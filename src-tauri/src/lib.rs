@@ -1,6 +1,7 @@
 mod commands;
 mod db;
 mod error;
+mod local_backend;
 mod models;
 mod sidecar;
 
@@ -23,6 +24,9 @@ pub fn run() {
                 .join("orcastudio");
             let conn = db::init_db(&data_dir)?;
             app.manage(DbState(Mutex::new(conn)));
+
+            // --- LocalBackend: job-directory root + single execution slot. ---
+            app.manage(local_backend::JobRunner::new(data_dir.clone()));
 
             // --- Sidecar: spawn uvicorn, then health-poll on a background thread. ---
             // In dev the sidecar lives at <project root>/sidecar (sibling of src-tauri).
@@ -48,6 +52,7 @@ pub fn run() {
             commands::jobs::list_jobs,
             commands::jobs::get_job,
             commands::jobs::update_job_status,
+            commands::jobs::submit_job,
             sidecar::get_sidecar_status,
         ])
         .build(tauri::generate_context!())

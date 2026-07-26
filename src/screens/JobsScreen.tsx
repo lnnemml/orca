@@ -9,7 +9,11 @@ function formatTimestamp(ts: string): string {
   return ts.replace("T", " ").replace(/\.\d+Z?$/, "");
 }
 
-export function JobsScreen() {
+interface JobsScreenProps {
+  onOpenDetail: (jobId: string, autoRun: boolean) => void;
+}
+
+export function JobsScreen({ onOpenDetail }: JobsScreenProps) {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -56,16 +60,46 @@ export function JobsScreen() {
               <th>Title</th>
               <th>Status</th>
               <th>Created</th>
+              <th></th>
             </tr>
           </thead>
           <tbody>
             {jobs.map((job) => (
-              <tr key={job.id}>
+              <tr
+                key={job.id}
+                className="clickable"
+                onClick={() => onOpenDetail(job.id, false)}
+              >
                 <td>{job.title}</td>
                 <td>
                   <span className={`badge ${job.status}`}>{job.status}</span>
                 </td>
                 <td className="mono">{formatTimestamp(job.created_at)}</td>
+                <td style={{ textAlign: "right" }}>
+                  {job.status === "draft" ? (
+                    <button
+                      className="btn btn-primary btn-sm"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onOpenDetail(job.id, true);
+                      }}
+                    >
+                      Run
+                    </button>
+                  ) : job.status === "running" ? (
+                    <span className="muted">Running…</span>
+                  ) : (
+                    <button
+                      className="btn btn-sm"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onOpenDetail(job.id, false);
+                      }}
+                    >
+                      Open
+                    </button>
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>

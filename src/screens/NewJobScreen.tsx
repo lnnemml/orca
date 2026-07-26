@@ -10,11 +10,13 @@ import {
 import type { Job } from "../types";
 
 interface NewJobScreenProps {
-  /** Called after a job is successfully created (parent navigates to Jobs). */
-  onCreated: (job: Job) => void;
+  /** A draft job was created; parent navigates to the Jobs list. */
+  onCreatedDraft: () => void;
+  /** Open a job's detail screen, optionally auto-running it. */
+  onOpenDetail: (jobId: string, autoRun: boolean) => void;
 }
 
-export function NewJobScreen({ onCreated }: NewJobScreenProps) {
+export function NewJobScreen({ onCreatedDraft, onOpenDetail }: NewJobScreenProps) {
   const [title, setTitle] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [content, setContent] = useState("");
@@ -27,7 +29,7 @@ export function NewJobScreen({ onCreated }: NewJobScreenProps) {
     if (!title.trim()) setTitle(t.name);
   };
 
-  const createJob = async () => {
+  const create = async (run: boolean) => {
     setCreating(true);
     setError(null);
     try {
@@ -35,7 +37,10 @@ export function NewJobScreen({ onCreated }: NewJobScreenProps) {
         title: title.trim() || "Untitled job",
         inputContent: content,
       });
-      onCreated(job);
+      // The detail screen performs the actual submit (after attaching its log
+      // listeners) so no early output lines are missed.
+      if (run) onOpenDetail(job.id, true);
+      else onCreatedDraft();
     } catch (e) {
       setError(String(e));
     } finally {
@@ -61,14 +66,22 @@ export function NewJobScreen({ onCreated }: NewJobScreenProps) {
             spellCheck={false}
           />
         </div>
-        <button
-          className="btn btn-primary"
-          onClick={createJob}
-          disabled={!canCreate}
-          style={{ alignSelf: "flex-end" }}
-        >
-          {creating ? "Creating…" : "Create Job"}
-        </button>
+        <div className="row" style={{ alignSelf: "flex-end" }}>
+          <button
+            className="btn"
+            onClick={() => create(false)}
+            disabled={!canCreate}
+          >
+            {creating ? "Creating…" : "Create Job"}
+          </button>
+          <button
+            className="btn btn-primary"
+            onClick={() => create(true)}
+            disabled={!canCreate}
+          >
+            Create &amp; Run
+          </button>
+        </div>
       </div>
 
       {error ? <div className="banner err">{error}</div> : null}

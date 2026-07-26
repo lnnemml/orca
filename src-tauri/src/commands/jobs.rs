@@ -35,16 +35,42 @@ fn list_jobs_conn(conn: &Connection) -> Result<Vec<Job>, AppError> {
 }
 
 /// A single job by id, or [`AppError::NotFound`].
-fn get_job_conn(conn: &Connection, id: &str) -> Result<Job, AppError> {
+pub(crate) fn get_job_conn(conn: &Connection, id: &str) -> Result<Job, AppError> {
     let sql = format!("SELECT {} FROM jobs WHERE id = ?1", Job::COLUMNS);
     conn.query_row(&sql, params![id], Job::from_row)
         .optional()?
         .ok_or_else(|| AppError::NotFound(format!("job {id}")))
 }
 
+/// Record the isolated job directory for a job (set once at submit time).
+pub(crate) fn set_job_dir_conn(conn: &Connection, id: &str, job_dir: &str) -> Result<(), AppError> {
+    conn.execute(
+        "UPDATE jobs SET job_dir = ?1 WHERE id = ?2",
+        params![job_dir, id],
+    )?;
+    Ok(())
+}
+
+/// Terminal transition (`completed`/`failed`): set status, stamp `completed_at`,
+/// and store an optional `error_message`. Used by the LocalBackend when a run
+/// finishes.
+pub(crate) fn finalize_job_conn(
+    conn: &Connection,
+    id: &str,
+    status: JobStatus,
+    error_message: Option<&str>,
+) -> Result<(), AppError> {
+    conn.execute(
+        "UPDATE jobs SET status = ?1, completed_at = datetime('now'), error_message = ?2 \
+         WHERE id = ?3",
+        params![status.as_str(), error_message, id],
+    )?;
+    Ok(())
+}
+
 /// Transition a job to `status`, stamping the matching timestamp:
 /// `started_at` on entering `running`, `completed_at` on `completed`/`failed`.
-fn update_job_status_conn(conn: &Connection, id: &str, status: &str) -> Result<(), AppError> {
+pub(crate) fn update_job_status_conn(conn: &Connection, id: &str, status: &str) -> Result<(), AppError> {
     let status = JobStatus::from_db(status)?;
     let affected = match status {
         JobStatus::Running => conn.execute(
@@ -94,6 +120,14 @@ pub fn get_job(db: State<'_, DbState>, id: String) -> Result<Job, AppError> {
 pub fn update_job_status(db: State<'_, DbState>, id: String, status: String) -> Result<(), AppError> {
     let conn = db.lock()?;
     update_job_status_conn(&conn, &id, &status)
+}
+
+/// Submit a draft job to the LocalBackend: prepare its dir, spawn ORCA, and
+/// stream the log. Returns immediately — the run proceeds on a background
+/// thread. See [`crate::local_backend`].
+#[tauri::command]
+pub fn submit_job(app: tauri::AppHandle, id: String) -> Result<(), AppError> {
+    crate::local_backend::submit(&app, &id)
 }
 
 #[cfg(test)]
@@ -179,6 +213,34 @@ mod tests {
 
         let err = update_job_status_conn(&conn, "no-such-id", "running").unwrap_err();
         assert!(matches!(err, AppError::NotFound(_)));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn set_job_dir_persists() {
+        let (conn, dir) = test_db();
+
+        let job = create_job_conn(&conn, "j", "! HF").unwrap();
+        set_job_dir_conn(&conn, &job.id, "/data/jobs/abc").unwrap();
+
+        let reloaded = get_job_conn(&conn, &job.id).unwrap();
+        assert_eq!(reloaded.job_dir.as_deref(), Some("/data/jobs/abc"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn finalize_sets_status_error_and_timestamp() {
+        let (conn, dir) = test_db();
+
+        let job = create_job_conn(&conn, "j", "! HF").unwrap();
+        finalize_job_conn(&conn, &job.id, JobStatus::Failed, Some("boom")).unwrap();
+
+        let reloaded = get_job_conn(&conn, &job.id).unwrap();
+        assert_eq!(reloaded.status, JobStatus::Failed);
+        assert_eq!(reloaded.error_message.as_deref(), Some("boom"));
+        assert!(reloaded.completed_at.is_some());
 
         std::fs::remove_dir_all(&dir).ok();
     }

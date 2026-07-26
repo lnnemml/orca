@@ -103,6 +103,13 @@ body {
   overflow: hidden;
 }
 
+/* The Job detail screen keeps the log console filling remaining height. */
+.screen.detail {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
 /* --- Status bar ------------------------------------------------------- */
 
 .statusbar {
@@ -183,6 +190,11 @@ body {
 .btn:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+.btn-sm {
+  padding: 4px 10px;
+  font-size: 12px;
 }
 
 .btn-primary {
@@ -295,6 +307,19 @@ body {
   font-size: 12px;
 }
 
+.jobs-table tr.clickable {
+  cursor: pointer;
+}
+
+.jobs-table tr.clickable:hover td {
+  background: var(--panel);
+}
+
+.muted {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .badge {
   display: inline-block;
   padding: 2px 8px;
@@ -349,6 +374,24 @@ body {
 .section-title {
   font-size: 16px;
   margin: 0 0 14px;
+}
+
+/* Terminal-style live log console (Job detail). */
+.log-console {
+  flex: 1;
+  min-height: 200px;
+  margin: 0;
+  overflow: auto;
+  background: #0d0f13;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  color: #c8ccd2;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .card {

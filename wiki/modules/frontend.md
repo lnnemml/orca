@@ -1,7 +1,7 @@
 # Module: Frontend (src/)
 
-**Status:** Phase 1 step 2 done — Monaco `.inp` editor + template library + job-creation
-UI with tabbed navigation (New Job / Jobs / Settings). Builds on the Phase 0 scaffold.
+**Status:** Phase 1 step 3 done — job detail screen with a live log console; Run / Create &
+Run wired to `submit_job`. Builds on step 2 (Monaco editor + templates + tabbed nav).
 
 ## As built (Phase 0)
 - Scaffolded via `create-tauri-app` (react-ts template). Note: the current template ships
@@ -55,6 +55,24 @@ editor/inputs. Only the active screen is mounted (switching to Jobs remounts it 
   `invoke` paths (`create_job` etc.) exercised via the already-tested Rust commands.
 - **Bundle note:** importing the full `monaco-editor` pulls all built-in languages (~4 MB / ~1 MB
   gz). Fine for a local desktop app; a future optimization is importing only `editor.api`.
+
+## As built (Phase 1 step 3) — run + live log console
+- **`App.tsx`** screen state became a union so it can hold a selected job:
+  `{kind:"job-detail", jobId, autoRun}` alongside the three tabs (Jobs stays highlighted while
+  drilled in).
+- **`NewJobScreen`** now has two buttons: "Create Job" (draft → Jobs) and "Create & Run"
+  (create → open detail with `autoRun`). It does NOT submit itself — the detail screen submits
+  after attaching listeners (see below).
+- **`JobsScreen`** rows are clickable (→ detail); an actions column shows Run (draft),
+  "Running…" (running), or Open. `onOpenDetail(jobId, autoRun)` from the parent.
+- **`JobDetailScreen`** (new): loads the job, `listen`s to `job:log` (append, capped at 5000
+  lines, auto-scroll) and `job:status` (update badge; reload full record on terminal state to
+  surface `error_message`/`completed_at`). Terminal-style `<pre className="log-console">`.
+  - **Ordering rule:** it attaches the log/status listeners FIRST, then (if `autoRun`) calls
+    `submit_job` — so no early output lines are missed. A `didSubmit` ref guards against React
+    StrictMode's dev double-mount firing two submits (the backend slot-mutex is the real guard).
+- **Known gap:** opening detail on an already-running job shows only lines emitted from that
+  point on — there's no backfill of `output.out` yet (would need a tail-reading command).
 
 ## Responsibilities
 Rendering, editing, user interaction. No filesystem/process access — everything through

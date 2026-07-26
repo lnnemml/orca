@@ -148,3 +148,53 @@ headlessly (as in Phase 0); browser verification of the web frontend used instea
 Fine for a local app; future optimization = import only `editor.api`.
 
 Next: `LocalBackend` — isolated job dir, full-path spawn, `output.out` capture + tailing.
+
+## [2026-07-26] session | Phase 1 step 3: LocalBackend — ORCA spawn, live log, completion
+
+The app runs its first real ORCA calculation. New `src-tauri/src/local_backend.rs` + the
+`submit_job` command + `JobDetailScreen` with a live log console.
+
+**Backend (`local_backend.rs`):** `submit(app, id)` → validate draft, read `orca_path`, reserve
+the single slot, `prepare_job_dir` (`<data>/jobs/<id>/` + `input.inp`), `run_orca` (full
+absolute path, `input.inp`, cwd = job dir, stdout piped, stderr → `stderr.log`), mark `running`,
+then a background thread streams stdout: appends each line to `output.out` AND batches to the UI
+via `job:log` (flush every 50 lines / 100 ms). On `wait()`: write `.exit_code`, then
+`detect_completion` reads a ~5 KB tail → `completed` iff `ORCA TERMINATED NORMALLY` + exit 0,
+else `failed` with a message from stderr/output tail; persisted via `finalize_job_conn`.
+`JobRunner` managed state = job-dir root + `Mutex<Option<String>>` (running id) → concurrency 1.
+All five domain rules honoured (full path / isolated dir / stream-not-slurp / marker+banner /
+concurrency 1). New `AppError::Backend`. Emits `job:log` + `job:status`.
+
+**Design choice:** no local `run.sh` wrapper — we pipe stdout in Rust and write `.exit_code`
+ourselves (simpler + gives the live stream). SshBackend will still use a remote runner script;
+the `.exit_code` marker convention stays shared. (Noted in execution-backends.md.)
+
+**Frontend:** `App` screen state is now a union incl. `{kind:"job-detail", jobId, autoRun}`.
+`NewJobScreen` gained "Create & Run" (creates draft, opens detail with autoRun). `JobsScreen`
+rows clickable + Run/Open/"Running…" actions. New `JobDetailScreen`: attaches `job:log`/
+`job:status` listeners FIRST, THEN submits (so no early lines lost); terminal-style `<pre>`
+console with auto-scroll, 5000-line cap; reloads the record on terminal status for
+`error_message`. A `didSubmit` ref neutralises StrictMode's dev double-submit (backend slot
+mutex is the real guard).
+
+**Verified:**
+- `cargo test` — 13 green (added `prepare_job_dir`, `read_tail`, `last_lines`,
+  `detect_completion`, `set_job_dir`, `finalize` tests). `cargo build` clean, no warnings.
+- **Real ORCA end-to-end:** `#[ignore]`d test `real_orca_water_single_point_completes` runs an
+  actual water single point (r²SCAN-3c) through `run_orca` + `detect_completion` against
+  `/opt/orca/orca` → passes in ~0.8 s, output has `ORCA TERMINATED NORMALLY`, `.exit_code`
+  written. Run with `cargo test -- --ignored`.
+- Frontend: `tsc` clean, `vite build` ok, rendered in Chrome — New Job shows both buttons,
+  Jobs table renders (invoke fails gracefully in a plain browser → banner, no crash), no
+  uncaught console errors.
+- **Not verified end-to-end:** the full in-app run flow (submit_job IPC → live `job:log` events
+  → console updating in the real webview) — the Tauri GUI can't be driven headlessly here (same
+  limitation as Phase 0). The risky part (real ORCA spawn/stream/detect) IS covered by the
+  ignored test through the exact backend code; the IPC/event glue is standard Tauri.
+
+**Known gaps (deferred, noted in wiki):** no startup reconciliation (a job left `running` after
+a crash stays `running`); no cancel/kill; no result parsing (energy/wall_time); no `output.out`
+backfill when opening an already-running job's detail.
+
+Next: minimal result extraction (final SCF energy, wall time) + job list showing energy;
+then startup reconciliation.

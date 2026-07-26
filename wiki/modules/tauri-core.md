@@ -1,7 +1,7 @@
 # Module: Rust core (src-tauri/)
 
-**Status:** Phase 1 step 1 done — job model + state machine in SQLite (on top of the
-Phase 0 scaffold: SQLite init, settings commands, sidecar lifecycle).
+**Status:** Phase 1 step 3 done — LocalBackend runs ORCA end-to-end (spawn, live log
+tailing, completion detection), on top of the job model (step 1) and Phase 0 scaffold.
 
 ## As built (Phase 0)
 Files: `lib.rs` (builder + setup + exit handling), `db.rs`, `error.rs`, `sidecar.rs`,
@@ -47,6 +47,28 @@ Files added: `models/job.rs`, `commands/jobs.rs`. `db.rs` gained migration v2.
 - **`AppError`** gained `NotFound(String)`.
 - **Not yet:** no UI, no `LocalBackend`/process spawn, no filesystem job dirs — those are
   Phase 1 later steps.
+
+## As built (Phase 1 step 3) — LocalBackend
+New file: `local_backend.rs`. New command `submit_job`, new managed state `JobRunner`.
+Full backend detail lives in `wiki/modules/execution-backends.md`; core-facing summary:
+
+- **`submit_job(app, id)`** (in `commands/jobs.rs`, delegates to `local_backend::submit`):
+  validates the job is `draft`, reads `orca_path`, reserves the single execution slot,
+  prepares the isolated job dir, spawns ORCA, marks `running`, and returns immediately — a
+  background thread streams the log and finalizes. Needs `AppHandle` (declared as a
+  `app: tauri::AppHandle` command param) for `emit`.
+- **`JobRunner` managed state** (`app.manage`d in `lib.rs` setup): holds the job-dir root
+  (`<data>/jobs/`) and `Mutex<Option<String>>` — the running job id, enforcing concurrency = 1.
+- **New jobs.rs DB helpers** (all `pub(crate)`): `set_job_dir_conn`, `finalize_job_conn`
+  (terminal status + `completed_at` + `error_message`), and `get_job_conn`/`update_job_status_conn`
+  promoted from private so the backend can reuse them.
+- **`AppError::Backend(String)`** added for spawn failures / bad config / queue-full.
+- **Events emitted** (Rust → UI, via `tauri::Emitter`): `job:log { job_id, lines: [String] }`
+  (batched every 50 lines / 100 ms) and `job:status { job_id, status }` on running + terminal.
+  Frontend `listen`s (allowed by `core:default` capability) and filters by `job_id`.
+- **Not yet:** startup reconciliation of jobs left `running` after a crash/close (a job stays
+  `running` in the DB) — deferred to Phase 2 (matches ROADMAP). No result parsing (energy/
+  wall_time) yet — separate ROADMAP item.
 
 ## Deviation note
 `dirs` crate used for the data dir (per task spec) rather than Tauri's `app.path()` API —

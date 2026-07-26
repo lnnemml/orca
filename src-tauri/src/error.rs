@@ -20,6 +20,11 @@ pub enum AppError {
     #[error("not found: {0}")]
     NotFound(String),
 
+    /// An execution-backend failure (spawn failed, bad configuration, queue
+    /// full, etc.). Distinct from `Io` so the message is user-facing.
+    #[error("backend error: {0}")]
+    Backend(String),
+
     /// Internal invariant failure (e.g. a poisoned mutex). Kept separate from
     /// `Sidecar` so the source of the failure stays legible.
     #[error("internal error: {0}")]

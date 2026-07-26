@@ -3,11 +3,16 @@ import { invoke } from "@tauri-apps/api/core";
 
 import { NewJobScreen } from "./screens/NewJobScreen";
 import { JobsScreen } from "./screens/JobsScreen";
+import { JobDetailScreen } from "./screens/JobDetailScreen";
 import { SettingsScreen } from "./screens/SettingsScreen";
 import type { SidecarState, SidecarStatus } from "./types";
 import "./styles/app.css";
 
-type Screen = "new-job" | "jobs" | "settings";
+type Screen =
+  | { kind: "new-job" }
+  | { kind: "jobs" }
+  | { kind: "settings" }
+  | { kind: "job-detail"; jobId: string; autoRun: boolean };
 
 const DOT_COLOR: Record<SidecarState, string> = {
   healthy: "var(--ok)",
@@ -21,16 +26,20 @@ const STATUS_LABEL: Record<SidecarState, string> = {
   down: "Sidecar down",
 };
 
-const TABS: { id: Screen; label: string }[] = [
+const TABS: { id: "new-job" | "jobs" | "settings"; label: string }[] = [
   { id: "new-job", label: "New Job" },
   { id: "jobs", label: "Jobs" },
   { id: "settings", label: "Settings" },
 ];
 
 function App() {
-  const [screen, setScreen] = useState<Screen>("new-job");
+  const [screen, setScreen] = useState<Screen>({ kind: "new-job" });
   const [sidecar, setSidecar] = useState<SidecarStatus | null>(null);
   const [orcaPath, setOrcaPath] = useState("");
+
+  const openDetail = useCallback((jobId: string, autoRun: boolean) => {
+    setScreen({ kind: "job-detail", jobId, autoRun });
+  }, []);
 
   const refreshSidecar = useCallback(async () => {
     try {
@@ -56,6 +65,9 @@ function App() {
     return () => clearInterval(id);
   }, [loadOrcaPath, refreshSidecar]);
 
+  // The Jobs tab stays highlighted while drilled into a job's detail.
+  const activeTab = screen.kind === "job-detail" ? "jobs" : screen.kind;
+
   return (
     <div className="app">
       <header className="topbar">
@@ -64,8 +76,8 @@ function App() {
           {TABS.map((t) => (
             <button
               key={t.id}
-              className={"tab" + (screen === t.id ? " active" : "")}
-              onClick={() => setScreen(t.id)}
+              className={"tab" + (activeTab === t.id ? " active" : "")}
+              onClick={() => setScreen({ kind: t.id })}
             >
               {t.label}
             </button>
@@ -73,12 +85,21 @@ function App() {
         </nav>
       </header>
 
-      {screen === "new-job" ? (
-        <NewJobScreen onCreated={() => setScreen("jobs")} />
-      ) : screen === "jobs" ? (
-        <JobsScreen />
-      ) : (
+      {screen.kind === "new-job" ? (
+        <NewJobScreen
+          onCreatedDraft={() => setScreen({ kind: "jobs" })}
+          onOpenDetail={openDetail}
+        />
+      ) : screen.kind === "jobs" ? (
+        <JobsScreen onOpenDetail={openDetail} />
+      ) : screen.kind === "settings" ? (
         <SettingsScreen />
+      ) : (
+        <JobDetailScreen
+          jobId={screen.jobId}
+          autoRun={screen.autoRun}
+          onBack={() => setScreen({ kind: "jobs" })}
+        />
       )}
 
       <footer className="statusbar">

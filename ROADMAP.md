@@ -34,9 +34,9 @@ project mission becomes real.
       (the `parsed` state is deferred until result extraction lands — Phase 1 later step)
 - [x] Monaco editor for `.inp` with ORCA syntax highlighting (custom Monarch grammar, basic)
 - [x] Template library (hardcoded to start): SP, Opt, Freq, Opt+Freq on r²SCAN-3c / B3LYP D4 def2-SVP
-- [ ] `LocalBackend`: isolated job dir, full-path spawn, stdout → `output.out`, `.exit_code` marker
-- [ ] Live log view: Rust tails `output.out`, streams lines to frontend via Tauri events
-- [ ] Completion detection (marker + `ORCA TERMINATED NORMALLY`), status surfaced in UI
+- [x] `LocalBackend`: isolated job dir, full-path spawn, stdout → `output.out`, `.exit_code` marker
+- [x] Live log view: Rust tails `output.out`, streams lines to frontend via Tauri events
+- [x] Completion detection (marker + `ORCA TERMINATED NORMALLY`), status surfaced in UI
 - [ ] Minimal result extraction: final SCF energy, wall time (regex in Rust is fine for now)
 - [ ] Job list screen: history of all runs with status, energy, open-folder button
 
