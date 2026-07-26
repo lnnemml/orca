@@ -1,15 +1,29 @@
 # ORCA basics: installation, invocation, environment
 
-**Status of this page:** pre-filled from planning; VERIFY every claim during Phase 0 and
-update with actual paths/versions.
+**Status of this page:** VERIFIED on 2026-07-26 (Phase 0). Values below reflect the actual
+working install on the author's laptop.
+
+## Verified environment (2026-07-26)
+
+| Item | Value |
+|---|---|
+| ORCA version | **6.1.0** |
+| Install path | **`/opt/orca`** (binary: `/opt/orca/orca`) |
+| OpenMPI version | **4.1.6** (system OpenMPI, compatible with this ORCA build) |
+| Host | Laptop-main, Linux Mint |
+
+Verification test (`water_optfreq`): r²SCAN-3c `Opt Freq TightSCF`, `%pal nprocs 4`,
+`%maxcore 2000`. Geometry optimization converged in **4 cycles**; final energy
+**−76.418938719971 Eh**; harmonic frequencies **1653.26 / 3813.32 / 3932.49 cm⁻¹**
+(all positive → confirmed minimum); run ended with `ORCA TERMINATED NORMALLY`.
+Full-path invocation with `%pal nprocs 4` parallelized correctly — the domain rule holds.
 
 ## Installation
 - ORCA 6.x: free academic/personal license via FAccTs registration; download tarball,
   unpack to e.g. `/opt/orca`. Never bundle/redistribute.
 - **OpenMPI version must match exactly** what the ORCA build was compiled against
-  (stated on the download page). Mismatch = cryptic MPI startup failures.
-- Record here after install: ORCA version, OpenMPI version, install path, `PATH`/
-  `LD_LIBRARY_PATH` additions.
+  (stated on the download page). Here: ORCA 6.1.0 works with system **OpenMPI 4.1.6**.
+  Mismatch = cryptic MPI startup failures.
 
 ## Invocation — the rule that breaks everyone
 Parallel runs REQUIRE the full absolute path:

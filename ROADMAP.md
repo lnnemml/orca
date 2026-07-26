@@ -12,9 +12,9 @@ calculations. No phase is "infrastructure only".
 
 **Goal:** working environment + repo skeleton + wiki discipline from day one.
 
-- [ ] Install ORCA 6.x (FAccTs academic registration), matching OpenMPI version
-- [ ] Verify from terminal: water single-point + geometry opt with `%pal nprocs 4`, full-path invocation
-- [ ] Record the verified install path, versions, and any install pain in `wiki/orca/orca-basics.md`
+- [x] Install ORCA 6.x (FAccTs academic registration), matching OpenMPI version — ORCA 6.1.0 at `/opt/orca`, system OpenMPI 4.1.6
+- [x] Verify from terminal: water single-point + geometry opt with `%pal nprocs 4`, full-path invocation — `water_optfreq` (r²SCAN-3c Opt+Freq) converged, minimum confirmed, `ORCA TERMINATED NORMALLY`
+- [x] Record the verified install path, versions, and any install pain in `wiki/orca/orca-basics.md`
 - [ ] Scaffold Tauri 2 + React + TS (Vite), runs with `npm run tauri dev`
 - [ ] Scaffold Python sidecar (FastAPI, `/health` endpoint), spawned by Tauri on startup, killed on exit
 - [ ] SQLite opened/migrated by Rust core (single `orcastudio.db` in user data dir)
