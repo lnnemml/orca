@@ -41,3 +41,38 @@ Wiki updated: `orca/orca-basics.md` (verified environment table + test results),
 `orca/gotchas.md` (no `--version`). ROADMAP Phase 0 install/verify/record marked done.
 
 Next: scaffold Tauri 2 + React + TS, then Python sidecar `/health` + SQLite init.
+
+## [2026-07-26] session | Phase 0: app scaffold (Tauri + sidecar + SQLite)
+
+Built the Phase 0 skeleton — `npm run tauri dev` opens the OrcaStudio window showing
+sidecar status and the configured ORCA path. Verified end-to-end on Laptop-main.
+
+**Prereqs installed:** Rust 1.97.1 (rustup, minimal profile); apt libs
+`libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev patchelf libayatana-appindicator3-dev`
+(Ayatana substituted for the older libappindicator3-dev — maintained replacement).
+
+**Frontend (src/):** `create-tauri-app` react-ts template moved into repo root; renamed to
+OrcaStudio (identifier `com.orcastudio.app`). `App.tsx` = System Status dashboard: sidecar
+dot (poll 5s) + editable ORCA path (Save). Builds clean under TS strict.
+
+**Sidecar (sidecar/):** FastAPI `GET /health -> {status:"ok",version:"0.1.0"}` + localhost
+CORS; venv; `pytest` green.
+
+**Rust core (src-tauri/):** `db.rs` (init + migration v1 `settings` table, seeds
+`orca_path=/opt/orca/orca`), `error.rs` (`AppError`, serialized as string in Phase 0),
+`sidecar.rs` (`SidecarManager`: free-port pick, spawn uvicorn from venv, 15×2s health poll on
+a bg thread, kill on `ExitRequested` + `Drop`), `commands/settings.rs`. `cargo test` green.
+
+**Verified:** window launches; Rust spawns uvicorn (dynamic port, from `.venv`), health poll
+hits `200`; DB seeded; changing `orca_path` survives restart (migration `INSERT OR IGNORE`
+doesn't clobber). Note: GUI window couldn't be screenshotted headlessly (no xdotool to raise
+it) — verified via process/log/DB/curl instead.
+
+**Doc drift found:** template ships **React 19**, ADR-001 says React 18 → flag for an ADR
+update. `AppError` serialized as plain string, not the `{code,message}` in tauri-core.md's
+planned surface → revisit when structured error codes are needed.
+
+Wiki updated: `modules/frontend.md`, `modules/tauri-core.md`, `modules/sidecar.md`
+(all → Phase 0 scaffold done). ROADMAP Phase 0 fully checked.
+
+Next (Phase 1): job model + state machine, Monaco editor, `LocalBackend`, live log tailing.

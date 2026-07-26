@@ -1,6 +1,18 @@
 # Module: Python sidecar (sidecar/)
 
-**Status:** not started
+**Status:** Phase 0 scaffold done — FastAPI app with `/health`, venv, pytest.
+
+## As built (Phase 0)
+- `app/main.py`: FastAPI app, `GET /health -> {"status":"ok","version":"0.1.0"}`
+  (Pydantic `HealthResponse`), CORS middleware restricted to localhost / `tauri://localhost`
+  via `allow_origin_regex`. `__version__` lives in `app/__init__.py`.
+- `requirements.txt`: fastapi / uvicorn[standard] / pydantic only (cclib/rdkit/ase later).
+  `requirements-dev.txt` adds pytest + httpx for tests.
+- Venv at `sidecar/.venv`; the Rust core prefers `.venv/bin/python`, falling back to system
+  `python3` with a warning.
+- Launched by the Rust core as `python -m uvicorn app.main:app --host 127.0.0.1 --port <dynamic>`
+  (cwd = `sidecar/`), stdout/stderr → `<data_dir>/sidecar.log`.
+- `tests/test_health.py`: FastAPI `TestClient` smoke test (`pytest` green).
 
 ## Responsibilities
 Chemistry intelligence: parsing, structure generation, conversions, manual indexing.

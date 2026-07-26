@@ -15,10 +15,10 @@ calculations. No phase is "infrastructure only".
 - [x] Install ORCA 6.x (FAccTs academic registration), matching OpenMPI version — ORCA 6.1.0 at `/opt/orca`, system OpenMPI 4.1.6
 - [x] Verify from terminal: water single-point + geometry opt with `%pal nprocs 4`, full-path invocation — `water_optfreq` (r²SCAN-3c Opt+Freq) converged, minimum confirmed, `ORCA TERMINATED NORMALLY`
 - [x] Record the verified install path, versions, and any install pain in `wiki/orca/orca-basics.md`
-- [ ] Scaffold Tauri 2 + React + TS (Vite), runs with `npm run tauri dev`
-- [ ] Scaffold Python sidecar (FastAPI, `/health` endpoint), spawned by Tauri on startup, killed on exit
-- [ ] SQLite opened/migrated by Rust core (single `orcastudio.db` in user data dir)
-- [ ] Git repo initialized; first `log.md` entry written
+- [x] Scaffold Tauri 2 + React + TS (Vite), runs with `npm run tauri dev` — window verified (React 19 per current template)
+- [x] Scaffold Python sidecar (FastAPI, `/health` endpoint), spawned by Tauri on startup, killed on exit — dynamic port, venv python, `sidecar.log`
+- [x] SQLite opened/migrated by Rust core (single `orcastudio.db` in user data dir) — migration v1 `settings` table, seeded `orca_path`
+- [x] Git repo initialized; first `log.md` entry written
 
 **Done when:** `npm run tauri dev` opens a window that shows sidecar status = healthy and
 ORCA path = configured; a water optimization ran successfully from the terminal.

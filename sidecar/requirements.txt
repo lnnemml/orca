@@ -1,0 +1,5 @@
+# Runtime dependencies for the OrcaStudio sidecar.
+# Phase 0 keeps this minimal; cclib / rdkit / ase are added in later phases.
+fastapi>=0.115
+uvicorn[standard]>=0.34
+pydantic>=2.0
