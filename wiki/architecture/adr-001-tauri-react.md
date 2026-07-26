@@ -7,7 +7,7 @@ Need a Linux-first desktop GUI. Author's strongest stack is React/TypeScript (Ne
 production experience). Alternatives considered: Electron, PySide6/Qt, egui (pure Rust).
 
 ## Decision
-Tauri 2 with React 18 + TypeScript (strict) + Vite.
+Tauri 2 with React 19 + TypeScript (strict) + Vite.
 
 ## Rationale
 - Reuses the author's highest-velocity skill set; UI iteration speed matters most
