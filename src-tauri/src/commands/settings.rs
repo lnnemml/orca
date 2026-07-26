@@ -14,7 +14,7 @@ use crate::error::AppError;
 pub struct DbState(pub Mutex<Connection>);
 
 impl DbState {
-    fn lock(&self) -> Result<std::sync::MutexGuard<'_, Connection>, AppError> {
+    pub(crate) fn lock(&self) -> Result<std::sync::MutexGuard<'_, Connection>, AppError> {
         self.0
             .lock()
             .map_err(|_| AppError::Internal("database mutex poisoned".into()))

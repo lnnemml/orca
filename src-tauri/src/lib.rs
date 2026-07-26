@@ -1,6 +1,7 @@
 mod commands;
 mod db;
 mod error;
+mod models;
 mod sidecar;
 
 use std::path::Path;
@@ -43,6 +44,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::settings::get_settings,
             commands::settings::set_setting,
+            commands::jobs::create_job,
+            commands::jobs::list_jobs,
+            commands::jobs::get_job,
+            commands::jobs::update_job_status,
             sidecar::get_sidecar_status,
         ])
         .build(tauri::generate_context!())

@@ -30,7 +30,8 @@ ORCA path = configured; a water optimization ran successfully from the terminal.
 **Goal:** the terminal is no longer needed for a basic ORCA run. This is the moment the
 project mission becomes real.
 
-- [ ] Job model + state machine in SQLite: `draft → running → completed | failed → parsed`
+- [x] Job model + state machine in SQLite: `draft → running → completed | failed`
+      (the `parsed` state is deferred until result extraction lands — Phase 1 later step)
 - [ ] Monaco editor for `.inp` with ORCA syntax highlighting (custom Monarch grammar, basic)
 - [ ] Template library (hardcoded to start): SP, Opt, Freq, Opt+Freq on r²SCAN-3c / B3LYP D4 def2-SVP
 - [ ] `LocalBackend`: isolated job dir, full-path spawn, stdout → `output.out`, `.exit_code` marker

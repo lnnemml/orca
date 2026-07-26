@@ -1,6 +1,7 @@
 # Module: Rust core (src-tauri/)
 
-**Status:** Phase 0 scaffold done — SQLite init, settings commands, sidecar lifecycle.
+**Status:** Phase 1 step 1 done — job model + state machine in SQLite (on top of the
+Phase 0 scaffold: SQLite init, settings commands, sidecar lifecycle).
 
 ## As built (Phase 0)
 Files: `lib.rs` (builder + setup + exit handling), `db.rs`, `error.rs`, `sidecar.rs`,
@@ -19,6 +20,33 @@ Files: `lib.rs` (builder + setup + exit handling), `db.rs`, `error.rs`, `sidecar
 - **Startup sequence (setup hook):** open+migrate SQLite → spawn sidecar → background
   health-poll thread. `RunEvent::ExitRequested` stops the sidecar; `Drop` on `SidecarManager`
   is the backstop.
+
+## As built (Phase 1 step 1) — job model + state machine
+Files added: `models/job.rs`, `commands/jobs.rs`. `db.rs` gained migration v2.
+
+- **Migration v2 (`db.rs`):** `migrate()` is now version-aware. It always ensures the v1
+  `settings` table/seeds, reads the stored `schema_version`, and steps forward: `version < 2`
+  → `CREATE TABLE jobs (...)`, then persists `schema_version=2`. Backward-compatible — an
+  existing v1 DB is upgraded in place, settings untouched (test `migrate_v1_to_v2_preserves_settings`).
+- **`jobs` table:** `id` (UUID v4 TEXT PK), `title`, `input_content` (full `.inp` text),
+  `status` (`draft|running|completed|failed`, default `draft`), `job_dir`, `energy` (REAL),
+  `wall_time` (REAL), `error_message`, `created_at` (`datetime('now')`), `started_at`,
+  `completed_at`. `Option` columns stay `NULL` until the relevant lifecycle step fills them.
+- **`JobStatus` enum (`models/job.rs`):** `Draft|Running|Completed|Failed`, serialized to/from
+  lowercase strings on the wire and in the DB (`as_str`, `from_db`). Remote states
+  (uploading/syncing) and `parsed` are deliberately deferred to later phases.
+- **`Job` struct:** mirrors the table 1:1, `#[derive(Serialize)]`. `Job::from_row` hydrates
+  from a row in `Job::COLUMNS` order; `Job::COLUMNS` is the single source of truth for the
+  select list.
+- **Commands implemented:** `create_job(title, input_content) -> Job` (generates UUID, inserts
+  as `draft`), `list_jobs() -> Vec<Job>` (newest first, `created_at DESC`),
+  `get_job(id) -> Job` (`AppError::NotFound` if absent), `update_job_status(id, status)` —
+  stamps `started_at` on `running`, `completed_at` on `completed`/`failed`; `NotFound` if the
+  id doesn't exist. Each command is a thin lock-and-delegate wrapper over a `*_conn(&Connection)`
+  helper so the state-machine logic is unit-testable without a Tauri app.
+- **`AppError`** gained `NotFound(String)`.
+- **Not yet:** no UI, no `LocalBackend`/process spawn, no filesystem job dirs — those are
+  Phase 1 later steps.
 
 ## Deviation note
 `dirs` crate used for the data dir (per task spec) rather than Tauri's `app.path()` API —

@@ -16,6 +16,10 @@ pub enum AppError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 
+    /// A requested entity (e.g. a job by id) does not exist.
+    #[error("not found: {0}")]
+    NotFound(String),
+
     /// Internal invariant failure (e.g. a poisoned mutex). Kept separate from
     /// `Sidecar` so the source of the failure stays legible.
     #[error("internal error: {0}")]

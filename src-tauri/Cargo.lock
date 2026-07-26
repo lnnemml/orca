@@ -2369,6 +2369,7 @@ dependencies = [
  "tauri-plugin-opener",
  "thiserror 2.0.19",
  "ureq",
+ "uuid",
 ]
 
 [[package]]

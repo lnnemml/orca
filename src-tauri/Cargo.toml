@@ -27,4 +27,6 @@ thiserror = "2"
 dirs = "5"
 # Sidecar lifecycle (Phase 0): spawn uvicorn, poll /health.
 ureq = "2"
+# Job identifiers (Phase 1): UUID v4 primary keys.
+uuid = { version = "1", features = ["v4"] }
 

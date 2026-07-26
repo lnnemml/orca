@@ -76,3 +76,35 @@ Wiki updated: `modules/frontend.md`, `modules/tauri-core.md`, `modules/sidecar.m
 (all → Phase 0 scaffold done). ROADMAP Phase 0 fully checked.
 
 Next (Phase 1): job model + state machine, Monaco editor, `LocalBackend`, live log tailing.
+
+## [2026-07-26] session | Phase 1 step 1: job model + state machine in SQLite
+
+Built the Rust data layer for jobs — no UI, no process spawn (those are later Phase 1 steps).
+
+**Migration v2 (`db.rs`):** `migrate()` is now version-aware — ensures the v1 `settings`
+table/seeds, reads stored `schema_version`, and steps forward (`< 2` → `CREATE TABLE jobs`,
+persist `schema_version=2`). Backward-compatible: an existing v1 DB upgrades in place with
+settings untouched (`orca_path` preserved). New test `migrate_v1_to_v2_preserves_settings`.
+
+**`models/job.rs`:** `JobStatus` enum (`Draft|Running|Completed|Failed`, lowercase serde on
+wire + in DB via `as_str`/`from_db`); `Job` struct mirroring the table 1:1 (`Serialize`);
+`Job::from_row` + `Job::COLUMNS` (single source of truth for the select list). Remote
+(uploading/syncing) and `parsed` states deliberately deferred.
+
+**`commands/jobs.rs`:** `create_job` (UUID v4, inserts `draft`), `list_jobs`
+(`created_at DESC`), `get_job` (`AppError::NotFound` if absent), `update_job_status` (stamps
+`started_at` on `running`, `completed_at` on `completed`/`failed`; `NotFound` on unknown id).
+Commands are thin lock-and-delegate wrappers over `*_conn(&Connection)` helpers → the
+state-machine logic is unit-testable without a Tauri app. All 4 registered in `lib.rs`.
+
+**`error.rs`:** added `NotFound(String)`. **Cargo.toml:** added `uuid` (v4).
+
+**Verified:** `cargo test` — 7/7 green (5 new job tests: create→draft in list, running sets
+`started_at`, completed sets `completed_at`, get/update missing → `NotFound`; plus the v1→v2
+migration test and the original `init_db_seeds_defaults`). `cargo build` clean, no warnings.
+
+Decision: `update_job_status` rejects unknown status strings via `JobStatus::from_db`
+(returns `AppError::Internal` for now — no dedicated validation variant yet). Only the four
+Phase 1 states exist; extend the enum + migration when remote/parsed states arrive.
+
+Next: Monaco `.inp` editor + template library, then `LocalBackend` (job dirs, spawn, tailing).
