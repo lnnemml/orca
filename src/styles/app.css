@@ -1,0 +1,360 @@
+/* OrcaStudio — monochrome dark shell with a single accent, tuned to sit
+   comfortably around Monaco's vs-dark editor. */
+
+:root {
+  --bg: #16181d;
+  --panel: #1f232b;
+  --panel-2: #262b34;
+  --border: #333a45;
+  --text: #e6e8eb;
+  --muted: #9aa0aa;
+  --muted-2: #6b7280;
+  --accent: #4f8cff;
+  --accent-hover: #6ba0ff;
+
+  --ok: #22c55e;
+  --warn: #eab308;
+  --err: #ef4444;
+
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --radius: 8px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+}
+
+/* --- App shell -------------------------------------------------------- */
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  min-width: 720px;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 16px;
+  height: 48px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  flex-shrink: 0;
+}
+
+.brand {
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
+.tabs {
+  display: flex;
+  gap: 4px;
+}
+
+.tab {
+  padding: 6px 14px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.tab:hover {
+  color: var(--text);
+  background: var(--panel-2);
+}
+
+.tab.active {
+  color: var(--text);
+  background: var(--panel-2);
+}
+
+.screen {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 20px;
+}
+
+/* The New Job screen keeps the editor filling remaining height. */
+.screen.new-job {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow: hidden;
+}
+
+/* --- Status bar ------------------------------------------------------- */
+
+.statusbar {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 0 16px;
+  height: 30px;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.statusbar .mono {
+  font-family: var(--mono);
+  color: var(--muted-2);
+}
+
+.status-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  display: inline-block;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
+/* --- Form controls ---------------------------------------------------- */
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.label {
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.input {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  padding: 8px 10px;
+  font-size: 14px;
+  outline: none;
+}
+
+.input:focus {
+  border-color: var(--accent);
+}
+
+.input.mono {
+  font-family: var(--mono);
+  font-size: 13px;
+}
+
+.btn {
+  padding: 8px 16px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.btn:hover:not(:disabled) {
+  border-color: var(--muted-2);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 500;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* --- Template picker -------------------------------------------------- */
+
+.template-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.template-group-title {
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 6px;
+}
+
+.template-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.template-card {
+  text-align: left;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  cursor: pointer;
+  color: var(--text);
+}
+
+.template-card:hover {
+  border-color: var(--muted-2);
+}
+
+.template-card.selected {
+  border-color: var(--accent);
+  background: var(--panel-2);
+}
+
+.template-card .tname {
+  font-weight: 500;
+  font-family: var(--mono);
+  font-size: 13px;
+}
+
+.template-card .tdesc {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 3px;
+}
+
+/* --- Editor ----------------------------------------------------------- */
+
+.editor-wrap {
+  flex: 1;
+  min-height: 200px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+/* --- Jobs table ------------------------------------------------------- */
+
+.jobs-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.jobs-table th,
+.jobs-table td {
+  text-align: left;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.jobs-table th {
+  color: var(--muted);
+  font-weight: 500;
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.5px;
+}
+
+.jobs-table td.mono {
+  font-family: var(--mono);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.badge.draft {
+  background: #33383f;
+  color: #c8ccd2;
+}
+.badge.running {
+  background: #3a3410;
+  color: var(--warn);
+}
+.badge.completed {
+  background: #10331d;
+  color: var(--ok);
+}
+.badge.failed {
+  background: #3a1414;
+  color: var(--err);
+}
+
+/* --- Misc ------------------------------------------------------------- */
+
+.empty {
+  color: var(--muted);
+  padding: 40px 0;
+  text-align: center;
+}
+
+.banner {
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  font-size: 13px;
+}
+
+.banner.ok {
+  background: #10331d;
+  color: var(--ok);
+}
+
+.banner.err {
+  background: #3a1414;
+  color: var(--err);
+}
+
+.section-title {
+  font-size: 16px;
+  margin: 0 0 14px;
+}
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px;
+  max-width: 560px;
+}

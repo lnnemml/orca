@@ -108,3 +108,43 @@ Decision: `update_job_status` rejects unknown status strings via `JobStatus::fro
 Phase 1 states exist; extend the enum + migration when remote/parsed states arrive.
 
 Next: Monaco `.inp` editor + template library, then `LocalBackend` (job dirs, spawn, tailing).
+
+## [2026-07-26] session | Phase 1 step 2: Monaco editor + templates + job-creation UI
+
+Frontend for authoring jobs. `npm install @monaco-editor/react monaco-editor`.
+
+**Editor (`src/editor/`):** `orca-language.ts` — Monarch grammar `orca-inp` highlighting the
+structural bits (`!` line, `%block`/`end`, `#` comments, `* xyz ... *` delimiters, numbers,
+strings; `ignoreCase`), deliberately not a full keyword list. `InputEditor.tsx` wraps
+`@monaco-editor/react` (vs-dark, full height), registers the language on `beforeMount`.
+
+**Offline Monaco (`monaco-setup.ts`):** `@monaco-editor/react` defaults to a CDN loader — fatal
+for a desktop app. Pinned to the bundled package via `loader.config({ monaco })` +
+`MonacoEnvironment.getWorker`. The worker import path is `monaco-editor/editor/editor.worker.js`
+(NOT `esm/vs/...`): the package `exports` map rewrites `monaco-editor/*` → `esm/vs/*`, so the
+prefixed path double-maps and Rollup can't resolve it. Non-trivial — logged in
+`debugging/001-monaco-offline-worker-resolve.md`.
+
+**Templates (`templates/orca-templates.ts`):** 8 hardcoded `OrcaTemplate`s (SP/Opt/Freq/Opt+Freq
+× r²SCAN-3c and B3LYP-D4/def2-SVP), each a full runnable `.inp` with `%pal nprocs 4 end`,
+`%maxcore 2000`, H2 placeholder geometry. **Domain-correctness deviation from the task spec:**
+spec asked for `%maxcore 2000 end`, but `%maxcore` is a simple directive with NO `end` (unlike
+the `%pal` block) — emitting `end` would be wrong ORCA, so templates use `%maxcore 2000`.
+
+**UI (`App.tsx` + `screens/`):** rewrote the single dashboard into a tabbed shell — New Job /
+Jobs / Settings (local `useState`, no router). `NewJobScreen` (title + template picker grid +
+editor → `create_job`), `JobsScreen` (`list_jobs` → title/status-badge/created table),
+`SettingsScreen` (the relocated ORCA-path editor). Bottom status bar shows sidecar dot + ORCA
+path (the old System Status is no longer the home screen). Styling extracted to
+`styles/app.css` — monochrome dark + one accent. Shared `types.ts` mirrors the Rust `Job`.
+
+**Verified:** `tsc --noEmit` clean; `vite build` succeeds; loaded `vite dev` in Chrome — nav
+works, picking a template fills the editor with live ORCA highlighting, zero console/worker
+errors (confirms bundled Monaco loads offline at runtime). Full `create_job` write path relies
+on the Rust commands already unit-tested in step 1. Note: full `tauri dev` GUI not screenshotted
+headlessly (as in Phase 0); browser verification of the web frontend used instead.
+
+**Bundle note:** full `monaco-editor` import pulls all built-in languages (~4 MB / ~1 MB gz).
+Fine for a local app; future optimization = import only `editor.api`.
+
+Next: `LocalBackend` — isolated job dir, full-path spawn, `output.out` capture + tailing.

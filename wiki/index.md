@@ -36,7 +36,8 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 ## Debugging
 
 - [README.md](debugging/README.md) — format for solved-bug pages
+- [001-monaco-offline-worker-resolve.md](debugging/001-monaco-offline-worker-resolve.md) — Monaco worker unresolved in Vite build (exports-map double-mapping) + CDN→bundled fix
 
 ---
 
-*Page count: 18. Last structural update: 2026-07-26 (initial scaffold).*
+*Page count: 19. Last structural update: 2026-07-26 (Phase 1.2: +debugging/001-monaco-offline-worker-resolve).*

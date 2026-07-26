@@ -32,8 +32,8 @@ project mission becomes real.
 
 - [x] Job model + state machine in SQLite: `draft → running → completed | failed`
       (the `parsed` state is deferred until result extraction lands — Phase 1 later step)
-- [ ] Monaco editor for `.inp` with ORCA syntax highlighting (custom Monarch grammar, basic)
-- [ ] Template library (hardcoded to start): SP, Opt, Freq, Opt+Freq on r²SCAN-3c / B3LYP D4 def2-SVP
+- [x] Monaco editor for `.inp` with ORCA syntax highlighting (custom Monarch grammar, basic)
+- [x] Template library (hardcoded to start): SP, Opt, Freq, Opt+Freq on r²SCAN-3c / B3LYP D4 def2-SVP
 - [ ] `LocalBackend`: isolated job dir, full-path spawn, stdout → `output.out`, `.exit_code` marker
 - [ ] Live log view: Rust tails `output.out`, streams lines to frontend via Tauri events
 - [ ] Completion detection (marker + `ORCA TERMINATED NORMALLY`), status surfaced in UI
