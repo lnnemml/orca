@@ -1,0 +1,11 @@
+node_modules/
+dist/
+target/
+__pycache__/
+*.pyc
+.venv/
+venv/
+resources/manual/*
+!resources/manual/README.md
+*.db
+.env
