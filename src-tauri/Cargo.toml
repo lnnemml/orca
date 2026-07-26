@@ -29,4 +29,6 @@ dirs = "5"
 ureq = "2"
 # Job identifiers (Phase 1): UUID v4 primary keys.
 uuid = { version = "1", features = ["v4"] }
+# Result extraction (Phase 1): regex over ORCA output tails.
+regex = "1"
 

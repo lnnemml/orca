@@ -51,6 +51,21 @@ pub(crate) fn set_job_dir_conn(conn: &Connection, id: &str, job_dir: &str) -> Re
     Ok(())
 }
 
+/// Store extracted results (final SCF energy in Hartree, wall time in seconds).
+/// Either may be `None` if extraction didn't find it.
+pub(crate) fn set_job_results_conn(
+    conn: &Connection,
+    id: &str,
+    energy: Option<f64>,
+    wall_time: Option<f64>,
+) -> Result<(), AppError> {
+    conn.execute(
+        "UPDATE jobs SET energy = ?1, wall_time = ?2 WHERE id = ?3",
+        params![energy, wall_time, id],
+    )?;
+    Ok(())
+}
+
 /// Terminal transition (`completed`/`failed`): set status, stamp `completed_at`,
 /// and store an optional `error_message`. Used by the LocalBackend when a run
 /// finishes.
@@ -128,6 +143,62 @@ pub fn update_job_status(db: State<'_, DbState>, id: String, status: String) -> 
 #[tauri::command]
 pub fn submit_job(app: tauri::AppHandle, id: String) -> Result<(), AppError> {
     crate::local_backend::submit(&app, &id)
+}
+
+/// Max lines returned by [`read_job_output`] (also the default when `tail_lines`
+/// is omitted). Bounds both the read and the payload for Phase 1.
+const OUTPUT_LINE_CAP: usize = 10_000;
+
+/// Read a job's `output.out` for the log console. Returns the last `tail_lines`
+/// lines (default/cap [`OUTPUT_LINE_CAP`]). Returns an empty vec — not an error —
+/// when the job has no directory yet or hasn't produced output.
+#[tauri::command]
+pub fn read_job_output(
+    db: State<'_, DbState>,
+    id: String,
+    tail_lines: Option<usize>,
+) -> Result<Vec<String>, AppError> {
+    let job_dir = {
+        let conn = db.lock()?;
+        get_job_conn(&conn, &id)?.job_dir
+    };
+    let Some(job_dir) = job_dir else {
+        return Ok(Vec::new());
+    };
+    let out_path = std::path::Path::new(&job_dir).join("output.out");
+    if !out_path.exists() {
+        return Ok(Vec::new());
+    }
+    let max_lines = tail_lines.map_or(OUTPUT_LINE_CAP, |n| n.min(OUTPUT_LINE_CAP));
+    Ok(crate::local_backend::read_tail_lines(&out_path, max_lines)?)
+}
+
+/// Open a job's directory in the OS file manager.
+#[tauri::command]
+pub fn open_job_folder(db: State<'_, DbState>, id: String) -> Result<(), AppError> {
+    let job_dir = {
+        let conn = db.lock()?;
+        get_job_conn(&conn, &id)?.job_dir
+    };
+    let job_dir = job_dir.ok_or_else(|| AppError::Backend("job has no directory yet".into()))?;
+    open_in_file_manager(&job_dir)
+}
+
+/// Spawn the platform file manager on `path` (Linux-first; also handles macOS /
+/// Windows). Detached — we don't wait on the viewer.
+fn open_in_file_manager(path: &str) -> Result<(), AppError> {
+    #[cfg(target_os = "linux")]
+    let program = "xdg-open";
+    #[cfg(target_os = "macos")]
+    let program = "open";
+    #[cfg(target_os = "windows")]
+    let program = "explorer";
+
+    std::process::Command::new(program)
+        .arg(path)
+        .spawn()
+        .map_err(|e| AppError::Backend(format!("failed to open '{path}': {e}")))?;
+    Ok(())
 }
 
 #[cfg(test)]

@@ -198,3 +198,42 @@ backfill when opening an already-running job's detail.
 
 Next: minimal result extraction (final SCF energy, wall time) + job list showing energy;
 then startup reconciliation.
+
+## [2026-07-26] milestone | Phase 1 step 4: results + backfill + job list — MVP closed
+
+Last step of Phase 1. The MVP goal is met: create a job from a template, edit it, Run, watch
+the log live, see the final energy in the job list — no terminal.
+
+**Result extraction (`src-tauri/src/result_extraction.rs`, new; +`regex` dep):**
+`extract_final_energy` (regex `FINAL SINGLE POINT ENERGY\s+(-?[\d.]+)`, last match = converged)
+and `extract_wall_time` (parses ORCA's `TOTAL RUN TIME:` line → seconds). Regexes compiled once
+via `LazyLock`. `drive_job` runs them on a 64 KB output tail when a job completes (64 KB, not the
+5 KB completion tail, because Freq/Opt prints the final energy well before EOF) and stores them
+via new `set_job_results_conn` **before** the terminal `job:status` event.
+
+**Output backfill:** new `read_job_output(id, tail_lines?)` command → `read_tail_lines`
+(reads ≤ 8 MB from the end, drops partial head line, caps 10 000 lines — never loads whole
+files). `JobDetailScreen` calls it after attaching listeners for non-draft jobs, so opening a
+finished job shows the full log (not "Waiting…"). `open_job_folder(id)` spawns the file manager
+(`xdg-open`).
+
+**Frontend polish:** `format.ts` (energy 6 dp, wall time `35.4s`/`2m 15s`/`1h 5m`, timestamp).
+Jobs list gained Energy (Eh) + Time columns; Job detail shows energy/time line + Open Folder.
+
+**Verified:**
+- `cargo test` — 19 green + 1 ignored (added 5 extraction tests, `read_tail_lines` test).
+  `cargo build` clean, no warnings. `tsc` + `vite build` clean.
+- **Real ORCA e2e** (`real_orca_water_single_point_completes`, `--ignored`) extended: now also
+  asserts `extract_final_energy` ≈ -76.419 Eh and `extract_wall_time` is `Some` against genuine
+  ORCA output, and `read_tail_lines` returns the full log. Passes (~0.6 s).
+- **Not verified in-GUI** (same headless limitation as Phase 0/1.3): the live in-app flow
+  through the real webview (backfill rendering, energy appearing in the list after a Run, Open
+  Folder launching the file manager). All backing commands are unit-/e2e-tested; IPC is standard.
+
+**Phase 1 (MVP) closed.** Remaining known gaps carried into later phases: startup reconciliation
+of interrupted `running` jobs; cancel/kill; backfill parsing of energy/time for jobs that
+completed *before* this step existed (only new runs get results); authoritative cclib parse
+(sidecar tier). Small accepted quirk: opening a *running* job can briefly duplicate log lines
+(backfill vs live overlap).
+
+Next (Phase 2): molecules & input UX — or first, startup reconciliation to harden the MVP.

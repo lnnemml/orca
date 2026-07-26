@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import type { Job, JobStatus } from "../types";
+import { formatEnergy, formatWallTime } from "../format";
 
 interface LogPayload {
   job_id: string;
@@ -45,7 +46,14 @@ export function JobDetailScreen({ jobId, autoRun, onBack }: JobDetailScreenProps
     let cancelled = false;
 
     (async () => {
-      await loadJob();
+      let current: Job | null = null;
+      try {
+        current = await invoke<Job>("get_job", { id: jobId });
+        if (cancelled) return;
+        setJob(current);
+      } catch (e) {
+        setError(String(e));
+      }
 
       unlistenLog = await listen<LogPayload>("job:log", (e) => {
         if (e.payload.job_id !== jobId) return;
@@ -58,11 +66,26 @@ export function JobDetailScreen({ jobId, autoRun, onBack }: JobDetailScreenProps
       unlistenStatus = await listen<StatusPayload>("job:status", (e) => {
         if (e.payload.job_id !== jobId) return;
         setJob((prev) => (prev ? { ...prev, status: e.payload.status } : prev));
-        // Reload the full record so error_message / completed_at appear.
+        // Reload the full record so error_message / completed_at / results appear.
         if (e.payload.status === "completed" || e.payload.status === "failed") {
           loadJob();
         }
       });
+
+      // Backfill existing output from output.out (after listeners are attached).
+      // For a completed/failed job this loads the whole log; for a running job it
+      // loads what exists so far and live events append from here (a small
+      // duplicate window is possible for a running job — acceptable for Phase 1).
+      if (current && current.status !== "draft") {
+        try {
+          const existing = await invoke<string[]>("read_job_output", { id: jobId });
+          if (!cancelled && existing.length) {
+            setLines((prev) => (prev.length ? prev : existing));
+          }
+        } catch (e) {
+          setError(String(e));
+        }
+      }
 
       // Kick off the run only AFTER listeners are attached, so no early output
       // lines are lost. The ref guards against React StrictMode's double-mount.
@@ -89,12 +112,27 @@ export function JobDetailScreen({ jobId, autoRun, onBack }: JobDetailScreenProps
     if (el) el.scrollTop = el.scrollHeight;
   }, [lines]);
 
+  const openFolder = async () => {
+    try {
+      await invoke("open_job_folder", { id: jobId });
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
   return (
     <div className="screen detail">
       <div className="row" style={{ justifyContent: "space-between", marginBottom: 10 }}>
-        <button className="btn btn-sm" onClick={onBack}>
-          ← Jobs
-        </button>
+        <div className="row">
+          <button className="btn btn-sm" onClick={onBack}>
+            ← Jobs
+          </button>
+          {job?.job_dir ? (
+            <button className="btn btn-sm" onClick={openFolder}>
+              Open Folder
+            </button>
+          ) : null}
+        </div>
         {job ? <span className={`badge ${job.status}`}>{job.status}</span> : null}
       </div>
 
@@ -108,6 +146,11 @@ export function JobDetailScreen({ jobId, autoRun, onBack }: JobDetailScreenProps
             {job.started_at ? ` · started ${job.started_at}` : ""}
             {job.completed_at ? ` · finished ${job.completed_at}` : ""}
           </div>
+          {job.energy != null || job.wall_time != null ? (
+            <div className="mono" style={{ color: "var(--text)", fontSize: 12, marginTop: 4 }}>
+              energy {formatEnergy(job.energy)} Eh · time {formatWallTime(job.wall_time)}
+            </div>
+          ) : null}
         </div>
       ) : null}
 

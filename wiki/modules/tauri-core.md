@@ -67,8 +67,24 @@ Full backend detail lives in `wiki/modules/execution-backends.md`; core-facing s
   (batched every 50 lines / 100 ms) and `job:status { job_id, status }` on running + terminal.
   Frontend `listen`s (allowed by `core:default` capability) and filters by `job_id`.
 - **Not yet:** startup reconciliation of jobs left `running` after a crash/close (a job stays
-  `running` in the DB) — deferred to Phase 2 (matches ROADMAP). No result parsing (energy/
-  wall_time) yet — separate ROADMAP item.
+  `running` in the DB) — deferred to Phase 2 (matches ROADMAP).
+
+## As built (Phase 1 step 4) — output backfill, results, open folder
+Closes Phase 1 (MVP). New commands + a results write path.
+
+- **`read_job_output(id, tail_lines: Option<usize>) -> Vec<String>`** — last `tail_lines`
+  (default/cap 10 000) lines of `<job_dir>/output.out`, backed by
+  `local_backend::read_tail_lines` which reads at most 8 MB from the end (drops a partial head
+  line) so it never loads whole multi-MB outputs (domain rule #5). Empty vec (not an error) when
+  the job has no dir or no output yet. Used by the detail screen to backfill the log console.
+- **`open_job_folder(id)`** — looks up `job_dir` from the DB and spawns the platform file
+  manager (`xdg-open` on Linux, also macOS `open` / Windows `explorer`). App-defined command, so
+  no capability entry needed.
+- **Result extraction on completion** — `drive_job`, after `detect_completion`, on `Completed`
+  reads a 64 KB tail and runs `result_extraction::{extract_final_energy, extract_wall_time}`,
+  storing them via the new `set_job_results_conn` **before** emitting the terminal `job:status`
+  (so the UI's reload sees energy/time). See `wiki/modules/parser.md`.
+- **Dependency:** added `regex = "1"`.
 
 ## Deviation note
 `dirs` crate used for the data dir (per task spec) rather than Tauri's `app.path()` API —

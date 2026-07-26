@@ -2,12 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 import type { Job } from "../types";
-
-/** Render an ISO-ish SQLite timestamp (`YYYY-MM-DD HH:MM:SS` UTC) compactly. */
-function formatTimestamp(ts: string): string {
-  // SQLite `datetime('now')` yields `2026-07-26 12:34:56` (UTC, space-separated).
-  return ts.replace("T", " ").replace(/\.\d+Z?$/, "");
-}
+import { formatEnergy, formatTimestamp, formatWallTime } from "../format";
 
 interface JobsScreenProps {
   onOpenDetail: (jobId: string, autoRun: boolean) => void;
@@ -59,6 +54,8 @@ export function JobsScreen({ onOpenDetail }: JobsScreenProps) {
             <tr>
               <th>Title</th>
               <th>Status</th>
+              <th style={{ textAlign: "right" }}>Energy (Eh)</th>
+              <th style={{ textAlign: "right" }}>Time</th>
               <th>Created</th>
               <th></th>
             </tr>
@@ -73,6 +70,12 @@ export function JobsScreen({ onOpenDetail }: JobsScreenProps) {
                 <td>{job.title}</td>
                 <td>
                   <span className={`badge ${job.status}`}>{job.status}</span>
+                </td>
+                <td className="mono" style={{ textAlign: "right" }}>
+                  {formatEnergy(job.energy)}
+                </td>
+                <td className="mono" style={{ textAlign: "right" }}>
+                  {formatWallTime(job.wall_time)}
                 </td>
                 <td className="mono">{formatTimestamp(job.created_at)}</td>
                 <td style={{ textAlign: "right" }}>

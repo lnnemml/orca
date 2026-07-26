@@ -21,7 +21,8 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::commands::jobs::{
-    finalize_job_conn, get_job_conn, set_job_dir_conn, update_job_status_conn,
+    finalize_job_conn, get_job_conn, set_job_dir_conn, set_job_results_conn,
+    update_job_status_conn,
 };
 use crate::commands::settings::DbState;
 use crate::error::AppError;
@@ -33,6 +34,10 @@ const LOG_BATCH_LINES: usize = 50;
 const LOG_BATCH_MILLIS: u64 = 100;
 /// How many bytes from the end of a file to inspect for markers / errors.
 const TAIL_BYTES: u64 = 5 * 1024;
+/// Larger tail for result extraction: a Freq/Opt run prints the final energy
+/// well before the end (normal modes + thermochemistry follow), so 5 KB isn't
+/// enough — 64 KB comfortably reaches back to the last `FINAL SINGLE POINT ENERGY`.
+const RESULT_TAIL_BYTES: u64 = 64 * 1024;
 
 /// App-wide LocalBackend state: the job-directory root plus the single
 /// execution slot (`Some(job_id)` while a job is running — concurrency = 1).
@@ -248,6 +253,22 @@ fn drive_job(app: AppHandle, job_id: String, job_dir: PathBuf, mut child: Child)
             let _ = finalize_job_conn(&conn, &job_id, status, error_message.as_deref());
         }
     }
+
+    // On success, pull the final energy + wall time from the output tail and
+    // persist them BEFORE the terminal event (so the UI's reload sees them).
+    if status == JobStatus::Completed {
+        let tail = read_tail(&out_path, RESULT_TAIL_BYTES).unwrap_or_default();
+        let energy = crate::result_extraction::extract_final_energy(&tail);
+        let wall_time = crate::result_extraction::extract_wall_time(&tail);
+        if energy.is_some() || wall_time.is_some() {
+            if let Some(db) = app.try_state::<DbState>() {
+                if let Ok(conn) = db.lock() {
+                    let _ = set_job_results_conn(&conn, &job_id, energy, wall_time);
+                }
+            }
+        }
+    }
+
     if let Some(runner) = app.try_state::<JobRunner>() {
         release_slot(&runner, &job_id);
     }
@@ -331,6 +352,32 @@ fn last_lines(text: &str, n: usize) -> String {
     all[start..].join("\n")
 }
 
+/// Bytes to read from the end when returning the last N lines of a file. Bounds
+/// memory even for tens-of-MB outputs (domain rule #5).
+const TAIL_LINES_MAX_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Return the last `max_lines` lines of a file, reading at most
+/// [`TAIL_LINES_MAX_BYTES`] from the end. If the file is larger than that, the
+/// first (possibly partial) line of the window is dropped. Used by
+/// `read_job_output` to backfill the log console without loading whole files.
+pub(crate) fn read_tail_lines(path: &Path, max_lines: usize) -> std::io::Result<Vec<String>> {
+    let mut f = File::open(path)?;
+    let len = f.metadata()?.len();
+    let start = len.saturating_sub(TAIL_LINES_MAX_BYTES);
+    f.seek(SeekFrom::Start(start))?;
+    let mut buf = Vec::new();
+    f.read_to_end(&mut buf)?;
+    let text = String::from_utf8_lossy(&buf);
+
+    let mut lines: Vec<&str> = text.lines().collect();
+    // Truncated head → first line is partial; drop it.
+    if start > 0 && !lines.is_empty() {
+        lines.remove(0);
+    }
+    let begin = lines.len().saturating_sub(max_lines);
+    Ok(lines[begin..].iter().map(|s| s.to_string()).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -378,6 +425,26 @@ mod tests {
         let text = "1\n2\n3\n4\n5";
         assert_eq!(last_lines(text, 2), "4\n5");
         assert_eq!(last_lines(text, 99), text);
+    }
+
+    #[test]
+    fn read_tail_lines_caps_and_reads_all() {
+        let data = scratch("taillines");
+        let path = data.join("out.txt");
+        let body: String = (1..=200).map(|i| format!("line {i}\n")).collect();
+        std::fs::write(&path, &body).unwrap();
+
+        // Whole file (fits well under the byte cap): all 200 lines.
+        let all = read_tail_lines(&path, 10_000).unwrap();
+        assert_eq!(all.len(), 200);
+        assert_eq!(all.first().unwrap(), "line 1");
+        assert_eq!(all.last().unwrap(), "line 200");
+
+        // Capped to the last 5 lines.
+        let tail = read_tail_lines(&path, 5).unwrap();
+        assert_eq!(tail, vec!["line 196", "line 197", "line 198", "line 199", "line 200"]);
+
+        std::fs::remove_dir_all(&data).ok();
     }
 
     #[test]
@@ -443,6 +510,24 @@ mod tests {
         assert!(dir.join(".exit_code").exists());
         let output = std::fs::read_to_string(&out_path).unwrap();
         assert!(output.contains("ORCA TERMINATED NORMALLY"));
+
+        // Result extraction against genuine ORCA output.
+        let tail = read_tail(&out_path, RESULT_TAIL_BYTES).unwrap();
+        let energy = crate::result_extraction::extract_final_energy(&tail)
+            .expect("should extract a final energy");
+        // Verified reference value for this geometry is ≈ -76.419 Eh.
+        assert!(
+            (energy - (-76.419)).abs() < 0.05,
+            "energy {energy} far from expected ~-76.419"
+        );
+        assert!(
+            crate::result_extraction::extract_wall_time(&tail).is_some(),
+            "should extract a wall time"
+        );
+
+        // read_tail_lines (backing read_job_output) returns the full log.
+        let all = read_tail_lines(&out_path, 10_000).unwrap();
+        assert!(all.iter().any(|l| l.contains("ORCA TERMINATED NORMALLY")));
 
         std::fs::remove_dir_all(&data).ok();
     }

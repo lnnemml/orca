@@ -37,8 +37,8 @@ project mission becomes real.
 - [x] `LocalBackend`: isolated job dir, full-path spawn, stdout → `output.out`, `.exit_code` marker
 - [x] Live log view: Rust tails `output.out`, streams lines to frontend via Tauri events
 - [x] Completion detection (marker + `ORCA TERMINATED NORMALLY`), status surfaced in UI
-- [ ] Minimal result extraction: final SCF energy, wall time (regex in Rust is fine for now)
-- [ ] Job list screen: history of all runs with status, energy, open-folder button
+- [x] Minimal result extraction: final SCF energy, wall time (regex in Rust is fine for now)
+- [x] Job list screen: history of all runs with status, energy, open-folder button
 
 **Done when:** author creates a job from a template, edits it, hits Run, watches the log live,
 and sees the final energy in the job list — without touching a terminal.

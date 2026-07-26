@@ -3,6 +3,7 @@ mod db;
 mod error;
 mod local_backend;
 mod models;
+mod result_extraction;
 mod sidecar;
 
 use std::path::Path;
@@ -53,6 +54,8 @@ pub fn run() {
             commands::jobs::get_job,
             commands::jobs::update_job_status,
             commands::jobs::submit_job,
+            commands::jobs::read_job_output,
+            commands::jobs::open_job_folder,
             sidecar::get_sidecar_status,
         ])
         .build(tauri::generate_context!())

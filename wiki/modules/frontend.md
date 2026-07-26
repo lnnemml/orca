@@ -1,7 +1,7 @@
 # Module: Frontend (src/)
 
-**Status:** Phase 1 step 3 done — job detail screen with a live log console; Run / Create &
-Run wired to `submit_job`. Builds on step 2 (Monaco editor + templates + tabbed nav).
+**Status:** Phase 1 **complete** (step 4) — output backfill for finished jobs, energy/time in
+the job list, Open Folder. Builds on step 3 (live log console) and step 2 (editor + templates).
 
 ## As built (Phase 0)
 - Scaffolded via `create-tauri-app` (react-ts template). Note: the current template ships
@@ -71,8 +71,23 @@ editor/inputs. Only the active screen is mounted (switching to Jobs remounts it 
   - **Ordering rule:** it attaches the log/status listeners FIRST, then (if `autoRun`) calls
     `submit_job` — so no early output lines are missed. A `didSubmit` ref guards against React
     StrictMode's dev double-mount firing two submits (the backend slot-mutex is the real guard).
-- **Known gap:** opening detail on an already-running job shows only lines emitted from that
-  point on — there's no backfill of `output.out` yet (would need a tail-reading command).
+## As built (Phase 1 step 4) — backfill + results + open folder
+- **`format.ts`** (new): shared `formatEnergy` (6 dp, `—` when null), `formatWallTime`
+  (`35.4s` / `2m 15s` / `1h 5m`), `formatTimestamp`. Used by Jobs list + Job detail.
+- **`JobDetailScreen` backfill:** after attaching listeners, for a non-draft job it calls
+  `read_job_output(id)` and seeds the console from `output.out` — so opening a finished job shows
+  the full log instead of "Waiting…". Guarded with `setLines(prev => prev.length ? prev : existing)`
+  so live events that already arrived win. For a *running* job a small duplicate window is
+  possible (backfill + overlapping live lines) — accepted for Phase 1. Also shows an
+  `energy … Eh · time …` line once results exist, and an **Open Folder** button
+  (`open_job_folder`) when `job_dir` is set.
+- **`JobsScreen` columns:** added Energy (Eh) and Time, right-aligned, via the shared
+  formatters. Row click and the per-row Run/Open buttons open the detail screen (Open opens the
+  in-app detail, not a file manager — the file manager is the detail's Open Folder button).
+
+## Resolved from step 3
+The earlier "no backfill of `output.out`" gap is closed by `read_job_output` + the detail
+backfill above.
 
 ## Responsibilities
 Rendering, editing, user interaction. No filesystem/process access — everything through
