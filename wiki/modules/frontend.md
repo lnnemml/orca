@@ -1,8 +1,9 @@
 # Module: Frontend (src/)
 
-**Status:** Phase 2 **in progress** — step 2.3 adds the molecule library (Molecules screen +
-Save/Use ↔ New Job); step 2.2 added .xyz import + SMILES→3D on New Job; step 2.1 added the
-3Dmol.js molecule preview. Phase 1 complete (step 4): output backfill, energy/time in the job
+**Status:** Phase 2 **in progress** — step 2.4 adds the ORCA input builder form (dropdowns → `.inp`,
+still editable in Monaco); step 2.3 added the molecule library (Molecules screen + Save/Use ↔ New
+Job); step 2.2 added .xyz import + SMILES→3D on New Job; step 2.1 added the 3Dmol.js molecule
+preview. Phase 1 complete (step 4): output backfill, energy/time in the job
 list, Open Folder; on step 3 (live log console) and step 2 (editor + templates).
 
 ## As built (Phase 0)
@@ -171,6 +172,49 @@ New screen + New Job integration; still `useState` + `invoke` only (no Zustand).
   row appears; row click → detail viewer; Use → New Job with `* xyz 0 1` block + preview; Save to
   Library → banner + second row (formula `C2H6O` carried through); Delete removes it. `tsc` +
   `vite build` clean, no console errors. Rust CRUD is `cargo test`-covered (24 green).
+
+## As built (Phase 2.4) — ORCA input builder form
+A form-constructor that turns method/basis/solvation dropdowns into a valid `.inp`, so the user
+doesn't have to memorise ORCA syntax. New `src/input-builder/` module; still `useState` only.
+
+- **`orca-options.ts`** (data only, no React): keyword catalogs — `JOB_TYPES`,
+  `COMPOSITE_METHODS`, `FUNCTIONAL_GROUPS` (optgroup'd by rung), `BASIS_SETS`, `DISPERSION`,
+  `RI_METHODS`, `SOLVATION_MODELS`, `SOLVENTS` (curated 20), `SCF_CONV`. `OrcaOption =
+  {keyword, label, description?}`; empty `keyword` = "no keyword". Keywords checked vs ORCA 6.1.
+- **`build-input.ts`** (pure, no React — unit-tested): `buildKeywordLine(state)` and
+  `buildOrcaInput(state, atomBlock)`. Encodes the domain rules (see `orca/input-format.md`):
+  composite methods emit ONLY their name (no basis/dispersion/RI); RI auto-adds the aux basis
+  (`def2/J` for RIJCOSX/RI-J, `def2/JK` for RI-JK) when a `def2` basis is used; canonical order
+  `method basis auxbasis RI dispersion solvation jobtype scfconv`; `%maxcore` no `end`, `%pal`
+  with `end`; solvation `MODEL(solvent)`; the passed atom rows are preserved verbatim (form's
+  charge/mult drive the header), placeholder comment when none. `DEFAULT_BUILDER_STATE`:
+  r2SCAN-3c composite, Opt+Freq, TightSCF, gas phase, 0/1, nprocs 4, maxcore 2000.
+- **`build-input.test.ts`** (vitest, 9 tests): composite self-sufficiency, RIJCOSX→def2/J,
+  RI-JK→def2/JK, CPCM(water), gas-phase omits solvation, `%maxcore`/`%pal` end rules, verbatim
+  coordinate preservation, form charge/mult in the header. **vitest added** (`npm test` =
+  `vitest run`); pure-function tests, default node env, no config file needed.
+- **`InputBuilderForm.tsx`**: the collapsible form. Seeds charge/mult from the current geometry
+  via `parseChargeMult` (reads only the `* xyz c m` header — the `!` line is never parsed back;
+  form→text stays one-way per ROADMAP). Composite-vs-functional radio toggle disables the
+  basis/dispersion/RI selects in composite mode; solvent select disabled in gas phase. **Live
+  preview** of the `!` line (`buildKeywordLine`) under the form — the learning element: the user
+  sees the syntax their choices produce before Generate. "Generate Input" extracts the editor's
+  atoms (`extractXyzFromInput` + `xyzToAtomLines`) and calls `onGenerate(buildOrcaInput(...))`.
+- **`NewJobScreen`**: collapsible `.input-builder` panel (▸/▾, default collapsed) above the
+  template picker; `onGenerate` → `setContent`, so the viewer refreshes via the existing debounce.
+- **CSS:** `.input-builder`/`.builder-toggle`/`.builder-body`/`.builder-row`/`.radio-row`/
+  `.builder-preview` (dark monospace `!`-line box) + a `.select` cursor rule; reuses `.field`/
+  `.input`/`.label`.
+- **Verified** in Chromium (`vite dev`, real sidecar, invoke stubbed): builder default preview
+  `! r2SCAN-3c Opt Freq TightSCF`; Functional mode →
+  `! B3LYP def2-TZVP def2/J RIJCOSX D4 Opt Freq TightSCF` (auto def2/J); CPCM →
+  `…D4 CPCM(water) Opt…` and the solvent select flips from disabled→enabled; SMILES `CCO` →
+  Generate 3D → **Generate Input** yields a full `.inp` with the new `!` line, `%pal…end` /
+  `%maxcore` (no end), and the 9 ethanol atoms preserved verbatim (read back via the stubbed
+  `create_job`). `tsc` + `npm test` (9) + `vite build` clean, no console errors. The real
+  ORCA-run leg of the checklist needs the Tauri backend + an ORCA binary — not drivable
+  headlessly (same limitation as prior phases); the generator's exact output is byte-covered by
+  vitest.
 
 ## Resolved from step 3
 The earlier "no backfill of `output.out`" gap is closed by `read_job_output` + the detail

@@ -1,0 +1,154 @@
+//! Keyword catalogs for the ORCA input builder form.
+//!
+//! Data only — no React. Every list is a plain array of {@link OrcaOption}s (or
+//! grouped arrays) so the form and the generator share one source of truth.
+//! Keywords are checked against the ORCA 6.1 manual
+//! (https://www.faccts.de/docs/orca/6.1/manual/).
+
+export interface OrcaOption {
+  /** The token that goes into the `!` line (empty string = "no keyword"). */
+  keyword: string;
+  /** What the user sees in the dropdown. */
+  label: string;
+  /** Short hint shown next to / under the control. */
+  description?: string;
+}
+
+/** Job types. Empty keyword = plain Single Point (ORCA's default). */
+export const JOB_TYPES: OrcaOption[] = [
+  { keyword: "", label: "Single Point (SP)" },
+  { keyword: "Opt", label: "Geometry Optimization" },
+  { keyword: "Freq", label: "Frequencies" },
+  { keyword: "Opt Freq", label: "Opt + Freq" },
+  { keyword: "OptTS Freq", label: "Transition State + Freq" },
+  { keyword: "NumFreq", label: "Numerical Frequencies" },
+];
+
+/**
+ * Composite ("3c") methods. Each bundles its OWN basis set, dispersion, and
+ * (where applicable) further corrections — so basis / dispersion / RI must be
+ * left OFF when one of these is selected (see `build-input.ts`).
+ */
+export const COMPOSITE_METHODS: OrcaOption[] = [
+  {
+    keyword: "r2SCAN-3c",
+    label: "r²SCAN-3c",
+    description: "Fast, accurate general purpose. Recommended default.",
+  },
+  { keyword: "B97-3c", label: "B97-3c", description: "Faster, GGA-level" },
+  { keyword: "PBEh-3c", label: "PBEh-3c", description: "Hybrid, small basis" },
+  {
+    keyword: "wB97X-3c",
+    label: "ωB97X-3c",
+    description: "Range-separated hybrid",
+  },
+  { keyword: "HF-3c", label: "HF-3c", description: "Minimal cost screening" },
+];
+
+/** Functionals, grouped by rung — used when NOT in composite mode. */
+export const FUNCTIONAL_GROUPS: { label: string; options: OrcaOption[] }[] = [
+  {
+    label: "GGA",
+    options: [
+      { keyword: "BP86", label: "BP86" },
+      { keyword: "PBE", label: "PBE" },
+      { keyword: "BLYP", label: "BLYP" },
+    ],
+  },
+  {
+    label: "meta-GGA",
+    options: [
+      { keyword: "TPSS", label: "TPSS" },
+      { keyword: "r2SCAN", label: "r²SCAN" },
+      { keyword: "M06-L", label: "M06-L" },
+    ],
+  },
+  {
+    label: "Hybrid",
+    options: [
+      { keyword: "B3LYP", label: "B3LYP" },
+      { keyword: "PBE0", label: "PBE0" },
+      { keyword: "TPSSh", label: "TPSSh" },
+      { keyword: "M06-2X", label: "M06-2X" },
+    ],
+  },
+  {
+    label: "Range-separated",
+    options: [
+      { keyword: "wB97X-D4", label: "ωB97X-D4" },
+      { keyword: "CAM-B3LYP", label: "CAM-B3LYP" },
+      { keyword: "wB97M-V", label: "ωB97M-V" },
+    ],
+  },
+  {
+    label: "Hartree-Fock",
+    options: [{ keyword: "HF", label: "HF" }],
+  },
+];
+
+export const BASIS_SETS: OrcaOption[] = [
+  { keyword: "def2-SVP", label: "def2-SVP", description: "Small, fast. Screening only." },
+  { keyword: "def2-TZVP", label: "def2-TZVP", description: "Standard workhorse. Recommended." },
+  { keyword: "def2-TZVPP", label: "def2-TZVPP", description: "Larger, for accurate energies" },
+  { keyword: "def2-QZVPP", label: "def2-QZVPP", description: "Near basis-set limit, expensive" },
+  {
+    keyword: "def2-TZVPD",
+    label: "def2-TZVPD",
+    description: "With diffuse functions (anions, excited states)",
+  },
+  { keyword: "def2-SVPD", label: "def2-SVPD", description: "Small with diffuse" },
+];
+
+export const DISPERSION: OrcaOption[] = [
+  { keyword: "", label: "None" },
+  { keyword: "D4", label: "D4", description: "Newest, recommended" },
+  { keyword: "D3BJ", label: "D3(BJ)", description: "Becke-Johnson damping" },
+  { keyword: "D3Zero", label: "D3(0)", description: "Zero damping" },
+  { keyword: "NL", label: "NL (VV10)", description: "Non-local, more expensive" },
+];
+
+export const RI_METHODS: OrcaOption[] = [
+  { keyword: "", label: "None (exact)" },
+  { keyword: "RIJCOSX", label: "RIJCOSX", description: "Hybrid DFT speedup. Needs AuxJ basis." },
+  { keyword: "RI-JK", label: "RI-JK", description: "Accurate but needs AuxJK basis" },
+  { keyword: "RI", label: "RI-J", description: "For pure (non-hybrid) functionals" },
+];
+
+export const SOLVATION_MODELS: OrcaOption[] = [
+  { keyword: "", label: "Gas phase" },
+  { keyword: "CPCM", label: "CPCM", description: "Conductor-like PCM. Fast, analytic gradients." },
+  { keyword: "SMD", label: "SMD", description: "Includes non-electrostatic terms. Better ΔG_solv." },
+];
+
+/**
+ * Curated subset of the most common solvents. ORCA supports 179; these 20
+ * cover the overwhelming majority of routine work.
+ */
+export const SOLVENTS: string[] = [
+  "water",
+  "methanol",
+  "ethanol",
+  "acetonitrile",
+  "dmso",
+  "dmf",
+  "thf",
+  "dichloromethane",
+  "chloroform",
+  "toluene",
+  "benzene",
+  "hexane",
+  "acetone",
+  "ethylacetate",
+  "diethylether",
+  "1,4-dioxane",
+  "pyridine",
+  "aceticacid",
+  "2-propanol",
+  "cyclohexane",
+];
+
+export const SCF_CONV: OrcaOption[] = [
+  { keyword: "", label: "Normal" },
+  { keyword: "TightSCF", label: "Tight", description: "Recommended for Opt/Freq" },
+  { keyword: "VeryTightSCF", label: "Very Tight", description: "For sensitive properties" },
+];

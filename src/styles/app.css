@@ -233,6 +233,101 @@ body {
   min-width: 0;
 }
 
+/* --- Input builder (collapsible form над template picker) ------------- */
+
+.input-builder {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.builder-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 12px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  text-align: left;
+}
+
+.builder-caret {
+  color: var(--muted);
+  width: 12px;
+}
+
+.builder-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 4px 12px 14px;
+  border-top: 1px solid var(--border);
+}
+
+.builder-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.builder-row .field {
+  flex: 1;
+  min-width: 150px;
+}
+
+.builder-row .builder-num {
+  flex: 0 0 110px;
+  min-width: 90px;
+}
+
+.builder-note {
+  flex: 2;
+  align-self: center;
+  font-style: italic;
+}
+
+.radio-row {
+  display: flex;
+  gap: 16px;
+  padding: 8px 0;
+}
+
+.radio {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.select {
+  cursor: pointer;
+}
+
+.builder-actions {
+  align-items: center;
+}
+
+.builder-preview {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  background: #0d0f13;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--muted);
+  font-size: 12px;
+  overflow-x: auto;
+  white-space: pre;
+}
+
 /* --- Template picker -------------------------------------------------- */
 
 .template-groups {

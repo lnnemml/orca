@@ -6,6 +6,7 @@ import { MoleculeViewer } from "../viewer/MoleculeViewer";
 import { extractXyzFromInput } from "../viewer/parse-xyz-from-input";
 import { injectXyzIntoInput } from "../viewer/inject-xyz-into-input";
 import { xyzToAtomLines, parseChargeMult } from "../viewer/xyz-format";
+import { InputBuilderForm } from "../input-builder/InputBuilderForm";
 import {
   CATEGORY_LABELS,
   ORCA_TEMPLATES,
@@ -40,6 +41,7 @@ export function NewJobScreen({
   const [formula, setFormula] = useState(initialMolecule?.formula ?? "");
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [builderOpen, setBuilderOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Preload a library molecule's coordinates into the editor once, on mount.
@@ -270,6 +272,23 @@ export function NewJobScreen({
 
       {error ? <div className="banner err">{error}</div> : null}
       {saved ? <div className="banner ok">Saved to library</div> : null}
+
+      <div className="input-builder">
+        <button
+          className="builder-toggle"
+          onClick={() => setBuilderOpen((o) => !o)}
+          aria-expanded={builderOpen}
+        >
+          <span className="builder-caret">{builderOpen ? "▾" : "▸"}</span>
+          Input Builder
+          <span className="muted" style={{ marginLeft: 8 }}>
+            method · basis · solvation → generates the input
+          </span>
+        </button>
+        {builderOpen ? (
+          <InputBuilderForm currentContent={content} onGenerate={setContent} />
+        ) : null}
+      </div>
 
       <div className="template-groups">
         <div className="template-group-title">Templates</div>

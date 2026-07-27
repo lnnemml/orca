@@ -57,7 +57,7 @@ npm run tauri dev
 # sidecar (from sidecar/, in venv)
 uvicorn app.main:app --port 8765 --reload
 # tests
-npm test                    # frontend
+npm test                    # frontend (vitest)
 cargo test                  # src-tauri/
 pytest                      # sidecar/
 # build release

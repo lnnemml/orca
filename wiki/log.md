@@ -384,3 +384,37 @@ detail viewer; Use → New Job with coords + preview; Save to Library → banner
 be driven headlessly (same limitation as prior phases); Rust CRUD is cargo-covered.
 
 Next: input builder form, then the sequential job queue (moved into Phase 2 per the ADR-007 revision).
+
+## [2026-07-27] session | Phase 2 step 4: ORCA input builder form
+
+Dropdowns → valid `.inp`, still editable in Monaco. Replaces having to know ORCA syntax by heart.
+
+**New `src/input-builder/` module:** `orca-options.ts` (data-only keyword catalogs — job types,
+composite/3c methods, functionals grouped by rung, def2 bases, dispersion, RI, solvation models +
+curated 20 solvents, SCF conv; all vs ORCA 6.1). `build-input.ts` — pure `buildKeywordLine` +
+`buildOrcaInput(state, atomBlock)` encoding the domain rules: **composite methods emit only their
+name** (no basis/dispersion/RI — disabled in the UI), **RI auto-pairs an aux basis** (`def2/J` for
+RIJCOSX/RI-J, `def2/JK` for RI-JK on def2 bases), canonical keyword order, `%maxcore` no `end` /
+`%pal` with `end`, `MODEL(solvent)` syntax, coordinates preserved verbatim (form charge/mult drive
+the header). `InputBuilderForm.tsx` — collapsible panel on New Job with a composite-vs-functional
+radio toggle, disabled solvent select in gas phase, and a **live `!`-line preview** (the learning
+element). Seeds charge/mult from the current `* xyz c m` header via `parseChargeMult`; the `!` line
+is never parsed back (form→text one-way, per ROADMAP).
+
+**Tooling:** added **vitest** (`npm test` → `vitest run`). `build-input.test.ts` — 9 tests
+(composite self-sufficiency, RIJCOSX→def2/J, RI-JK→def2/JK, CPCM(water), gas-phase omits solvation,
+maxcore/pal end rules, verbatim coords, form charge/mult). CLAUDE.md's `npm test # frontend` line is
+now real.
+
+**Verified** in Chromium (real sidecar, invoke stubbed): default `! r2SCAN-3c Opt Freq TightSCF`;
+Functional mode `! B3LYP def2-TZVP def2/J RIJCOSX D4 Opt Freq TightSCF`; CPCM → `…CPCM(water)…` +
+solvent select enables; SMILES `CCO` → Generate 3D → **Generate Input** → full `.inp` with the new
+`!` line, `%pal…end`/`%maxcore` (no end), and 9 ethanol atoms preserved verbatim (read back via the
+stubbed `create_job`). `tsc` + 9 vitest + `vite build` clean, no console errors. The checklist's
+real-ORCA-run leg needs the Tauri backend + ORCA binary (not drivable headlessly, same limitation as
+prior phases); the generator's exact output is byte-covered by vitest.
+
+NOT done (deliberate): reverse parse (input→form), double-hybrid AuxC logic, scan/NEB options
+(Phase 4.5), the full 179-solvent list.
+
+Next: live convergence dashboard for Opt jobs, then the sequential job queue.

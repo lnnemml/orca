@@ -58,9 +58,11 @@ and sees the final energy in the job list — without touching a terminal.
       table + CRUD commands, Molecules screen with add/list/detail/use/delete, "Save to Library"
       + "Use" ↔ New Job integration). NOT yet linked to jobs (`molecule_id` FK deferred to
       Phase 4.5, reaction modeling).
-- [ ] Input builder form: method/functional, basis, RI approximations, dispersion,
+- [~] Input builder form: method/functional, basis, RI approximations, dispersion,
       solvation (CPCM/SMD + solvent), job type, charge/multiplicity, `%pal`/`%maxcore`
-      → generates `.inp`, still hand-editable in Monaco (form ↔ text one-way is fine)
+      → generates `.inp`, still hand-editable in Monaco (form ↔ text one-way is fine) — **done**
+      (Phase 2.4: `src/input-builder/`, composite vs functional modes, auto RI aux basis, live
+      `!`-line preview). Double-hybrids (AuxC) deferred; form→text one-way as planned.
 - [ ] Live convergence dashboard for Opt jobs: energy per cycle, gradient norm vs criteria
       (parse incrementally from the streamed log)
 - [ ] Sidecar endpoint: xyz ↔ common format conversions (Open Babel)
