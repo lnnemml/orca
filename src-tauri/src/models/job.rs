@@ -1,10 +1,11 @@
 //! The `Job` model and its status state machine.
 //!
 //! A job is one ORCA calculation: an `.inp` payload plus everything we learn
-//! about running it. Phase 1 tracks only the local lifecycle
-//! `draft -> running -> completed | failed`. Remote-execution states
-//! (uploading, syncing) and the post-run `parsed` state arrive with later
-//! phases — see `wiki/modules/tauri-core.md`.
+//! about running it. The local lifecycle is
+//! `draft -> queued -> running -> completed | failed | cancelled` (the queue and
+//! cancellation arrived in Phase 2). Remote-execution states (uploading, syncing)
+//! and the post-run `parsed` state arrive with later phases — see
+//! `wiki/modules/tauri-core.md`.
 
 use rusqlite::Row;
 use serde::Serialize;
@@ -13,15 +14,20 @@ use crate::error::AppError;
 
 /// The lifecycle state of a job.
 ///
-/// Serialized to lowercase strings (`draft`, `running`, `completed`, `failed`)
-/// both on the wire (to the frontend) and in the `jobs.status` column.
+/// Serialized to lowercase strings (`draft`, `queued`, `running`, `completed`,
+/// `failed`, `cancelled`) both on the wire (to the frontend) and in the
+/// `jobs.status` column.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum JobStatus {
     Draft,
+    /// Submitted, waiting for the single execution slot (sequential queue).
+    Queued,
     Running,
     Completed,
     Failed,
+    /// Stopped by the user (queued job dropped, or running process killed).
+    Cancelled,
 }
 
 impl JobStatus {
@@ -29,20 +35,24 @@ impl JobStatus {
     pub fn as_str(&self) -> &'static str {
         match self {
             JobStatus::Draft => "draft",
+            JobStatus::Queued => "queued",
             JobStatus::Running => "running",
             JobStatus::Completed => "completed",
             JobStatus::Failed => "failed",
+            JobStatus::Cancelled => "cancelled",
         }
     }
 
     /// Parse a status string coming from the database or an IPC caller.
-    /// Rejects anything outside the Phase 1 state set.
+    /// Rejects anything outside the known state set.
     pub fn from_db(s: &str) -> Result<JobStatus, AppError> {
         match s {
             "draft" => Ok(JobStatus::Draft),
+            "queued" => Ok(JobStatus::Queued),
             "running" => Ok(JobStatus::Running),
             "completed" => Ok(JobStatus::Completed),
             "failed" => Ok(JobStatus::Failed),
+            "cancelled" => Ok(JobStatus::Cancelled),
             other => Err(AppError::Internal(format!("unknown job status: {other}"))),
         }
     }

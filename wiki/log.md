@@ -484,3 +484,51 @@ New: `wiki/orca/performance.md`. CLAUDE.md gains domain rule 8 (explicit core
 pinning). ADR-007 gains a mandatory `! XTB GOAT` conformer-ensemble step before
 pathway construction — single-conformer optimisation is not reproducible science.
 Phase 5 restated as a requirement rather than a convenience.
+
+## [2026-07-27] session | LocalBackend: CPU pinning, job queue, cancel
+
+Made local execution fit for real work — three parts, one commit.
+
+**1. CPU pinning (domain rule #8).** New `cpu_presets.rs` with measured presets
+(`interactive` = `taskset -c 8-15`, 8 ranks, default; `max_throughput` =
+`0,2,4,6,8-15`, 12 ranks) — masks are i5-12500H-specific, loudly documented, no
+auto-detection. `resolve_cpu_config` reads `cpu_preset`/`cpu_mask`/`cpu_nprocs`
+from settings (falls back to interactive). `run_orca` now takes an
+`Option<mask>`: with one it spawns `taskset -c <mask> orca …` with
+`OMPI_MCA_hwloc_base_binding_policy=none` (so taskset + OpenMPI don't fight);
+missing `taskset` → a clear error. `align_pal_nprocs` rewrites `%pal nprocs N end`
+to match the pinned core count (oversubscribing is 3× slower) and logs an info
+line so it isn't silent. Settings screen gained a CPU section.
+
+**2. Sequential queue — in SQLite, no worker thread.** The queue *is* the set of
+`status='queued'` jobs; `try_start_next` pulls the oldest when the slot frees
+(after enqueue / after each finish / on resume). `submit` now enqueues and
+**never** errors on a busy slot. `JobRunner` holds one slot + an `AtomicBool`
+pause flag. Pause is queue-only — the running job finishes; we deliberately do
+NOT SIGSTOP it (frozen RAM + MPI ranks may not resume). New statuses `queued`
+and `cancelled` (TEXT column, no migration).
+
+**3. Cancel — killpg the process group.** Spawn with `process_group(0)` so ORCA
++ all MPI ranks share one pgid; `cancel` does SIGTERM → 5 s → SIGKILL via
+`libc::killpg` (queued jobs just drop). A `cancelled` `AtomicBool` lets
+`drive_job` record `cancelled` instead of `failed`. Added `libc` (Unix dep).
+
+**Bonus: startup reconciliation.** `reconcile_on_startup` advances every job left
+`running` by a crash (finalize if its dir shows a finished run, else `failed`);
+`queued` jobs resume via a startup `try_start_next`. Closes the Phase 1 gap.
+
+**Verified.** `cargo test` 32 green (new: 5× `align_pal_nprocs`, 3×
+`resolve_cpu_config`); ignored real-ORCA e2e still passes. **Real ORCA, headless:**
+benzene B3LYP/def2-SVP `%pal nprocs 4` under the exact rule-8 command line — all 5
+ORCA processes pinned to cores 8–15, one shared PGID, `kill -TERM -<pgid>` reaped
+the whole tree. `tsc` + 10 vitest + `vite build` clean. The full in-GUI legs
+(3-job queue draining, Cancel button, htop core loading, Pause/Resume) still need
+the real Tauri window — not headless-drivable, same limitation as prior phases;
+the backend mechanics are unit- + real-ORCA-covered.
+
+**Graceful stop** (stop-after-cycle marker file) was investigated but NOT
+implemented: the ORCA 6.1 manual isn't indexed locally yet (Phase 4), so it
+couldn't be confirmed. Only hard kill ships; recorded in `gotchas.md` to re-check
+once the manual lands. Domain rule 4 (concurrency = 1) untouched.
+
+Next: live convergence dashboard for Opt jobs.

@@ -67,7 +67,11 @@ export function JobDetailScreen({ jobId, autoRun, onBack }: JobDetailScreenProps
         if (e.payload.job_id !== jobId) return;
         setJob((prev) => (prev ? { ...prev, status: e.payload.status } : prev));
         // Reload the full record so error_message / completed_at / results appear.
-        if (e.payload.status === "completed" || e.payload.status === "failed") {
+        if (
+          e.payload.status === "completed" ||
+          e.payload.status === "failed" ||
+          e.payload.status === "cancelled"
+        ) {
           loadJob();
         }
       });
@@ -120,6 +124,16 @@ export function JobDetailScreen({ jobId, autoRun, onBack }: JobDetailScreenProps
     }
   };
 
+  const cancel = async () => {
+    try {
+      await invoke("cancel_job", { id: jobId });
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const cancellable = job?.status === "running" || job?.status === "queued";
+
   return (
     <div className="screen detail">
       <div className="row" style={{ justifyContent: "space-between", marginBottom: 10 }}>
@@ -130,6 +144,11 @@ export function JobDetailScreen({ jobId, autoRun, onBack }: JobDetailScreenProps
           {job?.job_dir ? (
             <button className="btn btn-sm" onClick={openFolder}>
               Open Folder
+            </button>
+          ) : null}
+          {cancellable ? (
+            <button className="btn btn-sm" onClick={cancel}>
+              Cancel
             </button>
           ) : null}
         </div>

@@ -39,7 +39,12 @@ fn migrate(conn: &Connection) -> Result<(), AppError> {
             value TEXT NOT NULL
         );
         INSERT OR IGNORE INTO settings (key, value) VALUES ('orca_path', '/opt/orca/orca');
-        INSERT OR IGNORE INTO settings (key, value) VALUES ('schema_version', '1');",
+        INSERT OR IGNORE INTO settings (key, value) VALUES ('schema_version', '1');
+        -- CPU pinning (Phase 2, domain rule #8). Defaults to the Interactive
+        -- preset; cpu_mask/cpu_nprocs are only consulted when cpu_preset=custom.
+        INSERT OR IGNORE INTO settings (key, value) VALUES ('cpu_preset', 'interactive');
+        INSERT OR IGNORE INTO settings (key, value) VALUES ('cpu_mask', '8-15');
+        INSERT OR IGNORE INTO settings (key, value) VALUES ('cpu_nprocs', '8');",
     )?;
 
     let mut version = current_version(conn)?;

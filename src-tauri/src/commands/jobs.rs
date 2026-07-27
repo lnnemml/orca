@@ -92,11 +92,11 @@ pub(crate) fn update_job_status_conn(conn: &Connection, id: &str, status: &str) 
             "UPDATE jobs SET status = ?1, started_at = datetime('now') WHERE id = ?2",
             params![status.as_str(), id],
         )?,
-        JobStatus::Completed | JobStatus::Failed => conn.execute(
+        JobStatus::Completed | JobStatus::Failed | JobStatus::Cancelled => conn.execute(
             "UPDATE jobs SET status = ?1, completed_at = datetime('now') WHERE id = ?2",
             params![status.as_str(), id],
         )?,
-        JobStatus::Draft => conn.execute(
+        JobStatus::Draft | JobStatus::Queued => conn.execute(
             "UPDATE jobs SET status = ?1 WHERE id = ?2",
             params![status.as_str(), id],
         )?,
@@ -143,6 +143,33 @@ pub fn update_job_status(db: State<'_, DbState>, id: String, status: String) -> 
 #[tauri::command]
 pub fn submit_job(app: tauri::AppHandle, id: String) -> Result<(), AppError> {
     crate::local_backend::submit(&app, &id)
+}
+
+/// Cancel a running or queued job (see [`crate::local_backend::cancel`]).
+#[tauri::command]
+pub fn cancel_job(app: tauri::AppHandle, id: String) -> Result<(), AppError> {
+    crate::local_backend::cancel(&app, &id)
+}
+
+/// Pause the sequential queue: the running job finishes, but no queued job
+/// starts until [`resume_queue`].
+#[tauri::command]
+pub fn pause_queue(app: tauri::AppHandle) -> Result<(), AppError> {
+    crate::local_backend::set_paused(&app, true);
+    Ok(())
+}
+
+/// Resume the queue and immediately pull the next queued job if the slot is free.
+#[tauri::command]
+pub fn resume_queue(app: tauri::AppHandle) -> Result<(), AppError> {
+    crate::local_backend::set_paused(&app, false);
+    Ok(())
+}
+
+/// Whether the queue is currently paused.
+#[tauri::command]
+pub fn is_queue_paused(app: tauri::AppHandle) -> Result<bool, AppError> {
+    Ok(crate::local_backend::is_paused(&app))
 }
 
 /// Max lines returned by [`read_job_output`] (also the default when `tail_lines`

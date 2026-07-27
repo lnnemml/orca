@@ -108,6 +108,26 @@ New files: `models/molecule.rs`, `commands/molecules.rs`. `db.rs` gained migrati
   `*_conn` shape as jobs; four unit tests cover create/list, get-missing, update-fields,
   delete-removes. All registered in `lib.rs` invoke_handler.
 
+## As built (Phase 2) — CPU pinning, queue, cancel
+New file: `cpu_presets.rs`. `local_backend.rs` gained the queue/cancel/pinning logic (detailed
+in `wiki/modules/execution-backends.md`); the core-facing surface:
+
+- **`JobStatus` extended:** `Draft | Queued | Running | Completed | Failed | Cancelled`
+  (was four states). `as_str`/`from_db` and the TS `JobStatus` union updated in lockstep. State
+  machine: `draft → queued → running → completed | failed | cancelled`. `update_job_status_conn`
+  stamps `completed_at` on `cancelled` too; `queued` is a status-only transition.
+- **No migration:** `status` is TEXT, so the two new values need no schema change. `settings`
+  gained three seeded keys (idempotent `INSERT OR IGNORE`, no version bump): `cpu_preset`
+  (`interactive`), `cpu_mask` (`8-15`), `cpu_nprocs` (`8`).
+- **New commands** (all in `commands/jobs.rs` unless noted):
+  - `cancel_job(id)` → `local_backend::cancel` (queued: drop; running: killpg the tree).
+  - `pause_queue()` / `resume_queue()` / `is_queue_paused() -> bool` — queue-only pause.
+  - `get_cpu_presets() -> Vec<CpuPresetInfo>` (in `cpu_presets.rs`) for the Settings UI.
+  - `submit_job` unchanged in signature but now **enqueues** (never errors on a busy slot).
+- **Startup sequence** now runs `local_backend::reconcile_on_startup(&conn)` before managing the
+  DB, then spawns a thread that calls `try_start_next` to resume any `queued` jobs.
+- **Dependency:** `libc = "0.2"` (Unix-only target dep) for `killpg`.
+
 ## Deviation note
 `dirs` crate used for the data dir (per task spec) rather than Tauri's `app.path()` API —
 harmless; consolidate later if desired.

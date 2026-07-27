@@ -1,13 +1,20 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
 import { NewJobScreen } from "./screens/NewJobScreen";
 import { JobsScreen } from "./screens/JobsScreen";
 import { JobDetailScreen } from "./screens/JobDetailScreen";
 import { MoleculesScreen } from "./screens/MoleculesScreen";
 import { SettingsScreen } from "./screens/SettingsScreen";
-import type { Molecule, SidecarState, SidecarStatus } from "./types";
+import type { Job, Molecule, SidecarState, SidecarStatus } from "./types";
 import "./styles/app.css";
+
+interface QueueInfo {
+  running: number;
+  queued: number;
+  paused: boolean;
+}
 
 type Screen =
   | { kind: "new-job"; initialMolecule?: Molecule }
@@ -39,6 +46,7 @@ function App() {
   const [screen, setScreen] = useState<Screen>({ kind: "new-job" });
   const [sidecar, setSidecar] = useState<SidecarStatus | null>(null);
   const [orcaPath, setOrcaPath] = useState("");
+  const [queue, setQueue] = useState<QueueInfo>({ running: 0, queued: 0, paused: false });
 
   const openDetail = useCallback((jobId: string, autoRun: boolean) => {
     setScreen({ kind: "job-detail", jobId, autoRun });
@@ -52,6 +60,32 @@ function App() {
     }
   }, []);
 
+  const refreshQueue = useCallback(async () => {
+    try {
+      const [jobs, paused] = await Promise.all([
+        invoke<Job[]>("list_jobs"),
+        invoke<boolean>("is_queue_paused"),
+      ]);
+      setQueue({
+        running: jobs.filter((j) => j.status === "running").length,
+        queued: jobs.filter((j) => j.status === "queued").length,
+        paused,
+      });
+    } catch {
+      /* backend not ready / plain browser — leave the last known counts */
+    }
+  }, []);
+
+  const togglePause = useCallback(async () => {
+    try {
+      await invoke(queue.paused ? "resume_queue" : "pause_queue");
+    } catch {
+      /* surfaced elsewhere */
+    } finally {
+      refreshQueue();
+    }
+  }, [queue.paused, refreshQueue]);
+
   const loadOrcaPath = useCallback(async () => {
     try {
       const settings = await invoke<Record<string, string>>("get_settings");
@@ -64,9 +98,18 @@ function App() {
   useEffect(() => {
     loadOrcaPath();
     refreshSidecar();
-    const id = setInterval(refreshSidecar, 5000);
-    return () => clearInterval(id);
-  }, [loadOrcaPath, refreshSidecar]);
+    refreshQueue();
+    const id = setInterval(() => {
+      refreshSidecar();
+      refreshQueue();
+    }, 5000);
+    // Update queue counts promptly as jobs transition.
+    const unlisten = listen("job:status", () => refreshQueue());
+    return () => {
+      clearInterval(id);
+      unlisten.then((fn) => fn());
+    };
+  }, [loadOrcaPath, refreshSidecar, refreshQueue]);
 
   // The Jobs tab stays highlighted while drilled into a job's detail.
   const activeTab = screen.kind === "job-detail" ? "jobs" : screen.kind;
@@ -124,6 +167,19 @@ function App() {
         <span>
           ORCA: <span className="mono">{orcaPath || "not configured"}</span>
         </span>
+        {queue.running > 0 || queue.queued > 0 ? (
+          <span className="row" style={{ gap: 8 }}>
+            <span>
+              Queue:{" "}
+              {queue.running > 0 ? `${queue.running} running` : "idle"}
+              {queue.queued > 0 ? `, ${queue.queued} waiting` : ""}
+              {queue.paused ? " (paused)" : ""}
+            </span>
+            <button className="btn btn-sm" onClick={togglePause}>
+              {queue.paused ? "Resume" : "Pause"}
+            </button>
+          </span>
+        ) : null}
       </footer>
     </div>
   );

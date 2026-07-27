@@ -5,6 +5,24 @@ Living page. Add every trap encountered, newest at top, format:
 
 ---
 
+- **`%pal nprocs` larger than the pinned core count → job runs *slower*, not faster** → when ORCA
+  is pinned with `taskset -c <mask>`, an `%pal nprocs` that exceeds the masked core count
+  oversubscribes: e.g. 12 ranks fighting over 4 cores is ~3× slower than 4 ranks. Fix: OrcaStudio
+  rewrites `%pal nprocs N end` to match the pinned rank count before every run
+  (`align_pal_nprocs`), and emits a log line saying it did. Also disable OpenMPI's own binding
+  (`OMPI_MCA_hwloc_base_binding_policy=none`) so it doesn't fight taskset (domain rule #8,
+  `wiki/orca/performance.md`).
+- **Killing a running ORCA leaves ranks alive** → ORCA forks MPI ranks as child processes;
+  `kill`ing only the parent orphans the ranks, which keep burning CPU. Fix: spawn ORCA in its own
+  process group (`process_group(0)`) and signal the whole group with `killpg` (SIGTERM, then
+  SIGKILL after a grace period). Verified: `kill -TERM -<pgid>` reaps the entire tree.
+- **Graceful "stop after current optimization cycle" — UNCONFIRMED for 6.1** → ORCA is *said* to
+  support stopping a geometry optimization cleanly via a marker file in the job dir (preserving a
+  valid `.gbw` + last geometry), which would beat a hard kill. This could not be verified: the
+  ORCA 6.1 manual is not indexed locally yet (Phase 4; `resources/manual/` currently holds only a
+  README). Until confirmed against the real manual, OrcaStudio implements **only** hard kill
+  (killpg). Do not add a "Stop after current cycle" button on the strength of memory — re-check
+  the manual first.
 - **`orca --version` "fails" / does something weird** → ORCA has **no CLI flags**; it treats
   its first argument as the name of an input file, so `orca --version` tries to open a file
   literally called `--version`. There is no version subcommand → read the version from the

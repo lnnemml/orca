@@ -66,9 +66,13 @@ and sees the final energy in the job list — without touching a terminal.
 - [ ] Live convergence dashboard for Opt jobs: energy per cycle, gradient norm vs criteria
       (parse incrementally from the streamed log)
 - [ ] Sidecar endpoint: xyz ↔ common format conversions (Open Babel)
-- [ ] Sequential job queue: `queued` status, worker loop picks next job when current
-      completes (concurrency 1). Replaces the current "another job is running" error
-      with transparent queuing. Small scope: SQLite status + loop in LocalBackend.
+- [x] Sequential job queue: `queued` status, worker loop picks next job when current
+      completes (concurrency 1) — **done**. `submit` enqueues instead of erroring on a busy
+      slot; the queue lives in SQLite (`status='queued'`, oldest first), pulled by
+      `try_start_next` after each finish. Pause/resume (queue-only). Plus, beyond scope:
+      **CPU core pinning presets** (taskset + `%pal` alignment, domain rule #8),
+      **job cancellation** (killpg the ORCA process group), and **startup reconciliation**
+      of jobs left `running` by a crash. See `wiki/modules/execution-backends.md`.
 
 **Done when:** author pastes a SMILES, gets a 3D structure, configures an optimization in the
 form, runs it, and watches the energy curve descend in real time.

@@ -1,4 +1,5 @@
 mod commands;
+mod cpu_presets;
 mod db;
 mod error;
 mod local_backend;
@@ -24,10 +25,18 @@ pub fn run() {
                 .ok_or("could not determine user data directory")?
                 .join("orcastudio");
             let conn = db::init_db(&data_dir)?;
+            // Reconcile jobs left `running` by a previous crash/close before the
+            // connection is handed to managed state.
+            local_backend::reconcile_on_startup(&conn);
             app.manage(DbState(Mutex::new(conn)));
 
             // --- LocalBackend: job-directory root + single execution slot. ---
             app.manage(local_backend::JobRunner::new(data_dir.clone()));
+
+            // Resume the sequential queue: pick up any jobs left `queued` across a
+            // restart. Off-thread so setup returns promptly.
+            let queue_handle = app.handle().clone();
+            std::thread::spawn(move || local_backend::try_start_next(&queue_handle));
 
             // --- Sidecar: spawn uvicorn, then health-poll on a background thread. ---
             // In dev the sidecar lives at <project root>/sidecar (sibling of src-tauri).
@@ -54,8 +63,13 @@ pub fn run() {
             commands::jobs::get_job,
             commands::jobs::update_job_status,
             commands::jobs::submit_job,
+            commands::jobs::cancel_job,
+            commands::jobs::pause_queue,
+            commands::jobs::resume_queue,
+            commands::jobs::is_queue_paused,
             commands::jobs::read_job_output,
             commands::jobs::open_job_folder,
+            cpu_presets::get_cpu_presets,
             commands::molecules::create_molecule,
             commands::molecules::list_molecules,
             commands::molecules::get_molecule,

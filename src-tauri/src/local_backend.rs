@@ -13,10 +13,11 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use rusqlite::OptionalExtension;
+use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -25,6 +26,7 @@ use crate::commands::jobs::{
     update_job_status_conn,
 };
 use crate::commands::settings::DbState;
+use crate::cpu_presets::{CpuPreset, DEFAULT_PRESET_ID};
 use crate::error::AppError;
 use crate::models::job::JobStatus;
 
@@ -39,11 +41,30 @@ const TAIL_BYTES: u64 = 5 * 1024;
 /// enough — 64 KB comfortably reaches back to the last `FINAL SINGLE POINT ENERGY`.
 const RESULT_TAIL_BYTES: u64 = 64 * 1024;
 
-/// App-wide LocalBackend state: the job-directory root plus the single
-/// execution slot (`Some(job_id)` while a job is running — concurrency = 1).
+/// App-wide LocalBackend state: the job-directory root, the single execution
+/// slot (`Some` while a job is running — concurrency = 1, domain rule #4), and a
+/// pause flag for the queue.
+///
+/// The queue itself is NOT held in memory — `queued` jobs live in SQLite and are
+/// picked up by [`try_start_next`]. That survives an app restart and needs no
+/// separate worker thread or channel.
 pub struct JobRunner {
     data_dir: PathBuf,
-    running: Mutex<Option<String>>,
+    running: Mutex<Option<RunningJob>>,
+    /// When true, finished jobs don't pull the next `queued` one. The currently
+    /// running job (if any) always runs to completion — pause is queue-only.
+    paused: AtomicBool,
+}
+
+/// The one job currently executing, plus what cancellation needs.
+struct RunningJob {
+    job_id: String,
+    /// Process group id of the ORCA MPI tree (== the child pid, because we spawn
+    /// with `process_group(0)`). `0` during the brief startup window before the
+    /// child is spawned.
+    pgid: i32,
+    /// Set by [`cancel`] so [`drive_job`] records `cancelled` rather than `failed`.
+    cancelled: Arc<AtomicBool>,
 }
 
 impl JobRunner {
@@ -51,10 +72,11 @@ impl JobRunner {
         Self {
             data_dir,
             running: Mutex::new(None),
+            paused: AtomicBool::new(false),
         }
     }
 
-    fn running_lock(&self) -> Result<std::sync::MutexGuard<'_, Option<String>>, AppError> {
+    fn running_lock(&self) -> Result<std::sync::MutexGuard<'_, Option<RunningJob>>, AppError> {
         self.running
             .lock()
             .map_err(|_| AppError::Internal("job runner mutex poisoned".into()))
@@ -88,94 +110,299 @@ pub fn prepare_job_dir(
     Ok(dir)
 }
 
-/// Spawn ORCA (full absolute `orca_path`) on `input.inp` inside `job_dir`.
-/// stdout is piped (for tailing); stderr goes to `stderr.log`.
-pub fn run_orca(orca_path: &str, job_dir: &Path) -> Result<Child, AppError> {
-    let stderr = File::create(job_dir.join("stderr.log"))?;
-    Command::new(orca_path)
-        .arg("input.inp")
-        .current_dir(job_dir)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::from(stderr))
-        .spawn()
-        .map_err(|e| AppError::Backend(format!("failed to spawn ORCA at '{orca_path}': {e}")))
+/// Read a single settings value, or `None` if absent / unreadable.
+fn read_setting(conn: &Connection, key: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT value FROM settings WHERE key = ?1",
+        [key],
+        |r| r.get::<_, String>(0),
+    )
+    .optional()
+    .ok()
+    .flatten()
 }
 
-/// Submit a draft job: validate, reserve the slot, prepare the dir, spawn ORCA,
-/// mark it running, and hand off to a background tailing thread.
+/// Resolve the effective `(taskset mask, nprocs)` for a run from settings
+/// (domain rule #8). Falls back to the `interactive` preset when settings are
+/// missing or malformed. A `None` mask means "no pinning" (direct invocation).
+///
+/// - `cpu_preset = custom` → use `cpu_mask` / `cpu_nprocs` verbatim.
+/// - `cpu_preset = <known id>` → that preset's measured mask + nprocs.
+/// - anything else (missing / unknown) → the default preset.
+pub(crate) fn resolve_cpu_config(conn: &Connection) -> (Option<String>, u32) {
+    let preset = read_setting(conn, "cpu_preset").unwrap_or_else(|| DEFAULT_PRESET_ID.to_string());
+
+    if preset == "custom" {
+        let mask = read_setting(conn, "cpu_mask").unwrap_or_default();
+        let mask = if mask.trim().is_empty() {
+            None
+        } else {
+            Some(mask.trim().to_string())
+        };
+        let nprocs = read_setting(conn, "cpu_nprocs")
+            .and_then(|s| s.trim().parse::<u32>().ok())
+            .filter(|n| *n >= 1)
+            .unwrap_or(1);
+        return (mask, nprocs);
+    }
+
+    let p = CpuPreset::by_id(&preset)
+        .or_else(|| CpuPreset::by_id(DEFAULT_PRESET_ID))
+        .expect("the default preset always exists");
+    let mask = if p.mask.trim().is_empty() {
+        None
+    } else {
+        Some(p.mask.to_string())
+    };
+    (mask, p.nprocs)
+}
+
+/// A human-readable label for the resolved preset, for the alignment log line.
+fn resolve_cpu_label(conn: &Connection) -> String {
+    let preset = read_setting(conn, "cpu_preset").unwrap_or_else(|| DEFAULT_PRESET_ID.to_string());
+    if preset == "custom" {
+        return "Custom".to_string();
+    }
+    CpuPreset::by_id(&preset)
+        .or_else(|| CpuPreset::by_id(DEFAULT_PRESET_ID))
+        .map(|p| p.label.to_string())
+        .unwrap_or_else(|| "Interactive".to_string())
+}
+
+/// Rewrite `%pal nprocs N end` to match the pinned core count. ORCA would
+/// otherwise oversubscribe the mask — 12 ranks on 4 cores is 3x slower, not
+/// faster. If no `%pal` line exists, insert one after the `!` keyword line
+/// (or at the top if there isn't one). Handles both the single-line
+/// (`%pal nprocs 4 end`) and block (`%pal\n nprocs 4\nend`) forms.
+///
+/// Returns the (possibly unchanged) input and whether it was rewritten.
+pub(crate) fn align_pal_nprocs(input: &str, nprocs: u32) -> (String, bool) {
+    let canonical = format!("%pal nprocs {nprocs} end");
+    let trailing_newline = input.ends_with('\n');
+    let mut lines: Vec<String> = input.lines().map(str::to_string).collect();
+
+    let pal_idx = lines
+        .iter()
+        .position(|l| l.trim_start().to_ascii_lowercase().starts_with("%pal"));
+
+    if let Some(idx) = pal_idx {
+        // Find the extent of the directive. Single-line form carries its own
+        // `end`; block form spans until a line that is just `end`.
+        let opener = lines[idx].trim().to_ascii_lowercase();
+        let mut last = idx;
+        if !opener.contains("end") {
+            let mut j = idx + 1;
+            while j < lines.len() {
+                last = j;
+                if lines[j].trim().eq_ignore_ascii_case("end") {
+                    break;
+                }
+                j += 1;
+            }
+        }
+        if idx == last && lines[idx] == canonical {
+            return (input.to_string(), false); // already aligned
+        }
+        lines.splice(idx..=last, std::iter::once(canonical));
+    } else if let Some(idx) = lines.iter().position(|l| l.trim_start().starts_with('!')) {
+        lines.insert(idx + 1, canonical);
+    } else {
+        lines.insert(0, canonical);
+    }
+
+    let mut out = lines.join("\n");
+    if trailing_newline {
+        out.push('\n');
+    }
+    (out, true)
+}
+
+/// Spawn ORCA on `input.inp` inside `job_dir`. When `cpu_mask` is `Some`, ORCA
+/// is launched under `taskset -c <mask>` with OpenMPI's own binding disabled so
+/// the two don't fight (domain rule #8); otherwise it's invoked directly.
+/// stdout is piped (for tailing); stderr goes to `stderr.log`.
+///
+/// The child (and every MPI rank it forks) is placed in its own process group so
+/// a cancel can signal the whole tree with `killpg` — killing only the parent
+/// would leave orphaned ranks burning CPU.
+pub fn run_orca(orca_path: &str, job_dir: &Path, cpu_mask: Option<&str>) -> Result<Child, AppError> {
+    let stderr = File::create(job_dir.join("stderr.log"))?;
+
+    let mut cmd = match cpu_mask {
+        Some(mask) => {
+            let mut c = Command::new("taskset");
+            c.arg("-c").arg(mask).arg(orca_path).arg("input.inp");
+            c.env("OMPI_MCA_hwloc_base_binding_policy", "none");
+            c
+        }
+        None => {
+            let mut c = Command::new(orca_path);
+            c.arg("input.inp");
+            c
+        }
+    };
+
+    cmd.current_dir(job_dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::from(stderr));
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+
+    cmd.spawn().map_err(|e| {
+        if cpu_mask.is_some() && e.kind() == std::io::ErrorKind::NotFound {
+            AppError::Backend(
+                "taskset not found — install util-linux, or set cpu_preset to disable pinning"
+                    .into(),
+            )
+        } else {
+            AppError::Backend(format!("failed to spawn ORCA at '{orca_path}': {e}"))
+        }
+    })
+}
+
+/// Submit a draft job: move it to `queued` and try to start it. With the
+/// single-slot queue this never fails with "another job is running" — a busy
+/// slot just means the job waits its turn (oldest `created_at` first).
 pub fn submit(app: &AppHandle, job_id: &str) -> Result<(), AppError> {
     let db = app.state::<DbState>();
-    let runner = app.state::<JobRunner>();
-
-    // 1. Validate: the job exists and is a draft.
-    let input_content = {
+    {
         let conn = db.lock()?;
         let job = get_job_conn(&conn, job_id)?;
         if job.status != JobStatus::Draft {
             return Err(AppError::Backend(format!(
-                "job {job_id} is '{}'; only draft jobs can be run",
+                "job {job_id} is '{}'; only draft jobs can be queued",
                 job.status.as_str()
             )));
         }
-        job.input_content
-    };
-
-    // 2. Resolve the ORCA path (full absolute path — domain rule #1).
-    let orca_path = {
-        let conn = db.lock()?;
-        conn.query_row(
-            "SELECT value FROM settings WHERE key = 'orca_path'",
-            [],
-            |r| r.get::<_, String>(0),
-        )
-        .optional()?
-        .filter(|p| !p.trim().is_empty())
-        .ok_or_else(|| AppError::Backend("ORCA path is not configured (see Settings)".into()))?
-    };
-
-    // 3. Reserve the single execution slot (domain rule #4).
-    {
-        let mut running = runner.running_lock()?;
-        if let Some(other) = running.as_ref() {
-            return Err(AppError::Backend(format!(
-                "another job is already running ({other})"
-            )));
-        }
-        *running = Some(job_id.to_string());
+        update_job_status_conn(&conn, job_id, "queued")?;
     }
+    emit_status(app, job_id, JobStatus::Queued);
+    try_start_next(app);
+    Ok(())
+}
 
-    // Any failure past this point must free the slot.
-    match start_run(app, &db, &runner, job_id, &input_content, &orca_path) {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            release_slot(&runner, job_id);
-            Err(e)
+/// Start the oldest `queued` job if the slot is free and the queue isn't paused.
+/// Called after every enqueue, after each job finishes, and on resume. A no-op
+/// when the slot is busy, the queue is paused, or nothing is queued.
+pub fn try_start_next(app: &AppHandle) {
+    let runner = app.state::<JobRunner>();
+    let db = app.state::<DbState>();
+
+    // Claim the slot atomically: under the running lock, bail if paused or busy,
+    // otherwise pick the oldest queued job and reserve the slot (pgid 0 = still
+    // starting). Lock order is always running -> db (see cancel/try_start_next).
+    let (job_id, cancelled) = {
+        let mut running = match runner.running.lock() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        if runner.paused.load(Ordering::SeqCst) || running.is_some() {
+            return;
         }
+        let next: Option<String> = {
+            let conn = match db.lock() {
+                Ok(c) => c,
+                Err(_) => return,
+            };
+            conn.query_row(
+                "SELECT id FROM jobs WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()
+            .ok()
+            .flatten()
+        };
+        let Some(job_id) = next else {
+            return;
+        };
+        let cancelled = Arc::new(AtomicBool::new(false));
+        *running = Some(RunningJob {
+            job_id: job_id.clone(),
+            pgid: 0,
+            cancelled: cancelled.clone(),
+        });
+        (job_id, cancelled)
+    };
+
+    // Spawn is slow and needs the db lock, so it runs with no lock held. On
+    // failure, record it, free the slot, and try the next queued job.
+    if let Err(e) = start_run(app, &job_id, cancelled) {
+        if let Ok(conn) = db.lock() {
+            let _ = finalize_job_conn(&conn, &job_id, JobStatus::Failed, Some(&e.to_string()));
+        }
+        release_slot(&runner, &job_id);
+        emit_status(app, &job_id, JobStatus::Failed);
+        try_start_next(app);
     }
 }
 
-/// The fallible middle of [`submit`], factored out so the slot is released on
-/// any error (see the caller).
-fn start_run(
-    app: &AppHandle,
-    db: &DbState,
-    runner: &JobRunner,
-    job_id: &str,
-    input_content: &str,
-    orca_path: &str,
-) -> Result<(), AppError> {
-    // 4. Isolated job dir + input.inp; persist the path.
-    let job_dir = prepare_job_dir(&runner.data_dir, job_id, input_content)?;
+/// Prepare the dir, spawn ORCA (pinned per settings), mark running, and hand off
+/// to the tailing thread. The slot is already reserved by [`try_start_next`];
+/// `cancelled` is that slot's flag, shared with [`drive_job`].
+fn start_run(app: &AppHandle, job_id: &str, cancelled: Arc<AtomicBool>) -> Result<(), AppError> {
+    let db = app.state::<DbState>();
+    let runner = app.state::<JobRunner>();
+
+    // Read input + ORCA path (full absolute path, domain rule #1) + CPU config.
+    let (input_content, orca_path, cpu_mask, nprocs, preset_label) = {
+        let conn = db.lock()?;
+        let job = get_job_conn(&conn, job_id)?;
+        let orca_path = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'orca_path'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?
+            .filter(|p| !p.trim().is_empty())
+            .ok_or_else(|| {
+                AppError::Backend("ORCA path is not configured (see Settings)".into())
+            })?;
+        let (mask, nprocs) = resolve_cpu_config(&conn);
+        let label = resolve_cpu_label(&conn);
+        (job.input_content, orca_path, mask, nprocs, label)
+    };
+
+    // Align %pal to the pinned rank count (avoid oversubscribing the mask).
+    let (aligned_input, rewritten) = align_pal_nprocs(&input_content, nprocs);
+
+    // Isolated job dir + aligned input.inp; persist the path.
+    let job_dir = prepare_job_dir(&runner.data_dir, job_id, &aligned_input)?;
     {
         let conn = db.lock()?;
         set_job_dir_conn(&conn, job_id, &job_dir.to_string_lossy())?;
     }
 
-    // 5. Spawn ORCA.
-    let mut child = run_orca(orca_path, &job_dir)?;
+    // Spawn ORCA pinned to the resolved core mask.
+    let mut child = run_orca(&orca_path, &job_dir, cpu_mask.as_deref())?;
+    let pgid = child.id() as i32; // process_group(0) → pgid == child pid
 
-    // 6. Mark running + notify the UI. If the DB update fails, kill the child.
+    // Record the pgid on the reserved slot so cancel can signal the whole tree.
+    {
+        let mut running = runner.running_lock()?;
+        match running.as_mut() {
+            Some(rj) if rj.job_id == job_id => rj.pgid = pgid,
+            _ => {
+                // Slot vanished (e.g. cancelled during startup) — kill the child.
+                let _ = child.kill();
+                return Err(AppError::Backend("execution slot lost during startup".into()));
+            }
+        }
+    }
+
+    // If a cancel landed during the startup window, signal the tree now; the
+    // tailing thread finalizes it as cancelled once the process exits.
+    if cancelled.load(Ordering::SeqCst) {
+        signal_pgid(pgid, libc_sigterm());
+    }
+
+    // Mark running + notify. If the DB update fails, kill the child.
     {
         let conn = db.lock()?;
         if let Err(e) = update_job_status_conn(&conn, job_id, "running") {
@@ -185,16 +412,163 @@ fn start_run(
     }
     emit_status(app, job_id, JobStatus::Running);
 
-    // 7. Drive stdout tailing + completion detection off-thread.
+    // Surface the %pal alignment so it isn't silent magic (learning instrument).
+    if rewritten {
+        emit_log_line(
+            app,
+            job_id,
+            &format!("[OrcaStudio] %pal nprocs aligned to {nprocs} (cpu preset: {preset_label})"),
+        );
+    }
+
+    // Drive stdout tailing + completion detection off-thread.
     let app = app.clone();
     let job_id = job_id.to_string();
-    std::thread::spawn(move || drive_job(app, job_id, job_dir, child));
+    std::thread::spawn(move || drive_job(app, job_id, job_dir, child, cancelled));
     Ok(())
 }
 
+/// Cancel a `queued` or `running` job. A queued job is dropped in place (nothing
+/// to kill). A running job's process group is signalled (SIGTERM, then SIGKILL
+/// after a grace period); [`drive_job`] then records the terminal `cancelled`
+/// state once the process exits. Any other status is an error.
+pub fn cancel(app: &AppHandle, job_id: &str) -> Result<(), AppError> {
+    let db = app.state::<DbState>();
+    let runner = app.state::<JobRunner>();
+
+    // Is this the currently running job? Grab its pgid + cancel flag.
+    let running_info = {
+        let running = runner.running_lock()?;
+        running
+            .as_ref()
+            .filter(|r| r.job_id == job_id)
+            .map(|r| (r.pgid, r.cancelled.clone()))
+    };
+
+    if let Some((pgid, flag)) = running_info {
+        // Mark first so drive_job finalizes as `cancelled`, not `failed`.
+        flag.store(true, Ordering::SeqCst);
+        // pgid 0 = still in the startup window; start_run will signal once it has
+        // the real pgid (it checks the same flag).
+        if pgid > 0 {
+            terminate_pgid(pgid);
+        }
+        return Ok(());
+    }
+
+    // Not running — a queued job can be cancelled in place.
+    let status = {
+        let conn = db.lock()?;
+        get_job_conn(&conn, job_id)?.status
+    };
+    match status {
+        JobStatus::Queued => {
+            {
+                let conn = db.lock()?;
+                finalize_job_conn(
+                    &conn,
+                    job_id,
+                    JobStatus::Cancelled,
+                    Some("Cancelled before it started."),
+                )?;
+            }
+            emit_status(app, job_id, JobStatus::Cancelled);
+            Ok(())
+        }
+        other => Err(AppError::Backend(format!(
+            "job is not running or queued (status: {})",
+            other.as_str()
+        ))),
+    }
+}
+
+/// Set the queue pause flag. Pausing leaves the running job alone; resuming
+/// immediately pulls the next queued job.
+pub fn set_paused(app: &AppHandle, paused: bool) {
+    if let Some(runner) = app.try_state::<JobRunner>() {
+        runner.paused.store(paused, Ordering::SeqCst);
+    }
+    if !paused {
+        try_start_next(app);
+    }
+}
+
+/// Whether the queue is currently paused.
+pub fn is_paused(app: &AppHandle) -> bool {
+    app.try_state::<JobRunner>()
+        .map(|r| r.paused.load(Ordering::SeqCst))
+        .unwrap_or(false)
+}
+
+/// Reconcile job state on startup. After a restart nothing is actually running
+/// (the process tree died with the app), so advance every job the DB still
+/// thinks is `running`: if its dir shows a completed ORCA run, finalize it (with
+/// results); otherwise mark it failed. `queued` jobs are left untouched — the
+/// startup `try_start_next` picks them back up. Best-effort: DB errors are
+/// swallowed so a bad row can't block launch.
+pub fn reconcile_on_startup(conn: &Connection) {
+    let stale: Vec<(String, Option<String>)> = {
+        let mut stmt = match conn.prepare("SELECT id, job_dir FROM jobs WHERE status = 'running'") {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)));
+        match rows {
+            Ok(iter) => iter.filter_map(Result::ok).collect(),
+            Err(_) => return,
+        }
+    };
+
+    for (id, job_dir) in stale {
+        let Some(dir) = job_dir else {
+            let _ = finalize_job_conn(
+                conn,
+                &id,
+                JobStatus::Failed,
+                Some("app was closed while this job was running"),
+            );
+            continue;
+        };
+        let dir = Path::new(&dir);
+        let out_path = dir.join("output.out");
+        let exit_path = dir.join(".exit_code");
+
+        // If the job actually finished before the app closed, honour the marker.
+        let (status, msg) = if exit_path.exists() {
+            let exit_code = std::fs::read_to_string(&exit_path)
+                .ok()
+                .and_then(|s| s.trim().parse::<i32>().ok());
+            detect_completion(&out_path, &dir.join("stderr.log"), exit_code)
+        } else {
+            (
+                JobStatus::Failed,
+                Some("app was closed while this job was running".to_string()),
+            )
+        };
+
+        let _ = finalize_job_conn(conn, &id, status, msg.as_deref());
+        if status == JobStatus::Completed {
+            if let Ok(tail) = read_tail(&out_path, RESULT_TAIL_BYTES) {
+                let energy = crate::result_extraction::extract_final_energy(&tail);
+                let wall_time = crate::result_extraction::extract_wall_time(&tail);
+                if energy.is_some() || wall_time.is_some() {
+                    let _ = set_job_results_conn(conn, &id, energy, wall_time);
+                }
+            }
+        }
+    }
+}
+
 /// Stream stdout to `output.out` + the UI, then wait, write `.exit_code`, detect
-/// completion, persist the final state, and free the execution slot.
-fn drive_job(app: AppHandle, job_id: String, job_dir: PathBuf, mut child: Child) {
+/// completion (or cancellation), persist the final state, free the slot, and pull
+/// the next queued job.
+fn drive_job(
+    app: AppHandle,
+    job_id: String,
+    job_dir: PathBuf,
+    mut child: Child,
+    cancelled: Arc<AtomicBool>,
+) {
     let out_path = job_dir.join("output.out");
 
     if let Some(stdout) = child.stdout.take() {
@@ -239,14 +613,23 @@ fn drive_job(app: AppHandle, job_id: String, job_dir: PathBuf, mut child: Child)
 
     // Wait for exit and write the completion marker (domain rule #6).
     let exit_code = child.wait().ok().and_then(|s| s.code());
-    let exit_str = exit_code
-        .map(|c| c.to_string())
-        .unwrap_or_else(|| "unknown".to_string());
+    let was_cancelled = cancelled.load(Ordering::SeqCst);
+    let exit_str = if was_cancelled {
+        "cancelled".to_string()
+    } else {
+        exit_code
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| "unknown".to_string())
+    };
     let _ = std::fs::write(job_dir.join(".exit_code"), format!("{exit_str}\n"));
 
-    // Completion = marker written above AND normal-termination banner in output.
-    let (status, error_message) =
-        detect_completion(&out_path, &job_dir.join("stderr.log"), exit_code);
+    // A user cancel takes precedence over the (aborted) exit code: don't dump a
+    // stderr sheet as if it failed. Otherwise: completion = marker + banner.
+    let (status, error_message) = if was_cancelled {
+        (JobStatus::Cancelled, Some("Cancelled by user.".to_string()))
+    } else {
+        detect_completion(&out_path, &job_dir.join("stderr.log"), exit_code)
+    };
 
     if let Some(db) = app.try_state::<DbState>() {
         if let Ok(conn) = db.lock() {
@@ -273,16 +656,62 @@ fn drive_job(app: AppHandle, job_id: String, job_dir: PathBuf, mut child: Child)
         release_slot(&runner, &job_id);
     }
     emit_status(&app, &job_id, status);
+
+    // Slot is free — pull the next queued job (unless the queue is paused).
+    try_start_next(&app);
 }
 
 /// Free the execution slot iff it is still held by `job_id`.
 fn release_slot(runner: &JobRunner, job_id: &str) {
     if let Ok(mut running) = runner.running_lock() {
-        if running.as_deref() == Some(job_id) {
+        if running.as_ref().map(|r| r.job_id.as_str()) == Some(job_id) {
             *running = None;
         }
     }
 }
+
+/// The SIGTERM number (kept behind a helper so callers stay platform-agnostic).
+#[cfg(unix)]
+fn libc_sigterm() -> i32 {
+    libc::SIGTERM
+}
+#[cfg(not(unix))]
+fn libc_sigterm() -> i32 {
+    15
+}
+
+/// Send `sig` to an entire process group (no-op for a non-positive pgid).
+#[cfg(unix)]
+fn signal_pgid(pgid: i32, sig: i32) {
+    if pgid > 0 {
+        // SAFETY: killpg is a thin syscall wrapper; passing a signal number and
+        // a pgid has no memory-safety implications.
+        unsafe {
+            libc::killpg(pgid, sig);
+        }
+    }
+}
+#[cfg(not(unix))]
+fn signal_pgid(_pgid: i32, _sig: i32) {}
+
+/// SIGTERM a process group, give it up to 5 s to exit, then SIGKILL. Lets ORCA
+/// clean up its scratch files if it can, but guarantees the tree dies.
+#[cfg(unix)]
+fn terminate_pgid(pgid: i32) {
+    signal_pgid(pgid, libc::SIGTERM);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        // killpg(pgid, 0) probes liveness: 0 = the group still has members.
+        let alive = unsafe { libc::killpg(pgid, 0) } == 0;
+        if !alive {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    signal_pgid(pgid, libc::SIGKILL);
+}
+#[cfg(not(unix))]
+fn terminate_pgid(_pgid: i32) {}
 
 /// Emit a batch of log lines (no-op if empty); drains `batch`.
 fn emit_log(app: &AppHandle, job_id: &str, batch: &mut Vec<String>) {
@@ -294,6 +723,17 @@ fn emit_log(app: &AppHandle, job_id: &str, batch: &mut Vec<String>) {
         LogPayload {
             job_id: job_id.to_string(),
             lines: std::mem::take(batch),
+        },
+    );
+}
+
+/// Emit a single app-generated log line (e.g. the %pal alignment notice).
+fn emit_log_line(app: &AppHandle, job_id: &str, line: &str) {
+    let _ = app.emit(
+        "job:log",
+        LogPayload {
+            job_id: job_id.to_string(),
+            lines: vec![line.to_string()],
         },
     );
 }
@@ -448,6 +888,115 @@ mod tests {
     }
 
     #[test]
+    fn align_pal_rewrites_existing_single_line() {
+        let input = "! B3LYP def2-SVP Opt\n%pal nprocs 4 end\n%maxcore 2000\n\n* xyz 0 1\n H 0 0 0\n*\n";
+        let (out, changed) = align_pal_nprocs(input, 8);
+        assert!(changed);
+        assert!(out.contains("%pal nprocs 8 end"));
+        assert!(!out.contains("nprocs 4"));
+        // The coordinate block is untouched.
+        assert!(out.contains("* xyz 0 1\n H 0 0 0\n*"));
+        assert!(out.contains("%maxcore 2000"));
+    }
+
+    #[test]
+    fn align_pal_is_case_insensitive() {
+        let (out, changed) = align_pal_nprocs("! HF\n%PAL NPROCS 4 END\n", 8);
+        assert!(changed);
+        assert!(out.contains("%pal nprocs 8 end"));
+        assert!(!out.to_ascii_uppercase().contains("NPROCS 4"));
+    }
+
+    #[test]
+    fn align_pal_inserts_after_bang_line_when_absent() {
+        let input = "! r2SCAN-3c Opt\n\n* xyz 0 1\n H 0 0 0\n*\n";
+        let (out, changed) = align_pal_nprocs(input, 8);
+        assert!(changed);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines[0], "! r2SCAN-3c Opt");
+        assert_eq!(lines[1], "%pal nprocs 8 end"); // right after the ! line
+        assert!(out.contains("* xyz 0 1\n H 0 0 0\n*"));
+    }
+
+    #[test]
+    fn align_pal_rewrites_block_form() {
+        // Block form: %pal opening line, then nprocs, then a lone end.
+        let input = "! HF\n%pal\n  nprocs 4\nend\n%maxcore 1000\n";
+        let (out, changed) = align_pal_nprocs(input, 12);
+        assert!(changed);
+        assert!(out.contains("%pal nprocs 12 end"));
+        assert!(!out.contains("nprocs 4"));
+        // The stray block lines are gone; maxcore survives.
+        assert!(out.contains("%maxcore 1000"));
+        assert_eq!(out.matches("end").count(), 1);
+    }
+
+    #[test]
+    fn align_pal_noop_when_already_aligned() {
+        let input = "! HF\n%pal nprocs 8 end\n";
+        let (out, changed) = align_pal_nprocs(input, 8);
+        assert!(!changed);
+        assert_eq!(out, input);
+    }
+
+    /// An in-memory settings table for resolver tests.
+    fn settings_db(pairs: &[(&str, &str)]) -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);")
+            .unwrap();
+        for (k, v) in pairs {
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES (?1, ?2)",
+                rusqlite::params![k, v],
+            )
+            .unwrap();
+        }
+        conn
+    }
+
+    #[test]
+    fn resolve_cpu_config_uses_named_preset() {
+        // Default (interactive) when nothing is set.
+        let (mask, nprocs) = resolve_cpu_config(&settings_db(&[]));
+        assert_eq!(mask.as_deref(), Some("8-15"));
+        assert_eq!(nprocs, 8);
+
+        // Explicit max_throughput preset.
+        let (mask, nprocs) =
+            resolve_cpu_config(&settings_db(&[("cpu_preset", "max_throughput")]));
+        assert_eq!(mask.as_deref(), Some("0,2,4,6,8-15"));
+        assert_eq!(nprocs, 12);
+
+        // Unknown preset id → falls back to the default.
+        let (mask, nprocs) = resolve_cpu_config(&settings_db(&[("cpu_preset", "bogus")]));
+        assert_eq!(mask.as_deref(), Some("8-15"));
+        assert_eq!(nprocs, 8);
+    }
+
+    #[test]
+    fn resolve_cpu_config_custom() {
+        let (mask, nprocs) = resolve_cpu_config(&settings_db(&[
+            ("cpu_preset", "custom"),
+            ("cpu_mask", "0-3"),
+            ("cpu_nprocs", "4"),
+        ]));
+        assert_eq!(mask.as_deref(), Some("0-3"));
+        assert_eq!(nprocs, 4);
+    }
+
+    #[test]
+    fn resolve_cpu_config_custom_malformed_values() {
+        // Empty mask → no pinning; unparseable nprocs → 1.
+        let (mask, nprocs) = resolve_cpu_config(&settings_db(&[
+            ("cpu_preset", "custom"),
+            ("cpu_mask", "   "),
+            ("cpu_nprocs", "not-a-number"),
+        ]));
+        assert_eq!(mask, None);
+        assert_eq!(nprocs, 1);
+    }
+
+    #[test]
     fn detect_completion_needs_marker_and_zero_exit() {
         let data = scratch("detect");
         let out = data.join("output.out");
@@ -486,7 +1035,7 @@ mod tests {
                      H   0.0000   0.7572  -0.4692\n  H   0.0000  -0.7572  -0.4692\n*\n";
         let dir = prepare_job_dir(&data, "water-sp", input).unwrap();
 
-        let mut child = run_orca(orca, &dir).unwrap();
+        let mut child = run_orca(orca, &dir, None).unwrap();
 
         // Drain stdout to output.out — the same streaming drive_job does, minus
         // the Tauri emit (which needs an AppHandle).

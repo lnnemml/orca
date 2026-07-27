@@ -531,6 +531,10 @@ body {
   background: #33383f;
   color: #c8ccd2;
 }
+.badge.queued {
+  background: #2a2f36;
+  color: #9aa4b2;
+}
 .badge.running {
   background: #3a3410;
   color: var(--warn);
@@ -542,6 +546,11 @@ body {
 .badge.failed {
   background: #3a1414;
   color: var(--err);
+}
+/* Cancelled is a user action, not an error — amber, not red. */
+.badge.cancelled {
+  background: #33270f;
+  color: #d0873a;
 }
 
 /* --- Misc ------------------------------------------------------------- */

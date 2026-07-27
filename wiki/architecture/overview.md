@@ -35,12 +35,16 @@ Division of responsibility, one line each:
 ## Job lifecycle (the central state machine)
 
 ```
-draft ──▶ uploading ──▶ running ──▶ completed ──▶ syncing ──▶ parsed
-              │             │           │
-              │             ▼           ▼
-              └────────▶ failed ◀── cancelled
+draft ─▶ queued ─▶ uploading ─▶ running ─▶ completed ─▶ syncing ─▶ parsed
+            │           │           │           │
+            │           │           ▼           ▼
+            └───────────┴──▶ failed ◀── cancelled
 ```
 
+- `queued` is the sequential-queue waiting state (LocalBackend, Phase 2): submitting moves a
+  draft job here; a single worker slot pulls the oldest queued job when free (concurrency = 1).
+  `cancelled` reaches a queued job directly (dropped before it starts) or a running one
+  (process group killed).
 - `uploading`/`syncing` are no-ops for LocalBackend (instant transitions).
 - Completion is detected by **two** signals: `.exit_code` marker file exists AND
   `ORCA TERMINATED NORMALLY` appears in output. Marker without the string = crashed run.

@@ -1,6 +1,21 @@
 //! Shared TypeScript types mirroring the Rust IPC surface.
 
-export type JobStatus = "draft" | "running" | "completed" | "failed";
+export type JobStatus =
+  | "draft"
+  | "queued"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+/** Mirrors `src-tauri/src/cpu_presets.rs::CpuPresetInfo`. */
+export interface CpuPresetInfo {
+  id: string;
+  label: string;
+  mask: string;
+  nprocs: number;
+  description: string;
+}
 
 /** Mirrors `src-tauri/src/models/job.rs::Job` (serde, lowercase status). */
 export interface Job {

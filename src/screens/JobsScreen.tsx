@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
 import type { Job } from "../types";
 import { formatEnergy, formatTimestamp, formatWallTime } from "../format";
@@ -24,8 +25,26 @@ export function JobsScreen({ onOpenDetail }: JobsScreenProps) {
     }
   }, []);
 
+  const cancel = useCallback(
+    async (jobId: string) => {
+      try {
+        await invoke("cancel_job", { id: jobId });
+        // The terminal status arrives via job:status; reload to be safe.
+        load();
+      } catch (e) {
+        setError(String(e));
+      }
+    },
+    [load],
+  );
+
   useEffect(() => {
     load();
+    // Statuses change as the queue advances jobs — refresh on every transition.
+    const unlisten = listen("job:status", () => load());
+    return () => {
+      unlisten.then((fn) => fn());
+    };
   }, [load]);
 
   return (
@@ -89,8 +108,16 @@ export function JobsScreen({ onOpenDetail }: JobsScreenProps) {
                     >
                       Run
                     </button>
-                  ) : job.status === "running" ? (
-                    <span className="muted">Running…</span>
+                  ) : job.status === "running" || job.status === "queued" ? (
+                    <button
+                      className="btn btn-sm"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        cancel(job.id);
+                      }}
+                    >
+                      Cancel
+                    </button>
                   ) : (
                     <button
                       className="btn btn-sm"
