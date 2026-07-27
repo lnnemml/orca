@@ -1,6 +1,6 @@
 # ADR-007 — From molecular modeling to reaction modeling
 
-**Status:** proposed (pending author review)  
+**Status:** accepted 
 **Date:** 2026-07-27  
 **Supersedes:** —  
 **Context:** author's research experience (stereoselectivity proof for NaBH₄ reduction,
