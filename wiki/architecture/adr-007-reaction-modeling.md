@@ -63,8 +63,8 @@ forcing them to reshape their scientific question to fit the GUI's limitations.
 | **Pathway** | One approach geometry explored end-to-end: geometry sweep → jobs → energy profile → optional TS |
 | **Job** | A single ORCA (or xTB) calculation — the execution primitive |
 
-A Reaction contains one or more Pathways. A Pathway generates multiple Jobs
-(one per scan point, or a single NEB/OptTS job). Jobs remain standalone-capable:
+A Reaction contains one or more Pathways. A Pathway generates one Job
+(native ORCA scan), or a small set for NEB/OptTS workflows. Jobs remain standalone-capable:
 a user can still create and run a Job without any Reaction context.
 
 ## Data model impact
@@ -97,7 +97,6 @@ Existing `jobs` table gains nullable FKs:
 ```
 jobs.reaction_id   → reactions.id  (nullable)
 jobs.pathway_id    → pathways.id   (nullable)
-jobs.pathway_step  INTEGER         (nullable, index within sweep)
 ```
 
 Standalone jobs (reaction_id = NULL) remain fully functional.
@@ -165,7 +164,7 @@ implies the app produces ΔG‡ when it only produces ΔE‡.
 | **2.5** (new) | Geometry editor: measure, set distance/angle/dihedral, fragment placement, constraint → `%geom`, xTB pre-opt | **Core primitives** for reaction center construction |
 | **3** | Results dashboard: energies, trajectories, spectra, orbitals | Energy profile plot (reused for reaction coordinate) |
 | **4** | Manual integration | Teaching: what is Bürgi-Dunitz angle, what is NEB |
-| **4.5** (new) | Reaction Modeling: Reaction/Pathway data model, reaction center editor, parametric sweep, batch orchestration, comparative pathway view, reaction energy diagram | **The integration layer** |
+| **4.5** (new) | Reaction Modeling: Reaction/Pathway data model, reaction center editor, native ORCA scan per pathway, scan output parser, comparative energy profiles (ΔΔE‡), TS refinement pipeline | **The integration layer** |
 | **5** | SSH remote execution | Critical for sweep jobs (6–10+ heavy DFT calculations) |
 | **6** | NEB-TS, IRC, scans, TD-DFT, batch parametric | NEB-TS is the natural next step after TS guess |
 
