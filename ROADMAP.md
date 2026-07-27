@@ -145,6 +145,9 @@ answers "how do I set up CPCM for water" in one search.
 reaction, explores pathways via native ORCA scans, and compares electronic energy
 barriers — the full computational experiment lifecycle. See ADR-007.
 
+- [ ] Conformer ensemble step: `! XTB GOAT` on the substrate → Boltzmann-weighted
+      ensemble → re-optimise lowest 3–4 at DFT → build reaction centers on those.
+      Mandatory before any pathway (see ADR-007).
 - [ ] Data model: `reactions`, `reaction_centers`, `pathways` tables; nullable FKs from
       `jobs` (`reaction_id`, `pathway_id`)
 - [ ] Reaction setup UI: define substrate + reagent, pick reaction center atoms,
@@ -168,6 +171,9 @@ a computational screening of stereoselectivity.
 ## Phase 5 — Remote execution over SSH (≈ 2–3 weeks)
 
 **Goal:** heavy jobs run on a server; the laptop stays free. The app becomes disconnect-proof.
+**This is a requirement, not a convenience** — a full mechanism study is 300–800 jobs
+and the dev laptop is a development machine, not a compute node. See
+`wiki/orca/performance.md`.
 
 - [ ] Formalize `ExecutionBackend` trait (submit / stream_log / status / fetch_results / cancel);
       refactor `LocalBackend` onto it (the seam exists since Phase 1 — this makes it explicit)

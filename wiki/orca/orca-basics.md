@@ -50,3 +50,9 @@ All live in the ORCA install dir; same full-path rule applies.
 ## Scratch behavior
 ORCA writes many temp files next to the input (and honors scratch env vars). Our policy:
 one isolated dir per job, cleanup of temp files (keep: inp, out, xyz, gbw, hess, cubes).
+
+## Performance and parallelisation
+
+Core-count and pinning decisions are measured, not assumed — see
+[performance.md](performance.md) for the scaling benchmark on the dev machine
+(i5-12500H), the recommended presets, and the memory ceiling on `nprocs`.

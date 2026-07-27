@@ -457,3 +457,30 @@ or Generate Input collapses the accordion.
 need the real Tauri window (GUI not headless-drivable, same as prior phases).
 
 Next: live convergence dashboard for Opt jobs, then the sequential job queue.
+
+## [2026-07-27] ingest | ORCA parallel scaling measured on dev machine
+
+Controlled benchmark: 39-atom scaffold, 640 basis functions, RIJCOSX hybrid DFT SP,
+30 runs (3 repeats × 10 core configurations), thermal cooldown between runs,
+constant %maxcore, taskset pinning. All 30 runs converged in 12 SCF cycles —
+identical work, valid comparison. Spread <1%.
+
+**Two prior assumptions refuted:**
+- "Avoid mixed P+E core sets" — FALSE. ALL12 (114.8 s) is fastest, 28% ahead of P4.
+- "Hyperthreading hurts ORCA" — FALSE. HT8 (134.8 s) beats P4 (146.7 s) by 8%.
+
+**Key finding:** E8 (E-cores only, 156.7 s) is just 7% slower than P4 but runs at
+74 °C instead of 97 °C and leaves all P-cores free → best default for a machine
+that is also used for development.
+
+Presets adopted: Interactive = `taskset -c 8-15`, nprocs 8 (default);
+Max throughput = `taskset -c 0,2,4,6,8-15`, nprocs 12.
+
+Also recorded: memory ceiling on nprocs (15 GB RAM / 1 GB swap), benchmark
+methodology (the first attempt was invalid — 8-atom ethane, 4.8 s runs measured
+MPI startup, not scaling), and the E/P core equivalence factor of 0.53.
+
+New: `wiki/orca/performance.md`. CLAUDE.md gains domain rule 8 (explicit core
+pinning). ADR-007 gains a mandatory `! XTB GOAT` conformer-ensemble step before
+pathway construction — single-conformer optimisation is not reproducible science.
+Phase 5 restated as a requirement rather than a convenience.

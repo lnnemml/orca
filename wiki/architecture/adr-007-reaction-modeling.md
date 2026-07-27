@@ -107,6 +107,14 @@ The primary mechanism for exploring a reaction coordinate is ORCA's built-in
 relaxed surface scan (`%geom Scan ... end`), not N separately orchestrated jobs.
 
 ```
+Substrate (SMILES / import)
+    │
+    ▼
+Conformer ensemble: ! XTB GOAT  ← MANDATORY first step
+  Boltzmann-weighted ensemble in minutes at xTB level;
+  re-optimise the 3-4 lowest at DFT level
+    │
+    ▼
 Pathway setup (geometry editor, Phase 2.5):
   build starting geometry with correct approach angle/face
     │
@@ -128,6 +136,25 @@ Overlay two scan profiles → ΔΔE‡ (electronic energy barrier estimate)
     ▼
 [optional] TS refinement: scan maximum → OptTS → Freq → ΔG‡
 ```
+
+### Conformer sampling is not optional
+
+Optimising a single arbitrary starting conformer is not reproducible science.
+A flexible substrate has chain rotamers and, often, additional isomerism
+(e.g. syn/anti of a nitrite group, ~1–3 kcal/mol apart with a low rotation
+barrier — both populated in solution). One geometry does not describe the system.
+
+For reaction modeling the error compounds: substrate conformers × approach face
+× reagent orientation. Starting two pathways from unrelated conformers means the
+resulting ΔΔE‡ compares points on different conformational surfaces — a number
+comes out, but it means nothing.
+
+ORCA 6.1 makes this one keyword: `! XTB GOAT` produces a Boltzmann-weighted
+conformer ensemble in minutes. Re-optimise the lowest 3–4 at the DFT level and
+build reaction centers on those.
+
+Related: use `TightOpt` before `Freq`. Default optimisation convergence can leave
+artefactual low-frequency modes that corrupt the thermochemistry.
 
 Why native scan over N-job orchestration:
 - **Wavefunction chaining:** SCF at each scan point starts from the converged

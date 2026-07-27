@@ -26,6 +26,7 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 ## ORCA domain knowledge
 
 - [orca-basics.md](orca/orca-basics.md) — installation, invocation, MPI, environment
+- [performance.md](orca/performance.md) — measured parallel scaling on the dev machine (i5-12500H), core-pinning presets, benchmark methodology
 - [input-format.md](orca/input-format.md) — anatomy of an .inp file
 - [output-files.md](orca/output-files.md) — what ORCA produces and what each file is for
 - [gotchas.md](orca/gotchas.md) — accumulated traps and their solutions
@@ -43,4 +44,4 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 
 ---
 
-*Page count: 21. Last structural update: 2026-07-27 (+architecture/adr-007-reaction-modeling).*
+*Page count: 22. Last structural update: 2026-07-27 (+orca/performance).*

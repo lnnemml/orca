@@ -80,6 +80,12 @@ npm run tauri build
 6. Job completion = marker file (`.exit_code`) **and** `ORCA TERMINATED NORMALLY` in output.
 7. ORCA binaries are **never bundled or redistributed**; the app points to a user-configured
    install path. Same for the manual: indexed locally for personal use only.
+8. **Pin ORCA to an explicit core set** and disable OpenMPI's own binding so the
+   two don't fight: `OMPI_MCA_hwloc_base_binding_policy=none taskset -c <mask> ...`.
+   The optimal mask is **measured, not assumed** — on the dev machine's hybrid CPU
+   both "avoid mixing P+E cores" and "hyperthreading always hurts" turned out to be
+   false. Default preset is E-cores only (machine stays usable); max-throughput uses
+   all physical cores. See `wiki/orca/performance.md`.
 
 ## Wiki system
 
