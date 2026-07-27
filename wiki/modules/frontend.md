@@ -1,8 +1,8 @@
 # Module: Frontend (src/)
 
-**Status:** Phase 2 **in progress** — step 2.1 adds a 3Dmol.js molecule preview on New Job.
-Phase 1 complete (step 4): output backfill, energy/time in the job list, Open Folder; on step 3
-(live log console) and step 2 (editor + templates).
+**Status:** Phase 2 **in progress** — step 2.2 adds .xyz import + SMILES→3D on New Job; step 2.1
+added the 3Dmol.js molecule preview. Phase 1 complete (step 4): output backfill, energy/time in
+the job list, Open Folder; on step 3 (live log console) and step 2 (editor + templates).
 
 ## As built (Phase 0)
 - Scaffolded via `create-tauri-app` (react-ts template). Note: the current template ships
@@ -109,6 +109,33 @@ New `src/viewer/` module (details + design decisions in `modules/visualization.m
   MiniBrowser, since the GUI can't be driven headlessly — same limitation as Phase 0/1).
 - **Bundle note**: `3dmol` adds ~4 MB to the JS bundle (on top of Monaco). Acceptable for a local
   desktop app; a future optimisation is code-splitting the viewer.
+
+## As built (Phase 2.2) — molecule import (.xyz + SMILES → 3D)
+Two ways to load a molecule into the editor; both feed the Phase 2.1 preview automatically (edit
+→ 500 ms debounce → `extractXyzFromInput` → viewer). Added to `NewJobScreen`, no new screen.
+- **`src/viewer/inject-xyz-into-input.ts`** — `injectXyzIntoInput(content, atomLines, charge,
+  mult)`: finds the existing `* xyz|xyzfile … *` block (same marker `extractXyzFromInput` uses)
+  and **replaces** it, or **appends** a fresh block (blank-line-separated) when none exists.
+  Everything outside the block (`!` line, `%` blocks) is preserved.
+- **Import row** (between title and template picker, one line — `[Import .xyz] or [SMILES] [Generate
+  3D]`): a hidden `<input type="file" accept=".xyz,.XYZ">` triggered by a button (no
+  `tauri-plugin-dialog` — the HTML input suffices); `FileReader.readAsText` → local
+  `xyzToAtomLines` (validates first line = positive atom count, skips count+comment, keeps
+  `element x y z` rows) → `injectXyzIntoInput(…, 0, 1)`; sets the title from the filename if empty.
+  The input's `value` is reset after each pick so the same file can be re-imported.
+- **SMILES flow:** `get_sidecar_status` (invoke) → `fetch http://127.0.0.1:{port}/smiles-to-3d` →
+  `xyzToAtomLines(resp.xyz)` + `resp.charge` → `injectXyzIntoInput`. On non-OK response the
+  `detail` field is surfaced in the error banner; `Generating…` disables the button; title seeded
+  from `resp.formula` if empty. Enter in the field also triggers it. Still `useState` only — no
+  Zustand.
+- **CSS:** `.import-row` (flex, one line), `.import-smiles` (`flex:1`, monospace), `.import-or`
+  (muted).
+- **Verified** in Chromium (`vite dev`): `.xyz` import (methane) appends a block and renders CH₄;
+  `CCO` → ethanol (9 atoms), replacing the prior block; `xxx` → "Invalid SMILES" banner, editor
+  unchanged; `[O-]` → `* xyz -1 1`. `tsc`/`vite build` clean, no console errors. The SMILES happy
+  path was exercised against the real sidecar by stubbing only `window.__TAURI_INTERNALS__.invoke`
+  to return the running port (plain-browser `invoke` is otherwise unavailable — same GUI-driving
+  limitation as earlier phases); the endpoint itself is `pytest` + `curl` covered.
 
 ## Resolved from step 3
 The earlier "no backfill of `output.out`" gap is closed by `read_job_output` + the detail

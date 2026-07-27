@@ -51,7 +51,9 @@ and sees the final energy in the job list — without touching a terminal.
 
 - [~] 3Dmol.js viewer component: load xyz, ball-and-stick — **done** (Phase 2.1: `MoleculeViewer`
       + live xyz preview on New Job, WebKitGTK WebGL fix). Licorice toggle + atom picking → Phase 3.
-- [ ] Import: xyz file, SMILES → 3D via sidecar (RDKit ETKDG + MMFF cleanup)
+- [~] Import: xyz file, SMILES → 3D via sidecar (RDKit ETKDG + MMFF cleanup) — **done**
+      (Phase 2.2: `.xyz` file import + `/smiles-to-3d` endpoint, both inject coords into the
+      editor). MMFF conformer only; conformer choice / protonation states later.
 - [ ] Molecule library in SQLite (name, formula, xyz, tags), linked to jobs
 - [ ] Input builder form: method/functional, basis, RI approximations, dispersion,
       solvation (CPCM/SMD + solvent), job type, charge/multiplicity, `%pal`/`%maxcore`

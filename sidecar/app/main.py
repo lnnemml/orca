@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from . import __version__
+from .smiles import router as smiles_router
 
 app = FastAPI(title="OrcaStudio sidecar", version=__version__)
 
@@ -33,3 +34,7 @@ class HealthResponse(BaseModel):
 def health() -> HealthResponse:
     """Liveness probe polled by the Tauri sidecar manager."""
     return HealthResponse(status="ok", version=__version__)
+
+
+# Chemistry endpoints.
+app.include_router(smiles_router)

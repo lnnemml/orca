@@ -301,3 +301,36 @@ required precise control over Bürgi-Dunitz attack angle and stereofacial approa
 impossible in existing tools (Avogadro, Chimera, GaussView).
 
 All current Phase 2 work remains valid and unchanged — the new phases are additive.
+
+## [2026-07-27] session | Phase 2 step 2: xyz import + SMILES → 3D
+
+Two ways to load a molecule into the ORCA input, both feeding the Phase 2.1 viewer automatically.
+
+**Sidecar — first chemistry endpoint (`app/smiles.py`, RDKit):** `POST /smiles-to-3d`
+(`{smiles}` → `{xyz, formula, charge, multiplicity, num_atoms}`). Pipeline: `MolFromSmiles`
+(→400 on invalid) → `AddHs` → `EmbedMolecule(ETKDGv3())` with a `useRandomCoords` retry (→422 if
+still failing) → `MMFFOptimizeMolecule` (non-convergence tolerated) → `MolToXYZBlock` +
+`CalcMolFormula` + `GetFormalCharge`; multiplicity hardcoded 1 for now. `pip install rdkit`
+worked directly (modern wheel `rdkit==2026.3.4`; `rdkit-pypi` fallback NOT needed) — venv
+recreated. Spec-vs-API fix: `useRandomCoords` is a property of the ETKDGv3 params object, not a
+kwarg. `pytest` 5/5 green; `curl`-verified (`O`, `[O-]`→−1, invalid→400).
+
+**Frontend:** `src/viewer/inject-xyz-into-input.ts` — `injectXyzIntoInput` replaces an existing
+`* xyz|xyzfile … *` block or appends one, preserving the rest of the input. `NewJobScreen` gains
+a one-line import row: hidden `<input type=file accept=.xyz>` (no tauri-plugin-dialog) →
+`FileReader` → local `xyzToAtomLines` validation → inject (charge 0, mult 1, title from filename);
+and a SMILES field + Generate 3D → `get_sidecar_status` → `fetch /smiles-to-3d` → inject with
+RDKit's charge (title from formula). Error `detail` surfaced in the banner; `Generating…` disables
+the button. Still `useState` only.
+
+**Verified** in Chromium: methane `.xyz` appends + renders; `CCO` → ethanol replaces the block;
+`xxx` → "Invalid SMILES" (no change); `[O-]` → `* xyz -1 1`. `tsc`/`vite build` clean, no console
+errors. SMILES happy path tested against the live sidecar by stubbing only
+`window.__TAURI_INTERNALS__.invoke` to hand back the running port (plain-browser `invoke` is
+otherwise unavailable; the GUI still can't be driven headlessly — endpoint itself is pytest+curl
+covered).
+
+NOT done (deliberately, per task): Molecules screen, SQLite molecule library, Zustand — those are
+Task 2.3. Multiplicity is always 1 (radicals/triplets later).
+
+Next: molecule library + Molecules screen (Task 2.3), then the input builder form.

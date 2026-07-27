@@ -215,6 +215,24 @@ body {
   gap: 10px;
 }
 
+/* --- Import row (.xyz / SMILES) --------------------------------------- */
+
+.import-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.import-row .import-or {
+  color: var(--muted-2);
+  font-size: 12px;
+}
+
+.import-row .import-smiles {
+  flex: 1;
+  min-width: 0;
+}
+
 /* --- Template picker -------------------------------------------------- */
 
 .template-groups {
