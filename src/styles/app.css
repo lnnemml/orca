@@ -95,12 +95,15 @@ body {
   padding: 20px;
 }
 
-/* The New Job screen keeps the editor filling remaining height. */
+/* The New Job screen scrolls as a normal column. */
 .screen.new-job {
   display: flex;
   flex-direction: column;
   gap: 14px;
-  overflow: hidden;
+  /* Was `hidden`: with the builder and templates expanded there was no way to
+     reach the editor. The screen now scrolls as a normal column and the
+     editor keeps a usable fixed height instead of competing for flex space. */
+  overflow-y: auto;
 }
 
 /* The Job detail screen keeps the log console filling remaining height. */
@@ -309,6 +312,39 @@ body {
 
 .select {
   cursor: pointer;
+  /* WebKitGTK renders <select> as a native widget that ignores inherited
+     color — every property must be set explicitly, and the native appearance
+     stripped, or the text renders dark-on-dark. See debugging/003. */
+  -webkit-appearance: none;
+  appearance: none;
+  color: var(--text);
+  background-color: var(--panel);
+  /* Custom chevron, since appearance:none removes the native arrow. */
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath fill='%238b949e' d='M2.5 4.5 6 8l3.5-3.5z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 12px;
+  padding-right: 30px;
+  text-overflow: ellipsis;
+}
+
+/* The dropdown popup is also a native widget — style the options too. */
+.select option {
+  background-color: var(--panel-2);
+  color: var(--text);
+}
+
+.select:disabled {
+  color: var(--muted-2);
+  background-color: var(--panel-2);
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* WebKitGTK also renders number spinners with a light default; pin them dark. */
+.input[type="number"] {
+  color: var(--text);
+  background-color: var(--panel);
 }
 
 .builder-actions {
@@ -334,6 +370,13 @@ body {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+/* Templates is now a collapsible accordion section like the input builder —
+   give its body the same border-top + padding as `.builder-body`. */
+.input-builder > .template-groups {
+  padding: 4px 12px 14px;
+  border-top: 1px solid var(--border);
 }
 
 .template-group-title {
@@ -387,8 +430,11 @@ body {
    (right). The editor keeps the larger share; the preview is a fixed-min
    panel so it never crowds the editor out. */
 .editor-viewer-split {
-  flex: 1;
-  min-height: 200px;
+  /* Was `flex: 1` — that made the editor collapse when the panels above
+     expanded. A fixed height keeps it usable at any scroll position. */
+  flex: none;
+  height: 420px;
+  min-height: 420px;
   display: flex;
   gap: 12px;
 }

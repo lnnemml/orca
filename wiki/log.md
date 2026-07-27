@@ -432,3 +432,28 @@ the Dispersion dropdown with the hint "Included in the functional" for such func
 `input-format.md` Rule 1 broadened: "Composite methods and dispersion-inclusive functionals are
 self-contained." New vitest case: `wB97X-D4` + `D4` → `wB97X-D4` appears exactly once, no standalone
 `D4` token. 10 vitest + `tsc` clean.
+
+## [2026-07-27] session | UI fixes: WebKitGTK select contrast, accordion panels, scrollable New Job
+Three New Job issues found by manual testing in the real Tauri window (invisible in Chromium).
+CSS + a collapse wrapper only — no Input Builder / `build-input.ts` / `orca-options.ts` logic touched.
+
+**1. `<select>` dark-on-dark (WebKitGTK).** Native GTK select widgets ignore the inherited `.input`
+color → dropdown values rendered near-black on dark. `styles/app.css` `.select` now
+`-webkit-appearance:none` + explicit color/background + inline-SVG chevron; `.select:disabled` and
+`.input[type=number]` pinned dark too. `option` popup is a native menu → styling best-effort.
+New `debugging/003-webkitgtk-select-styling.md` (symptom→cause→fix→lesson), the 2nd WebKitGTK gotcha
+after 002. **Verified in `webkit2gtk-4.1 MiniBrowser`** (Tauri's engine) via probe HTML +
+`gnome-screenshot`: values light-on-dark, disabled muted-dark, chevron present, numbers readable.
+
+**2. Couldn't scroll to the editor.** `.screen.new-job` `overflow:hidden` + editor `flex:1` squeezed
+Monaco out when panels expanded. Now `overflow-y:auto`; `.editor-viewer-split` `flex:none;height:420px`.
+
+**3. Templates → accordion.** Templates is now a collapsible `.input-builder` section like the Input
+Builder. `NewJobScreen`: `builderOpen` boolean → one `openSection: "builder"|"templates"|null`
+(default null — both closed, editor+viewer visible). Sections mutually exclusive; picking a template
+or Generate Input collapses the accordion.
+
+`tsc` + `npm test` (10) + `vite build` clean. Live accordion/scroll + open-popup `option` styling
+need the real Tauri window (GUI not headless-drivable, same as prior phases).
+
+Next: live convergence dashboard for Opt jobs, then the sequential job queue.

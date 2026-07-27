@@ -41,7 +41,13 @@ export function NewJobScreen({
   const [formula, setFormula] = useState(initialMolecule?.formula ?? "");
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
-  const [builderOpen, setBuilderOpen] = useState(false);
+  // Input Builder and Templates behave as a two-section accordion: at most one
+  // open at a time, both closed by default so the editor + viewer are visible
+  // immediately. Opening one closes the other; picking a template or generating
+  // an input collapses the accordion (the user has what they wanted).
+  const [openSection, setOpenSection] = useState<
+    "builder" | "templates" | null
+  >(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Preload a library molecule's coordinates into the editor once, on mount.
@@ -74,6 +80,13 @@ export function NewJobScreen({
     setSelectedId(t.id);
     setContent(t.inputContent);
     if (!title.trim()) setTitle(t.name);
+    setOpenSection(null); // got the input — collapse so the editor is visible
+  };
+
+  // Builder's "Generate Input" → replace editor content and collapse the panel.
+  const handleGenerate = (newContent: string) => {
+    setContent(newContent);
+    setOpenSection(null);
   };
 
   // Import a local .xyz file: read it, validate, and replace the editor's
@@ -276,46 +289,74 @@ export function NewJobScreen({
       <div className="input-builder">
         <button
           className="builder-toggle"
-          onClick={() => setBuilderOpen((o) => !o)}
-          aria-expanded={builderOpen}
+          onClick={() =>
+            setOpenSection((s) => (s === "builder" ? null : "builder"))
+          }
+          aria-expanded={openSection === "builder"}
         >
-          <span className="builder-caret">{builderOpen ? "▾" : "▸"}</span>
+          <span className="builder-caret">
+            {openSection === "builder" ? "▾" : "▸"}
+          </span>
           Input Builder
           <span className="muted" style={{ marginLeft: 8 }}>
             method · basis · solvation → generates the input
           </span>
         </button>
-        {builderOpen ? (
-          <InputBuilderForm currentContent={content} onGenerate={setContent} />
+        {openSection === "builder" ? (
+          <InputBuilderForm
+            currentContent={content}
+            onGenerate={handleGenerate}
+          />
         ) : null}
       </div>
 
-      <div className="template-groups">
-        <div className="template-group-title">Templates</div>
-        {CATEGORY_LABELS.map(({ category, label }) => (
-          <div key={category}>
-            <div
-              className="template-group-title"
-              style={{ color: "var(--muted-2)", marginTop: 4 }}
-            >
-              {label}
-            </div>
-            <div className="template-grid">
-              {ORCA_TEMPLATES.filter((t) => t.category === category).map((t) => (
-                <button
-                  key={t.id}
-                  className={
-                    "template-card" + (selectedId === t.id ? " selected" : "")
-                  }
-                  onClick={() => pickTemplate(t)}
+      <div className="input-builder">
+        <button
+          className="builder-toggle"
+          onClick={() =>
+            setOpenSection((s) => (s === "templates" ? null : "templates"))
+          }
+          aria-expanded={openSection === "templates"}
+        >
+          <span className="builder-caret">
+            {openSection === "templates" ? "▾" : "▸"}
+          </span>
+          Templates
+          <span className="muted" style={{ marginLeft: 8 }}>
+            ready-made inputs for common job types
+          </span>
+        </button>
+        {openSection === "templates" ? (
+          <div className="template-groups">
+            {CATEGORY_LABELS.map(({ category, label }) => (
+              <div key={category}>
+                <div
+                  className="template-group-title"
+                  style={{ color: "var(--muted-2)", marginTop: 4 }}
                 >
-                  <div className="tname">{t.name}</div>
-                  <div className="tdesc">{t.description}</div>
-                </button>
-              ))}
-            </div>
+                  {label}
+                </div>
+                <div className="template-grid">
+                  {ORCA_TEMPLATES.filter((t) => t.category === category).map(
+                    (t) => (
+                      <button
+                        key={t.id}
+                        className={
+                          "template-card" +
+                          (selectedId === t.id ? " selected" : "")
+                        }
+                        onClick={() => pickTemplate(t)}
+                      >
+                        <div className="tname">{t.name}</div>
+                        <div className="tdesc">{t.description}</div>
+                      </button>
+                    ),
+                  )}
+                </div>
+              </div>
+            ))}
           </div>
-        ))}
+        ) : null}
       </div>
 
       <div className="editor-viewer-split">

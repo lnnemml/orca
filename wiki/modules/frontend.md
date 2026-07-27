@@ -216,6 +216,36 @@ doesn't have to memorise ORCA syntax. New `src/input-builder/` module; still `us
   headlessly (same limitation as prior phases); the generator's exact output is byte-covered by
   vitest.
 
+## As built (Phase 2.5) — New Job UI fixes (WebKitGTK contrast, accordion, scroll)
+Three issues found by manual testing in the real Tauri window (not visible in Chromium). CSS +
+a collapse wrapper only — no Input Builder / `build-input.ts` / `orca-options.ts` logic changed.
+
+- **`<select>` dark-on-dark (WebKitGTK).** Native GTK `<select>` widgets ignore the inherited
+  `.input` color, so dropdown values rendered near-black on `--panel`. Fix in `styles/app.css`:
+  `.select` now sets `-webkit-appearance:none` + explicit `color`/`background-color` + a custom
+  inline-SVG chevron (native arrow is gone under `appearance:none`); `.select:disabled` and
+  `.input[type=number]` get explicit dark colours too. The `option` popup is a native GTK menu —
+  `.select option` styling is best-effort. Full write-up + MiniBrowser verification in
+  `debugging/003-webkitgtk-select-styling.md`.
+- **Couldn't scroll to the editor.** `.screen.new-job` was `overflow: hidden` with the editor on
+  `flex: 1`, so an expanded builder/templates squeezed Monaco out with no way to reach it. Now
+  `.screen.new-job` is `overflow-y: auto` (scrolls as a normal column) and `.editor-viewer-split`
+  is `flex: none; height: 420px` (fixed usable height instead of competing for flex space).
+- **Templates always on screen → accordion.** Templates is now a collapsible `.input-builder`
+  section like the Input Builder (same toggle/caret markup; its body `.template-groups` gets a
+  `border-top` + padding via `.input-builder > .template-groups`). `NewJobScreen` replaced the
+  `builderOpen` boolean with one `openSection: "builder" | "templates" | null` (default `null` —
+  both closed, editor + viewer visible on open). The two sections are **mutually exclusive**
+  (opening one closes the other); picking a template or hitting **Generate Input** collapses the
+  accordion (`setOpenSection(null)`) since the user now wants the editor. Builder's `onGenerate`
+  is wrapped by `handleGenerate` to collapse after generating.
+- **Verified:** `tsc` + `npm test` (10) + `vite build` clean. The `<select>`/number-input contrast
+  fix confirmed in `webkit2gtk-4.1 MiniBrowser` (Tauri's engine, where the bug reproduces) via a
+  probe HTML + `gnome-screenshot`: values render light-on-dark, disabled select muted-dark, chevron
+  present, number inputs readable. The open-popup `option` styling and the live accordion/scroll
+  interactions need the real Tauri window (GUI not drivable headlessly — same limitation as prior
+  phases); the accordion is plain React state and the layout is pure CSS.
+
 ## Resolved from step 3
 The earlier "no backfill of `output.out`" gap is closed by `read_job_output` + the detail
 backfill above.
