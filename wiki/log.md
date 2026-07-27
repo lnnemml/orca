@@ -352,3 +352,35 @@ Four corrections to ADR-007 and ROADMAP based on domain review:
 
 Also: deduplicated Phase 6 (relaxed scans → 4.5, xTB → 2.5), added UFF fallback note
 for exotic fragments, added numerical-control-not-drag-editing decision.
+
+## [2026-07-27] session | Phase 2 step 3: molecule library in SQLite
+
+A molecule becomes a persistent object: save it, browse it, reuse it in a future job.
+
+**Rust core:** SQLite migration **v3** (`db.rs`, `SCHEMA_VERSION` → 3) adds a `molecules` table
+(`id` UUID, `name`, `formula`, `xyz` full standard string, `charge`/`multiplicity` INTEGER,
+`tags` comma-separated, `created_at`). `migrate()` is forward-only to `SCHEMA_VERSION`, so v1/v2
+DBs jump straight to v3 (the old `migrate_v1_to_v2_preserves_settings` test now asserts the final
+version is `SCHEMA_VERSION`). New `Molecule` model (`models/molecule.rs`, same `COLUMNS`/`from_row`
+pattern as `Job`) and five CRUD commands (`commands/molecules.rs`): create/list/get/update/delete,
+thin wrappers over `*_conn` helpers, `NotFound` on missing ids. **Molecules are NOT linked to
+`jobs`** — no `molecule_id` FK; that association is Phase 4.5 (reaction modeling). New tests:
+migration v2→v3 preserves jobs + molecule CRUD×4. `cargo test` 24 green.
+
+**Frontend:** new **Molecules** tab/screen (`MoleculesScreen.tsx`) — list in a `.jobs-table`
+(Name/Formula/Charge/Tags/Created + Use/Delete), row-click detail panel with a `MoleculeViewer`,
+empty state, and an inline Add form (Name, Charge/Mult, Import .xyz or SMILES→Generate 3D via the
+sidecar, Tags, live preview, Save → `create_molecule`). `App.tsx` gains the tab, a
+`{kind:"molecules"}` screen, and `new-job`'s optional `initialMolecule`. **Use** sends a molecule
+to New Job (injects xyz + charge/mult, seeds title); **Save to Library** on New Job persists the
+editor's current coordinates (`extractXyzFromInput` + new `parseChargeMult`, formula carried from
+the last SMILES gen). Shared xyz helpers extracted to `viewer/xyz-format.ts`
+(`xyzToAtomLines`/`atomLinesToXyz`/`parseChargeMult`). Still `useState` + `invoke`, no Zustand.
+
+**Verified** in Chromium (`vite dev`, real sidecar :8765, `invoke` stubbed with an in-memory
+molecule store): empty state → Add → `CCO` → Generate 3D renders ethanol → Save → row appears;
+detail viewer; Use → New Job with coords + preview; Save to Library → banner + second row (formula
+`C2H6O` carried); Delete removes it. `tsc` + `vite build` clean, no console errors. GUI still can't
+be driven headlessly (same limitation as prior phases); Rust CRUD is cargo-covered.
+
+Next: input builder form, then the sequential job queue (moved into Phase 2 per the ADR-007 revision).

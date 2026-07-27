@@ -86,6 +86,28 @@ Closes Phase 1 (MVP). New commands + a results write path.
   (so the UI's reload sees energy/time). See `wiki/modules/parser.md`.
 - **Dependency:** added `regex = "1"`.
 
+## As built (Phase 2.3) — molecule library
+New files: `models/molecule.rs`, `commands/molecules.rs`. `db.rs` gained migration v3.
+
+- **Migration v3 (`db.rs`):** `SCHEMA_VERSION` bumped to 3; a `version < 3` arm creates the
+  `molecules` table. `migrate()` is forward-only to `SCHEMA_VERSION`, so a v1 or v2 database is
+  upgraded straight to v3 in place (the existing `migrate_v1_to_v2_preserves_settings` test now
+  asserts the final version is `SCHEMA_VERSION`, not literally 2). New test
+  `migrate_v2_to_v3_preserves_jobs`: seed a v2 DB with one job → migrate → job survives and the
+  `molecules` table exists.
+- **`molecules` table:** `id` (UUID v4 TEXT PK), `name`, `formula` (default `''`), `xyz` (full
+  standard xyz string), `charge`/`multiplicity` (INTEGER, defaults 0/1), `tags` (comma-separated
+  TEXT, default `''`), `created_at` (`datetime('now')`). Deliberately **not** linked to `jobs` —
+  no `molecule_id` FK yet; molecule↔job association is Phase 4.5 (reaction modeling).
+- **`Molecule` struct (`models/molecule.rs`):** mirrors the table 1:1, `#[derive(Serialize)]`,
+  same `COLUMNS` + `from_row` pattern as `Job` (no enum fields, so `from_row` is a plain hydrate).
+- **Commands (`commands/molecules.rs`):** `create_molecule(name, formula, xyz, charge,
+  multiplicity, tags) -> Molecule`, `list_molecules() -> Vec<Molecule>` (newest first),
+  `get_molecule(id) -> Molecule` (`NotFound`), `update_molecule(id, …) -> Molecule` (full update,
+  `NotFound` if absent), `delete_molecule(id)` (`NotFound` if absent). Same thin-wrapper-over-
+  `*_conn` shape as jobs; four unit tests cover create/list, get-missing, update-fields,
+  delete-removes. All registered in `lib.rs` invoke_handler.
+
 ## Deviation note
 `dirs` crate used for the data dir (per task spec) rather than Tauri's `app.path()` API —
 harmless; consolidate later if desired.

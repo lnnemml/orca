@@ -54,7 +54,10 @@ and sees the final energy in the job list — without touching a terminal.
 - [~] Import: xyz file, SMILES → 3D via sidecar (RDKit ETKDG + MMFF cleanup) — **done**
       (Phase 2.2: `.xyz` file import + `/smiles-to-3d` endpoint, both inject coords into the
       editor). MMFF conformer only; conformer choice / protonation states later.
-- [ ] Molecule library in SQLite (name, formula, xyz, tags), linked to jobs
+- [~] Molecule library in SQLite (name, formula, xyz, tags) — **done** (Phase 2.3: `molecules`
+      table + CRUD commands, Molecules screen with add/list/detail/use/delete, "Save to Library"
+      + "Use" ↔ New Job integration). NOT yet linked to jobs (`molecule_id` FK deferred to
+      Phase 4.5, reaction modeling).
 - [ ] Input builder form: method/functional, basis, RI approximations, dispersion,
       solvation (CPCM/SMD + solvent), job type, charge/multiplicity, `%pal`/`%maxcore`
       → generates `.inp`, still hand-editable in Monaco (form ↔ text one-way is fine)

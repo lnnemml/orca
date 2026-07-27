@@ -17,6 +17,18 @@ export interface Job {
   completed_at: string | null;
 }
 
+/** Mirrors `src-tauri/src/models/molecule.rs::Molecule`. */
+export interface Molecule {
+  id: string;
+  name: string;
+  formula: string;
+  xyz: string;
+  charge: number;
+  multiplicity: number;
+  tags: string;
+  created_at: string;
+}
+
 export type SidecarState = "healthy" | "starting" | "down";
 
 export interface SidecarStatus {

@@ -56,6 +56,11 @@ pub fn run() {
             commands::jobs::submit_job,
             commands::jobs::read_job_output,
             commands::jobs::open_job_folder,
+            commands::molecules::create_molecule,
+            commands::molecules::list_molecules,
+            commands::molecules::get_molecule,
+            commands::molecules::update_molecule,
+            commands::molecules::delete_molecule,
             sidecar::get_sidecar_status,
         ])
         .build(tauri::generate_context!())

@@ -5,53 +5,58 @@ import { InputEditor } from "../editor/InputEditor";
 import { MoleculeViewer } from "../viewer/MoleculeViewer";
 import { extractXyzFromInput } from "../viewer/parse-xyz-from-input";
 import { injectXyzIntoInput } from "../viewer/inject-xyz-into-input";
+import { xyzToAtomLines, parseChargeMult } from "../viewer/xyz-format";
 import {
   CATEGORY_LABELS,
   ORCA_TEMPLATES,
   type OrcaTemplate,
 } from "../templates/orca-templates";
-import type { Job, SidecarStatus } from "../types";
+import type { Job, Molecule, SidecarStatus } from "../types";
 
 interface NewJobScreenProps {
   /** A draft job was created; parent navigates to the Jobs list. */
   onCreatedDraft: () => void;
   /** Open a job's detail screen, optionally auto-running it. */
   onOpenDetail: (jobId: string, autoRun: boolean) => void;
+  /** A library molecule to preload into the editor on mount ("Use" action). */
+  initialMolecule?: Molecule;
 }
 
-/**
- * Parse standard xyz text (`count`, comment, then `element x y z` rows) into
- * ORCA coordinate lines. Returns `null` if the first line isn't a positive atom
- * count or no valid coordinate rows follow.
- */
-function xyzToAtomLines(xyz: string): string[] | null {
-  const lines = xyz.split(/\r?\n/);
-  if (lines.length < 3) return null;
-  const count = Number(lines[0].trim());
-  if (!Number.isInteger(count) || count <= 0) return null;
-
-  const atoms: string[] = [];
-  for (let i = 2; i < lines.length; i++) {
-    const t = lines[i].trim();
-    if (t.length === 0) continue;
-    const parts = t.split(/\s+/);
-    if (parts.length < 4) continue;
-    const [element, x, y, z] = parts;
-    if (![x, y, z].every((n) => Number.isFinite(Number(n)))) continue;
-    atoms.push(`${element}   ${x}   ${y}   ${z}`);
-  }
-  return atoms.length > 0 ? atoms : null;
-}
-
-export function NewJobScreen({ onCreatedDraft, onOpenDetail }: NewJobScreenProps) {
-  const [title, setTitle] = useState("");
+export function NewJobScreen({
+  onCreatedDraft,
+  onOpenDetail,
+  initialMolecule,
+}: NewJobScreenProps) {
+  const [title, setTitle] = useState(initialMolecule?.name ?? "");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [content, setContent] = useState("");
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [smiles, setSmiles] = useState("");
   const [generating, setGenerating] = useState(false);
+  // Formula carried from the last SMILES generation, used when saving to the
+  // library (a plain .xyz import leaves it empty). Cleared when the editor's
+  // coordinate block is replaced by other means.
+  const [formula, setFormula] = useState(initialMolecule?.formula ?? "");
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Preload a library molecule's coordinates into the editor once, on mount.
+  useEffect(() => {
+    if (!initialMolecule) return;
+    const atoms = xyzToAtomLines(initialMolecule.xyz);
+    if (!atoms) return;
+    setContent((c) =>
+      injectXyzIntoInput(
+        c,
+        atoms,
+        initialMolecule.charge,
+        initialMolecule.multiplicity,
+      ),
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   // xyz extracted from the editor for the live preview — debounced so we don't
   // re-parse on every keystroke.
   const [previewXyz, setPreviewXyz] = useState<string | null>(null);
@@ -80,6 +85,8 @@ export function NewJobScreen({ onCreatedDraft, onOpenDetail }: NewJobScreenProps
         return;
       }
       setError(null);
+      setSaved(false);
+      setFormula(""); // a bare .xyz carries no formula
       setContent((c) => injectXyzIntoInput(c, atoms, 0, 1));
       const base = file.name.replace(/\.[^.]+$/, "");
       if (!title.trim()) setTitle(base);
@@ -123,12 +130,43 @@ export function NewJobScreen({ onCreatedDraft, onOpenDetail }: NewJobScreenProps
       };
       const atoms = xyzToAtomLines(data.xyz);
       if (!atoms) throw new Error("Sidecar returned a malformed structure");
+      setSaved(false);
+      setFormula(data.formula);
       setContent((c) => injectXyzIntoInput(c, atoms, data.charge, 1));
       if (!title.trim()) setTitle(data.formula);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setGenerating(false);
+    }
+  };
+
+  // Save the editor's current coordinates as a new library molecule. Charge and
+  // multiplicity come from the `* xyz charge mult` header; the formula is
+  // whatever the last SMILES generation reported (empty for a plain .xyz).
+  const saveToLibrary = async () => {
+    const xyz = extractXyzFromInput(content);
+    if (!xyz) {
+      setError("No coordinates in the input to save");
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      const { charge, multiplicity } = parseChargeMult(content);
+      await invoke<Molecule>("create_molecule", {
+        name: title.trim() || "Untitled molecule",
+        formula,
+        xyz,
+        charge,
+        multiplicity,
+        tags: "",
+      });
+      setSaved(true);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -220,9 +258,18 @@ export function NewJobScreen({ onCreatedDraft, onOpenDetail }: NewJobScreenProps
         >
           {generating ? "Generating…" : "Generate 3D"}
         </button>
+        <button
+          className="btn btn-sm"
+          onClick={saveToLibrary}
+          disabled={saving || !previewXyz}
+          title="Save the current coordinates as a library molecule"
+        >
+          {saving ? "Saving…" : "Save to Library"}
+        </button>
       </div>
 
       {error ? <div className="banner err">{error}</div> : null}
+      {saved ? <div className="banner ok">Saved to library</div> : null}
 
       <div className="template-groups">
         <div className="template-group-title">Templates</div>

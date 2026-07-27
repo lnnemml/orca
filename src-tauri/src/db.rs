@@ -14,7 +14,8 @@ use crate::error::AppError;
 ///
 /// - v1: `settings` key/value table (Phase 0).
 /// - v2: `jobs` table — job model + state machine (Phase 1).
-const SCHEMA_VERSION: i64 = 2;
+/// - v3: `molecules` table — persistent molecule library (Phase 2.3).
+const SCHEMA_VERSION: i64 = 3;
 
 /// Open (creating if needed) `orcastudio.db` under `data_dir` and migrate it to
 /// the current schema.
@@ -61,6 +62,26 @@ fn migrate(conn: &Connection) -> Result<(), AppError> {
             );",
         )?;
         version = 2;
+    }
+
+    // --- v2 -> v3: molecules table (persistent molecule library, Phase 2.3). ---
+    // Molecules are a standalone library for now; they are NOT linked to `jobs`
+    // (no `molecule_id` FK) — that association arrives with Phase 4.5 (reaction
+    // modeling).
+    if version < 3 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS molecules (
+                id           TEXT PRIMARY KEY,
+                name         TEXT NOT NULL,
+                formula      TEXT NOT NULL DEFAULT '',
+                xyz          TEXT NOT NULL,
+                charge       INTEGER NOT NULL DEFAULT 0,
+                multiplicity INTEGER NOT NULL DEFAULT 1,
+                tags         TEXT NOT NULL DEFAULT '',
+                created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )?;
+        version = 3;
     }
 
     // Persist the resulting version so subsequent runs skip completed steps.
@@ -137,13 +158,57 @@ mod tests {
             .expect("orca_path preserved");
         assert_eq!(orca_path, "/custom/orca");
 
-        // Version advanced to 2.
-        assert_eq!(current_version(&conn).unwrap(), 2);
+        // Migration is forward-only to the current schema version.
+        assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
 
         // The jobs table now exists and is empty.
         let jobs: i64 = conn
             .query_row("SELECT COUNT(*) FROM jobs", [], |r| r.get(0))
             .expect("jobs table should exist");
         assert_eq!(jobs, 0);
+    }
+
+    #[test]
+    fn migrate_v2_to_v3_preserves_jobs() {
+        // Simulate a Phase 1 (v2) database: settings + jobs table with one job,
+        // schema_version pinned at 2, and no molecules table.
+        let conn = Connection::open_in_memory().expect("open in-memory db");
+        conn.execute_batch(
+            "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO settings (key, value) VALUES ('orca_path', '/opt/orca/orca');
+             INSERT INTO settings (key, value) VALUES ('schema_version', '2');
+             CREATE TABLE jobs (
+                id            TEXT PRIMARY KEY,
+                title         TEXT NOT NULL,
+                input_content TEXT NOT NULL,
+                status        TEXT NOT NULL DEFAULT 'draft',
+                job_dir       TEXT,
+                energy        REAL,
+                wall_time     REAL,
+                error_message TEXT,
+                created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+                started_at    TEXT,
+                completed_at  TEXT
+             );
+             INSERT INTO jobs (id, title, input_content) VALUES ('j1', 'water opt', '! r2SCAN-3c Opt');",
+        )
+        .expect("seed v2 schema");
+
+        migrate(&conn).expect("v2 -> v3 migration should succeed");
+
+        // Version advanced to 3.
+        assert_eq!(current_version(&conn).unwrap(), 3);
+
+        // The existing job survived untouched.
+        let title: String = conn
+            .query_row("SELECT title FROM jobs WHERE id = 'j1'", [], |r| r.get(0))
+            .expect("job preserved");
+        assert_eq!(title, "water opt");
+
+        // The molecules table now exists and is empty.
+        let molecules: i64 = conn
+            .query_row("SELECT COUNT(*) FROM molecules", [], |r| r.get(0))
+            .expect("molecules table should exist");
+        assert_eq!(molecules, 0);
     }
 }

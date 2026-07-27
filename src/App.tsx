@@ -4,13 +4,15 @@ import { invoke } from "@tauri-apps/api/core";
 import { NewJobScreen } from "./screens/NewJobScreen";
 import { JobsScreen } from "./screens/JobsScreen";
 import { JobDetailScreen } from "./screens/JobDetailScreen";
+import { MoleculesScreen } from "./screens/MoleculesScreen";
 import { SettingsScreen } from "./screens/SettingsScreen";
-import type { SidecarState, SidecarStatus } from "./types";
+import type { Molecule, SidecarState, SidecarStatus } from "./types";
 import "./styles/app.css";
 
 type Screen =
-  | { kind: "new-job" }
+  | { kind: "new-job"; initialMolecule?: Molecule }
   | { kind: "jobs" }
+  | { kind: "molecules" }
   | { kind: "settings" }
   | { kind: "job-detail"; jobId: string; autoRun: boolean };
 
@@ -26,9 +28,10 @@ const STATUS_LABEL: Record<SidecarState, string> = {
   down: "Sidecar down",
 };
 
-const TABS: { id: "new-job" | "jobs" | "settings"; label: string }[] = [
+const TABS: { id: "new-job" | "jobs" | "molecules" | "settings"; label: string }[] = [
   { id: "new-job", label: "New Job" },
   { id: "jobs", label: "Jobs" },
+  { id: "molecules", label: "Molecules" },
   { id: "settings", label: "Settings" },
 ];
 
@@ -89,9 +92,16 @@ function App() {
         <NewJobScreen
           onCreatedDraft={() => setScreen({ kind: "jobs" })}
           onOpenDetail={openDetail}
+          initialMolecule={screen.initialMolecule}
         />
       ) : screen.kind === "jobs" ? (
         <JobsScreen onOpenDetail={openDetail} />
+      ) : screen.kind === "molecules" ? (
+        <MoleculesScreen
+          onUseMolecule={(mol) =>
+            setScreen({ kind: "new-job", initialMolecule: mol })
+          }
+        />
       ) : screen.kind === "settings" ? (
         <SettingsScreen />
       ) : (

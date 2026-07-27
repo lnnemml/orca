@@ -457,3 +457,22 @@ body {
   padding: 18px;
   max-width: 560px;
 }
+
+/* --- Molecules screen ------------------------------------------------- */
+
+/* The Add Molecule form and the selected-molecule detail both sit in the
+   normal scroll flow below the table. */
+.molecule-form {
+  margin-bottom: 16px;
+}
+
+.molecule-detail {
+  margin-top: 8px;
+}
+
+/* The detail/form viewer panels get an explicit height (inline) since they are
+   not inside the New Job flex split — reuse the same dark panel chrome. */
+.molecule-detail .viewer-panel,
+.molecule-form .viewer-panel {
+  flex: none;
+}

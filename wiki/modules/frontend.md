@@ -1,8 +1,9 @@
 # Module: Frontend (src/)
 
-**Status:** Phase 2 **in progress** — step 2.2 adds .xyz import + SMILES→3D on New Job; step 2.1
-added the 3Dmol.js molecule preview. Phase 1 complete (step 4): output backfill, energy/time in
-the job list, Open Folder; on step 3 (live log console) and step 2 (editor + templates).
+**Status:** Phase 2 **in progress** — step 2.3 adds the molecule library (Molecules screen +
+Save/Use ↔ New Job); step 2.2 added .xyz import + SMILES→3D on New Job; step 2.1 added the
+3Dmol.js molecule preview. Phase 1 complete (step 4): output backfill, energy/time in the job
+list, Open Folder; on step 3 (live log console) and step 2 (editor + templates).
 
 ## As built (Phase 0)
 - Scaffolded via `create-tauri-app` (react-ts template). Note: the current template ships
@@ -136,6 +137,40 @@ Two ways to load a molecule into the editor; both feed the Phase 2.1 preview aut
   path was exercised against the real sidecar by stubbing only `window.__TAURI_INTERNALS__.invoke`
   to return the running port (plain-browser `invoke` is otherwise unavailable — same GUI-driving
   limitation as earlier phases); the endpoint itself is `pytest` + `curl` covered.
+
+## As built (Phase 2.3) — molecule library + Molecules screen
+A molecule becomes a persistent object: save it, browse it, and reuse it in a future job.
+New screen + New Job integration; still `useState` + `invoke` only (no Zustand).
+
+- **Shared xyz helpers (`viewer/xyz-format.ts`, new):** `xyzToAtomLines` (moved out of
+  `NewJobScreen`), `atomLinesToXyz` (build standard xyz from ORCA coord lines), and
+  `parseChargeMult` (read `* xyz charge mult` header, default `0/1`). Reused by both screens.
+- **`screens/MoleculesScreen.tsx` (new):** header + "Add Molecule" toggle; `list_molecules` on
+  mount into a `.jobs-table` (Name / Formula / Charge / Tags / Created / Use+Delete). Row click
+  toggles a detail panel below the table: a `.viewer-panel` `MoleculeViewer` of the stored xyz +
+  an info line (formula · charge · mult · tags). Empty state points users at the New Job import.
+  **Add form** (inline `AddMoleculeForm`): Name + Charge/Multiplicity number inputs; the same
+  Import .xyz / SMILES→Generate 3D row as New Job (`get_sidecar_status` → `fetch /smiles-to-3d`);
+  Tags input; a live `MoleculeViewer` preview; Save → `create_molecule`. Delete → `delete_molecule`
+  then reload; Use → `onUseMolecule(mol)` bubbles to `App`.
+- **`App.tsx`:** new "Molecules" tab between Jobs and Settings; `Screen` union gains
+  `{kind:"molecules"}` and `new-job` gains an optional `initialMolecule`. `onUseMolecule` switches
+  to New Job carrying the molecule.
+- **`NewJobScreen.tsx`:** accepts `initialMolecule?` — on mount injects its xyz (with the
+  molecule's charge/mult) into the editor and seeds the title. New **"Save to Library"** button in
+  the import row: `extractXyzFromInput` + `parseChargeMult` → `create_molecule` (formula carried
+  from the last SMILES generation / the used molecule, empty for a bare `.xyz`), then a
+  "Saved to library" success banner. Local `xyzToAtomLines` replaced by the shared import.
+- **Types (`types.ts`):** `Molecule` mirrors the Rust struct.
+- **CSS:** reuses `.jobs-table` / `.card` / `.viewer-panel`; added `.molecule-form` /
+  `.molecule-detail` spacing and a `flex:none` override so the detail/form viewer panels honour
+  their explicit inline height (they aren't inside the New Job flex split).
+- **Verified** in Chromium (`vite dev`, real sidecar on :8765, `window.__TAURI_INTERNALS__.invoke`
+  stubbed with an in-memory molecule store — same GUI-can't-be-driven-headlessly limitation as
+  prior phases): Molecules empty state → Add → SMILES `CCO` → Generate 3D renders ethanol → Save →
+  row appears; row click → detail viewer; Use → New Job with `* xyz 0 1` block + preview; Save to
+  Library → banner + second row (formula `C2H6O` carried through); Delete removes it. `tsc` +
+  `vite build` clean, no console errors. Rust CRUD is `cargo test`-covered (24 green).
 
 ## Resolved from step 3
 The earlier "no backfill of `output.out`" gap is closed by `read_job_output` + the detail
