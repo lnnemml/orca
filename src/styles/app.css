@@ -268,14 +268,52 @@ body {
   margin-top: 3px;
 }
 
-/* --- Editor ----------------------------------------------------------- */
+/* --- Editor + molecule preview --------------------------------------- */
+
+/* Split the remaining height between the editor (left) and the 3D preview
+   (right). The editor keeps the larger share; the preview is a fixed-min
+   panel so it never crowds the editor out. */
+.editor-viewer-split {
+  flex: 1;
+  min-height: 200px;
+  display: flex;
+  gap: 12px;
+}
 
 .editor-wrap {
-  flex: 1;
+  flex: 2;
+  min-width: 0;
   min-height: 200px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   overflow: hidden;
+}
+
+.viewer-panel {
+  flex: 1;
+  min-width: 260px;
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: #0d0f13;
+}
+
+/* 3Dmol appends an absolutely-positioned canvas — the container must be a
+   positioned box that fills the panel. */
+.molecule-viewer {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+.viewer-empty {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 12px;
 }
 
 /* --- Jobs table ------------------------------------------------------- */

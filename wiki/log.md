@@ -237,3 +237,45 @@ completed *before* this step existed (only new runs get results); authoritative 
 (backfill vs live overlap).
 
 Next (Phase 2): molecules & input UX — or first, startup reconciliation to harden the MVP.
+
+## [2026-07-27] session | Phase 2 step 1: 3Dmol.js viewer component
+
+First Phase 2 step — a live 3D molecule preview on New Job. `npm install 3dmol` (v2.5.5; ships
+its own TS types, no custom `.d.ts` needed). New `src/viewer/`:
+
+- **`MoleculeViewer.tsx`** — 3Dmol React component. Props `xyzData` + optional `style`. One
+  `createViewer()` per mount (into a `useRef` div, `#0d0f13` background); a second effect
+  re-renders on `xyzData` change (`removeAllModels` → `addModel(xyz,"xyz")` →
+  `setStyle({},{stick:{},sphere:{scale:0.3}})` ball-and-stick → `zoomTo` → `render`). `ResizeObserver`
+  → `viewer.resize()`. Cleanup on unmount: `viewer.clear()` + null refs (WebGL context release).
+- **`parse-xyz-from-input.ts`** — `extractXyzFromInput` scans the `* xyz … *` block → standard
+  xyz; `null` for the `* xyzfile … file.xyz` form and for no-coordinates.
+- **`3dmol-setup.ts`** — side-effect module (imported by `MoleculeViewer`) neutralising
+  `OffscreenCanvas`. See the WebGL bug below.
+- **`NewJobScreen`** — split panel right of the editor; editor content parsed on a 500 ms debounce
+  → molecule or muted "No coordinates in input". CSS: `.editor-viewer-split` (editor `flex:2`,
+  viewer `flex:1 min-width 260px`) + panel styling in `app.css`. `useState` only, no Zustand.
+
+**WebGL bug (the visualization.md watchpoint, hit and resolved — `debugging/002`):** 3Dmol worked
+in Chromium but threw `TypeError: null is not an object (evaluating 'this._gl.clearDepth')` in the
+WebKitGTK webview. Root cause: 3Dmol's `initGL` prefers an OffscreenCanvas+`webgl2` path;
+WebKitGTK exposes `OffscreenCanvas` but returns `null` for `webgl2` on it → null GL context. Fix:
+`window.OffscreenCanvas = undefined` before the first `createViewer` forces 3Dmol's working
+direct-canvas branch (safe — we only show single molecules). **Reusable verification technique**
+discovered: the Tauri GUI can't be driven headlessly (no xdotool), but its engine is
+`libwebkit2gtk-4.1`, whose `MiniBrowser` (`/usr/lib/x86_64-linux-gnu/webkit2gtk-4.1/MiniBrowser`)
+runs a standalone probe HTML against the real `3dmol` build — reproduced the failure and confirmed
+the H₂ fix in the identical engine via window-title + `gnome-screenshot`.
+
+**Verified:** `tsc --noEmit` + `vite build` clean; Chromium (`vite dev`) — template → H₂ renders,
+clear editor → "No coordinates", zero console errors; H₂ dumbbell rendered in webkit2gtk-4.1
+MiniBrowser with the fix; the real Tauri window renders the split layout (sidecar healthy, ORCA
+configured). Not directly seen: the molecule *inside the Tauri GUI* (needs coords, no input
+automation) — covered by the identical-engine MiniBrowser render.
+
+Decision: layout is split-view (editor beside preview), not viewer-below-editor — editing coords
+next to a live 3D view is the natural pairing and preserves editor height. Bundle grew ~4 MB
+(3dmol); acceptable for a local app, code-split later.
+
+Next: extend to a Molecules screen / xyz import, and the JobDetailScreen result-geometry viewer
+(deferred from this task); atom picking + trajectory playback are Phase 3.

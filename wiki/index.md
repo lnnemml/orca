@@ -37,7 +37,8 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 
 - [README.md](debugging/README.md) — format for solved-bug pages
 - [001-monaco-offline-worker-resolve.md](debugging/001-monaco-offline-worker-resolve.md) — Monaco worker unresolved in Vite build (exports-map double-mapping) + CDN→bundled fix
+- [002-webkitgtk-3dmol-offscreencanvas.md](debugging/002-webkitgtk-3dmol-offscreencanvas.md) — 3Dmol.js null WebGL context in WebKitGTK (OffscreenCanvas webgl2 returns null) + fix & MiniBrowser test
 
 ---
 
-*Page count: 19. Last structural update: 2026-07-26 (Phase 1.2: +debugging/001-monaco-offline-worker-resolve).*
+*Page count: 20. Last structural update: 2026-07-27 (Phase 2.1: +debugging/002-webkitgtk-3dmol-offscreencanvas).*

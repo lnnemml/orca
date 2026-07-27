@@ -1,7 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 import { InputEditor } from "../editor/InputEditor";
+import { MoleculeViewer } from "../viewer/MoleculeViewer";
+import { extractXyzFromInput } from "../viewer/parse-xyz-from-input";
 import {
   CATEGORY_LABELS,
   ORCA_TEMPLATES,
@@ -22,6 +24,16 @@ export function NewJobScreen({ onCreatedDraft, onOpenDetail }: NewJobScreenProps
   const [content, setContent] = useState("");
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // xyz extracted from the editor for the live preview — debounced so we don't
+  // re-parse on every keystroke.
+  const [previewXyz, setPreviewXyz] = useState<string | null>(null);
+
+  useEffect(() => {
+    const id = setTimeout(() => {
+      setPreviewXyz(extractXyzFromInput(content));
+    }, 500);
+    return () => clearTimeout(id);
+  }, [content]);
 
   const pickTemplate = (t: OrcaTemplate) => {
     setSelectedId(t.id);
@@ -114,8 +126,17 @@ export function NewJobScreen({ onCreatedDraft, onOpenDetail }: NewJobScreenProps
         ))}
       </div>
 
-      <div className="editor-wrap">
-        <InputEditor value={content} onChange={setContent} />
+      <div className="editor-viewer-split">
+        <div className="editor-wrap">
+          <InputEditor value={content} onChange={setContent} />
+        </div>
+        <div className="viewer-panel">
+          {previewXyz ? (
+            <MoleculeViewer xyzData={previewXyz} />
+          ) : (
+            <div className="viewer-empty muted">No coordinates in input</div>
+          )}
+        </div>
       </div>
     </div>
   );

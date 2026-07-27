@@ -1,7 +1,8 @@
 # Module: Frontend (src/)
 
-**Status:** Phase 1 **complete** (step 4) — output backfill for finished jobs, energy/time in
-the job list, Open Folder. Builds on step 3 (live log console) and step 2 (editor + templates).
+**Status:** Phase 2 **in progress** — step 2.1 adds a 3Dmol.js molecule preview on New Job.
+Phase 1 complete (step 4): output backfill, energy/time in the job list, Open Folder; on step 3
+(live log console) and step 2 (editor + templates).
 
 ## As built (Phase 0)
 - Scaffolded via `create-tauri-app` (react-ts template). Note: the current template ships
@@ -84,6 +85,30 @@ editor/inputs. Only the active screen is mounted (switching to Jobs remounts it 
 - **`JobsScreen` columns:** added Energy (Eh) and Time, right-aligned, via the shared
   formatters. Row click and the per-row Run/Open buttons open the detail screen (Open opens the
   in-app detail, not a file manager — the file manager is the detail's Open Folder button).
+
+## As built (Phase 2.1) — molecule preview on New Job
+New `src/viewer/` module (details + design decisions in `modules/visualization.md`):
+- **`MoleculeViewer.tsx`** — 3Dmol.js ball-and-stick viewer; props `xyzData` + optional `style`.
+  Fills its parent, `ResizeObserver` → `viewer.resize()`, `viewer.clear()` on unmount to release
+  the WebGL context.
+- **`parse-xyz-from-input.ts`** — `extractXyzFromInput` pulls the `* xyz … *` block from the
+  editor content into standard xyz; `null` for `xyzfile` / no coordinates.
+- **`3dmol-setup.ts`** — side-effect module that neutralises `OffscreenCanvas` so 3Dmol renders
+  in the WebKitGTK webview (see `debugging/002`). Same side-effect-import pattern as
+  `editor/monaco-setup.ts`.
+- **`NewJobScreen`** — added a split panel right of the editor (`.editor-viewer-split`). Editor
+  content is parsed on a **500 ms debounce** (`useEffect` + `setTimeout`) into `previewXyz`; shows
+  the molecule or a muted "No coordinates in input" placeholder. `useState` only — no Zustand yet.
+- **CSS (`styles/app.css`)** — `.editor-viewer-split` / `.viewer-panel` / `.molecule-viewer` /
+  `.viewer-empty`; the panel reuses the panel border + `var(--radius)` and the `#0d0f13` console
+  background. `.molecule-viewer` is `position: relative` (3Dmol appends an absolute canvas).
+- **Verified**: `tsc` + `vite build` clean; Chromium (`vite dev`) — picking a template renders
+  H₂, clearing the editor falls back to "No coordinates", no console errors; H₂ render confirmed
+  in `webkit2gtk-4.1 MiniBrowser` (Tauri's engine) with the OffscreenCanvas fix; the real Tauri
+  window renders the split layout (molecule-in-Tauri-GUI verified via the identical-engine
+  MiniBrowser, since the GUI can't be driven headlessly — same limitation as Phase 0/1).
+- **Bundle note**: `3dmol` adds ~4 MB to the JS bundle (on top of Monaco). Acceptable for a local
+  desktop app; a future optimisation is code-splitting the viewer.
 
 ## Resolved from step 3
 The earlier "no backfill of `output.out`" gap is closed by `read_job_output` + the detail
