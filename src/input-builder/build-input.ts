@@ -4,6 +4,8 @@
 //! self-sufficiency, RI aux-basis pairing, keyword order, solvation syntax) are
 //! unit-testable in isolation. See `wiki/orca/input-format.md`.
 
+import { FUNCTIONAL_GROUPS } from "./orca-options";
+
 /** Everything the form collects. Mirrors the controls 1:1. */
 export interface BuilderState {
   jobType: string;
@@ -53,6 +55,20 @@ function auxBasisFor(basis: string, ri: string): string {
 }
 
 /**
+ * True when a functional already bundles its own dispersion correction (e.g.
+ * `wB97X-D4`, `wB97M-V`) — in which case the builder must NOT append a separate
+ * dispersion keyword, or the correction would be double-counted. Looks the
+ * functional up in {@link FUNCTIONAL_GROUPS}; unknown functionals return `false`.
+ */
+export function functionalHasBuiltInDispersion(functional: string): boolean {
+  for (const group of FUNCTIONAL_GROUPS) {
+    const opt = group.options.find((o) => o.keyword === functional);
+    if (opt) return opt.builtInDispersion === true;
+  }
+  return false;
+}
+
+/**
  * Build the `!` keyword line (without the leading `! `) in the canonical order
  * `method basis auxbasis RI dispersion solvation jobtype scfconv`. Exposed on
  * its own so the form can show a live preview before the user hits Generate.
@@ -69,7 +85,11 @@ export function buildKeywordLine(state: BuilderState): string {
     const aux = auxBasisFor(state.basis, state.ri);
     if (aux) tokens.push(aux);
     if (state.ri) tokens.push(state.ri);
-    if (state.dispersion) tokens.push(state.dispersion);
+    // Skip dispersion for functionals that already include it (e.g. wB97X-D4,
+    // wB97M-V) — appending D4/VV10 again would double-count the correction.
+    if (state.dispersion && !functionalHasBuiltInDispersion(state.functional)) {
+      tokens.push(state.dispersion);
+    }
   }
 
   if (state.solvationModel && state.solvent) {

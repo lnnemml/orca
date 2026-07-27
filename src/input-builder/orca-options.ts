@@ -12,6 +12,11 @@ export interface OrcaOption {
   label: string;
   /** Short hint shown next to / under the control. */
   description?: string;
+  /**
+   * The method already includes a dispersion correction (e.g. `-D4`, `-V`/VV10),
+   * so the builder must NOT add a separate dispersion keyword. See `build-input.ts`.
+   */
+  builtInDispersion?: boolean;
 }
 
 /** Job types. Empty keyword = plain Single Point (ORCA's default). */
@@ -75,9 +80,9 @@ export const FUNCTIONAL_GROUPS: { label: string; options: OrcaOption[] }[] = [
   {
     label: "Range-separated",
     options: [
-      { keyword: "wB97X-D4", label: "ωB97X-D4" },
+      { keyword: "wB97X-D4", label: "ωB97X-D4", builtInDispersion: true },
       { keyword: "CAM-B3LYP", label: "CAM-B3LYP" },
-      { keyword: "wB97M-V", label: "ωB97M-V" },
+      { keyword: "wB97M-V", label: "ωB97M-V", builtInDispersion: true },
     ],
   },
   {

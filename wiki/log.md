@@ -418,3 +418,17 @@ NOT done (deliberate): reverse parse (input→form), double-hybrid AuxC logic, s
 (Phase 4.5), the full 179-solvent list.
 
 Next: live convergence dashboard for Opt jobs, then the sequential job queue.
+
+## [2026-07-27] session | fix: don't double-count dispersion for built-in-D4/VV10 functionals
+Some functionals bake the dispersion correction into the name — `wB97X-D4` (`-D4`) and `wB97M-V`
+(VV10 `-V`). The builder was still appending the separate `dispersion` token, double-counting the
+correction (`! wB97X-D4 def2-TZVP D4 …`).
+
+**Fix:** `OrcaOption` gains `builtInDispersion?: boolean`; `wB97X-D4` and `wB97M-V` marked true.
+New `functionalHasBuiltInDispersion(functional)` in `build-input.ts` looks the functional up in
+`FUNCTIONAL_GROUPS`; `buildKeywordLine` skips `state.dispersion` when it returns true. Form disables
+the Dispersion dropdown with the hint "Included in the functional" for such functionals.
+
+`input-format.md` Rule 1 broadened: "Composite methods and dispersion-inclusive functionals are
+self-contained." New vitest case: `wB97X-D4` + `D4` → `wB97X-D4` appears exactly once, no standalone
+`D4` token. 10 vitest + `tsc` clean.

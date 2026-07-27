@@ -63,6 +63,24 @@ describe("buildKeywordLine", () => {
     expect(line).not.toContain("def2/J ");
   });
 
+  it("does not double-count dispersion for a functional with built-in D4", () => {
+    const line = buildKeywordLine(
+      state({
+        useComposite: false,
+        functional: "wB97X-D4",
+        basis: "def2-TZVP",
+        ri: "",
+        dispersion: "D4",
+        jobType: "",
+        scfConv: "",
+      }),
+    );
+    // The functional name (which contains "D4") appears exactly once...
+    expect(line.match(/wB97X-D4/g)).toHaveLength(1);
+    // ...and no standalone D4 dispersion token is appended after the basis.
+    expect(line.split(/\s+/)).not.toContain("D4");
+  });
+
   it("wraps solvent in the model: CPCM(water)", () => {
     const line = buildKeywordLine(
       state({ solvationModel: "CPCM", solvent: "water" }),

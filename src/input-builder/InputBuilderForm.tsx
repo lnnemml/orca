@@ -18,6 +18,7 @@ import {
   buildKeywordLine,
   buildOrcaInput,
   DEFAULT_BUILDER_STATE,
+  functionalHasBuiltInDispersion,
   type BuilderState,
 } from "./build-input";
 
@@ -35,12 +36,15 @@ function OptionSelect({
   options,
   onChange,
   disabled,
+  title,
 }: {
   label: string;
   value: string;
   options: OrcaOption[];
   onChange: (v: string) => void;
   disabled?: boolean;
+  /** Tooltip on the control — e.g. why it is disabled. */
+  title?: string;
 }) {
   return (
     <div className="field">
@@ -50,6 +54,7 @@ function OptionSelect({
         value={value}
         onChange={(e) => onChange(e.currentTarget.value)}
         disabled={disabled}
+        title={title}
       >
         {options.map((o) => (
           <option key={o.keyword || "__none__"} value={o.keyword}>
@@ -84,6 +89,7 @@ export function InputBuilderForm({
   };
 
   const compositeMode = state.useComposite;
+  const dispersionBuiltIn = functionalHasBuiltInDispersion(state.functional);
 
   return (
     <div className="builder-body">
@@ -162,6 +168,10 @@ export function InputBuilderForm({
             value={state.dispersion}
             options={DISPERSION}
             onChange={(v) => set("dispersion", v)}
+            disabled={dispersionBuiltIn}
+            title={
+              dispersionBuiltIn ? "Included in the functional" : undefined
+            }
           />
           <OptionSelect
             label="RI approximation"

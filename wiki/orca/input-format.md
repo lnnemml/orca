@@ -22,7 +22,7 @@ The Phase 2.4 input builder (`src/input-builder/`) generates the `!` line from d
 The rules below are baked into `build-input.ts` and checked against the ORCA 6.1 manual
 (https://www.faccts.de/docs/orca/6.1/manual/).
 
-### Rule 1 — Composite ("3c") methods are self-contained
+### Rule 1 — Composite methods and dispersion-inclusive functionals are self-contained
 `r2SCAN-3c`, `B97-3c`, `PBEh-3c`, `wB97X-3c`, `HF-3c` **already include their own basis set,
 dispersion correction, and (where needed) geometric/BSSE corrections.** When a 3c method is
 chosen, emit ONLY its name — do **not** add a basis, dispersion, or RI keyword. Adding
@@ -32,6 +32,20 @@ those fields in composite mode.
 ```
 ! r2SCAN-3c Opt Freq TightSCF        ← correct
 ! r2SCAN-3c def2-TZVP D4 Opt         ← WRONG (double basis + dispersion)
+```
+
+The same self-containment applies to **dispersion-inclusive functionals** used in
+Functional + Basis mode. Some functional names bake the dispersion correction into the name
+itself: `wB97X-D4` (the `-D4` *is* the D4 correction) and `wB97M-V` (the `-V` *is* the VV10
+non-local term). For these, emit the functional but **not** a separate dispersion keyword —
+appending `D4` again double-counts the correction. The builder marks such functionals with
+`builtInDispersion: true` (see `orca-options.ts`), `buildKeywordLine` skips the dispersion token
+via `functionalHasBuiltInDispersion()`, and the form disables the Dispersion dropdown with the
+hint "Included in the functional".
+
+```
+! wB97X-D4 def2-TZVP def2/J RIJCOSX Opt Freq   ← correct (D4 is in the name)
+! wB97X-D4 def2-TZVP D4 Opt Freq               ← WRONG (D4 counted twice)
 ```
 
 ### Rule 2 — RI needs a matching auxiliary (fitting) basis
