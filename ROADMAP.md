@@ -65,6 +65,30 @@ form, runs it, and watches the energy curve descend in real time.
 
 ---
 
+## Phase 2.5 — Geometry editor (≈ 3–4 weeks)
+
+**Goal:** precise geometric control over molecular structures — the foundation for
+reaction mechanism research. See ADR-007.
+
+- [ ] Atom picking in 3Dmol.js: click → highlight, show atom info (element, index, coordinates)
+- [ ] Measurement mode: pick 2/3/4 atoms → display distance / angle / dihedral angle
+- [ ] Geometry kernel in sidecar: set distance, set angle, set dihedral — recalculate
+      Cartesian coordinates; move single atom or rigid fragment
+- [ ] Edit mode in viewer: pick atoms → enter target value → preview → apply →
+      coordinates update in editor
+- [ ] Fragment library: common reagents (BH₄⁻, H₂O, common ligands), place at position
+      with specified distance/angle
+- [ ] Constraint manager: list of active constraints, toggle on/off, export to
+      ORCA `%geom Constraints ... end` block in the input
+- [ ] xTB integration: sidecar endpoint `/xtb-optimize` (xyz + constraints → optimized xyz),
+      xTB binary path in Settings (standalone `xtb`, not through ORCA)
+
+**Done when:** author builds a TS guess by placing BH₄⁻ at a Bürgi-Dunitz angle relative
+to a carbonyl carbon, constrains the approach distance, runs xTB pre-optimization, and
+gets a physically reasonable starting geometry — all inside OrcaStudio.
+
+---
+
 ## Phase 3 — Results dashboard (≈ 3–4 weeks)
 
 **Goal:** post-calculation analysis without any external tools.
@@ -104,6 +128,34 @@ answers "how do I set up CPCM for water" in one search.
 
 ---
 
+## Phase 4.5 — Reaction modeling (≈ 4–5 weeks)
+
+**Goal:** OrcaStudio becomes a reaction mechanism workstation. The researcher defines a
+reaction, explores pathways, and compares activation energies — the full computational
+experiment lifecycle. See ADR-007.
+
+- [ ] Data model: `reactions`, `reaction_centers`, `pathways` tables; nullable FKs from
+      `jobs` (`reaction_id`, `pathway_id`, `pathway_step`)
+- [ ] Reaction setup UI: define substrate + reagent, pick reaction center atoms,
+      set approach geometry (distance, angle, dihedral)
+- [ ] Reaction coordinate editor: define sweep variable (e.g. distance 3.0 → 1.5 Å),
+      number of steps
+- [ ] Parametric geometry generation: for each sweep point, generate xyz via geometry
+      kernel, create constrained ORCA input
+- [ ] Batch job orchestration: create → queue → run → collect energies (sequential,
+      reuses existing job infrastructure)
+- [ ] Energy profile visualization: reaction coordinate vs energy (recharts, reuse from
+      Phase 3 spectra/convergence plots)
+- [ ] Comparative pathway view: overlay Pathway A vs Pathway B energy profiles;
+      reaction energy diagram (ΔG‡ comparison)
+- [ ] Project structure: Reaction as a container for Molecules + Pathways + Jobs
+
+**Done when:** author defines two stereofacial attacks on a ketone (si vs re face),
+sweeps the approach distance, runs the calculations, and sees two energy profiles
+side by side with ΔΔG‡ — proving stereoselectivity computationally.
+
+---
+
 ## Phase 5 — Remote execution over SSH (≈ 2–3 weeks)
 
 **Goal:** heavy jobs run on a server; the laptop stays free. The app becomes disconnect-proof.
@@ -135,6 +187,10 @@ and OrcaStudio picks the job up, syncs results, and parses them — no terminal,
 - [ ] Batch/parametric runs: same molecule × list of functionals or basis sets
 - [ ] SLURM backend (third `ExecutionBackend` implementation)
 - [ ] Markdown notes attached to jobs/projects → the app becomes a lab journal
+- [ ] Multi-step mechanism support: Mechanism = ordered sequence of Reactions (catalytic
+      cycles like Sonogashira: oxidative addition → transmetalation → reductive elimination)
+- [ ] AI-assisted reaction setup: describe reaction → AI proposes reaction center, approach
+      geometry, pathways (Anthropic API, user's key)
 
 ---
 
@@ -143,4 +199,6 @@ and OrcaStudio picks the job up, syncs results, and parses them — no terminal,
 - Windows/macOS support (Linux first; Tauri keeps the door open)
 - Multi-user / collaboration features
 - Bundling ORCA or its manual (licensing)
-- Replacing Avogadro as a full molecular *editor* — import handles structure creation initially
+- Full-featured molecular drawing from scratch (symmetry-aware bond drawing, ring
+  perception, etc.) — structure creation uses import + fragment placement + geometric
+  manipulation (Phase 2.5), not free-hand sketching

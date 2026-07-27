@@ -11,6 +11,7 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 - [adr-004-sqlite-storage.md](architecture/adr-004-sqlite-storage.md) — SQLite as the single store (+ FTS5 for manual)
 - [adr-005-system-ssh.md](architecture/adr-005-system-ssh.md) — system ssh/rsync over SSH libraries
 - [adr-006-manual-integration.md](architecture/adr-006-manual-integration.md) — local ORCA manual indexing strategy
+- [adr-007-reaction-modeling.md](architecture/adr-007-reaction-modeling.md) — from molecular modeling to reaction modeling: domain objects, geometry editor, reaction coordinate workflows
 
 ## Modules
 
@@ -41,4 +42,4 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 
 ---
 
-*Page count: 20. Last structural update: 2026-07-27 (Phase 2.1: +debugging/002-webkitgtk-3dmol-offscreencanvas).*
+*Page count: 21. Last structural update: 2026-07-27 (+architecture/adr-007-reaction-modeling).*

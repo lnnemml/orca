@@ -10,9 +10,13 @@ and visualize everything — orbitals, spectra, trajectories, normal modes.
 **Mission.** ORCA is extremely powerful but atomized: dozens of standalone binaries
 (`orca`, `orca_plot`, `orca_mapspc`, ...), a 1300-page manual, terminal-only workflow.
 OrcaStudio removes that barrier — first for the author (a chemist learning quantum chemistry
-and doing research), potentially for others later. The app should make a person who fears
-the terminal feel at home running DFT calculations. Every design decision should be tested
-against this question: *does it lower the barrier or raise it?*
+and doing research), potentially for others later. Beyond lowering the barrier to ORCA,
+OrcaStudio is a **reaction mechanism workstation**: an environment where the researcher
+constructs reaction geometries with precise control (distances, angles of attack, dihedral
+angles), explores competing pathways, and compares activation energies — expressing
+computational experiments as directly as the scientific question demands (see ADR-007).
+Every design decision should be tested against two questions: *does it lower the barrier?*
+and *does it give the researcher the geometric control they need?*
 
 The app is also a **learning instrument**: live convergence plots, context-sensitive manual
 help, and explanations are first-class features, not extras.

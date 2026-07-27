@@ -279,3 +279,25 @@ next to a live 3D view is the natural pairing and preserves editor height. Bundl
 
 Next: extend to a Molecules screen / xyz import, and the JobDetailScreen result-geometry viewer
 (deferred from this task); atom picking + trajectory playback are Phase 3.
+
+## [2026-07-27] decision | ADR-007: from molecular modeling to reaction modeling
+
+Strategic expansion of OrcaStudio's mission. Key decisions:
+
+- **Reaction** (not Job) becomes the central intellectual object. A Reaction contains
+  Pathways, each generating Jobs along a reaction coordinate sweep.
+- New domain objects: Molecule, Fragment, ReactionCenter, Constraint, ReactionCoordinate,
+  Pathway, Reaction.
+- **Phase 2.5** (Geometry editor): atom picking, measurement, set distance/angle/dihedral,
+  fragment library, constraint manager → `%geom`, xTB constrained pre-optimization.
+- **Phase 4.5** (Reaction modeling): reaction/pathway data model, reaction coordinate editor,
+  parametric sweep, batch job orchestration, comparative energy profiles.
+- Phase 6 gains multi-step mechanisms (catalytic cycles) and AI-assisted reaction setup.
+- Non-goal updated: not a free-hand molecular drawing tool; structure creation via import +
+  fragment placement + geometric manipulation.
+
+Motivated by author's research experience: stereoselectivity proof for NaBH₄ reduction
+required precise control over Bürgi-Dunitz attack angle and stereofacial approach — 
+impossible in existing tools (Avogadro, Chimera, GaussView).
+
+All current Phase 2 work remains valid and unchanged — the new phases are additive.
