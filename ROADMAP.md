@@ -61,6 +61,9 @@ and sees the final energy in the job list — without touching a terminal.
 - [ ] Live convergence dashboard for Opt jobs: energy per cycle, gradient norm vs criteria
       (parse incrementally from the streamed log)
 - [ ] Sidecar endpoint: xyz ↔ common format conversions (Open Babel)
+- [ ] Sequential job queue: `queued` status, worker loop picks next job when current
+      completes (concurrency 1). Replaces the current "another job is running" error
+      with transparent queuing. Small scope: SQLite status + loop in LocalBackend.
 
 **Done when:** author pastes a SMILES, gets a 3D structure, configures an optimization in the
 form, runs it, and watches the energy curve descend in real time.
@@ -74,8 +77,9 @@ reaction mechanism research. See ADR-007.
 
 - [ ] Atom picking in 3Dmol.js: click → highlight, show atom info (element, index, coordinates)
 - [ ] Measurement mode: pick 2/3/4 atoms → display distance / angle / dihedral angle
-- [ ] Geometry kernel in sidecar: set distance, set angle, set dihedral — recalculate
-      Cartesian coordinates; move single atom or rigid fragment
+- [ ] Geometry kernel in sidecar (ASE-based): `atoms.set_distance()`, `set_angle()`,
+      `set_dihedral()` with mask arrays — recalculate Cartesian coordinates; move
+      single atom or rigid fragment. No custom trigonometry.
 - [ ] Edit mode in viewer: pick atoms → enter target value → preview → apply →
       coordinates update in editor
 - [ ] Fragment library: common reagents (BH₄⁻, H₂O, common ligands), place at position
@@ -130,31 +134,29 @@ answers "how do I set up CPCM for water" in one search.
 
 ---
 
-## Phase 4.5 — Reaction modeling (≈ 4–5 weeks)
+## Phase 4.5 — Reaction modeling (≈ 3–5 evenings)
 
 **Goal:** OrcaStudio becomes a reaction mechanism workstation. The researcher defines a
-reaction, explores pathways, and compares activation energies — the full computational
-experiment lifecycle. See ADR-007.
+reaction, explores pathways via native ORCA scans, and compares electronic energy
+barriers — the full computational experiment lifecycle. See ADR-007.
 
 - [ ] Data model: `reactions`, `reaction_centers`, `pathways` tables; nullable FKs from
-      `jobs` (`reaction_id`, `pathway_id`, `pathway_step`)
+      `jobs` (`reaction_id`, `pathway_id`)
 - [ ] Reaction setup UI: define substrate + reagent, pick reaction center atoms,
       set approach geometry (distance, angle, dihedral)
-- [ ] Reaction coordinate editor: define sweep variable (e.g. distance 3.0 → 1.5 Å),
-      number of steps
-- [ ] Parametric geometry generation: for each sweep point, generate xyz via geometry
-      kernel, create constrained ORCA input
-- [ ] Batch job orchestration: create → queue → run → collect energies (sequential,
-      reuses existing job infrastructure)
-- [ ] Energy profile visualization: reaction coordinate vs energy (recharts, reuse from
-      Phase 3 spectra/convergence plots)
+- [ ] Scan input generation: from ReactionCenter → ORCA `%geom Scan B a1 a2 = start, end, npoints end end`
+      (one job per pathway, native relaxed scan — NOT N separate jobs)
+- [ ] Scan output parser: extract per-point energies and coordinate values from ORCA output
+      (table format in scan output section)
+- [ ] Energy profile visualization: reaction coordinate vs energy (recharts)
 - [ ] Comparative pathway view: overlay Pathway A vs Pathway B energy profiles;
-      reaction energy diagram (ΔG‡ comparison)
-- [ ] Project structure: Reaction as a container for Molecules + Pathways + Jobs
+      ΔΔE‡ (electronic energy barrier difference) highlighted
+- [ ] TS refinement (late step): scan maximum geometry → OptTS → Freq → verify one
+      imaginary frequency → ΔG‡ with thermochemistry (publication-quality result)
 
 **Done when:** author defines two stereofacial attacks on a ketone (si vs re face),
-sweeps the approach distance, runs the calculations, and sees two energy profiles
-side by side with ΔΔG‡ — proving stereoselectivity computationally.
+runs two native ORCA scans, and sees two energy profiles side by side with ΔΔE‡ —
+a computational screening of stereoselectivity.
 
 ---
 
@@ -172,7 +174,7 @@ side by side with ΔΔG‡ — proving stereoselectivity computationally.
 - [ ] Job state machine extended: `uploading → running → syncing`; reconciliation on app start
       (check markers for every job that was `running`)
 - [ ] Remote `orca_plot` option: generate cubes server-side, download only `.cube`
-- [ ] Sequential job queue (concurrency 1 per backend), pause/cancel
+- [ ] Job pause/cancel (the sequential queue itself lands in Phase 2)
 
 **Done when:** author submits a job to the server, closes the laptop, reopens it hours later,
 and OrcaStudio picks the job up, syncs results, and parses them — no terminal, no lost state.
@@ -181,10 +183,8 @@ and OrcaStudio picks the job up, syncs results, and parses them — no terminal,
 
 ## Phase 6 — Power features (ongoing, pick by research needs)
 
-- [ ] Relaxed surface scans: input support + PES plot from scan output
 - [ ] TD-DFT UV-Vis: simulated spectrum with oscillator strengths, state table
 - [ ] NEB: path setup UI + energy profile visualization per iteration
-- [ ] xTB pre-optimization button (GFN2-xTB via sidecar) before any DFT job
 - [ ] Job comparison view: N jobs side by side (energies, geometries overlay, spectra)
 - [ ] Batch/parametric runs: same molecule × list of functionals or basis sets
 - [ ] SLURM backend (third `ExecutionBackend` implementation)
@@ -193,6 +193,8 @@ and OrcaStudio picks the job up, syncs results, and parses them — no terminal,
       cycles like Sonogashira: oxidative addition → transmetalation → reductive elimination)
 - [ ] AI-assisted reaction setup: describe reaction → AI proposes reaction center, approach
       geometry, pathways (Anthropic API, user's key)
+- [ ] TS refinement automation: scan maximum → OptTS → Freq → ΔG‡ pipeline
+      (if not completed in Phase 4.5)
 
 ---
 

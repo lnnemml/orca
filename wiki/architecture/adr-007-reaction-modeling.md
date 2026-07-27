@@ -102,36 +102,60 @@ jobs.pathway_step  INTEGER         (nullable, index within sweep)
 
 Standalone jobs (reaction_id = NULL) remain fully functional.
 
-## Execution model: pathway as batch orchestration
+## Execution model: native ORCA scan per pathway
+
+The primary mechanism for exploring a reaction coordinate is ORCA's built-in
+relaxed surface scan (`%geom Scan ... end`), not N separately orchestrated jobs.
 
 ```
-User defines ReactionCenter (d, angle, dihedral)
+Pathway setup (geometry editor, Phase 2.5):
+  build starting geometry with correct approach angle/face
     │
     ▼
-Sweep reaction coordinate: d = [3.0, 2.7, 2.4, 2.1, 1.8, 1.5]
+Generate ORCA input with native scan block:
+  %geom Scan
+    B 0 1 = 3.0, 1.5, 15    ← distance, start → end, N points
+  end end
     │
     ▼
-For each d:
-  ┌─ geometry kernel: generate xyz with these params
-  ├─ constraint manager: fix d, export %geom
-  ├─ [optional] xTB pre-optimize with constraint
-  └─ create ORCA Job (constrained Opt or SP)
+One ORCA Job per Pathway (two Jobs for si/re comparison)
     │
     ▼
-Run all (sequential, concurrency=1 per backend)
+Parse scan output: table of (step, energy, coordinate value)
     │
     ▼
-Collect energies → energy profile plot
+Overlay two scan profiles → ΔΔE‡ (electronic energy barrier estimate)
     │
     ▼
-[optional] identify maximum → TS guess → OptTS / NEB-TS
-    │
-    ▼
-Comparative view: overlay Pathway A vs Pathway B
+[optional] TS refinement: scan maximum → OptTS → Freq → ΔG‡
 ```
 
-Each step in this pipeline is a primitive we build in earlier phases.
-The orchestration layer is new but thin.
+Why native scan over N-job orchestration:
+- **Wavefunction chaining:** SCF at each scan point starts from the converged
+  orbitals of the previous point (2–5× faster convergence, avoids SCF instabilities).
+- **Geometry chaining:** the optimizer at each point starts from the previous
+  geometry, preventing jumps to different conformers that break the profile.
+- **Simplicity:** one job, one output, one entry in the queue.
+
+The N-job parametric approach remains as a fallback for:
+- Rigid (unrelaxed) scans at the SP level (rare).
+- NEB path setup (requires a set of discrete input images).
+- Recovery when a native scan fails at a specific point.
+
+### ΔE‡ vs ΔG‡ — terminology precision
+
+The maximum of a relaxed scan gives an **electronic energy barrier estimate** (ΔE‡),
+not a free energy. For comparing two stereofacial pathways, ΔΔE‡ from two scans is
+a valid first filter. For publication-quality results, the full pipeline is:
+
+1. Relaxed scan → identify approximate TS geometry (energy maximum).
+2. `OptTS` starting from the scan maximum → true saddle point.
+3. `Freq` on the optimized TS → confirm exactly one imaginary frequency +
+   thermochemistry corrections → ΔG‡.
+
+Phase 4.5 targets step 1 (scan profiles + ΔΔE‡). Steps 2–3 (TS refinement) are
+a late Phase 4.5 item or Phase 6 — documented explicitly so the wiki never
+implies the app produces ΔG‡ when it only produces ΔE‡.
 
 ## Phasing (how this integrates with the ROADMAP)
 
@@ -189,6 +213,21 @@ already works; it cannot substitute for missing primitives.
    geometric manipulation, not free-hand sketching."
 4. Every future design decision passes the test: "is this compatible with reaction
    center construction and pathway comparison?"
+5. **Geometry kernel uses ASE, not custom math.** `ase.Atoms` provides
+   `set_distance()`, `set_angle()`, `set_dihedral()` with mask arrays (which
+   atoms move). ASE is already a planned sidecar dependency. Custom trigonometry
+   for local coordinate systems is a classic source of week-long bugs —
+   unnecessary when ASE covers the exact operations we need. Fragment placement
+   starts minimal: attach along one vector (distance + angle + dihedral relative
+   to three selected atoms) — the Bürgi-Dunitz case.
+6. **Numerical control, not drag-editing.** The geometry editor uses typed
+   numerical values (pick atoms → enter distance/angle → apply), not mouse
+   dragging of atoms in 3D space. Drag-editing is imprecise, hard to implement
+   over 3Dmol.js (a viewer, not an editor), and doesn't match the research
+   workflow (the chemist knows the Bürgi-Dunitz angle is 107° — they want to
+   type it, not guess it by dragging).
+7. **Native ORCA scan for pathway sweeps, not N-job orchestration.** See the
+   updated Execution Model section above.
 
 ## Risks
 
@@ -204,6 +243,9 @@ already works; it cannot substitute for missing primitives.
 - **Catalytic cycles (Sonogashira etc.) are multi-step.** Each elementary step is its own
   Reaction with its own TS. A catalytic cycle is a sequence of Reactions. This meta-layer
   (Mechanism = ordered list of Reactions) is Phase 6+, not Phase 4.5.
+- **MMFF force field gaps.** RDKit's MMFF may lack parameters for exotic reagent
+  fragments (e.g. BH₄⁻). Mitigated by UFF fallback (`AllChem.UFFOptimizeMolecule`)
+  which has broader atom-type coverage. Documented for Phase 2.5 fragment library.
 
 ## References
 

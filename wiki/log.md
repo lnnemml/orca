@@ -334,3 +334,21 @@ NOT done (deliberately, per task): Molecules screen, SQLite molecule library, Zu
 Task 2.3. Multiplicity is always 1 (radicals/triplets later).
 
 Next: molecule library + Molecules screen (Task 2.3), then the input builder form.
+
+## [2026-07-27] decision | ADR-007 revision: native scan, ASE kernel, ΔE‡ precision
+
+Four corrections to ADR-007 and ROADMAP based on domain review:
+
+1. **Native ORCA scan over N-job orchestration.** Pathway sweep uses `%geom Scan`
+   (one job per pathway), not N separate constrained jobs. Wavefunction + geometry
+   chaining between scan points is critical for correct energy profiles.
+2. **ΔE‡ not ΔG‡.** Scan maximum gives electronic energy barrier (ΔE‡). For
+   publication-quality ΔG‡, need OptTS + Freq (TS refinement step). Phase 4.5
+   targets ΔΔE‡ as screening; TS refinement is a late/Phase 6 step.
+3. **ASE for geometry kernel.** `set_distance/angle/dihedral` with masks, not custom
+   trigonometry. Fragment placement = one-vector attachment (Bürgi-Dunitz case).
+4. **Job queue moved earlier.** Sequential queue (queued status + worker loop) added
+   to Phase 2 — needed for daily use, not just reaction modeling. Removed from Phase 5.
+
+Also: deduplicated Phase 6 (relaxed scans → 4.5, xTB → 2.5), added UFF fallback note
+for exotic fragments, added numerical-control-not-drag-editing decision.
