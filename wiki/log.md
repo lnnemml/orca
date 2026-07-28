@@ -1206,3 +1206,71 @@ but can diverge for a disk-shaped one (smallest-extent = face-on, not the freest
 contradiction for the documented case; the ADR prose is just looser. Option: leave as-is, or add a
 one-line ADR amendment ("freest axis = smallest bounding-box extent"). Left for the author — I won't
 edit #7 or amend without a call.
+
+## [2026-07-28] session | 2.5.1a: GOAT ensemble parsing, verified against a real run
+
+Pulled the GOAT conformer primitive up from Phase 4.5 (ADR-007 calls conformer search mandatory, but
+SMILES fragments arrive as an arbitrary ETKDG conformer — every scene may stand on the wrong one).
+**No UI.** Parser written **against a real run, not from memory** (gotchas rule).
+
+**The run.** n-butane (14 atoms), **ORCA 6.1.0**, `! XTB GOAT`, isolated dir, full-path
+`/opt/orca/orca`. TERMINATED NORMALLY. Observed (now in `wiki/orca/goat.md`):
+- Output files that matter: **`<name>.finalensemble.xyz`** (ensemble) + **`<name>.globalminimum.xyz`**
+  (~40 scratch files otherwise).
+- Ensemble comment line: **`<energy_Eh> converged=true`** — energy is the leading token (Hartree),
+  **no structure index**. globalminimum uses a *different* comment (energy only, no `converged=`).
+- **5 structures** in the file, **sorted ascending by energy**. Gotcha: the log says "Conformers below
+  3 kcal/mol: **4**" but the file has **5** (the 5th is ~4.9 kcal/mol) — trust the file, not the summary.
+- **Cost / `%pal`:** 1 core **4m20s** → `%pal 4` **1m13s** (~3.5×). GOAT parallelises *across* candidate
+  optimisations (NProcs=1 each, out-of-order completion), not within one. GOAT is slow and blocks the
+  concurrency-1 queue — give it `%pal`, treat as long-running (matters for 2.5.1b).
+- Charge via the plain `* xyz 0 1` header — no GOAT-specific keyword; the header is ORCA's universal
+  charge mechanism, so charged fragments (BH₄⁻ → `* xyz -1 1`) use the same. Mult 1 safe for the
+  closed-shell library fragments.
+
+**CRITICAL CHECK — verified on the butane run: atom order is PRESERVED.** All 5 ensemble structures
+have the identical element sequence to the input (`C C C C H H H H H H H H H H`). So a chosen conformer
+drops back into a fragment via `replaceFragmentAtoms` **with no atom mapping** — 2.5.1b's substitution
+is safe, no rewrite needed. (Re-verify on ORCA upgrade — noted in `goat.md`.)
+
+**Code (`src/scene/ensemble.ts`, pure).** `parseEnsemble(text): Conformer[] | null` (energy = leading
+comment token, `NaN` if unparsable — never invented; malformed/empty → `null`, never throws);
+`conformerMatchesFragment` (the `replaceFragmentAtoms` composition check as a predicate, via the
+now-**exported** `normalizeElement`); `goatInputForFragment` (uses `fragment.charge`, not scene
+`totalCharge` — GOAT runs on one fragment in isolation). **Test oracle is a real 3-structure slice** of
+the run in `src/scene/__fixtures__/butane.finalensemble.xyz` (loaded via Vite `?raw`) — declaration
+must meet reality, same rule that saved the fragment library.
+
+**Two decision records** (see the `decision` entry below for §5b): ADR-008 amendment pins *freest axis
+≡ smallest bounding-box extent* (closes the lint finding); and the d/θ/φ sequential-application record.
+
+**Wiki / ROADMAP.** New `orca/goat.md` + `chemistry/conformers.md` (Ukrainian: anti/gauche butane, why
+one SMILES conformer is a random snapshot). ROADMAP: inserted **2.5.1 — Conformer search (GOAT)**
+(a done, b pending) before the geometry editor, which becomes **2.5.2**; Phase 4.5's GOAT item narrowed
+to Boltzmann + DFT re-opt with a pointer to 2.5.1. Fixed the stale "2.5.1 = picking" refs → 2.5.2, and
+aligned the geometry-editor "2.5.3" refs → 2.5.2 (consequence of the renumber). index count 29 → 31.
+
+**Verified.** `tsc` clean, `vite build` clean, `vitest` **122** (was 112 → +10 ensemble). `cargo` not
+touched. Both ORCA job dirs removed (rule #3); the fixture kept. Next: 2.5.1b (run GOAT from the app +
+conformer substitution).
+
+## [2026-07-28] decision | Bürgi-Dunitz d/θ/φ apply sequentially (one pass, convergent)
+
+For the geometry editor (2.5.2), placing a reagent by distance → angle → dihedral can be done in **one
+sequential pass** — no iteration — **if the reference atoms are taken from the substrate side** and the
+mask is the reagent fragment. This is safe by construction, not merely convenient: **each operation lies
+in the symmetry group of the previous constraint**, so it cannot undo it.
+
+- `set_distance(C, H, mask=reagent)` — translates the reagent along the C→H line. Sets |C–H|.
+- `set_angle(O, C, H, mask=reagent)` — rotates the reagent about an axis **through C** (perpendicular to
+  the O–C–H plane). A rotation about C leaves **|C–H| unchanged**. Sets ∠O–C–H.
+- `set_dihedral(X, O, C, H, mask=reagent)` — rotates the reagent about the **O–C axis**. A rotation about
+  O–C leaves **both |C–H| and ∠O–C–H unchanged**. Sets the dihedral.
+
+Each later op's rotation axis passes through the atoms that define the earlier constraint, so the earlier
+quantity is invariant under it. One pass converges; no relaxation loop.
+
+**Mandatory acceptance test for 2.5.2 (without it "sequential" is just an assumption):** apply all three
+in order to a fragment, then **recompute all three from the resulting coordinates** — |C–H|, ∠O–C–H, and
+the dihedral must each equal their targets (tolerance ~1e-6). If any fails, the reference-atom convention
+is wrong (e.g. an axis not passing through the constraint atoms) and must be fixed before edit mode ships.

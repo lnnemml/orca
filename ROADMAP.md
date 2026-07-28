@@ -130,15 +130,31 @@ everything below — see ADR-008)
         that restores it (`restoreScene`: snapshot annotates, input decides)
 
 **✅ 2.5.0 — Scene / fragment foundation is COMPLETE.** Multi-fragment scenes can be
-built, viewed, persisted, and iterated on. Next in Phase 2.5 is **2.5.1** (atom
-picking + measurement), which builds on `locateAtom` / `fragmentAtomIndices`.
+built, viewed, persisted, and iterated on. Next in Phase 2.5 is **2.5.1** (conformer
+search / GOAT), then the geometry editor (**2.5.2**), which builds on `locateAtom` /
+`fragmentAtomIndices`.
 
 Deferred (needs Phase 3 output parsing): **"continue from the result"** — iterate
 from the *optimised* geometry instead of the starting one. The fragment snapshot
 already supports it (atom count/order invariant after Opt), see the ADR-008
 amendment.
 
-**2.5.1 — Geometry editor** (builds on the foundation)
+**2.5.1 — Conformer search (GOAT)** (ADR-007's mandatory first step, pulled up from
+Phase 4.5 — SMILES fragments arrive as an arbitrary ETKDG conformer, so every scene
+may stand on the wrong one)
+
+- [x] a. GOAT primitive, pure (`src/scene/ensemble.ts`): `parseEnsemble` (against a
+      real ORCA 6.1.0 run — see `wiki/orca/goat.md`), `conformerMatchesFragment`,
+      `goatInputForFragment`. **Verified: GOAT preserves atom count + order**, so a
+      conformer drops back into a fragment via `replaceFragmentAtoms` with no mapping.
+- [ ] b. Run GOAT from the app on a fragment → parse the ensemble → let the user pick
+      a conformer → substitute it back into the scene. GOAT is slow and blocks the
+      concurrency-1 queue (give it `%pal`; ~3.5× on 4 cores — `goat.md`).
+
+Boltzmann weighting + DFT re-optimisation of the lowest 3–4 stay in Phase 4.5 (the
+scientific pipeline); 2.5.1 is only the primitive.
+
+**2.5.2 — Geometry editor** (builds on the foundation)
 
 - [ ] Atom picking in 3Dmol.js: click → highlight, show atom info (element, index, coordinates)
       — uses `locateAtom(globalIndex)` to report "atom N of <fragment>"
@@ -214,9 +230,10 @@ answers "how do I set up CPCM for water" in one search.
 reaction, explores pathways via native ORCA scans, and compares electronic energy
 barriers — the full computational experiment lifecycle. See ADR-007.
 
-- [ ] Conformer ensemble step: `! XTB GOAT` on the substrate → Boltzmann-weighted
-      ensemble → re-optimise lowest 3–4 at DFT → build reaction centers on those.
-      Mandatory before any pathway (see ADR-007).
+- [ ] Conformer ensemble → reaction-center pipeline: **Boltzmann weighting** of the
+      GOAT ensemble + **re-optimise the lowest 3–4 at DFT** → build reaction centers on
+      those. Mandatory before any pathway (see ADR-007). *(The GOAT primitive itself —
+      run + ensemble parse — was done in 2.5.1; this is the scientific layer on top.)*
 - [ ] Data model: `reactions`, `reaction_centers`, `pathways` tables; nullable FKs from
       `jobs` (`reaction_id`, `pathway_id`)
 - [ ] Reaction setup UI: define substrate + reagent, pick reaction center atoms,

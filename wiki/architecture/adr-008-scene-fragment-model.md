@@ -196,3 +196,23 @@ output instead needs output parsing (cclib, Phase 3) and is out of scope here �
 the fragment snapshot is already built to support it: after an optimisation the
 atom count and order are invariant (`replaceFragmentAtoms`'s guarantee), so the
 fragment boundaries transfer onto the optimised coordinates with no guessing.
+
+---
+
+## Amendment (2026-07-28, closes a lint finding — #7 not edited)
+
+Decision #7 stands; this pins its operational meaning. #7's prose says a new
+fragment is placed "along the axis with the **most free space** / the freest
+axis." The implementation (`src/scene/placement.ts`) uses a precise rule:
+
+> **freest axis ≡ the axis of smallest bounding-box extent of the current scene.**
+
+For an elongated substrate (the case #7 describes) the two readings coincide:
+the thin dimension *is* where there's most room to approach from the side. For a
+disk-shaped substrate they can diverge (smallest extent = face-on, which isn't
+the freest approach) — and there the **implementation wins on purpose**: AABB
+separation along the smallest-extent axis *guarantees* no overlap (the ≥ gap
+clearance is structural), whereas "most free space" is only a heuristic with no
+such guarantee. Placement is deliberately coarse anyway (ADR #7: exact
+positioning is the geometry editor's job), so the non-overlap guarantee is what
+matters. `placement.test.ts` locks the ≥ gap separation.

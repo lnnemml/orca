@@ -9,7 +9,10 @@ wired the UI — the Add-Fragment panel and the `FragmentList` sidebar — so
 multi-fragment scenes became user-reachable. **2.5.0d-3** persists the layout
 (`jobs.scene_json`, schema v4) and adds the **"New iteration"** action that reads
 it, via the pure `restoreScene`. **Phase 2.5.0 (Scene/fragment foundation) is now
-complete** — next in Phase 2.5 is atom picking + measurement (2.5.1).
+complete.** **2.5.1a** added the GOAT conformer-search primitive (`ensemble.ts`:
+`parseEnsemble` / `conformerMatchesFragment` / `goatInputForFragment`) — pure, no
+UI. Next: 2.5.1b (run GOAT from the app, substitute a conformer), then the
+geometry editor (2.5.2).
 
 ## Responsibilities
 
@@ -38,8 +41,12 @@ functions, no imports from react / 3dmol / tauri. The reactive `store.ts` (added
 - `FragmentList.tsx` — the fragment sidebar (React; reads the store, uses the
   shared `fragmentColor` palette).
 - `restore.ts` — `restoreScene` (snapshot ↔ input reconciliation on job open).
+- `ensemble.ts` — GOAT conformer-ensemble parsing + input generation (2.5.1a).
+- `__fixtures__/butane.finalensemble.xyz` — a real (3-structure) slice of an ORCA
+  6.1.0 GOAT run, the test oracle for `ensemble.test.ts`.
 - `*.test.ts` (scene / parity / store / placement / fragment-library /
-  add-fragment / restore) — vitest; this module owns the bulk of the suite's tests.
+  add-fragment / restore / ensemble) — vitest; this module owns the bulk of the
+  suite's tests.
 
 ## The index-space invariant (why this module exists)
 
@@ -88,7 +95,7 @@ Immutable mutators (each returns a new Scene, never mutates the input):
   invariant above.
 - `translateFragment(fragment, dx, dy, dz)` — rigid-body shift of one fragment
   (same id / composition / internal geometry). Used by placement and, later, the
-  geometry editor (2.5.3).
+  geometry editor (2.5.2).
 
 Parsing / reset detection:
 - `parseAtomLines(lines): SceneAtom[] | null` — skips blanks and `#` comments;
@@ -238,7 +245,7 @@ has its coordinate on the chosen axis ≥ (scene max + gap) while every scene at
 scene/fragment pair — hence Euclidean distance ≥ gap. No pairwise scan. Empty scene
 → the fragment is returned unmoved (it *is* the first fragment). The *orientation*
 is deliberately crude and chemically meaningless; exact positioning (Bürgi-Dunitz)
-is the geometry editor's job in 2.5.3. Placement is a pure translation, so a
+is the geometry editor's job in 2.5.2. Placement is a pure translation, so a
 fragment's internal geometry is untouched — `placement.test.ts` asserts both the
 ≥ gap separation (including a second fragment clearing the first) and that every
 intra-fragment distance is preserved to 1e-9.
@@ -275,6 +282,31 @@ on the numbers is `provenance` + review, not the test. This is why the worst bug
 class here (a wrong-but-converging bond length) is defended by naming the source,
 not by a green suite. No runtime RDKit generation (MMFF lacks params for ions like
 BH₄⁻).
+
+## GOAT conformer ensemble (`ensemble.ts`, 2.5.1a)
+
+The primitive behind conformer search (ADR-007's mandatory first step, pulled up
+from Phase 4.5 because SMILES fragments arrive as an arbitrary ETKDG conformer).
+Pure; parser **written against a real ORCA 6.1.0 run**, not from memory — see
+`wiki/orca/goat.md` for the observed file format and cost.
+
+- `parseEnsemble(text): Conformer[] | null` — parse a `*.finalensemble.xyz`
+  multi-frame xyz. `Conformer = { atoms, energy (Eh, `NaN` if the comment has no
+  leading number), index }`. Energy is the leading token of the `"<energy>
+  converged=true"` comment. Malformed/empty → `null`, never throws (same contract
+  as `deserializeScene`). Observed ensembles are energy-sorted (global min first).
+- `conformerMatchesFragment(fragment, conformer): boolean` — the exact composition
+  check `replaceFragmentAtoms` enforces (count + element sequence, via the shared
+  `normalizeElement`), but as a **predicate** so 2.5.1b can show a clear refusal
+  instead of catching a throw. GOAT preserves atom order (**verified on the run**),
+  so a fragment's own ensemble always matches — this guards against the wrong
+  ensemble reaching the wrong fragment.
+- `goatInputForFragment(fragment, mult=1): string` — a `! XTB GOAT` input for **one
+  fragment in isolation**: charge is `fragment.charge` (not the scene's
+  `totalCharge`), multiplicity 1 (all library fragments are closed-shell).
+
+`normalizeElement` is now **exported** from `scene.ts` so this predicate,
+`replaceFragmentAtoms`, and `xyzMatchesScene` share one element normalisation.
 
 ## Notes
 

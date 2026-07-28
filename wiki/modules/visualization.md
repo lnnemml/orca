@@ -41,13 +41,14 @@ strings). With no props it renders an empty viewer. Approach (ADR-008 #2/#3):
   atoms. **Verified in the WebKitGTK 4.1 MiniBrowser** (technique from `debugging/002`), not just
   Chromium: a water (atoms 0–2) + BH₄⁻ (atoms 3–7) probe confirmed (a) context creation, (b) both
   fragments visible in different colours, (c) the coloured set was exactly `[3,4,5,6,7]` — read back
-  from each atom's `.style.stick.color` — and (d) fragment 0 stayed CPK. **Picking in 2.5.1 keys off
+  from each atom's `.style.stick.color` — and (d) fragment 0 stayed CPK. **Picking (in the geometry
+  editor, 2.5.2) keys off
   this same 0-based `atom.index`** (never `atom.serial`): pick index = merged-xyz line = Scene global
   index = ASE mask index.
 - **`zoomTo` only on composition change.** A ref holds a "composition signature" (`id:size` per
   fragment, joined — **not** coordinates). `zoomTo` fires only when that signature changes (atoms
   added/removed); a coordinate-only edit re-renders without moving the camera. This is essential for
-  the 2.5.3 loop (type an angle → apply → look → adjust): a camera that re-zooms on every apply is
+  the 2.5.2 loop (type an angle → apply → look → adjust): a camera that re-zooms on every apply is
   unusable. The legacy `xyzData` path keeps its always-`zoomTo` behaviour.
 
 Integrated on **NewJobScreen** as a split panel to the right of the editor

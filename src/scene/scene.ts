@@ -49,8 +49,10 @@ const ATOMIC_NUMBERS: Readonly<Record<string, number>> = {
   Tl: 81, Pb: 82, Bi: 83, Po: 84, At: 85, Rn: 86,
 };
 
-/** Canonicalise an element symbol to `Xx` casing (`cl` / `CL` → `Cl`). */
-function normalizeElement(symbol: string): string {
+/** Canonicalise an element symbol to `Xx` casing (`cl` / `CL` → `Cl`). Exported
+ * so composition checks (replaceFragmentAtoms, xyzMatchesScene,
+ * conformerMatchesFragment) share one normalisation. */
+export function normalizeElement(symbol: string): string {
   if (symbol.length === 0) return symbol;
   return symbol[0].toUpperCase() + symbol.slice(1).toLowerCase();
 }

@@ -32,11 +32,13 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 - [input-format.md](orca/input-format.md) — anatomy of an .inp file
 - [output-files.md](orca/output-files.md) — what ORCA produces and what each file is for
 - [gotchas.md](orca/gotchas.md) — accumulated traps and their solutions
+- [goat.md](orca/goat.md) — `! XTB GOAT` conformer search: observed ensemble format, atom-order preservation, `%pal` cost (verified on ORCA 6.1.0)
 
 ## Chemistry (навчальні нотатки, українською)
 
 - [README.md](chemistry/README.md) — що тут живе і як вести нотатки
 - [reagent-geometry.md](chemistry/reagent-geometry.md) — геометрія реагентів-нуклеофілів: гідрид, чому BH₄⁻ тетраедричний, чому кут води 104.5°
+- [conformers.md](chemistry/conformers.md) — конформери і GOAT: anti/gauche-бутан, чому один конформер зі SMILES — випадковий знімок
 
 ## Debugging
 
@@ -48,4 +50,4 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 
 ---
 
-*Page count: 29. Last structural update: 2026-07-28 (lint: recount — the metric had drifted from 26).*
+*Page count: 31. Last structural update: 2026-07-28 (+orca/goat, +chemistry/conformers).*
