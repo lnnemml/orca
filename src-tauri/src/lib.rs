@@ -5,6 +5,7 @@ mod db;
 mod error;
 mod local_backend;
 mod models;
+mod output_search;
 mod result_extraction;
 mod sidecar;
 
@@ -71,6 +72,8 @@ pub fn run() {
             commands::jobs::read_job_output,
             commands::jobs::read_job_convergence,
             commands::jobs::open_job_folder,
+            output_search::search_job_output,
+            output_search::get_search_presets,
             cpu_presets::get_cpu_presets,
             commands::molecules::create_molecule,
             commands::molecules::list_molecules,

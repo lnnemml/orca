@@ -19,6 +19,25 @@
 Negative frequencies in Freq output = saddle point, not a minimum. The Results screen must
 flag this loudly — core teaching moment.
 
+## What to look for in an output (search presets)
+The output-search feature (`output_search.rs`, Phase 2.7) ships one-click chips for the things a
+chemist actually greps for. It's a **learning instrument**: the presets teach *what* to look for
+and *what each banner means*. All wording below is **verified against real ORCA 6.1 output** on the
+dev machine unless noted.
+
+| Preset | Query (matcher) | What the banner means |
+|---|---|---|
+| **Warnings** | `WARNING` (literal, ci) | Advisory messages — often the reason a result is subtly off. Confirmed: the `WARNINGS` header and `WARNING:` lines. |
+| **Errors** | `ERROR\|error termination\|aborting\|ABORTING` (regex, **case-SENSITIVE**) | Fatal problems / aborts. Case-sensitive on purpose: a case-insensitive `error` matches the benign `Last DIIS Error` / `Startup error` on **every** SCF (12+ hits in a *successful* run) — noise that buries real aborts. The case-sensitive query fires 0× across 12 successful outputs. |
+| **SCF not converged** | `SCF NOT CONVERGED` (literal, ci) | The SCF failed → any energy after it is meaningless. (Positive case not reproducible locally — all sampled runs converged — but it's the standard failure banner, analogous to the `SCF CONVERGED AFTER N CYCLES` success line.) |
+| **Imaginary modes** | `imaginary mode` (literal, ci) | A negative vibrational frequency = a saddle point, not a minimum. Matches ORCA's real marker, e.g. `6:  -33.66 cm**-1  ***imaginary mode***`. **Not** bare `imaginary`, which hits `imaginary perturbations` (a CPHF count present in every Freq run, even at a true minimum). |
+| **Final energies** | `FINAL SINGLE POINT ENERGY` (literal) | One per optimization cycle; the last is the converged value. For an Opt run the count ≈ cycles + 1 (the post-convergence recompute). |
+| **Geometry convergence** | `Geometry convergence` (literal) | The per-cycle convergence tables (`\|Geometry convergence\|`); count = optimization cycles. |
+| **Timings** | `TOTAL RUN TIME\|Sum of individual times` (regex) | Where the wall time went. |
+| **Basis set info** | `Basis Dimension\|Number of basis functions` (regex) | How large the calculation actually was. |
+
+`ci` = case-insensitive (the default; the UI `Aa` toggle is off unless a preset turns it on).
+
 ## Convergence blocks (for live parsing)
 Formats confirmed against real ORCA 6.1 output (r²SCAN-3c). Parsed incrementally by
 `src-tauri/src/convergence.rs` for the live dashboard; will be reused in Phase 3 (results)

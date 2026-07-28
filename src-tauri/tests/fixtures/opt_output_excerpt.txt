@@ -1,8 +1,9 @@
 Excerpt of a real ORCA 6.1 r2SCAN-3c Opt run (C2H6), two geometry cycles.
-Contains: cycle markers, DIIS + SOSCF SCF sub-tables, per-cycle FINAL SINGLE
-POINT ENERGY, and |Geometry convergence| blocks (4 criteria on cycle 1 before
-an energy delta exists, 5 on cycle 2). Interspersed coordinate/internal tables
-are deliberate garbage to exercise the tolerant parser.
+Contains: cycle markers, DIIS + SOSCF SCF sub-tables, per-cycle final energy,
+and per-cycle convergence tables (4 criteria on cycle 1 before an energy delta
+exists, 5 on cycle 2). Interspersed coordinate/internal tables are deliberate
+garbage to exercise the tolerant parser. (This header avoids literal ORCA
+banners so it doesn't pollute substring-search fixtures.)
 
          *************************************************************
          *                GEOMETRY OPTIMIZATION CYCLE   1            *

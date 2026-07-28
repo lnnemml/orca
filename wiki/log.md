@@ -681,3 +681,49 @@ running+waiting / created-while-paused). The live-in-GUI legs (empty-queue pause
 reason, resume-starts-immediately) need the real Tauri window — not headless-drivable, same
 limitation as prior phases; the change is presentational React over the unchanged, already-verified
 `pause_queue`/`resume_queue`/`is_queue_paused` backend.
+
+## [2026-07-28] session | Phase 2 step 7: output search with ORCA presets
+
+Search an ORCA output for words, in-app — the last Phase 2 item (an addition beyond the original
+plan, per the author). Outputs reach tens of MB, so previously the only way to find something was
+an external editor.
+
+**Rust — streaming search (`output_search.rs`, new).** `search_output(path, opts)` reads the file
+line by line via `BufReader` — **never whole** (domain rule #5): it holds only a 2-line ring buffer
+of context, the ≤2 matches awaiting trailing context, and the capped result list. Each match
+carries 2 lines of context either side; single pass (a match stays pending until its trailing
+context arrives, then finalizes in line order; leftovers flush at EOF). `MAX_MATCHES = 500` caps
+returned matches while `total` counts every hit (`truncated = total > matches.len()`). Matcher:
+regex (`RegexBuilder.case_insensitive`; invalid → `AppError::Backend`) or literal `contains` with
+the needle lowercased once up front. Empty query → empty result. Commands `search_job_output` +
+`get_search_presets`, registered in `lib.rs`.
+
+**ORCA presets — the point of the feature.** One-click chips for what a chemist greps for
+(warnings, errors, SCF-not-converged, imaginary modes, energies, geom convergence, timings, basis).
+Wording **verified against 12 real outputs**, and two corrections came out of that (both in
+`orca/output-files.md`):
+- **`errors` had to become case-SENSITIVE** (`ERROR|error termination|aborting|ABORTING`): a
+  case-insensitive `error` matches the benign `Last DIIS Error`/`Startup error` on every SCF — 12+
+  hits in a *successful* run. The case-sensitive query fires **0×** across all 12. Required adding
+  a per-preset `case_sensitive` field (deviation from the task's struct — justified by the check).
+- **`imaginary` = `imaginary mode`**, not bare `imaginary` (which hits `imaginary perturbations`, a
+  CPHF count in every Freq run). Confirmed it matches ORCA's real `***imaginary mode***` marker on
+  a saddle-point output (`6:  -33.66 cm**-1  ***imaginary mode***`).
+
+**Frontend — `OutputSearchPanel.tsx`.** Collapsible accordion above the log console (same pattern
+as the convergence dashboard), collapsed by default, shown for non-draft jobs. Search box (Enter),
+`regex` + `Aa` toggles, preset chips that fill+flag+search in one click. Results: bounded scrolling
+monospace list with line numbers, highlighted match line + `<span class="hl">` on the occurrence,
+muted context lines; `500 of N` header when truncated; `No matches` when empty. **No
+search-as-you-type** (would kill the UI on 50 MB). No console jump-to-line (deferred — the console
+holds only the tail; noted in ROADMAP).
+
+**Verified.** `cargo test` 51 + 2 ignored (9 new search tests). `tsc` + `npm test` (10) +
+`vite build` clean. **Real outputs (headless):** ran every preset over the 12 real jobs — `errors`
+0 false positives (the DIIS-Error trap), `imaginary` 1 real `***imaginary mode***` hit, `energies`
+= cycles+1, and **431 KB / ~8600 lines searched in ~3 ms** (memory bounded). The in-GUI legs
+(chips, highlight, scroll, live-job search) need the real Tauri window — not headless-drivable,
+same limitation as prior phases; the search engine + presets are real-data-verified and the data
+path is fully typed.
+
+**Phase 2 fully closed** (2.1–2.7 + queue/pinning/cancel). Next: Phase 2.5 geometry editor.

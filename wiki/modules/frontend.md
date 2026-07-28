@@ -316,6 +316,32 @@ The bottom status bar's Queue indicator + Pause/Resume button (`App.tsx` footer)
   reads **`queued (paused)`** with a "Queue is paused" tooltip while paused — so a job that isn't
   moving shows why. Backend (`pause_queue`/`resume_queue`/`is_queue_paused`) untouched.
 
+## As built (Phase 2.7) — output search panel
+`src/screens/OutputSearchPanel.tsx` — a collapsible search over `output.out` on Job detail, so
+finding something in a tens-of-MB output no longer means opening an external editor.
+
+- **Placement:** a `.input-builder` accordion (same `builder-toggle`/`builder-caret` pattern as the
+  convergence dashboard) **above** the log console, collapsed by default, shown for any non-draft
+  job (`OutputSearchPanel` gets `jobId`).
+- **Controls:** a search box (Enter runs it), `regex` and `Aa` (case-sensitive) checkboxes (both
+  off by default), and a Search button that shows `Searching…`. **No search-as-you-type** — on a
+  50 MB file that would kill the UI; only Enter / button / preset click triggers a search.
+- **Preset chips** (`get_search_presets`): Warnings · Errors · SCF not converged · Imaginary
+  modes · Final energies · … Clicking a chip fills the box, sets its `regex`/`case_sensitive`
+  flags (so the toggles visibly reflect what runs — e.g. Errors flips `Aa` on), and searches at
+  once. `title` = the preset's description (the learning aid).
+- **Results:** header (`12 matches`, or `500 of 637 matches (showing first 500)` when truncated);
+  a bounded, own-scrolling (`max-height 300px`) monospace `white-space: pre` list — each hit is a
+  line-number gutter + the line, the match line highlighted (`.search-hit` bg) with the matched
+  substring wrapped in `.hl`, surrounded by muted context lines (`.search-ctx`). Empty search →
+  `No matches`. Highlight: literal by position; regex highlights the first match via a JS `RegExp`
+  (falls back to no highlight if the pattern isn't valid JS regex).
+- **Deliberately not done:** jumping the console to the matched line. The console holds only the
+  file's tail, so a jump would need a separate "window around line N" mode + a "back to live"
+  control. The in-result context covers the main need; jump-to-line is deferred (noted in ROADMAP).
+- CSS: `.output-search`, `.search-presets`, `.chip`, `.search-results`, `.search-hit`,
+  `.search-ctx`, `.ln`, `.hl` in `app.css`.
+
 ## Resolved from step 3
 The earlier "no backfill of `output.out`" gap is closed by `read_job_output` + the detail
 backfill above.

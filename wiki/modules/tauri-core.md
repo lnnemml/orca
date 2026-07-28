@@ -1,7 +1,8 @@
 # Module: Rust core (src-tauri/)
 
-**Status:** Phase 1 step 3 done — LocalBackend runs ORCA end-to-end (spawn, live log
-tailing, completion detection), on top of the job model (step 1) and Phase 0 scaffold.
+**Status:** Phase 2 complete. LocalBackend runs ORCA end-to-end (spawn, pinning, sequential
+queue, cancel with MPI-rank sweep); molecule library; streaming convergence parse (`parser.md`)
+and output search (`output_search.rs`). Built on the job model + Phase 0 scaffold.
 
 ## As built (Phase 0)
 Files: `lib.rs` (builder + setup + exit handling), `db.rs`, `error.rs`, `sidecar.rs`,
@@ -127,6 +128,41 @@ in `wiki/modules/execution-backends.md`); the core-facing surface:
 - **Startup sequence** now runs `local_backend::reconcile_on_startup(&conn)` before managing the
   DB, then spawns a thread that calls `try_start_next` to resume any `queued` jobs.
 - **Dependency:** `libc = "0.2"` (Unix-only target dep) for `killpg`.
+
+## As built (Phase 2.7) — streaming output search
+New file: `output_search.rs`. Two commands, registered in `lib.rs`.
+
+- **`search_job_output(id, opts: SearchOptions) -> SearchResult`** — search a job's `output.out`
+  for `opts.query` (`regex` / `case_sensitive` flags). Empty result (not an error) when the job
+  has no dir or output yet.
+- **`get_search_presets() -> Vec<SearchPresetInfo>`** — the curated ORCA search chips.
+- **Streaming algorithm (domain rule #5 — never the whole file in memory):** `search_output`
+  reads line by line through a `BufReader`, holding only a `VecDeque` ring buffer of the last
+  `CONTEXT_LINES` (2) lines, the ≤2 matches still awaiting trailing context, and the capped result
+  list. Each match carries `context_before`/`context_after` (2 lines each). Single pass: the
+  trailing-context requirement means a match is *pending* until the next 2 lines arrive, then moved
+  to results in line order; leftovers flush at EOF (handles matches at the file's end without
+  panicking). Measured: **431 KB / ~8600 lines searched in ~3 ms**.
+- **`MAX_MATCHES = 500`** caps returned matches, but `total` counts every hit (so the UI can say
+  "500 of 637") and `truncated = total > matches.len()`.
+- **Matcher:** regex via `RegexBuilder.case_insensitive(!case_sensitive)` (invalid pattern →
+  `AppError::Backend("invalid regular expression: …")`); literal `contains` otherwise, with the
+  needle lowercased **once** up front for the case-insensitive path (not per line). Empty query →
+  empty result, not an error.
+- **Presets (`SEARCH_PRESETS`)** — `id/label/query/regex/case_sensitive/description`. Wording
+  **verified against real ORCA 6.1 output** (see `orca/output-files.md`). Two correctness points
+  worth remembering:
+  - **`errors` is case-SENSITIVE** (`ERROR|error termination|aborting|ABORTING`): a
+    case-insensitive `error` matches the benign `DIIS Error` / `Startup error` printed on every SCF
+    (12+ hits in a *successful* run). Verified: the case-sensitive query fires **0 times** across
+    12 real successful outputs. This is why `SearchPreset` carries a per-preset `case_sensitive`
+    flag (a deviation from the original task struct — justified by the false-positive check).
+  - **`imaginary` = literal `imaginary mode`**, NOT bare `imaginary` (which hits
+    `imaginary perturbations`, a CPHF count present in every Freq run). Confirmed it matches
+    ORCA's real `***imaginary mode***` marker on a saddle-point output.
+- **9 unit tests** — literal+context, file-boundary context, case sensitivity, regex, invalid
+  regex → error, cap-but-count (600 hits → 500/600/truncated), empty query, and one over the real
+  `opt_output_excerpt.txt` fixture (`Geometry convergence` → 2).
 
 ## Deviation note
 `dirs` crate used for the data dir (per task spec) rather than Tauri's `app.path()` API —

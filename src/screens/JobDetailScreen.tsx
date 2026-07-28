@@ -6,6 +6,7 @@ import type { Job, JobStatus } from "../types";
 import { formatEnergy, formatWallTime } from "../format";
 import { ConvergenceDashboard } from "../convergence/ConvergenceDashboard";
 import type { ConvergenceEvent, ConvergencePayload } from "../convergence/types";
+import { OutputSearchPanel } from "./OutputSearchPanel";
 
 interface LogPayload {
   job_id: string;
@@ -35,6 +36,7 @@ export function JobDetailScreen({ jobId, autoRun, onBack }: JobDetailScreenProps
   // Dashboard accordion: user override (null = follow the default, which is
   // expanded while the job is active, collapsed once it's finished).
   const [dashOpen, setDashOpen] = useState<boolean | null>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const preRef = useRef<HTMLPreElement>(null);
   const didSubmit = useRef(false);
@@ -245,6 +247,27 @@ export function JobDetailScreen({ jobId, autoRun, onBack }: JobDetailScreenProps
                   Waiting for convergence data…
                 </div>
               )}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      {job && job.status !== "draft" ? (
+        <div className="input-builder" style={{ marginBottom: 10 }}>
+          <button
+            className="builder-toggle"
+            onClick={() => setSearchOpen((o) => !o)}
+            aria-expanded={searchOpen}
+          >
+            <span className="builder-caret">{searchOpen ? "▾" : "▸"}</span>
+            Search output
+            <span className="muted" style={{ marginLeft: 8 }}>
+              find warnings, energies, errors… without opening the file
+            </span>
+          </button>
+          {searchOpen ? (
+            <div className="builder-body">
+              <OutputSearchPanel jobId={jobId} />
             </div>
           ) : null}
         </div>
