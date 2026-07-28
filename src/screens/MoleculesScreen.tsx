@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 import { MoleculeViewer } from "../viewer/MoleculeViewer";
-import { xyzToAtomLines, atomLinesToXyz } from "../viewer/xyz-format";
+import { atomLinesToXyz } from "../viewer/xyz-format";
+import { importStructureFile, IMPORT_ACCEPT } from "../viewer/import-file";
 import { formatTimestamp } from "../format";
 import type { Molecule, SidecarStatus } from "../types";
 
@@ -188,25 +189,21 @@ function AddMoleculeForm({ onSaved, onError }: AddMoleculeFormProps) {
   const set = <K extends keyof Draft>(key: K, value: Draft[K]) =>
     setDraft((d) => ({ ...d, [key]: value }));
 
-  // Import a local .xyz file: read, validate, and normalise into a standard xyz
+  // Import a structure file: `.xyz` parsed locally, other formats converted to
+  // xyz by the sidecar (see import-file.ts). Normalised into a standard xyz
   // string for the preview and for saving.
-  const importXyzFile = (file: File) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const atoms = xyzToAtomLines(String(reader.result ?? ""));
-      if (!atoms) {
-        onError(`"${file.name}" is not a valid .xyz file`);
-        return;
-      }
+  const importFile = async (file: File) => {
+    try {
+      const { atomLines } = await importStructureFile(file);
       setDraft((d) => ({
         ...d,
-        xyz: atomLinesToXyz(atoms, d.name || file.name),
+        xyz: atomLinesToXyz(atomLines, d.name || file.name),
         name: d.name || file.name.replace(/\.[^.]+$/, ""),
         formula: "",
       }));
-    };
-    reader.onerror = () => onError(`Could not read "${file.name}"`);
-    reader.readAsText(file);
+    } catch (e) {
+      onError(e instanceof Error ? e.message : String(e));
+    }
   };
 
   // Generate a 3D structure from SMILES via the sidecar (RDKit ETKDG + MMFF).
@@ -321,16 +318,16 @@ function AddMoleculeForm({ onSaved, onError }: AddMoleculeFormProps) {
         <input
           ref={fileInputRef}
           type="file"
-          accept=".xyz,.XYZ"
+          accept={IMPORT_ACCEPT}
           hidden
           onChange={(e) => {
             const f = e.currentTarget.files?.[0];
-            if (f) importXyzFile(f);
+            if (f) importFile(f);
             e.currentTarget.value = "";
           }}
         />
         <button className="btn btn-sm" onClick={() => fileInputRef.current?.click()}>
-          Import .xyz
+          Import file
         </button>
         <span className="import-or">or</span>
         <input

@@ -45,20 +45,20 @@ and sees the final energy in the job list — without touching a terminal.
 
 ---
 
-## Phase 2 — Molecules & input UX (≈ 2–3 weeks)
+## Phase 2 — Molecules & input UX (≈ 2–3 weeks) — ✅ COMPLETE
 
 **Goal:** working with structures and building inputs becomes visual.
 
-- [~] 3Dmol.js viewer component: load xyz, ball-and-stick — **done** (Phase 2.1: `MoleculeViewer`
+- [x] 3Dmol.js viewer component: load xyz, ball-and-stick — **done** (Phase 2.1: `MoleculeViewer`
       + live xyz preview on New Job, WebKitGTK WebGL fix). Licorice toggle + atom picking → Phase 3.
-- [~] Import: xyz file, SMILES → 3D via sidecar (RDKit ETKDG + MMFF cleanup) — **done**
+- [x] Import: xyz file, SMILES → 3D via sidecar (RDKit ETKDG + MMFF cleanup) — **done**
       (Phase 2.2: `.xyz` file import + `/smiles-to-3d` endpoint, both inject coords into the
       editor). MMFF conformer only; conformer choice / protonation states later.
-- [~] Molecule library in SQLite (name, formula, xyz, tags) — **done** (Phase 2.3: `molecules`
+- [x] Molecule library in SQLite (name, formula, xyz, tags) — **done** (Phase 2.3: `molecules`
       table + CRUD commands, Molecules screen with add/list/detail/use/delete, "Save to Library"
       + "Use" ↔ New Job integration). NOT yet linked to jobs (`molecule_id` FK deferred to
       Phase 4.5, reaction modeling).
-- [~] Input builder form: method/functional, basis, RI approximations, dispersion,
+- [x] Input builder form: method/functional, basis, RI approximations, dispersion,
       solvation (CPCM/SMD + solvent), job type, charge/multiplicity, `%pal`/`%maxcore`
       → generates `.inp`, still hand-editable in Monaco (form ↔ text one-way is fine) — **done**
       (Phase 2.4: `src/input-builder/`, composite vs functional modes, auto RI aux basis, live
@@ -71,7 +71,15 @@ and sees the final energy in the job list — without touching a terminal.
       per-cycle chart (ΔE in kcal/mol tooltip), criteria-vs-tolerance chart (log Y). recharts;
       explicit chart width (WebKitGTK ResponsiveContainer 0×0 mitigation). Not in SQLite —
       parsed on demand.
-- [ ] Sidecar endpoint: xyz ↔ common format conversions (Open Babel)
+- [x] Sidecar endpoint: xyz ↔ common format conversions (**ASE**, not Open Babel) — **done**
+      (Phase 2.6: `POST /convert` + `GET /formats` in `sidecar/app/convert.py`). ASE chosen over
+      Open Babel: already a sidecar dep (ADR-007 geometry kernel), pure-Python wheel (no system
+      binary), covers xyz/pdb/cif/mol/sdf/gen/turbomole/vasp/... Whitelisted read/write formats
+      (security: ASE's full registry includes code-executing calc-package readers). Frontend:
+      the New Job + Molecules "Import file" button now accepts `.pdb/.cif/.mol/.sdf/.gen` too —
+      `.xyz` parsed locally, the rest converted to xyz via the sidecar (shared
+      `src/viewer/import-file.ts`). Open Babel remains the fallback only for formats ASE lacks
+      (e.g. mol2). Export to other formats from the UI is Phase 3.
 - [x] Sequential job queue: `queued` status, worker loop picks next job when current
       completes (concurrency 1) — **done**. `submit` enqueues instead of erroring on a busy
       slot; the queue lives in SQLite (`status='queued'`, oldest first), pulled by

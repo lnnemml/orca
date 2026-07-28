@@ -6,6 +6,7 @@ import { MoleculeViewer } from "../viewer/MoleculeViewer";
 import { extractXyzFromInput } from "../viewer/parse-xyz-from-input";
 import { injectXyzIntoInput } from "../viewer/inject-xyz-into-input";
 import { xyzToAtomLines, parseChargeMult } from "../viewer/xyz-format";
+import { importStructureFile, IMPORT_ACCEPT } from "../viewer/import-file";
 import { InputBuilderForm } from "../input-builder/InputBuilderForm";
 import {
   CATEGORY_LABELS,
@@ -89,25 +90,21 @@ export function NewJobScreen({
     setOpenSection(null);
   };
 
-  // Import a local .xyz file: read it, validate, and replace the editor's
-  // coordinate block (neutral charge 0, singlet). No sidecar needed.
-  const importXyzFile = (file: File) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const atoms = xyzToAtomLines(String(reader.result ?? ""));
-      if (!atoms) {
-        setError(`"${file.name}" is not a valid .xyz file`);
-        return;
-      }
+  // Import a structure file: `.xyz` is parsed locally, other formats are
+  // converted to xyz by the sidecar (see import-file.ts). Replaces the editor's
+  // coordinate block (neutral charge 0, singlet).
+  const importFile = async (file: File) => {
+    try {
+      const { atomLines } = await importStructureFile(file);
       setError(null);
       setSaved(false);
-      setFormula(""); // a bare .xyz carries no formula
-      setContent((c) => injectXyzIntoInput(c, atoms, 0, 1));
+      setFormula(""); // an imported file carries no formula
+      setContent((c) => injectXyzIntoInput(c, atomLines, 0, 1));
       const base = file.name.replace(/\.[^.]+$/, "");
       if (!title.trim()) setTitle(base);
-    };
-    reader.onerror = () => setError(`Could not read "${file.name}"`);
-    reader.readAsText(file);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
   };
 
   // Generate a 3D structure from SMILES via the sidecar (RDKit ETKDG + MMFF),
@@ -244,16 +241,16 @@ export function NewJobScreen({
         <input
           ref={fileInputRef}
           type="file"
-          accept=".xyz,.XYZ"
+          accept={IMPORT_ACCEPT}
           hidden
           onChange={(e) => {
             const f = e.currentTarget.files?.[0];
-            if (f) importXyzFile(f);
+            if (f) importFile(f);
             e.currentTarget.value = ""; // allow re-picking the same file
           }}
         />
         <button className="btn btn-sm" onClick={() => fileInputRef.current?.click()}>
-          Import .xyz
+          Import file
         </button>
         <span className="import-or">or</span>
         <input

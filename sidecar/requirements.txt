@@ -6,3 +6,7 @@ pydantic>=2.0
 # Structure generation (Phase 2.2): SMILES → 3D via ETKDGv3 + MMFF. The modern
 # PyPI wheel is named `rdkit` (the old `rdkit-pypi` fork is deprecated).
 rdkit>=2024.3
+# Molecular format conversion (Phase 2.6): xyz/pdb/cif/mol/sdf/... via ASE's
+# io.read/write. Pure-Python wheel — no system binary (unlike Open Babel); also
+# the geometry kernel for Phase 2.5 (set_distance/angle/dihedral). See ADR-007.
+ase>=3.23

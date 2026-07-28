@@ -1,6 +1,7 @@
 # Module: Frontend (src/)
 
-**Status:** Phase 2 **in progress** — step 2.5 adds the live convergence dashboard on Job detail
+**Status:** Phase 2 **complete** — step 2.6 extends file import to pdb/cif/mol/sdf/gen (shared
+`import-file.ts` → sidecar `/convert`); step 2.5 adds the live convergence dashboard on Job detail
 (energy + criteria per cycle, recharts); step 2.4 the ORCA input builder form (dropdowns → `.inp`,
 still editable in Monaco); step 2.3 the molecule library (Molecules screen + Save/Use ↔ New Job);
 step 2.2 .xyz import + SMILES→3D on New Job; step 2.1 the 3Dmol.js molecule preview. Phase 1
@@ -283,6 +284,19 @@ instead of reading the text log. New `src/convergence/` module; still `useState`
   parsed, **zero** Freq-eigenvector false positives. The live in-GUI rendering (charts updating
   mid-run, backfill on reopen) needs the real Tauri window — not headless-drivable, same limitation
   as every prior phase; recharts output is SVG and the data path is fully typed + tested.
+
+## As built (Phase 2.6) — multi-format structure import
+The "Import .xyz" button on **both** New Job and Molecules is now **"Import file"** and accepts
+`.xyz,.pdb,.cif,.mol,.sdf,.gen`. Logic extracted to a shared `src/viewer/import-file.ts`
+(`importStructureFile(file)` + `IMPORT_ACCEPT`) so the two screens don't duplicate it:
+- `.xyz` → parsed locally (`xyzToAtomLines`), no round-trip.
+- other formats → `from_format` from the extension, `fetch` the sidecar `/convert`
+  (`to_format: "xyz"`, port via `get_sidecar_status`), then the same `xyzToAtomLines` path.
+- throws `Error(message)` on any failure; each screen shows it in its existing banner. On error
+  the editor/draft is left untouched (the coordinate block is only replaced on success).
+
+Returns ORCA coordinate lines; New Job injects them with `injectXyzIntoInput(…, 0, 1)`, Molecules
+builds a standard xyz via `atomLinesToXyz`. No new screen. Export to other formats is Phase 3.
 
 ## Resolved from step 3
 The earlier "no backfill of `output.out`" gap is closed by `read_job_output` + the detail

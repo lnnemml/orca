@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from . import __version__
+from .convert import router as convert_router
 from .smiles import router as smiles_router
 
 app = FastAPI(title="OrcaStudio sidecar", version=__version__)
@@ -38,3 +39,4 @@ def health() -> HealthResponse:
 
 # Chemistry endpoints.
 app.include_router(smiles_router)
+app.include_router(convert_router)

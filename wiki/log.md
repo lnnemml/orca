@@ -577,3 +577,45 @@ and the frontend data path is fully typed.
 
 Next: sequential-queue polish already shipped; Phase 2.5 geometry editor (atom picking, measure,
 set distance/angle/dihedral) is the next big item.
+
+## [2026-07-28] milestone | Phase 2 complete: molecules, input builder, convergence, conversions
+
+Last Phase 2 item — molecular format conversion in the sidecar — and with it Phase 2 closes.
+
+**Library — ASE, not Open Babel** (ROADMAP said Open Babel; overridden). ASE is already a sidecar
+dependency (ADR-007 geometry kernel for Phase 2.5), installs as a pure-Python wheel (no system
+binary, no flaky `openbabel-wheel` build), and covers every format we need. Open Babel stays a
+fallback only for formats ASE lacks (e.g. mol2). `ase>=3.23` added to `requirements.txt`
+(`pip install -r` pulled `ase==3.29` + numpy/scipy/matplotlib; no venv recreate). Decision recorded
+in `modules/sidecar.md`.
+
+**Endpoint (`sidecar/app/convert.py`).** `POST /convert`
+(`{content, from_format, to_format}` → `{content, num_atoms, formula}`): content → tempfile
+(`suffix=.{from_format}`) → `ase.io.read(format=…, index=-1)` → `ase.io.write` to a second tempfile
+→ text back; both tempfiles cleaned in `finally`. `GET /formats` → `{read, write}` for UI dropdowns.
+**Security whitelist:** ASE's full registry includes calc-package readers that can execute code /
+read arbitrary files on parse — only plain structure formats are accepted, checked **before** ASE
+sees the input. `WRITE_FORMATS` narrower than `READ_FORMATS`. **Gotcha:** ASE's PDB format name is
+`proteindatabank`, not `pdb` — public keys mapped via `_ASE_FORMAT`. Errors: unknown fmt → 400,
+unparseable → 422, 0 atoms → 422.
+
+**Frontend — extended import, no new screen.** "Import .xyz" → **"Import file"** on both New Job and
+Molecules, `accept=".xyz,.pdb,.cif,.mol,.sdf,.gen"`. Shared `src/viewer/import-file.ts`
+(`importStructureFile` + `IMPORT_ACCEPT`) removes the duplicated per-screen handler: `.xyz` parsed
+locally, other formats converted to xyz via `/convert` (port from `get_sidecar_status`), then the
+common `xyzToAtomLines` path. Errors surface in each screen's existing banner; the editor/draft is
+only touched on success.
+
+**Verified.** `pytest` 11 green (6 new convert tests: xyz→pdb, pdb→xyz round-trip ≤1e-3, mol2→400,
+garbage→422, `/formats`, empty→422). Live `curl` against a running sidecar: xyz→pdb text, bad
+format→400, garbage→422, `/formats` lists both maps. `tsc` + `npm test` (10) + `vite build` clean.
+The GUI import legs (pick a `.pdb` on New Job → viewer shows the molecule; broken `.pdb` → clear
+error, editor intact) need the real Tauri window — not headless-drivable, same limitation as every
+prior phase; the pdb→xyz path the GUI uses is exactly `test_pdb_to_xyz` + curl-covered.
+
+**Phase 2 closed.** All items done: 3Dmol viewer (2.1), xyz/SMILES import (2.2), molecule library
+(2.3), input builder (2.4), convergence dashboard (2.5), format conversion (2.6). Plus beyond the
+original scope: sequential queue, CPU pinning, cancel, startup reconciliation.
+
+Next (Phase 2.5): geometry editor — atom picking in 3Dmol, measurement, set distance/angle/dihedral
+via ASE, fragment library, constraint manager → `%geom`.
