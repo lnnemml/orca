@@ -75,13 +75,19 @@ pub struct Job {
     pub created_at: String,
     pub started_at: Option<String>,
     pub completed_at: Option<String>,
+    /// Versioned SceneFragment snapshot (ADR-008 #5), written once at create
+    /// time. `None` for jobs created before schema v4, or with no scene. It
+    /// *annotates* `input_content`; the input text stays authoritative for
+    /// geometry (restore reconciles them — see `restoreScene` in the frontend).
+    pub scene_json: Option<String>,
 }
 
 impl Job {
     /// Column list used by every `SELECT` that hydrates a [`Job`]. The order
     /// here is the contract [`Job::from_row`] relies on.
     pub const COLUMNS: &'static str = "id, title, input_content, status, job_dir, \
-         energy, wall_time, error_message, created_at, started_at, completed_at";
+         energy, wall_time, error_message, created_at, started_at, completed_at, \
+         scene_json";
 
     /// Build a [`Job`] from a row selected in [`Job::COLUMNS`] order.
     pub fn from_row(row: &Row) -> rusqlite::Result<Job> {
@@ -106,6 +112,7 @@ impl Job {
             created_at: row.get(8)?,
             started_at: row.get(9)?,
             completed_at: row.get(10)?,
+            scene_json: row.get(11)?,
         })
     }
 }

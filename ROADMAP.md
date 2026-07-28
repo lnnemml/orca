@@ -126,7 +126,17 @@ everything below — see ADR-008)
   - d-2. Add Fragment: pure foundation, then UI
     - [x] a. Curated reagent library + bounding-box placement (pure, no UI)
     - [x] b. Add-Fragment panel + fragment sidebar (shared palette)
-  - [ ] d-3. `jobs.scene_json` persistence (schema v4)
+  - [x] d-3. `jobs.scene_json` persistence (schema v4) + "New iteration" action
+        that restores it (`restoreScene`: snapshot annotates, input decides)
+
+**✅ 2.5.0 — Scene / fragment foundation is COMPLETE.** Multi-fragment scenes can be
+built, viewed, persisted, and iterated on. Next in Phase 2.5 is **2.5.1** (atom
+picking + measurement), which builds on `locateAtom` / `fragmentAtomIndices`.
+
+Deferred (needs Phase 3 output parsing): **"continue from the result"** — iterate
+from the *optimised* geometry instead of the starting one. The fragment snapshot
+already supports it (atom count/order invariant after Opt), see the ADR-008
+amendment.
 
 **2.5.1 — Geometry editor** (builds on the foundation)
 

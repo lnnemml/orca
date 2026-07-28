@@ -5,9 +5,11 @@ on New Job**, via a Zustand store (`store.ts`) synced two-way with the Monaco
 buffer. 2.5.0a pure core → 2.5.0b input-builder + parity → 2.5.0c multi-fragment
 viewer → **2.5.0d-1 store + Scene↔Monaco sync + parser consolidation closed**.
 **2.5.0d-2a** added the pure foundation (reagent library + placement); **2.5.0d-2b**
-wired the UI — the Add-Fragment panel (reagents / library / import / SMILES, all
-one road) and the `FragmentList` sidebar — so **multi-fragment scenes are now
-user-reachable**. Still ahead: **d-3** `jobs.scene_json` persistence (schema v4).
+wired the UI — the Add-Fragment panel and the `FragmentList` sidebar — so
+multi-fragment scenes became user-reachable. **2.5.0d-3** persists the layout
+(`jobs.scene_json`, schema v4) and adds the **"New iteration"** action that reads
+it, via the pure `restoreScene`. **Phase 2.5.0 (Scene/fragment foundation) is now
+complete** — next in Phase 2.5 is atom picking + measurement (2.5.1).
 
 ## Responsibilities
 
@@ -35,8 +37,9 @@ functions, no imports from react / 3dmol / tauri. The reactive `store.ts` (added
   `libraryFragmentToScene`.
 - `FragmentList.tsx` — the fragment sidebar (React; reads the store, uses the
   shared `fragmentColor` palette).
+- `restore.ts` — `restoreScene` (snapshot ↔ input reconciliation on job open).
 - `*.test.ts` (scene / parity / store / placement / fragment-library /
-  add-fragment) — vitest; this module owns the bulk of the suite's tests.
+  add-fragment / restore) — vitest; this module owns the bulk of the suite's tests.
 
 ## The index-space invariant (why this module exists)
 
@@ -111,6 +114,17 @@ Parsing / reset detection:
   (case-insensitive) + coordinates within `tol`. **Float comparison, never
   string comparison** — formatting differs (`1.0` vs `1.00000000`). Different
   count / element sequence / `null` ⇒ `false`.
+- `restoreScene(inputContent, sceneJson)` (`restore.ts`, pure) — reconcile a
+  persisted snapshot with a job's input when opening/iterating it (ADR-008 #5
+  amendment). Returns `{ scene, snapshotRejected }`. Four branches: **no coord
+  block** → `{ null, false }`; **no snapshot** (pre-v4 / no scene) → single
+  fragment from the text, `false` (not an anomaly); **malformed/wrong-version
+  snapshot** → text fragment, `true`; **valid snapshot** →
+  `xyzMatchesScene(snapshot, input geometry)` — match returns the *snapshot*
+  (multi-fragment layout preserved), mismatch returns the text fragment, `true`.
+  The `input_content` is authoritative; the snapshot only annotates it. `true`
+  vs a `NULL`-snapshot `false` is the whole point of the flag — one draws a UI
+  note, the other is silent.
 
 Impure helper (isolated on purpose):
 - `makeFragmentId(): string` — `crypto.randomUUID()`. The **only**

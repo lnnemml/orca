@@ -152,3 +152,47 @@ belong to the reagent" bookkeeping. The model centralises that once.
 - `wiki/orca/input-format.md` — "Not yet modelled": `(1)`/`(2)` annotation.
 - `wiki/modules/visualization.md` — `atom.index` vs `atom.serial`, one-model
   multi-fragment rendering.
+
+---
+
+## Amendment (2026-07-28, implemented in 2.5.0d-3)
+
+Decision #5 (persist a `scene_json` snapshot) **stands** — this amendment corrects
+its *justification*, it does not change the decision (per the no-rewrite-history
+convention).
+
+**What was wrong.** #5 argued the column was needed because "cloning a job
+otherwise yields one flat fragment and the user re-splits the scene by hand every
+iteration." But **no clone/duplicate action existed in the app** when d-1–d-2b
+shipped: New Job is reachable only from its own tab and from Molecules (via
+`initialMolecule`). A snapshot column with no reader would have been dead weight —
+written on every job, read by nothing.
+
+**What changed.** 2.5.0d-3 makes the snapshot live by adding its reader in the same
+unit: a **"New iteration"** action on the job detail screen that seeds a fresh New
+Job draft from an existing job's `input_content` + `scene_json` (nothing from its
+results, status, or directory; iterating a running job is fine — only its input is
+taken). This is the clone #5 assumed. The iterative TS-guess workflow it enables —
+build a scene, run, tweak the approach angle, run again with the fragment layout
+intact — is now real and hand-verifiable.
+
+**The reconciliation rule from the Risks section is now code.** `input_content` is
+authoritative for geometry; `scene_json` only *annotates* it. `restoreScene`
+(pure, `src/scene/restore.ts`) honours a snapshot only when
+`xyzMatchesScene(snapshot, input geometry)` holds — the same primitive that guards
+the live Scene↔Monaco sync, not a second comparison. A missing / malformed /
+wrong-version / stale snapshot falls back to a single fragment parsed from the
+input, and a `snapshotRejected` flag distinguishes a *discarded* snapshot (worth a
+UI note) from a plain pre-v4 job (`scene_json = NULL`, no note).
+
+**Storage.** Schema v4 adds a nullable `jobs.scene_json TEXT`, written once at job
+creation (the input is immutable, so is the snapshot — no update path). Still
+deliberately NOT relational tables; Phase 4.5's Reaction/Pathway schema supersedes
+it, and the JSON→rows migration stays trivial.
+
+**Forward note — "continue from the result" (Phase 3+).** Iteration currently
+re-uses the job's *starting* geometry. Taking the *optimised* geometry from the
+output instead needs output parsing (cclib, Phase 3) and is out of scope here — but
+the fragment snapshot is already built to support it: after an optimisation the
+atom count and order are invariant (`replaceFragmentAtoms`'s guarantee), so the
+fragment boundaries transfer onto the optimised coordinates with no guessing.

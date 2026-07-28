@@ -30,6 +30,9 @@ export interface Job {
   created_at: string;
   started_at: string | null;
   completed_at: string | null;
+  /** Versioned SceneFragment snapshot (ADR-008 #5), or null for pre-v4 / no-scene
+   * jobs. Annotates `input_content`; the text stays authoritative for geometry. */
+  scene_json: string | null;
 }
 
 /** Mirrors `src-tauri/src/models/molecule.rs::Molecule`. */

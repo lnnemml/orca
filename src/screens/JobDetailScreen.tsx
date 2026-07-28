@@ -35,9 +35,16 @@ interface JobDetailScreenProps {
   /** Submit the job once listeners are attached (from a Run action). */
   autoRun: boolean;
   onBack: () => void;
+  /** Start a new iteration seeded from this job (input + fragment snapshot). */
+  onIterate: (job: Job) => void;
 }
 
-export function JobDetailScreen({ jobId, autoRun, onBack }: JobDetailScreenProps) {
+export function JobDetailScreen({
+  jobId,
+  autoRun,
+  onBack,
+  onIterate,
+}: JobDetailScreenProps) {
   const [job, setJob] = useState<Job | null>(null);
   const [lines, setLines] = useState<string[]>([]);
   const [events, setEvents] = useState<ConvergenceEvent[]>([]);
@@ -249,6 +256,15 @@ export function JobDetailScreen({ jobId, autoRun, onBack }: JobDetailScreenProps
           {job?.job_dir ? (
             <button className="btn btn-sm" onClick={openFolder}>
               Open Folder
+            </button>
+          ) : null}
+          {job ? (
+            <button
+              className="btn btn-sm"
+              onClick={() => onIterate(job)}
+              title="Start a new job from this one's input and fragment layout"
+            >
+              New iteration
             </button>
           ) : null}
           {cancellable ? (

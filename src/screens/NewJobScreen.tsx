@@ -20,9 +20,11 @@ import {
   sceneFromAtomLines,
   sceneFromOrcaInput,
   sceneFromXyz,
+  serializeScene,
   totalCharge,
   xyzMatchesScene,
 } from "../scene/scene";
+import { restoreScene } from "../scene/restore";
 import type { SceneFragment } from "../scene/types";
 import {
   CATEGORY_LABELS,
@@ -43,16 +45,27 @@ interface NewJobScreenProps {
   onOpenDetail: (jobId: string, autoRun: boolean) => void;
   /** A library molecule to preload into the editor on mount ("Use" action). */
   initialMolecule?: Molecule;
+  /** An existing job to seed a new iteration from ("New iteration" action):
+   * its input + fragment snapshot, nothing from its results/status/dir. */
+  initialJob?: Job;
 }
 
 export function NewJobScreen({
   onCreatedDraft,
   onOpenDetail,
   initialMolecule,
+  initialJob,
 }: NewJobScreenProps) {
-  const [title, setTitle] = useState(initialMolecule?.name ?? "");
+  // Seed title/content from an iterated job (marked so kinship shows in the job
+  // list) or a library molecule; both before first paint via useState.
+  const [title, setTitle] = useState(
+    initialJob ? `${initialJob.title} (iteration)` : initialMolecule?.name ?? "",
+  );
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [content, setContent] = useState("");
+  const [content, setContent] = useState(initialJob?.input_content ?? "");
+  // Set when an iterated job's fragment snapshot was discarded because it no
+  // longer matched its input (distinct from a plain no-snapshot job — no note).
+  const [snapshotRejected, setSnapshotRejected] = useState(false);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [smiles, setSmiles] = useState("");
@@ -113,13 +126,21 @@ export function NewJobScreen({
     setSaved(false);
   };
 
-  // Initialise the (module-singleton) scene store for this screen: a library
-  // molecule becomes a single-fragment scene; otherwise start empty, clearing
-  // any scene left over from a previous visit to New Job. useLayoutEffect (not
-  // useEffect) so the reset runs before paint — the screen remounts on every
+  // Initialise the (module-singleton) scene store for this screen. useLayoutEffect
+  // (not useEffect) so the reset runs before paint — the screen remounts on every
   // navigation, and a plain effect would flash the previous visit's molecule.
+  //  - iterated job → restore its scene, reconciling the snapshot with its input;
+  //  - library molecule → a single "library" fragment;
+  //  - otherwise → empty, clearing any scene left over from a prior visit.
   useLayoutEffect(() => {
-    if (initialMolecule) {
+    if (initialJob) {
+      const { scene: restored, snapshotRejected: rejected } = restoreScene(
+        initialJob.input_content,
+        initialJob.scene_json,
+      );
+      setScene(restored);
+      setSnapshotRejected(rejected);
+    } else if (initialMolecule) {
       setScene(
         sceneFromXyz(initialMolecule.xyz, {
           source: "library",
@@ -320,6 +341,9 @@ export function NewJobScreen({
       const job = await invoke<Job>("create_job", {
         title: title.trim() || "Untitled job",
         inputContent: content,
+        // Persist the fragment layout so a later iteration restores it (ADR-008
+        // #5). Written once, here; the job's input is immutable, so is this.
+        sceneJson: scene ? serializeScene(scene) : null,
       });
       // The detail screen performs the actual submit (after attaching its log
       // listeners) so no early output lines are missed.
@@ -476,6 +500,19 @@ export function NewJobScreen({
 
       {error ? <div className="banner err">{error}</div> : null}
       {saved ? <div className="banner ok">Saved to library</div> : null}
+      {snapshotRejected ? (
+        <div className="banner warn">
+          The fragment layout from the source job didn't match its input, so it
+          was dropped — this starts from a single fragment.
+          <button
+            className="btn btn-sm"
+            style={{ marginLeft: 10 }}
+            onClick={() => setSnapshotRejected(false)}
+          >
+            Dismiss
+          </button>
+        </div>
+      ) : null}
       {resetNotice ? (
         <div className="banner warn">
           Coordinates were edited manually — {resetNotice.fragmentCount} fragments

@@ -109,6 +109,20 @@ New files: `models/molecule.rs`, `commands/molecules.rs`. `db.rs` gained migrati
   `*_conn` shape as jobs; four unit tests cover create/list, get-missing, update-fields,
   delete-removes. All registered in `lib.rs` invoke_handler.
 
+## Schema v4 — `jobs.scene_json` (Phase 2.5, 2.5.0d-3)
+- **Migration v4 (`db.rs`):** `SCHEMA_VERSION` → 4; a `version < 4` arm runs
+  `ALTER TABLE jobs ADD COLUMN scene_json TEXT` (nullable). Purely additive, so old jobs carry
+  `NULL`. Test `migrate_v3_to_v4_preserves_jobs` (seed a v3 DB with a job → migrate → job survives,
+  `scene_json` column exists and is NULL). The v2→v3 test's version assertion switched to
+  `SCHEMA_VERSION` too (it hardcoded `3`). **Verified against a copy of the real DB:** 13 existing
+  jobs all preserved, schema_version 3→4, every job's `scene_json` NULL.
+- **`scene_json` semantics (ADR-008 #5 + its amendment):** a versioned `SceneFragment` snapshot
+  written **once at create time** — the job's input is immutable, so its snapshot is too (no update
+  path). It **annotates** `input_content`; the text stays authoritative for geometry (the frontend's
+  `restoreScene` reconciles them). `Job` gained the field, `Job::COLUMNS` + `from_row` extended (11th
+  column), `create_job(title, input_content, scene_json: Option<String>)`. Test
+  `create_persists_and_reloads_scene_json`.
+
 ## As built (Phase 2) — CPU pinning, queue, cancel
 New file: `cpu_presets.rs`. `local_backend.rs` gained the queue/cancel/pinning logic (detailed
 in `wiki/modules/execution-backends.md`); the core-facing surface:

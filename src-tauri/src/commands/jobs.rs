@@ -18,12 +18,20 @@ use crate::models::job::{Job, JobStatus};
 
 // --- Connection-level helpers (testable) ------------------------------------
 
-/// Insert a fresh `draft` job and return it fully hydrated.
-fn create_job_conn(conn: &Connection, title: &str, input_content: &str) -> Result<Job, AppError> {
+/// Insert a fresh `draft` job and return it fully hydrated. `scene_json` is the
+/// optional SceneFragment snapshot (ADR-008 #5), written once here at create
+/// time and never updated — the job's input is immutable, so its snapshot is too.
+fn create_job_conn(
+    conn: &Connection,
+    title: &str,
+    input_content: &str,
+    scene_json: Option<&str>,
+) -> Result<Job, AppError> {
     let id = Uuid::new_v4().to_string();
     conn.execute(
-        "INSERT INTO jobs (id, title, input_content, status) VALUES (?1, ?2, ?3, ?4)",
-        params![id, title, input_content, JobStatus::Draft.as_str()],
+        "INSERT INTO jobs (id, title, input_content, status, scene_json) \
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![id, title, input_content, JobStatus::Draft.as_str(), scene_json],
     )?;
     get_job_conn(conn, &id)
 }
@@ -118,9 +126,10 @@ pub fn create_job(
     db: State<'_, DbState>,
     title: String,
     input_content: String,
+    scene_json: Option<String>,
 ) -> Result<Job, AppError> {
     let conn = db.lock()?;
-    create_job_conn(&conn, &title, &input_content)
+    create_job_conn(&conn, &title, &input_content, scene_json.as_deref())
 }
 
 #[tauri::command]
@@ -350,7 +359,7 @@ mod tests {
     fn create_lists_job_as_draft() {
         let (conn, dir) = test_db();
 
-        let job = create_job_conn(&conn, "water opt", "! r2SCAN-3c Opt").unwrap();
+        let job = create_job_conn(&conn, "water opt", "! r2SCAN-3c Opt", None).unwrap();
         assert_eq!(job.status, JobStatus::Draft);
         assert!(job.started_at.is_none());
         assert!(job.completed_at.is_none());
@@ -359,6 +368,25 @@ mod tests {
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].id, job.id);
         assert_eq!(all[0].status, JobStatus::Draft);
+        // No snapshot passed → NULL, not an empty string.
+        assert_eq!(job.scene_json, None);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn create_persists_and_reloads_scene_json() {
+        let (conn, dir) = test_db();
+
+        let snap = r#"{"version":1,"fragments":[],"multiplicity":1}"#;
+        let job = create_job_conn(&conn, "with scene", "! HF", Some(snap)).unwrap();
+        assert_eq!(job.scene_json.as_deref(), Some(snap));
+
+        // Survives a fresh hydration (get + list both read the new column).
+        let reloaded = get_job_conn(&conn, &job.id).unwrap();
+        assert_eq!(reloaded.scene_json.as_deref(), Some(snap));
+        let listed = list_jobs_conn(&conn).unwrap();
+        assert_eq!(listed[0].scene_json.as_deref(), Some(snap));
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -367,7 +395,7 @@ mod tests {
     fn running_sets_started_at() {
         let (conn, dir) = test_db();
 
-        let job = create_job_conn(&conn, "j", "! HF").unwrap();
+        let job = create_job_conn(&conn, "j", "! HF", None).unwrap();
         update_job_status_conn(&conn, &job.id, "running").unwrap();
 
         let reloaded = get_job_conn(&conn, &job.id).unwrap();
@@ -382,7 +410,7 @@ mod tests {
     fn completed_sets_completed_at() {
         let (conn, dir) = test_db();
 
-        let job = create_job_conn(&conn, "j", "! HF").unwrap();
+        let job = create_job_conn(&conn, "j", "! HF", None).unwrap();
         update_job_status_conn(&conn, &job.id, "completed").unwrap();
 
         let reloaded = get_job_conn(&conn, &job.id).unwrap();
@@ -416,7 +444,7 @@ mod tests {
     fn set_job_dir_persists() {
         let (conn, dir) = test_db();
 
-        let job = create_job_conn(&conn, "j", "! HF").unwrap();
+        let job = create_job_conn(&conn, "j", "! HF", None).unwrap();
         set_job_dir_conn(&conn, &job.id, "/data/jobs/abc").unwrap();
 
         let reloaded = get_job_conn(&conn, &job.id).unwrap();
@@ -429,7 +457,7 @@ mod tests {
     fn finalize_sets_status_error_and_timestamp() {
         let (conn, dir) = test_db();
 
-        let job = create_job_conn(&conn, "j", "! HF").unwrap();
+        let job = create_job_conn(&conn, "j", "! HF", None).unwrap();
         finalize_job_conn(&conn, &job.id, JobStatus::Failed, Some("boom")).unwrap();
 
         let reloaded = get_job_conn(&conn, &job.id).unwrap();

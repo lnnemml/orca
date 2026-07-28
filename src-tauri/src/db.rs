@@ -15,7 +15,10 @@ use crate::error::AppError;
 /// - v1: `settings` key/value table (Phase 0).
 /// - v2: `jobs` table — job model + state machine (Phase 1).
 /// - v3: `molecules` table — persistent molecule library (Phase 2.3).
-const SCHEMA_VERSION: i64 = 3;
+/// - v4: `jobs.scene_json` — SceneFragment snapshot, written once at create time
+///   (Phase 2.5, ADR-008 #5). A nullable annotation over `input_content`, which
+///   stays authoritative for geometry.
+const SCHEMA_VERSION: i64 = 4;
 
 /// Open (creating if needed) `orcastudio.db` under `data_dir` and migrate it to
 /// the current schema.
@@ -87,6 +90,15 @@ fn migrate(conn: &Connection) -> Result<(), AppError> {
             );",
         )?;
         version = 3;
+    }
+
+    // --- v3 -> v4: jobs.scene_json (SceneFragment snapshot, Phase 2.5). ---
+    // A nullable annotation over input_content, written once at create time; the
+    // input text stays authoritative for geometry (ADR-008 #5). Purely additive,
+    // so jobs created before v4 simply carry NULL.
+    if version < 4 {
+        conn.execute_batch("ALTER TABLE jobs ADD COLUMN scene_json TEXT;")?;
+        version = 4;
     }
 
     // Persist the resulting version so subsequent runs skip completed steps.
@@ -201,8 +213,10 @@ mod tests {
 
         migrate(&conn).expect("v2 -> v3 migration should succeed");
 
-        // Version advanced to 3.
-        assert_eq!(current_version(&conn).unwrap(), 3);
+        // migrate() always runs fully forward to the latest schema; the point of
+        // this test is that the v2→v3 step (the molecules table) ran and left the
+        // existing job untouched on the way.
+        assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
 
         // The existing job survived untouched.
         let title: String = conn
@@ -215,5 +229,50 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM molecules", [], |r| r.get(0))
             .expect("molecules table should exist");
         assert_eq!(molecules, 0);
+    }
+
+    #[test]
+    fn migrate_v3_to_v4_preserves_jobs() {
+        // Simulate a Phase 2.3 (v3) database: settings + jobs (without the
+        // scene_json column) + molecules, schema_version pinned at 3, one job.
+        let conn = Connection::open_in_memory().expect("open in-memory db");
+        conn.execute_batch(
+            "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO settings (key, value) VALUES ('orca_path', '/opt/orca/orca');
+             INSERT INTO settings (key, value) VALUES ('schema_version', '3');
+             CREATE TABLE jobs (
+                id            TEXT PRIMARY KEY,
+                title         TEXT NOT NULL,
+                input_content TEXT NOT NULL,
+                status        TEXT NOT NULL DEFAULT 'draft',
+                job_dir       TEXT,
+                energy        REAL,
+                wall_time     REAL,
+                error_message TEXT,
+                created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+                started_at    TEXT,
+                completed_at  TEXT
+             );
+             CREATE TABLE molecules (id TEXT PRIMARY KEY, name TEXT NOT NULL, xyz TEXT NOT NULL);
+             INSERT INTO jobs (id, title, input_content) VALUES ('j1', 'water opt', '! r2SCAN-3c Opt');",
+        )
+        .expect("seed v3 schema");
+
+        migrate(&conn).expect("v3 -> v4 migration should succeed");
+
+        // Migrated fully forward; the v3→v4 step added the scene_json column.
+        assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
+
+        // The pre-existing job survived untouched, and its new scene_json is NULL
+        // (a job created before v4 carries no snapshot — not an anomaly).
+        let (title, scene_json): (String, Option<String>) = conn
+            .query_row(
+                "SELECT title, scene_json FROM jobs WHERE id = 'j1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("job preserved with a scene_json column");
+        assert_eq!(title, "water opt");
+        assert_eq!(scene_json, None);
     }
 }

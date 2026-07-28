@@ -280,6 +280,27 @@ palette 2.5.0c, library + placement d-2a); this is the glue.
   the Scene→content→Scene cycle without silently collapsing 0.5 s later. Plain-DOM UI (no WebGL) so
   no MiniBrowser pass needed; the in-window feel (sidebar, chips, Undo) is a manual checklist.
 
+## As built (2.5.0d-3) — persist the scene, iterate on a job
+Fragments now survive across a job (ADR-008 #5 + amendment). **Phase 2.5.0 closes here.**
+- **`create_job` write:** `NewJobScreen.create()` now passes `sceneJson: scene ? serializeScene(scene)
+  : null` — the one place jobs are created, so no per-component serialisation. Written once
+  (input/snapshot are immutable).
+- **"New iteration" action:** a button on `JobDetailScreen` (shown whenever a job is loaded — cloning
+  a running job is fine, only its input is taken) → `onIterate(job)` → `App` sets
+  `screen = { kind: "new-job", initialJob: job }`. "New iteration", not "Duplicate" — it's the next
+  round of the same work, chemist-framed. Nothing from results/status/dir is copied.
+- **Restore in `NewJobScreen`:** a new `initialJob?` prop. Title seeded `${job.title} (iteration)` and
+  content = the job's `input_content` (both via `useState`, before paint); the scene is restored in
+  the existing `useLayoutEffect` (no stale-scene flash) via **`restoreScene`** (§ scene.md). A
+  `snapshotRejected` state drives an unobtrusive `.banner.warn` **only** when a snapshot was present
+  but discarded (didn't match the input) — a plain `scene_json = NULL` job shows **no** note. The
+  restore leans on Effect A's guard: content already equals the input, the restored scene matches it,
+  so nothing re-injects (the `!` line / comments are preserved verbatim).
+- **`types.ts`:** `Job.scene_json: string | null`. `App` `Screen` union gained `initialJob?: Job`.
+- **Verified:** `tsc` + `vite build` + `vitest` 112 (was 105 → +7 `restore.test.ts`, all four branches
+  + a matching 2-fragment snapshot + a shifted-coords rejection); `cargo test` 55 (+2). Real-DB
+  migration checked (§ tauri-core.md). In-window iterate loop is a manual checklist.
+
 ## As built (Phase 2.5) — New Job UI fixes (WebKitGTK contrast, accordion, scroll)
 Three issues found by manual testing in the real Tauri window (not visible in Chromium). CSS +
 a collapse wrapper only — no Input Builder / `build-input.ts` / `orca-options.ts` logic changed.

@@ -1107,3 +1107,61 @@ that the reference number is physically right — the number's guarantee is prov
 
 **Verified.** `tsc --noEmit` clean, `vite build` clean, `vitest run` **105** (was 97 → +8). Two ORCA
 temp dirs created and removed. Next: d-3 (`jobs.scene_json`, schema v4).
+
+## [2026-07-28] session | 2.5.0d-3: persist scene snapshot + iterate on a job (2.5.0 closed)
+
+Fragments now survive an iteration over a job — and it's hand-verifiable. Two halves in one unit
+(`jobs.scene_json` + the action that reads it), for a reason worth recording.
+
+**The finding that shaped scope: there was no clone.** ADR-008 #5 justified the snapshot column by
+"cloning a job otherwise yields one flat fragment, re-split by hand every iteration." But **no
+clone/duplicate action existed** — New Job is reachable only from its own tab and from Molecules
+(`initialMolecule`). A column with no reader is dead weight. So the reader ships in the same task: a
+**"New iteration"** button on job detail that seeds a New Job draft from a job's `input_content` +
+`scene_json` (nothing from results/status/dir; iterating a running job is fine — only its input).
+Fixed the ADR by **amendment** (dated, at the end — decision #5 stands, its *justification* was
+wrong), not by editing #5. Naming: "New iteration", not "Duplicate" — chemist framing (next round of
+the same TS-guess work).
+
+**Restore rule is now code, reusing the sync primitive (not a second comparison).** `restoreScene`
+(`src/scene/restore.ts`, pure): `input_content` is authoritative for geometry, `scene_json` only
+annotates it. Four branches — no coord block → `{null,false}`; no snapshot → single fragment from
+text, `false` (**pre-v4 job, not an anomaly**); malformed/wrong-version → text fragment, `true`;
+valid snapshot → **`xyzMatchesScene(snapshot, input geometry)`** (the very primitive that guards the
+Monaco sync): match returns the *snapshot* (multi-fragment layout preserved), mismatch returns the
+text fragment, `true`. `snapshotRejected` deliberately splits the two single-fragment outcomes — a
+discarded snapshot draws a UI note, a `NULL` snapshot is silent. Tests: all four branches + a matching
+2-fragment snapshot (layout survives) + a right-count-but-shifted-coords snapshot (rejected).
+
+**Rust (schema v4).** `SCHEMA_VERSION` → 4; additive `ALTER TABLE jobs ADD COLUMN scene_json TEXT`
+gated on `version < 4`, same pattern as v2→v3. `Job` gained `scene_json: Option<String>` (COLUMNS +
+`from_row` 11th col); `create_job(title, input_content, scene_json: Option<String>)` — **written once
+at create, no update path** (input is immutable). `Result<T, AppError>`, no `.unwrap()` outside tests.
+Tests: `migrate_v3_to_v4_preserves_jobs` (old job survives, column NULL) + `create_persists_and_
+reloads_scene_json`. The v2→v3 test's `== 3` became `== SCHEMA_VERSION` (it was brittle; migrate always
+runs fully forward — same fix the v1→v2 test already had).
+
+**Real-DB migration check (mandatory).** Copied the live `~/.local/share/orcastudio/orcastudio.db`
+and ran the actual `migrate()` on it via a throwaway `#[ignore]`d test (removed after): **BEFORE
+schema_version=3, 13 jobs, no scene_json column → AFTER schema_version=4, 13 jobs (all preserved),
+scene_json NULL on every one.** Temp copy + test removed.
+
+**Write path (§4).** Only `NewJobScreen.create()` serialises: `sceneJson: scene ? serializeScene(scene)
+: null`. One path.
+
+**Deferred, noted (ROADMAP + ADR amendment):** "continue from the *result*" (iterate from the
+optimised output geometry) needs cclib output parsing → Phase 3. The snapshot already supports it —
+after Opt the atom count/order are invariant (`replaceFragmentAtoms`'s guarantee), so fragment
+boundaries transfer onto the optimised coords with no guessing.
+
+**Manual checks (author, real Tauri window):**
+1. Build water + BH₄⁻ → Create Job → open it → **New iteration** → New Job opens with **two fragments**
+   intact, same colours, charge −1, title "… (iteration)".
+2. Same for a single-fragment job → New iteration → one fragment, **no note**, behaves as always.
+3. A job created before this session (`scene_json` NULL) → New iteration → one fragment, **no note**.
+4. New iteration, then hand-break a coordinate in the cloned input → the "snapshot dropped" note
+   appears (rejected), and it starts from a single fragment.
+
+**Verified.** `tsc` clean, `vite build` clean, `vitest` **112** (was 105 → +7), `cargo test` **55**
+(was 53 → +2). Real DB migrated cleanly. **Phase 2.5.0 (Scene/fragment foundation) is complete** —
+next is 2.5.1 (atom picking + measurement).
