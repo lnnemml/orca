@@ -41,7 +41,8 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 - [001-monaco-offline-worker-resolve.md](debugging/001-monaco-offline-worker-resolve.md) — Monaco worker unresolved in Vite build (exports-map double-mapping) + CDN→bundled fix
 - [002-webkitgtk-3dmol-offscreencanvas.md](debugging/002-webkitgtk-3dmol-offscreencanvas.md) — 3Dmol.js null WebGL context in WebKitGTK (OffscreenCanvas webgl2 returns null) + fix & MiniBrowser test
 - [003-webkitgtk-select-styling.md](debugging/003-webkitgtk-select-styling.md) — `<select>` dark-on-dark in WebKitGTK (native GTK widget ignores inherited color) + appearance:none fix
+- [004-mpi-ranks-escape-process-group.md](debugging/004-mpi-ranks-escape-process-group.md) — cancel orphans ORCA's MPI ranks (they escape the parent's process group) + sweep-by-cwd fix
 
 ---
 
-*Page count: 22. Last structural update: 2026-07-27 (+orca/performance).*
+*Page count: 23. Last structural update: 2026-07-28 (+debugging/004).*

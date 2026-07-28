@@ -406,10 +406,11 @@ fn start_run(app: &AppHandle, job_id: &str, cancelled: Arc<AtomicBool>) -> Resul
         }
     }
 
-    // If a cancel landed during the startup window, signal the tree now; the
-    // tailing thread finalizes it as cancelled once the process exits.
+    // If a cancel landed during the startup window, terminate the tree now
+    // (off-thread — see `cancel`); drive_job finalizes it as cancelled on exit.
     if cancelled.load(Ordering::SeqCst) {
-        signal_pgid(pgid, libc_sigterm());
+        let dir = job_dir.clone();
+        std::thread::spawn(move || terminate_job(pgid, &dir));
     }
 
     // Mark running + notify. If the DB update fails, kill the child.
@@ -439,9 +440,9 @@ fn start_run(app: &AppHandle, job_id: &str, cancelled: Arc<AtomicBool>) -> Resul
 }
 
 /// Cancel a `queued` or `running` job. A queued job is dropped in place (nothing
-/// to kill). A running job's process group is signalled (SIGTERM, then SIGKILL
-/// after a grace period); [`drive_job`] then records the terminal `cancelled`
-/// state once the process exits. Any other status is an error.
+/// to kill). A running job's tree is terminated **off-thread** — [`drive_job`]
+/// records the terminal `cancelled` state once the process exits. Any other
+/// status is an error.
 pub fn cancel(app: &AppHandle, job_id: &str) -> Result<(), AppError> {
     let db = app.state::<DbState>();
     let runner = app.state::<JobRunner>();
@@ -458,10 +459,19 @@ pub fn cancel(app: &AppHandle, job_id: &str) -> Result<(), AppError> {
     if let Some((pgid, flag)) = running_info {
         // Mark first so drive_job finalizes as `cancelled`, not `failed`.
         flag.store(true, Ordering::SeqCst);
-        // pgid 0 = still in the startup window; start_run will signal once it has
-        // the real pgid (it checks the same flag).
+        // pgid 0 = still in the startup window; start_run will terminate once it
+        // has the real pgid (it checks the same flag).
         if pgid > 0 {
-            terminate_pgid(pgid);
+            // terminate_job blocks up to ~12 s (SIGTERM grace + sweep + SIGKILL).
+            // The `cancelled` flag already guarantees drive_job finalizes as
+            // `cancelled`, so don't make the UI wait for the kill to finish.
+            let job_dir = {
+                let conn = db.lock()?;
+                get_job_conn(&conn, job_id)?.job_dir
+            }
+            .map(PathBuf::from)
+            .unwrap_or_else(|| runner.data_dir.join("jobs").join(job_id));
+            std::thread::spawn(move || terminate_job(pgid, &job_dir));
         }
         return Ok(());
     }
@@ -690,16 +700,6 @@ fn release_slot(runner: &JobRunner, job_id: &str) {
     }
 }
 
-/// The SIGTERM number (kept behind a helper so callers stay platform-agnostic).
-#[cfg(unix)]
-fn libc_sigterm() -> i32 {
-    libc::SIGTERM
-}
-#[cfg(not(unix))]
-fn libc_sigterm() -> i32 {
-    15
-}
-
 /// Send `sig` to an entire process group (no-op for a non-positive pgid).
 #[cfg(unix)]
 fn signal_pgid(pgid: i32, sig: i32) {
@@ -714,24 +714,128 @@ fn signal_pgid(pgid: i32, sig: i32) {
 #[cfg(not(unix))]
 fn signal_pgid(_pgid: i32, _sig: i32) {}
 
-/// SIGTERM a process group, give it up to 5 s to exit, then SIGKILL. Lets ORCA
-/// clean up its scratch files if it can, but guarantees the tree dies.
+/// Signal every live process whose working directory is `job_dir`.
+///
+/// This is the safety net behind `killpg`. `process_group(0)` puts the ORCA
+/// parent, its `sh`, and `mpirun` in one group, but **not the MPI ranks** —
+/// mpirun gives each rank its own process group so terminal signals can't reach
+/// them (verified: ranks show PGID == their own PID). killpg therefore only
+/// reaches mpirun, which forwards SIGTERM to its ranks on the graceful path.
+/// After a SIGKILL mpirun cannot forward anything, which would strand N ranks
+/// burning N cores. Every process of a job runs with its cwd set to the job
+/// directory, so that is what we match on.
+///
+/// Best-effort: unreadable `/proc` entries (races, other users) are skipped.
 #[cfg(unix)]
-fn terminate_pgid(pgid: i32) {
+fn sweep_job_processes(job_dir: &Path, sig: i32) -> usize {
+    let target = match job_dir.canonicalize() {
+        Ok(p) => p,
+        Err(_) => return 0,
+    };
+    let self_pid = std::process::id();
+    let entries = match std::fs::read_dir("/proc") {
+        Ok(e) => e,
+        Err(_) => return 0,
+    };
+
+    let mut signalled = 0;
+    for entry in entries.flatten() {
+        // /proc/<pid>: numeric names only.
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        let Ok(pid) = name.parse::<i32>() else {
+            continue;
+        };
+        if pid as u32 == self_pid {
+            continue; // never signal ourselves
+        }
+        // The cwd symlink is unreadable if the process has exited or belongs to
+        // another user — skip it rather than fail the whole sweep.
+        let Ok(cwd) = std::fs::read_link(format!("/proc/{pid}/cwd")) else {
+            continue;
+        };
+        if cwd == target {
+            // SAFETY: kill is a thin syscall wrapper; a pid + signal number has
+            // no memory-safety implications.
+            unsafe {
+                libc::kill(pid, sig);
+            }
+            signalled += 1;
+        }
+    }
+    signalled
+}
+#[cfg(not(unix))]
+fn sweep_job_processes(_job_dir: &Path, _sig: i32) -> usize {
+    0
+}
+
+/// Terminate a whole ORCA job tree: its process group **and** the MPI ranks that
+/// escaped it (see [`sweep_job_processes`]).
+///
+/// 1. `killpg(SIGTERM)` — the graceful path: mpirun reaps its own ranks.
+/// 2. wait up to **10 s** for the group to drain (a heavy job may still be
+///    flushing `.gbw`), polling liveness.
+/// 3. regardless of that result, `sweep(SIGTERM)` — catches ranks mpirun never
+///    reached. Done **before** the SIGKILL so ranks still get a clean-exit shot.
+/// 4. 2 s grace.
+/// 5. `killpg(SIGKILL)` **and** `sweep(SIGKILL)` for anything still alive.
+///
+/// If the SIGKILL sweep had to kill anything, the graceful path failed — log it,
+/// because that means mpirun did not forward our signal to its ranks.
+#[cfg(unix)]
+fn terminate_job(pgid: i32, job_dir: &Path) {
     signal_pgid(pgid, libc::SIGTERM);
-    let deadline = Instant::now() + Duration::from_secs(5);
+
+    let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline {
         // killpg(pgid, 0) probes liveness: 0 = the group still has members.
-        let alive = unsafe { libc::killpg(pgid, 0) } == 0;
-        if !alive {
-            return;
+        if unsafe { libc::killpg(pgid, 0) } != 0 {
+            break;
         }
         std::thread::sleep(Duration::from_millis(100));
     }
+
+    // The ranks live outside the group — SIGTERM them by cwd before escalating.
+    sweep_job_processes(job_dir, libc::SIGTERM);
+    std::thread::sleep(Duration::from_secs(2));
+
+    // Escalate: hard-kill the group and any surviving ranks.
     signal_pgid(pgid, libc::SIGKILL);
+    let killed = sweep_job_processes(job_dir, libc::SIGKILL);
+    if killed > 0 {
+        eprintln!(
+            "[OrcaStudio] cancel: SIGKILLed {killed} orphaned process(es) in {} — \
+             mpirun did not reap its MPI ranks on SIGTERM",
+            job_dir.display()
+        );
+    }
 }
 #[cfg(not(unix))]
-fn terminate_pgid(_pgid: i32) {}
+fn terminate_job(_pgid: i32, _job_dir: &Path) {}
+
+/// Kill the currently running ORCA tree (if any) **synchronously** — used on app
+/// exit. A spawned thread would die with the process before the ranks do, so the
+/// blocking wait here is deliberate: it's the only place we must not return until
+/// the tree is dead, otherwise the MPI ranks outlive the app burning CPU.
+pub fn terminate_on_exit(app: &AppHandle) {
+    let Some(runner) = app.try_state::<JobRunner>() else {
+        return;
+    };
+    let (job_id, pgid) = {
+        let Ok(running) = runner.running.lock() else {
+            return;
+        };
+        match running.as_ref() {
+            Some(r) if r.pgid > 0 => (r.job_id.clone(), r.pgid),
+            _ => return,
+        }
+    };
+    // The job dir is deterministic (prepare_job_dir), so no DB read is needed.
+    let job_dir = runner.data_dir.join("jobs").join(&job_id);
+    terminate_job(pgid, &job_dir);
+}
 
 /// Emit a batch of log lines (no-op if empty); drains `batch`.
 fn emit_log(app: &AppHandle, job_id: &str, batch: &mut Vec<String>) {
@@ -886,6 +990,95 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// A `sh -c 'sleep 30'` child with its cwd set to `dir`. `sh` execs `sleep`,
+    /// so the returned `Child` *is* the process running in `dir`.
+    #[cfg(unix)]
+    fn spawn_sleeper_in(dir: &Path) -> std::process::Child {
+        let child = Command::new("sh")
+            .arg("-c")
+            .arg("sleep 30")
+            .current_dir(dir)
+            .spawn()
+            .expect("spawn sleeper");
+        // Let it start and settle its cwd before we scan /proc.
+        std::thread::sleep(Duration::from_millis(200));
+        child
+    }
+
+    /// Reap `child`, hard-killing it first so a test can never leak a `sleep 30`.
+    #[cfg(unix)]
+    fn reap(mut child: std::process::Child) {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sweep_job_processes_matches_cwd() {
+        let dir = scratch("sweep-match");
+        let mut child = spawn_sleeper_in(&dir);
+
+        let hit = sweep_job_processes(&dir, libc::SIGTERM);
+        assert!(hit >= 1, "expected to signal ≥1 process in the job dir, got {hit}");
+
+        // The SIGTERM should terminate it; wait for exit (also reaps the zombie).
+        let mut exited = false;
+        for _ in 0..60 {
+            if matches!(child.try_wait(), Ok(Some(_))) {
+                exited = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        if !exited {
+            reap(child);
+        }
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(exited, "sweep SIGTERM should have killed the process in the job dir");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sweep_ignores_other_dirs() {
+        let job_dir = scratch("sweep-jobdir");
+        let other_dir = scratch("sweep-otherdir");
+        let mut child = spawn_sleeper_in(&other_dir);
+
+        // Sweeping the (empty) job dir must not touch a process living elsewhere.
+        let hit = sweep_job_processes(&job_dir, libc::SIGTERM);
+        assert_eq!(hit, 0, "a process in another dir must not be signalled");
+
+        std::thread::sleep(Duration::from_millis(150));
+        let still_alive = matches!(child.try_wait(), Ok(None));
+        reap(child);
+        std::fs::remove_dir_all(&job_dir).ok();
+        std::fs::remove_dir_all(&other_dir).ok();
+        assert!(still_alive, "the process in the other dir should be untouched");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sweep_never_kills_self() {
+        // Point the sweep at a dir that is THIS process's cwd, with SIGKILL. The
+        // self-PID guard must skip us — if it didn't, the test process would die
+        // here. A unique temp dir guarantees no other process shares this cwd,
+        // so nothing else is matched (no collateral); cwd is restored after.
+        let original = std::env::current_dir().unwrap();
+        let dir = scratch("sweep-self");
+        std::env::set_current_dir(&dir).unwrap();
+        let hit = sweep_job_processes(&dir, libc::SIGKILL);
+        std::env::set_current_dir(&original).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+
+        // Reaching this line at all means we weren't killed; and self is excluded.
+        assert_eq!(hit, 0, "sweep must skip its own pid");
+        assert_eq!(
+            unsafe { libc::kill(std::process::id() as i32, 0) },
+            0,
+            "the test process must still be alive"
+        );
     }
 
     #[test]

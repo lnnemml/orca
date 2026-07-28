@@ -84,18 +84,40 @@ pinning and cancellation. All still concurrency = 1 (domain rule #4).
 - **Lock order** is always `running` → `db` (only `try_start_next` nests them); `cancel` and
   `start_run` take each lock alone. No inversion, no deadlock.
 
-### Cancellation — killpg the process group
-- Spawn uses `CommandExt::process_group(0)` so ORCA and every MPI rank it forks share one process
-  group (pgid == child pid). Killing only the parent would orphan the ranks — they'd keep burning
-  CPU. Confirmed: `kill -TERM -<pgid>` reaps the whole tree.
-- `cancel(app, job_id)`:
-  - **queued** → just finalize as `cancelled` (nothing to kill).
-  - **running** → set the `cancelled` flag (so `drive_job` records `cancelled`, not `failed`),
-    then `terminate_pgid`: `killpg(SIGTERM)`, poll up to 5 s, `killpg(SIGKILL)`. Uses `libc`
-    (Unix-only target dep). `.exit_code` gets a `cancelled` marker.
-  - any other status → `Backend("job is not running or queued")`.
-- `drive_job` checks the `cancelled` flag after `child.wait()` and records `cancelled` with a
-  clean message instead of a stderr sheet.
+### Cancellation — killpg the group + sweep the escaped MPI ranks by cwd
+**Correction (2026-07-28):** the earlier belief that `process_group(0)` puts ORCA *and all MPI
+ranks* in one group is **false**. Verified with real `ps` on a `%pal nprocs 4` run: only the
+`orca` parent, its `sh`, and `mpirun` share the leader's group — **each MPI rank
+(`orca_*_mp`) has its own process group** (`PGID == its own PID`). `mpirun` deliberately
+`setpgid`s every rank so terminal signals can't reach them. So `killpg(pgid, …)` reaches only
+orca + sh + mpirun, **not the ranks**. See `debugging/004-mpi-ranks-escape-process-group.md`
+and `orca/gotchas.md`.
+
+Cancel worked before only because a SIGTERM'd `mpirun` reaps its own ranks on the way out — pure
+OpenMPI cooperation. It breaks on the SIGKILL path: after the grace period `killpg(SIGKILL)`
+kills `mpirun` instantly, so it can't forward anything → **N orphaned ranks burn N cores forever**
+(exactly the heavy-job-won't-exit-on-SIGTERM case where the user hits Cancel).
+
+**Fix — cwd is the reliable membership signal.** Every process of a job runs with `cwd` = the job
+directory, so:
+- `sweep_job_processes(job_dir, sig)` walks `/proc/<pid>/cwd`, signalling every live process whose
+  cwd matches the (canonicalized) job dir — skipping our own pid. Best-effort; unreadable `/proc`
+  entries are skipped. This is the safety net behind `killpg`.
+- `terminate_job(pgid, job_dir)` replaces `terminate_pgid`: (1) `killpg(SIGTERM)`; (2) wait **up to
+  10 s** for the group to drain (heavy jobs may still be flushing `.gbw`); (3) `sweep(SIGTERM)` —
+  catches ranks mpirun never reached — **before** any SIGKILL so ranks still get a clean exit;
+  (4) 2 s grace; (5) `killpg(SIGKILL)` **and** `sweep(SIGKILL)`. Logs (`eprintln!`) if the final
+  sweep had to hard-kill anything — that means the graceful path failed.
+- **Non-blocking cancel.** `terminate_job` can take ~12 s, so `cancel` spawns it on a thread and
+  returns immediately; the `cancelled` flag already guarantees `drive_job` finalizes as
+  `cancelled`, so the UI needn't wait for the kill. The frontend Cancel button shows a disabled
+  "Cancelling…" until the terminal `job:status` arrives.
+- **App exit** (`terminate_on_exit`, called from the `lib.rs` `ExitRequested` handler) runs the same
+  `terminate_job` **synchronously** — a spawned thread would die with the process before the ranks
+  do, stranding them.
+- `cancel(app, job_id)`: **queued** → finalize as `cancelled` (nothing to kill); **running** → set
+  the `cancelled` flag, then spawn `terminate_job`; other status → `Backend(...)`. `drive_job`
+  checks the flag after `child.wait()` and records `cancelled` with a clean message.
 
 ### Startup reconciliation
 - `reconcile_on_startup(&Connection)` (called in `lib.rs` setup before the connection is managed):
@@ -114,6 +136,11 @@ marker file. This could NOT be confirmed: the ORCA 6.1 manual isn't indexed loca
 - Upload: `rsync -az <job_dir>/ <host>:<scratch>/<job_id>/`
 - Launch: `ssh <host> 'cd <dir> && nohup bash run.sh > /dev/null 2>&1 & echo $! > .pid'`
   where run.sh = orca invocation + `.exit_code` writer
+  - **Cancel gotcha (same as local):** ORCA's MPI ranks escape the parent's process group
+    (`orca_*_mp`, each its own PGID — see `debugging/004`). Killing the `.pid` parent (or its group)
+    remotely leaves the ranks burning the remote node's cores. The remote cancel must sweep by cwd
+    too, e.g. `ssh <host> "fuser -k <dir>"` or `pkill -f <dir>`; a `.pid` marker for the parent
+    alone is **not** enough. Design the remote runner so every rank inherits `cwd = <dir>`.
 - Poll: `ssh <host> "tail -c +<offset> <dir>/output.out"` every 5–10s; offset persisted
   in SQLite so polling resumes across app restarts
 - Fetch: `rsync` back per FetchPolicy (output/xyz/hess always, gbw opt-in, cubes on demand)

@@ -35,6 +35,7 @@ export function JobDetailScreen({ jobId, autoRun, onBack }: JobDetailScreenProps
   // Dashboard accordion: user override (null = follow the default, which is
   // expanded while the job is active, collapsed once it's finished).
   const [dashOpen, setDashOpen] = useState<boolean | null>(null);
+  const [cancelling, setCancelling] = useState(false);
   const preRef = useRef<HTMLPreElement>(null);
   const didSubmit = useRef(false);
 
@@ -152,10 +153,16 @@ export function JobDetailScreen({ jobId, autoRun, onBack }: JobDetailScreenProps
   };
 
   const cancel = async () => {
+    // The backend kills the ORCA tree off-thread, so this invoke returns fast;
+    // keep the button in a disabled "Cancelling…" state until the terminal
+    // `job:status` event arrives (which flips `cancellable` false and unmounts
+    // the button).
+    setCancelling(true);
     try {
       await invoke("cancel_job", { id: jobId });
     } catch (e) {
       setError(String(e));
+      setCancelling(false); // let the user retry
     }
   };
 
@@ -179,8 +186,8 @@ export function JobDetailScreen({ jobId, autoRun, onBack }: JobDetailScreenProps
             </button>
           ) : null}
           {cancellable ? (
-            <button className="btn btn-sm" onClick={cancel}>
-              Cancel
+            <button className="btn btn-sm" onClick={cancel} disabled={cancelling}>
+              {cancelling ? "Cancelling…" : "Cancel"}
             </button>
           ) : null}
         </div>

@@ -617,5 +617,44 @@ prior phase; the pdb→xyz path the GUI uses is exactly `test_pdb_to_xyz` + curl
 (2.3), input builder (2.4), convergence dashboard (2.5), format conversion (2.6). Plus beyond the
 original scope: sequential queue, CPU pinning, cancel, startup reconciliation.
 
+## [2026-07-28] session | fix: MPI ranks escape process group on cancel
+
+A latent orphan bug in cancellation, found by actually inspecting `ps` instead of trusting the
+old "killpg reaps the whole tree" claim.
+
+**Root cause (verified on real ORCA, `%pal nprocs 4`).** `process_group(0)` does **not** put the
+MPI ranks in ORCA's process group — `mpirun` `setpgid`s each rank into its own group
+(`PGID == PID`) so terminal signals can't reach them. `ps` proof: only `orca` + `sh` + `mpirun`
+share the leader's group; the 4 `orca_leanscf_mp` ranks each have their own. `killpg` therefore
+reaches mpirun but not the ranks. Cancel *appeared* to work only because a SIGTERM'd mpirun reaps
+its ranks cooperatively — but on the SIGKILL path (heavy job that ignores SIGTERM — the exact
+Cancel case) mpirun dies before forwarding, stranding N ranks on N cores forever. Reproduced live
+by SIGSTOP-ing mpirun then killpg-ing the group: ranks survived, had to be reaped by PID. Full
+writeup + ps evidence in `debugging/004-mpi-ranks-escape-process-group.md`.
+
+**Fix (`local_backend.rs`).** cwd is the reliable membership signal — every job process has
+`cwd` = job dir (confirmed `readlink /proc/<rank>/cwd` == job dir).
+- `sweep_job_processes(job_dir, sig)` — signal every `/proc/<pid>/cwd`-match (skip self, skip
+  unreadable). The safety net behind `killpg`.
+- `terminate_job(pgid, job_dir)` (replaces `terminate_pgid`): `killpg(SIGTERM)` → wait ≤10 s
+  (was 5 — heavy jobs may still be flushing `.gbw`) → `sweep(SIGTERM)` **before** any SIGKILL →
+  2 s → `killpg(SIGKILL)` + `sweep(SIGKILL)`; `eprintln!` if the final sweep hard-killed anything.
+- **Non-blocking cancel:** `cancel` spawns `terminate_job` off-thread and returns at once (it can
+  take ~12 s; the `cancelled` flag already drives finalization). Same for the startup-race path in
+  `start_run`. Frontend Cancel button → disabled "Cancelling…" until the terminal `job:status`.
+- **App exit:** new `terminate_on_exit` runs the same routine **synchronously** from the `lib.rs`
+  `ExitRequested` handler (a spawned thread would die before the ranks). Previously nothing killed
+  a running job on exit — the ranks outlived the app.
+
+**Verified.** `cargo test` 42 + 2 ignored (3 new: `sweep_job_processes_matches_cwd`,
+`sweep_ignores_other_dirs`, `sweep_never_kills_self` — real `sh`/`sleep` children, no leaks).
+`tsc` + `npm test` (10) clean. **Real ORCA (headless):** confirmed ranks escape the group (ps),
+ranks' cwd == job dir (readlink), killpg-alone orphans them after SIGSTOP-ing mpirun, and the
+cwd sweep reaps them. The in-GUI Cancel-button "Cancelling…" state is standard React (not
+headless-drivable, same limitation as prior phases). Doc corrections: `execution-backends.md`
+(the false process-group claim + SshBackend note), `orca/gotchas.md`, `debugging/004`.
+
+Next: Phase 2.5 geometry editor.
+
 Next (Phase 2.5): geometry editor — atom picking in 3Dmol, measurement, set distance/angle/dihedral
 via ASE, fragment library, constraint manager → `%geom`.

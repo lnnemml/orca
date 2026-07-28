@@ -12,10 +12,19 @@ Living page. Add every trap encountered, newest at top, format:
   (`align_pal_nprocs`), and emits a log line saying it did. Also disable OpenMPI's own binding
   (`OMPI_MCA_hwloc_base_binding_policy=none`) so it doesn't fight taskset (domain rule #8,
   `wiki/orca/performance.md`).
-- **Killing a running ORCA leaves ranks alive** → ORCA forks MPI ranks as child processes;
-  `kill`ing only the parent orphans the ranks, which keep burning CPU. Fix: spawn ORCA in its own
-  process group (`process_group(0)`) and signal the whole group with `killpg` (SIGTERM, then
-  SIGKILL after a grace period). Verified: `kill -TERM -<pgid>` reaps the entire tree.
+- **ORCA MPI ranks escape the parent's process group** → the intuitive fix for "killing ORCA
+  leaves ranks alive" — spawn in a new process group (`process_group(0)`) and `killpg` the group —
+  **only half works**. `mpirun` calls `setpgid` on every rank it forks so terminal signals can't
+  reach them, so each rank (`orca_*_mp`) ends up in **its own** process group (`PGID == its own
+  PID`). Verified with `ps -eo pid,pgid,cmd` on `%pal nprocs 4`: only `orca` + `sh` + `mpirun`
+  share the leader's group; the 4 ranks each have their own. So `killpg(pgid, …)` reaches mpirun
+  but not the ranks. It *appears* to work because a SIGTERM'd mpirun reaps its ranks cooperatively
+  — but on the SIGKILL path mpirun dies before it can, leaving N orphaned ranks burning N cores.
+  **Fix:** after `killpg(SIGTERM)`, also **sweep by working directory** — every job process has
+  `cwd` = the job dir, so signal every PID whose `/proc/<pid>/cwd` matches, before escalating to
+  SIGKILL. See `debugging/004-mpi-ranks-escape-process-group.md`. Same problem hits `SshBackend`
+  remotely (Phase 5) — a parent `.pid` marker is not enough; sweep by cwd there too
+  (`fuser -k <dir>` / `pkill -f <dir>`).
 - **Graceful "stop after current optimization cycle" — UNCONFIRMED for 6.1** → ORCA is *said* to
   support stopping a geometry optimization cleanly via a marker file in the job dir (preserving a
   valid `.gbw` + last geometry), which would beat a hard kill. This could not be verified: the

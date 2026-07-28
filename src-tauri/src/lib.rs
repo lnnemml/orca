@@ -83,8 +83,14 @@ pub fn run() {
         .expect("error while building tauri application");
 
     app.run(|app_handle, event| {
-        // Kill the sidecar on a clean exit so uvicorn doesn't outlive the app.
         if let tauri::RunEvent::ExitRequested { .. } = event {
+            // Kill any running ORCA tree first — its MPI ranks escape the
+            // parent's process group, so if we just exit they outlive the app
+            // burning CPU (mpirun can't forward our signal once we're gone, and
+            // no reconciliation runs until the next launch). Synchronous by
+            // design (see `terminate_on_exit`).
+            local_backend::terminate_on_exit(app_handle);
+            // Kill the sidecar on a clean exit so uvicorn doesn't outlive the app.
             if let Some(sidecar) = app_handle.try_state::<Arc<SidecarManager>>() {
                 let _ = sidecar.stop();
             }
