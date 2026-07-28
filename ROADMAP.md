@@ -117,7 +117,7 @@ everything below — see ADR-008)
       mapping, immutable updates, serialization, float-tolerant comparison)
 - [x] b. Scene ↔ input builder: total charge from fragments, coordinate
       injection, electron-parity validation
-- [ ] c. MoleculeViewer: multi-fragment rendering (one model, index-range
+- [x] c. MoleculeViewer: multi-fragment rendering (one model, index-range
       styling, per-fragment colours)
 - [ ] d. Add Fragment UI + Zustand scene store + `jobs.scene_json` (schema v4)
 

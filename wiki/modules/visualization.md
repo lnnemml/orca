@@ -17,6 +17,35 @@
   xyz (`count\ncomment\ncoords`). Returns `null` for the `* xyzfile … file.xyz` form (external
   file, unreadable on the frontend) and when no coordinates are found. Tolerates blank/`#` lines.
 
+### Multi-fragment rendering (2.5.0c)
+`MoleculeViewer` now takes an **optional `scene?: Scene`** alongside `xyzData?: string`; `scene`
+takes precedence. Existing callers (`MoleculesScreen`, `NewJobScreen`) pass only `xyzData` and are
+byte-for-byte unchanged. With no props it renders an empty viewer. Approach (ADR-008 #2/#3):
+
+- **One 3Dmol model, styled by atom index range** — not model-per-fragment. Coordinates come from
+  `mergeToXyz(scene)`; `fragmentRanges(scene)` (start-inclusive, end-exclusive) gives each fragment's
+  global index range. Base ball-and-stick (`{stick:{}, sphere:{scale:0.3}}`, CPK colours) is applied
+  to all atoms, then fragments **1+** get an override `setStyle({index:[…]}, {stick:{color}, sphere:{scale:0.3,color}})`.
+  Fragment **0 keeps CPK** — the substrate must not recolour when a reagent is added (this is a
+  requirement, not a nicety; a single-fragment scene looks identical to the pre-2.5.0c render).
+- **Palette** lives in `src/viewer/fragment-colors.ts` — `FRAGMENT_PALETTE`
+  (teal/coral/gold/violet) + `fragmentColor(i)` (`undefined` for fragment 0, cycling palette for
+  1+). One source of truth, shared with the 2.5.0d fragment sidebar so a fragment reads the same
+  colour in both places.
+- **`index` selector — confirmed behaviour.** 3Dmol's `AtomSelectionSpec.index` is typed
+  `number | number[]`, and `setStyle({index:[3,4,5,6,7]}, …)` genuinely styles exactly those 0-based
+  atoms. **Verified in the WebKitGTK 4.1 MiniBrowser** (technique from `debugging/002`), not just
+  Chromium: a water (atoms 0–2) + BH₄⁻ (atoms 3–7) probe confirmed (a) context creation, (b) both
+  fragments visible in different colours, (c) the coloured set was exactly `[3,4,5,6,7]` — read back
+  from each atom's `.style.stick.color` — and (d) fragment 0 stayed CPK. **Picking in 2.5.1 keys off
+  this same 0-based `atom.index`** (never `atom.serial`): pick index = merged-xyz line = Scene global
+  index = ASE mask index.
+- **`zoomTo` only on composition change.** A ref holds a "composition signature" (`id:size` per
+  fragment, joined — **not** coordinates). `zoomTo` fires only when that signature changes (atoms
+  added/removed); a coordinate-only edit re-renders without moving the camera. This is essential for
+  the 2.5.3 loop (type an angle → apply → look → adjust): a camera that re-zooms on every apply is
+  unusable. The legacy `xyzData` path keeps its always-`zoomTo` behaviour.
+
 Integrated on **NewJobScreen** as a split panel to the right of the editor
 (`.editor-viewer-split`: editor `flex:2`, viewer `flex:1 min-width 260px`). The editor content is
 parsed on a **500 ms debounce**; a valid block shows the molecule, otherwise a muted
@@ -62,4 +91,5 @@ Default grid 80–100; cubes cached in job dir; generated lazily on MO selection
 - Multi-fragment scenes render as **one 3Dmol model, styled by atom index range** — not one
   model per fragment. A single model keeps one index space end to end (pick index = merged-xyz
   index = ASE mask index); per-model indices reset to 0 and need an extra indirection layer.
-  Per-fragment colouring is index-range styling on that one model. See ADR-008.
+  Per-fragment colouring is index-range styling on that one model. **Implemented in 2.5.0c** and the
+  `{index:[…]}` selector is WebKitGTK-confirmed (see "Multi-fragment rendering" above). See ADR-008.

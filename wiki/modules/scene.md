@@ -6,7 +6,9 @@ generation and electron-parity validation. `buildOrcaInput` accepts a Scene, and
 through the viewer parsers). Still ahead: 2.5.0c multi-fragment viewer, 2.5.0d
 Zustand store + `jobs.scene_json` persistence (and the store is what makes the
 form's read-only-charge / parity UI act on a *real* multi-fragment Scene rather
-than the single fragment derived from the buffer).
+than the single fragment derived from the buffer). **2.5.0c** wired
+`fragmentRanges` / `mergeToXyz` into `MoleculeViewer` for multi-fragment
+rendering (viewer only; no store yet).
 
 ## Responsibilities
 
@@ -61,6 +63,10 @@ Index space:
 - `locateAtom(scene, globalIndex): { fragment, localIndex } | null`.
 - `fragmentRanges(scene): { fragmentId, start, end }[]` — **start inclusive, end
   exclusive** (same convention as `OutputMatch` col_start/col_end, Phase 2.7).
+  **First consumer (2.5.0c):** `MoleculeViewer` styles each fragment by its
+  `[start, end)` index range via `setStyle({index:[…]}, …)`; the end-exclusive
+  convention is what makes the water(0–2)+BH₄⁻(3–7) case colour atoms 3–7, not
+  0–4 (WebKitGTK-confirmed — see `modules/visualization.md`).
 
 Immutable mutators (each returns a new Scene, never mutates the input):
 - `addFragment`, `removeFragment`, `renameFragment`, `setFragmentCharge`,
@@ -141,3 +147,8 @@ deleted or changed in 2.5.0b. A comment in `scene.ts` names the overlap.
 - ADR mapping came through unchanged; nothing in 2.5.0a diverged from ADR-008.
 - `sceneFromAtomLines` takes an optional `id` in `opts` so the "editor" path can
   be tested deterministically without stubbing `crypto.randomUUID()`.
+- **Fragment colours** are not a Scene concern — they live in
+  `src/viewer/fragment-colors.ts` (`FRAGMENT_PALETTE` + `fragmentColor(i)`), one
+  source of truth shared by the 2.5.0c viewer and the 2.5.0d fragment sidebar so
+  a fragment reads the same colour in the 3D view and the list. Fragment 0 keeps
+  CPK element colours (the substrate must not recolour).

@@ -886,3 +886,50 @@ float-stable, intended by ADR-008 #4.
 **Verified.** `tsc --noEmit` clean, `vite build` clean, `vitest run` **56 tests** (was 42 → +10
 parity, +4 `sceneFromOrcaInput`). The 10 `build-input.test.ts` cases pass unchanged (file diff
 empty). Next: 2.5.0c multi-fragment viewer, 2.5.0d store + `scene_json` + finish the consolidation.
+
+## [2026-07-28] session | 2.5.0c: multi-fragment rendering in MoleculeViewer
+
+Taught `MoleculeViewer` to draw a multi-fragment Scene. Viewer only — no new UI, state, or store.
+
+**What was built.**
+- `MoleculeViewer` props extended to `{ xyzData?: string; scene?: Scene; style? }`. `scene` wins
+  when both are present; neither → empty viewer, no crash. Existing `xyzData` callers
+  (`MoleculesScreen` ×2, `NewJobScreen`) are untouched and render byte-for-byte as before (legacy
+  path keeps its always-`zoomTo`).
+- **One model, index-range styling** (ADR-008 #2/#3): coords from `mergeToXyz(scene)`; base
+  ball-and-stick CPK on all atoms; then fragments 1+ overridden with a flat palette colour on both
+  stick and sphere via `setStyle({index:[…]}, …)`. Fragment 0 stays CPK (substrate must not
+  recolour — hard requirement).
+- `src/viewer/fragment-colors.ts` — `FRAGMENT_PALETTE` (teal/coral/gold/violet) + `fragmentColor(i)`
+  (undefined for 0, cycling for 1+). Single source of truth, shared with the 2.5.0d sidebar.
+- **`zoomTo` only on composition change**: a ref holds a signature of `id:size` per fragment (not
+  coordinates); `zoomTo` fires only when it changes. Coordinate-only edits redraw without moving the
+  camera — required for the 2.5.3 angle-tweak loop.
+
+**Selector grounded in the types, not guessed.** `AtomSelectionSpec.index` is typed
+`number | number[]` and `StickStyleSpec.color` / `SphereStyleSpec.color` are `ColorSpec`
+(`number | string | Colored`) — so `{index:[…]}` + hex string colour are fully typed. No
+`@ts-ignore` anywhere.
+
+**WebKitGTK verification (mandatory — the headless-invisible failure mode).** vitest can't catch a
+colour that silently doesn't apply, so I ran the `debugging/002` MiniBrowser technique
+(`webkit2gtk-4.1/MiniBrowser`, the identical engine to Tauri's webview) on a standalone probe: water
+(atoms 0–2) + BH₄⁻ (atoms 3–7) ~5 Å apart, the exact `createViewer/addModel/setStyle({index})/render`
+calls, then it read each atom's `.style.stick.color` back. Result **ALL PASS**: (a) WebGL context
+created (OffscreenCanvas neutralisation holds); (b) 8 atoms in one model, both fragments visible;
+(c) the coloured index set was exactly `[3,4,5,6,7]` — **not** `[0,1,2,3,4]`, confirming
+`fragmentRanges` end-exclusive has no off-by-one; (d) fragment 0 kept CPK. Screenshot showed water in
+CPK (red O / white H) on the left and BH₄⁻ in teal on the right. So the `index` selector that all of
+2.5.1 picking depends on is confirmed in the real engine, not just Chromium. Probe left in
+`/tmp/frag-probe/` (throwaway).
+
+**Manual check (author, real Tauri window — once 2.5.0d threads a Scene into the viewer):** a scene
+with substrate + a reagent fragment shows the substrate in normal CPK element colours and each added
+reagent in a distinct flat palette colour (teal, then coral, …); rotating/zooming works as before;
+applying a coordinate change to a fragment (2.5.3) redraws **without** the camera jumping, while
+adding/removing a fragment re-zooms to fit.
+
+**Verified.** `tsc --noEmit` clean, `vite build` clean, `vitest run` 56 tests (unchanged — the
+rendering path isn't headless-unit-testable; its inputs `mergeToXyz`/`fragmentRanges` are already
+covered, and the engine behaviour was proven in MiniBrowser). Next: 2.5.0d — Zustand store +
+`jobs.scene_json` + Add Fragment UI (and finish the viewer-parser consolidation).
