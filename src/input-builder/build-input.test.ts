@@ -6,10 +6,31 @@ import {
   DEFAULT_BUILDER_STATE,
   type BuilderState,
 } from "./build-input";
+import type { Scene } from "../scene/types";
 
 /** A builder state overlaid on the defaults. */
 function state(overrides: Partial<BuilderState> = {}): BuilderState {
   return { ...DEFAULT_BUILDER_STATE, ...overrides };
+}
+
+/** A single-fragment scene with the given charge/multiplicity. */
+function scene(charge = 0, multiplicity = 1): Scene {
+  return {
+    fragments: [
+      {
+        id: "f",
+        name: "mol",
+        charge,
+        source: "editor",
+        atoms: [
+          { element: "O", x: 0, y: 0, z: 0.11779 },
+          { element: "H", x: 0, y: 0.755453, z: -0.471161 },
+          { element: "H", x: 0, y: -0.755453, z: -0.471161 },
+        ],
+      },
+    ],
+    multiplicity,
+  };
 }
 
 describe("buildKeywordLine", () => {
@@ -103,14 +124,10 @@ describe("buildOrcaInput", () => {
     expect(out).not.toContain("%maxcore 3000 end");
   });
 
-  it("preserves the coordinate block verbatim", () => {
-    const atoms = [
-      "O   0.000000   0.000000   0.117790",
-      "H   0.000000   0.755453  -0.471161",
-      "H   0.000000  -0.755453  -0.471161",
-    ].join("\n");
-    const out = buildOrcaInput(state({ charge: 0, multiplicity: 1 }), atoms);
-    expect(out).toContain(atoms);
+  it("writes the scene's canonical coordinate block", () => {
+    const out = buildOrcaInput(state({ charge: 0, multiplicity: 1 }), scene());
+    // Canonical merged rows (toFixed(8), padded) — geometry, not verbatim text.
+    expect(out).toContain("O     0.00000000    0.00000000    0.11779000");
     expect(out).toContain("* xyz 0 1");
     expect(out.trimEnd().endsWith("*")).toBe(true);
   });
@@ -120,8 +137,9 @@ describe("buildOrcaInput", () => {
     expect(out).toContain("# paste coordinates here");
   });
 
-  it("uses the form's charge and multiplicity in the geometry header", () => {
-    const out = buildOrcaInput(state({ charge: -1, multiplicity: 2 }), "Cl 0 0 0");
+  it("takes charge and multiplicity from the scene, overriding the form", () => {
+    // Form says 0 / 1, scene says -1 / 2 — the scene wins.
+    const out = buildOrcaInput(state({ charge: 0, multiplicity: 1 }), scene(-1, 2));
     expect(out).toContain("* xyz -1 2");
   });
 });

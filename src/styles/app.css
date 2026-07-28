@@ -602,6 +602,11 @@ body {
   color: var(--err);
 }
 
+.banner.warn {
+  background: #33290a;
+  color: var(--warn);
+}
+
 .section-title {
   font-size: 16px;
   margin: 0 0 14px;

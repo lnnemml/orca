@@ -10,12 +10,14 @@ import {
   fragmentAtomIndices,
   fragmentRanges,
   globalIndex,
+  injectSceneIntoInput,
   locateAtom,
   mergeToAtomLines,
   mergeToXyz,
   parseAtomLines,
   removeFragment,
   sceneFromOrcaInput,
+  sceneFromXyz,
   renameFragment,
   replaceFragmentAtoms,
   sceneFromAtomLines,
@@ -123,6 +125,16 @@ describe("atomicNumber", () => {
     expect(atomicNumber("cl")).toBe(17);
     expect(atomicNumber("CL")).toBe(17);
     expect(atomicNumber("Cl")).toBe(17);
+  });
+
+  it("covers the cross-coupling metals and up to Rn (Z ≤ 86)", () => {
+    expect(atomicNumber("Pd")).toBe(46);
+    expect(atomicNumber("Pt")).toBe(78);
+    expect(atomicNumber("Rn")).toBe(86);
+  });
+
+  it("throws naming an element beyond the table", () => {
+    expect(() => atomicNumber("U")).toThrow(/U/); // Z=92, unsupported
   });
 });
 
@@ -373,5 +385,55 @@ describe("sceneFromOrcaInput", () => {
     expect(s).not.toBeNull();
     expect(totalCharge(s!)).toBe(0);
     expect(s!.multiplicity).toBe(1);
+  });
+});
+
+describe("sceneFromXyz", () => {
+  const xyz =
+    "3\nwater\n" +
+    "O 0 0 0.11779\nH 0 0.755453 -0.471161\nH 0 -0.755453 -0.471161\n";
+
+  it("parses a standard xyz string (skips count + comment)", () => {
+    const s = sceneFromXyz(xyz, { id: "w", charge: -1, multiplicity: 2 });
+    expect(s).not.toBeNull();
+    expect(atomCount(s!)).toBe(3);
+    expect(s!.fragments[0].id).toBe("w");
+    expect(totalCharge(s!)).toBe(-1);
+    expect(s!.multiplicity).toBe(2);
+  });
+
+  it("returns null for a bad atom count or too-short input", () => {
+    expect(sceneFromXyz("notanumber\nc\nO 0 0 0")).toBeNull();
+    expect(sceneFromXyz("3\n")).toBeNull();
+  });
+});
+
+describe("injectSceneIntoInput", () => {
+  const s = sceneFromOrcaInput("* xyz -1 2\nO 0 0 0.11779\nH 0 0 1\n*", {
+    id: "f",
+  })!;
+
+  it("replaces an existing block, preserving surrounding lines", () => {
+    const content = "! B3LYP def2-SVP\n%pal nprocs 2 end\n\n* xyz 0 1\nH 0 0 0\n*\n";
+    const out = injectSceneIntoInput(content, s);
+    expect(out).toContain("! B3LYP def2-SVP");
+    expect(out).toContain("%pal nprocs 2 end");
+    expect(out).toContain("* xyz -1 2"); // header from the scene
+    expect(out).toContain("O     0.00000000    0.00000000    0.11779000");
+    expect(out).not.toContain("* xyz 0 1"); // old header replaced
+  });
+
+  it("appends a block when the input has none", () => {
+    const out = injectSceneIntoInput("! HF def2-SVP", s);
+    expect(out).toContain("! HF def2-SVP");
+    expect(out).toContain("* xyz -1 2");
+  });
+
+  it("round-trips with sceneFromOrcaInput (geometry preserved)", () => {
+    const out = injectSceneIntoInput("", s);
+    const back = sceneFromOrcaInput(out)!;
+    expect(xyzMatchesScene(s, mergeToAtomLines(back))).toBe(true);
+    expect(totalCharge(back)).toBe(-1);
+    expect(back.multiplicity).toBe(2);
   });
 });

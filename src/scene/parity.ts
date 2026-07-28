@@ -20,7 +20,7 @@ export type ParityIssue = {
   kind: "parity-mismatch";
   electrons: number;
   multiplicity: number;
-  /** Multiplicities of the correct parity, nearest first: e.g. [2, 4, 6]. */
+  /** Valid multiplicities of the correct parity, smallest first: e.g. [2, 4, 6]. */
   suggested: number[];
   message: string;
 };
@@ -41,7 +41,7 @@ function multiplicityName(m: number): string {
 /**
  * Check the scene's spin multiplicity against its electron count. Returns `null`
  * when the parity is consistent, when the scene is empty (nothing to validate),
- * or when the electron count can't be computed (an element outside the H–Kr
+ * or when the electron count can't be computed (an element outside the H–Rn
  * table) — in that last case we simply don't offer a parity opinion rather than
  * crash the caller.
  */
@@ -63,8 +63,13 @@ export function checkElectronParity(scene: Scene): ParityIssue | null {
     : multiplicity % 2 === 0;
   if (multiplicityOk) return null;
 
-  const start = electronsEven ? 1 : 2; // nearest valid multiplicity
-  const suggested = [start, start + 2, start + 4];
+  const smallest = electronsEven ? 1 : 2; // smallest allowed multiplicity
+  const suggested = [smallest, smallest + 2, smallest + 4];
+
+  // The *nearest* valid multiplicity to the one entered (not the smallest): the
+  // two neighbours m±1 both have the correct parity, so prefer the lower one
+  // when it is still ≥ the minimum, else the upper. (m=8 → 7, not 1.)
+  const nearest = multiplicity - 1 >= smallest ? multiplicity - 1 : multiplicity + 1;
 
   const parityWord = electronsEven ? "even" : "odd";
   const requiredParity = electronsEven ? "odd" : "even";
@@ -75,7 +80,7 @@ export function checkElectronParity(scene: Scene): ParityIssue | null {
     `This scene has ${electrons} electrons (${parityWord}), so its spin ` +
     `multiplicity must be ${requiredParity} — ${options}. ` +
     `Multiplicity ${multiplicity} (${multiplicityName(multiplicity)}) has the ` +
-    `wrong parity for ${electrons} electrons; the nearest valid value is ${start}.`;
+    `wrong parity for ${electrons} electrons; the nearest valid value is ${nearest}.`;
 
   return { kind: "parity-mismatch", electrons, multiplicity, suggested, message };
 }

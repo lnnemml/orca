@@ -1,13 +1,21 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 import { InputEditor } from "../editor/InputEditor";
 import { MoleculeViewer } from "../viewer/MoleculeViewer";
-import { extractXyzFromInput } from "../viewer/parse-xyz-from-input";
-import { injectXyzIntoInput } from "../viewer/inject-xyz-into-input";
-import { xyzToAtomLines, parseChargeMult } from "../viewer/xyz-format";
 import { importStructureFile, IMPORT_ACCEPT } from "../viewer/import-file";
 import { InputBuilderForm } from "../input-builder/InputBuilderForm";
+import { useSceneStore } from "../scene/store";
+import {
+  injectSceneIntoInput,
+  mergeToAtomLines,
+  mergeToXyz,
+  sceneFromAtomLines,
+  sceneFromOrcaInput,
+  sceneFromXyz,
+  totalCharge,
+  xyzMatchesScene,
+} from "../scene/scene";
 import {
   CATEGORY_LABELS,
   ORCA_TEMPLATES,
@@ -37,8 +45,9 @@ export function NewJobScreen({
   const [smiles, setSmiles] = useState("");
   const [generating, setGenerating] = useState(false);
   // Formula carried from the last SMILES generation, used when saving to the
-  // library (a plain .xyz import leaves it empty). Cleared when the editor's
-  // coordinate block is replaced by other means.
+  // library. It is library-molecule metadata (RDKit's molecular formula),
+  // orthogonal to the Scene geometry — SceneFragment has no formula concept — so
+  // it stays a separate state rather than moving into the fragment.
   const [formula, setFormula] = useState(initialMolecule?.formula ?? "");
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -51,31 +60,75 @@ export function NewJobScreen({
   >(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Preload a library molecule's coordinates into the editor once, on mount.
-  useEffect(() => {
-    if (!initialMolecule) return;
-    const atoms = xyzToAtomLines(initialMolecule.xyz);
-    if (!atoms) return;
-    setContent((c) =>
-      injectXyzIntoInput(
-        c,
-        atoms,
-        initialMolecule.charge,
-        initialMolecule.multiplicity,
-      ),
-    );
+  // ── Scene store: the single source of truth for geometry (ADR-008) ──────────
+  // Selectors return the stored objects directly, so an unchanged scene keeps
+  // its identity and MoleculeViewer does not redraw on every keystroke.
+  const scene = useSceneStore((s) => s.scene);
+  const resetNotice = useSceneStore((s) => s.resetNotice);
+  const setScene = useSceneStore((s) => s.setScene);
+  const collapseToSingleFragment = useSceneStore(
+    (s) => s.collapseToSingleFragment,
+  );
+  const undoReset = useSceneStore((s) => s.undoReset);
+  const dismissResetNotice = useSceneStore((s) => s.dismissResetNotice);
+
+  // Initialise the (module-singleton) scene store for this screen: a library
+  // molecule becomes a single-fragment scene; otherwise start empty, clearing
+  // any scene left over from a previous visit to New Job. useLayoutEffect (not
+  // useEffect) so the reset runs before paint — the screen remounts on every
+  // navigation, and a plain effect would flash the previous visit's molecule.
+  useLayoutEffect(() => {
+    if (initialMolecule) {
+      setScene(
+        sceneFromXyz(initialMolecule.xyz, {
+          source: "library",
+          sourceLabel: initialMolecule.id,
+          name: initialMolecule.name,
+          charge: initialMolecule.charge,
+          multiplicity: initialMolecule.multiplicity,
+        }),
+      );
+    } else {
+      setScene(null);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  // xyz extracted from the editor for the live preview — debounced so we don't
-  // re-parse on every keystroke.
-  const [previewXyz, setPreviewXyz] = useState<string | null>(null);
 
+  // Scene → content (ADR-008 #6): inject the merged coordinate block, leaving
+  // the `!` line / `%` blocks / comments untouched. The guard skips the write
+  // when the text already reflects this scene — preventing an echo after a
+  // content→scene sync and never reformatting a manual edit.
+  useEffect(() => {
+    if (!scene) return;
+    setContent((c) => {
+      const parsed = sceneFromOrcaInput(c);
+      if (parsed && xyzMatchesScene(scene, mergeToAtomLines(parsed))) return c;
+      return injectSceneIntoInput(c, scene);
+    });
+  }, [scene]);
+
+  // content → Scene (ADR-008 #6): on the same 500 ms debounce the preview used,
+  // compare the editor's coordinate block against the scene via xyzMatchesScene
+  // (parsed floats, never string compare). Match → leave the scene (the user was
+  // editing keywords). Diverged → the text wins: collapse to it. Block gone →
+  // clear. Scene absent but a block appeared (template / generated input) → adopt.
   useEffect(() => {
     const id = setTimeout(() => {
-      setPreviewXyz(extractXyzFromInput(content));
+      const parsed = sceneFromOrcaInput(content);
+      const current = useSceneStore.getState().scene;
+      if (!parsed) {
+        if (current) setScene(null);
+        return;
+      }
+      if (!current) {
+        setScene(parsed);
+        return;
+      }
+      if (xyzMatchesScene(current, mergeToAtomLines(parsed))) return;
+      collapseToSingleFragment(parsed.fragments[0].atoms);
     }, 500);
     return () => clearTimeout(id);
-  }, [content]);
+  }, [content, setScene, collapseToSingleFragment]);
 
   const pickTemplate = (t: OrcaTemplate) => {
     setSelectedId(t.id);
@@ -91,24 +144,31 @@ export function NewJobScreen({
   };
 
   // Import a structure file: `.xyz` is parsed locally, other formats are
-  // converted to xyz by the sidecar (see import-file.ts). Replaces the editor's
-  // coordinate block (neutral charge 0, singlet).
+  // converted to xyz by the sidecar (see import-file.ts). Becomes a single
+  // "import" fragment (neutral charge 0, singlet).
   const importFile = async (file: File) => {
     try {
       const { atomLines } = await importStructureFile(file);
       setError(null);
       setSaved(false);
       setFormula(""); // an imported file carries no formula
-      setContent((c) => injectXyzIntoInput(c, atomLines, 0, 1));
       const base = file.name.replace(/\.[^.]+$/, "");
+      const s = sceneFromAtomLines(atomLines, {
+        source: "import",
+        sourceLabel: file.name,
+        name: base,
+        charge: 0,
+        multiplicity: 1,
+      });
+      if (s) setScene(s);
       if (!title.trim()) setTitle(base);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
   };
 
-  // Generate a 3D structure from SMILES via the sidecar (RDKit ETKDG + MMFF),
-  // then inject the coordinates with the formal charge RDKit derived.
+  // Generate a 3D structure from SMILES via the sidecar (RDKit ETKDG + MMFF);
+  // becomes a single "smiles" fragment with the formal charge RDKit derived.
   const generateFromSmiles = async () => {
     const s = smiles.trim();
     if (!s) return;
@@ -140,11 +200,17 @@ export function NewJobScreen({
         charge: number;
         formula: string;
       };
-      const atoms = xyzToAtomLines(data.xyz);
-      if (!atoms) throw new Error("Sidecar returned a malformed structure");
+      const built = sceneFromXyz(data.xyz, {
+        source: "smiles",
+        sourceLabel: s,
+        name: data.formula,
+        charge: data.charge,
+        multiplicity: 1,
+      });
+      if (!built) throw new Error("Sidecar returned a malformed structure");
       setSaved(false);
       setFormula(data.formula);
-      setContent((c) => injectXyzIntoInput(c, atoms, data.charge, 1));
+      setScene(built);
       if (!title.trim()) setTitle(data.formula);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -153,23 +219,25 @@ export function NewJobScreen({
     }
   };
 
-  // Save the editor's current coordinates as a new library molecule. Charge and
-  // multiplicity come from the `* xyz charge mult` header; the formula is
-  // whatever the last SMILES generation reported (empty for a plain .xyz).
+  // Save the current geometry as a new library molecule. Geometry (canonical)
+  // comes from the scene; charge/multiplicity from the live `* xyz` header (so a
+  // manual header edit is honoured, matching the pre-store behaviour); the
+  // formula is whatever the last SMILES generation reported.
   const saveToLibrary = async () => {
-    const xyz = extractXyzFromInput(content);
-    if (!xyz) {
+    if (!scene) {
       setError("No coordinates in the input to save");
       return;
     }
     setSaving(true);
     setError(null);
     try {
-      const { charge, multiplicity } = parseChargeMult(content);
+      const header = sceneFromOrcaInput(content);
+      const charge = header ? totalCharge(header) : totalCharge(scene);
+      const multiplicity = header ? header.multiplicity : scene.multiplicity;
       await invoke<Molecule>("create_molecule", {
         name: title.trim() || "Untitled molecule",
         formula,
-        xyz,
+        xyz: mergeToXyz(scene, title.trim()),
         charge,
         multiplicity,
         tags: "",
@@ -273,7 +341,7 @@ export function NewJobScreen({
         <button
           className="btn btn-sm"
           onClick={saveToLibrary}
-          disabled={saving || !previewXyz}
+          disabled={saving || !scene}
           title="Save the current coordinates as a library molecule"
         >
           {saving ? "Saving…" : "Save to Library"}
@@ -282,6 +350,26 @@ export function NewJobScreen({
 
       {error ? <div className="banner err">{error}</div> : null}
       {saved ? <div className="banner ok">Saved to library</div> : null}
+      {resetNotice ? (
+        <div className="banner warn">
+          Coordinates were edited manually — {resetNotice.fragmentCount} fragments
+          merged into one.
+          <button
+            className="btn btn-sm"
+            style={{ marginLeft: 10 }}
+            onClick={() => undoReset()}
+          >
+            Undo
+          </button>
+          <button
+            className="btn btn-sm"
+            style={{ marginLeft: 6 }}
+            onClick={() => dismissResetNotice()}
+          >
+            Dismiss
+          </button>
+        </div>
+      ) : null}
 
       <div className="input-builder">
         <button
@@ -361,8 +449,8 @@ export function NewJobScreen({
           <InputEditor value={content} onChange={setContent} />
         </div>
         <div className="viewer-panel">
-          {previewXyz ? (
-            <MoleculeViewer xyzData={previewXyz} />
+          {scene ? (
+            <MoleculeViewer scene={scene} />
           ) : (
             <div className="viewer-empty muted">No coordinates in input</div>
           )}

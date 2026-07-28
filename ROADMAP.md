@@ -119,7 +119,12 @@ everything below — see ADR-008)
       injection, electron-parity validation
 - [x] c. MoleculeViewer: multi-fragment rendering (one model, index-range
       styling, per-fragment colours)
-- [ ] d. Add Fragment UI + Zustand scene store + `jobs.scene_json` (schema v4)
+- d. Store + Add Fragment UI + persistence — split into three (scope; see ADR-008
+      note in the log):
+  - [x] d-1. Zustand scene store + Scene↔Monaco two-way sync + New Job on the
+        store; parser consolidation closed
+  - [ ] d-2. Multi-fragment Add Fragment UI (the sidebar, shared palette)
+  - [ ] d-3. `jobs.scene_json` persistence (schema v4)
 
 **2.5.1 — Geometry editor** (builds on the foundation)
 

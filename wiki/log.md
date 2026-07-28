@@ -933,3 +933,76 @@ adding/removing a fragment re-zooms to fit.
 rendering path isn't headless-unit-testable; its inputs `mergeToXyz`/`fragmentRanges` are already
 covered, and the engine behaviour was proven in MiniBrowser). Next: 2.5.0d — Zustand store +
 `jobs.scene_json` + Add Fragment UI (and finish the viewer-parser consolidation).
+
+## [2026-07-28] session | 2.5.0d-1: scene store as geometry source of truth on New Job
+
+Made the Scene the source of truth for geometry on New Job — geometry flows through a Zustand store
+synced two-way with the Monaco buffer, not through the raw `content` string. **Acceptance criterion
+was "no visible behaviour change"**: Import / SMILES / Use / Save to Library / Generate / live
+preview all behave as before; only the plumbing changed.
+
+**Split 2.5.0d into d-1 / d-2 / d-3 — deliberate deviation from ADR-008 (reason: scope).** ADR-008
+listed 2.5.0d as one item ("Add Fragment UI + Zustand + scene_json"). That's three separable
+concerns and one session's worth is the store + sync + consolidation. So: **d-1** (this) store +
+Scene↔Monaco sync + New Job on the store + close the parser consolidation; **d-2** the multi-fragment
+Add-Fragment sidebar; **d-3** `jobs.scene_json` persistence (schema v4). ROADMAP updated to match.
+
+**Store (`src/scene/store.ts`).** `zustand` added (first store in the app; ADR-008 #10 sanctioned it).
+`useSceneStore` = `{ scene, previous, resetNotice }` + actions that are **thin wrappers over the pure
+scene functions** — no geometry logic in the store. Only `collapseToSingleFragment` / `undoReset` /
+`dismissResetNotice` are store-specific (undo bookkeeping the pure layer has no home for).
+
+**Scene ↔ Monaco sync (ADR-008 #6).** Scene→content: `injectSceneIntoInput` writes the merged block,
+guarded to skip when the text already matches (prevents echo, never reformats a manual edit).
+content→Scene: 500 ms debounce, decision by `xyzMatchesScene` (**parsed floats, tol 1e-6, never
+string compare** — the exact trap #6 warns about). Match → leave the scene (the silent common path:
+editing the `!` line / `%pal` / comments). Diverge → text wins, `collapseToSingleFragment`. Block
+gone → `setScene(null)`. No scene but a block appeared (template / Generate) → adopt. Reset notice +
+Undo shows **only when >1 fragment merged** — a single-fragment collapse is a geometric no-op, so it
+stays silent (else every hand-edit of a water coordinate would warn). Never fires in d-1's
+single-fragment world; wired for d-2.
+
+**Reference stability (the thing that stops the viewer blinking on every keystroke).** Selectors
+return the stored object directly; no-op actions return state unchanged; store init is a
+`useLayoutEffect` (the screen remounts on nav — a plain effect flashed the previous molecule).
+`store.test.ts` asserts repeated `scene` reads are `===`, and mirrors the screen's sync decision
+(match ⇒ no collapse ⇒ identity preserved; diverge ⇒ new reference).
+
+**Consolidation closed (ADR-008 delivered).** With NewJobScreen on `sceneFromOrcaInput` /
+`injectSceneIntoInput` (new, absorbed the old logic) + `sceneFromXyz`, the duplicate viewer parsers
+were **deleted**: `parse-xyz-from-input.ts`, `inject-xyz-into-input.ts`, and `parseChargeMult`.
+`viewer/xyz-format.ts` keeps only `xyzToAtomLines` / `atomLinesToXyz` (xyz-string formatters, not
+ORCA-input parsers) — live consumers `import-file.ts` + `MoleculesScreen`. **MoleculesScreen was
+deliberately NOT migrated to Scene**: it manages library molecules as stored xyz *strings* (the DB
+format), not multi-fragment scenes, so a Scene there is churn with regression risk and removes no
+duplication. Flagged, not overlooked.
+
+**Three review clean-ups from 2.5.0b, done.**
+1. `buildOrcaInput` signature is now `Scene | null` — the string branch (which existed only to keep
+   two tests I'd frozen) is gone. Converted exactly those two tests to Scene; the other 8 untouched
+   (`git diff` shows only 2 `it(` lines changed). Tests must not dictate the API — that was my error.
+2. Atomic-number table extended **H–Kr → H–Rn (Z ≤ 86)**, so Pd(46)/Pt(78) organometallics (the
+   cross-couplings ADR-007 names) count electrons instead of `checkElectronParity` silently
+   returning null. Unknown-element message + a Pd parity test added.
+3. Parity "nearest valid value" fixed — for even electrons + multiplicity 8 it said "1" (smallest),
+   now says "7" (actually nearest); `suggested` stays smallest-first. Test added.
+
+**Design notes (benign, flagged for the manual pass).** Save to Library now stores the **canonical**
+xyz (`mergeToXyz`, `toFixed(8)`) instead of the verbatim editor text — same geometry, ADR-008 #4
+format. Charge/mult on save still read from the live `* xyz` header (via `sceneFromOrcaInput`), so a
+manual header edit is honoured exactly as before. Manual coordinate typing re-zooms the viewer (new
+fragment id → composition change) — unchanged from the old always-`zoomTo` preview; programmatic
+fragment moves (2.5.3, via `replaceFragmentAtoms`) will keep the camera.
+
+**Manual checks (author, real Tauri window — sync behaviour isn't headless-drivable):**
+1. Edit the `!` line or `%pal` → **no** reset notice, viewer does **not** blink/redraw.
+2. Hand-edit a coordinate number → after ~0.5 s the viewer updates to the new geometry; on a
+   single-fragment scene there's **no** notice (nothing to undo — it's the geometry you just typed).
+3. Import a `.xyz` → SMILES `CCO` → Generate 3D → Use a library molecule: all three load and preview
+   exactly as before; the title auto-fills when empty.
+4. Save to Library then reopen the molecule → same geometry renders (stored canonical).
+5. Navigate New Job → Jobs → New Job: the screen starts empty (no stale molecule flash).
+
+**Verified.** `tsc --noEmit` clean, `vite build` clean, `vitest run` **76** (was 56 → +20: 13 store,
++ scene/parity additions). The 8 pre-existing `build-input.test.ts` cases untouched. Next: d-2
+(Add-Fragment sidebar) then d-3 (`scene_json`).

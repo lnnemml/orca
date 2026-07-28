@@ -1,14 +1,11 @@
 # Module: scene (`src/scene/`)
 
-**Status:** 2.5.0b done — the pure core (2.5.0a) is now wired into ORCA-input
-generation and electron-parity validation. `buildOrcaInput` accepts a Scene, and
-`InputBuilderForm.tsx` derives its geometry through `src/scene/` (no longer
-through the viewer parsers). Still ahead: 2.5.0c multi-fragment viewer, 2.5.0d
-Zustand store + `jobs.scene_json` persistence (and the store is what makes the
-form's read-only-charge / parity UI act on a *real* multi-fragment Scene rather
-than the single fragment derived from the buffer). **2.5.0c** wired
-`fragmentRanges` / `mergeToXyz` into `MoleculeViewer` for multi-fragment
-rendering (viewer only; no store yet).
+**Status:** 2.5.0d-1 done — the Scene is now the **source of truth for geometry
+on New Job**, via a Zustand store (`store.ts`) synced two-way with the Monaco
+buffer. 2.5.0a pure core → 2.5.0b input-builder + parity → 2.5.0c multi-fragment
+viewer → **2.5.0d-1 store + Scene↔Monaco sync + parser consolidation closed**.
+Still ahead (2.5.0d was split — see the log): **d-2** multi-fragment Add-Fragment
+UI (the sidebar), **d-3** `jobs.scene_json` persistence (schema v4).
 
 ## Responsibilities
 
@@ -18,17 +15,21 @@ abstraction for a multi-molecule geometry (substrate + reagent in one coordinate
 space, with known fragment boundaries). ORCA never sees a Scene — on export the
 fragments merge into one flat `* xyz totalCharge multiplicity ... *` block.
 
-This module is **pure and React-free** by design (ADR-008 decision 10): the merge
-/ index-mapping / comparison logic is plain node-testable functions; the reactive
-store that wraps them arrives in 2.5.0d. No imports from react / 3dmol / tauri.
+The pure layer (`scene.ts`, `parity.ts`, `types.ts`) is **React-free** by design
+(ADR-008 decision 10): merge / index-mapping / comparison as plain node-testable
+functions, no imports from react / 3dmol / tauri. The reactive `store.ts` (added
+2.5.0d-1) is the one React-facing file and stays a thin wrapper over that layer.
 
 ## Files
 
 - `types.ts` — `SceneAtom`, `FragmentSource`, `SceneFragment`, `Scene`;
   `FRAGMENT_SOURCES` (the valid-source list, for deserialize validation).
-- `scene.ts` — the merge / index / parse / serialize functions below.
+- `scene.ts` — the merge / index / parse / serialize functions below, plus the
+  ORCA-input ↔ Scene text I/O (`sceneFromOrcaInput`, `injectSceneIntoInput`).
 - `parity.ts` — `checkElectronParity` (electron-parity validation, ADR-008 #8).
-- `scene.test.ts` + `parity.test.ts` — vitest (46 tests total across the module).
+- `store.ts` — the Zustand scene store (React-facing; thin over the pure layer).
+- `scene.test.ts` + `parity.test.ts` + `store.test.ts` — vitest (this module owns
+  ~66 of the suite's tests).
 
 ## The index-space invariant (why this module exists)
 
@@ -54,7 +55,9 @@ Aggregates:
 - `atomCount(scene): number`.
 - `electronCount(scene): number` — Σ Z − totalCharge; **throws** on an unknown
   element (message names the symbol). Its parity constrains multiplicity parity.
-- `atomicNumber(symbol): number` — H–Kr, case-insensitive; throws on unknown.
+- `atomicNumber(symbol): number` — **H–Rn (Z ≤ 86)**, case-insensitive; throws on
+  unknown. Extended from H–Kr in 2.5.0d so Pd(46)/Pt(78) organometallics (the
+  cross-couplings ADR-007 names) count electrons instead of silently declining.
 
 Index space:
 - `globalIndex(scene, fragmentId, localIndex): number` — throws on unknown
@@ -80,10 +83,19 @@ Parsing / reset detection:
 - `sceneFromAtomLines(atomLines, opts): Scene | null` — single-fragment scene
   (the "editor" path). `opts.id` is accepted for determinism; defaults to
   `makeFragmentId()`.
+- `sceneFromXyz(xyz, opts): Scene | null` — single-fragment scene from a
+  **standard xyz string** (count/comment/rows), the shape the SMILES sidecar and
+  library molecules use. Skips the count+comment lines then reuses
+  `sceneFromAtomLines`.
 - `sceneFromOrcaInput(content, opts): Scene | null` — the ORCA-input → Scene
-  adapter (2.5.0b): extracts the `* xyz charge mult ... *` block, taking the
-  fragment charge and `scene.multiplicity` from the header. `null` for a
-  `* xyzfile` block (external geometry) or no block. Used by `InputBuilderForm`.
+  adapter: extracts the `* xyz charge mult ... *` block, taking the fragment
+  charge and `scene.multiplicity` from the header. `null` for a `* xyzfile` block
+  (external geometry) or no block.
+- `injectSceneIntoInput(content, scene): string` — the inverse: replace/insert
+  the coordinate block with the scene's merged canonical rows + `totalCharge` /
+  `multiplicity` header, leaving the `!` line, `%` blocks and comments intact.
+  The Scene → Monaco write of ADR-008 #6 (absorbed the old
+  `viewer/inject-xyz-into-input.ts`).
 - `xyzMatchesScene(scene, atomLines, tol=1e-6): boolean` — the reset-detection
   primitive (ADR-008 decision 6). Parses both sides and compares element symbols
   (case-insensitive) + coordinates within `tol`. **Float comparison, never
@@ -108,10 +120,13 @@ test diffs, and the float-tolerant comparison against the Monaco buffer.
 (`electronCount` = Σ Z − totalCharge) fixes the **parity** of the allowed spin
 multiplicity: even electrons ⇒ odd multiplicity (singlet/triplet/quintet), odd
 electrons ⇒ even multiplicity (doublet/quartet/sextet). A mismatch returns a
-`ParityIssue` with the electron count, the offending multiplicity, a nearest-first
-list of valid multiplicities (`[1,3,5]` or `[2,4,6]`), and an **explanatory**
-message (how many electrons, why that parity, what to use) — a teaching moment,
-not a diagnostic "invalid multiplicity".
+`ParityIssue` with the electron count, the offending multiplicity, a
+**smallest-first** list of valid multiplicities (`[1,3,5]` or `[2,4,6]`), and an
+**explanatory** message (how many electrons, why that parity, what to use) — a
+teaching moment, not a diagnostic "invalid multiplicity". The message names the
+*nearest* valid multiplicity to the one entered (2.5.0d fix: for multiplicity 8
+that is 7, not the smallest value 1 — `suggested` stays smallest-first, but the
+prose points at the closest fix).
 
 Scope of the check, deliberately narrow:
 - It validates **arithmetic possibility only**, never physical plausibility.
@@ -119,7 +134,7 @@ Scope of the check, deliberately narrow:
   chemist's call; we only catch the provably-impossible class (the error ORCA
   reports cryptically ~30 s into a run).
 - Returns `null` for an empty scene (nothing to validate) and for an element
-  outside the H–Kr table (can't count electrons → no parity opinion; it swallows
+  beyond the H–Rn table (can't count electrons → no parity opinion; it swallows
   the `electronCount` throw rather than crashing the caller).
 
 **Why the UI warns, not blocks.** `InputBuilderForm` shows the issue inline but
@@ -127,20 +142,49 @@ still lets Generate proceed: the user may build a scene incrementally and pass
 through a temporarily odd state, and ORCA itself rejects the truly impossible. We
 inform, we don't forbid.
 
-## Overlap — full consolidation deferred to 2.5.0d (narrowed from ADR-008)
+## The store (`store.ts`) and Scene ↔ Monaco sync
 
-ADR-008 said 2.5.0b would fully consolidate `src/viewer/xyz-format.ts`
-(`xyzToAtomLines`, `atomLinesToXyz`, `parseChargeMult`) and
-`src/viewer/parse-xyz-from-input.ts` (`extractXyzFromInput`) into `src/scene/`.
-**2.5.0b narrowed that on purpose:** only `InputBuilderForm.tsx` was migrated onto
-`src/scene/` (via `sceneFromOrcaInput`); `NewJobScreen.tsx` and
-`MoleculesScreen.tsx` still use the viewer helpers. Reason — both screens are
-rewritten in 2.5.0d (Add Fragment UI + Zustand), and consolidating their call
-sites now would mean rewriting them twice. So `sceneFromOrcaInput` deliberately
-duplicates a little of `extractXyzFromInput` / `parseChargeMult` in the interim;
-**2.5.0d removes the viewer copies** once every screen is migrated — that is where
-ADR-008's "full consolidation" actually lands. Nothing in `src/viewer/` was
-deleted or changed in 2.5.0b. A comment in `scene.ts` names the overlap.
+`useSceneStore` (Zustand) holds `{ scene, previous, resetNotice }` and actions
+that are **thin wrappers over the pure functions** — no geometry logic lives in
+the store, so the pure layer stays node-testable. `collapseToSingleFragment`,
+`undoReset`, `dismissResetNotice` are the only store-specific pieces (the pure
+layer has no place for undo bookkeeping).
+
+**Reference stability is a contract, not an optimisation.** `MoleculeViewer`
+redraws on a new `scene` reference (`useEffect([scene])`). Selectors return the
+stored object directly (`useSceneStore((s) => s.scene)`); actions that would be
+no-ops return the current state unchanged. So an unchanged scene keeps its
+identity and the viewer does not `removeAllModels`/`addModel` on every keystroke.
+`store.test.ts` asserts repeated reads are `===`.
+
+**Sync (ADR-008 #6), as wired in `NewJobScreen`:**
+- **Scene → Monaco:** on a scene change, `injectSceneIntoInput` writes the merged
+  block; a guard skips the write when the text already matches (prevents the echo
+  after a content→scene sync and never reformats a manual edit).
+- **Monaco → Scene:** on the 500 ms debounce, `xyzMatchesScene(scene, atomLines)`
+  (**parsed floats, tol 1e-6 — never string compare**) decides: match → leave the
+  scene (the user edited keywords, the common silent path); diverged → the text
+  wins, `collapseToSingleFragment`; block gone → `setScene(null)`; no scene yet
+  but a block appeared (template / generated input) → adopt it.
+- **Reset notice + Undo:** collapse stashes `previous`; the notice ("N fragments
+  merged into one" + Undo) shows **only when >1 fragment was lost** — a
+  single-fragment collapse is geometrically a no-op, so it stays silent (else the
+  user would see a warning on every hand-edit of a water molecule). Undo restores
+  `previous`, which re-injects its coordinates.
+
+## Consolidation — closed in 2.5.0d (ADR-008 delivered)
+
+ADR-008 promised the `src/viewer/` coordinate parsers would fold into `src/scene/`;
+2.5.0b narrowed it to `InputBuilderForm` only, and **2.5.0d closed it**. When
+`NewJobScreen` moved onto the store + `sceneFromOrcaInput` / `injectSceneIntoInput`,
+the duplicate ORCA-input parsers `parse-xyz-from-input.ts` (`extractXyzFromInput`)
+and `inject-xyz-into-input.ts` (`injectXyzIntoInput`) were **deleted**, and
+`parseChargeMult` was removed from `xyz-format.ts`. What remains in
+`viewer/xyz-format.ts` — `xyzToAtomLines`, `atomLinesToXyz` — is standard-xyz-string
+↔ atom-line **formatting**, not ORCA-input parsing, with live consumers
+`import-file.ts` and `MoleculesScreen` (which manages library molecules as stored
+xyz *strings*, not Scenes — deliberately not migrated). No duplication with this
+module remains.
 
 ## Notes
 

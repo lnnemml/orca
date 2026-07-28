@@ -17,7 +17,8 @@ console) and step 2 (editor + templates).
     polled every 5s (no Tauri events yet).
   - ORCA path row: editable field + Save button via `invoke('get_settings')` /
     `invoke('set_setting', {key, value})`; shows Configured / Unsaved-change state.
-- Zustand not yet introduced (single component, no shared state to justify it).
+- Zustand not yet introduced (single component, no shared state to justify it). *(Superseded in
+  2.5.0d-1: `src/scene/store.ts` is the first Zustand store — see "As built (2.5.0d-1)".)*
 
 ## As built (Phase 1 step 2) — editor + templates + job UI
 Layout: `App.tsx` is now a shell (topbar tabs + bottom status bar) that renders one of three
@@ -225,6 +226,32 @@ doesn't have to memorise ORCA syntax. New `src/input-builder/` module; still `us
   ORCA-run leg of the checklist needs the Tauri backend + an ORCA binary — not drivable
   headlessly (same limitation as prior phases); the generator's exact output is byte-covered by
   vitest.
+
+## As built (2.5.0d-1) — Scene store as geometry source of truth on New Job
+**Zustand is now a dependency** (`src/scene/store.ts`, ADR-008 #10 — the first store in the app;
+the earlier "Zustand not yet introduced" note is superseded). Behaviour is unchanged by design —
+Import / SMILES / Use / Save to Library / Generate / live preview all work exactly as before — but
+geometry flows through `useSceneStore`, not the raw `content` string.
+- **`NewJobScreen`** dropped `previewXyz` and the viewer-parser imports. It selects
+  `scene`/`resetNotice` (+ actions) from the store and runs the two ADR-008 #6 sync effects (see
+  `modules/scene.md`): Scene→content injection (guarded against echo) and a 500 ms content→Scene
+  debounce (`xyzMatchesScene`, float compare). Import → single `import` fragment; SMILES → `smiles`
+  fragment (`sceneFromXyz`, charge from RDKit); Use → `library` fragment (on mount); Save to Library
+  → `mergeToXyz(scene)` (canonical) + charge/mult from the live header. Viewer now takes `scene`
+  (`xyzData` no longer used here). Store init is a **`useLayoutEffect`** (the screen remounts on
+  every nav; a plain effect would flash the previous visit's molecule). `formula` stays a separate
+  state — it's RDKit metadata for the library record, orthogonal to Scene geometry.
+- **Reset notice:** a `.banner.warn` with Undo/Dismiss, shown only when a manual coordinate edit
+  merged **>1** fragment (never in d-1's single-fragment world — wired for d-2).
+- **`MoleculesScreen` unchanged:** it manages library molecules as stored xyz *strings*, not Scenes,
+  so it keeps `atomLinesToXyz` + `MoleculeViewer xyzData`. Not a regression, a deliberate scope call.
+- **Consolidation closed:** deleted `viewer/parse-xyz-from-input.ts` + `viewer/inject-xyz-into-input.ts`
+  and removed `parseChargeMult`; `xyz-format.ts` keeps only the two xyz-string formatters
+  (`xyzToAtomLines`/`atomLinesToXyz`) still used by `import-file.ts` + `MoleculesScreen`.
+- **Verified:** `tsc` + `vite build` clean; `vitest` 76 (was 56 → +20: store 13, scene/parity
+  additions). The two-way sync's in-window behaviour (no flicker on `!`-line edits, collapse+Undo on
+  manual coord edits) needs the real Tauri window — logged as a manual checklist, same headless
+  limitation as prior phases.
 
 ## As built (Phase 2.5) — New Job UI fixes (WebKitGTK contrast, accordion, scroll)
 Three issues found by manual testing in the real Tauri window (not visible in Chromium). CSS +

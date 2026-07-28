@@ -90,21 +90,19 @@ CPCM(water)
 SMD(acetonitrile)
 ```
 
-### Rule 6 — Coordinates are preserved
-The builder generates only the `!` line and `%` blocks; the geometry rows are carried through.
-`buildOrcaInput(state, geometry)` takes the geometry as a **Scene**, a raw atom-block string, or
-`null`:
-- **Scene** (the builder form's path since 2.5.0b) — coordinates are the canonical merged rows
-  (`mergeToAtomLines`, `toFixed(8)`); charge and multiplicity come from the Scene (see below).
-- **string** — the `element x y z` rows verbatim, with the form's charge / multiplicity. Retained
-  for the pre-Scene call sites and their tests.
-- **null / empty** — a commented placeholder, with the form's charge / multiplicity.
+### Rule 6 — Coordinates come from the Scene
+The builder generates only the `!` line and `%` blocks; the geometry is supplied by a Scene.
+`buildOrcaInput(state, scene)` takes a **Scene** or `null` (the string branch was removed in
+2.5.0d — it existed only to keep two tests, and tests must not dictate the API):
+- **Scene** — coordinates are the canonical merged rows (`mergeToAtomLines`, `toFixed(8)`); charge
+  and multiplicity come from the Scene (see below).
+- **null** — a commented placeholder, with the form's own charge / multiplicity fallback.
 
 ### Rule 7 — Charge and multiplicity come from the Scene
 When a Scene drives generation (ADR-008), the `* xyz charge mult` header is **derived**, not typed:
 - **charge = `totalCharge(scene)`** — the sum of the per-fragment formal charges. In the builder
   form the Charge field is read-only and shows this sum; you change it by setting a fragment's
-  charge (2.5.0d fragment UI), not by typing into the header.
+  charge (2.5.0d-2 fragment UI), not by typing into the header.
 - **multiplicity = `scene.multiplicity`** — a genuine physical choice, so it stays user-editable;
   the form writes the user's value into the Scene before generating.
 

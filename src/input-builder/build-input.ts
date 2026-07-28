@@ -105,48 +105,32 @@ export function buildKeywordLine(state: BuilderState): string {
 
 const PLACEHOLDER_COORDS = "# paste coordinates here, or import a molecule above";
 
-/** True for a {@link Scene} value (vs a raw atom-block string or null). */
-function isScene(geometry: Scene | string | null): geometry is Scene {
-  return (
-    typeof geometry === "object" &&
-    geometry !== null &&
-    Array.isArray((geometry as Scene).fragments)
-  );
-}
-
 /**
  * Assemble a complete, runnable ORCA input: the `!` line, the `%pal`/`%maxcore`
  * directives, and the `* xyz charge mult ... *` coordinate block.
  *
- * The `geometry` argument is either:
- * - a {@link Scene} — the preferred path (ADR-008): `charge` becomes
- *   `totalCharge(scene)`, the header multiplicity becomes `scene.multiplicity`,
- *   and the coordinates are the canonical merged rows `mergeToAtomLines(scene)`.
- *   The Scene therefore **overrides** `state.charge` / `state.multiplicity`.
- * - a raw atom-block string — the geometry's `element x y z` rows (verbatim, no
- *   delimiters), preserved exactly; here `state.charge` / `state.multiplicity`
- *   are used. Retained for the pre-Scene call sites and their tests (backward
- *   compatibility — see 2.5.0b note in the wiki log).
- * - `null`/empty — a commented placeholder, with `state.charge` /
- *   `state.multiplicity`.
+ * Geometry comes from a {@link Scene} (ADR-008): the header `charge` is
+ * `totalCharge(scene)`, the multiplicity is `scene.multiplicity`, and the
+ * coordinates are the canonical merged rows `mergeToAtomLines(scene)` — so the
+ * Scene **overrides** `state.charge` / `state.multiplicity`. Pass `null` (or an
+ * empty scene) to emit a commented placeholder using the form's own
+ * charge/multiplicity.
  *
  * `%maxcore` is a simple directive (NO `end`); `%pal` is a block (WITH `end`).
  */
 export function buildOrcaInput(
   state: BuilderState,
-  geometry: Scene | string | null,
+  scene: Scene | null,
 ): string {
   let charge = state.charge;
   let multiplicity = state.multiplicity;
   let coords: string;
 
-  if (isScene(geometry)) {
-    charge = totalCharge(geometry);
-    multiplicity = geometry.multiplicity;
-    const rows = mergeToAtomLines(geometry);
+  if (scene) {
+    charge = totalCharge(scene);
+    multiplicity = scene.multiplicity;
+    const rows = mergeToAtomLines(scene);
     coords = rows.length > 0 ? rows.join("\n") : PLACEHOLDER_COORDS;
-  } else if (typeof geometry === "string" && geometry.trim().length > 0) {
-    coords = geometry;
   } else {
     coords = PLACEHOLDER_COORDS;
   }

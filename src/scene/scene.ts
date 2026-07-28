@@ -8,17 +8,15 @@
  *
  * No React / 3Dmol / Tauri imports: this module is node-testable on its own.
  *
- * OVERLAP (consolidation completes in 2.5.0d, not 2.5.0b): `src/viewer/
- * xyz-format.ts` and `src/viewer/parse-xyz-from-input.ts` parse coordinate lines
- * into *string* rows (`"O   0.0   0.0   0.1"`) for the Phase 2 viewer path. This
- * module parses into structured {@link SceneAtom} objects, and {@link
- * sceneFromOrcaInput} below extracts the `* xyz c m ... *` block straight into a
- * Scene. 2.5.0b migrated only `InputBuilderForm.tsx` onto `src/scene/`; the
- * viewer helpers stay in use by `NewJobScreen.tsx` / `MoleculesScreen.tsx`
- * (both rewritten in 2.5.0d), so `sceneFromOrcaInput` deliberately duplicates a
- * little of `extractXyzFromInput` for now. 2.5.0d removes the viewer copies once
- * every screen is migrated — that is where the ADR-008 "full consolidation"
- * lands. See `wiki/modules/scene.md`.
+ * ORCA-input ↔ Scene text I/O lives here: {@link sceneFromOrcaInput} (read the
+ * `* xyz c m ... *` block into a Scene) and {@link injectSceneIntoInput} (write a
+ * Scene back). 2.5.0d closed the ADR-008 consolidation — the duplicate viewer
+ * parsers `parse-xyz-from-input.ts` and `inject-xyz-into-input.ts` were deleted
+ * once `NewJobScreen` moved onto this module. `src/viewer/xyz-format.ts` remains,
+ * but only for standard-xyz-string ↔ atom-line formatting (`xyzToAtomLines` /
+ * `atomLinesToXyz`), whose live consumers are `import-file.ts` and
+ * `MoleculesScreen` — those are not ORCA-input parsers, so no duplication with
+ * this module remains. See `wiki/modules/scene.md`.
  */
 
 import {
@@ -29,7 +27,10 @@ import {
   type SceneFragment,
 } from "./types";
 
-// ── Atomic numbers, H–Kr (enough for organic + first-row-TM chemistry) ───────
+// ── Atomic numbers, H–Rn (Z ≤ 86) ───────────────────────────────────────────
+// Covers the cross-coupling metals ADR-007 names — Pd (46), Pt (78) — plus the
+// lanthanides, so `electronCount` / `checkElectronParity` work for real
+// organometallic scenes instead of silently declining on an unknown symbol.
 
 const ATOMIC_NUMBERS: Readonly<Record<string, number>> = {
   H: 1, He: 2,
@@ -38,6 +39,14 @@ const ATOMIC_NUMBERS: Readonly<Record<string, number>> = {
   K: 19, Ca: 20,
   Sc: 21, Ti: 22, V: 23, Cr: 24, Mn: 25, Fe: 26, Co: 27, Ni: 28, Cu: 29, Zn: 30,
   Ga: 31, Ge: 32, As: 33, Se: 34, Br: 35, Kr: 36,
+  Rb: 37, Sr: 38,
+  Y: 39, Zr: 40, Nb: 41, Mo: 42, Tc: 43, Ru: 44, Rh: 45, Pd: 46, Ag: 47, Cd: 48,
+  In: 49, Sn: 50, Sb: 51, Te: 52, I: 53, Xe: 54,
+  Cs: 55, Ba: 56,
+  La: 57, Ce: 58, Pr: 59, Nd: 60, Pm: 61, Sm: 62, Eu: 63, Gd: 64, Tb: 65,
+  Dy: 66, Ho: 67, Er: 68, Tm: 69, Yb: 70, Lu: 71,
+  Hf: 72, Ta: 73, W: 74, Re: 75, Os: 76, Ir: 77, Pt: 78, Au: 79, Hg: 80,
+  Tl: 81, Pb: 82, Bi: 83, Po: 84, At: 85, Rn: 86,
 };
 
 /** Canonicalise an element symbol to `Xx` casing (`cl` / `CL` → `Cl`). */
@@ -46,11 +55,12 @@ function normalizeElement(symbol: string): string {
   return symbol[0].toUpperCase() + symbol.slice(1).toLowerCase();
 }
 
-/** Atomic number for an element symbol. Throws (naming the symbol) if unknown. */
+/** Atomic number for an element symbol (H–Rn, Z ≤ 86). Throws (naming the
+ * symbol) if unknown. */
 export function atomicNumber(symbol: string): number {
   const z = ATOMIC_NUMBERS[normalizeElement(symbol)];
   if (z === undefined) {
-    throw new Error(`unknown element symbol: "${symbol}" (supported H–Kr)`);
+    throw new Error(`unknown element symbol: "${symbol}" (supported H–Rn, Z ≤ 86)`);
   }
   return z;
 }
@@ -339,6 +349,24 @@ export function sceneFromAtomLines(
 }
 
 /**
+ * Build a single-fragment Scene from a **standard xyz string** (atom count,
+ * comment, then `element x y z` rows) — the shape returned by the SMILES sidecar
+ * and stored on library molecules. Returns `null` if the first line isn't a
+ * positive atom count or no atoms parse. `opts` is forwarded to
+ * {@link sceneFromAtomLines} (id / name / charge / multiplicity / source / label).
+ */
+export function sceneFromXyz(
+  xyz: string,
+  opts: SceneFromAtomLinesOptions = {},
+): Scene | null {
+  const lines = xyz.split(/\r?\n/);
+  if (lines.length < 3) return null;
+  const count = Number(lines[0].trim());
+  if (!Number.isInteger(count) || count <= 0) return null;
+  return sceneFromAtomLines(lines.slice(2), opts);
+}
+
+/**
  * Build a single-fragment Scene from a full ORCA input by extracting its
  * `* xyz <charge> <mult> ... *` coordinate block: the fragment charge comes from
  * the header, `scene.multiplicity` from the header, and the atoms from the block
@@ -385,6 +413,52 @@ export function sceneFromOrcaInput(
   }
 
   return sceneFromAtomLines(block, { ...opts, charge, multiplicity });
+}
+
+/**
+ * Replace (or insert) the `* xyz charge mult ... *` coordinate block in an ORCA
+ * input with a Scene's merged geometry: canonical rows from
+ * {@link mergeToAtomLines}, header charge from {@link totalCharge}, multiplicity
+ * from `scene.multiplicity`. Everything outside the block (the `!` line, `%`
+ * blocks, comments) is preserved. This is the Scene → Monaco write of ADR-008 #6
+ * and the inverse of {@link sceneFromOrcaInput}; it absorbed the former
+ * `src/viewer/inject-xyz-into-input.ts`.
+ */
+export function injectSceneIntoInput(content: string, scene: Scene): string {
+  const block =
+    `* xyz ${totalCharge(scene)} ${scene.multiplicity}\n` +
+    `${mergeToAtomLines(scene).join("\n")}\n*`;
+  const lines = content.split(/\r?\n/);
+
+  // Locate an existing block: an opening `*` followed by an `xyz`/`xyzfile`
+  // keyword — the same marker sceneFromOrcaInput scans for.
+  let start = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const rest = lines[i].trim();
+    if (!rest.startsWith("*")) continue;
+    if (rest.slice(1).trim().toLowerCase().startsWith("xyz")) {
+      start = i;
+      break;
+    }
+  }
+
+  if (start === -1) {
+    // No block yet — append at the end, separated by a blank line.
+    const trimmed = content.replace(/\s*$/, "");
+    return trimmed.length > 0 ? `${trimmed}\n\n${block}\n` : `${block}\n`;
+  }
+
+  // Closing `*` is the first `*` line after the opener; else the block runs to
+  // the end of the content.
+  let end = lines.length - 1;
+  for (let i = start + 1; i < lines.length; i++) {
+    if (lines[i].trim().startsWith("*")) {
+      end = i;
+      break;
+    }
+  }
+
+  return [...lines.slice(0, start), block, ...lines.slice(end + 1)].join("\n");
 }
 
 // ── (De)serialization for the `scene_json` snapshot ──────────────────────────

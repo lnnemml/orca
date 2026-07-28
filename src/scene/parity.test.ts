@@ -80,9 +80,28 @@ describe("checkElectronParity", () => {
     expect(issue.message.toLowerCase()).not.toContain("invalid");
   });
 
-  it("does not throw on an element outside H–Kr; returns null instead", () => {
-    const heavy = frag("u", ["U"], 0); // uranium — not in the H–Kr table
+  it("does not throw on an element beyond the table; returns null instead", () => {
+    const heavy = frag("u", ["U"], 0); // uranium (Z=92) — beyond H–Rn
     expect(() => checkElectronParity(scene(1, heavy))).not.toThrow();
     expect(checkElectronParity(scene(1, heavy))).toBeNull();
+  });
+
+  it("now validates a Pd complex instead of silently declining (Z≤86)", () => {
+    // Pd (46 e⁻, even) as a doublet is a real parity error — previously Pd was
+    // outside the table so this returned null and the check vanished.
+    const pd = frag("pd", ["Pd"], 0);
+    const issue = checkElectronParity(scene(2, pd));
+    expect(issue).not.toBeNull();
+    expect(issue!.electrons).toBe(46);
+    expect(issue!.suggested).toEqual([1, 3, 5]);
+  });
+
+  it("reports the *nearest* valid multiplicity, not the smallest", () => {
+    // 10 e⁻ (even) with multiplicity 8: valid list is [1,3,5] but the nearest
+    // valid value to 8 is 7, not 1.
+    const issue = checkElectronParity(scene(8, water()))!;
+    expect(issue.suggested).toEqual([1, 3, 5]);
+    expect(issue.message).toContain("nearest valid value is 7");
+    expect(issue.message).not.toContain("nearest valid value is 1");
   });
 });

@@ -1,7 +1,13 @@
 /**
- * Small helpers for moving between standard `.xyz` text, ORCA coordinate lines,
- * and the `* xyz charge mult` header. Shared by the New Job and Molecules
- * screens.
+ * Standard-`.xyz`-string ↔ ORCA-coordinate-line formatting. NOT an ORCA-input
+ * parser (that lives in `src/scene/scene.ts` — `sceneFromOrcaInput` /
+ * `injectSceneIntoInput`); these two are kept because their live consumers work
+ * in xyz *strings*, not Scenes: `import-file.ts` (file/sidecar xyz → atom lines)
+ * and `MoleculesScreen` (imported atom lines → the xyz string stored on a
+ * library molecule). The ORCA-input parsers this file used to hold
+ * (`parseChargeMult`) and its siblings (`parse-xyz-from-input.ts`,
+ * `inject-xyz-into-input.ts`) were removed in 2.5.0d when NewJobScreen moved to
+ * the scene store — completing the ADR-008 consolidation.
  */
 
 /**
@@ -34,30 +40,4 @@ export function xyzToAtomLines(xyz: string): string[] | null {
  */
 export function atomLinesToXyz(atomLines: string[], comment = ""): string {
   return `${atomLines.length}\n${comment}\n${atomLines.join("\n")}\n`;
-}
-
-/**
- * Pull the charge and multiplicity from an ORCA input's `* xyz charge mult`
- * header. Falls back to neutral singlet (`0 / 1`) when there is no such line or
- * the two integers can't be read.
- */
-export function parseChargeMult(content: string): {
-  charge: number;
-  multiplicity: number;
-} {
-  for (const line of content.split(/\r?\n/)) {
-    const t = line.trim();
-    if (!t.startsWith("*")) continue;
-    const rest = t.slice(1).trim();
-    if (!rest.toLowerCase().startsWith("xyz")) continue;
-    // `xyz <charge> <mult> ...` — the keyword may be `xyz` or `xyzfile`.
-    const parts = rest.split(/\s+/);
-    const charge = Number(parts[1]);
-    const multiplicity = Number(parts[2]);
-    if (Number.isInteger(charge) && Number.isInteger(multiplicity)) {
-      return { charge, multiplicity };
-    }
-    break;
-  }
-  return { charge: 0, multiplicity: 1 };
 }
