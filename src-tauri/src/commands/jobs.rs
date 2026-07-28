@@ -200,6 +200,29 @@ pub fn read_job_output(
     Ok(crate::local_backend::read_tail_lines(&out_path, max_lines)?)
 }
 
+/// Backfill the convergence dashboard: replay a job's `output.out` through the
+/// incremental parser and return every SCF / optimization datapoint. Returns an
+/// empty vec — not an error — when the job has no directory or output yet.
+/// Streams the file line by line (never loads it whole — domain rule #5).
+#[tauri::command]
+pub fn read_job_convergence(
+    db: State<'_, DbState>,
+    id: String,
+) -> Result<Vec<crate::convergence::ConvergenceEvent>, AppError> {
+    let job_dir = {
+        let conn = db.lock()?;
+        get_job_conn(&conn, &id)?.job_dir
+    };
+    let Some(job_dir) = job_dir else {
+        return Ok(Vec::new());
+    };
+    let out_path = std::path::Path::new(&job_dir).join("output.out");
+    if !out_path.exists() {
+        return Ok(Vec::new());
+    }
+    Ok(crate::local_backend::read_convergence(&out_path)?)
+}
+
 /// Open a job's directory in the OS file manager.
 #[tauri::command]
 pub fn open_job_folder(db: State<'_, DbState>, id: String) -> Result<(), AppError> {

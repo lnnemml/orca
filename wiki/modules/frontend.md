@@ -1,10 +1,11 @@
 # Module: Frontend (src/)
 
-**Status:** Phase 2 **in progress** — step 2.4 adds the ORCA input builder form (dropdowns → `.inp`,
-still editable in Monaco); step 2.3 added the molecule library (Molecules screen + Save/Use ↔ New
-Job); step 2.2 added .xyz import + SMILES→3D on New Job; step 2.1 added the 3Dmol.js molecule
-preview. Phase 1 complete (step 4): output backfill, energy/time in the job
-list, Open Folder; on step 3 (live log console) and step 2 (editor + templates).
+**Status:** Phase 2 **in progress** — step 2.5 adds the live convergence dashboard on Job detail
+(energy + criteria per cycle, recharts); step 2.4 the ORCA input builder form (dropdowns → `.inp`,
+still editable in Monaco); step 2.3 the molecule library (Molecules screen + Save/Use ↔ New Job);
+step 2.2 .xyz import + SMILES→3D on New Job; step 2.1 the 3Dmol.js molecule preview. Phase 1
+complete (step 4): output backfill, energy/time in the job list, Open Folder; step 3 (live log
+console) and step 2 (editor + templates).
 
 ## As built (Phase 0)
 - Scaffolded via `create-tauri-app` (react-ts template). Note: the current template ships
@@ -245,6 +246,43 @@ a collapse wrapper only — no Input Builder / `build-input.ts` / `orca-options.
   present, number inputs readable. The open-popup `option` styling and the live accordion/scroll
   interactions need the real Tauri window (GUI not drivable headlessly — same limitation as prior
   phases); the accordion is plain React state and the layout is pure CSS.
+
+## As built (Phase 2.5) — live convergence dashboard
+A learning instrument on Job detail: watch energy per cycle and the convergence criteria live,
+instead of reading the text log. New `src/convergence/` module; still `useState` + `invoke` only.
+
+- **`types.ts`** — mirrors `src-tauri/src/convergence.rs`: `ScfPoint` / `Criterion` / `OptPoint`,
+  the `ConvergenceEvent` union (discriminated on `kind: "scf" | "opt"`), and `ConvergencePayload`.
+- **`ConvergenceDashboard.tsx`** — props `events` + `status`. Three sections, each rendered only
+  when it has data:
+  - **A. Progress indicator** — real state, not a fake %: for an Opt, `Optimization cycle N ·
+    M/T criteria met` + a bar + a chip per criterion (✓/✗); for a single point, `SCF iteration K`;
+    for Freq, nothing (no opt data — a Freq run's SCF still shows as SCF iterations, which is fine).
+  - **B. Energy per cycle** (recharts `LineChart`, ≥2 points) — Y auto-domain, ticks 6 dp
+    (differences are ~1e-5 Eh on a total of hundreds); tooltip adds ΔE-from-previous in kcal/mol
+    (×627.509) for legibility.
+  - **C. Criteria vs tolerance** (recharts, **log Y**) — a line per gradient/step criterion with a
+    dashed `ReferenceLine` at its tolerance (same colour); `Energy change` excluded (signed,
+    different scale — it lives in the progress indicator). Values are magnitudes, safe for log.
+- **WebKitGTK / recharts** — recharts' `ResponsiveContainer` measures **0×0** in WebKitGTK (same
+  class of bug as 3Dmol's OffscreenCanvas and the `<select>` styling — the webview mismeasures).
+  Mitigated proactively: a `useContainerWidth` ResizeObserver hook measures the panel and passes an
+  **explicit pixel `width`** (+ fixed `height`) to each `LineChart`. No `ResponsiveContainer`. SVG
+  rendering itself is fine (lower risk than the WebGL/native-widget cases).
+- **`JobDetailScreen` integration** — a `job:convergence` listener is attached **before** submit
+  (listeners-first, same rule as `job:log`/`job:status` — Phase 1.3), and `read_job_convergence`
+  backfills after listeners attach, seeding only if live events haven't arrived (same order/guard
+  as the log backfill → no dedup needed). The dashboard sits in a collapsible accordion (the
+  `.input-builder` toggle pattern) **above** the log console: expanded by default while the job is
+  active (or auto-running), collapsed once finished.
+- **CSS** — `.convergence-dashboard` + `.conv-*` classes in `app.css`; the detail accordion body is
+  `max-height: 58vh; overflow-y: auto` so a tall dashboard never crushes the log console below it.
+- **Verified** — `tsc` + `npm test` (10) + `vite build` clean. The Rust parser (the risky part) is
+  `cargo test`-covered (7 unit tests over a real-output fixture) and validated against the two real
+  full outputs on the dev machine (`real_full_outputs_parse_sanely`, ignored): 4 and 7 opt cycles
+  parsed, **zero** Freq-eigenvector false positives. The live in-GUI rendering (charts updating
+  mid-run, backfill on reopen) needs the real Tauri window — not headless-drivable, same limitation
+  as every prior phase; recharts output is SVG and the data path is fully typed + tested.
 
 ## Resolved from step 3
 The earlier "no backfill of `output.out`" gap is closed by `read_job_output` + the detail

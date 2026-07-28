@@ -63,8 +63,14 @@ and sees the final energy in the job list — without touching a terminal.
       → generates `.inp`, still hand-editable in Monaco (form ↔ text one-way is fine) — **done**
       (Phase 2.4: `src/input-builder/`, composite vs functional modes, auto RI aux basis, live
       `!`-line preview). Double-hybrids (AuxC) deferred; form→text one-way as planned.
-- [ ] Live convergence dashboard for Opt jobs: energy per cycle, gradient norm vs criteria
-      (parse incrementally from the streamed log)
+- [x] Live convergence dashboard for Opt jobs: energy per cycle, gradient norm vs criteria
+      (parse incrementally from the streamed log) — **done** (Phase 2 step 5). Incremental
+      Rust parser (`src-tauri/src/convergence.rs`) feeds off the same stdout stream as the
+      log, emits batched `job:convergence` events; `read_job_convergence` backfills on open.
+      Frontend `src/convergence/` dashboard: progress indicator (N/M criteria met), energy-
+      per-cycle chart (ΔE in kcal/mol tooltip), criteria-vs-tolerance chart (log Y). recharts;
+      explicit chart width (WebKitGTK ResponsiveContainer 0×0 mitigation). Not in SQLite —
+      parsed on demand.
 - [ ] Sidecar endpoint: xyz ↔ common format conversions (Open Babel)
 - [x] Sequential job queue: `queued` status, worker loop picks next job when current
       completes (concurrency 1) — **done**. `submit` enqueues instead of erroring on a busy

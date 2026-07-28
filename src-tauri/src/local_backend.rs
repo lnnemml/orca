@@ -26,6 +26,7 @@ use crate::commands::jobs::{
     update_job_status_conn,
 };
 use crate::commands::settings::DbState;
+use crate::convergence::{ConvergenceEvent, ConvergenceParser};
 use crate::cpu_presets::{CpuPreset, DEFAULT_PRESET_ID};
 use crate::error::AppError;
 use crate::models::job::JobStatus;
@@ -95,6 +96,15 @@ struct LogPayload {
 struct StatusPayload {
     job_id: String,
     status: String,
+}
+
+/// Payload of the `job:convergence` event: a batch of freshly parsed SCF /
+/// optimization datapoints for the live dashboard. Batched on the same cadence
+/// as logs so a fast SCF (dozens of iterations/sec) doesn't flood the UI.
+#[derive(Clone, Serialize)]
+struct ConvergencePayload {
+    job_id: String,
+    events: Vec<ConvergenceEvent>,
 }
 
 /// Create `<data_dir>/jobs/<job_id>/` and write `input.inp` into it.
@@ -580,6 +590,8 @@ fn drive_job(
             .ok()
             .map(BufWriter::new);
         let mut batch: Vec<String> = Vec::new();
+        let mut conv_batch: Vec<ConvergenceEvent> = Vec::new();
+        let mut parser = ConvergenceParser::new();
         let mut last_flush = Instant::now();
         let mut line = String::new();
 
@@ -591,7 +603,13 @@ fn drive_job(
                     if let Some(w) = writer.as_mut() {
                         let _ = w.write_all(line.as_bytes());
                     }
-                    batch.push(line.trim_end_matches(['\n', '\r']).to_string());
+                    let trimmed = line.trim_end_matches(['\n', '\r']);
+                    // Same stream feeds the convergence parser — never a re-read
+                    // of output.out (domain rule #5).
+                    if let Some(ev) = parser.feed(trimmed) {
+                        conv_batch.push(ev);
+                    }
+                    batch.push(trimmed.to_string());
                     if batch.len() >= LOG_BATCH_LINES
                         || last_flush.elapsed() >= Duration::from_millis(LOG_BATCH_MILLIS)
                     {
@@ -599,6 +617,7 @@ fn drive_job(
                             let _ = w.flush();
                         }
                         emit_log(&app, &job_id, &mut batch);
+                        emit_convergence(&app, &job_id, &mut conv_batch);
                         last_flush = Instant::now();
                     }
                 }
@@ -609,6 +628,7 @@ fn drive_job(
             let _ = w.flush();
         }
         emit_log(&app, &job_id, &mut batch);
+        emit_convergence(&app, &job_id, &mut conv_batch);
     }
 
     // Wait for exit and write the completion marker (domain rule #6).
@@ -727,6 +747,20 @@ fn emit_log(app: &AppHandle, job_id: &str, batch: &mut Vec<String>) {
     );
 }
 
+/// Emit a batch of convergence datapoints (no-op if empty); drains `batch`.
+fn emit_convergence(app: &AppHandle, job_id: &str, batch: &mut Vec<ConvergenceEvent>) {
+    if batch.is_empty() {
+        return;
+    }
+    let _ = app.emit(
+        "job:convergence",
+        ConvergencePayload {
+            job_id: job_id.to_string(),
+            events: std::mem::take(batch),
+        },
+    );
+}
+
 /// Emit a single app-generated log line (e.g. the %pal alignment notice).
 fn emit_log_line(app: &AppHandle, job_id: &str, line: &str) {
     let _ = app.emit(
@@ -816,6 +850,25 @@ pub(crate) fn read_tail_lines(path: &Path, max_lines: usize) -> std::io::Result<
     }
     let begin = lines.len().saturating_sub(max_lines);
     Ok(lines[begin..].iter().map(|s| s.to_string()).collect())
+}
+
+/// Replay a finished/running job's `output.out` through a fresh
+/// [`ConvergenceParser`] and return every datapoint, for backfilling the
+/// dashboard when the detail screen opens. Reads **line by line** via a
+/// `BufReader` — the file (tens of MB for a long run) is never loaded whole
+/// (domain rule #5); only the compact event list is held.
+pub(crate) fn read_convergence(path: &Path) -> std::io::Result<Vec<ConvergenceEvent>> {
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
+    let mut parser = ConvergenceParser::new();
+    let mut events = Vec::new();
+    for line in reader.lines() {
+        let line = line?;
+        if let Some(ev) = parser.feed(&line) {
+            events.push(ev);
+        }
+    }
+    Ok(events)
 }
 
 #[cfg(test)]

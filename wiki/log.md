@@ -532,3 +532,48 @@ couldn't be confirmed. Only hard kill ships; recorded in `gotchas.md` to re-chec
 once the manual lands. Domain rule 4 (concurrency = 1) untouched.
 
 Next: live convergence dashboard for Opt jobs.
+
+## [2026-07-28] session | Phase 2 step 5: live convergence dashboard
+
+The learning instrument from CLAUDE.md, realised: during a run the user watches an energy-per-
+cycle plot and the convergence criteria update, instead of squinting at the text log.
+
+**Rust — incremental parser (`src-tauri/src/convergence.rs`, new).** `ConvergenceParser::feed(line)
+-> Option<ConvergenceEvent>` (`Scf(ScfPoint)` | `Opt(OptPoint)`, `#[serde(tag="kind")]`). Fed the
+**same** stdout stream `drive_job` already tails — `output.out` is never re-read while running
+(domain rule #5). `drive_job` batches events on the log cadence and emits `job:convergence`; new
+`read_job_convergence` command replays the file line-by-line via `BufReader` for backfill (never
+whole-file). **Not stored in SQLite** — parsed on demand.
+
+**Format reality vs the task's idealised spec** (all confirmed against real ORCA 6.1 r²SCAN-3c
+output, now in `orca/output-files.md`): there is **no `SCF ITERATIONS` banner** — ORCA 6 prints
+per-algorithm headers (`D-I-I-S`, `S-O-S-C-F`) with a continuous iter counter; iter starts at 1;
+ΔE is scientific and `0.00e+00` on iter 1. First opt cycle has **4** criteria (no `Energy change`
+yet), later cycles 5 → count not hardcoded. **Key gotcha:** Freq normal-mode eigenvector rows have
+the *identical* shape to SCF rows (`int  -0.000014  0.048084 …`) — pure line-shape parsing leaks
+them in as bogus SCF points. Fix: gate SCF parsing to inside an `Iteration … Energy (Eh)` table
+(closed by `SCF CONVERGED` / `TOTAL SCF ENERGY`). Per-cycle energy reuses
+`result_extraction::extract_final_energy`.
+
+**Frontend — `src/convergence/` + Job detail.** `ConvergenceDashboard.tsx`: (A) progress indicator
+(`cycle N · M/T criteria met` + chips, or `SCF iteration K` for SP); (B) energy-per-cycle
+`LineChart` (6-dp Y ticks, ΔE-in-kcal/mol tooltip); (C) criteria-vs-tolerance chart on a **log Y**
+with dashed tolerance `ReferenceLine`s. `job:convergence` listener attached **before** submit
+(listeners-first, Phase 1.3), `read_job_convergence` backfill in the same order/guard as the log.
+Accordion above the console, expanded while active. `npm install recharts` (v3.10).
+
+**WebKitGTK / recharts.** recharts' `ResponsiveContainer` measures 0×0 in WebKitGTK (same webview
+mismeasurement class as 3Dmol/`<select>`) — mitigated proactively with a `useContainerWidth`
+ResizeObserver passing explicit pixel `width` to each chart; no `ResponsiveContainer`. SVG render
+is low-risk otherwise.
+
+**Verified.** `cargo test` 39 + 2 ignored (7 new convergence unit tests over a real-C₂H₆ fixture).
+Parser validated against the two **real full outputs** on the dev machine
+(`real_full_outputs_parse_sanely`, ignored): 4 and 7 opt cycles, **zero** Freq-eigenvector false
+positives (all SCF energies < −1 Eh). `tsc` + `npm test` (10) + `vite build` clean, no warnings.
+The live in-GUI leg (charts updating mid-run, backfill on reopen) needs the real Tauri window —
+not headless-drivable, same limitation as every prior phase; the risky parsing is real-data-tested
+and the frontend data path is fully typed.
+
+Next: sequential-queue polish already shipped; Phase 2.5 geometry editor (atom picking, measure,
+set distance/angle/dihedral) is the next big item.

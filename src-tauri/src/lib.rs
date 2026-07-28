@@ -1,4 +1,5 @@
 mod commands;
+mod convergence;
 mod cpu_presets;
 mod db;
 mod error;
@@ -68,6 +69,7 @@ pub fn run() {
             commands::jobs::resume_queue,
             commands::jobs::is_queue_paused,
             commands::jobs::read_job_output,
+            commands::jobs::read_job_convergence,
             commands::jobs::open_job_folder,
             cpu_presets::get_cpu_presets,
             commands::molecules::create_molecule,

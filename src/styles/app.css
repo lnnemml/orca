@@ -608,6 +608,117 @@ body {
   max-width: 560px;
 }
 
+/* --- Convergence dashboard (Job detail) ------------------------------- */
+
+/* Bound the dashboard so it never crushes the log console below it; scroll
+   internally if both charts + criteria overflow. */
+.screen.detail .input-builder .builder-body {
+  max-height: 58vh;
+  overflow-y: auto;
+}
+
+.convergence-dashboard {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  width: 100%;
+}
+
+/* Section A — progress indicator. */
+.conv-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.conv-progress-head {
+  font-size: 13px;
+  color: var(--text);
+}
+
+.conv-progress-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--panel-2);
+  overflow: hidden;
+}
+
+.conv-progress-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.2s ease;
+}
+
+.conv-criteria-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.conv-chip {
+  font-size: 11px;
+  font-family: var(--mono);
+  padding: 2px 8px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+}
+
+.conv-chip.met {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 45%, var(--border));
+}
+
+.conv-chip.unmet {
+  color: var(--muted);
+}
+
+/* Sections B & C — charts. */
+.conv-chart {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.conv-chart-title {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.conv-tooltip {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 11px;
+  color: var(--text);
+}
+
+.conv-tooltip-delta {
+  color: var(--accent);
+  margin-top: 2px;
+}
+
+.conv-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.conv-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.conv-legend-swatch {
+  width: 10px;
+  height: 3px;
+  border-radius: 2px;
+  display: inline-block;
+}
+
 /* --- Molecules screen ------------------------------------------------- */
 
 /* The Add Molecule form and the selected-molecule detail both sit in the

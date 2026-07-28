@@ -4,6 +4,8 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import type { Job, JobStatus } from "../types";
 import { formatEnergy, formatWallTime } from "../format";
+import { ConvergenceDashboard } from "../convergence/ConvergenceDashboard";
+import type { ConvergenceEvent, ConvergencePayload } from "../convergence/types";
 
 interface LogPayload {
   job_id: string;
@@ -28,7 +30,11 @@ interface JobDetailScreenProps {
 export function JobDetailScreen({ jobId, autoRun, onBack }: JobDetailScreenProps) {
   const [job, setJob] = useState<Job | null>(null);
   const [lines, setLines] = useState<string[]>([]);
+  const [events, setEvents] = useState<ConvergenceEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
+  // Dashboard accordion: user override (null = follow the default, which is
+  // expanded while the job is active, collapsed once it's finished).
+  const [dashOpen, setDashOpen] = useState<boolean | null>(null);
   const preRef = useRef<HTMLPreElement>(null);
   const didSubmit = useRef(false);
 
@@ -43,6 +49,7 @@ export function JobDetailScreen({ jobId, autoRun, onBack }: JobDetailScreenProps
   useEffect(() => {
     let unlistenLog: UnlistenFn | undefined;
     let unlistenStatus: UnlistenFn | undefined;
+    let unlistenConv: UnlistenFn | undefined;
     let cancelled = false;
 
     (async () => {
@@ -61,6 +68,13 @@ export function JobDetailScreen({ jobId, autoRun, onBack }: JobDetailScreenProps
           const next = prev.concat(e.payload.lines);
           return next.length > MAX_LINES ? next.slice(next.length - MAX_LINES) : next;
         });
+      });
+
+      // Live convergence datapoints (SCF iterations + optimization steps),
+      // attached before submit so no early points are missed (listeners-first).
+      unlistenConv = await listen<ConvergencePayload>("job:convergence", (e) => {
+        if (e.payload.job_id !== jobId) return;
+        setEvents((prev) => prev.concat(e.payload.events));
       });
 
       unlistenStatus = await listen<StatusPayload>("job:status", (e) => {
@@ -89,6 +103,18 @@ export function JobDetailScreen({ jobId, autoRun, onBack }: JobDetailScreenProps
         } catch (e) {
           setError(String(e));
         }
+        // Backfill convergence datapoints the same way (and in the same order)
+        // as the log: seed only if live events haven't already populated.
+        try {
+          const past = await invoke<ConvergenceEvent[]>("read_job_convergence", {
+            id: jobId,
+          });
+          if (!cancelled && past.length) {
+            setEvents((prev) => (prev.length ? prev : past));
+          }
+        } catch (e) {
+          setError(String(e));
+        }
       }
 
       // Kick off the run only AFTER listeners are attached, so no early output
@@ -107,6 +133,7 @@ export function JobDetailScreen({ jobId, autoRun, onBack }: JobDetailScreenProps
       cancelled = true;
       unlistenLog?.();
       unlistenStatus?.();
+      unlistenConv?.();
     };
   }, [jobId, autoRun, loadJob]);
 
@@ -133,6 +160,11 @@ export function JobDetailScreen({ jobId, autoRun, onBack }: JobDetailScreenProps
   };
 
   const cancellable = job?.status === "running" || job?.status === "queued";
+  const isActive = job?.status === "running" || job?.status === "queued";
+  // Expanded by default while the job is active (or auto-running), collapsed for
+  // a finished job — the live dashboard is the main thing to watch mid-run.
+  const dashboardOpen = dashOpen ?? (isActive || autoRun);
+  const showDashboard = events.length > 0 || isActive;
 
   return (
     <div className="screen detail">
@@ -181,6 +213,33 @@ export function JobDetailScreen({ jobId, autoRun, onBack }: JobDetailScreenProps
       {job?.error_message ? (
         <div className="banner err" style={{ marginBottom: 10, whiteSpace: "pre-wrap" }}>
           {job.error_message}
+        </div>
+      ) : null}
+
+      {showDashboard ? (
+        <div className="input-builder" style={{ marginBottom: 10 }}>
+          <button
+            className="builder-toggle"
+            onClick={() => setDashOpen(!dashboardOpen)}
+            aria-expanded={dashboardOpen}
+          >
+            <span className="builder-caret">{dashboardOpen ? "▾" : "▸"}</span>
+            Convergence
+            <span className="muted" style={{ marginLeft: 8 }}>
+              energy &amp; convergence criteria per cycle
+            </span>
+          </button>
+          {dashboardOpen ? (
+            <div className="builder-body">
+              {events.length ? (
+                <ConvergenceDashboard events={events} status={job?.status ?? "running"} />
+              ) : (
+                <div className="muted" style={{ fontSize: 12 }}>
+                  Waiting for convergence data…
+                </div>
+              )}
+            </div>
+          ) : null}
         </div>
       ) : null}
 

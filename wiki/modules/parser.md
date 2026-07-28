@@ -1,6 +1,35 @@
 # Module: Result parsing
 
-**Status:** Rust minimal extraction built (Phase 1.4). Sidecar/cclib tier not started.
+**Status:** Rust minimal extraction (Phase 1.4) + incremental convergence parser (Phase 2.5)
+built. Sidecar/cclib tier not started.
+
+## As built (Phase 2.5) — `src-tauri/src/convergence.rs` (incremental streaming parser)
+The streaming tier (tier 1 below), realised for the live convergence dashboard. A
+`ConvergenceParser` is fed the **same** stdout stream `local_backend::drive_job` already tails —
+one line at a time, so `output.out` is never re-read while running (domain rule #5). `feed(line)`
+returns `Option<ConvergenceEvent>` (`Scf(ScfPoint)` | `Opt(OptPoint)`, internally tagged on
+`kind` for the frontend). `drive_job` batches these on the same cadence as logs and emits
+`job:convergence`; the `read_job_convergence` command replays a finished/running job's
+`output.out` (via `BufReader`, line by line) through a fresh parser for backfill.
+
+**What it parses** (formats + gotchas documented in `orca/output-files.md`):
+- **SCF iterations** — tolerant row parse (int iter, negative-decimal energy, ≥3 numeric
+  fields), **gated** to inside an `Iteration … Energy (Eh)` table. The gate is essential: Freq
+  normal-mode eigenvector rows have the identical shape and would otherwise leak in as SCF
+  points (verified against a real Opt+Freq run — the `real_full_outputs_parse_sanely` ignored
+  test asserts no near-zero "SCF" energy leaks). `cycle` = current opt cycle (0 for a single
+  point), read from `GEOMETRY OPTIMIZATION CYCLE N` markers.
+- **Geometry convergence** — state machine over the `|Geometry convergence|` block; each
+  `name value tolerance YES|NO` row → a `Criterion`; the closing dashed rule (after ≥1
+  criterion) emits an `OptPoint { cycle, energy, criteria }`. Criterion count is **not**
+  hardcoded (cycle 1 has 4, later cycles 5, OptTS more).
+- **Per-cycle energy** — reuses `result_extraction::extract_final_energy` on the
+  `FINAL SINGLE POINT ENERGY` line (one line at a time), attached to the cycle's `OptPoint`.
+
+**Not in SQLite** — convergence data is derived on demand from `output.out` (cheap to re-parse,
+avoids schema churn and a write path during the hot streaming loop). Fixture:
+`src-tauri/tests/fixtures/opt_output_excerpt.txt` (two real C₂H₆ cycles). Frontend mirror +
+dashboard in `src/convergence/` (see `modules/frontend.md` Phase 2.5).
 
 ## As built (Phase 1.4) — `src-tauri/src/result_extraction.rs`
 Minimal Rust extraction, run once when a job completes (in `local_backend::drive_job`, before
