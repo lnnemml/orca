@@ -291,6 +291,28 @@ export function replaceFragmentAtoms(
   };
 }
 
+/**
+ * Rigid-body translate a fragment by (dx, dy, dz). Pure/immutable — returns a new
+ * fragment with the same id, composition and internal geometry, only shifted.
+ * Used by fragment placement (2.5.0d-2) and the geometry editor (2.5.3).
+ */
+export function translateFragment(
+  fragment: SceneFragment,
+  dx: number,
+  dy: number,
+  dz: number,
+): SceneFragment {
+  return {
+    ...fragment,
+    atoms: fragment.atoms.map((a) => ({
+      ...a,
+      x: a.x + dx,
+      y: a.y + dy,
+      z: a.z + dz,
+    })),
+  };
+}
+
 // ── Parsing coordinate blocks into SceneAtoms ────────────────────────────────
 
 /**

@@ -123,7 +123,9 @@ everything below — see ADR-008)
       note in the log):
   - [x] d-1. Zustand scene store + Scene↔Monaco two-way sync + New Job on the
         store; parser consolidation closed
-  - [ ] d-2. Multi-fragment Add Fragment UI (the sidebar, shared palette)
+  - d-2. Add Fragment: pure foundation, then UI
+    - [x] a. Curated reagent library + bounding-box placement (pure, no UI)
+    - [ ] b. Add-Fragment panel / sidebar (shared palette)
   - [ ] d-3. `jobs.scene_json` persistence (schema v4)
 
 **2.5.1 — Geometry editor** (builds on the foundation)

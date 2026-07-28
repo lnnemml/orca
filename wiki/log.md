@@ -1006,3 +1006,51 @@ fragment moves (2.5.3, via `replaceFragmentAtoms`) will keep the camera.
 **Verified.** `tsc --noEmit` clean, `vite build` clean, `vitest run` **76** (was 56 → +20: 13 store,
 + scene/parity additions). The 8 pre-existing `build-input.test.ts` cases untouched. Next: d-2
 (Add-Fragment sidebar) then d-3 (`scene_json`).
+
+## [2026-07-28] session | 2.5.0d-2a: curated fragment library + bounding-box placement
+
+Built the pure foundation for adding fragments (ADR-008 #7 + #9) — no UI, no React, node-only tests.
+d-2b (the Add-Fragment panel/sidebar) consumes this; d-2a intentionally has no consumer yet.
+
+**Placement (`src/scene/placement.ts`).** `placeFragment(scene, fragment, gap=3.5)` separates the two
+AABBs along the axis where the **scene is smallest** (ties → x), centring on the other two — so a
+reagent approaches an x-elongated substrate from the side, not down the chain (the naive CoM+vector
+lands mid-chain). Clearance is structural, not hopeful: fragment-min on the chosen axis = scene-max +
+gap, so every cross pair differs by ≥ gap on that axis alone ⇒ distance ≥ gap. Empty scene → fragment
+returned unmoved. Also added `translateFragment(fragment, dx,dy,dz)` to `scene.ts` (pure rigid shift;
+placement uses it, 2.5.3 will too). Tests are **invariants, not golden numbers**: ≥ gap separation
+(incl. a 2nd fragment clearing the 1st), intra-fragment distances preserved to 1e-9, x-elongated
+substrate ⇒ off-x axis, empty scene identity, monatomic Cl⁻.
+
+**Library (`src/scene/fragment-library.ts`).** Eight reagents: BH₄⁻(−1), H⁻(−1), OH⁻(−1), CN⁻(−1),
+Cl⁻(−1), H₂O(0), NH₃(0), CH₃OH(0). `libraryFragmentToScene` → fresh id, deep-copied atoms,
+`source:"fragment-library"`, `sourceLabel=key`. Kept the list at exactly the eight requested —
+considered adding F⁻ but Cl⁻ already covers a halide nucleophile, so held off (avoid scope creep).
+
+**Where each geometry came from (the honesty ledger):**
+- Built from ideal symmetry + reference values (constructed in code, so symmetry is exact):
+  BH₄⁻ (T_d cube-diagonal dirs × B–H 1.24 Å); H₂O (C2v bent, O–H 0.9572 Å / 104.52°); NH₃ (C3v
+  pyramidal, N–H 1.012 Å / 106.67°); OH⁻ (0.964 Å), CN⁻ (1.16 Å) diatomics; H⁻, Cl⁻ monatomic.
+  Reference bond lengths/angles are the standard experimental/spectroscopic values, cited in each
+  `provenance`.
+- **CH₃OH — run through ORCA**, because a 6-atom low-symmetry Z-matrix is too error-prone to
+  hand-build and a wrong number here would converge silently. `! r2SCAN-3c Opt` in an isolated dir
+  `/tmp/orca-meoh-d2a` (nproc-serial, full `/opt/orca/orca` path — domain rules 1 & 3), TERMINATED
+  NORMALLY, E = −115.6947 Eh. Measured C–O 1.4303 Å, O–H 0.9597 Å, C–O–H 108.66° (all match
+  literature methanol); hardcoded those coords, **cleaned the dir up** afterwards.
+- **Nothing was dropped for uncertainty** — all eight geometries are either symmetry-exact or
+  ORCA-verified.
+
+**The invented-number guard.** Each entry declares `reference` internals; `fragment-library.test.ts`
+recomputes every bond/angle *from the coordinates* (independent distance/dot-product math, tol
+1e-3 Å / 0.1°) and fails on disagreement — a mistyped coordinate can't ship a wrong-but-converging
+geometry. Also checks non-empty provenance, unique keys, charges (BH₄⁻=−1, H₂O=0…), BH₄⁻'s six
+H–B–H all ≈109.47°, and that `libraryFragmentToScene` gives fresh ids + independent atoms.
+
+**Wiki.** New Ukrainian chemistry note `chemistry/reagent-geometry.md` (hydride nucleophile; why BH₄⁻
+is tetrahedral from VSEPR/cube-diagonals; why water is 104.5° not 109.5° — lone-pair compression
+CH₄→NH₃→H₂O; why methanol had to be computed). `modules/scene.md` gained placement + library
+sections; index + ROADMAP updated (d-2 split into d-2a done / d-2b pending).
+
+**Verified.** `tsc --noEmit` clean, `vite build` clean, `vitest run` **97** (was 76 → +21: placement
+8, library 13). ORCA temp dir removed.

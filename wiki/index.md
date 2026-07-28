@@ -36,6 +36,7 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 ## Chemistry (навчальні нотатки, українською)
 
 - [README.md](chemistry/README.md) — що тут живе і як вести нотатки
+- [reagent-geometry.md](chemistry/reagent-geometry.md) — геометрія реагентів-нуклеофілів: гідрид, чому BH₄⁻ тетраедричний, чому кут води 104.5°
 
 ## Debugging
 
@@ -47,4 +48,4 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 
 ---
 
-*Page count: 25. Last structural update: 2026-07-28 (+modules/scene).*
+*Page count: 26. Last structural update: 2026-07-28 (+chemistry/reagent-geometry).*

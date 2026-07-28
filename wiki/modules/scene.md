@@ -4,8 +4,10 @@
 on New Job**, via a Zustand store (`store.ts`) synced two-way with the Monaco
 buffer. 2.5.0a pure core → 2.5.0b input-builder + parity → 2.5.0c multi-fragment
 viewer → **2.5.0d-1 store + Scene↔Monaco sync + parser consolidation closed**.
-Still ahead (2.5.0d was split — see the log): **d-2** multi-fragment Add-Fragment
-UI (the sidebar), **d-3** `jobs.scene_json` persistence (schema v4).
+**2.5.0d-2a** added the pure foundation for adding fragments — a curated reagent
+library and bounding-box placement (no UI). Still ahead (2.5.0d was split — see
+the log): **d-2b** the Add-Fragment panel / sidebar UI, **d-3** `jobs.scene_json`
+persistence (schema v4).
 
 ## Responsibilities
 
@@ -28,8 +30,11 @@ functions, no imports from react / 3dmol / tauri. The reactive `store.ts` (added
   ORCA-input ↔ Scene text I/O (`sceneFromOrcaInput`, `injectSceneIntoInput`).
 - `parity.ts` — `checkElectronParity` (electron-parity validation, ADR-008 #8).
 - `store.ts` — the Zustand scene store (React-facing; thin over the pure layer).
-- `scene.test.ts` + `parity.test.ts` + `store.test.ts` — vitest (this module owns
-  ~66 of the suite's tests).
+- `placement.ts` — `placeFragment` (bounding-box separation for a new fragment).
+- `fragment-library.ts` — `FRAGMENT_LIBRARY` (curated reagents) +
+  `libraryFragmentToScene`.
+- `*.test.ts` (scene / parity / store / placement / fragment-library) — vitest;
+  this module owns the bulk of the suite's tests.
 
 ## The index-space invariant (why this module exists)
 
@@ -76,6 +81,9 @@ Immutable mutators (each returns a new Scene, never mutates the input):
   `setMultiplicity`.
 - `replaceFragmentAtoms(scene, fragmentId, atoms)` — enforces the index-space
   invariant above.
+- `translateFragment(fragment, dx, dy, dz)` — rigid-body shift of one fragment
+  (same id / composition / internal geometry). Used by placement and, later, the
+  geometry editor (2.5.3).
 
 Parsing / reset detection:
 - `parseAtomLines(lines): SceneAtom[] | null` — skips blanks and `#` comments;
@@ -185,6 +193,47 @@ and `inject-xyz-into-input.ts` (`injectXyzIntoInput`) were **deleted**, and
 `import-file.ts` and `MoleculesScreen` (which manages library molecules as stored
 xyz *strings*, not Scenes — deliberately not migrated). No duplication with this
 module remains.
+
+## Fragment placement (`placement.ts`, ADR-008 #7)
+
+`placeFragment(scene, fragment, gap = 3.5)` translates a copy of `fragment` so it
+sits clear of everything already in the scene. It separates the two axis-aligned
+bounding boxes (AABBs) **along the axis where the scene is smallest** (ties → x):
+for a substrate lying along x that means approaching from the side, not down the
+chain (the naive centre-of-mass + fixed vector lands mid-chain for elongated
+substrates). On the other two axes the fragment is centred over the scene so it
+faces the object rather than sitting in a corner.
+
+**The clearance is a guarantee, not a hope.** After placement every fragment atom
+has its coordinate on the chosen axis ≥ (scene max + gap) while every scene atom is
+≤ (scene max), so the difference on that one axis alone is ≥ gap for every
+scene/fragment pair — hence Euclidean distance ≥ gap. No pairwise scan. Empty scene
+→ the fragment is returned unmoved (it *is* the first fragment). The *orientation*
+is deliberately crude and chemically meaningless; exact positioning (Bürgi-Dunitz)
+is the geometry editor's job in 2.5.3. Placement is a pure translation, so a
+fragment's internal geometry is untouched — `placement.test.ts` asserts both the
+≥ gap separation (including a second fragment clearing the first) and that every
+intra-fragment distance is preserved to 1e-9.
+
+## Fragment library (`fragment-library.ts`, ADR-008 #9)
+
+`FRAGMENT_LIBRARY` is a curated list of the reagents a reaction study starts from:
+BH₄⁻, H⁻, OH⁻, CN⁻, Cl⁻, H₂O, NH₃, CH₃OH. Each `LibraryFragment` carries `atoms`,
+`charge`, a **non-empty `provenance`** (where the geometry came from), and a
+`reference` of ideal internals (bonds/angles). `libraryFragmentToScene(f)`
+instantiates it as a scene fragment with a fresh id, deep-copied atoms,
+`source: "fragment-library"`, `sourceLabel = key`.
+
+Geometries are built from **ideal symmetry + reference values**, never recalled
+loosely: BH₄⁻ from T_d cube diagonals × 1.24 Å; H₂O / NH₃ from bond length +
+angle (bent C2v / pyramidal C3v builders); the diatomics/monatomics trivially.
+The one polyatomic that can't be hand-built safely — **CH₃OH — was optimised with
+ORCA r²SCAN-3c** (isolated job dir, cleaned up) and its coordinates hardcoded.
+**The `reference` is the honesty contract:** `fragment-library.test.ts` recomputes
+every declared bond/angle *from the coordinates* (1e-3 Å / 0.1°) and fails on
+disagreement — so a mistyped coordinate can't ship a wrong-but-converging geometry
+(the worst bug class here: it neither crashes nor warns, it just does wrong
+chemistry). No runtime RDKit generation (MMFF lacks params for ions like BH₄⁻).
 
 ## Notes
 
