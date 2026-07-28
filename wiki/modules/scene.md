@@ -4,10 +4,10 @@
 on New Job**, via a Zustand store (`store.ts`) synced two-way with the Monaco
 buffer. 2.5.0a pure core → 2.5.0b input-builder + parity → 2.5.0c multi-fragment
 viewer → **2.5.0d-1 store + Scene↔Monaco sync + parser consolidation closed**.
-**2.5.0d-2a** added the pure foundation for adding fragments — a curated reagent
-library and bounding-box placement (no UI). Still ahead (2.5.0d was split — see
-the log): **d-2b** the Add-Fragment panel / sidebar UI, **d-3** `jobs.scene_json`
-persistence (schema v4).
+**2.5.0d-2a** added the pure foundation (reagent library + placement); **2.5.0d-2b**
+wired the UI — the Add-Fragment panel (reagents / library / import / SMILES, all
+one road) and the `FragmentList` sidebar — so **multi-fragment scenes are now
+user-reachable**. Still ahead: **d-3** `jobs.scene_json` persistence (schema v4).
 
 ## Responsibilities
 
@@ -33,8 +33,10 @@ functions, no imports from react / 3dmol / tauri. The reactive `store.ts` (added
 - `placement.ts` — `placeFragment` (bounding-box separation for a new fragment).
 - `fragment-library.ts` — `FRAGMENT_LIBRARY` (curated reagents) +
   `libraryFragmentToScene`.
-- `*.test.ts` (scene / parity / store / placement / fragment-library) — vitest;
-  this module owns the bulk of the suite's tests.
+- `FragmentList.tsx` — the fragment sidebar (React; reads the store, uses the
+  shared `fragmentColor` palette).
+- `*.test.ts` (scene / parity / store / placement / fragment-library /
+  add-fragment) — vitest; this module owns the bulk of the suite's tests.
 
 ## The index-space invariant (why this module exists)
 
@@ -175,10 +177,22 @@ identity and the viewer does not `removeAllModels`/`addModel` on every keystroke
   wins, `collapseToSingleFragment`; block gone → `setScene(null)`; no scene yet
   but a block appeared (template / generated input) → adopt it.
 - **Reset notice + Undo:** collapse stashes `previous`; the notice ("N fragments
-  merged into one" + Undo) shows **only when >1 fragment was lost** — a
-  single-fragment collapse is geometrically a no-op, so it stays silent (else the
-  user would see a warning on every hand-edit of a water molecule). Undo restores
-  `previous`, which re-injects its coordinates.
+  merged into one" + Undo, rendered by `NewJobScreen`, reachable from 2.5.0d-2b)
+  shows **only when >1 fragment was lost** — a single-fragment collapse is
+  geometrically a no-op, so it stays silent (else the user would see a warning on
+  every hand-edit of a water molecule). Undo restores `previous`, which re-injects
+  its coordinates.
+
+**Regression guard on the round-trip (the subsystem's finest wire).** Adding a
+fragment makes the scene multi-fragment → Scene→Monaco injects → ~500 ms later
+Monaco→Scene re-parses and asks `xyzMatchesScene`. If ordering/formatting drift
+made that FALSE, the scene would **silently collapse back to one fragment half a
+second after the add** — no error, just "the sidebar blinked and the fragments
+merged". `add-fragment.test.ts` locks this: it drives the real inject → parse →
+`xyzMatchesScene` path a real add produces and asserts the comparison stays TRUE
+(so the effect leaves the scene at two fragments). It's a pure-function
+simulation, not a rendered-component + fake-timers test, because the suite has no
+jsdom — and the comparison is exactly where the bug would live.
 
 ## Consolidation — closed in 2.5.0d (ADR-008 delivered)
 
@@ -224,16 +238,27 @@ BH₄⁻, H⁻, OH⁻, CN⁻, Cl⁻, H₂O, NH₃, CH₃OH. Each `LibraryFragmen
 instantiates it as a scene fragment with a fresh id, deep-copied atoms,
 `source: "fragment-library"`, `sourceLabel = key`.
 
-Geometries are built from **ideal symmetry + reference values**, never recalled
-loosely: BH₄⁻ from T_d cube diagonals × 1.24 Å; H₂O / NH₃ from bond length +
-angle (bent C2v / pyramidal C3v builders); the diatomics/monatomics trivially.
-The one polyatomic that can't be hand-built safely — **CH₃OH — was optimised with
-ORCA r²SCAN-3c** (isolated job dir, cleaned up) and its coordinates hardcoded.
-**The `reference` is the honesty contract:** `fragment-library.test.ts` recomputes
-every declared bond/angle *from the coordinates* (1e-3 Å / 0.1°) and fails on
-disagreement — so a mistyped coordinate can't ship a wrong-but-converging geometry
-(the worst bug class here: it neither crashes nor warns, it just does wrong
-chemistry). No runtime RDKit generation (MMFF lacks params for ions like BH₄⁻).
+Geometries are built from **ideal symmetry + a named bond length/angle**, never
+recalled loosely: H₂O / NH₃ from bond length + angle (bent C2v / pyramidal C3v
+builders, experimental reference values); OH⁻ / Cl⁻ / H⁻ diatomic/monatomic. Three
+lengths come from **ORCA r²SCAN-3c Opt** in isolated, cleaned-up job dirs (so the
+provenance names a real source, not a memory or a circular doc reference): BH₄⁻
+B–H 1.2368 Å (T_d), CN⁻ C≡N 1.1743 Å, and **CH₃OH** in full (the one polyatomic a
+6-atom Z-matrix can't be hand-built safely — its optimised coordinates are
+hardcoded).
+
+**What the library tests actually verify — and what they don't.** `fragment-library.test.ts`
+recomputes every declared `reference` bond/angle *from the coordinates* (1e-3 Å /
+0.1°). For CH₃OH (hardcoded coords) this is a genuine independent cross-check:
+coordinates vs declaration were written separately, so a transcription slip in
+either fails the test. For the seven symmetry-built fragments the coordinates are
+*generated from* the same reference values, so the test proves the **constructor is
+correct** (a bad T_d / C2v / C3v formula makes the recomputed angle disagree) —
+it does **not** prove the reference number itself is physically right. The guarantee
+on the numbers is `provenance` + review, not the test. This is why the worst bug
+class here (a wrong-but-converging bond length) is defended by naming the source,
+not by a green suite. No runtime RDKit generation (MMFF lacks params for ions like
+BH₄⁻).
 
 ## Notes
 

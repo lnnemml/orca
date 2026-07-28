@@ -1054,3 +1054,56 @@ sections; index + ROADMAP updated (d-2 split into d-2a done / d-2b pending).
 
 **Verified.** `tsc --noEmit` clean, `vite build` clean, `vitest run` **97** (was 76 → +21: placement
 8, library 13). ORCA temp dir removed.
+
+## [2026-07-28] session | 2.5.0d-2b: Add-Fragment panel + fragment sidebar
+
+The moment multi-fragment first becomes reachable to the user — everything under it (store d-1,
+palette 2.5.0c, library + placement d-2a) was already in place; this is the glue.
+
+**Regression guard result (the finest wire in the subsystem — recording it explicitly).** The risk:
+add a fragment → scene goes 2-fragment → Scene→content injects → ~500 ms later content→Scene
+re-parses and calls `xyzMatchesScene`; if ordering/formatting drift makes that FALSE, the scene
+**silently collapses to one fragment half a second after the add**, no error. `add-fragment.test.ts`
+drives the real inject → parse → `xyzMatchesScene` path a real add produces (water + BH₄⁻ → merged
+into a `! r2SCAN-3c Opt` input → re-parsed) and asserts the comparison is **TRUE** → the effect
+leaves the scene at 2 fragments. **PASS.** It's a pure-function simulation, not a rendered-component +
+fake-timers test, because the suite has no jsdom (adding one is a new dep, out of scope) — and the
+comparison is exactly where the bug would live, so the guard is faithful. Also checks total charge
+shows through the merged header (water + BH₄⁻ = `* xyz -1 1`).
+
+**UI.** `src/scene/FragmentList.tsx` — sidebar under the viewer: per-fragment row with the shared
+`fragmentColor(index)` swatch (fragment 0 → neutral swatch + "CPK" label, honestly flagged),
+inline-editable name (uncontrolled, commits on blur/Enter → `renameFragment`, no per-keystroke store
+write), atom count + signed charge, remove button; totals line + a note that removing fragment 0
+recolours the next (consequence of the CPK rule, surfaced as a label, rule unchanged). Add-Fragment
+panel (`openSection: "add"`) with four sources — Reagents (library chips, provenance in `title`),
+Import, SMILES, From-library (lazy `list_molecules`) — all through one helper `addFragmentToScene` =
+`placeFragment(current, f)` → `addFragment`. **One road:** first molecule and later reagents share
+the code (placeFragment on empty = identity), no "first replaces / rest add" split. Import/SMILES
+moved off the top row into the panel; row now = Add Fragment + Save to Library. Store gained
+`renameFragment`. Reset-notice banner (d-1, needs >1 fragment) now reachable with Undo/Dismiss.
+
+**Two provenance fixes from the d-2a review (ran ORCA to name real sources, not memory/circular).**
+Both r²SCAN-3c Opt in isolated dirs (`/opt/orca/orca`, cleaned up — domain rules 1 & 3):
+- **BH₄⁻**: was `1.24 Å "cf. ADR-008"` (circular — ADR took it from the prompt). Optimised → **B–H
+  1.2368 Å** (T_d), provenance now names the calc. Reference + builder length updated.
+- **CN⁻**: was `1.16 Å` unsourced. Optimised → **C≡N 1.1743 Å**, provenance names the calc.
+The library geometry tests still pass (constructor rebuilds T_d / the diatomic at the new lengths;
+the recompute-from-coords cross-check confirms).
+
+**Clarified what the library tests prove** (`modules/scene.md`, per review): for CH₃OH (hardcoded
+coords) it's a genuine independent coords-vs-declaration cross-check; for the seven symmetry-built
+fragments the coords are generated *from* the reference, so the test proves the **constructor**, not
+that the reference number is physically right — the number's guarantee is provenance + review.
+
+**Manual checks (author, real Tauri window — plain DOM, no WebGL, so no MiniBrowser needed):**
+1. water → Add Fragment → BH₄⁻ → **wait ~1 s** → sidebar shows 2 fragments; viewer shows BH₄⁻ in
+   teal, clearly separated from the water (not merged, and it did NOT collapse after the pause).
+2. Charge in the input builder form reads −1 automatically (totalCharge through the merged header).
+3. Parity warning behaves for the combined electron count.
+4. Undo scenario: two molecules → hand-edit a coordinate in Monaco → "N fragments merged" banner →
+   Undo → two fragments again with the original coordinates.
+5. Remove BH₄⁻ from the sidebar → back to one fragment, charge 0.
+
+**Verified.** `tsc --noEmit` clean, `vite build` clean, `vitest run` **105** (was 97 → +8). Two ORCA
+temp dirs created and removed. Next: d-3 (`jobs.scene_json`, schema v4).

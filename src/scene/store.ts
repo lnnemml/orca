@@ -19,6 +19,7 @@ import { makeFragmentId, setMultiplicity, totalCharge } from "./scene";
 import {
   addFragment as addFragmentPure,
   removeFragment as removeFragmentPure,
+  renameFragment as renameFragmentPure,
   replaceFragmentAtoms as replaceFragmentAtomsPure,
 } from "./scene";
 import type { Scene, SceneAtom, SceneFragment } from "./types";
@@ -33,6 +34,7 @@ export interface SceneStore {
   setScene(scene: Scene | null): void;
   addFragment(f: SceneFragment): void; // used by d-2
   removeFragment(id: string): void;
+  renameFragment(id: string, name: string): void;
   replaceFragmentAtoms(id: string, atoms: SceneAtom[]): void;
   setMultiplicity(m: number): void;
   /** Manual coordinate edit detected → collapse to one fragment, keep undo. */
@@ -59,6 +61,9 @@ export const useSceneStore = create<SceneStore>((set) => ({
 
   removeFragment: (id) =>
     set((s) => (s.scene ? { scene: removeFragmentPure(s.scene, id) } : s)),
+
+  renameFragment: (id, name) =>
+    set((s) => (s.scene ? { scene: renameFragmentPure(s.scene, id, name) } : s)),
 
   replaceFragmentAtoms: (id, atoms) =>
     set((s) =>

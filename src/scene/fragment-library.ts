@@ -123,15 +123,16 @@ export const FRAGMENT_LIBRARY: readonly LibraryFragment[] = [
     key: "bh4-",
     name: "BH₄⁻",
     charge: -1,
-    atoms: tetrahedral("B", "H", 1.24),
+    atoms: tetrahedral("B", "H", 1.2368),
     provenance:
-      "Ideal T_d symmetry; B–H 1.24 Å (NaBH₄ crystallographic value, cf. ADR-008).",
+      "Ideal T_d symmetry; B–H 1.2368 Å from r²SCAN-3c Opt (ORCA 6, 2026-07-28, " +
+      "isolated job dir, cleaned up).",
     reference: {
       bonds: [
-        { a: 0, b: 1, value: 1.24 },
-        { a: 0, b: 2, value: 1.24 },
-        { a: 0, b: 3, value: 1.24 },
-        { a: 0, b: 4, value: 1.24 },
+        { a: 0, b: 1, value: 1.2368 },
+        { a: 0, b: 2, value: 1.2368 },
+        { a: 0, b: 3, value: 1.2368 },
+        { a: 0, b: 4, value: 1.2368 },
       ],
       angles: [
         { a: 1, b: 0, c: 2, value: 109.47 },
@@ -160,10 +161,11 @@ export const FRAGMENT_LIBRARY: readonly LibraryFragment[] = [
     key: "cn-",
     name: "CN⁻",
     charge: -1,
-    atoms: diatomic("C", "N", 1.16),
+    atoms: diatomic("C", "N", 1.1743),
     provenance:
-      "Diatomic; C≡N 1.16 Å (cyanide ion reference bond length).",
-    reference: { bonds: [{ a: 0, b: 1, value: 1.16 }] },
+      "Diatomic; C≡N 1.1743 Å from r²SCAN-3c Opt (ORCA 6, 2026-07-28, isolated " +
+      "job dir, cleaned up).",
+    reference: { bonds: [{ a: 0, b: 1, value: 1.1743 }] },
   },
   {
     key: "cl-",

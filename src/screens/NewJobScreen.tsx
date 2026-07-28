@@ -6,6 +6,13 @@ import { MoleculeViewer } from "../viewer/MoleculeViewer";
 import { importStructureFile, IMPORT_ACCEPT } from "../viewer/import-file";
 import { InputBuilderForm } from "../input-builder/InputBuilderForm";
 import { useSceneStore } from "../scene/store";
+import { FragmentList } from "../scene/FragmentList";
+import { placeFragment } from "../scene/placement";
+import {
+  FRAGMENT_LIBRARY,
+  libraryFragmentToScene,
+  type LibraryFragment,
+} from "../scene/fragment-library";
 import {
   injectSceneIntoInput,
   mergeToAtomLines,
@@ -16,12 +23,18 @@ import {
   totalCharge,
   xyzMatchesScene,
 } from "../scene/scene";
+import type { SceneFragment } from "../scene/types";
 import {
   CATEGORY_LABELS,
   ORCA_TEMPLATES,
   type OrcaTemplate,
 } from "../templates/orca-templates";
 import type { Job, Molecule, SidecarStatus } from "../types";
+
+/** Charge with an explicit sign: `0`, `-1`, `+1`. */
+function signed(n: number): string {
+  return n > 0 ? `+${n}` : String(n);
+}
 
 interface NewJobScreenProps {
   /** A draft job was created; parent navigates to the Jobs list. */
@@ -56,8 +69,11 @@ export function NewJobScreen({
   // immediately. Opening one closes the other; picking a template or generating
   // an input collapses the accordion (the user has what they wanted).
   const [openSection, setOpenSection] = useState<
-    "builder" | "templates" | null
+    "add" | "builder" | "templates" | null
   >(null);
+  // Library molecules for the Add-Fragment "From library" source (lazy-loaded
+  // when the panel opens).
+  const [libMolecules, setLibMolecules] = useState<Molecule[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // ── Scene store: the single source of truth for geometry (ADR-008) ──────────
@@ -66,11 +82,36 @@ export function NewJobScreen({
   const scene = useSceneStore((s) => s.scene);
   const resetNotice = useSceneStore((s) => s.resetNotice);
   const setScene = useSceneStore((s) => s.setScene);
+  const addFragment = useSceneStore((s) => s.addFragment);
   const collapseToSingleFragment = useSceneStore(
     (s) => s.collapseToSingleFragment,
   );
   const undoReset = useSceneStore((s) => s.undoReset);
   const dismissResetNotice = useSceneStore((s) => s.dismissResetNotice);
+
+  // Lazy-load saved molecules whenever the Add-Fragment panel opens.
+  useEffect(() => {
+    if (openSection !== "add") return;
+    invoke<Molecule[]>("list_molecules")
+      .then(setLibMolecules)
+      .catch(() => setLibMolecules([]));
+  }, [openSection]);
+
+  /**
+   * The single road every "add a fragment" source takes (ADR-008): place the new
+   * fragment clear of whatever is already there, then append it. Works for the
+   * first fragment too — `placeFragment` on an empty scene is the identity and
+   * `addFragment` seeds a one-fragment scene — so there is no "first replaces,
+   * rest add" branch (d-1 removed exactly that split).
+   */
+  const addFragmentToScene = (fragment: SceneFragment) => {
+    const current = useSceneStore.getState().scene ?? {
+      fragments: [],
+      multiplicity: 1,
+    };
+    addFragment(placeFragment(current, fragment));
+    setSaved(false);
+  };
 
   // Initialise the (module-singleton) scene store for this screen: a library
   // molecule becomes a single-fragment scene; otherwise start empty, clearing
@@ -143,15 +184,33 @@ export function NewJobScreen({
     setOpenSection(null);
   };
 
+  // Add a curated reagent (BH₄⁻, H₂O, …) as a fragment.
+  const addReagent = (lf: LibraryFragment) => {
+    setError(null);
+    addFragmentToScene(libraryFragmentToScene(lf));
+  };
+
+  // Add a saved library molecule as a fragment.
+  const addLibraryMolecule = (m: Molecule) => {
+    const s = sceneFromXyz(m.xyz, {
+      source: "library",
+      sourceLabel: m.id,
+      name: m.name,
+      charge: m.charge,
+    });
+    if (!s) return;
+    setError(null);
+    addFragmentToScene(s.fragments[0]);
+    if (!title.trim()) setTitle(m.name);
+  };
+
   // Import a structure file: `.xyz` is parsed locally, other formats are
-  // converted to xyz by the sidecar (see import-file.ts). Becomes a single
-  // "import" fragment (neutral charge 0, singlet).
+  // converted to xyz by the sidecar (see import-file.ts). Added as an "import"
+  // fragment (neutral charge 0).
   const importFile = async (file: File) => {
     try {
       const { atomLines } = await importStructureFile(file);
       setError(null);
-      setSaved(false);
-      setFormula(""); // an imported file carries no formula
       const base = file.name.replace(/\.[^.]+$/, "");
       const s = sceneFromAtomLines(atomLines, {
         source: "import",
@@ -160,7 +219,11 @@ export function NewJobScreen({
         charge: 0,
         multiplicity: 1,
       });
-      if (s) setScene(s);
+      if (!s) return;
+      // Formula only means something for a single-molecule save; clear it when
+      // this import *is* the whole molecule (empty scene), leave it otherwise.
+      if (!useSceneStore.getState().scene) setFormula("");
+      addFragmentToScene(s.fragments[0]);
       if (!title.trim()) setTitle(base);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -168,7 +231,7 @@ export function NewJobScreen({
   };
 
   // Generate a 3D structure from SMILES via the sidecar (RDKit ETKDG + MMFF);
-  // becomes a single "smiles" fragment with the formal charge RDKit derived.
+  // added as a "smiles" fragment with the formal charge RDKit derived.
   const generateFromSmiles = async () => {
     const s = smiles.trim();
     if (!s) return;
@@ -208,9 +271,9 @@ export function NewJobScreen({
         multiplicity: 1,
       });
       if (!built) throw new Error("Sidecar returned a malformed structure");
-      setSaved(false);
-      setFormula(data.formula);
-      setScene(built);
+      // Only the first molecule's formula is meaningful for Save to Library.
+      if (!useSceneStore.getState().scene) setFormula(data.formula);
+      addFragmentToScene(built.fragments[0]);
       if (!title.trim()) setTitle(data.formula);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -305,48 +368,111 @@ export function NewJobScreen({
         </div>
       </div>
 
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept={IMPORT_ACCEPT}
+        hidden
+        onChange={(e) => {
+          const f = e.currentTarget.files?.[0];
+          if (f) importFile(f);
+          e.currentTarget.value = ""; // allow re-picking the same file
+        }}
+      />
+
       <div className="import-row">
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept={IMPORT_ACCEPT}
-          hidden
-          onChange={(e) => {
-            const f = e.currentTarget.files?.[0];
-            if (f) importFile(f);
-            e.currentTarget.value = ""; // allow re-picking the same file
-          }}
-        />
-        <button className="btn btn-sm" onClick={() => fileInputRef.current?.click()}>
-          Import file
-        </button>
-        <span className="import-or">or</span>
-        <input
-          className="input mono import-smiles"
-          placeholder="SMILES, e.g. CCO"
-          value={smiles}
-          onChange={(e) => setSmiles(e.currentTarget.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") generateFromSmiles();
-          }}
-          spellCheck={false}
-        />
         <button
           className="btn btn-sm"
-          onClick={generateFromSmiles}
-          disabled={generating || !smiles.trim()}
+          onClick={() => setOpenSection((s) => (s === "add" ? null : "add"))}
+          aria-expanded={openSection === "add"}
         >
-          {generating ? "Generating…" : "Generate 3D"}
+          {openSection === "add" ? "▾" : "＋"} Add Fragment
         </button>
         <button
           className="btn btn-sm"
           onClick={saveToLibrary}
           disabled={saving || !scene}
-          title="Save the current coordinates as a library molecule"
+          title="Save the current geometry as a library molecule"
         >
           {saving ? "Saving…" : "Save to Library"}
         </button>
       </div>
+
+      {openSection === "add" ? (
+        <div className="add-fragment-body">
+          <div className="add-source">
+            <div className="add-source-title muted">Reagents</div>
+            <div className="reagent-chips">
+              {FRAGMENT_LIBRARY.map((lf) => (
+                <button
+                  key={lf.key}
+                  className="chip"
+                  title={lf.provenance}
+                  onClick={() => addReagent(lf)}
+                >
+                  {lf.name}{" "}
+                  <span className="muted">
+                    {signed(lf.charge)} · {lf.atoms.length}a
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="add-source">
+            <div className="add-source-title muted">Import file or SMILES</div>
+            <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+              <button
+                className="btn btn-sm"
+                onClick={() => fileInputRef.current?.click()}
+              >
+                Import file
+              </button>
+              <input
+                className="input mono import-smiles"
+                placeholder="SMILES, e.g. CCO"
+                value={smiles}
+                onChange={(e) => setSmiles(e.currentTarget.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") generateFromSmiles();
+                }}
+                spellCheck={false}
+              />
+              <button
+                className="btn btn-sm"
+                onClick={generateFromSmiles}
+                disabled={generating || !smiles.trim()}
+              >
+                {generating ? "Generating…" : "Generate 3D"}
+              </button>
+            </div>
+          </div>
+
+          <div className="add-source">
+            <div className="add-source-title muted">From library</div>
+            {libMolecules.length === 0 ? (
+              <div className="muted" style={{ fontSize: 13 }}>
+                No saved molecules yet.
+              </div>
+            ) : (
+              <div className="lib-mol-list">
+                {libMolecules.map((m) => (
+                  <button
+                    key={m.id}
+                    className="lib-mol-row"
+                    onClick={() => addLibraryMolecule(m)}
+                  >
+                    <span>{m.name}</span>
+                    <span className="muted mono">
+                      {m.formula || "—"} · {signed(m.charge)}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      ) : null}
 
       {error ? <div className="banner err">{error}</div> : null}
       {saved ? <div className="banner ok">Saved to library</div> : null}
@@ -448,12 +574,15 @@ export function NewJobScreen({
         <div className="editor-wrap">
           <InputEditor value={content} onChange={setContent} />
         </div>
-        <div className="viewer-panel">
-          {scene ? (
-            <MoleculeViewer scene={scene} />
-          ) : (
-            <div className="viewer-empty muted">No coordinates in input</div>
-          )}
+        <div className="viewer-column">
+          <div className="viewer-panel">
+            {scene ? (
+              <MoleculeViewer scene={scene} />
+            ) : (
+              <div className="viewer-empty muted">No coordinates in input</div>
+            )}
+          </div>
+          <FragmentList />
         </div>
       </div>
     </div>

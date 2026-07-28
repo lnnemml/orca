@@ -253,6 +253,33 @@ geometry flows through `useSceneStore`, not the raw `content` string.
   manual coord edits) needs the real Tauri window — logged as a manual checklist, same headless
   limitation as prior phases.
 
+## As built (2.5.0d-2b) — Add-Fragment UI: multi-fragment becomes reachable
+The first point a user can build a multi-molecule scene. Everything under it was ready (store d-1,
+palette 2.5.0c, library + placement d-2a); this is the glue.
+- **`src/scene/FragmentList.tsx`** — sidebar in the viewer column (below the 3D view). One row per
+  fragment: the **same `fragmentColor(index)` swatch the viewer uses** (fragment 0 → a neutral swatch
+  + "CPK" label, honestly flagged as element colours, not a palette colour), an inline-editable name
+  (uncontrolled input, commits on blur/Enter via `renameFragment` — no per-keystroke store write),
+  atom count + signed charge, a remove button. A totals line (N fragments · M atoms · total charge)
+  and, when >1 fragment, a note that removing fragment 0 recolours the next (a consequence of the
+  "fragment 0 = substrate = CPK" rule, not a bug — surfaced as a label, the rule is unchanged).
+- **Add-Fragment panel** (a new `openSection: "add"` accordion on `NewJobScreen`) with four sources —
+  **Reagents** (`FRAGMENT_LIBRARY` chips, `title` = provenance), **Import file** + **SMILES** (the
+  existing handlers), **From library** (SQLite `list_molecules`, lazy-loaded when the panel opens).
+  All four run one helper `addFragmentToScene(f)` = `placeFragment(currentScene, f)` → `addFragment`.
+  **One road, no "first replaces / rest add" branch** — `placeFragment` on an empty scene is the
+  identity and `addFragment` seeds a one-fragment scene, so the first molecule and later reagents
+  take identical code (d-1 removed that split; d-2b keeps it removed). Import/SMILES moved off the
+  old top-level row into this panel; the row now holds only **Add Fragment** + **Save to Library**.
+- **Reset notice now reachable:** the d-1 banner (needs >1 fragment) renders with Undo
+  (`undoReset`) + Dismiss (`dismissResetNotice`). Store gained a `renameFragment` action.
+- **`MoleculesScreen` untouched** (still stored-xyz strings). `formula` stays single-molecule: set/
+  cleared only when the add *is* the whole molecule (empty scene), never clobbered by a later reagent.
+- **Verified:** `tsc` + `vite build` clean; `vitest` 105 (was 97 → +8, `add-fragment.test.ts`). The
+  headline test is the **round-trip regression guard** (§ scene.md): adding a fragment must survive
+  the Scene→content→Scene cycle without silently collapsing 0.5 s later. Plain-DOM UI (no WebGL) so
+  no MiniBrowser pass needed; the in-window feel (sidebar, chips, Undo) is a manual checklist.
+
 ## As built (Phase 2.5) — New Job UI fixes (WebKitGTK contrast, accordion, scroll)
 Three issues found by manual testing in the real Tauri window (not visible in Chromium). CSS +
 a collapse wrapper only — no Input Builder / `build-input.ts` / `orca-options.ts` logic changed.

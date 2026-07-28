@@ -500,6 +500,122 @@ body {
   padding: 12px;
 }
 
+/* Right-hand column of the editor/viewer split: viewer on top, fragment list
+   below, sharing the fixed split height. */
+.viewer-column {
+  flex: 1;
+  min-width: 260px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.viewer-column .viewer-panel {
+  flex: 1;
+  min-width: 0;
+  min-height: 120px;
+}
+
+/* Fragment sidebar. */
+.fragment-list {
+  flex: none;
+  max-height: 150px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px;
+  font-size: 13px;
+}
+.fragment-list.empty {
+  padding: 10px;
+  font-size: 12px;
+}
+.fragment-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 2px;
+}
+.fragment-swatch {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  border: 1px solid var(--muted-2);
+}
+.fragment-cpk {
+  flex: none;
+  font-size: 10px;
+  letter-spacing: 0.5px;
+}
+.fragment-name {
+  flex: 1;
+  min-width: 0;
+  padding: 2px 6px;
+  font-size: 13px;
+}
+.fragment-meta {
+  flex: none;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.fragment-summary {
+  padding: 6px 2px 2px;
+  font-size: 12px;
+  border-top: 1px solid var(--border);
+  margin-top: 4px;
+}
+.fragment-note {
+  padding: 2px;
+  font-size: 11px;
+  font-style: italic;
+}
+
+/* Add-Fragment panel. */
+.add-fragment-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+.add-source-title {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 6px;
+}
+.reagent-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.lib-mol-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 160px;
+  overflow-y: auto;
+}
+.lib-mol-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+  text-align: left;
+}
+.lib-mol-row:hover {
+  border-color: var(--muted-2);
+}
+
 /* --- Jobs table ------------------------------------------------------- */
 
 .jobs-table {
