@@ -92,3 +92,17 @@ would need it set.
 Running GOAT from the app, substituting a conformer back into the scene (2.5.1b);
 Boltzmann weighting + DFT re-optimisation of the lowest 3–4 (Phase 4.5). This page
 covers only the observed primitive: run → ensemble file → parse.
+
+## Run through the app's input (2.5.1b, same machine)
+
+Re-ran GOAT on butane using the **exact `goatInputForFragment` format** the app
+produces (`! XTB GOAT` + `* xyz 0 1` + rows), written as `input.inp` with
+`%pal nprocs 4 end` (as the backend's `align_pal_nprocs` inserts at submit). ORCA
+6.1.0, **TERMINATED NORMALLY, 1 min 13 s** (matches the earlier `%pal 4` run). The
+ensemble landed at **`input.finalensemble.xyz`** — the path `read_job_ensemble`
+reads. `parseEnsemble` + `deltaEKcal` on it gave **4 conformers**, ΔE **0.00 /
+0.596 / 2.567 / 2.607 kcal/mol** (the 0.596 anti→gauche gap is chemically sensible
+and matches the unit fixture), **atom order preserved** in all four. So the whole
+path — app input → GOAT → ensemble file → parse → ΔE — is verified on real data.
+(This run gave 4 structures; the 2.5.1a run gave 5 — GOAT's retained-count varies
+slightly; the parser and count-from-file handle either.)

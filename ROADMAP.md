@@ -147,12 +147,15 @@ may stand on the wrong one)
       real ORCA 6.1.0 run — see `wiki/orca/goat.md`), `conformerMatchesFragment`,
       `goatInputForFragment`. **Verified: GOAT preserves atom count + order**, so a
       conformer drops back into a fragment via `replaceFragmentAtoms` with no mapping.
-- [ ] b. Run GOAT from the app on a fragment → parse the ensemble → let the user pick
-      a conformer → substitute it back into the scene. GOAT is slow and blocks the
-      concurrency-1 queue (give it `%pal`; ~3.5× on 4 cores — `goat.md`).
+- [x] b. Run GOAT from the app on a fragment → parse the ensemble → let the user pick
+      a conformer → substitute it back into the scene. "Find conformers" per fragment,
+      an ensemble panel (ΔE kcal/mol) on Job detail, "Use this conformer" (replace in
+      place / new scene / refuse). Verified end-to-end on a real butane run.
 
-Boltzmann weighting + DFT re-optimisation of the lowest 3–4 stay in Phase 4.5 (the
-scientific pipeline); 2.5.1 is only the primitive.
+**✅ 2.5.1 — Conformer search (GOAT) is COMPLETE.** Boltzmann weighting + DFT
+re-optimisation of the lowest 3–4 stay in Phase 4.5 (the scientific pipeline);
+2.5.1 delivered the primitive + the run/pick UI. **Next: 2.5.2 — geometry editor**
+(the d/θ/φ sequential-apply acceptance test is already recorded — see the log).
 
 **2.5.2 — Geometry editor** (builds on the foundation)
 

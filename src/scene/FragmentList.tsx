@@ -1,19 +1,26 @@
 import { useSceneStore } from "./store";
 import { atomCount, totalCharge } from "./scene";
 import { fragmentColor } from "../viewer/fragment-colors";
+import type { SceneFragment } from "./types";
 
 /** Charge with an explicit sign: `0`, `-1`, `+1`. */
 function signed(n: number): string {
   return n > 0 ? `+${n}` : String(n);
 }
 
+interface FragmentListProps {
+  /** Launch a GOAT conformer search on one fragment (creates + runs a job). */
+  onFindConformers?: (fragment: SceneFragment) => void;
+}
+
 /**
  * Fragment sidebar for the New Job screen — one row per scene fragment, with the
  * same palette swatch the viewer uses (`fragmentColor`), an inline-editable name,
- * atom count + signed charge, and a remove button; a totals line underneath.
- * Multiplicity is edited in the input builder, not here.
+ * atom count + signed charge, remove, and (per fragment) a "Find conformers"
+ * GOAT launch. A totals line underneath. Multiplicity is edited in the input
+ * builder, not here.
  */
-export function FragmentList() {
+export function FragmentList({ onFindConformers }: FragmentListProps) {
   const scene = useSceneStore((s) => s.scene);
   const removeFragment = useSceneStore((s) => s.removeFragment);
   const renameFragment = useSceneStore((s) => s.renameFragment);
@@ -67,6 +74,15 @@ export function FragmentList() {
               {f.atoms.length} atom{f.atoms.length === 1 ? "" : "s"} ·{" "}
               {signed(f.charge)}
             </span>
+            {onFindConformers ? (
+              <button
+                className="btn btn-sm"
+                onClick={() => onFindConformers(f)}
+                title="Run a GOAT conformer search on this fragment (slow — see note)"
+              >
+                Find conformers
+              </button>
+            ) : null}
             <button
               className="btn btn-sm"
               onClick={() => removeFragment(f.id)}
@@ -82,6 +98,12 @@ export function FragmentList() {
         {scene.fragments.length} fragment{multi ? "s" : ""} · {atomCount(scene)}{" "}
         atoms · total charge {signed(totalCharge(scene))}
       </div>
+      {onFindConformers ? (
+        <div className="fragment-note muted">
+          Find conformers runs GOAT (`! XTB GOAT`) — minutes even for small
+          fragments, and it holds the queue (one job at a time).
+        </div>
+      ) : null}
       {multi ? (
         <div className="fragment-note muted">
           Fragment 0 (substrate) keeps CPK colours; removing it recolours the

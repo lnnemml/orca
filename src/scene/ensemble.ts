@@ -13,7 +13,7 @@
  */
 
 import { normalizeElement } from "./scene";
-import type { SceneAtom, SceneFragment } from "./types";
+import type { Scene, SceneAtom, SceneFragment } from "./types";
 
 export interface Conformer {
   atoms: SceneAtom[];
@@ -21,6 +21,21 @@ export interface Conformer {
   energy: number;
   /** 0-based position in the ensemble (ascending energy). */
   index: number;
+}
+
+/** 1 Hartree in kcal/mol (CODATA). */
+export const HARTREE_TO_KCAL_MOL = 627.5094740631;
+
+/**
+ * ΔE of each conformer relative to the lowest (conformers[0]), in **kcal/mol** —
+ * the unit a chemist reads, not the absolute Hartree values. `NaN` energies pass
+ * through as `NaN` (the UI shows a dash, not "NaN"). Ordering isn't assumed;
+ * the reference is the first entry (GOAT writes the global minimum first).
+ */
+export function deltaEKcal(conformers: Conformer[]): number[] {
+  if (conformers.length === 0) return [];
+  const e0 = conformers[0].energy;
+  return conformers.map((c) => (c.energy - e0) * HARTREE_TO_KCAL_MOL);
 }
 
 /**
@@ -121,4 +136,54 @@ export function goatInputForFragment(
     `* xyz ${fragment.charge} ${multiplicity}\n` +
     `${rows.join("\n")}\n*\n`
   );
+}
+
+/** What "Use this conformer" should do, decided purely (so it's testable). */
+export type ConformerApply =
+  | { action: "replace"; fragmentId: string; atoms: SceneAtom[] }
+  | { action: "new"; fragment: SceneFragment }
+  | { action: "refuse"; reason: string };
+
+/**
+ * Decide how to apply a chosen conformer back (2.5.1b §4), given the current
+ * store scene and the GOAT job's single-fragment snapshot:
+ * - the snapshot's fragment id is **still in the store scene** → `replace` its
+ *   atoms in place (exact addressing, no composition guessing);
+ * - otherwise (other session / scene cleared) → `new` single-fragment scene from
+ *   the snapshot's name/charge + the conformer's coordinates.
+ *
+ * Both branches first run `conformerMatchesFragment` against the fragment they'd
+ * touch (the live store fragment, or the snapshot); a mismatch (the fragment's
+ * composition changed) returns `refuse` — the caller shows a clear message, no
+ * throw. That's the whole reason the predicate exists.
+ */
+export function planConformerApply(
+  storeScene: Scene | null,
+  snapshotFragment: SceneFragment,
+  conformer: Conformer,
+): ConformerApply {
+  const live = storeScene?.fragments.find((f) => f.id === snapshotFragment.id);
+  const target = live ?? snapshotFragment;
+  if (!conformerMatchesFragment(target, conformer)) {
+    return {
+      action: "refuse",
+      reason:
+        "This conformer no longer matches the fragment — its composition changed " +
+        "since the search was launched.",
+    };
+  }
+  if (live) {
+    return {
+      action: "replace",
+      fragmentId: snapshotFragment.id,
+      atoms: conformer.atoms,
+    };
+  }
+  return {
+    action: "new",
+    fragment: {
+      ...snapshotFragment,
+      atoms: conformer.atoms.map((a) => ({ ...a })),
+    },
+  };
 }

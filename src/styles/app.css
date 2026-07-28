@@ -616,6 +616,63 @@ body {
   border-color: var(--muted-2);
 }
 
+/* GOAT conformer ensemble panel (Job detail). */
+.ensemble-panel {
+  margin-bottom: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px;
+}
+.ensemble-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.ensemble-body {
+  display: flex;
+  gap: 10px;
+}
+.ensemble-list {
+  flex: 1;
+  min-width: 0;
+  max-height: 220px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ensemble-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 5px 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+  text-align: left;
+}
+.ensemble-row:hover {
+  border-color: var(--muted-2);
+}
+.ensemble-row.selected {
+  border-color: var(--accent);
+}
+.ensemble-de {
+  flex: 1;
+}
+.ensemble-abs {
+  font-size: 12px;
+}
+.ensemble-viewer {
+  flex: 1;
+  min-width: 240px;
+  height: 220px;
+}
+
 /* --- Jobs table ------------------------------------------------------- */
 
 .jobs-table {

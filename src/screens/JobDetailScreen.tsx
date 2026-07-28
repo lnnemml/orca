@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
@@ -8,6 +8,16 @@ import { ConvergenceDashboard } from "../convergence/ConvergenceDashboard";
 import type { ConvergenceEvent, ConvergencePayload } from "../convergence/types";
 import { OutputSearchPanel } from "./OutputSearchPanel";
 import { OutputViewer, type OutputViewerHandle } from "./OutputViewer";
+import { MoleculeViewer } from "../viewer/MoleculeViewer";
+import { useSceneStore } from "../scene/store";
+import { deserializeScene } from "../scene/scene";
+import {
+  deltaEKcal,
+  parseEnsemble,
+  planConformerApply,
+  type Conformer,
+} from "../scene/ensemble";
+import type { Scene } from "../scene/types";
 
 /** Mirrors `commands::jobs::OutputContent`. */
 interface OutputContent {
@@ -37,6 +47,8 @@ interface JobDetailScreenProps {
   onBack: () => void;
   /** Start a new iteration seeded from this job (input + fragment snapshot). */
   onIterate: (job: Job) => void;
+  /** A conformer was applied to the scene store — go to New Job, keeping it. */
+  onUseConformer: () => void;
 }
 
 export function JobDetailScreen({
@@ -44,6 +56,7 @@ export function JobDetailScreen({
   autoRun,
   onBack,
   onIterate,
+  onUseConformer,
 }: JobDetailScreenProps) {
   const [job, setJob] = useState<Job | null>(null);
   const [lines, setLines] = useState<string[]>([]);
@@ -68,6 +81,83 @@ export function JobDetailScreen({
   });
   const preRef = useRef<HTMLPreElement>(null);
   const didSubmit = useRef(false);
+
+  // GOAT conformer ensemble (2.5.1b): read lazily once the job is completed, and
+  // only if `input.finalensemble.xyz` exists + parses (so non-GOAT jobs show
+  // nothing). `null` = not a GOAT ensemble; a `[]` never happens (parse → null).
+  const [ensemble, setEnsemble] = useState<Conformer[] | null>(null);
+  const [selectedConf, setSelectedConf] = useState(0);
+  const ensembleTried = useRef(false);
+
+  useEffect(() => {
+    if (job?.status !== "completed" || ensembleTried.current) return;
+    ensembleTried.current = true;
+    invoke<string>("read_job_ensemble", { id: jobId })
+      .then((text) => {
+        const parsed = parseEnsemble(text);
+        if (parsed) {
+          setEnsemble(parsed);
+          setSelectedConf(0);
+        }
+      })
+      .catch(() => {
+        /* no ensemble / not a GOAT job — leave the panel hidden */
+      });
+  }, [job?.status, jobId]);
+
+  // The fragment this GOAT job ran on (its single-fragment snapshot) and the
+  // per-conformer ΔE (kcal/mol) — both derived, memoised so the viewer below
+  // keeps a stable scene reference and doesn't redraw every render.
+  const snapshotFragment = useMemo(
+    () => (job?.scene_json ? (deserializeScene(job.scene_json)?.fragments[0] ?? null) : null),
+    [job?.scene_json],
+  );
+  const deltas = useMemo(() => (ensemble ? deltaEKcal(ensemble) : []), [ensemble]);
+  const conformerScene = useMemo<Scene | null>(() => {
+    const conf = ensemble?.[selectedConf];
+    if (!conf) return null;
+    return {
+      fragments: [
+        {
+          id: "conformer-preview",
+          name: snapshotFragment?.name ?? "conformer",
+          atoms: conf.atoms,
+          charge: snapshotFragment?.charge ?? 0,
+          source: "editor",
+        },
+      ],
+      multiplicity: 1,
+    };
+  }, [ensemble, selectedConf, snapshotFragment]);
+
+  // "Use this conformer": replace the live fragment in place if it's still in the
+  // store scene, else start a fresh single-fragment scene — decided purely by
+  // `planConformerApply`, which refuses (no throw) if the composition changed.
+  const useConformer = () => {
+    const conf = ensemble?.[selectedConf];
+    if (!conf || !snapshotFragment || !job?.scene_json) {
+      setError("This job has no fragment snapshot to apply a conformer to.");
+      return;
+    }
+    const plan = planConformerApply(
+      useSceneStore.getState().scene,
+      snapshotFragment,
+      conf,
+    );
+    if (plan.action === "refuse") {
+      setError(plan.reason);
+      return;
+    }
+    if (plan.action === "replace") {
+      useSceneStore.getState().replaceFragmentAtoms(plan.fragmentId, plan.atoms);
+    } else {
+      const mult = deserializeScene(job.scene_json)?.multiplicity ?? 1;
+      useSceneStore
+        .getState()
+        .setScene({ fragments: [plan.fragment], multiplicity: mult });
+    }
+    onUseConformer();
+  };
 
   const loadJob = useCallback(async () => {
     try {
@@ -302,6 +392,49 @@ export function JobDetailScreen({
       {job?.error_message ? (
         <div className="banner err" style={{ marginBottom: 10, whiteSpace: "pre-wrap" }}>
           {job.error_message}
+        </div>
+      ) : null}
+
+      {ensemble ? (
+        <div className="ensemble-panel">
+          <div className="ensemble-head">
+            <span className="section-title">
+              Conformers ({ensemble.length})
+            </span>
+            <button className="btn btn-primary btn-sm" onClick={useConformer}>
+              Use this conformer
+            </button>
+          </div>
+          <div className="ensemble-body">
+            <div className="ensemble-list">
+              {ensemble.map((c, i) => (
+                <button
+                  key={i}
+                  className={
+                    "ensemble-row" + (i === selectedConf ? " selected" : "")
+                  }
+                  onClick={() => setSelectedConf(i)}
+                >
+                  <span className="mono">#{i + 1}</span>
+                  <span className="ensemble-de">
+                    {Number.isNaN(deltas[i])
+                      ? "—"
+                      : `+${deltas[i].toFixed(2)} kcal/mol`}
+                  </span>
+                  <span className="ensemble-abs muted mono">
+                    {Number.isNaN(c.energy) ? "—" : `${c.energy.toFixed(6)} Eh`}
+                  </span>
+                </button>
+              ))}
+            </div>
+            <div className="ensemble-viewer viewer-panel">
+              {conformerScene ? <MoleculeViewer scene={conformerScene} /> : null}
+            </div>
+          </div>
+          <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+            ΔE relative to the lowest conformer (kcal/mol). Boltzmann weighting +
+            DFT re-optimisation of the lowest few is Phase 4.5.
+          </div>
         </div>
       ) : null}
 

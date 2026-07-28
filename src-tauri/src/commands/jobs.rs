@@ -213,6 +213,37 @@ pub fn read_job_output(
     Ok(crate::local_backend::read_tail_lines(&out_path, max_lines)?)
 }
 
+/// Max size of a GOAT ensemble file we'll read whole. The ensemble is a
+/// multi-frame xyz of ONE (small) fragment — kilobytes in practice — so reading
+/// it fully is fine (unlike `output.out`, domain rule #5). Cap defensively so a
+/// pathological file can't blow up the IPC payload.
+const MAX_ENSEMBLE_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Read a GOAT job's conformer ensemble (`input.finalensemble.xyz`, the file
+/// name GOAT derives from `input.inp` — see `wiki/orca/goat.md`). Returns an
+/// empty string (not an error) when the job has no dir, hasn't produced the file,
+/// or it isn't a GOAT run. Read lazily by `JobDetailScreen` on a completed job.
+#[tauri::command]
+pub fn read_job_ensemble(db: State<'_, DbState>, id: String) -> Result<String, AppError> {
+    let job_dir = {
+        let conn = db.lock()?;
+        get_job_conn(&conn, &id)?.job_dir
+    };
+    let Some(job_dir) = job_dir else {
+        return Ok(String::new());
+    };
+    let path = std::path::Path::new(&job_dir).join("input.finalensemble.xyz");
+    if !path.exists() {
+        return Ok(String::new());
+    }
+    if std::fs::metadata(&path)?.len() > MAX_ENSEMBLE_BYTES {
+        return Err(AppError::Internal(format!(
+            "ensemble file for job {id} is unexpectedly large (> {MAX_ENSEMBLE_BYTES} bytes)"
+        )));
+    }
+    Ok(std::fs::read_to_string(&path)?)
+}
+
 /// Max lines handed to the Monaco output viewer. An ORCA output can reach
 /// hundreds of MB; neither the IPC payload nor the editor model should carry
 /// that. ~300k lines ≈ 30 MB — a comfortable ceiling for the viewer.

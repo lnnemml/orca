@@ -320,6 +320,30 @@ Fragments now survive across a job (ADR-008 #5 + amendment). **Phase 2.5.0 close
   + a matching 2-fragment snapshot + a shifted-coords rejection); `cargo test` 55 (+2). Real-DB
   migration checked (§ tauri-core.md). In-window iterate loop is a manual checklist.
 
+## As built (2.5.1b) — run GOAT on a fragment, apply a conformer
+Conformer search is now usable end to end (§ `wiki/orca/goat.md`, `modules/scene.md`).
+- **"Find conformers"** — a per-fragment button in `FragmentList` (new `onFindConformers` prop wired
+  from `NewJobScreen`). It creates + runs a normal job: `input_content = goatInputForFragment(fragment)`
+  (`%pal` is inserted by the backend's `align_pal_nprocs` at submit, same as every job), `scene_json` =
+  a **single-fragment** scene of that fragment (§ scene.md — one fragment, not the whole scene), title
+  `Conformer search — <name>`. An honest cost note sits under the list (GOAT is slow, holds the queue) —
+  a caption, not a modal.
+- **Ensemble panel on `JobDetailScreen`** — on a *completed* job it lazily calls the new Rust command
+  `read_job_ensemble` (`input.finalensemble.xyz`) and `parseEnsemble`; non-GOAT jobs read nothing and
+  show nothing. Lists conformers with **ΔE in kcal/mol** (`deltaEKcal`, from the Hartree file — a
+  chemist's unit; `NaN` → a dash) + the absolute Eh secondary; the selected one renders in a
+  `MoleculeViewer` (memoised scene, stable reference). Count comes from the *file*, not the log summary
+  (goat.md gotcha).
+- **"Use this conformer"** — `planConformerApply` decides: **replace** the fragment in the store scene
+  in place (it survives the New Job → detail nav — singleton) → New Job with `keepScene` (a new
+  `Screen`/`NewJobScreen` flag that skips the mount reset); or a **new** single-fragment scene if the
+  scene was cleared; or **refuse** (a banner, no throw) if the composition changed.
+- **Verified:** `tsc` + `vite build` clean; `vitest` **128** (was 122 → +6: ΔE on the real fixture ≈
+  0.6 kcal/mol, the `scene_json` round-trip, both apply branches + refusal); `cargo test` 55 (the new
+  command compiles; file-read commands aren't unit-tested here, matching `read_job_output`). Real GOAT
+  run through the app's exact input format — see the log. The in-window click path (Find → wait → panel
+  → Use) needs the real Tauri window; manual checklist in the log.
+
 ## As built (Phase 2.5) — New Job UI fixes (WebKitGTK contrast, accordion, scroll)
 Three issues found by manual testing in the real Tauri window (not visible in Chromium). CSS +
 a collapse wrapper only — no Input Builder / `build-input.ts` / `orca-options.ts` logic changed.

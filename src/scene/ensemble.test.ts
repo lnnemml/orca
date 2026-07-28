@@ -2,11 +2,15 @@ import { describe, it, expect } from "vitest";
 
 import {
   conformerMatchesFragment,
+  deltaEKcal,
   goatInputForFragment,
   parseEnsemble,
+  planConformerApply,
   type Conformer,
 } from "./ensemble";
-import type { SceneFragment } from "./types";
+import { restoreScene } from "./restore";
+import { serializeScene } from "./scene";
+import type { Scene, SceneFragment } from "./types";
 
 // A real (truncated to 3 structures) `butane.finalensemble.xyz` from an actual
 // ORCA 6.1.0 `! XTB GOAT` run — declaration must agree with reality (§ the rule
@@ -93,6 +97,79 @@ describe("conformerMatchesFragment", () => {
       i === 0 ? { ...a, element: "N" } : a,
     );
     expect(conformerMatchesFragment(frag, conformers[0])).toBe(false);
+  });
+});
+
+describe("deltaEKcal (real butane fixture)", () => {
+  it("gives 0 for the global minimum and ~0.6 kcal/mol for the next (anti→gauche)", () => {
+    const c = parseEnsemble(ENSEMBLE)!;
+    const d = deltaEKcal(c);
+    expect(d[0]).toBe(0);
+    // -13.66418 vs -13.66513 Eh → ~0.596 kcal/mol — a number checkable against
+    // chemistry (butane anti/gauche gap ~0.9 at experiment, ~0.6 at xTB), not
+    // against itself.
+    expect(d[1]).toBeCloseTo(0.596, 2);
+    expect(d[2]).toBeGreaterThan(d[1]);
+  });
+
+  it("passes NaN energies through as NaN (UI shows a dash)", () => {
+    const c: Conformer[] = [
+      { atoms: [], energy: -10, index: 0 },
+      { atoms: [], energy: NaN, index: 1 },
+    ];
+    expect(deltaEKcal(c)[0]).toBe(0);
+    expect(Number.isNaN(deltaEKcal(c)[1])).toBe(true);
+  });
+});
+
+describe("GOAT scene_json semantics (§1): one fragment, survives restoreScene", () => {
+  it("a GOAT job's snapshot is a single fragment matching its own input", () => {
+    const frag = butaneFragment(parseEnsemble(ENSEMBLE)!);
+    // What the Find-conformers flow persists:
+    const input = goatInputForFragment(frag);
+    const sceneJson = serializeScene({ fragments: [frag], multiplicity: 1 });
+    // Opening/iterating that job must honour the snapshot (not reject it).
+    const { scene, snapshotRejected } = restoreScene(input, sceneJson);
+    expect(snapshotRejected).toBe(false);
+    expect(scene!.fragments).toHaveLength(1);
+    expect(scene!.fragments[0].id).toBe(frag.id);
+  });
+});
+
+describe("planConformerApply (§4 — both branches + refusal)", () => {
+  const conformers = parseEnsemble(ENSEMBLE)!;
+  const frag = butaneFragment(conformers);
+
+  it("REPLACE when the snapshot fragment is still in the store scene", () => {
+    const store: Scene = { fragments: [frag], multiplicity: 1 };
+    const plan = planConformerApply(store, frag, conformers[1]);
+    expect(plan.action).toBe("replace");
+    if (plan.action === "replace") {
+      expect(plan.fragmentId).toBe(frag.id);
+      expect(plan.atoms).toBe(conformers[1].atoms);
+    }
+  });
+
+  it("NEW single-fragment scene when the fragment is gone (other session)", () => {
+    const plan = planConformerApply(null, frag, conformers[0]);
+    expect(plan.action).toBe("new");
+    if (plan.action === "new") {
+      expect(plan.fragment.id).toBe(frag.id);
+      expect(plan.fragment.charge).toBe(frag.charge);
+      expect(plan.fragment.atoms).toHaveLength(14);
+      expect(plan.fragment.atoms).not.toBe(conformers[0].atoms); // copied
+    }
+  });
+
+  it("REFUSE (no throw) when the live fragment's composition changed", () => {
+    const changed: SceneFragment = { ...frag, atoms: frag.atoms.slice(0, 13) };
+    const store: Scene = { fragments: [changed], multiplicity: 1 };
+    let plan: ReturnType<typeof planConformerApply>;
+    expect(() => {
+      plan = planConformerApply(store, frag, conformers[0]);
+    }).not.toThrow();
+    expect(plan!.action).toBe("refuse");
+    if (plan!.action === "refuse") expect(plan!.reason).toMatch(/composition/i);
   });
 });
 

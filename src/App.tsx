@@ -17,7 +17,7 @@ interface QueueInfo {
 }
 
 type Screen =
-  | { kind: "new-job"; initialMolecule?: Molecule; initialJob?: Job }
+  | { kind: "new-job"; initialMolecule?: Molecule; initialJob?: Job; keepScene?: boolean }
   | { kind: "jobs" }
   | { kind: "molecules" }
   | { kind: "settings" }
@@ -153,6 +153,7 @@ function App() {
           onOpenDetail={openDetail}
           initialMolecule={screen.initialMolecule}
           initialJob={screen.initialJob}
+          keepScene={screen.keepScene}
         />
       ) : screen.kind === "jobs" ? (
         <JobsScreen onOpenDetail={openDetail} queuePaused={queue.paused} />
@@ -170,6 +171,7 @@ function App() {
           autoRun={screen.autoRun}
           onBack={() => setScreen({ kind: "jobs" })}
           onIterate={(job) => setScreen({ kind: "new-job", initialJob: job })}
+          onUseConformer={() => setScreen({ kind: "new-job", keepScene: true })}
         />
       )}
 

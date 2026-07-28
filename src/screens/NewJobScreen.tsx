@@ -25,6 +25,7 @@ import {
   xyzMatchesScene,
 } from "../scene/scene";
 import { restoreScene } from "../scene/restore";
+import { goatInputForFragment } from "../scene/ensemble";
 import type { SceneFragment } from "../scene/types";
 import {
   CATEGORY_LABELS,
@@ -48,6 +49,9 @@ interface NewJobScreenProps {
   /** An existing job to seed a new iteration from ("New iteration" action):
    * its input + fragment snapshot, nothing from its results/status/dir. */
   initialJob?: Job;
+  /** Keep the scene store as-is on mount (a conformer was just applied to it —
+   * "Use this conformer"); skip the usual reset. */
+  keepScene?: boolean;
 }
 
 export function NewJobScreen({
@@ -55,6 +59,7 @@ export function NewJobScreen({
   onOpenDetail,
   initialMolecule,
   initialJob,
+  keepScene,
 }: NewJobScreenProps) {
   // Seed title/content from an iterated job (marked so kinship shows in the job
   // list) or a library molecule; both before first paint via useState.
@@ -129,11 +134,14 @@ export function NewJobScreen({
   // Initialise the (module-singleton) scene store for this screen. useLayoutEffect
   // (not useEffect) so the reset runs before paint — the screen remounts on every
   // navigation, and a plain effect would flash the previous visit's molecule.
+  //  - keepScene → leave the store untouched (a conformer was just applied to it);
   //  - iterated job → restore its scene, reconciling the snapshot with its input;
   //  - library molecule → a single "library" fragment;
   //  - otherwise → empty, clearing any scene left over from a prior visit.
   useLayoutEffect(() => {
-    if (initialJob) {
+    if (keepScene) {
+      // "Use this conformer" already set the store scene; don't reset it.
+    } else if (initialJob) {
       const { scene: restored, snapshotRejected: rejected } = restoreScene(
         initialJob.input_content,
         initialJob.scene_json,
@@ -353,6 +361,26 @@ export function NewJobScreen({
       setError(String(e));
     } finally {
       setCreating(false);
+    }
+  };
+
+  // "Find conformers" on one fragment: create + run a GOAT job. Its input is the
+  // fragment ALONE (`goatInputForFragment`), and its `scene_json` is a
+  // single-fragment scene of that SAME fragment — so the snapshot annotates its
+  // own single-fragment input and `restoreScene` accepts it (ADR-008 #5; NOT the
+  // whole scene, which wouldn't match — see wiki/modules/scene.md). `%pal` is
+  // added by the backend's `align_pal_nprocs` at submit, same as every job.
+  const findConformers = async (fragment: SceneFragment) => {
+    setError(null);
+    try {
+      const job = await invoke<Job>("create_job", {
+        title: `Conformer search — ${fragment.name}`,
+        inputContent: goatInputForFragment(fragment),
+        sceneJson: serializeScene({ fragments: [fragment], multiplicity: 1 }),
+      });
+      onOpenDetail(job.id, true); // queue + run, then open its detail
+    } catch (e) {
+      setError(String(e));
     }
   };
 
@@ -619,7 +647,7 @@ export function NewJobScreen({
               <div className="viewer-empty muted">No coordinates in input</div>
             )}
           </div>
-          <FragmentList />
+          <FragmentList onFindConformers={findConformers} />
         </div>
       </div>
     </div>

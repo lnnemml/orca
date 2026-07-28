@@ -9,10 +9,10 @@ wired the UI — the Add-Fragment panel and the `FragmentList` sidebar — so
 multi-fragment scenes became user-reachable. **2.5.0d-3** persists the layout
 (`jobs.scene_json`, schema v4) and adds the **"New iteration"** action that reads
 it, via the pure `restoreScene`. **Phase 2.5.0 (Scene/fragment foundation) is now
-complete.** **2.5.1a** added the GOAT conformer-search primitive (`ensemble.ts`:
-`parseEnsemble` / `conformerMatchesFragment` / `goatInputForFragment`) — pure, no
-UI. Next: 2.5.1b (run GOAT from the app, substitute a conformer), then the
-geometry editor (2.5.2).
+complete.** **2.5.1** (conformer search) is complete: 2.5.1a the GOAT primitive
+(`ensemble.ts`), **2.5.1b** the UI — "Find conformers" on a fragment, the ensemble
+panel on Job detail, and "Use this conformer" (two branches). Next: the geometry
+editor (**2.5.2**), which already has the d/θ/φ acceptance test recorded.
 
 ## Responsibilities
 
@@ -283,7 +283,7 @@ class here (a wrong-but-converging bond length) is defended by naming the source
 not by a green suite. No runtime RDKit generation (MMFF lacks params for ions like
 BH₄⁻).
 
-## GOAT conformer ensemble (`ensemble.ts`, 2.5.1a)
+## GOAT conformer ensemble (`ensemble.ts`, 2.5.1a/b)
 
 The primitive behind conformer search (ADR-007's mandatory first step, pulled up
 from Phase 4.5 because SMILES fragments arrive as an arbitrary ETKDG conformer).
@@ -304,9 +304,37 @@ Pure; parser **written against a real ORCA 6.1.0 run**, not from memory — see
 - `goatInputForFragment(fragment, mult=1): string` — a `! XTB GOAT` input for **one
   fragment in isolation**: charge is `fragment.charge` (not the scene's
   `totalCharge`), multiplicity 1 (all library fragments are closed-shell).
+- `deltaEKcal(conformers): number[]` (2.5.1b) — ΔE of each conformer vs the lowest,
+  in **kcal/mol** (`HARTREE_TO_KCAL_MOL`), the unit a chemist reads. `NaN` energies
+  pass through (the UI shows a dash).
+- `planConformerApply(storeScene, snapshotFragment, conformer): ConformerApply`
+  (2.5.1b) — decides "Use this conformer" **purely** (so it's testable): `replace`
+  in place if the snapshot's fragment id is still in the store scene; else `new`
+  single-fragment scene; `refuse` (no throw) if `conformerMatchesFragment` fails.
 
 `normalizeElement` is now **exported** from `scene.ts` so this predicate,
 `replaceFragmentAtoms`, and `xyzMatchesScene` share one element normalisation.
+
+### `scene_json` for a GOAT job (2.5.1b — one column, one meaning)
+
+A GOAT job runs on **one fragment**, so its `input_content` holds only that
+fragment's coordinates. Its `scene_json` is therefore a **single-fragment scene of
+that same fragment** — the snapshot annotates its own single-fragment input, so
+`restoreScene`'s `xyzMatchesScene(snapshot, input geometry)` holds and the snapshot
+is honoured with **no special branch**, and the fragment's `id`/`name`/`charge`
+survive a restart. **Not the whole scene:** that would fail `xyzMatchesScene`
+against the single-fragment input and `restoreScene` would silently reject it —
+loading a second, implicit meaning into one column. One column, one meaning
+(`ensemble.test.ts` asserts this round-trip explicitly).
+
+**Applying a conformer back — two branches** (both needed; `planConformerApply`):
+the store is a singleton that survives the New Job → Job detail navigation, so when
+the search finishes the original scene is usually still there → **`replace`** the
+fragment (same id) in place, leaving the rest of the scene untouched, then navigate
+to New Job with `keepScene` (skips the usual store reset). If the scene was cleared
+(other session) → **`new`** single-fragment scene from the snapshot + the chosen
+conformer's coordinates. Composition is checked first; a mismatch **refuses**
+cleanly.
 
 ## Notes
 

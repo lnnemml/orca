@@ -158,6 +158,11 @@ registered in `lib.rs`.
   so a hundreds-of-MB file is never held whole (domain rule #5). We keep the **tail** (where a run's
   interesting end is) and report `first_line_no` (`> 1` iff truncated) so the viewer shows absolute
   file line numbers and search hits still map. Empty (not an error) when there's no dir/output.
+- **`read_job_ensemble(id) -> String`** (2.5.1b) — reads a GOAT job's `input.finalensemble.xyz`
+  (the fixed `input.inp` name gives a fixed ensemble name — see `wiki/orca/goat.md`) whole. Unlike
+  `output.out` this file is tiny (a multi-frame xyz of one small fragment), so reading it fully is
+  fine; capped at `MAX_ENSEMBLE_BYTES` (8 MB) defensively. Empty string (not an error) when there's
+  no dir/file or it isn't a GOAT run; `JobDetailScreen` parses it lazily on a completed job.
 - **Streaming search (domain rule #5):** `search_output` reads line by line through a `BufReader`,
   holding only an optional context ring buffer, the matches still awaiting trailing context, and
   the capped result list. Each `OutputMatch` carries `line_no`, the matched `line`, and the hit's

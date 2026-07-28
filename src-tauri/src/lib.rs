@@ -71,6 +71,7 @@ pub fn run() {
             commands::jobs::is_queue_paused,
             commands::jobs::read_job_output,
             commands::jobs::read_job_output_for_viewer,
+            commands::jobs::read_job_ensemble,
             commands::jobs::read_job_convergence,
             commands::jobs::open_job_folder,
             output_search::search_job_output,

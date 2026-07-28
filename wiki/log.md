@@ -1274,3 +1274,47 @@ quantity is invariant under it. One pass converges; no relaxation loop.
 in order to a fragment, then **recompute all three from the resulting coordinates** — |C–H|, ∠O–C–H, and
 the dihedral must each equal their targets (tolerance ~1e-6). If any fails, the reference-atom convention
 is wrong (e.g. an axis not passing through the constraint atoms) and must be fixed before edit mode ships.
+
+## [2026-07-28] session | 2.5.1b: run GOAT on a fragment, apply a conformer (2.5.1 closed)
+
+Conformer search is usable end to end. **2.5.1 is complete.**
+
+**`scene_json` for a GOAT job — read this first (§1).** A GOAT job runs on ONE fragment, so its
+`input_content` is that fragment alone. Its `scene_json` is a **single-fragment scene of that same
+fragment** — the snapshot annotates its own single-fragment input, so `restoreScene`'s
+`xyzMatchesScene` holds and it's honoured with no special branch, and `id`/`name`/`charge` survive a
+restart. Putting the *whole* scene there would fail `xyzMatchesScene` against the single-fragment
+input → silent rejection → a second implicit meaning in one column. An explicit test
+(`ensemble.test.ts`) asserts the round-trip: `restoreScene(goatInputForFragment(f), serialize({[f]}))`
+→ not rejected, one fragment.
+
+**Flow.** "Find conformers" per fragment in `FragmentList` → creates + runs a job
+(`goatInputForFragment`; `%pal` inserted by the backend's `align_pal_nprocs`, uniform with every job)
+with the single-fragment `scene_json`, title `Conformer search — <name>`, honest cost caption. On a
+completed job `JobDetailScreen` lazily calls the new **`read_job_ensemble`** Rust command
+(`input.finalensemble.xyz` — the fixed input name gives a fixed ensemble name) → `parseEnsemble` →
+panel of conformers with **ΔE in kcal/mol** (`deltaEKcal`; NaN → dash), the selected one in a
+`MoleculeViewer`. Count from the file, not the log summary (goat.md gotcha). "Use this conformer" →
+`planConformerApply` (pure, testable): **replace** the fragment in place if it's still in the store
+scene (survives the nav — singleton) → New Job with a new `keepScene` flag that skips the mount reset;
+else a **new** single-fragment scene; else **refuse** (banner, no throw) on composition mismatch.
+
+**Real run (mandatory).** Ran GOAT on butane via the app's **exact `goatInputForFragment` format**
+(`input.inp` + `%pal 4`). ORCA 6.1.0, **TERMINATED NORMALLY, 1m13s**; ensemble at
+`input.finalensemble.xyz`. `parseEnsemble` + `deltaEKcal` → **4 conformers, ΔE 0.00 / 0.596 / 2.567 /
+2.607 kcal/mol**, atom order preserved in all four. The 0.596 anti→gauche gap is chemically sensible
+and matches the unit fixture — so app input → GOAT → ensemble file → parse → ΔE is verified on real
+data, not just mocked. Job dir removed (rule #3). (4 structures this time vs 5 in 2.5.1a — GOAT's
+retained count varies; count-from-file handles it.)
+
+**Manual checks (author, real Tauri window — the click path isn't headless-drivable):**
+1. Build a scene → a fragment's **Find conformers** → a `Conformer search — <name>` job queues + runs,
+   with the cost caption visible beforehand.
+2. On completion → conformer list with ΔE (kcal/mol), pick one → it renders in the panel viewer.
+3. **Use this conformer** with the scene still live → the fragment updates **in place**, the rest of
+   the scene (other fragments, colours) untouched, back on New Job.
+4. Same after restarting the app (scene cleared) → the *new* branch: New Job with one fragment
+   (name + charge from the snapshot, coords from the conformer).
+
+**Verified.** `tsc` clean, `vite build` clean, `vitest` **128** (was 122 → +6), `cargo test` **55**.
+Next: 2.5.2 — geometry editor (its d/θ/φ acceptance test is already on record).
