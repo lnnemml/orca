@@ -56,3 +56,10 @@ Default grid 80–100; cubes cached in job dir; generated lazily on MO selection
   Phase 2/3 (the "Apple GPU"-masked renderer string in WebKitGTK is cosmetic; direct rendering is
   on an NVIDIA GPU on the dev box).
 - Cube file parsing in JS: stream-parse, don't JSON-roundtrip through the sidecar.
+- Atom identity for xyz models: use `atom.index` (0-based, stable — the model's atom-array
+  position, i.e. xyz line order), **not** `atom.serial` (comes from PDB-like formats, may be
+  1-based or absent). Picking, measurement, and ASE masks all key off `index`.
+- Multi-fragment scenes render as **one 3Dmol model, styled by atom index range** — not one
+  model per fragment. A single model keeps one index space end to end (pick index = merged-xyz
+  index = ASE mask index); per-model indices reset to 0 and need an extra indirection layer.
+  Per-fragment colouring is index-range styling on that one model. See ADR-008.

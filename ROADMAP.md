@@ -110,23 +110,45 @@ form, runs it, and watches the energy curve descend in real time.
 **Goal:** precise geometric control over molecular structures — the foundation for
 reaction mechanism research. See ADR-007.
 
+**2.5.0 — Scene / fragment foundation** (≈ 4 sessions, prerequisite for
+everything below — see ADR-008)
+
+- [ ] a. Scene/SceneFragment model: types + pure functions (merge, index
+      mapping, immutable updates, serialization, float-tolerant comparison)
+- [ ] b. Scene ↔ input builder: total charge from fragments, coordinate
+      injection, electron-parity validation
+- [ ] c. MoleculeViewer: multi-fragment rendering (one model, index-range
+      styling, per-fragment colours)
+- [ ] d. Add Fragment UI + Zustand scene store + `jobs.scene_json` (schema v4)
+
+**2.5.1 — Geometry editor** (builds on the foundation)
+
 - [ ] Atom picking in 3Dmol.js: click → highlight, show atom info (element, index, coordinates)
+      — uses `locateAtom(globalIndex)` to report "atom N of <fragment>"
 - [ ] Measurement mode: pick 2/3/4 atoms → display distance / angle / dihedral angle
+      — fragment boundaries make inter- vs intra-fragment distances distinguishable
 - [ ] Geometry kernel in sidecar (ASE-based): `atoms.set_distance()`, `set_angle()`,
       `set_dihedral()` with mask arrays — recalculate Cartesian coordinates; move
       single atom or rigid fragment. No custom trigonometry.
+      — `fragmentAtomIndices()` **is** the mask argument
 - [ ] Edit mode in viewer: pick atoms → enter target value → preview → apply →
       coordinates update in editor
+      — pick substrate + reagent atom ⇒ mask = reagent fragment, so the reagent moves
 - [ ] Fragment library: common reagents (BH₄⁻, H₂O, common ligands), place at position
       with specified distance/angle
+      — placement = set_distance/angle/dihedral with the mask on the newly added fragment
 - [ ] Constraint manager: list of active constraints, toggle on/off, export to
       ORCA `%geom Constraints ... end` block in the input
+      — constraints reference cross-fragment atom pairs
 - [ ] xTB integration: sidecar endpoint `/xtb-optimize` (xyz + constraints → optimized xyz),
       xTB binary path in Settings (standalone `xtb`, not through ORCA)
+      — merged xyz in, optimised xyz out; fragment boundaries preserved (order + count invariant)
 
 **Done when:** author builds a TS guess by placing BH₄⁻ at a Bürgi-Dunitz angle relative
 to a carbonyl carbon, constrains the approach distance, runs xTB pre-optimization, and
-gets a physically reasonable starting geometry — all inside OrcaStudio.
+gets a physically reasonable starting geometry — all inside OrcaStudio; and cloning that
+job restores the fragments, so the author adjusts the approach angle and reruns without
+rebuilding the scene by hand.
 
 ---
 

@@ -765,3 +765,31 @@ stale hits).
 (431 KB / ~8600 lines in ~3 ms). The in-GUI legs (reveal/decorate, prev/next, mode toggle, Reload,
 large-file scroll) need the real Tauri window — not headless-drivable, same limitation as prior
 phases; the data path is fully typed and Monaco is the already-proven editor engine.
+
+## [2026-07-28] decision | Scene/fragment model for multi-molecule geometry (ADR-008)
+
+Ingested ADR-008 (accepted). A **Scene** = ordered list of **SceneFragment**s — OrcaStudio's own
+abstraction; ORCA never sees it. On export fragments merge into one flat `* xyz totalCharge mult ... *`
+block; fragment identity lives only in our state and (as a snapshot) in the DB. This unblocks Phase 2.5:
+reaction setup needs substrate + reagent in one scene with known boundaries, but the whole Phase 2
+geometry path is single-fragment (one xyz, one `* xyz *` block, import *replaces* geometry).
+
+Key calls: `SceneFragment` not `Fragment` (React.Fragment collision); **one 3Dmol model** styled by
+atom index range, not one model per fragment (single index space: pick = merged-xyz = ASE mask);
+`atom.index` not `atom.serial`; canonical merged-xyz serializer; electron-parity validation from Σ Z − charge;
+curated fixed-geometry fragment library with provenance (no runtime RDKit — MMFF lacks BH₄⁻ params);
+Zustand store wrapping React-free pure functions; ORCA `(1)`/`(2)` annotation out of scope.
+
+**Two positions changed during the discussion:**
+- *Persistence:* in-memory-only → a **`scene_json` snapshot** (nullable TEXT, schema v4, versioned JSON).
+  The Phase 2.5 TS-guess workflow is iterative (build → run → adjust angle → rerun); without a snapshot,
+  cloning a job yields one flat fragment and the user re-splits by hand every iteration. NOT relational
+  tables — Phase 4.5's Reaction/Pathway schema replaces it; migration = read JSON, expand into rows.
+- *Reset rule:* "reset Scene to one fragment on any manual edit" → **coordinate-block-only, with float
+  tolerance and Undo**. Compare parsed floats at tolerance 1e-6 (never string compare — formatting differs);
+  reset only when the coordinate block actually changed, backed by an Undo notification (previous Scene in a ref).
+
+**2.5.0a starts from:** pure core only — Scene/SceneFragment types + pure functions (merge, index mapping,
+immutable updates, serialization, float-tolerant comparison) + tests, zero React. Then 2.5.0b (input builder +
+electron parity) and 2.5.0c (multi-fragment viewer) in parallel; 2.5.0d adds the Zustand store + `scene_json`
+migration. No code this session — ingest only.

@@ -111,3 +111,9 @@ multiplicity for the header). When no geometry is present it emits a commented p
 - `%geom Scan` / NEB (Phase 4.5, reaction modeling).
 - The full 179-solvent list — a curated 20 covers routine work.
 - Reverse parsing (input text → form) — the form → text flow is one-way (see ROADMAP).
+- Fragment annotation `(1)` / `(2)` on coordinate lines — deliberately unsupported.
+  It serves compound methods (DFT-SAPT, counterpoise BSSE), not standard Opt/Freq/Scan,
+  so OrcaStudio merges multi-fragment scenes into one flat `* xyz ... *` block (ADR-008).
+  Forward note: ORCA 6 also uses `%geom` fragments for rigid-body optimisation and
+  fragment constraints — when we generate those blocks, our internal SceneFragment model
+  becomes the source, rather than round-tripping through this input annotation.

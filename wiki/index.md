@@ -12,6 +12,7 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 - [adr-005-system-ssh.md](architecture/adr-005-system-ssh.md) — system ssh/rsync over SSH libraries
 - [adr-006-manual-integration.md](architecture/adr-006-manual-integration.md) — local ORCA manual indexing strategy
 - [adr-007-reaction-modeling.md](architecture/adr-007-reaction-modeling.md) — from molecular modeling to reaction modeling: domain objects, geometry editor, reaction coordinate workflows
+- [adr-008-scene-fragment-model.md](architecture/adr-008-scene-fragment-model.md) — Scene / SceneFragment model for multi-molecule geometry: one flat merged xyz, one 3Dmol model, `scene_json` snapshot
 
 ## Modules
 
@@ -45,4 +46,4 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 
 ---
 
-*Page count: 23. Last structural update: 2026-07-28 (+debugging/004).*
+*Page count: 24. Last structural update: 2026-07-28 (+adr-008).*
