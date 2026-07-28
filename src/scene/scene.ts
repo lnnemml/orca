@@ -8,13 +8,17 @@
  *
  * No React / 3Dmol / Tauri imports: this module is node-testable on its own.
  *
- * OVERLAP (flagged for 2.5.0b): `src/viewer/xyz-format.ts` and
- * `src/viewer/parse-xyz-from-input.ts` already parse coordinate lines, but into
- * *string* rows (`"O   0.0   0.0   0.1"`), for the Phase 2 viewer path. This
- * module parses into structured {@link SceneAtom} objects instead. The two are
- * intentionally left un-consolidated in 2.5.0a — the viewer helpers are working,
- * tested code — and 2.5.0b unifies them once the Scene ↔ input-builder wiring is
- * in place.
+ * OVERLAP (consolidation completes in 2.5.0d, not 2.5.0b): `src/viewer/
+ * xyz-format.ts` and `src/viewer/parse-xyz-from-input.ts` parse coordinate lines
+ * into *string* rows (`"O   0.0   0.0   0.1"`) for the Phase 2 viewer path. This
+ * module parses into structured {@link SceneAtom} objects, and {@link
+ * sceneFromOrcaInput} below extracts the `* xyz c m ... *` block straight into a
+ * Scene. 2.5.0b migrated only `InputBuilderForm.tsx` onto `src/scene/`; the
+ * viewer helpers stay in use by `NewJobScreen.tsx` / `MoleculesScreen.tsx`
+ * (both rewritten in 2.5.0d), so `sceneFromOrcaInput` deliberately duplicates a
+ * little of `extractXyzFromInput` for now. 2.5.0d removes the viewer copies once
+ * every screen is migrated — that is where the ADR-008 "full consolidation"
+ * lands. See `wiki/modules/scene.md`.
  */
 
 import {
@@ -332,6 +336,55 @@ export function sceneFromAtomLines(
     ...(opts.sourceLabel !== undefined ? { sourceLabel: opts.sourceLabel } : {}),
   };
   return { fragments: [fragment], multiplicity: opts.multiplicity ?? 1 };
+}
+
+/**
+ * Build a single-fragment Scene from a full ORCA input by extracting its
+ * `* xyz <charge> <mult> ... *` coordinate block: the fragment charge comes from
+ * the header, `scene.multiplicity` from the header, and the atoms from the block
+ * rows. Returns `null` when there is no inline coordinate block — including the
+ * `* xyzfile ...` form, whose geometry lives in an external file we don't read.
+ *
+ * This is the ORCA-input → Scene adapter used by `InputBuilderForm.tsx` (2.5.0b)
+ * so the form no longer needs the viewer parsers. See the OVERLAP note above.
+ */
+export function sceneFromOrcaInput(
+  content: string,
+  opts: Omit<SceneFromAtomLinesOptions, "charge" | "multiplicity"> = {},
+): Scene | null {
+  const lines = content.split(/\r?\n/);
+
+  // Find the opening `* xyz <c> <m>` marker. `xyzfile` also starts with "xyz",
+  // so reject it explicitly (external geometry, unreadable here).
+  let start = -1;
+  let charge = 0;
+  let multiplicity = 1;
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i].trim();
+    if (!t.startsWith("*")) continue;
+    const rest = t.slice(1).trim();
+    const keyword = rest.toLowerCase();
+    if (keyword.startsWith("xyzfile")) return null;
+    if (keyword.startsWith("xyz")) {
+      const parts = rest.split(/\s+/); // ["xyz", charge, mult, ...]
+      const c = Number(parts[1]);
+      const m = Number(parts[2]);
+      if (Number.isInteger(c)) charge = c;
+      if (Number.isInteger(m)) multiplicity = m;
+      start = i;
+      break;
+    }
+  }
+  if (start === -1) return null;
+
+  // Collect coordinate rows until the closing `*`.
+  const block: string[] = [];
+  for (let i = start + 1; i < lines.length; i++) {
+    if (lines[i].trim().startsWith("*")) break;
+    block.push(lines[i]);
+  }
+
+  return sceneFromAtomLines(block, { ...opts, charge, multiplicity });
 }
 
 // ── (De)serialization for the `scene_json` snapshot ──────────────────────────

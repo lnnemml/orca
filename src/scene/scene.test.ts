@@ -15,6 +15,7 @@ import {
   mergeToXyz,
   parseAtomLines,
   removeFragment,
+  sceneFromOrcaInput,
   renameFragment,
   replaceFragmentAtoms,
   sceneFromAtomLines,
@@ -332,5 +333,45 @@ describe("sceneFromAtomLines", () => {
 
   it("returns null when no atoms parse", () => {
     expect(sceneFromAtomLines(["# nothing"], { id: "w" })).toBeNull();
+  });
+});
+
+describe("sceneFromOrcaInput", () => {
+  const input = [
+    "! r2SCAN-3c Opt Freq TightSCF",
+    "%pal nprocs 4 end",
+    "%maxcore 2000",
+    "",
+    "* xyz -1 2",
+    "O   0.00000000   0.00000000   0.11779000",
+    "H   0.00000000   0.75545300  -0.47116100",
+    "H   0.00000000  -0.75545300  -0.47116100",
+    "*",
+    "",
+  ].join("\n");
+
+  it("extracts a single fragment with charge + multiplicity from the header", () => {
+    const s = sceneFromOrcaInput(input, { id: "f", name: "Sub" });
+    expect(s).not.toBeNull();
+    expect(s!.fragments).toHaveLength(1);
+    expect(s!.fragments[0].id).toBe("f");
+    expect(s!.fragments[0].charge).toBe(-1); // from `* xyz -1 2`
+    expect(s!.multiplicity).toBe(2);
+    expect(atomCount(s!)).toBe(3);
+  });
+
+  it("returns null for a `* xyzfile` external-geometry block", () => {
+    expect(sceneFromOrcaInput("* xyzfile 0 1 mol.xyz")).toBeNull();
+  });
+
+  it("returns null when there is no coordinate block", () => {
+    expect(sceneFromOrcaInput("! B3LYP def2-SVP\n%pal nprocs 2 end")).toBeNull();
+  });
+
+  it("defaults to neutral singlet when the header numbers are absent", () => {
+    const s = sceneFromOrcaInput("* xyz\nHe 0 0 0\n*");
+    expect(s).not.toBeNull();
+    expect(totalCharge(s!)).toBe(0);
+    expect(s!.multiplicity).toBe(1);
   });
 });

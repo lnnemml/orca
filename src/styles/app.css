@@ -301,6 +301,25 @@ body {
   font-style: italic;
 }
 
+/* Small caption under the read-only Charge field (Scene-derived sum). */
+.builder-charge-note {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+}
+
+/* Electron-parity warning row — informational, not an error/block. */
+.builder-parity {
+  flex: 1;
+  padding: 8px 10px;
+  border: 1px solid var(--warn);
+  border-radius: 6px;
+  background-color: rgba(234, 179, 8, 0.08);
+  color: var(--warn);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
 .radio-row {
   display: flex;
   gap: 16px;

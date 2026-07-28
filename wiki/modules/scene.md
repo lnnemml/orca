@@ -1,8 +1,12 @@
 # Module: scene (`src/scene/`)
 
-**Status:** 2.5.0a done — pure core (types + functions + tests), zero React.
-Not yet wired to anything: 2.5.0b connects it to the input builder, 2.5.0c to the
-viewer, 2.5.0d adds the Zustand store + `jobs.scene_json` persistence.
+**Status:** 2.5.0b done — the pure core (2.5.0a) is now wired into ORCA-input
+generation and electron-parity validation. `buildOrcaInput` accepts a Scene, and
+`InputBuilderForm.tsx` derives its geometry through `src/scene/` (no longer
+through the viewer parsers). Still ahead: 2.5.0c multi-fragment viewer, 2.5.0d
+Zustand store + `jobs.scene_json` persistence (and the store is what makes the
+form's read-only-charge / parity UI act on a *real* multi-fragment Scene rather
+than the single fragment derived from the buffer).
 
 ## Responsibilities
 
@@ -20,8 +24,9 @@ store that wraps them arrives in 2.5.0d. No imports from react / 3dmol / tauri.
 
 - `types.ts` — `SceneAtom`, `FragmentSource`, `SceneFragment`, `Scene`;
   `FRAGMENT_SOURCES` (the valid-source list, for deserialize validation).
-- `scene.ts` — all functions below.
-- `scene.test.ts` — vitest (32 tests).
+- `scene.ts` — the merge / index / parse / serialize functions below.
+- `parity.ts` — `checkElectronParity` (electron-parity validation, ADR-008 #8).
+- `scene.test.ts` + `parity.test.ts` — vitest (46 tests total across the module).
 
 ## The index-space invariant (why this module exists)
 
@@ -69,6 +74,10 @@ Parsing / reset detection:
 - `sceneFromAtomLines(atomLines, opts): Scene | null` — single-fragment scene
   (the "editor" path). `opts.id` is accepted for determinism; defaults to
   `makeFragmentId()`.
+- `sceneFromOrcaInput(content, opts): Scene | null` — the ORCA-input → Scene
+  adapter (2.5.0b): extracts the `* xyz charge mult ... *` block, taking the
+  fragment charge and `scene.multiplicity` from the header. `null` for a
+  `* xyzfile` block (external geometry) or no block. Used by `InputBuilderForm`.
 - `xyzMatchesScene(scene, atomLines, tol=1e-6): boolean` — the reset-detection
   primitive (ADR-008 decision 6). Parses both sides and compares element symbols
   (case-insensitive) + coordinates within `tol`. **Float comparison, never
@@ -87,15 +96,45 @@ Per row: element symbol `padEnd(2)`, then each coordinate `toFixed(8)`
 programming error → throw, never emit `NaN`. Determinism matters twice: golden
 test diffs, and the float-tolerant comparison against the Monaco buffer.
 
-## Overlap flagged for 2.5.0b
+## Electron parity (`parity.ts`, ADR-008 decision 8)
 
-`src/viewer/xyz-format.ts` (`xyzToAtomLines`, `atomLinesToXyz`, `parseChargeMult`)
-and `src/viewer/parse-xyz-from-input.ts` (`extractXyzFromInput`) already parse
-coordinate lines — but into **string** rows for the Phase 2 viewer path. This
-module parses into **`SceneAtom` objects**. The duplication is deliberate for
-2.5.0a (the viewer helpers are working, tested code on the live Phase 2 path);
-**2.5.0b consolidates them** once the Scene ↔ input-builder wiring lands. A
-comment in `scene.ts` names the overlap.
+`checkElectronParity(scene): ParityIssue | null`. The electron count
+(`electronCount` = Σ Z − totalCharge) fixes the **parity** of the allowed spin
+multiplicity: even electrons ⇒ odd multiplicity (singlet/triplet/quintet), odd
+electrons ⇒ even multiplicity (doublet/quartet/sextet). A mismatch returns a
+`ParityIssue` with the electron count, the offending multiplicity, a nearest-first
+list of valid multiplicities (`[1,3,5]` or `[2,4,6]`), and an **explanatory**
+message (how many electrons, why that parity, what to use) — a teaching moment,
+not a diagnostic "invalid multiplicity".
+
+Scope of the check, deliberately narrow:
+- It validates **arithmetic possibility only**, never physical plausibility.
+  Whether a triplet is a sensible ground state for *this* molecule is the
+  chemist's call; we only catch the provably-impossible class (the error ORCA
+  reports cryptically ~30 s into a run).
+- Returns `null` for an empty scene (nothing to validate) and for an element
+  outside the H–Kr table (can't count electrons → no parity opinion; it swallows
+  the `electronCount` throw rather than crashing the caller).
+
+**Why the UI warns, not blocks.** `InputBuilderForm` shows the issue inline but
+still lets Generate proceed: the user may build a scene incrementally and pass
+through a temporarily odd state, and ORCA itself rejects the truly impossible. We
+inform, we don't forbid.
+
+## Overlap — full consolidation deferred to 2.5.0d (narrowed from ADR-008)
+
+ADR-008 said 2.5.0b would fully consolidate `src/viewer/xyz-format.ts`
+(`xyzToAtomLines`, `atomLinesToXyz`, `parseChargeMult`) and
+`src/viewer/parse-xyz-from-input.ts` (`extractXyzFromInput`) into `src/scene/`.
+**2.5.0b narrowed that on purpose:** only `InputBuilderForm.tsx` was migrated onto
+`src/scene/` (via `sceneFromOrcaInput`); `NewJobScreen.tsx` and
+`MoleculesScreen.tsx` still use the viewer helpers. Reason — both screens are
+rewritten in 2.5.0d (Add Fragment UI + Zustand), and consolidating their call
+sites now would mean rewriting them twice. So `sceneFromOrcaInput` deliberately
+duplicates a little of `extractXyzFromInput` / `parseChargeMult` in the interim;
+**2.5.0d removes the viewer copies** once every screen is migrated — that is where
+ADR-008's "full consolidation" actually lands. Nothing in `src/viewer/` was
+deleted or changed in 2.5.0b. A comment in `scene.ts` names the overlap.
 
 ## Notes
 

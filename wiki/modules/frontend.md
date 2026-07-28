@@ -184,24 +184,32 @@ doesn't have to memorise ORCA syntax. New `src/input-builder/` module; still `us
   `RI_METHODS`, `SOLVATION_MODELS`, `SOLVENTS` (curated 20), `SCF_CONV`. `OrcaOption =
   {keyword, label, description?}`; empty `keyword` = "no keyword". Keywords checked vs ORCA 6.1.
 - **`build-input.ts`** (pure, no React — unit-tested): `buildKeywordLine(state)` and
-  `buildOrcaInput(state, atomBlock)`. Encodes the domain rules (see `orca/input-format.md`):
+  `buildOrcaInput(state, geometry)`. Encodes the domain rules (see `orca/input-format.md`):
   composite methods emit ONLY their name (no basis/dispersion/RI); RI auto-adds the aux basis
   (`def2/J` for RIJCOSX/RI-J, `def2/JK` for RI-JK) when a `def2` basis is used; canonical order
   `method basis auxbasis RI dispersion solvation jobtype scfconv`; `%maxcore` no `end`, `%pal`
-  with `end`; solvation `MODEL(solvent)`; the passed atom rows are preserved verbatim (form's
-  charge/mult drive the header), placeholder comment when none. `DEFAULT_BUILDER_STATE`:
-  r2SCAN-3c composite, Opt+Freq, TightSCF, gas phase, 0/1, nprocs 4, maxcore 2000.
-- **`build-input.test.ts`** (vitest, 9 tests): composite self-sufficiency, RIJCOSX→def2/J,
-  RI-JK→def2/JK, CPCM(water), gas-phase omits solvation, `%maxcore`/`%pal` end rules, verbatim
-  coordinate preservation, form charge/mult in the header. **vitest added** (`npm test` =
-  `vitest run`); pure-function tests, default node env, no config file needed.
-- **`InputBuilderForm.tsx`**: the collapsible form. Seeds charge/mult from the current geometry
-  via `parseChargeMult` (reads only the `* xyz c m` header — the `!` line is never parsed back;
-  form→text stays one-way per ROADMAP). Composite-vs-functional radio toggle disables the
-  basis/dispersion/RI selects in composite mode; solvent select disabled in gas phase. **Live
-  preview** of the `!` line (`buildKeywordLine`) under the form — the learning element: the user
-  sees the syntax their choices produce before Generate. "Generate Input" extracts the editor's
-  atoms (`extractXyzFromInput` + `xyzToAtomLines`) and calls `onGenerate(buildOrcaInput(...))`.
+  with `end`; solvation `MODEL(solvent)`. **Since 2.5.0b** the `geometry` arg is a `Scene`, a raw
+  atom-block string, or `null`: a Scene supplies canonical merged coordinates and **overrides**
+  charge (`totalCharge`) and multiplicity (`scene.multiplicity`); a string is preserved verbatim
+  with the form's charge/mult; null → placeholder. `DEFAULT_BUILDER_STATE`: r2SCAN-3c composite,
+  Opt+Freq, TightSCF, gas phase, 0/1, nprocs 4, maxcore 2000.
+- **`build-input.test.ts`** (vitest, 10 tests, unchanged in 2.5.0b): composite self-sufficiency,
+  RIJCOSX→def2/J, RI-JK→def2/JK, CPCM(water), gas-phase omits solvation, `%maxcore`/`%pal` end
+  rules, verbatim coordinate preservation, form charge/mult in the header. The Scene path kept these
+  green because the second arg is a `Scene | string | null` union — the string branch is the old
+  behaviour verbatim. **vitest** (`npm test` = `vitest run`); pure-function tests, node env.
+- **`InputBuilderForm.tsx`**: the collapsible form, now **Scene-driven** (2.5.0b). It derives a
+  (single-fragment) Scene from the current buffer via `sceneFromOrcaInput`, dropping the viewer
+  parsers (`parseChargeMult` / `extractXyzFromInput` / `xyzToAtomLines`) in favour of `src/scene/`.
+  When a Scene is present: **Charge is read-only**, showing `totalCharge(scene)` with a "Σ of N
+  fragments" caption (set per fragment, not typed — the fragment UI is 2.5.0d); **Multiplicity
+  stays editable** (a physical choice, written into the Scene before generate); and an inline
+  **electron-parity warning** (`checkElectronParity`) appears under the numeric controls when the
+  multiplicity parity contradicts the electron count — informational, Generate still works. With no
+  coordinate block both fields behave as before. Composite-vs-functional radio still disables the
+  basis/dispersion/RI selects; solvent select disabled in gas phase. **Live preview** of the `!`
+  line (`buildKeywordLine`) remains. "Generate Input" calls `onGenerate(buildOrcaInput(state,
+  scene))`. The `!` line is still never parsed back — form→text stays one-way per ROADMAP.
 - **`NewJobScreen`**: collapsible `.input-builder` panel (▸/▾, default collapsed) above the
   template picker; `onGenerate` → `setContent`, so the viewer refreshes via the existing debounce.
 - **CSS:** `.input-builder`/`.builder-toggle`/`.builder-body`/`.builder-row`/`.radio-row`/

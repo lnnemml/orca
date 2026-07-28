@@ -828,3 +828,61 @@ untouched and flagged in `scene.ts` + the module page for 2.5.0b to consolidate.
 **Verified.** `tsc --noEmit` clean, `vite build` clean, `vitest run` **42 tests** (was 10 → +32 in
 the new `scene.test.ts`). Pure arithmetic — no real ORCA needed. Next: 2.5.0b (Scene ↔ input builder,
 total charge from fragments, electron-parity validation) and 2.5.0c (multi-fragment viewer) in parallel.
+
+## [2026-07-28] session | 2.5.0b: Scene-driven charge/multiplicity + electron parity
+
+Wired the 2.5.0a pure core into ORCA-input generation and added electron-parity validation.
+
+**What was built.**
+- `buildOrcaInput(state, geometry)` now takes `Scene | string | null`. A Scene supplies canonical
+  merged coordinates (`mergeToAtomLines`) and **overrides** the header charge (`totalCharge`) and
+  multiplicity (`scene.multiplicity`); a string is the old verbatim atom-block path; null →
+  placeholder. `build-input.ts` imports the pure scene functions (still React-free).
+- `src/scene/parity.ts` — `checkElectronParity(scene): ParityIssue | null`. Even electrons ⇒ odd
+  multiplicity, odd ⇒ even; mismatch returns electron count + offending multiplicity + nearest-first
+  valid list (`[1,3,5]`/`[2,4,6]`) + an **explanatory** message (teaching, not "invalid"). Returns
+  null for an empty scene and — swallowing `electronCount`'s throw — for elements outside H–Kr.
+- `src/scene/scene.ts` gained `sceneFromOrcaInput(content, opts)` — extracts the `* xyz c m ... *`
+  block into a single-fragment Scene (charge + multiplicity from the header; null for `* xyzfile`).
+- `InputBuilderForm.tsx` is Scene-driven: derives a Scene from the buffer via `sceneFromOrcaInput`,
+  Charge read-only = `totalCharge(scene)` with a "Σ of N fragments" caption, Multiplicity stays
+  editable and is written into the Scene before generate, inline parity warning under the numeric
+  row (never blocks Generate). CSS: `.builder-charge-note`, `.builder-parity` (uses `--warn`).
+
+**Deviation 1 — buildOrcaInput signature is `Scene | string | null`, not the literal `Scene | null`
+from the task.** Reason: two of the ten existing `build-input.test.ts` cases pass a raw atom-block
+*string* as the second arg. A strict `Scene | null` would fail them at compile time, contradicting
+the hard requirement "all 10 pass without changes". The union keeps the string branch (old behaviour
+verbatim) and adds the Scene branch. All 10 tests pass **with the test file untouched** (`git diff`
+on it is empty); nothing was edited.
+
+**Deviation 2 — consolidation narrowed from ADR-008 (flagged so lint doesn't read it as drift).**
+ADR-008 said 2.5.0b would fully consolidate the viewer parsers (`xyz-format.ts`,
+`parse-xyz-from-input.ts`) into `src/scene/`. 2.5.0b migrated **only `InputBuilderForm.tsx`**;
+`NewJobScreen.tsx` and `MoleculesScreen.tsx` still use the viewer helpers, which are untouched.
+Reason: both screens are rewritten in 2.5.0d (Add Fragment UI + Zustand), so consolidating their
+call sites now means rewriting them twice. `sceneFromOrcaInput` therefore duplicates a little of
+`extractXyzFromInput`/`parseChargeMult` in the interim; **2.5.0d removes the viewer copies** — that is
+where ADR-008's "full consolidation" lands. Recorded in `scene.ts`, `modules/scene.md`, ADR mapping.
+
+**Design note — charge is now derived from the buffer.** With a Scene present, the form no longer
+lets you type a charge; it reflects the sum of fragment charges (in 2.5.0b that is the single
+fragment parsed from the `* xyz c m` header). To change charge in 2.5.0b you edit the header in
+Monaco (the buffer owns the coordinate block per ADR-008 #6); the per-fragment charge editor is
+2.5.0d. Also: generating from a Scene re-canonicalises coordinates to `toFixed(8)` (was verbatim) —
+float-stable, intended by ADR-008 #4.
+
+**Manual check (author, in the real Tauri window — not headless-drivable):**
+1. Open a job whose input has a `* xyz 0 1` water block → open the Input Builder. The **Charge
+   field is greyed/read-only** showing `0`, with a small "Σ of 1 fragment" caption beneath it;
+   Multiplicity stays editable.
+2. Set **Multiplicity to 2** → a yellow inline warning appears under the numeric row, reading roughly
+   "This scene has 10 electrons (even), so its spin multiplicity must be odd — singlet (1),
+   triplet (3), quintet (5). Multiplicity 2 (doublet) has the wrong parity …". Generate is **still
+   enabled** — click it and confirm the `* xyz 0 2` header is written anyway (warning, not block).
+3. Set Multiplicity back to 1 (or 3) → warning disappears. Clear the coordinate block entirely →
+   Charge becomes an editable number field again (no Scene).
+
+**Verified.** `tsc --noEmit` clean, `vite build` clean, `vitest run` **56 tests** (was 42 → +10
+parity, +4 `sceneFromOrcaInput`). The 10 `build-input.test.ts` cases pass unchanged (file diff
+empty). Next: 2.5.0c multi-fragment viewer, 2.5.0d store + `scene_json` + finish the consolidation.

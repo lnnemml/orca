@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
-import { extractXyzFromInput } from "../viewer/parse-xyz-from-input";
-import { xyzToAtomLines, parseChargeMult } from "../viewer/xyz-format";
+import { sceneFromOrcaInput, setMultiplicity, totalCharge } from "../scene/scene";
+import { checkElectronParity } from "../scene/parity";
 import {
   BASIS_SETS,
   COMPOSITE_METHODS,
@@ -73,19 +73,34 @@ export function InputBuilderForm({
   // Seed charge/multiplicity from the current geometry header so an imported
   // ion keeps its charge; the rest are plain defaults. (This reads only the
   // `* xyz c m` line — the `!` keyword line is never parsed back into the form.)
-  const [state, setState] = useState<BuilderState>(() => ({
-    ...DEFAULT_BUILDER_STATE,
-    ...parseChargeMult(currentContent),
-  }));
+  const [state, setState] = useState<BuilderState>(() => {
+    const seed = sceneFromOrcaInput(currentContent);
+    return {
+      ...DEFAULT_BUILDER_STATE,
+      charge: seed ? totalCharge(seed) : DEFAULT_BUILDER_STATE.charge,
+      multiplicity: seed ? seed.multiplicity : DEFAULT_BUILDER_STATE.multiplicity,
+    };
+  });
 
   const set = <K extends keyof BuilderState>(key: K, value: BuilderState[K]) =>
     setState((s) => ({ ...s, [key]: value }));
 
+  // The Scene derived from the current buffer (single-fragment in 2.5.0b —
+  // 2.5.0d threads a real multi-fragment Scene through a store). Its
+  // multiplicity is the user's editable choice, not the parsed header value, so
+  // charge derives from the fragments while multiplicity stays under the form's
+  // control. `null` when the buffer has no inline coordinate block.
+  const scene = useMemo(() => {
+    const parsed = sceneFromOrcaInput(currentContent);
+    return parsed ? setMultiplicity(parsed, state.multiplicity) : null;
+  }, [currentContent, state.multiplicity]);
+
+  const parity = scene ? checkElectronParity(scene) : null;
+
   const generate = () => {
-    const std = extractXyzFromInput(currentContent);
-    const atomLines = std ? xyzToAtomLines(std) : null;
-    const atomBlock = atomLines ? atomLines.join("\n") : null;
-    onGenerate(buildOrcaInput(state, atomBlock));
+    // Scene present → charge/mult/coords come from the Scene; absent → the
+    // form's own fields drive a placeholder geometry (unchanged behaviour).
+    onGenerate(buildOrcaInput(state, scene));
   };
 
   const compositeMode = state.useComposite;
@@ -217,12 +232,29 @@ export function InputBuilderForm({
       <div className="builder-row">
         <div className="field builder-num">
           <label className="label">Charge</label>
-          <input
-            className="input mono"
-            type="number"
-            value={state.charge}
-            onChange={(e) => set("charge", Number(e.currentTarget.value))}
-          />
+          {scene ? (
+            <>
+              <input
+                className="input mono"
+                type="number"
+                value={totalCharge(scene)}
+                readOnly
+                disabled
+                title="Sum of fragment charges — set per fragment, not here"
+              />
+              <span className="builder-charge-note muted">
+                Σ of {scene.fragments.length} fragment
+                {scene.fragments.length === 1 ? "" : "s"}
+              </span>
+            </>
+          ) : (
+            <input
+              className="input mono"
+              type="number"
+              value={state.charge}
+              onChange={(e) => set("charge", Number(e.currentTarget.value))}
+            />
+          )}
         </div>
         <div className="field builder-num">
           <label className="label">Multiplicity</label>
@@ -256,6 +288,15 @@ export function InputBuilderForm({
           />
         </div>
       </div>
+
+      {/* Electron-parity warning — informational, never blocks Generate. */}
+      {parity && (
+        <div className="builder-row">
+          <div className="builder-parity" role="status">
+            ⚠ {parity.message}
+          </div>
+        </div>
+      )}
 
       {/* Row 5: generate + live preview of the ! line */}
       <div className="builder-row builder-actions">

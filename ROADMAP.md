@@ -115,7 +115,7 @@ everything below — see ADR-008)
 
 - [x] a. Scene/SceneFragment model: types + pure functions (merge, index
       mapping, immutable updates, serialization, float-tolerant comparison)
-- [ ] b. Scene ↔ input builder: total charge from fragments, coordinate
+- [x] b. Scene ↔ input builder: total charge from fragments, coordinate
       injection, electron-parity validation
 - [ ] c. MoleculeViewer: multi-fragment rendering (one model, index-range
       styling, per-fragment colours)

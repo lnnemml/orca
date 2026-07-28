@@ -5,6 +5,8 @@
 //! unit-testable in isolation. See `wiki/orca/input-format.md`.
 
 import { FUNCTIONAL_GROUPS } from "./orca-options";
+import { mergeToAtomLines, totalCharge } from "../scene/scene";
+import type { Scene } from "../scene/types";
 
 /** Everything the form collects. Mirrors the controls 1:1. */
 export interface BuilderState {
@@ -103,27 +105,58 @@ export function buildKeywordLine(state: BuilderState): string {
 
 const PLACEHOLDER_COORDS = "# paste coordinates here, or import a molecule above";
 
+/** True for a {@link Scene} value (vs a raw atom-block string or null). */
+function isScene(geometry: Scene | string | null): geometry is Scene {
+  return (
+    typeof geometry === "object" &&
+    geometry !== null &&
+    Array.isArray((geometry as Scene).fragments)
+  );
+}
+
 /**
  * Assemble a complete, runnable ORCA input: the `!` line, the `%pal`/`%maxcore`
- * directives, and the coordinate block. `atomBlock` is the geometry's
- * `element x y z` rows (verbatim, no delimiters) — it is preserved exactly;
- * pass `null`/empty to emit a commented placeholder instead.
+ * directives, and the `* xyz charge mult ... *` coordinate block.
+ *
+ * The `geometry` argument is either:
+ * - a {@link Scene} — the preferred path (ADR-008): `charge` becomes
+ *   `totalCharge(scene)`, the header multiplicity becomes `scene.multiplicity`,
+ *   and the coordinates are the canonical merged rows `mergeToAtomLines(scene)`.
+ *   The Scene therefore **overrides** `state.charge` / `state.multiplicity`.
+ * - a raw atom-block string — the geometry's `element x y z` rows (verbatim, no
+ *   delimiters), preserved exactly; here `state.charge` / `state.multiplicity`
+ *   are used. Retained for the pre-Scene call sites and their tests (backward
+ *   compatibility — see 2.5.0b note in the wiki log).
+ * - `null`/empty — a commented placeholder, with `state.charge` /
+ *   `state.multiplicity`.
  *
  * `%maxcore` is a simple directive (NO `end`); `%pal` is a block (WITH `end`).
  */
 export function buildOrcaInput(
   state: BuilderState,
-  atomBlock: string | null,
+  geometry: Scene | string | null,
 ): string {
-  const coords =
-    atomBlock && atomBlock.trim().length > 0 ? atomBlock : PLACEHOLDER_COORDS;
+  let charge = state.charge;
+  let multiplicity = state.multiplicity;
+  let coords: string;
+
+  if (isScene(geometry)) {
+    charge = totalCharge(geometry);
+    multiplicity = geometry.multiplicity;
+    const rows = mergeToAtomLines(geometry);
+    coords = rows.length > 0 ? rows.join("\n") : PLACEHOLDER_COORDS;
+  } else if (typeof geometry === "string" && geometry.trim().length > 0) {
+    coords = geometry;
+  } else {
+    coords = PLACEHOLDER_COORDS;
+  }
 
   return [
     `! ${buildKeywordLine(state)}`,
     `%pal nprocs ${state.nprocs} end`,
     `%maxcore ${state.maxcore}`,
     "",
-    `* xyz ${state.charge} ${state.multiplicity}`,
+    `* xyz ${charge} ${multiplicity}`,
     coords,
     "*",
     "",

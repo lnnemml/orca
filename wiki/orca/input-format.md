@@ -91,9 +91,34 @@ SMD(acetonitrile)
 ```
 
 ### Rule 6 — Coordinates are preserved
-The builder generates only the `!` line and `%` blocks; the existing `* xyz charge mult ... *`
-atom rows are carried through verbatim (`buildOrcaInput` wraps them, using the form's charge /
-multiplicity for the header). When no geometry is present it emits a commented placeholder.
+The builder generates only the `!` line and `%` blocks; the geometry rows are carried through.
+`buildOrcaInput(state, geometry)` takes the geometry as a **Scene**, a raw atom-block string, or
+`null`:
+- **Scene** (the builder form's path since 2.5.0b) — coordinates are the canonical merged rows
+  (`mergeToAtomLines`, `toFixed(8)`); charge and multiplicity come from the Scene (see below).
+- **string** — the `element x y z` rows verbatim, with the form's charge / multiplicity. Retained
+  for the pre-Scene call sites and their tests.
+- **null / empty** — a commented placeholder, with the form's charge / multiplicity.
+
+### Rule 7 — Charge and multiplicity come from the Scene
+When a Scene drives generation (ADR-008), the `* xyz charge mult` header is **derived**, not typed:
+- **charge = `totalCharge(scene)`** — the sum of the per-fragment formal charges. In the builder
+  form the Charge field is read-only and shows this sum; you change it by setting a fragment's
+  charge (2.5.0d fragment UI), not by typing into the header.
+- **multiplicity = `scene.multiplicity`** — a genuine physical choice, so it stays user-editable;
+  the form writes the user's value into the Scene before generating.
+
+**Electron parity** (`checkElectronParity`, `src/scene/parity.ts`): the electron count
+(Σ Z − totalCharge) fixes the *parity* of the allowed multiplicity — even electrons ⇒ odd
+multiplicity (singlet/triplet/…), odd electrons ⇒ even multiplicity (doublet/quartet/…). A
+mismatch is the error ORCA reports cryptically ~30 s into a run; the form surfaces it instantly as
+an inline, explanatory warning (not a blocker — Generate still works).
+
+> **Important — what parity does *not* check.** It validates only the *arithmetic* possibility of a
+> multiplicity for a given electron count. It says nothing about whether that spin state is a
+> physically sensible ground state for the molecule (a triplet may be arithmetically allowed and
+> chemically absurd). Physical reasonableness is the chemist's judgement; we only catch the
+> provably-impossible parity mistake.
 
 ## Dispersion keywords
 `D4` (newest, recommended), `D3BJ` (Becke-Johnson damping), `D3Zero` (zero damping),
