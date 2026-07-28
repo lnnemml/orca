@@ -1,6 +1,12 @@
 # Module: Frontend (src/)
 
-**Status:** Phase 2 **complete** — step 2.6 extends file import to pdb/cif/mol/sdf/gen (shared
+**Status:** **Phase 2.5.0 (Scene/fragment foundation) complete** — the frontend now builds,
+views, persists and iterates multi-fragment scenes: a Zustand scene store (`src/scene/store.ts`)
+synced two-way with Monaco, an Add-Fragment panel + `FragmentList` sidebar, and job-to-job
+iteration (see "As built (2.5.0d-1/-2b/-3)"). The Phase 2 chronicle below predates it — sections
+carry supersession notes where 2.5.0 replaced them.
+
+_Phase 2 (complete):_ step 2.6 extends file import to pdb/cif/mol/sdf/gen (shared
 `import-file.ts` → sidecar `/convert`); step 2.5 adds the live convergence dashboard on Job detail
 (energy + criteria per cycle, recharts); step 2.4 the ORCA input builder form (dropdowns → `.inp`,
 still editable in Monaco); step 2.3 the molecule library (Molecules screen + Save/Use ↔ New Job);
@@ -92,6 +98,10 @@ editor/inputs. Only the active screen is mounted (switching to Jobs remounts it 
   in-app detail, not a file manager — the file manager is the detail's Open Folder button).
 
 ## As built (Phase 2.1) — molecule preview on New Job
+> **Superseded (2.5.0d-1):** `parse-xyz-from-input.ts` was deleted and the `previewXyz` state
+> removed when New Job moved to the scene store — geometry now flows through `src/scene/` (see
+> "As built (2.5.0d-1)"). `MoleculeViewer` and `3dmol-setup.ts` live on.
+
 New `src/viewer/` module (details + design decisions in `modules/visualization.md`):
 - **`MoleculeViewer.tsx`** — 3Dmol.js ball-and-stick viewer; props `xyzData` + optional `style`.
   Fills its parent, `ResizeObserver` → `viewer.resize()`, `viewer.clear()` on unmount to release
@@ -116,6 +126,11 @@ New `src/viewer/` module (details + design decisions in `modules/visualization.m
   desktop app; a future optimisation is code-splitting the viewer.
 
 ## As built (Phase 2.2) — molecule import (.xyz + SMILES → 3D)
+> **Superseded (2.5.0d-1):** `inject-xyz-into-input.ts` / `injectXyzIntoInput` and
+> `extractXyzFromInput` were deleted; the ORCA-input ↔ Scene text I/O now lives in
+> `src/scene/scene.ts` (`sceneFromOrcaInput` / `injectSceneIntoInput`) and geometry flows through
+> the scene store. Import/SMILES still work — they build a fragment and add it (2.5.0d-2b).
+
 Two ways to load a molecule into the editor; both feed the Phase 2.1 preview automatically (edit
 → 500 ms debounce → `extractXyzFromInput` → viewer). Added to `NewJobScreen`, no new screen.
 - **`src/viewer/inject-xyz-into-input.ts`** — `injectXyzIntoInput(content, atomLines, charge,
@@ -143,6 +158,10 @@ Two ways to load a molecule into the editor; both feed the Phase 2.1 preview aut
   limitation as earlier phases); the endpoint itself is `pytest` + `curl` covered.
 
 ## As built (Phase 2.3) — molecule library + Molecules screen
+> **Superseded in part (2.5.0d-1):** `parseChargeMult` was removed from `xyz-format.ts`; New Job's
+> Save-to-Library now reads charge/mult via `sceneFromOrcaInput` and geometry from the scene store.
+> `xyzToAtomLines` / `atomLinesToXyz` were kept (still used by `import-file.ts` + `MoleculesScreen`).
+
 A molecule becomes a persistent object: save it, browse it, and reuse it in a future job.
 New screen + New Job integration; still `useState` + `invoke` only (no Zustand).
 
@@ -378,8 +397,10 @@ The "Import .xyz" button on **both** New Job and Molecules is now **"Import file
 - throws `Error(message)` on any failure; each screen shows it in its existing banner. On error
   the editor/draft is left untouched (the coordinate block is only replaced on success).
 
-Returns ORCA coordinate lines; New Job injects them with `injectXyzIntoInput(…, 0, 1)`, Molecules
-builds a standard xyz via `atomLinesToXyz`. No new screen. Export to other formats is Phase 3.
+Returns ORCA coordinate lines; New Job injected them with `injectXyzIntoInput(…, 0, 1)` *(since
+2.5.0d-2b New Job builds a fragment and adds it via the scene store; `injectXyzIntoInput` was
+removed)*, Molecules builds a standard xyz via `atomLinesToXyz`. No new screen. Export to other
+formats is Phase 3.
 
 ## Status-bar queue control (fix)
 The bottom status bar's Queue indicator + Pause/Resume button (`App.tsx` footer):

@@ -246,7 +246,9 @@ intra-fragment distance is preserved to 1e-9.
 ## Fragment library (`fragment-library.ts`, ADR-008 #9)
 
 `FRAGMENT_LIBRARY` is a curated list of the reagents a reaction study starts from:
-BH₄⁻, H⁻, OH⁻, CN⁻, Cl⁻, H₂O, NH₃, CH₃OH. Each `LibraryFragment` carries `atoms`,
+BH₄⁻, H⁻, OH⁻, CN⁻, Cl⁻, H₂O, NH₃, CH₃OH (the chemistry — why BH₄⁻ is tetrahedral,
+why water is 104.5°, what a hydride nucleophile is — is in
+[`chemistry/reagent-geometry.md`](../chemistry/reagent-geometry.md)). Each `LibraryFragment` carries `atoms`,
 `charge`, a **non-empty `provenance`** (where the geometry came from), and a
 `reference` of ideal internals (bonds/angles). `libraryFragmentToScene(f)`
 instantiates it as a scene fragment with a fresh id, deep-copied atoms,

@@ -48,4 +48,4 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 
 ---
 
-*Page count: 26. Last structural update: 2026-07-28 (+chemistry/reagent-geometry).*
+*Page count: 29. Last structural update: 2026-07-28 (lint: recount — the metric had drifted from 26).*

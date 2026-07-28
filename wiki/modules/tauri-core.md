@@ -40,7 +40,8 @@ Files added: `models/job.rs`, `commands/jobs.rs`. `db.rs` gained migration v2.
   from a row in `Job::COLUMNS` order; `Job::COLUMNS` is the single source of truth for the
   select list.
 - **Commands implemented:** `create_job(title, input_content) -> Job` (generates UUID, inserts
-  as `draft`), `list_jobs() -> Vec<Job>` (newest first, `created_at DESC`),
+  as `draft`) *(signature gained `scene_json: Option<String>` in schema v4 — see "Schema v4"
+  below)*, `list_jobs() -> Vec<Job>` (newest first, `created_at DESC`),
   `get_job(id) -> Job` (`AppError::NotFound` if absent), `update_job_status(id, status)` —
   stamps `started_at` on `running`, `completed_at` on `completed`/`failed`; `NotFound` if the
   id doesn't exist. Each command is a thin lock-and-delegate wrapper over a `*_conn(&Connection)`

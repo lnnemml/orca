@@ -1,6 +1,8 @@
 # Module: Visualization
 
-**Status:** 3Dmol.js component built (Phase 2.1). Trajectories / orbitals / spectra not started.
+**Status:** 3Dmol.js component built (Phase 2.1); **multi-fragment rendering added (2.5.0c)** — one
+model, index-range styling, shared `fragmentColor` palette. Trajectories / orbitals / spectra not
+started.
 
 ## As built (Phase 2.1) — MoleculeViewer + xyz preview
 `npm install 3dmol` (v2.5.5; ships its own TypeScript types under `build/types/`, so no custom
@@ -16,11 +18,13 @@
   opening `* xyz …` marker, collects `element x y z` lines until the closing `*`, returns standard
   xyz (`count\ncomment\ncoords`). Returns `null` for the `* xyzfile … file.xyz` form (external
   file, unreadable on the frontend) and when no coordinates are found. Tolerates blank/`#` lines.
+  *(Deleted in 2.5.0d-1 — this extraction now lives in `src/scene/scene.ts` as `sceneFromOrcaInput`.)*
 
 ### Multi-fragment rendering (2.5.0c)
 `MoleculeViewer` now takes an **optional `scene?: Scene`** alongside `xyzData?: string`; `scene`
-takes precedence. Existing callers (`MoleculesScreen`, `NewJobScreen`) pass only `xyzData` and are
-byte-for-byte unchanged. With no props it renders an empty viewer. Approach (ADR-008 #2/#3):
+takes precedence. At 2.5.0c both callers still passed `xyzData`; **since 2.5.0d-1 `NewJobScreen`
+passes `scene`** (store-driven), while `MoleculesScreen` still passes `xyzData` (stored xyz
+strings). With no props it renders an empty viewer. Approach (ADR-008 #2/#3):
 
 - **One 3Dmol model, styled by atom index range** — not model-per-fragment. Coordinates come from
   `mergeToXyz(scene)`; `fragmentRanges(scene)` (start-inclusive, end-exclusive) gives each fragment's

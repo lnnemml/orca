@@ -1165,3 +1165,44 @@ boundaries transfer onto the optimised coords with no guessing.
 **Verified.** `tsc` clean, `vite build` clean, `vitest` **112** (was 105 → +7), `cargo test` **55**
 (was 53 → +2). Real DB migrated cleanly. **Phase 2.5.0 (Scene/fragment foundation) is complete** —
 next is 2.5.1 (atom picking + measurement).
+
+## [2026-07-28] lint | Wiki health-check after 2.5.0
+
+First lint of the ADR-008 cycle (ADR-008 → 2.5.0d-3). **12 findings: 8 factually wrong, 3 incomplete,
+2 stylistic (named, untouched), 1 needs-decision.** Fixed the first two categories; no code touched,
+no ADR rewritten (amendments only), no structure reorganised.
+
+**Fixed — factually wrong (deleted code described as present).** All in chronicle "As built (Phase
+N)" sections; fixed with concise **supersession markers** (annotate, don't delete — the as-built
+record stays, the reader gets a forward-pointer):
+- `frontend.md` Phase 2.1 / 2.2 / 2.3 / 2.6 — `parse-xyz-from-input.ts`, `inject-xyz-into-input.ts`,
+  `injectXyzIntoInput`, `extractXyzFromInput`, `parseChargeMult`, `previewXyz` all described live;
+  deleted/removed in 2.5.0d-1 (2.6's `injectXyzIntoInput` line fixed inline).
+- `visualization.md` — `parse-xyz-from-input.ts` in the file list (deleted); and the 2.5.0c claim
+  "NewJobScreen passes only `xyzData`" (it passes `scene` since 2.5.0d-1; only Molecules uses xyzData).
+- `tauri-core.md` — Phase 1 `create_job(title, input_content)` signature (gained `scene_json` in v4).
+- `index.md` — "Page count: 26" → **29** (31 files − index − log; the metric had drifted; index
+  lists all 29, no orphans).
+
+**Fixed — incomplete (correct but behind):**
+- `scene.md` fragment-library section → added the missing cross-link to
+  `chemistry/reagent-geometry.md`.
+- `frontend.md` + `visualization.md` Status lines → augmented to state 2.5.0 (scene/fragment) is
+  complete / multi-fragment rendering added.
+
+**Verified consistent — no action.** ADR-008 #4 (canonical format) matches code exactly
+(`padEnd(2)` + `toFixed(8).padStart(14)`). All four deliberate deviations are recorded as decisions
+with reasons, none silent (narrowed consolidation 2.5.0b; d→d-1/2/3; d-2→d-2a/2b; clone amendment).
+ROADMAP: 2.5.0 correctly closed, no drift. No orphan content pages, no dead links.
+
+**Stylistic (named, untouched):** `log.md` absent from `index.md` — intentional (append-only
+chronicle meta-file, like `index.md` itself). `visualization.md:9` "`xyzData: string`" is
+self-corrected 12 lines down by the 2.5.0c subsection.
+
+**Needs author decision (not resolved unilaterally):** ADR-008 **#7** says place a fragment "along
+the axis with the most free space / the freest axis"; the code + `scene.md` place "along the axis
+where the scene is smallest (least extent)." These coincide for the elongated substrate #7 describes,
+but can diverge for a disk-shaped one (smallest-extent = face-on, not the freest approach). Not a
+contradiction for the documented case; the ADR prose is just looser. Option: leave as-is, or add a
+one-line ADR amendment ("freest axis = smallest bounding-box extent"). Left for the author — I won't
+edit #7 or amend without a call.
