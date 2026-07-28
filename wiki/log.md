@@ -793,3 +793,38 @@ Zustand store wrapping React-free pure functions; ORCA `(1)`/`(2)` annotation ou
 immutable updates, serialization, float-tolerant comparison) + tests, zero React. Then 2.5.0b (input builder +
 electron parity) and 2.5.0c (multi-fragment viewer) in parallel; 2.5.0d adds the Zustand store + `scene_json`
 migration. No code this session — ingest only.
+
+## [2026-07-28] session | 2.5.0a: Scene/fragment pure core
+
+Built the pure core of the Scene model (ADR-008) as a new React-free module `src/scene/`
+(`types.ts`, `scene.ts`, `scene.test.ts`). No new npm deps (zustand waits for 2.5.0d; no uuid —
+`crypto.randomUUID()` is built in). See [modules/scene.md](modules/scene.md) for the full contract.
+
+**What's in it.** `Scene` = ordered `SceneFragment[]` + system `multiplicity`. Functions: canonical
+merge (`mergeToAtomLines` / `mergeToXyz`), aggregates (`totalCharge`, `atomCount`, `electronCount`,
+`atomicNumber` H–Kr), index space (`globalIndex`, `fragmentAtomIndices`, `locateAtom`,
+`fragmentRanges`), immutable mutators (`add/remove/rename/setFragmentCharge/setMultiplicity`,
+`replaceFragmentAtoms`), parsing (`parseAtomLines`, `sceneFromAtomLines`), snapshot
+(`serializeScene` / `deserializeScene`, version 1), and the reset primitive `xyzMatchesScene`.
+
+**Invariants chosen and why.**
+- *Index-space invariant:* `replaceFragmentAtoms` throws on any atom-count or element-sequence
+  change. Geometry ops move atoms, never alter composition — that's exactly what keeps every atom
+  index stable across an ASE call / xTB round-trip (the whole reason for one flat merged xyz).
+- *`makeFragmentId()` is the ONLY impure function* (`crypto.randomUUID()`); everything else is
+  deterministic, so tests pass literal ids. `sceneFromAtomLines` takes an optional `opts.id` for the
+  same reason (deterministic "editor" path without stubbing the RNG).
+- *`xyzMatchesScene` is float comparison, never string* (ADR-008 decision 6): parse both sides,
+  compare elements case-insensitively + coords within `tol=1e-6`. Verified true when the same numbers
+  are formatted differently (`0.0` vs `0.00000000`) and at 1e-7 drift; false at 1e-3, on changed
+  element, on changed count, and on null.
+- *`deserializeScene` never throws on user/DB data* — validates shape + version, returns null
+  otherwise. `electronCount` / `replaceFragmentAtoms` / `globalIndex` DO throw (programming errors).
+
+**Nothing diverged from ADR-008.** The one small addition not spelled out in the ADR: `opts.id` on
+`sceneFromAtomLines` (determinism). Known `xyz-format.ts` / `parse-xyz-from-input.ts` overlap left
+untouched and flagged in `scene.ts` + the module page for 2.5.0b to consolidate.
+
+**Verified.** `tsc --noEmit` clean, `vite build` clean, `vitest run` **42 tests** (was 10 → +32 in
+the new `scene.test.ts`). Pure arithmetic — no real ORCA needed. Next: 2.5.0b (Scene ↔ input builder,
+total charge from fragments, electron-parity validation) and 2.5.0c (multi-fragment viewer) in parallel.

@@ -113,7 +113,7 @@ reaction mechanism research. See ADR-007.
 **2.5.0 — Scene / fragment foundation** (≈ 4 sessions, prerequisite for
 everything below — see ADR-008)
 
-- [ ] a. Scene/SceneFragment model: types + pure functions (merge, index
+- [x] a. Scene/SceneFragment model: types + pure functions (merge, index
       mapping, immutable updates, serialization, float-tolerant comparison)
 - [ ] b. Scene ↔ input builder: total charge from fragments, coordinate
       injection, electron-parity validation

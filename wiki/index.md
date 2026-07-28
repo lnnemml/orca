@@ -22,6 +22,7 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 - [execution-backends.md](modules/execution-backends.md) — LocalBackend / SshBackend details
 - [parser.md](modules/parser.md) — result extraction: streaming regex + cclib
 - [visualization.md](modules/visualization.md) — 3Dmol.js integration, cubes, spectra
+- [scene.md](modules/scene.md) — Scene/SceneFragment pure core: merge to flat xyz, index-space invariant, reset-detection primitive (ADR-008)
 - [manual-index.md](modules/manual-index.md) — manual indexing pipeline + keyword map
 
 ## ORCA domain knowledge
@@ -46,4 +47,4 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 
 ---
 
-*Page count: 24. Last structural update: 2026-07-28 (+adr-008).*
+*Page count: 25. Last structural update: 2026-07-28 (+modules/scene).*
