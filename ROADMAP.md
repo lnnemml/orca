@@ -89,15 +89,16 @@ and sees the final energy in the job list — without touching a terminal.
       and **startup reconciliation** of jobs left `running` by a crash. See
       `wiki/modules/execution-backends.md`.
 - [x] Output search (addition beyond the original plan) — **done** (Phase 2.7:
-      `src-tauri/src/output_search.rs` + `src/screens/OutputSearchPanel.tsx`). Streaming
-      line-by-line search over `output.out` (never loads it whole, domain rule #5) with
-      before/after context, a 500-match cap that still reports the true total, and
-      **chemistry-aware presets** (Warnings / Errors / SCF-not-converged / Imaginary modes /
-      Final energies / Geometry convergence / Timings / Basis) verified against real ORCA 6.1
-      output. Collapsible panel above the log console. **Deferred:** "jump to line N in the
-      console" — the console holds only the file's tail, so a jump needs a separate
-      window-around-line mode + a back-to-live control; the in-result context covers the main
-      need for now.
+      `src-tauri/src/output_search.rs`, `commands::jobs::read_job_output_for_viewer`,
+      `src/screens/OutputSearchPanel.tsx` + `OutputViewer.tsx`). Streaming line-by-line search over
+      `output.out` (never loads it whole, domain rule #5), a 500-match cap that still reports the
+      true total, hit column ranges, and **chemistry-aware presets** (Warnings / Errors /
+      SCF-not-converged / Imaginary modes / Final energies / Geometry convergence / Timings / Basis)
+      verified against real ORCA 6.1 output. **In-file navigation:** search reveals hits in a
+      read-only **Monaco viewer** (Browse mode, loaded lazily, absolute line numbers, decorations)
+      with prev/next + `i / N` counter and F3/Enter keybindings; the live streaming console stays on
+      `<pre>`. (Supersedes the initial atomised-excerpt list — jump-to-line is now done, not
+      deferred.)
 
 **Done when:** author pastes a SMILES, gets a 3D structure, configures an optimization in the
 form, runs it, and watches the energy curve descend in real time.

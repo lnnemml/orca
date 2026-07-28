@@ -24,19 +24,25 @@ use crate::commands::jobs::get_job_conn;
 use crate::commands::settings::DbState;
 use crate::error::AppError;
 
-/// Lines of context kept either side of a match.
-const CONTEXT_LINES: usize = 2;
 /// Hard cap on returned matches (the `total` still counts every hit). A search
 /// that hits thousands of lines would otherwise flood the UI and the IPC.
 const MAX_MATCHES: usize = 500;
 
-/// One match: the line itself plus a few lines either side, so the user sees
-/// what the hit means without leaving the results list.
+/// One match: the line, its file line number, the hit's column range (for the
+/// editor viewer's decorations), and optional surrounding context.
 #[derive(Clone, Debug, Serialize)]
 pub struct OutputMatch {
     /// 1-indexed line number in output.out.
     pub line_no: usize,
     pub line: String,
+    /// 1-indexed character range of the hit within `line`, for precise editor
+    /// decoration. `col_end` is exclusive (Monaco range semantics). ORCA output
+    /// is ASCII, so char index == UTF-16 offset (which is what Monaco wants);
+    /// non-ASCII would need a conversion.
+    pub col_start: usize,
+    pub col_end: usize,
+    /// Populated only when `SearchOptions.context_lines > 0` (the editor viewer
+    /// navigates in-file and passes 0).
     pub context_before: Vec<String>,
     pub context_after: Vec<String>,
 }
@@ -67,6 +73,9 @@ pub struct SearchOptions {
     /// Treat `query` as a regular expression instead of a literal substring.
     pub regex: bool,
     pub case_sensitive: bool,
+    /// Lines of context to collect either side of each match. `0` collects none
+    /// (the editor viewer navigates in-file and doesn't need excerpts).
+    pub context_lines: usize,
 }
 
 /// A compiled matcher; the case-insensitive literal lowercases its needle once
@@ -92,27 +101,52 @@ impl Matcher {
         }
     }
 
-    fn is_match(&self, line: &str) -> bool {
+    /// Find the first match in `line`, returning its 1-indexed character column
+    /// range `(col_start, col_end)` where `col_end` is exclusive.
+    fn find(&self, line: &str) -> Option<(usize, usize)> {
         match self {
-            Matcher::Regex(re) => re.is_match(line),
-            Matcher::LiteralCaseSensitive(n) => line.contains(n.as_str()),
-            Matcher::LiteralCaseInsensitive(n) => line.to_lowercase().contains(n.as_str()),
+            Matcher::Regex(re) => {
+                let m = re.find(line)?;
+                Some(byte_range_to_cols(line, m.start(), m.end()))
+            }
+            Matcher::LiteralCaseSensitive(n) => {
+                let off = line.find(n.as_str())?;
+                Some(byte_range_to_cols(line, off, off + n.len()))
+            }
+            Matcher::LiteralCaseInsensitive(needle) => {
+                // Search the lowercased line; for ASCII (all ORCA output) char
+                // positions match the original 1:1.
+                let low = line.to_lowercase();
+                let off = low.find(needle.as_str())?;
+                let col_start = low[..off].chars().count() + 1;
+                Some((col_start, col_start + needle.chars().count()))
+            }
         }
     }
 }
 
-/// Search `path` line by line, returning matches with surrounding context.
-/// Streams the file — never loads it whole (domain rule #5).
+/// Convert a byte range in `line` to a 1-indexed, exclusive-end character column
+/// range.
+fn byte_range_to_cols(line: &str, start: usize, end: usize) -> (usize, usize) {
+    let col_start = line[..start].chars().count() + 1;
+    let len = line[start..end].chars().count();
+    (col_start, col_start + len)
+}
+
+/// Search `path` line by line, returning matches (with column ranges, and
+/// optional surrounding context when `opts.context_lines > 0`). Streams the
+/// file — never loads it whole (domain rule #5).
 pub fn search_output(path: &Path, opts: &SearchOptions) -> Result<SearchResult, AppError> {
     if opts.query.is_empty() {
         return Ok(SearchResult::empty());
     }
     let matcher = Matcher::build(opts)?;
+    let ctx = opts.context_lines;
 
     let reader = BufReader::new(File::open(path)?);
 
-    // The previous `CONTEXT_LINES` lines (context_before for the next match).
-    let mut before: VecDeque<String> = VecDeque::with_capacity(CONTEXT_LINES);
+    // The previous `ctx` lines (context_before for the next match).
+    let mut before: VecDeque<String> = VecDeque::with_capacity(ctx);
     // Matches whose trailing context is still being filled.
     let mut pending: Vec<OutputMatch> = Vec::new();
     let mut matches: Vec<OutputMatch> = Vec::new();
@@ -126,15 +160,15 @@ pub fn search_output(path: &Path, opts: &SearchOptions) -> Result<SearchResult, 
 
         // 1. This line is trailing context for any still-pending match.
         for m in pending.iter_mut() {
-            if m.context_after.len() < CONTEXT_LINES {
+            if m.context_after.len() < ctx {
                 m.context_after.push(line.clone());
             }
         }
-        // 2. Finalize matches whose trailing context is now complete. They fill
-        //    in line order, so `matches` stays sorted by line_no.
+        // 2. Finalize matches whose trailing context is now complete (immediate
+        //    when ctx == 0). They fill in line order, so `matches` stays sorted.
         let mut i = 0;
         while i < pending.len() {
-            if pending[i].context_after.len() >= CONTEXT_LINES {
+            if pending[i].context_after.len() >= ctx {
                 matches.push(pending.remove(i));
             } else {
                 i += 1;
@@ -142,11 +176,13 @@ pub fn search_output(path: &Path, opts: &SearchOptions) -> Result<SearchResult, 
         }
         // 3. Is this line itself a match? (context_after starts empty and fills
         //    on subsequent iterations — the match line never includes itself.)
-        if matcher.is_match(&line) {
+        if let Some((col_start, col_end)) = matcher.find(&line) {
             if total < MAX_MATCHES {
                 pending.push(OutputMatch {
                     line_no,
                     line: line.clone(),
+                    col_start,
+                    col_end,
                     context_before: before.iter().cloned().collect(),
                     context_after: Vec::new(),
                 });
@@ -154,11 +190,13 @@ pub fn search_output(path: &Path, opts: &SearchOptions) -> Result<SearchResult, 
             // Count every hit even past the cap, so `total` is truthful.
             total += 1;
         }
-        // 4. Slide the ring buffer.
-        if before.len() == CONTEXT_LINES {
-            before.pop_front();
+        // 4. Slide the ring buffer (skip entirely when no context is wanted).
+        if ctx > 0 {
+            if before.len() == ctx {
+                before.pop_front();
+            }
+            before.push_back(line);
         }
-        before.push_back(line);
     }
 
     // EOF: matches near the end never filled their trailing context — flush them
@@ -334,11 +372,17 @@ mod tests {
         path
     }
 
+    /// Default options: no context (what the viewer uses).
     fn opts(query: &str, regex: bool, case_sensitive: bool) -> SearchOptions {
+        opts_ctx(query, regex, case_sensitive, 0)
+    }
+
+    fn opts_ctx(query: &str, regex: bool, case_sensitive: bool, context_lines: usize) -> SearchOptions {
         SearchOptions {
             query: query.to_string(),
             regex,
             case_sensitive,
+            context_lines,
         }
     }
 
@@ -347,7 +391,7 @@ mod tests {
         let content: String = (1..=20).map(|i| format!("line {i}\n")).collect();
         let path = temp_file(&content);
 
-        let r = search_output(&path, &opts("line 10", false, false)).unwrap();
+        let r = search_output(&path, &opts_ctx("line 10", false, false, 2)).unwrap();
         assert_eq!(r.total, 1);
         assert_eq!(r.matches.len(), 1);
         let m = &r.matches[0];
@@ -367,13 +411,13 @@ mod tests {
         let path = temp_file(&content);
 
         // First line: no `before` context.
-        let first = search_output(&path, &opts("row 1", false, false)).unwrap();
+        let first = search_output(&path, &opts_ctx("row 1", false, false, 2)).unwrap();
         assert_eq!(first.matches[0].line_no, 1);
         assert!(first.matches[0].context_before.is_empty());
         assert_eq!(first.matches[0].context_after, vec!["row 2", "row 3"]);
 
         // Last line: no `after` context, and it doesn't panic on EOF flush.
-        let last = search_output(&path, &opts("row 5", false, false)).unwrap();
+        let last = search_output(&path, &opts_ctx("row 5", false, false, 2)).unwrap();
         assert_eq!(last.matches[0].line_no, 5);
         assert_eq!(last.matches[0].context_before, vec!["row 3", "row 4"]);
         assert!(last.matches[0].context_after.is_empty());
@@ -449,5 +493,37 @@ mod tests {
         assert_eq!(r.matches.len(), 2);
         // Each hit line actually contains the banner.
         assert!(r.matches.iter().all(|m| m.line.contains("Geometry convergence")));
+    }
+
+    #[test]
+    fn reports_match_columns() {
+        let path = temp_file("  FINAL SINGLE POINT ENERGY  -154.8\n");
+        let r = search_output(&path, &opts("SINGLE", false, false)).unwrap();
+        assert_eq!(r.matches.len(), 1);
+        let m = &r.matches[0];
+        // "  FINAL " is 8 chars, so SINGLE starts at 1-indexed column 9.
+        assert_eq!(m.col_start, 9);
+        assert_eq!(m.col_end, 15); // 9 + len("SINGLE")
+        // The reported column range slices back to exactly the query.
+        let hit: String = m
+            .line
+            .chars()
+            .skip(m.col_start - 1)
+            .take(m.col_end - m.col_start)
+            .collect();
+        assert_eq!(hit, "SINGLE");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn regex_match_columns_point_at_first_hit() {
+        let path = temp_file("xx ERROR yy aborting zz\n");
+        let r = search_output(&path, &opts("ERROR|aborting", true, false)).unwrap();
+        assert_eq!(r.matches.len(), 1);
+        let m = &r.matches[0];
+        // First regex hit is "ERROR" at column 4.
+        assert_eq!(m.col_start, 4);
+        assert_eq!(m.col_end, 9);
+        std::fs::remove_file(&path).ok();
     }
 }

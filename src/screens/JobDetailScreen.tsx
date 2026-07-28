@@ -7,6 +7,15 @@ import { formatEnergy, formatWallTime } from "../format";
 import { ConvergenceDashboard } from "../convergence/ConvergenceDashboard";
 import type { ConvergenceEvent, ConvergencePayload } from "../convergence/types";
 import { OutputSearchPanel } from "./OutputSearchPanel";
+import { OutputViewer, type OutputViewerHandle } from "./OutputViewer";
+
+/** Mirrors `commands::jobs::OutputContent`. */
+interface OutputContent {
+  content: string;
+  first_line_no: number;
+  total_lines: number;
+  truncated: boolean;
+}
 
 interface LogPayload {
   job_id: string;
@@ -38,6 +47,18 @@ export function JobDetailScreen({ jobId, autoRun, onBack }: JobDetailScreenProps
   const [dashOpen, setDashOpen] = useState<boolean | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  // Output area: "live" streams the <pre> console; "browse" shows the Monaco
+  // file viewer (loaded lazily on first entry).
+  const [mode, setMode] = useState<"live" | "browse">("live");
+  const [viewerContent, setViewerContent] = useState<OutputContent | null>(null);
+  const [loadingViewer, setLoadingViewer] = useState(false);
+  const [viewerApi, setViewerApi] = useState<OutputViewerHandle | null>(null);
+  const [snapshotAt, setSnapshotAt] = useState<string | null>(null);
+  const [resetToken, setResetToken] = useState(0);
+  const navRef = useRef<{ next: () => void; prev: () => void }>({
+    next: () => {},
+    prev: () => {},
+  });
   const preRef = useRef<HTMLPreElement>(null);
   const didSubmit = useRef(false);
 
@@ -140,11 +161,54 @@ export function JobDetailScreen({ jobId, autoRun, onBack }: JobDetailScreenProps
     };
   }, [jobId, autoRun, loadJob]);
 
-  // Auto-scroll the console to the bottom as new lines arrive.
+  // Auto-scroll the live console to the bottom as new lines arrive (and when
+  // switching back to Live).
   useEffect(() => {
+    if (mode !== "live") return;
     const el = preRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [lines]);
+  }, [lines, mode]);
+
+  // Load the viewer's content (last MAX_VIEWER_LINES) and stamp the snapshot.
+  const loadViewer = useCallback(async () => {
+    const c = await invoke<OutputContent>("read_job_output_for_viewer", {
+      id: jobId,
+    });
+    setViewerContent(c);
+    setSnapshotAt(new Date().toLocaleTimeString());
+  }, [jobId]);
+
+  // Enter Browse — loading the file lazily on the first entry only.
+  const enterBrowse = useCallback(async () => {
+    try {
+      if (!viewerContent) {
+        setLoadingViewer(true);
+        await loadViewer();
+      }
+      setMode("browse");
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setLoadingViewer(false);
+    }
+  }, [viewerContent, loadViewer]);
+
+  // Re-read the file (it grew while browsing a running job) and clear stale hits.
+  const reloadViewer = useCallback(async () => {
+    setLoadingViewer(true);
+    try {
+      await loadViewer();
+      setResetToken((t) => t + 1);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setLoadingViewer(false);
+    }
+  }, [loadViewer]);
+
+  // Stable callbacks so the viewer's F3 keybindings reach the search panel.
+  const onFindNext = useCallback(() => navRef.current.next(), []);
+  const onFindPrev = useCallback(() => navRef.current.prev(), []);
 
   const openFolder = async () => {
     try {
@@ -262,20 +326,82 @@ export function JobDetailScreen({ jobId, autoRun, onBack }: JobDetailScreenProps
             <span className="builder-caret">{searchOpen ? "▾" : "▸"}</span>
             Search output
             <span className="muted" style={{ marginLeft: 8 }}>
-              find warnings, energies, errors… without opening the file
+              find warnings, energies, errors… and jump to them in the file
             </span>
           </button>
           {searchOpen ? (
             <div className="builder-body">
-              <OutputSearchPanel jobId={jobId} />
+              <OutputSearchPanel
+                jobId={jobId}
+                viewer={viewerApi}
+                onSearchHit={enterBrowse}
+                navRef={navRef}
+                resetToken={resetToken}
+              />
             </div>
           ) : null}
         </div>
       ) : null}
 
-      <pre className="log-console" ref={preRef}>
+      {job && job.status !== "draft" ? (
+        <div className="output-modebar">
+          <div className="mode-toggle">
+            <button
+              className={"mode-btn" + (mode === "live" ? " active" : "")}
+              onClick={() => setMode("live")}
+            >
+              Live log
+            </button>
+            <button
+              className={"mode-btn" + (mode === "browse" ? " active" : "")}
+              onClick={enterBrowse}
+            >
+              {loadingViewer ? "Loading…" : "Browse file"}
+            </button>
+          </div>
+          {mode === "browse" && viewerContent ? (
+            <div className="row" style={{ gap: 10 }}>
+              {isActive ? (
+                <button
+                  className="btn btn-sm"
+                  onClick={reloadViewer}
+                  disabled={loadingViewer}
+                >
+                  Reload
+                </button>
+              ) : null}
+              {snapshotAt ? (
+                <span className="muted">snapshot at {snapshotAt}</span>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      <pre
+        className="log-console"
+        ref={preRef}
+        style={{ display: mode === "live" ? "block" : "none" }}
+      >
         {lines.length ? lines.join("\n") : "Waiting for ORCA output…"}
       </pre>
+
+      {viewerContent ? (
+        <div
+          className="output-viewer-wrap"
+          style={{ display: mode === "browse" ? "flex" : "none" }}
+        >
+          <OutputViewer
+            ref={setViewerApi}
+            content={viewerContent.content}
+            firstLineNo={viewerContent.first_line_no}
+            truncated={viewerContent.truncated}
+            totalLines={viewerContent.total_lines}
+            onFindNext={onFindNext}
+            onFindPrev={onFindPrev}
+          />
+        </div>
+      ) : null}
     </div>
   );
 }

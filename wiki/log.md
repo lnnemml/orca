@@ -727,3 +727,41 @@ same limitation as prior phases; the search engine + presets are real-data-verif
 path is fully typed.
 
 **Phase 2 fully closed** (2.1–2.7 + queue/pinning/cancel). Next: Phase 2.5 geometry editor.
+
+## [2026-07-28] session | output search: in-file navigation instead of excerpts
+
+Reworked output search. The prior design showed atomised 5-line excerpts — the author tried it and
+it was awkward. Replaced with real in-file navigation: search reveals the first hit in an actual
+file view, prev/next step between hits, a `3 / 12` counter shows position. My earlier "don't jump
+into the console" call was wrong; the right path wasn't windowing the `<pre>`, it was a **separate
+Monaco file viewer** (already a dependency: virtualized rendering, line numbers, `revealLineInCenter`,
+decorations).
+
+**Rust.** New `read_job_output_for_viewer` (`commands/jobs.rs`): streams `output.out` into a
+`VecDeque` capped at `MAX_VIEWER_LINES = 300_000` (≈30 MB), keeping the **tail** and reporting
+`first_line_no` so the viewer shows absolute line numbers even when truncated — never loads a
+hundreds-of-MB file whole (domain rule #5). `output_search.rs`: `OutputMatch` gains `col_start`/
+`col_end` (1-indexed char range, exclusive end — Monaco semantics) via a matcher that now returns
+the first hit's position; `SearchOptions` gains `context_lines` (viewer passes `0` → drops ~2500
+excerpt lines from the payload at 500 hits). New tests `reports_match_columns` +
+`regex_match_columns_point_at_first_hit`; existing context tests pass `context_lines: 2`.
+
+**Frontend — two output modes on Job detail.** Live = the existing `<pre>` console (kept for
+streaming; appending to a `<pre>` beats a Monaco model, autoscroll already tuned). Browse =
+`OutputViewer` (Monaco, read-only, plaintext, `wordWrap:off`, minimap, absolute `lineNumbers`).
+`OutputViewer` (forwardRef + useImperativeHandle) exposes `revealFileLine`/`setHits` backed by
+`createDecorationsCollection()` (`.hit-all` + current `.hit-current`/`.hit-current-line`); calls
+before Monaco mounts are buffered and flushed on mount. `OutputSearchPanel` rewritten: box +
+regex/Aa + preset chips kept, excerpt list gone; a search runs with `context_lines:0`, auto-switches
+to Browse, and drives the viewer via effects keyed on the viewer handle (no mount-timing race).
+Prev/Next cyclic, `i+1 / total` counter (`/ 500 of 637` when truncated) + current line; Enter =
+search / next-if-unchanged, Shift+Enter = prev, F3/Shift+F3 in panel or viewer (Monaco `addCommand`
+→ `navRef`). **Lazy:** `read_job_output_for_viewer` only on first Browse entry, not on opening a
+job; running jobs get a `Reload` + `snapshot at HH:MM:SS` (Reload bumps a `resetToken` that clears
+stale hits).
+
+**Verified.** `cargo test` 53 + 2 ignored (11 output_search incl. the 2 new column tests). `tsc` +
+`npm test` (10) + `vite build` clean. Column math unit-tested; streaming search real-data-verified
+(431 KB / ~8600 lines in ~3 ms). The in-GUI legs (reveal/decorate, prev/next, mode toggle, Reload,
+large-file scroll) need the real Tauri window — not headless-drivable, same limitation as prior
+phases; the data path is fully typed and Monaco is the already-proven editor engine.

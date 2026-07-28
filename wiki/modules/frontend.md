@@ -316,31 +316,47 @@ The bottom status bar's Queue indicator + Pause/Resume button (`App.tsx` footer)
   reads **`queued (paused)`** with a "Queue is paused" tooltip while paused — so a job that isn't
   moving shows why. Backend (`pause_queue`/`resume_queue`/`is_queue_paused`) untouched.
 
-## As built (Phase 2.7) — output search panel
-`src/screens/OutputSearchPanel.tsx` — a collapsible search over `output.out` on Job detail, so
-finding something in a tens-of-MB output no longer means opening an external editor.
+## As built (Phase 2.7) — output search: in-file navigation on Monaco
+Job detail now has **two output modes** and search navigates *inside the file* like any editor
+(reveal first hit, prev/next, `3 / 12` counter) instead of showing atomised 5-line excerpts. The
+first excerpt-list design (superseded) tested badly — the author wanted real navigation.
 
-- **Placement:** a `.input-builder` accordion (same `builder-toggle`/`builder-caret` pattern as the
-  convergence dashboard) **above** the log console, collapsed by default, shown for any non-draft
-  job (`OutputSearchPanel` gets `jobId`).
-- **Controls:** a search box (Enter runs it), `regex` and `Aa` (case-sensitive) checkboxes (both
-  off by default), and a Search button that shows `Searching…`. **No search-as-you-type** — on a
-  50 MB file that would kill the UI; only Enter / button / preset click triggers a search.
-- **Preset chips** (`get_search_presets`): Warnings · Errors · SCF not converged · Imaginary
-  modes · Final energies · … Clicking a chip fills the box, sets its `regex`/`case_sensitive`
-  flags (so the toggles visibly reflect what runs — e.g. Errors flips `Aa` on), and searches at
-  once. `title` = the preset's description (the learning aid).
-- **Results:** header (`12 matches`, or `500 of 637 matches (showing first 500)` when truncated);
-  a bounded, own-scrolling (`max-height 300px`) monospace `white-space: pre` list — each hit is a
-  line-number gutter + the line, the match line highlighted (`.search-hit` bg) with the matched
-  substring wrapped in `.hl`, surrounded by muted context lines (`.search-ctx`). Empty search →
-  `No matches`. Highlight: literal by position; regex highlights the first match via a JS `RegExp`
-  (falls back to no highlight if the pattern isn't valid JS regex).
-- **Deliberately not done:** jumping the console to the matched line. The console holds only the
-  file's tail, so a jump would need a separate "window around line N" mode + a "back to live"
-  control. The in-result context covers the main need; jump-to-line is deferred (noted in ROADMAP).
-- CSS: `.output-search`, `.search-presets`, `.chip`, `.search-results`, `.search-hit`,
-  `.search-ctx`, `.ln`, `.hl` in `app.css`.
+- **Two modes (`JobDetailScreen`):**
+  - **Live** (default): the existing `<pre className="log-console">` — kept for streaming. Appending
+    50 lines / 100 ms to a `<pre>` is cheaper than to a Monaco model, and its autoscroll is already
+    tuned. **Not** replaced by Monaco.
+  - **Browse:** `OutputViewer` (Monaco, read-only). Toggled by a `Live log | Browse file` control
+    over the output area; any successful search with hits auto-switches to Browse.
+  - Both stay mounted after the first Browse entry; switched via `display` so Monaco isn't rebuilt.
+  - **Lazy load:** `read_job_output_for_viewer` is called only on the **first** Browse entry (not on
+    opening a job), so opening a finished job doesn't pull tens of MB. For a running job, Browse
+    shows a `Reload` button + `snapshot at HH:MM:SS`.
+- **`OutputViewer.tsx`** (`@monaco-editor/react`, offline via the shared `editor/monaco-setup`):
+  `plaintext` (no ORCA grammar — that's for `.inp`), `readOnly`, `wordWrap:"off"` (ORCA output is
+  columnar), minimap on (helps navigate a long file). **Absolute line numbers when truncated:**
+  `lineNumbers: n => n + firstLineNo - 1`, so numbers match the file (and the hit list) even when
+  only the tail is loaded. `forwardRef` + `useImperativeHandle` exposes
+  `revealFileLine(fileLineNo, colStart?, colEnd?)` and `setHits([])`. Mapping
+  `monacoLine = fileLineNo - firstLineNo + 1`; `< 1` (a hit above the loaded tail window) returns
+  `false` and the panel notes "above the loaded window". Decorations via
+  `createDecorationsCollection()` (not the deprecated `deltaDecorations`): one collection for all
+  hits (`.hit-all`), one for the current hit (`.hit-current` inline + whole-line `.hit-current-line`).
+  Calls made before Monaco's `onMount` are **buffered** and flushed on mount (the viewer mounts a
+  tick after the handle is first requested).
+- **`OutputSearchPanel.tsx`** (rewritten): keeps the box, `regex`/`Aa`, and preset chips; the excerpt
+  list is gone. Search runs with `context_lines: 0` (no excerpt payload). On hits it stores the hit
+  list, triggers Browse, and drives the viewer via effects keyed on the viewer handle — so hits
+  apply once the viewer becomes available (no mount-timing race). `Prev`/`Next` step the index
+  **cyclically**; a `i+1 / total` counter (`i+1 / 500 of 637` when truncated) plus the current
+  `line N`. **Keyboard:** `Enter` searches, or steps to the next hit if the query is unchanged;
+  `Shift+Enter` previous; `F3`/`Shift+F3` next/prev whether focus is in the panel (container
+  `onKeyDown`) or in the viewer (Monaco `addCommand`, wired back through a `navRef`).
+- **Coordination:** `JobDetailScreen` owns `mode`, the lazily-loaded `viewerContent`, the viewer
+  handle (`viewerApi`, set via a callback `ref`), and a `navRef` the panel registers prev/next into;
+  `resetToken` (bumped on Reload) clears stale hits since line numbers can shift.
+- CSS: `.output-modebar`/`.mode-toggle`/`.mode-btn`, `.output-viewer*`, `.search-nav`, and the
+  Monaco decoration classes `.hit-all`/`.hit-current`/`.hit-current-line` in `app.css` (the old
+  `.search-results`/`.search-hit`/`.search-ctx`/`.hl` were removed).
 
 ## Resolved from step 3
 The earlier "no backfill of `output.out`" gap is closed by `read_job_output` + the detail

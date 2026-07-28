@@ -4,7 +4,11 @@
 //! delegate to the `*_conn` helpers, which take a `&Connection` directly so the
 //! state-machine logic is unit-testable without a running Tauri app.
 
+use std::collections::VecDeque;
+use std::io::{BufRead, BufReader};
+
 use rusqlite::{params, Connection, OptionalExtension};
+use serde::Serialize;
 use tauri::State;
 use uuid::Uuid;
 
@@ -198,6 +202,76 @@ pub fn read_job_output(
     }
     let max_lines = tail_lines.map_or(OUTPUT_LINE_CAP, |n| n.min(OUTPUT_LINE_CAP));
     Ok(crate::local_backend::read_tail_lines(&out_path, max_lines)?)
+}
+
+/// Max lines handed to the Monaco output viewer. An ORCA output can reach
+/// hundreds of MB; neither the IPC payload nor the editor model should carry
+/// that. ~300k lines ≈ 30 MB — a comfortable ceiling for the viewer.
+const MAX_VIEWER_LINES: usize = 300_000;
+
+/// Full output for the Monaco-based viewer. Capped by line count: when capped we
+/// keep the **tail** (that's where the interesting end of a run is) and report
+/// `first_line_no` so the viewer can display absolute file line numbers and map
+/// search hits correctly.
+#[derive(Serialize)]
+pub struct OutputContent {
+    pub content: String,
+    /// 1-indexed file line number of the first line in `content`.
+    /// `> 1` exactly when `truncated`.
+    pub first_line_no: usize,
+    pub total_lines: usize,
+    pub truncated: bool,
+}
+
+/// Read a job's `output.out` for the Monaco viewer, capped to the last
+/// [`MAX_VIEWER_LINES`] lines. Streams the file line by line (never loads a
+/// hundreds-of-MB file whole — domain rule #5), keeping only the tail window in
+/// memory. Empty content (not an error) when there's no dir or output yet.
+#[tauri::command]
+pub fn read_job_output_for_viewer(
+    db: State<'_, DbState>,
+    id: String,
+) -> Result<OutputContent, AppError> {
+    let empty = OutputContent {
+        content: String::new(),
+        first_line_no: 1,
+        total_lines: 0,
+        truncated: false,
+    };
+
+    let job_dir = {
+        let conn = db.lock()?;
+        get_job_conn(&conn, &id)?.job_dir
+    };
+    let Some(job_dir) = job_dir else {
+        return Ok(empty);
+    };
+    let out_path = std::path::Path::new(&job_dir).join("output.out");
+    if !out_path.exists() {
+        return Ok(empty);
+    }
+
+    let reader = BufReader::new(std::fs::File::open(&out_path)?);
+    let mut kept: VecDeque<String> = VecDeque::new();
+    let mut total_lines = 0usize;
+    for line in reader.lines() {
+        let line = line?;
+        total_lines += 1;
+        if kept.len() == MAX_VIEWER_LINES {
+            kept.pop_front();
+        }
+        kept.push_back(line);
+    }
+
+    let first_line_no = total_lines.saturating_sub(kept.len()) + 1;
+    let truncated = total_lines > kept.len();
+    let content = kept.into_iter().collect::<Vec<_>>().join("\n");
+    Ok(OutputContent {
+        content,
+        first_line_no,
+        total_lines,
+        truncated,
+    })
 }
 
 /// Backfill the convergence dashboard: replay a job's `output.out` through the

@@ -763,58 +763,80 @@ body {
   border-color: var(--accent);
 }
 
+/* Match navigation (prev/next + counter) — replaces the old excerpt list; the
+   results now live in the Monaco viewer below. */
+.search-nav {
+  gap: 10px;
+  align-items: center;
+  font-size: 12px;
+}
 .search-count {
   font-size: 12px;
+  color: var(--text);
 }
 
-/* Results: bounded, own scroll, monospace, no wrap (ORCA lines get long). */
-.search-results {
-  max-height: 300px;
-  overflow: auto;
-  background: #0d0f13;
+/* --- Output area: Live/Browse toggle + Monaco viewer ------------------ */
+
+.output-modebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.mode-toggle {
+  display: inline-flex;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 6px 0;
-  font-family: var(--mono);
+  overflow: hidden;
+}
+.mode-btn {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  padding: 4px 12px;
   font-size: 12px;
-  line-height: 1.5;
-  white-space: pre;
+  cursor: pointer;
 }
-
-.search-hit-block {
-  border-bottom: 1px solid var(--border);
-  padding: 2px 0;
-}
-.search-hit-block:last-child {
-  border-bottom: none;
-}
-
-.search-ctx {
-  color: var(--muted-2);
-  padding: 0 10px;
-}
-
-.search-hit {
+.mode-btn.active {
   background: var(--panel-2);
   color: var(--text);
-  padding: 0 10px;
 }
 
-/* Line-number gutter. */
-.ln {
-  display: inline-block;
-  min-width: 5ch;
-  margin-right: 12px;
-  text-align: right;
-  color: var(--muted-2);
-  user-select: none;
+/* The viewer fills the remaining height, like the log console it replaces. */
+.output-viewer-wrap {
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+}
+.output-viewer {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.output-viewer-editor {
+  flex: 1;
+  min-height: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.viewer-warn {
+  font-size: 12px;
+  padding: 4px 2px;
 }
 
-/* The matched substring. */
-.hl {
-  background: color-mix(in srgb, var(--accent) 35%, transparent);
-  color: var(--text);
-  border-radius: 2px;
+/* Search hits inside the output viewer. Monaco applies these to its own
+   decoration spans, so they must be plain colour/background rules. */
+.hit-all {
+  background: rgba(79, 140, 255, 0.25);
+}
+.hit-current {
+  background: rgba(234, 179, 8, 0.45);
+}
+.hit-current-line {
+  background: rgba(234, 179, 8, 0.1);
 }
 
 /* --- Molecules screen ------------------------------------------------- */

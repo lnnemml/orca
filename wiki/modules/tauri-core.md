@@ -129,26 +129,36 @@ in `wiki/modules/execution-backends.md`); the core-facing surface:
   DB, then spawns a thread that calls `try_start_next` to resume any `queued` jobs.
 - **Dependency:** `libc = "0.2"` (Unix-only target dep) for `killpg`.
 
-## As built (Phase 2.7) — streaming output search
-New file: `output_search.rs`. Two commands, registered in `lib.rs`.
+## As built (Phase 2.7) — streaming output search + viewer content
+New file: `output_search.rs`; plus `read_job_output_for_viewer` in `commands/jobs.rs`. All
+registered in `lib.rs`.
 
 - **`search_job_output(id, opts: SearchOptions) -> SearchResult`** — search a job's `output.out`
   for `opts.query` (`regex` / `case_sensitive` flags). Empty result (not an error) when the job
   has no dir or output yet.
 - **`get_search_presets() -> Vec<SearchPresetInfo>`** — the curated ORCA search chips.
-- **Streaming algorithm (domain rule #5 — never the whole file in memory):** `search_output`
-  reads line by line through a `BufReader`, holding only a `VecDeque` ring buffer of the last
-  `CONTEXT_LINES` (2) lines, the ≤2 matches still awaiting trailing context, and the capped result
-  list. Each match carries `context_before`/`context_after` (2 lines each). Single pass: the
-  trailing-context requirement means a match is *pending* until the next 2 lines arrive, then moved
-  to results in line order; leftovers flush at EOF (handles matches at the file's end without
-  panicking). Measured: **431 KB / ~8600 lines searched in ~3 ms**.
+- **`read_job_output_for_viewer(id) -> OutputContent { content, first_line_no, total_lines,
+  truncated }`** — the file for the Monaco viewer. **Capped to the last `MAX_VIEWER_LINES`
+  (300 000 ≈ 30 MB)**: streams line by line into a `VecDeque` that evicts the oldest past the cap,
+  so a hundreds-of-MB file is never held whole (domain rule #5). We keep the **tail** (where a run's
+  interesting end is) and report `first_line_no` (`> 1` iff truncated) so the viewer shows absolute
+  file line numbers and search hits still map. Empty (not an error) when there's no dir/output.
+- **Streaming search (domain rule #5):** `search_output` reads line by line through a `BufReader`,
+  holding only an optional context ring buffer, the matches still awaiting trailing context, and
+  the capped result list. Each `OutputMatch` carries `line_no`, the matched `line`, and the hit's
+  **1-indexed char column range `col_start`/`col_end`** (exclusive end — Monaco range semantics) for
+  precise editor decoration. Context (`context_before`/`context_after`) is **opt-in** via
+  `SearchOptions.context_lines` (the viewer passes `0`, saving ~2500 lines of payload at 500 hits;
+  the old excerpt UI used 2). Single pass, matches finalized in line order, leftovers flushed at
+  EOF. Measured: **431 KB / ~8600 lines searched in ~3 ms**.
 - **`MAX_MATCHES = 500`** caps returned matches, but `total` counts every hit (so the UI can say
   "500 of 637") and `truncated = total > matches.len()`.
-- **Matcher:** regex via `RegexBuilder.case_insensitive(!case_sensitive)` (invalid pattern →
-  `AppError::Backend("invalid regular expression: …")`); literal `contains` otherwise, with the
-  needle lowercased **once** up front for the case-insensitive path (not per line). Empty query →
-  empty result, not an error.
+- **Matcher** now returns the match's char column range (not just a bool): regex via
+  `RegexBuilder.case_insensitive(!case_sensitive)` (invalid pattern →
+  `AppError::Backend("invalid regular expression: …")`) → first `Match` byte range → char columns;
+  literal `find` otherwise, with the needle lowercased **once** up front for the case-insensitive
+  path (positions taken in the lowercased line — 1:1 for ASCII, which all ORCA output is). Empty
+  query → empty result, not an error.
 - **Presets (`SEARCH_PRESETS`)** — `id/label/query/regex/case_sensitive/description`. Wording
   **verified against real ORCA 6.1 output** (see `orca/output-files.md`). Two correctness points
   worth remembering:
@@ -160,9 +170,10 @@ New file: `output_search.rs`. Two commands, registered in `lib.rs`.
   - **`imaginary` = literal `imaginary mode`**, NOT bare `imaginary` (which hits
     `imaginary perturbations`, a CPHF count present in every Freq run). Confirmed it matches
     ORCA's real `***imaginary mode***` marker on a saddle-point output.
-- **9 unit tests** — literal+context, file-boundary context, case sensitivity, regex, invalid
-  regex → error, cap-but-count (600 hits → 500/600/truncated), empty query, and one over the real
-  `opt_output_excerpt.txt` fixture (`Geometry convergence` → 2).
+- **11 unit tests** — literal+context (`context_lines: 2`), file-boundary context, case
+  sensitivity, regex, invalid regex → error, cap-but-count (600 hits → 500/600/truncated), empty
+  query, the real `opt_output_excerpt.txt` fixture (`Geometry convergence` → 2), and **column
+  reporting** (`reports_match_columns`, `regex_match_columns_point_at_first_hit`).
 
 ## Deviation note
 `dirs` crate used for the data dir (per task spec) rather than Tauri's `app.path()` API —
