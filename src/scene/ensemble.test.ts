@@ -4,6 +4,7 @@ import {
   conformerMatchesFragment,
   deltaEKcal,
   goatInputForFragment,
+  isGoatInput,
   parseEnsemble,
   planConformerApply,
   type Conformer,
@@ -191,5 +192,37 @@ describe("goatInputForFragment", () => {
     expect(inp.trimEnd().endsWith("*")).toBe(true);
     // 2 atom rows between header and closing *.
     expect(inp.match(/^[A-Z][a-z]?\s/gm)).toHaveLength(2);
+  });
+});
+
+describe("isGoatInput", () => {
+  it("is true when a keyword line carries the GOAT token", () => {
+    expect(isGoatInput("! XTB GOAT\n* xyz 0 1\nH 0 0 0\n*\n")).toBe(true);
+    expect(isGoatInput(goatInputForFragment({
+      id: "x", name: "x", charge: 0, source: "smiles",
+      atoms: [{ element: "H", x: 0, y: 0, z: 0 }],
+    }))).toBe(true);
+    expect(isGoatInput("! goat xtb")).toBe(true); // case-insensitive
+  });
+
+  it("is false for a non-GOAT input", () => {
+    expect(isGoatInput("! B3LYP def2-SVP Opt\n* xyz 0 1\nH 0 0 0\n*\n")).toBe(false);
+    expect(isGoatInput("")).toBe(false);
+  });
+
+  it("ignores comment lines — a `# GOAT` mention is not a GOAT job", () => {
+    expect(isGoatInput("# GOAT was considered but rejected\n! B3LYP Opt\n")).toBe(
+      false,
+    );
+  });
+
+  it("ignores the geometry block — an atom/label named GOAT doesn't count", () => {
+    // Only `!` lines are inspected; a Goat-like token in the coord block is inert.
+    expect(isGoatInput("! B3LYP Opt\n* xyz 0 1\nGOAT 0 0 0\n*\n")).toBe(false);
+  });
+
+  it("matches on word boundaries, not substrings", () => {
+    expect(isGoatInput("! SCAPEGOATED")).toBe(false);
+    expect(isGoatInput("! XTB GOAT MAXITER 100")).toBe(true);
   });
 });

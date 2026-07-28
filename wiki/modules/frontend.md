@@ -344,6 +344,37 @@ Conformer search is now usable end to end (§ `wiki/orca/goat.md`, `modules/scen
   run through the app's exact input format — see the log. The in-window click path (Find → wait → panel
   → Use) needs the real Tauri window; manual checklist in the log.
 
+## As built (2.5.2a) — atom picking + the atom panel; GOAT-aware convergence label
+The first unit of the geometry editor, plus a small convergence-label fix (§
+`modules/visualization.md`, `modules/scene.md`, `wiki/orca/goat.md`).
+- **Picking risk cleared first.** Before any UI, re-ran the `debugging/002` MiniBrowser
+  probe against the *event* path (never checked since OffscreenCanvas was removed):
+  clicking 5 atoms at distinct screen points returned `atom.index` 0..4 exactly. Only
+  then was the UI built (see visualization.md Watchpoints for numbers).
+- **Atom panel** (`AtomInspector`, in the `viewer-column`, under the viewer, above
+  `FragmentList`): for the **last** picked atom — `atom N of <fragment> (<element>)` via
+  `describeAtom`, x/y/z to 4 dp, and the global index labelled **`global index N
+  (0-based)`** (the 0-/1-based `%geom` Constraints question is still open empirically, so
+  the UI states the base it shows). >1 atom → a click-ordered chip row with
+  fragment-colour swatches. `Clear` button; **Esc** does the same.
+- **Selection state lives in `NewJobScreen`**, not the scene store (the store stays a pure
+  geometry wrapper — ADR-008 #10). Picks go through `toggleAtom`; after **every scene
+  change where `compositionSignature` changed** the selection is re-run through
+  `validateSelection` (a coordinate-only edit leaves it alone). `MoleculeViewer` gets the
+  new optional `selection` / `onAtomPick` props — picking is off unless `onAtomPick` is
+  passed, so Molecules screen and the Job-detail conformer panel are untouched.
+- **GOAT convergence label (fix — the panel was lying on GOAT jobs).**
+  `ConvergenceDashboard` takes a new `variant: "standard" | "goat"` prop (the unused
+  `status` prop is left alone — one prop, one meaning). `JobDetailScreen` passes
+  `isGoatInput(job.input_content) ? "goat" : "standard"`. For `"goat"` the head reads
+  *"Conformer search · inner optimisation, cycle N · m/5 criteria met"* with a grey
+  *"one candidate of many — overall GOAT progress is not shown"* under it, and the
+  **progress bar is hidden** (a full bar with minutes of search still ahead was the
+  misleading part); the criteria chips stay.
+- **Verified:** `tsc` + `vite build` clean; `vitest` **149** (was 128 → +21: `selection.ts`
+  invariants, `isGoatInput`, `compositionSignature`); `cargo test` 55 (Rust untouched).
+  The in-window click path needs the real Tauri window; manual checklist in the log.
+
 ## As built (Phase 2.5) — New Job UI fixes (WebKitGTK contrast, accordion, scroll)
 Three issues found by manual testing in the real Tauri window (not visible in Chromium). CSS +
 a collapse wrapper only — no Input Builder / `build-input.ts` / `orca-options.ts` logic changed.

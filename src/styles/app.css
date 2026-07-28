@@ -571,6 +571,49 @@ body {
   font-style: italic;
 }
 
+/* Atom panel (2.5.2a) — under the viewer, above the fragment list. */
+.atom-inspector {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+}
+.atom-inspector-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.atom-inspector-title {
+  font-size: 13px;
+  color: var(--text);
+}
+.atom-inspector-coords {
+  font-size: 12px;
+  color: var(--muted);
+}
+.atom-inspector-index {
+  font-size: 11px;
+}
+.atom-inspector-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 2px;
+}
+.atom-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-family: var(--mono);
+  padding: 2px 8px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+}
+
 /* Add-Fragment panel. */
 .add-fragment-body {
   display: flex;
@@ -837,6 +880,14 @@ body {
 .conv-progress-head {
   font-size: 13px;
   color: var(--text);
+}
+
+/* GOAT variant: the honest disclaimer under the head — this is one inner
+   optimisation of one candidate, not overall search progress. */
+.conv-progress-sub {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: -4px;
 }
 
 .conv-progress-bar {

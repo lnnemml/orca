@@ -87,6 +87,25 @@ own charge, not the scene's `totalCharge`) and multiplicity 1 — safe for the
 closed-shell library fragments (all even electron count); an open-shell fragment
 would need it set.
 
+## Convergence panel on a GOAT job (2.5.2a)
+
+The live convergence dashboard parses SCF/opt cycles out of the output. On a GOAT
+run those cycles are **the inner geometry optimisation of one candidate conformer**,
+not the search itself — GOAT optimises many candidates in sequence, and the output's
+"cycle N, m/5 criteria met" belongs to whichever one is currently being refined. So
+the per-cycle **progress bar is actively misleading**: it fills to 100 % as *this*
+candidate's opt converges while the overall search still has minutes and many more
+candidates to go.
+
+Fix: `isGoatInput` (in `scene/ensemble.ts`, scans only `!` lines for the `GOAT`
+token) tells `JobDetailScreen` to pass `variant="goat"` to `ConvergenceDashboard`.
+That variant relabels the head *"Conformer search · inner optimisation, cycle N ·
+m/5 criteria met"*, adds a grey *"one candidate of many — overall GOAT progress is
+not shown"*, and **hides the bar** (the criteria chips stay — they're honestly the
+inner opt's state). GOAT does not emit an overall "candidate k of K" progress signal
+we can parse, so we show none rather than a fake one. (Details:
+`wiki/modules/frontend.md`, `wiki/modules/scene.md`.)
+
 ## Not done here (2.5.1b / Phase 4.5)
 
 Running GOAT from the app, substituting a conformer back into the scene (2.5.1b);

@@ -13,6 +13,7 @@ import { useSceneStore } from "../scene/store";
 import { deserializeScene } from "../scene/scene";
 import {
   deltaEKcal,
+  isGoatInput,
   parseEnsemble,
   planConformerApply,
   type Conformer,
@@ -454,7 +455,13 @@ export function JobDetailScreen({
           {dashboardOpen ? (
             <div className="builder-body">
               {events.length ? (
-                <ConvergenceDashboard events={events} status={job?.status ?? "running"} />
+                <ConvergenceDashboard
+                  events={events}
+                  status={job?.status ?? "running"}
+                  variant={
+                    job && isGoatInput(job.input_content) ? "goat" : "standard"
+                  }
+                />
               ) : (
                 <div className="muted" style={{ fontSize: 12 }}>
                   Waiting for convergence data…

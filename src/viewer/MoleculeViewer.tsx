@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import { createViewer, type GLViewer } from "3dmol";
 
 import type { Scene } from "../scene/types";
-import { fragmentRanges, mergeToXyz } from "../scene/scene";
+import { compositionSignature, fragmentRanges, mergeToXyz } from "../scene/scene";
 import { fragmentColor } from "./fragment-colors";
 
 // Side-effect: force 3Dmol onto its direct-canvas WebGL path so it renders in
@@ -14,27 +14,36 @@ interface MoleculeViewerProps {
   xyzData?: string;
   /** Multi-fragment path: takes precedence over `xyzData` when present. */
   scene?: Scene;
+  /**
+   * Ordered global atom indices to highlight (2.5.2a). Optional; a changed
+   * `selection` re-draws the highlight spheres only — never reloads the model or
+   * re-`zoomTo`s. Ignored unless `onAtomPick` is also given (picking off).
+   */
+  selection?: number[];
+  /**
+   * Atom-pick callback (2.5.2a). **Presence of this prop is what turns
+   * clickability on** — without it the viewer is display-only (Molecules screen,
+   * the Job-detail conformer panel), exactly as before. Receives the 0-based
+   * `atom.index` (== merged-xyz line == Scene global index; never `atom.serial`
+   * — ADR-008 decision 3).
+   */
+  onAtomPick?: (globalIndex: number) => void;
   style?: React.CSSProperties;
 }
 
 // Match the log console (#0d0f13) so the viewer sits inside the dark theme.
 const BACKGROUND = "#0d0f13";
 
+/** Highlight sphere for a selected atom — translucent so the CPK/fragment
+ * colour underneath still reads. Radius is a touch above the ball-and-stick
+ * sphere (scale 0.3) so it reads as a halo, not a repaint. */
+const HIGHLIGHT_COLOR = "#ffffff";
+const HIGHLIGHT_RADIUS = 0.55;
+const HIGHLIGHT_OPACITY = 0.35;
+
 /** Ball-and-stick — the same style the viewer has always used. Fresh object per
  * call (3Dmol may retain the reference). */
 const baseStyle = () => ({ stick: {}, sphere: { scale: 0.3 } });
-
-/**
- * A "composition signature" for a scene: atom count + the ordered fragment
- * id:size list, but NOT the coordinates. Two renders with the same signature
- * differ only in atom positions, so the camera must stay put (the 2.5.3 geometry
- * loop — type an angle, apply, look, adjust — is unusable if the view re-zooms
- * on every apply). A changed signature means atoms were added/removed and a
- * fresh `zoomTo` is warranted.
- */
-function compositionSignature(scene: Scene): string {
-  return scene.fragments.map((f) => `${f.id}:${f.atoms.length}`).join("|");
-}
 
 /**
  * Ball-and-stick molecule viewer built on 3Dmol.js. Fills its parent; mouse
@@ -46,12 +55,27 @@ function compositionSignature(scene: Scene): string {
  * fragment by atom-index range — ADR-008 #2/#3) or a flat `xyzData` string (the
  * original single-structure path). `scene` wins when both are given.
  */
-export function MoleculeViewer({ xyzData, scene, style }: MoleculeViewerProps) {
+export function MoleculeViewer({
+  xyzData,
+  scene,
+  selection,
+  onAtomPick,
+  style,
+}: MoleculeViewerProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const viewerRef = useRef<GLViewer | null>(null);
   // Last scene composition rendered — drives the zoom-only-on-composition-change
   // rule. `null` means "nothing/only-xyz rendered so far".
   const lastCompositionRef = useRef<string | null>(null);
+  // Latest onAtomPick, read through a ref so the model effect (which re-arms
+  // setClickable) doesn't need onAtomPick in its dependency list — an inline
+  // callback would otherwise rebuild the model on every render.
+  const onAtomPickRef = useRef<typeof onAtomPick>(onAtomPick);
+  onAtomPickRef.current = onAtomPick;
+  // Picking is enabled iff a pick handler was provided. Captured as a boolean so
+  // the model effect re-runs when it flips (it never flips in practice — a
+  // screen either passes onAtomPick or doesn't — but keeps the effect honest).
+  const pickable = onAtomPick != null;
 
   // Create the viewer once and wire up resize handling.
   useEffect(() => {
@@ -98,6 +122,15 @@ export function MoleculeViewer({ xyzData, scene, style }: MoleculeViewerProps) {
         );
       });
 
+      // Arm atom picking (2.5.2a) — only when a pick handler is present, and
+      // re-armed here because removeAllModels/addModel rebuilt the atom objects
+      // that carry the clickable flag. `atom.index` is the pick identity.
+      if (pickable) {
+        viewer.setClickable({}, true, (atom: { index: number }) => {
+          onAtomPickRef.current?.(atom.index);
+        });
+      }
+
       // Zoom only when the composition changed — not on a coordinate-only edit.
       const signature = compositionSignature(scene);
       if (signature !== lastCompositionRef.current) {
@@ -116,7 +149,32 @@ export function MoleculeViewer({ xyzData, scene, style }: MoleculeViewerProps) {
     }
 
     viewer.render();
-  }, [xyzData, scene]);
+    // The model is rebuilt whenever geometry changes OR picking flips on/off.
+  }, [xyzData, scene, pickable]);
+
+  // Highlight the selected atoms with translucent spheres. Kept a SEPARATE
+  // effect from the model rebuild so a selection change never reloads the model
+  // or moves the camera (`removeAllShapes` + re-add spheres, no zoomTo). Spheres
+  // — not setStyle — because a style override would clobber the per-fragment
+  // colours applied above and we'd have to restore them by hand; the spheres
+  // will also carry the measurement labels in 2.5.2b.
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer || !scene) return;
+    viewer.removeAllShapes();
+    const rows = scene.fragments.flatMap((f) => f.atoms);
+    for (const globalIndex of selection ?? []) {
+      const atom = rows[globalIndex];
+      if (!atom) continue; // stale index — validateSelection normally prevents this
+      viewer.addSphere({
+        center: { x: atom.x, y: atom.y, z: atom.z },
+        radius: HIGHLIGHT_RADIUS,
+        color: HIGHLIGHT_COLOR,
+        opacity: HIGHLIGHT_OPACITY,
+      });
+    }
+    viewer.render();
+  }, [selection, scene]);
 
   return <div ref={containerRef} className="molecule-viewer" style={style} />;
 }

@@ -1,7 +1,8 @@
 # Module: Visualization
 
 **Status:** 3Dmol.js component built (Phase 2.1); **multi-fragment rendering added (2.5.0c)** — one
-model, index-range styling, shared `fragmentColor` palette. Trajectories / orbitals / spectra not
+model, index-range styling, shared `fragmentColor` palette. **Atom picking added (2.5.2a)** — mouse
+click → `atom.index` → selection panel, WebKitGTK-confirmed. Trajectories / orbitals / spectra not
 started.
 
 ## As built (Phase 2.1) — MoleculeViewer + xyz preview
@@ -70,6 +71,38 @@ parsed on a **500 ms debounce**; a valid block shows the molecule, otherwise a m
   the direct-canvas path. Full analysis + reusable MiniBrowser test technique in
   `debugging/002-webkitgtk-3dmol-offscreencanvas.md`.
 
+### Atom picking (2.5.2a)
+The first unit of the geometry editor: click an atom in the 3D view, and a selection
+panel names it. Two **optional** props on `MoleculeViewer`:
+
+- `onAtomPick?: (globalIndex: number) => void` — **its presence is the on-switch for
+  clickability.** Absent → the viewer is display-only, byte-for-byte as before
+  (`pickable = onAtomPick != null` gates the only `setClickable` call). Only
+  `NewJobScreen` passes it; the Molecules screen (`xyzData` path) and the Job-detail
+  conformer panel pass neither prop and are unchanged — an acceptance criterion, not
+  a nicety.
+- `selection?: number[]` — ordered global atom indices to highlight.
+
+Mechanics:
+- **`setClickable({}, true, cb)` is re-armed inside the model effect**, after every
+  `removeAllModels`/`addModel` — the model (and the atom objects that carry the
+  `clickable` flag) is rebuilt on each geometry change, so the flag must be reapplied
+  or picking silently dies after the first edit.
+- In the 3Dmol callback `(atom, viewer, event, container)` we read **`atom.index`**,
+  never `atom.serial` (ADR-008 #3): `index` == merged-xyz line == Scene global index
+  == ASE mask index, one space end to end. `onAtomPick` is read through a **ref** so
+  an inline handler from the parent doesn't rebuild the model every render.
+- **Highlight = translucent `addSphere`, not `setStyle`.** A style override would
+  clobber the per-fragment colours (index-range styling) applied on the same model and
+  we'd have to restore them by hand; a sphere sits on top and leaves them intact. The
+  highlight runs in a **separate effect** keyed on `[selection, scene]` that does
+  `removeAllShapes()` + re-add + `render()` — **no `zoomTo`, no model reload**, so a
+  selection change never moves the camera. (The spheres also become the anchor for
+  2.5.2b's measurement labels.)
+- On a coordinate-only edit the model effect still re-renders (new `scene` ref) so the
+  sphere follows the atom to its new position; the *selection* itself is left alone by
+  `NewJobScreen` (it re-validates only on a `compositionSignature` change).
+
 ## Structures & trajectories
 3Dmol.js viewer component (**done**, above); multiframe xyz → trajectory playback with frame
 slider (Phase 3).
@@ -85,6 +118,21 @@ Default grid 80–100; cubes cached in job dir; generated lazily on MO selection
 - UV-Vis (Phase 6): Gaussian broadening over TD-DFT (energy, fosc).
 
 ## Watchpoints
+- **Mouse-pick path in WebKitGTK — VERIFIED (2.5.2a), was the open risk.** Forcing the
+  direct-canvas path (removing OffscreenCanvas, `debugging/002`) had never been checked
+  against 3Dmol's *event/ray-cast* path — if clicks didn't reach the callback, or arrived
+  with shifted coordinates, the whole picking UI was moot. Re-ran the `debugging/002`
+  MiniBrowser technique (`webkit2gtk-4.1/MiniBrowser`, standalone HTML, real
+  `node_modules/3dmol`, `OffscreenCanvas=undefined`): a 5-atom molecule, `setClickable({},
+  true, cb)` pushing `atom.index`, then for each atom **project via `modelToScreen` and
+  dispatch a real `mousedown` (on the canvas) + `mouseup` (on `document.body`)** at that
+  page coordinate — 3Dmol's actual handler chain (`getX` reads `ev.pageX`;
+  `closeEnoughForClick` tol 5; `handleClickSelection` ray-casts). **Result: clicking atoms
+  0–4 at five distinct screen points [386,123]/[211,130]/[303,271]/[375,247]/[216,231]
+  returned indices 0/1/2/3/4 exactly** — not always-0, not shifted. So `setClickable` +
+  the event path + `atom.index` ray-casting all work under the direct-canvas path.
+  (What this does *not* exercise: OS→WebKit hardware event delivery, which isn't
+  WebKit-specific and isn't the risk; the concern was 3Dmol's coordinate math post-002.)
 - WebKitGTK WebGL **context creation** — RESOLVED for single molecules via `3dmol-setup.ts`
   (`debugging/002`). Still validate WebGL **performance** with a ~100-atom molecule + cube in
   Phase 2/3 (the "Apple GPU"-masked renderer string in WebKitGTK is cosmetic; direct rendering is

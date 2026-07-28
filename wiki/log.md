@@ -1318,3 +1318,63 @@ retained count varies; count-from-file handles it.)
 
 **Verified.** `tsc` clean, `vite build` clean, `vitest` **128** (was 122 → +6), `cargo test` **55**.
 Next: 2.5.2 — geometry editor (its d/θ/φ acceptance test is already on record).
+
+## [2026-07-28] session | 2.5.2a: atom picking in the viewer + GOAT-aware convergence label
+
+First unit of the geometry editor: click an atom → a selection panel names it. Plus a small
+fix to the convergence panel's label on GOAT jobs. **No coordinate math, no sidecar, no
+constraints — that's 2.5.2b.**
+
+**Risk cleared FIRST (the whole point of the sequencing).** Whether 3Dmol's `setClickable`
+even works in WebKitGTK was unknown: `debugging/002` forced the direct-canvas path
+(OffscreenCanvas removed) and the *mouse-event* path had never been checked since. Re-ran the
+002 MiniBrowser technique (`webkit2gtk-4.1/MiniBrowser`, standalone HTML, real
+`node_modules/3dmol`, `OffscreenCanvas=undefined`) with a 5-atom molecule, `setClickable({},
+true, cb)` pushing `atom.index`, and for each atom **projected via `modelToScreen` then
+dispatched a real `mousedown` (canvas) + `mouseup` (`document.body`)** at that page coord —
+3Dmol's genuine handler chain (`getX`→`pageX`, `closeEnoughForClick` tol 5,
+`handleClickSelection` ray-cast). **Clicking atoms 0–4 at five distinct screen points
+returned indices 0/1/2/3/4 exactly** — not always-0, not shifted. Picking is sound under the
+direct-canvas path; UI built only after this. (Full numbers + what it doesn't cover:
+`modules/visualization.md` Watchpoints.)
+
+**Decisions (recorded):**
+- **Fifth-click rule — NOT FIFO.** Clicking a new atom when 4 are already picked makes the
+  selection `[that atom]`, not "drop oldest, append". FIFO would silently leave the user
+  measuring atoms different from the ones highlighted — a wrong-atom measurement with no
+  visible cause. A hard reset to the just-clicked atom is unambiguous. (`selection.ts`,
+  `MAX_SELECTION=4`.)
+- **Selection re-validates on `compositionSignature`, not a bespoke length check.** Moved
+  `compositionSignature` up from `MoleculeViewer` into `scene.ts` as an exported pure
+  function — one canonical "did composition change?", sibling of `xyzMatchesScene`. Both the
+  viewer's re-zoom and `NewJobScreen`'s `validateSelection` key off it; a coordinate-only edit
+  changes neither camera nor selection.
+- **Highlight via translucent `addSphere`, not `setStyle`** — a style path would clobber the
+  per-fragment index-range colours and need manual restore; a separate `[selection, scene]`
+  effect does `removeAllShapes` + re-add + render, **no `zoomTo`/model reload**. The spheres
+  also become 2.5.2b's measurement-label anchors.
+- **Selection state lives in `NewJobScreen`, not the scene store** — the store stays a pure
+  geometry wrapper (ADR-008 #10).
+- **Global index labelled `(0-based)` in the UI** — the 0-/1-based `%geom` Constraints
+  question is unresolved empirically; while open, the UI must state the base it shows.
+- **GOAT convergence fix — `variant` prop, NOT overloading `status`.** `ConvergenceDashboard`
+  gains `variant: "standard" | "goat"`; the existing unused `status` prop is left untouched
+  (one prop, one meaning). `JobDetailScreen` passes `isGoatInput(job.input_content) ? "goat" :
+  "standard"`. `isGoatInput` scans only `!` keyword lines for the `GOAT` token on word
+  boundaries (comments/geometry ignored). For `"goat"`: relabelled head ("Conformer search ·
+  inner optimisation, cycle N · m/5 criteria met"), a grey "one candidate of many — overall
+  GOAT progress is not shown", and the **progress bar is hidden** (a full bar with minutes of
+  search ahead was the lie); chips stay. Why: those cycles are one candidate's inner opt, not
+  search progress (`wiki/orca/goat.md`).
+
+**Clickability is off unless `onAtomPick` is passed** (`pickable = onAtomPick != null` gates the
+only `setClickable`). Only `NewJobScreen` passes it — Molecules screen and the Job-detail
+conformer panel are byte-identical (acceptance criterion, grep-proven, no jsdom to unit-test a
+render).
+
+**Verified.** `tsc` clean, `vite build` clean, `vitest` **149** (was 128 → +21: `selection.ts`
+invariants, `isGoatInput`, `compositionSignature`), `cargo test` **55** (Rust untouched). The
+in-window click checks (real fragment/local index per click, toggle-off, fifth-click reset,
+remove-first-fragment cleanup, coordinate-edit leaves selection+camera, GOAT running label) need
+the real Tauri window — not headless-drivable; author checklist stands. Next: 2.5.2b —
+distance/angle/dihedral measurement off this pick list.

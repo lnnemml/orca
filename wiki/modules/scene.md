@@ -41,7 +41,12 @@ functions, no imports from react / 3dmol / tauri. The reactive `store.ts` (added
 - `FragmentList.tsx` — the fragment sidebar (React; reads the store, uses the
   shared `fragmentColor` palette).
 - `restore.ts` — `restoreScene` (snapshot ↔ input reconciliation on job open).
-- `ensemble.ts` — GOAT conformer-ensemble parsing + input generation (2.5.1a).
+- `ensemble.ts` — GOAT conformer-ensemble parsing + input generation (2.5.1a),
+  plus `isGoatInput` (2.5.2a — is this a conformer-search job?).
+- `selection.ts` — the geometry editor's atom pick list (2.5.2a): `toggleAtom`,
+  `validateSelection`, `describeAtom`. Pure / node-tested, no React.
+- `AtomInspector.tsx` — the atom panel on New Job (React; reads a selection held
+  in `NewJobScreen` state, uses the shared `fragmentColor` palette).
 - `__fixtures__/butane.finalensemble.xyz` — a real (3-structure) slice of an ORCA
   6.1.0 GOAT run, the test oracle for `ensemble.test.ts`.
 - `*.test.ts` (scene / parity / store / placement / fragment-library /
@@ -81,6 +86,14 @@ Index space:
   fragment / out-of-range local index.
 - `fragmentAtomIndices(scene, fragmentId): number[]` — the future ASE mask.
 - `locateAtom(scene, globalIndex): { fragment, localIndex } | null`.
+- `compositionSignature(scene): string` — ordered `id:size` per fragment, joined;
+  **coordinates excluded**. The one canonical way to ask "did the scene's
+  composition change?" (atoms/fragments added or removed), the sibling of
+  `xyzMatchesScene` ("did the coordinates change?"). **Moved here from
+  `MoleculeViewer` in 2.5.2a** — there must not be a second copy. Two consumers,
+  both keying the *same* question off it: the viewer re-`zoomTo`s only on a
+  signature change (a coordinate-only edit must not move the camera), and
+  `NewJobScreen` re-runs `validateSelection` only on a signature change.
 - `fragmentRanges(scene): { fragmentId, start, end }[]` — **start inclusive, end
   exclusive** (same convention as `OutputMatch` col_start/col_end, Phase 2.7).
   **First consumer (2.5.0c):** `MoleculeViewer` styles each fragment by its
@@ -312,6 +325,13 @@ Pure; parser **written against a real ORCA 6.1.0 run**, not from memory — see
   in place if the snapshot's fragment id is still in the store scene; else `new`
   single-fragment scene; `refuse` (no throw) if `conformerMatchesFragment` fails.
 
+- `isGoatInput(content): boolean` (2.5.2a) — is this a GOAT conformer-search
+  job? Scans **only `!` keyword lines** (ignores `#` comments and the `* xyz`
+  block), matches the `GOAT` token on word boundaries, case-insensitively. Drives
+  the convergence panel's `variant` (a GOAT run's per-cycle bar is one inner
+  optimisation of one candidate, not search progress — see
+  `wiki/orca/goat.md` and `wiki/modules/frontend.md`).
+
 `normalizeElement` is now **exported** from `scene.ts` so this predicate,
 `replaceFragmentAtoms`, and `xyzMatchesScene` share one element normalisation.
 
@@ -335,6 +355,35 @@ to New Job with `keepScene` (skips the usual store reset). If the scene was clea
 (other session) → **`new`** single-fragment scene from the snapshot + the chosen
 conformer's coordinates. Composition is checked first; a mismatch **refuses**
 cleanly.
+
+## Atom selection (`selection.ts`, 2.5.2a)
+
+The geometry editor's pick list — pure, node-tested, React-free. A selection is
+an **ordered list of global atom indices** (the merged-xyz / ASE-mask space);
+2.5.2b reads it positionally as (a,b) distance / (a,vertex,b) angle / 4-atom
+dihedral chain. The UI (`NewJobScreen`) holds it in component state (**not** the
+scene store — the store stays a pure geometry wrapper, ADR-008 #10) and drives
+every change through these functions.
+
+- `MAX_SELECTION = 4` — a dihedral's four atoms.
+- `toggleAtom(selection, index): number[]` — one click, new array:
+  already-selected → remove; new & under the cap → append (order kept); new &
+  **at the cap → the selection becomes `[index]`**. The full-list rule is the
+  decision: **not FIFO.** Silently evicting the oldest atom would leave the user
+  measuring a set different from the atoms they see highlighted — a wrong-atom
+  measurement with no visible cause. A hard reset to the just-clicked atom is
+  unambiguous ("fifth click resets").
+- `validateSelection(selection, scene): number[]` — drop indices that no longer
+  address an atom (a fragment removed, scene cleared). Returns the **same array
+  reference** when nothing is dropped, so a no-op doesn't churn React state.
+- `describeAtom(scene, globalIndex): AtomDescription | null` — a thin wrapper over
+  `locateAtom` (no own fragment walk); adds `fragmentIndex` (the palette key) and
+  the atom's coordinates. `null` for out-of-range (same non-throwing contract).
+
+`NewJobScreen` re-runs `validateSelection` **only when `compositionSignature`
+changes** — never on a coordinate-only edit — so removing the first fragment
+while an atom of the last is selected clears the stale index instead of pointing
+it at a different atom.
 
 ## Notes
 

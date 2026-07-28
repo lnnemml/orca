@@ -7,6 +7,8 @@ import { importStructureFile, IMPORT_ACCEPT } from "../viewer/import-file";
 import { InputBuilderForm } from "../input-builder/InputBuilderForm";
 import { useSceneStore } from "../scene/store";
 import { FragmentList } from "../scene/FragmentList";
+import { AtomInspector } from "../scene/AtomInspector";
+import { toggleAtom, validateSelection } from "../scene/selection";
 import { placeFragment } from "../scene/placement";
 import {
   FRAGMENT_LIBRARY,
@@ -14,6 +16,7 @@ import {
   type LibraryFragment,
 } from "../scene/fragment-library";
 import {
+  compositionSignature,
   injectSceneIntoInput,
   mergeToAtomLines,
   mergeToXyz,
@@ -106,6 +109,39 @@ export function NewJobScreen({
   );
   const undoReset = useSceneStore((s) => s.undoReset);
   const dismissResetNotice = useSceneStore((s) => s.dismissResetNotice);
+
+  // ── Atom selection (2.5.2a) — the geometry editor's pick list ───────────────
+  // Ordered global atom indices, held in component state (NOT the scene store —
+  // the store stays a pure geometry wrapper; ADR-008 #10). 2.5.2b reads this
+  // list positionally for distance/angle/dihedral.
+  const [selection, setSelection] = useState<number[]>([]);
+  const onAtomPick = (globalIndex: number) =>
+    setSelection((sel) => toggleAtom(sel, globalIndex));
+  const clearSelection = () => setSelection([]);
+
+  // Re-validate the selection ONLY when the scene's composition changes (a
+  // fragment/atom added or removed) — via `compositionSignature`, the same
+  // primitive the viewer uses to decide when to re-zoom. A coordinate-only edit
+  // (same signature) leaves the selection untouched; `validateSelection` returns
+  // the same array reference when nothing is dropped, so an unchanged selection
+  // never churns state. This is the doctrine: composition change is asked in one
+  // place, never re-derived as a bespoke length check.
+  const lastSelCompRef = useRef<string | null>(null);
+  useEffect(() => {
+    const sig = scene ? compositionSignature(scene) : null;
+    if (sig === lastSelCompRef.current) return;
+    lastSelCompRef.current = sig;
+    setSelection((sel) => validateSelection(sel, scene));
+  }, [scene]);
+
+  // Esc clears the selection (mirrors the Clear button).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setSelection((sel) => (sel.length ? [] : sel));
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   // Lazy-load saved molecules whenever the Add-Fragment panel opens.
   useEffect(() => {
@@ -642,11 +678,22 @@ export function NewJobScreen({
         <div className="viewer-column">
           <div className="viewer-panel">
             {scene ? (
-              <MoleculeViewer scene={scene} />
+              <MoleculeViewer
+                scene={scene}
+                selection={selection}
+                onAtomPick={onAtomPick}
+              />
             ) : (
               <div className="viewer-empty muted">No coordinates in input</div>
             )}
           </div>
+          {scene ? (
+            <AtomInspector
+              scene={scene}
+              selection={selection}
+              onClear={clearSelection}
+            />
+          ) : null}
           <FragmentList onFindConformers={findConformers} />
         </div>
       </div>

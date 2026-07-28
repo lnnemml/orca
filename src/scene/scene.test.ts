@@ -5,6 +5,7 @@ import {
   addFragment,
   atomCount,
   atomicNumber,
+  compositionSignature,
   deserializeScene,
   electronCount,
   fragmentAtomIndices,
@@ -67,6 +68,34 @@ function borohydride(id = "bh4"): SceneFragment {
 function scene(...fragments: SceneFragment[]): Scene {
   return { fragments, multiplicity: 1 };
 }
+
+// ── compositionSignature ─────────────────────────────────────────────────────
+
+describe("compositionSignature", () => {
+  it("is id:size per fragment, joined — coordinates excluded", () => {
+    expect(compositionSignature(scene(water(), borohydride()))).toBe(
+      "wat:3|bh4:5",
+    );
+  });
+
+  it("is invariant to a coordinate-only change (same atoms moved)", () => {
+    const a = scene(water());
+    const moved = scene({
+      ...water(),
+      atoms: water().atoms.map((at) => ({ ...at, x: at.x + 1.5 })),
+    });
+    expect(compositionSignature(moved)).toBe(compositionSignature(a));
+  });
+
+  it("changes when a fragment is added or removed", () => {
+    const one = compositionSignature(scene(water()));
+    const two = compositionSignature(scene(water(), borohydride()));
+    expect(two).not.toBe(one);
+    expect(compositionSignature(removeFragment(scene(water(), borohydride()), "bh4"))).toBe(
+      one,
+    );
+  });
+});
 
 // ── mergeToXyz golden ────────────────────────────────────────────────────────
 

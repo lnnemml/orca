@@ -208,6 +208,24 @@ export function fragmentRanges(
   return ranges;
 }
 
+/**
+ * A "composition signature" for a scene: the ordered fragment `id:size` list,
+ * joined — but **not** the coordinates. The one canonical way to say "the
+ * scene's composition changed" (a fragment or atom was added/removed), the
+ * sibling of `xyzMatchesScene` for "the coordinates changed"; there must not be
+ * a second way to ask this in the code. Two scenes with the same signature
+ * differ only in atom positions. Consumers:
+ *  - `MoleculeViewer` re-`zoomTo`s only when the signature changes — a
+ *    coordinate-only edit must not move the camera (the 2.5.2 geometry loop —
+ *    type an angle, apply, look, adjust — is unusable if the view re-zooms on
+ *    every apply);
+ *  - the atom-selection panel (2.5.2a) re-runs `validateSelection` exactly when
+ *    the signature changes, never on a coordinate-only edit.
+ */
+export function compositionSignature(scene: Scene): string {
+  return scene.fragments.map((f) => `${f.id}:${f.atoms.length}`).join("|");
+}
+
 // ── Immutable mutators ───────────────────────────────────────────────────────
 
 /** Append a fragment (kept last — placement decides its coordinates). */

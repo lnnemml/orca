@@ -49,9 +49,22 @@ function useContainerWidth() {
 interface ConvergenceDashboardProps {
   events: ConvergenceEvent[];
   status: JobStatus;
+  /**
+   * How to read the progress section. `"standard"` (default): the per-cycle
+   * criteria are the whole job's convergence. `"goat"`: this is one **inner**
+   * optimisation of one candidate in a conformer search — the cycle/criteria are
+   * real but the progress BAR is hidden (a full bar with minutes of search still
+   * ahead is exactly what misled the user) and a disclaimer is shown. See
+   * `isGoatInput` (JobDetailScreen passes it) and wiki/orca/goat.md. The
+   * pre-existing `status` prop is deliberately left alone — one prop, one meaning.
+   */
+  variant?: "standard" | "goat";
 }
 
-export function ConvergenceDashboard({ events }: ConvergenceDashboardProps) {
+export function ConvergenceDashboard({
+  events,
+  variant = "standard",
+}: ConvergenceDashboardProps) {
   const { ref, width } = useContainerWidth();
 
   const scf = events.filter((e): e is ScfPoint => e.kind === "scf");
@@ -66,7 +79,11 @@ export function ConvergenceDashboard({ events }: ConvergenceDashboardProps) {
 
   return (
     <div className="convergence-dashboard" ref={ref}>
-      <ProgressIndicator latestScf={latestScf} latestOpt={latestOpt} />
+      <ProgressIndicator
+        latestScf={latestScf}
+        latestOpt={latestOpt}
+        variant={variant}
+      />
       <EnergyChart opt={opt} width={width} />
       <CriteriaChart opt={opt} width={width} />
     </div>
@@ -79,10 +96,13 @@ export function ConvergenceDashboard({ events }: ConvergenceDashboardProps) {
 function ProgressIndicator({
   latestScf,
   latestOpt,
+  variant,
 }: {
   latestScf: ScfPoint | null;
   latestOpt: OptPoint | null;
+  variant: "standard" | "goat";
 }) {
+  const isGoat = variant === "goat";
   // An optimization is in progress once we've either completed a cycle (opt
   // point) or started SCF inside cycle ≥ 1.
   const isOpt = latestOpt != null || (latestScf != null && latestScf.cycle >= 1);
@@ -94,14 +114,24 @@ function ProgressIndicator({
     return (
       <div className="conv-progress">
         <div className="conv-progress-head">
-          Optimization cycle {cycle} · {met}/{total} criteria met
+          {isGoat
+            ? `Conformer search · inner optimisation, cycle ${cycle} · ${met}/${total} criteria met`
+            : `Optimization cycle ${cycle} · ${met}/${total} criteria met`}
         </div>
-        <div className="conv-progress-bar" aria-hidden>
-          <div
-            className="conv-progress-fill"
-            style={{ width: `${total ? (met / total) * 100 : 0}%` }}
-          />
-        </div>
+        {isGoat ? (
+          // The disclaimer replaces the bar: a full bar with minutes of search
+          // still ahead is precisely what misled the user (wiki/orca/goat.md).
+          <div className="conv-progress-sub">
+            one candidate of many — overall GOAT progress is not shown
+          </div>
+        ) : (
+          <div className="conv-progress-bar" aria-hidden>
+            <div
+              className="conv-progress-fill"
+              style={{ width: `${total ? (met / total) * 100 : 0}%` }}
+            />
+          </div>
+        )}
         <div className="conv-criteria-chips">
           {latestOpt.criteria.map((c) => (
             <span
@@ -117,12 +147,22 @@ function ProgressIndicator({
   }
 
   if (latestScf) {
+    const prefix = isGoat
+      ? "Conformer search · inner optimisation, "
+      : isOpt
+        ? `Optimization cycle ${latestScf.cycle} · `
+        : "";
     return (
       <div className="conv-progress">
         <div className="conv-progress-head">
-          {isOpt ? `Optimization cycle ${latestScf.cycle} · ` : ""}
+          {prefix}
           SCF iteration {latestScf.iter}
         </div>
+        {isGoat ? (
+          <div className="conv-progress-sub">
+            one candidate of many — overall GOAT progress is not shown
+          </div>
+        ) : null}
       </div>
     );
   }
