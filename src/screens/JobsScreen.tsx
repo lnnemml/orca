@@ -7,9 +7,12 @@ import { formatEnergy, formatTimestamp, formatWallTime } from "../format";
 
 interface JobsScreenProps {
   onOpenDetail: (jobId: string, autoRun: boolean) => void;
+  /** Whether the queue is paused — surfaced on `queued` badges so a job that
+   *  isn't starting shows why. */
+  queuePaused: boolean;
 }
 
-export function JobsScreen({ onOpenDetail }: JobsScreenProps) {
+export function JobsScreen({ onOpenDetail, queuePaused }: JobsScreenProps) {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -88,7 +91,13 @@ export function JobsScreen({ onOpenDetail }: JobsScreenProps) {
               >
                 <td>{job.title}</td>
                 <td>
-                  <span className={`badge ${job.status}`}>{job.status}</span>
+                  {job.status === "queued" && queuePaused ? (
+                    <span className="badge queued" title="Queue is paused">
+                      queued (paused)
+                    </span>
+                  ) : (
+                    <span className={`badge ${job.status}`}>{job.status}</span>
+                  )}
                 </td>
                 <td className="mono" style={{ textAlign: "right" }}>
                   {formatEnergy(job.energy)}

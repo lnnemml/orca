@@ -77,8 +77,12 @@ function App() {
   }, []);
 
   const togglePause = useCallback(async () => {
+    const next = !queue.paused;
     try {
-      await invoke(queue.paused ? "resume_queue" : "pause_queue");
+      await invoke(next ? "pause_queue" : "resume_queue");
+      // Flip locally right away so the label updates without waiting for the
+      // refreshQueue round-trip.
+      setQueue((q) => ({ ...q, paused: next }));
     } catch {
       /* surfaced elsewhere */
     } finally {
@@ -114,6 +118,18 @@ function App() {
   // The Jobs tab stays highlighted while drilled into a job's detail.
   const activeTab = screen.kind === "job-detail" ? "jobs" : screen.kind;
 
+  // Adaptive queue label: activity → "1 running, 2 waiting"; empty → "idle" or
+  // "paused". Paused is always shown (even with an empty queue) so it can't be
+  // missed — a silently-not-starting queue is the failure this guards against.
+  const queueParts: string[] = [];
+  if (queue.running > 0) queueParts.push(`${queue.running} running`);
+  if (queue.queued > 0) queueParts.push(`${queue.queued} waiting`);
+  const queueLabel = queueParts.length
+    ? queueParts.join(", ") + (queue.paused ? " (paused)" : "")
+    : queue.paused
+      ? "paused"
+      : "idle";
+
   return (
     <div className="app">
       <header className="topbar">
@@ -138,7 +154,7 @@ function App() {
           initialMolecule={screen.initialMolecule}
         />
       ) : screen.kind === "jobs" ? (
-        <JobsScreen onOpenDetail={openDetail} />
+        <JobsScreen onOpenDetail={openDetail} queuePaused={queue.paused} />
       ) : screen.kind === "molecules" ? (
         <MoleculesScreen
           onUseMolecule={(mol) =>
@@ -167,19 +183,22 @@ function App() {
         <span>
           ORCA: <span className="mono">{orcaPath || "not configured"}</span>
         </span>
-        {queue.running > 0 || queue.queued > 0 ? (
-          <span className="row" style={{ gap: 8 }}>
-            <span>
-              Queue:{" "}
-              {queue.running > 0 ? `${queue.running} running` : "idle"}
-              {queue.queued > 0 ? `, ${queue.queued} waiting` : ""}
-              {queue.paused ? " (paused)" : ""}
-            </span>
-            <button className="btn btn-sm" onClick={togglePause}>
-              {queue.paused ? "Resume" : "Pause"}
-            </button>
+        <span className="row" style={{ gap: 8 }}>
+          <span className={queue.paused ? "queue-paused" : undefined}>
+            Queue: {queueLabel}
           </span>
-        ) : null}
+          <button
+            className="btn btn-sm"
+            onClick={togglePause}
+            title={
+              queue.paused
+                ? "Resume the queue"
+                : "Pause the queue — the running job finishes, but no queued job starts"
+            }
+          >
+            {queue.paused ? "Resume" : "Pause"}
+          </button>
+        </span>
       </footer>
     </div>
   );

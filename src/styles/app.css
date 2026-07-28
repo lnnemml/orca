@@ -133,6 +133,12 @@ body {
   color: var(--muted-2);
 }
 
+/* Paused queue: stand out so the state isn't missed even with an empty queue. */
+.queue-paused {
+  color: var(--warn);
+  font-weight: 500;
+}
+
 .status-dot {
   width: 9px;
   height: 9px;

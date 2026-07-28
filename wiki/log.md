@@ -658,3 +658,26 @@ Next: Phase 2.5 geometry editor.
 
 Next (Phase 2.5): geometry editor — atom picking in 3Dmol, measurement, set distance/angle/dihedral
 via ASE, fragment library, constraint manager → `%geom`.
+
+## [2026-07-28] session | fix: queue pause control always visible
+
+Small but real UX bug in the status-bar queue control. The Pause/Resume button only rendered when
+`running > 0 || queued > 0`, so (a) you couldn't pause *ahead* of stacking jobs — the main "queue
+work and walk away" flow — and (b) once the queue drained, the `paused` state became invisible and
+the next job silently didn't start. Frontend-only; backend queue logic untouched.
+
+**`App.tsx`:** the Pause/Resume button now **always** renders. Adaptive `queueLabel` — activity →
+`1 running, 2 waiting`; empty + not paused → `idle`; empty + paused → `paused` (shown even with an
+empty queue). New `.queue-paused` class (`var(--warn)`) highlights the indicator whenever paused so
+it can't be missed. Button `title`s explain the semantics. `togglePause` now flips `queue.paused`
+optimistically right after the successful `invoke` (label updates immediately, not after the
+`refreshQueue` round-trip; refresh still runs in `finally` to reconcile counts).
+
+**`JobsScreen.tsx`:** takes a `queuePaused` prop from `App`; a `queued` job's badge reads
+**`queued (paused)`** with a "Queue is paused" tooltip while paused — so a stalled job shows why.
+
+**Verified:** `tsc` + `npm test` (10) + `vite build` clean. Traced all label states (idle / paused /
+running+waiting / created-while-paused). The live-in-GUI legs (empty-queue pause highlight, badge
+reason, resume-starts-immediately) need the real Tauri window — not headless-drivable, same
+limitation as prior phases; the change is presentational React over the unchanged, already-verified
+`pause_queue`/`resume_queue`/`is_queue_paused` backend.

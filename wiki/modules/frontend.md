@@ -298,6 +298,24 @@ The "Import .xyz" button on **both** New Job and Molecules is now **"Import file
 Returns ORCA coordinate lines; New Job injects them with `injectXyzIntoInput(…, 0, 1)`, Molecules
 builds a standard xyz via `atomLinesToXyz`. No new screen. Export to other formats is Phase 3.
 
+## Status-bar queue control (fix)
+The bottom status bar's Queue indicator + Pause/Resume button (`App.tsx` footer):
+- **The Pause/Resume button always renders** (previously only when `running > 0 || queued > 0`).
+  You could not pause *ahead* of stacking jobs — the primary "queue work and walk away" flow — and
+  worse, the `paused` state became invisible once the queue drained, so the next job silently
+  didn't start.
+- **Adaptive label** (`queueLabel`): activity → `1 running, 2 waiting`; empty + not paused →
+  `idle`; empty + paused → `paused`. The paused suffix/state shows even with an empty queue.
+- **`.queue-paused`** class (`var(--warn)`, `app.css`) highlights the indicator whenever paused so
+  the state can't be missed. Button `title`s explain the semantics ("the running job finishes, but
+  no queued job starts").
+- **Optimistic toggle:** `togglePause` flips `queue.paused` locally right after the successful
+  `invoke`, so the label changes immediately instead of after the `refreshQueue` round-trip
+  (which still runs in `finally` to reconcile counts).
+- **Reason on the job row:** `App` passes `queuePaused` to `JobsScreen`; a `queued` job's badge
+  reads **`queued (paused)`** with a "Queue is paused" tooltip while paused — so a job that isn't
+  moving shows why. Backend (`pause_queue`/`resume_queue`/`is_queue_paused`) untouched.
+
 ## Resolved from step 3
 The earlier "no backfill of `output.out`" gap is closed by `read_job_output` + the detail
 backfill above.
