@@ -177,14 +177,16 @@ re-optimisation of the lowest 3–4 stay in Phase 4.5 (the scientific pipeline);
       — pick substrate + reagent atom ⇒ mask = reagent fragment, so the reagent moves
       **(2.5.2d — `edit-plan.ts` + `EditPanel`; visible mask glow; preview view-only;
       Apply → replaceFragmentAtoms; one-step Undo. INTER-fragment only.)**
-- [~] **2.5.3** — bond-graph mask split (intra-fragment edits, ring detection):
+- [x] **2.5.3** — bond-graph mask split (intra-fragment edits, ring detection):
       rotate a torsion of one molecule's own substrate by splitting the bond graph
       at the picked bond and detecting rings (so a ring bond is refused, not mis-split)
       — the mask becomes a graph-derived subset of ONE fragment, not the whole fragment
       - [x] **2.5.3a** — sidecar `POST /geometry/rotatable-mask`: perception (explicit
         multiplier 1.2, valence-tested), graph split, ring/unbonded/off-cut refusals,
         which-bond-to-cut rule; acceptance = rigid intra-dihedral through set-internal
-      - [ ] **2.5.3b** — planEdit calls it: an intra-fragment selection becomes an edit
+      - [x] **2.5.3b** — planEdit → `needs-split`; the UI resolves the mask (race-guarded)
+        and drives glow + set-internal from it; `within` restricts perception to one
+        fragment (metal–ligand trap); smaller fragment moves by default
 - [ ] Fragment library: common reagents (BH₄⁻, H₂O, common ligands), place at position
       with specified distance/angle
       — placement = set_distance/angle/dihedral with the mask on the newly added fragment

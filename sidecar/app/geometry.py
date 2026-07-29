@@ -240,6 +240,14 @@ class RotatableMaskRequest(BaseModel):
     cut: list[int]  # the bond to break: [i, j], 0-based GLOBAL indices
     moving: int  # an atom on the side that should move
     scale: float = _COVALENT_SCALE_DEFAULT  # covalent-radius multiplier
+    # Restrict perception to this atom set (the fragment being edited). Bonds are
+    # only considered when BOTH ends are `within`. WHY: perception sees the whole
+    # scene, and at mult=1.2 the Pd–N threshold is 2.52 Å while a real Pd–N bond
+    # is 2.05–2.15 Å — so a metal + ligand scene (the ADR-007 case) would fuse
+    # into one molecule and a torsion split would swallow the reagent. `within`
+    # keeps the graph inside one fragment. Indices stay GLOBAL (the 2.5.0 rule —
+    # one number through every layer); the returned mask is a subset of `within`.
+    within: "list[int] | None" = None
 
 
 class RotatableMaskResponse(BaseModel):
@@ -257,19 +265,25 @@ def _bond_edges(atoms: Atoms, cutoffs: list[float]) -> set[frozenset[int]]:
 
 
 def _components(
-    n: int, edges: set[frozenset[int]], exclude: frozenset[int] | None = None
+    nodes: "int | set[int]",
+    edges: set[frozenset[int]],
+    exclude: frozenset[int] | None = None,
 ) -> list[set[int]]:
-    """Connected components of an `n`-node graph, optionally without one edge."""
-    adj: dict[int, set[int]] = {k: set() for k in range(n)}
+    """Connected components over a node UNIVERSE — `range(n)` when `nodes` is an
+    int, or exactly the given index set (the `within` case). Edges touching a node
+    outside the universe are ignored, optionally minus one excluded edge."""
+    node_set: set[int] = set(range(nodes)) if isinstance(nodes, int) else set(nodes)
+    adj: dict[int, set[int]] = {k: set() for k in node_set}
     for e in edges:
         if e == exclude:
             continue
         a, b = tuple(e)
-        adj[a].add(b)
-        adj[b].add(a)
+        if a in node_set and b in node_set:
+            adj[a].add(b)
+            adj[b].add(a)
     seen: set[int] = set()
     comps: list[set[int]] = []
-    for start in range(n):
+    for start in sorted(node_set):
         if start in seen:
             continue
         stack = [start]
@@ -302,8 +316,30 @@ def rotatable_mask(req: RotatableMaskRequest) -> RotatableMaskResponse:
     if req.scale <= 0:
         raise HTTPException(422, "scale must be > 0")
 
+    # ── the `within` universe (the fragment being edited), if given ───────────
+    universe: "int | set[int]" = n
+    within_set: "set[int] | None" = None
+    if req.within is not None:
+        within_set = set(req.within)
+        if not within_set:
+            raise HTTPException(422, "within must be non-empty")
+        if any(a < 0 or a >= n for a in within_set):
+            raise HTTPException(422, f"within index out of range [0, {n})")
+        for label, a in (("cut", i), ("cut", j), ("moving", req.moving)):
+            if a not in within_set:
+                raise HTTPException(
+                    422,
+                    f"{label} atom {a} must be inside `within` — the split is "
+                    "restricted to that fragment.",
+                )
+        universe = within_set
+
     cutoffs = natural_cutoffs(atoms, mult=req.scale)
     edges = _bond_edges(atoms, cutoffs)
+    # Only bonds with BOTH ends inside the universe count — this is what keeps a
+    # metal–ligand contact from fusing the two fragments (see the request note).
+    if within_set is not None:
+        edges = {e for e in edges if e <= within_set}
     cut_length = float(atoms.get_distance(i, j))
 
     # ── the cut atoms must actually be perceived as bonded ────────────────────
@@ -318,8 +354,9 @@ def rotatable_mask(req: RotatableMaskRequest) -> RotatableMaskResponse:
 
     # ── perception sanity: an isolated molecule is one component; substrate +
     # reagent is two. More than two means perception produced something odd
-    # (a lone atom, or a fragment split by a stretched bond). ───────────────────
-    comps_before = _components(n, edges)
+    # (a lone atom, or a fragment split by a stretched bond). With `within` the
+    # universe is one fragment, so this is normally 1. ──────────────────────────
+    comps_before = _components(universe, edges)
     if len(comps_before) > 2:
         raise HTTPException(
             422,
@@ -329,7 +366,7 @@ def rotatable_mask(req: RotatableMaskRequest) -> RotatableMaskResponse:
         )
 
     # ── remove the bond, find the moving side ─────────────────────────────────
-    comps_after = _components(n, edges, exclude=frozenset((i, j)))
+    comps_after = _components(universe, edges, exclude=frozenset((i, j)))
     moving_comp = next(c for c in comps_after if req.moving in c)
 
     if i in moving_comp and j in moving_comp:

@@ -70,14 +70,25 @@ export type EditPlan =
       /** The other valid orientation, if any — moves the opposite fragment. */
       alternative: Orientation | null;
     }
+  | {
+      // 2.5.3b: all atoms are in ONE fragment (an intra-fragment torsion). The
+      // mask is not a whole fragment but the rotatable side of a bond — the UI
+      // must ASK the sidecar (`/geometry/rotatable-mask`). planEdit stays pure &
+      // synchronous: it describes WHAT to ask (cut/moving/within), it doesn't ask.
+      kind: "needs-split";
+      op: "distance" | "angle" | "dihedral";
+      indices: number[];
+      current: number;
+      unit: "Å" | "°";
+      /** The bond to break (global indices), per the sidecar's cut rule. */
+      cut: [number, number];
+      /** The chain's last atom — the side that moves. */
+      moving: number;
+      /** Restrict perception to this fragment's atoms (keeps a metal–ligand
+       * contact from fusing two fragments — see sidecar `within`). */
+      within: number[];
+    }
   | { kind: "unavailable"; reason: string };
-
-const INTRA_FRAGMENT_REASON =
-  "These atoms are in the same fragment. Editing an internal coordinate means " +
-  "rotating part of a molecule about a bond, which needs a bond-graph split " +
-  "(with ring detection) to decide which atoms move — that is the next step " +
-  "(2.5.3). For now, pick atoms across two fragments so the mask is a whole " +
-  "fragment.";
 
 /** A single orientation's validity: mover = last atom of `chain`; every earlier
  * atom must be OUT of the mover's fragment mask. `null` if the mover is stale or
@@ -149,22 +160,59 @@ export function planEdit(scene: Scene, selection: number[]): EditPlan {
   const a = orientationFor(scene, selection); // mover = last-clicked
   const b = orientationFor(scene, [...selection].reverse()); // mover = first-clicked
 
-  if (a) {
-    // Click order stays the default; expose B (if valid) as the alternative.
-    return { kind: "ready", ...base, ...a, reversed: false, alternative: b };
+  if (a && b) {
+    // Both sides are movable (typical inter-fragment distance). Default to moving
+    // the SMALLER fragment (2.5.3b fix): the geometry is identical either way
+    // (ORCA is indifferent to absolute coordinates), but moving 33 substrate
+    // atoms to place a 5-atom reagent jumps the whole view. Tie → click order (A).
+    const chooseA = a.mask.length <= b.mask.length;
+    const primary = chooseA ? a : b;
+    const alternative = chooseA ? b : a;
+    return { kind: "ready", ...base, ...primary, reversed: !chooseA, alternative };
   }
-  if (b) {
-    return { kind: "ready", ...base, ...b, reversed: true, alternative: null };
-  }
+  if (a) return { kind: "ready", ...base, ...a, reversed: false, alternative: null };
+  if (b) return { kind: "ready", ...base, ...b, reversed: true, alternative: null };
 
-  // Neither orientation works → refuse with the right reason.
+  // Neither orientation works with WHOLE fragments.
   if (allInOneFragment(scene, selection)) {
-    return { kind: "unavailable", reason: INTRA_FRAGMENT_REASON };
+    // Intra-fragment torsion → the mask is a bond-graph split the sidecar must
+    // compute. Describe the request; the UI makes the call (see the module note).
+    const fragmentId = locateAtom(scene, selection[0])!.fragment.id;
+    const { cut, moving } = cutAndMoving(m.kind, selection);
+    return {
+      kind: "needs-split",
+      op: m.kind,
+      indices: [...selection],
+      current: m.value,
+      unit: m.unit,
+      cut,
+      moving,
+      within: fragmentAtomIndices(scene, fragmentId),
+    };
   }
+  // Atoms across fragments but the pivot can't be held fixed — not a bond issue.
   return {
     kind: "unavailable",
     reason: immovablePivotReason(scene, selection, m.kind === "dihedral" ? "dihedral" : "angle"),
   };
+}
+
+/**
+ * Which bond the motion turns about, and which end moves — the rule the sidecar
+ * split uses (`wiki/modules/sidecar.md`): `distance(i,j)` → cut (i,j), move j;
+ * `angle(i,v,j)` → cut (v,j), move j; `dihedral(i,j,k,l)` → cut (j,k), move l.
+ */
+function cutAndMoving(
+  op: "distance" | "angle" | "dihedral",
+  selection: number[],
+): { cut: [number, number]; moving: number } {
+  if (op === "distance") {
+    return { cut: [selection[0], selection[1]], moving: selection[1] };
+  }
+  if (op === "angle") {
+    return { cut: [selection[1], selection[2]], moving: selection[2] };
+  }
+  return { cut: [selection[1], selection[2]], moving: selection[3] }; // dihedral
 }
 
 /**

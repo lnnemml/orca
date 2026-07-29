@@ -61,8 +61,15 @@ describe("planEdit — selection count", () => {
 // the screenshot. Positions are synthetic but make the picked angle B–C–O valid.
 function bigSubstrate(id = "ibu"): SceneFragment {
   const atoms: SceneAtom[] = [];
+  // A non-collinear zigzag so any 3/4 picked atoms form a valid angle/dihedral
+  // (deterministic — no Math.random).
   for (let i = 0; i < 33; i++) {
-    atoms.push({ element: i === 14 ? "O" : "C", x: i, y: 0, z: 0 });
+    atoms.push({
+      element: i === 14 ? "O" : "C",
+      x: i,
+      y: Math.sin(i * 1.3),
+      z: Math.cos(i * 0.9),
+    });
   }
   return { id, name: "ibuprofen", charge: 0, source: "editor", atoms };
 }
@@ -86,28 +93,38 @@ function bh4Off(id = "bh4"): SceneFragment {
 describe("planEdit — both orientations (2.5.2d-2)", () => {
   const s = scene(water(), borohydride());
 
-  it("2 atoms across fragments → ready (A default) with the OTHER as alternative", () => {
-    // pick water-O (0), then BH4 boron (3): default moves BH4 (last-clicked)...
+  it("2 atoms across fragments → moves the SMALLER fragment, OTHER as alternative", () => {
+    // water(3 atoms) vs BH4⁻(5). Either side is movable → default moves the
+    // SMALLER (water, 2.5.3b), BH4⁻ offered as the alternative.
     const p = planEdit(s, [0, 3]);
     expect(p.kind).toBe("ready");
     if (p.kind === "ready") {
       expect(p.op).toBe("distance");
-      expect(p.movingFragmentId).toBe("bh4");
-      expect(p.mask).toEqual([3, 4, 5, 6, 7]);
-      expect(p.reversed).toBe(false);
-      // ...and water is offered as the alternative (either side can move).
-      expect(p.alternative?.movingFragmentId).toBe("wat");
-      expect(p.alternative?.mask).toEqual([0, 1, 2]);
+      expect(p.movingFragmentId).toBe("wat"); // smaller fragment
+      expect(p.mask).toEqual([0, 1, 2]);
+      expect(p.alternative?.movingFragmentId).toBe("bh4"); // the bigger one
+      expect(p.alternative?.mask).toEqual([3, 4, 5, 6, 7]);
     }
   });
 
-  it("click order is the DEFAULT: reversing picks the other default mover", () => {
-    const bh4Last = planEdit(s, [0, 3]);
-    const waterLast = planEdit(s, [3, 0]);
-    if (bh4Last.kind === "ready") expect(bh4Last.movingFragmentId).toBe("bh4");
-    if (waterLast.kind === "ready") {
-      expect(waterLast.movingFragmentId).toBe("wat");
-      expect(waterLast.reversed).toBe(false);
+  it("smaller-fragment default is independent of click order", () => {
+    const bh4First = planEdit(s, [3, 0]); // BH4 clicked first
+    const bh4Last = planEdit(s, [0, 3]); // BH4 clicked last
+    // Whatever the order, the SMALLER fragment (water) moves by default.
+    if (bh4First.kind === "ready") expect(bh4First.movingFragmentId).toBe("wat");
+    if (bh4Last.kind === "ready") expect(bh4Last.movingFragmentId).toBe("wat");
+  });
+
+  it("(task 4) ibuprofen(33) + BH₄⁻(5): default moves BH₄⁻ in ANY order", () => {
+    const big = scene(bigSubstrate(), bh4Off());
+    // an inter-fragment distance: an ibuprofen carbon (12) and BH4 boron (33).
+    for (const sel of [[12, 33], [33, 12]]) {
+      const p = planEdit(big, sel);
+      expect(p.kind).toBe("ready");
+      if (p.kind === "ready") {
+        expect(p.movingFragmentId).toBe("bh4"); // the 5-atom reagent, not 33 atoms
+        expect(p.alternative?.movingFragmentId).toBe("ibu");
+      }
     }
   });
 
@@ -156,33 +173,73 @@ describe("planEdit — both orientations (2.5.2d-2)", () => {
 
   // ── (c) inter-fragment distance: alternative present, swap mirrors ──────────
   it("(c) distance: either side movable → alternative, swap gives the mirror", () => {
-    const p = planEdit(s, [0, 3]); // O(water) ··· B(bh4)
+    const p = planEdit(s, [0, 3]); // O(water) ··· B(bh4); default = water (smaller)
     expect(p.kind).toBe("ready");
     if (p.kind !== "ready") return;
+    expect(p.movingFragmentId).toBe("wat");
     expect(p.alternative).not.toBeNull();
     const swapped = swapToAlternative(p);
     if (swapped.kind !== "ready") throw new Error("swap dropped ready");
-    expect(swapped.movingFragmentId).toBe("wat"); // now the other side moves
-    expect(swapped.mask).toEqual([0, 1, 2]);
+    expect(swapped.movingFragmentId).toBe("bh4"); // "Move BH4 instead"
+    expect(swapped.mask).toEqual([3, 4, 5, 6, 7]);
     expect(swapped.reversed).toBe(!p.reversed);
     expect(swapped.current).toBeCloseTo(p.current, 12); // value unchanged
     // swapping again returns the original mover
     const back = swapToAlternative(swapped);
-    if (back.kind === "ready") expect(back.movingFragmentId).toBe("bh4");
+    if (back.kind === "ready") expect(back.movingFragmentId).toBe("wat");
   });
 });
 
-describe("planEdit — two distinct refusals (2.5.2d-2)", () => {
+describe("planEdit — intra-fragment → needs-split (2.5.3b)", () => {
   const s = scene(water(), borohydride());
+  const big = scene(bigSubstrate(), bh4Off()); // ibuprofen 0..32, BH4 33..37
 
-  it("(d) all atoms in one fragment → the bond-graph (intra) reason", () => {
+  it("all atoms in one fragment → needs-split (not a refusal)", () => {
     const p = planEdit(s, [3, 4, 5]); // all inside BH4⁻
-    expect(p.kind).toBe("unavailable");
-    if (p.kind === "unavailable") {
-      expect(p.reason).toMatch(/same fragment/i);
-      expect(p.reason).toMatch(/bond-graph|2\.5\.3/);
+    expect(p.kind).toBe("needs-split");
+  });
+
+  it("needs-split carries the right cut/moving/within per op", () => {
+    // within = the ibuprofen fragment's global indices (0..32).
+    const within = Array.from({ length: 33 }, (_, i) => i);
+    // distance(i,j) → cut (i,j), move j
+    const d = planEdit(big, [5, 12]);
+    expect(d.kind).toBe("needs-split");
+    if (d.kind === "needs-split") {
+      expect(d.cut).toEqual([5, 12]);
+      expect(d.moving).toBe(12);
+      expect(d.within).toEqual(within);
+    }
+    // angle(i,v,j) → cut (v,j), move j
+    const a = planEdit(big, [5, 12, 20]);
+    if (a.kind === "needs-split") {
+      expect(a.op).toBe("angle");
+      expect(a.cut).toEqual([12, 20]);
+      expect(a.moving).toBe(20);
+      expect(a.within).toEqual(within);
+    } else {
+      throw new Error("expected needs-split");
+    }
+    // dihedral(i,j,k,l) → cut (j,k), move l
+    const dih = planEdit(big, [5, 12, 20, 25]);
+    if (dih.kind === "needs-split") {
+      expect(dih.op).toBe("dihedral");
+      expect(dih.cut).toEqual([12, 20]);
+      expect(dih.moving).toBe(25);
+    } else {
+      throw new Error("expected needs-split");
     }
   });
+
+  it("still needs-split when the fragment is the ONLY one in the scene", () => {
+    const solo = scene(bigSubstrate()); // one fragment, whole scene
+    const p = planEdit(solo, [5, 12, 20, 25]);
+    expect(p.kind).toBe("needs-split");
+  });
+});
+
+describe("planEdit — the immovable-axis refusal (2.5.2d-2)", () => {
+  const s = scene(water(), borohydride());
 
   it("(e) 2+2 dihedral across fragments → the immovable-axis reason, names culprits", () => {
     // dihedral [1,0,3,4]: water {1,0} | BH4 {3,4}. Whichever end moves, an axis

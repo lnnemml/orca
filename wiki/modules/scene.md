@@ -53,7 +53,7 @@ functions, no imports from react / 3dmol / tauri. The reactive `store.ts` (added
   `angle`, `dihedral`, `measureSelection`, `formatMeasurementValue`. Pure /
   node-tested, React-free. **ASE conventions pinned to source** (see below).
 - `edit-plan.ts` — edit-mode planner (2.5.2d): `planEdit` (pick list → `ready` |
-  `unavailable`), plus the pure apply helpers `applyResponseToScene` and
+  `needs-split` | `unavailable`), plus the pure apply helpers `applyResponseToScene` and
   `applyResponseIssue`. Pure / node-tested, no React, no fetch.
 - `AtomInspector.tsx` — the atom panel on New Job (React; reads a selection held
   in `NewJobScreen` state, uses the shared `fragmentColor` palette).
@@ -478,12 +478,20 @@ fragment-library source), the butane dihedrals above, the symmetries, a mirror
 rotation + translation of the whole scene leaves all three unchanged to 1e-9;
 this catches a bug in the math, not in a single number).
 
-## Edit planning (`edit-plan.ts`, 2.5.2d; both-orientation fix 2.5.2d-2)
+## Edit planning (`edit-plan.ts`, 2.5.2d; both-orientation fix 2.5.2d-2; intra-fragment 2.5.3b)
 
-`planEdit(scene, selection)` turns the pick list into an `EditPlan`:
-`{ kind: "ready"; op; indices; mask; current; unit; movingFragmentId; reversed;
-alternative }` or `{ kind: "unavailable"; reason }`. The math is **not
-duplicated** — `op` and `current` come straight from `measureSelection`.
+`planEdit(scene, selection)` turns the pick list into an `EditPlan` — a
+three-way discriminated union:
+- `{ kind: "ready"; op; indices; mask; current; unit; movingFragmentId; reversed;
+  alternative }` — inter-fragment; the mask is a whole fragment, computed here;
+- `{ kind: "needs-split"; op; indices; current; unit; cut; moving; within }` —
+  intra-fragment torsion; the mask is a **bond-graph split** only the sidecar can
+  do. `planEdit` stays **pure & synchronous**: it describes WHAT to ask, not the
+  answer (**2.5.3b**);
+- `{ kind: "unavailable"; reason }` — a genuine geometric refusal.
+
+The math is **not duplicated** — `op` and `current` come straight from
+`measureSelection`.
 
 - **Click order is a DEFAULT, not a rule (2.5.2d-2).** The original unit took the
   LAST-clicked atom's fragment as the mover, full stop — which refused the real
@@ -500,14 +508,24 @@ duplicated** — `op` and `current` come straight from `measureSelection`.
   candidate B = reversed (mover = first). Each must pass the reference-atom rule
   (mover in its fragment's mask, no reference in that mask). Only A valid → A
   (`reversed:false`); only B → B (`reversed:true`, `indices` = reversed chain);
-  **both** valid (typical inter-fragment distance) → A stays the default and B is
-  exposed as `alternative` for the UI's "Move X instead" button
-  (`swapToAlternative` flips them, `current`/`op`/`unit` unchanged). The mask is
-  always a **whole fragment** — the sidecar gets it as an explicit index list
-  (the 2.5.0 decision).
-- **Two distinct refusals (2.5.2d-2).** When NEITHER orientation works:
-  - **all atoms in one fragment** → the genuine intra-fragment case → the
-    bond-graph-split reason (**2.5.3**);
+  **both** valid (typical inter-fragment distance) → the **SMALLER fragment moves
+  by default** (2.5.3b: `mask.length` decides; equal sizes → click order is the
+  tie-breaker), and the other is exposed as `alternative` for the UI's "Move X
+  instead" button (`swapToAlternative` flips them, `current`/`op`/`unit`
+  unchanged). Rationale: moving BH₄⁻ (5 atoms) rather than ibuprofen (33) is
+  almost always what the chemist means. The mask is always a **whole fragment** —
+  the sidecar gets it as an explicit index list (the 2.5.0 decision).
+- **Intra-fragment → `needs-split`, not a refusal (2.5.3b).** When ALL chain atoms
+  are in one fragment, `planEdit` returns `needs-split` carrying the sidecar's
+  **cut rule** — `distance(i,j)→cut (i,j)`, `angle(i,v,j)→cut (v,j)`,
+  `dihedral(i,j,k,l)→cut (j,k)`; `moving` = the last chain atom — plus
+  `within` = that fragment's atom indices (so perception can't fuse in a
+  coordinated reagent; see sidecar `within`). The UI resolves it via
+  `/geometry/rotatable-mask` and the returned mask drives BOTH the glow and
+  `set-internal`. This was a *refusal* in 2.5.2d–3a; 2.5.3b turns it into a
+  first-class edit.
+- **The remaining refusal (2.5.2d-2).** When atoms span fragments but the pivot
+  can't be held fixed:
   - **atoms across fragments but the pivot can't be held fixed** (a dihedral whose
     j–k axis atoms straddle fragments, or an angle whose two ends share a
     fragment) → a *different* reason that **names the offending atom indices**
@@ -526,8 +544,11 @@ duplicated** — `op` and `current` come straight from `measureSelection`.
   `fetch` and state; all decision logic is in this pure layer, so `edit-plan.test`
   covers it: the exact screenshot selection `[33,12,14]` → `reversed:true` moving
   BH₄⁻; the same selection reversed → same mask, `current` identical; the distance
-  `alternative` + `swapToAlternative` mirror; the two refusals (intra vs
-  immovable-pivot naming culprits `#0`, `#3`); the slice; the boundary check.
+  `alternative` + `swapToAlternative` mirror; the smaller-fragment default
+  (independent of click order; ibuprofen+BH₄⁻ → BH₄⁻ moves in ANY order); the
+  `needs-split` case carrying the right `cut`/`moving`/`within` per op (including
+  a single-fragment scene); the immovable-pivot refusal naming culprits `#0`,
+  `#3`; the slice; the boundary check.
 
 ## Notes
 

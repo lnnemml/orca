@@ -85,10 +85,12 @@ def _benzene() -> Atoms:
     return Atoms("C6H6", positions=cpos + hpos)
 
 
-def _rotmask(atoms: Atoms, cut, moving, scale=None):
+def _rotmask(atoms: Atoms, cut, moving, scale=None, within=None):
     body = {"xyz": _to_xyz(atoms), "cut": list(cut), "moving": moving}
     if scale is not None:
         body["scale"] = scale
+    if within is not None:
+        body["within"] = within
     return client.post("/geometry/rotatable-mask", json=body)
 
 
@@ -279,3 +281,57 @@ def test_ibuprofen_carboxyl_split_has_the_expected_size():
     assert len(mask) == 4
     assert mask_els == ["C", "H", "O", "O"]
     assert r.json()["static_count"] == n - 4
+
+
+# ── within: perception restricted to one fragment (2.5.3b) ───────────────────
+
+
+def _metal_ligand_scene():
+    """A C-chain substrate (torsion C1–C2) + a Pd reagent at 2.1 Å from the
+    terminal C3. The Pd–C contact (2.1 Å) is BELOW the mult=1.2 threshold
+    (C–Pd = 2.580 Å), so whole-scene perception fuses Pd into the substrate —
+    exactly the ADR-007 metal+ligand trap (real Pd–N is 2.05–2.15 Å, threshold
+    2.520 Å). Substrate = indices 0..3, reagent Pd = index 4."""
+    at = Atoms("CCCC", positions=[[0, 0, 0], [1.54, 0, 0], [3.08, 0, 0], [4.62, 0, 0]])
+    at += Atoms("Pd", positions=[[4.62, 2.1, 0]])  # 2.1 Å from C3, off-axis
+    return at
+
+
+def test_within_threshold_is_actually_crossed():
+    # Prove the contact crosses the perception threshold (computed, not guessed).
+    at = _metal_ligand_scene()
+    cut = natural_cutoffs(at, mult=_COVALENT_SCALE_DEFAULT)
+    threshold = cut[3] + cut[4]  # C3 + Pd
+    contact = at.get_distance(3, 4)
+    assert contact < threshold  # 2.100 < 2.580 → perceived as bonded
+    assert frozenset((3, 4)) in _bond_edges(at, cut)  # Pd fused into the substrate
+
+
+def test_without_within_the_mask_swallows_the_reagent_documented_trap():
+    # Cutting the substrate torsion C1–C2, moving C3 — WITHOUT `within`, the
+    # moving side reaches the Pd through the spurious contact, so the reagent
+    # (index 4) ends up in the mask. This is the trap `within` exists to fix; it
+    # is pinned here, not merely described.
+    at = _metal_ligand_scene()
+    r = _rotmask(at, cut=(1, 2), moving=3)  # no `within`
+    assert r.status_code == 200, r.text
+    assert 4 in r.json()["mask"]  # the Pd reagent is wrongly captured
+
+
+def test_within_keeps_the_mask_inside_the_substrate():
+    at = _metal_ligand_scene()
+    r = _rotmask(at, cut=(1, 2), moving=3, within=[0, 1, 2, 3])
+    assert r.status_code == 200, r.text
+    mask = r.json()["mask"]
+    assert 4 not in mask  # the Pd reagent is NOT moved
+    assert set(mask) <= {0, 1, 2, 3}  # mask is a subset of `within`
+    assert mask == [3]  # only the moving terminal carbon (axis carbon 2 dropped)
+
+
+def test_within_must_contain_cut_and_moving():
+    at = _metal_ligand_scene()
+    # cut atom 2 is not in `within`
+    r = _rotmask(at, cut=(1, 2), moving=1, within=[0, 1])
+    assert r.status_code == 422
+    assert "within" in r.json()["detail"].lower()
+

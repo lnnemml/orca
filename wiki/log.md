@@ -1936,3 +1936,46 @@ unchanged). `__version__` → **0.3.0** (new API — the handshake rule; else th
 meaning on its second use). Live `uvicorn` + `curl`: butane cut(1,2)/move 3 → mask [3,9,10,11,12,13],
 static_count 8, cut_length 1.527 Å; benzene ring bond → 422 cycle message. Next: 2.5.3b — planEdit
 calls this endpoint so an intra-fragment selection becomes an edit instead of a refusal.
+
+## [2026-07-29] decision | Perception sees the whole scene — `within` restricts the bond graph
+
+Found on review of 2.5.3a: `/geometry/rotatable-mask` gets the xyz of the **entire scene**, not one
+fragment. For a **metal–ligand** scene that's a trap. At `mult=1.2` the Pd–N threshold is **2.520 Å**
+and Pd–C **2.580 Å**, but a real dative Pd–N bond is **2.05–2.15 Å** — well under threshold. So
+perception **fuses the metal centre and its ligands into one molecule**, and an intra-substrate
+torsion split would swallow the coordinated reagent into the mask.
+
+**Decision: add `within: list[int] | None`.** When given, perception considers only bonds with BOTH
+ends in `within`; the component universe is `within`; the mask ⊆ `within`. **Indices stay GLOBAL** —
+`within` is a filter, not a re-basing (the 2.5.0 one-index-space rule holds). `cut`/`moving` must be
+inside `within` (else 422). The frontend passes the editing fragment's atoms, so a split can never
+reach across fragments. Pinned with a **computed** contact (Pd at 2.10 Å from a substrate C, below
+the 2.580 Å threshold — from covalent radii, not a guess) + a paired trap test (mask swallows Pd
+without `within`, clean with it). Request shape changed → `__version__` **0.3.0 → 0.4.0**.
+
+## [2026-07-29] session | 2.5.3b: intra-fragment edits reach the UI
+
+Wires 2.5.3a's endpoint into the editor: an intra-fragment torsion (a side-chain conformation) is now
+an **edit**, not a refusal. Plus the two review items above (`within`) and a default fix.
+
+**`planEdit` gains a third result `needs-split`** (`scene/edit-plan.ts`) — `{ op, indices, current,
+unit, cut, moving, within }`. When ALL chain atoms are in one fragment, the planner describes WHAT to
+ask (the sidecar's cut rule: distance→(i,j), angle→(v,j), dihedral→(j,k); moving = last chain atom;
+within = the fragment's atoms) but stays **pure & synchronous** — it doesn't fetch.
+
+**The UI resolves the mask** (`NewJobScreen`, not the panel — it already owns preview/undo/mask). A
+**race-guarded** effect (keyed on op+indices; cleanup sets `cancelled`) POSTs cut/moving/within to
+`/geometry/rotatable-mask`; **a response for a stale selection is dropped** so it never lands on the
+new pick. The resolved mask drives BOTH the glow AND `set-internal` — **one source, not two**.
+`EditPanel` takes it as `splitMask`/`splitResolving`/`splitError`, shows *"Internal edit · rotating
+about C#i–C#j"* + *"finding the rotatable atoms…"* while waiting, and surfaces a 422 (ring bond) in
+the sidecar's own words. The moved subset replaces its fragment's rows in place (unmoved rest
+unchanged), so `applyResponseToScene` is reused as-is.
+
+**Default fix: the SMALLER fragment moves** (was: last-clicked). When both orientations are valid,
+`planEdit` picks fewer atoms (ties → click order); "Move X instead" still flips it. ibuprofen(33) +
+BH₄⁻(5) in ANY click order → BH₄⁻ moves by default — almost always what the chemist means.
+
+**Verified.** `tsc` + `vite build` clean; `vitest` **248** (edit-plan: needs-split per op, single-
+fragment scene, smaller-fragment default independent of order); `pytest` **38** (the `within` tests,
+incl. the computed-contact trap); `cargo test` **59** untouched.

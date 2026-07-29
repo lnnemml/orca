@@ -11,6 +11,7 @@ import { FragmentList } from "../scene/FragmentList";
 import { AtomInspector } from "../scene/AtomInspector";
 import { EditPanel } from "../scene/EditPanel";
 import { planEdit, swapToAlternative } from "../scene/edit-plan";
+import { postSidecar } from "../sidecar-client";
 import {
   toggleAtom,
   validateSelection,
@@ -187,6 +188,52 @@ export function NewJobScreen({
     setPreviewScene(null);
     setPreferAlternative(false);
   }, [selection, scene]);
+
+  // ── Intra-fragment mask resolution (2.5.3b) ─────────────────────────────────
+  // A `needs-split` plan carries only cut/moving/within; the bond-graph split is
+  // the sidecar's job (perception the browser can't do). Resolve it here so the
+  // SAME mask drives the viewer glow AND set-internal — one source, not two.
+  // The effect is RACE-GUARDED: if the selection changes mid-fetch, cleanup sets
+  // `cancelled`, so a mask computed for an old pick never lands on the new one.
+  const [splitMask, setSplitMask] = useState<number[] | null>(null);
+  const [splitError, setSplitError] = useState<string | null>(null);
+  const [splitResolving, setSplitResolving] = useState(false);
+  const splitPlan = editPlan?.kind === "needs-split" ? editPlan : null;
+  const splitKey = splitPlan
+    ? `${splitPlan.op}:${splitPlan.indices.join(",")}`
+    : null;
+  useEffect(() => {
+    if (!scene || !splitPlan) {
+      setSplitMask(null);
+      setSplitError(null);
+      setSplitResolving(false);
+      return;
+    }
+    let cancelled = false;
+    setSplitMask(null);
+    setSplitError(null);
+    setSplitResolving(true);
+    postSidecar<{ mask: number[] }>("/geometry/rotatable-mask", {
+      xyz: mergeToXyz(scene),
+      cut: splitPlan.cut,
+      moving: splitPlan.moving,
+      within: splitPlan.within,
+    })
+      .then((resp) => {
+        if (cancelled) return;
+        setSplitMask(resp.mask);
+        setSplitResolving(false);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setSplitError(e instanceof Error ? e.message : String(e));
+        setSplitResolving(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [splitKey, scene]);
   const applyEdit = (newScene: Scene, previous: Scene) => {
     setPreEditScene(previous); // enable one-step Undo
     setScene(newScene); // → the Scene→Monaco effect injects the new coords
@@ -833,7 +880,11 @@ export function NewJobScreen({
                   showAtomNumbers={showNumbers}
                   theme={theme}
                   maskHighlight={
-                    editPlan?.kind === "ready" ? editPlan.mask : undefined
+                    editPlan?.kind === "ready"
+                      ? editPlan.mask
+                      : editPlan?.kind === "needs-split"
+                        ? splitMask ?? undefined
+                        : undefined
                   }
                 />
               </>
@@ -863,6 +914,9 @@ export function NewJobScreen({
                 plan={editPlan}
                 movingFragmentName={movingFragmentName}
                 alternativeFragmentName={alternativeFragmentName}
+                splitMask={splitMask}
+                splitError={splitError}
+                splitResolving={splitResolving}
                 onSwitchOrientation={() => setPreferAlternative((v) => !v)}
                 onPreview={setPreviewScene}
                 onApplied={applyEdit}

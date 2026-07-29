@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 
 import type { Scene } from "./types";
 import { postSidecar } from "../sidecar-client";
-import { describeAtom } from "./selection";
+import { describeAtom, type AtomDescription } from "./selection";
+import { locateAtom } from "./scene";
 import {
   applyResponseIssue,
   applyResponseToScene,
@@ -11,19 +12,20 @@ import {
 import { mergeToXyz } from "./scene";
 
 /**
- * Edit mode UI (2.5.2d) — lives in the Atom section of the geometry rail. Given a
- * `plan` (from `planEdit`), it shows the op, the current value, a target field,
- * and Preview / Apply. When the plan is `unavailable` it shows the reason as calm
- * text with no buttons.
+ * Edit mode UI (2.5.2d; intra-fragment 2.5.3b) — lives in the Atom section of the
+ * geometry rail. Given a `plan` (from `planEdit`), shows the op, current value, a
+ * target field, Preview / Apply.
  *
- * **The mask is visible before Apply** (the whole point of this unit): the moving
- * fragment glows in the viewer whenever the plan is ready — `NewJobScreen` passes
- * `plan.mask` to `MoleculeViewer`. This panel names the moving fragment too.
+ * Three plan kinds:
+ * - `ready` — inter-fragment; the mask is the whole moving fragment (`plan.mask`);
+ * - `needs-split` — intra-fragment torsion; the mask is a **bond-graph split** the
+ *   sidecar computes. `NewJobScreen` resolves it (`/geometry/rotatable-mask`) and
+ *   passes `splitMask` (or `splitError`/`splitResolving`); the SAME mask drives
+ *   the viewer glow and the `set-internal` call — one source, not two;
+ * - `unavailable` — the reason as calm text, no buttons.
  *
- * **Preview touches only the viewer** (the 2.5.1 decision): it POSTs to the
- * sidecar and hands the resulting Scene up as a *preview scene* that the viewer
- * renders — the store Scene and the Monaco buffer are untouched until Apply, so a
- * keystroke in the target field never runs the Scene↔Monaco sync + collapse rule.
+ * **Preview touches only the viewer** (2.5.1): it POSTs and hands the resulting
+ * Scene up as a preview scene; the store Scene and Monaco are untouched until Apply.
  */
 
 interface SidecarResponse {
@@ -32,20 +34,60 @@ interface SidecarResponse {
   max_static_displacement: number;
 }
 
-/** POST the op through the shared sidecar client (human error messages, incl.
- * "older build, restart" on a 404 — no Rust proxy; SMILES/convert go the same
- * way). */
-function callSidecar(
+/** The concrete edit to run — the mask resolved (from a `ready` fragment, or from
+ * the sidecar's bond-graph split). `null` while a split is resolving/errored. */
+interface ActiveEdit {
+  op: "distance" | "angle" | "dihedral";
+  indices: number[];
+  mask: number[];
+  current: number;
+  unit: "Å" | "°";
+  movingFragmentId: string;
+}
+
+function resolveActive(
   scene: Scene,
-  plan: Extract<EditPlan, { kind: "ready" }>,
+  plan: EditPlan,
+  splitMask: number[] | null,
+): ActiveEdit | null {
+  if (plan.kind === "ready") {
+    return {
+      op: plan.op,
+      indices: plan.indices,
+      mask: plan.mask,
+      current: plan.current,
+      unit: plan.unit,
+      movingFragmentId: plan.movingFragmentId,
+    };
+  }
+  if (plan.kind === "needs-split" && splitMask) {
+    // The mask is a subset of ONE fragment; the moved atoms replace that
+    // fragment's rows in place (the unmoved rest come back unchanged).
+    const frag = locateAtom(scene, plan.moving)?.fragment.id;
+    if (!frag) return null;
+    return {
+      op: plan.op,
+      indices: plan.indices,
+      mask: splitMask,
+      current: plan.current,
+      unit: plan.unit,
+      movingFragmentId: frag,
+    };
+  }
+  return null;
+}
+
+function callSetInternal(
+  scene: Scene,
+  active: ActiveEdit,
   value: number,
 ): Promise<SidecarResponse> {
   return postSidecar<SidecarResponse>("/geometry/set-internal", {
     xyz: mergeToXyz(scene),
-    op: plan.op,
-    indices: plan.indices,
+    op: active.op,
+    indices: active.indices,
     value,
-    mask: plan.mask,
+    mask: active.mask,
   });
 }
 
@@ -54,46 +96,67 @@ export function EditPanel({
   plan,
   movingFragmentName,
   alternativeFragmentName,
+  splitMask,
+  splitError,
+  splitResolving,
   onSwitchOrientation,
   onPreview,
   onApplied,
 }: {
   scene: Scene;
   plan: EditPlan;
-  /** Display name of the moving fragment (looked up by the parent). */
   movingFragmentName: string | null;
-  /** Display name of the OTHER movable fragment, if any (the alternative). */
   alternativeFragmentName: string | null;
-  /** Flip to the alternative orientation (the "Move X instead" action). */
+  /** The bond-graph mask for a `needs-split` plan, resolved by `NewJobScreen`. */
+  splitMask: number[] | null;
+  splitError: string | null;
+  splitResolving: boolean;
   onSwitchOrientation: () => void;
-  /** Hand a preview scene to the viewer, or `null` to clear the preview. */
   onPreview: (previewScene: Scene | null) => void;
-  /** Commit: the new scene + the scene before the edit (for one-step Undo). */
   onApplied: (newScene: Scene, previousScene: Scene) => void;
 }) {
-  const ready = plan.kind === "ready" ? plan : null;
+  const active = resolveActive(scene, plan, splitMask);
   const [target, setTarget] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [previewing, setPreviewing] = useState(false);
 
-  // Reset the field + preview whenever the coordinate being edited changes
-  // (a different op or a different atom chain). Keyed on op+indices so a
-  // coordinate-only re-render doesn't stomp the user's typing.
-  const editKey = ready ? `${ready.op}:${ready.indices.join(",")}` : "none";
+  // Reset field + preview when the coordinate being edited changes (op + atoms +
+  // whether the split has resolved). Keyed so a coordinate-only re-render doesn't
+  // stomp the user's typing.
+  const editKey =
+    plan.kind === "unavailable"
+      ? "none"
+      : `${plan.kind}:${plan.op}:${plan.indices.join(",")}:${active ? "R" : "-"}`;
   useEffect(() => {
     setError(null);
     setPreviewing(false);
     onPreview(null);
-    setTarget(ready ? String(round(ready.current)) : "");
+    setTarget(active ? String(round(active.current)) : "");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editKey]);
 
-  if (!ready) {
-    return plan.kind === "unavailable" ? (
-      <div className="edit-panel edit-unavailable muted">{plan.reason}</div>
-    ) : null;
+  if (plan.kind === "unavailable") {
+    return <div className="edit-panel edit-unavailable muted">{plan.reason}</div>;
   }
+
+  const intra = plan.kind === "needs-split";
+
+  // Intra-fragment, mask not yet resolved → header + status, no controls.
+  if (intra && !active) {
+    return (
+      <div className="edit-panel">
+        <div className="edit-head">
+          Internal edit · rotating about {bondLabel(scene, plan.cut)}
+        </div>
+        {splitResolving ? (
+          <div className="edit-current muted">finding the rotatable atoms…</div>
+        ) : null}
+        {splitError ? <div className="edit-error edit-error-severe">{splitError}</div> : null}
+      </div>
+    );
+  }
+  if (!active) return null;
 
   const value = Number(target);
   const valid = target.trim() !== "" && Number.isFinite(value);
@@ -103,8 +166,8 @@ export function EditPanel({
     setBusy(true);
     setError(null);
     try {
-      const resp = await callSidecar(scene, ready, value);
-      onPreview(applyResponseToScene(scene, ready.movingFragmentId, resp.xyz));
+      const resp = await callSetInternal(scene, active, value);
+      onPreview(applyResponseToScene(scene, active.movingFragmentId, resp.xyz));
       setPreviewing(true);
     } catch (e) {
       setPreviewing(false);
@@ -120,20 +183,10 @@ export function EditPanel({
     setBusy(true);
     setError(null);
     try {
-      const resp = await callSidecar(scene, ready, value);
-      // Front-of-the-boundary check (pure, shared, tested) — the server already
-      // checked, this guards our side before we mutate the scene.
-      const issue = applyResponseIssue(
-        scene,
-        resp.xyz,
-        resp.max_static_displacement,
-      );
+      const resp = await callSetInternal(scene, active, value);
+      const issue = applyResponseIssue(scene, resp.xyz, resp.max_static_displacement);
       if (issue) throw new Error(issue);
-      const newScene = applyResponseToScene(
-        scene,
-        ready.movingFragmentId,
-        resp.xyz,
-      );
+      const newScene = applyResponseToScene(scene, active.movingFragmentId, resp.xyz);
       setPreviewing(false);
       onPreview(null);
       onApplied(newScene, scene);
@@ -149,23 +202,32 @@ export function EditPanel({
     onPreview(null);
   };
 
-  const pivot = pivotLabel(scene, ready);
+  const header = intra ? (
+    <div className="edit-head">
+      Internal edit · rotating about{" "}
+      {plan.kind === "needs-split" ? bondLabel(scene, plan.cut) : ""}
+    </div>
+  ) : (
+    <div className="edit-head">
+      Set {active.op} · moving <strong>{movingFragmentName ?? "fragment"}</strong>
+      {pivotLabel(scene, active) ? (
+        <span className="muted"> · {pivotLabel(scene, active)}</span>
+      ) : null}
+    </div>
+  );
 
   return (
     <div className="edit-panel">
-      <div className="edit-head">
-        Set {ready.op} · moving <strong>{movingFragmentName ?? "fragment"}</strong>
-        {pivot ? <span className="muted"> · {pivot}</span> : null}
-      </div>
-      {ready.reversed ? (
+      {header}
+      {plan.kind === "ready" && plan.reversed ? (
         <div className="edit-reversed muted">
           chain read in reverse so the reagent moves
         </div>
       ) : null}
       <div className="edit-current muted">
-        current {round(ready.current)} {ready.unit}
+        current {round(active.current)} {active.unit}
       </div>
-      {ready.alternative ? (
+      {plan.kind === "ready" && plan.alternative ? (
         <button
           className="btn btn-sm edit-switch"
           onClick={onSwitchOrientation}
@@ -182,14 +244,10 @@ export function EditPanel({
           value={target}
           onChange={(e) => setTarget(e.target.value)}
           disabled={busy}
-          aria-label={`target ${ready.op} in ${ready.unit}`}
+          aria-label={`target ${active.op} in ${active.unit}`}
         />
-        <span className="edit-unit">{ready.unit}</span>
-        <button
-          className="btn btn-sm"
-          onClick={runPreview}
-          disabled={!valid || busy}
-        >
+        <span className="edit-unit">{active.unit}</span>
+        <button className="btn btn-sm" onClick={runPreview} disabled={!valid || busy}>
           Preview
         </button>
         <button
@@ -208,8 +266,7 @@ export function EditPanel({
       {error ? (
         <div
           className={
-            "edit-error" +
-            (isPostConditionError(error) ? " edit-error-severe" : "")
+            "edit-error" + (isPostConditionError(error) ? " edit-error-severe" : "")
           }
         >
           {error}
@@ -223,26 +280,29 @@ function round(v: number): number {
   return Math.round(v * 1000) / 1000;
 }
 
-/** The atom(s) an edit rotates about — the immovable pivot. For an angle it's the
- * vertex (`indices[1]`); for a dihedral it's the j–k axis (`indices[1..2]`). This
- * is what tells the user what stays put; without it the panel couldn't say what
- * the rotation is around. Null for a distance. */
-function pivotLabel(
-  scene: Scene,
-  plan: Extract<EditPlan, { kind: "ready" }>,
-): string | null {
-  if (plan.op === "angle") {
-    const v = plan.indices[1];
+/** "C#12–C#14" for the bond a torsion turns about. */
+function bondLabel(scene: Scene, cut: [number, number]): string {
+  const label = (i: number) => {
+    const d: AtomDescription | null = describeAtom(scene, i);
+    return d ? `${d.element}#${i}` : `#${i}`;
+  };
+  return `${label(cut[0])}–${label(cut[1])}`;
+}
+
+/** The pivot an inter-fragment angle/dihedral rotates about (vertex / axis). */
+function pivotLabel(scene: Scene, active: ActiveEdit): string | null {
+  if (active.op === "angle") {
+    const v = active.indices[1];
     const d = describeAtom(scene, v);
     return d ? `vertex ${d.element} #${v}` : null;
   }
-  if (plan.op === "dihedral") {
-    const [, j, k] = plan.indices;
+  if (active.op === "dihedral") {
+    const [, j, k] = active.indices;
     const dj = describeAtom(scene, j);
     const dk = describeAtom(scene, k);
     return dj && dk ? `axis ${dj.element}#${j}–${dk.element}#${k}` : null;
   }
-  return null; // distance has no pivot
+  return null;
 }
 
 function messageFor(e: unknown): string {
@@ -250,8 +310,8 @@ function messageFor(e: unknown): string {
   return String(e);
 }
 
-/** A 500 from the endpoint means a real post-condition breach (the count/order/
- * measured invariant failed) — surface it prominently, it's not a user mistake. */
+/** A 500 from the endpoint means a real post-condition breach — surface it
+ * prominently, it's not a user mistake. */
 function isPostConditionError(msg: string): boolean {
   return /not reached|changed|count/i.test(msg);
 }

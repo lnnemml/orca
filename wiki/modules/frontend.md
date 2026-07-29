@@ -485,8 +485,8 @@ section of the geometry rail; all decision logic is in the pure `scene/edit-plan
   (`modules/visualization.md`). The user sees which atoms will move; the default (the last-clicked
   atom's fragment) is *shown*, not silent. The panel also names the moving fragment.
 - **Fields.** When `ready`: the op, the current value, a target `<input>` (pre-filled with the
-  current value), the unit, and Preview / Apply. When `unavailable` (intra-fragment, <2/>4 atoms,
-  degenerate): the reason as calm text, no buttons.
+  current value), the unit, and Preview / Apply. When `unavailable` (immovable pivot, <2/>4 atoms,
+  degenerate): the reason as calm text, no buttons. When `needs-split`: see the 2.5.3b flow below.
 - **Preview touches ONLY the viewer** (the 2.5.1 decision). It POSTs to `/geometry/set-internal` and
   hands the resulting Scene up as `previewScene`, which the viewer renders (`scene={previewScene ??
   scene}`). The store Scene and the Monaco buffer are **untouched** until Apply, so a keystroke in
@@ -522,6 +522,27 @@ screenshot defect where click order wrongly decided solvability — `modules/sce
   re-measuring after **each** Apply — d stays 2.200000, angle 107.000000 — substrate internal
   deviation `0.00e+00`. In-window checks (the same by hand in the real window, "Move X instead",
   the immovable-axis refusal text) in the log.
+
+### Intra-fragment edits reach the UI (2.5.3b)
+A `needs-split` plan (all chain atoms in one fragment — a side-chain torsion) is resolved async, the
+one place the panel isn't purely local:
+- **`NewJobScreen` owns the resolution**, not the panel — it already orchestrates preview/undo/mask.
+  A **race-guarded** effect (keyed on op+indices; cleanup sets `cancelled`) POSTs `plan.cut`,
+  `plan.moving`, `plan.within` to `/geometry/rotatable-mask`. **If the selection changes mid-fetch,
+  the stale response is dropped** — a mask computed for an old pick never lands on the new one.
+- **One mask, one source.** The resolved mask drives BOTH `maskHighlight` (the glow) AND the panel's
+  `set-internal` call — never two computations that could disagree. `EditPanel` receives it as
+  `splitMask` (+`splitResolving`/`splitError`), synthesises the `ActiveEdit` (mask + the fragment of
+  `moving` as the moving fragment — the moved subset replaces that fragment's rows in place, the
+  unmoved rest come back unchanged), and from there the flow is identical to inter-fragment.
+- **Wait state.** While resolving, the head reads *"Internal edit · rotating about C#12–C#14"*
+  (`bondLabel(plan.cut)`) with *"finding the rotatable atoms…"* and no controls — the user sees which
+  bond is the axis before the mask arrives. A **422** (the bond is in a ring, cut/moving outside
+  `within`) is shown in the sidecar's own words via `.edit-error-severe` — not rewritten.
+- **The smaller fragment moves by default** (2.5.3b): when both orientations are valid, `planEdit`
+  picks the fragment with fewer atoms (ties → click order). "Move X instead" still flips it.
+- **Verified:** `tsc` + `vite build` clean; `vitest` **248**; `pytest` **38** (the `within` tests);
+  `cargo test` **59** untouched.
 
 ## As built (Phase 2.5) — New Job UI fixes (WebKitGTK contrast, accordion, scroll)
 Three issues found by manual testing in the real Tauri window (not visible in Chromium). CSS +

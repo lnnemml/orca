@@ -146,7 +146,7 @@ with `uvicorn` + `curl` (a real set-distance call, and a reference-atom-in-mask 
 ## Bond-graph mask split — `POST /geometry/rotatable-mask` (2.5.3a)
 For an **intra-fragment** edit (rotating a molecule's own torsion — a side-chain conformation, an OH
 orientation, an aryl-ring flip) the mask is not a whole fragment but the **connected side of a broken
-bond**. Request `{ xyz, cut: [i, j], moving, scale }` → response `{ mask, static_count, cut_length }`.
+bond**. Request `{ xyz, cut: [i, j], moving, scale, within? }` → response `{ mask, static_count, cut_length }`.
 Algorithm: perceive bonds → build the graph → remove the `cut` edge → the connected component
 containing `moving` is the mask (see the axis-atom note below).
 
@@ -188,8 +188,24 @@ cut atom that isn't `moving` itself** from the mask, so the reference atoms (`i,
 outside — exactly what `set-internal`'s reference-atom rule requires. For a distance/angle the mover
 IS a cut atom, so nothing is dropped and the mask is the full moving side.
 
+### Perception sees the WHOLE scene — restrict it with `within` (2.5.3b)
+The endpoint gets the xyz of the **entire scene** (substrate + reagent), not one fragment. That is a
+trap for a **metal–ligand** scene: at `mult=1.2` the Pd–N threshold is **2.520 Å** (`covalent_radii`:
+Pd 1.390, N 0.710) and Pd–C is **2.580 Å** (C 0.760), but a real dative Pd–N bond is **2.05–2.15 Å** —
+well under the threshold. So perception **fuses the metal centre and its ligands into one molecule**,
+and a torsion split inside the substrate would happily swallow the coordinated reagent into the mask.
+
+`within: list[int] | None` fixes this: when given, perception considers **only bonds with BOTH ends in
+`within`**, the component universe is restricted to `within`, and the returned mask ⊆ `within`.
+**Indices stay GLOBAL** — no local renumbering (the 2.5.0 one-index-space rule); `within` is a filter,
+not a re-basing. `cut` and `moving` must be inside `within` (else **422** naming `within`). The
+frontend passes the editing fragment's atoms as `within`, so a split can never reach across into
+another fragment. `test_within_threshold_is_actually_crossed` pins the trap with a **computed** contact
+(Pd at 2.10 Å from a substrate C, below the 2.580 Å threshold — a distance from covalent radii, not a
+guess); the paired trap test shows the mask swallows Pd **without** `within` and is clean **with** it.
+
 ### Verification
-`pytest` **34** (was 26 → +8). The quality test (a) above. Split: butane cut C1–C2, move C3 → mask by
+`pytest` **38** (was 34 → +4, the `within` tests). The quality test (a) above. Split: butane cut C1–C2, move C3 → mask by
 element composition = **1 C + 5 H** (the methyl + rotating H's; the axis carbon C2 dropped). Ring:
 benzene adjacent ring atoms → 422 cycle message. Not bonded: two atoms at 5 Å → 422 naming 5.000 Å.
 **Acceptance** (the intra analogue of 2.5.2c): butane dihedral anti → 60° using this endpoint's mask
@@ -197,7 +213,8 @@ applied through `set-internal` — target `60.000000`; static side unmoved; **ri
 distance WITHIN each side unchanged (moving-side max dev **4.7e-11**, static-side **8.5e-11**) → a
 rigid rotation, not a deformation; count/order preserved. Ibuprofen (generated via `/smiles-to-3d`):
 cut Cα–COOH → mask = the carboxyl group **{C, O, O, H} = 4 atoms**, `static_count` 29. `__version__`
-→ **0.3.0** (new API — the handshake rule). Live `curl`: butane → mask; benzene → 422.
+→ **0.3.0** at 2.5.3a; **0.4.0** at 2.5.3b (the `within` param changed the request shape — the
+handshake rule). Live `curl`: butane → mask; benzene → 422.
 
 ## Versioning + the stale-sidecar handshake (2.5.2d-1)
 
