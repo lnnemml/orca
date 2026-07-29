@@ -148,6 +148,17 @@ body {
   vertical-align: middle;
 }
 
+/* A stale sidecar is running old code — flag it prominently in the status bar
+   (2.5.2d-1), not hidden in a tooltip. */
+.status-stale {
+  font-weight: 700;
+  color: var(--warn);
+  padding: 1px 8px;
+  border-radius: 4px;
+  background: rgba(251, 191, 36, 0.15);
+  border: 1px solid var(--warn);
+}
+
 /* --- Form controls ---------------------------------------------------- */
 
 .field {

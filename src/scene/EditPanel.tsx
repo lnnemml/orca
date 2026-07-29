@@ -1,8 +1,7 @@
 import { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 
 import type { Scene } from "./types";
-import type { SidecarStatus } from "../types";
+import { postSidecar } from "../sidecar-client";
 import {
   applyResponseIssue,
   applyResponseToScene,
@@ -32,42 +31,21 @@ interface SidecarResponse {
   max_static_displacement: number;
 }
 
-/** POST the op to the sidecar (direct fetch to 127.0.0.1:{port}; no Rust proxy —
- * SMILES and convert go the same way). Throws with a human message. */
-async function callSidecar(
+/** POST the op through the shared sidecar client (human error messages, incl.
+ * "older build, restart" on a 404 — no Rust proxy; SMILES/convert go the same
+ * way). */
+function callSidecar(
   scene: Scene,
   plan: Extract<EditPlan, { kind: "ready" }>,
   value: number,
 ): Promise<SidecarResponse> {
-  const status = await invoke<SidecarStatus>("get_sidecar_status");
-  if (!status.port) throw new Error("The chemistry sidecar isn't ready yet.");
-  const resp = await fetch(
-    `http://127.0.0.1:${status.port}/geometry/set-internal`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        xyz: mergeToXyz(scene),
-        op: plan.op,
-        indices: plan.indices,
-        value,
-        mask: plan.mask,
-      }),
-    },
-  );
-  if (!resp.ok) {
-    let detail = `HTTP ${resp.status}`;
-    try {
-      const body = await resp.json();
-      if (body?.detail) detail = String(body.detail);
-    } catch {
-      /* non-JSON error body — keep the status code */
-    }
-    const err = new Error(detail) as Error & { httpStatus?: number };
-    err.httpStatus = resp.status;
-    throw err;
-  }
-  return (await resp.json()) as SidecarResponse;
+  return postSidecar<SidecarResponse>("/geometry/set-internal", {
+    xyz: mergeToXyz(scene),
+    op: plan.op,
+    indices: plan.indices,
+    value,
+    mask: plan.mask,
+  });
 }
 
 export function EditPanel({

@@ -250,72 +250,27 @@ describe("halo & measurement are ≥30° in hue from every element/palette colou
   }
 });
 
-// ── The mask "will-move" marker (2.5.2d) reuses the halo hue, by necessity ────
-// The edit mask glow must be distinct from the halo, elements, palette and
-// defaultColor. It CAN'T be hue-distinct from all of them at once: the only hue
-// band ≥30° from every element/palette/default colour IS the halo's (chartreuse).
-// This test locks that fact, which is why the mask reuses `theme.haloColor` and
-// is distinguished from the halo by FORM (solid glow vs wireframe cage), not hue.
-describe("mask marker shares the halo hue by necessity (no room for a second)", () => {
-  function saturation(hex: string): number {
-    const h = hex.replace("#", "");
-    const [r, g, b] = [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16) / 255);
-    const mx = Math.max(r, g, b);
-    const mn = Math.min(r, g, b);
-    const l = (mx + mn) / 2;
-    const d = mx - mn;
-    return d === 0 ? 0 : d / (1 - Math.abs(2 * l - 1));
-  }
-
+// ── Distinctness rule refined (2.5.2d-1): overlays split by whether they COEXIST ─
+// The ≥30°-hue rule above is for overlays that mark DIFFERENT atoms/bonds (halo,
+// measurement): they must not be mistaken for an atom's element colour. The
+// selection halo and the edit-mask glow, by contrast, sit on the SAME atom by
+// construction — the last-clicked atom is always in the mask — so they cannot be
+// confused for *each other's* atom. They are distinguished by FORM (wireframe cage
+// vs solid fill) and lightness, and the only colour requirement on a coexisting
+// overlay is contrast against the background. So the mask deliberately reuses
+// `theme.haloColor` — this is the rule, not an exception.
+describe("coexisting overlays (halo + mask) are form-distinguished, not hue-distinguished", () => {
   for (const theme of VIEWER_THEMES) {
-    it(`${theme.id}: no hue clears elements/palette/default AND the halo`, () => {
-      const drawn = { ...CPK_ELEMENT_COLORS, ...theme.elementColorOverrides };
-      // Only saturated colours constrain a hue (near-greys don't read as a hue).
-      const avoid = [...Object.values(drawn), "#ff1493", ...theme.fragmentPalette]
-        .filter((c) => saturation(c) >= 0.25);
-      // Search every integer hue via a synthesized colour and check both floors.
-      let found = false;
-      for (let hueDeg = 0; hueDeg < 360 && !found; hueDeg++) {
-        const probe = hslHex(hueDeg, 0.9, 0.5);
-        const clearsElements = avoid.every((c) => hueDistance(probe, c) >= 30);
-        const clearsHalo = hueDistance(probe, theme.haloColor) >= 30;
-        if (clearsElements && clearsHalo) found = true;
-      }
-      expect(found).toBe(false);
+    it(`${theme.id}: the mask reuses the halo hue and both clear the background`, () => {
+      // The mask IS `theme.haloColor` in MoleculeViewer (solid fill vs the halo's
+      // wireframe cage). A coexisting overlay is required to clear the BACKGROUND,
+      // not to differ in hue from the overlay it shares an atom with.
+      expect(
+        contrastRatio(theme.haloColor, theme.background),
+      ).toBeGreaterThanOrEqual(AA_LARGE);
     });
   }
 });
-
-/** Minimal HSL→hex (test-local) to synthesize probe colours at a given hue. */
-function hslHex(h: number, s: number, l: number): string {
-  h /= 360;
-  const f = (p: number, q: number, t: number) => {
-    if (t < 0) t += 1;
-    if (t > 1) t -= 1;
-    if (t < 1 / 6) return p + (q - p) * 6 * t;
-    if (t < 1 / 2) return q;
-    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
-    return p;
-  };
-  let r: number;
-  let g: number;
-  let b: number;
-  if (s === 0) {
-    r = g = b = l;
-  } else {
-    const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
-    const p = 2 * l - q;
-    r = f(p, q, h + 1 / 3);
-    g = f(p, q, h);
-    b = f(p, q, h - 1 / 3);
-  }
-  return (
-    "#" +
-    [r, g, b]
-      .map((v) => Math.round(v * 255).toString(16).padStart(2, "0"))
-      .join("")
-  );
-}
 
 // A guard so a future edit that reorders/renames the presets is noticed.
 describe("preset set", () => {

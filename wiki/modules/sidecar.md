@@ -142,6 +142,36 @@ final coordinates: targets `d=1.5 / θ=107.0 / φ=90.0` → recomputed `1.500000
 90.000000`, substrate internal geometry unchanged to 1e-9. `pytest` 25 (was 11 → +14). Live-verified
 with `uvicorn` + `curl` (a real set-distance call, and a reference-atom-in-mask → 422).
 
+## Versioning + the stale-sidecar handshake (2.5.2d-1)
+
+**Versioning rule:** bump `app/__init__.py` `__version__` **minor** every time an endpoint is added
+or its request/response shape changes. This is not cosmetic — the Rust core reads it to detect a
+sidecar running behind the app. (Now `0.2.0`: `+/geometry/set-internal` since `0.1.0`.)
+
+**Why it exists:** `npm run tauri dev` hot-reloads only the frontend; `SidecarManager::start` runs
+once at Rust startup and (in release) launches uvicorn without `--reload`. So after adding an
+endpoint, the reloaded frontend calls the new route while Python still runs old code → **404
+`{"detail":"Not Found"}`** mid-scenario, with no hint. Full write-up: `wiki/debugging/005`.
+
+**Handshake:** after `/health` answers, the Rust core parses the reported `version` and compares it
+against `EXPECTED_MIN_SIDECAR_VERSION` **component-wise as numbers** (`version_at_least` in
+`sidecar.rs` — string compare is wrong: `"0.10.0" < "0.9.0"` lexically). Older, or unparseable →
+`SidecarStatus.status = "stale"` (a new state, distinct from `down`), and the status bar shows it
+prominently. `SidecarStatus` now also carries `version` and `expected_version`. See
+`wiki/modules/tauri-core.md`.
+
+**Human errors, one wrapper:** `src/sidecar-client.ts` (`postSidecar` + the pure, tested
+`describeSidecarError`) is the single path for EditPanel / import-file / smiles. 404 → "older build,
+restart" (naming the route); 422 → the `detail` verbatim; 5xx → the `detail` prominently; network →
+"isn't running". No caller sees a bare `Not Found`.
+
+**`--reload` in dev:** debug builds (`cfg!(debug_assertions)`) launch uvicorn with
+`--reload --reload-dir app`, so Python edits are picked up without restarting the window. `--reload`
+spawns a worker child; `start` puts the sidecar in its **own process group** and `stop`/`Drop`
+`killpg` the whole tree (SIGTERM → grace → SIGKILL) — the `debugging/004` pattern, verified so no
+orphaned uvicorn keeps the port. Release builds keep the single non-reload process; the handshake is
+the guard there.
+
 ## Responsibilities
 Chemistry intelligence: parsing, structure generation, conversions, manual indexing.
 

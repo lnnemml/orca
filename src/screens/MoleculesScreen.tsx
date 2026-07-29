@@ -4,8 +4,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { MoleculeViewer } from "../viewer/MoleculeViewer";
 import { atomLinesToXyz } from "../viewer/xyz-format";
 import { importStructureFile, IMPORT_ACCEPT } from "../viewer/import-file";
+import { postSidecar } from "../sidecar-client";
 import { formatTimestamp } from "../format";
-import type { Molecule, SidecarStatus } from "../types";
+import type { Molecule } from "../types";
 
 interface MoleculesScreenProps {
   /** Send a molecule to the New Job screen ("Use" action). */
@@ -212,28 +213,11 @@ function AddMoleculeForm({ onSaved, onError }: AddMoleculeFormProps) {
     if (!s) return;
     setGenerating(true);
     try {
-      const status = await invoke<SidecarStatus>("get_sidecar_status");
-      if (!status.port) throw new Error("Sidecar is not ready yet");
-      const resp = await fetch(`http://127.0.0.1:${status.port}/smiles-to-3d`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ smiles: s }),
-      });
-      if (!resp.ok) {
-        let detail = `HTTP ${resp.status}`;
-        try {
-          const body = await resp.json();
-          if (body?.detail) detail = String(body.detail);
-        } catch {
-          /* non-JSON error body — keep the status code */
-        }
-        throw new Error(detail);
-      }
-      const data = (await resp.json()) as {
+      const data = await postSidecar<{
         xyz: string;
         charge: number;
         formula: string;
-      };
+      }>("/smiles-to-3d", { smiles: s });
       setDraft((d) => ({
         ...d,
         xyz: data.xyz,

@@ -327,15 +327,18 @@ as a **solid translucent sphere** (`MASK_OPACITY = 0.22`, radius = the halo radi
 drawn FIRST so the crisp selection cage sits on top where they overlap. The halo says "I picked
 this" (a wireframe cage on 2–4 atoms); the mask says "this will move" (a soft fill over the whole
 fragment). `NewJobScreen` passes the mask only while `planEdit` is `ready`.
-- **Distinctness — the mask shares the halo hue by necessity, distinguished by FORM.** The
-  distinctness invariant wants the mask ≥30° in hue from every element colour, the palette,
-  `defaultColor` #ff1493, **and the halo**. It is provably impossible to clear all of those at once:
-  the ONLY hue band ≥30° from the whole CPK/palette wheel is chartreuse (74–90°) — and that band IS
-  the halo's. `theme.test.ts` locks this (`no hue clears elements/palette/default AND the halo`,
-  per theme). So the mask **reuses `theme.haloColor`** and is set apart by **form** (solid glow vs
-  wireframe cage) and by coverage (whole fragment vs the picked atoms), not by hue. This is a
-  reported, deliberate exception to the "distinct hue" rule, surfaced to the architect rather than
-  faked.
+- **Distinctness — the rule, corrected (2.5.2d-1).** The ≥30°-hue invariant is for overlays that
+  mark **different** atoms/bonds (halo, measurement) — they must not be mistaken for an atom's
+  element colour. The halo and the mask, by contrast, **coexist on the SAME atom by construction**:
+  the last-clicked atom is always in the mask, so the two overlays literally share atoms and can't be
+  confused for *each other's* atom. **Coexisting overlays are distinguished by FORM** (wireframe cage
+  vs solid fill) and lightness; the only colour requirement on them is **contrast against the
+  background**. So the mask deliberately reuses `theme.haloColor` — that is the rule, not an
+  exception. (This corrects a spec error that demanded ≥30° hue between the halo and the mask; the
+  element-safe band being narrow — chartreuse 74–90° — is *why* no second annotation hue exists, but
+  it isn't the reason the mask shares the halo hue; the reason is that they mark the same atom.)
+  `theme.test.ts` splits the two classes: halo/measurement clear ≥30° from every element/palette/
+  default colour; the coexisting mask clears the background (≥3:1), reusing the halo hue.
 
 ## Structures & trajectories
 3Dmol.js viewer component (**done**, above); multiframe xyz → trajectory playback with frame

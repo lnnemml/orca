@@ -1801,3 +1801,46 @@ moved, `measured 1.8`, `max_static_displacement 0.0`. In-window checks needing t
 (the full carbonyl+BH₄⁻ d→θ→φ sequence by hand, re-measuring after each apply; intra-fragment
 refusal; Undo; camera doesn't jump on Apply) in the author checklist. Next: 2.5.3 — bond-graph mask
 split for intra-fragment edits.
+
+## [2026-07-29] session | 2.5.2d-1: detect a stale sidecar (version handshake) + human errors
+
+Diagnostic unit. 2.5.2d's code is correct; the trap is that the app can silently talk to an OLD
+sidecar and report it as the word **"Not Found"**. **Reproduced, not hypothesised:** with the app
+running, a route the running build lacks returns `HTTP 404 {"detail":"Not Found"}` — because
+`npm run tauri dev` hot-reloads only the frontend while `SidecarManager::start` launched uvicorn once
+at startup without `--reload`, so Python keeps serving the code loaded when the window opened. Full
+page: `wiki/debugging/005`.
+
+**Version handshake.** `app/__init__.py` → `0.2.0`; rule recorded in `sidecar.md`: bump minor on every
+endpoint add/change. Rust holds `EXPECTED_MIN_SIDECAR_VERSION`, parses `/health`'s `version`, and
+compares **component-wise as numbers** (`version_at_least`) — string compare lies (`"0.10.0" <
+"0.9.0"`). Older/unparseable → new `Health::Stale` (alive but old, distinct from `Down`); the status
+bar shows **"Sidecar STALE — restart the app"** as a warning band (running vs expected version), not a
+tooltip. `SidecarStatus` gained `version` + `expected_version`. 4 Rust tests (incl. `0.10.0` vs
+`0.9.0`, unparseable → stale, `parse_health_version`).
+
+**Human errors, one wrapper.** `src/sidecar-client.ts` (`postSidecar` + pure, tested
+`describeSidecarError`) now backs all three callers (EditPanel, import-file, smiles): 404 → "older
+build, restart" (names the route); 422 → `detail` verbatim; 5xx → `detail` prominently; network →
+"isn't running". No caller emits a bare `Not Found`.
+
+**`--reload` in dev — added, orphan-free.** Debug builds launch uvicorn with `--reload --reload-dir
+app`. `--reload` spawns a worker child; `start` puts the sidecar in its own process group and
+`stop`/`Drop` `killpg` the tree (the `debugging/004` discipline). **Verified live:** the tree is
+supervisor + resource_tracker + worker sharing one pgid; `killpg` reaped all three, `pgrep uvicorn`
+empty, port released. Benefit verified too: `touch app/geometry.py` → `WatchFiles ... Reloading`, new
+worker, `/health` still serving.
+
+**Spec-error fix (my mistake).** The ≥30°-hue distinctness rule is for overlays marking DIFFERENT
+atoms (halo, measurement). The halo and the edit mask coexist on the SAME atom by construction (the
+last-clicked atom is always in the mask), so they're distinguished by FORM (cage vs fill) + lightness,
+and only background contrast is required of them — the mask reuses the halo hue as the RULE, not an
+exception. `theme.test.ts` and `visualization.md` rewritten to split coexisting vs different-atom
+overlays.
+
+**Verified.** `tsc` + `vite build` clean; `vitest` **240** (was 234 → +6: `describeSidecarError`);
+`cargo test` **59** (was 55 → +4: version compare / parse); `pytest` **26** (was 25 → +1: the health
+test now asserts against `__version__` so a bump doesn't break it, plus a dotted-numeric check).
+In-window checks (status bar reads STALE not healthy against an old sidecar; Preview shows the
+older-build message) need the real Tauri window — author checklist. Next: 2.5.3 — bond-graph mask
+split.

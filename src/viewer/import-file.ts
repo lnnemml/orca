@@ -7,10 +7,8 @@
  * failure so the caller can surface it in its existing banner.
  */
 
-import { invoke } from "@tauri-apps/api/core";
-
 import { xyzToAtomLines } from "./xyz-format";
-import type { SidecarStatus } from "../types";
+import { postSidecar } from "../sidecar-client";
 
 /** File-picker `accept` list — kept in sync with {@link EXT_TO_FORMAT} + xyz. */
 export const IMPORT_ACCEPT = ".xyz,.pdb,.cif,.mol,.sdf,.gen";
@@ -65,27 +63,10 @@ function readFileText(file: File): Promise<string> {
 
 /** Convert non-xyz content to xyz via the sidecar; returns the xyz text. */
 async function convertToXyz(content: string, fromFormat: string): Promise<string> {
-  const status = await invoke<SidecarStatus>("get_sidecar_status");
-  if (!status.port) throw new Error("Sidecar is not ready yet");
-  const resp = await fetch(`http://127.0.0.1:${status.port}/convert`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      content,
-      from_format: fromFormat,
-      to_format: "xyz",
-    }),
+  const data = await postSidecar<{ content: string }>("/convert", {
+    content,
+    from_format: fromFormat,
+    to_format: "xyz",
   });
-  if (!resp.ok) {
-    let detail = `HTTP ${resp.status}`;
-    try {
-      const body = await resp.json();
-      if (body?.detail) detail = String(body.detail);
-    } catch {
-      /* non-JSON error body — keep the status code */
-    }
-    throw new Error(detail);
-  }
-  const data = (await resp.json()) as { content: string };
   return data.content;
 }

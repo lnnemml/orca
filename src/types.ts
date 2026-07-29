@@ -47,9 +47,13 @@ export interface Molecule {
   created_at: string;
 }
 
-export type SidecarState = "healthy" | "starting" | "down";
+export type SidecarState = "healthy" | "starting" | "stale" | "down";
 
 export interface SidecarStatus {
   status: SidecarState;
   port: number | null;
+  /** The sidecar's reported version once /health answered (2.5.2d-1). */
+  version?: string | null;
+  /** The minimum version this app build expects. */
+  expected_version?: string;
 }

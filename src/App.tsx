@@ -26,12 +26,14 @@ type Screen =
 const DOT_COLOR: Record<SidecarState, string> = {
   healthy: "var(--ok)",
   starting: "var(--warn)",
+  stale: "var(--warn)",
   down: "var(--err)",
 };
 
 const STATUS_LABEL: Record<SidecarState, string> = {
   healthy: "Sidecar healthy",
   starting: "Sidecar starting…",
+  stale: "Sidecar STALE — restart the app",
   down: "Sidecar down",
 };
 
@@ -176,13 +178,21 @@ function App() {
       )}
 
       <footer className="statusbar">
-        <span>
+        <span
+          className={
+            "status-sidecar" + (sidecar?.status === "stale" ? " status-stale" : "")
+          }
+        >
           <span
             className="status-dot"
             style={{ background: sidecar ? DOT_COLOR[sidecar.status] : "#4b5563" }}
           />
           {sidecar ? STATUS_LABEL[sidecar.status] : "Checking…"}
-          {sidecar?.port ? ` :${sidecar.port}` : ""}
+          {sidecar?.status === "stale" && sidecar.version
+            ? ` (running ${sidecar.version}, need ${sidecar.expected_version})`
+            : sidecar?.port
+              ? ` :${sidecar.port}`
+              : ""}
         </span>
         <span>
           ORCA: <span className="mono">{orcaPath || "not configured"}</span>

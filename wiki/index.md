@@ -48,7 +48,8 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 - [002-webkitgtk-3dmol-offscreencanvas.md](debugging/002-webkitgtk-3dmol-offscreencanvas.md) — 3Dmol.js null WebGL context in WebKitGTK (OffscreenCanvas webgl2 returns null) + fix & MiniBrowser test
 - [003-webkitgtk-select-styling.md](debugging/003-webkitgtk-select-styling.md) — `<select>` dark-on-dark in WebKitGTK (native GTK widget ignores inherited color) + appearance:none fix
 - [004-mpi-ranks-escape-process-group.md](debugging/004-mpi-ranks-escape-process-group.md) — cancel orphans ORCA's MPI ranks (they escape the parent's process group) + sweep-by-cwd fix
+- [005-stale-sidecar-hmr.md](debugging/005-stale-sidecar-hmr.md) — the app talks to a stale sidecar after frontend HMR (uvicorn stays old) → "Not Found"; version handshake + human errors + dev `--reload`
 
 ---
 
-*Page count: 32. Last structural update: 2026-07-29 (+architecture/prior-art).*
+*Page count: 33. Last structural update: 2026-07-29 (+debugging/005-stale-sidecar-hmr).*

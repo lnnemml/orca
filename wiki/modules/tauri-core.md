@@ -195,6 +195,24 @@ registered in `lib.rs`.
   query, the real `opt_output_excerpt.txt` fixture (`Geometry convergence` → 2), and **column
   reporting** (`reports_match_columns`, `regex_match_columns_point_at_first_hit`).
 
+## As built (2.5.2d-1) — stale-sidecar detection
+`sidecar.rs` gained a version handshake so the app can tell it's talking to an out-of-date sidecar
+(the `npm run tauri dev` HMR trap — `wiki/debugging/005`).
+- **`Health` gained `Stale`** (serialized `"stale"`) — responding but older than
+  `EXPECTED_MIN_SIDECAR_VERSION` (`"0.2.0"`). Distinct from `Down`: the process is alive, it just
+  needs a restart. `SidecarStatus` gained `version` (the reported one) and `expected_version`.
+- **`health_check`** now reads the `/health` body's `version` and sets `Healthy` vs `Stale` via
+  `version_at_least(actual, expected)` — a pure, unit-tested **component-wise numeric** compare
+  (string compare lies: `"0.10.0" < "0.9.0"`). Unparseable version → treated as stale, never healthy.
+- **`--reload` in dev + process-group kill.** Debug builds launch uvicorn with `--reload`; `start`
+  sets the child's **own process group** (`CommandExt::process_group(0)`) and `stop`/`Drop` call
+  `kill_process_tree` → `killpg(SIGTERM)` → grace → `killpg(SIGKILL)`, so the `--reload` worker child
+  isn't orphaned (the `debugging/004` process-group discipline, reused here). Verified live: no
+  orphaned uvicorn, port released.
+- **4 new unit tests** (`sidecar::tests`): `version_at_least` component-wise (incl. `0.10.0` vs
+  `0.9.0` where string order is wrong), ordering basics, unparseable → stale, and
+  `parse_health_version`.
+
 ## Deviation note
 `dirs` crate used for the data dir (per task spec) rather than Tauri's `app.path()` API —
 harmless; consolidate later if desired.
