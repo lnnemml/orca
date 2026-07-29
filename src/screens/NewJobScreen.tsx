@@ -123,6 +123,11 @@ export function NewJobScreen({
     setSelection((sel) => toggleAtom(sel, globalIndex));
   const clearSelection = () => setSelection([]);
 
+  // Show every atom's global index in the 3D view (2.5.2e-1). Off by default;
+  // selected atoms are numbered regardless (MoleculeViewer). Toggling this
+  // redraws labels only — no model reload, no camera move.
+  const [showNumbers, setShowNumbers] = useState(false);
+
   // React to a composition change via `compositionSignature` (the same
   // primitive the viewer uses to decide when to re-zoom). A coordinate-only edit
   // (same signature) leaves the selection untouched. On a real change, ask
@@ -687,12 +692,25 @@ export function NewJobScreen({
           <InputEditor value={content} onChange={setContent} />
         </div>
         <div className="viewer-column">
+          {scene ? (
+            <div className="viewer-toolbar">
+              <label className="viewer-toggle" title="Label every atom with its global index">
+                <input
+                  type="checkbox"
+                  checked={showNumbers}
+                  onChange={(e) => setShowNumbers(e.target.checked)}
+                />
+                Numbers
+              </label>
+            </div>
+          ) : null}
           <div className="viewer-panel">
             {scene ? (
               <MoleculeViewer
                 scene={scene}
                 selection={selection}
                 onAtomPick={onAtomPick}
+                showAtomNumbers={showNumbers}
               />
             ) : (
               <div className="viewer-empty muted">No coordinates in input</div>

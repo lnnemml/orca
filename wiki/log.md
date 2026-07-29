@@ -1459,3 +1459,54 @@ In-window checks need the real Tauri window: 2 atoms cross-fragment → distance
 `inter-fragment`; 3 atoms → angle whose vertex is the 2nd click (not the middle index); 4 atoms →
 dihedral; repeat-click on a picked atom under a label still deselects; remove first fragment →
 selection AND labels vanish. Next: 2.5.2c — apply d/θ/φ through the ASE geometry kernel.
+
+## [2026-07-29] session | 2.5.2e-1: proportional selection halo + optional atom numbering
+
+Viewer ergonomics after the 2.5.2 manual check: the selection halo was nearly invisible except
+on hydrogen, and atom numbering was wanted. **No geometry, no sidecar, no constraints.**
+
+**Root cause of the invisible halo — a constant radius, not "too small".** 3Dmol draws each atom
+as `sphere:{scale:0.3}` = `vdwRadii[element] * 0.3` (`GLModel.getRadiusFromStyle`), so the drawn
+radius is element-dependent: H 0.36 Å, O 0.456, N 0.465, **C 0.51**. The old halo was a *constant*
+`HIGHLIGHT_RADIUS = 0.55`, so the shell outside the atom was 0.19 Å on H but **0.04 Å on C** —
+seen only on hydrogen. Fix: `highlightRadius(element)` (pure, `src/viewer/highlight.ts`) =
+`vdw*0.3 + 0.25` floored at 0.5 — a **constant 0.25 Å shell on top of the drawn radius**, so every
+element shows the same visible thickness.
+
+**vdW table = documented copy of 3Dmol's.** 3Dmol exports `GLModel.vdwRadii` (typed), but its
+bundle needs `window`/`document` and won't load under the node test runner (no jsdom, by design),
+so importing it would break the pure test. Transcribed the table verbatim (v2.5.5), covering
+3Dmol's own set — H–Kr **plus Pd(46)/Pt(78)**, the cross-coupling metals ADR-007 names (we already
+hit a coverage hole exactly there in 2.5.0). Off-table → 1.5 Å = 3Dmol's `defaultSphereRadius`
+(never NaN/zero). **Drift guard:** pure `vdwTableDrift(reference)` lists mismatches;
+`MoleculeViewer` calls it once in dev with the live `GLModel.vdwRadii` and warns — the active check
+in the real webview, since the test can't reach 3dmol.
+
+**Empirical screenshot decision (MiniBrowser, `debugging/002` technique, H·C·N·O in one frame).**
+Before (constant 0.55, `#ffffff`, op 0.35): no visible halo on C/N/O, only on H. Solid magenta
+`vdw*0.3+0.25`: reads on C/N/H but **washes out over CPK red oxygen** (hue clash) and is thin on
+grey C. **Wireframe** magenta cage: crisp on all four including grey C and red O — chosen. Colour
+`#ff2d95` (saturated, reads on `#0d0f13` and on the light bg e-2 adds; NOT `#ffffff` = CPK H), op
+0.85. Per element after: H 0.61 / O 0.706 / N 0.715 / C 0.76 Å halo.
+
+**Atom numbering.** New `MoleculeViewer` prop `showAtomNumbers` (default false → Molecules screen
+and conformer panel unchanged); a `NewJobScreen` "Numbers" toggle. **Only the global 0-based index
+in the 3D view** — the local index stays in `AtomInspector` where the fragment gives it context
+(two numbers on an atom is exactly the confusion the single index space removes). **Selected atoms
+are numbered always**, even with the toggle off. Halos + measurement lines/labels + number labels
+all live in the **one** overlay effect (`[selection, scene, showAtomNumbers]`) — the single owner
+of `removeAllShapes`/`removeAllLabels`; a second owner would erase the first. `showAtomNumbers` is
+NOT in the model effect's deps, so toggling redraws labels only — no model reload, no `zoomTo`.
+
+**Number labels don't intercept picks — verified empirically.** A MiniBrowser probe placed the
+"1" label over atom index 1, armed `setClickable`, and dispatched a real click at that atom
+(project via `modelToScreen`, `mousedown` on canvas + `mouseup` on body — the 2.5.2a event path).
+Callback fired with `atom.index === 1` (window title `PICKED-1`): the label and halo did not
+intercept the pick.
+
+**Verified.** `tsc` + `vite build` clean; `vitest` **188** (was 178 → +10: `highlight.ts`
+monotonicity, floor, Pd/Pt non-fallback, drift guard); `cargo test` **55** (Rust untouched).
+In-window checks needing the real Tauri window: halo visible on an aromatic-ring carbon and a
+carbonyl oxygen; Numbers toggles without a camera jump; numbering on a ~50-atom scene stays
+responsive (perf input for e-2). Next: 2.5.2e-2 — viewer fullscreen / background presets / settings
+persistence. Screenshots archived with the session (`/tmp/halo-*.png`, `/tmp/pick-through-label.png`).

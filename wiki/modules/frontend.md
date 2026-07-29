@@ -400,6 +400,24 @@ source — see `modules/scene.md`). No coordinate change: measurement is display
   toggle-off under a label, remove-first-fragment clears selection + labels) need the real
   Tauri window; checklist in the log.
 
+## As built (2.5.2e-1) — viewer ergonomics: proportional halo + atom numbering
+Ergonomics after the 2.5.2 manual check (halo nearly invisible except on H; numbering wanted).
+No geometry touched. Halo maths + the numbering rule live in `MoleculeViewer` /
+`viewer/highlight.ts` — see `modules/visualization.md` for the root cause (constant radius vs
+`vdw×0.3`) and the wireframe/colour screenshot decision.
+- **`NewJobScreen` "Numbers" toggle** — a small checkbox in a new `.viewer-toolbar` above the 3D
+  view, shown only when a scene is present. Off by default; drives `MoleculeViewer`'s
+  `showAtomNumbers`. Local component state (`showNumbers`), not the scene store. Toggling it
+  redraws labels only — no model reload, no camera move (the label deps are on the overlay effect,
+  not the model effect).
+- **Global index only in the viewer**; the local index stays in `AtomInspector`. Selected atoms
+  are numbered even with the toggle off.
+- **Verified:** `tsc` + `vite build` clean; `vitest` **188** (was 178 → +10: `highlight.ts` —
+  monotonicity, floor, Pd/Pt non-fallback, table drift); `cargo test` 55 (Rust untouched).
+  MiniBrowser screenshots (before/after halo on H·C·N·O; pick-through-label = `PICKED-1`) stand
+  in for the headless-undrivable Tauri window; in-window checks (halo on aromatic C + carbonyl O,
+  toggle without camera jump, ~50-atom numbering perf) in the log checklist.
+
 ## As built (Phase 2.5) — New Job UI fixes (WebKitGTK contrast, accordion, scroll)
 Three issues found by manual testing in the real Tauri window (not visible in Chromium). CSS +
 a collapse wrapper only — no Input Builder / `build-input.ts` / `orca-options.ts` logic changed.

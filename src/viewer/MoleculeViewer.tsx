@@ -1,9 +1,10 @@
 import { useEffect, useRef } from "react";
-import { createViewer, type GLViewer } from "3dmol";
+import { createViewer, GLModel, type GLViewer } from "3dmol";
 
 import type { Scene, SceneAtom } from "../scene/types";
 import { compositionSignature, fragmentRanges, mergeToXyz } from "../scene/scene";
 import { measureSelection, formatMeasurementValue } from "../scene/measure";
+import { highlightRadius, vdwTableDrift } from "./highlight";
 import { fragmentColor } from "./fragment-colors";
 
 // Side-effect: force 3Dmol onto its direct-canvas WebGL path so it renders in
@@ -29,18 +30,37 @@ interface MoleculeViewerProps {
    * — ADR-008 decision 3).
    */
   onAtomPick?: (globalIndex: number) => void;
+  /**
+   * Label every atom with its **global 0-based index** (2.5.2e-1). Default
+   * false, so the Molecules screen and the Job-detail conformer panel are
+   * unchanged. Only the global index is ever shown in the 3D view — the local
+   * index lives in `AtomInspector`, where the fragment gives it context; two
+   * numbers on an atom would reintroduce exactly the ambiguity the single
+   * end-to-end index space exists to avoid. Selected atoms are always numbered,
+   * even with this off, so a pick is legible immediately.
+   */
+  showAtomNumbers?: boolean;
   style?: React.CSSProperties;
 }
 
 // Match the log console (#0d0f13) so the viewer sits inside the dark theme.
 const BACKGROUND = "#0d0f13";
 
-/** Highlight sphere for a selected atom — translucent so the CPK/fragment
- * colour underneath still reads. Radius is a touch above the ball-and-stick
- * sphere (scale 0.3) so it reads as a halo, not a repaint. */
-const HIGHLIGHT_COLOR = "#ffffff";
-const HIGHLIGHT_RADIUS = 0.55;
-const HIGHLIGHT_OPACITY = 0.35;
+/** Highlight halo for a selected atom (2.5.2e-1). A **wireframe** sphere, sized
+ * per element by `highlightRadius` (proportional to 3Dmol's drawn radius — a
+ * constant-radius halo was invisible on carbon; see `highlight.ts`). Wireframe,
+ * not a solid translucent sphere: the MiniBrowser screenshot showed a solid
+ * magenta halo washing out over CPK red oxygen and grey carbon, while the cage
+ * reads on all four of H/C/N/O. Colour is a saturated magenta (NOT `#ffffff`,
+ * which is CPK hydrogen and vanishes on the light background e-2 adds). */
+const HALO_COLOR = "#ff2d95";
+const HALO_OPACITY = 0.85;
+
+/** Atom-number label style (2.5.2e-1) — small, semi-transparent backing, drawn
+ * in front. Non-clickable (3Dmol labels default so), like the measurement
+ * labels. */
+const NUMBER_FONT_COLOR = "#e6e6e6";
+const NUMBER_BG = "#0d0f13";
 
 /** Ball-and-stick — the same style the viewer has always used. Fresh object per
  * call (3Dmol may retain the reference). */
@@ -116,6 +136,7 @@ export function MoleculeViewer({
   scene,
   selection,
   onAtomPick,
+  showAtomNumbers = false,
   style,
 }: MoleculeViewerProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -137,6 +158,21 @@ export function MoleculeViewer({
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
+
+    // Dev guard: our `highlight.ts` vdW table is a hand copy of 3Dmol's
+    // `GLModel.vdwRadii` (the node test runner can't load the 3dmol bundle, so
+    // we can't import it there). Here in the real webview 3Dmol IS loaded — warn
+    // if a 3Dmol upgrade moved the table out from under our copy.
+    if (import.meta.env.DEV) {
+      const drift = vdwTableDrift(
+        GLModel.vdwRadii as Record<string, number | undefined>,
+      );
+      if (drift.length > 0) {
+        console.warn(
+          `[MoleculeViewer] highlight.ts vdW radii disagree with 3Dmol for: ${drift.join(", ")} — update VDW_RADII.`,
+        );
+      }
+    }
 
     const viewer = createViewer(container, { backgroundColor: BACKGROUND });
     viewerRef.current = viewer;
@@ -208,20 +244,21 @@ export function MoleculeViewer({
     // The model is rebuilt whenever geometry changes OR picking flips on/off.
   }, [xyzData, scene, pickable]);
 
-  // Highlight the selected atoms with translucent spheres and, when 2+ atoms are
-  // picked, draw the measurement geometry (2.5.2b): a dashed line per bond of the
-  // pick chain and a value label. Kept a SEPARATE effect from the model rebuild
-  // so a selection change never reloads the model or moves the camera
-  // (`removeAllShapes`/`removeAllLabels` + re-add, no zoomTo). Spheres — not
-  // setStyle — because a style override would clobber the per-fragment colours
-  // applied above and we'd have to restore them by hand.
+  // The overlay effect — the SINGLE owner of every shape and label in the
+  // viewer: selection halos, measurement lines/labels (2.5.2b), and atom-number
+  // labels (2.5.2e-1). It must be the only place that calls
+  // `removeAllShapes`/`removeAllLabels`: a second effect doing so would erase
+  // this one's work (and vice-versa). Kept SEPARATE from the model rebuild so a
+  // selection or numbering change never reloads the model or moves the camera —
+  // `showAtomNumbers` is in the deps but NOT in the model effect's, so toggling
+  // Numbers redraws labels only, no `zoomTo`, no `addModel`.
   //
-  // `removeAllShapes`/`removeAllLabels` run BEFORE the `!scene` bail-out: when
-  // the scene goes null (last fragment removed) the halos and labels must clear,
-  // not linger. The lines/labels are decoration only — `addLine`/`addLabel` are
-  // NOT made clickable, so a label lying over a selected atom can't intercept the
-  // pick; a repeat click still toggles the atom off (the 2.5.2a picking path is
-  // untouched).
+  // `removeAllShapes`/`removeAllLabels` run BEFORE the `!scene` bail-out so a
+  // scene going null (last fragment removed) clears halos and labels. Every
+  // shape/label here is decoration — none is made clickable (3Dmol shapes and
+  // labels default non-clickable and we never call `setClickable` on them), so a
+  // label or halo lying over a selected atom can't intercept the pick; a repeat
+  // click still toggles the atom off (the 2.5.2a picking path is untouched).
   useEffect(() => {
     const viewer = viewerRef.current;
     if (!viewer) return;
@@ -232,22 +269,41 @@ export function MoleculeViewer({
       return;
     }
     const rows = scene.fragments.flatMap((f) => f.atoms);
-    const picked = (selection ?? [])
-      .map((gi) => rows[gi]) // stale index → undefined; validateSelection guards
-      .filter((a): a is (typeof rows)[number] => a != null);
 
-    for (const atom of picked) {
+    // Selection halos — wireframe spheres sized per element (see highlight.ts).
+    for (const gi of selection ?? []) {
+      const atom = rows[gi]; // stale index → undefined; validateSelection guards
+      if (!atom) continue;
       viewer.addSphere({
         center: { x: atom.x, y: atom.y, z: atom.z },
-        radius: HIGHLIGHT_RADIUS,
-        color: HIGHLIGHT_COLOR,
-        opacity: HIGHLIGHT_OPACITY,
+        radius: highlightRadius(atom.element),
+        color: HALO_COLOR,
+        opacity: HALO_OPACITY,
+        wireframe: true,
       });
     }
 
     drawMeasurement(viewer, scene, selection ?? []);
+
+    // Atom numbers — the GLOBAL 0-based index only. Every atom when the toggle
+    // is on; selected atoms ALWAYS (so a pick reads even with the toggle off).
+    const numbered = new Set<number>();
+    if (showAtomNumbers) rows.forEach((_, i) => numbered.add(i));
+    for (const gi of selection ?? []) if (rows[gi]) numbered.add(gi);
+    for (const gi of numbered) {
+      const atom = rows[gi];
+      viewer.addLabel(String(gi), {
+        position: { x: atom.x, y: atom.y, z: atom.z },
+        fontSize: 11,
+        fontColor: NUMBER_FONT_COLOR,
+        backgroundColor: NUMBER_BG,
+        backgroundOpacity: 0.6,
+        inFront: true,
+      });
+    }
+
     viewer.render();
-  }, [selection, scene]);
+  }, [selection, scene, showAtomNumbers]);
 
   return <div ref={containerRef} className="molecule-viewer" style={style} />;
 }

@@ -4,7 +4,8 @@
 model, index-range styling, shared `fragmentColor` palette. **Atom picking added (2.5.2a)** — mouse
 click → `atom.index` → selection panel, WebKitGTK-confirmed. **Measurement labels/lines added
 (2.5.2b)** — dashed bond lines + a d/θ/φ value label in the highlight effect, non-clickable.
-Trajectories / orbitals / spectra not started.
+**Halo made proportional + atom numbering (2.5.2e-1)** — wireframe halo sized per element,
+optional global-index labels. Trajectories / orbitals / spectra not started.
 
 ## As built (Phase 2.1) — MoleculeViewer + xyz preview
 `npm install 3dmol` (v2.5.5; ships its own TypeScript types under `build/types/`, so no custom
@@ -117,6 +118,54 @@ after the halo spheres, from `measureSelection` (pure, `scene/measure.ts`):
   we never call `setClickable` on them, so a label lying over a selected atom cannot intercept
   the pick — a repeat click still toggles that atom off (the 2.5.2a picking path is
   untouched). This is a direct regression guard for the pick-through-label case.
+
+### Proportional selection halo (2.5.2e-1)
+The manual check found the selection nearly invisible except on hydrogen. **Root cause was not
+"radius too small" — it was a constant radius.** 3Dmol draws each atom as `sphere:{scale:0.3}`,
+i.e. `vdwRadii[element] * 0.3` (`GLModel.getRadiusFromStyle`), so the drawn radius is
+element-dependent: H 0.36 Å, O 0.456, N 0.465, **C 0.51**. The old halo was a *constant*
+`HIGHLIGHT_RADIUS = 0.55`, so the visible shell outside the atom was 0.19 Å on H but **0.04 Å on
+C** — visible only on hydrogen. A bigger constant is not a fix (huge on H, still thin on C).
+
+- **Fix: `highlightRadius(element)` in `src/viewer/highlight.ts`** (pure, node-tested) =
+  `vdwRadius(element) * 0.3 + 0.25`, floored at 0.5. The **constant 0.25 Å shell** is added on
+  top of the *drawn* radius, so every element shows the same visible halo thickness — the whole
+  point.
+- **The vdW table is a documented DUPLICATE of 3Dmol's `GLModel.vdwRadii`** (transcribed
+  verbatim, v2.5.5). We copy rather than `import { GLModel } from "3dmol"` because the 3dmol
+  bundle needs `window`/`document` and **cannot load under the node test runner** (the suite has
+  no jsdom, deliberately). Coverage matches 3Dmol's: H–Kr **plus Pd(46) and Pt(78)** — the
+  cross-coupling metals ADR-007 names — and the rest of 3Dmol's list. Off-table elements fall
+  back to **1.5 Å = 3Dmol's `defaultSphereRadius`**, so their halos still track the drawn sphere;
+  never NaN or a silent zero. **Drift guard:** `vdwTableDrift(referenceTable)` (pure) lists any
+  element where our copy disagrees; `MoleculeViewer` calls it once in dev with the live
+  `GLModel.vdwRadii` and `console.warn`s — the active check the dup needs, run in the real webview
+  where 3Dmol IS loaded.
+- **Wireframe, not a solid translucent sphere.** MiniBrowser screenshots (the `debugging/002`
+  technique, H·C·N·O in one frame) showed the solid magenta halo washing out over **CPK red
+  oxygen** (hue clash) and thin over **grey carbon**, while a wireframe cage reads on all four.
+  Colour `#ff2d95` (saturated magenta) — **not `#ffffff`** (that is CPK hydrogen and would vanish
+  on the light background e-2 adds), and distinct from the amber measurement colour and the
+  fragment palette. `opacity 0.85`.
+
+### Atom numbering (2.5.2e-1)
+Optional prop `showAtomNumbers?: boolean` (default **false**, so Molecules screen and the
+Job-detail conformer panel are unchanged). A `NewJobScreen` "Numbers" toggle drives it.
+- **Only the GLOBAL 0-based index is ever shown in the 3D view.** The local index stays in
+  `AtomInspector`, where the fragment gives it context — two numbers on an atom would reintroduce
+  exactly the ambiguity the single end-to-end index space exists to remove.
+- **Selected atoms are numbered ALWAYS**, even with the toggle off, so a pick is legible the
+  instant it happens.
+- **One effect owns all shapes AND labels.** Halos, measurement lines/labels, and number labels
+  are drawn in the **same** `[selection, scene, showAtomNumbers]` overlay effect — the only place
+  that calls `removeAllShapes`/`removeAllLabels`. A second effect calling those would erase this
+  one's work. `showAtomNumbers` is in this effect's deps but **not** the model effect's, so
+  toggling Numbers redraws labels only — no `addModel`, no `zoomTo`, no camera move.
+- **Number labels are non-clickable** — same rule and mechanism as the measurement labels.
+  **Verified empirically (MiniBrowser):** a probe placed the "1" label over atom index 1, armed
+  `setClickable`, and dispatched a real click at that atom (project via `modelToScreen`, then
+  `mousedown` on canvas + `mouseup` on body — the 2.5.2a event technique). The callback fired with
+  `atom.index === 1` (window title `PICKED-1`): the label did not intercept the pick.
 
 ## Structures & trajectories
 3Dmol.js viewer component (**done**, above); multiframe xyz → trajectory playback with frame
