@@ -13,6 +13,7 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 - [adr-006-manual-integration.md](architecture/adr-006-manual-integration.md) — local ORCA manual indexing strategy
 - [adr-007-reaction-modeling.md](architecture/adr-007-reaction-modeling.md) — from molecular modeling to reaction modeling: domain objects, geometry editor, reaction coordinate workflows
 - [adr-008-scene-fragment-model.md](architecture/adr-008-scene-fragment-model.md) — Scene / SceneFragment model for multi-molecule geometry: one flat merged xyz, one 3Dmol model, `scene_json` snapshot
+- [adr-009-process-orchestration.md](architecture/adr-009-process-orchestration.md) — running external binaries belongs to Rust, not the sidecar (complements ADR-002/003; the xTB precedent)
 - [prior-art.md](architecture/prior-art.md) — how other tools (Avogadro 2, IQmol, Gabedit, Chemcraft, WebMO, GaussView) handle geometry, and what OrcaStudio does differently (scene-derived mask, unbroken index space)
 
 ## Modules
@@ -42,6 +43,7 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 - [README.md](chemistry/README.md) — що тут живе і як вести нотатки
 - [reagent-geometry.md](chemistry/reagent-geometry.md) — геометрія реагентів-нуклеофілів: гідрид, чому BH₄⁻ тетраедричний, чому кут води 104.5°
 - [conformers.md](chemistry/conformers.md) — конформери і GOAT: anti/gauche-бутан, чому один конформер зі SMILES — випадковий знімок
+- [burgi-dunitz.md](chemistry/burgi-dunitz.md) — траєкторія Бюрґі–Дунітца: чому нуклеофіл атакує карбоніл під ~107°, метод структурної кореляції, звʼязок зі стереоселективністю NaBH₄ і з d/θ/φ у редакторі
 
 ## Debugging
 
@@ -55,4 +57,4 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 
 ---
 
-*Page count: 36. Last structural update: 2026-07-29 (+debugging/006-xtb-empty-input-hang).*
+*Page count: 38. Last structural update: 2026-07-29 (wiki lint after phase 2.5: +adr-009-process-orchestration, +chemistry/burgi-dunitz).*

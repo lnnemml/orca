@@ -2211,3 +2211,59 @@ newest / drops oldest); `vitest` **301** unchanged (no frontend change); `tsc` +
 0 rust warnings. Verification dirs cleaned. **Phase 2.5 xtb pre-optimization is now working end to end.**
 xtb 6.6.1's empty-`--input` hang recorded in `gotchas.md` + `xtb.md` as a named foreign-binary quirk
 (upstream-issue candidate; not filed from here).
+
+## [2026-07-29] lint | Wiki health-check after phase 2.5
+
+Second full lint (first was after 2.5.0). Scope: the whole 2.5 arc — 2.5.2a–d, 2.5.3, 2.5.4,
+2.5.5 + seven fixes, two empirically-closed index-base questions, one ROADMAP deviation (xtb in
+Rust). **Checked:** the two index bases (ORCA 0-based / xtb 1-based) across pages **and** code;
+the mid-phase decision reversals (visible+redefinable mask, distinctness invariant, reference-atom
+rule checked twice, non-destructive constraint block); the three cross-cutting rules (order/count
+invariant, no index remap, preview touches neither Scene nor input text); every file in
+`src/scene/`, `src/viewer/`, `sidecar/app/`, `src-tauri/src/` against the module pages; ROADMAP
+markers; orphans + links + page count. Reported first, fixed after author sign-off.
+
+**Verified consistent — no change needed.** The two index bases sit side by side in `gotchas.md`
+and match the code (`constraints.ts` `ORCA_INDEX_BASE=0` identity; `xtb.rs` writes `+1`). All four
+mid-phase reversals describe the FINAL state in the authoritative module pages
+(`scene.md`/`visualization.md`). The three cross-cutting rules are worded the same everywhere (the
+no-remap rule for constraints explicitly cites the `selectionSurvives` call). ADR-008's freest-axis
+amendment closed the 2.5.0 lint finding. `sidecar.md` does not claim xtb as an endpoint. No broken
+links; no orphans; page count was correct (then 36).
+
+**Fixed — mechanical (applied before the report):** `sidecar.md` version `0.3.0`→`0.4.0` (it
+contradicted its own body + `app/__init__.py`); removed a duplicate `/parse` planned-endpoint line.
+
+**Fixed — contradiction (b):** `frontend.md:357` still called the `%geom` index base "still open
+empirically" (settled 0-based since 2.5.4a; the code comment was already fixed) → supersession
+marker added, annotate-not-delete.
+
+**Fixed — stale claims (c):** three module Status headers advanced to the end of phase 2.5
+(`scene.md` was worst — "2.5.2 underway… Next: 2.5.2c"; `frontend.md` "Phase 2.5.0 complete";
+`tauri-core.md` "Phase 2 complete"); `sidecar.md`'s "(Now 0.2.0)" reworded as a dated statement;
+`frontend.md:486`'s intermediate "last-clicked default" got a supersession marker → smaller-fragment
+default (2.5.3b).
+
+**Fixed — gaps (g):** `scene.md` file list gained `ConstraintPanel.tsx` and `xtb-progress.ts`
+(`formatXtbProgress`), both present in code but undocumented.
+
+**Author-decided items applied:** ROADMAP `[ ]` "Fragment library … place at specified distance/
+angle" left unchecked but annotated (library + `placeFragment` exist; guided one-step placement
+does not), the "Phase 2.5 COMPLETE" line now names the deferral, and a new **Phase 2.6 backlog**
+section carries it (+ the never-built constraint toggle). New **ADR-009** (running external
+binaries belongs to Rust, not the sidecar — complements ADR-002/003, xtb precedent; ADR-002/003
+NOT edited); the ROADMAP Open-Babel fallback now carries the pybel-library-vs-obabel-binary caveat.
+New Ukrainian study note **`chemistry/burgi-dunitz.md`** (the ~107° attack angle, structure
+correlation, NaBH₄ stereoselectivity, and the d/θ/φ→constraint→xtb bridge) — the chemistry gap for
+the whole geometry-editor phase; uncertain points flagged inline, not smoothed over.
+
+**Structural finding (the important one).** The five stale claims were not carelessness — they are
+the tail of ~42 accumulated `As built (<unit>)` sections that turned the module pages into a second
+chronicle competing with `log.md`. A page that records history drifts from the code by
+construction. Codified a schema rule in `CLAUDE.md` (module pages are present-tense, current-state;
+no new `As built` sections; history lives in `log.md`; a changed decision names the final rule +
+one-line log pointer). **Consolidating the existing `As built` sections is deliberately deferred to
+its own unit** — point fixes and a full rewrite of eight pages were kept out of this commit.
+
+index.md page count 36→38 (+adr-009, +burgi-dunitz). No ADR rewritten; `resources/manual/`
+untouched.

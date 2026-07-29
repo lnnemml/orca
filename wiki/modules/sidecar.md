@@ -3,7 +3,7 @@
 **Status:** Chemistry endpoints live — `/smiles-to-3d` (RDKit, Phase 2.2), `/convert` + `/formats`
 (ASE, Phase 2.6), `/geometry/set-internal` (ASE geometry kernel, Phase 2.5.2c), and
 `/geometry/rotatable-mask` (bond-graph split for intra-fragment edits, Phase 2.5.3a). Builds on the
-Phase 0 scaffold (`/health`, venv, pytest). Sidecar `__version__` `0.3.0`.
+Phase 0 scaffold (`/health`, venv, pytest). Sidecar `__version__` `0.4.0`.
 
 ## As built (Phase 0)
 - `app/main.py`: FastAPI app, `GET /health -> {"status":"ok","version":"0.1.0"}`
@@ -220,7 +220,9 @@ handshake rule). Live `curl`: butane → mask; benzene → 422.
 
 **Versioning rule:** bump `app/__init__.py` `__version__` **minor** every time an endpoint is added
 or its request/response shape changes. This is not cosmetic — the Rust core reads it to detect a
-sidecar running behind the app. (Now `0.2.0`: `+/geometry/set-internal` since `0.1.0`.)
+sidecar running behind the app. (At 2.5.2d-1 this was `0.2.0` — `+/geometry/set-internal`
+since `0.1.0`; it has advanced with each endpoint added since. The current version is in the
+Status line at the top of this page.)
 
 **Why it exists:** `npm run tauri dev` hot-reloads only the frontend; `SidecarManager::start` runs
 once at Rust startup and (in release) launches uvicorn without `--reload`. So after adding an
@@ -258,7 +260,6 @@ Chemistry intelligence: parsing, structure generation, conversions, manual index
 - `GET  /formats` — supported read/write formats for UI dropdowns — **done (Phase 2.6)**
 - `POST /geometry/set-internal` — set a distance/angle/dihedral with a mask (ASE) — **done (2.5.2c)**
 - `POST /geometry/rotatable-mask` — the rotatable side of a bond (bond-graph split, ring-aware) — **done (2.5.3a)**
-- `POST /parse` — path to output file → cclib-derived JSON (Phase 3)
 - `POST /manual/build-index` — one-off docs indexing (Phase 4)
 - `GET  /manual/search?q=` — FTS query proxy (or Rust queries SQLite directly — decide in Phase 4)
 

@@ -1,25 +1,17 @@
 # Module: scene (`src/scene/`)
 
-**Status:** 2.5.0d-1 done — the Scene is now the **source of truth for geometry
-on New Job**, via a Zustand store (`store.ts`) synced two-way with the Monaco
-buffer. 2.5.0a pure core → 2.5.0b input-builder + parity → 2.5.0c multi-fragment
-viewer → **2.5.0d-1 store + Scene↔Monaco sync + parser consolidation closed**.
-**2.5.0d-2a** added the pure foundation (reagent library + placement); **2.5.0d-2b**
-wired the UI — the Add-Fragment panel and the `FragmentList` sidebar — so
-multi-fragment scenes became user-reachable. **2.5.0d-3** persists the layout
-(`jobs.scene_json`, schema v4) and adds the **"New iteration"** action that reads
-it, via the pure `restoreScene`. **Phase 2.5.0 (Scene/fragment foundation) is now
-complete.** **2.5.1** (conformer search) is complete: 2.5.1a the GOAT primitive
-(`ensemble.ts`), **2.5.1b** the UI — "Find conformers" on a fragment, the ensemble
-panel on Job detail, and "Use this conformer" (two branches). The geometry editor
-(**2.5.2**) is underway: **2.5.2a** atom picking + selection (`selection.ts`); **2.5.2b**
-d/θ/φ measurement (`measure.ts`, ASE conventions pinned to source) + the selection-survival
-rule (`selectionSurvives`). Next: **2.5.2c** — apply d/θ/φ through ASE, whose acceptance test
-re-derives all three with `measure.ts` (already recorded). **2.5.4a** adds the
-pure `constraints.ts` (ORCA `%geom Constraints` generate/parse/inject; index base
-settled by a real ORCA run) and closes a 2.5.3b hole — the reference-atom rule is
-now re-run on the resolved bond-graph split mask (`maskRoleViolation`, one pure
-function on both paths). The constraint UI panel is 2.5.4b.
+**Status:** Phase 2.5 complete. The Scene is the **source of truth for geometry on
+New Job** — a Zustand store (`store.ts`) synced two-way with the Monaco buffer — and
+carries the whole reaction-geometry workflow: multi-fragment build (Add-Fragment panel
++ `FragmentList`), electron-parity validation (`parity.ts`), conformer search (GOAT,
+`ensemble.ts`), the geometry editor (atom picking `selection.ts`, d/θ/φ measurement
+`measure.ts` with ASE conventions pinned to source, edit-mode planning `edit-plan.ts`
+for inter- and intra-fragment edits, the reference-atom rule `maskRoleViolation` re-run
+on both the inter-fragment and the resolved bond-graph split mask), the constraint block
+over the input text (`constraints.ts`, `ConstraintPanel.tsx`, non-destructive rewrite),
+and xTB pre-optimization (`replaceAllAtoms`). Scene layout persists as `jobs.scene_json`
+(schema v4) and restores on job iterate (`restoreScene`). Per-unit history is in
+`wiki/log.md`.
 
 ## Responsibilities
 
@@ -70,6 +62,13 @@ functions, no imports from react / 3dmol / tauri. The reactive `store.ts` (added
   in `NewJobScreen` state, uses the shared `fragmentColor` palette).
 - `EditPanel.tsx` — edit-mode UI in the Atom rail section (React): target field,
   Preview/Apply, and the direct `fetch` to the sidecar geometry endpoint.
+- `ConstraintPanel.tsx` — the constraint section of the geometry rail (React): a
+  **view over the input text** (its only source is `parseConstraintsBlock(content)`),
+  one row per constraint (type badge, atoms in our terms, set-vs-measured value, delete)
+  plus the range and composition guards (2.5.4b); read-only on an `unrecognised` block
+  (2.5.5).
+- `xtb-progress.ts` — `formatXtbProgress` (2.5.5-fix-2): renders the `xtb:progress`
+  cycle count + an elapsed clock for the pre-optimize button. Pure / node-tested.
 - `__fixtures__/butane.finalensemble.xyz` — a real (3-structure) slice of an ORCA
   6.1.0 GOAT run, the test oracle for `ensemble.test.ts`.
 - `*.test.ts` (scene / parity / store / placement / fragment-library /

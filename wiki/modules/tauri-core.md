@@ -1,8 +1,10 @@
 # Module: Rust core (src-tauri/)
 
-**Status:** Phase 2 complete. LocalBackend runs ORCA end-to-end (spawn, pinning, sequential
+**Status:** Phase 2.5 complete. LocalBackend runs ORCA end-to-end (spawn, pinning, sequential
 queue, cancel with MPI-rank sweep); molecule library; streaming convergence parse (`parser.md`)
-and output search (`output_search.rs`). Built on the job model + Phase 0 scaffold.
+and output search (`output_search.rs`); `jobs.scene_json` snapshot (schema v4); and xTB
+pre-optimization (`xtb.rs` — off-thread starter, killpg + cwd sweep, post-conditions). Built on
+the job model + Phase 0 scaffold.
 
 ## As built (Phase 0)
 Files: `lib.rs` (builder + setup + exit handling), `db.rs`, `error.rs`, `sidecar.rs`,

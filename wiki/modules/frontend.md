@@ -1,10 +1,12 @@
 # Module: Frontend (src/)
 
-**Status:** **Phase 2.5.0 (Scene/fragment foundation) complete** — the frontend now builds,
-views, persists and iterates multi-fragment scenes: a Zustand scene store (`src/scene/store.ts`)
-synced two-way with Monaco, an Add-Fragment panel + `FragmentList` sidebar, and job-to-job
-iteration (see "As built (2.5.0d-1/-2b/-3)"). The Phase 2 chronicle below predates it — sections
-carry supersession notes where 2.5.0 replaced them.
+**Status:** **Phase 2.5 complete** — the frontend builds, views, persists and iterates
+multi-fragment scenes and drives the whole geometry editor: a Zustand scene store
+(`src/scene/store.ts`) synced two-way with Monaco, an Add-Fragment panel + `FragmentList`
+sidebar, atom picking + d/θ/φ measurement, edit mode (set distance/angle/dihedral from the
+viewer, inter- and intra-fragment), the constraint panel over the input text, and an xTB
+pre-optimize button. The chronicle below predates parts of it — sections carry supersession
+notes where a later unit replaced them.
 
 _Phase 2 (complete):_ step 2.6 extends file import to pdb/cif/mol/sdf/gen (shared
 `import-file.ts` → sidecar `/convert`); step 2.5 adds the live convergence dashboard on Job detail
@@ -354,8 +356,9 @@ The first unit of the geometry editor, plus a small convergence-label fix (§
 - **Atom panel** (`AtomInspector`, in the `viewer-column`, under the viewer, above
   `FragmentList`): for the **last** picked atom — `atom N of <fragment> (<element>)` via
   `describeAtom`, x/y/z to 4 dp, and the global index labelled **`global index N
-  (0-based)`** (the 0-/1-based `%geom` Constraints question is still open empirically, so
-  the UI states the base it shows). >1 atom → a click-ordered chip row with
+  (0-based)`** (at 2.5.2a the 0-/1-based `%geom` Constraints question was still open
+  empirically, so the UI stated the base it shows) *(superseded 2.5.4a: 0-based, settled —
+  `wiki/orca/constraints.md`)*. >1 atom → a click-ordered chip row with
   fragment-colour swatches. `Clear` button; **Esc** does the same.
 - **Selection state lives in `NewJobScreen`**, not the scene store (the store stays a pure
   geometry wrapper — ADR-008 #10). Picks go through `toggleAtom`; after **every scene
@@ -483,7 +486,8 @@ section of the geometry rail; all decision logic is in the pure `scene/edit-plan
 - **The mask is VISIBLE before Apply** — the design decision of this unit. Whenever `planEdit` is
   `ready`, `NewJobScreen` passes `plan.mask` to `MoleculeViewer` and the moving fragment glows
   (`modules/visualization.md`). The user sees which atoms will move; the default (the last-clicked
-  atom's fragment) is *shown*, not silent. The panel also names the moving fragment.
+  atom's fragment) is *shown*, not silent *(superseded 2.5.3b: the smaller fragment moves by
+  default; click order is only the tie-breaker)*. The panel also names the moving fragment.
 - **Fields.** When `ready`: the op, the current value, a target `<input>` (pre-filled with the
   current value), the unit, and Preview / Apply. When `unavailable` (immovable pivot, <2/>4 atoms,
   degenerate): the reason as calm text, no buttons. When `needs-split`: see the 2.5.3b flow below.

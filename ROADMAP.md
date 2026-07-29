@@ -79,7 +79,9 @@ and sees the final energy in the job list — without touching a terminal.
       the New Job + Molecules "Import file" button now accepts `.pdb/.cif/.mol/.sdf/.gen` too —
       `.xyz` parsed locally, the rest converted to xyz via the sidecar (shared
       `src/viewer/import-file.ts`). Open Babel remains the fallback only for formats ASE lacks
-      (e.g. mol2). Export to other formats from the UI is Phase 3.
+      (e.g. mol2) — but **per ADR-009** that means the Open Babel *library* (`pybel`) inside the
+      sidecar; shelling out to the `obabel` *binary* would belong in Rust, not the sidecar.
+      Export to other formats from the UI is Phase 3.
 - [x] Sequential job queue: `queued` status, worker loop picks next job when current
       completes (concurrency 1) — **done**. `submit` enqueues instead of erroring on a busy
       slot; the queue lives in SQLite (`status='queued'`, oldest first), pulled by
@@ -190,6 +192,11 @@ re-optimisation of the lowest 3–4 stay in Phase 4.5 (the scientific pipeline);
 - [ ] Fragment library: common reagents (BH₄⁻, H₂O, common ligands), place at position
       with specified distance/angle
       — placement = set_distance/angle/dihedral with the mask on the newly added fragment
+      — **Partly built:** the reagent library (`src/scene/fragment-library.ts`) and
+        bounding-box placement (`placeFragment`, coarse ≥3.5 Å gap) exist and add a fragment;
+        what is NOT built is adding a reagent *at a specified distance/angle/dihedral* in one
+        step — today it is added coarsely, then positioned via the separate edit mode. Left
+        `[ ]` until the two are one guided action; carried to the Phase 2.6 backlog below.
 - [x] Constraint manager: list of active constraints, delete, export to
       ORCA `%geom Constraints ... end` block in the input
       — constraints reference cross-fragment atom pairs
@@ -218,6 +225,22 @@ coordinate, and get a physically reasonable GFN2 starting geometry — all insid
 restorable on a job clone. **Done-when met:** the author can build a TS guess (BH₄⁻ at a
 Bürgi-Dunitz approach to a carbonyl), constrain the distance, xTB pre-optimize, and iterate
 the angle on a cloned job without rebuilding the scene by hand.
+
+**Deferred out of 2.5 (carried to Phase 2.6):** *guided fragment placement* — adding a reagent
+*at a specified distance/angle/dihedral* in one step. The pieces exist (reagent library +
+bounding-box placement + edit mode); what is missing is the single add-at-geometry action. See
+the `[ ]` "Fragment library" item above.
+
+---
+
+## Phase 2.6 — Geometry-editor backlog (carried from 2.5)
+
+Small follow-ups deferred out of Phase 2.5; pick up before or alongside Phase 3 as needed.
+
+- [ ] Guided fragment placement: add a reagent *at a specified distance/angle/dihedral* in one
+      step (today: coarse bounding-box add, then position via edit mode). Reuses
+      `placeFragment` + the edit-mode `set-internal` path — the gap is the unified UI action.
+- [ ] Constraint "toggle on/off" (currently delete + re-add covers it — see the 2.5.4b note).
 
 ---
 

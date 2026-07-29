@@ -106,13 +106,22 @@ architecture, decisions, ORCA domain knowledge, chemistry learning notes, solved
 |---|---|---|
 | ADR (decision) | `wiki/architecture/adr-NNN-*.md` | Any significant tech/design choice. Never rewrite history: supersede with a new ADR. |
 | Architecture overview | `wiki/architecture/overview.md` | Whenever component boundaries change. |
-| Module page | `wiki/modules/<module>.md` | One per module: responsibilities, interfaces, status, quirks. Update when the module changes meaningfully. |
+| Module page | `wiki/modules/<module>.md` | One per module: responsibilities, interfaces, status, quirks. Written in the **present tense, describing the CURRENT state** — see the rule below. Update when the module changes meaningfully. |
 | ORCA knowledge | `wiki/orca/*.md` | Any fact learned about ORCA behavior, formats, tools, gotchas. |
 | Chemistry notes | `wiki/chemistry/*.md` | Quantum chemistry concepts the author is learning. **Write these in Ukrainian** — they are personal study notes. |
 | Debugging log | `wiki/debugging/*.md` | One page per non-trivial solved bug: symptom → root cause → fix. |
 
 Language convention: technical pages (architecture, modules, orca) in English;
 `chemistry/` in Ukrainian; conversation with the author in Ukrainian.
+
+**Module pages describe the present, not the history.** A module page states the CURRENT
+state in the present tense. Do **not** grow per-unit `As built (<unit>)` sections — the
+chronicle lives in `log.md`, which is the append-only record. Where a decision changed during
+development, the page names the **final rule** and points to the log entry in one line, rather
+than narrating each intermediate state. (Reason, recorded so this isn't relitigated: the phase-2.5
+lint found five stale claims, all of them the tail of ~42 accumulated `As built` sections in the
+module pages — a module page that doubles as a second chronicle drifts from the code by
+construction. Consolidating the existing `As built` sections is tracked as its own unit.)
 
 ### index.md and log.md
 
