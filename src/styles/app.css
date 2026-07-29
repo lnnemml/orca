@@ -800,6 +800,82 @@ select:disabled,
   border-radius: 10px;
   border: 1px solid var(--border);
 }
+/* "Constrain selection" control in the Atom section (2.5.4b). */
+.atom-inspector-constrain {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 2px;
+}
+.atom-inspector-constrain-value {
+  width: 96px;
+}
+
+/* Constraints panel (2.5.4b) — a view over the input text, in the geometry rail. */
+.constraint-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+}
+.constraint-head {
+  font-size: 13px;
+  color: var(--text);
+}
+.constraint-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.constraint-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+.constraint-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text);
+}
+.constraint-atoms {
+  font-size: 12px;
+}
+.constraint-values {
+  font-size: 11px;
+}
+.constraint-del {
+  margin-left: auto;
+  padding: 0 8px;
+}
+/* An out-of-range constraint — flagged, not silent (ORCA segfaults on it). */
+.constraint-row-bad .constraint-badge,
+.constraint-row-bad .constraint-atoms {
+  color: #ff6b6b;
+  border-color: #ff6b6b;
+}
+.constraint-bad-note {
+  font-size: 11px;
+  color: #ff6b6b;
+  flex-basis: 100%;
+}
+.constraint-warn-list {
+  margin: 4px 0;
+  padding-left: 18px;
+  font-size: 11px;
+}
 
 /* Add-Fragment panel. */
 .add-fragment-body {

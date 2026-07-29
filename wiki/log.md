@@ -2026,3 +2026,42 @@ not the sidecar's inter-fragment wording. Butane test locks it.
 **Verified.** `tsc` clean; `vitest` **248 → 275** (+21 constraints round-trip/inject/comment-safety,
 +6 the split-mask rule incl. the butane repro); `pytest` **38** and `cargo test` **59** untouched (this
 was frontend-only). Two real ORCA 6.1.0 runs (index base + emitted-format validity), dirs cleaned.
+
+## [2026-07-29] decision | The one place the app blocks a run on input CONTENT: an out-of-range constraint index
+
+OrcaStudio never blocks a run because it dislikes the input — except here. A constraint index outside
+`[0, atomCount)` makes ORCA read past the atom array and **segfault with no diagnostic** (documented
+2.5.4a). So `constraintIndexIssues` gates Create AND Create & Run (both — the job's input is immutable
+once created, so a "draft" with a bad index is an un-runnable landmine). This is deliberately narrow:
+the justification is that the cost of *not* blocking is a crash with no error message, not merely a
+wrong result. Every other input mistake (bad parity, odd chemistry) is a warning, never a block.
+
+## [2026-07-29] session | 2.5.4b: constraint panel as a view over the input text + two guards
+
+The constraint UI. Non-negotiable shape (2.5.4a decision): **a view over the input text, not a parallel
+store.** `ConstraintPanel.tsx` reads `parseConstraintsBlock(content)` and nothing else — a block
+hand-edited in Monaco shows up with zero extra wiring (a test asserts different text → different list).
+Each row shows the atoms in our terms (`describeAtom`: "C#12 (Ibuprofen) ··· B#33 (BH₄⁻)"), the set
+value and the current measured value (`measureSelection`), and a `×` that deletes by re-injecting the
+remaining list.
+
+**"Constrain selection"** (`AtomInspector`, 2/3/4 atoms, kind by length) adds a constraint WITHOUT a
+value (freeze as-is — the TS-guess case), optional value field beside it. It calls back into
+`NewJobScreen`, which parses the text, appends (dedupe via `sameConstraint`), and writes through
+`injectConstraints` — **one data path**, the panel re-reads the text. No parallel state, no shortcut.
+
+**ЗАХИСТ 1 (range).** `constraintIndexIssues(cs, atomCount)` (pure) — see the decision entry above; the
+panel marks bad rows red, `NewJobScreen` blocks both create buttons with a message naming the constraint
+and indices and stating ORCA segfaults rather than erroring.
+
+**ЗАХИСТ 2 (composition).** Uses the EXISTING `compositionSignature` (no second notion): when it moves
+while constraints exist, a warning above the panel lists what each constraint names NOW (element +
+fragment) so verification is by eye. Catches the in-range-but-wrong case a range check can't. We do NOT
+rewrite the text or remap indices — "the same atom after a removal" has no operational definition, the
+same call as `selectionSurvives` (2.5.2a). Warning clears on Dismiss or when no constraints remain.
+
+**Verified.** `tsc` + `vite build` clean; `vitest` **275 → 286** (+11: range guard incl. the 38→33-atom
+case, `constraintFromSelection`, panel round-trip, delete-preserves-block+%geom, manual-edit-reflected,
+dedupe); `pytest` **38** / `cargo test` **59** untouched (frontend-only). No ORCA run — the segfault is
+already documented; the whole point of this unit is never to reach it. Also fixed a stale comment in
+`AtomInspector` that still said the index base was unsettled.

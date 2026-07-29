@@ -10,6 +10,14 @@ import { useSceneStore } from "../scene/store";
 import { FragmentList } from "../scene/FragmentList";
 import { AtomInspector } from "../scene/AtomInspector";
 import { EditPanel } from "../scene/EditPanel";
+import { ConstraintPanel } from "../scene/ConstraintPanel";
+import {
+  parseConstraintsBlock,
+  injectConstraints,
+  constraintIndexIssues,
+  constraintFromSelection,
+  sameConstraint,
+} from "../scene/constraints";
 import {
   planEdit,
   swapToAlternative,
@@ -29,6 +37,7 @@ import {
   type LibraryFragment,
 } from "../scene/fragment-library";
 import {
+  atomCount,
   compositionSignature,
   injectSceneIntoInput,
   mergeToAtomLines,
@@ -53,6 +62,19 @@ import type { Job, Molecule, SidecarStatus } from "../types";
 /** Charge with an explicit sign: `0`, `-1`, `+1`. */
 function signed(n: number): string {
   return n > 0 ? `+${n}` : String(n);
+}
+
+/** Human label for a constraint kind, for the range-block message. */
+function constraintTypeLabel(
+  kind: "distance" | "angle" | "dihedral" | "cartesian",
+): string {
+  return kind === "distance"
+    ? "a distance constraint"
+    : kind === "angle"
+      ? "an angle constraint"
+      : kind === "dihedral"
+        ? "a dihedral constraint"
+        : "a Cartesian constraint";
 }
 
 interface NewJobScreenProps {
@@ -283,6 +305,47 @@ export function NewJobScreen({
       setSelection((sel) => validateSelection(sel, scene));
     }
   }, [scene]);
+
+  // ── Constraint composition-change warning (2.5.4b, ЗАХИСТ 2) ────────────────
+  // A constraint written at 38 atoms and then a fragment removed → 33 atoms is a
+  // silent trap: Scene→Monaco rewrites ONLY the coordinate block, so the `%geom`
+  // indices stay as written — now pointing at different atoms (or out of range →
+  // ORCA segfaults). We do NOT remap or rewrite them (there is no operational
+  // definition of "the same atom" after a removal — the same 2.5.2a call we made
+  // for selection). Instead: when the composition signature moves while
+  // constraints exist, warn and let the user verify by eye. SAME
+  // `compositionSignature`, no second notion of "composition changed".
+  const [constraintCompWarn, setConstraintCompWarn] = useState(false);
+  const contentRef = useRef(content);
+  contentRef.current = content;
+  const lastConstraintSigRef = useRef<string | null>(null);
+  useEffect(() => {
+    const sig = scene ? compositionSignature(scene) : null;
+    const prev = lastConstraintSigRef.current;
+    if (sig === prev) return;
+    lastConstraintSigRef.current = sig;
+    // Skip the initial signature (mount / job restore is not a "change").
+    if (prev !== null && (parseConstraintsBlock(contentRef.current)?.length ?? 0) > 0) {
+      setConstraintCompWarn(true);
+    }
+  }, [scene]);
+  // The warning is meaningless with no constraints — clear it the moment the
+  // block is emptied (via delete, or a manual edit in Monaco).
+  useEffect(() => {
+    if ((parseConstraintsBlock(content)?.length ?? 0) === 0) setConstraintCompWarn(false);
+  }, [content]);
+
+  // "Constrain selection" (2.5.4b): freeze the 2/3/4-atom coordinate. One data
+  // path — parse the current text, append (no duplicate), write back through
+  // `injectConstraints`; the panel re-reads the text. No parallel state.
+  const constrainSelection = (value?: number) => {
+    const c = constraintFromSelection(selection, value);
+    if (!c) return;
+    const existing = parseConstraintsBlock(content) ?? [];
+    if (existing.some((e) => sameConstraint(e, c))) return;
+    setContent(injectConstraints(content, [...existing, c]));
+    setError(null);
+  };
 
   // Esc — ONE handler, explicit priority (2.5.2e-2 decision): in fullscreen it
   // exits fullscreen and does NOTHING else; otherwise it clears the selection.
@@ -538,6 +601,14 @@ export function NewJobScreen({
   };
 
   const create = async (run: boolean) => {
+    if (constraintBlockMessage) {
+      // The single place the app refuses to run on input CONTENT — justified: the
+      // alternative is ORCA reading past the atom array and crashing with no
+      // diagnostic. The job's input is immutable once created, so a "draft" would
+      // be an un-runnable landmine — block both Create and Create & Run.
+      setError(constraintBlockMessage);
+      return;
+    }
     setCreating(true);
     setError(null);
     try {
@@ -579,7 +650,34 @@ export function NewJobScreen({
     }
   };
 
-  const canCreate = content.trim().length > 0 && !creating;
+  // ── ЗАХИСТ 1 — range-check constraints before any run ───────────────────────
+  // ORCA does not validate constraint indices; an out-of-range one segfaults with
+  // no error (verified, `wiki/orca/constraints.md`). Parse straight from the text
+  // (the source of truth) and check against the geometry's atom count.
+  const constraints = parseConstraintsBlock(content) ?? [];
+  const indexIssues = scene
+    ? constraintIndexIssues(constraints, atomCount(scene))
+    : [];
+  const constraintBlockMessage =
+    indexIssues.length > 0 && scene
+      ? "Can't create or run this job — " +
+        `${indexIssues.length} constraint${indexIssues.length > 1 ? "s" : ""} ` +
+        `reference atom indices that don't exist in this geometry (it has ` +
+        `${atomCount(scene)} atoms, valid 0–${atomCount(scene) - 1}). ORCA does ` +
+        "NOT range-check constraint indices — it segfaults instead of reporting " +
+        "an error, so the run is blocked until they are fixed or removed: " +
+        indexIssues
+          .map(
+            (it) =>
+              `${constraintTypeLabel(it.constraint.kind)} on ` +
+              `${it.badIndices.map((i) => `#${i}`).join(", ")}`,
+          )
+          .join("; ") +
+        "."
+      : null;
+
+  const canCreate =
+    content.trim().length > 0 && !creating && !constraintBlockMessage;
 
   return (
     <div className="screen new-job">
@@ -614,6 +712,10 @@ export function NewJobScreen({
           </button>
         </div>
       </div>
+
+      {constraintBlockMessage ? (
+        <div className="banner err constraint-block">{constraintBlockMessage}</div>
+      ) : null}
 
       <input
         ref={fileInputRef}
@@ -925,6 +1027,7 @@ export function NewJobScreen({
                 scene={scene}
                 selection={selection}
                 onClear={clearSelection}
+                onConstrain={constrainSelection}
               />
             ) : null}
             {scene && editPlan && selection.length >= 2 ? (
@@ -956,6 +1059,15 @@ export function NewJobScreen({
               </div>
             ) : null}
             <FragmentList onFindConformers={findConformers} />
+            {scene ? (
+              <ConstraintPanel
+                scene={scene}
+                content={content}
+                onChange={setContent}
+                compositionChanged={constraintCompWarn}
+                onDismissComposition={() => setConstraintCompWarn(false)}
+              />
+            ) : null}
           </div>
         </div>
       </div>

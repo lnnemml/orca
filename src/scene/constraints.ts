@@ -291,3 +291,68 @@ export function injectConstraints(input: string, cs: Constraint[]): string {
   const block = "  " + constraintsSubBlock(cs, "  ") + "\n";
   return input.slice(0, at) + block + input.slice(at);
 }
+
+// ── UI helpers (2.5.4b) ──────────────────────────────────────────────────────
+
+/**
+ * Range-check every constraint's atom indices against the atom count of the
+ * geometry the constraint will run against. **This is the guard that stops a
+ * segfault:** ORCA does NOT validate constraint indices — an out-of-range index
+ * makes it read past the atom array and crash with no diagnostic (verified,
+ * `wiki/orca/constraints.md`). Returns one entry per offending constraint with
+ * the bad indices (in OrcaStudio's 0-based space); an empty array means safe.
+ *
+ * The dangerous path is not only hand-typing `{B 0 99 C}` — it's editing the
+ * scene: a constraint written at 38 atoms, then a fragment removed → 33 atoms,
+ * leaves the `%geom` block untouched (Scene→Monaco rewrites only the coordinate
+ * block), so index 37 is now out of range. Valid range is `[0, atomCount)`.
+ */
+export function constraintIndexIssues(
+  cs: Constraint[],
+  atomCount: number,
+): { constraint: Constraint; badIndices: number[] }[] {
+  const out: { constraint: Constraint; badIndices: number[] }[] = [];
+  for (const c of cs) {
+    const badIndices = c.atoms.filter((i) => i < 0 || i >= atomCount);
+    if (badIndices.length > 0) out.push({ constraint: c, badIndices });
+  }
+  return out;
+}
+
+/**
+ * Build a constraint from an ordered atom selection — the same length→kind rule
+ * as `measureSelection` (2 → distance, 3 → angle, 4 → dihedral). `value` omitted
+ * → freeze the coordinate as-is (the common TS-guess case). Returns `null` for a
+ * selection that isn't 2/3/4 atoms. Atoms are in OrcaStudio's 0-based global
+ * space, kept in click order (so the constraint reads the way the chemist picked).
+ */
+export function constraintFromSelection(
+  selection: number[],
+  value?: number,
+): Constraint | null {
+  const withValue = value !== undefined && Number.isFinite(value) ? { value } : {};
+  if (selection.length === 2) {
+    return { kind: "distance", atoms: [selection[0], selection[1]], ...withValue };
+  }
+  if (selection.length === 3) {
+    return { kind: "angle", atoms: [selection[0], selection[1], selection[2]], ...withValue };
+  }
+  if (selection.length === 4) {
+    return {
+      kind: "dihedral",
+      atoms: [selection[0], selection[1], selection[2], selection[3]],
+      ...withValue,
+    };
+  }
+  return null;
+}
+
+/** Structural equality (kind + atoms in the same order) — used to avoid adding
+ * the exact same constraint twice from a repeated "Constrain selection". */
+export function sameConstraint(a: Constraint, b: Constraint): boolean {
+  return (
+    a.kind === b.kind &&
+    a.atoms.length === b.atoms.length &&
+    a.atoms.every((x, i) => x === b.atoms[i])
+  );
+}

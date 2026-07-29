@@ -1,3 +1,5 @@
+import { useState } from "react";
+
 import type { Scene } from "./types";
 import { describeAtom } from "./selection";
 import { measureSelection, type Measurement } from "./measure";
@@ -12,20 +14,28 @@ import { fragmentColor } from "../viewer/fragment-colors";
  * a pure geometry wrapper). This is a display of that state: describe-only, no
  * geometry logic. `describeAtom` (pure) does the fragment lookup.
  *
- * The global index is labelled **0-based** on purpose: whether ORCA's `%geom`
- * Constraints are 0- or 1-based hasn't been settled empirically, so while that's
- * open the UI must state which base it shows — otherwise nobody remembers in two
- * weeks. See wiki/orca/goat.md siblings / the 2.5.2a log entry.
+ * The global index is labelled **0-based** on purpose — and that is exactly the
+ * base ORCA's `%geom Constraints` use (settled by a real run, 2.5.4a;
+ * `wiki/orca/constraints.md`), so the index shown here is the index a constraint
+ * line will carry. "Constrain selection" (2.5.4b) writes it straight through.
+ *
+ * `onConstrain` (2.5.4b): when the selection is 2/3/4 atoms, offer to freeze that
+ * coordinate. It calls back into `NewJobScreen`, which owns the input text — the
+ * panel never touches the text directly (one data path). Value optional (empty →
+ * freeze as-is, the common TS-guess case).
  */
 export function AtomInspector({
   scene,
   selection,
   onClear,
+  onConstrain,
 }: {
   scene: Scene;
   selection: number[];
   onClear: () => void;
+  onConstrain?: (value?: number) => void;
 }) {
+  const [constrainValue, setConstrainValue] = useState("");
   if (selection.length === 0) return null;
   const lastGlobal = selection[selection.length - 1];
   const last = describeAtom(scene, lastGlobal);
@@ -80,6 +90,30 @@ export function AtomInspector({
           ) : null}
         </div>
       ) : null}
+      {onConstrain && selection.length >= 2 && selection.length <= 4 ? (
+        <div className="atom-inspector-constrain">
+          <button
+            className="btn btn-sm"
+            onClick={() => {
+              const v = constrainValue.trim();
+              onConstrain(v === "" ? undefined : Number(v));
+              setConstrainValue("");
+            }}
+            title="Add a %geom constraint on this selection (frozen during the optimization)"
+          >
+            Constrain {constrainKindLabel(selection.length)}
+          </button>
+          <input
+            className="input atom-inspector-constrain-value"
+            type="number"
+            step="any"
+            placeholder="freeze as-is"
+            value={constrainValue}
+            onChange={(e) => setConstrainValue(e.target.value)}
+            aria-label="constraint target value (optional)"
+          />
+        </div>
+      ) : null}
       <div className="atom-inspector-coords mono">
         x {last.x.toFixed(4)} · y {last.y.toFixed(4)} · z {last.z.toFixed(4)}
       </div>
@@ -103,6 +137,12 @@ export function AtomInspector({
       ) : null}
     </div>
   );
+}
+
+/** The coordinate a selection of N atoms constrains — same length→kind rule as
+ * `measureSelection` / `constraintFromSelection`. */
+function constrainKindLabel(len: number): string {
+  return len === 2 ? "distance" : len === 3 ? "angle" : "dihedral";
 }
 
 /** A rendered measurement line: the atom chain in click order, the value, and

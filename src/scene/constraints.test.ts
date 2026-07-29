@@ -8,6 +8,9 @@ import {
   constraintsBlock,
   parseConstraintsBlock,
   injectConstraints,
+  constraintIndexIssues,
+  constraintFromSelection,
+  sameConstraint,
 } from "./constraints";
 
 const BASE = `! r2SCAN-3c Opt
@@ -201,5 +204,118 @@ end`;
   end
 end`;
     expect(parseConstraintsBlock(bad)).toBeNull(); // bond needs two atoms
+  });
+});
+
+// ── 2.5.4b: the two guards + the "Constrain selection" builder ────────────────
+
+describe("constraintIndexIssues — the range guard (ЗАХИСТ 1)", () => {
+  const cs: Constraint[] = [{ kind: "distance", atoms: [0, 37] }];
+
+  it("38-atom scene, constraint on 37 → clean", () => {
+    expect(constraintIndexIssues(cs, 38)).toEqual([]);
+  });
+
+  it("after a fragment is removed (33 atoms), 37 is flagged out of range", () => {
+    const issues = constraintIndexIssues(cs, 33);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].constraint).toBe(cs[0]);
+    expect(issues[0].badIndices).toEqual([37]);
+  });
+
+  it("flags a negative index and reports every bad index of a constraint", () => {
+    const many: Constraint[] = [{ kind: "dihedral", atoms: [-1, 2, 40, 50] }];
+    expect(constraintIndexIssues(many, 33)[0].badIndices).toEqual([-1, 40, 50]);
+  });
+
+  it("reports one entry per offending constraint, clean ones omitted", () => {
+    const mixed: Constraint[] = [
+      { kind: "distance", atoms: [0, 1] }, // fine
+      { kind: "angle", atoms: [0, 1, 99] }, // bad
+      { kind: "cartesian", atoms: [40] }, // bad
+    ];
+    const issues = constraintIndexIssues(mixed, 33);
+    expect(issues).toHaveLength(2);
+    expect(issues.map((i) => i.badIndices)).toEqual([[99], [40]]);
+  });
+});
+
+describe("constraintFromSelection — length → kind (same rule as measureSelection)", () => {
+  it("2/3/4 atoms → distance/angle/dihedral, frozen by default (no value)", () => {
+    expect(constraintFromSelection([12, 33])).toEqual({
+      kind: "distance",
+      atoms: [12, 33],
+    });
+    expect(constraintFromSelection([5, 12, 20])).toEqual({
+      kind: "angle",
+      atoms: [5, 12, 20],
+    });
+    expect(constraintFromSelection([5, 12, 20, 25])).toEqual({
+      kind: "dihedral",
+      atoms: [5, 12, 20, 25],
+    });
+  });
+
+  it("carries an explicit value when given", () => {
+    expect(constraintFromSelection([12, 33], 1.85)).toEqual({
+      kind: "distance",
+      atoms: [12, 33],
+      value: 1.85,
+    });
+  });
+
+  it("returns null for a selection that isn't 2/3/4 atoms", () => {
+    expect(constraintFromSelection([])).toBeNull();
+    expect(constraintFromSelection([7])).toBeNull();
+    expect(constraintFromSelection([1, 2, 3, 4, 5])).toBeNull();
+  });
+});
+
+describe("panel round-trip — view over the text, no drift", () => {
+  it("Constrain selection → inject → parse gives back exactly what the panel shows", () => {
+    // The exact acceptance step: pick carbonyl C(12) and B(33), no value.
+    const built = constraintFromSelection([12, 33])!;
+    const text = injectConstraints(BASE, [built]);
+    // What the panel reads is what the text says — same object, no parallel state.
+    expect(parseConstraintsBlock(text)).toEqual([built]);
+  });
+
+  it("a manual edit of the block is reflected immediately (different text → different list)", () => {
+    const a = injectConstraints(BASE, [constraintFromSelection([12, 33])!]);
+    // Simulate the user hand-editing the index 33 → 30 in Monaco.
+    const b = a.replace("{B 12 33 C}", "{B 12 30 C}");
+    expect(parseConstraintsBlock(a)).toEqual([{ kind: "distance", atoms: [12, 33] }]);
+    expect(parseConstraintsBlock(b)).toEqual([{ kind: "distance", atoms: [12, 30] }]);
+  });
+
+  it("deleting one row keeps the rest of the block and the rest of %geom", () => {
+    const withMaxiter = `! r2SCAN-3c Opt
+%geom
+  maxiter 200
+end
+* xyz 0 1
+C 0 0 0
+O 0 0 1.2
+*
+`;
+    const two = injectConstraints(withMaxiter, [
+      { kind: "distance", atoms: [0, 1], value: 1.3 },
+      { kind: "angle", atoms: [0, 1, 2] },
+    ]);
+    // Delete the first (what the panel's × does: inject the remaining list).
+    const remaining = (parseConstraintsBlock(two) ?? []).filter((_, i) => i !== 0);
+    const after = injectConstraints(two, remaining);
+    expect(parseConstraintsBlock(after)).toEqual([{ kind: "angle", atoms: [0, 1, 2] }]);
+    expect(after).toContain("maxiter 200"); // sibling %geom setting survives
+    expect(after).not.toContain("{B 0 1"); // the deleted row is gone
+  });
+});
+
+describe("sameConstraint — dedupe guard for repeated Constrain selection", () => {
+  it("true for identical kind + atoms, false otherwise", () => {
+    const a = constraintFromSelection([12, 33])!;
+    expect(sameConstraint(a, constraintFromSelection([12, 33])!)).toBe(true);
+    expect(sameConstraint(a, constraintFromSelection([33, 12])!)).toBe(false); // order matters
+    expect(sameConstraint(a, constraintFromSelection([12, 33, 40])!)).toBe(false);
   });
 });

@@ -121,6 +121,24 @@ Two consequences for OrcaStudio:
    the "successful run, wrong chemistry" trap. This is the whole reason the base
    was measured, not assumed.
 
+### Practical consequence — the app warns and blocks (2.5.4b)
+
+Because the input text is the source of truth (constraints live in the text, not a
+store) and Scene→Monaco rewrites **only** the coordinate block, the `%geom`
+indices are **never rewritten when the scene changes**. Remove a fragment and a
+constraint written against the old atom count is now either out of range or, worse,
+silently pointing at a different atom. OrcaStudio therefore:
+
+- **blocks Create / Create & Run** when any constraint index is out of range
+  (`constraintIndexIssues`) — the one place a run is refused on input content,
+  because the alternative is this segfault with no diagnostic;
+- **warns on any composition change** while constraints exist, listing what each
+  constraint names now (the in-range-but-wrong case, which no range check can
+  catch) — but does **not** rewrite or remap the indices; "the same atom after a
+  removal" has no operational definition (same call as `selectionSurvives`).
+
+See `wiki/modules/frontend.md` (ConstraintPanel) and `wiki/modules/scene.md`.
+
 ## OrcaStudio's mapping
 
 OrcaStudio's own atom indices are already 0-based (the merged-xyz / ASE-mask

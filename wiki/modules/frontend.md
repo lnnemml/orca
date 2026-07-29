@@ -544,6 +544,53 @@ one place the panel isn't purely local:
 - **Verified:** `tsc` + `vite build` clean; `vitest` **248**; `pytest` **38** (the `within` tests);
   `cargo test` **59** untouched.
 
+## As built (2.5.4b) — constraint panel over the input text, with range + composition guards
+The constraint UI. Its non-negotiable shape: **a view over the input text, not a parallel store**
+(the 2.5.4a decision). Plus two guards without which the panel would make the app *less* safe than
+no panel at all — because ORCA does **not** range-check constraint indices and **segfaults** on an
+out-of-range one (settled by a real run, `wiki/orca/constraints.md`).
+
+- **`ConstraintPanel.tsx`** (in the geometry rail, a section beside Atom + Fragments). Its only source
+  is `parseConstraintsBlock(content)` — no local constraint state. A block hand-edited in Monaco shows
+  up verbatim with zero extra wiring; the panel literally re-renders from the text. Each row: the type
+  badge (B/A/D/C), the atoms in **our** terms via `describeAtom` ("C#12 (Ibuprofen) ··· B#33 (BH₄⁻)"),
+  the set value (if any) **and** the current measured value via `measureSelection`/`formatMeasurementValue`
+  (a set-vs-now divergence is information, not an error), and a `×` that deletes the row by
+  re-`injectConstraints`-ing the remaining list.
+- **"Constrain selection"** — a button in the Atom section (`AtomInspector`), active for a 2/3/4-atom
+  pick, kind by length (the `measureSelection` rule, via `constraintFromSelection`). Adds the constraint
+  **without a value** (freeze as-is — the common TS-guess), with an optional value field beside it. It
+  never touches the text itself: it calls back into `NewJobScreen` (`constrainSelection`), which parses
+  the current text, appends (skipping an exact duplicate via `sameConstraint`), and writes back through
+  `injectConstraints`. **One data path** — the panel then re-reads the text. No shortcut, no second state.
+- **ЗАХИСТ 1 — range, before any run.** `constraintIndexIssues(cs, atomCount)` (pure) flags every
+  constraint whose indices fall outside `[0, atomCount)`. In the panel those rows are marked in red with
+  the bad indices named (not silent). In `NewJobScreen` the SAME function **blocks Create and Create &
+  Run** — `canCreate` goes false and `create()` refuses even if called — with the message quoted below.
+  **This is the only place the app refuses to run on input *content*.** It's justified: the alternative
+  is ORCA reading past the atom array and crashing with no diagnostic, and the job's input is immutable
+  once created, so a "draft" would be an un-runnable landmine (hence both buttons, not just Run).
+
+  > Can't create or run this job — 1 constraint references atom indices that don't exist in this
+  > geometry (it has 33 atoms, valid 0–32). ORCA does NOT range-check constraint indices — it segfaults
+  > instead of reporting an error, so the run is blocked until they are fixed or removed: a distance
+  > constraint on #37.
+
+- **ЗАХИСТ 2 — composition change.** Uses the **existing** `compositionSignature` (no second notion of
+  "composition changed"): a ref tracks the last signature; when it moves while the text has constraints,
+  a prominent warning appears above the panel listing what each constraint names **now** (element +
+  fragment, or "out of range") — so the check is by eye, not in the head. The trap it catches: a
+  constraint written at 38 atoms, then BH₄⁻ removed → 33 atoms; Scene→Monaco rewrites only the
+  coordinate block, so the `%geom` indices stay put — either out of range (→ ЗАХИСТ 1 blocks) or, worse,
+  silently pointing at different atoms (in range → a run that finishes on the wrong chemistry). We do
+  **not** rewrite the text or drop constraints: the text belongs to the user, and "the same atom after a
+  removal" has no operational definition (the same 2.5.2a call as selection). The warning clears on
+  Dismiss or when no constraints remain.
+- **Verified:** `tsc` + `vite build` clean; `vitest` **275 → 286** (constraint round-trip through the
+  panel, both guards, delete-preserves-block+%geom, manual-edit-reflected, dedupe); `pytest` **38** /
+  `cargo test` **59** untouched (frontend-only). No ORCA run — the segfault is already documented; the
+  point of this unit is to never reach it.
+
 ## As built (Phase 2.5) — New Job UI fixes (WebKitGTK contrast, accordion, scroll)
 Three issues found by manual testing in the real Tauri window (not visible in Chromium). CSS +
 a collapse wrapper only — no Input Builder / `build-input.ts` / `orca-options.ts` logic changed.

@@ -489,12 +489,12 @@ fragment-library source), the butane dihedrals above, the symmetries, a mirror
 rotation + translation of the whole scene leaves all three unchanged to 1e-9;
 this catches a bug in the math, not in a single number).
 
-## Constraints (`constraints.ts`, 2.5.4a) — input text is the source of truth
+## Constraints (`constraints.ts`, 2.5.4a; UI helpers + guards 2.5.4b) — input text is the source of truth
 
 The pure generate / parse / inject layer for the ORCA `%geom Constraints` block.
 **Decision (logged): the ORCA input *text* is the single source of truth for
 constraints**, exactly as it is for the `!` keyword line and the geometry block.
-The 2.5.4b UI panel will be a *view over the text*, never a parallel store — a
+The 2.5.4b UI panel is a *view over the text*, never a parallel store — a
 second home for constraints would drift from the input the same way a parallel
 Scene would drift from the coordinate block if `xyzMatchesScene` didn't force the
 comparison. So every operation round-trips through the text, and the invariant
@@ -518,6 +518,32 @@ comparison. So every operation round-trips through the text, and the invariant
   (a commented-out block never parses as live), returns `null` when there is no
   block *or* a `{ … }` line is malformed (never silently drops a constraint), `[]`
   for a present-but-empty block.
+
+### The two guards (2.5.4b) and the no-remap rule
+
+The panel (`ConstraintPanel.tsx`, see `wiki/modules/frontend.md`) is a view over
+the text; these two pure functions are the safety it must carry because ORCA
+segfaults on a bad index rather than reporting it:
+
+- `constraintIndexIssues(cs, atomCount): { constraint, badIndices }[]` — every
+  constraint whose atom indices fall outside `[0, atomCount)`, with the offending
+  indices (0-based). The panel marks those rows; `NewJobScreen` **blocks Create /
+  Create & Run** on a non-empty result — the one place a run is refused on input
+  *content*. Test: 38-atom scene, constraint on 37 → clean; drop a fragment
+  (33 atoms) → 37 is in `badIndices`.
+- `constraintFromSelection(selection, value?)` — build a constraint from an ordered
+  2/3/4-atom pick (the same length→kind rule as `measureSelection`); `value`
+  omitted → freeze as-is. `sameConstraint(a, b)` is the dedupe guard for a repeated
+  "Constrain selection".
+
+**No remap after a composition change — deliberately.** When a fragment is removed
+the `%geom` indices are *not* rewritten (Scene→Monaco touches only the coordinate
+block). We do **not** guess "the same atom" and re-point them: that has no
+operational definition after a removal — **the exact call made for `selection` in
+2.5.2a** (`selectionSurvives`, "a silent remap is worse than a lost click"). The
+2.5.4b response is the same in spirit: don't remap, *warn* — via the existing
+`compositionSignature` (no second notion of "composition changed"), listing what
+each constraint names now so the user verifies by eye.
 
 ## Edit planning (`edit-plan.ts`, 2.5.2d; both-orientation fix 2.5.2d-2; intra-fragment 2.5.3b; split-mask re-check 2.5.4a)
 
