@@ -1979,3 +1979,50 @@ BH₄⁻(5) in ANY click order → BH₄⁻ moves by default — almost always w
 **Verified.** `tsc` + `vite build` clean; `vitest` **248** (edit-plan: needs-split per op, single-
 fragment scene, smaller-fragment default independent of order); `pytest` **38** (the `within` tests,
 incl. the computed-contact trap); `cargo test` **59** untouched.
+
+## [2026-07-29] ingest | ORCA `%geom Constraints` is 0-based — settled by a real run
+
+The first-session "Question C" is closed. Not by memory (`gotchas.md` forbids trusting memory about
+ORCA), but by an ORCA 6.1.0 run designed so the two interpretations produce *visibly different
+geometry*: **chloromethane**, atom order `Cl, C, H, H, H` (so a one-index shift changes the bond
+*type*: C–Cl≈1.78 vs C–H≈1.09), constraint `{B 1 2 1.234 C}` with an **explicit value** distinct from
+both. After the opt the **C–H** bond (atoms 1,2 = C,H under 0-based) sat at exactly 1.234 Å and C–Cl
+relaxed to 1.80 Å; ORCA's own redundant-internal table printed `B(H 2, C 1)` — carbon = atom **1**,
+chlorine = atom **0**. Unambiguously **0-based**. Bonus: an out-of-range `{C 5 C}` on the 5-atom
+molecule **segfaulted** (ORCA does no bounds check) → range-check indices before writing a constraint.
+Full input, output lines, and the in-range control run in `wiki/orca/constraints.md`. ORCA dirs removed
+(rule 3).
+
+## [2026-07-29] decision | Input text is the source of truth for constraints
+
+Constraints live in the **ORCA input text**, exactly like the `!` keyword line and the geometry block —
+`constraints.ts` (2.5.4a) parses/injects, and the 2.5.4b UI panel will be a **view over the text**, not
+a parallel store. Why: a second home for constraints would drift from the input the same way a parallel
+Scene would drift from the coordinate block if `xyzMatchesScene` didn't force the comparison. The
+invariant `parse(inject(x, cs)) === cs` is a test. No separate DB column — the input *is* the storage.
+
+## [2026-07-29] session | 2.5.4a: ORCA constraint block (generate/parse), index base settled
+
+**Index base settled first** (the ingest entry above) — the whole point of the question, done with a
+real run before any code.
+
+**Pure `constraints.ts`** — `Constraint` (B/A/D/C, optional value), `ORCA_INDEX_BASE=0` +
+`toOrcaIndex`/`fromOrcaIndex` (identity, but routed through the constant so the code states the fact),
+`constraintsBlock` / `parseConstraintsBlock` / `injectConstraints`. Injection replaces or inserts the
+`Constraints` sub-block **without disturbing sibling `%geom` settings** (maxiter survives) via a
+depth-counting token scan that tells the inner `Constraints … end` from the outer `%geom … end`; parse
+strips `#` comments (a commented-out block never parses live) and returns `null` on a malformed line
+(never silently drops). The module's emitted separate-line form was itself run through ORCA 6.1.0 to
+confirm it's valid input.
+
+**Review hole from 2.5.3b, fixed (item 0).** Butane `angle(3,1,2)` → `needs-split`, cut (1,2), moving 2;
+`/geometry/rotatable-mask` returned a mask **containing reference atom 3** (it's on the rotatable side),
+and `set-internal` 422'd at Apply. The reference-atom rule was checked in `planEdit` but not re-run
+after the split mask arrived. Fix: `maskRoleViolation` is now **one pure function on both paths**
+(`orientationFor` inter-fragment; `NewJobScreen` post-split); a violation refuses with an explanation in
+**selection terms** (`explainSplitViolation`: "atom C#3 lies on the moving side of the C#1–C#2 bond …"),
+not the sidecar's inter-fragment wording. Butane test locks it.
+
+**Verified.** `tsc` clean; `vitest` **248 → 275** (+21 constraints round-trip/inject/comment-safety,
++6 the split-mask rule incl. the butane repro); `pytest` **38** and `cargo test` **59** untouched (this
+was frontend-only). Two real ORCA 6.1.0 runs (index base + emitted-format validity), dirs cleaned.

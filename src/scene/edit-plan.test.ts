@@ -6,6 +6,8 @@ import {
   swapToAlternative,
   applyResponseIssue,
   applyResponseToScene,
+  maskRoleViolation,
+  explainSplitViolation,
 } from "./edit-plan";
 import { measureSelection } from "./measure";
 import { mergeToXyz } from "./scene";
@@ -235,6 +237,78 @@ describe("planEdit — intra-fragment → needs-split (2.5.3b)", () => {
     const solo = scene(bigSubstrate()); // one fragment, whole scene
     const p = planEdit(solo, [5, 12, 20, 25]);
     expect(p.kind).toBe("needs-split");
+  });
+});
+
+// ── The 2.5.4a fix: re-run the reference-atom rule on the RESOLVED split mask ──
+// The 2.5.3b hole was that `planEdit` checked the rule for the inter-fragment
+// case but not after the sidecar's bond-graph split came back, so a reference
+// atom on the moving side slipped through to a 422 at Apply. Live repro (butane):
+//   angle(3,1,2) → needs-split, cut (1,2), moving 2
+//   /geometry/rotatable-mask → mask [2,3,9,10,11,12,13]  ← reference 3 IS inside
+// `maskRoleViolation` is the single pure check now used by BOTH orientationFor
+// (inter-fragment) and NewJobScreen (post-split); it must catch this.
+function butane(id = "but"): SceneFragment {
+  // C0-C1-C2-C3 backbone (so a cut on 1–2 reads "C#1–C#2"), then 10 H (idx 4-13).
+  // A deterministic zigzag; coordinates are irrelevant to the mask check, only
+  // the ELEMENTS matter for the label.
+  const atoms: SceneAtom[] = [];
+  for (let i = 0; i < 4; i++) atoms.push({ element: "C", x: i, y: (i % 2), z: 0 });
+  for (let i = 0; i < 10; i++)
+    atoms.push({ element: "H", x: i * 0.5, y: 1 + Math.sin(i), z: Math.cos(i) });
+  return { id, name: "butane", charge: 0, source: "editor", atoms };
+}
+
+describe("split-mask reference-atom rule (2.5.4a)", () => {
+  const s = scene(butane());
+  // The exact live-endpoint repro: mask returned by the sidecar for cut (1,2).
+  const cut: [number, number] = [1, 2];
+  const moving = 2;
+  const mask = [2, 3, 9, 10, 11, 12, 13];
+  const references = [3, 1]; // selection [3,1,2] minus the mover (2)
+
+  it("sanity: the butane selection reaches needs-split with cut (1,2), moving 2", () => {
+    const p = planEdit(s, [3, 1, 2]);
+    expect(p.kind).toBe("needs-split");
+    if (p.kind === "needs-split") {
+      expect(p.op).toBe("angle");
+      expect(p.cut).toEqual([1, 2]);
+      expect(p.moving).toBe(2);
+    }
+  });
+
+  it("flags the reference atom that landed on the moving side", () => {
+    const v = maskRoleViolation(mask, moving, references);
+    expect(v).not.toBeNull();
+    expect(v!.referencesOnMovingSide).toEqual([3]); // ref 3 ∈ mask
+    expect(v!.moverOffMovingSide).toBe(false); // mover 2 ∈ mask
+  });
+
+  it("passes a clean split (mover in, references out) → null", () => {
+    // A hypothetical clean split of a different coordinate: mover in, refs out.
+    expect(maskRoleViolation([3, 9, 10], 3, [1, 0])).toBeNull();
+  });
+
+  it("flags a mover missing from its own rotatable side", () => {
+    const v = maskRoleViolation([9, 10], 2, [3, 1]);
+    expect(v!.moverOffMovingSide).toBe(true);
+  });
+
+  it("explains the violation in selection terms (not the sidecar's wording)", () => {
+    const v = maskRoleViolation(mask, moving, references)!;
+    const msg = explainSplitViolation(s, cut, moving, v);
+    expect(msg).toContain("#3"); // names the offending reference
+    expect(msg).toContain("moving side");
+    expect(msg).toContain("C#1–C#2"); // the bond, with elements
+    expect(msg).toContain("static side"); // tells the user the fix
+    expect(msg).not.toMatch(/fragment|inter-fragment/i); // NOT the sidecar text
+  });
+
+  it("pluralises when several references land on the moving side", () => {
+    const v = maskRoleViolation([2, 3, 9], 2, [3, 9])!;
+    const msg = explainSplitViolation(s, cut, moving, v);
+    expect(msg).toMatch(/atoms .* lie on the moving side/);
+    expect(msg).toContain("reference atoms on the static side");
   });
 });
 

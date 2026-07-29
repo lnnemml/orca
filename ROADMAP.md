@@ -190,9 +190,14 @@ re-optimisation of the lowest 3–4 stay in Phase 4.5 (the scientific pipeline);
 - [ ] Fragment library: common reagents (BH₄⁻, H₂O, common ligands), place at position
       with specified distance/angle
       — placement = set_distance/angle/dihedral with the mask on the newly added fragment
-- [ ] Constraint manager: list of active constraints, toggle on/off, export to
+- [~] Constraint manager: list of active constraints, toggle on/off, export to
       ORCA `%geom Constraints ... end` block in the input
       — constraints reference cross-fragment atom pairs
+      - [x] **2.5.4a** — pure `constraints.ts` (generate/parse/inject); **index base
+            0-based settled by a real ORCA 6.1.0 run** (`wiki/orca/constraints.md`);
+            input text is the source of truth. Also closed a 2.5.3b hole: the
+            reference-atom rule re-runs on the resolved split mask.
+      - [ ] **2.5.4b** — the UI panel (a view over the input text, not a parallel store)
 - [ ] xTB integration: sidecar endpoint `/xtb-optimize` (xyz + constraints → optimized xyz),
       xTB binary path in Settings (standalone `xtb`, not through ORCA)
       — merged xyz in, optimised xyz out; fragment boundaries preserved (order + count invariant)

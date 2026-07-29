@@ -34,6 +34,7 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 - [output-files.md](orca/output-files.md) — what ORCA produces and what each file is for
 - [gotchas.md](orca/gotchas.md) — accumulated traps and their solutions
 - [goat.md](orca/goat.md) — `! XTB GOAT` conformer search: observed ensemble format, atom-order preservation, `%pal` cost (verified on ORCA 6.1.0)
+- [constraints.md](orca/constraints.md) — `%geom Constraints` block: B/A/D/C syntax, value/no-value, **0-based index base settled by a real ORCA 6.1.0 run**, out-of-range segfault
 
 ## Chemistry (навчальні нотатки, українською)
 
@@ -52,4 +53,4 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 
 ---
 
-*Page count: 33. Last structural update: 2026-07-29 (+debugging/005-stale-sidecar-hmr).*
+*Page count: 34. Last structural update: 2026-07-29 (+orca/constraints.md).*

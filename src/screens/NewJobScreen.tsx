@@ -10,7 +10,12 @@ import { useSceneStore } from "../scene/store";
 import { FragmentList } from "../scene/FragmentList";
 import { AtomInspector } from "../scene/AtomInspector";
 import { EditPanel } from "../scene/EditPanel";
-import { planEdit, swapToAlternative } from "../scene/edit-plan";
+import {
+  planEdit,
+  swapToAlternative,
+  maskRoleViolation,
+  explainSplitViolation,
+} from "../scene/edit-plan";
 import { postSidecar } from "../sidecar-client";
 import {
   toggleAtom,
@@ -221,7 +226,21 @@ export function NewJobScreen({
     })
       .then((resp) => {
         if (cancelled) return;
-        setSplitMask(resp.mask);
+        // Re-run the reference-atom rule on the RESOLVED mask (2.5.4a fix): the
+        // split doesn't know which atoms were references, so a reference can land
+        // on the moving side (butane angle(3,1,2) → mask ∋ ref 3) and set-internal
+        // would 422 at Apply. The SAME pure check as `orientationFor`; on a
+        // violation, refuse HERE with an explanation in terms of the selection,
+        // never the sidecar's inter-fragment wording.
+        const refs = splitPlan.indices.filter((i) => i !== splitPlan.moving);
+        const violation = maskRoleViolation(resp.mask, splitPlan.moving, refs);
+        if (violation) {
+          setSplitError(
+            explainSplitViolation(scene, splitPlan.cut, splitPlan.moving, violation),
+          );
+        } else {
+          setSplitMask(resp.mask);
+        }
         setSplitResolving(false);
       })
       .catch((e) => {

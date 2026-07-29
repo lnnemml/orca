@@ -39,6 +39,7 @@
 
 import type { Scene } from "./types";
 import { measureSelection } from "./measure";
+import { describeAtom } from "./selection";
 import {
   atomCount,
   fragmentAtomIndices,
@@ -90,16 +91,89 @@ export type EditPlan =
     }
   | { kind: "unavailable"; reason: string };
 
+/**
+ * The reference-atom rule that makes a rotation mask valid, extracted so ONE
+ * function guards BOTH code paths that produce a mask:
+ *  - the inter-fragment orientation (`orientationFor` — mask = a whole fragment);
+ *  - the intra-fragment bond-graph split, once the sidecar has resolved it
+ *    (`NewJobScreen`, after `/geometry/rotatable-mask` — mask = the rotatable side
+ *    of a bond).
+ *
+ * A valid mask holds the MOVING atom and NONE of the reference atoms — the other
+ * selected atoms that DEFINE the coordinate and must stay on the STATIC side.
+ * Returns `null` when the rule holds, else the offending indices.
+ *
+ * The 2.5.3b hole this closes: the rule was applied in `planEdit` for the
+ * inter-fragment case but never re-run after the sidecar mask arrived. So an
+ * intra-fragment split that put a reference atom on the moving side slipped
+ * through to a 422 at Apply — the butane case `angle(3,1,2)` → cut (1,2),
+ * mask `[2,3,9,10,11,12,13]` ∋ reference `3`. The split can't know which atoms
+ * were the references, so the caller must re-check.
+ */
+export interface MaskRoleViolation {
+  /** Reference atoms wrongly INSIDE the mask (on the moving side). */
+  referencesOnMovingSide: number[];
+  /** The moving atom is missing from the mask (shouldn't happen; guarded anyway). */
+  moverOffMovingSide: boolean;
+}
+
+export function maskRoleViolation(
+  mask: number[],
+  moving: number,
+  references: number[],
+): MaskRoleViolation | null {
+  const inMask = new Set(mask);
+  const referencesOnMovingSide = references.filter((r) => inMask.has(r));
+  const moverOffMovingSide = !inMask.has(moving);
+  if (referencesOnMovingSide.length === 0 && !moverOffMovingSide) return null;
+  return { referencesOnMovingSide, moverOffMovingSide };
+}
+
+/**
+ * Explain a post-split mask violation in terms of the user's SELECTION — never
+ * the sidecar's own message. `/geometry/rotatable-mask`'s wording is written for
+ * the inter-fragment case and reads wrong inside a single molecule; here we name
+ * the reference atom(s) that landed on the moving side and the bond the torsion
+ * turns about ("atom C#3 lies on the moving side of the C#1–C#2 bond — pick a
+ * reference atom on the static side").
+ */
+export function explainSplitViolation(
+  scene: Scene,
+  cut: [number, number],
+  moving: number,
+  violation: MaskRoleViolation,
+): string {
+  const label = (i: number) => {
+    const d = describeAtom(scene, i);
+    return d ? `${d.element}#${i}` : `#${i}`;
+  };
+  const bond = `${label(cut[0])}–${label(cut[1])}`;
+  const refs = violation.referencesOnMovingSide;
+  if (refs.length > 0) {
+    const names = refs.map(label).join(", ");
+    const [subject, verb] = refs.length === 1 ? ["atom", "lies"] : ["atoms", "lie"];
+    const object = refs.length === 1 ? "a reference atom" : "reference atoms";
+    return (
+      `${subject} ${names} ${verb} on the moving side of the ${bond} bond — ` +
+      `pick ${object} on the static side.`
+    );
+  }
+  return (
+    `the atom you're moving (${label(moving)}) isn't on the rotatable side of the ` +
+    `${bond} bond — pick a different coordinate.`
+  );
+}
+
 /** A single orientation's validity: mover = last atom of `chain`; every earlier
  * atom must be OUT of the mover's fragment mask. `null` if the mover is stale or
- * a reference atom sits in its mask. */
+ * a reference atom sits in its mask (the `maskRoleViolation` rule — shared with
+ * the intra-fragment split path). */
 function orientationFor(scene: Scene, chain: number[]): Orientation | null {
   const mover = chain[chain.length - 1];
   const located = locateAtom(scene, mover);
   if (!located) return null;
   const mask = fragmentAtomIndices(scene, located.fragment.id);
-  const maskSet = new Set(mask);
-  if (chain.slice(0, -1).some((r) => maskSet.has(r))) return null;
+  if (maskRoleViolation(mask, mover, chain.slice(0, -1))) return null;
   return { movingFragmentId: located.fragment.id, indices: [...chain], mask };
 }
 

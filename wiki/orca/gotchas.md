@@ -72,4 +72,14 @@ Living page. Add every trap encountered, newest at top, format:
   returning a silently-wrong mask. Rule: never trust perceived bonds blindly on geometries this app
   can distort; make the cutoff visible, test it against valence, and refuse rather than guess. See
   `wiki/modules/sidecar.md`.
+- **`%geom Constraints` index base — SETTLED: 0-based** (was the open "Question C").
+  An off-by-one here doesn't crash; it freezes the *wrong* coordinate on a run that
+  finishes `ORCA TERMINATED NORMALLY` — so it was resolved by a real ORCA 6.1.0
+  run (2026-07-29), not by memory. Chloromethane (order `Cl,C,H,H,H`) with
+  `{B 1 2 1.234 C}` froze the **C–H** bond (atoms 1,2 = C,H under 0-based) and left
+  C–Cl free; ORCA's own internal-coordinate table printed `B(H 2, C 1)` — carbon =
+  atom 1, chlorine = atom 0. Bonus trap: an **out-of-range index segfaults** (`{C 5 C}`
+  on a 5-atom molecule died at "Evaluating the coordinates") — ORCA does no bounds
+  check, so range-check indices before writing a constraint. Full evidence and the
+  in-range/out-of-range control in `wiki/orca/constraints.md`.
 - *(add as encountered during Phase 0+)*

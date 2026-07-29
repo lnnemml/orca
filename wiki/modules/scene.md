@@ -15,7 +15,11 @@ panel on Job detail, and "Use this conformer" (two branches). The geometry edito
 (**2.5.2**) is underway: **2.5.2a** atom picking + selection (`selection.ts`); **2.5.2b**
 d/θ/φ measurement (`measure.ts`, ASE conventions pinned to source) + the selection-survival
 rule (`selectionSurvives`). Next: **2.5.2c** — apply d/θ/φ through ASE, whose acceptance test
-re-derives all three with `measure.ts` (already recorded).
+re-derives all three with `measure.ts` (already recorded). **2.5.4a** adds the
+pure `constraints.ts` (ORCA `%geom Constraints` generate/parse/inject; index base
+settled by a real ORCA run) and closes a 2.5.3b hole — the reference-atom rule is
+now re-run on the resolved bond-graph split mask (`maskRoleViolation`, one pure
+function on both paths). The constraint UI panel is 2.5.4b.
 
 ## Responsibilities
 
@@ -54,7 +58,14 @@ functions, no imports from react / 3dmol / tauri. The reactive `store.ts` (added
   node-tested, React-free. **ASE conventions pinned to source** (see below).
 - `edit-plan.ts` — edit-mode planner (2.5.2d): `planEdit` (pick list → `ready` |
   `needs-split` | `unavailable`), plus the pure apply helpers `applyResponseToScene` and
-  `applyResponseIssue`. Pure / node-tested, no React, no fetch.
+  `applyResponseIssue`, and the shared reference-atom rule `maskRoleViolation` /
+  `explainSplitViolation` (2.5.4a). Pure / node-tested, no React, no fetch.
+- `constraints.ts` — ORCA `%geom Constraints` generate / parse / inject (2.5.4a):
+  `Constraint` type (B/A/D/C), `ORCA_INDEX_BASE`/`toOrcaIndex`/`fromOrcaIndex`,
+  `constraintsBlock`, `parseConstraintsBlock`, `injectConstraints`. Pure /
+  node-tested, no React, no fetch. **Input text is the source of truth** (see
+  below); the 2.5.4b panel will be a view over the text. Index base **0-based,
+  settled by a real ORCA 6.1.0 run** — `wiki/orca/constraints.md`.
 - `AtomInspector.tsx` — the atom panel on New Job (React; reads a selection held
   in `NewJobScreen` state, uses the shared `fragmentColor` palette).
 - `EditPanel.tsx` — edit-mode UI in the Atom rail section (React): target field,
@@ -478,7 +489,37 @@ fragment-library source), the butane dihedrals above, the symmetries, a mirror
 rotation + translation of the whole scene leaves all three unchanged to 1e-9;
 this catches a bug in the math, not in a single number).
 
-## Edit planning (`edit-plan.ts`, 2.5.2d; both-orientation fix 2.5.2d-2; intra-fragment 2.5.3b)
+## Constraints (`constraints.ts`, 2.5.4a) — input text is the source of truth
+
+The pure generate / parse / inject layer for the ORCA `%geom Constraints` block.
+**Decision (logged): the ORCA input *text* is the single source of truth for
+constraints**, exactly as it is for the `!` keyword line and the geometry block.
+The 2.5.4b UI panel will be a *view over the text*, never a parallel store — a
+second home for constraints would drift from the input the same way a parallel
+Scene would drift from the coordinate block if `xyzMatchesScene` didn't force the
+comparison. So every operation round-trips through the text, and the invariant
+`parse(inject(x, cs)) === cs` is a test.
+
+- `Constraint` = `distance` (B, 2 atoms) | `angle` (A, 3) | `dihedral` (D, 4) |
+  `cartesian` (C, 1); `value?` present → freeze at that value, absent → freeze at
+  current geometry. Atoms are in the 0-based merged-xyz / ASE-mask space (ADR-008).
+- **Index base = 0**, settled by a real ORCA 6.1.0 run (`wiki/orca/constraints.md`),
+  NOT memory. OrcaStudio's space is already 0-based, so `toOrcaIndex` /
+  `fromOrcaIndex` are the identity — but every index is routed through them (in
+  terms of `ORCA_INDEX_BASE`) so the code states the fact instead of relying on the
+  coincidence.
+- `injectConstraints` replaces an existing `Constraints` sub-block or inserts a new
+  one **without disturbing sibling `%geom` settings** (maxiter, …) or the geometry:
+  no `%geom` → a full block before the coordinate block; `%geom` present, no
+  `Constraints` → sub-block inserted inside; `Constraints` present → replaced in
+  place (never duplicated). Block location uses a depth-counting token scan so the
+  inner `Constraints … end` and the outer `%geom … end` are told apart.
+- `parseConstraintsBlock` is whitespace/case tolerant, **strips `#` comments first**
+  (a commented-out block never parses as live), returns `null` when there is no
+  block *or* a `{ … }` line is malformed (never silently drops a constraint), `[]`
+  for a present-but-empty block.
+
+## Edit planning (`edit-plan.ts`, 2.5.2d; both-orientation fix 2.5.2d-2; intra-fragment 2.5.3b; split-mask re-check 2.5.4a)
 
 `planEdit(scene, selection)` turns the pick list into an `EditPlan` — a
 three-way discriminated union:
@@ -524,6 +565,21 @@ The math is **not duplicated** — `op` and `current` come straight from
   `/geometry/rotatable-mask` and the returned mask drives BOTH the glow and
   `set-internal`. This was a *refusal* in 2.5.2d–3a; 2.5.3b turns it into a
   first-class edit.
+- **The reference-atom rule is re-run on the RESOLVED split mask (2.5.4a).** The
+  rule "the moving atom is IN the mask, every reference atom is OUT" was applied in
+  `planEdit` for the inter-fragment case but **not** after the sidecar's bond-graph
+  split returned — and the split doesn't know which atoms were references. A
+  reference that lands on the moving side slipped through to a **422 at Apply**.
+  Live repro (butane): `angle(3,1,2)` → `needs-split`, cut (1,2), moving 2;
+  `/geometry/rotatable-mask` → `[2,3,9,10,11,12,13]`, which contains reference **3**
+  (C#3 is bonded to the moving C#2, so it *is* on the rotatable side). Fix:
+  `maskRoleViolation(mask, moving, references)` is now a **single pure function**
+  used on BOTH paths — `orientationFor` (inter-fragment) and `NewJobScreen` after
+  the mask resolves. On a violation the edit is refused **with an explanation in
+  terms of the selection** (`explainSplitViolation`: "atom C#3 lies on the moving
+  side of the C#1–C#2 bond — pick a reference atom on the static side"), **never**
+  the sidecar's inter-fragment text (which reads wrong inside one molecule).
+  `edit-plan.test.ts` locks the butane case.
 - **The remaining refusal (2.5.2d-2).** When atoms span fragments but the pivot
   can't be held fixed:
   - **atoms across fragments but the pivot can't be held fixed** (a dihedral whose
