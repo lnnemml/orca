@@ -259,17 +259,26 @@ setting (SQLite, under Rust). Details of the tool itself: `wiki/orca/xtb.md`.
   `wiki/orca/xtb.md`). Any breach → `AppError::Backend` with a diagnostic, never a silently-returned
   geometry. The held-check also catches an index-base mistake: a wrong `+1` constrains a different
   pair and the intended one drifts past tolerance.
-- **Isolation + cleanup + kill (rule #3, `debugging/004`).** The scratch dir is removed and the slot
-  freed in the thread **unconditionally, right after `run_in_dir`** — outside any `?`, so it holds on
-  every exit path (success / error / cancel / timeout). This is the guarantee most easily lost when
-  moving work into a thread, so it lives in one place after the call, not scattered through the run.
-  Single-slot `XtbRunner` holds only the `cancelled` flag (`Some` = busy); **`xtb_cancel` just sets
-  the flag and returns** — it runs on the main thread and must not block, and `terminate_job` sleeps up
-  to ~12 s (SIGTERM grace + SIGKILL). The **worker thread's poll loop** (which holds the pgid + dir
-  locally) sees the flag within 50 ms and does the actual `terminate_job` (killpg SIGTERM→grace→SIGKILL
-  + **cwd sweep**, the ORCA primitives made `pub(crate)` — one copy) on its own thread, then the
-  unconditional cleanup runs. A timeout does the same. Still a helper, not a queued job — just no
-  longer blocking the UI thread on the run OR on the cancel.
+- **Isolation + cleanup + kill (rule #3, `debugging/004`).** The slot is freed in the thread
+  unconditionally right after `run_in_dir`. The scratch **dir cleanup is split (2.5.5-fix-2):**
+  `keep_dir_for_diagnostics(succeeded, cancelled)` → **remove on success and on user-cancel, KEEP on
+  any other failure** (timeout / non-zero exit / post-condition breach / parse error). Rule #3 is about
+  clearing ORCA-style scratch *litter* on success — it is NOT a licence to delete the *evidence* when a
+  run fails, which is exactly when `xtb.out` (the only record of where xtb spent its time) is needed.
+  The kept dir's path rides the `xtb:error` payload (`dir`) and the UI shows it as copyable text; the
+  error message also carries the **last ~20 lines of `xtb.out`** via the shared `read_tail_lines`
+  (bounded tail, rule #5 — one tailer, not a second). **Open issue:** kept dirs **accumulate** under
+  `<data>/xtb/` — a reaper (age/count-bounded) is deferred, not yet built.
+- **Live progress (2.5.5-fix-2).** The poll loop also reads the `xtb.out` tail ~once a second (same
+  `read_tail_lines`) and emits `xtb:progress { cycle }` on each new optimization cycle. The panel shows
+  the cycle + a ticking clock, so a stall — even a pre-first-cycle startup hang — is visible at once
+  instead of after minutes of silence.
+- **Cancel is non-blocking.** Single-slot `XtbRunner` holds only the `cancelled` flag (`Some` = busy);
+  **`xtb_cancel` just sets the flag and returns** — it runs on the main thread and must not block, and
+  `terminate_job` sleeps up to ~12 s. The **worker thread's poll loop** (holding the pgid + dir locally)
+  sees the flag within 50 ms and does the actual `terminate_job` (killpg SIGTERM→grace→SIGKILL + **cwd
+  sweep**, the ORCA primitives made `pub(crate)` — one copy) on its own thread. Still a helper, not a
+  queued job — just not blocking the UI thread on the run OR the cancel.
 - **Registration:** `xtb::{xtb_version, xtb_optimize, xtb_cancel}` in the invoke handler;
   `app.manage(xtb::XtbRunner::default())` in setup. 10 unit tests (`xtb::tests`): 1-based xcontrol
   per op, cartesian→`$fix`, freeze-as-is resolves the current value, out-of-range rejected before

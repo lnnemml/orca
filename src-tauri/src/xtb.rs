@@ -374,9 +374,20 @@ pub struct XtbResult {
 }
 
 /// Payload of the `xtb:error` event (the run failed / was cancelled / timed out).
+/// `dir` is the kept diagnostic directory on a genuine failure (not a cancel), for
+/// the UI to show as copyable text.
 #[derive(Clone, Serialize)]
 struct XtbErrorPayload {
     message: String,
+    dir: Option<String>,
+}
+
+/// Payload of the `xtb:progress` event — the current optimization cycle, so the UI
+/// shows live movement (and "very long" becomes visible immediately, not after
+/// five minutes of silence).
+#[derive(Clone, Serialize)]
+struct XtbProgressPayload {
+    cycle: u32,
 }
 
 /// Resolve a possibly-bare binary name to an absolute path via `$PATH`, so xtb is
@@ -501,10 +512,11 @@ pub fn xtb_optimize(
         });
     }
 
-    // Off the main thread — the whole point of this fix.
+    // Off the main thread — the whole point of the 2.5.5-fix.
     let timeout = timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
     std::thread::spawn(move || {
         let result = run_in_dir(
+            &app,
             &dir,
             &path,
             &cancelled,
@@ -518,30 +530,41 @@ pub fn xtb_optimize(
             timeout,
         );
 
-        // UNCONDITIONAL cleanup on EVERY exit path (success / error / cancel /
-        // timeout): remove the isolated dir (litters like ORCA — rule #3) and free
-        // the slot. This is the same guarantee the old in-command code gave; moving
-        // to a thread must not weaken it, so it sits right after `run_in_dir`,
-        // outside any `?`.
-        let _ = std::fs::remove_dir_all(&dir);
+        // Cleanup policy (2.5.5-fix-2): rule #3 is about clearing ORCA-style
+        // scratch litter on SUCCESS, not about throwing away evidence on FAILURE.
+        //  - success        → remove the dir (as before);
+        //  - user cancel     → remove (not a diagnostic case);
+        //  - any other error → KEEP the dir; xtb.out is the only thing that shows
+        //    WHERE xtb spent its time, and it's needed exactly when a run fails.
+        // Freeing the slot is unconditional either way.
+        let was_cancelled = cancelled.load(Ordering::SeqCst);
+        let keep = keep_dir_for_diagnostics(result.is_ok(), was_cancelled);
+        if !keep {
+            let _ = std::fs::remove_dir_all(&dir);
+        }
         if let Some(runner) = app.try_state::<XtbRunner>() {
             if let Ok(mut g) = runner.running.lock() {
                 *g = None;
             }
         }
 
-        // Report by event (the job-log convention: `<domain>:<kind>` payload).
         match result {
             Ok(res) => {
                 let _ = app.emit("xtb:done", res);
             }
             Err(e) => {
-                let _ = app.emit(
-                    "xtb:error",
-                    XtbErrorPayload {
-                        message: e.to_string(),
-                    },
-                );
+                // Attach the last ~20 lines of xtb.out (bounded tail, rule #5) and,
+                // when kept, the dir path — surfaced in the UI as copyable text.
+                let mut message = e.to_string();
+                let log_tail = tail(&dir.join("xtb.out"), 20);
+                if !log_tail.trim().is_empty() {
+                    message = format!("{message}\n\n— last lines of xtb.out —\n{log_tail}");
+                }
+                let dir_str = keep.then(|| dir.display().to_string());
+                if let Some(ref d) = dir_str {
+                    message = format!("{message}\n\nDiagnostic files kept at:\n{d}");
+                }
+                let _ = app.emit("xtb:error", XtbErrorPayload { message, dir: dir_str });
             }
         }
     });
@@ -550,6 +573,7 @@ pub fn xtb_optimize(
 
 #[allow(clippy::too_many_arguments)]
 fn run_in_dir(
+    app: &AppHandle,
     dir: &Path,
     path: &str,
     cancelled: &Arc<AtomicBool>,
@@ -606,15 +630,17 @@ fn run_in_dir(
     let pgid = child.id() as i32; // process_group(0) → pgid == child pid; kept local
                                   // (the poll loop below does the killpg + cwd sweep)
 
-    // Poll for exit / cancel / timeout.
+    // Poll for exit / cancel / timeout. Between checks, stream progress: read the
+    // bounded tail of xtb.out (~once a second) and emit the current opt cycle, so
+    // the panel shows live movement instead of five minutes of silence.
     let deadline = start + Duration::from_secs(timeout_secs);
+    let mut last_progress = Instant::now();
+    let mut last_cycle_seen: Option<u32> = None;
     loop {
         if let Some(status) = child.try_wait()? {
             if !status.success() {
-                return Err(AppError::Backend(format!(
-                    "xtb exited with an error.\n{}",
-                    tail(&dir.join("xtb.out"), 20)
-                )));
+                // Terse — the thread appends the xtb.out tail to every error.
+                return Err(AppError::Backend("xtb exited with an error".into()));
             }
             break;
         }
@@ -624,20 +650,27 @@ fn run_in_dir(
         }
         if Instant::now() > deadline {
             terminate_job(pgid, dir);
-            return Err(AppError::Backend(format!(
-                "xtb timed out after {timeout_secs}s"
-            )));
+            return Err(AppError::Backend(format!("xtb timed out after {timeout_secs}s")));
+        }
+        if last_progress.elapsed() >= Duration::from_millis(1000) {
+            last_progress = Instant::now();
+            let lines = crate::local_backend::read_tail_lines(&dir.join("xtb.out"), 40)
+                .unwrap_or_default();
+            if let Some(cycle) = last_cycle(&lines) {
+                if Some(cycle) != last_cycle_seen {
+                    last_cycle_seen = Some(cycle);
+                    let _ = app.emit("xtb:progress", XtbProgressPayload { cycle });
+                }
+            }
         }
         std::thread::sleep(Duration::from_millis(50));
     }
 
-    // xtb prints "normal termination of xtb" on success.
-    let out_text = std::fs::read_to_string(dir.join("xtb.out")).unwrap_or_default();
+    // xtb prints "normal termination of xtb" ~14 lines from the end (measured); a
+    // 30-line bounded tail (rule #5) covers it with margin.
+    let out_text = tail(&dir.join("xtb.out"), 30);
     if !out_text.contains("normal termination") {
-        return Err(AppError::Backend(format!(
-            "xtb did not terminate normally.\n{}",
-            tail(&dir.join("xtb.out"), 20)
-        )));
+        return Err(AppError::Backend("xtb did not terminate normally".into()));
     }
 
     // Read the optimized geometry.
@@ -670,14 +703,31 @@ fn run_in_dir(
     })
 }
 
-/// Last `n` lines of a file (for an error message); empty if unreadable.
+/// Last `n` lines of a file (for an error message / progress). Reads only a
+/// bounded **tail** from the end (domain rule #5) by reusing the ORCA log tailer
+/// `local_backend::read_tail_lines` — one copy, not a second file reader. Empty if
+/// unreadable.
 fn tail(path: &Path, n: usize) -> String {
-    std::fs::read_to_string(path)
-        .map(|s| {
-            let lines: Vec<&str> = s.lines().collect();
-            lines[lines.len().saturating_sub(n)..].join("\n")
-        })
+    crate::local_backend::read_tail_lines(path, n)
         .unwrap_or_default()
+        .join("\n")
+}
+
+/// Whether to KEEP the scratch dir for diagnostics after a run. Rule #3 is about
+/// clearing ORCA-style scratch litter on SUCCESS, not throwing away the evidence
+/// on FAILURE — so keep it only on a genuine failure (an error that is NOT a user
+/// cancel; a cancel is not a diagnostic case). Success and cancel remove it.
+fn keep_dir_for_diagnostics(succeeded: bool, cancelled: bool) -> bool {
+    !succeeded && !cancelled
+}
+
+/// The highest optimization cycle number visible in the tail lines, if any. xtb
+/// prints `.......... CYCLE    N ..........` per geometry step.
+fn last_cycle(lines: &[String]) -> Option<u32> {
+    lines.iter().rev().find_map(|l| {
+        let after = l.split("CYCLE").nth(1)?;
+        after.split_whitespace().next()?.parse::<u32>().ok()
+    })
 }
 
 #[cfg(test)]
@@ -802,5 +852,31 @@ mod tests {
         let (el, p) = parse_xyz(text).unwrap();
         assert_eq!(el, vec!["O", "H", "H"]);
         assert_eq!(p.len(), 3);
+    }
+
+    #[test]
+    fn keep_dir_only_on_a_genuine_failure() {
+        // A failure that is NOT a cancel (e.g. a timeout) keeps the dir for
+        // diagnostics — the guarantee most easily lost on a refactor.
+        assert!(keep_dir_for_diagnostics(false, false));
+        // Success removes it.
+        assert!(!keep_dir_for_diagnostics(true, false));
+        // A user cancel removes it (not a diagnostic case), even though the run
+        // ended in error.
+        assert!(!keep_dir_for_diagnostics(false, true));
+    }
+
+    #[test]
+    fn last_cycle_reads_the_highest_xtb_cycle_marker() {
+        let lines: Vec<String> = [
+            ".............................. CYCLE    1 ..............................",
+            "  ... energy ...",
+            ".............................. CYCLE    2 ..............................",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(last_cycle(&lines), Some(2));
+        assert_eq!(last_cycle(&["no cycles here".to_string()]), None);
     }
 }

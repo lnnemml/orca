@@ -54,6 +54,7 @@ import {
   totalCharge,
   xyzMatchesScene,
 } from "../scene/scene";
+import { formatXtbProgress } from "../scene/xtb-progress";
 import { restoreScene } from "../scene/restore";
 import { goatInputForFragment } from "../scene/ensemble";
 import type { Scene, SceneFragment } from "../scene/types";
@@ -363,7 +364,13 @@ export function NewJobScreen({
   // (`applyEdit` stashes `preEditScene`).
   const [xtbBusy, setXtbBusy] = useState(false);
   const [xtbError, setXtbError] = useState<string | null>(null);
+  const [xtbErrorDir, setXtbErrorDir] = useState<string | null>(null);
   const [xtbNote, setXtbNote] = useState<string | null>(null);
+  // Live progress (2.5.5-fix-2): the current opt cycle + a ticking elapsed counter,
+  // so five minutes of silence never happens again — "very long" is visible now.
+  const [xtbCycle, setXtbCycle] = useState<number | null>(null);
+  const [xtbElapsed, setXtbElapsed] = useState(0);
+  const xtbStartRef = useRef(0);
   // The scene the run was launched against. A result is applied ONLY to this exact
   // scene — the same stale-response guard as the split-mask fetch (2.5.3b): if the
   // scene changed while xtb ran, the result is dropped, never applied to a scene it
@@ -372,7 +379,11 @@ export function NewJobScreen({
   const runXtbPreopt = async () => {
     if (!scene) return;
     setXtbError(null);
+    setXtbErrorDir(null);
     setXtbNote(null);
+    setXtbCycle(null);
+    setXtbElapsed(0);
+    xtbStartRef.current = Date.now();
     xtbSceneRef.current = scene;
     setXtbBusy(true);
     try {
@@ -431,17 +442,33 @@ export function NewJobScreen({
           setXtbError(err instanceof Error ? err.message : String(err));
         }
       }),
-      listen<{ message: string }>("xtb:error", (event) => {
+      listen<{ message: string; dir: string | null }>("xtb:error", (event) => {
         if (cancelled) return;
         setXtbBusy(false);
         xtbSceneRef.current = null;
         setXtbError(event.payload.message);
+        setXtbErrorDir(event.payload.dir);
+      }),
+      listen<{ cycle: number }>("xtb:progress", (event) => {
+        if (cancelled) return;
+        setXtbCycle(event.payload.cycle);
       }),
     ]);
     return () => {
       cancelled = true;
       unlisten.then((fns) => fns.forEach((f) => f()));
     };
+  }, [xtbBusy]);
+
+  // Tick the elapsed counter every second while xtb runs, so the time is visibly
+  // live (a stalled cycle number + a growing clock = "this is taking too long").
+  useEffect(() => {
+    if (!xtbBusy) return;
+    const id = setInterval(
+      () => setXtbElapsed(Math.round((Date.now() - xtbStartRef.current) / 1000)),
+      1000,
+    );
+    return () => clearInterval(id);
   }, [xtbBusy]);
 
   // Esc — ONE handler, explicit priority (2.5.2e-2 decision): in fullscreen it
@@ -1196,6 +1223,11 @@ export function NewJobScreen({
                     </button>
                   ) : null}
                 </div>
+                {xtbBusy ? (
+                  <div className="muted xtb-note xtb-progress">
+                    {formatXtbProgress(xtbCycle, xtbElapsed)}
+                  </div>
+                ) : null}
                 {constraintsUnrecognised ? (
                   <div className="muted xtb-note">
                     constraint block unreadable — fix it in the editor to pre-optimize
@@ -1203,7 +1235,18 @@ export function NewJobScreen({
                 ) : null}
                 {xtbNote ? <div className="muted xtb-note">{xtbNote}</div> : null}
                 {xtbError ? (
-                  <div className="edit-error edit-error-severe">{xtbError}</div>
+                  <div className="edit-error edit-error-severe xtb-error">
+                    <div className="xtb-error-msg">{xtbError}</div>
+                    {xtbErrorDir ? (
+                      <input
+                        className="input mono xtb-error-dir"
+                        readOnly
+                        value={xtbErrorDir}
+                        onFocus={(e) => e.currentTarget.select()}
+                        title="Diagnostic files — select and copy this path"
+                      />
+                    ) : null}
+                  </div>
                 ) : null}
               </div>
             ) : null}

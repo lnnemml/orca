@@ -2152,3 +2152,32 @@ a run, hit Cancel mid-run, start a second run during the first — was NOT perfo
 mouse interaction in the WebKitGTK window (no scripted-input tool here, and "feels responsive" is a
 human perceptual check). Per the task, this manual run in the real window **remains the obligatory
 acceptance step for the author.** I did not and do not report responsiveness as verified-by-me.
+
+## [2026-07-29] session | 2.5.5-fix-2: diagnose the 300 s xtb hang — keep evidence, tail, live progress
+
+A no-constraint pre-optimization (dexketoprofen, C16H14O3, 33 atoms) ran 300 s and timed out, and the
+app made the cause **un-knowable**: `remove_dir_all` was unconditional, so `xtb.out` — the only record
+of where xtb spent its time — was deleted exactly when needed. This unit builds the diagnostics FIRST,
+then diagnoses; the invocation is unchanged (the fix is the author's call on this report).
+
+**Diagnosis (xtb 6.6.1, terminal, measured; full table in `wiki/orca/xtb.md`).** The app's exact
+command hangs at 99 % CPU with **0 optimization cycles** — a STARTUP hang, not convergence. It hangs
+regardless of molecule (ibuprofen too), `OMP_*`, or opt level (`loose`/`crude`). The ONE variant that
+converges (0.3 s, 16 cycles) is the one **without `--input xcontrol`**. **Root cause: `build_xcontrol`
+returns an empty string for zero constraints, and the command still writes that empty `xcontrol` and
+passes `--input xcontrol` — an empty `--input` file hangs xtb before cycle 1.** Every working 2.5.5 run
+had a non-empty xcontrol (constraints); this was the first real no-constraint run.
+
+**Rule #3 refined (my 2.5.5 spec error).** Rule #3 is about clearing ORCA-style scratch *litter* on
+success — NOT about discarding *evidence* on failure (ORCA jobs keep their dir; that's why they're
+debuggable). Cleanup is now split (`keep_dir_for_diagnostics`, pure + tested): **remove on
+success/cancel, KEEP on any other failure.** The kept path rides the `xtb:error` payload and shows in
+the UI as copyable text; the message carries the last ~20 lines of `xtb.out` via the shared
+`read_tail_lines` (bounded tail, rule #5 — reused, not a second reader; the old `tail()` had read the
+whole file). **Live progress:** the poll loop tails `xtb.out` ~1×/s and emits `xtb:progress { cycle }`;
+the panel shows the cycle + a ticking clock, so a pre-cycle hang is visible immediately. **Open issue
+(noted, not fixed):** kept dirs accumulate under `<data>/xtb/` — a reaper is deferred.
+
+**Verified.** `cargo test` **68 → 70** (`keep_dir_for_diagnostics`: failure keeps / success + cancel
+remove; `last_cycle` parse); `vitest` **299 → 301** (`formatXtbProgress`); `tsc` + `vite build` clean;
+0 rust warnings. Diagnostic dirs cleaned. The invocation fix awaits the author's decision on the table.

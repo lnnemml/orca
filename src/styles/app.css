@@ -899,6 +899,25 @@ select:disabled,
 .xtb-note {
   font-size: 11px;
 }
+.xtb-progress {
+  font-variant-numeric: tabular-nums;
+}
+.xtb-error {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.xtb-error-msg {
+  white-space: pre-wrap;
+  font-family: var(--mono);
+  font-size: 11px;
+  max-height: 160px;
+  overflow-y: auto;
+}
+.xtb-error-dir {
+  width: 100%;
+  font-size: 11px;
+}
 
 /* Add-Fragment panel. */
 .add-fragment-body {

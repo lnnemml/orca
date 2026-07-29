@@ -110,10 +110,45 @@ for now (GFN-FF, solvation, Hamiltonian choice are deliberately out of scope).
 <xtb_path> input.xyz --input xcontrol --opt --gfn 2 --chrg <c> --uhf <mult-1>
 ```
 
-in an isolated dir (removed after reading `xtbopt.xyz`, rule #3), by full path,
-in its own process group (cancel/timeout → killpg + cwd-sweep, `debugging/004`).
-The `xcontrol` file holds the `$constrain` / `$fix` blocks in 1-based indices. See
-`wiki/modules/tauri-core.md` for the command and its post-conditions.
+in an isolated dir by full path, in its own process group (cancel/timeout → killpg
++ cwd-sweep, `debugging/004`). The dir is **removed on success/cancel but KEPT on
+failure** for diagnostics (2.5.5-fix-2 — rule #3 clears litter, it does not throw
+away evidence). The `xcontrol` file holds the `$constrain` / `$fix` blocks in
+1-based indices. See `wiki/modules/tauri-core.md` for the command, its
+post-conditions, and the kept-dir accumulation note.
+
+## Diagnosed hang — an EMPTY `xcontrol` passed via `--input` freezes xtb (2.5.5-fix-2)
+
+**Symptom:** a no-constraint pre-optimization (dexketoprofen, C16H14O3, 33 atoms) ran
+for the full 300 s and timed out. `build_xcontrol` returns an **empty string** when
+there are no constraints, and the command wrote that empty `xcontrol` and still
+passed `--input xcontrol`.
+
+**Diagnosis (xtb 6.6.1, terminal, measured).** Every variant used the app's exact
+setup unless noted; timeout 45 s (124 = killed by timeout):
+
+| # | invocation | wall | opt cycles | CONVERGED |
+|---|---|---|---|---|
+| a | dexketoprofen, **empty `xcontrol` + `--input`** (exact app command) | **timeout** | 0 | no |
+| c | a, but **no** `OMP_*` env | **timeout** | 0 | no |
+| d | a, but `--opt loose` | **timeout** | 0 | no |
+| d | a, but `--opt crude` | **timeout** | 0 | no |
+| e | **ibuprofen** (33 atoms), empty `xcontrol` + `--input` | **timeout** | 0 | no |
+| b | dexketoprofen, **NO `--input`** | **0.3 s** | 16 | **yes** |
+
+**Conclusion — unambiguous:** an **empty `xcontrol` file passed via `--input` hangs
+xtb at 99 % CPU BEFORE the first optimization cycle** (0 cycles in every hang; the
+hang is at startup, not convergence). It is independent of the molecule (ibuprofen
+hangs identically), of `OMP_*`, and of the opt level. Dropping `--input xcontrol`
+(variant b) converges in 0.3 s. Every working run in 2.5.5 had a **non-empty**
+`xcontrol` (constraints); dexketoprofen was the first real **no-constraint** run, so
+it was the first to write an empty `xcontrol`.
+
+**Status:** this unit did NOT change the invocation — the fix (don't pass
+`--input xcontrol` when there are no constraints, i.e. `build_xcontrol` is empty) is
+the author's call on this report. What this unit DID change is that such a failure is
+now **diagnosable**: the scratch dir is kept, the error carries the `xtb.out` tail,
+and the panel shows live progress (so a pre-cycle hang is visible immediately).
 
 ## See also
 
