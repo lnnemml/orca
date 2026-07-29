@@ -1746,3 +1746,58 @@ in their zones changed). ASE **3.29.0**. Live `uvicorn` + `curl`: a real set-dis
 moved, substrate frozen, `max_static_displacement 0.0`) and a reference-atom-in-mask → 422 with the
 explanation. Next: 2.5.2d — the frontend wires this endpoint (fetch to 127.0.0.1:{port}), preview,
 edit mode.
+
+## [2026-07-29] decision | Edit mode: the mask is VISIBLE before Apply
+
+The design decision of 2.5.2d. GaussView/Chemcraft get this right and it's easy to lose because we
+have an "obvious" answer (the reagent fragment). Before Apply the user must SEE which atoms will
+move — the moving fragment glows in the viewer whenever `planEdit` is `ready`. The default (the
+fragment of the last-clicked atom) is *shown*, not silent. Implementation: `NewJobScreen` passes
+`plan.mask` to `MoleculeViewer`; the mask is a **solid translucent glow**, distinct in FORM from the
+selection halo (a wireframe cage). **Colour distinctness has a hard limit here:** no hue is ≥30°
+from every element/palette/default colour AND from the chartreuse halo — the only element-safe band
+IS the halo's (`theme.test.ts` proves it per theme). So the mask reuses the halo hue and is set
+apart by form, not hue — a reported exception, not a faked test.
+
+## [2026-07-29] decision | Edit mode scope: inter-fragment only; intra-fragment refused HERE
+
+2.5.2d does ONLY inter-fragment edits, where the mask is a WHOLE fragment (the reagent-vs-substrate
+case). Editing an internal coordinate of one molecule (rotating the substrate's own torsion) needs a
+bond-graph split with ring detection to decide which atoms move — a separate unit (**2.5.3**). An
+intra-fragment selection is **explicitly rejected in `planEdit` with the reason** (not silently
+applied to the whole fragment, which would translate the entire molecule instead of a part). The
+rejection mirrors the sidecar's reference-atom rule client-side, so the user learns it from the UI,
+not from a 422 after clicking Apply; the server check stays the boundary guard.
+
+## [2026-07-29] session | 2.5.2d: edit mode — set distance/angle/dihedral from the viewer
+
+Stitches 2.5.2a (pick) + 2.5.2b (measure) + 2.5.2c (sidecar kernel) into a working editor. Two
+decisions above (visible mask; inter-fragment scope). Also fixed a fact error: `sidecar.md:94`
+claimed `indices=` overrides `mask=` "in all three" — in ASE 3.29.0 the precedence DIFFERS
+(`set_distance`: non-empty `mask` overwrites `indices`; `set_angle`/`set_dihedral`: `indices`
+overwrites `mask`). We pass only `indices=` (mask left `None`), so our calls are unaffected; wording
+corrected.
+
+**Pure planner (`edit-plan.ts`).** `planEdit(scene, selection)` → `ready` (op/indices/mask/current/
+unit/movingFragmentId) or `unavailable(reason)`. Math from `measureSelection` (not duplicated); mask
+= `fragmentAtomIndices` of the last-clicked atom's fragment; intra-fragment refused via the mirrored
+reference-atom rule. Two more pure, tested helpers: `applyResponseToScene` (slice the moving
+fragment's rows by range → `replaceFragmentAtoms`) and `applyResponseIssue` (our-side boundary check
+before mutating: static atoms unmoved `< 1e-6`, count matches).
+
+**Preview touches ONLY the viewer.** `EditPanel` POSTs to `/geometry/set-internal` and hands the
+result up as a `previewScene` the viewer renders (`scene={previewScene ?? scene}`). The store Scene
+and Monaco are untouched until Apply — **proof it doesn't touch them:** `onPreview` is wired to
+`setPreviewScene` (local `useState`), while the only writer to the store is `setScene`, called
+solely in `applyEdit`; the Scene→Monaco inject effect depends on the *store* scene selector, which a
+preview never sets. Apply → `applyResponseIssue` → `applyResponseToScene` → `setScene` (normal
+injection) → one-step Undo notice (restores the pre-edit scene).
+
+**Verified.** `tsc` + `vite build` clean; `vitest` **234** (was 219 → +15: planner incl. click-order
+& intra-fragment, slice, boundary check; theme mask-hue-necessity per theme). `pytest` 25 and
+`cargo test` 55 untouched (their zones unchanged). Live `uvicorn` + `curl` with the EXACT request
+`EditPanel` builds (water+BH₄⁻, `op=distance`, `mask=[3,4,5,6,7]`, `value=1.8`): water frozen, BH₄⁻
+moved, `measured 1.8`, `max_static_displacement 0.0`. In-window checks needing the real Tauri window
+(the full carbonyl+BH₄⁻ d→θ→φ sequence by hand, re-measuring after each apply; intra-fragment
+refusal; Undo; camera doesn't jump on Apply) in the author checklist. Next: 2.5.3 — bond-graph mask
+split for intra-fragment edits.

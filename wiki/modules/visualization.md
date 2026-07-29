@@ -321,6 +321,22 @@ All halos are identical, so the pick that is the angle vertex / dihedral axis wa
 - **dihedral:** the **j–k axis** is a thick solid `addCylinder` (radius `AXIS_RADIUS = 0.05`), the
   outer i–j / k–l bonds stay thin dashed lines — the rotation axis reads at a glance.
 
+### Edit-mask "will-move" glow (2.5.2d)
+`MoleculeViewer` takes a `maskHighlight?: number[]` — the atoms an edit would move. They're drawn
+as a **solid translucent sphere** (`MASK_OPACITY = 0.22`, radius = the halo radius + a small boost),
+drawn FIRST so the crisp selection cage sits on top where they overlap. The halo says "I picked
+this" (a wireframe cage on 2–4 atoms); the mask says "this will move" (a soft fill over the whole
+fragment). `NewJobScreen` passes the mask only while `planEdit` is `ready`.
+- **Distinctness — the mask shares the halo hue by necessity, distinguished by FORM.** The
+  distinctness invariant wants the mask ≥30° in hue from every element colour, the palette,
+  `defaultColor` #ff1493, **and the halo**. It is provably impossible to clear all of those at once:
+  the ONLY hue band ≥30° from the whole CPK/palette wheel is chartreuse (74–90°) — and that band IS
+  the halo's. `theme.test.ts` locks this (`no hue clears elements/palette/default AND the halo`,
+  per theme). So the mask **reuses `theme.haloColor`** and is set apart by **form** (solid glow vs
+  wireframe cage) and by coverage (whole fragment vs the picked atoms), not by hue. This is a
+  reported, deliberate exception to the "distinct hue" rule, surfaced to the architect rather than
+  faked.
+
 ## Structures & trajectories
 3Dmol.js viewer component (**done**, above); multiframe xyz → trajectory playback with frame
 slider (Phase 3).

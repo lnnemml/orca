@@ -672,6 +672,62 @@ select:disabled,
   border-radius: 6px;
   background: var(--panel-2);
 }
+
+/* Edit mode (2.5.2d) — in the Atom section of the geometry rail. */
+.edit-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+}
+.edit-unavailable {
+  font-size: 12px;
+  line-height: 1.4;
+}
+.edit-head {
+  font-size: 13px;
+  color: var(--text);
+}
+.edit-current {
+  font-size: 12px;
+}
+.edit-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.edit-target {
+  width: 84px;
+}
+.edit-unit {
+  font-size: 12px;
+  color: var(--muted);
+}
+.edit-error {
+  font-size: 12px;
+  color: #fb7185;
+}
+.edit-error-severe {
+  padding: 6px 8px;
+  border: 1px solid #fb7185;
+  border-radius: 4px;
+  background: rgba(251, 113, 133, 0.12);
+  font-weight: 600;
+}
+.edit-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+  font-size: 12px;
+}
 .atom-inspector-head {
   display: flex;
   align-items: center;

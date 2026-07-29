@@ -9,6 +9,8 @@ import { InputBuilderForm } from "../input-builder/InputBuilderForm";
 import { useSceneStore } from "../scene/store";
 import { FragmentList } from "../scene/FragmentList";
 import { AtomInspector } from "../scene/AtomInspector";
+import { EditPanel } from "../scene/EditPanel";
+import { planEdit } from "../scene/edit-plan";
 import {
   toggleAtom,
   validateSelection,
@@ -34,7 +36,7 @@ import {
 } from "../scene/scene";
 import { restoreScene } from "../scene/restore";
 import { goatInputForFragment } from "../scene/ensemble";
-import type { SceneFragment } from "../scene/types";
+import type { Scene, SceneFragment } from "../scene/types";
 import {
   CATEGORY_LABELS,
   ORCA_TEMPLATES,
@@ -155,6 +157,32 @@ export function NewJobScreen({
   // Collapse the geometry rail in fullscreen for a clean canvas (2.5.2e-3b).
   // Only meaningful in fullscreen; not persisted.
   const [railCollapsed, setRailCollapsed] = useState(false);
+
+  // ── Edit mode (2.5.2d) ──────────────────────────────────────────────────────
+  // `previewScene` is the sidecar's proposed geometry shown ONLY in the viewer —
+  // the store Scene and Monaco are untouched until Apply (the 2.5.1 decision).
+  // `preEditScene` is the scene before the last Apply, for one-step Undo.
+  const [previewScene, setPreviewScene] = useState<Scene | null>(null);
+  const [preEditScene, setPreEditScene] = useState<Scene | null>(null);
+  // The plan drives the edit UI AND the mask glow (shown only when ready).
+  const editPlan = scene ? planEdit(scene, selection) : null;
+  const movingFragmentName =
+    scene && editPlan?.kind === "ready"
+      ? (scene.fragments.find((f) => f.id === editPlan.movingFragmentId)?.name ??
+        null)
+      : null;
+  // Preview is transient: drop it whenever the selection or the scene changes.
+  useEffect(() => {
+    setPreviewScene(null);
+  }, [selection, scene]);
+  const applyEdit = (newScene: Scene, previous: Scene) => {
+    setPreEditScene(previous); // enable one-step Undo
+    setScene(newScene); // → the Scene→Monaco effect injects the new coords
+  };
+  const undoEdit = () => {
+    if (preEditScene) setScene(preEditScene);
+    setPreEditScene(null);
+  };
 
   // React to a composition change via `compositionSignature` (the same
   // primitive the viewer uses to decide when to re-zoom). A coordinate-only edit
@@ -787,11 +815,14 @@ export function NewJobScreen({
                   </button>
                 </div>
                 <MoleculeViewer
-                  scene={scene}
+                  scene={previewScene ?? scene}
                   selection={selection}
                   onAtomPick={onAtomPick}
                   showAtomNumbers={showNumbers}
                   theme={theme}
+                  maskHighlight={
+                    editPlan?.kind === "ready" ? editPlan.mask : undefined
+                  }
                 />
               </>
             ) : (
@@ -813,6 +844,29 @@ export function NewJobScreen({
                 selection={selection}
                 onClear={clearSelection}
               />
+            ) : null}
+            {scene && editPlan && selection.length >= 2 ? (
+              <EditPanel
+                scene={scene}
+                plan={editPlan}
+                movingFragmentName={movingFragmentName}
+                onPreview={setPreviewScene}
+                onApplied={applyEdit}
+              />
+            ) : null}
+            {preEditScene ? (
+              <div className="edit-notice">
+                <span>Edit applied.</span>
+                <button className="btn btn-sm" onClick={undoEdit}>
+                  Undo
+                </button>
+                <button
+                  className="btn btn-sm"
+                  onClick={() => setPreEditScene(null)}
+                >
+                  Dismiss
+                </button>
+              </div>
             ) : null}
             <FragmentList onFindConformers={findConformers} />
           </div>

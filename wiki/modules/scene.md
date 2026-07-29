@@ -52,8 +52,13 @@ functions, no imports from react / 3dmol / tauri. The reactive `store.ts` (added
 - `measure.ts` — geometry measurement off the pick list (2.5.2b): `distance`,
   `angle`, `dihedral`, `measureSelection`, `formatMeasurementValue`. Pure /
   node-tested, React-free. **ASE conventions pinned to source** (see below).
+- `edit-plan.ts` — edit-mode planner (2.5.2d): `planEdit` (pick list → `ready` |
+  `unavailable`), plus the pure apply helpers `applyResponseToScene` and
+  `applyResponseIssue`. Pure / node-tested, no React, no fetch.
 - `AtomInspector.tsx` — the atom panel on New Job (React; reads a selection held
   in `NewJobScreen` state, uses the shared `fragmentColor` palette).
+- `EditPanel.tsx` — edit-mode UI in the Atom rail section (React): target field,
+  Preview/Apply, and the direct `fetch` to the sidecar geometry endpoint.
 - `__fixtures__/butane.finalensemble.xyz` — a real (3-structure) slice of an ORCA
   6.1.0 GOAT run, the test oracle for `ensemble.test.ts`.
 - `*.test.ts` (scene / parity / store / placement / fragment-library /
@@ -472,6 +477,40 @@ fragment-library source), the butane dihedrals above, the symmetries, a mirror
 (`φ → 360 − φ`), and the load-bearing one — **rigid motion** (an explicit proper
 rotation + translation of the whole scene leaves all three unchanged to 1e-9;
 this catches a bug in the math, not in a single number).
+
+## Edit planning (`edit-plan.ts`, 2.5.2d)
+
+`planEdit(scene, selection)` turns the pick list into an `EditPlan`:
+`{ kind: "ready"; op; indices; mask; current; unit; movingFragmentId }` or
+`{ kind: "unavailable"; reason }`. The math is **not duplicated** — `op` and
+`current` come straight from `measureSelection`.
+
+- **The mask = the fragment of the LAST-clicked atom** (`fragmentAtomIndices`).
+  Click the reagent atom last → the reagent moves; click the substrate last → the
+  substrate moves. `movingFragmentId` names it so the UI can label and highlight
+  it. This is the operational form of the 2.5.0 decision — the sidecar never sees
+  a fragment, it gets the mask as an explicit index list.
+- **Inter-fragment ONLY, and the rejection lives here.** `planEdit` mirrors the
+  sidecar's reference-atom rule: the last atom of the chain is in the mask (it is,
+  by construction — the mask is its fragment), every preceding atom must be OUT.
+  A reference atom inside the mask == the whole selection sits in one fragment →
+  **intra-fragment** → `unavailable` with the reason (needs a bond-graph split
+  with ring detection — that is **2.5.3**). The point is the user learns the rule
+  from the UI, not from a 422 after clicking Apply; the server check stays the
+  boundary guard. Editing a torsion of a molecule's *own* substrate is explicitly
+  refused here rather than silently applied to the whole fragment (which would
+  translate the entire molecule, not a part).
+- **Apply helpers, pure and tested.** `applyResponseToScene(scene,
+  movingFragmentId, responseXyz)` slices the moving fragment's rows out of the
+  response xyz (by its `fragmentRanges` window) and hands them to
+  `replaceFragmentAtoms` (which enforces count + element order — ADR-008).
+  `applyResponseIssue(scene, responseXyz, maxStaticDisplacement)` is the
+  front-of-the-boundary check before mutating: static atoms must not have moved
+  (`< 1e-6`), and the response count must equal `atomCount(scene)` — else it
+  returns a message and the edit is refused. `EditPanel` (React) does only the
+  `fetch` and state; all decision logic is in this pure layer, so `edit-plan.test`
+  covers it (intra-fragment rejection, click-order-decides-mover, `current` ===
+  `measureSelection`, the slice, the boundary check).
 
 ## Notes
 

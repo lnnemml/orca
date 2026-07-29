@@ -172,9 +172,15 @@ re-optimisation of the lowest 3–4 stay in Phase 4.5 (the scientific pipeline);
       — `fragmentAtomIndices()` **is** the mask argument
       **(2.5.2c — `POST /geometry/set-internal`; ASE 3.29 `indices=`; reference-atom rule +
       in-endpoint post-conditions; sequential d/θ/φ acceptance test passes)**
-- [ ] Edit mode in viewer: pick atoms → enter target value → preview → apply →
+- [x] Edit mode in viewer: pick atoms → enter target value → preview → apply →
       coordinates update in editor
       — pick substrate + reagent atom ⇒ mask = reagent fragment, so the reagent moves
+      **(2.5.2d — `edit-plan.ts` + `EditPanel`; visible mask glow; preview view-only;
+      Apply → replaceFragmentAtoms; one-step Undo. INTER-fragment only.)**
+- [ ] **2.5.3** — bond-graph mask split (intra-fragment edits, ring detection):
+      rotate a torsion of one molecule's own substrate by splitting the bond graph
+      at the picked bond and detecting rings (so a ring bond is refused, not mis-split)
+      — the mask becomes a graph-derived subset of ONE fragment, not the whole fragment
 - [ ] Fragment library: common reagents (BH₄⁻, H₂O, common ligands), place at position
       with specified distance/angle
       — placement = set_distance/angle/dihedral with the mask on the newly added fragment

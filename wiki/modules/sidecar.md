@@ -89,12 +89,17 @@ Phase 0 scaffold (`/health`, venv, pytest).
 
 ### ASE version + signatures (checked against the installed version, not memory)
 **ASE 3.29.0** (`sidecar/.venv`). The three `ase.Atoms` methods (`atoms.py`) each take **both**
-`mask=` and `indices=` — they are NOT interchangeable:
+`mask=` and `indices=` — they are NOT interchangeable, and their **precedence differs between
+methods** (the ASE docstrings and code are literally inconsistent here):
 - `mask=` is a **boolean array** of length N (`mask[i]` truthy → atom i moves);
-- `indices=` is a **list of atom indices** to move, and **overrides `mask`** in all three.
+- `indices=` is a **list of atom indices** to move;
+- **`set_distance`**: `elif mask:` — a **non-empty `mask` overwrites `indices`** (docstring:
+  "mask overwrites indices"); an empty list is falsy, so `indices` then wins;
+- **`set_angle` / `set_dihedral`**: `elif indices is not None:` — **`indices` overwrites `mask`**.
 
-We pass **`indices=`** because the request already carries a list of global indices — an exact fit,
-no boolean conversion. Signatures and the mapping:
+We pass **only `indices=`** (leaving `mask=None`) in all three calls, so this precedence tangle
+never bites us: with `mask=None`, every method uses `indices`. The request already carries a list of
+global indices — an exact fit, no boolean conversion. Signatures and the mapping:
 - `set_distance(a0, a1, distance, fix=0.5, mask=None, indices=None, ...)` — body:
   `for i in indices: R[i] -= x*(1-fix)*D` (a0 moves only `if i==a0`). With `indices` **excluding**
   a0, we must pass **`fix=0`** (fix the FIRST atom) so all displacement lands on the a1 side; else

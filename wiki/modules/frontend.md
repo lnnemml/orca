@@ -476,6 +476,38 @@ change on New Job.
   distinct; fresh no-remount/camera proof on the rebuilt layout (`sameCanvas=true cameraSame=true`).
   In-window checks (rail in fullscreen on dark/light, collapse, normal-mode before/after) in the log.
 
+## As built (2.5.2d) — edit mode (set distance/angle/dihedral from the viewer)
+The unit that stitches 2.5.2a–c together. `EditPanel` (`scene/EditPanel.tsx`) lives in the Atom
+section of the geometry rail; all decision logic is in the pure `scene/edit-plan.ts` (see
+`modules/scene.md`), the panel does only `fetch` + state.
+- **The mask is VISIBLE before Apply** — the design decision of this unit. Whenever `planEdit` is
+  `ready`, `NewJobScreen` passes `plan.mask` to `MoleculeViewer` and the moving fragment glows
+  (`modules/visualization.md`). The user sees which atoms will move; the default (the last-clicked
+  atom's fragment) is *shown*, not silent. The panel also names the moving fragment.
+- **Fields.** When `ready`: the op, the current value, a target `<input>` (pre-filled with the
+  current value), the unit, and Preview / Apply. When `unavailable` (intra-fragment, <2/>4 atoms,
+  degenerate): the reason as calm text, no buttons.
+- **Preview touches ONLY the viewer** (the 2.5.1 decision). It POSTs to `/geometry/set-internal` and
+  hands the resulting Scene up as `previewScene`, which the viewer renders (`scene={previewScene ??
+  scene}`). The store Scene and the Monaco buffer are **untouched** until Apply, so a keystroke in
+  the target field never runs the Scene↔Monaco sync + collapse rule. Preview resets on selection
+  change, scene change, or the Cancel button.
+- **Apply** validates the response on our side (`applyResponseIssue`: static atoms unmoved
+  `< 1e-6`, count matches — refuse with a message otherwise), builds the new Scene
+  (`applyResponseToScene` → `replaceFragmentAtoms`), then `setScene` — which drives the normal
+  Scene→Monaco injection. A one-step **Undo** notice (restores the pre-edit scene) appears on
+  success.
+- **Errors, human-readable:** sidecar not ready, 422 (the detail text — e.g. the reference-atom
+  rule), 500 (a real post-condition breach — shown prominently via `.edit-error-severe`).
+- **Direct sidecar fetch** to `http://127.0.0.1:{port}` from `get_sidecar_status` — no Rust proxy
+  (SMILES and convert go the same way).
+- **Verified:** `tsc` + `vite build` clean; `vitest` **234** (was 219 → +15: `edit-plan` planner /
+  slice / boundary-check, theme mask-hue-necessity). `pytest` 25 and `cargo test` 55 untouched.
+  Live `uvicorn` + `curl` with the exact request `EditPanel` builds (water+BH₄⁻, `op=distance`,
+  `mask=[3,4,5,6,7]`, `value=1.8`) → water frozen, BH₄⁻ moved, `measured 1.8`,
+  `max_static_displacement 0.0`. In-window checks (the full carbonyl+BH₄⁻ d/θ/φ sequence by hand,
+  intra-fragment refusal, Undo) in the log.
+
 ## As built (Phase 2.5) — New Job UI fixes (WebKitGTK contrast, accordion, scroll)
 Three issues found by manual testing in the real Tauri window (not visible in Chromium). CSS +
 a collapse wrapper only — no Input Builder / `build-input.ts` / `orca-options.ts` logic changed.

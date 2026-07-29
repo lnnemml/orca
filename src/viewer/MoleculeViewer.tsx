@@ -57,6 +57,16 @@ interface MoleculeViewerProps {
    * background doesn't leave dark label rectangles behind.
    */
   theme?: ViewerTheme;
+  /**
+   * Global indices of the atoms that an edit would MOVE (2.5.2d) — the mask. Drawn
+   * as a **solid translucent glow**, distinct in FORM from the selection halo (a
+   * wireframe cage): the halo says "I picked this", the mask says "this will
+   * move". They share the chartreuse hue on purpose — no hue is ≥30° from both
+   * every element colour AND the halo (the element-safe band IS the halo's; see
+   * theme.test.ts), so the distinction is carried by form, not hue. Shown only
+   * while an edit is available.
+   */
+  maskHighlight?: number[];
   style?: React.CSSProperties;
 }
 
@@ -65,6 +75,13 @@ interface MoleculeViewerProps {
  * is per-element via `highlightRadius`, and it's a wireframe cage (reads over
  * CPK red O / grey C where a solid sphere washed out). */
 const HALO_OPACITY = 0.85;
+
+/** Mask "will-move" glow (2.5.2d) — a SOLID translucent sphere (not a wireframe
+ * cage), a touch larger than the halo, so it reads as a soft region distinct in
+ * FORM from the selection halo. Reuses the theme halo colour (see the
+ * `maskHighlight` prop note on why hue can't distinguish them). */
+const MASK_OPACITY = 0.22;
+const MASK_RADIUS_BOOST = 0.15;
 
 /** Ball-and-stick — the same style the viewer has always used. Fresh object per
  * call (3Dmol may retain the reference). */
@@ -221,6 +238,7 @@ export function MoleculeViewer({
   onAtomPick,
   showAtomNumbers = false,
   theme = DEFAULT_THEME,
+  maskHighlight,
   style,
 }: MoleculeViewerProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -395,6 +413,20 @@ export function MoleculeViewer({
     }
     const rows = scene.fragments.flatMap((f) => f.atoms);
 
+    // Mask "will-move" glow (2.5.2d) — drawn FIRST (a soft solid sphere), so the
+    // crisp selection cage sits on top of it where they overlap.
+    for (const gi of maskHighlight ?? []) {
+      const atom = rows[gi];
+      if (!atom) continue;
+      viewer.addSphere({
+        center: { x: atom.x, y: atom.y, z: atom.z },
+        radius: highlightRadius(atom.element) + MASK_RADIUS_BOOST,
+        color: theme.haloColor,
+        opacity: MASK_OPACITY,
+        wireframe: false,
+      });
+    }
+
     // Selection halos — wireframe spheres sized per element (see highlight.ts),
     // coloured by the theme.
     for (const gi of selection ?? []) {
@@ -429,7 +461,7 @@ export function MoleculeViewer({
     }
 
     viewer.render();
-  }, [selection, scene, showAtomNumbers, theme]);
+  }, [selection, scene, showAtomNumbers, theme, maskHighlight]);
 
   return <div ref={containerRef} className="molecule-viewer" style={style} />;
 }
