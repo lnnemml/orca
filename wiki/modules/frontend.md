@@ -501,12 +501,27 @@ section of the geometry rail; all decision logic is in the pure `scene/edit-plan
   rule), 500 (a real post-condition breach — shown prominently via `.edit-error-severe`).
 - **Direct sidecar fetch** to `http://127.0.0.1:{port}` from `get_sidecar_status` — no Rust proxy
   (SMILES and convert go the same way).
-- **Verified:** `tsc` + `vite build` clean; `vitest` **234** (was 219 → +15: `edit-plan` planner /
-  slice / boundary-check, theme mask-hue-necessity). `pytest` 25 and `cargo test` 55 untouched.
-  Live `uvicorn` + `curl` with the exact request `EditPanel` builds (water+BH₄⁻, `op=distance`,
-  `mask=[3,4,5,6,7]`, `value=1.8`) → water frozen, BH₄⁻ moved, `measured 1.8`,
-  `max_static_displacement 0.0`. In-window checks (the full carbonyl+BH₄⁻ d/θ/φ sequence by hand,
-  intra-fragment refusal, Undo) in the log.
+
+### Both orientations + the rotation pivot in the panel (2.5.2d-2)
+The panel now makes the geometry legible and lets the user flip which side moves (fixing the
+screenshot defect where click order wrongly decided solvability — `modules/scene.md`).
+- **Pivot shown.** The head reads `Set angle · moving BH₄⁻ · vertex C #12` / `… · axis C#12–O#14`
+  (`pivotLabel` from `plan.indices` + `describeAtom`). Without it the panel couldn't say what the
+  rotation is *around*.
+- **Reversed note.** When `plan.reversed` (the chain was read backwards so the reagent moves), a
+  calm line — *"chain read in reverse so the reagent moves"* — so the choice isn't magic.
+- **"Move X instead".** When `plan.alternative` exists (either side is movable — typical
+  inter-fragment distance), a button flips `NewJobScreen`'s `preferAlternative`, which applies
+  `swapToAlternative` to the plan → the other fragment glows and moves. This is the redefinable mask
+  from the 2.5.2d spec, finished. The choice resets on selection/scene change.
+- **Verified:** `tsc` + `vite build` clean; `vitest` **245** (was 234 → +11 net: both-orientation
+  planner incl. the exact screenshot selection, `swapToAlternative`, the two refusals naming
+  culprits, and `measure.test` §f reversal invariance). `pytest` 26 and `cargo test` 59 untouched.
+  **The broken scenario driven to the end through the live sidecar** (reagent-first order, the
+  indices `planEdit` reverses to): distance C–B → 2.2, angle O–C–B → 107, dihedral Ha–O–C–B → 90;
+  re-measuring after **each** Apply — d stays 2.200000, angle 107.000000 — substrate internal
+  deviation `0.00e+00`. In-window checks (the same by hand in the real window, "Move X instead",
+  the immovable-axis refusal text) in the log.
 
 ## As built (Phase 2.5) — New Job UI fixes (WebKitGTK contrast, accordion, scroll)
 Three issues found by manual testing in the real Tauri window (not visible in Chromium). CSS +

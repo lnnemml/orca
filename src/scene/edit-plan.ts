@@ -1,28 +1,40 @@
 /**
- * Edit planner (2.5.2d). Pure / node-tested — no React, no fetch. Turns the pick
- * list into either a `ready` plan the edit UI + sidecar can act on, or an
- * `unavailable` explanation. The math is NOT duplicated: `op` and `current` come
- * straight from `measureSelection` (2.5.2b).
+ * Edit planner (2.5.2d, both-orientation fix 2.5.2d-2). Pure / node-tested — no
+ * React, no fetch. Turns the pick list into either a `ready` plan the edit UI +
+ * sidecar can act on, or an `unavailable` explanation. The math is NOT
+ * duplicated: `op` and `current` come straight from `measureSelection` (2.5.2b).
  *
- * ## Scope: inter-fragment edits only (this unit)
+ * ## Click order is a DEFAULT, not a rule (2.5.2d-2)
  *
- * The mask is a **whole fragment** — the fragment of the LAST-clicked atom. That
- * makes it the reagent-vs-substrate case ADR-007 is built around: click the
- * reagent atom last and the reagent moves. Editing an internal coordinate of one
- * molecule (rotating a torsion of the substrate itself) needs a bond-graph split
- * with ring detection to decide which atoms move — a separate unit (2.5.3). So an
- * intra-fragment selection is **explicitly rejected here with the reason**, not
- * silently applied to the whole fragment (which would translate the entire
- * molecule instead of a part of it).
+ * The mask is a **whole fragment** — the reagent-vs-substrate case ADR-007 is
+ * built around. The original 2.5.2d took the fragment of the LAST-clicked atom
+ * as the mover, full stop. That was wrong: a selection can be **read in either
+ * direction**, and angle/dihedral are **invariant under chain reversal**
+ * (`angle(i,v,j) == angle(j,v,i)`, `dihedral(i,j,k,l) == dihedral(l,k,j,i)`;
+ * distance is symmetric — verified in ASE 3.29.0 and in `measure.test.ts`).
+ * Reversing the chain doesn't change the value, only *which end moves*. So the
+ * defect: B#33(BH₄⁻)→C#12(ibuprofen)→O#14(ibuprofen) was refused as
+ * "same fragment" because the LAST atom's fragment (ibuprofen) held the
+ * reference C#12 — when the very same angle read the other way (O#14–C#12–B#33)
+ * moves BH₄⁻ with both references in ibuprofen. That's the nucleophile
+ * attack-angle edit the editor exists for.
  *
- * ## The reference-atom rule, mirrored from the server
+ * `planEdit` therefore tries **both orientations**:
+ *  - **candidate A** = chain as clicked (mover = last);
+ *  - **candidate B** = reversed chain (mover = first).
+ * Each must pass the reference-atom rule (mover in its own fragment's mask, no
+ * reference in that mask). If only one passes, take it. If both pass (the usual
+ * inter-fragment distance — either side can move), take **A** so click order
+ * stays the default, and expose **B** as `alternative` for a "Move X instead"
+ * toggle. If neither passes, refuse — with **two distinct reasons** (below).
  *
- * The sidecar enforces (422): the last atom of the chain must be IN the mask, all
- * preceding atoms must be OUT. We check the same thing here so the user learns
- * the rule from the UI, not from a 422 after clicking Apply. The server check
- * stays as the boundary guard; this is the friendly first line. Because the mask
- * is the last atom's fragment, "a reference atom fell into the mask" is exactly
- * the intra-fragment case — same test, one reason.
+ * ## Two distinct refusals
+ *  - **All atoms in one fragment** → genuinely intra-fragment: rotating a
+ *    molecule's own torsion needs a bond-graph split with ring detection (2.5.3).
+ *  - **Atoms across fragments but no orientation works** (a dihedral whose axis
+ *    atoms straddle fragments, or an angle whose two ends share a fragment) → the
+ *    rotation axis/vertex can't be held fixed; the message names the offending
+ *    atom indices.
  */
 
 import type { Scene } from "./types";
@@ -36,6 +48,14 @@ import {
   replaceFragmentAtoms,
 } from "./scene";
 
+/** One valid way to run the edit: which fragment moves, the ASE chain (mover
+ * last), and that fragment's mask. */
+interface Orientation {
+  movingFragmentId: string;
+  indices: number[];
+  mask: number[];
+}
+
 export type EditPlan =
   | {
       kind: "ready";
@@ -45,6 +65,10 @@ export type EditPlan =
       current: number;
       unit: "Å" | "°";
       movingFragmentId: string;
+      /** The chain was reversed vs click order so the reagent (first-clicked) moves. */
+      reversed: boolean;
+      /** The other valid orientation, if any — moves the opposite fragment. */
+      alternative: Orientation | null;
     }
   | { kind: "unavailable"; reason: string };
 
@@ -55,6 +79,52 @@ const INTRA_FRAGMENT_REASON =
   "(2.5.3). For now, pick atoms across two fragments so the mask is a whole " +
   "fragment.";
 
+/** A single orientation's validity: mover = last atom of `chain`; every earlier
+ * atom must be OUT of the mover's fragment mask. `null` if the mover is stale or
+ * a reference atom sits in its mask. */
+function orientationFor(scene: Scene, chain: number[]): Orientation | null {
+  const mover = chain[chain.length - 1];
+  const located = locateAtom(scene, mover);
+  if (!located) return null;
+  const mask = fragmentAtomIndices(scene, located.fragment.id);
+  const maskSet = new Set(mask);
+  if (chain.slice(0, -1).some((r) => maskSet.has(r))) return null;
+  return { movingFragmentId: located.fragment.id, indices: [...chain], mask };
+}
+
+/** Do all selected atoms belong to one fragment (the genuine intra-fragment case)? */
+function allInOneFragment(scene: Scene, selection: number[]): boolean {
+  const first = locateAtom(scene, selection[0])?.fragment.id;
+  if (first == null) return false;
+  return selection.every((i) => locateAtom(scene, i)?.fragment.id === first);
+}
+
+/** Reason for a multi-fragment selection that no orientation can satisfy: names
+ * the reference atoms that would move with an endpoint whichever way the chain
+ * is read (the atoms straddling the rotation axis / vertex). */
+function immovablePivotReason(
+  scene: Scene,
+  selection: number[],
+  op: "angle" | "dihedral",
+): string {
+  const offending = new Set<number>();
+  for (const chain of [selection, [...selection].reverse()]) {
+    const mover = chain[chain.length - 1];
+    const located = locateAtom(scene, mover);
+    if (!located) continue;
+    const maskSet = new Set(fragmentAtomIndices(scene, located.fragment.id));
+    for (const r of chain.slice(0, -1)) if (maskSet.has(r)) offending.add(r);
+  }
+  const list = [...offending].sort((a, b) => a - b).map((i) => `#${i}`).join(", ");
+  const pivot = op === "dihedral" ? "both axis atoms" : "the vertex";
+  return (
+    `No orientation of this chain keeps the rotation ${op === "dihedral" ? "axis" : "vertex"} ` +
+    `fixed: atoms ${list} would move with an endpoint whichever end you pick. For a valid ` +
+    `edit, ${pivot} — and every atom except one endpoint — must lie in a single STATIC ` +
+    `fragment. Re-pick so only one endpoint is in a different fragment.`
+  );
+}
+
 export function planEdit(scene: Scene, selection: number[]): EditPlan {
   if (selection.length < 2 || selection.length > 4) {
     return {
@@ -63,7 +133,8 @@ export function planEdit(scene: Scene, selection: number[]): EditPlan {
     };
   }
 
-  // op + current value come from the ONE measurement implementation.
+  // op + current value come from the ONE measurement implementation. `current`
+  // is orientation-invariant (see the module note), so it's computed once.
   const m = measureSelection(scene, selection);
   if (m.kind === "none") {
     return {
@@ -74,32 +145,48 @@ export function planEdit(scene: Scene, selection: number[]): EditPlan {
     };
   }
 
-  // The mask is the fragment of the LAST-clicked atom — the atom that moves.
-  const movingAtom = selection[selection.length - 1];
-  const located = locateAtom(scene, movingAtom);
-  if (!located) {
-    return { kind: "unavailable", reason: "The selection is stale." };
-  }
-  const movingFragmentId = located.fragment.id;
-  const mask = fragmentAtomIndices(scene, movingFragmentId);
-  const maskSet = new Set(mask);
+  const base = { op: m.kind, current: m.value, unit: m.unit } as const;
+  const a = orientationFor(scene, selection); // mover = last-clicked
+  const b = orientationFor(scene, [...selection].reverse()); // mover = first-clicked
 
-  // Reference-atom rule (mirror of the sidecar): every atom BEFORE the last must
-  // be static (out of the mask). A reference atom inside the mask == the whole
-  // selection (or the moving end of it) sits in one fragment → intra-fragment.
-  const references = selection.slice(0, -1);
-  if (references.some((r) => maskSet.has(r))) {
+  if (a) {
+    // Click order stays the default; expose B (if valid) as the alternative.
+    return { kind: "ready", ...base, ...a, reversed: false, alternative: b };
+  }
+  if (b) {
+    return { kind: "ready", ...base, ...b, reversed: true, alternative: null };
+  }
+
+  // Neither orientation works → refuse with the right reason.
+  if (allInOneFragment(scene, selection)) {
     return { kind: "unavailable", reason: INTRA_FRAGMENT_REASON };
   }
-
   return {
-    kind: "ready",
-    op: m.kind,
-    indices: [...selection],
-    mask,
-    current: m.value,
-    unit: m.unit,
-    movingFragmentId,
+    kind: "unavailable",
+    reason: immovablePivotReason(scene, selection, m.kind === "dihedral" ? "dihedral" : "angle"),
+  };
+}
+
+/**
+ * Flip a ready plan to its alternative orientation (the "Move X instead"
+ * action) — the alternative becomes the mover and the current mover becomes the
+ * alternative. `op`/`current`/`unit` are unchanged (orientation-invariant).
+ * No-op if the plan has no alternative.
+ */
+export function swapToAlternative(plan: EditPlan): EditPlan {
+  if (plan.kind !== "ready" || !plan.alternative) return plan;
+  const alt = plan.alternative;
+  return {
+    ...plan,
+    movingFragmentId: alt.movingFragmentId,
+    indices: alt.indices,
+    mask: alt.mask,
+    reversed: !plan.reversed,
+    alternative: {
+      movingFragmentId: plan.movingFragmentId,
+      indices: plan.indices,
+      mask: plan.mask,
+    },
   };
 }
 

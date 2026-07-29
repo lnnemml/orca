@@ -1,8 +1,9 @@
 import { describe, it, expect } from "vitest";
 
-import type { Scene, SceneFragment } from "./types";
+import type { Scene, SceneAtom, SceneFragment } from "./types";
 import {
   planEdit,
+  swapToAlternative,
   applyResponseIssue,
   applyResponseToScene,
 } from "./edit-plan";
@@ -56,39 +57,62 @@ describe("planEdit — selection count", () => {
   });
 });
 
-describe("planEdit — inter-fragment (ready)", () => {
+// A big substrate (33 atoms) + BH4⁻ (5) — the ibuprofen + nucleophile shape from
+// the screenshot. Positions are synthetic but make the picked angle B–C–O valid.
+function bigSubstrate(id = "ibu"): SceneFragment {
+  const atoms: SceneAtom[] = [];
+  for (let i = 0; i < 33; i++) {
+    atoms.push({ element: i === 14 ? "O" : "C", x: i, y: 0, z: 0 });
+  }
+  return { id, name: "ibuprofen", charge: 0, source: "editor", atoms };
+}
+/** BH4⁻ whose boron sits off the substrate axis so B–C(#12)–O(#14) isn't collinear. */
+function bh4Off(id = "bh4"): SceneFragment {
+  return {
+    id,
+    name: "BH4-",
+    charge: -1,
+    source: "fragment-library",
+    atoms: [
+      { element: "B", x: 12, y: 5, z: 0 },
+      { element: "H", x: 12.7, y: 5.7, z: 0.7 },
+      { element: "H", x: 11.3, y: 5.7, z: -0.7 },
+      { element: "H", x: 12.7, y: 5.7, z: -0.7 },
+      { element: "H", x: 11.3, y: 5.7, z: 0.7 },
+    ],
+  };
+}
+
+describe("planEdit — both orientations (2.5.2d-2)", () => {
   const s = scene(water(), borohydride());
 
-  it("2 atoms across fragments → ready, mask = the LAST-clicked fragment", () => {
-    // pick water-O (0), then BH4 boron (3): boron clicked last → BH4⁻ moves.
+  it("2 atoms across fragments → ready (A default) with the OTHER as alternative", () => {
+    // pick water-O (0), then BH4 boron (3): default moves BH4 (last-clicked)...
     const p = planEdit(s, [0, 3]);
     expect(p.kind).toBe("ready");
     if (p.kind === "ready") {
       expect(p.op).toBe("distance");
       expect(p.movingFragmentId).toBe("bh4");
-      expect(p.mask).toEqual([3, 4, 5, 6, 7]); // the whole BH4⁻ fragment
-      expect(p.unit).toBe("Å");
+      expect(p.mask).toEqual([3, 4, 5, 6, 7]);
+      expect(p.reversed).toBe(false);
+      // ...and water is offered as the alternative (either side can move).
+      expect(p.alternative?.movingFragmentId).toBe("wat");
+      expect(p.alternative?.mask).toEqual([0, 1, 2]);
     }
   });
 
-  it("click ORDER decides which fragment moves (reverse → the other moves)", () => {
-    const bh4Last = planEdit(s, [0, 3]); // water first, BH4 last
-    const waterLast = planEdit(s, [3, 0]); // BH4 first, water last
-    expect(bh4Last.kind).toBe("ready");
-    expect(waterLast.kind).toBe("ready");
+  it("click order is the DEFAULT: reversing picks the other default mover", () => {
+    const bh4Last = planEdit(s, [0, 3]);
+    const waterLast = planEdit(s, [3, 0]);
     if (bh4Last.kind === "ready") expect(bh4Last.movingFragmentId).toBe("bh4");
     if (waterLast.kind === "ready") {
       expect(waterLast.movingFragmentId).toBe("wat");
-      expect(waterLast.mask).toEqual([0, 1, 2]); // the whole water fragment
+      expect(waterLast.reversed).toBe(false);
     }
   });
 
   it("current === measureSelection value (math is not duplicated)", () => {
-    for (const sel of [
-      [0, 3], // distance
-      [1, 0, 3], // angle, vertex = water-O
-      [0, 1, 2, 3], // dihedral: 3 water refs + BH4 boron last (all refs static)
-    ]) {
+    for (const sel of [[0, 3], [1, 0, 3], [0, 1, 2, 3]]) {
       const p = planEdit(s, sel);
       const m = measureSelection(s, sel);
       expect(p.kind).toBe("ready");
@@ -98,18 +122,61 @@ describe("planEdit — inter-fragment (ready)", () => {
     }
   });
 
-  it("carries the pick list verbatim as indices (order preserved)", () => {
-    const p = planEdit(s, [0, 1, 2, 3]);
-    if (p.kind === "ready") expect(p.indices).toEqual([0, 1, 2, 3]);
+  // ── (a) the EXACT screenshot selection ──────────────────────────────────────
+  it("(a) screenshot case [33,12,14]: reagent moves via REVERSED chain", () => {
+    // ibuprofen = indices 0..32, BH4⁻ = 33..37 (B at 33). Click B(33) → C(12) →
+    // O(14). Last-clicked (O, ibuprofen) can't move — ref C#12 is in ibuprofen.
+    // Read the other way, BH4⁻ moves with both refs (C#12, O#14) static.
+    const big = scene(bigSubstrate(), bh4Off());
+    const p = planEdit(big, [33, 12, 14]);
+    expect(p.kind).toBe("ready");
+    if (p.kind === "ready") {
+      expect(p.op).toBe("angle");
+      expect(p.movingFragmentId).toBe("bh4");
+      expect(p.mask).toEqual([33, 34, 35, 36, 37]); // the whole BH4⁻
+      expect(p.reversed).toBe(true);
+      expect(p.alternative).toBeNull(); // the ibuprofen side is NOT movable
+    }
+  });
+
+  // ── (b) the same angle in the convenient order + value identical ────────────
+  it("(b) same selection reversed [14,12,33]: not reversed, same mask, SAME value", () => {
+    const big = scene(bigSubstrate(), bh4Off());
+    const forward = planEdit(big, [33, 12, 14]); // screenshot order
+    const convenient = planEdit(big, [14, 12, 33]); // reagent last
+    expect(convenient.kind).toBe("ready");
+    if (convenient.kind === "ready" && forward.kind === "ready") {
+      expect(convenient.movingFragmentId).toBe("bh4");
+      expect(convenient.reversed).toBe(false);
+      expect(convenient.mask).toEqual(forward.mask);
+      // The value is the SAME regardless of orientation — the crux of the fix.
+      expect(convenient.current).toBeCloseTo(forward.current, 9);
+    }
+  });
+
+  // ── (c) inter-fragment distance: alternative present, swap mirrors ──────────
+  it("(c) distance: either side movable → alternative, swap gives the mirror", () => {
+    const p = planEdit(s, [0, 3]); // O(water) ··· B(bh4)
+    expect(p.kind).toBe("ready");
+    if (p.kind !== "ready") return;
+    expect(p.alternative).not.toBeNull();
+    const swapped = swapToAlternative(p);
+    if (swapped.kind !== "ready") throw new Error("swap dropped ready");
+    expect(swapped.movingFragmentId).toBe("wat"); // now the other side moves
+    expect(swapped.mask).toEqual([0, 1, 2]);
+    expect(swapped.reversed).toBe(!p.reversed);
+    expect(swapped.current).toBeCloseTo(p.current, 12); // value unchanged
+    // swapping again returns the original mover
+    const back = swapToAlternative(swapped);
+    if (back.kind === "ready") expect(back.movingFragmentId).toBe("bh4");
   });
 });
 
-describe("planEdit — intra-fragment (unavailable, explained)", () => {
+describe("planEdit — two distinct refusals (2.5.2d-2)", () => {
   const s = scene(water(), borohydride());
 
-  it("all atoms in one fragment → unavailable, names the bond-graph reason", () => {
-    // three atoms all inside BH4⁻ (3,4,5)
-    const p = planEdit(s, [3, 4, 5]);
+  it("(d) all atoms in one fragment → the bond-graph (intra) reason", () => {
+    const p = planEdit(s, [3, 4, 5]); // all inside BH4⁻
     expect(p.kind).toBe("unavailable");
     if (p.kind === "unavailable") {
       expect(p.reason).toMatch(/same fragment/i);
@@ -117,14 +184,18 @@ describe("planEdit — intra-fragment (unavailable, explained)", () => {
     }
   });
 
-  it("a reference atom in the moving fragment is rejected (would move a ref)", () => {
-    // dihedral l=4 (BH4), but k=3 (BH4 boron) is also in the moving fragment →
-    // the mask would contain a reference atom → rejected by the mirror rule.
+  it("(e) 2+2 dihedral across fragments → the immovable-axis reason, names culprits", () => {
+    // dihedral [1,0,3,4]: water {1,0} | BH4 {3,4}. Whichever end moves, an axis
+    // atom (0 or 3) moves with it → no orientation holds the j–k axis fixed.
     const p = planEdit(s, [1, 0, 3, 4]);
-    // (1,0 are water; 3,4 are BH4) — here 3 is a REFERENCE and in the mask.
-    // The moving fragment is BH4 (last atom 4); ref 3 ∈ mask → unavailable.
     expect(p.kind).toBe("unavailable");
-    if (p.kind === "unavailable") expect(p.reason).toMatch(/same fragment/i);
+    if (p.kind === "unavailable") {
+      expect(p.reason).not.toMatch(/bond-graph/); // NOT the intra reason
+      expect(p.reason).toMatch(/axis/i);
+      // Names the offending atoms: 0 (water axis atom) and 3 (BH4 axis atom).
+      expect(p.reason).toContain("#0");
+      expect(p.reason).toContain("#3");
+    }
   });
 });
 

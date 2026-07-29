@@ -10,7 +10,7 @@ import { useSceneStore } from "../scene/store";
 import { FragmentList } from "../scene/FragmentList";
 import { AtomInspector } from "../scene/AtomInspector";
 import { EditPanel } from "../scene/EditPanel";
-import { planEdit } from "../scene/edit-plan";
+import { planEdit, swapToAlternative } from "../scene/edit-plan";
 import {
   toggleAtom,
   validateSelection,
@@ -164,16 +164,28 @@ export function NewJobScreen({
   // `preEditScene` is the scene before the last Apply, for one-step Undo.
   const [previewScene, setPreviewScene] = useState<Scene | null>(null);
   const [preEditScene, setPreEditScene] = useState<Scene | null>(null);
-  // The plan drives the edit UI AND the mask glow (shown only when ready).
-  const editPlan = scene ? planEdit(scene, selection) : null;
+  // "Move the other fragment instead" — flip to the plan's alternative orientation
+  // (2.5.2d-2). Reset when the selection/scene changes (the plan is different).
+  const [preferAlternative, setPreferAlternative] = useState(false);
+  // The base plan considers both chain orientations; `effectivePlan` applies the
+  // user's orientation choice. Both drive the edit UI AND the mask glow.
+  const basePlan = scene ? planEdit(scene, selection) : null;
+  const editPlan =
+    preferAlternative && basePlan?.kind === "ready" && basePlan.alternative
+      ? swapToAlternative(basePlan)
+      : basePlan;
+  const fragmentName = (id: string | undefined | null) =>
+    (id && scene?.fragments.find((f) => f.id === id)?.name) || null;
   const movingFragmentName =
-    scene && editPlan?.kind === "ready"
-      ? (scene.fragments.find((f) => f.id === editPlan.movingFragmentId)?.name ??
-        null)
+    editPlan?.kind === "ready" ? fragmentName(editPlan.movingFragmentId) : null;
+  const alternativeFragmentName =
+    editPlan?.kind === "ready"
+      ? fragmentName(editPlan.alternative?.movingFragmentId)
       : null;
-  // Preview is transient: drop it whenever the selection or the scene changes.
+  // Preview + orientation choice are transient: drop them when selection/scene changes.
   useEffect(() => {
     setPreviewScene(null);
+    setPreferAlternative(false);
   }, [selection, scene]);
   const applyEdit = (newScene: Scene, previous: Scene) => {
     setPreEditScene(previous); // enable one-step Undo
@@ -850,6 +862,8 @@ export function NewJobScreen({
                 scene={scene}
                 plan={editPlan}
                 movingFragmentName={movingFragmentName}
+                alternativeFragmentName={alternativeFragmentName}
+                onSwitchOrientation={() => setPreferAlternative((v) => !v)}
                 onPreview={setPreviewScene}
                 onApplied={applyEdit}
               />

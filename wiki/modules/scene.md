@@ -478,28 +478,43 @@ fragment-library source), the butane dihedrals above, the symmetries, a mirror
 rotation + translation of the whole scene leaves all three unchanged to 1e-9;
 this catches a bug in the math, not in a single number).
 
-## Edit planning (`edit-plan.ts`, 2.5.2d)
+## Edit planning (`edit-plan.ts`, 2.5.2d; both-orientation fix 2.5.2d-2)
 
 `planEdit(scene, selection)` turns the pick list into an `EditPlan`:
-`{ kind: "ready"; op; indices; mask; current; unit; movingFragmentId }` or
-`{ kind: "unavailable"; reason }`. The math is **not duplicated** — `op` and
-`current` come straight from `measureSelection`.
+`{ kind: "ready"; op; indices; mask; current; unit; movingFragmentId; reversed;
+alternative }` or `{ kind: "unavailable"; reason }`. The math is **not
+duplicated** — `op` and `current` come straight from `measureSelection`.
 
-- **The mask = the fragment of the LAST-clicked atom** (`fragmentAtomIndices`).
-  Click the reagent atom last → the reagent moves; click the substrate last → the
-  substrate moves. `movingFragmentId` names it so the UI can label and highlight
-  it. This is the operational form of the 2.5.0 decision — the sidecar never sees
-  a fragment, it gets the mask as an explicit index list.
-- **Inter-fragment ONLY, and the rejection lives here.** `planEdit` mirrors the
-  sidecar's reference-atom rule: the last atom of the chain is in the mask (it is,
-  by construction — the mask is its fragment), every preceding atom must be OUT.
-  A reference atom inside the mask == the whole selection sits in one fragment →
-  **intra-fragment** → `unavailable` with the reason (needs a bond-graph split
-  with ring detection — that is **2.5.3**). The point is the user learns the rule
-  from the UI, not from a 422 after clicking Apply; the server check stays the
-  boundary guard. Editing a torsion of a molecule's *own* substrate is explicitly
-  refused here rather than silently applied to the whole fragment (which would
-  translate the entire molecule, not a part).
+- **Click order is a DEFAULT, not a rule (2.5.2d-2).** The original unit took the
+  LAST-clicked atom's fragment as the mover, full stop — which refused the real
+  screenshot case `B#33(BH₄⁻)→C#12(ibuprofen)→O#14(ibuprofen)` as "same fragment"
+  (the last atom's fragment, ibuprofen, held the reference C#12), even though the
+  identical angle read the other way (`O#14–C#12–B#33`) moves BH₄⁻ with both
+  references static. **The measured value is invariant under chain reversal** —
+  `angle(i,v,j) == angle(j,v,i)`, `dihedral(i,j,k,l) == dihedral(l,k,j,i)`,
+  distance symmetric (verified in ASE 3.29.0 and in `measure.test.ts` §f: e.g.
+  angle 90.4615902578… and dihedral 171.5384757600… identical both ways).
+  Reversal changes only *which end moves*, not the number — so click order can't
+  decide whether the task is solvable.
+- **Both orientations are tried.** Candidate A = chain as clicked (mover = last);
+  candidate B = reversed (mover = first). Each must pass the reference-atom rule
+  (mover in its fragment's mask, no reference in that mask). Only A valid → A
+  (`reversed:false`); only B → B (`reversed:true`, `indices` = reversed chain);
+  **both** valid (typical inter-fragment distance) → A stays the default and B is
+  exposed as `alternative` for the UI's "Move X instead" button
+  (`swapToAlternative` flips them, `current`/`op`/`unit` unchanged). The mask is
+  always a **whole fragment** — the sidecar gets it as an explicit index list
+  (the 2.5.0 decision).
+- **Two distinct refusals (2.5.2d-2).** When NEITHER orientation works:
+  - **all atoms in one fragment** → the genuine intra-fragment case → the
+    bond-graph-split reason (**2.5.3**);
+  - **atoms across fragments but the pivot can't be held fixed** (a dihedral whose
+    j–k axis atoms straddle fragments, or an angle whose two ends share a
+    fragment) → a *different* reason that **names the offending atom indices**
+    (`immovablePivotReason`: the references that would move with an endpoint
+    whichever way the chain is read). The old code collapsed both into "same
+    fragment" — the lie the screenshot exposed. The user learns the rule from the
+    UI, not from a 422; the server check stays the boundary guard.
 - **Apply helpers, pure and tested.** `applyResponseToScene(scene,
   movingFragmentId, responseXyz)` slices the moving fragment's rows out of the
   response xyz (by its `fragmentRanges` window) and hands them to
@@ -509,8 +524,10 @@ this catches a bug in the math, not in a single number).
   (`< 1e-6`), and the response count must equal `atomCount(scene)` — else it
   returns a message and the edit is refused. `EditPanel` (React) does only the
   `fetch` and state; all decision logic is in this pure layer, so `edit-plan.test`
-  covers it (intra-fragment rejection, click-order-decides-mover, `current` ===
-  `measureSelection`, the slice, the boundary check).
+  covers it: the exact screenshot selection `[33,12,14]` → `reversed:true` moving
+  BH₄⁻; the same selection reversed → same mask, `current` identical; the distance
+  `alternative` + `swapToAlternative` mirror; the two refusals (intra vs
+  immovable-pivot naming culprits `#0`, `#3`); the slice; the boundary check.
 
 ## Notes
 

@@ -155,6 +155,43 @@ describe("symmetries", () => {
   });
 });
 
+// ── (f) chain-reversal invariance — the fact 2.5.2d-2's edit planner rests on ──
+// planEdit reads a selection in BOTH directions and reverses it so the reagent
+// (first-clicked) can be the moving end. That is only sound because the measured
+// value is identical either way: angle(i,v,j) == angle(j,v,i) and
+// dihedral(i,j,k,l) == dihedral(l,k,j,i). Pinned here on a deterministic generic
+// geometry (no symmetry to accidentally satisfy it).
+describe("chain-reversal invariance (basis of the both-orientation edit plan)", () => {
+  const s = sceneOf(
+    fragmentOf([
+      { element: "C", x: 0.13, y: 0.21, z: -0.34 },
+      { element: "N", x: 1.42, y: 0.02, z: 0.51 },
+      { element: "O", x: 2.11, y: 1.33, z: -0.22 },
+      { element: "C", x: 3.05, y: 0.71, z: 1.14 },
+    ]),
+  );
+
+  it("angle(i,v,j) === angle(j,v,i) to 1e-9", () => {
+    const fwd = angle(s, 0, 1, 2)!;
+    const rev = angle(s, 2, 1, 0)!;
+    expect(fwd).toBeCloseTo(rev, 9);
+    // (for the report: a real number, not just "equal")
+    expect(fwd).toBeGreaterThan(0);
+  });
+
+  it("dihedral(i,j,k,l) === dihedral(l,k,j,i) to 1e-9", () => {
+    const fwd = dihedral(s, 0, 1, 2, 3)!;
+    const rev = dihedral(s, 3, 2, 1, 0)!;
+    expect(fwd).toBeCloseTo(rev, 9);
+    expect(fwd).toBeGreaterThanOrEqual(0);
+    expect(fwd).toBeLessThan(360);
+  });
+
+  it("distance is symmetric to 1e-12", () => {
+    expect(distance(s, 0, 3)!).toBeCloseTo(distance(s, 3, 0)!, 12);
+  });
+});
+
 // ── Reflection: distance/angle invariant, dihedral → 360 − φ ──────────────────
 
 describe("mirror reflection", () => {

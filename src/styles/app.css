@@ -705,6 +705,13 @@ select:disabled,
 .edit-current {
   font-size: 12px;
 }
+.edit-reversed {
+  font-size: 11px;
+  font-style: italic;
+}
+.edit-switch {
+  align-self: flex-start;
+}
 .edit-controls {
   display: flex;
   align-items: center;

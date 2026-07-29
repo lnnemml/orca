@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 import type { Scene } from "./types";
 import { postSidecar } from "../sidecar-client";
+import { describeAtom } from "./selection";
 import {
   applyResponseIssue,
   applyResponseToScene,
@@ -52,6 +53,8 @@ export function EditPanel({
   scene,
   plan,
   movingFragmentName,
+  alternativeFragmentName,
+  onSwitchOrientation,
   onPreview,
   onApplied,
 }: {
@@ -59,6 +62,10 @@ export function EditPanel({
   plan: EditPlan;
   /** Display name of the moving fragment (looked up by the parent). */
   movingFragmentName: string | null;
+  /** Display name of the OTHER movable fragment, if any (the alternative). */
+  alternativeFragmentName: string | null;
+  /** Flip to the alternative orientation (the "Move X instead" action). */
+  onSwitchOrientation: () => void;
   /** Hand a preview scene to the viewer, or `null` to clear the preview. */
   onPreview: (previewScene: Scene | null) => void;
   /** Commit: the new scene + the scene before the edit (for one-step Undo). */
@@ -142,14 +149,31 @@ export function EditPanel({
     onPreview(null);
   };
 
+  const pivot = pivotLabel(scene, ready);
+
   return (
     <div className="edit-panel">
       <div className="edit-head">
         Set {ready.op} · moving <strong>{movingFragmentName ?? "fragment"}</strong>
+        {pivot ? <span className="muted"> · {pivot}</span> : null}
       </div>
+      {ready.reversed ? (
+        <div className="edit-reversed muted">
+          chain read in reverse so the reagent moves
+        </div>
+      ) : null}
       <div className="edit-current muted">
         current {round(ready.current)} {ready.unit}
       </div>
+      {ready.alternative ? (
+        <button
+          className="btn btn-sm edit-switch"
+          onClick={onSwitchOrientation}
+          disabled={busy}
+        >
+          Move {alternativeFragmentName ?? "the other fragment"} instead
+        </button>
+      ) : null}
       <div className="edit-controls">
         <input
           className="input edit-target"
@@ -197,6 +221,28 @@ export function EditPanel({
 
 function round(v: number): number {
   return Math.round(v * 1000) / 1000;
+}
+
+/** The atom(s) an edit rotates about — the immovable pivot. For an angle it's the
+ * vertex (`indices[1]`); for a dihedral it's the j–k axis (`indices[1..2]`). This
+ * is what tells the user what stays put; without it the panel couldn't say what
+ * the rotation is around. Null for a distance. */
+function pivotLabel(
+  scene: Scene,
+  plan: Extract<EditPlan, { kind: "ready" }>,
+): string | null {
+  if (plan.op === "angle") {
+    const v = plan.indices[1];
+    const d = describeAtom(scene, v);
+    return d ? `vertex ${d.element} #${v}` : null;
+  }
+  if (plan.op === "dihedral") {
+    const [, j, k] = plan.indices;
+    const dj = describeAtom(scene, j);
+    const dk = describeAtom(scene, k);
+    return dj && dk ? `axis ${dj.element}#${j}–${dk.element}#${k}` : null;
+  }
+  return null; // distance has no pivot
 }
 
 function messageFor(e: unknown): string {

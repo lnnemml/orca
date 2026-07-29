@@ -1844,3 +1844,49 @@ test now asserts against `__version__` so a bump doesn't break it, plus a dotted
 In-window checks (status bar reads STALE not healthy against an old sidecar; Preview shows the
 older-build message) need the real Tauri window — author checklist. Next: 2.5.3 — bond-graph mask
 split.
+
+## [2026-07-29] decision | Click order is a DEFAULT, not a rule (edit orientation)
+
+The spec error behind the 2.5.2d defect. 2.5.2d made "the LAST-clicked atom's fragment moves" a
+hard rule, so the reagent-attack-angle edit `B#33(BH₄⁻)→C#12(ibuprofen)→O#14(ibuprofen)` was refused
+as "same fragment" — the last atom's fragment (ibuprofen) held the reference C#12. But the SAME angle
+read the other way (`O#14–C#12–B#33`) moves BH₄⁻ with both references static. **Decision:** click
+order is only the DEFAULT tiebreak, never a solvability rule. `planEdit` tries both chain
+orientations; angle/dihedral are invariant under reversal (`angle(i,v,j)==angle(j,v,i)`,
+`dihedral(i,j,k,l)==dihedral(l,k,j,i)`, distance symmetric — verified in ASE 3.29.0 and
+`measure.test` §f), so reversal changes only which end moves, not the value. When only one
+orientation is valid, take it; when both are, keep click order as default and expose the other as an
+"alternative" the user can switch to. **What caused the spec error:** conflating "the mask is a whole
+fragment" (true) with "the mover is fixed by click order" (false); the direction of a chain is a UI
+artefact, not a chemical fact, and must not gate whether the task is solvable.
+
+## [2026-07-29] session | 2.5.2d-2: edit mode considers both chain orientations
+
+Fix for a defect found on a real scenario (ibuprofen + BH₄⁻, author screenshot). See the decision
+above for the root cause.
+
+**planEdit (both orientations).** Candidate A = chain as clicked (mover last); candidate B = reversed
+(mover first). Each checked against the reference-atom rule. Only-A / only-B / both (→ A default +
+`alternative` = B) / neither. `EditPlan.ready` gained `reversed` and `alternative`; `swapToAlternative`
+(pure) flips them for the UI. `current` is orientation-invariant (computed once).
+
+**Two refusals instead of one.** All atoms in one fragment → the genuine intra-fragment bond-graph
+reason (2.5.3). Atoms across fragments but no orientation valid (dihedral axis straddling fragments, or
+an angle whose two ends share a fragment) → `immovablePivotReason`, which **names the offending atom
+indices** (the references that would move with an endpoint either way). The old code lied "same
+fragment" for both.
+
+**UI.** The panel names the rotation pivot (`vertex C #12` / `axis C#12–O#14`), shows a calm "chain
+read in reverse so the reagent moves" line when `reversed`, and offers "Move <other> instead" when an
+alternative exists (finishing the redefinable mask half-built in 2.5.2d). Orientation choice lives in
+`NewJobScreen` (`preferAlternative`), resets on selection/scene change, and drives both the mask glow
+and the sidecar call.
+
+**Verified.** `tsc` + `vite build` clean; `vitest` **245** (was 240 → +5: both-orientation planner
+incl. the exact screenshot `[33,12,14]` → `reversed:true` moving BH₄⁻, the reversed-order value
+match, `swapToAlternative` mirror, the two refusals naming `#0`/`#3`, and `measure.test` §f). `pytest`
+26 and `cargo test` 59 untouched. **Manual acceptance driven to the end through the LIVE sidecar** (the
+indices `planEdit` reverses to, reagent-first order): distance C–B → 2.2, angle O–C–B → 107, dihedral
+Ha–O–C–B → 90; re-measured after EACH Apply — d = 2.200000, angle = 107.000000, dih = 90.000000,
+substrate internal deviation **0.00e+00**. This closes 2.5.2d. Next: 2.5.3 — bond-graph mask split for
+intra-fragment edits.
