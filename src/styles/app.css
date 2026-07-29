@@ -489,17 +489,37 @@ select:disabled,
   overflow: hidden;
   background: #0d0f13;
 }
-/* Fullscreen (2.5.2e-2): ONLY this class changes on toggle — the container goes
-   fixed over everything. MoleculeViewer stays in the same DOM/React position, so
-   it is not remounted; the ResizeObserver on its inner container fires on the
-   size change and calls viewer.resize(). */
-.viewer-panel-fullscreen {
+/* Fullscreen workbench (2.5.2e-3b): ONLY the workbench className changes on
+   toggle. The container goes fixed over everything and becomes a ROW — the
+   viewer stretches, the geometry rail is a fixed-width right column. Both the
+   viewer and the rail keep their DOM/React position, so neither remounts; the
+   ResizeObserver on the inner container fires on the size change and calls
+   viewer.resize(). (Was `.viewer-panel-fullscreen` in e-2 — now on the column so
+   the rail comes with it.) */
+.viewer-column-fullscreen {
   position: fixed;
   inset: 0;
   z-index: 1000;
+  flex-direction: row;
+  min-width: 0;
+  gap: 0;
+  background: var(--panel);
+}
+.viewer-column-fullscreen .viewer-panel {
   border: none;
   border-radius: 0;
-  min-width: 0;
+  min-height: 0;
+}
+.viewer-column-fullscreen .viewer-rail {
+  flex: 0 0 320px;
+  overflow-y: auto;
+  padding: 10px;
+  border-left: 1px solid var(--border);
+  background: var(--panel);
+}
+/* Collapsed rail (fullscreen only) → clean canvas. */
+.viewer-rail-collapsed {
+  display: none;
 }
 
 /* 3Dmol appends an absolutely-positioned canvas — the container must be a
@@ -533,6 +553,19 @@ select:disabled,
   flex: 1;
   min-width: 0;
   min-height: 120px;
+}
+/* Geometry rail (2.5.2e-3b) — the AtomInspector + FragmentList group. In normal
+   mode it's the lower part of the right column (content height); the wrapper is
+   visually inert (same 8px gaps as before), so New Job looks unchanged. In
+   fullscreen it becomes the fixed-width right column (rules above). */
+.viewer-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+.viewer-column > .viewer-rail {
+  flex: none;
 }
 /* Viewer toolbar (2.5.2e-1, extended 2.5.2e-2) — Numbers toggle, theme select,
    Expand/Exit. An overlay in the top-right of the viewer so it travels with the

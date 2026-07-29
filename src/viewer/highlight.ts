@@ -86,16 +86,25 @@ export function highlightRadius(element: string): number {
 }
 
 /**
- * The elements where our {@link VDW_RADII} copy disagrees with a reference table
+ * TWO-directional drift between our {@link VDW_RADII} copy and a reference table
  * (3Dmol's live `GLModel.vdwRadii`, injected so this stays 3dmol-free and
- * node-testable). Empty ⇒ the copy is faithful. `MoleculeViewer` calls this once
- * in dev with the real table and warns on any drift — the active guard the
- * documented duplication needs.
+ * node-testable):
+ * - `changed` — elements the reference also has but with a different radius (our
+ *   copy went stale);
+ * - `missing` — elements the reference HAS but our copy lacks. The one-way guard
+ *   iterated our keys, so "3Dmol has an element we don't" was invisible by
+ *   construction — the same blind spot that let the ADR-007 metals slip through
+ *   the colour table (see the log). This closes it.
+ * Both empty ⇒ faithful. `MoleculeViewer` calls it once in dev.
  */
 export function vdwTableDrift(
   referenceTable: Record<string, number | undefined>,
-): string[] {
-  return Object.keys(VDW_RADII).filter(
-    (el) => referenceTable[el] !== VDW_RADII[el],
+): { changed: string[]; missing: string[] } {
+  const changed = Object.keys(VDW_RADII).filter(
+    (el) => referenceTable[el] != null && referenceTable[el] !== VDW_RADII[el],
   );
+  const missing = Object.keys(referenceTable).filter(
+    (el) => referenceTable[el] != null && !(el in VDW_RADII),
+  );
+  return { changed, missing };
 }

@@ -15,12 +15,18 @@
  *
  * ## Why PRESETS, not a free colour picker
  *
- * The invariant that makes this safe is a **contrast floor** (`contrastRatio`,
- * WCAG relative luminance): `theme.test.ts` asserts ≥3:1 against the background
- * for THREE families of on-canvas colour — the overlay, the fragment palette,
- * AND the CPK element colours. A free background picker could make any of them
- * vanish and no test could catch an arbitrary user colour. Fixed presets keep
- * the guarantee testable.
+ * Two invariants make this safe, both asserted by `theme.test.ts`:
+ * - a **contrast floor** (`contrastRatio`, WCAG): ≥3:1 against the background for
+ *   THREE families of on-canvas colour — the overlay, the fragment palette, AND
+ *   the CPK element colours;
+ * - a **distinctness floor** (`hueDistance`, 2.5.2e-3b): the halo and the
+ *   measurement colour sit ≥30° in hue from every element colour (incl. 3Dmol's
+ *   off-table `defaultColor` #ff1493), every fragment-palette colour, and each
+ *   other's neighbours — so a selection halo can never be mistaken for an atom.
+ * A free colour picker could violate either and no test could catch an arbitrary
+ * runtime colour. The one hue band clear of every CPK/palette colour is
+ * **chartreuse (74–90°)** — CPK occupies the rest of the wheel — so the halo and
+ * measurement live there.
  *
  * ## What 2.5.2e-3a widened
  *
@@ -75,12 +81,19 @@ export interface ViewerTheme {
  * (dev, in the real webview where 3Dmol IS loaded).
  */
 export const CPK_ELEMENT_COLORS: Readonly<Record<string, string>> = {
+  // The 28 elements of 3Dmol's `rasmol` table (= `defaultColors`), verbatim.
   H: "#ffffff", He: "#ffc0cb", Li: "#b22222", B: "#00ff00", C: "#c8c8c8",
   N: "#8f8fff", O: "#f00000", F: "#daa520", Na: "#0000ff", Mg: "#228b22",
   Al: "#808090", Si: "#daa520", P: "#ffa500", S: "#ffc832", Cl: "#00ff00",
   Ca: "#808090", Ti: "#808090", Cr: "#808090", Mn: "#808090", Fe: "#ffa500",
   Ni: "#a52a2a", Cu: "#a52a2a", Zn: "#a52a2a", Br: "#a52a2a", Ag: "#808090",
   I: "#a020f0", Ba: "#ffa500", Au: "#daa520",
+  // ADR-007 cross-coupling metals — ABSENT from `rasmol`, so 3Dmol would paint
+  // them `defaultColor` (#ff1493), which collided with the old pink halo (see
+  // the log). Values taken from 3Dmol's OWN `Jmol` table (v2.5.5) — still the
+  // library's dictionary, no invented colours.
+  Pd: "#006985", Pt: "#d0d0e0", Rh: "#0a7d8c", Ru: "#248f8f", // Jmol
+  Ir: "#175487", Os: "#266696", // Jmol
 };
 
 /**
@@ -95,6 +108,9 @@ const LIGHT_ELEMENT_OVERRIDES: Readonly<Record<string, string>> = {
   H: "#838383", He: "#ff274d", B: "#009900", C: "#848484", N: "#7373ff",
   F: "#a77e18", Si: "#a77e18", P: "#b87700", S: "#aa7c00", Cl: "#009900",
   Fe: "#b87700", Ba: "#b87700", Au: "#a77e18",
+  // Pt (#d0d0e0, near-white) is the one ADR-007 metal that fails on light — the
+  // other five are dark enough. Same hue, darker.
+  Pt: "#8080ab",
 };
 
 /** Fragment palette for the light themes — the four `FRAGMENT_PALETTE` hues at
@@ -103,22 +119,24 @@ const LIGHT_ELEMENT_OVERRIDES: Readonly<Record<string, string>> = {
 const LIGHT_FRAGMENT_PALETTE = ["#0f766e", "#e11d48", "#a16207", "#7c3aed"] as const;
 
 /**
- * The four presets. **`dark` reproduces the pre-2.5.2e-2 look exactly** — empty
- * `elementColorOverrides` and the global `FRAGMENT_PALETTE` — so switching to it
- * is a no-op and it stays the default. `black` is the same overlay set on pure
- * black; `light`/`white` swap in darker overlay colours, CPK overrides, and the
- * darker fragment palette that all clear 3:1 on a light background.
+ * The four presets. `dark` keeps its background, labels, CPK colours (empty
+ * `elementColorOverrides`) and the global `FRAGMENT_PALETTE`; the **only** e-3b
+ * change to it is the halo/measurement colour, forced by the distinctness
+ * invariant off pink (which collided with 3Dmol's `defaultColor`) onto
+ * chartreuse. `black` is the same set on pure black; `light`/`white` swap in
+ * darker overlay colours, CPK overrides, and the darker fragment palette that all
+ * clear 3:1 on a light background.
  */
 export const VIEWER_THEMES: readonly ViewerTheme[] = [
   {
     id: "dark",
     label: "Dark",
     background: "#0d0f13",
-    haloColor: "#ff2d95",
+    haloColor: "#adee2b",
     labelText: "#e6e6e6",
     labelBg: "#0d0f13",
-    measurementLine: "#ffd34d",
-    measurementText: "#ffd34d",
+    measurementLine: "#b1eb70",
+    measurementText: "#b1eb70",
     elementColorOverrides: {},
     fragmentPalette: FRAGMENT_PALETTE,
   },
@@ -126,11 +144,11 @@ export const VIEWER_THEMES: readonly ViewerTheme[] = [
     id: "black",
     label: "Black",
     background: "#000000",
-    haloColor: "#ff2d95",
+    haloColor: "#adee2b",
     labelText: "#e6e6e6",
     labelBg: "#000000",
-    measurementLine: "#ffd34d",
-    measurementText: "#ffd34d",
+    measurementLine: "#b1eb70",
+    measurementText: "#b1eb70",
     elementColorOverrides: {},
     fragmentPalette: FRAGMENT_PALETTE,
   },
@@ -138,11 +156,11 @@ export const VIEWER_THEMES: readonly ViewerTheme[] = [
     id: "light",
     label: "Light",
     background: "#eceff3",
-    haloColor: "#c2185b",
+    haloColor: "#5e8b04",
     labelText: "#12151a",
     labelBg: "#f4f5f7",
-    measurementLine: "#b45309",
-    measurementText: "#b45309",
+    measurementLine: "#519504",
+    measurementText: "#519504",
     elementColorOverrides: LIGHT_ELEMENT_OVERRIDES,
     fragmentPalette: LIGHT_FRAGMENT_PALETTE,
   },
@@ -150,11 +168,11 @@ export const VIEWER_THEMES: readonly ViewerTheme[] = [
     id: "white",
     label: "White",
     background: "#ffffff",
-    haloColor: "#c2185b",
+    haloColor: "#5e8b04",
     labelText: "#12151a",
     labelBg: "#eef0f2",
-    measurementLine: "#b45309",
-    measurementText: "#b45309",
+    measurementLine: "#519504",
+    measurementText: "#519504",
     elementColorOverrides: LIGHT_ELEMENT_OVERRIDES,
     fragmentPalette: LIGHT_FRAGMENT_PALETTE,
   },
@@ -210,7 +228,8 @@ export function contrastRatio(hexA: string, hexB: string): number {
 
 /**
  * Hue angle (0–360°) of a hex colour — for the per-theme-palette invariant (a
- * light variant must share its dark counterpart's hue, only be darker).
+ * light variant must share its dark counterpart's hue) AND the distinctness
+ * invariant (halo / measurement must sit ≥30° from every element colour).
  * Achromatic (grey) → 0.
  */
 export function hueOf(hex: string): number {
@@ -228,26 +247,51 @@ export function hueOf(hex: string): number {
 }
 
 /** Smallest absolute difference between two hue angles, 0–180°. */
-export function hueDelta(a: string, b: string): number {
+export function hueDistance(a: string, b: string): number {
   const d = Math.abs(hueOf(a) - hueOf(b));
   return Math.min(d, 360 - d);
 }
 
+/** A key is in canonical element form (`H`, `He`) — not a PDB uppercase alias
+ * (`HE`, `LI`) that 3Dmol keeps for other formats and we don't mirror. */
+function isCanonicalElement(el: string): boolean {
+  return el.length > 0 && el === el[0].toUpperCase() + el.slice(1).toLowerCase();
+}
+
+/** Normalise a 3Dmol colour value (`0xRRGGBB` number or hex string) to `#rrggbb`. */
+function refToHex(ref: string | number | undefined): string | null {
+  if (ref == null) return null;
+  return typeof ref === "number"
+    ? "#" + (ref & 0xffffff).toString(16).padStart(6, "0")
+    : ref;
+}
+
 /**
- * Elements where our {@link CPK_ELEMENT_COLORS} copy disagrees with a reference
- * table (3Dmol's live `elementColors.defaultColors`, whose values are
- * `0xRRGGBB` numbers), injected so this stays 3dmol-free and node-testable.
- * Empty ⇒ the copy is faithful. `MoleculeViewer` calls it once in dev.
+ * TWO-directional drift between our {@link CPK_ELEMENT_COLORS} copy and a
+ * reference table (3Dmol's live `elementColors.defaultColors`), injected so this
+ * stays 3dmol-free and node-testable:
+ * - `changed` — our keys the reference ALSO has but with a different value (our
+ *   copy went stale). Keys the reference lacks (the ADR-007 metals, sourced from
+ *   3Dmol's `Jmol` table, not `defaultColors`) are skipped — not a disagreement.
+ * - `missing` — canonical element keys the reference HAS but our copy lacks. This
+ *   is the direction the one-way guard was blind to by construction (it iterated
+ *   our keys), and the direction that would have caught "3Dmol has an element we
+ *   don't". PDB uppercase aliases are ignored.
+ * Both empty ⇒ faithful. `MoleculeViewer` calls it once in dev.
  */
 export function cpkColorDrift(
   reference: Record<string, string | number | undefined>,
-): string[] {
-  return Object.keys(CPK_ELEMENT_COLORS).filter((el) => {
-    const ref = reference[el];
-    const refHex =
-      typeof ref === "number"
-        ? "#" + (ref & 0xffffff).toString(16).padStart(6, "0")
-        : ref;
-    return (refHex ?? "").toLowerCase() !== CPK_ELEMENT_COLORS[el].toLowerCase();
+): { changed: string[]; missing: string[] } {
+  const changed = Object.keys(CPK_ELEMENT_COLORS).filter((el) => {
+    const refHex = refToHex(reference[el]);
+    if (refHex == null) return false; // sourced elsewhere (Jmol metals)
+    return refHex.toLowerCase() !== CPK_ELEMENT_COLORS[el].toLowerCase();
   });
+  const missing = Object.keys(reference).filter(
+    (el) =>
+      reference[el] != null &&
+      isCanonicalElement(el) &&
+      !(el in CPK_ELEMENT_COLORS),
+  );
+  return { changed, missing };
 }

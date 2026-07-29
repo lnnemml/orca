@@ -248,22 +248,23 @@ export function MoleculeViewer({
     // we can't import it there). Here in the real webview 3Dmol IS loaded — warn
     // if a 3Dmol upgrade moved the table out from under our copy.
     if (import.meta.env.DEV) {
-      const drift = vdwTableDrift(
+      // Two-directional drift guards (2.5.2e-3b): `changed` = our copy is stale,
+      // `missing` = 3Dmol has an element we don't mirror (the direction that let
+      // the ADR-007 metals slip past the one-way guard).
+      const vdw = vdwTableDrift(
         GLModel.vdwRadii as Record<string, number | undefined>,
       );
-      if (drift.length > 0) {
+      if (vdw.changed.length || vdw.missing.length) {
         console.warn(
-          `[MoleculeViewer] highlight.ts vdW radii disagree with 3Dmol for: ${drift.join(", ")} — update VDW_RADII.`,
+          `[MoleculeViewer] highlight.ts vdW radii vs 3Dmol — changed: [${vdw.changed.join(", ")}], missing: [${vdw.missing.join(", ")}] — update VDW_RADII.`,
         );
       }
-      // Same guard for the CPK colour copy in theme.ts (contrast overrides are
-      // computed against these values, so a 3Dmol change must be noticed).
-      const cpkDrift = cpkColorDrift(
+      const cpk = cpkColorDrift(
         elementColors.defaultColors as Record<string, string | number | undefined>,
       );
-      if (cpkDrift.length > 0) {
+      if (cpk.changed.length || cpk.missing.length) {
         console.warn(
-          `[MoleculeViewer] theme.ts CPK colours disagree with 3Dmol for: ${cpkDrift.join(", ")} — update CPK_ELEMENT_COLORS.`,
+          `[MoleculeViewer] theme.ts CPK colours vs 3Dmol — changed: [${cpk.changed.join(", ")}], missing: [${cpk.missing.join(", ")}] — update CPK_ELEMENT_COLORS.`,
         );
       }
     }

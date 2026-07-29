@@ -9,7 +9,9 @@ optional global-index labels. **Themes + fullscreen + measurement vertex marking
 overlay colours move to the theme, background presets with a contrast invariant, remount-free
 fullscreen, angle arc / dihedral axis. **Light-theme legibility (2.5.2e-3a)** — CPK element-colour
 overrides + per-theme fragment palette (widened contrast invariant), element-selector `<select>`
-fix, round swatches. Trajectories / orbitals / spectra not started.
+fix, round swatches. **Colour distinctness + workbench rail (2.5.2e-3b)** — ADR-007 metals in the
+CPK table, chartreuse halo (≥30° from every element hue), two-directional drift guards, one-panel
+fullscreen rail. Trajectories / orbitals / spectra not started.
 
 ## As built (Phase 2.1) — MoleculeViewer + xyz preview
 `npm install 3dmol` (v2.5.5; ships its own TypeScript types under `build/types/`, so no custom
@@ -212,9 +214,48 @@ measured the wrong thing. The fix widens the invariant, it doesn't rewrite it.
   **MiniBrowser-verified:** BH₄⁻ on white renders all four H grey and B dark-green, legible.
 - **The CPK table is a documented DUPLICATE**, same as the vdW table: `CPK_ELEMENT_COLORS` in
   `theme.ts` is `elementColors.rasmol` transcribed verbatim (the 3dmol bundle can't load under the
-  node test runner). `cpkColorDrift(reference)` (pure) guards it; `MoleculeViewer` calls it in dev
-  with the live `elementColors.defaultColors`. The contrast overrides are computed against these
-  values, so a 3Dmol change must be noticed.
+  node test runner), **plus the ADR-007 metals from 3Dmol's `Jmol` table** (see below).
+  `cpkColorDrift(reference)` (pure) guards it; `MoleculeViewer` calls it in dev with the live
+  `elementColors.defaultColors`. The contrast overrides are computed against these values, so a
+  3Dmol change must be noticed.
+
+### Element-colour distinctness + the ADR-007 metals (2.5.2e-3b)
+A review finding, verified on the bundle: 3Dmol's `rasmol` (28 elements, = `defaultColors`) has
+**no Pd/Pt/Rh/Ru**, so 3Dmol painted them `elementColors.defaultColor` **#ff1493** (deep pink) —
+`hueDistance` **1.05** from the old halo `#ff2d95`, so every metal atom looked permanently selected.
+These are exactly ADR-007's cross-coupling metals. Two fixes:
+- **Metals added to `CPK_ELEMENT_COLORS` from 3Dmol's own `Jmol` table** (Pd #006985, Pt #d0d0e0,
+  Rh #0a7d8c, Ru #248f8f, Ir #175487, Os #266696) — still the library's dictionary, no invented
+  colours; each value's source (`rasmol`/`Jmol`) is named in a comment. Pt (near-white) is the one
+  that also fails the light-theme contrast floor, so it gets an override like the other elements.
+- **A distinctness invariant, not just contrast** (`hueDistance`, 0–180°). `theme.test.ts` asserts
+  that in **every** theme the halo and the measurement colour sit **≥30°** in hue from every element
+  colour (CPK *with* the theme's overrides), from `defaultColor` #ff1493, and from every
+  fragment-palette colour. The old pink halo fails this; the search showed the **only** hue band
+  clear of the entire CPK/palette wheel is **chartreuse, 74–90°** (CPK fills red 0, gold 35–48,
+  green 120, teal/cyan/blue metals 172–207, blue 240, purple 255–277, pink 328–351). So halo and
+  measurement moved there — **halo `#adee2b`/`#5e8b04`** (dark/light), **measurement
+  `#b1eb70`/`#519504`** — still ≥3:1 on all four backgrounds. This is the same doctrine as contrast:
+  the test states the requirement, the constant satisfies it. (This is the one e-3b change to the
+  dark theme; its background, CPK and palette are untouched.)
+- **Two-directional drift guards.** `cpkColorDrift` and `vdwTableDrift` now return
+  `{ changed, missing }`. `missing` — elements the live 3Dmol table HAS but our copy LACKS — is the
+  direction the one-way guards were blind to *by construction* (they iterated our keys), and the
+  direction that would have caught the missing metals. PDB uppercase aliases (`HE`, `LI`) are
+  ignored; Jmol-sourced metals absent from `defaultColors` are not flagged as `changed`.
+
+### Two 3Dmol facts that cost time (2.5.2e-3b)
+- **A custom `{prop:'elem', map}` colorscheme is honoured by the "discrete property mapping" branch
+  of `getColorFromStyle`** (`scheme.prop && scheme.map` → `map[atom[prop]]`). The *earlier* branch
+  `scheme[atom[scheme.prop]]` is **always false** for the `{prop,map}` object shape (it looks up
+  `scheme["Pd"]`, but our object only has `prop`/`map` keys) — so don't expect that branch to fire;
+  the discrete-mapping branch below it is the one that colours atoms. Named schemes (strings like
+  `"greenCarbon"`) take the first branch instead.
+- **3Dmol's XYZ parser canonicalises the element symbol** as
+  `elem[0].toUpperCase() + elem.substring(1).toLowerCase()` — identical to our `normalizeElement`.
+  So `atom.elem` is always proper-case (`Cl`, `Pd`) and our proper-case map keys match without a
+  case dance. The uppercase aliases (`HE`, `LI`, `NA`) in `rasmol` exist for PDB-style inputs and
+  are irrelevant to us — we neither copy nor need them (and the drift guard skips them).
 - **`theme.test.ts` invariants:** dark/black overrides are empty; light/white override **exactly**
   the computed failing set (no gaps, no redundant entries); every shipped override clears 3:1; each
   overridden element genuinely failed first; hue stays recognisable (≤25° from CPK, greys aside).
@@ -248,6 +289,27 @@ when the user enlarged the view to look closer. No Fullscreen API, no conditiona
   toggle, reported window title `RO-fired=2 cameraSame=true maxDelta=0.00e+0` — the observer fired
   and the camera view matrix was **bit-identical** before and after (the `getView` array is the
   concrete proof, not "looks the same").
+
+### Fullscreen workbench rail — one panel, two modes (2.5.2e-3b)
+The fixed class moved from `.viewer-panel` to `.viewer-column` (renamed conceptually to the
+workbench): the column now holds **both** the viewer panel AND the geometry rail (AtomInspector +
+FragmentList) in **one DOM structure** for both modes. Normal: a flex **column** (viewer over rail
+— the old right column, visually unchanged). Fullscreen: `position: fixed`, a flex **row** (viewer
+`flex:1`, rail `flex:0 0 320px` on the right). **Only classNames change**, so — critically — the
+layout rebuild does NOT move `MoleculeViewer` or the rail in the tree, and neither remounts.
+- **The rail is a single instance shared by both modes** — never duplicated. Two `AtomInspector`s
+  would be two copies of selection state and double maintenance of every future section (edit mode,
+  constraints, xTB); the rail is a section list designed so those units *add* a section, not
+  reflow. Collapsible in fullscreen (`.viewer-rail-collapsed` → `display:none`) for a clean canvas;
+  the collapse state is not persisted.
+- **No-remount re-proven AFTER the layout rebuild** (not inherited from e-2 — a layout change is
+  exactly what could silently reintroduce a remount). A fresh MiniBrowser probe drove the new
+  operation — a flex container toggled to `position: fixed; flex-direction: row` with a sibling
+  rail becoming the right column — and checked the **canvas DOM node identity** before/after (a
+  React remount would replace the node, tearing down the WebGL context). Title:
+  `sameCanvas=true cameraSame=true RO=2 maxD=0.0e+0` — same canvas node, `getView` bit-identical,
+  ResizeObserver fired. The in-app witness stays `viewerCreateCount` (dev log; a fullscreen toggle
+  must not tick it).
 
 ### Measurement vertex marking (2.5.2e-2)
 All halos are identical, so the pick that is the angle vertex / dihedral axis wasn't visible.

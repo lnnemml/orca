@@ -152,6 +152,9 @@ export function NewJobScreen({
   const [fullscreen, setFullscreen] = useState(false);
   const fullscreenRef = useRef(false);
   fullscreenRef.current = fullscreen;
+  // Collapse the geometry rail in fullscreen for a clean canvas (2.5.2e-3b).
+  // Only meaningful in fullscreen; not persisted.
+  const [railCollapsed, setRailCollapsed] = useState(false);
 
   // React to a composition change via `compositionSignature` (the same
   // primitive the viewer uses to decide when to re-zoom). A coordinate-only edit
@@ -725,15 +728,19 @@ export function NewJobScreen({
         <div className="editor-wrap">
           <InputEditor value={content} onChange={setContent} />
         </div>
-        <div className="viewer-column">
-          {/* The fullscreen toggle changes ONLY this className — MoleculeViewer
-              keeps its position in the tree (same `scene ?` branch), so React
-              never remounts it and the camera survives (2.5.2e-2). */}
-          <div
-            className={
-              "viewer-panel" + (fullscreen ? " viewer-panel-fullscreen" : "")
-            }
-          >
+        {/* The workbench holds BOTH the viewer and the geometry rail, in ONE
+            DOM structure for both modes (2.5.2e-3b). The fullscreen toggle
+            changes ONLY the className here (and the rail's) — MoleculeViewer and
+            the rail keep their tree positions, so React never remounts them and
+            the camera survives. Normal: a column (viewer over rail, the old
+            right column). Fullscreen: fixed, a row (viewer stretches, rail
+            ~320px on the right). */}
+        <div
+          className={
+            "viewer-column" + (fullscreen ? " viewer-column-fullscreen" : "")
+          }
+        >
+          <div className="viewer-panel">
             {scene ? (
               <>
                 <div className="viewer-toolbar">
@@ -760,6 +767,15 @@ export function NewJobScreen({
                       </option>
                     ))}
                   </select>
+                  {fullscreen ? (
+                    <button
+                      className="btn btn-sm"
+                      onClick={() => setRailCollapsed((c) => !c)}
+                      title={railCollapsed ? "Show panel" : "Hide panel"}
+                    >
+                      {railCollapsed ? "Panel" : "Hide"}
+                    </button>
+                  ) : null}
                   <button
                     className="btn btn-sm"
                     onClick={() => setFullscreen((f) => !f)}
@@ -782,14 +798,24 @@ export function NewJobScreen({
               <div className="viewer-empty muted">No coordinates in input</div>
             )}
           </div>
-          {scene ? (
-            <AtomInspector
-              scene={scene}
-              selection={selection}
-              onClear={clearSelection}
-            />
-          ) : null}
-          <FragmentList onFindConformers={findConformers} />
+          {/* The geometry rail — ONE instance, shared by both modes (never
+              duplicated: two AtomInspectors would be two copies of selection
+              state). Collapsible only in fullscreen. */}
+          <div
+            className={
+              "viewer-rail" +
+              (fullscreen && railCollapsed ? " viewer-rail-collapsed" : "")
+            }
+          >
+            {scene ? (
+              <AtomInspector
+                scene={scene}
+                selection={selection}
+                onClear={clearSelection}
+              />
+            ) : null}
+            <FragmentList onFindConformers={findConformers} />
+          </div>
         </div>
       </div>
     </div>

@@ -79,14 +79,24 @@ describe("highlightRadius", () => {
   });
 });
 
-describe("vdwTableDrift (the dup guard)", () => {
-  it("is empty against an identical reference", () => {
-    expect(vdwTableDrift({ ...VDW_RADII })).toEqual([]);
+describe("vdwTableDrift (two-directional dup guard)", () => {
+  it("is empty in both directions against an identical reference", () => {
+    expect(vdwTableDrift({ ...VDW_RADII })).toEqual({ changed: [], missing: [] });
   });
 
-  it("names the elements a reference disagrees on (or omits)", () => {
+  it("changed: names our keys the reference has with a different value", () => {
     const ref: Record<string, number> = { ...VDW_RADII, C: 1.99 };
-    delete (ref as Record<string, number | undefined>).Pt;
-    expect(vdwTableDrift(ref).sort()).toEqual(["C", "Pt"]);
+    const drift = vdwTableDrift(ref);
+    expect(drift.changed).toEqual(["C"]);
+    expect(drift.missing).toEqual([]);
+  });
+
+  it("missing: names a reference element absent from our copy (the closed blind spot)", () => {
+    // 3Dmol gaining an element we don't mirror — the direction the ADR-007 metals
+    // slipped through when the guard was one-way.
+    const ref: Record<string, number> = { ...VDW_RADII, Rf: 1.6 };
+    const drift = vdwTableDrift(ref);
+    expect(drift.missing).toEqual(["Rf"]);
+    expect(drift.changed).toEqual([]);
   });
 });

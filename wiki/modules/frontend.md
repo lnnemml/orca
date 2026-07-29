@@ -457,6 +457,25 @@ hydrogen (white) vanished on a white background. Fixes (viewer-colour logic in `
   3-fragment scene on light (each distinct), theme select fixed vs broken. Dark themes byte-identical
   (empty overrides → `cpkBaseStyle` returns the old object; palette `=== FRAGMENT_PALETTE`).
 
+## As built (2.5.2e-3b) — colour distinctness + fullscreen workbench rail
+Colour work is in `viewer/theme.ts` (see `modules/visualization.md`); the workbench is a layout
+change on New Job.
+- **Fullscreen workbench rail.** `.viewer-column` (was `.viewer-column`) now wraps the viewer panel
+  AND a `.viewer-rail` (AtomInspector + FragmentList) in ONE DOM structure. Normal mode: a column
+  (viewer over rail) — **visually identical to before** (the rail wrapper keeps the same 8px gaps;
+  this is the acceptance criterion). Fullscreen: the column goes `position: fixed` and becomes a row
+  (viewer stretches, rail 320px on the right). The fullscreen toggle changes **only** classNames, so
+  `MoleculeViewer` and the rail don't remount (proof in `modules/visualization.md`).
+- **The rail is one shared instance** (never a second `AtomInspector` — that would fork selection
+  state). It's a section list — Atom (inspector + measurement) and Fragments — designed so 2.5.2c/d
+  ADD a section, not reflow. In fullscreen a **Hide/Panel** button in the toolbar collapses it
+  (`display:none`) for a clean canvas; not persisted.
+- **Esc** still exits fullscreen first (unchanged single-handler rule from e-2).
+- **Verified:** `tsc` + `vite build` clean; `vitest` **219** (Part A colour tests; Part B is
+  layout/CSS with no unit tests); `cargo test` 55. MiniBrowser: Pd atom dark-teal + chartreuse halo
+  distinct; fresh no-remount/camera proof on the rebuilt layout (`sameCanvas=true cameraSame=true`).
+  In-window checks (rail in fullscreen on dark/light, collapse, normal-mode before/after) in the log.
+
 ## As built (Phase 2.5) — New Job UI fixes (WebKitGTK contrast, accordion, scroll)
 Three issues found by manual testing in the real Tauri window (not visible in Chromium). CSS +
 a collapse wrapper only — no Input Builder / `build-input.ts` / `orca-options.ts` logic changed.

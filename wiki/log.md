@@ -1638,3 +1638,65 @@ no-redundant / ≥3:1, per-theme palette + hue ±15°, `cpkColorDrift`, `hueOf`)
 (Rust untouched). Screenshots archived (`/tmp/bh4-white.png`, `select-proof.png`, `frag-light.png`).
 In-window checks needing the real Tauri window: BH₄⁻ + 3-fragment on light/white, dark before/after.
 Next: 2.5.2e-3b — layout / side-rail.
+
+## [2026-07-29] decision | Distinctness invariant for annotation colours (halo, measurement)
+
+A review finding (verified on the 3Dmol bundle): `rasmol` (28 elements, 3Dmol's default scheme) has
+NO Pd/Pt/Rh/Ru, so 3Dmol paints them `defaultColor` #ff1493 — `hueDistance` **1.05** from the old
+halo #ff2d95, i.e. every ADR-007 metal atom looked permanently selected. The one-way `cpkColorDrift`
+couldn't catch this: it iterated OUR keys, so "3Dmol has an element we lack" was invisible by
+construction.
+
+**Decision:** app annotation colours (selection halo, measurement line) are governed by a
+**distinctness invariant**, not only contrast. `theme.test.ts` asserts, per theme, that halo and
+measurement sit **≥30° in hue** (`hueDistance`) from every element colour (CPK *with* the theme's
+overrides), from `defaultColor` #ff1493, and from every fragment-palette colour. Same doctrine as
+contrast: the test states the requirement; the constant satisfies it.
+
+Consequence: the halo could not stay pink. The search showed the **only** hue band clear of the
+whole CPK/palette wheel is **chartreuse (74–90°)** — CPK occupies red 0, gold 35–48, green 120,
+teal/cyan/blue metals 172–207, blue 240, purple 255–277, pink 328–351. Rejected candidates: cyan/teal
+(≈180 — the metals Ru/Rh/Pd live there), orange/amber (≈40 — F/Si/Au/P/Fe/S), any pink/magenta (the
+defaultColor and coral/rose palette), blue (Na 240). Chosen: halo **#adee2b/#5e8b04** (dark/light),
+measurement **#b1eb70/#519504** — both ≥3:1 on all four backgrounds. This is the one e-3b change to
+the dark theme; its background/CPK/palette are untouched. The drift guards are now two-directional
+(`{changed, missing}`), closing the blind spot in both the colour and the vdW table.
+
+## [2026-07-29] session | 2.5.2e-3b: element-colour distinctness + fullscreen workbench rail
+
+Two parts. No geometry, no sidecar.
+
+**A — colour distinctness.** See the decision above. Verified against the bundle, not memory:
+3Dmol's default CPK is `elementColors.rasmol`; the ADR-007 metals are absent → `defaultColor`
+#ff1493. Added Pd/Pt/Rh/Ru/Ir/Os to `CPK_ELEMENT_COLORS` from 3Dmol's own `Jmol` table (source named
+per value); Pt (near-white) also gets a light-theme override. Halo/measurement moved to chartreuse
+under the new `hueDistance` ≥30° invariant. `cpkColorDrift` and `vdwTableDrift` are now
+two-directional; a `missing` test feeds a reference an extra element and asserts it surfaces. Two
+3Dmol facts pinned in `visualization.md`: (1) a `{prop:'elem',map}` colorscheme is honoured by the
+"discrete property mapping" branch of `getColorFromStyle` — the earlier `scheme[atom[scheme.prop]]`
+branch is always false for that object shape; (2) 3Dmol's XYZ parser canonicalises the symbol as
+`elem[0].toUpperCase()+substring(1).toLowerCase()` (= our `normalizeElement`), so map keys match and
+the uppercase `rasmol` aliases (HE/LI/NA) are PDB-only and irrelevant. `orca/gotchas.md` gained the
+element-keyed-table rule (this is the THIRD such hole: H–Kr atomic numbers in 2.5.0, vdW in e-1,
+colours now — always at the ADR-007 metals). MiniBrowser: a Pd complex renders Pd dark-teal with a
+chartreuse halo on a selected neighbour — no collision.
+
+**B — fullscreen workbench rail.** The fixed class moved from `.viewer-panel` to `.viewer-column`:
+the column now holds the viewer AND a `.viewer-rail` (AtomInspector + FragmentList) in ONE DOM
+structure. Normal = column (viewer over rail, visually unchanged — the acceptance criterion).
+Fullscreen = fixed row (viewer stretches, rail 320px right, collapsible via a toolbar button, not
+persisted). The rail is a **single shared instance** — never a duplicate AtomInspector (that would
+fork selection state); it's a section list built so 2.5.2c/d ADD a section.
+**Main risk was a silent remount reintroduced by the layout rebuild** — re-proven FRESH, not
+inherited: a MiniBrowser probe drove the exact new operation (flex container → `position:fixed;
+flex-direction:row` + sibling rail) and checked **canvas DOM node identity** (a remount replaces the
+node, tearing down the WebGL context) alongside `getView`: `sameCanvas=true cameraSame=true RO=2
+maxD=0`. In-app witness stays `viewerCreateCount`.
+
+**Verified.** `tsc` + `vite build` clean; `vitest` **219** (was 210 → +9: distinctness invariant per
+theme, metals present, two-directional `changed`/`missing` for both tables; Part B is layout/CSS, no
+unit tests); `cargo test` **55** (Rust untouched). Screenshots archived (`/tmp/pd-distinct.png`,
+`/tmp/workbench-proof.png`). New page `wiki/architecture/prior-art.md` (author's practical experience,
+marked as such — the d/θ/φ primitive exists elsewhere, but nowhere is the mask scene-derived nor the
+index unbroken to the ORCA launch). In-window checks (rail in fullscreen dark/light, collapse,
+normal-mode before/after) in the author checklist. Next: 2.5.2c — the ASE geometry kernel.

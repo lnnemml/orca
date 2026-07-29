@@ -7,7 +7,7 @@ import {
   contrastRatio,
   relativeLuminance,
   hueOf,
-  hueDelta,
+  hueDistance,
   cpkColorDrift,
   CPK_ELEMENT_COLORS,
   type ViewerTheme,
@@ -46,9 +46,10 @@ describe("hueOf", () => {
     expect(hueOf("#0000ff")).toBeCloseTo(240, 0);
     expect(hueOf("#808080")).toBe(0); // achromatic
   });
-  it("hueDelta wraps around 360°", () => {
-    expect(hueDelta("#ff0000", "#ff0000")).toBeCloseTo(0, 6);
-    expect(hueDelta("#ff0004", "#ff0000")).toBeLessThan(2); // 359°≈1°
+  it("hueDistance wraps around 360°", () => {
+    expect(hueDistance("#ff0000", "#ff0000")).toBeCloseTo(0, 6);
+    expect(hueDistance("#ff0004", "#ff0000")).toBeLessThan(2); // 359°≈1°
+    expect(hueDistance("#ff0000", "#00ff00")).toBeCloseTo(120, 0);
   });
 });
 
@@ -61,11 +62,15 @@ describe("viewerTheme", () => {
     expect(DEFAULT_THEME.id).toBe("dark");
   });
 
-  it("dark reproduces the pre-2.5.2e-2 look exactly (a no-op default)", () => {
+  it("dark keeps its background, CPK colours and palette (only halo/measurement moved)", () => {
     const dark = viewerTheme("dark");
     expect(dark.background).toBe("#0d0f13");
-    expect(dark.haloColor).toBe("#ff2d95");
-    expect(dark.measurementLine).toBe("#ffd34d");
+    expect(dark.elementColorOverrides).toEqual({}); // CPK untouched
+    expect(dark.fragmentPalette).toEqual([...FRAGMENT_PALETTE]);
+    // The ONLY e-3b change to dark: halo/measurement moved off pink (which
+    // collided with 3Dmol's defaultColor #ff1493) onto the chartreuse band.
+    expect(dark.haloColor).toBe("#adee2b");
+    expect(dark.measurementLine).toBe("#b1eb70");
   });
 });
 
@@ -102,7 +107,7 @@ describe("per-theme fragment palette", () => {
     for (const id of ["light", "white"] as const) {
       const pal = viewerTheme(id).fragmentPalette;
       pal.forEach((c, i) => {
-        expect(hueDelta(c, FRAGMENT_PALETTE[i])).toBeLessThanOrEqual(15);
+        expect(hueDistance(c, FRAGMENT_PALETTE[i])).toBeLessThanOrEqual(15);
       });
     }
   });
@@ -159,13 +164,19 @@ describe("CPK element-colour overrides", () => {
     for (const theme of VIEWER_THEMES) {
       for (const [el, color] of Object.entries(theme.elementColorOverrides)) {
         if (GREYSCALE.has(el)) continue;
-        expect(hueDelta(color, CPK_ELEMENT_COLORS[el]), `${theme.id} ${el}`).toBeLessThanOrEqual(25);
+        expect(hueDistance(color, CPK_ELEMENT_COLORS[el]), `${theme.id} ${el}`).toBeLessThanOrEqual(25);
       }
+    }
+  });
+
+  it("includes the ADR-007 metals (Pd Pt Rh Ru Ir Os) — else 3Dmol paints them defaultColor", () => {
+    for (const m of ["Pd", "Pt", "Rh", "Ru", "Ir", "Os"]) {
+      expect(CPK_ELEMENT_COLORS[m], m).toBeDefined();
     }
   });
 });
 
-describe("cpkColorDrift (the dup guard)", () => {
+describe("cpkColorDrift (two-directional dup guard)", () => {
   // 3Dmol stores colours as 0xRRGGBB numbers; the guard normalises before compare.
   function asNumbers(): Record<string, number> {
     const out: Record<string, number> = {};
@@ -174,16 +185,69 @@ describe("cpkColorDrift (the dup guard)", () => {
     return out;
   }
 
-  it("is empty against an identical (numeric) reference", () => {
-    expect(cpkColorDrift(asNumbers())).toEqual([]);
+  it("is empty in both directions against an identical reference", () => {
+    expect(cpkColorDrift(asNumbers())).toEqual({ changed: [], missing: [] });
   });
 
-  it("names elements a reference disagrees on or omits", () => {
+  it("changed: names our keys the reference has with a different value", () => {
     const ref = asNumbers();
     ref.C = 0x123456;
-    delete ref.H;
-    expect(cpkColorDrift(ref).sort()).toEqual(["C", "H"]);
+    const drift = cpkColorDrift(ref);
+    expect(drift.changed).toEqual(["C"]);
+    expect(drift.missing).toEqual([]);
   });
+
+  it("missing: names a reference element absent from our copy (the closed blind spot)", () => {
+    const ref = asNumbers();
+    ref.Rf = 0x123456; // 3Dmol gains an element we don't mirror
+    const drift = cpkColorDrift(ref);
+    expect(drift.missing).toEqual(["Rf"]);
+    expect(drift.changed).toEqual([]);
+  });
+
+  it("ignores PDB uppercase aliases (HE/LI) in the missing direction", () => {
+    const ref = asNumbers();
+    ref.HE = ref.He; // 3Dmol keeps such aliases; we don't mirror them
+    ref.LI = ref.Li;
+    expect(cpkColorDrift(ref).missing).toEqual([]);
+  });
+
+  it("does NOT flag the Jmol-sourced metals as changed against defaultColors", () => {
+    // The real app passes elementColors.defaultColors (= rasmol, NO metals). Our
+    // metals came from Jmol; the reference lacking them must not be 'changed'.
+    const ref = asNumbers();
+    for (const m of ["Pd", "Pt", "Rh", "Ru", "Ir", "Os"]) delete ref[m];
+    expect(cpkColorDrift(ref).changed).toEqual([]);
+  });
+});
+
+// ── Distinctness invariant (2.5.2e-3b) — halo/measurement vs every element ────
+describe("halo & measurement are ≥30° in hue from every element/palette colour", () => {
+  const DEFAULT_COLOR = "#ff1493"; // 3Dmol's elementColors.defaultColor (off-table)
+  const MIN_HUE = 30;
+
+  for (const theme of VIEWER_THEMES) {
+    it(`${theme.id}: halo and measurementLine clear the annotation band`, () => {
+      // Element colours AS DRAWN in this theme (CPK with the theme's overrides).
+      const drawn: Record<string, string> = {
+        ...CPK_ELEMENT_COLORS,
+        ...theme.elementColorOverrides,
+      };
+      const avoid = [
+        ...Object.values(drawn),
+        DEFAULT_COLOR,
+        ...theme.fragmentPalette,
+      ];
+      for (const annotation of [theme.haloColor, theme.measurementLine]) {
+        for (const other of avoid) {
+          expect(
+            hueDistance(annotation, other),
+            `${theme.id} ${annotation} vs ${other}`,
+          ).toBeGreaterThanOrEqual(MIN_HUE);
+        }
+      }
+    });
+  }
 });
 
 // A guard so a future edit that reorders/renames the presets is noticed.

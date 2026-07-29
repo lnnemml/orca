@@ -43,4 +43,21 @@ Living page. Add every trap encountered, newest at top, format:
 - **MPI errors at startup on a machine where serial runs work** → OpenMPI version mismatch
   with the ORCA build → install the exact version the release notes specify.
 - **Huge outputs freeze naive viewers** → never read output files whole; tail/stream only.
+- **Any element-keyed table taken from outside MUST be checked against the ADR-007 metals
+  (Pd, Pt, Rh, Ru, Ir, Os) BEFORE relying on it.** This has now bitten the project **three times**,
+  same shape each time — a lookup table keyed by element symbol, complete for organic elements,
+  with a hole exactly where the reaction-modeling work lives (4d/5d transition metals):
+  1. **2.5.0** — our own `atomicNumber` table stopped at **H–Kr (Z ≤ 36)**, so Pd(46)/Pt(78) threw
+     on electron counting. Extended to H–Rn.
+  2. **2.5.2e-1** — 3Dmol's `GLModel.vdwRadii` needed a fallback; the copy was checked to include
+     Pd/Pt, and off-table elements got an explicit fallback radius.
+  3. **2.5.2e-3b** — 3Dmol's default colour table (`rasmol`, 28 elements) has **no Pd/Pt/Rh/Ru**,
+     so 3Dmol painted them `defaultColor` #ff1493 — which collided with the pink selection halo,
+     making every metal atom look permanently selected. Fixed by adding the metals from 3Dmol's
+     `Jmol` table and moving the halo off pink.
+  The rule: when adopting an element-keyed table (colours, radii, masses, basis defaults, anything),
+  **explicitly verify coverage of Pd/Pt/Rh/Ru/Ir/Os** and decide the fallback deliberately. A
+  drift/coverage guard must check BOTH directions — "our copy is stale" AND "the source has an
+  element we don't" — because iterating only our own keys is blind to the missing-element case by
+  construction (that is exactly how case 3 slipped through). See `wiki/modules/visualization.md`.
 - *(add as encountered during Phase 0+)*

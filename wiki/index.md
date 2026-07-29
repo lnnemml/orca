@@ -13,6 +13,7 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 - [adr-006-manual-integration.md](architecture/adr-006-manual-integration.md) — local ORCA manual indexing strategy
 - [adr-007-reaction-modeling.md](architecture/adr-007-reaction-modeling.md) — from molecular modeling to reaction modeling: domain objects, geometry editor, reaction coordinate workflows
 - [adr-008-scene-fragment-model.md](architecture/adr-008-scene-fragment-model.md) — Scene / SceneFragment model for multi-molecule geometry: one flat merged xyz, one 3Dmol model, `scene_json` snapshot
+- [prior-art.md](architecture/prior-art.md) — how other tools (Avogadro 2, IQmol, Gabedit, Chemcraft, WebMO, GaussView) handle geometry, and what OrcaStudio does differently (scene-derived mask, unbroken index space)
 
 ## Modules
 
@@ -50,4 +51,4 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 
 ---
 
-*Page count: 31. Last structural update: 2026-07-28 (+orca/goat, +chemistry/conformers).*
+*Page count: 32. Last structural update: 2026-07-29 (+architecture/prior-art).*
