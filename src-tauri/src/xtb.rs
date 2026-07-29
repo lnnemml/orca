@@ -16,11 +16,11 @@
 //! cleanly — the post-condition below is the runtime guard against exactly that.
 //! See `wiki/orca/xtb.md` and `wiki/orca/gotchas.md`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -188,7 +188,14 @@ pub fn parse_xyz(text: &str) -> Result<(Vec<String>, Vec<V3>), AppError> {
 /// **1-based** space (`+1`). Distance/angle/dihedral use their resolved target
 /// value (explicit, or the geometry's current value when the user froze "as-is");
 /// a Cartesian constraint becomes a hard `$fix atoms:` entry.
-pub fn build_xcontrol(constraints: &[Constraint], targets: &[Target]) -> String {
+///
+/// Returns **`None` when there is nothing to write** (no constraints). This is the
+/// SINGLE source of truth for the empty case: `None` → the file is NOT created AND
+/// `--input` is NOT passed. An empty `xcontrol` passed via `--input` hangs xtb
+/// 6.6.1 before the first cycle (`wiki/debugging/006`) — the 2.5.5-fix-2 bug came
+/// from three decisions (content / write file / pass flag) drifting apart; making
+/// them read one value closes it.
+pub fn build_xcontrol(constraints: &[Constraint], targets: &[Target]) -> Option<String> {
     let mut out = String::new();
     let mut fixed: Vec<usize> = Vec::new();
     let mut has_geom = false;
@@ -241,7 +248,31 @@ pub fn build_xcontrol(constraints: &[Constraint], targets: &[Target]) -> String 
         out.push_str(&format!("  atoms: {}\n", list.join(",")));
         out.push_str("$end\n");
     }
-    out
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+/// Build xtb's argv (after the binary path). **`--input xcontrol` is included ONLY
+/// when there is an xcontrol to pass** — the SAME `has_xcontrol` that decides
+/// whether the file is written (see `build_xcontrol`). Pure, so a test proves the
+/// flag is present with constraints and absent without — the test that would have
+/// caught the 2.5.5-fix-2 hang without a five-minute wait.
+pub fn xtb_args(has_xcontrol: bool, charge: i32, uhf: i32) -> Vec<String> {
+    let mut a = vec!["input.xyz".to_string()];
+    if has_xcontrol {
+        a.push("--input".to_string());
+        a.push("xcontrol".to_string());
+    }
+    for s in ["--opt", "--gfn", "2", "--chrg"] {
+        a.push(s.to_string());
+    }
+    a.push(charge.to_string());
+    a.push("--uhf".to_string());
+    a.push(uhf.to_string());
+    a
 }
 
 /// The resolved target for a constraint: a scalar value (distance/angle/dihedral)
@@ -590,7 +621,12 @@ fn run_in_dir(
     // even if we bail before spawning (a missing dir → remove_dir_all is a no-op).
     std::fs::create_dir_all(dir)?;
     std::fs::write(dir.join("input.xyz"), xyz)?;
-    std::fs::write(dir.join("xcontrol"), build_xcontrol(constraints, targets))?;
+    // One value drives both: write the file iff there's content, and pass --input
+    // iff we wrote it. No empty --input (the hang).
+    let xcontrol = build_xcontrol(constraints, targets);
+    if let Some(ref content) = xcontrol {
+        std::fs::write(dir.join("xcontrol"), content)?;
+    }
     let uhf = multiplicity - 1; // unpaired electrons = 2S = mult − 1
 
     // A cancel that landed during setup: bail before spawning.
@@ -602,16 +638,7 @@ fn run_in_dir(
     let stderr = stdout.try_clone()?;
     let mut cmd = Command::new(path);
     cmd.current_dir(dir)
-        .arg("input.xyz")
-        .arg("--input")
-        .arg("xcontrol")
-        .arg("--opt")
-        .arg("--gfn")
-        .arg("2")
-        .arg("--chrg")
-        .arg(charge.to_string())
-        .arg("--uhf")
-        .arg(uhf.to_string())
+        .args(xtb_args(xcontrol.is_some(), charge, uhf))
         .env("OMP_NUM_THREADS", "4")
         .env("OMP_STACKSIZE", "1G")
         .stdin(Stdio::null())
@@ -721,6 +748,43 @@ fn keep_dir_for_diagnostics(succeeded: bool, cancelled: bool) -> bool {
     !succeeded && !cancelled
 }
 
+/// How many kept diagnostic dirs to retain under `<data>/xtb/`. The rest are pruned
+/// at startup — closing the 2.5.5-fix-2 "kept dirs accumulate" issue without a
+/// setting (a small fixed window is enough to debug the last few failures).
+const KEEP_DIAGNOSTIC_DIRS: usize = 5;
+
+/// Choose which diagnostic dirs to prune: everything EXCEPT the `keep`
+/// most-recently-modified. Pure + testable. The newest are kept, so a run that
+/// just failed (its dir is the newest) is never pruned by the next startup.
+fn dirs_to_prune(mut entries: Vec<(PathBuf, SystemTime)>, keep: usize) -> Vec<PathBuf> {
+    entries.sort_by(|a, b| b.1.cmp(&a.1)); // newest first
+    entries.into_iter().skip(keep).map(|(p, _)| p).collect()
+}
+
+/// At startup, remove all but the `KEEP_DIAGNOSTIC_DIRS` newest dirs under
+/// `<data>/xtb/`. Best-effort: an unreadable root / entry is skipped, never fatal.
+pub fn prune_diagnostic_dirs(data_dir: &Path) {
+    let root = data_dir.join("xtb");
+    let Ok(entries) = std::fs::read_dir(&root) else {
+        return;
+    };
+    let mut dirs: Vec<(PathBuf, SystemTime)> = Vec::new();
+    for e in entries.flatten() {
+        let path = e.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let mtime = e
+            .metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        dirs.push((path, mtime));
+    }
+    for p in dirs_to_prune(dirs, KEEP_DIAGNOSTIC_DIRS) {
+        let _ = std::fs::remove_dir_all(&p);
+    }
+}
+
 /// The highest optimization cycle number visible in the tail lines, if any. xtb
 /// prints `.......... CYCLE    N ..........` per geometry step.
 fn last_cycle(lines: &[String]) -> Option<u32> {
@@ -760,7 +824,7 @@ mod tests {
         }];
         let p = xyz_positions();
         let targets = resolve_targets(&cs, &p).unwrap();
-        let xc = build_xcontrol(&cs, &targets);
+        let xc = build_xcontrol(&cs, &targets).unwrap();
         assert!(xc.contains("$constrain"));
         assert!(xc.contains("force constant=1"));
         assert!(xc.contains("distance: 1, 2, 1.234000"), "got:\n{xc}");
@@ -794,7 +858,7 @@ mod tests {
             },
         ];
         let targets = resolve_targets(&cs, &p).unwrap();
-        let xc = build_xcontrol(&cs, &targets);
+        let xc = build_xcontrol(&cs, &targets).unwrap();
         assert!(xc.contains("angle: 1, 2, 3, 109.0000"), "got:\n{xc}");
         assert!(xc.contains("dihedral: 1, 2, 3, 4, 90.0000"), "got:\n{xc}");
     }
@@ -804,7 +868,7 @@ mod tests {
         let cs = vec![Constraint::Cartesian { atoms: [4] }];
         let p = xyz_positions();
         let targets = resolve_targets(&cs, &p).unwrap();
-        let xc = build_xcontrol(&cs, &targets);
+        let xc = build_xcontrol(&cs, &targets).unwrap();
         assert!(xc.contains("$fix"), "got:\n{xc}");
         assert!(xc.contains("atoms: 5"), "got:\n{xc}"); // 0-based 4 → 1-based 5
     }
@@ -864,6 +928,50 @@ mod tests {
         // A user cancel removes it (not a diagnostic case), even though the run
         // ended in error.
         assert!(!keep_dir_for_diagnostics(false, true));
+    }
+
+    #[test]
+    fn argv_includes_input_only_with_an_xcontrol() {
+        // WITHOUT constraints → no `--input` (an empty --input file hangs xtb).
+        let no_xc = xtb_args(false, 0, 0);
+        assert!(!no_xc.iter().any(|a| a == "--input"), "argv: {no_xc:?}");
+        assert!(no_xc.contains(&"--opt".to_string()));
+        // WITH constraints → `--input xcontrol` present (guards the regression).
+        let with_xc = xtb_args(true, -1, 1);
+        let i = with_xc.iter().position(|a| a == "--input").expect("has --input");
+        assert_eq!(with_xc[i + 1], "xcontrol");
+        assert!(with_xc.windows(2).any(|w| w == ["--chrg", "-1"]));
+        assert!(with_xc.windows(2).any(|w| w == ["--uhf", "1"]));
+    }
+
+    #[test]
+    fn build_xcontrol_is_none_without_constraints() {
+        assert!(build_xcontrol(&[], &[]).is_none());
+        let cs = vec![Constraint::Distance {
+            atoms: [0, 1],
+            value: Some(1.5),
+        }];
+        let p = xyz_positions();
+        let targets = resolve_targets(&cs, &p).unwrap();
+        assert!(build_xcontrol(&cs, &targets).is_some());
+    }
+
+    #[test]
+    fn prune_keeps_the_newest_and_drops_the_oldest() {
+        use std::time::Duration;
+        // 6 dirs, times 1..=6; keep 5 → only the oldest (time 1) is pruned.
+        let entries: Vec<(PathBuf, SystemTime)> = (1..=6)
+            .map(|t| {
+                (
+                    PathBuf::from(format!("/x/{t}")),
+                    SystemTime::UNIX_EPOCH + Duration::from_secs(t),
+                )
+            })
+            .collect();
+        let pruned = dirs_to_prune(entries, 5);
+        assert_eq!(pruned, vec![PathBuf::from("/x/1")]);
+        // The newest (a just-failed run's dir) is never pruned.
+        assert!(!pruned.contains(&PathBuf::from("/x/6")));
     }
 
     #[test]

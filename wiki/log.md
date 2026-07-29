@@ -2181,3 +2181,33 @@ the panel shows the cycle + a ticking clock, so a pre-cycle hang is visible imme
 **Verified.** `cargo test` **68 → 70** (`keep_dir_for_diagnostics`: failure keeps / success + cancel
 remove; `last_cycle` parse); `vitest` **299 → 301** (`formatXtbProgress`); `tsc` + `vite build` clean;
 0 rust warnings. Diagnostic dirs cleaned. The invocation fix awaits the author's decision on the table.
+
+## [2026-07-29] session | 2.5.5-fix-3: pass --input only when xcontrol has content; prune old diagnostic dirs
+
+The fix for the 2.5.5-fix-2 diagnosis (an empty `xcontrol` passed via `--input` hangs xtb 6.6.1 before
+cycle 1). Written up as `wiki/debugging/006-xtb-empty-input-hang.md`.
+
+**One source, not an extra `if`.** The bug was three decisions drifting apart — *what content*,
+*whether to write the file*, *whether to pass the flag* — and the content was empty while the file and
+flag didn't know. `build_xcontrol` now returns **`Option<String>`** (`None` = nothing to write);
+`None` → no file AND no `--input`, `Some` → both. Both reads come from the one `Option`. The argv is a
+pure **`xtb_args(has_xcontrol, charge, uhf)`**, and `argv_includes_input_only_with_an_xcontrol` asserts
+`--input` present with constraints, absent without — **the test that would have caught this in
+milliseconds instead of five minutes**.
+
+**Diagnostic-dir accumulation — closed.** `dirs_to_prune(entries, keep)` (pure + tested) returns all but
+the `keep` most-recently-modified; `prune_diagnostic_dirs` scans `<data>/xtb/` at startup (off-thread)
+and removes the rest, keeping `KEEP_DIAGNOSTIC_DIRS = 5`. **Newest-kept**, so a just-failed run's dir is
+never pruned by the next launch (asserted). No setting.
+
+**Verified with real xtb 6.6.1 on dexketoprofen (C16H14O3, 33 atoms), the exact argv the fix builds:**
+- **no constraints** (fixed argv, NO `--input`, no `xcontrol` file) → **1 s, 16 cycles, CONVERGED**
+  (was a 300 s timeout);
+- **with a constraint** (`--input xcontrol`) → **<1 s, 17 cycles, CONVERGED, constraint applied** — so
+  `--input` is not lost with the fix (the likely regression, checked explicitly).
+
+`cargo test` **70 → 73** (`xtb_args` both states, `build_xcontrol` `None`/`Some`, `dirs_to_prune` keeps
+newest / drops oldest); `vitest` **301** unchanged (no frontend change); `tsc` + `vite build` clean;
+0 rust warnings. Verification dirs cleaned. **Phase 2.5 xtb pre-optimization is now working end to end.**
+xtb 6.6.1's empty-`--input` hang recorded in `gotchas.md` + `xtb.md` as a named foreign-binary quirk
+(upstream-issue candidate; not filed from here).

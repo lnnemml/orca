@@ -51,7 +51,8 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 - [003-webkitgtk-select-styling.md](debugging/003-webkitgtk-select-styling.md) — `<select>` dark-on-dark in WebKitGTK (native GTK widget ignores inherited color) + appearance:none fix
 - [004-mpi-ranks-escape-process-group.md](debugging/004-mpi-ranks-escape-process-group.md) — cancel orphans ORCA's MPI ranks (they escape the parent's process group) + sweep-by-cwd fix
 - [005-stale-sidecar-hmr.md](debugging/005-stale-sidecar-hmr.md) — the app talks to a stale sidecar after frontend HMR (uvicorn stays old) → "Not Found"; version handshake + human errors + dev `--reload`
+- [006-xtb-empty-input-hang.md](debugging/006-xtb-empty-input-hang.md) — xTB pre-optimize hangs 300 s on a no-constraint run: an empty `xcontrol` passed via `--input` freezes xtb 6.6.1 before cycle 1; rejected hypotheses (molecule/OMP/opt level) + the `--input`-only-with-content fix
 
 ---
 
-*Page count: 35. Last structural update: 2026-07-29 (+orca/xtb.md).*
+*Page count: 36. Last structural update: 2026-07-29 (+debugging/006-xtb-empty-input-hang).*

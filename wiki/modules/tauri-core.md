@@ -246,9 +246,11 @@ setting (SQLite, under Rust). Details of the tool itself: `wiki/orca/xtb.md`.
   index rejects here for immediate feedback), **reserves the single slot** (rejecting a concurrent
   run) with a `pgid: 0` placeholder, then spawns the worker thread and returns. `constraints`
   deserialize from the TS `Constraint` (0-based atoms; `valueText` ignored). The thread's `run_in_dir`
-  resolves each target (explicit value, or the geometry's CURRENT value for a freeze-as-is), has
-  **`build_xcontrol`** write the `$constrain`/`$fix` blocks with every index **`+1` (xtb is 1-based —
-  `wiki/orca/xtb.md`)**, runs `<xtb> input.xyz --input xcontrol --opt --gfn 2 --chrg <c> --uhf
+  resolves each target (explicit value, or the geometry's CURRENT value for a freeze-as-is). **`build_xcontrol`
+  returns `Option<String>` (`None` = no constraints — 2.5.5-fix-3)**; that one value decides both whether
+  the `xcontrol` file is written AND whether `--input` is passed (`xtb_args`, a pure argv builder — an
+  empty `--input` file **hangs** xtb, `wiki/debugging/006`), with every index **`+1` (xtb is 1-based —
+  `wiki/orca/xtb.md`)**. It runs `<xtb> input.xyz [--input xcontrol] --opt --gfn 2 --chrg <c> --uhf
   <mult−1>` by full path in an **isolated dir** (`<data>/xtb/<uuid>`) in its own process group, polls
   `try_wait` + the `cancelled` flag every 50 ms, and reads `xtbopt.xyz`. The result rides `xtb:done`,
   an error `xtb:error`.
@@ -267,8 +269,12 @@ setting (SQLite, under Rust). Details of the tool itself: `wiki/orca/xtb.md`.
   run fails, which is exactly when `xtb.out` (the only record of where xtb spent its time) is needed.
   The kept dir's path rides the `xtb:error` payload (`dir`) and the UI shows it as copyable text; the
   error message also carries the **last ~20 lines of `xtb.out`** via the shared `read_tail_lines`
-  (bounded tail, rule #5 — one tailer, not a second). **Open issue:** kept dirs **accumulate** under
-  `<data>/xtb/` — a reaper (age/count-bounded) is deferred, not yet built.
+  (bounded tail, rule #5 — one tailer, not a second). **Accumulation closed (2.5.5-fix-3):** kept
+  dirs are pruned to the **`KEEP_DIAGNOSTIC_DIRS` (5) newest at startup** — `dirs_to_prune` (pure +
+  tested) sorts by mtime and returns all but the newest N; `prune_diagnostic_dirs` runs off-thread in
+  setup. Newest-kept means a **just-failed run's dir is never pruned** by the next launch (test
+  asserts the newest survives). No setting — a small fixed window is enough to debug the last few
+  failures.
 - **Live progress (2.5.5-fix-2).** The poll loop also reads the `xtb.out` tail ~once a second (same
   `read_tail_lines`) and emits `xtb:progress { cycle }` on each new optimization cycle. The panel shows
   the cycle + a ticking clock, so a stall — even a pre-first-cycle startup hang — is visible at once

@@ -99,4 +99,11 @@ Living page. Add every trap encountered, newest at top, format:
   harmonic restraint, so the held coordinate deviates from the target (measured: 0.011 Å on a
   realistic reaction-coordinate hold at k=1.0; up to 0.12 Å when fighting a stiff bond). The
   post-condition tolerance (0.1 Å) is sized from this — see `wiki/orca/xtb.md`.
+- **xtb 6.6.1 HANGS on an EMPTY `--input` file** → given `--input <file>` where the file is empty,
+  xtb spins at 99 % CPU and never reaches the first optimization cycle (verified: 300 s timeout,
+  0 cycles; independent of molecule, `OMP_*`, opt level — `wiki/debugging/006`). A foreign-binary
+  bug we don't own. **Rule: never pass `--input` unless the detailed-input file has content** —
+  OrcaStudio's `build_xcontrol` returns `Option` and one value drives both "write the file" and
+  "pass `--input`". This bit exactly the first no-constraint run (all prior runs had constraints,
+  so a non-empty `xcontrol`). Candidate upstream xtb issue (not filed from here).
 - *(add as encountered during Phase 0+)*

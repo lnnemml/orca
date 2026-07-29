@@ -107,15 +107,17 @@ for now (GFN-FF, solvation, Hamiltonian choice are deliberately out of scope).
 ## What OrcaStudio runs
 
 ```
-<xtb_path> input.xyz --input xcontrol --opt --gfn 2 --chrg <c> --uhf <mult-1>
+<xtb_path> input.xyz [--input xcontrol] --opt --gfn 2 --chrg <c> --uhf <mult-1>
 ```
 
-in an isolated dir by full path, in its own process group (cancel/timeout → killpg
-+ cwd-sweep, `debugging/004`). The dir is **removed on success/cancel but KEPT on
-failure** for diagnostics (2.5.5-fix-2 — rule #3 clears litter, it does not throw
-away evidence). The `xcontrol` file holds the `$constrain` / `$fix` blocks in
-1-based indices. See `wiki/modules/tauri-core.md` for the command, its
-post-conditions, and the kept-dir accumulation note.
+`--input xcontrol` is present **only when there are constraints** (an empty one
+hangs xtb — above). In an isolated dir by full path, in its own process group
+(cancel/timeout → killpg + cwd-sweep, `debugging/004`). The dir is **removed on
+success/cancel but KEPT on failure** for diagnostics (2.5.5-fix-2 — rule #3 clears
+litter, it does not throw away evidence); kept dirs are pruned to the **5 newest at
+startup** (2.5.5-fix-3, closing the accumulation issue — no setting). The `xcontrol`
+file holds the `$constrain` / `$fix` blocks in 1-based indices. See
+`wiki/modules/tauri-core.md` for the command and its post-conditions.
 
 ## Diagnosed hang — an EMPTY `xcontrol` passed via `--input` freezes xtb (2.5.5-fix-2)
 
@@ -144,11 +146,20 @@ hangs identically), of `OMP_*`, and of the opt level. Dropping `--input xcontrol
 `xcontrol` (constraints); dexketoprofen was the first real **no-constraint** run, so
 it was the first to write an empty `xcontrol`.
 
-**Status:** this unit did NOT change the invocation — the fix (don't pass
-`--input xcontrol` when there are no constraints, i.e. `build_xcontrol` is empty) is
-the author's call on this report. What this unit DID change is that such a failure is
-now **diagnosable**: the scratch dir is kept, the error carries the `xtb.out` tail,
-and the panel shows live progress (so a pre-cycle hang is visible immediately).
+**Fix (2.5.5-fix-3):** `build_xcontrol` now returns `Option<String>` — `None` when
+there are no constraints. **One value decides both** whether the `xcontrol` file is
+written and whether `--input` is passed (`xtb_args(has_xcontrol, …)`, a pure argv
+builder with a test): no constraints → no file, no `--input`; constraints → both.
+Verified on dexketoprofen: no-constraint → **1 s / 16 cycles / converged**;
+with-constraint → **<1 s / 17 cycles / converged, constraint applied** (so `--input`
+isn't lost). Full story: `wiki/debugging/006-xtb-empty-input-hang.md`. The earlier
+diagnosability changes (2.5.5-fix-2: keep the dir on failure, tail the log, live
+progress) are what made this findable.
+
+> **xtb 6.6.1 quirk (named fact):** an **empty file passed via `--input` hangs xtb
+> before the first cycle** (99 % CPU, no output), independent of molecule/OMP/opt
+> level. A foreign-binary bug we don't own; OrcaStudio simply never passes an empty
+> `--input`. Candidate for an upstream xtb issue (author's call; not filed from here).
 
 ## See also
 

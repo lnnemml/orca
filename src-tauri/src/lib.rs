@@ -38,6 +38,10 @@ pub fn run() {
 
             // --- xtb pre-optimizer: its own single-slot runner (2.5.5). ---
             app.manage(xtb::XtbRunner::default());
+            // Prune old kept diagnostic dirs (keep the newest few) off-thread so
+            // setup returns promptly (2.5.5-fix-3).
+            let prune_dir = data_dir.clone();
+            std::thread::spawn(move || xtb::prune_diagnostic_dirs(&prune_dir));
 
             // Resume the sequential queue: pick up any jobs left `queued` across a
             // restart. Off-thread so setup returns promptly.
