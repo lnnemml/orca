@@ -1,8 +1,9 @@
 # Module: Python sidecar (sidecar/)
 
 **Status:** Chemistry endpoints live — `/smiles-to-3d` (RDKit, Phase 2.2), `/convert` + `/formats`
-(ASE, Phase 2.6), and `/geometry/set-internal` (ASE geometry kernel, Phase 2.5.2c). Builds on the
-Phase 0 scaffold (`/health`, venv, pytest).
+(ASE, Phase 2.6), `/geometry/set-internal` (ASE geometry kernel, Phase 2.5.2c), and
+`/geometry/rotatable-mask` (bond-graph split for intra-fragment edits, Phase 2.5.3a). Builds on the
+Phase 0 scaffold (`/health`, venv, pytest). Sidecar `__version__` `0.3.0`.
 
 ## As built (Phase 0)
 - `app/main.py`: FastAPI app, `GET /health -> {"status":"ok","version":"0.1.0"}`
@@ -142,6 +143,62 @@ final coordinates: targets `d=1.5 / θ=107.0 / φ=90.0` → recomputed `1.500000
 90.000000`, substrate internal geometry unchanged to 1e-9. `pytest` 25 (was 11 → +14). Live-verified
 with `uvicorn` + `curl` (a real set-distance call, and a reference-atom-in-mask → 422).
 
+## Bond-graph mask split — `POST /geometry/rotatable-mask` (2.5.3a)
+For an **intra-fragment** edit (rotating a molecule's own torsion — a side-chain conformation, an OH
+orientation, an aryl-ring flip) the mask is not a whole fragment but the **connected side of a broken
+bond**. Request `{ xyz, cut: [i, j], moving, scale }` → response `{ mask, static_count, cut_length }`.
+Algorithm: perceive bonds → build the graph → remove the `cut` edge → the connected component
+containing `moving` is the mask (see the axis-atom note below).
+
+### Bond perception is a GUESS — so it's checked, and it can refuse
+Bonds are perceived from geometry via **`ase.neighborlist`** (checked against ASE 3.29.0, not memory):
+`natural_cutoffs(atoms, mult=scale)` gives a per-atom cutoff = covalent radius × `scale`, and
+`neighbor_list("ij", atoms, cutoffs)` returns the pairs with `d_ij < cutoffs[i] + cutoffs[j]`.
+- **The multiplier is explicit** (`scale`, request param), not a hidden constant, because this editor
+  can create geometries where the guess is wrong (a stretched bond vanishing; two fragments the editor
+  placed at ~2.2 Å spuriously bonding).
+- **ASE's own default `mult=1.0` is TOO TIGHT** — it misses C–H and even C–C (butane → 0 bonds). Our
+  default is **`_COVALENT_SCALE_DEFAULT = 1.2`**. Measured against known valence, `mult` in [1.1, 1.3]
+  all give the correct counts (butane **13**, benzene **12**, BH₄⁻ **4** — the charged trap, same
+  multiplier as neutrals — water **2**); 1.2 sits mid-plateau (margin for slightly-stretched real
+  bonds) yet still below the threshold that would bond the ~2.2 Å reaction distances (C···B at 1.2 →
+  1.92 Å < 2.2). `test_rotatable_mask::test_perception_matches_valence_at_default_scale` is the quality
+  gate.
+- **The endpoint refuses (422) rather than guess wrong**, each with what to do:
+  - **cut atoms not bonded** → names the actual distance and the threshold `< cutoffs[i]+cutoffs[j]`,
+    suggests raising `scale` if the bond is genuinely stretched;
+  - **the bond is in a RING** (removing it doesn't split the graph — `moving`'s side still reaches
+    both cut atoms) → says the bond is in a cycle and to pick a non-cyclic bond. *This IS the
+    cycle detection — an operational definition ("the cut doesn't separate the graph"), no SSSR
+    needed.*
+  - **`moving` on neither side of the cut** (a disconnected component) → suspicious, refuse;
+  - **> 2 components before any cut** → perception produced something odd (a stray atom, a fragment
+    split by a stretched bond); names the component count.
+
+### Which bond to cut (the rule 2.5.3b will use)
+The bond cut is the one the motion turns about, and the LAST chain atom's side moves — consistent
+with ASE's `set_distance`/`set_angle`/`set_dihedral` and the 2.5.2c reference-atom rule:
+- `distance(i, j)` → `cut = (i, j)`, `moving = j`
+- `angle(i, v, j)` → `cut = (v, j)`, `moving = j`
+- `dihedral(i, j, k, l)` → `cut = (j, k)`, `moving = l`
+
+**Axis atom → automatically outside the mask.** For a dihedral, `cut = (j, k)` is the rotation axis
+and `k` lands in `moving`'s component but sits ON the axis (it doesn't move). The endpoint **drops any
+cut atom that isn't `moving` itself** from the mask, so the reference atoms (`i, j, k`) all fall
+outside — exactly what `set-internal`'s reference-atom rule requires. For a distance/angle the mover
+IS a cut atom, so nothing is dropped and the mask is the full moving side.
+
+### Verification
+`pytest` **34** (was 26 → +8). The quality test (a) above. Split: butane cut C1–C2, move C3 → mask by
+element composition = **1 C + 5 H** (the methyl + rotating H's; the axis carbon C2 dropped). Ring:
+benzene adjacent ring atoms → 422 cycle message. Not bonded: two atoms at 5 Å → 422 naming 5.000 Å.
+**Acceptance** (the intra analogue of 2.5.2c): butane dihedral anti → 60° using this endpoint's mask
+applied through `set-internal` — target `60.000000`; static side unmoved; **rigidity**: every pairwise
+distance WITHIN each side unchanged (moving-side max dev **4.7e-11**, static-side **8.5e-11**) → a
+rigid rotation, not a deformation; count/order preserved. Ibuprofen (generated via `/smiles-to-3d`):
+cut Cα–COOH → mask = the carboxyl group **{C, O, O, H} = 4 atoms**, `static_count` 29. `__version__`
+→ **0.3.0** (new API — the handshake rule). Live `curl`: butane → mask; benzene → 422.
+
 ## Versioning + the stale-sidecar handshake (2.5.2d-1)
 
 **Versioning rule:** bump `app/__init__.py` `__version__` **minor** every time an endpoint is added
@@ -183,6 +240,7 @@ Chemistry intelligence: parsing, structure generation, conversions, manual index
 - `POST /convert` — format conversion (**ASE**, not Open Babel) — **done (Phase 2.6)**
 - `GET  /formats` — supported read/write formats for UI dropdowns — **done (Phase 2.6)**
 - `POST /geometry/set-internal` — set a distance/angle/dihedral with a mask (ASE) — **done (2.5.2c)**
+- `POST /geometry/rotatable-mask` — the rotatable side of a bond (bond-graph split, ring-aware) — **done (2.5.3a)**
 - `POST /parse` — path to output file → cclib-derived JSON (Phase 3)
 - `POST /manual/build-index` — one-off docs indexing (Phase 4)
 - `GET  /manual/search?q=` — FTS query proxy (or Rust queries SQLite directly — decide in Phase 4)

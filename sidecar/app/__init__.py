@@ -5,4 +5,5 @@
 # EXPECTED_MIN_SIDECAR_VERSION at /health time and flags a `stale` sidecar (a hot
 # frontend reload picks up new routes; uvicorn without --reload does not). See
 # wiki/modules/sidecar.md and wiki/debugging/005.
-__version__ = "0.2.0"
+# 0.3.0: +POST /geometry/rotatable-mask (bond-graph split for intra-fragment edits).
+__version__ = "0.3.0"

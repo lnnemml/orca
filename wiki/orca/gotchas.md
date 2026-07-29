@@ -60,4 +60,16 @@ Living page. Add every trap encountered, newest at top, format:
   drift/coverage guard must check BOTH directions — "our copy is stale" AND "the source has an
   element we don't" — because iterating only our own keys is blind to the missing-element case by
   construction (that is exactly how case 3 slipped through). See `wiki/modules/visualization.md`.
+- **Bond perception is a GUESS from geometry, not a fact — and OUR OWN editor can create the
+  geometries where it is wrong.** Bonds are inferred from interatomic distance vs covalent radii ×
+  a multiplier (`ase.neighborlist.natural_cutoffs`). A **stretched** bond can vanish from the guess;
+  two **close** atoms that aren't bonded can appear bonded — and the geometry editor routinely makes
+  both (an inter-fragment reaction distance of ~2.2 Å is exactly the ambiguous zone for heavy
+  atoms). So `POST /geometry/rotatable-mask` (2.5.3a) makes the multiplier an **explicit parameter**
+  (default 1.2 — ASE's own 1.0 is too tight, misses C–H/C–C), checks perception against **known
+  valence** in tests (butane 13, benzene 12, BH₄⁻ 4 — the charged trap — water 2), and **refuses with
+  an explanation** when the guess looks odd (unbonded cut, ring bond, >2 components) rather than
+  returning a silently-wrong mask. Rule: never trust perceived bonds blindly on geometries this app
+  can distort; make the cutoff visible, test it against valence, and refuse rather than guess. See
+  `wiki/modules/sidecar.md`.
 - *(add as encountered during Phase 0+)*

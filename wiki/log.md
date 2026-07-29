@@ -1890,3 +1890,49 @@ indices `planEdit` reverses to, reagent-first order): distance C–B → 2.2, an
 Ha–O–C–B → 90; re-measured after EACH Apply — d = 2.200000, angle = 107.000000, dih = 90.000000,
 substrate internal deviation **0.00e+00**. This closes 2.5.2d. Next: 2.5.3 — bond-graph mask split for
 intra-fragment edits.
+
+## [2026-07-29] session | 2.5.3a: bond-graph mask split in the sidecar (rotatable side of a bond)
+
+Unblocks intra-fragment edits — rotating a molecule's own torsion (side-chain conformation, OH
+orientation, aryl-ring flip), which the editor could not do (planEdit refused, pointing here).
+Sidecar only (Python + pytest); the frontend wiring is 2.5.3b.
+
+**New endpoint `POST /geometry/rotatable-mask`** (`app/geometry.py`, same router/style as
+set-internal). `{ xyz, cut:[i,j], moving, scale }` → `{ mask, static_count, cut_length }`. Perceive
+bonds → graph → remove the cut edge → the component containing `moving` is the mask.
+
+**Main risk = perception is a guess.** Bonds come from `ase.neighborlist` (checked against ASE
+3.29.0): `natural_cutoffs(atoms, mult=scale)` (per-atom covalent radius × scale) +
+`neighbor_list("ij", …)` (bond iff `d < cutoffs[i]+cutoffs[j]`). The editor itself makes geometries
+where the guess fails (stretched bond vanishes; ~2.2 Å reaction distance spuriously bonds), so: the
+multiplier is an **explicit param**, perception is **tested against valence**, and the endpoint
+**refuses rather than guesses**.
+
+**Multiplier — measured, not assumed.** ASE's default `mult=1.0` is too tight (butane → 0 bonds!).
+Counts vs known valence: `mult` in [1.1, 1.3] all give butane 13 / benzene 12 / **BH₄⁻ 4** (charged
+trap, same multiplier as neutrals) / water 2. Chose **1.2** — mid-plateau, tolerant of slightly
+stretched real bonds, still below the threshold that would bond a 2.2 Å reaction distance (C···B →
+1.92 Å). Test (a) is the gate.
+
+**Refusals (422), each with what to do:** not bonded (names distance + threshold); **ring** (removing
+the bond doesn't split the graph — `moving`'s side still reaches both cut atoms → "the bond is in a
+cycle, pick a non-cyclic bond"; this IS the cycle detection, operational, no SSSR); `moving` on
+neither side; >2 components before the cut (odd perception, names the count).
+
+**Which bond to cut** (recorded for 2.5.3b): distance(i,j)→cut(i,j),move j; angle(i,v,j)→cut(v,j),
+move j; dihedral(i,j,k,l)→cut(j,k),move l. For a dihedral, the axis atom k lands in the mover's
+component but sits ON the axis — the endpoint **drops any cut atom that isn't the mover**, so the
+reference atoms fall outside the mask automatically (exactly what set-internal's reference rule
+needs).
+
+**Acceptance (intra analogue of 2.5.2c).** butane dihedral anti → 60° via this mask through
+set-internal: target **60.000000**; static side unmoved; **rigidity** — every pairwise distance
+within each side unchanged (moving-side max dev **4.7e-11**, static-side **8.5e-11**) → a rigid
+rotation, not a deformation; count/order preserved. Ibuprofen (from `/smiles-to-3d`): cut Cα–COOH →
+mask = the carboxyl group **{C,O,O,H} = 4 atoms**, static_count 29.
+
+**Verified.** `pytest` **34** (was 26 → +8). `vitest` 245 and `cargo test` 59 untouched (their zones
+unchanged). `__version__` → **0.3.0** (new API — the handshake rule; else the version check loses
+meaning on its second use). Live `uvicorn` + `curl`: butane cut(1,2)/move 3 → mask [3,9,10,11,12,13],
+static_count 8, cut_length 1.527 Å; benzene ring bond → 422 cycle message. Next: 2.5.3b — planEdit
+calls this endpoint so an intra-fragment selection becomes an edit instead of a refusal.

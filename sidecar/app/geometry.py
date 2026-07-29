@@ -30,6 +30,7 @@ the request already carries a list, so `indices` is the exact fit and overrides
 from typing import Literal
 
 from ase import Atoms
+from ase.neighborlist import natural_cutoffs, neighbor_list
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
@@ -39,6 +40,16 @@ router = APIRouter()
 _OP_LEN = {"distance": 2, "angle": 3, "dihedral": 4}
 # Tolerance for the measured-value post-condition, per op.
 _OP_TOL = {"distance": 1e-6, "angle": 1e-4, "dihedral": 1e-4}
+
+# Covalent-radius multiplier for bond perception (2.5.3a). ASE's own
+# `natural_cutoffs` default is mult=1.0, which is TOO TIGHT for us — it misses
+# C–H and even C–C in real geometries (butane → 0 bonds). Measured against known
+# valence, mult in [1.1, 1.3] all give the right counts (butane 13, benzene 12,
+# BH₄⁻ 4, water 2). We take 1.2: comfortably inside that plateau, a little
+# tolerance for slightly-stretched real bonds, yet still below the threshold that
+# would spuriously bond the ~2.2 Å reaction distances THIS editor creates (C···B
+# at 1.2 → 1.92 Å < 2.2). See wiki/modules/sidecar.md.
+_COVALENT_SCALE_DEFAULT = 1.2
 
 
 class SetInternalRequest(BaseModel):
@@ -211,4 +222,142 @@ def set_internal(req: SetInternalRequest) -> SetInternalResponse:
         xyz=_to_xyz(atoms),
         measured=float(measured),
         max_static_displacement=max_static,
+    )
+
+
+# ── Bond-graph mask split (2.5.3a) ────────────────────────────────────────────
+# For an INTRA-fragment edit — rotating a molecule's own torsion — the mask is
+# not a whole fragment but the connected side of a broken bond. Bond perception
+# is a GUESS from geometry (covalent radii × a multiplier), and this editor can
+# create geometries where the guess is wrong (a stretched bond vanishing, close
+# fragments spuriously bonding). So the multiplier is an explicit parameter, and
+# the endpoint REFUSES with an explanation when the guess produces something odd
+# rather than returning a silently-wrong mask.
+
+
+class RotatableMaskRequest(BaseModel):
+    xyz: str
+    cut: list[int]  # the bond to break: [i, j], 0-based GLOBAL indices
+    moving: int  # an atom on the side that should move
+    scale: float = _COVALENT_SCALE_DEFAULT  # covalent-radius multiplier
+
+
+class RotatableMaskResponse(BaseModel):
+    mask: list[int]  # sorted global indices of the moving side
+    static_count: int  # atoms left fixed
+    cut_length: float  # length of the broken bond, Å (for the UI)
+
+
+def _bond_edges(atoms: Atoms, cutoffs: list[float]) -> set[frozenset[int]]:
+    """Perceived covalent bonds as `{frozenset({i, j})}`: a bond exists iff
+    `d_ij < cutoffs[i] + cutoffs[j]` (`cutoffs` from `natural_cutoffs(atoms,
+    mult=scale)`). Non-periodic input — no cell needed."""
+    i_arr, j_arr = neighbor_list("ij", atoms, cutoffs)
+    return {frozenset((int(a), int(b))) for a, b in zip(i_arr, j_arr)}
+
+
+def _components(
+    n: int, edges: set[frozenset[int]], exclude: frozenset[int] | None = None
+) -> list[set[int]]:
+    """Connected components of an `n`-node graph, optionally without one edge."""
+    adj: dict[int, set[int]] = {k: set() for k in range(n)}
+    for e in edges:
+        if e == exclude:
+            continue
+        a, b = tuple(e)
+        adj[a].add(b)
+        adj[b].add(a)
+    seen: set[int] = set()
+    comps: list[set[int]] = []
+    for start in range(n):
+        if start in seen:
+            continue
+        stack = [start]
+        comp: set[int] = set()
+        while stack:
+            x = stack.pop()
+            if x in seen:
+                continue
+            seen.add(x)
+            comp.add(x)
+            stack.extend(adj[x] - seen)
+        comps.append(comp)
+    return comps
+
+
+@router.post("/geometry/rotatable-mask", response_model=RotatableMaskResponse)
+def rotatable_mask(req: RotatableMaskRequest) -> RotatableMaskResponse:
+    atoms = _parse_xyz(req.xyz)
+    n = len(atoms)
+
+    # ── request shape ─────────────────────────────────────────────────────────
+    if len(req.cut) != 2:
+        raise HTTPException(422, f"cut must be a bond [i, j], got {len(req.cut)} atoms")
+    i, j = req.cut
+    if i == j:
+        raise HTTPException(422, "cut atoms must be distinct")
+    for label, a in (("cut", i), ("cut", j), ("moving", req.moving)):
+        if a < 0 or a >= n:
+            raise HTTPException(422, f"{label} index {a} out of range [0, {n})")
+    if req.scale <= 0:
+        raise HTTPException(422, "scale must be > 0")
+
+    cutoffs = natural_cutoffs(atoms, mult=req.scale)
+    edges = _bond_edges(atoms, cutoffs)
+    cut_length = float(atoms.get_distance(i, j))
+
+    # ── the cut atoms must actually be perceived as bonded ────────────────────
+    if frozenset((i, j)) not in edges:
+        threshold = float(cutoffs[i] + cutoffs[j])
+        raise HTTPException(
+            422,
+            f"atoms {i} and {j} are not bonded: they are {cut_length:.3f} Å apart, "
+            f"but a bond needs < {threshold:.3f} Å (covalent radii × scale {req.scale}). "
+            "Pick a real bond, or raise the scale if this bond is genuinely stretched.",
+        )
+
+    # ── perception sanity: an isolated molecule is one component; substrate +
+    # reagent is two. More than two means perception produced something odd
+    # (a lone atom, or a fragment split by a stretched bond). ───────────────────
+    comps_before = _components(n, edges)
+    if len(comps_before) > 2:
+        raise HTTPException(
+            422,
+            f"bond perception split the structure into {len(comps_before)} pieces "
+            "before any cut — that usually means a stretched bond or a stray atom. "
+            "Check the geometry, or adjust the scale.",
+        )
+
+    # ── remove the bond, find the moving side ─────────────────────────────────
+    comps_after = _components(n, edges, exclude=frozenset((i, j)))
+    moving_comp = next(c for c in comps_after if req.moving in c)
+
+    if i in moving_comp and j in moving_comp:
+        raise HTTPException(
+            422,
+            f"bond {i}–{j} is in a RING: removing it does not split the molecule "
+            f"(atom {req.moving}'s side still reaches both ends), so there is no "
+            "rotatable subgroup. Rotating a ring bond would deform the ring — pick "
+            "a bond that is not part of a cycle.",
+        )
+    if i not in moving_comp and j not in moving_comp:
+        raise HTTPException(
+            422,
+            f"the moving atom {req.moving} is not on either side of bond {i}–{j} "
+            "(it sits in a disconnected part of the structure). Pick a moving atom "
+            "adjacent to the bond being rotated.",
+        )
+
+    # Drop any cut atom that is NOT the mover itself. For a dihedral the cut is
+    # the rotation AXIS (j, k): k lands in the mover's component but sits ON the
+    # axis — it's a reference atom that doesn't move, so dropping it makes this a
+    # valid set-internal mask (the reference atoms fall outside automatically —
+    # task 3). For a distance/angle the mover IS a cut atom, so nothing is
+    # dropped and the mask is the full moving side.
+    drop = {c for c in req.cut if c != req.moving}
+    mask = sorted(moving_comp - drop)
+    return RotatableMaskResponse(
+        mask=mask,
+        static_count=n - len(mask),
+        cut_length=cut_length,
     )
