@@ -91,7 +91,10 @@ Aggregates:
 Index space:
 - `globalIndex(scene, fragmentId, localIndex): number` — throws on unknown
   fragment / out-of-range local index.
-- `fragmentAtomIndices(scene, fragmentId): number[]` — the future ASE mask.
+- `fragmentAtomIndices(scene, fragmentId): number[]` — **IS the ASE `mask`** sent to the sidecar
+  geometry kernel (`POST /geometry/set-internal`, 2.5.2c): the 0-based global indices allowed to
+  move. The index space is the same on both sides of HTTP — index N here is index N in the sidecar's
+  request/response xyz (ADR-008). See `wiki/modules/sidecar.md`.
 - `locateAtom(scene, globalIndex): { fragment, localIndex } | null`.
 - `compositionSignature(scene): string` — ordered `id:size` per fragment, joined;
   **coordinates excluded**. The one canonical way to ask "did the scene's

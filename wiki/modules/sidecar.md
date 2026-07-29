@@ -1,8 +1,8 @@
 # Module: Python sidecar (sidecar/)
 
-**Status:** Two chemistry endpoints live — `/smiles-to-3d` (RDKit, Phase 2.2) and
-`/convert` + `/formats` (ASE, Phase 2.6, closes Phase 2). Builds on the Phase 0 scaffold
-(`/health`, venv, pytest).
+**Status:** Chemistry endpoints live — `/smiles-to-3d` (RDKit, Phase 2.2), `/convert` + `/formats`
+(ASE, Phase 2.6), and `/geometry/set-internal` (ASE geometry kernel, Phase 2.5.2c). Builds on the
+Phase 0 scaffold (`/health`, venv, pytest).
 
 ## As built (Phase 0)
 - `app/main.py`: FastAPI app, `GET /health -> {"status":"ok","version":"0.1.0"}`
@@ -73,6 +73,70 @@
   read+write; empty `0`-count xyz → 422. `pytest` 11 total green. Live-verified with `curl`
   (xyz→pdb text, bad format → 400, garbage → 422, `/formats`).
 
+## As built (Phase 2.5.2c) — geometry kernel (ASE)
+- **`app/geometry.py`** — `APIRouter` with `POST /geometry/set-internal`, registered in `main.py`.
+  Sets a distance / angle / dihedral to a target value by moving a masked subgroup.
+  - **Request:** `{xyz, op: "distance"|"angle"|"dihedral", indices: int[], value, mask: int[]}`.
+    `indices` = the 0-based **global** atom indices defining the coordinate (2/3/4). `mask` = the
+    0-based global indices **allowed to move**. `value` = Å (distance) or degrees (angle/dihedral).
+  - **Response:** `{xyz, measured, max_static_displacement}`. `xyz` is the same format and the same
+    atom order; `measured` is **re-derived from the resulting coordinates**;
+    `max_static_displacement` is the largest move of any atom OUTSIDE the mask.
+- **The mask is the fragment, computed by the frontend.** The sidecar knows nothing about scenes or
+  fragments (the 2.5.0 decision): the caller sends `fragmentAtomIndices` as the explicit `mask`
+  list. The index space is identical on both sides of HTTP — index N in the request xyz is index N
+  in the response (ADR-008). See `wiki/modules/scene.md`.
+
+### ASE version + signatures (checked against the installed version, not memory)
+**ASE 3.29.0** (`sidecar/.venv`). The three `ase.Atoms` methods (`atoms.py`) each take **both**
+`mask=` and `indices=` — they are NOT interchangeable:
+- `mask=` is a **boolean array** of length N (`mask[i]` truthy → atom i moves);
+- `indices=` is a **list of atom indices** to move, and **overrides `mask`** in all three.
+
+We pass **`indices=`** because the request already carries a list of global indices — an exact fit,
+no boolean conversion. Signatures and the mapping:
+- `set_distance(a0, a1, distance, fix=0.5, mask=None, indices=None, ...)` — body:
+  `for i in indices: R[i] -= x*(1-fix)*D` (a0 moves only `if i==a0`). With `indices` **excluding**
+  a0, we must pass **`fix=0`** (fix the FIRST atom) so all displacement lands on the a1 side; else
+  the a0-side term is silently dropped and the distance is wrong. Mapping: `set_distance(i, j,
+  value, fix=0, indices=mask)` — i = reference (static), j = moving endpoint.
+- `set_angle(a1, a2, a3, angle, mask=None, indices=None, add=False)` — rotates the masked group
+  about the **vertex `a2`** (`axis = cross(a2→a1, a2→a3)`, `center = a2`). Mapping:
+  `set_angle(i, vertex, j, value, indices=mask)`.
+- `set_dihedral(a1, a2, a3, a4, angle, mask=None, indices=None)` — rotates the masked group about
+  the **a2–a3 axis** (`axis = pos[a3]-pos[a2]`, `center = pos[a3]`); the docstring warns "if
+  mask/indices does not contain a4, a4 will NOT be moved". Mapping:
+  `set_dihedral(i, j, k, l, value, indices=mask)`.
+  (`get_dihedral` returns **[0, 360)** — the convention `measure.ts` pins; re-verified below.)
+
+### The reference-atom rule (what makes sequential placement safe)
+Validation enforces (422): the **last atom of the chain must be IN the mask, every preceding atom
+must NOT be** — `distance(i,j)`: j∈mask, i∉; `angle(i,v,j)`: j∈mask, i,v∉;
+`dihedral(i,j,k,l)`: l∈mask, i,j,k∉. This is the operational form of "reference atoms are taken
+from the substrate side" (2026-07-28 decision): each later op's rotation axis passes through the
+reference atoms of the earlier constraint, so applying distance→angle→dihedral in **one sequential
+pass** cannot undo an earlier value. Without the rule the second op silently destroys the first.
+Also validated: `indices` length matches `op`, all in range, distinct; mask non-empty, in range, a
+**strict** subset; `distance > 0`; `angle ∈ (0, 180)`; dihedral any real (folds to [0, 360)).
+
+### Post-conditions INSIDE the endpoint (not only in tests)
+Before returning, the endpoint checks and raises **500 with a diagnostic** (never silently returns
+wrong coordinates) if: the atom count changed; the element sequence changed positionally; or
+`measured` is outside tolerance of the target (`1e-6` Å for distance, `1e-4°` for angle/dihedral,
+the dihedral compared circularly so 359.99 vs 0.01 doesn't false-fail). This is the crux of the
+unit: an error here doesn't crash — it returns coordinates ORCA computes *other* chemistry from —
+so the check is a running guard, not a test-only assertion. Cost is negligible; the price of a
+missed error is weeks of the wrong calculation.
+
+### Verification (the convention tripwire FIRED and PASSED)
+The 2.5.2b tripwire was carried into pytest: the SAME butane coordinates `measure.test.ts` pins →
+ASE `get_dihedral(0,1,2,3)` = **179.998** (anti) / **67.523** (gauche) to 3 dp — exact. So the ASE
+[0,360) convention and our `measure.ts` agree; the tripwire caught no divergence. The sequential
+acceptance test (carbonyl + hydride, three separate endpoint calls) recomputes all three from the
+final coordinates: targets `d=1.5 / θ=107.0 / φ=90.0` → recomputed `1.50000000 / 107.000000 /
+90.000000`, substrate internal geometry unchanged to 1e-9. `pytest` 25 (was 11 → +14). Live-verified
+with `uvicorn` + `curl` (a real set-distance call, and a reference-atom-in-mask → 422).
+
 ## Responsibilities
 Chemistry intelligence: parsing, structure generation, conversions, manual indexing.
 
@@ -83,6 +147,7 @@ Chemistry intelligence: parsing, structure generation, conversions, manual index
 - `POST /smiles-to-3d` — SMILES → xyz (RDKit ETKDG + MMFF) — **done (Phase 2.2)**
 - `POST /convert` — format conversion (**ASE**, not Open Babel) — **done (Phase 2.6)**
 - `GET  /formats` — supported read/write formats for UI dropdowns — **done (Phase 2.6)**
+- `POST /geometry/set-internal` — set a distance/angle/dihedral with a mask (ASE) — **done (2.5.2c)**
 - `POST /parse` — path to output file → cclib-derived JSON (Phase 3)
 - `POST /manual/build-index` — one-off docs indexing (Phase 4)
 - `GET  /manual/search?q=` — FTS query proxy (or Rust queries SQLite directly — decide in Phase 4)

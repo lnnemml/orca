@@ -166,10 +166,12 @@ re-optimisation of the lowest 3–4 stay in Phase 4.5 (the scientific pipeline);
       — fragment boundaries make inter- vs intra-fragment distances distinguishable
       **(2.5.2b — `measure.ts`, ASE conventions pinned to source; readout + viewer
       labels; also the `selectionSurvives` review fix)**
-- [ ] Geometry kernel in sidecar (ASE-based): `atoms.set_distance()`, `set_angle()`,
+- [x] Geometry kernel in sidecar (ASE-based): `atoms.set_distance()`, `set_angle()`,
       `set_dihedral()` with mask arrays — recalculate Cartesian coordinates; move
       single atom or rigid fragment. No custom trigonometry.
       — `fragmentAtomIndices()` **is** the mask argument
+      **(2.5.2c — `POST /geometry/set-internal`; ASE 3.29 `indices=`; reference-atom rule +
+      in-endpoint post-conditions; sequential d/θ/φ acceptance test passes)**
 - [ ] Edit mode in viewer: pick atoms → enter target value → preview → apply →
       coordinates update in editor
       — pick substrate + reagent atom ⇒ mask = reagent fragment, so the reagent moves

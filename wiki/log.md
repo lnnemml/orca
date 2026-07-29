@@ -1700,3 +1700,49 @@ unit tests); `cargo test` **55** (Rust untouched). Screenshots archived (`/tmp/p
 marked as such — the d/θ/φ primitive exists elsewhere, but nowhere is the mask scene-derived nor the
 index unbroken to the ORCA launch). In-window checks (rail in fullscreen dark/light, collapse,
 normal-mode before/after) in the author checklist. Next: 2.5.2c — the ASE geometry kernel.
+
+## [2026-07-29] session | 2.5.2c: ASE geometry kernel in the sidecar
+
+The geometry core: `POST /geometry/set-internal` (`sidecar/app/geometry.py`) sets a
+distance/angle/dihedral to a target by moving a masked subgroup, on ASE. Python + pytest only; no
+frontend (that's 2.5.2d).
+
+**This is a silent-error surface** — a wrong result doesn't crash, it returns coordinates ORCA
+computes *other* chemistry from. So two tripping guards, not one test set:
+
+1. **Convention tripwire — FIRED and PASSED.** The question we set two sessions ago: does ASE's
+   [0,360) dihedral match what `measure.ts` pinned? Carried the SAME butane coordinates into pytest:
+   ASE `get_dihedral(0,1,2,3)` = **179.998** (anti) / **67.523** (gauche) to 3 dp — exact. No
+   divergence between the ASE call and `measure.ts`; the convention fixed in 2.5.2b is sound against
+   ASE 3.29.0.
+2. **Post-conditions INSIDE the endpoint**, not only in tests: atom count unchanged, element
+   sequence unchanged positionally, `measured` within tol of target (1e-6 Å / 1e-4°, dihedral
+   compared circularly) → else **500 with a diagnostic**. The count/order invariant (ADR-008) now
+   crosses the process boundary, so it's checked where the coordinates are produced.
+
+**ASE signatures — checked against the installed venv (3.29.0), not memory.** `set_distance` /
+`set_angle` / `set_dihedral` each take both `mask=` (boolean array) and `indices=` (list of atom
+indices; overrides mask). Chose **`indices=`** — the request already carries a list. Read the actual
+bodies: `set_distance` needs **`fix=0`** with an a0-excluding mask (its loop only applies the a1-side
+term to masked atoms; the a0-side term is dropped, so fix must put 100% on a1 or the distance is
+silently wrong). `set_angle` rotates about the vertex a2; `set_dihedral` about the a2–a3 axis and
+warns a4 must be in the mask. Full mapping in `wiki/modules/sidecar.md`.
+
+**Reference-atom rule (validation, 422).** Last atom of the chain IN the mask, all preceding NOT —
+the operational form of "reference atoms from the substrate side" (2026-07-28 decision). Enforced in
+the endpoint with a message that names the cause, so a mask with a reference atom is refused, not
+silently applied (which would let op 2 undo op 1).
+
+**Sequential acceptance test (2026-07-28 decision — "sequential" is no longer an assumption).**
+Carbonyl (H2C=O) + hydride, mask = the reagent. Three SEPARATE endpoint calls, each input = previous
+output: set_distance(C,H⁻) → set_angle(O,C,H⁻) → set_dihedral(Ha,O,C,H⁻). Recomputed from the FINAL
+coordinates vs the TARGETS: **d 1.5 → 1.50000000, θ 107.0 → 107.000000, φ 90.0 → 90.000000**;
+substrate internal pairwise geometry unchanged to **1e-9**. The Bürgi-Dunitz one-pass convergence
+holds against real ASE.
+
+**Verified.** `pytest` **25** (was 11 → +14: tripwire, each op, sequential acceptance, idempotence,
+rigid-motion invariance, six validation cases). `vitest` 219 and `cargo test` 55 untouched (nothing
+in their zones changed). ASE **3.29.0**. Live `uvicorn` + `curl`: a real set-distance call (hydride
+moved, substrate frozen, `max_static_displacement 0.0`) and a reference-atom-in-mask → 422 with the
+explanation. Next: 2.5.2d — the frontend wires this endpoint (fetch to 127.0.0.1:{port}), preview,
+edit mode.
