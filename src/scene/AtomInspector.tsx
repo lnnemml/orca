@@ -1,5 +1,6 @@
 import type { Scene } from "./types";
 import { describeAtom } from "./selection";
+import { measureSelection, type Measurement } from "./measure";
 import { fragmentColor } from "../viewer/fragment-colors";
 
 /**
@@ -30,6 +31,12 @@ export function AtomInspector({
   const last = describeAtom(scene, lastGlobal);
   if (!last) return null; // stale index — validateSelection normally prevents this
 
+  // The measurement read off the pick list (2.5.2b), positionally: 2 → distance,
+  // 3 → angle (middle pick = vertex), 4 → dihedral. `none` for 1 atom or a
+  // degenerate pick — the panel then shows only the atom description.
+  const measurement = measureSelection(scene, selection);
+  const readout = describeMeasurement(scene, measurement);
+
   // Fragment 0 keeps CPK colours (no palette entry) — show a hollow swatch, the
   // same convention FragmentList uses.
   const swatch = (fragmentIndex: number) => {
@@ -56,11 +63,28 @@ export function AtomInspector({
           Clear
         </button>
       </div>
+      {readout ? (
+        <div className="atom-inspector-readout">
+          <span className="atom-inspector-measure mono">
+            {readout.chain}
+            {"  "}
+            {readout.value}
+          </span>
+          {readout.interFragment ? (
+            <span
+              className="atom-inspector-badge"
+              title="The two atoms are in different fragments — this distance is a candidate reaction coordinate."
+            >
+              inter-fragment
+            </span>
+          ) : null}
+        </div>
+      ) : null}
       <div className="atom-inspector-coords mono">
         x {last.x.toFixed(4)} · y {last.y.toFixed(4)} · z {last.z.toFixed(4)}
       </div>
       <div className="atom-inspector-index muted">
-        global index {lastGlobal} (0-based)
+        local index {last.localIndex} · global index {lastGlobal} (both 0-based)
       </div>
       {selection.length > 1 ? (
         <div className="atom-inspector-list">
@@ -79,4 +103,31 @@ export function AtomInspector({
       ) : null}
     </div>
   );
+}
+
+/** A rendered measurement line: the atom chain in click order, the value, and
+ * whether it crosses fragments. Null when there is no measurement (0/1 atoms or
+ * a degenerate pick). Distance uses `···` (a through-space contact), angle and
+ * dihedral use `–` (a bonded chain), matching how a chemist writes them. */
+function describeMeasurement(
+  scene: Scene,
+  m: Measurement,
+): { chain: string; value: string; interFragment: boolean } | null {
+  if (m.kind === "none") return null;
+  const symbols = m.atoms.map((gi) => describeAtom(scene, gi)?.element ?? "?");
+  const sep = m.kind === "distance" ? "···" : "–";
+  const chain = symbols.join(sep);
+  if (m.kind === "distance") {
+    return {
+      chain,
+      value: `${m.value.toFixed(3)} ${m.unit}`,
+      interFragment: !m.sameFragment,
+    };
+  }
+  const label = m.kind === "dihedral" ? "dihedral " : "";
+  return {
+    chain,
+    value: `${label}${m.value.toFixed(1)}${m.unit}`,
+    interFragment: !m.sameFragment,
+  };
 }

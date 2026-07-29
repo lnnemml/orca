@@ -1378,3 +1378,84 @@ in-window click checks (real fragment/local index per click, toggle-off, fifth-c
 remove-first-fragment cleanup, coordinate-edit leaves selection+camera, GOAT running label) need
 the real Tauri window — not headless-drivable; author checklist stands. Next: 2.5.2b —
 distance/angle/dihedral measurement off this pick list.
+
+## [2026-07-29] decision | Selection survival rule — signature-based, no remap
+
+A 2.5.2a review finding, fixed first in 2.5.2b. **Defect (reproduced on the built code):**
+`validateSelection` checks only that a picked index is in range, so it survives an index
+*shift*. Scene = Water(global 0,1,2) + BH₄⁻(3..7); pick global 3 = B (BH₄⁻ local 0).
+`removeFragment("wat")` → 5 atoms; `validateSelection([3], after)` → `[3]` (not cleared), and
+`describeAtom(after, 3)` now resolves to element "H", local 3 — a **different atom**. The pick
+silently moved boron → hydrogen. In 2.5.2d that index goes into an ASE mask, so a silent shift
+would mask the wrong atom. The old test `"cleans the selection after removeFragment of the FIRST
+fragment"` passed for the **wrong reason** — it used index 8, which merely fell out of range, so
+it never exercised the shift.
+
+**Decision (architect):**
+- `addFragment` always appends the new fragment LAST, so a pure append does **not** shift
+  existing indices — a selection survives it.
+- Any other change to `compositionSignature` (fragment removed, composition changed) **clears
+  the selection entirely**.
+- **No remap.** After a removal "the same atom" has no operational definition; a silent guess
+  costs more than a lost click.
+
+**Implementation.** `selection.ts::selectionSurvives(prevSig, nextSig)` — true iff
+`next === prev` or `next` starts with `prev + "|"` (clean append; the trailing `"|"` forces a
+whole-field match so `"a:3"` can't append-match `"a:30|b:2"`). Works on signature strings, never
+sees the scene. `NewJobScreen` on a signature change: `!selectionSurvives → setSelection([])`,
+else keep; `validateSelection` stays a second echelon (mainly `scene → null`). Old test replaced
+(not added beside) with an **in-range index 3** case that range validation can't catch, plus a
+`selectionSurvives` block driving the real before/after signatures.
+
+## [2026-07-29] decision | Dihedral convention pinned to ASE source — [0, 360)
+
+2.5.2b's `measure.ts` is the tool 2.5.2c's acceptance test uses to **re-derive** d/θ/φ after
+applying them through ASE. If our convention diverged from ASE, that test would fail a correct
+core or pass a wrong one — so the convention is fixed now from the **real ASE source** in the
+sidecar venv (`ase/geometry/geometry.py`, `ase/atoms.py`; checked 2026-07-29), not from memory.
+
+- **Angle vertex = the MIDDLE index.** `Atoms.get_angle(a1,a2,a3)` = angle between `a1-a2` and
+  `a3-a2` (`atoms.py::get_angles`) — `a2` is the vertex. Our `(i, vertex, j)` maps positionally.
+- **Dihedral range `[0, 360)`, NOT `(-180, 180]`.** `geometry.py::get_dihedrals` does
+  `atan2 → [-π,π]` then `dihedrals[dihedrals < 0.] += 2*pi` **before** `np.degrees`. We replicate
+  that fold verbatim. Verified numerically against ASE on the butane fixture (via the sidecar
+  venv): anti = **179.998°**, gauche = **67.523°** — the gauche value lands on the **60 side**,
+  not 300, which is exactly what the fold with `v0=a1-a0, v1=a2-a1, v2=a3-a2` produces.
+  `measure.test.ts` locks 67.523° → **this is the tripwire that breaks in 2.5.2c** if ASE and
+  `measure.ts` ever fold opposite ways. Reversal-invariant (`d(i,j,k,l)==d(l,k,j,i)`); a mirror
+  sends `φ → 360 − φ`. Collinearity guarded by the normalised cross-product norm, not an angle.
+
+## [2026-07-29] session | 2.5.2b: geometry measurements + selection survival rule
+
+Second unit of the geometry editor: read d/θ/φ off the 2.5.2a pick list. **No coordinate change,
+no sidecar, no ASE call, no constraints — that is 2.5.2c/d.**
+
+**Done first — the review fixes (2.5.2a findings):**
+1. **Selection survival rule** — see the decision entry above (`selectionSurvives`; old
+   wrong-reason test replaced with an in-range index-3 case).
+2. **`isGoatInput` trailing comment** — `! XTB Opt # GOAT next time` was true; now the line is
+   cut at the first `#` before the `!`/`GOAT` check (+ test).
+3. **Highlight effect leaked shapes on `scene → null`** — `removeAllShapes`/`removeAllLabels`
+   now run BEFORE the `!scene` bail-out (halos + labels clear when the last fragment goes).
+
+**Measurement core (`scene/measure.ts`, pure/node-tested):** `distance` / `angle` (middle pick =
+vertex) / `dihedral` (chain i-j-k-l, ASE `[0,360)`), `measureSelection` (positional: 2/3/4 →
+d/θ/φ; 0/1 or degenerate → none), `formatMeasurementValue`. Degenerate → **null, never NaN**;
+`sameFragment` flags an inter-fragment distance (a future reaction coordinate). Conventions in
+the decision entry. Tests are invariants, not self-constructor literals: water H–O–H 104.52° /
+O–H 0.9572 Å, BH₄⁻ H–B–H 109.47°, butane anti 179.998° / gauche 67.523°, symmetries, mirror
+`φ→360−φ`, and the load-bearing **rigid-motion** test (explicit proper rotation + translation of
+the whole scene leaves all three unchanged to 1e-9).
+
+**UI (display-only):** `AtomInspector` gains a readout line at ≥2 picks — `H···B  1.234 Å`,
+`104.5°`, `dihedral 178.9°`, atom chain in click order, prominent `inter-fragment` badge; index
+line now `local index N · global index N (both 0-based)`. `MoleculeViewer`'s highlight effect
+draws dashed bond lines + a value label (`drawMeasurement`) — **not clickable**, so a label over
+an atom can't intercept the pick (repeat-click toggle-off preserved).
+
+**Verified.** `tsc` + `vite build` clean; `vitest` **178** (was 149 → +29: `measure.ts`,
+`selectionSurvives`, `isGoatInput` trailing-comment); `cargo test` **55** (Rust untouched).
+In-window checks need the real Tauri window: 2 atoms cross-fragment → distance with
+`inter-fragment`; 3 atoms → angle whose vertex is the 2nd click (not the middle index); 4 atoms →
+dihedral; repeat-click on a picked atom under a label still deselects; remove first fragment →
+selection AND labels vanish. Next: 2.5.2c — apply d/θ/φ through the ASE geometry kernel.

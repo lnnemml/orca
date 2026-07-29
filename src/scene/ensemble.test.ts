@@ -221,6 +221,13 @@ describe("isGoatInput", () => {
     expect(isGoatInput("! B3LYP Opt\n* xyz 0 1\nGOAT 0 0 0\n*\n")).toBe(false);
   });
 
+  it("ignores a trailing comment on a keyword line", () => {
+    // The `#` note mentions GOAT but the actual keywords are an Opt job.
+    expect(isGoatInput("! XTB Opt # GOAT next time")).toBe(false);
+    // ...and a real GOAT keyword with a trailing comment still counts.
+    expect(isGoatInput("! XTB GOAT # find all conformers")).toBe(true);
+  });
+
   it("matches on word boundaries, not substrings", () => {
     expect(isGoatInput("! SCAPEGOATED")).toBe(false);
     expect(isGoatInput("! XTB GOAT MAXITER 100")).toBe(true);

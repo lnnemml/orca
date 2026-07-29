@@ -143,16 +143,19 @@ export function goatInputForFragment(
  * lines** — those starting with `!` — ignoring comments (`#`) and the geometry
  * block, and matches the `GOAT` token on word boundaries, case-insensitively.
  * So `! XTB GOAT` is GOAT, `! B3LYP def2-SVP Opt` is not, a `# GOAT ...` comment
- * is not, and an atom or fragment named "Goat…" in the `* xyz` block is
+ * is not, a keyword line with a **trailing** comment (`! XTB Opt # GOAT next
+ * time`) is not, and an atom or fragment named "Goat…" in the `* xyz` block is
  * irrelevant. Drives the convergence panel's GOAT variant (2.5.2a §5): on a GOAT
  * run the per-cycle progress bar is one inner optimisation of one candidate, not
  * search progress, and must not be shown as if it were.
  */
 export function isGoatInput(content: string): boolean {
   return content.split("\n").some((line) => {
-    const trimmed = line.trim();
-    if (!trimmed.startsWith("!")) return false;
-    return /\bGOAT\b/i.test(trimmed);
+    // Strip any trailing `#` comment first — `! XTB Opt # GOAT next time` is an
+    // Opt job that merely mentions GOAT in a note, not a conformer search.
+    const code = line.split("#")[0].trim();
+    if (!code.startsWith("!")) return false;
+    return /\bGOAT\b/i.test(code);
   });
 }
 

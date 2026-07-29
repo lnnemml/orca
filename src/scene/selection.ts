@@ -41,10 +41,48 @@ export function toggleAtom(selection: number[], index: number): number[] {
 }
 
 /**
+ * Does a selection **survive** a composition change from `prevSignature` to
+ * `nextSignature` (both {@link compositionSignature} strings, or `null` for "no
+ * scene")? Works on the signature strings alone — it never sees the scene.
+ *
+ * The rule (2.5.2b architect decision):
+ *  - **unchanged** (`next === prev`) → survives (nothing moved);
+ *  - **pure append** (`next` starts with `prev + "|"`) → survives. `addFragment`
+ *    always appends the new fragment LAST, so every existing atom keeps its
+ *    global index; a selection of the older atoms still addresses the same
+ *    atoms. The trailing `"|"` is load-bearing: it forces a whole-field match so
+ *    `"a:3"` does not spuriously "append-match" `"a:30|b:2"` (id is a UUID, size
+ *    could still prefix-collide without the delimiter).
+ *  - **anything else** (a fragment removed, its atom count changed, the scene
+ *    cleared, or a scene appearing from nothing) → does NOT survive.
+ *
+ * Why no remap on removal: after a fragment is deleted "the same atom" has no
+ * operational definition — indices shifted and a silent guess (index N now
+ * means a different atom) is worse than a lost click. `validateSelection` only
+ * checks range, so it *survives an index shift* — a picked in-range index can
+ * silently re-point at a different atom after a removal. This predicate is the
+ * primary guard; `validateSelection` stays a second echelon (mainly the
+ * `scene → null` path).
+ */
+export function selectionSurvives(
+  prevSignature: string | null,
+  nextSignature: string | null,
+): boolean {
+  if (nextSignature === prevSignature) return true;
+  if (prevSignature === null || nextSignature === null) return false;
+  return nextSignature.startsWith(prevSignature + "|");
+}
+
+/**
  * Drop any picked index that no longer addresses an atom in `scene` (a fragment
  * was removed, the scene was cleared). Returns the **same array reference** when
  * nothing is dropped, so a no-op validation doesn't churn React state / re-run
  * effects. Order of the survivors is preserved.
+ *
+ * **Range only:** this survives an index *shift* — a picked index that is still
+ * in range but now addresses a different atom passes through unchanged. That is
+ * exactly why {@link selectionSurvives} (composition-signature based) is the
+ * primary guard on removal; this function is the second echelon.
  */
 export function validateSelection(
   selection: number[],

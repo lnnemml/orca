@@ -8,7 +8,11 @@ import { InputBuilderForm } from "../input-builder/InputBuilderForm";
 import { useSceneStore } from "../scene/store";
 import { FragmentList } from "../scene/FragmentList";
 import { AtomInspector } from "../scene/AtomInspector";
-import { toggleAtom, validateSelection } from "../scene/selection";
+import {
+  toggleAtom,
+  validateSelection,
+  selectionSurvives,
+} from "../scene/selection";
 import { placeFragment } from "../scene/placement";
 import {
   FRAGMENT_LIBRARY,
@@ -119,19 +123,26 @@ export function NewJobScreen({
     setSelection((sel) => toggleAtom(sel, globalIndex));
   const clearSelection = () => setSelection([]);
 
-  // Re-validate the selection ONLY when the scene's composition changes (a
-  // fragment/atom added or removed) — via `compositionSignature`, the same
-  // primitive the viewer uses to decide when to re-zoom. A coordinate-only edit
-  // (same signature) leaves the selection untouched; `validateSelection` returns
-  // the same array reference when nothing is dropped, so an unchanged selection
-  // never churns state. This is the doctrine: composition change is asked in one
-  // place, never re-derived as a bespoke length check.
+  // React to a composition change via `compositionSignature` (the same
+  // primitive the viewer uses to decide when to re-zoom). A coordinate-only edit
+  // (same signature) leaves the selection untouched. On a real change, ask
+  // `selectionSurvives`: an unchanged signature or a pure append (a new fragment
+  // is always appended LAST, so existing indices don't shift) keeps the
+  // selection; any other change (fragment removed, composition changed, scene
+  // cleared) clears it OUTRIGHT — no remap. `validateSelection` stays a second
+  // echelon (mainly the append path and defensive `scene → null`), because a
+  // range-only check survives an index shift and would silently re-point a pick.
   const lastSelCompRef = useRef<string | null>(null);
   useEffect(() => {
     const sig = scene ? compositionSignature(scene) : null;
-    if (sig === lastSelCompRef.current) return;
+    const prev = lastSelCompRef.current;
+    if (sig === prev) return;
     lastSelCompRef.current = sig;
-    setSelection((sel) => validateSelection(sel, scene));
+    if (!selectionSurvives(prev, sig)) {
+      setSelection((sel) => (sel.length ? [] : sel));
+    } else {
+      setSelection((sel) => validateSelection(sel, scene));
+    }
   }, [scene]);
 
   // Esc clears the selection (mirrors the Clear button).

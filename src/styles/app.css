@@ -597,6 +597,28 @@ body {
 .atom-inspector-index {
   font-size: 11px;
 }
+/* Measurement readout (2.5.2b) — distance / angle / dihedral off the pick list. */
+.atom-inspector-readout {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.atom-inspector-measure {
+  font-size: 13px;
+  color: var(--text);
+  font-weight: 600;
+}
+.atom-inspector-badge {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 1px 7px;
+  border-radius: 10px;
+  color: #ffd34d;
+  border: 1px solid #ffd34d;
+  background: rgba(255, 211, 77, 0.12);
+}
 .atom-inspector-list {
   display: flex;
   flex-wrap: wrap;

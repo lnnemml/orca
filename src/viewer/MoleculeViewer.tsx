@@ -1,8 +1,9 @@
 import { useEffect, useRef } from "react";
 import { createViewer, type GLViewer } from "3dmol";
 
-import type { Scene } from "../scene/types";
+import type { Scene, SceneAtom } from "../scene/types";
 import { compositionSignature, fragmentRanges, mergeToXyz } from "../scene/scene";
+import { measureSelection, formatMeasurementValue } from "../scene/measure";
 import { fragmentColor } from "./fragment-colors";
 
 // Side-effect: force 3Dmol onto its direct-canvas WebGL path so it renders in
@@ -44,6 +45,61 @@ const HIGHLIGHT_OPACITY = 0.35;
 /** Ball-and-stick — the same style the viewer has always used. Fresh object per
  * call (3Dmol may retain the reference). */
 const baseStyle = () => ({ stick: {}, sphere: { scale: 0.3 } });
+
+/** Measurement decoration (2.5.2b): dashed line between consecutive picks + a
+ * value label. Decoration only — never made clickable (see the highlight
+ * effect), so it can't intercept an atom pick. */
+const MEASURE_COLOR = "#ffd34d";
+
+const xyz = (a: SceneAtom) => ({ x: a.x, y: a.y, z: a.z });
+const midpoint = (a: SceneAtom, b: SceneAtom) => ({
+  x: (a.x + b.x) / 2,
+  y: (a.y + b.y) / 2,
+  z: (a.z + b.z) / 2,
+});
+
+/**
+ * Draw the measurement geometry for the current pick list: one dashed line per
+ * bond of the chain, and a single value label anchored where a chemist reads it
+ * — the midpoint for a distance (i–j) and for a dihedral (the j–k axis), the
+ * vertex for an angle. No-op for 0/1 atoms or any degenerate pick
+ * (`measureSelection` → `none`). Caller has already run `removeAllShapes` /
+ * `removeAllLabels` and will `render()`.
+ */
+function drawMeasurement(viewer: GLViewer, scene: Scene, selection: number[]) {
+  const m = measureSelection(scene, selection);
+  const label = formatMeasurementValue(m);
+  if (m.kind === "none" || !label) return;
+
+  const rows = scene.fragments.flatMap((f) => f.atoms);
+  const pts = m.atoms.map((gi) => rows[gi]);
+  if (pts.some((a) => a == null)) return; // stale index — bail (guarded upstream)
+
+  for (let n = 0; n < pts.length - 1; n++) {
+    viewer.addLine({
+      dashed: true,
+      start: xyz(pts[n]),
+      end: xyz(pts[n + 1]),
+      color: MEASURE_COLOR,
+    });
+  }
+
+  const anchor =
+    m.kind === "angle"
+      ? xyz(pts[1]) // the vertex
+      : m.kind === "dihedral"
+        ? midpoint(pts[1], pts[2]) // middle of the j–k axis
+        : midpoint(pts[0], pts[1]); // distance: midpoint of the bond
+
+  viewer.addLabel(label, {
+    position: anchor,
+    backgroundColor: "#1b1d23",
+    backgroundOpacity: 0.85,
+    fontColor: MEASURE_COLOR,
+    fontSize: 13,
+    inFront: true,
+  });
+}
 
 /**
  * Ball-and-stick molecule viewer built on 3Dmol.js. Fills its parent; mouse
@@ -152,20 +208,35 @@ export function MoleculeViewer({
     // The model is rebuilt whenever geometry changes OR picking flips on/off.
   }, [xyzData, scene, pickable]);
 
-  // Highlight the selected atoms with translucent spheres. Kept a SEPARATE
-  // effect from the model rebuild so a selection change never reloads the model
-  // or moves the camera (`removeAllShapes` + re-add spheres, no zoomTo). Spheres
-  // — not setStyle — because a style override would clobber the per-fragment
-  // colours applied above and we'd have to restore them by hand; the spheres
-  // will also carry the measurement labels in 2.5.2b.
+  // Highlight the selected atoms with translucent spheres and, when 2+ atoms are
+  // picked, draw the measurement geometry (2.5.2b): a dashed line per bond of the
+  // pick chain and a value label. Kept a SEPARATE effect from the model rebuild
+  // so a selection change never reloads the model or moves the camera
+  // (`removeAllShapes`/`removeAllLabels` + re-add, no zoomTo). Spheres — not
+  // setStyle — because a style override would clobber the per-fragment colours
+  // applied above and we'd have to restore them by hand.
+  //
+  // `removeAllShapes`/`removeAllLabels` run BEFORE the `!scene` bail-out: when
+  // the scene goes null (last fragment removed) the halos and labels must clear,
+  // not linger. The lines/labels are decoration only — `addLine`/`addLabel` are
+  // NOT made clickable, so a label lying over a selected atom can't intercept the
+  // pick; a repeat click still toggles the atom off (the 2.5.2a picking path is
+  // untouched).
   useEffect(() => {
     const viewer = viewerRef.current;
-    if (!viewer || !scene) return;
+    if (!viewer) return;
     viewer.removeAllShapes();
+    viewer.removeAllLabels();
+    if (!scene) {
+      viewer.render();
+      return;
+    }
     const rows = scene.fragments.flatMap((f) => f.atoms);
-    for (const globalIndex of selection ?? []) {
-      const atom = rows[globalIndex];
-      if (!atom) continue; // stale index — validateSelection normally prevents this
+    const picked = (selection ?? [])
+      .map((gi) => rows[gi]) // stale index → undefined; validateSelection guards
+      .filter((a): a is (typeof rows)[number] => a != null);
+
+    for (const atom of picked) {
       viewer.addSphere({
         center: { x: atom.x, y: atom.y, z: atom.z },
         radius: HIGHLIGHT_RADIUS,
@@ -173,6 +244,8 @@ export function MoleculeViewer({
         opacity: HIGHLIGHT_OPACITY,
       });
     }
+
+    drawMeasurement(viewer, scene, selection ?? []);
     viewer.render();
   }, [selection, scene]);
 

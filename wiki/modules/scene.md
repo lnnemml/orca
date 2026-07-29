@@ -11,8 +11,11 @@ multi-fragment scenes became user-reachable. **2.5.0d-3** persists the layout
 it, via the pure `restoreScene`. **Phase 2.5.0 (Scene/fragment foundation) is now
 complete.** **2.5.1** (conformer search) is complete: 2.5.1a the GOAT primitive
 (`ensemble.ts`), **2.5.1b** the UI — "Find conformers" on a fragment, the ensemble
-panel on Job detail, and "Use this conformer" (two branches). Next: the geometry
-editor (**2.5.2**), which already has the d/θ/φ acceptance test recorded.
+panel on Job detail, and "Use this conformer" (two branches). The geometry editor
+(**2.5.2**) is underway: **2.5.2a** atom picking + selection (`selection.ts`); **2.5.2b**
+d/θ/φ measurement (`measure.ts`, ASE conventions pinned to source) + the selection-survival
+rule (`selectionSurvives`). Next: **2.5.2c** — apply d/θ/φ through ASE, whose acceptance test
+re-derives all three with `measure.ts` (already recorded).
 
 ## Responsibilities
 
@@ -44,7 +47,11 @@ functions, no imports from react / 3dmol / tauri. The reactive `store.ts` (added
 - `ensemble.ts` — GOAT conformer-ensemble parsing + input generation (2.5.1a),
   plus `isGoatInput` (2.5.2a — is this a conformer-search job?).
 - `selection.ts` — the geometry editor's atom pick list (2.5.2a): `toggleAtom`,
-  `validateSelection`, `describeAtom`. Pure / node-tested, no React.
+  `validateSelection`, `describeAtom`, plus `selectionSurvives` (2.5.2b — the
+  composition-signature survival rule). Pure / node-tested, no React.
+- `measure.ts` — geometry measurement off the pick list (2.5.2b): `distance`,
+  `angle`, `dihedral`, `measureSelection`, `formatMeasurementValue`. Pure /
+  node-tested, React-free. **ASE conventions pinned to source** (see below).
 - `AtomInspector.tsx` — the atom panel on New Job (React; reads a selection held
   in `NewJobScreen` state, uses the shared `fragmentColor` palette).
 - `__fixtures__/butane.finalensemble.xyz` — a real (3-structure) slice of an ORCA
@@ -93,7 +100,8 @@ Index space:
   `MoleculeViewer` in 2.5.2a** — there must not be a second copy. Two consumers,
   both keying the *same* question off it: the viewer re-`zoomTo`s only on a
   signature change (a coordinate-only edit must not move the camera), and
-  `NewJobScreen` re-runs `validateSelection` only on a signature change.
+  `NewJobScreen` reconsiders the pick list only on a signature change — passing
+  the before/after signatures to `selectionSurvives` (2.5.2b).
 - `fragmentRanges(scene): { fragmentId, start, end }[]` — **start inclusive, end
   exclusive** (same convention as `OutputMatch` col_start/col_end, Phase 2.7).
   **First consumer (2.5.0c):** `MoleculeViewer` styles each fragment by its
@@ -373,17 +381,94 @@ every change through these functions.
   measuring a set different from the atoms they see highlighted — a wrong-atom
   measurement with no visible cause. A hard reset to the just-clicked atom is
   unambiguous ("fifth click resets").
-- `validateSelection(selection, scene): number[]` — drop indices that no longer
-  address an atom (a fragment removed, scene cleared). Returns the **same array
-  reference** when nothing is dropped, so a no-op doesn't churn React state.
+- `validateSelection(selection, scene): number[]` — drop indices **out of range**
+  (a fragment removed, scene cleared). Returns the **same array reference** when
+  nothing is dropped, so a no-op doesn't churn React state. **Range only:** it
+  *survives an index shift* — a picked index that is still in range but now points
+  at a different atom passes through unchanged. It is the **second echelon**, not
+  the primary removal guard (see `selectionSurvives`).
+- `selectionSurvives(prevSignature, nextSignature): boolean` (2.5.2b) — does a
+  selection survive a composition change, working on the two
+  `compositionSignature` strings alone (never sees the scene)? **true** iff the
+  signature is **unchanged** or a **pure append** (`next` starts with
+  `prev + "|"`); **false** on a removal, a recomposition, or a cleared/appeared
+  scene. The trailing `"|"` forces a whole-field match so `"a:3"` can't
+  append-match `"a:30|b:2"`. This is the **primary** guard `NewJobScreen` keys
+  the pick list off (see the survival rule below).
 - `describeAtom(scene, globalIndex): AtomDescription | null` — a thin wrapper over
   `locateAtom` (no own fragment walk); adds `fragmentIndex` (the palette key) and
   the atom's coordinates. `null` for out-of-range (same non-throwing contract).
 
-`NewJobScreen` re-runs `validateSelection` **only when `compositionSignature`
-changes** — never on a coordinate-only edit — so removing the first fragment
-while an atom of the last is selected clears the stale index instead of pointing
-it at a different atom.
+### The selection survival rule (2.5.2b)
+
+`addFragment` **always appends** the new fragment last, so an append leaves every
+existing atom's global index unchanged — a selection of the older atoms survives
+it. Any **other** composition change (a fragment removed, its atom count changed)
+shifts indices, and after a removal "the same atom" has **no operational
+definition**: a silent remap (index N now means a different atom) is worse than a
+lost click. So the rule is a clean binary:
+
+- signature unchanged (a coordinate-only edit) or pure append → **keep** the
+  selection;
+- anything else → **clear it outright**, no remap.
+
+`NewJobScreen` asks `selectionSurvives(prev, next)` on every signature change;
+`!survives → setSelection([])`. `validateSelection` stays a defensive second
+echelon (mainly the append path and `scene → null`). **Why the split matters:**
+`validateSelection` is range-only, so it *survives an index shift* — remove
+water(0,1,2) from water+BH₄⁻ with the boron (global 3) picked and global 3 is
+still in range but now addresses a BH₄⁻ hydrogen. Range validation keeps `[3]`
+silently pointing at the wrong atom; `selectionSurvives` (signature `wat:3|bh4:5`
+→ `bh4:5`, not an append) returns false and clears it. In 2.5.2d that index
+becomes an ASE mask, so a silent shift would mask the wrong atom.
+
+## Measurement (`measure.ts`, 2.5.2b)
+
+Reads the pick list **positionally**: 2 atoms → `distance(i,j)`, 3 → `angle(i,
+vertex, j)` with the **middle pick as the vertex**, 4 → `dihedral(i,j,k,l)` along
+the chain (axis `j–k`). `measureSelection(scene, selection)` returns a tagged
+`Measurement` (`none | distance | angle | dihedral`), each carrying `atoms` (the
+picks in click order) and `sameFragment` — inter-fragment distance is a future
+reaction coordinate (ADR-007) and must read apart from internal geometry.
+Degenerate inputs (coincident atoms, zero vector, collinear inner triple for the
+dihedral, out-of-range index) return **null, never NaN**; `measureSelection` maps
+null → `none`.
+
+### Conventions, pinned to ASE source (the 2.5.2c dependency)
+
+These are not just a user readout: 2.5.2c's acceptance test applies a target
+d/θ/φ through ASE, reads coordinates back, and **re-derives all three with this
+module** to check them. A convention that diverged from ASE would fail a correct
+core or — worse — pass a wrong one. So the conventions are fixed from the **real
+ASE source** in the sidecar venv (`ase/geometry/geometry.py`, `ase/atoms.py`;
+ASE checked 2026-07-29), not from memory:
+
+- **Angle vertex = the middle index.** `Atoms.get_angle(a1, a2, a3)` is the angle
+  between `a1-a2` and `a3-a2` (`atoms.py::get_angles`: `v12 = a1s - a2s`,
+  `v32 = a3s - a2s`) — `a2` is the vertex. Our `(i, vertex, j)` matches
+  positionally. Range `[0, 180]`.
+- **Dihedral range `[0, 360)`, NOT `(-180, 180]`.** `geometry.py::get_dihedrals`
+  computes `atan2` into `[-π, π]` then executes
+  `dihedrals[dihedrals < 0.] += 2*pi` **before** converting to degrees — folding
+  to `[0, 2π)`. We replicate that fold verbatim. Confirmed numerically against
+  ASE on the butane fixture: anti = 179.998°, gauche = **67.523°** (the 60 side,
+  not 300 — which is exactly what the `[0,360)` fold with vectors
+  `v0=a1-a0, v1=a2-a1, v2=a3-a2` produces). `measure.test.ts` locks the gauche
+  value; it is the tripwire if 2.5.2c's ASE call ever folds the other way.
+- **Reversal invariance / reflection.** `dihedral(i,j,k,l) === dihedral(l,k,j,i)`
+  (ASE-confirmed to full precision). A reflection through one axis (improper
+  rotation) sends `φ → 360 − φ`; distance and angle are reflection-invariant.
+- **Collinearity by cross-product norm, not angle.** The dihedral is undefined
+  when an inner triple is planar; we threshold the **normalised cross-product
+  magnitude** (== |sin θ|, scale-free, well-conditioned near 0/180°), not an
+  `acos` angle.
+
+`measure.test.ts` asserts invariants, not literals from our own constructor:
+water H–O–H 104.52° / O–H 0.9572 Å and BH₄⁻ H–B–H 109.47° (from the
+fragment-library source), the butane dihedrals above, the symmetries, a mirror
+(`φ → 360 − φ`), and the load-bearing one — **rigid motion** (an explicit proper
+rotation + translation of the whole scene leaves all three unchanged to 1e-9;
+this catches a bug in the math, not in a single number).
 
 ## Notes
 

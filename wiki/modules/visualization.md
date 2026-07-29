@@ -2,8 +2,9 @@
 
 **Status:** 3Dmol.js component built (Phase 2.1); **multi-fragment rendering added (2.5.0c)** — one
 model, index-range styling, shared `fragmentColor` palette. **Atom picking added (2.5.2a)** — mouse
-click → `atom.index` → selection panel, WebKitGTK-confirmed. Trajectories / orbitals / spectra not
-started.
+click → `atom.index` → selection panel, WebKitGTK-confirmed. **Measurement labels/lines added
+(2.5.2b)** — dashed bond lines + a d/θ/φ value label in the highlight effect, non-clickable.
+Trajectories / orbitals / spectra not started.
 
 ## As built (Phase 2.1) — MoleculeViewer + xyz preview
 `npm install 3dmol` (v2.5.5; ships its own TypeScript types under `build/types/`, so no custom
@@ -96,12 +97,26 @@ Mechanics:
   clobber the per-fragment colours (index-range styling) applied on the same model and
   we'd have to restore them by hand; a sphere sits on top and leaves them intact. The
   highlight runs in a **separate effect** keyed on `[selection, scene]` that does
-  `removeAllShapes()` + re-add + `render()` — **no `zoomTo`, no model reload**, so a
-  selection change never moves the camera. (The spheres also become the anchor for
-  2.5.2b's measurement labels.)
+  `removeAllShapes()` + `removeAllLabels()` + re-add + `render()` — **no `zoomTo`, no
+  model reload**, so a selection change never moves the camera.
 - On a coordinate-only edit the model effect still re-renders (new `scene` ref) so the
   sphere follows the atom to its new position; the *selection* itself is left alone by
-  `NewJobScreen` (it re-validates only on a `compositionSignature` change).
+  `NewJobScreen` (it reconsiders it only on a `compositionSignature` change — 2.5.2b via
+  `selectionSurvives`).
+
+### Measurement labels & lines (2.5.2b)
+Live in the **same** highlight effect (`[selection, scene]`), drawn by `drawMeasurement`
+after the halo spheres, from `measureSelection` (pure, `scene/measure.ts`):
+- a **dashed `addLine`** per bond of the pick chain (2 picks → 1 line, 3 → 2, 4 → 3) and
+  one value **`addLabel`** (`formatMeasurementValue`) — anchored at the bond midpoint for a
+  distance, the **vertex** for an angle, the **j–k axis midpoint** for a dihedral.
+- **`removeAllShapes()` / `removeAllLabels()` run BEFORE the `!scene` early return** — the
+  earlier code bailed on `!scene` first, so when the last fragment was removed the halos and
+  labels lingered. Clear first, then bail.
+- **Labels and lines are NOT made clickable.** 3Dmol shapes/labels default non-clickable and
+  we never call `setClickable` on them, so a label lying over a selected atom cannot intercept
+  the pick — a repeat click still toggles that atom off (the 2.5.2a picking path is
+  untouched). This is a direct regression guard for the pick-through-label case.
 
 ## Structures & trajectories
 3Dmol.js viewer component (**done**, above); multiframe xyz → trajectory playback with frame

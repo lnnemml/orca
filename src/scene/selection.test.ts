@@ -1,11 +1,12 @@
 import { describe, it, expect } from "vitest";
 
 import type { Scene, SceneFragment } from "./types";
-import { removeFragment } from "./scene";
+import { removeFragment, compositionSignature } from "./scene";
 import {
   MAX_SELECTION,
   toggleAtom,
   validateSelection,
+  selectionSurvives,
   describeAtom,
 } from "./selection";
 
@@ -123,14 +124,66 @@ describe("validateSelection", () => {
     expect(validateSelection([0, 1, 2], null)).toEqual([]);
   });
 
-  it("cleans the selection after removeFragment of the FIRST fragment", () => {
-    // water(0..2) + BH4-(3..7) + Cl-(8); select an atom of the LAST fragment.
-    const s = scene(water(), borohydride(), chloride());
-    const sel = [8]; // the chloride
-    // Remove the first fragment → 6 atoms remain, valid indices 0..5.
+  // The defect the 2.5.2b review found: range-only validation SURVIVES an index
+  // shift. Removing the first fragment slides every later atom down, so a picked
+  // index that is still in range silently re-points at a DIFFERENT atom. This
+  // test documents that `validateSelection` alone cannot catch it — which is why
+  // `selectionSurvives` (below) is the primary guard. (The old test here passed
+  // for the wrong reason: it used index 8, which merely fell out of range.)
+  it("does NOT clean an in-range index that a removal re-pointed (range-only)", () => {
+    // water(0,1,2) + BH4-(3..7); pick global 3 = the boron (BH4- local 0).
+    const s = scene(water(), borohydride());
+    const sel = [3];
+    expect(describeAtom(s, 3)).toMatchObject({ element: "B", localIndex: 0 });
+    // Remove water → 5 atoms remain (0..4); global 3 is now an H (BH4- local 3).
     const after = removeFragment(s, "wat");
-    const cleaned = validateSelection(sel, after);
-    expect(cleaned).toEqual([]); // index 8 no longer exists — not a stray atom
+    expect(describeAtom(after, 3)).toMatchObject({ element: "H", localIndex: 3 });
+    // Range-only check keeps it — the selection silently moved boron → hydrogen.
+    expect(validateSelection(sel, after)).toEqual([3]);
+  });
+});
+
+// ── selectionSurvives (2.5.2b — the composition-signature guard) ──────────────
+
+describe("selectionSurvives", () => {
+  it("survives an unchanged signature (a coordinate-only edit)", () => {
+    const sig = "a:3|b:5";
+    expect(selectionSurvives(sig, sig)).toBe(true);
+  });
+
+  it("survives a pure append (a fragment added LAST — indices don't shift)", () => {
+    expect(selectionSurvives("a:3", "a:3|b:5")).toBe(true);
+    expect(selectionSurvives("a:3|b:5", "a:3|b:5|c:1")).toBe(true);
+  });
+
+  it("does NOT append-match on a size prefix (the trailing '|' is load-bearing)", () => {
+    // "a:3" must not be read as a prefix of "a:30|b:2".
+    expect(selectionSurvives("a:3", "a:30|b:2")).toBe(false);
+  });
+
+  it("does not survive a removal, a recomposition, or a cleared scene", () => {
+    expect(selectionSurvives("a:3|b:5", "b:5")).toBe(false); // first removed
+    expect(selectionSurvives("a:3|b:5", "a:3")).toBe(false); // last removed
+    expect(selectionSurvives("a:3|b:5", "a:4|b:5")).toBe(false); // count changed
+    expect(selectionSurvives("a:3", null)).toBe(false); // scene cleared
+    expect(selectionSurvives(null, "a:3")).toBe(false); // scene appeared
+  });
+
+  it("survives when both are null (no scene throughout)", () => {
+    expect(selectionSurvives(null, null)).toBe(true);
+  });
+
+  // The full reproduction, driven through real signatures: removing the FIRST
+  // fragment must NOT survive, so NewJobScreen clears the selection instead of
+  // letting index 3 re-point boron → hydrogen (the defect above).
+  it("clears the selection on removeFragment of the FIRST fragment", () => {
+    const s = scene(water(), borohydride()); // sig: wat:3|bh4:5
+    const after = removeFragment(s, "wat"); // sig: bh4:5
+    const survives = selectionSurvives(
+      compositionSignature(s),
+      compositionSignature(after),
+    );
+    expect(survives).toBe(false); // → NewJobScreen setSelection([])
   });
 });
 

@@ -375,6 +375,31 @@ The first unit of the geometry editor, plus a small convergence-label fix (§
   invariants, `isGoatInput`, `compositionSignature`); `cargo test` 55 (Rust untouched).
   The in-window click path needs the real Tauri window; manual checklist in the log.
 
+## As built (2.5.2b) — measurement readout + viewer labels
+Reads the pick list as geometry (pure math in `scene/measure.ts`; conventions pinned to ASE
+source — see `modules/scene.md`). No coordinate change: measurement is display-only here.
+- **`AtomInspector` readout** (a new line under the head, shown at ≥2 picks): the atom chain
+  in **click order** with the value — `H···B  1.234 Å`, `104.5°`, `dihedral 178.9°` (distance
+  uses `···`, angle/dihedral use `–`). A prominent **`inter-fragment`** badge when the two
+  atoms are in different fragments — that distance is the future reaction coordinate (ADR-007),
+  read apart from internal geometry. The angle vertex is the **middle pick**, not the smallest
+  index. The index line now reads **`local index N · global index N (both 0-based)`** (the
+  local index was 0-based all along but only the global one said so).
+- **Viewer labels/lines** live in `MoleculeViewer`'s highlight effect — see
+  `modules/visualization.md`. Dashed line per bond of the pick chain + one value label; not
+  clickable, so they never intercept an atom pick.
+- **Selection survival (review fix, done first).** The old rule re-ran only `validateSelection`
+  on a signature change, which is **range-only** and survives an index shift — after removing
+  the first fragment a still-in-range pick silently re-pointed at a different atom. Now
+  `NewJobScreen` asks `selectionSurvives(prevSig, nextSig)`: unchanged or pure-append → keep,
+  anything else → clear. (`selection.ts`; the survival rule is in `modules/scene.md`.)
+- **Verified:** `tsc` + `vite build` clean; `vitest` **178** (was 149 → +29: `measure.ts`
+  chemistry/invariants incl. rigid-motion & mirror, `selectionSurvives`, `isGoatInput`
+  trailing-comment); `cargo test` 55 (Rust untouched). In-window checks (2-atom
+  inter-fragment distance, 3-atom angle with the right vertex, 4-atom dihedral, repeat-click
+  toggle-off under a label, remove-first-fragment clears selection + labels) need the real
+  Tauri window; checklist in the log.
+
 ## As built (Phase 2.5) — New Job UI fixes (WebKitGTK contrast, accordion, scroll)
 Three issues found by manual testing in the real Tauri window (not visible in Chromium). CSS +
 a collapse wrapper only — no Input Builder / `build-input.ts` / `orca-options.ts` logic changed.

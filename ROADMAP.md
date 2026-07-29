@@ -162,8 +162,10 @@ re-optimisation of the lowest 3–4 stay in Phase 4.5 (the scientific pipeline);
 - [x] Atom picking in 3Dmol.js: click → highlight, show atom info (element, index, coordinates)
       — uses `locateAtom(globalIndex)` to report "atom N of <fragment>" **(2.5.2a — pick path
       WebKitGTK-verified; `selection.ts` + atom panel; also the GOAT convergence-label fix)**
-- [ ] Measurement mode: pick 2/3/4 atoms → display distance / angle / dihedral angle
+- [x] Measurement mode: pick 2/3/4 atoms → display distance / angle / dihedral angle
       — fragment boundaries make inter- vs intra-fragment distances distinguishable
+      **(2.5.2b — `measure.ts`, ASE conventions pinned to source; readout + viewer
+      labels; also the `selectionSurvives` review fix)**
 - [ ] Geometry kernel in sidecar (ASE-based): `atoms.set_distance()`, `set_angle()`,
       `set_dihedral()` with mask arrays — recalculate Cartesian coordinates; move
       single atom or rigid fragment. No custom trigonometry.
