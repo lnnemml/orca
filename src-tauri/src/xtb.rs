@@ -16,14 +16,14 @@
 //! cleanly — the post-condition below is the runtime guard against exactly that.
 //! See `wiki/orca/xtb.md` and `wiki/orca/gotchas.md`.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::commands::settings::DbState;
 use crate::error::AppError;
@@ -352,14 +352,14 @@ fn distance_between(a: V3, b: V3) -> f64 {
 
 // ── Runner state + commands ───────────────────────────────────────────────────
 
+/// The reserved slot for the one in-flight run. Just the cancel flag: `Some` means
+/// busy, and the worker thread (which holds the pgid + dir locally) does the actual
+/// killpg/sweep off the UI thread when it sees the flag. `xtb_cancel` only flips it.
 struct XtbRun {
-    pgid: i32,
-    dir: PathBuf,
     cancelled: Arc<AtomicBool>,
 }
 
-/// Single-slot runner: xtb is a synchronous helper (seconds), so at most one runs
-/// at a time. Holds the running pgid + dir so `xtb_cancel` can kill the group.
+/// Single-slot runner: xtb is a helper (seconds), so at most one runs at a time.
 #[derive(Default)]
 pub struct XtbRunner {
     running: Mutex<Option<XtbRun>>,
@@ -371,6 +371,12 @@ pub struct XtbResult {
     pub xyz: String,
     pub wall_time_secs: f64,
     pub held: Vec<HeldConstraint>,
+}
+
+/// Payload of the `xtb:error` event (the run failed / was cancelled / timed out).
+#[derive(Clone, Serialize)]
+struct XtbErrorPayload {
+    message: String,
 }
 
 /// Resolve a possibly-bare binary name to an absolute path via `$PATH`, so xtb is
@@ -430,27 +436,32 @@ pub fn xtb_version(db: State<'_, DbState>) -> Result<String, AppError> {
     Ok(format!("xtb {version}"))
 }
 
-/// Cancel the running xtb (if any): flag it and kill the process group + sweep by
-/// cwd (`debugging/004`).
+/// Cancel the running xtb (if any). **Only sets the flag** — it must NOT block: it
+/// runs on the main thread, and `terminate_job` sleeps up to ~12 s (SIGTERM grace
+/// + SIGKILL). The worker thread's poll loop checks `cancelled` every 50 ms and
+/// does the actual killpg + cwd sweep (`debugging/004`) on ITS thread, then cleans
+/// up. So the button returns instantly and the kill happens off the UI thread.
 #[tauri::command]
 pub fn xtb_cancel(runner: State<'_, XtbRunner>) {
-    let guard = match runner.running.lock() {
-        Ok(g) => g,
-        Err(_) => return,
-    };
-    if let Some(run) = guard.as_ref() {
-        run.cancelled.store(true, Ordering::SeqCst);
-        terminate_job(run.pgid, &run.dir);
+    if let Ok(guard) = runner.running.lock() {
+        if let Some(run) = guard.as_ref() {
+            run.cancelled.store(true, Ordering::SeqCst);
+        }
     }
 }
 
-/// Pre-optimize a scene with GFN2-xTB, holding `constraints`. Prepares an isolated
-/// dir (domain rule #3), writes `input.xyz` + xcontrol (constraints in xtb's
-/// 1-based `$constrain`), runs xtb by full path, checks post-conditions (atom
-/// count, element order, each constraint held within tolerance), cleans up, and
-/// returns the optimized geometry. Killable via `xtb_cancel` / timeout.
+/// Start a GFN2-xTB pre-optimization holding `constraints`, then RETURN. This is a
+/// **starter**, mirroring `submit_job` → `drive_job`: it validates the input,
+/// reserves the single slot, and moves the actual work (spawn xtb, poll,
+/// post-conditions, dir cleanup) into a `std::thread::spawn`. A long operation must
+/// NEVER run inside a synchronous command — the command executes on the main
+/// GTK/WebKit thread, so the window would freeze for the whole run AND `xtb_cancel`
+/// (a separate command) could not be delivered. The result / errors arrive on the
+/// frontend as **events** (`xtb:done` / `xtb:error`), the same mechanism job logs
+/// use. See `wiki/modules/tauri-core.md`.
 #[tauri::command]
 pub fn xtb_optimize(
+    app: AppHandle,
     db: State<'_, DbState>,
     runner: State<'_, XtbRunner>,
     xyz: String,
@@ -458,67 +469,89 @@ pub fn xtb_optimize(
     multiplicity: i32,
     constraints: Vec<Constraint>,
     timeout_secs: Option<u64>,
-) -> Result<XtbResult, AppError> {
+) -> Result<(), AppError> {
+    // Validate synchronously so the user gets immediate feedback (bad multiplicity,
+    // out-of-range index) instead of an event a moment later.
     if multiplicity < 1 {
         return Err(AppError::Backend("xtb: multiplicity must be ≥ 1".into()));
     }
-    // Reject a concurrent run (single slot).
-    {
-        let guard = runner
-            .running
-            .lock()
-            .map_err(|_| AppError::Internal("xtb runner mutex poisoned".into()))?;
-        if guard.is_some() {
-            return Err(AppError::Backend(
-                "an xtb optimization is already running".into(),
-            ));
-        }
-    }
     let path = xtb_path(&db)?;
-
-    // Parse the input geometry once — for target resolution AND the element-order
-    // post-condition.
     let (elements_in, positions_in) = parse_xyz(&xyz)?;
-    let targets = resolve_targets(&constraints, &positions_in)?;
+    let targets = resolve_targets(&constraints, &positions_in)?; // out-of-range → immediate err
 
-    // Isolated directory (domain rule #3).
+    // Reserve the single slot (reject a concurrent run) BEFORE returning, so a
+    // second click between here and the thread spawning can't start a second run.
+    let cancelled = Arc::new(AtomicBool::new(false));
     let data_dir = dirs::data_dir()
         .ok_or_else(|| AppError::Internal("no user data directory".into()))?
         .join("orcastudio");
     let dir = data_dir.join("xtb").join(uuid::Uuid::new_v4().to_string());
-    std::fs::create_dir_all(&dir)?;
-
-    // Run everything with cleanup guaranteed afterwards (rule #3).
-    let cancelled = Arc::new(AtomicBool::new(false));
-    let result = run_in_dir(
-        &path,
-        &dir,
-        &runner,
-        &cancelled,
-        &xyz,
-        charge,
-        multiplicity,
-        &constraints,
-        &targets,
-        &elements_in,
-        &positions_in,
-        timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS),
-    );
-
-    // Always: unregister + remove the scratch dir (litters like ORCA — rule #3).
-    if let Ok(mut g) = runner.running.lock() {
-        *g = None;
+    {
+        let mut g = runner
+            .running
+            .lock()
+            .map_err(|_| AppError::Internal("xtb runner mutex poisoned".into()))?;
+        if g.is_some() {
+            return Err(AppError::Backend(
+                "an xtb optimization is already running".into(),
+            ));
+        }
+        *g = Some(XtbRun {
+            cancelled: cancelled.clone(),
+        });
     }
-    let _ = std::fs::remove_dir_all(&dir);
 
-    result
+    // Off the main thread — the whole point of this fix.
+    let timeout = timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
+    std::thread::spawn(move || {
+        let result = run_in_dir(
+            &dir,
+            &path,
+            &cancelled,
+            &xyz,
+            charge,
+            multiplicity,
+            &constraints,
+            &targets,
+            &elements_in,
+            &positions_in,
+            timeout,
+        );
+
+        // UNCONDITIONAL cleanup on EVERY exit path (success / error / cancel /
+        // timeout): remove the isolated dir (litters like ORCA — rule #3) and free
+        // the slot. This is the same guarantee the old in-command code gave; moving
+        // to a thread must not weaken it, so it sits right after `run_in_dir`,
+        // outside any `?`.
+        let _ = std::fs::remove_dir_all(&dir);
+        if let Some(runner) = app.try_state::<XtbRunner>() {
+            if let Ok(mut g) = runner.running.lock() {
+                *g = None;
+            }
+        }
+
+        // Report by event (the job-log convention: `<domain>:<kind>` payload).
+        match result {
+            Ok(res) => {
+                let _ = app.emit("xtb:done", res);
+            }
+            Err(e) => {
+                let _ = app.emit(
+                    "xtb:error",
+                    XtbErrorPayload {
+                        message: e.to_string(),
+                    },
+                );
+            }
+        }
+    });
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
 fn run_in_dir(
-    path: &str,
     dir: &Path,
-    runner: &State<'_, XtbRunner>,
+    path: &str,
     cancelled: &Arc<AtomicBool>,
     xyz: &str,
     charge: i32,
@@ -529,9 +562,17 @@ fn run_in_dir(
     positions_in: &[V3],
     timeout_secs: u64,
 ) -> Result<XtbResult, AppError> {
+    // Create the isolated dir here so the thread's cleanup-after is unconditional
+    // even if we bail before spawning (a missing dir → remove_dir_all is a no-op).
+    std::fs::create_dir_all(dir)?;
     std::fs::write(dir.join("input.xyz"), xyz)?;
     std::fs::write(dir.join("xcontrol"), build_xcontrol(constraints, targets))?;
     let uhf = multiplicity - 1; // unpaired electrons = 2S = mult − 1
+
+    // A cancel that landed during setup: bail before spawning.
+    if cancelled.load(Ordering::SeqCst) {
+        return Err(AppError::Backend("xtb optimization cancelled".into()));
+    }
 
     let stdout = std::fs::File::create(dir.join("xtb.out"))?;
     let stderr = stdout.try_clone()?;
@@ -562,20 +603,8 @@ fn run_in_dir(
     let mut child = cmd
         .spawn()
         .map_err(|e| AppError::Backend(format!("could not spawn xtb at '{path}': {e}")))?;
-    let pgid = child.id() as i32; // process_group(0) → pgid == child pid
-
-    // Register so xtb_cancel can reach it.
-    {
-        let mut g = runner
-            .running
-            .lock()
-            .map_err(|_| AppError::Internal("xtb runner mutex poisoned".into()))?;
-        *g = Some(XtbRun {
-            pgid,
-            dir: dir.to_path_buf(),
-            cancelled: cancelled.clone(),
-        });
-    }
+    let pgid = child.id() as i32; // process_group(0) → pgid == child pid; kept local
+                                  // (the poll loop below does the killpg + cwd sweep)
 
     // Poll for exit / cancel / timeout.
     let deadline = start + Duration::from_secs(timeout_secs);

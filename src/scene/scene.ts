@@ -334,6 +334,25 @@ export function replaceAllAtoms(scene: Scene, atoms: SceneAtom[]): Scene {
 }
 
 /**
+ * Guard for applying an off-thread result (an xtb pre-optimization, 2.5.5-fix)
+ * back to the scene: **apply only to the exact scene reference it was launched
+ * against.** The result is a whole-scene geometry computed from the scene as it
+ * was at launch; if the user changed the scene while it ran (a fragment
+ * added/removed, another edit), applying it would clobber that change or mismatch
+ * the atom count. This is the same stale-response drop as the split-mask fetch
+ * (2.5.3b) — a result for a superseded input is discarded, not forced on. Identity
+ * (not composition) is the key: any `setScene` yields a new reference (store
+ * contract), so a coordinate-only edit during the run also (correctly) drops the
+ * now-stale result.
+ */
+export function xtbResultApplies(
+  launchedScene: Scene | null,
+  currentScene: Scene | null,
+): boolean {
+  return launchedScene !== null && launchedScene === currentScene;
+}
+
+/**
  * Rigid-body translate a fragment by (dx, dy, dz). Pure/immutable — returns a new
  * fragment with the same id, composition and internal geometry, only shifted.
  * Used by fragment placement (2.5.0d-2) and the geometry editor (2.5.3).

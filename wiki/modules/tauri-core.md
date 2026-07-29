@@ -213,6 +213,24 @@ registered in `lib.rs`.
   `0.9.0` where string order is wrong), ordering basics, unparseable → stale, and
   `parse_health_version`.
 
+## Rule — a long operation NEVER lives inside a synchronous command
+A `#[tauri::command] fn` executes on the **main thread**, which on Linux is the GTK/WebKitGTK UI
+thread. Anything slow inside it freezes the window for the whole duration AND starves every other
+command (a separate cancel command can't be delivered while the main thread is busy). **The pattern
+is: a starter command that validates + reserves state + RETURNS immediately, the actual work in
+`std::thread::spawn`, and results/errors reported to the frontend as events** (`app.emit`, the same
+mechanism job logs use — `<domain>:<kind>` payloads). Two places apply it:
+- **`drive_job`** (`local_backend.rs`) — `submit_job` returns at once; a spawned thread tails ORCA's
+  stdout and emits `job:log` / `job:status` / `job:convergence`.
+- **`xtb_optimize`** (`xtb.rs`, 2.5.5-fix) — was wrong at first: a synchronous command that ran the
+  whole ~1.5 s xtb inline, so the window froze and `xtb_cancel` was undeliverable (found on review by
+  reading the code against `drive_job`). Fixed to the same starter+thread+events shape: emits
+  `xtb:done` / `xtb:error`.
+
+This defect is invisible to `cargo test` and shows on the first click, so the acceptance step is a
+**manual run in the real window** (rotate the molecule during a run → stays responsive; Cancel
+mid-run → interrupts; second run during the first → rejected).
+
 ## As built (Phase 2.5.5) — xtb pre-optimization (`xtb.rs`)
 Standalone GFN2-xTB relaxation of a scene while holding the user's constraints, so the geometry
 handed to ORCA is already sensible. **In Rust, not the sidecar** (logged decision): Rust owns
@@ -223,14 +241,17 @@ setting (SQLite, under Rust). Details of the tool itself: `wiki/orca/xtb.md`.
   a `settings` row like `orca_path`). Never bundled (#7). `xtb_version` command runs
   `<path> --version` and parses the banner for the Settings "Check" button; `resolve_binary`
   turns a bare name into an absolute path via `$PATH`.
-- **`xtb_optimize(xyz, charge, multiplicity, constraints, timeout_secs?) -> XtbResult`** — the core
-  command. `constraints` deserialize from the TS `Constraint` (0-based atoms; `valueText` ignored).
-  Flow: parse the input xyz once (for target resolution AND the element-order post-condition) →
-  resolve each constraint's target (explicit value, or the geometry's CURRENT value for a
-  freeze-as-is) → **`build_xcontrol`** writes the `$constrain`/`$fix` blocks with every index **`+1`
-  (xtb is 1-based — `wiki/orca/xtb.md`)** → run `<xtb> input.xyz --input xcontrol --opt --gfn 2
-  --chrg <c> --uhf <mult−1>` by full path, in an **isolated dir** (`<data>/xtb/<uuid>`), in its own
-  process group → read `xtbopt.xyz`.
+- **`xtb_optimize(xyz, charge, multiplicity, constraints, timeout_secs?) -> ()`** — a **starter**
+  (2.5.5-fix): it validates synchronously (multiplicity, parse xyz, resolve targets → an out-of-range
+  index rejects here for immediate feedback), **reserves the single slot** (rejecting a concurrent
+  run) with a `pgid: 0` placeholder, then spawns the worker thread and returns. `constraints`
+  deserialize from the TS `Constraint` (0-based atoms; `valueText` ignored). The thread's `run_in_dir`
+  resolves each target (explicit value, or the geometry's CURRENT value for a freeze-as-is), has
+  **`build_xcontrol`** write the `$constrain`/`$fix` blocks with every index **`+1` (xtb is 1-based —
+  `wiki/orca/xtb.md`)**, runs `<xtb> input.xyz --input xcontrol --opt --gfn 2 --chrg <c> --uhf
+  <mult−1>` by full path in an **isolated dir** (`<data>/xtb/<uuid>`) in its own process group, polls
+  `try_wait` + the `cancelled` flag every 50 ms, and reads `xtbopt.xyz`. The result rides `xtb:done`,
+  an error `xtb:error`.
 - **Post-conditions INSIDE the command** (not only tests — the price of a missed error is the wrong
   geometry into a multi-hour ORCA run): atom count unchanged; element sequence unchanged
   positionally; **each constraint held within tolerance** (`check_held`: 0.1 Å distance / 5° angle /
@@ -238,11 +259,17 @@ setting (SQLite, under Rust). Details of the tool itself: `wiki/orca/xtb.md`.
   `wiki/orca/xtb.md`). Any breach → `AppError::Backend` with a diagnostic, never a silently-returned
   geometry. The held-check also catches an index-base mistake: a wrong `+1` constrains a different
   pair and the intended one drifts past tolerance.
-- **Isolation + cleanup + kill (rule #3, `debugging/004`).** The scratch dir is removed after
-  reading, on every path. Single-slot `XtbRunner` managed state holds the running pgid + dir;
-  `xtb_cancel` flags it and calls `terminate_job` (killpg SIGTERM→grace→SIGKILL + **cwd sweep**),
-  the SAME primitives as the ORCA backend (made `pub(crate)` — one copy). A timeout does the same.
-  xtb is synchronous (seconds), so it's a blocking command polling `try_wait`, not a queued job.
+- **Isolation + cleanup + kill (rule #3, `debugging/004`).** The scratch dir is removed and the slot
+  freed in the thread **unconditionally, right after `run_in_dir`** — outside any `?`, so it holds on
+  every exit path (success / error / cancel / timeout). This is the guarantee most easily lost when
+  moving work into a thread, so it lives in one place after the call, not scattered through the run.
+  Single-slot `XtbRunner` holds only the `cancelled` flag (`Some` = busy); **`xtb_cancel` just sets
+  the flag and returns** — it runs on the main thread and must not block, and `terminate_job` sleeps up
+  to ~12 s (SIGTERM grace + SIGKILL). The **worker thread's poll loop** (which holds the pgid + dir
+  locally) sees the flag within 50 ms and does the actual `terminate_job` (killpg SIGTERM→grace→SIGKILL
+  + **cwd sweep**, the ORCA primitives made `pub(crate)` — one copy) on its own thread, then the
+  unconditional cleanup runs. A timeout does the same. Still a helper, not a queued job — just no
+  longer blocking the UI thread on the run OR on the cancel.
 - **Registration:** `xtb::{xtb_version, xtb_optimize, xtb_cancel}` in the invoke handler;
   `app.manage(xtb::XtbRunner::default())` in setup. 10 unit tests (`xtb::tests`): 1-based xcontrol
   per op, cartesian→`$fix`, freeze-as-is resolves the current value, out-of-range rejected before

@@ -2117,3 +2117,38 @@ xtb 6.6.1.
 `$fix`, freeze-as-is, out-of-range rejected, held-check flags/passes, xyz parse — `2 ignored` pre-existing);
 `pytest` **38** untouched (this unit added nothing to the sidecar — the whole point of the Rust decision).
 xtb dirs cleaned. **Phase 2.5 (Scene / geometry editor / reaction-coordinate control) is complete.**
+
+## [2026-07-29] session | 2.5.5-fix: run xtb OFF the main thread (window froze, cancel undeliverable)
+
+**Found by reading the code, not by tests** — the defect is invisible to `cargo test` and shows on the
+first click. `xtb_optimize` was a *synchronous* `#[tauri::command]`, so it ran the whole ~1.5 s xtb on
+the **main GTK/WebKitGTK thread**: (1) the window froze for the entire run; (2) `xtb_cancel` (a separate
+command) could not be delivered while the main thread was busy — the Cancel button was unreachable by
+construction, and a UI-side timeout too. The project's own ORCA path already does the right thing
+(`submit_job` returns at once; `drive_job` runs in `std::thread::spawn` and emits events).
+
+**Fix — the existing pattern, not a new one.** `xtb_optimize` is now a **starter**: validate
+synchronously (multiplicity, parse, resolve targets → out-of-range rejects immediately), **reserve the
+single slot** (concurrent run rejected), spawn the worker thread, return. The thread runs `run_in_dir`
+(spawn xtb in its own group, poll `try_wait` + the `cancelled` flag every 50 ms, post-conditions),
+then **unconditionally** removes the isolated dir + frees the slot right after `run_in_dir` (outside any
+`?`, so it holds on success / error / cancel / timeout — the guarantee most easily lost in the move to a
+thread), then emits **`xtb:done`** / **`xtb:error`** (the job-log event convention). The slot now holds
+**only the cancel flag** — `xtb_cancel` **just sets it and returns** (it runs on the main thread;
+`terminate_job` sleeps up to ~12 s, so the worker thread — not the cancel command — does the killpg +
+cwd sweep off the UI thread when it sees the flag). So neither the run nor the cancel blocks the window.
+
+**Guarantees preserved:** single slot (reserved in the command before it returns), unconditional dir
+cleanup + slot release, process-group kill (`terminate_job`). **Stale-result race** (a result arriving
+after the user changed the scene): solved the SAME way as the 2.5.3b split-mask fetch — the frontend
+captures the launch scene and applies the result **only to that exact reference** (`xtbResultApplies`,
+now a named + tested pure guard); a changed scene → discarded, never clobbered. The event listener also
+carries the 2.5.3b `cancelled`-flag cleanup.
+
+**Verification — the honest state.** `cargo test` **68** (unchanged, no regression); `tsc` + `vite
+build` clean; `vitest` **296 → 299** (+3 `xtbResultApplies`). The window is now structurally identical
+to the proven-responsive `drive_job` path. **The physical acceptance test — rotate the molecule during
+a run, hit Cancel mid-run, start a second run during the first — was NOT performed by me:** it needs
+mouse interaction in the WebKitGTK window (no scripted-input tool here, and "feels responsive" is a
+human perceptual check). Per the task, this manual run in the real window **remains the obligatory
+acceptance step for the author.** I did not and do not report responsiveness as verified-by-me.

@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
 import { InputEditor } from "../editor/InputEditor";
 import { MoleculeViewer } from "../viewer/MoleculeViewer";
@@ -44,6 +45,7 @@ import {
   mergeToAtomLines,
   parseAtomLines,
   replaceAllAtoms,
+  xtbResultApplies,
   mergeToXyz,
   sceneFromAtomLines,
   sceneFromOrcaInput,
@@ -352,49 +354,95 @@ export function NewJobScreen({
     setError(null);
   };
 
-  // ── xTB pre-optimization (2.5.5) — Rust-side, synchronous, cancellable ───────
+  // ── xTB pre-optimization (2.5.5; off-thread 2.5.5-fix) ──────────────────────
   // Relax the WHOLE scene with GFN2-xTB while holding the text's constraints (the
-  // source of truth), then replace all coordinates. Undo rides the SAME one-step
-  // mechanism as edit mode (`applyEdit` stashes `preEditScene`).
+  // source of truth), then replace all coordinates. `xtb_optimize` is now a
+  // STARTER that returns immediately (the run lives on a Rust thread and reports
+  // via `xtb:done`/`xtb:error` events), so the window stays responsive and Cancel
+  // is actually deliverable. Undo rides the SAME one-step mechanism as edit mode
+  // (`applyEdit` stashes `preEditScene`).
   const [xtbBusy, setXtbBusy] = useState(false);
   const [xtbError, setXtbError] = useState<string | null>(null);
   const [xtbNote, setXtbNote] = useState<string | null>(null);
+  // The scene the run was launched against. A result is applied ONLY to this exact
+  // scene — the same stale-response guard as the split-mask fetch (2.5.3b): if the
+  // scene changed while xtb ran, the result is dropped, never applied to a scene it
+  // wasn't computed from (a mismatched atom count / wrong coordinates).
+  const xtbSceneRef = useRef<Scene | null>(null);
   const runXtbPreopt = async () => {
     if (!scene) return;
-    setXtbBusy(true);
     setXtbError(null);
     setXtbNote(null);
+    xtbSceneRef.current = scene;
+    setXtbBusy(true);
     try {
-      const result = await invoke<{
-        xyz: string;
-        wall_time_secs: number;
-        held: { kind: string; deviation: number; unit: string }[];
-      }>("xtb_optimize", {
+      await invoke("xtb_optimize", {
         xyz: mergeToXyz(scene),
         charge: totalCharge(scene),
         multiplicity: scene.multiplicity,
         constraints, // parsed from the text; unrecognised → button is disabled
         timeoutSecs: null,
       });
-      const atoms = parseAtomLines(result.xyz.trim().split("\n").slice(2));
-      if (!atoms) throw new Error("xtb returned a geometry OrcaStudio couldn't parse");
-      applyEdit(replaceAllAtoms(scene, atoms), scene); // preEditScene ← Undo
-      const held = result.held.length
-        ? " · held " +
-          result.held
-            .map((h) => `${h.kind} ±${h.deviation.toFixed(3)}${h.unit}`)
-            .join(", ")
-        : "";
-      setXtbNote(`Pre-optimized in ${result.wall_time_secs.toFixed(1)}s${held}`);
+      // Started — the result/errors arrive as events (handled below).
     } catch (e) {
-      setXtbError(e instanceof Error ? e.message : String(e));
-    } finally {
+      // Synchronous rejection only: busy slot / bad input. No run started.
       setXtbBusy(false);
+      xtbSceneRef.current = null;
+      setXtbError(e instanceof Error ? e.message : String(e));
     }
   };
   const cancelXtb = () => {
     invoke("xtb_cancel").catch(() => {});
   };
+
+  // Result/error events from the off-thread xtb run. Subscribed only while busy;
+  // the `cancelled` flag set in cleanup drops a late event (the 2.5.3b pattern),
+  // and the captured-scene identity check drops a result whose scene has since
+  // changed (applying it would clobber the user's edit / mismatch atom count).
+  useEffect(() => {
+    if (!xtbBusy) return;
+    let cancelled = false;
+    const unlisten = Promise.all([
+      listen<{
+        xyz: string;
+        wall_time_secs: number;
+        held: { kind: string; deviation: number; unit: string }[];
+      }>("xtb:done", (event) => {
+        if (cancelled) return;
+        setXtbBusy(false);
+        const captured = xtbSceneRef.current;
+        xtbSceneRef.current = null;
+        if (!xtbResultApplies(captured, useSceneStore.getState().scene) || !captured) {
+          setXtbNote("Pre-optimization discarded — the scene changed while it ran.");
+          return;
+        }
+        try {
+          const atoms = parseAtomLines(event.payload.xyz.trim().split("\n").slice(2));
+          if (!atoms) throw new Error("xtb returned a geometry OrcaStudio couldn't parse");
+          applyEdit(replaceAllAtoms(captured, atoms), captured); // preEditScene ← Undo
+          const held = event.payload.held.length
+            ? " · held " +
+              event.payload.held
+                .map((h) => `${h.kind} ±${h.deviation.toFixed(3)}${h.unit}`)
+                .join(", ")
+            : "";
+          setXtbNote(`Pre-optimized in ${event.payload.wall_time_secs.toFixed(1)}s${held}`);
+        } catch (err) {
+          setXtbError(err instanceof Error ? err.message : String(err));
+        }
+      }),
+      listen<{ message: string }>("xtb:error", (event) => {
+        if (cancelled) return;
+        setXtbBusy(false);
+        xtbSceneRef.current = null;
+        setXtbError(event.payload.message);
+      }),
+    ]);
+    return () => {
+      cancelled = true;
+      unlisten.then((fns) => fns.forEach((f) => f()));
+    };
+  }, [xtbBusy]);
 
   // Esc — ONE handler, explicit priority (2.5.2e-2 decision): in fullscreen it
   // exits fullscreen and does NOTHING else; otherwise it clears the selection.

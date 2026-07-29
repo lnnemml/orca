@@ -22,6 +22,7 @@ import {
   renameFragment,
   replaceFragmentAtoms,
   replaceAllAtoms,
+  xtbResultApplies,
   sceneFromAtomLines,
   serializeScene,
   setFragmentCharge,
@@ -270,6 +271,26 @@ describe("replaceAllAtoms", () => {
       .map((line) => line.trim().split(/\s+/))
       .map(([, x, y, z]) => ({ element: "C", x: Number(x), y: Number(y), z: Number(z) }));
     expect(() => replaceAllAtoms(s, flat)).toThrow(/element sequence/);
+  });
+});
+
+// ── xtbResultApplies — the off-thread stale-result guard (2.5.5-fix) ──────────
+
+describe("xtbResultApplies", () => {
+  const s = scene(water());
+
+  it("applies only to the exact scene reference the run was launched against", () => {
+    expect(xtbResultApplies(s, s)).toBe(true);
+  });
+
+  it("drops the result when the scene changed while xtb ran (new reference)", () => {
+    const edited = scene(water()); // same composition, different object → user edited
+    expect(xtbResultApplies(s, edited)).toBe(false);
+  });
+
+  it("drops the result when there is no launch scene or the scene was cleared", () => {
+    expect(xtbResultApplies(null, s)).toBe(false);
+    expect(xtbResultApplies(s, null)).toBe(false);
   });
 });
 
