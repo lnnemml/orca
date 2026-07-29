@@ -6,311 +6,244 @@ and output search (`output_search.rs`); `jobs.scene_json` snapshot (schema v4); 
 pre-optimization (`xtb.rs` — off-thread starter, killpg + cwd sweep, post-conditions). Built on
 the job model + Phase 0 scaffold.
 
-## As built (Phase 0)
-Files: `lib.rs` (builder + setup + exit handling), `db.rs`, `error.rs`, `sidecar.rs`,
-`commands/settings.rs`.
-- **Commands implemented:** `get_settings() -> HashMap<String,String>`,
-  `set_setting(key, value)`, `get_sidecar_status() -> SidecarStatus { status, port }`.
-- **DB (`db.rs`):** `init_db(data_dir)` opens `orcastudio.db` under `dirs::data_dir()/orcastudio`
-  and runs migration v1 (`settings` k/v table, seeds `orca_path=/opt/orca/orca`,
-  `schema_version=1`). Idempotent (`IF NOT EXISTS` / `INSERT OR IGNORE`) — a user-changed
-  `orca_path` survives restart (verified).
-- **Managed state:** `DbState(Mutex<Connection>)` (Connection is `Send` not `Sync`) and
-  `Arc<SidecarManager>`.
-- **`AppError`** variants: `Database`, `Sidecar`, `Io`, `Internal` (poisoned-mutex etc.).
-  Phase 0 serializes it to the frontend as a **plain string** (not `{code, message}` as the
-  planned surface below envisions — revisit when the UI needs structured error codes).
-- **Startup sequence (setup hook):** open+migrate SQLite → spawn sidecar → background
-  health-poll thread. `RunEvent::ExitRequested` stops the sidecar; `Drop` on `SidecarManager`
-  is the backstop.
+## Responsibilities & boundaries
 
-## As built (Phase 1 step 1) — job model + state machine
-Files added: `models/job.rs`, `commands/jobs.rs`. `db.rs` gained migration v2.
+Job state machine, SQLite ownership, ExecutionBackend implementations, sidecar lifecycle, log
+tailing, settings, and **all external-process spawning** (ORCA and xtb — ADR-009; the sidecar
+never runs a binary). The runtime mechanics of running ORCA live in
+`wiki/modules/execution-backends.md`; result parsing in `wiki/modules/parser.md`.
 
-- **Migration v2 (`db.rs`):** `migrate()` is now version-aware. It always ensures the v1
-  `settings` table/seeds, reads the stored `schema_version`, and steps forward: `version < 2`
-  → `CREATE TABLE jobs (...)`, then persists `schema_version=2`. Backward-compatible — an
-  existing v1 DB is upgraded in place, settings untouched (test `migrate_v1_to_v2_preserves_settings`).
-- **`jobs` table:** `id` (UUID v4 TEXT PK), `title`, `input_content` (full `.inp` text),
-  `status` (`draft|running|completed|failed`, default `draft`), `job_dir`, `energy` (REAL),
-  `wall_time` (REAL), `error_message`, `created_at` (`datetime('now')`), `started_at`,
-  `completed_at`. `Option` columns stay `NULL` until the relevant lifecycle step fills them.
-- **`JobStatus` enum (`models/job.rs`):** `Draft|Running|Completed|Failed`, serialized to/from
-  lowercase strings on the wire and in the DB (`as_str`, `from_db`). Remote states
-  (uploading/syncing) and `parsed` are deliberately deferred to later phases.
-- **`Job` struct:** mirrors the table 1:1, `#[derive(Serialize)]`. `Job::from_row` hydrates
-  from a row in `Job::COLUMNS` order; `Job::COLUMNS` is the single source of truth for the
-  select list.
-- **Commands implemented:** `create_job(title, input_content) -> Job` (generates UUID, inserts
-  as `draft`) *(signature gained `scene_json: Option<String>` in schema v4 — see "Schema v4"
-  below)*, `list_jobs() -> Vec<Job>` (newest first, `created_at DESC`),
-  `get_job(id) -> Job` (`AppError::NotFound` if absent), `update_job_status(id, status)` —
-  stamps `started_at` on `running`, `completed_at` on `completed`/`failed`; `NotFound` if the
-  id doesn't exist. Each command is a thin lock-and-delegate wrapper over a `*_conn(&Connection)`
-  helper so the state-machine logic is unit-testable without a Tauri app.
-- **`AppError`** gained `NotFound(String)`.
-- **Not yet:** no UI, no `LocalBackend`/process spawn, no filesystem job dirs — those are
-  Phase 1 later steps.
+## Files
 
-## As built (Phase 1 step 3) — LocalBackend
-New file: `local_backend.rs`. New command `submit_job`, new managed state `JobRunner`.
-Full backend detail lives in `wiki/modules/execution-backends.md`; core-facing summary:
+- `lib.rs` — Tauri builder, setup hook, exit handling, invoke-handler registration.
+- `db.rs` — SQLite open + versioned migrations (v1–v4).
+- `error.rs` — `AppError` (thiserror).
+- `sidecar.rs` — `SidecarManager`: spawn/health-poll/kill uvicorn; the version handshake.
+- `commands/{settings,jobs,molecules}.rs` — Tauri command surface (thin wrappers over `*_conn`).
+- `models/{job,molecule}.rs` — row structs (`COLUMNS` + `from_row`).
+- `local_backend.rs` — ORCA execution, queue, cancel (see `execution-backends.md`).
+- `cpu_presets.rs` — measured core-pinning presets (see `execution-backends.md`).
+- `result_extraction.rs`, `convergence.rs` — result/convergence parsing (see `parser.md`).
+- `output_search.rs` — streaming output search + presets.
+- `xtb.rs` — xTB pre-optimization.
 
-- **`submit_job(app, id)`** (in `commands/jobs.rs`, delegates to `local_backend::submit`):
-  validates the job is `draft`, reads `orca_path`, reserves the single execution slot,
-  prepares the isolated job dir, spawns ORCA, marks `running`, and returns immediately — a
-  background thread streams the log and finalizes. Needs `AppHandle` (declared as a
-  `app: tauri::AppHandle` command param) for `emit`.
-- **`JobRunner` managed state** (`app.manage`d in `lib.rs` setup): holds the job-dir root
-  (`<data>/jobs/`) and `Mutex<Option<String>>` — the running job id, enforcing concurrency = 1.
-- **New jobs.rs DB helpers** (all `pub(crate)`): `set_job_dir_conn`, `finalize_job_conn`
-  (terminal status + `completed_at` + `error_message`), and `get_job_conn`/`update_job_status_conn`
-  promoted from private so the backend can reuse them.
-- **`AppError::Backend(String)`** added for spawn failures / bad config / queue-full.
-- **Events emitted** (Rust → UI, via `tauri::Emitter`): `job:log { job_id, lines: [String] }`
-  (batched every 50 lines / 100 ms) and `job:status { job_id, status }` on running + terminal.
-  Frontend `listen`s (allowed by `core:default` capability) and filters by `job_id`.
-- **Not yet:** startup reconciliation of jobs left `running` after a crash/close (a job stays
-  `running` in the DB) — deferred to Phase 2 (matches ROADMAP).
+## Database & migrations (`db.rs`)
 
-## As built (Phase 1 step 4) — output backfill, results, open folder
-Closes Phase 1 (MVP). New commands + a results write path.
+`init_db(data_dir)` opens `orcastudio.db` under `dirs::data_dir()/orcastudio`. `migrate()` is
+version-aware and **forward-only to `SCHEMA_VERSION`**: it ensures the v1 base, reads the stored
+`schema_version`, and steps forward, so a v1 DB upgrades straight through to the current version in
+place. All steps are idempotent (`IF NOT EXISTS` / `INSERT OR IGNORE`) — a user-changed `orca_path`
+survives a restart.
 
-- **`read_job_output(id, tail_lines: Option<usize>) -> Vec<String>`** — last `tail_lines`
-  (default/cap 10 000) lines of `<job_dir>/output.out`, backed by
-  `local_backend::read_tail_lines` which reads at most 8 MB from the end (drops a partial head
-  line) so it never loads whole multi-MB outputs (domain rule #5). Empty vec (not an error) when
-  the job has no dir or no output yet. Used by the detail screen to backfill the log console.
-- **`open_job_folder(id)`** — looks up `job_dir` from the DB and spawns the platform file
-  manager (`xdg-open` on Linux, also macOS `open` / Windows `explorer`). App-defined command, so
-  no capability entry needed.
-- **Result extraction on completion** — `drive_job`, after `detect_completion`, on `Completed`
-  reads a 64 KB tail and runs `result_extraction::{extract_final_energy, extract_wall_time}`,
-  storing them via the new `set_job_results_conn` **before** emitting the terminal `job:status`
-  (so the UI's reload sees energy/time). See `wiki/modules/parser.md`.
-- **Dependency:** added `regex = "1"`.
+- **v1** — `settings` k/v table; seeds `orca_path=/opt/orca/orca` and (idempotently, no bump)
+  `cpu_preset=interactive`, `cpu_mask=8-15`, `cpu_nprocs=8`, `xtb_path=xtb`.
+- **v2** — `jobs` table: `id` (UUID v4 TEXT PK), `title`, `input_content` (full `.inp`), `status`
+  (default `draft`), `job_dir`, `energy` (REAL), `wall_time` (REAL), `error_message`, `created_at`
+  (`datetime('now')`), `started_at`, `completed_at`. `Option` columns stay `NULL` until their
+  lifecycle step fills them.
+- **v3** — `molecules` table: `id` (UUID v4 TEXT PK), `name`, `formula` (default `''`), `xyz` (full
+  standard xyz), `charge`/`multiplicity` (INTEGER, defaults 0/1), `tags` (comma-separated TEXT,
+  default `''`), `created_at`. **Not** linked to `jobs` — no `molecule_id` FK yet (Phase 4.5).
+- **v4** — additive `ALTER TABLE jobs ADD COLUMN scene_json TEXT` (nullable); old jobs carry `NULL`.
+- The two new queue statuses (`queued`, `cancelled`) needed **no migration** — `status` is TEXT.
+- Migration tests assert preservation across each step (`migrate_v1_to_v2_preserves_settings`,
+  `migrate_v2_to_v3_preserves_jobs`, `migrate_v3_to_v4_preserves_jobs`; the version assertions use
+  `SCHEMA_VERSION`, not a literal). Verified against a copy of the real DB: 13 existing jobs
+  preserved across 3→4, `scene_json` NULL on every one.
 
-## As built (Phase 2.3) — molecule library
-New files: `models/molecule.rs`, `commands/molecules.rs`. `db.rs` gained migration v3.
+**`scene_json` semantics** (ADR-008 #5 + amendment): a versioned `SceneFragment` snapshot written
+**once at create time** — the job's input is immutable, so its snapshot is too (no update path). It
+**annotates** `input_content`; the text stays authoritative for geometry (the frontend's
+`restoreScene` reconciles them).
 
-- **Migration v3 (`db.rs`):** `SCHEMA_VERSION` bumped to 3; a `version < 3` arm creates the
-  `molecules` table. `migrate()` is forward-only to `SCHEMA_VERSION`, so a v1 or v2 database is
-  upgraded straight to v3 in place (the existing `migrate_v1_to_v2_preserves_settings` test now
-  asserts the final version is `SCHEMA_VERSION`, not literally 2). New test
-  `migrate_v2_to_v3_preserves_jobs`: seed a v2 DB with one job → migrate → job survives and the
-  `molecules` table exists.
-- **`molecules` table:** `id` (UUID v4 TEXT PK), `name`, `formula` (default `''`), `xyz` (full
-  standard xyz string), `charge`/`multiplicity` (INTEGER, defaults 0/1), `tags` (comma-separated
-  TEXT, default `''`), `created_at` (`datetime('now')`). Deliberately **not** linked to `jobs` —
-  no `molecule_id` FK yet; molecule↔job association is Phase 4.5 (reaction modeling).
-- **`Molecule` struct (`models/molecule.rs`):** mirrors the table 1:1, `#[derive(Serialize)]`,
-  same `COLUMNS` + `from_row` pattern as `Job` (no enum fields, so `from_row` is a plain hydrate).
-- **Commands (`commands/molecules.rs`):** `create_molecule(name, formula, xyz, charge,
-  multiplicity, tags) -> Molecule`, `list_molecules() -> Vec<Molecule>` (newest first),
-  `get_molecule(id) -> Molecule` (`NotFound`), `update_molecule(id, …) -> Molecule` (full update,
-  `NotFound` if absent), `delete_molecule(id)` (`NotFound` if absent). Same thin-wrapper-over-
-  `*_conn` shape as jobs; four unit tests cover create/list, get-missing, update-fields,
-  delete-removes. All registered in `lib.rs` invoke_handler.
+## Models (`models/`)
 
-## Schema v4 — `jobs.scene_json` (Phase 2.5, 2.5.0d-3)
-- **Migration v4 (`db.rs`):** `SCHEMA_VERSION` → 4; a `version < 4` arm runs
-  `ALTER TABLE jobs ADD COLUMN scene_json TEXT` (nullable). Purely additive, so old jobs carry
-  `NULL`. Test `migrate_v3_to_v4_preserves_jobs` (seed a v3 DB with a job → migrate → job survives,
-  `scene_json` column exists and is NULL). The v2→v3 test's version assertion switched to
-  `SCHEMA_VERSION` too (it hardcoded `3`). **Verified against a copy of the real DB:** 13 existing
-  jobs all preserved, schema_version 3→4, every job's `scene_json` NULL.
-- **`scene_json` semantics (ADR-008 #5 + its amendment):** a versioned `SceneFragment` snapshot
-  written **once at create time** — the job's input is immutable, so its snapshot is too (no update
-  path). It **annotates** `input_content`; the text stays authoritative for geometry (the frontend's
-  `restoreScene` reconciles them). `Job` gained the field, `Job::COLUMNS` + `from_row` extended (11th
-  column), `create_job(title, input_content, scene_json: Option<String>)`. Test
-  `create_persists_and_reloads_scene_json`.
+`Job` and `Molecule` mirror their tables 1:1 (`#[derive(Serialize)]`). `from_row` hydrates from a
+row in `COLUMNS` order; `COLUMNS` is the single source of truth for the select list (`Job` gained
+`scene_json` as its 11th column in v4). `JobStatus` = `Draft | Queued | Running | Completed |
+Failed | Cancelled`, serialized to/from lowercase strings on the wire and in the DB
+(`as_str`/`from_db`; the TS `JobStatus` union tracks it in lockstep). State machine: `draft →
+queued → running → completed | failed | cancelled`. Remote states (uploading/syncing) and `parsed`
+are deferred. An unknown status string from the DB → `AppError::Internal` via `from_db`.
 
-## As built (Phase 2) — CPU pinning, queue, cancel
-New file: `cpu_presets.rs`. `local_backend.rs` gained the queue/cancel/pinning logic (detailed
-in `wiki/modules/execution-backends.md`); the core-facing surface:
+## Errors (`error.rs`)
 
-- **`JobStatus` extended:** `Draft | Queued | Running | Completed | Failed | Cancelled`
-  (was four states). `as_str`/`from_db` and the TS `JobStatus` union updated in lockstep. State
-  machine: `draft → queued → running → completed | failed | cancelled`. `update_job_status_conn`
-  stamps `completed_at` on `cancelled` too; `queued` is a status-only transition.
-- **No migration:** `status` is TEXT, so the two new values need no schema change. `settings`
-  gained three seeded keys (idempotent `INSERT OR IGNORE`, no version bump): `cpu_preset`
-  (`interactive`), `cpu_mask` (`8-15`), `cpu_nprocs` (`8`).
-- **New commands** (all in `commands/jobs.rs` unless noted):
-  - `cancel_job(id)` → `local_backend::cancel` (queued: drop; running: killpg the tree).
-  - `pause_queue()` / `resume_queue()` / `is_queue_paused() -> bool` — queue-only pause.
-  - `get_cpu_presets() -> Vec<CpuPresetInfo>` (in `cpu_presets.rs`) for the Settings UI.
-  - `submit_job` unchanged in signature but now **enqueues** (never errors on a busy slot).
-- **Startup sequence** now runs `local_backend::reconcile_on_startup(&conn)` before managing the
-  DB, then spawns a thread that calls `try_start_next` to resume any `queued` jobs.
-- **Dependency:** `libc = "0.2"` (Unix-only target dep) for `killpg`.
+`AppError` variants: `Database`, `Sidecar`, `Io`, `Internal` (poisoned mutex etc.),
+`NotFound(String)`, `Backend(String)` (spawn failure / bad config / queue issues). **Serialized to
+the frontend as a plain string** today; the `{code, message}` structured surface is aspirational —
+revisit when the UI needs error codes.
 
-## As built (Phase 2.7) — streaming output search + viewer content
-New file: `output_search.rs`; plus `read_job_output_for_viewer` in `commands/jobs.rs`. All
-registered in `lib.rs`.
+## Startup sequence (setup hook, `lib.rs`)
 
-- **`search_job_output(id, opts: SearchOptions) -> SearchResult`** — search a job's `output.out`
-  for `opts.query` (`regex` / `case_sensitive` flags). Empty result (not an error) when the job
-  has no dir or output yet.
-- **`get_search_presets() -> Vec<SearchPresetInfo>`** — the curated ORCA search chips.
-- **`read_job_output_for_viewer(id) -> OutputContent { content, first_line_no, total_lines,
-  truncated }`** — the file for the Monaco viewer. **Capped to the last `MAX_VIEWER_LINES`
-  (300 000 ≈ 30 MB)**: streams line by line into a `VecDeque` that evicts the oldest past the cap,
-  so a hundreds-of-MB file is never held whole (domain rule #5). We keep the **tail** (where a run's
-  interesting end is) and report `first_line_no` (`> 1` iff truncated) so the viewer shows absolute
-  file line numbers and search hits still map. Empty (not an error) when there's no dir/output.
-- **`read_job_ensemble(id) -> String`** (2.5.1b) — reads a GOAT job's `input.finalensemble.xyz`
-  (the fixed `input.inp` name gives a fixed ensemble name — see `wiki/orca/goat.md`) whole. Unlike
-  `output.out` this file is tiny (a multi-frame xyz of one small fragment), so reading it fully is
-  fine; capped at `MAX_ENSEMBLE_BYTES` (8 MB) defensively. Empty string (not an error) when there's
-  no dir/file or it isn't a GOAT run; `JobDetailScreen` parses it lazily on a completed job.
-- **Streaming search (domain rule #5):** `search_output` reads line by line through a `BufReader`,
-  holding only an optional context ring buffer, the matches still awaiting trailing context, and
-  the capped result list. Each `OutputMatch` carries `line_no`, the matched `line`, and the hit's
-  **1-indexed char column range `col_start`/`col_end`** (exclusive end — Monaco range semantics) for
-  precise editor decoration. Context (`context_before`/`context_after`) is **opt-in** via
-  `SearchOptions.context_lines` (the viewer passes `0`, saving ~2500 lines of payload at 500 hits;
-  the old excerpt UI used 2). Single pass, matches finalized in line order, leftovers flushed at
-  EOF. Measured: **431 KB / ~8600 lines searched in ~3 ms**.
-- **`MAX_MATCHES = 500`** caps returned matches, but `total` counts every hit (so the UI can say
-  "500 of 637") and `truncated = total > matches.len()`.
-- **Matcher** now returns the match's char column range (not just a bool): regex via
-  `RegexBuilder.case_insensitive(!case_sensitive)` (invalid pattern →
-  `AppError::Backend("invalid regular expression: …")`) → first `Match` byte range → char columns;
-  literal `find` otherwise, with the needle lowercased **once** up front for the case-insensitive
-  path (positions taken in the lowercased line — 1:1 for ASCII, which all ORCA output is). Empty
-  query → empty result, not an error.
-- **Presets (`SEARCH_PRESETS`)** — `id/label/query/regex/case_sensitive/description`. Wording
-  **verified against real ORCA 6.1 output** (see `orca/output-files.md`). Two correctness points
-  worth remembering:
-  - **`errors` is case-SENSITIVE** (`ERROR|error termination|aborting|ABORTING`): a
-    case-insensitive `error` matches the benign `DIIS Error` / `Startup error` printed on every SCF
-    (12+ hits in a *successful* run). Verified: the case-sensitive query fires **0 times** across
-    12 real successful outputs. This is why `SearchPreset` carries a per-preset `case_sensitive`
-    flag (a deviation from the original task struct — justified by the false-positive check).
-  - **`imaginary` = literal `imaginary mode`**, NOT bare `imaginary` (which hits
-    `imaginary perturbations`, a CPHF count present in every Freq run). Confirmed it matches
-    ORCA's real `***imaginary mode***` marker on a saddle-point output.
-- **11 unit tests** — literal+context (`context_lines: 2`), file-boundary context, case
-  sensitivity, regex, invalid regex → error, cap-but-count (600 hits → 500/600/truncated), empty
-  query, the real `opt_output_excerpt.txt` fixture (`Geometry convergence` → 2), and **column
-  reporting** (`reports_match_columns`, `regex_match_columns_point_at_first_hit`).
+open + migrate SQLite → `local_backend::reconcile_on_startup(&conn)` (advance any job left
+`running` by a crash — see `execution-backends.md`) → manage `DbState(Mutex<Connection>)` (the
+`Connection` is `Send`, not `Sync`) + `Arc<SidecarManager>` + `JobRunner` + `XtbRunner` → spawn the
+sidecar + a background health-poll thread → a thread that runs `try_start_next` to resume `queued`
+jobs → `prune_diagnostic_dirs` off-thread (xtb). `RunEvent::ExitRequested` stops the sidecar and
+runs `terminate_on_exit` synchronously; `Drop` on `SidecarManager` is the backstop.
 
-## As built (2.5.2d-1) — stale-sidecar detection
-`sidecar.rs` gained a version handshake so the app can tell it's talking to an out-of-date sidecar
-(the `npm run tauri dev` HMR trap — `wiki/debugging/005`).
-- **`Health` gained `Stale`** (serialized `"stale"`) — responding but older than
-  `EXPECTED_MIN_SIDECAR_VERSION` (`"0.2.0"`). Distinct from `Down`: the process is alive, it just
-  needs a restart. `SidecarStatus` gained `version` (the reported one) and `expected_version`.
-- **`health_check`** now reads the `/health` body's `version` and sets `Healthy` vs `Stale` via
-  `version_at_least(actual, expected)` — a pure, unit-tested **component-wise numeric** compare
-  (string compare lies: `"0.10.0" < "0.9.0"`). Unparseable version → treated as stale, never healthy.
-- **`--reload` in dev + process-group kill.** Debug builds launch uvicorn with `--reload`; `start`
-  sets the child's **own process group** (`CommandExt::process_group(0)`) and `stop`/`Drop` call
-  `kill_process_tree` → `killpg(SIGTERM)` → grace → `killpg(SIGKILL)`, so the `--reload` worker child
-  isn't orphaned (the `debugging/004` process-group discipline, reused here). Verified live: no
-  orphaned uvicorn, port released.
-- **4 new unit tests** (`sidecar::tests`): `version_at_least` component-wise (incl. `0.10.0` vs
-  `0.9.0` where string order is wrong), ordering basics, unparseable → stale, and
-  `parse_health_version`.
+## Commands (thin wrappers over `*_conn(&Connection)` helpers)
 
-## Rule — a long operation NEVER lives inside a synchronous command
+- **Settings:** `get_settings() -> HashMap<String,String>`, `set_setting(key, value)`,
+  `get_sidecar_status() -> SidecarStatus { status, port, version, expected_version }`.
+- **Jobs:** `create_job(title, input_content, scene_json: Option<String>) -> Job` (UUID, inserts
+  `draft`, snapshot written once); `list_jobs() -> Vec<Job>` (`created_at DESC`); `get_job(id)`
+  (`NotFound`); `update_job_status(id, status)` (stamps `started_at` on `running`, `completed_at`
+  on `completed`/`failed`/`cancelled`); `submit_job(app, id)` (enqueues, returns at once — needs
+  `app: tauri::AppHandle` for `emit`); `cancel_job(id)`; `pause_queue()` / `resume_queue()` /
+  `is_queue_paused() -> bool`; `read_job_output(id, tail_lines: Option<usize>) -> Vec<String>`;
+  `read_job_output_for_viewer(id) -> OutputContent`; `read_job_convergence(id)`;
+  `read_job_ensemble(id) -> String`; `open_job_folder(id)`; `search_job_output(id, opts) ->
+  SearchResult`; `get_search_presets()`.
+- **Molecules:** `create_molecule(name, formula, xyz, charge, multiplicity, tags)`,
+  `list_molecules()` (newest first), `get_molecule(id)`, `update_molecule(id, …)` (full update),
+  `delete_molecule(id)` — each `NotFound` on a missing id.
+- **CPU / xtb:** `get_cpu_presets() -> Vec<CpuPresetInfo>`; `xtb_version`, `xtb_optimize`,
+  `xtb_cancel` (see below).
+- **DB helpers** (`pub(crate)`, reused by the backend): `set_job_dir_conn`, `finalize_job_conn`
+  (terminal status + `completed_at` + `error_message`), `set_job_results_conn`, `get_job_conn`,
+  `update_job_status_conn`.
+
+`open_job_folder` spawns the platform file manager (`xdg-open` / macOS `open` / Windows
+`explorer`) — an app-defined command, so no capability entry is needed. The frontend `listen`s to
+events (allowed by the `core:default` capability) and filters by `job_id`.
+
+## The threading rule — a long operation NEVER lives inside a synchronous command
+
 A `#[tauri::command] fn` executes on the **main thread**, which on Linux is the GTK/WebKitGTK UI
 thread. Anything slow inside it freezes the window for the whole duration AND starves every other
 command (a separate cancel command can't be delivered while the main thread is busy). **The pattern
 is: a starter command that validates + reserves state + RETURNS immediately, the actual work in
-`std::thread::spawn`, and results/errors reported to the frontend as events** (`app.emit`, the same
-mechanism job logs use — `<domain>:<kind>` payloads). Two places apply it:
+`std::thread::spawn`, and results/errors reported to the frontend as events** (`app.emit`,
+`<domain>:<kind>` payloads). Two places apply it:
+
 - **`drive_job`** (`local_backend.rs`) — `submit_job` returns at once; a spawned thread tails ORCA's
   stdout and emits `job:log` / `job:status` / `job:convergence`.
-- **`xtb_optimize`** (`xtb.rs`, 2.5.5-fix) — was wrong at first: a synchronous command that ran the
-  whole ~1.5 s xtb inline, so the window froze and `xtb_cancel` was undeliverable (found on review by
-  reading the code against `drive_job`). Fixed to the same starter+thread+events shape: emits
-  `xtb:done` / `xtb:error`.
+- **`xtb_optimize`** (`xtb.rs`) — a starter; the run is off-thread and emits `xtb:done` /
+  `xtb:error` (this was a synchronous command at first, froze the window, and made `xtb_cancel`
+  undeliverable — the defect is invisible to `cargo test` and shows on the first click, so the
+  acceptance step is a manual run in the real window; changed in `[2026-07-29] 2.5.5-fix`).
 
-This defect is invisible to `cargo test` and shows on the first click, so the acceptance step is a
-**manual run in the real window** (rotate the molecule during a run → stays responsive; Cancel
-mid-run → interrupts; second run during the first → rejected).
+## Result extraction & convergence
 
-## As built (Phase 2.5.5) — xtb pre-optimization (`xtb.rs`)
+On completion, `drive_job` runs `result_extraction::{extract_final_energy, extract_wall_time}` over
+a 64 KB output tail and stores them via `set_job_results_conn` **before** the terminal `job:status`.
+The incremental `convergence.rs` parser feeds off the same stdout stream. Full detail in
+`wiki/modules/parser.md`.
+
+## Output search & viewer content (`output_search.rs`)
+
+- **`search_job_output(id, opts: SearchOptions) -> SearchResult`** — streaming search of a job's
+  `output.out` (`regex` / `case_sensitive` flags). `search_output` reads line by line through a
+  `BufReader`, holding only an optional context ring buffer, the matches awaiting trailing context,
+  and the capped result list — **never the whole file** (domain rule #5). Single pass, matches
+  finalized in line order, leftovers flushed at EOF. Measured: **431 KB / ~8600 lines in ~3 ms**.
+  Empty result (not an error) when the job has no dir/output; empty query → empty result.
+- Each `OutputMatch` carries `line_no`, the matched `line`, and the hit's **1-indexed char column
+  range `col_start`/`col_end`** (exclusive end — Monaco range semantics). Context
+  (`context_before`/`context_after`) is **opt-in** via `SearchOptions.context_lines` (the viewer
+  passes `0`, saving ~2500 lines of payload at 500 hits). **`MAX_MATCHES = 500`** caps returned
+  matches while `total` counts every hit (so the UI says "500 of 637"; `truncated = total >
+  matches.len()`).
+- **Matcher:** regex via `RegexBuilder.case_insensitive(!case_sensitive)` (invalid pattern →
+  `AppError::Backend("invalid regular expression: …")`) → first `Match` byte range → char columns;
+  else literal `find` with the needle lowercased **once** up front for the case-insensitive path
+  (positions taken in the lowercased line — 1:1 for ASCII, which all ORCA output is).
+- **`read_job_output_for_viewer(id) -> OutputContent { content, first_line_no, total_lines,
+  truncated }`** — the file for the Monaco viewer, **capped to the last `MAX_VIEWER_LINES` (300 000
+  ≈ 30 MB)**: streams line by line into a `VecDeque` that evicts the oldest past the cap, so a
+  hundreds-of-MB file is never held whole. Keeps the **tail** and reports `first_line_no` (`> 1` iff
+  truncated) so the viewer shows absolute line numbers and hits still map.
+- **`read_job_ensemble(id) -> String`** — reads a GOAT job's `input.finalensemble.xyz` (the fixed
+  `input.inp` name gives a fixed ensemble name — `wiki/orca/goat.md`) whole; unlike `output.out` it
+  is tiny (a multi-frame xyz of one small fragment), capped at `MAX_ENSEMBLE_BYTES` (8 MB)
+  defensively. Empty string (not an error) when there's no dir/file or it isn't a GOAT run.
+- **Presets (`SEARCH_PRESETS`, `id/label/query/regex/case_sensitive/description`)** — wording
+  verified against real ORCA 6.1 output (`orca/output-files.md`). Two correctness points:
+  - **`errors` is case-SENSITIVE** (`ERROR|error termination|aborting|ABORTING`) — a
+    case-insensitive `error` matches the benign `DIIS Error` / `Startup error` printed on every SCF
+    (12+ hits in a *successful* run; the case-sensitive query fires **0×** across 12 real
+    successful outputs). This is why `SearchPreset` carries a per-preset `case_sensitive` flag.
+  - **`imaginary` = literal `imaginary mode`**, NOT bare `imaginary` (which hits `imaginary
+    perturbations`, a CPHF count in every Freq run); it matches ORCA's real `***imaginary mode***`
+    marker on a saddle point.
+
+## Sidecar lifecycle & the stale-sidecar handshake (`sidecar.rs`)
+
+`SidecarManager` picks a free port, spawns uvicorn, health-polls on a background thread, and kills
+it on `ExitRequested` + `Drop`. `Health` has `Healthy` / `Stale` / `Down`: `health_check` reads the
+`/health` body's `version` and sets `Healthy` vs `Stale` via `version_at_least(actual, expected)` —
+a pure, unit-tested **component-wise numeric** compare against `EXPECTED_MIN_SIDECAR_VERSION`
+(`"0.2.0"`); a string compare would lie (`"0.10.0" < "0.9.0"`). An unparseable version is treated
+as stale, never healthy. `SidecarStatus` carries `version` + `expected_version`. Debug builds launch
+uvicorn with `--reload`; `start` sets the child's **own process group** (`CommandExt::process_group(0)`)
+and `stop`/`Drop` `kill_process_tree` → `killpg(SIGTERM)` → grace → `killpg(SIGKILL)`, so the
+`--reload` worker child isn't orphaned. The rule and its rationale are in `wiki/modules/sidecar.md`
++ `wiki/debugging/005`.
+
+## xTB pre-optimization (`xtb.rs`)
+
 Standalone GFN2-xTB relaxation of a scene while holding the user's constraints, so the geometry
-handed to ORCA is already sensible. **In Rust, not the sidecar** (logged decision): Rust owns
-process spawning (isolation rule #3, kill-the-group `debugging/004`), and the binary path is a
-setting (SQLite, under Rust). Details of the tool itself: `wiki/orca/xtb.md`.
+handed to ORCA is already sensible. **In Rust, not the sidecar** (ADR-009): Rust owns process
+spawning (isolation rule #3, kill-the-group `debugging/004`), and the binary path is a setting.
+Tool details: `wiki/orca/xtb.md`.
 
-- **`xtb_path` setting** — seeded `'xtb'` in migration v1's idempotent seeds (no schema bump; it's
-  a `settings` row like `orca_path`). Never bundled (#7). `xtb_version` command runs
-  `<path> --version` and parses the banner for the Settings "Check" button; `resolve_binary`
-  turns a bare name into an absolute path via `$PATH`.
-- **`xtb_optimize(xyz, charge, multiplicity, constraints, timeout_secs?) -> ()`** — a **starter**
-  (2.5.5-fix): it validates synchronously (multiplicity, parse xyz, resolve targets → an out-of-range
-  index rejects here for immediate feedback), **reserves the single slot** (rejecting a concurrent
-  run) with a `pgid: 0` placeholder, then spawns the worker thread and returns. `constraints`
-  deserialize from the TS `Constraint` (0-based atoms; `valueText` ignored). The thread's `run_in_dir`
-  resolves each target (explicit value, or the geometry's CURRENT value for a freeze-as-is). **`build_xcontrol`
-  returns `Option<String>` (`None` = no constraints — 2.5.5-fix-3)**; that one value decides both whether
-  the `xcontrol` file is written AND whether `--input` is passed (`xtb_args`, a pure argv builder — an
-  empty `--input` file **hangs** xtb, `wiki/debugging/006`), with every index **`+1` (xtb is 1-based —
-  `wiki/orca/xtb.md`)**. It runs `<xtb> input.xyz [--input xcontrol] --opt --gfn 2 --chrg <c> --uhf
-  <mult−1>` by full path in an **isolated dir** (`<data>/xtb/<uuid>`) in its own process group, polls
-  `try_wait` + the `cancelled` flag every 50 ms, and reads `xtbopt.xyz`. The result rides `xtb:done`,
-  an error `xtb:error`.
-- **Post-conditions INSIDE the command** (not only tests — the price of a missed error is the wrong
-  geometry into a multi-hour ORCA run): atom count unchanged; element sequence unchanged
-  positionally; **each constraint held within tolerance** (`check_held`: 0.1 Å distance / 5° angle /
-  0.01 Å `$fix`; the distance tolerance is measured — realistic hold 0.011 Å at force constant 1.0,
-  `wiki/orca/xtb.md`). Any breach → `AppError::Backend` with a diagnostic, never a silently-returned
-  geometry. The held-check also catches an index-base mistake: a wrong `+1` constrains a different
-  pair and the intended one drifts past tolerance.
+- **`xtb_path`** setting (seeded `'xtb'`, a `settings` row like `orca_path`; never bundled — #7).
+  `xtb_version` runs `<path> --version` and parses the banner for the Settings "Check" button;
+  `resolve_binary` turns a bare name into an absolute path via `$PATH`.
+- **`xtb_optimize(xyz, charge, multiplicity, constraints, timeout_secs?) -> ()`** — a **starter**:
+  it validates synchronously (multiplicity, parse xyz, resolve targets → an out-of-range index
+  rejects here for immediate feedback), **reserves the single slot** (rejecting a concurrent run)
+  with a `pgid: 0` placeholder, spawns the worker thread, and returns. `constraints` deserialize
+  from the TS `Constraint` (0-based atoms; `valueText` ignored). The thread's `run_in_dir` resolves
+  each target (explicit value, or the geometry's CURRENT value for a freeze-as-is).
+  **`build_xcontrol` returns `Option<String>`** (`None` = no constraints); that one value decides
+  both whether the `xcontrol` file is written AND whether `--input` is passed (`xtb_args`, a pure
+  argv builder — an empty `--input` file **hangs** xtb, `wiki/debugging/006`), with every index
+  **`+1`** (xtb is 1-based — `wiki/orca/xtb.md`). It runs
+  `<xtb> input.xyz [--input xcontrol] --opt --gfn 2 --chrg <c> --uhf <mult−1>` by full path in an
+  **isolated dir** (`<data>/xtb/<uuid>`) in its own process group, polls `try_wait` + the
+  `cancelled` flag every 50 ms, and reads `xtbopt.xyz`. The result rides `xtb:done`, an error
+  `xtb:error`.
+- **Post-conditions INSIDE the command** (the price of a missed error is the wrong geometry into a
+  multi-hour ORCA run): atom count unchanged; element sequence unchanged positionally; **each
+  constraint held within tolerance** (`check_held`: 0.1 Å distance / 5° angle / 0.01 Å `$fix`; the
+  distance tolerance is measured — realistic hold 0.011 Å at force constant 1.0). Any breach →
+  `AppError::Backend` with a diagnostic. The held-check also catches an index-base mistake: a wrong
+  `+1` constrains a different pair and the intended one drifts past tolerance.
 - **Isolation + cleanup + kill (rule #3, `debugging/004`).** The slot is freed in the thread
-  unconditionally right after `run_in_dir`. The scratch **dir cleanup is split (2.5.5-fix-2):**
+  unconditionally right after `run_in_dir`. The scratch **dir cleanup is split**:
   `keep_dir_for_diagnostics(succeeded, cancelled)` → **remove on success and on user-cancel, KEEP on
-  any other failure** (timeout / non-zero exit / post-condition breach / parse error). Rule #3 is about
-  clearing ORCA-style scratch *litter* on success — it is NOT a licence to delete the *evidence* when a
-  run fails, which is exactly when `xtb.out` (the only record of where xtb spent its time) is needed.
-  The kept dir's path rides the `xtb:error` payload (`dir`) and the UI shows it as copyable text; the
-  error message also carries the **last ~20 lines of `xtb.out`** via the shared `read_tail_lines`
-  (bounded tail, rule #5 — one tailer, not a second). **Accumulation closed (2.5.5-fix-3):** kept
+  any other failure** (timeout / non-zero exit / post-condition breach / parse error). Rule #3 is
+  about clearing ORCA-style scratch *litter* on success — it is NOT a licence to delete the
+  *evidence* when a run fails, which is exactly when `xtb.out` (the only record of where xtb spent
+  its time) is needed. The kept dir's path rides the `xtb:error` payload (`dir`) and the UI shows it
+  as copyable text; the error message also carries the **last ~20 lines of `xtb.out`** via the
+  shared `read_tail_lines` (bounded tail, rule #5 — one tailer). **Accumulation** is bounded: kept
   dirs are pruned to the **`KEEP_DIAGNOSTIC_DIRS` (5) newest at startup** — `dirs_to_prune` (pure +
-  tested) sorts by mtime and returns all but the newest N; `prune_diagnostic_dirs` runs off-thread in
-  setup. Newest-kept means a **just-failed run's dir is never pruned** by the next launch (test
-  asserts the newest survives). No setting — a small fixed window is enough to debug the last few
-  failures.
-- **Live progress (2.5.5-fix-2).** The poll loop also reads the `xtb.out` tail ~once a second (same
-  `read_tail_lines`) and emits `xtb:progress { cycle }` on each new optimization cycle. The panel shows
-  the cycle + a ticking clock, so a stall — even a pre-first-cycle startup hang — is visible at once
-  instead of after minutes of silence.
-- **Cancel is non-blocking.** Single-slot `XtbRunner` holds only the `cancelled` flag (`Some` = busy);
-  **`xtb_cancel` just sets the flag and returns** — it runs on the main thread and must not block, and
-  `terminate_job` sleeps up to ~12 s. The **worker thread's poll loop** (holding the pgid + dir locally)
-  sees the flag within 50 ms and does the actual `terminate_job` (killpg SIGTERM→grace→SIGKILL + **cwd
-  sweep**, the ORCA primitives made `pub(crate)` — one copy) on its own thread. Still a helper, not a
-  queued job — just not blocking the UI thread on the run OR the cancel.
-- **Registration:** `xtb::{xtb_version, xtb_optimize, xtb_cancel}` in the invoke handler;
-  `app.manage(xtb::XtbRunner::default())` in setup. 10 unit tests (`xtb::tests`): 1-based xcontrol
-  per op, cartesian→`$fix`, freeze-as-is resolves the current value, out-of-range rejected before
-  spawn, `check_held` flags a drift / passes within tolerance, xyz parse.
-
-## Deviation note
-`dirs` crate used for the data dir (per task spec) rather than Tauri's `app.path()` API —
-harmless; consolidate later if desired.
-
-## Responsibilities
-Job state machine, SQLite ownership, ExecutionBackend implementations, sidecar lifecycle,
-log tailing/polling, settings.
-
-## Key commands (planned API surface)
-`create_job`, `submit_job`, `cancel_job`, `list_jobs`, `get_job`,
-`read_log_chunk(job_id, offset)`, `save_molecule`, `list_molecules`,
-`get_settings`, `set_settings`, `test_server_profile`.
+  tested) sorts by mtime and returns all but the newest N; `prune_diagnostic_dirs` runs off-thread
+  in setup. Newest-kept means a **just-failed run's dir is never pruned** by the next launch. No
+  setting.
+- **Live progress.** The poll loop also reads the `xtb.out` tail ~once a second (same
+  `read_tail_lines`) and emits `xtb:progress { cycle }` on each new optimization cycle — so a stall,
+  even a pre-first-cycle startup hang, is visible at once instead of after minutes of silence.
+- **Cancel is non-blocking.** The single-slot `XtbRunner` holds only the `cancelled` flag (`Some` =
+  busy); **`xtb_cancel` just sets the flag and returns** — it runs on the main thread and must not
+  block, and `terminate_job` sleeps up to ~12 s. The **worker thread's poll loop** (holding the
+  pgid + dir locally) sees the flag within 50 ms and does the actual `terminate_job` (killpg
+  SIGTERM→grace→SIGKILL + **cwd sweep**, the ORCA primitives made `pub(crate)` — one copy) on its
+  own thread. It's a helper, not a queued job — just not blocking the UI thread on the run OR the
+  cancel.
 
 ## Events emitted
-`job:status(job_id, status)`, `job:log(job_id, lines)`, `job:convergence(job_id, point)`,
-`sidecar:status(healthy|down)`.
 
-## Conventions
-- Every command returns `Result<T, AppError>` (thiserror), serialized as
-  `{ code, message }` for the frontend.
-- Startup sequence: open+migrate SQLite → reconcile job states → spawn sidecar → emit ready.
-- No `.unwrap()` outside tests.
+`job:status(job_id, status)`, `job:log(job_id, lines)` (batched every 50 lines / 100 ms),
+`job:convergence(job_id, event)`; `xtb:done` / `xtb:error` / `xtb:progress { cycle }`;
+sidecar status via `SidecarStatus` polling.
+
+## Conventions & quirks
+
+- Every command returns `Result<T, AppError>` (thiserror); no `.unwrap()` outside tests.
+- `dirs` crate is used for the data dir (per the task spec) rather than Tauri's `app.path()` API —
+  harmless; consolidate later if desired.
+- Dependencies added along the way: `uuid` (v4), `regex`, `libc` (Unix-only, for `killpg`).

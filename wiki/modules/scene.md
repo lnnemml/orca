@@ -260,19 +260,16 @@ merged". `add-fragment.test.ts` locks this: it drives the real inject → parse 
 simulation, not a rendered-component + fake-timers test, because the suite has no
 jsdom — and the comparison is exactly where the bug would live.
 
-## Consolidation — closed in 2.5.0d (ADR-008 delivered)
+## Boundary with `viewer/xyz-format.ts` (no duplicate parsers)
 
-ADR-008 promised the `src/viewer/` coordinate parsers would fold into `src/scene/`;
-2.5.0b narrowed it to `InputBuilderForm` only, and **2.5.0d closed it**. When
-`NewJobScreen` moved onto the store + `sceneFromOrcaInput` / `injectSceneIntoInput`,
-the duplicate ORCA-input parsers `parse-xyz-from-input.ts` (`extractXyzFromInput`)
-and `inject-xyz-into-input.ts` (`injectXyzIntoInput`) were **deleted**, and
-`parseChargeMult` was removed from `xyz-format.ts`. What remains in
-`viewer/xyz-format.ts` — `xyzToAtomLines`, `atomLinesToXyz` — is standard-xyz-string
-↔ atom-line **formatting**, not ORCA-input parsing, with live consumers
+All ORCA-input ↔ Scene text I/O lives in this module (`sceneFromOrcaInput` /
+`injectSceneIntoInput`). `viewer/xyz-format.ts` keeps only standard-xyz-string ↔
+atom-line **formatting** (`xyzToAtomLines`, `atomLinesToXyz`), consumed by
 `import-file.ts` and `MoleculesScreen` (which manages library molecules as stored
-xyz *strings*, not Scenes — deliberately not migrated). No duplication with this
-module remains.
+xyz *strings*, not Scenes — deliberately not Scene-backed). There is **no duplicate
+parser**: the old viewer parsers `parse-xyz-from-input.ts`, `inject-xyz-into-input.ts`,
+and `parseChargeMult` no longer exist — they were folded in here per ADR-008
+(consolidation closed in `[2026-07-28] 2.5.0d-1`).
 
 ## Fragment placement (`placement.ts`, ADR-008 #7)
 

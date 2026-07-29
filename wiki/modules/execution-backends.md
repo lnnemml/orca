@@ -1,152 +1,156 @@
 # Module: Execution backends (src-tauri/src/backends/)
 
-**Status:** LocalBackend **built and verified against real ORCA** (Phase 1.3), extended in
-Phase 2 with CPU core pinning, a sequential queue, and cancellation. SshBackend still Phase 5.
-Note: implemented as a single module `src-tauri/src/local_backend.rs`, not a `backends/` trait
-dir yet — the `ExecutionBackend` trait (ADR-003) will be extracted when the second backend
-arrives (ROADMAP Phase 2 makes the seam explicit).
+**Status:** `LocalBackend` runs ORCA end-to-end — isolated job dir, CPU core pinning, a sequential
+in-SQLite queue, cancellation with an MPI-rank sweep, and startup reconciliation. `SshBackend` is
+Phase 5. Implemented as a single module `src-tauri/src/local_backend.rs`, **not** a `backends/`
+trait dir yet — the `ExecutionBackend` trait (ADR-003) is extracted when the second backend arrives
+(ROADMAP Phase 5 makes the seam explicit).
 
-## LocalBackend — as built (Phase 1.3)
-File: `src-tauri/src/local_backend.rs`. Entry point: `submit(app, job_id)` (via the
-`submit_job` Tauri command). Flow:
+## How a local job runs (`local_backend.rs`)
+
+Entry point: `submit(app, job_id)` (via the `submit_job` Tauri command). A job flows:
 
 1. **Validate** — job exists and is `draft` (else `AppError::Backend`).
 2. **Resolve ORCA path** — read `settings.orca_path`; must be non-empty. Invoked as a **full
    absolute path** (domain rule #1) so ORCA's MPI self-re-invocation for `%pal` works.
-3. **Reserve slot** — `JobRunner.running: Mutex<Option<String>>` holds the one running job id;
-   a second submit returns `"another job is already running"` (concurrency = 1, domain rule #4).
-   The mutex reservation is what makes this race-safe (incl. React StrictMode double-submit).
-4. **Isolated job dir** (domain rule #3) — `prepare_job_dir` creates `<data>/jobs/<job_id>/`
-   and writes `input.inp`; the absolute path is stored in `jobs.job_dir`.
-5. **Spawn** — `run_orca`: `Command::new(orca_path).arg("input.inp").current_dir(job_dir)`,
-   `stdin` null, `stdout` piped (for tailing), `stderr` → `stderr.log`. Mark job `running`.
-6. **Tailing thread** (one per run) — `BufReader` over child stdout, line by line:
-   append each line to `output.out` **and** batch to the UI via `job:log` (flush every 50
-   lines or 100 ms). Never loads the whole output into memory (domain rule #5).
-7. **Completion** — on `child.wait()`: write exit code to `.exit_code`, then `detect_completion`
+3. **Enqueue, don't reserve-or-error.** `submit` moves the draft to `queued` and calls
+   `try_start_next` — it **never** returns "another job is already running" (see Sequential queue).
+   The single running slot (`JobRunner.running`) is reserved by `try_start_next` when it actually
+   starts a job; the mutex reservation is what makes starting race-safe, including React
+   StrictMode's dev double-submit. *(Was: submit ran the draft directly and errored on a busy slot;
+   changed in `[2026-07-27] LocalBackend: CPU pinning, job queue, cancel`.)*
+4. **Isolated job dir** (domain rule #3) — `prepare_job_dir` creates `<data>/jobs/<job_id>/` and
+   writes `input.inp`; the absolute path is stored in `jobs.job_dir`.
+5. **Spawn** — `run_orca(orca_path, job_dir, cpu_mask)`: `Command` with `stdin` null, `stdout`
+   piped (for tailing), `stderr` → `stderr.log`, `current_dir` = job dir. With no mask it runs
+   `<orca> input.inp` directly; with a mask, the pinned form (see CPU pinning). Mark job `running`.
+6. **Tailing thread** (one per run) — `BufReader` over child stdout, line by line: append each line
+   to `output.out` **and** batch to the UI via `job:log` (flush every 50 lines or 100 ms). Never
+   loads the whole output into memory (domain rule #5).
+7. **Completion** — on `child.wait()`: write the exit code to `.exit_code`, then `detect_completion`
    reads only a ~5 KB **tail** of `output.out`: `completed` iff it contains
-   `ORCA TERMINATED NORMALLY` AND exit code == 0 (domain rule #6); else `failed` with an
-   `error_message` from `stderr.log` (or the output tail). Persist via `finalize_job_conn`,
-   release the slot, emit terminal `job:status`.
+   `ORCA TERMINATED NORMALLY` **and** exit code == 0 (domain rule #6); else `failed` with an
+   `error_message` from `stderr.log` (or the output tail). Persist via `finalize_job_conn`, release
+   the slot, emit terminal `job:status`.
 
-Artifacts left in each job dir: `input.inp`, `output.out`, `stderr.log`, `.exit_code`
-(plus ORCA's own scratch files — cleanup policy per `orca-basics.md` not yet applied).
+Artifacts in each job dir: `input.inp`, `output.out`, `stderr.log`, `.exit_code` (plus ORCA's own
+scratch files — the cleanup policy in `orca-basics.md` is not yet applied).
 
-**Design note — no runner script.** The earlier plan wrapped ORCA in a `run.sh` that does
-`echo $? > .exit_code`. Locally we instead pipe stdout in Rust and write `.exit_code`
-ourselves — simpler and gives us the live stream directly. The SshBackend will still use a
-remote runner script (can't hold a pipe across SSH), so the `.exit_code` marker convention is
-shared; only the local path skips the wrapper.
+**No runner script (local).** Locally we pipe stdout in Rust and write `.exit_code` ourselves —
+simpler, and it gives the live stream directly. The `SshBackend` will still use a remote runner
+script (a pipe can't be held across SSH), so the `.exit_code` marker convention is shared; only the
+local path skips the wrapper.
 
-**Verified:** unit tests for `prepare_job_dir`, `read_tail`, `last_lines`, `detect_completion`;
-plus an `#[ignore]`d end-to-end test (`real_orca_water_single_point_completes`) that runs a real
-water single point through `run_orca` + `detect_completion` against `/opt/orca/orca` — passes
-(`cargo test -- --ignored`), output contains `ORCA TERMINATED NORMALLY`, `.exit_code` written.
+Unit-tested: `prepare_job_dir`, `read_tail`, `last_lines`, `detect_completion`; plus an `#[ignore]`d
+end-to-end `real_orca_water_single_point_completes` that runs a real water single point through
+`run_orca` + `detect_completion` against `/opt/orca/orca`.
 
-## As built (Phase 2) — CPU pinning, sequential queue, cancellation
+## CPU pinning (domain rule #8)
 
-The LocalBackend moved from "run one draft job, error if busy" to a real sequential queue with
-pinning and cancellation. All still concurrency = 1 (domain rule #4).
-
-### CPU pinning (domain rule #8)
-- `src-tauri/src/cpu_presets.rs`: measured presets (`interactive` = `8-15`/8 ranks, the default;
-  `max_throughput` = `0,2,4,6,8-15`/12 ranks). **Masks are specific to the dev machine's
-  i5-12500H** — documented loudly in the module doc-comment; a different machine uses the
-  `custom` preset. No topology auto-detection (out of scope). `get_cpu_presets` exposes them to
-  the Settings UI.
+- **`cpu_presets.rs`** — measured presets: `interactive` = mask `8-15` / 8 ranks (the default),
+  `max_throughput` = `0,2,4,6,8-15` / 12 ranks. **The masks are specific to the dev machine's
+  i5-12500H** — documented loudly in the module doc-comment; a different machine uses the `custom`
+  preset. No topology auto-detection (out of scope). `get_cpu_presets` exposes them to the Settings
+  UI. Preset rationale and the benchmark are in `wiki/orca/performance.md`.
 - `resolve_cpu_config(&Connection) -> (Option<String>, u32)` reads `cpu_preset` / `cpu_mask` /
   `cpu_nprocs` from `settings`; falls back to the interactive preset on missing/malformed values.
-  `None` mask = no pinning (direct invocation).
-- `run_orca(orca_path, job_dir, cpu_mask: Option<&str>)`: with a mask, spawns
-  `taskset -c <mask> <orca> input.inp` **with `OMPI_MCA_hwloc_base_binding_policy=none`** so
-  taskset and OpenMPI don't fight over placement. Missing `taskset` → a clear Backend error
-  ("install util-linux, or set cpu_preset to disable pinning"), never a silent failure.
-- `align_pal_nprocs(input, nprocs) -> (String, bool)`: rewrites/inserts `%pal nprocs N end` to
-  match the pinned core count (oversubscribing the mask is 3× *slower*, not faster — 12 ranks on
-  4 cores). Handles single-line and block `%pal` forms; inserts after the `!` line when absent.
-  When it rewrites, an info line is emitted to the job log
+  A `None` mask means no pinning (direct invocation).
+- With a mask, `run_orca` spawns `taskset -c <mask> <orca> input.inp` **with
+  `OMPI_MCA_hwloc_base_binding_policy=none`** so taskset and OpenMPI don't fight over placement.
+  Missing `taskset` → a clear Backend error ("install util-linux, or set cpu_preset to disable
+  pinning"), never a silent failure.
+- `align_pal_nprocs(input, nprocs) -> (String, bool)` rewrites/inserts `%pal nprocs N end` to match
+  the pinned core count (oversubscribing the mask is ~3× *slower*, not faster — 12 ranks on 4
+  cores). Handles single-line and block `%pal` forms; inserts after the `!` line when absent. When
+  it rewrites, an info line is emitted to the job log
   (`[OrcaStudio] %pal nprocs aligned to N (cpu preset: …)`) — not silent magic.
-- **Verified against real ORCA (headless):** benzene B3LYP/def2-SVP `%pal nprocs 4` launched via
-  the exact rule-8 command line — all 5 ORCA processes pinned to cores 8–15, sharing one PGID.
+- Verified against real ORCA (headless): benzene B3LYP/def2-SVP `%pal nprocs 4` via the exact
+  rule-8 command line — all 5 ORCA processes pinned to cores 8–15, sharing one PGID.
 
-### Sequential queue — in SQLite, not in memory
+## Sequential queue — in SQLite, not in memory
+
 - **No worker thread / channel.** The queue *is* the set of jobs with `status='queued'`.
-  `try_start_next(app)` picks the oldest queued job (`ORDER BY created_at ASC`) and starts it if
-  the slot is free and the queue isn't paused. Called after enqueue, after each job finishes
+  `try_start_next(app)` picks the oldest queued job (`ORDER BY created_at ASC`) and starts it if the
+  slot is free and the queue isn't paused. Called after enqueue, after each job finishes
   (`drive_job`), and on resume. This survives an app restart for free.
-- `submit` now moves a draft job to `queued` and calls `try_start_next` — it **never** returns
-  "another job is running". Users can stack up jobs; they run one at a time.
-- `JobRunner` = `data_dir` + `Mutex<Option<RunningJob>>` (the single slot) + `AtomicBool` pause
-  flag. `RunningJob { job_id, pgid, cancelled }`.
-- **Pause is queue-only.** `pause_queue` stops the *next* job from starting; the running job runs
-  to completion. We deliberately do **not** SIGSTOP the running ORCA: it holds all its RAM
+- `JobRunner` = `data_dir` + `Mutex<Option<RunningJob>>` (the single slot) + an `AtomicBool` pause
+  flag. `RunningJob { job_id, pgid, cancelled }`. Concurrency = 1 (domain rule #4).
+- **Pause is queue-only.** `pause_queue` stops the *next* job from starting; the running job runs to
+  completion. We deliberately do **not** SIGSTOP the running ORCA: it holds all its RAM
   (nprocs × maxcore) frozen, and MPI ranks stopped mid-communication may not resume cleanly.
 - **Lock order** is always `running` → `db` (only `try_start_next` nests them); `cancel` and
   `start_run` take each lock alone. No inversion, no deadlock.
 
-### Cancellation — killpg the group + sweep the escaped MPI ranks by cwd
-**Correction (2026-07-28):** the earlier belief that `process_group(0)` puts ORCA *and all MPI
-ranks* in one group is **false**. Verified with real `ps` on a `%pal nprocs 4` run: only the
-`orca` parent, its `sh`, and `mpirun` share the leader's group — **each MPI rank
-(`orca_*_mp`) has its own process group** (`PGID == its own PID`). `mpirun` deliberately
-`setpgid`s every rank so terminal signals can't reach them. So `killpg(pgid, …)` reaches only
-orca + sh + mpirun, **not the ranks**. See `debugging/004-mpi-ranks-escape-process-group.md`
-and `orca/gotchas.md`.
+## Cancellation — killpg the group **and** sweep the escaped MPI ranks by cwd
 
-Cancel worked before only because a SIGTERM'd `mpirun` reaps its own ranks on the way out — pure
-OpenMPI cooperation. It breaks on the SIGKILL path: after the grace period `killpg(SIGKILL)`
-kills `mpirun` instantly, so it can't forward anything → **N orphaned ranks burn N cores forever**
-(exactly the heavy-job-won't-exit-on-SIGTERM case where the user hits Cancel).
+**The trap:** `process_group(0)` does **not** put ORCA and all its MPI ranks in one group. On a
+`%pal nprocs 4` run (verified with real `ps`), only the `orca` parent, its `sh`, and `mpirun` share
+the leader's group — **each MPI rank (`orca_*_mp`) has its own process group** (`PGID == its own
+PID`), because `mpirun` `setpgid`s every rank so terminal signals can't reach them. So
+`killpg(pgid, …)` reaches only orca + sh + mpirun, **not the ranks**. See
+`debugging/004-mpi-ranks-escape-process-group.md` and `orca/gotchas.md`.
+
+A plain `killpg` *appears* to work only because a SIGTERM'd `mpirun` reaps its own ranks on the way
+out (pure OpenMPI cooperation). It breaks on the SIGKILL path: after the grace period
+`killpg(SIGKILL)` kills `mpirun` instantly, so it can't forward anything → **N orphaned ranks burn
+N cores forever** — exactly the heavy-job-won't-exit-on-SIGTERM case where the user hits Cancel.
 
 **Fix — cwd is the reliable membership signal.** Every process of a job runs with `cwd` = the job
-directory, so:
-- `sweep_job_processes(job_dir, sig)` walks `/proc/<pid>/cwd`, signalling every live process whose
-  cwd matches the (canonicalized) job dir — skipping our own pid. Best-effort; unreadable `/proc`
+directory. *(Changed in `[2026-07-28] fix: MPI ranks escape process group on cancel`.)*
+
+- `sweep_job_processes(job_dir, sig)` walks `/proc/<pid>/cwd` and signals every live process whose
+  cwd matches the canonicalized job dir, skipping our own pid. Best-effort; unreadable `/proc`
   entries are skipped. This is the safety net behind `killpg`.
-- `terminate_job(pgid, job_dir)` replaces `terminate_pgid`: (1) `killpg(SIGTERM)`; (2) wait **up to
-  10 s** for the group to drain (heavy jobs may still be flushing `.gbw`); (3) `sweep(SIGTERM)` —
-  catches ranks mpirun never reached — **before** any SIGKILL so ranks still get a clean exit;
-  (4) 2 s grace; (5) `killpg(SIGKILL)` **and** `sweep(SIGKILL)`. Logs (`eprintln!`) if the final
-  sweep had to hard-kill anything — that means the graceful path failed.
+- `terminate_job(pgid, job_dir)`: (1) `killpg(SIGTERM)`; (2) wait **up to 10 s** for the group to
+  drain (heavy jobs may still be flushing `.gbw`); (3) `sweep(SIGTERM)` — catches ranks mpirun
+  never reached — **before** any SIGKILL, so ranks still get a clean exit; (4) 2 s grace;
+  (5) `killpg(SIGKILL)` **and** `sweep(SIGKILL)`. Logs (`eprintln!`) if the final sweep had to
+  hard-kill anything — that means the graceful path failed. (`terminate_job` and
+  `sweep_job_processes` are `pub(crate)` and reused by the xtb pre-optimizer — ADR-009.)
 - **Non-blocking cancel.** `terminate_job` can take ~12 s, so `cancel` spawns it on a thread and
   returns immediately; the `cancelled` flag already guarantees `drive_job` finalizes as
-  `cancelled`, so the UI needn't wait for the kill. The frontend Cancel button shows a disabled
-  "Cancelling…" until the terminal `job:status` arrives.
-- **App exit** (`terminate_on_exit`, called from the `lib.rs` `ExitRequested` handler) runs the same
+  `cancelled`, so the UI needn't wait. The frontend Cancel button shows a disabled "Cancelling…"
+  until the terminal `job:status` arrives.
+- **App exit** (`terminate_on_exit`, from the `lib.rs` `ExitRequested` handler) runs the same
   `terminate_job` **synchronously** — a spawned thread would die with the process before the ranks
   do, stranding them.
 - `cancel(app, job_id)`: **queued** → finalize as `cancelled` (nothing to kill); **running** → set
   the `cancelled` flag, then spawn `terminate_job`; other status → `Backend(...)`. `drive_job`
   checks the flag after `child.wait()` and records `cancelled` with a clean message.
 
-### Startup reconciliation
-- `reconcile_on_startup(&Connection)` (called in `lib.rs` setup before the connection is managed):
-  every job still `running` in the DB is re-checked — if its dir shows a finished ORCA run
-  (`.exit_code` + banner) it's finalized (with results); otherwise it's marked `failed` with
-  "app was closed while this job was running". `queued` jobs are left for the startup
-  `try_start_next` to resume. Closes the Phase 1 gap (a crashed `running` job stayed `running`).
+## Startup reconciliation
 
-### Graceful stop — investigated, not implemented
+`reconcile_on_startup(&Connection)` (called in `lib.rs` setup before the connection is managed):
+every job still `running` in the DB is re-checked — if its dir shows a finished ORCA run
+(`.exit_code` + banner) it is finalized (with results); otherwise it is marked `failed` with "app
+was closed while this job was running". `queued` jobs are left for the startup `try_start_next` to
+resume. This closes the Phase 1 gap where a crashed `running` job stayed `running`.
+
+## Graceful stop — investigated, not implemented
+
 ORCA reportedly supports stopping a geometry optimization cleanly after the current cycle via a
-marker file. This could NOT be confirmed: the ORCA 6.1 manual isn't indexed locally yet (Phase 4;
-`resources/manual/` holds only a README). So only hard kill (killpg) is implemented. See
-`wiki/orca/gotchas.md` — revisit "Stop after current cycle" once the manual is indexed.
+marker file (preserving a valid `.gbw` + last geometry). This could **not** be confirmed: the ORCA
+6.1 manual isn't indexed locally yet (Phase 4; `resources/manual/` holds only a README). So only
+hard kill (killpg + sweep) is implemented. See `wiki/orca/gotchas.md` — revisit "Stop after current
+cycle" once the manual is indexed.
 
 ## SshBackend (Phase 5)
+
 - Upload: `rsync -az <job_dir>/ <host>:<scratch>/<job_id>/`
-- Launch: `ssh <host> 'cd <dir> && nohup bash run.sh > /dev/null 2>&1 & echo $! > .pid'`
-  where run.sh = orca invocation + `.exit_code` writer
+- Launch: `ssh <host> 'cd <dir> && nohup bash run.sh > /dev/null 2>&1 & echo $! > .pid'`, where
+  `run.sh` = the ORCA invocation + a `.exit_code` writer.
   - **Cancel gotcha (same as local):** ORCA's MPI ranks escape the parent's process group
-    (`orca_*_mp`, each its own PGID — see `debugging/004`). Killing the `.pid` parent (or its group)
+    (`orca_*_mp`, each its own PGID — `debugging/004`). Killing the `.pid` parent (or its group)
     remotely leaves the ranks burning the remote node's cores. The remote cancel must sweep by cwd
     too, e.g. `ssh <host> "fuser -k <dir>"` or `pkill -f <dir>`; a `.pid` marker for the parent
     alone is **not** enough. Design the remote runner so every rank inherits `cwd = <dir>`.
-- Poll: `ssh <host> "tail -c +<offset> <dir>/output.out"` every 5–10s; offset persisted
-  in SQLite so polling resumes across app restarts
-- Fetch: `rsync` back per FetchPolicy (output/xyz/hess always, gbw opt-in, cubes on demand)
-- Cube generation remotely: `ssh <host> 'cd <dir> && <orca_bin_dir>/orca_plot ...'`
+- Poll: `ssh <host> "tail -c +<offset> <dir>/output.out"` every 5–10 s; offset persisted in SQLite
+  so polling resumes across app restarts.
+- Fetch: `rsync` back per `FetchPolicy` (output/xyz/hess always, gbw opt-in, cubes on demand).
+- Remote cube generation: `ssh <host> 'cd <dir> && <orca_bin_dir>/orca_plot ...'`.
 
 ## Invariants (both backends)
-- Completion = `.exit_code` present AND "ORCA TERMINATED NORMALLY" in output tail.
+
+- Completion = `.exit_code` present **and** `ORCA TERMINATED NORMALLY` in the output tail.
 - Reconciliation on startup for any non-terminal job state.
 - Concurrency 1 per backend by default.

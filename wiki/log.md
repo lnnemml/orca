@@ -2267,3 +2267,54 @@ its own unit** — point fixes and a full rewrite of eight pages were kept out o
 
 index.md page count 36→38 (+adr-009, +burgi-dunitz). No ADR rewritten; `resources/manual/`
 untouched.
+
+## [2026-07-29] session | Consolidate module pages to present-tense current state
+
+The deferred unit from the phase-2.5 lint: collapse the ~42 accumulated `As built (<unit>)` sections
+across `wiki/modules/*` under the schema rule (present-tense, current-state; history in `log.md`).
+**No code touched — `wiki/` only.** Worked one section at a time: extract its facts, check each
+against the page's current description / `log.md` / ADR / `gotchas.md`, and **move any fact found
+nowhere else into the present-tense body before removing the chronological wrapper** — a lost fact
+costs more than a spare paragraph.
+
+**Collapsed, by page.** `parser.md` 2; `execution-backends.md` 2 + a "Correction" chronology folded;
+`sidecar.md` 4 + the versioning section reframed; `tauri-core.md` 10; `visualization.md` a Phase-2.1
+wrapper with ~15 dated subsections; `frontend.md` ~22 dated/`As built` sections. `scene.md` had no
+`As built` sections (a function-contract page already in present tense) — only the one chronological
+"Consolidation — closed in 2.5.0d" section was reframed to a present-tense boundary note.
+`manual-index.md` untouched (not started). Each page now: 1–2-sentence Status, responsibilities +
+boundaries, files/interfaces with one-line contracts, present-tense invariants, quirks, and a
+`[YYYY-MM-DD]` log pointer where a decision changed.
+
+**Facts that lived only in an `As built` section and were carried into the present body** (verified
+by grep after the rewrite — the full set is large; the load-bearing ones): the offline-Monaco worker
+path `editor/editor.worker.js?worker` + the exports-map double-map; the 8 templates and the
+`%maxcore` no-`end` rule; `functionalHasBuiltInDispersion` / `builtInDispersion`; the input-builder
+canonical keyword order + RI aux-basis pairing; `useLayoutEffect` store init, `didSubmit`,
+listeners-first, `xtbResultApplies`, `valueText`, `inspectConstraintsBlock`, `preferAlternative`,
+`snapshotRejected`, `keepScene`, `resetToken`/`navRef`, `formatXtbProgress`, the "above the loaded
+window" viewer-truncation note, `627.509`, the `58vh` accordion cap; (Rust) `MAX_VIEWER_LINES`
+300 000, `read_job_ensemble` + `MAX_ENSEMBLE_BYTES`, `KEEP_DIAGNOSTIC_DIRS`/`dirs_to_prune`,
+`check_held`/`xtb_args`/`build_xcontrol` Option, `RESULT_TAIL_BYTES` 64 KB, the 431 KB/~3 ms search
+measurement, the `errors` 0×/12 and `imaginary mode` preset findings, `version_at_least` +
+`EXPECTED_MIN 0.2.0`, `pgid: 0` placeholder; (sidecar) `_COVALENT_SCALE_DEFAULT 1.2`, the Pd–N 2.520
+/ Pd–C 2.580 / dative 2.05–2.15 Å trap, `proteindatabank`/`_ASE_FORMAT`, `fix=0`, the [0,360) fold
+with 179.998/67.523, `maxIters=500`, `rdkit==2026.3.4`; (execution) `OMPI_MCA_hwloc_base_binding_policy=none`,
+`align_pal_nprocs`, `sweep_job_processes`/`terminate_job` 10 s+2 s, `RunningJob{job_id,pgid,cancelled}`;
+(viewer) `highlightRadius = vdw*0.3+0.25` floor 0.5, `MASK_OPACITY 0.22`, `AXIS_RADIUS 0.05`, the
+chartreuse halo `#adee2b/#5e8b04`, the Jmol metal colours, the 13-element CPK contrast table, the two
+`getColorFromStyle` colorscheme facts, `viewerCreateCount`; (parser) the SCF-gate against Freq
+eigenvector rows, `GEOMETRY OPTIMIZATION CYCLE N`, the non-hardcoded criterion count.
+
+**Dropped as chronicle (now only in `log.md`):** per-unit test counts (`vitest 296`, `cargo 68`…),
+the repeated "GUI not headless-drivable, same limitation as prior phases" note, and the intermediate
+halo hex `#ff2d95` (superseded by chartreuse — the "old pink halo, hueDistance 1.05" rationale is
+kept, the literal is not). The frontend `State` section's aspirational `jobsStore`/`editorStore`/
+`settingsStore` were relabelled **planned** (only `useSceneStore` exists) — a latent false
+present-tense claim fixed in passing.
+
+**Left as-is, deliberately:** `scene.md`'s inline `(2.5.xy)` provenance tags on function contracts
+(they are provenance, not chronology, and mass-editing risks error — the schema rule allows a
+one-line pointer); `manual-index.md`. Cross-refs checked: no page references a removed
+`As built (…)` section; the two lint supersession markers (frontend.md:357/486) were removed with the
+intermediate text they annotated. No broken links; page count unchanged (38).
