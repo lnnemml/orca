@@ -477,10 +477,23 @@ body {
   flex: 1;
   min-width: 260px;
   display: flex;
+  position: relative; /* anchors the absolute .viewer-toolbar overlay */
   border: 1px solid var(--border);
   border-radius: var(--radius);
   overflow: hidden;
   background: #0d0f13;
+}
+/* Fullscreen (2.5.2e-2): ONLY this class changes on toggle — the container goes
+   fixed over everything. MoleculeViewer stays in the same DOM/React position, so
+   it is not remounted; the ResizeObserver on its inner container fires on the
+   size change and calls viewer.resize(). */
+.viewer-panel-fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  border: none;
+  border-radius: 0;
+  min-width: 0;
 }
 
 /* 3Dmol appends an absolutely-positioned canvas — the container must be a
@@ -515,23 +528,41 @@ body {
   min-width: 0;
   min-height: 120px;
 }
-/* Viewer toolbar (2.5.2e-1) — the Numbers toggle above the 3D view. */
+/* Viewer toolbar (2.5.2e-1, extended 2.5.2e-2) — Numbers toggle, theme select,
+   Expand/Exit. An overlay in the top-right of the viewer so it travels with the
+   panel into fullscreen. */
 .viewer-toolbar {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 5;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  background: rgba(13, 15, 19, 0.6);
+  backdrop-filter: blur(2px);
 }
 .viewer-toggle {
   display: inline-flex;
   align-items: center;
   gap: 5px;
   font-size: 12px;
-  color: var(--muted);
+  color: var(--text);
   cursor: pointer;
   user-select: none;
 }
 .viewer-toggle input {
   cursor: pointer;
+}
+.viewer-theme-select {
+  font-size: 12px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
 }
 
 /* Fragment sidebar. */

@@ -5,11 +5,22 @@ import type { Scene, SceneAtom } from "../scene/types";
 import { compositionSignature, fragmentRanges, mergeToXyz } from "../scene/scene";
 import { measureSelection, formatMeasurementValue } from "../scene/measure";
 import { highlightRadius, vdwTableDrift } from "./highlight";
+import { DEFAULT_THEME, type ViewerTheme } from "./theme";
 import { fragmentColor } from "./fragment-colors";
 
 // Side-effect: force 3Dmol onto its direct-canvas WebGL path so it renders in
 // the WebKitGTK webview (must run before the first createViewer).
 import "./3dmol-setup";
+
+/**
+ * Module-level count of how many 3Dmol viewers this module has created — the
+ * concrete **remount witness** (2.5.2e-2). Entering/leaving fullscreen only
+ * toggles a CSS class on an ancestor; `MoleculeViewer` keeps its tree position,
+ * so React keeps the instance and this counter does NOT tick. If a refactor
+ * ever moved the component between two JSX branches, a fullscreen toggle would
+ * remount it and this number would climb — the dev log makes that visible.
+ */
+let viewerCreateCount = 0;
 
 interface MoleculeViewerProps {
   /** Flat xyz — the existing single-structure path (Molecules screen, previews). */
@@ -40,36 +51,30 @@ interface MoleculeViewerProps {
    * even with this off, so a pick is legible immediately.
    */
   showAtomNumbers?: boolean;
+  /**
+   * Viewer colour theme (2.5.2e-2). Default `dark` — the pre-2.5.2e-2 look. The
+   * background is set via `setBackgroundColor` (no model reload, no zoomTo) and
+   * every overlay colour (halo, labels, measurement) is read from it, so a light
+   * background doesn't leave dark label rectangles behind.
+   */
+  theme?: ViewerTheme;
   style?: React.CSSProperties;
 }
 
-// Match the log console (#0d0f13) so the viewer sits inside the dark theme.
-const BACKGROUND = "#0d0f13";
-
-/** Highlight halo for a selected atom (2.5.2e-1). A **wireframe** sphere, sized
- * per element by `highlightRadius` (proportional to 3Dmol's drawn radius — a
- * constant-radius halo was invisible on carbon; see `highlight.ts`). Wireframe,
- * not a solid translucent sphere: the MiniBrowser screenshot showed a solid
- * magenta halo washing out over CPK red oxygen and grey carbon, while the cage
- * reads on all four of H/C/N/O. Colour is a saturated magenta (NOT `#ffffff`,
- * which is CPK hydrogen and vanishes on the light background e-2 adds). */
-const HALO_COLOR = "#ff2d95";
+/** Selection-halo wireframe opacity (2.5.2e-1). The colour comes from the theme
+ * (`haloColor`); a constant-radius halo was invisible on carbon, so the RADIUS
+ * is per-element via `highlightRadius`, and it's a wireframe cage (reads over
+ * CPK red O / grey C where a solid sphere washed out). */
 const HALO_OPACITY = 0.85;
-
-/** Atom-number label style (2.5.2e-1) — small, semi-transparent backing, drawn
- * in front. Non-clickable (3Dmol labels default so), like the measurement
- * labels. */
-const NUMBER_FONT_COLOR = "#e6e6e6";
-const NUMBER_BG = "#0d0f13";
 
 /** Ball-and-stick — the same style the viewer has always used. Fresh object per
  * call (3Dmol may retain the reference). */
 const baseStyle = () => ({ stick: {}, sphere: { scale: 0.3 } });
 
-/** Measurement decoration (2.5.2b): dashed line between consecutive picks + a
- * value label. Decoration only — never made clickable (see the highlight
- * effect), so it can't intercept an atom pick. */
-const MEASURE_COLOR = "#ffd34d";
+/** Radius (Å) of the thick, solid cylinder marking a dihedral's j–k axis
+ * (2.5.2e-2) — chunky enough to read as the axis against the thin dashed i–j /
+ * k–l lines. */
+const AXIS_RADIUS = 0.05;
 
 const xyz = (a: SceneAtom) => ({ x: a.x, y: a.y, z: a.z });
 const midpoint = (a: SceneAtom, b: SceneAtom) => ({
@@ -79,14 +84,66 @@ const midpoint = (a: SceneAtom, b: SceneAtom) => ({
 });
 
 /**
- * Draw the measurement geometry for the current pick list: one dashed line per
- * bond of the chain, and a single value label anchored where a chemist reads it
- * — the midpoint for a distance (i–j) and for a dihedral (the j–k axis), the
- * vertex for an angle. No-op for 0/1 atoms or any degenerate pick
+ * Draw a short arc near an angle's VERTEX (2.5.2e-2), between the two rays
+ * `vertex→a` and `vertex→b`, as a fan of solid line segments along the great
+ * circle from one ray to the other. This is what tells the eye WHICH picked atom
+ * is the vertex — without a second number on the atom (the "one number per atom"
+ * rule from e-1 holds). Radius scales with the shorter arm so it never overshoots
+ * a bond. No-op when the rays are (anti)parallel (no arc to draw).
+ */
+function drawAngleArc(
+  viewer: GLViewer,
+  a: SceneAtom,
+  vertex: SceneAtom,
+  b: SceneAtom,
+  color: string,
+) {
+  const u = [a.x - vertex.x, a.y - vertex.y, a.z - vertex.z];
+  const w = [b.x - vertex.x, b.y - vertex.y, b.z - vertex.z];
+  const nu = Math.hypot(u[0], u[1], u[2]);
+  const nw = Math.hypot(w[0], w[1], w[2]);
+  if (nu === 0 || nw === 0) return;
+  const un = u.map((c) => c / nu);
+  const wn = w.map((c) => c / nw);
+  const dot = Math.max(-1, Math.min(1, un[0] * wn[0] + un[1] * wn[1] + un[2] * wn[2]));
+  const omega = Math.acos(dot);
+  const sinO = Math.sin(omega);
+  if (sinO < 1e-6) return; // 0° / 180° — no arc plane is defined
+  const radius = Math.min(0.6, 0.35 * Math.min(nu, nw));
+  const N = 16;
+  let prev: { x: number; y: number; z: number } | null = null;
+  for (let i = 0; i <= N; i++) {
+    const t = i / N;
+    const s1 = Math.sin((1 - t) * omega) / sinO;
+    const s2 = Math.sin(t * omega) / sinO;
+    const p = {
+      x: vertex.x + radius * (un[0] * s1 + wn[0] * s2),
+      y: vertex.y + radius * (un[1] * s1 + wn[1] * s2),
+      z: vertex.z + radius * (un[2] * s1 + wn[2] * s2),
+    };
+    if (prev) viewer.addLine({ start: prev, end: p, color });
+    prev = p;
+  }
+}
+
+/**
+ * Draw the measurement geometry for the current pick list and a value label,
+ * marking WHICH atom is the vertex/axis geometrically (2.5.2e-2) — never with a
+ * second number (the "one number per atom" rule from e-1 holds):
+ * - **distance:** one dashed line, label at the bond midpoint;
+ * - **angle:** two dashed rays + a solid ARC at the vertex, label at the vertex;
+ * - **dihedral:** the j–k axis as a thick solid cylinder, the i–j / k–l bonds as
+ *   thin dashed lines, label at the axis midpoint.
+ * Colours come from `theme`. No-op for 0/1 atoms or any degenerate pick
  * (`measureSelection` → `none`). Caller has already run `removeAllShapes` /
  * `removeAllLabels` and will `render()`.
  */
-function drawMeasurement(viewer: GLViewer, scene: Scene, selection: number[]) {
+function drawMeasurement(
+  viewer: GLViewer,
+  scene: Scene,
+  selection: number[],
+  theme: ViewerTheme,
+) {
   const m = measureSelection(scene, selection);
   const label = formatMeasurementValue(m);
   if (m.kind === "none" || !label) return;
@@ -95,13 +152,24 @@ function drawMeasurement(viewer: GLViewer, scene: Scene, selection: number[]) {
   const pts = m.atoms.map((gi) => rows[gi]);
   if (pts.some((a) => a == null)) return; // stale index — bail (guarded upstream)
 
-  for (let n = 0; n < pts.length - 1; n++) {
-    viewer.addLine({
-      dashed: true,
-      start: xyz(pts[n]),
-      end: xyz(pts[n + 1]),
-      color: MEASURE_COLOR,
+  const line = theme.measurementLine;
+
+  if (m.kind === "dihedral") {
+    // Emphasise the j–k axis (pts[1]–pts[2]) with a thick solid cylinder; the
+    // two outer bonds stay thin dashed lines. This shows the rotation axis.
+    viewer.addLine({ dashed: true, start: xyz(pts[0]), end: xyz(pts[1]), color: line });
+    viewer.addCylinder({
+      start: xyz(pts[1]),
+      end: xyz(pts[2]),
+      radius: AXIS_RADIUS,
+      color: line,
     });
+    viewer.addLine({ dashed: true, start: xyz(pts[2]), end: xyz(pts[3]), color: line });
+  } else {
+    for (let n = 0; n < pts.length - 1; n++) {
+      viewer.addLine({ dashed: true, start: xyz(pts[n]), end: xyz(pts[n + 1]), color: line });
+    }
+    if (m.kind === "angle") drawAngleArc(viewer, pts[0], pts[1], pts[2], line);
   }
 
   const anchor =
@@ -113,9 +181,9 @@ function drawMeasurement(viewer: GLViewer, scene: Scene, selection: number[]) {
 
   viewer.addLabel(label, {
     position: anchor,
-    backgroundColor: "#1b1d23",
+    backgroundColor: theme.labelBg,
     backgroundOpacity: 0.85,
-    fontColor: MEASURE_COLOR,
+    fontColor: theme.measurementText,
     fontSize: 13,
     inFront: true,
   });
@@ -137,6 +205,7 @@ export function MoleculeViewer({
   selection,
   onAtomPick,
   showAtomNumbers = false,
+  theme = DEFAULT_THEME,
   style,
 }: MoleculeViewerProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -174,10 +243,21 @@ export function MoleculeViewer({
       }
     }
 
-    const viewer = createViewer(container, { backgroundColor: BACKGROUND });
+    const viewer = createViewer(container, {
+      backgroundColor: theme.background,
+    });
     viewerRef.current = viewer;
+    viewerCreateCount += 1;
+    if (import.meta.env.DEV) {
+      // Remount witness — see the note on `viewerCreateCount`. A fullscreen
+      // toggle must NOT increment this; only a real mount/navigation does.
+      console.debug(`[MoleculeViewer] viewer created (total #${viewerCreateCount})`);
+    }
 
-    // Keep the render surface in sync with the container (flex/split resizes).
+    // Keep the render surface in sync with the container (flex/split resizes AND
+    // the fullscreen class toggle — the container's box changes, so this fires
+    // and calls resize; no remount needed). Same mechanism the split-panel
+    // resize already relies on.
     const observer = new ResizeObserver(() => viewer.resize());
     observer.observe(container);
 
@@ -187,7 +267,19 @@ export function MoleculeViewer({
       viewerRef.current = null;
       lastCompositionRef.current = null;
     };
+    // theme.background is only the INITIAL colour; the [theme] effect below keeps
+    // it in sync, so it's intentionally not a dep here (mount-once effect).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Background follows the theme — `setBackgroundColor`, no model reload, no
+  // zoomTo. Runs on mount (after create) and whenever the theme changes.
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer) return;
+    viewer.setBackgroundColor(theme.background, 1);
+    viewer.render();
+  }, [theme]);
 
   // Re-render whenever the geometry changes (scene takes precedence over xyz).
   useEffect(() => {
@@ -270,20 +362,21 @@ export function MoleculeViewer({
     }
     const rows = scene.fragments.flatMap((f) => f.atoms);
 
-    // Selection halos — wireframe spheres sized per element (see highlight.ts).
+    // Selection halos — wireframe spheres sized per element (see highlight.ts),
+    // coloured by the theme.
     for (const gi of selection ?? []) {
       const atom = rows[gi]; // stale index → undefined; validateSelection guards
       if (!atom) continue;
       viewer.addSphere({
         center: { x: atom.x, y: atom.y, z: atom.z },
         radius: highlightRadius(atom.element),
-        color: HALO_COLOR,
+        color: theme.haloColor,
         opacity: HALO_OPACITY,
         wireframe: true,
       });
     }
 
-    drawMeasurement(viewer, scene, selection ?? []);
+    drawMeasurement(viewer, scene, selection ?? [], theme);
 
     // Atom numbers — the GLOBAL 0-based index only. Every atom when the toggle
     // is on; selected atoms ALWAYS (so a pick reads even with the toggle off).
@@ -295,15 +388,15 @@ export function MoleculeViewer({
       viewer.addLabel(String(gi), {
         position: { x: atom.x, y: atom.y, z: atom.z },
         fontSize: 11,
-        fontColor: NUMBER_FONT_COLOR,
-        backgroundColor: NUMBER_BG,
+        fontColor: theme.labelText,
+        backgroundColor: theme.labelBg,
         backgroundOpacity: 0.6,
         inFront: true,
       });
     }
 
     viewer.render();
-  }, [selection, scene, showAtomNumbers]);
+  }, [selection, scene, showAtomNumbers, theme]);
 
   return <div ref={containerRef} className="molecule-viewer" style={style} />;
 }

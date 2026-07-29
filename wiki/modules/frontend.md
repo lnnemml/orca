@@ -418,6 +418,27 @@ No geometry touched. Halo maths + the numbering rule live in `MoleculeViewer` /
   in for the headless-undrivable Tauri window; in-window checks (halo on aromatic C + carbonyl O,
   toggle without camera jump, ~50-atom numbering perf) in the log checklist.
 
+## As built (2.5.2e-2) — fullscreen viewer, themes, measurement vertex marking
+The `.viewer-toolbar` (now an overlay in the viewer's top-right, so it travels into fullscreen)
+gains two controls beside **Numbers**:
+- **Theme `<select>`** (Dark / Black / Light / White) → `changeTheme` sets `themeId` state AND
+  persists it via `set_setting("viewer_theme", id)`; loaded on mount from `get_settings`. Passes
+  `viewerTheme(themeId)` to `MoleculeViewer`. Colour/contrast rules are in `viewer/theme.ts` — see
+  `modules/visualization.md`.
+- **Expand / Exit button** → toggles `fullscreen` state, which only adds
+  `.viewer-panel-fullscreen` (position: fixed) to the panel. `MoleculeViewer` is NOT remounted
+  (same tree position; proof + ResizeObserver behaviour in `modules/visualization.md`). Fullscreen
+  is a view mode, deliberately **not** persisted.
+- **Esc rule (decision):** ONE keydown handler with an explicit branch read from a `fullscreenRef`
+  — in fullscreen Esc exits fullscreen and leaves the selection alone; otherwise Esc clears the
+  selection. One Esc = one action, and the precedence is a code branch, not a race between two
+  separately-mounted keydown effects.
+- **Verified:** `tsc` + `vite build` clean; `vitest` **199** (was 188 → +11: `theme.ts` — WCAG
+  contrast maths, per-theme overlay ≥3:1, palette failure pinned); `cargo test` 55 (Rust
+  untouched). MiniBrowser: light+white overlay legibility (gold palette washes out — reported);
+  camera proof `RO-fired=2 cameraSame=true maxDelta=0`; 50-label perf build 94 ms / re-render
+  1 ms. In-window checks (theme survives restart, fullscreen from the real window) in the log.
+
 ## As built (Phase 2.5) — New Job UI fixes (WebKitGTK contrast, accordion, scroll)
 Three issues found by manual testing in the real Tauri window (not visible in Chromium). CSS +
 a collapse wrapper only — no Input Builder / `build-input.ts` / `orca-options.ts` logic changed.

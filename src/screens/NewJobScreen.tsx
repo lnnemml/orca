@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 import { InputEditor } from "../editor/InputEditor";
 import { MoleculeViewer } from "../viewer/MoleculeViewer";
+import { VIEWER_THEMES, viewerTheme } from "../viewer/theme";
 import { importStructureFile, IMPORT_ACCEPT } from "../viewer/import-file";
 import { InputBuilderForm } from "../input-builder/InputBuilderForm";
 import { useSceneStore } from "../scene/store";
@@ -128,6 +129,30 @@ export function NewJobScreen({
   // redraws labels only — no model reload, no camera move.
   const [showNumbers, setShowNumbers] = useState(false);
 
+  // Viewer theme (2.5.2e-2) — persisted in the `settings` table under
+  // `viewer_theme`; loaded on mount, saved on change. `viewerTheme` falls back to
+  // dark for an unknown/absent value.
+  const [themeId, setThemeId] = useState<string>("dark");
+  const theme = viewerTheme(themeId);
+  useEffect(() => {
+    invoke<Record<string, string>>("get_settings")
+      .then((s) => setThemeId(s.viewer_theme ?? "dark"))
+      .catch(() => {});
+  }, []);
+  const changeTheme = (id: string) => {
+    setThemeId(id);
+    invoke("set_setting", { key: "viewer_theme", value: id }).catch(() => {});
+  };
+
+  // Fullscreen viewer (2.5.2e-2) — a VIEW mode, deliberately NOT persisted. Only
+  // a CSS class on the viewer container changes (position: fixed); MoleculeViewer
+  // keeps its tree position, so it is NOT remounted and the camera survives. A
+  // ref mirrors the state for the keydown handler so Esc priority doesn't depend
+  // on effect mount order.
+  const [fullscreen, setFullscreen] = useState(false);
+  const fullscreenRef = useRef(false);
+  fullscreenRef.current = fullscreen;
+
   // React to a composition change via `compositionSignature` (the same
   // primitive the viewer uses to decide when to re-zoom). A coordinate-only edit
   // (same signature) leaves the selection untouched. On a real change, ask
@@ -150,10 +175,19 @@ export function NewJobScreen({
     }
   }, [scene]);
 
-  // Esc clears the selection (mirrors the Clear button).
+  // Esc — ONE handler, explicit priority (2.5.2e-2 decision): in fullscreen it
+  // exits fullscreen and does NOTHING else; otherwise it clears the selection.
+  // One Esc = one action. The precedence is a branch in a single handler, read
+  // from `fullscreenRef`, so it does NOT depend on the mount order of separate
+  // keydown effects (two listeners would race on who runs first).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setSelection((sel) => (sel.length ? [] : sel));
+      if (e.key !== "Escape") return;
+      if (fullscreenRef.current) {
+        setFullscreen(false);
+        return; // exit fullscreen; selection is left untouched
+      }
+      setSelection((sel) => (sel.length ? [] : sel));
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -692,26 +726,58 @@ export function NewJobScreen({
           <InputEditor value={content} onChange={setContent} />
         </div>
         <div className="viewer-column">
-          {scene ? (
-            <div className="viewer-toolbar">
-              <label className="viewer-toggle" title="Label every atom with its global index">
-                <input
-                  type="checkbox"
-                  checked={showNumbers}
-                  onChange={(e) => setShowNumbers(e.target.checked)}
-                />
-                Numbers
-              </label>
-            </div>
-          ) : null}
-          <div className="viewer-panel">
+          {/* The fullscreen toggle changes ONLY this className — MoleculeViewer
+              keeps its position in the tree (same `scene ?` branch), so React
+              never remounts it and the camera survives (2.5.2e-2). */}
+          <div
+            className={
+              "viewer-panel" + (fullscreen ? " viewer-panel-fullscreen" : "")
+            }
+          >
             {scene ? (
-              <MoleculeViewer
-                scene={scene}
-                selection={selection}
-                onAtomPick={onAtomPick}
-                showAtomNumbers={showNumbers}
-              />
+              <>
+                <div className="viewer-toolbar">
+                  <label
+                    className="viewer-toggle"
+                    title="Label every atom with its global index"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={showNumbers}
+                      onChange={(e) => setShowNumbers(e.target.checked)}
+                    />
+                    Numbers
+                  </label>
+                  <select
+                    className="viewer-theme-select"
+                    value={themeId}
+                    onChange={(e) => changeTheme(e.target.value)}
+                    title="Viewer background theme"
+                  >
+                    {VIEWER_THEMES.map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.label}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    className="btn btn-sm"
+                    onClick={() => setFullscreen((f) => !f)}
+                    title={
+                      fullscreen ? "Exit fullscreen (Esc)" : "Fullscreen viewer"
+                    }
+                  >
+                    {fullscreen ? "Exit" : "Expand"}
+                  </button>
+                </div>
+                <MoleculeViewer
+                  scene={scene}
+                  selection={selection}
+                  onAtomPick={onAtomPick}
+                  showAtomNumbers={showNumbers}
+                  theme={theme}
+                />
+              </>
             ) : (
               <div className="viewer-empty muted">No coordinates in input</div>
             )}

@@ -5,7 +5,9 @@ model, index-range styling, shared `fragmentColor` palette. **Atom picking added
 click → `atom.index` → selection panel, WebKitGTK-confirmed. **Measurement labels/lines added
 (2.5.2b)** — dashed bond lines + a d/θ/φ value label in the highlight effect, non-clickable.
 **Halo made proportional + atom numbering (2.5.2e-1)** — wireframe halo sized per element,
-optional global-index labels. Trajectories / orbitals / spectra not started.
+optional global-index labels. **Themes + fullscreen + measurement vertex marking (2.5.2e-2)** —
+overlay colours move to the theme, background presets with a contrast invariant, remount-free
+fullscreen, angle arc / dihedral axis. Trajectories / orbitals / spectra not started.
 
 ## As built (Phase 2.1) — MoleculeViewer + xyz preview
 `npm install 3dmol` (v2.5.5; ships its own TypeScript types under `build/types/`, so no custom
@@ -140,7 +142,11 @@ C** — visible only on hydrogen. A bigger constant is not a fix (huge on H, sti
   never NaN or a silent zero. **Drift guard:** `vdwTableDrift(referenceTable)` (pure) lists any
   element where our copy disagrees; `MoleculeViewer` calls it once in dev with the live
   `GLModel.vdwRadii` and `console.warn`s — the active check the dup needs, run in the real webview
-  where 3Dmol IS loaded.
+  where 3Dmol IS loaded. **Scope of the guard:** it compares the table's *values*, not 3Dmol's
+  *lookup logic* — `getRadiusFromStyle` also does a second, case-normalised lookup for two-letter
+  symbols (`"CL"`→`"Cl"`) before falling back. We don't reproduce that branch; our own
+  `vdwRadius` normalises the symbol up front (via `normalizeElement`, same first-upper-rest-lower
+  rule), so the value matches for any casing without copying the fallback dance.
 - **Wireframe, not a solid translucent sphere.** MiniBrowser screenshots (the `debugging/002`
   technique, H·C·N·O in one frame) showed the solid magenta halo washing out over **CPK red
   oxygen** (hue clash) and thin over **grey carbon**, while a wireframe cage reads on all four.
@@ -166,6 +172,57 @@ Job-detail conformer panel are unchanged). A `NewJobScreen` "Numbers" toggle dri
   `setClickable`, and dispatched a real click at that atom (project via `modelToScreen`, then
   `mousedown` on canvas + `mouseup` on body — the 2.5.2a event technique). The callback fired with
   `atom.index === 1` (window title `PICKED-1`): the label did not intercept the pick.
+
+### Themes — overlay colours belong to the theme (2.5.2e-2)
+`src/viewer/theme.ts` (pure, node-tested) defines four `ViewerTheme` presets (`dark`, `black`,
+`light`, `white`); `MoleculeViewer` takes a `theme` prop (default `dark`).
+- **Overlay colours are the theme's, not the module's.** 2.5.2e-1 hard-coded `NUMBER_BG =
+  "#0d0f13"`, `HALO_COLOR = "#ff2d95"`, the amber measurement colour — all tuned for a near-black
+  background. On a light background those become dark label rectangles and low-contrast marks, so
+  the whole overlay palette (halo, label text/bg, measurement line/text) now travels with the
+  theme. **`dark` reproduces the pre-2.5.2e-2 look exactly**, so it's a no-op default.
+- **Background via `setBackgroundColor(bg, 1)` in its own `[theme]` effect** — no `addModel`, no
+  `zoomTo`. The overlay effect gains `theme` in its deps so halos/labels/measurement recolour with
+  it. The model effect does NOT depend on `theme`, so a theme change never rebuilds the model.
+- **The contrast invariant is why we use PRESETS, not a free colour picker.** `contrastRatio`
+  (WCAG relative luminance, pure) lets `theme.test.ts` assert that in **every** theme the halo,
+  label text (on its label bg), and measurement line clear **3:1** against their background. A
+  free background picker would let a user pick a colour that makes the halo invisible and no test
+  could catch an arbitrary runtime colour; a fixed preset set keeps the guarantee testable. All
+  overlay colours pass on all four themes (measured 5.0–16.8:1).
+- **FRAGMENT_PALETTE is measured, NOT re-tinted.** The four fragment colours are shared with
+  `FragmentList`, so this module only measures them. They pass on the dark themes and **fail on the
+  light ones** — bg `#eceff3`/`#ffffff`: teal 1.61/1.86, coral 2.33/2.69, gold 1.45/1.67, violet
+  2.36/2.72, all below 3:1 (MiniBrowser screenshot confirms gold especially washes out on white).
+  `theme.test.ts` pins this known-failure set so the fact is on record for the architect's palette
+  decision and a regression trips the test; the palette is left unchanged.
+
+### Fullscreen — no remount, camera survives (2.5.2e-2)
+A `.viewer-panel-fullscreen` class puts the viewer container `position: fixed; inset: 0`. **Only
+the container's className changes** — `MoleculeViewer` keeps its position in the React tree (the
+same `scene ?` branch renders it whether or not fullscreen), so React never remounts it. This is
+deliberate: a remount would `viewer.clear()` + re-`createViewer`, and **context re-init is the
+fragile spot in WebKitGTK** (`debugging/002`), plus the camera would reset via `zoomTo` exactly
+when the user enlarged the view to look closer. No Fullscreen API, no conditional JSX with
+`MoleculeViewer` in two different tree positions.
+- **Remount witness:** a module-level `viewerCreateCount`, `console.debug`'d in dev on every
+  `createViewer`. A fullscreen toggle must not tick it.
+- **Resize:** the existing `ResizeObserver` on the inner container fires on the size change and
+  calls `viewer.resize()` — no explicit call needed. **Verified in MiniBrowser** (the
+  `debugging/002` technique): a probe with a `getView()` snapshot, then a `position: fixed` class
+  toggle, reported window title `RO-fired=2 cameraSame=true maxDelta=0.00e+0` — the observer fired
+  and the camera view matrix was **bit-identical** before and after (the `getView` array is the
+  concrete proof, not "looks the same").
+
+### Measurement vertex marking (2.5.2e-2)
+All halos are identical, so the pick that is the angle vertex / dihedral axis wasn't visible.
+`drawMeasurement` now marks it **geometrically** (never a second number — the "one number per atom
+= global index" rule from e-1 holds; click order is shown by geometry, not digits):
+- **angle:** two dashed rays + a solid **arc** at the vertex (`drawAngleArc` — a fan of short line
+  segments slerped along the great circle from one ray to the other, radius scaled to the shorter
+  arm so it never overshoots a bond; no-op when the rays are (anti)parallel);
+- **dihedral:** the **j–k axis** is a thick solid `addCylinder` (radius `AXIS_RADIUS = 0.05`), the
+  outer i–j / k–l bonds stay thin dashed lines — the rotation axis reads at a glance.
 
 ## Structures & trajectories
 3Dmol.js viewer component (**done**, above); multiframe xyz → trajectory playback with frame

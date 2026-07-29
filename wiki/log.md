@@ -1510,3 +1510,68 @@ In-window checks needing the real Tauri window: halo visible on an aromatic-ring
 carbonyl oxygen; Numbers toggles without a camera jump; numbering on a ~50-atom scene stays
 responsive (perf input for e-2). Next: 2.5.2e-2 — viewer fullscreen / background presets / settings
 persistence. Screenshots archived with the session (`/tmp/halo-*.png`, `/tmp/pick-through-label.png`).
+
+## [2026-07-29] decision | Viewer background: presets, not a free colour picker
+
+2.5.2e-2 offers background themes. **Fixed presets, not a free colour picker** — because the
+safety property is a testable **contrast invariant**: `theme.test.ts` asserts every theme's halo,
+label text, and measurement line clear WCAG 3:1 against their background (`contrastRatio`, pure).
+A free picker would let a user choose a background that makes the halo invisible, and no test can
+catch an arbitrary runtime colour. Presets keep the guarantee. Four: `dark` (the pre-2.5.2e-2
+look, unchanged, still default), `black`, `light`, `white`. Overlay colours moved OUT of
+`MoleculeViewer` into the theme (e-1 had hard-coded `NUMBER_BG = #0d0f13`, which is a dark
+rectangle on a light background).
+
+**Reported, not silently fixed — FRAGMENT_PALETTE fails contrast on the light themes.** The four
+fragment colours are shared with `FragmentList`, so this unit only *measures* them. Against
+`#eceff3` / `#ffffff`: teal 1.61/1.86, coral 2.33/2.69, gold 1.45/1.67, violet 2.36/2.72 — all
+below 3:1 (gold worst; MiniBrowser screenshot confirms it washes out on white). Dark themes pass.
+The failure set is pinned in `theme.test.ts` (suite stays green, regression trips it). **Palette
+decision is the architect's** — left unchanged.
+
+## [2026-07-29] decision | Esc priority — one handler, explicit branch
+
+With fullscreen added, Esc has two possible meanings (exit fullscreen; clear selection). Rule:
+**in fullscreen, Esc exits fullscreen and does nothing else; otherwise it clears the selection.
+One Esc = one action.** Implemented as a SINGLE keydown handler whose first branch reads a
+`fullscreenRef` — the precedence is a code branch, NOT a race between two separately-mounted
+keydown effects (whose order would depend on mount order and silently flip under refactor). The
+visible Exit button is the discoverable path; Esc is the shortcut.
+
+## [2026-07-29] session | 2.5.2e-2: fullscreen viewer, background themes, measurement vertex marking
+
+Viewer polish; no geometry, no sidecar. Three pieces.
+
+**Themes (`viewer/theme.ts`, pure).** Four `ViewerTheme` presets; `MoleculeViewer` takes a `theme`
+prop (default `dark` = the old look exactly, a no-op). Background via `setBackgroundColor` in a
+`[theme]` effect (no model reload, no `zoomTo`); halo/label/measurement colours read from the
+theme in the overlay effect. See the presets-not-picker decision for the contrast invariant and
+the FRAGMENT_PALETTE light-theme failure (reported, palette untouched). Persisted under
+`settings.viewer_theme` via the existing `get_settings`/`set_setting` (no schema migration).
+
+**Fullscreen — the main risk was a REMOUNT.** A remount would `viewer.clear()` + re-`createViewer`
+(context re-init is WebKitGTK's fragile spot, `debugging/002`) and reset the camera exactly when
+the user enlarged to look closer. So fullscreen changes ONLY a CSS class on the viewer container
+(`position: fixed; inset 0`); `MoleculeViewer` keeps its React tree position (same `scene ?`
+branch), never remounts. **Concrete proofs:** (1) module-level `viewerCreateCount`, dev-logged on
+every `createViewer` — a fullscreen toggle must not tick it; (2) MiniBrowser probe with a
+`getView()` snapshot across a `position: fixed` class toggle → title
+`RO-fired=2 cameraSame=true maxDelta=0.00e+0`: the `ResizeObserver` fires (so `viewer.resize()`
+runs, no explicit call) and the camera view matrix is bit-identical. Esc rule in its own decision.
+
+**Measurement vertex marking (for 2.5.2d).** All halos are identical, so the angle vertex / dihedral
+axis wasn't visible. `drawMeasurement` now marks it geometrically — **angle:** a solid arc at the
+vertex (`drawAngleArc`, slerped segments, radius ≤ shorter arm); **dihedral:** the j–k axis as a
+thick `addCylinder`, outer bonds thin dashed. **No second number on the atom** — the "one number =
+global index" rule from e-1 holds; click order is shown by geometry, not digits.
+
+**e-1 leftover answered.** Numbering ~50 atoms (MiniBrowser): labels build ~94 ms once, per-frame
+re-render ~1 ms → rotation stays smooth, all 50 legible. Label `fontSize` is screen-space
+(constant px), so it stays readable in fullscreen — no dynamic sizing needed.
+
+**Verified.** `tsc` + `vite build` clean; `vitest` **199** (was 188 → +11: `theme.ts` WCAG
+contrast maths, per-theme overlay ≥3:1, pinned palette failures); `cargo test` **55** (Rust
+untouched). MiniBrowser screenshots archived (`/tmp/themes-stacked.png`, `theme-white-solo.png`,
+`camera-proof.png`, `perf-proof.png`). In-window checks needing the real Tauri window: theme
+survives an app restart; fullscreen enter/exit from the real window keeps the racurs; light/white
+readability at full size. Next: 2.5.2d — apply a measured d/θ/φ back through the ASE kernel.
