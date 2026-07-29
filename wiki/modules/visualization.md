@@ -7,7 +7,9 @@ click → `atom.index` → selection panel, WebKitGTK-confirmed. **Measurement l
 **Halo made proportional + atom numbering (2.5.2e-1)** — wireframe halo sized per element,
 optional global-index labels. **Themes + fullscreen + measurement vertex marking (2.5.2e-2)** —
 overlay colours move to the theme, background presets with a contrast invariant, remount-free
-fullscreen, angle arc / dihedral axis. Trajectories / orbitals / spectra not started.
+fullscreen, angle arc / dihedral axis. **Light-theme legibility (2.5.2e-3a)** — CPK element-colour
+overrides + per-theme fragment palette (widened contrast invariant), element-selector `<select>`
+fix, round swatches. Trajectories / orbitals / spectra not started.
 
 ## As built (Phase 2.1) — MoleculeViewer + xyz preview
 `npm install 3dmol` (v2.5.5; ships its own TypeScript types under `build/types/`, so no custom
@@ -185,17 +187,50 @@ Job-detail conformer panel are unchanged). A `NewJobScreen` "Numbers" toggle dri
   `zoomTo`. The overlay effect gains `theme` in its deps so halos/labels/measurement recolour with
   it. The model effect does NOT depend on `theme`, so a theme change never rebuilds the model.
 - **The contrast invariant is why we use PRESETS, not a free colour picker.** `contrastRatio`
-  (WCAG relative luminance, pure) lets `theme.test.ts` assert that in **every** theme the halo,
-  label text (on its label bg), and measurement line clear **3:1** against their background. A
-  free background picker would let a user pick a colour that makes the halo invisible and no test
-  could catch an arbitrary runtime colour; a fixed preset set keeps the guarantee testable. All
-  overlay colours pass on all four themes (measured 5.0–16.8:1).
-- **FRAGMENT_PALETTE is measured, NOT re-tinted.** The four fragment colours are shared with
-  `FragmentList`, so this module only measures them. They pass on the dark themes and **fail on the
-  light ones** — bg `#eceff3`/`#ffffff`: teal 1.61/1.86, coral 2.33/2.69, gold 1.45/1.67, violet
-  2.36/2.72, all below 3:1 (MiniBrowser screenshot confirms gold especially washes out on white).
-  `theme.test.ts` pins this known-failure set so the fact is on record for the architect's palette
-  decision and a regression trips the test; the palette is left unchanged.
+  (WCAG relative luminance, pure) lets `theme.test.ts` assert **3:1** against the background for
+  **three** on-canvas colour families (widened in 2.5.2e-3a): the **overlay** (halo, label text,
+  measurement line/text), the **fragment palette**, and the **CPK element colours**. A free
+  background picker could make any of them vanish and no test could catch an arbitrary runtime
+  colour; presets keep the guarantee testable.
+
+### CPK element-colour overrides on light themes (2.5.2e-3a)
+The e-2 test measured only `FRAGMENT_PALETTE` (fragments 1+) — but **fragment 0 is drawn in CPK
+element colours, and CPK hydrogen is white.** On the white theme every hydrogen vanished (the BH₄⁻
+screenshot — one molecule, one fragment, all CPK, the commonest case). The test passed honestly; it
+measured the wrong thing. The fix widens the invariant, it doesn't rewrite it.
+- **`ViewerTheme.elementColorOverrides`** — a per-element map merged OVER 3Dmol's default element
+  colours. **Empty for the dark themes** (their look is untouched, not a pixel). For light/white it
+  covers the **13 elements** whose default colour fails 3:1 against `#eceff3` (the harder of the two
+  light backgrounds): `H He B C N F Si P S Cl Fe Ba Au`. Each override is the **same hue, darker**
+  (H and C become greys); tuned to ≥3.2:1 vs `#eceff3`, which also clears white.
+- **Applied via 3Dmol `colorscheme`.** `MoleculeViewer`'s base style becomes
+  `{ colorscheme: { prop: "elem", map } }` where `map = { ...elementColors.defaultColors,
+  ...theme.elementColorOverrides }` (the merge is why partial overrides keep every other element's
+  CPK colour). Confirmed against the bundle — 3Dmol's default CPK scheme is `elementColors.rasmol`
+  (aliased by `defaultColors`), and a `{prop,map}` colorscheme is honoured. With **no** overrides
+  the function returns the exact old `baseStyle()` object, so the dark path is byte-identical.
+  **MiniBrowser-verified:** BH₄⁻ on white renders all four H grey and B dark-green, legible.
+- **The CPK table is a documented DUPLICATE**, same as the vdW table: `CPK_ELEMENT_COLORS` in
+  `theme.ts` is `elementColors.rasmol` transcribed verbatim (the 3dmol bundle can't load under the
+  node test runner). `cpkColorDrift(reference)` (pure) guards it; `MoleculeViewer` calls it in dev
+  with the live `elementColors.defaultColors`. The contrast overrides are computed against these
+  values, so a 3Dmol change must be noticed.
+- **`theme.test.ts` invariants:** dark/black overrides are empty; light/white override **exactly**
+  the computed failing set (no gaps, no redundant entries); every shipped override clears 3:1; each
+  overridden element genuinely failed first; hue stays recognisable (≤25° from CPK, greys aside).
+
+### Fragment palette as a theme property (2.5.2e-3a)
+The four fragment colours are now `ViewerTheme.fragmentPalette`, and `MoleculeViewer` reads the
+palette from the theme (not the global constant). **`FragmentList` stays on the global
+`FRAGMENT_PALETTE`** — its swatches sit on the app's dark side panel, where the bright colours read.
+- dark/black: `fragmentPalette === FRAGMENT_PALETTE` (unchanged);
+- light/white: the same four **hues** at lower lightness (`#0f766e #e11d48 #a16207 #7c3aed`), each
+  ≥3:1 on both light backgrounds. **Named compromise:** on a light theme the sidebar swatch and the
+  viewer fragment are the *same hue at different brightness* — identity rides on hue, legibility on
+  lightness. The alternative (leave the palette bright) is an invisible fragment, which is worse.
+- **`theme.test.ts`:** every theme's four palette colours clear 3:1 vs its background; the
+  light/white hue stays within **±15°** of its dark counterpart (the invariant that guards "same
+  colour, darker" — not a literal). The global `FRAGMENT_PALETTE` constant is unchanged.
 
 ### Fullscreen — no remount, camera survives (2.5.2e-2)
 A `.viewer-panel-fullscreen` class puts the viewer container `position: fixed; inset: 0`. **Only

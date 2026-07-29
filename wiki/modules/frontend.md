@@ -439,6 +439,24 @@ gains two controls beside **Numbers**:
   camera proof `RO-fired=2 cameraSame=true maxDelta=0`; 50-label perf build 94 ms / re-render
   1 ms. In-window checks (theme survives restart, fullscreen from the real window) in the log.
 
+## As built (2.5.2e-3a) — light-theme legibility
+The light themes shipped in e-2 were unusable: the theme `<select>` was dark-on-dark and CPK
+hydrogen (white) vanished on a white background. Fixes (viewer-colour logic in `viewer/theme.ts` /
+`MoleculeViewer` — see `modules/visualization.md`; select fix in `debugging/003`):
+- **Theme `<select>` regression → element-selector fix.** The debugging/003 `-webkit-appearance`
+  fix lived on the `.select` **class**; `.viewer-theme-select` (a new class) missed it. Moved the
+  rule to the **element selector** `select` (`.select` kept as alias), so every `<select>` is
+  covered by default. `.viewer-theme-select` reduced to cosmetic tweaks (no `background` shorthand
+  — it would wipe the chevron). Amendment recorded in `debugging/003`.
+- **Round fragment swatches** (`.fragment-swatch` → `border-radius: 50%`, one rule, used by both
+  `FragmentList` and `AtomInspector`). A hollow SQUARE swatch beside the real "Numbers" checkbox
+  read as an unchecked checkbox on the screenshot; a circle can't be mistaken for one.
+- **Verified:** `tsc` + `vite build` clean; `vitest` **210** (was 199 → +11: `theme.ts` CPK
+  overrides exact-cover / no-redundant / ≥3:1, per-theme palette ≥3:1 + hue ±15°, `cpkColorDrift`,
+  `hueOf`); `cargo test` 55 (Rust untouched). MiniBrowser: BH₄⁻ on white (4 H grey, legible),
+  3-fragment scene on light (each distinct), theme select fixed vs broken. Dark themes byte-identical
+  (empty overrides → `cpkBaseStyle` returns the old object; palette `=== FRAGMENT_PALETTE`).
+
 ## As built (Phase 2.5) — New Job UI fixes (WebKitGTK contrast, accordion, scroll)
 Three issues found by manual testing in the real Tauri window (not visible in Chromium). CSS +
 a collapse wrapper only — no Input Builder / `build-input.ts` / `orca-options.ts` logic changed.

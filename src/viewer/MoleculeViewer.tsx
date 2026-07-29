@@ -1,12 +1,11 @@
 import { useEffect, useRef } from "react";
-import { createViewer, GLModel, type GLViewer } from "3dmol";
+import { createViewer, GLModel, elementColors, type GLViewer } from "3dmol";
 
 import type { Scene, SceneAtom } from "../scene/types";
 import { compositionSignature, fragmentRanges, mergeToXyz } from "../scene/scene";
 import { measureSelection, formatMeasurementValue } from "../scene/measure";
 import { highlightRadius, vdwTableDrift } from "./highlight";
-import { DEFAULT_THEME, type ViewerTheme } from "./theme";
-import { fragmentColor } from "./fragment-colors";
+import { DEFAULT_THEME, cpkColorDrift, type ViewerTheme } from "./theme";
 
 // Side-effect: force 3Dmol onto its direct-canvas WebGL path so it renders in
 // the WebKitGTK webview (must run before the first createViewer).
@@ -70,6 +69,22 @@ const HALO_OPACITY = 0.85;
 /** Ball-and-stick — the same style the viewer has always used. Fresh object per
  * call (3Dmol may retain the reference). */
 const baseStyle = () => ({ stick: {}, sphere: { scale: 0.3 } });
+
+/**
+ * Ball-and-stick base style for the scene path, honouring a theme's CPK element
+ * overrides (2.5.2e-3a). When the theme has overrides (light/white), atoms are
+ * coloured by a `colorscheme` map = 3Dmol's default element colours WITH the
+ * theme's low-contrast elements darkened (so CPK hydrogen isn't white-on-white).
+ * With no overrides (dark/black) it returns the exact `baseStyle()` object — a
+ * true no-op, so the dark themes render byte-identically to before.
+ */
+function cpkBaseStyle(theme: ViewerTheme) {
+  const overrides = theme.elementColorOverrides;
+  if (Object.keys(overrides).length === 0) return baseStyle();
+  const map = { ...elementColors.defaultColors, ...overrides };
+  const colorscheme = { prop: "elem", map } as unknown as { prop: string };
+  return { stick: { colorscheme }, sphere: { scale: 0.3, colorscheme } };
+}
 
 /** Radius (Å) of the thick, solid cylinder marking a dihedral's j–k axis
  * (2.5.2e-2) — chunky enough to read as the axis against the thin dashed i–j /
@@ -241,6 +256,16 @@ export function MoleculeViewer({
           `[MoleculeViewer] highlight.ts vdW radii disagree with 3Dmol for: ${drift.join(", ")} — update VDW_RADII.`,
         );
       }
+      // Same guard for the CPK colour copy in theme.ts (contrast overrides are
+      // computed against these values, so a 3Dmol change must be noticed).
+      const cpkDrift = cpkColorDrift(
+        elementColors.defaultColors as Record<string, string | number | undefined>,
+      );
+      if (cpkDrift.length > 0) {
+        console.warn(
+          `[MoleculeViewer] theme.ts CPK colours disagree with 3Dmol for: ${cpkDrift.join(", ")} — update CPK_ELEMENT_COLORS.`,
+        );
+      }
     }
 
     const viewer = createViewer(container, {
@@ -289,15 +314,19 @@ export function MoleculeViewer({
 
     if (scene && scene.fragments.length > 0) {
       viewer.addModel(mergeToXyz(scene), "xyz");
-      // Base ball-and-stick with CPK element colours for every atom...
-      viewer.setStyle({}, baseStyle());
+      // Base ball-and-stick with CPK element colours for every atom — with the
+      // theme's low-contrast element overrides folded in (light/white), so
+      // fragment 0 (the CPK fragment) is legible on the background...
+      viewer.setStyle({}, cpkBaseStyle(theme));
       // ...then override fragments 1+ with a flat palette colour on BOTH stick
       // and sphere so each fragment reads as one object. Fragment 0 keeps CPK.
-      // The `index` selector takes the 0-based atom index, which for an xyz
-      // model is the merged-xyz line order == the Scene global index (ADR-008).
+      // The palette is the THEME's (darker on light themes); the `index` selector
+      // takes the 0-based atom index, which for an xyz model is the merged-xyz
+      // line order == the Scene global index (ADR-008).
+      const palette = theme.fragmentPalette;
       fragmentRanges(scene).forEach((range, fragmentIndex) => {
-        const color = fragmentColor(fragmentIndex);
-        if (!color) return; // fragment 0 → leave on CPK colours
+        if (fragmentIndex === 0) return; // fragment 0 → leave on CPK colours
+        const color = palette[(fragmentIndex - 1) % palette.length];
         const indices: number[] = [];
         for (let i = range.start; i < range.end; i++) indices.push(i);
         viewer.setStyle(
@@ -333,8 +362,11 @@ export function MoleculeViewer({
     }
 
     viewer.render();
-    // The model is rebuilt whenever geometry changes OR picking flips on/off.
-  }, [xyzData, scene, pickable]);
+    // Rebuilt on geometry change, picking flip, OR theme change (CPK overrides +
+    // per-fragment palette are re-applied). A theme switch keeps the same
+    // composition signature, so the zoom guard fires no `zoomTo` — the camera is
+    // preserved (background is handled in the separate [theme] effect below).
+  }, [xyzData, scene, pickable, theme]);
 
   // The overlay effect — the SINGLE owner of every shape and label in the
   // viewer: selection halos, measurement lines/labels (2.5.2b), and atom-number

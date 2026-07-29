@@ -335,11 +335,15 @@ body {
   cursor: pointer;
 }
 
+/* WebKitGTK renders <select> as a native widget that ignores inherited color —
+   every property must be set explicitly and the native appearance stripped, or
+   the text renders dark-on-dark. Applied to the ELEMENT selector (not just the
+   .select class) so EVERY <select> is fixed by default — a class you must
+   remember to add gets forgotten, which is exactly how .viewer-theme-select
+   regressed in 2.5.2e-2. `.select` stays as an alias. See debugging/003. */
+select,
 .select {
   cursor: pointer;
-  /* WebKitGTK renders <select> as a native widget that ignores inherited
-     color — every property must be set explicitly, and the native appearance
-     stripped, or the text renders dark-on-dark. See debugging/003. */
   -webkit-appearance: none;
   appearance: none;
   color: var(--text);
@@ -354,11 +358,13 @@ body {
 }
 
 /* The dropdown popup is also a native widget — style the options too. */
+select option,
 .select option {
   background-color: var(--panel-2);
   color: var(--text);
 }
 
+select:disabled,
 .select:disabled {
   color: var(--muted-2);
   background-color: var(--panel-2);
@@ -556,13 +562,14 @@ body {
 .viewer-toggle input {
   cursor: pointer;
 }
+/* Only cosmetic tweaks — colour, appearance-reset and the chevron come from the
+   element `select` rule (do NOT set `background` shorthand here; it would wipe
+   the chevron background-image). */
 .viewer-theme-select {
   font-size: 12px;
-  padding: 2px 4px;
-  border-radius: 4px;
-  background: var(--panel-2);
-  color: var(--text);
+  height: 26px;
   border: 1px solid var(--border);
+  border-radius: 4px;
 }
 
 /* Fragment sidebar. */
@@ -589,7 +596,9 @@ body {
   flex: none;
   width: 12px;
   height: 12px;
-  border-radius: 3px;
+  /* Round (2.5.2e-3a): a hollow SQUARE swatch next to the real "Numbers"
+     checkbox read as an unchecked checkbox on the screenshot. A circle can't. */
+  border-radius: 50%;
   border: 1px solid var(--muted-2);
 }
 .fragment-cpk {

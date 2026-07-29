@@ -1575,3 +1575,66 @@ untouched). MiniBrowser screenshots archived (`/tmp/themes-stacked.png`, `theme-
 `camera-proof.png`, `perf-proof.png`). In-window checks needing the real Tauri window: theme
 survives an app restart; fullscreen enter/exit from the real window keeps the racurs; light/white
 readability at full size. Next: 2.5.2d — apply a measured d/θ/φ back through the ASE kernel.
+
+## [2026-07-29] decision | Fragment palette becomes a theme property (hue vs lightness)
+
+2.5.2e-2 reported that `FRAGMENT_PALETTE` fails 3:1 on the light themes and left the call to the
+architect. Decision: **the global `FRAGMENT_PALETTE` constant is NOT changed** — it is shared with
+`FragmentList`'s swatches, which sit on the app's dark side panel and read fine there. Instead the
+palette becomes a **per-theme property** (`ViewerTheme.fragmentPalette`): dark/black keep the four
+current colours; light/white use the same four **hues at lower lightness**
+(`#0f766e #e11d48 #a16207 #7c3aed`), each ≥3:1 against the light backgrounds.
+
+**Named compromise:** on a light theme, the sidebar swatch (bright, global palette) and the viewer
+fragment (darker, theme palette) are the *same hue at different brightness*. Identity rides on hue,
+legibility on lightness. The alternative — one palette everywhere — means an **invisible fragment**
+on the light themes, which is strictly worse than a brightness mismatch. `theme.test.ts` locks the
+hue tie (light variant within ±15° of its dark counterpart) so "same colour, darker" can't drift
+into "different colour".
+
+## [2026-07-29] session | 2.5.2e-3a: light-theme legibility — select, CPK overrides, per-theme palette
+
+The light themes were unusable — two defects, both spotted on a real-window screenshot. No layout,
+no fullscreen (that's e-3b), no geometry.
+
+**1. `<select>` regression (fixed first).** The debugging/003 WebKitGTK `-webkit-appearance: none`
+fix lived on the `.select` **class**; e-2's `.viewer-theme-select` was a new class and silently
+missed it, so WebKitGTK drew the native GTK widget with dark text. Moved the rule to the **element
+selector** `select` (`.select` kept as alias) — every `<select>` is now covered by default. All
+five selects in `src/` grepped and confirmed under the rule; `.viewer-theme-select` reduced to
+cosmetic tweaks (no `background` shorthand, which would wipe the chevron). debugging/003 amended:
+the lesson is "the fix lives on the element selector", not "don't forget the class" — because it
+was forgotten. MiniBrowser-verified (fixed = light text + chevron; broken reference = dark native).
+
+**2. CPK colours vs the theme background — the invariant was too narrow.** The e-2 contrast test
+checked `FRAGMENT_PALETTE` (fragments 1+), but fragment 0 is drawn in **CPK element colours**, and
+CPK hydrogen is **white** — on white every hydrogen vanished (the BH₄⁻ screenshot). The test was
+honest, it measured the wrong thing. Widened, not rewritten: `ViewerTheme.elementColorOverrides`,
+empty on dark (untouched), covering the **13** elements that fail 3:1 vs `#eceff3` on light/white
+(`H He B C N F Si P S Cl Fe Ba Au`) — each the same hue, darker; H/C become greys. Applied via
+3Dmol `colorscheme: {prop:"elem", map: {...elementColors.defaultColors, ...overrides}}` (default CPK
+= `elementColors.rasmol`, confirmed in the bundle). CPK table transcribed into `theme.ts`
+(`CPK_ELEMENT_COLORS`, a documented dup — the 3dmol bundle can't load in node), guarded by
+`cpkColorDrift` in dev. MiniBrowser: BH₄⁻ on white → 4 H grey, B dark-green, all legible.
+
+**3. Fragment palette as a theme property** — see the decision above (global constant untouched;
+light/white get darker same-hue variants; `FragmentList` stays on the global palette).
+
+**4. Round fragment swatches** (`border-radius: 50%`, `FragmentList` + `AtomInspector`) — a hollow
+square swatch beside the real "Numbers" checkbox read as an unchecked checkbox.
+
+**Contrast numbers (report).** CPK elements failing 3:1 on light `#eceff3` / white `#ffffff` (13,
+identical sets): H 1.15/1.00, He 1.33/1.54, B 1.19/1.37, C 1.45/1.67, N 2.41/2.78, F 1.94/2.24,
+Si 1.94/2.24, P 1.71/1.97, S 1.34/1.55, Cl 1.19/1.37, Fe 1.71/1.97, Ba 1.71/1.97, Au 1.94/2.24 —
+all overridden to ≥3.2 vs `#eceff3`. Fragment palette light/white (vs `#eceff3`/`#fff`): teal
+4.75/5.47, rose 4.07/4.70, gold 4.27/4.92, violet 4.94/5.70; hueΔ vs dark 2.9/4.5/7.8/7.0 (≤15°).
+
+**Dark themes unchanged — proof beyond "looks the same":** dark/black ship empty overrides, so
+`cpkBaseStyle` returns the literal old `baseStyle()` object, and `fragmentPalette ===
+FRAGMENT_PALETTE`; `theme.test.ts` asserts both.
+
+**Verified.** `tsc` + `vite build` clean; `vitest` **210** (was 199 → +11: CPK exact-cover /
+no-redundant / ≥3:1, per-theme palette + hue ±15°, `cpkColorDrift`, `hueOf`); `cargo test` **55**
+(Rust untouched). Screenshots archived (`/tmp/bh4-white.png`, `select-proof.png`, `frag-light.png`).
+In-window checks needing the real Tauri window: BH₄⁻ + 3-fragment on light/white, dark before/after.
+Next: 2.5.2e-3b — layout / side-rail.

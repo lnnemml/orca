@@ -63,3 +63,27 @@ only best-effort styleable; don't rely on it for contrast. This is the **second*
 gotcha in the project (see `debugging/002` — `OffscreenCanvas` present-but-null): when something
 works in Chromium but not the Tauri webview, suspect a WebKit/GTK-specific behaviour and reproduce
 in `webkit2gtk-4.1/MiniBrowser` before chasing the integration. Recorded in `wiki/modules/frontend.md`.
+
+---
+
+## Amendment — 2026-07-29 (2.5.2e-3a): the fix lives on the ELEMENT selector, not a class
+
+The 2.5.2e-2 viewer theme `<select>` (`.viewer-theme-select`) was created as a **new class** and
+did **not** carry this fix — no `-webkit-appearance: none`, no explicit colour — so WebKitGTK
+rendered it as the native GTK widget with dark text again (visible on the light-theme screenshot).
+The regression proves the real lesson: **a fix you must remember to apply to each new control will
+be forgotten.**
+
+So the rule moved from the `.select` class to the **element selector** `select` (with `.select`
+kept as an alias): `select, .select { -webkit-appearance: none; … }`. Now every `<select>` in the
+app is fixed by default; a new dropdown can't opt out by forgetting a class. `.viewer-theme-select`
+was reduced to cosmetic-only tweaks (font-size, border, radius) — critically it must **not** set the
+`background` shorthand, which would wipe the chevron `background-image` from the element rule.
+
+Verified in `MiniBrowser`: the fixed select renders light text + chevron; a reference `<select>`
+with the e-2 styling (no `appearance: none`) renders dark native text beside it. Grep confirms all
+five `<select>` in `src/` are now covered by the element rule (four already carried `.input select`,
+the fifth is `.viewer-theme-select`).
+
+**Revised lesson:** for WebKitGTK form-control theming, put the fix on the **element selector** so
+coverage is automatic — a class-scoped fix is a fix waiting to be forgotten (and it was).
