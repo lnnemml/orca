@@ -13,11 +13,22 @@
 
 /** A geometry constraint, atoms in OrcaStudio's own 0-based global index space
  * (the merged-xyz / ASE-mask space, ADR-008). `value` optional: present → freeze
- * at that explicit value; absent → freeze at the current geometry. */
+ * at that explicit value; absent → freeze at the current geometry.
+ *
+ * `valueText` (2.5.5) preserves the user's EXACT numeric text through a
+ * parse→inject round-trip when it isn't the canonical rendering of the number
+ * (e.g. `90.0`, which `String(90)` would flatten to `90`). Set by the parser only
+ * for non-canonical text; unset for freshly-built constraints. It exists so a
+ * rewrite of a recognised block does not silently reformat what the user typed. */
 export type Constraint =
-  | { kind: "distance"; atoms: [number, number]; value?: number }
-  | { kind: "angle"; atoms: [number, number, number]; value?: number }
-  | { kind: "dihedral"; atoms: [number, number, number, number]; value?: number }
+  | { kind: "distance"; atoms: [number, number]; value?: number; valueText?: string }
+  | { kind: "angle"; atoms: [number, number, number]; value?: number; valueText?: string }
+  | {
+      kind: "dihedral";
+      atoms: [number, number, number, number];
+      value?: number;
+      valueText?: string;
+    }
   | { kind: "cartesian"; atoms: [number] };
 
 /** OrcaStudio's own atom indices are **0-based** (ADR-008). */
@@ -70,7 +81,10 @@ function formatValue(v: number): string {
 function constraintLine(c: Constraint): string {
   const idx = c.atoms.map(toOrcaIndex).join(" ");
   if (c.kind === "cartesian") return `{C ${idx} C}`;
-  const value = c.value !== undefined ? ` ${formatValue(c.value)}` : "";
+  // Prefer the user's exact text (valueText) over a re-rendered number, so a
+  // rewrite never turns `90.0` into `90`.
+  const vt = c.valueText ?? (c.value !== undefined ? formatValue(c.value) : undefined);
+  const value = vt !== undefined ? ` ${vt}` : "";
   // Trailing `C` is ORCA's "constrain" flag — required for the coordinate to be
   // held (verified in the 6.1.0 run).
   return `{${TYPE_LETTER[c.kind]} ${idx}${value} C}`;
@@ -94,13 +108,11 @@ export function constraintsBlock(cs: Constraint[]): string {
 
 // ── Parsing ──────────────────────────────────────────────────────────────────
 
-/** Strip `#`-to-EOL comments so a commented-out `Constraints`/`{…}` never parses
- * as live (ORCA's comment char is `#`). */
-function stripComments(s: string): string {
-  return s
-    .split("\n")
-    .map((l) => l.replace(/#.*/, ""))
-    .join("\n");
+/** Replace every `#`-to-EOL comment with the **same number of spaces**, so token
+ * offsets stay identical to the original text (unlike a line-join strip). Used to
+ * find the live block while ignoring commented-out `Constraints`/`end`/`{…}`. */
+function maskComments(s: string): string {
+  return s.replace(/#[^\n]*/g, (m) => " ".repeat(m.length));
 }
 
 /** Parse the inside of one `{ … }` (braces already removed). `null` if malformed. */
@@ -125,56 +137,93 @@ function parseConstraintToken(inner: string): Constraint | null {
   }
 
   let value: number | undefined;
+  let valueText: string | undefined;
   const valueToks = rest.slice(nAtoms);
   if (valueToks.length === 1) {
     if (type === "C") return null; // cartesian carries no value
     value = Number(valueToks[0]);
     if (!Number.isFinite(value)) return null;
+    // Keep the exact text only when it isn't the canonical rendering (e.g. `90.0`,
+    // `1.2340`) — canonical numbers round-trip via `formatValue` with no baggage.
+    if (String(value) !== valueToks[0]) valueText = valueToks[0];
   }
+  const valueFields = {
+    ...(value !== undefined && { value }),
+    ...(valueText !== undefined && { valueText }),
+  };
 
   const kind = LETTER_KIND[type];
   switch (kind) {
     case "distance":
-      return { kind, atoms: [atoms[0], atoms[1]], ...(value !== undefined && { value }) };
+      return { kind, atoms: [atoms[0], atoms[1]], ...valueFields };
     case "angle":
-      return {
-        kind,
-        atoms: [atoms[0], atoms[1], atoms[2]],
-        ...(value !== undefined && { value }),
-      };
+      return { kind, atoms: [atoms[0], atoms[1], atoms[2]], ...valueFields };
     case "dihedral":
-      return {
-        kind,
-        atoms: [atoms[0], atoms[1], atoms[2], atoms[3]],
-        ...(value !== undefined && { value }),
-      };
+      return { kind, atoms: [atoms[0], atoms[1], atoms[2], atoms[3]], ...valueFields };
     case "cartesian":
       return { kind, atoms: [atoms[0]] };
   }
 }
 
 /**
- * Parse the `Constraints … end` sub-block out of an ORCA input. Tolerant of
- * whitespace and case. Returns:
- *  - `null` when there is **no** Constraints block (or the input is empty), and
- *  - `null` when a `{ … }` line is malformed (don't silently drop a constraint);
- *  - `[]` for a present-but-empty block.
+ * What a `Constraints … end` sub-block *is*, so a caller can tell **"no block"**
+ * from **"a block I don't fully understand"** (2.5.5). The distinction is
+ * load-bearing: `injectConstraints` rewrites the whole block, so it must run ONLY
+ * on `parsed` — otherwise a comment or an unknown token the panel couldn't show
+ * gets silently destroyed on the next add/delete (the 2.5.4b data-loss bug).
+ *
+ * **We rewrite only what we fully recognised.** `unrecognised` covers a `{ … }`
+ * token we can't parse AND a `#` comment inside the block (we can't preserve a
+ * comment through a rewrite) AND any non-`{…}` syntax we don't model.
+ */
+export type ConstraintsInspection =
+  | { kind: "absent" }
+  | { kind: "parsed"; cs: Constraint[] }
+  | { kind: "unrecognised"; sample: string };
+
+export function inspectConstraintsBlock(input: string): ConstraintsInspection {
+  // Find the LIVE block on comment-masked text (a commented-out block is absent),
+  // but read its inner content from the ORIGINAL text (offsets align — mask keeps
+  // length) so a comment INSIDE the block is visible and counts as unrecognised.
+  const masked = maskComments(input);
+  const toks = scanTokens(masked);
+  const gi = toks.findIndex((t) => t.t.toLowerCase() === "constraints");
+  if (gi < 0) return { kind: "absent" };
+  const endTok = toks.slice(gi + 1).find((t) => t.t.toLowerCase() === "end");
+  if (!endTok) return { kind: "absent" }; // never closes → not a block we own
+  const innerRaw = input.slice(toks[gi].end, endTok.start);
+
+  // A comment inside the block — we can't round-trip it, so hands off.
+  if (innerRaw.includes("#")) return { kind: "unrecognised", sample: firstSample(innerRaw) };
+
+  const braceTokens = innerRaw.match(/\{[^}]*\}/g) ?? [];
+  const cs: Constraint[] = [];
+  for (const tk of braceTokens) {
+    const c = parseConstraintToken(tk.slice(1, -1));
+    if (!c) return { kind: "unrecognised", sample: tk.trim() };
+    cs.push(c);
+  }
+  // Anything that isn't a `{ … }` or whitespace is syntax we don't model.
+  const leftover = innerRaw.replace(/\{[^}]*\}/g, "").trim();
+  if (leftover) return { kind: "unrecognised", sample: firstSample(leftover) };
+  return { kind: "parsed", cs };
+}
+
+/** The first non-empty, trimmed line — a compact sample for the panel's notice. */
+function firstSample(s: string): string {
+  return s.split("\n").map((l) => l.trim()).find((l) => l.length > 0) ?? s.trim();
+}
+
+/**
+ * Parse the `Constraints … end` sub-block. A convenience over
+ * `inspectConstraintsBlock`: `[]` for a present-but-empty block, the constraints
+ * for a fully-recognised one, and `null` for **both** absent and unrecognised —
+ * so a caller that only wants "the constraints, if I can trust them" gets `null`
+ * the moment the block holds anything we couldn't safely rewrite.
  */
 export function parseConstraintsBlock(input: string): Constraint[] | null {
-  const clean = stripComments(input);
-  // First `end` after `Constraints` closes it — constraint lines carry no `end`,
-  // so the non-greedy match can't overshoot into the enclosing `%geom` end.
-  const m = /constraints\b([\s\S]*?)\bend\b/i.exec(clean);
-  if (!m) return null;
-  const tokens = m[1].match(/\{[^}]*\}/g);
-  if (!tokens) return [];
-  const out: Constraint[] = [];
-  for (const tk of tokens) {
-    const c = parseConstraintToken(tk.slice(1, -1));
-    if (!c) return null;
-    out.push(c);
-  }
-  return out;
+  const ins = inspectConstraintsBlock(input);
+  return ins.kind === "parsed" ? ins.cs : null;
 }
 
 // ── Injection ────────────────────────────────────────────────────────────────

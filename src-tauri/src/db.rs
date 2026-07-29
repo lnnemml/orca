@@ -42,6 +42,9 @@ fn migrate(conn: &Connection) -> Result<(), AppError> {
             value TEXT NOT NULL
         );
         INSERT OR IGNORE INTO settings (key, value) VALUES ('orca_path', '/opt/orca/orca');
+        -- Standalone xtb for pre-optimization (Phase 2.5.5), NOT xtb-via-ORCA.
+        -- Seeded to the common PATH location; the user sets the real path in Settings.
+        INSERT OR IGNORE INTO settings (key, value) VALUES ('xtb_path', 'xtb');
         INSERT OR IGNORE INTO settings (key, value) VALUES ('schema_version', '1');
         -- CPU pinning (Phase 2, domain rule #8). Defaults to the Interactive
         -- preset; cpu_mask/cpu_nprocs are only consulted when cpu_preset=custom.

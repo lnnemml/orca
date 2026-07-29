@@ -312,6 +312,28 @@ export function replaceFragmentAtoms(
 }
 
 /**
+ * Replace the coordinates of EVERY atom in the scene from one flat list, sliced
+ * back to the fragments by their existing `[start, end)` windows (2.5.5). Used
+ * when a whole-scene optimizer (xtb pre-opt) hands back a merged geometry: the
+ * atom count and element order are an invariant (ADR-008 one-index-space), so
+ * each fragment's slice goes through `replaceFragmentAtoms`, which enforces
+ * count + element order per fragment. Throws (never silently mis-slices) if the
+ * flat list's length doesn't equal `atomCount(scene)`.
+ */
+export function replaceAllAtoms(scene: Scene, atoms: SceneAtom[]): Scene {
+  if (atoms.length !== atomCount(scene)) {
+    throw new Error(
+      `replaceAllAtoms: got ${atoms.length} atoms but the scene has ${atomCount(scene)}`,
+    );
+  }
+  let next = scene;
+  for (const { fragmentId, start, end } of fragmentRanges(scene)) {
+    next = replaceFragmentAtoms(next, fragmentId, atoms.slice(start, end));
+  }
+  return next;
+}
+
+/**
  * Rigid-body translate a fragment by (dx, dy, dz). Pure/immutable — returns a new
  * fragment with the same id, composition and internal geometry, only shifted.
  * Used by fragment placement (2.5.0d-2) and the geometry editor (2.5.3).

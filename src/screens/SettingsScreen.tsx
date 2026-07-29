@@ -9,6 +9,13 @@ export function SettingsScreen() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // --- xtb (standalone pre-optimizer, 2.5.5) ---
+  const [xtbPath, setXtbPath] = useState("");
+  const [savedXtbPath, setSavedXtbPath] = useState("");
+  const [savingXtb, setSavingXtb] = useState(false);
+  const [xtbVersion, setXtbVersion] = useState<string | null>(null);
+  const [checkingXtb, setCheckingXtb] = useState(false);
+
   // --- CPU pinning (domain rule #8) ---
   const [presets, setPresets] = useState<CpuPresetInfo[]>([]);
   const [cpuPreset, setCpuPreset] = useState("interactive");
@@ -25,6 +32,9 @@ export function SettingsScreen() {
       const path = settings.orca_path ?? "";
       setOrcaPath(path);
       setSavedPath(path);
+      const xtb = settings.xtb_path ?? "";
+      setXtbPath(xtb);
+      setSavedXtbPath(xtb);
       setPresets(presetList);
       setCpuPreset(settings.cpu_preset ?? "interactive");
       setCpuMask(settings.cpu_mask ?? "8-15");
@@ -66,7 +76,36 @@ export function SettingsScreen() {
     }
   };
 
+  const saveXtbPath = async () => {
+    setSavingXtb(true);
+    setError(null);
+    try {
+      await invoke("set_setting", { key: "xtb_path", value: xtbPath });
+      setSavedXtbPath(xtbPath);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setSavingXtb(false);
+    }
+  };
+
+  const checkXtb = async () => {
+    setCheckingXtb(true);
+    setXtbVersion(null);
+    setError(null);
+    try {
+      // Verifies the saved path (persist first so the command reads what's shown).
+      if (xtbPath !== savedXtbPath) await saveXtbPath();
+      setXtbVersion(await invoke<string>("xtb_version"));
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setCheckingXtb(false);
+    }
+  };
+
   const dirty = orcaPath !== savedPath;
+  const xtbDirty = xtbPath !== savedXtbPath;
   const isCustom = cpuPreset === "custom";
 
   return (
@@ -100,6 +139,49 @@ export function SettingsScreen() {
               <span style={{ color: "var(--warn)" }}>Unsaved change</span>
             ) : (
               <span style={{ color: "var(--ok)" }}>Configured</span>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div className="card" style={{ marginTop: 12 }}>
+        <div className="field">
+          <label className="label" htmlFor="xtb-path">
+            xtb executable path
+          </label>
+          <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 6 }}>
+            Standalone <span className="mono">xtb</span> for pre-optimization (not
+            xtb-via-ORCA). Point this at the binary — an absolute path is best.
+          </div>
+          <div className="row">
+            <input
+              id="xtb-path"
+              className="input mono"
+              style={{ flex: 1 }}
+              value={xtbPath}
+              onChange={(e) => setXtbPath(e.currentTarget.value)}
+              spellCheck={false}
+            />
+            <button
+              className="btn btn-primary"
+              onClick={saveXtbPath}
+              disabled={!xtbDirty || savingXtb}
+            >
+              {savingXtb ? "Saving…" : "Save"}
+            </button>
+            <button className="btn" onClick={checkXtb} disabled={checkingXtb}>
+              {checkingXtb ? "Checking…" : "Check"}
+            </button>
+          </div>
+          <div style={{ fontSize: 12, marginTop: 2 }}>
+            {xtbVersion ? (
+              <span style={{ color: "var(--ok)" }}>{xtbVersion}</span>
+            ) : xtbDirty ? (
+              <span style={{ color: "var(--warn)" }}>Unsaved change</span>
+            ) : (
+              <span style={{ color: "var(--muted)" }}>
+                Configured — click Check to verify.
+              </span>
             )}
           </div>
         </div>

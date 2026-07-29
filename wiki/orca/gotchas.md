@@ -82,4 +82,21 @@ Living page. Add every trap encountered, newest at top, format:
   on a 5-atom molecule died at "Evaluating the coordinates") — ORCA does no bounds
   check, so range-check indices before writing a constraint. Full evidence and the
   in-range/out-of-range control in `wiki/orca/constraints.md`.
+- **TWO constraint index bases — ORCA is 0-based, xtb is 1-based. DO NOT confuse them.**
+  Both were settled by real runs (never memory), each with the chloromethane experiment
+  (order `Cl,C,H,H,H`, an explicit-value constraint on the pair whose bond *type* a one-index
+  shift changes):
+  - **ORCA `%geom Constraints` → 0-based** (2.5.4a; `{B 1 2 …}` froze the C–H pair;
+    `wiki/orca/constraints.md`).
+  - **xtb `$constrain` → 1-based** (2.5.5; `distance: 1, 2, …` froze the Cl–C pair;
+    `wiki/orca/xtb.md`).
+  OrcaStudio stores constraints **0-based** (ADR-008), so it writes ORCA indices **as-is** and
+  xtb indices **`+1`**. An off-by-one here freezes the WRONG coordinate on a calculation that
+  finishes normally — both code paths therefore carry a runtime guard (ORCA: range-check +
+  segfault block; xtb: the post-condition that the constraint was actually held, which also
+  catches a base mismatch because the intended pair would then drift).
+- **xtb holds constraints with a SPRING, not rigidly.** `$constrain force constant=k` is a
+  harmonic restraint, so the held coordinate deviates from the target (measured: 0.011 Å on a
+  realistic reaction-coordinate hold at k=1.0; up to 0.12 Å when fighting a stiff bond). The
+  post-condition tolerance (0.1 Å) is sized from this — see `wiki/orca/xtb.md`.
 - *(add as encountered during Phase 0+)*

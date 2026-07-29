@@ -13,6 +13,7 @@ import { EditPanel } from "../scene/EditPanel";
 import { ConstraintPanel } from "../scene/ConstraintPanel";
 import {
   parseConstraintsBlock,
+  inspectConstraintsBlock,
   injectConstraints,
   constraintIndexIssues,
   constraintFromSelection,
@@ -41,6 +42,8 @@ import {
   compositionSignature,
   injectSceneIntoInput,
   mergeToAtomLines,
+  parseAtomLines,
+  replaceAllAtoms,
   mergeToXyz,
   sceneFromAtomLines,
   sceneFromOrcaInput,
@@ -341,10 +344,56 @@ export function NewJobScreen({
   const constrainSelection = (value?: number) => {
     const c = constraintFromSelection(selection, value);
     if (!c) return;
-    const existing = parseConstraintsBlock(content) ?? [];
+    const ins = inspectConstraintsBlock(content);
+    if (ins.kind === "unrecognised") return; // never rewrite a block we can't read (2.5.5)
+    const existing = ins.kind === "parsed" ? ins.cs : [];
     if (existing.some((e) => sameConstraint(e, c))) return;
     setContent(injectConstraints(content, [...existing, c]));
     setError(null);
+  };
+
+  // ── xTB pre-optimization (2.5.5) — Rust-side, synchronous, cancellable ───────
+  // Relax the WHOLE scene with GFN2-xTB while holding the text's constraints (the
+  // source of truth), then replace all coordinates. Undo rides the SAME one-step
+  // mechanism as edit mode (`applyEdit` stashes `preEditScene`).
+  const [xtbBusy, setXtbBusy] = useState(false);
+  const [xtbError, setXtbError] = useState<string | null>(null);
+  const [xtbNote, setXtbNote] = useState<string | null>(null);
+  const runXtbPreopt = async () => {
+    if (!scene) return;
+    setXtbBusy(true);
+    setXtbError(null);
+    setXtbNote(null);
+    try {
+      const result = await invoke<{
+        xyz: string;
+        wall_time_secs: number;
+        held: { kind: string; deviation: number; unit: string }[];
+      }>("xtb_optimize", {
+        xyz: mergeToXyz(scene),
+        charge: totalCharge(scene),
+        multiplicity: scene.multiplicity,
+        constraints, // parsed from the text; unrecognised → button is disabled
+        timeoutSecs: null,
+      });
+      const atoms = parseAtomLines(result.xyz.trim().split("\n").slice(2));
+      if (!atoms) throw new Error("xtb returned a geometry OrcaStudio couldn't parse");
+      applyEdit(replaceAllAtoms(scene, atoms), scene); // preEditScene ← Undo
+      const held = result.held.length
+        ? " · held " +
+          result.held
+            .map((h) => `${h.kind} ±${h.deviation.toFixed(3)}${h.unit}`)
+            .join(", ")
+        : "";
+      setXtbNote(`Pre-optimized in ${result.wall_time_secs.toFixed(1)}s${held}`);
+    } catch (e) {
+      setXtbError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setXtbBusy(false);
+    }
+  };
+  const cancelXtb = () => {
+    invoke("xtb_cancel").catch(() => {});
   };
 
   // Esc — ONE handler, explicit priority (2.5.2e-2 decision): in fullscreen it
@@ -653,8 +702,13 @@ export function NewJobScreen({
   // ── ЗАХИСТ 1 — range-check constraints before any run ───────────────────────
   // ORCA does not validate constraint indices; an out-of-range one segfaults with
   // no error (verified, `wiki/orca/constraints.md`). Parse straight from the text
-  // (the source of truth) and check against the geometry's atom count.
-  const constraints = parseConstraintsBlock(content) ?? [];
+  // (the source of truth) and check against the geometry's atom count. An
+  // unrecognised block (2.5.5) yields no parsed constraints — we can't validate
+  // what we don't read, and the panel/buttons go read-only so we never rewrite it.
+  const constraintsInspection = inspectConstraintsBlock(content);
+  const constraints =
+    constraintsInspection.kind === "parsed" ? constraintsInspection.cs : [];
+  const constraintsUnrecognised = constraintsInspection.kind === "unrecognised";
   const indexIssues = scene
     ? constraintIndexIssues(constraints, atomCount(scene))
     : [];
@@ -1028,6 +1082,11 @@ export function NewJobScreen({
                 selection={selection}
                 onClear={clearSelection}
                 onConstrain={constrainSelection}
+                constrainDisabledReason={
+                  constraintsUnrecognised
+                    ? "The constraint block contains syntax OrcaStudio doesn't recognise — edit it in the input editor."
+                    : null
+                }
               />
             ) : null}
             {scene && editPlan && selection.length >= 2 ? (
@@ -1067,6 +1126,38 @@ export function NewJobScreen({
                 compositionChanged={constraintCompWarn}
                 onDismissComposition={() => setConstraintCompWarn(false)}
               />
+            ) : null}
+            {scene ? (
+              <div className="xtb-panel">
+                <div className="xtb-row">
+                  <button
+                    className="btn btn-sm"
+                    onClick={runXtbPreopt}
+                    disabled={xtbBusy || constraintsUnrecognised}
+                    title={
+                      constraintsUnrecognised
+                        ? "The constraint block is unrecognised — fix it in the editor first."
+                        : "GFN2-xTB relax the geometry, holding the constraints in the input text."
+                    }
+                  >
+                    {xtbBusy ? "Pre-optimizing…" : "xTB pre-optimize"}
+                  </button>
+                  {xtbBusy ? (
+                    <button className="btn btn-sm" onClick={cancelXtb}>
+                      Cancel
+                    </button>
+                  ) : null}
+                </div>
+                {constraintsUnrecognised ? (
+                  <div className="muted xtb-note">
+                    constraint block unreadable — fix it in the editor to pre-optimize
+                  </div>
+                ) : null}
+                {xtbNote ? <div className="muted xtb-note">{xtbNote}</div> : null}
+                {xtbError ? (
+                  <div className="edit-error edit-error-severe">{xtbError}</div>
+                ) : null}
+              </div>
             ) : null}
           </div>
         </div>

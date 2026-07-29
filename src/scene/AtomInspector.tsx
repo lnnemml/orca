@@ -29,11 +29,15 @@ export function AtomInspector({
   selection,
   onClear,
   onConstrain,
+  constrainDisabledReason,
 }: {
   scene: Scene;
   selection: number[];
   onClear: () => void;
   onConstrain?: (value?: number) => void;
+  /** When set, "Constrain selection" is disabled with this as the tooltip — used
+   * when the constraint block is unrecognised and must not be rewritten (2.5.5). */
+  constrainDisabledReason?: string | null;
 }) {
   const [constrainValue, setConstrainValue] = useState("");
   if (selection.length === 0) return null;
@@ -94,12 +98,16 @@ export function AtomInspector({
         <div className="atom-inspector-constrain">
           <button
             className="btn btn-sm"
+            disabled={!!constrainDisabledReason}
             onClick={() => {
               const v = constrainValue.trim();
               onConstrain(v === "" ? undefined : Number(v));
               setConstrainValue("");
             }}
-            title="Add a %geom constraint on this selection (frozen during the optimization)"
+            title={
+              constrainDisabledReason ??
+              "Add a %geom constraint on this selection (frozen during the optimization)"
+            }
           >
             Constrain {constrainKindLabel(selection.length)}
           </button>
@@ -110,8 +118,14 @@ export function AtomInspector({
             placeholder="freeze as-is"
             value={constrainValue}
             onChange={(e) => setConstrainValue(e.target.value)}
+            disabled={!!constrainDisabledReason}
             aria-label="constraint target value (optional)"
           />
+          {constrainDisabledReason ? (
+            <span className="muted atom-inspector-constrain-note">
+              {constrainDisabledReason}
+            </span>
+          ) : null}
         </div>
       ) : null}
       <div className="atom-inspector-coords mono">

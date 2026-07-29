@@ -7,6 +7,7 @@ import {
   fromOrcaIndex,
   constraintsBlock,
   parseConstraintsBlock,
+  inspectConstraintsBlock,
   injectConstraints,
   constraintIndexIssues,
   constraintFromSelection,
@@ -186,15 +187,16 @@ O 0 0 1.2
     expect(parseConstraintsBlock(commented)).toBeNull();
   });
 
-  it("strips a trailing inline comment on a constraint line", () => {
+  it("a comment INSIDE the block → unrecognised, not parsed (2.5.5: we can't preserve it)", () => {
     const withComment = `%geom
   Constraints
     {B 0 1 C}   # freeze the forming bond
   end
 end`;
-    expect(parseConstraintsBlock(withComment)).toEqual([
-      { kind: "distance", atoms: [0, 1] },
-    ]);
+    // Parse returns null (we won't hand back a list we can't safely rewrite);
+    // inspect names it unrecognised so the panel goes read-only instead.
+    expect(parseConstraintsBlock(withComment)).toBeNull();
+    expect(inspectConstraintsBlock(withComment).kind).toBe("unrecognised");
   });
 
   it("returns null on a malformed constraint line (never silently drops)", () => {
@@ -317,5 +319,105 @@ describe("sameConstraint — dedupe guard for repeated Constrain selection", () 
     expect(sameConstraint(a, constraintFromSelection([12, 33])!)).toBe(true);
     expect(sameConstraint(a, constraintFromSelection([33, 12])!)).toBe(false); // order matters
     expect(sameConstraint(a, constraintFromSelection([12, 33, 40])!)).toBe(false);
+  });
+});
+
+// ── 2.5.5 item 0: the 2.5.4b data-loss bug — rewrite ONLY what we recognised ───
+
+describe("inspectConstraintsBlock — absent / parsed / unrecognised", () => {
+  it("absent when there is no block", () => {
+    expect(inspectConstraintsBlock(BASE).kind).toBe("absent");
+    expect(inspectConstraintsBlock("").kind).toBe("absent");
+  });
+
+  it("absent for a fully commented-out block (not a live one)", () => {
+    const commented = `! r2SCAN-3c Opt
+# %geom
+#   Constraints
+#     {B 0 1 C}
+#   end
+# end
+`;
+    expect(inspectConstraintsBlock(commented).kind).toBe("absent");
+  });
+
+  it("parsed when every token is understood", () => {
+    const text = injectConstraints(BASE, [
+      { kind: "distance", atoms: [0, 1], value: 1.3 },
+    ]);
+    const ins = inspectConstraintsBlock(text);
+    expect(ins.kind).toBe("parsed");
+    if (ins.kind === "parsed") {
+      expect(ins.cs).toEqual([{ kind: "distance", atoms: [0, 1], value: 1.3 }]);
+    }
+  });
+
+  it("REGRESSION A — a hand-written comment inside the block is not destroyed", () => {
+    // The 2.5.4b bug: adding a constraint via the button rewrote the block and the
+    // comment vanished. Now the block is unrecognised → the add path is blocked,
+    // so injectConstraints is never called and the text is left alone.
+    const withComment = `%geom
+  Constraints
+    {B 0 1 C}
+#   {B 1 2 C}
+  end
+end
+* xyz 0 1
+C 0 0 0
+O 0 0 1.2
+H 0 1 0
+*
+`;
+    const ins = inspectConstraintsBlock(withComment);
+    expect(ins.kind).toBe("unrecognised");
+    // The guard the UI relies on: we never call inject on an unrecognised block.
+    expect(parseConstraintsBlock(withComment)).toBeNull();
+  });
+
+  it("REGRESSION B — an unknown token does not wipe the user's valid constraints", () => {
+    // {X 9 9 C} is syntax we don't model. Old behaviour: parse → null, panel empty,
+    // a button-add rewrote the block from [] and destroyed TWO valid constraints.
+    // Now: unrecognised, so the block is read-only and untouched.
+    const withUnknown = `%geom
+  Constraints
+    {B 0 1 C}
+    {X 9 9 C}
+    {A 0 1 2 C}
+  end
+end`;
+    const ins = inspectConstraintsBlock(withUnknown);
+    expect(ins.kind).toBe("unrecognised");
+    if (ins.kind === "unrecognised") expect(ins.sample).toContain("X");
+    expect(parseConstraintsBlock(withUnknown)).toBeNull();
+  });
+});
+
+describe("value text is preserved as written (2.5.5)", () => {
+  it("90.0 survives a rewrite (was flattened to 90)", () => {
+    const text = `%geom
+  Constraints
+    {D 0 1 2 3 90.0 C}
+  end
+end`;
+    const ins = inspectConstraintsBlock(text);
+    expect(ins.kind).toBe("parsed");
+    if (ins.kind !== "parsed") throw new Error("expected parsed");
+    // The semantic value is the number; the exact text rides alongside.
+    expect(ins.cs[0]).toMatchObject({ kind: "dihedral", value: 90, valueText: "90.0" });
+    // A rewrite (add another constraint) keeps 90.0, not 90.
+    const rewritten = injectConstraints(text, [
+      ...ins.cs,
+      { kind: "distance", atoms: [0, 1] },
+    ]);
+    expect(rewritten).toContain("{D 0 1 2 3 90.0 C}");
+    expect(rewritten).not.toContain("90 C");
+  });
+
+  it("a canonical number carries no valueText (clean round-trip)", () => {
+    const text = injectConstraints(BASE, [
+      { kind: "dihedral", atoms: [0, 1, 2, 3], value: 90 },
+    ]);
+    const ins = inspectConstraintsBlock(text);
+    if (ins.kind === "parsed") expect(ins.cs[0]).not.toHaveProperty("valueText");
   });
 });

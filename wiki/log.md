@@ -2065,3 +2065,55 @@ case, `constraintFromSelection`, panel round-trip, delete-preserves-block+%geom,
 dedupe); `pytest` **38** / `cargo test` **59** untouched (frontend-only). No ORCA run — the segfault is
 already documented; the whole point of this unit is never to reach it. Also fixed a stale comment in
 `AtomInspector` that still said the index base was unsettled.
+
+## [2026-07-29] decision | xTB pre-optimization lives in Rust, not the sidecar (deviates from ROADMAP)
+
+ROADMAP said "sidecar endpoint `/xtb-optimize`". We build it in **Rust** instead. Why: (a) Rust owns
+process spawning, and with it the isolated-directory rule (#3) and the kill-the-whole-group discipline
+(`debugging/004`) — xtb can leave children/threads, same class of problem; (b) the binary path is a
+**setting**, and settings live in SQLite under Rust; (c) the sidecar is deliberately ignorant of the
+jobs dir and of settings — it understands the *chemistry of files*, it does not *run binaries*. The
+sidecar stays that boundary; process orchestration stays in Rust next to the ORCA backend it mirrors.
+
+## [2026-07-29] ingest | xtb `$constrain` is 1-based — and that is NOT ORCA's 0-based
+
+Settled by a real xtb 6.6.1 run (not memory), same design as the ORCA experiment: chloromethane
+(`Cl,C,H,H,H`), `distance: 1, 2, 1.234`. xtb echoed *"constraining bond 1 2 … actual value 1.7780 Å"* —
+the initial value of pair `1,2` is the **Cl–C** distance (1.778), so `1,2` = atoms Cl(1),C(2): **1-based**.
+ORCA's `%geom Constraints` is **0-based** (2.5.4a). OrcaStudio stores 0-based (ADR-008) → writes ORCA
+as-is, xtb `+1`. **The two bases now sit side by side in `gotchas.md`** so they're never confused.
+Second finding: xtb holds constraints by a **harmonic spring** (`force constant`), not rigidly — on the
+realistic run (ibuprofen+BH₄⁻, C···B at 2.2 Å) the target held to **0.011 Å** at force constant 1.0;
+the artificial extreme (compressing C–Cl 0.54 Å) deviated up to 0.12 Å. The post-condition tolerance
+(0.1 Å distance) is sized from the realistic number — full data in `wiki/orca/xtb.md`. Both experiment
+dirs removed (rule #3).
+
+## [2026-07-29] session | 2.5.5: xTB pre-optimization (Rust) + constraint block made non-destructive
+
+**Item 0 first — the 2.5.4b data-loss bug.** The panel rewrote the whole `%geom Constraints` block on
+every add/delete, destroying (1) a `#` comment inside the block and (2) valid constraints sitting beside
+an unknown token like `{X 9 9 C}` (parse→null→panel empty→rewrite from `[]`). Fix:
+`inspectConstraintsBlock` → **`absent | parsed | unrecognised`**; **we rewrite only what we fully
+recognised.** A comment-inside or an unparseable token → `unrecognised`; the panel is read-only, add +
+delete + xtb are disabled, `injectConstraints` is never called. Numbers preserved as typed (`90.0`) via
+`valueText`. Two regression tests reproduce both scenarios.
+
+**xtb_optimize (Rust, `src-tauri/src/xtb.rs`).** Prepares an isolated dir (#3), writes `input.xyz` +
+xcontrol (`$constrain`/`$fix`, every index **+1** for xtb's 1-based base), runs xtb by full path in its
+own process group, reads `xtbopt.xyz`. **Post-conditions in the command** (not only tests): atom count,
+element order, and **each constraint held within tolerance** (0.1 Å distance — measured; 5° angle; 0.01 Å
+`$fix`) — the held-check also catches an index-base mistake (the intended pair would drift). Dir removed
+after; `xtb_cancel`/timeout → `terminate_job` (killpg + cwd sweep, the ORCA primitives made `pub(crate)`,
+one copy). `xtb_path` setting + `xtb_version` Check button in Settings. Frontend: rail button with
+running/cancel state, `replaceAllAtoms` applies the result, Undo via the existing `applyEdit`/preEditScene.
+
+**Experiments (both with numbers).** (a) index base — above. (b) realistic — ibuprofen(33)+BH₄⁻(5),
+C(#12)···B(#33) held at 2.2 Å (`distance: 13, 34, 2.2`): held to **0.011 Å**, ibuprofen RMSD 0.67 Å (rest
+relaxed), atom order preserved, **1.5 s**. The emitted xcontrol format was itself round-tripped through
+xtb 6.6.1.
+
+**Verified.** `tsc` + `vite build` clean; `vitest` **286 → 296** (+10: item-0 regressions + `valueText`
++ `replaceAllAtoms`); `cargo test` **59 → 68** (+10 `xtb::tests`: 1-based xcontrol per op, cartesian→
+`$fix`, freeze-as-is, out-of-range rejected, held-check flags/passes, xyz parse — `2 ignored` pre-existing);
+`pytest` **38** untouched (this unit added nothing to the sidecar — the whole point of the Rust decision).
+xtb dirs cleaned. **Phase 2.5 (Scene / geometry editor / reaction-coordinate control) is complete.**

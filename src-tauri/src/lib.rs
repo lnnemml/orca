@@ -8,6 +8,7 @@ mod models;
 mod output_search;
 mod result_extraction;
 mod sidecar;
+mod xtb;
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -34,6 +35,9 @@ pub fn run() {
 
             // --- LocalBackend: job-directory root + single execution slot. ---
             app.manage(local_backend::JobRunner::new(data_dir.clone()));
+
+            // --- xtb pre-optimizer: its own single-slot runner (2.5.5). ---
+            app.manage(xtb::XtbRunner::default());
 
             // Resume the sequential queue: pick up any jobs left `queued` across a
             // restart. Off-thread so setup returns promptly.
@@ -83,6 +87,9 @@ pub fn run() {
             commands::molecules::update_molecule,
             commands::molecules::delete_molecule,
             sidecar::get_sidecar_status,
+            xtb::xtb_version,
+            xtb::xtb_optimize,
+            xtb::xtb_cancel,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

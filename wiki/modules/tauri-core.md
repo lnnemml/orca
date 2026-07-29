@@ -213,6 +213,41 @@ registered in `lib.rs`.
   `0.9.0` where string order is wrong), ordering basics, unparseable → stale, and
   `parse_health_version`.
 
+## As built (Phase 2.5.5) — xtb pre-optimization (`xtb.rs`)
+Standalone GFN2-xTB relaxation of a scene while holding the user's constraints, so the geometry
+handed to ORCA is already sensible. **In Rust, not the sidecar** (logged decision): Rust owns
+process spawning (isolation rule #3, kill-the-group `debugging/004`), and the binary path is a
+setting (SQLite, under Rust). Details of the tool itself: `wiki/orca/xtb.md`.
+
+- **`xtb_path` setting** — seeded `'xtb'` in migration v1's idempotent seeds (no schema bump; it's
+  a `settings` row like `orca_path`). Never bundled (#7). `xtb_version` command runs
+  `<path> --version` and parses the banner for the Settings "Check" button; `resolve_binary`
+  turns a bare name into an absolute path via `$PATH`.
+- **`xtb_optimize(xyz, charge, multiplicity, constraints, timeout_secs?) -> XtbResult`** — the core
+  command. `constraints` deserialize from the TS `Constraint` (0-based atoms; `valueText` ignored).
+  Flow: parse the input xyz once (for target resolution AND the element-order post-condition) →
+  resolve each constraint's target (explicit value, or the geometry's CURRENT value for a
+  freeze-as-is) → **`build_xcontrol`** writes the `$constrain`/`$fix` blocks with every index **`+1`
+  (xtb is 1-based — `wiki/orca/xtb.md`)** → run `<xtb> input.xyz --input xcontrol --opt --gfn 2
+  --chrg <c> --uhf <mult−1>` by full path, in an **isolated dir** (`<data>/xtb/<uuid>`), in its own
+  process group → read `xtbopt.xyz`.
+- **Post-conditions INSIDE the command** (not only tests — the price of a missed error is the wrong
+  geometry into a multi-hour ORCA run): atom count unchanged; element sequence unchanged
+  positionally; **each constraint held within tolerance** (`check_held`: 0.1 Å distance / 5° angle /
+  0.01 Å `$fix`; the distance tolerance is measured — realistic hold 0.011 Å at force constant 1.0,
+  `wiki/orca/xtb.md`). Any breach → `AppError::Backend` with a diagnostic, never a silently-returned
+  geometry. The held-check also catches an index-base mistake: a wrong `+1` constrains a different
+  pair and the intended one drifts past tolerance.
+- **Isolation + cleanup + kill (rule #3, `debugging/004`).** The scratch dir is removed after
+  reading, on every path. Single-slot `XtbRunner` managed state holds the running pgid + dir;
+  `xtb_cancel` flags it and calls `terminate_job` (killpg SIGTERM→grace→SIGKILL + **cwd sweep**),
+  the SAME primitives as the ORCA backend (made `pub(crate)` — one copy). A timeout does the same.
+  xtb is synchronous (seconds), so it's a blocking command polling `try_wait`, not a queued job.
+- **Registration:** `xtb::{xtb_version, xtb_optimize, xtb_cancel}` in the invoke handler;
+  `app.manage(xtb::XtbRunner::default())` in setup. 10 unit tests (`xtb::tests`): 1-based xcontrol
+  per op, cartesian→`$fix`, freeze-as-is resolves the current value, out-of-range rejected before
+  spawn, `check_held` flags a drift / passes within tolerance, xyz parse.
+
 ## Deviation note
 `dirs` crate used for the data dir (per task spec) rather than Tauri's `app.path()` API —
 harmless; consolidate later if desired.

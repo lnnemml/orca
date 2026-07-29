@@ -591,6 +591,40 @@ out-of-range one (settled by a real run, `wiki/orca/constraints.md`).
   `cargo test` **59** untouched (frontend-only). No ORCA run — the segfault is already documented; the
   point of this unit is to never reach it.
 
+## As built (2.5.5) — constraint panel made non-destructive + xTB pre-optimize
+Two parts: a data-loss fix in the constraint panel, and the xTB pre-optimizer button.
+
+**Constraint panel — "rewrite only what we recognised" (item 0).** The 2.5.4b panel rewrote the whole
+block on every add/delete via `injectConstraints`. Two ways that destroyed user text: a `#` comment
+inside the block (stripped, then gone on rewrite), and an unknown token like `{X 9 9 C}` (parse → null
+→ panel empty → a button-add rewrote from `[]`, wiping the valid constraints too). Fix:
+`inspectConstraintsBlock` distinguishes **`absent` / `parsed` / `unrecognised`** (`wiki/modules/scene.md`).
+On `unrecognised` the panel shows a **read-only notice** naming the offending sample and disables add +
+delete; `NewJobScreen`'s "Constrain selection" and the xtb button are disabled too, and
+`injectConstraints` is never called — so nothing is rewritten. Numbers are preserved as typed
+(`90.0`, not `90`) via `valueText`.
+
+**xTB pre-optimize button** (geometry rail, below the constraint panel). Relaxes the whole scene with
+GFN2-xTB while holding the text's constraints, then replaces all coordinates.
+- **Constraints come from the text** (source of truth): the `parsed` cs passed straight to the Rust
+  `xtb_optimize` command. If the block is `unrecognised` the button is **disabled with a reason** — we
+  can't translate constraints we can't read.
+- **Running state + cancel:** the button shows *"Pre-optimizing…"* and a **Cancel** appears
+  (`xtb_cancel` → killpg + sweep). A synchronous Rust command (seconds), so no queue.
+- **Applying the result:** `replaceAllAtoms(scene, parseAtomLines(result.xyz))` (count + element order
+  invariant, `wiki/modules/scene.md`), then `applyEdit` — which stashes `preEditScene`, so **Undo rides
+  the exact same one-step mechanism as edit mode** (the "Edit applied · Undo" notice). A success line
+  reports the wall time and the held deviations (*"held distance ±0.011Å"*).
+- **Settings:** an xtb path field beside the ORCA one, with a **Check** button (`xtb_version`) that runs
+  `xtb --version` and shows the version — the same pattern as ORCA.
+- **Verified:** `tsc` + `vite build` clean; `vitest` **286 → 296** (item-0 regressions: comment-inside
+  and unknown-token blocks → unrecognised, `parseConstraintsBlock` null, `valueText` preserved;
+  `replaceAllAtoms` slice/invariants); `cargo test` **59 → 68** (`xtb::tests`, 1-based xcontrol +
+  post-conditions); `pytest` **38** untouched. Two real xtb 6.6.1 runs settled the index base and the
+  tolerance (`wiki/orca/xtb.md`); the emitted xcontrol format was itself round-tripped through xtb.
+  The live click-through (build approach → constrain → pre-optimize → Undo) needs the Tauri window (GUI
+  not headless-drivable, same limitation as prior phases); the data path is covered by the tests above.
+
 ## As built (Phase 2.5) — New Job UI fixes (WebKitGTK contrast, accordion, scroll)
 Three issues found by manual testing in the real Tauri window (not visible in Chromium). CSS +
 a collapse wrapper only — no Input Builder / `build-input.ts` / `orca-options.ts` logic changed.

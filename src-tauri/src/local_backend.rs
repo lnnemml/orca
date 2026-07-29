@@ -702,7 +702,7 @@ fn release_slot(runner: &JobRunner, job_id: &str) {
 
 /// Send `sig` to an entire process group (no-op for a non-positive pgid).
 #[cfg(unix)]
-fn signal_pgid(pgid: i32, sig: i32) {
+pub(crate) fn signal_pgid(pgid: i32, sig: i32) {
     if pgid > 0 {
         // SAFETY: killpg is a thin syscall wrapper; passing a signal number and
         // a pgid has no memory-safety implications.
@@ -712,7 +712,7 @@ fn signal_pgid(pgid: i32, sig: i32) {
     }
 }
 #[cfg(not(unix))]
-fn signal_pgid(_pgid: i32, _sig: i32) {}
+pub(crate) fn signal_pgid(_pgid: i32, _sig: i32) {}
 
 /// Signal every live process whose working directory is `job_dir`.
 ///
@@ -727,7 +727,7 @@ fn signal_pgid(_pgid: i32, _sig: i32) {}
 ///
 /// Best-effort: unreadable `/proc` entries (races, other users) are skipped.
 #[cfg(unix)]
-fn sweep_job_processes(job_dir: &Path, sig: i32) -> usize {
+pub(crate) fn sweep_job_processes(job_dir: &Path, sig: i32) -> usize {
     let target = match job_dir.canonicalize() {
         Ok(p) => p,
         Err(_) => return 0,
@@ -767,7 +767,7 @@ fn sweep_job_processes(job_dir: &Path, sig: i32) -> usize {
     signalled
 }
 #[cfg(not(unix))]
-fn sweep_job_processes(_job_dir: &Path, _sig: i32) -> usize {
+pub(crate) fn sweep_job_processes(_job_dir: &Path, _sig: i32) -> usize {
     0
 }
 
@@ -785,7 +785,7 @@ fn sweep_job_processes(_job_dir: &Path, _sig: i32) -> usize {
 /// If the SIGKILL sweep had to kill anything, the graceful path failed — log it,
 /// because that means mpirun did not forward our signal to its ranks.
 #[cfg(unix)]
-fn terminate_job(pgid: i32, job_dir: &Path) {
+pub(crate) fn terminate_job(pgid: i32, job_dir: &Path) {
     signal_pgid(pgid, libc::SIGTERM);
 
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -813,7 +813,7 @@ fn terminate_job(pgid: i32, job_dir: &Path) {
     }
 }
 #[cfg(not(unix))]
-fn terminate_job(_pgid: i32, _job_dir: &Path) {}
+pub(crate) fn terminate_job(_pgid: i32, _job_dir: &Path) {}
 
 /// Kill the currently running ORCA tree (if any) **synchronously** — used on app
 /// exit. A spawned thread would die with the process before the ranks do, so the

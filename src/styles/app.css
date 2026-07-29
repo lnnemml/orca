@@ -876,6 +876,29 @@ select:disabled,
   padding-left: 18px;
   font-size: 11px;
 }
+.atom-inspector-constrain-note {
+  flex-basis: 100%;
+  font-size: 11px;
+}
+
+/* xTB pre-optimize (2.5.5) — in the geometry rail. */
+.xtb-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+}
+.xtb-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.xtb-note {
+  font-size: 11px;
+}
 
 /* Add-Fragment panel. */
 .add-fragment-body {

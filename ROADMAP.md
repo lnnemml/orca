@@ -201,15 +201,23 @@ re-optimisation of the lowest 3–4 stay in Phase 4.5 (the scientific pipeline);
             "Constrain selection" in the Atom section, and two guards: range-check
             blocks Run (ORCA segfaults on a bad index), composition-change warning
             (no auto-remap). "Toggle on/off" not built — delete + re-add covers it.
-- [ ] xTB integration: sidecar endpoint `/xtb-optimize` (xyz + constraints → optimized xyz),
-      xTB binary path in Settings (standalone `xtb`, not through ORCA)
-      — merged xyz in, optimised xyz out; fragment boundaries preserved (order + count invariant)
+- [x] **2.5.5** xTB pre-optimization — **in RUST, not the sidecar** (logged decision:
+      Rust owns process spawn + isolation + settings). `xtb_optimize` command: merged xyz
+      in, optimised xyz out; fragment boundaries preserved (order + count invariant via
+      `replaceAllAtoms`); isolated dir + killpg/sweep (`debugging/004`); post-conditions in
+      the command. **xtb `$constrain` is 1-based — settled by a real xtb 6.6.1 run** (≠ ORCA's
+      0-based; `wiki/orca/xtb.md`). xtb path + Check button in Settings. Also fixed a 2.5.4b
+      data-loss bug: the constraint panel now rewrites only a fully-recognised block.
 
-**Done when:** author builds a TS guess by placing BH₄⁻ at a Bürgi-Dunitz angle relative
-to a carbonyl carbon, constrains the approach distance, runs xTB pre-optimization, and
-gets a physically reasonable starting geometry — all inside OrcaStudio; and cloning that
-job restores the fragments, so the author adjusts the approach angle and reruns without
-rebuilding the scene by hand.
+**Phase 2.5 — COMPLETE.** The scene/fragment model (2.5.0), conformer search (2.5.1), the
+geometry editor with d/θ/φ set from the viewer and bond-graph torsion splits (2.5.2–2.5.3),
+the constraint manager over the input text with range + composition guards (2.5.4), and xTB
+pre-optimization (2.5.5) together make OrcaStudio a reaction-geometry workstation: build a
+substrate + reagent, place the reagent with geometric control, constrain the approach
+coordinate, and get a physically reasonable GFN2 starting geometry — all inside the app, all
+restorable on a job clone. **Done-when met:** the author can build a TS guess (BH₄⁻ at a
+Bürgi-Dunitz approach to a carbonyl), constrain the distance, xTB pre-optimize, and iterate
+the angle on a cloned job without rebuilding the scene by hand.
 
 ---
 

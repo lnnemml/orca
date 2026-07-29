@@ -21,6 +21,7 @@ import {
   sceneFromXyz,
   renameFragment,
   replaceFragmentAtoms,
+  replaceAllAtoms,
   sceneFromAtomLines,
   serializeScene,
   setFragmentCharge,
@@ -229,6 +230,46 @@ describe("replaceFragmentAtoms", () => {
       i === 0 ? { ...a, element: "N" } : a,
     );
     expect(() => replaceFragmentAtoms(s, "wat", swapped)).toThrow(/element sequence/);
+  });
+});
+
+// ── replaceAllAtoms (2.5.5, xtb result) ──────────────────────────────────────
+
+describe("replaceAllAtoms", () => {
+  const s = scene(water(), borohydride()); // water 0–2, BH4⁻ 3–7 → 8 atoms
+
+  it("slices a flat list back to fragments by their [start,end) windows", () => {
+    // A whole-scene optimizer hands back all 8 atoms shifted by +1 in x.
+    const flat = mergeToAtomLines(s)
+      .map((line) => line.trim().split(/\s+/))
+      .map(([el, x, y, z]) => ({
+        element: el,
+        x: Number(x) + 1,
+        y: Number(y),
+        z: Number(z),
+      }));
+    const next = replaceAllAtoms(s, flat);
+    // Composition preserved, coordinates updated per fragment.
+    expect(next.fragments.map((f) => f.id)).toEqual(["wat", "bh4"]);
+    expect(next.fragments[0].atoms[0].x).toBeCloseTo(s.fragments[0].atoms[0].x + 1);
+    expect(next.fragments[1].atoms[0].x).toBeCloseTo(s.fragments[1].atoms[0].x + 1);
+    // Element order intact across the whole scene.
+    expect(next.fragments[1].atoms.map((a) => a.element)).toEqual(
+      s.fragments[1].atoms.map((a) => a.element),
+    );
+  });
+
+  it("throws when the flat list's length isn't the scene's atom count", () => {
+    expect(() => replaceAllAtoms(s, [{ element: "O", x: 0, y: 0, z: 0 }])).toThrow(
+      /8/,
+    );
+  });
+
+  it("throws when the element order doesn't match (via replaceFragmentAtoms)", () => {
+    const flat = mergeToAtomLines(s)
+      .map((line) => line.trim().split(/\s+/))
+      .map(([, x, y, z]) => ({ element: "C", x: Number(x), y: Number(y), z: Number(z) }));
+    expect(() => replaceAllAtoms(s, flat)).toThrow(/element sequence/);
   });
 });
 

@@ -3,26 +3,31 @@ import { describeAtom } from "./selection";
 import { measureSelection, formatMeasurementValue } from "./measure";
 import { atomCount } from "./scene";
 import {
-  parseConstraintsBlock,
+  inspectConstraintsBlock,
   injectConstraints,
   constraintIndexIssues,
   type Constraint,
 } from "./constraints";
 
 /**
- * The Constraints panel (2.5.4b) — a **view over the input text**, never a
- * parallel store. Its only source is `parseConstraintsBlock(content)`: whatever
- * the text says, the panel shows, including a block edited by hand in Monaco. Add
- * happens elsewhere ("Constrain selection" in the Atom section); this panel
- * lists, reports, and deletes.
+ * The Constraints panel (2.5.4b; non-destructive 2.5.5) — a **view over the input
+ * text**, never a parallel store. Its only source is
+ * `inspectConstraintsBlock(content)`: whatever the text says, the panel shows,
+ * including a block edited by hand in Monaco. Add happens elsewhere ("Constrain
+ * selection" in the Atom section); this panel lists, reports, and deletes.
  *
- * Two guards live here (without them the panel makes the app *less* safe — see
- * `wiki/orca/constraints.md`, ORCA does not range-check and segfaults):
- *  - **out-of-range rows are flagged explicitly** (not silently) — the Run path
- *    (`NewJobScreen`) blocks on the same `constraintIndexIssues`;
+ * Three block states (2.5.5): **absent** → no section; **parsed** → the rows +
+ * delete; **unrecognised** → a read-only notice, NO add/delete. The last is the
+ * data-loss guard: `injectConstraints` rewrites the whole block, so it must never
+ * run on a block holding a comment or a token we couldn't parse — we'd destroy it.
+ *
+ * Two safety guards live here (ORCA does not range-check and segfaults —
+ * `wiki/orca/constraints.md`):
+ *  - **out-of-range rows are flagged explicitly** — the Run path (`NewJobScreen`)
+ *    blocks on the same `constraintIndexIssues`;
  *  - a **composition-change warning** (driven by `compositionSignature` in
- *    `NewJobScreen`) reminds the user that removing a fragment does NOT rewrite
- *    the `%geom` indices, and lists which atom each constraint names *now*.
+ *    `NewJobScreen`) — removing a fragment does NOT rewrite the `%geom` indices;
+ *    the warning lists which atom each constraint names *now*.
  *
  * We never rewrite the text or drop a constraint automatically: the text belongs
  * to the user, and "the same atom after a fragment was removed" has no
@@ -42,8 +47,25 @@ export function ConstraintPanel({
   compositionChanged: boolean;
   onDismissComposition: () => void;
 }) {
-  const constraints = parseConstraintsBlock(content) ?? [];
-  if (constraints.length === 0) return null; // nothing in the text → no section
+  const inspection = inspectConstraintsBlock(content);
+  if (inspection.kind === "absent") return null; // nothing in the text → no section
+
+  if (inspection.kind === "unrecognised") {
+    return (
+      <div className="constraint-panel">
+        <div className="constraint-head">Constraints</div>
+        <div className="banner warn constraint-warn">
+          This <code>%geom Constraints</code> block contains syntax OrcaStudio
+          doesn't recognise (near <code className="mono">{inspection.sample}</code>).
+          The panel won't rewrite it — edit it directly in the input editor. Adding
+          and deleting from the panel are disabled so nothing here is lost.
+        </div>
+      </div>
+    );
+  }
+
+  const constraints = inspection.cs;
+  if (constraints.length === 0) return null; // an empty block → nothing to show
 
   const n = atomCount(scene);
   const issues = constraintIndexIssues(constraints, n);

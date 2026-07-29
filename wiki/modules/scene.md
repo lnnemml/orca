@@ -133,6 +133,12 @@ Immutable mutators (each returns a new Scene, never mutates the input):
   `setMultiplicity`.
 - `replaceFragmentAtoms(scene, fragmentId, atoms)` — enforces the index-space
   invariant above.
+- `replaceAllAtoms(scene, atoms)` (2.5.5) — replace EVERY atom's coordinates from
+  one flat list, sliced back to fragments by their `[start, end)` windows
+  (`fragmentRanges`) and each slice run through `replaceFragmentAtoms` (so the
+  count + element order invariant holds per fragment). Throws if the flat list's
+  length ≠ `atomCount(scene)`. The apply path for a whole-scene optimizer (xtb
+  pre-opt hands back a merged geometry, same order — `wiki/orca/xtb.md`).
 - `translateFragment(fragment, dx, dy, dz)` — rigid-body shift of one fragment
   (same id / composition / internal geometry). Used by placement and, later, the
   geometry editor (2.5.2).
@@ -514,10 +520,19 @@ comparison. So every operation round-trips through the text, and the invariant
   `Constraints` → sub-block inserted inside; `Constraints` present → replaced in
   place (never duplicated). Block location uses a depth-counting token scan so the
   inner `Constraints … end` and the outer `%geom … end` are told apart.
-- `parseConstraintsBlock` is whitespace/case tolerant, **strips `#` comments first**
-  (a commented-out block never parses as live), returns `null` when there is no
-  block *or* a `{ … }` line is malformed (never silently drops a constraint), `[]`
-  for a present-but-empty block.
+- `parseConstraintsBlock` returns `null` when there is no block *or* it's
+  unrecognised, `[]` for a present-but-empty block, the constraints otherwise.
+- `inspectConstraintsBlock` (2.5.5) is the richer view: **`absent` | `parsed{cs}` |
+  `unrecognised{sample}`**. **We rewrite only what we fully recognised** —
+  `injectConstraints` reformats the whole block, so a block holding a `#` comment
+  or a token we can't parse must be **read-only** (else the next add/delete
+  silently destroys it — the 2.5.4b data-loss bug). It finds the live block on
+  comment-masked text (a commented-out block is `absent`) but reads the inner
+  content from the original (a comment *inside* the block → `unrecognised`). The
+  panel goes read-only and the Run/xtb/add paths are disabled on `unrecognised`.
+- `valueText` (2.5.5) preserves a user's exact numeric text (`90.0`, not `90`)
+  through a rewrite — the parser sets it only when the text isn't the canonical
+  rendering of the number, so canonical constraints round-trip clean.
 
 ### The two guards (2.5.4b) and the no-remap rule
 
