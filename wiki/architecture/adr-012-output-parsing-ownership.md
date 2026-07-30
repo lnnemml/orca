@@ -119,3 +119,32 @@ If a future ORCA changes a format, the probe catches it before the parsers do.
 - [ADR-002](adr-002-python-sidecar.md), [ADR-009](adr-009-process-orchestration.md),
   [ADR-010](adr-010-editor-identity-state.md) — narrowed / complied-with / refined above.
 - `ROADMAP.md` Phase 3 — the artifact-reading items that implement this ADR.
+
+---
+
+## Amendment (2026-07-30, unit 3.3) — two unit systems in the chosen sources
+
+The decision text above **stands unchanged**; this amendment records a measurement made after
+it (precedent: ADR-008's amendments). Unit 3.3 measured the units of every numeric array in the
+artifacts this ADR chose (full table + methods in
+[`parse-sources.md`](../orca/parse-sources.md), "Units" section). The load-bearing finding:
+
+**The authoritative tier spans two length-unit systems.** `.property.txt $Geometry` and
+`.hess $atoms` are **Bohr** (`&Units "Bohr"` literal; `.hess` by ratio 1.8886/1.6579 vs input);
+`orca_2json`, `.xyz`, `_trj.xyz`, and the scan `.allxyz`/`.dat` are **Å**. The app is Å
+end to end (Scene, merged xyz, viewer, input generator, d/θ/φ, xtb bridge). So each reader must
+convert Bohr→Å at its boundary. This is the index-base trap (ORCA 0-based vs xtb 1-based) one
+level down — scalar, not index — and **worse in one way**: a wrong index base segfaults or
+visibly misplaces an atom, but a stray 1.889 on a normal-mode displacement renders a *plausible,
+wrong* animation (exactly the IR-peak-click path of Phase 3). Other units measured: energies
+**Eh**, frequencies **cm⁻¹** (`&Units "cm^-1"` literal), IR intensity **km/mol**, dipole
+**a.u.** (`&Units "a.u."` literal), gradient **Eh/Bohr**, `$normal_modes` **dimensionless**
+unit-norm (Σ² = 1.0). `entropyS` in `$THERMOCHEMISTRY_Energies` is **T·S in Eh**, not S
+(`entropyS == enthalpyH − freeEnergyG`, exact). `$hessian` and `$dipole_derivatives` absolute
+units are **UNDETERMINED** by any file literal — determiners named in parse-sources.md.
+
+The norm that governs this is **CLAUDE.md domain rule #11** (canonical units Å/Eh/cm⁻¹/km-mol,
+one conversion at the boundary, a Bohr→Å post-condition that fails loudly, the `&grad`
+order-source named). Rule #11 is the units analogue of rules #9/#10 — a normative complement to
+this ADR, not a change to its decision. The scan gap this ADR listed as open is now **closed**
+(see the scan inventory in parse-sources.md); TD-DFT remains open.

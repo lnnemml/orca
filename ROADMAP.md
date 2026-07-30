@@ -264,6 +264,10 @@ the `[ ]` "Fragment library" item above.
       *silent substitution of the compound*, so the import must mark undefined stereocenters
       rather than hide the choice. Small, and it does **not** wait for Phase 4.2 — it belongs
       wherever an imported structure is first shown.
+- [ ] **"No MO data" is a normal state, not an error.** `orca_2json` emits no JSON for an
+      xTB/GOAT `.gbw` (measured, unit 3.2) — a GOAT or xTB-pre-opt job simply has no orbital
+      energies/occupations. The results screen must render the MO/HOMO-LUMO panel as absent, not
+      crash or show an error, when the source is missing.
 - [ ] Results screen per job: summary card (energy, HOMO/LUMO gap, dipole, imaginary freq warning)
 - [ ] Optimization trajectory playback in 3Dmol.js (multiframe xyz)
 - [ ] Orbital/density isosurfaces: wrap `orca_plot` (batch mode) → `.cube` → 3Dmol.js volumetric
@@ -380,8 +384,13 @@ ADR-010's `ReactionPath` (`fold(reactant, transform)`, atom mapping by construct
       set approach geometry (distance, angle, dihedral)
 - [ ] Scan input generation: from ReactionCenter → ORCA `%geom Scan B a1 a2 = start, end, npoints end end`
       (one job per pathway, native relaxed scan — NOT N separate jobs)
-- [ ] Scan output parser: extract per-point energies and coordinate values from ORCA output
-      (table format in scan output section)
+- [ ] Scan output parser: per-point energies + scanned-coordinate values from the **structured**
+      `.relaxscanact.dat` / `.relaxscanscf.dat` (2 cols `coordinate energy`, one row per point;
+      `act` = composite/actual, `scf` = bare SCF) — **measured** in unit 3.3 ([parse-sources.md](wiki/orca/parse-sources.md)).
+      `.out` `RELAXED SURFACE SCAN RESULTS` is the text mirror; `.property.txt`/`_trj.xyz` are
+      per-opt-cycle, **not** per-point. Coordinate in Å, energy in Eh (both cross-checked).
+      Note for the scan *generator* (above): a relaxed scan needs `! Opt` — without it ORCA runs
+      a single point and silently ignores the `Scan` block (measured).
 - [ ] Energy profile visualization: reaction coordinate vs energy (recharts)
 - [ ] Comparative pathway view: overlay Pathway A vs Pathway B energy profiles;
       ΔΔE‡ (electronic energy barrier difference) highlighted

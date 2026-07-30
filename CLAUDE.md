@@ -99,6 +99,21 @@ npm run tauri build
     ORCA's `%geom` index base is 0-based while xtb's `$constrain` is 1-based (opposite, both
     verified — `wiki/orca/constraints.md`, `wiki/orca/xtb.md`); an empty `--input` hangs xtb
     (`debugging/006`); `mask` silently overrides `indices` in the geometry kernel.
+11. **No physical quantity crosses a parser boundary as a bare number.** Each artifact reader
+    converts to the app's **canonical units exactly once, at the boundary**: lengths → **Å**,
+    energies → **Eh**, frequencies → **cm⁻¹**, IR intensities → **km/mol** (all measured, not
+    assumed — `wiki/orca/parse-sources.md`). Units are established only by (1) a file literal,
+    (2) a numeric cross-check with a stated ratio, or (3) a determiner run — never from
+    convention or memory; what none settles is `UNDETERMINED`, not guessed. **Post-condition
+    (rule #9, in our terms):** a reader whose artifact contains geometry we already know (the
+    first `$Geometry` vs the input xyz) recomputes it after conversion and asserts max Δ <
+    1e-4 Å — so a **missed Bohr→Å conversion fails loudly** (≈1.889× off) instead of animating
+    plausible-but-wrong physics. Named seam to preserve: `$SCF_Nuc_Gradient &grad` is a bare
+    positional array; its order comes from the co-located `$Geometry` block. Why this is a rule:
+    the authoritative tier spans **two unit systems** — `.property.txt`/`.hess` geometry is
+    **Bohr**, `orca_2json`/`.xyz`/`_trj.xyz` is **Å** (measured) — and a stray 1.889 on a normal-
+    mode displacement does not crash; it renders a believable, wrong animation (the IR-peak
+    click of Phase 3).
 
 ## Wiki system
 

@@ -7,6 +7,9 @@
 | `_trj.xyz` / `.xyz` | Optimization trajectory / final geometry | Always fetch; trajectory player |
 | `.hess` | Hessian (frequencies) | Fetch for Freq jobs |
 | `.cube` | Volumetric data from orca_plot | Generate lazily; cache; never in DB |
+| `.relaxscanact.dat` / `.relaxscanscf.dat` | Relaxed-scan surface: 2 cols `coordinate energy` (`act` = composite/actual, `scf` = bare SCF), one row per scan point | **The** structured per-point source for Phase 4.5 energy profiles ([parse-sources.md](parse-sources.md)) |
+| `.allxyz` | Relaxed-scan geometries, `>`-separated; comment line carries `Step N E <energy>` | Geometry + energy per point (not the coordinate value) |
+| `.NNN.xyz` / `.NNN.gbw` | Per-scan-point final geometry / wavefunction | Per-point artifacts |
 | `.densities`, `.tmp*` | Scratch | Delete on cleanup |
 | `.property.txt` / property files | Machine-readable results (ORCA 6) | **Measured** parse source: `$Block…$End` with energies, `$Geometry`, population `&AtomicCharges`, `$SCF_Dipole_Moment`, `$THERMOCHEMISTRY_Energies`, `$Hessian` — see [parse-sources.md](parse-sources.md) |
 
@@ -20,6 +23,15 @@ Measured — full per-quantity table + evidence in [parse-sources.md](parse-sour
 - **`_trj.xyz` / `.xyz`** — trajectory / final geometry.
 - **`orca_2json` over `.gbw`** — MO energies + occupations (Eh), HOMO/LUMO.
 - **`output.out`** — live streaming + search only; not authoritative.
+- **Scan (`%geom Scan` + `! Opt`)** — per-point `coordinate energy` in the structured
+  `.relaxscanact.dat` / `.relaxscanscf.dat`; `.out` `RELAXED SURFACE SCAN RESULTS` is the text
+  mirror; `.property.txt`/`_trj.xyz` are per-opt-cycle, **not** per-point.
+
+**Units are two systems** (measured — [parse-sources.md](parse-sources.md) "Units"): geometry in
+`.property.txt`/`.hess` is **Bohr** (`&Units "Bohr"`), while `orca_2json`/`.xyz`/`_trj.xyz`/scan
+are **Å**. Energies **Eh**, frequencies **cm⁻¹** (`&Units "cm^-1"`), IR **km/mol**, dipole
+**a.u.** (`&Units "a.u."`), gradient **Eh/Bohr**; `$THERMOCHEMISTRY_Energies entropyS` is **T·S
+in Eh**, not S. Each reader converts Bohr→Å once at its boundary (CLAUDE.md rule #11).
 
 ## Completion signals
 - Success: `ORCA TERMINATED NORMALLY` near end of output + `.exit_code` = 0 (our marker).

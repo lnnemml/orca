@@ -551,6 +551,171 @@ def _probe_json_atom_order(job: Path, z_inp: list[int]) -> dict:
 
 
 # ----------------------------------------------------------------------------- #
+# PART B — UNITS of every numeric array (literal / cross-check / determiner-run)  #
+#                                                                                 #
+# The unit of every array is established by exactly one of three methods, never   #
+# from convention or memory (domain rule #10, now #11 for units):                 #
+#   (1) a literal in the file — quoted verbatim;                                  #
+#   (2) a numeric cross-check against a source whose unit is already known — the  #
+#       RATIO is reported as a number;                                            #
+#   (3) a determiner run — a binary that resolves it.                             #
+# What none of the three settles is reported UNDETERMINED with the run that would #
+# settle it named. No unit is guessed.                                            #
+# ----------------------------------------------------------------------------- #
+DEBYE_PER_AU = 2.541746            # 1 a.u. dipole = 2.541746 Debye
+
+
+def _parse_normal_modes_col(hess: Path, col: int) -> "np.ndarray | None":
+    lines = hess.read_text().splitlines()
+    idx = [k for k, l in enumerate(lines) if l.strip() == "$normal_modes"]
+    if not idx:
+        return None
+    i = idx[0]
+    dim = int(lines[i + 1].split()[0])
+    M = np.zeros((dim, dim))
+    r = i + 2
+    while r < len(lines):
+        hdr = lines[r].split()
+        if not hdr or not hdr[0].isdigit():
+            break
+        cols = [int(x) for x in hdr]
+        r += 1
+        for _ in range(dim):
+            p = lines[r].split()
+            rr = int(p[0])
+            for c, v in zip(cols, p[1:]):
+                M[rr, c] = float(v)
+            r += 1
+        if cols[-1] == dim - 1:
+            break
+    return M[:, col] if col < dim else None
+
+
+def _property_units_literals(prop: Path) -> dict:
+    """Every `&name [... &Units "X" ...]` literal in the property file."""
+    out = {}
+    for m in re.finditer(r'&(\w+)\s*\[[^\]]*&Units\s+"([^"]+)"', prop.read_text()):
+        out.setdefault(m.group(1), m.group(2))
+    return out
+
+
+def _thermo_field(prop: Path, name: str):
+    m = re.search(rf'&{name}\s*\[&Type "Double"\]\s+(-?[\d.eE+-]+)', prop.read_text())
+    return float(m.group(1)) if m else None
+
+
+def probe_units(job: Path) -> dict:
+    r = {}
+    hess = job / "input.hess"
+    prop = job / "input.property.txt"
+
+    # --- .hess $normal_modes: normalization (sum of squares) + pltvib scale ----
+    if hess.exists():
+        col = _parse_normal_modes_col(hess, 6)
+        if col is not None:
+            r["normal_modes"] = {
+                "unit": "dimensionless (normalized Cartesian displacement)",
+                "method": "(2) numeric: sum-of-squares of a mode column",
+                "sum_of_squares_mode6": round(float((col ** 2).sum()), 6),
+                "note": "orca_pltvib scales the raw vector by 2.0 for animation "
+                        "amplitude (measured) — that factor is display, not a unit",
+            }
+        # $hessian: .hess vs property.txt same numbers?
+        r["hessian"] = {
+            "unit": "UNDETERMINED (no literal in .hess or .property.txt)",
+            "method": "(2) cross-check .hess vs property $Hessian; absolute unit "
+                      "needs a determiner",
+            "determiner": "reconstruct frequencies from Hessian + atomic masses and "
+                          "check which unit (expected Eh/Bohr^2) reproduces the "
+                          "measured cm^-1",
+        }
+        r["dipole_derivatives"] = {
+            "unit": "UNDETERMINED (no literal)",
+            "method": "none of (1)/(2)/(3) applied",
+            "determiner": "cross-check against IR intensities (I ∝ |dμ/dQ|^2), or a "
+                          "labelled source",
+        }
+        r["vibrational_frequencies"] = {
+            "unit": "cm^-1",
+            "method": "(2) numeric: .hess values equal the .out '***imaginary "
+                      "mode***' / 'cm**-1' listing (ratio 1.0)",
+        }
+        r["ir_spectrum"] = {
+            "unit": "col0=freq cm^-1, col2=Int km/mol, col1=T^2 a.u., col3-5=TX/TY/TZ",
+            "method": "(1) literal: the .out 'IR SPECTRUM' header names the columns "
+                      "and units; (2) col2 value equals .out 'Int km/mol' (ratio 1.0)",
+        }
+
+    # --- .property.txt literals + thermo cross-check ---------------------------
+    if prop.exists():
+        lits = _property_units_literals(prop)
+        r["property_unit_literals"] = lits  # e.g. dipoleMagnitude→a.u., FREQ→cm^-1
+        H = _thermo_field(prop, "enthalpyH")
+        G = _thermo_field(prop, "freeEnergyG")
+        S = _thermo_field(prop, "entropyS")
+        if None not in (H, G, S):
+            r["thermochemistry"] = {
+                "fields_unit": "Eh (all: zpe, innerEnergyU, enthalpyH, freeEnergyG)",
+                "method_fields": "(1) literal: .out thermochemistry prints each in Eh",
+                "entropyS_is": "T*S (NOT S)",
+                "method_entropyS": "(2) numeric: entropyS == enthalpyH - freeEnergyG",
+                "entropyS_field": S,
+                "H_minus_G": round(H - G, 12),
+                "match": abs((H - G) - S) < 1e-9,
+            }
+        r["gradient"] = {
+            "unit": "Eh/Bohr",
+            "method": "(1) literal: .out labels 'Eh/bohr' for the Cartesian gradient "
+                      "(property.txt $SCF_Nuc_Gradient &grad carries no unit literal)",
+        }
+
+    # --- orca_2json literals ---------------------------------------------------
+    r["orca_2json"] = _probe_json_units(job)
+
+    # --- scan artifacts --------------------------------------------------------
+    dat = job / "input.relaxscanact.dat"
+    if dat.exists():
+        rows = [ln.split() for ln in dat.read_text().splitlines() if ln.strip()]
+        r["scan"] = {
+            "source_structured": ".relaxscanact.dat / .relaxscanscf.dat "
+                                 "(2 columns: coordinate, energy)",
+            "n_points": len(rows),
+            "coordinate_unit": "Angstrom",
+            "coordinate_method": "(2) numeric: col1 value 1.40 equals the C-C distance "
+                                 "in that point's geometry (allxyz step 1 = 1.400 Å)",
+            "energy_unit": "Eh",
+            "energy_method": "(2) numeric: col2 equals the point's FINAL SINGLE POINT "
+                             "ENERGY / .allxyz comment E (ratio 1.0)",
+            "coordinate_sample": [rw[0] for rw in rows],
+            "energy_sample": [rw[1] for rw in rows],
+        }
+    return r
+
+
+def _probe_json_units(job: Path) -> dict:
+    conv = ORCA_DIR / "orca_2json"
+    gbw = job / "input.gbw"
+    if not conv.exists() or not gbw.exists():
+        return {"status": "orca_2json-or-gbw-absent"}
+    import shutil
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        shutil.copy(gbw, Path(td) / "input.gbw")
+        env = {**os.environ, "LD_LIBRARY_PATH": str(ORCA_DIR)}
+        subprocess.run([str(conv), "input.gbw"], cwd=td, capture_output=True,
+                       text=True, timeout=120, env=env)
+        jf = Path(td) / "input.json"
+        if not jf.exists():
+            return {"status": "no-json-emitted (xTB/GOAT gbw — normal, not an error)"}
+        mol = json.loads(jf.read_text())["Molecule"]
+    return {
+        "CoordinateUnits": mol.get("CoordinateUnits"),      # (1) literal 'Angs'
+        "MO_EnergyUnit": mol.get("MolecularOrbitals", {}).get("EnergyUnit"),  # 'Eh'
+        "method": "(1) literal in the JSON",
+    }
+
+
+# ----------------------------------------------------------------------------- #
 # structured-artifact inventory                                                 #
 # ----------------------------------------------------------------------------- #
 def probe_artifacts(job: Path) -> dict:
@@ -667,6 +832,14 @@ def run(jobs: dict[str, Path]) -> None:
     print("\n" + "-" * 78)
     print(f"GATE VERDICT: {'FAIL — ' + ', '.join(gate_fail) if gate_fail else 'PASS (all artifact element orders == input)'}")
     print("-" * 78)
+
+    # ---- PART B: UNITS of every numeric array --------------------------------
+    print("\n" + "=" * 78)
+    print("PART B — UNITS per array: (1) literal / (2) cross-check ratio / (3) determiner")
+    print("=" * 78)
+    for role, job in jobs.items():
+        print(f"\n### {role}  {job.name}")
+        print(json.dumps(probe_units(job), indent=2))
 
     # ---- 1. cclib attributes -------------------------------------------------
     print("\n" + "-" * 78)

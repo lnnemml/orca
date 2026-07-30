@@ -2485,3 +2485,59 @@ note removed; ROADMAP Phase 3 first item → four Rust artifact readers, seam it
 measured order sources; index count → 43. **Gaps still open:** scan (`%geom Scan`) and TD-DFT —
 no such job exists, need a real run (next unit). cclib left installed in the venv from the probe;
 **not** pinned in requirements.
+
+## [2026-07-30] ingest | Scan artifacts + units of every numeric array (unit 3.3, measured)
+
+Measurement unit before writing parsers. **No parsers, no `results` schema, no UI.** Extended
+`sidecar/probes/parse_sources.py` with `probe_artifact_order` (already there) re-run on a scan +
+new `probe_units`.
+
+**Part A — real relaxed scan (closes the Phase-4.5 "no scan" gap).** Ran one 6-point relaxed C–C
+scan of ethane from the **terminal** (not the app — scan generation is Phase 4.5; no SQLite row),
+`! r2SCAN-3c Opt TightSCF` + `%geom Scan B 0 1 = 1.4,2.4,6 end end`, 0-based indices range-checked
+first. Gotcha measured: without `! Opt` ORCA runs a single point and silently ignores `Scan` (1
+energy, 1 geometry) — the relaxed scan needs Opt. Dir:
+`~/.local/share/orcastudio/probe-scans/scan-ethane-cc`. Scan-only files (verbatim):
+`.relaxscanact.dat`/`.relaxscanscf.dat` (**structured**, 2 cols coordinate+energy, 6 rows; act =
+composite, scf = bare SCF), `.allxyz` (6 geoms, comment carries `Step N E <energy>`, not the
+coordinate), `.NNN.xyz`/`.NNN.gbw` (per-point). **Per-point energy+coordinate live in the
+structured `.dat` files**; `.out RELAXED SURFACE SCAN RESULTS` is the text mirror;
+`.property.txt` has 26 `$Geometry` (per-opt-cycle, NOT 6 points) and `_trj.xyz` 26 frames — not
+the scan source. Order gate on the scan dir: **PASS** (all 26 trj frames + 26 `$Geometry` blocks
+keep input order — best available silent-reorder test).
+
+**Part B — units of every array, each by one method (1) literal / (2) cross-check ratio / (3)
+determiner; UNDETERMINED where none applies.** Literals: `$Geometry`/`.hess $atoms` = **Bohr**
+(`&Units "Bohr"`), `&FREQ` = **cm⁻¹** (`&Units "cm^-1"`), dipole = **a.u.** (`&Units "a.u."`),
+`orca_2json` = **Å** (`CoordinateUnits`) / MO **Eh** (`EnergyUnit`). Cross-checks (ratio):
+`.hess $atoms` Bohr (1.8886 ethane / 1.6579 saddle vs input), `.xyz`/`_trj` = Å (1.0 vs json),
+`$vibrational_frequencies` cm⁻¹ (1.0 vs `.out`), `$normal_modes` **dimensionless unit-norm**
+(Σ²=1.0; `orca_pltvib` scales ×2.0 for display, measured via path (3)), IR intensity **km/mol**
+(`.hess $ir_spectrum` col2 = `.out` Int, header names units), gradient **Eh/Bohr** (`.out`
+literal), scan coordinate Å + energy Eh (1.0). Thermochemistry all **Eh**; **`entropyS` = T·S in
+Eh, NOT S** (`entropyS == enthalpyH − freeEnergyG`, exact). UNDETERMINED: `$hessian` absolute
+unit (`.hess`==`.property.txt`, ratio 1.0, but no literal → determiner: reconstruct freqs from
+Hessian+masses), `$dipole_derivatives` (determiner: cross-check vs IR intensities). The
+load-bearing finding: the authoritative tier spans **two length systems** (Bohr vs Å).
+
+Gaps: TD-DFT (`etenergies`/`etoscs`) still unmeasured — no such job (Phase 6).
+
+## [2026-07-30] decision | Units norm — CLAUDE.md rule #11 + ADR-012 amendment (unit 3.3)
+
+**No decision text rewritten.** New **domain rule #11** (units are a norm, like #9/#10, not a
+choice): no physical quantity crosses a parser boundary as a bare number; each reader converts to
+canonical units **once at the boundary** — length **Å**, energy **Eh**, frequency **cm⁻¹**, IR
+**km/mol** (all measured); units come only from a literal / a cross-check ratio / a determiner,
+never convention; **post-condition (rule #9 in our terms):** a reader whose artifact carries
+geometry we already know recomputes it after conversion and asserts max Δ < 1e-4 Å — a missed
+Bohr→Å conversion then fails loudly (≈1.889×), not silently animating wrong physics (the Phase-3
+IR-peak click). The `$SCF_Nuc_Gradient &grad` order-from-`$Geometry` seam is named in the rule so
+it survives to parser-writing time. Reason recorded: two unit systems in the authoritative tier
+are measured, and a stray 1.889 on a mode displacement does not crash.
+
+**ADR-012 gets an AMENDMENT** (ADR-008 precedent — decision text untouched): records the measured
+two-unit-system finding + the full units table pointer, names rule #11 as the governing norm,
+and marks the scan gap **closed**. ADR-002/009/010 and the proposal untouched; cclib still not in
+requirements. **Wiki:** `parse-sources.md` +scan inventory +units table, scan gap closed;
+`output-files.md` +scan rows +units note; ROADMAP Phase 4.5 scan parser sourced to `.dat`, Phase
+3 "+no-MO-is-normal" item; CLAUDE.md +rule #11; ADR-012 +amendment. Page count unchanged (43).

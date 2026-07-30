@@ -217,6 +217,68 @@ final-geometry source, nothing vibrational.
 Other converters present in `/opt/orca` (not run here): `orca_2aim`, `orca_2mkl`, `orca_mapspc`
 (spectrum broadening), `orca_chelpg`. Named for future probes, not measured.
 
+### Relaxed scan artifacts (measured — unit 3.3)
+A real 6-point relaxed C–C scan of ethane was run **from the terminal** (not the app — the scan
+generator is Phase 4.5), `! r2SCAN-3c Opt TightSCF` + `%geom Scan B 0 1 = 1.4, 2.4, 6 end end`,
+indices 0-based and range-checked before the run (`constraints.md`). Note: a relaxed scan needs
+`! Opt` — without it ORCA runs a single point and silently ignores the `Scan` block (measured:
+1 energy, 1 geometry). Files that appear in a scan and **not** in an Opt+Freq run (verbatim
+listing):
+
+- `input.relaxscanact.dat` / `input.relaxscanscf.dat` — **structured**, 2 columns
+  `coordinate  energy`, one row per scan point (6). `act` = the actual (final composite) energy,
+  `scf` = the bare SCF energy; the two differ (r²SCAN-3c has gCP+D4 terms).
+- `input.allxyz` — the 6 relaxed geometries, `>`-separated; each comment line carries
+  `Relaxed Surface Scan Step N E <energy>` (energy, **not** the coordinate value).
+- `input.001.xyz … input.006.xyz` + `input.001.gbw … input.006.gbw` — per-point final geometry
+  and wavefunction.
+
+**Where per-point energies + the scanned coordinate live** (the Phase-4.5 question): the clean
+**structured** source is `.relaxscanact.dat` / `.relaxscanscf.dat` (coordinate + energy, 6 rows).
+The **text** mirror is the `.out` `RELAXED SURFACE SCAN RESULTS` summary table ("The Calculated
+Surface using the 'Actual Energy'" / "using the SCF energy"). `.property.txt` here holds **26**
+`$Geometry` blocks (every opt cycle across all points, **not** 6 scan points) and `_trj.xyz` 26
+frames — so property/trj are **per-cycle, not per-point**; they are *not* the scan source.
+Atom-order gate ran on the scan dir: **PASS** — all 26 trj frames and all 26 `$Geometry` blocks
+keep the input element order (best available test for a silent mid-scan reorder).
+
+---
+
+## Units — measured per array (unit 3.3)
+
+The one risk the Part-A gate touched but did not formalise: the authoritative tier spans **two
+length-unit systems**. Every unit below is set by exactly one method — (1) a file literal quoted
+verbatim, (2) a numeric cross-check with the **ratio as a number**, or (3) a determiner run —
+never from convention. `UNDETERMINED` is a real, allowed result. Produced by `probe_units()` in
+`sidecar/probes/parse_sources.py`.
+
+| Quantity (artifact) | Unit | Method | Number |
+|---|---|---|---|
+| length — `.property.txt $Geometry`, `.hess $atoms` | **Bohr** | (1) `&Units "Bohr"` (property); (2) for `.hess`, ratio vs input | 1.8886 / 1.6579 |
+| length — `orca_2json` | **Å** | (1) `CoordinateUnits "Angs"` | — |
+| length — `.xyz`, `_trj.xyz`, `.allxyz` | **Å** | (2) ratio 1.0 vs `orca_2json`/input | 1.0 |
+| energy — `.property.txt` SCF/DFT/Single_Point | **Eh** | (2) equals `.out FINAL SINGLE POINT ENERGY` | 1.0 |
+| energy — `orca_2json` MO | **Eh** | (1) `EnergyUnit "Eh"` | — |
+| frequency — `.hess $vibrational_frequencies` | **cm⁻¹** | (2) equals `.out` `cm**-1` listing | 1.0 |
+| frequency — `.property.txt &FREQ` | **cm⁻¹** | (1) `&Units "cm^-1"` | — |
+| normal modes — `.hess $normal_modes` | **dimensionless** (unit-norm Cartesian displacement) | (2) Σ² of a mode column | 1.0 (pltvib scales ×2.0 for display) |
+| IR intensity — `.hess $ir_spectrum` col2 | **km/mol** | (1) `.out` `IR SPECTRUM` header names it; (2) col2 = `.out` Int | 1.0 |
+| dipole — `.property.txt $SCF_Dipole_Moment` | **a.u.** | (1) `&Units "a.u."` | — |
+| gradient — `.property.txt $SCF_Nuc_Gradient &grad` | **Eh/Bohr** | (1) `.out` labels `Eh/bohr` (property has no literal) | — |
+| thermo — `zpe / innerEnergyU / enthalpyH / freeEnergyG` | **Eh** | (1) `.out` prints each in Eh | — |
+| thermo — `entropyS` | **T·S, in Eh** (not S) | (2) `entropyS == enthalpyH − freeEnergyG` | exact |
+| `.hess $hessian` / `.property.txt $Hessian` | **UNDETERMINED** (same numbers both files) | (2) `.hess[0,0] == property[0,0]`; absolute unit unmeasured | 1.0 |
+| `.hess $dipole_derivatives` | **UNDETERMINED** | none of (1)/(2)/(3) | — |
+| scan coordinate — `.relaxscanact.dat` col1 | **Å** | (2) = the C–C distance in that point's geometry | 1.0 |
+| scan energy — `.relaxscanact.dat` col2 | **Eh** | (2) = the point's FINAL SINGLE POINT ENERGY | 1.0 |
+
+**Canonical app units** (rule #11): length **Å**, energy **Eh**, frequency **cm⁻¹**, IR
+intensity **km/mol**. The one conversion every geometry reader owes at its boundary is
+**Bohr→Å** (`.property.txt`, `.hess`); everything else is already canonical. `$hessian` and
+`$dipole_derivatives` stay `UNDETERMINED` — determiners: reconstruct frequencies from the
+Hessian + atomic masses (expected Eh/Bohr²); cross-check `$dipole_derivatives` against IR
+intensities. Neither is a Results-screen display quantity.
+
 ---
 
 ## Summary table — where each Results-screen quantity can be read (measured)
@@ -244,9 +306,12 @@ Every ❌/✅ above rests on a probe run in §1–§5, not on expectation.
 
 ## Gaps (runs the probe could NOT make)
 
-- **No scan job** (`%geom Scan`) exists in the job dirs → scan-output parsing is **unmeasured**
-  (needed for ROADMAP Phase 4.5 energy profiles).
-- **No TD-DFT / excited-state job** → `etenergies` / `etoscs` sources unmeasured.
+- ~~No scan job~~ **CLOSED (unit 3.3):** a real relaxed scan was run; per-point energy +
+  coordinate live in the structured `.relaxscanact.dat` / `.relaxscanscf.dat` (see the scan
+  inventory above). The scan dir lives at `~/.local/share/orcastudio/probe-scans/scan-ethane-cc`
+  (terminal run, **not** an app job — no SQLite row).
+- **No TD-DFT / excited-state job** → `etenergies` / `etoscs` sources unmeasured (separate unit,
+  Phase 6).
 - **cclib full-parse peak RSS** unmeasurable (no successful parse) — rule #5 cannot be checked
   against cclib until cclib parses ORCA 6.1 at all.
 - **Final-geometry atom order via cclib** not directly confirmed (cclib only exposed the
