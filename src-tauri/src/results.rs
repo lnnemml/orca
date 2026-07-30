@@ -22,10 +22,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
 use crate::parse::elements::symbol_of;
+use crate::parse::hess::{HessFile, ReferenceGeometry};
 use crate::parse::property::{PopulationScheme, PropertyFile, Verified};
 
 /// Bump when the stored JSON shape or the parse semantics change.
-pub const PARSER_VERSION: u32 = 1;
+/// - v1: property.txt only (unit 3.5).
+/// - v2: + `.hess` frequencies / IR / normal modes + thermo temperature (unit 3.6).
+pub const PARSER_VERSION: u32 = 2;
 
 // --------------------------------------------------------------------------- //
 // The stored structure (goes into results.data_json verbatim)                   //
@@ -64,6 +67,8 @@ pub struct DipoleJson {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThermoJson {
+    /// Kelvin (measured literal). Needed to derive S from the T·S term.
+    pub temperature_k: f64,
     pub el_energy_eh: f64,
     pub zpe_eh: f64,
     pub inner_energy_u_eh: f64,
@@ -71,6 +76,31 @@ pub struct ThermoJson {
     /// T·S in Eh, NOT entropy S (measured: == enthalpy_h_eh − free_energy_g_eh).
     pub t_times_s_eh: f64,
     pub free_energy_g_eh: f64,
+}
+
+/// Vibrational data from `.hess` (unit 3.6). Stored WITH the `$atoms` element order
+/// (the file's order source), per the unit-3.5 rule. Modes are a matrix, not
+/// per-atom rows. Frequencies cm⁻¹, IR intensity km/mol (measured); modes are
+/// Cartesian (unit-3.6 gate).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FrequenciesJson {
+    /// `$atoms` element order — the sequence the normal-mode rows (3N Cartesian
+    /// coords, atom-major) belong to.
+    pub elements: Vec<String>,
+    pub frequencies_cm: Vec<f64>,
+    /// Negative-frequency count: 0 = minimum, 1 = transition state, >1 = neither.
+    pub imaginary_count: usize,
+    pub zero_count: usize,
+    pub is_linear: bool,
+    pub ir_intensity_km_mol: Vec<f64>,
+    /// 3N — the normal-mode matrix dimension.
+    pub n_modes: usize,
+    /// Row-major n×n Cartesian normal modes.
+    pub normal_modes: Vec<f64>,
+    pub temperature_k: Option<f64>,
+    pub scale_factor: Option<f64>,
+    /// `.hess` sections with no accessor (rule #10) — surfaced, not dropped.
+    pub unknown_sections: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -83,12 +113,18 @@ pub struct ParsedResults {
     /// The optimized (last) geometry — the canonical element order for the record.
     pub final_geometry: FinalGeometry,
     pub gradient: Option<GradientJson>,
+    /// Vibrational data from `.hess`, or `None` when the job produced none (SP,
+    /// GOAT) — a normal state, not an error.
+    pub frequencies: Option<FrequenciesJson>,
     /// Blocks ORCA emitted that this reader has no accessor for (rule #10).
     pub unknown_blocks: Vec<String>,
 }
 
 impl ParsedResults {
-    fn from_verified(v: &Verified) -> Result<ParsedResults, AppError> {
+    fn from_verified(
+        v: &Verified,
+        hess: Option<&crate::parse::hess::Verified>,
+    ) -> Result<ParsedResults, AppError> {
         let geoms = v.geometries()?;
         let last = geoms
             .last()
@@ -129,6 +165,7 @@ impl ParsedResults {
         });
 
         let thermochemistry = v.thermochemistry().map(|t| ThermoJson {
+            temperature_k: t.temperature_k,
             el_energy_eh: t.el_energy_eh,
             zpe_eh: t.zpe_eh,
             inner_energy_u_eh: t.inner_energy_u_eh,
@@ -136,6 +173,29 @@ impl ParsedResults {
             t_times_s_eh: t.t_times_s_eh,
             free_energy_g_eh: t.free_energy_g_eh,
         });
+
+        let frequencies = match hess {
+            None => None,
+            Some(h) => {
+                let f = h.frequencies()?;
+                let atoms = h.atoms()?;
+                let ir: Vec<f64> = h.ir_spectrum()?.iter().map(|r| r.intensity_km_mol).collect();
+                let modes = h.normal_modes()?;
+                Some(FrequenciesJson {
+                    elements: atoms.iter().map(|a| a.element.clone()).collect(),
+                    frequencies_cm: f.values_cm,
+                    imaginary_count: f.imaginary_count,
+                    zero_count: f.zero_count,
+                    is_linear: f.is_linear,
+                    ir_intensity_km_mol: ir,
+                    n_modes: modes.n,
+                    normal_modes: modes.into_row_major(),
+                    temperature_k: h.actual_temperature(),
+                    scale_factor: h.frequency_scale_factor(),
+                    unknown_sections: h.unknown_section_names(),
+                })
+            }
+        };
 
         let gradient = v.last_gradient().map(|g| {
             let order_elements = v
@@ -157,6 +217,7 @@ impl ParsedResults {
             thermochemistry,
             final_geometry,
             gradient,
+            frequencies,
             unknown_blocks: v.unknown_block_names(),
         })
     }
@@ -204,7 +265,23 @@ pub fn parse_and_store(
         Ok(v) => v,
         Err(e) => return ParseOutcome::ParseFailed(e.to_string()),
     };
-    let results = match ParsedResults::from_verified(&verified) {
+
+    // `.hess` is optional: SP/GOAT have none (a normal state). When present, verify
+    // it against the OPTIMIZED geometry (the Freq geometry) — the `.property.txt`
+    // final `$Geometry`, which we already have — not `input.inp` (the start).
+    let hess_path = Path::new(job_dir).join("input.hess");
+    let hess_verified = if hess_path.exists() {
+        match final_geometry_reference(&verified)
+            .and_then(|r| Ok(HessFile::from_path(&hess_path)?.verify(&r)?))
+        {
+            Ok(hv) => Some(hv),
+            Err(e) => return ParseOutcome::ParseFailed(format!(".hess: {e}")),
+        }
+    } else {
+        None
+    };
+
+    let results = match ParsedResults::from_verified(&verified, hess_verified.as_ref()) {
         Ok(r) => r,
         Err(e) => return ParseOutcome::ParseFailed(e.to_string()),
     };
@@ -219,22 +296,42 @@ pub fn parse_and_store(
     ParseOutcome::Parsed
 }
 
+/// The `.property.txt` optimized (last) geometry as the reference for the `.hess`
+/// geometry post-condition — the Freq geometry, not the input geometry.
+fn final_geometry_reference(v: &Verified) -> Result<ReferenceGeometry, AppError> {
+    let geoms = v.geometries()?;
+    let last = geoms
+        .last()
+        .ok_or_else(|| AppError::Internal("verified property.txt has no geometry".into()))?;
+    Ok(ReferenceGeometry {
+        z: last.atoms.iter().map(|a| a.z).collect(),
+        xyz_angstrom: last
+            .atoms
+            .iter()
+            .map(|a| [a.xyz[0].angstrom(), a.xyz[1].angstrom(), a.xyz[2].angstrom()])
+            .collect(),
+    })
+}
+
 /// Idempotent upsert keyed by `job_id`: re-parsing the same job updates the row,
 /// never duplicates it.
 fn store(conn: &Connection, job_id: &str, r: &ParsedResults) -> Result<(), AppError> {
     let data_json = serde_json::to_string(r)
         .map_err(|e| AppError::Internal(format!("serialize results: {e}")))?;
     let thermo = r.thermochemistry.as_ref();
+    // Narrow column: imaginary-mode count — the job list sorts by it and the card's
+    // minimum/TS warning stands on it. NULL when there is no `.hess`.
+    let imaginary_count = r.frequencies.as_ref().map(|f| f.imaginary_count as i64);
     conn.execute(
         "INSERT INTO results (
             job_id, final_energy_eh, dipole_magnitude_au,
             zpe_eh, inner_energy_u_eh, enthalpy_h_eh, t_times_s_eh, free_energy_g_eh,
-            data_json, parser_version, parsed_at
-         ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10, datetime('now'))
+            imaginary_count, data_json, parser_version, parsed_at
+         ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11, datetime('now'))
          ON CONFLICT(job_id) DO UPDATE SET
             final_energy_eh=?2, dipole_magnitude_au=?3,
             zpe_eh=?4, inner_energy_u_eh=?5, enthalpy_h_eh=?6, t_times_s_eh=?7, free_energy_g_eh=?8,
-            data_json=?9, parser_version=?10, parsed_at=datetime('now')",
+            imaginary_count=?9, data_json=?10, parser_version=?11, parsed_at=datetime('now')",
         params![
             job_id,
             r.final_energy_eh,
@@ -244,6 +341,7 @@ fn store(conn: &Connection, job_id: &str, r: &ParsedResults) -> Result<(), AppEr
             thermo.map(|t| t.enthalpy_h_eh),
             thermo.map(|t| t.t_times_s_eh),
             thermo.map(|t| t.free_energy_g_eh),
+            imaginary_count,
             data_json,
             r.parser_version,
         ],
@@ -359,7 +457,7 @@ mod tests {
 
     #[test]
     fn per_atom_charges_carry_their_element_order() {
-        let r = ParsedResults::from_verified(&verified()).unwrap();
+        let r = ParsedResults::from_verified(&verified(), None).unwrap();
         let mulliken = r.charges.iter().find(|c| c.scheme == "mulliken").unwrap();
         assert_eq!(mulliken.elements, ["C", "C", "H", "H", "H", "H", "H", "H"]);
         assert_eq!(mulliken.charges.len(), mulliken.elements.len());
@@ -372,7 +470,7 @@ mod tests {
     #[test]
     fn store_is_idempotent_on_job_id() {
         let conn = mem_db();
-        let r = ParsedResults::from_verified(&verified()).unwrap();
+        let r = ParsedResults::from_verified(&verified(), None).unwrap();
         store(&conn, "job1", &r).unwrap();
         store(&conn, "job1", &r).unwrap(); // re-parse → update, not duplicate
         let n: i64 = conn
@@ -384,7 +482,7 @@ mod tests {
     #[test]
     fn read_back_preserves_element_order() {
         let conn = mem_db();
-        let r = ParsedResults::from_verified(&verified()).unwrap();
+        let r = ParsedResults::from_verified(&verified(), None).unwrap();
         store(&conn, "job1", &r).unwrap();
         verify_stored(&conn, "job1", &r).expect("round-trip preserves per-atom order");
 
@@ -397,7 +495,7 @@ mod tests {
     #[test]
     fn narrow_columns_match_the_json() {
         let conn = mem_db();
-        let r = ParsedResults::from_verified(&verified()).unwrap();
+        let r = ParsedResults::from_verified(&verified(), None).unwrap();
         store(&conn, "job1", &r).unwrap();
         let (energy, ts): (f64, f64) = conn
             .query_row(
@@ -447,6 +545,14 @@ mod tests {
         assert_eq!(m.charges.len(), 8);
         let t = r.thermochemistry.unwrap();
         assert!((t.t_times_s_eh - (t.enthalpy_h_eh - t.free_energy_g_eh)).abs() < 1e-9);
-        eprintln!("real Opt+Freq stored: E={:?} Eh, mulliken charges={:?}", r.final_energy_eh, m.charges);
+        // unit 3.6: the .hess was read too — 24 frequencies, a minimum (0 imaginary).
+        let f = r.frequencies.expect("Opt+Freq has .hess frequencies");
+        assert_eq!(f.frequencies_cm.len(), 24);
+        assert_eq!(f.imaginary_count, 0);
+        assert_eq!(f.n_modes, 24);
+        eprintln!(
+            "real Opt+Freq stored: E={:?} Eh, {} freqs ({} imaginary), mulliken={:?}",
+            r.final_energy_eh, f.frequencies_cm.len(), f.imaginary_count, m.charges
+        );
     }
 }

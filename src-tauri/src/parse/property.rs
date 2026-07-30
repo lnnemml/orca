@@ -414,6 +414,8 @@ impl PropertyFile {
         let f = |name: &str| b.prop(name).and_then(|p| p.scalar_f64());
         Some(Thermochemistry {
             geometry_index: b.geometry_index.unwrap_or(0),
+            // `&temperature`; K by the `.out` literal "Temperature … 298.15 K".
+            temperature_k: f("temperature")?,
             el_energy_eh: f("elEnergy")?,
             zpe_eh: f("zpe")?,
             inner_energy_u_eh: f("innerEnergyU")?,
@@ -671,6 +673,8 @@ pub struct Gradient {
 #[derive(Clone, Debug, Serialize)]
 pub struct Thermochemistry {
     pub geometry_index: u32,
+    /// `&temperature`, in Kelvin (`.out` literal "Temperature … K").
+    pub temperature_k: f64,
     pub el_energy_eh: f64,
     pub zpe_eh: f64,
     pub inner_energy_u_eh: f64,

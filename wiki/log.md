@@ -2633,3 +2633,56 @@ results screen, trajectory/orbitals/spectra/export, the normal-mode determiner. 
 and the proposal untouched; cclib still not in requirements. **Wiki:** `artifact-readers.md`
 +typestate section; `tauri-core.md` +v5/`results`/`parsed`/hook/per-atom rule; ROADMAP Phase 3
 `.property.txt` wired + card `[~]`; index unchanged (44 — no new page).
+
+## [2026-07-30] ingest | Gate: $normal_modes are Cartesian, not mass-weighted (determiner, per-atom numbers)
+
+Unit-3.6 gate before writing the `.hess` reader. Σ² = 1.0 (unit 3.3) only proved *normalization* —
+mass-weighted eigenvectors are unit-norm too — so it needed a determiner run (rule #10). Ran
+`orca_pltvib m.hess 9` (mode 9 = 997 cm⁻¹, non-degenerate, C and H both move) on ethane
+`d7992449`; took the first block's displacement columns (Å) ÷ the raw `$normal_modes` column, per
+atom. **Per-atom ratio = 2.0000 for all 8 atoms** (both C at 12.011 u and H at 1.008 u) → **H/C =
+1.0000, not √(12/1) ≈ 3.4519**. A single scalar (pltvib's animation amplitude) independent of mass
+⇒ **Cartesian**, not mass-weighted. Consequence: the `.hess` reader consumes normal modes as-is
+(Cartesian displacements), **no ÷√m**, no atomic-mass table. `parse-sources.md` updated: the
+`$normal_modes` row is no longer UNDETERMINED — method (3) with the numbers. (`$hessian` /
+`$dipole_derivatives` stay UNDETERMINED — not read.)
+
+Also measured while grounding the reader (recorded in `parse-sources.md` / the reader): `.hess
+$atoms` is the Freq geometry **rigidly reframed** (COM/Eckart) — a uniform 1.041 Å shift vs the
+input frame on the asymmetric saddle, 0 on symmetric ethane; interatomic distances match to 4e-8 Å.
+So the `.hess` geometry post-condition is **distance-based**, not coordinate-based (a missed Bohr→Å
+still fails at 6.6 Å; the reframe passes).
+
+## [2026-07-30] session | Second artifact reader: .hess (frequencies, IR, normal modes) + storage + card
+
+Unit 3.6 Part B/C, after the gate above. `src-tauri/src/parse/hess.rs` — the **second** reader,
+holding the `.property.txt` template: two layers, typestate (`parse → verify(reference) →
+Verified`, accessors only on `Verified`), unknown sections surfaced (rule #10), post-conditions as
+errors, units by type. Two deliberate deviations, both recorded: the **grammar** differs
+(`$section`-with-its-own-shape vs `$Block`/`&prop`) — the tokenizer is written to it; the
+**geometry post-condition is distance-based** (the reframe, above), and the caller supplies the
+**optimized** geometry (property final `$Geometry`), not `input.inp`.
+
+Measured facts in structure, not comments: signed frequencies with an explicit `imaginary_count`
+(0 = minimum, 1 = TS, >1 = neither); exact-`== 0.0` trans/rot filter (no threshold), 5 (linear) vs
+6 (non-linear) distinguished not failed; Cartesian modes (gate) with no ÷√m; `$ir_spectrum`
+intensity = column 2 (km/mol), tested against a column swap; `$hessian`/`$dipole_derivatives`
+recognized-but-not-read (UNDETERMINED units, never shown). Post-conditions: element order,
+distance-invariant geometry, lengths (freqs 3N, modes 3N×3N, IR 3N), zero-count ∈ {5,6}. 9 tests
+against real ethane-minimum + saddle fixtures (saddle carries the −33.66 cm⁻¹ imaginary), plus a
+synthetic linear diatomic proving 5 zeros is legal and a `missed_bohr_conversion_fails_loudly`.
+
+**Storage + card (Part C):** `results` schema **v6** (guarded ALTER adds `imaginary_count` — the
+narrow sort/warning column; the full frequencies/IR/normal-mode matrix goes in `data_json` WITH the
+`$atoms` element order, matrix not per-atom rows). `parser_version` → 2. `results.rs` reads the
+optional `.hess` in the completion hook (absent for SP/GOAT = normal). Card gains a vibrational
+table with IR intensities and a **prominent minimum/TS/neither verdict** (teaching, not alarming).
+Two pinned items closed: (1) the thermo card now also shows a **derived S in J/(mol·K)**, labelled
+"derived: T·S / T", with a named `EH_TO_J_PER_MOL` constant and `temperature_k` added to
+`Thermochemistry` (K by the `.out` literal); (2) the `NoArtifact`-conflation forward-note is
+recorded in `tauri-core.md` for Phase 5. Real e2e (`#[ignore]`, green): real ethane Opt+Freq →
+24 frequencies, 0 imaginary, stored + read back. Tests: Rust 100 + 3 ignored, frontend 301, tsc
+clean, no warnings. Out of scope (untouched): mode animation, IR Lorentzian plot, the other two
+readers, ADR-002/009/010/012, proposal; cclib still not in requirements. Wiki: `parse-sources.md`
+(gate), `artifact-readers.md` (second reader), `tauri-core.md` (v6 + NoArtifact note), ROADMAP
+Phase 3.

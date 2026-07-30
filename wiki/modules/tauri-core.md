@@ -55,10 +55,15 @@ survives a restart.
   DO UPDATE`) so re-parsing updates, never duplicates. `create_results_table` is factored out so
   tests build just this table. Units are in the column names (rule #11); `t_times_s_eh` is **T·S
   in Eh, not entropy S** (measured `entropyS == H − G`).
+- **v6** — `results.imaginary_count INTEGER` (nullable), the negative-frequency count from
+  `.hess` (unit 3.6): the job list sorts by it and the minimum/TS warning stands on it. Added by a
+  **guarded** `ALTER` (`column_exists` via `PRAGMA table_info`) so the additive step is idempotent
+  across paths — `create_results_table` already carries the column for a fresh install, and the
+  guard covers a DB that stopped at v5.
 - The queue statuses (`queued`, `cancelled`) and `parsed` needed **no migration** — `status` is TEXT.
-- Migration tests assert preservation across each step (…`migrate_v3_to_v4_preserves_jobs`,
-  `migrate_v4_to_v5_adds_results_and_preserves_jobs`; version assertions use `SCHEMA_VERSION`, not a
-  literal). Verified against a copy of the real DB: 13 existing jobs preserved across 3→4.
+- Migration tests assert preservation across each step (…`migrate_v4_to_v5_adds_results_and_preserves_jobs`,
+  `migrate_v5_to_v6_adds_imaginary_count_via_guarded_alter`; version assertions use `SCHEMA_VERSION`,
+  not a literal). Verified against a copy of the real DB: 13 existing jobs preserved across 3→4.
 
 **Per-atom data rule (the load-bearing storage invariant).** Per-atom arrays go into `data_json`
 **with the element sequence they were verified against** — charges next to their own
@@ -94,7 +99,15 @@ finish path and startup reconciliation): once a job is `completed`, read `input.
 `verify` it against the reference geometry extracted from the job's own `input_content` (the reader
 never reads `input.inp`), store + read back, and advance to `parsed`. A parse failure records the
 reason and leaves the job `completed`; a missing artifact leaves it `completed` silently. The
-`read_job_results` command returns the stored structure to the frontend's `ResultsCard`.
+`read_job_results` command returns the stored structure to the frontend's `ResultsCard`. The
+`.hess` reader runs in the same hook when `input.hess` is present (its reference is the
+`.property.txt` final geometry — the Freq geometry — via a distance-invariant check); absent for
+SP/GOAT, which is normal.
+
+**Forward note (Phase 5).** `ParseOutcome::NoArtifact` is currently silent and conflates two cases
+that will diverge under remote execution: "this calculation type produces no such file" (fine) and
+"rsync has not pulled it back yet" (a transient the UI should reflect). Not reworked now — flagged
+so it is not lost when `SshBackend` lands.
 
 ## Errors (`error.rs`)
 

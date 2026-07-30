@@ -252,7 +252,12 @@ the `[ ]` "Fragment library" item above.
         accessors only after post-conditions pass), `results` table (v5, per-atom data with element
         order in JSON), completion hook → `parsed` state, `ResultsCard`. Real Opt+Freq proven
         (`real_optfreq_job_parses_stores_and_reads_back`).
-  - [ ] `.hess` reader → signed frequencies (3N), normal modes (3N×3N), IR intensities
+  - [x] `.hess` reader → signed frequencies (3N), normal modes (3N×3N), IR intensities — **done**
+        (unit 3.6, `src-tauri/src/parse/hess.rs`): same template, distance-based geometry
+        post-condition (`.hess $atoms` is rigidly reframed — measured). Normal modes settled
+        **Cartesian** by a determiner run (pltvib÷raw = 2.0 for every atom, H/C = 1.0 not √12), so
+        no ÷√m. `imaginary_count` is an explicit field; exact-zero trans/rot (5 linear / 6 not).
+        Wired via `results.rs` (v6, `imaginary_count` column) + shown in the card.
   - [ ] `_trj.xyz` / `.xyz` reader → trajectory frames / final geometry
   - [ ] `orca_2json` over `.gbw` (Rust spawns the binary, ADR-009) → MO energies + occupations,
         HOMO/LUMO
@@ -274,17 +279,19 @@ the `[ ]` "Fragment library" item above.
       xTB/GOAT `.gbw` (measured, unit 3.2) — a GOAT or xTB-pre-opt job simply has no orbital
       energies/occupations. The results screen must render the MO/HOMO-LUMO panel as absent, not
       crash or show an error, when the source is missing.
-- [~] Results screen per job: summary card. **Minimal card done (unit 3.5)**: final energy,
-      dipole, three charge schemes (atom→value), thermochemistry with the T·S term labelled as
-      T·S not entropy (`t_times_s_eh`; card row "T·S (entropy term)"). Absent sections hidden
-      (GOAT/SP render without crashing). Still to come: HOMO/LUMO gap + imaginary-freq warning
-      (need the `orca_2json` and `.hess` readers).
+- [~] Results screen per job: summary card. **Done (units 3.5–3.6)**: final energy, dipole, three
+      charge schemes (atom→value), thermochemistry (T·S labelled as T·S, plus a *derived* S in
+      J/(mol·K)), and a **vibrational table with IR intensities + a prominent minimum/TS/neither
+      verdict from `imaginary_count`** (the teaching moment). Absent sections hidden (SP/GOAT
+      render without crashing). Still to come: HOMO/LUMO gap (needs the `orca_2json` reader).
 - [ ] Optimization trajectory playback in 3Dmol.js (multiframe xyz)
 - [ ] Orbital/density isosurfaces: wrap `orca_plot` (batch mode) → `.cube` → 3Dmol.js volumetric
       rendering; MO picker with energies and occupations
 - [ ] IR spectrum: Lorentzian broadening of freq/intensity list, interactive recharts plot;
       click a peak → animate that normal mode in the viewer
-- [ ] Imaginary-frequency detection surfaced prominently (saddle point vs minimum — teaching moment)
+- [x] Imaginary-frequency detection surfaced prominently (saddle point vs minimum — teaching
+      moment) — **done** (unit 3.6): `imaginary_count` explicit field + the card's verdict banner
+      (0 = minimum, 1 = transition state, >1 = neither → re-optimize).
 - [ ] Export: xyz of final geometry, CSV of parsed data, PNG of plots
 
 **Done when:** for an Opt+Freq job the author can watch the trajectory, spin the HOMO isosurface,

@@ -261,7 +261,7 @@ never from convention. `UNDETERMINED` is a real, allowed result. Produced by `pr
 | energy — `orca_2json` MO | **Eh** | (1) `EnergyUnit "Eh"` | — |
 | frequency — `.hess $vibrational_frequencies` | **cm⁻¹** | (2) equals `.out` `cm**-1` listing | 1.0 |
 | frequency — `.property.txt &FREQ` | **cm⁻¹** | (1) `&Units "cm^-1"` | — |
-| normal modes — `.hess $normal_modes` | **unit-norm displacement**; Cartesian-vs-mass-weighted **UNDETERMINED** | (2) Σ² of a mode column = 1.0 proves *normalization*, not Cartesian-ness (mass-weighted modes are unit-norm too) | 1.0 |
+| normal modes — `.hess $normal_modes` | **Cartesian** normalized displacement (dimensionless) | (3) determiner run: `orca_pltvib` frame minus equilibrium ÷ raw column, per atom — 2.0000 for **all 8** ethane atoms (H/C = 1.0000, not √12≈3.46) → Cartesian, not mass-weighted | H/C = 1.0000 |
 | IR intensity — `.hess $ir_spectrum` col2 | **km/mol** | (1) `.out` `IR SPECTRUM` header names it; (2) col2 = `.out` Int | 1.0 |
 | dipole — `.property.txt $SCF_Dipole_Moment` | **a.u.** | (1) `&Units "a.u."` | — |
 | gradient — `.property.txt $SCF_Nuc_Gradient &grad` | **Eh/Bohr** | (1) `.out` labels `Eh/bohr` (property has no literal) | — |
@@ -279,12 +279,15 @@ intensity **km/mol**. The one conversion every geometry reader owes at its bound
 Hessian + atomic masses (expected Eh/Bohr²); cross-check `$dipole_derivatives` against IR
 intensities. Neither is a Results-screen display quantity.
 
-`$normal_modes` is `UNDETERMINED` on **Cartesian-vs-mass-weighted** — Σ² = 1.0 proves the column
-is *normalized*, not that it is Cartesian (mass-weighted eigenvectors are unit-norm too).
-Determiner (a gate for the `.hess` reader, not run here): per-atom ratio of `orca_pltvib` frames
-(Å) minus the equilibrium geometry against the raw `$normal_modes` column — on ethane's C and H a
-**single** scalar across all 8 atoms ⇒ Cartesian; **two** groups differing by √12 ≈ 3.46 ⇒
-mass-weighted.
+`$normal_modes` is **Cartesian** (settled by the unit-3.6 gate — Σ² = 1.0 only proved
+*normalization*, and mass-weighted eigenvectors are unit-norm too, so it needed a determiner run).
+Determiner: `orca_pltvib m.hess 9` (mode 9 = 997 cm⁻¹, non-degenerate, C and H both move); the
+first block's displacement columns (Å) ÷ the raw `$normal_modes` column, per atom. Measured
+per-atom ratio = **2.0000 for all 8 atoms** (both C at 12.011 u and H at 1.008 u), i.e. **H/C =
+1.0000, not √(12/1) ≈ 3.4519** — a single scalar (pltvib's animation amplitude) independent of
+mass. Mass-weighted modes would have split the ratio by 3.46. **Consequence for the `.hess`
+reader:** normal modes are consumed as-is (Cartesian displacement vectors); **no ÷√m** and no atomic-
+mass table is needed.
 
 ---
 

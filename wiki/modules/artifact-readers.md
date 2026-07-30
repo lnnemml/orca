@@ -1,10 +1,11 @@
 # Module: Artifact readers (`src-tauri/src/parse/`)
 
 **Status:** the authoritative result-parsing tier of ADR-012 — own Rust parsers over ORCA's
-structured artifacts, replacing the abandoned cclib plan. **One of four readers is built:**
-`.property.txt`. The other three (`.hess`, `_trj.xyz`/`.xyz`, `orca_2json`) are **not started**.
-Nothing here is wired into the job pipeline yet (a later Phase-3 unit); `mod parse` is
-`#[allow(dead_code)]` until then.
+structured artifacts, replacing the abandoned cclib plan. **Two of four readers are built:**
+`.property.txt` (unit 3.4/3.5, the template) and `.hess` (unit 3.6, frequencies / IR / normal
+modes). `_trj.xyz`/`.xyz` and `orca_2json` are **not started**. Both readers are wired into the
+job pipeline via `results.rs` (unit 3.5/3.6): on completion the job is parsed and advanced to
+`parsed`.
 
 ## Why this exists
 cclib 1.8.1 crashes on ORCA 6.1.0 output and ORCA 6 is outside its handled matrix
@@ -80,12 +81,41 @@ typestate, the same shape as ADR-010's `parse_output` (uncallable without the
 - **Unknown blocks stay visible** — `unknown_block_names()` reports any block not in `KNOWN_BLOCKS`
   so an ORCA 6.2 addition is seen, not dropped (rule #10).
 
+## Second reader — `.hess` (unit 3.6): the template held; one post-condition bent
+`parse/hess.rs` copies the whole external contract — two layers, typestate
+(`parse → verify(reference) → Verified`), unknown sections surfaced, post-conditions-as-errors,
+units by type — so nothing new had to be invented. Two deliberate differences, both recorded:
+
+- **Grammar differs, and that's fine.** `.property.txt` is uniform `$Block`/`&prop`; `.hess` is
+  `$section` headers each with its **own** shape (a count then rows; a `3N 3N` dim then
+  column-blocks; a bare scalar). The tokenizer is written to *this* grammar (raw lines per
+  section) while the accessors/typestate above it are identical. A shared tokenizer would have
+  been the wrong kind of reuse.
+- **The geometry post-condition is distance-based, not coordinate-based.** Measured: `.hess
+  $atoms` is the Freq geometry **rigidly reframed** (centre-of-mass / Eckart) — a uniform 1.041 Å
+  shift on the saddle, 0 on symmetric ethane. A coordinate compare would false-alarm on that
+  reframe. Interatomic **distances** are translation/rotation invariant, so `.hess` compares
+  those: a missed Bohr→Å still fails loudly (6.6 Å on the saddle), a reframe passes (4e-8 Å). The
+  caller supplies the **optimized** geometry as the reference (the `.property.txt` final
+  `$Geometry`), *not* `input.inp` (the start) — a Freq is computed at the minimum, so `$atoms` ≠
+  the input geometry.
+
+Measured facts the `.hess` reader encodes in structure: `$vibrational_frequencies` keeps its
+**sign** and `imaginary_count` is an **explicit field** (0 = minimum, 1 = TS, >1 = neither), not
+a UI derivation; the 5–6 **exact-zero** trans/rot modes are matched by exact `== 0.0` (no
+threshold), and 5 (linear) vs 6 (non-linear) is a distinction, not a failure; `$normal_modes` is
+**Cartesian** (unit-3.6 gate — see `parse-sources.md`), consumed as-is with **no ÷√m**;
+`$ir_spectrum` intensity is column 2 (km/mol); `$hessian` and `$dipole_derivatives` have
+UNDETERMINED units and are **recognized but not read**, so no value is shown with a unit taken on
+faith.
+
 ## Files
 - `parse/mod.rs` — module overview + shared `ParseError` (`#[from]` into `AppError`).
 - `parse/units.rs` — `Angstrom` (canonical length; the type guard).
 - `parse/elements.rs` — symbol ↔ Z, fragment-suffix stripping (`C(1)` → `C`).
 - `parse/property.rs` — the `.property.txt` reader (tokenizer + typed accessors + post-conditions).
-- `parse/property/tests.rs` — against real SP / Opt+Freq / GOAT / scan fixtures in
+- `parse/hess.rs` — the `.hess` reader (frequencies, IR, normal modes; distance-based geometry check).
+- `parse/{property,hess}/tests.rs` — against real SP / Opt+Freq / GOAT / scan / saddle fixtures in
   `src-tauri/tests/fixtures/`.
 
 ## Rule #5

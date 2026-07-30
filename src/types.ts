@@ -26,6 +26,8 @@ export interface ParsedResults {
   dipole: { magnitude_au: number; total_au: [number, number, number] } | null;
   charges: AtomCharges[];
   thermochemistry: {
+    /** Kelvin. */
+    temperature_k: number;
     el_energy_eh: number;
     zpe_eh: number;
     inner_energy_u_eh: number;
@@ -36,6 +38,21 @@ export interface ParsedResults {
   } | null;
   final_geometry: { elements: string[]; xyz_angstrom: [number, number, number][] };
   gradient: { geometry_index: number; order_elements: string[]; grad_eh_per_bohr: number[] } | null;
+  /** Vibrational data from .hess, or null (SP/GOAT have no .hess). */
+  frequencies: {
+    elements: string[];
+    frequencies_cm: number[];
+    /** 0 = minimum, 1 = transition state, >1 = neither. */
+    imaginary_count: number;
+    zero_count: number;
+    is_linear: boolean;
+    ir_intensity_km_mol: number[];
+    n_modes: number;
+    normal_modes: number[];
+    temperature_k: number | null;
+    scale_factor: number | null;
+    unknown_sections: string[];
+  } | null;
   unknown_blocks: string[];
 }
 

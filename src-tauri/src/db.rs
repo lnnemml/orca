@@ -21,7 +21,10 @@ use crate::error::AppError;
 /// - v5: `results` table — parsed `.property.txt` (Phase 3, ADR-012). Narrow typed
 ///   columns for the card + one JSON column with per-atom arrays stored WITH their
 ///   element order. One row per job (`job_id` PK), upserted idempotently.
-const SCHEMA_VERSION: i64 = 5;
+/// - v6: `results.imaginary_count` — negative-frequency count from `.hess` (unit
+///   3.6). A narrow column the job list sorts by and the minimum/TS warning stands
+///   on; NULL when a job has no `.hess`.
+const SCHEMA_VERSION: i64 = 6;
 
 /// Open (creating if needed) `orcastudio.db` under `data_dir` and migrate it to
 /// the current schema.
@@ -115,6 +118,17 @@ fn migrate(conn: &Connection) -> Result<(), AppError> {
         version = 5;
     }
 
+    // --- v5 -> v6: results.imaginary_count (unit 3.6). ---
+    // `create_results_table` already includes the column (current schema), so a
+    // fresh v4→v5→v6 upgrade adds it in the v5 step; this guarded ALTER covers a
+    // database that stopped at v5 before this column existed. Additive, nullable.
+    if version < 6 {
+        if !column_exists(conn, "results", "imaginary_count")? {
+            conn.execute_batch("ALTER TABLE results ADD COLUMN imaginary_count INTEGER;")?;
+        }
+        version = 6;
+    }
+
     // Persist the resulting version so subsequent runs skip completed steps.
     conn.execute(
         "UPDATE settings SET value = ?1 WHERE key = 'schema_version'",
@@ -140,12 +154,24 @@ pub(crate) fn create_results_table(conn: &Connection) -> Result<(), AppError> {
             enthalpy_h_eh       REAL,
             t_times_s_eh        REAL,
             free_energy_g_eh    REAL,
+            imaginary_count     INTEGER,
             data_json           TEXT NOT NULL,
             parser_version      INTEGER NOT NULL,
             parsed_at           TEXT NOT NULL DEFAULT (datetime('now'))
         );",
     )?;
     Ok(())
+}
+
+/// Whether `table` has a column named `col` (via `PRAGMA table_info`). Used to make
+/// an additive `ALTER` idempotent across migration paths.
+fn column_exists(conn: &Connection, table: &str, col: &str) -> Result<bool, AppError> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let found = stmt
+        .query_map([], |r| r.get::<_, String>(1))?
+        .filter_map(|c| c.ok())
+        .any(|name| name == col);
+    Ok(found)
 }
 
 /// Read the stored `schema_version` from `settings`, defaulting to 1 for a
@@ -348,5 +374,28 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM results", [], |r| r.get(0))
             .expect("results table should exist");
         assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn migrate_v5_to_v6_adds_imaginary_count_via_guarded_alter() {
+        // A DB stopped at v5: a results table WITHOUT imaginary_count.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO settings (key, value) VALUES ('schema_version', '5');
+             CREATE TABLE jobs (id TEXT PRIMARY KEY);
+             CREATE TABLE results (
+                job_id TEXT PRIMARY KEY, final_energy_eh REAL, dipole_magnitude_au REAL,
+                zpe_eh REAL, inner_energy_u_eh REAL, enthalpy_h_eh REAL, t_times_s_eh REAL,
+                free_energy_g_eh REAL, data_json TEXT NOT NULL, parser_version INTEGER NOT NULL,
+                parsed_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );",
+        )
+        .unwrap();
+        assert!(!column_exists(&conn, "results", "imaginary_count").unwrap());
+
+        migrate(&conn).expect("v5 -> v6 should add the column");
+        assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
+        assert!(column_exists(&conn, "results", "imaginary_count").unwrap());
     }
 }

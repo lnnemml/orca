@@ -16,6 +16,7 @@
 //! dropped (rule #10). See `wiki/modules/artifact-readers.md`.
 
 pub mod elements;
+pub mod hess;
 pub mod property;
 pub mod units;
 
@@ -53,4 +54,10 @@ pub enum ParseError {
         expected: usize,
         got: usize,
     },
+
+    /// A section/value that parsed structurally but is not what a valid artifact
+    /// should contain (e.g. a translation/rotation zero-mode count that is neither
+    /// 5 (linear) nor 6 (non-linear)).
+    #[error("malformed {field}: {detail}")]
+    Malformed { field: String, detail: String },
 }
