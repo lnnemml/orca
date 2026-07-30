@@ -1,7 +1,10 @@
 # Module: Result parsing
 
 **Status:** two Rust extractors built — minimal result extraction and an incremental streaming
-convergence parser. The authoritative sidecar/cclib tier is not started.
+convergence parser. The authoritative tier is not started; per
+[ADR-012](../architecture/adr-012-output-parsing-ownership.md) it is now **Rust over ORCA's
+structured artifacts**, not a sidecar/cclib parse (cclib crashes on ORCA 6.1.0 output — see
+[parse-sources.md](../orca/parse-sources.md)).
 
 ## Responsibilities & boundaries
 
@@ -10,8 +13,14 @@ Turn ORCA output into structured data. Two tiers, by design:
 1. **Streaming tier (Rust, during a run)** — lightweight, tolerant regexes over incoming log
    lines for live UI only: SCF iteration energies, per-cycle geometry energy, gradient norms vs
    convergence criteria. Tolerant to partial lines; **never authoritative**.
-2. **Authoritative tier (sidecar, after a run)** — cclib full parse of the final output → SQLite
-   `results`. Everything the Results screen shows comes from here. **Not built** (Phase 3).
+2. **Authoritative tier (Rust, over structured artifacts — ADR-012) — not started.** After a
+   run, own parsers read `.property.txt` (energies, geometry, charges, dipole, thermochemistry),
+   `.hess` (signed frequencies, normal modes, IR), `_trj.xyz`/`.xyz` (trajectory, final
+   geometry), and `orca_2json` over `.gbw` (MO energies/occupations) → SQLite `results`.
+   Everything the Results screen shows comes from here. `output.out` is **not** an authoritative
+   source (rule #5 holds by construction — the multi-MB text is never parsed whole). cclib is
+   **not** used. Part A of the parse-sources probe verified every artifact's atom order equals
+   the input order, so each artifact's position→`AtomId` map is the identity today.
 
 Formats and the ORCA-6 output gotchas these parsers rely on are documented in
 `wiki/orca/output-files.md`.
@@ -70,7 +79,8 @@ parse (geometries, frequencies, spectra) is the sidecar/cclib tier, not yet buil
 
 ## Notes
 
-- Keep a fixtures library of real outputs (per ORCA version, per job type) in
-  `sidecar/tests/fixtures/` — regression safety when ORCA formatting shifts between versions.
-- cclib gaps (if any ORCA 6 block is unsupported) get targeted supplemental parsers in Python,
-  documented here as they appear.
+- Keep a fixtures library of real artifacts (per ORCA version, per job type) — `.property.txt`,
+  `.hess`, `_trj.xyz`, `orca_2json` output — as regression safety when ORCA formatting shifts
+  between versions. Format stability across ORCA versions is **unmeasured** (ADR-012 caveat);
+  `sidecar/probes/parse_sources.py` re-runs on every ORCA upgrade to catch a format change
+  before the parsers silently misread it.

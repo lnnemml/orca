@@ -2431,3 +2431,57 @@ freq/thermo). Full per-quantity source table lives in `wiki/orca/parse-sources.m
 job → etenergies/etoscs unmeasured; cclib full-parse RSS unmeasurable; cclib *dev/git* build (not
 on PyPI) not tested. **Wiki:** +`orca/parse-sources.md`; `output-files.md` `.property.txt` row and
 Imaginary-frequencies section replaced with measured facts; index count → 42.
+
+## [2026-07-30] decision | Own structured-artifact parsing (ADR-012) after verifying artifact atom order
+
+Two-part unit behind a gate. **No parsers written, no `results` schema, no UI, no scan run.**
+Only the probe was extended (`sidecar/probes/parse_sources.py`) and the decision + docs synced.
+
+**Part A — the gate (fixes a defect from unit 3.1).** Unit 3.1 checked atom order for cclib
+only; cclib turned out dead and the seam moved to structured artifacts, but the order check did
+not follow — `parse-sources.md` asserted "the structured artifacts carry the same atom count in
+the same order" with evidence only for *count*. Part A extended the probe to compare the ELEMENT
+sequence of **every** artifact against the launching `input.inp`, per frame and per block:
+`.hess $atoms`, `orca_2json Atoms`, every `_trj.xyz`/`.xyz` frame (5/8/18), every `.property.txt
+$Geometry` block (1/5/8/18). **GATE VERDICT: PASS** on all four jobs — no reorder anywhere.
+Measured units (not assumed): `.hess $atoms` = Bohr (coord ratio 1.8886 ethane / 1.6579 saddle
+vs input; `&Units "Bohr"` literal in `.property.txt`; `orca_2json` = Angs, final geometry so a
+coord diff there is final-vs-initial, not reorder); `normal_modes` = 3N×3N, `vibfreqs` = 3N.
+
+**Seam, named precisely** (and an earlier error corrected): the atomic-charge arrays are **not**
+bare positional — Mulliken/Loewdin/Mayer each carry a co-located `&ATNO` array whose order was
+verified == input (unit 3.1 had wrongly called them bare, because a `sed` started at
+`&AtomicCharges` and skipped the `&ATNO` two lines above). The **only** bare positional
+atom-ordered array is `$SCF_Nuc_Gradient &grad` (3N flattened), whose order is assumed from the
+co-located `$Geometry` block — assumption named, not hidden. `&FREQ` is mode-indexed, not
+atom-indexed. GOAT quirk measured: xTB tags elements `C(1)` in `$Geometry` (fragment suffix) and
+its gbw is not readable by `orca_2json` (no JSON) — neither is a reorder.
+
+**Part B — ADR-012 (ACCEPTED).** Authoritative tier = our own parsers over structured artifacts,
+one quantity one home: `.property.txt` (energies/geometry/charges/dipole/thermo), `.hess`
+(signed freqs/normal modes/IR), `_trj.xyz`/`.xyz` (trajectory/final geom), `orca_2json` over
+`.gbw` (MO energies+occupations, HOMO/LUMO). `output.out` **not** authoritative (rule #5 holds by
+construction). **cclib not adopted, not added to requirements.txt.** Durable reason, not the
+symptom: (a) crash reproduces on all four outputs at a generic SCF-table site (env-independent);
+(b) measured — cclib's `orcaparser.py` knows only version markers `Orca 2.6`/`ORCA4.0`/`ORCA 5.0`,
+**no ORCA 6.x**, so 6.x is outside its handled matrix even absent the crash; (c) 1.8.1 is latest
+on PyPI and predates 6.1. **Reopening needs BOTH:** our probe runs clean on our outputs AND ORCA
+6.x appears in cclib's supported matrix — a cclib release alone reopens nothing. Second
+consequence: the tier moves to **Rust** (`.property.txt`/`.hess` are library-free text parsing;
+`orca_2json` is a binary spawn → ADR-009), dropping the results HTTP round-trip and one runtime
+boundary. ADR-002 **narrowed** (sidecar no longer owns result parsing; cclib declined) — not
+edited, per the ADR-008/010 precedent. ADR-010 amendment (i) **survives, narrowed**: positional
+arrays still cross the sidecar boundary via RDKit/ASE, so Rust still builds the `IndexMap` there;
+only the positional producer behind the boundary changed (cclib → artifacts). Rule-#10 caveat
+kept explicit: `.property.txt`/`.hess`/`orca_2json` format stability across ORCA versions is
+**unmeasured**; mitigation = probe re-run on every upgrade + real-artifact fixtures with the
+parsers.
+
+**Docs synced:** +`adr-012`; `parse-sources.md` unverified "same order" claim replaced with the
+Part-A per-artifact table + array-labelling table + ADR-012 pointer; `output-files.md`
+`output.out` row + per-quantity artifact map rewritten; `parser.md` Tier 2 retargeted cclib →
+"Rust over structured artifacts (ADR-012), not started" and the "cclib gaps → Python parsers"
+note removed; ROADMAP Phase 3 first item → four Rust artifact readers, seam item updated with the
+measured order sources; index count → 43. **Gaps still open:** scan (`%geom Scan`) and TD-DFT —
+no such job exists, need a real run (next unit). cclib left installed in the venv from the probe;
+**not** pinned in requirements.

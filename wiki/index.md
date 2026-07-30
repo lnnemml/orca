@@ -16,6 +16,7 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 - [adr-009-process-orchestration.md](architecture/adr-009-process-orchestration.md) — running external binaries belongs to Rust, not the sidecar (complements ADR-002/003; the xTB precedent)
 - [adr-010-editor-identity-state.md](architecture/adr-010-editor-identity-state.md) — editor identity & state model: `AtomId`, branded `OrcaIndex`/`AseIndex`, `IndexMap`, `emit_input`/`parse_output` paired, op-log fold; refines ADR-008 (three corrections; sidecar stays positional, Rust maps)
 - [adr-011-editor-graphics-stack.md](architecture/adr-011-editor-graphics-stack.md) — editor graphics stack (wgpu→WASM→WebGL2/WebGPU, impostors, GPU picking): **proposed/deferred**, gated on a spike with verifiable exit criteria; until then 3Dmol stays a dumb renderer
+- [adr-012-output-parsing-ownership.md](architecture/adr-012-output-parsing-ownership.md) — authoritative result parsing = own Rust parsers over structured artifacts (`.property.txt`/`.hess`/`_trj.xyz`/`orca_2json`), **not cclib** (crashes on ORCA 6.1); narrows ADR-002, moves the tier to Rust (ADR-009)
 - [prior-art.md](architecture/prior-art.md) — how other tools (Avogadro 2, IQmol, Gabedit, Chemcraft, WebMO, GaussView) handle geometry, and what OrcaStudio does differently (scene-derived mask, unbroken index space)
 - [proposals/editor-architecture-2026-07-30.md](architecture/proposals/editor-architecture-2026-07-30.md) — author's design proposal for the editor architecture (source document for ADR-010/011; includes §11 rejected alternatives). Input, not a decision — not edited.
 
@@ -61,4 +62,4 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 
 ---
 
-*Page count: 42. Last structural update: 2026-07-30 (parse-source probe unit 3.1: +orca/parse-sources.md — measured cclib-vs-artifacts evidence for ORCA 6.1.0).*
+*Page count: 43. Last structural update: 2026-07-30 (parse-ownership unit 3.2: +adr-012-output-parsing-ownership — own Rust artifact parsers after verifying per-artifact atom order).*

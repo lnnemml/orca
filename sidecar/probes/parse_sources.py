@@ -15,6 +15,11 @@ survives us and can be re-run against the next ORCA version:
 Any role may be omitted; the probe reports it as a gap rather than inventing a run.
 
 What it checks (maps 1:1 to the unit's task list):
+  A. atom ORDER in EACH structured artifact (.hess $atoms, orca_2json, every _trj/.xyz
+     frame, every .property.txt $Geometry block) vs the launching input.inp — exact
+     element-sequence equality, first mismatch reported. Plus whether the &AtomicCharges
+     / &grad / &FREQ arrays are element-labelled or BARE positional (the seam). This is
+     the GATE: any reorder → stop.
   1. cclib version + which attributes are present/absent per output (SP vs Opt+Freq).
   2. Atom order & count: cclib atomnos/atomcoords[0] vs the input .inp xyz block —
      exact element-sequence equality, coord match within input's own precision.
@@ -300,6 +305,252 @@ def probe_atom_order(job: Path) -> dict:
 
 
 # ----------------------------------------------------------------------------- #
+# PART A — atom ORDER in each structured artifact (the real Phase-3 seam)         #
+#                                                                                 #
+# The previous unit checked order for cclib only; cclib is dead, so the seam      #
+# moved to the structured artifacts and the check must move with it. Here we      #
+# compare the ELEMENT SEQUENCE of every artifact against the launching input.inp, #
+# frame by frame and block by block — exact equality, first mismatch reported.    #
+# ----------------------------------------------------------------------------- #
+BOHR_PER_ANGSTROM = 1.8897259886
+
+
+def _cmp_elements(z_ref: list[int], z_test: list[int]) -> dict:
+    """Exact element-sequence equality; report first divergent index."""
+    first = next((i for i, (a, b) in enumerate(zip(z_ref, z_test)) if a != b), None)
+    return {
+        "n_ref": len(z_ref),
+        "n_test": len(z_test),
+        "count_match": len(z_ref) == len(z_test),
+        "order_exact": (first is None) and (len(z_ref) == len(z_test)),
+        "first_mismatch_index": first,
+    }
+
+
+def _z_from_symbols(symbols: list[str]) -> list[int]:
+    return [Z_BY_SYMBOL.get(s) for s in symbols]
+
+
+def _hess_atoms(path: Path):
+    """Return (symbols, coords) from the .hess $atoms section: 'SYM mass x y z'."""
+    lines = path.read_text().splitlines()
+    for i, ln in enumerate(lines):
+        if ln.strip() == "$atoms":
+            n = int(lines[i + 1].strip())
+            syms, coords = [], []
+            for row in lines[i + 2: i + 2 + n]:
+                p = row.split()
+                syms.append(p[0])
+                coords.append([float(p[2]), float(p[3]), float(p[4])])
+            return syms, coords
+    return None, None
+
+
+def _hess_dims(path: Path) -> dict:
+    """Dimension lines of $normal_modes and $vibrational_frequencies."""
+    lines = path.read_text().splitlines()
+    out = {}
+    for i, ln in enumerate(lines):
+        s = ln.strip()
+        if s == "$normal_modes":
+            out["normal_modes_dim"] = lines[i + 1].strip()
+        elif s == "$vibrational_frequencies":
+            out["vibfreqs_count"] = int(lines[i + 1].strip())
+    return out
+
+
+def _xyz_frames_symbols(path: Path) -> list[list[str]]:
+    """Element column of EVERY frame in an (xmol) xyz file."""
+    lines = path.read_text().splitlines()
+    frames, i = [], 0
+    while i < len(lines):
+        try:
+            n = int(lines[i].strip())
+        except (ValueError, IndexError):
+            break
+        syms = [lines[i + 2 + k].split()[0] for k in range(n)]
+        frames.append(syms)
+        i += 2 + n
+    return frames
+
+
+def _property_geometry_blocks(path: Path) -> list[list[str]]:
+    """Element column of EVERY $Geometry block's &CartesianCoordinates."""
+    text = path.read_text()
+    blocks = []
+    for m in re.finditer(r"\$Geometry\b(.*?)\$End", text, re.DOTALL):
+        body = m.group(1)
+        cm = re.search(r"&CartesianCoordinates[^\n]*\n(.*)", body, re.DOTALL)
+        if not cm:
+            continue
+        syms = []
+        for row in cm.group(1).splitlines():
+            p = row.split()
+            if len(p) < 4:
+                continue
+            # GOAT/xTB tags elements with a fragment suffix, e.g. 'C(1)' — strip it
+            sym = re.sub(r"\(\d+\)$", "", p[0])
+            if sym in Z_BY_SYMBOL:
+                syms.append(sym)
+        if syms:
+            blocks.append(syms)
+    return blocks
+
+
+def _parse_atno_array(body: str) -> list[int]:
+    """Extract the integer values of the first &ATNO array in a block body."""
+    m = re.search(r"&ATNO[^\n]*\n(.*)", body, re.DOTALL)
+    if not m:
+        return []
+    vals = []
+    for row in m.group(1).splitlines():
+        p = row.split()
+        # rows are 'idx value'; the array ends at the next '&' directive
+        if not p:
+            continue
+        if p[0].startswith("&"):
+            break
+        if len(p) >= 2 and p[0].isdigit():
+            try:
+                vals.append(int(float(p[1])))
+            except ValueError:
+                break
+    return vals
+
+
+def _property_array_labeling(path: Path, z_inp: list[int]) -> dict:
+    """For each population scheme + gradient + FREQ: is the array element-labelled
+    (carries a co-located &ATNO whose order we VERIFY == input) or a BARE positional
+    array whose order must be ASSUMED from the $Geometry block? Reports it plainly —
+    this is the seam."""
+    text = path.read_text()
+    out = {}
+    for scheme in ("Mulliken", "Loewdin", "Mayer"):
+        m = re.search(
+            rf"\$SCF_{scheme}_Population_Analysis\b(.*?)\$End", text, re.DOTALL,
+        )
+        if not m:
+            out[scheme] = "block-absent"
+            continue
+        body = m.group(1)
+        has_charges = "&AtomicCharges" in body or "&QA" in body
+        atno = _parse_atno_array(body)
+        if atno:
+            cmp = _cmp_elements(z_inp, atno)
+            out[scheme] = {
+                "has_atomic_charges": has_charges,
+                "kind": "element-labelled (co-located &ATNO in same block)",
+                "ATNO_order_matches_input": cmp["order_exact"],
+                "ATNO_first_mismatch_index": cmp["first_mismatch_index"],
+            }
+        else:
+            out[scheme] = {
+                "has_atomic_charges": has_charges,
+                "kind": "BARE positional (order assumed from $Geometry)",
+            }
+    grad = re.search(r"\$SCF_Nuc_Gradient\b(.*?)\$End", text, re.DOTALL)
+    if grad:
+        out["SCF_Nuc_Gradient.grad"] = (
+            "BARE positional, &Dim (3N,1) flattened xyz "
+            "(order assumed from $Geometry)"
+        )
+    freq = re.search(r"&FREQ\b[^\n]*\n", text)
+    if freq:
+        out["THERMOCHEMISTRY.FREQ"] = (
+            "BARE positional, &Dim (3N,1) (mode index, not atom-indexed)"
+        )
+    return out
+
+
+def probe_artifact_order(job: Path) -> dict:
+    """PART A: element order in each artifact vs the launching input.inp."""
+    inp_rows = parse_inp_xyz(job / "input.inp")
+    if inp_rows is None:
+        return {"status": "no-inp-xyz-block"}
+    z_inp = _z_from_symbols([s for s, *_ in inp_rows])
+    inp_max = max(abs(v) for _, *xyz in inp_rows for v in xyz)
+    n_inp = len(z_inp)
+    r = {"n_inp": n_inp}
+
+    # 1. .hess $atoms + dims
+    hess = job / "input.hess"
+    if hess.exists():
+        syms, coords = _hess_atoms(hess)
+        if syms is not None:
+            cmp = _cmp_elements(z_inp, _z_from_symbols(syms))
+            hmax = max(abs(v) for row in coords for v in row)
+            ratio = hmax / inp_max if inp_max else 0.0
+            cmp["coord_ratio_vs_input"] = round(ratio, 4)
+            cmp["units_measured"] = (
+                "Bohr" if ratio > 1.5 else "Angstrom" if 0.7 < ratio < 1.3 else "?"
+            )
+            dims = _hess_dims(hess)
+            cmp["normal_modes_dim"] = dims.get("normal_modes_dim")
+            cmp["vibfreqs_count"] = dims.get("vibfreqs_count")
+            cmp["expected_3N"] = 3 * n_inp
+            cmp["vibfreqs_is_3N"] = dims.get("vibfreqs_count") == 3 * n_inp
+            cmp["normal_modes_is_3Nx3N"] = (
+                dims.get("normal_modes_dim") == f"{3 * n_inp} {3 * n_inp}"
+            )
+            r["hess_$atoms"] = cmp
+
+    # 2. orca_2json Molecule.Atoms
+    r["orca_2json_Atoms"] = _probe_json_atom_order(job, z_inp)
+
+    # 3. _trj.xyz + .xyz — every frame
+    for name, key in (("input_trj.xyz", "trj"), ("input.xyz", "xyz")):
+        p = job / name
+        if p.exists():
+            frames = _xyz_frames_symbols(p)
+            per = [_cmp_elements(z_inp, _z_from_symbols(f)) for f in frames]
+            bad = [i for i, c in enumerate(per) if not c["order_exact"]]
+            r[key] = {
+                "n_frames": len(frames),
+                "all_frames_order_exact": len(bad) == 0,
+                "bad_frame_indices": bad,
+                "per_frame_first_mismatch": [c["first_mismatch_index"] for c in per],
+            }
+
+    # 4. .property.txt — every $Geometry block + array labeling
+    prop = job / "input.property.txt"
+    if prop.exists():
+        blocks = _property_geometry_blocks(prop)
+        per = [_cmp_elements(z_inp, _z_from_symbols(b)) for b in blocks]
+        bad = [i for i, c in enumerate(per) if not c["order_exact"]]
+        r["property_$Geometry"] = {
+            "n_blocks": len(blocks),
+            "all_blocks_order_exact": len(bad) == 0,
+            "bad_block_indices": bad,
+        }
+        r["property_array_labeling"] = _property_array_labeling(prop, z_inp)
+    return r
+
+
+def _probe_json_atom_order(job: Path, z_inp: list[int]) -> dict:
+    conv = ORCA_DIR / "orca_2json"
+    gbw = job / "input.gbw"
+    if not conv.exists() or not gbw.exists():
+        return {"status": "orca_2json-or-gbw-absent"}
+    import shutil
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        shutil.copy(gbw, Path(td) / "input.gbw")
+        env = {**os.environ, "LD_LIBRARY_PATH": str(ORCA_DIR)}
+        subprocess.run([str(conv), "input.gbw"], cwd=td, capture_output=True,
+                       text=True, timeout=120, env=env)
+        jf = Path(td) / "input.json"
+        if not jf.exists():
+            return {"status": "no-json-emitted"}
+        atoms = json.loads(jf.read_text())["Molecule"]["Atoms"]
+    z_json = [a["ElementNumber"] for a in atoms]
+    idx = [a["Idx"] for a in atoms]
+    cmp = _cmp_elements(z_inp, z_json)
+    cmp["Idx_is_monotonic_0..N-1"] = idx == list(range(len(idx)))
+    cmp["coords_note"] = "coords are FINAL geometry (Angs); compared by ELEMENT only"
+    return cmp
+
+
+# ----------------------------------------------------------------------------- #
 # structured-artifact inventory                                                 #
 # ----------------------------------------------------------------------------- #
 def probe_artifacts(job: Path) -> dict:
@@ -393,6 +644,29 @@ def run(jobs: dict[str, Path]) -> None:
     print("\nselected jobs:")
     for role, job in jobs.items():
         print(f"  {role:10s} {job}")
+
+    # ---- PART A: atom ORDER in each artifact (the gate) ----------------------
+    print("\n" + "=" * 78)
+    print("PART A — atom ORDER in each structured artifact vs input.inp (GATE)")
+    print("=" * 78)
+    gate_fail = []
+    for role, job in jobs.items():
+        print(f"\n### {role}  {job.name}")
+        rep = probe_artifact_order(job)
+        print(json.dumps(rep, indent=2))
+        # collect any order failure for the gate verdict
+        for k, v in rep.items():
+            if not isinstance(v, dict):
+                continue
+            if v.get("order_exact") is False:
+                gate_fail.append(f"{role}:{k}")
+            if v.get("all_frames_order_exact") is False:
+                gate_fail.append(f"{role}:{k}")
+            if v.get("all_blocks_order_exact") is False:
+                gate_fail.append(f"{role}:{k}")
+    print("\n" + "-" * 78)
+    print(f"GATE VERDICT: {'FAIL — ' + ', '.join(gate_fail) if gate_fail else 'PASS (all artifact element orders == input)'}")
+    print("-" * 78)
 
     # ---- 1. cclib attributes -------------------------------------------------
     print("\n" + "-" * 78)

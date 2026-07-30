@@ -72,12 +72,58 @@ Comparing cclib's `atomnos` and `atomcoords[0]` against the `* xyz … *` block 
 
 **PASS on all four.** Caveat, stated because it matters: the coordinates cclib exposes are
 `atomcoords[0]` = the **initial** geometry (cclib crashed before the optimized one), so this
-confirms cclib's atom **ordering** equals the input ordering; it does not, by itself, prove
-the *final* geometry keeps that order. The structured artifacts below carry the same atom
-count in the same order (`_trj.xyz` natom = input natom; `.property.txt` `$Geometry`
-`&NAtoms` = input), and none of these runs used symmetry (`PointGroup: C1` in the gbw), which
-is the case ORCA is known to reorder under — flagged as an open UseSym probe in ROADMAP
-Phase 4.5.
+confirms only cclib's atom **ordering** equals the input ordering. It does **not**, by itself,
+say anything about the order in the structured artifacts we actually read — that is measured
+separately, per artifact, below. None of these runs used symmetry (`PointGroup: C1` in the
+gbw), which is the case ORCA is known to reorder under — flagged as an open UseSym probe in
+ROADMAP Phase 4.5.
+
+---
+
+## Atom order in EACH structured artifact — the real seam (measured, Part A)
+
+cclib is dead, so the Phase-3 seam moved onto the structured artifacts. This section replaces
+an earlier **unverified** claim ("the structured artifacts carry the same atom count in the
+same order") — which had evidence only for *count*, not *order* — with a per-artifact,
+per-frame, per-block measurement. The element sequence of every artifact is compared to the
+`* xyz … *` block of the launching `input.inp`; exact equality, first divergent index on
+failure. Produced by `probe_artifact_order()` in `sidecar/probes/parse_sources.py`.
+
+| Artifact | what is compared | SP | min | saddle | GOAT |
+|---|---|---|---|---|---|
+| `.hess $atoms` | element column vs input | — | ✅ | ✅ | — (no `.hess`) |
+| `.hess` dims | `vibfreqs = 3N`, `normal_modes = 3N×3N` | — | ✅ 24, 24×24 | ✅ 57, 57×57 | — |
+| `orca_2json` `Atoms` | `ElementNumber` seq vs input; `Idx` = 0…N-1 | ✅ | ✅ | ✅ | ⚠ no JSON (xTB gbw) |
+| `_trj.xyz` | element column of **every** frame | — | ✅ 5/5 | ✅ 8/8 | ✅ 18/18 |
+| `input.xyz` | element column (final) | — | ✅ | ✅ | ✅ |
+| `.property.txt $Geometry` | element column of **every** block | ✅ 1/1 | ✅ 5/5 | ✅ 8/8 | ✅ 18/18 |
+
+**Gate verdict: PASS** — every artifact's element order equals the input order, on every
+frame and every block, across all four jobs. No reorder anywhere.
+
+**Units, measured (not assumed):** `.hess $atoms` coordinates are **Bohr** — the ratio of the
+largest `.hess` coordinate to the largest input coordinate is **1.8886** (ethane) / **1.6579**
+(saddle), i.e. ≈ the Bohr/Å factor 1.889, not ≈ 1.0. `.property.txt $Geometry` states its unit
+in the file: `&Units "Bohr"`. `orca_2json` states `CoordinateUnits: "Angs"` and its coords are
+the **final** geometry (z 0.7635 vs input 0.768) — a coordinate difference there is
+final-vs-initial, **not** a reorder; order is compared by element only.
+
+### Per-atom array labelling — the one place order is *assumed*
+
+Which per-atom arrays carry their own element label, and which are bare positional (order must
+be assumed from the co-located `$Geometry` block)? Measured directly:
+
+| Array | labelled? | measured |
+|---|---|---|
+| `$SCF_Mulliken/Loewdin/Mayer_Population_Analysis` `&AtomicCharges` | **element-labelled** | each block carries a co-located `&ATNO` array whose order was verified == input on all jobs |
+| `$SCF_Nuc_Gradient &grad` | **BARE positional** | `&Dim (3N,1)` flattened xyz, no per-atom label → order **assumed** from the block's `$Geometry` (same `&GeometryIndex`, `&NAtoms`) |
+| `$THERMOCHEMISTRY_Energies &FREQ` | not atom-indexed | `&Dim (3N,1)` is a **mode** index, not an atom index (modes map to atoms via `.hess $normal_modes`, itself 3N×3N in atom order) |
+
+So the atomic **charges** are self-describing (labelled, verified) — an earlier note that
+called them "bare positional" was wrong and is corrected here. The only bare positional
+*atom-ordered* array is the SCF gradient, and its order source is named explicitly: the
+co-located `$Geometry` block. The decision that turns this measurement into a rule is
+**[ADR-012](../architecture/adr-012-output-parsing-ownership.md)**.
 
 ---
 

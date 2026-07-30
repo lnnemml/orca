@@ -2,13 +2,24 @@
 
 | File | What it is | Our handling |
 |---|---|---|
-| `output.out` | Main text log; everything cclib parses | Stream during run; keep; parse after |
+| `output.out` | Main text log | **Not** an authoritative parse source ([ADR-012](../architecture/adr-012-output-parsing-ownership.md)): stream during run (`convergence.rs`), search (`output_search.rs`), two tail regexes (final energy, wall time). Rich results come from structured artifacts, not this file |
 | `.gbw` | Wavefunction/orbitals (binary) | Needed by orca_plot; large — remote fetch opt-in |
 | `_trj.xyz` / `.xyz` | Optimization trajectory / final geometry | Always fetch; trajectory player |
 | `.hess` | Hessian (frequencies) | Fetch for Freq jobs |
 | `.cube` | Volumetric data from orca_plot | Generate lazily; cache; never in DB |
 | `.densities`, `.tmp*` | Scratch | Delete on cleanup |
 | `.property.txt` / property files | Machine-readable results (ORCA 6) | **Measured** parse source: `$Block…$End` with energies, `$Geometry`, population `&AtomicCharges`, `$SCF_Dipole_Moment`, `$THERMOCHEMISTRY_Energies`, `$Hessian` — see [parse-sources.md](parse-sources.md) |
+
+## Which artifact each result comes from (ADR-012)
+Measured — full per-quantity table + evidence in [parse-sources.md](parse-sources.md):
+
+- **`.property.txt`** — energies, geometry (Bohr), atomic charges (Mulliken/Loewdin/Mayer,
+  each element-labelled via `&ATNO`), dipole, thermochemistry (ZPE/H/S/G).
+- **`.hess`** — signed frequencies (`$vibrational_frequencies`, 3N), normal modes
+  (`$normal_modes`, 3N×3N), IR (`$ir_spectrum`); `$atoms` coords are Bohr.
+- **`_trj.xyz` / `.xyz`** — trajectory / final geometry.
+- **`orca_2json` over `.gbw`** — MO energies + occupations (Eh), HOMO/LUMO.
+- **`output.out`** — live streaming + search only; not authoritative.
 
 ## Completion signals
 - Success: `ORCA TERMINATED NORMALLY` near end of output + `.exit_code` = 0 (our marker).

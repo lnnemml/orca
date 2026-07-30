@@ -242,15 +242,23 @@ the `[ ]` "Fragment library" item above.
 
 **Goal:** post-calculation analysis without any external tools.
 
-- [ ] Sidecar: full cclib parse endpoint → structured JSON (energies, orbitals, frequencies,
-      intensities, charges, dipole, TD-DFT states); stored in SQLite per job
-- [ ] **The per-atom seam.** Every per-atom array the sidecar returns (frequencies + normal
-      modes, charges, the trajectory) passes through **one explicit mapping function at the
-      boundary**, in Rust. Today that function is the identity (the sidecar array is already in
-      merged-xyz order); after ADR-010 lands, **only that function changes**, not the dashboard.
-      This is where the ADR-010 `IndexMap<AseIndex>` boundary (correction (i): the sidecar stays
-      positional, Rust maps) is first exercised — so the dashboard is written against the mapped
-      result from day one, never against raw positional indices.
+- [ ] **Authoritative parsers in Rust, over structured artifacts** ([ADR-012](wiki/architecture/adr-012-output-parsing-ownership.md);
+      **no cclib**, `output.out` not authoritative). One per source, results → SQLite per job:
+  - [ ] `.property.txt` reader → energies, geometry, atomic charges (Mulliken/Loewdin/Mayer),
+        dipole, thermochemistry (ZPE/H/S/G)
+  - [ ] `.hess` reader → signed frequencies (3N), normal modes (3N×3N), IR intensities
+  - [ ] `_trj.xyz` / `.xyz` reader → trajectory frames / final geometry
+  - [ ] `orca_2json` over `.gbw` (Rust spawns the binary, ADR-009) → MO energies + occupations,
+        HOMO/LUMO
+- [ ] **The per-atom seam** (now known concretely — Part A of the parse-sources probe measured
+      it). Every per-atom array from an artifact passes through **one explicit mapping function
+      at the boundary**, in Rust. Measured order source per array: `.property.txt` charges are
+      element-labelled (`&ATNO`, order == input); `$Geometry` / `.hess $atoms` / `_trj` / `.xyz`
+      / `orca_2json Atoms` all carry the element column, order == input; the one bare positional
+      atom-ordered array (`$SCF_Nuc_Gradient &grad`) takes its order from the co-located
+      `$Geometry` block — **that assumption is named, not hidden**. The mapping is the identity
+      today; after ADR-010's `AtomId`/`IndexMap` lands (or if `! UseSym` reorders — open Phase 4.5
+      probe), **only that one function changes**, not the dashboard.
 - [ ] **Unfixed-stereocenter flag on SMILES import.** RDKit's ETKDG picks an enantiomer
       arbitrarily for a SMILES with no stereo descriptors; for stereoselectivity work that is a
       *silent substitution of the compound*, so the import must mark undefined stereocenters
