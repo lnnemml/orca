@@ -21,10 +21,13 @@ macro_rules! fixture {
 const OPTFREQ: &str = fixture!("property_optfreq_ethane.property.txt");
 const OPTFREQ_INP: &str = fixture!("property_optfreq_ethane.input.inp");
 const SP: &str = fixture!("property_sp.property.txt");
+const SP_INP: &str = fixture!("property_sp.input.inp");
 const GOAT: &str = fixture!("property_goat.property.txt");
+const GOAT_INP: &str = fixture!("property_goat.input.inp");
 const SCAN: &str = fixture!("property_scan_ethane.property.txt");
 
-/// Parse the `* xyz … *` block of an `.inp` into Å coordinates (the reference).
+/// Parse the `* xyz … *` block of an `.inp` into Å coordinates (the reference the
+/// caller supplies to `verify`).
 fn inp_xyz_angstrom(inp: &str) -> Vec<[f64; 3]> {
     let mut out = Vec::new();
     let mut inside = false;
@@ -53,49 +56,46 @@ fn inp_xyz_angstrom(inp: &str) -> Vec<[f64; 3]> {
 
 #[test]
 fn fixtures_are_present_on_disk() {
-    // guards against a silently-missing fixture (include_str! would fail to build,
-    // but this makes the intent explicit for a reader).
-    assert!(std::path::Path::new(FIX).join("property_optfreq_ethane.property.txt").exists());
+    assert!(std::path::Path::new(FIX)
+        .join("property_optfreq_ethane.property.txt")
+        .exists());
 }
 
 #[test]
 fn tokenizes_blocks_and_all_are_known() {
+    // works on the UNVERIFIED handle — rule-#10 diagnostics need no reference.
     let pf = PropertyFile::parse(OPTFREQ);
     assert!(pf.blocks.len() > 10, "expected many blocks, got {}", pf.blocks.len());
-    // every block in a healthy Opt+Freq is classified — no surprises.
     assert_eq!(pf.unknown_block_names(), Vec::<String>::new());
 }
 
 #[test]
-fn ethane_el_energy_matches_out() {
-    // measured cross-check with the .out FINAL SINGLE POINT ENERGY.
-    let pf = PropertyFile::parse(OPTFREQ);
-    let thermo = pf.thermochemistry().expect("ethane Opt+Freq has thermochemistry");
+fn unverified_handle_verifies_then_exposes_values() {
+    // the typestate in one test: parse → verify(reference) → read.
+    let reference = inp_xyz_angstrom(OPTFREQ_INP);
+    assert_eq!(reference.len(), 8);
+    let v = PropertyFile::parse(OPTFREQ)
+        .verify(&reference)
+        .expect("Opt+Freq verifies against its own input xyz");
+
+    // el energy: measured cross-check with the .out FINAL SINGLE POINT ENERGY.
+    let thermo = v.thermochemistry().expect("Opt+Freq has thermochemistry");
     assert!(
         (thermo.el_energy_eh - (-79.7918513760713)).abs() < 1e-9,
         "elEnergy = {}",
         thermo.el_energy_eh
     );
-}
 
-#[test]
-fn first_geometry_matches_input_xyz_within_tolerance() {
-    let pf = PropertyFile::parse(OPTFREQ);
-    let reference = inp_xyz_angstrom(OPTFREQ_INP);
-    assert_eq!(reference.len(), 8);
-    // Bohr→Å conversion done in the reader; the post-condition passes.
-    pf.verify_geometry(&reference).expect("converted geometry matches input xyz");
-
-    let g = pf.first_geometry().unwrap();
-    let elements: Vec<&str> = g.atoms.iter().map(|a| a.element.as_str()).collect();
+    let geoms = v.geometries().unwrap();
+    let elements: Vec<&str> = geoms[0].atoms.iter().map(|a| a.element.as_str()).collect();
     assert_eq!(elements, ["C", "C", "H", "H", "H", "H", "H", "H"]);
 }
 
 #[test]
 fn missed_bohr_conversion_fails_loudly() {
     // Simulate a reader that FORGOT ×0.529: it treated the Bohr number as if it
-    // were already Å (from_angstrom on a Bohr magnitude). The post-condition must
-    // reject it at ≈1.889×, not accept a plausible-but-wrong molecule.
+    // were already Å (from_angstrom on a Bohr magnitude). The geometry
+    // post-condition must reject it at ≈1.889×, not accept a plausible molecule.
     let reference = inp_xyz_angstrom(OPTFREQ_INP);
     let wrong: Vec<GeomAtom> = reference
         .iter()
@@ -115,7 +115,6 @@ fn missed_bohr_conversion_fails_loudly() {
 
     match verify_geometry_atoms(&wrong, &reference) {
         Err(ParseError::GeometryMismatch { max_delta }) => {
-            // the largest |coord| is ~1.162 Å → Δ ≈ 1.162 × (1/0.5292 − 1) ≈ 1.035 Å
             assert!(max_delta > 0.5, "max_delta = {max_delta}");
         }
         other => panic!("expected GeometryMismatch, got {other:?}"),
@@ -123,10 +122,20 @@ fn missed_bohr_conversion_fails_loudly() {
 }
 
 #[test]
+fn verify_rejects_a_wrong_reference() {
+    // A reference of the wrong length is a caller error the post-condition catches.
+    let bad_reference = vec![[0.0, 0.0, 0.0]]; // 1 atom vs ethane's 8
+    let err = PropertyFile::parse(OPTFREQ).verify(&bad_reference).unwrap_err();
+    assert!(matches!(err, ParseError::LengthMismatch { .. }), "{err:?}");
+}
+
+#[test]
 fn entropy_field_is_t_times_s() {
     // measured: entropyS == enthalpyH − freeEnergyG (so it is T·S in Eh, not S).
-    let pf = PropertyFile::parse(OPTFREQ);
-    let t = pf.thermochemistry().unwrap();
+    let v = PropertyFile::parse(OPTFREQ)
+        .verify(&inp_xyz_angstrom(OPTFREQ_INP))
+        .unwrap();
+    let t = v.thermochemistry().unwrap();
     assert!(
         (t.t_times_s_eh - (t.enthalpy_h_eh - t.free_energy_g_eh)).abs() < 1e-9,
         "t_times_s_eh={} H-G={}",
@@ -136,50 +145,52 @@ fn entropy_field_is_t_times_s() {
 }
 
 #[test]
-fn goat_parses_with_none_for_absent_blocks() {
+fn goat_verifies_and_absent_blocks_are_none() {
     // GOAT has only $Geometry + $Single_Point_Data — a reader that crashes here is
     // a bug (measured: no charges/dipole/thermo).
-    let pf = PropertyFile::parse(GOAT);
-    assert!(!pf.geometries().unwrap().is_empty());
-    assert!(pf.final_single_point_energy().is_some());
-    let ch = pf.charges();
+    let v = PropertyFile::parse(GOAT)
+        .verify(&inp_xyz_angstrom(GOAT_INP))
+        .expect("GOAT verifies (its first geometry == input)");
+    assert!(!v.geometries().unwrap().is_empty());
+    assert!(v.final_single_point_energy().is_some());
+    let ch = v.charges();
     assert!(ch.mulliken.is_none() && ch.loewdin.is_none() && ch.mayer.is_none());
-    assert!(pf.dipole().is_none());
-    assert!(pf.thermochemistry().is_none());
-    assert!(pf.last_gradient().is_none());
+    assert!(v.dipole().is_none());
+    assert!(v.thermochemistry().is_none());
+    assert!(v.last_gradient().is_none());
 }
 
 #[test]
 fn sp_has_charges_and_dipole_but_no_thermo() {
-    let pf = PropertyFile::parse(SP);
-    assert!(pf.charges().mulliken.is_some());
-    assert!(pf.dipole().is_some());
-    assert!(pf.thermochemistry().is_none(), "SP has no thermochemistry");
-    pf.verify_charge_order().expect("SP charge order == geometry");
+    let v = PropertyFile::parse(SP).verify(&inp_xyz_angstrom(SP_INP)).unwrap();
+    assert!(v.charges().mulliken.is_some());
+    assert!(v.dipole().is_some());
+    assert!(v.thermochemistry().is_none(), "SP has no thermochemistry");
 }
 
 #[test]
 fn mayer_charge_read_from_qa() {
     // measured: Mayer's charge field is &QA, not &AtomicCharges.
-    let pf = PropertyFile::parse(OPTFREQ);
-    let mayer = pf.charges().mayer.expect("Opt+Freq has a Mayer block");
+    let v = PropertyFile::parse(OPTFREQ)
+        .verify(&inp_xyz_angstrom(OPTFREQ_INP))
+        .unwrap();
+    let mayer = v.charges().mayer.expect("Opt+Freq has a Mayer block");
     assert_eq!(mayer.charges.len(), 8);
     assert_eq!(mayer.atomic_numbers.len(), 8);
 }
 
 #[test]
-fn charge_order_and_lengths_hold() {
-    let pf = PropertyFile::parse(OPTFREQ);
-    pf.verify_charge_order().expect("ATNO order == geometry");
-    pf.verify_lengths().expect("charges=N, grad=3N, FREQ=3N");
-}
-
-#[test]
-fn scan_geometries_are_per_cycle_not_scan_points() {
+fn scan_geometry_blocks_are_per_cycle_not_scan_points() {
     // measured: a 6-point relaxed scan has 26 $Geometry blocks (opt cycles), NOT 6
-    // scan points. The reader must not present these as scan points.
-    let pf = PropertyFile::parse(SCAN);
-    assert_eq!(pf.geometries().unwrap().len(), 26);
+    // scan points. Structural count on the raw blocks — no verify needed (and the
+    // scan's first geometry is already constrained, so it would not match the input
+    // xyz anyway).
+    let n = PropertyFile::parse(SCAN)
+        .blocks
+        .iter()
+        .filter(|b| b.name == "Geometry")
+        .count();
+    assert_eq!(n, 26);
 }
 
 #[test]
@@ -196,14 +207,14 @@ $Totally_New_ORCA_62_Block
 $End
 ";
     let pf = PropertyFile::parse(text);
-    assert_eq!(pf.unknown_block_names(), vec!["Totally_New_ORCA_62_Block".to_string()]);
+    assert_eq!(
+        pf.unknown_block_names(),
+        vec!["Totally_New_ORCA_62_Block".to_string()]
+    );
 }
 
 #[test]
 fn refuses_a_pathological_size() {
-    // the cap is checked on a path; a tiny synthetic file over the (test) view of
-    // the limit is awkward to fake on disk, so we assert the constant is sane and
-    // that a real fixture is far under it.
     let bytes = std::fs::metadata(
         std::path::Path::new(FIX).join("property_scan_ethane.property.txt"),
     )

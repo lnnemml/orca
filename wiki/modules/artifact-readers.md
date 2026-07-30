@@ -35,6 +35,28 @@ type, `parse::units::Angstrom`, with a **private** field in its **own** module. 
 (`missed_bohr_conversion_fails_loudly`) goes red at ≈1.889× when it happens. Canonical set:
 length Å, energy Eh, frequency cm⁻¹, IR km/mol.
 
+## Typestate — the post-condition is ON the path, not beside it (rule #9)
+
+An earlier shape had `parse()` return a value-bearing handle and left `verify_*`
+as separate methods a caller could simply *not* call — numbers read unchecked, and
+it compiled. Rule #9 says the post-condition must be unavoidable. So the reader is a
+typestate, the same shape as ADR-010's `parse_output` (uncallable without the
+`IndexMap` from a paired `emit_input`):
+
+- `PropertyFile::parse` / `from_path` return an **unverified** handle. It has
+  **no value accessors at all** — no `charges()`, `geometries()`, `final_energy()`.
+  Only `unknown_block_names()` (rule-#10 diagnostics must work even when verification
+  fails) and `verify()`.
+- `verify(reference_angstrom)` runs all three post-conditions and, only on success,
+  returns `Verified` — the **only** type with value accessors.
+- So `PropertyFile::parse(text).charges()` **does not compile**: `charges` exists
+  only on `Verified`, which exists only downstream of a passed `verify`. A caller
+  cannot read a number without having verified it.
+- The **caller supplies the reference** (each job has its own `input.inp`). The
+  reader never reads `input.inp` itself — that would be a hidden cross-module
+  dependency. `results::parse_and_store` extracts the reference from the job's
+  stored `input_content` and passes it in.
+
 ## Post-conditions (rule #9 + #11), errors not warnings
 - **Geometry** — given a known-Å reference (the input xyz), the reader recomputes the first
   `$Geometry` after conversion and asserts max Δ < 1e-4 Å. A missed Bohr→Å fails here, loudly.

@@ -248,7 +248,10 @@ the `[ ]` "Fragment library" item above.
         dipole, thermochemistry (ZPE/H/S/G) — **done** (unit 3.4, `src-tauri/src/parse/property.rs`,
         the template for the other three): two-layer tokenizer, canonical units held by the
         `Angstrom` type (Bohr→Å at the boundary, rule #11), order + geometry post-conditions,
-        unknown blocks surfaced. Not yet wired to the pipeline / `results` schema (later units).
+        unknown blocks surfaced. **Wired end-to-end in unit 3.5**: typestate (`verify()` → `Verified`,
+        accessors only after post-conditions pass), `results` table (v5, per-atom data with element
+        order in JSON), completion hook → `parsed` state, `ResultsCard`. Real Opt+Freq proven
+        (`real_optfreq_job_parses_stores_and_reads_back`).
   - [ ] `.hess` reader → signed frequencies (3N), normal modes (3N×3N), IR intensities
   - [ ] `_trj.xyz` / `.xyz` reader → trajectory frames / final geometry
   - [ ] `orca_2json` over `.gbw` (Rust spawns the binary, ADR-009) → MO energies + occupations,
@@ -271,10 +274,11 @@ the `[ ]` "Fragment library" item above.
       xTB/GOAT `.gbw` (measured, unit 3.2) — a GOAT or xTB-pre-opt job simply has no orbital
       energies/occupations. The results screen must render the MO/HOMO-LUMO panel as absent, not
       crash or show an error, when the source is missing.
-- [ ] Results screen per job: summary card (energy, HOMO/LUMO gap, dipole, imaginary freq warning).
-      **Label the thermochemistry `entropyS` as T·S, not entropy** — measured: the field is T·S in
-      Eh (`entropyS == H − G`), so a card that prints "S" would show a number in the wrong units
-      (the reader already names it `t_times_s_eh`; the UI must match).
+- [~] Results screen per job: summary card. **Minimal card done (unit 3.5)**: final energy,
+      dipole, three charge schemes (atom→value), thermochemistry with the T·S term labelled as
+      T·S not entropy (`t_times_s_eh`; card row "T·S (entropy term)"). Absent sections hidden
+      (GOAT/SP render without crashing). Still to come: HOMO/LUMO gap + imaginary-freq warning
+      (need the `orca_2json` and `.hess` readers).
 - [ ] Optimization trajectory playback in 3Dmol.js (multiframe xyz)
 - [ ] Orbital/density isosurfaces: wrap `orca_plot` (batch mode) → `.cube` → 3Dmol.js volumetric
       rendering; MO picker with energies and occupations

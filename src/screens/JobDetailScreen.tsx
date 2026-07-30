@@ -7,6 +7,7 @@ import { formatEnergy, formatWallTime } from "../format";
 import { ConvergenceDashboard } from "../convergence/ConvergenceDashboard";
 import type { ConvergenceEvent, ConvergencePayload } from "../convergence/types";
 import { OutputSearchPanel } from "./OutputSearchPanel";
+import { ResultsCard } from "./ResultsCard";
 import { OutputViewer, type OutputViewerHandle } from "./OutputViewer";
 import { MoleculeViewer } from "../viewer/MoleculeViewer";
 import { useSceneStore } from "../scene/store";
@@ -203,8 +204,11 @@ export function JobDetailScreen({
         if (e.payload.job_id !== jobId) return;
         setJob((prev) => (prev ? { ...prev, status: e.payload.status } : prev));
         // Reload the full record so error_message / completed_at / results appear.
+        // `parsed` is the terminal success state (results stored); a `completed`
+        // with a parse error also lands here so its message shows.
         if (
           e.payload.status === "completed" ||
+          e.payload.status === "parsed" ||
           e.payload.status === "failed" ||
           e.payload.status === "cancelled"
         ) {
@@ -395,6 +399,8 @@ export function JobDetailScreen({
           {job.error_message}
         </div>
       ) : null}
+
+      {job ? <ResultsCard jobId={jobId} status={job.status} /> : null}
 
       {ensemble ? (
         <div className="ensemble-panel">

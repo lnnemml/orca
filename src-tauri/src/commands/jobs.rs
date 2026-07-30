@@ -95,6 +95,21 @@ pub(crate) fn finalize_job_conn(
     Ok(())
 }
 
+/// Record a **results parse** failure on a job that otherwise completed fine. The
+/// status stays `completed` (the calculation ran; only our parse of it did not) —
+/// this only surfaces the reason in the UI. Distinct from a `failed` calculation.
+pub(crate) fn set_job_parse_error_conn(
+    conn: &Connection,
+    id: &str,
+    message: &str,
+) -> Result<(), AppError> {
+    conn.execute(
+        "UPDATE jobs SET error_message = ?1 WHERE id = ?2",
+        params![message, id],
+    )?;
+    Ok(())
+}
+
 /// Transition a job to `status`, stamping the matching timestamp:
 /// `started_at` on entering `running`, `completed_at` on `completed`/`failed`.
 pub(crate) fn update_job_status_conn(conn: &Connection, id: &str, status: &str) -> Result<(), AppError> {
@@ -106,6 +121,12 @@ pub(crate) fn update_job_status_conn(conn: &Connection, id: &str, status: &str) 
         )?,
         JobStatus::Completed | JobStatus::Failed | JobStatus::Cancelled => conn.execute(
             "UPDATE jobs SET status = ?1, completed_at = datetime('now') WHERE id = ?2",
+            params![status.as_str(), id],
+        )?,
+        // `parsed` is post-`completed`; completed_at is already stamped, so only
+        // the status advances.
+        JobStatus::Parsed => conn.execute(
+            "UPDATE jobs SET status = ?1 WHERE id = ?2",
             params![status.as_str(), id],
         )?,
         JobStatus::Draft | JobStatus::Queued => conn.execute(
@@ -142,6 +163,17 @@ pub fn list_jobs(db: State<'_, DbState>) -> Result<Vec<Job>, AppError> {
 pub fn get_job(db: State<'_, DbState>, id: String) -> Result<Job, AppError> {
     let conn = db.lock()?;
     get_job_conn(&conn, &id)
+}
+
+/// The parsed `.property.txt` results for a job (the full structure, incl. per-atom
+/// arrays with their element order), or `None` if the job has none yet.
+#[tauri::command]
+pub fn read_job_results(
+    db: State<'_, DbState>,
+    id: String,
+) -> Result<Option<crate::results::ParsedResults>, AppError> {
+    let conn = db.lock()?;
+    crate::results::read_job_results(&conn, &id)
 }
 
 #[tauri::command]

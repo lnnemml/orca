@@ -25,6 +25,11 @@ pub enum JobStatus {
     Queued,
     Running,
     Completed,
+    /// Completed AND its `.property.txt` results were parsed, verified, and stored
+    /// (Phase 3). A post-`completed` state: the calculation already succeeded; this
+    /// only says our own parse of it did too. A `completed` job with a parse error
+    /// is a calculation that ran fine but whose results we could not read.
+    Parsed,
     Failed,
     /// Stopped by the user (queued job dropped, or running process killed).
     Cancelled,
@@ -38,6 +43,7 @@ impl JobStatus {
             JobStatus::Queued => "queued",
             JobStatus::Running => "running",
             JobStatus::Completed => "completed",
+            JobStatus::Parsed => "parsed",
             JobStatus::Failed => "failed",
             JobStatus::Cancelled => "cancelled",
         }
@@ -51,6 +57,7 @@ impl JobStatus {
             "queued" => Ok(JobStatus::Queued),
             "running" => Ok(JobStatus::Running),
             "completed" => Ok(JobStatus::Completed),
+            "parsed" => Ok(JobStatus::Parsed),
             "failed" => Ok(JobStatus::Failed),
             "cancelled" => Ok(JobStatus::Cancelled),
             other => Err(AppError::Internal(format!("unknown job status: {other}"))),

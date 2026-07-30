@@ -16,7 +16,9 @@ never runs a binary). The runtime mechanics of running ORCA live in
 ## Files
 
 - `lib.rs` — Tauri builder, setup hook, exit handling, invoke-handler registration.
-- `db.rs` — SQLite open + versioned migrations (v1–v4).
+- `db.rs` — SQLite open + versioned migrations (v1–v5).
+- `results.rs` — store/read parsed `.property.txt` into the `results` table (ADR-012); the
+  completion hook lives in `local_backend`. See `modules/artifact-readers.md`.
 - `error.rs` — `AppError` (thiserror).
 - `sidecar.rs` — `SidecarManager`: spawn/health-poll/kill uvicorn; the version handshake.
 - `commands/{settings,jobs,molecules}.rs` — Tauri command surface (thin wrappers over `*_conn`).
@@ -45,11 +47,27 @@ survives a restart.
   standard xyz), `charge`/`multiplicity` (INTEGER, defaults 0/1), `tags` (comma-separated TEXT,
   default `''`), `created_at`. **Not** linked to `jobs` — no `molecule_id` FK yet (Phase 4.5).
 - **v4** — additive `ALTER TABLE jobs ADD COLUMN scene_json TEXT` (nullable); old jobs carry `NULL`.
-- The two new queue statuses (`queued`, `cancelled`) needed **no migration** — `status` is TEXT.
-- Migration tests assert preservation across each step (`migrate_v1_to_v2_preserves_settings`,
-  `migrate_v2_to_v3_preserves_jobs`, `migrate_v3_to_v4_preserves_jobs`; the version assertions use
-  `SCHEMA_VERSION`, not a literal). Verified against a copy of the real DB: 13 existing jobs
-  preserved across 3→4, `scene_json` NULL on every one.
+- **v5** — `results` table: parsed `.property.txt` per job (Phase 3, ADR-012 + ADR-004). Shape:
+  a few **narrow typed columns** (`final_energy_eh`, `dipole_magnitude_au`, the thermochemistry
+  fields, `parser_version`, `parsed_at`) for the card and future job-list sorting, plus one
+  **`data_json` TEXT** column holding the full parsed structure. `job_id` is the PK (FK →
+  `jobs(id)` ON DELETE CASCADE); one row per job, **upserted idempotently** (`ON CONFLICT(job_id)
+  DO UPDATE`) so re-parsing updates, never duplicates. `create_results_table` is factored out so
+  tests build just this table. Units are in the column names (rule #11); `t_times_s_eh` is **T·S
+  in Eh, not entropy S** (measured `entropyS == H − G`).
+- The queue statuses (`queued`, `cancelled`) and `parsed` needed **no migration** — `status` is TEXT.
+- Migration tests assert preservation across each step (…`migrate_v3_to_v4_preserves_jobs`,
+  `migrate_v4_to_v5_adds_results_and_preserves_jobs`; version assertions use `SCHEMA_VERSION`, not a
+  literal). Verified against a copy of the real DB: 13 existing jobs preserved across 3→4.
+
+**Per-atom data rule (the load-bearing storage invariant).** Per-atom arrays go into `data_json`
+**with the element sequence they were verified against** — charges next to their own
+`elements`/`atomic_numbers`, the gradient next to the `order_elements` of its `$Geometry`. There is
+**no** position-keyed "result atom" table: a DB row outlives the code that knew the order, so a bare
+positional array would strand the atoms it belongs to (exactly ADR-010's concern, at the longest
+horizon). A storage-boundary post-condition (rule #9) reads the row back after writing and asserts
+the per-atom counts and element order survived serialization. Details: `results.rs`,
+`modules/artifact-readers.md`.
 
 **`scene_json` semantics** (ADR-008 #5 + amendment): a versioned `SceneFragment` snapshot written
 **once at create time** — the job's input is immutable, so its snapshot is too (no update path). It
@@ -61,10 +79,22 @@ survives a restart.
 `Job` and `Molecule` mirror their tables 1:1 (`#[derive(Serialize)]`). `from_row` hydrates from a
 row in `COLUMNS` order; `COLUMNS` is the single source of truth for the select list (`Job` gained
 `scene_json` as its 11th column in v4). `JobStatus` = `Draft | Queued | Running | Completed |
-Failed | Cancelled`, serialized to/from lowercase strings on the wire and in the DB
+Parsed | Failed | Cancelled`, serialized to/from lowercase strings on the wire and in the DB
 (`as_str`/`from_db`; the TS `JobStatus` union tracks it in lockstep). State machine: `draft →
-queued → running → completed | failed | cancelled`. Remote states (uploading/syncing) and `parsed`
-are deferred. An unknown status string from the DB → `AppError::Internal` via `from_db`.
+queued → running → completed → parsed | failed | cancelled`. **`parsed` is post-`completed`**
+(Phase 3): the calculation already succeeded; `parsed` only adds that our `.property.txt` parse of
+it succeeded too. The two failure modes are kept distinct — a `failed` job is a calculation that
+failed; a `completed` job with an `error_message` is a calculation that ran fine but whose results
+would not parse (OUR problem, not the run's); and a completed job with no `.property.txt` is
+"nothing to parse", not a failure. Remote states (uploading/syncing) are still deferred. An unknown
+status string from the DB → `AppError::Internal` via `from_db`.
+
+**Completion → parse hook** (`local_backend::parse_results_after_completion`, shared by the live
+finish path and startup reconciliation): once a job is `completed`, read `input.property.txt`,
+`verify` it against the reference geometry extracted from the job's own `input_content` (the reader
+never reads `input.inp`), store + read back, and advance to `parsed`. A parse failure records the
+reason and leaves the job `completed`; a missing artifact leaves it `completed` silently. The
+`read_job_results` command returns the stored structure to the frontend's `ResultsCard`.
 
 ## Errors (`error.rs`)
 

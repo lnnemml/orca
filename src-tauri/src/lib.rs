@@ -6,12 +6,9 @@ mod error;
 mod local_backend;
 mod models;
 mod output_search;
-// The .property.txt artifact reader (ADR-012). Built and tested but not yet wired
-// into the job pipeline (that is a later Phase-3 unit), so its API is dead until
-// then — the allow keeps the build clean without hiding a real unused-code smell.
-#[allow(dead_code)]
 mod parse;
 mod result_extraction;
+mod results;
 mod sidecar;
 mod xtb;
 
@@ -86,6 +83,7 @@ pub fn run() {
             commands::jobs::read_job_output_for_viewer,
             commands::jobs::read_job_ensemble,
             commands::jobs::read_job_convergence,
+            commands::jobs::read_job_results,
             commands::jobs::open_job_folder,
             output_search::search_job_output,
             output_search::get_search_presets,

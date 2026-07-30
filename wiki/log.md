@@ -2586,3 +2586,50 @@ with the determiner named (a gate for the `.hess` reader, not run here).
 "under way" (first reader built, 3 not started — precise); ROADMAP Phase 3 `.property.txt` → `[x]`
 + an entropyS-labelling card item; index count → 44. No SQLite `results` schema, no UI, no three
 other readers — all out of scope per the unit. ADR-002/009/010/012 untouched; cclib not in requirements.
+
+## [2026-07-30] session | Thin vertical slice: parsed results end to end (typestate → results table → completion hook → card)
+
+Unit 3.5 — the first slice that puts per-atom data in permanent storage, so the invariant is
+stricter than "store the numbers": no per-atom array is stored without the element sequence it was
+already verified against.
+
+**Task 1 — typestate (gate).** The reader's post-conditions used to sit *beside* the path (three
+methods a caller could skip). Now `PropertyFile::parse` returns an **unverified** handle with **no
+value accessors** — only `unknown_block_names()` and `verify(reference)`. `verify` runs all three
+post-conditions and returns `Verified`, the only type with `charges()`/`geometries()`/… So
+`parse(text).charges()` does not compile. The caller supplies the reference (each job's own
+`input.inp`); the reader never reads `input.inp` (no hidden cross-module dep). Removed the blanket
+`#[allow(dead_code)]` on `mod parse`; cleaned the real unused that surfaced (`RawProp.ptype`/`dim` +
+their regexes, an unused `first_geometry` delegate, `geometry_block_count`) rather than silencing.
+
+**Task 2 — `results` table (schema v5).** Narrow typed columns (final energy, dipole magnitude,
+thermochemistry, `parser_version`, `parsed_at`) for the card + sorting; one `data_json` column with
+the full structure. Per-atom arrays live in JSON **with their element order** (charges next to
+`elements`/`atomic_numbers`, gradient next to its `$Geometry` `order_elements`) — **no
+position-keyed atom table** (ADR-010, longest horizon). Idempotent upsert on `job_id`. Units in
+column names (rule #11); `t_times_s_eh` is **T·S in Eh, not entropy S**.
+
+**Task 3 — completion hook.** `local_backend::parse_results_after_completion` (live finish +
+reconcile): read `.property.txt`, verify against the reference from `input_content`, store, read
+back, advance to `parsed`. Two failure modes kept distinct: calc failed → `failed`; calc fine but
+parse failed → stays `completed`, reason recorded (OUR problem); no `.property.txt` → "nothing to
+parse", not a failure. **Storage post-condition (rule #9):** read the row back and assert per-atom
+counts + element order survived serialization. New `JobStatus::Parsed` (post-`completed`);
+`read_job_results` command.
+
+**Task 4 — minimal card.** `ResultsCard.tsx`: final energy, dipole, three charge schemes
+(atom→value, keyed by stored element order), thermochemistry with **T·S labelled as T·S**, not
+entropy. Absent sections hidden — GOAT/SP render without crashing (measured: GOAT has no
+charges/dipole/thermo). Unknown blocks shown as a small line, not an error.
+
+**Proven on real data:** `real_optfreq_job_parses_stores_and_reads_back` (`#[ignore]`, ran green) —
+a real ethane Opt+Freq job dir → parsed → stored → read back: E = −79.79185137607134 Eh, 8 Mulliken
+charges (C ≈ −0.412, H ≈ +0.137), `t_times_s == H − G`. Tests: Rust 93 + 1 ignored real-data;
+frontend 301; `tsc` clean; no warnings. Migration v4→v5 covered by
+`migrate_v4_to_v5_adds_results_and_preserves_jobs`.
+
+Out of scope (untouched): the other three readers, `results`-schema for spectra/orbitals, full
+results screen, trajectory/orbitals/spectra/export, the normal-mode determiner. ADR-002/009/010/012
+and the proposal untouched; cclib still not in requirements. **Wiki:** `artifact-readers.md`
++typestate section; `tauri-core.md` +v5/`results`/`parsed`/hook/per-atom rule; ROADMAP Phase 3
+`.property.txt` wired + card `[~]`; index unchanged (44 — no new page).

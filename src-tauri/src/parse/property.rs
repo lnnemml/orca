@@ -12,10 +12,12 @@
 //!    name. Every block it sees is kept, including ones it has no accessor for —
 //!    so a new block in ORCA 6.2 becomes *visible* ([`PropertyFile::unknown_block_names`]),
 //!    not silently dropped (domain rule #10).
-//! 2. **Typed accessors** on top ([`PropertyFile::geometries`], [`PropertyFile::charges`],
-//!    …) that interpret known blocks and — crucially — **convert to canonical
-//!    units at this boundary** (rule #11). Bohr coordinates become [`Angstrom`]
-//!    and never leave this layer as bare `f64`.
+//! 2. **Typed accessors** on top ([`Verified::geometries`], [`Verified::charges`], …)
+//!    that interpret known blocks and — crucially — **convert to canonical units at
+//!    this boundary** (rule #11). Bohr coordinates become [`Angstrom`] and never
+//!    leave this layer as bare `f64`. The accessors live on [`Verified`], not
+//!    [`PropertyFile`], so a value cannot be read before the post-conditions pass
+//!    ([`PropertyFile::verify`]) — rule #9, the post-condition is on the path.
 //!
 //! # Units (all measured — `wiki/orca/parse-sources.md`)
 //! `$Geometry` is **Bohr** → Å here; energies **Eh**; dipole **a.u.**; gradient
@@ -45,24 +47,21 @@ const MAX_BYTES: u64 = 16 * 1024 * 1024;
 /// shows up as ≈1.889×, far above this.
 const GEOMETRY_TOL_ANGSTROM: f64 = 1e-4;
 
-static TYPE_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"&Type\s+"([^"]+)""#).unwrap());
 static UNITS_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"&Units\s+"([^"]+)""#).unwrap());
-static DIM_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"&Dim\s*\((\d+),(\d+)\)").unwrap());
 
 // --------------------------------------------------------------------------- //
 // Layer 1 — generic tokenizer                                                   //
 // --------------------------------------------------------------------------- //
 
-/// A `&prop` entry as seen by the tokenizer, uninterpreted.
+/// A `&prop` entry as seen by the tokenizer, uninterpreted. Only `units` is kept
+/// from the `[…]` bracket — the typed layer interprets values by field name + data
+/// shape, and checks array lengths against N rather than trusting `&Dim` (rule
+/// #11). A future reader that needs `&Type`/`&Dim` adds them back with a consumer.
 #[derive(Clone, Debug)]
 pub struct RawProp {
     pub name: String,
-    pub ptype: Option<String>,
     pub units: Option<String>,
-    pub dim: Option<(usize, usize)>,
     /// The first token after `]` (or after the name when there is no bracket) — a
     /// scalar value like `8`, `-79.79…`, `true`, `"6.1.0"`.
     pub inline: Option<String>,
@@ -239,9 +238,29 @@ impl PropertyFile {
         PropertyFile { blocks }
     }
 
+    /// Run the three post-conditions and, only if all pass, hand back a
+    /// [`Verified`] — the **only** type with value accessors. Rule #9 says the
+    /// post-condition lives *on the path*, not beside it: an unverified
+    /// [`PropertyFile`] has no `charges()`/`energy()`/`geometries()` at all (not
+    /// "present but warns"), so a caller physically cannot read a number without
+    /// having verified it first — the same shape as ADR-010's `parse_output`,
+    /// which cannot be called without the `IndexMap` from a paired `emit_input`.
+    ///
+    /// The **caller supplies the reference** (each job has its own `input.inp`);
+    /// the reader never reads `input.inp` itself — that would be a hidden
+    /// cross-module dependency.
+    pub fn verify(self, reference_angstrom: &[[f64; 3]]) -> Result<Verified, ParseError> {
+        self.check_geometry(reference_angstrom)?;
+        self.check_charge_order()?;
+        self.check_lengths()?;
+        Ok(Verified(self))
+    }
+
     /// Block names the typed layer neither interprets nor deliberately ignores —
     /// deduped, in first-seen order. Empty is the healthy case; a non-empty result
-    /// means ORCA emitted something new that deserves a look (rule #10).
+    /// means ORCA emitted something new that deserves a look (rule #10). Stays on
+    /// the **unverified** handle so rule-#10 diagnostics work even when
+    /// verification fails.
     pub fn unknown_block_names(&self) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
         for b in &self.blocks {
@@ -262,7 +281,7 @@ impl PropertyFile {
     /// i.e. one per optimization cycle — NOT scan points.** (Measured: a 6-point
     /// scan has 26 of them.) Per-scan-point data lives in `.relaxscanact.dat`, a
     /// different reader.
-    pub fn geometries(&self) -> Result<Vec<Geometry>, ParseError> {
+    fn geometries(&self) -> Result<Vec<Geometry>, ParseError> {
         self.blocks
             .iter()
             .filter(|b| b.name == "Geometry")
@@ -271,7 +290,7 @@ impl PropertyFile {
     }
 
     /// The first `$Geometry` (the starting geometry — what an input xyz matches).
-    pub fn first_geometry(&self) -> Result<Geometry, ParseError> {
+    fn first_geometry(&self) -> Result<Geometry, ParseError> {
         self.blocks
             .iter()
             .find(|b| b.name == "Geometry")
@@ -317,7 +336,7 @@ impl PropertyFile {
 
     /// Converged final single-point energy in Eh — the **last** `$Single_Point_Data`
     /// `&FinalEnergy` (an optimization prints one per cycle).
-    pub fn final_single_point_energy(&self) -> Option<f64> {
+    fn final_single_point_energy(&self) -> Option<f64> {
         self.last_block("Single_Point_Data")?
             .prop("FinalEnergy")?
             .scalar_f64()
@@ -328,7 +347,7 @@ impl PropertyFile {
     /// Atomic charges from all three schemes (each `None` if absent — e.g. GOAT).
     /// Measured field names differ: Mulliken/Loewdin charge = `&AtomicCharges`,
     /// **Mayer charge = `&QA`** (its `&AtomicCharges` does not exist).
-    pub fn charges(&self) -> Charges {
+    fn charges(&self) -> Charges {
         Charges {
             mulliken: self.population(PopulationScheme::Mulliken),
             loewdin: self.population(PopulationScheme::Loewdin),
@@ -350,7 +369,7 @@ impl PropertyFile {
 
     // ---- dipole (a.u.) ---------------------------------------------------- //
 
-    pub fn dipole(&self) -> Option<Dipole> {
+    fn dipole(&self) -> Option<Dipole> {
         let b = self.last_block("SCF_Dipole_Moment")?;
         let magnitude_au = b.prop("dipoleMagnitude")?.scalar_f64()?;
         let total = b.prop("dipoleTotal").map(|p| p.numbers()).unwrap_or_default();
@@ -371,7 +390,7 @@ impl PropertyFile {
     /// The **last** `$SCF_Nuc_Gradient`, or `None`. The array is bare positional;
     /// its atom order is the `$Geometry` with the same `geometry_index` — fetch it
     /// via [`PropertyFile::geometry_for`].
-    pub fn last_gradient(&self) -> Option<Gradient> {
+    fn last_gradient(&self) -> Option<Gradient> {
         let b = self.last_block("SCF_Nuc_Gradient")?;
         Some(Gradient {
             geometry_index: b.geometry_index.unwrap_or(0),
@@ -381,7 +400,7 @@ impl PropertyFile {
 
     /// The `$Geometry` whose `&GeometryIndex` matches — the order source for a
     /// bare positional array (gradient). Bohr → Å.
-    pub fn geometry_for(&self, geometry_index: u32) -> Option<Geometry> {
+    fn geometry_for(&self, geometry_index: u32) -> Option<Geometry> {
         self.blocks
             .iter()
             .find(|b| b.name == "Geometry" && b.geometry_index == Some(geometry_index))
@@ -390,7 +409,7 @@ impl PropertyFile {
 
     // ---- thermochemistry (Eh) --------------------------------------------- //
 
-    pub fn thermochemistry(&self) -> Option<Thermochemistry> {
+    fn thermochemistry(&self) -> Option<Thermochemistry> {
         let b = self.last_block("THERMOCHEMISTRY_Energies")?;
         let f = |name: &str| b.prop(name).and_then(|p| p.scalar_f64());
         Some(Thermochemistry {
@@ -411,7 +430,7 @@ impl PropertyFile {
     /// matches a known Å reference (the input xyz) to < 1e-4 Å. A missed Bohr→Å
     /// conversion fails here at ≈1.889×, loudly, instead of animating a plausible
     /// wrong molecule. This is an **error**, not a warning.
-    pub fn verify_geometry(&self, reference_angstrom: &[[f64; 3]]) -> Result<(), ParseError> {
+    fn check_geometry(&self, reference_angstrom: &[[f64; 3]]) -> Result<(), ParseError> {
         let g = self.first_geometry()?;
         verify_geometry_atoms(&g.atoms, reference_angstrom)
     }
@@ -419,7 +438,7 @@ impl PropertyFile {
     /// The element order of each present population block's `&ATNO` equals the
     /// first geometry's element order — else the charges would sit on the wrong
     /// atoms. Error on mismatch.
-    pub fn verify_charge_order(&self) -> Result<(), ParseError> {
+    fn check_charge_order(&self) -> Result<(), ParseError> {
         let geom = self.first_geometry()?;
         let z_geom: Vec<u8> = geom.atoms.iter().map(|a| a.z).collect();
         let ch = self.charges();
@@ -445,7 +464,7 @@ impl PropertyFile {
 
     /// Array lengths against N (from the first geometry), **measured not trusted**:
     /// charges = N, `&ATNO` = N, gradient = 3N, thermochemistry `&FREQ` = 3N.
-    pub fn verify_lengths(&self) -> Result<(), ParseError> {
+    fn check_lengths(&self) -> Result<(), ParseError> {
         let n = self.first_geometry()?.atoms.len();
         let check = |field: &str, got: usize, expected: usize| {
             if got == expected {
@@ -476,6 +495,49 @@ impl PropertyFile {
             }
         }
         Ok(())
+    }
+}
+
+/// A `.property.txt` whose three post-conditions passed — the **only** type that
+/// exposes values. You cannot construct one except via [`PropertyFile::verify`],
+/// so every number read below has been checked (geometry ↔ reference, `&ATNO`
+/// order ↔ geometry, array lengths ↔ N).
+#[derive(Clone, Debug)]
+pub struct Verified(PropertyFile);
+
+impl Verified {
+    /// Every `$Geometry` (Bohr → Å) — one per **optimization cycle**, not scan points.
+    pub fn geometries(&self) -> Result<Vec<Geometry>, ParseError> {
+        self.0.geometries()
+    }
+    /// Converged final single-point energy, Eh.
+    pub fn final_single_point_energy(&self) -> Option<f64> {
+        self.0.final_single_point_energy()
+    }
+    /// Atomic charges from all three schemes (each `None` if the block is absent).
+    pub fn charges(&self) -> Charges {
+        self.0.charges()
+    }
+    /// Dipole (a.u.), or `None`.
+    pub fn dipole(&self) -> Option<Dipole> {
+        self.0.dipole()
+    }
+    /// The last SCF gradient (Eh/Bohr, bare positional), or `None`.
+    pub fn last_gradient(&self) -> Option<Gradient> {
+        self.0.last_gradient()
+    }
+    /// The `$Geometry` (Bohr → Å) whose `&GeometryIndex` matches — the order source
+    /// for a bare positional gradient.
+    pub fn geometry_for(&self, geometry_index: u32) -> Option<Geometry> {
+        self.0.geometry_for(geometry_index)
+    }
+    /// Thermochemistry (Eh), or `None`.
+    pub fn thermochemistry(&self) -> Option<Thermochemistry> {
+        self.0.thermochemistry()
+    }
+    /// Diagnostic: blocks with no accessor (rule #10). Also on the unverified handle.
+    pub fn unknown_block_names(&self) -> Vec<String> {
+        self.0.unknown_block_names()
     }
 }
 
@@ -512,14 +574,7 @@ fn parse_prop_line(rest: &str) -> RawProp {
         _ => (None, after_name),
     };
 
-    let ptype = bracket.and_then(|b| TYPE_RE.captures(b)).map(|c| c[1].to_string());
     let units = bracket.and_then(|b| UNITS_RE.captures(b)).map(|c| c[1].to_string());
-    let dim = bracket.and_then(|b| DIM_RE.captures(b)).map(|c| {
-        (
-            c[1].parse::<usize>().unwrap_or(0),
-            c[2].parse::<usize>().unwrap_or(0),
-        )
-    });
 
     // inline scalar: the first token of the tail that is not the start of a quoted
     // trailing comment (e.g. `"No Van der Waals correction"`).
@@ -531,9 +586,7 @@ fn parse_prop_line(rest: &str) -> RawProp {
 
     RawProp {
         name,
-        ptype,
         units,
-        dim,
         inline,
         data_lines: Vec::new(),
     }

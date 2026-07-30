@@ -22,8 +22,8 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::commands::jobs::{
-    finalize_job_conn, get_job_conn, set_job_dir_conn, set_job_results_conn,
-    update_job_status_conn,
+    finalize_job_conn, get_job_conn, set_job_dir_conn, set_job_parse_error_conn,
+    set_job_results_conn, update_job_status_conn,
 };
 use crate::commands::settings::DbState;
 use crate::convergence::{ConvergenceEvent, ConvergenceParser};
@@ -526,6 +526,31 @@ pub fn is_paused(app: &AppHandle) -> bool {
 /// results); otherwise mark it failed. `queued` jobs are left untouched — the
 /// startup `try_start_next` picks them back up. Best-effort: DB errors are
 /// swallowed so a bad row can't block launch.
+/// Parse + store a completed job's structured `.property.txt` results and return
+/// the resulting status: `parsed` on success, `completed` on a parse failure (with
+/// the reason recorded — the calculation ran fine, only our parse did not) or when
+/// there is nothing to parse. Shared by the live finish path and reconciliation.
+fn parse_results_after_completion(conn: &Connection, job_id: &str) -> JobStatus {
+    let job = match get_job_conn(conn, job_id) {
+        Ok(j) => j,
+        Err(_) => return JobStatus::Completed,
+    };
+    let Some(dir) = job.job_dir.as_deref() else {
+        return JobStatus::Completed;
+    };
+    match crate::results::parse_and_store(conn, job_id, dir, &job.input_content) {
+        crate::results::ParseOutcome::Parsed => {
+            let _ = update_job_status_conn(conn, job_id, "parsed");
+            JobStatus::Parsed
+        }
+        crate::results::ParseOutcome::ParseFailed(msg) => {
+            let _ = set_job_parse_error_conn(conn, job_id, &format!("results parse failed: {msg}"));
+            JobStatus::Completed
+        }
+        crate::results::ParseOutcome::NoArtifact => JobStatus::Completed,
+    }
+}
+
 pub fn reconcile_on_startup(conn: &Connection) {
     let stale: Vec<(String, Option<String>)> = {
         let mut stmt = match conn.prepare("SELECT id, job_dir FROM jobs WHERE status = 'running'") {
@@ -575,6 +600,8 @@ pub fn reconcile_on_startup(conn: &Connection) {
                     let _ = set_job_results_conn(conn, &id, energy, wall_time);
                 }
             }
+            // Same parse+store as the live finish path (idempotent on job id).
+            let _ = parse_results_after_completion(conn, &id);
         }
     }
 }
@@ -655,7 +682,7 @@ fn drive_job(
 
     // A user cancel takes precedence over the (aborted) exit code: don't dump a
     // stderr sheet as if it failed. Otherwise: completion = marker + banner.
-    let (status, error_message) = if was_cancelled {
+    let (mut status, error_message) = if was_cancelled {
         (JobStatus::Cancelled, Some("Cancelled by user.".to_string()))
     } else {
         detect_completion(&out_path, &job_dir.join("stderr.log"), exit_code)
@@ -678,6 +705,18 @@ fn drive_job(
                 if let Ok(conn) = db.lock() {
                     let _ = set_job_results_conn(&conn, &job_id, energy, wall_time);
                 }
+            }
+        }
+    }
+
+    // Parse + store the structured `.property.txt` results (ADR-012), then advance
+    // to `parsed`. A parse failure is OUR problem, not the calculation's: the job
+    // stays `completed` and the reason is recorded (distinct from a `failed` run);
+    // a missing artifact is "nothing to parse", not a failure.
+    if status == JobStatus::Completed {
+        if let Some(db) = app.try_state::<DbState>() {
+            if let Ok(conn) = db.lock() {
+                status = parse_results_after_completion(&conn, &job_id);
             }
         }
     }

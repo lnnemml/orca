@@ -18,7 +18,10 @@ use crate::error::AppError;
 /// - v4: `jobs.scene_json` — SceneFragment snapshot, written once at create time
 ///   (Phase 2.5, ADR-008 #5). A nullable annotation over `input_content`, which
 ///   stays authoritative for geometry.
-const SCHEMA_VERSION: i64 = 4;
+/// - v5: `results` table — parsed `.property.txt` (Phase 3, ADR-012). Narrow typed
+///   columns for the card + one JSON column with per-atom arrays stored WITH their
+///   element order. One row per job (`job_id` PK), upserted idempotently.
+const SCHEMA_VERSION: i64 = 5;
 
 /// Open (creating if needed) `orcastudio.db` under `data_dir` and migrate it to
 /// the current schema.
@@ -104,12 +107,44 @@ fn migrate(conn: &Connection) -> Result<(), AppError> {
         version = 4;
     }
 
+    // --- v4 -> v5: results table (parsed .property.txt, Phase 3, ADR-012). ---
+    // Per-atom arrays live in `data_json` WITH their element order, never a
+    // position-keyed atom table (ADR-010). Purely additive; jobs parsed later.
+    if version < 5 {
+        create_results_table(conn)?;
+        version = 5;
+    }
+
     // Persist the resulting version so subsequent runs skip completed steps.
     conn.execute(
         "UPDATE settings SET value = ?1 WHERE key = 'schema_version'",
         rusqlite::params![version.to_string()],
     )?;
     debug_assert_eq!(version, SCHEMA_VERSION);
+    Ok(())
+}
+
+/// Create the `results` table (schema v5). Factored out so tests can build just
+/// this table on an in-memory DB. Narrow typed columns carry what the card shows
+/// and the job list will sort by; `data_json` carries the full parsed structure
+/// including per-atom arrays with their element order. Units are in the column
+/// names (rule #11) — notably `t_times_s_eh` is **T·S in Eh**, not entropy S.
+pub(crate) fn create_results_table(conn: &Connection) -> Result<(), AppError> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS results (
+            job_id              TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+            final_energy_eh     REAL,
+            dipole_magnitude_au REAL,
+            zpe_eh              REAL,
+            inner_energy_u_eh   REAL,
+            enthalpy_h_eh       REAL,
+            t_times_s_eh        REAL,
+            free_energy_g_eh    REAL,
+            data_json           TEXT NOT NULL,
+            parser_version      INTEGER NOT NULL,
+            parsed_at           TEXT NOT NULL DEFAULT (datetime('now'))
+        );",
+    )?;
     Ok(())
 }
 
@@ -277,5 +312,41 @@ mod tests {
             .expect("job preserved with a scene_json column");
         assert_eq!(title, "water opt");
         assert_eq!(scene_json, None);
+    }
+
+    #[test]
+    fn migrate_v4_to_v5_adds_results_and_preserves_jobs() {
+        // A Phase 2.5 (v4) database: jobs (with scene_json) + a completed job, no
+        // results table.
+        let conn = Connection::open_in_memory().expect("open in-memory db");
+        conn.execute_batch(
+            "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO settings (key, value) VALUES ('schema_version', '4');
+             CREATE TABLE jobs (
+                id TEXT PRIMARY KEY, title TEXT NOT NULL, input_content TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'draft', job_dir TEXT, energy REAL,
+                wall_time REAL, error_message TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                started_at TEXT, completed_at TEXT, scene_json TEXT
+             );
+             INSERT INTO jobs (id, title, input_content, status)
+                VALUES ('j1', 'ethane', '! r2SCAN-3c Opt Freq', 'completed');",
+        )
+        .expect("seed v4 schema");
+
+        migrate(&conn).expect("v4 -> v5 migration should succeed");
+        assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
+
+        // Existing completed job untouched.
+        let status: String = conn
+            .query_row("SELECT status FROM jobs WHERE id = 'j1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(status, "completed");
+
+        // The results table now exists and is empty.
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM results", [], |r| r.get(0))
+            .expect("results table should exist");
+        assert_eq!(n, 0);
     }
 }
