@@ -86,6 +86,19 @@ npm run tauri build
    both "avoid mixing P+E cores" and "hyperthreading always hurts" turned out to be
    false. Default preset is E-cores only (machine stays usable); max-throughput uses
    all physical cores. See `wiki/orca/performance.md`.
+9. **Every process boundary has a post-condition that checks the result in OUR terms** —
+   never trust a third party's "finished successfully". Recompute what matters and verify
+   it: `measured` is re-derived from the returned geometry, `max_static_displacement` is
+   checked, atom count *and* order are asserted invariant across a round-trip. A binary that
+   exits 0 having done the wrong thing is the common case, not the edge case. (Empirical
+   complement to the type invariants of ADR-010 — every phase-2.5 defect was caught by a
+   post-condition or a probe, not by a type.)
+10. **No fact about a third-party program's behaviour is accepted from memory or docs —
+    only from a run, recorded in the wiki.** The manual is wrong often enough that a claim
+    only counts once a real invocation confirms it. Settled this way, each with a wiki page:
+    ORCA's `%geom` index base is 0-based while xtb's `$constrain` is 1-based (opposite, both
+    verified — `wiki/orca/constraints.md`, `wiki/orca/xtb.md`); an empty `--input` hangs xtb
+    (`debugging/006`); `mask` silently overrides `indices` in the geometry kernel.
 
 ## Wiki system
 

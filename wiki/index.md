@@ -14,7 +14,10 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 - [adr-007-reaction-modeling.md](architecture/adr-007-reaction-modeling.md) — from molecular modeling to reaction modeling: domain objects, geometry editor, reaction coordinate workflows
 - [adr-008-scene-fragment-model.md](architecture/adr-008-scene-fragment-model.md) — Scene / SceneFragment model for multi-molecule geometry: one flat merged xyz, one 3Dmol model, `scene_json` snapshot
 - [adr-009-process-orchestration.md](architecture/adr-009-process-orchestration.md) — running external binaries belongs to Rust, not the sidecar (complements ADR-002/003; the xTB precedent)
+- [adr-010-editor-identity-state.md](architecture/adr-010-editor-identity-state.md) — editor identity & state model: `AtomId`, branded `OrcaIndex`/`AseIndex`, `IndexMap`, `emit_input`/`parse_output` paired, op-log fold; refines ADR-008 (three corrections; sidecar stays positional, Rust maps)
+- [adr-011-editor-graphics-stack.md](architecture/adr-011-editor-graphics-stack.md) — editor graphics stack (wgpu→WASM→WebGL2/WebGPU, impostors, GPU picking): **proposed/deferred**, gated on a spike with verifiable exit criteria; until then 3Dmol stays a dumb renderer
 - [prior-art.md](architecture/prior-art.md) — how other tools (Avogadro 2, IQmol, Gabedit, Chemcraft, WebMO, GaussView) handle geometry, and what OrcaStudio does differently (scene-derived mask, unbroken index space)
+- [proposals/editor-architecture-2026-07-30.md](architecture/proposals/editor-architecture-2026-07-30.md) — author's design proposal for the editor architecture (source document for ADR-010/011; includes §11 rejected alternatives). Input, not a decision — not edited.
 
 ## Modules
 
@@ -57,4 +60,4 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 
 ---
 
-*Page count: 38. Last structural update: 2026-07-29 (wiki lint after phase 2.5: +adr-009-process-orchestration, +chemistry/burgi-dunitz).*
+*Page count: 41. Last structural update: 2026-07-30 (editor planning/ingest: +adr-010-editor-identity-state, +adr-011-editor-graphics-stack, +proposals/editor-architecture-2026-07-30 — the last had been an index orphan since commit 67c763c).*

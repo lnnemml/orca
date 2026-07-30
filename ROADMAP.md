@@ -49,6 +49,11 @@ and sees the final energy in the job list — without touching a terminal.
 
 **Goal:** working with structures and building inputs becomes visual.
 
+> **Note on labels:** the "Phase 2.6" / "Phase 2.7" tags inside the completed items below are
+> *historical* — they mark the order work landed within Phase 2, not future phases. (The former
+> `## Phase 2.6 — Geometry-editor backlog` **section** was renamed and moved to
+> `## Phase 4.2 — Geometry editor completion`, after Phase 4.)
+
 - [x] 3Dmol.js viewer component: load xyz, ball-and-stick — **done** (Phase 2.1: `MoleculeViewer`
       + live xyz preview on New Job, WebKitGTK WebGL fix). Licorice toggle + atom picking → Phase 3.
 - [x] Import: xyz file, SMILES → 3D via sidecar (RDKit ETKDG + MMFF cleanup) — **done**
@@ -196,7 +201,7 @@ re-optimisation of the lowest 3–4 stay in Phase 4.5 (the scientific pipeline);
         bounding-box placement (`placeFragment`, coarse ≥3.5 Å gap) exist and add a fragment;
         what is NOT built is adding a reagent *at a specified distance/angle/dihedral* in one
         step — today it is added coarsely, then positioned via the separate edit mode. Left
-        `[ ]` until the two are one guided action; carried to the Phase 2.6 backlog below.
+        `[ ]` until the two are one guided action; carried to `Phase 4.2 — Geometry editor completion`.
 - [x] Constraint manager: list of active constraints, delete, export to
       ORCA `%geom Constraints ... end` block in the input
       — constraints reference cross-fragment atom pairs
@@ -226,21 +231,10 @@ restorable on a job clone. **Done-when met:** the author can build a TS guess (B
 Bürgi-Dunitz approach to a carbonyl), constrain the distance, xTB pre-optimize, and iterate
 the angle on a cloned job without rebuilding the scene by hand.
 
-**Deferred out of 2.5 (carried to Phase 2.6):** *guided fragment placement* — adding a reagent
+**Deferred out of 2.5 (carried to `Phase 4.2 — Geometry editor completion`):** *guided fragment placement* — adding a reagent
 *at a specified distance/angle/dihedral* in one step. The pieces exist (reagent library +
 bounding-box placement + edit mode); what is missing is the single add-at-geometry action. See
 the `[ ]` "Fragment library" item above.
-
----
-
-## Phase 2.6 — Geometry-editor backlog (carried from 2.5)
-
-Small follow-ups deferred out of Phase 2.5; pick up before or alongside Phase 3 as needed.
-
-- [ ] Guided fragment placement: add a reagent *at a specified distance/angle/dihedral* in one
-      step (today: coarse bounding-box add, then position via edit mode). Reuses
-      `placeFragment` + the edit-mode `set-internal` path — the gap is the unified UI action.
-- [ ] Constraint "toggle on/off" (currently delete + re-add covers it — see the 2.5.4b note).
 
 ---
 
@@ -250,6 +244,18 @@ Small follow-ups deferred out of Phase 2.5; pick up before or alongside Phase 3 
 
 - [ ] Sidecar: full cclib parse endpoint → structured JSON (energies, orbitals, frequencies,
       intensities, charges, dipole, TD-DFT states); stored in SQLite per job
+- [ ] **The per-atom seam.** Every per-atom array the sidecar returns (frequencies + normal
+      modes, charges, the trajectory) passes through **one explicit mapping function at the
+      boundary**, in Rust. Today that function is the identity (the sidecar array is already in
+      merged-xyz order); after ADR-010 lands, **only that function changes**, not the dashboard.
+      This is where the ADR-010 `IndexMap<AseIndex>` boundary (correction (i): the sidecar stays
+      positional, Rust maps) is first exercised — so the dashboard is written against the mapped
+      result from day one, never against raw positional indices.
+- [ ] **Unfixed-stereocenter flag on SMILES import.** RDKit's ETKDG picks an enantiomer
+      arbitrarily for a SMILES with no stereo descriptors; for stereoselectivity work that is a
+      *silent substitution of the compound*, so the import must mark undefined stereocenters
+      rather than hide the choice. Small, and it does **not** wait for Phase 4.2 — it belongs
+      wherever an imported structure is first shown.
 - [ ] Results screen per job: summary card (energy, HOMO/LUMO gap, dipole, imaginary freq warning)
 - [ ] Optimization trajectory playback in 3Dmol.js (multiframe xyz)
 - [ ] Orbital/density isosurfaces: wrap `orca_plot` (batch mode) → `.cube` → 3Dmol.js volumetric
@@ -283,11 +289,78 @@ answers "how do I set up CPCM for water" in one search.
 
 ---
 
+## Phase 4.2 — Geometry editor completion
+
+**Goal:** finish the geometry editor on the identity and state model of
+[ADR-010](wiki/architecture/adr-010-editor-identity-state.md) — not as a list of ergonomic
+gaps, but as a small set of typed operations over one authoritative core. The renderer stays
+3Dmol (a dumb renderer) until the [ADR-011](wiki/architecture/adr-011-editor-graphics-stack.md)
+spike passes; this phase touches no pixels of its own except where 3Dmol is fed a new table.
+Estimate deferred until stage 1 is scoped.
+
+**Stage 1 — identity core** (the largest part of the win; touches no pixels)
+
+- [ ] `AtomId` (opaque, stable), branded `OrcaIndex` / `AseIndex` (mixing does not compile),
+      and `IndexMap` as the only conversion — extracted so atom identity is one thing across the
+      codebase. Per ADR-010 correction (i), the sidecar stays positional and Rust builds the
+      `IndexMap` at the boundary (the same seam Phase 3 already exercises).
+- [ ] `emit_input` / `parse_output` paired: `parse_output` cannot be called without the mapping
+      produced by the matching `emit_input` (type-level invariant). Property test: round-trip
+      `set(AtomId) → emit → parse → set(AtomId)` is identity.
+
+**Stage 2 — operation log + ephemeral layer**
+
+- [ ] State becomes a fold over a log of typed operations; undo/redo fall out of the log.
+- [ ] 3Dmol becomes a **dumb renderer**: it is handed geometry + an `AtomId → viewer index`
+      table and is never a source of truth (ADR-010 / ADR-011).
+- [ ] The xyz block in Monaco becomes a **generated read-only projection** of the Scene.
+      **Cost to preserve:** today the author edits coordinates directly in Monaco — making the
+      block read-only removes that path, so it must be *replaced, not deleted*, by a
+      "paste xyz → import as a fragment" action. The capability moves; it does not disappear.
+
+**Stage 3 — operations over the core** (each item is an `Op`, not new state)
+
+- [ ] Rigid-body drag of a fragment. **Risk — the first *continuous* interaction in the app:**
+      during the drag only the viewer moves (ephemeral layer, 60 fps, not logged); the Scene and
+      the input text update **once on release**, as a single step with a single Undo.
+      Post-condition: pairwise distances *within the mask* are unchanged by the drag (rigid-body
+      move, verified in our terms — domain rule #9).
+- [ ] Rotation of a fragment about its approach axis (an `Op` over the mask).
+- [ ] vdW-overlap detection after a move (warn on clashes the coarse placement can produce).
+- [ ] Undo deeper than one step (falls out of the operation log; today edit mode is one-step).
+- [ ] Ring torsions (rotate a torsion whose bond is inside a ring) — an `Op` over a
+      graph-derived mask, building on the 2.5.3 bond-graph split.
+
+**Carried from Phase 2.5** (unchanged, still open)
+
+- [ ] Guided fragment placement: add a reagent *at a specified distance/angle/dihedral* in one
+      step (today: coarse bounding-box add, then position via edit mode). Reuses
+      `placeFragment` + the edit-mode `set-internal` path — the gap is the unified UI action.
+- [ ] Constraint "toggle on/off" (currently delete + re-add covers it — see the 2.5.4b note).
+
+**Done when:** the editor's state is a fold over a typed operation log, 3Dmol is a dumb renderer
+fed an `AtomId` table, a fragment can be dragged rigidly with one Undo, and no bare integer
+crosses a boundary the app owns.
+
+---
+
 ## Phase 4.5 — Reaction modeling (≈ 3–5 evenings)
 
 **Goal:** OrcaStudio becomes a reaction mechanism workstation. The researcher defines a
 reaction, explores pathways via native ORCA scans, and compares electronic energy
 barriers — the full computational experiment lifecycle. See ADR-007.
+
+**Depends on Phase 4.2** — the reaction-center and scan setup UIs build on the completed
+geometry editor (typed operations, one authoritative core); product-from-reactant derivation is
+ADR-010's `ReactionPath` (`fold(reactant, transform)`, atom mapping by construction).
+
+> **Open question — settle before any symmetry work.** ORCA may reorder atoms in its output when
+> symmetry is active. Before relying on symmetry (`! UseSym` or point-group detection) anywhere
+> in this phase, run a real `! UseSym` job and **check whether the output atom order matches the
+> input order** (domain rule #10 — verify by a run, not from docs). If it reorders, that is a
+> direct risk to [ADR-008](wiki/architecture/adr-008-scene-fragment-model.md) (one index space,
+> merged-xyz order) and to ADR-010's `IndexMap`, and must be handled at the `parse_output`
+> boundary before scans are trusted.
 
 - [ ] Conformer ensemble → reaction-center pipeline: **Boltzmann weighting** of the
       GOAT ensemble + **re-optimise the lowest 3–4 at DFT** → build reaction centers on

@@ -2318,3 +2318,71 @@ present-tense claim fixed in passing.
 one-line pointer); `manual-index.md`. Cross-refs checked: no page references a removed
 `As built (…)` section; the two lint supersession markers (frontend.md:357/486) were removed with the
 intermediate text they annotated. No broken links; page count unchanged (38).
+
+## [2026-07-30] decision | Adopt the editor identity model (ADR-010), defer the renderer (ADR-011), reorder the roadmap
+
+Planning/ingest unit against the author's design proposal
+`architecture/proposals/editor-architecture-2026-07-30.md` (committed at `67c763c`). **No code
+touched — `wiki/`, `CLAUDE.md`, `ROADMAP.md` only. No refactor started.** The proposal is an
+*input*, not a decision; it was **not edited**. The author's review verdict governs: part
+accepted, part deferred, three points corrected.
+
+**ADR-010 (accepted) — editor identity & state model.** `AtomId` is opaque stable identity, not
+an array position; branded `OrcaIndex`/`AseIndex` (no bare integer crosses a runtime boundary);
+atom order matters in exactly one place — the input generator, which also hands back the inverse
+table; `emit_input`/`parse_output` paired with an `IndexMap` (parse impossible without the emit's
+map — a type invariant); state = fold over a typed op-log, with an ephemeral drag layer (60 fps
+not logged, one op on mouseup); authority split by kind of data (text owns chemistry, Scene owns
+geometry); product derived from reactant by ops, so atom mapping exists by construction. ADR-010
+**refines ADR-008** (per-layer index discipline → locality in one typed module), does not
+contradict it; ADR-008 not edited.
+
+**Three corrections made during review** (each recorded with its reason so it is not
+relitigated): **(i)** the sidecar returns POSITIONAL arrays — cclib/RDKit/ASE know nothing of
+`AtomId` — so Rust builds the `IndexMap` at the boundary; without this ADR-010 would conflict
+with ADR-002 and the Phase 3 cclib plan. **(ii)** bond perception has exactly ONE
+implementation (today in the sidecar: `natural_cutoffs`, 1.2 multiplier, `within`, ring detection
+via non-disconnecting cut); if it moves to core the sidecar LOSES its copy in the same change —
+no "just in case" duplicate (the duplicated vdW/CPK-table history). **(iii)** the proposal's
+"never show ORCA indices" rule is REJECTED — the app is a learning instrument; hiding ORCA's
+language is harmful. Rule in force: never show a *bare* index without naming its space (as the
+current `local index 3 · global index 3 (both 0-based)`).
+
+**ADR-011 (proposed / deferred) — editor graphics stack.** Target: wgpu → WASM →
+WebGL2/WebGPU in the webview, impostor spheres/cylinders, GPU picking returning `AtomId`.
+Deferred because no phase-2.5 defect came from 3Dmol's index space (it is aligned — the model is
+rebuilt from our merged xyz every render); the expensive authority-claimants are removed by
+ADR-010 without pixels. Gated on a spike with **verifiable** exit criteria: wgpu-triangle under
+`webkit2gtk-4.1` via the MiniBrowser bench (`debugging/002` technique); WebGL2 path works; WASM
+bundle size measured as a number; GPU picking returns the correct id under the same webview.
+Until then 3Dmol is a **dumb renderer** fed geometry + an `AtomId → viewer index` table, never a
+source of truth.
+
+**Two new CLAUDE.md domain rules (#9, #10)** — normative, not decisions: #9 every process
+boundary has a post-condition that checks the result in OUR terms (recomputed `measured`,
+`max_static_displacement`, atom count+order invariant), never trusting a foreign "success"; #10
+no fact about a third-party program is accepted from memory/docs, only from a logged run (the two
+opposite ORCA/xtb index bases, the empty `--input` hang, `mask` overriding `indices`). ADR-010
+records these as the *empirical complement* to its type invariants — every phase-2.5 defect was
+caught by a probe or post-condition, not a type.
+
+**ROADMAP reorder:** Phase 3 (results) → Phase 4 (manual) → **Phase 4.2 — Geometry editor
+completion** → Phase 4.5 (reaction modeling). The former `## Phase 2.6 — Geometry-editor backlog`
+section was renamed to `Phase 4.2` and moved after Phase 4, filled with ADR-010's staging (stage
+1 identity core; stage 2 op-log + 3Dmol-as-dumb-renderer + read-only Monaco xyz with a
+paste-xyz-as-fragment replacement path; stage 3 drag/rotation/vdW/undo/ring-torsions as ops), the
+two carried 2.5 items kept. **Label collision resolved:** the "Phase 2.6"/"Phase 2.7" tags inside
+Phase 2's `[x]` items are *chronicle* (POST /convert; output_search.rs) and were left untouched
+with one clarifying note; the two *references* to the section inside Phase 2.5 ("carried to the
+Phase 2.6 backlog below" / "carried to Phase 2.6") were redirected to `Phase 4.2` with "below"
+dropped. Phase 4.5 gained a Phase-4.2 dependency line and a UseSym open question (verify by a real
+run whether ORCA reorders output atoms — a direct ADR-008/010 risk). Phase 3 gained the per-atom
+seam item (one explicit mapping fn at the boundary; identity today, only-it-changes after ADR-010)
+and an unfixed-stereocenter flag on SMILES import (RDKit picks an enantiomer arbitrarily — a
+silent compound substitution, so it does not wait for 4.2).
+
+**index.md:** +ADR-010, +ADR-011, +the proposal page (an index orphan since `67c763c` — the
+"0 orphans" lint invariant was already broken). Page count re-derived from the tree: **41**
+content pages (was a stale 38; the proposal was one of the missing three, ADR-010/011 the other
+two). Structural-update date → 2026-07-30. **Next:** none of this is built — implementation of
+Phase 4.2 stage 1 is the first code unit, and it starts only when the roadmap says so.
