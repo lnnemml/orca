@@ -67,6 +67,20 @@ interface MoleculeViewerProps {
    * while an edit is available.
    */
   maskHighlight?: number[];
+  /**
+   * Trajectory playback (unit 3.8). When true, a change of `xyzData` that keeps
+   * the SAME atom count updates coordinates in place WITHOUT re-`zoomTo` — so the
+   * camera stays put while the frames advance (a per-frame `zoomTo` would make
+   * the molecule jump every tick). A change of atom count still re-`zoomTo`s.
+   * Default false → the Molecules/preview path is byte-for-byte unchanged (it
+   * always `zoomTo`s a newly-shown molecule).
+   *
+   * The viewer is still a **dumb renderer** (ADR-011): it is handed one frame's
+   * geometry and draws it. It does NOT hold the frame list, a timer, or 3Dmol's
+   * `setCoordinates`/`animate` frame apparatus — the current frame number is
+   * application state in `TrajectoryPlayer`.
+   */
+  preserveCameraOnUpdate?: boolean;
   style?: React.CSSProperties;
 }
 
@@ -239,6 +253,7 @@ export function MoleculeViewer({
   showAtomNumbers = false,
   theme = DEFAULT_THEME,
   maskHighlight,
+  preserveCameraOnUpdate = false,
   style,
 }: MoleculeViewerProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -370,11 +385,24 @@ export function MoleculeViewer({
         lastCompositionRef.current = signature;
       }
     } else if (xyzData && xyzData.trim().length > 0) {
-      // Legacy single-structure path — unchanged behaviour: always zoomTo.
       viewer.addModel(xyzData, "xyz");
       viewer.setStyle({}, baseStyle());
-      viewer.zoomTo();
-      lastCompositionRef.current = null;
+      if (preserveCameraOnUpdate) {
+        // Trajectory playback: zoom only when the atom COUNT changes (a new
+        // molecule), not on a coordinate-only frame advance — otherwise the
+        // camera would reset every frame. The first line of an xyz IS the count.
+        const count = xyzData.trimStart().split(/\r?\n/, 1)[0].trim();
+        const signature = `xyz:${count}`;
+        if (signature !== lastCompositionRef.current) {
+          viewer.zoomTo();
+          lastCompositionRef.current = signature;
+        }
+      } else {
+        // Single-structure path (Molecules screen, previews) — unchanged
+        // behaviour: always zoomTo a newly-shown molecule.
+        viewer.zoomTo();
+        lastCompositionRef.current = null;
+      }
     } else {
       // Neither prop — render an empty viewer without crashing.
       lastCompositionRef.current = null;
@@ -385,7 +413,7 @@ export function MoleculeViewer({
     // per-fragment palette are re-applied). A theme switch keeps the same
     // composition signature, so the zoom guard fires no `zoomTo` — the camera is
     // preserved (background is handled in the separate [theme] effect below).
-  }, [xyzData, scene, pickable, theme]);
+  }, [xyzData, scene, pickable, theme, preserveCameraOnUpdate]);
 
   // The overlay effect — the SINGLE owner of every shape and label in the
   // viewer: selection halos, measurement lines/labels (2.5.2b), and atom-number

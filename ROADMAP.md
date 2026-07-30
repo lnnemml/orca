@@ -289,11 +289,23 @@ the `[ ]` "Fragment library" item above.
       verdict from `imaginary_count`** (the teaching moment). Absent sections hidden (SP/GOAT
       render without crashing). The summary card is now feature-complete for parsed data; richer
       views (trajectory playback, isosurfaces, spectra) are the visualization items below.
-- [ ] Optimization trajectory playback in 3Dmol.js (multiframe xyz)
+- [x] Optimization trajectory playback in 3Dmol.js (multiframe xyz) — **done** (unit 3.8, Part A;
+      `src/trajectory/`). Transport + slider + speed + an energy-per-cycle chart (click to jump).
+      **The current frame number and the play timer are application state (`TrajectoryPlayer`), NOT
+      3Dmol's frame apparatus** — the viewer is fed one frame (ADR-011). Frames are labelled honestly
+      as optimization **cycles** (not scan points, measured). Empty states: 1 frame → static, no
+      controls; no trajectory (SP) → hidden. Element-order identity checked at the UI boundary. See
+      `wiki/modules/results-ui.md`.
 - [ ] Orbital/density isosurfaces: wrap `orca_plot` (batch mode) → `.cube` → 3Dmol.js volumetric
       rendering; MO picker with energies and occupations
-- [ ] IR spectrum: Lorentzian broadening of freq/intensity list, interactive recharts plot;
-      click a peak → animate that normal mode in the viewer
+- [x] IR spectrum: Lorentzian broadening of freq/intensity list, interactive recharts plot — **done**
+      (unit 3.8, Part B; `src/spectrum/`). Area-normalized Lorentzian (∫ peak = km/mol intensity,
+      tested), FWHM slider + explicit grid (plot choices, not molecule properties), trans/rot excluded
+      by exact-zero and imaginary excluded by sign (both surfaced: imaginary shown separately as a
+      transition-state diagnosis). Peak ↔ frequency-row click both ways. Cross-checked against
+      `orca_mapspc` (14.0%, cause = its wing truncation — reported, not fudged; `parse-sources.md`).
+      **`click a peak → animate that normal mode` is deferred to unit 3.9** (needs Kabsch alignment) —
+      no "static mode preview" stopgap.
 - [x] Imaginary-frequency detection surfaced prominently (saddle point vs minimum — teaching
       moment) — **done** (unit 3.6): `imaginary_count` explicit field + the card's verdict banner
       (0 = minimum, 1 = transition state, >1 = neither → re-optimize).

@@ -2738,3 +2738,65 @@ requirements. Out of scope: trajectory playback, isosurfaces, mode animation, IR
 the Kabsch-rotation determiner (next unit's gate). Wiki: `parse-sources.md` (gate + comment line),
 `artifact-readers.md` (readers 3–4 + the spawn/parse boundary), `tauri-core.md` (v7 + no-coeff
 rule), ROADMAP Phase 3 (parse tier complete).
+
+## [2026-07-30] session | Unit 3.8: trajectory playback + broadened IR spectrum (frame state in the app, not the viewer)
+
+First **purely visualization** unit of Phase 3. Both parts stand on already-parsed `data_json`
+(unit 3.7); no artifact is re-read. No Rust changes — frontend only.
+
+**The load-bearing decision — frame ownership.** This is the first time the viewer receives a
+*sequence* of geometries. 3Dmol has its own frame apparatus (`addModelsAsFrames`/`setFrame`/
+`animate`; `setCoordinates` loads a whole `T×N×3` to drive it) — **not used.** The current frame
+number is **application state** in `TrajectoryPlayer` (React), the play timer is a `useEffect`
+`setInterval` there, and the viewer is a **dumb renderer** fed **one frame's** xyz (ADR-011). Reason
+beyond tidiness: Phase 4.2 swaps the renderer once the ADR-011 spike passes — nothing may migrate
+into 3Dmol's state; and a timer buried in the viewer couldn't sync with the cycle label, the energy
+readout, or the highlighted point on the E(cycle) chart. Same call as `selection` (view-local UI
+state, not the store).
+
+**Part A — playback (`src/trajectory/`).** `frame.ts` (pure, tested): `frameToXyz` (throws on a
+count mismatch — no silent render), `frameLabel` (**honest: optimization CYCLES, never "scan step"**
+— measured, a 6-point scan has 26 frames), `frameEnergyText`/`frameDeltaKcal` (comment energy Eh +
+ΔE-from-cycle-1 kcal/mol), `energySeries`, `elementsAgree`. `TrajectoryPlayer.tsx`: transport +
+slider + speed (0.5–4× = 2–20 fps, app-layer timer), the **E(cycle) chart** (click a point → jump,
+current cycle a vertical marker — the learning core, watch it descend). **Identity check at the UI
+boundary:** `elementsAgree(trajectory.elements, final_geometry.elements)` before drawing — mismatch →
+error, not a wrong animation (the readers' element-order discipline one layer out). Empty states: 1
+frame → static, no controls; SP (no trajectory) → section hidden. `MoleculeViewer` gained one opt-in
+prop `preserveCameraOnUpdate`: a same-atom-count `xyzData` change redraws **without** `zoomTo` (camera
+holds through playback); count change still zooms; default false → Molecules/preview unchanged. We
+rebuild the single-frame model per tick (the only in-place path is 3Dmol's forbidden frame apparatus);
+`frameToXyz` is ~3.5 µs/8 atoms, ~13 µs/50 (measured, Node) — playback is **timer-bound**, not
+rebuild-bound. Real in-webview `addModel` fps not headlessly measured (standing GUI-drive limit).
+
+**Part B — IR spectrum (`src/spectrum/`).** `ir.ts` (pure, tested): `classifyModes` splits the stick
+list **by measured fact, not a threshold** — exact-zero (`=== 0`) trans/rot excluded, negative
+(imaginary) excluded by **sign** but returned separately, `cm > 0` broadened; `lorentzian` is
+**area-normalized** (∫ = 1, so ∫ peak = km/mol intensity — a test locks it) with `g = FWHM/2` written
+out; `autoGrid` names range+step explicitly. `IrSpectrumPanel.tsx`: verdict banner (min/TS/neither),
+**imaginary modes listed separately as a transition-state diagnosis** (not dropped, not broadened),
+Lorentzian curve (recharts `ComposedChart`) with a **FWHM slider** + printed grid (plot choices, not
+molecule properties), the frequency table, and **peak ↔ row** two-way selection. **No mode animation**
+— unit 3.9, behind the Kabsch gate; no static-preview stopgap.
+
+**orca_mapspc cross-check (rules #9/#10).** Probe `sidecar/probes/ir_mapspc_xcheck.py` (one-off, not
+app code). Flags from its own `-h` (`IR -l0 -w<FWHM> -x0<min> -x1<max> -n<npts>`, attached values;
+its `-h` prints "Peak FWHM" → `-w` IS the FWHM). **Max shape deviation = 14.0%**, cause **measured**:
+orca broadens col1 (a.u.) peak-height-normalized and writes `1000 − absorption`, we broadcast col2
+(km/mol = 5053.6·col1) area-normalized; the real residual is **wing truncation** (orca is exactly 0
+at 3172/3401 pts, cutting tails beyond ~1.9·FWHM) while we keep full wings so area = intensity. Peak
+cores + FWHM agree. Reported, **not fudged** — our curve isn't bent to a tool whose normalization and
+windowing differ by design. Recorded in `parse-sources.md`.
+
+**Shared:** extracted `useContainerWidth` to `src/charts/` (the WebKitGTK 0×0 workaround, one owner);
+`ConvergenceDashboard` now imports it (dedup).
+
+**Verified.** `tsc` clean; **vitest 322 passed** (19 files; +21: `ir.test.ts` — sign/zero split, area
+= intensity, FWHM half-max, superposition, grid; `frame.test.ts` — honest label, ΔE, identity,
+count-mismatch throw); `vite build` clean (pre-existing bundle-size warning only). In-GUI legs (the
+player animating, peak/row click, the FWHM slider in the real webview) need the Tauri window — not
+headless-drivable, same limitation as every prior unit; the risky logic is all pure-tested and the
+recharts/3Dmol paths reuse proven patterns. ADR-002/009/010/011/012 + the proposal untouched.
+
+Next (unit 3.9): normal-mode animation — the Kabsch-alignment determiner gate, then click-a-peak →
+watch the atoms move.

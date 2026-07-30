@@ -247,14 +247,22 @@ and reset the camera via `zoomTo` exactly when the user enlarged to look closer.
   order), **not** `atom.serial` (comes from PDB-like formats, may be 1-based or absent). Picking,
   measurement, and ASE masks all key off `index`.
 
-## Structures & trajectories (planned)
-Multiframe xyz → trajectory playback with a frame slider (Phase 3).
+## Structures & trajectories (unit 3.8 — done)
+Trajectory playback is built — see [results-ui.md](results-ui.md). The viewer stays a **dumb
+renderer**: it is fed **one frame** at a time; the current frame number and the play timer are
+application state in `TrajectoryPlayer`, **not** 3Dmol's frame apparatus (ADR-011). The only viewer
+change is the opt-in **`preserveCameraOnUpdate`** prop — an `xyzData` change that keeps the same atom
+count redraws without `zoomTo` (the camera holds through playback); a count change still zooms.
+Default false, so the Molecules/preview path is unchanged.
 
 ## Orbitals / densities (planned)
 `orca_plot` in batch mode generates `.cube` from `.gbw` → 3Dmol.js volumetric isosurface
 (positive/negative lobes, adjustable isovalue). Default grid 80–100; cubes cached in the job dir;
 generated lazily on MO selection.
 
-## Spectra (planned)
-IR: Lorentzian broadening over (freq, intensity) → recharts; peak click → animate the normal mode
-(displacement vectors from output). UV-Vis (Phase 6): Gaussian broadening over TD-DFT (energy, fosc).
+## Spectra (unit 3.8 — IR done; mode animation deferred)
+IR: Lorentzian broadening over (freq, intensity) → recharts, built in `src/spectrum/` — see
+[results-ui.md](results-ui.md). Peak click selects the frequency-table row (and vice-versa). Peak
+click → **animate the normal mode** is unit 3.9, behind the Kabsch-alignment gate — deliberately NOT
+a "static mode preview" in the meantime. UV-Vis (Phase 6): Gaussian broadening over TD-DFT (energy,
+fosc).

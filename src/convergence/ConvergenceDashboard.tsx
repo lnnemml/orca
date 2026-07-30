@@ -1,4 +1,3 @@
-import { useLayoutEffect, useRef, useState } from "react";
 import {
   CartesianGrid,
   Line,
@@ -11,6 +10,7 @@ import {
 
 import type { JobStatus } from "../types";
 import type { ConvergenceEvent, OptPoint, ScfPoint } from "./types";
+import { useContainerWidth } from "../charts/useContainerWidth";
 
 /** Hartree → kcal/mol, for the human-readable ΔE in the energy tooltip. */
 const HARTREE_TO_KCAL = 627.5094740631;
@@ -27,24 +27,6 @@ const PLOTTED_CRITERIA: { name: string; color: string }[] = [
 ];
 
 const CHART_HEIGHT = 200;
-
-/** Measure a container's content width via ResizeObserver. recharts'
- * ResponsiveContainer measures 0×0 in WebKitGTK (Tauri's engine), so we pass an
- * explicit pixel width to the charts instead. */
-function useContainerWidth() {
-  const ref = useRef<HTMLDivElement>(null);
-  const [width, setWidth] = useState(0);
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const update = () => setWidth(el.clientWidth);
-    update();
-    const ro = new ResizeObserver(update);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-  return { ref, width };
-}
 
 interface ConvergenceDashboardProps {
   events: ConvergenceEvent[];

@@ -29,6 +29,7 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 - [parser.md](modules/parser.md) — result extraction: streaming (Tier 1) + authoritative artifact readers (Tier 2)
 - [artifact-readers.md](modules/artifact-readers.md) — `src-tauri/src/parse/`: two-layer tokenizer + typed accessors, canonical units held by the `Angstrom` type, post-conditions; `.property.txt` built (the template), 3 others not started (ADR-012)
 - [visualization.md](modules/visualization.md) — 3Dmol.js integration, cubes, spectra
+- [results-ui.md](modules/results-ui.md) — post-calculation visualization (unit 3.8): trajectory playback + IR spectrum; the frame number is app state, not the viewer's (ADR-011)
 - [scene.md](modules/scene.md) — Scene/SceneFragment pure core: merge to flat xyz, index-space invariant, reset-detection primitive (ADR-008)
 - [manual-index.md](modules/manual-index.md) — manual indexing pipeline + keyword map
 
@@ -50,6 +51,7 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 - [reagent-geometry.md](chemistry/reagent-geometry.md) — геометрія реагентів-нуклеофілів: гідрид, чому BH₄⁻ тетраедричний, чому кут води 104.5°
 - [conformers.md](chemistry/conformers.md) — конформери і GOAT: anti/gauche-бутан, чому один конформер зі SMILES — випадковий знімок
 - [burgi-dunitz.md](chemistry/burgi-dunitz.md) — траєкторія Бюрґі–Дунітца: чому нуклеофіл атакує карбоніл під ~107°, метод структурної кореляції, звʼязок зі стереоселективністю NaBH₄ і з d/θ/φ у редакторі
+- [ir-spectrum.md](chemistry/ir-spectrum.md) — ІЧ-спектр: чому обчислений спектр — палички, а не крива; розширення лінії; FWHM як вибір побудови графіка; що означає площа під піком; уявна частота як діагноз перехідного стану
 
 ## Debugging
 
@@ -63,4 +65,4 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 
 ---
 
-*Page count: 44. Last structural update: 2026-07-30 (unit 3.4: +modules/artifact-readers.md — the `.property.txt` reader, first of four, canonical units held by type).*
+*Page count: 46. Last structural update: 2026-07-30 (unit 3.8: +modules/results-ui.md — trajectory playback + IR spectrum, frame state in the app not the viewer; +chemistry/ir-spectrum.md — line broadening / FWHM / imaginary-frequency diagnosis).*

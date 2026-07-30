@@ -214,8 +214,38 @@ Invocation (measured): `orca_2json input.gbw` **with the extension** (`input` al
 `freq|hessian|thermo|enthalp|entropy|gibbs|vibration` → 0 hits). It is the wavefunction/MO +
 final-geometry source, nothing vibrational.
 
-Other converters present in `/opt/orca` (not run here): `orca_2aim`, `orca_2mkl`, `orca_mapspc`
-(spectrum broadening), `orca_chelpg`. Named for future probes, not measured.
+Other converters present in `/opt/orca`: `orca_2aim`, `orca_2mkl`, `orca_chelpg` (not run here);
+`orca_mapspc` (spectrum broadening) **is now measured** — see the IR cross-check below.
+
+### `orca_mapspc` IR broadening cross-check (unit 3.8 — measured)
+
+The app's own IR Lorentzian broadening (`src/spectrum/ir.ts`) was cross-checked against ORCA's own
+`orca_mapspc` (domain rule #9 — recompute what matters in our terms; rule #10 — a third-party
+program's behaviour accepted only from a run). Probe: `sidecar/probes/ir_mapspc_xcheck.py` (one-off,
+**not** app code). On the ethane minimum `.hess` (`d7992449`), FWHM 10 cm⁻¹, grid 0–3400 / 3401 pts:
+
+**Flags — from `orca_mapspc`'s own `-h`, not memory:** `orca_mapspc <file> IR -l0 -w<FWHM>
+-x0<min> -x1<max> -n<npts>`. Two facts the `-h` and a run settle:
+- **`-w` IS the FWHM** — the tool prints `Peak FWHM [cm-1] ... <w>`, so it is the full width at half
+  max, not a HWHM (this fixed our `g = FWHM/2` convention).
+- **values are ATTACHED** — `-w 10` (with a space) → `Error: flag not understood`; `-w10` works.
+
+**Result: max shape deviation = 14.0%** (full grid), and the **cause is measured, not guessed**:
+- `orca_mapspc` writes `.ir.dat` as **`1000 − absorption`** and broadens **column 1** of
+  `$ir_spectrum` (the a.u. value) with a **peak-height** normalization; we broaden **column 2**
+  (km/mol) with an **area** normalization. Column 2 = **5053.6 × column 1** (constant across strong
+  modes — measured), so the two intensity columns are the same quantity in different units; the
+  normalization/representation differences are global constants, not a shape difference.
+- The real residual is **wing truncation**: `orca_mapspc`'s curve is **exactly `0.0` at 3172 / 3401
+  grid points** (a pure Lorentzian never is) — it cuts the tails to zero beyond ~1.9·FWHM. In each
+  peak's **core** the two lineshapes agree (ratio ≈ constant, same FWHM by half-max). Our curve keeps
+  the full analytic wings **on purpose** — that is what makes ∫(one peak) = its km/mol intensity
+  (the Part-B area property). Truncating to match orca would break it.
+
+Per rule #10 the number and its cause are **reported, not fudged**: our curve is not bent to match a
+third-party tool whose normalization and windowing differ by design. The core-lineshape agreement is
+the thing that could have been silently wrong (peak positions, FWHM handling, the Lorentzian form) —
+and it checks out.
 
 #### `orca_2json` scaling — the rule-#5 gate (measured, unit 3.7)
 The JSON is dominated by `MolecularOrbitals.MOs[].MOCoefficients` — an n×n matrix (n = basis

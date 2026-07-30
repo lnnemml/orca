@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 import type { JobStatus, ParsedResults } from "../types";
+import { IrSpectrumPanel } from "../spectrum/IrSpectrumPanel";
+import { TrajectoryPlayer } from "../trajectory/TrajectoryPlayer";
 
 /** 1 Hartree in J/mol = E_h (4.359744722e-18 J) × N_A (6.02214076e23 /mol).
  * CODATA 2018; the named factor, like BOHR_TO_ANGSTROM in the Rust readers. */
@@ -75,6 +77,17 @@ export function ResultsCard({ jobId, status }: { jobId: string; status: JobStatu
           )}
         </div>
 
+        {/* Optimization-trajectory playback (unit 3.8, Part A). Hidden for a
+            single-point job (no trajectory). The reference element order is the
+            final geometry's — the player refuses to animate on a mismatch. */}
+        {results.trajectory && results.trajectory.n_frames >= 1 && (
+          <TrajectoryPlayer
+            elements={results.trajectory.elements}
+            frames={results.trajectory.frames}
+            referenceElements={results.final_geometry.elements}
+          />
+        )}
+
         {t && (
           <section>
             <div className="section-title" style={{ fontSize: 12 }}>
@@ -105,7 +118,7 @@ export function ResultsCard({ jobId, status }: { jobId: string; status: JobStatu
           </section>
         )}
 
-        {results.frequencies && <FrequencyPanel f={results.frequencies} />}
+        {results.frequencies && <IrSpectrumPanel f={results.frequencies} />}
 
         {results.charges.length > 0 && (
           <section>
@@ -123,81 +136,6 @@ export function ResultsCard({ jobId, status }: { jobId: string; status: JobStatu
         )}
       </div>
     </div>
-  );
-}
-
-/** Frequencies + IR intensities. The imaginary-mode count is shown prominently as
- * a teaching moment (ROADMAP): it says whether the geometry is a minimum, a
- * transition state, or neither — explained, not alarming. */
-function FrequencyPanel({ f }: { f: NonNullable<ParsedResults["frequencies"]> }) {
-  const verdict =
-    f.imaginary_count === 0
-      ? { text: "Minimum — 0 imaginary frequencies.", tone: "var(--muted)" }
-      : f.imaginary_count === 1
-        ? { text: "Transition state — exactly 1 imaginary frequency.", tone: "var(--text)" }
-        : {
-            text: `Neither a minimum nor a transition state — ${f.imaginary_count} imaginary frequencies; re-optimize.`,
-            tone: "var(--text)",
-          };
-
-  // Real vibrational modes only: the 5–6 exact-zero translation/rotation modes are
-  // not vibrations. Imaginary (negative) modes are kept and flagged.
-  const modes = f.frequencies_cm
-    .map((cm, i) => ({ cm, ir: f.ir_intensity_km_mol[i] ?? 0 }))
-    .filter((m) => m.cm !== 0);
-
-  return (
-    <section>
-      <div className="section-title" style={{ fontSize: 12 }}>
-        Vibrational frequencies
-      </div>
-      <div
-        className="mono"
-        style={{ fontSize: 12, marginBottom: 6, color: verdict.tone, fontWeight: 600 }}
-      >
-        {verdict.text}
-      </div>
-      <table className="mono" style={{ fontSize: 12, borderCollapse: "collapse" }}>
-        <thead>
-          <tr>
-            <th style={{ textAlign: "right", paddingRight: 12, color: "var(--muted)" }}>#</th>
-            <th style={{ textAlign: "right", paddingRight: 12, color: "var(--muted)" }}>
-              cm⁻¹
-            </th>
-            <th style={{ textAlign: "right", color: "var(--muted)" }}>IR km/mol</th>
-          </tr>
-        </thead>
-        <tbody>
-          {modes.map((m, i) => {
-            const imaginary = m.cm < 0;
-            return (
-              <tr key={i}>
-                <td style={{ textAlign: "right", paddingRight: 12, color: "var(--muted)" }}>
-                  {i + 1}
-                  {imaginary ? " ✕" : ""}
-                </td>
-                <td
-                  style={{
-                    textAlign: "right",
-                    paddingRight: 12,
-                    fontWeight: imaginary ? 700 : 400,
-                  }}
-                  title={imaginary ? "imaginary (negative) frequency" : undefined}
-                >
-                  {m.cm.toFixed(2)}
-                </td>
-                <td style={{ textAlign: "right" }}>{m.ir.toFixed(2)}</td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-      {f.scale_factor != null && f.scale_factor !== 1 && (
-        <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
-          frequency scale factor {f.scale_factor}
-        </div>
-      )}
-    </section>
   );
 }
 
