@@ -2686,3 +2686,55 @@ clean, no warnings. Out of scope (untouched): mode animation, IR Lorentzian plot
 readers, ADR-002/009/010/012, proposal; cclib still not in requirements. Wiki: `parse-sources.md`
 (gate), `artifact-readers.md` (second reader), `tauri-core.md` (v6 + NoArtifact note), ROADMAP
 Phase 3.
+
+## [2026-07-30] ingest | Gate: orca_2json scaling (rule #5) — measured, streamable
+
+Unit-3.7 gate before writing the `orca_2json` reader. The JSON is dominated by
+`MolecularOrbitals.MOs[].MOCoefficients` (an n×n matrix we don't need), measured on two gbw:
+ethane 198 KB json / nMO 68 / MOCoeff **52.5%**; saddle (def2-TZVP) **3.5 MB** / nMO 314 / MOCoeff
+**62%**. Extrapolation (arithmetic, `nBF ≈ 31·heavy + 5·H` fit to the saddle, json ∝ nBF²): a
+50-atom def2-TZVP → ~38 MB, a 60-atom → ~52 MB, ~60% of it coefficients we discard — **tens of MB**,
+a real rule-#5 hazard (not hundreds). Flags from `orca_2json -h` (not memory): only format
+(`-json/-bson/-ubjson/-msgpack`) + `-property*`; **no flag omits coefficients**. **Resolution
+(gate PASS):** `serde_json::from_reader` (already a dep) into a struct that omits `MOCoefficients`
+— serde skips it as `IgnoredAny`, never allocated; peak memory is the two small per-MO arrays.
+Reading the file whole into a `Value` would be the `.out` mistake in JSON clothing.
+
+Also measured for the `_trj.xyz` reader: the comment line is **identical across job types**
+(`Coordinates from ORCA-job input E <energy>` on Opt/GOAT/scan `_trj` and on `.xyz`) → the frame
+energy is parseable to `Option<f64>`. `.allxyz` differs (`… Relaxed Surface Scan Step N …`,
+`>`-separated) — out of scope, not fed to the reader.
+
+## [2026-07-30] session | Last two artifact readers: _trj.xyz + orca_2json — the ADR-012 tier is complete
+
+Unit 3.7 Part B/C/Г. Two readers on the template; the ADR-012 authoritative parse tier is now
+**complete** (all four), and Phase 3 past here is pure visualization.
+
+`parse/xyz.rs` (`_trj.xyz`/`.xyz`) — multi-frame xmol, typestate, Å via `from_angstrom` (the
+identity case, still guarded by a `missed_conversion` test). Comment energy measured, uniform.
+Post-conditions: natom constant, element order per **frame** == reference, ≥ 1 frame, first-frame
+geometry. Frames are opt cycles, never scan points (26 for a 6-point scan). 8 tests.
+
+`orca_2json` split in two (kept apart): **spawn** `crate::orca_json` (ADR-009 — Rust owns it;
+ORCA path from **settings**, rule #7, not hard-coded; `LD_LIBRARY_PATH` + `.gbw` extension; lazy +
+cached in the job dir, rule #3; xTB gbw → `Ok(None)`), and the **reader** `parse/mo.rs`
+(streamed `from_reader` omitting `MOCoefficients` → rule #5; distance-invariant geometry check;
+reference = final geometry; HOMO/LUMO from the occupancy boundary). 5 tests, incl. a 198 KB
+gbw-json fixture that DOES contain coefficients (exercises the skip) + a stored-json assertion that
+coefficients never persist.
+
+Storage v7 (`homo_lumo_gap_eh` narrow column, guarded ALTER as v6); `parser_version` → 3.
+`data_json` gains the trajectory (frames = opt cycles, element order once + per-frame Å coords +
+comment energy) and MO energies/occupancies — **never** coefficients (rule #5; a test proves it).
+Trajectory-size decision (reported): longest measured 26×8; a 30-cycle×50-atom opt ≈ tens of KB —
+kept inline, frames→file-path switch noted if ever needed. Card: HOMO/LUMO gap in **Eh + eV**
+(named `EH_TO_EV`), a trajectory frame-count row; absent sections hidden.
+
+Real full-pipeline e2e (`#[ignore]`, green, on a temp COPY so orca_2json's json never pollutes user
+data): all four readers → E=−79.79185 Eh, 24 freqs (0 imaginary), 5 trajectory frames, HOMO/LUMO
+gap 0.4173 Eh, and `MOCoefficients` absent from the stored JSON. Tests: Rust 114 + 3 ignored,
+frontend 301, tsc clean, no warnings. ADR-002/009/010/012 + proposal untouched; cclib still not in
+requirements. Out of scope: trajectory playback, isosurfaces, mode animation, IR plot, export,
+the Kabsch-rotation determiner (next unit's gate). Wiki: `parse-sources.md` (gate + comment line),
+`artifact-readers.md` (readers 3–4 + the spawn/parse boundary), `tauri-core.md` (v7 + no-coeff
+rule), ROADMAP Phase 3 (parse tier complete).

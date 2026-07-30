@@ -1,11 +1,11 @@
 # Module: Artifact readers (`src-tauri/src/parse/`)
 
-**Status:** the authoritative result-parsing tier of ADR-012 — own Rust parsers over ORCA's
-structured artifacts, replacing the abandoned cclib plan. **Two of four readers are built:**
-`.property.txt` (unit 3.4/3.5, the template) and `.hess` (unit 3.6, frequencies / IR / normal
-modes). `_trj.xyz`/`.xyz` and `orca_2json` are **not started**. Both readers are wired into the
-job pipeline via `results.rs` (unit 3.5/3.6): on completion the job is parsed and advanced to
-`parsed`.
+**Status:** the authoritative result-parsing tier of ADR-012 is **complete** — all four own Rust
+parsers over ORCA's structured artifacts, replacing the abandoned cclib plan: `.property.txt`
+(unit 3.4/3.5, the template), `.hess` (unit 3.6, frequencies / IR / normal modes), `_trj.xyz`/`.xyz`
+(unit 3.7, trajectory), and `orca_2json` (unit 3.7, MO energies/occupancies → HOMO/LUMO). All are
+wired into the job pipeline via `results.rs`: on completion the job is parsed and advanced to
+`parsed`. Phase 3 beyond this point is pure visualization.
 
 ## Why this exists
 cclib 1.8.1 crashes on ORCA 6.1.0 output and ORCA 6 is outside its handled matrix
@@ -109,14 +109,44 @@ threshold), and 5 (linear) vs 6 (non-linear) is a distinction, not a failure; `$
 UNDETERMINED units and are **recognized but not read**, so no value is shown with a unit taken on
 faith.
 
+## Third & fourth readers — `_trj.xyz` and `orca_2json` (unit 3.7)
+- **`_trj.xyz` / `.xyz`** (`parse/xyz.rs`) holds the template unchanged: multi-frame xmol grammar,
+  typestate, Å via `from_angstrom` (the identity case — still guarded, and a `missed_conversion`
+  test proves the wrong choice fails). The **comment line** was *measured*, not assumed:
+  `Coordinates from ORCA-job input E <energy>`, identical on every frame of Opt / GOAT / scan and
+  on `.xyz`, so the frame energy is parsed to `Option<f64>`. Post-conditions: natom constant across
+  frames, element order per **frame** == reference, ≥ 1 frame, first-frame geometry. Frames are opt
+  cycles, **never** "scan points" (26 for a 6-point scan). `.allxyz` / `.relaxscan*.dat` are
+  Phase 4.5 and not fed here.
+- **`orca_2json`** splits into two things kept apart:
+  - **The spawn** (`crate::orca_json`, a top-level module, *not* under `parse/`) — process
+    orchestration, so Rust owns it (ADR-009). The ORCA path comes from **settings** (rule #7, not
+    hard-coded); `orca_2json` + libs sit beside it (`LD_LIBRARY_PATH`, `.gbw` extension — measured
+    requirements). Generation is **lazy + cached** in the job dir (the only writable place, rule
+    #3): regenerated only when the JSON is missing or older than the `.gbw`. A non-zero exit / no
+    JSON (an xTB gbw) is `Ok(None)`, not a panic.
+  - **The reader** (`parse/mo.rs`) — the pure template reader. **Rule #5 is the whole point here**
+    (unit-3.7 gate): the JSON is ~52–62% `MOCoefficients` and extrapolates to *tens of MB*, so it
+    is **streamed** with `serde_json::from_reader` into a struct that omits `MOCoefficients` —
+    serde skips it as `IgnoredAny` (never allocated). Reading it whole into a `Value` would repeat
+    the `.out` mistake. Coefficients are **never** stored in the DB (a test asserts they are not in
+    the serialized results). Geometry check is distance-invariant (as `.hess`); the reference is
+    the **final** geometry (orca_2json's coords are final, not the input).
+
+This is the first reader whose input is *produced by spawning a binary* — the boundary is drawn so
+the spawn (orchestration, Rust) and the parse (pure) never mix in one function.
+
 ## Files
-- `parse/mod.rs` — module overview + shared `ParseError` (`#[from]` into `AppError`).
+- `parse/mod.rs` — module overview + shared `ParseError` + shared `ReferenceGeometry`.
 - `parse/units.rs` — `Angstrom` (canonical length; the type guard).
 - `parse/elements.rs` — symbol ↔ Z, fragment-suffix stripping (`C(1)` → `C`).
-- `parse/property.rs` — the `.property.txt` reader (tokenizer + typed accessors + post-conditions).
-- `parse/hess.rs` — the `.hess` reader (frequencies, IR, normal modes; distance-based geometry check).
-- `parse/{property,hess}/tests.rs` — against real SP / Opt+Freq / GOAT / scan / saddle fixtures in
-  `src-tauri/tests/fixtures/`.
+- `parse/property.rs` — `.property.txt` (energies, geometry, charges, dipole, gradient, thermo).
+- `parse/hess.rs` — `.hess` (frequencies, IR, normal modes; distance-based geometry check).
+- `parse/xyz.rs` — `_trj.xyz` / `.xyz` (trajectory frames + comment energy).
+- `parse/mo.rs` — `orca_2json` JSON (MO energies/occupancies; streamed, coefficients skipped).
+- `orca_json.rs` (top level) — the `orca_2json` **spawn** (ADR-009), lazy-cached in the job dir.
+- `parse/*/tests.rs` — against real SP / Opt+Freq / GOAT / scan / saddle fixtures in
+  `src-tauri/tests/fixtures/` (incl. a 198 KB gbw-json with coefficients, to exercise the skip).
 
 ## Rule #5
 `.property.txt` is tens–hundreds of KB (measured max ≈ 344 KB), so it is read whole — unlike

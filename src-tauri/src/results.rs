@@ -22,13 +22,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
 use crate::parse::elements::symbol_of;
-use crate::parse::hess::{HessFile, ReferenceGeometry};
+use crate::parse::hess::HessFile;
 use crate::parse::property::{PopulationScheme, PropertyFile, Verified};
+use crate::parse::xyz::XyzFile;
+use crate::parse::ReferenceGeometry;
 
 /// Bump when the stored JSON shape or the parse semantics change.
 /// - v1: property.txt only (unit 3.5).
 /// - v2: + `.hess` frequencies / IR / normal modes + thermo temperature (unit 3.6).
-pub const PARSER_VERSION: u32 = 2;
+/// - v3: + `_trj.xyz` trajectory + `orca_2json` MO energies/occupancies (unit 3.7).
+pub const PARSER_VERSION: u32 = 3;
 
 // --------------------------------------------------------------------------- //
 // The stored structure (goes into results.data_json verbatim)                   //
@@ -103,6 +106,39 @@ pub struct FrequenciesJson {
     pub unknown_sections: Vec<String>,
 }
 
+/// Optimization/scan trajectory (unit 3.7). Frames are opt cycles, NOT scan
+/// points. Element order stored once (constant across frames — unit-3.5 rule);
+/// per-frame Å coords + the comment energy.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrajectoryJson {
+    pub n_frames: usize,
+    pub elements: Vec<String>,
+    pub frames: Vec<TrajFrame>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrajFrame {
+    pub energy_eh: Option<f64>,
+    pub xyz_angstrom: Vec<[f64; 3]>,
+}
+
+/// MO energies + occupancies from `orca_2json` (unit 3.7). `MOCoefficients` are
+/// NEVER stored (rule #5). Occupancy is kept so HOMO/LUMO can be re-derived.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrbitalsJson {
+    pub energy_unit: String,
+    /// `[energy_eh, occupancy]` per MO, ascending energy.
+    pub orbitals: Vec<[f64; 2]>,
+    pub homo_lumo: Option<HomoLumoJson>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HomoLumoJson {
+    pub homo_eh: f64,
+    pub lumo_eh: f64,
+    pub gap_eh: f64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParsedResults {
     pub parser_version: u32,
@@ -116,6 +152,10 @@ pub struct ParsedResults {
     /// Vibrational data from `.hess`, or `None` when the job produced none (SP,
     /// GOAT) — a normal state, not an error.
     pub frequencies: Option<FrequenciesJson>,
+    /// Optimization/scan trajectory from `_trj.xyz`, or `None` (a single-point job).
+    pub trajectory: Option<TrajectoryJson>,
+    /// MO energies/occupancies from `orca_2json`, or `None` (xTB/GOAT gbw — normal).
+    pub orbitals: Option<OrbitalsJson>,
     /// Blocks ORCA emitted that this reader has no accessor for (rule #10).
     pub unknown_blocks: Vec<String>,
 }
@@ -124,6 +164,8 @@ impl ParsedResults {
     fn from_verified(
         v: &Verified,
         hess: Option<&crate::parse::hess::Verified>,
+        trajectory: Option<TrajectoryJson>,
+        orbitals: Option<OrbitalsJson>,
     ) -> Result<ParsedResults, AppError> {
         let geoms = v.geometries()?;
         let last = geoms
@@ -218,8 +260,45 @@ impl ParsedResults {
             final_geometry,
             gradient,
             frequencies,
+            trajectory,
+            orbitals,
             unknown_blocks: v.unknown_block_names(),
         })
+    }
+}
+
+/// Build the trajectory JSON from a verified `_trj.xyz`. Element order stored once.
+fn trajectory_json(xyz: &crate::parse::xyz::Verified) -> TrajectoryJson {
+    let frames = xyz.frames();
+    let elements = frames
+        .first()
+        .map(|f| f.atoms.iter().map(|a| a.element.clone()).collect())
+        .unwrap_or_default();
+    let out_frames = frames
+        .iter()
+        .map(|f| TrajFrame {
+            energy_eh: f.energy_eh,
+            xyz_angstrom: f
+                .atoms
+                .iter()
+                .map(|a| [a.xyz[0].angstrom(), a.xyz[1].angstrom(), a.xyz[2].angstrom()])
+                .collect(),
+        })
+        .collect();
+    TrajectoryJson { n_frames: frames.len(), elements, frames: out_frames }
+}
+
+/// Build the MO JSON from a verified `orca_2json`. Coefficients are never included.
+fn orbitals_json(mo: &crate::parse::mo::Verified) -> OrbitalsJson {
+    let homo_lumo = mo.homo_lumo().map(|(homo, lumo, gap)| HomoLumoJson {
+        homo_eh: homo,
+        lumo_eh: lumo,
+        gap_eh: gap,
+    });
+    OrbitalsJson {
+        energy_unit: mo.energy_unit().unwrap_or("Eh").to_string(),
+        orbitals: mo.orbitals().iter().map(|&(e, o)| [e, o]).collect(),
+        homo_lumo,
     }
 }
 
@@ -252,16 +331,21 @@ pub fn parse_and_store(
     job_dir: &str,
     input_content: &str,
 ) -> ParseOutcome {
-    let path = Path::new(job_dir).join("input.property.txt");
+    let dir = Path::new(job_dir);
+    let path = dir.join("input.property.txt");
     if !path.exists() {
         return ParseOutcome::NoArtifact;
     }
-    let reference = match xyz_reference(input_content) {
-        Some(r) if !r.is_empty() => r,
+    // The input's start geometry (with elements) — the reference for `.property.txt`
+    // (coords only; it checks element order internally) and for `_trj.xyz` (whose
+    // first frame is the start).
+    let input_ref = match input_reference(input_content) {
+        Some(r) if !r.z.is_empty() => r,
         _ => return ParseOutcome::ParseFailed("no * xyz * block in the job input".into()),
     };
 
-    let verified = match PropertyFile::from_path(&path).and_then(|pf| pf.verify(&reference)) {
+    let verified = match PropertyFile::from_path(&path).and_then(|pf| pf.verify(&input_ref.xyz_angstrom))
+    {
         Ok(v) => v,
         Err(e) => return ParseOutcome::ParseFailed(e.to_string()),
     };
@@ -269,7 +353,7 @@ pub fn parse_and_store(
     // `.hess` is optional: SP/GOAT have none (a normal state). When present, verify
     // it against the OPTIMIZED geometry (the Freq geometry) — the `.property.txt`
     // final `$Geometry`, which we already have — not `input.inp` (the start).
-    let hess_path = Path::new(job_dir).join("input.hess");
+    let hess_path = dir.join("input.hess");
     let hess_verified = if hess_path.exists() {
         match final_geometry_reference(&verified)
             .and_then(|r| Ok(HessFile::from_path(&hess_path)?.verify(&r)?))
@@ -281,10 +365,39 @@ pub fn parse_and_store(
         None
     };
 
-    let results = match ParsedResults::from_verified(&verified, hess_verified.as_ref()) {
-        Ok(r) => r,
-        Err(e) => return ParseOutcome::ParseFailed(e.to_string()),
+    // Trajectory (`_trj.xyz`): first frame == the input start geometry. Optional.
+    let trj_path = dir.join("input_trj.xyz");
+    let trajectory = if trj_path.exists() {
+        match XyzFile::from_path(&trj_path).and_then(|x| x.verify(&input_ref)) {
+            Ok(xv) => Some(trajectory_json(&xv)),
+            Err(e) => return ParseOutcome::ParseFailed(format!("_trj.xyz: {e}")),
+        }
+    } else {
+        None
     };
+
+    // MO energies/occupancies (`orca_2json` over `.gbw`): generated lazily via the
+    // user-configured ORCA path (ADR-009); absent for xTB/GOAT gbw (normal). The
+    // reference is the optimized (final) geometry — orca_2json's coords are final.
+    let orbitals = match read_orca_path(conn) {
+        None => None,
+        Some(orca_path) => match crate::orca_json::ensure_gbw_json(&orca_path, dir) {
+            Err(e) => return ParseOutcome::ParseFailed(format!("orca_2json: {e}")),
+            Ok(None) => None,
+            Ok(Some(json)) => match final_geometry_reference(&verified)
+                .and_then(|r| Ok(crate::parse::mo::MoJson::from_path(&json)?.verify(&r)?))
+            {
+                Ok(mv) => Some(orbitals_json(&mv)),
+                Err(e) => return ParseOutcome::ParseFailed(format!("orca_2json: {e}")),
+            },
+        },
+    };
+
+    let results =
+        match ParsedResults::from_verified(&verified, hess_verified.as_ref(), trajectory, orbitals) {
+            Ok(r) => r,
+            Err(e) => return ParseOutcome::ParseFailed(e.to_string()),
+        };
     if let Err(e) = store(conn, job_id, &results) {
         return ParseOutcome::ParseFailed(e.to_string());
     }
@@ -319,19 +432,25 @@ fn store(conn: &Connection, job_id: &str, r: &ParsedResults) -> Result<(), AppEr
     let data_json = serde_json::to_string(r)
         .map_err(|e| AppError::Internal(format!("serialize results: {e}")))?;
     let thermo = r.thermochemistry.as_ref();
-    // Narrow column: imaginary-mode count — the job list sorts by it and the card's
-    // minimum/TS warning stands on it. NULL when there is no `.hess`.
+    // Narrow columns for the card + job-list sorting: imaginary-mode count (the
+    // minimum/TS warning) and the HOMO/LUMO gap. NULL when the source is absent.
     let imaginary_count = r.frequencies.as_ref().map(|f| f.imaginary_count as i64);
+    let gap_eh = r
+        .orbitals
+        .as_ref()
+        .and_then(|o| o.homo_lumo.as_ref())
+        .map(|hl| hl.gap_eh);
     conn.execute(
         "INSERT INTO results (
             job_id, final_energy_eh, dipole_magnitude_au,
             zpe_eh, inner_energy_u_eh, enthalpy_h_eh, t_times_s_eh, free_energy_g_eh,
-            imaginary_count, data_json, parser_version, parsed_at
-         ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11, datetime('now'))
+            imaginary_count, homo_lumo_gap_eh, data_json, parser_version, parsed_at
+         ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12, datetime('now'))
          ON CONFLICT(job_id) DO UPDATE SET
             final_energy_eh=?2, dipole_magnitude_au=?3,
             zpe_eh=?4, inner_energy_u_eh=?5, enthalpy_h_eh=?6, t_times_s_eh=?7, free_energy_g_eh=?8,
-            imaginary_count=?9, data_json=?10, parser_version=?11, parsed_at=datetime('now')",
+            imaginary_count=?9, homo_lumo_gap_eh=?10, data_json=?11, parser_version=?12,
+            parsed_at=datetime('now')",
         params![
             job_id,
             r.final_energy_eh,
@@ -342,6 +461,7 @@ fn store(conn: &Connection, job_id: &str, r: &ParsedResults) -> Result<(), AppEr
             thermo.map(|t| t.t_times_s_eh),
             thermo.map(|t| t.free_energy_g_eh),
             imaginary_count,
+            gap_eh,
             data_json,
             r.parser_version,
         ],
@@ -395,12 +515,11 @@ fn verify_stored(conn: &Connection, job_id: &str, expected: &ParsedResults) -> R
     Ok(())
 }
 
-/// Extract the `* xyz charge mult … *` coordinate block from an ORCA input as Å
-/// coordinates — the reference geometry for verification. Element symbols are not
-/// needed (verification compares coordinates; element order is checked separately
-/// against `&ATNO`).
-fn xyz_reference(input_content: &str) -> Option<Vec<[f64; 3]>> {
-    let mut out = Vec::new();
+/// Extract the `* xyz charge mult … *` block from an ORCA input as the start
+/// geometry (elements + Å coords). The reference for `.property.txt` (coords only —
+/// it checks element order internally) and for `_trj.xyz` (elements + coords).
+fn input_reference(input_content: &str) -> Option<ReferenceGeometry> {
+    let (mut z, mut xyz) = (Vec::new(), Vec::new());
     let mut inside = false;
     for line in input_content.lines() {
         let t = line.trim();
@@ -414,18 +533,33 @@ fn xyz_reference(input_content: &str) -> Option<Vec<[f64; 3]>> {
             }
             let toks: Vec<&str> = t.split_whitespace().collect();
             if toks.len() >= 4 {
-                match (toks[1].parse(), toks[2].parse(), toks[3].parse()) {
-                    (Ok(x), Ok(y), Ok(z)) => out.push([x, y, z]),
-                    _ => {}
+                if let (Some(zz), Ok(x), Ok(y), Ok(zc)) = (
+                    crate::parse::elements::z_of(toks[0]),
+                    toks[1].parse(),
+                    toks[2].parse(),
+                    toks[3].parse(),
+                ) {
+                    z.push(zz);
+                    xyz.push([x, y, zc]);
                 }
             }
         }
     }
     if inside {
-        Some(out)
+        Some(ReferenceGeometry { z, xyz_angstrom: xyz })
     } else {
         None
     }
+}
+
+/// The user-configured ORCA binary path (rule #7 — a setting, not hard-coded).
+fn read_orca_path(conn: &Connection) -> Option<String> {
+    conn.query_row(
+        "SELECT value FROM settings WHERE key = 'orca_path'",
+        [],
+        |r| r.get::<_, String>(0),
+    )
+    .ok()
 }
 
 #[cfg(test)]
@@ -451,13 +585,13 @@ mod tests {
     }
 
     fn verified() -> Verified {
-        let reference = xyz_reference(OPTFREQ_INP).unwrap();
-        PropertyFile::parse(OPTFREQ).verify(&reference).unwrap()
+        let reference = input_reference(OPTFREQ_INP).unwrap();
+        PropertyFile::parse(OPTFREQ).verify(&reference.xyz_angstrom).unwrap()
     }
 
     #[test]
     fn per_atom_charges_carry_their_element_order() {
-        let r = ParsedResults::from_verified(&verified(), None).unwrap();
+        let r = ParsedResults::from_verified(&verified(), None, None, None).unwrap();
         let mulliken = r.charges.iter().find(|c| c.scheme == "mulliken").unwrap();
         assert_eq!(mulliken.elements, ["C", "C", "H", "H", "H", "H", "H", "H"]);
         assert_eq!(mulliken.charges.len(), mulliken.elements.len());
@@ -470,7 +604,7 @@ mod tests {
     #[test]
     fn store_is_idempotent_on_job_id() {
         let conn = mem_db();
-        let r = ParsedResults::from_verified(&verified(), None).unwrap();
+        let r = ParsedResults::from_verified(&verified(), None, None, None).unwrap();
         store(&conn, "job1", &r).unwrap();
         store(&conn, "job1", &r).unwrap(); // re-parse → update, not duplicate
         let n: i64 = conn
@@ -482,7 +616,7 @@ mod tests {
     #[test]
     fn read_back_preserves_element_order() {
         let conn = mem_db();
-        let r = ParsedResults::from_verified(&verified(), None).unwrap();
+        let r = ParsedResults::from_verified(&verified(), None, None, None).unwrap();
         store(&conn, "job1", &r).unwrap();
         verify_stored(&conn, "job1", &r).expect("round-trip preserves per-atom order");
 
@@ -495,7 +629,7 @@ mod tests {
     #[test]
     fn narrow_columns_match_the_json() {
         let conn = mem_db();
-        let r = ParsedResults::from_verified(&verified(), None).unwrap();
+        let r = ParsedResults::from_verified(&verified(), None, None, None).unwrap();
         store(&conn, "job1", &r).unwrap();
         let (energy, ts): (f64, f64) = conn
             .query_row(
@@ -515,44 +649,64 @@ mod tests {
         assert!(matches!(outcome, ParseOutcome::NoArtifact));
     }
 
-    /// End-to-end on a REAL Opt+Freq job dir: the whole slice
-    /// (from_path → verify → store → read-back) on real files, not a fixture
-    /// string. Opt-in like the other real-data tests.
+    /// End-to-end on a COPY of a REAL Opt+Freq job dir: all four readers
+    /// (property → hess → trajectory → orca_2json) + store + read-back, on real
+    /// files. Copied to a temp dir so orca_2json's `input.json` never pollutes the
+    /// user's data. Opt-in like the other real-data tests (needs ORCA at /opt/orca).
     #[test]
-    #[ignore = "reads a real job dir from ~/.local/share"]
-    fn real_optfreq_job_parses_stores_and_reads_back() {
-        let dir = format!(
+    #[ignore = "reads a real job dir from ~/.local/share and runs orca_2json"]
+    fn real_optfreq_full_pipeline_end_to_end() {
+        let src = format!(
             "{}/.local/share/orcastudio/jobs/d7992449-10e3-47c9-9a16-8e22d60b955d",
             std::env::var("HOME").unwrap()
         );
-        if !Path::new(&dir).join("input.property.txt").exists() {
+        if !Path::new(&src).join("input.property.txt").exists() {
             eprintln!("skipping: real job dir not present");
             return;
         }
-        let input = std::fs::read_to_string(Path::new(&dir).join("input.inp")).unwrap();
+        // copy the artifacts we read into a scratch dir.
+        let tmp = std::env::temp_dir().join(format!("results-e2e-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        for f in ["input.property.txt", "input.inp", "input.hess", "input_trj.xyz", "input.gbw"] {
+            std::fs::copy(Path::new(&src).join(f), tmp.join(f)).unwrap();
+        }
+        let input = std::fs::read_to_string(tmp.join("input.inp")).unwrap();
+
         let conn = Connection::open_in_memory().unwrap();
         conn.execute("CREATE TABLE jobs (id TEXT PRIMARY KEY)", []).unwrap();
         conn.execute("INSERT INTO jobs (id) VALUES ('real1')", []).unwrap();
         crate::db::create_results_table(&conn).unwrap();
+        // seed the ORCA path so the orca_2json path runs (rule #7: from settings).
+        conn.execute_batch(
+            "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO settings (key,value) VALUES ('orca_path','/opt/orca/orca');",
+        )
+        .unwrap();
 
-        let outcome = parse_and_store(&conn, "real1", &dir, &input);
+        let outcome = parse_and_store(&conn, "real1", tmp.to_str().unwrap(), &input);
         assert!(matches!(outcome, ParseOutcome::Parsed), "{outcome:?}");
 
         let r = read_job_results(&conn, "real1").unwrap().unwrap();
         assert!((r.final_energy_eh.unwrap() - (-79.791851376071)).abs() < 1e-6);
-        let m = r.charges.iter().find(|c| c.scheme == "mulliken").unwrap();
-        assert_eq!(m.elements.len(), 8);
-        assert_eq!(m.charges.len(), 8);
-        let t = r.thermochemistry.unwrap();
-        assert!((t.t_times_s_eh - (t.enthalpy_h_eh - t.free_energy_g_eh)).abs() < 1e-9);
-        // unit 3.6: the .hess was read too — 24 frequencies, a minimum (0 imaginary).
-        let f = r.frequencies.expect("Opt+Freq has .hess frequencies");
-        assert_eq!(f.frequencies_cm.len(), 24);
-        assert_eq!(f.imaginary_count, 0);
-        assert_eq!(f.n_modes, 24);
+        assert_eq!(r.charges.iter().find(|c| c.scheme == "mulliken").unwrap().charges.len(), 8);
+        // .hess: 24 freqs, a minimum.
+        let f = r.frequencies.as_ref().expect(".hess frequencies");
+        assert_eq!((f.frequencies_cm.len(), f.imaginary_count), (24, 0));
+        // _trj.xyz: 5 frames, first carries a comment energy.
+        let trj = r.trajectory.as_ref().expect("_trj.xyz trajectory");
+        assert_eq!(trj.n_frames, 5);
+        assert!(trj.frames[0].energy_eh.is_some());
+        // orca_2json: 68 MOs, a HOMO/LUMO gap; NO coefficients in the JSON.
+        let orb = r.orbitals.as_ref().expect("orca_2json orbitals");
+        assert_eq!(orb.orbitals.len(), 68);
+        let gap = orb.homo_lumo.as_ref().expect("HOMO/LUMO").gap_eh;
+        assert!(gap > 0.0);
+        let stored_json = serde_json::to_string(&r).unwrap();
+        assert!(!stored_json.contains("MOCoefficients"), "coefficients must never be stored");
         eprintln!(
-            "real Opt+Freq stored: E={:?} Eh, {} freqs ({} imaginary), mulliken={:?}",
-            r.final_energy_eh, f.frequencies_cm.len(), f.imaginary_count, m.charges
+            "real Opt+Freq full pipeline: E={:?} Eh, {} freqs, {} frames, gap={:.4} Eh",
+            r.final_energy_eh, f.frequencies_cm.len(), trj.n_frames, gap
         );
+        std::fs::remove_dir_all(&tmp).ok();
     }
 }

@@ -6,6 +6,8 @@ import type { JobStatus, ParsedResults } from "../types";
 /** 1 Hartree in J/mol = E_h (4.359744722e-18 J) × N_A (6.02214076e23 /mol).
  * CODATA 2018; the named factor, like BOHR_TO_ANGSTROM in the Rust readers. */
 const EH_TO_J_PER_MOL = 2_625_499.6;
+/** 1 Hartree in eV (CODATA 2018). Chemists read orbital gaps in eV. */
+const EH_TO_EV = 27.211_386_245_988;
 
 /** Minimal parsed-results card (Phase 3, ADR-012): final energy, dipole, atomic
  * charges (three schemes), thermochemistry with correct labels. Frequencies are
@@ -51,6 +53,24 @@ export function ResultsCard({ jobId, status }: { jobId: string; status: JobStatu
           {results.dipole && (
             <div>
               dipole <strong>{results.dipole.magnitude_au.toFixed(4)}</strong> a.u.
+            </div>
+          )}
+          {results.orbitals?.homo_lumo && (
+            <div>
+              HOMO–LUMO gap{" "}
+              <strong>{results.orbitals.homo_lumo.gap_eh.toFixed(4)}</strong> Eh{" "}
+              <span style={{ color: "var(--muted)" }}>
+                ({(results.orbitals.homo_lumo.gap_eh * EH_TO_EV).toFixed(2)} eV)
+              </span>
+            </div>
+          )}
+          {results.trajectory && (
+            <div>
+              trajectory <strong>{results.trajectory.n_frames}</strong> frames
+              <span style={{ color: "var(--muted)", fontSize: 11 }}>
+                {" "}
+                (optimization cycles)
+              </span>
             </div>
           )}
         </div>

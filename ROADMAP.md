@@ -242,7 +242,7 @@ the `[ ]` "Fragment library" item above.
 
 **Goal:** post-calculation analysis without any external tools.
 
-- [ ] **Authoritative parsers in Rust, over structured artifacts** ([ADR-012](wiki/architecture/adr-012-output-parsing-ownership.md);
+- [x] **Authoritative parsers in Rust, over structured artifacts** — all four built (units 3.4–3.7). ([ADR-012](wiki/architecture/adr-012-output-parsing-ownership.md);
       **no cclib**, `output.out` not authoritative). One per source, results → SQLite per job:
   - [x] `.property.txt` reader → energies, geometry, atomic charges (Mulliken/Loewdin/Mayer),
         dipole, thermochemistry (ZPE/H/S/G) — **done** (unit 3.4, `src-tauri/src/parse/property.rs`,
@@ -258,9 +258,13 @@ the `[ ]` "Fragment library" item above.
         **Cartesian** by a determiner run (pltvib÷raw = 2.0 for every atom, H/C = 1.0 not √12), so
         no ÷√m. `imaginary_count` is an explicit field; exact-zero trans/rot (5 linear / 6 not).
         Wired via `results.rs` (v6, `imaginary_count` column) + shown in the card.
-  - [ ] `_trj.xyz` / `.xyz` reader → trajectory frames / final geometry
-  - [ ] `orca_2json` over `.gbw` (Rust spawns the binary, ADR-009) → MO energies + occupations,
-        HOMO/LUMO
+  - [x] `_trj.xyz` / `.xyz` reader → trajectory frames / final geometry — **done** (unit 3.7,
+        `src-tauri/src/parse/xyz.rs`): multi-frame, comment energy (measured, uniform across job
+        types), frames = opt cycles not scan points. Stored in `data_json` (v7).
+  - [x] `orca_2json` over `.gbw` (Rust spawns the binary, ADR-009) → MO energies + occupations,
+        HOMO/LUMO — **done** (unit 3.7): spawn (`orca_json.rs`, path from settings, lazy-cached)
+        separate from the reader (`parse/mo.rs`, **streamed** — `MOCoefficients` skipped, never in
+        memory or DB; rule #5 gate measured). `homo_lumo_gap_eh` narrow column (v7).
 - [ ] **The per-atom seam** (now known concretely — Part A of the parse-sources probe measured
       it). Every per-atom array from an artifact passes through **one explicit mapping function
       at the boundary**, in Rust. Measured order source per array: `.property.txt` charges are
@@ -275,15 +279,16 @@ the `[ ]` "Fragment library" item above.
       *silent substitution of the compound*, so the import must mark undefined stereocenters
       rather than hide the choice. Small, and it does **not** wait for Phase 4.2 — it belongs
       wherever an imported structure is first shown.
-- [ ] **"No MO data" is a normal state, not an error.** `orca_2json` emits no JSON for an
-      xTB/GOAT `.gbw` (measured, unit 3.2) — a GOAT or xTB-pre-opt job simply has no orbital
-      energies/occupations. The results screen must render the MO/HOMO-LUMO panel as absent, not
-      crash or show an error, when the source is missing.
-- [~] Results screen per job: summary card. **Done (units 3.5–3.6)**: final energy, dipole, three
+- [x] **"No MO data" is a normal state, not an error.** — **done** (unit 3.7): `orca_json::ensure_gbw_json`
+      returns `Ok(None)` for an xTB/GOAT `.gbw` (converter produces no JSON), `orbitals` is `None`,
+      and the card simply omits the HOMO/LUMO row — no crash, no error.
+- [~] Results screen per job: summary card. **Done (units 3.5–3.7)**: final energy, dipole, HOMO/LUMO
+      gap (Eh + eV), trajectory frame count, three
       charge schemes (atom→value), thermochemistry (T·S labelled as T·S, plus a *derived* S in
       J/(mol·K)), and a **vibrational table with IR intensities + a prominent minimum/TS/neither
       verdict from `imaginary_count`** (the teaching moment). Absent sections hidden (SP/GOAT
-      render without crashing). Still to come: HOMO/LUMO gap (needs the `orca_2json` reader).
+      render without crashing). The summary card is now feature-complete for parsed data; richer
+      views (trajectory playback, isosurfaces, spectra) are the visualization items below.
 - [ ] Optimization trajectory playback in 3Dmol.js (multiframe xyz)
 - [ ] Orbital/density isosurfaces: wrap `orca_plot` (batch mode) → `.cube` → 3Dmol.js volumetric
       rendering; MO picker with energies and occupations

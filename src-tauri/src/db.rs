@@ -24,7 +24,9 @@ use crate::error::AppError;
 /// - v6: `results.imaginary_count` — negative-frequency count from `.hess` (unit
 ///   3.6). A narrow column the job list sorts by and the minimum/TS warning stands
 ///   on; NULL when a job has no `.hess`.
-const SCHEMA_VERSION: i64 = 6;
+/// - v7: `results.homo_lumo_gap_eh` — HOMO/LUMO gap from `orca_2json` (unit 3.7);
+///   the card shows it and the list will sort by it. NULL without an ORCA `.gbw`.
+const SCHEMA_VERSION: i64 = 7;
 
 /// Open (creating if needed) `orcastudio.db` under `data_dir` and migrate it to
 /// the current schema.
@@ -129,6 +131,14 @@ fn migrate(conn: &Connection) -> Result<(), AppError> {
         version = 6;
     }
 
+    // --- v6 -> v7: results.homo_lumo_gap_eh (unit 3.7). Guarded ALTER, as v6. ---
+    if version < 7 {
+        if !column_exists(conn, "results", "homo_lumo_gap_eh")? {
+            conn.execute_batch("ALTER TABLE results ADD COLUMN homo_lumo_gap_eh REAL;")?;
+        }
+        version = 7;
+    }
+
     // Persist the resulting version so subsequent runs skip completed steps.
     conn.execute(
         "UPDATE settings SET value = ?1 WHERE key = 'schema_version'",
@@ -155,6 +165,7 @@ pub(crate) fn create_results_table(conn: &Connection) -> Result<(), AppError> {
             t_times_s_eh        REAL,
             free_energy_g_eh    REAL,
             imaginary_count     INTEGER,
+            homo_lumo_gap_eh    REAL,
             data_json           TEXT NOT NULL,
             parser_version      INTEGER NOT NULL,
             parsed_at           TEXT NOT NULL DEFAULT (datetime('now'))
@@ -397,5 +408,28 @@ mod tests {
         migrate(&conn).expect("v5 -> v6 should add the column");
         assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
         assert!(column_exists(&conn, "results", "imaginary_count").unwrap());
+        // migrate() runs fully forward, so v7's column is present too.
+        assert!(column_exists(&conn, "results", "homo_lumo_gap_eh").unwrap());
+    }
+
+    #[test]
+    fn migrate_v6_to_v7_adds_homo_lumo_gap() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO settings (key, value) VALUES ('schema_version', '6');
+             CREATE TABLE jobs (id TEXT PRIMARY KEY);
+             CREATE TABLE results (
+                job_id TEXT PRIMARY KEY, final_energy_eh REAL, dipole_magnitude_au REAL,
+                zpe_eh REAL, inner_energy_u_eh REAL, enthalpy_h_eh REAL, t_times_s_eh REAL,
+                free_energy_g_eh REAL, imaginary_count INTEGER, data_json TEXT NOT NULL,
+                parser_version INTEGER NOT NULL, parsed_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );",
+        )
+        .unwrap();
+        assert!(!column_exists(&conn, "results", "homo_lumo_gap_eh").unwrap());
+        migrate(&conn).expect("v6 -> v7");
+        assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
+        assert!(column_exists(&conn, "results", "homo_lumo_gap_eh").unwrap());
     }
 }

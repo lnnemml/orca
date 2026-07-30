@@ -5,6 +5,7 @@ mod db;
 mod error;
 mod local_backend;
 mod models;
+mod orca_json;
 mod output_search;
 mod parse;
 mod result_extraction;

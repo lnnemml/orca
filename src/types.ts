@@ -53,6 +53,19 @@ export interface ParsedResults {
     scale_factor: number | null;
     unknown_sections: string[];
   } | null;
+  /** Optimization/scan trajectory from _trj.xyz (frames are opt cycles, not scan
+   * points), or null for a single-point job. */
+  trajectory: {
+    n_frames: number;
+    elements: string[];
+    frames: { energy_eh: number | null; xyz_angstrom: [number, number, number][] }[];
+  } | null;
+  /** MO energies/occupancies from orca_2json (no coefficients), or null (xTB/GOAT). */
+  orbitals: {
+    energy_unit: string;
+    orbitals: [number, number][];
+    homo_lumo: { homo_eh: number; lumo_eh: number; gap_eh: number } | null;
+  } | null;
   unknown_blocks: string[];
 }
 

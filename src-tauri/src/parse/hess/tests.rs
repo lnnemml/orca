@@ -2,9 +2,9 @@
 //! own runs — rule #7 is about not redistributing ORCA itself). Both an ethane
 //! minimum and a saddle point are used: the saddle carries the imaginary mode.
 
-use super::{HessFile, ReferenceGeometry};
+use super::HessFile;
 use crate::parse::elements::z_of;
-use crate::parse::ParseError;
+use crate::parse::{ParseError, ReferenceGeometry};
 
 macro_rules! fixture {
     ($name:literal) => {

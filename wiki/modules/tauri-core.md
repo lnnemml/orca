@@ -17,8 +17,9 @@ never runs a binary). The runtime mechanics of running ORCA live in
 
 - `lib.rs` — Tauri builder, setup hook, exit handling, invoke-handler registration.
 - `db.rs` — SQLite open + versioned migrations (v1–v5).
-- `results.rs` — store/read parsed `.property.txt` into the `results` table (ADR-012); the
-  completion hook lives in `local_backend`. See `modules/artifact-readers.md`.
+- `results.rs` — store/read parsed results (all four artifact readers) into the `results` table
+  (ADR-012); the completion hook lives in `local_backend`. See `modules/artifact-readers.md`.
+- `orca_json.rs` — spawn `orca_2json` (ADR-009), lazy-cached gbw→JSON in the job dir (unit 3.7).
 - `error.rs` — `AppError` (thiserror).
 - `sidecar.rs` — `SidecarManager`: spawn/health-poll/kill uvicorn; the version handshake.
 - `commands/{settings,jobs,molecules}.rs` — Tauri command surface (thin wrappers over `*_conn`).
@@ -60,10 +61,20 @@ survives a restart.
   **guarded** `ALTER` (`column_exists` via `PRAGMA table_info`) so the additive step is idempotent
   across paths — `create_results_table` already carries the column for a fresh install, and the
   guard covers a DB that stopped at v5.
+- **v7** — `results.homo_lumo_gap_eh REAL` (nullable), the HOMO/LUMO gap from `orca_2json` (unit
+  3.7); same guarded-`ALTER` pattern. NULL without an ORCA `.gbw` (xTB/GOAT).
+  - **What `data_json` gains (units 3.6–3.7):** vibrational data (frequencies/IR/normal-mode
+    matrix with the `$atoms` element order), the `_trj.xyz` **trajectory** (frames = opt cycles,
+    element order stored once + per-frame Å coords + comment energy), and MO **energies +
+    occupancies**. **`MOCoefficients` are never stored** — the n×n block is ~52–62% of the
+    orca_2json JSON and useless to us (rule #5); the reader streams past it. Trajectory-size note:
+    the longest measured run is 26 frames × 8 atoms; a realistic 30-cycle × 50-atom opt is ~tens of
+    KB of JSON — kept inline; if a pathological run ever bloated the row, the switch is frames→file
+    path (not done, not needed).
 - The queue statuses (`queued`, `cancelled`) and `parsed` needed **no migration** — `status` is TEXT.
-- Migration tests assert preservation across each step (…`migrate_v4_to_v5_adds_results_and_preserves_jobs`,
-  `migrate_v5_to_v6_adds_imaginary_count_via_guarded_alter`; version assertions use `SCHEMA_VERSION`,
-  not a literal). Verified against a copy of the real DB: 13 existing jobs preserved across 3→4.
+- Migration tests assert preservation across each step (…`migrate_v5_to_v6_adds_imaginary_count_via_guarded_alter`,
+  `migrate_v6_to_v7_adds_homo_lumo_gap`; version assertions use `SCHEMA_VERSION`, not a literal).
+  Verified against a copy of the real DB: 13 existing jobs preserved across 3→4.
 
 **Per-atom data rule (the load-bearing storage invariant).** Per-atom arrays go into `data_json`
 **with the element sequence they were verified against** — charges next to their own

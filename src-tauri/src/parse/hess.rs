@@ -43,7 +43,7 @@ use serde::Serialize;
 
 use super::elements::{strip_fragment_suffix, z_of};
 use super::units::Angstrom;
-use super::ParseError;
+use super::{ParseError, ReferenceGeometry};
 
 /// Measured max is ≈ 150 KB (saddle `99e805f5`); 16 MB is a wide safety margin.
 const MAX_BYTES: u64 = 16 * 1024 * 1024;
@@ -51,14 +51,6 @@ const MAX_BYTES: u64 = 16 * 1024 * 1024;
 /// Distance post-condition tolerance (rule #11): a missed Bohr→Å conversion shows
 /// up as whole-Ångström distance errors, far above this.
 const DISTANCE_TOL_ANGSTROM: f64 = 1e-4;
-
-/// A reference geometry the **caller** supplies to [`HessFile::verify`] — the
-/// optimized geometry the Freq was computed at (e.g. the `.property.txt` final
-/// `$Geometry`, or `input.xyz`). The reader never reads it from disk itself.
-pub struct ReferenceGeometry {
-    pub z: Vec<u8>,
-    pub xyz_angstrom: Vec<[f64; 3]>,
-}
 
 // --------------------------------------------------------------------------- //
 // Layer 1 — generic tokenizer                                                   //

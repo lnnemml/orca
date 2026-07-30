@@ -17,8 +17,21 @@
 
 pub mod elements;
 pub mod hess;
+pub mod mo;
 pub mod property;
 pub mod units;
+pub mod xyz;
+
+/// A reference geometry the **caller** supplies to a reader's `verify` — a geometry
+/// we already know that the artifact should match (an `input.inp` start geometry, or
+/// the optimized `.property.txt` final geometry). The reader never reads it from
+/// disk itself (no hidden cross-module dependency). Shared by the `.hess` and `.xyz`
+/// readers; `property` checks element order internally (via `&ATNO`) and takes only
+/// coordinates.
+pub struct ReferenceGeometry {
+    pub z: Vec<u8>,
+    pub xyz_angstrom: Vec<[f64; 3]>,
+}
 
 /// Errors shared by the artifact readers. Converts into [`crate::error::AppError`]
 /// so command-facing code keeps returning `Result<T, AppError>`.

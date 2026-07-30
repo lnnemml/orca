@@ -217,6 +217,43 @@ final-geometry source, nothing vibrational.
 Other converters present in `/opt/orca` (not run here): `orca_2aim`, `orca_2mkl`, `orca_mapspc`
 (spectrum broadening), `orca_chelpg`. Named for future probes, not measured.
 
+#### `orca_2json` scaling — the rule-#5 gate (measured, unit 3.7)
+The JSON is dominated by `MolecularOrbitals.MOs[].MOCoefficients` — an n×n matrix (n = basis
+functions) we do **not** need (we want only `OrbitalEnergy` + `Occupancy`).
+
+| job | atoms / basis | `.gbw` | `.json` | nMO | MOCoeff bytes | % of json |
+|---|---|---|---|---|---|---|
+| ethane (def2-SVP) | 8 | 1.08 MB | 198 KB | 68 | 104 KB | **52.5%** |
+| saddle (def2-TZVP) | 19 | 1.97 MB | **3.5 MB** | 314 | 2.17 MB | **62%** |
+
+(`MOCoeff bytes` = sum of `len(json.dumps(MOCoefficients))` over MOs.) **Extrapolation** (shown,
+not felt): fit `nBF ≈ 31·heavy + 5·H` to the saddle (8 heavy·31 + 11 H·5 = 303 ≈ measured 314);
+json ∝ nBF². A 50-atom organic (~30 heavy + 20 H) → 1030 BF → 3.5 MB·(1030/314)² ≈ **38 MB**; a
+60-atom (~35 heavy + 25 H) → 1210 BF → ≈ **52 MB**, of which ~60% (~23–31 MB) is coefficients we
+discard. Tens of MB for the author's realistic case — a real rule-#5 hazard, not hundreds of MB.
+
+**Flags (from `orca_2json`'s own `-h` output, not memory):** `-json/-bson/-ubjson/-msgpack`
+(format only), `-gbw`, `-property*` (property txt↔json). **No flag omits MO coefficients.**
+
+**Resolution (gate PASS):** stream the file with `serde_json::from_reader` (already a dependency)
+into a struct that simply **omits** `MOCoefficients` — serde consumes it as `IgnoredAny`
+(tokenized past, never allocated), so peak memory is the two small per-MO arrays, not the whole
+file. Reading it whole into a `serde_json::Value` would be the `.out` mistake in JSON clothing.
+
+### `_trj.xyz` comment line (measured — unit 3.7)
+Verbatim, **identical format on every frame of every job type** (Opt / GOAT / scan) and on `.xyz`:
+
+```
+Coordinates from ORCA-job input E -79.791800280837   ← Opt+Freq _trj frame
+Coordinates from ORCA-job input E -45.164880639800   ← GOAT _trj frame
+Coordinates from ORCA-job input E -79.781552926389   ← scan _trj frame
+Coordinates from ORCA-job input E -79.791851376071   ← .xyz (final geometry)
+```
+
+So the comment carries the **frame energy in Eh** after `" E "` — parseable to `Option<f64>`,
+uniform across job types. `.allxyz` is **different** (`… Relaxed Surface Scan Step N E …`, and
+`>`-separated) — out of scope (Phase 4.5), not fed to the xyz reader.
+
 ### Relaxed scan artifacts (measured — unit 3.3)
 A real 6-point relaxed C–C scan of ethane was run **from the terminal** (not the app — the scan
 generator is Phase 4.5), `! r2SCAN-3c Opt TightSCF` + `%geom Scan B 0 1 = 1.4, 2.4, 6 end end`,
