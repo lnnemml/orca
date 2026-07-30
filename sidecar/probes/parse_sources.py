@@ -614,9 +614,15 @@ def probe_units(job: Path) -> dict:
         col = _parse_normal_modes_col(hess, 6)
         if col is not None:
             r["normal_modes"] = {
-                "unit": "dimensionless (normalized Cartesian displacement)",
-                "method": "(2) numeric: sum-of-squares of a mode column",
+                "unit": "unit-norm displacement; Cartesian-vs-mass-weighted UNDETERMINED",
+                "method": "(2) sum-of-squares of a mode column = 1.0 proves "
+                          "normalization, NOT Cartesian-ness (mass-weighted modes "
+                          "are unit-norm too)",
                 "sum_of_squares_mode6": round(float((col ** 2).sum()), 6),
+                "determiner": "per-atom ratio of orca_pltvib frames (Å) minus "
+                              "equilibrium against the raw column — ethane C/H: one "
+                              "scalar for all 8 ⇒ Cartesian; two groups differing by "
+                              "√12≈3.46 ⇒ mass-weighted (gate for the .hess reader)",
                 "note": "orca_pltvib scales the raw vector by 2.0 for animation "
                         "amplitude (measured) — that factor is display, not a unit",
             }

@@ -26,7 +26,8 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 - [tauri-core.md](modules/tauri-core.md) — Rust core: commands, events, job state machine
 - [sidecar.md](modules/sidecar.md) — Python service: endpoints, dependencies
 - [execution-backends.md](modules/execution-backends.md) — LocalBackend / SshBackend details
-- [parser.md](modules/parser.md) — result extraction: streaming regex + cclib
+- [parser.md](modules/parser.md) — result extraction: streaming (Tier 1) + authoritative artifact readers (Tier 2)
+- [artifact-readers.md](modules/artifact-readers.md) — `src-tauri/src/parse/`: two-layer tokenizer + typed accessors, canonical units held by the `Angstrom` type, post-conditions; `.property.txt` built (the template), 3 others not started (ADR-012)
 - [visualization.md](modules/visualization.md) — 3Dmol.js integration, cubes, spectra
 - [scene.md](modules/scene.md) — Scene/SceneFragment pure core: merge to flat xyz, index-space invariant, reset-detection primitive (ADR-008)
 - [manual-index.md](modules/manual-index.md) — manual indexing pipeline + keyword map
@@ -62,4 +63,4 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 
 ---
 
-*Page count: 43. Last structural update: 2026-07-30 (parse-ownership unit 3.2: +adr-012-output-parsing-ownership — own Rust artifact parsers after verifying per-artifact atom order).*
+*Page count: 44. Last structural update: 2026-07-30 (unit 3.4: +modules/artifact-readers.md — the `.property.txt` reader, first of four, canonical units held by type).*

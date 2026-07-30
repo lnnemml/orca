@@ -261,7 +261,7 @@ never from convention. `UNDETERMINED` is a real, allowed result. Produced by `pr
 | energy — `orca_2json` MO | **Eh** | (1) `EnergyUnit "Eh"` | — |
 | frequency — `.hess $vibrational_frequencies` | **cm⁻¹** | (2) equals `.out` `cm**-1` listing | 1.0 |
 | frequency — `.property.txt &FREQ` | **cm⁻¹** | (1) `&Units "cm^-1"` | — |
-| normal modes — `.hess $normal_modes` | **dimensionless** (unit-norm Cartesian displacement) | (2) Σ² of a mode column | 1.0 (pltvib scales ×2.0 for display) |
+| normal modes — `.hess $normal_modes` | **unit-norm displacement**; Cartesian-vs-mass-weighted **UNDETERMINED** | (2) Σ² of a mode column = 1.0 proves *normalization*, not Cartesian-ness (mass-weighted modes are unit-norm too) | 1.0 |
 | IR intensity — `.hess $ir_spectrum` col2 | **km/mol** | (1) `.out` `IR SPECTRUM` header names it; (2) col2 = `.out` Int | 1.0 |
 | dipole — `.property.txt $SCF_Dipole_Moment` | **a.u.** | (1) `&Units "a.u."` | — |
 | gradient — `.property.txt $SCF_Nuc_Gradient &grad` | **Eh/Bohr** | (1) `.out` labels `Eh/bohr` (property has no literal) | — |
@@ -278,6 +278,13 @@ intensity **km/mol**. The one conversion every geometry reader owes at its bound
 `$dipole_derivatives` stay `UNDETERMINED` — determiners: reconstruct frequencies from the
 Hessian + atomic masses (expected Eh/Bohr²); cross-check `$dipole_derivatives` against IR
 intensities. Neither is a Results-screen display quantity.
+
+`$normal_modes` is `UNDETERMINED` on **Cartesian-vs-mass-weighted** — Σ² = 1.0 proves the column
+is *normalized*, not that it is Cartesian (mass-weighted eigenvectors are unit-norm too).
+Determiner (a gate for the `.hess` reader, not run here): per-atom ratio of `orca_pltvib` frames
+(Å) minus the equilibrium geometry against the raw `$normal_modes` column — on ethane's C and H a
+**single** scalar across all 8 atoms ⇒ Cartesian; **two** groups differing by √12 ≈ 3.46 ⇒
+mass-weighted.
 
 ---
 

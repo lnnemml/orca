@@ -29,6 +29,10 @@ pub enum AppError {
     /// `Sidecar` so the source of the failure stays legible.
     #[error("internal error: {0}")]
     Internal(String),
+
+    /// An artifact reader (ADR-012) failed to parse or a post-condition tripped.
+    #[error("parse error: {0}")]
+    Parse(#[from] crate::parse::ParseError),
 }
 
 impl Serialize for AppError {

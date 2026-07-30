@@ -2541,3 +2541,48 @@ and marks the scan gap **closed**. ADR-002/009/010 and the proposal untouched; c
 requirements. **Wiki:** `parse-sources.md` +scan inventory +units table, scan gap closed;
 `output-files.md` +scan rows +units note; ROADMAP Phase 4.5 scan parser sourced to `.dat`, Phase
 3 "+no-MO-is-normal" item; CLAUDE.md +rule #11; ADR-012 +amendment. Page count unchanged (43).
+
+## [2026-07-30] session | First artifact reader in Rust: .property.txt (canonical units by type, rule #11)
+
+Unit 3.4 — first code that reads numbers from an artifact (ADR-012 authoritative tier). Written as
+the **template** for the other three readers. `src-tauri/src/parse/`: `mod.rs` (+`ParseError`,
+`#[from]` into `AppError`), `units.rs` (`Angstrom`), `elements.rs` (symbol↔Z, `C(1)`-suffix strip),
+`property.rs` + `property/tests.rs`. Not wired to the pipeline / `results` schema (later units);
+`mod parse` is `#[allow(dead_code)]`.
+
+**Two-layer parser** (the template's spine): a generic `$Block…$End` / `&prop [&Type,&Dim,&Units]`
+tokenizer that knows the grammar not the blocks and keeps every block (unknown ones surface via
+`unknown_block_names()`, rule #10), then typed accessors that convert to canonical units at the
+boundary.
+
+**Units held by TYPE, not a comment (the unit's whole point, rule #11).** `Angstrom` has a private
+field in its own module; `property` is a *sibling*, so `Angstrom(x)` does not compile there — the
+reader must pick `from_bohr` (convert) or `from_angstrom` (already Å). The measured trap: `.property.txt`
+`$Geometry` is Bohr, the app is Å; a forgotten ×0.529 renders a plausible 1.889×-too-large molecule.
+Test `missed_bohr_conversion_fails_loudly` builds a geometry from Bohr magnitudes typed as Å and
+asserts the geometry post-condition rejects it (~1.03 Å Δ). Without that test rule #11 is a slogan.
+
+**Post-conditions are errors, not warnings:** geometry (first `$Geometry` after conversion vs a
+known-Å reference, max Δ < 1e-4), `&ATNO` order == geometry order, lengths (charges=N, grad=3N,
+FREQ=3N) checked against N, never trusted from `&Dim`.
+
+**Three measured traps encoded in structure, not prose:** (a) `entropyS` field named
+`t_times_s_eh` — measured `entropyS == enthalpyH − freeEnergyG`, i.e. T·S in Eh, unreadable as S;
+(b) scan `$Geometry` blocks are opt cycles not scan points (test locks 26 for the 6-point scan);
+(c) `$SCF_Nuc_Gradient &grad` bare positional, bound to its `$Geometry` via `geometry_index` in the
+type. Also measured: Mayer's charge field is `&QA` (not `&AtomicCharges`); absent blocks → `None`
+(GOAT parses: only Geometry + Single_Point_Data), a reader crashing on GOAT is a bug.
+
+**Tests:** 13, against real SP / Opt+Freq(ethane) / GOAT / relaxed-scan `.property.txt` fixtures in
+`src-tauri/tests/fixtures/` (author's own runs — rule #7 is about not redistributing ORCA, not our
+outputs; stated in the commit). `elEnergy == -79.7918513760713` (cross-check with `.out`) passes.
+Full suite: 86 passed, 0 failed, clean build (no warnings).
+
+**Task 0 (did not wait):** corrected `$normal_modes` label in `parse-sources.md` + the probe script
+— Σ²=1.0 proves normalization, not Cartesian-ness; Cartesian-vs-mass-weighted is now UNDETERMINED
+with the determiner named (a gate for the `.hess` reader, not run here).
+
+**Wiki:** +`modules/artifact-readers.md` (the template, present tense); `parser.md` Tier 2
+"under way" (first reader built, 3 not started — precise); ROADMAP Phase 3 `.property.txt` → `[x]`
++ an entropyS-labelling card item; index count → 44. No SQLite `results` schema, no UI, no three
+other readers — all out of scope per the unit. ADR-002/009/010/012 untouched; cclib not in requirements.

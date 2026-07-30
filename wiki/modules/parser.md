@@ -1,8 +1,11 @@
 # Module: Result parsing
 
-**Status:** two Rust extractors built — minimal result extraction and an incremental streaming
-convergence parser. The authoritative tier is not started; per
-[ADR-012](../architecture/adr-012-output-parsing-ownership.md) it is now **Rust over ORCA's
+**Status:** two Rust extractors built (minimal result extraction + the incremental streaming
+convergence parser), and the authoritative tier is now **under way**: the first of its four
+artifact readers, `.property.txt`, is **built and tested** (`src-tauri/src/parse/`, see
+[artifact-readers.md](artifact-readers.md)); `.hess`, `_trj.xyz`/`.xyz`, and `orca_2json` are not
+started, and none is wired into the job pipeline yet. Per
+[ADR-012](../architecture/adr-012-output-parsing-ownership.md) the tier is **Rust over ORCA's
 structured artifacts**, not a sidecar/cclib parse (cclib crashes on ORCA 6.1.0 output — see
 [parse-sources.md](../orca/parse-sources.md)).
 
@@ -13,14 +16,16 @@ Turn ORCA output into structured data. Two tiers, by design:
 1. **Streaming tier (Rust, during a run)** — lightweight, tolerant regexes over incoming log
    lines for live UI only: SCF iteration energies, per-cycle geometry energy, gradient norms vs
    convergence criteria. Tolerant to partial lines; **never authoritative**.
-2. **Authoritative tier (Rust, over structured artifacts — ADR-012) — not started.** After a
-   run, own parsers read `.property.txt` (energies, geometry, charges, dipole, thermochemistry),
-   `.hess` (signed frequencies, normal modes, IR), `_trj.xyz`/`.xyz` (trajectory, final
-   geometry), and `orca_2json` over `.gbw` (MO energies/occupations) → SQLite `results`.
-   Everything the Results screen shows comes from here. `output.out` is **not** an authoritative
-   source (rule #5 holds by construction — the multi-MB text is never parsed whole). cclib is
-   **not** used. Part A of the parse-sources probe verified every artifact's atom order equals
-   the input order, so each artifact's position→`AtomId` map is the identity today.
+2. **Authoritative tier (Rust, over structured artifacts — ADR-012) — under way.** After a run,
+   own parsers read `.property.txt` (energies, geometry, charges, dipole, thermochemistry) —
+   **built** (`src-tauri/src/parse/property.rs`, [artifact-readers.md](artifact-readers.md)) —
+   plus `.hess` (signed frequencies, normal modes, IR), `_trj.xyz`/`.xyz` (trajectory, final
+   geometry), and `orca_2json` over `.gbw` (MO energies/occupations) — **not started** → SQLite
+   `results`. Everything the Results screen shows comes from here. `output.out` is **not** an
+   authoritative source (rule #5 holds by construction — the multi-MB text is never parsed
+   whole). cclib is **not** used. Part A of the parse-sources probe verified every artifact's
+   atom order equals the input order, so each artifact's position→`AtomId` map is the identity
+   today; the `.property.txt` reader enforces that with a per-block order + Bohr→Å post-condition.
 
 Formats and the ORCA-6 output gotchas these parsers rely on are documented in
 `wiki/orca/output-files.md`.
