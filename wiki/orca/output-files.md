@@ -8,7 +8,7 @@
 | `.hess` | Hessian (frequencies) | Fetch for Freq jobs |
 | `.cube` | Volumetric data from orca_plot | Generate lazily; cache; never in DB |
 | `.densities`, `.tmp*` | Scratch | Delete on cleanup |
-| `.property.txt` / property files | Machine-readable results (ORCA 6) | Evaluate as parse source alongside cclib |
+| `.property.txt` / property files | Machine-readable results (ORCA 6) | **Measured** parse source: `$Block…$End` with energies, `$Geometry`, population `&AtomicCharges`, `$SCF_Dipole_Moment`, `$THERMOCHEMISTRY_Energies`, `$Hessian` — see [parse-sources.md](parse-sources.md) |
 
 ## Completion signals
 - Success: `ORCA TERMINATED NORMALLY` near end of output + `.exit_code` = 0 (our marker).
@@ -18,6 +18,16 @@
 ## Imaginary frequencies
 Negative frequencies in Freq output = saddle point, not a minimum. The Results screen must
 flag this loudly — core teaching moment.
+
+**Measured (ORCA 6.1.0, saddle job `99e805f5`, see [parse-sources.md](parse-sources.md)):**
+the 6 rigid-body (translation/rotation) modes are printed as **exactly `0.0000000000000000`**
+in `.hess`, `.out`, and `.property.txt &FREQ` — already projected out, no small residue to
+threshold. The imaginary mode appears with its **negative sign preserved** in `.hess`
+(`6  -33.6608873883281419`) and `.out` (`6:  -33.66 cm**-1  ***imaginary mode***`), and ORCA
+itself emits the `***imaginary mode***` marker. So a cutoff is not needed to drop trans/rot
+modes (they are literally 0); ORCA's own marker is the measured signal for a real imaginary.
+Note: cclib 1.8.1 cannot report any of this — it crashes before reaching `vibfreqs` (see
+parse-sources.md §1).
 
 ## What to look for in an output (search presets)
 The output-search feature (`output_search.rs`, Phase 2.7) ships one-click chips for the things a

@@ -2386,3 +2386,48 @@ silent compound substitution, so it does not wait for 4.2).
 content pages (was a stale 38; the proposal was one of the missing three, ADR-010/011 the other
 two). Structural-update date → 2026-07-30. **Next:** none of this is built — implementation of
 Phase 4.2 stage 1 is the first code unit, and it starts only when the roadmap says so.
+
+## [2026-07-30] ingest | Measure ORCA 6.1.0 parse sources (cclib vs .hess/_trj/property/orca_2json)
+
+Probe unit 3.1 — measure, don't decide. **No decision, no ADR; `parser.md`, ROADMAP Phase 3,
+ADR-002 untouched** (they state the current plan; if the probe overturns it, they change with a
+future ADR-012, not now). The recommendation was delivered separately in the report, not written
+into the wiki. Probe script committed: `sidecar/probes/parse_sources.py` (re-runnable on the next
+ORCA version). cclib installed into the sidecar venv for the probe (it was deliberately not a
+dependency yet — `requirements.txt`: "cclib / ase are added in later phases").
+
+**Environment:** cclib **1.8.1** (measured LATEST on PyPI), Python 3.12.3, ORCA **6.1.0**, on four
+real job dirs (SP `09de617c`, Opt+Freq min `d7992449`, Opt+Freq saddle `99e805f5`, GOAT `04aeca22`).
+
+**Headline (unverified-assumption caught):** cclib 1.8.1 **crashes on every ORCA 6.1.0 output** —
+`IndexError` in `orcaparser.py:2799 _append_scfvalues_scftargets` (SP/Opt+Freq/saddle),
+`AssertionError` (GOAT). Our docs listed "cclib parses ORCA 6.1.0" as plan; it was never true for
+the released cclib. Before dying (3–21 ms in), the parser harvests only `atomnos`, `atomcoords[0]`
+(**initial** geometry, `len 1`), `natom`, `scfenergies` (`len 1`, first cycle), `metadata` — and
+**never reaches** vibfreqs/charges/moenergies/homos/thermochemistry/etenergies.
+
+**Atom-order seam:** cclib `atomnos`+`atomcoords[0]` vs the launching `input.inp` xyz — **exact
+match on all four** (count + element order + coord Δ = 0.0). Caveat recorded: this is the *initial*
+geometry (cclib crashed before the optimized one); final-order invariance rests on constant natom
+in `_trj`/`.property.txt` and `C1` point group.
+
+**Imaginary/near-zero (measured direct from artifacts, since cclib can't):** 6 trans/rot modes are
+printed **exactly `0.0`** (`.hess`, `.out`, `.property.txt &FREQ`) — no residue to threshold; the
+saddle's imaginary mode keeps its sign, `-33.6608873883281419` in `.hess` / `-33.66 cm**-1
+***imaginary mode***` in `.out`, ORCA emitting the marker itself.
+
+**Rule #5:** largest `output.out` = 647 818 B (GOAT); cclib import floor ≈ 83 MiB peak RSS;
+full-parse peak **unmeasurable** (no parse completes).
+
+**Structured sources inventoried:** `.hess` (14 sections incl. signed `$vibrational_frequencies`,
+`$normal_modes`, `$ir_spectrum`); `_trj.xyz` (5/8/18 frames); `.property.txt` (energies, `$Geometry`,
+Mulliken/Loewdin/Mayer `&AtomicCharges`, `$SCF_Dipole_Moment`, `$Hessian`, `$THERMOCHEMISTRY_Energies`
+with zpe/H/S/G; GOAT has only Geometry+Single_Point_Data); `/opt/orca/orca_2json input.gbw`
+(needs `LD_LIBRARY_PATH=/opt/orca`, rc 0 → JSON with `Molecule.Atoms` final Angs coords +
+`MolecularOrbitals` 68 MOs with `OrbitalEnergy`/`Occupancy` in Eh + Charge/Mult/PointGroup; **no**
+freq/thermo). Full per-quantity source table lives in `wiki/orca/parse-sources.md`.
+
+**Gaps left (named, not faked):** no scan (`%geom Scan`) job → scan parsing unmeasured; no TD-DFT
+job → etenergies/etoscs unmeasured; cclib full-parse RSS unmeasurable; cclib *dev/git* build (not
+on PyPI) not tested. **Wiki:** +`orca/parse-sources.md`; `output-files.md` `.property.txt` row and
+Imaginary-frequencies section replaced with measured facts; index count → 42.

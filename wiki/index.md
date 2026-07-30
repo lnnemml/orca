@@ -40,6 +40,7 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 - [goat.md](orca/goat.md) — `! XTB GOAT` conformer search: observed ensemble format, atom-order preservation, `%pal` cost (verified on ORCA 6.1.0)
 - [constraints.md](orca/constraints.md) — `%geom Constraints` block: B/A/D/C syntax, value/no-value, **0-based index base settled by a real ORCA 6.1.0 run**, out-of-range segfault
 - [xtb.md](orca/xtb.md) — standalone GFN2-xTB pre-optimization: **1-based `$constrain` (≠ ORCA!)** settled by a real xtb 6.6.1 run, spring-held constraints + the measured tolerance, charge/multiplicity
+- [parse-sources.md](orca/parse-sources.md) — **measured** parse sources for ORCA 6.1.0: cclib 1.8.1 crashes on 6.1 output; `.hess`/`.property.txt`/`_trj.xyz`/`orca_2json` inventory; per-quantity source table (probe: `sidecar/probes/parse_sources.py`)
 
 ## Chemistry (навчальні нотатки, українською)
 
@@ -60,4 +61,4 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 
 ---
 
-*Page count: 41. Last structural update: 2026-07-30 (editor planning/ingest: +adr-010-editor-identity-state, +adr-011-editor-graphics-stack, +proposals/editor-architecture-2026-07-30 — the last had been an index orphan since commit 67c763c).*
+*Page count: 42. Last structural update: 2026-07-30 (parse-source probe unit 3.1: +orca/parse-sources.md — measured cclib-vs-artifacts evidence for ORCA 6.1.0).*
