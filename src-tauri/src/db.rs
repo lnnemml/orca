@@ -26,7 +26,7 @@ use crate::error::AppError;
 ///   on; NULL when a job has no `.hess`.
 /// - v7: `results.homo_lumo_gap_eh` — HOMO/LUMO gap from `orca_2json` (unit 3.7);
 ///   the card shows it and the list will sort by it. NULL without an ORCA `.gbw`.
-const SCHEMA_VERSION: i64 = 7;
+const SCHEMA_VERSION: i64 = 8;
 
 /// Open (creating if needed) `orcastudio.db` under `data_dir` and migrate it to
 /// the current schema.
@@ -137,6 +137,31 @@ fn migrate(conn: &Connection) -> Result<(), AppError> {
             conn.execute_batch("ALTER TABLE results ADD COLUMN homo_lumo_gap_eh REAL;")?;
         }
         version = 7;
+    }
+
+    // --- v7 -> v8: backfill jobs.energy from the AUTHORITATIVE results tier
+    // (unit 3.9 defect 2). Jobs parsed before the header energy was sourced from
+    // `results` have a NULL `jobs.energy` (the output.out tail regex missed the
+    // final energy on a large molecule — measured 164 KB past the 64 KB window on
+    // a 33-atom Freq) while `results.final_energy_eh` holds the real value. A
+    // one-time data backfill (not a schema change): fill only the NULL ones from
+    // their parsed result, so old jobs don't stay blank forever. Idempotent. ---
+    if version < 8 {
+        // Guarded: a real DB always has jobs.energy (created at v2), but some
+        // migration-test fixtures stub `jobs` as `(id)` only — skip cleanly there.
+        if column_exists(conn, "jobs", "energy")? {
+            conn.execute_batch(
+                "UPDATE jobs SET energy = (
+                     SELECT r.final_energy_eh FROM results r WHERE r.job_id = jobs.id
+                 )
+                 WHERE energy IS NULL
+                   AND EXISTS (
+                     SELECT 1 FROM results r2
+                     WHERE r2.job_id = jobs.id AND r2.final_energy_eh IS NOT NULL
+                   );",
+            )?;
+        }
+        version = 8;
     }
 
     // Persist the resulting version so subsequent runs skip completed steps.
@@ -431,5 +456,50 @@ mod tests {
         migrate(&conn).expect("v6 -> v7");
         assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
         assert!(column_exists(&conn, "results", "homo_lumo_gap_eh").unwrap());
+    }
+
+    #[test]
+    fn migrate_v7_to_v8_backfills_energy_from_results() {
+        // A pre-v8 DB: two completed jobs both parsed (results present), but only
+        // ONE has jobs.energy filled — the other is NULL (the output.out tail
+        // missed the far-back final energy; unit 3.9 defect 2). A third job has a
+        // NULL energy and NO results row (never parsed) → must stay NULL.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO settings (key, value) VALUES ('schema_version', '7');
+             CREATE TABLE jobs (id TEXT PRIMARY KEY, energy REAL, wall_time REAL);
+             INSERT INTO jobs (id, energy) VALUES ('big', NULL);
+             INSERT INTO jobs (id, energy) VALUES ('small', -76.4);
+             INSERT INTO jobs (id, energy) VALUES ('unparsed', NULL);
+             CREATE TABLE results (
+                job_id TEXT PRIMARY KEY, final_energy_eh REAL, dipole_magnitude_au REAL,
+                zpe_eh REAL, inner_energy_u_eh REAL, enthalpy_h_eh REAL, t_times_s_eh REAL,
+                free_energy_g_eh REAL, imaginary_count INTEGER, homo_lumo_gap_eh REAL,
+                data_json TEXT NOT NULL, parser_version INTEGER NOT NULL,
+                parsed_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );
+             INSERT INTO results (job_id, final_energy_eh, data_json, parser_version)
+                VALUES ('big', -843.690396, '{}', 3);
+             INSERT INTO results (job_id, final_energy_eh, data_json, parser_version)
+                VALUES ('small', -76.418939, '{}', 3);",
+        )
+        .unwrap();
+
+        migrate(&conn).expect("v7 -> v8");
+        assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
+
+        let energy = |id: &str| -> Option<f64> {
+            conn.query_row("SELECT energy FROM jobs WHERE id = ?1", [id], |r| {
+                r.get::<_, Option<f64>>(0)
+            })
+            .unwrap()
+        };
+        // The NULL-energy parsed job is backfilled from results.
+        assert_eq!(energy("big"), Some(-843.690396));
+        // A job that already had an energy is untouched (not clobbered).
+        assert_eq!(energy("small"), Some(-76.4));
+        // A job with no results row stays NULL.
+        assert_eq!(energy("unparsed"), None);
     }
 }

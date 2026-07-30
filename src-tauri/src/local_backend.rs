@@ -22,8 +22,8 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::commands::jobs::{
-    finalize_job_conn, get_job_conn, set_job_dir_conn, set_job_parse_error_conn,
-    set_job_results_conn, update_job_status_conn,
+    finalize_job_conn, get_job_conn, set_job_dir_conn, set_job_energy_conn,
+    set_job_parse_error_conn, set_job_results_conn, update_job_status_conn,
 };
 use crate::commands::settings::DbState;
 use crate::convergence::{ConvergenceEvent, ConvergenceParser};
@@ -541,6 +541,15 @@ fn parse_results_after_completion(conn: &Connection, job_id: &str) -> JobStatus 
     match crate::results::parse_and_store(conn, job_id, dir, &job.input_content) {
         crate::results::ParseOutcome::Parsed => {
             let _ = update_job_status_conn(conn, job_id, "parsed");
+            // The header/list energy now comes from the AUTHORITATIVE results tier
+            // (ADR-012), overwriting the output.out tail estimate: a large molecule
+            // pushes the last FINAL SINGLE POINT ENERGY past the 64 KB estimate
+            // window (measured 164 KB on a 33-atom Freq — unit 3.9 defect 2). The
+            // regex stays a live estimate DURING the run; once `.property.txt` is
+            // parsed, this is the real value.
+            if let Some(e) = crate::results::stored_final_energy(conn, job_id) {
+                let _ = set_job_energy_conn(conn, job_id, e);
+            }
             JobStatus::Parsed
         }
         crate::results::ParseOutcome::ParseFailed(msg) => {
@@ -1150,6 +1159,34 @@ mod tests {
         let text = "1\n2\n3\n4\n5";
         assert_eq!(last_lines(text, 2), "4\n5");
         assert_eq!(last_lines(text, 99), text);
+    }
+
+    /// Defect 2 (unit 3.9), on a REAL 200 KB dexketoprofen output tail: the last
+    /// `FINAL SINGLE POINT ENERGY` sits 164 KB from EOF — past `RESULT_TAIL_BYTES`
+    /// (64 KB). So the tail regex (a live estimate) MISSES it, which is exactly
+    /// why the header/list energy is taken from the authoritative `results` tier
+    /// (ADR-012), not from here. This locks the measured window gap so a future
+    /// "just bump the constant" regression is caught.
+    #[test]
+    fn final_energy_sits_past_the_estimate_window_on_a_real_big_molecule() {
+        let fixture = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/dexketoprofen_output_tail.out"
+        );
+        let path = Path::new(fixture);
+        // The 64 KB estimate window does NOT reach the final energy.
+        let tail64 = read_tail(path, RESULT_TAIL_BYTES).unwrap();
+        assert!(
+            crate::result_extraction::extract_final_energy(&tail64).is_none(),
+            "the 64 KB estimate window unexpectedly reached the final energy — \
+             the defect-2 gap is not being exercised"
+        );
+        // A large enough tail DOES contain it → this is a window-size problem, not
+        // a missing value. The value matches the parsed/authoritative one.
+        let tail_all = read_tail(path, 1024 * 1024).unwrap();
+        let e = crate::result_extraction::extract_final_energy(&tail_all)
+            .expect("a full read must find the final energy");
+        assert!((e - (-843.690395750533)).abs() < 1e-6, "got {e}");
     }
 
     #[test]

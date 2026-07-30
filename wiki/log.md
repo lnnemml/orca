@@ -2800,3 +2800,60 @@ recharts/3Dmol paths reuse proven patterns. ADR-002/009/010/011/012 + the propos
 
 Next (unit 3.9): normal-mode animation — the Kabsch-alignment determiner gate, then click-a-peak →
 watch the atoms move.
+
+## [2026-07-30] session | Unit 3.9: three defects from the first real molecule (dexketoprofen, 33 atoms)
+
+The author's first real run — dexketoprofen, `! r2SCAN-3c CPCM(ethanol) Opt Freq TightSCF`, 21m29s —
+exposed three defects, two serious. Kabsch + mode animation deliberately deferred: half of Phase 3
+was physically unreachable from the UI, which mattered more. **The unifying insight: both serious
+defects are Phase-1 decisions Phase 3 outgrew** — neither was wrong then, both invisible on ethane,
+both appeared on the first real molecule. Fixed at the cause, not the symptom. Full writeup:
+`wiki/debugging/007`.
+
+**Defect 1 — half the results screen unreachable.** `.screen.detail` had `overflow: hidden` with a
+`flex: 1` log console filling the viewport (correct in Phase 1, when the console was the only content).
+Phase 3 added the results card above it, so the IR spectrum / imaginary list / verdict were rendered
+and clipped. Fix: the SAME recipe already applied to `.screen.new-job` — scroll as a normal column
+(`overflow-y: auto`), console + Browse viewer get a fixed `60vh` height, not `flex: 1`. **One layout,
+not a status-conditional split.** Audited every other `overflow: hidden`: all on fixed-size boxes
+(Monaco wrappers, 3D canvas, toggle, progress bar) — `.screen.detail` was the only diseased one.
+
+**Defect 2 — blank header energy.** Measured: the last `FINAL SINGLE POINT ENERGY` sits **164 186 B**
+from EOF (99 modes + IR + thermo between it and the end), past `RESULT_TAIL_BYTES` (64 KB) — so the
+tail regex left `jobs.energy` NULL while `results.final_energy_eh` held −843.690396. NOT a constant
+bump (moving target; contradicts ADR-012). Fix, three parts: (a) after parse, `jobs.energy` is
+overwritten from the authoritative `results` tier (`stored_final_energy` → `set_job_energy_conn`); the
+regex stays a **live estimate during a run**. (b) Migration **v7→v8** backfills old jobs from `results`
+(one-time data correction, guarded on `jobs.energy` existing). (c) **The post-condition that would have
+caught it (rule #9):** cycle energies now have two independent sources — the streaming `.out` parser
+(`convergence.rs`) and `_trj.xyz` frame comments (unit 3.7) — and `cycle_energy_cross_check` compares
+counts (`n_traj ∈ {n_opt, n_opt+1}`, the trailing converged frame — measured) and values (< 1e-6 Eh)
+after every run. Divergence → recorded `ParseFailed`, not silence. **Gated to non-GOAT** (its
+trajectory is conformers, not one opt's cycles — 17 inner-opt blocks vs 18 frames, measured, would
+false-fail). Agreement is bit-for-bit on dexketoprofen / ethane / saddle.
+
+**Defect 3 — dipole in a.u. only.** The card gives the gap in Eh+eV and entropy in J/(mol·K), but left
+the dipole in a.u. Now shows debye too (1.7621 a.u. → 4.48 D), `AU_TO_DEBYE` a named CODATA constant
+beside `EH_TO_EV`/`EH_TO_J_PER_MOL`. **Display only** — the DB still stores a.u. (the measured artifact
+unit); debye is derived, like S from T·S.
+
+**Real-data fixtures + tests (dexketoprofen, the largest real system we have — catches what ethane
+can't):** `src-tauri/tests/fixtures/dexketoprofen_output_tail.out` (200 KB real tail) locks the
+defect-2 window gap (`final_energy_sits_past_the_estimate_window…`: 64 KB tail → None, full read →
+−843.690395750533). `src/spectrum/__fixtures__/dexketoprofen-freqs.json` (real 99 freqs+IR) locks the
+low-mode regression: 6 exact zeros excluded, the four genuine low modes **21.36 / 31.94 / 36.84 / 49.15
+cm⁻¹ survive** (a naive "<50 cm⁻¹" threshold would eat them, invisibly on ethane whose lowest is 318).
+`cycle_energy_cross_check` unit-tested with the real 16 opt / 17 traj energies (match, +1 frame, planted
+divergence caught, count mismatch caught, empty skipped); `input_is_goat` tested. A `#[ignore]`
+real-dir test parses the whole 33-atom job and asserts the cross-check PASSES and the authoritative
+energy is recovered.
+
+**Verified.** `cargo test` **121 + 4 ignored** (added: output-tail defect-2 regression, 5 cross-check/
+GOAT unit tests, migration v7→v8 backfill; the 2 ignored real-data tests — dexketoprofen + ethane —
+pass, confirming the cross-check doesn't false-fail on real runs). `tsc` clean, `vitest` **324** (+2
+real-data low-mode tests), `vite build` clean, no Rust warnings. In-GUI legs (scrolling the screen,
+the debye/energy values in the real webview) need the Tauri window — standing limitation; the logic is
+unit-tested and the CSS mirrors the proven `.screen.new-job` fix. ADR-002/009/010/011/012 + proposal
+untouched.
+
+Next: Kabsch-alignment gate → normal-mode animation (click an IR peak → watch the atoms move).

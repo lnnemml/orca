@@ -97,6 +97,27 @@ a `ResizeObserver` that feeds an explicit pixel width to every chart. Extracted 
 `ConvergenceDashboard` (which now imports it) so the convergence, trajectory-energy, and IR charts
 share one copy.
 
+## The Job-detail screen: one layout, and where the header energy comes from (unit 3.9)
+
+**One scrolling layout, not two.** The Job-detail screen (`JobDetailScreen`) scrolls as a normal
+column (`.screen.detail { overflow-y: auto }`); the live log console and the Browse-mode Monaco viewer
+get a **fixed** height (`60vh`), not `flex: 1`. Before unit 3.9 the screen was `overflow: hidden` with
+a flex-filling console — correct in Phase 1 when the console was the only content, but it clipped the
+Phase-3 results card (trajectory, IR spectrum, verdict) that now sits above it, so half of Phase 3 was
+rendered and unreachable. The fix is deliberately **not** a status-conditional layout (running →
+full-height console, parsed → scroll): that is two layouts, each only ever tested by hand. See
+[debugging/007](../debugging/007-phase1-decisions-phase3-outgrew.md).
+
+**The header energy is authoritative, not an estimate.** The energy in the job header/list
+(`jobs.energy`) is filled from `results.final_energy_eh` (parsed `.property.txt`, ADR-012) once a job
+reaches `parsed` — **not** from the `output.out` tail regex, which misses the final energy on a large
+molecule (measured: 164 KB past the 64 KB window on the 33-atom dexketoprofen Freq). The regex stays a
+**live estimate during a run**; the parsed value replaces it. Old jobs are backfilled once by
+migration v7→v8. A post-condition (`results::cycle_energy_cross_check`) compares the two independent
+optimization-cycle energy sources (`.out` convergence vs `_trj.xyz` frames) after every non-GOAT run,
+so a silent drift is a recorded diagnostic. Details in
+[debugging/007](../debugging/007-phase1-decisions-phase3-outgrew.md).
+
 ## See also
 - [ADR-011](../architecture/adr-011-editor-graphics-stack.md) — 3Dmol is a dumb renderer until the
   spike passes; the reason the frame number may not live in the viewer.

@@ -78,6 +78,21 @@ pub(crate) fn set_job_results_conn(
     Ok(())
 }
 
+/// Overwrite a job's energy from the **authoritative** parsed result (ADR-012),
+/// leaving `wall_time` untouched. Called after a successful parse: the output.out
+/// tail regex in [`set_job_results_conn`] is only a **live estimate** during a
+/// run and misses the final energy on a large molecule (the last
+/// `FINAL SINGLE POINT ENERGY` sits past the tail window — measured 164 KB on a
+/// 33-atom Freq, unit 3.9 defect 2). `results.final_energy_eh`, read from
+/// `.property.txt`, is the value the header/list must show.
+pub(crate) fn set_job_energy_conn(conn: &Connection, id: &str, energy: f64) -> Result<(), AppError> {
+    conn.execute(
+        "UPDATE jobs SET energy = ?1 WHERE id = ?2",
+        params![energy, id],
+    )?;
+    Ok(())
+}
+
 /// Terminal transition (`completed`/`failed`): set status, stamp `completed_at`,
 /// and store an optional `error_message`. Used by the LocalBackend when a run
 /// finishes.

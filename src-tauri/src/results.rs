@@ -15,11 +15,14 @@
 //! sorting, plus one **JSON column** holding the full structure including the
 //! per-atom arrays. Large artifacts stay on disk (paths, not blobs).
 
+use std::fs::File;
+use std::io::{BufRead, BufReader};
 use std::path::Path;
 
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
+use crate::convergence::{ConvergenceEvent, ConvergenceParser};
 use crate::error::AppError;
 use crate::parse::elements::symbol_of;
 use crate::parse::hess::HessFile;
@@ -376,6 +379,25 @@ pub fn parse_and_store(
         None
     };
 
+    // Post-condition (rule #9): the optimization-cycle energies have TWO
+    // independent sources — the streaming `.out` convergence parser (a regex over
+    // a fragile text format) and the `_trj.xyz` frame-comment energies (measured,
+    // unit 3.7). Cross-check them so a silent drift in either (e.g. an ORCA 6.2
+    // format change that breaks the streaming regex) is a recorded diagnostic, not
+    // an invisible wrong/missing energy. This is exactly the check that would have
+    // caught defect 2 automatically. Skipped for GOAT: its trajectory is
+    // CONFORMERS, not the cycles of one optimization, so the two are unrelated by
+    // construction (GOAT has 17 inner-opt blocks vs 18 conformer frames — measured).
+    if let Some(traj) = &trajectory {
+        if !input_is_goat(input_content) {
+            let opt_e = optpoint_energies(&dir.join("output.out"));
+            let traj_e: Vec<f64> = traj.frames.iter().filter_map(|f| f.energy_eh).collect();
+            if let Err(msg) = cycle_energy_cross_check(&opt_e, &traj_e) {
+                return ParseOutcome::ParseFailed(msg);
+            }
+        }
+    }
+
     // MO energies/occupancies (`orca_2json` over `.gbw`): generated lazily via the
     // user-configured ORCA path (ADR-009); absent for xTB/GOAT gbw (normal). The
     // reference is the optimized (final) geometry — orca_2json's coords are final.
@@ -469,6 +491,20 @@ fn store(conn: &Connection, job_id: &str, r: &ParsedResults) -> Result<(), AppEr
     Ok(())
 }
 
+/// The authoritative final energy for a job, from the narrow `results` column
+/// (populated from `.property.txt`, ADR-012) — `None` if unparsed or absent. Read
+/// via the narrow column, not by deserializing the whole `data_json` (unit 3.9
+/// defect 2: the header/list energy comes from here, not the output.out tail).
+pub fn stored_final_energy(conn: &Connection, job_id: &str) -> Option<f64> {
+    conn.query_row(
+        "SELECT final_energy_eh FROM results WHERE job_id = ?1",
+        params![job_id],
+        |r| r.get::<_, Option<f64>>(0),
+    )
+    .ok()
+    .flatten()
+}
+
 /// Read the stored results for a job (the full JSON structure), or `None`.
 pub fn read_job_results(conn: &Connection, job_id: &str) -> Result<Option<ParsedResults>, AppError> {
     let json: Option<String> = conn
@@ -513,6 +549,85 @@ fn verify_stored(conn: &Connection, job_id: &str, expected: &ParsedResults) -> R
         }
     }
     Ok(())
+}
+
+/// Energy of every optimization cycle, from the streaming `.out` convergence
+/// parser (`convergence.rs`). Reads line-by-line (domain rule #5) — the file is
+/// never loaded whole. Empty for a single point (no cycles) or a missing file.
+fn optpoint_energies(output_path: &Path) -> Vec<f64> {
+    let Ok(file) = File::open(output_path) else {
+        return Vec::new();
+    };
+    let mut parser = ConvergenceParser::new();
+    let mut out = Vec::new();
+    for line in BufReader::new(file).lines().map_while(Result::ok) {
+        if let Some(ConvergenceEvent::Opt(p)) = parser.feed(&line) {
+            if let Some(e) = p.energy {
+                out.push(e);
+            }
+        }
+    }
+    out
+}
+
+/// Max |ΔE| tolerated between the two cycle-energy sources. They agree
+/// bit-for-bit on every real job measured (dexketoprofen, ethane, saddle); the
+/// tolerance only guards formatting/rounding, far below any real divergence.
+const CYCLE_ENERGY_TOL_EH: f64 = 1e-6;
+
+/// Compare the two independent optimization-cycle energy sequences — the `.out`
+/// convergence parser vs the `_trj.xyz` frame energies. `Ok(())` when they agree.
+///
+/// Measured relationship (dexketoprofen / ethane / saddle): the trajectory may
+/// carry ONE extra trailing frame — the converged geometry's final point, which
+/// has no optimization-cycle block — so `n_traj ∈ {n_opt, n_opt+1}`, and the
+/// shared prefix matches to `CYCLE_ENERGY_TOL_EH`. Either sequence empty →
+/// nothing to cross-check (not a plain optimization) → `Ok`. Pure, so it is
+/// tested directly.
+fn cycle_energy_cross_check(opt_e: &[f64], traj_e: &[f64]) -> Result<(), String> {
+    if opt_e.is_empty() || traj_e.is_empty() {
+        return Ok(());
+    }
+    if !(traj_e.len() == opt_e.len() || traj_e.len() == opt_e.len() + 1) {
+        return Err(format!(
+            "cycle-energy cross-check failed: {} optimization cycles in output.out but {} \
+             trajectory frames carry an energy in _trj.xyz (expected equal, or +1 for the \
+             converged final frame) — one source is out of step (a parser or ORCA-format drift)",
+            opt_e.len(),
+            traj_e.len()
+        ));
+    }
+    let k = opt_e.len().min(traj_e.len());
+    for i in 0..k {
+        let d = (opt_e[i] - traj_e[i]).abs();
+        if d > CYCLE_ENERGY_TOL_EH {
+            return Err(format!(
+                "cycle-energy cross-check failed at cycle {}: output.out has {:.8} Eh but \
+                 _trj.xyz has {:.8} Eh (Δ={:.2e} > {:.0e}) — the streaming parser and the \
+                 trajectory disagree",
+                i + 1,
+                opt_e[i],
+                traj_e[i],
+                d,
+                CYCLE_ENERGY_TOL_EH
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Is this a GOAT conformer search? Scans `!` keyword lines for the GOAT token
+/// (word-boundary, case-insensitive) — the Rust twin of the frontend's
+/// `isGoatInput`. A GOAT trajectory is conformers, not one optimization's cycles,
+/// so the cycle-energy cross-check does not apply to it.
+fn input_is_goat(input_content: &str) -> bool {
+    input_content
+        .lines()
+        .filter(|l| l.trim_start().starts_with('!'))
+        .any(|l| {
+            l.split(|c: char| !c.is_ascii_alphanumeric())
+                .any(|w| w.eq_ignore_ascii_case("GOAT"))
+        })
 }
 
 /// Extract the `* xyz charge mult … *` block from an ORCA input as the start
@@ -647,6 +762,115 @@ mod tests {
         let conn = mem_db();
         let outcome = parse_and_store(&conn, "job1", "/nonexistent/dir", OPTFREQ_INP);
         assert!(matches!(outcome, ParseOutcome::NoArtifact));
+    }
+
+    // --- cycle-energy cross-check (defect 2 post-condition) -----------------
+
+    /// The REAL dexketoprofen (33 atoms, r²SCAN-3c CPCM Opt+Freq) cycle energies:
+    /// 16 optimization cycles from output.out, and 17 `_trj.xyz` frames — the 16
+    /// plus one trailing converged-geometry frame. Measured (unit 3.9); the two
+    /// sources agree bit-for-bit.
+    const DEXKET_OPT: [f64; 16] = [
+        -843.687198544630, -843.689618984769, -843.689892241908, -843.690114003287,
+        -843.690169925981, -843.690267894649, -843.690305293370, -843.690314085785,
+        -843.690342684298, -843.690359106485, -843.690377473507, -843.690388695645,
+        -843.690386205625, -843.690394448464, -843.690395537446, -843.690395213624,
+    ];
+    fn dexket_traj() -> Vec<f64> {
+        let mut v = DEXKET_OPT.to_vec();
+        v.push(-843.690395750533); // the trailing converged frame (+1)
+        v
+    }
+
+    #[test]
+    fn cross_check_matches_on_real_dexketoprofen() {
+        // 16 opt cycles vs 17 trajectory frames (the +1 trailing frame) → agree.
+        assert!(cycle_energy_cross_check(&DEXKET_OPT, &dexket_traj()).is_ok());
+        // Equal counts (no trailing frame) also agree.
+        assert!(cycle_energy_cross_check(&DEXKET_OPT, &DEXKET_OPT).is_ok());
+    }
+
+    #[test]
+    fn cross_check_catches_a_planted_value_divergence() {
+        // Perturb one trajectory energy well past the tolerance — the exact class
+        // of silent drift (a broken regex, a shifted format) this guards against.
+        let mut traj = dexket_traj();
+        traj[5] += 0.01;
+        let err = cycle_energy_cross_check(&DEXKET_OPT, &traj).unwrap_err();
+        assert!(err.contains("cycle 6"), "should name the divergent cycle: {err}");
+    }
+
+    #[test]
+    fn cross_check_catches_a_count_mismatch() {
+        // A trajectory with far more frames than opt cycles (not the +1 case) → err.
+        let mut traj = dexket_traj();
+        traj.extend([-843.7, -843.7, -843.7]);
+        assert!(cycle_energy_cross_check(&DEXKET_OPT, &traj).is_err());
+        // Fewer trajectory frames than opt cycles → also a mismatch.
+        assert!(cycle_energy_cross_check(&DEXKET_OPT, &DEXKET_OPT[..10]).is_err());
+    }
+
+    #[test]
+    fn cross_check_skips_when_either_source_is_empty() {
+        // SP: no opt cycles; GOAT-skipped: nothing to compare → Ok, never a failure.
+        assert!(cycle_energy_cross_check(&[], &dexket_traj()).is_ok());
+        assert!(cycle_energy_cross_check(&DEXKET_OPT, &[]).is_ok());
+    }
+
+    #[test]
+    fn input_is_goat_detects_the_keyword() {
+        assert!(input_is_goat("! XTB GOAT\n* xyz 0 1\n*\n"));
+        assert!(input_is_goat("! goat tightscf\n")); // case-insensitive
+        // A plain optimization is NOT GOAT (the cross-check must run for it).
+        assert!(!input_is_goat("! r2SCAN-3c CPCM(ethanol) Opt Freq TightSCF\n"));
+        // "GOAT" only as a whole keyword token, not inside another word.
+        assert!(!input_is_goat("! SCAPEGOATING\n"));
+    }
+
+    /// Defect 2 (unit 3.9) on the REAL 33-atom dexketoprofen job: parse the whole
+    /// pipeline and assert (a) the cross-check PASSES on real data (outcome
+    /// `Parsed`, so the .out cycle energies and the _trj.xyz frame energies agree),
+    /// and (b) `stored_final_energy` — the AUTHORITATIVE value the header/list now
+    /// shows — is the real final energy, the one the 64 KB output tail regex could
+    /// not reach (164 KB back). Ignored: reads the real ~1.4 MB job dir + spawns
+    /// orca_2json.
+    #[test]
+    #[ignore = "reads the real dexketoprofen job dir from ~/.local/share and runs orca_2json"]
+    fn real_dexketoprofen_header_energy_from_results_and_cross_check_passes() {
+        let src = format!(
+            "{}/.local/share/orcastudio/jobs/b0d1db94-8012-47aa-9d2a-bb5924abca13",
+            std::env::var("HOME").unwrap()
+        );
+        if !Path::new(&src).join("input.property.txt").exists() {
+            eprintln!("skipping: real dexketoprofen job dir not present");
+            return;
+        }
+        let tmp = std::env::temp_dir().join(format!("dexket-e2e-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        for f in ["input.property.txt", "input.inp", "input.hess", "input_trj.xyz", "input.gbw", "output.out"] {
+            std::fs::copy(Path::new(&src).join(f), tmp.join(f)).unwrap();
+        }
+        let input = std::fs::read_to_string(tmp.join("input.inp")).unwrap();
+
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute("CREATE TABLE jobs (id TEXT PRIMARY KEY)", []).unwrap();
+        conn.execute("INSERT INTO jobs (id) VALUES ('dexket')", []).unwrap();
+        crate::db::create_results_table(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO settings (key,value) VALUES ('orca_path','/opt/orca/orca');",
+        )
+        .unwrap();
+
+        // The cross-check runs here (33-atom Opt, not GOAT) and must PASS.
+        let outcome = parse_and_store(&conn, "dexket", tmp.to_str().unwrap(), &input);
+        assert!(matches!(outcome, ParseOutcome::Parsed), "{outcome:?}");
+
+        // The authoritative header energy — the value the tail regex missed.
+        let e = stored_final_energy(&conn, "dexket").expect("authoritative energy");
+        assert!((e - (-843.690395750533)).abs() < 1e-5, "got {e}");
+        eprintln!("dexketoprofen authoritative final energy = {e} Eh (tail regex missed it by 164 KB)");
+        std::fs::remove_dir_all(&tmp).ok();
     }
 
     /// End-to-end on a COPY of a REAL Opt+Freq job dir: all four readers

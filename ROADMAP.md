@@ -304,8 +304,10 @@ the `[ ]` "Fragment library" item above.
       by exact-zero and imaginary excluded by sign (both surfaced: imaginary shown separately as a
       transition-state diagnosis). Peak ↔ frequency-row click both ways. Cross-checked against
       `orca_mapspc` (14.0%, cause = its wing truncation — reported, not fudged; `parse-sources.md`).
-      **`click a peak → animate that normal mode` is deferred to unit 3.9** (needs Kabsch alignment) —
-      no "static mode preview" stopgap.
+      **`click a peak → animate that normal mode` remains `[ ]`, behind the Kabsch-alignment gate**
+      (a later unit) — no "static mode preview" stopgap. (Unit 3.9 turned out to be a defect-fix unit:
+      the results screen was made reachable and the header energy re-sourced from the parsed artifact —
+      see `wiki/debugging/007`; Kabsch + mode animation did not start.)
 - [x] Imaginary-frequency detection surfaced prominently (saddle point vs minimum — teaching
       moment) — **done** (unit 3.6): `imaginary_count` explicit field + the card's verdict banner
       (0 = minimum, 1 = transition state, >1 = neither → re-optimize).

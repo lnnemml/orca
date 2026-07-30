@@ -38,6 +38,16 @@ in Eh**, not S. Each reader converts Bohr→Å once at its boundary (CLAUDE.md r
 - `.exit_code` present but nonzero / string absent → failed; surface the tail of the
   output in the UI (ORCA's error messages are usually in the last ~50 lines).
 
+## The last energy is NOT near the end of a Freq output (measured — unit 3.9)
+For an **Opt+Freq** run the last `FINAL SINGLE POINT ENERGY` is followed by the entire
+normal-mode block, the IR table, and thermochemistry — which grow with the number of modes (3N).
+On the 33-atom dexketoprofen job (`b0d1db94`, `output.out` 1 039 023 B) the last energy sits
+**164 186 bytes** from EOF; on 8-atom ethane it is a few KB back. This is a **property of ORCA's
+output layout, not of our reader** — and it is why the header/list energy is taken from the
+authoritative `.property.txt` (ADR-012), not from a fixed-size tail of `output.out`: any tail
+window is a moving target as the molecule grows. See
+[debugging/007](../debugging/007-phase1-decisions-phase3-outgrew.md).
+
 ## Imaginary frequencies
 Negative frequencies in Freq output = saddle point, not a minimum. The Results screen must
 flag this loudly — core teaching moment.

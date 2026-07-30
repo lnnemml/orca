@@ -10,6 +10,11 @@ import { TrajectoryPlayer } from "../trajectory/TrajectoryPlayer";
 const EH_TO_J_PER_MOL = 2_625_499.6;
 /** 1 Hartree in eV (CODATA 2018). Chemists read orbital gaps in eV. */
 const EH_TO_EV = 27.211_386_245_988;
+/** 1 atomic unit of electric dipole moment (e·a₀) in debye (CODATA 2018:
+ * 2.5417464519 D). Stored value stays a.u. (the measured artifact unit); debye
+ * is a display-only conversion, like S from T·S and the eV gap. Chemists read
+ * dipole moments in debye. */
+const AU_TO_DEBYE = 2.541_746_451_9;
 
 /** Minimal parsed-results card (Phase 3, ADR-012): final energy, dipole, atomic
  * charges (three schemes), thermochemistry with correct labels. Frequencies are
@@ -54,7 +59,10 @@ export function ResultsCard({ jobId, status }: { jobId: string; status: JobStatu
           )}
           {results.dipole && (
             <div>
-              dipole <strong>{results.dipole.magnitude_au.toFixed(4)}</strong> a.u.
+              dipole <strong>{results.dipole.magnitude_au.toFixed(4)}</strong> a.u.{" "}
+              <span style={{ color: "var(--muted)" }}>
+                ({(results.dipole.magnitude_au * AU_TO_DEBYE).toFixed(2)} D)
+              </span>
             </div>
           )}
           {results.orbitals?.homo_lumo && (

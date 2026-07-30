@@ -9,6 +9,7 @@ import {
   DEFAULT_FWHM_CM,
   type IrMode,
 } from "./ir";
+import dexketoprofen from "./__fixtures__/dexketoprofen-freqs.json";
 
 describe("classifyModes — split by measured fact, not a threshold", () => {
   // A saddle-like list: 6 exact-zero trans/rot, one imaginary (measured -33.66
@@ -42,6 +43,34 @@ describe("classifyModes — split by measured fact, not a threshold", () => {
     const { active } = classifyModes(freq, ir);
     const ch = active.find((m) => m.cm === 3014.8)!;
     expect(ch.index).toBe(9); // its position in the full list
+  });
+});
+
+describe("classifyModes on REAL dexketoprofen data — the low modes must survive", () => {
+  // The 33-atom Opt+Freq that exposed unit 3.9's defects (measured): 6 exact-zero
+  // trans/rot modes, then genuine low vibrations at 21.36 / 31.94 / 36.84 / 49.15
+  // cm⁻¹. On ethane the lowest real mode is 318 cm⁻¹, so a naive "drop everything
+  // below ~50 cm⁻¹" threshold would look fine there and silently eat FOUR real
+  // modes here. The sign/exact-zero split must keep them.
+  const { active, imaginary, zeroCount } = classifyModes(
+    dexketoprofen.frequencies_cm,
+    dexketoprofen.ir_intensity_km_mol,
+  );
+
+  it("excludes exactly the 6 trans/rot zeros, keeps the other 93", () => {
+    expect(dexketoprofen.frequencies_cm).toHaveLength(99); // 3N, N=33
+    expect(zeroCount).toBe(6);
+    expect(active).toHaveLength(93);
+    expect(imaginary).toHaveLength(0); // a true minimum
+  });
+
+  it("keeps the four genuine low-frequency modes 21–49 cm⁻¹ in the spectrum", () => {
+    for (const cm of [21.363181111779085, 31.942914230043712, 36.84049190480933, 49.15300069069197]) {
+      expect(active.some((m) => m.cm === cm)).toBe(true);
+    }
+    // The lowest active mode is the 21.36 one, not something above a threshold.
+    const lowest = Math.min(...active.map((m) => m.cm));
+    expect(lowest).toBeCloseTo(21.3631811, 5);
   });
 });
 

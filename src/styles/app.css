@@ -106,11 +106,19 @@ body {
   overflow-y: auto;
 }
 
-/* The Job detail screen keeps the log console filling remaining height. */
+/* The Job detail screen scrolls as a normal column — the SAME fix as
+   `.screen.new-job` above. Was `overflow: hidden` with a `flex: 1` log console
+   filling the viewport: correct in Phase 1 when the console was the only thing on
+   this screen, but Phase 3 added the results card (trajectory, IR spectrum,
+   charges, thermochemistry) ABOVE it, and `hidden` clipped everything past the
+   fold — half of Phase 3 was rendered but unreachable. Now the screen scrolls and
+   the console (and the Browse viewer) get a usable FIXED height instead of
+   competing for flex space. One layout for every job status — deliberately not a
+   status-conditional split. */
 .screen.detail {
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow-y: auto;
 }
 
 /* --- Status bar ------------------------------------------------------- */
@@ -1133,10 +1141,14 @@ select:disabled,
   margin: 0 0 14px;
 }
 
-/* Terminal-style live log console (Job detail). */
+/* Terminal-style live log console (Job detail). A FIXED height (not `flex: 1`)
+   since the screen now scrolls as a column — a flex child of an auto-height
+   column has no space to fill and would collapse. Tall enough to be a usable
+   console; the page scrolls past it. */
 .log-console {
-  flex: 1;
-  min-height: 200px;
+  flex: none;
+  height: 60vh;
+  min-height: 240px;
   margin: 0;
   overflow: auto;
   background: #0d0f13;
@@ -1356,10 +1368,13 @@ select:disabled,
   color: var(--text);
 }
 
-/* The viewer fills the remaining height, like the log console it replaces. */
+/* The Browse-mode Monaco viewer gets a FIXED height (matching the log console),
+   since the screen scrolls as a column now — Monaco needs a defined height to
+   render (a `flex: 1` child of an auto-height column would collapse to nothing). */
 .output-viewer-wrap {
-  flex: 1;
-  min-height: 0;
+  flex: none;
+  height: 60vh;
+  min-height: 240px;
   flex-direction: column;
 }
 .output-viewer {
