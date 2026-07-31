@@ -55,10 +55,13 @@ enforce on their artifacts (ADR-010/012 seam), applied one layer out.
 ### The viewer's coordinate-update path (`MoleculeViewer` `preserveCameraOnUpdate`)
 A new opt-in prop: when set, an `xyzData` change that keeps the **same atom count** redraws the
 frame **without** re-`zoomTo` (the camera stays put through playback); a count change still zooms.
-Default false → the Molecules/preview path is byte-for-byte unchanged. **We rebuild the single-frame
-model each tick** (`removeAllModels`/`addModel`) rather than mutate coordinates in place, because the
-only in-place path 3Dmol offers is its trajectory/`animate` apparatus, which would move frame
-ownership into the viewer (ADR-011). At the sizes that occur this is not a bottleneck: the app-side
+Default false → the Molecules/preview path is byte-for-byte unchanged. **The trajectory rebuilds the
+single-frame model each tick** (`removeAllModels`/`addModel`) — on purpose, because along an
+optimization/reaction path bonds genuinely change and should be re-perceived. (Unit 3.14 showed the
+in-place alternative — mutate `x/y/z` + `setStyle` to rebuild geometry — does NOT need 3Dmol's
+`setFrame`/`animate` apparatus, correcting an earlier note; the **mode animation** uses exactly that
+in-place path to freeze topology, while the trajectory keeps rebuilding by design.) At the sizes that
+occur neither is a bottleneck: the app-side
 per-frame work (`frameToXyz`) is ~3.5 µs for 8 atoms / ~13 µs for 50 (measured, Node) — negligible
 against a 50 ms (20 fps) tick, so playback is **timer-bound**, not rebuild-bound. The real in-webview
 `addModel`/`render` time was not headlessly measured (the standing Tauri-GUI-drive limitation), but
@@ -170,16 +173,24 @@ this is why it is a gate, not an assumption.
 - **Masses are derived from the element symbol** via a standard-weight table **verified equal** to the
   `.hess $atoms` mass column (C 12.011 / H 1.008 / O 15.999, `probes/mode_amplitude.py`) — so the reader
   and stored data are untouched (rule #10). No mass → no physical amplitude shown (never guessed).
-- **Bond topology is FROZEN at equilibrium (unit 3.13).** A vibration is the same molecule; its bond
-  graph is a function of the **equilibrium** geometry only. But 3Dmol perceives bonds from each frame's
-  distances, so an animated stretch made bonds flicker (over-compressed bonds blink, over-stretched ones
-  detach — the oxygen floating off in the author's screenshot). Fix: `MoleculeViewer.bondTopologyReference`
-  — the equilibrium xyz. Bonds are perceived **once** from it (3Dmol's own perception — the sole one,
-  **not** a second implementation; ADR-010) and **reused for every frame** (`assignBonds:false` on the
-  frame, then the frozen pairs applied). The **app decides** the topology by choosing the equilibrium
-  reference; the viewer draws (ADR-011). Even at the default amplitude a plain distance cutoff (1.75 Å)
-  keeps the bonded set identical across the period (measured separation 0.10 Å for #84, 0.24 Å for the
-  low mode) — the freeze is belt-and-suspenders on top of that.
+- **Bond topology is FROZEN at equilibrium — by building ONCE and updating coordinates (unit 3.13/3.14).**
+  A vibration is the same molecule; its bond graph is a function of the **equilibrium** geometry only. But
+  3Dmol perceives bonds from each frame's distances, so an animated stretch made bonds flicker. `MoleculeViewer`
+  takes a `bondTopologyReference` (the equilibrium xyz): the model is built **once** from it — a normal
+  parse, so 3Dmol perceives bonds *and* assigns `atom.index`, the sole perception (ADR-010) — and each frame
+  then only **updates the atoms' coordinates** in place (`applyCoordsToAtoms` over `selectedAtoms({})`) +
+  `setStyle` (which nulls the cached geometry so `render` rebuilds sticks at the new positions from the same
+  bonds). Topology is frozen by construction; the **app decides** it by choosing the reference, the viewer
+  draws (ADR-011). This corrects the unit-3.8 belief that in-place coordinate updates need 3Dmol's
+  `setFrame`/`animate` apparatus — they do not, and frame ownership stays in the app.
+  - **Why NOT the unit-3.13 first attempt** (`assignBonds:false` + hand-set bonds each frame): it drew
+    **nothing**. `assignBonds:false` leaves `atom.index` unset and 3Dmol's stick gate is `atom.index <
+    atom2.index`, so `undefined < undefined` dropped every cylinder — see [debugging/008](../debugging/008-frozen-bonds-drew-nothing.md).
+  - **The test now checks the OUTPUT, not the input.** The 3.13 test asserted our *bonded set* was stable
+    across phases — which passes even on a blank render (input, not output). `drawableBondCount`
+    (`frozenTopology.ts`) mirrors 3Dmol's draw gate: **> 0** for a normal parse, **0** when `index` is unset
+    (the regression, reproduced), constant across coordinate updates. 3Dmol needs WebGL (no jsdom), so a
+    **DEV assertion in the viewer** warns in the real webview if a built frozen model has 0 drawable bonds.
 - **The trajectory has the SAME per-frame perception — and is deliberately LEFT that way.** Along an
   optimization/reaction path bonds can genuinely form and break; freezing them would hide real chemistry.
   So `TrajectoryPlayer` passes no `bondTopologyReference`. Different question, different answer (reported,

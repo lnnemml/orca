@@ -64,7 +64,8 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 - [005-stale-sidecar-hmr.md](debugging/005-stale-sidecar-hmr.md) — the app talks to a stale sidecar after frontend HMR (uvicorn stays old) → "Not Found"; version handshake + human errors + dev `--reload`
 - [006-xtb-empty-input-hang.md](debugging/006-xtb-empty-input-hang.md) — xTB pre-optimize hangs 300 s on a no-constraint run: an empty `xcontrol` passed via `--input` freezes xtb 6.6.1 before cycle 1; rejected hypotheses (molecule/OMP/opt level) + the `--input`-only-with-content fix
 - [007-phase1-decisions-phase3-outgrew.md](debugging/007-phase1-decisions-phase3-outgrew.md) — the first real molecule (dexketoprofen, 33 atoms) exposed two Phase-1 decisions Phase 3 outgrew: `.screen.detail overflow:hidden` clipped the results screen, and the header energy read a 64 KB output tail that misses the final energy 164 KB back. Fixes: one scrolling layout; header energy from `results` (ADR-012) + a cross-check post-condition
+- [008-frozen-bonds-drew-nothing.md](debugging/008-frozen-bonds-drew-nothing.md) — freezing bond topology (unit 3.13) drew atoms but NO bonds: `assignBonds:false` leaves `atom.index` unset and 3Dmol's stick gate is `atom.index < atom2.index`, so every cylinder was dropped. Fix: build once from equilibrium, update only coordinates. Lesson: the 3.13 test checked our input (bonded set) not the rendered output — 3.14 mirrors 3Dmol's draw gate
 
 ---
 
-*Page count: 47. Last structural update: 2026-07-30 (unit 3.9: +debugging/007-phase1-decisions-phase3-outgrew.md — the results screen made reachable + the header energy re-sourced from the parsed artifact, both Phase-1 decisions Phase 3 outgrew).*
+*Page count: 49. Last structural update: 2026-07-31 (unit 3.14: +debugging/008-frozen-bonds-drew-nothing.md and src/viewer/frozenTopology.ts — frozen-topology animation drew no bonds; fixed by build-once + coordinate-update, with an output-side draw-gate test).*

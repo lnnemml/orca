@@ -3093,3 +3093,48 @@ Tauri webview) need the window — standing headless limit; the amplitude math, 
 topology-stability property and the physical amplitude are all pure-tested.
 
 Next: Phase 3 remainder — orbital/density isosurfaces (`orca_plot` → `.cube`), then export.
+
+## [2026-07-31] session | Unit 3.14: draw bonds again — freeze topology by updating coordinates, not rebuilding
+
+A regression from `2e54e49` (unit 3.13): after freezing bond topology the mode animation drew **atoms
+but no bonds at all**. Atoms in place, oscillation plausible (amplitude fix intact), zero sticks.
+
+**Root cause — from the 3Dmol bundle, not memory (rule #10).** 3.13 froze topology by parsing each
+frame `assignBonds:false` and setting the equilibrium bonds by hand. The bonds reached the live atoms
+(verified: `selectedAtoms()` returns real atoms, not copies; written symmetrically with `bondOrder`).
+But `GLModel.drawBondSticks` draws each bond only from the lower index: gate **`atom.index <
+atom2.index`**. `assignBonds:false` never runs `assignBonds`, which is what assigns `atom.index` (the
+parser sets only `serial`). So `atom.index` was `undefined` on every frame, `undefined < undefined` is
+false, and **every cylinder was dropped** — a perfect bond list, nothing drawn. Spheres don't use that
+gate, hence "atoms, no bonds". Full writeup: `wiki/debugging/008`.
+
+**Fix — the path where the problem can't exist.** Build the model **once** from the equilibrium
+reference (a normal parse → 3Dmol perceives bonds AND assigns `index`, so the gate holds), then each
+frame **update only the coordinates** (`applyCoordsToAtoms` over `selectedAtoms({})`) + `setStyle`
+(nulls the cached `molObj` → `render` rebuilds sticks at the moved atoms with the same bonds/indices).
+No model rebuild, no `assignBonds:false`, no manual bonds — the whole class is gone. Topology frozen by
+construction; app decides it (picks the reference), viewer draws (ADR-011); the sole perception is
+3Dmol's normal one (ADR-010). This also corrects the unit-3.8 belief that in-place coordinate updates
+need 3Dmol's `setFrame`/`animate` apparatus — they don't; frame ownership stays in `ModeAnimator`.
+Logic in the pure `src/viewer/frozenTopology.ts`.
+
+**Trajectory untouched** (checked): it passes no `bondTopologyReference` → the normal rebuild-per-frame
+path, re-perceiving bonds (correct — bonds change along a path). Camera still preserved (zoom only on
+first build of the frozen model). Amplitude / default 0.18 Å / physical-amplitude label untouched.
+
+**The lesson — the test checked the INPUT, not the OUTPUT.** 3.13 shipped green: its test asserted our
+*bonded set* (our coords + a cutoff) was stable across phases — true even when nothing reached the
+screen. A blank render is invisible to an input-side test. 3.14's test targets the output:
+`drawableBondCount` mirrors 3Dmol's `atom.index < atom2.index` stick gate — **>0** for a normal parse,
+**0** when `index` is unset (the regression reproduced), constant across coordinate updates. 3Dmol needs
+WebGL (no jsdom → the rendered pixels still can't be checked headless; boundary named), so a **DEV
+assertion in the viewer** warns in the real webview if a built frozen model has 0 drawable bonds — the
+check 3.13 lacked, now on the real object.
+
+**Verified.** `tsc` clean; **vitest 363 passed** (22 files; +7 `frozenTopology.test.ts` incl. the
+regression reproduction); `vite build` clean (pre-existing bundle warning only). No Rust changes. In-GUI
+leg (bonds actually rendering as atoms move in the Tauri webview) needs the window — standing headless
+limit; the coordinate-preservation and draw-gate invariants are pure-tested and the DEV warning guards
+the real object. ADR-002/009/010/011/012 + the proposal untouched.
+
+Next: Phase 3 remainder — orbital/density isosurfaces (`orca_plot` → `.cube`), then export.
