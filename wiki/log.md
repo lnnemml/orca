@@ -3363,3 +3363,41 @@ entries), `manual-index.md`'s own "Status: not started" (Phase 4 hasn't started 
 retarget note, and cclib in the ADRs/parse-sources/output-files as the rejected-decision record.
 
 Next: Phase 4 — the manual indexer (4.1 gate on the real `_sources/*.md.txt`).
+
+## [2026-07-31] ingest | Part-A GATE: measured ORCA 6.1 manual source format (Sphinx/MyST toctree)
+
+`scripts/fetch-manual.py --manifest --sample 6` — an out-of-band author script (ADR-013 (2): not a
+Tauri command, not a sidecar endpoint; stdlib only, no new dependency). Builds the file list by a
+**deterministic toctree walk**, never a crawl (URLs come only from manifest paths; body links are
+never followed). Measured facts (full page: `wiki/orca/manual-sources.md`):
+
+- **Manifest (140 paths):** 11 container `index*` pages (all 200) + 126 leaf `.md.txt` + 3 generated
+  no-source, named — `bibliography`, `genindex`, `html_versions`. No silent skips.
+- **The `//` trap is real, not hypothetical:** the root `index.md.txt` writes one toctree entry as
+  `contents/structurereactivity//index_structurereactivity`; `normpath` collapses it — without that,
+  the entire **Structure and Reactivity** branch (Opt/Scan/TS/IRC/NEB/GOAT — the research program)
+  would vanish silently. It was the only path the walk had to normalize.
+- **toctree shapes handled:** backtick AND colon fences (varying `:::`/`::::` lengths); `:`-option
+  lines skipped; root `{eval-rst}` `.. toctree::` read (holds genindex/bibliography); `Title <path>`
+  and bare entries.
+- **ATX sectioning:** sample 44 headings, `#`=7/`##`=20/`###`=17, deepest `###` in the sample (corpus
+  goes deeper — Part-B full sweep). Corpus ≈ **2.8 MiB** Markdown (126 leaves × ~23.5 KB mean).
+- **Keywords markup is HETEROGENEOUS (the ADR-013 seed paragraph's ground truth):** RI's `## Keywords`
+  is a labeled `:::{table}` MyST directive over a GFM pipe table (col1=keyword, col2=desc); the `%cpcm`
+  "Complete Keyword List" is NOT a table but an annotated ` ```orca ` code block (`name value #
+  desc`). Seeding `keywords.json` survives — the data IS structured — but needs **two extractors**
+  (table + `%block` code-block), curated on top. Refines, does not break, ADR-013's keywords para;
+  concerns the seeder, not sectioning, so it does not touch the (3) review condition.
+- **Anchors:** `(label)=` → `#slug` where slug = lowercase + non-alnum-runs→`-`; verified **46/46**
+  labels against real HTML ids, across `sec:`/`tab:`/`fig:`/`table:`. And **`objects.inv` exists**
+  (46 257 B) — the authoritative label→anchor map, so slugify need not be trusted as a guess (NOT
+  parsed this unit, per scope — flagged for the sectioner/keyword units).
+- **ADR-013 (3) MyST-parser review NOT triggered by the sample:** body `{eval-rst}` = 0 (root = 1,
+  expected). ATX-only sectioning holds so far; definitive over all 126 is Part B.
+- **Network hygiene:** descriptive UA + contact link, ~0.7 s pause, 5xx/timeout backoff (≤3), hard cap
+  250 requests. Run used **24/250**. `resources/manual/` untouched — nothing written to disk, nothing
+  committed (Part A measures in memory).
+
+Part-A commit (this): `scripts/fetch-manual.py` (--manifest/--sample) + `wiki/orca/manual-sources.md`
++ index/manual-index/ROADMAP wiring. **STOP at the gate** — Part B (`--all` full fetch,
+`manifest.json`, in-our-terms post-conditions, git-clean license check) awaits author approval.

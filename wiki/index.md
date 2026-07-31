@@ -46,6 +46,7 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 - [constraints.md](orca/constraints.md) — `%geom Constraints` block: B/A/D/C syntax, value/no-value, **0-based index base settled by a real ORCA 6.1.0 run**, out-of-range segfault
 - [xtb.md](orca/xtb.md) — standalone GFN2-xTB pre-optimization: **1-based `$constrain` (≠ ORCA!)** settled by a real xtb 6.6.1 run, spring-held constraints + the measured tolerance, charge/multiplicity
 - [parse-sources.md](orca/parse-sources.md) — **measured** parse sources for ORCA 6.1.0: cclib 1.8.1 crashes on 6.1 output; `.hess`/`.property.txt`/`_trj.xyz`/`orca_2json` inventory; per-quantity source table; the `.hess` frame is a pure translation of the reference (unit-3.12 Kabsch gate, no mode rotation) (probes: `parse_sources.py`, `hess_frame_kabsch.py`)
+- [manual-sources.md](orca/manual-sources.md) — **measured** ORCA 6.1 manual source format (Sphinx+MyST, `_sources/*.md.txt`): the 140-path toctree walk (11 containers / 126 leaves / 3 no-source), the `//` normalization trap on the Structure-and-Reactivity branch, ATX sectioning, heterogeneous "Keywords" markup (`:::{table}` pipe tables vs annotated ` ```orca ` blocks), the `(label)=`→`#slug` anchor rule (46/46) + `objects.inv` exists, eval-rst review-trigger = 0 in body sample (probe: `scripts/fetch-manual.py`)
 
 ## Chemistry (навчальні нотатки, українською)
 
@@ -72,4 +73,4 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 
 ---
 
-*Page count: 53. Last structural update: 2026-07-31 (+architecture/adr-013-manual-indexing-ownership.md — Rust owns manual indexing + DB writes, narrows ADR-006; the pre-Phase-4 unit that also fixed two stale wiki lines and added the FTS5 build-gate test).*
+*Page count: 54. Last structural update: 2026-07-31 (+orca/manual-sources.md — measured ORCA 6.1 manual source format via `scripts/fetch-manual.py`, ADR-013 Part-A gate: toctree manifest, ATX sectioning, keyword markup, anchor rule).*
