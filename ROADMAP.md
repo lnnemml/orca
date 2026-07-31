@@ -265,15 +265,15 @@ the `[ ]` "Fragment library" item above.
         HOMO/LUMO — **done** (unit 3.7): spawn (`orca_json.rs`, path from settings, lazy-cached)
         separate from the reader (`parse/mo.rs`, **streamed** — `MOCoefficients` skipped, never in
         memory or DB; rule #5 gate measured). `homo_lumo_gap_eh` narrow column (v7).
-- [ ] **The per-atom seam** (now known concretely — Part A of the parse-sources probe measured
-      it). Every per-atom array from an artifact passes through **one explicit mapping function
-      at the boundary**, in Rust. Measured order source per array: `.property.txt` charges are
-      element-labelled (`&ATNO`, order == input); `$Geometry` / `.hess $atoms` / `_trj` / `.xyz`
-      / `orca_2json Atoms` all carry the element column, order == input; the one bare positional
-      atom-ordered array (`$SCF_Nuc_Gradient &grad`) takes its order from the co-located
-      `$Geometry` block — **that assumption is named, not hidden**. The mapping is the identity
-      today; after ADR-010's `AtomId`/`IndexMap` lands (or if `! UseSym` reorders — open Phase 4.5
-      probe), **only that one function changes**, not the dashboard.
+- [x] **The per-atom seam — parsing side done** (Part A of the parse-sources probe measured it).
+      Every per-atom array is read with its order verified: `.property.txt` charges are
+      element-labelled (`&ATNO`, order == input); `$Geometry` / `.hess $atoms` / `_trj` / `.xyz` /
+      `orca_2json Atoms` all carry the element column, order == input; the one bare positional
+      atom-ordered array (`$SCF_Nuc_Gradient &grad`) takes its order from the co-located `$Geometry`
+      block — **that assumption is named, not hidden** (readers enforce it via post-conditions). The
+      mapping is the **identity** today, so the dashboard is correct. *Not yet done:* extracting this
+      into the typed `AtomId`/`IndexMap` — that is **Phase 4.2 Stage 1** (and if `! UseSym` reorders,
+      the open Phase-4.5 probe), where **only that one function changes**, not the dashboard.
 - [ ] **Unfixed-stereocenter flag on SMILES import.** RDKit's ETKDG picks an enantiomer
       arbitrarily for a SMILES with no stereo descriptors; for stereoselectivity work that is a
       *silent substitution of the compound*, so the import must mark undefined stereocenters
@@ -282,7 +282,7 @@ the `[ ]` "Fragment library" item above.
 - [x] **"No MO data" is a normal state, not an error.** — **done** (unit 3.7): `orca_json::ensure_gbw_json`
       returns `Ok(None)` for an xTB/GOAT `.gbw` (converter produces no JSON), `orbitals` is `None`,
       and the card simply omits the HOMO/LUMO row — no crash, no error.
-- [~] Results screen per job: summary card. **Done (units 3.5–3.7)**: final energy, dipole, HOMO/LUMO
+- [x] Results screen per job: summary card. **Done (units 3.5–3.7)**: final energy, dipole, HOMO/LUMO
       gap (Eh + eV), trajectory frame count, three
       charge schemes (atom→value), thermochemistry (T·S labelled as T·S, plus a *derived* S in
       J/(mol·K)), and a **vibrational table with IR intensities + a prominent minimum/TS/neither
@@ -349,9 +349,11 @@ the `[ ]` "Fragment library" item above.
       orbitals marked** (derived per-element table + energy-gap cross-check, not "1s per heavy atom"), and
       a **ball-and-stick / lines** representation toggle (to see a core 1s that hides inside the sphere).
 
-**Phase 3 is complete** — for an Opt+Freq job the author can watch the trajectory, spin the HOMO
-isosurface, click IR peaks to see the vibrations, and export geometry / data / plots — all inside
-OrcaStudio.
+**Phase 3 (the results dashboard) is complete** — for an Opt+Freq job the author can watch the
+trajectory, spin the HOMO isosurface, click IR peaks to see the vibrations, and export geometry /
+data / plots — all inside OrcaStudio. The one remaining `[ ]` above (the **unfixed-stereocenter flag
+on SMILES import**) is a small cross-cutting import-time TODO, not a dashboard feature — it belongs
+wherever an imported structure is first shown and is carried forward independently.
 
 ---
 
@@ -502,7 +504,27 @@ and OrcaStudio picks the job up, syncs results, and parses them — no terminal,
 
 ## Phase 6 — Power features (ongoing, pick by research needs)
 
-- [ ] TD-DFT UV-Vis: simulated spectrum with oscillator strengths, state table
+- [ ] **UV-Vis (TD-DFT)** — *early Phase 6.* The broadening machinery already exists (shared with the
+      IR spectrum), but UV-Vis is **not** a copy: broaden with a **Gaussian** (not Lorentzian); the
+      x-axis is usually **nm** (a non-uniform reciprocal of a uniform-in-eV grid — plot in eV, label
+      in nm, or resample); and **oscillator strength → absorbance needs an assumed band width** (yet
+      another labelled display choice, like FWHM). A state table (energy, fosc, dominant transitions)
+      accompanies the plot.
+      - **Prerequisites (both measured, rule #10):** (1) a **probe for where excited states live** —
+        `.property.txt` vs only the `.out` text — this gap is **already flagged open** (parse-sources
+        "Gaps": no TD-DFT job exists yet); and (2) a **real TD-DFT run** to read from.
+      - **Methodological caveat (record it in the UI):** **r²SCAN-3c is not suitable for excited
+        states** — semilocal/composite functionals systematically underestimate charge-transfer
+        states. A **hybrid or range-separated** functional (e.g. ωB97X-D4, CAM-B3LYP) is required;
+        the app should steer the user there, not silently accept the ground-state method.
+- [ ] **NMR (shielding → chemical shift)** — *after Phase 4.5, and here is why.* ORCA computes an
+      **absolute shielding σ**, but a spectrum needs the **shift δ = σ_reference − σ_sample**, i.e. a
+      **second calculation** (the reference, e.g. TMS) **with the exact same method/basis** — so a
+      single job is never enough. On top of that: **Boltzmann averaging over conformers** (the GOAT
+      primitive already exists, 2.5.1) and **averaging chemically-equivalent nuclei**. This is the
+      **same structural need as ΔΔG‡** — aggregating **several jobs into one result** — which is why
+      NMR waits until **Reaction is a first-class object** (Phase 4.5's data model), not before: the
+      multi-job aggregation must exist first.
 - [ ] NEB: path setup UI + energy profile visualization per iteration
 - [ ] Job comparison view: N jobs side by side (energies, geometries overlay, spectra)
 - [ ] Batch/parametric runs: same molecule × list of functionals or basis sets

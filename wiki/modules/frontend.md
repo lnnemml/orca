@@ -6,7 +6,9 @@ two-way with Monaco, an Add-Fragment panel + `FragmentList` sidebar, atom pickin
 measurement, edit mode (set distance/angle/dihedral from the viewer, inter- and intra-fragment), a
 constraint panel over the input text, and an xTB pre-optimize button. Phase 2 (jobs, editor,
 templates, molecule library, input builder, convergence dashboard, output search, multi-format
-import) is complete.
+import) is complete. **This page covers the editor/job frontend**; the Phase-3 **results** frontend
+(summary card, trajectory/spectra/orbitals/export) is complete and documented in
+[results-ui.md](results-ui.md).
 
 ## Responsibilities & boundaries
 
@@ -373,10 +375,14 @@ a standard xyz via `atomLinesToXyz`.
 - **Round swatches** — `.fragment-swatch` is `border-radius: 50%` (one rule, `FragmentList` +
   `AtomInspector`); a hollow square swatch beside the "Numbers" checkbox read as an unchecked checkbox.
 
-## Screens (planned)
+## Screens (later phases)
 
-Results (summary card, trajectory player, MO viewer, spectra — Phase 3), Manual (FTS search panel —
-Phase 4), and the "Run on:" backend selector + server profiles in Settings (Phase 5).
+- **Results** (summary card, trajectory player, IR spectrum + mode animation, orbital isosurfaces,
+  export) — **done** (Phase 3); the results-frontend detail lives in
+  [results-ui.md](results-ui.md) (`src/screens/ResultsCard.tsx`, `src/spectrum/`, `src/trajectory/`,
+  `src/orbitals/`, `src/export/`).
+- **Manual** (FTS search panel) — Phase 4.
+- **"Run on:" backend selector + server profiles** in Settings — Phase 5.
 
 ## State (current & planned)
 

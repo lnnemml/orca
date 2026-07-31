@@ -3,8 +3,9 @@
 **Status:** the 3Dmol.js viewer is built and drives the whole geometry editor — multi-fragment
 rendering (one model, index-range styling), atom picking, a d/θ/φ measurement overlay, an
 edit-mask glow, per-element proportional selection halos, optional atom numbering, four background
-themes, and remount-free fullscreen with a workbench rail. Trajectories, orbitals, and spectra are
-not started (Phase 3+).
+themes, and remount-free fullscreen with a workbench rail. It also now drives the **Phase-3 results
+views** — trajectory playback, normal-mode animation, and orbital isosurfaces (all **done**; the
+results-side detail lives in [results-ui.md](results-ui.md), this page keeps the viewer mechanics).
 
 ## Responsibilities & scope
 
@@ -30,6 +31,13 @@ Props: `xyzData?: string` (standard xyz) | `scene?: Scene` (`scene` wins), plus 
 `onAtomPick?`, `selection?`, `maskHighlight?`, `showAtomNumbers?`, `theme?`. With neither `scene`
 nor `xyzData` it renders an empty viewer, no crash. `NewJobScreen` passes `scene`; `MoleculesScreen`
 passes `xyzData` (stored xyz strings); the Job-detail conformer panel passes `xyzData`.
+
+**Phase-3 results props** (details in [results-ui.md](results-ui.md)): `preserveCameraOnUpdate`
+(trajectory / animation — redraw same-count frames without `zoomTo`); `bondTopologyReference` (freeze
+bond topology from an equilibrium geometry and coordinate-update per frame — mode animation, unit
+3.14); `orbitalCube` / `orbitalIsoValue` (a `.cube`'s molecule + ± phase isosurfaces, unit 3.15);
+`representation` (`"stick"` | `"line"`, unit 3.16). The component is also a `forwardRef` exposing
+`toPngBytes()` (3Dmol `pngURI()` readback, for PNG export). App-owned state throughout (ADR-011).
 
 - **One `createViewer()` per mount** into a `useRef` div. A **model effect** rebuilds the model on a
   geometry change: base ball-and-stick `{stick:{}, sphere:{scale:0.3}}` on all atoms, then the
@@ -255,14 +263,19 @@ change is the opt-in **`preserveCameraOnUpdate`** prop — an `xyzData` change t
 count redraws without `zoomTo` (the camera holds through playback); a count change still zooms.
 Default false, so the Molecules/preview path is unchanged.
 
-## Orbitals / densities (planned)
-`orca_plot` in batch mode generates `.cube` from `.gbw` → 3Dmol.js volumetric isosurface
-(positive/negative lobes, adjustable isovalue). Default grid 80–100; cubes cached in the job dir;
-generated lazily on MO selection.
+## Orbitals / densities (unit 3.15 — DONE)
+`orca_plot` (driven over stdin, not the unusable `plot-inputfile` mode — measured, `orca/orca-plot.md`)
+generates a `.cube` from `.gbw`; the viewer draws the molecule from the cube + two ± phase isosurfaces
+(the sign is the wavefunction **phase, not charge**), with an isovalue slider. Default grid 80³
+(measured ≈6.9 MB); cubes cached in the job dir, never in the DB; generated lazily on MO selection.
+The `.cube` string is parsed once into a `VolumeData`, so an isovalue change redraws only the
+surfaces. WebKitGTK renders the isosurface — gated via MiniBrowser (`debugging/002` technique).
+Detail: [results-ui.md](results-ui.md). Density cubes / the MO-coefficient route are **not** done.
 
-## Spectra (unit 3.8 — IR done; mode animation deferred)
-IR: Lorentzian broadening over (freq, intensity) → recharts, built in `src/spectrum/` — see
-[results-ui.md](results-ui.md). Peak click selects the frequency-table row (and vice-versa). Peak
-click → **animate the normal mode** is unit 3.9, behind the Kabsch-alignment gate — deliberately NOT
-a "static mode preview" in the meantime. UV-Vis (Phase 6): Gaussian broadening over TD-DFT (energy,
-fosc).
+## Spectra (units 3.8–3.12 — IR + mode animation DONE)
+IR: Lorentzian broadening over (freq, intensity) → recharts, in `src/spectrum/` — see
+[results-ui.md](results-ui.md). Peak click selects the frequency-table row (and vice-versa), and
+**animates the normal mode** (unit 3.12): the `.hess` frame was proven a pure translation of the
+reference (Kabsch gate), so modes are added as-is; phase/amplitude/timer are app state, the viewer
+gets one frame with a **frozen** bond topology. UV-Vis (Phase 6): Gaussian broadening over TD-DFT
+(energy, fosc) — see the ROADMAP note.

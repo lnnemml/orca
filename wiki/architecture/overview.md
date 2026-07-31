@@ -21,16 +21,22 @@
                 │ HTTP, localhost:8765
 ┌───────────────┴──────────────────────────────────────────┐
 │ PYTHON SIDECAR — sidecar/ (FastAPI)                      │
-│  · cclib: full output parsing → structured JSON          │
-│  · RDKit: SMILES → 3D (ETKDG), format conversions        │
+│  · RDKit: SMILES → 3D (ETKDG)                            │
+│  · ASE: geometry kernel (d/θ/φ, masks) + format convert  │
 │  · Manual indexer: HTML docs → sections → SQLite FTS5    │
+│    (planned, Phase 4)                                     │
 └──────────────────────────────────────────────────────────┘
 ```
 
+Result parsing is **not** in the sidecar. cclib was rejected (crashes on ORCA 6.1.0); the
+authoritative tier is own **Rust** parsers over ORCA's structured artifacts (ADR-012), next to the
+streaming convergence parser. See `wiki/modules/artifact-readers.md`.
+
 Division of responsibility, one line each:
 - **Frontend** renders and edits; it never touches the filesystem or processes directly.
-- **Rust core** owns *where and how things run* and *what is stored*.
-- **Sidecar** owns *what things mean chemically*.
+- **Rust core** owns *where and how things run*, *what is stored*, and *parsing results* (ADR-012).
+- **Sidecar** owns *in-process chemistry over file content* — structure generation (RDKit) and the
+  geometry kernel + conversion (ASE); it never spawns a process (ADR-009) and does not parse results.
 
 ## Job lifecycle (the central state machine)
 
@@ -59,10 +65,11 @@ draft ─▶ queued ─▶ uploading ─▶ running ─▶ completed ─▶ sync
 2. Backend `submit()` — local spawn or rsync+ssh nohup (see ADR-003, ADR-005)
 3. Log lines stream to frontend as Tauri events → live console + incremental convergence
    parsing (lightweight regex in Rust for `SCF ITERATIONS` / `Geometry convergence` blocks)
-4. On completion → results synced locally → Rust calls sidecar `/parse` → cclib JSON
-   → stored in SQLite `results` table
-5. Results screen reads from SQLite; heavy artifacts (cubes) are generated lazily on demand
-   via `orca_plot` and cached in the job dir
+4. On completion → results synced locally → **Rust parses the structured artifacts directly**
+   (`.property.txt`/`.hess`/`_trj.xyz` + `orca_2json` over `.gbw`; ADR-012, no sidecar, no cclib)
+   → stored in SQLite `results` table → job advances to `parsed`
+5. Results screen reads from SQLite; heavy artifacts (orbital cubes) are generated lazily on demand
+   via `orca_plot` and cached in the job dir (never in the DB)
 
 ## Storage layout
 

@@ -2,12 +2,15 @@
 
 **Status:** chemistry endpoints live — `/smiles-to-3d` (RDKit), `/convert` + `/formats` (ASE),
 `/geometry/set-internal` and `/geometry/rotatable-mask` (the ASE geometry kernel). Sidecar
-`__version__` `0.4.0`. The cclib parse tier and manual indexing are Phase 3 / Phase 4.
+`__version__` `0.4.0`. **Result parsing is NOT a sidecar concern** — cclib was rejected and the
+authoritative tier moved to Rust (ADR-012); see [artifact-readers.md](artifact-readers.md). Manual
+indexing is still Phase 4.
 
 ## Responsibilities & boundaries
 
 Chemistry intelligence over file *content*: structure generation (RDKit), format conversion and
-the geometry kernel (ASE), later cclib parsing and manual indexing. Two hard boundaries:
+the geometry kernel (ASE), later manual indexing. **Not** result parsing — that is Rust over
+structured artifacts (ADR-012), never a sidecar/cclib endpoint. Two hard boundaries:
 
 - **Stateless.** All persistence lives in SQLite owned by Rust (ADR-002). Inputs are either file
   paths inside the app data dir (parsing endpoints) or small literals like a SMILES string — never
@@ -230,13 +233,13 @@ orphaned. Release builds keep the single non-reload process; the handshake is th
 
 ## Dependencies
 
-fastapi, uvicorn, pydantic, rdkit, ase (pulls numpy/scipy/matplotlib); cclib later (Phase 3). Open
-Babel is NOT a dependency — ASE covers conversions.
+fastapi, uvicorn, pydantic, rdkit, ase (pulls numpy/scipy/matplotlib). **cclib is NOT a dependency**
+(rejected — ADR-012). Open Babel is NOT a dependency — ASE covers conversions.
 
 ## Endpoints (planned, beyond those above)
 
-- `POST /parse` — output file path → cclib-derived JSON (energies, orbitals, freqs, intensities,
-  charges, dipole, TD-DFT states, geometry trajectory) — Phase 3.
+- ~~`POST /parse` — output → cclib JSON~~ **REJECTED (ADR-012):** result parsing is Rust over
+  structured artifacts, not a sidecar/cclib endpoint. Not built, and will not be.
 - `POST /manual/build-index` — one-off docs indexing — Phase 4.
 - `GET  /manual/search?q=` — FTS query proxy (or Rust queries SQLite directly — decide in Phase 4).
 

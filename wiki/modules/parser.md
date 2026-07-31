@@ -1,12 +1,13 @@
 # Module: Result parsing
 
-**Status:** two Rust extractors built (minimal result extraction + the incremental streaming
-convergence parser), and the authoritative tier is now **under way**: the first of its four
-artifact readers, `.property.txt`, is **built and tested** (`src-tauri/src/parse/`, see
-[artifact-readers.md](artifact-readers.md)); `.hess`, `_trj.xyz`/`.xyz`, and `orca_2json` are not
-started, and none is wired into the job pipeline yet. Per
-[ADR-012](../architecture/adr-012-output-parsing-ownership.md) the tier is **Rust over ORCA's
-structured artifacts**, not a sidecar/cclib parse (cclib crashes on ORCA 6.1.0 output — see
+**Status:** both tiers are built. The **streaming tier** (minimal result extraction + the
+incremental convergence parser) is described in full on this page. The **authoritative tier is
+COMPLETE** — all four Rust artifact readers (`.property.txt`, `.hess`, `_trj.xyz`/`.xyz`,
+`orca_2json`) are built, tested, and wired end-to-end into the job pipeline via `results.rs` (job →
+`parsed`). That tier has its own page — **[artifact-readers.md](artifact-readers.md)** — and is not
+re-described here beyond the boundary below. Per
+[ADR-012](../architecture/adr-012-output-parsing-ownership.md) it is **Rust over ORCA's structured
+artifacts**, not a sidecar/cclib parse (cclib crashes on ORCA 6.1.0 output — see
 [parse-sources.md](../orca/parse-sources.md)).
 
 ## Responsibilities & boundaries
@@ -16,16 +17,16 @@ Turn ORCA output into structured data. Two tiers, by design:
 1. **Streaming tier (Rust, during a run)** — lightweight, tolerant regexes over incoming log
    lines for live UI only: SCF iteration energies, per-cycle geometry energy, gradient norms vs
    convergence criteria. Tolerant to partial lines; **never authoritative**.
-2. **Authoritative tier (Rust, over structured artifacts — ADR-012) — under way.** After a run,
-   own parsers read `.property.txt` (energies, geometry, charges, dipole, thermochemistry) —
-   **built** (`src-tauri/src/parse/property.rs`, [artifact-readers.md](artifact-readers.md)) —
-   plus `.hess` (signed frequencies, normal modes, IR), `_trj.xyz`/`.xyz` (trajectory, final
-   geometry), and `orca_2json` over `.gbw` (MO energies/occupations) — **not started** → SQLite
-   `results`. Everything the Results screen shows comes from here. `output.out` is **not** an
-   authoritative source (rule #5 holds by construction — the multi-MB text is never parsed
-   whole). cclib is **not** used. Part A of the parse-sources probe verified every artifact's
-   atom order equals the input order, so each artifact's position→`AtomId` map is the identity
-   today; the `.property.txt` reader enforces that with a per-block order + Bohr→Å post-condition.
+2. **Authoritative tier (Rust, over structured artifacts — ADR-012) — COMPLETE.** After a run, own
+   parsers read `.property.txt` (energies, geometry, charges, dipole, thermochemistry), `.hess`
+   (signed frequencies, normal modes, IR), `_trj.xyz`/`.xyz` (trajectory, final geometry), and
+   `orca_2json` over `.gbw` (MO energies/occupations) → SQLite `results`. **All four built, tested,
+   wired** — the detail lives in **[artifact-readers.md](artifact-readers.md)**. Everything the
+   Results screen shows comes from here. `output.out` is **not** an authoritative source (rule #5 —
+   the multi-MB *log* is never parsed whole; the small structured artifacts are read whole and
+   capped). cclib is **not** used. Part A of the parse-sources probe verified every artifact's atom
+   order equals the input order, so each artifact's position→`AtomId` map is the identity today; the
+   readers enforce that with per-block/per-frame order + Bohr→Å post-conditions.
 
 Formats and the ORCA-6 output gotchas these parsers rely on are documented in
 `wiki/orca/output-files.md`.
@@ -79,8 +80,11 @@ asserted against genuine ORCA output in the ignored `real_orca_water_single_poin
 **Why a 64 KB tail, not the 5 KB completion tail:** a Freq / Opt+Freq run prints the final energy
 well before EOF (normal modes + thermochemistry follow), so a small tail can miss it.
 
-**Deliberately minimal** — only the two numbers the job list needs today. The rich, authoritative
-parse (geometries, frequencies, spectra) is the sidecar/cclib tier, not yet built.
+**Deliberately minimal** — only the two numbers the job list needs *during/right after* a run. The
+rich, authoritative parse (geometries, frequencies, spectra, MOs) is the **Rust artifact-reader
+tier** (ADR-012, [artifact-readers.md](artifact-readers.md)), which runs on completion and is what
+the header energy is re-sourced from (`jobs.energy` is overwritten from `results` — a 64 KB tail can
+miss the final energy on a large molecule; see [debugging/007](../debugging/007-phase1-decisions-phase3-outgrew.md)).
 
 ## Notes
 

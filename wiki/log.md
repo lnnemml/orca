@@ -3267,3 +3267,47 @@ path and the PNG rasterization are not headless-drivable (dialog + canvas), so t
 plugin added; ADR-009 already puts file I/O in Rust). **Phase 3 complete.**
 
 Next: Phase 4 — the geometry/reaction editor (ADR-010/011 land).
+
+## [2026-07-31] lint | Post-Phase-3 wiki lint — parse tier moved to Rust, cclib removed, roadmap realigned
+
+First lint since ~unit 3.1 (16 units: ADR-012 killed cclib, the authoritative parse tier moved from
+the sidecar to Rust, four artifact readers landed, rules #9/#10/#11 were added, orbitals passed a
+gate, the plan shifted twice). **Code/tests/probes untouched — wiki + ROADMAP + CLAUDE.md only.**
+
+**Found: 15 items across 5 categories.**
+
+- **Stale — cclib survivors (7):** `CLAUDE.md` (repo layout + tech-stack said "cclib parsing"),
+  `overview.md` (diagram "cclib: full output parsing", "sidecar owns what things mean chemically",
+  data-flow "Rust calls sidecar /parse → cclib JSON"), `parser.md` (status + Tier-2 "first of four
+  built, rest not started, not wired" + "sidecar/cclib tier not yet built"), `sidecar.md` (status,
+  responsibilities, deps, the planned `POST /parse → cclib JSON` endpoint). **Fixed** — all now say
+  the tier is Rust over structured artifacts (ADR-012), cclib rejected; `/parse` marked REJECTED, not
+  built. cclib mentions in ADR-002/012, `log.md`, `parse-sources.md`, `output-files.md` are
+  historical/measured/decision — **left as chronicle**.
+- **Stale — Phase-3 "not started" claims (4):** `visualization.md` (status "trajectories/orbitals/
+  spectra not started", "Orbitals (planned)", "Spectra — mode animation deferred") and `frontend.md`
+  ("Screens (planned): Results — Phase 3"). **Fixed** — all done (units 3.8–3.16), pointing to
+  results-ui.md; the viewer's Phase-3 props documented.
+- **ROADMAP drift (2):** summary card `[~]` → `[x]` (feature-complete); the per-atom-seam `[ ]`
+  reworded (parsing IS done with named order assumptions; the typed `AtomId`/`IndexMap` is Phase-4.2
+  Stage 1, where it is already tracked) and "Phase 3 complete" clarified vs the one remaining
+  cross-cutting `[ ]` (stereocenter-flag on import). Phase 0–2/4.x statuses spot-checked — accurate.
+- **CLAUDE.md rule wording (1):** rule #5 read as violated (we read `.property.txt`/`.hess` whole).
+  **Reworded** to distinguish the unbounded `output.out` (never whole) from the small, size-capped
+  structured artifacts (read whole, justified) — no code change, the practice was already right.
+
+**Checked clean (no action):** no orphan pages; **page count 52 is factually correct** (54 files −
+index.md − log.md). **No measurement divergences** — `.hess` reframe (pure translation), Bohr/Å,
+`entropyS`=T·S, imaginary modes, index bases are consistent across parse-sources (canonical) /
+output-files / orca-plot / artifact-readers; only duplication-with-references, which is fine.
+Language convention holds (chemistry/ Ukrainian, rest English).
+
+**Planning added (not lint):** ROADMAP Phase 6 UV-Vis (TD-DFT) and NMR fleshed out with real
+dependencies — UV-Vis needs an excited-state-source probe (gap already flagged) + a real TD-DFT run,
+Gaussian broadening, nm-vs-eV axis, an assumed band width, and a hybrid/range-separated functional
+(r²SCAN-3c unfit for excited states); NMR needs σ→δ (a second same-method reference calc) + Boltzmann
+averaging (GOAT exists) + equivalent-nuclei averaging, so it waits until Reaction is a first-class
+multi-job object (Phase 4.5) — the same aggregation need as ΔΔG‡.
+
+**Surfaced, not self-decided:** none blocking. The per-atom-seam item is duplicated between Phase 3
+(now a note) and Phase 4.2 Stage 1 (the actual typed-seam work) — left in both, not deleted.

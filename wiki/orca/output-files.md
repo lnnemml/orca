@@ -83,8 +83,9 @@ dev machine unless noted.
 
 ## Convergence blocks (for live parsing)
 Formats confirmed against real ORCA 6.1 output (r²SCAN-3c). Parsed incrementally by
-`src-tauri/src/convergence.rs` for the live dashboard; will be reused in Phase 3 (results)
-and Phase 4.5 (scan energy profiles).
+`src-tauri/src/convergence.rs` for the live dashboard (the **streaming** tier — the authoritative
+Phase-3 results come from the structured artifacts, not this text; ADR-012). The same block formats
+are reused for Phase 4.5 scan energy profiles.
 
 ### SCF iteration table
 There is **no `SCF ITERATIONS` banner** in ORCA 6 — each SCF algorithm prints its own column

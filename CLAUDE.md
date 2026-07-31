@@ -31,7 +31,7 @@ orca-studio/
 ├── wiki/                ← the knowledge base (see "Wiki system" below)
 ├── src/                 ← React + TypeScript frontend (Vite)
 ├── src-tauri/           ← Rust core: process spawn, file watching, SSH, SQLite access
-├── sidecar/             ← Python FastAPI service: cclib parsing, RDKit, manual indexing
+├── sidecar/             ← Python FastAPI service: RDKit (SMILES→3D), ASE (geometry kernel + conversion), manual indexing
 └── resources/manual/    ← RAW SOURCES: indexed ORCA documentation. IMMUTABLE — never edit.
 ```
 
@@ -40,7 +40,12 @@ orca-studio/
 Full rationale lives in `wiki/architecture/` (ADRs). Summary:
 
 - **Tauri 2 + React 18 + TypeScript (strict)** — desktop shell and UI. ADR-001.
-- **Python sidecar (FastAPI on localhost:8765)** — chemistry logic: cclib, RDKit, ASE. ADR-002.
+- **Python sidecar (FastAPI on localhost:8765)** — in-process chemistry over file *content*:
+  RDKit (SMILES→3D), ASE (geometry kernel + format conversion). ADR-002. **Result parsing is NOT
+  here** — see the next bullet.
+- **Authoritative result parsing = own Rust parsers over ORCA's structured artifacts**
+  (`.property.txt`/`.hess`/`_trj.xyz`/`orca_2json`), **not cclib** (crashes on ORCA 6.1.0) and not the
+  sidecar. External-binary spawns (`orca_2json`, `orca_plot`) are Rust's too. ADR-012 / ADR-009.
 - **ExecutionBackend abstraction** — every calculation runs through a backend trait
   (`LocalBackend`, `SshBackend`, later `SlurmBackend`). UI code never knows where a job runs. ADR-003.
 - **SQLite** (via Rust, one DB file per user data dir) — projects, molecules, jobs, results,
@@ -75,8 +80,12 @@ npm run tauri build
    isolation + post-run cleanup is mandatory.
 4. **Default concurrency = 1.** ORCA parallelizes itself via `%pal`; the queue runs
    jobs sequentially unless the user explicitly overrides.
-5. **Never load whole output files into memory.** Outputs reach tens of MB; stream/tail.
-   Cube files reach hundreds of MB; generate with moderate grids (80–100) by default.
+5. **Never load the unbounded `output.out` whole** — it reaches tens of MB; stream/tail it
+   (streaming convergence parse, output search, the two tail regexes). The **small, bounded
+   structured artifacts** ARE read whole and that is correct: `.property.txt` (≈344 KB max measured)
+   and `.hess` (≈150 KB) fit in memory, each reader still **size-caps** (16 MB) and refuses a
+   pathological file, and an isosurface needs the whole `.cube` (read capped at 32 MB). The rule is
+   about the unbounded log, not every file. Cube generation still uses moderate grids (80–100).
 6. Job completion = marker file (`.exit_code`) **and** `ORCA TERMINATED NORMALLY` in output.
 7. ORCA binaries are **never bundled or redistributed**; the app points to a user-configured
    install path. Same for the manual: indexed locally for personal use only.
