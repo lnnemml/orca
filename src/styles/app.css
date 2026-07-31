@@ -1557,6 +1557,59 @@ select:disabled,
 .ir-sticks rect {
   outline: none;
 }
+/* Imaginary modes are clickable (select → animate the reaction coordinate). */
+button.ir-imaginary-mode {
+  border: 1px solid transparent;
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  cursor: pointer;
+  padding: 0 4px;
+  border-radius: 4px;
+}
+button.ir-imaginary-mode:hover {
+  border-color: var(--warn);
+}
+button.ir-imaginary-mode.selected {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+/* Normal-mode animation (unit 3.12). */
+.mode-animator {
+  margin-top: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  background: var(--panel-2);
+}
+.mode-label {
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+.mode-label .mode-imag {
+  color: var(--warn);
+  font-weight: 700;
+}
+.mode-viewer {
+  height: 300px;
+  flex: none;
+}
+.mode-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 6px;
+}
+.mode-amp {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.mode-amp input[type="range"] {
+  accent-color: var(--accent);
+}
 .ir-table .ir-row {
   cursor: pointer;
 }

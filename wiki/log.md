@@ -2963,3 +2963,75 @@ is pure-tested. `wiki/modules/results-ui.md` updated (why the grid is raw-derive
 011/012 + the proposal untouched.
 
 Next (unchanged): Kabsch-alignment gate → normal-mode animation (click an IR peak → watch the atoms move).
+
+## [2026-07-31] ingest | Unit-3.12 GATE: the .hess $atoms frame is a PURE TRANSLATION (no rotation)
+
+Determiner run before any animation code (`sidecar/probes/hess_frame_kabsch.py`, terminal, not app
+code). Kabsch superposition between `.hess $atoms` (Bohr→Å) and the reference geometry the reader
+already accepts (`.property.txt` final `$Geometry`, Bohr→Å), in **index order, no correspondence
+search**. R maps `.hess → reference`.
+
+| job | max&#124;R−I&#124; | det R | RMSD (Å) | raw per-atom &#124;hess−ref&#124; | &#124;t&#124; (Å) |
+|---|---|---|---|---|---|
+| ethane-min (8) | 2.05e-13 | +1 | 5.7e-13 | 0.000000 (same frame) | 0.000 |
+| saddle (19) | 2.87e-14 | +1 | 4.2e-13 | 1.098986 (uniform) | 1.099 |
+| dexketoprofen (33) | 1.22e-14 | +1 | 4.4e-13 | 0.149018 (uniform) | 0.149 |
+
+**Verdict: PURE TRANSLATION on all three** — `max|R−I| ≤ 3e-13` (machine precision), `det R=+1`, RMSD
+~1e-13. Independent tell: the raw per-atom shift `|hess−ref|` is **identical for every atom** (min ==
+max == mean) — a rigid translation's signature. The **33-atom asymmetric dexketoprofen** is the
+decisive witness: any real rotation there is unambiguous, and it is 1e-14. The reader's distance-based
+post-condition (rotation-invariant) could never have said this; the gate did. **Consequence:**
+`$normal_modes` are added to the reference geometry **as-is** — no mode rotation owed at any boundary
+(had R≠I, the reader would owe one, visible in the type like `÷√m`). Narrows the earlier "centre of
+mass / Eckart frame" wording to **centre-of-mass translation, no Eckart rotation** on these jobs.
+Recorded with matrices in `parse-sources.md`; `hess.rs` / `artifact-readers.md` comments corrected.
+
+**Amplitude calibration (same probe):** at the `orca_pltvib` multiplier A=2.0 the median mode keeps a
+min interatomic distance ≈0.95 Å, but the sharpest localized C–H stretches overshoot to 0.02–0.07 Å
+(ethane 7/18, saddle 14/51, dexket 16/93 modes < 0.5 Å). So 2.0 is a good default for bends but
+overshoots stretches → amplitude is a slider with a **collapse guard** at 0.5 Å.
+
+## [2026-07-31] session | Unit 3.12 Part B: normal-mode animation (click a peak → watch the atoms move)
+
+Gate passed (ingest above), so Part B was written. **No Rust reader change** — the gate proved no mode
+rotation is owed (comment-only corrections to `hess.rs`).
+
+**Pure module `src/spectrum/mode.ts`** (node-tested, mirrors `trajectory/frame.ts`): `modeDisplacements`
+extracts mode k as the **column** of the row-major 3N×3N matrix (a row would be a different thing — the
+seam, locked by a known-matrix test); `modeFrameCoords` = `x_eq + A·sin(2π·phase)·v` (phase 0 =
+equilibrium **exactly**, sin 0 = 0); `modeFrameXyz` reuses the trajectory formatter (one path to the
+dumb renderer); `minInteratomicDistance` / `modeMinDistanceOverPeriod` are the collapse guard (samples
+the whole period, not just the sin=±1 extremes — the per-pair distance is convex in sin).
+
+**`ModeAnimator.tsx` — ownership is the trajectory's, verbatim (ADR-011):** phase (int 0…39),
+amplitude, play timer and speed are **application state**; the viewer gets ONE frame, no timer, no
+3Dmol `animate`/`setFrame`. The timer loops the period forever (vs the trajectory's play-once).
+Identity check at the UI boundary (`elementsAgree(f.elements, geometry.elements)`) before drawing —
+mismatch → error, not the wrong atoms. Auto-plays on select; selecting a new mode restarts at phase 0.
+
+**Amplitude is a display choice** (the mode is normalized — no absolute amplitude), default **2.0** =
+measured `orca_pltvib` multiplier, labelled as such; a slider like FWHM / display-scale. **Collapse
+guard (rule #9):** when the current amplitude drives atoms < 0.5 Å (`MIN_SAFE_DISTANCE_ANGSTROM`,
+measured floor), a warning tells the user to reduce it instead of drawing mush.
+
+**Spectrum ↔ mode:** clicking a peak/row (already wired) or now an **imaginary-mode chip** selects a
+mode and animates it; the shared `selected` index is also the `$normal_modes` column. **Imaginary
+modes are animatable — the teaching payoff:** for a TS the imaginary mode traces the **reaction
+coordinate** (downhill both ways), labelled as such (dexketoprofen has none → the saddle fixture is
+the imaginary case). Panel gained a `geometry` prop (the final geometry = the equilibrium the modes
+animate around); `ResultsCard` passes `results.final_geometry`. Empty states: no `.hess` → panel
+absent; frequencies but no `$normal_modes`/bad shape → no animator, the table stands.
+
+**Teaching page** `wiki/chemistry/normal-modes.md` (Ukrainian): what a normal mode is, why amplitude is
+arbitrary, why animating an imaginary mode shows the reaction coordinate, why modes are taken as-is.
+
+**Verified.** `tsc` clean; **vitest 351 passed** (21 files; +12 `mode.test.ts` — column-not-row
+extraction, phase-0 = equilibrium, ±A extremes, count-mismatch throws, collapse guard flags/passes);
+`vite build` clean (pre-existing bundle warning only). Rust untouched semantically (comment-only). The
+gate + amplitude calibration are reproducible via `sidecar/probes/hess_frame_kabsch.py` (numpy only).
+In-GUI leg (the atoms actually moving in the Tauri webview) needs the window — standing headless
+limit; the geometry math, the phase-0 invariant, the column seam and the guard are all pure-tested.
+ADR-002/009/010/011/012 + the proposal untouched.
+
+Next: Phase 3 remainder — orbital/density isosurfaces (`orca_plot` → `.cube`), then export.

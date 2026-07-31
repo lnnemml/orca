@@ -304,8 +304,15 @@ the `[ ]` "Fragment library" item above.
       by exact-zero and imaginary excluded by sign (both surfaced: imaginary shown separately as a
       transition-state diagnosis). Peak ↔ frequency-row click both ways. Cross-checked against
       `orca_mapspc` (14.0%, cause = its wing truncation — reported, not fudged; `parse-sources.md`).
-      **`click a peak → animate that normal mode` remains `[ ]`, behind the Kabsch-alignment gate**
-      (a later unit) — no "static mode preview" stopgap. (Unit 3.9 turned out to be a defect-fix unit:
+      **`click a peak → animate that normal mode` is now `[x]` (unit 3.12).** Its Kabsch determiner
+      cleared the last `.hess` uncertainty: the `$atoms` frame is a **pure translation** of the
+      reference geometry (`max|R−I| ≤ 3e-13` on ethane / saddle / dexketoprofen — the asymmetric 33-atom
+      case is the decisive witness), so `$normal_modes` are added **as-is**, no mode rotation. Animation
+      is `x_eq + A·sin(2π·phase)·v`; phase/amplitude/timer are **application state** (`ModeAnimator`,
+      ADR-011), the viewer gets one frame. Amplitude is a display choice (default 2.0 = measured
+      `orca_pltvib` multiplier) with a collapse guard (<0.5 Å → warn, measured). Imaginary modes are
+      animatable and labelled as the **reaction coordinate**. Pure math + gate in `src/spectrum/mode.ts`
+      (+ `probes/hess_frame_kabsch.py`); teaching page `chemistry/normal-modes.md`. (Unit 3.9 turned out to be a defect-fix unit:
       the results screen was made reachable and the header energy re-sourced from the parsed artifact —
       see `wiki/debugging/007`; Kabsch + mode animation did not start.) **Unit 3.10** (first chemist
       review) made the presentation honest: on-curve markers replaced by **sticks** (km/mol, right

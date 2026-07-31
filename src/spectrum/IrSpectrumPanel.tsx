@@ -13,6 +13,7 @@ import {
 
 import type { ParsedResults } from "../types";
 import { useContainerWidth } from "../charts/useContainerWidth";
+import { ModeAnimator } from "./ModeAnimator";
 import {
   classifyModes,
   spectrum,
@@ -69,7 +70,17 @@ const STICK_COLOR = "#8fb56a";
  * Click a stick → the matching frequency row selects, and vice-versa. No mode
  * ANIMATION here — that is unit 3.9, behind the Kabsch gate.
  */
-export function IrSpectrumPanel({ f }: { f: Frequencies }) {
+type FinalGeometry = ParsedResults["final_geometry"];
+
+export function IrSpectrumPanel({
+  f,
+  geometry,
+}: {
+  f: Frequencies;
+  /** The final/reference geometry — the equilibrium the modes animate around, and
+   * the element order the modes must match (unit 3.12). `null` disables animation. */
+  geometry: FinalGeometry | null;
+}) {
   const [fwhm, setFwhm] = useState(DEFAULT_FWHM_CM);
   // Display scale factor — a PLOT choice (like FWHM), default 1.00. See irPresentation.
   const [scale, setScale] = useState(DEFAULT_SCALE);
@@ -129,13 +140,21 @@ export function IrSpectrumPanel({ f }: { f: Frequencies }) {
         <div className="ir-imaginary">
           <span className="ir-imaginary-tag">imaginary (excluded from the spectrum):</span>{" "}
           {imaginary.map((m) => (
-            <span key={m.index} className="ir-imaginary-mode mono">
+            <button
+              key={m.index}
+              type="button"
+              className={
+                "ir-imaginary-mode mono" + (m.index === selected ? " selected" : "")
+              }
+              onClick={() => setSelected(m.index === selected ? null : m.index)}
+              title="animate this mode — the reaction coordinate"
+            >
               {m.cm.toFixed(2)} cm⁻¹
-            </span>
+            </button>
           ))}
           <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
             a negative (imaginary) frequency is the signature of a transition
-            state — see the verdict above.
+            state — click it to animate the reaction coordinate.
           </div>
         </div>
       ) : null}
@@ -304,6 +323,25 @@ export function IrSpectrumPanel({ f }: { f: Frequencies }) {
             </div>
           ) : null}
         </div>
+      ) : null}
+
+      {/* Normal-mode animation (unit 3.12, Part B) — a mode is selected (peak, row,
+          or imaginary click) and its atoms move. Gated behind the 3.12 Kabsch
+          determiner (modes added as-is). Hidden when there is no geometry or no
+          `$normal_modes` (the table still stands). */}
+      {selected != null &&
+      geometry != null &&
+      f.n_modes > 0 &&
+      f.normal_modes.length === f.n_modes * f.n_modes ? (
+        <ModeAnimator
+          elements={f.elements}
+          equilibrium={geometry.xyz_angstrom}
+          referenceElements={geometry.elements}
+          normalModes={f.normal_modes}
+          nModes={f.n_modes}
+          modeIndex={selected}
+          frequencyCm={f.frequencies_cm[selected]}
+        />
       ) : null}
 
       {/* The frequency table — active (real) modes, clickable rows, selection in

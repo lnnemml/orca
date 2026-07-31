@@ -92,13 +92,17 @@ units by type — so nothing new had to be invented. Two deliberate differences,
   section) while the accessors/typestate above it are identical. A shared tokenizer would have
   been the wrong kind of reuse.
 - **The geometry post-condition is distance-based, not coordinate-based.** Measured: `.hess
-  $atoms` is the Freq geometry **rigidly reframed** (centre-of-mass / Eckart) — a uniform 1.041 Å
-  shift on the saddle, 0 on symmetric ethane. A coordinate compare would false-alarm on that
-  reframe. Interatomic **distances** are translation/rotation invariant, so `.hess` compares
-  those: a missed Bohr→Å still fails loudly (6.6 Å on the saddle), a reframe passes (4e-8 Å). The
-  caller supplies the **optimized** geometry as the reference (the `.property.txt` final
-  `$Geometry`), *not* `input.inp` (the start) — a Freq is computed at the minimum, so `$atoms` ≠
-  the input geometry.
+  $atoms` is the Freq geometry **rigidly reframed** — a **pure centre-of-mass translation, no
+  rotation** (unit-3.12 Kabsch gate: `max|R−I| ≤ 3e-13` on all three jobs, incl. asymmetric
+  dexketoprofen; the per-atom shift is identical for every atom — a translation's signature). A
+  uniform ~1.10 Å shift on the saddle, 0 on symmetric ethane. A coordinate compare would
+  false-alarm on that translation. Interatomic **distances** are translation/rotation invariant,
+  so `.hess` compares those: a missed Bohr→Å still fails loudly (6.6 Å on the saddle), a reframe
+  passes (4e-8 Å). The caller supplies the **optimized** geometry as the reference (the
+  `.property.txt` final `$Geometry`), *not* `input.inp` (the start) — a Freq is computed at the
+  minimum, so `$atoms` ≠ the input geometry. **No mode-rotation boundary exists** on the reader:
+  the gate proved none is owed, so `$normal_modes` are added to the reference geometry as-is for
+  animation (unit 3.12, `src/spectrum/mode.ts`).
 
 Measured facts the `.hess` reader encodes in structure: `$vibrational_frequencies` keeps its
 **sign** and `imaginary_count` is an **explicit field** (0 = minimum, 1 = TS, >1 = neither), not

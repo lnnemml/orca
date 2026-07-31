@@ -21,13 +21,18 @@
 //!   dimension line then column-blocks, a bare scalar). The tokenizer collects raw
 //!   lines per section; each typed accessor knows its section's shape.
 //! - **Geometry post-condition is distance-based, not coordinate-based.** Measured:
-//!   `$atoms` is the Freq geometry **rigidly reframed** (to the centre of mass /
-//!   Eckart frame) — on the asymmetric saddle every atom is shifted by a uniform
-//!   1.041 Å vs the input frame, while symmetric ethane shows 0. A coordinate
-//!   compare would false-alarm on that reframe. Interatomic **distances** are
-//!   translation/rotation invariant, so we compare those: a missed Bohr→Å still
-//!   fails loudly (every distance ×1.889 → 6.6 Å off on the saddle), a reframe
-//!   passes (4e-8 Å). See `wiki/orca/parse-sources.md`.
+//!   `$atoms` is the Freq geometry **rigidly reframed** — a **pure centre-of-mass
+//!   translation, no rotation** (measured: unit-3.12 Kabsch gate, `max|R−I| ≤ 3e-13`
+//!   on all three jobs incl. the asymmetric 33-atom one; the raw per-atom shift is
+//!   identical for every atom — the signature of a translation). On the asymmetric
+//!   saddle every atom is shifted by a uniform ~1.10 Å vs the input frame, while
+//!   symmetric ethane shows 0. A coordinate compare would false-alarm on that
+//!   translation. Interatomic **distances** are translation/rotation invariant, so
+//!   we compare those: a missed Bohr→Å still fails loudly (every distance ×1.889 →
+//!   6.6 Å off on the saddle), a reframe passes (4e-8 Å). The gate's other payoff:
+//!   because the reframe carries **no rotation**, `$normal_modes` are added to the
+//!   reference geometry **as-is** for animation (no mode rotation owed at any
+//!   boundary). See `wiki/orca/parse-sources.md`.
 //!
 //! # Units (all measured — `parse-sources.md`)
 //! `$atoms` coords **Bohr** → Å; `$vibrational_frequencies` **cm⁻¹** (signed);

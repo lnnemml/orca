@@ -126,7 +126,9 @@ export function ResultsCard({ jobId, status }: { jobId: string; status: JobStatu
           </section>
         )}
 
-        {results.frequencies && <IrSpectrumPanel f={results.frequencies} />}
+        {results.frequencies && (
+          <IrSpectrumPanel f={results.frequencies} geometry={results.final_geometry} />
+        )}
 
         {results.charges.length > 0 && (
           <section>

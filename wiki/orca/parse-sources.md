@@ -382,6 +382,59 @@ mass table is needed.
 
 ---
 
+## `.hess $atoms` frame: pure translation, NO rotation (unit-3.12 gate — measured)
+
+The last open uncertainty about `.hess`. The reader's geometry post-condition compares **pairwise
+distances** (`hess.rs::check_geometry_distances`), which are **rotation-invariant by construction** —
+so it can confirm the reframe preserves the molecule but can **never** say whether the reframe is a
+pure translation or *also* a rotation. That gap matters for **animation**: `$normal_modes` are
+displacement vectors in the `.hess` frame; if that frame is rotated relative to the reference
+geometry the scene is drawn in, adding the vectors animates along **rotated** directions — smooth,
+symmetric, and wrong (the same invisible class as mass-weighted modes).
+
+**Determiner:** Kabsch superposition between `.hess $atoms` (Bohr→Å) and the reference geometry the
+reader already accepts (`.property.txt` **final** `$Geometry`, Bohr→Å), **in index order, no
+correspondence search** (the correspondence is given by index). Probe:
+`sidecar/probes/hess_frame_kabsch.py` (terminal run, not app code). `R` maps `.hess → reference`.
+
+| job | max&#124;R−I&#124; | det R | RMSD after (Å) | raw per-atom &#124;hess−ref&#124; (Å) | translation &#124;t&#124; (Å) |
+|---|---|---|---|---|---|
+| ethane-min (8) | **2.05e-13** | +1.000 | 5.7e-13 | 0.000000 (identical frame) | 0.000 |
+| saddle (19) | **2.87e-14** | +1.000 | 4.2e-13 | 1.098986 (uniform) | 1.099, t=[1.0408, −0.1624, −0.3133] |
+| dexketoprofen (33) | **1.22e-14** | +1.000 | 4.4e-13 | 0.149018 (uniform) | 0.149, t=[0.0673, −0.0520, −0.1224] |
+
+R on all three (largest, the saddle):
+```
+ [ 1.00000000  -0.00000000   0.00000000 ]
+ [ 0.00000000   1.00000000   0.00000000 ]
+ [-0.00000000  -0.00000000   1.00000000 ]
+```
+
+**Verdict: PURE TRANSLATION on every job** — `max|R−I| ≤ 3e-13` (machine precision), `det R = +1`,
+RMSD ~1e-13 Å. The tell is independent of Kabsch: the raw per-atom shift `|hess−ref|` is **identical
+for every atom** (min == max == mean), which is exactly a rigid translation and nothing else. The
+**33-atom asymmetric** dexketoprofen is the decisive witness — any real rotation there is unambiguous
+(no symmetry to hide it), and it is `1e-14`. So the earlier "centre of mass / Eckart frame" wording is
+narrowed by measurement to **centre-of-mass translation, no Eckart rotation** on these jobs.
+
+**Consequence:** `$normal_modes` are consumed **as-is** and added directly to the reference geometry
+for animation — **no rotation into the reference frame** is applied, and none is needed (translation
+does not rotate a displacement vector). Had `R` differed from `I`, the reader would owe a mode
+rotation at its boundary, visible in the type (like `÷√m`); it does not. Locked by
+`src/spectrum/mode.test.ts` (the column-extraction seam) and reproducible via the probe.
+
+### Amplitude calibration — the collapse-guard floor (Part-B, measured)
+Same probe, second block. Animation is `x = x_eq + A·sin·v`; the extreme is `sin=±1`. At the
+`orca_pltvib` multiplier **A=2.0**, per job, how close do atoms get (min interatomic distance over the
+period)? Equilibrium mins ≈ **1.0 Å**; at A=2.0 the **median** mode stays ≈ **0.95 Å**, but the
+sharpest **localized C–H stretches overshoot to 0.02–0.07 Å** (2.0 is too large *for those* — ethane
+7/18, saddle 14/51, dexket 16/93 modes drop below 0.5 Å). So **2.0 is a good default for bends/most
+modes but overshoots localized stretches** — which is why amplitude is a slider and a **collapse guard**
+warns below **0.5 Å** (`MIN_SAFE_DISTANCE_ANGSTROM`, `mode.ts`) rather than drawing mush. 0.5 Å cleanly
+separates a genuine collapse from ordinary bond compression.
+
+---
+
 ## Summary table — where each Results-screen quantity can be read (measured)
 
 Legend: ✅ measured available · ❌ measured NOT available · — not applicable.

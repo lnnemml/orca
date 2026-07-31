@@ -29,7 +29,7 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 - [parser.md](modules/parser.md) — result extraction: streaming (Tier 1) + authoritative artifact readers (Tier 2)
 - [artifact-readers.md](modules/artifact-readers.md) — `src-tauri/src/parse/`: two-layer tokenizer + typed accessors, canonical units held by the `Angstrom` type, post-conditions; `.property.txt` built (the template), 3 others not started (ADR-012)
 - [visualization.md](modules/visualization.md) — 3Dmol.js integration, cubes, spectra
-- [results-ui.md](modules/results-ui.md) — post-calculation visualization: trajectory playback + IR spectrum; the frame number is app state, not the viewer's (ADR-011); IR panel is sticks (km/mol) + broadened curve (km/mol·cm⁻¹) on two labelled axes, single-source tooltip, display-only scale + inversion (unit 3.10)
+- [results-ui.md](modules/results-ui.md) — post-calculation visualization: trajectory playback + IR spectrum + normal-mode animation; the frame/phase is app state, not the viewer's (ADR-011); IR panel is sticks (km/mol) + broadened curve (km/mol·cm⁻¹) on two labelled axes, single-source tooltip, display-only scale + inversion (3.10); click a peak → animate the mode, amplitude a display choice, imaginary = reaction coordinate (3.12)
 - [scene.md](modules/scene.md) — Scene/SceneFragment pure core: merge to flat xyz, index-space invariant, reset-detection primitive (ADR-008)
 - [manual-index.md](modules/manual-index.md) — manual indexing pipeline + keyword map
 
@@ -43,7 +43,7 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 - [goat.md](orca/goat.md) — `! XTB GOAT` conformer search: observed ensemble format, atom-order preservation, `%pal` cost (verified on ORCA 6.1.0)
 - [constraints.md](orca/constraints.md) — `%geom Constraints` block: B/A/D/C syntax, value/no-value, **0-based index base settled by a real ORCA 6.1.0 run**, out-of-range segfault
 - [xtb.md](orca/xtb.md) — standalone GFN2-xTB pre-optimization: **1-based `$constrain` (≠ ORCA!)** settled by a real xtb 6.6.1 run, spring-held constraints + the measured tolerance, charge/multiplicity
-- [parse-sources.md](orca/parse-sources.md) — **measured** parse sources for ORCA 6.1.0: cclib 1.8.1 crashes on 6.1 output; `.hess`/`.property.txt`/`_trj.xyz`/`orca_2json` inventory; per-quantity source table (probe: `sidecar/probes/parse_sources.py`)
+- [parse-sources.md](orca/parse-sources.md) — **measured** parse sources for ORCA 6.1.0: cclib 1.8.1 crashes on 6.1 output; `.hess`/`.property.txt`/`_trj.xyz`/`orca_2json` inventory; per-quantity source table; the `.hess` frame is a pure translation of the reference (unit-3.12 Kabsch gate, no mode rotation) (probes: `parse_sources.py`, `hess_frame_kabsch.py`)
 
 ## Chemistry (навчальні нотатки, українською)
 
@@ -51,6 +51,7 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 - [reagent-geometry.md](chemistry/reagent-geometry.md) — геометрія реагентів-нуклеофілів: гідрид, чому BH₄⁻ тетраедричний, чому кут води 104.5°
 - [conformers.md](chemistry/conformers.md) — конформери і GOAT: anti/gauche-бутан, чому один конформер зі SMILES — випадковий знімок
 - [burgi-dunitz.md](chemistry/burgi-dunitz.md) — траєкторія Бюрґі–Дунітца: чому нуклеофіл атакує карбоніл під ~107°, метод структурної кореляції, звʼязок зі стереоселективністю NaBH₄ і з d/θ/φ у редакторі
+- [normal-modes.md](chemistry/normal-modes.md) — нормальні моди: що таке мода й що показує анімація; чому амплітуда довільна (вибір подання); чому анімація уявної моди показує координату реакції; чому моди беруться «як є» (ворота Кабша)
 - [ir-spectrum.md](chemistry/ir-spectrum.md) — ІЧ-спектр: чому обчислений спектр — палички, а не крива; розширення лінії; FWHM як вибір побудови графіка; що означає площа під піком; уявна частота як діагноз перехідного стану; **чому обчислений спектр не схожий на експериментальний** (інтенсивність vs %T, два C=O, гармонічне завищення, O–H-димер, низькі моди й ентропія — зміряно на декскетопрофені)
 
 ## Debugging

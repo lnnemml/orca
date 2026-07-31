@@ -1,9 +1,9 @@
 # Module: Results UI (`src/trajectory/`, `src/spectrum/`, `src/charts/`)
 
-**Status:** the post-calculation **visualization** tier of Phase 3 (unit 3.8) — optimization
-**trajectory playback** and the broadened **IR spectrum**. Both stand entirely on already-parsed,
-already-stored data (`data_json`, unit 3.7); no artifact is re-read. Mode **animation** (clicking a
-peak to see the atoms move) is **not** here — it is unit 3.9, behind the Kabsch-alignment gate.
+**Status:** the post-calculation **visualization** tier of Phase 3 — optimization **trajectory
+playback**, the broadened **IR spectrum**, and **normal-mode animation** (click a peak → watch the
+atoms move; unit 3.12, after its Kabsch determiner cleared the `.hess` frame). All stand entirely on
+already-parsed, already-stored data (`data_json`, unit 3.7); no artifact is re-read.
 
 ## Where the current frame lives (the load-bearing decision)
 
@@ -132,11 +132,43 @@ for ≤ 50 atoms it is far under the tick.
   `km/mol` (stick intensity), x `cm⁻¹`. The artifact's own `$frequency_scale_factor` is surfaced with
   its value and an explanation that 1.0 means ORCA applied none — distinct from the display scale.
 
-  **Peak ↔ row:** clicking a stick selects its frequency-table row (and draws a dashed marker at the
-  scaled wavenumber); clicking a row selects the stick — one shared `selected` mode index (the
-  original index into `frequencies_cm`). **No mode animation** — unit 3.9, behind the Kabsch gate.
-  Note: `$actual_temperature` (measured 0.0) is **never** used as a temperature here or anywhere;
-  the card's entropy uses `ThermoJson::temperature_k` (see [`orca/parse-sources.md`](../orca/parse-sources.md)).
+  **Peak ↔ row ↔ animation:** clicking a stick selects its frequency-table row (and draws a dashed
+  marker at the scaled wavenumber); clicking a row selects the stick; clicking an imaginary-mode chip
+  selects it too — one shared `selected` mode index (the original index into `frequencies_cm`), which
+  is also the **column** of `$normal_modes`. Selecting a mode reveals the animation (below). Note:
+  `$actual_temperature` (measured 0.0) is **never** used as a temperature here or anywhere; the card's
+  entropy uses `ThermoJson::temperature_k` (see [`orca/parse-sources.md`](../orca/parse-sources.md)).
+
+### Normal-mode animation (unit 3.12) — `src/spectrum/mode.ts` + `ModeAnimator.tsx`
+Gated behind the **unit-3.12 Kabsch determiner** (`probes/hess_frame_kabsch.py`): the `.hess $atoms`
+frame is a **pure translation** of the reference geometry on all three jobs (`max|R−I| ≤ 3e-13`, incl.
+asymmetric dexketoprofen), so `$normal_modes` are added to the reference geometry **as-is** — no mode
+rotation. Had the gate found a rotation, the animation would have been smooth, symmetric and wrong;
+this is why it is a gate, not an assumption.
+
+- **`mode.ts`** (pure, node-tested): `modeDisplacements` extracts mode `k` as the **column** of the
+  row-major 3N×3N matrix (a row would be a different thing — the seam, locked by a test);
+  `modeFrameCoords` is `x_eq + A·sin(2π·phase)·v` (phase 0 = equilibrium exactly); `modeFrameXyz`
+  reuses the trajectory formatter (one code path to the dumb renderer); `modeMinDistanceOverPeriod`
+  is the collapse guard.
+- **Ownership is the trajectory's, verbatim (ADR-011).** The **phase, amplitude, play timer and
+  speed are application state** in `ModeAnimator`; the viewer is handed **one frame's** geometry, with
+  no timer, no frame list, and no 3Dmol `animate`/`setFrame`. The timer loops the period forever
+  (unlike the trajectory's play-once). Same call as the trajectory frame number and the editor
+  `selection` — view-local state held by the component, not the store or the renderer.
+- **Amplitude is a display choice**, defaulting to the measured `orca_pltvib` multiplier **2.0**
+  (labelled as such — the mode is normalized and has no absolute amplitude), a slider like the FWHM and
+  the display scale. A **collapse guard** (rule #9) warns when the current amplitude drives atoms closer
+  than **0.5 Å** (`MIN_SAFE_DISTANCE_ANGSTROM`) — measured: 2.0 suits bends (median min ≈0.95 Å) but
+  overshoots localized C–H stretches (0.02–0.07 Å), so the guard tells the user to reduce it rather than
+  drawing mush.
+- **Identity check at the UI boundary**, like the trajectory: `elementsAgree(f.elements,
+  geometry.elements)` before animating — a mismatch renders an error, not the wrong atoms moving.
+- **Imaginary modes are animatable, and it is the teaching payoff:** for a transition state the imaginary
+  mode traces the **reaction coordinate** (the motion downhill in both directions), labelled as such in
+  the animator — never filtered out as noise.
+- **Empty states:** no `.hess` (SP/GOAT) → the whole panel is absent; frequencies but no `$normal_modes`
+  (or a bad shape) → no animator, the frequency table still stands.
 
 ### Cross-checked against ORCA's own tool
 The broadening was verified against `/opt/orca/orca_mapspc` (domain rules #9/#10) — flags taken from
