@@ -106,10 +106,23 @@ for ≤ 50 atoms it is far under the tick.
   curve value at that x, and the **nearest mode** labelled *as nearest* with its Δ, never as "the value
   here". `irPresentation.test.ts` locks the one-x property (reproduces the 115-vs-3714 scenario).
 
+  **The x-grid is built from the RAW frequencies + the slider's full range, never the current scale
+  (`fixedGrid`, unit 3.11).** The scale slider exists to slide the peaks against a *stationary* ruler
+  and compare with experiment. Deriving the grid from the already-scaled modes (the original code)
+  multiplied both the data and the axis by the same factor — a self-similar picture where the peaks
+  never moved in pixels, only the tick labels changed, so the parameter was useless. `fixedGrid` hands
+  `autoGrid` two synthetic extremes — lowest raw mode × min-scale, highest × max-scale — so the frame
+  covers every reachable peak position and stays put while the slider moves (invariant, tested: move
+  the scale → axis bounds unchanged, peak position changed). The step is FWHM-only, so it too is
+  scale-stable. Everything that *should* move with scale still does — the sticks, the curve, the
+  selected-mode marker, and the tooltip's nearest-mode (all computed from `scaledModes`, i.e. in the
+  same drawn space as the axis).
+
   **Three labelled plot choices**, each a UI control, none a molecular property: the **FWHM** slider;
   the **display scale factor** slider (default **1.00**, range 0.9–1.1 — NOT baked in per method, NOT
   read from the artifact's `$frequency_scale_factor`; when ≠ 1 the table shows raw **and** scaled
-  columns, the scaled marked *derived*, and the curve/sticks move to the scaled positions); and the
+  columns, the scaled marked *derived*, the curve/sticks move to the scaled positions **against the
+  fixed grid above**); and the
   **inverted view** toggle (peaks up / peaks down). The inverted view **reverses both Y axes** (data
   unchanged — the honest inversion), the x-axis stays increasing, and it is labelled a *conventional
   depiction, explicitly NOT transmittance* — %T needs the Beer–Lambert law (path length,

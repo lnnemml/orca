@@ -15,7 +15,6 @@ import type { ParsedResults } from "../types";
 import { useContainerWidth } from "../charts/useContainerWidth";
 import {
   classifyModes,
-  autoGrid,
   spectrum,
   type IrMode,
   DEFAULT_FWHM_CM,
@@ -24,6 +23,7 @@ import {
 } from "./ir";
 import {
   scaledModes,
+  fixedGrid,
   irTooltipModel,
   DEFAULT_SCALE,
   MIN_SCALE,
@@ -88,7 +88,10 @@ export function IrSpectrumPanel({ f }: { f: Frequencies }) {
   // Scaling is applied by transforming the mode list fed to the physics module, so
   // the curve and the sticks share one (scaled) x-axis. ir.ts is untouched.
   const scaledActive = useMemo(() => scaledModes(active, scale), [active, scale]);
-  const grid = useMemo(() => autoGrid(scaledActive, fwhm), [scaledActive, fwhm]);
+  // The x-grid is FIXED — derived from the RAW modes and the slider's full range, NOT
+  // the current scale (unit 3.11). This is what makes the slider useful: the peaks
+  // slide against a stationary ruler. Depends on `active` + `fwhm`, never `scale`.
+  const grid = useMemo(() => fixedGrid(active, fwhm), [active, fwhm]);
   const curve = useMemo(() => spectrum(scaledActive, grid, fwhm), [scaledActive, grid, fwhm]);
 
   // Right-axis (km/mol) domain for the sticks — explicit, with a little headroom so

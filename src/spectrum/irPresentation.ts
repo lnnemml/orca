@@ -21,8 +21,15 @@
 //!    value at this point"). Built as a pure function so a test can lock that the
 //!    label and every value in the tooltip come from the same x — the fix for the
 //!    unit-3.10 tooltip that mixed a label from one series with a value from another.
+//!
+//!  * **a scale-independent x-grid** (`fixedGrid`). The whole point of the scale
+//!    slider is to see peaks slide against a FIXED ruler and compare with
+//!    experiment. So the grid bounds must come from the RAW frequencies and the
+//!    slider's full range — never the current scale (unit 3.11: deriving them from
+//!    the already-scaled modes multiplied both the data and the ruler by the same
+//!    number, a self-similar picture where the peaks never moved in pixels).
 
-import type { IrMode } from "./ir";
+import { autoGrid, type Grid, type IrMode } from "./ir";
 
 /** Display scale factor bounds. Default is the identity: the raw, measured
  * frequencies. The range brackets the usual harmonic→fundamental factors
@@ -44,6 +51,47 @@ export const SCALE_STEP = 0.005;
 export function scaledModes(active: IrMode[], factor: number): IrMode[] {
   if (factor === 1) return active;
   return active.map((m) => ({ ...m, cm: m.cm * factor }));
+}
+
+/**
+ * The x-grid the chart draws against — deliberately **independent of the current
+ * scale**, so moving the slider moves the peaks but never the ruler.
+ *
+ * The bounds must cover every position a peak can reach across the WHOLE slider
+ * range `[minScale, maxScale]`: the leftmost is `(lowest raw mode)·minScale`, the
+ * rightmost `(highest raw mode)·maxScale` (all frequencies are positive, so the
+ * extreme scale factors give the extreme positions). We hand those two extremes to
+ * `autoGrid`, which then applies the exact same padding, 0-clamp, and (scale-free,
+ * FWHM-only) step it uses everywhere — so `ir.ts` is untouched and the step stays
+ * constant while the slider moves.
+ *
+ * Consequence: at scale 1.0 the frame is a little wider than the data (there is room
+ * on the right for peaks to slide into as you scale up) — that headroom is the ruler
+ * the parameter needs, not wasted space. The broadened curve is still sampled from
+ * the *scaled* modes over this fixed grid (`spectrum(scaledModes(...), fixedGrid(...))`),
+ * so the peaks land at their scaled wavenumbers inside a stationary axis.
+ */
+export function fixedGrid(
+  active: IrMode[],
+  fwhm: number,
+  minScale: number = MIN_SCALE,
+  maxScale: number = MAX_SCALE,
+): Grid {
+  if (active.length === 0) return autoGrid([], fwhm);
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const m of active) {
+    if (m.cm < lo) lo = m.cm;
+    if (m.cm > hi) hi = m.cm;
+  }
+  // Two synthetic modes at the extreme reachable positions; intensity is irrelevant
+  // to the grid (autoGrid only reads `cm`). This reuses autoGrid's pad/step/clamp
+  // verbatim rather than re-deriving them here.
+  const extremes: IrMode[] = [
+    { cm: lo * minScale, kmMol: 0, index: -1 },
+    { cm: hi * maxScale, kmMol: 0, index: -1 },
+  ];
+  return autoGrid(extremes, fwhm);
 }
 
 /** The mode whose wavenumber is closest to `cm`, or `null` on an empty list. Ties

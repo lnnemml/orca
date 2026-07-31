@@ -2924,3 +2924,42 @@ logic is all pure-tested and the recharts v3 hooks are used per their documented
 ADR-002/009/010/011/012 + the proposal untouched.
 
 Next (unchanged): Kabsch-alignment gate → normal-mode animation (click an IR peak → watch the atoms move).
+
+## [2026-07-31] session | Unit 3.11: keep the IR x-grid fixed so the display scale actually moves the peaks
+
+A one-defect follow-up to unit 3.10. The display-scale slider looked functional but changed nothing
+visible: **the grid was scaled together with the data**. Measured on two panel states (O–H, the
+highest mode, 3714.4 cm⁻¹): scale 0.945 → axis max 3591.25, scale 1.040 → axis max 3944 — in both,
+axis max = scaled-max + ~81 cm⁻¹. So the range was derived from the ALREADY-scaled frequencies;
+multiplying data and ruler by one number gives a self-similar picture — peaks frozen in pixels, only
+the tick labels changing (900/1800/2700 → 1000/2000/3000). That defeats the parameter's only purpose:
+you scale to compare peak positions against experiment, which needs a **stationary** ruler.
+
+**Fix (`fixedGrid` in `irPresentation.ts`, pure).** The grid bounds now come from the **raw** modes +
+the slider's full range, never the current scale: it hands `autoGrid` two synthetic extremes — lowest
+raw mode × `MIN_SCALE`, highest × `MAX_SCALE` — so the frame covers every position a peak can reach
+across the whole slider and stays constant while the slider moves. Reusing `autoGrid` keeps the exact
+pad/0-clamp/step and leaves `ir.ts` untouched (its broadening math is the orca_mapspc-verified part).
+The step is FWHM-only, so it was already scale-stable and stays so. The panel's `grid` useMemo now
+depends on `active` + `fwhm`, **not** `scale`; the curve is still `spectrum(scaledModes(...), grid)`,
+so peaks land at their scaled wavenumbers inside a fixed axis.
+
+**Checked the rest for the same disease.** Everything that *should* move with scale still does and is
+computed in the drawn (scaled) space: sticks (`IrSticks modes={scaledActive}`), the curve
+(`spectrum(scaledActive, …)`), the selected-mode dashed marker (`raw × scale`), and the tooltip's
+nearest-mode (`irTooltipModel(label, curveThere, scaledActive)` — label and modes both in scaled
+space, so it compares like with like, not scaled-vs-raw). Only the grid was wrong.
+
+**Test (pure, `irPresentation.test.ts`).** The invariant is now locked, not eyeballed: at two scales
+the grid bounds are identical while a given mode's fractional position on the axis differs; every peak
+stays inside the frame across the whole slider range; the step is range/scale-independent; and a
+reproduction of the old `autoGrid(scaledModes(...))` path shows its max tracked the scale (the bug),
+whereas `fixedGrid`'s does not.
+
+**Verified.** `tsc` clean; **vitest 339 passed** (20 files; +5 fixedGrid tests); `vite build` clean
+(pre-existing bundle-size warning only). No Rust changes. In-GUI leg (watching the peaks slide against
+a fixed axis as the slider moves) needs the Tauri window — standing headless limitation; the invariant
+is pure-tested. `wiki/modules/results-ui.md` updated (why the grid is raw-derived). ADR-002/009/010/
+011/012 + the proposal untouched.
+
+Next (unchanged): Kabsch-alignment gate → normal-mode animation (click an IR peak → watch the atoms move).
