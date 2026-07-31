@@ -1,8 +1,14 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
-import { MoleculeViewer } from "../viewer/MoleculeViewer";
-import { orbitalRows, defaultOrbital } from "./orbitalList";
+import {
+  MoleculeViewer,
+  type Representation,
+  type MoleculeViewerHandle,
+} from "../viewer/MoleculeViewer";
+import { RepresentationToggle } from "../viewer/RepresentationToggle";
+import { saveBytes, exportName } from "../export/save";
+import { orbitalRows, defaultOrbital, coreOrbitals } from "./orbitalList";
 
 /** 1 Hartree in eV (CODATA 2018) — chemists read orbital energies in eV. */
 const EH_TO_EV = 27.211_386_245_988;
@@ -37,14 +43,24 @@ const ISOVALUE_STEP = 0.005;
 export function OrbitalPanel({
   jobId,
   orbitals,
+  elements,
+  jobTitle,
 }: {
   jobId: string;
   /** `[energyEh, occupancy]` per MO, ascending (from `results.orbitals.orbitals`). */
   orbitals: [number, number][];
+  /** The molecule's element sequence (`final_geometry.elements`) — used to DERIVE the
+   * core-orbital marking (per-element table + energy-gap cross-check). */
+  elements: string[];
+  /** For export filenames (unit 3.16). */
+  jobTitle: string;
 }) {
-  const rows = useMemo(() => orbitalRows(orbitals), [orbitals]);
+  const viewerRef = useRef<MoleculeViewerHandle | null>(null);
+  const rows = useMemo(() => orbitalRows(orbitals, elements), [orbitals, elements]);
+  const core = useMemo(() => coreOrbitals(orbitals, elements), [orbitals, elements]);
   const [selected, setSelected] = useState(() => defaultOrbital(orbitals));
   const [isoValue, setIsoValue] = useState(DEFAULT_ISOVALUE);
+  const [representation, setRepresentation] = useState<Representation>("stick");
   const [cube, setCube] = useState<string | null>(null);
   const [state, setState] = useState<"loading" | "ready" | "none" | "error">("loading");
   const [errorMsg, setErrorMsg] = useState("");
@@ -93,7 +109,12 @@ export function OrbitalPanel({
         <div className="orbital-view">
           <div className="viewer-panel orbital-viewer">
             {state === "ready" && cube ? (
-              <MoleculeViewer orbitalCube={cube} orbitalIsoValue={isoValue} />
+              <MoleculeViewer
+                ref={viewerRef}
+                orbitalCube={cube}
+                orbitalIsoValue={isoValue}
+                representation={representation}
+              />
             ) : (
               <div className="orbital-placeholder muted mono">
                 {state === "loading"
@@ -108,10 +129,19 @@ export function OrbitalPanel({
           {selectedRow ? (
             <div className="mono" style={{ fontSize: 12, marginTop: 4 }}>
               MO {selectedRow.index}
-              {selectedRow.kind === "HOMO" ? " (HOMO)" : selectedRow.kind === "LUMO" ? " (LUMO)" : ""}{" "}
+              {selectedRow.kind === "HOMO"
+                ? " (HOMO)"
+                : selectedRow.kind === "LUMO"
+                  ? " (LUMO)"
+                  : selectedRow.kind === "core"
+                    ? " (core)"
+                    : ""}{" "}
               — {selectedRow.energyEh.toFixed(4)} Eh{" "}
               <span className="muted">({(selectedRow.energyEh * EH_TO_EV).toFixed(2)} eV)</span>
               , occ {selectedRow.occupancy.toFixed(2)}
+              {selectedRow.kind === "core" ? (
+                <span className="muted"> — a core 1s (deep, hides inside the atom; try “lines”)</span>
+              ) : null}
             </div>
           ) : null}
 
@@ -128,10 +158,30 @@ export function OrbitalPanel({
                 aria-label="isosurface level"
               />
             </label>
+            <RepresentationToggle value={representation} onChange={setRepresentation} />
             <span className="orbital-legend">
               <span className="orbital-swatch pos" /> +phase
               <span className="orbital-swatch neg" /> −phase
             </span>
+            {state === "ready" ? (
+              <button
+                className="btn btn-sm"
+                title="save a PNG snapshot of the 3D scene"
+                onClick={() => {
+                  try {
+                    const bytes = viewerRef.current?.toPngBytes();
+                    if (bytes)
+                      saveBytes(exportName(jobTitle, `mo${selected}`, "png"), bytes).catch((e) =>
+                        console.error("[export]", e),
+                      );
+                  } catch (e) {
+                    console.error("[export]", e);
+                  }
+                }}
+              >
+                PNG
+              </button>
+            ) : null}
           </div>
 
           <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
@@ -139,6 +189,15 @@ export function OrbitalPanel({
             NOT charge. The isovalue is a viewing choice (grid {GRID_INTERVALS}³, cube from{" "}
             <code>orca_plot</code>, cached on disk). HOMO/LUMO are the frontier orbitals —
             the electrons most easily removed / the first empty level, where reactivity lives.
+          </div>
+
+          {/* Core marking is DERIVED (per-element table + energy-gap cross-check), not
+              read from the artifact — named as such, with the discrepancy when it disagrees. */}
+          <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
+            {core.note}
+            {core.count != null && core.count > 0
+              ? ` — MOs 0–${core.count - 1} are the deep 1s-type core (empty-looking, occluded).`
+              : ""}
           </div>
         </div>
       </div>
@@ -164,13 +223,14 @@ function OrbitalPicker({
           className={
             "orbital-row" +
             (r.index === selected ? " selected" : "") +
-            (r.kind === "HOMO" || r.kind === "LUMO" ? " frontier" : "")
+            (r.kind === "HOMO" || r.kind === "LUMO" ? " frontier" : "") +
+            (r.kind === "core" ? " core" : "")
           }
           onClick={() => onSelect(r.index)}
         >
           <span className="orbital-no">{r.index}</span>
           <span className="orbital-tag">
-            {r.kind === "HOMO" ? "HOMO" : r.kind === "LUMO" ? "LUMO" : ""}
+            {r.kind === "HOMO" ? "HOMO" : r.kind === "LUMO" ? "LUMO" : r.kind === "core" ? "core" : ""}
           </span>
           <span className="orbital-e">{r.energyEh.toFixed(3)}</span>
           <span className="orbital-occ muted">{r.occupancy.toFixed(1)}</span>

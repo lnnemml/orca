@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 
-import { MoleculeViewer } from "../viewer/MoleculeViewer";
+import { MoleculeViewer, type Representation } from "../viewer/MoleculeViewer";
+import { RepresentationToggle } from "../viewer/RepresentationToggle";
 import { elementsAgree, frameToXyz } from "../trajectory/frame";
 import {
   modeDisplacements,
@@ -76,6 +77,7 @@ export function ModeAnimator({
   // Amplitude = maximum atomic displacement in Å (unit 3.13).
   const [amplitude, setAmplitude] = useState(DEFAULT_AMPLITUDE_ANGSTROM);
   const [fps, setFps] = useState(DEFAULT_FPS);
+  const [representation, setRepresentation] = useState<Representation>("stick");
 
   // Selecting a different mode restarts the oscillation from equilibrium.
   useEffect(() => {
@@ -165,6 +167,7 @@ export function ModeAnimator({
           xyzData={frameXyz}
           preserveCameraOnUpdate
           bondTopologyReference={referenceXyz || undefined}
+          representation={representation}
         />
       </div>
 
@@ -198,6 +201,8 @@ export function ModeAnimator({
             aria-label="mode amplitude, maximum atomic displacement in ångström"
           />
         </label>
+
+        <RepresentationToggle value={representation} onChange={setRepresentation} />
 
         <select
           className="select select-sm"

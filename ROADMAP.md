@@ -338,10 +338,20 @@ the `[ ]` "Fragment library" item above.
 - [x] Imaginary-frequency detection surfaced prominently (saddle point vs minimum — teaching
       moment) — **done** (unit 3.6): `imaginary_count` explicit field + the card's verdict banner
       (0 = minimum, 1 = transition state, >1 = neither → re-optimize).
-- [ ] Export: xyz of final geometry, CSV of parsed data, PNG of plots
+- [x] Export: xyz of final geometry, CSV of parsed data, PNG of plots — **done** (unit 3.16).
+      Built from already-parsed `results` (no re-parse, ADR-012), saved via the native dialog to a
+      user-chosen location — **never the job dir** (rule #3, enforced in Rust). xyz (Å, post-condition
+      lines == atoms + 2); CSV per set (frequencies with a derived scaled column when scale ≠ 1; charges;
+      MOs; thermochemistry — units in every header, `entropyS` exported as **T·S**, derived S separate).
+      **PNG gated first** (both paths measured under webkit2gtk-4.1 — `wiki/debugging/009`): charts via
+      recharts-SVG→canvas→PNG (`SVG_OK 6237`), 3D scene via 3Dmol `pngURI()` (`PNG_OK 17388`) — both PASS,
+      nothing dropped. Absent data → the button is disabled, never an empty file. Also this unit: **core
+      orbitals marked** (derived per-element table + energy-gap cross-check, not "1s per heavy atom"), and
+      a **ball-and-stick / lines** representation toggle (to see a core 1s that hides inside the sphere).
 
-**Done when:** for an Opt+Freq job the author can watch the trajectory, spin the HOMO isosurface,
-and click IR peaks to see the vibrations — all inside OrcaStudio.
+**Phase 3 is complete** — for an Opt+Freq job the author can watch the trajectory, spin the HOMO
+isosurface, click IR peaks to see the vibrations, and export geometry / data / plots — all inside
+OrcaStudio.
 
 ---
 

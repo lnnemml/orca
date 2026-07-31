@@ -5,6 +5,13 @@ import type { JobStatus, ParsedResults } from "../types";
 import { IrSpectrumPanel } from "../spectrum/IrSpectrumPanel";
 import { TrajectoryPlayer } from "../trajectory/TrajectoryPlayer";
 import { OrbitalPanel } from "../orbitals/OrbitalPanel";
+import {
+  finalGeometryXyz,
+  chargesCsv,
+  orbitalsCsv,
+  thermochemistryCsv,
+} from "../export/exporters";
+import { saveText, exportName } from "../export/save";
 
 /** 1 Hartree in J/mol = E_h (4.359744722e-18 J) × N_A (6.02214076e23 /mol).
  * CODATA 2018; the named factor, like BOHR_TO_ANGSTROM in the Rust readers. */
@@ -24,7 +31,15 @@ const AU_TO_DEBYE = 2.541_746_451_9;
  * Absence is a normal state, not an error: GOAT has no charges/dipole/thermo, SP
  * no thermochemistry (measured). Empty sections are simply not rendered. The card
  * never crashes or shouts on a job that legitimately lacks a section. */
-export function ResultsCard({ jobId, status }: { jobId: string; status: JobStatus }) {
+export function ResultsCard({
+  jobId,
+  jobTitle,
+  status,
+}: {
+  jobId: string;
+  jobTitle: string;
+  status: JobStatus;
+}) {
   const [results, setResults] = useState<ParsedResults | null>(null);
 
   useEffect(() => {
@@ -52,6 +67,7 @@ export function ResultsCard({ jobId, status }: { jobId: string; status: JobStatu
         Results
       </div>
       <div style={{ padding: 10, display: "grid", gap: 10 }}>
+        <ExportBar results={results} jobTitle={jobTitle} />
         <div className="mono" style={{ fontSize: 13 }}>
           {results.final_energy_eh != null && (
             <div>
@@ -94,6 +110,7 @@ export function ResultsCard({ jobId, status }: { jobId: string; status: JobStatu
             elements={results.trajectory.elements}
             frames={results.trajectory.frames}
             referenceElements={results.final_geometry.elements}
+            jobTitle={jobTitle}
           />
         )}
 
@@ -128,13 +145,22 @@ export function ResultsCard({ jobId, status }: { jobId: string; status: JobStatu
         )}
 
         {results.frequencies && (
-          <IrSpectrumPanel f={results.frequencies} geometry={results.final_geometry} />
+          <IrSpectrumPanel
+            f={results.frequencies}
+            geometry={results.final_geometry}
+            jobTitle={jobTitle}
+          />
         )}
 
         {/* Orbital isosurfaces (unit 3.15). Present iff orca_2json yielded MOs — absent
             for xTB/GOAT (measured), so the section simply doesn't render. */}
         {results.orbitals && results.orbitals.orbitals.length > 0 && (
-          <OrbitalPanel jobId={jobId} orbitals={results.orbitals.orbitals} />
+          <OrbitalPanel
+            jobId={jobId}
+            orbitals={results.orbitals.orbitals}
+            elements={results.final_geometry.elements}
+            jobTitle={jobTitle}
+          />
         )}
 
         {results.charges.length > 0 && (
@@ -152,6 +178,69 @@ export function ResultsCard({ jobId, status }: { jobId: string; status: JobStatu
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Data-export bar (unit 3.16). Everything is built from the already-parsed `results` (no
+ * re-parse) and saved to a user-chosen location — NEVER the job dir (rule #3, enforced in
+ * Rust too). A button is present only when its data exists (empty = disabled with a
+ * reason, not an empty file). PNG exports live beside their charts/viewers.
+ */
+function ExportBar({ results, jobTitle }: { results: ParsedResults; jobTitle: string }) {
+  const [busy, setBusy] = useState(false);
+  const run = async (what: string, ext: string, build: () => string) => {
+    setBusy(true);
+    try {
+      await saveText(exportName(jobTitle, what, ext), build(), ext);
+    } catch (e) {
+      console.error("[export]", e);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const hasCharges = results.charges.length > 0;
+  const hasOrbitals = !!results.orbitals && results.orbitals.orbitals.length > 0;
+  const hasThermo = !!results.thermochemistry;
+  return (
+    <div className="export-bar">
+      <span className="export-label muted">export</span>
+      <button
+        className="btn btn-sm"
+        disabled={busy}
+        onClick={() =>
+          run("geometry", "xyz", () =>
+            finalGeometryXyz(results.final_geometry, jobTitle, results.final_energy_eh),
+          )
+        }
+      >
+        geometry .xyz
+      </button>
+      <button
+        className="btn btn-sm"
+        disabled={busy || !hasCharges}
+        title={hasCharges ? "" : "no atomic charges for this job"}
+        onClick={() => run("charges", "csv", () => chargesCsv(results.charges))}
+      >
+        charges .csv
+      </button>
+      <button
+        className="btn btn-sm"
+        disabled={busy || !hasOrbitals}
+        title={hasOrbitals ? "" : "no molecular orbitals for this job"}
+        onClick={() => run("orbitals", "csv", () => orbitalsCsv(results.orbitals!))}
+      >
+        orbitals .csv
+      </button>
+      <button
+        className="btn btn-sm"
+        disabled={busy || !hasThermo}
+        title={hasThermo ? "" : "no thermochemistry for this job (needs a Freq run)"}
+        onClick={() => run("thermochemistry", "csv", () => thermochemistryCsv(results.thermochemistry!))}
+      >
+        thermo .csv
+      </button>
     </div>
   );
 }

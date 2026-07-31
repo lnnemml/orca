@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   CartesianGrid,
   ComposedChart,
@@ -14,6 +14,9 @@ import {
 import type { ParsedResults } from "../types";
 import { useContainerWidth } from "../charts/useContainerWidth";
 import { ModeAnimator } from "./ModeAnimator";
+import { frequenciesCsv } from "../export/exporters";
+import { saveText, saveBytes, exportName } from "../export/save";
+import { svgToPngBytes } from "../export/png";
 import {
   classifyModes,
   spectrum,
@@ -75,12 +78,17 @@ type FinalGeometry = ParsedResults["final_geometry"];
 export function IrSpectrumPanel({
   f,
   geometry,
+  jobTitle,
 }: {
   f: Frequencies;
   /** The final/reference geometry — the equilibrium the modes animate around, and
    * the element order the modes must match (unit 3.12). `null` disables animation. */
   geometry: FinalGeometry | null;
+  /** For export filenames (unit 3.16). */
+  jobTitle: string;
 }) {
+  // The chart container — its recharts `<svg>` is grabbed for the PNG export.
+  const chartRef = useRef<HTMLDivElement | null>(null);
   const [fwhm, setFwhm] = useState(DEFAULT_FWHM_CM);
   // Display scale factor — a PLOT choice (like FWHM), default 1.00. See irPresentation.
   const [scale, setScale] = useState(DEFAULT_SCALE);
@@ -160,7 +168,7 @@ export function IrSpectrumPanel({
       ) : null}
 
       {active.length > 0 && width > 0 ? (
-        <div className="conv-chart" style={{ marginTop: 6 }}>
+        <div className="conv-chart" style={{ marginTop: 6 }} ref={chartRef}>
           <div className="conv-chart-title">
             IR — sticks (km/mol) with the Lorentzian-broadened curve
             {inverted ? " · inverted view (a conventional depiction, not transmittance)" : ""}
@@ -295,6 +303,33 @@ export function IrSpectrumPanel({
                 peaks down
               </button>
             </div>
+
+            {/* Export (unit 3.16): the frequency CSV honours the current display scale
+                (a scaled column when ≠ 1); the PNG rasterizes this chart's SVG. */}
+            <button
+              className="btn btn-sm"
+              onClick={() =>
+                saveText(exportName(jobTitle, "frequencies", "csv"), frequenciesCsv(f, scale), "csv").catch(
+                  (e) => console.error("[export]", e),
+                )
+              }
+            >
+              CSV
+            </button>
+            <button
+              className="btn btn-sm"
+              onClick={async () => {
+                try {
+                  const svg = chartRef.current?.querySelector("svg");
+                  if (svg)
+                    await saveBytes(exportName(jobTitle, "spectrum", "png"), await svgToPngBytes(svg));
+                } catch (e) {
+                  console.error("[export]", e);
+                }
+              }}
+            >
+              PNG
+            </button>
           </div>
 
           <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>

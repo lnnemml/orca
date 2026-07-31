@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CartesianGrid,
   Line,
@@ -11,6 +11,8 @@ import {
 
 import { MoleculeViewer } from "../viewer/MoleculeViewer";
 import { useContainerWidth } from "../charts/useContainerWidth";
+import { saveBytes, exportName } from "../export/save";
+import { svgToPngBytes } from "../export/png";
 import {
   frameToXyz,
   frameLabel,
@@ -59,17 +61,22 @@ interface TrajectoryPlayerProps {
    * (the UI-boundary echo of the readers' element-order post-condition).
    */
   referenceElements: string[];
+  /** For export filenames (unit 3.16). */
+  jobTitle: string;
 }
 
 export function TrajectoryPlayer({
   elements,
   frames,
   referenceElements,
+  jobTitle,
 }: TrajectoryPlayerProps) {
   const [frame, setFrame] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [fps, setFps] = useState(DEFAULT_FPS);
   const { ref, width } = useContainerWidth();
+  // The energy chart container — its recharts `<svg>` is grabbed for the PNG export.
+  const energyChartRef = useRef<HTMLDivElement | null>(null);
 
   const total = frames.length;
   const last = total - 1;
@@ -213,8 +220,25 @@ export function TrajectoryPlayer({
       {/* Energy per cycle — the core learning view: watch it descend. Click a
           point to jump to that cycle; the current cycle is a vertical marker. */}
       {series.length >= 2 && width > 0 ? (
-        <div className="conv-chart">
-          <div className="conv-chart-title">Energy per cycle (Eh) — click to jump</div>
+        <div className="conv-chart" ref={energyChartRef}>
+          <div className="conv-chart-title">
+            Energy per cycle (Eh) — click to jump
+            <button
+              className="btn btn-sm"
+              style={{ marginLeft: 10 }}
+              onClick={async () => {
+                try {
+                  const svg = energyChartRef.current?.querySelector("svg");
+                  if (svg)
+                    await saveBytes(exportName(jobTitle, "energy-per-cycle", "png"), await svgToPngBytes(svg));
+                } catch (e) {
+                  console.error("[export]", e);
+                }
+              }}
+            >
+              PNG
+            </button>
+          </div>
           <LineChart
             width={width}
             height={CHART_HEIGHT}

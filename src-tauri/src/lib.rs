@@ -26,6 +26,7 @@ use sidecar::SidecarManager;
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // --- Storage: single SQLite file under the user data dir (ADR-004). ---
             let data_dir = dirs::data_dir()
@@ -87,6 +88,8 @@ pub fn run() {
             commands::jobs::read_job_convergence,
             commands::jobs::read_job_results,
             commands::jobs::read_orbital_cube,
+            commands::export::write_export_text,
+            commands::export::write_export_bytes,
             commands::jobs::open_job_folder,
             output_search::search_job_output,
             output_search::get_search_presets,

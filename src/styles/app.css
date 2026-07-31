@@ -1713,6 +1713,23 @@ button.ir-imaginary-mode.selected {
 .orbital-swatch.neg {
   background: #d43b3b;
 }
+.orbital-row.core .orbital-tag {
+  color: var(--muted);
+  font-style: italic;
+}
+/* Data-export bar (unit 3.16). */
+.export-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.export-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-right: 2px;
+}
 .ir-table .ir-row {
   cursor: pointer;
 }

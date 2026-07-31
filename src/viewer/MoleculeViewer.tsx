@@ -1,5 +1,7 @@
-import { useEffect, useRef } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import { createViewer, GLModel, VolumeData, elementColors, type GLViewer, type GLShape } from "3dmol";
+
+import { dataUrlToBytes } from "../export/png";
 
 import type { Scene, SceneAtom } from "../scene/types";
 import { compositionSignature, fragmentRanges, mergeToXyz } from "../scene/scene";
@@ -114,6 +116,10 @@ interface MoleculeViewerProps {
   /** Isosurface level (Å⁻³·²). A display choice; the sign is the wavefunction PHASE,
    * not charge. Ignored unless `orbitalCube` is set. */
   orbitalIsoValue?: number;
+  /** Molecule representation (unit 3.16): `stick` (default) or `line`. App-owned
+   * (ADR-011). Honoured on the orbital, mode-animation and single-xyz paths; the
+   * scene editor is always ball-and-stick. */
+  representation?: Representation;
   style?: React.CSSProperties;
 }
 
@@ -136,9 +142,13 @@ const HALO_OPACITY = 0.85;
 const MASK_OPACITY = 0.22;
 const MASK_RADIUS_BOOST = 0.15;
 
-/** Ball-and-stick — the same style the viewer has always used. Fresh object per
- * call (3Dmol may retain the reference). */
-const baseStyle = () => ({ stick: {}, sphere: { scale: 0.3 } });
+/** The flat molecule style. **Two representations only** (unit 3.16): the default
+ * ball-and-stick, and thin **lines** — lines expose a core 1s isosurface that hides
+ * inside an atom's drawn sphere (the occlusion the orbital panel needs). Fresh object
+ * per call (3Dmol may retain the reference). */
+export type Representation = "stick" | "line";
+const baseStyle = (representation: Representation = "stick") =>
+  representation === "line" ? { line: {} } : { stick: {}, sphere: { scale: 0.3 } };
 
 /**
  * Ball-and-stick base style for the scene path, honouring a theme's CPK element
@@ -284,20 +294,31 @@ function drawMeasurement(
  * fragment by atom-index range — ADR-008 #2/#3) or a flat `xyzData` string (the
  * original single-structure path). `scene` wins when both are given.
  */
-export function MoleculeViewer({
-  xyzData,
-  scene,
-  selection,
-  onAtomPick,
-  showAtomNumbers = false,
-  theme = DEFAULT_THEME,
-  maskHighlight,
-  preserveCameraOnUpdate = false,
-  bondTopologyReference,
-  orbitalCube,
-  orbitalIsoValue,
-  style,
-}: MoleculeViewerProps) {
+/** Imperative handle (unit 3.16): a PNG snapshot of the current 3D scene, for export.
+ * The app requests it; the viewer produces it from what it drew (ADR-011). */
+export interface MoleculeViewerHandle {
+  toPngBytes: () => Uint8Array | null;
+}
+
+export const MoleculeViewer = forwardRef<MoleculeViewerHandle, MoleculeViewerProps>(
+  function MoleculeViewer(
+    {
+      xyzData,
+      scene,
+      selection,
+      onAtomPick,
+      showAtomNumbers = false,
+      theme = DEFAULT_THEME,
+      maskHighlight,
+      preserveCameraOnUpdate = false,
+      bondTopologyReference,
+      orbitalCube,
+      orbitalIsoValue,
+      representation = "stick",
+      style,
+    }: MoleculeViewerProps,
+    ref,
+  ) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const viewerRef = useRef<GLViewer | null>(null);
   // The single, persistent model of a frozen-topology animation (unit 3.14): built
@@ -321,6 +342,21 @@ export function MoleculeViewer({
   // the model effect re-runs when it flips (it never flips in practice — a
   // screen either passes onAtomPick or doesn't — but keeps the effect honest).
   const pickable = onAtomPick != null;
+
+  // 3D-scene PNG snapshot for export (unit 3.16). Re-render then read the WebGL buffer
+  // back via 3Dmol's `pngURI()` (the path measured to work under WebKitGTK — debugging/009).
+  useImperativeHandle(
+    ref,
+    () => ({
+      toPngBytes() {
+        const viewer = viewerRef.current;
+        if (!viewer) return null;
+        viewer.render();
+        return dataUrlToBytes(viewer.pngURI());
+      },
+    }),
+    [],
+  );
 
   // Create the viewer once and wire up resize handling.
   useEffect(() => {
@@ -408,7 +444,7 @@ export function MoleculeViewer({
       animRef.current = null;
       viewer.removeAllModels();
       viewer.addModel(orbCube, "cube");
-      viewer.setStyle({}, baseStyle());
+      viewer.setStyle({}, baseStyle(representation));
       const count = orbCube.trimStart().split(/\r?\n/, 1)[0].trim();
       const signature = `orbital:${count}`;
       if (signature !== lastCompositionRef.current) {
@@ -441,7 +477,7 @@ export function MoleculeViewer({
         anim!.model.selectedAtoms({}) as Array<{ x: number; y: number; z: number }>,
         parseXyzCoords(xyzData!), // frozenRef truthy ⇒ xyzData is a non-empty string
       );
-      anim!.model.setStyle({}, baseStyle()); // (re)apply style + null the cached geometry
+      anim!.model.setStyle({}, baseStyle(representation)); // (re)apply style + null the cached geometry
       if (firstBuild) {
         viewer.zoomTo(); // frame the molecule once; later frames keep the camera
         if (import.meta.env.DEV) {
@@ -505,7 +541,7 @@ export function MoleculeViewer({
       }
     } else if (xyzData && xyzData.trim().length > 0) {
       viewer.addModel(xyzData, "xyz");
-      viewer.setStyle({}, baseStyle());
+      viewer.setStyle({}, baseStyle(representation));
       if (preserveCameraOnUpdate) {
         // Trajectory playback: zoom only when the atom COUNT changes (a new
         // molecule), not on a coordinate-only frame advance — otherwise the
@@ -532,7 +568,7 @@ export function MoleculeViewer({
     // per-fragment palette are re-applied). A theme switch keeps the same
     // composition signature, so the zoom guard fires no `zoomTo` — the camera is
     // preserved (background is handled in the separate [theme] effect below).
-  }, [xyzData, scene, pickable, theme, preserveCameraOnUpdate, bondTopologyReference, orbitalCube]);
+  }, [xyzData, scene, pickable, theme, preserveCameraOnUpdate, bondTopologyReference, orbitalCube, representation]);
 
   // Orbital isosurfaces (unit 3.15) — drawn SEPARATELY from the model so changing the
   // isovalue redraws only the two ± surfaces (the cube is parsed once into a VolumeData,
@@ -649,4 +685,5 @@ export function MoleculeViewer({
   }, [selection, scene, showAtomNumbers, theme, maskHighlight, orbitalCube]);
 
   return <div ref={containerRef} className="molecule-viewer" style={style} />;
-}
+  },
+);

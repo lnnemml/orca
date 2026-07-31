@@ -31,6 +31,7 @@ ureq = "2"
 uuid = { version = "1", features = ["v4"] }
 # Result extraction (Phase 1): regex over ORCA output tails.
 regex = "1"
+tauri-plugin-dialog = "2"
 
 # Job cancellation (Phase 2): killpg the ORCA MPI process group. Unix-only.
 [target.'cfg(unix)'.dependencies]

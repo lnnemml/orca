@@ -3213,3 +3213,57 @@ the React wiring (invoke/effects) is not headless-drivable — standing Tauri-GU
 012 + the proposal untouched.
 
 Next: Phase 3's last item — export (xyz / CSV / PNG).
+
+## [2026-07-31] ingest | Unit-3.16 GATE: WebKitGTK PNG export — both paths PASS (measured)
+
+Gate before the PNG-export UI (MiniBrowser probes, 002 technique; full page `wiki/debugging/009`).
+- **Charts (recharts SVG → 2D-canvas → PNG):** serialize `<svg>` → `data:image/svg+xml` Image →
+  drawImage onto a 2D canvas → `toDataURL("image/png")`. **`SVG_OK 6237`** — real PNG, no exception,
+  no taint. (App caveat, not a WebKit limit: `var(--…)` in recharts colours must be resolved to
+  computed values in the serialized SVG — handled in `export/png.ts`.)
+- **3D scene (3Dmol WebGL → `pngURI()` readback):** **`PNG_OK 17388`** — real PNG, no exception. The
+  GL readback works under webkit2gtk-4.1 with the 002 direct-canvas fix. (A first "stuck" run was a
+  probe escaping bug, not WebKit.)
+**Verdict: both PASS** → all three PNG exports (spectrum, energy-per-cycle, 3D snapshot) are in scope;
+nothing dropped or faked. Author confirms in the real app. Data export (xyz/CSV) isn't gated.
+
+## [2026-07-31] session | Unit 3.16: export (geometry/data/plots) + core-orbital marking + a lines representation — Phase 3 closes
+
+The last Phase-3 unit. Gate first (ingest above), then the exports; two orbital-review follow-ons ride along.
+
+**Task 0 — core-orbital marking (DERIVED).** The author built MO 0 → blank; the render only wakes at
+MO 19 because C₁₆H₁₄O₃ has exactly 19 core orbitals (3 O-1s + 16 C-1s), the boundary sitting there.
+`orbitalList.ts` marks core from a **per-element table** (H/He→0, Li–Ne→1, Na–Ar→5; anything else →
+no mark — NOT "1s per heavy atom", which holds only for the 2nd period) **cross-checked** against the
+biggest low-energy gap: the count is placed only if the table's number equals the gap position, else no
+mark + the mismatch reported. Named DERIVED, like T·S and the display scale. Measured: expected 19, the
+−10.03→−1.08 Eh gap falls after 19 → agree → MOs 0–18 tagged core.
+
+**Task 1 — representation toggle.** A core 1s hides inside the atom's drawn sphere (occlusion), so
+`MoleculeViewer` got a `representation` prop (**stick / lines**, two only) + a shared `RepresentationToggle`;
+app-owned (ADR-011), honoured on the orbital, mode-animation and single-xyz paths.
+
+**GATE — WebKitGTK PNG (both paths PASS, measured).** MiniBrowser probes (`wiki/debugging/009`): recharts
+SVG→2D-canvas→`toDataURL` (`SVG_OK 6237`) and 3Dmol WebGL `pngURI()` readback (`PNG_OK 17388`). Nothing
+dropped. (A first "stuck" 3D run was a probe escaping bug, not WebKit; and `pkill -f MiniBrowser` kills the
+probe shell itself — kill by PID.)
+
+**Export.** New `tauri-plugin-dialog` (native save dialog) + Rust `write_export_text` / `write_export_bytes`
+commands that **refuse any path under the app data dir** (rule #3; the default is elsewhere too). Content is
+built from the already-parsed `results` — **no re-parse** (ADR-012). `export/exporters.ts` (pure, tested):
+`finalGeometryXyz` (Å, stored order, comment = job+energy, post-condition lines == atoms+2 or throw);
+`frequenciesCsv` (active modes; a *derived* `scaled ×N` column only when the panel's scale ≠ 1); `chargesCsv`;
+`orbitalsCsv` (Eh+eV); `thermochemistryCsv` — **units in every header**, full stored precision, `entropyS`
+exported as **T·S in Eh** (never "entropy") with a separate *derived* S in J/(mol·K). PNG: `svgToPngBytes`
+(serialize the `<svg>`, resolve `var(--…)` to computed colours, white bg, fixed 2× canvas) for the spectrum
+and energy charts; `MoleculeViewer.toPngBytes()` (imperative handle → `pngURI()`) for the 3D scene. Buttons:
+data bar in `ResultsCard`; freq CSV + spectrum PNG in `IrSpectrumPanel` (owns the scale + chart); energy PNG
+in `TrajectoryPlayer`; 3D snapshot in `OrbitalPanel`. Absent data → disabled button, never an empty file.
+
+**Verified.** `tsc` clean; **vitest 388** (24 files; +5 core-orbital, +11 exporters); `vite build` clean;
+`cargo test` **126** (+2 export-guard: a path inside the data dir is refused, outside is allowed). The write
+path and the PNG rasterization are not headless-drivable (dialog + canvas), so the pure builders + the guard
++ the measured WebKit gate carry it; author confirms the dialogs in the real app. No ADR touched (dialog
+plugin added; ADR-009 already puts file I/O in Rust). **Phase 3 complete.**
+
+Next: Phase 4 — the geometry/reaction editor (ADR-010/011 land).

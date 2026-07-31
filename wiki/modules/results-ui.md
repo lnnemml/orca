@@ -244,6 +244,38 @@ the real unknown — whether WebKitGTK renders a 3Dmol isosurface (it does; Mini
 - **Absence is normal:** an xTB/GOAT `.gbw` yields no JSON MOs (measured), so `results.orbitals` is
   absent and the whole section is not rendered; if `orca_plot` produces nothing, the viewer shows a
   note, never crashes.
+- **Core-orbital marking is DERIVED, not read (unit 3.16).** `orbitalList.ts` marks the deep 1s-type
+  **core** orbitals (the empty-looking, occluded ones — MO 0 confused the author) from a per-element
+  table (H/He→0, Li–Ne→1, Na–Ar→5; anything else → no mark) **cross-checked** against the big
+  core→valence energy gap: the count is placed only if the table's number equals the position of the
+  largest low-energy gap, else no mark and the disagreement is reported. It is **NOT** "one 1s per
+  heavy atom" (true only for the 2nd period), and the UI names it derived. Measured on dexketoprofen:
+  19 core (16 C + 3 O), the −10→−1 Eh gap confirms it.
+- **Representation toggle (unit 3.16, `RepresentationToggle`).** Ball-and-stick / **lines**, two
+  representations only — lines exist to expose a core 1s isosurface that hides inside an atom's drawn
+  sphere. App state in the panel (ADR-011); `MoleculeViewer` honours `representation` on the orbital,
+  mode-animation and single-xyz paths (the scene editor is always ball-and-stick).
+
+## Export (unit 3.16) — `src/export/`
+Everything is built from the **already-parsed** `results` (no re-parse; ADR-012) and saved to a
+**user-chosen** location via the native dialog (`@tauri-apps/plugin-dialog`), **never the job dir**
+(rule #3 — the default is elsewhere AND the Rust write commands `write_export_text`/`write_export_bytes`
+refuse any path under the app data dir). Default filename = `{job}-{what}.{ext}`.
+
+- **`exporters.ts`** (pure, node-tested): `finalGeometryXyz` (Å, stored order, comment = job + energy,
+  **post-condition** lines == atoms + 2 or throw); `frequenciesCsv` (active modes; a `scaled ×N
+  (derived)` column only when the panel's display scale ≠ 1); `chargesCsv`; `orbitalsCsv` (Eh + eV);
+  `thermochemistryCsv`. **Units are in every header** (rule #11 in the file), numbers keep full stored
+  precision, and `entropyS` is exported as **T·S in Eh**, never "entropy" — with a separate, explicitly
+  *derived* entropy-S row in J/(mol·K).
+- **PNG** (gated — both paths measured to work under WebKitGTK, [debugging/009](../debugging/009-webkitgtk-png-export.md)):
+  the spectrum and energy-per-cycle charts via `svgToPngBytes` (serialize the recharts `<svg>`, resolve
+  `var(--…)` to computed colours, white bg, 2× canvas → PNG); the 3D scene via `MoleculeViewer`'s
+  imperative `toPngBytes()` (3Dmol `pngURI()` readback). Fixed 2× resolution, named.
+- **Where the buttons live:** data-export bar in `ResultsCard` (xyz/charges/MO/thermo — each present only
+  when its data is); the frequency CSV + spectrum PNG in `IrSpectrumPanel` (it owns the display scale and
+  the chart); the energy PNG in `TrajectoryPlayer`; the 3D snapshot in `OrbitalPanel`. Absent data → the
+  button is disabled with a reason, never an empty file.
 
 ## `src/charts/useContainerWidth.ts`
 The one owner of the **WebKitGTK 0×0 `ResponsiveContainer`** workaround (`debugging/002`/`003` class):

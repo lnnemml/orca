@@ -400,7 +400,7 @@ export function JobDetailScreen({
         </div>
       ) : null}
 
-      {job ? <ResultsCard jobId={jobId} status={job.status} /> : null}
+      {job ? <ResultsCard jobId={jobId} jobTitle={job.title} status={job.status} /> : null}
 
       {ensemble ? (
         <div className="ensemble-panel">
