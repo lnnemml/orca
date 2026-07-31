@@ -2362,6 +2362,7 @@ name = "orcastudio"
 version = "0.1.0"
 dependencies = [
  "dirs 5.0.1",
+ "flate2",
  "libc",
  "regex",
  "rusqlite",

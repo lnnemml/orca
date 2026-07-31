@@ -4,6 +4,7 @@ mod cpu_presets;
 mod db;
 mod error;
 mod local_backend;
+mod manual;
 mod models;
 mod orca_json;
 mod orca_plot;

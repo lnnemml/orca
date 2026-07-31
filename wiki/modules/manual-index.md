@@ -1,18 +1,28 @@
 # Module: Manual index (Phase 4)
 
-**Status:** not started · Strategy in [ADR-006](../architecture/adr-006-manual-integration.md),
+**Status:** in progress · Strategy in [ADR-006](../architecture/adr-006-manual-integration.md),
 ownership + source format narrowed by [ADR-013](../architecture/adr-013-manual-indexing-ownership.md)
-(**Rust**, over raw Markdown, writing the Rust-owned SQLite — not the sidecar).
+(**Rust**, over raw Markdown, writing the Rust-owned SQLite — not the sidecar). **Fetch** (unit 4.1,
+`scripts/fetch-manual.py`) and the **sectioner** (unit 4.2, `src-tauri/src/manual/`) are built; the
+FTS5 **schema + storage** are unit 4.3.
 
 ## Pipeline (Rust, one-off per ORCA version)
 Fetch is out-of-band (see below); indexing runs in Rust:
 raw Markdown (local `resources/manual/<orca-version>/<path>.md.txt`, mirroring the manifest path —
-the remote `_sources/` URL prefix is a Sphinx artifact, dropped locally; ATX headings) → section
-splitter (heading tree, no HTML parser) → rows
-`(id, version, breadcrumb, title, body_md, input_examples, source_anchor)` → SQLite FTS5 table on the
-**Rust-owned `Connection`**. The bundled SQLite (3.46.0) carries FTS5 unconditionally — gated by
+the remote `_sources/` URL prefix is a Sphinx artifact, dropped locally; ATX headings) → **section
+splitter — built** (`src-tauri/src/manual/sections.rs`, fence-aware, non-nested bodies, line-conservation
+post-condition; [modules/manual-sections.md](manual-sections.md)) → rows
+`(id, version, breadcrumb, title, body_md, input_examples, source_anchor)` → **SQLite FTS5 table (4.3,
+not built)** on the **Rust-owned `Connection`**. The section `anchor` comes from `objects.inv` (the
+authoritative label→anchor map, read by `manual/objects_inv.rs`) cross-checked by `predict_anchor`. The
+bundled SQLite (3.46.0) carries FTS5 unconditionally — gated by
 `db.rs::fts5_is_available_with_ranking_and_snippet`, so a future rusqlite bump that drops FTS5 fails
 in that test, not here.
+
+**Open questions the 4.2 gate hands to 4.3 (measured):** 140 unlabelled sections collide on title-slug
+within a file (so a title slug is not a unique key); ~43 % of corpus bytes are inside fenced blocks
+(raw-body vs cleaned-prose indexing); 27 empty-body navigational sections (index them or not). Numbers
+in [orca/manual-sources.md](../orca/manual-sources.md) "Sectioner gate".
 
 **Why Rust, not the sidecar:** ADR-012's rule (text-to-structure without a chemistry library → Rust)
 plus the sidecar's own "stateless, all persistence is Rust-owned SQLite" invariant, plus the two-

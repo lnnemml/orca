@@ -3496,3 +3496,47 @@ double-top pages (numericalintegration 2.9+2.10, foreword 6.1.1+6.1.0, magnx 5.2
 now asserts H1 ≥ 126 and exits non-zero otherwise, since H1 < 126 is the one way an unclosed fence
 could make `iter_prose_lines` silently swallow a file (measured: 0 zero-H1 leaves). No app code / db.rs;
 no deps; resources/manual/ not committed.
+
+## [2026-07-31] session | Unit 4.2: manual sectioner + objects.inv anchor map (Rust), line-conservation gate
+
+Built `src-tauri/src/manual/` (mirrors `src/parse/`): `sections.rs`, `objects_inv.rs`, `mod.rs`,
+`tests.rs`. Rust per ADR-013 (3). **No DB touched** — no migration, table, FTS5, or Tauri command;
+schema/storage are unit 4.3. One dependency: `flate2` (already transitive in Cargo.lock 1.1.9 —
+declaration only), for the zlib in `objects.inv`.
+
+**Section definition (fixed explicitly):** one ATX heading, body to the NEXT heading of ANY level,
+bodies **not nested** (a `#`'s body is just its preamble to the first `##`) — required for FTS and it
+is what makes line conservation checkable. Headings found **only outside fenced blocks** (Rust port of
+the deny-list `prose_mask`; the Python `iter_prose_lines` is now removed). **Label binding:** the
+`(name)=` lines directly above a heading (blanks skipped) bind to it; `anchor` = slug of the closest.
+
+**Three post-conditions IN CODE (rule #9):** (a) line conservation inside `sectionize` — sections +
+preamble tile the file exactly once, else `SectionError` naming the lost/overlapping indices; (b)
+`predict_anchor` vs `objects.inv` fragment per label; (c) label→section-file binding vs the `objects.inv`
+uri. (b)/(c) are `objects_inv::verify_against_inventory` (library code, reused by the gate). The
+`#[ignore]` corpus gate (`cargo test manual_corpus -- --ignored`) runs all three over the 126 leaves.
+
+**Gate report (measured, inputs for 4.3's schema):** 1586 sections (#=129 ##=654 ###=604 ####=193
+#####=6 — identical to the fence-aware ATX recount, so Rust and the Python count agree); sections/file
+min 1 / median 7 / max 162; deepest breadcrumb 4. Body median 1330 B / p95 9074 B / max 48 245 B;
+27 empty-body (1.7 %). Labels: 1069 with, 517 without; **140 unlabelled sections collide on title-slug
+within a file** (title slug is not a unique key — flagged for 4.3). objects.inv 1671 entries (1450
+std:label); of 1069 heading labels **944 found, 0 anchor mismatches, 0 binding mismatches**; the 125
+not found are **all `sec:`** (genuine section labels Sphinx didn't register, not over-capture). **Line
+conservation 126/126 PASS.** Bytes prose 57.3 % / fenced 42.7 % (raw-vs-cleaned indexing is a 4.3
+choice). `objects.inv` fetched once via `scripts/fetch-manual.py --objects-inv` (46 257 B, gitignored).
+
+**Atomic rule migration (ADR-010 (ii)):** removed from `scripts/fetch-manual.py` — `iter_prose_lines`,
+`analyze_atx`, `classify_keywords_markup`, `_keyword_forms`, `_naive_atx`, `analyze_disk`, `selftest`,
+`predict_anchor`, `find_labels`, `count_eval_rst`, `html_url`, and modes `--analyze-only`/`--selftest`;
+plus the `report()`/`report_all()` content-analysis sections that consumed them. The script keeps ONLY
+fetch / manifest / toctree (`parse_toctrees`, the allow-list, untouched) / `objects.inv` (+ new
+`--objects-inv`). No second Python home for the heading/keyword/anchor rule — it moved atomically. The
+numbers those functions produced stay in `manual-sources.md` as measured, now recomputed by the Rust gate.
+
+**Verified:** `cargo test` 138 passed / 6 ignored / 0 warnings; corpus gate green; `tsc`/`vitest`
+untouched (no TS). No db.rs / command / UI. `resources/manual/*` (incl. objects.inv) gitignored, not
+committed. Wiki: +modules/manual-sections.md, index.md, manual-sources.md (gate numbers + Rust-migration
+note), manual-index.md (pipeline: sectioner built, storage 4.3).
+
+Next: unit 4.3 — the `manual_sections` schema + FTS5 storage over these sections.

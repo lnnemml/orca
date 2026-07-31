@@ -7,6 +7,13 @@ real run, dated and versioned, not from docs or memory. Two gates fed this page:
 the numbers below are corpus-wide unless a line says "sample". Where Part A gave an estimate, Part B's
 exact figure replaces it (and the estimate is labelled as such).
 
+**Update (unit 4.2):** the body **content analysis** — ATX sectioning, keyword-markup classification,
+the anchor rule — moved out of this script into **Rust** (`src-tauri/src/manual/`, ADR-013 (3)). Those
+numbers are now recomputed and verified over the whole corpus by the sectioner gate
+(`cargo test manual_corpus -- --ignored`); see [`modules/manual-sections.md`](../modules/manual-sections.md)
+and the "Sectioner gate" section below. The script keeps only fetch / manifest / toctree /
+`objects.inv`.
+
 ## Where the sources live
 
 - **Base:** `https://www.faccts.de/docs/orca/6.1/manual/`
@@ -125,12 +132,13 @@ these 21 sections carry no in-body table or code block at all.
 
 ## Fence tracking: two scanners, one close-rule — and the H1 post-condition
 
-- **Why two fence scanners, and why it is not debt.** `parse_toctrees` is an **allow-list**: it acts
-  only *inside* `{toctree}`/`{eval-rst}` directives, so a bare ` ```orca ` code fence can never inject a
-  phantom entry into the manifest — it doesn't need to see code fences at all. `iter_prose_lines` is a
-  **deny-list**: it must hide *every* fence, so it must see all of them. Opposite jobs; only the
-  **close rule** (`_is_fence_close`) is shared. Collapsing them into one function would force one side
-  to do the other's job badly — they stay separate on purpose.
+- **Why two fence scanners, and why it is not debt.** `parse_toctrees` (in the fetch script) is an
+  **allow-list**: it acts only *inside* `{toctree}`/`{eval-rst}` directives, so a bare ` ```orca `
+  code fence can never inject a phantom entry into the manifest — it doesn't need to see code fences at
+  all. The **deny-list** scanner — which must hide *every* fence so heading detection skips ORCA
+  `#`-comments — is `sections::prose_mask` in **Rust** (unit 4.2; the Python `iter_prose_lines` was
+  removed when body analysis moved to Rust). Opposite jobs, deliberately separate; the two live in two
+  languages now, and that is correct — the toctree walk is the fetch script's, the sectioning is Rust's.
 - **H1 identity as a post-condition (asserted on every `--analyze-only`).** Level-1 headings total
   **129 = 126 leaves + 3** pages that legitimately carry two top-headings
   (`essentialelements/numericalintegration` = sections 2.9 + 2.10; `preface/foreword` = 6.1.1 + 6.1.0;
@@ -159,6 +167,25 @@ independent derivations that must agree):
 - **`objects.inv` is NOT parsed in this unit** (ADR-013 scope is fetch + measure). Only the *intent* is
   recorded, so the next unit builds the map as `objects.inv` **cross-checked by** `predict_anchor`, and
   does not quietly pick just one.
+
+## Sectioner gate (Rust, unit 4.2) — measured over all 126 leaves
+
+`cargo test manual_corpus -- --ignored` runs the ATX sectioner + `objects.inv` cross-check over the
+corpus and prints these (full detail + method in [`modules/manual-sections.md`](../modules/manual-sections.md)):
+
+- **Sections: 1586** (`#`=129, `##`=654, `###`=604, `####`=193, `#####`=6 — identical to the fence-aware
+  ATX recount, i.e. the Rust sectioner and the earlier Python count agree). Per file: **min 1 / median
+  7 / max 162**; deepest breadcrumb **4**.
+- **Body size:** median **1330 B** / p95 **9074 B** / max **48 245 B**; **27** empty-body (navigational)
+  sections (1.7 %).
+- **Labels:** **1069** sections labelled, **517** not; **140** unlabelled sections **collide on
+  title-slug within one file** (many `## Keywords`) — an unlabelled title-slug is not a unique key.
+- **Anchors/binding (post-conditions):** of 1069 heading labels, **944 found in `objects.inv`, 0 anchor
+  mismatches, 0 binding mismatches** (the rule holds 944/944). The **125 not found are all `sec:`**
+  labels — section labels Sphinx did not register, not over-captured figures/tables.
+- **Line conservation: 126/126 files PASS** — every line owned by exactly one section or preamble.
+- **Bytes: prose 57.3 % / fenced 42.7 %** — ~half the corpus is inside code/table fences; 4.3 decides
+  raw-body vs cleaned-prose indexing.
 
 ## MyST-parser review condition (ADR-013 (3)) — NOT triggered by the sample
 

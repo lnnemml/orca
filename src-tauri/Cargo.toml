@@ -32,6 +32,10 @@ uuid = { version = "1", features = ["v4"] }
 # Result extraction (Phase 1): regex over ORCA output tails.
 regex = "1"
 tauri-plugin-dialog = "2"
+# Manual objects.inv (Phase 4.2, ADR-013): decompress the zlib stream in the
+# Sphinx inventory v2. Already transitive in Cargo.lock (1.1.9) — this adds only
+# the declaration, no new crate enters the build.
+flate2 = "1"
 
 # Job cancellation (Phase 2): killpg the ORCA MPI process group. Unix-only.
 [target.'cfg(unix)'.dependencies]

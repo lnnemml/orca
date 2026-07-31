@@ -13,14 +13,17 @@ original Markdown ships at ``<base>_sources/<path>.md.txt``. We build the file
 list by a DETERMINISTIC walk of the ``{toctree}`` graph starting from the root
 ``index``, and fetch ONLY paths that walk produces.
 
-Part A (this unit): ``--manifest`` builds the manifest by walking the toctree;
-``--sample N`` additionally fetches N representative leaves (in memory) and
-reports measured facts about the source format. Part B (``--all``, manifest.json,
-post-conditions) is a later unit and is intentionally not implemented yet.
+Scope: this script does ONLY what fetching needs — fetch, manifest, the toctree
+walk (``parse_toctrees``, an allow-list), and ``objects.inv`` retrieval. Body
+CONTENT analysis (ATX sectioning, keyword-markup classification, anchor rule) was
+moved to Rust (ADR-013 (3): ``src-tauri/src/manual/``, unit 4.2), where it is
+verified against the whole corpus by ``cargo test manual_corpus -- --ignored``.
+The numbers those checks produce live in ``wiki/orca/manual-sources.md``.
 
 Usage:
-    python scripts/fetch-manual.py --manifest --sample 6
-    python scripts/fetch-manual.py --manifest            # manifest only, no fetch
+    python scripts/fetch-manual.py --manifest            # walk the toctree, report
+    python scripts/fetch-manual.py --all                 # fetch every leaf + manifest.json
+    python scripts/fetch-manual.py --objects-inv         # fetch the label->anchor map
 """
 
 from __future__ import annotations
@@ -34,7 +37,6 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -169,40 +171,6 @@ def _is_fence_close(line: str, fence_char: str, fence_len: int) -> bool:
     return len(s) >= fence_len and set(s) == {fence_char}
 
 
-# Any fenced block opener — backtick CODE fences (```orca, ```python) AND colon
-# directives (:::{table}), of any length. Wider than _FENCE_OPEN, which requires
-# a {name} because parse_toctrees only cares about DIRECTIVE fences. This one is
-# for hiding *all* fenced content from the heading/keyword scanners.
-_FENCE_ANY = re.compile(r"^\s*(?P<fence>`{3,}|:{3,})(?P<info>.*)$")
-
-
-def iter_prose_lines(text: str) -> Iterator[tuple[int, str]]:
-    """Yield (index, line) for every line that is OUTSIDE a fenced block.
-
-    THE single fence tracker for the heading/keyword scanners — the same
-    open/close rule parse_toctrees uses (`_is_fence_close`, longer-outer /
-    shorter-inner nesting), widened to every fence kind. Without it, ORCA input
-    examples — which comment with '#' — get miscounted as ATX headings, and a
-    '####' separator inside a ```orca block prematurely ends a section. One rule,
-    one home: analyze_atx and classify_keywords_markup both go through here.
-    """
-    lines = text.splitlines()
-    i, n = 0, len(lines)
-    while i < n:
-        line = lines[i]
-        m = _FENCE_ANY.match(line)
-        if m:
-            fence = m.group("fence")
-            fence_char, fence_len = fence[0], len(fence)
-            i += 1  # consume the block body up to and including its close
-            while i < n and not _is_fence_close(lines[i], fence_char, fence_len):
-                i += 1
-            i += 1  # skip the closing fence line
-            continue
-        yield i, line
-        i += 1
-
-
 def _clean_entry(raw: str) -> str | None:
     """Turn a raw toctree line into a path, or None if it is not an entry."""
     s = raw.strip()
@@ -332,10 +300,6 @@ def source_url(base: str, path: str) -> str:
     return f"{base}_sources/{path}.md.txt"
 
 
-def html_url(base: str, path: str) -> str:
-    return f"{base}{path}.html"
-
-
 def build_manifest(fetcher: Fetcher, base: str) -> Manifest:
     """Deterministic BFS over the toctree graph from the root ``index``."""
     man = Manifest()
@@ -381,80 +345,15 @@ def build_manifest(fetcher: Fetcher, base: str) -> Manifest:
     return man
 
 
-# --- Source-format analysis (report items) ---------------------------------
-
-_ATX = re.compile(r"^(#{1,6})\s+\S")
-_LABEL = re.compile(r"^\(([^)]+)\)=\s*$")          # MyST target: (sec:a.b.c)=
-_ID_ATTR = re.compile(r'id="([^"]+)"')
-
-
-def analyze_atx(text: str) -> tuple[int, dict[int, int], int]:
-    """Count ATX headings OUTSIDE fenced blocks (via iter_prose_lines), so ORCA
-    '#'-comment lines inside ```orca examples are not miscounted as headings."""
-    counts: dict[int, int] = {}
-    total = 0
-    deepest = 0
-    for _idx, line in iter_prose_lines(text):
-        m = _ATX.match(line)
-        if m:
-            lvl = len(m.group(1))
-            counts[lvl] = counts.get(lvl, 0) + 1
-            total += 1
-            deepest = max(deepest, lvl)
-    return total, counts, deepest
-
-
-def predict_anchor(label: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-")
-
-
-def find_labels(text: str) -> list[str]:
-    return [m.group(1) for line in text.splitlines() if (m := _LABEL.match(line))]
-
-
-def _keyword_forms(body_lines: list[str]) -> set[str]:
-    """Which machine-readable form(s) a keyword section's body uses. Body is the
-    ORIGINAL lines (fences intact) so a ```orca code block is visible."""
-    blob = "\n".join(body_lines)
-    forms: set[str] = set()
-    # An annotated code block: a ```orca (or ```{...} orca) fence.
-    if re.search(r"^\s*`{3,}[^\n]*\borca\b", blob, re.MULTILINE):
-        forms.add("orca-codeblock")
-    if "{list-table}" in blob:
-        forms.add("list-table")
-    if re.search(r"^\s*\|.*\|", blob, re.MULTILINE):
-        forms.add("pipe-table")
-    if re.search(r"^[^\s:|`].*\n:\s+\S", blob, re.MULTILINE):
-        forms.add("def-list")
-    if not forms:
-        forms.add("prose" if blob.strip() else "(empty)")
-    return forms
-
-
-def classify_keywords_markup(text: str) -> list[tuple[str, set[str]]]:
-    """For each 'Keywords' heading, which markup form(s) its body uses. Heading
-    detection goes through iter_prose_lines (so a '####' inside a code block is
-    not mistaken for a heading and does not truncate the section)."""
-    lines = text.splitlines()
-    heading_idxs = [idx for idx, line in iter_prose_lines(text) if _ATX.match(line)]
-    heading_set = set(heading_idxs)
-    out: list[tuple[str, set[str]]] = []
-    for idx in heading_idxs:
-        if "keyword" not in lines[idx].lower():
-            continue
-        # Body runs to the next PROSE heading (code-block headings excluded).
-        later = [h for h in heading_idxs if h > idx]
-        end = later[0] if later else len(lines)
-        out.append((lines[idx].strip(), _keyword_forms(lines[idx + 1:end])))
-    return out
-
-
-def count_eval_rst(text: str) -> int:
-    _, n = parse_toctrees(text)
-    return n
-
-
 # --- Reporting -------------------------------------------------------------
+#
+# Content analysis of file bodies — ATX sectioning, keyword-markup classification,
+# anchor prediction, the label→anchor cross-check — moved to Rust (ADR-013 (3):
+# `src-tauri/src/manual/`, unit 4.2). It is verified there against the whole corpus
+# by `cargo test manual_corpus -- --ignored`. The numbers those checks produce live
+# in `wiki/orca/manual-sources.md`. This script keeps ONLY what fetching needs:
+# fetch, manifest, the toctree walk (`parse_toctrees`, an allow-list), and
+# `objects.inv` retrieval.
 
 def report(man: Manifest, fetcher: Fetcher, base: str, sample_n: int) -> int:
     print("\n" + "=" * 72)
@@ -528,90 +427,19 @@ def report(man: Manifest, fetcher: Fetcher, base: str, sample_n: int) -> int:
     print(f"    extrapolated corpus   : {len(leaves)} leaves x mean "
           f"~= {avg * len(leaves) / 1_048_576:,.1f} MiB (rough)")
 
-    # (3) ATX section counts across the sample.
-    agg: dict[int, int] = {}
-    total_sections = 0
-    deepest_all = 0
-    per_file_deepest: list[tuple[str, int, int]] = []
-    for p in ok_files:
-        text = fetched[p].body.decode("utf-8", errors="replace")
-        t, counts, deepest = analyze_atx(text)
-        total_sections += t
-        deepest_all = max(deepest_all, deepest)
-        per_file_deepest.append((p, t, deepest))
-        for lvl, c in counts.items():
-            agg[lvl] = agg.get(lvl, 0) + c
-    print(f"\n[3] ATX SECTIONS (sample)")
-    print(f"    total headings        : {total_sections}")
-    print(f"    by level              : "
-          + ", ".join(f"{'#'*lvl}={agg.get(lvl,0)}" for lvl in range(1, 7) if agg.get(lvl)))
-    print(f"    deepest level         : {'#'*deepest_all} ({deepest_all})")
-    for p, t, d in per_file_deepest:
-        print(f"        {t:>3} headings, deepest {'#'*d:<6}  {p}")
-
-    # (4) how are 'Keywords' sections marked?
-    print(f"\n[4] 'KEYWORDS' SECTION MARKUP  (decides whether keywords.json can be seeded)")
-    any_kw = False
-    for p in ok_files:
-        text = fetched[p].body.decode("utf-8", errors="replace")
-        for heading, forms in classify_keywords_markup(text):
-            any_kw = True
-            print(f"    {p}")
-            print(f"        {heading!r}  ->  {', '.join(sorted(forms))}")
-    if not any_kw:
-        print("    (no 'Keywords' heading found in the sample)")
-
-    # (5) objects.inv presence + size (NOT parsed).
-    print(f"\n[5] objects.inv (label->anchor map; presence + size only, not parsed)")
+    # (3) objects.inv presence (content parsing/sectioning is Rust's — 4.2).
+    print(f"\n[3] objects.inv (authoritative label->anchor map; presence only)")
     inv = fetcher.get(base + "objects.inv")
     if inv.ok:
-        print(f"    present: {len(inv.body)} bytes at {base}objects.inv")
-        print(f"    -> an authoritative label->anchor map exists; slugify guessing can be retired")
+        print(f"    present: {len(inv.body)} bytes at {base}objects.inv "
+              f"(fetch it with --objects-inv; parsing is Rust)")
     else:
-        print(f"    NOT available ({inv.status} {inv.error}) — slugify rule stays a guess")
-
-    # (6) eval-rst blocks in BODY (not root) — the MyST-parser review trigger.
-    print(f"\n[6] eval-rst IN DOCUMENT BODIES  (ADR-013 (3) review trigger)")
-    body_eval = []
-    for p in ok_files:
-        text = fetched[p].body.decode("utf-8", errors="replace")
-        n = count_eval_rst(text)
-        if n:
-            body_eval.append((p, n))
-    root_eval = man.entries["index"].eval_rst
-    print(f"    root index eval-rst   : {root_eval} block(s) (expected — holds genindex/biblio)")
-    if body_eval:
-        print(f"    !! body eval-rst blocks: {body_eval}  <-- REPORT SEPARATELY, do not self-decide")
-    else:
-        print(f"    body eval-rst blocks  : 0 in sample (ATX-only sectioning holds so far)")
-
-    # (7) anchor rule: (sec:a.b.c) -> #sec-a-b-c, checked against the HTML.
-    print(f"\n[7] ANCHOR RULE  (sec:a.b.c  <->  #sec-a-b-c), verified against HTML")
-    matched = 0
-    checked = 0
-    for p in ok_files:
-        text = fetched[p].body.decode("utf-8", errors="replace")
-        labels = find_labels(text)
-        if not labels:
-            continue
-        html = fetcher.get(html_url(base, p))
-        if not html.ok:
-            print(f"    !! could not fetch HTML for {p} ({html.error})")
-            continue
-        ids = set(_ID_ATTR.findall(html.body.decode("utf-8", errors="replace")))
-        for lab in labels:
-            checked += 1
-            pred = predict_anchor(lab)
-            hit = pred in ids
-            matched += 1 if hit else 0
-            mark = "ok" if hit else "MISS"
-            print(f"    [{mark}] {p}: ({lab})  ->  #{pred}")
-    print(f"    matched {matched}/{checked} labels against real HTML ids")
+        print(f"    NOT available ({inv.status} {inv.error})")
 
     print("\n" + "=" * 72)
     print(f"requests used: {fetcher.attempts}/{fetcher.cap}")
-    print("STOP — Part A gate. Part B (--all, manifest.json, post-conditions) "
-          "awaits author approval.")
+    print("Manifest/sample only. Body sectioning + anchor checks live in Rust "
+          "(cargo test manual_corpus -- --ignored).")
     print("=" * 72)
     return 1 if (failed_containers or sample_404) else 0
 
@@ -761,73 +589,12 @@ def report_all(fetcher: Fetcher, out_dir: Path, version_dir: Path,
     print(f"    success count == manifest 200 leaves          : "
           f"{success} == {expected}  {'PASS' if success == expected else 'FAIL'}")
 
-    # --- Read the on-disk corpus once for the four measurements. ---
-    texts: dict[str, str] = {}
-    for r in ok_records:
-        p = out_dir / r["local"]
-        if p.exists():
-            texts[r["path"]] = p.read_text(encoding="utf-8", errors="replace")
-
-    # (1a) TRUE ATX distribution + max level across ALL leaves.
-    dist: dict[int, int] = {}
-    deepest = 0
-    deepest_files: list[str] = []
-    for path, text in texts.items():
-        _, counts, dpath = analyze_atx(text)
-        for lvl, c in counts.items():
-            dist[lvl] = dist.get(lvl, 0) + c
-        if dpath > deepest:
-            deepest = dpath
-            deepest_files = [path]
-        elif dpath == deepest:
-            deepest_files.append(path)
-    print(f"\n[1a] ATX DISTRIBUTION (all {len(texts)} leaves)")
-    print("     " + ", ".join(f"{'#'*lvl}={dist.get(lvl,0)}" for lvl in range(1, 7) if dist.get(lvl)))
-    print(f"     deepest ATX level: {'#'*deepest} ({deepest})  e.g. {deepest_files[:3]}")
-    # TOC proves #### (level 4) exists (scf/basisset/DFT/CASSCF/mreom/mm/troubleshooting).
-    if deepest < 4:
-        print(f"     !! DISCREPANCY: TOC implies level-4 (####) sections exist "
-              f"(e.g. 2.6.7.1.1 scf.md, 2.7.2.13.1 basisset.md) but ATX max is only "
-              f"{'#'*deepest} — deep subsections may NOT be ATX headings. REPORTED, not silent.")
-
-    # (1b) eval-rst blocks in BODY across ALL leaves (the ADR-013 (3) trigger).
-    body_eval: list[tuple[str, int]] = []
-    total_eval = 0
-    for path, text in texts.items():
-        n = count_eval_rst(text)
-        if n:
-            body_eval.append((path, n))
-            total_eval += n
-    print(f"\n[1b] eval-rst IN BODIES (all leaves) — ADR-013 (3) review condition")
-    print(f"     total body eval-rst blocks: {total_eval}")
-    if body_eval:
-        print(f"     files: {sorted(body_eval)}")
-        print(f"     -> non-zero: assess whether these carry SECTION structure before "
-              f"trusting ATX-only sectioning (do not self-decide).")
-    else:
-        print(f"     -> ZERO across the whole corpus: ATX-only sectioning holds; "
-              f"ADR-013 (3) stays closed.")
-
-    # (1c) exact total corpus size.
+    # Exact total corpus size (a fetch statistic). ATX distribution, eval-rst,
+    # label ASCII, and anchor checks are the Rust gate's job now (4.2) — see
+    # `cargo test manual_corpus -- --ignored` and `wiki/orca/manual-sources.md`.
     total_bytes = sum((out_dir / r["local"]).stat().st_size
                       for r in ok_records if (out_dir / r["local"]).exists())
-    print(f"\n[1c] EXACT CORPUS SIZE")
-    print(f"     {total_bytes} bytes = {total_bytes/1_048_576:.2f} MiB over {len(texts)} leaves")
-
-    # (1d) are all labels ASCII? (predict_anchor collapses non-ASCII to '-').
-    non_ascii: list[tuple[str, str]] = []
-    total_labels = 0
-    for path, text in texts.items():
-        for lab in find_labels(text):
-            total_labels += 1
-            if not lab.isascii():
-                non_ascii.append((path, lab))
-    print(f"\n[1d] LABEL ASCII CHECK ({total_labels} labels)")
-    if non_ascii:
-        print(f"     !! {len(non_ascii)} NON-ASCII label(s) — predict_anchor would mangle them: "
-              f"{non_ascii[:10]}")
-    else:
-        print(f"     all labels ASCII — predict_anchor's [^a-z0-9]+->'-' is lossless here")
+    print(f"\n[SIZE] {total_bytes} bytes = {total_bytes/1_048_576:.2f} MiB over {len(ok_records)} leaves")
 
     print("\n" + "=" * 72)
     if problems:
@@ -840,187 +607,54 @@ def report_all(fetcher: Fetcher, out_dir: Path, version_dir: Path,
     return 0
 
 
-# --- Offline recount (reads disk, no network) + self-test ------------------
+# --- objects.inv retrieval -------------------------------------------------
 
-def _naive_atx(text: str) -> dict[int, int]:
-    """The OLD, buggy count: every line, fences included. Kept only to measure
-    the delta against the fence-aware count."""
-    d: dict[int, int] = {}
-    for line in text.splitlines():
-        m = _ATX.match(line)
-        if m:
-            d[len(m.group(1))] = d.get(len(m.group(1)), 0) + 1
-    return d
-
-
-def analyze_disk(out_dir: Path) -> int:
-    """Recount the corpus ALREADY on disk — no network. Reports the fence-aware
-    ATX distribution vs the old naive one, files with >1 H1, and a keyword-markup
-    reclassification over ALL leaves."""
-    version_dir = out_dir / ORCA_VERSION
-    files = sorted(version_dir.rglob("*.md.txt"))
-    if not files:
-        print(f"no .md.txt under {version_dir} — run --all first (no refetch here)", file=sys.stderr)
-        return 2
-
-    naive: dict[int, int] = {}
-    fixed: dict[int, int] = {}
-    fixed_total = 0
-    deepest = 0
-    deepest_files: list[str] = []
-    multi_h1: list[tuple[str, int]] = []
-    zero_h1: list[str] = []
-    total_bytes = 0
-    kw_forms: dict[str, int] = {}
-    kw_rows: list[tuple[str, str, set[str]]] = []
-
-    for p in files:
-        rel = str(p.relative_to(version_dir))[:-len(".md.txt")]
-        text = p.read_text(encoding="utf-8", errors="replace")
-        total_bytes += p.stat().st_size
-        for lvl, c in _naive_atx(text).items():
-            naive[lvl] = naive.get(lvl, 0) + c
-        t, counts, dpath = analyze_atx(text)
-        fixed_total += t
-        for lvl, c in counts.items():
-            fixed[lvl] = fixed.get(lvl, 0) + c
-        if dpath > deepest:
-            deepest, deepest_files = dpath, [rel]
-        elif dpath == deepest:
-            deepest_files.append(rel)
-        if counts.get(1, 0) > 1:
-            multi_h1.append((rel, counts[1]))
-        if counts.get(1, 0) == 0:
-            zero_h1.append(rel)
-        for heading, forms in classify_keywords_markup(text):
-            kw_rows.append((rel, heading, forms))
-            for f in forms:
-                kw_forms[f] = kw_forms.get(f, 0) + 1
-
-    print("=" * 72)
-    print(f"ORCA {ORCA_VERSION} manual — OFFLINE RECOUNT ({len(files)} leaves on disk, no network)")
-    print("=" * 72)
-
-    naive_total = sum(naive.values())
-    print(f"\n[ATX] fence-aware distribution (all {len(files)} leaves)")
-    print("      " + ", ".join(f"{'#'*lvl}={fixed.get(lvl,0)}" for lvl in range(1, 7) if fixed.get(lvl)))
-    print(f"      total headings: {fixed_total}   deepest: {'#'*deepest} ({deepest})  e.g. {deepest_files[:3]}")
-    print(f"\n[ATX] OLD naive count (fences included), for the delta")
-    print("      " + ", ".join(f"{'#'*lvl}={naive.get(lvl,0)}" for lvl in range(1, 7) if naive.get(lvl)))
-    print(f"      total headings: {naive_total}")
-    fake1 = naive.get(1, 0) - fixed.get(1, 0)
-    print(f"\n[ATX] FALSE level-1 headings removed: {naive.get(1,0)} -> {fixed.get(1,0)}  "
-          f"(= {fake1} were ORCA '#' comments inside code blocks)")
-    print(f"      total false headings removed (all levels): {naive_total - fixed_total}")
-
-    # H1 identity as a POST-CONDITION (rule #9): every leaf must contribute >=1
-    # top heading. total H1 = n_leaves + (double-H1 pages). If it drops below the
-    # leaf count, a file was swallowed by an unclosed fence — the one way
-    # iter_prose_lines can silently lose content.
-    h1 = fixed.get(1, 0)
-    n_files = len(files)
-    h1_ok = not zero_h1 and h1 >= n_files
-    print(f"\n[H1] level-1 identity post-condition (checked every run)")
-    print(f"     total H1 = {h1};  leaves = {n_files};  double-H1 pages = {len(multi_h1)}  "
-          f"({h1} == {n_files} + {len(multi_h1)})")
-    if zero_h1:
-        print(f"     !! FAIL: {len(zero_h1)} leaf/leaves with ZERO H1 — swallowed by an unclosed "
-              f"fence? {zero_h1}")
-    elif h1 < n_files:
-        print(f"     !! FAIL: H1 {h1} < leaves {n_files} — content lost to an unclosed fence")
-    else:
-        print(f"     ok: every leaf keeps its top heading; the {len(multi_h1)} genuine double-H1 "
-              f"pages are {[m[0] for m in multi_h1]}")
-
-    print(f"\n[SIZE] {total_bytes} bytes = {total_bytes/1_048_576:.2f} MiB (unchanged — a cross-check)")
-
-    print(f"\n[KEYWORDS] reclassified over ALL {len(files)} leaves ({len(kw_rows)} 'Keyword' headings)")
-    for form, c in sorted(kw_forms.items(), key=lambda kv: -kv[1]):
-        print(f"     {c:>3}  {form}")
-    seed_forms = {f for f in kw_forms if f in ("orca-codeblock", "pipe-table", "list-table")}
-    print(f"     machine-seedable forms present: {sorted(seed_forms)}")
-    if seed_forms <= {"orca-codeblock", "pipe-table", "list-table"} and len(seed_forms) <= 2 \
-            and "list-table" not in seed_forms:
-        print(f"     -> the two-extractor conclusion HOLDS (table + ```orca code block).")
-    else:
-        print(f"     -> MORE than two seed forms present: {sorted(seed_forms)} — REPORT, do not self-decide.")
-    return 0 if h1_ok else 1
-
-
-_SELFTEST_FIXTURE = '''\
-# Real Heading One
-
-Some prose.
-
-```orca
-# comment line inside code
-#### separator
-Basis "def2-TZVP" # inline comment
-%scf
-  MaxIter 200   # another comment
-end
-```
-
-## Real Heading Two
-
-More prose with an inline `# not a heading` code span.
-'''
-
-
-def selftest() -> int:
-    """Fence-tracking regression test — no network. The ```orca block carries a
-    '# comment', a '#### separator' and an inline '#'; none may count."""
-    total, counts, deepest = analyze_atx(_SELFTEST_FIXTURE)
-    ok = True
-
-    def check(cond: bool, msg: str) -> None:
-        nonlocal ok
-        print(f"  [{'ok' if cond else 'FAIL'}] {msg}")
-        ok = ok and cond
-
-    check(total == 2, f"exactly 2 headings counted (got {total})")
-    check(counts == {1: 1, 2: 1}, f"one '#' and one '##' (got {counts})")
-    check(deepest == 2, f"deepest is '##' — the '####' inside ```orca ignored (got {deepest})")
-    prose = [line for _i, line in iter_prose_lines(_SELFTEST_FIXTURE)]
-    check(not any("separator" in l for l in prose), "no code-block line leaked into prose")
-    check(not any(l.startswith("# comment") for l in prose), "'# comment' not treated as prose/heading")
-    print("SELFTEST:", "PASS" if ok else "FAIL")
-    return 0 if ok else 1
+def fetch_objects_inv(fetcher: Fetcher, base: str, out_dir: Path) -> int:
+    """Fetch `<base>objects.inv` once into resources/manual/<version>/objects.inv.
+    The authoritative label->anchor map; PARSED in Rust (src/manual/objects_inv.rs),
+    not here. Gitignored like the rest of the corpus (ADR-006)."""
+    res = fetcher.get(base + "objects.inv")
+    if not res.ok:
+        print(f"objects.inv fetch failed: {res.status} {res.error}", file=sys.stderr)
+        return 1
+    dest = out_dir / ORCA_VERSION / "objects.inv"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(res.body)
+    print(f"objects.inv: {len(res.body)} bytes -> {dest}")
+    print("Reminder: resources/manual/* is gitignored (copyright, ADR-006) — do NOT commit it.")
+    return 0
 
 
 # --- CLI -------------------------------------------------------------------
 
 def main(argv: list[str]) -> int:
-    ap = argparse.ArgumentParser(description="Fetch/measure ORCA manual sources (ADR-013).")
+    ap = argparse.ArgumentParser(
+        description="Fetch ORCA manual sources (ADR-013). Body sectioning + anchor "
+                    "checks live in Rust (src-tauri/src/manual/).")
     ap.add_argument("--base", default=DEFAULT_BASE, help="manual base URL")
     ap.add_argument("--manifest", action="store_true",
-                    help="build the toctree manifest and report")
+                    help="build the toctree manifest and report it")
     ap.add_argument("--sample", type=int, default=0, metavar="N",
-                    help="also fetch N representative leaves (in memory) and measure format")
+                    help="also fetch N representative leaves (in memory) as a spot-check")
     ap.add_argument("--all", action="store_true",
                     help="full fetch of every leaf into --out, write manifest.json, verify")
     ap.add_argument("--force", action="store_true",
                     help="ignore the manifest.json cache and refetch every file")
-    ap.add_argument("--analyze-only", action="store_true",
-                    help="recount the corpus ALREADY on disk — no network")
-    ap.add_argument("--selftest", action="store_true",
-                    help="run the fence-tracking regression test — no network")
+    ap.add_argument("--objects-inv", action="store_true",
+                    help="fetch objects.inv (the label->anchor map) into --out")
     ap.add_argument("--out", default=str(Path("resources/manual")),
                     help="output dir (default resources/manual)")
     args = ap.parse_args(argv)
 
-    if args.selftest:
-        return selftest()
-    if args.analyze_only:
-        return analyze_disk(Path(args.out))
-
-    if not (args.manifest or args.all):
+    if not (args.manifest or args.all or args.objects_inv):
         ap.print_help()
         return 2
 
     base = args.base if args.base.endswith("/") else args.base + "/"
     fetcher = Fetcher()
     try:
+        if args.objects_inv:
+            return fetch_objects_inv(fetcher, base, Path(args.out))
         if args.all:
             return fetch_all(fetcher, base, Path(args.out), args.force)
         man = build_manifest(fetcher, base)

@@ -33,6 +33,7 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 - [results-ui.md](modules/results-ui.md) — post-calculation visualization: trajectory playback + IR spectrum + normal-mode animation; the frame/phase is app state, not the viewer's (ADR-011); IR panel is sticks (km/mol) + broadened curve (km/mol·cm⁻¹) on two labelled axes, single-source tooltip, display-only scale + inversion (3.10); click a peak → animate the mode, amplitude a display choice, imaginary = reaction coordinate (3.12)
 - [scene.md](modules/scene.md) — Scene/SceneFragment pure core: merge to flat xyz, index-space invariant, reset-detection primitive (ADR-008)
 - [manual-index.md](modules/manual-index.md) — manual indexing pipeline + keyword map
+- [manual-sections.md](modules/manual-sections.md) — `src-tauri/src/manual/`: ATX sectioner (fence-aware, non-nested bodies) + `objects.inv` anchor map; three post-conditions (line conservation, anchors, label binding); the `#[ignore]` corpus gate. Writes no DB (storage is 4.3)
 
 ## ORCA domain knowledge
 
@@ -73,4 +74,4 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 
 ---
 
-*Page count: 54. Last structural update: 2026-07-31 (+orca/manual-sources.md — measured ORCA 6.1 manual source format via `scripts/fetch-manual.py`, ADR-013 Part-A gate: toctree manifest, ATX sectioning, keyword markup, anchor rule).*
+*Page count: 55. Last structural update: 2026-07-31 (+modules/manual-sections.md — the Rust ATX sectioner + objects.inv anchor map, unit 4.2: line-conservation post-condition, corpus gate; content analysis moved out of the fetch script).*
