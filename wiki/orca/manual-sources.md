@@ -167,6 +167,16 @@ independent derivations that must agree):
 - **`objects.inv` is NOT parsed in this unit** (ADR-013 scope is fetch + measure). Only the *intent* is
   recorded, so the next unit builds the map as `objects.inv` **cross-checked by** `predict_anchor`, and
   does not quietly pick just one.
+- **Sphinx lowercases std-domain label names (measured, unit 4.2).** The names written into
+  `objects.inv` are **case-folded**, while a source label keeps its case — and the ORCA manual is full
+  of acronyms (RI, DFT, MP2, CASSCF, NEVPT2) and camelCase command labels (`BohrToAngs`, `closeFile`).
+  A case-sensitive lookup therefore *missed* **125 of 1069** heading labels; folding case on both sides
+  (one `normalize_label`, called for the map and every lookup) brought that to **1** — and that lone
+  remainder (`sec:spectroscopyproperties.nocv.theory`) is a genuinely unregistered label, not a
+  case difference. **Before/after: 944 → 1068 labels actually cross-checked** against the inventory
+  (still 0 anchor and 0 binding mismatches). The 125 were never "missing data": the corpus has 1448
+  `(…)=` targets and the inventory 1450 `std:label` entries — equal cardinality ruled out absence and
+  pointed at key spelling, which the run confirmed.
 
 ## Sectioner gate (Rust, unit 4.2) — measured over all 126 leaves
 
@@ -180,9 +190,11 @@ corpus and prints these (full detail + method in [`modules/manual-sections.md`](
   sections (1.7 %).
 - **Labels:** **1069** sections labelled, **517** not; **140** unlabelled sections **collide on
   title-slug within one file** (many `## Keywords`) — an unlabelled title-slug is not a unique key.
-- **Anchors/binding (post-conditions):** of 1069 heading labels, **944 found in `objects.inv`, 0 anchor
-  mismatches, 0 binding mismatches** (the rule holds 944/944). The **125 not found are all `sec:`**
-  labels — section labels Sphinx did not register, not over-captured figures/tables.
+- **Anchors/binding (post-conditions):** of 1069 heading labels, **1068 found in `objects.inv`, 0 anchor
+  mismatches, 0 binding mismatches** — the rule holds **1068/1068 checked** (the gate prints the
+  denominator, `0 out of 1068 checked; 1 unchecked`, so a check can't read PASS having examined
+  nothing). The **1 not found** (`sec:spectroscopyproperties.nocv.theory`) is a genuine unregistered
+  section label. See the Sphinx label-normalization note below — it is why this is 1068, not 944.
 - **Line conservation: 126/126 files PASS** — every line owned by exactly one section or preamble.
 - **Bytes: prose 57.3 % / fenced 42.7 %** — ~half the corpus is inside code/table fences; 4.3 decides
   raw-body vs cleaned-prose indexing.

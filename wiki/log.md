@@ -3540,3 +3540,29 @@ committed. Wiki: +modules/manual-sections.md, index.md, manual-sources.md (gate 
 note), manual-index.md (pipeline: sectioner built, storage 4.3).
 
 Next: unit 4.3 — the `manual_sections` schema + FTS5 storage over these sections.
+
+## [2026-07-31] ingest | Sphinx lowercases label names — case-fold the objects.inv key (125 "not found" → 1)
+
+Defect in `objects_inv::verify_against_inventory`: the inventory map was keyed by the raw,
+case-sensitive `e.name`, so the 4.2 gate reported 125/1069 heading labels "not found". Arithmetic ruled
+out missing data (corpus 1448 `(…)=` targets vs inventory 1450 `std:label` — equal cardinality), which
+pointed at key spelling.
+
+**Measured (rule #10, not assumed):** Sphinx's std domain **lowercases** label names before writing
+`objects.inv`. Of the 125, **124 matched after lowercasing** — the manual is full of acronyms and
+camelCase command labels (`BohrToAngs`, `closeFile`, `makeReferenceFromDir`). The **1 remainder**,
+`sec:spectroscopyproperties.nocv.theory`, is absent from the inventory entirely (not a substring) — a
+genuine unregistered section label, not case.
+
+**Fix:** one `normalize_label` (lowercase) called on BOTH sides — the map build and every lookup — not
+two scattered `.to_lowercase()`. Result: **not_found 125 → 1**, and labels actually cross-checked
+**944 → 1068**, still **0 anchor + 0 binding mismatches** (so the anchor rule and binding rule now hold
+1068/1068, a far stronger check than 944/944). `entries_not_ours` 727 → 603.
+
+**Made the old reading impossible (rule #9):** the gate now prints the denominator for (b) and (c) —
+`0 mismatch(es) out of 1068 checked; 1 unchecked` — so a post-condition can never report PASS while
+silently having checked nothing. Added a unit test (`label_lookup_folds_case`) locking the fold.
+
+`cargo test` 139 passed / 6 ignored / 0 warnings; corpus gate green. No db.rs, no schema/FTS5, no new
+dependency; sectioner untouched beyond this. Wiki: `manual-sections.md` + `manual-sources.md` updated
+(944→1068, 125→1, the Sphinx-lowercase fact with before/after).

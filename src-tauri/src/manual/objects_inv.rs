@@ -125,6 +125,16 @@ pub struct AnchorReport {
     pub not_found: Vec<String>,
 }
 
+/// The single label-key normalizer, called on BOTH the inventory side and every
+/// lookup. Sphinx's `std` domain **lowercases** label names before writing
+/// `objects.inv` (measured: 124 of 125 corpus "not found" were case alone — the
+/// manual is full of acronyms: RI, DFT, MP2, CASSCF, and camelCase command names
+/// like `BohrToAngs`). Normalizing on only one side would silently drop those
+/// labels into "unchecked", so the cross-check must fold case at the boundary.
+fn normalize_label(name: &str) -> String {
+    name.to_lowercase()
+}
+
 /// Cross-check every heading-bound label against `objects.inv`: (b) our independent
 /// `predict_anchor` must equal the inventory fragment; (c) the inventory uri must
 /// point at the file the label is bound in. Mismatches are collected and NAMED.
@@ -134,23 +144,27 @@ pub fn verify_against_inventory(
 ) -> AnchorReport {
     use std::collections::{HashMap, HashSet};
 
-    let map: HashMap<&str, &InvEntry> = entries.iter().map(|e| (e.name.as_str(), e)).collect();
-    let our: HashSet<&str> = sections
+    let map: HashMap<String, &InvEntry> =
+        entries.iter().map(|e| (normalize_label(&e.name), e)).collect();
+    let our: HashSet<String> = sections
         .iter()
-        .flat_map(|s| s.labels.iter().map(String::as_str))
+        .flat_map(|s| s.labels.iter().map(|l| normalize_label(l)))
         .collect();
 
     let mut rep = AnchorReport {
         inv_entries: entries.len(),
         inv_labels: entries.iter().filter(|e| e.domain_role == "std:label").count(),
-        entries_not_ours: entries.iter().filter(|e| !our.contains(e.name.as_str())).count(),
+        entries_not_ours: entries
+            .iter()
+            .filter(|e| !our.contains(&normalize_label(&e.name)))
+            .count(),
         ..Default::default()
     };
 
     for s in sections {
         for label in &s.labels {
             rep.our_labels += 1;
-            let Some(entry) = map.get(label.as_str()) else {
+            let Some(entry) = map.get(&normalize_label(label)) else {
                 rep.not_found.push(label.clone());
                 continue;
             };
@@ -214,5 +228,35 @@ mod tests {
     #[test]
     fn rejects_non_inventory() {
         assert!(parse(b"not an inventory\n\x78\x9c").is_err());
+    }
+
+    #[test]
+    fn label_lookup_folds_case() {
+        // Sphinx writes the label lowercased; our source label keeps its case.
+        // The cross-check must still find it (and then verify anchor + binding).
+        use super::super::sections::Section;
+        let sec = Section {
+            file: "contents/x".into(),
+            level: 2,
+            title: "T".into(),
+            breadcrumb: vec![],
+            labels: vec!["sec:Foo.BarBaz".into()],
+            anchor: Some("sec-foo-barbaz".into()),
+            body: String::new(),
+            line_start: 0,
+            line_end: 0,
+        };
+        let entries = vec![InvEntry {
+            name: "sec:foo.barbaz".into(),
+            domain_role: "std:label".into(),
+            priority: -1,
+            uri: "contents/x.html#sec-foo-barbaz".into(),
+            dispname: "T".into(),
+        }];
+        let rep = verify_against_inventory(std::slice::from_ref(&sec), &entries);
+        assert_eq!(rep.found_in_inv, 1, "case-different label must be found, not dropped to unchecked");
+        assert!(rep.not_found.is_empty());
+        assert!(rep.anchor_mismatches.is_empty(), "predict_anchor already lowercases → matches");
+        assert!(rep.binding_mismatches.is_empty());
     }
 }

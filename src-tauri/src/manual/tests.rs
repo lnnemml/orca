@@ -187,11 +187,14 @@ fn manual_corpus() {
                 }
                 println!("        not found by label prefix: {prefixes:?}");
             }
-            println!("    (b) predict_anchor vs objects.inv mismatches: {}", rep.anchor_mismatches.len());
+            let unchecked = rep.our_labels - rep.found_in_inv;
+            println!("    (b) predict_anchor vs objects.inv: {} mismatch(es) out of {} checked; {} unchecked",
+                     rep.anchor_mismatches.len(), rep.found_in_inv, unchecked);
             for m in rep.anchor_mismatches.iter().take(10) {
                 println!("        {m}");
             }
-            println!("    (c) label-binding file mismatches: {}", rep.binding_mismatches.len());
+            println!("    (c) label binding vs objects.inv: {} mismatch(es) out of {} checked; {} unchecked",
+                     rep.binding_mismatches.len(), rep.found_in_inv, unchecked);
             for m in rep.binding_mismatches.iter().take(10) {
                 println!("        {m}");
             }

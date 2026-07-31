@@ -57,7 +57,10 @@ block), so 4.3 reuses it.
    F; mismatches named.
 
 Post-conditions 2–3 need the corpus + `objects.inv`, so they run (and fail the gate) in the `#[ignore]`
-corpus test; post-condition 1 runs on every `sectionize` call, corpus or fixture.
+corpus test; post-condition 1 runs on every `sectionize` call, corpus or fixture. The lookup keys are
+case-folded on both sides by one `normalize_label` (Sphinx lowercases label names), and the gate
+prints `N mismatches out of M checked; K unchecked` — so a check that silently examined nothing can
+never masquerade as PASS.
 
 ## Running the gate
 
@@ -82,11 +85,15 @@ sectioning + line conservation and names the two anchor checks as skipped.
 - **Labels:** **1069** sections have ≥1 label; **517** do not (their anchor is a title slug). **140**
   label-less sections **collide on title-slug within a single file** (many `## Keywords`) — so an
   unlabelled section's title slug is **not** a unique key; 4.3 needs a disambiguator.
-- **`objects.inv`:** 1671 entries (1450 `std:label`); 727 not ours. Of our 1069 heading labels,
-  **944 found, 0 anchor mismatches, 0 binding mismatches** — the anchor rule and the binding rule both
-  hold 944/944. The **125 not found are all `sec:`** (section) labels — so the binding is not
-  over-capturing figures/tables; these are section labels Sphinx did not register in the inventory
-  (a 4.3 investigation, not a defect here).
+- **`objects.inv`:** 1671 entries (1450 `std:label`); 603 not ours. Of our 1069 heading labels,
+  **1068 found, 0 anchor mismatches, 0 binding mismatches** — the anchor and binding rules both hold
+  **1068 / 1068 checked**. Label keys are **case-folded on both sides** (`normalize_label`): Sphinx
+  lowercases std-domain label names before writing the inventory, so a mixed-case source label
+  (`sec:…BohrToAngs`) must be looked up case-insensitively (measured: 124 of a former 125 "not found"
+  were case alone — see `manual-sources.md`). The **1 still not found**
+  (`sec:spectroscopyproperties.nocv.theory`) is a genuine section label Sphinx did not register — the
+  lone real gap, flagged for 4.3. The gate prints denominators (`0 mismatches out of 1068 checked; 1
+  unchecked`) so a post-condition can never read PASS while silently having checked nothing.
 - **Line conservation:** **126 / 126 files PASS.**
 - **Bytes:** prose **57.3 %** / fenced **42.7 %** of 3 985 404 line-bytes — nearly half the corpus is
   inside fenced blocks (code/tables). 4.3 decides: index the raw body, or a cleaned prose projection.
