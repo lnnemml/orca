@@ -26,6 +26,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import posixpath
 import re
 import sys
@@ -33,6 +35,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
 # --- Configuration ---------------------------------------------------------
@@ -79,9 +82,11 @@ class RequestCapExceeded(RuntimeError):
 @dataclass
 class FetchResult:
     url: str
-    status: int          # HTTP status, or 0 for a network-level failure
+    status: int          # HTTP status (304 = not modified), or 0 for a network failure
     body: bytes | None
     error: str | None = None
+    etag: str | None = None
+    last_modified: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -96,7 +101,13 @@ class Fetcher:
         self.attempts = 0
         self._first = True
 
-    def get(self, url: str) -> FetchResult:
+    def get(self, url: str, if_none_match: str | None = None,
+            if_modified_since: str | None = None) -> FetchResult:
+        """GET url. With a conditional header (If-None-Match from a stored ETag, or
+        If-Modified-Since from a stored Last-Modified), a 304 comes back as
+        status=304 with no body and the caller reuses its cached copy. Measured:
+        faccts.de sends Last-Modified but NOT ETag, so If-Modified-Since is the
+        header that actually yields 304s here."""
         last_err = None
         for attempt in range(1, MAX_RETRIES + 1):
             if self.attempts >= self.cap:
@@ -109,11 +120,24 @@ class Fetcher:
             if not self._first:
                 time.sleep(REQUEST_PAUSE_S)
             self._first = False
-            req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+            headers = {"User-Agent": USER_AGENT}
+            if if_none_match:
+                headers["If-None-Match"] = if_none_match
+            if if_modified_since:
+                headers["If-Modified-Since"] = if_modified_since
+            req = urllib.request.Request(url, headers=headers)
             try:
                 with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_S) as resp:
-                    return FetchResult(url=url, status=resp.status, body=resp.read())
+                    return FetchResult(
+                        url=url, status=resp.status, body=resp.read(),
+                        etag=resp.headers.get("ETag"),
+                        last_modified=resp.headers.get("Last-Modified"),
+                    )
             except urllib.error.HTTPError as e:
+                # 304 Not Modified is a real, non-error answer to a conditional GET.
+                if e.code == 304:
+                    return FetchResult(url=url, status=304, body=None,
+                                       etag=if_none_match, last_modified=if_modified_since)
                 # 4xx is terminal (a 404 is a real answer); 5xx is retryable.
                 if 500 <= e.code < 600 and attempt < MAX_RETRIES:
                     last_err = f"HTTP {e.code}"
@@ -547,6 +571,230 @@ def report(man: Manifest, fetcher: Fetcher, base: str, sample_n: int) -> int:
     return 1 if (failed_containers or sample_404) else 0
 
 
+# --- Part B: full fetch, manifest.json, post-conditions --------------------
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _looks_like_html(body: bytes) -> bool:
+    head = body.lstrip()[:64].lower()
+    return head.startswith(b"<!doctype") or head.startswith(b"<html")
+
+
+def fetch_all(fetcher: Fetcher, base: str, out_dir: Path, force: bool) -> int:
+    """Fetch every leaf into out_dir/<version>/<path>.md.txt, write manifest.json,
+    then verify the result IN OUR TERMS (rule #9). Returns a process exit code."""
+    version_dir = out_dir / ORCA_VERSION
+    manifest_path = out_dir / "manifest.json"
+
+    # Prior manifest → idempotency (skip a file whose ETag still matches).
+    prior: dict[str, dict] = {}
+    if manifest_path.exists() and not force:
+        try:
+            for rec in json.loads(manifest_path.read_text()).get("files", []):
+                prior[rec["path"]] = rec
+        except (json.JSONDecodeError, KeyError):
+            print("  (prior manifest.json unreadable — refetching all)", file=sys.stderr)
+
+    print("Building manifest (toctree walk)…", file=sys.stderr)
+    man = build_manifest(fetcher, base)
+    leaves = [e.path for e in man.entries.values() if e.kind == "leaf"]
+    failed_containers = [p for p, r in man.container_status.items() if not r.ok]
+
+    records: list[dict] = []
+    print(f"Fetching {len(leaves)} leaves into {version_dir}/ …", file=sys.stderr)
+    for path in leaves:
+        url = source_url(base, path)
+        local = version_dir / (path + ".md.txt")
+        prior_rec = prior.get(path, {})
+        prior_etag = prior_rec.get("etag")
+        prior_lm = prior_rec.get("last_modified")
+        have_local = local.exists()
+
+        # Prefer ETag; fall back to Last-Modified (this server sends only the latter).
+        res = fetcher.get(
+            url,
+            if_none_match=prior_etag if have_local else None,
+            if_modified_since=prior_lm if (have_local and not prior_etag) else None,
+        )
+
+        if res.status == 304 and have_local:
+            body = local.read_bytes()
+            rec = dict(prior.get(path, {}))
+            rec.update(action="reused", status=304, fetched_at=_now_iso())
+            rec.setdefault("size", len(body))
+            rec.setdefault("sha256", hashlib.sha256(body).hexdigest())
+            rec["path"], rec["url"] = path, url
+            rec["local"] = str(local.relative_to(out_dir))
+            records.append(rec)
+            continue
+
+        if not res.ok:
+            records.append({
+                "path": path, "url": url, "local": str(local.relative_to(out_dir)),
+                "status": res.status, "action": "failed", "error": res.error,
+                "size": 0, "sha256": None, "etag": None, "last_modified": None,
+                "fetched_at": _now_iso(),
+            })
+            print(f"  !! FAILED {res.status}: {path} ({res.error})", file=sys.stderr)
+            continue
+
+        body = res.body
+        sha = hashlib.sha256(body).hexdigest()
+        # Idempotent write: unchanged content (same hash) is not rewritten.
+        if not (have_local and prior.get(path, {}).get("sha256") == sha):
+            local.parent.mkdir(parents=True, exist_ok=True)
+            local.write_bytes(body)
+        records.append({
+            "path": path, "url": url, "local": str(local.relative_to(out_dir)),
+            "status": 200, "action": "downloaded", "size": len(body), "sha256": sha,
+            "etag": res.etag, "last_modified": res.last_modified, "fetched_at": _now_iso(),
+        })
+
+    # --- Write manifest.json (goal: a 6.2 refresh is a DIFF, not a blind redownload).
+    manifest_doc = {
+        "orca_version": ORCA_VERSION,
+        "base_url": base,
+        "generated_at": _now_iso(),
+        "counts": {
+            "manifest_paths": len(man.entries),
+            "leaves": len(leaves),
+            "containers": sum(1 for e in man.entries.values() if e.kind == "container"),
+            "no_source": sorted(e.path for e in man.entries.values() if e.kind == "no-source"),
+        },
+        "files": records,
+    }
+    out_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(json.dumps(manifest_doc, indent=2) + "\n")
+
+    return report_all(fetcher, out_dir, version_dir, records, leaves, failed_containers)
+
+
+def report_all(fetcher: Fetcher, out_dir: Path, version_dir: Path,
+               records: list[dict], leaves: list[str], failed_containers: list[str]) -> int:
+    print("\n" + "=" * 72)
+    print(f"ORCA {ORCA_VERSION} manual — FULL fetch (Part B)")
+    print("=" * 72)
+
+    downloaded = [r for r in records if r["action"] == "downloaded"]
+    reused = [r for r in records if r["action"] == "reused"]
+    failed = [r for r in records if r["action"] == "failed"]
+
+    # --- Post-conditions IN OUR TERMS (rule #9) ---
+    ok_records = [r for r in records if r["action"] in ("downloaded", "reused")]
+    problems: list[str] = []
+    html_masq: list[str] = []
+    empty: list[str] = []
+    for r in ok_records:
+        p = out_dir / r["local"]
+        if not p.exists() or p.stat().st_size == 0:
+            empty.append(r["path"])
+            continue
+        body = p.read_bytes()
+        if _looks_like_html(body):
+            html_masq.append(r["path"])
+    success = len(ok_records) - len(html_masq) - len(empty)
+    expected = len(leaves)
+
+    print(f"\n[FETCH] downloaded={len(downloaded)} reused={len(reused)} failed={len(failed)}")
+    print(f"        requests used: {fetcher.attempts}/{fetcher.cap}")
+    if failed:
+        problems.append(f"{len(failed)} fetch failure(s): {[r['path'] for r in failed]}")
+    if html_masq:
+        problems.append(f"{len(html_masq)} HTML-masquerade file(s): {html_masq}")
+    if empty:
+        problems.append(f"{len(empty)} empty/missing file(s): {empty}")
+    if success != expected:
+        problems.append(f"success {success} != expected leaves {expected}")
+    if failed_containers:
+        problems.append(f"container fetch failures: {failed_containers}")
+
+    print(f"\n[POST-CONDITIONS] (rule #9 — verified in our terms, not the server's 'done')")
+    print(f"    every OK file is text, not an HTML error page : {'PASS' if not html_masq else 'FAIL'}")
+    print(f"    every OK file is non-empty                    : {'PASS' if not empty else 'FAIL'}")
+    print(f"    success count == manifest 200 leaves          : "
+          f"{success} == {expected}  {'PASS' if success == expected else 'FAIL'}")
+
+    # --- Read the on-disk corpus once for the four measurements. ---
+    texts: dict[str, str] = {}
+    for r in ok_records:
+        p = out_dir / r["local"]
+        if p.exists():
+            texts[r["path"]] = p.read_text(encoding="utf-8", errors="replace")
+
+    # (1a) TRUE ATX distribution + max level across ALL leaves.
+    dist: dict[int, int] = {}
+    deepest = 0
+    deepest_files: list[str] = []
+    for path, text in texts.items():
+        _, counts, dpath = analyze_atx(text)
+        for lvl, c in counts.items():
+            dist[lvl] = dist.get(lvl, 0) + c
+        if dpath > deepest:
+            deepest = dpath
+            deepest_files = [path]
+        elif dpath == deepest:
+            deepest_files.append(path)
+    print(f"\n[1a] ATX DISTRIBUTION (all {len(texts)} leaves)")
+    print("     " + ", ".join(f"{'#'*lvl}={dist.get(lvl,0)}" for lvl in range(1, 7) if dist.get(lvl)))
+    print(f"     deepest ATX level: {'#'*deepest} ({deepest})  e.g. {deepest_files[:3]}")
+    # TOC proves #### (level 4) exists (scf/basisset/DFT/CASSCF/mreom/mm/troubleshooting).
+    if deepest < 4:
+        print(f"     !! DISCREPANCY: TOC implies level-4 (####) sections exist "
+              f"(e.g. 2.6.7.1.1 scf.md, 2.7.2.13.1 basisset.md) but ATX max is only "
+              f"{'#'*deepest} — deep subsections may NOT be ATX headings. REPORTED, not silent.")
+
+    # (1b) eval-rst blocks in BODY across ALL leaves (the ADR-013 (3) trigger).
+    body_eval: list[tuple[str, int]] = []
+    total_eval = 0
+    for path, text in texts.items():
+        n = count_eval_rst(text)
+        if n:
+            body_eval.append((path, n))
+            total_eval += n
+    print(f"\n[1b] eval-rst IN BODIES (all leaves) — ADR-013 (3) review condition")
+    print(f"     total body eval-rst blocks: {total_eval}")
+    if body_eval:
+        print(f"     files: {sorted(body_eval)}")
+        print(f"     -> non-zero: assess whether these carry SECTION structure before "
+              f"trusting ATX-only sectioning (do not self-decide).")
+    else:
+        print(f"     -> ZERO across the whole corpus: ATX-only sectioning holds; "
+              f"ADR-013 (3) stays closed.")
+
+    # (1c) exact total corpus size.
+    total_bytes = sum((out_dir / r["local"]).stat().st_size
+                      for r in ok_records if (out_dir / r["local"]).exists())
+    print(f"\n[1c] EXACT CORPUS SIZE")
+    print(f"     {total_bytes} bytes = {total_bytes/1_048_576:.2f} MiB over {len(texts)} leaves")
+
+    # (1d) are all labels ASCII? (predict_anchor collapses non-ASCII to '-').
+    non_ascii: list[tuple[str, str]] = []
+    total_labels = 0
+    for path, text in texts.items():
+        for lab in find_labels(text):
+            total_labels += 1
+            if not lab.isascii():
+                non_ascii.append((path, lab))
+    print(f"\n[1d] LABEL ASCII CHECK ({total_labels} labels)")
+    if non_ascii:
+        print(f"     !! {len(non_ascii)} NON-ASCII label(s) — predict_anchor would mangle them: "
+              f"{non_ascii[:10]}")
+    else:
+        print(f"     all labels ASCII — predict_anchor's [^a-z0-9]+->'-' is lossless here")
+
+    print("\n" + "=" * 72)
+    if problems:
+        print("RESULT: FAIL — " + " | ".join(problems))
+        print("=" * 72)
+        return 1
+    print(f"RESULT: PASS — {expected} leaves fetched & verified; manifest.json written.")
+    print("Reminder: resources/manual/* is gitignored (copyright, ADR-006) — do NOT commit it.")
+    print("=" * 72)
+    return 0
+
+
 # --- CLI -------------------------------------------------------------------
 
 def main(argv: list[str]) -> int:
@@ -557,28 +805,27 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--sample", type=int, default=0, metavar="N",
                     help="also fetch N representative leaves (in memory) and measure format")
     ap.add_argument("--all", action="store_true",
-                    help="[Part B — not yet implemented] full fetch into resources/manual/")
+                    help="full fetch of every leaf into --out, write manifest.json, verify")
+    ap.add_argument("--force", action="store_true",
+                    help="ignore the manifest.json cache and refetch every file")
     ap.add_argument("--out", default=str(Path("resources/manual")),
-                    help="output dir (Part B)")
+                    help="output dir (default resources/manual)")
     args = ap.parse_args(argv)
 
-    if args.all:
-        print("--all is Part B (full fetch + manifest.json + post-conditions); "
-              "not implemented in this unit. Run --manifest --sample first.", file=sys.stderr)
-        return 2
-
-    if not args.manifest:
+    if not (args.manifest or args.all):
         ap.print_help()
         return 2
 
     base = args.base if args.base.endswith("/") else args.base + "/"
     fetcher = Fetcher()
     try:
+        if args.all:
+            return fetch_all(fetcher, base, Path(args.out), args.force)
         man = build_manifest(fetcher, base)
+        return report(man, fetcher, base, args.sample)
     except RequestCapExceeded as e:
         print(f"ABORT: {e}", file=sys.stderr)
         return 3
-    return report(man, fetcher, base, args.sample)
 
 
 if __name__ == "__main__":

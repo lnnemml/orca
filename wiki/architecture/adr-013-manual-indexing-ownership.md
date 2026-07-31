@@ -90,3 +90,33 @@ own file living in the repo — but written by *seed-then-curate*, not typed fro
 The concrete `manual_sections` schema, the FTS5 table shape, the fetch script itself, and the Monaco
 hover-provider wiring are Phase-4 work with their own gate. ADR-013 fixes only **ownership** and the
 **source format**, so Phase 4 does not re-litigate them.
+
+## Amendment (2026-07-31, unit 4.1) — keyword markup is heterogeneous; the seeder needs two extractors
+
+The decision text above **stands unchanged**; this amendment records a measurement made after it
+(precedent: ADR-012's unit-3.3 amendment). Unit 4.1 built `scripts/fetch-manual.py` and fetched the
+full ORCA 6.1 manual (126 leaf pages; full numbers in [`orca/manual-sources.md`](../orca/manual-sources.md)).
+It confirmed the format decisions — ATX-only sectioning is sufficient (**body `{eval-rst}` = 0 across
+all 126**, so the (3) review condition is **closed**, not merely "not yet triggered") — and refined
+the **`keywords.json` seed paragraph** with one measured fact:
+
+**The manual's keyword lists are not one uniform format. They come in two markups, so seeding needs
+two extractors, not one:**
+
+- **(a) A `:::{table}` MyST directive over a GFM pipe table** — e.g. `RI.md` `## Keywords`: column 1 =
+  keyword (backtick-wrapped, sometimes comma-separated aliases), column 2 = description. Two fields.
+- **(b) An annotated ` ```orca ` code block** in `name value # description` form — e.g.
+  `solvationmodels.md` "Complete Keyword List for the `%cpcm` Block". **Form (b) is the richer
+  source**: it yields keyword **+ default value + description** in one line, where the table gives only
+  keyword + description. A seeder should prefer (b) where both exist.
+
+This **refines, does not cancel**, the ADR-013 seed-then-curate paragraph: `keywords.json` is still
+seeded programmatically from the manual and curated on top — but the seeder is `{table}` extractor
+**plus** `%block` code-block extractor, not a single table reader. This is a *seeder* concern, separate
+from sectioning, so it does not touch decisions (1)/(2)/(3).
+
+One more construction fixed by the run (rule #9): the label→anchor map is `objects.inv` (authoritative,
+exists — 46 257 B) **cross-checked by** an independent `predict_anchor` slug rule asserted on every
+label (all 1448 corpus labels ASCII; 46/46 matched real HTML ids in the sample). Two derivations that
+must agree — the next unit builds it that way, not "one or the other". `objects.inv` is **not parsed**
+in this unit.

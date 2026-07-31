@@ -1,9 +1,11 @@
 # ORCA 6.1 manual — source format (measured)
 
-**Measured 2026-07-31** by `scripts/fetch-manual.py --manifest --sample 6` (ADR-013 Part-A gate).
-Genre: like `parse-sources.md` — facts from a real run, dated and versioned, not from docs or memory.
-Nothing here is a guess: every number is from the walk + a 6-file representative sample (24 HTTP
-requests, cap 250). The full-corpus fetch is a later unit (Part B, `--all`).
+**Measured 2026-07-31** by `scripts/fetch-manual.py`. Genre: like `parse-sources.md` — facts from a
+real run, dated and versioned, not from docs or memory. Two gates fed this page: **Part A**
+(`--manifest --sample 6`, 24 requests) established the format on a 6-file sample; **Part B** (`--all`,
+137 requests) fetched the **full corpus of 126 leaves** and re-measured everything over all of it, so
+the numbers below are corpus-wide unless a line says "sample". Where Part A gave an estimate, Part B's
+exact figure replaces it (and the estimate is labelled as such).
 
 ## Where the sources live
 
@@ -57,13 +59,20 @@ page must not look alike.
 
 ## ATX headings (the sectioning unit)
 
-Sections come straight from ATX (`#`/`##`/`###`) heading levels — no HTML parser needed.
+Sections come straight from ATX (`#`/`##`/`###`…) heading levels — no HTML parser needed.
 
-- **Sample (6 files):** 44 headings — `#`=7, `##`=20, `###`=17; **deepest in the sample = `###`
-  (level 3)**. The corpus certainly goes deeper on the big detailed pages; the full level
-  distribution is a Part-B measurement over all 126 leaves.
-- **Size:** sample mean **≈ 23.5 KB/file** → corpus **≈ 2.8 MiB** of Markdown (rough extrapolation
-  over 126 leaves). Comfortably read-whole territory.
+- **Full corpus (all 126 leaves, Part B):** **2055 headings** — `#`=593, `##`=657, `###`=606,
+  `####`=193, `#####`=6. **Deepest ATX level = `#####` (level 5)** (e.g.
+  `contents/utilitiesvisualization/orca_2json`). No discrepancy with the TOC: it implied level-4
+  (`####`) sections exist (2.6.7.1.1 scf.md, 2.7.2.13.1 basisset.md, 3.3.4.1.1 DFT, …) and Part B
+  confirms `####` (193) — and one level deeper still (`#####`). Deep subsections **are** ATX, so
+  ATX-only sectioning reaches them.
+- **Sample-only (Part A, superseded):** the 6-file sample showed a max of `###` and a mean of
+  ≈ 23.5 KB/file — both **sample artefacts**, kept here only to show why a sample under-measures.
+- **Exact size (Part B):** **4 084 799 bytes = 3.90 MiB** of Markdown over 126 leaves (mean ≈ 32.4 KB).
+  The Part-A **estimate of ~2.8 MiB was low**, not high: the three tiny `preface/*` leaves in the
+  sample pulled the mean down more than the three hand-picked keyword-heavy files pushed it up.
+  Comfortably read-whole territory either way.
 
 ## "Keywords" sections are HETEROGENEOUS — seedable, but from two forms
 
@@ -76,8 +85,10 @@ markups**, so a seeder needs **two extractors**, not one:
    (backtick-wrapped, sometimes comma-separated aliases), **column 2/3 = options / description**.
    Cleanly parseable.
 2. **Annotated ` ```orca ` code block** — e.g. `## Complete Keyword List for the %cpcm Block` is NOT
-   a table but a fenced `%cpcm … end` block of `name  value  # description` lines. Also seedable, but
-   by a code-block line parser, not a table parser.
+   a table but a fenced `%cpcm … end` block of `name  value  # description` lines. Seedable by a
+   code-block line parser, not a table parser — and it is the **richer** source: each line yields
+   keyword **+ default value + description** at once, whereas the pipe table gives only two fields
+   (keyword + description). A seeder should prefer form 2 where both exist.
 
 Some sections ("Surface Scan Keywords", "OpenCOSMO-RS Keywords") read as prose in the coarse
 classifier and likely mix prose with one of the two forms below their heading. **Consequence for
@@ -86,28 +97,64 @@ from the Keywords sections" means **table extractor + `%block` code-block extrac
 not one uniform table format. (This concerns the *seeder*, not sectioning, so it does not touch the
 (3) MyST-parser review condition.)
 
-## Anchors: `(label)=` → `#slug`, and there is an authoritative map
+## Anchors: build the label→anchor map as a POST-CONDITION, not a guess
 
-- **Rule (verified 46/46 labels in the sample, across `sec:`/`tab:`/`fig:`/`table:` prefixes):** a MyST
-  target `(sec:a.b.c)=` in the source becomes the HTML id `#sec-a-b-c`. The transform is: **lowercase,
-  then every run of non-alphanumeric characters → a single `-`** (so `:` and `.` and `_` all fold to
-  `-`; `CPCM-features` → `cpcm-features`). Not just `sec:` — every label prefix follows it.
-- **`objects.inv` EXISTS** (`<base>objects.inv`, **46 257 bytes**). This is Sphinx's authoritative
-  label→anchor (and label→title) map. So the slugify rule above does **not** have to be trusted as a
-  guess — the inventory is the ground truth. **Not parsed in this unit** (ADR-013 scope); flagged so
-  the sectioner/keyword units use it instead of re-deriving anchors.
+The section unit will need a `label → #anchor` map (every cross-reference in the body is a `(label)`).
+How that map is built is **fixed here as a construction, not left as a later choice** (rule #9 — two
+independent derivations that must agree):
+
+- **Authoritative source: `objects.inv`.** `<base>objects.inv` **EXISTS** (**46 257 bytes**) — Sphinx's
+  authoritative label→anchor (and label→title) inventory. It is the ground truth for anchors.
+- **Independent check: `predict_anchor`, asserted on EVERY label.** The rule `(label)=` → `#slug` where
+  `slug` = **lowercase, then every run of non-alphanumeric characters → a single `-`** (so `:`/`.`/`_`
+  fold to `-`; `CPCM-features` → `cpcm-features`; holds for every prefix — `sec:`/`tab:`/`fig:`/`table:`,
+  not just `sec:`). This is computed **independently** of `objects.inv` and asserted equal to it for
+  **each** label; a mismatch fails loudly rather than silently emitting a dead anchor.
+- **The two derivations are intentional (rule #9), not debt.** `predict_anchor` alone is a guess;
+  `objects.inv` alone is an opaque binary; each guards the other. Verified so far: `predict_anchor`
+  matched real HTML ids **46/46** in the Part-A sample, and **all 1448 labels across the full corpus
+  are ASCII** (Part B) — so the `[^a-z0-9]+` → `-` transform loses nothing here.
+- **`objects.inv` is NOT parsed in this unit** (ADR-013 scope is fetch + measure). Only the *intent* is
+  recorded, so the next unit builds the map as `objects.inv` **cross-checked by** `predict_anchor`, and
+  does not quietly pick just one.
 
 ## MyST-parser review condition (ADR-013 (3)) — NOT triggered by the sample
 
 The only thing that would force a *true* MyST parser for **sectioning** is structural `{eval-rst}` in
-document bodies. Measured: **root** `index` has **1** `{eval-rst}` block (expected — the back-matter
-toctree); **body eval-rst in the 6-file sample = 0**. So ATX-only sectioning holds so far. This is a
-sample, not a proof over all 126 — the definitive count is a Part-B sweep, and if bodies turn out to
-carry structural eval-rst, ADR-013 (3) reopens (decisions (1)/(2) do not depend on it).
+document bodies. Measured over the **full corpus (Part B, all 126 leaves): body `{eval-rst}` = 0**
+(the root `index` has 1, expected — the back-matter toctree). So this is no longer "holds so far" — it
+is settled: **ATX-only sectioning is sufficient, and ADR-013 (3) stays closed.** (Were a future ORCA
+version to introduce structural eval-rst in bodies, this same measurement would reopen it; decisions
+(1)/(2) do not depend on it.)
+
+## `manifest.json` and idempotent refresh
+
+`--all` writes every leaf to `resources/manual/<version>/<path>.md.txt` and a `manifest.json` at
+`resources/manual/manifest.json` recording, per file: path, source URL, HTTP status, size, **sha256**,
+**ETag / Last-Modified**, fetch time — plus the ORCA version and run date. The point of the manifest is
+that a **6.2 refresh is a diff, not a blind re-download**.
+
+- **Idempotency (measured):** a re-run does not re-download a file whose server copy is unchanged.
+  **This server sends `Last-Modified` on all 126 files but NO `ETag` (0/126)** — so the conditional
+  request that actually yields `304 Not Modified` here is **`If-Modified-Since`** (from the stored
+  `Last-Modified`), not `If-None-Match`. The script prefers an ETag when present and falls back to
+  Last-Modified; verified — a second `--all` reports **downloaded=0, reused=126**. `--force` ignores
+  the cache and refetches.
+- **Post-conditions in our terms (rule #9)** run after the fetch: every stored file is text (not an
+  `<!DOCTYPE`/`<html>` error page), non-empty, and the count of OK files **equals** the number of
+  200-status leaves in the manifest. Any mismatch → non-zero exit + a **named** list; never a silent
+  "done". Part B: all three PASS (126 == 126).
 
 ## Network hygiene (this is someone else's server)
 
 `scripts/fetch-manual.py` uses: a descriptive User-Agent naming the project + a contact link; a
 ~0.7 s pause between requests; retry with exponential backoff on 5xx/timeout (max 3); and a **hard
 cap of 250 requests** so a walk bug cannot become a hammer. `--sample N` fetches only N leaves. The
-Part-A run used **24/250** requests.
+Part-A run used **24/250**; the full Part-B `--all` used **137/250** (11 containers + 126 leaves), 0
+failures.
+
+## License
+
+`resources/manual/*` (the fetched Markdown **and** `manifest.json`) is gitignored except the README —
+the copyrighted ORCA manual is indexed locally for personal use and **never committed/redistributed**
+(ADR-006). Verified after the Part-B run: `git status` shows nothing under `resources/manual/`.

@@ -3401,3 +3401,41 @@ never followed). Measured facts (full page: `wiki/orca/manual-sources.md`):
 Part-A commit (this): `scripts/fetch-manual.py` (--manifest/--sample) + `wiki/orca/manual-sources.md`
 + index/manual-index/ROADMAP wiring. **STOP at the gate** — Part B (`--all` full fetch,
 `manifest.json`, in-our-terms post-conditions, git-clean license check) awaits author approval.
+
+## [2026-07-31] session | Part B: full ORCA 6.1 manual fetch (--all + manifest.json + post-conditions)
+
+Extended `scripts/fetch-manual.py` with `--all` (author-approved after the Part-A gate): full fetch of
+all 126 leaves into `resources/manual/6.1/<path>.md.txt`, a `resources/manual/manifest.json`
+(path/URL/status/size/sha256/ETag/Last-Modified/fetch-time + ORCA version + run date), idempotency,
+and in-our-terms post-conditions (rule #9). Still stdlib only, no new dependency; `db.rs`/sectioner/
+`keywords.json`/DB schema untouched (out of scope).
+
+**Full-corpus measurements (Part B re-measured over all 126, not the sample):**
+- **ATX:** 2055 headings — `#`=593, `##`=657, `###`=606, `####`=193, `#####`=6; **deepest `#####`
+  (level 5)**. TOC implied `####` exists — confirmed (193) and one deeper (e.g. `orca_2json`). No
+  discrepancy; deep subsections ARE ATX, so ATX-only sectioning reaches them.
+- **body `{eval-rst}` = 0 across all 126** (root has 1, expected). This is the number that **closes**
+  ADR-013 (3): ATX-only sectioning is sufficient, definitively — not "so far".
+- **Exact corpus: 4 084 799 B = 3.90 MiB** over 126 leaves (mean ≈ 32.4 KB). The Part-A ~2.8 MiB was
+  an under-estimate (the three tiny `preface/*` sample leaves pulled the mean below corpus).
+- **All 1448 labels ASCII** → `predict_anchor`'s `[^a-z0-9]+`→`-` is lossless here.
+
+**Idempotency — a measured correction (rule #10).** The manifest showed the server sends
+**Last-Modified on all 126 but NO ETag (0/126)**, so `If-None-Match` could never 304. Added an
+`If-Modified-Since` fallback; verified a second `--all` reports **downloaded=0, reused=126**. `--force`
+refetches. (Memory/HTTP-lore said "use ETag"; the run said this server has none — fixed per the run.)
+
+**Post-conditions PASS:** every stored file is text (not `<!DOCTYPE`/`<html>`), non-empty, and OK-count
+== 200-leaf-count (126 == 126); mismatch would exit non-zero with a named list. Requests: 137/250, 0
+failures. **License:** `resources/manual/*` (Markdown + manifest.json) gitignored except README —
+`git check-ignore` confirms both; `git status` clean under the dir; **nothing committed** (ADR-006).
+
+**Wiki:** `orca/manual-sources.md` updated to full-corpus numbers (the 2.8 MiB estimate labelled and
+replaced by exact 3.90 MiB; ATX distribution; eval-rst=0; ASCII), anchor map reframed as a **rule-#9
+post-condition** (`objects.inv` authoritative × `predict_anchor` independent check, both asserted;
+objects.inv still NOT parsed — intent only), `manifest.json`/idempotency/license sections added.
+**ADR-013 amendment appended** (decision text untouched, ADR-012-precedent): keyword markup
+heterogeneous → two extractors, (b) `%block` code-block the richer source; (3) closed.
+
+Next: Phase 4.1 sectioner (Rust) over the fetched Markdown — ATX heading tree; and the label→anchor
+map as objects.inv × predict_anchor.
