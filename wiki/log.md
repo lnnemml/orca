@@ -3439,3 +3439,40 @@ heterogeneous → two extractors, (b) `%block` code-block the richer source; (3)
 
 Next: Phase 4.1 sectioner (Rust) over the fetched Markdown — ATX heading tree; and the label→anchor
 map as objects.inv × predict_anchor.
+
+## [2026-07-31] ingest | Fence-aware ATX recount — 464 phantom headings were ORCA '#' comments
+
+Defect (self-inflicted, silent): `analyze_atx` and `classify_keywords_markup` in
+`scripts/fetch-manual.py` matched `^#{1,6}\s` on EVERY line, not tracking ` ``` ` fences — while
+`parse_toctrees` in the SAME file tracked fences correctly. One file, two implementations of one job,
+one naive. ORCA input comments with `#`, the manual is full of ` ```orca ` examples, so comment lines
+(`# ...`, `#### separator`) were counted as headings. Symptom that gave it away: `#`=593 over 126
+pages ≈ 4.7 H1/page, where a Sphinx page has one.
+
+**Fix — one rule, one home.** New `iter_prose_lines(text)` yields only lines OUTSIDE fenced blocks
+(backtick code fences AND `:::` directives, any length, nesting via longer-outer/shorter-inner — the
+same close rule `parse_toctrees` uses, widened to code fences it doesn't need to see). `analyze_atx`
+and `classify_keywords_markup` now both route through it. `parse_toctrees`/`count_eval_rst` untouched
+(never buggy — so **body eval-rst = 0 still stands**, (3) stays closed). Regression test `--selftest`
+(in-code fixture, no network): two real headings + a ` ```orca ` block with `# comment` / `####
+separator` / inline `#` → asserts exactly 2 headings, none from the block. PASS. New `--analyze-only`
+recounts the on-disk corpus with **no network** (rule: don't re-download).
+
+**Recount (offline, all 126 leaves):**
+- **Corrected ATX:** `#`=129, `##`=654, `###`=604, `####`=193, `#####`=6 (1586 total); deepest still
+  `#####` (5). Old naive: `#`=593 … (2055 total). **464 false level-1** removed (469 all levels) — all
+  ORCA `#` comments. `####`/`#####` were unpolluted (real deep sections). Matches the ~440–470 estimate.
+- **H1 per page:** 3/126 leaves have TWO H1 (`numericalintegration`, `preface/foreword`, `magnx`) —
+  real double-top-heading pages (verified), so a sectioner must not assume one H1/file. Reported, not
+  explained.
+- **Keyword markup reclassified over ALL 126 (79 headings):** ` ```orca ` code block **33**, pipe table
+  **27**, prose **21**, `{list-table}` **1**. So it is **three** structured forms + a prose tail, not
+  two — the sample's "two extractors" was an undercount. `{list-table}` is a third structured markup;
+  21 prose sections are curation targets, not extractor input. Seed-then-curate still holds (majority
+  seedable). Corpus size unchanged (3.90 MiB) — the bug was heading-counting only.
+
+**Direct spec recorded for the next unit** (`manual-sources.md`): the sectioner MUST support ≥5 ATX
+levels AND MUST ignore `#` inside fenced blocks (~460 phantom sections otherwise). Wiki updated:
+`orca/manual-sources.md` (corrected distribution + named cause + 3-form keyword table + sectioner-
+requirements spec), ADR-013 amendment corrected (append, decision text untouched). No app code / db.rs
+touched; no objects.inv parse; no deps; `resources/manual/` not committed.

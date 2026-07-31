@@ -120,3 +120,21 @@ exists — 46 257 B) **cross-checked by** an independent `predict_anchor` slug r
 label (all 1448 corpus labels ASCII; 46/46 matched real HTML ids in the sample). Two derivations that
 must agree — the next unit builds it that way, not "one or the other". `objects.inv` is **not parsed**
 in this unit.
+
+### Correction to the amendment (2026-07-31, unit-4.1 recount)
+
+Two numbers in the amendment above came from the **6-file sample** and from a heading count that was
+later found **polluted** (`analyze_atx` matched `#` on lines inside ` ```orca ` code blocks, and ORCA
+input comments with `#` — 464 phantom level-1 "headings"; fixed to count only outside fenced blocks).
+A fence-aware recount over **all 126 leaves** revises the keyword finding:
+
+- **Not two forms — three, plus a prose tail.** Over 79 "Keyword" headings: ` ```orca ` code block
+  **33**, GFM pipe table **27**, `{list-table}` **1** (a third structured markup), **prose 21**. So the
+  seeder needs **three** structured extractors, and ~27% of keyword sections (prose) fall to
+  hand-curation. The seed-then-curate decision still **holds** — the majority is seedable — but the
+  "two extractors" figure was a sample undercount; full table + method in
+  [`orca/manual-sources.md`](../orca/manual-sources.md).
+
+Decisions (1)/(2)/(3) are untouched: this is a *seeder* refinement. **Body `{eval-rst}` = 0** still
+stands (it is counted via `parse_toctrees`, which always tracked fences correctly — it was never the
+buggy path), so (3) stays closed.

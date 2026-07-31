@@ -59,36 +59,67 @@ page must not look alike.
 
 ## ATX headings (the sectioning unit)
 
-Sections come straight from ATX (`#`/`##`/`###`…) heading levels — no HTML parser needed.
+Sections come straight from ATX (`#`/`##`/`###`…) heading levels — no HTML parser needed. **These
+counts are fence-aware: only lines OUTSIDE fenced blocks are headings** (see the correction below).
 
-- **Full corpus (all 126 leaves, Part B):** **2055 headings** — `#`=593, `##`=657, `###`=606,
+- **Full corpus (all 126 leaves, fence-aware):** **1586 headings** — `#`=129, `##`=654, `###`=604,
   `####`=193, `#####`=6. **Deepest ATX level = `#####` (level 5)** (e.g.
   `contents/utilitiesvisualization/orca_2json`). No discrepancy with the TOC: it implied level-4
-  (`####`) sections exist (2.6.7.1.1 scf.md, 2.7.2.13.1 basisset.md, 3.3.4.1.1 DFT, …) and Part B
+  (`####`) sections exist (2.6.7.1.1 scf.md, 2.7.2.13.1 basisset.md, 3.3.4.1.1 DFT, …) and the recount
   confirms `####` (193) — and one level deeper still (`#####`). Deep subsections **are** ATX, so
   ATX-only sectioning reaches them.
-- **Sample-only (Part A, superseded):** the 6-file sample showed a max of `###` and a mean of
-  ≈ 23.5 KB/file — both **sample artefacts**, kept here only to show why a sample under-measures.
-- **Exact size (Part B):** **4 084 799 bytes = 3.90 MiB** of Markdown over 126 leaves (mean ≈ 32.4 KB).
-  The Part-A **estimate of ~2.8 MiB was low**, not high: the three tiny `preface/*` leaves in the
-  sample pulled the mean down more than the three hand-picked keyword-heavy files pushed it up.
-  Comfortably read-whole territory either way.
+- **Correction (unit-4.1 recount).** An earlier count reported **2055** headings (`#`=593) — that was
+  **polluted**: `analyze_atx` matched `#` on *every* line, including inside ` ```orca ` code blocks,
+  and **ORCA input comments with `#`**, so comment lines were counted as headings. **464 of the 593
+  level-1 "headings" were comments** (469 false across all levels; `##`/`###` lost 3/2, `####`/`#####`
+  none — the deep levels were real). Fixed by counting only lines outside fenced blocks (one shared
+  `iter_prose_lines` tracker; regression test `--selftest`); recount is offline (`--analyze-only`, no
+  refetch).
+- **One H1 per page — mostly.** 3 of 126 leaves carry **two** level-1 headings
+  (`essentialelements/numericalintegration`, `preface/foreword`, `spectroscopyproperties/magnx`) —
+  genuine double-top-heading pages (e.g. foreword has a 6.1.1 and a 6.1.0 foreword). A sectioner must
+  not assume exactly one H1 per file.
+- **Sample-only (Part A, superseded):** the 6-file sample showed a max of `###` — a sample artefact.
+- **Exact size:** **4 084 799 bytes = 3.90 MiB** of Markdown over 126 leaves (mean ≈ 32.4 KB). Unchanged
+  by the recount — the bug was heading-*counting* only, not the bytes. (The Part-A ~2.8 MiB was a
+  low sample estimate: the three tiny `preface/*` leaves pulled the mean below corpus.)
 
-## "Keywords" sections are HETEROGENEOUS — seedable, but from two forms
+> **Sectioner requirements (direct spec for the next unit, not an observation).** The ATX sectioner
+> **MUST** support at least **5 heading levels** (`#`…`#####`), and **MUST** ignore any `#` line inside
+> a fenced block — ` ``` ` code fences (ORCA examples comment with `#`) **and** `:::` directives. A
+> naive line scan invents **~460 phantom sections** (measured). Track fences in **one** place, as
+> `iter_prose_lines` does; do not re-derive the rule per call site.
 
-This is the fact ADR-013's "seed `keywords.json` from the manual's Keywords sections" paragraph
-stands on. Reality (measured, not assumed): the machine-readable keyword lists come in **two distinct
-markups**, so a seeder needs **two extractors**, not one:
+## "Keywords" sections are HETEROGENEOUS — three structured forms plus a prose tail
 
-1. **Labeled `:::{table}` directive wrapping a GFM pipe table** — e.g. RI's `## Keywords` has
-   `(tab:essentialelements.ri.keywords.simple)=` / `(tab:...block)=` tables: **column 1 = keyword**
-   (backtick-wrapped, sometimes comma-separated aliases), **column 2/3 = options / description**.
-   Cleanly parseable.
-2. **Annotated ` ```orca ` code block** — e.g. `## Complete Keyword List for the %cpcm Block` is NOT
-   a table but a fenced `%cpcm … end` block of `name  value  # description` lines. Seedable by a
-   code-block line parser, not a table parser — and it is the **richer** source: each line yields
-   keyword **+ default value + description** at once, whereas the pipe table gives only two fields
-   (keyword + description). A seeder should prefer form 2 where both exist.
+This is the fact ADR-013's "seed `keywords.json` from the manual's Keywords sections" paragraph stands
+on. Part A's 6-file sample suggested **two** forms; the full-corpus reclassification (`--analyze-only`,
+all 126 leaves, **79 "Keyword" headings**) shows **more** — three machine-seedable markups *and* a
+substantial prose remainder:
+
+| form | count | seedable? |
+|---|---|---|
+| **annotated ` ```orca ` code block** (`name value # description`) | **33** | yes — richest |
+| **GFM pipe table** (often wrapped in a `:::{table}` directive) | **27** | yes |
+| **`{list-table}` directive** | **1** | yes |
+| **prose** (unstructured text) | **21** | **no** — needs curation, not a parser |
+
+*(counts sum to 82 over 79 headings — a few sections carry two forms.)*
+
+- The ` ```orca ` code block is the **richest** source: each line yields keyword **+ default value +
+  description** at once (e.g. `%cpcm` "Complete Keyword List"), where a pipe table gives only keyword +
+  description (e.g. RI's `## Keywords`). A seeder should prefer it where both exist.
+- **`{list-table}` is a third structured form** (1 occurrence) — a table variant, but a distinct MyST
+  directive a pipe-table parser would miss.
+- **21 of 79 keyword headings are prose** — no table, no code block. These are **not** mechanically
+  seedable; they are curation targets, not extractor input.
+
+**Consequence:** the "two extractors" figure from the sample was an **undercount**. A seeder needs
+**three** structured extractors (` ```orca ` block, pipe table, `{list-table}`), and even then ~27% of
+keyword sections (prose) fall to hand-curation. This still **refines, not cancels**, ADR-013's
+seed-then-curate paragraph — the bulk is seedable — but "seed from the Keywords sections" is a
+three-form job with a real curation tail, not a two-form one. (A *seeder* concern, separate from
+sectioning — it does not touch the (3) MyST-parser review condition.)
 
 Some sections ("Surface Scan Keywords", "OpenCOSMO-RS Keywords") read as prose in the coarse
 classifier and likely mix prose with one of the two forms below their heading. **Consequence for

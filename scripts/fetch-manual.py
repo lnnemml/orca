@@ -34,6 +34,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -166,6 +167,40 @@ _RST_TOCTREE = re.compile(r"^\s*\.\.\s+toctree::")
 def _is_fence_close(line: str, fence_char: str, fence_len: int) -> bool:
     s = line.strip()
     return len(s) >= fence_len and set(s) == {fence_char}
+
+
+# Any fenced block opener — backtick CODE fences (```orca, ```python) AND colon
+# directives (:::{table}), of any length. Wider than _FENCE_OPEN, which requires
+# a {name} because parse_toctrees only cares about DIRECTIVE fences. This one is
+# for hiding *all* fenced content from the heading/keyword scanners.
+_FENCE_ANY = re.compile(r"^\s*(?P<fence>`{3,}|:{3,})(?P<info>.*)$")
+
+
+def iter_prose_lines(text: str) -> Iterator[tuple[int, str]]:
+    """Yield (index, line) for every line that is OUTSIDE a fenced block.
+
+    THE single fence tracker for the heading/keyword scanners — the same
+    open/close rule parse_toctrees uses (`_is_fence_close`, longer-outer /
+    shorter-inner nesting), widened to every fence kind. Without it, ORCA input
+    examples — which comment with '#' — get miscounted as ATX headings, and a
+    '####' separator inside a ```orca block prematurely ends a section. One rule,
+    one home: analyze_atx and classify_keywords_markup both go through here.
+    """
+    lines = text.splitlines()
+    i, n = 0, len(lines)
+    while i < n:
+        line = lines[i]
+        m = _FENCE_ANY.match(line)
+        if m:
+            fence = m.group("fence")
+            fence_char, fence_len = fence[0], len(fence)
+            i += 1  # consume the block body up to and including its close
+            while i < n and not _is_fence_close(lines[i], fence_char, fence_len):
+                i += 1
+            i += 1  # skip the closing fence line
+            continue
+        yield i, line
+        i += 1
 
 
 def _clean_entry(raw: str) -> str | None:
@@ -354,10 +389,12 @@ _ID_ATTR = re.compile(r'id="([^"]+)"')
 
 
 def analyze_atx(text: str) -> tuple[int, dict[int, int], int]:
+    """Count ATX headings OUTSIDE fenced blocks (via iter_prose_lines), so ORCA
+    '#'-comment lines inside ```orca examples are not miscounted as headings."""
     counts: dict[int, int] = {}
     total = 0
     deepest = 0
-    for line in text.splitlines():
+    for _idx, line in iter_prose_lines(text):
         m = _ATX.match(line)
         if m:
             lvl = len(m.group(1))
@@ -375,32 +412,40 @@ def find_labels(text: str) -> list[str]:
     return [m.group(1) for line in text.splitlines() if (m := _LABEL.match(line))]
 
 
-def classify_keywords_markup(text: str) -> list[tuple[str, str]]:
-    """For each heading containing 'keyword', how is the section's body marked?"""
+def _keyword_forms(body_lines: list[str]) -> set[str]:
+    """Which machine-readable form(s) a keyword section's body uses. Body is the
+    ORIGINAL lines (fences intact) so a ```orca code block is visible."""
+    blob = "\n".join(body_lines)
+    forms: set[str] = set()
+    # An annotated code block: a ```orca (or ```{...} orca) fence.
+    if re.search(r"^\s*`{3,}[^\n]*\borca\b", blob, re.MULTILINE):
+        forms.add("orca-codeblock")
+    if "{list-table}" in blob:
+        forms.add("list-table")
+    if re.search(r"^\s*\|.*\|", blob, re.MULTILINE):
+        forms.add("pipe-table")
+    if re.search(r"^[^\s:|`].*\n:\s+\S", blob, re.MULTILINE):
+        forms.add("def-list")
+    if not forms:
+        forms.add("prose" if blob.strip() else "(empty)")
+    return forms
+
+
+def classify_keywords_markup(text: str) -> list[tuple[str, set[str]]]:
+    """For each 'Keywords' heading, which markup form(s) its body uses. Heading
+    detection goes through iter_prose_lines (so a '####' inside a code block is
+    not mistaken for a heading and does not truncate the section)."""
     lines = text.splitlines()
-    out: list[tuple[str, str]] = []
-    for idx, line in enumerate(lines):
-        m = _ATX.match(line)
-        if not m or "keyword" not in line.lower():
+    heading_idxs = [idx for idx, line in iter_prose_lines(text) if _ATX.match(line)]
+    heading_set = set(heading_idxs)
+    out: list[tuple[str, set[str]]] = []
+    for idx in heading_idxs:
+        if "keyword" not in lines[idx].lower():
             continue
-        # Look at the section body until the next heading.
-        body: list[str] = []
-        for follow in lines[idx + 1:]:
-            if _ATX.match(follow):
-                break
-            body.append(follow)
-        blob = "\n".join(body)
-        if "{list-table}" in blob:
-            kind = "{list-table} directive"
-        elif re.search(r"^\s*\|.*\|", blob, re.MULTILINE):
-            kind = "pipe table"
-        elif re.search(r"^[^\s:].*\n:\s+\S", blob, re.MULTILINE):
-            kind = "definition list"
-        elif blob.strip():
-            kind = "plain text / prose"
-        else:
-            kind = "(empty body)"
-        out.append((line.strip(), kind))
+        # Body runs to the next PROSE heading (code-block headings excluded).
+        later = [h for h in heading_idxs if h > idx]
+        end = later[0] if later else len(lines)
+        out.append((lines[idx].strip(), _keyword_forms(lines[idx + 1:end])))
     return out
 
 
@@ -509,10 +554,10 @@ def report(man: Manifest, fetcher: Fetcher, base: str, sample_n: int) -> int:
     any_kw = False
     for p in ok_files:
         text = fetched[p].body.decode("utf-8", errors="replace")
-        for heading, kind in classify_keywords_markup(text):
+        for heading, forms in classify_keywords_markup(text):
             any_kw = True
             print(f"    {p}")
-            print(f"        {heading!r}  ->  {kind}")
+            print(f"        {heading!r}  ->  {', '.join(sorted(forms))}")
     if not any_kw:
         print("    (no 'Keywords' heading found in the sample)")
 
@@ -795,6 +840,138 @@ def report_all(fetcher: Fetcher, out_dir: Path, version_dir: Path,
     return 0
 
 
+# --- Offline recount (reads disk, no network) + self-test ------------------
+
+def _naive_atx(text: str) -> dict[int, int]:
+    """The OLD, buggy count: every line, fences included. Kept only to measure
+    the delta against the fence-aware count."""
+    d: dict[int, int] = {}
+    for line in text.splitlines():
+        m = _ATX.match(line)
+        if m:
+            d[len(m.group(1))] = d.get(len(m.group(1)), 0) + 1
+    return d
+
+
+def analyze_disk(out_dir: Path) -> int:
+    """Recount the corpus ALREADY on disk — no network. Reports the fence-aware
+    ATX distribution vs the old naive one, files with >1 H1, and a keyword-markup
+    reclassification over ALL leaves."""
+    version_dir = out_dir / ORCA_VERSION
+    files = sorted(version_dir.rglob("*.md.txt"))
+    if not files:
+        print(f"no .md.txt under {version_dir} — run --all first (no refetch here)", file=sys.stderr)
+        return 2
+
+    naive: dict[int, int] = {}
+    fixed: dict[int, int] = {}
+    fixed_total = 0
+    deepest = 0
+    deepest_files: list[str] = []
+    multi_h1: list[tuple[str, int]] = []
+    total_bytes = 0
+    kw_forms: dict[str, int] = {}
+    kw_rows: list[tuple[str, str, set[str]]] = []
+
+    for p in files:
+        rel = str(p.relative_to(version_dir))[:-len(".md.txt")]
+        text = p.read_text(encoding="utf-8", errors="replace")
+        total_bytes += p.stat().st_size
+        for lvl, c in _naive_atx(text).items():
+            naive[lvl] = naive.get(lvl, 0) + c
+        t, counts, dpath = analyze_atx(text)
+        fixed_total += t
+        for lvl, c in counts.items():
+            fixed[lvl] = fixed.get(lvl, 0) + c
+        if dpath > deepest:
+            deepest, deepest_files = dpath, [rel]
+        elif dpath == deepest:
+            deepest_files.append(rel)
+        if counts.get(1, 0) > 1:
+            multi_h1.append((rel, counts[1]))
+        for heading, forms in classify_keywords_markup(text):
+            kw_rows.append((rel, heading, forms))
+            for f in forms:
+                kw_forms[f] = kw_forms.get(f, 0) + 1
+
+    print("=" * 72)
+    print(f"ORCA {ORCA_VERSION} manual — OFFLINE RECOUNT ({len(files)} leaves on disk, no network)")
+    print("=" * 72)
+
+    naive_total = sum(naive.values())
+    print(f"\n[ATX] fence-aware distribution (all {len(files)} leaves)")
+    print("      " + ", ".join(f"{'#'*lvl}={fixed.get(lvl,0)}" for lvl in range(1, 7) if fixed.get(lvl)))
+    print(f"      total headings: {fixed_total}   deepest: {'#'*deepest} ({deepest})  e.g. {deepest_files[:3]}")
+    print(f"\n[ATX] OLD naive count (fences included), for the delta")
+    print("      " + ", ".join(f"{'#'*lvl}={naive.get(lvl,0)}" for lvl in range(1, 7) if naive.get(lvl)))
+    print(f"      total headings: {naive_total}")
+    fake1 = naive.get(1, 0) - fixed.get(1, 0)
+    print(f"\n[ATX] FALSE level-1 headings removed: {naive.get(1,0)} -> {fixed.get(1,0)}  "
+          f"(= {fake1} were ORCA '#' comments inside code blocks)")
+    print(f"      total false headings removed (all levels): {naive_total - fixed_total}")
+
+    print(f"\n[H1] files with more than one level-1 heading (expect ~0; a Sphinx page has one)")
+    if multi_h1:
+        print(f"     {len(multi_h1)} file(s): {multi_h1}")
+    else:
+        print(f"     0 — every leaf has at most one H1 (consistent with one page = one section root)")
+
+    print(f"\n[SIZE] {total_bytes} bytes = {total_bytes/1_048_576:.2f} MiB (unchanged — a cross-check)")
+
+    print(f"\n[KEYWORDS] reclassified over ALL {len(files)} leaves ({len(kw_rows)} 'Keyword' headings)")
+    for form, c in sorted(kw_forms.items(), key=lambda kv: -kv[1]):
+        print(f"     {c:>3}  {form}")
+    seed_forms = {f for f in kw_forms if f in ("orca-codeblock", "pipe-table", "list-table")}
+    print(f"     machine-seedable forms present: {sorted(seed_forms)}")
+    if seed_forms <= {"orca-codeblock", "pipe-table", "list-table"} and len(seed_forms) <= 2 \
+            and "list-table" not in seed_forms:
+        print(f"     -> the two-extractor conclusion HOLDS (table + ```orca code block).")
+    else:
+        print(f"     -> MORE than two seed forms present: {sorted(seed_forms)} — REPORT, do not self-decide.")
+    return 0
+
+
+_SELFTEST_FIXTURE = '''\
+# Real Heading One
+
+Some prose.
+
+```orca
+# comment line inside code
+#### separator
+Basis "def2-TZVP" # inline comment
+%scf
+  MaxIter 200   # another comment
+end
+```
+
+## Real Heading Two
+
+More prose with an inline `# not a heading` code span.
+'''
+
+
+def selftest() -> int:
+    """Fence-tracking regression test — no network. The ```orca block carries a
+    '# comment', a '#### separator' and an inline '#'; none may count."""
+    total, counts, deepest = analyze_atx(_SELFTEST_FIXTURE)
+    ok = True
+
+    def check(cond: bool, msg: str) -> None:
+        nonlocal ok
+        print(f"  [{'ok' if cond else 'FAIL'}] {msg}")
+        ok = ok and cond
+
+    check(total == 2, f"exactly 2 headings counted (got {total})")
+    check(counts == {1: 1, 2: 1}, f"one '#' and one '##' (got {counts})")
+    check(deepest == 2, f"deepest is '##' — the '####' inside ```orca ignored (got {deepest})")
+    prose = [line for _i, line in iter_prose_lines(_SELFTEST_FIXTURE)]
+    check(not any("separator" in l for l in prose), "no code-block line leaked into prose")
+    check(not any(l.startswith("# comment") for l in prose), "'# comment' not treated as prose/heading")
+    print("SELFTEST:", "PASS" if ok else "FAIL")
+    return 0 if ok else 1
+
+
 # --- CLI -------------------------------------------------------------------
 
 def main(argv: list[str]) -> int:
@@ -808,9 +985,18 @@ def main(argv: list[str]) -> int:
                     help="full fetch of every leaf into --out, write manifest.json, verify")
     ap.add_argument("--force", action="store_true",
                     help="ignore the manifest.json cache and refetch every file")
+    ap.add_argument("--analyze-only", action="store_true",
+                    help="recount the corpus ALREADY on disk — no network")
+    ap.add_argument("--selftest", action="store_true",
+                    help="run the fence-tracking regression test — no network")
     ap.add_argument("--out", default=str(Path("resources/manual")),
                     help="output dir (default resources/manual)")
     args = ap.parse_args(argv)
+
+    if args.selftest:
+        return selftest()
+    if args.analyze_only:
+        return analyze_disk(Path(args.out))
 
     if not (args.manifest or args.all):
         ap.print_help()
