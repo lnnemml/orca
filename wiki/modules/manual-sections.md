@@ -1,9 +1,11 @@
 # Module: Manual sectioner (`src-tauri/src/manual/`)
 
 **Status:** built (unit 4.2). Turns the fetched ORCA manual Markdown into `Section`s and reads the
-authoritative `objects.inv` anchor map. **Writes nothing to the database** — the FTS schema and
-storage are unit 4.3. Rust per [ADR-013](../architecture/adr-013-manual-indexing-ownership.md) (3):
-text-to-structure without a chemistry library, over Markdown, no HTML parser.
+authoritative `objects.inv` anchor map. **This module writes nothing to the database itself** — storage
+(the v9 `manual_sections` + FTS5) and search are `manual/index.rs` (unit 4.3,
+[manual-index.md](manual-index.md)), which consumes `sectionize` + `verify_against_inventory`. Rust per
+[ADR-013](../architecture/adr-013-manual-indexing-ownership.md) (3): text-to-structure without a
+chemistry library, over Markdown, no HTML parser.
 
 Files: `sections.rs` (sectioner + line-conservation), `objects_inv.rs` (Sphinx inventory v2 reader +
 anchor cross-check), `mod.rs`, `tests.rs` (the corpus gate). One dependency added: `flate2` (already

@@ -46,21 +46,27 @@ pub enum SectionError {
 
 // --- The fence rule (ported from Python iter_prose_lines) ------------------
 
-/// If `line` opens a fenced block, return its `(fence_char, run_length)`. Backtick
-/// CODE fences (```` ```orca ````) AND colon directives (`:::{table}`), any length
-/// ≥ 3, leading whitespace tolerated.
-fn fence_open(line: &str) -> Option<(char, usize)> {
+/// If `line` opens a fenced block, return `(fence_char, run_length, info_after_run)`.
+/// Backtick CODE fences (```` ```orca ````, info `orca`) AND colon directives
+/// (`:::{table}`, info `{table}`), any length ≥ 3, leading whitespace tolerated. The
+/// info distinguishes a code fence (bare lang) from a MyST directive (`{name}`).
+pub(crate) fn fence_open_info(line: &str) -> Option<(char, usize, &str)> {
     let t = line.trim_start();
     let c = t.chars().next()?;
     if c != '`' && c != ':' {
         return None;
     }
     let run = t.chars().take_while(|&x| x == c).count();
-    (run >= 3).then_some((c, run))
+    // `\`` and `:` are one byte each, so `run` is a valid byte offset into `t`.
+    (run >= 3).then(|| (c, run, &t[run..]))
+}
+
+fn fence_open(line: &str) -> Option<(char, usize)> {
+    fence_open_info(line).map(|(c, l, _)| (c, l))
 }
 
 /// A closing fence line: only the fence char, run ≥ the opening run.
-fn is_fence_close(line: &str, ch: char, len: usize) -> bool {
+pub(crate) fn is_fence_close(line: &str, ch: char, len: usize) -> bool {
     let t = line.trim();
     !t.is_empty() && t.chars().count() >= len && t.chars().all(|x| x == ch)
 }

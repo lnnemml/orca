@@ -11,7 +11,11 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use rusqlite::{params, Connection};
+
+use super::index::collect_leaves;
 use super::objects_inv;
+use super::projection::search_projection;
 use super::sections::{self, Section};
 
 fn repo_root() -> PathBuf {
@@ -25,25 +29,6 @@ fn corpus_version(manual_dir: &Path) -> String {
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
         .and_then(|v| v.get("orca_version").and_then(|x| x.as_str()).map(String::from))
         .unwrap_or_else(|| "6.1".to_string())
-}
-
-/// Collect `(file_id, contents)` for every leaf. `file_id` is the path relative to
-/// the version dir with `.md.txt` stripped and forward slashes — exactly the form
-/// an `objects.inv` uri uses (`contents/essentialelements/RI`).
-fn collect_leaves(dir: &Path, base: &Path, out: &mut Vec<(String, String)>) {
-    let Ok(rd) = std::fs::read_dir(dir) else { return };
-    for entry in rd.flatten() {
-        let p = entry.path();
-        if p.is_dir() {
-            collect_leaves(&p, base, out);
-        } else if p.to_string_lossy().ends_with(".md.txt") {
-            let rel = p.strip_prefix(base).unwrap_or(&p).to_string_lossy().replace('\\', "/");
-            let id = rel.strip_suffix(".md.txt").unwrap_or(&rel).to_string();
-            if let Ok(text) = std::fs::read_to_string(&p) {
-                out.push((id, text));
-            }
-        }
-    }
 }
 
 fn percentile(sorted: &[usize], p: f64) -> usize {
@@ -231,4 +216,212 @@ fn manual_corpus() {
     println!("\n{:=<72}", "");
     // The gate is red if the central post-condition ever fails.
     assert!(conservation_fail.is_empty(), "line conservation failed on {} file(s)", conservation_fail.len());
+}
+
+// --- Retrieval-quality gate (unit 4.3) ------------------------------------
+//
+// Builds TWO in-memory FTS5 indexes over the sectioned corpus — (A) raw body,
+// (B) cleaned `search_projection` — and measures both with the SAME query set
+// whose targets are fixed here BEFORE measuring (two are ROADMAP Phase-4
+// acceptance criteria). The column choice is made by number, not taste.
+//
+//     cargo test retrieval_gate -- --ignored --nocapture
+
+/// query, and the acceptable target sections as (file-id, any-of title keywords).
+struct Query {
+    q: &'static str,
+    targets: &'static [(&'static str, &'static [&'static str])],
+}
+
+const QUERIES: &[Query] = &[
+    // Two ROADMAP Phase-4 acceptance criteria:
+    Query { q: "RIJCOSX", targets: &[("contents/essentialelements/RI", &["rijcosx"])] },
+    Query { q: "how do I set up CPCM for water",
+            targets: &[("contents/essentialelements/solvationmodels", &["cpcm"])] },
+    // The rest, from CLAUDE.md + the template library:
+    Query { q: "%geom Constraints", targets: &[("contents/structurereactivity/optimizations", &["constrain"])] },
+    Query { q: "%geom Scan relaxed surface scan",
+            targets: &[("contents/structurereactivity/optimizations_scans", &["scan"])] },
+    Query { q: "%pal nprocs parallel", targets: &[("contents/essentialelements/parallel", &["parallel", "process"])] },
+    Query { q: "%maxcore memory", targets: &[("contents/essentialelements/input", &["memory"])] },
+    Query { q: "def2/J auxiliary basis", targets: &[("contents/essentialelements/basisset", &["auxiliary"])] },
+    Query { q: "CPCM water", targets: &[("contents/essentialelements/solvationmodels", &["cpcm"])] },
+    Query { q: "SMD solvation", targets: &[("contents/essentialelements/solvationmodels", &["smd"])] },
+    Query { q: "TightOpt optimization thresholds",
+            targets: &[("contents/structurereactivity/optimizations", &["threshold", "convergence", "optimization"])] },
+    Query { q: "NumFreq numerical frequencies", targets: &[("contents/structurereactivity/frequencies", &["frequenc"])] },
+    Query { q: "GOAT", targets: &[("contents/structurereactivity/goat", &["goat"])] },
+    Query { q: "NEB-TS", targets: &[("contents/structurereactivity/neb", &["neb"])] },
+    Query { q: "IRC intrinsic reaction coordinate",
+            targets: &[("contents/structurereactivity/irc", &["reaction coordinate", "intrinsic", "irc"])] },
+    Query { q: "imaginary frequency transition state",
+            targets: &[("contents/structurereactivity/optimizations_TS", &["transition"]),
+                       ("contents/structurereactivity/frequencies", &["frequenc"])] },
+    Query { q: "orca_2json", targets: &[("contents/utilitiesvisualization/orca_2json", &["orca_2json", "json"])] },
+    Query { q: "xtb GFN", targets: &[("contents/modelchemistries/semiempirical", &["xtb", "gfn", "semiempirical"])] },
+];
+
+fn build_fts(sections: &[super::sections::Section], project: bool) -> Connection {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE VIRTUAL TABLE fts USING fts5(
+             file UNINDEXED, title, breadcrumb, body, tokenize='porter unicode61');",
+    )
+    .unwrap();
+    {
+        let mut stmt = conn
+            .prepare("INSERT INTO fts(rowid, file, title, breadcrumb, body) VALUES (?1,?2,?3,?4,?5)")
+            .unwrap();
+        for (i, s) in sections.iter().enumerate() {
+            let body = if project { search_projection(&s.body) } else { s.body.clone() };
+            stmt.execute(params![(i as i64) + 1, s.file, s.title, s.breadcrumb.join(" > "), body])
+                .unwrap();
+        }
+    }
+    conn
+}
+
+/// Top-5 rowids (→ section indices) for a query, title-weighted bm25 ASC.
+fn top5(conn: &Connection, match_q: &str) -> Vec<usize> {
+    if match_q.is_empty() {
+        return Vec::new();
+    }
+    let mut stmt = conn
+        .prepare(
+            "SELECT rowid FROM fts WHERE fts MATCH ?1
+             ORDER BY bm25(fts, 0.0, 10.0, 5.0, 1.0) LIMIT 5",
+        )
+        .unwrap();
+    stmt.query_map(params![match_q], |r| r.get::<_, i64>(0))
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|x| (x - 1) as usize)
+        .collect()
+}
+
+fn is_target(s: &super::sections::Section, q: &Query) -> bool {
+    let title = s.title.to_lowercase();
+    q.targets.iter().any(|(file, keys)| s.file == *file && keys.iter().any(|k| title.contains(k)))
+}
+
+fn measure(sections: &[super::sections::Section], project: bool, label: &str) -> (usize, usize) {
+    let conn = build_fts(sections, project);
+    let mut h1 = 0;
+    let mut h5 = 0;
+    println!("\n  [{label}]");
+    for query in QUERIES {
+        let hits = top5(&conn, &super::index::to_fts_match(query.q));
+        let at1 = hits.first().is_some_and(|&i| is_target(&sections[i], query));
+        let at5 = hits.iter().any(|&i| is_target(&sections[i], query));
+        if at1 {
+            h1 += 1;
+        }
+        if at5 {
+            h5 += 1;
+        }
+        if !at5 {
+            let got = hits.iter().take(3).map(|&i| format!("{}#{}", sections[i].file, sections[i].title)).collect::<Vec<_>>();
+            println!("    MISS  {:<40} -> {:?}", query.q, got);
+        } else if !at1 {
+            let rank = hits.iter().position(|&i| is_target(&sections[i], query)).unwrap() + 1;
+            println!("    @{rank:<3} {:<40} (in top-5, not first)", query.q);
+        }
+    }
+    println!("    hit@1 {}/{}  hit@5 {}/{}", h1, QUERIES.len(), h5, QUERIES.len());
+    (h1, h5)
+}
+
+#[test]
+#[ignore]
+fn retrieval_gate() {
+    let manual_dir = repo_root().join("resources/manual");
+    let version = corpus_version(&manual_dir);
+    let version_dir = manual_dir.join(&version);
+    if !version_dir.is_dir() {
+        eprintln!("skipping: no corpus at {}", version_dir.display());
+        return;
+    }
+    let mut leaves: Vec<(String, String)> = Vec::new();
+    collect_leaves(&version_dir, &version_dir, &mut leaves);
+    let mut sections: Vec<super::sections::Section> = Vec::new();
+    for (file, text) in &leaves {
+        if let Ok(secs) = super::sections::sectionize(file, text) {
+            sections.extend(secs);
+        }
+    }
+
+    println!("\n{:=<72}", "");
+    println!("RETRIEVAL GATE — {} sections, {} queries", sections.len(), QUERIES.len());
+    println!("{:=<72}", "");
+
+    let n = QUERIES.len() as f64;
+    let (a1, a5) = measure(&sections, false, "A: raw body_md");
+    let (b1, b5) = measure(&sections, true, "B: cleaned projection");
+
+    let (a5f, b5f) = (a5 as f64 / n, b5 as f64 / n);
+    println!("\n  SUMMARY  A raw: hit@1 {a1}/{} hit@5 {a5}/{}   |   B cleaned: hit@1 {b1}/{} hit@5 {b5}/{}",
+             QUERIES.len(), QUERIES.len(), QUERIES.len(), QUERIES.len());
+
+    // Exit criterion: if BOTH variants miss the 80% hit@5 bar, the problem is not
+    // the column — stop and report (the gate goes red).
+    let best5 = a5f.max(b5f);
+    assert!(
+        best5 >= 0.80,
+        "hit@5 < 80% for BOTH variants (A {a5f:.0}%, B {b5f:.0}%) — column choice won't fix this; \
+         the sectioning or index shape needs rethinking. STOP.",
+    );
+
+    // Choose by number; within noise (±1 query) prefer the simpler raw body (A).
+    let choice = if (b5 as i64 - a5 as i64).abs() <= 1 {
+        "A (raw body_md) — B is within noise, so take the simpler column"
+    } else if b5 > a5 {
+        "B (cleaned projection) — measurably better hit@5"
+    } else {
+        "A (raw body_md) — measurably better hit@5"
+    };
+    println!("  CHOICE: {choice}");
+    println!("{:=<72}", "");
+}
+
+// --- Ingest gate: run the REAL build_index over the corpus (unit 4.3) --------
+//
+//     cargo test manual_ingest -- --ignored --nocapture
+
+#[test]
+#[ignore]
+fn manual_ingest() {
+    let manual_root = repo_root().join("resources/manual");
+    let version = corpus_version(&manual_root);
+    if !manual_root.join(&version).is_dir() {
+        eprintln!("skipping: no corpus");
+        return;
+    }
+    let mut conn = Connection::open_in_memory().unwrap();
+    crate::db::create_manual_tables(&conn).unwrap();
+
+    let report = super::index::build_index(&mut conn, &manual_root, &version)
+        .expect("build_index (all content post-conditions run inside it)");
+
+    println!("\n{:=<72}", "");
+    println!("MANUAL INGEST — {report:#?}");
+    println!("{:=<72}", "");
+
+    assert_eq!(report.section_count, 1586, "section count matches the sectioner gate");
+    assert_eq!(report.anchors_verified, 1068, "1068 anchors cross-checked against objects.inv");
+    assert_eq!(report.null_anchors, 1586 - 1068, "the rest are UNDETERMINED (NULL), not guessed");
+
+    // End-to-end search on the real index: the two ROADMAP acceptance queries.
+    let rij = super::index::search_manual(&conn, "RIJCOSX", 5).unwrap();
+    assert!(rij.iter().take(5).any(|h| h.file == "contents/essentialelements/RI"),
+            "RIJCOSX finds the RI page in top-5");
+    let cpcm = super::index::search_manual(&conn, "how do I set up CPCM for water", 5).unwrap();
+    assert!(cpcm.iter().take(5).any(|h| h.file == "contents/essentialelements/solvationmodels"),
+            "CPCM-for-water finds solvationmodels in top-5");
+
+    // Idempotent: a second ingest replaces, not duplicates.
+    let again = super::index::build_index(&mut conn, &manual_root, &version).unwrap();
+    assert_eq!(again.section_count, report.section_count);
+    let rows: i64 = conn.query_row("SELECT COUNT(*) FROM manual_sections", [], |r| r.get(0)).unwrap();
+    assert_eq!(rows as usize, report.section_count, "re-ingest replaced, did not duplicate");
+    println!("idempotent re-ingest OK: {rows} rows");
 }

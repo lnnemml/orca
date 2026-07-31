@@ -16,7 +16,7 @@ never runs a binary). The runtime mechanics of running ORCA live in
 ## Files
 
 - `lib.rs` — Tauri builder, setup hook, exit handling, invoke-handler registration.
-- `db.rs` — SQLite open + versioned migrations (v1–v8).
+- `db.rs` — SQLite open + versioned migrations (v1–v9).
 - `results.rs` — store/read parsed results (all four artifact readers) into the `results` table
   (ADR-012); the completion hook lives in `local_backend`. See `modules/artifact-readers.md`.
 - `orca_json.rs` — spawn `orca_2json` (ADR-009), lazy-cached gbw→JSON in the job dir (unit 3.7).
@@ -79,10 +79,16 @@ survives a restart.
   energies and only where a non-NULL `final_energy_eh` exists, so an already-filled job is never
   clobbered and a never-parsed job stays NULL. **Guarded** on `jobs.energy` existing so migration-test
   fixtures that stub `jobs` as `(id)` only skip cleanly. See `debugging/007`.
+- **v9** — the **ORCA manual index** (Phase 4.3, ADR-013), the first tables the manual owns:
+  `manual_sections` (row per section; synthetic `id` PK, **nullable `anchor`** + `anchor_source`,
+  `body_md`, JSON `breadcrumb`/`labels`, index on `(orca_version, file)`), **`manual_fts`** — an
+  **external-content** FTS5 over `manual_sections` so the body is not duplicated — and
+  `manual_provenance`. Created via `create_manual_tables` (factored out, like `create_results_table`).
+  Ingest + search live in `src/manual/index.rs`. Full schema: `modules/manual-index.md`.
 - The queue statuses (`queued`, `cancelled`) and `parsed` needed **no migration** — `status` is TEXT.
-- Migration tests assert preservation across each step (…`migrate_v5_to_v6_adds_imaginary_count_via_guarded_alter`,
-  `migrate_v6_to_v7_adds_homo_lumo_gap`, `migrate_v7_to_v8_backfills_energy_from_results`; version
-  assertions use `SCHEMA_VERSION`, not a literal). A separate `fts5_is_available_with_ranking_and_snippet`
+- Migration tests assert preservation across each step (…`migrate_v6_to_v7_adds_homo_lumo_gap`,
+  `migrate_v7_to_v8_backfills_energy_from_results`, `migrate_v8_to_v9_adds_manual_tables_and_preserves_data`;
+  version assertions use `SCHEMA_VERSION`, not a literal). A separate `fts5_is_available_with_ranking_and_snippet`
   test gates the bundled SQLite's FTS5 support (Phase 4 / ADR-013 stands on it) — not a migration.
   Verified against a copy of the real DB: 13 existing jobs preserved across 3→4.
 

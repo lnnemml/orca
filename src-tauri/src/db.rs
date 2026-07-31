@@ -26,7 +26,11 @@ use crate::error::AppError;
 ///   on; NULL when a job has no `.hess`.
 /// - v7: `results.homo_lumo_gap_eh` — HOMO/LUMO gap from `orca_2json` (unit 3.7);
 ///   the card shows it and the list will sort by it. NULL without an ORCA `.gbw`.
-const SCHEMA_VERSION: i64 = 8;
+/// - v8: backfill `jobs.energy` from `results` (unit 3.9); a data migration, not a
+///   schema change.
+/// - v9: `manual_sections` + `manual_fts` (external-content FTS5) + `manual_provenance`
+///   — the ORCA manual index (Phase 4.3, ADR-013). First tables the manual owns.
+const SCHEMA_VERSION: i64 = 9;
 
 /// Open (creating if needed) `orcastudio.db` under `data_dir` and migrate it to
 /// the current schema.
@@ -164,6 +168,15 @@ fn migrate(conn: &Connection) -> Result<(), AppError> {
         version = 8;
     }
 
+    // --- v8 -> v9: the ORCA manual index (Phase 4.3, ADR-013). manual_sections +
+    // an external-content FTS5 mirror (no 4 MB body duplication — the retrieval gate
+    // chose the raw body column, and A-variant hit@5 88% justifies external-content)
+    // + a provenance row. First tables the manual owns. ---
+    if version < 9 {
+        create_manual_tables(conn)?;
+        version = 9;
+    }
+
     // Persist the resulting version so subsequent runs skip completed steps.
     conn.execute(
         "UPDATE settings SET value = ?1 WHERE key = 'schema_version'",
@@ -194,6 +207,64 @@ pub(crate) fn create_results_table(conn: &Connection) -> Result<(), AppError> {
             data_json           TEXT NOT NULL,
             parser_version      INTEGER NOT NULL,
             parsed_at           TEXT NOT NULL DEFAULT (datetime('now'))
+        );",
+    )?;
+    Ok(())
+}
+
+/// Create the manual-index tables (schema v9, ADR-013). Factored out so tests and
+/// the ingest can build them on an in-memory DB.
+///
+/// `manual_sections` is the row-per-section store. The `anchor` is **nullable** and
+/// paired with `anchor_source`: it is filled ONLY where the section's label was
+/// cross-checked against `objects.inv` (1068 of 1586 on ORCA 6.1). For the rest the
+/// correct HTML anchor is UNDETERMINED (rule #11) — `objects.inv` carries only
+/// explicit labels, Sphinx auto-generates the others from the heading slug with
+/// traversal-state suffixes we cannot recompute, and ~140 unlabelled sections
+/// collide on that slug within a file. A guessed anchor points at a fragment that
+/// does not exist and reads as "the manual moved", so we store NULL and let the
+/// link land on the page. The synthetic `id` PK is deliberate: neither `anchor` nor
+/// `(file, title_slug)` is unique (the collision above).
+///
+/// `manual_fts` is an **external-content** FTS5 over `manual_sections` — it stores
+/// the search index but reads column values from the base table by `rowid=id`, so
+/// the body text is not duplicated. Rebuilt wholesale on each ingest
+/// (`INSERT INTO manual_fts(manual_fts) VALUES('rebuild')`). `bm25` is ASC
+/// (less = more relevant — `fts5_is_available_with_ranking_and_snippet`).
+pub(crate) fn create_manual_tables(conn: &Connection) -> Result<(), AppError> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS manual_sections (
+            id            INTEGER PRIMARY KEY,
+            orca_version  TEXT NOT NULL,
+            file          TEXT NOT NULL,
+            level         INTEGER NOT NULL,
+            title         TEXT NOT NULL,
+            breadcrumb    TEXT NOT NULL,        -- JSON array of ancestor titles
+            labels        TEXT NOT NULL,        -- JSON array of MyST labels
+            anchor        TEXT,                 -- NULL when UNDETERMINED (rule #11)
+            anchor_source TEXT NOT NULL,        -- 'objects_inv' | 'undetermined'
+            body_md       TEXT NOT NULL,
+            line_start    INTEGER NOT NULL,
+            line_end      INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_manual_sections_version_file
+            ON manual_sections(orca_version, file);
+
+        CREATE VIRTUAL TABLE IF NOT EXISTS manual_fts USING fts5(
+            title, breadcrumb, body_md,
+            content='manual_sections', content_rowid='id',
+            tokenize='porter unicode61'
+        );
+
+        CREATE TABLE IF NOT EXISTS manual_provenance (
+            orca_version        TEXT PRIMARY KEY,
+            base_url            TEXT,
+            corpus_collected_at TEXT,
+            corpus_hash         TEXT NOT NULL,
+            sectioner_version   INTEGER NOT NULL,
+            section_count       INTEGER NOT NULL,
+            anchors_verified    INTEGER NOT NULL,
+            indexed_at          TEXT NOT NULL DEFAULT (datetime('now'))
         );",
     )?;
     Ok(())
@@ -501,6 +572,60 @@ mod tests {
         assert_eq!(energy("small"), Some(-76.4));
         // A job with no results row stays NULL.
         assert_eq!(energy("unparsed"), None);
+    }
+
+    #[test]
+    fn migrate_v8_to_v9_adds_manual_tables_and_preserves_data() {
+        // A v8 DB: settings + jobs with one job. The v9 step adds the manual tables.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO settings (key, value) VALUES ('schema_version', '8');
+             CREATE TABLE jobs (id TEXT PRIMARY KEY, energy REAL);
+             INSERT INTO jobs (id, energy) VALUES ('j1', -76.4);",
+        )
+        .unwrap();
+
+        migrate(&conn).expect("v8 -> v9");
+        assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
+
+        // The pre-existing job is untouched.
+        let e: Option<f64> = conn
+            .query_row("SELECT energy FROM jobs WHERE id = 'j1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(e, Some(-76.4));
+
+        // The manual tables now exist and are empty; the external-content FTS works.
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM manual_sections", [], |r| r.get(0))
+            .expect("manual_sections exists");
+        assert_eq!(n, 0);
+        conn.execute_batch(
+            "INSERT INTO manual_sections
+                (id, orca_version, file, level, title, breadcrumb, labels, anchor,
+                 anchor_source, body_md, line_start, line_end)
+             VALUES (1, '6.1', 'contents/x', 2, 'RIJCOSX', '[]', '[]', 'sec-x',
+                 'objects_inv', 'the RIJCOSX approximation', 0, 3);
+             INSERT INTO manual_fts(manual_fts) VALUES('rebuild');",
+        )
+        .expect("insert + rebuild external-content FTS");
+        let hits: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM manual_fts WHERE manual_fts MATCH 'rijcosx'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(hits, 1, "FTS indexes the base table's body_md");
+        // A NULL anchor is allowed (UNDETERMINED, rule #11).
+        conn.execute_batch(
+            "INSERT INTO manual_sections
+                (id, orca_version, file, level, title, breadcrumb, labels, anchor,
+                 anchor_source, body_md, line_start, line_end)
+             VALUES (2, '6.1', 'contents/y', 2, 'Keywords', '[]', '[]', NULL,
+                 'undetermined', 'body', 0, 1);",
+        )
+        .expect("NULL anchor is permitted");
     }
 
     /// FTS5 build-gate. NOT a migration and NOT a table the app ships — a tripwire

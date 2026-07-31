@@ -131,7 +131,7 @@ pub struct AnchorReport {
 /// manual is full of acronyms: RI, DFT, MP2, CASSCF, and camelCase command names
 /// like `BohrToAngs`). Normalizing on only one side would silently drop those
 /// labels into "unchecked", so the cross-check must fold case at the boundary.
-fn normalize_label(name: &str) -> String {
+pub(crate) fn normalize_label(name: &str) -> String {
     name.to_lowercase()
 }
 

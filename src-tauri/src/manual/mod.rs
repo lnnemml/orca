@@ -17,7 +17,9 @@
 //! `cargo test manual_corpus -- --ignored --nocapture`.
 #![allow(dead_code)] // scaffolding consumed by unit 4.3 (storage) — not wired to a command yet.
 
+pub mod index;
 pub mod objects_inv;
+pub mod projection;
 pub mod sections;
 
 #[cfg(test)]

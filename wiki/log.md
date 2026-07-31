@@ -3566,3 +3566,62 @@ silently having checked nothing. Added a unit test (`label_lookup_folds_case`) l
 `cargo test` 139 passed / 6 ignored / 0 warnings; corpus gate green. No db.rs, no schema/FTS5, no new
 dependency; sectioner untouched beyond this. Wiki: `manual-sections.md` + `manual-sources.md` updated
 (944→1068, 125→1, the Sphinx-lowercase fact with before/after).
+
+## [2026-07-31] decision | Manual FTS column = raw body_md (external-content), chosen by the retrieval gate
+
+The 4.2 gate left one column open: 42.7 % of corpus bytes are inside fenced blocks, so should the FTS
+index (A) the raw `body_md` or (B) a cleaned projection (strip MyST/LaTeX, keep ` ```orca ` blocks)?
+Decided **by number**, not taste. `retrieval_gate` built both over the real corpus and measured 17
+pre-registered queries (two are ROADMAP acceptance criteria): **A hit@5 15/17 (88 %), B 16/17 (94 %)**;
+hit@1 9/17 for both. B's only edge is GOAT (A ranks the Compound-scripting `goat` commands above the
+GOAT page) — a 1-query, within-noise difference.
+
+**Chosen: A (raw `body_md`).** Rationale: (1) the tie-break rule — within noise, take the simpler; (2)
+A is what makes the FTS **external-content** (`content='manual_sections'`), so the 4 MB body is not
+duplicated; B would need a second stored column. The projection code (`projection.rs`) stays for the
+gate but is NOT in the ingest path. Honest caveats recorded: the `imaginary frequency` "miss" actually
+returned a relevant section not in the pre-registered targets (goalpost not moved); hit@1 ~53 % leaves
+real work for the future exact-keyword layer (`keywords.json` / hover, 4.4+).
+
+## [2026-07-31] session | Unit 4.3: manual_sections schema (v9) + FTS5 index + search + retrieval gate
+
+First tables the manual owns in `orcastudio.db` (ADR-013). Migration **v8→v9** (`SCHEMA_VERSION` 8→9,
+`create_manual_tables`): `manual_sections` (synthetic `id` PK — neither `anchor` nor `(file,
+title_slug)` is unique, 140 slug collisions; **nullable `anchor`** + `anchor_source`; JSON
+`breadcrumb`/`labels`; `(orca_version, file)` index), external-content `manual_fts` over
+`title/breadcrumb/body_md` (no body duplication), and `manual_provenance` (base_url, collected_at,
+corpus_hash, sectioner_version, counts — the `parser_version` role for a diffable refresh). Migration
+test `migrate_v8_to_v9_...` asserts data preservation + a working external-content FTS.
+
+**Three anchor populations (rule #11):** of 1586 sections, **1068** have a verified anchor (closest
+label in `objects.inv`, matching file + slug); **517** are unlabelled (uncheckable — `objects.inv`
+carries only explicit labels); the rest undetermined. `anchor` is NULL for all unverified — Sphinx
+auto-generates unlabelled ids with traversal-state suffixes we cannot recompute, and ~140 collide on
+the title slug within a file. A guessed anchor points at a nonexistent fragment and reads as "the
+manual moved"; NULL is honest and the link lands on the page. (The lone named gap:
+`sec:spectroscopyproperties.nocv.theory`, not in the inventory.)
+
+**Ingest (`manual/index.rs`, `build_manual_index` command, no UI):** sectionise → resolve anchors →
+write, **idempotent** (replace the version's rows; re-ingest gave 1586 rows, no dup). Content-preserving
+post-conditions run **inside the transaction** (rule #9) so a lossy ingest rolls back: row count ==
+sections; **every `body_md` reads back byte-for-byte** (subsumes byte-sum — catches silent truncation);
+byte total matches; FTS rows == table rows; NULL-anchor count == section_count − verified. Measured:
+1586 sections, 1068 verified, 518 NULL, 4 025 114 body bytes.
+
+**Search (`search_manual` command):** `Vec<ManualHit { id, file, breadcrumb, title, anchor, snippet,
+rank }>`, FTS5 `snippet()`, `ORDER BY bm25` ASC (title-weighted 10/5/1). Empty query → empty result
+(the `output_search` contract). The MATCH builder `to_fts_match` is the ONE shared with the gate, so the
+gate predicts production. End-to-end on the real index: both ROADMAP queries (RIJCOSX, CPCM-for-water)
+land their target page in top-5.
+
+**Column choice by the retrieval gate:** raw `body_md` (external-content) — see the `decision` entry
+above. Gates (all `#[ignore]`, like `manual_corpus`): `retrieval_gate` (A/B measurement),
+`manual_ingest` (real build_index + post-conditions + idempotency).
+
+**Verified:** `cargo test` 147 passed / 8 ignored / 0 warnings; migration test green; gates green;
+`tsc`/`vitest` untouched (no TS). No UI, no `keywords.json`, no HTML id scraping (the nullable
+anchor + anchor_source keep the schema out of that unit's way). No new dependency. Wiki: manual-index.md
+(schema/ingest/search/column choice/3 anchor populations), tauri-core.md (v9), manual-sources.md
+(retrieval gate), ROADMAP (indexing [x], search [~]).
+
+Next: 4.4 — the manual panel UI + Monaco hover provider (and separately the `keywords.json` seeder).

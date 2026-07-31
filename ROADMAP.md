@@ -367,10 +367,16 @@ wherever an imported structure is first shown and is carried forward independent
 > over the network (an out-of-band per-version author script does); `keywords.json` is seeded from
 > the manual's own Keywords/genindex and curated on top. Narrows ADR-006. (Statuses below unchanged.)
 
-- [ ] One-off indexing pipeline (Rust, not sidecar — ADR-013): raw Markdown `_sources/*.md.txt`
-      (ATX headings, no HTML parser) → sections → SQLite FTS5 (stored locally in user data dir;
-      never redistributed). Fetch is an out-of-band per-version author script.
-- [ ] Manual panel: full-text search with keyword highlighting, section rendering
+- [x] One-off indexing pipeline (Rust, not sidecar — ADR-013): raw Markdown `_sources/*.md.txt`
+      (ATX headings, no HTML parser) → sections → SQLite FTS5 (stored locally; never redistributed).
+      Fetch is an out-of-band per-version author script. **Done (units 4.1–4.3):** fetch
+      (`scripts/fetch-manual.py`), sectioner + `objects.inv` anchor map (`src/manual/`, line
+      conservation), and the v9 schema (`manual_sections` + external-content `manual_fts` +
+      provenance) with `build_manual_index` ingest (byte-for-byte read-back post-conditions). 1586
+      sections, 1068 verified anchors.
+- [~] Manual panel: full-text search with keyword highlighting, section rendering. **Backend done
+      (4.3):** `search_manual` command → `bm25`-ranked hits with FTS5 `snippet()`; the retrieval gate
+      measured hit@5 88 % (raw `body_md` chosen by number). **The panel UI is 4.4** (no UI this unit).
 - [ ] `keywords.json`: input keywords (`!` line + `%` blocks) → manual sections; **seeded** from the
       manual's own native "Keywords" sections + genindex, then curated on top (ADR-013 narrows
       ADR-006's "by hand"); grow it organically, starting with everything the template library uses

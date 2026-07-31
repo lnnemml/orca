@@ -199,6 +199,28 @@ corpus and prints these (full detail + method in [`modules/manual-sections.md`](
 - **Bytes: prose 57.3 % / fenced 42.7 %** — ~half the corpus is inside code/table fences; 4.3 decides
   raw-body vs cleaned-prose indexing.
 
+## Retrieval gate (unit 4.3) — the FTS column chosen by number
+
+`cargo test retrieval_gate -- --ignored` builds two FTS5 indexes over the sectioned corpus and measures
+both with **17 fixed queries whose target sections were registered before measuring** (two are ROADMAP
+Phase-4 acceptance criteria: "RIJCOSX explains what it is", "how do I set up CPCM for water"). The
+variants: **(A)** raw `body_md`; **(B)** a cleaned projection (strip MyST directive/target syntax and
+LaTeX, **keep ` ```orca ` code blocks** — an input line is often a better target than the prose; 42.7 %
+of corpus bytes are inside fences). Same title-weighted `bm25` for both.
+
+| variant | hit@1 | hit@5 |
+|---|---|---|
+| A — raw `body_md` | 9/17 | **15/17 (88 %)** |
+| B — cleaned projection | 9/17 | **16/17 (94 %)** |
+
+Both clear the 80 % hit@5 exit bar. B's *only* advantage is **GOAT** (A ranks the Compound-scripting
+`goat` commands above the GOAT page) — a 1-query difference, within the noise band. Per the tie-break,
+**A (raw `body_md`) is chosen**: simpler, and it is what lets the FTS be *external-content* (no 4 MB
+duplication). Two honest notes: the `imaginary frequency` "miss" actually returned a relevant section
+(`troubleshooting#Imaginary Frequencies after Optimization`) that was not in the pre-registered target
+list — the goalpost was not moved; and hit@1 is only ~53 %, so the future exact-keyword layer
+(`keywords.json` / hover) still has a job.
+
 ## MyST-parser review condition (ADR-013 (3)) — NOT triggered by the sample
 
 The only thing that would force a *true* MyST parser for **sectioning** is structural `{eval-rst}` in
