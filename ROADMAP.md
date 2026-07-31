@@ -361,6 +361,12 @@ wherever an imported structure is first shown and is carried forward independent
 
 **Goal:** the app teaches ORCA while you use it. Key differentiator.
 
+> **Ownership settled before the phase:** [ADR-013](wiki/architecture/adr-013-manual-indexing-ownership.md)
+> — indexing runs in **Rust** (not the sidecar), over the raw **Markdown** `_sources/*.md.txt`
+> (ATX headings, no HTML parser), writing the Rust-owned SQLite; the app never fetches the manual
+> over the network (an out-of-band per-version author script does); `keywords.json` is seeded from
+> the manual's own Keywords/genindex and curated on top. Narrows ADR-006. (Statuses below unchanged.)
+
 - [ ] One-off indexing script (sidecar): ORCA HTML docs → markdown sections → SQLite FTS5
       (stored locally in user data dir; never redistributed)
 - [ ] Manual panel: full-text search with keyword highlighting, section rendering

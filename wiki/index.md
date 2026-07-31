@@ -17,6 +17,7 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 - [adr-010-editor-identity-state.md](architecture/adr-010-editor-identity-state.md) — editor identity & state model: `AtomId`, branded `OrcaIndex`/`AseIndex`, `IndexMap`, `emit_input`/`parse_output` paired, op-log fold; refines ADR-008 (three corrections; sidecar stays positional, Rust maps)
 - [adr-011-editor-graphics-stack.md](architecture/adr-011-editor-graphics-stack.md) — editor graphics stack (wgpu→WASM→WebGL2/WebGPU, impostors, GPU picking): **proposed/deferred**, gated on a spike with verifiable exit criteria; until then 3Dmol stays a dumb renderer
 - [adr-012-output-parsing-ownership.md](architecture/adr-012-output-parsing-ownership.md) — authoritative result parsing = own Rust parsers over structured artifacts (`.property.txt`/`.hess`/`_trj.xyz`/`orca_2json`), **not cclib** (crashes on ORCA 6.1); narrows ADR-002, moves the tier to Rust (ADR-009)
+- [adr-013-manual-indexing-ownership.md](architecture/adr-013-manual-indexing-ownership.md) — manual indexing ownership: **Rust** writes `orcastudio.db` and does the sectioning (Markdown/ATX, not HTML); the app never fetches the manual over the network (a per-version script does); narrows ADR-006 (three decisions), does not edit it
 - [prior-art.md](architecture/prior-art.md) — how other tools (Avogadro 2, IQmol, Gabedit, Chemcraft, WebMO, GaussView) handle geometry, and what OrcaStudio does differently (scene-derived mask, unbroken index space)
 - [proposals/editor-architecture-2026-07-30.md](architecture/proposals/editor-architecture-2026-07-30.md) — author's design proposal for the editor architecture (source document for ADR-010/011; includes §11 rejected alternatives). Input, not a decision — not edited.
 
@@ -27,7 +28,7 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 - [sidecar.md](modules/sidecar.md) — Python service: endpoints, dependencies
 - [execution-backends.md](modules/execution-backends.md) — LocalBackend / SshBackend details
 - [parser.md](modules/parser.md) — result extraction: streaming (Tier 1) + authoritative artifact readers (Tier 2)
-- [artifact-readers.md](modules/artifact-readers.md) — `src-tauri/src/parse/`: two-layer tokenizer + typed accessors, canonical units held by the `Angstrom` type, post-conditions; `.property.txt` built (the template), 3 others not started (ADR-012)
+- [artifact-readers.md](modules/artifact-readers.md) — `src-tauri/src/parse/`: two-layer tokenizer + typed accessors, canonical units held by the `Angstrom` type, post-conditions; the ADR-012 tier is **complete** — all four readers (`.property.txt`, `.hess`, `_trj.xyz`/`.xyz`, `orca_2json`) built and wired into `results.rs`
 - [visualization.md](modules/visualization.md) — 3Dmol.js integration, cubes, spectra
 - [results-ui.md](modules/results-ui.md) — post-calculation visualization: trajectory playback + IR spectrum + normal-mode animation; the frame/phase is app state, not the viewer's (ADR-011); IR panel is sticks (km/mol) + broadened curve (km/mol·cm⁻¹) on two labelled axes, single-source tooltip, display-only scale + inversion (3.10); click a peak → animate the mode, amplitude a display choice, imaginary = reaction coordinate (3.12)
 - [scene.md](modules/scene.md) — Scene/SceneFragment pure core: merge to flat xyz, index-space invariant, reset-detection primitive (ADR-008)
@@ -71,4 +72,4 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 
 ---
 
-*Page count: 52. Last structural update: 2026-07-31 (unit 3.16: +debugging/009-webkitgtk-png-export.md — PNG-export gate; Phase 3 closed with export of geometry/data/plots, core-orbital marking, and a lines representation).*
+*Page count: 53. Last structural update: 2026-07-31 (+architecture/adr-013-manual-indexing-ownership.md — Rust owns manual indexing + DB writes, narrows ADR-006; the pre-Phase-4 unit that also fixed two stale wiki lines and added the FTS5 build-gate test).*

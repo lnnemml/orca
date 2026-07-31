@@ -3311,3 +3311,55 @@ multi-job object (Phase 4.5) — the same aggregation need as ΔΔG‡.
 
 **Surfaced, not self-decided:** none blocking. The per-atom-seam item is duplicated between Phase 3
 (now a note) and Phase 4.2 Stage 1 (the actual typed-seam work) — left in both, not deleted.
+
+## [2026-07-31] decision | ADR-013 manual indexing ownership + FTS5 build-gate test + two stale wiki lines
+
+A pre-Phase-4 unit whose whole risk is silent: no crashing code, just wiki lines that lie and one
+architectural decision that, unrecorded, would be re-made in Phase 4 (maybe differently). Neither
+class is caught by a test — hence a unit of its own, before Phase 4.
+
+**ADR-013 (accepted, narrows ADR-006 — ADR-006 NOT edited, the ADR-012-narrows-ADR-002 precedent).**
+Fixes the *who*/*how* of manual indexing (the *what* — local FTS5 index — is ADR-006, unchanged):
+(1) **only Rust writes `orcastudio.db`** and does the indexing — the sidecar's own invariant is
+"stateless, all persistence is Rust-owned SQLite", so a sidecar indexer would break the sidecar's own
+boundary; plus a second argument, the sidecar links **system** libsqlite3 while Rust links its **own**
+amalgamation (3.46.0, `-DSQLITE_ENABLE_FTS5` unconditional — measured), and two SQLite builds writing
+one file give two answers to "is FTS5 here?". (2) **The app never fetches the manual over the
+network** — fetch is an out-of-band author script writing `resources/manual/` (RAW, immutable),
+preserving `overview.md`'s no-extra-network posture; not a Tauri command, not a sidecar endpoint.
+(3) **Sectioning in Rust** (ADR-012's text-to-structure-without-a-chem-library rule), over **Markdown
+with ATX headings**, not HTML — measured: the ORCA 6.1 manual is Sphinx+MyST with `html_copy_source`,
+Markdown sources at `_sources/*.md.txt`, so no HTML parser in any language. Named review condition: if
+the Phase-4.1 gate shows real files need a true MyST parser, (3) reopens; (1)/(2) do not depend on it.
+Separate finding: `keywords.json` is **seeded** from the manual's dozens of native Keywords sections +
+genindex and curated on top — narrowing ADR-006's "curated by hand".
+
+**FTS5 build-gate test** (`db.rs::fts5_is_available_with_ranking_and_snippet`, a test — NOT a
+migration/table). On an in-memory conn: `CREATE VIRTUAL TABLE ... USING fts5` (porter unicode61),
+MATCH + `snippet()`, porter stemming, and `ORDER BY bm25(...)` **without DESC** puts the most relevant
+first (bm25 returns NEGATIVE scores, less = more relevant — counter-intuitive, so it's asserted, not
+commented). Purpose is the future rusqlite upgrade: if the build ever drops FTS5, it fails here, not
+in Phase 4. Measured baseline holds: libsqlite3-sys 0.30.1 `build_bundled` = SQLite 3.46.0 with FTS5
+unconditional.
+
+**Two stale wiki lines** the 2026-07-31 lint missed (it checked pages, not the one-line catalog
+descriptions): `index.md`'s `artifact-readers.md` blurb still said "`.property.txt` built, 3 others
+not started" while the page says all four complete — rewritten (and all other index descriptions
+spot-checked against their pages; only this one drifted). `modules/tauri-core.md` said "migrations
+(v1–v5)" while `SCHEMA_VERSION = 8`, and its migration list stopped at v7 — added v8 (the unit-3.9
+`jobs.energy` backfill, previously documented only in `debugging/007` + `results-ui.md`) and fixed the
+range; other migrations untouched.
+
+**Consequences applied:** `modules/sidecar.md` — `/manual/build-index` + `/manual/search` marked
+**REJECTED (ADR-013)** (same style as `/parse`); sidecar not involved in Phase 4. `modules/
+manual-index.md` — pipeline rewritten to Rust. `resources/manual/README.md` — "sidecar indexing
+pipeline" line corrected to author fetch-script + Rust indexing. `ROADMAP.md` Phase 4 — added an
+ADR-013 pointer note; **statuses unchanged**. No DB migration (SCHEMA_VERSION stays 8), no new
+dependency (Cargo.toml/requirements.txt untouched), ADR-002/004/006/012 untouched.
+
+**Verified:** `cargo test` green (+1: the FTS5 test); `tsc`/`vitest` untouched (out of scope). Repo
+grep for "not started"/"cclib" in `wiki/`: remaining hits are historical/chronicle — `log.md` (past
+entries), `manual-index.md`'s own "Status: not started" (Phase 4 hasn't started — correct), ADR-012's
+retarget note, and cclib in the ADRs/parse-sources/output-files as the rejected-decision record.
+
+Next: Phase 4 — the manual indexer (4.1 gate on the real `_sources/*.md.txt`).

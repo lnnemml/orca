@@ -16,7 +16,7 @@ never runs a binary). The runtime mechanics of running ORCA live in
 ## Files
 
 - `lib.rs` — Tauri builder, setup hook, exit handling, invoke-handler registration.
-- `db.rs` — SQLite open + versioned migrations (v1–v5).
+- `db.rs` — SQLite open + versioned migrations (v1–v8).
 - `results.rs` — store/read parsed results (all four artifact readers) into the `results` table
   (ADR-012); the completion hook lives in `local_backend`. See `modules/artifact-readers.md`.
 - `orca_json.rs` — spawn `orca_2json` (ADR-009), lazy-cached gbw→JSON in the job dir (unit 3.7).
@@ -71,9 +71,19 @@ survives a restart.
     the longest measured run is 26 frames × 8 atoms; a realistic 30-cycle × 50-atom opt is ~tens of
     KB of JSON — kept inline; if a pathological run ever bloated the row, the switch is frames→file
     path (not done, not needed).
+- **v8** — a one-time **data backfill**, not a schema change (`SCHEMA_VERSION = 8`; no column added):
+  `UPDATE jobs SET energy = (SELECT r.final_energy_eh FROM results r WHERE r.job_id = jobs.id)` for
+  every job whose `energy` is still NULL but whose parsed `results` row already holds the value (unit
+  3.9 defect 2 — the `output.out` tail regex missed a final energy measured **164 KB past the 64 KB
+  window** on a 33-atom Freq, while the authoritative tier had it). Idempotent: it touches only NULL
+  energies and only where a non-NULL `final_energy_eh` exists, so an already-filled job is never
+  clobbered and a never-parsed job stays NULL. **Guarded** on `jobs.energy` existing so migration-test
+  fixtures that stub `jobs` as `(id)` only skip cleanly. See `debugging/007`.
 - The queue statuses (`queued`, `cancelled`) and `parsed` needed **no migration** — `status` is TEXT.
 - Migration tests assert preservation across each step (…`migrate_v5_to_v6_adds_imaginary_count_via_guarded_alter`,
-  `migrate_v6_to_v7_adds_homo_lumo_gap`; version assertions use `SCHEMA_VERSION`, not a literal).
+  `migrate_v6_to_v7_adds_homo_lumo_gap`, `migrate_v7_to_v8_backfills_energy_from_results`; version
+  assertions use `SCHEMA_VERSION`, not a literal). A separate `fts5_is_available_with_ranking_and_snippet`
+  test gates the bundled SQLite's FTS5 support (Phase 4 / ADR-013 stands on it) — not a migration.
   Verified against a copy of the real DB: 13 existing jobs preserved across 3→4.
 
 **Per-atom data rule (the load-bearing storage invariant).** Per-atom arrays go into `data_json`

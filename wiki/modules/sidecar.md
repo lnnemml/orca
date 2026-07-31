@@ -3,14 +3,16 @@
 **Status:** chemistry endpoints live — `/smiles-to-3d` (RDKit), `/convert` + `/formats` (ASE),
 `/geometry/set-internal` and `/geometry/rotatable-mask` (the ASE geometry kernel). Sidecar
 `__version__` `0.4.0`. **Result parsing is NOT a sidecar concern** — cclib was rejected and the
-authoritative tier moved to Rust (ADR-012); see [artifact-readers.md](artifact-readers.md). Manual
-indexing is still Phase 4.
+authoritative tier moved to Rust (ADR-012); see [artifact-readers.md](artifact-readers.md). **Manual
+indexing is Rust too, not the sidecar** — [ADR-013](../architecture/adr-013-manual-indexing-ownership.md)
+narrows ADR-006: the sidecar is not involved in Phase 4.
 
 ## Responsibilities & boundaries
 
 Chemistry intelligence over file *content*: structure generation (RDKit), format conversion and
-the geometry kernel (ASE), later manual indexing. **Not** result parsing — that is Rust over
-structured artifacts (ADR-012), never a sidecar/cclib endpoint. Two hard boundaries:
+the geometry kernel (ASE). **Not** result parsing — that is Rust over structured artifacts
+(ADR-012), never a sidecar/cclib endpoint. **Not** manual indexing either — that is Rust over the
+raw Markdown docs (ADR-013), never a sidecar endpoint. Two hard boundaries:
 
 - **Stateless.** All persistence lives in SQLite owned by Rust (ADR-002). Inputs are either file
   paths inside the app data dir (parsing endpoints) or small literals like a SMILES string — never
@@ -240,8 +242,11 @@ fastapi, uvicorn, pydantic, rdkit, ase (pulls numpy/scipy/matplotlib). **cclib i
 
 - ~~`POST /parse` — output → cclib JSON~~ **REJECTED (ADR-012):** result parsing is Rust over
   structured artifacts, not a sidecar/cclib endpoint. Not built, and will not be.
-- `POST /manual/build-index` — one-off docs indexing — Phase 4.
-- `GET  /manual/search?q=` — FTS query proxy (or Rust queries SQLite directly — decide in Phase 4).
+- ~~`POST /manual/build-index` — one-off docs indexing~~ **REJECTED (ADR-013):** manual indexing runs
+  in Rust over the raw Markdown docs and writes the Rust-owned SQLite (the sidecar is stateless, and
+  only Rust's bundled SQLite carries the FTS5 we tested). Not built, and will not be.
+- ~~`GET /manual/search?q=` — FTS query proxy~~ **REJECTED (ADR-013):** Rust queries SQLite directly;
+  the sidecar has no read path to the manual index either.
 
 ## Conventions
 

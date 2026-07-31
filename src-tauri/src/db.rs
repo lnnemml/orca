@@ -502,4 +502,92 @@ mod tests {
         // A job with no results row stays NULL.
         assert_eq!(energy("unparsed"), None);
     }
+
+    /// FTS5 build-gate. NOT a migration and NOT a table the app ships — a tripwire
+    /// for a future `rusqlite` / `libsqlite3-sys` bump. Measured: `libsqlite3-sys`
+    /// 0.30.1 under `build_bundled` compiles the SQLite 3.46.0 amalgamation with
+    /// `-DSQLITE_ENABLE_FTS5` UNCONDITIONALLY, so FTS5 + `porter`/`unicode61`
+    /// tokenizers + `snippet()` + `bm25()` all work today. Phase 4's manual index
+    /// (ADR-013) stands on exactly this. If a future upgrade ever stops carrying
+    /// FTS5 in the build, this fails HERE, up front, instead of deep in Phase 4.
+    #[test]
+    fn fts5_is_available_with_ranking_and_snippet() {
+        let conn = Connection::open_in_memory().unwrap();
+
+        // A virtual table with two columns and the porter+unicode61 tokenizer.
+        // The CREATE itself is the first half of the gate: it only compiles if the
+        // linked SQLite carries the FTS5 module.
+        conn.execute_batch(
+            "CREATE VIRTUAL TABLE docs USING fts5(
+                 title, body, tokenize = 'porter unicode61'
+             );
+             INSERT INTO docs (title, body) VALUES
+                ('RIJCOSX', 'The RIJ-COSX approximation accelerates hybrid DFT calculations.'),
+                ('CPCM',    'The conductor-like polarizable continuum model describes implicit solvation.'),
+                ('Geometry','Geometry optimization searches for a stationary point on the surface.');",
+        )
+        .expect("CREATE VIRTUAL TABLE ... USING fts5 must compile — the build carries FTS5");
+
+        // MATCH + snippet(): snippet wraps the hit in the given delimiters. Column
+        // index 1 = body (0-based). 'solvation' lives in the CPCM row's body.
+        let snippet: String = conn
+            .query_row(
+                "SELECT snippet(docs, 1, '[', ']', '…', 8)
+                 FROM docs WHERE docs MATCH 'solvation'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("MATCH should find the CPCM row");
+        assert!(
+            snippet.contains("[solvation]"),
+            "snippet() should mark the matched term: got {snippet:?}"
+        );
+
+        // porter stemming is live: a query for 'accelerate' matches stored
+        // 'accelerates' (both stem to the same root).
+        let stemmed: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM docs WHERE docs MATCH 'accelerate'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stemmed, 1, "porter tokenizer should stem 'accelerates' → 'accelerate'");
+
+        // Ranking. Add a short, high-term-frequency row so it must outrank the
+        // single-mention 'Geometry' row on the query 'geometry'.
+        conn.execute(
+            "INSERT INTO docs (title, body) VALUES
+                ('Opt', 'geometry geometry geometry geometry geometry')",
+            [],
+        )
+        .unwrap();
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT title, bm25(docs) FROM docs
+                 WHERE docs MATCH 'geometry' ORDER BY bm25(docs)",
+            )
+            .unwrap();
+        let ranked: Vec<(String, f64)> = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+
+        assert_eq!(ranked.len(), 2, "two rows mention 'geometry'");
+
+        // The counter-intuitive core, and why this is a test not a comment:
+        // SQLite's bm25() returns NEGATIVE scores where MORE negative = MORE
+        // relevant. So `ORDER BY bm25(docs)` WITHOUT `DESC` (ascending) puts the
+        // best match first. The high-frequency 'Opt' row must lead.
+        assert_eq!(ranked[0].0, "Opt", "more mentions ⇒ more relevant ⇒ first under ascending bm25");
+        assert!(ranked[0].1 < 0.0, "bm25 scores are negative: {}", ranked[0].1);
+        assert!(
+            ranked[0].1 < ranked[1].1,
+            "ascending order = most relevant first: {} should be < {}",
+            ranked[0].1,
+            ranked[1].1,
+        );
+    }
 }
