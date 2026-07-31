@@ -6,6 +6,7 @@ mod error;
 mod local_backend;
 mod models;
 mod orca_json;
+mod orca_plot;
 mod output_search;
 mod parse;
 mod result_extraction;
@@ -85,6 +86,7 @@ pub fn run() {
             commands::jobs::read_job_ensemble,
             commands::jobs::read_job_convergence,
             commands::jobs::read_job_results,
+            commands::jobs::read_orbital_cube,
             commands::jobs::open_job_folder,
             output_search::search_job_output,
             output_search::get_search_presets,

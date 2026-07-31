@@ -488,6 +488,10 @@ function verdictFor(imaginaryCount: number): { text: string; tone: string } {
   };
 }
 
+/** Number of side-by-side columns the frequency table flows into (93 modes in one
+ * column is a scroll). On a narrow window the flex container wraps them (CSS). */
+const FREQ_TABLE_COLUMNS = 3;
+
 function FrequencyTable({
   active,
   zeroCount,
@@ -502,42 +506,64 @@ function FrequencyTable({
   onSelect: (index: number | null) => void;
 }) {
   const showScaled = scale !== DEFAULT_SCALE;
+  // Flow the modes into N balanced columns, keeping the 1-based running number
+  // continuous down each column (so "#" reads 1..N across the whole table).
+  const perColumn = Math.ceil(active.length / FREQ_TABLE_COLUMNS);
+  const columns = Array.from({ length: FREQ_TABLE_COLUMNS }, (_, c) =>
+    active
+      .slice(c * perColumn, (c + 1) * perColumn)
+      .map((m, j) => ({ mode: m, ordinal: c * perColumn + j + 1 })),
+  ).filter((col) => col.length > 0);
+
   return (
     <div style={{ marginTop: 8 }}>
-      <table className="mono ir-table" style={{ fontSize: 12, borderCollapse: "collapse" }}>
-        <thead>
-          <tr>
-            <th style={{ textAlign: "right", paddingRight: 12, color: "var(--muted)" }}>#</th>
-            <th style={{ textAlign: "right", paddingRight: 12, color: "var(--muted)" }}>cm⁻¹ (raw)</th>
-            {showScaled ? (
-              <th style={{ textAlign: "right", paddingRight: 12, color: "var(--muted)" }}>
-                cm⁻¹ ×{scale.toFixed(3)} (scaled — derived)
-              </th>
-            ) : null}
-            <th style={{ textAlign: "right", color: "var(--muted)" }}>IR km/mol</th>
-          </tr>
-        </thead>
-        <tbody>
-          {active.map((m, i) => (
-            <tr
-              key={m.index}
-              className={"ir-row" + (m.index === selected ? " selected" : "")}
-              onClick={() => onSelect(m.index === selected ? null : m.index)}
-            >
-              <td style={{ textAlign: "right", paddingRight: 12, color: "var(--muted)" }}>
-                {i + 1}
-              </td>
-              <td style={{ textAlign: "right", paddingRight: 12 }}>{m.cm.toFixed(2)}</td>
-              {showScaled ? (
-                <td style={{ textAlign: "right", paddingRight: 12, color: "var(--muted)" }}>
-                  {(m.cm * scale).toFixed(2)}
-                </td>
-              ) : null}
-              <td style={{ textAlign: "right" }}>{m.kmMol.toFixed(2)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <div className="ir-table-columns">
+        {columns.map((col, c) => (
+          <table
+            key={c}
+            className="mono ir-table"
+            style={{ fontSize: 12, borderCollapse: "collapse" }}
+          >
+            <thead>
+              <tr>
+                <th style={{ textAlign: "right", paddingRight: 12, color: "var(--muted)" }}>#</th>
+                <th style={{ textAlign: "right", paddingRight: 12, color: "var(--muted)" }}>cm⁻¹ (raw)</th>
+                {showScaled ? (
+                  <th style={{ textAlign: "right", paddingRight: 12, color: "var(--muted)" }}>
+                    ×{scale.toFixed(3)}
+                  </th>
+                ) : null}
+                <th style={{ textAlign: "right", color: "var(--muted)" }}>km/mol</th>
+              </tr>
+            </thead>
+            <tbody>
+              {col.map(({ mode: m, ordinal }) => (
+                <tr
+                  key={m.index}
+                  className={"ir-row" + (m.index === selected ? " selected" : "")}
+                  onClick={() => onSelect(m.index === selected ? null : m.index)}
+                >
+                  <td style={{ textAlign: "right", paddingRight: 12, color: "var(--muted)" }}>
+                    {ordinal}
+                  </td>
+                  <td style={{ textAlign: "right", paddingRight: 12 }}>{m.cm.toFixed(2)}</td>
+                  {showScaled ? (
+                    <td style={{ textAlign: "right", paddingRight: 12, color: "var(--muted)" }}>
+                      {(m.cm * scale).toFixed(2)}
+                    </td>
+                  ) : null}
+                  <td style={{ textAlign: "right" }}>{m.kmMol.toFixed(2)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ))}
+      </div>
+      {showScaled ? (
+        <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
+          the ×{scale.toFixed(3)} column is the scaled wavenumber (derived), not a molecular property.
+        </div>
+      ) : null}
       {zeroCount > 0 ? (
         <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
           {zeroCount} translation/rotation modes at exactly 0 cm⁻¹ (excluded — not

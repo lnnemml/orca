@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { createViewer, GLModel, elementColors, type GLViewer } from "3dmol";
+import { createViewer, GLModel, VolumeData, elementColors, type GLViewer, type GLShape } from "3dmol";
 
 import type { Scene, SceneAtom } from "../scene/types";
 import { compositionSignature, fragmentRanges, mergeToXyz } from "../scene/scene";
@@ -102,8 +102,26 @@ interface MoleculeViewerProps {
    * 3Dmol's stick gate is `atom.index < atom2.index`. See `frozenTopology.ts`.)
    */
   bondTopologyReference?: string;
+  /**
+   * Orbital isosurface (unit 3.15). The cube's TEXT — 3Dmol parses the whole grid
+   * (`VolumeData`) into a mesh. When set (and no `scene`), the viewer draws the
+   * molecule FROM the cube's atoms plus two isosurfaces at ±`orbitalIsoValue` in
+   * distinct colours (the two wavefunction phases). The **app owns** which orbital,
+   * the isovalue, and visibility (ADR-011); the viewer draws. Changing the isovalue
+   * redraws only the surfaces (the cube is parsed once, cached).
+   */
+  orbitalCube?: string;
+  /** Isosurface level (Å⁻³·²). A display choice; the sign is the wavefunction PHASE,
+   * not charge. Ignored unless `orbitalCube` is set. */
+  orbitalIsoValue?: number;
   style?: React.CSSProperties;
 }
+
+/** Isosurface colours — the two wavefunction phases. Sign is PHASE, not charge; the
+ * label says so. Blue = positive lobe, red = negative. */
+const ORBITAL_POS_COLOR = "#3b6fd4";
+const ORBITAL_NEG_COLOR = "#d43b3b";
+const ORBITAL_ISO_OPACITY = 0.85;
 
 /** Selection-halo wireframe opacity (2.5.2e-1). The colour comes from the theme
  * (`haloColor`); a constant-radius halo was invisible on carbon, so the RADIUS
@@ -276,6 +294,8 @@ export function MoleculeViewer({
   maskHighlight,
   preserveCameraOnUpdate = false,
   bondTopologyReference,
+  orbitalCube,
+  orbitalIsoValue,
   style,
 }: MoleculeViewerProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -284,6 +304,11 @@ export function MoleculeViewer({
   // once from `bondTopologyReference`, then coordinate-updated per frame. Keyed by the
   // reference string so it is rebuilt only when the molecule changes.
   const animRef = useRef<{ source: string; model: GLModel } | null>(null);
+  // Orbital isosurface (unit 3.15): the cube parsed ONCE into a VolumeData (keyed by the
+  // cube text) and the two ± phase surface shapes, so an isovalue change removes exactly
+  // those two and redraws — no re-parse, and the selection-halo path is untouched.
+  const volDataRef = useRef<{ source: string; vol: VolumeData } | null>(null);
+  const isoShapesRef = useRef<GLShape[]>([]);
   // Last scene composition rendered — drives the zoom-only-on-composition-change
   // rule. `null` means "nothing/only-xyz rendered so far".
   const lastCompositionRef = useRef<string | null>(null);
@@ -352,6 +377,8 @@ export function MoleculeViewer({
       viewerRef.current = null;
       lastCompositionRef.current = null;
       animRef.current = null;
+      volDataRef.current = null;
+      isoShapesRef.current = [];
     };
     // theme.background is only the INITIAL colour; the [theme] effect below keeps
     // it in sync, so it's intentionally not a dep here (mount-once effect).
@@ -371,6 +398,26 @@ export function MoleculeViewer({
   useEffect(() => {
     const viewer = viewerRef.current;
     if (!viewer) return;
+
+    // Orbital-isosurface path (unit 3.15): the MOLECULE is built here from the cube's
+    // atoms (once per cube); the ± isosurfaces are drawn by the dedicated effect below so
+    // an isovalue change doesn't rebuild the model. Depends on `orbitalCube`, not the
+    // isovalue. Camera holds across MO switches (same molecule → same atom count).
+    const orbCube = !scene && orbitalCube?.trim() ? orbitalCube : null;
+    if (orbCube) {
+      animRef.current = null;
+      viewer.removeAllModels();
+      viewer.addModel(orbCube, "cube");
+      viewer.setStyle({}, baseStyle());
+      const count = orbCube.trimStart().split(/\r?\n/, 1)[0].trim();
+      const signature = `orbital:${count}`;
+      if (signature !== lastCompositionRef.current) {
+        viewer.zoomTo();
+        lastCompositionRef.current = signature;
+      }
+      viewer.render();
+      return;
+    }
 
     // Frozen-topology animation path (unit 3.14): keep ONE model across frames — build
     // it from the equilibrium reference so 3Dmol perceives bonds + assigns index once,
@@ -485,7 +532,41 @@ export function MoleculeViewer({
     // per-fragment palette are re-applied). A theme switch keeps the same
     // composition signature, so the zoom guard fires no `zoomTo` — the camera is
     // preserved (background is handled in the separate [theme] effect below).
-  }, [xyzData, scene, pickable, theme, preserveCameraOnUpdate, bondTopologyReference]);
+  }, [xyzData, scene, pickable, theme, preserveCameraOnUpdate, bondTopologyReference, orbitalCube]);
+
+  // Orbital isosurfaces (unit 3.15) — drawn SEPARATELY from the model so changing the
+  // isovalue redraws only the two ± surfaces (the cube is parsed once into a VolumeData,
+  // cached by its text). Runs after the model effect (the molecule exists) and after the
+  // overlay effect (which is guarded to leave these shapes alone). Removes exactly its own
+  // two shapes on each change — never `removeAllShapes` (which would wipe selection halos).
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer) return;
+    // Clear previous surfaces (also the teardown when the cube goes away).
+    for (const s of isoShapesRef.current) viewer.removeShape(s);
+    isoShapesRef.current = [];
+    if (!orbitalCube?.trim() || orbitalIsoValue == null || orbitalIsoValue <= 0) {
+      viewer.render();
+      return;
+    }
+    // Parse the cube ONCE (per cube text); reuse across isovalue changes.
+    if (volDataRef.current?.source !== orbitalCube) {
+      volDataRef.current = { source: orbitalCube, vol: new VolumeData(orbitalCube, "cube") };
+    }
+    const vol = volDataRef.current.vol;
+    const pos = viewer.addIsosurface(vol, {
+      isoval: orbitalIsoValue,
+      color: ORBITAL_POS_COLOR,
+      opacity: ORBITAL_ISO_OPACITY,
+    });
+    const neg = viewer.addIsosurface(vol, {
+      isoval: -orbitalIsoValue,
+      color: ORBITAL_NEG_COLOR,
+      opacity: ORBITAL_ISO_OPACITY,
+    });
+    isoShapesRef.current = [pos, neg];
+    viewer.render();
+  }, [orbitalCube, orbitalIsoValue]);
 
   // The overlay effect — the SINGLE owner of every shape and label in the
   // viewer: selection halos, measurement lines/labels (2.5.2b), and atom-number
@@ -505,6 +586,10 @@ export function MoleculeViewer({
   useEffect(() => {
     const viewer = viewerRef.current;
     if (!viewer) return;
+    // The orbital viewer owns its shapes (the isosurfaces) via the isosurface effect —
+    // leave them alone. This overlay path is for the scene editor (halos/measurement),
+    // which the orbital viewer never uses.
+    if (orbitalCube?.trim()) return;
     viewer.removeAllShapes();
     viewer.removeAllLabels();
     if (!scene) {
@@ -561,7 +646,7 @@ export function MoleculeViewer({
     }
 
     viewer.render();
-  }, [selection, scene, showAtomNumbers, theme, maskHighlight]);
+  }, [selection, scene, showAtomNumbers, theme, maskHighlight, orbitalCube]);
 
   return <div ref={containerRef} className="molecule-viewer" style={style} />;
 }

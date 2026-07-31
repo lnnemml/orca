@@ -209,6 +209,42 @@ its `-h`, result recorded in [`orca/parse-sources.md`](../orca/parse-sources.md)
 and FWHM match; the documented difference (orca truncates the Lorentzian wings, we keep them so the
 area = intensity property holds) is reported as a number, not fudged away.
 
+### The frequency table flows into three columns (task, unit 3.15)
+93 modes in one column is a scroll, so `FrequencyTable` flows them into **three** side-by-side
+sub-tables (`FREQ_TABLE_COLUMNS`), the running `#` continuous down each column. Selection, the
+peak↔row highlight, and the imaginary/scaled logic are unchanged — each row still calls the shared
+`onSelect(m.index)`. On a narrow window the flex row (`.ir-table-columns`) **wraps**, it doesn't
+overflow. Cosmetic only.
+
+## `src/orbitals/` — orbital isosurfaces (unit 3.15)
+The last Phase-3 visualization. The MO energies + occupancies were already parsed (`orca_2json`,
+`data_json.orbitals`); this adds the orbitals as **volume**. Gated behind a measured three-part gate
+([`orca/orca-plot.md`](../orca/orca-plot.md)): `orca_plot` batch invocation, cube sizes/times, and —
+the real unknown — whether WebKitGTK renders a 3Dmol isosurface (it does; MiniBrowser screenshot).
+
+- **`orbitalList.ts`** (pure, node-tested): `orbitalRows` marks exactly one **HOMO** (highest
+  occupied) and one **LUMO** (first virtual) — the teaching pair — and `defaultOrbital` opens on the
+  HOMO. Occupied = occupancy > 0.5 (measured MOs are 2.0/0.0, not a knife-edge).
+- **`OrbitalPanel.tsx`**: the picker (MO number, energy Eh + eV, occupancy, HOMO/LUMO tagged) beside
+  the viewer, an **isovalue slider**, and the +/− phase legend. On selecting an MO it `invoke`s
+  `read_orbital_cube` (Rust generates the cube lazily via `orca_plot`, caches it in the job dir keyed
+  by MO+grid, reads it once capped at 32 MB — the cube is a **disk artifact, never in the DB**).
+- **Isovalue is a DISPLAY choice** (like the FWHM and the mode amplitude): a slider, default **0.05**
+  named. The two surface colours are the wavefunction's two **phases (sign of ψ), NOT charge** — said
+  in the label. Grid is fixed at the measured moderate **80³** (~6.9 MB, ~0.2 Å; rule #5 verified by
+  number, `orca-plot.md`).
+- **State ownership (ADR-011):** the selected orbital, the isovalue and visibility are app state in
+  `OrbitalPanel`; the viewer is handed the cube text + isovalue and draws. `MoleculeViewer` grew an
+  **`orbitalCube` / `orbitalIsoValue`** path: the molecule is built once from the cube's atoms (model
+  effect), and the ± isosurfaces are drawn by a **dedicated effect** that parses the cube into a
+  `VolumeData` **once** (cached by text) and, on an isovalue change, `removeShape`s exactly its two
+  surfaces and re-adds them — no re-parse, and the scene-editor overlay effect is guarded to leave
+  those shapes alone. **One scene, one mode:** the orbital viewer shows a static molecule + surface;
+  it never also animates a normal mode (that lives in the IR panel).
+- **Absence is normal:** an xTB/GOAT `.gbw` yields no JSON MOs (measured), so `results.orbitals` is
+  absent and the whole section is not rendered; if `orca_plot` produces nothing, the viewer shows a
+  note, never crashes.
+
 ## `src/charts/useContainerWidth.ts`
 The one owner of the **WebKitGTK 0×0 `ResponsiveContainer`** workaround (`debugging/002`/`003` class):
 a `ResizeObserver` that feeds an explicit pixel width to every chart. Extracted from

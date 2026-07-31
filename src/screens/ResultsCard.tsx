@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { JobStatus, ParsedResults } from "../types";
 import { IrSpectrumPanel } from "../spectrum/IrSpectrumPanel";
 import { TrajectoryPlayer } from "../trajectory/TrajectoryPlayer";
+import { OrbitalPanel } from "../orbitals/OrbitalPanel";
 
 /** 1 Hartree in J/mol = E_h (4.359744722e-18 J) × N_A (6.02214076e23 /mol).
  * CODATA 2018; the named factor, like BOHR_TO_ANGSTROM in the Rust readers. */
@@ -128,6 +129,12 @@ export function ResultsCard({ jobId, status }: { jobId: string; status: JobStatu
 
         {results.frequencies && (
           <IrSpectrumPanel f={results.frequencies} geometry={results.final_geometry} />
+        )}
+
+        {/* Orbital isosurfaces (unit 3.15). Present iff orca_2json yielded MOs — absent
+            for xTB/GOAT (measured), so the section simply doesn't render. */}
+        {results.orbitals && results.orbitals.orbitals.length > 0 && (
+          <OrbitalPanel jobId={jobId} orbitals={results.orbitals.orbitals} />
         )}
 
         {results.charges.length > 0 && (

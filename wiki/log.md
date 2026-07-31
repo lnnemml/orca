@@ -3138,3 +3138,78 @@ limit; the coordinate-preservation and draw-gate invariants are pure-tested and 
 the real object. ADR-002/009/010/011/012 + the proposal untouched.
 
 Next: Phase 3 remainder — orbital/density isosurfaces (`orca_plot` → `.cube`), then export.
+
+## [2026-07-31] ingest | Unit-3.15 GATE: orca_plot batch, cube sizes, WebKitGTK isosurface — all measured, PASS
+
+Gate before any UI (`/tmp` runs + MiniBrowser, not app code). Full page: `wiki/orca/orca-plot.md`.
+
+1. **Non-interactive orca_plot.** Its usage advertises `orca_plot gbw-file plot-inputfile`, but that
+   batch file's field order is undocumented and unsatisfiable from a run — after `PlotType/Format/MO-OP`
+   it demands a "state density"/"infile" field; every attempt exited rc=64 FATAL, no cube (an early
+   "success" was a STALE cube — corrected). **What works: drive the interactive menu over stdin**
+   (`printf "2\n{mo}\n4\n{grid}\n11\n12\n" | orca_plot input.gbw -i`) — deterministic, produces
+   `input.mo{N}a.cube`. Invocation per `orca_json.rs` (ADR-009): path from `dirname(settings.orca_path)`,
+   LD_LIBRARY_PATH, cwd=job dir. Menu numbers pinned to ORCA 6.1.0.
+
+2. **Sizes/times (HOMO of dexketoprofen, 33 atoms).** 40³ 0.87 MB/0.06s · 60³ 2.9 MB/0.16s · **80³ 6.9
+   MB/0.36s** · 100³ 13.5 MB/0.67s. ASCII, ~13.75 bytes/point, size = (N+1)³·13.75 — scales with grid,
+   independent of atom count at fixed N. Extrapolation to ~60 atoms at equal resolution (N≈120): ~24 MB /
+   ~3s (arithmetic in the page). Rule #5's 80–100 default verified — 80³ = 6.9 MB, not "hundreds of MB".
+   3Dmol needs the whole cube text (VolumeData parses a full string — stated), so it is read whole once;
+   the app caps the read at 32 MB and refuses larger.
+
+3. **WebKitGTK isosurface — the real unknown, PASSED.** MiniBrowser probe (debugging/002 technique) in the
+   identical webkit2gtk-4.1 engine: `OffscreenCanvas=undefined` fix + addModel(cube) + two addVolumetricData
+   (+/− lobes) + render → window title `ISO_OK` (no exception) and a screenshot shows the HOMO's blue
+   (+phase)/red (−phase) lobes on the molecule. The volumetric path works in the real engine. Author still
+   confirms in the actual Tauri app.
+
+**Verdict: PASS on all three.** Part B (lazy cached cube generation + orbital picker + isovalue slider)
+proceeds. No ADR touched.
+
+## [2026-07-31] session | Unit 3.15: orbital isosurfaces from orca_plot cubes (+ three-column freq table)
+
+The last big Phase-3 visualization. Gate first (ingest above / `wiki/orca/orca-plot.md`), then Part B.
+
+**Gate (measured, PASS on all three).** (1) `orca_plot`'s advertised `gbw plot-inputfile` batch mode was
+**unusable** — after PlotType/Format/MO-OP it demands an undocumented "state density" field; every attempt
+exited FATAL with no cube (an early "success" was a STALE cube). Non-interactive route that works: **drive
+its interactive menu over stdin** (`2\n{mo}\n4\n{grid}\n11\n12\n`), producing `input.mo{N}a.cube`. (2)
+Cube size/time by grid (HOMO, dexketoprofen): 40³ 0.87 MB/0.06s · 60³ 2.9/0.16 · **80³ 6.9/0.36** · 100³
+13.5/0.67; ASCII ~13.75 B/point, size = (N+1)³·13.75 (independent of atom count at fixed N); ~60-atom @120³
+≈ 24 MB/~3s. Rule #5's 80³ default verified. (3) The real unknown — WebKitGTK rendering a 3Dmol isosurface —
+**PASSES**: MiniBrowser probe (debugging/002 technique) with the EXACT app API path (`new VolumeData` +
+`addIsosurface(+/-)` + `removeShape`+re-add on isovalue change) reached `ISO_OK` and a screenshot shows the
+HOMO's blue(+phase)/red(−phase) lobes. Author still confirms in the actual Tauri app.
+
+**Rust (`orca_plot.rs`, mirrors `orca_json.rs`, ADR-009).** `ensure_mo_cube(orca_path, job_dir, mo, grid)`:
+lazy + cached in the job dir under a **grid-keyed** name `orbital.mo{N}.g{G}.cube` (so grids of one MO
+coexist), regenerated only when missing/older than the gbw. Path from `dirname(settings.orca_path)` (rule
+#7), LD_LIBRARY_PATH, cwd=job dir (rule #3); stdin written then dropped (EOF) so it can't hang. Command
+`read_orbital_cube` reads the cube capped at **32 MB** (3Dmol needs the whole text — stated, not hidden)
+and returns the text or `None` (xTB/GOAT gbw → normal). **Cubes never touch the DB.** Real integration test
+(`#[ignore]`) generates + caches + confirms a second call is a cache hit; 3 unit tests for the menu script /
+cache name / no-gbw path.
+
+**Frontend.** `orbitals/orbitalList.ts` (pure, tested): HOMO = highest occupied, LUMO = first virtual,
+default = HOMO. `OrbitalPanel.tsx`: picker (MO#, Eh+eV, occupancy, HOMO/LUMO tagged) + **isovalue slider**
+(display choice, default 0.05) + a +/− phase legend; `invoke("read_orbital_cube", …)` on select (grid fixed
+80³). `MoleculeViewer` gained an `orbitalCube`/`orbitalIsoValue` path: molecule built once from the cube's
+atoms (model effect), ± isosurfaces in a **dedicated effect** that parses the cube into a `VolumeData` once
+(cached by text) and on an isovalue change `removeShape`s exactly its two surfaces + re-adds — no re-parse;
+the scene-editor overlay effect is guarded to leave those shapes alone. **State app-owned (ADR-011)**; one
+scene, one mode (no animation in the orbital view). Absence hides the section.
+
+**Task 0:** `FrequencyTable` flows the 93 modes into **three** columns (`.ir-table-columns`, wraps on a
+narrow window); selection/peak↔row/scaled logic unchanged.
+
+**Teaching:** `chemistry/orbitals.md` (Ukrainian) — MO/isosurface; the two colours are ψ **phase, not
+charge**; isovalue as a viewing choice; why HOMO/LUMO are the frontier orbitals.
+
+**Verified.** `tsc` clean; **vitest 372 passed** (23 files; +9 `orbitalList.test.ts`); `vite build` clean
+(pre-existing bundle warning); `cargo test` **124 passed** (+3 orca_plot unit; +1 `#[ignore]` real cube-gen
+test passes on demand). The isosurface renders in the real webkit2gtk-4.1 engine (MiniBrowser screenshot);
+the React wiring (invoke/effects) is not headless-drivable — standing Tauri-GUI limit. ADR-002/009/010/011/
+012 + the proposal untouched.
+
+Next: Phase 3's last item — export (xyz / CSV / PNG).

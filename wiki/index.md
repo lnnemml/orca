@@ -36,6 +36,7 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 ## ORCA domain knowledge
 
 - [orca-basics.md](orca/orca-basics.md) — installation, invocation, MPI, environment
+- [orca-plot.md](orca/orca-plot.md) — **measured** unit-3.15 gate: `orca_plot` non-interactive invocation (its `plot-inputfile` batch mode was unusable → drive the menu over stdin), cube size/time by grid (40³–100³ = 0.9–13.5 MB, sub-second), the `.cube` format, and the WebKitGTK isosurface render PASS (MiniBrowser)
 - [performance.md](orca/performance.md) — measured parallel scaling on the dev machine (i5-12500H), core-pinning presets, benchmark methodology
 - [input-format.md](orca/input-format.md) — anatomy of an .inp file
 - [output-files.md](orca/output-files.md) — what ORCA produces and what each file is for
@@ -53,6 +54,7 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 - [burgi-dunitz.md](chemistry/burgi-dunitz.md) — траєкторія Бюрґі–Дунітца: чому нуклеофіл атакує карбоніл під ~107°, метод структурної кореляції, звʼязок зі стереоселективністю NaBH₄ і з d/θ/φ у редакторі
 - [normal-modes.md](chemistry/normal-modes.md) — нормальні моди: що таке мода й що показує анімація; чому амплітуда довільна (вибір подання); чому анімація уявної моди показує координату реакції; чому моди беруться «як є» (ворота Кабша)
 - [ir-spectrum.md](chemistry/ir-spectrum.md) — ІЧ-спектр: чому обчислений спектр — палички, а не крива; розширення лінії; FWHM як вибір побудови графіка; що означає площа під піком; уявна частота як діагноз перехідного стану; **чому обчислений спектр не схожий на експериментальний** (інтенсивність vs %T, два C=O, гармонічне завищення, O–H-димер, низькі моди й ентропія — зміряно на декскетопрофені)
+- [orbitals.md](chemistry/orbitals.md) — орбіталі та ізоповерхні: що таке МО й ізоповерхня; чому дві кольорові поверхні — це знак **фази**, а не заряд; ізозначення як вибір подання; чому HOMO/LUMO — межові орбіталі, де живе реакційна здатність
 
 ## Debugging
 
@@ -68,4 +70,4 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 
 ---
 
-*Page count: 49. Last structural update: 2026-07-31 (unit 3.14: +debugging/008-frozen-bonds-drew-nothing.md and src/viewer/frozenTopology.ts — frozen-topology animation drew no bonds; fixed by build-once + coordinate-update, with an output-side draw-gate test).*
+*Page count: 51. Last structural update: 2026-07-31 (unit 3.15: +orca/orca-plot.md and chemistry/orbitals.md — orbital isosurfaces from orca_plot cubes, after a measured three-part gate; the frequency table also went three-column).*

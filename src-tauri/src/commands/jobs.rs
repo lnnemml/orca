@@ -361,6 +361,65 @@ pub fn read_job_output_for_viewer(
     })
 }
 
+/// Max orbital-cube size we hand to the webview. 3Dmol's `VolumeData` parses the WHOLE
+/// cube string (an isosurface needs the whole grid — rule #5's stream/tail is impossible
+/// here), so the cube IS loaded whole; this cap bounds the worst case. Measured
+/// (`orca-plot.md`): 80³ = 6.9 MB, 100³ = 13.5 MB, a 60-atom @120³ ≈ 24 MB — all under
+/// 32 MB. A larger request is refused with a "lower the grid" message, not read.
+const CUBE_READ_CAP: u64 = 32 * 1024 * 1024;
+
+/// Generate (lazily, cached) and read the `.cube` for one molecular orbital, for the
+/// orbital-isosurface viewer (unit 3.15). Returns the cube text, or `None` when the job
+/// has no `.gbw` / no `orca_plot` / it produced nothing (xTB/GOAT — a normal state, the
+/// section is simply hidden). Errors only on an over-cap cube or an IO failure.
+///
+/// The cube is a disk artifact in the job dir (`orca_plot.rs`); it is **never** stored in
+/// the DB — only its text crosses to the viewer, once, capped.
+#[tauri::command]
+pub fn read_orbital_cube(
+    db: State<'_, DbState>,
+    id: String,
+    mo_index: u32,
+    grid: u32,
+) -> Result<Option<String>, AppError> {
+    let (job_dir, orca_path) = {
+        let conn = db.lock()?;
+        let job_dir = get_job_conn(&conn, &id)?.job_dir;
+        let orca_path = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'orca_path'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?
+            .filter(|p| !p.trim().is_empty());
+        (job_dir, orca_path)
+    };
+    let (Some(job_dir), Some(orca_path)) = (job_dir, orca_path) else {
+        return Ok(None);
+    };
+
+    let cube_path = crate::orca_plot::ensure_mo_cube(
+        &orca_path,
+        std::path::Path::new(&job_dir),
+        mo_index,
+        grid,
+    )?;
+    let Some(cube_path) = cube_path else {
+        return Ok(None);
+    };
+
+    let bytes = std::fs::metadata(&cube_path)?.len();
+    if bytes > CUBE_READ_CAP {
+        return Err(AppError::Internal(format!(
+            "orbital cube is {} MB (> {} MB cap) — lower the grid resolution",
+            bytes / (1024 * 1024),
+            CUBE_READ_CAP / (1024 * 1024),
+        )));
+    }
+    Ok(Some(std::fs::read_to_string(&cube_path)?))
+}
+
 /// Backfill the convergence dashboard: replay a job's `output.out` through the
 /// incremental parser and return every SCF / optimization datapoint. Returns an
 /// empty vec — not an error — when the job has no directory or output yet.

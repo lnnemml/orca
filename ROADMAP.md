@@ -296,8 +296,19 @@ the `[ ]` "Fragment library" item above.
       as optimization **cycles** (not scan points, measured). Empty states: 1 frame → static, no
       controls; no trajectory (SP) → hidden. Element-order identity checked at the UI boundary. See
       `wiki/modules/results-ui.md`.
-- [ ] Orbital/density isosurfaces: wrap `orca_plot` (batch mode) → `.cube` → 3Dmol.js volumetric
-      rendering; MO picker with energies and occupations
+- [x] Orbital isosurfaces: wrap `orca_plot` → `.cube` → 3Dmol.js volumetric rendering; MO picker with
+      energies and occupations — **done** (unit 3.15). Gated first (measured, `wiki/orca/orca-plot.md`):
+      `orca_plot`'s advertised `plot-inputfile` batch mode was unusable (undocumented "state density"
+      field → FATAL, no cube), so generation drives its interactive menu over **stdin**; cube sizes
+      40³–100³ = 0.9–13.5 MB, sub-second (rule #5's 80³ default = 6.9 MB verified by number, read capped
+      at 32 MB); and the real unknown — WebKitGTK rendering a 3Dmol **isosurface** — PASSES (MiniBrowser
+      screenshot, debugging/002 technique). Generation is **lazy + cached** in the job dir keyed by
+      MO+grid (`orca_plot.rs`, mirrors `orca_json.rs`, ADR-009), **never in the DB**. Picker marks
+      HOMO/LUMO (default HOMO); **isovalue is a display-choice slider**; +/− colours are the ψ **phase,
+      not charge** (labelled). State (orbital/isovalue/visibility) is app-owned (ADR-011);
+      `MoleculeViewer` gained an `orbitalCube`/`orbitalIsoValue` path. **Density** cubes / the MO-coeff
+      route are not done — only canonical MOs from the gbw. (Also: the frequency table now flows into
+      three columns.)
 - [x] IR spectrum: Lorentzian broadening of freq/intensity list, interactive recharts plot — **done**
       (unit 3.8, Part B; `src/spectrum/`). Area-normalized Lorentzian (∫ peak = km/mol intensity,
       tested), FWHM slider + explicit grid (plot choices, not molecule properties), trans/rot excluded
