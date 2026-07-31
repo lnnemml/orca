@@ -3476,3 +3476,23 @@ levels AND MUST ignore `#` inside fenced blocks (~460 phantom sections otherwise
 `orca/manual-sources.md` (corrected distribution + named cause + 3-form keyword table + sectioner-
 requirements spec), ADR-013 amendment corrected (append, decision text untouched). No app code / db.rs
 touched; no objects.inv parse; no deps; `resources/manual/` not committed.
+
+## [2026-07-31] lint | manual-sources.md: drop stale two-form keyword paragraph; add H1 post-condition
+
+The fence-aware recount rewrote the keyword section to three structured forms + a prose tail, but a
+**previous-version paragraph survived directly under it** ("Some sections … read as prose … table
+extractor + %block code-block extractor … not one uniform table format") — two forms where the block
+above says three. A knowledge page describes the present; the "at first it looked like two" history is
+already in the two ADR-013 amendments + log.md. **Deleted.** Its guess "likely mix prose with one of
+the two forms below their heading" also **contradicted the measurement**: `_keyword_forms` adds `prose`
+only `if not forms`, so a prose-classified section has no in-body structured form — noted inline
+instead of guessing.
+
+Added two measured lines: (1) **why there are two fence scanners and it isn't debt** —
+`parse_toctrees` is an allow-list (acts only inside `{toctree}`/`{eval-rst}`, so a bare ` ```orca `
+cannot inject a manifest entry), `iter_prose_lines` is a deny-list (must see every fence); shared close
+rule, separate on purpose. (2) **H1 identity as a checked post-condition** — 129 = 126 leaves + 3 real
+double-top pages (numericalintegration 2.9+2.10, foreword 6.1.1+6.1.0, magnx 5.27+5.28); `--analyze-only`
+now asserts H1 ≥ 126 and exits non-zero otherwise, since H1 < 126 is the one way an unclosed fence
+could make `iter_prose_lines` silently swallow a file (measured: 0 zero-H1 leaves). No app code / db.rs;
+no deps; resources/manual/ not committed.

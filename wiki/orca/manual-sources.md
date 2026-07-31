@@ -119,14 +119,25 @@ substantial prose remainder:
 keyword sections (prose) fall to hand-curation. This still **refines, not cancels**, ADR-013's
 seed-then-curate paragraph — the bulk is seedable — but "seed from the Keywords sections" is a
 three-form job with a real curation tail, not a two-form one. (A *seeder* concern, separate from
-sectioning — it does not touch the (3) MyST-parser review condition.)
+sectioning — it does not touch the (3) MyST-parser review condition.) The `prose` bucket is measured,
+not a hedge: `_keyword_forms` adds `prose` **only when no structured form is present** in the body, so
+these 21 sections carry no in-body table or code block at all.
 
-Some sections ("Surface Scan Keywords", "OpenCOSMO-RS Keywords") read as prose in the coarse
-classifier and likely mix prose with one of the two forms below their heading. **Consequence for
-ADR-013:** the keywords paragraph survives — the information IS structured and seedable — but "seed
-from the Keywords sections" means **table extractor + `%block` code-block extractor**, curated on top;
-not one uniform table format. (This concerns the *seeder*, not sectioning, so it does not touch the
-(3) MyST-parser review condition.)
+## Fence tracking: two scanners, one close-rule — and the H1 post-condition
+
+- **Why two fence scanners, and why it is not debt.** `parse_toctrees` is an **allow-list**: it acts
+  only *inside* `{toctree}`/`{eval-rst}` directives, so a bare ` ```orca ` code fence can never inject a
+  phantom entry into the manifest — it doesn't need to see code fences at all. `iter_prose_lines` is a
+  **deny-list**: it must hide *every* fence, so it must see all of them. Opposite jobs; only the
+  **close rule** (`_is_fence_close`) is shared. Collapsing them into one function would force one side
+  to do the other's job badly — they stay separate on purpose.
+- **H1 identity as a post-condition (asserted on every `--analyze-only`).** Level-1 headings total
+  **129 = 126 leaves + 3** pages that legitimately carry two top-headings
+  (`essentialelements/numericalintegration` = sections 2.9 + 2.10; `preface/foreword` = 6.1.1 + 6.1.0;
+  `spectroscopyproperties/magnx` = 5.27 + 5.28 — the pairs confirmed independently from the TOC). Every
+  leaf contributes **≥ 1** H1, so the recount asserts **H1 ≥ 126** (0 leaves with zero H1, measured):
+  if it ever drops below the leaf count, some file lost its top heading to an **unclosed fence** — the
+  one way `iter_prose_lines` can silently swallow content. `--analyze-only` exits non-zero if it fails.
 
 ## Anchors: build the label→anchor map as a POST-CONDITION, not a guess
 

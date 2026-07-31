@@ -869,6 +869,7 @@ def analyze_disk(out_dir: Path) -> int:
     deepest = 0
     deepest_files: list[str] = []
     multi_h1: list[tuple[str, int]] = []
+    zero_h1: list[str] = []
     total_bytes = 0
     kw_forms: dict[str, int] = {}
     kw_rows: list[tuple[str, str, set[str]]] = []
@@ -889,6 +890,8 @@ def analyze_disk(out_dir: Path) -> int:
             deepest_files.append(rel)
         if counts.get(1, 0) > 1:
             multi_h1.append((rel, counts[1]))
+        if counts.get(1, 0) == 0:
+            zero_h1.append(rel)
         for heading, forms in classify_keywords_markup(text):
             kw_rows.append((rel, heading, forms))
             for f in forms:
@@ -910,11 +913,24 @@ def analyze_disk(out_dir: Path) -> int:
           f"(= {fake1} were ORCA '#' comments inside code blocks)")
     print(f"      total false headings removed (all levels): {naive_total - fixed_total}")
 
-    print(f"\n[H1] files with more than one level-1 heading (expect ~0; a Sphinx page has one)")
-    if multi_h1:
-        print(f"     {len(multi_h1)} file(s): {multi_h1}")
+    # H1 identity as a POST-CONDITION (rule #9): every leaf must contribute >=1
+    # top heading. total H1 = n_leaves + (double-H1 pages). If it drops below the
+    # leaf count, a file was swallowed by an unclosed fence — the one way
+    # iter_prose_lines can silently lose content.
+    h1 = fixed.get(1, 0)
+    n_files = len(files)
+    h1_ok = not zero_h1 and h1 >= n_files
+    print(f"\n[H1] level-1 identity post-condition (checked every run)")
+    print(f"     total H1 = {h1};  leaves = {n_files};  double-H1 pages = {len(multi_h1)}  "
+          f"({h1} == {n_files} + {len(multi_h1)})")
+    if zero_h1:
+        print(f"     !! FAIL: {len(zero_h1)} leaf/leaves with ZERO H1 — swallowed by an unclosed "
+              f"fence? {zero_h1}")
+    elif h1 < n_files:
+        print(f"     !! FAIL: H1 {h1} < leaves {n_files} — content lost to an unclosed fence")
     else:
-        print(f"     0 — every leaf has at most one H1 (consistent with one page = one section root)")
+        print(f"     ok: every leaf keeps its top heading; the {len(multi_h1)} genuine double-H1 "
+              f"pages are {[m[0] for m in multi_h1]}")
 
     print(f"\n[SIZE] {total_bytes} bytes = {total_bytes/1_048_576:.2f} MiB (unchanged — a cross-check)")
 
@@ -928,7 +944,7 @@ def analyze_disk(out_dir: Path) -> int:
         print(f"     -> the two-extractor conclusion HOLDS (table + ```orca code block).")
     else:
         print(f"     -> MORE than two seed forms present: {sorted(seed_forms)} — REPORT, do not self-decide.")
-    return 0
+    return 0 if h1_ok else 1
 
 
 _SELFTEST_FIXTURE = '''\
