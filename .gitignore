@@ -5,7 +5,12 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+# The fetched ORCA manual is COPYRIGHT — indexed locally for personal use only,
+# NEVER committed or redistributed (ADR-006 / ADR-013). Ignore everything under
+# resources/manual/ (corpus leaves, objects.inv, manifest.json) except this README.
+# `git check-ignore resources/manual/<anything>` must print the path.
 resources/manual/*
+resources/manual/**
 !resources/manual/README.md
 *.db
 .env
