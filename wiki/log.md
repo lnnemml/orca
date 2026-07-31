@@ -3035,3 +3035,61 @@ limit; the geometry math, the phase-0 invariant, the column seam and the guard a
 ADR-002/009/010/011/012 + the proposal untouched.
 
 Next: Phase 3 remainder — orbital/density isosurfaces (`orca_plot` → `.cube`), then export.
+
+## [2026-07-31] session | Unit 3.13: chemically-honest mode animation — amplitude = max atomic displacement, frozen bond topology
+
+The first real look at the 3.12 animation found it chemically false in TWO independent ways (measured
+on dexketoprofen mode #84 = 1752.7 cm⁻¹, the C=O acid stretch). Fixed both; `probes/mode_amplitude.py`
+grounds every number (rule #10).
+
+**Bug 1 — amplitude normalized against the wrong norm.** The mode is unit-normalized over all **3N**
+components (measured Σ|v|²=1), so a bare `A·v` gives a localized mode's busiest atom a huge move and a
+delocalized mode's a crumb — the "fine for bends, collapsing for stretches" the 3.12 calibration already
+saw. That diagnosis was right; the 3.12 answer (a slider + collapse guard) treated the symptom.
+**Cause fixed:** `A` now means the **maximum atomic displacement in Å** — normalize by `max_j|v_j|`, the
+largest **atomic tri-vector norm** (NOT the largest component — measured ratio 1.07–1.41, up to √3, a
+silent error). Verified: max atomic move == A to 1e-9 for the localized C=O #84 AND the delocalized low
+mode (#6). Default **0.18 Å** (measured: largest round value keeping the C=O #84 bond's closest approach
+≥ 0.9 Å — 0.25→0.808, 0.20→0.889, 0.18→0.921). The `orca_pltvib` 2.0 is dropped as the default — it is a
+*norm* multiplier, a different quantity; kept in the wiki so the measured fact isn't lost. The collapse
+guard stays as the last line, not the main mechanism.
+
+**Physical amplitude in the label.** Verified the `.hess $atoms` 2nd column IS masses (C 12.0110, H
+1.0080, O 15.9990 — rule #10), so the frontend derives mass from the element symbol (a standard-weight
+table equal to those) without touching the reader/stored data. Label now shows the mode's real
+zero-point amplitude `A0 = √(ħ/2μω)`, μ = 1/Σ(|v_i|²/m_i). Measured C=O #84: μ ≈ 3.12 amu, **A0 ≈ 0.055
+Å** — reported vs the reviewer's ≈0.04 estimate: the mode mixes in light-H motion, lowering μ and raising
+A0 (discrepancy reported, not fudged). So the label reads "real ≈ 0.055 Å, drawn 0.18 for visibility".
+
+**Bug 2 — bond topology re-perceived every frame.** 3Dmol perceives bonds from each frame's distances,
+so an animated stretch made bonds flicker (over-compressed blink, over-stretched detach — the O floating
+off in the screenshot). A vibration is the SAME molecule; its graph is a function of the **equilibrium**
+only. Fix: new `MoleculeViewer.bondTopologyReference` (the equilibrium xyz) — bonds are perceived **once**
+from it (3Dmol's own perception, the sole one — NOT a second implementation, ADR-010: `readFrozenBonds`
+reads 3Dmol's result back) and reused every frame (`assignBonds:false` on the frame, then the frozen
+pairs applied by array position, which is what `drawBondSticks` indexes by). The **app decides** the
+topology (picks the equilibrium reference); the viewer draws (ADR-011). Even at default A a plain 1.75 Å
+cutoff keeps the bonded set identical across the period (measured separation 0.10 Å #84 / 0.24 Å low) —
+freeze is belt-and-suspenders.
+
+**Trajectory: same disease, LEFT alone (reported, not fixed).** `TrajectoryPlayer` also re-perceives per
+frame — but along an opt/reaction path bonds genuinely form/break, so freezing would hide real chemistry.
+Different question, different answer; it passes no `bondTopologyReference`.
+
+**Tests (`mode.test.ts`, real fixture `dexketoprofen-modes.json` — 99 modes + geometry + masses).**
+max atomic move == A for localized #84 AND delocalized #6 (the normalization proof); atomic-norm-not-
+component (diagonal √3 test); phase 0 = equilibrium; #84 min interatomic ≥ 0.9 Å at default A; topology
+(1.75 Å cutoff) identical at phases 0/0.25/0.75 for both modes; μ≈3.12 / A0≈0.055 for #84; the element→
+mass table equals the fixture's `.hess` mass column; null on unknown element / imaginary freq; collapse
+guard still flags/passes.
+
+**Not touched:** artifact readers, stored data, spectrum math (untouched); frame/timer ownership stays
+in the app; trajectory topology; ADR-002/009/010/011/012 + the proposal.
+
+**Verified.** `tsc` clean; **vitest 356 passed** (21 files; mode.test 12→17); `vite build` clean
+(pre-existing bundle warning only). No Rust changes. Gate/calibration reproducible via
+`probes/mode_amplitude.py` (numpy only). In-GUI legs (the actual motion + non-flickering bonds in the
+Tauri webview) need the window — standing headless limit; the amplitude math, the max==A invariant, the
+topology-stability property and the physical amplitude are all pure-tested.
+
+Next: Phase 3 remainder — orbital/density isosurfaces (`orca_plot` → `.cube`), then export.

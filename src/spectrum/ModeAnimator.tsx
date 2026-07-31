@@ -1,33 +1,37 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { MoleculeViewer } from "../viewer/MoleculeViewer";
-import { elementsAgree } from "../trajectory/frame";
+import { elementsAgree, frameToXyz } from "../trajectory/frame";
 import {
   modeDisplacements,
   modeFrameXyz,
   modeMinDistanceOverPeriod,
-  DEFAULT_AMPLITUDE,
-  MIN_AMPLITUDE,
-  MAX_AMPLITUDE,
-  AMPLITUDE_STEP,
+  atomicMasses,
+  zeroPointAmplitudeAngstrom,
+  DEFAULT_AMPLITUDE_ANGSTROM,
+  MIN_AMPLITUDE_ANGSTROM,
+  MAX_AMPLITUDE_ANGSTROM,
+  AMPLITUDE_STEP_ANGSTROM,
   PHASE_FRAMES,
   MIN_SAFE_DISTANCE_ANGSTROM,
 } from "./mode";
 
 /**
- * Normal-mode animation (unit 3.12, Part B) — the click-a-peak → watch-the-atoms-move
- * view, gated behind unit 3.12's Kabsch determiner (the `.hess` frame is a pure
- * translation of the reference, so modes are added as-is; `mode.ts`).
+ * Normal-mode animation (unit 3.12, made chemically honest in unit 3.13). Click a
+ * peak → the atoms move along the mode.
  *
- * **Ownership is the trajectory's, verbatim (ADR-011).** The phase, the amplitude,
- * the play timer and the speed are APPLICATION state here; the viewer is handed ONE
- * frame's geometry and has no timer, no frame list, and no 3Dmol `animate`/`setFrame`.
- * `mode.ts` builds that one frame (`x_eq + A·sin(2π·phase)·v`).
+ * **Ownership is the trajectory's, verbatim (ADR-011).** The phase, amplitude, play
+ * timer and speed are APPLICATION state here; the viewer is handed ONE frame's
+ * geometry, with no timer, no frame list, and no 3Dmol `animate`/`setFrame`.
  *
- * **Amplitude is a display choice** (the mode is normalized — no absolute amplitude),
- * defaulting to the measured `orca_pltvib` multiplier 2.0, labelled as such. A
- * collapse guard warns when the current amplitude drives atoms into each other
- * (rule #9) instead of drawing mush.
+ * **Amplitude = the maximum atomic displacement, in Å** (unit 3.13) — a display
+ * choice with a labelled physical reference (the mode's real zero-point amplitude,
+ * computed from verified masses). Not the old `A × mode` (which over-drove localized
+ * stretches — the mode is normalized over 3N, so the busiest atom got the lot).
+ *
+ * **Bond topology is frozen at equilibrium** (unit 3.13): the graph is a function of
+ * the equilibrium geometry only, so it is perceived once and held for the whole
+ * cycle (`bondTopologyReference`), never re-perceived per distorted frame.
  */
 
 /** Playback speeds — frames/second for the app-layer timer (a UI choice). At
@@ -69,7 +73,8 @@ export function ModeAnimator({
   // owns it, never the viewer. Auto-plays on select (clicking a peak starts it).
   const [phaseStep, setPhaseStep] = useState(0);
   const [playing, setPlaying] = useState(true);
-  const [amplitude, setAmplitude] = useState(DEFAULT_AMPLITUDE);
+  // Amplitude = maximum atomic displacement in Å (unit 3.13).
+  const [amplitude, setAmplitude] = useState(DEFAULT_AMPLITUDE_ANGSTROM);
   const [fps, setFps] = useState(DEFAULT_FPS);
 
   // Selecting a different mode restarts the oscillation from equilibrium.
@@ -78,9 +83,7 @@ export function ModeAnimator({
     setPlaying(true);
   }, [modeIndex]);
 
-  // The play timer lives HERE (app layer), looping the period forever while playing —
-  // unlike the trajectory's play-once. Kept in the component so the amplitude, the
-  // label and the guard all stay in lock-step with the drawn frame.
+  // The play timer lives HERE (app layer), looping the period forever while playing.
   useEffect(() => {
     if (!playing) return;
     const id = setInterval(() => {
@@ -100,11 +103,26 @@ export function ModeAnimator({
       const disp = modeDisplacements(normalModes, nModes, modeIndex);
       if (disp.length !== equilibrium.length) return null;
       const minDist = modeMinDistanceOverPeriod(equilibrium, disp, amplitude);
-      return { disp, minDist };
+      const masses = atomicMasses(elements);
+      const zeroPoint = masses
+        ? zeroPointAmplitudeAngstrom(disp, masses, frequencyCm)
+        : null;
+      return { disp, minDist, zeroPoint };
     } catch {
       return null;
     }
-  }, [identityOk, shapeOk, normalModes, nModes, modeIndex, equilibrium, amplitude]);
+  }, [identityOk, shapeOk, normalModes, nModes, modeIndex, equilibrium, amplitude, elements, frequencyCm]);
+
+  // The equilibrium geometry as xyz — the reference from which bond topology is
+  // perceived ONCE and frozen for the whole animation (unit 3.13). Independent of the
+  // mode and the phase, so bonds never flicker as the atoms move.
+  const referenceXyz = useMemo(() => {
+    try {
+      return frameToXyz(elements, { energy_eh: null, xyz_angstrom: equilibrium });
+    } catch {
+      return "";
+    }
+  }, [elements, equilibrium]);
 
   const frameXyz = useMemo(() => {
     if (!derived) return "";
@@ -143,12 +161,16 @@ export function ModeAnimator({
       </div>
 
       <div className="viewer-panel mode-viewer">
-        <MoleculeViewer xyzData={frameXyz} preserveCameraOnUpdate />
+        <MoleculeViewer
+          xyzData={frameXyz}
+          preserveCameraOnUpdate
+          bondTopologyReference={referenceXyz || undefined}
+        />
       </div>
 
       {collapsing ? (
         <div className="banner warn" style={{ marginTop: 6 }}>
-          At amplitude {amplitude.toFixed(2)} the atoms overlap (closest approach{" "}
+          At {amplitude.toFixed(2)} Å the atoms overlap (closest approach{" "}
           {derived.minDist.toFixed(2)} Å &lt; {MIN_SAFE_DISTANCE_ANGSTROM} Å). The
           amplitude is a viewing choice, not physical — reduce it to see this mode
           without the atoms passing through each other.
@@ -165,15 +187,15 @@ export function ModeAnimator({
         </button>
 
         <label className="mode-amp">
-          amplitude {amplitude.toFixed(2)}
+          amplitude {amplitude.toFixed(2)} Å
           <input
             type="range"
-            min={MIN_AMPLITUDE}
-            max={MAX_AMPLITUDE}
-            step={AMPLITUDE_STEP}
+            min={MIN_AMPLITUDE_ANGSTROM}
+            max={MAX_AMPLITUDE_ANGSTROM}
+            step={AMPLITUDE_STEP_ANGSTROM}
             value={amplitude}
             onChange={(e) => setAmplitude(Number(e.target.value))}
-            aria-label="mode amplitude"
+            aria-label="mode amplitude, maximum atomic displacement in ångström"
           />
         </label>
 
@@ -192,8 +214,16 @@ export function ModeAnimator({
       </div>
 
       <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
-        amplitude is a display choice — a normalized mode has no absolute amplitude.
-        Default 2.0 is the multiplier <code>orca_pltvib</code> applies (measured).
+        <strong>A</strong> is the maximum atomic displacement (a viewing choice) — the
+        busiest atom moves this far, so localized and delocalized modes are comparably
+        visible.
+        {derived.zeroPoint != null ? (
+          <>
+            {" "}This mode's real zero-point amplitude is ≈ {derived.zeroPoint.toFixed(3)} Å
+            (from its reduced mass); we exaggerate to {amplitude.toFixed(2)} Å for
+            visibility.
+          </>
+        ) : null}
       </div>
     </div>
   );

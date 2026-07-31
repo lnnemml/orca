@@ -81,6 +81,19 @@ interface MoleculeViewerProps {
    * application state in `TrajectoryPlayer`.
    */
   preserveCameraOnUpdate?: boolean;
+  /**
+   * FREEZE bond topology from this reference geometry (an xyz string) instead of
+   * re-perceiving it from every `xyzData` frame (unit 3.13). A vibration is the same
+   * molecule — its bond graph is a function of the EQUILIBRIUM only — but 3Dmol
+   * perceives bonds from the current frame's distances, so an animated stretch makes
+   * bonds flicker (an over-compressed bond blinks, an over-stretched one detaches).
+   * When set, bonds are perceived ONCE from this reference (3Dmol's own perception —
+   * the sole one; ADR-010) and reused for every frame (`assignBonds:false` on the
+   * frame). The **app decides** the topology (by choosing the equilibrium reference);
+   * the viewer draws (ADR-011). Only used on the `xyzData` path. Trajectory playback
+   * deliberately does NOT set this — there bonds can genuinely form/break.
+   */
+  bondTopologyReference?: string;
   style?: React.CSSProperties;
 }
 
@@ -100,6 +113,43 @@ const MASK_RADIUS_BOOST = 0.15;
 /** Ball-and-stick — the same style the viewer has always used. Fresh object per
  * call (3Dmol may retain the reference). */
 const baseStyle = () => ({ stick: {}, sphere: { scale: 0.3 } });
+
+/** One frozen bond as `[posA, posB, order]` — atom **array positions** (which is
+ * what 3Dmol's stick drawing indexes by, `atoms[j]`), not serials. */
+type FrozenBond = [number, number, number];
+
+/** Read the bonds 3Dmol perceived on a model, as position pairs (i < j). Used ONCE
+ * on the equilibrium reference so the topology can be frozen for animation. This is
+ * NOT a second bond-perception implementation (ADR-010): it reads back 3Dmol's own
+ * perception — the sole one the viewer already uses to draw sticks. */
+function readFrozenBonds(model: GLModel): FrozenBond[] {
+  const atoms = model.selectedAtoms({}) as Array<{ bonds?: number[]; bondOrder?: number[] }>;
+  const pairs: FrozenBond[] = [];
+  atoms.forEach((a, i) => {
+    (a.bonds ?? []).forEach((j, k) => {
+      if (i < j) pairs.push([i, j, a.bondOrder?.[k] ?? 1]);
+    });
+  });
+  return pairs;
+}
+
+/** Overwrite a model's bonds with a frozen list (both directions). The model must
+ * have been parsed with `assignBonds:false` so 3Dmol did not perceive its own from
+ * the displaced frame — that per-frame perception is exactly the flicker this fixes. */
+function applyFrozenBonds(model: GLModel, pairs: FrozenBond[]): void {
+  const atoms = model.selectedAtoms({}) as Array<{ bonds: number[]; bondOrder: number[] }>;
+  atoms.forEach((a) => {
+    a.bonds = [];
+    a.bondOrder = [];
+  });
+  for (const [i, j, order] of pairs) {
+    if (!atoms[i] || !atoms[j]) continue;
+    atoms[i].bonds.push(j);
+    atoms[i].bondOrder.push(order);
+    atoms[j].bonds.push(i);
+    atoms[j].bondOrder.push(order);
+  }
+}
 
 /**
  * Ball-and-stick base style for the scene path, honouring a theme's CPK element
@@ -254,10 +304,14 @@ export function MoleculeViewer({
   theme = DEFAULT_THEME,
   maskHighlight,
   preserveCameraOnUpdate = false,
+  bondTopologyReference,
   style,
 }: MoleculeViewerProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const viewerRef = useRef<GLViewer | null>(null);
+  // Frozen bond topology (unit 3.13), perceived ONCE from `bondTopologyReference`
+  // and cached by that string so it is re-perceived only when the reference changes.
+  const frozenBondsRef = useRef<{ source: string; pairs: FrozenBond[] } | null>(null);
   // Last scene composition rendered — drives the zoom-only-on-composition-change
   // rule. `null` means "nothing/only-xyz rendered so far".
   const lastCompositionRef = useRef<string | null>(null);
@@ -385,7 +439,25 @@ export function MoleculeViewer({
         lastCompositionRef.current = signature;
       }
     } else if (xyzData && xyzData.trim().length > 0) {
-      viewer.addModel(xyzData, "xyz");
+      const frozenRef = bondTopologyReference?.trim();
+      if (frozenRef) {
+        // Freeze topology (unit 3.13): perceive bonds ONCE from the equilibrium
+        // reference (3Dmol's own perception — the sole one), cache by the reference
+        // string, and reuse them for every displaced frame so the graph can't
+        // flicker. The frame is parsed with assignBonds:false so 3Dmol does not
+        // re-perceive from the (deliberately distorted) animated distances.
+        let cache = frozenBondsRef.current;
+        if (!cache || cache.source !== frozenRef) {
+          const refModel = viewer.addModel(frozenRef, "xyz");
+          cache = { source: frozenRef, pairs: readFrozenBonds(refModel) };
+          frozenBondsRef.current = cache;
+          viewer.removeModel(refModel);
+        }
+        const model = viewer.addModel(xyzData, "xyz", { assignBonds: false });
+        applyFrozenBonds(model, cache.pairs);
+      } else {
+        viewer.addModel(xyzData, "xyz");
+      }
       viewer.setStyle({}, baseStyle());
       if (preserveCameraOnUpdate) {
         // Trajectory playback: zoom only when the atom COUNT changes (a new
@@ -413,7 +485,7 @@ export function MoleculeViewer({
     // per-fragment palette are re-applied). A theme switch keeps the same
     // composition signature, so the zoom guard fires no `zoomTo` — the camera is
     // preserved (background is handled in the separate [theme] effect below).
-  }, [xyzData, scene, pickable, theme, preserveCameraOnUpdate]);
+  }, [xyzData, scene, pickable, theme, preserveCameraOnUpdate, bondTopologyReference]);
 
   // The overlay effect — the SINGLE owner of every shape and label in the
   // viewer: selection halos, measurement lines/labels (2.5.2b), and atom-number

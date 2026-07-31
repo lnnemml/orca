@@ -423,15 +423,33 @@ does not rotate a displacement vector). Had `R` differed from `I`, the reader wo
 rotation at its boundary, visible in the type (like `÷√m`); it does not. Locked by
 `src/spectrum/mode.test.ts` (the column-extraction seam) and reproducible via the probe.
 
-### Amplitude calibration — the collapse-guard floor (Part-B, measured)
-Same probe, second block. Animation is `x = x_eq + A·sin·v`; the extreme is `sin=±1`. At the
-`orca_pltvib` multiplier **A=2.0**, per job, how close do atoms get (min interatomic distance over the
-period)? Equilibrium mins ≈ **1.0 Å**; at A=2.0 the **median** mode stays ≈ **0.95 Å**, but the
-sharpest **localized C–H stretches overshoot to 0.02–0.07 Å** (2.0 is too large *for those* — ethane
-7/18, saddle 14/51, dexket 16/93 modes drop below 0.5 Å). So **2.0 is a good default for bends/most
-modes but overshoots localized stretches** — which is why amplitude is a slider and a **collapse guard**
-warns below **0.5 Å** (`MIN_SAFE_DISTANCE_ANGSTROM`, `mode.ts`) rather than drawing mush. 0.5 Å cleanly
-separates a genuine collapse from ordinary bond compression.
+### Amplitude — what `orca_pltvib` 2.0 actually is, and the right normalization (unit 3.13, measured)
+`probes/hess_frame_kabsch.py` first showed that at the `orca_pltvib` multiplier **A=2.0** the median
+mode keeps ≈0.95 Å but the sharpest localized C–H stretches overshoot to 0.02–0.07 Å (ethane 7/18,
+saddle 14/51, dexket 16/93 modes below 0.5 Å). Unit 3.13 (`probes/mode_amplitude.py`) found the **root
+cause and the fix**, measured on dexketoprofen:
+
+- **The mode is unit-normalized over all 3N components** (`Σ|v_i|² = 1.0`, measured). So `orca_pltvib`'s
+  `2.0` is a multiplier **of that norm**, NOT a displacement in Å — a *different quantity*. The same
+  `2.0` moves a delocalized mode's busiest atom a little and a localized mode's busiest atom a lot,
+  which is the whole "fine for bends, collapsing for stretches" story. **Do not use 2.0 as an Å default.**
+- **Right normalization: `A` = the maximum atomic displacement in Å**, i.e. divide by `max_j|v_j|` where
+  `|v_j|` is atom j's **tri-vector norm** — NOT `max|component|` (measured ratio 1.07–1.41, up to √3: a
+  silent error). Then every mode moves its busiest atom by exactly `A`. Verified: with this, max atomic
+  move == A to 1e-9 for the localized C=O #84 **and** the delocalized low mode.
+- **Default A = 0.18 Å** (measured, not the reviewer's ~0.25 ballpark). Binding constraint = the C=O #84
+  stretch (eq 1.213 Å): its closest approach vs A is 0.25→0.808, 0.20→0.889, **0.18→0.921**, so 0.18 is
+  the largest round value keeping every pair ≥ 0.9 Å ("bonds intact"). An exaggeration for visibility
+  (real thermal amplitudes are ~0.04–0.07 Å) with bonds intact. The **collapse guard** (`< 0.5 Å`,
+  `MIN_SAFE_DISTANCE_ANGSTROM`) stays as the last line for a large hand-set A, no longer the main mechanism.
+
+**Mass column (`.hess $atoms` 2nd column) — VERIFIED (rule #10):** C = **12.0110**, H = **1.0080**,
+O = **15.9990** — the standard atomic weights. So the frontend derives mass from the element symbol
+(a table equal to these) without the reader carrying masses. This feeds the **physical amplitude**
+shown in the label: `A0 = √(ħ/(2μω))`, reduced mass `μ = 1/Σ(|v_i|²/m_i)`. Measured for C=O #84:
+**μ ≈ 3.12 amu, A0 ≈ 0.055 Å** (the reviewer's ≈0.04 estimate assumed a purer/heavier C=O; the mode
+mixes in light-H motion, which lowers μ and raises A0 — reported, not fudged). The delocalized low mode
+gives A0 ≈ 0.68 Å (a soft, large-amplitude torsion). So the label says: real ~0.055 Å, we draw 0.18.
 
 ---
 

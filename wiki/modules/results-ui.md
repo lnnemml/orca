@@ -139,7 +139,7 @@ for ≤ 50 atoms it is far under the tick.
   `$actual_temperature` (measured 0.0) is **never** used as a temperature here or anywhere; the card's
   entropy uses `ThermoJson::temperature_k` (see [`orca/parse-sources.md`](../orca/parse-sources.md)).
 
-### Normal-mode animation (unit 3.12) — `src/spectrum/mode.ts` + `ModeAnimator.tsx`
+### Normal-mode animation (unit 3.12; made chemically honest in 3.13) — `src/spectrum/mode.ts` + `ModeAnimator.tsx`
 Gated behind the **unit-3.12 Kabsch determiner** (`probes/hess_frame_kabsch.py`): the `.hess $atoms`
 frame is a **pure translation** of the reference geometry on all three jobs (`max|R−I| ≤ 3e-13`, incl.
 asymmetric dexketoprofen), so `$normal_modes` are added to the reference geometry **as-is** — no mode
@@ -148,20 +148,42 @@ this is why it is a gate, not an assumption.
 
 - **`mode.ts`** (pure, node-tested): `modeDisplacements` extracts mode `k` as the **column** of the
   row-major 3N×3N matrix (a row would be a different thing — the seam, locked by a test);
-  `modeFrameCoords` is `x_eq + A·sin(2π·phase)·v` (phase 0 = equilibrium exactly); `modeFrameXyz`
+  `modeFrameCoords` is `x_eq + A·sin(2π·phase)·v̂` (phase 0 = equilibrium exactly); `modeFrameXyz`
   reuses the trajectory formatter (one code path to the dumb renderer); `modeMinDistanceOverPeriod`
-  is the collapse guard.
+  is the collapse guard; `zeroPointAmplitudeAngstrom` is the physical amplitude for the label.
 - **Ownership is the trajectory's, verbatim (ADR-011).** The **phase, amplitude, play timer and
   speed are application state** in `ModeAnimator`; the viewer is handed **one frame's** geometry, with
   no timer, no frame list, and no 3Dmol `animate`/`setFrame`. The timer loops the period forever
   (unlike the trajectory's play-once). Same call as the trajectory frame number and the editor
   `selection` — view-local state held by the component, not the store or the renderer.
-- **Amplitude is a display choice**, defaulting to the measured `orca_pltvib` multiplier **2.0**
-  (labelled as such — the mode is normalized and has no absolute amplitude), a slider like the FWHM and
-  the display scale. A **collapse guard** (rule #9) warns when the current amplitude drives atoms closer
-  than **0.5 Å** (`MIN_SAFE_DISTANCE_ANGSTROM`) — measured: 2.0 suits bends (median min ≈0.95 Å) but
-  overshoots localized C–H stretches (0.02–0.07 Å), so the guard tells the user to reduce it rather than
-  drawing mush.
+- **Amplitude = the MAXIMUM ATOMIC DISPLACEMENT, in Å (unit 3.13).** The mode is unit-normalized over
+  all **3N** components (measured `Σ|v|²=1`), so a bare `A·v` gives the busiest atom of a *localized*
+  mode a huge move and of a *delocalized* mode a crumb — the earlier "fine for bends, collapsing for
+  stretches" (the C=O #84 bond reached **0.63 Å**). The fix normalizes by `max_j|v_j|` — the largest
+  **atomic tri-vector norm**, NOT the largest component (off by up to √3) — so the busiest atom always
+  moves exactly `A` and every mode is comparably visible. Default **0.18 Å** (measured: the largest round
+  value keeping the worst localized stretch's bonds ≥ 0.9 Å; real thermal amplitudes are ~0.04–0.07 Å,
+  we exaggerate for visibility). The old `orca_pltvib` 2.0 is **not** the default — it is a *norm*
+  multiplier, a different quantity (`parse-sources.md`). The label shows the mode's real zero-point
+  amplitude `√(ħ/2μω)` (from verified masses — see below), naming the exaggeration. The **collapse
+  guard** (`< 0.5 Å`) stays as the last line for a large hand-set A, no longer the main mechanism.
+- **Masses are derived from the element symbol** via a standard-weight table **verified equal** to the
+  `.hess $atoms` mass column (C 12.011 / H 1.008 / O 15.999, `probes/mode_amplitude.py`) — so the reader
+  and stored data are untouched (rule #10). No mass → no physical amplitude shown (never guessed).
+- **Bond topology is FROZEN at equilibrium (unit 3.13).** A vibration is the same molecule; its bond
+  graph is a function of the **equilibrium** geometry only. But 3Dmol perceives bonds from each frame's
+  distances, so an animated stretch made bonds flicker (over-compressed bonds blink, over-stretched ones
+  detach — the oxygen floating off in the author's screenshot). Fix: `MoleculeViewer.bondTopologyReference`
+  — the equilibrium xyz. Bonds are perceived **once** from it (3Dmol's own perception — the sole one,
+  **not** a second implementation; ADR-010) and **reused for every frame** (`assignBonds:false` on the
+  frame, then the frozen pairs applied). The **app decides** the topology by choosing the equilibrium
+  reference; the viewer draws (ADR-011). Even at the default amplitude a plain distance cutoff (1.75 Å)
+  keeps the bonded set identical across the period (measured separation 0.10 Å for #84, 0.24 Å for the
+  low mode) — the freeze is belt-and-suspenders on top of that.
+- **The trajectory has the SAME per-frame perception — and is deliberately LEFT that way.** Along an
+  optimization/reaction path bonds can genuinely form and break; freezing them would hide real chemistry.
+  So `TrajectoryPlayer` passes no `bondTopologyReference`. Different question, different answer (reported,
+  not fixed — this is the one place per-frame perception is correct).
 - **Identity check at the UI boundary**, like the trajectory: `elementsAgree(f.elements,
   geometry.elements)` before animating — a mismatch renders an error, not the wrong atoms moving.
 - **Imaginary modes are animatable, and it is the teaching payoff:** for a transition state the imaginary

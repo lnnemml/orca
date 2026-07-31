@@ -2,61 +2,90 @@
 //! discipline as `trajectory/frame.ts`, whose ownership rule this mirrors).
 //!
 //! A normal mode is a set of per-atom Cartesian displacement vectors; animating it
-//! is `x(t) = x_eq + A · sin(2πt) · v`, one period back and forth, looped. All the
+//! is `x(t) = x_eq + A · sin(2πt) · v̂`, one period back and forth, looped. All the
 //! math lives here as named, checkable functions; the component owns only the phase,
 //! amplitude, and timer (ADR-011 — the viewer gets ONE frame, never a timer).
 //!
 //! # Two facts this module rests on, both MEASURED (`wiki/orca/parse-sources.md`)
 //!  * **The mode vectors are taken AS-IS — no rotation.** The gate (unit 3.12,
 //!    `probes/hess_frame_kabsch.py`) proved the `.hess $atoms` frame is the
-//!    reference (`.property.txt` final) geometry plus a **pure translation** on all
-//!    three jobs (max|R−I| ≤ 3e-13, incl. the asymmetric 33-atom dexketoprofen).
-//!    Translation does not rotate a displacement vector, so a mode column added to
-//!    the reference geometry animates in the correct direction.
-//!  * **The modes are Cartesian, unit-normalized** (unit-3.6 gate — no ÷√m). So the
-//!    displacement is used directly; the only free number is the amplitude.
+//!    reference geometry plus a **pure translation** on all three jobs.
+//!  * **The modes are Cartesian, unit-normalized over all 3N components** (unit-3.6
+//!    gate — no ÷√m). That last fact is exactly the amplitude trap below.
 //!
-//! # Amplitude is a DISPLAY choice, with no absolute meaning
-//! A normalized mode has no intrinsic amplitude — only a direction. The default
-//! `DEFAULT_AMPLITUDE = 2.0` is the multiplier `orca_pltvib` itself applies
-//! (measured, unit-3.6 gate), stated so the number is not magic. It is a slider,
-//! like the FWHM and the display-scale factor.
+//! # Amplitude = MAXIMUM ATOMIC DISPLACEMENT in Å (unit 3.13)
+//! The mode is normalized over all **3N** components, so its unit "length" is split
+//! across every moving atom. In a delocalized mode (a bend over 33 atoms) each atom
+//! gets a crumb; in a localized one (a C=O or C–H stretch) almost the whole unit
+//! sits on two atoms. The SAME scalar multiplier therefore produces wildly different
+//! physical motion — which is why the earlier `A × v` normalization was "fine for
+//! bends, collapsing for stretches" (measured: mode #84 C=O drove its bond to
+//! **0.63 Å**). The fix: **A is the maximum atomic displacement, in Å** —
+//!
+//!     disp_i(phase) = A · sin(2π·phase) · v_i / max_j |v_j|
+//!
+//! where `max_j |v_j|` is the largest **atomic tri-vector norm** (NOT the largest
+//! single component — those differ by up to √3, a silent error; `maxAtomicNorm`).
+//! Now every mode — localized or delocalized — moves its busiest atom by exactly A,
+//! so all 99 modes are comparably visible and no bond is over-driven. The default is
+//! **measured**, not the old `orca_pltvib` 2.0 (which was a NORM multiplier, a
+//! different quantity — see `parse-sources.md`).
 
 import { frameToXyz } from "../trajectory/frame";
 
-/** The `orca_pltvib` multiplier (measured, unit-3.6). A display default, not a
- * molecular property — the mode is normalized and has no absolute amplitude. */
-export const DEFAULT_AMPLITUDE = 2.0;
-export const MIN_AMPLITUDE = 0.25;
-export const MAX_AMPLITUDE = 3.0;
-export const AMPLITUDE_STEP = 0.25;
+/**
+ * Default max atomic displacement, Å. **Measured** (`probes/mode_amplitude.py`): an
+ * exaggeration for visibility (real thermal amplitudes are ~0.04–0.07 Å), bounded by
+ * the worst localized stretch keeping its bonds intact — mode #84's C=O (eq 1.213 Å)
+ * closest approach vs A: 0.25→0.808, 0.20→0.889, **0.18→0.921**, so 0.18 keeps every
+ * pair ≥ 0.9 Å. (The reviewer's ~0.25 ballpark, narrowed by the C=O measurement.)
+ */
+export const DEFAULT_AMPLITUDE_ANGSTROM = 0.18;
+export const MIN_AMPLITUDE_ANGSTROM = 0.02;
+export const MAX_AMPLITUDE_ANGSTROM = 0.6;
+export const AMPLITUDE_STEP_ANGSTROM = 0.02;
 
 /** Frames sampled over one full period. Phase is `p / PHASE_FRAMES`, p = 0…N−1, so
  * phase 0 is exactly the equilibrium (sin 0 = 0). A UI/app timer advances p. */
 export const PHASE_FRAMES = 40;
 
 /**
- * Collapse-guard floor, Å. Below this two atoms read as merged mush, not a molecule.
- * Measured basis (`probes/hess_frame_kabsch.py`): equilibrium min interatomic
- * distances are ≈1.0 Å; at A=2.0 ordinary modes keep a median ≈0.95 Å, but the
- * sharpest localized C–H stretches drive atoms to 0.02–0.07 Å at the sin=±1 extreme
- * (2.0 overshoots them). 0.5 Å cleanly separates a genuine collapse from ordinary
- * bond compression — it is a *guard that warns*, not a hard block (rule #9).
+ * Collapse-guard floor, Å — the LAST line of defence for a large amplitude, no
+ * longer the main mechanism (the max-displacement normalization is). Below this two
+ * atoms read as merged mush. At the default 0.18 Å no mode trips it; it only fires
+ * if the user drags the slider well up. Kept (rule #9), not relied upon.
  */
 export const MIN_SAFE_DISTANCE_ANGSTROM = 0.5;
+
+/** Physical-amplitude constants (CODATA). Named, like `BOHR_TO_ANGSTROM`. */
+const HBAR_J_S = 1.054_571_817e-34;
+const SPEED_OF_LIGHT_CM_S = 2.997_924_58e10;
+const AMU_KG = 1.660_539_066_6e-27;
+
+/**
+ * Standard atomic weights (amu), IUPAC — VERIFIED to equal the `.hess $atoms` 2nd
+ * (mass) column on the dexketoprofen run (C 12.011, H 1.008, O 15.999 to 4 dp,
+ * `probes/mode_amplitude.py`), so deriving mass from the element symbol here matches
+ * the artifact without the reader carrying masses (rule #10 — measured, not assumed).
+ * An element absent here yields no physical amplitude (shown as such, never guessed).
+ */
+const ATOMIC_MASS_AMU: Record<string, number> = {
+  H: 1.008, He: 4.0026, Li: 6.94, Be: 9.0122, B: 10.81, C: 12.011, N: 14.007,
+  O: 15.999, F: 18.998, Ne: 20.18, Na: 22.99, Mg: 24.305, Al: 26.982, Si: 28.085,
+  P: 30.974, S: 32.06, Cl: 35.45, Ar: 39.948, K: 39.098, Ca: 40.078, Fe: 55.845,
+  Cu: 63.546, Zn: 65.38, Br: 79.904, I: 126.9,
+};
 
 type Vec3 = [number, number, number];
 
 /**
  * Mode `modeIndex`'s per-atom displacement, extracted as the **column** of the
  * row-major 3N×3N `$normal_modes` matrix (column k = mode k — the measured
- * convention, `parse-sources.md`; a row would be atom-component k, a different
- * thing entirely). Row `3a+c` is atom `a`, Cartesian component `c`, so
- * `disp[a][c] = normalModes[(3a+c)·n + k]`.
+ * convention, `parse-sources.md`; a row would be a different thing). Row `3a+c` is
+ * atom `a`, Cartesian component `c`, so `disp[a][c] = normalModes[(3a+c)·n + k]`.
  *
  * Throws (never returns a wrong-length vector) on a matrix that is not n², an
- * `nModes` not divisible by 3, or an out-of-range mode index — the UI-boundary echo
- * of the reader's shape invariants (rule #9).
+ * `nModes` not divisible by 3, or an out-of-range mode index (rule #9).
  */
 export function modeDisplacements(
   normalModes: number[],
@@ -87,14 +116,31 @@ export function modeDisplacements(
 }
 
 /**
- * The animated geometry at `phase` ∈ [0,1): `x_eq + A·sin(2π·phase)·v`. At phase 0
- * (and 0.5) this is exactly the equilibrium (sin = 0). Throws on an atom-count
- * mismatch between the equilibrium and the displacement — never a silent draw.
+ * The largest **atomic** displacement magnitude in a mode — `max_j |v_j|`, where
+ * `|v_j|` is the tri-vector norm of atom j. This is the normalization denominator so
+ * that `A` means the max atomic displacement. It is deliberately NOT `max |component|`
+ * (which is smaller by up to √3 for an atom moving on a diagonal — the silent error
+ * this function's name guards against).
+ */
+export function maxAtomicNorm(disp: Vec3[]): number {
+  let m = 0;
+  for (const v of disp) {
+    const n = Math.hypot(v[0], v[1], v[2]);
+    if (n > m) m = n;
+  }
+  return m;
+}
+
+/**
+ * The animated geometry at `phase` ∈ [0,1): `x_eq + A·sin(2π·phase)·v̂`, where the
+ * mode is scaled so the **busiest atom moves exactly `amplitudeAngstrom` at the
+ * sin=±1 extreme**. At phase 0 (and 0.5) this is exactly the equilibrium (sin = 0).
+ * Throws on an atom-count mismatch — never a silent draw.
  */
 export function modeFrameCoords(
   equilibrium: Vec3[],
   disp: Vec3[],
-  amplitude: number,
+  amplitudeAngstrom: number,
   phase: number,
 ): Vec3[] {
   if (equilibrium.length !== disp.length) {
@@ -102,7 +148,10 @@ export function modeFrameCoords(
       `equilibrium has ${equilibrium.length} atoms but the mode has ${disp.length}`,
     );
   }
-  const s = amplitude * Math.sin(2 * Math.PI * phase);
+  const vmax = maxAtomicNorm(disp);
+  // s carries BOTH the phase and the Å-per-unit scaling. vmax === 0 (a rigid/zero
+  // mode we never animate) → no motion rather than a divide-by-zero.
+  const s = vmax > 0 ? (amplitudeAngstrom / vmax) * Math.sin(2 * Math.PI * phase) : 0;
   return equilibrium.map((p, a) => [
     p[0] + s * disp[a][0],
     p[1] + s * disp[a][1],
@@ -111,16 +160,16 @@ export function modeFrameCoords(
 }
 
 /** One animated frame as a standard xyz string for the viewer. Reuses the
- * trajectory formatter (same count-mismatch throw), so the animation and the
- * trajectory feed the dumb renderer through one code path. */
+ * trajectory formatter (same count-mismatch throw), so animation and trajectory
+ * feed the dumb renderer through one code path. */
 export function modeFrameXyz(
   elements: string[],
   equilibrium: Vec3[],
   disp: Vec3[],
-  amplitude: number,
+  amplitudeAngstrom: number,
   phase: number,
 ): string {
-  const coords = modeFrameCoords(equilibrium, disp, amplitude, phase);
+  const coords = modeFrameCoords(equilibrium, disp, amplitudeAngstrom, phase);
   return frameToXyz(elements, { energy_eh: null, xyz_angstrom: coords });
 }
 
@@ -143,18 +192,66 @@ export function minInteratomicDistance(coords: Vec3[]): number {
  * The closest two atoms get anywhere in the mode's period at this amplitude — the
  * number the collapse guard tests against `MIN_SAFE_DISTANCE_ANGSTROM`. The per-pair
  * distance is convex in `sin`, so the minimum can be interior; we sample the period
- * (not just the sin=±1 extremes) and take the global min. Deterministic.
+ * and take the global min. Deterministic.
  */
 export function modeMinDistanceOverPeriod(
   equilibrium: Vec3[],
   disp: Vec3[],
-  amplitude: number,
+  amplitudeAngstrom: number,
   samples: number = PHASE_FRAMES,
 ): number {
   let best = Infinity;
   for (let p = 0; p < samples; p++) {
-    const d = minInteratomicDistance(modeFrameCoords(equilibrium, disp, amplitude, p / samples));
+    const d = minInteratomicDistance(
+      modeFrameCoords(equilibrium, disp, amplitudeAngstrom, p / samples),
+    );
     if (d < best) best = d;
   }
   return best;
+}
+
+/** Atomic masses (amu) for an element list, or `null` if any element is not in the
+ * verified table — so the physical amplitude is shown only when every mass is known. */
+export function atomicMasses(elements: string[]): number[] | null {
+  const out: number[] = [];
+  for (const el of elements) {
+    const m = ATOMIC_MASS_AMU[el];
+    if (m == null) return null;
+    out.push(m);
+  }
+  return out;
+}
+
+/**
+ * The mode's effective reduced mass (amu): `μ = 1 / Σ_i(|v_i|²/m_i)`. With the mode
+ * unit-normalized (`Σ|v_i|² = 1`), a light atom carrying much of the motion pulls μ
+ * down. `disp` and `massesAmu` must be index-aligned and same length.
+ */
+export function reducedMassAmu(disp: Vec3[], massesAmu: number[]): number {
+  let s = 0;
+  for (let a = 0; a < disp.length; a++) {
+    const n2 = disp[a][0] ** 2 + disp[a][1] ** 2 + disp[a][2] ** 2;
+    s += n2 / massesAmu[a];
+  }
+  return 1 / s;
+}
+
+/**
+ * The mode's zero-point (real thermal) amplitude in Å: `A0 = √(ħ / (2 μ ω))`, with
+ * `ω = 2πc·ν̃` (ν̃ in cm⁻¹) and μ from {@link reducedMassAmu}. This is the number the
+ * label shows to make the point that `A` (the drawn max displacement) is a viewing
+ * choice: real vibrations are ~0.04–0.07 Å, we draw ~0.18 for visibility. `null` for
+ * a non-positive frequency (imaginary/zero modes have no zero-point amplitude) or
+ * unknown masses. Measured on #84: μ ≈ 3.12 amu → A0 ≈ 0.055 Å.
+ */
+export function zeroPointAmplitudeAngstrom(
+  disp: Vec3[],
+  massesAmu: number[],
+  frequencyCm: number,
+): number | null {
+  if (frequencyCm <= 0) return null;
+  const mu = reducedMassAmu(disp, massesAmu) * AMU_KG;
+  const omega = 2 * Math.PI * SPEED_OF_LIGHT_CM_S * frequencyCm;
+  const a0_m = Math.sqrt(HBAR_J_S / (2 * mu * omega));
+  return a0_m * 1e10;
 }
