@@ -235,7 +235,13 @@ impl ParsedResults {
                     ir_intensity_km_mol: ir,
                     n_modes: modes.n,
                     normal_modes: modes.into_row_major(),
+                    // `$actual_temperature` (measured 0.0) — NOT the calculation
+                    // temperature; kept only to surface the raw field. The real
+                    // temperature is ThermoJson::temperature_k (from .property.txt).
+                    // Never wire this into a temperature display. See hess.rs / parse-sources.md.
                     temperature_k: h.actual_temperature(),
+                    // `$frequency_scale_factor` (measured 1.0 = ORCA applied none).
+                    // The UI's display scale is a separate, user-owned plot choice.
                     scale_factor: h.frequency_scale_factor(),
                     unknown_sections: h.unknown_section_names(),
                 })

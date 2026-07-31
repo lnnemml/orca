@@ -2857,3 +2857,70 @@ unit-tested and the CSS mirrors the proven `.screen.new-job` fix. ADR-002/009/01
 untouched.
 
 Next: Kabsch-alignment gate → normal-mode animation (click an IR peak → watch the atoms move).
+
+## [2026-07-31] session | Unit 3.10: honest IR presentation after the first chemist review
+
+The IR panel worked but *looked* right in ways that weren't true. First real look by the chemist
+found three defects and two places where a display choice was implicit instead of labelled. **The
+physics was not touched** — `ir.ts` is cross-checked against `orca_mapspc` and the numbers hold
+(tallest peak 40.3 = 2·632.8/(π·10)). The whole unit is about the seam rule #11 draws on screen:
+every element of the plot is either a measured quantity or an explicitly labelled construction
+choice — never a third thing that reads as physics but isn't.
+
+**Bug 1 — markers → sticks.** On-curve Scatter markers replaced by **sticks**: a vertical line per
+mode at its wavenumber, height = IR intensity in **km/mol** (the physically honest object — the
+spectrum IS a set of lines). The broadened curve (km/mol·cm⁻¹, area-normalized density) sits on top.
+**Two labelled Y axes** (left curve km/mol·cm⁻¹, right sticks km/mol) — chosen over one axis because
+they are genuinely different quantities and a single axis would need an arbitrary FWHM/lineshape
+conversion factor (a made-up parameter, rule #11). Sticks are drawn SVG (`IrSticks`, recharts v3
+`useXAxisScale` + `usePlotArea`), positioned from the plot area + the explicit km/mol max so they do
+not depend on the data-less right axis registering an internal scale.
+
+**Bug 2 — the two-series tooltip.** recharts merged the curve Line and the markers Scatter and took
+the label from one x and a value from another (`115 cm⁻¹` header next to `9.350` = the O–H peak
+height at 3714). Fixed **structurally**: sticks are no longer a chart series, so the Tooltip has only
+the Line to read — nothing to merge. A custom `content` derives everything from the one hovered
+wavenumber via `irTooltipModel(label, curveValueThere, modes)`: the curve value at that x plus the
+**nearest mode** labelled *as nearest* with its Δ. `irPresentation.ts` is a new pure, node-tested
+module (physics stays in `ir.ts`); `irPresentation.test.ts` reproduces the 115-vs-3714 scenario and
+locks the one-x property.
+
+**Bug 3 — Y axis units.** Both axes now carry units (left km/mol·cm⁻¹, right km/mol) — rule #11 on
+the display.
+
+**Choice — inverted view.** A peaks-up / peaks-down toggle. Inversion **reverses both Y axes** (data
+unchanged — the honest inversion), x stays increasing, and it is labelled a *conventional depiction,
+explicitly NOT transmittance*: %T needs the Beer–Lambert law (path length, concentration) a
+calculation does not contain, so no `%T` axis and no invented parameters.
+
+**Choice — frequency scaling.** Harmonic frequencies run high (measured: C–H 3025–3193 where a
+chemist expects 2900–3000). Scaling is a **display slider** (default 1.00), NOT a method-specific
+number baked into code (we have no measured/cited one) and NOT `$frequency_scale_factor` — that field
+is **measured 1.0** = "ORCA applied none"; building "scaled frequencies" on it would show the same
+numbers twice. When scale ≠ 1 the table shows raw **and** scaled columns (scaled marked *derived*)
+and the curve/sticks move to the scaled positions. If a future run prints ≠ 1.0, that is a measured
+fact and may seed the slider.
+
+**`$actual_temperature` audit.** Measured **0.0** on dexketoprofen though thermochemistry was at
+298.15 K — it is NOT the calculation temperature. Confirmed it is never used as one: the card's
+entropy uses `ThermoJson::temperature_k` (`.property.txt`). Strengthened the `hess.rs` accessor doc
+and the `results.rs` population-site comment; the field stays only to surface the raw value (a rename
+to avoid the trap is noted, deferred — it would change the stored `data_json` key).
+
+**Teaching page.** `chemistry/ir-spectrum.md` gained "чому обчислений спектр не схожий на
+експериментальний" on **measured** dexketoprofen numbers: intensity(km/mol) vs %T (C=O acid 1752.7 =
+632.8 km/mol vs all 13 C–H = 125, strongest 24.9 — C–H are objectively weak, they only *look*
+prominent in %T); two resolved C=O (1752.7 acid / 1670.1 ketone, lowered by ring conjugation); the
+harmonic overestimate + why no factor is coded; **O–H 3714 = free monomer** (real acid dimerizes →
+band to ~3000, smeared — the biggest discrepancy, and not in C–H); low modes 21–49 cm⁻¹ → why entropy
+is the least reliable number in the card.
+
+**Verified.** `tsc` clean; **vitest 334 passed** (20 files; +10: `irPresentation.test.ts` — scaled
+no-op/transform, nearest-mode, single-source tooltip incl. the 115-vs-3714 bug); `vite build` clean
+(pre-existing bundle-size warning only). Rust changes are comments only (`cargo` untouched
+semantically). In-GUI legs (sticks + two axes rendering, the tooltip, the scale/inversion controls in
+the real webview) need the Tauri window — standing headless limitation; the tooltip/scale/nearest
+logic is all pure-tested and the recharts v3 hooks are used per their documented custom-shape purpose.
+ADR-002/009/010/011/012 + the proposal untouched.
+
+Next (unchanged): Kabsch-alignment gate → normal-mode animation (click an IR peak → watch the atoms move).

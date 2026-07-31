@@ -307,7 +307,16 @@ the `[ ]` "Fragment library" item above.
       **`click a peak → animate that normal mode` remains `[ ]`, behind the Kabsch-alignment gate**
       (a later unit) — no "static mode preview" stopgap. (Unit 3.9 turned out to be a defect-fix unit:
       the results screen was made reachable and the header energy re-sourced from the parsed artifact —
-      see `wiki/debugging/007`; Kabsch + mode animation did not start.)
+      see `wiki/debugging/007`; Kabsch + mode animation did not start.) **Unit 3.10** (first chemist
+      review) made the presentation honest: on-curve markers replaced by **sticks** (km/mol, right
+      axis) under the broadened curve (km/mol·cm⁻¹, left axis) — two labelled axes, not one; the
+      two-series tooltip that mixed a label from one x with a value from another replaced by a
+      **single-source** custom tooltip (`irPresentation.ts`, tested); a **display scale factor** slider
+      (default 1.00, no method-specific number baked in — `$frequency_scale_factor` measured 1.0 = none)
+      and an **inverted view** toggle (labelled a *conventional depiction, not transmittance* — no
+      Beer–Lambert, no invented %T). `$actual_temperature` (measured 0.0) confirmed never used as a
+      temperature. Teaching page `chemistry/ir-spectrum.md` gained "why the computed spectrum differs
+      from experiment" (measured dexketoprofen numbers).
 - [x] Imaginary-frequency detection surfaced prominently (saddle point vs minimum — teaching
       moment) — **done** (unit 3.6): `imaginary_count` explicit field + the card's verdict banner
       (0 = minimum, 1 = transition state, >1 = neither → re-optimize).

@@ -77,13 +77,53 @@ for ≤ 50 atoms it is far under the tick.
     intensity — **the area under a peak is physically meaningful** (a test locks `∫ ≈ intensity`).
   - **`autoGrid`** names the x-axis explicitly: range = mode span padded by 8·FWHM, clamped at 0;
     step = FWHM/8 floored at 0.5 cm⁻¹ — not "by eye".
+- **`irPresentation.ts`** (pure, node-tested): the **presentation** layer on top of `ir.ts`'s
+  physics — everything here is a *drawing* choice, never a molecular property. `scaledModes` applies
+  the display scale factor (identity at 1.0) by transforming the mode list fed to `ir.ts`, so the
+  physics module is untouched and curve + sticks share one x-axis; `nearestMode` / `irTooltipModel`
+  build the single-source tooltip state (see below). Kept separate from `ir.ts` so the "physics" and
+  the "how we draw it" layers don't blur.
 - **`IrSpectrumPanel.tsx`**: the verdict banner (minimum / TS / neither, from `imaginary_count` — the
   teaching moment), the **imaginary modes listed separately** as a transition-state **diagnosis**
-  (not dropped, not broadened), the Lorentzian curve (recharts `ComposedChart`) with a **FWHM
-  slider** and the grid printed as numbers (both are plot choices, stated as such), and the frequency
-  table. **Peak ↔ row:** clicking a peak marker selects its frequency-table row and draws a vertical
-  marker; clicking a row selects the peak — one shared `selected` mode index (the original index into
-  `frequencies_cm`). **No mode animation** — unit 3.9, behind the Kabsch gate.
+  (not dropped, not broadened), the chart, the plot-choice controls, and the frequency table.
+
+  **Sticks vs curve — two honest representations, two labelled axes (unit 3.10).** The spectrum *is*
+  a set of lines, so the primary object is **sticks**: a vertical line per mode at its wavenumber,
+  height = its IR intensity in **km/mol** (right axis, drawn by the `IrSticks` component using v3's
+  `useXAxisScale` + `usePlotArea` — positioned from the plot area and the explicit km/mol max, so it
+  does not depend on the data-less right axis registering an internal scale). The **broadened curve**
+  (km/mol·cm⁻¹, area-normalized — a *density*) sits on top on the **left** axis. They are genuinely
+  different quantities (integrated intensity vs density), so they get **two labelled axes** — a single
+  axis would need an arbitrary FWHM/lineshape-dependent conversion factor, a made-up parameter (rule
+  #11). The earlier on-curve Scatter markers are **gone** (they were neither sticks nor curve, and
+  they were the second series that broke the tooltip).
+
+  **Single-source tooltip (unit 3.10 bug fix).** The old tooltip merged two recharts series and took
+  the label from one x and a value from another (header `115 cm⁻¹` beside a `9.350` that was the O–H
+  peak height at 3714). Fixed structurally: sticks are **not a chart series** (they are drawn SVG), so
+  the Tooltip has only the curve Line to read — nothing to merge. A custom `content` derives
+  everything from the one hovered wavenumber via `irTooltipModel(label, curveValueThere, modes)`: the
+  curve value at that x, and the **nearest mode** labelled *as nearest* with its Δ, never as "the value
+  here". `irPresentation.test.ts` locks the one-x property (reproduces the 115-vs-3714 scenario).
+
+  **Three labelled plot choices**, each a UI control, none a molecular property: the **FWHM** slider;
+  the **display scale factor** slider (default **1.00**, range 0.9–1.1 — NOT baked in per method, NOT
+  read from the artifact's `$frequency_scale_factor`; when ≠ 1 the table shows raw **and** scaled
+  columns, the scaled marked *derived*, and the curve/sticks move to the scaled positions); and the
+  **inverted view** toggle (peaks up / peaks down). The inverted view **reverses both Y axes** (data
+  unchanged — the honest inversion), the x-axis stays increasing, and it is labelled a *conventional
+  depiction, explicitly NOT transmittance* — %T needs the Beer–Lambert law (path length,
+  concentration) a calculation does not contain, so no `%T` axis and no invented parameters appear.
+
+  **Axis units on screen (rule #11 on the display):** left `km/mol·cm⁻¹` (broadened density), right
+  `km/mol` (stick intensity), x `cm⁻¹`. The artifact's own `$frequency_scale_factor` is surfaced with
+  its value and an explanation that 1.0 means ORCA applied none — distinct from the display scale.
+
+  **Peak ↔ row:** clicking a stick selects its frequency-table row (and draws a dashed marker at the
+  scaled wavenumber); clicking a row selects the stick — one shared `selected` mode index (the
+  original index into `frequencies_cm`). **No mode animation** — unit 3.9, behind the Kabsch gate.
+  Note: `$actual_temperature` (measured 0.0) is **never** used as a temperature here or anywhere;
+  the card's entropy uses `ThermoJson::temperature_k` (see [`orca/parse-sources.md`](../orca/parse-sources.md)).
 
 ### Cross-checked against ORCA's own tool
 The broadening was verified against `/opt/orca/orca_mapspc` (domain rules #9/#10) — flags taken from

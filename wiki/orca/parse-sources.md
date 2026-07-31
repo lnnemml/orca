@@ -152,6 +152,30 @@ and for that, ORCA's own `***imaginary mode***` marker is the measured signal.
 
 ---
 
+## `.hess` scalar fields — what they are NOT (measured, unit 3.10)
+
+Two single-value `.hess` sections look like they name the calculation's conditions. Both were
+measured on the dexketoprofen Freq run (`! r2SCAN-3c CPCM(ethanol) Opt Freq TightSCF`, 33 atoms,
+thermochemistry computed at **298.15 K**), and both are **traps**:
+
+| Section | measured value | what it is | what it is **not** |
+|---|---|---|---|
+| `$frequency_scale_factor` | **1.000000** | the factor ORCA **already applied** to the printed frequencies (1.0 = none applied) | **not** a recommended/empirical factor for the method, and **not** a reason to display "scaled frequencies" — that would show the same numbers twice |
+| `$actual_temperature` | **0.000000** | a field printed as 0 on this run | **not** the calculation temperature — the thermochemistry was done at 298.15 K |
+
+**Where the real temperature lives:** `$THERMOCHEMISTRY_Energies temperature` in `.property.txt`
+(`&Units` cross-checked, unit 3.3), surfaced as `ThermoJson::temperature_k`. The Results card's
+entropy uses **that** field (`S = T·S / T`), never `$actual_temperature`. The `.hess`
+`actual_temperature` is stored on `FrequenciesJson::temperature_k` only to surface the raw field;
+it is **not consumed** anywhere as a temperature (audited unit 3.10). A rename of that field to
+avoid the trap is noted but deferred (it would change the stored `data_json` key).
+
+**Consequence for the IR panel (unit 3.10):** frequency scaling is therefore a **display choice**
+(a UI slider, default **1.00**), exactly like the FWHM — never a number baked in per method (we
+have neither measured nor cited one) and never read from `$frequency_scale_factor` while it stays
+1.0. If a future run ever prints `$frequency_scale_factor ≠ 1.0`, *that* is a measured fact and may
+seed the slider's initial value; until then the field only explains why nothing is rescaled.
+
 ## Domain rule #5 — cclib parse cost (measured)
 
 | item | value |

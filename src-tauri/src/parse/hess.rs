@@ -434,11 +434,18 @@ impl Verified {
     pub fn ir_spectrum(&self) -> Result<Vec<IrRow>, ParseError> {
         self.0.ir_spectrum()
     }
-    /// `$actual_temperature` (as printed; not a canonical-unit quantity).
+    /// `$actual_temperature` as printed — **measured 0.0** on the dexketoprofen
+    /// Freq run whose thermochemistry was computed at 298.15 K. So this field is
+    /// **NOT the calculation temperature**; it must never be used as one. The
+    /// authoritative temperature is `$THERMOCHEMISTRY_Energies temperature`
+    /// (`.property.txt` → `ThermoJson::temperature_k`). See `parse-sources.md`.
     pub fn actual_temperature(&self) -> Option<f64> {
         self.0.section("actual_temperature").and_then(|s| s.scalar())
     }
-    /// `$frequency_scale_factor` (dimensionless).
+    /// `$frequency_scale_factor` (dimensionless) — the factor ORCA **already
+    /// applied** to the printed frequencies. **Measured 1.0** (= none applied); it
+    /// is not a recommended value for the method. Not a display scale: applying a
+    /// display factor is a UI choice (see `IrSpectrumPanel`), not this field.
     pub fn frequency_scale_factor(&self) -> Option<f64> {
         self.0.section("frequency_scale_factor").and_then(|s| s.scalar())
     }

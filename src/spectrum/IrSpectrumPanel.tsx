@@ -4,10 +4,11 @@ import {
   ComposedChart,
   Line,
   ReferenceLine,
-  Scatter,
   Tooltip,
   XAxis,
   YAxis,
+  useXAxisScale,
+  usePlotArea,
 } from "recharts";
 
 import type { ParsedResults } from "../types";
@@ -16,38 +17,66 @@ import {
   classifyModes,
   autoGrid,
   spectrum,
-  lorentzian,
+  type IrMode,
   DEFAULT_FWHM_CM,
   MIN_FWHM_CM,
   MAX_FWHM_CM,
 } from "./ir";
+import {
+  scaledModes,
+  irTooltipModel,
+  DEFAULT_SCALE,
+  MIN_SCALE,
+  MAX_SCALE,
+  SCALE_STEP,
+} from "./irPresentation";
 
 type Frequencies = NonNullable<ParsedResults["frequencies"]>;
 
-const CHART_HEIGHT = 220;
+const CHART_HEIGHT = 240;
+/** Stick colour (km/mol axis). The curve is `#4f8cff`; sticks are a distinct green
+ * so the two representations never read as one series. */
+const STICK_COLOR = "#8fb56a";
 
 /**
- * IR spectrum + frequency table (unit 3.8, Part B), coordinated.
+ * IR spectrum + frequency table (unit 3.8, revised unit 3.10 after the first real
+ * chemist review), coordinated.
+ *
+ * **Two honest representations, never mixed silently (unit 3.10, rules #9/#11).**
+ *  - **Sticks** — a vertical line at each mode's real wavenumber, height = its IR
+ *    intensity in **km/mol**. This is the physically honest object: the spectrum IS
+ *    a set of lines. Drawn on the **right** axis, in km/mol.
+ *  - **Curve** — the Lorentzian-broadened sum, in **km/mol·cm⁻¹** (a density whose
+ *    integral over a peak is the km/mol intensity — area-normalized, `ir.ts`), on
+ *    the **left** axis. It sits *on top of* the sticks to show what broadening makes
+ *    of them.
+ *
+ * The two are genuinely different quantities (an integrated intensity vs a density),
+ * so they get **two labelled axes**. Placing them on one axis would need an
+ * arbitrary conversion factor (FWHM- and lineshape-dependent) — a made-up parameter,
+ * exactly what rule #11 forbids. Two axes state the truth.
+ *
+ * **Every non-measured element of the plot is a labelled CHOICE**, not a molecular
+ * property: the FWHM (slider), the display scale factor (slider, default 1.00 — NOT
+ * baked-in per method, NOT the artifact's own `$frequency_scale_factor`), and the
+ * inverted view (a *conventional depiction*, explicitly NOT transmittance — no
+ * Beer–Lambert law is applied).
  *
  * The stick list (`.hess`, already parsed) is split by MEASURED FACT — exact-zero
- * translation/rotation modes and negative (imaginary) modes are NOT broadened
- * into the curve (a Lorentzian would smear a peak onto/through zero). The
- * imaginary modes are shown **separately as a diagnosis** — an imaginary
- * frequency means a transition state, not noise (the teaching moment, kept).
+ * translation/rotation modes and negative (imaginary) modes are NOT broadened into
+ * the curve. Imaginary modes are shown **separately as a diagnosis**.
  *
- * Three plot choices are made explicit in the UI, because they are properties of
- * the GRAPH, not the molecule: the line shape (Lorentzian), the FWHM (a slider),
- * and the x-grid (range + step, shown). The area under a peak equals its km/mol
- * intensity (area-normalized Lorentzian — `ir.ts`), cross-checked against ORCA's
- * `orca_mapspc` (`wiki/orca/parse-sources.md`).
- *
- * Click a peak → the matching frequency row selects, and vice-versa. There is no
- * mode ANIMATION here — that is unit 3.9, behind the Kabsch gate.
+ * Click a stick → the matching frequency row selects, and vice-versa. No mode
+ * ANIMATION here — that is unit 3.9, behind the Kabsch gate.
  */
 export function IrSpectrumPanel({ f }: { f: Frequencies }) {
   const [fwhm, setFwhm] = useState(DEFAULT_FWHM_CM);
-  // The selected mode's ORIGINAL index into f.frequencies_cm (shared by the
-  // chart and the table); null = nothing selected.
+  // Display scale factor — a PLOT choice (like FWHM), default 1.00. See irPresentation.
+  const [scale, setScale] = useState(DEFAULT_SCALE);
+  // Inverted view (peaks drawn downward) — a conventional depiction, NOT transmittance.
+  const [inverted, setInverted] = useState(false);
+  // The selected mode's ORIGINAL index into f.frequencies_cm (shared by the chart
+  // and the table); null = nothing selected.
   const [selected, setSelected] = useState<number | null>(null);
   const { ref, width } = useContainerWidth();
 
@@ -55,24 +84,27 @@ export function IrSpectrumPanel({ f }: { f: Frequencies }) {
     () => classifyModes(f.frequencies_cm, f.ir_intensity_km_mol),
     [f.frequencies_cm, f.ir_intensity_km_mol],
   );
-  const grid = useMemo(() => autoGrid(active, fwhm), [active, fwhm]);
-  const curve = useMemo(() => spectrum(active, grid, fwhm), [active, grid, fwhm]);
 
-  // Clickable markers sitting ON the curve at each mode centre (so a "peak" is a
-  // real target). Height = the curve value at the mode's wavenumber.
-  const markers = useMemo(
-    () =>
-      active.map((m) => ({
-        cm: m.cm,
-        y: active.reduce((s, o) => s + o.kmMol * lorentzian(m.cm, o.cm, fwhm), 0),
-        index: m.index,
-      })),
-    [active, fwhm],
+  // Scaling is applied by transforming the mode list fed to the physics module, so
+  // the curve and the sticks share one (scaled) x-axis. ir.ts is untouched.
+  const scaledActive = useMemo(() => scaledModes(active, scale), [active, scale]);
+  const grid = useMemo(() => autoGrid(scaledActive, fwhm), [scaledActive, fwhm]);
+  const curve = useMemo(() => spectrum(scaledActive, grid, fwhm), [scaledActive, grid, fwhm]);
+
+  // Right-axis (km/mol) domain for the sticks — explicit, with a little headroom so
+  // the tallest peak is not flush against the top. Positioning uses this same max,
+  // so the drawn sticks and the rendered axis ticks agree.
+  const stickMaxRaw = useMemo(
+    () => active.reduce((m, s) => Math.max(m, s.kmMol), 0),
+    [active],
   );
+  const stickAxisMax = stickMaxRaw > 0 ? stickMaxRaw * 1.05 : 1;
 
   const verdict = verdictFor(f.imaginary_count);
-  const selectedCm =
-    selected != null ? f.frequencies_cm[selected] : null;
+  const selectedCmScaled =
+    selected != null && f.frequencies_cm[selected] > 0
+      ? f.frequencies_cm[selected] * scale
+      : null;
 
   return (
     <section ref={ref}>
@@ -108,13 +140,14 @@ export function IrSpectrumPanel({ f }: { f: Frequencies }) {
       {active.length > 0 && width > 0 ? (
         <div className="conv-chart" style={{ marginTop: 6 }}>
           <div className="conv-chart-title">
-            IR — Lorentzian broadened (area under a peak = its km/mol intensity)
+            IR — sticks (km/mol) with the Lorentzian-broadened curve
+            {inverted ? " · inverted view (a conventional depiction, not transmittance)" : ""}
           </div>
           <ComposedChart
             width={width}
             height={CHART_HEIGHT}
             data={curve}
-            margin={{ top: 8, right: 16, bottom: 16, left: 8 }}
+            margin={{ top: 8, right: 20, bottom: 18, left: 12 }}
           >
             <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" />
             <XAxis
@@ -124,31 +157,59 @@ export function IrSpectrumPanel({ f }: { f: Frequencies }) {
               stroke="var(--muted)"
               fontSize={11}
               tickLine={false}
-              label={{ value: "wavenumber (cm⁻¹)", position: "insideBottom", offset: -6, fontSize: 11, fill: "var(--muted-2)" }}
+              label={{ value: "wavenumber (cm⁻¹)", position: "insideBottom", offset: -8, fontSize: 11, fill: "var(--muted-2)" }}
             />
+            {/* Left axis — the broadened curve, a density in km/mol·cm⁻¹. */}
             <YAxis
-              stroke="var(--muted)"
+              yAxisId="curve"
+              stroke="#4f8cff"
               fontSize={11}
-              width={56}
+              width={62}
               tickLine={false}
               domain={[0, "auto"]}
+              reversed={inverted}
               tickFormatter={(v: number) => v.toFixed(1)}
+              label={{ value: "curve (km/mol·cm⁻¹)", angle: -90, position: "insideLeft", fontSize: 11, fill: "#4f8cff", style: { textAnchor: "middle" } }}
+            />
+            {/* Right axis — the sticks, an integrated intensity in km/mol. */}
+            <YAxis
+              yAxisId="stick"
+              orientation="right"
+              stroke={STICK_COLOR}
+              fontSize={11}
+              width={58}
+              tickLine={false}
+              type="number"
+              domain={[0, stickAxisMax]}
+              reversed={inverted}
+              tickFormatter={(v: number) => v.toFixed(0)}
+              label={{ value: "sticks (km/mol)", angle: 90, position: "insideRight", fontSize: 11, fill: STICK_COLOR, style: { textAnchor: "middle" } }}
             />
             <Tooltip
               isAnimationActive={false}
-              formatter={(v) => (typeof v === "number" ? v.toFixed(3) : String(v))}
-              labelFormatter={(l) => `${Number(l).toFixed(0)} cm⁻¹`}
-              contentStyle={{
-                background: "var(--panel-2)",
-                border: "1px solid var(--border)",
-                borderRadius: 6,
-                fontSize: 11,
-              }}
+              content={<IrTooltipContent modes={scaledActive} />}
             />
-            {selectedCm != null && selectedCm > 0 ? (
-              <ReferenceLine x={selectedCm} stroke="var(--accent)" strokeWidth={1.5} />
+            {/* Sticks drawn UNDER the curve (curve on top). Positioned from the plot
+                area + the explicit km/mol max, so they do not depend on the right
+                axis' internal scale being registered. */}
+            <IrSticks
+              modes={scaledActive}
+              stickMax={stickAxisMax}
+              inverted={inverted}
+              selected={selected}
+              onSelect={(i) => setSelected(i === selected ? null : i)}
+            />
+            {selectedCmScaled != null ? (
+              <ReferenceLine
+                yAxisId="curve"
+                x={selectedCmScaled}
+                stroke="var(--accent)"
+                strokeWidth={1}
+                strokeDasharray="4 3"
+              />
             ) : null}
             <Line
+              yAxisId="curve"
               type="monotone"
               dataKey="absorbance"
               stroke="#4f8cff"
@@ -156,21 +217,9 @@ export function IrSpectrumPanel({ f }: { f: Frequencies }) {
               dot={false}
               isAnimationActive={false}
             />
-            {/* Clickable peak markers — selecting one highlights its table row. */}
-            <Scatter
-              data={markers}
-              dataKey="y"
-              fill="#b1eb70"
-              onClick={(p: { payload?: { index?: number } }) => {
-                // recharts wraps the original datum in `payload` on the point.
-                const i = p?.payload?.index;
-                if (i != null) setSelected(i);
-              }}
-              isAnimationActive={false}
-            />
           </ComposedChart>
 
-          {/* Plot construction, stated as numbers — not eyeballed. */}
+          {/* Plot construction, stated as numbers and labelled choices. */}
           <div className="ir-controls">
             <label className="ir-fwhm">
               FWHM {fwhm} cm⁻¹
@@ -184,29 +233,203 @@ export function IrSpectrumPanel({ f }: { f: Frequencies }) {
                 aria-label="Lorentzian FWHM"
               />
             </label>
-            <span className="muted" style={{ fontSize: 11 }}>
-              grid {grid.min}–{grid.max} cm⁻¹, step {grid.step} · Lorentzian ·
-              FWHM is a plot choice, not a molecular property
-            </span>
+
+            <label className="ir-fwhm">
+              display scale {scale.toFixed(3)}
+              <input
+                type="range"
+                min={MIN_SCALE}
+                max={MAX_SCALE}
+                step={SCALE_STEP}
+                value={scale}
+                onChange={(e) => setScale(Number(e.target.value))}
+                aria-label="frequency display scale factor"
+              />
+              {scale !== DEFAULT_SCALE ? (
+                <button
+                  type="button"
+                  className="ir-reset"
+                  onClick={() => setScale(DEFAULT_SCALE)}
+                  title="reset to 1.000 (raw frequencies)"
+                >
+                  reset
+                </button>
+              ) : null}
+            </label>
+
+            <div className="ir-view-toggle" role="group" aria-label="spectrum orientation">
+              <button
+                type="button"
+                className={!inverted ? "active" : ""}
+                onClick={() => setInverted(false)}
+              >
+                peaks up
+              </button>
+              <button
+                type="button"
+                className={inverted ? "active" : ""}
+                onClick={() => setInverted(true)}
+              >
+                peaks down
+              </button>
+            </div>
           </div>
+
+          <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
+            grid {grid.min}–{grid.max} cm⁻¹, step {grid.step} · Lorentzian · FWHM is a
+            plot choice, not a molecular property. Left axis km/mol·cm⁻¹ (broadened
+            density), right axis km/mol (stick intensity) — two different quantities,
+            not one axis.
+          </div>
+
+          {scale !== DEFAULT_SCALE ? (
+            <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
+              display scale {scale.toFixed(3)} — your choice, applied to the drawing;
+              it is NOT a property of the molecule. Harmonic frequencies run high, but
+              we bake in no method-specific factor: the raw and scaled columns are
+              both in the table below. Pick a citable value for your method.
+            </div>
+          ) : null}
+
+          {inverted ? (
+            <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
+              inverted view — peaks drawn downward, a conventional way to depict an IR
+              spectrum. This is <strong>not transmittance</strong>: converting
+              intensity to %T needs the Beer–Lambert law (path length, concentration),
+              which a calculation does not contain. The axes and values are unchanged;
+              only the drawing direction is flipped.
+            </div>
+          ) : null}
         </div>
       ) : null}
 
       {/* The frequency table — active (real) modes, clickable rows, selection in
-          sync with the chart. */}
+          sync with the chart. A scaled column appears only when scale ≠ 1.00. */}
       <FrequencyTable
         active={active}
         zeroCount={zeroCount}
+        scale={scale}
         selected={selected}
         onSelect={setSelected}
       />
 
-      {f.scale_factor != null && f.scale_factor !== 1 ? (
+      {/* The artifact's OWN scale factor — shown to explain why it changes nothing:
+          measured 1.0 means ORCA applied none. It is not the display scale above. */}
+      {f.scale_factor != null ? (
         <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
-          frequency scale factor {f.scale_factor}
+          artifact <code>$frequency_scale_factor</code> = {f.scale_factor.toFixed(6)}
+          {f.scale_factor === 1
+            ? " — the factor ORCA already applied to these frequencies (1.000000 = none). Not a recommended value for the method; the display scale above is the researcher's choice."
+            : " — the factor ORCA already applied; the display scale above is applied on top of it."}
         </div>
       ) : null}
     </section>
+  );
+}
+
+/**
+ * The sticks: one vertical line per mode, from the km/mol baseline to its intensity,
+ * plus a wide transparent hit-target for click-to-select. Positioned from the plot
+ * area (`usePlotArea`) and the explicit `stickMax` rather than the right axis' own
+ * scale — a linear [0, stickMax] map over the plot height matches the axis ticks
+ * (same domain, same range) and does not depend on a data-less axis registering a
+ * scale. `inverted` flips the baseline to the top so peaks point down.
+ */
+function IrSticks({
+  modes,
+  stickMax,
+  inverted,
+  selected,
+  onSelect,
+}: {
+  modes: IrMode[];
+  stickMax: number;
+  inverted: boolean;
+  selected: number | null;
+  onSelect: (index: number) => void;
+}) {
+  const xScale = useXAxisScale();
+  const plot = usePlotArea();
+  if (!xScale || !plot || stickMax <= 0) return null;
+
+  const baseline = inverted ? plot.y : plot.y + plot.height; // pixel of value 0
+  const pixelOf = (kmMol: number) =>
+    inverted
+      ? plot.y + (kmMol / stickMax) * plot.height
+      : plot.y + plot.height - (kmMol / stickMax) * plot.height;
+
+  return (
+    <g className="ir-sticks">
+      {modes.map((m) => {
+        const px = xScale(m.cm);
+        if (px == null) return null;
+        const py = pixelOf(m.kmMol);
+        const isSel = m.index === selected;
+        const top = Math.min(baseline, py);
+        const h = Math.abs(baseline - py);
+        return (
+          <g key={m.index}>
+            <line
+              x1={px}
+              x2={px}
+              y1={baseline}
+              y2={py}
+              stroke={isSel ? "var(--accent)" : STICK_COLOR}
+              strokeWidth={isSel ? 2 : 1}
+            />
+            <rect
+              x={px - 4}
+              y={top}
+              width={8}
+              height={Math.max(h, 3)}
+              fill="transparent"
+              style={{ cursor: "pointer" }}
+              onClick={() => onSelect(m.index)}
+            >
+              <title>
+                {m.cm.toFixed(1)} cm⁻¹ · {m.kmMol.toFixed(1)} km/mol
+              </title>
+            </rect>
+          </g>
+        );
+      })}
+    </g>
+  );
+}
+
+/**
+ * Single-source tooltip: everything derives from the ONE wavenumber under the cursor
+ * (`label`) and the curve value the chart read there (`payload[0].value`). The
+ * sticks are NOT a chart series (they are drawn SVG), so recharts has nothing to
+ * merge — the unit-3.10 two-series mix is structurally impossible here. The nearest
+ * mode is labelled as nearest, with its distance, never as "the value at this point".
+ */
+function IrTooltipContent(props: {
+  active?: boolean;
+  label?: number | string;
+  payload?: ReadonlyArray<{ value?: number | string }>;
+  modes: IrMode[];
+}) {
+  const { active, label, payload, modes } = props;
+  if (!active || payload == null || payload.length === 0) return null;
+  const cm = Number(label);
+  const curveVal = Number(payload[0]?.value ?? 0);
+  const model = irTooltipModel(cm, curveVal, modes);
+  return (
+    <div className="ir-tooltip mono">
+      <div className="ir-tooltip-head">{model.cm.toFixed(0)} cm⁻¹</div>
+      <div>
+        curve {model.curve.toFixed(3)}{" "}
+        <span className="muted">km/mol·cm⁻¹</span>
+      </div>
+      {model.nearest ? (
+        <div className="ir-tooltip-mode">
+          nearest mode {model.nearest.cm.toFixed(1)} cm⁻¹ ·{" "}
+          {model.nearest.kmMol.toFixed(1)} km/mol{" "}
+          <span className="muted">(Δ {model.nearest.deltaCm.toFixed(0)} cm⁻¹)</span>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -227,21 +450,29 @@ function verdictFor(imaginaryCount: number): { text: string; tone: string } {
 function FrequencyTable({
   active,
   zeroCount,
+  scale,
   selected,
   onSelect,
 }: {
   active: ReturnType<typeof classifyModes>["active"];
   zeroCount: number;
+  scale: number;
   selected: number | null;
   onSelect: (index: number | null) => void;
 }) {
+  const showScaled = scale !== DEFAULT_SCALE;
   return (
     <div style={{ marginTop: 8 }}>
       <table className="mono ir-table" style={{ fontSize: 12, borderCollapse: "collapse" }}>
         <thead>
           <tr>
             <th style={{ textAlign: "right", paddingRight: 12, color: "var(--muted)" }}>#</th>
-            <th style={{ textAlign: "right", paddingRight: 12, color: "var(--muted)" }}>cm⁻¹</th>
+            <th style={{ textAlign: "right", paddingRight: 12, color: "var(--muted)" }}>cm⁻¹ (raw)</th>
+            {showScaled ? (
+              <th style={{ textAlign: "right", paddingRight: 12, color: "var(--muted)" }}>
+                cm⁻¹ ×{scale.toFixed(3)} (scaled — derived)
+              </th>
+            ) : null}
             <th style={{ textAlign: "right", color: "var(--muted)" }}>IR km/mol</th>
           </tr>
         </thead>
@@ -256,6 +487,11 @@ function FrequencyTable({
                 {i + 1}
               </td>
               <td style={{ textAlign: "right", paddingRight: 12 }}>{m.cm.toFixed(2)}</td>
+              {showScaled ? (
+                <td style={{ textAlign: "right", paddingRight: 12, color: "var(--muted)" }}>
+                  {(m.cm * scale).toFixed(2)}
+                </td>
+              ) : null}
               <td style={{ textAlign: "right" }}>{m.kmMol.toFixed(2)}</td>
             </tr>
           ))}
