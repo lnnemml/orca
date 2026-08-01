@@ -69,23 +69,21 @@ function dedup(ds: SectionDescriptor[]): SectionDescriptor[] {
 let registered = false;
 export function registerOrcaHover(monaco: Monaco, languageId: string) {
   if (registered) return;
-  registered = true;
 
-  monaco.editor.registerCommand(OPEN_COMMAND, (_accessor: unknown, json: string) => {
-    if (openHandler) openHandler(JSON.parse(json) as SectionDescriptor);
-  });
-
+  // Mandatory: the hover itself. Registered FIRST so that a failure of the optional
+  // command below can never keep the hover from appearing (an optional wire must not
+  // block the mandatory one — same posture as post-conditions inside a transaction).
   monaco.languages.registerHoverProvider(languageId, {
     provideHover(model: editor.ITextModel, position: Position) {
       const word = model.getWordAtPosition(position);
       if (!word) return null;
-      const match: HoverMatch | null = resolveHover(
+      const match = resolveHover(
         model.getValue(),
         position.lineNumber - 1,
         word.startColumn - 1,
         word.word,
       );
-      if (!match) return null; // MISS → silence (contract)
+      if (!match) return null; // qualified MISS → show nothing (manual-keywords.md contract)
       return {
         range: new monaco.Range(
           position.lineNumber,
@@ -97,6 +95,20 @@ export function registerOrcaHover(monaco: Monaco, languageId: string) {
       };
     },
   });
+
+  // Optional: the command a hover link uses to open the manual drawer. If it fails to
+  // register, the hover must still show — the link just won't be clickable, rather than
+  // the whole hover vanishing. So this is wrapped and never allowed to throw upward.
+  try {
+    monaco.editor.registerCommand(OPEN_COMMAND, (_accessor: unknown, json: string) => {
+      if (openHandler) openHandler(JSON.parse(json) as SectionDescriptor);
+    });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error("orca hover: manual-open command failed to register", err);
+  }
+
+  registered = true; // only after the mandatory hover-provider registration succeeded
 }
 
 /** The map's ORCA version, passed to `resolve_manual_section` so a stale map is caught. */

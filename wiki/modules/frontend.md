@@ -72,6 +72,15 @@ that an in-progress New Job draft is discarded on a tab switch (accepted).
   (int/float/scientific/signed), quoted strings; `ignoreCase` (ORCA is case-insensitive).
   Deliberately structural, not a full keyword list. `InputEditor.tsx` wraps `@monaco-editor/react`
   (vs-dark, full height), registering the language on `beforeMount`.
+- **Hover wiring (`orca-hover.ts`, `editor-options.ts`).** `registerOrcaHover` registers the
+  keyword→manual hover **provider first** (mandatory), then the "open in drawer" command in a
+  `try/catch` (optional — its failure must not vanish the hover), and flips its `registered` guard
+  only after the provider registration succeeds. Editor options are pinned in `editor-options.ts`
+  (a type-only module, so a wiring test can import it without dragging `monaco-setup`); the
+  load-bearing one is **`fixedOverflowWidgets: true`** — without it a hover on the top `!` line
+  (line 1) renders inside the editor's `overflow:hidden` guard and is clipped to nothing
+  (`debugging/010`). Covered by `orca-hover-wiring.test.ts` (fake monaco, no jsdom): provider
+  registered for the same language id `<Editor>` uses, survives the command throwing, flag pinned.
 - **`monaco-setup.ts` — critical for offline.** `@monaco-editor/react` defaults to a CDN loader
   (fatal for a desktop app); we pin the bundled package via `loader.config({ monaco })` + Vite's
   base editor worker. The worker import path is **`monaco-editor/editor/editor.worker.js?worker`**,

@@ -4121,3 +4121,29 @@ recorded plainly: the 1515 block-option records (~53 % of the map) serve 1 real 
 valuable regardless are qualified addressing, the owner veto, consumer-form gates, the argument rule,
 and the pattern discipline itself. Verify: cargo 148/18-ignored (+bridge/generate green), tsc, vitest
 423 green; keywords.json diff reviewable + byte-identical re-gen. Numbers: `manual-sources.md` Part I.
+
+## [2026-08-01] session | fix: hover clipped on the top `!` line (fixedOverflowWidgets) + wiring test
+
+**Symptom (architect, real window):** hovering `! r2SCAN-3c Opt Freq TightSCF` shows no hover;
+highlighting, drawer, and all pure-hover unit tests are green. The presumed cause (registration
+order / language id) was handed over — but the brief was measure, don't guess.
+
+**Measured, not guessed.** No mouse/console access in WebKitGTK, so facts were written into visible
+DOM banners from a temporary `onMount`. Four probes, each killing a candidate: model language =
+`orca-inp` (matches); `getWordAtPosition` on the `!` line = `r2SCAN-3c` (full token); `resolveHover`
+on the live model = MATCH, `buildHoverMarkdown` = 673 chars no throw; a side-effect inside the
+**registered** `provideHover` fired (provider IS invoked). Yet `.monaco-hover` sat at **y≈255, above
+the editor's top edge** → clipped by the editor's `overflow:hidden` guard. The presumed cause was
+wrong on both counts; the real defect was widget rendering.
+
+**Fix.** `fixedOverflowWidgets: true` (`src/editor/editor-options.ts`, split out as a type-only
+module so a test can pin it) makes overflow widgets render body-level and escape the clip — real
+manual popup verified un-clipped in-window. Plus registration hardening in `registerOrcaHover`:
+hover provider **first** (mandatory), open-in-drawer command **second** in `try/catch` (optional,
+must not vanish the hover), `registered=true` only after the mandatory registration succeeds.
+
+**Test that would have caught it:** `orca-hover-wiring.test.ts` (fake monaco, no jsdom) — provider
+registered for the same language id `<Editor>` uses, survives the command throwing, and
+`fixedOverflowWidgets` pinned. **Lesson:** the pure functions were unit-tested; the wiring — order,
+options, rendering — was not, and that is exactly where it broke. Page: `debugging/010`.
+Verify: tsc clean, vitest 426 green (30 files). No Rust/sidecar touched.

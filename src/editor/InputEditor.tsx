@@ -8,6 +8,7 @@ import {
   orcaMonarchTokens,
 } from "./orca-language";
 import { registerOrcaHover } from "./orca-hover";
+import { orcaEditorOptions } from "./editor-options";
 import { ManualDrawer } from "../manual/ManualDrawer";
 
 // Register the ORCA language exactly once per Monaco instance. `beforeMount`
@@ -43,16 +44,7 @@ export function InputEditor({ value, onChange }: InputEditorProps) {
         value={value}
         onChange={(next) => onChange(next ?? "")}
         beforeMount={registerOrcaLanguage}
-        options={{
-          fontFamily: "ui-monospace, 'SF Mono', Menlo, Consolas, monospace",
-          fontSize: 13,
-          minimap: { enabled: false },
-          scrollBeyondLastLine: false,
-          automaticLayout: true,
-          tabSize: 2,
-          renderWhitespace: "none",
-          smoothScrolling: true,
-        }}
+        options={orcaEditorOptions}
       />
       <ManualDrawer />
     </>
