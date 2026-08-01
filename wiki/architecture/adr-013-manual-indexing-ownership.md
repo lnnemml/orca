@@ -138,3 +138,18 @@ A fence-aware recount over **all 126 leaves** revises the keyword finding:
 Decisions (1)/(2)/(3) are untouched: this is a *seeder* refinement. **Body `{eval-rst}` = 0** still
 stands (it is counted via `parse_toctrees`, which always tracked fences correctly — it was never the
 buggy path), so (3) stays closed.
+
+## Amendment (2026-08-01, unit 4.3) — hit@1 is the measured reason `keywords.json` is a separate layer
+
+The decision text above **stands unchanged**; this records a measurement made after it (same precedent
+as the two amendments above). The unit-4.3 retrieval gate (`cargo test retrieval_gate -- --ignored`,
+17 pre-registered queries, full table in [`orca/manual-sources.md`](../orca/manual-sources.md)) gave,
+for the chosen raw-`body_md` index, **hit@1 = 9/17 (~53 %) and hit@5 = 15/17 (88 %)**.
+
+That gap is the **measured justification for the two-tier structure ADR-006 assumed without a number**:
+**FTS for the panel** (many candidates — hit@5 88 % works because the chemist picks from five) and an
+**explicit keyword→section map for hover** (one candidate — hit@1 ~53 % is too low to show a single
+answer confidently). The hit@1 number is precisely why `keywords.json` exists as a **separate layer**,
+not merely a convenience: the hover provider must **not** fall back to FTS. This refines, does not
+cancel, the seed-then-curate paragraph and touches none of decisions (1)/(2)/(3) — it is a *consumer*
+observation about which surface each retrieval path may feed.

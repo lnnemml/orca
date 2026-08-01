@@ -41,6 +41,19 @@ Per the tie-break, **A (raw `body_md`) is chosen** — simpler, and it is what m
 (no duplication) possible. B's projection code stays for the gate but is not in the ingest path. See
 [orca/manual-sources.md](../orca/manual-sources.md) "Retrieval gate".
 
+### Two surfaces, two precision bars — why the hover provider does NOT read FTS
+The same gate measured both ranks, and they diverge: **A hit@1 = 9/17 (~53 %), hit@5 = 15/17 (88 %)**
+(both fractions from the gate, not rounded percentages). The right section is almost always *in* the
+result set, but in about half the queries it is **not first**. **The tolerable imprecision depends on
+how many results the surface shows.** The **search panel** renders five candidates, so hit@5 88 %
+is fully workable there — the chemist recognises the one they wanted among the five. The **Monaco
+hover** shows **one** section, and shows it confidently, with no visible sign it might be a guess —
+at hit@1 ~53 % it would surface the wrong section on roughly half of all hovers.
+
+**Therefore the hover provider is NOT fed by FTS search.** Its source is `keywords.json`, where a
+keyword is mapped to a section **explicitly**; FTS stays for the panel. This is not taste — the number
+(hit@1 9/17) is the reason `keywords.json` exists as a separate layer rather than a convenience.
+
 ### Three anchor populations — why `anchor` is NULLABLE (rule #11)
 Of 1586 sections: **1068 have a verified anchor** (their closest label is in `objects.inv` with a
 matching file + slug → `anchor_source='objects_inv'`). The rest are `NULL` / `undetermined`:

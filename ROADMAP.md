@@ -381,7 +381,12 @@ wherever an imported structure is first shown and is carried forward independent
       manual's own native "Keywords" sections + genindex, then curated on top (ADR-013 narrows
       ADR-006's "by hand"); grow it organically, starting with everything the template library uses
 - [ ] Monaco hover provider: hover a keyword in the editor → short description → click opens
-      the full manual section in the panel
+      the full manual section in the panel. **Depends on the `keywords.json` item above and is fed
+      by it, NOT by FTS** — the retrieval gate measured hit@1 = 9/17 (~53 %) vs hit@5 15/17 (88 %),
+      so FTS is fine for the five-candidate panel but too imprecise for a single confident hover.
+      If a keyword is **not** in the map, the hover **stays silent** or says "not in the map"; it
+      does **not** fall back to FTS and does **not** guess. Same posture as the nullable anchor in
+      4.3: UNDETERMINED beats plausible-but-wrong (rule #11).
 - [ ] (Optional) "Explain with Claude": keyword + current input context + manual excerpt →
       Anthropic API (user's own key in settings) → plain-language explanation
 

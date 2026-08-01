@@ -3625,3 +3625,25 @@ anchor + anchor_source keep the schema out of that unit's way). No new dependenc
 (retrieval gate), ROADMAP (indexing [x], search [~]).
 
 Next: 4.4 — the manual panel UI + Monaco hover provider (and separately the `keywords.json` seeder).
+
+## [2026-08-01] decision | hit@1 constrains the hover layer — keywords.json, not FTS (ADR-013 amendment)
+
+Small ingest, no code: move a **consequence** to where it acts. The 4.3 retrieval gate's second number
+— **hit@1 = 9/17 (~53 %)** alongside hit@5 = 15/17 (88 %), raw `body_md` — lived only as a side remark
+in `manual-sources.md`. It is constructive: the right section is almost always *in* the result set but
+about half the time is **not first**.
+
+**Rule made explicit:** tolerable imprecision depends on how many results the surface shows. The search
+**panel** shows five candidates → hit@5 88 % works (the chemist recognises the target). The Monaco
+**hover** shows **one**, confidently, with no sign of a guess → at hit@1 ~53 % it would show the wrong
+section on ~half of hovers. **Therefore the hover provider is NOT fed by FTS**; its source is
+`keywords.json` (keyword→section mapped explicitly). FTS stays for the panel. If a keyword is absent
+from the map, hover stays silent / says "not in the map" — it does not fall back to FTS and does not
+guess (same posture as the nullable anchor in 4.3: UNDETERMINED beats plausible-but-wrong, rule #11).
+
+Placed where it works: `modules/manual-index.md` (hit@1 next to hit@5, both exact fractions; new
+"Two surfaces, two precision bars" subsection); **ADR-013** amendment (2026-08-01 — hit@1 is the
+measured justification for the two-tier structure ADR-006 assumed without a number; decision text
+untouched, same precedent as the two prior amendments); ROADMAP Phase 4 (hover item now names its
+dependency on `keywords.json` and the no-FTS-fallback rule in prose; markers unchanged). Not done, by
+instruction: no `keywords.json` built, no hover written, no code, no re-measure, ADR-006 untouched.
