@@ -115,28 +115,43 @@ rows, 0 failures). 0 matches (the manual moved) or an out-of-range `nth` is a `N
 pick-first. The command `resolve_manual_section` also checks **`keywords.json.orca_version` == the
 built index's version** — a stale map is reported, not silently resolved against a different corpus.
 
-## Coverage — the hard gate, rewritten in CONSUMER form
+## Coverage — an explicit, named INVENTORY, and the honest number
 
-The seed post-condition is: every keyword the **app itself emits** must resolve. **The old gate was
-partly empty.** It matched by bare **string** (`norm_kw`, which drops `%`), so it counted `%maxcore`
-covered because `maxcore` matched a `MAXCORE` **block-option** inside %xtb/%cis/%mdci — a match of the
-*string*, not the *entity*. Rewritten to ask the **hover's** question — *does a token, in its emit
-context, resolve to a record of the right TYPE (and, in a block, the right block)?* A wrong-type match
-is a **miss**, named, not counted.
+The coverage gate improved twice by the number **falling**: 46/46 → 44/46 when it asked the consumer's
+question (type, not string). The deepest flaw was left: we fixed the *form* of the question, not the
+*population*. The 46 were what `input-builder` **emits**; the hover fires on what the author **types** —
+domain guards (`! XTB GOAT`, `TightOpt` before `Freq`), the reaction chain (NEB-TS → OptTS → IRC).
+Different sets.
 
-- **Rust generator gate** (`generate_keywords_json`): type-aware now (`!`→simple, `%`→block,
-  `opt`→block-option). Result: **44 of 46** resolve; **2 named gaps** the old string gate hid —
-  `%maxcore` (a no-`end` directive; home is the `{numref}` "List of Input Blocks" layer) and `CPCM`
-  (emitted as a simple `!` keyword `CPCM(solvent)`, but only `%cpcm` the block was seeded). Both stay
-  **silent** in the hover (correct — silence beats a wrong section); both are curation targets, not
-  fixed here (that changes the file). Four keywords resolve via curation: `M06-L`/`M06-2X` through
-  `aliases[]`; `TightSCF`/`VeryTightSCF` as curated prose entries.
-- **TS consumer gate** (`src/manual/coverage.test.ts`): tokenises the Phase-1 templates + block
-  contexts with the **real `wordPattern`**, classifies each token's context, and looks up type- and
-  block-aware. **13 of 22** distinct `(token, context)` resolve; the misses are correct silences —
-  `%maxcore [block]`, `Constraints [block-option %geom]` (its record is under `%method`, a curation
-  miss), `nprocs [block-option %pal]`, and non-keywords (`end`, constraint atoms). It also asserts
-  `MaxIter` resolves to **`%scf`** (the right block), not the 15 other `MaxIter`s.
+**One home, named per word.** The expectation set lives in **`src/manual/keyword-inventory.json`**,
+read by **both** gates (the Rust `generate_keywords_json` and the TS `coverage.test.ts`) — no second
+list. Every entry carries a **`source`** (why it is here), so the set is arguable word-by-word, not
+arbitrary: `builder` (`input-builder/` + `goatInputForFragment`), `template`, `domain` (ADR-014
+guards), `workflow` (ADR-007 reaction chain). Populated from those named sources, **not** memory —
+`MORead`/`PrintBasis` are deliberately **absent** (block-option-only in the map, but no named source),
+so the inventory stays named, not merely longer.
+
+**Honest number: 45 of 53 resolve** (type- and block-aware; Rust and TS agree). A word without a
+`gap` tag is a **hard** post-condition (must resolve); a `gap` word is a declared, classified hole —
+**reported, never a panic**. The eight gaps, by closer:
+
+| closer | count | words |
+|---|---|---|
+| **(a) `{numref}` layer** | 1 | `%maxcore` (block; it is in "List of Input Blocks") |
+| **(b) curated (prose only)** | 3 | `IRC`, `ScanTS`, `NEB-CI` — run-types documented in chapter prose, no keyword-table entry (like `TightSCF` in 4.4) |
+| **(c) second/right form of a concept in the map** | 4 | `CPCM`, `XTB`, `TightOpt` (exist as `%cpcm`/`%xtb`/`%method`, need the **simple** form) and `Constraints` (seeded under `%method`, the app emits it under **`%geom`** — a mis-owner curation fix) |
+| **(d) not in corpus at all** | 0 | — |
+
+**The `{numref}` layer, priced for the first time: it closes 1 of the 8 named gaps** (`%maxcore`).
+The other 7 are curation (b, ×3) and second-form (c, ×4). So `{numref}` is **not** the high-value next
+step for coverage of the words the project is built around — the reaction chain and the domain guards
+are closed by prose curation and simple-form records, not by the block index. That number is the basis
+for sequencing it later rather than next.
+
+**Why the old numbers were inflated.** `%maxcore` and `CPCM` counted covered by string (both have a
+`%block` of the same name); `XTB`/`TightOpt` exist only as block-options; `IRC`/`ScanTS`/`NEB-CI` were
+never in the population at all. The inventory makes each of these an explicit, sourced line a reviewer
+can accept or dispute.
 
 ## The hover provider + drawer (the consumers)
 

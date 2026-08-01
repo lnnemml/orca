@@ -578,37 +578,54 @@ fn table_keywords(body: &str) -> Vec<String> {
     out
 }
 
-/// Every keyword the APP ITSELF emits into an input — read from the code, not memory
-/// (`src/input-builder/orca-options.ts`, `build-input.ts`, `templates/orca-templates.ts`,
-/// `scene/constraints.ts`). Compound `!` tokens are split. Kind: `!` simple / `%` block
-/// / `opt` block-option. THIS is the denominator of the coverage number.
-const APP_EMITTED: &[(&str, &str)] = &[
-    // job types (Opt Freq / OptTS Freq / NumFreq split)
-    ("Opt", "!"), ("Freq", "!"), ("OptTS", "!"), ("NumFreq", "!"),
-    // composite (3c) methods
-    ("r2SCAN-3c", "!"), ("B97-3c", "!"), ("PBEh-3c", "!"), ("wB97X-3c", "!"), ("HF-3c", "!"),
-    // functionals
-    ("BP86", "!"), ("PBE", "!"), ("BLYP", "!"), ("TPSS", "!"), ("r2SCAN", "!"), ("M06-L", "!"),
-    ("B3LYP", "!"), ("PBE0", "!"), ("TPSSh", "!"), ("M06-2X", "!"),
-    ("wB97X-D4", "!"), ("CAM-B3LYP", "!"), ("wB97M-V", "!"), ("HF", "!"),
-    // basis sets
-    ("def2-SVP", "!"), ("def2-TZVP", "!"), ("def2-TZVPP", "!"), ("def2-QZVPP", "!"),
-    ("def2-TZVPD", "!"), ("def2-SVPD", "!"),
-    // aux bases (emitted by build-input / templates)
-    ("def2/J", "!"), ("def2/JK", "!"),
-    // dispersion
-    ("D4", "!"), ("D3BJ", "!"), ("D3Zero", "!"), ("NL", "!"),
-    // RI
-    ("RIJCOSX", "!"), ("RI-JK", "!"), ("RI", "!"),
-    // solvation models
-    ("CPCM", "!"), ("SMD", "!"),
-    // SCF convergence
-    ("TightSCF", "!"), ("VeryTightSCF", "!"),
-    // %-blocks the app writes
-    ("%pal", "%"), ("%maxcore", "%"), ("%geom", "%"),
-    // %geom sub-option
-    ("Constraints", "opt"),
+/// One expectation-inventory entry (the ONE home is `src/manual/keyword-inventory.json`,
+/// shared with the TS coverage gate — no second list). `expect` = the type a hover needs
+/// in the word's emit context; `gap` (a|b|c|d) is present only on words we KNOWINGLY do
+/// not cover yet, with the closer that will. A word without `gap` is HARD.
+struct InvEntry {
+    keyword: String,
+    expect: String,          // "simple" | "block" | "block-option"
+    block: Option<String>,   // owning block for a block-option expectation
+    gap: Option<String>,     // a|b|c|d — a declared, classified hole (not a failure)
+}
+
+/// Read the shared inventory. Author-run gate (like the corpus), so reading the repo
+/// file is fine — and it means the Rust and TS gates cannot drift.
+fn load_inventory() -> Vec<InvEntry> {
+    let path = repo_root().join("src/manual/keyword-inventory.json");
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).expect("read keyword-inventory.json"))
+            .expect("parse keyword-inventory.json");
+    v["keywords"]
+        .as_array()
+        .expect("keywords array")
+        .iter()
+        .map(|e| InvEntry {
+            keyword: e["keyword"].as_str().unwrap().to_string(),
+            expect: e["expect"].as_str().unwrap().to_string(),
+            block: e.get("block").and_then(|x| x.as_str()).map(String::from),
+            gap: e.get("gap").and_then(|x| x.as_str()).map(String::from),
+        })
+        .collect()
+}
+
+/// The input-builder's simple `!` tokens — a SEED type-inference hint (a token found in
+/// the corpus that is one of these is recorded `simple`, else `block-option`). This is
+/// distinct from the coverage inventory: it must NOT include aspirational domain/workflow
+/// words (XTB, TightOpt, …) or the seed would reclassify them and change the file. So it
+/// stays the input-builder set, not the inventory.
+const SEED_SIMPLE_HINT: &[&str] = &[
+    "Opt", "Freq", "OptTS", "NumFreq",
+    "r2SCAN-3c", "B97-3c", "PBEh-3c", "wB97X-3c", "HF-3c",
+    "BP86", "PBE", "BLYP", "TPSS", "r2SCAN", "M06-L", "B3LYP", "PBE0", "TPSSh", "M06-2X",
+    "wB97X-D4", "CAM-B3LYP", "wB97M-V", "HF",
+    "def2-SVP", "def2-TZVP", "def2-TZVPP", "def2-QZVPP", "def2-TZVPD", "def2-SVPD",
+    "def2/J", "def2/JK", "D4", "D3BJ", "D3Zero", "NL", "RIJCOSX", "RI-JK", "RI",
+    "CPCM", "SMD", "TightSCF", "VeryTightSCF",
 ];
+fn app_simple_set() -> HashSet<String> {
+    SEED_SIMPLE_HINT.iter().map(|t| norm_kw(t)).collect()
+}
 
 #[test]
 #[ignore]
@@ -705,21 +722,22 @@ fn keyword_seed_measure() {
     println!("    corpus-wide structured tokens: {} ({} distinct) <- maximal seed pool",
              corpus_tokens.len(), corpus_distinct.len());
 
-    // ---- A3: COVERAGE of what the app emits (the main number) ----
+    // ---- A3: COVERAGE of the inventory in the corpus pool (a coarse string probe) ----
+    let inventory = load_inventory();
     let pool: HashSet<String> = corpus_distinct.iter().map(|t| norm_kw(t)).collect();
     let mut covered = 0;
     let mut missing: Vec<&str> = Vec::new();
-    for (kw, _kind) in APP_EMITTED {
-        if pool.contains(&norm_kw(kw)) {
+    for e in &inventory {
+        if pool.contains(&norm_kw(&e.keyword)) {
             covered += 1;
         } else {
-            missing.push(kw);
+            missing.push(&e.keyword);
         }
     }
-    println!("\n[A3] APP COVERAGE (the number that matters)");
-    println!("    app-emitted keywords: {}", APP_EMITTED.len());
+    println!("\n[A3] INVENTORY IN CORPUS POOL (coarse — string, not type)");
+    println!("    inventory keywords: {}", inventory.len());
     println!("    with a candidate in the corpus pool: {}", covered);
-    println!("    MISSING ({}): {:?}", missing.len(), missing);
+    println!("    absent from pool ({}): {:?}", missing.len(), missing);
 
     // ---- A4: precision proxy — literal occurrence in the target section ----
     // Extractor sanity: a token extracted from section S must occur literally in S
@@ -948,13 +966,16 @@ fn keyword_seed_ambiguity() {
     println!("\n[B2] {{numref}}-DEFERRED (NOT seeded here — next measure's material)");
     println!("    distinct block names in \"List of Input Blocks\" (+index): {}", deferred_numref.len());
 
-    // Coverage post-condition preview: every app-emitted keyword must resolve.
+    // Coverage preview against the seed pool (coarse — string, not type; the real
+    // type-aware gate lives in generate_keywords_json + coverage.test.ts).
+    let inventory = load_inventory();
     let pool: HashSet<String> = token_homes.keys().map(|t| norm_kw(t)).collect();
     let alias_of: HashMap<&str, &str> = ALIASES.iter().cloned().collect();
     let prose: HashSet<&str> = PROSE_CURATED.iter().cloned().collect();
     let (mut by_seed, mut by_alias, mut by_prose) = (0, 0, 0);
     let mut unresolved: Vec<&str> = Vec::new();
-    for (kw, _) in APP_EMITTED {
+    for e in &inventory {
+        let kw = e.keyword.as_str();
         if pool.contains(&norm_kw(kw)) {
             by_seed += 1;
         } else if alias_of.get(kw).is_some_and(|a| pool.contains(&norm_kw(a))) {
@@ -965,9 +986,9 @@ fn keyword_seed_ambiguity() {
             unresolved.push(kw);
         }
     }
-    println!("\n[B3] APP COVERAGE post-condition (either 46/46 or the generator fails)");
+    println!("\n[B3] INVENTORY IN SEED POOL (coarse string probe)");
     println!("    by home-seed: {by_seed}   by alias: {by_alias}   by prose-curation: {by_prose}");
-    println!("    UNRESOLVED (would FAIL generation) ({}): {:?}", unresolved.len(), unresolved);
+    println!("    absent from pool ({}): {:?}", unresolved.len(), unresolved);
 
     println!("\n{:=<72}", "");
     // EXIT gate: if too much of the map is ambiguous, the record shape (single
@@ -1065,8 +1086,7 @@ fn generate_keywords_json() {
     }
 
     // App `!`-simple tokens for type inference.
-    let app_simple: HashSet<String> =
-        APP_EMITTED.iter().filter(|(_, k)| *k == "!").map(|(t, _)| norm_kw(t)).collect();
+    let app_simple: HashSet<String> = app_simple_set();
     let type_of = |tok: &str| -> &'static str {
         if tok.starts_with('%') {
             "block"
@@ -1243,33 +1263,47 @@ fn generate_keywords_json() {
     });
 
     // ---- HARD post-conditions (rule #9) ----
-    // (a) every app-emitted keyword resolves to a record of the RIGHT TYPE, or FAIL.
-    // TYPE-aware (the old check matched by bare string, so `%maxcore` counted a `MAXCORE`
-    // block-option — a wrong-entity match; that "46/46" was partly empty). App kind →
-    // required record type: `!`→simple, `%`→block, `opt`→block-option.
-    let req_type = |kind: &str| match kind { "%" => "block", "opt" => "block-option", _ => "simple" };
-    let resolvable: HashSet<(String, String)> = entries.iter().flat_map(|e| {
+    // (a) COVERAGE over the shared inventory (src/manual/keyword-inventory.json — the ONE
+    // home, read by coverage.test.ts too). TYPE- and block-aware: a record resolves an
+    // entry only if its type matches `expect` and, for a block-option, the owning block.
+    // A record contributes (keyword, type, owner-block-or-"") for the join.
+    let resolvable: HashSet<(String, String, String)> = entries.iter().flat_map(|e| {
         let ty = e["type"].as_str().unwrap().to_string();
+        let blk = if ty == "block-option" {
+            e.get("block").and_then(|x| x.as_str()).unwrap_or("").to_lowercase()
+        } else {
+            String::new()
+        };
         let mut ks = vec![norm_kw(e["keyword"].as_str().unwrap())];
         if let Some(al) = e.get("aliases").and_then(|a| a.as_array()) {
             ks.extend(al.iter().filter_map(|x| x.as_str()).map(norm_kw));
         }
-        ks.into_iter().map(move |k| (k, ty.clone()))
+        ks.into_iter().map(move |k| (k, ty.clone(), blk.clone()))
     }).collect();
-    // `%maxcore` is a NAMED gap: a no-`end` directive whose home is the {numref} "List of
-    // Input Blocks" layer (not seeded here). It MUST stay uncovered — a wrong hover on it
-    // would be worse than silence. Any OTHER missing keyword is a real failure.
-    // Both revealed BY this type-aware rewrite (the old string gate hid them): the app
-    // emits them as simple/directive, the map has only a `%block` of the same name.
-    // `%maxcore` → the {numref} "List of Input Blocks" layer; `CPCM` → a simple-keyword
-    // curation target (only `%cpcm` was seeded). Silence on both is correct per contract;
-    // fixing them changes the FILE, which is a separate unit.
-    const KNOWN_GAPS: &[&str] = &["%maxcore", "CPCM"];
-    let missing: Vec<&str> = APP_EMITTED.iter()
-        .filter(|(k, kind)| !resolvable.contains(&(norm_kw(k), req_type(kind).to_string())))
-        .map(|(k, _)| *k)
-        .filter(|k| !KNOWN_GAPS.contains(k))
+    let inventory = load_inventory();
+    let inv_resolves = |e: &InvEntry| {
+        let blk = if e.expect == "block-option" {
+            e.block.clone().unwrap_or_default().to_lowercase()
+        } else {
+            String::new()
+        };
+        resolvable.contains(&(norm_kw(&e.keyword), e.expect.clone(), blk))
+    };
+    // HARD = entries without a `gap` tag: they MUST resolve. `gap` entries are declared,
+    // classified holes (a|b|c|d) — reported, never a panic (fixing them is a separate unit).
+    let resolved = inventory.iter().filter(|e| inv_resolves(e)).count();
+    let missing: Vec<&str> = inventory.iter()
+        .filter(|e| e.gap.is_none() && !inv_resolves(e))
+        .map(|e| e.keyword.as_str())
         .collect();
+    let gap_now_resolves: Vec<&str> = inventory.iter()
+        .filter(|e| e.gap.is_some() && inv_resolves(e))
+        .map(|e| e.keyword.as_str())
+        .collect();
+    let gaps_by = |c: &str| -> Vec<String> {
+        inventory.iter().filter(|e| e.gap.as_deref() == Some(c))
+            .map(|e| format!("{} [{}]", e.keyword, e.expect)).collect()
+    };
     // (b) no dangling int ref — every section/target index is in range.
     let n_sec = sections_json.len();
     let dangling = entries.iter().any(|e| {
@@ -1310,11 +1344,19 @@ fn generate_keywords_json() {
              recs_target_count(&doc));
     println!("    keyword records: {} ({} ambiguous -> targets[])", entries.len(), ambiguous);
     println!("    block-option owner_source: text {o_text} / structural {o_struct} / null {o_null}");
-    println!("    app coverage (type-aware): {} of {} resolve; known gaps (silent by design): {:?}",
-             APP_EMITTED.len() - missing.len() - KNOWN_GAPS.len(), APP_EMITTED.len(), KNOWN_GAPS);
+    println!("\n    INVENTORY COVERAGE (type-aware): {resolved} of {} resolve", inventory.len());
+    println!("      gaps by closer:");
+    println!("        (a) {{numref}} layer:     {:?}", gaps_by("a"));
+    println!("        (b) curated (prose):    {:?}", gaps_by("b"));
+    println!("        (c) second simple form: {:?}", gaps_by("c"));
+    println!("        (d) not in corpus:      {:?}", gaps_by("d"));
     println!("{:=<72}", "");
     assert!(scf_tol.is_some(), "SCF Convergence Tolerances home not found — curation target moved");
-    assert!(missing.is_empty(), "coverage post-condition FAILED (wrong or no type): {missing:?}");
+    // Only HARD (non-gap) inventory words are a post-condition; a red/incomplete coverage
+    // number is a REPORT (the gaps above), not a panic — that is the whole point of the unit.
+    assert!(missing.is_empty(), "HARD coverage FAILED — non-gap inventory word unresolved: {missing:?}");
+    assert!(gap_now_resolves.is_empty(),
+            "a declared gap now resolves — remove its `gap` tag from keyword-inventory.json: {gap_now_resolves:?}");
     assert!(!dangling, "a section/target index is out of range — dangling reference");
     assert!(n_sec > 0, "no sections");
 }
@@ -1408,8 +1450,7 @@ fn owner_signal_measure() {
     // Rebuild the home-seed exactly as the generator does, keeping the SOURCE token
     // per (section, token) so we can classify block-option targets.
     let stop: HashSet<&str> = ["end", "End", "END"].into_iter().collect();
-    let app_simple: HashSet<String> =
-        APP_EMITTED.iter().filter(|(_, k)| *k == "!").map(|(t, _)| norm_kw(t)).collect();
+    let app_simple: HashSet<String> = app_simple_set();
     let mut title_home: HashSet<String> = HashSet::new();
     // (token, section_idx) for every home mapping.
     let mut homes: Vec<(String, usize)> = Vec::new();
@@ -1527,8 +1568,7 @@ fn owner_union_measure() {
     }
 
     let stop: HashSet<&str> = ["end", "End", "END"].into_iter().collect();
-    let app_simple: HashSet<String> =
-        APP_EMITTED.iter().filter(|(_, k)| *k == "!").map(|(t, _)| norm_kw(t)).collect();
+    let app_simple: HashSet<String> = app_simple_set();
     let mut title_home: HashSet<String> = HashSet::new();
     // dedup (token, section) so counts match the generated file's target set.
     let mut homes: HashSet<(String, usize)> = HashSet::new();

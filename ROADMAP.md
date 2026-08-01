@@ -384,12 +384,15 @@ wherever an imported structure is first shown and is carried forward independent
 - [~] `keywords.json`: input keywords (`!` line + `%` blocks) → manual sections; **seeded** from the
       manual's own native "Keywords" sections + genindex, then curated on top (ADR-013 narrows
       ADR-006's "by hand"); grow it organically, starting with everything the template library uses.
-      **Seed done (unit 4.4 Part B):** `src/manual/keywords.json` seeded from the broad structured pool
-      (home mappings only) by the `generate_keywords_json` gate; stable key `(file, breadcrumb, title,
-      nth)`; **46/46 app-emitted keywords resolve** (generator fails otherwise); ambiguous keywords
-      (measured 14.2 %) carry `targets[]`, not a guessed section. See
-      [manual-keywords.md](wiki/modules/manual-keywords.md). **Left:** hand summaries, the `{numref}`
-      deferred layer (60 `%`-blocks), and the hover-side disambiguation of `targets[]`.
+      **Seed done (4.4 B):** `src/manual/keywords.json` seeded from the structured pool (home only);
+      stable key `(file, breadcrumb, title, nth)`; ambiguous keywords carry `targets[]`. **Coverage now
+      gated against an explicit, named inventory** (`keyword-inventory.json`, builder+domain+workflow;
+      one home, both gates): **45 of 53 resolve** — the honest number after fixing the *population*, not
+      just the form. The 8 gaps are classified by closer (a `{numref}` ×1 · b curated ×3 · c
+      second/right form ×4 · d none) — see the table in
+      [manual-keywords.md](wiki/modules/manual-keywords.md). **Left (by closer):** curation for
+      `IRC`/`ScanTS`/`NEB-CI` + `CPCM`/`XTB`/`TightOpt`/`Constraints`-in-%geom; the `{numref}` layer
+      (closes only `%maxcore`, so low priority); hand summaries.
 - [x] Monaco hover provider: hover a keyword → keyword/type/owning-block + Open → a **side drawer**
       showing the section (reusing `SectionView`, author stays in the editor). Fed by `keywords.json`,
       **NOT** FTS; qualified type/block-aware lookup (`enclosingBlock` + `wordPattern`), `aliases[]`

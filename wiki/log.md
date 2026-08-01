@@ -3935,3 +3935,37 @@ by the window. Temp auto-open patch reverted before commit.
 Verify: cargo 148 (+ ignored gates keywords_bridge/generate green), tsc clean, vitest 420. No
 {numref} layer, no Monarch state, no schema/sectioner change, file unchanged (only the gate), no deps.
 Left: `%maxcore`/`CPCM`/`Constraints`-in-%geom curation; the {numref} layer.
+
+## [2026-08-01] ingest | coverage inventory made explicit (builder+domain+workflow); gaps classified by closer
+
+The coverage gate improved twice by the number falling (46/46 → 44/46) as the FORM of the question got
+honest (type, not string). Third, deepest flaw: the POPULATION. The 46 were what input-builder emits;
+the hover fires on what the author TYPES — domain guards (`! XTB GOAT`, `TightOpt` before `Freq`) and
+the reaction chain (NEB-TS → OptTS → IRC). Different sets.
+
+**One home.** The expectation set is now `src/manual/keyword-inventory.json`, read by BOTH gates (Rust
+`generate_keywords_json` + TS `coverage.test.ts`) — the two implicit lists collapsed to one. Each entry
+names its **source** (builder / template / domain=ADR-014 / workflow=ADR-007), so it is reviewable
+word-by-word; populated from named sources, NOT memory — `MORead`/`PrintBasis` deliberately absent (no
+named source: named, not longer). Type-inference hint for seeding kept SEPARATE (input-builder `!`
+tokens) so the inventory can't reclassify the seed — keywords.json byte-identical, unchanged.
+
+**Honest number: 45 of 53 resolve** (type+block-aware; Rust and TS agree). Hard post-condition = the
+45 non-gap words; a `gap` word is a declared, classified hole — reported, never a panic. **8 gaps by
+closer: (a) {numref} — 1** (`%maxcore`); **(b) curated prose — 3** (`IRC`, `ScanTS`, `NEB-CI`, run-types
+in prose only, 0 backtick); **(c) second/right form — 4** (`CPCM`/`XTB`/`TightOpt` need the simple form
+of a concept that exists as `%block`/block-option; `Constraints` seeded under `%method` but emitted
+under `%geom`); **(d) not in corpus — 0**.
+
+**{numref} priced for the first time: it closes 1 of 8 named gaps** (`%maxcore`). The other 7 are
+curation (3) + second-form (4). So the block index is NOT the high-value next step for the words the
+project is built around (the reaction chain, the domain guards) — that number is the basis for
+sequencing {numref} later, not next. Domain weight recorded: `! XTB GOAT` is mandatory before any
+pathway (GOAT resolves, XTB does not); NEB-TS/OptTS exist, IRC absent — the map fails exactly on the
+thesis chain.
+
+Gate design: HARD post-condition (must resolve) vs INVENTORY of expectation (want to cover) are
+separated — a red/incomplete coverage number is a REPORT with the gap list, not a panic. Verify: cargo
+148 (+ ignored gates green), tsc clean, vitest 420, keywords.json unchanged. Numbers in
+`orca/manual-sources.md` Part D. NOT done (by instruction): no keywords.json edits, no {numref} layer,
+no hover/drawer/schema/sectioner/generator-seed change, no deps. Next units fill the map by category.

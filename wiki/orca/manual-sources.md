@@ -312,7 +312,19 @@ The "several `%`-tokens" refinement (a third rule for sections naming multiple b
 number**: it would rescue only 145 of 726 such targets (4.7 %) on a heuristic with nothing to check it
 against — cost without a post-condition.
 
-## MyST-parser review condition (ADR-013 (3)) — NOT triggered by the sample
+### Part D — coverage over an explicit, named inventory (the population, not just the form)
+
+The coverage gate improved twice by the number falling as the *form* of the question got honest
+(46/46 → 44/46, string → type). Part D fixes the **population**: the expectation set is now
+`src/manual/keyword-inventory.json` (one home, both gates), each word carrying a **source** — `builder`
+/ `template` / `domain` (ADR-014 guards) / `workflow` (ADR-007 reaction chain). **53 words; 45 resolve
+(type- and block-aware).** The 8 gaps, classified by closer: **(a) `{numref}` layer — 1** (`%maxcore`);
+**(b) curated prose — 3** (`IRC`, `ScanTS`, `NEB-CI`); **(c) second/right form of a concept in the map
+— 4** (`CPCM`, `XTB`, `TightOpt`, `Constraints`-under-`%geom`); **(d) not in corpus — 0**. Corpus
+checks behind the classification: "List of Input Blocks" contains `%maxcore`/`%cpcm`/`%xtb`/`%irc`/
+`%neb` (but not `%scan`); `IRC`/`ScanTS`/`NEB-CI` appear in the corpus only in prose (0 backtick
+entries). **`{numref}` closes 1 of 8** — so the block index is not the high-value next step for the
+words the project is built around; curation + simple-form records close 7.
 
 The only thing that would force a *true* MyST parser for **sectioning** is structural `{eval-rst}` in
 document bodies. Measured over the **full corpus (Part B, all 126 leaves): body `{eval-rst}` = 0**
