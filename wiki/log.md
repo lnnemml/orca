@@ -3647,3 +3647,38 @@ measured justification for the two-tier structure ADR-006 assumed without a numb
 untouched, same precedent as the two prior amendments); ROADMAP Phase 4 (hover item now names its
 dependency on `keywords.json` and the no-FTS-fallback rule in prose; markers unchanged). Not done, by
 instruction: no `keywords.json` built, no hover written, no code, no re-measure, ADR-006 untouched.
+
+## [2026-08-01] decision | ADR-014 AI integration boundary + agentic-AI landscape page
+
+Documentation unit, no code. The agentic-AI field made ADR-007's speculative AI ladder concrete: by
+mid-2026 several systems drive real QC engines from natural language (verified, URL+date, in the new
+`architecture/ai-landscape.md`) — **El Agente drives ORCA 6.0.1** (Aspuru-Guzik, arXiv:2505.02484,
+Matter Jul 2025), **ChemGraph** drives ORCA/NWChem/Psi4/xTB via ASE (Argonne, arXiv:2506.06363,
+Apache-2.0), **Aitomia** drives Gaussian/ORCA/PySCF/xtb over MLatom in the cloud (Dral, arXiv:2505.08195),
+and **Bunsen** (Schrödinger, early access 2026-07-27) orchestrates its validated physics stack on a
+GCP+NVIDIA cluster for drug discovery. "AI over ORCA" already exists — so the boundary of the agent's
+authority had to be fixed **before** Phase 4's "Explain with Claude" ships, not re-decided ad hoc in
+Phase 6.
+
+**ADR-014 (accepted, narrows ADR-007 §"AI integration" — ADR-007 not edited, same precedent as
+012→002 / 013→006).** Five decisions: **(1)** AI never inside the numerical pipeline — it reads what
+the deterministic tier (ADR-012 readers, ASE kernel, `ir.ts`) emits, never emits a number that lands
+in a plot/table/coordinate (rule #11 in its worst form); **(1a)** geometric constants — including
+**scan windows / step / point counts** (`%geom Scan … = 1.5, 3.0, 12`) — are **retrieved from curated
+data or derived from measured geometry, never recalled**; "typically 1.5 to 3.0 Å" is forbidden. This
+admits ADR-007's L2 only in retrieval form. **(2)** Three authority tiers T1 explain (read-only) /
+T2 draft (text the author reads before Run) / T3 orchestrate (MCP over the command layer, gated on
+Phase 4.5), mapped onto ADR-007's L1–L4 on an orthogonal axis (L = what AI does, T = what it may
+touch). **(3)** Methodology is an executable guard, not a system prompt — safe with a mediocre model
+(rule #10); named honestly as **not yet implemented** (the three guards land with the Phase 4.5 scan
+generator). **(4)** Commands are an API: every new compute-spending command needs a **pollable** path,
+not only a Tauri event — named hole: `xtb_optimize` (event-only `xtb:done`); a debt, not fixed here.
+**(5)** The model is a rented asset; no in-house orchestration model trained. **What does not change:**
+phase order 4 → 4.2 → 4.5 → 5 stays — a competitor release is not grounds to reorder.
+
+Touched (all `.md`, no code): new `architecture/adr-014-*.md`, new `architecture/ai-landscape.md`;
+`prior-art.md` (+1 sibling-link line); `ROADMAP.md` Phase 6 (+MCP T3 item, +ADR-014 link on
+AI-assisted reaction setup); `modules/tauri-core.md` (pollable-path rule for new commands, decision
+(4)); `index.md` (+2 Architecture entries, page count 55→59, last-structural-update).
+Next: still Phase 4.4 (manual panel UI + Monaco hover + keywords.json seeder) — this unit did not
+change the phase order.

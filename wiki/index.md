@@ -18,7 +18,9 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 - [adr-011-editor-graphics-stack.md](architecture/adr-011-editor-graphics-stack.md) — editor graphics stack (wgpu→WASM→WebGL2/WebGPU, impostors, GPU picking): **proposed/deferred**, gated on a spike with verifiable exit criteria; until then 3Dmol stays a dumb renderer
 - [adr-012-output-parsing-ownership.md](architecture/adr-012-output-parsing-ownership.md) — authoritative result parsing = own Rust parsers over structured artifacts (`.property.txt`/`.hess`/`_trj.xyz`/`orca_2json`), **not cclib** (crashes on ORCA 6.1); narrows ADR-002, moves the tier to Rust (ADR-009)
 - [adr-013-manual-indexing-ownership.md](architecture/adr-013-manual-indexing-ownership.md) — manual indexing ownership: **Rust** writes `orcastudio.db` and does the sectioning (Markdown/ATX, not HTML); the app never fetches the manual over the network (a per-version script does); narrows ADR-006 (three decisions), does not edit it
+- [adr-014-ai-integration-boundary.md](architecture/adr-014-ai-integration-boundary.md) — AI integration boundary: AI never inside the numerical pipeline (geometric constants **retrieved, never recalled**); three authority tiers T1 explain / T2 draft / T3 orchestrate (MCP, after Phase 4.5) mapped onto ADR-007's L1–L4; methodology as executable guard; commands as a pollable API; narrows ADR-007 §"AI integration", does not edit it
 - [prior-art.md](architecture/prior-art.md) — how other tools (Avogadro 2, IQmol, Gabedit, Chemcraft, WebMO, GaussView) handle geometry, and what OrcaStudio does differently (scene-derived mask, unbroken index space)
+- [ai-landscape.md](architecture/ai-landscape.md) — register of **agentic AI layers** over computational chemistry (Bunsen, El Agente over ORCA, ChemGraph, Aitomia), each with a uniform Who/Drives-what/Interface/Compute/Access/Delta record; why they do not change OrcaStudio's need, and what they confirm (agents built **over** validated physics); the JOSS statement-of-need source. Sibling of prior-art.md (builders/viewers)
 - [proposals/editor-architecture-2026-07-30.md](architecture/proposals/editor-architecture-2026-07-30.md) — author's design proposal for the editor architecture (source document for ADR-010/011; includes §11 rejected alternatives). Input, not a decision — not edited.
 
 ## Modules
@@ -74,4 +76,4 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 
 ---
 
-*Page count: 55. Last structural update: 2026-07-31 (+modules/manual-sections.md — the Rust ATX sectioner + objects.inv anchor map, unit 4.2: line-conservation post-condition, corpus gate; content analysis moved out of the fetch script).*
+*Page count: 59. Last structural update: 2026-08-01 (+architecture/adr-014-ai-integration-boundary.md and +architecture/ai-landscape.md — the AI integration boundary (T1/T2/T3 authority tiers, geometric constants retrieved-not-recalled) and the agentic-AI landscape register for the JOSS statement of need).*

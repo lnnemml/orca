@@ -52,3 +52,6 @@ Everything else OrcaStudio does (build, view orbitals, submit remotely) these to
 better and more maturely. The bet is narrow and specific: a **reaction-mechanism workstation** where
 the fragment decomposition drives the geometry operations and the index space is unbroken to the
 run — not a better general molecular editor.
+
+*This page is about builders / viewers / geometry; the agentic AI layer over computational chemistry
+lives in [ai-landscape.md](ai-landscape.md).*

@@ -178,6 +178,14 @@ runs `terminate_on_exit` synchronously; `Drop` on `SidecarManager` is the backst
 `explorer`) — an app-defined command, so no capability entry is needed. The frontend `listen`s to
 events (allowed by the `core:default` capability) and filters by `job_id`.
 
+**Pollable-path rule for new commands ([ADR-014](../architecture/adr-014-ai-integration-boundary.md)
+(4)).** The threading rule below makes every long operation *event-driven*, but a future MCP client
+(T3) does **not** listen to Tauri events — so **every new compute-spending command must also expose a
+*pollable* path to its status/result, not only an event**. `submit_job` already satisfies this via
+`get_job`; `xtb_optimize` does **not** (it emits only `xtb:done` / `xtb:error`, no status query). That
+gap is a **named debt**, not fixed here — retrofitting `xtb_optimize` is out of scope for the ADR-014
+documentation unit and touches no code.
+
 ## The threading rule — a long operation NEVER lives inside a synchronous command
 
 A `#[tauri::command] fn` executes on the **main thread**, which on Linux is the GTK/WebKitGTK UI

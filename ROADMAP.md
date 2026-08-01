@@ -552,7 +552,12 @@ and OrcaStudio picks the job up, syncs results, and parses them — no terminal,
 - [ ] Multi-step mechanism support: Mechanism = ordered sequence of Reactions (catalytic
       cycles like Sonogashira: oxidative addition → transmetalation → reductive elimination)
 - [ ] AI-assisted reaction setup: describe reaction → AI proposes reaction center, approach
-      geometry, pathways (Anthropic API, user's key)
+      geometry, pathways (Anthropic API, user's key). **Authority boundary fixed by
+      [ADR-014](wiki/architecture/adr-014-ai-integration-boundary.md)** (T2 draft: text the author
+      reads before Run; geometric constants retrieved, never recalled).
+- [ ] MCP server over the Tauri command layer (T3 of
+      [ADR-014](wiki/architecture/adr-014-ai-integration-boundary.md)) — **depends on Phase 4.5**
+      (nothing to orchestrate while the central object is the Job, not the Reaction)
 - [ ] TS refinement automation: scan maximum → OptTS → Freq → ΔG‡ pipeline
       (if not completed in Phase 4.5)
 
