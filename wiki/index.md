@@ -36,6 +36,7 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 - [scene.md](modules/scene.md) — Scene/SceneFragment pure core: merge to flat xyz, index-space invariant, reset-detection primitive (ADR-008)
 - [manual-index.md](modules/manual-index.md) — manual indexing pipeline + keyword map
 - [manual-sections.md](modules/manual-sections.md) — `src-tauri/src/manual/`: ATX sectioner (fence-aware, non-nested bodies) + `objects.inv` anchor map; three post-conditions (line conservation, anchors, label binding); the `#[ignore]` corpus gate. Writes no DB (storage is 4.3)
+- [manual-keywords.md](modules/manual-keywords.md) — `src/manual/keywords.json`: the keyword→section map for the Monaco hover (4.4). Seeded from the manual's structured pool (home mappings only) by a Rust `#[ignore]` generator, curated on top; stable key `(file, breadcrumb, title, nth)` (not the synthetic id); coverage post-condition 46/46 app-emitted keywords or the generator fails; ambiguous keywords carry `targets[]` (measured 14.2 %), not a guessed single section
 
 ## ORCA domain knowledge
 
@@ -76,4 +77,4 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 
 ---
 
-*Page count: 59. Last structural update: 2026-08-01 (+architecture/adr-014-ai-integration-boundary.md and +architecture/ai-landscape.md — the AI integration boundary (T1/T2/T3 authority tiers, geometric constants retrieved-not-recalled) and the agentic-AI landscape register for the JOSS statement of need).*
+*Page count: 60. Last structural update: 2026-08-01 (+modules/manual-keywords.md — the seeded keyword→section map (unit 4.4 Part B): broad structured-pool home seeding, stable `(file, breadcrumb, title, nth)` key, 46/46 app-coverage post-condition, `targets[]` for the measured 14.2 % ambiguous tail).*

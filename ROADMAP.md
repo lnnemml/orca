@@ -377,9 +377,15 @@ wherever an imported structure is first shown and is carried forward independent
 - [~] Manual panel: full-text search with keyword highlighting, section rendering. **Backend done
       (4.3):** `search_manual` command → `bm25`-ranked hits with FTS5 `snippet()`; the retrieval gate
       measured hit@5 88 % (raw `body_md` chosen by number). **The panel UI is 4.4** (no UI this unit).
-- [ ] `keywords.json`: input keywords (`!` line + `%` blocks) → manual sections; **seeded** from the
+- [~] `keywords.json`: input keywords (`!` line + `%` blocks) → manual sections; **seeded** from the
       manual's own native "Keywords" sections + genindex, then curated on top (ADR-013 narrows
-      ADR-006's "by hand"); grow it organically, starting with everything the template library uses
+      ADR-006's "by hand"); grow it organically, starting with everything the template library uses.
+      **Seed done (unit 4.4 Part B):** `src/manual/keywords.json` seeded from the broad structured pool
+      (home mappings only) by the `generate_keywords_json` gate; stable key `(file, breadcrumb, title,
+      nth)`; **46/46 app-emitted keywords resolve** (generator fails otherwise); ambiguous keywords
+      (measured 14.2 %) carry `targets[]`, not a guessed section. See
+      [manual-keywords.md](wiki/modules/manual-keywords.md). **Left:** hand summaries, the `{numref}`
+      deferred layer (60 `%`-blocks), and the hover-side disambiguation of `targets[]`.
 - [ ] Monaco hover provider: hover a keyword in the editor → short description → click opens
       the full manual section in the panel. **Depends on the `keywords.json` item above and is fed
       by it, NOT by FTS** — the retrieval gate measured hit@1 = 9/17 (~53 %) vs hit@5 15/17 (88 %),

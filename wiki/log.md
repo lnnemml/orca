@@ -3748,3 +3748,35 @@ docs-only; the measurement gate stays in the tree for the seeding unit (Part B),
 `keywords.json` (schema: keyword, type, section key, aliases[], summary, provenance) and the loader
 post-condition. No code committed here, no schema/ingest/sectioner/FTS touched, no prose parsed, no
 genindex/HTML.
+
+## [2026-08-01] session | Unit 4.4 Part B: seed keywords.json from the manual structured pool
+
+Generated `src/manual/keywords.json` — the keyword→section map the Monaco hover will read (ADR-013:
+Rust owns manual text-to-structure, a `#[ignore]` generator emits it; frontend consumes). Seed scope
+(user decision): **broad** (whole structured pool: annotated ```orca + pipe/list/flat tables +
+keyword-titled sections), **home mappings only** — `{numref}`-target records deferred (A4's 100 %
+precision was for home only). New gates in `manual/tests.rs`: `keyword_seed_measure` (A1–A4),
+`keyword_seed_ambiguity` (+ 30 % exit), `generate_keywords_json`.
+
+**Stable key** = `(file, breadcrumb, title, nth)` — not the synthetic id (reassigned per ingest). The
+triple collides once (mreom's two `## Perturbative MR-EOM-CCPT` H2 siblings), so `nth` disambiguates
+only where needed; `line_start` NOT written (diff churn). Loader post-condition (rule #9): every key
+resolves to exactly one section, 0/≥2 errors naming the key, never pick-first.
+
+**New measure — ambiguity (mirror of the A1 collision): 14.2 %** (370 of 2606 home-seed tokens map to
+≥2 sections: MaxIter 17, %method 16, PrintLevel 15…). Under the 30 % exit bar, so generation
+proceeded; ambiguous keywords carry **`targets[]`, not a guessed single section** — hover must not
+pick first (disambiguation is the next unit, on a number).
+
+**Coverage post-condition (hard): 46/46** app-emitted keywords resolve or the generator panics naming
+misses. Four needed curation: `M06-L`/`M06-2X` via `aliases[]` (the manual writes `M06L`/`M062X`; no
+hyphen normalization — dashes matter in def2-SVP/NEB-TS/B3LYP-D4); `TightSCF`/`VeryTightSCF` as curated
+prose entries (scf › Convergence Tolerances). Extractor reads the functional table's 2nd column and
+strips `{cite}` role backticks; appendix (change log/glossary) excluded (its `## GOAT` change entries
+aren't docs).
+
+**Output:** 2608 records, ~1.05 MB (2447 block-option / 121 simple / 40 block; 390 ambiguous),
+deterministic sort. Size noted as a fact — the block-option bulk is curation material, not finished
+entries. No DB schema/migration (bundled file, map lookup). `cargo test` green (147 passed, 11
+ignored). Wiki: new `modules/manual-keywords.md`, `index.md` (60 pages), `ROADMAP` (item → [~]).
+Left: hand summaries, the {numref} deferred layer (60 %-blocks), targets[] disambiguation.
