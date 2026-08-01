@@ -3682,3 +3682,34 @@ AI-assisted reaction setup); `modules/tauri-core.md` (pollable-path rule for new
 (4)); `index.md` (+2 Architecture entries, page count 55→59, last-structural-update).
 Next: still Phase 4.4 (manual panel UI + Monaco hover + keywords.json seeder) — this unit did not
 change the phase order.
+
+## [2026-08-01] ingest | El Agente line (Quntur / Estructural) — honest delta after verification
+
+Chase-down of `ai-landscape.md` "To verify" item 1, which turned out to be substantive and changed
+the Delta. No code; ADR-014 not edited (its decisions stand). Web-verified (URL+date, rule #10):
+
+- **El Agente Quntur** — Pérez-Sánchez … Aspuru-Guzik, [arXiv:2602.04850](https://arxiv.org/abs/2602.04850)
+  (v1 2026-02-04). **Instantiated in ORCA; supports the full range of ORCA 6.0 calculations; reasons
+  over software documentation and scientific literature** to plan/execute/adapt/analyze.
+- **El Agente Estructural** — Choi … Aspuru-Guzik/Bernales, [arXiv:2602.04849](https://arxiv.org/abs/2602.04849)
+  (v1 2026-02-04). **Multimodal NL-driven geometry generation/manipulation** with control over
+  atom/functional-group replacement, connectivity, and **stereochemistry**, using **VLMs**;
+  integrated into Quntur.
+- **El Agente Forjador** — [arXiv:2604.14609](https://arxiv.org/abs/2604.14609) (2026-04) — task-driven
+  agent generation for quantum *simulation*/dynamics; **not our domain**, checked and set aside.
+
+**Why it changed the page:** the old delta ("OrcaStudio has geometric control, they don't") no longer
+holds — Estructural is exactly NL geometry manipulation incl. stereochemistry, and Quntur's
+documentation-grounding overlaps our planned Phase-4 manual layer. Rewrote the El Agente record as a
+**line** (Q 2025 → Quntur 2026 → Estructural 2026, each with the standard field schema; Estructural a
+separate entry) and replaced the Delta with a **divergence of bets, not of features**: Estructural
+lets the **model** decide geometry (NL+VLM); OrcaStudio bets on **direct human manipulation** checked
+by post-conditions (rule #9) over an **unbroken index space** ([ADR-008]) where the AI **cannot emit a
+coordinate** ([ADR-014] (1a)). Framed as exactly the critique ADR-014 already makes — now with an
+addressee in the literature — not as a stronger/weaker position. "What this does NOT change" (d)
+reworked accordingly (dropped "learning layer"/"geometry editing" as differentiators — both now exist
+upstream); "What it confirms" gains the Estructural caveat (the emit-boundary is clean for
+energies/gradients but geometry construction is where the field now lets a model generate numbers, an
+unsettled bet). "To verify" trimmed to the still-open fields (El Agente line interface/compute/access;
+Aitomia source; Bunsen interface/Jaguar). Updated: `ai-landscape.md`, `index.md` (description line;
+page count unchanged — edits only). Next: still Phase 4.4.

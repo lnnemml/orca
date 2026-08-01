@@ -37,29 +37,77 @@ Each entry has the same fields, in this order:
   organic QM), cloud cluster (not a laptop), closed EA (not a local app). Not a competitor; a
   confirmation — see *What it confirms*.
 
-## El Agente (Aspuru-Guzik group) — the nearest existing analog
+## El Agente line (Aspuru-Guzik group) — the nearest existing work
 
-- **Drives what** — **ORCA (v6.0.1) is the main quantum-chemistry engine for all calculations**,
-  alongside RDKit, OpenBabel, xTB and Architector. This is why El Agente is OrcaStudio's closest
-  existing neighbour: *an LLM agent over ORCA, with autonomous file handling and submission*, is
-  exactly the T3 shape of [ADR-014](adr-014-ai-integration-boundary.md).
+Not one system but a **line of agents**: **El Agente Q** (2025) → **El Agente Quntur** (2026) →
+**El Agente Estructural** (2026). All are over ORCA, and by 2026 the line has reached the two places
+we thought were our own — grounding in the manual (Quntur *reasons over software documentation*) and
+direct geometric construction (Estructural *manipulates geometry, including stereochemistry, from
+natural language*). The honest delta (below) is therefore a divergence of **bets**, not of features.
+A fourth paper, *El Agente Forjador* ([arXiv:2604.14609](https://arxiv.org/abs/2604.14609), 2026-04),
+is **task-driven agent generation for quantum *simulation* / dynamics** — a different domain, not
+relevant to OrcaStudio; checked and set aside.
+
+### El Agente Q (2025)
+
 - **Who / when** — Zou, Cheng, Aldossary, … Aspuru-Guzik. arXiv:2505.02484 (**2025-05-05**),
   published in *Matter*, **July 2025**.
   ([arXiv](https://arxiv.org/abs/2505.02484),
-  [Matter](https://www.cell.com/matter/fulltext/S2590-2385(25)00306-6)) A 2026 follow-up appears in
-  search — *El Agente Quntur*, [arXiv:2602.04850](https://arxiv.org/abs/2602.04850) — contents not
-  verified here (see To verify).
-- **Interface** — `unknown` (LLM multi-agent system with transparent action-trace logs; concrete
-  front end not stated in the sources checked).
-- **Compute** — `unknown` (not stated in the abstract; runs the engines above wherever they are
-  installed).
+  [Matter](https://www.cell.com/matter/fulltext/S2590-2385(25)00306-6))
+- **Drives what** — **ORCA (v6.0.1) is the main quantum-chemistry engine for all calculations**,
+  alongside RDKit, OpenBabel, xTB and Architector. *An LLM agent over ORCA with autonomous file
+  handling and submission* — the T3 shape of [ADR-014](adr-014-ai-integration-boundary.md).
+- **Interface** — `unknown` (LLM multi-agent system with transparent action-trace logs; front end
+  not stated in the sources checked).
+- **Compute** — `unknown` (not stated; runs the engines above wherever installed).
 - **Access** — `unknown` (code-availability / license not confirmed in the sources checked).
-- **Delta vs OrcaStudio** — stated plainly, without softening: **"AI over ORCA" already exists.**
-  OrcaStudio's difference is *not* the presence of an agent. It is that the agent sits over a
-  **desktop application with a local, free academic ORCA**, over **manual reaction-center
-  construction** (geometric control — distances, angles of attack, dihedrals) and a **learning
-  layer** — and that the **authority boundary is fixed architecturally** ([ADR-014](adr-014-ai-integration-boundary.md)),
-  not left to depend on model strength. If this page does not say that, a JOSS reviewer will.
+- **Delta vs OrcaStudio** — see the line-level delta below.
+
+### El Agente Quntur (2026)
+
+- **Who / when** — Pérez-Sánchez, Zou, Campos-Gonzalez-Angulo, … Aspuru-Guzik.
+  [arXiv:2602.04850](https://arxiv.org/abs/2602.04850) (v1 **2026-02-04**, v2 2026-04-14) — *"A
+  research collaborator agent for quantum chemistry"*.
+- **Drives what** — **instantiated in ORCA; supports the full range of calculations available in
+  ORCA 6.0**. It **reasons over software documentation and scientific literature** to plan, execute,
+  adapt, and analyze — the documentation-grounding that overlaps our own Phase-4 manual layer.
+- **Interface** — `unknown` (hierarchical multi-agent system; front end not stated).
+- **Compute** — `unknown` (not stated).
+- **Access** — `unknown` (code-availability not stated in the sources checked).
+- **Delta vs OrcaStudio** — see the line-level delta below.
+
+### El Agente Estructural (2026)
+
+- **Who / when** — Choi, Zou, Müller, … Aspuru-Guzik, Bernales.
+  [arXiv:2602.04849](https://arxiv.org/abs/2602.04849) (v1 **2026-02-04**, v2 2026-04-13) — *"An
+  Artificially Intelligent Molecular Editor"*.
+- **Drives what** — a **multimodal, natural-language-driven geometry-generation and manipulation
+  agent**: precise control over **atomic / functional-group replacement, atomic connectivity, and
+  stereochemistry**, using **vision-language models** alongside domain tools. Its **integration into
+  El Agente Quntur** is stated. This is the geometric-construction capability we had listed as
+  OrcaStudio's differentiator — now present in the literature.
+- **Interface** — `unknown` (multimodal / natural-language; front end not stated).
+- **Compute** — `unknown` (not stated).
+- **Access** — `unknown` (not stated in the sources checked).
+- **Delta vs OrcaStudio** — see the line-level delta below.
+
+### Delta vs OrcaStudio (the line)
+
+The old formula — *"OrcaStudio has geometric control, they don't"* — **no longer holds**: Estructural
+is exactly geometry manipulation from natural language, stereochemistry included. The real difference
+is a divergence of **bets**, not of feature presence:
+
+- **Estructural** generates and edits geometry through **natural language + a VLM** — the geometric
+  decisions are made by the **model**.
+- **OrcaStudio** bets on **direct human manipulation** checked by **post-conditions** (rule #9) over
+  an **unbroken index space** ([ADR-008](adr-008-scene-fragment-model.md)), where the AI **by
+  construction cannot emit a coordinate** ([ADR-014](adr-014-ai-integration-boundary.md) (1a):
+  geometric constants are retrieved or derived, never recalled).
+
+This is **not a weaker position** — it is precisely the critique [ADR-014](adr-014-ai-integration-boundary.md)
+already formulates (a model that *emits* geometry has no provenance for it), now with a concrete
+addressee in the literature rather than a hypothetical one. Which bet is right is an open empirical
+question; the page records the fork, not a verdict.
 
 ## ChemGraph (Argonne)
 
@@ -105,36 +153,42 @@ Read off the columns above, not re-narrated:
   academic agents — El Agente, ChemGraph, Aitomia — *do* overlap on domain; they are separated on
   the other axes and by form factor, below.)
 - **(b) Compute.** The cloud entrants (**Bunsen, Aitomia**) need a cluster; OrcaStudio runs on a
-  **laptop with free academic ORCA**. This axis does **not** separate ChemGraph or El Agente, which
-  are self-hostable — so compute alone is not the argument against those two.
+  **laptop with free academic ORCA**. This axis does **not** separate **ChemGraph** (self-hostable);
+  the El Agente line's compute is `unknown`, so compute is not a claimed argument against it either.
 - **(c) Access.** **Bunsen** is closed early access and **Aitomia** is cloud-gated; OrcaStudio is a
-  **local desktop app**. This axis does **not** separate **ChemGraph** (Apache-2.0) — so access
-  alone is not the argument against it either.
-- **(d) The honest separation from the open academic agents.** "AI over ORCA" already exists
-  (El Agente drives ORCA 6.0.1; ChemGraph drives it via ASE). OrcaStudio is not differentiated by
-  *having* an agent. It is a **desktop reaction-mechanism workstation** — manual reaction-center
-  construction, an unbroken pick→run index space ([ADR-008](adr-008-scene-fragment-model.md)), a
-  learning layer — with the **agent's authority fixed in architecture** ([ADR-014](adr-014-ai-integration-boundary.md)),
-  not left to the strength of whatever model is loaded. That is the statement of need.
+  **local desktop app**. This axis does **not** separate **ChemGraph** (Apache-2.0); the El Agente
+  line's access is `unknown` — so access alone is not the argument against those.
+- **(d) The honest separation is a divergence of bets, not a missing feature.** "AI over ORCA"
+  already exists (El Agente Q/Quntur over ORCA; ChemGraph via ASE), the **manual-grounding** we
+  planned for Phase 4 exists (Quntur *reasons over software documentation*), and **NL-driven
+  geometry construction incl. stereochemistry** exists (Estructural). So OrcaStudio is **not**
+  differentiated by having an agent, a docs layer, or geometry editing. The fork is *who decides the
+  geometry*: OrcaStudio bets on **direct human manipulation** checked by **post-conditions** (rule
+  #9) over an **unbroken pick→run index space** ([ADR-008](adr-008-scene-fragment-model.md)), where
+  the AI **by construction cannot emit a coordinate** ([ADR-014](adr-014-ai-integration-boundary.md)
+  (1a)) — against an agent that *generates* the geometry from language. That is the statement of
+  need: an architectural authority boundary, not a claim to a unique feature.
 
 ## What it confirms
 
 The largest company in the field builds an agent **on top of validated physics, not instead of it**
 — Bunsen is positioned precisely as *executing validated methods*, and its QM path runs through
 Schrödinger's own engines, not through the language model. The academic agents converge on the same
-line independently: **El Agente drives ORCA**, **ChemGraph drives ORCA / NWChem / Psi4 via ASE**,
-**Aitomia drives Gaussian / ORCA / PySCF / xtb** — in every case the LLM *orchestrates* a
-deterministic engine and reads what it returns; none of them let the model *emit* the physics. That
-is exactly the boundary [ADR-014](adr-014-ai-integration-boundary.md) fixes: the AI never inside the
-numerical pipeline. Four independent groups drawing the same line is the strongest available evidence
-that the line is the right one.
+line independently: **El Agente Q/Quntur drive ORCA** (Quntur *instantiated in ORCA*, full ORCA 6.0),
+**ChemGraph drives ORCA / NWChem / Psi4 via ASE**, **Aitomia drives Gaussian / ORCA / PySCF / xtb** —
+in every case the LLM *orchestrates* a deterministic engine and reads what it returns; none let the
+model *emit* the physics. That is exactly the boundary [ADR-014](adr-014-ai-integration-boundary.md)
+fixes: the AI never inside the numerical pipeline. Four independent groups drawing the same line is
+the strongest available evidence that the line is the right one. **The caveat Estructural raises:**
+that boundary is clean for *energies and gradients*, but **geometry construction** is where a model is
+now allowed to *generate* the numbers (NL + VLM). OrcaStudio draws the line there too (ADR-014 (1a)) —
+which is a bet the field has not settled, not a consensus.
 
 ---
 
 ## To verify
 
-- *El Agente Quntur* ([arXiv:2602.04850](https://arxiv.org/abs/2602.04850), 2026) — a 2026 "research
-  collaborator agent" follow-up; contents, engines driven, and access model not yet read.
-- El Agente (2025) — interface, compute location, and code license unconfirmed.
+- El Agente line (Q / Quntur / Estructural) — **interface, compute location, and code
+  availability / license** are `unknown` across all three; abstracts do not state them.
 - Aitomia — whether any component is open source, and the pricing model of the public instances.
 - Bunsen — concrete interface, and whether the QM engine (Jaguar) enters a later release.
