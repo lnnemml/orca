@@ -3857,3 +3857,36 @@ run; bundled-app corpus path is later. Verify: cargo 148, tsc clean, vitest 397 
 Wiki: frontend.md (Manual panel + SectionView + why), manual-index.md (get/status commands, markers,
 manual_root debt), ROADMAP (panel [x]). No schema/FTS/sectioner/generator/keywords.json changes; no
 hover, no {numref}, no drawer, no deps.
+
+## [2026-08-01] ingest | ORCA block nesting + word boundaries measured for the hover qualifier (4.4 Part A)
+
+The Monarch tokenizer is stateless (one `root`, no @push/@pop), so the block qualifier the hover needs
+isn't in Monaco's state — derived by a PURE function `enclosingBlock(text, line)` (`src/editor/`,
+tested without Monaco, 10 trap tests). The hazard: a scanner wrong about the enclosing block makes the
+hover show the WRONG section confidently (a qualified lookup finds a record either way). So it returns
+**null on any ambiguity**, never a guess.
+
+Measured over the manual's own **1477 ` ```orca ` blocks** (a real validation corpus, rule #10):
+- **Opener forms:** 682 multi-line block, 27 single-line block, **46 no-`end` directive (6.1 %)**
+  (`%maxcore 3000`, `%moinp "…"`, `%base "…"`). A naive "every `%name` opens" scanner ends with a
+  dirty stack on **42/1477 (2.8 %)** — all no-`end` directives. So the scanner opens a block ONLY when
+  a matching `end` follows (forward scan); built that way it never runs away (**0/1477** open stacks),
+  and truncated fragments are treated as directives too (conservative).
+- **Nesting is real:** `%geom … Constraints … end end` — bare-word sub-blocks (no `%`), the case
+  `scene/constraints.ts::locateGeom` already handles. The scanner pops the enclosing `%block` early on
+  a sub-block `end` → conservative null after the sub-block, correct `%geom` inside it.
+- **Word boundaries:** Monaco's default `wordPattern` (reconstructed from node_modules, not memory)
+  splits `def2-SVP`→[def2,SVP], `NEB-TS`, `M06-2X`, `%maxcore`→[maxcore], `def2/J`→[def2,J]; only
+  `RIJCOSX` survives. `def2` handed instead of `def2-SVP` is a miss indistinguishable from "not in the
+  map" — the hover unit MUST set a `wordPattern` keeping `-_./%` in words (exact regex in the wiki).
+- **Coverage on OUR text (Phase-1 templates):** all simple `!` keywords resolve; `%pal`/`%geom` ✓,
+  but **`%maxcore` is ABSENT** from `keywords.json` (a no-`end` directive from the `{numref}`-deferred
+  layer) → hover stays silent (correct per contract), a named curation hole.
+- **Render piggyback:** **110/1558 sections (7.1 %)** carry a pipe-table outside a ` ``` ` fence (26
+  Keyword-titled) → they render as misaligned proportional prose in `SectionView`. Substantial, so
+  Part B routes a `^\s*\|` line into the same monospace `<pre>` as a fence (same linear check, no
+  parser, preservation test unchanged).
+
+Facts in new `wiki/orca/input-syntax.md`. Verify: vitest green (enclosing-block 10 traps), tsc clean,
+cargo untouched. Part B (hover provider + drawer + wordPattern + pipe-table `<pre>`) NOT started.
+No keywords.json/schema/sectioner/Monarch-state changes, no deps.
