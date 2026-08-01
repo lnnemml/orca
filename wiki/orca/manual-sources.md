@@ -221,6 +221,66 @@ duplication). Two honest notes: the `imaginary frequency` "miss" actually return
 list — the goalpost was not moved; and hit@1 is only ~53 %, so the future exact-keyword layer
 (`keywords.json` / hover) still has a job.
 
+## Keyword-seed measurement (unit 4.4) — the stable key, and coverage of what the app emits
+
+`cargo test keyword_seed_measure -- --ignored --nocapture` measures the three things that decide
+whether `keywords.json` can be a *confident single-answer* hover (ADR-013's hit@1 = 9/17 finding): a
+**stable key**, **coverage of what the app itself emits**, and a cheap **precision proxy** per entry.
+It does **not** count "keywords extracted" — a map that points at the wrong section yet looks complete
+is the hazard, so the numbers are about correctness, not volume.
+
+**Stable key — `(file, breadcrumb, title)` is NOT unique (measured).** `manual_sections.id` is a
+synthetic PK reassigned on every ingest, so a curated file cannot key on it (it would silently slide to
+another section after re-indexing). Of the candidate keys, `anchor` is out (NULL in 518) and
+`(file, title)` is out (140 within-file slug collisions, unit 4.2). The next candidate,
+**`(file, breadcrumb, title)`, collides on exactly 1 pair**: `contents/modelchemistries/mreom` carries
+**two identical `## Perturbative MR-EOM-CCPT` H2 headings** (lines 374 and 1572), same parent → same
+breadcrumb → same triple. So the **chosen key is `(file, breadcrumb, title)` plus an optional `nth`
+ordinal used only where the triple is ambiguous** (today: that one mreom pair). `line_start` is **not**
+written into the curated file (it would churn the diff on every reflow). The **loader post-condition
+(rule #9): every key must resolve to exactly one section; 0 or ≥2 is an error naming the key — never
+pick-first.**
+
+**Candidate sources (heuristic token extraction).**
+
+| source | tokens | distinct |
+|---|---|---|
+| the 79 "Keyword…"-titled sections — ` ```orca ` blocks | 1052 | 847 |
+| the 79 "Keyword…"-titled sections — pipe / list / flat tables | 863 | 747 |
+| ↳ their union | | **1471** |
+| **"List of Input Blocks"** flat-table (the single richest `%`-block source) | 64 | **64** |
+| corpus-wide structured markup (maximal seed pool) | 11134 | **4247** |
+
+Two hypotheses tested, both answered by number:
+- **"List of Input Blocks" IS the richest single `%`-block source** — 60 rows → 64 names (4 aliases),
+  each with a `{numref}` to its documentation section (105 refs). It carries `pal`, `geom`, `maxcore`
+  — all three `%`-blocks the app emits.
+- **"Simple Keyword Lines" is NOT a list of `!` keywords** — it is a flat-table *index* (25 topic
+  rows, 35 `{numref}` to *other* tables like `tab:…dft.gga`). The individual simple keywords live in
+  those referenced per-topic tables, not here.
+- Incidentally `:::{flat-table}` is a **fourth** structured markup (36 files corpus-wide), beyond the
+  three the 4.1 count found in the 79 keyword sections (` ```orca ` / `:::{table}` pipe / `{list-table}`).
+
+**App coverage (the number that matters) — 42 of 46.** Every keyword the app itself writes into an
+input (read from `src/input-builder/orca-options.ts`, `build-input.ts`, `templates/orca-templates.ts`,
+`scene/constraints.ts` — not from memory) checked against the corpus pool. **4 are missing, and they
+split into two distinct causes:**
+- **`TightSCF`, `VeryTightSCF`** — present and backtick-wrapped (×5, ×2) but **only in prose**; there
+  is no SCF-convergence keyword *table*. → curation targets (ADR-013's prose tail), not a corpus gap.
+- **`M06-L`, `M06-2X`** — the manual spells them **`M06L` / `M062X` (no hyphen)** in the functional
+  table, while the app emits the hyphenated form. → a **spelling divergence**, handled by an
+  `aliases[]` field on the record, **not** by hyphen-normalization (dashes are significant elsewhere:
+  `def2-SVP`, `NEB-TS`, `B3LYP-D4`).
+
+One extractor lesson for the seeder: the DFT functional table (`DensityFunctionalTheory.md`) holds the
+input token in its **second** column (`| M06-L {cite} | \`M06L\` | … |`), not the first cell — the
+seeder must read the token column, not assume column 1.
+
+**Precision proxy — 7574 / 7574 = 100 %.** Every token extracted from a section occurs literally in
+that section's title or body (0 suspicious) — the extractor invents nothing. This validates only the
+*home* mapping; the real risk is the `{numref}`-referenced target (target ≠ home), whose precision the
+seeding unit measures directly.
+
 ## MyST-parser review condition (ADR-013 (3)) — NOT triggered by the sample
 
 The only thing that would force a *true* MyST parser for **sectioning** is structural `{eval-rst}` in

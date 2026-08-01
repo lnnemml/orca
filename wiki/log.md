@@ -3713,3 +3713,38 @@ energies/gradients but geometry construction is where the field now lets a model
 unsettled bet). "To verify" trimmed to the still-open fields (El Agente line interface/compute/access;
 Aitomia source; Bunsen interface/Jaguar). Updated: `ai-landscape.md`, `index.md` (description line;
 page count unchanged — edits only). Next: still Phase 4.4.
+
+## [2026-08-01] ingest | Keyword-seed measurement (unit 4.4): stable key, app coverage, precision proxy
+
+Measured the seeding inputs BEFORE generating `keywords.json`, over the real sectioner
+(`keyword_seed_measure` gate, `src-tauri/src/manual/tests.rs`, `#[ignore]`). The hazard this unit
+guards is a map that points at the wrong section yet looks complete — a confident wrong hover
+(ADR-013's hit@1 = 9/17). So the gate measures correctness, not volume.
+
+**A1 — stable key.** `manual_sections.id` is reassigned per ingest, so the curated file cannot key on
+it. `(file, breadcrumb, title)` is **NOT unique**: exactly 1 collision — `modelchemistries/mreom` has
+two identical `## Perturbative MR-EOM-CCPT` H2 siblings (lines 374, 1572), same parent → same triple.
+**Decision:** key = `(file, breadcrumb, title)` + an optional `nth` ordinal only where the triple is
+ambiguous; `line_start` NOT written to the file; loader post-condition (rule #9) — every key resolves
+to exactly one section, 0 or ≥2 errors naming the key, never pick-first.
+
+**A2 — sources.** 79 "Keyword"-titled sections: 847 distinct ```orca tokens + 747 distinct table
+tokens (union 1471). "List of Input Blocks" flat-table = the richest single `%`-block source (64
+names, has pal/geom/maxcore). "Simple Keyword Lines" is an INDEX of 25 topic groups, NOT a keyword
+list (hypothesis corrected). `:::{flat-table}` is a 4th structured form (36 files) beyond the 4.1
+three. Corpus-wide pool: 4247 distinct tokens.
+
+**A3 — app coverage (the number that matters): 42/46.** Keywords the app emits (read from
+`input-builder/`, `templates/`, `scene/constraints.ts`) vs the pool. 4 missing, two causes:
+`TightSCF`/`VeryTightSCF` exist only in prose (curation, not a corpus gap); `M06-L`/`M06-2X` are
+spelled `M06L`/`M062X` in the manual → `aliases[]`, NOT hyphen-normalization (dashes are significant:
+def2-SVP, NEB-TS, B3LYP-D4). Seeder lesson: the functional table puts the input token in column 2.
+
+**A4 — precision proxy: 7574/7574 = 100 %** literal occurrence in the home section — the extractor
+invents nothing. (Home mapping only; the `{numref}`-target precision is the seeding unit's job.)
+
+Numbers recorded in `wiki/orca/manual-sources.md` ("Keyword-seed measurement (unit 4.4)"). Part A is
+docs-only; the measurement gate stays in the tree for the seeding unit (Part B), which will build
+`keywords.json` (schema: keyword, type, section key, aliases[], summary, provenance) and the loader
+post-condition. No code committed here, no schema/ingest/sectioner/FTS touched, no prose parsed, no
+genindex/HTML.
