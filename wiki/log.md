@@ -3969,3 +3969,30 @@ separated — a red/incomplete coverage number is a REPORT with the gap list, no
 148 (+ ignored gates green), tsc clean, vitest 420, keywords.json unchanged. Numbers in
 `orca/manual-sources.md` Part D. NOT done (by instruction): no keywords.json edits, no {numref} layer,
 no hover/drawer/schema/sectioner/generator-seed change, no deps. Next units fill the map by category.
+
+## [2026-08-01] ingest | the structural owner is wrong OFF the intersection — scale is hundreds, not units
+
+Measurement only (no fix), before any (c) curation. The 98.5 % owner-agreement was measured on the
+INTERSECTION (936 targets, both signals resolve). It never covered the 855 targets where the structural
+proxy resolved ALONE — and that is exactly where the error sits. TightOpt (%method) and PrintBasis
+(%output) are not "missing simple forms": they are simple `!` keywords MISqualified as block-options,
+the structural proxy inferring a `%block` owner the section text never named (a `%block` higher up the
+breadcrumb).
+
+Measured over the 802 structural block-option records (814 targets): **537 targets (66.8 %) name an
+owner absent from the section body** (529 records); **515 (64 %) sit in a body with no `%`-token at
+all** (the `!`-line-in-```orca signal is weak, 4.5 % — absence of the owner is the discriminator). By
+title (rule derived from real corpus headings): **475 targets / 473 records** in sections whose heading
+is about `!`-line keywords — 384 `… Basis Sets` (basis names ARE simple keywords), 54 `… Optimization
+Keywords`, 21 `Convergence Tolerances`, 16 `Simple Input Keywords`. Manual 10: **7 misqualified** (5
+basis names → %basis; 2 geom keywords → %method not %geom, the Constraints class); 3 genuine (%mm,
+%md/Minimize).
+
+Two failure modes: (i) simple keywords qualified as block-options; (ii) right-kind-wrong-block. Scale
+~500 records — hundreds, so NOT a curate-a-few fix. Verdict: owner derivation needs a THIRD signal (a
+section-title / body-text veto — reject a structural owner the body never names), a generator change
+with its own gate = a separate unit. Nothing changed here.
+
+Wiki: numbers in `orca/manual-sources.md` Part E; the 98.5 % statement corrected in manual-keywords.md
+and manual-sources.md to say it holds ONLY on the intersection, not as a validation of the structural
+proxy outside it. No code, no keywords.json, no generator/owner-rule change (that is the next unit).

@@ -71,9 +71,18 @@ One line now, an ugly bug avoided later.
 **Why trust the union — the agreement number.** Where both signals resolve (936 targets), they agree
 **98.5 %** (14 disagreements, 8 of them one cross-reference section). Two independent derivations
 confirming each other is the same construction as **`objects.inv` × `predict_anchor`** (4.2): each is
-a guess alone, together they are a post-condition. It means the **structural 62 %** figure was not
-merely plausible — an independent text signal validated it after the fact. Because agreement is near-
-total, text-priority is safe (it settles the 14 sensibly) and the structural half is not a liability.
+a guess alone, together they are a post-condition. Because agreement is near-total on the intersection,
+text-priority is safe there (it settles the 14 sensibly).
+
+**⚠ Scope of the 98.5 % (corrected — `orca/manual-sources.md` Part E).** That number is measured **only
+on the intersection** where BOTH signals resolve (936 targets). It is **not** a validation of the
+structural proxy **outside** it. The **855 structural-only** targets had nothing to check against — and
+a later measurement found the error sits exactly there: **537 of 814 structural targets (66.8 %) name
+an owner the section body never mentions**, ~500 of them **basis-set / simple-keyword tables whose
+entries are simple `!` keywords, not block-options** (`aug-cc-pV5Z`, `MINI`, `TightOpt`, `PrintBasis`).
+So the structural half **is** a liability off the intersection; fixing it needs a **third signal** (a
+section-title / body-text veto) in the owner derivation — a generator change with its own gate, a
+separate unit.
 
 **Cross-reference sections are null by rule.** A section titled "List of related keywords" / "See
 also" **lists other blocks'** keywords — it references, it does not document. Both derivations there

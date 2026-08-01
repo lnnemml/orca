@@ -296,10 +296,10 @@ thrown away. Measured on the generated file and fixed:
   literal `%block` token in the option's home section) takes priority; **structural** (unique `%block`
   of the file / unique deepest ancestor) fills; else **null**. Union coverage **74.7 %** (text 45.2 %
   + structural 29.5 %), null **25.3 %** — up from either signal alone (text 45 %, structural 62 %).
-- **The load-bearing number — agreement.** Where both signals resolve (936 targets) they **agree
-  98.5 %** (14 disagreements, 8 in one cross-reference section). So the structural 62 % recorded above
-  is **independently validated**, not merely plausible — the same `objects.inv` × `predict_anchor`
-  construction (two derivations that must agree), and it held again.
+- **The agreement number — and its SCOPE (corrected, see Part E).** Where both signals resolve (936
+  targets) they **agree 98.5 %** (14 disagreements). This validates the two derivations **on their
+  intersection** — but **not** the structural proxy where it resolves ALONE (855 targets), which was
+  measured only in Part E and is where the error turned out to sit.
 - **Ambiguity is now real.** Keyed on `(block, option)`, `MaxIter`'s 17 targets become **11 records**
   (one per owner block + one `null`); 320 word-level block-option "ambiguities" fall to ~201 **genuine
   multi-doc** cases (`%casscf MaxIter` truly in CASSCF and DMRG). The residual is not measured error —
@@ -325,6 +325,35 @@ checks behind the classification: "List of Input Blocks" contains `%maxcore`/`%c
 `%neb` (but not `%scan`); `IRC`/`ScanTS`/`NEB-CI` appear in the corpus only in prose (0 backtick
 entries). **`{numref}` closes 1 of 8** — so the block index is not the high-value next step for the
 words the project is built around; curation + simple-form records close 7.
+
+### Part E — the structural owner is wrong off the intersection (scale: hundreds, not units)
+
+Before any curation, a measurement of the population the 98.5 % agreement never covered. That number is
+the **intersection** (936 targets where text AND structural both resolve). Structural resolves **alone**
+on 855 targets — nothing to check it against — and the error is there. Of the **802 structural
+block-option records (814 targets)**:
+
+- **537 targets (66.8 %) name an owner the section body never mentions** — the `%block` is not in the
+  body; the owner was inferred purely from a `%block` higher up the breadcrumb. **529 distinct records.**
+- **515 (64 %) sit in a section body with NO `%`-token at all.** (The reverse `!`-line-in-` ```orca `
+  signal is weak — only **36 (4.5 %)** — so absence of the owner is the discriminator, not presence of
+  `!`.)
+- **By section title (rule derived from the real corpus headings):** **475 targets / 473 records** live
+  in sections whose **heading is about `!`-line keywords, not a `%`-block** — **384** in `… Basis Sets`
+  tables (basis names are simple `!` keywords), **54** `… Optimization Keywords`, **21** `Convergence
+  Tolerances`, **16** `Simple Input Keywords`. (Full title histogram: 69 distinct titles; top ones are
+  `Keywords` 105, `… Basis Sets` variants, `Geometry Optimization Keywords` 54.)
+- **Manual check of 10 (spread across the list): 7 are misqualified** — 5 basis-set names owned by
+  `%basis` (`aug-cc-pwCV5Z/C`, `cc-pV5Z-DK`, `HGBSP1-7`, `MINI`, `Partridge-3` — simple `!` keywords),
+  2 geometry keywords owned by `%method` instead of `%geom` (`ConnectFragments`, `TolMaxG`, the same
+  wrong-owner class as `Constraints`). 3 are genuine (`%mm`, `%md`/`Minimize` options).
+
+Two failure modes, both from the structural proxy assigning an owner the text does not support:
+**(i)** simple keywords (basis sets, run-type keyword tables) qualified as block-options; **(ii)**
+right-kind-wrong-block (geom keywords → `%method`). Scale is **~500 records — hundreds, not units** —
+so this is **not** a curate-a-few fix like `IRC`/`ScanTS`. The owner derivation needs a **third signal**
+(a section-title / body-text veto: do not accept a structural owner the body never names), which is a
+**generator change with its own gate** — a separate unit. Nothing is changed here; this is the scale.
 
 The only thing that would force a *true* MyST parser for **sectioning** is structural `{eval-rst}` in
 document bodies. Measured over the **full corpus (Part B, all 126 leaves): body `{eval-rst}` = 0**
