@@ -2109,3 +2109,194 @@ fn orphan_section_signal() {
     println!("  => clean simple candidates (pure-! only): {o_pure_bang}; MIXED (propagation illegal): {o_mixed}; no-signal: {o_neither}");
     println!("{:=<72}", "");
 }
+
+// --- Demand measure: what the author actually types on the ! line (unit 4.4 H) ---
+//
+//     cargo test demand_measure -- --ignored --nocapture
+//
+// The inventory of 46 is OUR builder's vocabulary — measuring it is the pattern's
+// third face. This measures DEMAND: the `!`-line tokens of inputs the author really
+// ran (group A, from the user DB), kept SEPARATE from our own inputs (B fixtures, C
+// templates), tokenised by the REAL `wordPattern` (read from orca-language.ts, not a
+// second tokenizer). A vs (B∪C) divergence is the result.
+
+fn word_pattern() -> Regex {
+    // Read the literal from src/editor/orca-language.ts — the same regex Monaco uses.
+    let ts = std::fs::read_to_string(repo_root().join("src/editor/orca-language.ts")).unwrap();
+    let line = ts.lines().find(|l| l.trim_start().starts_with('/') && l.trim_end().ends_with("/;"))
+        .expect("orcaWordPattern literal");
+    let src = line.trim().strip_prefix('/').unwrap().strip_suffix("/;").unwrap();
+    Regex::new(src).expect("compile wordPattern")
+}
+
+/// All `!`-line tokens of one input, via the wordPattern (mirrors Monaco getWord*).
+fn bang_tokens(input: &str, wp: &Regex) -> Vec<String> {
+    let mut out = Vec::new();
+    for l in input.lines() {
+        let t = l.trim_start();
+        if let Some(rest) = t.strip_prefix('!') {
+            for m in wp.find_iter(rest) {
+                out.push(m.as_str().to_string());
+            }
+        }
+    }
+    out
+}
+
+/// Option NAMES inside a `%…end` block — the FIRST token of each block line (the
+/// option, not its value). Skips the `* … *` coordinate block, else geometry floats
+/// leak in past a no-`end` `%maxcore`. For the reverse measure only.
+fn block_body_tokens(input: &str, wp: &Regex) -> Vec<String> {
+    let end_re = Regex::new(r"(?i)\bend\b").unwrap();
+    let mut out = Vec::new();
+    let mut in_block = false;
+    let mut in_coords = false;
+    for l in input.lines() {
+        let t = l.trim_start();
+        if t.starts_with('*') {
+            in_coords = !in_coords; // `* xyz 0 1` … closing `*`
+            continue;
+        }
+        if in_coords || t.starts_with('#') || t.starts_with('!') {
+            continue;
+        }
+        let has_end = end_re.is_match(t);
+        if let Some(name) = t.strip_prefix('%') {
+            // single-line `%pal nprocs 4 end` → the option name after the block name
+            if let Some(sp) = name.find(char::is_whitespace) {
+                if let Some(m) = wp.find(&name[sp..]) {
+                    out.push(m.as_str().to_string());
+                }
+            }
+            in_block = !has_end;
+        } else if in_block {
+            if let Some(m) = wp.find(t) {
+                out.push(m.as_str().to_string()); // first token = option name
+            }
+            if has_end {
+                in_block = false;
+            }
+        }
+    }
+    out
+}
+
+#[test]
+#[ignore]
+fn demand_measure() {
+    let wp = word_pattern();
+
+    // ---- Group A: the author's real jobs (user DB, OUTSIDE the repo) ----
+    let db = dirs::data_dir().map(|d| d.join("orcastudio/orcastudio.db"));
+    let mut a_inputs: Vec<String> = Vec::new();
+    match db.as_ref().filter(|p| p.exists()) {
+        Some(p) => {
+            let conn = Connection::open(p).unwrap();
+            let mut stmt = conn.prepare("SELECT input_content FROM jobs").unwrap();
+            a_inputs = stmt.query_map([], |r| r.get::<_, String>(0)).unwrap().filter_map(Result::ok).collect();
+        }
+        None => {}
+    }
+    // ---- Group B: our test fixtures ----
+    let mut b_inputs: Vec<String> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(repo_root().join("src-tauri/tests/fixtures")) {
+        for e in rd.flatten() {
+            if e.path().extension().is_some_and(|x| x == "inp") {
+                if let Ok(s) = std::fs::read_to_string(e.path()) { b_inputs.push(s); }
+            }
+        }
+    }
+    // ---- Group C: Phase-1 templates (parse the .ts) ----
+    let mut c_inputs: Vec<String> = Vec::new();
+    {
+        let ts = std::fs::read_to_string(repo_root().join("src/templates/orca-templates.ts")).unwrap();
+        let cval = |name: &str| Regex::new(&format!(r#"const {name} = "([^"]+)""#)).unwrap()
+            .captures(&ts).map(|c| c[1].to_string()).unwrap_or_default();
+        let (r2, b3) = (cval("R2SCAN"), cval("B3LYP"));
+        for cap in Regex::new(r"buildInput\(`([^`]+)`\)").unwrap().captures_iter(&ts) {
+            let line = cap[1].replace("${R2SCAN}", &r2).replace("${B3LYP}", &b3);
+            c_inputs.push(format!("! {line}\n"));
+        }
+    }
+
+    let distinct = |inputs: &[String]| -> (usize, Vec<String>) {
+        let mut all = Vec::new();
+        for i in inputs { all.extend(bang_tokens(i, &wp)); }
+        let set: std::collections::BTreeSet<String> = all.iter().map(|t| t.to_lowercase()).collect();
+        (all.len(), set.into_iter().collect())
+    };
+    let (a_tot, a_dist) = distinct(&a_inputs);
+    let (b_tot, b_dist) = distinct(&b_inputs);
+    let (c_tot, c_dist) = distinct(&c_inputs);
+    let bc: std::collections::BTreeSet<String> = b_dist.iter().chain(c_dist.iter()).cloned().collect();
+
+    println!("\n{:=<72}", "");
+    println!("DEMAND ON THE ! LINE — groups kept separate (A never merged with B∪C)");
+    println!("{:=<72}", "");
+    println!("  (A) author jobs (user DB): {} inputs | {a_tot} tokens | {} distinct", a_inputs.len(), a_dist.len());
+    println!("  (B) test fixtures:         {} inputs | {b_tot} tokens | {} distinct", b_inputs.len(), b_dist.len());
+    println!("  (C) Phase-1 templates:     {} inputs | {c_tot} tokens | {} distinct", c_inputs.len(), c_dist.len());
+    println!("  (B∪C) distinct: {}", bc.len());
+    let a_only: Vec<&String> = a_dist.iter().filter(|t| !bc.contains(*t)).collect();
+    println!("  A \\ (B∪C) — demand OUR inputs never show: {:?}", a_only);
+
+    // ---- Task 2: top-30 in A + the CPCM(water) note ----
+    let mut freq: HashMap<String, usize> = HashMap::new();
+    for i in &a_inputs { for t in bang_tokens(i, &wp) { *freq.entry(t.to_lowercase()).or_insert(0) += 1; } }
+    let mut fv: Vec<(&String, &usize)> = freq.iter().collect();
+    fv.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+    println!("\n  [A] top tokens by frequency:");
+    for (t, c) in fv.iter().take(30) { println!("        {c:3}  {t}"); }
+    println!("  note: `CPCM(water)` → wordPattern yields {:?} (the `(...)` are separators)",
+             bang_tokens("! CPCM(water)\n", &wp));
+
+    // ---- Task 3: coverage of A's ! tokens, consumer form (! line → simple) ----
+    let doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(repo_root().join("src/manual/keywords.json")).unwrap()).unwrap();
+    let recs = doc["keywords"].as_array().unwrap();
+    let mut simple_prov: HashMap<String, String> = HashMap::new(); // norm -> provenance (simple record)
+    let mut has_undet: HashSet<String> = HashSet::new();
+    let mut any_rec: HashSet<String> = HashSet::new();
+    for r in recs {
+        let mut keys = vec![norm_kw(r["keyword"].as_str().unwrap())];
+        if let Some(al) = r.get("aliases").and_then(|a| a.as_array()) {
+            keys.extend(al.iter().filter_map(|x| x.as_str()).map(norm_kw));
+        }
+        let ty = r["type"].as_str().unwrap();
+        for k in keys {
+            any_rec.insert(k.clone());
+            if ty == "simple" { simple_prov.entry(k.clone()).or_insert_with(|| r["provenance"].as_str().unwrap().to_string()); }
+            if ty == "undetermined" { has_undet.insert(k); }
+        }
+    }
+    let (mut via_seed, mut via_cur, mut undet, mut absent) = (0, 0, 0, 0);
+    let mut miss_names: Vec<&String> = Vec::new();
+    for t in &a_dist {
+        match simple_prov.get(t).map(|s| s.as_str()) {
+            Some("curated") => via_cur += 1,
+            Some(_) => via_seed += 1,
+            None => {
+                if has_undet.contains(t) { undet += 1; } else { absent += 1; }
+                miss_names.push(t);
+            }
+        }
+    }
+    let cov = via_seed + via_cur;
+    println!("\n  [A] ! -line COVERAGE (consumer form): {cov} / {} distinct resolve simple \
+             ({via_seed} seed, {via_cur} curation)", a_dist.len());
+    println!("      not resolved: {undet} have an `undetermined` record (in map, invisible), {absent} absent");
+    println!("      misses: {miss_names:?}");
+    println!("      vs the inventory's 46/53 — A is builder-generated, so it echoes the builder set");
+
+    // ---- Task 4: reverse — how much of the 1515 block-option half does A touch? ----
+    let bo_keys: HashSet<String> = recs.iter().filter(|r| r["type"] == "block-option")
+        .map(|r| norm_kw(r["keyword"].as_str().unwrap())).collect();
+    let mut a_block_tokens: HashSet<String> = HashSet::new();
+    for i in &a_inputs { for t in block_body_tokens(i, &wp) { a_block_tokens.insert(t.to_lowercase()); } }
+    let touched: Vec<&String> = bo_keys.iter().filter(|k| a_block_tokens.contains(*k)).collect();
+    println!("\n  [A] REVERSE — block-option records touched by A's block bodies: {} of {} distinct block-option keywords",
+             touched.len(), bo_keys.len());
+    println!("      A's block-body tokens: {:?}", { let mut v: Vec<&String> = a_block_tokens.iter().collect(); v.sort(); v });
+    println!("      touched: {touched:?}");
+    println!("{:=<72}", "");
+}

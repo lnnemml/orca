@@ -4056,3 +4056,34 @@ regeneration byte-identical; descriptors 317/317; 0 dangling. `cargo test` + `ts
 mixing, not the presence of a second channel. The rule is not "our knowledge is forbidden" but "it must
 not masquerade as a domain measurement — it has its own attributed channel." Named to be caught a
 fourth time before it ships.
+
+## [2026-08-01] ingest | demand on the ! line, from the author's own inputs (A vs B∪C)
+
+Before curating the 7 gaps: measure DEMAND, because the inventory of 46 is our builder's vocabulary —
+the pattern's third face. `demand_measure` reads `!`-line tokens from three groups, never merged: (A)
+the author's real jobs in the user DB (`~/.local/share/orcastudio/orcastudio.db`, outside the repo);
+(B) test fixtures; (C) Phase-1 templates. Tokenised by the REAL `wordPattern` from orca-language.ts.
+
+Sizes: **(A) 16 jobs, 15 distinct** `!`-tokens; (B) 6; (C) 9; **(B∪C) 11**. `A \ (B∪C) =
+{cpcm, def2-tzvp, dmso, ethanol}` — and `dmso`/`ethanol` are solvent VALUES (`CPCM(water)` →
+`[CPCM, water]`), `cpcm`/`def2-tzvp` builder words absent from our fixtures. So **A barely diverges
+from B∪C: the demand IS the builder's vocabulary** — the author generates inputs WITH the input-builder,
+so the "measure of 46" was already, by accident, a measure of demand. No independent signal (hand-typed
+%-block options) exists yet — the pattern seen once more, from the demand side.
+
+**(A) `!`-coverage: 12/15 resolve** (2 seed, 10 curation). 3 misses: `dmso`/`ethanol` (solvent values,
+correctly silent) and **`XTB`** — a real gap `c` HIT BY REAL DEMAND (`! XTB GOAT`, the ibuprofen run +
+a domain guard; GOAT resolves, XTB does not). Echoes 46/53 (same builder set).
+
+**Reverse — seed value: 1 of 1363 block-option keywords touched by demand** (`nprocs`). The 1515
+block-option records (~53 % of the map), the part the manual structures and the seed captured well,
+serve essentially NO current demand — the author types `!` lines, not `%`-block bodies. Where seed
+effort paid off (structured capture) is not where demand is (the `!` line, in flat-tables/prose the
+seed can't read).
+
+Conclusion: next curation is not "the 7 gaps" broadly but **XTB** (the one real-demand miss) + a
+**solvent** class; the block-option half needs none for demand; re-measure once %-blocks are hand-edited.
+Also reconciled the B2 arithmetic: 5+22+11+2=40; the missing 2 of 42 are `TightSCF`/`VeryTightSCF`,
+covered via PROSE_CURATED (a fourth path, not a discrepancy). Verify: `demand_measure` #[ignore] gate;
+plain cargo test 148/17-ignored, vitest green; keywords.json byte-identical. Numbers in
+`orca/manual-sources.md` Parts G–H. Nothing changed: no keywords.json/generator/curation/hover edits.

@@ -423,6 +423,45 @@ Two independent signals, in the generator (`type` is a value **`undetermined`**,
   c.) File **576 KB → 515 KB**; regeneration byte-identical; descriptors **317/317** resolve; 0
   dangling refs.
 
+(B2 arithmetic reconciled: the buckets 5 title + 22 flip + 11 add + 2 alias = 40; the **remaining 2 of
+42 are `TightSCF`/`VeryTightSCF`**, covered separately via `PROSE_CURATED` — not a discrepancy, a fourth
+curation path.)
+
+### Part H — DEMAND on the `!` line, from the author's own inputs (`demand_measure`)
+
+The inventory of 46 is OUR builder's vocabulary — the pattern's third face was measuring it. This
+measures **demand**: the `!`-line tokens of inputs the author actually ran, kept in groups that are
+**never merged**. Group **(A)** = the user DB (`~/.local/share/orcastudio/orcastudio.db`, outside the
+repo); **(B)** = our test fixtures; **(C)** = the Phase-1 templates. Tokenised by the **real
+`wordPattern`** read from `orca-language.ts` (not a second tokenizer).
+
+- **Sizes:** (A) **16 jobs, 15 distinct** `!`-tokens; (B) 3 fixtures, 6 distinct; (C) 8 templates, 9
+  distinct; **(B∪C) 11 distinct**. `CPCM(water)` → `wordPattern` yields `["CPCM", "water"]` (the `(…)`
+  are separators, so a solvent name becomes its own token).
+- **A barely diverges from (B∪C)** — `A \ (B∪C) = {cpcm, def2-tzvp, dmso, ethanol}`, and of those
+  `dmso`/`ethanol` are solvent VALUES, `cpcm`/`def2-tzvp` are builder words merely absent from our
+  fixtures. **The demand IS the builder's vocabulary** — because the author generates inputs *with* the
+  input-builder. So the earlier "measure of 46" was, by accident, already a measure of demand; the
+  independent signal (hand-typed `%`-block options) does not exist yet. This is the pattern once more,
+  now visible from the demand side: at this stage there is no daylight between "what we emit" and "what
+  the author types".
+- **(A) `!`-line coverage (consumer form): 12 of 15 resolve** (2 via SEED, **10 via CURATION**). The 3
+  misses: `dmso`, `ethanol` (solvent values, not keywords — a future "solvent" class, correctly silent
+  now) and **`XTB`** — a real gap `c` **hit by real demand** (`! XTB GOAT` is the author's ibuprofen
+  conformer run and a mandatory domain guard; `GOAT` resolves, `XTB` does not). Top A tokens: `TightSCF`
+  13, `Opt` 12, `Freq` 11, `B3LYP`/`D4`/`def2/J`/`RIJCOSX` 8, `def2-SVP` 7, `r2SCAN-3c` 5.
+- **Reverse — the value of the seed's big half: 1 of 1363 distinct block-option keywords is touched by
+  demand** (`nprocs`, from `%pal`). The 1515 block-option records (≈ 53 % of the map) — the part the
+  manual documents structurally and the seed captured well — serve **essentially no current demand**,
+  because the author types `!` lines, not `%`-block bodies. That is a fact about where seed effort paid
+  off (structured capture) versus where demand actually is (the `!` line, documented in flat-tables and
+  prose the seed can't read).
+
+Conclusion: the next curation step is not "the seven gaps" broadly — it is **`XTB`** (the one
+real-demand keyword miss) and a **solvent** class; the block-option half needs no curation for demand.
+And the demand corpus should be **re-measured** once the author hand-edits `%`-blocks — only then will
+independent demand for that half appear.
+
 The only thing that would force a *true* MyST parser for **sectioning** is structural `{eval-rst}` in
 document bodies. Measured over the **full corpus (Part B, all 126 leaves): body `{eval-rst}` = 0**
 (the root `index` has 1, expected — the back-matter toctree). So this is no longer "holds so far" — it
