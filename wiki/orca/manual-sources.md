@@ -355,6 +355,52 @@ so this is **not** a curate-a-few fix like `IRC`/`ScanTS`. The owner derivation 
 (a section-title / body-text veto: do not accept a structural owner the body never names), which is a
 **generator change with its own gate** — a separate unit. Nothing is changed here; this is the scale.
 
+### Part F — the ROOT of the mis-typing, and why merging won't fix it
+
+**The root (found in the generator, not a symptom).** `type_of` in `generate_keywords_json` is:
+
+```
+if tok.starts_with('%')                               -> "block"
+else if app_simple.contains(tok) || title_home(tok)   -> "simple"
+else                                                  -> "block-option"   // ← a dumpster
+```
+
+`simple` is granted ONLY to words OUR input-builder emits or that match a section title; **everything
+else defaults to `block-option` with no manual signal at all.** The `else` branch does not classify —
+it *collects the unknown*. The structural proxy then dutifully hands each such record a breadcrumb
+owner, because it was handed a thing already declared a block-option. So Part E's two symptoms —
+simple-word-as-block-option and right-kind-wrong-block — are **one defect: the TYPE was inferred from
+OUR application, not from the manual.** This is the **third instance of the same pattern**: `%maxcore`
+"covered" because the gate measured in our notation; 46/46 held because the inventory was ours; here the
+*type* comes from our app. Each time the fix was to ask the manual, not ourselves.
+
+**Does merging fix it? Measured — no** (`cargo test structural_overlap_measure -- --ignored`). Of the
+structural block-option targets whose owner is **not** named in the section body — **522** (the exact
+figure with the real sectioner; Part E's 537 was an approximate probe):
+
+| | count | meaning |
+|---|---|---|
+| **1a** already documented elsewhere as `type=simple` | **0** | merge is impossible — the dumpster made **no** simple record for any of them |
+| **1b** already a **confirmed** block-option elsewhere | **14** | genuine block-option, this target a duplicate from a foreign section |
+| **1c** true orphans (no other record) | **508** | **500 distinct words** |
+
+So the merge hypothesis is **refuted by 1a = 0**: because the root typed *everything* unknown as
+block-option, none of these words got a simple record to merge into. And the direct signal is weak
+**corpus-wide too**: of the 500 orphan words, only **44 (8.8 %)** appear on a `!` line anywhere in a
+` ```orca ` block. The orphan population is overwhelmingly **basis-set tables** — top source sections:
+`Jensen Basis Sets` (56), `Correlation-consistent Basis Sets` (53), `Auxiliary basis sets … (AuxC)`
+(47), `Hydrogenic Gaussian Basis Sets` (24), `Relativistic Correlation-Consistent …` (22), … — i.e.
+basis names, which are simple `!` keywords, with **no per-word `!`-example** to lean on.
+
+**What this means for the fix (numbers, not a guess).** The owner **veto** (accept a structural owner
+only when the body names it) removes the wrong owner from the 522 and keeps the 14+ confirmed. But
+veto alone leaves a `block-option` with `block: null`, and for a basis name that is **still the wrong
+type** — a `!`-line hover looks for `simple` and misses, silently. Since 1a = 0 (nothing to merge) and
+the `!` signal is weak (8.8 %), the words cannot be confidently retyped `simple` either. So the shape
+is a **third type value `scope: "undetermined"`** — a value with meaning (like `anchor = NULL`,
+`owner_source = null`), not a false second type — for the ~508 orphans, decided by these numbers.
+(Nothing is changed here; this is the scale and the shape.)
+
 The only thing that would force a *true* MyST parser for **sectioning** is structural `{eval-rst}` in
 document bodies. Measured over the **full corpus (Part B, all 126 leaves): body `{eval-rst}` = 0**
 (the root `index` has 1, expected — the back-matter toctree). So this is no longer "holds so far" — it

@@ -1691,3 +1691,166 @@ fn owner_union_measure() {
 fn pct(n: usize, d: usize) -> f64 {
     100.0 * n as f64 / d.max(1) as f64
 }
+
+// --- Structural mis-typing overlap measure (unit 4.4 Part F) -----------------
+//
+//     cargo test structural_overlap_measure -- --ignored --nocapture
+//
+// ROOT (confirmed): the generator's `type_of` `else` branch is a dumpster — a token
+// that is neither `%`-prefixed nor one of OUR builder/title-home simples defaults to
+// `block-option` with NO manual signal. The structural proxy then hands it a breadcrumb
+// owner. So the "mis-typed block-option" population is largely SIMPLE keywords (basis
+// names, run-type tables). This measures how many of those 537 no-text-support targets
+// are ALREADY documented elsewhere (a merge, not a new type), vs true orphans — the
+// number that decides Part B's shape.
+
+#[test]
+#[ignore]
+fn structural_overlap_measure() {
+    let manual_dir = repo_root().join("resources/manual");
+    let version = corpus_version(&manual_dir);
+    let version_dir = manual_dir.join(&version);
+    if !version_dir.is_dir() {
+        eprintln!("skipping: no corpus");
+        return;
+    }
+    // Sectionise → body per descriptor (file, breadcrumb, title, nth), nth in doc order
+    // (the SAME scheme the generator used to key sections).
+    let mut leaves: Vec<(String, String)> = Vec::new();
+    collect_leaves(&version_dir, &version_dir, &mut leaves);
+    leaves.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut all: Vec<Section> = Vec::new();
+    for (file, text) in &leaves {
+        if let Ok(secs) = sections::sectionize(file, text) {
+            all.extend(secs);
+        }
+    }
+    let mut order: Vec<usize> = (0..all.len()).collect();
+    order.sort_by_key(|&i| (all[i].file.clone(), all[i].line_start));
+    let mut nth_seen: HashMap<(String, String, String), usize> = HashMap::new();
+    let mut body_by_key: HashMap<(String, String, String, usize), String> = HashMap::new();
+    for &i in &order {
+        let s = &all[i];
+        let trip = (s.file.clone(), s.breadcrumb.join("\u{1}"), s.title.clone());
+        let n = nth_seen.entry(trip.clone()).or_insert(0);
+        body_by_key.insert((trip.0, trip.1, trip.2, *n), s.body.clone());
+        *n += 1;
+    }
+
+    // Corpus-wide `!`-line tokens inside ```orca blocks (direct "this is a simple keyword"
+    // signal, over the WHOLE corpus, not just the home section).
+    let mut bang_tokens: HashSet<String> = HashSet::new();
+    for (_f, text) in &leaves {
+        let mut in_orca = false;
+        for line in text.lines() {
+            let tl = line.trim_start();
+            if tl.starts_with("```") {
+                in_orca = if in_orca { false } else { tl.trim_start_matches('`').trim().eq_ignore_ascii_case("orca") };
+                continue;
+            }
+            if in_orca && tl.starts_with('!') {
+                for t in tl.trim_start_matches('!').split_whitespace() {
+                    bang_tokens.insert(norm_kw(t));
+                }
+            }
+        }
+    }
+
+    // keywords.json
+    let doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(repo_root().join("src/manual/keywords.json")).unwrap()).unwrap();
+    let secs = doc["sections"].as_array().unwrap();
+    let key_of = |i: usize| -> (String, String, String, usize) {
+        let s = &secs[i];
+        (
+            s["file"].as_str().unwrap().to_string(),
+            s["breadcrumb"].as_array().unwrap().iter().map(|x| x.as_str().unwrap()).collect::<Vec<_>>().join("\u{1}"),
+            s["title"].as_str().unwrap().to_string(),
+            s["nth"].as_u64().unwrap() as usize,
+        )
+    };
+    let title_of = |i: usize| secs[i]["title"].as_str().unwrap().to_string();
+    let recs = doc["keywords"].as_array().unwrap();
+    let idxs = |r: &serde_json::Value| -> Vec<usize> {
+        if let Some(s) = r.get("section") { vec![s.as_u64().unwrap() as usize] }
+        else { r["targets"].as_array().unwrap().iter().map(|x| x.as_u64().unwrap() as usize).collect() }
+    };
+    let owner_in_body = |owner: &str, body: &str| body.to_lowercase().contains(&owner.to_lowercase());
+
+    // Per-keyword: is there a SIMPLE record? a CONFIRMED block-option record?
+    let mut has_simple: HashSet<String> = HashSet::new();
+    let mut has_confirmed_bo: HashSet<String> = HashSet::new();
+    for r in recs {
+        let k = norm_kw(r["keyword"].as_str().unwrap());
+        let ty = r["type"].as_str().unwrap();
+        if ty == "simple" {
+            has_simple.insert(k.clone());
+        }
+        if ty == "block-option" {
+            let src = r["owner_source"].as_str();
+            let owner = r["block"].as_str().unwrap_or("");
+            let confirmed = src == Some("text")
+                || (src == Some("structural")
+                    && idxs(r).iter().any(|&i| body_by_key.get(&key_of(i)).is_some_and(|b| owner_in_body(owner, b))));
+            if confirmed {
+                has_confirmed_bo.insert(k);
+            }
+        }
+    }
+
+    // The 537: structural block-option TARGETS whose owner is NOT in the section body.
+    let (mut c1a, mut c1b, mut c1c) = (0usize, 0usize, 0usize);
+    let mut no_support = 0usize;
+    let mut orphan_titles: HashMap<String, usize> = HashMap::new();
+    let mut orphan_words: Vec<String> = Vec::new();
+    let mut orphan_in_bang = 0usize;
+    let mut orphan_word_set: HashSet<String> = HashSet::new();
+    for r in recs {
+        if r["type"].as_str() != Some("block-option") || r["owner_source"].as_str() != Some("structural") {
+            continue;
+        }
+        let k = norm_kw(r["keyword"].as_str().unwrap());
+        let owner = r["block"].as_str().unwrap_or("");
+        for i in idxs(r) {
+            let body_missing_owner = body_by_key.get(&key_of(i)).map(|b| !owner_in_body(owner, b)).unwrap_or(true);
+            if !body_missing_owner {
+                continue;
+            }
+            no_support += 1;
+            if has_simple.contains(&k) {
+                c1a += 1;
+            } else if has_confirmed_bo.contains(&k) {
+                c1b += 1;
+            } else {
+                c1c += 1;
+                *orphan_titles.entry(title_of(i)).or_insert(0) += 1;
+                if orphan_word_set.insert(k.clone()) {
+                    orphan_words.push(r["keyword"].as_str().unwrap().to_string());
+                    if bang_tokens.contains(&k) {
+                        orphan_in_bang += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    println!("\n{:=<72}", "");
+    println!("STRUCTURAL MIS-TYPE OVERLAP — no-text-support structural targets");
+    println!("{:=<72}", "");
+    println!("    no-owner-in-body targets: {no_support}");
+    println!("    1a already documented as type=simple elsewhere: {c1a}");
+    println!("    1b already a CONFIRMED block-option elsewhere:  {c1b}");
+    println!("    1c true orphans (no other record):             {c1c}");
+    println!("    (1a+1b+1c = {} )", c1a + c1b + c1c);
+    println!("\n    [1c] distinct orphan keywords: {}", orphan_word_set.len());
+    println!("    [1c] orphan words also seen on a `!` line SOMEWHERE in corpus: {orphan_in_bang} / {}",
+             orphan_word_set.len());
+    let mut tt: Vec<(&String, &usize)> = orphan_titles.iter().collect();
+    tt.sort_by(|a, b| b.1.cmp(a.1));
+    println!("    [1c] top-10 source-section titles:");
+    for (t, c) in tt.iter().take(10) {
+        println!("        {c:4}  {t}");
+    }
+    println!("    [1c] 15 orphan words: {:?}", orphan_words.iter().take(15).collect::<Vec<_>>());
+    println!("{:=<72}", "");
+}

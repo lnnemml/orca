@@ -3996,3 +3996,31 @@ with its own gate = a separate unit. Nothing changed here.
 Wiki: numbers in `orca/manual-sources.md` Part E; the 98.5 % statement corrected in manual-keywords.md
 and manual-sources.md to say it holds ONLY on the intersection, not as a validation of the structural
 proxy outside it. No code, no keywords.json, no generator/owner-rule change (that is the next unit).
+
+## [2026-08-01] ingest | ROOT of the mis-typing found (else→block-option dumpster); merging won't fix it (1a=0)
+
+Measurement only, before Part B. Confirmed the ROOT in the generator's `type_of`: `simple` is granted
+only to OUR builder words or title-home matches; the `else` branch defaults everything unknown to
+`block-option` with NO manual signal — it collects the unknown rather than classifying it. The
+structural proxy then owns each such record from a breadcrumb ancestor. So Part E's two symptoms are
+ONE defect: **the TYPE was inferred from our application, not from the manual** — the third instance of
+this pattern (%maxcore measured in our notation; 46/46 held because the inventory was ours; here the
+type comes from our app).
+
+Overlap measure (`structural_overlap_measure`, real sectioner + exact descriptor match). Of the **522**
+structural block-option targets whose owner is absent from the section body: **1a already type=simple
+elsewhere = 0** (merge impossible — the dumpster made no simple records); **1b already a confirmed
+block-option elsewhere = 14**; **1c true orphans = 508 (500 distinct words)**. Sum 522. Corpus-wide `!`
+signal weak too: only **44/500 (8.8 %)** orphan words appear on a `!` line anywhere in a ```orca block.
+Orphans are overwhelmingly basis-set tables (Jensen 56, Correlation-consistent 53, AuxC 47, …).
+
+Consequence, by number not guess: merging is out (1a=0). An owner **veto** alone leaves a
+`block-option`/`block:null`, still the WRONG TYPE for a basis name (a `!`-hover wants `simple` and
+misses silently). With no simple record to merge and a weak `!` signal, the words can't be confidently
+retyped simple either — so the shape is a third type value **`scope:"undetermined"`** (a value like
+anchor=NULL, not a false second type) for the ~508. Part B builds veto (owner) + undetermined (type),
+two independent signals. Nothing changed here.
+
+Wiki: numbers + root in `orca/manual-sources.md` Part F. No code/keywords.json/generator/lookup/hover
+change; keywords.json byte-identical; plain cargo test + vitest green; the measure is an `#[ignore]`
+gate. Part B (the fix) not started.
