@@ -401,6 +401,28 @@ is a **third type value `scope: "undetermined"`** — a value with meaning (like
 `owner_source = null`), not a false second type — for the ~508 orphans, decided by these numbers.
 (Nothing is changed here; this is the scale and the shape.)
 
+### Part G — the fix (owner veto + type from the manual)
+
+Two independent signals, in the generator (`type` is a value **`undetermined`**, not a separate
+`scope` field — one field per decision).
+
+- **Owner veto (B1):** a **structural** owner is accepted only when the section body NAMES it
+  (correlating two sources, like `objects.inv` × `predict_anchor`). The 522 unconfirmed structural
+  targets lose their owner; **291 remain** structural (confirmed in body), 1224 text. Block-option
+  records with a null owner drop from the file: **`owner_source = null` block-options → 0**.
+- **Type from the manual (B2):** `type_of` no longer reads `app_simple`. Seed types: `%…`→block,
+  title-is-keyword→simple, else `undetermined` (block-option needs a positive, veto-confirmed owner).
+  Result: **1183 `undetermined` records** where the dumpster + proxy used to force block-option/null.
+  A basis table is now homogeneous in the seed (`def2-QZVPP` and `ma-def2-SVP` both `undetermined`).
+- **Curated channel (B2 correction):** the `app_simple` knowledge moves to `provenance:"curated"`, not
+  deleted. Of the 42 builder simple keywords: **5 stay seeded** (title is the keyword), **22 flipped**
+  from `undetermined`, **11 added** beside a block-option, **2 via alias**; **0 hard words lost**.
+- **Coverage, by channel:** **46 of 53 resolve — 9 via SEED (manual), 37 via CURATION (ours,
+  attributed)** — the split is now visible so the two channels can't merge again. (`CPCM` moved from a
+  gap to curated-covered; gaps: `%maxcore` a; `IRC`/`ScanTS`/`NEB-CI` b; `XTB`/`TightOpt`/`Constraints`
+  c.) File **576 KB → 515 KB**; regeneration byte-identical; descriptors **317/317** resolve; 0
+  dangling refs.
+
 The only thing that would force a *true* MyST parser for **sectioning** is structural `{eval-rst}` in
 document bodies. Measured over the **full corpus (Part B, all 126 leaves): body `{eval-rst}` = 0**
 (the root `index` has 1, expected — the back-matter toctree). So this is no longer "holds so far" — it

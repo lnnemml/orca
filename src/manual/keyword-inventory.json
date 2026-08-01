@@ -47,7 +47,7 @@
     { "keyword": "%geom", "expect": "block", "source": "builder" },
     { "keyword": "Constraints", "expect": "block-option", "block": "%geom", "source": "builder", "gap": "c" },
 
-    { "keyword": "CPCM", "expect": "simple", "source": "builder", "gap": "c" },
+    { "keyword": "CPCM", "expect": "simple", "source": "builder" },
     { "keyword": "XTB", "expect": "simple", "source": "builder", "gap": "c" },
     { "keyword": "%maxcore", "expect": "block", "source": "builder", "gap": "a" },
 

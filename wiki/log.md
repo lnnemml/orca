@@ -4024,3 +4024,35 @@ two independent signals. Nothing changed here.
 Wiki: numbers + root in `orca/manual-sources.md` Part F. No code/keywords.json/generator/lookup/hover
 change; keywords.json byte-identical; plain cargo test + vitest green; the measure is an `#[ignore]`
 gate. Part B (the fix) not started.
+
+## [2026-08-01] session | fix: keyword type from the manual, not from what our builder emits
+
+Root fixed, not the symptom. `type_of`'s `else` branch was a dumpster — a token neither `%`-prefixed
+nor an OUR-builder/title word defaulted to `block-option`, then the structural proxy owned it from a
+breadcrumb ancestor. Two independent signals, one commit:
+
+**B1 owner veto:** a structural owner is accepted only when the section body NAMES it (correlate two
+sources, like objects.inv × predict_anchor). The 522 unconfirmed structural targets lose their owner;
+291 remain (confirmed), 1224 text. Block-option/null-owner records → 0.
+
+**B2 type from the manual, with correction:** `type_of` no longer reads `app_simple`. Seed: `%`→block,
+title-is-keyword→simple, else **`undetermined`** (block-option requires a positive, veto-confirmed
+owner). 1183 `undetermined` records where the dumpster forced block-option/null. A basis table is now
+homogeneous in the seed (`def2-QZVPP` and `ma-def2-SVP` both undetermined — the builder accident
+removed). The `app_simple` KNOWLEDGE is not deleted but moved to `provenance:"curated"`: of 42 builder
+simples, 5 stay seeded (title), 22 flipped from undetermined, 11 added beside a block-option, 2 alias;
+0 hard words lost. The third type value lives in `type` (one field per decision), not a separate
+`scope` — two fields would re-split one hover branch into two sources of truth.
+
+**B3 hover contract (one line):** an `undetermined` record answers neither a qualified block lookup nor
+a simple one — invisible to the hover (silence), reachable only by the panel's unqualified path.
+
+**B4 gate:** hard post-condition (non-gap words) holds; **46 of 53 resolve, split 9 SEED / 37 CURATION**
+so the channels stay visible (up from 45; CPCM moved gap→curated-covered). File 576→515 KB;
+regeneration byte-identical; descriptors 317/317; 0 dangling. `cargo test` + `tsc` + `vitest` green.
+
+**Pattern named (wiki):** a check that measures US instead of the subject — %maxcore in our notation,
+46/46 from our builder's output, `app_simple` inside `type_of`. Three cases, ONE pattern: channel-
+mixing, not the presence of a second channel. The rule is not "our knowledge is forbidden" but "it must
+not masquerade as a domain measurement — it has its own attributed channel." Named to be caught a
+fourth time before it ships.

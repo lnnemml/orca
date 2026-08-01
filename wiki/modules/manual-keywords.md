@@ -140,27 +140,51 @@ guards), `workflow` (ADR-007 reaction chain). Populated from those named sources
 `MORead`/`PrintBasis` are deliberately **absent** (block-option-only in the map, but no named source),
 so the inventory stays named, not merely longer.
 
-**Honest number: 45 of 53 resolve** (type- and block-aware; Rust and TS agree). A word without a
+**Honest number: 46 of 53 resolve** (type- and block-aware; Rust and TS agree), **split by CHANNEL so
+the two never merge: 9 via SEED (the manual), 37 via CURATION (ours, attributed)**. A word without a
 `gap` tag is a **hard** post-condition (must resolve); a `gap` word is a declared, classified hole —
-**reported, never a panic**. The eight gaps, by closer:
+**reported, never a panic**. The seven gaps, by closer:
 
 | closer | count | words |
 |---|---|---|
 | **(a) `{numref}` layer** | 1 | `%maxcore` (block; it is in "List of Input Blocks") |
-| **(b) curated (prose only)** | 3 | `IRC`, `ScanTS`, `NEB-CI` — run-types documented in chapter prose, no keyword-table entry (like `TightSCF` in 4.4) |
-| **(c) second/right form of a concept in the map** | 4 | `CPCM`, `XTB`, `TightOpt` (exist as `%cpcm`/`%xtb`/`%method`, need the **simple** form) and `Constraints` (seeded under `%method`, the app emits it under **`%geom`** — a mis-owner curation fix) |
+| **(b) curated (prose only)** | 3 | `IRC`, `ScanTS`, `NEB-CI` — run-types documented in chapter prose, no keyword-table entry (like `TightSCF`) |
+| **(c) second/right form of a concept in the map** | 3 | `XTB`, `TightOpt` (exist as `%xtb`/`%method`, need the **simple** form) and `Constraints` (seeded under `%method`, the app emits it under **`%geom`**) |
 | **(d) not in corpus at all** | 0 | — |
 
-**The `{numref}` layer, priced for the first time: it closes 1 of the 8 named gaps** (`%maxcore`).
-The other 7 are curation (b, ×3) and second-form (c, ×4). So `{numref}` is **not** the high-value next
-step for coverage of the words the project is built around — the reaction chain and the domain guards
-are closed by prose curation and simple-form records, not by the block index. That number is the basis
-for sequencing it later rather than next.
+(`CPCM` was a gap; the curated overlay now covers it — a `!`-simple record pointing at the `%cpcm`
+documentation — so its `gap` tag was removed.)
 
-**Why the old numbers were inflated.** `%maxcore` and `CPCM` counted covered by string (both have a
-`%block` of the same name); `XTB`/`TightOpt` exist only as block-options; `IRC`/`ScanTS`/`NEB-CI` were
-never in the population at all. The inventory makes each of these an explicit, sourced line a reviewer
-can accept or dispute.
+**Type comes from the manual, not from our builder (the fix).** `type_of` no longer consults
+`app_simple`; the seed types a token `%…`→block, title-is-the-keyword→simple, else **`undetermined`**
+resolved by the owner (a block-option needs a positive, body-confirmed owner). So a basis name and its
+table-mate — `def2-QZVPP` and `ma-def2-SVP` — are **both `undetermined` in the SEED** (homogeneous; the
+builder accident removed). The **curated channel** then asserts, WITH `provenance: "curated"`, that the
+words OUR builder emits are simple: 22 flipped from `undetermined`, 11 added beside a block-option, 2
+via alias, 5 stay seeded (their section title IS the keyword). Same bit as before — but attributed,
+visible in the diff, arguable per word.
+
+**`{numref}` still closes only 1 of the gaps** (`%maxcore`); the rest are curation (b, ×3) + second-form
+(c, ×3). It is not the high-value next step for the words the project is built around.
+
+### The recurring pattern — a check that measures US instead of the subject
+
+State it precisely, because stated loosely it does harm: **not** "our knowledge is forbidden" (that
+would reject entering what we know). The rule is: **our knowledge must not MASQUERADE as a measurement
+of the subject matter — it has its own channel, with provenance.** The same defect has now appeared
+**three times**, each a *mixing of channels*, not the presence of a second one:
+
+1. **`%maxcore` "covered"** — the coverage check measured in *our* notation (string-normalised), so a
+   `%maxcore` directive matched a `MAXCORE` block-option. (Fixed: ask the type/entity, not the string.)
+2. **`46/46` held** — the expectation set was assembled from *our* builder's output, so it could only
+   confirm what we emit. (Fixed: an explicit, sourced inventory — builder / domain / workflow.)
+3. **`app_simple` inside `type_of`** — the seed's *type* was inferred from what our app emits, so a
+   basis name was `simple` only if our builder happened to list it. (Fixed here: type from the manual;
+   what we know moves to the `curated` channel with `provenance`.)
+
+Each time the tell was the same — a number that looked like a fact about ORCA but was a reflection of
+OrcaStudio — and each fix was the same shape: give our knowledge its own attributed channel and let the
+check ask the manual. Named here so it is recognised a **fourth** time before it ships.
 
 ## The hover provider + drawer (the consumers)
 
@@ -169,6 +193,9 @@ Three cases, kept apart (`keyword-lookup.ts::hoverContext`): `!`-line → simple
 a block (`enclosingBlock`, plus a same-line `%pal nprocs …` check) → block-option of that block.
 `aliases[]` are consulted (`M06-L`↔`M06L`). **Contract, enforced:** a qualified **miss returns `null`
 → no hover at all** (silence), never a bare-name or FTS fall-back — that is the panel's separate path.
+A record whose type is **`undetermined`** answers **neither** a qualified block lookup **nor** a simple
+one — it is invisible to the hover (silence), reachable only by the panel's unqualified path
+(*"documented in N places"*), already a separate, deliberate channel.
 An empty `summary` is not a reason to suppress (seeded records have none): the hover shows keyword,
 type, owning block (+ `owner_source`), and the target's breadcrumb › title as an **Open** command-link;
 several targets → *"documented in N places"* with a list, **not** a picked first. Clicking Open fires

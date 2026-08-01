@@ -385,14 +385,15 @@ wherever an imported structure is first shown and is carried forward independent
       manual's own native "Keywords" sections + genindex, then curated on top (ADR-013 narrows
       ADR-006's "by hand"); grow it organically, starting with everything the template library uses.
       **Seed done (4.4 B):** `src/manual/keywords.json` seeded from the structured pool (home only);
-      stable key `(file, breadcrumb, title, nth)`; ambiguous keywords carry `targets[]`. **Coverage now
+      stable key `(file, breadcrumb, title, nth)`; ambiguous keywords carry `targets[]`. **Coverage
       gated against an explicit, named inventory** (`keyword-inventory.json`, builder+domain+workflow;
-      one home, both gates): **45 of 53 resolve** — the honest number after fixing the *population*, not
-      just the form. The 8 gaps are classified by closer (a `{numref}` ×1 · b curated ×3 · c
-      second/right form ×4 · d none) — see the table in
-      [manual-keywords.md](wiki/modules/manual-keywords.md). **Left (by closer):** curation for
-      `IRC`/`ScanTS`/`NEB-CI` + `CPCM`/`XTB`/`TightOpt`/`Constraints`-in-%geom; the `{numref}` layer
-      (closes only `%maxcore`, so low priority); hand summaries.
+      one home, both gates). **Type now from the manual, not our builder** (`type_of` dropped
+      `app_simple`; no-owner tokens are `undetermined`, a value, not a dumpster block-option; the
+      builder's knowledge moved to a `provenance:"curated"` channel). **46 of 53 resolve — 9 via SEED,
+      37 via CURATION** (split kept visible so the channels can't merge). 7 gaps: `%maxcore` (a);
+      `IRC`/`ScanTS`/`NEB-CI` (b); `XTB`/`TightOpt`/`Constraints`-in-%geom (c) — table in
+      [manual-keywords.md](wiki/modules/manual-keywords.md). **Left:** curation for the 7 gaps; the
+      `{numref}` layer (closes only `%maxcore`, low priority); hand summaries.
 - [x] Monaco hover provider: hover a keyword → keyword/type/owning-block + Open → a **side drawer**
       showing the section (reusing `SectionView`, author stays in the editor). Fed by `keywords.json`,
       **NOT** FTS; qualified type/block-aware lookup (`enclosingBlock` + `wordPattern`), `aliases[]`

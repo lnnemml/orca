@@ -1085,15 +1085,20 @@ fn generate_keywords_json() {
         v.dedup();
     }
 
-    // App `!`-simple tokens for type inference.
-    let app_simple: HashSet<String> = app_simple_set();
+    // TYPE COMES FROM THE MANUAL, not from what our builder emits. `app_simple` is NO
+    // LONGER consulted here — that made the seed's `type` a fact about OUR app (the
+    // root of the mis-typing: `else` was a dumpster). It moves to the CURATED layer
+    // below, attributed. So: `%`→block; a section whose TITLE is the token→simple;
+    // otherwise `unknown` — resolved by the owner (a `block-option` needs a positive
+    // owner; none → `undetermined`, a value, not a dumpster default).
+    let curated_simple: HashSet<String> = app_simple_set();
     let type_of = |tok: &str| -> &'static str {
         if tok.starts_with('%') {
             "block"
-        } else if app_simple.contains(&norm_kw(tok)) || title_home.contains(tok) {
+        } else if title_home.contains(tok) {
             "simple"
         } else {
-            "block-option"
+            "unknown"
         }
     };
 
@@ -1134,19 +1139,26 @@ fn generate_keywords_json() {
     };
     let struct_owner = |idx: usize| -> Option<String> {
         let s = &all[idx];
-        let dblocks = blocks_in_file.get(&s.file)?;
-        if dblocks.len() == 1 {
-            return dblocks.iter().next().cloned();
-        }
-        let p = path_of(s);
-        let cands = block_sec.get(&s.file)?;
-        let mut anc: Vec<&(Vec<String>, String)> =
-            cands.iter().filter(|(bp, _)| bp.len() <= p.len() && p[..bp.len()] == bp[..]).collect();
-        anc.sort_by_key(|(bp, _)| bp.len());
-        let deepest = anc.last().map(|(bp, _)| bp.len())?;
-        let top: HashSet<&String> =
-            anc.iter().filter(|(bp, _)| bp.len() == deepest).map(|(_, bn)| bn).collect();
-        (top.len() == 1).then(|| top.iter().next().unwrap().to_string())
+        let cand: Option<String> = (|| {
+            let dblocks = blocks_in_file.get(&s.file)?;
+            if dblocks.len() == 1 {
+                return dblocks.iter().next().cloned();
+            }
+            let p = path_of(s);
+            let cands = block_sec.get(&s.file)?;
+            let mut anc: Vec<&(Vec<String>, String)> =
+                cands.iter().filter(|(bp, _)| bp.len() <= p.len() && p[..bp.len()] == bp[..]).collect();
+            anc.sort_by_key(|(bp, _)| bp.len());
+            let deepest = anc.last().map(|(bp, _)| bp.len())?;
+            let top: HashSet<&String> =
+                anc.iter().filter(|(bp, _)| bp.len() == deepest).map(|(_, bn)| bn).collect();
+            (top.len() == 1).then(|| top.iter().next().unwrap().to_string())
+        })();
+        // B1 VETO (rule #9, correlate two sources): a structural owner is accepted ONLY
+        // when the section body NAMES it. An owner inferred purely from a breadcrumb
+        // ancestor the text never mentions does not belong. (Measured: 522/814 targets
+        // failed this; ~508 are simple keywords in name-tables, not block-options.)
+        cand.filter(|o| s.body.to_lowercase().contains(&o.to_lowercase()))
     };
     let text_owner = |idx: usize| -> Option<String> {
         let pts = percent_tokens(&all[idx]);
@@ -1188,13 +1200,14 @@ fn generate_keywords_json() {
         let mut prov = "seeded";
         if let Some(al) = aliases {
             prov = "curated"; // an alias is a curation act
-            if al.iter().any(|a| app_simple.contains(&norm_kw(a))) {
+            if al.iter().any(|a| curated_simple.contains(&norm_kw(a))) {
                 ty = "simple"; // an alias that is an app `!`-keyword (M06-L)
             }
         }
-        if ty == "block-option" {
-            // Split by owner: `MaxIter` becomes (%scf, MaxIter), (%casscf, MaxIter),
-            // (null, MaxIter) — the qualifier is part of the identity, not metadata.
+        if ty == "unknown" {
+            // Resolve by OWNER: `MaxIter` splits into (%scf, MaxIter), (%casscf, MaxIter)
+            // — each with a text- or veto-confirmed owner → `block-option`. A group with
+            // NO owner is NOT a block-option (no positive evidence) → `undetermined`.
             let mut groups: HashMap<Option<String>, (Option<&'static str>, Vec<usize>)> =
                 HashMap::new();
             for &i in idxs {
@@ -1209,15 +1222,77 @@ fn generate_keywords_json() {
             gk.sort_by(|a, b| a.clone().unwrap_or_default().cmp(&b.clone().unwrap_or_default()));
             for owner in gk {
                 let (src, gidxs) = groups.remove(&owner).unwrap();
-                let mut o = base(tok, ty, prov, aliases);
-                o.insert("block".into(), owner.map(serde_json::Value::from).unwrap_or(serde_json::Value::Null));
-                o.insert("owner_source".into(), src.map(serde_json::Value::from).unwrap_or(serde_json::Value::Null));
-                recs.push((o, gidxs));
+                match owner {
+                    Some(b) => {
+                        let mut o = base(tok, "block-option", prov, aliases);
+                        o.insert("block".into(), b.into());
+                        o.insert("owner_source".into(),
+                                 src.map(serde_json::Value::from).unwrap_or(serde_json::Value::Null));
+                        recs.push((o, gidxs));
+                    }
+                    None => {
+                        // No manual owner → UNDETERMINED (like anchor=NULL): a value, not
+                        // a dumpster `block-option`/null. Reachable only by the unqualified
+                        // path ("documented in N places"), never by a qualified lookup.
+                        recs.push((base(tok, "undetermined", prov, aliases), gidxs));
+                    }
+                }
             }
         } else {
             recs.push((base(tok, ty, prov, aliases), idxs.clone()));
         }
     }
+    // ---- CURATED overlay: the app-emitted simple keywords, moved OUT of type_of into
+    // an attributed channel. The seed left them `undetermined` — homogeneous with their
+    // table-mates (`def2-QZVPP` and `ma-def2-SVP` both undetermined). Curation now
+    // asserts, WITH PROVENANCE, that the ones OUR builder emits are simple. Same bit as
+    // before, but attributed (visible in the diff, arguable per word) instead of
+    // masquerading as a manual measurement inside `type_of`. ----
+    let simple_seeded: HashSet<String> = recs.iter()
+        .filter(|(o, _)| o["type"] == "simple")
+        .map(|(o, _)| norm_kw(o["keyword"].as_str().unwrap()))
+        .collect();
+    // Words already covered via a curated ALIAS (M06-L → M06L) need nothing here.
+    let alias_covered: HashSet<String> = curated_aliases.values().flatten().map(|a| norm_kw(a)).collect();
+    let mut curated_from_undet: Vec<String> = Vec::new(); // flipped an undetermined record
+    let mut curated_added: Vec<String> = Vec::new();       // added alongside a block-option record
+    let mut curated_no_record: Vec<String> = Vec::new();   // no home at all (a curation gap)
+    for kw in SEED_SIMPLE_HINT {
+        let n = norm_kw(kw);
+        if simple_seeded.contains(&n) || alias_covered.contains(&n) {
+            continue; // seeded simple (title), or already curated via an alias
+        }
+        // Prefer flipping the word's undetermined group (its table-mates stay undetermined).
+        let mut flipped = false;
+        for (o, _) in recs.iter_mut() {
+            if o["type"] == "undetermined" && norm_kw(o["keyword"].as_str().unwrap()) == n {
+                o.insert("type".into(), "simple".into());
+                o.insert("provenance".into(), "curated".into());
+                flipped = true;
+                break;
+            }
+        }
+        if flipped {
+            curated_from_undet.push((*kw).to_string());
+            continue;
+        }
+        // No undetermined group — the word was extracted only WITH an owner (block-option).
+        // It is still a simple `!` keyword our builder emits; ADD a curated simple record at
+        // the same home(s), leaving the (genuine) block-option record intact.
+        let idxs: Vec<usize> = recs.iter()
+            .filter(|(o, _)| norm_kw(o["keyword"].as_str().unwrap()) == n)
+            .flat_map(|(_, r)| r.iter().copied())
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+        if idxs.is_empty() {
+            curated_no_record.push((*kw).to_string()); // not extracted anywhere (e.g. CPCM)
+        } else {
+            recs.push((base(kw, "simple", "curated", None), idxs));
+            curated_added.push((*kw).to_string());
+        }
+    }
+
     // Curated prose-only entries (not in the structured seed).
     if let Some(i) = scf_tol {
         for kw in PROSE_CURATED {
@@ -1343,8 +1418,46 @@ fn generate_keywords_json() {
     println!("    sections: {n_sec} (normalized; was {} target objects before)",
              recs_target_count(&doc));
     println!("    keyword records: {} ({} ambiguous -> targets[])", entries.len(), ambiguous);
+    let n_undet = entries.iter().filter(|e| e["type"] == "undetermined").count();
+    let n_curated = entries.iter().filter(|e| e["provenance"] == "curated").count();
     println!("    block-option owner_source: text {o_text} / structural {o_struct} / null {o_null}");
-    println!("\n    INVENTORY COVERAGE (type-aware): {resolved} of {} resolve", inventory.len());
+    println!("    types: undetermined {n_undet} (was `block-option`/null); curated records {n_curated}");
+
+    // --- B2 measure: the `app_simple` knowledge, moved to the curated channel ---
+    let ch_title = curated_simple.iter().filter(|k| simple_seeded.contains(*k)).count();
+    println!("\n    [B2] app-builder simple keywords ({}) — where the type comes from now:",
+             curated_simple.len());
+    println!("        on a section TITLE (stay SEEDED, manual): {ch_title}");
+    println!("        moved to CURATED (were app_simple only): flip-undetermined {} + add-beside-blockopt {} + alias {}",
+             curated_from_undet.len(), curated_added.len(),
+             curated_simple.iter().filter(|k| alias_covered.contains(*k)).count());
+    println!("        no home at all (curation gaps): {curated_no_record:?}");
+    println!("        curated-simple list (flipped): {curated_from_undet:?}");
+    println!("        curated-simple list (added beside block-option): {curated_added:?}");
+
+    // --- Inventory coverage, split by CHANNEL (seed vs curation) so the two don't merge ---
+    let rec_prov: HashMap<(String, String, String), String> = entries.iter().flat_map(|e| {
+        let ty = e["type"].as_str().unwrap().to_string();
+        let blk = if ty == "block-option" {
+            e.get("block").and_then(|x| x.as_str()).unwrap_or("").to_lowercase()
+        } else { String::new() };
+        let prov = e["provenance"].as_str().unwrap().to_string();
+        let mut ks = vec![norm_kw(e["keyword"].as_str().unwrap())];
+        if let Some(al) = e.get("aliases").and_then(|a| a.as_array()) {
+            ks.extend(al.iter().filter_map(|x| x.as_str()).map(norm_kw));
+        }
+        ks.into_iter().map(move |k| ((k, ty.clone(), blk.clone()), prov.clone()))
+    }).collect();
+    let (mut via_seed, mut via_cur) = (0usize, 0usize);
+    for e in inventory.iter().filter(|e| inv_resolves(e)) {
+        let blk = if e.expect == "block-option" { e.block.clone().unwrap_or_default().to_lowercase() } else { String::new() };
+        match rec_prov.get(&(norm_kw(&e.keyword), e.expect.clone(), blk)).map(|s| s.as_str()) {
+            Some("curated") => via_cur += 1,
+            _ => via_seed += 1,
+        }
+    }
+    println!("\n    INVENTORY COVERAGE (type-aware): {resolved} of {} resolve — {via_seed} via SEED (manual), \
+             {via_cur} via CURATION (ours, attributed)", inventory.len());
     println!("      gaps by closer:");
     println!("        (a) {{numref}} layer:     {:?}", gaps_by("a"));
     println!("        (b) curated (prose):    {:?}", gaps_by("b"));
@@ -1852,5 +1965,147 @@ fn structural_overlap_measure() {
         println!("        {c:4}  {t}");
     }
     println!("    [1c] 15 orphan words: {:?}", orphan_words.iter().take(15).collect::<Vec<_>>());
+    println!("{:=<72}", "");
+}
+
+// --- B0: per-SECTION signal over the 508 orphans (unit 4.4 Part F/B0) --------
+//
+//     cargo test orphan_section_signal -- --ignored --nocapture
+//
+// The 8.8 % `!`-signal was per-WORD; the manual documents `!`-usage per-TABLE. So
+// measure per source SECTION: does the section carry a `!`-line using one of ITS OWN
+// extracted words (per-section simple signal), and — the reverse, mandatory — does the
+// same section ALSO use its words as a block option (`%basis … <word>`)? A mixed table
+// makes table-propagation illegal, and that must be a NUMBER, not an assumption of
+// homogeneity.
+
+#[test]
+#[ignore]
+fn orphan_section_signal() {
+    let manual_dir = repo_root().join("resources/manual");
+    let version = corpus_version(&manual_dir);
+    let version_dir = manual_dir.join(&version);
+    if !version_dir.is_dir() {
+        eprintln!("skipping: no corpus");
+        return;
+    }
+    let mut leaves: Vec<(String, String)> = Vec::new();
+    collect_leaves(&version_dir, &version_dir, &mut leaves);
+    leaves.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut all: Vec<Section> = Vec::new();
+    for (file, text) in &leaves {
+        if let Ok(secs) = sections::sectionize(file, text) {
+            all.extend(secs);
+        }
+    }
+    let mut order: Vec<usize> = (0..all.len()).collect();
+    order.sort_by_key(|&i| (all[i].file.clone(), all[i].line_start));
+    let mut nth_seen: HashMap<(String, String, String), usize> = HashMap::new();
+    let mut body_by_key: HashMap<(String, String, String, usize), String> = HashMap::new();
+    for &i in &order {
+        let s = &all[i];
+        let trip = (s.file.clone(), s.breadcrumb.join("\u{1}"), s.title.clone());
+        let n = nth_seen.entry(trip.clone()).or_insert(0);
+        body_by_key.insert((trip.0, trip.1, trip.2, *n), s.body.clone());
+        *n += 1;
+    }
+
+    let doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(repo_root().join("src/manual/keywords.json")).unwrap()).unwrap();
+    let secs = doc["sections"].as_array().unwrap();
+    let key_of = |i: usize| -> (String, String, String, usize) {
+        let s = &secs[i];
+        (s["file"].as_str().unwrap().to_string(),
+         s["breadcrumb"].as_array().unwrap().iter().map(|x| x.as_str().unwrap()).collect::<Vec<_>>().join("\u{1}"),
+         s["title"].as_str().unwrap().to_string(),
+         s["nth"].as_u64().unwrap() as usize)
+    };
+    let recs = doc["keywords"].as_array().unwrap();
+    let idxs = |r: &serde_json::Value| -> Vec<usize> {
+        if let Some(s) = r.get("section") { vec![s.as_u64().unwrap() as usize] }
+        else { r["targets"].as_array().unwrap().iter().map(|x| x.as_u64().unwrap() as usize).collect() }
+    };
+    let owner_in_body = |owner: &str, body: &str| body.to_lowercase().contains(&owner.to_lowercase());
+    let mut has_simple: HashSet<String> = HashSet::new();
+    let mut has_confirmed_bo: HashSet<String> = HashSet::new();
+    for r in recs {
+        let k = norm_kw(r["keyword"].as_str().unwrap());
+        let ty = r["type"].as_str().unwrap();
+        if ty == "simple" { has_simple.insert(k.clone()); }
+        if ty == "block-option" {
+            let owner = r["block"].as_str().unwrap_or("");
+            let confirmed = r["owner_source"].as_str() == Some("text")
+                || (r["owner_source"].as_str() == Some("structural")
+                    && idxs(r).iter().any(|&i| body_by_key.get(&key_of(i)).is_some_and(|b| owner_in_body(owner, b))));
+            if confirmed { has_confirmed_bo.insert(k); }
+        }
+    }
+    // orphan (section index) -> its orphan words (normalized)
+    let mut orphan_sec: HashMap<usize, HashSet<String>> = HashMap::new();
+    for r in recs {
+        if r["type"].as_str() != Some("block-option") || r["owner_source"].as_str() != Some("structural") { continue; }
+        let k = norm_kw(r["keyword"].as_str().unwrap());
+        let owner = r["block"].as_str().unwrap_or("");
+        for i in idxs(r) {
+            let missing = body_by_key.get(&key_of(i)).map(|b| !owner_in_body(owner, b)).unwrap_or(true);
+            if missing && !has_simple.contains(&k) && !has_confirmed_bo.contains(&k) {
+                orphan_sec.entry(i).or_default().insert(k.clone());
+            }
+        }
+    }
+
+    // Per section: does it carry a `!`-line using one of its OWN words (bang), and does
+    // it use one of its OWN words INSIDE a `%…` block (blockuse)?
+    let scan = |body: &str, words: &HashSet<String>| -> (bool, bool) {
+        let (mut bang, mut blockuse) = (false, false);
+        let mut in_orca = false;
+        let mut block: Vec<String> = Vec::new();
+        let flush = |block: &[String], bang: &mut bool, blockuse: &mut bool| {
+            let has_pct = block.iter().any(|l| l.to_lowercase().contains('%'));
+            for l in block {
+                let tl = l.trim_start();
+                if let Some(rest) = tl.strip_prefix('!') {
+                    if rest.split_whitespace().any(|t| words.contains(&norm_kw(t))) { *bang = true; }
+                } else if has_pct {
+                    if tl.split_whitespace().any(|t| words.contains(&norm_kw(t))) { *blockuse = true; }
+                }
+            }
+        };
+        for line in body.lines() {
+            let tl = line.trim_start();
+            if tl.starts_with("```") {
+                if in_orca { flush(&block, &mut bang, &mut blockuse); block.clear(); in_orca = false; }
+                else if tl.trim_start_matches('`').trim().eq_ignore_ascii_case("orca") { in_orca = true; }
+                continue;
+            }
+            if in_orca { block.push(line.to_string()); }
+        }
+        (bang, blockuse)
+    };
+
+    let (mut s_pure_bang, mut s_pure_block, mut s_mixed, mut s_neither) = (0usize, 0usize, 0usize, 0usize);
+    let (mut o_pure_bang, mut o_pure_block, mut o_mixed, mut o_neither) = (0usize, 0usize, 0usize, 0usize);
+    let mut title_of_bucket: HashMap<&str, usize> = HashMap::new();
+    for (&i, words) in &orphan_sec {
+        let body = body_by_key.get(&key_of(i)).cloned().unwrap_or_default();
+        let (bang, blockuse) = scan(&body, words);
+        let n = words.len();
+        match (bang, blockuse) {
+            (true, false) => { s_pure_bang += 1; o_pure_bang += n; *title_of_bucket.entry("pure-!").or_insert(0)+=1; }
+            (false, true) => { s_pure_block += 1; o_pure_block += n; }
+            (true, true)  => { s_mixed += 1; o_mixed += n; }
+            (false, false)=> { s_neither += 1; o_neither += n; }
+        }
+    }
+    let sections = orphan_sec.len();
+    let orphans: usize = orphan_sec.values().map(|w| w.len()).sum();
+    println!("\n{:=<72}", "");
+    println!("ORPHAN PER-SECTION SIGNAL — {sections} source sections, {orphans} orphan words");
+    println!("{:=<72}", "");
+    println!("  sections: pure-! {s_pure_bang} | pure-block {s_pure_block} | mixed {s_mixed} | neither {s_neither}");
+    println!("  orphans:  pure-! {o_pure_bang} | pure-block {o_pure_block} | mixed {o_mixed} | neither {o_neither}");
+    println!("  => per-section `!` signal (pure-! ∪ mixed) covers {} of {} orphans",
+             o_pure_bang + o_mixed, orphans);
+    println!("  => clean simple candidates (pure-! only): {o_pure_bang}; MIXED (propagation illegal): {o_mixed}; no-signal: {o_neither}");
     println!("{:=<72}", "");
 }

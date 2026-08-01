@@ -9,7 +9,12 @@
 import kwjson from "./keywords.json";
 import { enclosingBlock } from "../editor/enclosing-block";
 
-export type KeywordType = "simple" | "block" | "block-option";
+// `undetermined`: the manual gave no positive signal for the type (no owner, no simple
+// title) — a value like anchor=NULL, NOT a dumpster default. A qualified hover lookup
+// only ever asks for simple / block / block-option, so an `undetermined` record is
+// invisible to it (silence); it is reachable only by the panel's unqualified path
+// ("documented in N places"). Contract: the hover never falls back to it.
+export type KeywordType = "simple" | "block" | "block-option" | "undetermined";
 
 export interface KeywordRecord {
   keyword: string;
