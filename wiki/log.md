@@ -3780,3 +3780,43 @@ deterministic sort. Size noted as a fact — the block-option bulk is curation m
 entries. No DB schema/migration (bundled file, map lookup). `cargo test` green (147 passed, 11
 ignored). Wiki: new `modules/manual-keywords.md`, `index.md` (60 pages), `ROADMAP` (item → [~]).
 Left: hand summaries, the {numref} deferred layer (60 %-blocks), targets[] disambiguation.
+
+## [2026-08-01] decision | Qualify block-options + normalize sections in keywords.json (schema v2)
+
+Schema fix while keywords.json still has no consumer. Both first-cut problems — size and
+"ambiguity" — had one cause: a block-option record stored the BARE option name though the owning
+block was known at extraction, and every target carried a full breadcrumb copy.
+
+**Normalization.** 3173 target objects → 317 distinct `sections` (10× dup); records reference the
+array by int. **1.00 → 0.56 MB** (dedup alone ~0.25 MB; qualification trades part back for
+correctness). Added `schema_version: 2` at root (the record shape changed — `targets: [{…}]` →
+`[<int>]` — an old reader would take ints for objects; same role as `parser_version` / DB
+`SCHEMA_VERSION`).
+
+**Qualification — a block-option is a QUALIFIED NAME, the qualifier is identity, not metadata.**
+Key = `(block, option)`. `MaxIter` becomes 11 records (`%scf MaxIter`, `%casscf MaxIter`, …) — the
+exact AtomId lesson (position confused for atom identity; here option name confused for option
+identity; both surface as a surplus of candidates, not a crash). `block` derived by UNION of two
+independent signals with provenance `owner_source`: **text** (single literal `%block` in the home
+section — text, not inference; priority) → **structural** (unique `%block` of file / unique deepest
+ancestor) → **null** (a value, like anchor_source 'undetermined'). Union coverage 74.7 %, null 25.3 %.
+
+**The load-bearing measure — agreement.** Where both signals resolve (936 targets) they agree
+**98.5 %** (14 disagreements). This retroactively VALIDATES the structural 62 % already in the wiki —
+the same `objects.inv` × `predict_anchor` construction (two derivations that must agree), held again.
+So structural is not demoted. Dropped the "several %-tokens" third rule by number (rescues 145/726 =
+4.7 % on an uncheckable heuristic). Cross-reference sections ("List of related keywords" / "See
+also", measured 2: nocv, mcd) → owner null BY RULE, not by accidental tie.
+
+**Consumer contract fixed here (not reinvented in the hover unit):** 25.3 % of block-options have
+`block: null` — unreachable by qualified lookup. The hover does NOT fall back to unqualified
+bare-name search on a qualified miss; unqualified lookup is a separate, deliberate path answering
+"documented in N places" (a list), not one section. Same posture as "hover does not fall back to FTS"
+(ADR-013 amendment) — unwritten, it gets replayed. `targets[]` reflects reality (`%casscf MaxIter`
+truly in CASSCF and DMRG); we do NOT target zero null or zero ambiguity.
+
+Post-conditions (rule #9): 46/46 app coverage or panic; **zero dangling int refs** (asserted);
+byte-deterministic re-run. Output: 2836 records, 317 sections, owner_source text 1204 / structural
+802 / null 669. New measures in `manual/tests.rs`: `owner_signal_measure`, `owner_union_measure`.
+`cargo test` green (147 passed, 13 ignored). Wiki: `manual-keywords.md` rewritten, `manual-sources.md`
+Part C before/after, `index.md` line. No DB/FTS/sectioner touched, no {numref} layer, no new deps.

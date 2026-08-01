@@ -1,112 +1,149 @@
 # Module: keywords.json (`src/manual/keywords.json`)
 
-**Status:** seeded (unit 4.4, Part B). The keyword→section map that feeds the Monaco **hover**
-provider (4.4 UI, not built yet). It is a **repo file, seeded programmatically then curated by hand**
-(ADR-013 narrows ADR-006's "by hand") — Rust owns manual text-to-structure (ADR-013), so a Rust
-`#[ignore]` generator emits it; the frontend consumes it. **Why a separate layer at all:** the hover
-shows **one** section, confidently; at the FTS panel's hit@1 = 9/17 (~53 %, ADR-013 amendment) a
-search-fed hover would be wrong half the time. So hover reads an **explicit** map, not FTS.
+**Status:** seeded + qualified + normalized (unit 4.4, Parts B–C). The keyword→section map that feeds
+the Monaco **hover** provider (4.4 UI, not built yet). It is a **repo file, seeded programmatically
+then curated by hand** (ADR-013 narrows ADR-006's "by hand") — Rust owns manual text-to-structure
+(ADR-013), so a Rust `#[ignore]` generator emits it; the frontend consumes it. **Why a separate layer
+at all:** the hover shows **one** section, confidently; at the FTS panel's hit@1 = 9/17 (~53 %,
+ADR-013 amendment) a search-fed hover would be wrong half the time. So hover reads an **explicit** map,
+not FTS.
 
-## Why this file exists as data, not FTS
+## The core idea — a block-option is a qualified name
 
-Two surfaces, two precision bars ([manual-index.md](manual-index.md)): the **panel** shows 5
-candidates (FTS hit@5 88 % works), the **hover** shows 1 (needs an explicit map). This file is that
-map. FTS stays for the panel.
+**A `block-option` is a qualified name, and the qualifier is part of the identity, not metadata.
+`MaxIter` without a block is not a keyword — it is a string that occurs in fifteen different places.
+The parallel to `AtomId` is exact: there a position in an array was mistaken for the identity of an
+atom; here an option name is mistaken for the identity of an option. Both times the confusion shows up
+not as a crash but as a surplus of candidates.** (In the generated file `MaxIter` is literally 11
+records — `%scf MaxIter`, `%casscf MaxIter`, `%method MaxIter`, … — each a distinct hover target.)
 
-## Schema (one record per keyword)
+So the lookup key for a block-option is **(block, option)**, never the bare option.
+
+## Schema (`schema_version: 2`)
+
+The file is **normalized**: one `sections` array (each distinct section once) and records that
+**reference sections by integer index**. `schema_version` is at the root for the same reason
+`results.parser_version` and the DB `SCHEMA_VERSION` exist — the record shape changed (`targets` went
+from `[{…}]` to `[<int>]`), and an old reader on a new file would silently take integers for objects.
+One line now, an ugly bug avoided later.
 
 ```jsonc
 {
-  "keyword": "RIJCOSX",             // the token as it appears (case preserved)
-  "type": "simple" | "block" | "block-option",   // seed heuristic; curation refines
-  "provenance": "seeded" | "curated",
-  "aliases": ["M06-L"],             // optional — spelling variants (NOT hyphen-normalized)
-  "summary": "…",                   // optional — empty on seed; curation fills
-  "section": { "file": "...", "breadcrumb": [...], "title": "...", "nth": 0 }
-  //  ── OR, when the keyword documents in more than one place ──
-  "targets": [ { "file": ..., "breadcrumb": [...], "title": ..., "nth": 0 }, ... ]
+  "schema_version": 2,
+  "orca_version": "6.1",
+  "sections": [                          // index space; referenced by number
+    { "file": "...", "breadcrumb": [...], "title": "...", "nth": 0 },   // = section 0
+    ...
+  ],
+  "keywords": [
+    { "keyword": "RIJCOSX", "type": "simple", "provenance": "seeded",
+      "targets": [0, 3] },               // int refs into `sections`
+    { "keyword": "MaxIter", "type": "block-option", "provenance": "seeded",
+      "block": "%scf", "owner_source": "text", "section": 52 },
+    { "keyword": "MaxIter", "type": "block-option", "provenance": "seeded",
+      "block": null, "owner_source": null, "targets": [11, 88, 140] },
+    { "keyword": "M06L", "type": "simple", "provenance": "curated",
+      "aliases": ["M06-L"], "targets": [96, 105] }
+  ]
 }
 ```
 
-A record has **either `section` (unambiguous) or `targets[]` (ambiguous)** — never both.
+- **`section` (one) or `targets` (many)** — never both. `targets[]` **reflects reality** (one option
+  genuinely documented in several places — `%casscf MaxIter` lives in the CASSCF *and* the DMRG
+  chapters), not our inability to choose. The hover **must not** collapse it to the first.
+- **`block` / `owner_source`** — block-option only (see below).
+- **`aliases[]`** — spelling variants (`M06L` ← `M06-L`), **not** hyphen-normalized (dashes are
+  significant: `def2-SVP`, `NEB-TS`, `B3LYP-D4`).
 
-## The stable key — `(file, breadcrumb, title, nth)`, and why
+## Owner derivation — union of two independent signals, with provenance
 
-`keywords.json` must survive **re-ingest of the same corpus**, so it **cannot** key on
-`manual_sections.id` — the synthetic PK is reassigned on every ingest and would silently slide a
-curated entry onto another section. The other candidates were measured out (unit 4.4,
-[orca/manual-sources.md](../orca/manual-sources.md)): `anchor` is NULL in 518 sections;
-`(file, title)` collides 140× (label-less `## Keywords`); and even **`(file, breadcrumb, title)`
-collides once** — `modelchemistries/mreom` has **two identical `## Perturbative MR-EOM-CCPT` H2
-siblings** under the same parent. So the key adds an **`nth` ordinal, used only where the triple
-repeats** (document order; `0` for all but that one pair). `line_start` is deliberately **not** in the
-key — it would churn the diff on every manual reflow, and the file is human-reviewed.
+`block` is derived two independent ways, and `owner_source` records which one spoke:
 
-**Loader post-condition (rule #9), when the hover layer is built:** every key must resolve to
-**exactly one** section; **0 or ≥2 is an error naming the key — never pick-first.** A key that resolves
-to nothing (manual moved) or to two sections (bad key) must fail loudly, not silently point somewhere.
+- **`"text"`** — the option's home section carries **exactly one literal `%block` token** (`%scf
+  MaxIter 200 end` in an annotated ` ```orca ` block, or the heading). Text, not inference. **Takes
+  priority.**
+- **`"structural"`** — text is silent, but the file has a unique `%block` (or a unique deepest
+  `%block` ancestor by breadcrumb). Fills where text is silent.
+- **`null`** — both are silent. `null` is a **value with meaning**, like `anchor_source =
+  'undetermined'` in 4.3 — the section genuinely does not name a block, so the qualifier is *unknown*,
+  not a hole to be filled by guessing.
 
-## Coverage — the number that gates the generator: 46/46
+**Why trust the union — the agreement number.** Where both signals resolve (936 targets), they agree
+**98.5 %** (14 disagreements, 8 of them one cross-reference section). Two independent derivations
+confirming each other is the same construction as **`objects.inv` × `predict_anchor`** (4.2): each is
+a guess alone, together they are a post-condition. It means the **structural 62 %** figure was not
+merely plausible — an independent text signal validated it after the fact. Because agreement is near-
+total, text-priority is safe (it settles the 14 sensibly) and the structural half is not a liability.
 
-The seed is broad (the whole structured pool), but its **post-condition is narrow**: every keyword the
-**app itself emits** into an input must resolve, or the generator **panics naming the misses**. The 46
-come from the code, not memory (`src/input-builder/orca-options.ts`, `build-input.ts`,
-`templates/orca-templates.ts`, `scene/constraints.ts`). Four needed help, and they are the curation
-seed:
-- **`M06-L` / `M06-2X`** — the manual spells them **`M06L` / `M062X`** (no hyphen), so the seeded
-  `M06L`/`M062X` records carry `aliases: ["M06-L"]` / `["M06-2X"]`. **No hyphen normalization** — the
-  dash is significant in `def2-SVP`, `NEB-TS`, `B3LYP-D4`.
-- **`TightSCF` / `VeryTightSCF`** — documented only in **prose** (no keyword table), so they are
-  **curated** entries pointing at `essentialelements/scf › Convergence Tolerances`.
+**Cross-reference sections are null by rule.** A section titled "List of related keywords" / "See
+also" **lists other blocks'** keywords — it references, it does not document. Both derivations there
+answer the wrong question, so its options get `block: null` **by rule**. Measured: **2 sections**
+(`spectroscopyproperties/nocv`, `.../mcd`) — units, not a category, but named so the null is by design,
+not by an accidental tie.
 
-## What was seeded, and what was deliberately left
+## Consumer contract (fixed here, for the hover unit — not to be reinvented there)
 
-Seeded from the **broad structured pool, home mappings only** — the token's documentation home is a
-keyword table (`:::{table}` pipe / `{list-table}` / `:::{flat-table}`), an **annotated** ` ```orca `
-keyword-list block (`name value # desc`), or a **section title that is itself a keyword** (`## RI-JK`,
-`## RIJCOSX`, `## GOAT`). The functional table's input token lives in its **second** column
-(`| M06-L {cite}\`m06l\` | \`M06L\` | … |`) — the extractor reads that column, and strips MyST role
-backticks (`{cite}\`…\``) so it takes the keyword, not the citation key. The appendix (change log /
-glossary) is excluded — its `## GOAT`-style change entries are not documentation.
+**25.3 % of block-option targets have `block: null`** — they are **unreachable by qualified lookup**
+(`%scf` + `MaxIter`). The rule for the next unit is fixed **here**:
 
-Deliberately **not** seeded here (measured, deferred — not lost):
-- **`{numref}`-target records** — a keyword whose only home is a *reference* to another section (the
-  60 `%`-blocks in "List of Input Blocks", each pointing at its doc section via `{numref}`). Their
-  precision was **not measured** (A4 = 100 % was for *home* mappings only), so resolving them is the
-  next unit's measure, not a guess now.
-- **prose keyword sections** — the ~21 prose "Keywords" sections (unit 4.1) are curation targets by
-  definition, not extractor input.
+> The hover does **not** fall back to an unqualified, bare-option-name search when the qualified
+> lookup misses. Unqualified lookup is a **separate, deliberate path**, and its answer is *"documented
+> in N places"* — a list — **not one section.**
 
-## Ambiguity — measured 14.2 %, and why `targets[]` instead of a guess
+This is the same posture as *"hover does not fall back to FTS"* in the ADR-013 amendment: without
+writing it down, it gets replayed. A qualified miss that silently degrades to "first place `MaxIter`
+appears" is exactly the confident-wrong-answer the whole layer exists to prevent.
 
-One keyword string can document in more than one section (the mirror of the mreom key collision: there
-one section had two keys, here one key has several sections). Measured: **370 of 2606 home-seed tokens
-(14.2 %) map to ≥2 sections** — common block options like `MaxIter` (17), `%method` (16), `PrintLevel`
-(15). Under the **30 % exit bar** (above which the record shape itself would be wrong), so generation
-proceeded — but an ambiguous keyword gets **`targets[]` (all homes), not a single `section`**, and the
-future hover **must not pick the first**. How to disambiguate (block context under the cursor, the
-current selection, or showing several) is the **next unit's** decision, made on a number — this unit
-only refuses to fake a resolution it has not measured.
+## The stable section key — `(file, breadcrumb, title, nth)`
 
-## Size (measured)
+Each `sections` element is keyed by `(file, breadcrumb, title, nth)` — **not** `manual_sections.id`
+(synthetic, reassigned per ingest → would slide a curated entry). The other candidates were measured
+out (unit 4.4, [orca/manual-sources.md](../orca/manual-sources.md)): `anchor` NULL in 518;
+`(file, title)` collides 140×; **`(file, breadcrumb, title)` collides once** (mreom's two identical
+`## Perturbative MR-EOM-CCPT` H2 siblings), so `nth` disambiguates only where the triple repeats.
+`line_start` is **not** in the key (diff churn).
 
-**2608 records, ~1.05 MB** (390 ambiguous → `targets[]`; types: 2447 block-option, 121 simple, 40
-block). Larger than the "small map" the strategy first imagined — the bulk is `block-option` seed with
-empty summaries, i.e. **curation material**, not finished entries. Bundled with the frontend, parsed
-once into a lookup; a map lookup, no FTS. If it needs trimming, that is a curation decision, recorded
-here so it is a choice and not a surprise.
+**Loader post-conditions (rule #9), when the hover layer is built:** (1) a `(block, keyword)` /
+`keyword` key resolves to **exactly one record**; (2) every int ref is a valid `sections` index — the
+generator already asserts **zero dangling references**. A key resolving to nothing or an index out of
+range must fail loudly, never point somewhere.
+
+## Coverage — the hard gate: 46/46
+
+Broad seed, **narrow post-condition**: every keyword the **app itself emits** (from the code:
+`input-builder/`, `templates/`, `scene/constraints.ts`) must resolve, or the generator **panics naming
+the misses**. Four needed curation: `M06-L`/`M06-2X` via `aliases[]` (manual spells them
+`M06L`/`M062X`); `TightSCF`/`VeryTightSCF` as curated prose entries (`scf › Convergence Tolerances`).
+
+## What was seeded / deliberately deferred
+
+Seeded from the **broad structured pool, home mappings only** — keyword tables (`:::{table}` pipe /
+`{list-table}` / `:::{flat-table}`), annotated ` ```orca ` blocks, and keyword-titled sections
+(`## RI-JK`, `## GOAT`). Functional-table token is the **2nd** column; MyST role backticks
+(`{cite}\`…\``) are stripped; the appendix (change log / glossary) is excluded. **Deferred** (measured,
+not lost): `{numref}`-target records (60 `%`-blocks in "List of Input Blocks", precision unmeasured)
+and the ~21 prose "Keywords" sections (curation, not extractor input).
+
+## Size and shape (measured)
+
+**~0.56 MB, 2836 records, 317 sections.** Normalization collapsed **3173 target objects → 317
+distinct** (10× duplication removed); on its own that would have reached ~0.25 MB, but qualification
+**splits block-options by owner** (one `MaxIter` → 11 records, each with `block`/`owner_source`), which
+trades part of that back **for correctness** — the surplus is now *qualified* identities, not
+duplicated sections. `owner_source` over block-option records: **text 1204 / structural 802 / null
+669**. 240 records are ambiguous (`targets[]`). Bundled with the frontend, parsed once into a lookup.
 
 ## Regenerating
 
 ```bash
-# Rust generator (author-run, ADR-013) — rewrites src/manual/keywords.json from the corpus:
-cargo test generate_keywords_json -- --ignored --nocapture
-# the two measures behind it:
-cargo test keyword_seed_measure   -- --ignored --nocapture   # A1 stable key, A2 sources, A3 coverage, A4 precision
-cargo test keyword_seed_ambiguity -- --ignored --nocapture   # ambiguity % + the 30% exit gate
+cargo test generate_keywords_json -- --ignored --nocapture   # emits src/manual/keywords.json
+# the measures behind it:
+cargo test keyword_seed_measure   -- --ignored --nocapture   # A1 key, A2 sources, A3 coverage, A4 precision
+cargo test keyword_seed_ambiguity -- --ignored --nocapture   # ambiguity % + 30% exit gate
+cargo test owner_signal_measure   -- --ignored --nocapture   # literal %-token owner signal
+cargo test owner_union_measure    -- --ignored --nocapture   # union coverage + the 98.5% agreement
 ```
 
-Deterministic (sorted by keyword, case-insensitive) so a re-seed is a readable diff. Curated entries
-(hand summaries, aliases, prose homes) are preserved by re-running curation on top — the generator
-writes the seed; curation is layered after. No DB schema, no migration: the file is small enough to
-bundle and the hover does a map lookup, not a query.
+Deterministic (byte-identical re-run; sections sorted by key, records by keyword then block). Curation
+(hand summaries, aliases, prose homes) is layered on top of the seed. No DB schema, no migration: the
+file bundles with the frontend and the hover does a map lookup, not a query.

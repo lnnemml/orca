@@ -281,6 +281,37 @@ that section's title or body (0 suspicious) — the extractor invents nothing. T
 *home* mapping; the real risk is the `{numref}`-referenced target (target ≠ home), whose precision the
 seeding unit measures directly.
 
+### Part C — qualifying block-options and normalizing sections (before/after)
+
+The first-cut `keywords.json` keyed block-options on the **bare option name**, which conflated two
+faults into one file: **size** (each of 3173 target objects carried a full copy of its section
+breadcrumb) and **"ambiguity"** (`MaxIter` looked 17-fold ambiguous when it is really 15 different
+options of 15 different blocks). Both have one cause — the owner block, known at extraction, was
+thrown away. Measured on the generated file and fixed:
+
+- **Normalization.** 3173 target objects → **317 distinct sections** (10× duplication). Records now
+  reference a `sections` array by integer. **1.00 MB → 0.56 MB** (dedup alone would reach ~0.25 MB;
+  qualification trades part back — see below).
+- **Owner, two independent signals.** `owner_source ∈ {text, structural, null}`. **Text** (a single
+  literal `%block` token in the option's home section) takes priority; **structural** (unique `%block`
+  of the file / unique deepest ancestor) fills; else **null**. Union coverage **74.7 %** (text 45.2 %
+  + structural 29.5 %), null **25.3 %** — up from either signal alone (text 45 %, structural 62 %).
+- **The load-bearing number — agreement.** Where both signals resolve (936 targets) they **agree
+  98.5 %** (14 disagreements, 8 in one cross-reference section). So the structural 62 % recorded above
+  is **independently validated**, not merely plausible — the same `objects.inv` × `predict_anchor`
+  construction (two derivations that must agree), and it held again.
+- **Ambiguity is now real.** Keyed on `(block, option)`, `MaxIter`'s 17 targets become **11 records**
+  (one per owner block + one `null`); 320 word-level block-option "ambiguities" fall to ~201 **genuine
+  multi-doc** cases (`%casscf MaxIter` truly in CASSCF and DMRG). The residual is not measured error —
+  it is one option documented in several places, which `targets[]` states honestly.
+- **Cross-reference sections → null by rule.** "List of related keywords" / "See also" sections list
+  *other* blocks' keywords; both derivations there answer the wrong question. Measured: **2 sections**
+  (`nocv`, `mcd`) — closed by rule, not by an accidental tie.
+
+The "several `%`-tokens" refinement (a third rule for sections naming multiple blocks) was **dropped by
+number**: it would rescue only 145 of 726 such targets (4.7 %) on a heuristic with nothing to check it
+against — cost without a post-condition.
+
 ## MyST-parser review condition (ADR-013 (3)) — NOT triggered by the sample
 
 The only thing that would force a *true* MyST parser for **sectioning** is structural `{eval-rst}` in

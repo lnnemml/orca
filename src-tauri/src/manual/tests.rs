@@ -1020,78 +1020,198 @@ fn generate_keywords_json() {
         curated_aliases.entry(seed.to_string()).or_default().push(app.to_string());
     }
 
-    // Build entries.
-    let mut entries: Vec<serde_json::Value> = Vec::new();
+    // ---- Owner derivation (union of two independent signals, with provenance) ----
+    let path_of = |s: &Section| -> Vec<String> {
+        let mut p = s.breadcrumb.clone();
+        p.push(s.title.clone());
+        p
+    };
+    // %-block home sections per file (block names lowercased).
+    let mut block_sec: HashMap<String, Vec<(Vec<String>, String)>> = HashMap::new();
+    let mut blocks_in_file: HashMap<String, HashSet<String>> = HashMap::new();
+    for (tok, idxs) in &homes {
+        if type_of(tok) == "block" {
+            for &i in idxs {
+                let s = &all[i];
+                block_sec.entry(s.file.clone()).or_default().push((path_of(s), tok.to_lowercase()));
+                blocks_in_file.entry(s.file.clone()).or_default().insert(tok.to_lowercase());
+            }
+        }
+    }
+    // A "List of related keywords" / "See also" section LISTS other blocks' keywords —
+    // it references, it does not document. Both derivations there answer the wrong
+    // question, so owner = null BY RULE (measured: 2 sections, mcd + nocv).
+    let cross_ref = |s: &Section| -> bool {
+        let t = s.title.to_lowercase();
+        t.contains("related keyword") || t.contains("see also")
+    };
+    let struct_owner = |idx: usize| -> Option<String> {
+        let s = &all[idx];
+        let dblocks = blocks_in_file.get(&s.file)?;
+        if dblocks.len() == 1 {
+            return dblocks.iter().next().cloned();
+        }
+        let p = path_of(s);
+        let cands = block_sec.get(&s.file)?;
+        let mut anc: Vec<&(Vec<String>, String)> =
+            cands.iter().filter(|(bp, _)| bp.len() <= p.len() && p[..bp.len()] == bp[..]).collect();
+        anc.sort_by_key(|(bp, _)| bp.len());
+        let deepest = anc.last().map(|(bp, _)| bp.len())?;
+        let top: HashSet<&String> =
+            anc.iter().filter(|(bp, _)| bp.len() == deepest).map(|(_, bn)| bn).collect();
+        (top.len() == 1).then(|| top.iter().next().unwrap().to_string())
+    };
+    let text_owner = |idx: usize| -> Option<String> {
+        let pts = percent_tokens(&all[idx]);
+        (pts.len() == 1).then(|| pts.into_iter().next().unwrap())
+    };
+    // (owner, owner_source) — TEXT priority, STRUCTURAL fill, else null (a value).
+    let owner_of = |idx: usize| -> (Option<String>, Option<&'static str>) {
+        if cross_ref(&all[idx]) {
+            return (None, None);
+        }
+        if let Some(o) = text_owner(idx) {
+            return (Some(o), Some("text"));
+        }
+        if let Some(o) = struct_owner(idx) {
+            return (Some(o), Some("structural"));
+        }
+        (None, None)
+    };
+    let src_rank = |s: Option<&'static str>| match s { Some("text") => 2, Some(_) => 1, None => 0 };
+
+    // ---- Build records; section refs kept as `all`-indices, interned later. ----
+    let mut recs: Vec<(serde_json::Map<String, serde_json::Value>, Vec<usize>)> = Vec::new();
+    let base = |tok: &str, ty: &str, prov: &str, aliases: Option<&Vec<String>>| {
+        let mut o = serde_json::Map::new();
+        o.insert("keyword".into(), tok.into());
+        o.insert("type".into(), ty.into());
+        o.insert("provenance".into(), prov.into());
+        if let Some(a) = aliases {
+            o.insert("aliases".into(), serde_json::json!(a));
+        }
+        o
+    };
     let mut tokens: Vec<&String> = homes.keys().collect();
     tokens.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()).then(a.cmp(b)));
     for tok in tokens {
         let idxs = &homes[tok];
-        let mut obj = serde_json::Map::new();
-        obj.insert("keyword".into(), tok.clone().into());
-        obj.insert("provenance".into(), "seeded".into());
+        let aliases = curated_aliases.get(tok);
         let mut ty = type_of(tok);
-        if let Some(aliases) = curated_aliases.get(tok) {
-            obj.insert("aliases".into(), serde_json::json!(aliases));
-            obj.insert("provenance".into(), "curated".into()); // an alias is a curation act
-            // If an alias is an app `!`-simple keyword (M06-L), the entry is simple.
-            if aliases.iter().any(|a| app_simple.contains(&norm_kw(a))) {
-                ty = "simple";
+        let mut prov = "seeded";
+        if let Some(al) = aliases {
+            prov = "curated"; // an alias is a curation act
+            if al.iter().any(|a| app_simple.contains(&norm_kw(a))) {
+                ty = "simple"; // an alias that is an app `!`-keyword (M06-L)
             }
         }
-        obj.insert("type".into(), ty.into());
-        if idxs.len() == 1 {
-            obj.insert("section".into(), section_key(&all[idxs[0]], nth_of[idxs[0]]));
+        if ty == "block-option" {
+            // Split by owner: `MaxIter` becomes (%scf, MaxIter), (%casscf, MaxIter),
+            // (null, MaxIter) — the qualifier is part of the identity, not metadata.
+            let mut groups: HashMap<Option<String>, (Option<&'static str>, Vec<usize>)> =
+                HashMap::new();
+            for &i in idxs {
+                let (owner, src) = owner_of(i);
+                let e = groups.entry(owner).or_insert((None, Vec::new()));
+                if src_rank(src) > src_rank(e.0) {
+                    e.0 = src;
+                }
+                e.1.push(i);
+            }
+            let mut gk: Vec<Option<String>> = groups.keys().cloned().collect();
+            gk.sort_by(|a, b| a.clone().unwrap_or_default().cmp(&b.clone().unwrap_or_default()));
+            for owner in gk {
+                let (src, gidxs) = groups.remove(&owner).unwrap();
+                let mut o = base(tok, ty, prov, aliases);
+                o.insert("block".into(), owner.map(serde_json::Value::from).unwrap_or(serde_json::Value::Null));
+                o.insert("owner_source".into(), src.map(serde_json::Value::from).unwrap_or(serde_json::Value::Null));
+                recs.push((o, gidxs));
+            }
         } else {
-            // AMBIGUOUS: many homes -> targets[]; hover must NOT pick first (next unit).
-            let targets: Vec<serde_json::Value> =
-                idxs.iter().map(|&i| section_key(&all[i], nth_of[i])).collect();
-            obj.insert("targets".into(), serde_json::json!(targets));
+            recs.push((base(tok, ty, prov, aliases), idxs.clone()));
         }
-        entries.push(serde_json::Value::Object(obj));
     }
-
     // Curated prose-only entries (not in the structured seed).
     if let Some(i) = scf_tol {
         for kw in PROSE_CURATED {
-            entries.push(serde_json::json!({
-                "keyword": kw,
-                "type": "simple",
-                "provenance": "curated",
-                "summary": "Tighten SCF convergence thresholds (prose-documented; no keyword table).",
-                "section": section_key(&all[i], nth_of[i]),
-            }));
+            let mut o = base(kw, "simple", "curated", None);
+            o.insert("summary".into(),
+                "Tighten SCF convergence thresholds (prose-documented; no keyword table).".into());
+            recs.push((o, vec![i]));
         }
     }
-    // Keep the whole file deterministically ordered (curated entries included).
+
+    // ---- Normalize sections: one array of distinct section keys + int refs. ----
+    let skey_tuple = |i: usize| -> (String, Vec<String>, String, usize) {
+        (all[i].file.clone(), all[i].breadcrumb.clone(), all[i].title.clone(), nth_of[i])
+    };
+    let mut ordered: Vec<usize> =
+        recs.iter().flat_map(|(_, r)| r.iter().copied()).collect::<HashSet<_>>().into_iter().collect();
+    ordered.sort_by(|&a, &b| skey_tuple(a).cmp(&skey_tuple(b)));
+    let idx_map: HashMap<usize, usize> =
+        ordered.iter().enumerate().map(|(new, &old)| (old, new)).collect();
+    let sections_json: Vec<serde_json::Value> =
+        ordered.iter().map(|&i| section_key(&all[i], nth_of[i])).collect();
+
+    // Finalize each record: remap refs to int indices; `section` (1) or `targets` (n).
+    let mut entries: Vec<serde_json::Value> = Vec::new();
+    for (mut o, refs) in recs {
+        let mut ints: Vec<usize> = refs.iter().map(|i| idx_map[i]).collect();
+        ints.sort_unstable();
+        ints.dedup();
+        if ints.len() == 1 {
+            o.insert("section".into(), (ints[0] as u64).into());
+        } else {
+            // Many homes -> targets[] REFLECTS REALITY (one option, several docs), not
+            // our inability to pick. Hover must NOT collapse this to the first.
+            o.insert("targets".into(), serde_json::json!(ints));
+        }
+        entries.push(serde_json::Value::Object(o));
+    }
     entries.sort_by(|a, b| {
-        let ka = a["keyword"].as_str().unwrap();
-        let kb = b["keyword"].as_str().unwrap();
-        ka.to_lowercase().cmp(&kb.to_lowercase()).then(ka.cmp(kb))
+        let (ka, kb) = (a["keyword"].as_str().unwrap(), b["keyword"].as_str().unwrap());
+        let (ba, bb) = (a.get("block").and_then(|x| x.as_str()).unwrap_or(""),
+                        b.get("block").and_then(|x| x.as_str()).unwrap_or(""));
+        ka.to_lowercase().cmp(&kb.to_lowercase()).then(ka.cmp(kb)).then(ba.cmp(bb))
     });
 
-    // ---- HARD post-condition: every app-emitted keyword resolves, or FAIL. ----
-    let resolvable: HashSet<String> = entries
-        .iter()
-        .flat_map(|e| {
-            let mut ks = vec![norm_kw(e["keyword"].as_str().unwrap())];
-            if let Some(al) = e.get("aliases").and_then(|a| a.as_array()) {
-                ks.extend(al.iter().filter_map(|x| x.as_str()).map(norm_kw));
-            }
-            ks
-        })
-        .collect();
-    let missing: Vec<&str> = APP_EMITTED
-        .iter()
-        .map(|(k, _)| *k)
-        .filter(|k| !resolvable.contains(&norm_kw(k)))
-        .collect();
+    // ---- HARD post-conditions (rule #9) ----
+    // (a) every app-emitted keyword resolves (by keyword string or alias) or FAIL.
+    let resolvable: HashSet<String> = entries.iter().flat_map(|e| {
+        let mut ks = vec![norm_kw(e["keyword"].as_str().unwrap())];
+        if let Some(al) = e.get("aliases").and_then(|a| a.as_array()) {
+            ks.extend(al.iter().filter_map(|x| x.as_str()).map(norm_kw));
+        }
+        ks
+    }).collect();
+    let missing: Vec<&str> = APP_EMITTED.iter().map(|(k, _)| *k)
+        .filter(|k| !resolvable.contains(&norm_kw(k))).collect();
+    // (b) no dangling int ref — every section/target index is in range.
+    let n_sec = sections_json.len();
+    let dangling = entries.iter().any(|e| {
+        let idxs: Vec<i64> = match (e.get("section"), e.get("targets")) {
+            (Some(s), _) => vec![s.as_i64().unwrap()],
+            (_, Some(t)) => t.as_array().unwrap().iter().map(|x| x.as_i64().unwrap()).collect(),
+            _ => vec![-1],
+        };
+        idxs.iter().any(|&i| i < 0 || i as usize >= n_sec)
+    });
+
+    // report tallies
     let ambiguous = entries.iter().filter(|e| e.get("targets").is_some()).count();
+    let bo = |e: &serde_json::Value| e["type"] == "block-option";
+    let cnt_src = |v: &str| entries.iter().filter(|e| bo(e) && e["owner_source"] == v).count();
+    let (o_text, o_struct) = (cnt_src("text"), cnt_src("structural"));
+    let o_null = entries.iter().filter(|e| bo(e) && e["owner_source"].is_null()).count();
 
     let doc = serde_json::json!({
-        "_comment": "SEEDED from the ORCA 6.1 manual structured markup (home mappings only) \
-                     by `cargo test generate_keywords_json`; curate on top. \
-                     Key = (file, breadcrumb, title, nth). See wiki/modules/manual-keywords.md.",
+        "schema_version": 2,
+        "_comment": "SEEDED from the ORCA 6.1 manual structured markup (home mappings only) by \
+                     `cargo test generate_keywords_json`; curate on top. Records reference the \
+                     `sections` array by index; block-options carry (block, owner_source). \
+                     See wiki/modules/manual-keywords.md.",
         "orca_version": version,
+        "sections": sections_json,
         "keywords": entries,
     });
     let out_dir = repo_root().join("src/manual");
@@ -1101,13 +1221,348 @@ fn generate_keywords_json() {
     std::fs::write(&out_path, &text).unwrap();
 
     println!("\n{:=<72}", "");
-    println!("GENERATED {}", out_path.display());
-    println!("    entries: {} ({} ambiguous -> targets[])", doc["keywords"].as_array().unwrap().len(), ambiguous);
-    println!("    app coverage: {}/{} ({} missing)", APP_EMITTED.len() - missing.len(), APP_EMITTED.len(), missing.len());
-    if !missing.is_empty() {
-        println!("    MISSING: {missing:?}");
-    }
+    println!("GENERATED {} ({} bytes)", out_path.display(), text.len());
+    println!("    sections: {n_sec} (normalized; was {} target objects before)",
+             recs_target_count(&doc));
+    println!("    keyword records: {} ({} ambiguous -> targets[])", entries.len(), ambiguous);
+    println!("    block-option owner_source: text {o_text} / structural {o_struct} / null {o_null}");
+    println!("    app coverage: {}/{}", APP_EMITTED.len() - missing.len(), APP_EMITTED.len());
     println!("{:=<72}", "");
     assert!(scf_tol.is_some(), "SCF Convergence Tolerances home not found — curation target moved");
     assert!(missing.is_empty(), "coverage post-condition FAILED: app keywords with no entry: {missing:?}");
+    assert!(!dangling, "a section/target index is out of range — dangling reference");
+    assert!(n_sec > 0, "no sections");
+}
+
+/// Sum of section references across records (for the before/after normalization report).
+fn recs_target_count(doc: &serde_json::Value) -> usize {
+    doc["keywords"].as_array().unwrap().iter().map(|e| {
+        if e.get("section").is_some() { 1 } else { e["targets"].as_array().unwrap().len() }
+    }).sum()
+}
+
+// --- Owner DIRECT-SIGNAL measure (unit 4.4, Part C) --------------------------
+//
+//     cargo test owner_signal_measure -- --ignored --nocapture
+//
+// The block-option owner should come from the LITERAL `%block` token in the
+// option's home section (`%scf MaxIter 200 end` in an annotated ```orca block, or
+// the heading) — text, not inference. This measures how strong that direct signal
+// is: does the home section carry exactly one literal `%`-token (→ owner direct),
+// several (→ needs a rule, not invented here), or none (→ null)?
+
+/// Distinct literal `%block` tokens in a section's title + body.
+fn percent_tokens(s: &Section) -> HashSet<String> {
+    let re = Regex::new(r"%[A-Za-z][A-Za-z0-9]*").unwrap();
+    let hay = format!("{}\n{}", s.title, s.body);
+    re.find_iter(&hay).map(|m| m.as_str().to_lowercase()).collect()
+}
+
+/// Distinct `%block` tokens that OPEN an annotated ```orca block that also contains
+/// `opt` as a first-token line — the finest signal (same code block as the option).
+fn percent_in_option_block(body: &str, opt: &str) -> HashSet<String> {
+    let mut owners = HashSet::new();
+    let mut in_orca = false;
+    let mut block: Vec<String> = Vec::new();
+    let opt_l = opt.to_lowercase();
+    let scan = |block: &[String], owners: &mut HashSet<String>| {
+        let pcts: Vec<String> = block.iter().flat_map(|l| {
+            Regex::new(r"%[A-Za-z][A-Za-z0-9]*").unwrap()
+                .find_iter(l).map(|m| m.as_str().to_lowercase()).collect::<Vec<_>>()
+        }).collect();
+        let has_opt = block.iter().any(|l| {
+            l.trim().split_whitespace().next().map(|t| t.trim_end_matches(',').to_lowercase())
+                == Some(opt_l.clone())
+        });
+        if has_opt {
+            for p in pcts {
+                owners.insert(p);
+            }
+        }
+    };
+    for line in body.lines() {
+        let tl = line.trim_start();
+        if tl.starts_with("```") {
+            let lang = tl.trim_start_matches('`').trim();
+            if in_orca {
+                scan(&block, &mut owners);
+                block.clear();
+                in_orca = false;
+            } else if lang.eq_ignore_ascii_case("orca") {
+                in_orca = true;
+            }
+            continue;
+        }
+        if in_orca {
+            block.push(line.to_string());
+        }
+    }
+    owners
+}
+
+#[test]
+#[ignore]
+fn owner_signal_measure() {
+    let manual_dir = repo_root().join("resources/manual");
+    let version = corpus_version(&manual_dir);
+    let version_dir = manual_dir.join(&version);
+    if !version_dir.is_dir() {
+        eprintln!("skipping: no corpus at {}", version_dir.display());
+        return;
+    }
+    let mut leaves: Vec<(String, String)> = Vec::new();
+    collect_leaves(&version_dir, &version_dir, &mut leaves);
+    leaves.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut all: Vec<Section> = Vec::new();
+    for (file, text) in &leaves {
+        if let Ok(secs) = sections::sectionize(file, text) {
+            all.extend(secs);
+        }
+    }
+
+    // Rebuild the home-seed exactly as the generator does, keeping the SOURCE token
+    // per (section, token) so we can classify block-option targets.
+    let stop: HashSet<&str> = ["end", "End", "END"].into_iter().collect();
+    let app_simple: HashSet<String> =
+        APP_EMITTED.iter().filter(|(_, k)| *k == "!").map(|(t, _)| norm_kw(t)).collect();
+    let mut title_home: HashSet<String> = HashSet::new();
+    // (token, section_idx) for every home mapping.
+    let mut homes: Vec<(String, usize)> = Vec::new();
+    for (i, s) in all.iter().enumerate() {
+        if s.title == "List of Input Blocks" || s.title == "Simple Keyword Lines"
+            || s.file.starts_with("contents/appendix/")
+        {
+            continue;
+        }
+        let title = s.title.trim();
+        if !title.contains(char::is_whitespace)
+            && kw_token_ok(title) && !stop.contains(title) && looks_like_keyword_title(title)
+        {
+            title_home.insert(title.to_string());
+            homes.push((title.to_string(), i));
+        }
+        for t in orca_annotated_keywords(&s.body).into_iter().chain(table_first_keyword(&s.body)) {
+            if !stop.contains(t.as_str()) {
+                homes.push((t, i));
+            }
+        }
+    }
+    let type_of = |tok: &str| -> &'static str {
+        if tok.starts_with('%') { "block" }
+        else if app_simple.contains(&norm_kw(tok)) || title_home.contains(tok) { "simple" }
+        else { "block-option" }
+    };
+
+    // Classify each block-option TARGET (option × home section) by the direct signal.
+    let mut one = 0usize;      // exactly one literal %-token in the home section
+    let mut many = 0usize;     // several -> needs a rule
+    let mut none = 0usize;     // zero -> null
+    let mut many_block_resolves = 0usize; // of `many`, the same-```orca-block signal is unique
+    let mut sec_of: HashMap<usize, HashSet<String>> = HashMap::new();
+    let mut bo_sections: HashSet<usize> = HashSet::new();
+    for (tok, i) in &homes {
+        if type_of(tok) != "block-option" {
+            continue;
+        }
+        bo_sections.insert(*i);
+        let pts = sec_of.entry(*i).or_insert_with(|| percent_tokens(&all[*i])).clone();
+        match pts.len() {
+            0 => none += 1,
+            1 => one += 1,
+            _ => {
+                many += 1;
+                // finer signal: %-token(s) in the SAME ```orca block as the option
+                let inblk = percent_in_option_block(&all[*i].body, tok);
+                if inblk.len() == 1 {
+                    many_block_resolves += 1;
+                }
+            }
+        }
+    }
+    let total = one + many + none;
+
+    // Per distinct SECTION (what the prompt asked): how many %-tokens.
+    let mut sec_one = 0usize;
+    let mut sec_many = 0usize;
+    let mut sec_none = 0usize;
+    for i in &bo_sections {
+        match sec_of.entry(*i).or_insert_with(|| percent_tokens(&all[*i])).len() {
+            0 => sec_none += 1,
+            1 => sec_one += 1,
+            _ => sec_many += 1,
+        }
+    }
+
+    println!("\n{:=<72}", "");
+    println!("OWNER DIRECT-SIGNAL (literal %-token in the option's home section)");
+    println!("{:=<72}", "");
+    println!("\n[per block-option TARGET] total {total}");
+    println!("    exactly one %-token  -> owner DIRECT & unique: {one} ({:.1}%)", 100.0 * one as f64 / total as f64);
+    println!("    several %-tokens     -> needs a rule:          {many} ({:.1}%)", 100.0 * many as f64 / total as f64);
+    println!("        (of those, the same-```orca-block signal is UNIQUE: {many_block_resolves})");
+    println!("    zero %-tokens        -> null:                  {none} ({:.1}%)", 100.0 * none as f64 / total as f64);
+    println!("    direct-signal owner coverage (one + block-resolved many): {} ({:.1}%)",
+             one + many_block_resolves, 100.0 * (one + many_block_resolves) as f64 / total as f64);
+    println!("\n[per distinct SECTION] {} sections yielded a block-option", bo_sections.len());
+    println!("    one %-token: {sec_one} | several: {sec_many} | none: {sec_none}");
+    println!("\n    vs the STRUCTURAL proxy measured earlier: 62.0% owner / 38.0% null.");
+    println!("{:=<72}", "");
+}
+
+// --- Owner UNION + AGREEMENT measure (unit 4.4, Part C) ----------------------
+//
+//     cargo test owner_union_measure -- --ignored --nocapture
+//
+// Union of two independent derivations with provenance: TEXT (literal single
+// %-token in the home section) takes priority; STRUCTURAL (unique %-block of the
+// file, or unique deepest %-block ancestor) fills where text is silent; both
+// silent -> null (a value, like anchor_source 'undetermined'). The load-bearing
+// number is AGREEMENT on the intersection: if the two rarely disagree, the union
+// is sound and the structural claim already in the wiki holds; if they disagree
+// a lot, structural is unreliable and must be demoted.
+
+#[test]
+#[ignore]
+fn owner_union_measure() {
+    let manual_dir = repo_root().join("resources/manual");
+    let version = corpus_version(&manual_dir);
+    let version_dir = manual_dir.join(&version);
+    if !version_dir.is_dir() {
+        eprintln!("skipping: no corpus at {}", version_dir.display());
+        return;
+    }
+    let mut leaves: Vec<(String, String)> = Vec::new();
+    collect_leaves(&version_dir, &version_dir, &mut leaves);
+    leaves.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut all: Vec<Section> = Vec::new();
+    for (file, text) in &leaves {
+        if let Ok(secs) = sections::sectionize(file, text) {
+            all.extend(secs);
+        }
+    }
+
+    let stop: HashSet<&str> = ["end", "End", "END"].into_iter().collect();
+    let app_simple: HashSet<String> =
+        APP_EMITTED.iter().filter(|(_, k)| *k == "!").map(|(t, _)| norm_kw(t)).collect();
+    let mut title_home: HashSet<String> = HashSet::new();
+    // dedup (token, section) so counts match the generated file's target set.
+    let mut homes: HashSet<(String, usize)> = HashSet::new();
+    for (i, s) in all.iter().enumerate() {
+        if s.title == "List of Input Blocks" || s.title == "Simple Keyword Lines"
+            || s.file.starts_with("contents/appendix/")
+        {
+            continue;
+        }
+        let title = s.title.trim();
+        if !title.contains(char::is_whitespace)
+            && kw_token_ok(title) && !stop.contains(title) && looks_like_keyword_title(title)
+        {
+            title_home.insert(title.to_string());
+            homes.insert((title.to_string(), i));
+        }
+        for t in orca_annotated_keywords(&s.body).into_iter().chain(table_first_keyword(&s.body)) {
+            if !stop.contains(t.as_str()) {
+                homes.insert((t, i));
+            }
+        }
+    }
+    let type_of = |tok: &str| -> &'static str {
+        if tok.starts_with('%') { "block" }
+        else if app_simple.contains(&norm_kw(tok)) || title_home.contains(tok) { "simple" }
+        else { "block-option" }
+    };
+
+    // Structural derivation inputs: %-block home sections per file (lowercased).
+    let path_of = |s: &Section| -> Vec<String> {
+        let mut p = s.breadcrumb.clone();
+        p.push(s.title.clone());
+        p
+    };
+    let mut block_sec: HashMap<String, Vec<(Vec<String>, String)>> = HashMap::new();
+    let mut blocks_in_file: HashMap<String, HashSet<String>> = HashMap::new();
+    for (tok, i) in &homes {
+        if type_of(tok) == "block" {
+            let s = &all[*i];
+            block_sec.entry(s.file.clone()).or_default().push((path_of(s), tok.to_lowercase()));
+            blocks_in_file.entry(s.file.clone()).or_default().insert(tok.to_lowercase());
+        }
+    }
+    let struct_owner = |idx: usize| -> Option<String> {
+        let s = &all[idx];
+        let dblocks = blocks_in_file.get(&s.file)?;
+        if dblocks.len() == 1 {
+            return dblocks.iter().next().cloned();
+        }
+        let p = path_of(s);
+        let cands = block_sec.get(&s.file)?;
+        let mut anc: Vec<&(Vec<String>, String)> =
+            cands.iter().filter(|(bp, _)| bp.len() <= p.len() && p[..bp.len()] == bp[..]).collect();
+        anc.sort_by_key(|(bp, _)| bp.len());
+        let deepest = anc.last().map(|(bp, _)| bp.len())?;
+        let top: HashSet<&String> =
+            anc.iter().filter(|(bp, _)| bp.len() == deepest).map(|(_, bn)| bn).collect();
+        if top.len() == 1 {
+            Some(top.into_iter().next().unwrap().clone())
+        } else {
+            None
+        }
+    };
+    let text_owner = |idx: usize| -> Option<String> {
+        let pts = percent_tokens(&all[idx]);
+        if pts.len() == 1 { pts.into_iter().next() } else { None }
+    };
+
+    let mut total = 0usize;
+    let (mut has_text, mut has_struct, mut has_union) = (0usize, 0usize, 0usize);
+    let (mut both, mut agree) = (0usize, 0usize);
+    let (mut src_text, mut src_struct, mut src_null) = (0usize, 0usize, 0usize);
+    let mut disagreements: Vec<String> = Vec::new();
+    for (tok, i) in &homes {
+        if type_of(tok) != "block-option" {
+            continue;
+        }
+        total += 1;
+        let t = text_owner(*i);
+        let st = struct_owner(*i);
+        if t.is_some() { has_text += 1; }
+        if st.is_some() { has_struct += 1; }
+        if t.is_some() || st.is_some() { has_union += 1; }
+        if let (Some(tt), Some(ss)) = (&t, &st) {
+            both += 1;
+            if tt == ss {
+                agree += 1;
+            } else if disagreements.len() < 10 {
+                disagreements.push(format!("{:<16} @ {}#{}  text={} struct={}",
+                    tok, all[*i].file, all[*i].title, tt, ss));
+            }
+        }
+        match (t.is_some(), st.is_some()) {
+            (true, _) => src_text += 1,       // text priority
+            (false, true) => src_struct += 1,
+            (false, false) => src_null += 1,
+        }
+    }
+
+    println!("\n{:=<72}", "");
+    println!("OWNER UNION + AGREEMENT — {total} block-option targets (deduped)");
+    println!("{:=<72}", "");
+    println!("\n[1] COVERAGE");
+    println!("    text  resolves: {has_text} ({:.1}%)", pct(has_text, total));
+    println!("    struct resolves: {has_struct} ({:.1}%)", pct(has_struct, total));
+    println!("    UNION resolves:  {has_union} ({:.1}%)   null: {} ({:.1}%)",
+             pct(has_union, total), total - has_union, pct(total - has_union, total));
+    println!("\n[2] AGREEMENT on the intersection (THE number)");
+    println!("    both resolve: {both} | agree: {agree} ({:.1}%) | disagree: {}",
+             pct(agree, both.max(1)), both - agree);
+    for d in &disagreements {
+        println!("        {d}");
+    }
+    println!("\n[3] owner_source distribution (text priority)");
+    println!("    text: {src_text} ({:.1}%) | structural: {src_struct} ({:.1}%) | null: {src_null} ({:.1}%)",
+             pct(src_text, total), pct(src_struct, total), pct(src_null, total));
+    println!("{:=<72}", "");
+}
+
+fn pct(n: usize, d: usize) -> f64 {
+    100.0 * n as f64 / d.max(1) as f64
 }
