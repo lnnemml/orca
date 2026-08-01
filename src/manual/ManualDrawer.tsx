@@ -1,42 +1,48 @@
-//! A side drawer that shows a manual section opened from an editor hover — WITHOUT
-//! pulling the author out of the editor (task 4.4). It reuses the SAME `SectionView`
-//! as `ManualScreen` (no second copy), and resolves the hover's descriptor to a DB row
-//! through `resolve_manual_section` (the keywords.json→DB bridge, with a version check).
+//! A side drawer that shows a manual page opened from an editor hover — WITHOUT pulling
+//! the author out of the editor (task 4.4). It renders the SAME `PageView` as
+//! `ManualScreen` (one display component, no second copy). The hover's descriptor is
+//! resolved to a DB row through `resolve_manual_section` (the keywords.json→DB bridge,
+//! with a version check); the drawer then loads that row's FULL PAGE and scrolls to /
+//! highlights the resolved section.
 
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
-import { SectionView } from "./SectionView";
+import { PageView } from "./PageView";
 import { orcaMapVersion, type SectionDescriptor } from "./keyword-lookup";
 import { setManualOpenHandler } from "../editor/orca-hover";
-import type { ManualSection } from "./types";
+import type { ManualPage, ManualSection } from "./types";
 
 export function ManualDrawer() {
-  const [section, setSection] = useState<ManualSection | null>(null);
+  const [page, setPage] = useState<ManualPage | null>(null);
+  const [targetId, setTargetId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     setManualOpenHandler(async (d: SectionDescriptor) => {
       setError(null);
       try {
-        setSection(
-          await invoke<ManualSection>("resolve_manual_section", {
-            file: d.file,
-            breadcrumb: d.breadcrumb,
-            title: d.title,
-            nth: d.nth,
-            mapVersion: orcaMapVersion, // → map_version; a stale map is reported, not resolved
-          }),
-        );
+        // 1. keywords.json descriptor → the exact section (file + id), version-checked.
+        const section = await invoke<ManualSection>("resolve_manual_section", {
+          file: d.file,
+          breadcrumb: d.breadcrumb,
+          title: d.title,
+          nth: d.nth,
+          mapVersion: orcaMapVersion, // → map_version; a stale map is reported, not resolved
+        });
+        // 2. Its full page — the display unit (a section indexes, a page shows).
+        setPage(await invoke<ManualPage>("get_manual_page", { file: section.file }));
+        setTargetId(section.id);
       } catch (e) {
         setError(String(e));
-        setSection(null);
+        setPage(null);
+        setTargetId(null);
       }
     });
     return () => setManualOpenHandler(null);
   }, []);
 
-  if (!section && !error) return null;
+  if (!page && !error) return null;
   return (
     <aside className="manual-drawer">
       <div className="manual-drawer-head">
@@ -44,7 +50,8 @@ export function ManualDrawer() {
         <button
           className="btn btn-sm"
           onClick={() => {
-            setSection(null);
+            setPage(null);
+            setTargetId(null);
             setError(null);
           }}
         >
@@ -54,8 +61,8 @@ export function ManualDrawer() {
       <div className="manual-drawer-body">
         {error ? (
           <div className="banner err">{error}</div>
-        ) : section ? (
-          <SectionView section={section} />
+        ) : page ? (
+          <PageView page={page} targetSectionId={targetId} />
         ) : null}
       </div>
     </aside>

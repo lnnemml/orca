@@ -406,6 +406,132 @@ pub fn resolve_descriptor(
     })
 }
 
+/// One section's line-bounds within its file — enough for the frontend to scroll to and
+/// highlight it inside the full page. The body itself is NOT here: the page carries the
+/// whole file text, and a section is a line range into it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PageSection {
+    pub id: i64,
+    pub level: u8,
+    pub title: String,
+    pub anchor: Option<String>,
+    pub line_start: usize,
+    pub line_end: usize,
+}
+
+/// A full manual page: the file's complete text (read from disk) plus the line-bounds of
+/// every section indexed from it, in line order. The display unit — a section indexes,
+/// a page shows.
+#[derive(Debug, Clone, Serialize)]
+pub struct ManualPage {
+    pub file: String,
+    pub orca_version: String,
+    pub text: String,
+    pub sections: Vec<PageSection>,
+}
+
+/// Read the full text of `file` off disk and pair it with the line-bounds of every
+/// section the index holds for it. **Source of truth is the FILE ON DISK** — not the
+/// stored `body_md` — because the preamble (lines before the first heading) is verified
+/// by the sectioner's coverage check but never stored, and the heading lines cannot be
+/// reproduced byte-for-byte from `title`+`level`.
+///
+/// **Post-condition (rule #9, in our terms):** the file read now must match what was
+/// indexed. Checked the cheapest sufficient way — the file's line count equals
+/// `max(line_end)+1` over its sections, and each section's `line_start` line begins with
+/// exactly `level` `#` and contains its `title`. A mismatch (the corpus drifted on disk
+/// while the index is stale — a refresh, a partial reload) is an **explicit error**, not
+/// a silent page whose scroll target lands on the wrong section.
+pub fn get_page(conn: &Connection, manual_root: &Path, file: &str) -> Result<ManualPage, AppError> {
+    // Serve the most-recently-built version's index (the one `manual_index_status` reports).
+    let version = index_status(conn)?
+        .ok_or_else(|| AppError::NotFound("manual index not built".into()))?
+        .orca_version;
+
+    let mut stmt = conn.prepare(
+        "SELECT id, level, title, anchor, line_start, line_end
+         FROM manual_sections
+         WHERE orca_version = ?1 AND file = ?2
+         ORDER BY line_start",
+    )?;
+    let sections: Vec<PageSection> = stmt
+        .query_map(params![version, file], |r| {
+            Ok(PageSection {
+                id: r.get(0)?,
+                level: r.get::<_, i64>(1)? as u8,
+                title: r.get(2)?,
+                anchor: r.get(3)?,
+                line_start: r.get::<_, i64>(4)? as usize,
+                line_end: r.get::<_, i64>(5)? as usize,
+            })
+        })?
+        .filter_map(Result::ok)
+        .collect();
+    if sections.is_empty() {
+        return Err(AppError::NotFound(format!(
+            "no indexed sections for manual file {file}"
+        )));
+    }
+
+    let path = manual_root.join(&version).join(format!("{file}.md.txt"));
+    let text = std::fs::read_to_string(&path)
+        .map_err(|e| AppError::NotFound(format!("manual page {} not readable: {e}", path.display())))?;
+
+    verify_page_matches_index(file, &text, &sections)?;
+
+    Ok(ManualPage {
+        file: file.to_string(),
+        orca_version: version,
+        text,
+        sections,
+    })
+}
+
+/// The get_page post-condition, factored out so it is testable without the DB or the
+/// filesystem. Splits `text` the SAME way the sectioner did (`str::lines`), so line
+/// indices align. Any drift → an `Internal` error naming the file and the mismatch.
+fn verify_page_matches_index(
+    file: &str,
+    text: &str,
+    sections: &[PageSection],
+) -> Result<(), AppError> {
+    let lines: Vec<&str> = text.lines().collect();
+    // (1) the file's line count == max(line_end)+1 over its sections. Because the last
+    // section's line_end is the file's last line index (the sectioner's tiling), this
+    // catches truncation or growth on disk.
+    let max_end = sections.iter().map(|s| s.line_end).max().unwrap_or(0);
+    if lines.len() != max_end + 1 {
+        return Err(AppError::Internal(format!(
+            "page on disk does not match the index for {file}: {} lines on disk, index \
+             expects {} (max line_end + 1); rebuild the index",
+            lines.len(),
+            max_end + 1
+        )));
+    }
+    // (2) each section's heading line is where and what the index says it is: exactly
+    // `level` leading `#`, and it contains the stored `title`.
+    for s in sections {
+        let line = lines.get(s.line_start).ok_or_else(|| {
+            AppError::Internal(format!(
+                "page on disk does not match the index for {file}: section {} line_start {} \
+                 out of range ({} lines); rebuild the index",
+                s.id,
+                s.line_start,
+                lines.len()
+            ))
+        })?;
+        let hashes = line.chars().take_while(|&c| c == '#').count();
+        if hashes != s.level as usize || !line.contains(&s.title) {
+            return Err(AppError::Internal(format!(
+                "page on disk does not match the index for {file}: line {} is {line:?}, \
+                 expected a level-{} heading containing {:?}; rebuild the index",
+                s.line_start, s.level, s.title
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Fetch one section in full for display. A missing id is a `NotFound` error, never an
 /// empty section (the caller must be able to tell "no such section" from "empty body").
 pub fn get_section(conn: &Connection, id: i64) -> Result<ManualSection, AppError> {
@@ -533,5 +659,106 @@ mod tests {
         assert_eq!(to_fts_match("RIJCOSX"), "\"rijcosx\"");
         assert_eq!(to_fts_match("how do I set up CPCM for water"), "\"cpcm\" OR \"water\"");
         assert_eq!(to_fts_match(""), "");
+    }
+
+    // ── Page display (a section indexes, a page shows) ──────────────────────────
+
+    /// A small corpus file whose sectioner output we know: a preamble, then three
+    /// headings at levels 1/2/3. Line indices below are 0-based into `.lines()`.
+    const PAGE: &str = "\
+# Top
+
+preamble prose
+
+## Alpha
+
+alpha body
+
+### Alpha child
+
+child body
+
+## Beta
+
+beta body";
+
+    fn page_sections() -> Vec<PageSection> {
+        // Derived by hand from PAGE, matching what `sectionize` produces:
+        //  0:# Top  1:  2:preamble  3:  4:## Alpha  5:  6:alpha body  7:
+        //  8:### Alpha child  9:  10:child body  11:  12:## Beta  13:  14:beta body
+        vec![
+            PageSection { id: 1, level: 1, title: "Top".into(), anchor: None, line_start: 0, line_end: 3 },
+            PageSection { id: 2, level: 2, title: "Alpha".into(), anchor: None, line_start: 4, line_end: 7 },
+            PageSection { id: 3, level: 3, title: "Alpha child".into(), anchor: None, line_start: 8, line_end: 11 },
+            PageSection { id: 4, level: 2, title: "Beta".into(), anchor: None, line_start: 12, line_end: 14 },
+        ]
+    }
+
+    #[test]
+    fn page_post_condition_accepts_a_matching_file() {
+        // Independent confidence the hand-derived bounds are right: sectionize agrees.
+        let secs = sections::sectionize("page", PAGE).unwrap();
+        let derived: Vec<PageSection> = secs
+            .iter()
+            .enumerate()
+            .map(|(i, s)| PageSection {
+                id: i as i64 + 1,
+                level: s.level,
+                title: s.title.clone(),
+                anchor: None,
+                line_start: s.line_start,
+                line_end: s.line_end,
+            })
+            .collect();
+        assert_eq!(derived, page_sections());
+        verify_page_matches_index("page", PAGE, &page_sections()).unwrap();
+    }
+
+    #[test]
+    fn page_post_condition_catches_a_line_count_drift() {
+        // The corpus grew on disk (an extra trailing line) but the index is stale.
+        let grown = format!("{PAGE}\nan extra line the index never saw");
+        let err = verify_page_matches_index("page", &grown, &page_sections()).unwrap_err();
+        assert!(matches!(err, AppError::Internal(_)));
+        assert!(err.to_string().contains("does not match the index"));
+    }
+
+    #[test]
+    fn page_post_condition_catches_a_shifted_heading() {
+        // Same line count, but a heading moved/changed under a stale index: line 4 is no
+        // longer "## Alpha". A silent page would scroll the wrong place — this must fail.
+        let shifted = PAGE.replace("## Alpha\n", "## Gamma\n");
+        let err = verify_page_matches_index("page", &shifted, &page_sections()).unwrap_err();
+        assert!(matches!(err, AppError::Internal(_)));
+        assert!(err.to_string().contains("does not match the index"));
+    }
+
+    #[test]
+    fn get_page_round_trips_a_temp_corpus() {
+        use std::io::Write;
+        // A throwaway corpus on disk: <tmp>/6.1/contents/demo.md.txt.
+        let tmp = std::env::temp_dir().join(format!("orca_page_test_{}", std::process::id()));
+        let vdir = tmp.join("6.1").join("contents");
+        std::fs::create_dir_all(&vdir).unwrap();
+        let mut f = std::fs::File::create(vdir.join("demo.md.txt")).unwrap();
+        f.write_all(PAGE.as_bytes()).unwrap();
+        drop(f);
+
+        let mut conn = mem_db();
+        // Full ingest path writes provenance, so index_status/get_page can resolve.
+        build_index(&mut conn, &tmp, "6.1").unwrap();
+
+        let page = get_page(&conn, &tmp, "contents/demo").unwrap();
+        assert_eq!(page.orca_version, "6.1");
+        assert_eq!(page.text, PAGE); // the FILE on disk, byte-for-byte
+        let titles: Vec<&str> = page.sections.iter().map(|s| s.title.as_str()).collect();
+        assert_eq!(titles, ["Top", "Alpha", "Alpha child", "Beta"]);
+        // Sections are in line order and the last one's line_end is the file's last line.
+        assert_eq!(page.sections.last().unwrap().line_end, PAGE.lines().count() - 1);
+
+        // A file the index has no sections for is NotFound, not an empty page.
+        assert!(matches!(get_page(&conn, &tmp, "contents/nope"), Err(AppError::NotFound(_))));
+
+        std::fs::remove_dir_all(&tmp).ok();
     }
 }

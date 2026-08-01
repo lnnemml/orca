@@ -374,13 +374,16 @@ wherever an imported structure is first shown and is carried forward independent
       conservation), and the v9 schema (`manual_sections` + external-content `manual_fts` +
       provenance) with `build_manual_index` ingest (byte-for-byte read-back post-conditions). 1586
       sections, 1068 verified anchors.
-- [x] Manual panel: full-text search with keyword highlighting, section rendering. Backend (4.3):
+- [x] Manual panel: full-text search with keyword highlighting, **full-page rendering**. Backend (4.3):
       `search_manual` → `bm25`-ranked hits; **UI (4.4):** `ManualScreen` (debounced search, results as
-      breadcrumb › title + highlighted snippet) + `get_manual_section` → a standalone `SectionView`
-      (drawer-ready for the hover unit). Render is **minimal + loss-free** — fences as monospace, all
-      else verbatim; a preservation test asserts every non-whitespace char of `body_md` survives.
-      Snippet markers moved off `[`/`]` (1905/1903 in the corpus) to PUA codepoints (0). Verified in
-      the real WebKitGTK window. See [manual-index.md](wiki/modules/manual-index.md).
+      breadcrumb › title + highlighted snippet). **A section indexes, a page shows** — a result opens the
+      whole page via `get_manual_page` and scrolls to / highlights the found section (`PageView`, the one
+      display component, shared with the hover drawer; `SectionView` folded in). Render is **minimal +
+      loss-free** — fences as monospace, all else verbatim; a preservation test asserts every
+      non-whitespace char of `body_md` survives. Page reads the **file on disk** with a post-condition
+      that disk matches the index (line count + heading identity), so a stale corpus fails loudly.
+      `manual_root()` debt closed (source + bundled). Snippet markers moved off `[`/`]` (1905/1903 in the
+      corpus) to PUA codepoints (0). See [manual-index.md](wiki/modules/manual-index.md).
 - [~] `keywords.json`: input keywords (`!` line + `%` blocks) → manual sections; **seeded** from the
       manual's own native "Keywords" sections + genindex, then curated on top (ADR-013 narrows
       ADR-006's "by hand"); grow it organically, starting with everything the template library uses.
@@ -398,7 +401,7 @@ wherever an imported structure is first shown and is carried forward independent
       `Constraints`-in-%geom (c). Table + denominator in
       [manual-keywords.md](wiki/modules/manual-keywords.md) and `orca/manual-sources.md` Part I.
 - [x] Monaco hover provider: hover a keyword → keyword/type/owning-block + Open → a **side drawer**
-      showing the section (reusing `SectionView`, author stays in the editor). Fed by `keywords.json`,
+      showing the section's page (reusing `PageView`, author stays in the editor). Fed by `keywords.json`,
       **NOT** FTS; qualified type/block-aware lookup (`enclosingBlock` + `wordPattern`), `aliases[]`
       consulted. **On a miss the hover does not appear at all** (silence), never a bare-name/FTS
       fall-back — hovering `%maxcore` shows nothing (rule #11: silence beats plausible-but-wrong).

@@ -8,13 +8,42 @@ use tauri::State;
 
 use crate::commands::settings::DbState;
 use crate::error::AppError;
-use crate::manual::index::{self, IngestReport, ManualHit, ManualSection, ManualStatus};
+use crate::manual::index::{self, IngestReport, ManualHit, ManualPage, ManualSection, ManualStatus};
 
-/// The manual corpus root. Author-run indexing reads the repo's `resources/manual/`
-/// (the same tree the fetch script writes); bundled-resource resolution for a shipped
-/// app is a later concern (4.4+).
-fn manual_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../resources/manual")
+/// Resolve the manual corpus root honestly for BOTH the source and the bundled run —
+/// no longer a debt, because page display (below) reads the corpus off disk, not just
+/// the one-off indexer.
+///
+/// - **Source/dev run:** the repo tree the fetch script writes,
+///   `CARGO_MANIFEST_DIR/../resources/manual`. That path is baked at compile time, so on
+///   a bundled app running on another machine it does not exist — which is exactly the
+///   discriminator: if it is on disk, we are running from source.
+/// - **Bundled run:** the corpus lives under the **user data dir**, alongside the SQLite
+///   DB it is indexed into (`<data_dir>/orcastudio/manual`, the same `dirs::data_dir()`
+///   base `lib.rs` uses for the DB). **Not** an app-resource dir: the ORCA manual is
+///   never bundled or redistributed (domain rule #7), so it cannot ship inside the app
+///   bundle — the user fetches it locally, and it belongs next to their data.
+///
+/// If neither resolves, this is an explicit error naming **where it looked**, never an
+/// empty corpus that reads downstream as "no sections".
+fn manual_root() -> Result<PathBuf, AppError> {
+    let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../resources/manual");
+    if src.is_dir() {
+        return Ok(src);
+    }
+    let bundled = dirs::data_dir()
+        .ok_or_else(|| AppError::Internal("could not determine user data directory".into()))?
+        .join("orcastudio")
+        .join("manual");
+    if bundled.is_dir() {
+        return Ok(bundled);
+    }
+    Err(AppError::NotFound(format!(
+        "manual corpus not found. Looked in {} (source run) and {} (bundled run). \
+         Fetch it with scripts/fetch-manual.py.",
+        src.display(),
+        bundled.display()
+    )))
 }
 
 fn corpus_version(root: &std::path::Path) -> String {
@@ -32,10 +61,25 @@ pub fn build_manual_index(
     db: State<'_, DbState>,
     version: Option<String>,
 ) -> Result<IngestReport, AppError> {
-    let root = manual_root();
+    let root = manual_root()?;
     let version = version.unwrap_or_else(|| corpus_version(&root));
     let mut conn = db.lock()?;
     index::build_index(&mut conn, &root, &version)
+}
+
+/// The full text of one manual file plus the line-bounds of every section indexed from
+/// it (id, level, title, anchor, line_start, line_end), in line order — so the panel can
+/// scroll to and highlight a section without a second request. **The page is read from
+/// the FILE ON DISK, not rebuilt from stored sections** (the preamble and the exact
+/// heading lines are not byte-reproducible from the DB). A post-condition (rule #9)
+/// inside `get_page` asserts the file on disk matches the index and fails loudly on a
+/// drift ("page on disk does not match the index; rebuild") rather than showing a
+/// plausible-but-wrong page.
+#[tauri::command]
+pub fn get_manual_page(db: State<'_, DbState>, file: String) -> Result<ManualPage, AppError> {
+    let root = manual_root()?;
+    let conn = db.lock()?;
+    index::get_page(&conn, &root, &file)
 }
 
 /// Full-text search over the manual index. Empty query → empty result.

@@ -2444,3 +2444,57 @@ fn manual_bang_vocabulary() {
     }
     println!("{:=<72}", "");
 }
+
+/// Measurement for the "a section indexes, a page shows" change: how much bigger the
+/// display unit (a whole page) is than the indexed unit (a section), and how many pages
+/// need a table of contents. Prints; not a pass/fail gate.
+///
+///     cargo test page_size_measure -- --ignored --nocapture
+#[test]
+#[ignore]
+fn page_size_measure() {
+    let manual_dir = repo_root().join("resources/manual");
+    let version = corpus_version(&manual_dir);
+    let version_dir = manual_dir.join(&version);
+    if !version_dir.is_dir() {
+        eprintln!("skipping: no corpus at {}", version_dir.display());
+        return;
+    }
+    let mut leaves: Vec<(String, String)> = Vec::new();
+    collect_leaves(&version_dir, &version_dir, &mut leaves);
+    assert!(!leaves.is_empty());
+
+    let mut page_bytes: Vec<usize> = Vec::new(); // one per file (the display unit)
+    let mut section_bytes: Vec<usize> = Vec::new(); // one per section body (the index unit)
+    let mut per_page_sections: Vec<usize> = Vec::new();
+    let mut pages_over_50 = 0usize;
+    for (file, text) in &leaves {
+        page_bytes.push(text.len());
+        let secs = sections::sectionize(file, text).unwrap();
+        per_page_sections.push(secs.len());
+        if secs.len() > 50 {
+            pages_over_50 += 1;
+        }
+        for s in &secs {
+            section_bytes.push(s.body.len());
+        }
+    }
+    page_bytes.sort_unstable();
+    section_bytes.sort_unstable();
+    per_page_sections.sort_unstable();
+
+    let stat = |v: &[usize]| (percentile(v, 0.5), percentile(v, 0.95), *v.last().unwrap());
+    let (pm, p95, pmax) = stat(&page_bytes);
+    let (sm, s95, smax) = stat(&section_bytes);
+
+    println!("\n{:=<72}", "");
+    println!("ORCA {version} — PAGE vs SECTION size ({} pages, {} sections)", leaves.len(), section_bytes.len());
+    println!("{:=<72}", "");
+    println!("  PAGE bytes (the new display unit):    median {pm} · p95 {p95} · max {pmax}");
+    println!("  SECTION bytes (the index unit):       median {sm} · p95 {s95} · max {smax}");
+    println!("  display unit grew  ~{:.0}x at the median, ~{:.0}x at p95",
+             pm as f64 / sm.max(1) as f64, p95 as f64 / s95.max(1) as f64);
+    println!("  sections/page: median {} · max {} · pages with >50 (ToC mandatory): {}",
+             percentile(&per_page_sections, 0.5), per_page_sections.last().unwrap(), pages_over_50);
+    println!("{:=<72}", "");
+}

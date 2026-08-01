@@ -79,13 +79,57 @@ label Sphinx did not register — the lone real gap.)
   `[link](…)`/MyST role), the PUA pair **0**, so the frontend can split on them for `<mark>` without
   phantom highlights.
 - **`get_manual_section(id)`** command (4.4) → `ManualSection { id, file, level, title, breadcrumb,
-  anchor, anchor_source, body_md }` — the full body the panel/`SectionView` renders (search returns
-  only a snippet). A missing id is a **`NotFound` error, not an empty section** (the caller must tell
-  "no such section" from "empty body"). **`manual_index_status()`** → `Option<ManualStatus>` (null when
-  no rows) so the panel shows a **Build-index** state, not a mis-readable empty list.
-- **Debt (named — `manual_root()`):** the corpus path is `CARGO_MANIFEST_DIR/../resources/manual`, so
-  `build_manual_index` only works from a **source** run. Resolving a bundled app's corpus path (a Tauri
-  resource dir) is a later concern, not this unit's.
+  anchor, anchor_source, body_md }` — one section's full body. A missing id is a **`NotFound` error, not
+  an empty section** (the caller must tell "no such section" from "empty body"). Still the resolve
+  target of the hover→drawer bridge; the *display* surfaces now open a whole page (below).
+  **`manual_index_status()`** → `Option<ManualStatus>` (null when no rows) so the panel shows a
+  **Build-index** state, not a mis-readable empty list.
+- **`get_manual_page(file)`** command → `ManualPage { file, orca_version, text, sections:
+  Vec<PageSection{ id, level, title, anchor, line_start, line_end }> }` — the full file text plus every
+  section's line-bounds in line order, so the frontend scrolls to and highlights a section without a
+  second request. See "A section indexes, a page shows" below.
+
+### A section indexes, a page shows
+The section is the right unit for **search** (fine granularity → bm25 hits) but the wrong unit for
+**reading** (the author, after real use, could not see *why* a keyword sat where it did — no
+surrounding context). The two tasks have opposite optima; the median body of **1330 B** and the 27
+empty navigational sections were symptoms of a unit stretched across both. So the surfaces split:
+**search stays section-grained; the result opens the whole page** and scrolls to the found section.
+The sectioner is not devalued — it still supplies search granularity; it just stops being the display
+screen.
+
+- **Source of the page is the FILE ON DISK, not the stored sections.** Two measured reasons it cannot
+  be rebuilt from the DB: the **preamble** (lines before the first heading) is checked by the
+  sectioner's coverage post-condition but **never stored** as a section; and the heading lines would
+  have to be reconstructed from `title`+`level`, which is not byte-identical to the source. The page
+  reads `manual_root/<version>/<file>.md.txt`, split the same way the sectioner split it (`str::lines`),
+  so `line_start`/`line_end` align.
+- **Post-condition (rule #9), the load-bearing part.** The page is read from disk but the bounds come
+  from the DB — if the corpus drifted (a refresh to a new ORCA version, a partial reload) while the
+  index is stale, the panel would show one thing and search would find another, and `line_start` would
+  point at the wrong section — an **invisible** divergence, both halves plausible. So `get_page`
+  re-derives the match in our terms before returning: the file's **line count == `max(line_end)+1`**
+  over its sections (the last section's `line_end` is the file's last line, by the sectioner's tiling),
+  and **each section's `line_start` line begins with exactly `level` `#` and contains its `title`**. A
+  mismatch is an **explicit `Internal` error** ("page on disk does not match the index; rebuild"), never
+  a silent wrong page (`verify_page_matches_index`, unit-tested three ways: matching file passes, a
+  line-count drift fails, a shifted heading fails).
+- **Why not a per-file hash in the DB.** A hash column would be stronger (it also catches body edits
+  that leave line count and headings intact) but needs a schema migration. The corpus is immutable by
+  rule; the realistic drift is a version refresh or partial reload, which moves line counts and headings
+  and **is** caught by the two cheap checks above. So no hash and no migration — the check is sufficient
+  for the failure it guards. (`corpus_hash` in `manual_provenance` is computed *from the sections*
+  (`index.rs`), i.e. it attests the **indexed** state, not the current disk — which is exactly why it
+  cannot serve as the freshness check here.)
+
+- **Corpus path — the `manual_root()` debt is closed** (was: `CARGO_MANIFEST_DIR/../resources/manual`,
+  source-only). Now resolved honestly for both runs, because page display reads the corpus off disk, not
+  just the one-off indexer: a **source/dev run** uses the repo tree (the compile-time `CARGO_MANIFEST_DIR`
+  path — absent on a bundled app elsewhere, which is the discriminator); a **bundled run** uses
+  `<data_dir>/orcastudio/manual` (the same `dirs::data_dir()` base `lib.rs` uses for the SQLite DB).
+  **Not** an app-resource dir — the ORCA manual is never bundled/redistributed (domain rule #7), so it
+  cannot ship in the app bundle; the user fetches it locally and it belongs next to their data. Neither
+  resolving → an explicit error **naming where it looked**, not an empty corpus.
 
 **Why Rust, not the sidecar:** ADR-012's rule (text-to-structure without a chemistry library → Rust)
 plus the sidecar's own "stateless, all persistence is Rust-owned SQLite" invariant, plus the two-
@@ -118,9 +162,11 @@ template library → solvation → job types → %blocks. Lives in repo (our own
 content).
 
 ## UI integration
-- Search panel: **built (4.4)** — `ManualScreen` + a standalone `SectionView` (drawer-ready for the
-  hover unit). Loss-free render (fences monospace, everything else verbatim; a preservation test
-  asserts no char of `body_md` is dropped). See [frontend.md](frontend.md) "Manual panel".
+- Search panel: **built (4.4)** — `ManualScreen`; a result opens the whole page via `get_manual_page`
+  and scrolls to the found section. The one display component is `PageView` (shared with the hover
+  drawer — no second copy). Loss-free render (fences monospace, everything else verbatim; a
+  preservation test asserts no char of `body_md` is dropped). See [frontend.md](frontend.md) "Manual
+  panel".
 - Monaco hover provider: tokenize `!` line and `%block` names → keywords.json lookup.
 - "Explain with Claude" (optional): POST keyword + current .inp + manual excerpt to
   Anthropic API with the user's key from settings (the one sanctioned extra network path).

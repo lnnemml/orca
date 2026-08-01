@@ -1,13 +1,13 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
-import { SectionView } from "../manual/SectionView";
+import { PageView } from "../manual/PageView";
 import {
   SNIP_OPEN,
   SNIP_CLOSE,
   type IngestReport,
   type ManualHit,
-  type ManualSection,
+  type ManualPage,
   type ManualStatus,
 } from "../manual/types";
 
@@ -33,7 +33,10 @@ export function ManualScreen() {
 
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<ManualHit[]>([]);
-  const [selected, setSelected] = useState<ManualSection | null>(null);
+  // A search result opens the FULL PAGE; `targetId` is the hit's section, scrolled to
+  // and highlighted inside it — so the reader sees where the match came from, in context.
+  const [page, setPage] = useState<ManualPage | null>(null);
+  const [targetId, setTargetId] = useState<number | null>(null);
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -84,9 +87,10 @@ export function ManualScreen() {
     };
   }, [query, status]);
 
-  const openSection = useCallback(async (id: number) => {
+  const openHit = useCallback(async (hit: ManualHit) => {
     try {
-      setSelected(await invoke<ManualSection>("get_manual_section", { id }));
+      setPage(await invoke<ManualPage>("get_manual_page", { file: hit.file }));
+      setTargetId(hit.id);
     } catch (e) {
       setError(String(e));
     }
@@ -149,8 +153,8 @@ export function ManualScreen() {
             hits.map((h) => (
               <button
                 key={h.id}
-                className={"manual-result" + (selected?.id === h.id ? " active" : "")}
-                onClick={() => openSection(h.id)}
+                className={"manual-result" + (targetId === h.id ? " active" : "")}
+                onClick={() => openHit(h)}
               >
                 <div className="manual-result-crumb mono">
                   {h.breadcrumb.length ? h.breadcrumb.join(" › ") + " › " : ""}
@@ -166,10 +170,10 @@ export function ManualScreen() {
       </div>
 
       <div className="manual-view-col">
-        {selected ? (
-          <SectionView section={selected} />
+        {page ? (
+          <PageView page={page} targetSectionId={targetId} />
         ) : (
-          <div className="empty">Select a result to read the full section.</div>
+          <div className="empty">Select a result to read the full page.</div>
         )}
       </div>
     </div>

@@ -11,7 +11,7 @@ export interface ManualHit {
   rank: number;
 }
 
-/** A full section for display — everything `SectionView` needs. */
+/** One full section (the hover→drawer resolve target; the display surfaces open a page). */
 export interface ManualSection {
   id: number;
   file: string;
@@ -21,6 +21,30 @@ export interface ManualSection {
   anchor: string | null;
   anchor_source: string;
   body_md: string;
+}
+
+/**
+ * One section's line-bounds within its page — enough to scroll to and highlight it in
+ * the full file text (the body is not here; the page carries the whole text).
+ */
+export interface PageSection {
+  id: number;
+  level: number;
+  title: string;
+  anchor: string | null;
+  line_start: number;
+  line_end: number;
+}
+
+/**
+ * A full manual page: the file's complete text (read from disk) plus every section's
+ * line-bounds, in line order. The display unit — a section indexes, a page shows.
+ */
+export interface ManualPage {
+  file: string;
+  orca_version: string;
+  text: string;
+  sections: PageSection[];
 }
 
 /** Result of an author-run `build_manual_index`. */

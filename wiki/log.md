@@ -4147,3 +4147,54 @@ registered for the same language id `<Editor>` uses, survives the command throwi
 `fixedOverflowWidgets` pinned. **Lesson:** the pure functions were unit-tested; the wiring — order,
 options, rendering — was not, and that is exactly where it broke. Page: `debugging/010`.
 Verify: tsc clean, vitest 426 green (30 files). No Rust/sidecar touched.
+
+## [2026-08-01] session | Manual: full-page rendering (a section indexes, a page shows) + manual_root() debt closed
+
+**Why.** Author feedback after real use: sections are too atomized — a search result does not show
+*why* a keyword sits where it does. Not a sectioner defect; the section serves two tasks with opposite
+optima (search wants fine granularity for bm25, reading wants context). Median body 1330 B and 27
+empty navigational sections were the symptoms. Split the surfaces: **search stays section-grained; the
+result opens the whole page** and scrolls to the found section. The sectioner still supplies search
+granularity — it just stops being the display screen.
+
+**Task 1 — `manual_root()` debt closed.** Was `CARGO_MANIFEST_DIR/../resources/manual` (source-only),
+which now also blocks page reads. Resolved honestly: **source/dev run** → the repo tree (the
+compile-time path, absent on a bundled app elsewhere = the discriminator); **bundled run** →
+`<data_dir>/orcastudio/manual` (same `dirs::data_dir()` base as the DB). **Not** an app-resource dir —
+the manual is never bundled/redistributed (domain rule #7). Neither resolves → an explicit error
+**naming where it looked**.
+
+**Task 2 — `get_manual_page(file)`** → `ManualPage { file, orca_version, text, sections:[{id, level,
+title, anchor, line_start, line_end}] }`. Source is the **file on disk**, NOT the stored sections: the
+preamble is coverage-checked but never stored, and heading lines are not byte-reproducible from
+`title`+`level`. **Post-condition (rule #9):** file line count == `max(line_end)+1`, and each
+section's `line_start` line has exactly `level` `#` and contains its `title`; a mismatch is an explicit
+"page on disk does not match the index; rebuild" error, never a silent wrong page. Chose **no per-file
+hash / no migration** — the two cheap checks cover the realistic drift (version refresh, partial
+reload); `corpus_hash` attests the *indexed* state (computed from sections), so it cannot be the
+freshness check. `verify_page_matches_index` unit-tested three ways + a temp-corpus round-trip.
+
+**Task 3 — one display component.** `SectionView` folded into **`PageView`** (`src/manual/PageView.tsx`),
+shared by `ManualScreen` and `ManualDrawer` — no second render path (the pattern had collapsed four
+times). It splits the file into line-owned segments (preamble + each section `[line_start,line_end]`),
+so a section's DOM node spans exactly its bounds → highlight = `.target` on that node; scrolls the
+target into view. In-page ToC (`<details>`, headings) for big pages. Body rendering still through the
+unchanged `renderManualBody`→`parseManualBody`; preservation test stays green (moved import to
+`PageView`).
+
+**Task 4 — measured.** `page_size_measure` (ignored): PAGE bytes median **18 773** / p95 **119 545** /
+max **214 493** (≈209 KB) vs SECTION bytes median **1330** / p95 9074 / max 48 245 — the display unit
+grew ~14× at the median. **The max page is ~209 KB, not the 48 KB assumed** (that was the max
+*section*). Sections/page median 7, max 162; **4 pages >50 sections** (ToC mandatory). `parseManualBody`
+on the 209 KB page ≈ **0.48 ms** (V8) — render-prep is sub-ms.
+
+**Honesty note (rule #10).** The interactive WebKitGTK check (scroll landed on the section, highlight
+matches the bounds, the 209 KB page renders un-clipped) I could **not** perform: this environment has
+no input-injection tool (`xdotool` missing) and the browser tooling speaks CDP to Chrome, not
+WebKit's protocol, so I cannot drive or observe the Tauri webview. Not claiming a check I didn't run —
+it is the author's to do (Manual tab → search e.g. `CASSCF` → click a result → confirm scroll +
+highlight + no clipping). Everything else is verified: cargo 152 pass, tsc clean, vitest 426 green,
+preservation test still char-for-char.
+
+**Not touched (next units):** the hover provider (its replacement by selection is the next unit),
+Explain-with-Claude, the sectioner, `keywords.json`, FTS, the search schema. No migration, no new deps.

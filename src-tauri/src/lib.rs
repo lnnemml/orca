@@ -103,6 +103,7 @@ pub fn run() {
             commands::manual::build_manual_index,
             commands::manual::search_manual,
             commands::manual::get_manual_section,
+            commands::manual::get_manual_page,
             commands::manual::manual_index_status,
             commands::manual::resolve_manual_section,
             sidecar::get_sidecar_status,

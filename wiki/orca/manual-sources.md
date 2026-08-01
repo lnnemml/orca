@@ -199,6 +199,25 @@ corpus and prints these (full detail + method in [`modules/manual-sections.md`](
 - **Bytes: prose 57.3 % / fenced 42.7 %** — ~half the corpus is inside code/table fences; 4.3 decides
   raw-body vs cleaned-prose indexing.
 
+## Page vs section size (the "a section indexes, a page shows" split) — measured
+
+`cargo test page_size_measure -- --ignored --nocapture` over the same 126 leaves, for the change from a
+section-as-screen to a page-as-screen:
+
+- **Display unit grew ~14×.** PAGE bytes (the whole file, the new display unit): **median 18 773 · p95
+  119 545 · max 214 493** (≈209 KB). SECTION bytes (the index unit): **median 1330 · p95 9074 · max
+  48 245** (cross-checks the 4.2 body-size row). So the reader's unit is ~14× the median section and
+  ~13× at p95.
+- **The max page is ~209 KB, not 48 KB** — the earlier 48 KB was the max *section*; the largest *page*
+  (`contents/modelchemistries/CASSCF.md.txt`, 5247 lines) is 4× that. This is why the in-page ToC is not
+  optional on big pages.
+- **Sections per page:** median **7**, max **162**; **4 pages carry >50 sections** (where the ToC is
+  mandatory).
+- **Render-prep cost is negligible.** `parseManualBody` over the 209 KB page: **~0.48 ms/parse** (V8,
+  200 iters) — the JS work of turning the file into blocks is sub-millisecond, so any perceptible cost on
+  the real page is React reconciliation + WebKitGTK paint of ~5000 lines, not the parse. (WebKitGTK paint
+  time itself is **not** measured here — see the session log's honesty note.)
+
 ## Retrieval gate (unit 4.3) — the FTS column chosen by number
 
 `cargo test retrieval_gate -- --ignored` builds two FTS5 indexes over the sectioned corpus and measures

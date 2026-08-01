@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { isValidElement, type ReactNode } from "react";
 
 import { parseManualBody } from "./render";
-import { renderManualBody } from "./SectionView";
+import { renderManualBody } from "./PageView";
 
 /**
  * The text a DOM would expose as `textContent`: the concatenation of every string/

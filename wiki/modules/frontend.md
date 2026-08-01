@@ -358,19 +358,31 @@ a standard xyz via `atomLinesToXyz`.
 ## Manual panel (`src/manual/`, `src/screens/ManualScreen.tsx`) — Phase 4.4
 
 The first **real consumer** of the manual index (ADR-013 / [manual-index.md](manual-index.md)). A tab
-in the shell; two columns — debounced FTS search on the left, the full section on the right.
+in the shell; two columns — debounced FTS search on the left, the full **page** on the right.
 
+- **A section indexes, a page shows.** Search is section-grained (bm25 needs it) but reading is not —
+  from a lone section the author could not see *why* a keyword sat where it did. So a result opens the
+  **whole page** and scrolls to the found section (see [manual-index.md](manual-index.md)). The section
+  stays the search unit; it is no longer the display screen.
 - **`ManualScreen`** — the host. On mount `manual_index_status`: **null → a "Build index" state**
   (a card + button running `build_manual_index`, then the `IngestReport` tallies), **not** an empty
   result list (which reads as "nothing found" — the failure this guards). With an index: a search box
   → `search_manual` (250 ms debounce; **empty query → empty list**, the command's contract, never an
   error), results as `breadcrumb › **title**` + a highlighted snippet (rank hidden). Click →
-  `get_manual_section(id)` → `SectionView`.
-- **`SectionView` is a standalone component, NOT baked into the screen** — deliberately. The next
-  unit's Monaco hover opens a section **without pulling the author out of the editor**, i.e. this same
-  component will live in a drawer. So the screen is only its host; `SectionView` takes a
-  `ManualSection` and owns no fetching/chrome. (Do not build the global drawer yet — but do not wire
-  the renderer into the screen so it must later be dug out.)
+  `get_manual_page(hit.file)` → `PageView` with `targetSectionId = hit.id` (scroll + highlight).
+- **`PageView` is the ONE display component** (`src/manual/PageView.tsx`), shared by `ManualScreen` and
+  `ManualDrawer` — there is no second render path (the pattern was collapsing four times over). It takes
+  a `ManualPage` + an optional `targetSectionId`. `SectionView` is **gone**, folded into `PageView`.
+  - Splits `page.text` into line-owned segments — the preamble, then each section `[line_start,
+    line_end]`. Sections tile the file by line (the sectioner's line-conservation), so **a section's DOM
+    node spans exactly its indexed bounds**: highlighting the bounds is just adding `.target` to that
+    node. Scrolls the target into view (`scrollIntoView`) on target/page change.
+  - **In-page ToC**: the file's headings (`level`+`title`) as a collapsible list (`<details>`, open
+    only on ≤20-section pages) — how the reader moves on a **209 KB / 162-section** page (measured max;
+    4 pages carry >50 sections). No `<select>`, so the WebKitGTK select gotcha does not apply.
+  - Body rendering still goes through `renderManualBody` → the pure, tested `parseManualBody`
+    (`render.ts`) — the block rules are unchanged, and the preservation test (below) stays green after
+    moving `renderManualBody` from `SectionView` into `PageView`.
 - **Render rule — loss-free (`src/manual/render.ts`), the display analogue of the sectioner's
   line-conservation (rule #9).** Section bodies are MyST (prose, `$…$` LaTeX, `:::{directives}`,
   tables; 42.7 % of corpus bytes inside fences). A naive Markdown renderer eats what it doesn't
@@ -387,9 +399,9 @@ in the shell; two columns — debounced FTS search on the left, the full section
   phantom highlight on literal brackets. `SNIP_OPEN`/`SNIP_CLOSE` are shared with Rust.
 - **No new dependency, no `<select>`** (so the WebKitGTK select gotcha doesn't apply here); the search
   box is a plain `.input`.
-- **Known debt (named, not fixed here):** `manual_root()` resolves to `CARGO_MANIFEST_DIR`, so the
-  index only builds from a **source** run; resolving the corpus path for a **bundled** app is a later
-  concern (recorded in [manual-index.md](manual-index.md)).
+- **`manual_root()` debt closed** — the corpus path now resolves honestly for source *and* bundled runs
+  (page display reads the corpus off disk, so it could no longer stay a source-only path). Detail in
+  [manual-index.md](manual-index.md).
 - **Pipe tables render monospace (4.4 Part B).** `render.ts` now groups a run of `^\s*\|` rows into a
   `<pre>` (like a fence) so table columns align — measured 110 sections (7.1 %) carried a pipe-table
   that was rendering as misaligned proportional prose. Same linear per-line check as the fence, **no
@@ -412,8 +424,9 @@ wrong-type match is a miss), consulting `aliases[]`.
   first). An empty `summary` does not suppress it (seeded records have none).
 - **`ManualDrawer`** is a fixed-position side overlay (does not disturb the editor layout, so the
   author stays in the editor). Clicking Open fires the command → the drawer resolves the descriptor via
-  `resolve_manual_section` (the keywords.json→DB bridge, with a version check) and renders the section
-  in the **SAME `SectionView`** as `ManualScreen` — no second copy.
+  `resolve_manual_section` (the keywords.json→DB bridge, with a version check) to a section (file + id),
+  then loads that section's **whole page** via `get_manual_page` and renders it in the **SAME `PageView`**
+  as `ManualScreen` — one display component — scrolled to and highlighting the resolved section.
 
 ## Queue control (status bar)
 
