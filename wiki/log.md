@@ -4087,3 +4087,37 @@ Also reconciled the B2 arithmetic: 5+22+11+2=40; the missing 2 of 42 are `TightS
 covered via PROSE_CURATED (a fourth path, not a discrepancy). Verify: `demand_measure` #[ignore] gate;
 plain cargo test 148/17-ignored, vitest green; keywords.json byte-identical. Numbers in
 `orca/manual-sources.md` Parts G–H. Nothing changed: no keywords.json/generator/curation/hover edits.
+
+## [2026-08-01] session | argument rule + curated ! keyword (XTB), measured against the manual's own ! vocabulary
+
+Task 0 first — the DENOMINATOR: the manual's own `!` vocabulary from its ```orca blocks (the one source
+that is NOT us). **424 distinct `!`-tokens, 417 lines; the map resolves 42 (10 %)** (13 seed, 29
+curation); 293 absent, 89 undetermined-only. Our demand (A, 15 tokens) covers 3.1 %. Top absent are real
+methods/bases (MOReAd 27, DLPNO-CCSD 20, NEB 15, NoIter 13, ALPB 10, RHF 10, `/C` aux bases). **Verdict:
+the manual's `!` vocabulary is ~28× wider than our 15; the curated layer is OPEN — a plan, not seven
+entries. Phase 4's keyword coverage is not "done"** (hover functionally works — RIJCOSX explains,
+`keywords.json`[~] not [x]).
+
+**Argument rule (task 1):** a token inside `(…)` after a keyword is an ARGUMENT — `keyword-lookup.ts::
+isArgumentToken`, a positive pure line-check in `hoverContext`. Forms measured in the corpus (general,
+not a whitelist): CPCM/SMD/ALPB/DDCOSMO/CPCMX solvents, SV(P) basis, DLPNO-CCSD(T) triples, PAL8(n).
+Regression proof: `water` IS in the map (%frag), yet a hover on `CPCM(water)`'s `water` is silent —
+silence from the RULE, not absence. The 4.9 "silence for dmso/ethanol" was a hole in the map, already
+half-broken (water seeded under %frag), now closed by the rule.
+
+**XTB curated (task 2):** the one gap real demand hit (`! XTB GOAT`). Added a `simple`/`curated` record
+→ `semiempirical › Extended Tight-Binding: GFN0-xTB, …` (found, not guessed); its `%xtb` block-option
+untouched (both forms legit). Section ordering changed so a curated-only section APPENDS after the
+stable seed sections → keywords.json diff = **one record + one appended section**, fully reviewable
+(not a 1400-line renumber cascade); regeneration byte-identical; descriptors 318/318.
+
+**Task 3:** the other 6 gaps (IRC/ScanTS/NEB-CI b, TightOpt/Constraints c, %maxcore a) stay DECLARED,
+NOT curated one-by-one — the 10 % denominator says the layer needs a plan and none of the six is
+demand-hit. Inventory 47/53 (9 seed, 38 curation; CPCM+XTB moved gap→curated).
+
+**Pattern, 4th case (task 4):** the demand corpus looked independent but was us (A ≈ B∪C, the author
+builds with the input-builder) — caught by measuring against the manual's own `!` vocabulary. Also
+recorded plainly: the 1515 block-option records (~53 % of the map) serve 1 real request of 1363; durably
+valuable regardless are qualified addressing, the owner veto, consumer-form gates, the argument rule,
+and the pattern discipline itself. Verify: cargo 148/18-ignored (+bridge/generate green), tsc, vitest
+423 green; keywords.json diff reviewable + byte-identical re-gen. Numbers: `manual-sources.md` Part I.

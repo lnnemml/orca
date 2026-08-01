@@ -389,11 +389,14 @@ wherever an imported structure is first shown and is carried forward independent
       gated against an explicit, named inventory** (`keyword-inventory.json`, builder+domain+workflow;
       one home, both gates). **Type now from the manual, not our builder** (`type_of` dropped
       `app_simple`; no-owner tokens are `undetermined`, a value, not a dumpster block-option; the
-      builder's knowledge moved to a `provenance:"curated"` channel). **46 of 53 resolve — 9 via SEED,
-      37 via CURATION** (split kept visible so the channels can't merge). 7 gaps: `%maxcore` (a);
-      `IRC`/`ScanTS`/`NEB-CI` (b); `XTB`/`TightOpt`/`Constraints`-in-%geom (c) — table in
-      [manual-keywords.md](wiki/modules/manual-keywords.md). **Left:** curation for the 7 gaps; the
-      `{numref}` layer (closes only `%maxcore`, low priority); hand summaries.
+      builder's knowledge moved to a `provenance:"curated"` channel). **47 of 53 inventory words
+      resolve — 9 via SEED, 38 via CURATION**. Argument rule added (`CPCM(water)` → `water` gets no
+      hover; a positive line-check). **BUT the inventory is our builder's vocabulary; measured against
+      the manual's OWN `!` vocabulary the map covers only 10 % (42 of 424 tokens).** So the **curated
+      layer is OPEN — a plan, not a list** (curation is demand-driven: only `XTB` was hit by a real
+      run). Remaining declared gaps: `%maxcore` (a); `IRC`/`ScanTS`/`NEB-CI` (b); `TightOpt`/
+      `Constraints`-in-%geom (c). Table + denominator in
+      [manual-keywords.md](wiki/modules/manual-keywords.md) and `orca/manual-sources.md` Part I.
 - [x] Monaco hover provider: hover a keyword → keyword/type/owning-block + Open → a **side drawer**
       showing the section (reusing `SectionView`, author stays in the editor). Fed by `keywords.json`,
       **NOT** FTS; qualified type/block-aware lookup (`enclosingBlock` + `wordPattern`), `aliases[]`

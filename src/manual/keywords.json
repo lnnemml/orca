@@ -20498,6 +20498,13 @@
       "type": "block-option"
     },
     {
+      "keyword": "XTB",
+      "provenance": "curated",
+      "section": 317,
+      "summary": "GFN-xTB / GFN2-xTB semiempirical methods via the ! line (ORCA's xtb interface). See also the %xtb block.",
+      "type": "simple"
+    },
+    {
       "block": "%xtb",
       "keyword": "XTB",
       "owner_source": "text",
@@ -23675,6 +23682,14 @@
       "file": "contents/workflowsautomatization/compounddetails",
       "nth": 0,
       "title": "Remove_Element"
+    },
+    {
+      "breadcrumb": [
+        "Semiempirical Methods"
+      ],
+      "file": "contents/modelchemistries/semiempirical",
+      "nth": 0,
+      "title": "Extended Tight-Binding: GFN0-xTB, GFN-xTB, GFN2-xTB"
     }
   ]
 }

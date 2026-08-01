@@ -85,6 +85,11 @@ export function hoverContext(
   // Inside a `#` comment or a `"…"` string the token is not a keyword — no hover.
   if (before.includes("#")) return null;
   if ((before.match(/"/g)?.length ?? 0) % 2 === 1) return null;
+  // A token inside `(…)` is an ARGUMENT of the preceding keyword (`CPCM(water)`,
+  // `SMD(DMSO)`, `SV(P)`, `DLPNO-CCSD(T)`), NOT a keyword itself — a POSITIVE rule, not
+  // a hope that the word is absent from the map (`water` IS in it, under %frag). Any of
+  // the paren forms in the corpus (CPCM/SMD/ALPB/DDCOSMO/CPCMX/SV/DEF2-TZVP/CCSD/…).
+  if (isArgumentToken(lineText, colBefore)) return null;
   if (word.startsWith("%")) return { kind: "block", block: null };
   if (/^\s*!/.test(lineText)) return { kind: "simple", block: null };
   let block = enclosingBlock(text, line);
@@ -94,6 +99,13 @@ export function hoverContext(
   }
   if (block) return { kind: "block-option", block };
   return null;
+}
+
+/** Is the token at `colBefore` inside a `(…)` argument group? (An unclosed `(` sits to
+ *  its left.) Pure over the line — testable without Monaco, in the `enclosingBlock` style. */
+export function isArgumentToken(lineText: string, colBefore: number): boolean {
+  const pre = lineText.slice(0, colBefore);
+  return (pre.match(/\(/g)?.length ?? 0) > (pre.match(/\)/g)?.length ?? 0);
 }
 
 /** Records matching `word` (or one of its aliases) of the RIGHT type — and, for a

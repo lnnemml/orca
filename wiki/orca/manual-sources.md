@@ -462,6 +462,33 @@ real-demand keyword miss) and a **solvent** class; the block-option half needs n
 And the demand corpus should be **re-measured** once the author hand-edits `%`-blocks — only then will
 independent demand for that half appear.
 
+### Part I — the DENOMINATOR: the manual's own `!` vocabulary (`manual_bang_vocabulary`)
+
+Demand ≈ builder (Part H), so demand is not an independent signal. The available proxy that is **not
+us**: the `!`-lines in the manual's own ` ```orca ` blocks — how ORCA's authors use the simple-input
+line. This is the denominator that decides whether the curated layer is a seven-item list or a plan.
+
+- **417 `!`-lines, 424 distinct `!`-tokens** in the corpus's ` ```orca ` blocks. Our map resolves
+  **42 / 424 = 10 %** as simple (13 seed, 29 curation); **293 absent, 89 undetermined-only**. Our
+  demand (A, 15 tokens) covers **3.1 %** of it.
+- **The manual's `!` vocabulary is ~28× wider than our 15** and only 10 % covered. Top absent tokens
+  are real methods/bases, not noise: `MOReAd` (27), `DLPNO-CCSD` (20), `NEB` (15), `NoIter` (13),
+  `ALPB` (10), `RHF` (10), the `/C` aux bases (`def2-TZVP/C`…, `undetermined`). So the **curated layer
+  is OPEN — it needs a plan, not seven entries** — and Phase 4's keyword coverage is **not** "done".
+- **Argument forms measured** (`KEYWORD(arg)` on `!`-lines): `CPCM` (11), `DLPNO-CCSD` (11), `SV` (9),
+  `ALPB` (8), `GCP` (3), `DEF2-TZVP` (3), `SMD` (3), `DDCOSMO`/`CPCMX`/`CCSD`/`RI-CCSD`/`PAL8` (2 each).
+  So the argument rule is **general** (solvents, `SV(P)` basis, `CCSD(T)` triples, `PAL8(n)`), not a
+  `CPCM`/`SMD` whitelist.
+
+Acted on this number (not on convenience): **`XTB` curated** (the one gap real demand hit — `! XTB
+GOAT`), pointing at `semiempirical › Extended Tight-Binding: GFN0-xTB, …` (found, not guessed; its
+`%xtb` block-option left intact). The other six inventory gaps (`IRC`/`ScanTS`/`NEB-CI` b,
+`TightOpt`/`Constraints`-in-%geom c, `%maxcore` a) stay **declared gaps** — not curated one-by-one,
+because 10 % coverage means the layer needs a plan and none of the six is demand-hit. Inventory
+**47 / 53** (9 seed, **38 curation**). keywords.json diff = **one curated record + one appended section**
+(the section array appends curated-only sections after the stable seed sections, so a curation add is
+reviewable, not a renumber cascade); regeneration byte-identical; descriptors **318/318**.
+
 The only thing that would force a *true* MyST parser for **sectioning** is structural `{eval-rst}` in
 document bodies. Measured over the **full corpus (Part B, all 126 leaves): body `{eval-rst}` = 0**
 (the root `index` has 1, expected — the back-matter toctree). So this is no longer "holds so far" — it

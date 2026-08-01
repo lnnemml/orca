@@ -1,7 +1,27 @@
 import { describe, it, expect } from "vitest";
 
 import inventory from "./keyword-inventory.json";
-import { lookup, type KeywordType } from "./keyword-lookup";
+import { lookup, resolveHover, isArgumentToken, type KeywordType } from "./keyword-lookup";
+
+// The argument rule: a token inside `(…)` after a keyword is an ARGUMENT, not a keyword.
+// This is the regression that proves the rule is a rule, not luck — `water` IS in the
+// map (as a %frag block-option), yet a hover on `CPCM(water)`'s `water` must be silent.
+describe("argument tokens on the ! line get no hover (even when they're in the map)", () => {
+  it("`water` IS in the map (so silence must come from the RULE, not absence)", () => {
+    expect(lookup("water", "block-option", "%frag").length).toBeGreaterThan(0);
+  });
+  it("`! CPCM(water)` — cursor on `water` → no hover; cursor on `CPCM` → resolves", () => {
+    const line = "! CPCM(water)\n"; // `water` starts at column 7, `CPCM` at 2
+    expect(resolveHover(line, 0, 7, "water")).toBeNull(); // argument → silence
+    expect(resolveHover(line, 0, 2, "CPCM")).not.toBeNull(); // the keyword → resolves
+  });
+  it("isArgumentToken is a pure line check", () => {
+    expect(isArgumentToken("! CPCM(water)", 7)).toBe(true);
+    expect(isArgumentToken("! CPCM(water)", 2)).toBe(false);
+    expect(isArgumentToken("! SV(P) def2-TZVP", 5)).toBe(true); // P inside SV(P)
+    expect(isArgumentToken("! SV(P) def2-TZVP", 8)).toBe(false); // def2-TZVP after the )
+  });
+});
 
 // The coverage gate over the EXPLICIT inventory (keyword-inventory.json) — the ONE
 // home for the expectation set, read by this gate and the Rust generator. The earlier

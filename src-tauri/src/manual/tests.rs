@@ -881,6 +881,20 @@ const ALIASES: &[(&str, &str)] = &[("M06-L", "M06L"), ("M06-2X", "M062X")];
 /// not by the seed extractor. They still MUST resolve for the coverage gate.
 const PROSE_CURATED: &[&str] = &["TightSCF", "VeryTightSCF"];
 
+/// Curated `!`-line keywords whose SIMPLE form the manual documents in a specific
+/// section (found in the corpus, not guessed): (keyword, file, title, summary). Demand-
+/// driven — added one at a time with a named home. `XTB` is the one gap real demand hit
+/// (`! XTB GOAT`, the author's conformer run + a mandatory domain guard); its existing
+/// `%xtb` block-option is left untouched (both forms are legitimate).
+const CURATED_INPUT: &[(&str, &str, &str, &str)] = &[
+    (
+        "XTB",
+        "contents/modelchemistries/semiempirical",
+        "Extended Tight-Binding: GFN0-xTB, GFN-xTB, GFN2-xTB",
+        "GFN-xTB / GFN2-xTB semiempirical methods via the ! line (ORCA's xtb interface). See also the %xtb block.",
+    ),
+];
+
 #[test]
 #[ignore]
 fn keyword_seed_ambiguity() {
@@ -1303,13 +1317,40 @@ fn generate_keywords_json() {
         }
     }
 
+    // Curated `!`-line keywords with an explicit documentation section (found, not
+    // guessed). These are demand-driven additions (4.9/4.10): the section is where the
+    // manual documents the SIMPLE form. Any existing block-option of the same name is
+    // left intact (both forms legitimate). One per line so the diff is fully reviewable.
+    // CURATED_INPUT records go into their OWN list so a new section they introduce is
+    // APPENDED after the seed's sections (see ordering) — keeping every existing index
+    // stable, so adding one curated keyword is a one-record diff, not a renumber cascade.
+    let mut ci_recs: Vec<(serde_json::Map<String, serde_json::Value>, Vec<usize>)> = Vec::new();
+    for (kw, file, title, summary) in CURATED_INPUT {
+        match all.iter().position(|s| s.file == *file && s.title == *title) {
+            Some(i) => {
+                let mut o = base(kw, "simple", "curated", None);
+                o.insert("summary".into(), (*summary).into());
+                ci_recs.push((o, vec![i]));
+            }
+            None => panic!("CURATED_INPUT section not found: {file} :: {title}"),
+        }
+    }
+
     // ---- Normalize sections: one array of distinct section keys + int refs. ----
+    // Base sections (everything except CURATED_INPUT) are sorted → stable indices. A
+    // section a CURATED_INPUT record introduces and nothing else references is APPENDED
+    // after them, so existing indices never shift when curation grows.
     let skey_tuple = |i: usize| -> (String, Vec<String>, String, usize) {
         (all[i].file.clone(), all[i].breadcrumb.clone(), all[i].title.clone(), nth_of[i])
     };
     let mut ordered: Vec<usize> =
         recs.iter().flat_map(|(_, r)| r.iter().copied()).collect::<HashSet<_>>().into_iter().collect();
     ordered.sort_by(|&a, &b| skey_tuple(a).cmp(&skey_tuple(b)));
+    let base_set: HashSet<usize> = ordered.iter().copied().collect();
+    let mut appended: Vec<usize> = ci_recs.iter().flat_map(|(_, r)| r.iter().copied())
+        .filter(|i| !base_set.contains(i)).collect::<HashSet<_>>().into_iter().collect();
+    appended.sort_by(|&a, &b| skey_tuple(a).cmp(&skey_tuple(b)));
+    ordered.extend(appended); // curated-only sections after the stable seed sections
     let idx_map: HashMap<usize, usize> =
         ordered.iter().enumerate().map(|(new, &old)| (old, new)).collect();
     let sections_json: Vec<serde_json::Value> =
@@ -1317,7 +1358,7 @@ fn generate_keywords_json() {
 
     // Finalize each record: remap refs to int indices; `section` (1) or `targets` (n).
     let mut entries: Vec<serde_json::Value> = Vec::new();
-    for (mut o, refs) in recs {
+    for (mut o, refs) in recs.into_iter().chain(ci_recs) {
         let mut ints: Vec<usize> = refs.iter().map(|i| idx_map[i]).collect();
         ints.sort_unstable();
         ints.dedup();
@@ -2298,5 +2339,108 @@ fn demand_measure() {
              touched.len(), bo_keys.len());
     println!("      A's block-body tokens: {:?}", { let mut v: Vec<&String> = a_block_tokens.iter().collect(); v.sort(); v });
     println!("      touched: {touched:?}");
+    println!("{:=<72}", "");
+}
+
+// --- Task 0: the manual's OWN ! vocabulary — the denominator (unit 4.4 I) -----
+//
+//     cargo test manual_bang_vocabulary -- --ignored --nocapture
+//
+// Demand ≈ builder (4.9), so it is not an independent signal. The available proxy that
+// is NOT us: the `!`-lines in the manual's 1477 ```orca blocks — how ORCA's own authors
+// use the simple-input line. This is the denominator: if it dwarfs our 15 (A) tokens,
+// the curated layer needs a PLAN, not a seven-item list; if it is also narrow, the gaps
+// are a list and Phase 4 closes.
+
+#[test]
+#[ignore]
+fn manual_bang_vocabulary() {
+    let wp = word_pattern();
+    let manual_dir = repo_root().join("resources/manual");
+    let version = corpus_version(&manual_dir);
+    let version_dir = manual_dir.join(&version);
+    if !version_dir.is_dir() { eprintln!("skipping: no corpus"); return; }
+    let mut leaves: Vec<(String, String)> = Vec::new();
+    collect_leaves(&version_dir, &version_dir, &mut leaves);
+
+    // Every `!`-line token inside a ```orca block, corpus-wide.
+    let mut n_lines = 0usize;
+    let mut freq: HashMap<String, usize> = HashMap::new();
+    for (_f, text) in &leaves {
+        let mut in_orca = false;
+        for line in text.lines() {
+            let tl = line.trim_start();
+            if tl.starts_with("```") {
+                in_orca = if in_orca { false } else { tl.trim_start_matches('`').trim().eq_ignore_ascii_case("orca") };
+                continue;
+            }
+            if in_orca {
+                if let Some(rest) = tl.strip_prefix('!') {
+                    n_lines += 1;
+                    for m in wp.find_iter(rest) { *freq.entry(m.as_str().to_lowercase()).or_insert(0) += 1; }
+                }
+            }
+        }
+    }
+    let vocab: HashSet<String> = freq.keys().cloned().collect();
+
+    // Simple-lookup classification (same as the hover asks on the ! line).
+    let doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(repo_root().join("src/manual/keywords.json")).unwrap()).unwrap();
+    let recs = doc["keywords"].as_array().unwrap();
+    let mut simple_prov: HashMap<String, String> = HashMap::new();
+    let mut has_undet: HashSet<String> = HashSet::new();
+    let mut any_rec: HashSet<String> = HashSet::new();
+    for r in recs {
+        let mut keys = vec![norm_kw(r["keyword"].as_str().unwrap())];
+        if let Some(al) = r.get("aliases").and_then(|a| a.as_array()) {
+            keys.extend(al.iter().filter_map(|x| x.as_str()).map(norm_kw));
+        }
+        let ty = r["type"].as_str().unwrap();
+        for k in keys {
+            any_rec.insert(k.clone());
+            if ty == "simple" { simple_prov.entry(k.clone()).or_insert_with(|| r["provenance"].as_str().unwrap().into()); }
+            if ty == "undetermined" { has_undet.insert(k); }
+        }
+    }
+    let (mut seed, mut cur, mut undet, mut absent) = (0usize, 0usize, 0usize, 0usize);
+    for t in &vocab {
+        match simple_prov.get(t).map(|s| s.as_str()) {
+            Some("curated") => cur += 1,
+            Some(_) => seed += 1,
+            None => if has_undet.contains(t) { undet += 1 } else { absent += 1 },
+        }
+    }
+
+    // Group (A)'s 15 tokens (demand) vs this vocabulary.
+    let db = dirs::data_dir().map(|d| d.join("orcastudio/orcastudio.db"));
+    let mut a_tokens: HashSet<String> = HashSet::new();
+    if let Some(p) = db.as_ref().filter(|p| p.exists()) {
+        let conn = Connection::open(p).unwrap();
+        let inputs: Vec<String> = conn.prepare("SELECT input_content FROM jobs").unwrap()
+            .query_map([], |r| r.get::<_, String>(0)).unwrap().filter_map(Result::ok).collect();
+        for i in &inputs { for t in bang_tokens(i, &wp) { a_tokens.insert(t.to_lowercase()); } }
+    }
+    let a_in_vocab = a_tokens.iter().filter(|t| vocab.contains(*t)).count();
+
+    println!("\n{:=<72}", "");
+    println!("MANUAL ! VOCABULARY (denominator) — ```orca blocks corpus-wide");
+    println!("{:=<72}", "");
+    println!("  !-lines: {n_lines} | distinct !-tokens: {}", vocab.len());
+    println!("  resolve simple: seed {seed} / curation {cur} | absent {absent} | undetermined-only {undet}");
+    println!("    coverage of the manual's ! vocabulary: {} / {} ({:.0}%)",
+             seed + cur, vocab.len(), 100.0 * (seed + cur) as f64 / vocab.len().max(1) as f64);
+    println!("  our demand (A) distinct: {} | of them in the manual vocab: {a_in_vocab}", a_tokens.len());
+    println!("    our 15 cover {:.1}% of the manual's {} ! tokens", 100.0 * a_in_vocab as f64 / vocab.len().max(1) as f64, vocab.len());
+    let mut fv: Vec<(&String, &usize)> = freq.iter().collect();
+    fv.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+    println!("  top-25 manual ! tokens:");
+    for (t, c) in fv.iter().take(25) {
+        let cls = match simple_prov.get(*t).map(|s| s.as_str()) {
+            Some("curated") => "cur", Some(_) => "seed",
+            None => if has_undet.contains(*t) { "undet" } else { "ABSENT" },
+        };
+        println!("        {c:4}  {t:20} [{cls}]");
+    }
     println!("{:=<72}", "");
 }

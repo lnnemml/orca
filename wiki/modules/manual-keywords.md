@@ -140,20 +140,26 @@ guards), `workflow` (ADR-007 reaction chain). Populated from those named sources
 `MORead`/`PrintBasis` are deliberately **absent** (block-option-only in the map, but no named source),
 so the inventory stays named, not merely longer.
 
-**Honest number: 46 of 53 resolve** (type- and block-aware; Rust and TS agree), **split by CHANNEL so
-the two never merge: 9 via SEED (the manual), 37 via CURATION (ours, attributed)**. A word without a
+**Honest number: 47 of 53 resolve** (type- and block-aware; Rust and TS agree), **split by CHANNEL so
+the two never merge: 9 via SEED (the manual), 38 via CURATION (ours, attributed)**. A word without a
 `gap` tag is a **hard** post-condition (must resolve); a `gap` word is a declared, classified hole —
-**reported, never a panic**. The seven gaps, by closer:
+**reported, never a panic**. The six gaps, by closer:
 
 | closer | count | words |
 |---|---|---|
 | **(a) `{numref}` layer** | 1 | `%maxcore` (block; it is in "List of Input Blocks") |
 | **(b) curated (prose only)** | 3 | `IRC`, `ScanTS`, `NEB-CI` — run-types documented in chapter prose, no keyword-table entry (like `TightSCF`) |
-| **(c) second/right form of a concept in the map** | 3 | `XTB`, `TightOpt` (exist as `%xtb`/`%method`, need the **simple** form) and `Constraints` (seeded under `%method`, the app emits it under **`%geom`**) |
+| **(c) second/right form of a concept in the map** | 2 | `TightOpt` (exists as `%method`, needs the **simple** form) and `Constraints` (seeded under `%method`, the app emits it under **`%geom`**) |
 | **(d) not in corpus at all** | 0 | — |
 
-(`CPCM` was a gap; the curated overlay now covers it — a `!`-simple record pointing at the `%cpcm`
-documentation — so its `gap` tag was removed.)
+(`CPCM` and `XTB` were gaps; both now covered by the curated channel — `CPCM` from the `%cpcm`
+documentation, `XTB` a hand-added `!`-line record at `semiempirical › Extended Tight-Binding`, its
+`%xtb` block-option untouched — so their `gap` tags were removed.)
+
+**But the six gaps are NOT the whole debt.** The manual's own `!` vocabulary is **424 distinct tokens**
+of which the map resolves **10 %** (Part I); the six inventory gaps are just the ones OUR builder made
+us notice. **The curated layer is a plan, not a seven-item list, and Phase 4's keyword coverage is not
+"done".** Curation is demand-driven (only `XTB` was hit by a real run); the rest is an open backlog.
 
 **Type comes from the manual, not from our builder (the fix).** `type_of` no longer consults
 `app_simple`; the seed types a token `%…`→block, title-is-the-keyword→simple, else **`undetermined`**
@@ -172,19 +178,37 @@ visible in the diff, arguable per word.
 State it precisely, because stated loosely it does harm: **not** "our knowledge is forbidden" (that
 would reject entering what we know). The rule is: **our knowledge must not MASQUERADE as a measurement
 of the subject matter — it has its own channel, with provenance.** The same defect has now appeared
-**three times**, each a *mixing of channels*, not the presence of a second one:
+**four times**, each a *mixing of channels*, not the presence of a second one:
 
 1. **`%maxcore` "covered"** — the coverage check measured in *our* notation (string-normalised), so a
    `%maxcore` directive matched a `MAXCORE` block-option. (Fixed: ask the type/entity, not the string.)
 2. **`46/46` held** — the expectation set was assembled from *our* builder's output, so it could only
    confirm what we emit. (Fixed: an explicit, sourced inventory — builder / domain / workflow.)
 3. **`app_simple` inside `type_of`** — the seed's *type* was inferred from what our app emits, so a
-   basis name was `simple` only if our builder happened to list it. (Fixed here: type from the manual;
+   basis name was `simple` only if our builder happened to list it. (Fixed: type from the manual;
    what we know moves to the `curated` channel with `provenance`.)
+4. **the demand corpus looked independent but was us** — the author's own inputs (A) barely diverge
+   from our fixtures+templates (B∪C), because he generates inputs *with* the input-builder. "Measure
+   what the author types" was, at this stage, "measure what we emit" once more. (Caught by measuring
+   A against the manual's own `!` vocabulary — the one source that is **not** us: 15 vs 424, 10 %.)
 
 Each time the tell was the same — a number that looked like a fact about ORCA but was a reflection of
 OrcaStudio — and each fix was the same shape: give our knowledge its own attributed channel and let the
-check ask the manual. Named here so it is recognised a **fourth** time before it ships.
+check ask the manual. Named here so it is recognised a **fifth** time before it ships.
+
+### What is worth keeping (honest about the seed's value)
+
+Without euphemism: **the 1515 block-option records — ≈ 53 % of the map — are touched by 1 real request**
+out of 1363 distinct block-option keywords (Part H). The half the manual documents *structurally*, and
+the seed captured well, serves almost no current demand, because the author types `!` lines, not
+`%`-block bodies. That is a fact about the seed's value **for today's demand**, recorded plainly.
+
+What is durably valuable, independent of that number: **qualified addressing** (a block-option is
+`(block, option)`, not a bare string); the **owner veto** (a structural owner only when the body names
+it); **gates in consumer form** (they ask the question the hover asks); the **argument rule** (a
+positive line-check, not luck); and the named **pattern** above — the discipline that caught four
+self-measurements before they shipped. The block-option half is not wasted: it is the substrate the day
+the author starts hand-writing `%`-blocks — at which point demand must be **re-measured**, not assumed.
 
 ## The hover provider + drawer (the consumers)
 
@@ -196,6 +220,12 @@ a block (`enclosingBlock`, plus a same-line `%pal nprocs …` check) → block-o
 A record whose type is **`undetermined`** answers **neither** a qualified block lookup **nor** a simple
 one — it is invisible to the hover (silence), reachable only by the panel's unqualified path
 (*"documented in N places"*), already a separate, deliberate channel.
+**Argument rule (a POSITIVE check, not luck):** a token inside `(…)` after a keyword —
+`CPCM(water)`, `SMD(DMSO)`, `SV(P)`, `DLPNO-CCSD(T)`, `PAL8(8)` — is an **argument**, not a keyword, so
+the hover does not fire on it (`keyword-lookup.ts::isArgumentToken`, a pure line check). This is a rule
+because the silence must not depend on absence: `water` **is** in the map (a `%frag` block-option), so
+without the rule a hover on `CPCM(water)`'s `water` would confidently show *Automatic Fragmentation* —
+a right answer to a question that was not asked. The regression test proves it (`coverage.test.ts`).
 An empty `summary` is not a reason to suppress (seeded records have none): the hover shows keyword,
 type, owning block (+ `owner_source`), and the target's breadcrumb › title as an **Open** command-link;
 several targets → *"documented in N places"* with a list, **not** a picked first. Clicking Open fires
