@@ -74,7 +74,18 @@ label Sphinx did not register — the lone real gap.)
 - **`search_manual(query, limit?)`** command → `Vec<ManualHit { id, file, breadcrumb, title, anchor,
   snippet, rank }>`. `snippet()` from FTS5, `ORDER BY bm25` ASC. **Empty query → empty result** (not an
   error — the `output_search` contract). The MATCH builder (`to_fts_match`) is the ONE shared with the
-  gate, so the gate predicts production.
+  gate, so the gate predicts production. **Snippet markers are PUA `U+E000`/`U+E001`, not `[`/`]`**
+  (`SNIP_OPEN`/`SNIP_CLOSE`): `[`/`]` occur **1905/1903** times in the 4 MB corpus (measured — every
+  `[link](…)`/MyST role), the PUA pair **0**, so the frontend can split on them for `<mark>` without
+  phantom highlights.
+- **`get_manual_section(id)`** command (4.4) → `ManualSection { id, file, level, title, breadcrumb,
+  anchor, anchor_source, body_md }` — the full body the panel/`SectionView` renders (search returns
+  only a snippet). A missing id is a **`NotFound` error, not an empty section** (the caller must tell
+  "no such section" from "empty body"). **`manual_index_status()`** → `Option<ManualStatus>` (null when
+  no rows) so the panel shows a **Build-index** state, not a mis-readable empty list.
+- **Debt (named — `manual_root()`):** the corpus path is `CARGO_MANIFEST_DIR/../resources/manual`, so
+  `build_manual_index` only works from a **source** run. Resolving a bundled app's corpus path (a Tauri
+  resource dir) is a later concern, not this unit's.
 
 **Why Rust, not the sidecar:** ADR-012's rule (text-to-structure without a chemistry library → Rust)
 plus the sidecar's own "stateless, all persistence is Rust-owned SQLite" invariant, plus the two-
@@ -107,7 +118,9 @@ template library → solvation → job types → %blocks. Lives in repo (our own
 content).
 
 ## UI integration
-- Search panel: FTS query, snippet highlighting, section rendering (markdown).
+- Search panel: **built (4.4)** — `ManualScreen` + a standalone `SectionView` (drawer-ready for the
+  hover unit). Loss-free render (fences monospace, everything else verbatim; a preservation test
+  asserts no char of `body_md` is dropped). See [frontend.md](frontend.md) "Manual panel".
 - Monaco hover provider: tokenize `!` line and `%block` names → keywords.json lookup.
 - "Explain with Claude" (optional): POST keyword + current .inp + manual excerpt to
   Anthropic API with the user's key from settings (the one sanctioned extra network path).

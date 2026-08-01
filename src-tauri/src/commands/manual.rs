@@ -8,7 +8,7 @@ use tauri::State;
 
 use crate::commands::settings::DbState;
 use crate::error::AppError;
-use crate::manual::index::{self, IngestReport, ManualHit};
+use crate::manual::index::{self, IngestReport, ManualHit, ManualSection, ManualStatus};
 
 /// The manual corpus root. Author-run indexing reads the repo's `resources/manual/`
 /// (the same tree the fetch script writes); bundled-resource resolution for a shipped
@@ -47,4 +47,20 @@ pub fn search_manual(
 ) -> Result<Vec<ManualHit>, AppError> {
     let conn = db.lock()?;
     index::search_manual(&conn, &query, limit.unwrap_or(20))
+}
+
+/// One full section by id (for the panel/`SectionView`) — `search_manual` returns only
+/// a snippet. A missing id is an error, not an empty section.
+#[tauri::command]
+pub fn get_manual_section(db: State<'_, DbState>, id: i64) -> Result<ManualSection, AppError> {
+    let conn = db.lock()?;
+    index::get_section(&conn, id)
+}
+
+/// Is the manual index built, and with what tallies? `None` → the panel shows a
+/// "Build index" state rather than an empty (mis-readable) result list.
+#[tauri::command]
+pub fn manual_index_status(db: State<'_, DbState>) -> Result<Option<ManualStatus>, AppError> {
+    let conn = db.lock()?;
+    index::index_status(&conn)
 }

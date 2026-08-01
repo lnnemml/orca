@@ -346,6 +346,42 @@ no round-trip); other formats send `from_format` from the extension to the sidec
 touched on success. On New Job the result becomes a fragment added via the scene store; on Molecules
 a standard xyz via `atomLinesToXyz`.
 
+## Manual panel (`src/manual/`, `src/screens/ManualScreen.tsx`) — Phase 4.4
+
+The first **real consumer** of the manual index (ADR-013 / [manual-index.md](manual-index.md)). A tab
+in the shell; two columns — debounced FTS search on the left, the full section on the right.
+
+- **`ManualScreen`** — the host. On mount `manual_index_status`: **null → a "Build index" state**
+  (a card + button running `build_manual_index`, then the `IngestReport` tallies), **not** an empty
+  result list (which reads as "nothing found" — the failure this guards). With an index: a search box
+  → `search_manual` (250 ms debounce; **empty query → empty list**, the command's contract, never an
+  error), results as `breadcrumb › **title**` + a highlighted snippet (rank hidden). Click →
+  `get_manual_section(id)` → `SectionView`.
+- **`SectionView` is a standalone component, NOT baked into the screen** — deliberately. The next
+  unit's Monaco hover opens a section **without pulling the author out of the editor**, i.e. this same
+  component will live in a drawer. So the screen is only its host; `SectionView` takes a
+  `ManualSection` and owns no fetching/chrome. (Do not build the global drawer yet — but do not wire
+  the renderer into the screen so it must later be dug out.)
+- **Render rule — loss-free (`src/manual/render.ts`), the display analogue of the sectioner's
+  line-conservation (rule #9).** Section bodies are MyST (prose, `$…$` LaTeX, `:::{directives}`,
+  tables; 42.7 % of corpus bytes inside fences). A naive Markdown renderer eats what it doesn't
+  understand **without error** — a directive vanishes, math turns to underscore-mush, an ORCA input
+  loses indentation, and the reader can't tell. So we recognize **exactly one** structure — ` ``` `
+  fences → a monospace block preserving indentation — and emit **everything else verbatim**. We do
+  **not** render MyST. **Post-condition (`render.test.ts`):** every non-whitespace char of `body_md`
+  survives into the rendered text (`reactText` mirrors DOM `textContent` without jsdom; asserted
+  char-for-char over crafted samples covering each hazard, and checked over the whole real corpus —
+  0 loss on 126 leaves). A loss fails the test naming the section.
+- **Snippet highlighting** — `search_manual`'s `snippet()` wraps matches in **PUA codepoints
+  `U+E000`/`U+E001`**, not `[`/`]`. Measured: `[`/`]` occur **1905 / 1903** times in the 4 MB corpus
+  (every `[link](…)` / MyST role), the PUA pair **0** — so `<mark>` splitting on them can't paint a
+  phantom highlight on literal brackets. `SNIP_OPEN`/`SNIP_CLOSE` are shared with Rust.
+- **No new dependency, no `<select>`** (so the WebKitGTK select gotcha doesn't apply here); the search
+  box is a plain `.input`.
+- **Known debt (named, not fixed here):** `manual_root()` resolves to `CARGO_MANIFEST_DIR`, so the
+  index only builds from a **source** run; resolving the corpus path for a **bundled** app is a later
+  concern (recorded in [manual-index.md](manual-index.md)).
+
 ## Queue control (status bar)
 
 - The **Pause/Resume button always renders** (you can pause *ahead* of stacking jobs, and the
@@ -381,7 +417,7 @@ a standard xyz via `atomLinesToXyz`.
   export) — **done** (Phase 3); the results-frontend detail lives in
   [results-ui.md](results-ui.md) (`src/screens/ResultsCard.tsx`, `src/spectrum/`, `src/trajectory/`,
   `src/orbitals/`, `src/export/`).
-- **Manual** (FTS search panel) — Phase 4.
+- **Manual** (FTS search panel) — **done** (Phase 4.4, below).
 - **"Run on:" backend selector + server profiles** in Settings — Phase 5.
 
 ## State (current & planned)

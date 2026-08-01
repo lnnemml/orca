@@ -3820,3 +3820,40 @@ byte-deterministic re-run. Output: 2836 records, 317 sections, owner_source text
 802 / null 669. New measures in `manual/tests.rs`: `owner_signal_measure`, `owner_union_measure`.
 `cargo test` green (147 passed, 13 ignored). Wiki: `manual-keywords.md` rewritten, `manual-sources.md`
 Part C before/after, `index.md` line. No DB/FTS/sectioner touched, no {numref} layer, no new deps.
+
+## [2026-08-01] session | Unit 4.4: manual search panel + SectionView (loss-free render)
+
+First REAL consumer of the manual index (ADR-013). Backend: `get_manual_section(id) -> ManualSection`
+(full body, not a snippet; missing id = NotFound, never empty) and `manual_index_status() ->
+Option<ManualStatus>` (drives a Build-index state, not a mis-readable empty list). UI: `ManualScreen`
+(debounced `search_manual`, results as breadcrumb › title + highlighted snippet, click →
+`get_manual_section`) hosting a **standalone `SectionView`** — kept separate on purpose so the next
+unit's Monaco hover can open a section in a drawer without pulling the author out of the editor (global
+drawer NOT built here).
+
+**Render rule (display analogue of line-conservation, rule #9): what is not recognized is shown AS IS,
+never dropped.** Section bodies are MyST (prose, LaTeX, `:::{directives}`, tables; 42.7 % of bytes in
+fences). A naive markdown renderer eats what it can't parse WITHOUT error. So `render.ts` recognizes
+exactly one structure — ` ``` ` fences → monospace, indentation preserved — and emits everything else
+verbatim; no MyST rendering, no new dependency (react-markdown/marked would be a dep that doesn't
+understand MyST — not taken). **Preservation post-condition (`render.test.ts`):** every non-whitespace
+char of `body_md` survives into the rendered text (`reactText` mirrors DOM `textContent`, no jsdom),
+asserted char-for-char over hazard samples AND checked over the whole real corpus (126 leaves, 0 loss).
+
+**Snippet markers moved off `[`/`]` → PUA `U+E000`/`U+E001`.** Measured: `[`/`]` occur **1905/1903**
+in the 4 MB corpus (every `[link]`/role), PUA pair **0** — so `<mark>` highlighting can't fire on
+literal brackets (task caught by number, not by eye).
+
+**Real-window verification (WebKitGTK, the ethos: critical bugs surface in the actual window, not
+vitest).** Launched `npm run tauri dev`, screenshotted: (1) app renders, Manual tab present; (2) the
+Build-index empty state; (3) after building (1586 sections) a search for RIJCOSX — results with
+correct highlights (RIJCOSX marked, literal `[`/`:` in bib text NOT falsely marked), and a section
+whose body is a MyST `{bibliography}` directive **rendered verbatim in a monospace fence, delimiters
+and indentation intact** — the exact silent-loss case, prevented. Temporary auto-drive + default-screen
+patches used to reach the state (no xdotool for input injection) and **reverted** before commit.
+
+Debt named, not fixed: `manual_root()` = `CARGO_MANIFEST_DIR`, so indexing works only from a source
+run; bundled-app corpus path is later. Verify: cargo 148, tsc clean, vitest 397 (incl. preservation).
+Wiki: frontend.md (Manual panel + SectionView + why), manual-index.md (get/status commands, markers,
+manual_root debt), ROADMAP (panel [x]). No schema/FTS/sectioner/generator/keywords.json changes; no
+hover, no {numref}, no drawer, no deps.

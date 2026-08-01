@@ -44,6 +44,27 @@ pub struct ManualHit {
     pub rank: f64,
 }
 
+/// A full section for display — everything the panel/`SectionView` needs.
+#[derive(Debug, Clone, Serialize)]
+pub struct ManualSection {
+    pub id: i64,
+    pub file: String,
+    pub level: u8,
+    pub title: String,
+    pub breadcrumb: Vec<String>,
+    pub anchor: Option<String>,
+    pub anchor_source: String,
+    pub body_md: String,
+}
+
+/// Snippet match delimiters. `[`/`]` (the obvious choice, and the first cut) occur
+/// **1905 / 1903** times in the 4 MB corpus (measured) — every `[link](…)` and MyST
+/// role — so a highlighter splitting on them would paint ~1900 phantom matches. These
+/// two Private-Use-Area codepoints occur **0** times in the corpus (measured), so a
+/// split on them is exact. The frontend turns them into `<mark>`.
+pub const SNIP_OPEN: &str = "\u{E000}";
+pub const SNIP_CLOSE: &str = "\u{E001}";
+
 /// Walk `dir` for `*.md.txt`, pushing `(file_id, contents)`. `file_id` is the path
 /// relative to `base` with `.md.txt` stripped and forward slashes — the form an
 /// `objects.inv` uri uses (`contents/essentialelements/RI`).
@@ -284,15 +305,18 @@ pub fn search_manual(conn: &Connection, query: &str, limit: usize) -> Result<Vec
     if m.is_empty() {
         return Ok(Vec::new());
     }
-    let mut stmt = conn.prepare(
+    // Snippet markers are PUA codepoints (measured 0 in the corpus), not `[`/`]`
+    // (measured 1905/1903) — so the frontend can split on them without false matches.
+    let snip = format!("snippet(manual_fts, 2, '{SNIP_OPEN}', '{SNIP_CLOSE}', '…', 12)");
+    let mut stmt = conn.prepare(&format!(
         "SELECT s.id, s.file, s.breadcrumb, s.title, s.anchor,
-                snippet(manual_fts, 2, '[', ']', '…', 12),
+                {snip},
                 bm25(manual_fts, 10.0, 5.0, 1.0)
          FROM manual_fts JOIN manual_sections s ON s.id = manual_fts.rowid
          WHERE manual_fts MATCH ?1
          ORDER BY bm25(manual_fts, 10.0, 5.0, 1.0)
          LIMIT ?2",
-    )?;
+    ))?;
     let hits = stmt
         .query_map(params![m, limit as i64], |r| {
             let breadcrumb_json: String = r.get(2)?;
@@ -309,6 +333,68 @@ pub fn search_manual(conn: &Connection, query: &str, limit: usize) -> Result<Vec
         .filter_map(Result::ok)
         .collect();
     Ok(hits)
+}
+
+/// Whether the manual index has rows, and the ingest tallies if so — so the panel can
+/// show a "Build index" state instead of an empty result list (which reads as "nothing
+/// found"). `None` = not built (no rows).
+#[derive(Debug, Clone, Serialize)]
+pub struct ManualStatus {
+    pub orca_version: String,
+    pub section_count: i64,
+    pub anchors_verified: i64,
+    pub null_anchors: i64,
+}
+
+/// The index status from `manual_provenance` — `None` when nothing is indexed yet.
+pub fn index_status(conn: &Connection) -> Result<Option<ManualStatus>, AppError> {
+    let row = conn.query_row(
+        "SELECT orca_version, section_count, anchors_verified
+         FROM manual_provenance ORDER BY indexed_at DESC LIMIT 1",
+        [],
+        |r| {
+            let section_count: i64 = r.get(1)?;
+            let anchors_verified: i64 = r.get(2)?;
+            Ok(ManualStatus {
+                orca_version: r.get(0)?,
+                section_count,
+                anchors_verified,
+                null_anchors: section_count - anchors_verified,
+            })
+        },
+    );
+    match row {
+        Ok(s) if s.section_count > 0 => Ok(Some(s)),
+        Ok(_) | Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(AppError::from(e)),
+    }
+}
+
+/// Fetch one section in full for display. A missing id is a `NotFound` error, never an
+/// empty section (the caller must be able to tell "no such section" from "empty body").
+pub fn get_section(conn: &Connection, id: i64) -> Result<ManualSection, AppError> {
+    conn.query_row(
+        "SELECT id, file, level, title, breadcrumb, anchor, anchor_source, body_md
+         FROM manual_sections WHERE id = ?1",
+        params![id],
+        |r| {
+            let breadcrumb_json: String = r.get(4)?;
+            Ok(ManualSection {
+                id: r.get(0)?,
+                file: r.get(1)?,
+                level: r.get::<_, i64>(2)? as u8,
+                title: r.get(3)?,
+                breadcrumb: serde_json::from_str(&breadcrumb_json).unwrap_or_default(),
+                anchor: r.get(5)?,
+                anchor_source: r.get(6)?,
+                body_md: r.get(7)?,
+            })
+        },
+    )
+    .map_err(|e| match e {
+        rusqlite::Error::QueryReturnedNoRows => AppError::NotFound(format!("manual section {id}")),
+        other => AppError::from(other),
+    })
 }
 
 #[cfg(test)]
@@ -380,10 +466,30 @@ mod tests {
         assert_eq!(hits.first().map(|h| h.title.as_str()), Some("RIJCOSX"));
         assert!(hits[0].rank < 0.0, "bm25 is negative: {}", hits[0].rank);
         assert!(hits[0].snippet.to_lowercase().contains("rijcosx"));
+        // The match is wrapped in PUA markers, not `[`/`]` (which occur in the corpus).
+        assert!(hits[0].snippet.contains(SNIP_OPEN) && hits[0].snippet.contains(SNIP_CLOSE));
+        assert!(!hits[0].snippet.contains('['));
 
         let water = search_manual(&conn, "CPCM water", 5).unwrap();
         assert_eq!(water.first().map(|h| h.title.as_str()), Some("CPCM"));
         assert!(water[0].anchor.is_none()); // undetermined here
+    }
+
+    #[test]
+    fn get_section_returns_full_body_or_notfound() {
+        let mut conn = mem_db();
+        insert(&mut conn, &[section(
+            "contents/essentialelements/RI", "RIJCOSX", &[],
+            "The RIJCOSX approximation accelerates hybrid DFT.\n\n```orca\n! RIJCOSX\n```",
+        )]);
+        let id = search_manual(&conn, "RIJCOSX", 1).unwrap()[0].id;
+        let sec = get_section(&conn, id).unwrap();
+        assert_eq!(sec.title, "RIJCOSX");
+        assert_eq!(sec.breadcrumb, vec!["Root".to_string()]);
+        assert!(sec.body_md.contains("```orca")); // full body, not a snippet
+        assert_eq!(sec.anchor_source, "undetermined");
+        // A missing id is an error, not an empty section.
+        assert!(matches!(get_section(&conn, 999_999), Err(AppError::NotFound(_))));
     }
 
     #[test]

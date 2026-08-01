@@ -1741,3 +1741,108 @@ button.ir-imaginary-mode.selected {
   color: var(--accent);
   font-weight: 600;
 }
+
+/* ── Manual panel (Phase 4.4) ──────────────────────────────────────────────── */
+.manual-screen {
+  display: grid;
+  grid-template-columns: minmax(320px, 400px) 1fr;
+  gap: 16px;
+  align-items: start;
+  /* fill the viewport under the topbar/statusbar so each column scrolls alone */
+  height: calc(100vh - 96px);
+  overflow: hidden;
+}
+.manual-search-col {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+}
+.manual-search-col .input {
+  width: 100%;
+  margin-bottom: 10px;
+}
+.manual-results {
+  overflow-y: auto;
+  min-height: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.manual-result {
+  text-align: left;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  cursor: pointer;
+  color: var(--text);
+  font: inherit;
+}
+.manual-result:hover {
+  border-color: var(--accent);
+}
+.manual-result.active {
+  border-color: var(--accent);
+  background: var(--panel-2);
+}
+.manual-result-crumb {
+  font-size: 0.78rem;
+  color: var(--muted);
+  margin-bottom: 3px;
+}
+.manual-result-crumb strong {
+  color: var(--text);
+}
+.manual-result-snippet {
+  font-size: 0.82rem;
+  color: var(--muted);
+  line-height: 1.4;
+}
+.manual-result-snippet mark {
+  background: rgba(79, 140, 255, 0.28);
+  color: var(--text);
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+.manual-view-col {
+  overflow-y: auto;
+  min-height: 0;
+  height: 100%;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 18px 22px;
+}
+.manual-breadcrumb {
+  font-size: 0.8rem;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+.manual-section-title {
+  margin: 0 0 12px;
+  font-size: 1.35rem;
+}
+.manual-body {
+  line-height: 1.55;
+}
+/* Prose, LaTeX, :::{directives}, tables — shown AS IS, newlines/indentation kept. */
+.manual-prose {
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0 0 2px;
+}
+/* Fenced code (ORCA input) — monospace, indentation preserved, horizontal scroll. */
+.manual-fence {
+  white-space: pre;
+  overflow-x: auto;
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin: 8px 0;
+}

@@ -102,6 +102,8 @@ pub fn run() {
             commands::molecules::delete_molecule,
             commands::manual::build_manual_index,
             commands::manual::search_manual,
+            commands::manual::get_manual_section,
+            commands::manual::manual_index_status,
             sidecar::get_sidecar_status,
             xtb::xtb_version,
             xtb::xtb_optimize,

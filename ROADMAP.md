@@ -374,9 +374,13 @@ wherever an imported structure is first shown and is carried forward independent
       conservation), and the v9 schema (`manual_sections` + external-content `manual_fts` +
       provenance) with `build_manual_index` ingest (byte-for-byte read-back post-conditions). 1586
       sections, 1068 verified anchors.
-- [~] Manual panel: full-text search with keyword highlighting, section rendering. **Backend done
-      (4.3):** `search_manual` command → `bm25`-ranked hits with FTS5 `snippet()`; the retrieval gate
-      measured hit@5 88 % (raw `body_md` chosen by number). **The panel UI is 4.4** (no UI this unit).
+- [x] Manual panel: full-text search with keyword highlighting, section rendering. Backend (4.3):
+      `search_manual` → `bm25`-ranked hits; **UI (4.4):** `ManualScreen` (debounced search, results as
+      breadcrumb › title + highlighted snippet) + `get_manual_section` → a standalone `SectionView`
+      (drawer-ready for the hover unit). Render is **minimal + loss-free** — fences as monospace, all
+      else verbatim; a preservation test asserts every non-whitespace char of `body_md` survives.
+      Snippet markers moved off `[`/`]` (1905/1903 in the corpus) to PUA codepoints (0). Verified in
+      the real WebKitGTK window. See [manual-index.md](wiki/modules/manual-index.md).
 - [~] `keywords.json`: input keywords (`!` line + `%` blocks) → manual sections; **seeded** from the
       manual's own native "Keywords" sections + genindex, then curated on top (ADR-013 narrows
       ADR-006's "by hand"); grow it organically, starting with everything the template library uses.

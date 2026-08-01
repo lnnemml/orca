@@ -6,6 +6,7 @@ import { NewJobScreen } from "./screens/NewJobScreen";
 import { JobsScreen } from "./screens/JobsScreen";
 import { JobDetailScreen } from "./screens/JobDetailScreen";
 import { MoleculesScreen } from "./screens/MoleculesScreen";
+import { ManualScreen } from "./screens/ManualScreen";
 import { SettingsScreen } from "./screens/SettingsScreen";
 import type { Job, Molecule, SidecarState, SidecarStatus } from "./types";
 import "./styles/app.css";
@@ -20,6 +21,7 @@ type Screen =
   | { kind: "new-job"; initialMolecule?: Molecule; initialJob?: Job; keepScene?: boolean }
   | { kind: "jobs" }
   | { kind: "molecules" }
+  | { kind: "manual" }
   | { kind: "settings" }
   | { kind: "job-detail"; jobId: string; autoRun: boolean };
 
@@ -37,10 +39,11 @@ const STATUS_LABEL: Record<SidecarState, string> = {
   down: "Sidecar down",
 };
 
-const TABS: { id: "new-job" | "jobs" | "molecules" | "settings"; label: string }[] = [
+const TABS: { id: "new-job" | "jobs" | "molecules" | "manual" | "settings"; label: string }[] = [
   { id: "new-job", label: "New Job" },
   { id: "jobs", label: "Jobs" },
   { id: "molecules", label: "Molecules" },
+  { id: "manual", label: "Manual" },
   { id: "settings", label: "Settings" },
 ];
 
@@ -165,6 +168,8 @@ function App() {
             setScreen({ kind: "new-job", initialMolecule: mol })
           }
         />
+      ) : screen.kind === "manual" ? (
+        <ManualScreen />
       ) : screen.kind === "settings" ? (
         <SettingsScreen />
       ) : (
