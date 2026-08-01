@@ -1846,3 +1846,33 @@ button.ir-imaginary-mode.selected {
   padding: 8px 10px;
   margin: 8px 0;
 }
+
+/* ── Manual hover drawer (Phase 4.4) — a side panel opened from an editor hover ── */
+.manual-drawer {
+  position: fixed;
+  top: 48px;             /* under the topbar */
+  bottom: 34px;          /* above the statusbar */
+  right: 0;
+  width: min(480px, 42vw);
+  background: var(--panel);
+  border-left: 1px solid var(--border);
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.35);
+  display: flex;
+  flex-direction: column;
+  z-index: 40;
+}
+.manual-drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.manual-drawer-body {
+  overflow-y: auto;
+  padding: 14px 18px;
+  min-height: 0;
+}
+/* Monaco renders hover command-links as anchors — make them read as actions. */
+.monaco-hover a { color: var(--accent); }
+.manual-table { white-space: pre; }

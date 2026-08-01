@@ -19,6 +19,10 @@ export function renderManualBody(body: string): ReactNode {
       <pre className="manual-fence" key={i}>
         {b.text}
       </pre>
+    ) : b.kind === "table" ? (
+      <pre className="manual-fence manual-table" key={i}>
+        {b.text}
+      </pre>
     ) : (
       <div className="manual-prose" key={i}>
         {b.text}

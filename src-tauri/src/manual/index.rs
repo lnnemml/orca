@@ -370,6 +370,42 @@ pub fn index_status(conn: &Connection) -> Result<Option<ManualStatus>, AppError>
     }
 }
 
+/// Resolve a `keywords.json` section descriptor `(file, breadcrumb, title, nth)` to a
+/// `manual_sections` row id. `keywords.json` references sections by index into its OWN
+/// `sections` array (a different space from the DB's synthetic id), so the hover needs
+/// this bridge. `nth` is the ordinal among identical `(file, breadcrumb, title)` triples
+/// in document order (`line_start`) — it exists because that triple collides once
+/// (mreom). **Post-condition (rule #9): a descriptor resolves to EXACTLY one row.** 0
+/// matches (the manual moved) or an out-of-range `nth` is a `NotFound` error, never a
+/// pick-first — a wrong section shown confidently is the failure the whole layer guards.
+pub fn resolve_descriptor(
+    conn: &Connection,
+    version: &str,
+    file: &str,
+    breadcrumb: &[String],
+    title: &str,
+    nth: usize,
+) -> Result<i64, AppError> {
+    let bc = serde_json::to_string(breadcrumb)
+        .map_err(|e| AppError::Internal(format!("serialize breadcrumb: {e}")))?;
+    let mut stmt = conn.prepare(
+        "SELECT id FROM manual_sections
+         WHERE orca_version = ?1 AND file = ?2 AND breadcrumb = ?3 AND title = ?4
+         ORDER BY line_start",
+    )?;
+    let ids: Vec<i64> = stmt
+        .query_map(params![version, file, bc, title], |r| r.get::<_, i64>(0))?
+        .filter_map(Result::ok)
+        .collect();
+    ids.get(nth).copied().ok_or_else(|| {
+        AppError::NotFound(format!(
+            "manual descriptor {file} :: {} > {title} [nth {nth}] resolved to {} row(s)",
+            breadcrumb.join(" > "),
+            ids.len()
+        ))
+    })
+}
+
 /// Fetch one section in full for display. A missing id is a `NotFound` error, never an
 /// empty section (the caller must be able to tell "no such section" from "empty body").
 pub fn get_section(conn: &Connection, id: i64) -> Result<ManualSection, AppError> {

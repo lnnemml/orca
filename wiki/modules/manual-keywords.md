@@ -103,17 +103,55 @@ out (unit 4.4, [orca/manual-sources.md](../orca/manual-sources.md)): `anchor` NU
 `## Perturbative MR-EOM-CCPT` H2 siblings), so `nth` disambiguates only where the triple repeats.
 `line_start` is **not** in the key (diff churn).
 
-**Loader post-conditions (rule #9), when the hover layer is built:** (1) a `(block, keyword)` /
-`keyword` key resolves to **exactly one record**; (2) every int ref is a valid `sections` index — the
-generator already asserts **zero dangling references**. A key resolving to nothing or an index out of
-range must fail loudly, never point somewhere.
+## The bridge to the DB — descriptor → row (unit 4.4 Part B)
 
-## Coverage — the hard gate: 46/46
+`keywords.json` references sections **by index into its own `sections` array** (a descriptor
+`(file, breadcrumb, title, nth)`); `get_manual_section` takes a **DB synthetic id** — different spaces.
+`index.rs::resolve_descriptor` bridges them: it matches `(orca_version, file, breadcrumb, title)`
+ordered by `line_start` and returns the `nth`. **Post-condition (rule #9), specified in 4.4 and only
+checkable now that there is a consumer — verified:** every one of the **317 descriptors resolves to
+EXACTLY one row**, injectively (gate `cargo test keywords_bridge -- --ignored`: 317 → 317 distinct
+rows, 0 failures). 0 matches (the manual moved) or an out-of-range `nth` is a `NotFound` error, never a
+pick-first. The command `resolve_manual_section` also checks **`keywords.json.orca_version` == the
+built index's version** — a stale map is reported, not silently resolved against a different corpus.
 
-Broad seed, **narrow post-condition**: every keyword the **app itself emits** (from the code:
-`input-builder/`, `templates/`, `scene/constraints.ts`) must resolve, or the generator **panics naming
-the misses**. Four needed curation: `M06-L`/`M06-2X` via `aliases[]` (manual spells them
-`M06L`/`M062X`); `TightSCF`/`VeryTightSCF` as curated prose entries (`scf › Convergence Tolerances`).
+## Coverage — the hard gate, rewritten in CONSUMER form
+
+The seed post-condition is: every keyword the **app itself emits** must resolve. **The old gate was
+partly empty.** It matched by bare **string** (`norm_kw`, which drops `%`), so it counted `%maxcore`
+covered because `maxcore` matched a `MAXCORE` **block-option** inside %xtb/%cis/%mdci — a match of the
+*string*, not the *entity*. Rewritten to ask the **hover's** question — *does a token, in its emit
+context, resolve to a record of the right TYPE (and, in a block, the right block)?* A wrong-type match
+is a **miss**, named, not counted.
+
+- **Rust generator gate** (`generate_keywords_json`): type-aware now (`!`→simple, `%`→block,
+  `opt`→block-option). Result: **44 of 46** resolve; **2 named gaps** the old string gate hid —
+  `%maxcore` (a no-`end` directive; home is the `{numref}` "List of Input Blocks" layer) and `CPCM`
+  (emitted as a simple `!` keyword `CPCM(solvent)`, but only `%cpcm` the block was seeded). Both stay
+  **silent** in the hover (correct — silence beats a wrong section); both are curation targets, not
+  fixed here (that changes the file). Four keywords resolve via curation: `M06-L`/`M06-2X` through
+  `aliases[]`; `TightSCF`/`VeryTightSCF` as curated prose entries.
+- **TS consumer gate** (`src/manual/coverage.test.ts`): tokenises the Phase-1 templates + block
+  contexts with the **real `wordPattern`**, classifies each token's context, and looks up type- and
+  block-aware. **13 of 22** distinct `(token, context)` resolve; the misses are correct silences —
+  `%maxcore [block]`, `Constraints [block-option %geom]` (its record is under `%method`, a curation
+  miss), `nprocs [block-option %pal]`, and non-keywords (`end`, constraint atoms). It also asserts
+  `MaxIter` resolves to **`%scf`** (the right block), not the 15 other `MaxIter`s.
+
+## The hover provider + drawer (the consumers)
+
+`src/editor/orca-hover.ts` registers a Monaco hover provider and an `orca.openManualSection` command.
+Three cases, kept apart (`keyword-lookup.ts::hoverContext`): `!`-line → simple; `%name` → block; inside
+a block (`enclosingBlock`, plus a same-line `%pal nprocs …` check) → block-option of that block.
+`aliases[]` are consulted (`M06-L`↔`M06L`). **Contract, enforced:** a qualified **miss returns `null`
+→ no hover at all** (silence), never a bare-name or FTS fall-back — that is the panel's separate path.
+An empty `summary` is not a reason to suppress (seeded records have none): the hover shows keyword,
+type, owning block (+ `owner_source`), and the target's breadcrumb › title as an **Open** command-link;
+several targets → *"documented in N places"* with a list, **not** a picked first. Clicking Open fires
+the command → `ManualDrawer` resolves the descriptor via `resolve_manual_section` and shows the section
+in a **side drawer that reuses the SAME `SectionView`** as `ManualScreen` — the author is not pulled
+out of the editor. Word boundaries come whole via the language `wordPattern` (`def2-SVP`, `%maxcore`;
+`wiki/orca/input-syntax.md`).
 
 ## What was seeded / deliberately deferred
 

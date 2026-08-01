@@ -104,6 +104,7 @@ pub fn run() {
             commands::manual::search_manual,
             commands::manual::get_manual_section,
             commands::manual::manual_index_status,
+            commands::manual::resolve_manual_section,
             sidecar::get_sidecar_status,
             xtb::xtb_version,
             xtb::xtb_optimize,

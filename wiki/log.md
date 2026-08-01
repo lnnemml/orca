@@ -3890,3 +3890,48 @@ Measured over the manual's own **1477 ` ```orca ` blocks** (a real validation co
 Facts in new `wiki/orca/input-syntax.md`. Verify: vitest green (enclosing-block 10 traps), tsc clean,
 cargo untouched. Part B (hover provider + drawer + wordPattern + pipe-table `<pre>`) NOT started.
 No keywords.json/schema/sectioner/Monarch-state changes, no deps.
+
+## [2026-08-01] session | Unit 4.4 Part B: manual hover provider (qualified lookup, silence on miss) + section drawer
+
+The editor's consumer of keywords.json — and the first real test of its whole design (a block-option
+is a qualified name). Six pieces:
+
+**Coverage gate rewritten in CONSUMER form (the flaw the unit opened on).** The old gate matched by
+bare STRING (`norm_kw`, drops `%`), so `%maxcore` counted covered because `maxcore` matched a `MAXCORE`
+block-option in %xtb/%cis/%mdci — string, not entity; "46/46" was partly empty. Now type-aware
+(`!`→simple, `%`→block, `opt`→block-option): **44/46 resolve**, two named gaps the old gate hid —
+`%maxcore` ({numref} layer) and `CPCM` (emitted simple `CPCM(solvent)`, only `%cpcm` seeded). Both stay
+silent (correct); curation targets, file untouched. A second **TS consumer gate** (coverage.test.ts)
+tokenises the templates with the real wordPattern and asserts type+block-aware resolution (MaxIter→%scf,
+not the other 15).
+
+**Bridge keywords.json→DB** (`resolve_descriptor`): descriptor `(file,breadcrumb,title,nth)` → row.
+Post-condition promised in 4.4, now checkable and **verified: 317/317 descriptors → exactly one row,
+injective** (gate `keywords_bridge`). Version check: keywords.json.orca_version must equal the built
+index (stale map reported, not resolved).
+
+**wordPattern** (task 3): the language config keeps `-_./%` in words so `def2-SVP`/`%maxcore`/`def2/J`
+come whole (Monaco default split them). 6-token test.
+
+**Hover provider** (`orca-hover.ts`): 3 cases via `hoverContext` (+`enclosingBlock`, +same-line
+`%pal nprocs`), type/block-aware lookup, `aliases[]`. **Contract enforced: a miss → no hover at all
+(silence)**, never a bare-name or FTS fall-back. Body: keyword/type/owning-block(+owner_source), Open
+command-link; several targets → "documented in N places", not a picked first. Empty summary doesn't
+suppress.
+
+**Drawer** (`ManualDrawer.tsx`): a fixed side overlay opened by the Open command; resolves via
+`resolve_manual_section` and renders the SAME `SectionView` as ManualScreen — author stays in the
+editor. **Pipe-tables** (task 6): `render.ts` groups `^\s*\|` runs into a `<pre>` (110 sections, 7.1 %,
+were misaligned prose); font choice only, preservation test unchanged and green.
+
+**Window verification (WebKitGTK).** App runs, editor + hover registered, no crash. Drawer verified
+end-to-end in the real window: a descriptor resolved through the bridge and rendered RIJCOSX in the
+side drawer with the editor still visible (loss-free render: `{cite}` roles and `[…](sec:…)` shown
+as-is). Honest limit: the hover POPUP itself needs a real mouseover and this environment has no input
+injection (no xdotool), so the hover's LOGIC (resolveHover/buildHoverMarkdown: RIJCOSX simple/multi,
+MaxIter→%scf, %maxcore→silence, def2-SVP whole) is covered by unit tests, and its OUTPUT (the drawer)
+by the window. Temp auto-open patch reverted before commit.
+
+Verify: cargo 148 (+ ignored gates keywords_bridge/generate green), tsc clean, vitest 420. No
+{numref} layer, no Monarch state, no schema/sectioner change, file unchanged (only the gate), no deps.
+Left: `%maxcore`/`CPCM`/`Constraints`-in-%geom curation; the {numref} layer.

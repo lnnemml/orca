@@ -381,6 +381,30 @@ in the shell; two columns — debounced FTS search on the left, the full section
 - **Known debt (named, not fixed here):** `manual_root()` resolves to `CARGO_MANIFEST_DIR`, so the
   index only builds from a **source** run; resolving the corpus path for a **bundled** app is a later
   concern (recorded in [manual-index.md](manual-index.md)).
+- **Pipe tables render monospace (4.4 Part B).** `render.ts` now groups a run of `^\s*\|` rows into a
+  `<pre>` (like a fence) so table columns align — measured 110 sections (7.1 %) carried a pipe-table
+  that was rendering as misaligned proportional prose. Same linear per-line check as the fence, **no
+  table parsing** — a font choice only, so the preservation test stays green unchanged.
+
+## Manual hover in the editor (`src/editor/orca-hover.ts`, `src/manual/ManualDrawer.tsx`) — 4.4 Part B
+
+The editor's consumer of `keywords.json`. `InputEditor` registers a Monaco hover provider (+ the
+`orca.openManualSection` command) on language registration. The provider gets the word (whole, via the
+`wordPattern` — `def2-SVP`, `%maxcore` come intact), classifies its context
+([keyword-lookup.ts](../../src/manual/keyword-lookup.ts): `!`-line → simple, `%name` → block, inside a
+block → block-option of that block via `enclosingBlock`), and looks up **type- and block-aware** (a
+wrong-type match is a miss), consulting `aliases[]`.
+
+- **Contract (enforced, from manual-keywords.md):** a qualified **miss → the hover does not appear at
+  all** (silence), never a bare-name or FTS fall-back — hovering `%maxcore` shows nothing, not "not
+  found". Unqualified search is the panel's separate path.
+- **Hover body:** keyword, type, owning block (+ `owner_source`), and an **Open** command-link with the
+  target's breadcrumb › title; several targets → *"documented in N places"* (a list, not a picked
+  first). An empty `summary` does not suppress it (seeded records have none).
+- **`ManualDrawer`** is a fixed-position side overlay (does not disturb the editor layout, so the
+  author stays in the editor). Clicking Open fires the command → the drawer resolves the descriptor via
+  `resolve_manual_section` (the keywords.json→DB bridge, with a version check) and renders the section
+  in the **SAME `SectionView`** as `ManualScreen` — no second copy.
 
 ## Queue control (status bar)
 

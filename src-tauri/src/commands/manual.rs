@@ -64,3 +64,29 @@ pub fn manual_index_status(db: State<'_, DbState>) -> Result<Option<ManualStatus
     let conn = db.lock()?;
     index::index_status(&conn)
 }
+
+/// Resolve a `keywords.json` section descriptor to the full section (the hover→drawer
+/// path). `map_version` is `keywords.json`'s `orca_version`: if it disagrees with the
+/// built index, the map is **stale** — say so, don't silently resolve against a
+/// different corpus. The descriptor must resolve to exactly one row (`resolve_descriptor`).
+#[tauri::command]
+pub fn resolve_manual_section(
+    db: State<'_, DbState>,
+    file: String,
+    breadcrumb: Vec<String>,
+    title: String,
+    nth: usize,
+    map_version: String,
+) -> Result<ManualSection, AppError> {
+    let conn = db.lock()?;
+    let status = index::index_status(&conn)?
+        .ok_or_else(|| AppError::NotFound("manual index not built".into()))?;
+    if status.orca_version != map_version {
+        return Err(AppError::Internal(format!(
+            "keywords.json is for ORCA {map_version} but the index is {} — rebuild the index",
+            status.orca_version
+        )));
+    }
+    let id = index::resolve_descriptor(&conn, &status.orca_version, &file, &breadcrumb, &title, nth)?;
+    index::get_section(&conn, id)
+}

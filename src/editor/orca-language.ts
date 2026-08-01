@@ -10,12 +10,23 @@ import type { languages } from "monaco-editor";
 /** The language id registered with Monaco. */
 export const orcaLanguageId = "orca-inp";
 
+/**
+ * A word is an ORCA token — keep `- _ . / %` INSIDE words so `def2-SVP`, `NEB-TS`,
+ * `M06-2X`, `%maxcore`, `def2/J` come to the hover WHOLE. Monaco's default splits on
+ * all of those (measured, `wiki/orca/input-syntax.md`), and `def2` handed instead of
+ * `def2-SVP` is a lookup miss that looks exactly like "not in the map". Second branch:
+ * float literals (mirrors Monaco's default first group), so numbers aren't mis-worded.
+ */
+export const orcaWordPattern =
+  /(%?[A-Za-z][A-Za-z0-9]*(?:[-_./][A-Za-z0-9]+)*)|(-?\d*\.\d\w*)/;
+
 /** Editor behaviour: `#` line comments, no bracket pairs to auto-close. */
 export const orcaLanguageConfiguration: languages.LanguageConfiguration = {
   comments: { lineComment: "#" },
   brackets: [],
   surroundingPairs: [{ open: '"', close: '"' }],
   autoClosingPairs: [{ open: '"', close: '"' }],
+  wordPattern: orcaWordPattern,
 };
 
 /** Monarch tokenizer. ORCA input is case-insensitive, hence `ignoreCase`. */

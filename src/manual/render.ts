@@ -18,9 +18,11 @@
 
 export type Block =
   | { kind: "fence"; text: string } // full verbatim region, INCLUDING the ``` lines
+  | { kind: "table"; text: string } // a run of `|`-rows — monospace so columns align
   | { kind: "prose"; text: string }; // verbatim; newlines/indentation preserved by CSS
 
 const FENCE = /^\s*```/;
+const PIPE_ROW = /^\s*\|/; // a Markdown pipe-table row (measured: 110 sections carry one)
 
 /**
  * Split a body into fence and prose blocks. Every source line lands in exactly one
@@ -50,6 +52,17 @@ export function parseManualBody(body: string): Block[] {
         if (close) break;
       }
       blocks.push({ kind: "fence", text: buf.join("\n") });
+    } else if (PIPE_ROW.test(lines[i])) {
+      // A run of pipe-table rows → monospace so columns line up. Same linear
+      // per-line check as FENCE — no table PARSING, only a font choice; content is
+      // still emitted verbatim, so the preservation invariant is untouched.
+      flush();
+      const buf: string[] = [];
+      while (i < lines.length && PIPE_ROW.test(lines[i])) {
+        buf.push(lines[i]);
+        i++;
+      }
+      blocks.push({ kind: "table", text: buf.join("\n") });
     } else {
       prose.push(lines[i]);
       i++;

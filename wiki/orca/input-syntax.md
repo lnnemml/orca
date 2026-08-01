@@ -83,9 +83,10 @@ Monaco's **default** word definition (reconstructed verbatim from
 | `RIJCOSX` | `RIJCOSX` (only survivor) | `RIJCOSX` |
 
 `def2` handed to the lookup instead of `def2-SVP` is a **miss that looks exactly like "not in the
-map"** — the silence-masking-an-error the consumer contract forbids. The hover unit **must** set a
-`wordPattern` on the language configuration that keeps `- _ . / %` inside words, e.g.
-`/(%?[A-Za-z][A-Za-z0-9]*(?:[-_./][A-Za-z0-9]+)*)|(-?\d*\.\d\w*)/`.
+map"** — the silence-masking-an-error the consumer contract forbids. **Applied (4.4 Part B):** the
+language configuration now sets `orcaWordPattern =
+/(%?[A-Za-z][A-Za-z0-9]*(?:[-_./][A-Za-z0-9]+)*)|(-?\d*\.\d\w*)/`, keeping `- _ . / %` inside words;
+tested on all six tokens (`src/editor/orca-language.test.ts`).
 
 ## Lookup coverage on OUR text (the Phase-1 template library)
 

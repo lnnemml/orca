@@ -390,13 +390,14 @@ wherever an imported structure is first shown and is carried forward independent
       (measured 14.2 %) carry `targets[]`, not a guessed section. See
       [manual-keywords.md](wiki/modules/manual-keywords.md). **Left:** hand summaries, the `{numref}`
       deferred layer (60 `%`-blocks), and the hover-side disambiguation of `targets[]`.
-- [ ] Monaco hover provider: hover a keyword in the editor → short description → click opens
-      the full manual section in the panel. **Depends on the `keywords.json` item above and is fed
-      by it, NOT by FTS** — the retrieval gate measured hit@1 = 9/17 (~53 %) vs hit@5 15/17 (88 %),
-      so FTS is fine for the five-candidate panel but too imprecise for a single confident hover.
-      If a keyword is **not** in the map, the hover **stays silent** or says "not in the map"; it
-      does **not** fall back to FTS and does **not** guess. Same posture as the nullable anchor in
-      4.3: UNDETERMINED beats plausible-but-wrong (rule #11).
+- [x] Monaco hover provider: hover a keyword → keyword/type/owning-block + Open → a **side drawer**
+      showing the section (reusing `SectionView`, author stays in the editor). Fed by `keywords.json`,
+      **NOT** FTS; qualified type/block-aware lookup (`enclosingBlock` + `wordPattern`), `aliases[]`
+      consulted. **On a miss the hover does not appear at all** (silence), never a bare-name/FTS
+      fall-back — hovering `%maxcore` shows nothing (rule #11: silence beats plausible-but-wrong).
+      keywords.json→DB bridge (`resolve_manual_section`) verified: 317/317 descriptors → exactly one
+      row. Coverage gate rewritten in consumer form (44/46 type-aware; `%maxcore`/`CPCM` named gaps the
+      old string gate hid). See [manual-keywords.md](wiki/modules/manual-keywords.md).
 - [ ] (Optional) "Explain with Claude": keyword + current input context + manual excerpt →
       Anthropic API (user's own key in settings) → plain-language explanation
 

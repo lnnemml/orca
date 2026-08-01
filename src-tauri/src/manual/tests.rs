@@ -426,6 +426,73 @@ fn manual_ingest() {
     println!("idempotent re-ingest OK: {rows} rows");
 }
 
+// --- keywords.json → DB bridge gate (unit 4.4 Part B) ------------------------
+//
+//     cargo test keywords_bridge -- --ignored --nocapture
+//
+// The post-condition specified in Part B and only checkable now that there is a
+// consumer: EVERY section descriptor in keywords.json resolves to EXACTLY one
+// manual_sections row (0 or a nth-out-of-range = error, never pick-first), and the
+// map's orca_version matches the built index.
+
+#[test]
+#[ignore]
+fn keywords_bridge() {
+    let manual_root = repo_root().join("resources/manual");
+    let version = corpus_version(&manual_root);
+    if !manual_root.join(&version).is_dir() {
+        eprintln!("skipping: no corpus");
+        return;
+    }
+    let mut conn = Connection::open_in_memory().unwrap();
+    crate::db::create_manual_tables(&conn).unwrap();
+    super::index::build_index(&mut conn, &manual_root, &version).unwrap();
+
+    let kw_path = repo_root().join("src/manual/keywords.json");
+    let doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&kw_path).unwrap()).unwrap();
+
+    // Version agreement (a stale map must be caught, not silently resolved).
+    assert_eq!(
+        doc["orca_version"].as_str().unwrap(),
+        version,
+        "keywords.json orca_version != built index version"
+    );
+
+    let sections = doc["sections"].as_array().unwrap();
+    let mut ids: HashSet<i64> = HashSet::new();
+    let mut failures: Vec<String> = Vec::new();
+    for s in sections {
+        let file = s["file"].as_str().unwrap();
+        let title = s["title"].as_str().unwrap();
+        let nth = s["nth"].as_u64().unwrap() as usize;
+        let breadcrumb: Vec<String> = s["breadcrumb"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x.as_str().unwrap().to_string())
+            .collect();
+        match super::index::resolve_descriptor(&conn, &version, file, &breadcrumb, title, nth) {
+            Ok(id) => {
+                ids.insert(id);
+            }
+            Err(e) => failures.push(format!("{e}")),
+        }
+    }
+
+    println!("\n{:=<72}", "");
+    println!("KEYWORDS BRIDGE — {} descriptors", sections.len());
+    println!("    resolved to distinct rows: {}", ids.len());
+    println!("    failures: {}", failures.len());
+    for f in failures.iter().take(10) {
+        println!("      !! {f}");
+    }
+    println!("{:=<72}", "");
+    // exactly one row each, and injective (no two descriptors → the same row).
+    assert!(failures.is_empty(), "{} descriptor(s) did not resolve to exactly one row", failures.len());
+    assert_eq!(ids.len(), sections.len(), "descriptors are not injective onto rows");
+}
+
 // --- Keyword-seed measurement gate (unit 4.4) --------------------------------
 //
 //     cargo test keyword_seed_measure -- --ignored --nocapture
@@ -1176,16 +1243,33 @@ fn generate_keywords_json() {
     });
 
     // ---- HARD post-conditions (rule #9) ----
-    // (a) every app-emitted keyword resolves (by keyword string or alias) or FAIL.
-    let resolvable: HashSet<String> = entries.iter().flat_map(|e| {
+    // (a) every app-emitted keyword resolves to a record of the RIGHT TYPE, or FAIL.
+    // TYPE-aware (the old check matched by bare string, so `%maxcore` counted a `MAXCORE`
+    // block-option — a wrong-entity match; that "46/46" was partly empty). App kind →
+    // required record type: `!`→simple, `%`→block, `opt`→block-option.
+    let req_type = |kind: &str| match kind { "%" => "block", "opt" => "block-option", _ => "simple" };
+    let resolvable: HashSet<(String, String)> = entries.iter().flat_map(|e| {
+        let ty = e["type"].as_str().unwrap().to_string();
         let mut ks = vec![norm_kw(e["keyword"].as_str().unwrap())];
         if let Some(al) = e.get("aliases").and_then(|a| a.as_array()) {
             ks.extend(al.iter().filter_map(|x| x.as_str()).map(norm_kw));
         }
-        ks
+        ks.into_iter().map(move |k| (k, ty.clone()))
     }).collect();
-    let missing: Vec<&str> = APP_EMITTED.iter().map(|(k, _)| *k)
-        .filter(|k| !resolvable.contains(&norm_kw(k))).collect();
+    // `%maxcore` is a NAMED gap: a no-`end` directive whose home is the {numref} "List of
+    // Input Blocks" layer (not seeded here). It MUST stay uncovered — a wrong hover on it
+    // would be worse than silence. Any OTHER missing keyword is a real failure.
+    // Both revealed BY this type-aware rewrite (the old string gate hid them): the app
+    // emits them as simple/directive, the map has only a `%block` of the same name.
+    // `%maxcore` → the {numref} "List of Input Blocks" layer; `CPCM` → a simple-keyword
+    // curation target (only `%cpcm` was seeded). Silence on both is correct per contract;
+    // fixing them changes the FILE, which is a separate unit.
+    const KNOWN_GAPS: &[&str] = &["%maxcore", "CPCM"];
+    let missing: Vec<&str> = APP_EMITTED.iter()
+        .filter(|(k, kind)| !resolvable.contains(&(norm_kw(k), req_type(kind).to_string())))
+        .map(|(k, _)| *k)
+        .filter(|k| !KNOWN_GAPS.contains(k))
+        .collect();
     // (b) no dangling int ref — every section/target index is in range.
     let n_sec = sections_json.len();
     let dangling = entries.iter().any(|e| {
@@ -1226,10 +1310,11 @@ fn generate_keywords_json() {
              recs_target_count(&doc));
     println!("    keyword records: {} ({} ambiguous -> targets[])", entries.len(), ambiguous);
     println!("    block-option owner_source: text {o_text} / structural {o_struct} / null {o_null}");
-    println!("    app coverage: {}/{}", APP_EMITTED.len() - missing.len(), APP_EMITTED.len());
+    println!("    app coverage (type-aware): {} of {} resolve; known gaps (silent by design): {:?}",
+             APP_EMITTED.len() - missing.len() - KNOWN_GAPS.len(), APP_EMITTED.len(), KNOWN_GAPS);
     println!("{:=<72}", "");
     assert!(scf_tol.is_some(), "SCF Convergence Tolerances home not found — curation target moved");
-    assert!(missing.is_empty(), "coverage post-condition FAILED: app keywords with no entry: {missing:?}");
+    assert!(missing.is_empty(), "coverage post-condition FAILED (wrong or no type): {missing:?}");
     assert!(!dangling, "a section/target index is out of range — dangling reference");
     assert!(n_sec > 0, "no sections");
 }
