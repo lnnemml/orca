@@ -383,6 +383,26 @@ in the shell; two columns — debounced FTS search on the left, the full **page*
   - Body rendering still goes through `renderManualBody` → the pure, tested `parseManualBody`
     (`render.ts`) — the block rules are unchanged, and the preservation test (below) stays green after
     moving `renderManualBody` from `SectionView` into `PageView`.
+  - **Fences SCROLL, they don't clip (4.14, `wiki/debugging/011`).** A ` ```orca ` fence keeps
+    `white-space: pre` (indentation is significant) + `overflow-x: auto`, but the scroll only engages
+    when the container item is bounded. The flex/grid **automatic minimum size** (`min-width: auto` =
+    min-content) grew the item to the fence's content width and killed the scroll — **one defect, two
+    layouts**: `.manual-view-col` (the `1fr` GRID track of `ManualScreen`) and `.manual-drawer-body`
+    (the column-FLEX item of `ManualDrawer`). Fix: **`min-width: 0` on both items** (the horizontal twin
+    of the `min-height: 0` already there). A non-obvious trap that returns elsewhere — recorded as a rule
+    in debugging/011: a scroll container that won't scroll → look UP the flex/grid chain, not at it.
+- **`ManualDrawer` is a fixed-position side overlay with a RESIZABLE left edge (4.14).** A 6 px
+  `col-resize` strip (`.manual-drawer-resize`) drags the left edge; width is clamped to **[320 px, 85 %
+  viewport]**. The drag is the app's **second continuous interaction** (after fragment-drag, Phase 4.2):
+  it moves **only the width, via direct DOM** (`asideRef.style.width` on `pointermove`) and commits +
+  persists on `pointerup` — **no `setState` during the drag**, so `PageView` (a page reaches 209 KB) is
+  **not** re-rendered per mouse move. Pure width math + clamp is in `drawer-width.ts` (unit-tested).
+  - **Width persistence lives in `localStorage`, a DELIBERATE exception to ADR-004** ("persistence is
+    Rust-owned SQLite"). Reason: it is a pure UI preference (not data), and a **synchronous** read on
+    first render gives the correct width immediately — a SQLite read is async and would flash the default
+    width first (`viewer_theme`, the one UI pref that DOES use `set_setting`, accepts that flash; a
+    resizing drawer should not). No new dependency; the exception is named here so it is not a silent
+    drift from ADR-004.
 - **Render rule — three categories, each source char in EXACTLY ONE (`src/manual/render.ts`,
   4.11), the display analogue of the sectioner's line-conservation (rule #9).** The invariant is
   **two-directional: nothing disappears unnoticed AND nothing appears unnoticed.** Both halves are

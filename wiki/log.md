@@ -4375,3 +4375,35 @@ Open→channel with the descriptor). cargo untouched (no Rust). **NOT done: the 
 check** (`r2SCAN-3c`/`TightSCF`/`%pal`/`nprocs`/`CPCM(water)`/`Tight`/xyz) — headless, left to the author.
 
 **Not touched:** PageView, sectioner, keywords.json, schema, FTS; no deps; keywords.json not extended.
+
+## [2026-08-04] session | fix: manual fences scroll instead of clipping; resizable manual drawer (two independent UI defects)
+
+Two INDEPENDENT problems, kept apart (a wider drawer does not fix clipping — it clips again at any width
+where the editor sits beside it).
+
+**Problem 1 — clipping (a defect, not tightness).** ` ```orca ` fences clipped right with no scrollbar
+though `.manual-fence` has `white-space:pre` + `overflow-x:auto`. Root cause = the flex/grid **automatic
+minimum size** (`min-width:auto` = min-content) on the CONTAINER item: it grows to the fence's content
+width, so the fence is never bounded and its `overflow-x` never engages. **One defect, two layouts** —
+`.manual-drawer-body` (column-FLEX item) and `.manual-view-col` (the `1fr` GRID track of `ManualScreen`).
+Fix: `min-width:0` on both (the horizontal twin of the `min-height:0` already present). NOT line-wrapping
+— ORCA indentation is significant. Recorded as `wiki/debugging/011` (one cause, two manifestations) with
+the rule: a scroll container that won't scroll → look UP the flex/grid chain, not at it.
+
+**Problem 2 — resize.** `ManualDrawer` left edge is now draggable (`.manual-drawer-resize`, `col-resize`),
+clamped **[320 px, 85 % viewport]**. The app's second continuous interaction (after fragment-drag): it
+moves ONLY the width via **direct DOM** (`asideRef.style.width` on `pointermove`) and commits + persists
+on `pointerup` — **no setState during the drag**, so a 209 KB `PageView` is not re-rendered per mouse
+move. Width persists in **`localStorage`** — a NAMED, deliberate exception to ADR-004 (SQLite persistence):
+a pure UI preference read **synchronously** on first render avoids the default-width flash a SQLite read
+would cause (the `viewer_theme` pref accepts that flash; a resizing drawer should not). Pure width
+math/clamp in `drawer-width.ts` (unit-tested, 6 cases). No new dependency.
+
+**Verified.** tsc 0, vitest 467 (the render **preservation** tests untouched — this is CSS + geometry,
+not render; 28 render tests unchanged). **NOT done — the interactive real-window check** (headless here),
+which is the main one for a layout fix: (a) widest fence scrolls in a MINIMAL-width drawer; (b) same on
+`ManualScreen`; (c) drag smooth on a 209 KB page; (d) width survives restart. The `ManualScreen` grid
+clip is a certain bug (grid `1fr` + `min-width:auto`); the drawer is the same trap engines commonly show.
+Left to the author to confirm in the window — not claimed.
+
+**Not touched:** PageView, render.ts, the selection panel, lookup, keywords.json, schema.
