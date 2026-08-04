@@ -79,6 +79,13 @@ function renderInline(text: string, opts: RenderOpts, keyBase: string): ReactNod
         );
       case "math":
         return <span key={key}>{renderMath(t.tex, t.display)}</span>;
+      case "cite":
+        // {cite}`keys` → [keys] (category 1 — a VISIBLE citation in Sphinx; keep the keys).
+        return (
+          <span className="manual-cite" key={key}>
+            [{t.keys}]
+          </span>
+        );
       case "xref": {
         const target = opts.resolve?.(t.label) ?? null;
         // Unresolved → verbatim source, NOT a dead click (same posture as a NULL anchor
@@ -120,6 +127,9 @@ function renderBlocks(blocks: Block[], opts: RenderOpts, keyBase: string): React
             {b.text}
           </pre>
         );
+      case "label":
+        // Category 3 — a MyST anchor label line `(name)=`, invisible in the real manual.
+        return null;
       case "prose":
         return (
           <div className="manual-prose" key={key}>

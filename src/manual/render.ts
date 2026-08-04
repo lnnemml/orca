@@ -15,9 +15,13 @@
 //!       (`{note}`/`{warning}`/`{table}`/…) are category 2.
 //!   (3) RECOGNIZED & DELIBERATELY HIDDEN — a NAMED whitelist only. The census refuted
 //!       "hide anything that looks like a directive": 13.6 % of the corpus sits under a
-//!       directive fence but almost all of it is VISIBLE content. Only three are
-//!       genuinely invisible in the real Sphinx render: `{index}`, `{tabularcolumns}`,
-//!       and `{raw}` WITH the `latex` argument — see `isHiddenDirective` for the reasons.
+//!       directive fence but almost all of it is VISIBLE content. FOUR positions, each
+//!       measured invisible in the published Furo HTML (4.15, source-vs-HTML gate): three
+//!       directives — `{index}`, `{tabularcolumns}`, `{raw}` WITH `latex` (`isHiddenDirective`)
+//!       — plus the **MyST anchor label line** `(name)=` (`isAnchorLabelLine`; 1438×,
+//!       invisible 184/186 in the sample — the 2 were substring noise). The label is a
+//!       LINE-level construct, not a directive; it was missed by the 4.12 census because
+//!       that census listed construct TYPES (directives/math/code/xrefs) and a label is none.
 //!
 //! We do NOT parse MyST. We recognize exactly these constructs by name/delimiter and emit
 //! everything else verbatim. `render.test.ts` splits the preservation test three ways.
@@ -26,6 +30,7 @@
 export type Block =
   | { kind: "fence"; text: string } // code fence, INCLUDING the ``` lines — monospace, verbatim
   | { kind: "table"; text: string } // a run of `|`-rows — monospace so columns align
+  | { kind: "label"; text: string } // a MyST anchor label line `(name)=` — HIDDEN (category 3)
   | { kind: "prose"; text: string } // verbatim text carrying inline constructs (below)
   | {
       kind: "directive";
@@ -42,7 +47,8 @@ export type Inline =
   | { kind: "text"; text: string }
   | { kind: "code"; text: string } // ``…`` → the content (backticks dropped)
   | { kind: "math"; tex: string; display: boolean } // $…$ / $$…$$ → KaTeX
-  | { kind: "xref"; text: string; label: string; raw: string }; // {ref}/{numref}/[..](sec:/tab:)
+  | { kind: "xref"; text: string; label: string; raw: string } // {ref}/{numref}/[..](sec:/tab:)
+  | { kind: "cite"; keys: string; raw: string }; // {cite}`keys` → [keys] (see below)
 
 // --- Fence handling (mirrors the Rust sectioner's fence rule, `sections.rs`) ---
 
@@ -66,6 +72,17 @@ function isFenceClose(line: string, ch: string, len: number): boolean {
 }
 
 const PIPE_ROW = /^\s*\|/; // a Markdown pipe-table row (measured: 110 sections carry one)
+
+/** A MyST anchor label line — a WHOLE trimmed line `(name)=` with no parens inside the
+ *  name. This is EXACTLY the sectioner's `parse_label` rule (`src-tauri/src/manual/
+ *  sections.rs`, rule #9 — the same construction that built the anchor map), so the render
+ *  hides precisely what the index treats as a label, no wider. The whole-line requirement
+ *  is the checkable boundary: a `(x)= y` mid-line, or `(x)=` INSIDE a ` ```orca ` fence
+ *  (handled as a fence block before this is ever reached), is NOT a label and is kept. */
+const ANCHOR_LABEL = /^\([^()]+\)=$/;
+export function isAnchorLabelLine(line: string): boolean {
+  return ANCHOR_LABEL.test(line.trim());
+}
 
 /**
  * Split a body into blocks. Every source line lands in exactly one block, verbatim (the
@@ -145,6 +162,13 @@ export function parseManualBody(body: string): Block[] {
         i++;
       }
       blocks.push({ kind: "table", text: buf.join("\n") });
+    } else if (isAnchorLabelLine(lines[i])) {
+      // A MyST anchor label line `(name)=` — invisible in the real manual (category 3).
+      // Reached only OUTSIDE a fence (fences are consumed above), so a `(x)=` inside a
+      // ` ```orca ` block stays code, not a hidden label.
+      flush();
+      blocks.push({ kind: "label", text: lines[i] });
+      i++;
     } else {
       prose.push(lines[i]);
       i++;
@@ -192,8 +216,16 @@ export function tokenizeInline(text: string): Inline[] {
       const role = ROLE_RE.exec(s);
       if (role && (role[1] === "ref" || role[1] === "numref")) {
         out.push({ kind: "xref", text: role[2], label: role[2], raw: s });
+      } else if (role && role[1].toLowerCase().startsWith("cite")) {
+        // {cite}/{cite:t}/{cite:p}`keys` → `[keys]` (category 1). In Sphinx a citation is
+        // VISIBLE (rendered `[n]`), so it must NOT be hidden — the census-era verbatim was a
+        // DISTORTION (the loudest construct, 1002×, shown as raw syntax). We keep the KEYS,
+        // not a number: `[n]` is order-dependent and re-flows on any reprint, while a bibkey
+        // (`barone1998`) stably identifies the work and is directly searchable — the better
+        // form, not a fallback for the missing bibliography. Text-preserving, declared, tested.
+        out.push({ kind: "cite", keys: role[2], raw: s });
       } else {
-        // {cite}/{eq}/{cspan}/… → verbatim (category 2); its arg is NOT inline code.
+        // {eq}/{cspan}/… → verbatim (category 2); its arg is NOT inline code.
         out.push({ kind: "text", text: s });
       }
     } else if (s.startsWith("[")) {
@@ -237,8 +269,9 @@ function sameName(a: string, b: string): boolean {
 }
 
 /**
- * Is this directive category (3) — recognized and DELIBERATELY hidden? EXACTLY three,
- * each for a measured reason (`wiki/modules/frontend.md`):
+ * Is this DIRECTIVE category (3) — recognized and DELIBERATELY hidden? EXACTLY three
+ * directives (the fourth category-3 position, the `(name)=` anchor label, is a LINE, not a
+ * directive — see `isAnchorLabelLine`). Each for a measured reason (`wiki/modules/frontend.md`):
  *
  *   - `{index}` (321×) — index markers; INVISIBLE in the real Sphinx render.
  *   - `{tabularcolumns}` (76×) — a LaTeX column spec; INVISIBLE in HTML output.

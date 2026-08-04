@@ -4431,3 +4431,29 @@ examples + images) · 342 unresolved `{numref}` · `bibliography` (generated pag
 
 **Next (Task 1–4, commit B):** `(name)=` → category 3 (boundary = whole prose line, tested both ways);
 `{cite}` → category 1 (`[keys]`); corpus gate grows (cat3 += label, cat1 += cite) + a negative control.
+
+## [2026-08-04] session | feat: hide MyST anchor labels; render {cite} compactly (whitelist → four, Task 1–4)
+
+**Task 1 — `(name)=` → category 3.** `render.ts` gains a `label` block (`isAnchorLabelLine`): a WHOLE
+trimmed prose line `^\([^()]+\)=$` — the sectioner's own `parse_label` rule (rule #9). PageView renders it
+to nothing. Boundary tested BOTH ways: a `(x)= …` mid-line (67× corpus) and a `(x)=` inside a ` ```orca `
+fence (10×, kept as code — the safe side; those ride an over-extended fence past a non-standard
+`` ``` --> `` close) are NOT hidden. 1438 labels hidden.
+
+**Task 2 — `{cite}` → category 1.** The tokenizer already identified the role (excluded from inline code);
+only the ACTION changed: `{cite}`/`{cite:t}`keys`` → a `cite` token → `[keys]`. Recorded as a DECISION,
+not a workaround: the KEY is better than `[n]` (stable + searchable; `[n]` re-flows on reprint), so a
+future "add bibliography → numbers" would be a regression.
+
+**Task 3 — the gap grew to five components** (manual-sources.md): 430 + 342 + bibliography (generated →
+keeps keys) + `{eq}` 146 (generated numbers → stays category 2), one root (we took sources, not the
+render). `{eq}` left category 2 (no compact form).
+
+**Task 4 — corpus gate + negative control.** `render.corpus.test.ts` grows: cat3 += label source, cat1 +=
+cite source, visible += `[keys]`; the (S)/(R) sum still balances on **all 126 pages**. A committed
+negative control proves the new branches bite (a render eating cite keys, or showing a hidden label,
+unbalances the sum).
+
+**Verified.** tsc 0, vitest 474, cargo 152 — green; corpus gate green on 126. **NOT done:** the interactive
+window check (that `(sec:…)=` is gone and citations read `[barone1998]`) — headless, left to the author.
+Not touched: schema, sectioner, keywords.json, the selection panel; no deps.

@@ -8,6 +8,7 @@ import {
   xrefLabels,
   isHiddenDirective,
   isMissingInclude,
+  isAnchorLabelLine,
 } from "./render";
 import { renderManualBody, type AnchorTarget } from "./PageView";
 
@@ -129,13 +130,23 @@ describe("category 1 — cross-references resolve to a link, else stay verbatim"
       },
     ]);
   });
-  it("a {cite}/{eq} role is NOT a cross-ref and NOT inline code — it stays verbatim", () => {
-    expect(tokenizeInline("as in {cite}`Neese2020` and {eq}`eqn:1`")).toEqual([
+  it("{cite} is category 1 (→ a cite token); {eq} stays verbatim; neither is inline code", () => {
+    expect(tokenizeInline("as in {cite}`barone1998, garcia` and {eq}`eqn:1`")).toEqual([
       { kind: "text", text: "as in " },
-      { kind: "text", text: "{cite}`Neese2020`" },
+      { kind: "cite", keys: "barone1998, garcia", raw: "{cite}`barone1998, garcia`" },
       { kind: "text", text: " and " },
-      { kind: "text", text: "{eq}`eqn:1`" },
+      { kind: "text", text: "{eq}`eqn:1`" }, // {eq} = an equation number we don't have → verbatim
     ]);
+  });
+  it("{cite}/{cite:t}`keys` renders as [keys] — the keys kept (stable + searchable), not [n]", () => {
+    expect(reactText(renderManualBody("C-PCM{cite}`barone1998, garcia_neese_gcs`: the model"))).toBe(
+      "C-PCM[barone1998, garcia_neese_gcs]: the model",
+    );
+    // the {cite} marker and backticks are gone; the keys survive
+    const r = reactText(renderManualBody("see {cite:t}`Neese2020`"));
+    expect(r).toBe("see [Neese2020]");
+    expect(r).not.toContain("{cite");
+    expect(r).not.toContain("`");
   });
   it("a RESOLVED link renders as the link text (source form dropped)", () => {
     const resolve = (l: string): AnchorTarget | null =>
@@ -192,6 +203,34 @@ describe("category 3 — the named hide-whitelist (and only it)", () => {
   it("a directive OUTSIDE the whitelist ({note}) is NOT hidden — its content stays", () => {
     const rendered = reactText(renderManualBody(":::{note}\nkeep this note\n:::"));
     expect(rendered).toContain("keep this note");
+  });
+
+  // ── the FOURTH position: the MyST anchor label line `(name)=` (1438×, invisible) ──
+  it("a whole-line MyST anchor label `(sec:…)=` renders to nothing", () => {
+    const body = "(sec:essentialelements.solvationmodels)=\n## Solvation models\nprose";
+    const rendered = reactText(renderManualBody(body));
+    expect(rendered).not.toContain("sec:essentialelements.solvationmodels");
+    expect(rendered).not.toContain("(");
+    expect(rendered).toContain("Solvation models");
+  });
+  it("isAnchorLabelLine: exactly a whole trimmed `(name)=` with no inner parens", () => {
+    expect(isAnchorLabelLine("(sec:foo)=")).toBe(true);
+    expect(isAnchorLabelLine("  (tab:bar)=  ")).toBe(true); // trimmed
+    expect(isAnchorLabelLine("(compoundPrintSpecifiers)=")).toBe(true); // a real bare label
+    // NOT a label (the checkable boundary):
+    expect(isAnchorLabelLine("(x)= y")).toBe(false); // mid-line: content after
+    expect(isAnchorLabelLine("see (x)= here")).toBe(false); // not the whole line
+    expect(isAnchorLabelLine("(a(b)c)=")).toBe(false); // inner parens
+    expect(isAnchorLabelLine("(sec:foo)")).toBe(false); // no `=`
+  });
+  it("a `(x)= y` mid-line look-alike is NOT hidden (67 such in the corpus)", () => {
+    const rendered = reactText(renderManualBody("the map (r)= 0 defines the origin"));
+    expect(rendered).toContain("(r)= 0");
+  });
+  it("a `(x)=` INSIDE a ```orca fence is code, NOT a hidden label", () => {
+    const body = "```orca\n(not_a_label)=\n! B3LYP\n```";
+    const rendered = reactText(renderManualBody(body));
+    expect(rendered).toContain("(not_a_label)=");
   });
 });
 

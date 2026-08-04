@@ -1862,6 +1862,11 @@ button.ir-imaginary-mode.selected {
   border-radius: 4px;
   padding: 0 4px;
 }
+/* A citation `{cite}`keys`` → [keys] (category 1). Keys, not a number: stable + searchable. */
+.manual-cite {
+  color: var(--muted);
+  white-space: nowrap;
+}
 /* KaTeX math. Block math on its own line; inline flows with the text. */
 .manual-math-display {
   display: block;

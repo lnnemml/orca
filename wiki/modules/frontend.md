@@ -416,24 +416,37 @@ in the shell; two columns — debounced FTS search on the left, the full **page*
     dollar-only — `\(…\)` and `{math}` are **0** measured — so exactly two delimiters, no more);
     **cross-references** `{ref}`/`{numref}` roles + `[..](sec:/tab:)` links → a link, **but only when
     the anchor map resolves** — an unresolved target stays category 2 (verbatim text, never a dead
-    click; same posture as a NULL anchor and hover silence).
+    click; same posture as a NULL anchor and hover silence); **citations** `{cite}`/`{cite:t}`keys`` →
+    **`[keys]`** (4.15). A citation is VISIBLE in Sphinx (rendered `[n]`), so the census-era verbatim
+    `{cite}`barone1998`` was a DISTORTION — the loudest construct (1002×) shown as raw syntax. We keep
+    the **keys, not a number**, and this is the BETTER form, not a fallback for the missing bibliography:
+    `[n]` is order-dependent and re-flows on any reprint, whereas a bibkey (`barone1998`) stably
+    identifies the work and is directly **searchable** — for a chemist chasing the paper, the key is more
+    useful than the number. (So a future "add the bibliography → switch to `[n]`" unit would be a
+    REGRESSION, not progress.)
   - **(2) UNRECOGNIZED → verbatim.** The preservation test lives HERE, **unweakened** — split off so
     it stays a pure char-for-char check over samples with NO category-1 construct (else a transform
     would force it green while silently dropping text). Code fences, pipe tables, prose, and every
     VISIBLE directive (`{note}`/`{table}`/…) are category 2.
-  - **(3) recognized & DELIBERATELY HIDDEN — a NAMED whitelist, EXACTLY THREE**, each for a measured
-    reason (the census refuted "hide anything directive-shaped": 13.6 % of corpus is under a directive
-    fence but almost all is VISIBLE content — a blanket hide would eat it):
+  - **(3) recognized & DELIBERATELY HIDDEN — a NAMED whitelist, EXACTLY FOUR**, each measured invisible
+    in the published Furo HTML (4.15 source-vs-HTML gate; the census refuted "hide anything
+    directive-shaped": 13.6 % of corpus is under a directive fence but almost all is VISIBLE content):
     - `{index}` (321×) — index markers, INVISIBLE in the real Sphinx render;
-    - `{tabularcolumns}` (76×) — a LaTeX column spec, INVISIBLE in HTML;
+    - `{tabularcolumns}` (76×) — a LaTeX column spec, INVISIBLE in HTML (gate: 0/3 visible);
     - **`({raw}, latex)` (176×) — the KEY IS THE PAIR, not the name `{raw}`.** `{raw}` is output aimed
       at a *different* builder; the `latex` variant is invisible in the HTML we reproduce. "The arg is
       always `latex`" is measured **on this corpus**, not a property of MyST — a 6.2 refresh could add
       `{raw} html`, and a name-only list would swallow it. A test pins `{raw} html` → **shown
       verbatim**; another pins that a directive outside the list (`{note}`) is **not** hidden.
-    The name compare is **one function, case-insensitive from day one** (`isHiddenDirective`), because
-    admonitions already arrive as `{Note}`/`{note}`/`{NOTE}` (a later second normalization would be the
-    fourth turn of the `normalize_label` pattern).
+    - **`(name)=` MyST anchor label (1438×, 4.15) — a LINE, not a directive.** The 4.12 census listed
+      construct TYPES and a label is none, so it was rendered as visible junk (`(sec:…)=` before a
+      heading) until the author saw it in the window. INVISIBLE in HTML (gate: 2/186, the 2 = substring
+      noise, hand-checked 0/60). **Boundary (checkable, `isAnchorLabelLine`):** a WHOLE trimmed prose
+      line `^\([^()]+\)=$` — exactly the sectioner's `parse_label` rule (rule #9: hide precisely what the
+      index calls a label, no wider). A `(x)= …` mid-line (67× in corpus) and a `(x)=` inside a code
+      fence (10×, kept as code — the safe side) are NOT hidden; both are tested.
+    Directive names compare **case-insensitively** (`isHiddenDirective`), because admonitions arrive as
+    `{Note}`/`{note}`/`{NOTE}`; the label is a separate line-level predicate (`isAnchorLabelLine`).
 
   **Post-conditions (`render.test.ts`, split three ways):** category 2 preserves every non-whitespace
   char (`reactText` mirrors DOM `textContent` without jsdom); category 1 asserts each transform
@@ -447,9 +460,12 @@ in the shell; two columns — debounced FTS search on the left, the full **page*
   a **sum over categories** — not "rendered == source" (a transform changes the text): **(S)** the
   parser+tokenizer PARTITION every source char into a category (`cat1 ⊎ cat2 ⊎ cat3 ⊎ cat5 ==` source,
   as a char multiset — nothing unclassified), and **(R)** the actual React render emits exactly the
-  declared-visible chars (`cat2` + code contents + resolved-xref texts + `{literalinclude}` markers;
-  math → nothing, hidden → nothing). Every legitimate transform is **accounted**, so an undeclared loss
-  unbalances the sum on the offending file (failure names the file + the char diff, not a bare `false`).
+  declared-visible chars (`cat2` + code contents + resolved-xref texts + `{cite}` → `[keys]` +
+  `{literalinclude}` markers; math → nothing, hidden directives AND `(name)=` labels → nothing). Every
+  legitimate transform is **accounted**, so an undeclared loss unbalances the sum on the offending file
+  (failure names the file + the char diff). A committed **negative control** proves the new 4.15 branches
+  bite — a render that eats cite keys, or that shows a hidden label, unbalances (R) (CLAUDE.md convention:
+  a gate whose ability to fail is undemonstrated is green for an unknown reason).
   Every xref is resolved by a stub so each takes the lossy transform path — the strictest check, and
   DB-free. Corpus is gitignored, so on a machine without it the suite **SKIPS with an explicit message**
   (never a silent pass); `ORCA_MANUAL_ROOT` overrides the path. (This is the FIRST corpus-level check of

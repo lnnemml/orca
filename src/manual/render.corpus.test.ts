@@ -86,14 +86,16 @@ function findCorpus(): { versionDir: string; files: { rel: string; text: string 
 interface Buckets {
   cat1: string; // transformed-token SOURCE (code/math/xref)
   cat2: string; // verbatim
-  cat3: string; // hidden whitelist directive SOURCE
+  cat3: string; // hidden SOURCE — whitelist directives AND `(name)=` anchor labels
   cat5: string; // {literalinclude} SOURCE (dropped, marker injected)
   codeContents: string; // what code tokens render to
   xrefTexts: string; // what resolved xrefs render to
+  citeVisible: string; // what {cite}`keys` renders to → `[keys]`
   includeMarkers: string; // what {literalinclude} renders to
 }
 const emptyBuckets = (): Buckets => ({
-  cat1: "", cat2: "", cat3: "", cat5: "", codeContents: "", xrefTexts: "", includeMarkers: "",
+  cat1: "", cat2: "", cat3: "", cat5: "", codeContents: "", xrefTexts: "", citeVisible: "",
+  includeMarkers: "",
 });
 
 /** The exact source of a directive block (opener + body + closer). Whitespace-only inner
@@ -126,8 +128,14 @@ function classify(source: string, acc: Buckets): void {
             acc.cat1 += t.raw;
             acc.xrefTexts += t.text;
             break;
+          case "cite": // {cite}`keys` → [keys] (category 1)
+            acc.cat1 += t.raw;
+            acc.citeVisible += "[" + t.keys + "]";
+            break;
         }
       }
+    } else if (b.kind === "label") {
+      acc.cat3 += b.text; // a MyST anchor label line — hidden, renders to nothing
     } else {
       // directive
       if (isHiddenDirective(b.name, b.arg)) {
@@ -187,10 +195,40 @@ describe("manual render — corpus preservation (three-category sum over all lea
 
       // (R) the render emits exactly the declared-visible chars — no render-layer loss.
       const rendered = reactText(renderManualBody(text, { resolve: resolveAll }));
-      const visibleExpected = acc.cat2 + acc.codeContents + acc.xrefTexts + acc.includeMarkers;
+      const visibleExpected =
+        acc.cat2 + acc.codeContents + acc.xrefTexts + acc.citeVisible + acc.includeMarkers;
       const rDiff = multisetDiff("rendered", strip(rendered), "expected-visible", strip(visibleExpected));
       if (rDiff) failures.push(`${rel} — render (R): ${rDiff}`);
     }
     expect(failures, `preservation broke on ${failures.length} check(s):\n${failures.join("\n")}`).toEqual([]);
+  });
+});
+
+// Negative control (CLAUDE.md convention: a gate whose ability to fail is undemonstrated is
+// green for an unknown reason). Runs WITHOUT the corpus — proves the NEW 4.15 branches bite.
+describe("the {cite} and (label)= branches unbalance the sum when a render misbehaves", () => {
+  const expectedVisible = (acc: Buckets) =>
+    strip(acc.cat2 + acc.codeContents + acc.xrefTexts + acc.citeVisible + acc.includeMarkers);
+
+  it("(R) bites if a render EATS cite keys", () => {
+    const body = "C-PCM{cite}`barone1998`: the model";
+    const acc = emptyBuckets();
+    classify(body, acc);
+    const expected = expectedVisible(acc);
+    const correct = strip(reactText(renderManualBody(body, { resolve: resolveAll })));
+    expect(multisetDiff("rendered", correct, "expected", expected)).toBe(""); // real render balances
+    const buggy = correct.replace("barone1998", ""); // a render that drops the keys
+    expect(multisetDiff("buggy", buggy, "expected", expected)).not.toBe("");
+  });
+
+  it("(R) bites if a render SHOWS a hidden `(name)=` anchor label", () => {
+    const body = "(sec:foo)=\nvisible prose";
+    const acc = emptyBuckets();
+    classify(body, acc);
+    const expected = expectedVisible(acc);
+    const correct = strip(reactText(renderManualBody(body)));
+    expect(multisetDiff("rendered", correct, "expected", expected)).toBe(""); // label hidden → balances
+    const buggy = correct + "(sec:foo)="; // a render that failed to hide the label
+    expect(multisetDiff("buggy", buggy, "expected", expected)).not.toBe("");
   });
 });
