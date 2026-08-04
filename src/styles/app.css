@@ -1847,6 +1847,61 @@ button.ir-imaginary-mode.selected {
   margin: 8px 0;
 }
 
+/* ── Rendered constructs (Phase 4.11) — category 1 transforms + the flagged classes ── */
+/* Inline code `…` → <code> (the largest transform surface, 11.77 % of corpus). */
+.manual-code {
+  font-family: var(--mono);
+  font-size: 0.88em;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+/* KaTeX math. Block math on its own line; inline flows with the text. */
+.manual-math-display {
+  display: block;
+  overflow-x: auto;
+  margin: 6px 0;
+}
+.manual-math {
+  white-space: normal;
+}
+/* A resolved cross-reference → a clickable link (accent, no dead clicks: an unresolved
+   target renders as verbatim text, never an <a>). */
+.manual-xref {
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.manual-xref:hover {
+  text-decoration: none;
+}
+/* External content not in our corpus (`{literalinclude}`, 255×) — an honest ABSENCE
+   marker, so the gap is visible where the manual gave an input example. */
+.manual-missing {
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  color: var(--muted);
+  background: var(--bg);
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
+  margin: 8px 0;
+}
+/* A visible directive (note/warning/table/…): a light rail; its markers are shown de-
+   emphasised (category 2 — nothing hidden but the three named metadata directives). */
+.manual-directive {
+  border-left: 2px solid var(--border);
+  padding-left: 10px;
+  margin: 6px 0;
+}
+.manual-directive-marker {
+  color: var(--muted);
+  font-size: 0.82em;
+  white-space: pre-wrap;
+}
+
 /* ── Manual hover drawer (Phase 4.4) — a side panel opened from an editor hover ── */
 .manual-drawer {
   position: fixed;

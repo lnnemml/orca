@@ -106,6 +106,7 @@ pub fn run() {
             commands::manual::get_manual_page,
             commands::manual::manual_index_status,
             commands::manual::resolve_manual_section,
+            commands::manual::resolve_manual_anchors,
             sidecar::get_sidecar_status,
             xtb::xtb_version,
             xtb::xtb_optimize,

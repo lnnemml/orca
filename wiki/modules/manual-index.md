@@ -88,6 +88,15 @@ label Sphinx did not register — the lone real gap.)
   Vec<PageSection{ id, level, title, anchor, line_start, line_end }> }` — the full file text plus every
   section's line-bounds in line order, so the frontend scrolls to and highlights a section without a
   second request. See "A section indexes, a page shows" below.
+- **`resolve_manual_anchors(labels)`** command (4.11) → `Vec<Option<AnchorTarget{ file, section_id }>>`
+  — batch-resolves the page's cross-reference labels (`sec:…`/`tab:…` from `{ref}`/`{numref}` roles and
+  `[..](sec:…)` links) to their target sections. Read-only; the slugify rule is the sectioner's
+  `predict_anchor` (rule #9 — the SAME transform that built the stored `anchor`, **not** a second
+  normalization), matched against `manual_sections.anchor`. A label with no match → `None`, and the
+  panel keeps that link **verbatim**, never a dead click. Measured **1364/1722 (79.2 %)** resolve
+  (`xref_resolution_measure`; `{ref}` 98.8 %, links 98.5 %, `{numref}` 32.8 % — it targets numbered
+  tables/figures, mostly not section anchors). Feeds the render's category-1 cross-reference transform
+  (see [frontend.md](frontend.md) "Render rule").
 
 ### A section indexes, a page shows
 The section is the right unit for **search** (fine granularity → bm25 hits) but the wrong unit for

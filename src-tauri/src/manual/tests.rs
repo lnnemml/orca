@@ -2769,3 +2769,73 @@ fn myst_constructs_measure() {
     println!("(census only — see wiki/orca/manual-sources.md for the reading)");
     println!("{:=<72}", "");
 }
+
+// --- Cross-reference resolution measure (unit 4.11) --------------------------
+//
+//     cargo test xref_resolution_measure -- --ignored --nocapture
+//
+// Task 3's number: of the manual's navigational cross-references (`{ref}`/`{numref}`
+// roles + `[..](sec:/tab:)` links), how many RESOLVE to a section via the anchor map?
+// A ref resolves iff `predict_anchor(label)` (the SAME slugify that built the stored
+// anchor — rule #9, reused not re-derived) equals some section's anchor. The rest point
+// at a NULL-anchor section or an unregistered label → the panel keeps them verbatim, not
+// a dead click. Predicts production: the runtime `resolve_anchors` matches the same way.
+
+#[test]
+#[ignore]
+fn xref_resolution_measure() {
+    let manual_dir = repo_root().join("resources/manual");
+    let version = corpus_version(&manual_dir);
+    let version_dir = manual_dir.join(&version);
+    if !version_dir.is_dir() {
+        eprintln!("skipping: no corpus at {}", version_dir.display());
+        return;
+    }
+    let mut leaves: Vec<(String, String)> = Vec::new();
+    collect_leaves(&version_dir, &version_dir, &mut leaves);
+    let mut all: Vec<Section> = Vec::new();
+    for (file, text) in &leaves {
+        if let Ok(secs) = sections::sectionize(file, text) {
+            all.extend(secs);
+        }
+    }
+    // The set of anchors the resolver can hit (every non-NULL section anchor).
+    let anchors: HashSet<String> = all.iter().filter_map(|s| s.anchor.clone()).collect();
+
+    let re_role = Regex::new(r"\{(ref|numref)\}`([^`]+)`").unwrap();
+    let re_link = Regex::new(r"\[[^\]]*\]\(((?:sec|tab):[^)]+)\)").unwrap();
+
+    // (form, total, resolved)
+    let mut stats: Vec<(&str, usize, usize)> = vec![("{ref}", 0, 0), ("{numref}", 0, 0), ("[..](sec/tab:)", 0, 0)];
+    let mut count = |form_idx: usize, label: &str| {
+        let slug = sections::predict_anchor(label);
+        stats[form_idx].1 += 1;
+        if anchors.contains(&slug) {
+            stats[form_idx].2 += 1;
+        }
+    };
+    // Scan the whole body — the same population the runtime collects (`xrefLabels` walks
+    // prose AND directive bodies, e.g. `{numref}` cells inside a `{flat-table}`), so the
+    // rate here is what the panel actually shows, not a prose-only slice.
+    for s in &all {
+        for c in re_role.captures_iter(&s.body) {
+            let idx = if &c[1] == "ref" { 0 } else { 1 };
+            count(idx, &c[2]);
+        }
+        for c in re_link.captures_iter(&s.body) {
+            count(2, &c[1]);
+        }
+    }
+
+    let total: usize = stats.iter().map(|(_, t, _)| t).sum();
+    let resolved: usize = stats.iter().map(|(_, _, r)| r).sum();
+    println!("\n{:=<72}", "");
+    println!("ORCA {version} — CROSS-REF RESOLUTION ({} sections, {} anchors)", all.len(), anchors.len());
+    println!("{:=<72}", "");
+    for (form, t, r) in &stats {
+        println!("    {:<16} {:>5} total · {:>5} resolved ({:.1}%)", form, t, r, 100.0 * *r as f64 / (*t).max(1) as f64);
+    }
+    println!("    {:<16} {:>5} total · {:>5} resolved ({:.1}%)", "ALL", total, resolved, 100.0 * resolved as f64 / total.max(1) as f64);
+    println!("    unresolved {} → kept as verbatim TEXT (NULL-anchor target or unregistered label)", total - resolved);
+    println!("{:=<72}", "");
+}

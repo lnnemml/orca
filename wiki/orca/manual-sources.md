@@ -295,6 +295,39 @@ class (13.6 % is mostly visible tables/admonitions) — the invisible-metadata s
 ≈0.3–0.6 %. This is exactly why the invariant's category (3) must be a **named** whitelist: a
 blanket "looks like a directive → hide" would eat 13 % of visible content.
 
+**Cross-reference resolution (`cargo test xref_resolution_measure -- --ignored`).** How many of
+the navigational cross-references reach a section through the anchor map (`predict_anchor(label)` ∈
+the section anchors — the SAME slugify that built the stored anchor, reused; scanned over the same
+population the runtime collects, prose + directive bodies):
+
+| form | total | resolved | % |
+|---|---:|---:|---:|
+| `{ref}` | 688 | 680 | 98.8 |
+| `{numref}` | 509 | 167 | 32.8 |
+| `[..](sec:/tab:)` links | 525 | 517 | 98.5 |
+| **ALL** | **1722** | **1364** | **79.2** |
+
+The 358 unresolved stay **verbatim text** (never a dead click). The section-targeting forms (`{ref}`,
+`sec:`/`tab:` links) resolve ~98.7 %; the total is pulled to 79 % by `{numref}`, which points at
+numbered **tables/figures/equations** — most of those labels are not section anchors, so those refs
+correctly render as plain text. (`{figure}` 161 + `{subfigure}` 14 = 175 reference `_images/` we did
+not fetch — same external-content class as `{literalinclude}`; recorded, not handled this unit.)
+
+**KaTeX bundle cost — the first visual dependency, before/after `npm run build`.** main JS 6 254 →
+6 557 KB (**+303 KB raw / +82 KB gz**), CSS 187 → 217 KB (**+30 KB**), whole `dist/` 16.5 → 17.9 MB
+(**+1.41 MB**, the 59 bundled font files). **0 external `url()` in the built CSS** (verified) — fully
+offline, no CDN.
+
+**KaTeX render cost — the honest, measurable proxy (Node V8, `katex.renderToString`).** The corpus's
+math-heaviest page `modelchemistries/mdci` (**364 formulas**) renders all of them in **21.5 ms**; the
+largest-*bytes* page `modelchemistries/CASSCF` (214 KB, 153 formulas) in **6.6 ms** (0.043 ms/formula).
+**NOT measured (stated plainly, as last time):** this is string generation in Node — the real cost in
+a WebKitGTK window is a slower JS engine **plus** DOM insertion of KaTeX's nested spans and paint of a
+~5000-line page. That paint is left to an interactive check by the author before deciding on lazy
+(out-of-viewport) math or collapsed sections; the sync render itself is well under a frame at the
+median and ~21 ms at the worst page, so it is unlikely to be the bottleneck — but that is a prediction,
+not a measured paint time.
+
 ## Retrieval gate (unit 4.3) — the FTS column chosen by number
 
 `cargo test retrieval_gate -- --ignored` builds two FTS5 indexes over the sectioned corpus and measures

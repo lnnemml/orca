@@ -4223,3 +4223,53 @@ the author), never "looks like a directive → hide", which would eat 13 % of vi
 **Next (Задачі 2–4, on "ок"):** KaTeX (first visual dep, bundle size before/after), inline code →
 `<code>`, cross-refs → anchor-map links, the three categories split in the preservation test, and a
 before/after render-time measurement on the largest page.
+
+## [2026-08-04] decision | manual render — three categories, KaTeX (first visual dep), a THREE-name hide-whitelist
+
+The 4.11 census (previous entry) refuted the screenshot model, so the render is built on the
+reformulated invariant: **every source char is in EXACTLY ONE of three categories** — (1) recognized &
+transformed (math→KaTeX, `` `code` ``→`<code>`, resolvable cross-refs→`<a>`), (2) unrecognized→verbatim
+(the preservation test, unweakened, split off so it stays a pure char check), (3) recognized &
+deliberately hidden — a **named** whitelist. Decisions recorded:
+
+- **KaTeX, not MathJax** — the project's FIRST visual dependency (precedent). Reasons: fully offline
+  (fonts bundled, 0 network `url()` in built CSS — verified), synchronous, covers Sphinx's LaTeX subset.
+  `throwOnError:false` so an unknown macro shows its source (category 2), never breaks the page.
+  Corpus math is dollar-only (`\(…\)` and `{math}` are 0), so exactly two delimiters are supported.
+- **The hide-whitelist is EXACTLY three, by name:** `{index}`, `{tabularcolumns}`, and **`({raw},
+  latex)`** — the last keyed on the PAIR, not the name, because "arg always latex" is measured on THIS
+  corpus, not a MyST property (a 6.2 refresh could add `{raw} html`, which stays visible — pinned by a
+  test). Name compare is one case-insensitive function from day one (admonitions arrive as
+  `{Note}`/`{note}`/`{NOTE}`).
+- **Cross-refs resolve via the EXISTING anchor map** (`predict_anchor` reused, no second normalization),
+  through a new read-only `resolve_manual_anchors`; an unresolved target stays verbatim, never a dead
+  click — the same posture as a NULL anchor and hover silence.
+- **`{literalinclude}` is its own class** — a visible absence marker, because the external `.inp` was
+  never fetched; verbatim would show a path where the manual gave an input example.
+
+## [2026-08-04] session | feat: render math (KaTeX), inline code and cross-references; hide three named metadata directives
+
+**Done.** `src/manual/render.ts` rewritten: `parseManualBody` now recognizes directive fences (```` ``` ````
+and `:::`) as `directive` blocks; `tokenizeInline` splits prose into code/math/xref/text; pure
+`isHiddenDirective`/`isMissingInclude`/`xrefLabels`. `PageView` renders category 1 (KaTeX via
+`renderToString`+`dangerouslySetInnerHTML`, `<code>`, resolved `<a>`), hides the three named
+directives, flags `{literalinclude}`, and batch-resolves cross-refs on page load; `onNavigate` threaded
+through ManualScreen + ManualDrawer (same-page scroll internal, cross-page loads the file). Rust: new
+read-only `resolve_manual_anchors` command + `index::resolve_anchors` (reuses `predict_anchor`). KaTeX
+CSS imported once in `main.tsx`.
+
+**Measured.** Bundle before/after (`npm run build`): main JS +303 KB raw / +82 KB gz, CSS +30 KB,
+`dist/` +1.41 MB (59 bundled fonts), 0 CDN refs. Cross-ref resolution 1364/1722 (79.2 %;
+`xref_resolution_measure`). KaTeX render (Node V8, honest proxy): worst page mdci 364 formulas 21.5 ms,
+CASSCF 153 formulas 6.6 ms. **NOT measured:** WebKitGTK DOM-insert + paint in a real window — left to
+the author's interactive check before deciding lazy math / collapsed sections; the sync render is under
+a frame at the median, ~21 ms worst, so unlikely to be the bottleneck (a prediction, not a paint time).
+
+**Verification.** `render.test.ts` split three ways (category 2 preservation unweakened; a transform
+test per construct; whitelist-hides + `{raw} html`-visible + `{note}`-not-hidden + `{literalinclude}`
+marker). tsc, vitest (444), cargo (manual unit tests) all green.
+
+**Not touched (next units):** the editor hover (its replacement by selection is next), the sectioner,
+`keywords.json`, the schema, FTS. Only KaTeX added; "unrecognized → verbatim" stays the base — this unit
+adds named exceptions only. Deferred by number: images (`{figure}`/`{subfigure}` 175×) and the
+`{numref}`-to-non-section tail; lazy math pending the author's paint measurement.

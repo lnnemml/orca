@@ -96,6 +96,17 @@ export function ManualScreen() {
     }
   }, []);
 
+  // A cross-page cross-reference click (same-page scroll is internal to PageView): load
+  // the target file and scroll to the referenced section.
+  const navigate = useCallback(async (file: string, sectionId: number) => {
+    try {
+      setPage(await invoke<ManualPage>("get_manual_page", { file }));
+      setTargetId(sectionId);
+    } catch (e) {
+      setError(String(e));
+    }
+  }, []);
+
   // ── Not-built state: a clear call to action, not an empty result list. ──
   if (checked && !status) {
     return (
@@ -171,7 +182,7 @@ export function ManualScreen() {
 
       <div className="manual-view-col">
         {page ? (
-          <PageView page={page} targetSectionId={targetId} />
+          <PageView page={page} targetSectionId={targetId} onNavigate={navigate} />
         ) : (
           <div className="empty">Select a result to read the full page.</div>
         )}

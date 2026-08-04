@@ -406,6 +406,49 @@ pub fn resolve_descriptor(
     })
 }
 
+/// A cross-reference target — the section a `[..](sec:…)` / `{ref}`…`` label points to.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct AnchorTarget {
+    pub file: String,
+    pub section_id: i64,
+}
+
+/// Resolve manual cross-reference LABELS to sections through the `anchor` column. The
+/// slugify rule is the sectioner's `predict_anchor` (rule #9 — the SAME transform that
+/// built the stored anchor, reused, never a second normalization). A label whose slug
+/// matches no anchor → `None` (UNDETERMINED: the target is one of the ~518 NULL-anchor
+/// sections, or a genuinely unregistered label) — the frontend then keeps the link as
+/// verbatim text, not a dead click. Batch (one call per page), order-preserving.
+pub fn resolve_anchors(
+    conn: &Connection,
+    labels: &[String],
+) -> Result<Vec<Option<AnchorTarget>>, AppError> {
+    let version = index_status(conn)?
+        .ok_or_else(|| AppError::NotFound("manual index not built".into()))?
+        .orca_version;
+    let mut stmt = conn.prepare(
+        "SELECT file, id FROM manual_sections
+         WHERE orca_version = ?1 AND anchor = ?2
+         ORDER BY line_start LIMIT 1",
+    )?;
+    let mut out = Vec::with_capacity(labels.len());
+    for label in labels {
+        let slug = predict_anchor(label);
+        if slug.is_empty() {
+            out.push(None);
+            continue;
+        }
+        match stmt.query_row(params![version, slug], |r| {
+            Ok(AnchorTarget { file: r.get(0)?, section_id: r.get(1)? })
+        }) {
+            Ok(t) => out.push(Some(t)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => out.push(None),
+            Err(e) => return Err(AppError::from(e)),
+        }
+    }
+    Ok(out)
+}
+
 /// One section's line-bounds within its file — enough for the frontend to scroll to and
 /// highlight it inside the full page. The body itself is NOT here: the page carries the
 /// whole file text, and a section is a line range into it.

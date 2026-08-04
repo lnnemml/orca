@@ -42,6 +42,17 @@ export function ManualDrawer() {
     return () => setManualOpenHandler(null);
   }, []);
 
+  // A cross-page cross-reference click inside the drawer → load the target file in place.
+  const navigate = async (file: string, sectionId: number) => {
+    setError(null);
+    try {
+      setPage(await invoke<ManualPage>("get_manual_page", { file }));
+      setTargetId(sectionId);
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
   if (!page && !error) return null;
   return (
     <aside className="manual-drawer">
@@ -62,7 +73,7 @@ export function ManualDrawer() {
         {error ? (
           <div className="banner err">{error}</div>
         ) : page ? (
-          <PageView page={page} targetSectionId={targetId} />
+          <PageView page={page} targetSectionId={targetId} onNavigate={navigate} />
         ) : null}
       </div>
     </aside>

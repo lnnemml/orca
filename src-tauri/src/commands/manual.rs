@@ -8,7 +8,9 @@ use tauri::State;
 
 use crate::commands::settings::DbState;
 use crate::error::AppError;
-use crate::manual::index::{self, IngestReport, ManualHit, ManualPage, ManualSection, ManualStatus};
+use crate::manual::index::{
+    self, AnchorTarget, IngestReport, ManualHit, ManualPage, ManualSection, ManualStatus,
+};
 
 /// Resolve the manual corpus root honestly for BOTH the source and the bundled run —
 /// no longer a debt, because page display (below) reads the corpus off disk, not just
@@ -107,6 +109,19 @@ pub fn get_manual_section(db: State<'_, DbState>, id: i64) -> Result<ManualSecti
 pub fn manual_index_status(db: State<'_, DbState>) -> Result<Option<ManualStatus>, AppError> {
     let conn = db.lock()?;
     index::index_status(&conn)
+}
+
+/// Resolve manual cross-reference labels (`sec:…`/`tab:…`, from `{ref}`/`{numref}` roles
+/// and `[..](sec:…)` links) to their target sections, in one batch per page. `None` for a
+/// label the anchor map doesn't resolve — the panel keeps that link verbatim, never a dead
+/// click. Read-only; the slugify rule is the sectioner's `predict_anchor` (no new resolve).
+#[tauri::command]
+pub fn resolve_manual_anchors(
+    db: State<'_, DbState>,
+    labels: Vec<String>,
+) -> Result<Vec<Option<AnchorTarget>>, AppError> {
+    let conn = db.lock()?;
+    index::resolve_anchors(&conn, &labels)
 }
 
 /// Resolve a `keywords.json` section descriptor to the full section (the hover→drawer

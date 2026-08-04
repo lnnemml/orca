@@ -383,22 +383,69 @@ in the shell; two columns — debounced FTS search on the left, the full **page*
   - Body rendering still goes through `renderManualBody` → the pure, tested `parseManualBody`
     (`render.ts`) — the block rules are unchanged, and the preservation test (below) stays green after
     moving `renderManualBody` from `SectionView` into `PageView`.
-- **Render rule — loss-free (`src/manual/render.ts`), the display analogue of the sectioner's
-  line-conservation (rule #9).** Section bodies are MyST (prose, `$…$` LaTeX, `:::{directives}`,
-  tables; 42.7 % of corpus bytes inside fences). A naive Markdown renderer eats what it doesn't
-  understand **without error** — a directive vanishes, math turns to underscore-mush, an ORCA input
-  loses indentation, and the reader can't tell. So we recognize **exactly one** structure — ` ``` `
-  fences → a monospace block preserving indentation — and emit **everything else verbatim**. We do
-  **not** render MyST. **Post-condition (`render.test.ts`):** every non-whitespace char of `body_md`
-  survives into the rendered text (`reactText` mirrors DOM `textContent` without jsdom; asserted
-  char-for-char over crafted samples covering each hazard, and checked over the whole real corpus —
-  0 loss on 126 leaves). A loss fails the test naming the section.
+- **Render rule — three categories, each source char in EXACTLY ONE (`src/manual/render.ts`,
+  4.11), the display analogue of the sectioner's line-conservation (rule #9).** Section bodies are
+  MyST. A naive Markdown renderer eats what it doesn't understand **without error** — the quietest
+  way to lose text. So every char is one of:
+  - **(1) recognized & TRANSFORMED**, each with its OWN test (a char-preservation test cannot cover a
+    transform — it *changes* the text): **inline code** `` `…` `` → `<code>` (backticks gone, content
+    kept — the largest surface, 11.77 % of corpus); **math** `$…$`/`$$…$$` → **KaTeX** (the corpus is
+    dollar-only — `\(…\)` and `{math}` are **0** measured — so exactly two delimiters, no more);
+    **cross-references** `{ref}`/`{numref}` roles + `[..](sec:/tab:)` links → a link, **but only when
+    the anchor map resolves** — an unresolved target stays category 2 (verbatim text, never a dead
+    click; same posture as a NULL anchor and hover silence).
+  - **(2) UNRECOGNIZED → verbatim.** The preservation test lives HERE, **unweakened** — split off so
+    it stays a pure char-for-char check over samples with NO category-1 construct (else a transform
+    would force it green while silently dropping text). Code fences, pipe tables, prose, and every
+    VISIBLE directive (`{note}`/`{table}`/…) are category 2.
+  - **(3) recognized & DELIBERATELY HIDDEN — a NAMED whitelist, EXACTLY THREE**, each for a measured
+    reason (the census refuted "hide anything directive-shaped": 13.6 % of corpus is under a directive
+    fence but almost all is VISIBLE content — a blanket hide would eat it):
+    - `{index}` (321×) — index markers, INVISIBLE in the real Sphinx render;
+    - `{tabularcolumns}` (76×) — a LaTeX column spec, INVISIBLE in HTML;
+    - **`({raw}, latex)` (176×) — the KEY IS THE PAIR, not the name `{raw}`.** `{raw}` is output aimed
+      at a *different* builder; the `latex` variant is invisible in the HTML we reproduce. "The arg is
+      always `latex`" is measured **on this corpus**, not a property of MyST — a 6.2 refresh could add
+      `{raw} html`, and a name-only list would swallow it. A test pins `{raw} html` → **shown
+      verbatim**; another pins that a directive outside the list (`{note}`) is **not** hidden.
+    The name compare is **one function, case-insensitive from day one** (`isHiddenDirective`), because
+    admonitions already arrive as `{Note}`/`{note}`/`{NOTE}` (a later second normalization would be the
+    fourth turn of the `normalize_label` pattern).
+
+  **Post-conditions (`render.test.ts`, split three ways):** category 2 preserves every non-whitespace
+  char (`reactText` mirrors DOM `textContent` without jsdom); category 1 asserts each transform
+  explicitly (`tokenizeInline` is pure, so tokens are checked directly); category 3 asserts the
+  whitelist hides and nothing outside it does. **We still do NOT parse MyST** — no markdown library,
+  no MyST parser; "unrecognized → verbatim" is the base, and this unit only adds **named** exceptions.
+- **KaTeX — the FIRST visual dependency of the project (precedent).** Chosen over MathJax because it
+  is **fully offline** (fonts bundled, **0 network `url()` in the built CSS** — verified; keeps the
+  no-extra-network posture of `overview.md`), renders synchronously, and covers the LaTeX subset
+  Sphinx emits. `throwOnError: false`, so an unknown macro renders its **source verbatim** (falls into
+  category 2) instead of breaking the page — pinned by a test. Bundle cost, measured before/after
+  `npm run build`: main JS **6 254 → 6 557 KB (+303 KB raw / +82 KB gz)**, CSS **187 → 217 KB
+  (+30 KB)**, whole `dist/` **16.5 → 17.9 MB (+1.41 MB)** — the delta is the 59 bundled KaTeX font
+  files (loaded by the browser only for glyphs actually used). CSS imported once in `main.tsx`, out of
+  the test import chain.
+- **Cross-reference resolution — via the EXISTING anchor map, no second normalization.** A label
+  (`sec:…`/`tab:…`) resolves through the new **read-only** `resolve_manual_anchors` command, which
+  slugifies with the sectioner's `predict_anchor` (rule #9 — the same transform that built the stored
+  `anchor`, reused) and looks it up in `manual_sections.anchor`. PageView batches every label on a
+  page into one call on load, then renders synchronously; a same-page target scrolls internally, a
+  cross-page target calls the host's `onNavigate` (ManualScreen loads the file; ManualDrawer loads it
+  in place). Measured (`xref_resolution_measure`): **1364 / 1722 (79.2 %) resolve** — `{ref}` 98.8 %
+  and `[..](sec:/tab:)` links 98.5 %, while `{numref}` is only 32.8 % because it targets numbered
+  tables/figures/equations, most of which are not section anchors; those **stay verbatim**, correctly.
+- **`{literalinclude}` (255×) — a visible ABSENCE MARKER, not verbatim (category 5).** The directive
+  references an external `.inp` the manifest fetch never took (`_sources/*.md.txt` only), so verbatim
+  would show a **path where the manual gave an input example** — silent emptiness exactly where input
+  examples are most valuable. `render.ts` `isMissingInclude` → “input example not loaded (`<path>`)”,
+  turning 255 silent gaps into a measured, named hole. (`{figure}` 161 + `{subfigure}` 14 = **175** are
+  the same class — external `_images/` we did not fetch — but are **left untouched this unit**; the
+  number is recorded so “do we fetch images?” arrives with a figure, not a guess.)
 - **Snippet highlighting** — `search_manual`'s `snippet()` wraps matches in **PUA codepoints
   `U+E000`/`U+E001`**, not `[`/`]`. Measured: `[`/`]` occur **1905 / 1903** times in the 4 MB corpus
   (every `[link](…)` / MyST role), the PUA pair **0** — so `<mark>` splitting on them can't paint a
   phantom highlight on literal brackets. `SNIP_OPEN`/`SNIP_CLOSE` are shared with Rust.
-- **No new dependency, no `<select>`** (so the WebKitGTK select gotcha doesn't apply here); the search
-  box is a plain `.input`.
 - **`manual_root()` debt closed** — the corpus path now resolves honestly for source *and* bundled runs
   (page display reads the corpus off disk, so it could no longer stay a source-only path). Detail in
   [manual-index.md](manual-index.md).
