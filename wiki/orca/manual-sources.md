@@ -683,6 +683,54 @@ is settled: **ATX-only sectioning is sufficient, and ADR-013 (3) stays closed.**
 version to introduce structural eval-rst in bodies, this same measurement would reopen it; decisions
 (1)/(2) do not depend on it.)
 
+## Selection normalization for the manual lookup (unit 4.13)
+
+The editor lookup's trigger moved from **hover** (one `wordPattern` token) to a user **SELECTION**
+(anything — half a word, three words, an xyz line). Hover gave a grammar-bounded token; a selection
+gives arbitrary text, so the normalization had to be MEASURED, not invented — a plausible answer to an
+imprecise selection is worse than none (the NULL-anchor / hover-silence posture). Measured by
+`selection-lookup.corpus.test.ts` over the corpus's **1475 ` ```orca ` blocks** and the map (**2528
+distinct keys** incl aliases):
+
+- **Key forms decide what a selection can be:** **space 0** (a selection with an internal space can
+  never be a single key → silence — so `Opt Freq`, `%geom Constraints` are silence), **paren 0** (`(…)`
+  is an argument delimiter, not part of a key), slash **78** (`def2/J`, `aug-cc-…/C`), dot **47**
+  (`basename.xyz`, `D.Print`). Slash/dot/`-`/`%` are token-continuation; parens and space are not.
+- **Two premises REFUTED by the measurement — the same shape, on both sides.** (a) "`Tight` gives
+  silence because it is not in the map" — **`tight` IS in the map** (`Tight[block-option/%scf]`); the
+  silence in a `!`-line's *simple* context comes from the **type qualifier** (wrong type → miss), not
+  absence. (b) "`SV(P)` is a map key, so stripping its `(P)` would lose it" — **`sv(p)` is NOT a key**
+  (`sv` is); **0 keys contain a paren**, so `SV(P)` → `SV` is correct, not a loss.
+- **The real risk is a same-type partial: 16 of 121 simple keys are a substring of a longer SIMPLE
+  key** — `opt`⊂`optts`, `freq`⊂`numfreq`, `d4`⊂`wb97x-d4`, `ri`⊂`ri-jk`, plus `hf`/`pbe`/`b3lyp`/
+  `tightscf`/`def2-svp`/`r2scan`. These are the *most common tokens of real inputs*; selecting `Opt`
+  inside `OptTS` would give a confident answer about the neighbour, and the type qualifier is powerless
+  (both simple). This is the `MaxIter`-has-15-owners defect in another plane: **the entity boundary does
+  not coincide with the selection boundary.** So the **boundary guard IS the rule** (not a UX add-on):
+  a selection is rejected unless its source neighbours are outside the token-continuation class
+  `[\w%/.-]` (parens excluded, so `CPCM`-before-`(` is not a cut and `water`-inside-`()` is reached by
+  the argument rule, not the guard).
+- **Guard-vs-muffler — the decisive number: FALSE REJECTS = 0 / 2877.** Of every whitespace-delimited
+  corpus token that resolves, **zero** would be rejected by the guard (their neighbours are whitespace /
+  line edges). The guard rejects only mid-token cuts, never a natural selection — so it is a guard, not
+  a muffler.
+- **Argument order — whole-first, then strip (0 loss):** try the WHOLE selection exactly, and only on a
+  miss strip one trailing balanced `(…)` and retry. Of **69** `KEYWORD(arg)` corpus tokens, **0** are
+  themselves keys, so all **12** distinct that resolve do so **stripped** (`SV(P)`→`SV`,
+  `CPCM(Water)`→`CPCM`, `DLPNO-CCSD(T)`→`DLPNO-CCSD`) with **no loss** — but the whole-first order is the
+  correct invariant the day a paren-bearing key is added.
+- **Resolve rate (whole-then-strip, exact):** `!`-line tokens **229/550 distinct (42 %)**, `%`-block-
+  option first tokens **1045/1852 (56 %)** — the map's coverage fraction; the rest correctly → silence.
+
+**The rule, and its FOUR silences (three silent, one VISIBLE).** A selection resolves iff: (1) single
+line, (2) no internal whitespace, (3) boundaries not mid-token, (4) — after whole-then-strip and the
+position qualifier — an exact type/block-aware hit. A miss can be four things, and the display treats
+them in two classes: **malformed** (internal space or a mid-token cut) → the panel appears with a
+**format hint** ("select one keyword whole"), a correctable user action; **qualified miss** (well-formed
+but not in the map, or wrong type/position like an argument token) → **no panel** (silence), the boundary
+of our data. The distinction is the learning-instrument's job: the author must be able to tell "select
+differently" from "we don't document this."
+
 ## `manifest.json` and idempotent refresh
 
 `--all` writes every leaf to `resources/manual/<version>/<path>.md.txt` and a `manifest.json` at
