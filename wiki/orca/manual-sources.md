@@ -310,23 +310,52 @@ population the runtime collects, prose + directive bodies):
 The 358 unresolved stay **verbatim text** (never a dead click). The section-targeting forms (`{ref}`,
 `sec:`/`tab:` links) resolve ~98.7 %; the total is pulled to 79 % by `{numref}`, which points at
 numbered **tables/figures/equations** — most of those labels are not section anchors, so those refs
-correctly render as plain text. (`{figure}` 161 + `{subfigure}` 14 = 175 reference `_images/` we did
-not fetch — same external-content class as `{literalinclude}`; recorded, not handled this unit.)
+correctly render as plain text. The **342** unresolved `{numref}` are partly downstream of the
+absent-content gap below (see "External content the fetch skipped").
 
 **KaTeX bundle cost — the first visual dependency, before/after `npm run build`.** main JS 6 254 →
 6 557 KB (**+303 KB raw / +82 KB gz**), CSS 187 → 217 KB (**+30 KB**), whole `dist/` 16.5 → 17.9 MB
 (**+1.41 MB**, the 59 bundled font files). **0 external `url()` in the built CSS** (verified) — fully
-offline, no CDN.
+offline, no CDN. **Provenance of these deltas is laborious, not absent:** the "after" is a fresh
+`npm run build`; the "before" is recoverable by rebuilding at **`d9a6492^`** (the commit before KaTeX
+landed), not a committed gate.
 
-**KaTeX render cost — the honest, measurable proxy (Node V8, `katex.renderToString`).** The corpus's
-math-heaviest page `modelchemistries/mdci` (**364 formulas**) renders all of them in **21.5 ms**; the
-largest-*bytes* page `modelchemistries/CASSCF` (214 KB, 153 formulas) in **6.6 ms** (0.043 ms/formula).
-**NOT measured (stated plainly, as last time):** this is string generation in Node — the real cost in
-a WebKitGTK window is a slower JS engine **plus** DOM insertion of KaTeX's nested spans and paint of a
-~5000-line page. That paint is left to an interactive check by the author before deciding on lazy
-(out-of-viewport) math or collapsed sections; the sync render itself is well under a frame at the
-median and ~21 ms at the worst page, so it is unlikely to be the bottleneck — but that is a prediction,
-not a measured paint time.
+**KaTeX render cost — an AD-HOC NODE PROXY, not a gate, and NOT the answer to the perf question.**
+An ad-hoc `node`/`katex.renderToString` run (not committed, not reproducible from the repo) over the
+corpus's math-heaviest page `modelchemistries/mdci` (**364 formulas**) rendered all of them in
+**21.5 ms**; the largest-*bytes* page `modelchemistries/CASSCF` (214 KB, 153 formulas) in **6.6 ms**.
+This measures **string generation in Node V8** — an *adjacent* quantity. The actual question ("does the
+page hang?") is **DOM insertion of KaTeX's nested spans + WebKitGTK paint of a ~5000-line page**, which
+this does NOT measure and which is left to the **author's interactive check in a real window**.
+Committing a proxy gate and calling it the number's provenance would manufacture a fresh false number
+with a look of legitimacy (see "the adjacent-measurement trap" under Part F) — so it stays labelled a
+proxy, deliberately un-gated.
+
+## External content the fetch skipped — one gap, one cause, one cure (a named future unit)
+
+The render (4.11) surfaced several directives that reference content **not in our corpus**, because the
+manifest fetch (`scripts/fetch-manual.py`) took only `_sources/*.md.txt` — not the linked `.inp`
+examples, not the `_images/`. These are **ONE gap** (one cause, one cure — fetch the referenced files),
+so they are collected here rather than scattered:
+
+| directive | count | referenced content |
+|---|---:|---|
+| `{literalinclude}` | 255 | external ORCA `.inp` input examples |
+| `{figure}` + `{subfigure}` | 175 | `_images/` figures |
+| **total** | **430** | **the absent-content gap** |
+
+Today `{literalinclude}` renders as a visible **absence marker** ("input example not loaded (`<path>`)")
+and figures are untouched; both are recorded, not handled. The cure is a manifest-fetch extension (a
+future unit) that also pulls the referenced `.inp` and `_images/` — the input examples first, since
+worked input is this manual's most valuable content (mission).
+
+**Dependent forecast (a gate for that unit before it starts):** `{numref}` resolves at only **32.8 %**
+(167/509), and **342** are unresolved. A share of those point at the very figures/tables the fetch
+skipped — so **if `_images/` (and the numbered objects) are ingested, `{numref}` resolution must rise
+by a measurable amount.** That predicted rise is the future unit's built-in post-condition: if fetching
+the images does *not* move the `{numref}` number, the ingest did not do what it claimed. (This is a
+**distinct** debt from the 430: the 342 mix absent-figure targets with non-section objects — do NOT
+merge them into one number.)
 
 ## Retrieval gate (unit 4.3) — the FTS column chosen by number
 
@@ -499,9 +528,38 @@ else defaults to `block-option` with no manual signal at all.** The `else` branc
 it *collects the unknown*. The structural proxy then dutifully hands each such record a breadcrumb
 owner, because it was handed a thing already declared a block-option. So Part E's two symptoms —
 simple-word-as-block-option and right-kind-wrong-block — are **one defect: the TYPE was inferred from
-OUR application, not from the manual.** This is the **third instance of the same pattern**: `%maxcore`
-"covered" because the gate measured in our notation; 46/46 held because the inventory was ours; here the
-*type* comes from our app. Each time the fix was to ask the manual, not ourselves.
+OUR application, not from the manual.**
+
+**Pattern 1 — a check that measures US instead of the subject (collected, all four).** Our knowledge is
+not forbidden; it must not **masquerade as a measurement of the manual** — it gets its own channel with
+provenance. The same defect appeared **four times** (this collection is the canonical one; the module
+[modules/manual-keywords.md](../modules/manual-keywords.md) carries the same list):
+1. **`%maxcore` "covered"** — the gate measured in *our* notation (string-normalised), so a `%maxcore`
+   directive matched a `MAXCORE` block-option.
+2. **`46/46` held** — the expectation set was assembled from *our* builder's output, so it could only
+   confirm what we emit.
+3. **`app_simple` in `type_of`** — the seed's *type* was inferred from what our app emits (the `else`
+   above is a dumpster: everything unknown → block-option). *(Fixed in Part G: type from the manual.)*
+4. **the demand corpus looked independent but was us** — the author's inputs (A) barely diverge from our
+   fixtures+templates (B∪C), because he generates inputs *with* the input-builder (Part H). "Measure
+   what the author types" was "measure what we emit" once more; caught by measuring A against the
+   manual's own `!` vocabulary (15 vs 424, 10 %). *(Found later, in Part H — collected here.)*
+Each fix was the same shape: give our knowledge its own attributed channel and let the check ask the
+manual.
+
+**Pattern 2 — the adjacent-measurement trap (a DISTINCT pattern; three instances).** Not "we measured
+ourselves" but "a number measured an **adjacent** quantity and was read as the answer to the actual
+question." Named separately because its tell and its cure differ (the cure is to re-scope the claim to
+what was measured, or measure the real thing — not to re-channel our knowledge):
+1. **`98.5 %` owner agreement** — read as validating the structural proxy; measured **only the
+   intersection** (936 targets), never the 855 structural-only ones where the error sat (Part E).
+2. **"render preservation: 0 loss on 126 leaves"** — read as the render being loss-free; the corpus
+   check that existed measured **Rust storage** (`body_md` byte-for-byte through SQLite, `index.rs`),
+   **not** the render. It was never true of the render, four units, until `render.corpus.test.ts` (4.12).
+3. **KaTeX `21.5 / 6.6 ms`** — read as "does the page hang?"; measures **Node V8 string generation**,
+   not WebKitGTK DOM-insert + paint (labelled a proxy above, deliberately un-gated).
+The tell: a real, correct number sitting next to the question it is cited for. The cure is scope, not
+provenance — a gate that measures the proxy would only launder the trap.
 
 **Does merging fix it? Measured — no** (`cargo test structural_overlap_measure -- --ignored`). Of the
 structural block-option targets whose owner is **not** named in the section body — **522** (the exact

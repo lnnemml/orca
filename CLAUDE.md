@@ -207,6 +207,11 @@ Report findings, propose fixes, apply approved ones, log a `lint` entry.
 - **Rust**: `thiserror` for errors; every Tauri command returns `Result<T, AppError>`;
   no `.unwrap()` outside tests.
 - **Python**: type hints everywhere; Pydantic models for all API schemas; `ruff` for lint.
+- **A gate whose ability to fail is not demonstrated is green for an unknown reason.** For a test that
+  guards an invariant (a post-condition, a preservation/coverage gate), show it *bites* — a negative
+  control that deliberately breaks the invariant and confirms the test goes red (e.g. `d9a6492`:
+  a render dropping inline-code content unbalances the corpus sum). Without that, a passing gate does
+  not distinguish "invariant holds" from "test checks nothing."
 - **Commits**: conventional commits (`feat:`, `fix:`, `docs:`, `refactor:`).
   Wiki updates ride in the same commit as the change they document.
 - Small, reviewable increments. The author reads the diffs — write code to be read.

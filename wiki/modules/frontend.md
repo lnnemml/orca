@@ -384,9 +384,12 @@ in the shell; two columns — debounced FTS search on the left, the full **page*
     (`render.ts`) — the block rules are unchanged, and the preservation test (below) stays green after
     moving `renderManualBody` from `SectionView` into `PageView`.
 - **Render rule — three categories, each source char in EXACTLY ONE (`src/manual/render.ts`,
-  4.11), the display analogue of the sectioner's line-conservation (rule #9).** Section bodies are
-  MyST. A naive Markdown renderer eats what it doesn't understand **without error** — the quietest
-  way to lose text. So every char is one of:
+  4.11), the display analogue of the sectioner's line-conservation (rule #9).** The invariant is
+  **two-directional: nothing disappears unnoticed AND nothing appears unnoticed.** Both halves are
+  real: a naive renderer *drops* what it doesn't understand (the quiet loss), and `{literalinclude}`
+  (category 5, below) *injects* a marker string that was never in the source — so the corpus gate
+  accounts BOTH the declared-removed and the declared-injected chars (`render.corpus.test.ts` (R)),
+  not just "no source char lost". Section bodies are MyST; every char is one of:
   - **(1) recognized & TRANSFORMED**, each with its OWN test (a char-preservation test cannot cover a
     transform — it *changes* the text): **inline code** `` `…` `` → `<code>` (backticks gone, content
     kept — the largest surface, 11.77 % of corpus); **math** `$…$`/`$$…$$` → **KaTeX** (the corpus is
@@ -454,9 +457,10 @@ in the shell; two columns — debounced FTS search on the left, the full **page*
   references an external `.inp` the manifest fetch never took (`_sources/*.md.txt` only), so verbatim
   would show a **path where the manual gave an input example** — silent emptiness exactly where input
   examples are most valuable. `render.ts` `isMissingInclude` → “input example not loaded (`<path>`)”,
-  turning 255 silent gaps into a measured, named hole. (`{figure}` 161 + `{subfigure}` 14 = **175** are
-  the same class — external `_images/` we did not fetch — but are **left untouched this unit**; the
-  number is recorded so “do we fetch images?” arrives with a figure, not a guess.)
+  turning 255 silent gaps into a measured, named hole. This is one face of a single **absent-content
+  gap** (255 input examples + 175 `_images/` figures = 430, one cause, one cure) — collected, with its
+  `{numref}`-resolution forecast, in [manual-sources.md](../orca/manual-sources.md) "External content
+  the fetch skipped".
 - **Snippet highlighting** — `search_manual`'s `snippet()` wraps matches in **PUA codepoints
   `U+E000`/`U+E001`**, not `[`/`]`. Measured: `[`/`]` occur **1905 / 1903** times in the 4 MB corpus
   (every `[link](…)` / MyST role), the PUA pair **0** — so `<mark>` splitting on them can't paint a

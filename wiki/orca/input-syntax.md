@@ -100,10 +100,9 @@ it names a real coverage hole for a very common directive — a curation target,
 
 ## Rendering piggyback — pipe tables outside ` ``` ` fences
 
-`SectionView` fences only ` ``` ` blocks; a MyST pipe table (often inside a `:::{table}` colon
-directive) therefore renders as **proportional-font prose with `word-break`**, so its columns
-misalign — characters are all present (the preservation test still holds) but it is hard to read.
+`PageView` (the one display component) groups a run of pipe-table rows (`^\s*\|`, often inside a
+`:::{table}` colon directive) into the same monospace `<pre>` as a ` ``` ` fence, so columns align.
 Measured: **110 of 1558 sections (7.1 %)** carry a pipe-table line outside a ` ``` ` fence, **26 of
-them Keyword-titled**. Substantial, not units — so the follow-up routes a pipe-table line (`^\s*\|`)
-into the same monospace `<pre>` as a fence: **the same linear line check, no parser, the preservation
-test unchanged.**
+them Keyword-titled** — substantial, not units, which is why it earned the fix. **The same linear line
+check, no parser, the preservation test unchanged** (a font choice only). Done in 4.4 Part B; see
+[modules/frontend.md](../modules/frontend.md) "Manual panel".

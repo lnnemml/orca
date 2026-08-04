@@ -1,6 +1,7 @@
 # Module: keywords.json (`src/manual/keywords.json`)
 
-**Status:** seeded + qualified + normalized (unit 4.4, Parts B–C). The keyword→section map that feeds
+**Status:** seeded + qualified + normalized + **owner-vetoed / type-from-manual** (unit 4.4, Parts B–I;
+the intermediate states are the log's, not this page's). The keyword→section map that feeds
 the Monaco **hover** provider (4.4 UI, not built yet). It is a **repo file, seeded programmatically
 then curated by hand** (ADR-013 narrows ADR-006's "by hand") — Rust owns manual text-to-structure
 (ADR-013), so a Rust `#[ignore]` generator emits it; the frontend consumes it. **Why a separate layer
@@ -40,49 +41,53 @@ One line now, an ugly bug avoided later.
       "targets": [0, 3] },               // int refs into `sections`
     { "keyword": "MaxIter", "type": "block-option", "provenance": "seeded",
       "block": "%scf", "owner_source": "text", "section": 52 },
-    { "keyword": "MaxIter", "type": "block-option", "provenance": "seeded",
-      "block": null, "owner_source": null, "targets": [11, 88, 140] },
+    { "keyword": "def2-QZVPP", "type": "undetermined", "provenance": "seeded",
+      "targets": [11, 88] },             // a basis name: no positive, body-confirmed block owner
     { "keyword": "M06L", "type": "simple", "provenance": "curated",
       "aliases": ["M06-L"], "targets": [96, 105] }
   ]
 }
 ```
 
+- **`type ∈ {simple, block, block-option, undetermined}`.** `undetermined` (Part G) is a **value with
+  meaning**, like `anchor = NULL`: the seed could not positively type the token (not a `%block`, not a
+  keyword-title, and no body-confirmed owner), so it is left honest rather than dumped into
+  `block-option`. **1183 of 2857 records are `undetermined`** — mostly basis-set / simple-keyword
+  tables. It is invisible to the hover (below).
 - **`section` (one) or `targets` (many)** — never both. `targets[]` **reflects reality** (one option
   genuinely documented in several places — `%casscf MaxIter` lives in the CASSCF *and* the DMRG
   chapters), not our inability to choose. The hover **must not** collapse it to the first.
-- **`block` / `owner_source`** — block-option only (see below).
+- **`block` / `owner_source`** — block-option only, and only when a signal confirms it (see below);
+  there are **no** block-option records with `owner_source: null` (Part G's veto removed them).
 - **`aliases[]`** — spelling variants (`M06L` ← `M06-L`), **not** hyphen-normalized (dashes are
   significant: `def2-SVP`, `NEB-TS`, `B3LYP-D4`).
 
-## Owner derivation — union of two independent signals, with provenance
+## Owner derivation — a body-confirmed owner, or the token is `undetermined`
 
-`block` is derived two independent ways, and `owner_source` records which one spoke:
+`block` is set only when a signal positively names it, and `owner_source` records which spoke. There
+is **no third `null`-owner block-option state** — a token with no confirmed owner is `type:
+"undetermined"`, not a block-option with a missing block (Part G; see the veto below):
 
 - **`"text"`** — the option's home section carries **exactly one literal `%block` token** (`%scf
   MaxIter 200 end` in an annotated ` ```orca ` block, or the heading). Text, not inference. **Takes
   priority.**
-- **`"structural"`** — text is silent, but the file has a unique `%block` (or a unique deepest
-  `%block` ancestor by breadcrumb). Fills where text is silent.
-- **`null`** — both are silent. `null` is a **value with meaning**, like `anchor_source =
-  'undetermined'` in 4.3 — the section genuinely does not name a block, so the qualifier is *unknown*,
-  not a hole to be filled by guessing.
+- **`"structural"` — accepted ONLY when the section body also NAMES that block (the veto).** The
+  file's unique `%block` (or unique deepest `%block` ancestor) proposes an owner; it is kept only if
+  the body mentions it. If the body never names it, the structural owner is **rejected** and the token
+  falls to `undetermined`.
 
-**Why trust the union — the agreement number.** Where both signals resolve (936 targets), they agree
-**98.5 %** (14 disagreements, 8 of them one cross-reference section). Two independent derivations
-confirming each other is the same construction as **`objects.inv` × `predict_anchor`** (4.2): each is
-a guess alone, together they are a post-condition. Because agreement is near-total on the intersection,
-text-priority is safe there (it settles the 14 sensibly).
+Current counts (`generate_keywords_json`): **text 1224 / structural 291** — and **`owner_source: null`
+block-options = 0** (the veto removed them).
 
-**⚠ Scope of the 98.5 % (corrected — `orca/manual-sources.md` Part E).** That number is measured **only
-on the intersection** where BOTH signals resolve (936 targets). It is **not** a validation of the
-structural proxy **outside** it. The **855 structural-only** targets had nothing to check against — and
-a later measurement found the error sits exactly there: **537 of 814 structural targets (66.8 %) name
-an owner the section body never mentions**, ~500 of them **basis-set / simple-keyword tables whose
-entries are simple `!` keywords, not block-options** (`aug-cc-pV5Z`, `MINI`, `TightOpt`, `PrintBasis`).
-So the structural half **is** a liability off the intersection; fixing it needs a **third signal** (a
-section-title / body-text veto) in the owner derivation — a generator change with its own gate, a
-separate unit.
+**Why the veto exists — the 98.5 % was intersection-only.** Where both signals resolve (936 targets)
+they agree **98.5 %** (14 disagreements) — two independent derivations confirming each other, the same
+construction as **`objects.inv` × `predict_anchor`** (4.2). But that number is measured **only on the
+intersection**; it never validated the **855 structural-only** targets, and Part E found the error sat
+exactly there: **537 of 814 structural targets (66.8 %) named an owner the body never mentions**, ~500
+of them **basis-set / simple-keyword tables whose entries are simple `!` keywords, not block-options**
+(`aug-cc-pV5Z`, `MINI`, `PrintBasis`). Part G's veto (a body-text confirmation — a third signal
+correlating two sources, like anchors) is the fix, **applied**, not a future unit; the unconfirmed
+structural owners became `undetermined`. Full before/after in `orca/manual-sources.md` Parts E–G.
 
 **Cross-reference sections are null by rule.** A section titled "List of related keywords" / "See
 also" **lists other blocks'** keywords — it references, it does not document. Both derivations there
@@ -92,8 +97,9 @@ not by an accidental tie.
 
 ## Consumer contract (fixed here, for the hover unit — not to be reinvented there)
 
-**25.3 % of block-option targets have `block: null`** — they are **unreachable by qualified lookup**
-(`%scf` + `MaxIter`). The rule for the next unit is fixed **here**:
+**The owner-less tokens are now `undetermined`, not `block: null` block-options** — **unreachable by
+qualified lookup** (`%scf` + `MaxIter`) *and* by simple lookup; they are reachable only by the panel's
+unqualified path. The rule for the hover is fixed **here**:
 
 > The hover does **not** fall back to an unqualified, bare-option-name search when the qualified
 > lookup misses. Unqualified lookup is a **separate, deliberate path**, and its answer is *"documented
@@ -118,8 +124,8 @@ out (unit 4.4, [orca/manual-sources.md](../orca/manual-sources.md)): `anchor` NU
 `(file, breadcrumb, title, nth)`); `get_manual_section` takes a **DB synthetic id** — different spaces.
 `index.rs::resolve_descriptor` bridges them: it matches `(orca_version, file, breadcrumb, title)`
 ordered by `line_start` and returns the `nth`. **Post-condition (rule #9), specified in 4.4 and only
-checkable now that there is a consumer — verified:** every one of the **317 descriptors resolves to
-EXACTLY one row**, injectively (gate `cargo test keywords_bridge -- --ignored`: 317 → 317 distinct
+checkable now that there is a consumer — verified:** every one of the **318 descriptors resolves to
+EXACTLY one row**, injectively (gate `cargo test keywords_bridge -- --ignored`: 318 → 318 distinct
 rows, 0 failures). 0 matches (the manual moved) or an out-of-range `nth` is a `NotFound` error, never a
 pick-first. The command `resolve_manual_section` also checks **`keywords.json.orca_version` == the
 built index's version** — a stale map is reported, not silently resolved against a different corpus.
@@ -230,7 +236,7 @@ An empty `summary` is not a reason to suppress (seeded records have none): the h
 type, owning block (+ `owner_source`), and the target's breadcrumb › title as an **Open** command-link;
 several targets → *"documented in N places"* with a list, **not** a picked first. Clicking Open fires
 the command → `ManualDrawer` resolves the descriptor via `resolve_manual_section` and shows the section
-in a **side drawer that reuses the SAME `SectionView`** as `ManualScreen` — the author is not pulled
+in a **side drawer that reuses the SAME `PageView`** as `ManualScreen` — the author is not pulled
 out of the editor. Word boundaries come whole via the language `wordPattern` (`def2-SVP`, `%maxcore`;
 `wiki/orca/input-syntax.md`).
 
@@ -245,12 +251,14 @@ and the ~21 prose "Keywords" sections (curation, not extractor input).
 
 ## Size and shape (measured)
 
-**~0.56 MB, 2836 records, 317 sections.** Normalization collapsed **3173 target objects → 317
-distinct** (10× duplication removed); on its own that would have reached ~0.25 MB, but qualification
+**~515 KB, 2857 records, 318 sections.** Normalization collapsed **3173 target objects → 317
+distinct** (10× duplication removed; Part I appended **1** curated-only section → **318**); on its own
+that dedup would have reached ~0.25 MB, but qualification
 **splits block-options by owner** (one `MaxIter` → 11 records, each with `block`/`owner_source`), which
 trades part of that back **for correctness** — the surplus is now *qualified* identities, not
-duplicated sections. `owner_source` over block-option records: **text 1204 / structural 802 / null
-669**. 240 records are ambiguous (`targets[]`). Bundled with the frontend, parsed once into a lookup.
+duplicated sections. Record types: **block-option 1515 / undetermined 1183 / simple 119 / block 40**;
+`owner_source` over the block-option records: **text 1224 / structural 291** (0 null — the veto).
+Bundled with the frontend, parsed once into a lookup.
 
 ## Regenerating
 

@@ -4293,3 +4293,52 @@ message on a machine without it (`ORCA_MANUAL_ROOT` overrides). VERBATIM samples
 
 **Verified.** Passes over all 126 leaves (1.1 s). Non-vacuous: a negative control (a render that drops
 inline-code content) unbalances (R) — the gate bites. Corrected the stale frontend.md wording.
+
+## [2026-08-04] lint | Post-Phase-4 wiki lint — number-provenance pass; two measurement anti-patterns named
+
+First full lint since Post-Phase-3 (14 Phase-4 units). **New dimension: FALSE facts, not just stale** —
+triggered by "render preservation: 0 loss on 126 leaves", which lived in frontend.md four units, read as
+a measured fact, though no render corpus test ever existed (it conflated with the Rust `body_md` storage
+check). A contradiction-only lint cannot catch a number that was never true. **Wiki + CLAUDE.md only —
+no `.ts/.rs/.py` touched; cargo (152) / tsc / vitest (445) green.**
+
+**Reviewed ~70 numeric/`measured`/`verified`/`PASS` claims (Phase-4 pages exhaustively, older spot-checked).
+Found: 3 without committed provenance (b), 6 contradicting what the gate measures (c), + count/wording.**
+
+- **(c1) `manual-keywords.md` contradicted itself** — first half pre–Part-G (schema example with
+  `owner_source:null` block-options; owner section calling the veto "a separate unit"; "25.3 % block:null";
+  size `0.56 MB / 2836 / 317`), later half post–Part-G (47/53, `undetermined`, "the owner veto"). Exactly
+  the layered-module-page drift CLAUDE.md forbids. **Rewritten to the present rule** against the actual
+  `keywords.json`: type ∈ {simple, block, block-option, **undetermined** (1183)}; owner veto is the rule,
+  **0** null-owner block-options; `owner_source` text 1224 / structural 291; 2857 records / 318 sections /
+  ~515 KB; 318 descriptors.
+- **(c2/c3) `index.md`** manual-keywords description + footer were pre–Part-G (46/46, 0.56 MB, 98.5 % un-
+  scoped, no `undetermined`). Rewritten to 47/53 / 515 KB / owner-veto / type-from-manual.
+- **(c4/c5)** stale `317/2836/0.56 MB` → `318/2857/515 KB`; dedup 3173→317 (+1 curated = 318).
+- **(c6) `SectionView` as a live display path** in `input-syntax.md` and `manual-keywords.md` → `PageView`
+  (the one component; `SectionView` is gone). The input-syntax pipe-table paragraph also described a DONE
+  fix as future — corrected.
+- **(b) no committed provenance, labelled honestly (not deleted):** KaTeX render `21.5/6.6 ms` = an **ad-hoc
+  Node proxy** (V8 string-gen), NOT a gate and NOT the perf answer (WebKitGTK paint, author's manual check);
+  KaTeX bundle deltas = "before" recoverable by rebuilding at `d9a6492^` (provenance laborious, not absent).
+- **Health:** page count 61 → **60** (my own report's 59 was itself a false count — `grep -vE index.md`
+  also excluded `manual-index.md`; noted in-session); 0 orphans, 0 dead links, log tail = 5, language ok.
+
+**Two anti-patterns named (own `## Part F` collection, cross-linked):** *Pattern 1 — a check that measures
+US not the subject* (%maxcore / 46-46 / app_simple-in-`type_of` / demand-A≈B∪C), the fourth (Part H) now
+collected with the first three. *Pattern 2 — the adjacent-measurement trap* (98.5 % intersection-only /
+"0 loss" storage-not-render / KaTeX V8-not-paint): a real number cited for the adjacent question; cure is
+scope, not provenance — a proxy gate only launders it. **`CLAUDE.md` "Coding conventions"** gained the
+negative-control rule: a gate whose ability to fail is undemonstrated is green for an unknown reason
+(`d9a6492` precedent).
+
+**Consolidated future unit:** the absent-content gap — `{literalinclude}` 255 + `{figure}`/`{subfigure}`
+175 = **430**, one cause (fetch took only `_sources/*.md.txt`), one cure — collected in manual-sources.md
+with a **dependent forecast**: if `_images/` are ingested, `{numref}` resolution (today 32.8 %, 342 unre-
+solved) must rise measurably — the future unit's built-in post-condition. The 342 are kept SEPARATE (mixed
+targets), not merged into 430.
+
+**Surfaced, not self-decided:** ROADMAP line 377 ("full-page rendering [x]") does not mention 4.11/4.12
+(math/KaTeX/cross-refs/corpus gate) — minor, left for the author. A perf GATE for KaTeX paint was
+explicitly declined (a proxy gate would manufacture a fresh false number — Pattern 2); the real number is
+the author's, in a window.
