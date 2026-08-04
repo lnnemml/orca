@@ -4273,3 +4273,23 @@ marker). tsc, vitest (444), cargo (manual unit tests) all green.
 `keywords.json`, the schema, FTS. Only KaTeX added; "unrecognized → verbatim" stays the base — this unit
 adds named exceptions only. Deferred by number: images (`{figure}`/`{subfigure}` 175×) and the
 `{numref}`-to-non-section tail; lazy math pending the author's paint measurement.
+
+## [2026-08-04] session | test: restore the CORPUS preservation check for the render path (4.12)
+
+**Why.** 4.11 split the preservation test three ways but left category 2 on **8 synthetic
+samples only** — no test read `resources/manual/` at all, dropping render coverage from ~4 M real
+chars to eight fixtures, silently (all three descriptions look correct). Archaeology: a TS *render*
+corpus check never actually existed (no `readFileSync`/`readdirSync` in any `.test.ts`, ever); the
+"0 loss on 126 leaves" wording (from 4.4, cd4e824) conflated it with the Rust **storage** byte-for-byte
+post-condition (`index.rs`). So this is the first real corpus-level check of the render path.
+
+**Done.** `src/manual/render.corpus.test.ts` reads all 126 leaves and checks, per file, the
+**sum over categories** (not "rendered == source", which a transform breaks): **(S)** parser+tokenizer
+partition every source char into `cat1 ⊎ cat2 ⊎ cat3 ⊎ cat5` (== source, char multiset); **(R)** the
+actual React render emits exactly the declared-visible chars (`cat2` + code contents + resolved-xref
+texts + `{literalinclude}` markers; math/hidden → nothing). Every xref resolved by a stub → the
+strictest, DB-free path. Failure names the file + char diff. Corpus gitignored → SKIP with an explicit
+message on a machine without it (`ORCA_MANUAL_ROOT` overrides). VERBATIM samples kept as fast units.
+
+**Verified.** Passes over all 126 leaves (1.1 s). Non-vacuous: a negative control (a render that drops
+inline-code content) unbalances (R) — the gate bites. Corrected the stale frontend.md wording.

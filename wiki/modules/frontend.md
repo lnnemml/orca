@@ -417,6 +417,21 @@ in the shell; two columns — debounced FTS search on the left, the full **page*
   explicitly (`tokenizeInline` is pure, so tokens are checked directly); category 3 asserts the
   whitelist hides and nothing outside it does. **We still do NOT parse MyST** — no markdown library,
   no MyST parser; "unrecognized → verbatim" is the base, and this unit only adds **named** exceptions.
+- **Corpus preservation gate — the sample tests, run over all 126 real leaves (`render.corpus.test.ts`,
+  4.12).** The sample tests cover the hazards *by construction*; a render change could still drop text
+  on some real page they don't resemble (inline code alone is 11.77 % of corpus chars, so a page with
+  **no** category-1 construct barely exists). So this reads `resources/manual/` and checks, **per file**,
+  a **sum over categories** — not "rendered == source" (a transform changes the text): **(S)** the
+  parser+tokenizer PARTITION every source char into a category (`cat1 ⊎ cat2 ⊎ cat3 ⊎ cat5 ==` source,
+  as a char multiset — nothing unclassified), and **(R)** the actual React render emits exactly the
+  declared-visible chars (`cat2` + code contents + resolved-xref texts + `{literalinclude}` markers;
+  math → nothing, hidden → nothing). Every legitimate transform is **accounted**, so an undeclared loss
+  unbalances the sum on the offending file (failure names the file + the char diff, not a bare `false`).
+  Every xref is resolved by a stub so each takes the lossy transform path — the strictest check, and
+  DB-free. Corpus is gitignored, so on a machine without it the suite **SKIPS with an explicit message**
+  (never a silent pass); `ORCA_MANUAL_ROOT` overrides the path. (This is the FIRST corpus-level check of
+  the *render* path — the earlier "0 loss on 126 leaves" wording conflated it with the Rust *storage*
+  byte-for-byte post-condition, which checks `body_md` survives SQLite, not the render.)
 - **KaTeX — the FIRST visual dependency of the project (precedent).** Chosen over MathJax because it
   is **fully offline** (fonts bundled, **0 network `url()` in the built CSS** — verified; keeps the
   no-extra-network posture of `overview.md`), renders synchronously, and covers the LaTeX subset
