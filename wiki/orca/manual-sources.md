@@ -218,6 +218,83 @@ section-as-screen to a page-as-screen:
   the real page is React reconciliation + WebKitGTK paint of ~5000 lines, not the parse. (WebKitGTK paint
   time itself is **not** measured here — see the session log's honesty note.)
 
+## MyST construct census (unit 4.11) — the render plan by number
+
+`cargo test myst_constructs_measure -- --ignored --nocapture` walks all 126 leaves
+(**3 984 406 chars**) with the sectioner's own fence model (`fence_open_info` +
+`is_fence_close`, so a `$`/backtick inside an opaque ` ```code``` ` fence is never
+counted) and censuses every render construct by **occurrences AND characters** — the
+first because it decides the category-3 hide-whitelist, the second because it scales the
+category-1 transform effort. The reason it exists: the page render (4.11) made the manual
+panel the main reading surface, and the hide-whitelist had to be built from numbers, not a
+screenshot. The gate writes nothing; these are its numbers.
+
+**Category 1 — MATH (→ KaTeX).** The whole corpus's math is **dollar-delimited, and only
+dollar-delimited**:
+
+| form | occ | chars | % corpus |
+|---|---:|---:|---:|
+| `$$…$$` block | 874 | 169 941 | 4.27 |
+| `$…$` inline | 4746 | 65 165 | 1.64 |
+| `\(…\)` | **0** | 0 | 0 |
+| `{math}` role | **0** | 0 | 0 |
+| `{math}` directive | **0** | 0 | 0 |
+| `(eqn:N)` labels | 330 | 4 495 | — |
+
+So KaTeX needs exactly two delimiters (`$$`, `$`) and **zero tail** — `\(…\)`, the `{math}`
+role and the `{math}` directive do not occur at all. Combined math ≈ 5.9 % of corpus chars.
+
+**Category 1 — INLINE CODE (→ `<code>`).** One construct, `` `…` `` — **9280 occ · 468 984
+chars = 11.77 %**, the single largest transform surface. Measured role-aware: a role's
+backtick arg (`` {ref}`sec:x` ``) is stripped before the count, so it is not double-counted
+as code. Of the remainder **0 %** are bare `prefix:label` cross-refs written as code — they
+are genuine code tokens (keywords, paths, commands).
+
+**Category 1 — CROSS-REFERENCES (→ link).** Two syntaxes reach a page/table, **≈1710 nav
+refs**: roles `{ref}` 685 + `{numref}` 502, and links `[text](sec:…)` 515 + `(tab:…)` 8.
+Resolve via the existing anchor map (1068 verified + `predict_anchor`), unresolved → text.
+A **tail stays verbatim** because its target is not an in-corpus page: `{cite}` 991
+(citations — no bibliography in the corpus), `{eq}` 144 (equations), `{cspan}`/`{rspan}`/
+`{sup}`/`{sub}`/`{ints}` (table-cell formatting), and links `(external url)` 82 /
+`(relative path)` 118 / `(page fragment)` 138.
+
+**Category 2 vs 3 — DIRECTIVES: the whitelist, decided here.** 32 distinct directive names;
+**13.6 % of corpus chars sit under some directive fence** — but that is overwhelmingly
+**visible content**, not metadata. Histogram by occurrence:
+
+```
+321 {index}          255 {literalinclude}  176 {raw}         161 {figure}
+119 {note}           104 {flat-table}       95 {table}        76 {bibliography}
+ 76 {tabularcolumns}  72 {Note}             37 {warning}      37 {important}
+ 24 {glossary}        19 {list-table}       18 {tip}          14 {subfigure}
+ 12 {admonition}       8 {Tip}   (+ {NOTE}/{Warning}/{Caution}/{Hint}/{Attention}/
+                                    {only}/{seealso}/{versionadded}/{deprecated}/{include})
+```
+
+- **Genuinely INVISIBLE in real Sphinx → category 3 (hide), a NAMED whitelist:** `{index}`
+  (321 occ, 0.31 % — invisible index markers, `` ```{index} Installation ``; the noise
+  *per occurrence*), `{tabularcolumns}` (76 occ — LaTeX-only column spec, invisible in HTML),
+  and `{raw} latex` (176 occ, 0.14 % — raw LaTeX passthrough, invisible in HTML; the arg is
+  always `latex` here, whereas `{raw} html` would be visible).
+- **Everything else is VISIBLE content → category 2 (verbatim):** the 29 remaining names —
+  tables (`{table}`/`{flat-table}`/`{list-table}`, already monospaced), admonitions
+  (`{note}`/`{warning}`/`{important}`/`{tip}`/`{admonition}`/…), `{figure}`/`{subfigure}`,
+  `{bibliography}`, `{glossary}`. Separately, **`{literalinclude}` (255)** references an
+  EXTERNAL `.inp` not present in the corpus — a broken-content-reference, not metadata; it
+  stays verbatim and is flagged, not hidden.
+- **Case matters:** `{index}` is single-case, but admonitions arrive as `{Note}`/`{note}`/
+  `{NOTE}`, `{Tip}`/`{tip}` — a whitelist that ever hides one must fold case. Not needed for
+  `{index}`/`{tabularcolumns}`.
+
+**The reading (answers the gate's question — do 2–3 constructs carry most of it?).** Yes,
+per category: math = **2** delimiters (no tail); inline code = **1** construct (11.77 %);
+cross-refs = **2** nav syntaxes (citation/equation tail verbatim); hide = **`{index}`** by
+occurrence, plus `{tabularcolumns}` and `{raw} latex` — a **2–3-name** whitelist. The
+load-bearing correction to the screenshot model: the noise is **not** the whole `{directive}`
+class (13.6 % is mostly visible tables/admonitions) — the invisible-metadata subset is only
+≈0.3–0.6 %. This is exactly why the invariant's category (3) must be a **named** whitelist: a
+blanket "looks like a directive → hide" would eat 13 % of visible content.
+
 ## Retrieval gate (unit 4.3) — the FTS column chosen by number
 
 `cargo test retrieval_gate -- --ignored` builds two FTS5 indexes over the sectioned corpus and measures

@@ -2498,3 +2498,274 @@ fn page_size_measure() {
              percentile(&per_page_sections, 0.5), per_page_sections.last().unwrap(), pages_over_50);
     println!("{:=<72}", "");
 }
+
+// --- MyST construct census (unit 4.11 render gate) ---------------------------
+//
+//     cargo test myst_constructs_measure -- --ignored --nocapture
+//
+// The page render (4.11) made the manual panel the main reading surface, so its
+// readability now matters. Four construct CLASSES share the screen — math
+// (`$$…$$`, `$…$`, `\(…\)`, `{math}`), inline code (`` `Trust` ``), metadata
+// directives (`{index}` — INVISIBLE in the real manual, NOISE in ours), and
+// cross-references (`[…](sec:…)`). Before touching the renderer we measure them
+// over the WHOLE corpus, so the render plan is built on numbers, not a screenshot:
+// the hide-whitelist (category 3) is chosen by which directive NAMES carry volume,
+// and the transform effort (category 1) is scaled by how much text math + code +
+// links actually cover. It writes nothing; it prints the numbers manual-sources.md
+// records. The question it must answer: do two–three constructs carry most of the
+// noise/transform, and is the rest a tail not worth code?
+
+fn chars(s: &str) -> usize {
+    s.chars().count()
+}
+
+/// Classify a link target by its label prefix (`sec:`/`tab:`/`fig:`/`eqn:`…) or,
+/// when it has none, by shape (external URL / same-page fragment / relative path).
+fn link_bucket(target: &str) -> String {
+    let t = target.trim();
+    if let Some((prefix, _)) = t.split_once(':') {
+        // a MyST cross-ref label is `word:rest` with an alphabetic head and no slash
+        // before the colon (rules out `https`, which we route by shape below).
+        if !prefix.is_empty()
+            && prefix.chars().all(|c| c.is_ascii_alphabetic())
+            && prefix != "http"
+            && prefix != "https"
+            && prefix != "mailto"
+        {
+            return format!("{prefix}:");
+        }
+    }
+    if t.starts_with("http://") || t.starts_with("https://") || t.starts_with("mailto:") {
+        "(external url)".to_string()
+    } else if t.starts_with('#') {
+        "(page fragment)".to_string()
+    } else {
+        "(relative path)".to_string()
+    }
+}
+
+#[test]
+#[ignore]
+fn myst_constructs_measure() {
+    let manual_dir = repo_root().join("resources/manual");
+    let version = corpus_version(&manual_dir);
+    let version_dir = manual_dir.join(&version);
+    if !version_dir.is_dir() {
+        eprintln!("skipping: no corpus at {} — run scripts/fetch-manual.py --all", version_dir.display());
+        return;
+    }
+    let mut leaves: Vec<(String, String)> = Vec::new();
+    collect_leaves(&version_dir, &version_dir, &mut leaves);
+    leaves.sort_by(|a, b| a.0.cmp(&b.0));
+    assert!(!leaves.is_empty(), "no .md.txt leaves under {}", version_dir.display());
+
+    // Regexes for the inline constructs (built once).
+    let re_block_math = Regex::new(r"(?s)\$\$.+?\$\$").unwrap();
+    let re_inline_math = Regex::new(r"\$[^$\n]+?\$").unwrap();
+    let re_paren_math = Regex::new(r"(?s)\\\(.+?\\\)").unwrap();
+    // A MyST role: `{name}` immediately followed by a backtick-wrapped argument.
+    let re_role = Regex::new(r"\{([A-Za-z][A-Za-z0-9:+_-]*)\}`([^`]*)`").unwrap();
+    let re_inline_code = Regex::new(r"`[^`]+`").unwrap();
+    let re_link = Regex::new(r"\[([^\]]*)\]\(([^)]+)\)").unwrap();
+    let re_eqn_label = Regex::new(r"\(eqn:[^)]+\)").unwrap();
+
+    // Accumulators: (occurrences, characters).
+    let mut block_math = (0usize, 0usize);
+    let mut inline_math = (0usize, 0usize);
+    let mut paren_math = (0usize, 0usize);
+    let mut inline_code = (0usize, 0usize);
+    let mut eqn_labels = (0usize, 0usize);
+    let mut roles: HashMap<String, (usize, usize)> = HashMap::new();
+    let mut links: HashMap<String, (usize, usize)> = HashMap::new();
+    // Directive fences, keyed by `{name}` — both ```{name} and :::{name} forms.
+    let mut directives: HashMap<String, (usize, usize)> = HashMap::new();
+    let mut directive_union_chars = 0usize; // chars of lines under >=1 directive fence
+    let mut total_chars = 0usize;
+
+    // A fence frame on the walk stack.
+    struct Frame {
+        ch: char,
+        len: usize,
+        is_code: bool,       // a bare-lang ``` fence: interior is OPAQUE code
+        name: Option<String>, // Some(name) for a `{name}` directive
+        start_line: usize,
+    }
+
+    for (_file, text) in &leaves {
+        let lines: Vec<&str> = text.lines().collect();
+        total_chars += lines.iter().map(|l| chars(l)).sum::<usize>();
+
+        // First pass: fence walk → directive census + a per-line `code`/`directive` mask.
+        let mut stack: Vec<Frame> = Vec::new();
+        let mut is_code_line = vec![false; lines.len()]; // opaque code fence marker/interior
+        let mut under_directive = vec![false; lines.len()];
+
+        for (i, raw) in lines.iter().enumerate() {
+            // Inside an opaque code fence: only its matching close ends it; nothing
+            // in between is parsed (a ```{note}`` inside ```orca`` is literal text).
+            if let Some(top) = stack.last() {
+                if top.is_code {
+                    is_code_line[i] = true; // marker or interior — do not scan inline
+                    if sections::is_fence_close(raw, top.ch, top.len) {
+                        stack.pop();
+                    }
+                    // a code fence is under a directive iff something remains on the stack
+                    under_directive[i] = stack.iter().any(|f| f.name.is_some());
+                    continue;
+                }
+            }
+            // Not inside a code fence: a close of the (directive) top pops it.
+            if let Some(top) = stack.last() {
+                if sections::is_fence_close(raw, top.ch, top.len) {
+                    let f = stack.pop().unwrap();
+                    if let Some(name) = f.name {
+                        let span: usize = lines[f.start_line..=i].iter().map(|l| chars(l)).sum();
+                        let e = directives.entry(name).or_insert((0, 0));
+                        e.0 += 1;
+                        e.1 += span;
+                    }
+                    under_directive[i] = stack.iter().any(|f| f.name.is_some());
+                    continue;
+                }
+            }
+            // A new fence opener (nested directive, or a code fence inside a directive).
+            if let Some((ch, len, info)) = sections::fence_open_info(raw) {
+                let info = info.trim();
+                let is_directive = info.starts_with('{');
+                let name = if is_directive {
+                    // `{index}` / `{list-table}` / `{note}` → the name between the braces
+                    info.trim_start_matches('{')
+                        .split('}')
+                        .next()
+                        .unwrap_or("")
+                        .trim()
+                        .to_string()
+                        .into()
+                } else {
+                    None
+                };
+                let is_code = !is_directive && ch == '`'; // bare-lang backtick fence
+                is_code_line[i] = true; // the marker line itself is not inline-scannable
+                under_directive[i] = is_directive || stack.iter().any(|f| f.name.is_some());
+                stack.push(Frame { ch, len, is_code, name, start_line: i });
+                continue;
+            }
+            // Plain interior line (prose, or a directive body): scannable.
+            under_directive[i] = stack.iter().any(|f| f.name.is_some());
+        }
+        for (i, raw) in lines.iter().enumerate() {
+            if under_directive[i] && !is_code_line[i] {
+                directive_union_chars += chars(raw);
+            }
+        }
+
+        // Second pass: inline constructs over SCANNABLE regions — maximal runs of
+        // non-code lines (directive bodies included; opaque code excluded). Joined so
+        // a `$$…$$` that spans lines is matched whole, without crossing a code fence.
+        let mut i = 0;
+        while i < lines.len() {
+            if is_code_line[i] {
+                i += 1;
+                continue;
+            }
+            let start = i;
+            while i < lines.len() && !is_code_line[i] {
+                i += 1;
+            }
+            let region = lines[start..i].join("\n");
+
+            // Block math first; blank out matches (equal char count) so `$…$` below
+            // cannot re-scan the same `$$`.
+            let mut masked = region.clone();
+            for m in re_block_math.find_iter(&region) {
+                block_math.0 += 1;
+                block_math.1 += chars(m.as_str());
+            }
+            masked = re_block_math.replace_all(&masked, |c: &regex::Captures| {
+                " ".repeat(chars(&c[0]))
+            }).into_owned();
+            for m in re_inline_math.find_iter(&masked) {
+                inline_math.0 += 1;
+                inline_math.1 += chars(m.as_str());
+            }
+            for m in re_paren_math.find_iter(&region) {
+                paren_math.0 += 1;
+                paren_math.1 += chars(m.as_str());
+            }
+            for c in re_role.captures_iter(&region) {
+                let e = roles.entry(c[1].to_string()).or_insert((0, 0));
+                e.0 += 1;
+                e.1 += chars(&c[0]);
+            }
+            // Inline code AFTER stripping roles, so `{ref}`sec:x`` is not counted as
+            // code — its backtick arg belongs to the role.
+            let no_roles = re_role.replace_all(&region, "");
+            for m in re_inline_code.find_iter(&no_roles) {
+                inline_code.0 += 1;
+                inline_code.1 += chars(m.as_str());
+            }
+            for c in re_link.captures_iter(&region) {
+                let e = links.entry(link_bucket(&c[2])).or_insert((0, 0));
+                e.0 += 1;
+                e.1 += chars(&c[0]);
+            }
+            for m in re_eqn_label.find_iter(&region) {
+                eqn_labels.0 += 1;
+                eqn_labels.1 += chars(m.as_str());
+            }
+        }
+    }
+
+    let pct = |c: usize| 100.0 * c as f64 / total_chars.max(1) as f64;
+
+    println!("\n{:=<72}", "");
+    println!("ORCA {version} — MyST CONSTRUCT CENSUS ({} leaves, {} chars)", leaves.len(), total_chars);
+    println!("{:=<72}", "");
+
+    println!("\n[1] MATH  (category 1 — transform to KaTeX)");
+    println!("    $$…$$ block   : {:>5} occ · {:>7} chars ({:.2}%)", block_math.0, block_math.1, pct(block_math.1));
+    println!("    $…$ inline    : {:>5} occ · {:>7} chars ({:.2}%)", inline_math.0, inline_math.1, pct(inline_math.1));
+    println!("    \\(…\\) inline  : {:>5} occ · {:>7} chars ({:.2}%)", paren_math.0, paren_math.1, pct(paren_math.1));
+    let math_role = roles.get("math").copied().unwrap_or((0, 0));
+    println!("    {{math}} role   : {:>5} occ · {:>7} chars ({:.2}%)", math_role.0, math_role.1, pct(math_role.1));
+    let math_dir = directives.get("math").copied().unwrap_or((0, 0));
+    println!("    {{math}} block  : {:>5} occ · {:>7} chars ({:.2}%)  (directive form)", math_dir.0, math_dir.1, pct(math_dir.1));
+    println!("    (eqn:…) labels: {:>5} occ · {:>7} chars", eqn_labels.0, eqn_labels.1);
+
+    println!("\n[2] INLINE CODE  (category 1 — transform to <code>)");
+    println!("    `…`           : {:>5} occ · {:>7} chars ({:.2}%)", inline_code.0, inline_code.1, pct(inline_code.1));
+
+    println!("\n[3] CROSS-REFERENCES  (category 1 — transform to a link)");
+    let mut role_rows: Vec<(&String, &(usize, usize))> =
+        roles.iter().filter(|(k, _)| *k != "math").collect();
+    role_rows.sort_by(|a, b| b.1 .1.cmp(&a.1 .1));
+    println!("    roles {{name}}`arg` (ref/numref/…):");
+    for (name, (occ, ch)) in &role_rows {
+        println!("        {{{:<10}}} : {:>5} occ · {:>7} chars", name, occ, ch);
+    }
+    let mut link_rows: Vec<(&String, &(usize, usize))> = links.iter().collect();
+    link_rows.sort_by(|a, b| b.1 .1.cmp(&a.1 .1));
+    println!("    links [text](target) by target class:");
+    for (bucket, (occ, ch)) in &link_rows {
+        println!("        {:<16} : {:>5} occ · {:>7} chars", bucket, occ, ch);
+    }
+
+    println!("\n[4] DIRECTIVES  (category 2 verbatim OR 3 hidden — the WHITELIST is decided here)");
+    println!("    total distinct directive names: {}", directives.len());
+    println!("    union chars under >=1 directive fence: {} ({:.1}% of corpus)", directive_union_chars, pct(directive_union_chars));
+    let mut dir_rows: Vec<(&String, &(usize, usize))> = directives.iter().collect();
+    dir_rows.sort_by(|a, b| b.1 .1.cmp(&a.1 .1));
+    println!("    top-15 by volume (name : occ · chars · % of corpus):");
+    for (name, (occ, ch)) in dir_rows.iter().take(15) {
+        println!("        {{{:<14}}} : {:>5} occ · {:>7} chars ({:.2}%)", name, occ, ch, pct(*ch));
+    }
+    let tail: usize = dir_rows.iter().skip(15).map(|(_, (_, c))| *c).sum();
+    let tail_occ: usize = dir_rows.iter().skip(15).map(|(_, (o, _))| *o).sum();
+    println!("        … tail ({} more names) : {} occ · {} chars ({:.2}%)",
+             dir_rows.len().saturating_sub(15), tail_occ, tail, pct(tail));
+
+    println!("\n{:=<72}", "");
+    // A census, not a post-condition — no assert. The report is the deliverable.
+    println!("(census only — see wiki/orca/manual-sources.md for the reading)");
+    println!("{:=<72}", "");
+}

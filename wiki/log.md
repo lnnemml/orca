@@ -4198,3 +4198,28 @@ preservation test still char-for-char.
 
 **Not touched (next units):** the hover provider (its replacement by selection is the next unit),
 Explain-with-Claude, the sectioner, `keywords.json`, FTS, the search schema. No migration, no new deps.
+
+## [2026-08-04] ingest | measure MyST constructs in the manual corpus (the render plan by number)
+
+**Gate (unit 4.11, before touching the renderer).** `cargo test myst_constructs_measure --
+--ignored --nocapture` (`src-tauri/src/manual/tests.rs`) walks all 126 leaves (3 984 406 chars)
+with the sectioner's own fence model and censuses every render construct by **occurrences AND
+characters**. Numbers recorded in `wiki/orca/manual-sources.md` ("MyST construct census").
+
+**Findings.** Math is dollar-only: `$$…$$` 874/4.27 %, `$…$` 4746/1.64 %; `\(…\)`, `{math}` role
+and `{math}` directive are **0** — KaTeX needs two delimiters, zero tail. Inline code `` `…` `` is
+the biggest transform, **11.77 %** (9280 occ), and role-args are stripped from that count.
+Cross-refs come in two nav syntaxes (`{ref}`/`{numref}` roles + `[..](sec:/tab:)` links, ≈1710),
+with a citation/equation/formatting tail that stays verbatim. Of 32 directive names, **13.6 % of
+corpus is under a directive fence but almost all of it is VISIBLE content** (tables, admonitions,
+figures); the genuinely-invisible metadata is only `{index}` (321 occ, 0.31 %), `{tabularcolumns}`
+(76) and `{raw} latex` (176) — ≈0.3–0.6 %.
+
+**The reading.** Two–three constructs carry each category; the rest is a tail. Load-bearing
+correction to the screenshot model: the noise is NOT the whole `{directive}` class — so category (3)
+must be a **named** whitelist (proposed: `{index}` + `{tabularcolumns}`; `{raw} latex` deferred to
+the author), never "looks like a directive → hide", which would eat 13 % of visible content.
+
+**Next (Задачі 2–4, on "ок"):** KaTeX (first visual dep, bundle size before/after), inline code →
+`<code>`, cross-refs → anchor-map links, the three categories split in the preservation test, and a
+before/after render-time measurement on the largest page.
