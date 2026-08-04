@@ -625,6 +625,211 @@ def fetch_objects_inv(fetcher: Fetcher, base: str, out_dir: Path) -> int:
     return 0
 
 
+# --- Source vs published-HTML sample (unit 4.15 gate) ----------------------
+#
+# The RENDER whitelist (category 3 = "hide, invisible in the real manual") was built
+# from OUR list of construct TYPES (directives/math/code/xrefs, 4.12) — so `(label)=`
+# anchor markers, which are none of those, were shown. That is Pattern 1 (a check that
+# measures US, not the subject) once more. The cure is to ask the SUBJECT: the published
+# HTML. This mode fetches a DIVERSE sample of pages' rendered HTML, extracts the main
+# content (Furo `<article id="furo-main-content">`), and reports which SOURCE construct
+# classes are ABSENT from the rendered text — the domain's own list of "invisible", and
+# the reverse (visible in HTML but we hide). It only PROPOSES; the whitelist stays
+# by-name and author-approved. Author-run, out-of-band (ADR-013 (2) intact).
+
+from html.parser import HTMLParser  # noqa: E402  (stdlib; kept local to this mode)
+
+# Diverse by chapter (the author's spec): essential/model/structure/quickstart/preface/
+# spectroscopy/utilities/architecture, the shortest leaf, the largest leaf, and a container.
+HTML_SAMPLE_PATHS = [
+    "contents/essentialelements/solvationmodels",
+    "contents/essentialelements/scf",
+    "contents/essentialelements/RI",
+    "contents/modelchemistries/mdci",
+    "contents/modelchemistries/CASSCF",                # the largest leaf
+    "contents/structurereactivity/optimizations",
+    "contents/quickstartguide/troubleshooting",
+    "contents/orcaarchitecture/conversionfactors",     # the shortest leaf
+    "contents/preface/howtocite",                       # citations by nature
+    "contents/spectroscopyproperties/CASSCFresp",
+    "contents/utilitiesvisualization/orca_2json",
+    "index",                                            # a container (index_*)
+]
+
+_VOID_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input",
+              "link", "meta", "param", "source", "track", "wbr"}
+
+
+class _ArticleText(HTMLParser):
+    """Collect the visible text of `<article id="furo-main-content">` — Furo's main
+    content, without the nav/sidebar/footer. Skips <script>/<style>."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.on = False
+        self.depth = 0
+        self.skip = 0
+        self.parts: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        if not self.on:
+            if tag == "article" and dict(attrs).get("id") == "furo-main-content":
+                self.on = True
+                self.depth = 1
+            return
+        if tag in _VOID_TAGS:
+            return
+        self.depth += 1
+        if tag in ("script", "style"):
+            self.skip += 1
+
+    def handle_endtag(self, tag):
+        if not self.on or tag in _VOID_TAGS:
+            return
+        if tag in ("script", "style") and self.skip > 0:
+            self.skip -= 1
+        self.depth -= 1
+        if self.depth == 0:
+            self.on = False
+
+    def handle_data(self, data):
+        if self.on and self.skip == 0:
+            self.parts.append(data)
+
+    def text(self) -> str:
+        return " ".join("".join(self.parts).split())
+
+
+# Source-side construct detectors. Each yields the PAYLOAD whose presence we test in the
+# rendered text (absent → invisible/transformed; present → visible verbatim).
+_LABEL_LINE = re.compile(r"^\s*\(([^()]+)\)=\s*$", re.M)          # MyST anchor label line
+_INDEX_DIR = re.compile(r"^\s*(?:`{3,}|:{3,})\{index\}\s*(.+)$", re.M)
+_TABCOLS = re.compile(r"^\s*(?:`{3,}|:{3,})\{tabularcolumns\}\s*(.+)$", re.M)
+_RAW_LATEX = re.compile(r"^\s*(?:`{3,}|:{3,})\{raw\}\s*latex\b", re.M)
+_CITE = re.compile(r"\{cite[a-z:]*\}`([^`]+)`")                   # {cite}/{cite:t}/… keys
+_NUMREF = re.compile(r"\{numref\}`([^`]+)`")
+_INLINE_CODE = re.compile(r"(?<!\})`([^`]+)`")                    # ` … ` NOT a role arg
+
+
+def _fence_iter(src: str):
+    """Yield (line, in_orca_fence) — so a `(x)=` INSIDE a ```orca block is not a label."""
+    in_fence = False
+    fence_char = ""
+    fence_len = 0
+    for line in src.splitlines():
+        s = line.strip()
+        if not in_fence and (s.startswith("```") or s.startswith(":::")):
+            fence_char, fence_len = s[0], len(s) - len(s.lstrip(s[0]))
+            in_fence = True
+            yield line, False  # the opener line itself is not prose
+            continue
+        if in_fence and s and set(s) == {fence_char} and len(s) >= fence_len:
+            in_fence = False
+            yield line, False
+            continue
+        yield line, in_fence
+
+
+def html_sample(fetcher: Fetcher, base: str, out_dir: Path, n: int) -> int:
+    paths = HTML_SAMPLE_PATHS[: n] if n and n < len(HTML_SAMPLE_PATHS) else HTML_SAMPLE_PATHS
+    print("\n" + "=" * 72)
+    print(f"ORCA {ORCA_VERSION} — SOURCE vs PUBLISHED HTML ({len(paths)} pages)")
+    print("Asking the subject (Furo HTML), not our list of construct types.")
+    print("=" * 72)
+
+    # Aggregate over the sample: class -> [occurrences, payload-visible-in-rendered].
+    # `reliable`: the payload is SYNTHETIC (a label/key/spec that never occurs in prose),
+    # so "absent from rendered" truly means invisible. For NATURAL-word payloads (index
+    # terms, code tokens) the substring test over-reports "visible" (the word is in the
+    # prose anyway) — marked unreliable, decided by Sphinx builder semantics instead.
+    RELIABLE = {"(label)= anchor", "{tabularcolumns}", "{cite} keys", "{numref} keys"}
+    agg: dict[str, list[int]] = {
+        "(label)= anchor": [0, 0],
+        "{index}": [0, 0],
+        "{tabularcolumns}": [0, 0],
+        "{raw} latex": [0, 0],
+        "{cite} keys": [0, 0],
+        "{numref} keys": [0, 0],
+        "inline `code`": [0, 0],
+    }
+    sample_ok = 0
+    for p in paths:
+        html_res = fetcher.get(f"{base}{p}.html")
+        src_res = fetcher.get(source_url(base, p))
+        if not (html_res.ok and src_res.ok):
+            print(f"  !! skip {p}: html={html_res.status} src={src_res.status}")
+            continue
+        sample_ok += 1
+        parser = _ArticleText()
+        parser.feed(html_res.body.decode("utf-8", "replace"))
+        rendered = parser.text().lower()
+        src = src_res.body.decode("utf-8", "replace")
+
+        def probe(name: str, payloads: list[str]) -> None:
+            for pl in payloads:
+                agg[name][0] += 1
+                if pl and pl.lower() in rendered:
+                    agg[name][1] += 1
+
+        # anchor labels — only whole prose lines (not inside a ```orca fence)
+        prose = "\n".join(line for line, inf in _fence_iter(src) if not inf)
+        probe("(label)= anchor", [m.group(1) for m in _LABEL_LINE.finditer(prose)])
+        probe("{index}", [m.group(1).split(";")[0].split(":")[-1].strip()
+                          for m in _INDEX_DIR.finditer(src)])
+        probe("{tabularcolumns}", [m.group(1).strip() for m in _TABCOLS.finditer(src)])
+        # {raw} latex: presence, and whether a distinctive latex command leaks (it should not)
+        if _RAW_LATEX.search(src):
+            agg["{raw} latex"][0] += 1
+            if "\\sisetup" in rendered or "\\begin{" in rendered:
+                agg["{raw} latex"][1] += 1
+        probe("{cite} keys", [k.strip() for m in _CITE.finditer(src)
+                              for k in m.group(1).split(",")][:40])
+        probe("{numref} keys", [m.group(1) for m in _NUMREF.finditer(src)][:40])
+        probe("inline `code`", [m.group(1) for m in _INLINE_CODE.finditer(src)
+                               if 2 <= len(m.group(1)) <= 40][:40])
+
+    print(f"\n[SAMPLE] {sample_ok}/{len(paths)} pages fetched (html + source)")
+    print(f"\n[CLASS]  payload PRESENT in rendered / total  (RELIABLE = synthetic payload)")
+    for name, (tot, vis) in agg.items():
+        frac = f"{vis}/{tot}" if tot else "0/0"
+        if name not in RELIABLE:
+            note = "prose/latex payload — substring test NOT decisive (Sphinx semantics)"
+            print(f"    {name:<20} {frac:>10}   -> [{note}]")
+            continue
+        verdict = ("INVISIBLE (category-3 candidate)" if tot and vis <= max(2, tot // 50) else
+                   "visible" if tot and vis == tot else
+                   "partial")
+        print(f"    {name:<20} {frac:>10}   -> {verdict}")
+
+    # Corpus-wide frequency of each class (local .md.txt — the author has the corpus).
+    version_dir = out_dir / ORCA_VERSION
+    print(f"\n[CORPUS FREQUENCY] (local {version_dir}/*.md.txt)")
+    if not version_dir.is_dir():
+        print(f"    (no local corpus at {version_dir} — run --all first for these counts)")
+    else:
+        counts = {k: 0 for k in ("(label)= anchor", "{index}", "{tabularcolumns}",
+                                 "{raw} latex", "{cite}", "{numref}", "{eq}")}
+        for f in version_dir.rglob("*.md.txt"):
+            t = f.read_text(encoding="utf-8", errors="replace")
+            prose = "\n".join(line for line, inf in _fence_iter(t) if not inf)
+            counts["(label)= anchor"] += len(_LABEL_LINE.findall(prose))
+            counts["{index}"] += len(_INDEX_DIR.findall(t))
+            counts["{tabularcolumns}"] += len(_TABCOLS.findall(t))
+            counts["{raw} latex"] += len(_RAW_LATEX.findall(t))
+            counts["{cite}"] += len(_CITE.findall(t))
+            counts["{numref}"] += len(_NUMREF.findall(t))
+            counts["{eq}"] += len(re.findall(r"\{eq\}`[^`]+`", t))
+        for k, v in counts.items():
+            print(f"    {k:<20} {v:>6}")
+
+    print("\n" + "=" * 72)
+    print("Candidates for category 3 (INVISIBLE) are PROPOSALS — the whitelist stays")
+    print("by-name and author-approved. Requests used: "
+          f"{fetcher.attempts}/{fetcher.cap}")
+    print("=" * 72)
+    return 0
+
+
 # --- CLI -------------------------------------------------------------------
 
 def main(argv: list[str]) -> int:
@@ -642,17 +847,22 @@ def main(argv: list[str]) -> int:
                     help="ignore the manifest.json cache and refetch every file")
     ap.add_argument("--objects-inv", action="store_true",
                     help="fetch objects.inv (the label->anchor map) into --out")
+    ap.add_argument("--html-sample", type=int, default=0, metavar="N",
+                    help="fetch N diverse pages' published HTML + source and report which "
+                         "source constructs are absent from the rendered text (unit 4.15 gate)")
     ap.add_argument("--out", default=str(Path("resources/manual")),
                     help="output dir (default resources/manual)")
     args = ap.parse_args(argv)
 
-    if not (args.manifest or args.all or args.objects_inv):
+    if not (args.manifest or args.all or args.objects_inv or args.html_sample):
         ap.print_help()
         return 2
 
     base = args.base if args.base.endswith("/") else args.base + "/"
     fetcher = Fetcher()
     try:
+        if args.html_sample:
+            return html_sample(fetcher, base, Path(args.out), args.html_sample)
         if args.objects_inv:
             return fetch_objects_inv(fetcher, base, Path(args.out))
         if args.all:

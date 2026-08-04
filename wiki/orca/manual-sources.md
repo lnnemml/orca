@@ -349,6 +349,18 @@ and figures are untouched; both are recorded, not handled. The cure is a manifes
 future unit) that also pulls the referenced `.inp` and `_images/` — the input examples first, since
 worked input is this manual's most valuable content (mission).
 
+**Two more components of the SAME gap, kept separate (different mechanism — GENERATED, not a skipped
+file):** `bibliography` was one of the three no-source pages (Sphinx generates it; there is no
+`.md.txt`), so the real author-year records are unreachable — the reason `{cite}` renders as the **keys**
+(`[barone1998]`) and not a number (4.15, Task 2). And **equation numbers** (`{eq}`, 146×) are likewise a
+*generated numbering* absent from the source, which is why `{eq}` stays category 2 (no compact form
+found). All five components share **one root: we took the sources, not the render** — the sources omit
+everything Sphinx generates or links (input files, images, the bibliography, equation numbers). This is
+one sentence worth keeping, because from it grows the question "should we have fetched the HTML instead?"
+— and the 4.15 `--html-sample` gate is the first, cheap, sampled answer to it. The five are **not one
+number**: 430 (input examples + images, skipped files) · 342 unresolved `{numref}` (mixed targets) ·
+`bibliography` (1 generated page) · `{eq}` 146 (generated numbers).
+
 **Dependent forecast (a gate for that unit before it starts):** `{numref}` resolves at only **32.8 %**
 (167/509), and **342** are unresolved. A share of those point at the very figures/tables the fetch
 skipped — so **if `_images/` (and the numbered objects) are ingested, `{numref}` resolution must rise
@@ -356,6 +368,46 @@ by a measurable amount.** That predicted rise is the future unit's built-in post
 the images does *not* move the `{numref}` number, the ingest did not do what it claimed. (This is a
 **distinct** debt from the 430: the 342 mix absent-figure targets with non-section objects — do NOT
 merge them into one number.)
+
+## Source vs published HTML — asking the render, not our list (unit 4.15 gate)
+
+The 4.12 census enumerated construct TYPES (directives / math / code / xrefs) and built the hide-whitelist
+from that. But a MyST **anchor label** line `(name)=` is none of those types, so the census never listed
+it, and we rendered `(sec:…solvationmodels)=` before a heading — visible junk that is INVISIBLE in the
+real manual. The census's inventory was OUR list of types, not the subject's answer to "what does Sphinx
+not show" — **Pattern 1 (a check that measures us), 5th instance** — and it was found not by any gate but
+by the **author's eye in the window**. That is the lesson: a manual window-check catches a class no gate
+built from our own inventory can, because the gate inherits our blind spots.
+
+The cure is to ask the subject: the published HTML. `scripts/fetch-manual.py --html-sample N` (author-run,
+out-of-band — ADR-013 (2) intact) fetches a **diverse 12-page sample** (8 chapters + the shortest leaf +
+the largest + a container), extracts the main content (Furo `<article id="furo-main-content">`, stdlib
+`html.parser`, no dependency), and tests which SOURCE constructs are absent from the rendered text. The
+test is only decisive for **synthetic** payloads (a label/key/spec never coincides with prose); for
+natural-word payloads (index terms, code tokens) it over-reports "visible" and is marked NOT decisive —
+those are settled by Sphinx builder semantics, and saying so is worth more than a false checkmark
+(**Pattern 2**: the measurement's scope is smaller than the claim; name it).
+
+| class (synthetic payload) | visible in rendered (sample) | corpus | verdict |
+|---|---|---:|---|
+| `(name)=` anchor label | **2/186** (the 2 = substring noise; RI+mdci hand-checked 0/60) | **1438** | **INVISIBLE → category 3** |
+| `{cite}` keys | 2/165 | 1002 | keys invisible, but the CITATION is visible → **category 1** |
+| `{numref}` keys | 0/64 | 509 | keys invisible, renders a number → already a cross-ref |
+| `{tabularcolumns}` | 0/3 | 76 | INVISIBLE (confirms the existing whitelist item) |
+
+*Not decisive by substring (Sphinx semantics decide):* `{index}` 38/56 (index terms = prose words), `{raw}
+latex` (HTML build excludes latex-only raw), inline code 85/347 (visible; sanity). **Reverse check — of
+the three existing whitelist items, none is actually visible** (no defect); the one distortion found was
+`{cite}` shown verbatim (fixed → category 1, Task 2).
+
+**`(name)=` boundary (checkable, measured).** The render hides EXACTLY a whole trimmed prose line matching
+`^\([^()]+\)=$` — the sectioner's own `parse_label` rule (`sections.rs`, rule #9: hide precisely what the
+index calls a label). Measured over the corpus with render.ts's fence model: **1438 hidden**; the
+look-alikes that are correctly KEPT — **67** mid-line `(x)= …` (not a whole line) and **10** `(x)=` that
+ride inside a ` ```orca ` block whose fence over-extends past a non-standard `` ``` --> `` close (our
+strict "close = fence-chars only" rule; a source quirk, the safe side of the boundary — never hide code).
+The 1448 of unit 4.1 vs 1438 here is exactly this boundary: 4.1 counted every `(…)=` target; 1438 is the
+ones that are a whole prose line and would actually hide.
 
 ## Retrieval gate (unit 4.3) — the FTS column chosen by number
 
@@ -530,9 +582,9 @@ owner, because it was handed a thing already declared a block-option. So Part E'
 simple-word-as-block-option and right-kind-wrong-block — are **one defect: the TYPE was inferred from
 OUR application, not from the manual.**
 
-**Pattern 1 — a check that measures US instead of the subject (collected, all four).** Our knowledge is
+**Pattern 1 — a check that measures US instead of the subject (collected, all five).** Our knowledge is
 not forbidden; it must not **masquerade as a measurement of the manual** — it gets its own channel with
-provenance. The same defect appeared **four times** (this collection is the canonical one; the module
+provenance. The same defect appeared **five times** (this collection is the canonical one; the module
 [modules/manual-keywords.md](../modules/manual-keywords.md) carries the same list):
 1. **`%maxcore` "covered"** — the gate measured in *our* notation (string-normalised), so a `%maxcore`
    directive matched a `MAXCORE` block-option.
@@ -544,6 +596,13 @@ provenance. The same defect appeared **four times** (this collection is the cano
    fixtures+templates (B∪C), because he generates inputs *with* the input-builder (Part H). "Measure
    what the author types" was "measure what we emit" once more; caught by measuring A against the
    manual's own `!` vocabulary (15 vs 424, 10 %). *(Found later, in Part H — collected here.)*
+5. **the render hide-whitelist listed OUR construct types** — the 4.12 census enumerated
+   directives/math/code/xrefs and built category 3 from that, so the `(name)=` anchor label (none of
+   those types) was never a candidate and rendered as visible junk. The inventory was our type-list, not
+   the subject's "what does Sphinx not show". *(Fixed 4.15: the `--html-sample` gate asks the published
+   HTML; `(name)=` surfaced at once.)* **Found not by a gate but by the author's EYE in the window** — a
+   manual window-check catches a class no gate built from our inventory can, because the gate inherits
+   our blind spots. That is itself the lesson, and the reason the interactive check is not optional.
 Each fix was the same shape: give our knowledge its own attributed channel and let the check ask the
 manual.
 

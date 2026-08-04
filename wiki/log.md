@@ -4407,3 +4407,27 @@ clip is a certain bug (grid `1fr` + `min-width:auto`); the drawer is the same tr
 Left to the author to confirm in the window — not claimed.
 
 **Not touched:** PageView, render.ts, the selection panel, lookup, keywords.json, schema.
+
+## [2026-08-04] ingest | measure what the rendered manual HIDES — source vs published HTML (4.15 gate)
+
+**Why.** The author saw `(sec:…solvationmodels)=` rendered before a section heading — a MyST anchor
+label, INVISIBLE in the real manual (1448 in the corpus, 4.1). We showed them because the 4.12 census
+listed construct TYPES (directives/math/code/xrefs) and a `(name)=` label is none — the inventory was OUR
+list, not the subject's answer. Pattern 1, 5th instance; found not by a gate but by the author's EYE in
+the window.
+
+**Gate (`scripts/fetch-manual.py --html-sample N`).** Author-run, out-of-band (ADR-013 (2) intact). Fetches
+a diverse 12-page sample's published HTML (Furo `<article id="furo-main-content">`, stdlib `html.parser`,
+no dep) + source, and reports which SOURCE constructs are absent from the rendered text. Decisive only for
+SYNTHETIC payloads (label/key/spec never coincide with prose); natural-word payloads (index/code) marked
+NOT decisive — Pattern 2 named (scope < claim). Findings: `(name)=` INVISIBLE (2/186, hand-checked 0/60 on
+RI+mdci; corpus 1438) → category 3; `{cite}` keys invisible but the citation VISIBLE → category 1;
+`{tabularcolumns}` invisible (confirms whitelist); reverse check — none of the 3 existing whitelist items
+is actually visible (no defect). Numbers + method in `wiki/orca/manual-sources.md`.
+
+**Consolidated gap grew to five components, one root (we took sources, not the render):** 430 (input
+examples + images) · 342 unresolved `{numref}` · `bibliography` (generated page → `{cite}` keeps keys) ·
+`{eq}` 146 (generated numbers → stays category 2). Kept as separate numbers, not merged.
+
+**Next (Task 1–4, commit B):** `(name)=` → category 3 (boundary = whole prose line, tested both ways);
+`{cite}` → category 1 (`[keys]`); corpus gate grows (cat3 += label, cat1 += cite) + a negative control.
