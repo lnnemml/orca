@@ -473,26 +473,54 @@ in the shell; two columns — debounced FTS search on the left, the full **page*
   that was rendering as misaligned proportional prose. Same linear per-line check as the fence, **no
   table parsing** — a font choice only, so the preservation test stays green unchanged.
 
-## Manual hover in the editor (`src/editor/orca-hover.ts`, `src/manual/ManualDrawer.tsx`) — 4.4 Part B
+## Manual lookup BY SELECTION in the editor (`src/manual/selection-lookup.ts`, `src/editor/selection-panel.ts`, `ManualDrawer.tsx`) — 4.13
 
-The editor's consumer of `keywords.json`. `InputEditor` registers a Monaco hover provider (+ the
-`orca.openManualSection` command) on language registration. The provider gets the word (whole, via the
-`wordPattern` — `def2-SVP`, `%maxcore` come intact), classifies its context
-([keyword-lookup.ts](../../src/manual/keyword-lookup.ts): `!`-line → simple, `%name` → block, inside a
-block → block-option of that block via `enclosingBlock`), and looks up **type- and block-aware** (a
-wrong-type match is a miss), consulting `aliases[]`.
+The editor's consumer of `keywords.json`. **The trigger is a SELECTION, not a hover (4.13 replaced the
+hover — it is gone, not kept alongside).** Three reasons, in order of weight:
+1. **Hover interrupted edits** — it fired with a delay and popped up unbidden while typing; and its
+   markdown `command:` "Open" link **silently failed** to open the drawer (a Monaco quirk a `try/catch`
+   masked). Selection is deliberate, so the panel is a request, not an interruption.
+2. **Hover gave exactly ONE `wordPattern` token** — which we patched twice; ORCA keywords are often not
+   one token (`NEB-TS`, `DLPNO-CCSD(T)`, `def2/J`, `%geom Constraints`). A selection lets the author
+   **name the boundary himself**, removing a whole class of future `wordPattern` patches.
+3. **Help as a request, not an interruption** — a deliberate selection matches the "learning instrument"
+   mission better than a passive hover.
 
-- **Contract (enforced, from manual-keywords.md):** a qualified **miss → the hover does not appear at
-  all** (silence), never a bare-name or FTS fall-back — hovering `%maxcore` shows nothing, not "not
-  found". Unqualified search is the panel's separate path.
-- **Hover body:** keyword, type, owning block (+ `owner_source`), and an **Open** command-link with the
-  target's breadcrumb › title; several targets → *"documented in N places"* (a list, not a picked
-  first). An empty `summary` does not suppress it (seeded records have none).
-- **`ManualDrawer`** is a fixed-position side overlay (does not disturb the editor layout, so the
-  author stays in the editor). Clicking Open fires the command → the drawer resolves the descriptor via
-  `resolve_manual_section` (the keywords.json→DB bridge, with a version check) to a section (file + id),
-  then loads that section's **whole page** via `get_manual_page` and renders it in the **SAME `PageView`**
-  as `ManualScreen` — one display component — scrolled to and highlighting the resolved section.
+- **`resolveSelection` ([selection-lookup.ts](../../src/manual/selection-lookup.ts)) — the MEASURED
+  normalization** (numbers in [manual-sources.md](../orca/manual-sources.md) "Selection normalization"):
+  the input is arbitrary text, so silence-vs-answer is decided by a rule, not a guess. Multi-line or
+  internal-whitespace → malformed (0 keys carry a space); a **boundary guard** rejects a selection that
+  cuts a token (16 simple keys are substrings of a longer simple key — `opt`⊂`optts` — so a mid-token
+  cut would answer about the neighbour; the guard's measured **false-reject rate is 0/2877**, so it is a
+  guard, not a muffler); then **whole-first exact lookup, strip one trailing `(…)`, retry** (`CPCM(water)`
+  → `CPCM`); then the unchanged position qualifier ([keyword-lookup.ts](../../src/manual/keyword-lookup.ts):
+  `!`-line → simple, `%name` → block, inside a block → block-option via `enclosingBlock`; an argument
+  token → silence). The lookup stays **type- and block-aware** (a wrong-type match is a miss),
+  consulting `aliases[]`.
+- **Two outcomes for a non-hit, deliberately distinct (the learning-instrument's job):** a **qualified
+  miss** (well-formed but not in the map, or an argument token like the `water` in `CPCM(water)`) → the
+  panel **does not appear** (silence, the boundary of our data — the manual-keywords.md contract still
+  holds: no bare-name / FTS fall-back). A **malformed selection** (internal space or a mid-token cut) →
+  the panel appears with a **format hint** ("Select one keyword whole") — a *correctable user action*,
+  not an answer. Without the split the author can't tell "select differently" from "we don't document
+  this."
+- **The panel (`selection-panel.ts`)** — a Monaco **content widget** over the settled selection (a short
+  debounce after the selection changes, so it does not flicker mid-drag). It is an **overflow widget
+  (`allowEditorOverflow`)**, so `editor-options.ts`'s `fixedOverflowWidgets: true` un-clips it on the top
+  line — the **same path** debugging/010 fixed for the hover. Content: `word — type (owning block)` + an
+  **Open in manual** button (several targets → *"Open (N) →"*); a reserved layout **slot** for the future
+  *Explain with Claude* action — room, **not** a stub button. The wire is split from the DOM: the pure,
+  DOM-free `createSelectionController` (selection → resolve → show/hide + Open) is tested with a fake
+  editor (`selection-panel.test.ts`, no jsdom — the debugging/010 lesson: test the wiring, not only the
+  pure functions).
+- **The Open action calls the `manual-open.ts` channel directly** (`openManualSection` → the handler
+  `ManualDrawer` registered via `setManualOpenHandler`) — **not** a Monaco markdown command (the one
+  that failed silently). `ManualDrawer` is a fixed-position side overlay: it resolves the descriptor via
+  `resolve_manual_section` (the keywords.json→DB bridge, version-checked) to a section, loads its **whole
+  page** via `get_manual_page`, and renders it in the **SAME `PageView`** as `ManualScreen`.
+- **Kept from the hover unit:** the pure lookup (`hoverContext`, `resolveHover`, `enclosingBlock`,
+  `isArgumentToken`) — only the trigger and input normalization changed, not the logic — and the
+  `manual-open.ts` channel (Monaco-decoupled, survived the trigger change unedited; was `orca-hover.ts`).
 
 ## Queue control (status bar)
 

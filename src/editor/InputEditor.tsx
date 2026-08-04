@@ -1,4 +1,5 @@
 import Editor, { type Monaco } from "@monaco-editor/react";
+import type { editor as MonacoEditor } from "monaco-editor";
 
 // Side-effect: point Monaco at the bundled package + worker (must run before mount).
 import "./monaco-setup";
@@ -7,7 +8,7 @@ import {
   orcaLanguageId,
   orcaMonarchTokens,
 } from "./orca-language";
-import { registerOrcaHover } from "./orca-hover";
+import { registerSelectionLookup } from "./selection-panel";
 import { orcaEditorOptions } from "./editor-options";
 import { ManualDrawer } from "../manual/ManualDrawer";
 
@@ -23,8 +24,6 @@ function registerOrcaLanguage(monaco: Monaco) {
     orcaLanguageId,
     orcaLanguageConfiguration,
   );
-  // The hover provider (keyword → manual section) + its "open in drawer" command.
-  registerOrcaHover(monaco, orcaLanguageId);
 }
 
 interface InputEditorProps {
@@ -32,8 +31,10 @@ interface InputEditorProps {
   onChange: (value: string) => void;
 }
 
-/** Full-height Monaco editor wired to the ORCA `.inp` grammar (vs-dark). The
- *  `ManualDrawer` is a fixed-position overlay (opened by a hover's "open" command), so
+/** Full-height Monaco editor wired to the ORCA `.inp` grammar (vs-dark). Manual help is
+ *  triggered by a SELECTION (unit 4.13, not hover): `registerSelectionLookup` (on mount,
+ *  where the editor instance is available) shows a floating panel over a settled selection.
+ *  The `ManualDrawer` is a fixed-position overlay (opened by the panel's "Open" action), so
  *  it does not affect the editor's layout and the author stays in the editor. */
 export function InputEditor({ value, onChange }: InputEditorProps) {
   return (
@@ -44,6 +45,9 @@ export function InputEditor({ value, onChange }: InputEditorProps) {
         value={value}
         onChange={(next) => onChange(next ?? "")}
         beforeMount={registerOrcaLanguage}
+        onMount={(editor, monaco) =>
+          registerSelectionLookup(monaco, editor as MonacoEditor.ICodeEditor)
+        }
         options={orcaEditorOptions}
       />
       <ManualDrawer />

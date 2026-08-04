@@ -10,7 +10,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 import { PageView } from "./PageView";
 import { orcaMapVersion, type SectionDescriptor } from "./keyword-lookup";
-import { setManualOpenHandler } from "../editor/orca-hover";
+import { setManualOpenHandler } from "../editor/manual-open";
 import type { ManualPage, ManualSection } from "./types";
 
 export function ManualDrawer() {

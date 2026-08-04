@@ -14,13 +14,11 @@ import { join, resolve } from "node:path";
 import { describe, it } from "vitest";
 
 import kwjson from "./keywords.json";
+import { isTokenChar, stripTrailingArg } from "./selection-lookup";
 
-// ── The candidate rule, pure (mirrors what selection-lookup.ts implements) ──────────────
-// Token-continuation class: letters/digits/_ plus the chars real keys carry — `%` (block
-// prefix), `/` (def2/J, aug-cc-…/C: 78), `.` (basename.xyz, D.Print: 47), `-` (def2-SVP).
-// Parens are EXCLUDED — 0 keys contain them; `(` is an argument delimiter, so a selection
-// abutting `(` did NOT cut a token (that is the `CPCM` / `water` distinction).
-const WORD = /[\w%/.-]/;
+// The boundary class + arg-strip are the resolver's own (`selection-lookup.ts`), imported
+// so this gate measures exactly what ships — parens EXCLUDED (0 paren keys; `(` is an
+// argument delimiter, the `CPCM` / `water` distinction).
 
 const keys = new Set<string>();
 {
@@ -30,10 +28,9 @@ const keys = new Set<string>();
 }
 
 const norm = (s: string) => s.trim().toLowerCase();
-/** Strip ONE trailing balanced `(...)` argument group: `CPCM(water)` → `CPCM`. */
-const stripArg = (s: string) => s.replace(/\([^()]*\)\s*$/, "").trim();
+const stripArg = stripTrailingArg;
 
-/** The refined lookup order: try the WHOLE selection first (so `SV(P)`, itself a key, is
+/** The refined lookup order: try the WHOLE selection first (so a paren-bearing key would be
  *  kept), and only on a miss strip a trailing `(...)` and retry (so `CPCM(water)` → CPCM). */
 function resolveKey(sel: string): string | null {
   const whole = norm(sel);
@@ -144,8 +141,7 @@ describe("selection normalization — measured over the corpus (Task-0 gate)", (
 
     // [3] FALSE-REJECT: a whitespace-delimited token that RESOLVES, whose source
     // neighbours are word-class chars (→ the guard would reject a correct selection).
-    const guardWouldReject = (s: Sel) =>
-      (s.before && WORD.test(s.before)) || (s.after && WORD.test(s.after));
+    const guardWouldReject = (s: Sel) => isTokenChar(s.before) || isTokenChar(s.after);
     const correct = [...bang, ...blockOpt].filter((s) => resolveKey(s.tok));
     const falseRejects = correct.filter(guardWouldReject);
     const frExamples = [...new Set(falseRejects.map((s) => `${s.before}[${s.tok}]${s.after}`))].slice(0, 10);

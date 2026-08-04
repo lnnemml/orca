@@ -2,7 +2,7 @@
 
 **Status:** seeded + qualified + normalized + **owner-vetoed / type-from-manual** (unit 4.4, Parts B–I;
 the intermediate states are the log's, not this page's). The keyword→section map that feeds
-the Monaco **hover** provider (4.4 UI, not built yet). It is a **repo file, seeded programmatically
+the editor's **selection lookup** (4.13, which replaced the 4.4 hover). It is a **repo file, seeded programmatically
 then curated by hand** (ADR-013 narrows ADR-006's "by hand") — Rust owns manual text-to-structure
 (ADR-013), so a Rust `#[ignore]` generator emits it; the frontend consumes it. **Why a separate layer
 at all:** the hover shows **one** section, confidently; at the FTS panel's hit@1 = 9/17 (~53 %,
@@ -108,6 +108,18 @@ unqualified path. The rule for the hover is fixed **here**:
 This is the same posture as *"hover does not fall back to FTS"* in the ADR-013 amendment: without
 writing it down, it gets replayed. A qualified miss that silently degrades to "first place `MaxIter`
 appears" is exactly the confident-wrong-answer the whole layer exists to prevent.
+
+**Under the SELECTION trigger (4.13), the qualified-miss → silence contract is UNCHANGED** — a
+well-formed selection with no type/block-aware record shows nothing (no bare-name / FTS fall-back), and
+an argument token (the `water` in `CPCM(water)`) is silent by the position rule. The selection trigger
+adds ONE new, distinct outcome that is **not** a lookup answer: a **malformed selection** (internal
+whitespace, or a boundary that cuts a token — measured: 16 simple keys are substrings of a longer simple
+key, so a mid-token cut would confidently answer about the neighbour) shows a **format hint** ("select
+one keyword whole"), a correctable user action. So the consumer now distinguishes *three* things it used
+to collapse into "no hover": a **hit**, a **qualified miss** (silence — the boundary of our data), and a
+**malformed request** (a hint — the boundary of the *query*). Normalization rule + numbers:
+[orca/manual-sources.md](../orca/manual-sources.md) "Selection normalization"; consumer
+`src/manual/selection-lookup.ts` + `src/editor/selection-panel.ts`.
 
 ## The stable section key — `(file, breadcrumb, title, nth)`
 
@@ -216,9 +228,12 @@ positive line-check, not luck); and the named **pattern** above — the discipli
 self-measurements before they shipped. The block-option half is not wasted: it is the substrate the day
 the author starts hand-writing `%`-blocks — at which point demand must be **re-measured**, not assumed.
 
-## The hover provider + drawer (the consumers)
+## The selection panel + drawer (the consumers, 4.13 — was a hover)
 
-`src/editor/orca-hover.ts` registers a Monaco hover provider and an `orca.openManualSection` command.
+The trigger is a **SELECTION**, not a hover (4.13 removed the hover). `src/manual/selection-lookup.ts`
+normalizes the selection (measured rule — boundary guard + whole-then-strip; `orca/manual-sources.md`)
+and `src/editor/selection-panel.ts` shows a floating panel over the settled selection. The three lookup
+cases below are **unchanged** — only the trigger and input normalization changed, not the qualifier.
 Three cases, kept apart (`keyword-lookup.ts::hoverContext`): `!`-line → simple; `%name` → block; inside
 a block (`enclosingBlock`, plus a same-line `%pal nprocs …` check) → block-option of that block.
 `aliases[]` are consulted (`M06-L`↔`M06L`). **Contract, enforced:** a qualified **miss returns `null`
@@ -233,11 +248,12 @@ because the silence must not depend on absence: `water` **is** in the map (a `%f
 without the rule a hover on `CPCM(water)`'s `water` would confidently show *Automatic Fragmentation* —
 a right answer to a question that was not asked. The regression test proves it (`coverage.test.ts`).
 An empty `summary` is not a reason to suppress (seeded records have none): the hover shows keyword,
-type, owning block (+ `owner_source`), and the target's breadcrumb › title as an **Open** command-link;
-several targets → *"documented in N places"* with a list, **not** a picked first. Clicking Open fires
-the command → `ManualDrawer` resolves the descriptor via `resolve_manual_section` and shows the section
-in a **side drawer that reuses the SAME `PageView`** as `ManualScreen` — the author is not pulled
-out of the editor. Word boundaries come whole via the language `wordPattern` (`def2-SVP`, `%maxcore`;
+type, owning block (+ `owner_source`), and an **Open in manual** button (several targets → *"Open (N)
+→"*, not a picked first). Clicking Open calls the **`manual-open.ts` channel directly** (`openManualSection`
+→ the handler `ManualDrawer` registered) — **not** a Monaco markdown `command:` (the one that failed
+silently under the hover, 4.13) — and `ManualDrawer` resolves the descriptor via `resolve_manual_section`
+and shows the section in a **side drawer that reuses the SAME `PageView`** as `ManualScreen` — the author
+is not pulled out of the editor. Word boundaries come whole via the language `wordPattern` (`def2-SVP`, `%maxcore`;
 `wiki/orca/input-syntax.md`).
 
 ## What was seeded / deliberately deferred

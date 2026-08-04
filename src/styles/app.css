@@ -1902,6 +1902,38 @@ button.ir-imaginary-mode.selected {
   white-space: pre-wrap;
 }
 
+/* ── Selection lookup panel (Phase 4.13) — a floating card over a settled selection ──
+   An overflow content widget (fixedOverflowWidgets un-clips it on the top line). */
+.selection-panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+  padding: 6px 8px;
+  font-size: 0.82rem;
+  max-width: 340px;
+  transform: translateY(-8px); /* sit just above the selection */
+  pointer-events: auto;
+}
+.selection-panel .sp-head {
+  font-family: var(--mono);
+  margin-bottom: 4px;
+}
+.selection-panel .sp-hint {
+  color: var(--muted);
+  font-style: italic;
+}
+.selection-panel .sp-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+/* Reserved layout room for the future "Explain with Claude" action — no stub button. */
+.selection-panel .sp-explain-slot {
+  min-width: 0;
+  flex: 1;
+}
+
 /* ── Manual hover drawer (Phase 4.4) — a side panel opened from an editor hover ── */
 .manual-drawer {
   position: fixed;

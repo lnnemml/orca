@@ -4342,3 +4342,36 @@ targets), not merged into 430.
 (math/KaTeX/cross-refs/corpus gate) — minor, left for the author. A perf GATE for KaTeX paint was
 explicitly declined (a proxy gate would manufacture a fresh false number — Pattern 2); the real number is
 the author's, in a window.
+
+## [2026-08-04] session | feat: selection-triggered manual lookup (replaces hover), by a measured normalization
+
+**Why (real-use feedback).** The Monaco hover fired with a delay, popped up unbidden during edits, and
+its markdown `command:` "Open" link silently failed to open the drawer (masked by a try/catch). Changed
+the TRIGGER, not patched it: help by **selection**, not hover. Also removes a class of `wordPattern`
+patches — ORCA keywords are often not one token (`NEB-TS`, `def2/J`, `%geom Constraints`); a selection
+lets the author name the boundary. And a selection is deliberate → help as a request, not an interruption.
+
+**Task-0 gate (commit A, `c01450e`).** Measured the normalization over 1475 ` ```orca ` blocks + the
+2528-key map (`selection-lookup.corpus.test.ts`): 0 space keys, 0 paren keys; **16/121 simple keys are a
+substring of a longer simple key** (`opt`⊂`optts`…) → a mid-token cut answers about the neighbour, and
+the type qualifier is powerless (both simple), so the **boundary guard IS the rule**. Decisive number:
+**false-reject = 0/2877** (a guard, not a muffler). Two premises refuted by the same measurement: `tight`
+IS in the map (silence there is the type qualifier, not absence); `sv(p)` is NOT a key (`sv` is) → `SV(P)`
+→`SV` is correct. Whole-first-then-strip: 0 loss.
+
+**Done (commit B).** `resolveSelection` (pure: multi-line/space → malformed; boundary guard `[\w%/.-]`,
+parens excluded; whole-first exact then strip `(…)` retry; position qualifier unchanged) → hit / malformed
+/ miss. Panel (`selection-panel.ts`): a Monaco content widget over the settled selection (debounced),
+`allowEditorOverflow` + `fixedOverflowWidgets` (the debugging/010 path); a **hit** shows keyword+type+Open,
+a **malformed** selection shows a **format hint** ("select one keyword whole"), a qualified **miss** shows
+nothing (silence) — three outcomes the hover collapsed into one. Open calls the `manual-open.ts` channel
+directly (not a markdown command). Hover REMOVED (`orca-hover.ts` + its two tests gone); the pure lookup
+(`hoverContext`/`resolveHover`/`enclosingBlock`/`isArgumentToken`) and the `setManualOpenHandler` channel
+kept. Reserved layout slot for a future *Explain with Claude* — no stub button.
+
+**Verified.** tsc 0, vitest 461 (incl. the pure resolver tests — Task 3 arg rule: `CPCM(water)`→CPCM,
+`water`-inside→silence — and the wiring test — Task 4, fake editor, no jsdom: selection→resolve→panel,
+Open→channel with the descriptor). cargo untouched (no Rust). **NOT done: the interactive real-window
+check** (`r2SCAN-3c`/`TightSCF`/`%pal`/`nprocs`/`CPCM(water)`/`Tight`/xyz) — headless, left to the author.
+
+**Not touched:** PageView, sectioner, keywords.json, schema, FTS; no deps; keywords.json not extended.
