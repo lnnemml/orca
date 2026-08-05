@@ -4653,3 +4653,51 @@ within the measured scope. Claim bounded to these 3 molecules, SP+Opt/Freq, thes
 D-groups / cubic groups / `PointGroup "..."` / large systems / intra-equivalence-class order NOT measured.
 Recorded: [`orca/usesym-atom-order.md`](orca/usesym-atom-order.md). Part B (ADR-016 + amendments) pending
 the author's go-ahead. Run artifacts gitignored (`sidecar/probes/_*_runs/`); the wiki quotes them verbatim.
+
+## [2026-08-05] decision | ADR-016 emit_input ownership (Rust core); ADR-010(i) + ADR-014 amendments; Stage 1 units 1a–1e
+
+Phase 4.2 unit 1a, Part B — ingest of the decisions the UseSym probe gated.
+
+**ADR-016 (new) — `emit_input` ownership: the Rust core.** ADR-010 made `emit_input`/`parse_output`
+a type-level pair, but they live in different languages — emit is TS (`injectSceneIntoInput`,
+`constraints.ts`, `input-builder/`), parse is Rust (ADR-012 readers, immovable: they stream the
+unbounded log and size-cap the artifacts). A type invariant across a language boundary is a
+convention with a compiler on one side. Since `parse_output` cannot move, **the order-bearing
+`emit_input` moves to Rust** — a new `orcastudio-core` crate in the workspace (proposal §6.3;
+separate now because Stage 2 compiles it to WASM). **Narrow move:** only the coordinate block +
+`%geom Constraints` emit (the two paths whose output depends on atom order) cross in Stage 1; the
+Scene store, editor UI, method/basis form, and geometry↔sidecar seam stay TS to Stage 2/3 — stated
+as a decision, not left as residue. Five bare-integer seams enumerated; ~68-site scope recorded as a
+rough sizing number, not a precise count. **Probe consequence:** the `parse_output` map is the
+**identity in the measured scope**, and — the point ADR-016 makes precise — the **post-condition**
+(element-seq + fingerprint on real output) is not a defensive extra but the mechanism that makes
+identity a safe assumption *outside* the probe (unprobed point groups, future ORCA versions): the
+map is verified against the artifact, never trusted. Display-vs-authoritative emit tension named and
+deferred to 1e on purpose.
+
+**ADR-010 amendment (correction (i) refined).** History not rewritten. Correction (i) said "Rust
+builds the IndexMap"; the exact principle is "the map's builder is the **owner of the emitted
+order**." For the ORCA-input seam that owner is now Rust (ADR-016); for the geometry↔sidecar seam it
+is **TS** — TS fetches `/geometry` directly, Rust never touches it (verified: `grep -rn "/geometry"
+src-tauri/src/` empty) — and stays TS until the Scene moves in Stage 2. The sidecar stays positional
+(unaffected).
+
+**ADR-014 amendment (charge/multiplicity) — PENDING AUTHOR REVIEW.** Charge and spin multiplicity
+fall between decision (1) (not coordinates) and (1a) (not curated geometric constants), yet T2 may
+draft an `.inp` that carries `* xyz <charge> <mult>`, and a wrong multiplicity runs cleanly and
+returns meaningless physics — the charge/spin analogue of the missed Bohr→Å conversion. Proposed
+rule: the AI never emits charge/multiplicity silently; they come from the Scene (fragment-charge sum,
+ADR-008 #8 / 2.5.0b) or an explicit user value; the guard is `checkElectronParity` (`parity.ts`), a
+tool refusal not a prompt line — same shape as decision (3). Formulated for the author's review, not
+yet ratified.
+
+**ROADMAP.** Stage 1 rewritten into units 1a–1e (1a checked done: probe + ingest; 1b AtomId in TS
+Scene; 1c orcastudio-core crate + golden vs TS emit; 1d parse pairing + round-trip property test; 1e
+wiring, mints map at create_job, resolves the display-vs-authoritative tension). Phase-4.5 UseSym
+open question rewritten from "settle before any symmetry work" to "PARTLY SETTLED" — points at the
+measured page, keeps the block, names what is still open (D/cubic groups, `PointGroup "..."`, large
+systems, intra-equivalence-class order) and the re-run-the-probe-per-system rule. "Explain with
+Claude" already carries the "Layer 1 of 3" mark (capital L — a lowercase grep missed it); no change.
+
+Touched: adr-016 (new), adr-010 (amendment), adr-014 (amendment, pending), ROADMAP.md, index.md.
+No code in this unit (ADR-016 lands across 1c–1e).

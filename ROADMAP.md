@@ -430,15 +430,30 @@ gaps, but as a small set of typed operations over one authoritative core. The re
 spike passes; this phase touches no pixels of its own except where 3Dmol is fed a new table.
 Estimate deferred until stage 1 is scoped.
 
-**Stage 1 — identity core** (the largest part of the win; touches no pixels)
+**Stage 1 — identity core** (the largest part of the win; touches no pixels). Broken into units
+1a–1e once [ADR-016](wiki/architecture/adr-016-emit-input-ownership.md) fixed that `emit_input`
+(the order-bearing part) moves to a Rust `orcastudio-core` crate so the ADR-010 `emit`/`parse` pair
+is same-language and compiler-enforced. **Only the order-bearing emit moves** — the Scene store,
+editor UI, method/basis form, and the geometry↔sidecar seam stay TS until Stage 2/3.
 
-- [ ] `AtomId` (opaque, stable), branded `OrcaIndex` / `AseIndex` (mixing does not compile),
-      and `IndexMap` as the only conversion — extracted so atom identity is one thing across the
-      codebase. Per ADR-010 correction (i), the sidecar stays positional and Rust builds the
-      `IndexMap` at the boundary (the same seam Phase 3 already exercises).
-- [ ] `emit_input` / `parse_output` paired: `parse_output` cannot be called without the mapping
-      produced by the matching `emit_input` (type-level invariant). Property test: round-trip
-      `set(AtomId) → emit → parse → set(AtomId)` is identity.
+- [x] **1a — UseSym probe + ingest.** Measured whether `! UseSym` reorders atoms in ORCA 6.1.0
+      output artifacts (gate for the whole IndexMap design): **no observable reorder** in the
+      measured scope (`wiki/orca/usesym-atom-order.md`) → the `parse_output` map is the **identity**,
+      carried as a **post-condition** (element-seq + fingerprint on real output), not trusted.
+      Ingested ADR-016 (emit ownership), ADR-010 correction-(i) refinement, and the ADR-014
+      charge/multiplicity amendment (pending review).
+- [ ] **1b — `AtomId` in the TS Scene.** Allocation, scene JSON v2, preservation across every
+      mutator, branded TS index types. No Rust core yet.
+- [ ] **1c — the `orcastudio-core` crate.** `AtomId` / `OrcaIndex` / `AseIndex` / `IndexMap`; v2
+      deserialization; `emit_input → (text, IndexMap)` for the coordinate block + `%geom
+      Constraints`; a golden test against the current TS emit (byte-identical output).
+- [ ] **1d — parse pairing.** The ADR-012 readers accept the `IndexMap`; it is persisted with the
+      job; legacy jobs get a derived identity map; property test: round-trip
+      `set(AtomId) → emit → parse → set(AtomId)` is identity. `parse_output` cannot be called
+      without the matching `emit_input`'s map (type-level invariant, now same-language).
+- [ ] **1e — wiring.** `create_job` mints the map; xtb indices are branded at the serde boundary;
+      resolve the display-emit (Scene→Monaco projection) vs authoritative-emit (mints the map at
+      `create_job`) tension named in ADR-016.
 
 **Stage 2 — operation log + ephemeral layer**
 
@@ -486,13 +501,20 @@ barriers — the full computational experiment lifecycle. See ADR-007.
 geometry editor (typed operations, one authoritative core); product-from-reactant derivation is
 ADR-010's `ReactionPath` (`fold(reactant, transform)`, atom mapping by construction).
 
-> **Open question — settle before any symmetry work.** ORCA may reorder atoms in its output when
-> symmetry is active. Before relying on symmetry (`! UseSym` or point-group detection) anywhere
-> in this phase, run a real `! UseSym` job and **check whether the output atom order matches the
-> input order** (domain rule #10 — verify by a run, not from docs). If it reorders, that is a
-> direct risk to [ADR-008](wiki/architecture/adr-008-scene-fragment-model.md) (one index space,
-> merged-xyz order) and to ADR-010's `IndexMap`, and must be handled at the `parse_output`
-> boundary before scans are trusted.
+> **Open question — PARTLY SETTLED (unit 1a, 2026-08-05).** ORCA may reorder atoms in its output
+> when symmetry is active. This was measured for the common case:
+> [`wiki/orca/usesym-atom-order.md`](wiki/orca/usesym-atom-order.md) ran real `! UseSym` jobs and
+> found **no observable reorder** — ORCA reorients + symmetrizes but preserves input atom order —
+> for formaldehyde (C2v), methanol (Cs, SP + Opt+Freq), and water (C2v), across `.out` /
+> `.property.txt` / `_trj.xyz` / `.xyz` / `.hess`. So for these groups the `parse_output` map is
+> the identity, guarded by a post-condition (element-seq + fingerprint on real output — ADR-016).
+> **Still open for THIS phase:** the probe did **not** cover the D-groups, cubic groups, explicit
+> `%Symmetry PointGroup "..."`, or larger systems, and permutations of symmetry-**equivalent** atoms
+> are unobservable in principle. Before relying on symmetry for a *specific* reaction system here,
+> **re-run the probe on that system** (domain rule #10); if it reorders, that is a direct risk to
+> [ADR-008](wiki/architecture/adr-008-scene-fragment-model.md) (one index space, merged-xyz order)
+> and to ADR-010's `IndexMap`, and the post-condition catches it at the `parse_output` boundary
+> before scans are trusted.
 
 - [ ] Conformer ensemble → reaction-center pipeline: **Boltzmann weighting** of the
       GOAT ensemble + **re-optimise the lowest 3–4 at DFT** → build reaction centers on

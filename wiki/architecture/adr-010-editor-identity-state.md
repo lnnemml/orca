@@ -97,11 +97,37 @@ accepted from memory/docs, only from a logged run) are the **empirical complemen
 ADR's type-level invariants. Types remove the off-by-one that never should have compiled; probes
 and post-conditions remove the ones no type can see.
 
+## Amendment (2026-08-05, unit 1a) — correction (i) refined: the map's owner is the emitter of the order
+
+The decision text and correction (i) above **stand unchanged**; this refines their *phrasing*, made
+concrete once [ADR-016](adr-016-emit-input-ownership.md) fixed where `emit_input` lives. History is
+not rewritten.
+
+Correction (i) said "**Rust** builds the `IndexMap` at the boundary." That was written under the
+tacit assumption that the ORCA-input emit is Rust's. The **exact** principle — the one that survives
+either language choice — is: **the `IndexMap` is built by the module that owns the emitted order**,
+whichever language that module is in.
+
+- For the **ORCA-input seam** (coordinate block, `%geom Constraints`), ADR-016 moves the emit into
+  the `orcastudio-core` Rust crate, so **Rust** owns the order and builds the map — correction (i)
+  holds verbatim there.
+- For the **geometry↔sidecar seam**, the owner is **TypeScript**: TS fetches `/geometry` directly and
+  **Rust never touches it** (verified — `grep -rn "/geometry" src-tauri/src/` is empty). So *that*
+  `IndexMap<AseIndex>` is built in TS, and stays TS until the Scene itself moves in Stage 2. This is
+  not a contradiction of correction (i) — it is correction (i)'s own rule ("the same module owns the
+  outgoing order and the incoming mapping") applied to a seam whose emitter happens to be TS.
+
+The sidecar itself stays positional (cclib/RDKit/ASE know nothing of `AtomId`) — that part of
+correction (i) is unaffected. What changed is only the sentence that named *Rust* as the builder: the
+builder is the **order's owner**, and for one of the two seams that owner is TS.
+
 ## References
 
 - [`proposals/editor-architecture-2026-07-30.md`](proposals/editor-architecture-2026-07-30.md)
   — full rationale, invariants I1–I7, state model, migration plan, and §11 rejected
   alternatives. The source document for this ADR.
+- [ADR-016](adr-016-emit-input-ownership.md) — moves `emit_input` (the order-bearing part) into the
+  Rust `orcastudio-core` crate; refines correction (i) above.
 - [ADR-002](adr-002-python-sidecar.md) — the sidecar is stateless chemistry-of-files logic
   (correction (i)).
 - [ADR-008](adr-008-scene-fragment-model.md) — the Scene/SceneFragment model this ADR refines.

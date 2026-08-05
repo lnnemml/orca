@@ -173,3 +173,35 @@ This is **layer 1 of the three** ADR-014 sketched for T1's build-out (selection 
 Layers 2 (a follow-up in the same grounded context) and 3 (a chat with `search_manual` as a tool) are
 **not** anticipated by layer 1's structure — no chat, no history, no input box exists in this path. See
 [ADR-015](adr-015-api-key-storage.md) for storage, the live model list, and where the call is made.
+
+## Amendment (2026-08-05, unit 1a) — charge & multiplicity are never set silently by the AI · **PENDING AUTHOR REVIEW**
+
+> **Status of this amendment:** *proposed, awaiting the author's review.* Formulated in unit 1a
+> (alongside [ADR-016](adr-016-emit-input-ownership.md)) because it falls in a gap the decision text
+> leaves open; the wording below is for review, not yet ratified.
+
+Decision **(1)** keeps the AI out of the **numerical pipeline** (energies, geometries,
+thermochemistry). Decision **(1a)** keeps **geometric constants** retrieved-not-recalled. **Charge and
+spin multiplicity fall between them and are covered by neither:** they are *not* coordinates, so (1)
+does not reach them, and they are *not* geometric constants pointed at in curated data, so (1a) does
+not either. Yet **T2 is allowed to draft an `.inp`**, and an `.inp` carries `* xyz <charge> <mult>`.
+
+**Why this is the dangerous gap, not a pedantic one.** A wrong multiplicity does **not** crash and
+does **not** look wrong: ORCA runs the calculation at the stated spin state and returns a clean,
+plausible, and *physically meaningless* result. It is the charge/spin analogue of the missed
+Bohr→Å conversion (rule #11) — a believable wrong number with no boundary that flags it. A recalled
+"it's probably a singlet" is exactly the failure mode (1a) forbids for bond lengths, one axis over.
+
+**Rule (proposed):** the AI **never emits `charge` or `multiplicity` silently**. Their value comes
+from **(a)** the Scene — total charge as the sum of fragment charges (ADR-008 #8 / 2.5.0b) — or
+**(b)** an explicit value the user typed. If a T2 draft needs them and neither source has spoken, the
+draft **leaves them to the existing input-builder path and says so**; it does not guess. The guard is
+already built and is not the AI's to bypass: **`checkElectronParity`** (`src/scene/parity.ts`, ADR-008
+#8) — Σ Z − total charge gives the electron count, whose parity constrains the allowed multiplicity
+(even electrons → odd multiplicity, and vice versa); an odd electron count with a singlet is rejected
+**regardless of what the model proposed**. This is the same shape as decision (3): a methodology guard
+that is a **tool refusal**, not a line in a system prompt — it holds on the model's worst day.
+
+This **refines**, does not cancel, decisions (1)/(1a)/(3): it names charge/multiplicity as a third
+category the same principle already governs (provenance, not recall; enforced by a guard, not a
+prompt), and points the enforcement at the parity check that exists.
