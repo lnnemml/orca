@@ -174,11 +174,11 @@ Layers 2 (a follow-up in the same grounded context) and 3 (a chat with `search_m
 **not** anticipated by layer 1's structure — no chat, no history, no input box exists in this path. See
 [ADR-015](adr-015-api-key-storage.md) for storage, the live model list, and where the call is made.
 
-## Amendment (2026-08-05, unit 1a) — charge & multiplicity are never set silently by the AI · **PENDING AUTHOR REVIEW**
+## Amendment (2026-08-05, unit 1a; ratified unit 1b 2026-08-05) — charge & multiplicity are never set silently by the AI
 
-> **Status of this amendment:** *proposed, awaiting the author's review.* Formulated in unit 1a
-> (alongside [ADR-016](adr-016-emit-input-ownership.md)) because it falls in a gap the decision text
-> leaves open; the wording below is for review, not yet ratified.
+> **Status of this amendment:** **accepted** (ratified by the author in unit 1b with two scoping
+> fixes, folded in below). Formulated in unit 1a alongside
+> [ADR-016](adr-016-emit-input-ownership.md) because it falls in a gap the decision text leaves open.
 
 Decision **(1)** keeps the AI out of the **numerical pipeline** (energies, geometries,
 thermochemistry). Decision **(1a)** keeps **geometric constants** retrieved-not-recalled. **Charge and
@@ -192,15 +192,31 @@ plausible, and *physically meaningless* result. It is the charge/spin analogue o
 Bohr→Å conversion (rule #11) — a believable wrong number with no boundary that flags it. A recalled
 "it's probably a singlet" is exactly the failure mode (1a) forbids for bond lengths, one axis over.
 
-**Rule (proposed):** the AI **never emits `charge` or `multiplicity` silently**. Their value comes
+**Rule:** the AI **never emits `charge` or `multiplicity` silently**. Their value comes
 from **(a)** the Scene — total charge as the sum of fragment charges (ADR-008 #8 / 2.5.0b) — or
 **(b)** an explicit value the user typed. If a T2 draft needs them and neither source has spoken, the
-draft **leaves them to the existing input-builder path and says so**; it does not guess. The guard is
-already built and is not the AI's to bypass: **`checkElectronParity`** (`src/scene/parity.ts`, ADR-008
-#8) — Σ Z − total charge gives the electron count, whose parity constrains the allowed multiplicity
-(even electrons → odd multiplicity, and vice versa); an odd electron count with a singlet is rejected
-**regardless of what the model proposed**. This is the same shape as decision (3): a methodology guard
-that is a **tool refusal**, not a line in a system prompt — it holds on the model's worst day.
+draft **leaves them to the existing input-builder path and says so**; it does not guess.
+
+**What the parity guard does and does NOT catch (scoping fix a).** `checkElectronParity`
+(`src/scene/parity.ts`, ADR-008 #8) catches only **parity-impossible** states: Σ Z − total charge
+gives the electron count, whose parity fixes the allowed multiplicity parity (even electrons → odd
+multiplicity, and vice versa), so an odd electron count with a singlet is rejected **regardless of
+what the model proposed**. It does **not** catch a **parity-consistent wrong multiplicity** — a
+triplet proposed for a closed-shell singlet passes straight through it (both are odd multiplicities).
+For that class the protection is **the provenance rule itself** — the draft does not write the field;
+the Scene or the user does — with parity as an **arithmetic backstop** underneath, not the primary
+guard. So the "holds on the model's worst day" property belongs to the **provenance rule as a
+tool-shape** (the draft has no field to fill), **not** to the parity check, which is a narrower
+arithmetic net.
+
+**The asymmetry, named with its reason (scoping fix b).** The **human** path *warns, does not block*:
+`InputBuilderForm` shows a parity issue inline but still lets Generate proceed, because a person
+builds a scene **incrementally** and may legally pass through a temporarily odd intermediate state
+(see [`wiki/modules/scene.md`](../modules/scene.md) → "Why the UI warns, not blocks"). The
+**AI-draft** path *refuses*: an AI draft has **no incremental excuse** — it emits a whole artifact in
+one shot and so must be **born valid**. Same guard, deliberately different response, because the two
+callers have different relationships to intermediate states. (Cross-referenced from `scene.md` so a
+future lint reads this as a *stated* asymmetry, not a contradiction between two pages.)
 
 This **refines**, does not cancel, decisions (1)/(1a)/(3): it names charge/multiplicity as a third
 category the same principle already governs (provenance, not recall; enforced by a guard, not a

@@ -216,7 +216,12 @@ Scope of the check, deliberately narrow:
 **Why the UI warns, not blocks.** `InputBuilderForm` shows the issue inline but
 still lets Generate proceed: the user may build a scene incrementally and pass
 through a temporarily odd state, and ORCA itself rejects the truly impossible. We
-inform, we don't forbid.
+inform, we don't forbid. **This human-path leniency is deliberately *not* extended
+to an AI draft:** [ADR-014](../architecture/adr-014-ai-integration-boundary.md)'s
+charge/multiplicity amendment makes an AI-drafted `.inp` *refuse* an invalid state
+rather than warn — an AI emits a whole artifact in one shot and has no incremental
+excuse, so it must be born valid. Same guard, different response, because the two
+callers have different relationships to intermediate states.
 
 ## The store (`store.ts`) and Scene ↔ Monaco sync
 

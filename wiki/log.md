@@ -4701,3 +4701,22 @@ Claude" already carries the "Layer 1 of 3" mark (capital L — a lowercase grep 
 
 Touched: adr-016 (new), adr-010 (amendment), adr-014 (amendment, pending), ROADMAP.md, index.md.
 No code in this unit (ADR-016 lands across 1c–1e).
+
+## [2026-08-05] decision | ratify the ADR-014 charge/multiplicity amendment (two scoping fixes)
+
+Phase 4.2 unit 1b, task 0. The author accepted the unit-1a charge/multiplicity amendment to ADR-014
+with two wording fixes; PENDING AUTHOR REVIEW removed, status → accepted.
+
+(a) **Bound the parity guard's claim.** `checkElectronParity` catches only parity-**impossible**
+states; a parity-**consistent** wrong multiplicity (a triplet for a closed-shell singlet) passes
+through it. For that class the protection is the **provenance rule** (the draft writes no field —
+Scene or user does), with parity as an arithmetic backstop. "Holds on the model's worst day" belongs
+to the provenance rule as a tool-shape, not to the parity check.
+
+(b) **Name the asymmetry with its reason.** The human path *warns, does not block* (a person builds
+incrementally and may legally pass through a temporarily odd state — scene.md "Why the UI warns, not
+blocks"); the AI-draft path *refuses* (no incremental excuse — one-shot artifact must be born valid).
+Cross-referenced both ways (adr-014 ↔ scene.md) so a future lint reads it as a stated asymmetry, not
+a page contradiction.
+
+Touched: adr-014 (amendment ratified), scene.md (back-reference). No code.
