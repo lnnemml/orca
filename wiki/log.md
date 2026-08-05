@@ -4624,3 +4624,32 @@ its source named the **ARCHITECT** (not a gate, not Claude Code) — the pattern
 part of the lesson. Touched: adr-015 (model-selection amendment), tauri-core.md, frontend.md, and the
 prior log entry's false clause; the default's review condition (Sonnet 4.6 → Sonnet 5) is **unchanged** —
 it does not depend on this error.
+
+## [2026-08-05] ingest | probe: does `! UseSym` reorder atoms in ORCA 6.1.0 output artifacts (measured)
+
+Phase 4.2 unit 1a, Part A. The gate for the Stage-1 IndexMap design (ADR-016): does ORCA reorder
+atoms in its output when symmetry is active? The ORCA manual describes `! UseSym` as reorient +
+center + symmetrize and says **nothing** about atom ordering — so it was measured, not assumed
+(rule #10).
+
+Probe [`sidecar/probes/usesym_atom_order.py`](../sidecar/probes/usesym_atom_order.py) — three real
+`/opt/orca/orca` runs (serial, one isolated dir each): formaldehyde `H C H O` SP (→ C2v), methanol
+SP with interleaved methyl-H order (→ Cs), water `H O H` Opt+Freq r2SCAN-3c (→ C2v). Detector
+compares **rigid-motion-invariant fingerprints** (per atom: sorted distance vector) so a legal
+reorientation/symmetrization is not mistaken for a reorder, and names **equivalence classes** so a
+permutation of symmetry-equivalent atoms is reported unobservable rather than "no reorder".
+
+**Verdict (within scope): NO observable reorder in any artifact** — `.out` echo, `.property.txt`
+`$Geometry`, `_trj.xyz` (all frames), final `.xyz`, `.hess $atoms`. ORCA's own "Symmetry-perfected
+Cartesians" table lists atoms in exact input order with a 0-based `Index` (consistent with the 0-based
+`%geom` base). Symmetrization drift ≈ 0 (inputs built symmetric); `.hess`-vs-final-frame fingerprint
+1e-6 Bohr (print precision, not motion). **Negative controls demonstrably bite** (CLAUDE.md convention):
+element-swap → element-check red; in-plane↔mirror methyl-H swap (same element, inequivalent) → fingerprint
+red where element-check is blind; equivalent-mirror-H swap → correctly unobservable (no crying wolf).
+
+Consequence for ADR-016 / ADR-010: for a `UseSym` job the IndexMap is the **identity**, carried as a
+post-condition (the probe's check re-run on real output) rather than a mandatory permuted map — but only
+within the measured scope. Claim bounded to these 3 molecules, SP+Opt/Freq, these artifacts, ORCA 6.1.0;
+D-groups / cubic groups / `PointGroup "..."` / large systems / intra-equivalence-class order NOT measured.
+Recorded: [`orca/usesym-atom-order.md`](orca/usesym-atom-order.md). Part B (ADR-016 + amendments) pending
+the author's go-ahead. Run artifacts gitignored (`sidecar/probes/_*_runs/`); the wiki quotes them verbatim.
