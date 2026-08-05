@@ -61,12 +61,22 @@ for (const t of [1e-12, 1e-9, 4.9e-9, 5e-9, 5.1e-9, 9.9e-9]) {
   add(t);
   add(-t);
 }
-// exact-ish half at the 8th decimal — the rounding-tie stress (k + 0.5)·1e-8.
-for (let k = 0; k < 2000; k++) {
-  add((k + 0.5) * 1e-8);
-  add(-(k + 0.5) * 1e-8);
-  add(k + 0.5e-8);
-  add(-(k + 0.5e-8));
+// TRUE binary halves at the 8th decimal — the real rounding-tie class. A double x
+// with x·10^8 exactly a half-integer means x = odd/2^9 = odd/512 (since 10^8 = 2^8·5^8
+// and the ·0.5 adds one power of two). These are where JS toFixed (round-half-AWAY)
+// and Rust {:.8} (round-half-to-EVEN) diverge — but only when the 8th digit is even
+// (odd → both go up). The earlier (k+0.5)·1e-8 values are NOT binary halves and cannot
+// probe this (corrected in unit 1c Part A2).
+for (let odd = 1; odd < 4000; odd += 2) {
+  add(odd / 512);
+  add(-(odd / 512));
+}
+// integer-offset ties + near the padStart(14) width boundaries.
+for (const k of [0, 1, 9, 99, 999, 9999]) {
+  for (const odd of [1, 5, 7, 11, 2049]) {
+    add(k + odd / 512);
+    add(-(k + odd / 512));
+  }
 }
 // classic decimal-tie traps (x.xx5 that the naive reader expects to round up).
 for (const t of [1.005, 8.575, 2.675, 0.615, 1.255, 0.125, 0.375, 1.0000000050]) {

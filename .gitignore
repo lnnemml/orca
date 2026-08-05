@@ -22,3 +22,4 @@ sidecar/probes/_*_runs/
 # scripts/float-parity-corpus.mjs from a fixed seed. The generator + reader are
 # committed; the corpus itself is not.
 scripts/_float-parity-corpus.txt
+scripts/_constraint-value-corpus.txt

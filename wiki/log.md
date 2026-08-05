@@ -4800,3 +4800,33 @@ Verdict: golden byte-identity is viable; the −0.0 case needs one rule. **STOP 
 coordinate formatter (recommended — minimal, keeps strict byte-identity) or (B) weaken the golden to
 token-numeric equality. Recorded: `architecture/float-formatting-parity.md`. Part B (the crate) waits
 on the rule decision. Corpus gitignored (regenerated from seed); generator + reader committed.
+
+## [2026-08-05] ingest | unit 1c Part A2 — correct the formatter probe (real ties = odd/512); fmt_coord rule; constraint-value front
+
+Architect review of Part A: bit-pattern method right, −0.0 real, STOP right — but "0 rounding
+divergences" was **false in scope**. The tie stress used `(k+0.5)·1e-8`, which are not representable
+binary halves; the TRUE 8th-decimal ties are `x = odd/512` (`x·10⁸+½ ∈ ℤ ⇔ x = odd/2⁹`). At those, JS
+`toFixed` rounds half-**away**, Rust `{:.8}` half-to-**even** → diverge when the 8th digit is even.
+Reproduced on this toolchain (rustc 1.97.1): 1/512 JS `0.00195313` vs Rust `0.00195312`; 3/512 agree;
+−1e-12 agree; −0.0 diverges.
+
+**Front 1 (coordinates) — SOLVED.** Corpus rebuilt with the odd/512 tie class (both signs, integer
+offsets, near padStart boundaries), 1,008,832 doubles. Bare `{:>14.8}` diverges **2025** (1
+sign-of-zero + 2024 tie) — the negative control, shown red. `fmt_coord` (3-part rule: signed-zero
+`if x==0.0{0.0}else{x}`; tie detect `y=|x|·512` exact, odd-integer ⇒ away-from-zero
+`m=floor(|x|·1e8)+1`; else `{:.8}`; then padStart(14)) is **0** divergences, byte-identical incl.
+negative ties. This is the emit spec for Part B; the corpus comparison becomes a permanent `#[ignore]`
+gate, adversarial values baked into golden fixtures.
+
+**Front 2 (constraint value) — OPEN, STOP.** `constraintsBlock` renders values via `String(v)`
+(shortest round-trip), not toFixed. Measured `String(v)` vs Rust `format!("{}")` over 505,972
+constraint-plausible doubles: **14 divergences**, all the same class — a value whose shortest
+round-trip needs **17 sig digits** with the 17th ambiguous; V8 dtoa picks the lower, Rust flt2dec the
+higher (e.g. `-200.30410766601562` vs `…63`). Arises only for raw full-precision doubles (a measured
+bond length); a user value is preserved by `valueText` and a canonical short number is unique. Named
+boundary: JS `String` goes exponential for `|v|≥1e21` and `<1e-6`, Rust `{}` never — unreachable for
+the constraint range but stated. Per protocol (>0 → STOP), `fmt_value` not baked; recommended rule
+(B1): the core Constraint value is `valueText` or a short number, "freeze at measured" omits the value
+(ORCA idiom), so a 17-digit double never reaches the formatter — matches the TS path. Architect's call.
+
+Recorded: `architecture/float-formatting-parity.md` (both fronts, corrected). Corpora gitignored.

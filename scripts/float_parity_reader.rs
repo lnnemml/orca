@@ -14,6 +14,33 @@
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 
+/// The coordinate formatter that `orcastudio-core::emit::fmt_coord` implements —
+/// byte-identical to JS `n.toFixed(8).padStart(14)` (mergeToAtomLines). Three parts
+/// (unit 1c Part A2, architect's rule):
+///  1. signed zero: map -0.0 -> +0.0 (JS toFixed drops the sign; Rust keeps it).
+///     `x == 0.0` is true for BOTH ±0.0 and nothing else, so -1e-12 stays
+///     "-0.00000000" (it is not zero).
+///  2. exact 8th-decimal halves (x = odd/512): JS rounds half AWAY, Rust {:.8}
+///     rounds half to EVEN. Detect with y = |x|*512 — multiplication by a power of
+///     two never rounds, so no false positives; tie iff y is an odd integer (guarded
+///     below 2^53). On a tie, render away-from-zero: m = floor(|x|*1e8)+1 (|x|*1e8
+///     is a half-integer < 2^53, exact; +1 after floor = the larger n).
+///  3. everything else: plain {:.8}. Then padStart(14).
+fn fmt_coord(x: f64) -> String {
+    let x = if x == 0.0 { 0.0 } else { x }; // (1) signed zero
+    let ax = x.abs();
+    let y = ax * 512.0; // exact (power-of-two scaling)
+    let is_tie = y < 9_007_199_254_740_992.0 /* 2^53 */ && y.fract() == 0.0 && (y as u64) % 2 == 1;
+    let core = if is_tie {
+        let m = (ax * 1e8).floor() as u64 + 1; // away from zero
+        let sign = if x.is_sign_negative() { "-" } else { "" };
+        format!("{}{}.{:08}", sign, m / 100_000_000, m % 100_000_000)
+    } else {
+        format!("{:.8}", x)
+    };
+    format!("{:>14}", core) // padStart(14)
+}
+
 fn strip_leading_minus(s: &str) -> &str {
     s.strip_prefix('-').unwrap_or(s)
 }
@@ -31,9 +58,16 @@ fn main() {
     let f = File::open(&path).expect("open corpus");
     let rdr = BufReader::new(f);
 
-    let (mut n, mut fixed_div, mut pad_div, mut sign_zero, mut rounding) = (0u64, 0u64, 0u64, 0u64, 0u64);
+    // Two comparisons against the JS reference (padStart(14) formatCoord):
+    //  * BARE {:>14.8}  — the negative control: how many the naive formatter gets
+    //    wrong. Split into sign-of-zero vs rounding(tie) so the two classes are
+    //    named separately.
+    //  * fmt_coord      — the shipping rule: MUST be 0.
+    let (mut n, mut bare_div, mut bare_sign, mut bare_round, mut coord_div) =
+        (0u64, 0u64, 0u64, 0u64, 0u64);
     let mut sign_samples: Vec<String> = Vec::new();
     let mut round_samples: Vec<String> = Vec::new();
+    let mut coord_samples: Vec<String> = Vec::new();
 
     for line in rdr.lines() {
         let line = line.unwrap();
@@ -42,58 +76,68 @@ fn main() {
         }
         let mut it = line.split('\t');
         let hex = it.next().unwrap();
-        let js_fixed = it.next().unwrap();
-        let js_pad = it.next().unwrap();
+        let _js_fixed = it.next().unwrap();
+        let js_pad = it.next().unwrap(); // formatCoord = toFixed(8).padStart(14)
 
         let bits = u64::from_str_radix(hex, 16).expect("hex u64");
         let x = f64::from_bits(bits);
-        let rust_fixed = format!("{:.8}", x);
-        let rust_pad = format!("{:>14.8}", x);
+        let bare = format!("{:>14.8}", x);
+        let fixed_rule = fmt_coord(x);
 
         n += 1;
-        if rust_fixed != js_fixed {
-            fixed_div += 1;
-            let sample = format!(
-                "bits=0x{hex}  js.toFixed(8)={js_fixed:?}  rust{{:.8}}={rust_fixed:?}"
-            );
-            if is_sign_of_zero(js_fixed, &rust_fixed) {
-                sign_zero += 1;
+        if bare != js_pad {
+            bare_div += 1;
+            let sample = format!("bits=0x{hex}  js={js_pad:?}  bare{{:>14.8}}={bare:?}");
+            // classify on the unpadded cores
+            if is_sign_of_zero(js_pad.trim(), bare.trim()) {
+                bare_sign += 1;
                 if sign_samples.len() < 5 {
                     sign_samples.push(sample);
                 }
             } else {
-                rounding += 1;
+                bare_round += 1;
                 if round_samples.len() < 10 {
                     round_samples.push(sample);
                 }
             }
         }
-        if rust_pad != js_pad {
-            pad_div += 1;
+        if fixed_rule != js_pad {
+            coord_div += 1;
+            if coord_samples.len() < 10 {
+                coord_samples.push(format!(
+                    "bits=0x{hex}  js={js_pad:?}  fmt_coord={fixed_rule:?}"
+                ));
+            }
         }
     }
 
-    println!("corpus doubles compared : {n}");
-    println!("toFixed(8) divergences  : {fixed_div}  (sign-of-zero {sign_zero}, rounding {rounding})");
-    println!("padded formatCoord div. : {pad_div}");
+    println!("corpus doubles compared        : {n}");
+    println!("BARE {{:>14.8}} vs JS formatCoord : {bare_div}  (sign-of-zero {bare_sign}, rounding/tie {bare_round})");
+    println!("fmt_coord vs JS formatCoord     : {coord_div}");
     if !sign_samples.is_empty() {
-        println!("\n-- sign-of-zero samples --");
+        println!("\n-- BARE sign-of-zero samples --");
         for s in &sign_samples {
             println!("  {s}");
         }
     }
     if !round_samples.is_empty() {
-        println!("\n-- ROUNDING samples (the dangerous class) --");
+        println!("\n-- BARE rounding/tie samples (the dangerous class the naive formatter gets WRONG) --");
         for s in &round_samples {
+            println!("  {s}");
+        }
+    }
+    if !coord_samples.is_empty() {
+        println!("\n-- fmt_coord FAILURES (should be none) --");
+        for s in &coord_samples {
             println!("  {s}");
         }
     }
     println!(
         "\nVERDICT: {}",
-        if rounding == 0 {
-            "no ROUNDING divergence — golden byte-identity is safe for the coordinate formatter (modulo the sign-of-zero rule below)"
+        if coord_div == 0 {
+            "fmt_coord is byte-identical to JS across the corpus; the bare formatter is NOT (count above) — that gap is why fmt_coord exists"
         } else {
-            "ROUNDING divergence present — STOP, golden byte-identity is NOT safe as-is"
+            "fmt_coord DIVERGES — rule is wrong, STOP"
         }
     );
 }
