@@ -73,7 +73,8 @@ that an in-progress New Job draft is discarded on a tab switch (accepted).
   a network call there would report a misleading "could not reach Anthropic" when the real problem
   is that there is no key to check (different causes, different messages). With a usable key the card
   also shows a **model picker** whose options come from the **live** `list_anthropic_models`
-  (`/v1/models`) — not a hardcoded menu (so nothing goes stale; a non-existent model can't be offered).
+  (`/v1/models`) — not a hardcoded menu (so the options are only ever models this key can reach, and no
+  wrong belief about the model lineup can reach them, since the source is the run, not our memory).
   The choice saves to `settings` (`anthropic_model`, default `claude-sonnet-4-6` — a price/sufficiency
   decision, not a UI preference). If the key can't reach the saved model, Settings says so
   **immediately** (compared against the live list), not as a surprise on the first Explain. **No price is

@@ -176,11 +176,16 @@ concrete by the first shipped explain call.
 
 **The option list is a measurement, not a doc lookup (rule #10).** `verify_api_key` already hits
 `GET /v1/models`, which returns exactly the models **this key** may use. The Settings model picker is
-populated from that live list — never from a hardcoded menu. This is not decoration: a hardcoded menu
-goes stale silently (the unit-4 verify const was `claude-opus-4-8`, two generations behind, and no
-review-against-memory would have caught it — only the run did). A consequence falls out for free: the
-picker cannot offer a model that does not exist (e.g. there is **no Opus 4.6** — 4.6 is Sonnet), because
-the list is the API's answer, not ours.
+populated from that live list — never from a hardcoded menu. A consequence falls out for free: the
+picker can only ever offer a model this key can actually reach, because its source is the run, not
+**our idea of the model lineup** — and an idea of the lineup is exactly the thing that goes wrong.
+This session recorded the failure twice, both from the **architect** (not a gate, not Claude Code):
+`claude-opus-4-8` was first suspected as fabricated — it exists; and a release list found by search was
+read as the whole lineup, so a model absent from that list was declared not to exist — it exists too. **Neither wrong belief could reach the picker's options**, because the options are the
+API's answer, not anyone's memory. The construction survived a wrong belief about the lineup; a
+hardcoded menu would have inherited it. (The single *default* string is the one place a lineup belief
+still lands — hence its review condition below.) See
+[`orca/manual-sources.md`](../orca/manual-sources.md) Part F, Pattern 1, 6th instance.
 
 **The default lives in `settings`, not a const** — it is a **price/sufficiency** decision (Sonnet 4.6 is
 enough for a two-sentence explain), the same class as `cpu_preset`/`xtb_path`, and ADR-004 already owns

@@ -582,10 +582,12 @@ owner, because it was handed a thing already declared a block-option. So Part E'
 simple-word-as-block-option and right-kind-wrong-block — are **one defect: the TYPE was inferred from
 OUR application, not from the manual.**
 
-**Pattern 1 — a check that measures US instead of the subject (collected, all five).** Our knowledge is
-not forbidden; it must not **masquerade as a measurement of the manual** — it gets its own channel with
-provenance. The same defect appeared **five times** (this collection is the canonical one; the module
-[modules/manual-keywords.md](../modules/manual-keywords.md) carries the same list):
+**Pattern 1 — our knowledge substituting for a measurement of the subject (collected, all six).** Our
+knowledge is not forbidden; it must not become the **source** where a run should be — it gets its own
+channel with provenance, and the check asks the subject (the manual; and, in the sixth, the API). The
+same defect appeared **six times**. The first five are the manual-indexing instances (the module
+[modules/manual-keywords.md](../modules/manual-keywords.md) carries those five); the sixth is
+cross-domain (the API-key work, unit 4.16) and lives only here — the pattern is not the manual's alone:
 1. **`%maxcore` "covered"** — the gate measured in *our* notation (string-normalised), so a `%maxcore`
    directive matched a `MAXCORE` block-option.
 2. **`46/46` held** — the expectation set was assembled from *our* builder's output, so it could only
@@ -603,8 +605,21 @@ provenance. The same defect appeared **five times** (this collection is the cano
    HTML; `(name)=` surfaced at once.)* **Found not by a gate but by the author's EYE in the window** — a
    manual window-check catches a class no gate built from our inventory can, because the gate inherits
    our blind spots. That is itself the lesson, and the reason the interactive check is not optional.
+6. **the model lineup — a wrong belief that never reached the list** — the explain model picker (unit
+   4.16) could have drawn its options from *our knowledge of the model lineup*; instead it draws them
+   from `GET /v1/models` (the run). The distinction was not academic this session: the belief was wrong
+   **twice**, and **both times the source was the ARCHITECT — not a gate, not Claude Code** —
+   `claude-opus-4-8` first suspected as fabricated (it exists), and a model absent from a search-found
+   release list declared not to exist (it exists too — a release list found by search holds the notable
+   releases, not all, and "absent from the list" was read as "absent from reality"). **Neither wrong
+   belief could reach the picker's options**, because the source is the run, not anyone's memory. The
+   construction survived a wrong belief about the subject; a hardcoded menu would have inherited it.
+   *(The one place a lineup belief still lands is the single default string — hence its review
+   condition, [architecture/adr-015-api-key-storage.md](../architecture/adr-015-api-key-storage.md).)*
+   Recorded with its source named because **the pattern has no owner** — it issues from the architect as
+   readily as from a gate or from Claude Code, and that ownerlessness is part of the lesson.
 Each fix was the same shape: give our knowledge its own attributed channel and let the check ask the
-manual.
+subject — the manual for the first five, the live API for the sixth.
 
 **Pattern 2 — the adjacent-measurement trap (a DISTINCT pattern; three instances).** Not "we measured
 ourselves" but "a number measured an **adjacent** quantity and was read as the answer to the actual

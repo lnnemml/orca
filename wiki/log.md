@@ -4559,10 +4559,14 @@ Recorded as amendments (decision text untouched): [ADR-015](architecture/adr-015
 (model selection) + [ADR-014](architecture/adr-014-ai-integration-boundary.md) (T1 now implemented).
 
 - **Options are measured, not documented (rule #10).** The Settings model picker is populated from
-  `GET /v1/models` — the models THIS key can use — never a hardcoded menu. A hardcoded menu goes stale
-  silently: the unit-4 verify const `claude-opus-4-8` was two generations behind and no review-against-
-  memory caught it, only the run did. The live list also cannot offer a non-existent model (there is no
-  Opus 4.6 — 4.6 is Sonnet).
+  `GET /v1/models` — the models THIS key can use — never a hardcoded menu. The picker can only ever offer
+  a model this key can reach, because its source is the run, not **our idea of the model lineup** — and a
+  wrong idea of the lineup is exactly what a hardcoded menu inherits. This session recorded the failure
+  twice, both from the **architect** (not a gate, not Claude Code): `claude-opus-4-8` suspected as
+  fabricated (it exists), and a model absent from a search-found release list declared not to exist (it
+  exists too). Neither could reach the picker's options. (See Part F, Pattern 1, 6th instance —
+  corrected 2026-08-05: an earlier draft of this entry claimed "Opus 4.6 does not exist"; it does. The
+  argument now needs no lineup fact.)
 - **The default lives in `settings`, not a const** — a price/sufficiency decision (Sonnet 4.6 is enough
   for explain), ADR-004's store, not a UI preference (it governs cost + what goes on the wire). The const
   is only the seed/fallback.
@@ -4599,3 +4603,24 @@ The first AI feature — ADR-014 T1, layer 1 of 3. Selection + resolved section 
   leaves with the {eq} change; negative controls bite. **NOT checked:** the live Anthropic call (needs a
   real key — the window check is the author's), so `verify`/`list_models`/`explain` are exercised by unit
   tests over the pure parse/prompt/error-map helpers, not an end-to-end network round-trip.
+
+## [2026-08-05] lint | correct a false model-lineup fact; Pattern 1 gains a 6th (architect-sourced) instance
+
+The unit-4.16 model-selection amendment argued the live-list picker "cannot offer a non-existent model
+(there is no Opus 4.6 — 4.6 is Sonnet)." **That is false — Opus 4.6 exists** (it is in the claude.ai
+model list). The error was the architect's: a release list found by search held the *notable* releases,
+not all, and "absent from the list" was read as "absent from reality."
+
+Fix — reformulate the argument so it needs **no fact about the model lineup at all**: the picker can only
+offer a model this key can reach, because its source is the run (`GET /v1/models`), not our idea of the
+lineup — and an idea of the lineup is precisely what a hardcoded menu would inherit. The illustration is
+now a **recorded event, not a claim about a third-party product**: the architect erred about the lineup
+twice this session (suspected `claude-opus-4-8` as fabricated — it exists; declared Opus 4.6 nonexistent —
+it exists), and **neither wrong belief could reach the list**, because the list is not from him. The
+construction survived the architect's error; a hardcoded list would not.
+
+Recorded in [`orca/manual-sources.md`](orca/manual-sources.md) Part F as **Pattern 1, 6th instance**, with
+its source named the **ARCHITECT** (not a gate, not Claude Code) — the pattern has no owner, and that is
+part of the lesson. Touched: adr-015 (model-selection amendment), tauri-core.md, frontend.md, and the
+prior log entry's false clause; the default's review condition (Sonnet 4.6 → Sonnet 5) is **unchanged** —
+it does not depend on this error.
