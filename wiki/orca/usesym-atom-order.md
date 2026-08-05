@@ -30,13 +30,15 @@ Phase 4.2 Stage 1 (ADR-016) is exactly that unstated question, so it was measure
    detector names the equivalence classes and reports a swap inside one as *unobservable*,
    never as "no reorder". **This is the boundary of the claim, stated in the claim.**
 
-## The three systems (input atom order verbatim)
+## The systems (input atom order verbatim)
 
 | system | keywords | detected PG | note |
 |---|---|---|---|
 | formaldehyde, order **H C H O** | `! HF def2-SV(P) UseSym TightSCF` | **C2v** | mixed multi-element order — an element-reorder would show instantly |
 | methanol, order **C O H(–O) H(mirror+) H(in-plane) H(mirror–)** | `! HF def2-SV(P) UseSym TightSCF` | **Cs** | decisive case: two mirror methyl H are **equivalent**, the in-plane one is **not** — the only way to see a reorder *inside* one element |
 | water, order **H O H** | `! r2SCAN-3c UseSym TightOpt Freq` | **C2v** | covers motion artifacts: `_trj.xyz`, `.hess $atoms`, final `.xyz` |
+| **methanol (same xyz), Opt+Freq** | `! r2SCAN-3c UseSym TightOpt Freq` | **Cs** | **the gap closer**: distinguishable one-element atoms **×** motion artifacts — the one combination neither the methanol-SP nor the water-Opt+Freq run reached |
+| *control:* formaldehyde (same xyz), **no symmetry** | `! HF def2-SV(P) TightSCF` | — | ID baseline: detector on a known identity must report identity |
 
 Formaldehyde input, verbatim:
 
@@ -86,23 +88,37 @@ reorder. Note ORCA's `Index` is **0-based**, consistent with the 0-based `%geom`
 Every artifact's element sequence equals the input order, and every fingerprint match is the
 identity permutation (modulo the named equivalence classes):
 
-| artifact | formaldehyde | methanol | water (Opt+Freq) |
-|---|---|---|---|
-| `.out` `CARTESIAN COORDINATES (ANGSTROEM)` block 0 | identity | identity | — |
-| `.property.txt` `$Geometry` block(s) | identity (1 block) | identity (1 block) | element-seq ✓, all 5 blocks |
-| `_trj.xyz` frame 0 vs input (fingerprint) | — | — | identity |
-| `_trj.xyz` all frames (element seq) | — | — | ✓ (5 frames) |
-| final `.xyz` (element seq) | — | — | ✓ |
-| `.hess $atoms` (element seq) | — | — | ✓ |
-| `.hess $atoms` vs final trj frame (fingerprint) | — | — | identity |
+| artifact | formaldehyde SP | methanol SP | water Opt+Freq | **methanol Opt+Freq** |
+|---|---|---|---|---|
+| `.out` `CARTESIAN COORDINATES (ANGSTROEM)` block 0 | identity | identity | — | — |
+| `.property.txt` `$Geometry` block(s) | identity (1) | identity (1) | element-seq ✓ (5) | element-seq ✓ (8) |
+| `_trj.xyz` frame 0 vs input (fingerprint) | — | — | identity | **identity** |
+| `_trj.xyz` all frames (element seq) | — | — | ✓ (5) | ✓ (8) |
+| final `.xyz` (element seq) | — | — | ✓ | ✓ |
+| `.hess $atoms` (element seq) | — | — | ✓ | ✓ |
+| `.hess $atoms` vs final trj frame (fingerprint) | — | — | identity | **identity** |
 
-- **Equivalence classes measured:** formaldehyde `{H0, H2}`; methanol `{H3, H5}` (mirror
-  methyl pair); water `{H0, H2}`. Order within these is unobservable — not claimed.
+The **methanol Opt+Freq** column is the decisive gap closer: it is the only run that crosses
+**distinguishable atoms of one element** (the in-plane methyl H vs the mirror pair) with the
+**motion artifacts**. In its `.hess $atoms`-vs-final-frame fingerprint the in-plane H (index 4)
+matches **only** ref candidate `[4]` while the mirror pair `{3, 5}` is the sole equivalence
+class — so the order of the *distinguishable* H is confirmed preserved through `_trj.xyz` (8
+frames), the final `.xyz`, and `.hess $atoms`, not merely for water where every H is
+equivalent and an intra-element reorder would have been invisible.
+
+- **Equivalence classes measured:** formaldehyde `{H0, H2}`; methanol (SP & Opt+Freq)
+  `{H3, H5}` (mirror methyl pair); water `{H0, H2}`. Order within these is unobservable —
+  not claimed.
+- **ID control — formaldehyde WITHOUT `UseSym`** (`! HF def2-SV(P) TightSCF`, no symmetry,
+  point group not detected): the detector on this known identity reports **identity** on both
+  the `.out` block and the `.property.txt` `$Geometry` block — the positive baseline that the
+  UseSym runs are compared against. (It ran but was unrecorded in the first draft; an
+  unrecorded control does not exist.)
 - **Symmetrization drift:** ≈ 0 for the SP inputs (they were constructed already-symmetric,
   and reorientation is fingerprint-invariant). The `.hess`-vs-final-frame fingerprint drift
-  was **1e-6 Bohr** — the `.hess` prints fewer decimals than `_trj.xyz`, not a real motion.
-  A grossly asymmetric input would drift more (bounded by `SymThresh`, default 1e-4 a.u.);
-  that regime is not probed here.
+  was **1e-6 Bohr** on both Opt+Freq runs — the `.hess` prints fewer decimals than `_trj.xyz`,
+  not a real motion. A grossly asymmetric input would drift more (bounded by `SymThresh`,
+  default 1e-4 a.u.); that regime is not probed here.
 
 ## Negative controls — the detector demonstrably bites (CLAUDE.md convention)
 
@@ -120,8 +136,11 @@ in-principle-invisible permutation.
 
 ## Scope of the claim (exactly the measurement — Pattern 2 guard)
 
-Measured: **formaldehyde (C2v), methanol (Cs), water (C2v)**; job types **SP** and
-**Opt+Freq**; artifacts **`.out` coordinate echo, `.property.txt` `$Geometry`, `_trj.xyz`,
+Measured: **formaldehyde (C2v), methanol (Cs), water (C2v)**; job types **SP** (formaldehyde,
+methanol) and **Opt+Freq** (water *and* methanol) — the Opt+Freq claim rests on **methanol**,
+whose in-plane vs mirror methyl H are distinguishable, not only on water where all H are
+equivalent, so an intra-element reorder on the motion path would have been *seen* had it
+occurred; artifacts **`.out` coordinate echo, `.property.txt` `$Geometry`, `_trj.xyz`,
 final `.xyz`, `.hess $atoms`**; **ORCA 6.1.0**. Not measured / not claimed: larger systems;
 other point groups (in particular the D-groups and cubic groups whose reorientation is more
 aggressive); explicit `%Symmetry PointGroup "..."`; grossly asymmetric inputs with large

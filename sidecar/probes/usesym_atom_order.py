@@ -111,6 +111,17 @@ RUNS = {
         "charge_mult": (0, 1),
         "kind": "optfreq",
     },
+    # The decisive gap closer: distinguishable atoms of one element (methanol's
+    # in-plane vs mirror methyl H) crossing the MOTION artifacts (_trj.xyz, .hess
+    # $atoms, final .xyz). Water covers motion but all its H are equivalent, so an
+    # intra-element reorder on the Opt/Freq path was structurally unobservable until
+    # this run.
+    "methanol_optfreq": {
+        "xyz": METHANOL_XYZ,
+        "keywords": "! r2SCAN-3c UseSym TightOpt Freq",
+        "charge_mult": (0, 1),
+        "kind": "optfreq",
+    },
     # ID control: same formaldehyde, symmetry OFF — detector on a known identity.
     "formaldehyde_nosym": {
         "xyz": FORMALDEHYDE_XYZ,
@@ -211,7 +222,9 @@ def property_geometry_blocks(job: Path):
                 continue
             sym = re.sub(r"\(\d+\)$", "", p[0])
             if sym in Z_BY_SYMBOL:
-                # property.txt geometry is Bohr — convert to Angstrom for fingerprints
+                # property.txt geometry is Bohr; coords are returned AS-IS (Bohr) and
+                # compared against a Bohr-scaled reference (inp_bohr) at the call site —
+                # fingerprints only need both sides in the same scale, so no conversion here.
                 rows.append((sym, float(p[-3]), float(p[-2]), float(p[-1])))
         if rows:
             blocks.append(rows)
@@ -390,6 +403,8 @@ def compare_run(job: Path, kind: str) -> dict:
         blocks = out_cartesian_blocks(job)
         out["out_cartesian_block0"] = detect(inp, blocks[0]) if blocks else "absent"
         pblocks = property_geometry_blocks(job)
+        # Bohr-space compare: FP_TOL_ANGSTROM is here effectively 1.889x STRICTER
+        # (1 Å tol ≈ 0.529 Bohr) — conservative for an identity verdict, named not chance.
         out["property_$Geometry_block0"] = detect(inp_bohr, pblocks[0]) if pblocks else "absent"
         out["property_n_blocks"] = len(pblocks)
     else:  # optfreq — geometry CHANGES; input ≈ FIRST trajectory frame only
@@ -417,6 +432,8 @@ def compare_run(job: Path, kind: str) -> dict:
             flast = trj[-1]
             flast_bohr = [(s, x * BOHR_PER_ANGSTROM, y * BOHR_PER_ANGSTROM, z * BOHR_PER_ANGSTROM)
                           for s, x, y, z in flast]
+            # Bohr-space compare: FP_TOL_ANGSTROM is here 1.889x STRICTER (see note above)
+            # — conservative for an identity verdict.
             out["hess_$atoms_vs_trj_final_frame_fingerprint"] = detect(flast_bohr, hatoms)
         pblocks = property_geometry_blocks(job)
         out["property_$Geometry_element_sequence"] = _elem_seq_all(
