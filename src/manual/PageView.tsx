@@ -86,6 +86,13 @@ function renderInline(text: string, opts: RenderOpts, keyBase: string): ReactNod
             [{t.keys}]
           </span>
         );
+      case "eq":
+        // {eq}`label` → [label] (category 1 — a VISIBLE equation ref; keep the label, same as cite).
+        return (
+          <span className="manual-eq" key={key}>
+            [{t.label}]
+          </span>
+        );
       case "xref": {
         const target = opts.resolve?.(t.label) ?? null;
         // Unresolved → verbatim source, NOT a dead click (same posture as a NULL anchor

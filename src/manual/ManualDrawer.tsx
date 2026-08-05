@@ -11,6 +11,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { PageView } from "./PageView";
 import { orcaMapVersion, type SectionDescriptor } from "./keyword-lookup";
 import { setManualOpenHandler } from "../editor/manual-open";
+import { setExplainHandler, type ExplainRequest } from "../editor/explain-open";
 import { clampDrawerWidth, readDrawerWidth, storeDrawerWidth } from "./drawer-width";
 import type { ManualPage, ManualSection } from "./types";
 
@@ -18,6 +19,17 @@ export function ManualDrawer() {
   const [page, setPage] = useState<ManualPage | null>(null);
   const [targetId, setTargetId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // The Claude explanation for the current selection (ADR-014 T1). Kept SEPARATE from `page`
+  // so the reader always sees the border between the ORCA source and the model's interpretation.
+  const [explaining, setExplaining] = useState(false);
+  const [explanation, setExplanation] = useState<string | null>(null);
+  const [explainError, setExplainError] = useState<string | null>(null);
+  const clearExplanation = () => {
+    setExplaining(false);
+    setExplanation(null);
+    setExplainError(null);
+  };
 
   // Resizable left edge. The COMMITTED width is React state (drives the inline style); a
   // DRAG moves ONLY the width via direct DOM (`asideRef.style.width`) so PageView — a page
@@ -50,33 +62,65 @@ export function ManualDrawer() {
     storeDrawerWidth(window.localStorage, w);
   };
 
+  // Resolve a keywords.json descriptor → its section (version-checked) and open its page.
+  const openSection = async (d: SectionDescriptor): Promise<ManualSection> => {
+    const section = await invoke<ManualSection>("resolve_manual_section", {
+      file: d.file,
+      breadcrumb: d.breadcrumb,
+      title: d.title,
+      nth: d.nth,
+      mapVersion: orcaMapVersion, // → map_version; a stale map is reported, not resolved
+    });
+    setPage(await invoke<ManualPage>("get_manual_page", { file: section.file }));
+    setTargetId(section.id);
+    return section;
+  };
+
   useEffect(() => {
     setManualOpenHandler(async (d: SectionDescriptor) => {
       setError(null);
+      clearExplanation(); // opening a section is a fresh context — drop any prior explanation
       try {
-        // 1. keywords.json descriptor → the exact section (file + id), version-checked.
-        const section = await invoke<ManualSection>("resolve_manual_section", {
-          file: d.file,
-          breadcrumb: d.breadcrumb,
-          title: d.title,
-          nth: d.nth,
-          mapVersion: orcaMapVersion, // → map_version; a stale map is reported, not resolved
-        });
-        // 2. Its full page — the display unit (a section indexes, a page shows).
-        setPage(await invoke<ManualPage>("get_manual_page", { file: section.file }));
-        setTargetId(section.id);
+        await openSection(d);
       } catch (e) {
         setError(String(e));
         setPage(null);
         setTargetId(null);
       }
     });
-    return () => setManualOpenHandler(null);
+
+    // T1 Explain: open the section AND ask Claude, grounded ONLY in that section's body. The
+    // three fields (word + line + section body) are exactly what `explain_selection` accepts.
+    setExplainHandler(async (req: ExplainRequest) => {
+      setError(null);
+      setExplanation(null);
+      setExplainError(null);
+      setExplaining(true);
+      try {
+        const section = await openSection(req.descriptor);
+        const answer = await invoke<string>("explain_selection", {
+          word: req.word,
+          line: req.line,
+          section: section.body_md,
+        });
+        setExplanation(answer);
+      } catch (e) {
+        setExplainError(String(e)); // distinct causes come pre-worded from Rust (TASK 5)
+      } finally {
+        setExplaining(false);
+      }
+    });
+
+    return () => {
+      setManualOpenHandler(null);
+      setExplainHandler(null);
+    };
   }, []);
 
   // A cross-page cross-reference click inside the drawer → load the target file in place.
   const navigate = async (file: string, sectionId: number) => {
     setError(null);
+    clearExplanation(); // navigating away leaves the explained selection's context
     try {
       setPage(await invoke<ManualPage>("get_manual_page", { file }));
       setTargetId(sectionId);
@@ -85,7 +129,8 @@ export function ManualDrawer() {
     }
   };
 
-  if (!page && !error) return null;
+  const showExplain = explaining || explanation !== null || explainError !== null;
+  if (!page && !error && !showExplain) return null;
   return (
     <aside ref={asideRef} className="manual-drawer" style={{ width }}>
       {/* Draggable left edge — resize only (col-resize); commits + persists on release. */}
@@ -104,12 +149,29 @@ export function ManualDrawer() {
             setPage(null);
             setTargetId(null);
             setError(null);
+            clearExplanation();
           }}
         >
           Close
         </button>
       </div>
       <div className="manual-drawer-body">
+        {/* Claude's explanation — visually SEPARATED and LABELLED as interpretation, so the
+            reader always sees the border between the ORCA source (below) and the model. */}
+        {showExplain ? (
+          <div className="manual-explanation">
+            <div className="manual-explanation-head">
+              Explained by Claude — not ORCA manual text
+            </div>
+            {explaining ? (
+              <div className="manual-explanation-body muted">Explaining…</div>
+            ) : explainError ? (
+              <div className="banner err">{explainError}</div>
+            ) : (
+              <div className="manual-explanation-body">{explanation}</div>
+            )}
+          </div>
+        ) : null}
         {error ? (
           <div className="banner err">{error}</div>
         ) : page ? (

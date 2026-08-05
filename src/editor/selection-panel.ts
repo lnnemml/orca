@@ -18,9 +18,13 @@
 import type { Monaco } from "@monaco-editor/react";
 import type { editor as MonacoEditor, IDisposable } from "monaco-editor";
 
+import { invoke } from "@tauri-apps/api/core";
+
 import { resolveSelection } from "../manual/selection-lookup";
 import { recordSections, type HoverMatch, type SectionDescriptor } from "../manual/keyword-lookup";
 import { openManualSection } from "./manual-open";
+import { requestExplain } from "./explain-open";
+import type { KeySource } from "../types";
 
 export interface PanelPosition {
   lineNumber: number;
@@ -56,6 +60,9 @@ export interface SelectionController {
   update(): void;
   /** Open the current hit's section in the drawer (the panel's "Open" action). */
   open(): void;
+  /** Explain the current hit (word + line + its section) — the ADR-014 T1 action. Advice
+   *  only; NEVER writes to the editor (there is no editor-mutating call in this path). */
+  explain(): void;
   dispose(): void;
 }
 
@@ -69,7 +76,9 @@ export function createSelectionController(
   opts: { debounceMs?: number } = {},
 ): SelectionController {
   let timer: ReturnType<typeof setTimeout> | null = null;
-  let current: SectionDescriptor | null = null;
+  // The current hit's three explain fields (word + the line around it + its section descriptor).
+  // Null when there is no resolvable section (miss / malformed / a descriptor-less record).
+  let currentHit: { word: string; line: string; descriptor: SectionDescriptor } | null = null;
 
   const sub = editor.onDidChangeCursorSelection(() => {
     if (timer) clearTimeout(timer);
@@ -80,7 +89,7 @@ export function createSelectionController(
     const sel = editor.getSelection();
     const model = editor.getModel();
     if (!sel || !model || sel.isEmpty()) {
-      current = null;
+      currentHit = null;
       view.hide();
       return;
     }
@@ -96,29 +105,35 @@ export function createSelectionController(
     const at: PanelPosition = { lineNumber: sel.startLineNumber, column: sel.startColumn };
     if (r.kind === "miss") {
       // qualified miss (not in the map, or an argument token) → silence, no panel.
-      current = null;
+      currentHit = null;
       view.hide();
       return;
     }
     if (r.kind === "malformed") {
       // internal space / a mid-token cut → a correctable FORMAT hint, not an answer.
-      current = null;
+      currentHit = null;
       view.show({ kind: "malformed", hint: "Select one keyword whole" }, at);
       return;
     }
     const descriptors = dedup(r.match.records.flatMap(recordSections));
-    current = descriptors[0] ?? null;
+    const descriptor = descriptors[0];
+    const lineText = model.getValue().split("\n")[sel.startLineNumber - 1] ?? "";
+    currentHit = descriptor ? { word: r.match.word, line: lineText, descriptor } : null;
     view.show({ kind: "hit", word: r.match.word, typeLabel: typeLabel(r.match), descriptors }, at);
   }
 
   function open() {
-    if (current) openManualSection(current);
+    if (currentHit) openManualSection(currentHit.descriptor);
+  }
+  function explain() {
+    // Advice only — hands the three fields to the drawer channel; touches nothing in the editor.
+    if (currentHit) requestExplain(currentHit);
   }
   function dispose() {
     if (timer) clearTimeout(timer);
     sub.dispose();
   }
-  return { update, open, dispose };
+  return { update, open, explain, dispose };
 }
 
 // ── The Monaco content-widget view (the DOM adapter; not unit-tested — jsdom-free) ──────
@@ -134,6 +149,21 @@ export function registerSelectionLookup(
 ): IDisposable {
   const dom = document.createElement("div");
   dom.className = "selection-panel";
+
+  // Whether a usable key exists (TASK 3: no key → no Explain button, not an error on click).
+  // Refreshed from `api_key_status` on register and on each show, so adding a key in Settings
+  // makes the button appear on the next selection without a reload.
+  let keyUsable = false;
+  const refreshKey = () => {
+    invoke<KeySource>("api_key_status")
+      .then((k) => {
+        keyUsable = k.state === "stored-in-keyring" || k.state === "from-environment";
+      })
+      .catch(() => {
+        keyUsable = false;
+      });
+  };
+  refreshKey();
 
   let position: MonacoEditor.IContentWidgetPosition | null = null;
   let added = false;
@@ -171,12 +201,20 @@ export function registerSelectionLookup(
           open.onclick = () => controller.open();
           actions.appendChild(open);
         }
-        // A reserved slot for the future "Explain with Claude" action (unit 4.x) — layout
-        // room, deliberately NOT a stub button that does nothing.
+        // "Explain with Claude" (ADR-014 T1). Appears only with a usable key AND a resolved
+        // section — no key → absent, not an error on click. Advice shows in the drawer.
         const explainSlot = document.createElement("span");
         explainSlot.className = "sp-explain-slot";
+        if (keyUsable && content.descriptors.length) {
+          const explain = document.createElement("button");
+          explain.className = "btn btn-sm sp-explain";
+          explain.textContent = "Explain with Claude";
+          explain.onclick = () => controller.explain();
+          explainSlot.appendChild(explain);
+        }
         actions.appendChild(explainSlot);
         dom.appendChild(actions);
+        refreshKey(); // keep the flag fresh for the next selection
       }
       position = {
         position: { lineNumber: at.lineNumber, column: at.column },

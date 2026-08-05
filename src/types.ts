@@ -87,6 +87,14 @@ export type KeySource =
   | { state: "from-environment"; last4: string }
   | { state: "unavailable"; reason: string };
 
+/** Mirrors `src-tauri/src/anthropic.rs::ModelInfo` — one model this key may use, from the LIVE
+ * `/v1/models` (rule #10: options are measured, not hardcoded). No price: the endpoint doesn't
+ * return it, and hardcoding one would be the recalled-constant anti-pattern (ADR-014 (1a)). */
+export interface ModelInfo {
+  id: string;
+  display_name: string | null;
+}
+
 /** Mirrors `src-tauri/src/models/job.rs::Job` (serde, lowercase status). */
 export interface Job {
   id: string;

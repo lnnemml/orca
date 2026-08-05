@@ -91,11 +91,12 @@ interface Buckets {
   codeContents: string; // what code tokens render to
   xrefTexts: string; // what resolved xrefs render to
   citeVisible: string; // what {cite}`keys` renders to → `[keys]`
+  eqVisible: string; // what {eq}`label` renders to → `[label]`
   includeMarkers: string; // what {literalinclude} renders to
 }
 const emptyBuckets = (): Buckets => ({
   cat1: "", cat2: "", cat3: "", cat5: "", codeContents: "", xrefTexts: "", citeVisible: "",
-  includeMarkers: "",
+  eqVisible: "", includeMarkers: "",
 });
 
 /** The exact source of a directive block (opener + body + closer). Whitespace-only inner
@@ -131,6 +132,10 @@ function classify(source: string, acc: Buckets): void {
           case "cite": // {cite}`keys` → [keys] (category 1)
             acc.cat1 += t.raw;
             acc.citeVisible += "[" + t.keys + "]";
+            break;
+          case "eq": // {eq}`label` → [label] (category 1)
+            acc.cat1 += t.raw;
+            acc.eqVisible += "[" + t.label + "]";
             break;
         }
       }
@@ -196,7 +201,7 @@ describe("manual render — corpus preservation (three-category sum over all lea
       // (R) the render emits exactly the declared-visible chars — no render-layer loss.
       const rendered = reactText(renderManualBody(text, { resolve: resolveAll }));
       const visibleExpected =
-        acc.cat2 + acc.codeContents + acc.xrefTexts + acc.citeVisible + acc.includeMarkers;
+        acc.cat2 + acc.codeContents + acc.xrefTexts + acc.citeVisible + acc.eqVisible + acc.includeMarkers;
       const rDiff = multisetDiff("rendered", strip(rendered), "expected-visible", strip(visibleExpected));
       if (rDiff) failures.push(`${rel} — render (R): ${rDiff}`);
     }
@@ -208,7 +213,9 @@ describe("manual render — corpus preservation (three-category sum over all lea
 // green for an unknown reason). Runs WITHOUT the corpus — proves the NEW 4.15 branches bite.
 describe("the {cite} and (label)= branches unbalance the sum when a render misbehaves", () => {
   const expectedVisible = (acc: Buckets) =>
-    strip(acc.cat2 + acc.codeContents + acc.xrefTexts + acc.citeVisible + acc.includeMarkers);
+    strip(
+      acc.cat2 + acc.codeContents + acc.xrefTexts + acc.citeVisible + acc.eqVisible + acc.includeMarkers,
+    );
 
   it("(R) bites if a render EATS cite keys", () => {
     const body = "C-PCM{cite}`barone1998`: the model";
@@ -218,6 +225,17 @@ describe("the {cite} and (label)= branches unbalance the sum when a render misbe
     const correct = strip(reactText(renderManualBody(body, { resolve: resolveAll })));
     expect(multisetDiff("rendered", correct, "expected", expected)).toBe(""); // real render balances
     const buggy = correct.replace("barone1998", ""); // a render that drops the keys
+    expect(multisetDiff("buggy", buggy, "expected", expected)).not.toBe("");
+  });
+
+  it("(R) bites if a render EATS an {eq} label", () => {
+    const body = "See Eq. {eq}`eqn:gcp` for the correction.";
+    const acc = emptyBuckets();
+    classify(body, acc);
+    const expected = expectedVisible(acc);
+    const correct = strip(reactText(renderManualBody(body, { resolve: resolveAll })));
+    expect(multisetDiff("rendered", correct, "expected", expected)).toBe(""); // real render balances
+    const buggy = correct.replace("eqn:gcp", ""); // a render that drops the eq label
     expect(multisetDiff("buggy", buggy, "expected", expected)).not.toBe("");
   });
 

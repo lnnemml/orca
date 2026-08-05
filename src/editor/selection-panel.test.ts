@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createSelectionController, type PanelContent, type PanelPosition } from "./selection-panel";
 import { orcaEditorOptions } from "./editor-options";
 import { setManualOpenHandler } from "./manual-open";
+import { setExplainHandler } from "./explain-open";
 
 // The WIRING — the selection listener + resolve + the Open action — is where the trigger
 // change could break while the pure `resolveSelection` tests stay green (debugging/010:
@@ -77,6 +78,7 @@ describe("selection panel wiring (fake editor + view, no jsdom)", () => {
   afterEach(() => {
     vi.useRealTimers();
     setManualOpenHandler(null);
+    setExplainHandler(null);
   });
 
   it("a settled selection over a keyword → show(hit) with the normalized word", () => {
@@ -109,6 +111,42 @@ describe("selection panel wiring (fake editor + view, no jsdom)", () => {
 
     expect(opened).toHaveBeenCalledTimes(1);
     expect(opened.mock.calls[0][0]).toMatchObject({ file: expect.any(String), title: expect.any(String) });
+  });
+
+  it("Explain hands the drawer exactly {word, line, descriptor} and writes NOTHING to the editor", () => {
+    const explained = vi.fn();
+    setExplainHandler(explained); // ManualDrawer registers this in the app
+
+    const fe = makeFakeEditor("! r2SCAN-3c", sel(3, 12));
+    // A spy for any editor mutation — tier-zero (ADR-014): explain must never write to the editor.
+    const writeSpy = vi.fn();
+    (fe.editor as unknown as { executeEdits: unknown }).executeEdits = writeSpy;
+    const fv = makeFakeView();
+    const c = createSelectionController(fe.editor, fv.view);
+
+    c.update();
+    c.explain(); // the panel's "Explain with Claude" action
+
+    expect(explained).toHaveBeenCalledTimes(1);
+    const req = explained.mock.calls[0][0];
+    // Exactly the three fields — no coordinate/geometry/file could ride along (ADR-015 (3)).
+    expect(Object.keys(req).sort()).toEqual(["descriptor", "line", "word"]);
+    expect(req.word).toBe("r2SCAN-3c");
+    expect(req.line).toBe("! r2SCAN-3c");
+    expect(req.descriptor).toMatchObject({ file: expect.any(String), title: expect.any(String) });
+    // The editor was never mutated (tier-zero: advice only, no insert path).
+    expect(writeSpy).not.toHaveBeenCalled();
+  });
+
+  it("Explain is a no-op when there is no resolved section (a miss) — no drawer call", () => {
+    const explained = vi.fn();
+    setExplainHandler(explained);
+    const fe = makeFakeEditor("! NotAKeyword", sel(3, 14));
+    const fv = makeFakeView();
+    const c = createSelectionController(fe.editor, fv.view);
+    c.update();
+    c.explain();
+    expect(explained).not.toHaveBeenCalled();
   });
 
   it("a mid-token cut → show(malformed) with a format hint (not silence)", () => {

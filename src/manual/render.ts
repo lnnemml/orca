@@ -48,7 +48,8 @@ export type Inline =
   | { kind: "code"; text: string } // ``…`` → the content (backticks dropped)
   | { kind: "math"; tex: string; display: boolean } // $…$ / $$…$$ → KaTeX
   | { kind: "xref"; text: string; label: string; raw: string } // {ref}/{numref}/[..](sec:/tab:)
-  | { kind: "cite"; keys: string; raw: string }; // {cite}`keys` → [keys] (see below)
+  | { kind: "cite"; keys: string; raw: string } // {cite}`keys` → [keys] (see below)
+  | { kind: "eq"; label: string; raw: string }; // {eq}`label` → [label] (same fix as {cite})
 
 // --- Fence handling (mirrors the Rust sectioner's fence rule, `sections.rs`) ---
 
@@ -224,8 +225,15 @@ export function tokenizeInline(text: string): Inline[] {
         // (`barone1998`) stably identifies the work and is directly searchable — the better
         // form, not a fallback for the missing bibliography. Text-preserving, declared, tested.
         out.push({ kind: "cite", keys: role[2], raw: s });
+      } else if (role && role[1].toLowerCase() === "eq") {
+        // {eq}`label` → `[label]` (category 1) — the SAME fix as {cite}, one construct later.
+        // In Sphinx an equation reference is VISIBLE (rendered as a number); the census-era
+        // verbatim `{eq}`eqn:gcp`` broke the sentence ("Eq. {eq}`eqn:gcp` is") with raw syntax.
+        // We keep the LABEL, not a number: a number re-flows on reprint, while `eqn:gcp` stably
+        // identifies the equation — the same key-over-number reasoning that settled {cite}.
+        out.push({ kind: "eq", label: role[2], raw: s });
       } else {
-        // {eq}/{cspan}/… → verbatim (category 2); its arg is NOT inline code.
+        // {cspan}/… → verbatim (category 2); its arg is NOT inline code.
         out.push({ kind: "text", text: s });
       }
     } else if (s.startsWith("[")) {

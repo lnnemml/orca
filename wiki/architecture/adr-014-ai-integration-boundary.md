@@ -147,3 +147,29 @@ coordinates, so the "read-only, bounded" boundary is the command's *type*, enfor
 not by intent. ADR-015 also fixes the two questions ADR-014 left implicit for T1: **where the secret
 lives** (system keyring, not the copied `.db`) and **where the network call is made** (Rust, so the key
 never enters webview scope). This refines, does not cancel, decision (2).
+
+## Amendment (2026-08-05, unit 4.16) — T1 is now IMPLEMENTED ("Explain a selection with Claude")
+
+The decision text above **stands unchanged**; this records the first realized tier. "Explain with Claude"
+ships as T1: **read-only**, grounded on a parsed manual section + the editor line, producing advice shown
+in the drawer. The three invariants this ADR fixed for T1 hold as *construction*, not intention:
+
+- **(1a) retrieved, not recalled — held STRUCTURALLY.** There is no Explain button without an **open,
+  resolved section**: the button's appearance condition is `usable key AND resolved section`
+  (`canExplain`, tested). So the model has a section to read and nothing to answer from memory — the
+  "plausible-but-source-less number" failure mode is removed by the *absence of a path*, not by a prompt
+  telling the model to behave. (The system prompt that says "ground only in the provided section" is the
+  belt to that structural suspenders.)
+- **The bounded payload IS the command type (ADR-015 (3)).** `explain_selection` takes exactly **word +
+  line + section** — three `&str` via `build_explain_prompt`, whose signature a wiring test pins. There is
+  **no parameter** for the input file or the coordinates; geometry cannot ride along because the type has
+  no seat for it. Unpublished-research geometry stays out by construction.
+- **Tier-zero: the explanation writes NOTHING to the editor.** The explain path exposes no editor-mutating
+  call; it returns text to a read-only drawer band, visually bordered and labelled "Explained by Claude —
+  not ORCA manual text". A wiring test asserts `explain()` calls the drawer channel and never mutates the
+  fake editor. Advice, not insertion — the T1↔T2 line drawn as code, not prose.
+
+This is **layer 1 of the three** ADR-014 sketched for T1's build-out (selection → section → one answer).
+Layers 2 (a follow-up in the same grounded context) and 3 (a chat with `search_manual` as a tool) are
+**not** anticipated by layer 1's structure — no chat, no history, no input box exists in this path. See
+[ADR-015](adr-015-api-key-storage.md) for storage, the live model list, and where the call is made.

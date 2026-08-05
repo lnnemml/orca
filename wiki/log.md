@@ -4552,3 +4552,50 @@ Two follow-ups that belonged with ADR-015, appended (no decision text rewritten)
   (performance.md, parse-sources.md, manual-sources.md, input-syntax.md). Both existing pages already
   sit correctly — nothing moved; the rule exists so a third such page doesn't drift to a third home.
   `index.md` needs no change (it carries no per-category placement prose).
+
+## [2026-08-05] decision | model choice from the LIVE /v1/models; the default is review-conditioned
+
+Recorded as amendments (decision text untouched): [ADR-015](architecture/adr-015-api-key-storage.md)
+(model selection) + [ADR-014](architecture/adr-014-ai-integration-boundary.md) (T1 now implemented).
+
+- **Options are measured, not documented (rule #10).** The Settings model picker is populated from
+  `GET /v1/models` — the models THIS key can use — never a hardcoded menu. A hardcoded menu goes stale
+  silently: the unit-4 verify const `claude-opus-4-8` was two generations behind and no review-against-
+  memory caught it, only the run did. The live list also cannot offer a non-existent model (there is no
+  Opus 4.6 — 4.6 is Sonnet).
+- **The default lives in `settings`, not a const** — a price/sufficiency decision (Sonnet 4.6 is enough
+  for explain), ADR-004's store, not a UI preference (it governs cost + what goes on the wire). The const
+  is only the seed/fallback.
+- **No price shown** — `/v1/models` doesn't return it; hardcoding one is the recalled-constant anti-
+  pattern ADR-014 (1a). Omitted, not invented.
+- **Review condition:** the default `claude-sonnet-4-6` is a superseded model (Sonnet 5 displaces it) —
+  revisit at its deprecation or when the live list stops containing it. The live-list rule removes the
+  stale-menu failure for the *options*; this names it for the single *default* string it can't remove.
+
+## [2026-08-05] session | feat: explain a selection with Claude (T1: three fields, live model list, no editor writes)
+
+The first AI feature — ADR-014 T1, layer 1 of 3. Selection + resolved section → one answer in the drawer.
+
+- **Grounding is STRUCTURAL, not a prompt.** No Explain button without an open, resolved section
+  (`canExplain` = usable key AND section, tested), so the model has nothing to answer from memory — the
+  "plausible number without provenance" regress is removed by the absence of a path. The system prompt
+  ("ground only in the section") is the belt to that suspenders.
+- **`explain_selection(word, line, section)` — exactly three `&str`.** No file/geometry parameter; the
+  bound is the command's type. `build_explain_prompt`'s `fn(&str,&str,&str)->String` signature is pinned
+  by a wiring test (sibling of the secrets return-type pins). Model read from `settings`, not the caller.
+- **Tier-zero.** The explain path exposes no editor-mutating call; the answer renders in a bordered,
+  labelled drawer band ("Explained by Claude — not ORCA manual text") — the reader sees the source↔
+  interpretation border. A wiring test asserts `explain()` hands the drawer only `{word, line, descriptor}`
+  and never mutates the (spied) editor.
+- **Error causes distinct (TASK 5):** 401 key / 404 model-not-available / other API / transport offline —
+  different messages (`status_error`, tested). No logging of key or body. Reuses `ureq` (no new dep, no
+  new feature — `serde_json` over string bodies).
+- **Model picker** from the live `/v1/models` (see the decision entry above), stored in `settings`.
+- **ПРИЧІП:** `{eq}`label` → `[label]` (the {cite} fix, one construct later; sample + corpus negative
+  control added). `{table}` caption **flagged, NOT done** — it is the first directive whose opener must
+  split into hidden syntax + visible caption, a new axis unlike an inline role; left to its own unit (the
+  author's "stop if harder than {cite}" instruction).
+- **Verification.** cargo 160 / tsc 0 / vitest 481 — green; corpus preservation gate green on **126**
+  leaves with the {eq} change; negative controls bite. **NOT checked:** the live Anthropic call (needs a
+  real key — the window check is the author's), so `verify`/`list_models`/`explain` are exercised by unit
+  tests over the pure parse/prompt/error-map helpers, not an end-to-end network round-trip.

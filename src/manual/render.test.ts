@@ -130,13 +130,22 @@ describe("category 1 — cross-references resolve to a link, else stay verbatim"
       },
     ]);
   });
-  it("{cite} is category 1 (→ a cite token); {eq} stays verbatim; neither is inline code", () => {
-    expect(tokenizeInline("as in {cite}`barone1998, garcia` and {eq}`eqn:1`")).toEqual([
+  it("{cite} and {eq} are both category 1 (→ tokens, not inline code); a bare role stays verbatim", () => {
+    expect(tokenizeInline("as in {cite}`barone1998, garcia` and {eq}`eqn:1`, cf. {cspan}`x`")).toEqual([
       { kind: "text", text: "as in " },
       { kind: "cite", keys: "barone1998, garcia", raw: "{cite}`barone1998, garcia`" },
       { kind: "text", text: " and " },
-      { kind: "text", text: "{eq}`eqn:1`" }, // {eq} = an equation number we don't have → verbatim
+      { kind: "eq", label: "eqn:1", raw: "{eq}`eqn:1`" }, // now the key, same as {cite}
+      { kind: "text", text: ", cf. " },
+      { kind: "text", text: "{cspan}`x`" }, // an unrecognized role → still verbatim
     ]);
+  });
+  it("{eq}`label` renders as [label] — the label kept (stable), the sentence no longer broken", () => {
+    // The census-era verbatim broke the sentence: "Eq. {eq}`eqn:gcp` is" → now "Eq. [eqn:gcp] is".
+    const r = reactText(renderManualBody("See Eq. {eq}`eqn:gcp` is the gCP term"));
+    expect(r).toBe("See Eq. [eqn:gcp] is the gCP term");
+    expect(r).not.toContain("{eq");
+    expect(r).not.toContain("`");
   });
   it("{cite}/{cite:t}`keys` renders as [keys] — the keys kept (stable + searchable), not [n]", () => {
     expect(reactText(renderManualBody("C-PCM{cite}`barone1998, garcia_neese_gcs`: the model"))).toBe(

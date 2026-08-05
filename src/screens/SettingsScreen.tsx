@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
-import type { CpuPresetInfo, KeySource } from "../types";
+import type { CpuPresetInfo, KeySource, ModelInfo } from "../types";
+
+/** Seed/fallback default — the review-conditioned value (ADR-015 amendment); the live list drives options. */
+const DEFAULT_MODEL = "claude-sonnet-4-6";
 
 export function SettingsScreen() {
   const [orcaPath, setOrcaPath] = useState("");
@@ -31,6 +34,12 @@ export function SettingsScreen() {
   const [checkingKey, setCheckingKey] = useState(false);
   const [keyCheck, setKeyCheck] = useState<string | null>(null);
 
+  // --- Explain model (ADR-015): options from the LIVE /v1/models, stored in settings. ---
+  const [models, setModels] = useState<ModelInfo[]>([]);
+  const [selectedModel, setSelectedModel] = useState(DEFAULT_MODEL);
+  const [loadingModels, setLoadingModels] = useState(false);
+  const [modelsError, setModelsError] = useState<string | null>(null);
+
   const loadSettings = useCallback(async () => {
     try {
       const [settings, presetList] = await Promise.all([
@@ -47,6 +56,7 @@ export function SettingsScreen() {
       setCpuPreset(settings.cpu_preset ?? "interactive");
       setCpuMask(settings.cpu_mask ?? "8-15");
       setCpuNprocs(settings.cpu_nprocs ?? "8");
+      setSelectedModel(settings.anthropic_model ?? DEFAULT_MODEL);
     } catch (e) {
       setError(String(e));
     }
@@ -60,10 +70,39 @@ export function SettingsScreen() {
     }
   }, []);
 
+  const loadModels = useCallback(async () => {
+    setLoadingModels(true);
+    setModelsError(null);
+    try {
+      setModels(await invoke<ModelInfo[]>("list_anthropic_models"));
+    } catch (e) {
+      setModelsError(String(e));
+      setModels([]);
+    } finally {
+      setLoadingModels(false);
+    }
+  }, []);
+
   useEffect(() => {
     loadSettings();
     loadKeySource();
   }, [loadSettings, loadKeySource]);
+
+  // Load the live model list only when a usable key exists (so a key-less start isn't an error).
+  useEffect(() => {
+    const s = keySource?.state;
+    if (s === "stored-in-keyring" || s === "from-environment") loadModels();
+    else setModels([]);
+  }, [keySource, loadModels]);
+
+  const changeModel = async (id: string) => {
+    setSelectedModel(id);
+    try {
+      await invoke("set_setting", { key: "anthropic_model", value: id });
+    } catch (e) {
+      setError(String(e));
+    }
+  };
 
   const saveOrcaPath = async () => {
     setSaving(true);
@@ -169,6 +208,9 @@ export function SettingsScreen() {
   // Anthropic" when the real problem is that there is no key to check (ADR-015).
   const keyState = keySource?.state;
   const canCheckKey = keyState === "stored-in-keyring" || keyState === "from-environment";
+  // TASK 2: say it in Settings immediately when the key can't reach the saved model — not as a
+  // surprise on the first Explain. Only meaningful once the live list has loaded.
+  const selectedUnavailable = models.length > 0 && !models.some((m) => m.id === selectedModel);
 
   return (
     <div className="screen">
@@ -399,6 +441,58 @@ export function SettingsScreen() {
               <span style={{ color: "var(--muted)" }}>No API key stored.</span>
             ) : null}
           </div>
+
+          {/* Explain model — options from the LIVE list of what THIS key can use (not hardcoded,
+              so no menu goes stale). Only shown with a usable key. */}
+          {canCheckKey ? (
+            <div className="field" style={{ marginTop: 12 }}>
+              <label className="label" htmlFor="anthropic-model">
+                Model for “Explain with Claude”
+              </label>
+              <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 6 }}>
+                From the models your key can use. Default{" "}
+                <span className="mono">{DEFAULT_MODEL}</span> — enough for Explain; a
+                price/sufficiency choice, not novelty.
+              </div>
+              <div className="row">
+                <select
+                  id="anthropic-model"
+                  className="input mono"
+                  style={{ flex: 1 }}
+                  value={selectedModel}
+                  disabled={loadingModels || models.length === 0}
+                  onChange={(e) => changeModel(e.currentTarget.value)}
+                >
+                  {/* Keep the saved value visible even if the key can't currently reach it. */}
+                  {!models.some((m) => m.id === selectedModel) ? (
+                    <option value={selectedModel}>{selectedModel}</option>
+                  ) : null}
+                  {models.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {(m.display_name ?? m.id) + (m.id === DEFAULT_MODEL ? " — default" : "")}
+                    </option>
+                  ))}
+                </select>
+                <button className="btn" onClick={loadModels} disabled={loadingModels}>
+                  {loadingModels ? "…" : "Refresh"}
+                </button>
+              </div>
+              <div style={{ fontSize: 12, marginTop: 2 }}>
+                {modelsError ? (
+                  <span style={{ color: "var(--warn)" }}>{modelsError}</span>
+                ) : selectedUnavailable ? (
+                  <span style={{ color: "var(--warn)" }}>
+                    Your key can’t access <span className="mono">{selectedModel}</span> — pick
+                    another.
+                  </span>
+                ) : loadingModels ? (
+                  <span style={{ color: "var(--muted)" }}>Loading models…</span>
+                ) : models.length ? (
+                  <span style={{ color: "var(--ok)" }}>{models.length} models available.</span>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
         </div>
       </div>
 

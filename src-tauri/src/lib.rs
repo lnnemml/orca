@@ -117,6 +117,8 @@ pub fn run() {
             secrets::set_api_key,
             secrets::delete_api_key,
             anthropic::verify_api_key,
+            anthropic::list_anthropic_models,
+            anthropic::explain_selection,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

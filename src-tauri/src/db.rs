@@ -62,7 +62,11 @@ fn migrate(conn: &Connection) -> Result<(), AppError> {
         -- preset; cpu_mask/cpu_nprocs are only consulted when cpu_preset=custom.
         INSERT OR IGNORE INTO settings (key, value) VALUES ('cpu_preset', 'interactive');
         INSERT OR IGNORE INTO settings (key, value) VALUES ('cpu_mask', '8-15');
-        INSERT OR IGNORE INTO settings (key, value) VALUES ('cpu_nprocs', '8');",
+        INSERT OR IGNORE INTO settings (key, value) VALUES ('cpu_nprocs', '8');
+        -- Explain-with-Claude model (Phase 4, ADR-015): a price/sufficiency choice, so a
+        -- settings row (not a const). Sonnet 4.6 is sufficient for explain. Review at its
+        -- deprecation / when the live /v1/models list drops it (ADR-015 amendment).
+        INSERT OR IGNORE INTO settings (key, value) VALUES ('anthropic_model', 'claude-sonnet-4-6');",
     )?;
 
     let mut version = current_version(conn)?;

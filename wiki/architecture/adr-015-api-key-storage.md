@@ -168,3 +168,38 @@ a **visible override indicator** (the UI must never quietly prefer env over a ke
 stored), and **stale-variable behaviour** (an env var left set from a previous shell must not silently
 shadow the keyring). Decision (1) (key never in the webview) and (3) (bounded wire payload) do **not**
 depend on this and stand regardless.
+
+## Amendment (2026-08-05, unit 4.16) — model choice from the LIVE list; a review-conditioned default
+
+The decision text above **stands unchanged**; this records how the explain **model** is chosen, made
+concrete by the first shipped explain call.
+
+**The option list is a measurement, not a doc lookup (rule #10).** `verify_api_key` already hits
+`GET /v1/models`, which returns exactly the models **this key** may use. The Settings model picker is
+populated from that live list — never from a hardcoded menu. This is not decoration: a hardcoded menu
+goes stale silently (the unit-4 verify const was `claude-opus-4-8`, two generations behind, and no
+review-against-memory would have caught it — only the run did). A consequence falls out for free: the
+picker cannot offer a model that does not exist (e.g. there is **no Opus 4.6** — 4.6 is Sonnet), because
+the list is the API's answer, not ours.
+
+**The default lives in `settings`, not a const** — it is a **price/sufficiency** decision (Sonnet 4.6 is
+enough for a two-sentence explain), the same class as `cpu_preset`/`xtb_path`, and ADR-004 already owns
+that store. It is **not** a UI preference (unlike drawer width, a deliberate `localStorage` exception),
+because it governs **cost** and **what goes on the wire**. The `DEFAULT_MODEL` const is only the seed and
+the unset-fallback; the live list drives what the user can pick.
+
+**Pricing is not shown, and that is deliberate, not an omission.** `/v1/models` does not return pricing;
+hardcoding a price table would be exactly the recalled-constant anti-pattern ADR-014 (1a) forbids
+("retrieved, never recalled"). So price is omitted rather than invented. If a future `/v1/models` carries
+a price field, surface it then — the picker parses defensively and would show it.
+
+**Availability is surfaced in Settings, not deferred to the first Explain.** If the key cannot reach the
+saved model (tier, deprecation), Settings says so immediately (the saved id is compared against the live
+list); and the explain call still maps a `404` to a model-specific message rather than a generic failure.
+
+**Review condition (named, the genre of the two above).** The default `claude-sonnet-4-6` is a **superseded
+model** — Sonnet 4.6 is displaced by Sonnet 5 (same class, newer; Sonnet 5's launch price is *below*
+Sonnet 4.6's standard through 2026-08-31). A default pinned to a superseded model has a shelf life:
+**revisit it at Sonnet 4.6 deprecation, or when the live `/v1/models` list stops containing it.** A
+hardcoded default *without* such a condition silently becomes a dead row — the exact failure this
+amendment's live-list rule removes for the *options* but cannot remove for the single *default* string.

@@ -71,7 +71,14 @@ that an in-progress New Job draft is discarded on a tab switch (accepted).
   ("system keyring, ends …wxyz" / "using `ANTHROPIC_API_KEY`" / the `unavailable` reason), so the
   env fallback is visible, not silent. **Check is disabled in the `absent`/`unavailable` states** —
   a network call there would report a misleading "could not reach Anthropic" when the real problem
-  is that there is no key to check (different causes, different messages).
+  is that there is no key to check (different causes, different messages). With a usable key the card
+  also shows a **model picker** whose options come from the **live** `list_anthropic_models`
+  (`/v1/models`) — not a hardcoded menu (so nothing goes stale; a non-existent model can't be offered).
+  The choice saves to `settings` (`anthropic_model`, default `claude-sonnet-4-6` — a price/sufficiency
+  decision, not a UI preference). If the key can't reach the saved model, Settings says so
+  **immediately** (compared against the live list), not as a surprise on the first Explain. **No price is
+  shown** — `/v1/models` doesn't return it and hardcoding one is the recalled-constant anti-pattern
+  (ADR-014 (1a)).
 
 ## Editor & templates (`src/editor/`, `src/templates/`)
 
@@ -431,7 +438,14 @@ in the shell; two columns — debounced FTS search on the left, the full **page*
     `[n]` is order-dependent and re-flows on any reprint, whereas a bibkey (`barone1998`) stably
     identifies the work and is directly **searchable** — for a chemist chasing the paper, the key is more
     useful than the number. (So a future "add the bibliography → switch to `[n]`" unit would be a
-    REGRESSION, not progress.)
+    REGRESSION, not progress.) **Equation refs** `{eq}`label`` → **`[label]`** (4.16) — the SAME fix,
+    one construct later: an eq ref is VISIBLE in Sphinx (a number), the verbatim `Eq. {eq}`eqn:gcp` is`
+    broke the sentence with raw syntax, and we keep the **label** (stable) not the number (re-flows) —
+    the {cite} reasoning, applied. **Still open (flagged, not done):** `:::{table} <caption>` shows the
+    caption verbatim WITH its `:::{table}`/`:::` delimiters, though the caption is VISIBLE in Sphinx and
+    the syntax is not. This is category-1 *incompleteness* (like {cite}/{eq} were), but it is the first
+    **directive** whose opener must split into hidden syntax + visible caption — a new axis in the block
+    renderer AND the corpus classifier, unlike an inline role. Left to its own unit (harder than {cite}).
   - **(2) UNRECOGNIZED → verbatim.** The preservation test lives HERE, **unweakened** — split off so
     it stays a pure char-for-char check over samples with NO category-1 construct (else a transform
     would force it green while silently dropping text). Code fences, pipe tables, prose, and every
@@ -469,7 +483,8 @@ in the shell; two columns — debounced FTS search on the left, the full **page*
   parser+tokenizer PARTITION every source char into a category (`cat1 ⊎ cat2 ⊎ cat3 ⊎ cat5 ==` source,
   as a char multiset — nothing unclassified), and **(R)** the actual React render emits exactly the
   declared-visible chars (`cat2` + code contents + resolved-xref texts + `{cite}` → `[keys]` +
-  `{literalinclude}` markers; math → nothing, hidden directives AND `(name)=` labels → nothing). Every
+  `{eq}` → `[label]` + `{literalinclude}` markers; math → nothing, hidden directives AND `(name)=` labels
+  → nothing). Every
   legitimate transform is **accounted**, so an undeclared loss unbalances the sum on the offending file
   (failure names the file + the char diff). A committed **negative control** proves the new 4.15 branches
   bite — a render that eats cite keys, or that shows a hidden label, unbalances (R) (CLAUDE.md convention:
@@ -552,16 +567,27 @@ hover — it is gone, not kept alongside).** Three reasons, in order of weight:
   debounce after the selection changes, so it does not flicker mid-drag). It is an **overflow widget
   (`allowEditorOverflow`)**, so `editor-options.ts`'s `fixedOverflowWidgets: true` un-clips it on the top
   line — the **same path** debugging/010 fixed for the hover. Content: `word — type (owning block)` + an
-  **Open in manual** button (several targets → *"Open (N) →"*); a reserved layout **slot** for the future
-  *Explain with Claude* action — room, **not** a stub button. The wire is split from the DOM: the pure,
-  DOM-free `createSelectionController` (selection → resolve → show/hide + Open) is tested with a fake
-  editor (`selection-panel.test.ts`, no jsdom — the debugging/010 lesson: test the wiring, not only the
-  pure functions).
+  **Open in manual** button (several targets → *"Open (N) →"*); and the **Explain with Claude** action
+  (ADR-014 T1, 4.16) filling the slot that 4.13 reserved. The wire is split from the DOM: the pure,
+  DOM-free `createSelectionController` (selection → resolve → show/hide + Open + Explain) is tested with a
+  fake editor (`selection-panel.test.ts`, no jsdom — the debugging/010 lesson: test the wiring, not only
+  the pure functions).
 - **The Open action calls the `manual-open.ts` channel directly** (`openManualSection` → the handler
   `ManualDrawer` registered via `setManualOpenHandler`) — **not** a Monaco markdown command (the one
   that failed silently). `ManualDrawer` is a fixed-position side overlay: it resolves the descriptor via
   `resolve_manual_section` (the keywords.json→DB bridge, version-checked) to a section, loads its **whole
   page** via `get_manual_page`, and renders it in the **SAME `PageView`** as `ManualScreen`.
+- **Explain with Claude (`explain-open.ts` channel; ADR-014 T1).** Appears only when `canExplain` (pure,
+  tested) holds — a **usable key** (`stored-in-keyring`/`from-environment`, from `api_key_status`) AND a
+  **resolved section**; no key → the button is **absent**, not an error on click. On click the controller
+  hands the drawer **exactly** `{ word, line, descriptor }` (the three ADR-015 (3) fields — a wiring test
+  asserts those keys and *only* those, and that the editor is never mutated: **tier-zero**, advice not
+  insertion). `ManualDrawer` resolves the section, opens its page, and calls `explain_selection(word,
+  line, section.body_md)`. The answer renders in the **same drawer**, in a **bordered, labelled band**
+  ("Explained by Claude — not ORCA manual text") ABOVE the page — the reader always sees the border
+  between the ORCA source and the model's interpretation. Errors arrive pre-worded from Rust (no key /
+  offline / model-not-available / API error — different messages, TASK-5 posture); the band clears on
+  Open, cross-ref navigate, and Close.
 - **Kept from the hover unit:** the pure lookup (`hoverContext`, `resolveHover`, `enclosingBlock`,
   `isArgumentToken`) — only the trigger and input normalization changed, not the logic — and the
   `manual-open.ts` channel (Monaco-decoupled, survived the trigger change unedited; was `orca-hover.ts`).

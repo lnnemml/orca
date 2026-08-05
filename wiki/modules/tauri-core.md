@@ -187,6 +187,20 @@ runs `terminate_on_exit` synchronously; `Drop` on `SidecarManager` is the backst
   without spending generation tokens. Wiring tests pin the return types (none is the key) and that
   `KeySource` serializes without the secret body (negative control: a `last4` that forgets to
   truncate turns the gate red). Measured keyring gate: `wiki/architecture/keyring-availability.md`.
+- **Explain / models (ADR-014 T1, ADR-015; `anthropic.rs`, all `async` + `spawn_blocking`):**
+  - `list_anthropic_models() -> Vec<ModelInfo>` — the **live** `/v1/models` list of what THIS key may
+    use; the Settings model picker's options (rule #10: options measured, not hardcoded — so no menu
+    goes stale, and a non-existent model like "Opus 4.6" can't be offered). `ModelInfo { id,
+    display_name }`; **no price** (the endpoint doesn't return it, and hardcoding one is the
+    recalled-constant anti-pattern ADR-014 (1a)).
+  - `explain_selection(word, line, section) -> String` — the T1 explain. **Exactly three data fields**;
+    the command has **no** parameter for the input file or coordinates (the bound is the type;
+    `build_explain_prompt`'s `fn(&str,&str,&str)->String` signature is pinned by a wiring test).
+    Reads the model from `settings` (`anthropic_model`, seeded `claude-sonnet-4-6`), not from the
+    caller. Returns advice text — **writes nothing to the editor** (tier-zero: no insert path exists).
+  - **Error causes are distinct (`status_error`, unit-tested):** `401` = key rejected, `404` = model not
+    available to this key, other = generic API error, transport = offline (a normal mode, not a failure).
+    A single "failed" would hide the cause. No logging of key or request/response body, even in debug.
 - **DB helpers** (`pub(crate)`, reused by the backend): `set_job_dir_conn`, `finalize_job_conn`
   (terminal status + `completed_at` + `error_message`), `set_job_results_conn`, `get_job_conn`,
   `update_job_status_conn`.

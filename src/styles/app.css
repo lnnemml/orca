@@ -1867,6 +1867,11 @@ button.ir-imaginary-mode.selected {
   color: var(--muted);
   white-space: nowrap;
 }
+/* {eq}`label` → [label] — same muted, keep-the-key treatment as {cite}. */
+.manual-eq {
+  color: var(--muted);
+  white-space: nowrap;
+}
 /* KaTeX math. Block math on its own line; inline flows with the text. */
 .manual-math-display {
   display: block;
@@ -1942,6 +1947,30 @@ button.ir-imaginary-mode.selected {
 .selection-panel .sp-explain-slot {
   min-width: 0;
   flex: 1;
+}
+.selection-panel .sp-explain {
+  white-space: nowrap;
+}
+
+/* Claude's explanation — a clearly bordered, tinted band ABOVE the manual page so the reader
+   always sees the boundary between the ORCA source and the model's interpretation (ADR-014 T1). */
+.manual-explanation {
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  padding: 8px 10px;
+  margin: 8px 8px 12px;
+}
+.manual-explanation-head {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+  margin-bottom: 4px;
+}
+.manual-explanation-body {
+  white-space: pre-wrap;
+  line-height: 1.5;
 }
 
 /* ── Manual hover drawer (Phase 4.4) — a side panel opened from an editor hover ── */
