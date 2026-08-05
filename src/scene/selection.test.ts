@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 
-import type { Scene, SceneFragment } from "./types";
+import type { Scene } from "./types";
+import { testScene, type RawFragment } from "./scene-test-util";
 import { removeFragment, compositionSignature } from "./scene";
 import {
   MAX_SELECTION,
@@ -12,7 +13,7 @@ import {
 
 // ── Fixtures: three fragments of DIFFERENT sizes (3 + 5 + 1 = 9 atoms) ────────
 
-function water(id = "wat"): SceneFragment {
+function water(id = "wat"): RawFragment {
   return {
     id,
     name: "Water",
@@ -26,7 +27,7 @@ function water(id = "wat"): SceneFragment {
   };
 }
 
-function borohydride(id = "bh4"): SceneFragment {
+function borohydride(id = "bh4"): RawFragment {
   const d = 1.24 / Math.sqrt(3);
   return {
     id,
@@ -43,7 +44,7 @@ function borohydride(id = "bh4"): SceneFragment {
   };
 }
 
-function chloride(id = "cl"): SceneFragment {
+function chloride(id = "cl"): RawFragment {
   return {
     id,
     name: "Cl-",
@@ -53,8 +54,8 @@ function chloride(id = "cl"): SceneFragment {
   };
 }
 
-function scene(...fragments: SceneFragment[]): Scene {
-  return { fragments, multiplicity: 1 };
+function scene(...fragments: RawFragment[]): Scene {
+  return testScene(fragments);
 }
 
 // ── toggleAtom ───────────────────────────────────────────────────────────────

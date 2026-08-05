@@ -10,8 +10,10 @@ for inter- and intra-fragment edits, the reference-atom rule `maskRoleViolation`
 on both the inter-fragment and the resolved bond-graph split mask), the constraint block
 over the input text (`constraints.ts`, `ConstraintPanel.tsx`, non-destructive rewrite),
 and xTB pre-optimization (`replaceAllAtoms`). Scene layout persists as `jobs.scene_json`
-(schema v4) and restores on job iterate (`restoreScene`). Per-unit history is in
-`wiki/log.md`.
+(DB schema v4; the JSON payload is **v2** since unit 1b — per-atom `AtomId` +
+`nextAtomId`, with v1 migrated on read) and restores on job iterate (`restoreScene`).
+As of Phase 4.2 unit 1b every atom carries a stable **`AtomId`** (ADR-010 identity core,
+in TS ahead of the Rust move — ADR-016). Per-unit history is in `wiki/log.md`.
 
 ## Responsibilities
 
@@ -28,10 +30,17 @@ functions, no imports from react / 3dmol / tauri. The reactive `store.ts` (added
 
 ## Files
 
-- `types.ts` — `SceneAtom`, `FragmentSource`, `SceneFragment`, `Scene`;
-  `FRAGMENT_SOURCES` (the valid-source list, for deserialize validation).
+- `types.ts` — `RawAtom` / `SceneAtom` (raw + `AtomId`), `RawFragment` /
+  `SceneFragment` (in-Scene subtype), `FragmentSource`, `Scene` (carries
+  `nextAtomId`); `FRAGMENT_SOURCES` (the valid-source list, for deserialize
+  validation).
+- `ids.ts` — `AtomId` (branded), `makeAtomId`, `stampFreshIds` (mint), `carryIds`
+  (positional identity carry). Pure, dependency-free (unit 1b).
 - `scene.ts` — the merge / index / parse / serialize functions below, plus the
   ORCA-input ↔ Scene text I/O (`sceneFromOrcaInput`, `injectSceneIntoInput`).
+- `scene-test-util.ts` — **test-only** `testScene` / `testAtom` constructors that
+  mint ids the way production does (so tests never spell out ids and `id` is never
+  made optional). Not imported by any production module.
 - `parity.ts` — `checkElectronParity` (electron-parity validation, ADR-008 #8).
 - `store.ts` — the Zustand scene store (React-facing; thin over the pure layer).
 - `placement.ts` — `placeFragment` (bounding-box separation for a new fragment).
@@ -85,12 +94,79 @@ them. `replaceFragmentAtoms` enforces this — it throws on any count or
 element-sequence change — so an ASE call or xTB round-trip can hand coordinates
 back by position and every stored index stays valid.
 
+## `AtomId` — stable atom identity (`ids.ts`, unit 1b; ADR-010 I1 / ADR-016)
+
+A **positional** index is fine while nothing reorders, but the identity core
+(ADR-010) wants an identity that is invariant under moves and independent of array
+position. `ids.ts` adds it, in the TS Scene, ahead of the Rust core move (ADR-016
+lands that in 1c–1e — 1b touches **no** Rust and does **not** rebrand the ~68
+positional-index sites; it adds identity to the model only).
+
+**The two atom shapes (`types.ts`).** A parser produces a **`RawAtom`**
+(`{element,x,y,z}`, no identity); a **`SceneAtom`** is a `RawAtom` **plus** a
+branded `AtomId` and exists only inside a Scene. `SceneFragment` is the in-Scene
+subtype of the detached **`RawFragment`** (raw atoms) — so anything that accepts a
+`RawFragment` also accepts a `SceneFragment`, but not the reverse. `AtomId` is a
+branded `number` (compile-time phantom, erases to a plain integer at runtime).
+
+**Allocation is pure.** The counter lives on the Scene (`nextAtomId`), never a
+module global; `stampFreshIds(rawAtoms, start)` returns the id-bearing atoms and
+the advanced counter. A fresh scene mints `0..n-1`; `addFragment` mints from
+`scene.nextAtomId` for the joining atoms (a detached fragment has **no** ids — they
+are minted only on entry). The counter is **monotonic**: `removeFragment` never
+rolls it back and an id is never reused (uniqueness is required only *within one
+Scene*, so `undoReset` restoring a previous scene wholesale is correct).
+
+**The id-transfer rule — carried, never re-minted (the one that must not be
+"optimized").** A geometry replacement (`replaceFragmentAtoms`, `replaceAllAtoms`)
+takes **`RawAtom[]`** — the incoming atoms come from ASE / xtb / GOAT / parsed xyz
+and **carry no id of their own** (the type has no `id` field, so there is
+structurally nothing to mis-transfer). Identity is preserved by `carryIds`, which
+takes the **old** atoms' ids **positionally** onto the new coordinates. This is
+correct *because* the count + element-order invariant above is already enforced.
+Minting fresh ids on a replace would silently void atom identity on every geometry
+edit — nothing would crash, no coordinate test would go red. A negative-control
+test asserts `id` is **identical (`===`) before and after `replaceAllAtoms`** and
+was shown to go red when `carryIds` is swapped for a re-mint (log 1b). **A future
+reader must not "simplify" `carryIds` into `stampFreshIds`: the input never carries
+an id, and the whole point is to reuse the old one.** A rigid move
+(`translateFragment`) is generic over Raw/Scene and preserves ids by construction.
+
+**Identity boundary — the Monaco collapse.** When a manual coordinate edit wins and
+the Scene collapses to one fragment (`collapseToSingleFragment`), the atoms get
+**fresh** ids: identity continuity across *arbitrarily* hand-edited text is
+undefined, so it is not claimed. This is a **deliberate boundary of identity**, not
+a bug — it holds until Stage 2 makes the xyz block a read-only projection of the
+Scene (ROADMAP Phase 4.2 Stage 2), after which the hand-edit path (and this
+boundary) goes away.
+
+### `scene_json` v2 and the v1 migration
+
+`serializeScene` writes **version 2**: each atom carries its `id`, and the scene
+carries `nextAtomId`. `deserializeScene` reads v2 (validating that ids are unique
+and every id `< nextAtomId`) and **migrates v1 in place** — it does **not** reject
+it. A v1 snapshot (pre-1b: atoms without ids, no counter) has ids minted
+`0..N-1` scene-wide in fragment order, `nextAtomId = N`. **Why migration is
+mandatory, not optional:** every existing `jobs.scene_json` is v1; returning `null`
+for those would make `restoreScene` treat each as a malformed snapshot
+(`snapshotRejected = true`) and **silently collapse every multi-fragment job to a
+single fragment on open**. A test drives a **real** v1 string (emitted by the
+pre-1b code, `__fixtures__/scene-v1.json`, copied verbatim — not synthesized)
+through `restoreScene` and asserts the two-fragment layout survives
+(`snapshotRejected = false`); its negative control asserts a valid v1 does **not**
+deserialize to `null`, and was shown to go red when migration is disabled (log 1b).
+
+**No SQL migration is needed:** the version lives *inside* the JSON string, so an
+old row is upgraded on read by `deserializeScene`; `jobs.scene_json` stays a plain
+`TEXT` column and the DB schema is untouched.
+
 ## Functions (one-line contracts)
 
 Merge / serialize:
 - `mergeToAtomLines(scene): string[]` — canonical coordinate rows, fragment order.
 - `mergeToXyz(scene, comment=""): string` — `count\ncomment\nrows\n`.
-- `serializeScene(scene): string` — versioned JSON (`"version": 1`).
+- `serializeScene(scene): string` — versioned JSON (`"version": 2`: per-atom `id` +
+  `nextAtomId`). See "`AtomId`" above for the v1→v2 migration on read.
 - `deserializeScene(json): Scene | null` — validates shape + version; **never
   throws** on user/DB data, returns `null` on anything unexpected.
 

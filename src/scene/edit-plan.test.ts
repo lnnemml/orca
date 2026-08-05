@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 
-import type { Scene, SceneAtom, SceneFragment } from "./types";
+import type { Scene } from "./types";
+import { testScene, type RawFragment } from "./scene-test-util";
+import type { RawAtom } from "./types";
 import {
   planEdit,
   swapToAlternative,
@@ -13,7 +15,7 @@ import { measureSelection } from "./measure";
 import { mergeToXyz } from "./scene";
 
 // Two fragments of different sizes: water (global 0,1,2) + BH4⁻ (global 3..7).
-function water(id = "wat"): SceneFragment {
+function water(id = "wat"): RawFragment {
   return {
     id,
     name: "Water",
@@ -27,7 +29,7 @@ function water(id = "wat"): SceneFragment {
   };
 }
 
-function borohydride(id = "bh4"): SceneFragment {
+function borohydride(id = "bh4"): RawFragment {
   const d = 1.24 / Math.sqrt(3);
   return {
     id,
@@ -44,8 +46,8 @@ function borohydride(id = "bh4"): SceneFragment {
   };
 }
 
-function scene(...fragments: SceneFragment[]): Scene {
-  return { fragments, multiplicity: 1 };
+function scene(...fragments: RawFragment[]): Scene {
+  return testScene(fragments);
 }
 
 describe("planEdit — selection count", () => {
@@ -61,8 +63,8 @@ describe("planEdit — selection count", () => {
 
 // A big substrate (33 atoms) + BH4⁻ (5) — the ibuprofen + nucleophile shape from
 // the screenshot. Positions are synthetic but make the picked angle B–C–O valid.
-function bigSubstrate(id = "ibu"): SceneFragment {
-  const atoms: SceneAtom[] = [];
+function bigSubstrate(id = "ibu"): RawFragment {
+  const atoms: RawAtom[] = [];
   // A non-collinear zigzag so any 3/4 picked atoms form a valid angle/dihedral
   // (deterministic — no Math.random).
   for (let i = 0; i < 33; i++) {
@@ -76,7 +78,7 @@ function bigSubstrate(id = "ibu"): SceneFragment {
   return { id, name: "ibuprofen", charge: 0, source: "editor", atoms };
 }
 /** BH4⁻ whose boron sits off the substrate axis so B–C(#12)–O(#14) isn't collinear. */
-function bh4Off(id = "bh4"): SceneFragment {
+function bh4Off(id = "bh4"): RawFragment {
   return {
     id,
     name: "BH4-",
@@ -248,11 +250,11 @@ describe("planEdit — intra-fragment → needs-split (2.5.3b)", () => {
 //   /geometry/rotatable-mask → mask [2,3,9,10,11,12,13]  ← reference 3 IS inside
 // `maskRoleViolation` is the single pure check now used by BOTH orientationFor
 // (inter-fragment) and NewJobScreen (post-split); it must catch this.
-function butane(id = "but"): SceneFragment {
+function butane(id = "but"): RawFragment {
   // C0-C1-C2-C3 backbone (so a cut on 1–2 reads "C#1–C#2"), then 10 H (idx 4-13).
   // A deterministic zigzag; coordinates are irrelevant to the mask check, only
   // the ELEMENTS matter for the label.
-  const atoms: SceneAtom[] = [];
+  const atoms: RawAtom[] = [];
   for (let i = 0; i < 4; i++) atoms.push({ element: "C", x: i, y: (i % 2), z: 0 });
   for (let i = 0; i < 10; i++)
     atoms.push({ element: "H", x: i * 0.5, y: 1 + Math.sin(i), z: Math.cos(i) });

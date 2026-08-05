@@ -15,6 +15,7 @@
 
 import { create } from "zustand";
 
+import { stampFreshIds } from "./ids";
 import { makeFragmentId, setMultiplicity, totalCharge } from "./scene";
 import {
   addFragment as addFragmentPure,
@@ -22,7 +23,7 @@ import {
   renameFragment as renameFragmentPure,
   replaceFragmentAtoms as replaceFragmentAtomsPure,
 } from "./scene";
-import type { Scene, SceneAtom, SceneFragment } from "./types";
+import type { RawAtom, RawFragment, Scene } from "./types";
 
 export interface SceneStore {
   scene: Scene | null;
@@ -32,16 +33,19 @@ export interface SceneStore {
   resetNotice: { fragmentCount: number } | null;
 
   setScene(scene: Scene | null): void;
-  addFragment(f: SceneFragment): void; // used by d-2
+  addFragment(f: RawFragment): void; // used by d-2; atoms get scene-minted ids
   removeFragment(id: string): void;
   renameFragment(id: string, name: string): void;
-  replaceFragmentAtoms(id: string, atoms: SceneAtom[]): void;
+  replaceFragmentAtoms(id: string, atoms: RawAtom[]): void;
   setMultiplicity(m: number): void;
   /** Manual coordinate edit detected → collapse to one fragment, keep undo. */
-  collapseToSingleFragment(atoms: SceneAtom[]): void;
+  collapseToSingleFragment(atoms: RawAtom[]): void;
   undoReset(): void;
   dismissResetNotice(): void;
 }
+
+/** The identity element for `addFragment` on an empty store (ids start at 0). */
+const EMPTY_SCENE: Scene = { fragments: [], multiplicity: 1, nextAtomId: 0 };
 
 export const useSceneStore = create<SceneStore>((set) => ({
   scene: null,
@@ -53,9 +57,9 @@ export const useSceneStore = create<SceneStore>((set) => ({
 
   addFragment: (f) =>
     set((s) => ({
-      scene: s.scene
-        ? addFragmentPure(s.scene, f)
-        : { fragments: [f], multiplicity: 1 },
+      // Route through the pure addFragment even when the scene is empty, so the
+      // fragment's atoms get scene-minted ids exactly once (never a raw literal).
+      scene: addFragmentPure(s.scene ?? EMPTY_SCENE, f),
       resetNotice: null,
     })),
 
@@ -81,17 +85,23 @@ export const useSceneStore = create<SceneStore>((set) => ({
     set((s) => {
       const prev = s.scene;
       const fragmentCount = prev ? prev.fragments.length : 0;
+      // The text won: identity continuity with arbitrarily hand-edited coordinates
+      // is undefined, so the collapsed fragment gets FRESH ids from 0. This is the
+      // identity boundary of the Monaco path until Stage 2 makes the xyz block a
+      // read-only projection (documented in scene.md).
+      const { atoms: stamped, nextAtomId } = stampFreshIds(atoms, 0);
       const collapsed: Scene = {
         fragments: [
           {
             id: makeFragmentId(),
             name: prev?.fragments[0]?.name ?? "Molecule",
-            atoms,
+            atoms: stamped,
             charge: prev ? totalCharge(prev) : 0,
             source: "editor",
           },
         ],
         multiplicity: prev?.multiplicity ?? 1,
+        nextAtomId,
       };
       return {
         scene: collapsed,

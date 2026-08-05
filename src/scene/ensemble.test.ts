@@ -11,7 +11,8 @@ import {
 } from "./ensemble";
 import { restoreScene } from "./restore";
 import { serializeScene } from "./scene";
-import type { Scene, SceneFragment } from "./types";
+import type { RawFragment, Scene } from "./types";
+import { testScene } from "./scene-test-util";
 
 // A real (truncated to 3 structures) `butane.finalensemble.xyz` from an actual
 // ORCA 6.1.0 `! XTB GOAT` run — declaration must agree with reality (§ the rule
@@ -19,7 +20,7 @@ import type { Scene, SceneFragment } from "./types";
 import ENSEMBLE from "./__fixtures__/butane.finalensemble.xyz?raw";
 
 /** A butane fragment whose atoms are the ensemble's first conformer. */
-function butaneFragment(conformers: Conformer[]): SceneFragment {
+function butaneFragment(conformers: Conformer[]): RawFragment {
   return {
     id: "but",
     name: "butane",
@@ -128,7 +129,7 @@ describe("GOAT scene_json semantics (§1): one fragment, survives restoreScene",
     const frag = butaneFragment(parseEnsemble(ENSEMBLE)!);
     // What the Find-conformers flow persists:
     const input = goatInputForFragment(frag);
-    const sceneJson = serializeScene({ fragments: [frag], multiplicity: 1 });
+    const sceneJson = serializeScene(testScene([frag], 1));
     // Opening/iterating that job must honour the snapshot (not reject it).
     const { scene, snapshotRejected } = restoreScene(input, sceneJson);
     expect(snapshotRejected).toBe(false);
@@ -142,7 +143,7 @@ describe("planConformerApply (§4 — both branches + refusal)", () => {
   const frag = butaneFragment(conformers);
 
   it("REPLACE when the snapshot fragment is still in the store scene", () => {
-    const store: Scene = { fragments: [frag], multiplicity: 1 };
+    const store: Scene = testScene([frag], 1);
     const plan = planConformerApply(store, frag, conformers[1]);
     expect(plan.action).toBe("replace");
     if (plan.action === "replace") {
@@ -163,8 +164,8 @@ describe("planConformerApply (§4 — both branches + refusal)", () => {
   });
 
   it("REFUSE (no throw) when the live fragment's composition changed", () => {
-    const changed: SceneFragment = { ...frag, atoms: frag.atoms.slice(0, 13) };
-    const store: Scene = { fragments: [changed], multiplicity: 1 };
+    const changed: RawFragment = { ...frag, atoms: frag.atoms.slice(0, 13) };
+    const store: Scene = testScene([changed], 1);
     let plan: ReturnType<typeof planConformerApply>;
     expect(() => {
       plan = planConformerApply(store, frag, conformers[0]);
@@ -176,7 +177,7 @@ describe("planConformerApply (§4 — both branches + refusal)", () => {
 
 describe("goatInputForFragment", () => {
   it("emits `! XTB GOAT` and the fragment's own charge (not the scene total)", () => {
-    const bh4: SceneFragment = {
+    const bh4: RawFragment = {
       id: "bh4",
       name: "BH4-",
       charge: -1,

@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 
-import type { Scene, SceneAtom, SceneFragment } from "./types";
+import type { RawAtom, RawFragment, Scene, SceneAtom } from "./types";
+import { testScene } from "./scene-test-util";
 import {
   distance,
   angle,
@@ -21,15 +22,15 @@ import ENSEMBLE from "./__fixtures__/butane.finalensemble.xyz?raw";
 function libScene(key: string): Scene {
   const lf = FRAGMENT_LIBRARY.find((f) => f.key === key);
   if (!lf) throw new Error(`no library fragment ${key}`);
-  return { fragments: [libraryFragmentToScene(lf)], multiplicity: 1 };
+  return testScene([libraryFragmentToScene(lf)], 1);
 }
 
-function fragmentOf(atoms: SceneAtom[], id = "f"): SceneFragment {
+function fragmentOf(atoms: RawAtom[], id = "f"): RawFragment {
   return { id, name: id, charge: 0, source: "editor", atoms };
 }
 
-function sceneOf(...fragments: SceneFragment[]): Scene {
-  return { fragments, multiplicity: 1 };
+function sceneOf(...fragments: RawFragment[]): Scene {
+  return testScene(fragments);
 }
 
 /** The butane conformers of the fixture, as single-fragment scenes. Conformer 0
@@ -57,25 +58,26 @@ function rigidMove(scene: Scene): Scene {
   ];
   const t = [1.234, -5.6, 7.89];
   const move = (a: SceneAtom): SceneAtom => ({
+    id: a.id, // a rigid move preserves atom identity
     element: a.element,
     x: R[0][0] * a.x + R[0][1] * a.y + R[0][2] * a.z + t[0],
     y: R[1][0] * a.x + R[1][1] * a.y + R[1][2] * a.z + t[1],
     z: R[2][0] * a.x + R[2][1] * a.y + R[2][2] * a.z + t[2],
   });
   return {
+    ...scene,
     fragments: scene.fragments.map((f) => ({ ...f, atoms: f.atoms.map(move) })),
-    multiplicity: scene.multiplicity,
   };
 }
 
 /** Reflect every atom through the x=0 plane (an improper rotation, det = −1). */
 function mirrorX(scene: Scene): Scene {
   return {
+    ...scene,
     fragments: scene.fragments.map((f) => ({
       ...f,
       atoms: f.atoms.map((a) => ({ ...a, x: -a.x })),
     })),
-    multiplicity: scene.multiplicity,
   };
 }
 
@@ -313,7 +315,7 @@ describe("measureSelection", () => {
   it("flags an inter-fragment distance (a future reaction coordinate)", () => {
     // water (0,1,2) + Cl⁻ (3): a bond across fragments. The library places both
     // O and Cl at the origin, so offset the chloride to a real contact distance.
-    const cl: SceneFragment = {
+    const cl: RawFragment = {
       id: "cl",
       name: "Cl-",
       charge: -1,

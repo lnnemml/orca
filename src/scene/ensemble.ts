@@ -12,11 +12,13 @@
  * fragment via `replaceFragmentAtoms` with no atom mapping.
  */
 
+import { stampFreshIds } from "./ids";
 import { normalizeElement } from "./scene";
-import type { Scene, SceneAtom, SceneFragment } from "./types";
+import type { RawAtom, RawFragment, Scene, SceneFragment } from "./types";
 
 export interface Conformer {
-  atoms: SceneAtom[];
+  /** Raw geometry — a parsed ensemble carries no atom identity. */
+  atoms: RawAtom[];
   /** Energy in Hartree (Eh). `NaN` when the comment had no leading number. */
   energy: number;
   /** 0-based position in the ensemble (ascending energy). */
@@ -72,7 +74,7 @@ export function parseEnsemble(text: string): Conformer[] | null {
     if (i + 2 + count > lines.length) return null;
     const comment = lines[i + 1];
 
-    const atoms: SceneAtom[] = [];
+    const atoms: RawAtom[] = [];
     for (let k = 0; k < count; k++) {
       const parts = lines[i + 2 + k].trim().split(/\s+/);
       if (parts.length < 4) return null;
@@ -101,7 +103,7 @@ export function parseEnsemble(text: string): Conformer[] | null {
  * the wrong ensemble to the wrong fragment.
  */
 export function conformerMatchesFragment(
-  fragment: SceneFragment,
+  fragment: RawFragment,
   conformer: Conformer,
 ): boolean {
   if (fragment.atoms.length !== conformer.atoms.length) return false;
@@ -125,7 +127,7 @@ export function conformerMatchesFragment(
  * open-shell fragment would need it set explicitly.
  */
 export function goatInputForFragment(
-  fragment: SceneFragment,
+  fragment: RawFragment,
   multiplicity = 1,
 ): string {
   const rows = fragment.atoms.map(
@@ -161,8 +163,8 @@ export function isGoatInput(content: string): boolean {
 
 /** What "Use this conformer" should do, decided purely (so it's testable). */
 export type ConformerApply =
-  | { action: "replace"; fragmentId: string; atoms: SceneAtom[] }
-  | { action: "new"; fragment: SceneFragment }
+  | { action: "replace"; fragmentId: string; atoms: RawAtom[] }
+  | { action: "new"; fragment: SceneFragment; nextAtomId: number }
   | { action: "refuse"; reason: string };
 
 /**
@@ -180,7 +182,7 @@ export type ConformerApply =
  */
 export function planConformerApply(
   storeScene: Scene | null,
-  snapshotFragment: SceneFragment,
+  snapshotFragment: RawFragment,
   conformer: Conformer,
 ): ConformerApply {
   const live = storeScene?.fragments.find((f) => f.id === snapshotFragment.id);
@@ -200,11 +202,12 @@ export function planConformerApply(
       atoms: conformer.atoms,
     };
   }
+  // Fresh single-fragment scene: the conformer's raw atoms become SceneAtoms here
+  // (the Scene boundary), ids minted from 0, so the caller sets `nextAtomId`.
+  const { atoms, nextAtomId } = stampFreshIds(conformer.atoms, 0);
   return {
     action: "new",
-    fragment: {
-      ...snapshotFragment,
-      atoms: conformer.atoms.map((a) => ({ ...a })),
-    },
+    fragment: { ...snapshotFragment, atoms },
+    nextAtomId,
   };
 }

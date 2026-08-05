@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 
-import type { Scene, SceneFragment } from "./types";
+import type { Scene } from "./types";
+import { testScene, type RawFragment } from "./scene-test-util";
 import {
   addFragment,
   atomCount,
@@ -34,7 +35,7 @@ import {
 // ── Fixtures (literal ids → deterministic, no makeFragmentId) ────────────────
 
 /** Real water geometry (O + 2 H), Å. */
-function water(id = "wat"): SceneFragment {
+function water(id = "wat"): RawFragment {
   return {
     id,
     name: "Water",
@@ -49,7 +50,7 @@ function water(id = "wat"): SceneFragment {
 }
 
 /** BH₄⁻: T_d, B–H 1.24 Å (charge −1). */
-function borohydride(id = "bh4"): SceneFragment {
+function borohydride(id = "bh4"): RawFragment {
   const d = 1.24 / Math.sqrt(3);
   return {
     id,
@@ -67,8 +68,8 @@ function borohydride(id = "bh4"): SceneFragment {
   };
 }
 
-function scene(...fragments: SceneFragment[]): Scene {
-  return { fragments, multiplicity: 1 };
+function scene(...fragments: RawFragment[]): Scene {
+  return testScene(fragments);
 }
 
 // ── compositionSignature ─────────────────────────────────────────────────────
@@ -325,6 +326,62 @@ describe("immutability", () => {
   });
 });
 
+// ── AtomId: allocation + preservation (unit 1b) ──────────────────────────────
+
+describe("AtomId — allocation and preservation (unit 1b)", () => {
+  it("a fresh scene mints ids 0..n-1 and sets nextAtomId to the count", () => {
+    const s = scene(water()); // 3 atoms
+    expect(s.fragments[0].atoms.map((a) => a.id)).toEqual([0, 1, 2]);
+    expect(s.nextAtomId).toBe(3);
+  });
+
+  it("addFragment mints FRESH ids for the new atoms and advances the counter", () => {
+    const s = addFragment(scene(water()), borohydride()); // 3 + 5
+    const ids = s.fragments.flatMap((f) => f.atoms.map((a) => a.id));
+    expect(ids).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+    expect(s.nextAtomId).toBe(8);
+  });
+
+  it("removeFragment does NOT roll the counter back (ids are never reused)", () => {
+    const s = addFragment(scene(water()), borohydride()); // nextAtomId 8
+    const after = removeFragment(s, "wat"); // 5 atoms remain
+    expect(after.nextAtomId).toBe(8);
+  });
+
+  // THE negative control (CLAUDE.md convention): a geometry replacement must CARRY
+  // the old atoms' ids, never re-mint. If `replaceAllAtoms` minted fresh ids, this
+  // `toEqual(before)` goes red — the test that fails on re-minting. (Demonstrated
+  // biting by temporarily swapping carryIds→stampFreshIds; see the 1b log entry.)
+  it("replaceAllAtoms PRESERVES every atom id — geometry moves, identity does not", () => {
+    const s = addFragment(scene(water()), borohydride()); // 8 atoms
+    const before = s.fragments.flatMap((f) => f.atoms.map((a) => a.id));
+    // A whole-scene geometry update (an xtb pre-opt): same composition, moved coords.
+    const moved = s.fragments
+      .flatMap((f) => f.atoms)
+      .map((a) => ({ element: a.element, x: a.x + 0.1, y: a.y, z: a.z }));
+    const next = replaceAllAtoms(s, moved);
+    const after = next.fragments.flatMap((f) => f.atoms.map((a) => a.id));
+    expect(after).toEqual(before); // identical ids, in order — the invariant
+    // …and the coordinates really moved, so the assertion isn't trivially green:
+    expect(next.fragments[0].atoms[0].x).toBeCloseTo(
+      s.fragments[0].atoms[0].x + 0.1,
+    );
+    expect(next.nextAtomId).toBe(s.nextAtomId); // a replace never touches the counter
+  });
+
+  it("replaceFragmentAtoms carries the fragment's ids positionally", () => {
+    const s = scene(water());
+    const ids0 = s.fragments[0].atoms.map((a) => a.id);
+    const moved = s.fragments[0].atoms.map((a) => ({
+      element: a.element,
+      x: a.x,
+      y: a.y,
+      z: a.z + 0.05,
+    }));
+    expect(replaceFragmentAtoms(s, "wat", moved).fragments[0].atoms.map((a) => a.id)).toEqual(ids0);
+  });
+});
+
 // ── Serialization ────────────────────────────────────────────────────────────
 
 describe("serialize/deserialize", () => {
@@ -334,13 +391,13 @@ describe("serialize/deserialize", () => {
     expect(back).toEqual(s);
   });
 
-  it("writes version 1", () => {
-    expect(JSON.parse(serializeScene(scene(water()))).version).toBe(1);
+  it("writes version 2", () => {
+    expect(JSON.parse(serializeScene(scene(water()))).version).toBe(2);
   });
 
-  it("returns null for the wrong version", () => {
+  it("returns null for an unknown (future) version", () => {
     const obj = JSON.parse(serializeScene(scene(water())));
-    obj.version = 2;
+    obj.version = 3; // a version we don't understand → reject (v1 is migrated, not rejected)
     expect(deserializeScene(JSON.stringify(obj))).toBeNull();
   });
 

@@ -19,9 +19,12 @@
  * this module remains. See `wiki/modules/scene.md`.
  */
 
+import { carryIds, stampFreshIds } from "./ids";
 import {
   FRAGMENT_SOURCES,
   type FragmentSource,
+  type RawAtom,
+  type RawFragment,
   type Scene,
   type SceneAtom,
   type SceneFragment,
@@ -120,6 +123,23 @@ export function totalCharge(scene: Scene): number {
 /** Total number of atoms across all fragments. */
 export function atomCount(scene: Scene): number {
   return scene.fragments.reduce((sum, f) => sum + f.atoms.length, 0);
+}
+
+/**
+ * The smallest valid `nextAtomId` for a set of fragments already carrying ids:
+ * one past the largest id present (0 for no atoms). For wrapping an existing
+ * fragment into a fresh single-fragment Scene (e.g. the GOAT snapshot) without
+ * re-minting its atom ids — the result satisfies the v2 invariant (every id <
+ * nextAtomId).
+ */
+export function nextAtomIdFor(fragments: SceneFragment[]): number {
+  let max = -1;
+  for (const f of fragments) {
+    for (const a of f.atoms) {
+      if (a.id > max) max = a.id;
+    }
+  }
+  return max + 1;
 }
 
 /**
@@ -228,9 +248,22 @@ export function compositionSignature(scene: Scene): string {
 
 // ── Immutable mutators ───────────────────────────────────────────────────────
 
-/** Append a fragment (kept last — placement decides its coordinates). */
-export function addFragment(scene: Scene, fragment: SceneFragment): Scene {
-  return { ...scene, fragments: [...scene.fragments, fragment] };
+/**
+ * Append a fragment (kept last — placement decides its coordinates). Its atoms
+ * are **new to this Scene**, so they get **fresh** `AtomId`s from the Scene's
+ * counter and the counter advances — any ids the incoming fragment carried
+ * (e.g. the provisional 0-based ids of a just-built or library fragment) are
+ * discarded, because ids are only unique *within a Scene* and this fragment is
+ * joining one now. (Contrast `replaceFragmentAtoms`, which is a geometry edit of
+ * atoms that already belong to the Scene and therefore *keeps* their ids.)
+ */
+export function addFragment(scene: Scene, fragment: RawFragment): Scene {
+  const { atoms, nextAtomId } = stampFreshIds(fragment.atoms, scene.nextAtomId);
+  return {
+    ...scene,
+    fragments: [...scene.fragments, { ...fragment, atoms }],
+    nextAtomId,
+  };
 }
 
 /** Drop a fragment by id (no-op if absent). */
@@ -284,7 +317,7 @@ export function setMultiplicity(scene: Scene, multiplicity: number): Scene {
 export function replaceFragmentAtoms(
   scene: Scene,
   fragmentId: string,
-  atoms: SceneAtom[],
+  atoms: RawAtom[],
 ): Scene {
   const fragment = requireFragment(scene, fragmentId);
   if (atoms.length !== fragment.atoms.length) {
@@ -303,10 +336,15 @@ export function replaceFragmentAtoms(
       );
     }
   }
+  // The incoming atoms are RAW (from ASE / xtb / GOAT / parsed xyz — no id). Atom
+  // identity is preserved by carrying the OLD atoms' ids positionally; the
+  // count + element-order invariant just checked is exactly what makes the
+  // positional carry correct. Never mint fresh ids here — that would silently void
+  // atom identity on every geometry edit (unit-1b rule). `nextAtomId` is untouched.
   return {
     ...scene,
     fragments: scene.fragments.map((f) =>
-      f.id === fragmentId ? { ...f, atoms: atoms.map((a) => ({ ...a })) } : f,
+      f.id === fragmentId ? { ...f, atoms: carryIds(f.atoms, atoms) } : f,
     ),
   };
 }
@@ -320,7 +358,7 @@ export function replaceFragmentAtoms(
  * count + element order per fragment. Throws (never silently mis-slices) if the
  * flat list's length doesn't equal `atomCount(scene)`.
  */
-export function replaceAllAtoms(scene: Scene, atoms: SceneAtom[]): Scene {
+export function replaceAllAtoms(scene: Scene, atoms: RawAtom[]): Scene {
   if (atoms.length !== atomCount(scene)) {
     throw new Error(
       `replaceAllAtoms: got ${atoms.length} atoms but the scene has ${atomCount(scene)}`,
@@ -357,12 +395,14 @@ export function xtbResultApplies(
  * fragment with the same id, composition and internal geometry, only shifted.
  * Used by fragment placement (2.5.0d-2) and the geometry editor (2.5.3).
  */
-export function translateFragment(
-  fragment: SceneFragment,
+export function translateFragment<F extends RawFragment>(
+  fragment: F,
   dx: number,
   dy: number,
   dz: number,
-): SceneFragment {
+): F {
+  // Generic over Raw/Scene fragment: `...a` preserves the `id` when there is one
+  // (a rigid move keeps atom identity), and its absence when there isn't.
   return {
     ...fragment,
     atoms: fragment.atoms.map((a) => ({
@@ -371,7 +411,7 @@ export function translateFragment(
       y: a.y + dy,
       z: a.z + dz,
     })),
-  };
+  } as F;
 }
 
 // ── Parsing coordinate blocks into SceneAtoms ────────────────────────────────
@@ -382,8 +422,8 @@ export function translateFragment(
  * fields (element + three finite numbers) is skipped. Returns `null` when no
  * valid atom line is found.
  */
-export function parseAtomLines(lines: string[]): SceneAtom[] | null {
-  const atoms: SceneAtom[] = [];
+export function parseAtomLines(lines: string[]): RawAtom[] | null {
+  const atoms: RawAtom[] = [];
   for (const line of lines) {
     const t = line.trim();
     if (t.length === 0 || t.startsWith("#")) continue;
@@ -418,8 +458,11 @@ export function sceneFromAtomLines(
   atomLines: string[],
   opts: SceneFromAtomLinesOptions = {},
 ): Scene | null {
-  const atoms = parseAtomLines(atomLines);
-  if (atoms === null) return null;
+  const raw = parseAtomLines(atomLines);
+  if (raw === null) return null;
+  // This is a Scene boundary: raw parser output becomes SceneAtoms here, ids
+  // minted from 0 for a fresh single-fragment scene, counter left at the count.
+  const { atoms, nextAtomId } = stampFreshIds(raw, 0);
   const fragment: SceneFragment = {
     id: opts.id ?? makeFragmentId(),
     name: opts.name ?? "Molecule",
@@ -428,7 +471,7 @@ export function sceneFromAtomLines(
     source: opts.source ?? "editor",
     ...(opts.sourceLabel !== undefined ? { sourceLabel: opts.sourceLabel } : {}),
   };
-  return { fragments: [fragment], multiplicity: opts.multiplicity ?? 1 };
+  return { fragments: [fragment], multiplicity: opts.multiplicity ?? 1, nextAtomId };
 }
 
 /**
@@ -546,14 +589,19 @@ export function injectSceneIntoInput(content: string, scene: Scene): string {
 
 // ── (De)serialization for the `scene_json` snapshot ──────────────────────────
 
-const SCENE_JSON_VERSION = 1;
+const SCENE_JSON_VERSION = 2;
 
-/** Serialize a scene to the versioned JSON snapshot written to `jobs.scene_json`. */
+/**
+ * Serialize a scene to the versioned JSON snapshot written to `jobs.scene_json`.
+ * v2 adds a per-atom `id` (carried automatically — `SceneAtom` has the field) and
+ * the scene-level `nextAtomId` counter, so identity survives save → reopen.
+ */
 export function serializeScene(scene: Scene): string {
   return JSON.stringify({
     version: SCENE_JSON_VERSION,
     fragments: scene.fragments,
     multiplicity: scene.multiplicity,
+    nextAtomId: scene.nextAtomId,
   });
 }
 
@@ -561,7 +609,8 @@ function isFiniteNumber(v: unknown): v is number {
   return typeof v === "number" && Number.isFinite(v);
 }
 
-function validAtom(v: unknown): v is SceneAtom {
+/** A raw atom (v1 shape, and the geometry half of a v2 atom): element + coords. */
+function validRawAtom(v: unknown): v is RawAtom {
   if (typeof v !== "object" || v === null) return false;
   const a = v as Record<string, unknown>;
   return (
@@ -572,20 +621,42 @@ function validAtom(v: unknown): v is SceneAtom {
   );
 }
 
-function validFragment(v: unknown): v is SceneFragment {
-  if (typeof v !== "object" || v === null) return false;
-  const f = v as Record<string, unknown>;
+/** A v2 atom: a raw atom plus a non-negative integer `id`. */
+function validSceneAtom(v: unknown): v is SceneAtom {
+  if (!validRawAtom(v)) return false;
+  const id = (v as { id?: unknown }).id;
+  return typeof id === "number" && Number.isInteger(id) && id >= 0;
+}
+
+/** Common fragment fields (everything except the atom-array element type). */
+function validFragmentMeta(f: Record<string, unknown>): boolean {
   if (typeof f.id !== "string" || typeof f.name !== "string") return false;
   if (typeof f.charge !== "number" || !Number.isFinite(f.charge)) return false;
   if (!FRAGMENT_SOURCES.includes(f.source as FragmentSource)) return false;
   if (f.sourceLabel !== undefined && typeof f.sourceLabel !== "string") return false;
-  if (!Array.isArray(f.atoms) || !f.atoms.every(validAtom)) return false;
   return true;
+}
+
+function validFragmentWith(
+  v: unknown,
+  atomValidator: (a: unknown) => boolean,
+): boolean {
+  if (typeof v !== "object" || v === null) return false;
+  const f = v as Record<string, unknown>;
+  if (!validFragmentMeta(f)) return false;
+  return Array.isArray(f.atoms) && f.atoms.every(atomValidator);
 }
 
 /**
  * Parse a `scene_json` snapshot back into a Scene. Validates shape and version
  * and returns `null` on anything unexpected — never throws on user/DB data.
+ *
+ * **v1 is MIGRATED, never rejected.** Every scene saved before unit 1b is a v1
+ * snapshot (atoms without ids, no `nextAtomId`). Returning `null` for those would
+ * make `restoreScene` treat every existing multi-fragment job as a malformed
+ * snapshot and silently collapse its layout to one fragment. So a valid v1 is
+ * migrated in place: ids are minted 0..N-1 across all fragments in order (the same
+ * scene-wide allocation a fresh scene uses), `nextAtomId = N`.
  */
 export function deserializeScene(json: string): Scene | null {
   let parsed: unknown;
@@ -596,17 +667,62 @@ export function deserializeScene(json: string): Scene | null {
   }
   if (typeof parsed !== "object" || parsed === null) return null;
   const obj = parsed as Record<string, unknown>;
-  if (obj.version !== SCENE_JSON_VERSION) return null;
   if (typeof obj.multiplicity !== "number" || !Number.isFinite(obj.multiplicity)) {
     return null;
   }
-  if (!Array.isArray(obj.fragments) || !obj.fragments.every(validFragment)) {
-    return null;
+  if (!Array.isArray(obj.fragments)) return null;
+
+  if (obj.version === 1) {
+    if (!obj.fragments.every((f) => validFragmentWith(f, validRawAtom))) return null;
+    return migrateV1ToV2(obj.fragments as V1Fragment[], obj.multiplicity);
   }
-  return {
-    fragments: obj.fragments as SceneFragment[],
-    multiplicity: obj.multiplicity,
-  };
+
+  if (obj.version === SCENE_JSON_VERSION) {
+    if (!obj.fragments.every((f) => validFragmentWith(f, validSceneAtom))) return null;
+    if (typeof obj.nextAtomId !== "number" || !Number.isInteger(obj.nextAtomId)) {
+      return null;
+    }
+    const fragments = obj.fragments as SceneFragment[];
+    // ids must be unique within the scene and all below the counter (else the
+    // counter could re-issue a live id — the invariant `nextAtomId` guarantees).
+    const seen = new Set<number>();
+    for (const f of fragments) {
+      for (const a of f.atoms) {
+        if (a.id >= obj.nextAtomId || seen.has(a.id)) return null;
+        seen.add(a.id);
+      }
+    }
+    return { fragments, multiplicity: obj.multiplicity, nextAtomId: obj.nextAtomId };
+  }
+
+  return null;
+}
+
+/** A v1 fragment: same meta as a SceneFragment but atoms are raw (no id). */
+interface V1Fragment {
+  id: string;
+  name: string;
+  atoms: RawAtom[];
+  charge: number;
+  source: FragmentSource;
+  sourceLabel?: string;
+}
+
+function migrateV1ToV2(fragments: V1Fragment[], multiplicity: number): Scene {
+  let next = 0;
+  const migrated: SceneFragment[] = fragments.map((f) => {
+    const { atoms, nextAtomId } = stampFreshIds(f.atoms, next);
+    next = nextAtomId;
+    return {
+      id: f.id,
+      name: f.name,
+      atoms,
+      charge: f.charge,
+      source: f.source,
+      ...(f.sourceLabel !== undefined ? { sourceLabel: f.sourceLabel } : {}),
+    };
+  });
+  return { fragments: migrated, multiplicity, nextAtomId: next };
 }
 
 // ── Reset-detection primitive (ADR-008 decision 6) ───────────────────────────

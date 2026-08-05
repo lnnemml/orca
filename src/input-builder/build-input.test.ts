@@ -7,6 +7,7 @@ import {
   type BuilderState,
 } from "./build-input";
 import type { Scene } from "../scene/types";
+import { testScene } from "../scene/scene-test-util";
 
 /** A builder state overlaid on the defaults. */
 function state(overrides: Partial<BuilderState> = {}): BuilderState {
@@ -15,8 +16,8 @@ function state(overrides: Partial<BuilderState> = {}): BuilderState {
 
 /** A single-fragment scene with the given charge/multiplicity. */
 function scene(charge = 0, multiplicity = 1): Scene {
-  return {
-    fragments: [
+  return testScene(
+    [
       {
         id: "f",
         name: "mol",
@@ -30,7 +31,7 @@ function scene(charge = 0, multiplicity = 1): Scene {
       },
     ],
     multiplicity,
-  };
+  );
 }
 
 describe("buildKeywordLine", () => {

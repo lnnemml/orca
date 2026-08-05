@@ -1,37 +1,38 @@
 import { describe, it, expect } from "vitest";
 
 import { placeFragment } from "./placement";
-import type { Scene, SceneAtom, SceneFragment } from "./types";
+import type { RawAtom, RawFragment, Scene } from "./types";
+import { testScene } from "./scene-test-util";
 
-function frag(id: string, atoms: SceneAtom[]): SceneFragment {
+function frag(id: string, atoms: RawAtom[]): RawFragment {
   return { id, name: id, atoms, charge: 0, source: "editor" };
 }
 
-function scene(...fragments: SceneFragment[]): Scene {
-  return { fragments, multiplicity: 1 };
+function scene(...fragments: RawFragment[]): Scene {
+  return testScene(fragments);
 }
 
-const dist = (p: SceneAtom, q: SceneAtom) =>
+const dist = (p: RawAtom, q: RawAtom) =>
   Math.hypot(p.x - q.x, p.y - q.y, p.z - q.z);
 
 /** Minimum distance between any atom of `a` and any atom of `b`. */
-function minCross(a: SceneAtom[], b: SceneAtom[]): number {
+function minCross(a: RawAtom[], b: RawAtom[]): number {
   let m = Infinity;
   for (const p of a) for (const q of b) m = Math.min(m, dist(p, q));
   return m;
 }
 
-function centroidX(atoms: SceneAtom[]): number {
+function centroidX(atoms: RawAtom[]): number {
   return atoms.reduce((s, a) => s + a.x, 0) / atoms.length;
 }
 
 // A small bent triangle (water-like) and a compact 4-atom cluster (BH4-like).
-const water: SceneAtom[] = [
+const water: RawAtom[] = [
   { element: "O", x: 0, y: 0, z: 0 },
   { element: "H", x: 0.76, y: 0, z: 0.59 },
   { element: "H", x: -0.76, y: 0, z: 0.59 },
 ];
-const cluster: SceneAtom[] = [
+const cluster: RawAtom[] = [
   { element: "B", x: 0, y: 0, z: 0 },
   { element: "H", x: 0.72, y: 0.72, z: 0.72 },
   { element: "H", x: -0.72, y: -0.72, z: 0.72 },
@@ -68,7 +69,7 @@ describe("placeFragment", () => {
 
   it("approaches an X-elongated substrate off-axis (not down the chain)", () => {
     // Linear chain ~10 Å along x, no extent in y/z → smallest axis is y or z.
-    const chain: SceneAtom[] = Array.from({ length: 6 }, (_, i) => ({
+    const chain: RawAtom[] = Array.from({ length: 6 }, (_, i) => ({
       element: "C",
       x: i * 2,
       y: 0,
@@ -95,7 +96,7 @@ describe("placeFragment", () => {
   });
 
   it("handles a monatomic fragment (Cl⁻)", () => {
-    const cl: SceneAtom[] = [{ element: "Cl", x: 0, y: 0, z: 0 }];
+    const cl: RawAtom[] = [{ element: "Cl", x: 0, y: 0, z: 0 }];
     const placed = placeFragment(scene(frag("s", water)), frag("cl", cl));
     expect(minCross(water, placed.atoms)).toBeGreaterThanOrEqual(GAP - 1e-9);
   });

@@ -4720,3 +4720,55 @@ Cross-referenced both ways (adr-014 ↔ scene.md) so a future lint reads it as a
 a page contradiction.
 
 Touched: adr-014 (amendment ratified), scene.md (back-reference). No code.
+
+## [2026-08-05] session | feat(scene): AtomId — stable atom identity in the TS Scene model (unit 1b)
+
+Phase 4.2 Stage 1 unit 1b. Adds `AtomId` to the TS Scene ahead of the Rust core move (ADR-016 lands
+that in 1c–1e). **No Rust touched; the ~68 positional-index sites were NOT rebranded** (that is 1c–1e
+/ Stage 2 territory — rebranding without changing seam ownership is cosmetic churn with regression
+risk and no new invariant). 1b adds identity to the *model* only.
+
+**Types (`ids.ts` new, `types.ts`).** Branded `AtomId = number & {unique symbol}` (erases to a plain
+int at runtime → JSON writes a bare integer). Split `RawAtom` (`{element,x,y,z}`, what parsing
+returns) vs `SceneAtom` (raw + `id`, only inside a Scene); `RawFragment` (detached) vs its in-Scene
+subtype `SceneFragment` — so anything accepting `RawFragment` also accepts `SceneFragment`. This
+subtype relation removed the "provisional id" smell entirely: library/placement/detached fragments
+are `RawFragment` and simply have no ids; ids are minted only on Scene entry.
+
+**Allocation is pure.** Counter on the Scene (`nextAtomId`), never a module global; `stampFreshIds`
+mints and advances. Fresh scene → `0..n-1`; `addFragment` mints from the counter for joining atoms;
+`removeFragment` never rolls back (ids never reused; uniqueness is per-Scene, so `undoReset` is
+correct). `placeFragment`/`translateFragment` made generic over Raw/Scene, preserving ids on a rigid
+move.
+
+**The id-transfer rule (the risk this unit was about).** `replaceFragmentAtoms`/`replaceAllAtoms`
+take `RawAtom[]` (ASE/xtb/GOAT/parsed — the type has no `id`, so nothing to mis-transfer) and carry
+the OLD atoms' ids **positionally** (`carryIds`), correct because count+element-order is already
+enforced. Re-minting on replace would silently void identity on every edit; nothing crashes. Negative
+control: `id` identical (`===`) before/after `replaceAllAtoms` — **shown red** by swapping
+`carryIds → stampFreshIds` (`[1000,1001,…] ≠ [0,1,…,7]`), then reverted.
+
+**scene_json v2 + v1 migration.** `serializeScene` → v2 (per-atom id + `nextAtomId`). `deserializeScene`
+validates v2 (ids unique, all `< nextAtomId`) and **migrates v1 in place** (ids `0..N-1` scene-wide,
+`nextAtomId=N`) — never rejects it. Rejecting v1 would make `restoreScene` mark every existing
+multi-fragment job `snapshotRejected` and silently collapse it to one fragment on open. Tested with a
+**real** v1 string emitted by the pre-1b code (`__fixtures__/scene-v1.json`, copied verbatim — not
+synthesized): through `restoreScene` the 2-fragment layout survives, `snapshotRejected=false`.
+Negative control: valid v1 not `null` — **shown red** by disabling migration, then reverted. **No SQL
+migration** (version lives inside the JSON; `jobs.scene_json` stays a plain TEXT column).
+
+**Monaco collapse = identity boundary (named, not a bug).** `collapseToSingleFragment` mints FRESH
+ids — identity continuity across arbitrarily hand-edited text is undefined; holds until Stage 2 makes
+the xyz block a read-only projection. Recorded in scene.md.
+
+**Task 0 (same session, separate commit `f56fc8a`):** ratified the ADR-014 charge/multiplicity
+amendment with two scoping fixes (parity guard catches only parity-impossible states; human-warns vs
+AI-refuses asymmetry, cross-referenced adr-014 ↔ scene.md).
+
+Verify: tsc 0; vitest **489 passed** (+8 new: 5 AtomId allocation/preservation, 3 v1 migration);
+cargo unchanged (160, no Rust touched). The app window was **not** run — 1b is a pure TS-model change
+with no screen or UI-flow change; acceptance is "nothing changed", carried by the full green suite +
+the new tests. Test-only `scene-test-util.ts` added so tests mint ids as production does without
+making `id` optional. Touched: ids.ts (new), types.ts, scene.ts, store.ts, ensemble.ts,
+fragment-library.ts, placement.ts, JobDetailScreen.tsx, NewJobScreen.tsx, + test files; scene.md,
+ROADMAP.md.

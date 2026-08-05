@@ -21,7 +21,7 @@
  */
 
 import { translateFragment } from "./scene";
-import type { Scene, SceneAtom, SceneFragment } from "./types";
+import type { RawAtom, RawFragment, Scene } from "./types";
 
 /** Default clearance between the two bounding boxes, in Ångström. */
 const DEFAULT_GAP = 3.5;
@@ -32,7 +32,7 @@ interface Aabb {
 }
 
 /** Axis-aligned bounding box of a non-empty atom list. */
-function aabb(atoms: SceneAtom[]): Aabb {
+function aabb(atoms: RawAtom[]): Aabb {
   const min: [number, number, number] = [Infinity, Infinity, Infinity];
   const max: [number, number, number] = [-Infinity, -Infinity, -Infinity];
   for (const a of atoms) {
@@ -51,11 +51,11 @@ function aabb(atoms: SceneAtom[]): Aabb {
  * unmoved — it *is* the first fragment. Composition and internal geometry are
  * untouched (it is a pure translation).
  */
-export function placeFragment(
+export function placeFragment<F extends RawFragment>(
   scene: Scene,
-  fragment: SceneFragment,
+  fragment: F,
   gap: number = DEFAULT_GAP,
-): SceneFragment {
+): F {
   const sceneAtoms = scene.fragments.flatMap((f) => f.atoms);
   // First fragment — nothing to avoid, leave it where it is.
   if (sceneAtoms.length === 0) return translateFragment(fragment, 0, 0, 0);

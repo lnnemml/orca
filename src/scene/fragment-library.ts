@@ -16,13 +16,13 @@
  */
 
 import { makeFragmentId } from "./scene";
-import type { SceneAtom, SceneFragment } from "./types";
+import type { RawAtom, RawFragment } from "./types";
 
 export interface LibraryFragment {
   key: string; // "bh4-", "water"
   name: string; // "BH₄⁻"
   charge: number;
-  atoms: SceneAtom[];
+  atoms: RawAtom[];
   /** Where this geometry came from — required, never empty. */
   provenance: string;
   /** Documented ideal internals the geometry must satisfy (see tests). */
@@ -32,17 +32,17 @@ export interface LibraryFragment {
   };
 }
 
-// ── Geometry builders (ideal internal coordinates → SceneAtom[]) ──────────────
+// ── Geometry builders (ideal internal coordinates → RawAtom[]) ──────────────
 
 const DEG = Math.PI / 180;
 
 /** A monatomic fragment at the origin. */
-function monatomic(element: string): SceneAtom[] {
+function monatomic(element: string): RawAtom[] {
   return [{ element, x: 0, y: 0, z: 0 }];
 }
 
 /** A–B diatomic: A at the origin, B at (0, 0, r). */
-function diatomic(a: string, b: string, r: number): SceneAtom[] {
+function diatomic(a: string, b: string, r: number): RawAtom[] {
   return [
     { element: a, x: 0, y: 0, z: 0 },
     { element: b, x: 0, y: 0, z: r },
@@ -54,7 +54,7 @@ function diatomic(a: string, b: string, r: number): SceneAtom[] {
  * diagonals normalised to length `r`. T_d and all Y–X–Y angles = 109.47° follow
  * from the construction.
  */
-function tetrahedral(x: string, y: string, r: number): SceneAtom[] {
+function tetrahedral(x: string, y: string, r: number): RawAtom[] {
   const dirs = [
     [1, 1, 1],
     [1, -1, -1],
@@ -78,7 +78,7 @@ function tetrahedral(x: string, y: string, r: number): SceneAtom[] {
  * bond length `r`, Y–X–Y = `angleDeg`. By construction the angle between the two
  * bond vectors is exactly `angleDeg`.
  */
-function bent(x: string, y: string, r: number, angleDeg: number): SceneAtom[] {
+function bent(x: string, y: string, r: number, angleDeg: number): RawAtom[] {
   const half = (angleDeg * DEG) / 2;
   const sx = r * Math.sin(half);
   const cz = r * Math.cos(half);
@@ -100,7 +100,7 @@ function pyramidal(
   y: string,
   r: number,
   angleDeg: number,
-): SceneAtom[] {
+): RawAtom[] {
   const sin2b = (1 - Math.cos(angleDeg * DEG)) / 1.5;
   const sinb = Math.sqrt(sin2b);
   const cosb = Math.sqrt(1 - sin2b);
@@ -237,11 +237,13 @@ export const FRAGMENT_LIBRARY: readonly LibraryFragment[] = [
 ];
 
 /**
- * Instantiate a library entry as a fresh scene fragment: a new id each call,
- * deep-copied atoms (so the caller can move it without touching the library),
- * `source: "fragment-library"` and `sourceLabel` = the library key.
+ * Instantiate a library entry as a fresh **detached** fragment ({@link
+ * RawFragment}): a new fragment id each call, deep-copied **raw** atoms (so the
+ * caller can move it without touching the library), `source: "fragment-library"`
+ * and `sourceLabel` = the library key. Atom ids are NOT assigned here — a detached
+ * fragment has none; `addFragment` mints them when it joins a Scene.
  */
-export function libraryFragmentToScene(f: LibraryFragment): SceneFragment {
+export function libraryFragmentToScene(f: LibraryFragment): RawFragment {
   return {
     id: makeFragmentId(),
     name: f.name,

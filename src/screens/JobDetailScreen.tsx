@@ -11,6 +11,7 @@ import { ResultsCard } from "./ResultsCard";
 import { OutputViewer, type OutputViewerHandle } from "./OutputViewer";
 import { MoleculeViewer } from "../viewer/MoleculeViewer";
 import { useSceneStore } from "../scene/store";
+import { stampFreshIds } from "../scene/ids";
 import { deserializeScene } from "../scene/scene";
 import {
   deltaEKcal,
@@ -118,17 +119,20 @@ export function JobDetailScreen({
   const conformerScene = useMemo<Scene | null>(() => {
     const conf = ensemble?.[selectedConf];
     if (!conf) return null;
+    // Preview-only scene: the conformer's raw atoms get fresh 0-based ids.
+    const { atoms, nextAtomId } = stampFreshIds(conf.atoms, 0);
     return {
       fragments: [
         {
           id: "conformer-preview",
           name: snapshotFragment?.name ?? "conformer",
-          atoms: conf.atoms,
+          atoms,
           charge: snapshotFragment?.charge ?? 0,
           source: "editor",
         },
       ],
       multiplicity: 1,
+      nextAtomId,
     };
   }, [ensemble, selectedConf, snapshotFragment]);
 
@@ -156,7 +160,11 @@ export function JobDetailScreen({
       const mult = deserializeScene(job.scene_json)?.multiplicity ?? 1;
       useSceneStore
         .getState()
-        .setScene({ fragments: [plan.fragment], multiplicity: mult });
+        .setScene({
+          fragments: [plan.fragment],
+          multiplicity: mult,
+          nextAtomId: plan.nextAtomId,
+        });
     }
     onUseConformer();
   };

@@ -2,7 +2,8 @@ import { beforeEach, describe, it, expect } from "vitest";
 
 import { useSceneStore } from "./store";
 import { mergeToAtomLines, totalCharge, xyzMatchesScene } from "./scene";
-import type { Scene, SceneAtom, SceneFragment } from "./types";
+import type { RawAtom, Scene } from "./types";
+import { testScene, type RawFragment } from "./scene-test-util";
 
 // Reset only the data fields between tests (merge, so the actions survive).
 beforeEach(() =>
@@ -11,7 +12,7 @@ beforeEach(() =>
 
 const get = () => useSceneStore.getState();
 
-function frag(id: string, elements: string[], charge = 0): SceneFragment {
+function frag(id: string, elements: string[], charge = 0): RawFragment {
   return {
     id,
     name: id,
@@ -21,8 +22,8 @@ function frag(id: string, elements: string[], charge = 0): SceneFragment {
   };
 }
 
-function scene(multiplicity: number, ...fragments: SceneFragment[]): Scene {
-  return { fragments, multiplicity };
+function scene(multiplicity: number, ...fragments: RawFragment[]): Scene {
+  return testScene(fragments, multiplicity);
 }
 
 describe("setScene + reference stability", () => {
@@ -45,7 +46,7 @@ describe("setScene + reference stability", () => {
 });
 
 describe("collapseToSingleFragment", () => {
-  const atoms: SceneAtom[] = [
+  const atoms: RawAtom[] = [
     { element: "O", x: 9, y: 0, z: 0 },
     { element: "H", x: 9, y: 1, z: 0 },
   ];

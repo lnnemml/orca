@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 
-import type { Scene, SceneFragment } from "./types";
+import type { Scene } from "./types";
+import { testScene, type RawFragment } from "./scene-test-util";
 import { checkElectronParity } from "./parity";
 
 /** A fragment with the given atoms/charge (geometry is irrelevant to parity). */
@@ -8,7 +9,7 @@ function frag(
   id: string,
   elements: string[],
   charge = 0,
-): SceneFragment {
+): RawFragment {
   return {
     id,
     name: id,
@@ -18,8 +19,8 @@ function frag(
   };
 }
 
-function scene(multiplicity: number, ...fragments: SceneFragment[]): Scene {
-  return { fragments, multiplicity };
+function scene(multiplicity: number, ...fragments: RawFragment[]): Scene {
+  return testScene(fragments, multiplicity);
 }
 
 const water = (c = 0) => frag("water", ["O", "H", "H"], c); // 10 e⁻ neutral

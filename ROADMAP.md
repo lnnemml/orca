@@ -442,8 +442,11 @@ editor UI, method/basis form, and the geometry↔sidecar seam stay TS until Stag
       carried as a **post-condition** (element-seq + fingerprint on real output), not trusted.
       Ingested ADR-016 (emit ownership), ADR-010 correction-(i) refinement, and the ADR-014
       charge/multiplicity amendment (pending review).
-- [ ] **1b — `AtomId` in the TS Scene.** Allocation, scene JSON v2, preservation across every
-      mutator, branded TS index types. No Rust core yet.
+- [x] **1b — `AtomId` in the TS Scene.** Branded `AtomId` (`ids.ts`), `RawAtom`/`SceneAtom` +
+      `RawFragment`/`SceneFragment` split (identity minted only at the Scene boundary), pure
+      allocation via `nextAtomId`, positional id-carry across every replace (`carryIds`, never
+      re-minted — negative-control tested), scene JSON **v2** with **v1 migrated on read** (no SQL
+      migration; real-fixture + collapse-guard tests). No Rust, no pipeline rebrand.
 - [ ] **1c — the `orcastudio-core` crate.** `AtomId` / `OrcaIndex` / `AseIndex` / `IndexMap`; v2
       deserialization; `emit_input → (text, IndexMap)` for the coordinate block + `%geom
       Constraints`; a golden test against the current TS emit (byte-identical output).

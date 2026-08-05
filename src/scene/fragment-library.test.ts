@@ -5,9 +5,9 @@ import {
   libraryFragmentToScene,
   type LibraryFragment,
 } from "./fragment-library";
-import type { SceneAtom } from "./types";
+import type { RawAtom } from "./types";
 
-const dist = (atoms: SceneAtom[], i: number, j: number) =>
+const dist = (atoms: RawAtom[], i: number, j: number) =>
   Math.hypot(
     atoms[i].x - atoms[j].x,
     atoms[i].y - atoms[j].y,
@@ -15,7 +15,7 @@ const dist = (atoms: SceneAtom[], i: number, j: number) =>
   );
 
 /** Angle (degrees) at vertex `j` between atoms `i` and `k`. */
-function angle(atoms: SceneAtom[], i: number, j: number, k: number): number {
+function angle(atoms: RawAtom[], i: number, j: number, k: number): number {
   const v1 = [atoms[i].x - atoms[j].x, atoms[i].y - atoms[j].y, atoms[i].z - atoms[j].z];
   const v2 = [atoms[k].x - atoms[j].x, atoms[k].y - atoms[j].y, atoms[k].z - atoms[j].z];
   const dot = v1[0] * v2[0] + v1[1] * v2[1] + v1[2] * v2[2];

@@ -43,6 +43,7 @@ import {
   compositionSignature,
   injectSceneIntoInput,
   mergeToAtomLines,
+  nextAtomIdFor,
   parseAtomLines,
   replaceAllAtoms,
   xtbResultApplies,
@@ -57,7 +58,7 @@ import {
 import { formatXtbProgress } from "../scene/xtb-progress";
 import { restoreScene } from "../scene/restore";
 import { goatInputForFragment } from "../scene/ensemble";
-import type { Scene, SceneFragment } from "../scene/types";
+import type { RawFragment, Scene, SceneFragment } from "../scene/types";
 import {
   CATEGORY_LABELS,
   ORCA_TEMPLATES,
@@ -504,10 +505,11 @@ export function NewJobScreen({
    * `addFragment` seeds a one-fragment scene — so there is no "first replaces,
    * rest add" branch (d-1 removed exactly that split).
    */
-  const addFragmentToScene = (fragment: SceneFragment) => {
+  const addFragmentToScene = (fragment: RawFragment) => {
     const current = useSceneStore.getState().scene ?? {
       fragments: [],
       multiplicity: 1,
+      nextAtomId: 0,
     };
     addFragment(placeFragment(current, fragment));
     setSaved(false);
@@ -766,7 +768,11 @@ export function NewJobScreen({
       const job = await invoke<Job>("create_job", {
         title: `Conformer search — ${fragment.name}`,
         inputContent: goatInputForFragment(fragment),
-        sceneJson: serializeScene({ fragments: [fragment], multiplicity: 1 }),
+        sceneJson: serializeScene({
+          fragments: [fragment],
+          multiplicity: 1,
+          nextAtomId: nextAtomIdFor([fragment]),
+        }),
       });
       onOpenDetail(job.id, true); // queue + run, then open its detail
     } catch (e) {
