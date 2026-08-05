@@ -4533,3 +4533,22 @@ No Explain button yet (next unit).
   red, reverted green). **NOT checked:** the live `verify` network call (needs a real key — the
   window check is the author's), and a locked keyring (named-untested, ADR-015).
 - ROADMAP: "Explain with Claude" is **no longer Optional**.
+
+## [2026-08-05] decision | ADR-015 env-fallback review condition; CLAUDE.md rule for measurement-page placement
+
+Two follow-ups that belonged with ADR-015, appended (no decision text rewritten).
+
+- **[ADR-015](architecture/adr-015-api-key-storage.md) amendment — review condition for the env
+  fallback**, in the genre of ADR-013 (3). Names the cost of the narrow rule: a user with
+  `ANTHROPIC_API_KEY` set AND a working-but-empty keyring is shown `absent`, not `from-environment` —
+  the app ignores a key they have. Harmless on the desktop; the **trigger to reopen is Phase 5 (SSH
+  remote execution)**, where headless/remote contexts make env the only usable channel. Reopening
+  means deciding whether env stays a fallback or becomes a config channel — which needs its own design
+  (documented precedence, visible override indicator, stale-variable behaviour). Decisions (1) and (3)
+  don't depend on it.
+- **CLAUDE.md — new page-types row for measurement (rule-#10) pages.** Placement is by *what the
+  measurement serves*, not "is it about the host": supports a **decision** → `wiki/architecture/`
+  (keyring-availability.md under ADR-015); about **ORCA behaviour / how to run it** → `wiki/orca/`
+  (performance.md, parse-sources.md, manual-sources.md, input-syntax.md). Both existing pages already
+  sit correctly — nothing moved; the rule exists so a third such page doesn't drift to a third home.
+  `index.md` needs no change (it carries no per-category placement prose).

@@ -147,6 +147,7 @@ architecture, decisions, ORCA domain knowledge, chemistry learning notes, solved
 | ORCA knowledge | `wiki/orca/*.md` | Any fact learned about ORCA behavior, formats, tools, gotchas. |
 | Chemistry notes | `wiki/chemistry/*.md` | Quantum chemistry concepts the author is learning. **Write these in Ukrainian** — they are personal study notes. |
 | Debugging log | `wiki/debugging/*.md` | One page per non-trivial solved bug: symptom → root cause → fix. |
+| Measurement page (rule #10 record) | by **what it serves**, not "is it about the host": a measurement supporting a specific **decision** → `wiki/architecture/` (e.g. `keyring-availability.md` under ADR-015); a measurement about **ORCA's behavior or how to run it** → `wiki/orca/` (`performance.md` under domain rule #8, `parse-sources.md`, `manual-sources.md`, `input-syntax.md`). | Whenever rule #10 requires a third-party fact be recorded from a run. Pick the home by the criterion above so a third such page doesn't drift to a third location. |
 
 Language convention: technical pages (architecture, modules, orca) in English;
 `chemistry/` in Ukrainian; conversation with the author in Ukrainian.

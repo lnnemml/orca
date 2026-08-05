@@ -145,3 +145,26 @@ A **locked keyring** was not force-tested on this host (it would disrupt the use
 store and can hang on a GUI unlock prompt — see [keyring-availability.md](keyring-availability.md)).
 The structural expectation is `NoStorageAccess` / `PlatformFailure` — an `Err`, not a panic — handled
 by the same "keyring unusable" branch as `NoDefaultStore`.
+
+## Review condition (named so it is not silently overridden — the genre of ADR-013 (3))
+
+The decision text above **stands unchanged**; this names the cost of the narrow env rule in (2) and
+the one trigger that would reopen it.
+
+**The cost, stated plainly.** The env var is a fallback for *unavailability*, not an override of an
+empty store: a user who has exported `ANTHROPIC_API_KEY` **and** has a working-but-empty keyring is
+shown `absent` ("no key stored"), not `from-environment` — the app ignores a key they in fact have.
+Today this does not bite: OrcaStudio launches from the desktop, where the keyring is present and is the
+right primary store, so a working keyring being *empty while env is set* is a transient the user fixes
+by pressing Save once.
+
+**Trigger to reopen — Phase 5 (SSH remote execution, [ADR-005](adr-005-system-ssh.md)).** Remote and
+headless contexts arrive where the assumption breaks: a session with **no graphical unlock path** in
+which Secret Service is *present but its collection is unavailable or empty*, and the **environment is
+the only usable channel** for the key. When that context is real, reconsider whether env stays a
+**fallback** or becomes a first-class **configuration channel**. That is not a one-line flip — it needs
+its own design: a **documented precedence** (does env override a stored key, or only fill an empty one?),
+a **visible override indicator** (the UI must never quietly prefer env over a key the user believes is
+stored), and **stale-variable behaviour** (an env var left set from a previous shell must not silently
+shadow the keyring). Decision (1) (key never in the webview) and (3) (bounded wire payload) do **not**
+depend on this and stand regardless.
