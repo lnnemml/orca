@@ -78,6 +78,15 @@ export interface CpuPresetInfo {
   description: string;
 }
 
+/** Mirrors `src-tauri/src/secrets.rs::KeySource` (ADR-015). The ONLY key info the
+ * frontend receives — never the key itself. `last4` is for recognition only. The
+ * fallback trigger is a distinct third state (`unavailable`), not "no key". */
+export type KeySource =
+  | { state: "stored-in-keyring"; last4: string }
+  | { state: "absent" }
+  | { state: "from-environment"; last4: string }
+  | { state: "unavailable"; reason: string };
+
 /** Mirrors `src-tauri/src/models/job.rs::Job` (serde, lowercase status). */
 export interface Job {
   id: string;

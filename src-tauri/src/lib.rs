@@ -1,3 +1,4 @@
+mod anthropic;
 mod commands;
 mod convergence;
 mod cpu_presets;
@@ -12,6 +13,7 @@ mod output_search;
 mod parse;
 mod result_extraction;
 mod results;
+mod secrets;
 mod sidecar;
 mod xtb;
 
@@ -111,6 +113,10 @@ pub fn run() {
             xtb::xtb_version,
             xtb::xtb_optimize,
             xtb::xtb_cancel,
+            secrets::api_key_status,
+            secrets::set_api_key,
+            secrets::delete_api_key,
+            anthropic::verify_api_key,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

@@ -408,8 +408,12 @@ wherever an imported structure is first shown and is carried forward independent
       keywords.json→DB bridge (`resolve_manual_section`) verified: 317/317 descriptors → exactly one
       row. Coverage gate rewritten in consumer form (44/46 type-aware; `%maxcore`/`CPCM` named gaps the
       old string gate hid). See [manual-keywords.md](wiki/modules/manual-keywords.md).
-- [ ] (Optional) "Explain with Claude": keyword + current input context + manual excerpt →
-      Anthropic API (user's own key in settings) → plain-language explanation
+- [ ] "Explain with Claude": keyword + current input context + manual excerpt →
+      Anthropic API (user's own key in settings) → plain-language explanation. **No longer
+      Optional** — CLAUDE.md makes explanations a first-class feature. Storage + the minimal
+      verify call are **done** ([ADR-015](wiki/architecture/adr-015-api-key-storage.md)): key in
+      the system keyring, the call made by Rust so it never enters the webview, wire payload
+      bounded to word+line+section. The Explain button + full payload are the next unit.
 
 **Done when:** hovering `RIJCOSX` in the editor explains what it is, and the manual panel
 answers "how do I set up CPCM for water" in one search.

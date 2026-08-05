@@ -29,6 +29,10 @@ never runs a binary). The runtime mechanics of running ORCA live in
 - `result_extraction.rs`, `convergence.rs` — result/convergence parsing (see `parser.md`).
 - `output_search.rs` — streaming output search + presets.
 - `xtb.rs` — xTB pre-optimization.
+- `secrets.rs` — Anthropic API key in the OS keyring (ADR-015): `KeySource` four-state resolution
+  + store/read/delete; the key never leaves Rust. See below.
+- `anthropic.rs` — the **single** outbound network path to Anthropic (ADR-015): the minimal
+  `verify` call; model + API version in constants; no logging of key or body.
 
 ## Database & migrations (`db.rs`)
 
@@ -170,6 +174,19 @@ runs `terminate_on_exit` synchronously; `Drop` on `SidecarManager` is the backst
   `delete_molecule(id)` — each `NotFound` on a missing id.
 - **CPU / xtb:** `get_cpu_presets() -> Vec<CpuPresetInfo>`; `xtb_version`, `xtb_optimize`,
   `xtb_cancel` (see below).
+- **API key (ADR-015, `secrets.rs` + `anthropic.rs`):** `api_key_status() -> KeySource`,
+  `set_api_key(key)`, `delete_api_key()`, `verify_api_key() -> String`. **No command returns the
+  key** — the frontend learns only the source *state*. `KeySource` is a four-variant enum
+  (`stored-in-keyring` / `absent` / `from-environment` / `unavailable`, internally-tagged kebab);
+  the state carries only `last4` for recognition, never the key. The fallback trigger is a
+  *distinct third state* (`NoDefaultStore` = "no keyring backend", ≠ `NoEntry` = "keyring empty");
+  the env var (`ANTHROPIC_API_KEY`) is read **only** when the keyring is unusable, and that source
+  is shown in the UI — **no silent plaintext write to the DB**. `set_api_key` fails loudly if the
+  keyring is unavailable. `verify_api_key` is **`async` + `spawn_blocking`** (the threading rule:
+  a 15 s offline timeout must not freeze the window) and hits `GET /v1/models` — authenticates
+  without spending generation tokens. Wiring tests pin the return types (none is the key) and that
+  `KeySource` serializes without the secret body (negative control: a `last4` that forgets to
+  truncate turns the gate red). Measured keyring gate: `wiki/architecture/keyring-availability.md`.
 - **DB helpers** (`pub(crate)`, reused by the backend): `set_job_dir_conn`, `finalize_job_conn`
   (terminal status + `completed_at` + `error_message`), `set_job_results_conn`, `get_job_conn`,
   `update_job_status_conn`.

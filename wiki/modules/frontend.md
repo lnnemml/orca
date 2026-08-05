@@ -63,7 +63,15 @@ that an in-progress New Job draft is discarded on a tab switch (accepted).
   `MoleculeViewer xyzData`; migrating it to a Scene would be churn with regression risk and remove no
   duplication.
 - **`SettingsScreen`** — the ORCA path editor (`get_settings` / `set_setting`), the CPU-preset
-  section, and the xtb path field + **Check** button (`xtb_version`, same pattern as ORCA).
+  section, the xtb path field + **Check** button (`xtb_version`, same pattern as ORCA), and the
+  **Anthropic API key** card (ADR-015). The key card holds only the input value (a `type=password`
+  field **cleared immediately after Save** — the secret is not kept in React state longer than
+  needed) and the `KeySource` **state** from `api_key_status` — never the key. `Save`/`Delete`/
+  `Check` map to `set_api_key`/`delete_api_key`/`verify_api_key`. The source is shown explicitly
+  ("system keyring, ends …wxyz" / "using `ANTHROPIC_API_KEY`" / the `unavailable` reason), so the
+  env fallback is visible, not silent. **Check is disabled in the `absent`/`unavailable` states** —
+  a network call there would report a misleading "could not reach Anthropic" when the real problem
+  is that there is no key to check (different causes, different messages).
 
 ## Editor & templates (`src/editor/`, `src/templates/`)
 

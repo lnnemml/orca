@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
-import type { CpuPresetInfo } from "../types";
+import type { CpuPresetInfo, KeySource } from "../types";
 
 export function SettingsScreen() {
   const [orcaPath, setOrcaPath] = useState("");
@@ -22,6 +22,14 @@ export function SettingsScreen() {
   const [cpuMask, setCpuMask] = useState("8-15");
   const [cpuNprocs, setCpuNprocs] = useState("8");
   const [cpuSaved, setCpuSaved] = useState(false);
+
+  // --- Anthropic API key (ADR-015). The key never enters the webview: we hold
+  // only the input value (cleared right after Save) and the source STATE. ---
+  const [apiKeyInput, setApiKeyInput] = useState("");
+  const [keySource, setKeySource] = useState<KeySource | null>(null);
+  const [savingKey, setSavingKey] = useState(false);
+  const [checkingKey, setCheckingKey] = useState(false);
+  const [keyCheck, setKeyCheck] = useState<string | null>(null);
 
   const loadSettings = useCallback(async () => {
     try {
@@ -44,9 +52,18 @@ export function SettingsScreen() {
     }
   }, []);
 
+  const loadKeySource = useCallback(async () => {
+    try {
+      setKeySource(await invoke<KeySource>("api_key_status"));
+    } catch (e) {
+      setError(String(e));
+    }
+  }, []);
+
   useEffect(() => {
     loadSettings();
-  }, [loadSettings]);
+    loadKeySource();
+  }, [loadSettings, loadKeySource]);
 
   const saveOrcaPath = async () => {
     setSaving(true);
@@ -104,9 +121,54 @@ export function SettingsScreen() {
     }
   };
 
+  const saveApiKey = async () => {
+    setSavingKey(true);
+    setError(null);
+    setKeyCheck(null);
+    try {
+      await invoke("set_api_key", { key: apiKeyInput });
+      // Don't hold the secret in state longer than needed (ADR-015).
+      setApiKeyInput("");
+      await loadKeySource();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setSavingKey(false);
+    }
+  };
+
+  const deleteApiKey = async () => {
+    setError(null);
+    setKeyCheck(null);
+    try {
+      await invoke("delete_api_key");
+      await loadKeySource();
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const checkApiKey = async () => {
+    setCheckingKey(true);
+    setKeyCheck(null);
+    setError(null);
+    try {
+      setKeyCheck(await invoke<string>("verify_api_key"));
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setCheckingKey(false);
+    }
+  };
+
   const dirty = orcaPath !== savedPath;
   const xtbDirty = xtbPath !== savedXtbPath;
   const isCustom = cpuPreset === "custom";
+  // "Check" only makes sense when a usable key exists — a network call in the
+  // absent/unavailable states would report a misleading "could not reach
+  // Anthropic" when the real problem is that there is no key to check (ADR-015).
+  const keyState = keySource?.state;
+  const canCheckKey = keyState === "stored-in-keyring" || keyState === "from-environment";
 
   return (
     <div className="screen">
@@ -274,6 +336,67 @@ export function SettingsScreen() {
             </button>
             {cpuSaved ? (
               <span style={{ color: "var(--ok)", fontSize: 12 }}>Saved</span>
+            ) : null}
+          </div>
+        </div>
+      </div>
+
+      <div className="card" style={{ marginTop: 12 }}>
+        <div className="field">
+          <label className="label" htmlFor="api-key">
+            Anthropic API key
+          </label>
+          <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 6 }}>
+            For “Explain with Claude”. Stored in the system keyring — never in the
+            project database. The call is made by the app core; the key never enters
+            this window.
+          </div>
+          <div className="row">
+            <input
+              id="api-key"
+              className="input mono"
+              type="password"
+              style={{ flex: 1 }}
+              value={apiKeyInput}
+              placeholder="sk-ant-…"
+              autoComplete="off"
+              spellCheck={false}
+              onChange={(e) => setApiKeyInput(e.currentTarget.value)}
+            />
+            <button
+              className="btn btn-primary"
+              onClick={saveApiKey}
+              disabled={apiKeyInput.trim() === "" || savingKey}
+            >
+              {savingKey ? "Saving…" : "Save"}
+            </button>
+            <button
+              className="btn"
+              onClick={deleteApiKey}
+              disabled={keyState !== "stored-in-keyring"}
+            >
+              Delete
+            </button>
+            <button className="btn" onClick={checkApiKey} disabled={!canCheckKey || checkingKey}>
+              {checkingKey ? "Checking…" : "Check"}
+            </button>
+          </div>
+          <div style={{ fontSize: 12, marginTop: 2 }}>
+            {keyCheck ? (
+              <span style={{ color: "var(--ok)" }}>{keyCheck}</span>
+            ) : keySource?.state === "stored-in-keyring" ? (
+              <span style={{ color: "var(--ok)" }}>
+                Stored in the system keyring (ends …{keySource.last4}).
+              </span>
+            ) : keySource?.state === "from-environment" ? (
+              <span style={{ color: "var(--warn)" }}>
+                System keyring unavailable — using{" "}
+                <span className="mono">ANTHROPIC_API_KEY</span> (ends …{keySource.last4}).
+              </span>
+            ) : keySource?.state === "unavailable" ? (
+              <span style={{ color: "var(--warn)" }}>{keySource.reason}</span>
+            ) : keySource?.state === "absent" ? (
+              <span style={{ color: "var(--muted)" }}>No API key stored.</span>
             ) : null}
           </div>
         </div>

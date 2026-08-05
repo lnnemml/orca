@@ -4505,3 +4505,31 @@ the OS). Three decisions, each against an *invisible* loss:
 **Next (not this unit):** the code — `keyring` dep, `set/delete/api_key_status/verify_api_key` commands (none
 returns the key), the single Rust egress module, and the Settings field (Check disabled in `absent`/`unavailable`).
 `ureq` already present covers the HTTP need — no new HTTP dep. ROADMAP: "Explain with Claude" leaves *Optional*.
+
+## [2026-08-05] session | feat: Anthropic API key in the system keyring (ADR-015)
+
+Implemented storage + the minimal verify call for [ADR-015](architecture/adr-015-api-key-storage.md).
+No Explain button yet (next unit).
+
+- **`secrets.rs`** — `KeySource` four-state resolver (`stored-in-keyring` / `absent` /
+  `from-environment` / `unavailable`) + `store`/`read`/`delete` over the `keyring` crate 4.1.6.
+  The env var is read **only** when the keyring is unusable (`NoDefaultStore`/`NoStorageAccess`/
+  `PlatformFailure`), never when it's merely empty; `set` fails loudly if the keyring is
+  unavailable — **no silent plaintext-in-DB fallback**. Commands `api_key_status`/`set_api_key`/
+  `delete_api_key` — **none returns the key**; the frontend gets only the source state (+ `last4`).
+- **`anthropic.rs`** — the single egress. `verify_api_key` is `async` + `spawn_blocking` (threading
+  rule: a 15 s offline timeout must not freeze the GTK/WebKit main thread) and hits `GET /v1/models`
+  (authenticates, spends **no** generation tokens — grounded via the claude-api skill; header
+  `anthropic-version: 2023-06-01`, model const `claude-opus-4-8`). No logging of key or body.
+- **No new HTTP dep** — the existing `ureq` 2.12.1 carries rustls TLS (verified in Cargo.lock).
+  Only new dep is `keyring = "4.1.6"` (pure-Rust zbus-secret-service, no C `-dev` package).
+- **Settings UI** — password field cleared right after Save; Save/Delete/Check; the key **source is
+  shown explicitly** (keyring / env / unavailable-reason); **Check disabled** in `absent`/`unavailable`
+  (a network call there would misreport "could not reach Anthropic" — different causes, different
+  messages, the same posture as the three tildes in the selection panel).
+- **Verification.** cargo 160 / tsc 0 / vitest 474 — green. Wiring tests: the key commands' return
+  types are pinned (none is the key); `KeySource` serializes without the secret body — **negative
+  control demonstrated to bite** (a `last4` that forgets to truncate leaks the key and turns the gate
+  red, reverted green). **NOT checked:** the live `verify` network call (needs a real key — the
+  window check is the author's), and a locked keyring (named-untested, ADR-015).
+- ROADMAP: "Explain with Claude" is **no longer Optional**.

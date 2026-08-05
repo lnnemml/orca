@@ -36,6 +36,11 @@ tauri-plugin-dialog = "2"
 # Sphinx inventory v2. Already transitive in Cargo.lock (1.1.9) — this adds only
 # the declaration, no new crate enters the build.
 flate2 = "1"
+# Anthropic API key in the OS credential store (Phase 4, ADR-015). Default Linux
+# backend is pure-Rust zbus-secret-service — no libsecret/libdbus C dependency
+# (measured: wiki/architecture/keyring-availability.md). The HTTP call reuses the
+# existing `ureq` (rustls TLS) — no new HTTP dependency.
+keyring = "4.1.6"
 
 # Job cancellation (Phase 2): killpg the ORCA MPI process group. Unix-only.
 [target.'cfg(unix)'.dependencies]
