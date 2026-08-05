@@ -82,4 +82,7 @@ draft ─▶ queued ─▶ uploading ─▶ running ─▶ completed ─▶ sync
 
 Local-first: no telemetry, no network calls except (a) user-configured SSH servers,
 (b) optional Anthropic API "explain" feature with the user's own key. SSH credentials are
-never stored by the app — it delegates entirely to the user's `~/.ssh` setup.
+never stored by the app — it delegates entirely to the user's `~/.ssh` setup. For (b), the
+same "give the secret to the OS" posture applies: the Anthropic key lives in the **system
+keyring**, not in `orcastudio.db`, and the network call is made by **Rust** so the key never
+enters the webview — see [ADR-015](adr-015-api-key-storage.md).

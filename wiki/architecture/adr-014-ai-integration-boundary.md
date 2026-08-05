@@ -134,3 +134,16 @@ on Phase 4.5 by decision (2); nothing in this ADR pulls AI orchestration earlier
   to; its *What it confirms* section is the same boundary as decision (1).
 - ADR-007 is unchanged (narrowed, not edited). ADR-006 / ADR-013 untouched.
 - No new dependency; no code in this unit.
+
+## Amendment (2026-08-05) — [ADR-015](adr-015-api-key-storage.md) makes T1 structural
+
+The decision text above **stands unchanged**; this records a narrowing made by a later ADR (same
+precedent as ADR-013's own amendments). Decision (2) described the T1 tier's authority as a *property*
+— "read-only, grounded on the FTS manual and parsed results". A boundary stated as a property, not
+built as one, holds only as long as everyone respects it. **ADR-015 (3) + its "Consequence for ADR-014"
+close that for T1 by construction:** the Phase-4 explain command accepts **exactly** the selected word,
+its surrounding line, and the section text — it has **no parameter** for the input file or the
+coordinates, so the "read-only, bounded" boundary is the command's *type*, enforced by the compiler,
+not by intent. ADR-015 also fixes the two questions ADR-014 left implicit for T1: **where the secret
+lives** (system keyring, not the copied `.db`) and **where the network call is made** (Rust, so the key
+never enters webview scope). This refines, does not cancel, decision (2).

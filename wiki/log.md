@@ -4457,3 +4457,51 @@ unbalances the sum).
 **Verified.** tsc 0, vitest 474, cargo 152 — green; corpus gate green on 126. **NOT done:** the interactive
 window check (that `(sec:…)=` is gone and citations read `[barone1998]`) — headless, left to the author.
 Not touched: schema, sectioner, keywords.json, the selection panel; no deps.
+
+## [2026-08-05] ingest | measure keyring availability on this host (ADR-015 gate)
+
+Rule #10 gate before choosing an API-key store: does a Secret Service keyring backend actually work
+here (Linux Mint / Cinnamon / gnome-keyring)? Probed in a throwaway `/tmp/keyring-probe` — `src-tauri/Cargo.toml`
+untouched. Recorded in [`architecture/keyring-availability.md`](architecture/keyring-availability.md).
+
+**Works.** `keyring` 4.1.6, default Linux backend `zbus-secret-service` (pure Rust; `secret-service 5.1.0`
+→ `zbus 5.18`, **no libsecret/libdbus C dep**). Happy path under service `orcastudio`:
+set → get (byte-equal, rule #9) → delete → get = `NoEntry`. All clean, no panic.
+
+**The naive absence test lied — caught on the artifact, not postfactum.** `env -u DBUS_SESSION_BUS_ADDRESS`
+returns `NoEntry`, *not* absence: zbus still finds the bus via `$XDG_RUNTIME_DIR/bus`. A naive test would
+have sent the code down the *key-absent* branch and the fallback would never fire — invisible here (always
+has Secret Service), visible only on a foreign machine that lacks it. Same class as "the measurement measured
+the adjacent thing". Genuine absence (bogus bus address) → **`Error::NoDefaultStore` at `Entry::new`**, a clean
+`Err`. **`NoDefaultStore` ≠ `NoEntry`** is the load-bearing distinction: "keyring empty, ask user" vs "no
+keyring, fall back to env and say so".
+
+**Options weighed** (real crates.io resolve): `keyring` 4.1.6 chosen (thin wrapper over the OS store, ADR-005
+spirit) over the community `tauri-plugin-keyring` 0.1.0 / `-keyring-store` 0.2.0 / `-keychain` 2.0.2
+(pre-1.0 indirection) and the official `tauri-plugin-stronghold` 2.3.1 (**rejected**: encrypted file still
+rides the backup). **Not tested:** a locked keyring (would disrupt the user's real credentials / hang on a GUI
+prompt) — structural expectation `NoStorageAccess`/`PlatformFailure`, an `Err` not a panic. **Gate: PASSED.**
+
+## [2026-08-05] decision | ADR-015 — Anthropic API key in the system keyring; key never crosses into the webview
+
+[ADR-015](architecture/adr-015-api-key-storage.md), accepted. **Narrows ADR-014** (T1 becomes a construction,
+not a described property; ADR-014 gets an amendment, not an edit), **precedent ADR-005** (give the secret to
+the OS). Three decisions, each against an *invisible* loss:
+
+1. **The key never enters the webview** — Rust makes the Anthropic call; the frontend sends the selection and
+   gets text back, never the key. Consequence of ADR-009 (external side-effects = Rust) + ADR-013/overview
+   posture (network egress is enumerated), not separate caution. A key in renderer scope is one `console.log`
+   away — we placed exactly such logs twice in two weeks (debugging/010).
+2. **Storage = system keyring** (`keyring` 4.1.6), not `settings` in `orcastudio.db` — the DB is a file that
+   gets *copied* (backup, second machine, archive to a colleague) and a plaintext key leaves with every copy.
+   Honest boundary carried in the ADR: keyring protects **on copy and at rest**, **not** against code as the
+   same user in an unlocked session. The measurement forced a **four-state** model (`stored-in-keyring` /
+   `absent` / `from-environment` / `unavailable`) because the fallback's trigger (`NoDefaultStore`) is a *third*
+   state a two-state model can't express. Env fallback is **explicit in the UI, never a silent plaintext write**.
+   Rejected `tauri-plugin-stronghold` (encrypted file still rides the backup).
+3. **The wire payload is explicit and minimal** — word + surrounding line + section text; **not** the whole
+   input, **not** the coordinates (geometry = unpublished research). Expansion is a separate, consented change.
+
+**Next (not this unit):** the code — `keyring` dep, `set/delete/api_key_status/verify_api_key` commands (none
+returns the key), the single Rust egress module, and the Settings field (Check disabled in `absent`/`unavailable`).
+`ureq` already present covers the HTTP need — no new HTTP dep. ROADMAP: "Explain with Claude" leaves *Optional*.
