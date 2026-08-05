@@ -1,0 +1,15 @@
+# Cargo workspace (Phase 4.2 unit 1c, ADR-016). Two members:
+#   src-tauri        — the Tauri app crate (process spawn, SSH, SQLite, parsers)
+#   orcastudio-core  — the std-only identity + emit_input core that ADR-016 moves
+#                      out of TypeScript. Kept a SEPARATE crate on purpose: Stage 2
+#                      compiles it to WASM for the renderer, and a dependency-light
+#                      (std-only, no tauri/tokio) core is the precondition for that.
+#
+# NOTE (build): a workspace shares one target dir at the workspace root (./target),
+# not src-tauri/target. `cargo build/test --workspace` was verified headless;
+# `npm run tauri dev` / `npm run tauri build` (the desktop window + bundling) is for
+# the author to confirm — Tauri resolves the artifact via cargo metadata, which is
+# workspace-aware, but that path cannot be exercised headless here.
+[workspace]
+members = ["src-tauri", "orcastudio-core"]
+resolver = "2"

@@ -1,0 +1,9 @@
+%geom
+  Constraints
+    {B 0 1 1.234 C}
+    {A 0 1 2 90.0 C}
+    {D 0 1 2 3 -60 C}
+    {B 3 4 C}
+    {C 5 C}
+  end
+end

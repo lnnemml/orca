@@ -447,9 +447,16 @@ editor UI, method/basis form, and the geometry↔sidecar seam stay TS until Stag
       allocation via `nextAtomId`, positional id-carry across every replace (`carryIds`, never
       re-minted — negative-control tested), scene JSON **v2** with **v1 migrated on read** (no SQL
       migration; real-fixture + collapse-guard tests). No Rust, no pipeline rebrand.
-- [ ] **1c — the `orcastudio-core` crate.** `AtomId` / `OrcaIndex` / `AseIndex` / `IndexMap`; v2
-      deserialization; `emit_input → (text, IndexMap)` for the coordinate block + `%geom
-      Constraints`; a golden test against the current TS emit (byte-identical output).
+- [x] **1c — the `orcastudio-core` crate.** Workspace (`src-tauri` + `orcastudio-core`, std-only,
+      WASM-ready). `AtomId` / `OrcaIndex` / `AseIndex` / `IndexMap` (mixing does not compile —
+      `compile_fail` doctests); v2 deserialization (same validation as TS; **v1 → loud named Err**,
+      migration stays in TS); `emit_input → (text, IndexMap)` for the coordinate block + `%geom
+      Constraints`, **byte-identical** to the TS emit (golden vs committed TS-emitted fixtures). The
+      byte-identity rests on two measured formatters — `fmt_coord` (odd/512 ties + signed zero) and
+      `fmt_value` (17-digit ties absorbed by `value_text`) — see
+      [float-formatting-parity.md](wiki/architecture/float-formatting-parity.md). Dead code until
+      1d/1e wire it. Desktop-window build (`tauri dev`/`build`) left for the author (workspace target
+      dir); `cargo build/test --workspace` verified.
 - [ ] **1d — parse pairing.** The ADR-012 readers accept the `IndexMap`; it is persisted with the
       job; legacy jobs get a derived identity map; property test: round-trip
       `set(AtomId) → emit → parse → set(AtomId)` is identity. `parse_output` cannot be called
@@ -463,6 +470,14 @@ editor UI, method/basis form, and the geometry↔sidecar seam stay TS until Stag
 - [ ] State becomes a fold over a log of typed operations; undo/redo fall out of the log.
 - [ ] 3Dmol becomes a **dumb renderer**: it is handed geometry + an `AtomId → viewer index`
       table and is never a source of truth (ADR-010 / ADR-011).
+- [ ] **Dividend — selection moves onto `AtomId` (agreed after 1b).** Once the renderer takes an
+      `AtomId → viewer index` table, the atom selection (`selection.ts`) keys on `AtomId` instead of
+      a positional global index. Stable identity gives, for the first time, an operational definition
+      of "the same atom" *after a fragment is removed*, so `selectionSurvives` can **preserve** a
+      selection across a composition change instead of clearing it. Today's clearing is **correct for
+      the positional space** (ADR-008 — a removed fragment renumbers everything, so a kept index would
+      point at the wrong atom); moving to `AtomId` is a **behaviour change**, which is why it lives
+      here in Stage 2, not in the identity-only Stage 1.
 - [ ] The xyz block in Monaco becomes a **generated read-only projection** of the Scene.
       **Cost to preserve:** today the author edits coordinates directly in Monaco — making the
       block read-only removes that path, so it must be *replaced, not deleted*, by a

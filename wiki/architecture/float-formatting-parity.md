@@ -6,7 +6,7 @@ TS emit). Both were measured with the **bit-pattern** method (below). Results:
 | formatter pair | where used | result |
 |---|---|---|
 | JS `toFixed(8)` vs Rust `{:.8}` | coordinate block (`mergeToAtomLines`) | **diverges** on signed-zero **and** the true tie class (odd/512) — **solved** by `fmt_coord` (0 divergences) |
-| JS `String(v)` vs Rust `format!("{}")` | `%geom` constraint value (`constraintsBlock`) | **diverges** on 17-digit shortest-round-trip ties — **open** (architect's rule) |
+| JS `String(v)` vs Rust `format!("{}")` | `%geom` constraint value (`constraintsBlock`) | **diverges** on 17-digit shortest-round-trip ties — **closed by rule** (`value_text` absorbs them by construction + a loud 17-digit guard) |
 
 Home is `wiki/architecture/` per the measurement-placement rule (supports the
 ADR-016 decision, not about ORCA behaviour).
@@ -123,18 +123,40 @@ for `|v| ≥ 1e21` and `0 < |v| < 1e-6` (`(1e-7).toString() === "1e-7"`); Rust `
 `String(v)` vs `{}` divergence outside that range and is stated here rather than
 discovered later.
 
-### Status: OPEN — architect's rule (Part A2 STOP)
+### Status: CLOSED by RULE, not by zero divergences (architect's decision)
 
-Per the second-front protocol (`>0 divergences → STOP, report bits`), `fmt_value`
-is **not** baked yet. `fmt_value = format!("{}")` is correct for canonical/`valueText`
-values but diverges on raw 17-digit doubles. Candidate rules (for decision):
+The 14 divergences are **real** and are **absorbed by construction**, not formatted
+away. The rule that ships (`orcastudio-core::emit`):
 
-- **(B1) Constrain the input:** the core `Constraint` value, when present, is either
-  a `valueText` (user's exact text, emitted verbatim) or a number whose `String(v)`
-  is short — a "freeze at the measured value" omits the number entirely (the ORCA
-  idiom: `{B i j C}` with no value freezes at the current geometry), so a raw
-  17-digit double never reaches the formatter. Emit relies on / asserts this.
-  Matches how the TS path already behaves. **Recommended.**
-- **(B2)** Rust reimplements V8's dtoa tie-break — heavy, brittle across engine/rustc
-  versions.
-- **(B3)** Weaken the constraint-value golden to numeric equality — loses byte-identity.
+1. **`fmt_value(v) = format!("{}", v)`** — no V8 dtoa emulation, no golden weakening.
+2. **The value model mirrors TS**, so canonicality is judged by **each emitter's own
+   render**:
+   - `None` → freeze at the current geometry (no number — the ORCA idiom `{B i j C}`);
+   - `value: Option<f64>` + `value_text: Option<String>`;
+   - **emit:** `value_text ?? fmt_value(value)`;
+   - **parse (the `value_text_for` helper; the parser is unit 1d):**
+     `value_text = Some(tok)` **iff** `tok != fmt_value(parse(tok))`. Because Rust
+     judges canonicality by **its own** `fmt_value` (as TS judges by `String(v)`),
+     **anything Rust cannot reproduce canonically is preserved verbatim** — turning
+     "a 17-digit double never reaches `fmt_value`" from an assumption into a
+     **guarantee by construction**.
+3. **A loud guard, not a silent assumption:** emitting a **programmatic** value
+   (`value_text = None`) whose `fmt_value` has **≥17 significant digits** returns
+   `CoreError::NonCanonicalConstraintValue` (naming the value and the rule) rather
+   than printing a byte that TS would not. Under the value model this is a caller
+   bug (the value is either user/short or came from parsing, where `value_text`
+   already fired). **The threshold 17 is measured, not a priori:** all 14 corpus
+   divergences are 17-digit; 0 at ≤16. The gate is re-runnable, so the claim is
+   bounded exactly there.
+
+**Opposite canonicality judgments, same bytes (the non-obvious part — do not "fix"
+one side).** For `"0.0000001"`: JS `String` goes **exponential** (`"1e-7"`), so the
+TS parser **sets** `valueText`; Rust `format!("{}")` stays **fixed** (`"0.0000001"`),
+so the Rust parser does **not** set it. Both paths emit `"0.0000001"` — via opposite
+judgments about whether the token was canonical. A golden test pins this
+(`exponent_boundary_opposite_judgments_same_bytes`).
+
+The killer case (a measured `"…62"` that Rust would render `"…63"`) round-trips
+byte-identically **because** the parser preserves the token as `value_text`; a golden
+test proves it, and a negative control (disable `value_text_for` → the token is lost)
+was shown to go red, then reverted.

@@ -1,0 +1,15 @@
+[package]
+name = "orcastudio-core"
+version = "0.1.0"
+edition = "2021"
+description = "OrcaStudio identity core + emit_input (ADR-016). std-only, WASM-ready."
+
+[lib]
+name = "orcastudio_core"
+
+# Deliberately minimal: std-only + serde. NO tauri, NO tokio, nothing that would
+# block the Stage-2 WASM target (ADR-016). serde is WASM-compatible.
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"

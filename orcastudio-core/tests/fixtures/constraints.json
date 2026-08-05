@@ -1,0 +1,43 @@
+[
+  {
+    "kind": "distance",
+    "atoms": [
+      0,
+      1
+    ],
+    "value": 1.234
+  },
+  {
+    "kind": "angle",
+    "atoms": [
+      0,
+      1,
+      2
+    ],
+    "value": 90,
+    "valueText": "90.0"
+  },
+  {
+    "kind": "dihedral",
+    "atoms": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "value": -60
+  },
+  {
+    "kind": "distance",
+    "atoms": [
+      3,
+      4
+    ]
+  },
+  {
+    "kind": "cartesian",
+    "atoms": [
+      5
+    ]
+  }
+]

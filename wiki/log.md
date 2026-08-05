@@ -4830,3 +4830,48 @@ the constraint range but stated. Per protocol (>0 → STOP), `fmt_value` not bak
 (ORCA idiom), so a 17-digit double never reaches the formatter — matches the TS path. Architect's call.
 
 Recorded: `architecture/float-formatting-parity.md` (both fronts, corrected). Corpora gitignored.
+
+## [2026-08-05] decision | unit 1c fmt_value rule — canonicality judged by each emitter's own render; loud 17-digit guard
+
+Architect's decision closing Front 2 (constraint value). Not zero divergences, not V8 emulation, not
+a weakened golden: `fmt_value(v) = format!("{}", v)`, and the value model mirrors TS so **canonicality
+is judged by each emitter's OWN render**. Core Constraint: `None` → freeze (no number);
+`value: Option<f64>` + `value_text: Option<String>`; EMIT `value_text ?? fmt_value(value)`; PARSE
+`value_text = Some(tok) ⇔ tok != fmt_value(parse(tok))`. Because Rust judges by its own `fmt_value`
+(as TS by `String(v)`), anything Rust can't reproduce canonically is preserved verbatim — the
+"17-digit double never reaches the formatter" becomes a guarantee by construction, not an assumption.
+Backstop: a programmatic value (`value_text=None`) with ≥17 significant digits → `CoreError` (named,
+loud), threshold measured (all 14 divergences 17-digit, 0 at ≤16). Opposite-judgment/same-bytes case
+(`1e-7`: TS goes exponential and sets valueText, Rust stays fixed and does not) documented + golden-pinned.
+
+## [2026-08-05] session | feat(core): orcastudio-core crate — AtomId/OrcaIndex/AseIndex/IndexMap, v2 scene, emit_input (unit 1c Part B)
+
+Phase 4.2 Stage 1 unit 1c Part B. New Rust crate `orcastudio-core` in a cargo workspace (root
+Cargo.toml, members src-tauri + orcastudio-core), std-only + serde (WASM-ready, ADR-016). **Dead code
+beyond its own tests until 1d/1e** — expected.
+
+- `ids.rs`: `AtomId`/`OrcaIndex`/`AseIndex` newtypes (mixing does not compile — two `compile_fail`
+  doctests prove it); `IndexMap<T>` built from ONE source (`from_emit_order`), forward+reverse
+  consistent by construction.
+- `scene.rs`: `deserialize_scene` for v2 with TS validation semantics; **v1 → loud named
+  `UnsupportedSceneVersion`, NOT migrated** — migration has one home (TS at DB read), create_job
+  always emits fresh v2, so v1 in Rust is a caller bug.
+- `emit.rs`: `emit_coordinate_block → (text, IndexMap<OrcaIndex>)` and `emit_constraints_block`,
+  byte-identical to `injectSceneIntoInput`'s block / `constraintsBlock`. `fmt_coord` (odd/512 ties +
+  signed zero, from Part A2) and `fmt_value` + `value_text_for` + the 17-digit guard (Front 2 rule).
+  Own Constraint type WITH value_text; xtb.rs Constraint left untouched with a TODO(1e).
+- Golden fixtures written once from the real TS emitters (throwaway vitest generator, then deleted),
+  committed; `tests/golden.rs` asserts byte-identity + IndexMap↔rows coupling + measured-value
+  round-trip + the exponent-boundary opposite-judgment case. `tests/parity_gate.rs` = the permanent
+  `#[ignore]` fmt_coord corpus gate (0/1,008,832 by hand).
+
+Negative controls, all shown red then reverted: (a) corrupt one golden byte → coordinate golden
+FAILED; (b) build the IndexMap from a reversed order → both coupling tests FAILED (order and map are
+one source); (d) disable `value_text_for` → the measured-value round-trip FAILED (why the parser must
+set value_text).
+
+Verify: `cargo build --workspace` + `cargo test --workspace` green (src-tauri 160 unchanged + core 12
+unit + 6 golden + 2 doctests + 1 ignored gate); tsc 0; vitest 489 (TS untouched). **Named build risk:**
+the workspace target dir moves to ./target; `npm run tauri dev`/`build` (desktop window + bundling) is
+for the author to confirm — verified headless as far as cargo reaches. Added: modules/orcastudio-core.md;
+ROADMAP 1c → [x] + the Stage-2 selection-on-AtomId dividend.
