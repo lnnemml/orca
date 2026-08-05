@@ -4772,3 +4772,31 @@ the new tests. Test-only `scene-test-util.ts` added so tests mint ids as product
 making `id` optional. Touched: ids.ts (new), types.ts, scene.ts, store.ts, ensemble.ts,
 fragment-library.ts, placement.ts, JobDetailScreen.tsx, NewJobScreen.tsx, + test files; scene.md,
 ROADMAP.md.
+
+## [2026-08-05] ingest | probe: JS toFixed(8) vs Rust {:.8} coordinate-formatter parity (bit-pattern corpus)
+
+Phase 4.2 unit 1c, Part A — the gate before the orcastudio-core crate. ADR-016's golden test asserts
+byte-identity of the Rust coordinate emit with the TS `mergeToAtomLines` (`toFixed(8).padStart(14)`);
+byte-identity is safe only if JS `toFixed(8)` (round-half-up per ECMA-262) and Rust `{:.8}`
+(round-half-to-even, flt2dec) agree. Different algorithms → measured, not assumed (rule #10).
+
+Method (load-bearing): `scripts/float-parity-corpus.mjs` transfers every double to
+`scripts/float_parity_reader.rs` as its exact **u64 bit pattern** (`writeDoubleLE` → hex →
+`f64::from_bits`), NEVER a decimal string — a decimal string re-parses with its own rounding and the
+corpus would measure a parser round-trip, not the two formatters. Decimal strings on each line are the
+JS output being compared against, not a transport of the value.
+
+Corpus (fixed seed, reproducible): signed zero; tiny round-to-zero values; 2000 near-half points at
+the 8th decimal; classic decimal-tie traps (1.005, 8.575, …); padStart(14) width boundaries (13/14/15
+chars); 5000 typical chem coords; + 1,000,000 random in [-1000,1000]. **1,012,786** distinct doubles.
+
+Result: **0 rounding divergences.** The round-half-up vs half-to-even difference did not surface — for
+8 decimals a binary double almost never lands exactly on a decimal half. The **only** divergence is
+signed zero: `0x8000000000000000` (−0.0) → JS `"0.00000000"` vs Rust `"-0.00000000"` (Rust keeps the
+sign; toFixed drops it). Deterministic, one case.
+
+Verdict: golden byte-identity is viable; the −0.0 case needs one rule. **STOP per the Part-A protocol
+(>0 divergences) — the rule is the architect's call:** (A) Rust normalizes −0.0 → +0.0 in the
+coordinate formatter (recommended — minimal, keeps strict byte-identity) or (B) weaken the golden to
+token-numeric equality. Recorded: `architecture/float-formatting-parity.md`. Part B (the crate) waits
+on the rule decision. Corpus gitignored (regenerated from seed); generator + reader committed.

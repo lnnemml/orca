@@ -18,3 +18,7 @@ resources/manual/**
 # (gbw and scratch, multi-MB). Re-runnable from the probe script; the wiki quotes
 # the relevant lines verbatim, so the raw artifacts are not committed.
 sidecar/probes/_*_runs/
+# Float-parity probe corpus (~30 MB, ~1M lines): regenerated deterministically by
+# scripts/float-parity-corpus.mjs from a fixed seed. The generator + reader are
+# committed; the corpus itself is not.
+scripts/_float-parity-corpus.txt
