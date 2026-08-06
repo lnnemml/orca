@@ -2527,6 +2527,7 @@ dependencies = [
  "flate2",
  "keyring",
  "libc",
+ "orcastudio-core",
  "regex",
  "rusqlite",
  "serde",

@@ -3,8 +3,10 @@
 //! manual; these are our own calculation outputs).
 
 use super::{verify_geometry_atoms, GeomAtom, PropertyFile};
+use crate::parse::elements::z_of;
 use crate::parse::units::Angstrom;
-use crate::parse::ParseError;
+use crate::parse::{derived_identity_ids, identity_map_for, ParseError, ReferenceGeometry};
+use orcastudio_core::ids::{IndexMap, OrcaIndex};
 
 const FIX: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/");
 
@@ -26,10 +28,16 @@ const GOAT: &str = fixture!("property_goat.property.txt");
 const GOAT_INP: &str = fixture!("property_goat.input.inp");
 const SCAN: &str = fixture!("property_scan_ethane.property.txt");
 
-/// Parse the `* xyz … *` block of an `.inp` into Å coordinates (the reference the
-/// caller supplies to `verify`).
+/// Parse the `* xyz … *` block of an `.inp` into Å coordinates (kept for the
+/// `verify_geometry_atoms` post-condition test, which takes bare coords).
 fn inp_xyz_angstrom(inp: &str) -> Vec<[f64; 3]> {
-    let mut out = Vec::new();
+    reference(inp).xyz_angstrom
+}
+
+/// The full reference (elements + coords + derived identity ids) the caller supplies
+/// to `verify`, parsed from an `.inp` `* xyz … *` block.
+fn reference(inp: &str) -> ReferenceGeometry {
+    let (mut z, mut xyz) = (Vec::new(), Vec::new());
     let mut inside = false;
     for line in inp.lines() {
         let t = line.trim();
@@ -43,7 +51,8 @@ fn inp_xyz_angstrom(inp: &str) -> Vec<[f64; 3]> {
             }
             let toks: Vec<&str> = t.split_whitespace().collect();
             if toks.len() >= 4 {
-                out.push([
+                z.push(z_of(toks[0]).unwrap());
+                xyz.push([
                     toks[1].parse().unwrap(),
                     toks[2].parse().unwrap(),
                     toks[3].parse().unwrap(),
@@ -51,7 +60,13 @@ fn inp_xyz_angstrom(inp: &str) -> Vec<[f64; 3]> {
             }
         }
     }
-    out
+    let ids = derived_identity_ids(z.len());
+    ReferenceGeometry { z, xyz_angstrom: xyz, ids }
+}
+
+/// The identity map for a reference — the derived (unit 1d) case every green test uses.
+fn map_of(r: &ReferenceGeometry) -> IndexMap<OrcaIndex> {
+    identity_map_for(r)
 }
 
 #[test]
@@ -72,10 +87,10 @@ fn tokenizes_blocks_and_all_are_known() {
 #[test]
 fn unverified_handle_verifies_then_exposes_values() {
     // the typestate in one test: parse → verify(reference) → read.
-    let reference = inp_xyz_angstrom(OPTFREQ_INP);
-    assert_eq!(reference.len(), 8);
+    let r = reference(OPTFREQ_INP);
+    assert_eq!(r.z.len(), 8);
     let v = PropertyFile::parse(OPTFREQ)
-        .verify(&reference)
+        .verify(&r, &map_of(&r))
         .expect("Opt+Freq verifies against its own input xyz");
 
     // el energy: measured cross-check with the .out FINAL SINGLE POINT ENERGY.
@@ -124,17 +139,20 @@ fn missed_bohr_conversion_fails_loudly() {
 #[test]
 fn verify_rejects_a_wrong_reference() {
     // A reference of the wrong length is a caller error the post-condition catches.
-    let bad_reference = vec![[0.0, 0.0, 0.0]]; // 1 atom vs ethane's 8
-    let err = PropertyFile::parse(OPTFREQ).verify(&bad_reference).unwrap_err();
+    let bad = ReferenceGeometry {
+        z: vec![6],
+        xyz_angstrom: vec![[0.0, 0.0, 0.0]], // 1 atom vs ethane's 8
+        ids: derived_identity_ids(1),
+    };
+    let err = PropertyFile::parse(OPTFREQ).verify(&bad, &map_of(&bad)).unwrap_err();
     assert!(matches!(err, ParseError::LengthMismatch { .. }), "{err:?}");
 }
 
 #[test]
 fn entropy_field_is_t_times_s() {
     // measured: entropyS == enthalpyH − freeEnergyG (so it is T·S in Eh, not S).
-    let v = PropertyFile::parse(OPTFREQ)
-        .verify(&inp_xyz_angstrom(OPTFREQ_INP))
-        .unwrap();
+    let r = reference(OPTFREQ_INP);
+    let v = PropertyFile::parse(OPTFREQ).verify(&r, &map_of(&r)).unwrap();
     let t = v.thermochemistry().unwrap();
     assert!(
         (t.t_times_s_eh - (t.enthalpy_h_eh - t.free_energy_g_eh)).abs() < 1e-9,
@@ -148,8 +166,9 @@ fn entropy_field_is_t_times_s() {
 fn goat_verifies_and_absent_blocks_are_none() {
     // GOAT has only $Geometry + $Single_Point_Data — a reader that crashes here is
     // a bug (measured: no charges/dipole/thermo).
+    let r = reference(GOAT_INP);
     let v = PropertyFile::parse(GOAT)
-        .verify(&inp_xyz_angstrom(GOAT_INP))
+        .verify(&r, &map_of(&r))
         .expect("GOAT verifies (its first geometry == input)");
     assert!(!v.geometries().unwrap().is_empty());
     assert!(v.final_single_point_energy().is_some());
@@ -162,18 +181,42 @@ fn goat_verifies_and_absent_blocks_are_none() {
 
 #[test]
 fn sp_has_charges_and_dipole_but_no_thermo() {
-    let v = PropertyFile::parse(SP).verify(&inp_xyz_angstrom(SP_INP)).unwrap();
+    let r = reference(SP_INP);
+    let v = PropertyFile::parse(SP).verify(&r, &map_of(&r)).unwrap();
     assert!(v.charges().mulliken.is_some());
     assert!(v.dipole().is_some());
     assert!(v.thermochemistry().is_none(), "SP has no thermochemistry");
 }
 
 #[test]
+fn permuted_map_makes_verify_refuse() {
+    // Negative control (a) at the reader level: a map that swaps two NON-equivalent
+    // atoms (ethane position 0 = C, position 2 = H) must make verify() refuse with a
+    // named order mismatch. The map is cross-checked against the artifact, never
+    // trusted — this is what holds a mislabelled parse red.
+    let r = reference(OPTFREQ_INP);
+    let mut order = r.ids.clone();
+    order.swap(0, 2);
+    let permuted = IndexMap::<OrcaIndex>::from_emit_order(&order);
+    let err = PropertyFile::parse(OPTFREQ).verify(&r, &permuted).unwrap_err();
+    assert!(matches!(err, ParseError::OrderMismatch { index: 0, .. }), "{err:?}");
+}
+
+#[test]
+fn wrong_atom_count_map_makes_verify_refuse() {
+    // Negative control (b): a map with one fewer atom than the artifact (7 vs 8) is
+    // refused with a named length mismatch.
+    let r = reference(OPTFREQ_INP);
+    let short = IndexMap::<OrcaIndex>::from_emit_order(&r.ids[..7]);
+    let err = PropertyFile::parse(OPTFREQ).verify(&r, &short).unwrap_err();
+    assert!(matches!(err, ParseError::LengthMismatch { .. }), "{err:?}");
+}
+
+#[test]
 fn mayer_charge_read_from_qa() {
     // measured: Mayer's charge field is &QA, not &AtomicCharges.
-    let v = PropertyFile::parse(OPTFREQ)
-        .verify(&inp_xyz_angstrom(OPTFREQ_INP))
-        .unwrap();
+    let r = reference(OPTFREQ_INP);
+    let v = PropertyFile::parse(OPTFREQ).verify(&r, &map_of(&r)).unwrap();
     let mayer = v.charges().mayer.expect("Opt+Freq has a Mayer block");
     assert_eq!(mayer.charges.len(), 8);
     assert_eq!(mayer.atomic_numbers.len(), 8);

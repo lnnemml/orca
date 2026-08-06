@@ -30,6 +30,8 @@ use std::path::Path;
 
 use serde::Serialize;
 
+use orcastudio_core::ids::{IndexMap, OrcaIndex};
+
 use super::elements::{strip_fragment_suffix, z_of};
 use super::units::Angstrom;
 use super::{ParseError, ReferenceGeometry};
@@ -120,8 +122,14 @@ impl XyzFile {
         Ok(XyzFile { frames })
     }
 
-    /// Run the post-conditions; only on success return [`Verified`].
-    pub fn verify(self, reference: &ReferenceGeometry) -> Result<Verified, ParseError> {
+    /// Run the post-conditions; only on success return [`Verified`]. Unit 1d adds the
+    /// job's `IndexMap<OrcaIndex>`: the per-frame element-order check becomes the map
+    /// post-condition (identity map ⇒ the same check on every frame).
+    pub fn verify(
+        self,
+        reference: &ReferenceGeometry,
+        map: &IndexMap<OrcaIndex>,
+    ) -> Result<Verified, ParseError> {
         if self.frames.is_empty() {
             return Err(ParseError::MissingField("xyz frames (need ≥ 1)".into()));
         }
@@ -134,23 +142,12 @@ impl XyzFile {
                 got: f.atoms.len(),
             });
         }
-        // element order of EVERY frame == reference.
-        if n != reference.z.len() {
-            return Err(ParseError::LengthMismatch {
-                field: "atom count".into(),
-                expected: reference.z.len(),
-                got: n,
-            });
-        }
+        // The map post-condition on EVERY frame — the ONE per-atom function the seam
+        // touches here. Each frame's element sequence must equal the order the map
+        // asserts (map.len() vs frame length is the length guard).
         for (fi, f) in self.frames.iter().enumerate() {
-            for (ai, (sym, _)) in f.atoms.iter().enumerate() {
-                if z_of(sym) != Some(reference.z[ai]) {
-                    return Err(ParseError::OrderMismatch {
-                        block: format!("frame {fi}"),
-                        index: ai,
-                    });
-                }
-            }
+            let z: Vec<u8> = f.atoms.iter().map(|(sym, _)| z_of(sym).unwrap_or(0)).collect();
+            super::check_map_order(&z, map, reference, &format!("frame {fi}"))?;
         }
         // geometry post-condition (rule #11) on the FIRST frame, after conversion.
         let mut max_delta = 0.0_f64;

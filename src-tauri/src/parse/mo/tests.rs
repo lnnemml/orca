@@ -5,7 +5,13 @@ use std::io::Write;
 
 use super::MoJson;
 use crate::parse::elements::z_of;
-use crate::parse::{ParseError, ReferenceGeometry};
+use crate::parse::{derived_identity_ids, identity_map_for, ParseError, ReferenceGeometry};
+use orcastudio_core::ids::{IndexMap, OrcaIndex};
+
+/// The identity map for a reference — the derived (unit 1d) case every green test uses.
+fn map_of(r: &ReferenceGeometry) -> IndexMap<OrcaIndex> {
+    identity_map_for(r)
+}
 
 const FINAL_ETHANE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -26,14 +32,16 @@ fn reference() -> ReferenceGeometry {
         z.push(z_of(k[0]).unwrap());
         xyz.push([k[1].parse().unwrap(), k[2].parse().unwrap(), k[3].parse().unwrap()]);
     }
-    ReferenceGeometry { z, xyz_angstrom: xyz }
+    let ids = derived_identity_ids(z.len());
+    ReferenceGeometry { z, xyz_angstrom: xyz, ids }
 }
 
 #[test]
 fn ethane_orbitals_and_homo_lumo() {
+    let r = reference();
     let v = MoJson::from_path(&ethane_json_path())
         .unwrap()
-        .verify(&reference())
+        .verify(&r, &map_of(&r))
         .expect("ethane gbw-json verifies against its final geometry");
     let orbitals = v.orbitals();
     assert_eq!(orbitals.len(), 68); // measured nMO
@@ -67,7 +75,7 @@ fn missed_conversion_fails_loudly() {
             *x /= bohr;
         }
     }
-    match MoJson::from_path(&ethane_json_path()).unwrap().verify(&r) {
+    match MoJson::from_path(&ethane_json_path()).unwrap().verify(&r, &map_of(&r)) {
         Err(ParseError::GeometryMismatch { .. }) => {}
         other => panic!("expected GeometryMismatch, got {:?}", other.err()),
     }
@@ -77,7 +85,7 @@ fn missed_conversion_fails_loudly() {
 fn wrong_element_order_is_rejected() {
     let mut r = reference();
     r.z.swap(0, 2); // C↔H — the energies would sit on the wrong atoms
-    match MoJson::from_path(&ethane_json_path()).unwrap().verify(&r) {
+    match MoJson::from_path(&ethane_json_path()).unwrap().verify(&r, &map_of(&r)) {
         Err(ParseError::OrderMismatch { .. }) => {}
         other => panic!("expected OrderMismatch, got {:?}", other.err()),
     }

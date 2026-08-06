@@ -26,6 +26,8 @@ use std::path::Path;
 
 use serde::Deserialize;
 
+use orcastudio_core::ids::{IndexMap, OrcaIndex};
+
 use super::units::Angstrom;
 use super::{ParseError, ReferenceGeometry};
 
@@ -98,26 +100,19 @@ impl MoJson {
 
     /// Post-conditions, then [`Verified`]. The reference is the **final** geometry
     /// (e.g. the `.property.txt` final `$Geometry`) — orca_2json's coords are final.
-    pub fn verify(self, reference: &ReferenceGeometry) -> Result<Verified, ParseError> {
+    /// Unit 1d adds the job's `IndexMap<OrcaIndex>`: the element-order check becomes
+    /// the map post-condition (identity map ⇒ the same check).
+    pub fn verify(
+        self,
+        reference: &ReferenceGeometry,
+        map: &IndexMap<OrcaIndex>,
+    ) -> Result<Verified, ParseError> {
         let atoms = &self.root.molecule.atoms;
-        // element order == reference.
-        if atoms.len() != reference.z.len() {
-            return Err(ParseError::LengthMismatch {
-                field: "Atoms count".into(),
-                expected: reference.z.len(),
-                got: atoms.len(),
-            });
-        }
-        if let Some(i) = atoms
-            .iter()
-            .zip(&reference.z)
-            .position(|(a, z)| a.element_number != *z)
-        {
-            return Err(ParseError::OrderMismatch {
-                block: "orca_2json Atoms".into(),
-                index: i,
-            });
-        }
+        // The map post-condition — the ONE per-atom function the seam touches here.
+        // The `Atoms` element sequence (which HOMO/LUMO occupancies index) must equal
+        // the order the map asserts (map.len() vs count is the length guard).
+        let z: Vec<u8> = atoms.iter().map(|a| a.element_number).collect();
+        super::check_map_order(&z, map, reference, "orca_2json Atoms")?;
         // geometry post-condition (rule #11): coords are Å (from_angstrom). A missed
         // conversion (from_bohr) would scale distances by 0.529 → caught. Compared
         // by interatomic distance, so a rigid reframe (if any) is tolerated.

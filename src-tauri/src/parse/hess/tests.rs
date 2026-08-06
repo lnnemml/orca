@@ -4,7 +4,8 @@
 
 use super::HessFile;
 use crate::parse::elements::z_of;
-use crate::parse::{ParseError, ReferenceGeometry};
+use crate::parse::{derived_identity_ids, identity_map_for, ParseError, ReferenceGeometry};
+use orcastudio_core::ids::{IndexMap, OrcaIndex};
 
 macro_rules! fixture {
     ($name:literal) => {
@@ -35,13 +36,20 @@ fn reference(xyz: &str) -> ReferenceGeometry {
             }
         }
     }
-    ReferenceGeometry { z, xyz_angstrom: coords }
+    let ids = derived_identity_ids(z.len());
+    ReferenceGeometry { z, xyz_angstrom: coords, ids }
+}
+
+/// The identity map for a reference — the derived (unit 1d) case every green test uses.
+fn map_of(r: &ReferenceGeometry) -> IndexMap<OrcaIndex> {
+    identity_map_for(r)
 }
 
 #[test]
 fn ethane_dimensions_and_is_a_minimum() {
+    let r = reference(ETHANE_XYZ);
     let v = HessFile::parse(ETHANE_HESS)
-        .verify(&reference(ETHANE_XYZ))
+        .verify(&r, &map_of(&r))
         .expect("ethane .hess verifies against its final geometry");
     let f = v.frequencies().unwrap();
     assert_eq!(f.values_cm.len(), 24); // 3N, N=8
@@ -55,8 +63,9 @@ fn ethane_dimensions_and_is_a_minimum() {
 
 #[test]
 fn saddle_has_one_imaginary_mode() {
+    let r = reference(SADDLE_XYZ);
     let v = HessFile::parse(SADDLE_HESS)
-        .verify(&reference(SADDLE_XYZ))
+        .verify(&r, &map_of(&r))
         .expect("saddle .hess verifies (distance-invariant, tolerates the reframe)");
     let f = v.frequencies().unwrap();
     assert_eq!(f.values_cm.len(), 57); // 3N, N=19
@@ -73,8 +82,9 @@ fn saddle_geometry_passes_despite_rigid_reframe() {
     // Measured: $atoms on the saddle is translated 1.041 Å vs the input frame, yet
     // interatomic distances match to 4e-8 Å. The distance-based post-condition must
     // pass (a coordinate compare would false-alarm).
+    let r = reference(SADDLE_XYZ);
     HessFile::parse(SADDLE_HESS)
-        .verify(&reference(SADDLE_XYZ))
+        .verify(&r, &map_of(&r))
         .expect("distance-invariant geometry check tolerates the reframe");
 }
 
@@ -90,7 +100,7 @@ fn missed_bohr_conversion_fails_loudly() {
             *x /= bohr; // Bohr-magnitude reference
         }
     }
-    match HessFile::parse(ETHANE_HESS).verify(&r) {
+    match HessFile::parse(ETHANE_HESS).verify(&r, &map_of(&r)) {
         Err(ParseError::GeometryMismatch { max_delta }) => {
             assert!(max_delta > 0.5, "max_delta = {max_delta}");
         }
@@ -103,9 +113,8 @@ fn ir_columns_are_not_transposed() {
     // Measured columns: freq | T² (a.u.) | Int (km/mol) | TX TY TZ. Mode 7 (831.20
     // cm⁻¹) is IR-active — its intensity is ~5.87 km/mol and its T² is tiny; a
     // column swap would put them the other way round.
-    let v = HessFile::parse(ETHANE_HESS)
-        .verify(&reference(ETHANE_XYZ))
-        .unwrap();
+    let r = reference(ETHANE_XYZ);
+    let v = HessFile::parse(ETHANE_HESS).verify(&r, &map_of(&r)).unwrap();
     let ir = v.ir_spectrum().unwrap();
     let row = ir
         .iter()
@@ -169,9 +178,10 @@ fn linear_molecule_five_zeros_is_ok_not_an_error() {
     let ref_geom = ReferenceGeometry {
         z: vec![6, 8],
         xyz_angstrom: vec![[0.0, 0.0, 0.0], [0.0, 0.0, 2.1]],
+        ids: derived_identity_ids(2),
     };
     let v = HessFile::parse(LINEAR_HESS)
-        .verify(&ref_geom)
+        .verify(&ref_geom, &map_of(&ref_geom))
         .expect("a linear molecule with 5 trans/rot zeros is legal");
     let f = v.frequencies().unwrap();
     assert_eq!(f.zero_count, 5);
@@ -187,7 +197,8 @@ fn a_bad_zero_count_is_malformed() {
     let ref_geom = ReferenceGeometry {
         z: vec![6, 8],
         xyz_angstrom: vec![[0.0, 0.0, 0.0], [0.0, 0.0, 2.1]],
+        ids: derived_identity_ids(2),
     };
-    let err = HessFile::parse(&broken).verify(&ref_geom).unwrap_err();
+    let err = HessFile::parse(&broken).verify(&ref_geom, &map_of(&ref_geom)).unwrap_err();
     assert!(matches!(err, ParseError::Malformed { .. }), "{err:?}");
 }

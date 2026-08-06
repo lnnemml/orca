@@ -1,9 +1,10 @@
 # Module: orcastudio-core (`orcastudio-core/`)
 
-**Status:** created in Phase 4.2 Stage 1 unit **1c** (ADR-016). Holds the identity
-types + the order-bearing `emit_input`. **Dead code beyond its own tests until 1d/1e
-wire it** — that is expected (ADR-016): 1d pairs the parsers, 1e mints the map at
-`create_job` and brands the xtb serde boundary.
+**Status:** created in Phase 4.2 Stage 1 unit **1c** (ADR-016); **wired into the parsers in
+1d** — `src-tauri` now depends on this crate and the ADR-012 readers take its
+`IndexMap<OrcaIndex>` in `verify()` (see `modules/artifact-readers.md`). Holds the identity
+types + the order-bearing `emit_input`. Unit 1e still owes: `create_job` mints the map and the
+xtb serde boundary is branded.
 
 A **separate crate** in the cargo workspace (root `Cargo.toml`, members `src-tauri` +
 `orcastudio-core`) on purpose: Stage 2 compiles it to **WASM** for the renderer, so it
@@ -43,6 +44,14 @@ text does not (it carries no order) and stays in TS (`injectSceneIntoInput`).
   unit 1e; a `TODO(1e)` marks it).
 - `tests/golden.rs` — byte-identity vs the committed TS-emitted fixtures
   (`tests/fixtures/`), the IndexMap↔rows coupling, and the measured-value round-trip.
+- `tests/roundtrip.rs` (unit 1d) — the **typed, in-process half** of the ADR-010 invariant:
+  for 2000 seeded random scenes, `set(AtomId) → emit_coordinate_block → parse_coordinate_rows →
+  re-key by AtomId through the map` is **identity** (element exact, coords to 1e-9) and the map is a
+  bijection over every atom. Deterministic (a seeded splitmix64 — no `rand`/`Math.random`, which the
+  runtime forbids and which would make a failure irreproducible); coords on the `k/8` lattice so
+  formatting is lossless (float parity is the probe's job, not this test's). `emit::parse_coordinate_rows`
+  is the crate-local inverse of the coordinate-block emit that closes this pair **inside the crate** —
+  the compiler-visible half; the src-tauri readers are the *verified-at-the-persistence-boundary* half.
 - `tests/parity_gate.rs` — the permanent `#[ignore]` `fmt_coord` gate over the full
   ~1M-double corpus (needs Node to regenerate the corpus; see below).
 - `src/lib.rs` — `CoreError` (all named, loud; CLAUDE.md rule #9).

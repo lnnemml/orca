@@ -28,7 +28,8 @@ use crate::parse::elements::symbol_of;
 use crate::parse::hess::HessFile;
 use crate::parse::property::{PopulationScheme, PropertyFile, Verified};
 use crate::parse::xyz::XyzFile;
-use crate::parse::ReferenceGeometry;
+use crate::parse::{derived_identity_ids, identity_map_for, ReferenceGeometry};
+use orcastudio_core::ids::{IndexMap, OrcaIndex};
 
 /// Bump when the stored JSON shape or the parse semantics change.
 /// - v1: property.txt only (unit 3.5).
@@ -350,10 +351,23 @@ pub fn parse_and_store(
     // first frame is the start).
     let input_ref = match input_reference(input_content) {
         Some(r) if !r.z.is_empty() => r,
+        // An unreadable input coordinate block is a LOUD, named parse failure — not a
+        // silent skip. The derived identity map (below) is built from this block, so
+        // if it cannot be read we cannot verify atom identity at all.
         _ => return ParseOutcome::ParseFailed("no * xyz * block in the job input".into()),
     };
 
-    let verified = match PropertyFile::from_path(&path).and_then(|pf| pf.verify(&input_ref.xyz_angstrom))
+    // The job's IndexMap<OrcaIndex> (unit 1d): read from jobs.index_map_json, which is
+    // NULL for every row today, so this is the DERIVED identity map from the input
+    // coordinate block. It is cross-checked against each artifact inside verify() —
+    // never trusted (the input on disk can be hand-edited after the run).
+    let job_map = match job_index_map(conn, job_id, &input_ref) {
+        Ok(m) => m,
+        Err(e) => return ParseOutcome::ParseFailed(e.to_string()),
+    };
+
+    let verified = match PropertyFile::from_path(&path)
+        .and_then(|pf| pf.verify(&input_ref, &job_map))
     {
         Ok(v) => v,
         Err(e) => return ParseOutcome::ParseFailed(e.to_string()),
@@ -365,7 +379,7 @@ pub fn parse_and_store(
     let hess_path = dir.join("input.hess");
     let hess_verified = if hess_path.exists() {
         match final_geometry_reference(&verified)
-            .and_then(|r| Ok(HessFile::from_path(&hess_path)?.verify(&r)?))
+            .and_then(|r| Ok(HessFile::from_path(&hess_path)?.verify(&r, &job_map)?))
         {
             Ok(hv) => Some(hv),
             Err(e) => return ParseOutcome::ParseFailed(format!(".hess: {e}")),
@@ -377,7 +391,7 @@ pub fn parse_and_store(
     // Trajectory (`_trj.xyz`): first frame == the input start geometry. Optional.
     let trj_path = dir.join("input_trj.xyz");
     let trajectory = if trj_path.exists() {
-        match XyzFile::from_path(&trj_path).and_then(|x| x.verify(&input_ref)) {
+        match XyzFile::from_path(&trj_path).and_then(|x| x.verify(&input_ref, &job_map)) {
             Ok(xv) => Some(trajectory_json(&xv)),
             Err(e) => return ParseOutcome::ParseFailed(format!("_trj.xyz: {e}")),
         }
@@ -413,7 +427,7 @@ pub fn parse_and_store(
             Err(e) => return ParseOutcome::ParseFailed(format!("orca_2json: {e}")),
             Ok(None) => None,
             Ok(Some(json)) => match final_geometry_reference(&verified)
-                .and_then(|r| Ok(crate::parse::mo::MoJson::from_path(&json)?.verify(&r)?))
+                .and_then(|r| Ok(crate::parse::mo::MoJson::from_path(&json)?.verify(&r, &job_map)?))
             {
                 Ok(mv) => Some(orbitals_json(&mv)),
                 Err(e) => return ParseOutcome::ParseFailed(format!("orca_2json: {e}")),
@@ -444,14 +458,42 @@ fn final_geometry_reference(v: &Verified) -> Result<ReferenceGeometry, AppError>
     let last = geoms
         .last()
         .ok_or_else(|| AppError::Internal("verified property.txt has no geometry".into()))?;
+    let z: Vec<u8> = last.atoms.iter().map(|a| a.z).collect();
     Ok(ReferenceGeometry {
-        z: last.atoms.iter().map(|a| a.z).collect(),
+        // Legacy job (unit 1d): derived identity ids, same 0..n as the job map.
+        ids: derived_identity_ids(z.len()),
         xyz_angstrom: last
             .atoms
             .iter()
             .map(|a| [a.xyz[0].angstrom(), a.xyz[1].angstrom(), a.xyz[2].angstrom()])
             .collect(),
+        z,
     })
+}
+
+/// The job's `IndexMap<OrcaIndex>` (unit 1d). Reads `jobs.index_map_json`: NULL for
+/// every row today → the DERIVED identity map from the input coordinate block's atom
+/// count, cross-checked against each artifact inside `verify()`. A present value is a
+/// LOUD, named error: minting/deserializing the map is unit 1e's job and no row
+/// should carry one yet — better a named refusal than a silent wrong-order parse.
+fn job_index_map(
+    conn: &Connection,
+    job_id: &str,
+    reference: &ReferenceGeometry,
+) -> Result<IndexMap<OrcaIndex>, AppError> {
+    let stored: Option<String> = conn.query_row(
+        "SELECT index_map_json FROM jobs WHERE id = ?1",
+        [job_id],
+        |r| r.get(0),
+    )?;
+    match stored {
+        None => Ok(identity_map_for(reference)),
+        Some(_) => Err(AppError::Internal(
+            "jobs.index_map_json is present, but minting/deserializing the IndexMap is unit 1e's job — \
+             no row should carry one in unit 1d"
+                .into(),
+        )),
+    }
 }
 
 /// Idempotent upsert keyed by `job_id`: re-parsing the same job updates the row,
@@ -667,7 +709,11 @@ fn input_reference(input_content: &str) -> Option<ReferenceGeometry> {
         }
     }
     if inside {
-        Some(ReferenceGeometry { z, xyz_angstrom: xyz })
+        // Legacy job (unit 1d): derived identity ids from the coordinate block's atom
+        // count — the same 0..n the job map is built from, so the two agree on the
+        // green path by construction (unit 1e replaces both with minted ids).
+        let ids = derived_identity_ids(z.len());
+        Some(ReferenceGeometry { z, xyz_angstrom: xyz, ids })
     } else {
         None
     }
@@ -707,7 +753,8 @@ mod tests {
 
     fn verified() -> Verified {
         let reference = input_reference(OPTFREQ_INP).unwrap();
-        PropertyFile::parse(OPTFREQ).verify(&reference.xyz_angstrom).unwrap()
+        let map = identity_map_for(&reference);
+        PropertyFile::parse(OPTFREQ).verify(&reference, &map).unwrap()
     }
 
     #[test]

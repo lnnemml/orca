@@ -66,6 +66,41 @@ typestate, the same shape as ADR-010's `parse_output` (uncallable without the
 - **Lengths, measured not trusted** — charges = N, `&ATNO` = N, `&grad` = 3N, `&FREQ` = 3N,
   checked against N from the geometry, never read off `&Dim`.
 
+## The `IndexMap` post-condition (unit 1d) — one function per reader, verified not trusted
+Unit 1d pairs the readers with the ADR-016 identity core. `verify()` now takes the job's
+`IndexMap<OrcaIndex>` (from `orcastudio-core`) alongside the reference, and the element-order
+post-condition becomes **the map post-condition**: `parse::check_map_order(artifact_z, map,
+reference, block)` asserts *the artifact's element sequence equals the order the map asserts* —
+position `p` holds `map.to_atom(OrcaIndex(p))`, whose element the reference fixes **independently of
+the map** (its `ids`↔`z` pairing). Each reader has exactly **one** such function — `property`'s
+`check_map_order` (over the first `$Geometry`), `hess`'s (over `$atoms`), `xyz`'s (per frame),
+`mo`'s (over `Atoms`) — the single seam ADR-016/Phase-3 promised would change; the accessors,
+result structs, and stored JSON are byte-for-byte unchanged.
+
+- **Identity ⇒ the pre-1d check.** For the identity map (every job in 1d) the lookup reduces to
+  `artifact_z == reference.z`, so green data — and the dashboard — are identical.
+- **The map is a REQUIRED argument, CROSS-CHECKED against the artifact — not trusted.** A permuted
+  map (two non-equivalent atoms swapped) makes the map's lookup and the reference's independent
+  element disagree → loud `OrderMismatch`; a wrong-count map → `LengthMismatch`. Both demonstrated
+  to bite (`parse::map_order_controls`, `property::tests`); the decisive control is
+  `check_order_ignoring_map`, a map-ignoring twin that goes green on the same permuted input,
+  proving the map/artifact cross-check is what holds the permutation red.
+- **Typed in-process / verified at the persistence boundary — stated verbatim, no over-reach.** The
+  ADR-010 `emit_input`/`parse_output` pair is a *type-level* invariant only **within one process**
+  (orcastudio-core on both sides — the compiler sees the `AtomId ↔ OrcaIndex` provenance). The map
+  is minted at `create_job`, **serialized into SQLite**, and re-read at parse time — serialization
+  **erases the type provenance**, so at this boundary the invariant honestly degrades to *a required
+  argument cross-checked against the artifact* (a post-condition, rule #9), NOT a type guarantee.
+  Writing "type-level invariant across persistence" would be exactly the over-reach ADR-010's
+  empirical addendum warns against. The distinction is written verbatim on `check_map_order`.
+- **Legacy / NULL map (all jobs in 1d).** Schema v10 adds nullable `jobs.index_map_json`, NULL for
+  every row until unit 1e mints it. `results::job_index_map` reads it: NULL → a **derived identity
+  map** from the input coordinate block's atom count (`derived_identity_map`), cross-checked in
+  `verify()` against the artifact — never postulated, because the input on disk can be hand-edited
+  after the run. An unreadable input coordinate block is a **loud, named** parse failure (no `* xyz *`
+  block), not a silent skip. A *present* `index_map_json` is refused with a named error (minting is
+  unit 1e's job).
+
 ## Measured facts the code encodes (not comments — structure)
 - **`entropyS` is not entropy.** Measured `entropyS == enthalpyH − freeEnergyG`, i.e. **T·S in
   Eh**. The field is named `t_times_s_eh` so it cannot be read as S in J/(mol·K).

@@ -30,7 +30,12 @@ use crate::error::AppError;
 ///   schema change.
 /// - v9: `manual_sections` + `manual_fts` (external-content FTS5) + `manual_provenance`
 ///   — the ORCA manual index (Phase 4.3, ADR-013). First tables the manual owns.
-const SCHEMA_VERSION: i64 = 9;
+/// - v10: `jobs.index_map_json` — the serialized `IndexMap<OrcaIndex>` minted at
+///   `create_job` (Phase 4.2, ADR-016 unit 1e). Nullable and additive; in unit 1d
+///   EVERY row is NULL and the parser derives an identity map from the input
+///   coordinate block instead (`results::job_index_map`). The column exists now so
+///   the 1e minting has a home and this migration is not on 1e's critical path.
+const SCHEMA_VERSION: i64 = 10;
 
 /// Open (creating if needed) `orcastudio.db` under `data_dir` and migrate it to
 /// the current schema.
@@ -179,6 +184,17 @@ fn migrate(conn: &Connection) -> Result<(), AppError> {
     if version < 9 {
         create_manual_tables(conn)?;
         version = 9;
+    }
+
+    // --- v9 -> v10: jobs.index_map_json (Phase 4.2, ADR-016). Nullable, additive.
+    // The IndexMap<OrcaIndex> minted at create_job (unit 1e) is serialized here; in
+    // unit 1d every row stays NULL and the parser derives an identity map from the
+    // input coordinate block. Guarded ALTER, like v6/v7. ---
+    if version < 10 {
+        if column_exists(conn, "jobs", "id")? && !column_exists(conn, "jobs", "index_map_json")? {
+            conn.execute_batch("ALTER TABLE jobs ADD COLUMN index_map_json TEXT;")?;
+        }
+        version = 10;
     }
 
     // Persist the resulting version so subsequent runs skip completed steps.
@@ -630,6 +646,37 @@ mod tests {
                  'undetermined', 'body', 0, 1);",
         )
         .expect("NULL anchor is permitted");
+    }
+
+    #[test]
+    fn migrate_v9_to_v10_adds_index_map_json_and_preserves_jobs() {
+        // A v9 DB with one job carrying input_content. The v10 step adds the nullable
+        // index_map_json column; the pre-existing job is untouched and its new column
+        // is NULL (unit 1d: every row NULL, the parser derives an identity map).
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO settings (key, value) VALUES ('schema_version', '9');
+             CREATE TABLE jobs (id TEXT PRIMARY KEY, input_content TEXT NOT NULL);
+             INSERT INTO jobs (id, input_content) VALUES ('j1', '* xyz 0 1');",
+        )
+        .unwrap();
+        assert!(!column_exists(&conn, "jobs", "index_map_json").unwrap());
+
+        migrate(&conn).expect("v9 -> v10");
+        assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
+        assert!(column_exists(&conn, "jobs", "index_map_json").unwrap());
+
+        // Pre-existing job preserved; the new column is NULL for it.
+        let (input, map): (String, Option<String>) = conn
+            .query_row(
+                "SELECT input_content, index_map_json FROM jobs WHERE id = 'j1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(input, "* xyz 0 1");
+        assert_eq!(map, None, "unit 1d: every row is NULL (minting is unit 1e)");
     }
 
     /// FTS5 build-gate. NOT a migration and NOT a table the app ships — a tripwire

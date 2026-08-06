@@ -2,7 +2,13 @@
 
 use super::XyzFile;
 use crate::parse::elements::z_of;
-use crate::parse::{ParseError, ReferenceGeometry};
+use crate::parse::{derived_identity_ids, identity_map_for, ParseError, ReferenceGeometry};
+use orcastudio_core::ids::{IndexMap, OrcaIndex};
+
+/// The identity map for a reference — the derived (unit 1d) case every green test uses.
+fn map_of(r: &ReferenceGeometry) -> IndexMap<OrcaIndex> {
+    identity_map_for(r)
+}
 
 macro_rules! fixture {
     ($name:literal) => {
@@ -38,7 +44,8 @@ fn ref_from_inp(inp: &str) -> ReferenceGeometry {
             }
         }
     }
-    ReferenceGeometry { z, xyz_angstrom: xyz }
+    let ids = derived_identity_ids(z.len());
+    ReferenceGeometry { z, xyz_angstrom: xyz, ids }
 }
 
 /// Reference from the first frame of an xyz (for a `.xyz` final geometry).
@@ -51,15 +58,17 @@ fn ref_from_first_frame(xyz_text: &str) -> ReferenceGeometry {
         z.push(z_of(k[0]).unwrap());
         xyz.push([k[1].parse().unwrap(), k[2].parse().unwrap(), k[3].parse().unwrap()]);
     }
-    ReferenceGeometry { z, xyz_angstrom: xyz }
+    let ids = derived_identity_ids(z.len());
+    ReferenceGeometry { z, xyz_angstrom: xyz, ids }
 }
 
 #[test]
 fn ethane_trj_frames_and_comment_energy() {
     // _trj first frame == the input start geometry.
+    let r = ref_from_inp(ETHANE_INP);
     let v = XyzFile::parse(TRJ_ETHANE)
         .unwrap()
-        .verify(&ref_from_inp(ETHANE_INP))
+        .verify(&r, &map_of(&r))
         .expect("ethane _trj verifies against the input start geometry");
     let frames = v.frames();
     assert_eq!(frames.len(), 5); // measured
@@ -73,9 +82,10 @@ fn ethane_trj_frames_and_comment_energy() {
 
 #[test]
 fn final_xyz_is_a_single_frame() {
+    let r = ref_from_first_frame(FINAL_ETHANE);
     let v = XyzFile::parse(FINAL_ETHANE)
         .unwrap()
-        .verify(&ref_from_first_frame(FINAL_ETHANE))
+        .verify(&r, &map_of(&r))
         .unwrap();
     assert_eq!(v.frames().len(), 1); // .xyz = final geometry, one frame
 }
@@ -85,9 +95,10 @@ fn scan_trj_is_26_frames_not_scan_points() {
     // 26 opt cycles for a 6-point scan — the reader exposes *frames*, never "scan
     // points". Verified against the scan trajectory's own first frame (its first
     // frame is a constrained opt step, not the input start).
+    let r = ref_from_first_frame(TRJ_SCAN);
     let v = XyzFile::parse(TRJ_SCAN)
         .unwrap()
-        .verify(&ref_from_first_frame(TRJ_SCAN))
+        .verify(&r, &map_of(&r))
         .unwrap();
     assert_eq!(v.frames().len(), 26);
 }
@@ -99,7 +110,7 @@ fn every_frame_natom_is_constant_and_ordered() {
     let r = ref_from_first_frame(TRJ_SCAN);
     XyzFile::parse(TRJ_SCAN)
         .unwrap()
-        .verify(&r)
+        .verify(&r, &map_of(&r))
         .expect("all 26 scan frames share natom and element order");
 }
 
@@ -114,7 +125,7 @@ fn missed_conversion_fails_loudly() {
             *x /= bohr;
         }
     }
-    match XyzFile::parse(TRJ_ETHANE).unwrap().verify(&r) {
+    match XyzFile::parse(TRJ_ETHANE).unwrap().verify(&r, &map_of(&r)) {
         Err(ParseError::GeometryMismatch { max_delta }) => assert!(max_delta > 0.3, "{max_delta}"),
         other => panic!("expected GeometryMismatch, got {other:?}"),
     }
@@ -130,14 +141,14 @@ fn malformed_frame_is_an_error() {
 #[test]
 fn comment_without_energy_is_none_not_a_failure() {
     let text = "1\njust a comment, no energy\nH 0.0 0.0 0.0\n";
-    let r = ReferenceGeometry { z: vec![1], xyz_angstrom: vec![[0.0, 0.0, 0.0]] };
-    let v = XyzFile::parse(text).unwrap().verify(&r).unwrap();
+    let r = ReferenceGeometry { z: vec![1], xyz_angstrom: vec![[0.0, 0.0, 0.0]], ids: derived_identity_ids(1) };
+    let v = XyzFile::parse(text).unwrap().verify(&r, &map_of(&r)).unwrap();
     assert_eq!(v.frames()[0].energy_eh, None);
 }
 
 #[test]
 fn empty_has_no_frames_and_fails_verify() {
-    let r = ReferenceGeometry { z: vec![1], xyz_angstrom: vec![[0.0, 0.0, 0.0]] };
-    let err = XyzFile::parse("").unwrap().verify(&r).unwrap_err();
+    let r = ReferenceGeometry { z: vec![1], xyz_angstrom: vec![[0.0, 0.0, 0.0]], ids: derived_identity_ids(1) };
+    let err = XyzFile::parse("").unwrap().verify(&r, &map_of(&r)).unwrap_err();
     assert!(matches!(err, ParseError::MissingField(_)), "{err:?}");
 }

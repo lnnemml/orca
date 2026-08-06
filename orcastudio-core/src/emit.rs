@@ -71,6 +71,37 @@ pub fn emit_coordinate_block(scene: &Scene) -> (String, IndexMap<OrcaIndex>) {
     (text, map)
 }
 
+/// The inverse of [`emit_coordinate_block`]'s row layout, for the in-process
+/// round-trip gate (unit 1d): read the `* xyz … *` block THIS crate emitted back
+/// into `(element, [x, y, z])` rows, **in file order** (== `OrcaIndex` order).
+/// Paired with the emit's `IndexMap` a caller keys each row by `AtomId`.
+///
+/// This is **not** a general ORCA coordinate parser (that stays in the src-tauri
+/// readers, ADR-012); it reads exactly the shape [`atom_row`] writes — an element
+/// token then three whitespace-separated floats — so the emit→parse pair is closed
+/// **inside the crate**, the typed half of the ADR-010 invariant (the src-tauri
+/// readers are the verified-at-the-persistence-boundary half).
+pub fn parse_coordinate_rows(block: &str) -> Vec<(String, [f64; 3])> {
+    let mut rows = Vec::new();
+    for line in block.lines() {
+        let t = line.trim();
+        // The header `* xyz <charge> <mult>` and the closing `*` both start with '*'.
+        if t.is_empty() || t.starts_with('*') {
+            continue;
+        }
+        let toks: Vec<&str> = t.split_whitespace().collect();
+        if toks.len() < 4 {
+            continue;
+        }
+        if let (Ok(x), Ok(y), Ok(z)) =
+            (toks[1].parse::<f64>(), toks[2].parse::<f64>(), toks[3].parse::<f64>())
+        {
+            rows.push((toks[0].to_string(), [x, y, z]));
+        }
+    }
+    rows
+}
+
 // ── constraint value formatter (fmt_value) — parity.md Front 2 ────────────────
 
 /// Format a constraint value byte-identically to JS `String(v)` for the canonical

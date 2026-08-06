@@ -457,10 +457,18 @@ editor UI, method/basis form, and the geometry↔sidecar seam stay TS until Stag
       [float-formatting-parity.md](wiki/architecture/float-formatting-parity.md). Dead code until
       1d/1e wire it. Desktop-window build (`tauri dev`/`build`) left for the author (workspace target
       dir); `cargo build/test --workspace` verified.
-- [ ] **1d — parse pairing.** The ADR-012 readers accept the `IndexMap`; it is persisted with the
-      job; legacy jobs get a derived identity map; property test: round-trip
-      `set(AtomId) → emit → parse → set(AtomId)` is identity. `parse_output` cannot be called
-      without the matching `emit_input`'s map (type-level invariant, now same-language).
+- [x] **1d — parse pairing.** The ADR-012 readers (`property`/`hess`/`xyz`/`mo`) take the job's
+      `IndexMap<OrcaIndex>` in the `verify()` path: the former element-order post-condition is
+      rephrased as "artifact order == the order the map asserts" (`parse::check_map_order`), for the
+      identity map the same check as before, so the dashboard numbers are unchanged. Schema **v10**
+      adds nullable `jobs.index_map_json`; every row is NULL in 1d, so the parser derives an identity
+      map from the input coordinate block (`results::job_index_map`), cross-checked against the
+      artifact. Round-trip property test in core (`set(AtomId) → emit → parse → set(AtomId)` = identity,
+      2000 seeded scenes). Negative controls demonstrably bite (permuted map / wrong count refuse;
+      disabling the map check turns the permutation green). **Claim corrected:** the pair is a
+      *type-level* invariant only *in-process* (same crate on both sides); across SQLite the provenance
+      is serialized away, so the map is a **required, artifact-cross-checked argument** (post-condition,
+      rule #9), NOT a type invariant — stated verbatim in code and on the module page.
 - [ ] **1e — wiring.** `create_job` mints the map; xtb indices are branded at the serde boundary;
       resolve the display-emit (Scene→Monaco projection) vs authoritative-emit (mints the map at
       `create_job`) tension named in ADR-016.

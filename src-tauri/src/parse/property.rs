@@ -36,9 +36,11 @@ use std::sync::LazyLock;
 use regex::Regex;
 use serde::Serialize;
 
+use orcastudio_core::ids::{IndexMap, OrcaIndex};
+
 use super::elements::{strip_fragment_suffix, z_of};
 use super::units::Angstrom;
-use super::ParseError;
+use super::{ParseError, ReferenceGeometry};
 
 /// Measured max is ≈ 344 KB (saddle `99e805f5`); 16 MB is a wide safety margin.
 const MAX_BYTES: u64 = 16 * 1024 * 1024;
@@ -249,11 +251,38 @@ impl PropertyFile {
     /// The **caller supplies the reference** (each job has its own `input.inp`);
     /// the reader never reads `input.inp` itself — that would be a hidden
     /// cross-module dependency.
-    pub fn verify(self, reference_angstrom: &[[f64; 3]]) -> Result<Verified, ParseError> {
-        self.check_geometry(reference_angstrom)?;
+    ///
+    /// Unit 1d threads the job's `IndexMap<OrcaIndex>` through this path and adds the
+    /// map post-condition ([`check_map_order`](super::check_map_order)): the artifact
+    /// order must equal the order the map asserts. For the identity map (every job in
+    /// 1d) this is the element-order check Phase 3 already ran, so verified values —
+    /// and the dashboard — are byte-for-byte unchanged. The map is a **required
+    /// argument, cross-checked against the artifact** (a post-condition), not a
+    /// type-level guarantee across the SQLite boundary — see the seam note on
+    /// `check_map_order`.
+    pub fn verify(
+        self,
+        reference: &ReferenceGeometry,
+        map: &IndexMap<OrcaIndex>,
+    ) -> Result<Verified, ParseError> {
+        self.check_geometry(&reference.xyz_angstrom)?;
         self.check_charge_order()?;
         self.check_lengths()?;
+        self.check_map_order(reference, map)?;
         Ok(Verified(self))
+    }
+
+    /// The unit-1d map post-condition on this reader — the ONE per-atom function the
+    /// ADR-016 seam touches here. The first `$Geometry`'s element sequence (the
+    /// artifact's atom order; charges are already verified equal to it by
+    /// [`check_charge_order`]) must match the order the `IndexMap` asserts.
+    fn check_map_order(
+        &self,
+        reference: &ReferenceGeometry,
+        map: &IndexMap<OrcaIndex>,
+    ) -> Result<(), ParseError> {
+        let z: Vec<u8> = self.first_geometry()?.atoms.iter().map(|a| a.z).collect();
+        super::check_map_order(&z, map, reference, "$Geometry")
     }
 
     /// Block names the typed layer neither interprets nor deliberately ignores —

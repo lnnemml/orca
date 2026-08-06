@@ -4875,3 +4875,53 @@ unit + 6 golden + 2 doctests + 1 ignored gate); tsc 0; vitest 489 (TS untouched)
 the workspace target dir moves to ./target; `npm run tauri dev`/`build` (desktop window + bundling) is
 for the author to confirm — verified headless as far as cargo reaches. Added: modules/orcastudio-core.md;
 ROADMAP 1c → [x] + the Stage-2 selection-on-AtomId dividend.
+
+## [2026-08-06] session | feat(parse): readers take the IndexMap — verified against the artifact, identity for legacy (unit 1d)
+
+Phase 4.2 Stage 1 unit **1d** — paired the ADR-012 artifact readers with the ADR-016 identity core.
+
+**Docs first (unit 1c tail, Task 0).** Recorded the corpus-construction lesson as a Pattern-2
+corollary on `architecture/float-formatting-parity.md` (with a cross-ref from `orca/manual-sources.md`
+Part F): the `toFixed(8)` parity corpus was first seeded from the *folklore* tie (`1.005`,
+`(k+0.5)·1e-8`) — non-representable decimals that can never be a round-half tie, an adversarial-looking
+corpus that tested nothing. The real ties (`x = odd/512`) come from the failure-class arithmetic
+(`x·10⁸+½ ∈ ℤ`). Lesson: build the stress inputs from the failure condition, not from the canonical
+cautionary example. (Separate `docs:` commit.)
+
+**The pairing.** `src-tauri` now depends on `orcastudio-core`. The readers (`property`/`hess`/`xyz`/`mo`)
+take the job's `IndexMap<OrcaIndex>` in `verify()`; the former element-order post-condition is rephrased
+as the **map post-condition** (`parse::check_map_order`): the artifact's element sequence must equal the
+order the map asserts — position `p` holds `map.to_atom(OrcaIndex(p))`, whose element the reference fixes
+**independently of the map** (its `ids`↔`z` table). Exactly **one function per reader** changed (the seam
+ADR-016/Phase-3 promised); accessors, result structs, and stored JSON are byte-for-byte unchanged — the
+`real_optfreq` fixture numbers are identical. For the identity map (every job in 1d) it reduces to the
+pre-1d `artifact_z == reference.z` check.
+
+**The honest claim (the architect's first review point).** The ADR-010 `emit_input`/`parse_output` pair
+is type-level only **in-process** (orcastudio-core on both sides). The map is minted at `create_job`,
+**serialized into SQLite**, and re-read at parse time — serialization **erases the type provenance**, so
+across persistence the invariant degrades to *a required argument cross-checked against the artifact* (a
+post-condition, rule #9), NOT a type guarantee. Stated verbatim on `check_map_order` and in
+`modules/artifact-readers.md` — the over-reach ADR-010's empirical addendum warns against, avoided by
+name.
+
+**Persistence.** Schema **v10**: nullable `jobs.index_map_json` (guarded ALTER). Every row is NULL in 1d
+→ `results::job_index_map` derives an **identity map** from the input coordinate block, cross-checked in
+`verify()` (never postulated — the input on disk can be hand-edited after the run). An unreadable
+coordinate block is a loud, named parse failure; a *present* map value is refused (minting is 1e's job).
+Migration test `migrate_v9_to_v10_adds_index_map_json_and_preserves_jobs`.
+
+**Round-trip (typed, in-process half).** `orcastudio-core/tests/roundtrip.rs`: 2000 seeded scenes,
+`set(AtomId) → emit → parse → set(AtomId)` = identity, map a bijection. Deterministic splitmix64 (no
+`rand`); `emit::parse_coordinate_rows` is the crate-local inverse.
+
+**Negative controls — demonstrably bite (the second review point).** `parse::map_order_controls` +
+`property::tests`: (a) a permuted map (C↔H, non-equivalent) → `OrderMismatch`; (b) a wrong-count map →
+`LengthMismatch`; (c) `check_order_ignoring_map`, a map-ignoring twin, goes **green** on the same
+permuted input that (a) rejects — proving the map/artifact cross-check is what holds the permutation red,
+not chance. Verified by temporarily gutting `check_map_order`: exactly those 5 control tests went red,
+everything else stayed green; reverted.
+
+**Verification.** `cargo test --workspace` green (166 src-tauri + core + roundtrip); `tsc --noEmit`
+clean; vitest 489/489. `create_job`, TS, and `xtb.rs` untouched (1e's scope). Next: **1e** — mint the map
+at `create_job`, brand the xtb serde boundary, resolve the display-vs-authoritative-emit tension.

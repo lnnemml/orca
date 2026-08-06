@@ -46,6 +46,8 @@ use std::path::Path;
 
 use serde::Serialize;
 
+use orcastudio_core::ids::{IndexMap, OrcaIndex};
+
 use super::elements::{strip_fragment_suffix, z_of};
 use super::units::Angstrom;
 use super::{ParseError, ReferenceGeometry};
@@ -181,9 +183,16 @@ impl HessFile {
     }
 
     /// Run the post-conditions; only on success return [`Verified`], the sole type
-    /// with value accessors. The caller supplies the reference geometry.
-    pub fn verify(self, reference: &ReferenceGeometry) -> Result<Verified, ParseError> {
-        self.check_element_order(reference)?;
+    /// with value accessors. The caller supplies the reference geometry **and** the
+    /// job's `IndexMap<OrcaIndex>` (unit 1d): the former-standalone element-order
+    /// check is now the map post-condition — for the identity map the same check,
+    /// so `$normal_modes` still animate the same atoms (see `check_map_order`).
+    pub fn verify(
+        self,
+        reference: &ReferenceGeometry,
+        map: &IndexMap<OrcaIndex>,
+    ) -> Result<Verified, ParseError> {
+        self.check_map_order(reference, map)?;
         self.check_geometry_distances(reference)?;
         self.check_lengths()?;
         self.check_zero_modes()?;
@@ -325,22 +334,16 @@ impl HessFile {
 
     // ---- post-conditions --------------------------------------------------- //
 
-    fn check_element_order(&self, reference: &ReferenceGeometry) -> Result<(), ParseError> {
-        let z_atoms: Vec<u8> = self.atoms()?.iter().map(|a| a.z).collect();
-        if z_atoms.len() != reference.z.len() {
-            return Err(ParseError::LengthMismatch {
-                field: "$atoms count".into(),
-                expected: reference.z.len(),
-                got: z_atoms.len(),
-            });
-        }
-        if let Some(i) = z_atoms.iter().zip(&reference.z).position(|(a, b)| a != b) {
-            return Err(ParseError::OrderMismatch {
-                block: "$atoms".into(),
-                index: i,
-            });
-        }
-        Ok(())
+    /// The unit-1d map post-condition — the ONE per-atom function the seam touches
+    /// here. `$atoms`' element sequence (the artifact order the normal modes and IR
+    /// rows are indexed by) must equal the order the `IndexMap` asserts.
+    fn check_map_order(
+        &self,
+        reference: &ReferenceGeometry,
+        map: &IndexMap<OrcaIndex>,
+    ) -> Result<(), ParseError> {
+        let z: Vec<u8> = self.atoms()?.iter().map(|a| a.z).collect();
+        super::check_map_order(&z, map, reference, "$atoms")
     }
 
     /// Distance-invariant geometry check (see the module note on the reframe).
