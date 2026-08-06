@@ -35,7 +35,10 @@ use crate::error::AppError;
 ///   EVERY row is NULL and the parser derives an identity map from the input
 ///   coordinate block instead (`results::job_index_map`). The column exists now so
 ///   the 1e minting has a home and this migration is not on 1e's critical path.
-const SCHEMA_VERSION: i64 = 10;
+/// - v11: `jobs.scene_log_json` — the serialized operation log (ADR-017 unit 2b),
+///   co-written with `scene_json` at `create_job`. Nullable and additive; "New
+///   iteration" restores it, cross-checked against the snapshot.
+const SCHEMA_VERSION: i64 = 11;
 
 /// Open (creating if needed) `orcastudio.db` under `data_dir` and migrate it to
 /// the current schema.
@@ -195,6 +198,17 @@ fn migrate(conn: &Connection) -> Result<(), AppError> {
             conn.execute_batch("ALTER TABLE jobs ADD COLUMN index_map_json TEXT;")?;
         }
         version = 10;
+    }
+
+    // --- v10 -> v11: jobs.scene_log_json (Phase 4.2, ADR-017 unit 2b). Nullable,
+    // additive. The serialized operation log, co-written with scene_json at
+    // create_job; "New iteration" restores it, cross-checked against the snapshot.
+    // Guarded ALTER, like v6/v7/v10. ---
+    if version < 11 {
+        if column_exists(conn, "jobs", "id")? && !column_exists(conn, "jobs", "scene_log_json")? {
+            conn.execute_batch("ALTER TABLE jobs ADD COLUMN scene_log_json TEXT;")?;
+        }
+        version = 11;
     }
 
     // Persist the resulting version so subsequent runs skip completed steps.
@@ -677,6 +691,36 @@ mod tests {
             .unwrap();
         assert_eq!(input, "* xyz 0 1");
         assert_eq!(map, None, "unit 1d: every row is NULL (minting is unit 1e)");
+    }
+
+    #[test]
+    fn migrate_v10_to_v11_adds_scene_log_json_and_preserves_jobs() {
+        // A v10 DB with one job. The v11 step adds the nullable scene_log_json column
+        // (unit 2b); the pre-existing job is untouched and its new column is NULL (a
+        // legacy job seeds a fresh log on New iteration).
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO settings (key, value) VALUES ('schema_version', '10');
+             CREATE TABLE jobs (id TEXT PRIMARY KEY, input_content TEXT NOT NULL);
+             INSERT INTO jobs (id, input_content) VALUES ('j1', '* xyz 0 1');",
+        )
+        .unwrap();
+        assert!(!column_exists(&conn, "jobs", "scene_log_json").unwrap());
+
+        migrate(&conn).expect("v10 -> v11");
+        assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
+        assert!(column_exists(&conn, "jobs", "scene_log_json").unwrap());
+
+        let (input, log): (String, Option<String>) = conn
+            .query_row(
+                "SELECT input_content, scene_log_json FROM jobs WHERE id = 'j1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(input, "* xyz 0 1");
+        assert_eq!(log, None, "legacy job: NULL log (seeds fresh on New iteration)");
     }
 
     /// FTS5 build-gate. NOT a migration and NOT a table the app ships — a tripwire

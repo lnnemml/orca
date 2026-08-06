@@ -34,6 +34,7 @@ fn create_job_conn(
     title: &str,
     input_content: &str,
     scene_json: Option<&str>,
+    scene_log_json: Option<&str>,
 ) -> Result<Job, AppError> {
     let id = Uuid::new_v4().to_string();
     let index_map_json = serde_json::to_string(&crate::results::mint_stored_index_map(
@@ -41,16 +42,20 @@ fn create_job_conn(
         scene_json,
     ))
     .map_err(|e| AppError::Internal(format!("serialize index_map_json: {e}")))?;
+    // scene_json (the map-minting contract, unit 1e) and scene_log_json (the
+    // history, unit 2b) are written by the SAME INSERT — atomic by construction,
+    // so a later restore can cross-check the two against each other.
     conn.execute(
-        "INSERT INTO jobs (id, title, input_content, status, scene_json, index_map_json) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO jobs (id, title, input_content, status, scene_json, index_map_json, scene_log_json) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         params![
             id,
             title,
             input_content,
             JobStatus::Draft.as_str(),
             scene_json,
-            index_map_json
+            index_map_json,
+            scene_log_json
         ],
     )?;
     get_job_conn(conn, &id)
@@ -183,9 +188,16 @@ pub fn create_job(
     title: String,
     input_content: String,
     scene_json: Option<String>,
+    scene_log_json: Option<String>,
 ) -> Result<Job, AppError> {
     let conn = db.lock()?;
-    create_job_conn(&conn, &title, &input_content, scene_json.as_deref())
+    create_job_conn(
+        &conn,
+        &title,
+        &input_content,
+        scene_json.as_deref(),
+        scene_log_json.as_deref(),
+    )
 }
 
 #[tauri::command]
@@ -516,7 +528,7 @@ mod tests {
     fn create_lists_job_as_draft() {
         let (conn, dir) = test_db();
 
-        let job = create_job_conn(&conn, "water opt", "! r2SCAN-3c Opt", None).unwrap();
+        let job = create_job_conn(&conn, "water opt", "! r2SCAN-3c Opt", None, None).unwrap();
         assert_eq!(job.status, JobStatus::Draft);
         assert!(job.started_at.is_none());
         assert!(job.completed_at.is_none());
@@ -536,7 +548,7 @@ mod tests {
         let (conn, dir) = test_db();
 
         let snap = r#"{"version":1,"fragments":[],"multiplicity":1}"#;
-        let job = create_job_conn(&conn, "with scene", "! HF", Some(snap)).unwrap();
+        let job = create_job_conn(&conn, "with scene", "! HF", Some(snap), None).unwrap();
         assert_eq!(job.scene_json.as_deref(), Some(snap));
 
         // Survives a fresh hydration (get + list both read the new column).
@@ -544,6 +556,30 @@ mod tests {
         assert_eq!(reloaded.scene_json.as_deref(), Some(snap));
         let listed = list_jobs_conn(&conn).unwrap();
         assert_eq!(listed[0].scene_json.as_deref(), Some(snap));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn create_persists_and_reloads_scene_log_json() {
+        // Unit 2b: the operation log column (v11) is co-written with scene_json and
+        // reads back on get + list. The store owns the log format; this only checks
+        // the column round-trips the opaque string.
+        let (conn, dir) = test_db();
+
+        let snap = r#"{"version":2,"fragments":[],"multiplicity":1,"nextAtomId":0}"#;
+        let log = r#"{"version":1,"pointer":-1,"entries":[]}"#;
+        let job = create_job_conn(&conn, "with log", "! HF", Some(snap), Some(log)).unwrap();
+        assert_eq!(job.scene_log_json.as_deref(), Some(log));
+
+        let reloaded = get_job_conn(&conn, &job.id).unwrap();
+        assert_eq!(reloaded.scene_log_json.as_deref(), Some(log));
+        let listed = list_jobs_conn(&conn).unwrap();
+        assert_eq!(listed[0].scene_log_json.as_deref(), Some(log));
+
+        // A job with no log → NULL (not empty string) — the legacy restore branch.
+        let bare = create_job_conn(&conn, "no log", "! HF", None, None).unwrap();
+        assert_eq!(bare.scene_log_json, None);
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -565,7 +601,7 @@ mod tests {
     fn create_mints_the_index_map_from_matching_text() {
         let (conn, dir) = test_db();
         let input = "! HF def2-SVP\n* xyz 0 1\nF 0.0 0.0 0.0\nH 0.0 0.0 0.92\n*\n";
-        let job = create_job_conn(&conn, "hf", input, Some(HF_SCENE)).unwrap();
+        let job = create_job_conn(&conn, "hf", input, Some(HF_SCENE), None).unwrap();
         assert_eq!(
             stored_index_map(&conn, &job.id),
             crate::results::StoredIndexMap::Minted(vec![0, 1])
@@ -580,7 +616,7 @@ mod tests {
         // per-atom data). The job is still created (input validity is ORCA's business).
         let (conn, dir) = test_db();
         let input = "! HF\n* xyz 0 1\nH 0.0 0.0 0.92\nF 0.0 0.0 0.0\n*\n"; // reordered
-        let job = create_job_conn(&conn, "hf", input, Some(HF_SCENE)).unwrap();
+        let job = create_job_conn(&conn, "hf", input, Some(HF_SCENE), None).unwrap();
         assert_eq!(job.status, JobStatus::Draft); // not blocked
         match stored_index_map(&conn, &job.id) {
             crate::results::StoredIndexMap::Skipped(reason) => {
@@ -594,7 +630,7 @@ mod tests {
     #[test]
     fn create_without_a_scene_skips_the_map() {
         let (conn, dir) = test_db();
-        let job = create_job_conn(&conn, "raw", "! HF\n* xyz 0 1\nF 0 0 0\nH 0 0 1\n*\n", None).unwrap();
+        let job = create_job_conn(&conn, "raw", "! HF\n* xyz 0 1\nF 0 0 0\nH 0 0 1\n*\n", None, None).unwrap();
         assert!(matches!(
             stored_index_map(&conn, &job.id),
             crate::results::StoredIndexMap::Skipped(_)
@@ -606,7 +642,7 @@ mod tests {
     fn running_sets_started_at() {
         let (conn, dir) = test_db();
 
-        let job = create_job_conn(&conn, "j", "! HF", None).unwrap();
+        let job = create_job_conn(&conn, "j", "! HF", None, None).unwrap();
         update_job_status_conn(&conn, &job.id, "running").unwrap();
 
         let reloaded = get_job_conn(&conn, &job.id).unwrap();
@@ -621,7 +657,7 @@ mod tests {
     fn completed_sets_completed_at() {
         let (conn, dir) = test_db();
 
-        let job = create_job_conn(&conn, "j", "! HF", None).unwrap();
+        let job = create_job_conn(&conn, "j", "! HF", None, None).unwrap();
         update_job_status_conn(&conn, &job.id, "completed").unwrap();
 
         let reloaded = get_job_conn(&conn, &job.id).unwrap();
@@ -655,7 +691,7 @@ mod tests {
     fn set_job_dir_persists() {
         let (conn, dir) = test_db();
 
-        let job = create_job_conn(&conn, "j", "! HF", None).unwrap();
+        let job = create_job_conn(&conn, "j", "! HF", None, None).unwrap();
         set_job_dir_conn(&conn, &job.id, "/data/jobs/abc").unwrap();
 
         let reloaded = get_job_conn(&conn, &job.id).unwrap();
@@ -668,7 +704,7 @@ mod tests {
     fn finalize_sets_status_error_and_timestamp() {
         let (conn, dir) = test_db();
 
-        let job = create_job_conn(&conn, "j", "! HF", None).unwrap();
+        let job = create_job_conn(&conn, "j", "! HF", None, None).unwrap();
         finalize_job_conn(&conn, &job.id, JobStatus::Failed, Some("boom")).unwrap();
 
         let reloaded = get_job_conn(&conn, &job.id).unwrap();

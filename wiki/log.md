@@ -5062,3 +5062,17 @@ new API: `NewJobScreen` (sync → `seedScene`/`collapseFromText`; restore → `r
 dead** — collapse is a logged op, undo re-injects, no second collapse (**control (c)**, a sync
 integration test). Three `scene: null` consumers defined + tested. All three negative controls
 demonstrated red then restored. vitest 511 green, `tsc` 0. Persistence lands in the next commit.
+
+## [2026-08-06] session | feat(jobs): persist scene_log_json; New iteration restores the history (unit 2b)
+
+Schema **v11** — guarded `ALTER TABLE jobs ADD COLUMN scene_log_json TEXT` (nullable, additive,
+like v6/v7/v10). `create_job` writes `scene_log_json` **co-written with `scene_json` in the same
+INSERT** — atomic by construction, so a restore can cross-check the two (the log↔snapshot check of
+`restoreSceneLog`, this session's control (b)). The `Job` struct + `Job::COLUMNS` + `from_row` carry
+it as the 13th column, so `get_job`/`list_jobs` return it to the UI for New iteration; the TS `Job`
+type mirrors it. A GOAT search job writes NULL (no editing history → seeds fresh on iterate). Tests:
+`create_persists_and_reloads_scene_log_json` (round-trip + NULL for a bare job) and
+`migrate_v10_to_v11_adds_scene_log_json_and_preserves_jobs` (preservation). The 1e map-minting
+contract is **untouched** — minting still reads `scene_json`, as before. `cargo test --workspace`
+green. Wiki: `tauri-core.md` (v11 migration + cross-check), ADR-017 amendment, `scene.md`. **Stage 2
+units 2a+2b done; next: 2c (dumb renderer + AtomId pipeline).**

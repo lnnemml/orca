@@ -16,7 +16,7 @@ never runs a binary). The runtime mechanics of running ORCA live in
 ## Files
 
 - `lib.rs` — Tauri builder, setup hook, exit handling, invoke-handler registration.
-- `db.rs` — SQLite open + versioned migrations (v1–v10).
+- `db.rs` — SQLite open + versioned migrations (v1–v11).
 - `results.rs` — store/read parsed results (all four artifact readers) into the `results` table
   (ADR-012); the completion hook lives in `local_backend`. See `modules/artifact-readers.md`.
 - `orca_json.rs` — spawn `orca_2json` (ADR-009), lazy-cached gbw→JSON in the job dir (unit 3.7).
@@ -101,10 +101,20 @@ survives a restart.
   artifact via a **scene-sourced** anchor, so a corrupted stored map is caught — see
   `modules/artifact-readers.md`); a skip / NULL / legacy row falls back to the derived identity map
   (unit 1d). A clone / "new iteration" mints its OWN map (it runs through `create_job`).
+- **v11** — additive `ALTER TABLE jobs ADD COLUMN scene_log_json TEXT` (nullable, guarded `ALTER` like
+  v6/v7/v10; ADR-017 unit 2b). Holds the serialized **operation log** (log format v1, scenes v2
+  inside), **co-written with `scene_json` in the same INSERT** at `create_job` — so the two are atomic
+  and a later restore can cross-check them. The frontend's `restoreSceneLog` honours the log only if
+  its current snapshot equals `scene_json`; on a mismatch the **log is rejected (named reason) and the
+  snapshot wins** — `scene_json` (the map-minting contract above) stays more authoritative than the
+  history. NULL for pre-v11 / no-scene jobs (a legacy job seeds a fresh log on New iteration). The
+  `Job` struct + `Job::COLUMNS` carry `scene_log_json` as the 13th column so `get_job`/`list_jobs`
+  return it to the UI.
 - The queue statuses (`queued`, `cancelled`) and `parsed` needed **no migration** — `status` is TEXT.
 - Migration tests assert preservation across each step (…`migrate_v6_to_v7_adds_homo_lumo_gap`,
   `migrate_v7_to_v8_backfills_energy_from_results`, `migrate_v8_to_v9_adds_manual_tables_and_preserves_data`,
-  `migrate_v9_to_v10_adds_index_map_json_and_preserves_jobs`; version assertions use `SCHEMA_VERSION`,
+  `migrate_v9_to_v10_adds_index_map_json_and_preserves_jobs`,
+  `migrate_v10_to_v11_adds_scene_log_json_and_preserves_jobs`; version assertions use `SCHEMA_VERSION`,
   not a literal). A separate `fts5_is_available_with_ranking_and_snippet`
   test gates the bundled SQLite's FTS5 support (Phase 4 / ADR-013 stands on it) — not a migration.
   Verified against a copy of the real DB: 13 existing jobs preserved across 3→4.
@@ -121,7 +131,9 @@ the per-atom counts and element order survived serialization. Details: `results.
 **`scene_json` semantics** (ADR-008 #5 + amendment): a versioned `SceneFragment` snapshot written
 **once at create time** — the job's input is immutable, so its snapshot is too (no update path). It
 **annotates** `input_content`; the text stays authoritative for geometry (the frontend's
-`restoreScene` reconciles them).
+`restoreScene` reconciles them). **`scene_log_json`** (v11, ADR-017 unit 2b) rides alongside it —
+the operation log, co-written in the same INSERT and cross-checked against `scene_json` on New
+iteration (a diverged log is rejected, the snapshot wins).
 
 ## Models (`models/`)
 
@@ -173,7 +185,7 @@ runs `terminate_on_exit` synchronously; `Drop` on `SidecarManager` is the backst
 
 - **Settings:** `get_settings() -> HashMap<String,String>`, `set_setting(key, value)`,
   `get_sidecar_status() -> SidecarStatus { status, port, version, expected_version }`.
-- **Jobs:** `create_job(title, input_content, scene_json: Option<String>) -> Job` (UUID, inserts
+- **Jobs:** `create_job(title, input_content, scene_json: Option<String>, scene_log_json: Option<String>) -> Job` (UUID, inserts
   `draft`, snapshot written once); `list_jobs() -> Vec<Job>` (`created_at DESC`); `get_job(id)`
   (`NotFound`); `update_job_status(id, status)` (stamps `started_at` on `running`, `completed_at`
   on `completed`/`failed`/`cancelled`); `submit_job(app, id)` (enqueues, returns at once — needs
