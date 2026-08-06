@@ -591,12 +591,14 @@ owner, because it was handed a thing already declared a block-option. So Part E'
 simple-word-as-block-option and right-kind-wrong-block — are **one defect: the TYPE was inferred from
 OUR application, not from the manual.**
 
-**Pattern 1 — our knowledge substituting for a measurement of the subject (collected, all six).** Our
-knowledge is not forbidden; it must not become the **source** where a run should be — it gets its own
-channel with provenance, and the check asks the subject (the manual; and, in the sixth, the API). The
-same defect appeared **six times**. The first five are the manual-indexing instances (the module
-[modules/manual-keywords.md](../modules/manual-keywords.md) carries those five); the sixth is
-cross-domain (the API-key work, unit 4.16) and lives only here — the pattern is not the manual's alone:
+**Pattern 1 — our knowledge (or our tool's reach) substituting for a measurement of the subject
+(collected, all seven).** Our knowledge is not forbidden; it must not become the **source** where a
+run should be — it gets its own channel with provenance, and the check asks the subject (the manual;
+the API in the sixth; the whole file in the seventh). The same defect appeared **seven times**. The
+first five are the manual-indexing instances (the module
+[modules/manual-keywords.md](../modules/manual-keywords.md) carries those five); the sixth and seventh
+are cross-domain (the API-key work, unit 4.16; the xtb-tail diagnosis, unit 2c1) and live only here —
+the pattern is not the manual's alone:
 1. **`%maxcore` "covered"** — the gate measured in *our* notation (string-normalised), so a `%maxcore`
    directive matched a `MAXCORE` block-option.
 2. **`46/46` held** — the expectation set was assembled from *our* builder's output, so it could only
@@ -627,8 +629,24 @@ cross-domain (the API-key work, unit 4.16) and lives only here — the pattern i
    condition, [architecture/adr-015-api-key-storage.md](../architecture/adr-015-api-key-storage.md).)*
    Recorded with its source named because **the pattern has no owner** — it issues from the architect as
    readily as from a gate or from Claude Code, and that ownerlessness is part of the lesson.
-Each fix was the same shape: give our knowledge its own attributed channel and let the check ask the
-subject — the manual for the first five, the live API for the sixth.
+7. **an absence claim measured with a presence-only tool (the xtb-tail diagnosis, unit 2c1)** — while
+   diagnosing the xTB completion bug ([debugging/012](../debugging/012-xtb-completion-gate-both-ways.md)),
+   `normal termination` was declared **absent** from the author's `xtb.out` on the strength of a
+   `tail -35` plus a case-sensitive grep of error patterns — **without grepping the line itself over the
+   whole file**. It was there, at **line 1492/1533 — 41 lines from the end**, buried under the post-opt
+   Wiberg bond-order table (unbuffered stderr prints early, the large buffered stdout block flushes after;
+   the **burial depth GROWS with system size** — hence the "~14 lines" seen on the small 2.5.5 systems).
+   On that false absence a theory of **teardown-death of the build** was erected, and the real difference
+   between the builds (`builduser` vs `stahn`) was handed a **causal status it never earned**. The root
+   was our own `tail(30)` gate; **Claude Code found it by going to the live kept-dirs instead of trusting
+   the narrative** (the same "the evidence is the log" discipline as debugging/006). The distinction here
+   is not knowledge-vs-run but **tool-scope-vs-claim**: `tail` / a fixed window / a case-sensitive grep are
+   **presence detectors** — they can confirm a string is *there*, never that it is *absent*. **An absence
+   claim requires a whole-file, case-insensitive search, or it is not measured.** (A second instance of the
+   same in this project — the "Layer 1 of 3" grep, `ROADMAP`.)
+Each fix was the same shape: give our knowledge (or our tool's silence) its own attributed channel and
+let the check ask the subject — the manual for the first five, the live API for the sixth, a
+whole-file search for the seventh.
 
 **Pattern 2 — the adjacent-measurement trap (a DISTINCT pattern; three instances).** Not "we measured
 ourselves" but "a number measured an **adjacent** quantity and was read as the answer to the actual

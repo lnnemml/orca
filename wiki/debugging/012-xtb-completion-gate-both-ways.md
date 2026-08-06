@@ -87,3 +87,7 @@ FAILED scan makes the classifier accept the non-converged fixture — shown red,
 - `wiki/orca/xtb.md` — the completion-signals table (this measurement, as a domain fact).
 - `wiki/debugging/006-xtb-empty-input-hang.md` — the earlier xtb 6.6.1 quirk; same "keep the dir on
   failure, the evidence is the log" discipline that made this findable.
+- `wiki/orca/manual-sources.md` Part F, **Pattern 1 instance 7** — the *diagnosis* lesson from this
+  bug: `normal termination` was first declared absent on a `tail -35` + case-sensitive grep (a
+  presence-only tool), and a build-teardown theory was built on that false absence. An absence claim
+  needs a whole-file, case-insensitive search or it is not measured.
