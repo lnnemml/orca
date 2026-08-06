@@ -56,8 +56,10 @@ bond topology from an equilibrium geometry and coordinate-update per frame — m
 
 ADR-008 #2/#3: a Scene renders as **one 3Dmol model, styled by atom index range** — never
 model-per-fragment (a single model keeps one index space end to end; per-model indices reset to 0
-and would need an indirection layer). Coordinates come from `mergeToXyz(scene)`; `fragmentRanges(scene)`
-(start-inclusive, end-exclusive) gives each fragment's global range. Base CPK ball-and-stick on all
+and would need an indirection layer). Geometry comes from **`buildViewerFeed(scene)`** (unit 2c1),
+which returns the merged xyz **and** its `AtomId↔viewer-index` table from one pass over the same atoms
+— the model 3Dmol draws and the table picks resolve through are the same object, not two states kept
+in sync. `fragmentRanges(scene)` (start-inclusive, end-exclusive) gives each fragment's global range. Base CPK ball-and-stick on all
 atoms, then fragments **1+** get `setStyle({index:[…]}, {stick:{color}, sphere:{scale:0.3,color}})`.
 **Fragment 0 keeps CPK** — the substrate must not recolour when a reagent is added (a hard
 requirement; a single-fragment scene looks identical to the plain render). The per-fragment colour
@@ -66,23 +68,36 @@ comes from the theme's palette (see Themes).
 - **The `index` selector is confirmed in WebKitGTK**, not just Chromium: a water (0–2) + BH₄⁻ (3–7)
   probe in the `webkit2gtk-4.1` MiniBrowser (the `debugging/002` technique) styled exactly
   `[3,4,5,6,7]` (read back from each atom's `.style.stick.color`) — **not** `[0,1,2,3,4]`, confirming
-  `fragmentRanges` end-exclusive has no off-by-one, and fragment 0 stayed CPK. All picking keys off
-  this same 0-based `atom.index` (pick index = merged-xyz line = Scene global index = ASE mask index).
+  `fragmentRanges` end-exclusive has no off-by-one, and fragment 0 stayed CPK. 3Dmol's 0-based
+  `atom.index` is the **viewer index** (= merged-xyz line); the feed's table maps it to the atom's
+  stable `AtomId`, which is what leaves the viewer (2c1) — `atom.index` never escapes as an app id.
 - **`zoomTo` only on composition change.** A ref holds a composition signature (`id:size` per
   fragment, **not** coordinates); `zoomTo` fires only when it changes (atoms added/removed). A
   coordinate-only edit re-renders without moving the camera — essential for the edit loop (type an
   angle → apply → look → adjust). The legacy `xyzData` path keeps its always-`zoomTo` behaviour.
 
-## Atom picking
+## Atom picking (AtomId out, unit 2c1)
 
-- **`onAtomPick?: (globalIndex) => void` is the on-switch for clickability** — `pickable =
+- **`onAtomPick?: (pick: AtomPick) => void` is the on-switch for clickability** — `pickable =
   onAtomPick != null` gates the only `setClickable` call; absent → display-only, byte-for-byte as
-  before. Only `NewJobScreen` passes it.
+  before. Only `NewJobScreen` passes it. `AtomPick = { atomId, viewerIndex }`: `atomId` is the stable
+  identity consumers key on; `viewerIndex` is the raw `atom.index`, **viewer space**, carried for
+  diagnostics only — never used as an app id (that is the coupling 2c1 severs).
 - **`setClickable({}, true, cb)` is re-armed inside the model effect**, after every
   `removeAllModels`/`addModel` — the atom objects that carry the `clickable` flag are rebuilt on each
-  geometry change, so the flag must be reapplied or picking silently dies after the first edit.
-- In the callback we read **`atom.index`**, never `atom.serial` (ADR-008 #3). `onAtomPick` is read
-  through a **ref** so an inline parent handler doesn't rebuild the model every render.
+  geometry change, so the flag must be reapplied or picking silently dies after the first edit. The
+  table (`viewerTableRef`) is set in the **same effect run**, from the **same `buildViewerFeed`**, so
+  it always names the geometry just drawn; the non-scene paths (xyz / orbital / animation) clear it,
+  and it is nulled on unmount — a stale table can never resolve a pick.
+- In the callback we read **`atom.index`** (never `atom.serial` — ADR-008 #3) and resolve it through
+  the table: `table.atomIdAt(atom.index) → AtomId`. **Post-condition (domain rule #9):** if the table
+  has no id for that drawn index, the callback emits **nothing** rather than a guessed id — an
+  unresolvable click is dropped, never mapped to the wrong atom. `onAtomPick` is read through a **ref**
+  so an inline parent handler doesn't rebuild the model every render.
+- **The 2c1→2c2 seam:** `selection`/`measure`/`edit-plan`/`constraints` still key on the positional
+  global index; `NewJobScreen` has one named adapter that converts the pick's `AtomId` back to a
+  global index via `buildViewerAtomTable(scene).viewerIndexOf(...)` (TODO(2c2): deleted when the
+  pipeline moves onto `AtomId`).
 
 ## The overlay effect (one owner of all shapes & labels)
 
@@ -92,6 +107,14 @@ effect keyed on `[selection, scene, showAtomNumbers, theme]` — the **only** pl
 re-add → `render()` with **no `zoomTo` and no model reload**, so a selection/number/theme change
 never moves the camera. On a coordinate-only edit the model effect still re-renders (new `scene` ref)
 so overlays follow atoms to their new positions.
+
+- **Fed through the table (2c1).** The overlay builds `buildViewerAtomTable(scene)` and an `AtomId→atom`
+  map, and resolves each halo/mask entry by *global index → AtomId → atom* rather than indexing the
+  atom array directly. The **number** a label shows is the atom's viewer index **read from the table**
+  (`table.viewerIndexOf(id)`), not the loop counter that merely coincides with it — the source is the
+  table, not an accident. The value shown is unchanged (still the positional 0-based number; renaming
+  the index *space* in the UI is 2c2). `drawMeasurement` is still positional — it is driven by
+  `measure.ts`, a consumer frozen for 2c1 and moved to `AtomId` in 2c2.
 
 - **Selection halo = translucent wireframe cage** (`addSphere`, not `setStyle` — a style override
   would clobber the per-fragment index-range colours). **Sized per element:** 3Dmol draws each atom

@@ -63,6 +63,14 @@ the core and is **never** a source of truth — not for geometry, not for select
 mapped back to `AtomId` through that table. This is exactly ADR-010's migration Phase 2 shape,
 and it is where the editor lives until the spike justifies moving to `orcastudio-render`.
 
+**Realized in unit 2c1:** `buildViewerFeed(scene)` (`src/scene/scene.ts`) returns the geometry **and**
+its `AtomId↔viewer-index` table from one pass, so the model 3Dmol draws and the table clicks resolve
+through are one object; `onAtomPick` returns an `AtomId` (raw `atom.index` carried only as a diagnostic
+`viewerIndex`); the reads-from-3Dmol audit found the boundary intact (`3dmol` imported in one file,
+only the two sanctioned reads `pngURI` / the app-owned animation model). The consumers still key on a
+positional index behind one named `2c1→2c2` adapter; moving them onto `AtomId` is 2c2. See
+[modules/editor-ui.md](../modules/editor-ui.md) and [modules/visualization.md](../modules/visualization.md).
+
 ## References
 
 - [`proposals/editor-architecture-2026-07-30.md`](proposals/editor-architecture-2026-07-30.md)

@@ -20,6 +20,7 @@
  */
 
 import { carryIds, stampFreshIds } from "./ids";
+import type { AtomId } from "./ids";
 import {
   FRAGMENT_SOURCES,
   type FragmentSource,
@@ -111,6 +112,86 @@ export function mergeToAtomLines(scene: Scene): string[] {
 export function mergeToXyz(scene: Scene, comment = ""): string {
   const rows = mergeToAtomLines(scene);
   return `${rows.length}\n${comment}\n${rows.join("\n")}\n`;
+}
+
+// ── The viewer feed: geometry + AtomId↔viewer-index table, born together ──────
+//
+// 3Dmol is a dumb renderer (ADR-010 I1 / ADR-011): it is handed one geometry and
+// an AtomId↔viewer-index table, and is never a source of truth. "Viewer index" is
+// 3Dmol's `atom.index` on an xyz model — the merged-xyz LINE order, which is
+// exactly `allAtoms(scene)` order (fragment order, then in-fragment). That is the
+// ONLY coupling between our index space and 3Dmol's, and it is made explicit here
+// rather than left as a coincidence a caller must re-derive (ADR-008 #3).
+
+/**
+ * The mapping between a Scene atom's stable {@link AtomId} and its position in the
+ * geometry handed to 3Dmol (the "viewer index" == merged-xyz line == 3Dmol
+ * `atom.index`). Both directions, total over the scene it was built from. It is a
+ * pure snapshot: it holds no live reference to the scene and is rebuilt whenever
+ * the geometry is (never mutated in place), so it cannot drift out from under the
+ * geometry it names.
+ */
+export interface ViewerAtomTable {
+  /** AtomId drawn at this viewer index, or `undefined` if out of range. */
+  atomIdAt(viewerIndex: number): AtomId | undefined;
+  /** Viewer index of this AtomId, or `undefined` if absent from the scene. */
+  viewerIndexOf(id: AtomId): number | undefined;
+  /** Number of atoms == number of drawn viewer indices (0..length-1). */
+  readonly length: number;
+}
+
+/**
+ * Geometry + its companion table, produced by ONE pass so they cannot disagree.
+ * This is the whole point of unit 2c1: the table is not a second piece of state
+ * that "also has to be updated" — it is a return value of the same function that
+ * forms the geometry, from the same atom sequence.
+ */
+export interface ViewerFeed {
+  /** The merged xyz string handed to 3Dmol's `addModel`. */
+  xyz: string;
+  /** Its AtomId↔viewer-index table, over the exact same atom order. */
+  table: ViewerAtomTable;
+}
+
+/** Wrap a viewer-index→AtomId list as a two-way {@link ViewerAtomTable}. The
+ * reverse map is a bijection because AtomIds are unique within a Scene (the
+ * `nextAtomId` invariant); `buildViewerFeed`/`buildViewerAtomTable` are the only
+ * builders, so no caller can construct an inconsistent one. */
+function makeViewerAtomTable(idsByViewerIndex: readonly AtomId[]): ViewerAtomTable {
+  const indexById = new Map<AtomId, number>();
+  idsByViewerIndex.forEach((id, i) => indexById.set(id, i));
+  return {
+    atomIdAt: (i) => idsByViewerIndex[i],
+    viewerIndexOf: (id) => indexById.get(id),
+    length: idsByViewerIndex.length,
+  };
+}
+
+/**
+ * Form the geometry 3Dmol will draw AND the AtomId↔viewer-index table for it, in
+ * a SINGLE pass over `allAtoms(scene)`. The viewer calls exactly this at the
+ * drawing site, so the model it builds and the table it resolves picks through
+ * come from one function, one atom sequence — they are the same object, not two
+ * states kept in sync. The rows are byte-identical to {@link mergeToXyz} (same
+ * `atomRow`), so nothing about the drawn geometry changes.
+ */
+export function buildViewerFeed(scene: Scene, comment = ""): ViewerFeed {
+  const atoms = allAtoms(scene);
+  const rows = atoms.map(atomRow);
+  const table = makeViewerAtomTable(atoms.map((a) => a.id));
+  return { xyz: `${rows.length}\n${comment}\n${rows.join("\n")}\n`, table };
+}
+
+/**
+ * The table alone (no xyz), for a consumer that must map AtomId→viewer index
+ * without rebuilding the geometry string — the 2c1→2c2 boundary adapter in
+ * `NewJobScreen`. It is the SAME pure derivation `buildViewerFeed` uses (same
+ * `allAtoms` order, same `makeViewerAtomTable`), so a table from here and the
+ * feed's table are identical for a given scene — recomputed from the current
+ * scene, never a stored copy that could lag.
+ */
+export function buildViewerAtomTable(scene: Scene): ViewerAtomTable {
+  return makeViewerAtomTable(allAtoms(scene).map((a) => a.id));
 }
 
 // ── Aggregates ───────────────────────────────────────────────────────────────

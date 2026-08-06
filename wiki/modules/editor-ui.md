@@ -1,6 +1,6 @@
 # Module: editor UI (the New Job workspace)
 
-**Status:** Phase 4.2 unit 2b-ux. The New Job screen (`src/screens/NewJobScreen.tsx`) is a
+**Status:** Phase 4.2 unit 2c1. The New Job screen (`src/screens/NewJobScreen.tsx`) is a
 **viewer-first workspace**: the 3Dmol canvas is the primary surface, and the geometry panels live in
 a **right dock** (`src/scene/EditorDock.tsx`) that is a thin icon rail expanding per section. This
 page records the **layout principle and where future panels go** — not the current CSS pixel values
@@ -45,6 +45,53 @@ width (and flips the split ratio), which changes the viewer's flex box, which fi
 exactly the path fullscreen and the split-panel resize already use. **No per-toggle `viewer.resize()`
 call exists** (that would be a second, ad-hoc mechanism). If a future layout change ever fails to
 fire the observer under WebKitGTK, that is a new `debugging/` page, not a scattered fix.
+
+## Feeding the viewer: geometry + AtomId table, one function (unit 2c1)
+
+3Dmol is a **dumb renderer** (ADR-010 / ADR-011): it is handed one geometry and, alongside it, an
+`AtomId↔viewer-index` table, and is never a source of truth. The contract that keeps that honest:
+
+- **The table is built by the SAME function that forms the geometry.** `buildViewerFeed(scene)`
+  (in `scene.ts`) returns `{ xyz, table }` from one pass over `allAtoms(scene)` — the model 3Dmol
+  draws and the table picks resolve through come from one call, one atom sequence. The table is **not**
+  a second piece of state that "also has to be updated"; it is a return value of the geometry builder.
+  A construction where the table could drift from the geometry in even one code path is *wrong*, not
+  "needs care" — the failure is silent and the worst kind (a click returns a *different* atom's id and
+  everything downstream succeeds with the wrong atom). `MoleculeViewer` sets its `viewerTableRef` in
+  the same effect run that calls `addModel`, and clears it on the non-scene paths — see
+  [visualization.md](visualization.md) "Atom picking".
+- **Picking returns an `AtomId`.** `onAtomPick(pick: AtomPick)` where `AtomPick = { atomId, viewerIndex }`.
+  `viewerIndex` is 3Dmol's raw `atom.index` — **viewer space, diagnostics only**, never an app id.
+- **The 2c1→2c2 seam.** `selection` / `measure` / `edit-plan` / `constraints` still key on the
+  positional global index (they move to `AtomId` in 2c2). At the boundary sits **one** explicit, named
+  adapter in `NewJobScreen.onAtomPick`: it converts the pick's `AtomId` back to a global index via
+  `buildViewerAtomTable(scene).viewerIndexOf(...)` (the same pure table derivation, recomputed from the
+  current scene — no stored copy to lag). It carries a `TODO(2c2)` and is deleted when the pipeline
+  keys on `AtomId` directly (and `selectionSurvives` gains its removal dividend — see below).
+
+## Reads from 3Dmol — the ADR-011 audit (unit 2c1)
+
+The whole app imports `3dmol` in **one file** (`MoleculeViewer.tsx`) — the single renderer boundary.
+Every place that pulls state *out* of 3Dmol was swept; only two exist, both conscious exceptions with
+the coordinate-of-a-click read added by picking:
+
+- **`viewer.pngURI()`** (`toPngBytes`, unit 3.16) — reads the rendered buffer to export a PNG.
+  Sanctioned by ADR-011 verbatim ("the app requests it; the viewer produces it from what it drew"):
+  it is *output from what was drawn*, not a truth-read.
+- **`anim.model.selectedAtoms({})`** (frozen-topology animation, unit 3.14) — reads the atom objects of
+  a model **the app itself built and holds** as the animation vehicle, to write the next frame's
+  coordinates in place (and, in DEV only, to count drawable bonds — a diagnostic). Not 3Dmol as a
+  source of geometry/selection/picking truth; the app owns this model deliberately. Documented in
+  [visualization.md](visualization.md).
+- **`atom.index` inside the pick callback** — the *identity of the clicked atom*, immediately resolved
+  to an `AtomId` through the feed's table (ADR-011: "clicks are mapped back to AtomId through that
+  table"). This is the one read the renderer boundary is *supposed* to have.
+
+Not viewer reads (false positives worth recording so a future audit doesn't re-flag them):
+`editor.getModel()` in `selection-panel.ts` is **Monaco**, not 3Dmol; `results.trajectory.frames` in
+`ResultsCard` reads **our parsed results**. No consumer (`ModeAnimator`, `OrbitalPanel`,
+`TrajectoryPlayer`, `MoleculesScreen`, `JobDetailScreen`, `NewJobScreen`) reads 3Dmol internals — they
+feed it via props only.
 
 ## Where future panels go
 

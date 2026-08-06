@@ -5120,3 +5120,34 @@ GOAT` via ORCA) does **not** share this gate — untouched. Spawn/killpg/isolati
 untouched; cancel/timeout stay gates. `cargo test --workspace` green (+6 xtb tests, 182 lib);
 frontend unchanged. Wiki: `orca/xtb.md` (Pattern-2 correction — completion-signals table),
 `+debugging/012`, `tauri-core.md`, index.md.
+
+## [2026-08-06] session | feat(viewer): 3Dmol becomes a dumb renderer — AtomId↔viewer table (unit 2c1)
+3Dmol is now fed geometry **and** an `AtomId↔viewer-index` table built by the SAME function, and
+returns picks as `AtomId` (ADR-010 I1 / ADR-011). **The table cannot drift from the geometry:**
+`buildViewerFeed(scene)` (`src/scene/scene.ts`) returns `{ xyz, table }` from one pass over
+`allAtoms(scene)` — the model `addModel` draws and the table the pick handler resolves through are one
+object, not two states kept in sync. `MoleculeViewer` sets `viewerTableRef` in the same effect run
+that builds the model and **clears it on every non-scene path** (xyz/orbital/animation) + unmount, so
+a stale table can never resolve a pick. **Picking → `AtomId`:** `onAtomPick(pick: AtomPick)` with
+`AtomPick = { atomId, viewerIndex }`; `viewerIndex` is the raw `atom.index`, **viewer space,
+diagnostics only** — never an app id. Post-condition (rule #9): an unresolvable click emits **nothing**
+rather than a guessed id. **Overlay fed through the table:** halo/mask resolve *global index → AtomId →
+atom*; the number a label shows is `table.viewerIndexOf(id)` (the same positional value, but sourced
+from the table, not a loop-counter coincidence). Value unchanged — renaming the index *space* in the UI
+is 2c2. **2c1→2c2 seam:** consumers (`selection`/`measure`/`edit-plan`/`constraints`) stay positional
+behind ONE named adapter in `NewJobScreen.onAtomPick` (`buildViewerAtomTable(scene).viewerIndexOf`,
+`TODO(2c2)`). **Reads-from-3Dmol audit (ADR-011):** `3dmol` imported in one file; only two reads —
+`pngURI()` (output from what was drawn, sanctioned) and the app-owned frozen-topology animation model
+(`selectedAtoms({})`, unit 3.14) — both named in `editor-ui.md`; `getModel()` in `selection-panel.ts`
+is Monaco (false positive). **Tests:** `viewer-atom-table.test.ts` — bijection + order-consistency,
+byte-identical to `mergeToXyz`, same-physical-atom-after-remove; **negative controls** (a) a stale
+table (not rebuilt with the geometry) resolves a drawn slot to a now-removed atom, (b) a reversed table
+on **asymmetric** fragments (3+2) returns a **cross-fragment** atom — both demonstrated bites (the live
+reversal also drove the positive bijection/identity tests red: `expected 5 to be 0`, `expected 1 to be
+3`; restored). `tsc`/vitest (517) green; no Rust touched. Also **docs-rider (Part F, Pattern 1 #7):**
+the xtb-tail absence claim — `normal termination` declared absent on `tail -35` + case-sensitive grep
+(a **presence-only** tool) without a full-file search; the line was at 1492/1533, and a build-teardown
+theory was built on the false absence. Rule: **an absence claim needs a whole-file, case-insensitive
+search or it is not measured.** Cross-ref `debugging/012`. Wiki: `editor-ui.md` (feed contract, seam,
+audit), `visualization.md` (feed source, picking, overlay), `adr-011`, `manual-sources.md` Part F,
+ROADMAP 2c1 → [x]. **Next:** 2c2 — pipeline onto `AtomId`, the `selectionSurvives` removal dividend.

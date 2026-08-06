@@ -534,9 +534,12 @@ Stage 3, where it is actually needed.)
       toggle + fullscreen), same as the split-panel resize; no per-toggle call. *Why before 2c:*
       viewer-first is the frame the AtomId-picking work (2c) plugs into, and a usable workspace makes
       testing the rest of Stage 2 far easier. See `wiki/modules/editor-ui.md`.
-- [ ] **2c1 — 3Dmol becomes a dumb renderer.** It is handed geometry + an `AtomId → viewer index`
+- [x] **2c1 — 3Dmol becomes a dumb renderer.** It is handed geometry + an `AtomId → viewer index`
       table and is never a source of truth (ADR-010 / ADR-011); picking resolves through the table to
-      an `AtomId`.
+      an `AtomId`. `buildViewerFeed(scene)` returns geometry **and** table from one pass (they cannot
+      drift); `onAtomPick` returns an `AtomId` (raw `atom.index` kept only as a diagnostic
+      `viewerIndex`); reads-from-3Dmol audit clean (one import site, two sanctioned reads). Consumers
+      stay positional behind one named `2c1→2c2` adapter. See `wiki/modules/editor-ui.md`.
 - [ ] **2c2 — the pipeline moves onto `AtomId` + the `selectionSurvives` dividend (agreed after
       1b).** `selection.ts` / `measure.ts` / `edit-plan.ts` / `constraints.ts` key on `AtomId`
       instead of a positional global index. Stable identity gives, for the first time, an operational

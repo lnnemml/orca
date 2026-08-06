@@ -4,7 +4,14 @@ import { createViewer, GLModel, VolumeData, elementColors, type GLViewer, type G
 import { dataUrlToBytes } from "../export/png";
 
 import type { Scene, SceneAtom } from "../scene/types";
-import { compositionSignature, fragmentRanges, mergeToXyz } from "../scene/scene";
+import type { AtomId } from "../scene/ids";
+import {
+  buildViewerAtomTable,
+  buildViewerFeed,
+  compositionSignature,
+  fragmentRanges,
+  type ViewerAtomTable,
+} from "../scene/scene";
 import { measureSelection, formatMeasurementValue } from "../scene/measure";
 import { highlightRadius, vdwTableDrift } from "./highlight";
 import { DEFAULT_THEME, cpkColorDrift, type ViewerTheme } from "./theme";
@@ -36,13 +43,16 @@ interface MoleculeViewerProps {
    */
   selection?: number[];
   /**
-   * Atom-pick callback (2.5.2a). **Presence of this prop is what turns
-   * clickability on** — without it the viewer is display-only (Molecules screen,
-   * the Job-detail conformer panel), exactly as before. Receives the 0-based
-   * `atom.index` (== merged-xyz line == Scene global index; never `atom.serial`
-   * — ADR-008 decision 3).
+   * Atom-pick callback (2.5.2a; AtomId in 2c1). **Presence of this prop is what
+   * turns clickability on** — without it the viewer is display-only (Molecules
+   * screen, the Job-detail conformer panel), exactly as before. Receives a
+   * {@link AtomPick}: the stable {@link AtomId} of the clicked atom (resolved
+   * through the feed's table — never a raw viewer index leaking out as an app id),
+   * plus the raw `atom.index` labelled `viewerIndex` for diagnostics only. The
+   * viewer is a dumb renderer (ADR-010 / ADR-011): the identity it returns is the
+   * one the core minted, mapped back from what 3Dmol drew.
    */
-  onAtomPick?: (globalIndex: number) => void;
+  onAtomPick?: (pick: AtomPick) => void;
   /**
    * Label every atom with its **global 0-based index** (2.5.2e-1). Default
    * false, so the Molecules screen and the Job-detail conformer panel are
@@ -121,6 +131,20 @@ interface MoleculeViewerProps {
    * scene editor is always ball-and-stick. */
   representation?: Representation;
   style?: React.CSSProperties;
+}
+
+/**
+ * The result of clicking an atom (2c1). `atomId` is the stable identity the rest
+ * of the app keys on; `viewerIndex` is 3Dmol's raw `atom.index` — **viewer
+ * space**, carried only for diagnostics and never to be used as an app id (that
+ * is the coupling 2c1 severs). A consumer that still needs a positional global
+ * index resolves `atomId` back through a `ViewerAtomTable` — it does not read
+ * `viewerIndex`.
+ */
+export interface AtomPick {
+  atomId: AtomId;
+  /** Raw 3Dmol `atom.index` — VIEWER SPACE, diagnostics only. */
+  viewerIndex: number;
 }
 
 /** Isosurface colours — the two wavefunction phases. Sign is PHASE, not charge; the
@@ -333,6 +357,13 @@ export const MoleculeViewer = forwardRef<MoleculeViewerHandle, MoleculeViewerPro
   // Last scene composition rendered — drives the zoom-only-on-composition-change
   // rule. `null` means "nothing/only-xyz rendered so far".
   const lastCompositionRef = useRef<string | null>(null);
+  // The AtomId↔viewer-index table for the geometry CURRENTLY drawn (2c1). Set in
+  // the model effect from the SAME `buildViewerFeed` call that builds the model,
+  // so it can never name a different geometry than the one on screen. The pick
+  // handler reads it to map 3Dmol's `atom.index` back to the stable AtomId. `null`
+  // whenever the scene path is not active (xyz / orbital / animation paths draw no
+  // pickable scene). Non-scene paths clear it so a stale table can't resolve a pick.
+  const viewerTableRef = useRef<ViewerAtomTable | null>(null);
   // Latest onAtomPick, read through a ref so the model effect (which re-arms
   // setClickable) doesn't need onAtomPick in its dependency list — an inline
   // callback would otherwise rebuild the model on every render.
@@ -412,6 +443,7 @@ export const MoleculeViewer = forwardRef<MoleculeViewerHandle, MoleculeViewerPro
       viewer.clear(); // drop models/shapes and release the WebGL context
       viewerRef.current = null;
       lastCompositionRef.current = null;
+      viewerTableRef.current = null;
       animRef.current = null;
       volDataRef.current = null;
       isoShapesRef.current = [];
@@ -442,6 +474,7 @@ export const MoleculeViewer = forwardRef<MoleculeViewerHandle, MoleculeViewerPro
     const orbCube = !scene && orbitalCube?.trim() ? orbitalCube : null;
     if (orbCube) {
       animRef.current = null;
+      viewerTableRef.current = null; // not a pickable scene — no table
       viewer.removeAllModels();
       viewer.addModel(orbCube, "cube");
       viewer.setStyle({}, baseStyle(representation));
@@ -464,6 +497,7 @@ export const MoleculeViewer = forwardRef<MoleculeViewerHandle, MoleculeViewerPro
         ? bondTopologyReference.trim()
         : null;
     if (frozenRef) {
+      viewerTableRef.current = null; // frozen-topology animation — not a pickable scene
       let anim = animRef.current;
       const firstBuild = !anim || anim.source !== frozenRef;
       if (firstBuild) {
@@ -500,9 +534,17 @@ export const MoleculeViewer = forwardRef<MoleculeViewerHandle, MoleculeViewerPro
     if (animRef.current) animRef.current = null;
 
     viewer.removeAllModels();
+    // Default to no table; only the scene branch below installs one (the xyz and
+    // empty branches draw nothing pickable).
+    viewerTableRef.current = null;
 
     if (scene && scene.fragments.length > 0) {
-      viewer.addModel(mergeToXyz(scene), "xyz");
+      // Geometry AND its AtomId↔viewer-index table from ONE call (2c1): the model
+      // 3Dmol draws and the table the pick handler resolves through are the same
+      // object, built from the same atom sequence — they cannot disagree.
+      const feed = buildViewerFeed(scene);
+      viewer.addModel(feed.xyz, "xyz");
+      viewerTableRef.current = feed.table;
       // Base ball-and-stick with CPK element colours for every atom — with the
       // theme's low-contrast element overrides folded in (light/white), so
       // fragment 0 (the CPK fragment) is legible on the background...
@@ -524,12 +566,18 @@ export const MoleculeViewer = forwardRef<MoleculeViewerHandle, MoleculeViewerPro
         );
       });
 
-      // Arm atom picking (2.5.2a) — only when a pick handler is present, and
-      // re-armed here because removeAllModels/addModel rebuilt the atom objects
-      // that carry the clickable flag. `atom.index` is the pick identity.
+      // Arm atom picking (2.5.2a; AtomId in 2c1) — only when a pick handler is
+      // present, and re-armed here because removeAllModels/addModel rebuilt the
+      // atom objects that carry the clickable flag. 3Dmol's `atom.index` is the
+      // VIEWER index; the identity we emit is the AtomId the table names for it.
+      // Post-condition (domain rule #9): if the table has no id for this drawn
+      // index, emit NOTHING rather than a guessed id — a click that can't be
+      // resolved to a real atom is dropped, never mapped to the wrong atom.
       if (pickable) {
         viewer.setClickable({}, true, (atom: { index: number }) => {
-          onAtomPickRef.current?.(atom.index);
+          const atomId = viewerTableRef.current?.atomIdAt(atom.index);
+          if (atomId === undefined) return;
+          onAtomPickRef.current?.({ atomId, viewerIndex: atom.index });
         });
       }
 
@@ -632,12 +680,25 @@ export const MoleculeViewer = forwardRef<MoleculeViewerHandle, MoleculeViewerPro
       viewer.render();
       return;
     }
-    const rows = scene.fragments.flatMap((f) => f.atoms);
+    // The overlay is fed through the SAME table the geometry was built with (2c1):
+    // the atoms in viewer order, the table naming their indices, and an id→atom map
+    // so a halo/label follows an AtomId, not a raw array slot. A selection/mask
+    // entry is still a positional global index in 2c1 (the consumers move in 2c2) —
+    // it is resolved index → AtomId → atom through the table, so the atom a halo
+    // lands on and the NUMBER shown on it both come from the table, never from the
+    // loop counter coinciding with 3Dmol's index.
+    const atoms = scene.fragments.flatMap((f) => f.atoms);
+    const table = buildViewerAtomTable(scene);
+    const byId = new Map<AtomId, SceneAtom>(atoms.map((a) => [a.id, a]));
+    const atomAtGlobalIndex = (gi: number): SceneAtom | undefined => {
+      const id = table.atomIdAt(gi); // global position → AtomId (through the table)
+      return id === undefined ? undefined : byId.get(id);
+    };
 
     // Mask "will-move" glow (2.5.2d) — drawn FIRST (a soft solid sphere), so the
     // crisp selection cage sits on top of it where they overlap.
     for (const gi of maskHighlight ?? []) {
-      const atom = rows[gi];
+      const atom = atomAtGlobalIndex(gi);
       if (!atom) continue;
       viewer.addSphere({
         center: { x: atom.x, y: atom.y, z: atom.z },
@@ -651,7 +712,7 @@ export const MoleculeViewer = forwardRef<MoleculeViewerHandle, MoleculeViewerPro
     // Selection halos — wireframe spheres sized per element (see highlight.ts),
     // coloured by the theme.
     for (const gi of selection ?? []) {
-      const atom = rows[gi]; // stale index → undefined; validateSelection guards
+      const atom = atomAtGlobalIndex(gi); // stale index → undefined; validateSelection guards
       if (!atom) continue;
       viewer.addSphere({
         center: { x: atom.x, y: atom.y, z: atom.z },
@@ -664,14 +725,23 @@ export const MoleculeViewer = forwardRef<MoleculeViewerHandle, MoleculeViewerPro
 
     drawMeasurement(viewer, scene, selection ?? [], theme);
 
-    // Atom numbers — the GLOBAL 0-based index only. Every atom when the toggle
-    // is on; selected atoms ALWAYS (so a pick reads even with the toggle off).
-    const numbered = new Set<number>();
-    if (showAtomNumbers) rows.forEach((_, i) => numbered.add(i));
-    for (const gi of selection ?? []) if (rows[gi]) numbered.add(gi);
-    for (const gi of numbered) {
-      const atom = rows[gi];
-      viewer.addLabel(String(gi), {
+    // Atom numbers — keyed by AtomId, valued by the table's viewer index (the same
+    // positional 0-based number as before, but now SOURCED from the table, not the
+    // loop counter). Every atom when the toggle is on; selected atoms ALWAYS (so a
+    // pick reads even with the toggle off). Renaming the index SPACE in the UI is
+    // 2c2 — the value shown is unchanged here.
+    const numbered = new Map<AtomId, number>();
+    if (showAtomNumbers) {
+      for (const a of atoms) numbered.set(a.id, table.viewerIndexOf(a.id)!);
+    }
+    for (const gi of selection ?? []) {
+      const id = table.atomIdAt(gi);
+      if (id !== undefined) numbered.set(id, table.viewerIndexOf(id)!);
+    }
+    for (const [id, n] of numbered) {
+      const atom = byId.get(id);
+      if (!atom) continue;
+      viewer.addLabel(String(n), {
         position: { x: atom.x, y: atom.y, z: atom.z },
         fontSize: 11,
         fontColor: theme.labelText,

@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
 import { InputEditor } from "../editor/InputEditor";
-import { MoleculeViewer } from "../viewer/MoleculeViewer";
+import { MoleculeViewer, type AtomPick } from "../viewer/MoleculeViewer";
 import { VIEWER_THEMES, viewerTheme } from "../viewer/theme";
 import { importStructureFile, IMPORT_ACCEPT } from "../viewer/import-file";
 import { InputBuilderForm } from "../input-builder/InputBuilderForm";
@@ -42,6 +42,7 @@ import {
 } from "../scene/fragment-library";
 import {
   atomCount,
+  buildViewerAtomTable,
   compositionSignature,
   injectSceneIntoInput,
   mergeToAtomLines,
@@ -176,8 +177,23 @@ export function NewJobScreen({
   // the store stays a pure geometry wrapper; ADR-008 #10). 2.5.2b reads this
   // list positionally for distance/angle/dihedral.
   const [selection, setSelection] = useState<number[]>([]);
-  const onAtomPick = (globalIndex: number) =>
+  // ── TEMPORARY SEAM 2c1→2c2 ──────────────────────────────────────────────────
+  // The viewer now speaks AtomId (2c1); selection/measure/edit-plan/constraints
+  // still key on the positional global index. This is the ONE explicit, named
+  // adapter that converts the pick's AtomId back to a global position, through the
+  // same table the viewer draws with (`buildViewerAtomTable` — the pure derivation
+  // of the current scene, so it agrees with the geometry that produced the pick).
+  // We deliberately do NOT read `pick.viewerIndex` (that is viewer space — using it
+  // as an app id is the coupling 2c1 severs). TODO(2c2): delete this adapter — the
+  // AtomId flows straight into an AtomId-keyed selection and `selectionSurvives`
+  // gains its removal dividend.
+  const onAtomPick = (pick: AtomPick) => {
+    const current = useSceneStore.getState().scene;
+    if (!current) return;
+    const globalIndex = buildViewerAtomTable(current).viewerIndexOf(pick.atomId);
+    if (globalIndex === undefined) return;
     setSelection((sel) => toggleAtom(sel, globalIndex));
+  };
   const clearSelection = () => setSelection([]);
 
   // Show every atom's global index in the 3D view (2.5.2e-1). Off by default;
