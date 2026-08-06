@@ -56,6 +56,20 @@ So `1, 2` selected atoms **Cl (atom 1)** and **C (atom 2)**: **1-based**. Under 
 0-based reading, `1, 2` would be C and the first H (initial ≈ 1.09 Å). It was not.
 OrcaStudio stores constraints 0-based (ADR-008), so it writes every index **`+1`**.
 
+### The `+1` is one typed conversion, not a scattered flip (unit 1e)
+`xtb.rs` **brands the serde boundary** so the base flip cannot be missed or doubled by a
+stray edit — the mistake that freezes the wrong coordinate on a clean-finishing run.
+Constraint atoms deserialize (`#[serde(transparent)]`) into a 0-based **`SceneIndex`**; the
+only way to a 1-based **`XtbIndex`** is `SceneIndex::to_xtb()`, the single site where `+ 1`
+touches an atom index. `SceneIndex` has **no `Display`**, so a 0-based index cannot be written
+into a `$constrain` / `$fix` line without the conversion (a bare index is a compile error —
+negative control (d)); `.zero_based()` is the deliberate, named accessor for indexing our own
+0-based geometry. A source-grep test (`the_base_flip_is_one_typed_conversion…`) fails if a bare
+`atoms[N] + 1` ever returns to the writer. `xtb::Constraint` is **not** unified with
+`orcastudio_core::emit::Constraint` (the ORCA `%geom` 0-based type): they drive different emits
+(xtb `$constrain` vs ORCA `%geom`), so folding them would drag a rewrite of the xtb-input emit
+— a named `TODO(1e-followup)`, not done.
+
 ## Constraints hold by a **spring**, not rigidly — the tolerance
 
 xtb applies constraints as a **harmonic restraint** (`force constant` = the spring

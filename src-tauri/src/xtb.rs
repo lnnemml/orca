@@ -11,10 +11,12 @@
 //! ## Index base — xtb `$constrain` is **1-based** (NOT the same as ORCA!)
 //! Settled by a real xtb 6.6.1 run (2026-07-29), NOT memory. ORCA `%geom
 //! Constraints` is **0-based**; xtb `$constrain` is **1-based**. OrcaStudio stores
-//! constraints 0-based (ADR-008), so every index written here is `+1`. Getting
-//! this wrong freezes the WRONG coordinate on an optimization that finishes
-//! cleanly — the post-condition below is the runtime guard against exactly that.
-//! See `wiki/orca/xtb.md` and `wiki/orca/gotchas.md`.
+//! constraints 0-based (ADR-008). Getting the flip wrong freezes the WRONG coordinate
+//! on an optimization that finishes cleanly — so unit 1e **brands the serde boundary**
+//! (`SceneIndex` 0-based in, `XtbIndex` 1-based out): the `+1` is the ONE typed
+//! conversion [`SceneIndex::to_xtb`], and a 0-based index has no `Display`, so it
+//! cannot reach a line without it. The `check_held` post-condition below remains the
+//! runtime guard. See `wiki/orca/xtb.md` and `wiki/orca/gotchas.md`.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -46,33 +48,84 @@ const TOL_CARTESIAN_ANG: f64 = 0.01;
 
 const DEFAULT_TIMEOUT_SECS: u64 = 300;
 
-// ── Constraints (mirror the TS `Constraint`, atoms 0-based) ───────────────────
+// ── Branded index bases (unit 1e) ─────────────────────────────────────────────
+//
+// The xtb serde boundary is branded so the 0→1 base flip is ONE typed conversion,
+// not a bare `+ 1` scattered across the writer (where a missed or doubled flip
+// freezes the wrong coordinate on a clean-finishing optimization — domain rule #9).
+
+/// A 0-based atom index as it arrives from the app (scene / ORCA space, ADR-008).
+/// `#[serde(transparent)]`, so the wire `[0,1]` deserializes straight into these.
+/// It has **no `Display`** on purpose: a 0-based index therefore cannot be written
+/// into a `$constrain` / `$fix` line without first going through [`SceneIndex::to_xtb`]
+/// — that is the compile-time half of control (d).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(transparent)]
+pub struct SceneIndex(usize);
+
+impl SceneIndex {
+    #[cfg(test)]
+    pub fn new(i: usize) -> Self {
+        SceneIndex(i)
+    }
+    /// The 0-based value, for indexing OUR OWN geometry arrays. Named (not `Deref`)
+    /// so a raw geometry index is always a deliberate `.zero_based()`, never implicit.
+    pub fn zero_based(self) -> usize {
+        self.0
+    }
+    /// The SINGLE 0→1 base flip in the whole module — the only place `+ 1` touches an
+    /// atom index. Returns the 1-based [`XtbIndex`] that xtb `$constrain` demands
+    /// (measured: `wiki/orca/xtb.md`).
+    pub fn to_xtb(self) -> XtbIndex {
+        XtbIndex(self.0 + 1)
+    }
+}
+
+/// A 1-based xtb `$constrain` / `$fix` atom index. Constructible ONLY via
+/// [`SceneIndex::to_xtb`], and the ONLY index type with `Display`, so every index
+/// written into an xcontrol line provably passed the one typed conversion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct XtbIndex(usize);
+
+impl std::fmt::Display for XtbIndex {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+// ── Constraints (mirror the TS `Constraint`, atoms 0-based `SceneIndex`) ───────
+//
+// TODO(1e-followup): NOT unified with `orcastudio_core::emit::Constraint` (the ORCA
+// `%geom` 0-based constraint with `value_text`). Reason: this type drives a DIFFERENT
+// emit — xtb `$constrain`/`$fix`, 1-based, with a separate `Target` resolution and no
+// `value_text` — so folding the two would drag a rewrite of the xtb-input emit, which
+// the unit-1e brief explicitly scopes out. Unify only if/when the xtb emit is revisited.
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Constraint {
     Distance {
-        atoms: [usize; 2],
+        atoms: [SceneIndex; 2],
         #[serde(default)]
         value: Option<f64>,
     },
     Angle {
-        atoms: [usize; 3],
+        atoms: [SceneIndex; 3],
         #[serde(default)]
         value: Option<f64>,
     },
     Dihedral {
-        atoms: [usize; 4],
+        atoms: [SceneIndex; 4],
         #[serde(default)]
         value: Option<f64>,
     },
     Cartesian {
-        atoms: [usize; 1],
+        atoms: [SceneIndex; 1],
     },
 }
 
 impl Constraint {
-    fn atom_indices(&self) -> &[usize] {
+    fn atom_indices(&self) -> &[SceneIndex] {
         match self {
             Constraint::Distance { atoms, .. } => atoms,
             Constraint::Angle { atoms, .. } => atoms,
@@ -197,17 +250,19 @@ pub fn parse_xyz(text: &str) -> Result<(Vec<String>, Vec<V3>), AppError> {
 /// them read one value closes it.
 pub fn build_xcontrol(constraints: &[Constraint], targets: &[Target]) -> Option<String> {
     let mut out = String::new();
-    let mut fixed: Vec<usize> = Vec::new();
+    let mut fixed: Vec<XtbIndex> = Vec::new();
     let mut has_geom = false;
     let mut body = String::new();
+    // Every index below is written via `.to_xtb()` (the one typed 0→1 flip); there is
+    // no bare `+ 1` on an atom index in this writer.
     for (c, t) in constraints.iter().zip(targets) {
         match (c, t) {
             (Constraint::Distance { atoms, .. }, Target::Value(v)) => {
                 has_geom = true;
                 body.push_str(&format!(
                     "  distance: {}, {}, {:.6}\n",
-                    atoms[0] + 1,
-                    atoms[1] + 1,
+                    atoms[0].to_xtb(),
+                    atoms[1].to_xtb(),
                     v
                 ));
             }
@@ -215,9 +270,9 @@ pub fn build_xcontrol(constraints: &[Constraint], targets: &[Target]) -> Option<
                 has_geom = true;
                 body.push_str(&format!(
                     "  angle: {}, {}, {}, {:.4}\n",
-                    atoms[0] + 1,
-                    atoms[1] + 1,
-                    atoms[2] + 1,
+                    atoms[0].to_xtb(),
+                    atoms[1].to_xtb(),
+                    atoms[2].to_xtb(),
                     v
                 ));
             }
@@ -225,14 +280,14 @@ pub fn build_xcontrol(constraints: &[Constraint], targets: &[Target]) -> Option<
                 has_geom = true;
                 body.push_str(&format!(
                     "  dihedral: {}, {}, {}, {}, {:.4}\n",
-                    atoms[0] + 1,
-                    atoms[1] + 1,
-                    atoms[2] + 1,
-                    atoms[3] + 1,
+                    atoms[0].to_xtb(),
+                    atoms[1].to_xtb(),
+                    atoms[2].to_xtb(),
+                    atoms[3].to_xtb(),
                     v
                 ));
             }
-            (Constraint::Cartesian { atoms }, _) => fixed.push(atoms[0] + 1),
+            (Constraint::Cartesian { atoms }, _) => fixed.push(atoms[0].to_xtb()),
             _ => {}
         }
     }
@@ -292,6 +347,7 @@ pub fn resolve_targets(constraints: &[Constraint], p: &[V3]) -> Result<Vec<Targe
     let mut out = Vec::with_capacity(constraints.len());
     for c in constraints {
         for &i in c.atom_indices() {
+            let i = i.zero_based();
             if i >= n {
                 return Err(AppError::Backend(format!(
                     "xtb: constraint references atom #{i} but the geometry has {n} atoms (0–{})",
@@ -299,16 +355,24 @@ pub fn resolve_targets(constraints: &[Constraint], p: &[V3]) -> Result<Vec<Targe
                 )));
             }
         }
+        // `.zero_based()` indexes OUR geometry (0-based); the 0→1 xtb flip happens only
+        // in the writer via `.to_xtb()`.
         let t = match c {
-            Constraint::Distance { atoms, value } => {
-                Target::Value(value.unwrap_or_else(|| distance(p, atoms[0], atoms[1])))
-            }
-            Constraint::Angle { atoms, value } => {
-                Target::Value(value.unwrap_or_else(|| angle(p, atoms[0], atoms[1], atoms[2])))
-            }
-            Constraint::Dihedral { atoms, value } => Target::Value(
-                value.unwrap_or_else(|| dihedral(p, atoms[0], atoms[1], atoms[2], atoms[3])),
+            Constraint::Distance { atoms, value } => Target::Value(
+                value.unwrap_or_else(|| distance(p, atoms[0].zero_based(), atoms[1].zero_based())),
             ),
+            Constraint::Angle { atoms, value } => Target::Value(value.unwrap_or_else(|| {
+                angle(p, atoms[0].zero_based(), atoms[1].zero_based(), atoms[2].zero_based())
+            })),
+            Constraint::Dihedral { atoms, value } => Target::Value(value.unwrap_or_else(|| {
+                dihedral(
+                    p,
+                    atoms[0].zero_based(),
+                    atoms[1].zero_based(),
+                    atoms[2].zero_based(),
+                    atoms[3].zero_based(),
+                )
+            })),
             Constraint::Cartesian { .. } => Target::Fixed,
         };
         out.push(t);
@@ -342,19 +406,26 @@ pub fn check_held(
     for (c, t) in constraints.iter().zip(targets) {
         let (kind, unit, target, final_value, dev, tol) = match (c, t) {
             (Constraint::Distance { atoms, .. }, Target::Value(v)) => {
-                let f = distance(p1, atoms[0], atoms[1]);
+                let f = distance(p1, atoms[0].zero_based(), atoms[1].zero_based());
                 ("distance", "Å", *v, f, (f - v).abs(), TOL_DISTANCE_ANG)
             }
             (Constraint::Angle { atoms, .. }, Target::Value(v)) => {
-                let f = angle(p1, atoms[0], atoms[1], atoms[2]);
+                let f = angle(p1, atoms[0].zero_based(), atoms[1].zero_based(), atoms[2].zero_based());
                 ("angle", "°", *v, f, (f - v).abs(), TOL_ANGLE_DEG)
             }
             (Constraint::Dihedral { atoms, .. }, Target::Value(v)) => {
-                let f = dihedral(p1, atoms[0], atoms[1], atoms[2], atoms[3]);
+                let f = dihedral(
+                    p1,
+                    atoms[0].zero_based(),
+                    atoms[1].zero_based(),
+                    atoms[2].zero_based(),
+                    atoms[3].zero_based(),
+                );
                 ("dihedral", "°", *v, f, angular_diff(f, *v), TOL_ANGLE_DEG)
             }
             (Constraint::Cartesian { atoms }, _) => {
-                let d = distance_between(p0[atoms[0]], p1[atoms[0]]);
+                let a = atoms[0].zero_based();
+                let d = distance_between(p0[a], p1[a]);
                 ("cartesian", "Å", 0.0, d, d, TOL_CARTESIAN_ANG)
             }
             _ => continue,
@@ -798,6 +869,12 @@ fn last_cycle(lines: &[String]) -> Option<u32> {
 mod tests {
     use super::*;
 
+    /// 0-based scene indices for a constraint's `atoms` array (test ergonomics — the
+    /// production path deserializes these through `#[serde(transparent)]`).
+    fn si<const N: usize>(a: [usize; N]) -> [SceneIndex; N] {
+        a.map(SceneIndex::new)
+    }
+
     fn xyz_positions() -> Vec<V3> {
         // chloromethane order Cl, C, H, H, H (the index-base experiment geometry)
         vec![
@@ -819,7 +896,7 @@ mod tests {
     fn xcontrol_is_one_based_and_holds_the_right_pair() {
         // Our 0-based (0,1) = Cl–C → xtb 1-based must be "1, 2".
         let cs = vec![Constraint::Distance {
-            atoms: [0, 1],
+            atoms: si([0, 1]),
             value: Some(1.234),
         }];
         let p = xyz_positions();
@@ -833,7 +910,7 @@ mod tests {
     #[test]
     fn freeze_as_is_resolves_current_value() {
         let cs = vec![Constraint::Distance {
-            atoms: [0, 1],
+            atoms: si([0, 1]),
             value: None,
         }];
         let p = xyz_positions();
@@ -849,11 +926,11 @@ mod tests {
         let p = xyz_positions();
         let cs = vec![
             Constraint::Angle {
-                atoms: [0, 1, 2],
+                atoms: si([0, 1, 2]),
                 value: Some(109.0),
             },
             Constraint::Dihedral {
-                atoms: [0, 1, 2, 3],
+                atoms: si([0, 1, 2, 3]),
                 value: Some(90.0),
             },
         ];
@@ -865,7 +942,7 @@ mod tests {
 
     #[test]
     fn cartesian_becomes_a_fix_block() {
-        let cs = vec![Constraint::Cartesian { atoms: [4] }];
+        let cs = vec![Constraint::Cartesian { atoms: si([4]) }];
         let p = xyz_positions();
         let targets = resolve_targets(&cs, &p).unwrap();
         let xc = build_xcontrol(&cs, &targets).unwrap();
@@ -876,7 +953,7 @@ mod tests {
     #[test]
     fn out_of_range_index_is_rejected_before_xtb() {
         let cs = vec![Constraint::Distance {
-            atoms: [0, 99],
+            atoms: si([0, 99]),
             value: None,
         }];
         let p = xyz_positions();
@@ -886,7 +963,7 @@ mod tests {
     #[test]
     fn check_held_flags_a_drifted_constraint() {
         let cs = vec![Constraint::Distance {
-            atoms: [0, 1],
+            atoms: si([0, 1]),
             value: Some(1.234),
         }];
         let p0 = xyz_positions();
@@ -900,7 +977,7 @@ mod tests {
     #[test]
     fn check_held_passes_within_tolerance() {
         let cs = vec![Constraint::Distance {
-            atoms: [0, 1],
+            atoms: si([0, 1]),
             value: Some(1.778),
         }];
         let p0 = xyz_positions();
@@ -916,6 +993,31 @@ mod tests {
         let (el, p) = parse_xyz(text).unwrap();
         assert_eq!(el, vec!["O", "H", "H"]);
         assert_eq!(p.len(), 3);
+    }
+
+    // Negative control (d): the 0→1 flip goes through exactly ONE typed conversion.
+    // The compile-time half — a bare `usize` / `SceneIndex` cannot be `Display`ed into
+    // a line — is enforced by `XtbIndex` being the only index type with `Display`
+    // (SceneIndex has none). This source-grep is the observable complement: the writer
+    // must carry no bare index flip, and the flip must live only in
+    // `to_xtb`. A future edit that reintroduces a bare index flip in the writer fails here.
+    #[test]
+    fn the_base_flip_is_one_typed_conversion_not_a_bare_plus_one() {
+        let src = include_str!("xtb.rs");
+        // Needles are built at runtime so THIS test's own source does not self-match.
+        let plus = "+";
+        let flip = format!("self.0 {plus} 1"); // the one flip, inside to_xtb
+        assert_eq!(src.matches(&flip).count(), 1, "the flip must live in to_xtb only");
+        let bare = format!("] {plus} 1"); // the pre-1e bare-index-flip pattern
+        assert!(!src.contains(&bare), "no bare index flip may remain in the writer");
+        assert!(src.contains(".to_xtb()"), "the writer flips via SceneIndex::to_xtb");
+    }
+
+    #[test]
+    fn to_xtb_is_one_based_and_zero_based_indexes_our_geometry() {
+        let s = SceneIndex::new(4);
+        assert_eq!(s.zero_based(), 4); // indexes our 0-based geometry
+        assert_eq!(s.to_xtb().to_string(), "5"); // 0-based 4 → 1-based 5 for xtb
     }
 
     #[test]
@@ -948,7 +1050,7 @@ mod tests {
     fn build_xcontrol_is_none_without_constraints() {
         assert!(build_xcontrol(&[], &[]).is_none());
         let cs = vec![Constraint::Distance {
-            atoms: [0, 1],
+            atoms: si([0, 1]),
             value: Some(1.5),
         }];
         let p = xyz_positions();
