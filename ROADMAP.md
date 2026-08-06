@@ -598,6 +598,13 @@ Stage 3, where it is actually needed.) **Next: Stage 3 — operations over the c
       never commits), **c4** (axis P→Q / pivot P), **c5** (degenerate axis → no-op), each with a
       demonstrated-biting negative control. See `wiki/modules/scene.md`, `visualization.md`, `editor-ui.md`,
       ADR-017. **Manual gates m1–m5 pending live verification in the Tauri window.**
+  - **Polish 3.3b — axis/distance overlay toggle.** The axis cylinder (3.3) and the measurement distance
+    line drew on the same two atoms at once (two overlapping objects that read as one wrong line). Now a
+    toggle shows **exactly one** overlay for the pair — Axis (cylinder + Å on the axis midpoint) or
+    Distance (measurement line + label), never both; the Å number is the same in both (single source:
+    `measure` distance). Pure decision `chooseRotateOverlay` (`viewer/rotate-overlay.ts`), gates **c1**
+    (default/flip) + **c2** (never both — demonstrated-biting). App-owned `rotateOverlay`, reset with the
+    axis; the measure tool outside Rotate is untouched. **Manual gates m1–m5 pending live verification.**
 - [x] **vdW-overlap detection after a move (unit 3.2).** After any geometry change, **inter-fragment**
       atoms closer than `k·(rᵢ+rⱼ)` of their cited vdW sum (Bondi/Mantina/Alvarez — `scene/vdw-radii.ts`,
       **B** and **Pd/Pt** covered; uncovered → UNDETERMINED, skipped + surfaced, never guessed) are

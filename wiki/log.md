@@ -5437,3 +5437,40 @@ model rebuild, `axisHighlight` axis cylinder + why committed coords stay correct
 (rotation → [x], m1–m5 flagged). **Not touched:** no sidecar computation (ratified TS), no 2.5.3
 torsion / rotatable-mask, no spin-drag, no Move-drag change; Rust/sidecar untouched. **Next: Stage 3 —
 ring torsions (the last unit of Stage 3).**
+
+## [2026-08-06] session | feat(editor): rotate-axis overlay toggle — axis or distance, never both (Phase 4.2 Stage 3, unit 3.3b)
+A small polish of 3.3 from the real window. **The problem:** while the Rotate panel holds an axis
+`[P, Q]`, the viewer drew BOTH the extended axis cylinder (3.3) AND the measurement distance line on the
+**same two atoms** — two overlapping greenish objects of different length that read as "the line is
+wrong". **A2 (ratified):** while the panel has an axis, draw **exactly ONE** overlay for that pair, chosen
+by a toggle; in axis mode the Å number stays (on the axis midpoint) so length always reads, but no second
+line.
+
+**The decision is a pure function, tested apart from the jsdom-less viewer.** `viewer/rotate-overlay.ts`:
+`chooseRotateOverlay(hasAxis, overlay) → {axis, measure}` — no axis → `{false, true}` (the measure tool
+outside Rotate is **untouched**, both modes identical); axis + "axis" → `{true, false}` (cylinder + label,
+no measure line); axis + "distance" → `{false, true}` (measure line + label, no cylinder). The
+post-condition callers lean on: **`axis && measure` is never both true**. The viewer reads the plan and
+gates the two draws; in axis mode it adds the Å label at `midpoint(P,Q)`.
+
+**The Å number is the measure distance — one source, no second computation.** `rotationAxisValueLabel`
+reuses `measureSelection`/`formatMeasurementValue`, the SAME calls `drawMeasurement` makes; both render it
+through a new shared `drawValueLabel` (extracted so the distance line and the axis midpoint show the value
+in one style). So the number reads identically whichever overlay is up (grep-shown).
+
+**State is app-owned, resets with the axis.** `rotateOverlay: "axis" | "distance"` lives in `NewJobScreen`
+(next to `rotateAxis`/`clashK` — NOT in the Scene; grep-confirmed absent from `src/scene/`), default
+"axis", reset to "axis" whenever the axis pair changes/clears (a `[rotateAxis]` effect) and on Cancel.
+`RotatePanel` renders a small segmented **Axis ⇄ Distance** toggle that only flips this render choice — it
+does not touch `rotateAxis`/`selection`/the rotation op (3.3 math untouched).
+
+**Gates.** Pure (`viewer/rotate-overlay.test.ts`): **c1** default is "axis" + flip is its own inverse;
+**c2** the decision — outside Rotate measure-as-is in either mode, with an axis exactly one overlay, and
+**never both** (broke it to `{axis:true, measure:true}` → the invariant test reddened, reverted). `tsc`
+clean, **vitest 545 green** (was 540, +5), `vite build` clean. **Manual gates m1–m5 (WebKitGTK) pending
+live verification** — flagged in ROADMAP.
+
+**Wiki (same commit):** `visualization.md` (the `rotateOverlay` bullet — one overlay at a time, the pure
+decision, Å from measure), `editor-ui.md` (the toggle under the Rotate affordance), ROADMAP (3.3b note),
+this entry. **Not touched:** the 3.3 rotation math/op, the ephemeral preview path, the measurement tool
+outside Rotate; Rust/sidecar untouched. **Next: Stage 3 — ring torsions (the last unit of Stage 3).**

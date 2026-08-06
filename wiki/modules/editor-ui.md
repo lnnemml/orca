@@ -56,6 +56,13 @@ page records the **layout principle and where future panels go** — not the cur
   degenerate axis (P ≡ Q) disables Apply with a reason. It is **pure TS, a sibling of — not routed
   through — the sidecar set-internal edit** (rigid transform vs internal-coordinate solve; see the split
   in `modules/scene.md`). Mechanism / preview path: `visualization.md`.
+  - **Axis ⇄ Distance overlay toggle (unit 3.3b).** The axis cylinder and the measurement distance line
+    were drawn on the same two atoms at once — two overlapping objects that read as one wrong line. A
+    small segmented toggle now shows **exactly one** overlay for the pair: **Axis** (cylinder + the Å
+    value on the axis midpoint) or **Distance** (the measurement line + label). The Å number is the same
+    in both modes (single source: `measure` distance). App-owned state (`rotateOverlay` in `NewJobScreen`,
+    like `clashK`), default Axis, reset to Axis when the pair changes or on Cancel; **the measurement
+    tool outside Rotate is untouched**.
 - **Sections, in order of use:** Selection & Measure (`AtomInspector`) · Edit (`EditPanel` + the Move-mode
   toggle + `RotatePanel`) · Fragments (the Add-Fragment palette — reagents / import / SMILES / **Paste xyz** / library —
   **plus** `FragmentList`) · Constraints (`ConstraintPanel`) · History (`HistoryPanel`) · Actions (xTB

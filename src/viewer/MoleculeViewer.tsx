@@ -17,6 +17,7 @@ import { highlightRadius, vdwTableDrift } from "./highlight";
 import { DEFAULT_THEME, cpkColorDrift, type ViewerTheme } from "./theme";
 import { parseXyzCoords, applyCoordsToAtoms, drawableBondCount } from "./frozenTopology";
 import { makeDragController, type WorldDelta } from "./fragment-drag";
+import { chooseRotateOverlay, type RotateOverlay } from "./rotate-overlay";
 
 // Side-effect: force 3Dmol onto its direct-canvas WebGL path so it renders in
 // the WebKitGTK webview (must run before the first createViewer).
@@ -98,6 +99,14 @@ interface MoleculeViewerProps {
    * nothing. Purely decorative — a display of the axis the panel is turning about.
    */
   axisHighlight?: [AtomId, AtomId] | null;
+  /**
+   * Which single overlay to draw for the `axisHighlight` pair (unit 3.3b): the axis
+   * cylinder (with the Å label on the axis midpoint) OR the distance measurement
+   * line + label — **never both** (they drew on the same two atoms and read as one
+   * wrong line). Ignored when `axisHighlight` is null (the measurement is untouched
+   * outside Rotate). Default `"axis"` (the panel opens for rotating).
+   */
+  rotateOverlay?: RotateOverlay;
   /**
    * EPHEMERAL coordinate-only overlay (unit 3.3) — the live preview of a rigid
    * fragment rotation. A Scene with the SAME composition as `scene` but the rotating
@@ -356,6 +365,25 @@ function drawAngleArc(
   }
 }
 
+/** A measurement value label (the "N Å" / "109°" chip). Extracted (unit 3.3b) so
+ * the distance line AND the rotation-axis midpoint show the value in the SAME style
+ * from the SAME formatter. */
+function drawValueLabel(
+  viewer: GLViewer,
+  position: { x: number; y: number; z: number },
+  text: string,
+  theme: ViewerTheme,
+) {
+  viewer.addLabel(text, {
+    position,
+    backgroundColor: theme.labelBg,
+    backgroundOpacity: 0.85,
+    fontColor: theme.measurementText,
+    fontSize: 13,
+    inFront: true,
+  });
+}
+
 /**
  * Draw the measurement geometry for the current pick list and a value label,
  * marking WHICH atom is the vertex/axis geometrically (2.5.2e-2) — never with a
@@ -409,14 +437,17 @@ function drawMeasurement(
         ? midpoint(pts[1], pts[2]) // middle of the j–k axis
         : midpoint(pts[0], pts[1]); // distance: midpoint of the bond
 
-  viewer.addLabel(label, {
-    position: anchor,
-    backgroundColor: theme.labelBg,
-    backgroundOpacity: 0.85,
-    fontColor: theme.measurementText,
-    fontSize: 13,
-    inFront: true,
-  });
+  drawValueLabel(viewer, anchor, label, theme);
+}
+
+/**
+ * The Å value for the rotation axis pair `[P, Q]`, from `measure` distance — the
+ * SAME source `drawMeasurement` uses, NEVER a second computation (unit 3.3b). Returns
+ * `null` if the pair doesn't measure (degenerate / stale).
+ */
+function rotationAxisValueLabel(scene: Scene, axis: [AtomId, AtomId]): string | null {
+  const m = measureSelection(scene, [axis[0], axis[1]]);
+  return m.kind === "none" ? null : formatMeasurementValue(m) || null;
 }
 
 /** Radius of the rotation-axis cylinder (unit 3.3) — a touch thicker than the
@@ -473,6 +504,7 @@ export const MoleculeViewer = forwardRef<MoleculeViewerHandle, MoleculeViewerPro
       maskHighlight,
       clashHighlight,
       axisHighlight,
+      rotateOverlay = "axis",
       ephemeralScene,
       preserveCameraOnUpdate = false,
       bondTopologyReference,
@@ -873,17 +905,29 @@ export const MoleculeViewer = forwardRef<MoleculeViewerHandle, MoleculeViewerPro
       });
     }
 
-    // Rotation axis (unit 3.3) — the P→Q line the active "Rotate about axis" edit
-    // turns about, drawn as an extended cylinder so it reads as an axis. Both
-    // endpoints are fixed points of the rotation (P is the pivot; Q lies on the
-    // line), so drawing it at the committed coords stays correct during preview.
-    if (axisHighlight) {
+    // Rotation axis vs measurement — EXACTLY ONE overlay for the picked pair (unit
+    // 3.3b). While the Rotate panel holds an axis `[P, Q]` the toggle picks which:
+    // the extended axis cylinder (with the Å value on the axis midpoint) OR the
+    // measurement distance line + label — never both (they drew on the same two
+    // atoms and read as one wrong line). Outside Rotate (`axisHighlight` null) the
+    // measurement is untouched. The Å number is ALWAYS the `measure` distance —
+    // `rotationAxisValueLabel` reuses `measureSelection`, the same source
+    // `drawMeasurement` uses, so it reads identically in both modes.
+    const overlayPlan = chooseRotateOverlay(axisHighlight != null, rotateOverlay);
+    if (overlayPlan.axis && axisHighlight) {
       const pa = byId.get(axisHighlight[0]);
       const qa = byId.get(axisHighlight[1]);
-      if (pa && qa) drawRotationAxis(viewer, pa, qa, theme.haloColor);
+      if (pa && qa) {
+        // Both endpoints are fixed points of the rotation (P is the pivot; Q lies on
+        // the line), so drawing at committed coords stays correct during preview.
+        drawRotationAxis(viewer, pa, qa, theme.haloColor);
+        const value = rotationAxisValueLabel(scene, axisHighlight);
+        if (value) drawValueLabel(viewer, midpoint(pa, qa), value, theme);
+      }
     }
-
-    drawMeasurement(viewer, scene, selection ?? [], theme);
+    if (overlayPlan.measure) {
+      drawMeasurement(viewer, scene, selection ?? [], theme);
+    }
 
     // Atom numbers — keyed by AtomId, valued by the table's viewer index (the same
     // positional 0-based number as before, but SOURCED from the table). Every atom
@@ -912,7 +956,7 @@ export const MoleculeViewer = forwardRef<MoleculeViewerHandle, MoleculeViewerPro
     }
 
     viewer.render();
-  }, [selection, scene, showAtomNumbers, theme, maskHighlight, clashHighlight, axisHighlight, orbitalCube]);
+  }, [selection, scene, showAtomNumbers, theme, maskHighlight, clashHighlight, axisHighlight, rotateOverlay, orbitalCube]);
 
   // Ephemeral coordinate-only overlay — the live rotation preview (unit 3.3). Reuses
   // the SAME frozen-topology coordinate-update path the Move-mode drag and the mode

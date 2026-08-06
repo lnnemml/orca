@@ -158,6 +158,18 @@ the angle comes from a slider in `RotatePanel`, outside the viewer.
   selection accent). Drawn from the **committed** coords, which is correct throughout the preview:
   **both endpoints are fixed points** of the rotation (P is the pivot; Q lies on the axis line), so
   neither moves as the angle turns — and the selection halos on P and Q stay correct for the same reason.
+- **`rotateOverlay?: "axis" | "distance"` — exactly ONE overlay for the pair (unit 3.3b).** The axis
+  cylinder (3.3) and the measurement distance line drew on the **same two atoms** → two overlapping
+  greenish objects of different length, read as "the line is wrong". Now a toggle picks one: **`"axis"`**
+  draws the cylinder **plus the Å label on the axis midpoint** and **suppresses the measurement line**;
+  **`"distance"`** draws the measurement line + label and **suppresses the cylinder**. The choice is a
+  pure function, `chooseRotateOverlay(hasAxis, overlay) → {axis, measure}` (`viewer/rotate-overlay.ts`,
+  unit-tested apart from the jsdom-less viewer — the post-condition `axis && measure` is **never** both
+  true). **The Å number is ALWAYS the `measure` distance** — `rotationAxisValueLabel` reuses
+  `measureSelection`/`formatMeasurementValue`, the SAME source `drawMeasurement` uses (via the shared
+  `drawValueLabel`), so length reads identically in both modes; no second computation. When
+  `axisHighlight` is null (outside Rotate) the plan is `{axis:false, measure:true}` — the measurement is
+  **untouched**.
 
 ## The overlay effect (one owner of all shapes & labels)
 

@@ -4,6 +4,7 @@ import type { AtomId } from "./ids";
 import type { Scene } from "./types";
 import { globalIndexOfAtom, rotateFragmentInScene, rotationAxis } from "./scene";
 import { describeAtomById } from "./selection";
+import type { RotateOverlay } from "../viewer/rotate-overlay";
 
 /**
  * "Rotate about axis" — the rigid whole-fragment rotation tool (Phase 4.2 Stage 3,
@@ -24,6 +25,8 @@ import { describeAtomById } from "./selection";
 export function RotatePanel({
   scene,
   selection,
+  overlay,
+  onOverlayChange,
   onEphemeral,
   onAxis,
   onApply,
@@ -31,6 +34,10 @@ export function RotatePanel({
   scene: Scene;
   /** The pick list — the tool is active on exactly two atoms [P, Q]. */
   selection: AtomId[];
+  /** Which overlay the viewer draws for the axis pair (unit 3.3b) — app-owned in
+   * `NewJobScreen`; this panel only toggles it. */
+  overlay: RotateOverlay;
+  onOverlayChange: (o: RotateOverlay) => void;
   /** Push the ephemeral preview scene up to the viewer (null = no preview). */
   onEphemeral: (previewScene: Scene | null) => void;
   /** Tell the viewer which two atoms form the drawn axis (null = none). */
@@ -118,6 +125,7 @@ export function RotatePanel({
   const cancel = () => {
     setAngleDeg("0");
     onEphemeral(null);
+    onOverlayChange("axis"); // back to the axis view on cancel (unit 3.3b)
   };
 
   return (
@@ -134,6 +142,28 @@ export function RotatePanel({
       <button className="btn btn-sm edit-switch" onClick={() => setSwapped((v) => !v)}>
         Swap pivot ⇄ direction
       </button>
+      {/* Overlay toggle (unit 3.3b): show EITHER the rotation axis OR the P→Q
+          distance for this pair — never both. The Å number is shown either way. */}
+      <div
+        className="rotate-overlay-toggle"
+        role="group"
+        aria-label="axis overlay: axis or distance"
+      >
+        <button
+          className={"seg-btn" + (overlay === "axis" ? " seg-on" : "")}
+          onClick={() => onOverlayChange("axis")}
+          aria-pressed={overlay === "axis"}
+        >
+          Axis
+        </button>
+        <button
+          className={"seg-btn" + (overlay === "distance" ? " seg-on" : "")}
+          onClick={() => onOverlayChange("distance")}
+          aria-pressed={overlay === "distance"}
+        >
+          Distance
+        </button>
+      </div>
       {degenerate ? (
         <div className="edit-error">
           The two picked atoms coincide — no axis direction is defined. Pick two

@@ -1092,6 +1092,29 @@ select:disabled,
 .rotate-angle {
   width: 72px;
 }
+/* Axis ⇄ Distance overlay toggle (unit 3.3b) — a small segmented control. */
+.rotate-overlay-toggle {
+  display: inline-flex;
+  align-self: flex-start;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  overflow: hidden;
+}
+.rotate-overlay-toggle .seg-btn {
+  padding: 3px 10px;
+  font-size: 12px;
+  border: none;
+  background: var(--panel-2);
+  color: var(--muted);
+  cursor: pointer;
+}
+.rotate-overlay-toggle .seg-btn + .seg-btn {
+  border-left: 1px solid var(--border);
+}
+.rotate-overlay-toggle .seg-on {
+  background: var(--accent, #4f8cff);
+  color: #fff;
+}
 
 /* Import xyz as fragment (unit 2d) — the paste-xyz source in the Fragments dock. */
 .paste-xyz {

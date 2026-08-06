@@ -14,6 +14,7 @@ import { EditorDock, type DockSection } from "../scene/EditorDock";
 import { AtomInspector } from "../scene/AtomInspector";
 import { EditPanel } from "../scene/EditPanel";
 import { RotatePanel } from "../scene/RotatePanel";
+import { DEFAULT_ROTATE_OVERLAY, type RotateOverlay } from "../viewer/rotate-overlay";
 import { ConstraintPanel } from "../scene/ConstraintPanel";
 import {
   parseConstraintsBlock,
@@ -267,6 +268,13 @@ export function NewJobScreen({
   // the viewer draws the axis through. Both cleared on Apply/Cancel by `RotatePanel`.
   const [rotateEphemeral, setRotateEphemeral] = useState<Scene | null>(null);
   const [rotateAxis, setRotateAxis] = useState<[AtomId, AtomId] | null>(null);
+  // Which overlay the viewer draws for the axis pair (unit 3.3b) — axis cylinder or
+  // the P→Q distance line, never both. App-owned (like `clashK`), NOT in the Scene.
+  // Defaults to the axis view and resets to it whenever the axis pair changes/clears.
+  const [rotateOverlay, setRotateOverlay] = useState<RotateOverlay>(DEFAULT_ROTATE_OVERLAY);
+  useEffect(() => {
+    setRotateOverlay(DEFAULT_ROTATE_OVERLAY);
+  }, [rotateAxis]);
   // "Move the other fragment instead" — flip to the plan's alternative orientation
   // (2.5.2d-2). Reset when the selection/scene changes (the plan is different).
   const [preferAlternative, setPreferAlternative] = useState(false);
@@ -1166,6 +1174,8 @@ export function NewJobScreen({
           <RotatePanel
             scene={scene}
             selection={selection}
+            overlay={rotateOverlay}
+            onOverlayChange={setRotateOverlay}
             onEphemeral={setRotateEphemeral}
             onAxis={setRotateAxis}
             onApply={(fragmentId, axisAtoms, angleRad) => {
@@ -1589,6 +1599,7 @@ export function NewJobScreen({
                   scene={previewScene ?? scene}
                   ephemeralScene={rotateEphemeral}
                   axisHighlight={rotateAxis}
+                  rotateOverlay={rotateOverlay}
                   selection={selection}
                   onAtomPick={onAtomPick}
                   moveMode={moveMode}
