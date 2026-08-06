@@ -1,6 +1,6 @@
 # Module: editor UI (the New Job workspace)
 
-**Status:** Phase 4.2 unit 2d (Stage 2 closed). The New Job screen (`src/screens/NewJobScreen.tsx`) is a
+**Status:** Phase 4.2 unit 3.1 (Stage 3 — operations over the core — begun). The New Job screen (`src/screens/NewJobScreen.tsx`) is a
 **viewer-first workspace**: the 3Dmol canvas is the primary surface, and the geometry panels live in
 a **right dock** (`src/scene/EditorDock.tsx`) that is a thin icon rail expanding per section. This
 page records the **layout principle and where future panels go** — not the current CSS pixel values
@@ -26,9 +26,16 @@ page records the **layout principle and where future panels go** — not the cur
   two doors — **Paste xyz** (import as a fragment, the typical path) and **Replace input** (the
   **named escape**: unlock the whole buffer once to paste a different calculation, then Adopt it as a
   fresh scene). See `modules/scene.md` for the sync wiring; `modules/frontend.md` for the controls.
-- **Sections, in order of use:** Selection & Measure (`AtomInspector`) · Edit (`EditPanel`) ·
-  Fragments (the Add-Fragment palette — reagents / import / SMILES / **Paste xyz** / library — **plus**
-  `FragmentList`) · Constraints (`ConstraintPanel`) · History (`HistoryPanel`) · Actions (xTB
+- **Move mode — rough placement by dragging (unit 3.1; a toggle in the Edit section).** A checkbox
+  turns on rigid-body fragment drag: grab any atom of a fragment and drag to move the whole fragment in
+  the plane of the screen (60fps, one Undo step — see `modules/visualization.md`). It is deliberately
+  **coarse**: the drag sets *approximate* geometry; **exact** distances/angles/dihedrals come from the
+  measure + constraint tools and the input editor. That division of labour is the point — the drag
+  answers "roughly here", the editor answers "exactly this". A drag on empty space still rotates the
+  camera; a click still picks; toggling Move off restores plain rotate/pick.
+- **Sections, in order of use:** Selection & Measure (`AtomInspector`) · Edit (`EditPanel` + the Move-mode
+  toggle) · Fragments (the Add-Fragment palette — reagents / import / SMILES / **Paste xyz** / library —
+  **plus** `FragmentList`) · Constraints (`ConstraintPanel`) · History (`HistoryPanel`) · Actions (xTB
   pre-optimize). Each
   toggles **independently**; open-state is **session-only** (not persisted — a fresh screen starts
   viewer-first with just Fragments open so Add Fragment is discoverable). Each section shows its

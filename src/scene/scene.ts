@@ -532,6 +532,29 @@ export function translateFragment<F extends RawFragment>(
   } as F;
 }
 
+/**
+ * Rigid-body translate ONE fragment (by id) within a scene by (dx, dy, dz) Å,
+ * leaving every other fragment untouched. Pure/immutable; the moved fragment
+ * keeps its id, composition, internal geometry and atom order (`translateFragment`
+ * above), so atom identity and count/order are invariant across the move — the
+ * post-condition the rigid-drag op relies on (domain rule #9). No-op if the id is
+ * absent. This is the scene-level mutator the store's `translateFragment` commits.
+ */
+export function translateFragmentInScene(
+  scene: Scene,
+  fragmentId: string,
+  dx: number,
+  dy: number,
+  dz: number,
+): Scene {
+  return {
+    ...scene,
+    fragments: scene.fragments.map((f) =>
+      f.id === fragmentId ? translateFragment(f, dx, dy, dz) : f,
+    ),
+  };
+}
+
 // ── Parsing coordinate blocks into SceneAtoms ────────────────────────────────
 
 /**

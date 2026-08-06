@@ -338,8 +338,10 @@ store's core invariant and what makes the "mutator bypasses the log" defect
 the three pointer moves `undo` / `redo` / `jumpTo`. Every write to `scene` in the
 store is `scene: current(log)` right after the log changed. Convenience mutators
 (`addFragment`, `removeFragment`, `renameFragment`, `setMultiplicity`,
-`replaceFragmentAtoms(via)`) compute the result from the pure
-`scene.ts` functions and funnel through `commit`; `seedScene(scene, source)` is a
+`replaceFragmentAtoms(via)`, and `translateFragment(id, dx, dy, dz)` — the rigid-body
+drag commit, unit 3.1: `translateFragmentInScene` → a `translate-fragment` op, one
+op with the TOTAL delta on mouseup, a no-op on a zero delta) compute the result from
+the pure `scene.ts` functions and funnel through `commit`; `seedScene(scene, source)` is a
 thin `installLog` of a fresh `restore-snapshot`-seeded log (or the empty log for a
 `null` scene). Undo/redo are **deep** now (the whole log), superseding the old
 one-step `previous`/`undoReset`. A store test asserts `scene === current(log)`

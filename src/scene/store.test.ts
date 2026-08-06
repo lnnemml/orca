@@ -204,6 +204,66 @@ describe("undo / redo over the log", () => {
   });
 });
 
+// ── Rigid-body drag commit (Stage 3, unit 3.1) — one op, rigid, others untouched (c1) ─
+// The store mutator a fragment drag commits on release. Post-condition (rule #9):
+// ALL mover atoms shift by the SAME delta, internal pairwise distances are invariant
+// (a rigid move), count/order/AtomId are invariant, and other fragments are untouched.
+
+describe("translateFragment (c1)", () => {
+  const pairwise = (atoms: { x: number; y: number; z: number }[]): number[] => {
+    const ds: number[] = [];
+    for (let i = 0; i < atoms.length; i++)
+      for (let j = i + 1; j < atoms.length; j++) {
+        const a = atoms[i];
+        const b = atoms[j];
+        ds.push(Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z));
+      }
+    return ds;
+  };
+
+  it("commits ONE op; shifts every mover atom equally; distances + other fragments invariant", () => {
+    const two = scene(1, frag("a", ["O", "H", "H"]), frag("b", ["N", "H", "H"]));
+    get().seedScene(two, "library");
+    const before = get().scene!;
+    const moverBefore = before.fragments[1];
+    const otherBefore = before.fragments[0];
+    const [dx, dy, dz] = [1.5, -2.0, 0.5];
+    const lenBefore = get().log.entries.length;
+
+    get().translateFragment("b", dx, dy, dz);
+
+    // Exactly one op, with the total delta.
+    expect(get().log.entries.length).toBe(lenBefore + 1);
+    expect(get().log.entries[get().log.pointer].op).toMatchObject({
+      type: "translate-fragment",
+      fragmentId: "b",
+      delta: [dx, dy, dz],
+    });
+
+    const moverAfter = get().scene!.fragments[1];
+    moverAfter.atoms.forEach((a, i) => {
+      expect(a.x).toBeCloseTo(moverBefore.atoms[i].x + dx, 10); // shifted by the SAME delta
+      expect(a.y).toBeCloseTo(moverBefore.atoms[i].y + dy, 10);
+      expect(a.z).toBeCloseTo(moverBefore.atoms[i].z + dz, 10);
+      expect(a.id).toBe(moverBefore.atoms[i].id); // AtomId invariant
+      expect(a.element).toBe(moverBefore.atoms[i].element); // order invariant
+    });
+    // Rigid: internal pairwise distances unchanged.
+    pairwise(moverAfter.atoms).forEach((d, k) =>
+      expect(d).toBeCloseTo(pairwise(moverBefore.atoms)[k], 10),
+    );
+    // The other fragment is untouched.
+    expect(get().scene!.fragments[0]).toEqual(otherBefore);
+  });
+
+  it("a zero delta is a no-op (no op appended)", () => {
+    get().seedScene(scene(1, frag("a", ["O", "H"])), "library");
+    const len = get().log.entries.length;
+    get().translateFragment("a", 0, 0, 0);
+    expect(get().log.entries.length).toBe(len);
+  });
+});
+
 describe("mutators are no-ops on a null scene (identity preserved)", () => {
   it("setMultiplicity / removeFragment leave a null scene null", () => {
     get().setMultiplicity(3);

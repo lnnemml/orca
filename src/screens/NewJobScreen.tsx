@@ -179,6 +179,7 @@ export function NewJobScreen({
   const commit = useSceneStore((s) => s.commit);
   const installLog = useSceneStore((s) => s.installLog);
   const seedScene = useSceneStore((s) => s.seedScene);
+  const translateFragment = useSceneStore((s) => s.translateFragment);
 
   // ── Atom selection (2.5.2a; AtomId-native 2c2) — the geometry editor's pick list
   // Ordered stable AtomIds, held in component state (NOT the scene store — the store
@@ -194,6 +195,13 @@ export function NewJobScreen({
   // selected atoms are numbered regardless (MoleculeViewer). Toggling this
   // redraws labels only — no model reload, no camera move.
   const [showNumbers, setShowNumbers] = useState(false);
+
+  // Move mode (Phase 4.2 Stage 3, unit 3.1): when on, a mouse-drag starting on an
+  // atom rigidly moves that atom's whole fragment in the plane of the screen (the
+  // 60fps motion is a viewer-only overlay; one `translate-fragment` op commits on
+  // release — ADR-010). A drag on empty space still rotates; a click still picks.
+  // Session-only (a view affordance, not persisted).
+  const [moveMode, setMoveMode] = useState(false);
 
   // Viewer theme (2.5.2e-2) — persisted in the `settings` table under
   // `viewer_theme`; loaded on mount, saved on change. `viewerTheme` falls back to
@@ -1063,21 +1071,40 @@ export function NewJobScreen({
       label: "Edit geometry",
       short: "Edit",
       glyph: "✎",
-      body:
-        scene && editPlan && selection.length >= 2 ? (
-          <EditPanel
-            scene={scene}
-            plan={editPlan}
-            movingFragmentName={movingFragmentName}
-            alternativeFragmentName={alternativeFragmentName}
-            splitMask={splitMask}
-            splitError={splitError}
-            splitResolving={splitResolving}
-            onSwitchOrientation={() => setPreferAlternative((v) => !v)}
-            onPreview={setPreviewScene}
-            onApplied={applyEdit}
-          />
-        ) : null,
+      body: scene ? (
+        <div className="edit-section">
+          {/* Move mode (unit 3.1): rough repositioning by dragging a fragment in the
+              viewer. Coarse by design — exact distances/angles come from the
+              measure + constraint tools below and the editor (division of labour). */}
+          <label className="move-mode-toggle" title="Drag any atom of a fragment to move the whole fragment in the plane of the screen. A drag on empty space still rotates the camera.">
+            <input
+              type="checkbox"
+              checked={moveMode}
+              onChange={(e) => setMoveMode(e.target.checked)}
+            />
+            Move mode — drag a fragment to reposition it
+          </label>
+          {editPlan && selection.length >= 2 ? (
+            <EditPanel
+              scene={scene}
+              plan={editPlan}
+              movingFragmentName={movingFragmentName}
+              alternativeFragmentName={alternativeFragmentName}
+              splitMask={splitMask}
+              splitError={splitError}
+              splitResolving={splitResolving}
+              onSwitchOrientation={() => setPreferAlternative((v) => !v)}
+              onPreview={setPreviewScene}
+              onApplied={applyEdit}
+            />
+          ) : (
+            <div className="muted" style={{ fontSize: 13 }}>
+              Pick 2+ atoms for a distance / angle / dihedral edit — or use Move mode
+              for rough placement.
+            </div>
+          )}
+        </div>
+      ) : null,
     },
     {
       id: "fragments",
@@ -1467,6 +1494,8 @@ export function NewJobScreen({
                   scene={previewScene ?? scene}
                   selection={selection}
                   onAtomPick={onAtomPick}
+                  moveMode={moveMode}
+                  onFragmentDrag={translateFragment}
                   showAtomNumbers={showNumbers}
                   theme={theme}
                   maskHighlight={

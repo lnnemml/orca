@@ -5240,3 +5240,74 @@ the authority-split / read-only-projection principle; Replace input as the named
 (unit-2d amendment: `collapse-from-text` is legacy), `app.css` (`.paste-xyz` textarea), ROADMAP (2d
 → [x], **Stage 2 marked COMPLETE**, Stage 3 next). **Next: Stage 3 — operations over the core (rigid
 drag + the ephemeral layer; the first item is the Scene→Rust/WASM move).**
+
+## [2026-08-06] session | feat(editor): rigid-body fragment drag — ephemeral layer, one op on release (Phase 4.2 Stage 3, unit 3.1)
+The first CONTINUOUS interaction in the app, and the first Stage-3 op. In **Move mode** (a toggle in the
+Edit dock section) a mouse-drag starting on an atom grabs that atom's whole fragment and moves it
+rigidly **in the plane of the screen at 60fps** — a **viewer-only ephemeral overlay**; the Scene, text
+and log are untouched until mouseup, when exactly ONE `translate-fragment` op commits the TOTAL delta
+(ADR-010: 60fps motion not logged, one Undo).
+
+**CORRECTION (append-only, per the schema — the prior entry is not edited):** the 2d session entry
+ended "Next: Stage 3 … the first item is the Scene→Rust/WASM move." That was a **misread**. Stage 3 =
+**operations over the core** (rigid drag first); **Scene→Rust/WASM is ADR-011, deferred behind a
+spike, and is NOT what Stage 3 means**. ROADMAP had the same drift in its Stage-1 recap line
+("Stage 3 (Scene→Rust/WASM)") — fixed this unit.
+
+**PROBE FIRST (rule #10), the single real unknown — screen→world unproject.** Before any wiring I
+measured, in the real running viewer, whether 3Dmol 2.5.5 gives a reliable pixel→world delta in the
+screen plane. **PASS:** `viewer.screenOffsetToModel(dxPx, dyPx, modelz)` returns a world **delta** (the
+same call 3Dmol uses for its own pan); `viewer.modelToScreen` returns **page** pixels (hit-test vs
+`event.pageX/Y`). Round-trip accuracy: the default `modelz` (scene-centre depth) tracks to ~0.13 px
+frontal but **leads the cursor +6% at a rotated camera** (perspective depth effect — direction always
+exact, only the magnitude of which depth-plane sticks to the cursor). Passing the **grabbed atom's
+depth** — `new Vector3(atom).applyMatrix4(viewer.modelGroup.matrixWorld).z`, which is literally the
+first line of `modelToScreen`'s own chain (so it reuses the documented projection input, NOT invented
+camera math — a wrong first guess blew up to −350%) — makes tracking **pixel-exact (0 px)** across 3
+atoms × 4 deltas at frontal AND 45°y+30°x. Recorded in `wiki/debugging/013`. Because the probe passed,
+I proceeded; had it failed I would have stopped for the axis-constraint alternative.
+
+**Where the ephemeral state lives (NOT in the store).** The store gained a committable
+`translateFragment(id, dx, dy, dz)` → `translateFragmentInScene` (new pure scene mutator) →
+`translate-fragment` op → `commit` (the one door, like every mutator). Everything else is **viewer-local**:
+`MoleculeViewer`'s drag effect holds the pointer session in closures/refs; the frozen-topology
+coordinate-update path (unit 3.14) moves the grabbed fragment's live model atoms per frame
+(`applySceneStyle` — the styling extracted from the model effect so a drag frame keeps the per-fragment
+palette — nulls cached geometry so sticks redraw; no `addModel`, no re-perception, no `zoomTo`). `commit`
+is called **exactly once, in `pointerup`** — never in `pointermove`. The pure accumulate/commit logic is
+`src/viewer/fragment-drag.ts` (`makeDragController`), split out so a simulated (begin, move×N, end)
+sequence is unit-tested without jsdom (the `syncMonacoToScene` pattern from 2d).
+
+**Camera suppression (review point 3).** 3Dmol binds `mousedown` on its canvas (`glDOM`). The Move
+effect binds `mousedown` on the **container in the CAPTURE phase**, so an atom-grab runs first and
+`stopPropagation()`s → 3Dmol's canvas mousedown never fires and its rotate (gated on state that mousedown
+sets) is suppressed for the drag. Empty-space drag isn't stopped → 3Dmol rotates; a click (< 3 px)
+re-emits the pick through `viewerTableRef` (we intercepted 3Dmol's own click). `mousemove`/`mouseup`
+are on `window` for the drag's life; a mid-drag Move-off / unmount cancels via a tracked cleanup ref.
+
+**Gates.** Pure (vitest): **(c1)** `translateFragment` commits ONE op, shifts every mover atom by the
+SAME delta, internal pairwise distances + count/order/AtomId invariant, other fragments untouched — broke
+it (shift only atom 0) → red, reverted; **(c2)** a simulated (down, move×3, up) yields exactly ONE log
+entry with the SUMMED delta — broke it (commit per move) → log grows → red, reverted; **(c3)** the Scene
+snapshot is `===` its pre-drag value during the drag (before up) — the same per-move-commit break reddens
+it too. `tsc` clean, **vitest 521 green**, `vite build` clean. **Manual gates m1–m4 verified LIVE** (the
+WebKitGTK dev server at :1420 via Chrome — the real 3Dmol + mouse + React wiring, not jsdom): **m1** in
+Move mode, dragging the H₂O fragment moved all 3 of its atoms by the SAME delta (4.284, −3.122, 0) Å in
+the screen plane while BH₄⁻ stayed put and the camera did NOT rotate; **m2** release logged ONE history
+entry "Move H₂O by (4.284, −3.122, 0) Å", one Undo restored it, the Monaco block updated once (on
+release); **m3** with Move off, a viewer drag rotated the camera (both fragments together, block
+unchanged — a view change) and a click picked (halo appeared); **m4** a drag frame (setStyle+render) cost
+**~1.3 ms at 38 atoms** (BH₄ + H₂O + 5×CH₃OH), ~12× under the 16.7 ms/60fps budget, essentially flat vs 8
+atoms (fixed per-frame overhead dominates) — no stutter; the definitive WebKitGTK-GPU number is worth a
+confirming glance in the real window but the headroom makes a regression very unlikely, and the
+frozen-topology precedent agrees.
+
+**Wiki (same commit):** `debugging/013` (the probe — API + accuracy + camera binding), `visualization.md`
+(Move-mode/ephemeral-drag section: camera suppression, frozen-topology reuse, Scene-untouched
+post-condition), `editor-ui.md` (status → 3.1; Move mode as a coarse-placement affordance — precision is
+the editor/constraints, division of labour), `scene.md` (store `translateFragment` mutator + the pure
+`translateFragmentInScene`), `index.md` (+debugging/013, page count 71), ROADMAP (rigid-drag → [x],
+"Undo deeper than one step" → [x] (done in 2b), Stage-1 recap line de-drifted, Stage 3 begun). **Not
+touched (ADR-011 deferred):** no Scene→Rust/WASM, no renderer move; no vdW-clash warning (next Stage-3
+unit); no axis-constraint drag; the pure scene/oplog core, Rust, sidecar all untouched. **Next: Stage 3
+continues — vdW-overlap detection after a move, then fragment rotation about the approach axis.**

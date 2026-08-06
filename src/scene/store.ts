@@ -49,6 +49,7 @@ import {
   renameFragment as renameFragmentPure,
   replaceFragmentAtoms as replaceFragmentAtomsPure,
   setMultiplicity as setMultiplicityPure,
+  translateFragmentInScene,
 } from "./scene";
 import type { RawAtom, RawFragment, Scene } from "./types";
 
@@ -78,6 +79,13 @@ export interface SceneStore {
   renameFragment(id: string, name: string): void;
   setMultiplicity(m: number): void;
   replaceFragmentAtoms(id: string, atoms: RawAtom[], via: FragmentGeometryVia): void;
+  /**
+   * Rigid-body translate a fragment by a TOTAL (dx, dy, dz) Å — the single op a
+   * drag commits on release (Stage 3; ADR-010: the ephemeral 60fps motion is a
+   * viewer-only overlay and is NOT logged; exactly one `translate-fragment` op
+   * lands here on mouseup). No-op on a zero delta or an absent id.
+   */
+  translateFragment(id: string, dx: number, dy: number, dz: number): void;
 
   // ── History navigation (undo/redo fall out of the log — ADR-010) ──
   undo(): void;
@@ -175,6 +183,18 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
     get().commit(
       { type: "replace-fragment-atoms", fragmentId: id, name: frag.name, edit: via },
       replaceFragmentAtomsPure(cur, id, atoms),
+    );
+  },
+
+  translateFragment: (id, dx, dy, dz) => {
+    const cur = current(get().log);
+    if (!cur) return;
+    const frag = cur.fragments.find((f) => f.id === id);
+    if (!frag) return;
+    if (dx === 0 && dy === 0 && dz === 0) return; // a click with no drag → no op
+    get().commit(
+      { type: "translate-fragment", fragmentId: id, name: frag.name, delta: [dx, dy, dz] },
+      translateFragmentInScene(cur, id, dx, dy, dz),
     );
   },
 

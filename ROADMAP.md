@@ -493,7 +493,9 @@ editor UI, method/basis form, and the geometry↔sidecar seam stay TS until Stag
 **Stage 1 is COMPLETE** — the identity core (ADR-016) is authored in Rust (`orcastudio-core`),
 emit-input is byte-identical to the TS source, the parsers are paired with the `IndexMap` and
 verify it against the artifact, the map is minted at `create_job` from verified text, and the xtb
-index-base seam is branded. Stage 2 (operation log) and Stage 3 (Scene→Rust/WASM) remain.
+index-base seam is branded. Stage 2 (operation log) is **complete**; Stage 3 (operations over the
+core — rigid drag first) is **begun**. (Scene→Rust/WASM is ADR-011, deferred behind a spike — it is
+**not** what Stage 3 means; Stage 3 = operations over the core.)
 
 **Stage 2 — operation log** ✅ **COMPLETE** (units 2a–2d, once [ADR-017](wiki/architecture/adr-017-operation-log.md)
 fixed the log design: each entry **materializes** its resultant snapshot — provenance, not a
@@ -569,16 +571,24 @@ Stage 3, where it is actually needed.) **Next: Stage 3 — operations over the c
 
 **Stage 3 — operations over the core** (each item is an `Op`, not new state)
 
-- [ ] Rigid-body drag of a fragment. **The ephemeral layer lands here** (moved out of Stage 2's
-      description — it is needed only for the drag, ADR-010). **Risk — the first *continuous*
-      interaction in the app:** during the drag only the viewer moves (ephemeral layer, 60 fps, not
-      logged); the Scene and the input text update **once on release**, as a single `translate-fragment`
-      op with a single Undo.
-      Post-condition: pairwise distances *within the mask* are unchanged by the drag (rigid-body
-      move, verified in our terms — domain rule #9).
+- [x] **Rigid-body drag of a fragment (unit 3.1).** **The ephemeral layer landed here** (ADR-010):
+      during the drag only the viewer moves (60 fps, **not** logged) via the frozen-topology
+      coordinate-update path; the Scene and the input text update **once on release**, as a single
+      `translate-fragment` op with a single Undo. Move mode is a toggle in the Edit dock section; the
+      grab intercepts 3Dmol's canvas mousedown in the capture phase so the camera doesn't rotate for
+      the drag (empty-space drag still rotates; a click still picks). Screen→world is 3Dmol's
+      `screenOffsetToModel` at the grabbed atom's depth — measured **pixel-exact** (`debugging/013`, the
+      mandatory probe). Post-condition (rule #9): every mover atom shifts by the same delta, internal
+      pairwise distances + count/order/AtomId invariant, other fragments untouched. Pure gates **c1**
+      (translate commit), **c2** (one op / summed delta), **c3** (Scene untouched mid-drag), each with a
+      proven-biting negative control; manual gates **m1–m4** verified live (drag moves one fragment /
+      camera held; one history entry + one Undo; rotate+pick outside Move mode; ~1.3 ms/frame at 38
+      atoms). See `wiki/modules/visualization.md`, `editor-ui.md`, `debugging/013`.
 - [ ] Rotation of a fragment about its approach axis (an `Op` over the mask).
 - [ ] vdW-overlap detection after a move (warn on clashes the coarse placement can produce).
-- [ ] Undo deeper than one step (falls out of the operation log; today edit mode is one-step).
+- [x] **Undo deeper than one step** — done in unit 2b: undo/redo/`jumpTo` fold over the whole
+      operation log (superseding the old one-step `previous`/`undoReset`), so every op (drag included)
+      is a full history step.
 - [ ] Ring torsions (rotate a torsion whose bond is inside a ring) — an `Op` over a
       graph-derived mask, building on the 2.5.3 bond-graph split.
 

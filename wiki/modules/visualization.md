@@ -99,6 +99,42 @@ comes from the theme's palette (see Themes).
   adapter is gone. The ASE mask and the `%geom` constraint stay positional at their own emit seams
   (see `wiki/modules/scene.md`).
 
+## Rigid-body fragment drag — "Move mode" (unit 3.1; ADR-010 ephemeral layer)
+
+When `moveMode` is on (scene path, pickable, with `onFragmentDrag` wired), a mouse-drag that STARTS on
+an atom grabs that atom's whole fragment and moves it rigidly **in the plane of the screen at 60fps**.
+The entire drag is a **viewer-only ephemeral overlay** — the Scene/store is untouched until release,
+when exactly ONE `translate-fragment` op is committed with the total delta (ADR-010: 60fps motion is
+not logged; one op, one Undo). The pure accumulate/commit logic is `src/viewer/fragment-drag.ts`
+(`makeDragController`), unit-tested without jsdom (the same split as `syncMonacoToScene` in 2d); the
+3Dmol/mouse wiring is a separate effect in `MoleculeViewer`, keyed `[moveMode, pickable, scene, theme]`.
+
+- **Camera suppression.** 3Dmol binds `mousedown` on its canvas (`glDOM`). The Move effect binds
+  `mousedown` on the **container in the CAPTURE phase**, so an atom-grab runs first and
+  `stopPropagation()`s — 3Dmol's canvas mousedown never fires, and its rotate (gated on state that
+  mousedown sets) is suppressed for the drag. A drag on **empty space** is not stopped → 3Dmol rotates
+  as usual; a **click** (movement under `DRAG_THRESHOLD_PX`) picks the grabbed atom (we intercepted
+  3Dmol's own click, so the pick is re-emitted through `viewerTableRef`). `mousemove`/`mouseup` are on
+  `window` for the drag's life so it survives the cursor leaving the canvas; a mid-drag Move-off /
+  unmount cancels cleanly via a tracked cleanup ref.
+- **screen→world, pixel-exact.** `screenOffsetToModel(dxPx, dyPx, modelz)` turns the pixel delta into a
+  world delta in the screen plane; `modelz = grabbedAtomDepth(atom)` (the atom's `modelGroup.matrixWorld`
+  z) makes the grabbed atom track the cursor to **0 px** at any camera orientation (measured,
+  `debugging/013`). The internal-API reach falls back to the default depth (≤~6% lag) if a 3Dmol upgrade
+  moves it — accuracy only, never a crash.
+- **Ephemeral coordinate-update reuses the frozen-topology path (unit 3.14).** `showEphemeral` mutates
+  the grabbed fragment's live model-atom `.x/.y/.z` (= pre-drag coords + world delta) then
+  `applySceneStyle` (which `setStyle`-nulls the cached geometry so sticks redraw at the new coords) +
+  `render()` — **no `addModel`, no bond re-perception, no `zoomTo`**, exactly like the mode-animation
+  frame update. `applySceneStyle` is the styling extracted from the model effect so a drag frame keeps
+  the per-fragment palette (no CPK flash). On release the store commits → the model effect rebuilds from
+  the new Scene at the same coordinates (no flick); on a click/zero-drag the controller `restore`s the
+  fragment to its pre-drag coords.
+- **The Scene is the source of geometry; the overlay never writes it (rule #9 post-condition, unit 3.1
+  c1/c3).** During the drag the store snapshot is `===` its pre-drag value; on commit `translateFragment`
+  shifts every mover atom by the same delta (internal pairwise distances invariant, count/order/AtomId
+  invariant), other fragments untouched.
+
 ## The overlay effect (one owner of all shapes & labels)
 
 Halos, measurement lines/labels, atom-number labels, and the edit-mask glow are all drawn in **one**

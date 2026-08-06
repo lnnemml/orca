@@ -16,6 +16,7 @@ import { measureSelection, formatMeasurementValue } from "../scene/measure";
 import { highlightRadius, vdwTableDrift } from "./highlight";
 import { DEFAULT_THEME, cpkColorDrift, type ViewerTheme } from "./theme";
 import { parseXyzCoords, applyCoordsToAtoms, drawableBondCount } from "./frozenTopology";
+import { makeDragController, type WorldDelta } from "./fragment-drag";
 
 // Side-effect: force 3Dmol onto its direct-canvas WebGL path so it renders in
 // the WebKitGTK webview (must run before the first createViewer).
@@ -132,6 +133,24 @@ interface MoleculeViewerProps {
    * (ADR-011). Honoured on the orbital, mode-animation and single-xyz paths; the
    * scene editor is always ball-and-stick. */
   representation?: Representation;
+  /**
+   * Rigid-body fragment drag — "Move mode" (Phase 4.2 Stage 3, unit 3.1). When
+   * true (scene path only), a mouse-drag STARTING on an atom grabs that atom's
+   * whole fragment and moves it rigidly in the plane of the screen at 60fps — a
+   * VIEWER-ONLY ephemeral overlay (the Scene is untouched, ADR-010). Camera
+   * rotation is suppressed for that drag (the grab intercepts the mousedown before
+   * 3Dmol). On release, the TOTAL delta is handed up via {@link onFragmentDrag} as
+   * ONE op. A drag on empty space still rotates the camera; a click still picks.
+   * When false, mouse behaviour is unchanged (rotate / pick). Requires `onAtomPick`
+   * (a pickable scene) and `onFragmentDrag`.
+   */
+  moveMode?: boolean;
+  /**
+   * Release callback for a rigid fragment drag (unit 3.1): the grabbed fragment's
+   * id and the TOTAL world displacement (Å). Called exactly once per drag, on
+   * mouseup (never per frame). The app commits it as one `translate-fragment` op.
+   */
+  onFragmentDrag?: (fragmentId: string, dx: number, dy: number, dz: number) => void;
   style?: React.CSSProperties;
 }
 
@@ -192,10 +211,63 @@ function cpkBaseStyle(theme: ViewerTheme) {
   return { stick: { colorscheme }, sphere: { scale: 0.3, colorscheme } };
 }
 
+/**
+ * Apply the scene's ball-and-stick styling to the current model: CPK for fragment
+ * 0, a flat palette colour for fragments 1+ (each reads as one object). Extracted
+ * (unit 3.1) so BOTH the model-rebuild effect AND the ephemeral drag redraw style
+ * identically — a drag frame must not flash fragment 0's CPK onto the others.
+ * `setStyle` also nulls the model's cached geometry, so sticks redraw at whatever
+ * coordinates the atoms currently hold (the frozen-topology update path).
+ */
+function applySceneStyle(viewer: GLViewer, scene: Scene, theme: ViewerTheme) {
+  viewer.setStyle({}, cpkBaseStyle(theme));
+  const palette = theme.fragmentPalette;
+  fragmentRanges(scene).forEach((range, fragmentIndex) => {
+    if (fragmentIndex === 0) return; // fragment 0 → leave on CPK colours
+    const color = palette[(fragmentIndex - 1) % palette.length];
+    const indices: number[] = [];
+    for (let i = range.start; i < range.end; i++) indices.push(i);
+    viewer.setStyle({ index: indices }, { stick: { color }, sphere: { scale: 0.3, color } });
+  });
+}
+
+/**
+ * Depth (in the frame `screenOffsetToModel` expects) of an atom at world coords —
+ * the exact first step of 3Dmol's own `modelToScreen` chain (measured pixel-exact,
+ * `wiki/debugging/013`). Passing this as the `modelz` argument makes a drag track
+ * the GRABBED atom to 0 px error at any camera orientation. Reaches two 3Dmol
+ * internals (`modelGroup.matrixWorld`, the `Vector3` constructor) by runtime probe,
+ * not a typed import — so it returns `undefined` if a 3Dmol upgrade moves them,
+ * and the caller falls back to the default (scene-centre) depth (≤~6% tracking lag
+ * at a strongly rotated camera — still usable for a coarse-position affordance).
+ */
+function grabbedAtomDepth(
+  viewer: GLViewer,
+  atom: { x: number; y: number; z: number },
+): number | undefined {
+  const internals = viewer as unknown as {
+    modelGroup?: { matrixWorld?: unknown };
+    rotationGroup?: { position?: { constructor: new (x: number, y: number, z: number) => { applyMatrix4(m: unknown): { z: number } } } };
+  };
+  const matrixWorld = internals.modelGroup?.matrixWorld;
+  const Vec3 = internals.rotationGroup?.position?.constructor;
+  if (!matrixWorld || !Vec3) return undefined;
+  return new Vec3(atom.x, atom.y, atom.z).applyMatrix4(matrixWorld).z;
+}
+
 /** Radius (Å) of the thick, solid cylinder marking a dihedral's j–k axis
  * (2.5.2e-2) — chunky enough to read as the axis against the thin dashed i–j /
  * k–l lines. */
 const AXIS_RADIUS = 0.05;
+
+/** A pointer within this many pixels of an atom's projected centre grabs it in Move
+ * mode (unit 3.1). Coarse on purpose — the drag is a rough placement, refined by the
+ * editor/constraints; a generous radius makes small atoms (H) easy to grab. */
+const GRAB_RADIUS_PX = 22;
+
+/** A pointer that stays within this many pixels of the grab point is a CLICK (pick);
+ * crossing it starts a DRAG (move). Small, so a deliberate drag registers at once. */
+const DRAG_THRESHOLD_PX = 3;
 
 const xyz = (a: SceneAtom) => ({ x: a.x, y: a.y, z: a.z });
 const midpoint = (a: SceneAtom, b: SceneAtom) => ({
@@ -341,6 +413,8 @@ export const MoleculeViewer = forwardRef<MoleculeViewerHandle, MoleculeViewerPro
       orbitalCube,
       orbitalIsoValue,
       representation = "stick",
+      moveMode = false,
+      onFragmentDrag,
       style,
     }: MoleculeViewerProps,
     ref,
@@ -371,6 +445,10 @@ export const MoleculeViewer = forwardRef<MoleculeViewerHandle, MoleculeViewerPro
   // callback would otherwise rebuild the model on every render.
   const onAtomPickRef = useRef<typeof onAtomPick>(onAtomPick);
   onAtomPickRef.current = onAtomPick;
+  // Latest onFragmentDrag, read through a ref so the drag effect (below) does not
+  // re-attach its listeners when only this inline callback changes.
+  const onFragmentDragRef = useRef<typeof onFragmentDrag>(onFragmentDrag);
+  onFragmentDragRef.current = onFragmentDrag;
   // Picking is enabled iff a pick handler was provided. Captured as a boolean so
   // the model effect re-runs when it flips (it never flips in practice — a
   // screen either passes onAtomPick or doesn't — but keeps the effect honest).
@@ -547,26 +625,11 @@ export const MoleculeViewer = forwardRef<MoleculeViewerHandle, MoleculeViewerPro
       const feed = buildViewerFeed(scene);
       viewer.addModel(feed.xyz, "xyz");
       viewerTableRef.current = feed.table;
-      // Base ball-and-stick with CPK element colours for every atom — with the
-      // theme's low-contrast element overrides folded in (light/white), so
-      // fragment 0 (the CPK fragment) is legible on the background...
-      viewer.setStyle({}, cpkBaseStyle(theme));
-      // ...then override fragments 1+ with a flat palette colour on BOTH stick
-      // and sphere so each fragment reads as one object. Fragment 0 keeps CPK.
-      // The palette is the THEME's (darker on light themes); the `index` selector
-      // takes the 0-based atom index, which for an xyz model is the merged-xyz
-      // line order == the Scene global index (ADR-008).
-      const palette = theme.fragmentPalette;
-      fragmentRanges(scene).forEach((range, fragmentIndex) => {
-        if (fragmentIndex === 0) return; // fragment 0 → leave on CPK colours
-        const color = palette[(fragmentIndex - 1) % palette.length];
-        const indices: number[] = [];
-        for (let i = range.start; i < range.end; i++) indices.push(i);
-        viewer.setStyle(
-          { index: indices },
-          { stick: { color }, sphere: { scale: 0.3, color } },
-        );
-      });
+      // Ball-and-stick: CPK for fragment 0, a flat palette colour per fragment 1+
+      // (each reads as one object). The `index` selector is the merged-xyz line
+      // order == the Scene global index (ADR-008). Extracted to `applySceneStyle`
+      // (unit 3.1) so the ephemeral drag redraw styles identically.
+      applySceneStyle(viewer, scene, theme);
 
       // Arm atom picking (2.5.2a; AtomId in 2c1) — only when a pick handler is
       // present, and re-armed here because removeAllModels/addModel rebuilt the
@@ -758,6 +821,136 @@ export const MoleculeViewer = forwardRef<MoleculeViewerHandle, MoleculeViewerPro
 
     viewer.render();
   }, [selection, scene, showAtomNumbers, theme, maskHighlight, orbitalCube]);
+
+  // Rigid-body fragment drag — "Move mode" (unit 3.1). Active only on a pickable
+  // scene with Move mode on and a drag callback wired. The whole interaction is a
+  // VIEWER-ONLY ephemeral overlay: the Scene/store is untouched until mouseup, when
+  // exactly ONE `translate-fragment` op is committed with the total delta (ADR-010;
+  // the pure accumulate/commit logic is `fragment-drag.ts`, unit-tested without
+  // jsdom). The mousedown listener is on the CONTAINER in the CAPTURE phase, so an
+  // atom-grab `stopPropagation`s BEFORE 3Dmol's canvas mousedown — that suppresses
+  // camera rotation for the drag (3Dmol's rotate is gated on state it sets in that
+  // mousedown). A drag on empty space is not stopped → 3Dmol rotates as usual; a
+  // click still picks (the drag commits nothing on a zero move).
+  const dragCleanupRef = useRef<(() => void) | null>(null);
+  useEffect(() => {
+    const container = containerRef.current;
+    const viewer = viewerRef.current;
+    if (!container || !viewer) return;
+    if (!moveMode || !pickable || !scene || scene.fragments.length === 0) return;
+
+    const ranges = fragmentRanges(scene);
+
+    const onMouseDown = (e: MouseEvent) => {
+      if (e.button !== 0) return; // left button only
+      const model = viewer.getModel();
+      if (!model) return;
+      const atoms = model.selectedAtoms({}) as Array<{ x: number; y: number; z: number }>;
+      if (atoms.length === 0) return;
+
+      // Hit-test: nearest projected atom within the grab radius (page pixels — the
+      // space `modelToScreen` returns; verified against the canvas rect, debugging/013).
+      const screens = viewer.modelToScreen(
+        atoms.map((a) => ({ x: a.x, y: a.y, z: a.z })),
+      ) as Array<{ x: number; y: number }>;
+      let best = -1;
+      let bestD = GRAB_RADIUS_PX;
+      for (let i = 0; i < screens.length; i++) {
+        const d = Math.hypot(screens[i].x - e.pageX, screens[i].y - e.pageY);
+        if (d < bestD) {
+          bestD = d;
+          best = i;
+        }
+      }
+      if (best < 0) return; // empty space → let 3Dmol rotate (don't stopPropagation)
+
+      const fi = ranges.findIndex((r) => best >= r.start && best < r.end);
+      if (fi < 0) return;
+      const range = ranges[fi];
+      const fragmentId = scene.fragments[fi].id;
+
+      // Grab: suppress the camera for this drag (beat 3Dmol's canvas mousedown).
+      e.stopPropagation();
+      e.preventDefault();
+
+      // The grabbed fragment's live atom refs + their pre-drag coords, and the
+      // grabbed atom's depth (for pixel-exact screen-plane tracking).
+      const fragAtoms = atoms.slice(range.start, range.end);
+      const orig = fragAtoms.map((a) => ({ x: a.x, y: a.y, z: a.z }));
+      const modelz = grabbedAtomDepth(viewer, atoms[best]);
+
+      const setFragCoords = (fn: (i: number) => { x: number; y: number; z: number }) => {
+        for (let i = 0; i < fragAtoms.length; i++) {
+          const p = fn(i);
+          fragAtoms[i].x = p.x;
+          fragAtoms[i].y = p.y;
+          fragAtoms[i].z = p.z;
+        }
+        applySceneStyle(viewer, scene, theme); // nulls cached geometry → sticks redraw at new coords
+        viewer.render();
+      };
+
+      const controller = makeDragController({
+        unproject: (dxPx, dyPx): WorldDelta => {
+          const wd = viewer.screenOffsetToModel(dxPx, dyPx, modelz) as {
+            x: number;
+            y: number;
+            z: number;
+          };
+          return [wd.x, wd.y, wd.z];
+        },
+        showEphemeral: (delta) =>
+          setFragCoords((i) => ({
+            x: orig[i].x + delta[0],
+            y: orig[i].y + delta[1],
+            z: orig[i].z + delta[2],
+          })),
+        commit: (fid, delta) => onFragmentDragRef.current?.(fid, delta[0], delta[1], delta[2]),
+        restore: () => setFragCoords((i) => orig[i]),
+      });
+      controller.begin(fragmentId, [e.pageX, e.pageY]);
+
+      // Distinguish a CLICK (→ pick the grabbed atom, since we intercepted 3Dmol's
+      // own click handler) from a DRAG (→ move the fragment). A pointer that stays
+      // within the threshold is a click; crossing it starts the ephemeral drag.
+      let didDrag = false;
+      const onMove = (me: MouseEvent) => {
+        if (!didDrag) {
+          if (Math.hypot(me.pageX - e.pageX, me.pageY - e.pageY) < DRAG_THRESHOLD_PX) return;
+          didDrag = true;
+        }
+        controller.move([me.pageX, me.pageY]);
+      };
+      const onUp = (ue: MouseEvent) => {
+        if (didDrag) {
+          controller.end([ue.pageX, ue.pageY]); // commits ONE op with the total delta
+        } else {
+          controller.cancel(); // a click, not a drag → pick, don't move
+          const atomId = viewerTableRef.current?.atomIdAt(best);
+          if (atomId !== undefined) onAtomPickRef.current?.({ atomId, viewerIndex: best });
+        }
+        cleanup();
+      };
+      const cleanup = () => {
+        window.removeEventListener("mousemove", onMove, true);
+        window.removeEventListener("mouseup", onUp, true);
+        dragCleanupRef.current = null;
+      };
+      // Track window listeners so a mid-drag unmount / Move-mode-off cancels cleanly.
+      dragCleanupRef.current = () => {
+        controller.cancel();
+        cleanup();
+      };
+      window.addEventListener("mousemove", onMove, true);
+      window.addEventListener("mouseup", onUp, true);
+    };
+
+    container.addEventListener("mousedown", onMouseDown, true); // capture — before 3Dmol's canvas mousedown
+    return () => {
+      container.removeEventListener("mousedown", onMouseDown, true);
+      dragCleanupRef.current?.(); // cancel an in-flight drag on teardown (Move off / unmount)
+    };
+  }, [moveMode, pickable, scene, theme]);
 
   return <div ref={containerRef} className="molecule-viewer" style={style} />;
   },
