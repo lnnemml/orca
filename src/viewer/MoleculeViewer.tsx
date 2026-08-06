@@ -920,7 +920,7 @@ export const MoleculeViewer = forwardRef<MoleculeViewerHandle, MoleculeViewerPro
       if (pa && qa) {
         // Both endpoints are fixed points of the rotation (P is the pivot; Q lies on
         // the line), so drawing at committed coords stays correct during preview.
-        drawRotationAxis(viewer, pa, qa, theme.haloColor);
+        drawRotationAxis(viewer, pa, qa, theme.axisColor);
         const value = rotationAxisValueLabel(scene, axisHighlight);
         if (value) drawValueLabel(viewer, midpoint(pa, qa), value, theme);
       }

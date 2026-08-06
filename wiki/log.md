@@ -5521,3 +5521,41 @@ restore, root cause, fix, what it silently broke), `scene.md` (the adopt-preserv
 `adoptPreservesScene` contract; restore's persist-is-truth clarified as measured-correct), `index.md`
 (+debugging/014), this entry. **Not touched:** `restore.ts` (measured correct), the rotate/clash/move
 ops, Rust/sidecar. **Next: Stage 3 — ring torsions (the last unit of Stage 3).**
+
+## [2026-08-06] session | fix(editor): rotation axis gets a distinct accent colour so the Axis/Distance toggle is visibly perceptible (unit 3.3b-fix)
+The 3.3b Axis⇄Distance toggle changed nothing visible. The **mandatory manual gate** (which is exactly
+what exposed this) turned up **two** measured causes, not one.
+
+**Cause 1 — colour.** The axis cylinder borrowed `theme.haloColor` (chartreuse), indistinguishable from
+the green measurement line, so "axis" and "distance" looked identical. **Fix:** a dedicated
+`theme.axisColor` — a saturated **azure** (`#3b82f6` dark, `#1d4ed8` light). Chosen deliberately to avoid
+every known overlay collision: the chartreuse selection halo / green measurement line (~85°), the magenta
+clash glow (~330°), the off-table Pd/Pt pink (`#ff1493`), and each fragment-palette hue
+(teal/coral/gold/violet). The blue sits in the gap between the teal and violet fragment hues, so the max
+reachable gap to the nearer of them is ~42°; `theme.test.ts` therefore locks a **whole-family gap (>90°)
+from the greens it was confused with** and a **>30° gap** from everything else, plus 3:1 contrast on each
+background. Negative control: setting the axis back to the green halo reddens the green-family assertion.
+
+**Cause 2 — a render loop that the colour fix alone would NOT have solved (also a manual-gate finding).**
+Selecting a pair spammed **"Maximum update depth exceeded"** (92/min in the console) and the toggle
+**snapped straight back to Axis**. Root cause (measured, not the review's "toggle logic is correct"):
+`RotatePanel` computed `axis = rotationAxis(scene, p, q)` — a fresh object every render — and fed it into
+the effect's deps, so `onAxis([p,q])` (`setRotateAxis`) fired every render → re-render → loop; and because
+`NewJobScreen`'s `[rotateAxis]` reset snaps the overlay to "axis" whenever `rotateAxis`'s identity changes,
+the toggle could never leave Axis. This shipped latent in **unit 3.3** (whose manual gates were deferred) —
+the deferral is what let it through. **Fix:** `useMemo` the axis (keyed on scene/P/Q) and **split** the
+one effect into two — `onAxis` keyed only on the pair (fires on a pair change, not an angle tick),
+`onEphemeral` keyed on the angle + memoized axis.
+
+**Gates.** Pure: `theme.test.ts` — axis contrast in the overlay loop + a distinctness block (whole-family
+off the greens, clearly off clash/pink/fragments), demonstrated-biting. `tsc` clean, **vitest 552 green**
+(+4), `vite build` clean. **Manual (WebKitGTK, live — the decisive gate):** built H₂O+BH₄⁻, picked B#3 →
+O#0. **m1** default Axis → **azure** cylinder (not green); **m2** flip Distance → **green** measurement
+line, cylinder gone — a **clearly visible** change; **m3** flip Axis → azure cylinder back, Å identical in
+both; console **clean** (0 "Maximum update depth", was 92/min before the loop fix). Toggle switches and is
+perceptible.
+
+**Wiki (same commit):** `theme.ts` (the `axisColor` field, documented), `visualization.md` (the azure
+accent + why, and the render-loop fix — memoize + split effects), ROADMAP (3.3b → DONE, both causes),
+this entry. **Not touched:** the toggle's pure decision (`chooseRotateOverlay` unchanged), the measure
+render, the rotate math/op, the merge fix. **Next: Stage 3 — ring torsions (the last unit of Stage 3).**

@@ -604,7 +604,14 @@ Stage 3, where it is actually needed.) **Next: Stage 3 — operations over the c
     Distance (measurement line + label), never both; the Å number is the same in both (single source:
     `measure` distance). Pure decision `chooseRotateOverlay` (`viewer/rotate-overlay.ts`), gates **c1**
     (default/flip) + **c2** (never both — demonstrated-biting). App-owned `rotateOverlay`, reset with the
-    axis; the measure tool outside Rotate is untouched. **Manual gates m1–m5 pending live verification.**
+    axis; the measure tool outside Rotate is untouched. **3.3b-fix (mandatory live gate):** the toggle was
+    imperceptible for TWO measured reasons — (1) the axis borrowed the green `haloColor`, indistinguishable
+    from the green measurement line → gave it a distinct **azure `theme.axisColor`** (hue-distinctness +
+    contrast locked in `theme.test.ts`); (2) a **render loop** (`rotationAxis`'s fresh object in an effect's
+    deps → `setRotateAxis` every render → "Maximum update depth", and the `[rotateAxis]` reset snapped the
+    toggle back to Axis) → memoized `axis` + split the panel effect. **m1–m3 confirmed live** (WebKitGTK):
+    Axis → azure cylinder, Distance → green line (visible change), back to Axis → cylinder returns, Å
+    identical; console clean (was 92 loop errors/min). **DONE.**
 - [x] **vdW-overlap detection after a move (unit 3.2).** After any geometry change, **inter-fragment**
       atoms closer than `k·(rᵢ+rⱼ)` of their cited vdW sum (Bondi/Mantina/Alvarez — `scene/vdw-radii.ts`,
       **B** and **Pd/Pt** covered; uncovered → UNDETERMINED, skipped + surfaced, never guessed) are

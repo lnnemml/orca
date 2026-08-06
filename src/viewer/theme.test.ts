@@ -77,11 +77,48 @@ describe("viewerTheme", () => {
 // ── Overlay contrast — every theme's own overlay colours clear 3:1 ────────────
 describe("overlay colours clear the 3:1 contrast floor in every theme", () => {
   for (const theme of VIEWER_THEMES) {
-    it(`${theme.id}: halo, label text, measurement line/text`, () => {
+    it(`${theme.id}: halo, label text, measurement line/text, axis`, () => {
       expect(contrastRatio(theme.haloColor, theme.background)).toBeGreaterThanOrEqual(AA_LARGE);
       expect(contrastRatio(theme.labelText, theme.labelBg)).toBeGreaterThanOrEqual(AA_LARGE);
       expect(contrastRatio(theme.measurementLine, theme.background)).toBeGreaterThanOrEqual(AA_LARGE);
       expect(contrastRatio(theme.measurementText, theme.labelBg)).toBeGreaterThanOrEqual(AA_LARGE);
+      expect(contrastRatio(theme.axisColor, theme.background)).toBeGreaterThanOrEqual(AA_LARGE);
+    });
+  }
+});
+
+// ── Rotation-axis colour is VISUALLY distinct (unit 3.3b-fix) ─────────────────
+// The Axis⇄Distance toggle was imperceptible because the axis cylinder borrowed the
+// green `haloColor` — indistinguishable from the green measurement line. The fix
+// gives the axis its own azure accent; this locks it hue-far from every other
+// overlay so the toggle reads as a real change (c1).
+describe("rotation-axis colour is distinct from the other overlays", () => {
+  // Reference overlay colours the axis must NOT be confused with. `CLASH_COLOR`
+  // (#ff2d95) is `MoleculeViewer`'s magenta glow; #ff1493 is the off-table Pd/Pt
+  // pink that once collided with the halo (see theme.ts / the log). Hardcoded with
+  // a comment for the same reason `highlight.ts`'s vdW table is copied — the 3Dmol
+  // consumer isn't importable under the node runner.
+  const CLASH_MAGENTA = "#ff2d95";
+  const PD_PT_PINK = "#ff1493";
+  // The bug was the axis reading as the GREEN measurement line / halo, so those must
+  // be a WHOLE different family (a large gap). Everything else must be clearly
+  // distinct but need not be as far — the fragment palette flanks the blue with teal
+  // AND violet, so the max achievable gap to the nearer of them is only ~42°; 30° is
+  // a comfortable "clearly different hue" floor that both clear.
+  const GREEN_FAMILY_GAP = 90; // axis vs the greens it was confused with
+  const DISTINCT_GAP = 30; // axis vs every other overlay
+
+  for (const theme of VIEWER_THEMES) {
+    it(`${theme.id}: axis hue is a whole family off the greens, and clearly distinct from clash/pink/fragments`, () => {
+      // The core of the fix: NOT the green measurement line / halo.
+      expect(hueDistance(theme.axisColor, theme.haloColor)).toBeGreaterThan(GREEN_FAMILY_GAP);
+      expect(hueDistance(theme.axisColor, theme.measurementLine)).toBeGreaterThan(GREEN_FAMILY_GAP);
+      // And distinct from the other overlays that carry meaning.
+      expect(hueDistance(theme.axisColor, CLASH_MAGENTA)).toBeGreaterThan(DISTINCT_GAP);
+      expect(hueDistance(theme.axisColor, PD_PT_PINK)).toBeGreaterThan(DISTINCT_GAP);
+      for (const c of theme.fragmentPalette) {
+        expect(hueDistance(theme.axisColor, c)).toBeGreaterThan(DISTINCT_GAP);
+      }
     });
   }
 });

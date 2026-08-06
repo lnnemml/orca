@@ -154,8 +154,14 @@ the angle comes from a slider in `RotatePanel`, outside the viewer.
   `ephemeralScene`, so turning the angle re-runs only this cheap effect.
 - **`axisHighlight?: [AtomId, AtomId] | null`** — the two picked atoms of the active rotation, drawn in
   the overlay effect as an **extended axis cylinder** through P→Q (a touch thicker than the dihedral
-  axis, extended ~0.7 Å past each atom so it reads as an axis, not a P–Q bond; coloured with the
-  selection accent). Drawn from the **committed** coords, which is correct throughout the preview:
+  axis, extended ~0.7 Å past each atom so it reads as an axis, not a P–Q bond). **Coloured with
+  `theme.axisColor` — a distinct azure accent, NOT the green `haloColor` (unit 3.3b-fix).** Borrowing the
+  halo/measurement green made the axis rod visually indistinguishable from the green measurement line, so
+  the Axis⇄Distance toggle changed nothing perceptible — a **manual-gate finding** (the toggle logic was
+  right; the colour wasn't). The azure is chosen for maximum hue distance from every other overlay — the
+  chartreuse halo / green measurement line (~85°), the magenta clash glow (~330°), the off-table Pd/Pt
+  pink, and each fragment-palette hue — `theme.test.ts` locks a whole-family gap from the greens and a
+  clear gap from the rest. Drawn from the **committed** coords, which is correct throughout the preview:
   **both endpoints are fixed points** of the rotation (P is the pivot; Q lies on the axis line), so
   neither moves as the angle turns — and the selection halos on P and Q stay correct for the same reason.
 - **`rotateOverlay?: "axis" | "distance"` — exactly ONE overlay for the pair (unit 3.3b).** The axis
@@ -170,6 +176,16 @@ the angle comes from a slider in `RotatePanel`, outside the viewer.
   `drawValueLabel`), so length reads identically in both modes; no second computation. When
   `axisHighlight` is null (outside Rotate) the plan is `{axis:false, measure:true}` — the measurement is
   **untouched**.
+  - **The `RotatePanel` wiring that drives `axisHighlight`/`ephemeralScene` must not churn state (unit
+    3.3b-fix, same manual gate).** `rotationAxis` returns a fresh object; feeding it into an effect's deps
+    made the effect `setRotateAxis`/`setRotateEphemeral` **every render** → an infinite update loop
+    ("Maximum update depth exceeded", 92/min in the console) AND — because `NewJobScreen`'s `[rotateAxis]`
+    reset snaps the overlay back to `"axis"` whenever `rotateAxis`'s identity changes — a toggle that
+    could never leave Axis. Fix: **memoize** `axis` (keyed on `scene`/P/Q) and **split** the panel's one
+    effect into two — `onAxis([P,Q])` keyed only on the pair (so it fires on a pair change, not an angle
+    tick), `onEphemeral` keyed on the angle + memoized axis. The console is clean and the toggle sticks;
+    verified live. (jsdom-less viewer + panel → the regression guard is the manual gate: no "Maximum
+    update depth" after selecting a pair.)
 
 ## The overlay effect (one owner of all shapes & labels)
 

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import type { AtomId } from "./ids";
 import type { Scene } from "./types";
@@ -62,31 +62,41 @@ export function RotatePanel({
   const q = active ? selection[swapped ? 0 : 1] : null;
   const pivotFragmentId =
     p !== null ? describeAtomById(scene, p)?.fragmentId ?? null : null;
-  const axis = p !== null && q !== null ? rotationAxis(scene, p, q) : null;
+  // MEMOIZED: `rotationAxis` returns a fresh object; if it went straight into an
+  // effect's deps the effect would re-run every render → `setRotateAxis`/
+  // `setRotateEphemeral` every render → an infinite update loop ("Maximum update
+  // depth exceeded", caught by the unit-3.3b-fix manual gate). Keyed on the stable
+  // inputs, it's the SAME object across renders that don't change scene/p/q.
+  const axis = useMemo(
+    () => (p !== null && q !== null ? rotationAxis(scene, p, q) : null),
+    [scene, p, q],
+  );
 
   const deg = Number(angleDeg);
   const validAngle = angleDeg.trim() !== "" && Number.isFinite(deg);
   const angleRad = (deg * Math.PI) / 180;
 
-  // Push the ephemeral preview + the drawn axis whenever the inputs change. The
-  // preview is a PURE recompute over the committed scene shown ONLY in the viewer
-  // (the store is untouched); a zero/invalid angle or a degenerate axis shows none.
+  // Two SEPARATE effects, so turning the angle does not churn the drawn-axis state.
+  // (a) The drawn axis pair — fires ONLY when the pair / active flag changes. Were
+  //     this to fire on every angle tick, `rotateAxis`'s identity would change each
+  //     tick and `NewJobScreen`'s `[rotateAxis]` reset would snap the overlay toggle
+  //     back to "axis" — making Axis⇄Distance un-switchable.
   useEffect(() => {
-    if (!active || p === null || q === null) {
-      onAxis(null);
-      onEphemeral(null);
-      return;
-    }
-    onAxis([p, q]);
-    if (!axis || !pivotFragmentId || !validAngle || deg === 0) {
+    onAxis(active && p !== null && q !== null ? [p, q] : null);
+  }, [active, p, q, onAxis]);
+  // (b) The ephemeral preview — a PURE recompute over the committed scene shown ONLY
+  //     in the viewer (store untouched); null for a zero/invalid angle or degenerate
+  //     axis. `axis` is memoized, so this runs on real input changes, never a loop.
+  useEffect(() => {
+    if (
+      !active || p === null || q === null ||
+      !axis || !pivotFragmentId || !validAngle || deg === 0
+    ) {
       onEphemeral(null);
       return;
     }
     onEphemeral(rotateFragmentInScene(scene, pivotFragmentId, [p, q], angleRad));
-  }, [
-    active, p, q, deg, validAngle, axis, pivotFragmentId, angleRad, scene,
-    onAxis, onEphemeral,
-  ]);
+  }, [active, p, q, axis, pivotFragmentId, validAngle, deg, angleRad, scene, onEphemeral]);
 
   // Clear the viewer overlay if the tool unmounts (dock section closed).
   useEffect(() => () => {

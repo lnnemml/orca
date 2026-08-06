@@ -56,6 +56,17 @@ export interface ViewerTheme {
   /** Measurement value text (on `labelBg`). */
   measurementText: string;
   /**
+   * Rotation-axis cylinder (unit 3.3b-fix) — a DELIBERATELY distinct accent so the
+   * Rotate panel's Axis⇄Distance toggle is visibly perceptible: the axis rod must NOT
+   * read as the green measurement line (which it did when it borrowed `haloColor`).
+   * A saturated **azure blue**, chosen for maximum hue distance from every other
+   * overlay: the chartreuse selection halo / green measurement line (~85°), the
+   * magenta clash glow (~330°, `CLASH_COLOR`), the off-table Pd/Pt pink (`#ff1493`),
+   * and each fragment-palette hue (teal/coral/gold/violet). `theme.test.ts` locks the
+   * distinctness and the 3:1 contrast on this theme's background.
+   */
+  axisColor: string;
+  /**
    * Per-element CPK colour overrides for elements whose default colour would
    * fail 3:1 against this theme's background (empty for the dark themes, so they
    * are unchanged). `MoleculeViewer` merges these OVER 3Dmol's default element
@@ -137,6 +148,7 @@ export const VIEWER_THEMES: readonly ViewerTheme[] = [
     labelBg: "#0d0f13",
     measurementLine: "#b1eb70",
     measurementText: "#b1eb70",
+    axisColor: "#3b82f6",
     elementColorOverrides: {},
     fragmentPalette: FRAGMENT_PALETTE,
   },
@@ -149,6 +161,7 @@ export const VIEWER_THEMES: readonly ViewerTheme[] = [
     labelBg: "#000000",
     measurementLine: "#b1eb70",
     measurementText: "#b1eb70",
+    axisColor: "#3b82f6",
     elementColorOverrides: {},
     fragmentPalette: FRAGMENT_PALETTE,
   },
@@ -161,6 +174,7 @@ export const VIEWER_THEMES: readonly ViewerTheme[] = [
     labelBg: "#f4f5f7",
     measurementLine: "#519504",
     measurementText: "#519504",
+    axisColor: "#1d4ed8",
     elementColorOverrides: LIGHT_ELEMENT_OVERRIDES,
     fragmentPalette: LIGHT_FRAGMENT_PALETTE,
   },
@@ -173,6 +187,7 @@ export const VIEWER_THEMES: readonly ViewerTheme[] = [
     labelBg: "#eef0f2",
     measurementLine: "#519504",
     measurementText: "#519504",
+    axisColor: "#1d4ed8",
     elementColorOverrides: LIGHT_ELEMENT_OVERRIDES,
     fragmentPalette: LIGHT_FRAGMENT_PALETTE,
   },
