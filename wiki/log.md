@@ -5016,3 +5016,19 @@ column (migration is 2b); `jobs.scene_json` stays the v2 snapshot, core contract
 **measured** first (38-atom scene: ~2.9 KB/snapshot, ~3.5 KB/entry, ~345 KiB/100-op session), cap
 deferred with numbers. Op vocabulary = one variant per Scene mutator (checklist in the ADR so 2b
 finds no hole).
+
+## [2026-08-06] session | feat(scene): operation log — pure types, pointer semantics, provenance (unit 2a)
+
+`src/scene/oplog.ts` (pure — no store/viewer/Monaco/DB/Rust): the tagged-union `Op` (one variant per
+Scene mutator + `collapse-from-text`/`restore-snapshot`; geometry ops AtomId-native), `describe(op)`
+(a human lab-journal line per variant), `LogEntry {op, scene}` with the snapshot **deep-frozen**,
+`SceneLog {entries, pointer}`, `append` (truncates the redo tail), `undo`/`redo`/`current`,
+`logInvariant` (`-1 ≤ pointer < len`, `-1` = empty scene), and log-format-**v1** serialization
+(scenes embedded as v2 via the existing `serializeScene`, versioned independently; `deserializeLog`
+never throws). `oplog.test.ts` (13 tests): pointer invariants, tail-truncation, undo/redo round-trip
+**identity** (same frozen snapshot `===`), `describe` per variant, serialize round-trip + rejection.
+**Negative controls demonstrated red then restored:** (a) breaking tail-truncation reddens "redo
+after append impossible" (len 3 ≠ 2); (b) neutering the deep-freeze reddens the immutability gate.
+Sizes measured (numbers in ADR-017). Full vitest green (502 + 13), `tsc` 0, `cargo test --workspace`
+green + unchanged (no Rust touched). Wiki: +ADR-017, scene.md op-log section, index.md, ROADMAP
+(Stage 2 units, ephemeral→Stage 3). **Next: 2b — the store on the log.**

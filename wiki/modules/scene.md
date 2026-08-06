@@ -42,7 +42,10 @@ functions, no imports from react / 3dmol / tauri. The reactive `store.ts` (added
   mint ids the way production does (so tests never spell out ids and `id` is never
   made optional). Not imported by any production module.
 - `parity.ts` — `checkElectronParity` (electron-parity validation, ADR-008 #8).
-- `store.ts` — the Zustand scene store (React-facing; thin over the pure layer).
+- `store.ts` — the Zustand scene store (React-facing; thin over the pure layer). Its one-step
+  `previous`/`undoReset` is superseded by the operation log in unit 2b (not yet removed).
+- `oplog.ts` — the **operation log** (Phase 4.2 Stage 2 unit 2a; ADR-017): pure types + pointer
+  semantics, no store/viewer/Monaco/DB/Rust. See "The operation log" below.
 - `placement.ts` — `placeFragment` (bounding-box separation for a new fragment).
 - `fragment-library.ts` — `FRAGMENT_LIBRARY` (curated reagents) +
   `libraryFragmentToScene`.
@@ -340,6 +343,43 @@ merged". `add-fragment.test.ts` locks this: it drives the real inject → parse 
 (so the effect leaves the scene at two fragments). It's a pure-function
 simulation, not a rendered-component + fake-timers test, because the suite has no
 jsdom — and the comparison is exactly where the bug would live.
+
+## The operation log (`oplog.ts`, unit 2a; ADR-017) — types ready, store in 2b
+
+Editor state becomes a **fold over a log of typed operations** (ADR-010); Stage 2 builds that log.
+Unit 2a lands the **pure types and pointer semantics** — `oplog.ts` imports nothing from the store,
+viewer, Monaco, DB, or Rust, and is **inert until the store is wired onto it in 2b**.
+
+- **`Op`** — a tagged union with **one variant per Scene mutator** (`add-fragment`,
+  `remove-fragment`, `rename-fragment`, `set-fragment-charge`, `set-multiplicity`,
+  `translate-fragment`, `replace-fragment-atoms` `{edit: via 'set-internal'|'xtb'|'conformer'}`,
+  `replace-all-atoms` `{edit: via 'xtb'}`) plus the two store acts `collapse-from-text` and
+  `restore-snapshot`. The mutator↔Op table is in ADR-017 (so 2b finds no hole). Geometry ops
+  reference atoms by **`AtomId`**, not a positional index — the log is AtomId-native ahead of the
+  2c2 pipeline move.
+- **`describe(op): string`** — one human lab-journal line per variant ("Set dihedral 4-7-12-15 to
+  30°", "Add fragment BH₄⁻ (borohydride)"). Cheap and total; the journal reads from the moment the
+  types exist.
+- **`SceneLog {entries, pointer}`**, `LogEntry {op, scene}` — `append` (truncates the redo tail),
+  `undo`/`redo`/`current`, `logInvariant`. Pointer invariant **`-1 ≤ pointer < len`**, `-1` = the
+  empty scene (`current → null`), so undo can reach a blank canvas.
+- **Serialization** — log format **v1**, versioned *independently* of the Scene JSON; each entry's
+  scene is embedded as its `serializeScene` **string** (Scene format v2, migration reused).
+  `deserializeLog` never throws, returns `null` on bad data (the `deserializeScene` contract).
+
+**The one rule that must not be "optimized" (ADR-017 decision 1, the sibling of the `carryIds`
+warning above).** Each entry **materializes the resultant snapshot** — the snapshot is the **source
+of truth**, the `Op` is **provenance, not a recipe**. A future reader will be tempted to drop the
+snapshots and *replay* the ops to reconstruct state ("smaller, DRY"). **Do not:** the geometry ops
+run through ASE in the sidecar, so a replay makes history a **function of the installed ASE version**
+— a dependency bump would silently rewrite geometries computed months ago, and a scientific
+instrument's history must not change retroactively. The argument stands **verbatim** both in ADR-017
+and as the header comment of `oplog.ts`, on purpose. Two negative controls demonstrably bite (log
+2a): **(a)** breaking tail-truncation reddens "redo after append impossible"; **(b)** neutering the
+deep-freeze reddens the immutability gate (`Object.freeze` is a real runtime guarantee in every
+environment, and ES-module strict mode makes a write to a frozen field *throw*, so it bites in prod).
+Sizes are **measured** (ADR-017): ~2.9 KB per 38-atom snapshot, ~3.5 KB per entry, ~345 KiB per
+100-op session → **no length cap yet**, deferred with numbers.
 
 ## Boundary with `viewer/xyz-format.ts` (no duplicate parsers)
 
