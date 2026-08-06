@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 
-import { restoreScene } from "./restore";
+import { restoreScene, restoreSceneLog } from "./restore";
+import { append, current, emptyLog, serializeLog, type Op } from "./oplog";
 import {
   deserializeScene,
   injectSceneIntoInput,
@@ -132,5 +133,66 @@ describe("v1 scene_json migration (unit 1b) — a real pre-1b snapshot", () => {
   // the test that fails if v1 is rejected instead of migrated.
   it("does NOT return null for a valid v1 (the collapse guard bites)", () => {
     expect(deserializeScene(V1_SNAPSHOT)).not.toBeNull();
+  });
+});
+
+describe("restoreSceneLog — the log ↔ snapshot cross-check (unit 2b)", () => {
+  const boundary = (s: Scene): Op => ({
+    type: "restore-snapshot",
+    source: "new-iteration",
+    fragmentCount: s.fragments.length,
+    atomCount: s.fragments.reduce((n, f) => n + f.atoms.length, 0),
+  });
+
+  it("legacy (no scene_log_json) → seeds a fresh log, history begins here", () => {
+    const s = testScene([water(), bh4()], 1);
+    const r = restoreSceneLog(inputFor(s), serializeScene(s), null);
+    expect(r.logRejected).toBe("legacy");
+    expect(r.scene!.fragments).toHaveLength(2);
+    expect(r.log.entries).toHaveLength(1); // just the iteration boundary
+    expect(r.log.entries[0].op.type).toBe("restore-snapshot");
+  });
+
+  it("a log whose snapshot matches scene_json is HONOURED (+ boundary on top)", () => {
+    const s = testScene([water(), bh4()], 1);
+    const persisted = append(emptyLog(), boundary(s), s);
+    const r = restoreSceneLog(inputFor(s), serializeScene(s), serializeLog(persisted));
+    expect(r.logRejected).toBeNull();
+    expect(r.log.entries).toHaveLength(2); // persisted entry + the new iteration boundary
+    expect(r.scene!.fragments).toHaveLength(2);
+  });
+
+  // NEGATIVE CONTROL (b): a scene_log_json whose current snapshot DISAGREES with
+  // scene_json is a write bug — the log is rejected with a named reason and the
+  // snapshot (the map-minting contract) is honoured. New iteration still works.
+  it("a log that diverges from scene_json is REJECTED; the snapshot wins", () => {
+    const s = testScene([water(), bh4()], 1);
+    // A log built from a DIFFERENT (moved) geometry than scene_json.
+    const moved: Scene = {
+      ...s,
+      fragments: s.fragments.map((f) => ({
+        ...f,
+        atoms: f.atoms.map((a) => ({ ...a, x: a.x + 1 })),
+      })),
+    };
+    const badLog = append(emptyLog(), boundary(moved), moved);
+    const r = restoreSceneLog(inputFor(s), serializeScene(s), serializeLog(badLog));
+    expect(r.logRejected).toBe("log-diverged");
+    expect(r.scene!.fragments).toHaveLength(2); // snapshot honoured
+    // the installed log's current snapshot is the SNAPSHOT geometry, not the log's
+    expect(serializeScene(current(r.log)!)).toBe(serializeScene(s));
+  });
+
+  it("an unreadable scene_log_json → seeded with a named reason (never throws)", () => {
+    const s = testScene([water()], 1);
+    const r = restoreSceneLog(inputFor(s), serializeScene(s), "{not valid log}");
+    expect(r.logRejected).toBe("log-unreadable");
+    expect(r.scene!.fragments).toHaveLength(1);
+  });
+
+  it("no coordinate block → the empty log (scene null)", () => {
+    const r = restoreSceneLog("! r2SCAN-3c Opt\n", null, null);
+    expect(r.scene).toBeNull();
+    expect(r.log.pointer).toBe(-1);
   });
 });

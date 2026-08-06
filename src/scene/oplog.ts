@@ -73,8 +73,15 @@ export type FragmentGeometryVia =
 /** Provenance of a whole-scene geometry replacement (today: xtb pre-opt). */
 export type WholeSceneVia = { via: "xtb" };
 
-/** Where a restored snapshot came from (today: the "New iteration" action). */
-export type SnapshotSource = "new-iteration";
+/**
+ * Where a whole-scene snapshot entered the log — the seed of a geometry lineage:
+ *  - `new-iteration` — the "New iteration" action restored a saved job's scene;
+ *  - `text-adopt` — a coordinate block appeared in the input text (a template /
+ *    a generated / a pasted input) and the Scene adopted it;
+ *  - `library` — a molecule was loaded from the library.
+ * All three replace the whole geometry, so all three are a `restore-snapshot`.
+ */
+export type SnapshotSource = "new-iteration" | "text-adopt" | "library";
 
 /**
  * A typed editor operation. The tagged union mirrors the Scene mutators of
@@ -198,11 +205,15 @@ export function describe(op: Op): string {
       return "Pre-optimize all fragments (xtb)";
     case "collapse-from-text":
       return `Edit coordinates as text (${plural(op.fragmentCount, "fragment")} → 1)`;
-    case "restore-snapshot":
-      return (
-        `Restore snapshot (New iteration) — ` +
-        `${plural(op.fragmentCount, "fragment")}, ${plural(op.atomCount, "atom")}`
-      );
+    case "restore-snapshot": {
+      const lead =
+        op.source === "new-iteration"
+          ? "Restore snapshot (New iteration)"
+          : op.source === "text-adopt"
+            ? "Adopt geometry from input text"
+            : "Load from library";
+      return `${lead} — ${plural(op.fragmentCount, "fragment")}, ${plural(op.atomCount, "atom")}`;
+    }
   }
 }
 
@@ -273,6 +284,19 @@ export function redo(log: SceneLog): SceneLog {
   return log.pointer < log.entries.length - 1
     ? { entries: log.entries, pointer: log.pointer + 1 }
     : log;
+}
+
+/**
+ * Set the pointer directly — the history panel's "jump to this step". A no-op
+ * (same reference) if `pointer` is out of `[-1, len)` or already current. This
+ * is the same mechanism as {@link undo}/{@link redo}, not a new one; it just
+ * moves more than one step.
+ */
+export function goto(log: SceneLog, pointer: number): SceneLog {
+  if (pointer < -1 || pointer >= log.entries.length || pointer === log.pointer) {
+    return log;
+  }
+  return { entries: log.entries, pointer };
 }
 
 /** Whether {@link undo} would change the log. */
@@ -399,7 +423,13 @@ function isOp(v: unknown): v is Op {
     case "collapse-from-text":
       return int("fragmentCount");
     case "restore-snapshot":
-      return o.source === "new-iteration" && int("fragmentCount") && int("atomCount");
+      return (
+        (o.source === "new-iteration" ||
+          o.source === "text-adopt" ||
+          o.source === "library") &&
+        int("fragmentCount") &&
+        int("atomCount")
+      );
   }
 }
 

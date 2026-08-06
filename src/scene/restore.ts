@@ -15,11 +15,21 @@
  */
 
 import {
+  atomCount,
   deserializeScene,
   mergeToAtomLines,
   sceneFromOrcaInput,
+  serializeScene,
   xyzMatchesScene,
 } from "./scene";
+import {
+  append,
+  current,
+  deserializeLog,
+  emptyLog,
+  type Op,
+  type SceneLog,
+} from "./oplog";
 import type { Scene } from "./types";
 
 export function restoreScene(
@@ -44,4 +54,86 @@ export function restoreScene(
     return { scene: snapshot, snapshotRejected: false };
   }
   return { scene: fromText, snapshotRejected: true };
+}
+
+/**
+ * Why a persisted operation log was NOT honoured on restore:
+ *  - `legacy` — the job predates `scene_log_json` (NULL). Not an anomaly; a fresh
+ *    log is seeded so history "begins here", honestly.
+ *  - `log-unreadable` — the column was present but didn't deserialize (corrupt /
+ *    a future format). Fall back to a seeded log.
+ *  - `log-diverged` — the log deserialized, but **its current snapshot does not
+ *    equal the co-written `scene_json` snapshot**. `scene_json` is the map-minting
+ *    contract (ADR-016 unit 1e): it is *more authoritative* than the history, so
+ *    the log is **rejected loudly** and the snapshot is honoured. This is a write
+ *    bug (the two persists were written together at `create_job`), surfaced, not
+ *    swallowed.
+ */
+export type LogRejection = "legacy" | "log-unreadable" | "log-diverged";
+
+export interface LogRestore {
+  /** The log to install in the store (`scene` follows as `current(log)`). */
+  log: SceneLog;
+  scene: Scene | null;
+  /** `null` when the persisted log was honoured; a reason when it was not. */
+  logRejected: LogRejection | null;
+  /** From `restoreScene`: the snapshot disagreed with the input text. */
+  snapshotRejected: boolean;
+}
+
+/**
+ * Restore a job's operation log on "New iteration" (unit 2b). Composes
+ * `restoreScene` (input text ↔ snapshot, ADR-008 #5) with a **cross-check of the
+ * persisted log against the snapshot** (the 2b main risk): the log is honoured
+ * only if its current snapshot equals `scene_json`; otherwise the snapshot wins
+ * and the log is rejected with a named reason. Either way an iteration boundary
+ * (`restore-snapshot`) is appended on top so history carries across iterations.
+ *
+ * Pure and total — never throws; a `null` snapshot / log is a branch, not an
+ * error (the `deserializeScene` / `deserializeLog` contract).
+ */
+export function restoreSceneLog(
+  inputContent: string,
+  sceneJson: string | null,
+  sceneLogJson: string | null,
+): LogRestore {
+  const { scene: restored, snapshotRejected } = restoreScene(inputContent, sceneJson);
+
+  // No coordinate block at all → the empty log (scene → null).
+  if (!restored) {
+    return { log: emptyLog(), scene: null, logRejected: null, snapshotRejected };
+  }
+
+  const iterationBoundary: Op = {
+    type: "restore-snapshot",
+    source: "new-iteration",
+    fragmentCount: restored.fragments.length,
+    atomCount: atomCount(restored),
+  };
+
+  // Seed a FRESH log from the reconciled scene — history "begins here".
+  const seeded = (reason: LogRejection): LogRestore => {
+    const log = append(emptyLog(), iterationBoundary, restored);
+    return { log, scene: current(log), logRejected: reason, snapshotRejected };
+  };
+
+  if (sceneLogJson === null) return seeded("legacy");
+
+  const persisted = deserializeLog(sceneLogJson);
+  if (!persisted) return seeded("log-unreadable");
+
+  // THE cross-check: the log's current snapshot must equal the co-written
+  // scene_json snapshot (serialized-identical — they were written from one scene
+  // at create_job). A mismatch means the log lies; reject it, honour the snapshot.
+  const snapshot = sceneJson ? deserializeScene(sceneJson) : null;
+  const logScene = current(persisted);
+  const agree =
+    snapshot !== null &&
+    logScene !== null &&
+    serializeScene(logScene) === serializeScene(snapshot);
+  if (!agree) return seeded("log-diverged");
+
+  // Honour the history: append the iteration boundary on top.
+  const log = append(persisted, iterationBoundary, restored);
+  return { log, scene: current(log), logRejected: null, snapshotRejected };
 }

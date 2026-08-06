@@ -5042,3 +5042,23 @@ caveat** (rule #11 spirit) that coefficient² weight without the overlap matrix 
 (Mulliken-like sans S) — label the method, or use Loewdin per-MO populations if a determiner run
 shows ORCA prints them. Useful for Phase 4.5 donor/acceptor identification; explicitly not to be
 gold-plated before then. Phase 3 closing note updated: two carried-forward `[ ]` items now, not one.
+
+## [2026-08-06] session | feat(scene): the store folds over the operation log — deep undo/redo, dispatch-only (unit 2b)
+
+The Zustand store (`store.ts`) now **folds over the log**: `scene` is DERIVED (`scene ===
+current(log)`, always), there is **no `setScene`** — the only doors are `commit(op, resultScene)`
+and `installLog(log)` (+ pointer moves `undo`/`redo`/`jumpTo`). Convenience mutators funnel through
+`commit`; `seedScene(scene, source)` is a thin `installLog` of a seeded log. The mutator-bypasses-
+the-log defect is impossible by construction — **control (a)** asserts `scene === current(log)`
+after every action and reddens when one action writes `scene` without the log. `oplog.ts` gained
+`goto(pointer)` and `SnapshotSource` = `new-iteration | text-adopt | library`. `restore.ts`
+gained **`restoreSceneLog`**: the persisted log is honoured only if its current snapshot equals the
+co-written `scene_json`; a mismatch **rejects the log (named reason) and honours the snapshot**
+(**control (b)** — the map-minting contract, unit 1e, stays authoritative). Consumers moved to the
+new API: `NewJobScreen` (sync → `seedScene`/`collapseFromText`; restore → `restoreSceneLog` +
+`installLog`; edit apply → `commit`; deep undo replaces one-step `preEditScene`), `EditPanel`
+(hands up the typed `Op`), `JobDetailScreen` (conformer via), plus a read-only **`HistoryPanel`**
+(`describe()` list, click = pointer jump, Undo/Redo + Ctrl/Cmd+Z). The **collapse↔undo loop is
+dead** — collapse is a logged op, undo re-injects, no second collapse (**control (c)**, a sync
+integration test). Three `scene: null` consumers defined + tested. All three negative controls
+demonstrated red then restored. vitest 511 green, `tsc` 0. Persistence lands in the next commit.

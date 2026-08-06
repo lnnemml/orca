@@ -9,6 +9,7 @@ import {
   deserializeLog,
   describe,
   emptyLog,
+  goto,
   logInvariant,
   redo,
   serializeLog,
@@ -143,6 +144,21 @@ vitestDescribe("undo / redo round-trip is identity", () => {
 
     const r2 = redo(r1);
     expect(current(r2)).toBe(log.entries[1].scene); // same object we started at
+  });
+
+  it("goto jumps the pointer directly (the history-panel click)", () => {
+    const log = append(
+      append(append(emptyLog(), ADD, waterScene()), MULT, twoFragmentScene()),
+      RENAME,
+      waterScene(),
+    ); // pointer 2
+    expect(goto(log, 0).pointer).toBe(0); // jump back two
+    expect(current(goto(log, 0))).toBe(log.entries[0].scene);
+    expect(goto(log, -1).pointer).toBe(-1); // jump to empty scene
+    expect(current(goto(log, -1))).toBeNull();
+    expect(goto(log, 2)).toBe(log); // already current → same ref
+    expect(goto(log, 5)).toBe(log); // out of range → no-op
+    expect(goto(log, -2)).toBe(log); // below -1 → no-op
   });
 
   it("undo/redo at the boundaries are no-ops (same reference)", () => {
@@ -291,6 +307,14 @@ vitestDescribe("describe() — one human line per variant", () => {
       [
         { type: "restore-snapshot", source: "new-iteration", fragmentCount: 2, atomCount: 12 },
         "Restore snapshot (New iteration) — 2 fragments, 12 atoms",
+      ],
+      [
+        { type: "restore-snapshot", source: "text-adopt", fragmentCount: 1, atomCount: 3 },
+        "Adopt geometry from input text — 1 fragment, 3 atoms",
+      ],
+      [
+        { type: "restore-snapshot", source: "library", fragmentCount: 1, atomCount: 8 },
+        "Load from library — 1 fragment, 8 atoms",
       ],
     ];
     for (const [op, expected] of cases) {

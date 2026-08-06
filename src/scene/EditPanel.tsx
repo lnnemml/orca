@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 
 import type { Scene } from "./types";
+import type { Op } from "./oplog";
+import { makeAtomId } from "./ids";
 import { postSidecar } from "../sidecar-client";
 import { describeAtom, type AtomDescription } from "./selection";
 import { locateAtom } from "./scene";
@@ -113,7 +115,8 @@ export function EditPanel({
   splitResolving: boolean;
   onSwitchOrientation: () => void;
   onPreview: (previewScene: Scene | null) => void;
-  onApplied: (newScene: Scene, previousScene: Scene) => void;
+  /** Hand the store the typed op (provenance) + its resultant snapshot. */
+  onApplied: (op: Op, newScene: Scene) => void;
 }) {
   const active = resolveActive(scene, plan, splitMask);
   const [target, setTarget] = useState("");
@@ -189,7 +192,19 @@ export function EditPanel({
       const newScene = applyResponseToScene(scene, active.movingFragmentId, resp.xyz);
       setPreviewing(false);
       onPreview(null);
-      onApplied(newScene, scene);
+      // The op carries provenance in AtomIds (stable across a later removal): map
+      // the picked global indices to their atoms' ids from the pre-edit scene.
+      const atoms = active.indices.map((i) => {
+        const loc = locateAtom(scene, i);
+        return loc ? loc.fragment.atoms[loc.localIndex].id : makeAtomId(i);
+      });
+      const op: Op = {
+        type: "replace-fragment-atoms",
+        fragmentId: active.movingFragmentId,
+        name: movingFragmentName ?? "fragment",
+        edit: { via: "set-internal", kind: active.op, atoms, target: value, unit: active.unit },
+      };
+      onApplied(op, newScene);
     } catch (e) {
       setError(messageFor(e));
     } finally {

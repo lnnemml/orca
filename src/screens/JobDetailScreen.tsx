@@ -155,16 +155,25 @@ export function JobDetailScreen({
       return;
     }
     if (plan.action === "replace") {
-      useSceneStore.getState().replaceFragmentAtoms(plan.fragmentId, plan.atoms);
-    } else {
-      const mult = deserializeScene(job.scene_json)?.multiplicity ?? 1;
+      // A logged geometry op — its provenance names the conformer (unit 2b).
       useSceneStore
         .getState()
-        .setScene({
+        .replaceFragmentAtoms(plan.fragmentId, plan.atoms, {
+          via: "conformer",
+          conformerIndex: conf.index,
+          deltaEKcal: null,
+        });
+    } else {
+      const mult = deserializeScene(job.scene_json)?.multiplicity ?? 1;
+      // The store scene was cleared → seed a fresh lineage from the conformer.
+      useSceneStore.getState().seedScene(
+        {
           fragments: [plan.fragment],
           multiplicity: mult,
           nextAtomId: plan.nextAtomId,
-        });
+        },
+        "new-iteration",
+      );
     }
     onUseConformer();
   };

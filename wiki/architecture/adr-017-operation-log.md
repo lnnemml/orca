@@ -173,6 +173,27 @@ throws** on user/DB data (the `deserializeScene` contract).
 - **`store.ts`'s one-step `previous`/`undoReset`** is superseded by the log in 2b (not yet removed).
 - **Phase 4.5** reuses the `Op` types and replays materialized snapshots (decision 1/2).
 
+## Amendment (unit 2b, 2026-08-06) — the store landed as designed; two small refinements
+
+The four decisions above **stand unchanged** — the store implementation matches them, so no
+decision is revised. Recorded here so a future reader isn't surprised by two details the design
+didn't spell out:
+
+1. **`scene` is derived, and there is no `setScene`.** The store holds the `SceneLog` and a `scene`
+   field that is *only* ever `current(log)`. The two low-level doors are `commit(op, resultScene)`
+   (append) and `installLog(log)` (lifecycle replace); every convenience mutator funnels through
+   `commit`. This makes the "mutator bypasses the log" defect (the 2b main risk) impossible by
+   construction — a store test asserts `scene === current(log)` after every action, proven-biting.
+2. **`SnapshotSource` gained `text-adopt` and `library`** (beside `new-iteration`), and `oplog`
+   gained `goto(log, pointer)` for the history-panel jump. Both are vocabulary/navigation additions,
+   not decision changes: a whole-scene seed (a template/pasted block adopted from text, or a library
+   molecule) is honestly a `restore-snapshot`, and `describe` names its origin. Persistence adds one
+   mechanism the design named but didn't detail — the **log↔snapshot cross-check** on restore
+   (`restoreSceneLog`): the persisted log is honoured only if its current snapshot equals the
+   co-written `scene_json`; otherwise it is **rejected with a named reason and the snapshot wins**
+   (decision 3's "core contract untouched," made operational). Negative controls (a)/(b)/(c) —
+   bypass, cross-check, collapse↔undo loop — all demonstrably bite.
+
 ## References
 
 - [ADR-010](adr-010-editor-identity-state.md) — "state is a fold over a log of typed operations"; the

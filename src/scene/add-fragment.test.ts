@@ -1,6 +1,7 @@
 import { beforeEach, describe, it, expect } from "vitest";
 
 import { useSceneStore } from "./store";
+import { emptyLog } from "./oplog";
 import { placeFragment } from "./placement";
 import { libraryFragmentToScene, FRAGMENT_LIBRARY } from "./fragment-library";
 import {
@@ -15,7 +16,7 @@ import type { Scene, RawFragment } from "./types";
 import { testScene } from "./scene-test-util";
 
 beforeEach(() =>
-  useSceneStore.setState({ scene: null, previous: null, resetNotice: null }),
+  useSceneStore.setState({ log: emptyLog(), scene: null, resetNotice: null }),
 );
 
 const get = () => useSceneStore.getState();
@@ -52,7 +53,7 @@ describe("add-fragment REGRESSION GUARD: the Scene→content→Scene round-trip"
   // pure functions the effects call, not a rendered component + fake timers —
   // the comparison is exactly where the bug would live.)
   it("adding a 2nd fragment survives the round-trip without collapsing", () => {
-    get().setScene(testScene([water()], 1));
+    get().seedScene(testScene([water()], 1), "library");
     addFragmentToScene(bh4());
     expect(get().scene!.fragments).toHaveLength(2);
 
@@ -67,7 +68,7 @@ describe("add-fragment REGRESSION GUARD: the Scene→content→Scene round-trip"
   });
 
   it("total charge shows through the merged header after the add (water + BH₄⁻ = −1)", () => {
-    get().setScene(testScene([water()], 1));
+    get().seedScene(testScene([water()], 1), "library");
     addFragmentToScene(bh4());
     const content = injectSceneIntoInput("! r2SCAN-3c Opt\n", get().scene!);
     expect(content).toContain("* xyz -1 1");
@@ -76,7 +77,7 @@ describe("add-fragment REGRESSION GUARD: the Scene→content→Scene round-trip"
 
 describe("add-fragment sources build the right fragment", () => {
   it("a reagent add carries fragment-library source + charge, placed clear", () => {
-    get().setScene(testScene([water()], 1));
+    get().seedScene(testScene([water()], 1), "library");
     addFragmentToScene(bh4());
     const added = get().scene!.fragments[1];
     expect(added.source).toBe("fragment-library");
@@ -97,7 +98,7 @@ describe("add-fragment sources build the right fragment", () => {
       sourceLabel: "amine.xyz",
       charge: 0,
     })!;
-    get().setScene(testScene([water()], 1));
+    get().seedScene(testScene([water()], 1), "library");
     addFragmentToScene(s.fragments[0]);
     expect(get().scene!.fragments[1].source).toBe("import");
     expect(get().scene!.fragments[1].sourceLabel).toBe("amine.xyz");
@@ -114,26 +115,26 @@ describe("add-fragment sources build the right fragment", () => {
 describe("remove / rename / undo through the store", () => {
   it("removing fragment 0 leaves a valid single-fragment scene", () => {
     const two: Scene = testScene([water(), bh4()], 1);
-    get().setScene(two);
+    get().seedScene(two, "library");
     get().removeFragment("wat");
     expect(get().scene!.fragments).toHaveLength(1);
     expect(get().scene!.fragments[0].source).toBe("fragment-library");
   });
 
   it("renameFragment renames without touching geometry", () => {
-    get().setScene(testScene([water()], 1));
+    get().seedScene(testScene([water()], 1), "library");
     get().renameFragment("wat", "Substrate");
     expect(get().scene!.fragments[0].name).toBe("Substrate");
     expect(get().scene!.fragments[0].atoms).toHaveLength(3);
   });
 
-  it("undoReset restores both the scene and (via re-inject) its coordinates", () => {
+  it("undo restores both the scene and (via re-inject) its coordinates", () => {
     const two: Scene = testScene([water(), bh4()], 1);
-    get().setScene(two);
+    get().seedScene(two, "library");
     // Simulate a manual coordinate edit collapsing the 2-fragment scene.
-    get().collapseToSingleFragment(water().atoms);
+    get().collapseFromText(water().atoms);
     expect(get().resetNotice).toEqual({ fragmentCount: 2 });
-    get().undoReset();
+    get().undo();
     expect(get().scene).toBe(two);
     // The restored scene re-injects its (two-fragment) coordinates into content.
     const content = injectSceneIntoInput("! HF\n", get().scene!);

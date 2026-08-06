@@ -511,11 +511,18 @@ Stage 3, where it is actually needed.)
       **(b)** neutering the deep-freeze reddens the immutability gate. Sizes **measured** (38-atom
       reaction scene: ~2.9 KB/snapshot, ~3.5 KB/entry, ~345 KiB per 100-op session) → **no length cap
       yet** (deferred with numbers, not chosen blind). Ingested ADR-017.
-- [ ] **2b — the store on the log.** The Zustand store becomes a fold over the log: deep undo/redo
-      (superseding today's one-step `previous`/`undoReset`), `scene_log_json` persistence (schema
-      migration — **not** in 2a) and "New iteration" restoring the log (its last snapshot reconciled
-      against the input, the `restoreScene` standard). `jobs.scene_json` stays the v2 snapshot — the
-      core contract is untouched (ADR-017 decision 3).
+- [x] **2b — the store folds over the log.** `scene` is now **derived** (`scene === current(log)`,
+      always), so there is **no `setScene`** — the only doors are `commit(op, resultScene)` and
+      `installLog(log)`; the mutator-bypasses-the-log defect is *impossible by construction* (control
+      (a) proves it red). Deep undo/redo/`jumpTo` (superseding the one-step `previous`/`undoReset`);
+      a **read-only history panel** (`describe()` lines, click = pointer jump, Undo/Redo + Ctrl/Cmd+Z).
+      `scene_log_json` persisted (schema **v11**, guarded ALTER) **co-written with `scene_json` in the
+      one INSERT**; "New iteration" restores the log **cross-checked against the snapshot** — a
+      diverged log is **rejected loudly, the snapshot wins** (the map-minting contract, unit 1e, is
+      untouched; control (b)). The collapse↔undo loop is **dead** (collapse is a logged op; undo
+      re-injects, no second collapse — control (c)). `jobs.scene_json` stays the v2 snapshot (ADR-017
+      decision 3). Three `scene: null` consumers defined (sync / input builder / minting). Sizes: no
+      cap (ADR-017 decision 4).
 - [ ] **2c1 — 3Dmol becomes a dumb renderer.** It is handed geometry + an `AtomId → viewer index`
       table and is never a source of truth (ADR-010 / ADR-011); picking resolves through the table to
       an `AtomId`.

@@ -111,6 +111,10 @@ export interface Job {
   /** Versioned SceneFragment snapshot (ADR-008 #5), or null for pre-v4 / no-scene
    * jobs. Annotates `input_content`; the text stays authoritative for geometry. */
   scene_json: string | null;
+  /** Serialized operation log (ADR-017 / unit 2b), or null for pre-v11 / no-scene
+   * jobs. Co-written with `scene_json`; "New iteration" restores it, cross-checked
+   * against the snapshot (the log is rejected loudly on a mismatch). */
+  scene_log_json: string | null;
 }
 
 /** Mirrors `src-tauri/src/models/molecule.rs::Molecule`. */

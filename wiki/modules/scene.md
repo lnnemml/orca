@@ -45,13 +45,18 @@ functions, no imports from react / 3dmol / tauri. The reactive `store.ts` (added
 - `store.ts` — the Zustand scene store (React-facing; thin over the pure layer). Its one-step
   `previous`/`undoReset` is superseded by the operation log in unit 2b (not yet removed).
 - `oplog.ts` — the **operation log** (Phase 4.2 Stage 2 unit 2a; ADR-017): pure types + pointer
-  semantics, no store/viewer/Monaco/DB/Rust. See "The operation log" below.
+  semantics (`append`/`undo`/`redo`/`goto`/`current`, `describe`, serialize), no
+  store/viewer/Monaco/DB/Rust. See "The operation log" below.
+- `HistoryPanel.tsx` — the read-only history panel (unit 2b; React): `describe()` list, click =
+  pointer jump, Undo/Redo + hotkeys. Reads the store log; no state of its own.
 - `placement.ts` — `placeFragment` (bounding-box separation for a new fragment).
 - `fragment-library.ts` — `FRAGMENT_LIBRARY` (curated reagents) +
   `libraryFragmentToScene`.
 - `FragmentList.tsx` — the fragment sidebar (React; reads the store, uses the
   shared `fragmentColor` palette).
-- `restore.ts` — `restoreScene` (snapshot ↔ input reconciliation on job open).
+- `restore.ts` — `restoreScene` (snapshot ↔ input reconciliation on job open) and
+  `restoreSceneLog` (unit 2b: the log ↔ snapshot cross-check for New iteration —
+  the log is rejected loudly if it diverges from `scene_json`).
 - `ensemble.ts` — GOAT conformer-ensemble parsing + input generation (2.5.1a),
   plus `isGoatInput` (2.5.2a — is this a conformer-search job?).
 - `selection.ts` — the geometry editor's atom pick list (2.5.2a): `toggleAtom`,
@@ -302,20 +307,50 @@ rather than warn — an AI emits a whole artifact in one shot and has no increme
 excuse, so it must be born valid. Same guard, different response, because the two
 callers have different relationships to intermediate states.
 
-## The store (`store.ts`) and Scene ↔ Monaco sync
+## The store (`store.ts`) folds over the operation log (unit 2b) and Scene ↔ Monaco sync
 
-`useSceneStore` (Zustand) holds `{ scene, previous, resetNotice }` and actions
-that are **thin wrappers over the pure functions** — no geometry logic lives in
-the store, so the pure layer stays node-testable. `collapseToSingleFragment`,
-`undoReset`, `dismissResetNotice` are the only store-specific pieces (the pure
-layer has no place for undo bookkeeping).
+`useSceneStore` (Zustand) holds `{ log, scene, resetNotice }`. Since unit 2b the
+**`scene` is DERIVED**: `scene === current(log)`, always — that equality is the
+store's core invariant and what makes the "mutator bypasses the log" defect
+*impossible by construction* (ADR-017 / the 2b main risk). **There is no
+`setScene`.** The only two ways the log changes are `commit(op, resultScene)`
+(append one entry — the single door for a geometry op) and `installLog(log)`
+(replace the whole log — a lifecycle event: seed / New iteration / clear), plus
+the three pointer moves `undo` / `redo` / `jumpTo`. Every write to `scene` in the
+store is `scene: current(log)` right after the log changed. Convenience mutators
+(`addFragment`, `removeFragment`, `renameFragment`, `setMultiplicity`,
+`replaceFragmentAtoms(via)`, `collapseFromText`) compute the result from the pure
+`scene.ts` functions and funnel through `commit`; `seedScene(scene, source)` is a
+thin `installLog` of a fresh `restore-snapshot`-seeded log (or the empty log for a
+`null` scene). Undo/redo are **deep** now (the whole log), superseding the old
+one-step `previous`/`undoReset`. A store test asserts `scene === current(log)`
+after **every** action, with a proven-biting negative control (control (a)).
 
-**Reference stability is a contract, not an optimisation.** `MoleculeViewer`
-redraws on a new `scene` reference (`useEffect([scene])`). Selectors return the
-stored object directly (`useSceneStore((s) => s.scene)`); actions that would be
-no-ops return the current state unchanged. So an unchanged scene keeps its
-identity and the viewer does not `removeAllModels`/`addModel` on every keystroke.
-`store.test.ts` asserts repeated reads are `===`.
+**Reference stability is still a contract.** `MoleculeViewer` redraws on a new
+`scene` reference (`useEffect([scene])`). `current(log)` returns the **same frozen
+snapshot object** across undo/redo, and a no-op action returns state unchanged, so
+navigating history does not churn the viewer. `store.test.ts` asserts repeated
+reads are `===`.
+
+**`scene: null` — the three consumers (the −1 pointer's defined behaviour).** The
+log's pointer is `-1` (empty / fully undone) exactly when `current(log)` is `null`.
+Three consumers key off that: the **Scene↔Monaco sync** writes nothing to Monaco on
+a `null` scene and clears the lineage (`seedScene(null, …)` → empty log) when the
+coordinate block is deleted; the **input builder** reads charge/multiplicity only
+when a scene exists; **`create_job` map-minting** takes its existing skip branch
+(no scene → `{"skipped": …}`, unit 1e). Each is a test.
+
+**History panel + New iteration (unit 2b).** `HistoryPanel.tsx` is a **read-only**
+list of `describe()` lines — the current step highlighted, a click **jumps the
+pointer** (the same undo/redo mechanism), plus Undo/Redo buttons and Ctrl/Cmd+Z /
+Ctrl/Cmd+Shift+Z (skipped while a text field / Monaco has focus, so the editor
+keeps its own undo). On **New iteration**, `restoreSceneLog` (`restore.ts`) restores
+the persisted `scene_log_json` **only if its current snapshot equals the co-written
+`scene_json`**; a mismatch **rejects the log with a named reason and honours the
+snapshot** (`scene_json` is the map-minting contract, unit 1e — more authoritative
+than history). A legacy job (no log) seeds a fresh log ("history begins here"). An
+iteration boundary (`restore-snapshot`) is appended on top so history carries across
+iterations. `restore.test.ts` covers all branches incl. the diverged-log control (b).
 
 **Sync (ADR-008 #6), as wired in `NewJobScreen`:**
 - **Scene → Monaco:** on a scene change, `injectSceneIntoInput` writes the merged
@@ -324,14 +359,16 @@ identity and the viewer does not `removeAllModels`/`addModel` on every keystroke
 - **Monaco → Scene:** on the 500 ms debounce, `xyzMatchesScene(scene, atomLines)`
   (**parsed floats, tol 1e-6 — never string compare**) decides: match → leave the
   scene (the user edited keywords, the common silent path); diverged → the text
-  wins, `collapseToSingleFragment`; block gone → `setScene(null)`; no scene yet
-  but a block appeared (template / generated input) → adopt it.
-- **Reset notice + Undo:** collapse stashes `previous`; the notice ("N fragments
-  merged into one" + Undo, rendered by `NewJobScreen`, reachable from 2.5.0d-2b)
-  shows **only when >1 fragment was lost** — a single-fragment collapse is
-  geometrically a no-op, so it stays silent (else the user would see a warning on
-  every hand-edit of a water molecule). Undo restores `previous`, which re-injects
-  its coordinates.
+  wins, `collapseFromText` (a **logged `CollapseFromText` op**, unit 2b); block gone
+  → `seedScene(null, …)` (empty log); no scene yet but a block appeared (template /
+  generated input) → `seedScene(parsed, "text-adopt")`.
+- **Reset notice + Undo:** the notice ("N fragments merged into one" + Undo) shows
+  **only when >1 fragment was lost** — a single-fragment collapse is geometrically a
+  no-op, so it stays silent. Undo is now the **log's** `undo` (deep, not a one-step
+  `previous`): it restores the pre-collapse layout, which the Scene→Monaco sync
+  re-injects, so the text matches again and **no second collapse fires** — the
+  collapse↔undo loop is *dead*, proven by an integration test (control (c)), not
+  asserted.
 
 **Regression guard on the round-trip (the subsystem's finest wire).** Adding a
 fragment makes the scene multi-fragment → Scene→Monaco injects → ~500 ms later
@@ -344,11 +381,13 @@ merged". `add-fragment.test.ts` locks this: it drives the real inject → parse 
 simulation, not a rendered-component + fake-timers test, because the suite has no
 jsdom — and the comparison is exactly where the bug would live.
 
-## The operation log (`oplog.ts`, unit 2a; ADR-017) — types ready, store in 2b
+## The operation log (`oplog.ts`, unit 2a; ADR-017) — the store folds over it (2b)
 
-Editor state becomes a **fold over a log of typed operations** (ADR-010); Stage 2 builds that log.
-Unit 2a lands the **pure types and pointer semantics** — `oplog.ts` imports nothing from the store,
-viewer, Monaco, DB, or Rust, and is **inert until the store is wired onto it in 2b**.
+Editor state is a **fold over a log of typed operations** (ADR-010). `oplog.ts` is the **pure types
+and pointer semantics** — it imports nothing from the store, viewer, Monaco, DB, or Rust. Unit 2b
+wires the store onto it (see "The store folds over the operation log" above); `goto(log, pointer)`
+is the history-panel jump, and `SnapshotSource` covers the three whole-scene seeds (`new-iteration`
+/ `text-adopt` / `library`).
 
 - **`Op`** — a tagged union with **one variant per Scene mutator** (`add-fragment`,
   `remove-fragment`, `rename-fragment`, `set-fragment-charge`, `set-multiplicity`,

@@ -9,6 +9,7 @@ import { importStructureFile, IMPORT_ACCEPT } from "../viewer/import-file";
 import { InputBuilderForm } from "../input-builder/InputBuilderForm";
 import { useSceneStore } from "../scene/store";
 import { FragmentList } from "../scene/FragmentList";
+import { HistoryPanel } from "../scene/HistoryPanel";
 import { AtomInspector } from "../scene/AtomInspector";
 import { EditPanel } from "../scene/EditPanel";
 import { ConstraintPanel } from "../scene/ConstraintPanel";
@@ -56,7 +57,8 @@ import {
   xyzMatchesScene,
 } from "../scene/scene";
 import { formatXtbProgress } from "../scene/xtb-progress";
-import { restoreScene } from "../scene/restore";
+import { restoreSceneLog, type LogRejection } from "../scene/restore";
+import { serializeLog, type Op } from "../scene/oplog";
 import { goatInputForFragment } from "../scene/ensemble";
 import type { RawFragment, Scene, SceneFragment } from "../scene/types";
 import {
@@ -116,6 +118,7 @@ export function NewJobScreen({
   // Set when an iterated job's fragment snapshot was discarded because it no
   // longer matched its input (distinct from a plain no-snapshot job — no note).
   const [snapshotRejected, setSnapshotRejected] = useState(false);
+  const [logRejected, setLogRejected] = useState<LogRejection | null>(null);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [smiles, setSmiles] = useState("");
@@ -143,13 +146,14 @@ export function NewJobScreen({
   // Selectors return the stored objects directly, so an unchanged scene keeps
   // its identity and MoleculeViewer does not redraw on every keystroke.
   const scene = useSceneStore((s) => s.scene);
+  const log = useSceneStore((s) => s.log);
   const resetNotice = useSceneStore((s) => s.resetNotice);
-  const setScene = useSceneStore((s) => s.setScene);
   const addFragment = useSceneStore((s) => s.addFragment);
-  const collapseToSingleFragment = useSceneStore(
-    (s) => s.collapseToSingleFragment,
-  );
-  const undoReset = useSceneStore((s) => s.undoReset);
+  const commit = useSceneStore((s) => s.commit);
+  const installLog = useSceneStore((s) => s.installLog);
+  const seedScene = useSceneStore((s) => s.seedScene);
+  const collapseFromText = useSceneStore((s) => s.collapseFromText);
+  const undo = useSceneStore((s) => s.undo);
   const dismissResetNotice = useSceneStore((s) => s.dismissResetNotice);
 
   // ── Atom selection (2.5.2a) — the geometry editor's pick list ───────────────
@@ -196,9 +200,8 @@ export function NewJobScreen({
   // ── Edit mode (2.5.2d) ──────────────────────────────────────────────────────
   // `previewScene` is the sidecar's proposed geometry shown ONLY in the viewer —
   // the store Scene and Monaco are untouched until Apply (the 2.5.1 decision).
-  // `preEditScene` is the scene before the last Apply, for one-step Undo.
+  // Undo is now the operation log's undo (deep, not one-step) — unit 2b.
   const [previewScene, setPreviewScene] = useState<Scene | null>(null);
-  const [preEditScene, setPreEditScene] = useState<Scene | null>(null);
   // "Move the other fragment instead" — flip to the plan's alternative orientation
   // (2.5.2d-2). Reset when the selection/scene changes (the plan is different).
   const [preferAlternative, setPreferAlternative] = useState(false);
@@ -282,13 +285,12 @@ export function NewJobScreen({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [splitKey, scene]);
-  const applyEdit = (newScene: Scene, previous: Scene) => {
-    setPreEditScene(previous); // enable one-step Undo
-    setScene(newScene); // → the Scene→Monaco effect injects the new coords
-  };
-  const undoEdit = () => {
-    if (preEditScene) setScene(preEditScene);
-    setPreEditScene(null);
+  // EditPanel hands up the typed op + its resultant snapshot; the store appends
+  // it (→ the Scene→Monaco effect injects the new coords). Undo/redo are the
+  // log's, not a local one-step stash (unit 2b).
+  const applyEdit = (op: Op, newScene: Scene) => {
+    commit(op, newScene);
+    setSaved(false);
   };
 
   // React to a composition change via `compositionSignature` (the same
@@ -361,8 +363,8 @@ export function NewJobScreen({
   // source of truth), then replace all coordinates. `xtb_optimize` is now a
   // STARTER that returns immediately (the run lives on a Rust thread and reports
   // via `xtb:done`/`xtb:error` events), so the window stays responsive and Cancel
-  // is actually deliverable. Undo rides the SAME one-step mechanism as edit mode
-  // (`applyEdit` stashes `preEditScene`).
+  // is actually deliverable. The applied geometry is a `replace-all-atoms` op on
+  // the log (undo/redo via the log, like every other edit — unit 2b).
   const [xtbBusy, setXtbBusy] = useState(false);
   const [xtbError, setXtbError] = useState<string | null>(null);
   const [xtbErrorDir, setXtbErrorDir] = useState<string | null>(null);
@@ -431,7 +433,11 @@ export function NewJobScreen({
         try {
           const atoms = parseAtomLines(event.payload.xyz.trim().split("\n").slice(2));
           if (!atoms) throw new Error("xtb returned a geometry OrcaStudio couldn't parse");
-          applyEdit(replaceAllAtoms(captured, atoms), captured); // preEditScene ← Undo
+          commit(
+            { type: "replace-all-atoms", edit: { via: "xtb" } },
+            replaceAllAtoms(captured, atoms),
+          );
+          setSaved(false);
           const held = event.payload.held.length
             ? " · held " +
               event.payload.held
@@ -519,21 +525,25 @@ export function NewJobScreen({
   // (not useEffect) so the reset runs before paint — the screen remounts on every
   // navigation, and a plain effect would flash the previous visit's molecule.
   //  - keepScene → leave the store untouched (a conformer was just applied to it);
-  //  - iterated job → restore its scene, reconciling the snapshot with its input;
-  //  - library molecule → a single "library" fragment;
+  //  - iterated job → restore its OPERATION LOG, cross-checked against the snapshot
+  //    (the log is rejected loudly if it diverges — unit 2b main risk);
+  //  - library molecule → a single "library" fragment (a seeded log);
   //  - otherwise → empty, clearing any scene left over from a prior visit.
   useLayoutEffect(() => {
     if (keepScene) {
-      // "Use this conformer" already set the store scene; don't reset it.
+      // "Use this conformer" already dispatched onto the store log; don't reset it.
     } else if (initialJob) {
-      const { scene: restored, snapshotRejected: rejected } = restoreScene(
-        initialJob.input_content,
-        initialJob.scene_json,
-      );
-      setScene(restored);
+      const { log: restoredLog, snapshotRejected: rejected, logRejected: logRej } =
+        restoreSceneLog(
+          initialJob.input_content,
+          initialJob.scene_json,
+          initialJob.scene_log_json ?? null,
+        );
+      installLog(restoredLog);
       setSnapshotRejected(rejected);
+      setLogRejected(logRej);
     } else if (initialMolecule) {
-      setScene(
+      seedScene(
         sceneFromXyz(initialMolecule.xyz, {
           source: "library",
           sourceLabel: initialMolecule.id,
@@ -541,9 +551,10 @@ export function NewJobScreen({
           charge: initialMolecule.charge,
           multiplicity: initialMolecule.multiplicity,
         }),
+        "library",
       );
     } else {
-      setScene(null);
+      seedScene(null, "text-adopt"); // empty log, clears any prior visit's scene
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -564,25 +575,27 @@ export function NewJobScreen({
   // content → Scene (ADR-008 #6): on the same 500 ms debounce the preview used,
   // compare the editor's coordinate block against the scene via xyzMatchesScene
   // (parsed floats, never string compare). Match → leave the scene (the user was
-  // editing keywords). Diverged → the text wins: collapse to it. Block gone →
-  // clear. Scene absent but a block appeared (template / generated input) → adopt.
+  // editing keywords). Diverged → the text wins: collapse to it (a logged
+  // CollapseFromText op — undoing it re-injects the old coords so no second
+  // collapse fires, unit 2b test c). Block gone → clear the lineage (empty log).
+  // Scene absent but a block appeared (template / generated input) → adopt it.
   useEffect(() => {
     const id = setTimeout(() => {
       const parsed = sceneFromOrcaInput(content);
       const current = useSceneStore.getState().scene;
       if (!parsed) {
-        if (current) setScene(null);
+        if (current) seedScene(null, "text-adopt");
         return;
       }
       if (!current) {
-        setScene(parsed);
+        seedScene(parsed, "text-adopt");
         return;
       }
       if (xyzMatchesScene(current, mergeToAtomLines(parsed))) return;
-      collapseToSingleFragment(parsed.fragments[0].atoms);
+      collapseFromText(parsed.fragments[0].atoms);
     }, 500);
     return () => clearTimeout(id);
-  }, [content, setScene, collapseToSingleFragment]);
+  }, [content, seedScene, collapseFromText]);
 
   const pickTemplate = (t: OrcaTemplate) => {
     setSelectedId(t.id);
@@ -744,6 +757,10 @@ export function NewJobScreen({
         // Persist the fragment layout so a later iteration restores it (ADR-008
         // #5). Written once, here; the job's input is immutable, so is this.
         sceneJson: scene ? serializeScene(scene) : null,
+        // The operation log alongside it — history carries across iterations
+        // (unit 2b). Both co-written; restore cross-checks them. Null when there
+        // is no scene (empty log), keeping the two columns consistent.
+        sceneLogJson: scene ? serializeLog(log) : null,
       });
       // The detail screen performs the actual submit (after attaching its log
       // listeners) so no early output lines are missed.
@@ -773,6 +790,9 @@ export function NewJobScreen({
           multiplicity: 1,
           nextAtomId: nextAtomIdFor([fragment]),
         }),
+        // A GOAT search job carries no editing history — a New iteration of it
+        // seeds a fresh log from its snapshot (the "legacy" restore branch).
+        sceneLogJson: null,
       });
       onOpenDetail(job.id, true); // queue + run, then open its detail
     } catch (e) {
@@ -973,6 +993,20 @@ export function NewJobScreen({
           </button>
         </div>
       ) : null}
+      {logRejected && logRejected !== "legacy" ? (
+        <div className="banner warn">
+          The edit history saved with this job didn&apos;t match its geometry
+          snapshot ({logRejected}), so it was not loaded — the geometry is intact,
+          history begins here.
+          <button
+            className="btn btn-sm"
+            style={{ marginLeft: 10 }}
+            onClick={() => setLogRejected(null)}
+          >
+            Dismiss
+          </button>
+        </div>
+      ) : null}
       {resetNotice ? (
         <div className="banner warn">
           Coordinates were edited manually — {resetNotice.fragmentCount} fragments
@@ -980,7 +1014,7 @@ export function NewJobScreen({
           <button
             className="btn btn-sm"
             style={{ marginLeft: 10 }}
-            onClick={() => undoReset()}
+            onClick={() => undo()}
           >
             Undo
           </button>
@@ -1184,20 +1218,7 @@ export function NewJobScreen({
                 onApplied={applyEdit}
               />
             ) : null}
-            {preEditScene ? (
-              <div className="edit-notice">
-                <span>Edit applied.</span>
-                <button className="btn btn-sm" onClick={undoEdit}>
-                  Undo
-                </button>
-                <button
-                  className="btn btn-sm"
-                  onClick={() => setPreEditScene(null)}
-                >
-                  Dismiss
-                </button>
-              </div>
-            ) : null}
+            <HistoryPanel />
             <FragmentList onFindConformers={findConformers} />
             {scene ? (
               <ConstraintPanel
