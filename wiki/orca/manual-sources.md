@@ -388,6 +388,15 @@ natural-word payloads (index terms, code tokens) it over-reports "visible" and i
 those are settled by Sphinx builder semantics, and saying so is worth more than a false checkmark
 (**Pattern 2**: the measurement's scope is smaller than the claim; name it).
 
+> **Pattern 2 corollary — the scope gap can hide *inside the corpus*.** A fourth instance
+> lives on [`architecture/float-formatting-parity.md`](../architecture/float-formatting-parity.md)
+> ("The corpus-construction lesson"): the `toFixed(8)` parity corpus was first seeded from
+> the *folklore* tie (`1.005`, `(k+0.5)·1e-8`), decimals that are not representable doubles
+> and so can never be a round-half tie — an adversarial-looking corpus that tested nothing.
+> The real ties (`x = odd/512`) come from the failure-class arithmetic (`x·10⁸+½ ∈ ℤ`).
+> Lesson: **build the stress inputs from the failure condition, not from the canonical
+> cautionary example.**
+
 | class (synthetic payload) | visible in rendered (sample) | corpus | verdict |
 |---|---|---:|---|
 | `(name)=` anchor label | **2/186** (the 2 = substring noise; RI+mdci hand-checked 0/60) | **1438** | **INVISIBLE → category 3** |

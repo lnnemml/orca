@@ -49,6 +49,27 @@ Measured, my toolchain (matches the architect's):
 -0.0   JS "0.00000000"  Rust {:.8} "-0.00000000"  (diverge: signed zero)
 ```
 
+### The corpus-construction lesson (a Pattern-2 corollary)
+
+Why the first corpus was blind is the reusable lesson, not the odd/512 fact itself:
+**an adversarial corpus must be built from the *mathematics of the failure class*, not
+from folklore examples of it.** The folklore tie for `toFixed` is the decimal half —
+`1.005`, `(k+0.5)·1e-8` — the number everyone "knows" rounds wrong. But those decimals
+are **not representable** binary doubles at the 8th place, so they can never *be* a
+round-half tie: the corpus looked adversarial and tested nothing. The real ties fall out
+of the arithmetic — `x·10⁸ + ½ ∈ ℤ` ⟹ `x = odd/512` — and only a corpus seeded from
+*that* derivation exposes the divergence. A corpus built from folklore is a green gate
+for an unknown reason (the CLAUDE.md "a gate whose ability to fail is not demonstrated"
+rule, applied to the test *inputs* rather than the assertion): the negative control
+(bare `{:>14.8}` scoring 2025) is what proves the seeding actually bites.
+
+This is the same shape as **Pattern 2** in [`orca/manual-sources.md`](../orca/manual-sources.md)
+Part F ("the measurement's scope is smaller than the claim; name it") — here the scope
+gap was hidden *inside the corpus*: a stress set that cannot reach the failure mode
+silently narrows the claim to nothing. Corollary to keep: **derive the stress inputs
+from the failure condition; never trust an example just because it is the canonical
+cautionary one.**
+
 ### Corpus and result
 
 Corpus (fixed seed, 1,008,832 distinct doubles): `±0.0`; tiny round-to-zero
