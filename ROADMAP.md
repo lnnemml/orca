@@ -485,29 +485,52 @@ emit-input is byte-identical to the TS source, the parsers are paired with the `
 verify it against the artifact, the map is minted at `create_job` from verified text, and the xtb
 index-base seam is branded. Stage 2 (operation log) and Stage 3 (Scene→Rust/WASM) remain.
 
-**Stage 2 — operation log + ephemeral layer**
+**Stage 2 — operation log** (broken into units 2a–2d once [ADR-017](wiki/architecture/adr-017-operation-log.md)
+fixed the log design: each entry **materializes** its resultant snapshot — provenance, not a
+recompile recipe, so history can't be rewritten by an ASE bump. The ephemeral drag layer moved to
+Stage 3, where it is actually needed.)
 
-- [ ] State becomes a fold over a log of typed operations; undo/redo fall out of the log.
-- [ ] 3Dmol becomes a **dumb renderer**: it is handed geometry + an `AtomId → viewer index`
-      table and is never a source of truth (ADR-010 / ADR-011).
-- [ ] **Dividend — selection moves onto `AtomId` (agreed after 1b).** Once the renderer takes an
-      `AtomId → viewer index` table, the atom selection (`selection.ts`) keys on `AtomId` instead of
-      a positional global index. Stable identity gives, for the first time, an operational definition
-      of "the same atom" *after a fragment is removed*, so `selectionSurvives` can **preserve** a
-      selection across a composition change instead of clearing it. Today's clearing is **correct for
-      the positional space** (ADR-008 — a removed fragment renumbers everything, so a kept index would
-      point at the wrong atom); moving to `AtomId` is a **behaviour change**, which is why it lives
-      here in Stage 2, not in the identity-only Stage 1.
-- [ ] The xyz block in Monaco becomes a **generated read-only projection** of the Scene.
-      **Cost to preserve:** today the author edits coordinates directly in Monaco — making the
-      block read-only removes that path, so it must be *replaced, not deleted*, by a
-      "paste xyz → import as a fragment" action. The capability moves; it does not disappear.
+- [x] **2a — operation log: pure types + ingest.** `src/scene/oplog.ts` — pure, no store/viewer/
+      Monaco/DB/Rust: the tagged-union `Op` (one variant per Scene mutator — checklist in ADR-017,
+      so 2b finds no hole), `describe(op)` (a human lab-journal line per variant already at the type
+      layer), `LogEntry {op, scene}` with the snapshot **deep-frozen** and materialized, `SceneLog
+      {entries, pointer}`, `append` (truncates the redo tail), `undo`/`redo`/`current`, and log
+      format **v1** serialization (scenes embedded as v2 via the existing `serializeScene`, versioned
+      independently). Pointer invariant `-1 ≤ pointer < len` (`-1` = empty scene). Negative controls
+      demonstrably bite: **(a)** breaking tail-truncation reddens "redo after append impossible";
+      **(b)** neutering the deep-freeze reddens the immutability gate. Sizes **measured** (38-atom
+      reaction scene: ~2.9 KB/snapshot, ~3.5 KB/entry, ~345 KiB per 100-op session) → **no length cap
+      yet** (deferred with numbers, not chosen blind). Ingested ADR-017.
+- [ ] **2b — the store on the log.** The Zustand store becomes a fold over the log: deep undo/redo
+      (superseding today's one-step `previous`/`undoReset`), `scene_log_json` persistence (schema
+      migration — **not** in 2a) and "New iteration" restoring the log (its last snapshot reconciled
+      against the input, the `restoreScene` standard). `jobs.scene_json` stays the v2 snapshot — the
+      core contract is untouched (ADR-017 decision 3).
+- [ ] **2c1 — 3Dmol becomes a dumb renderer.** It is handed geometry + an `AtomId → viewer index`
+      table and is never a source of truth (ADR-010 / ADR-011); picking resolves through the table to
+      an `AtomId`.
+- [ ] **2c2 — the pipeline moves onto `AtomId` + the `selectionSurvives` dividend (agreed after
+      1b).** `selection.ts` / `measure.ts` / `edit-plan.ts` / `constraints.ts` key on `AtomId`
+      instead of a positional global index. Stable identity gives, for the first time, an operational
+      definition of "the same atom" *after a fragment is removed*, so `selectionSurvives` can
+      **preserve** a selection across a composition change instead of clearing it. Today's clearing is
+      **correct for the positional space** (ADR-008 — a removed fragment renumbers everything, so a
+      kept index would point at the wrong atom); moving to `AtomId` is a **conscious behaviour
+      change**, which is why it lives here in Stage 2, not in the identity-only Stage 1.
+- [ ] **2d — the Monaco xyz projection.** The xyz block in Monaco becomes a **generated read-only
+      projection** of the Scene. **Cost to preserve:** today the author edits coordinates directly in
+      Monaco — making the block read-only removes that path, so the capability is *replaced, not
+      deleted*, by a "paste xyz → import as a fragment" action (and this narrows the
+      `collapse-from-text` op — ADR-017). The ability to edit coordinates by hand **moves; it does not
+      disappear.**
 
 **Stage 3 — operations over the core** (each item is an `Op`, not new state)
 
-- [ ] Rigid-body drag of a fragment. **Risk — the first *continuous* interaction in the app:**
-      during the drag only the viewer moves (ephemeral layer, 60 fps, not logged); the Scene and
-      the input text update **once on release**, as a single step with a single Undo.
+- [ ] Rigid-body drag of a fragment. **The ephemeral layer lands here** (moved out of Stage 2's
+      description — it is needed only for the drag, ADR-010). **Risk — the first *continuous*
+      interaction in the app:** during the drag only the viewer moves (ephemeral layer, 60 fps, not
+      logged); the Scene and the input text update **once on release**, as a single `translate-fragment`
+      op with a single Undo.
       Post-condition: pairwise distances *within the mask* are unchanged by the drag (rigid-body
       move, verified in our terms — domain rule #9).
 - [ ] Rotation of a fragment about its approach axis (an `Op` over the mask).

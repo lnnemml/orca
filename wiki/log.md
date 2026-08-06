@@ -4984,3 +4984,35 @@ independence; `tauri-core.md` v10 "every row is NULL" → the minted/skipped env
 30–32 unqualified "type-level invariant" → pointer to the 1d–1e / ADR-016 refinement; `index.md`
 core + readers lines refreshed. No broken cross-references found; the ROADMAP marks 1e `[x]` and
 **Stage 1 COMPLETE**.
+
+## [2026-08-06] ingest | Phase 4.2 Stage 2 rewritten into units 2a–2d; ephemeral layer → Stage 3
+
+ROADMAP ingest for the operation log. **Stage 2** ("operation log + ephemeral layer") rewritten
+into units **2a–2d**: 2a pure log types + ingest (`[x]` this session); 2b the store on the log
+(deep undo/redo, `scene_log_json` persist, "New iteration" restores the log); 2c1 the dumb renderer
+(`AtomId → viewer index` table, picking → `AtomId`); 2c2 the pipeline (selection/measure/edit-plan/
+constraints) onto `AtomId` + the **`selectionSurvives` dividend** (a conscious behaviour change —
+preserve a selection across a fragment removal, now that identity gives "the same atom" an
+operational definition); 2d the Monaco xyz **read-only projection** + paste-as-fragment (manual
+coordinate editing is *replaced, not removed*). The **ephemeral drag layer** moved out of Stage 2's
+heading into the first unit of **Stage 3** (the rigid-body drag) — it is needed only for the drag
+(ADR-010). *Open (blocked on the architect's verbatim wording): the Phase 3 tail item
+"multi-fragment frontier-orbital labeling" — to be pasted in with its honesty caveat about weights
+without an overlap matrix.*
+
+## [2026-08-06] decision | ADR-017 — the operation log (design)
+
+Four decisions, each with rationale. **(1) Each entry materializes its resultant snapshot** — the
+snapshot is the source of truth, the `Op` is provenance (a lab-journal line), not a recompile
+recipe. The load-bearing argument, stood verbatim in the ADR *and* the `oplog.ts` header: a
+replay-from-ops log would make history a **function of the installed ASE version** (geometry ops run
+through ASE in the sidecar), so a dependency bump would silently rewrite old geometries — a
+scientific instrument's history must not change retroactively. **(2) No WASM in Stage 2** — the op
+schema is shared by serde-JSON + goldens, apply-orchestration is TS; Phase 4.5 replays materialized
+snapshots. Openly corrects the unit-1c ground "the crate is separate *because* Stage 2 is WASM" →
+the crate's separateness stands on std-only/MSRV, not WASM. **(3)** New optional `jobs.scene_log_json`
+column (migration is 2b); `jobs.scene_json` stays the v2 snapshot, core contract untouched.
+**(4)** Undo/redo is a pointer; append truncates the redo tail; **no length cap yet** — sizes
+**measured** first (38-atom scene: ~2.9 KB/snapshot, ~3.5 KB/entry, ~345 KiB/100-op session), cap
+deferred with numbers. Op vocabulary = one variant per Scene mutator (checklist in the ADR so 2b
+finds no hole).
