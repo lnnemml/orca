@@ -93,13 +93,20 @@ result structs, and stored JSON are byte-for-byte unchanged.
   argument cross-checked against the artifact* (a post-condition, rule #9), NOT a type guarantee.
   Writing "type-level invariant across persistence" would be exactly the over-reach ADR-010's
   empirical addendum warns against. The distinction is written verbatim on `check_map_order`.
-- **Legacy / NULL map (all jobs in 1d).** Schema v10 adds nullable `jobs.index_map_json`, NULL for
-  every row until unit 1e mints it. `results::job_index_map` reads it: NULL → a **derived identity
-  map** from the input coordinate block's atom count (`derived_identity_map`), cross-checked in
-  `verify()` against the artifact — never postulated, because the input on disk can be hand-edited
-  after the run. An unreadable input coordinate block is a **loud, named** parse failure (no `* xyz *`
-  block), not a silent skip. A *present* `index_map_json` is refused with a named error (minting is
-  unit 1e's job).
+- **Minted (unit 1e) vs derived (legacy) map.** `results::resolve_job_mapping` reads
+  `jobs.index_map_json`:
+  - **`{"minted":…}`** (minted at `create_job` from the text↔scene correspondence) + a readable scene
+    → the stored map is used, and the AtomId→element anchor for `check_map_order` comes from the
+    **scene** (`scene.atom_order()` read from `scene_json`, **independent of the stored map**). That
+    independence is what makes a corrupted stored map bite: because the anchor is not derived from the
+    map, a permuted stored map disagrees with the scene at the artifact and fails loudly, rather than
+    cancelling itself out. (Negative control `minted_map_is_load_bearing…` in `results.rs`.)
+  - **`{"skipped":…}` / NULL / minted-but-scene-gone** → the **derived identity map** from the input
+    coordinate block, anchor `0..n` (the unit-1d path), still cross-checked against the artifact.
+  An unreadable input coordinate block remains a **loud, named** parse failure (no `* xyz *` block).
+  The reference's coords/`z` stay text-sourced; only the AtomId **anchor** switches to the scene for a
+  minted job — and only the anchor needs to, because element and coord truth still come from the
+  artifact/text, both independent of the stored map.
 
 ## Measured facts the code encodes (not comments — structure)
 - **`entropyS` is not entropy.** Measured `entropyS == enthalpyH − freeEnergyG`, i.e. **T·S in

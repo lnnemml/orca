@@ -130,6 +130,43 @@ surprise.
 - **No code in unit 1a** — this ADR records the decision; 1c–1e implement it.
 - **`wiki/orca/usesym-atom-order.md`** is the measured basis for the `parse_output` post-condition.
 
+## Amendment (unit 1e, 2026-08-06) — resolving the display/authoritative tension
+
+History is not rewritten; the tension named above is now **resolved** by the wiring unit. Four
+decisions, implemented, not re-debated:
+
+1. **The display emit stays TypeScript.** The Scene→Monaco projection (the sync) is untouched; there
+   is no IPC on the debounce and no Rust round-trip to render the geometry the author reads.
+2. **The authoritative act is at `create_job`.** When a job is created with a scene, Rust parses the
+   coordinate block of the **submitted `input_content`**, verifies it corresponds to the scene
+   (element sequence exact + float-tolerant coordinates — the `xyzMatchesScene` standard, re-derived in
+   `orcastudio_core::mint_index_map`), and mints the `IndexMap` **from that verified correspondence**.
+   **Never from the scene alone** — ORCA runs the *text*, so a scene/text drift (a sync race, any sync
+   bug) must SKIP, not silently encode a lying map. This is the empirical complement to ADR-010: the
+   1d failure class (per-atom data re-labelled onto the wrong atoms) would otherwise be re-introduced
+   at mint time. On any mismatch or an input form we cannot map (`* xyzfile`, `%coords`, no block) a
+   **self-describing skip** `{"skipped": "<reason>"}` is stored in the same column; the job is NOT
+   blocked (input validity is ORCA's business, the map is ours), and parse falls back to the derived
+   identity map (unit 1d), which re-verifies against the artifact anyway.
+3. **No text canonicalisation at submit, and no runtime byte-check of display-vs-authoritative.** The
+   text is the source of truth (the 2.5.4b lesson); the submit path does not rewrite it. A runtime
+   byte-equality check of the two emits is **deliberately absent** — it cannot tell a legal hand-edit
+   from a drift, so it would be noise, not a guard. Byte-identity lives where it is decisive: the
+   `orcastudio-core` golden + corpus gates (`float-formatting-parity.md`). This absence is recorded so
+   a future reader does not "finish" it into existence.
+4. **Two minting paths, both named.** `emit_input`'s production role is (a) **authored-by-app** inputs
+   (Phase 4.5 reaction/scan setup, where the app writes the `.inp` and mints from its own emit) and
+   (b) the **gates**. Unit 1e is the **authored-by-text** path: the human/AI wrote the `.inp`, and the
+   map is minted by *verifying* that text against the scene. Same `IndexMap`, two provenances.
+
+The map's **type-level** provenance holds only in-process; across `jobs.index_map_json` (SQLite) it is
+a serialized value, so the parser treats it as a **required, artifact-cross-checked** argument, not a
+type guarantee (unit 1d, `check_map_order`). A minted map is verified against the artifact via a
+**scene-sourced** AtomId→element anchor (independent of the stored map), so a corrupted stored map is
+caught, not cancelled. The **xtb serde boundary is branded** (`SceneIndex` 0-based in / `XtbIndex`
+1-based out): the `$constrain` `+1` flip is one typed conversion, `SceneIndex` has no `Display`. This
+closes **Stage 1**.
+
 ## References
 
 - [`proposals/editor-architecture-2026-07-30.md`](proposals/editor-architecture-2026-07-30.md) §6.3

@@ -1,10 +1,9 @@
 # Module: orcastudio-core (`orcastudio-core/`)
 
-**Status:** created in Phase 4.2 Stage 1 unit **1c** (ADR-016); **wired into the parsers in
-1d** — `src-tauri` now depends on this crate and the ADR-012 readers take its
-`IndexMap<OrcaIndex>` in `verify()` (see `modules/artifact-readers.md`). Holds the identity
-types + the order-bearing `emit_input`. Unit 1e still owes: `create_job` mints the map and the
-xtb serde boundary is branded.
+**Status:** created in Phase 4.2 Stage 1 unit **1c** (ADR-016); **wired into the parsers in 1d**
+(`src-tauri` depends on this crate; the ADR-012 readers take its `IndexMap<OrcaIndex>` in `verify()`)
+and **into `create_job` in 1e** (`mint_index_map` mints the map from the text↔scene correspondence).
+Holds the identity types, the order-bearing `emit_input`, and the mint. **Stage 1 is complete.**
 
 A **separate crate** in the cargo workspace (root `Cargo.toml`, members `src-tauri` +
 `orcastudio-core`) on purpose: Stage 2 compiles it to **WASM** for the renderer, so it
@@ -44,6 +43,13 @@ text does not (it carries no order) and stays in TS (`injectSceneIntoInput`).
   unit 1e; a `TODO(1e)` marks it).
 - `tests/golden.rs` — byte-identity vs the committed TS-emitted fixtures
   (`tests/fixtures/`), the IndexMap↔rows coupling, and the measured-value round-trip.
+- `src/mint.rs` (unit 1e) — `mint_index_map(&Scene, input_content) -> Result<IndexMap<OrcaIndex>,
+  String>`: parse the input's coordinate block, verify it corresponds to the scene (element sequence
+  exact + float-tolerant coords, the `xyzMatchesScene` standard; `normalize_element` is the Rust twin
+  of the TS one), and mint from that verified correspondence — **never from the scene alone**. `Err`
+  is a self-describing skip reason (mismatch, or an unsupported input form: `* xyzfile`, `%coords`, no
+  block). Pure/std-only (WASM-ready). Its tests carry negative controls (a) reordered/drifted/wrong-
+  count → skip, and (c) the scene-only mint would mislabel.
 - `tests/roundtrip.rs` (unit 1d) — the **typed, in-process half** of the ADR-010 invariant:
   for 2000 seeded random scenes, `set(AtomId) → emit_coordinate_block → parse_coordinate_rows →
   re-key by AtomId through the map` is **identity** (element exact, coords to 1e-9) and the map is a

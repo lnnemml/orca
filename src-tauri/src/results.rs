@@ -29,7 +29,7 @@ use crate::parse::hess::HessFile;
 use crate::parse::property::{PopulationScheme, PropertyFile, Verified};
 use crate::parse::xyz::XyzFile;
 use crate::parse::{derived_identity_ids, identity_map_for, ReferenceGeometry};
-use orcastudio_core::ids::{IndexMap, OrcaIndex};
+use orcastudio_core::ids::{AtomId, IndexMap, OrcaIndex};
 
 /// Bump when the stored JSON shape or the parse semantics change.
 /// - v1: property.txt only (unit 3.5).
@@ -349,7 +349,7 @@ pub fn parse_and_store(
     // The input's start geometry (with elements) — the reference for `.property.txt`
     // (coords only; it checks element order internally) and for `_trj.xyz` (whose
     // first frame is the start).
-    let input_ref = match input_reference(input_content) {
+    let mut input_ref = match input_reference(input_content) {
         Some(r) if !r.z.is_empty() => r,
         // An unreadable input coordinate block is a LOUD, named parse failure — not a
         // silent skip. The derived identity map (below) is built from this block, so
@@ -357,14 +357,17 @@ pub fn parse_and_store(
         _ => return ParseOutcome::ParseFailed("no * xyz * block in the job input".into()),
     };
 
-    // The job's IndexMap<OrcaIndex> (unit 1d): read from jobs.index_map_json, which is
-    // NULL for every row today, so this is the DERIVED identity map from the input
-    // coordinate block. It is cross-checked against each artifact inside verify() —
-    // never trusted (the input on disk can be hand-edited after the run).
-    let job_map = match job_index_map(conn, job_id, &input_ref) {
+    // The job's IndexMap<OrcaIndex> (unit 1e): a MINTED map from `jobs.index_map_json`
+    // (created at create_job from the text↔scene correspondence), or the DERIVED
+    // identity map for a legacy/skipped job. `atom_ids` is the INDEPENDENT AtomId
+    // anchor the map is cross-checked against inside verify() — scene-sourced when
+    // minted (so a corrupted stored map cannot cancel itself out), synthetic 0..n when
+    // derived. The map is verified against each artifact, never trusted.
+    let (job_map, atom_ids) = match resolve_job_mapping(conn, job_id, &input_ref) {
         Ok(m) => m,
         Err(e) => return ParseOutcome::ParseFailed(e.to_string()),
     };
+    input_ref.ids = atom_ids.clone();
 
     let verified = match PropertyFile::from_path(&path)
         .and_then(|pf| pf.verify(&input_ref, &job_map))
@@ -378,7 +381,7 @@ pub fn parse_and_store(
     // final `$Geometry`, which we already have — not `input.inp` (the start).
     let hess_path = dir.join("input.hess");
     let hess_verified = if hess_path.exists() {
-        match final_geometry_reference(&verified)
+        match final_geometry_reference(&verified, &atom_ids)
             .and_then(|r| Ok(HessFile::from_path(&hess_path)?.verify(&r, &job_map)?))
         {
             Ok(hv) => Some(hv),
@@ -426,7 +429,7 @@ pub fn parse_and_store(
         Some(orca_path) => match crate::orca_json::ensure_gbw_json(&orca_path, dir) {
             Err(e) => return ParseOutcome::ParseFailed(format!("orca_2json: {e}")),
             Ok(None) => None,
-            Ok(Some(json)) => match final_geometry_reference(&verified)
+            Ok(Some(json)) => match final_geometry_reference(&verified, &atom_ids)
                 .and_then(|r| Ok(crate::parse::mo::MoJson::from_path(&json)?.verify(&r, &job_map)?))
             {
                 Ok(mv) => Some(orbitals_json(&mv)),
@@ -452,16 +455,20 @@ pub fn parse_and_store(
 }
 
 /// The `.property.txt` optimized (last) geometry as the reference for the `.hess`
-/// geometry post-condition — the Freq geometry, not the input geometry.
-fn final_geometry_reference(v: &Verified) -> Result<ReferenceGeometry, AppError> {
+/// geometry post-condition — the Freq geometry, not the input geometry. `atom_ids` is
+/// the job's AtomId anchor (scene-sourced when minted, synthetic when derived), keyed
+/// to the same emit order as the final geometry (== artifact order).
+fn final_geometry_reference(
+    v: &Verified,
+    atom_ids: &[AtomId],
+) -> Result<ReferenceGeometry, AppError> {
     let geoms = v.geometries()?;
     let last = geoms
         .last()
         .ok_or_else(|| AppError::Internal("verified property.txt has no geometry".into()))?;
     let z: Vec<u8> = last.atoms.iter().map(|a| a.z).collect();
     Ok(ReferenceGeometry {
-        // Legacy job (unit 1d): derived identity ids, same 0..n as the job map.
-        ids: derived_identity_ids(z.len()),
+        ids: atom_ids.to_vec(),
         xyz_angstrom: last
             .atoms
             .iter()
@@ -471,28 +478,84 @@ fn final_geometry_reference(v: &Verified) -> Result<ReferenceGeometry, AppError>
     })
 }
 
-/// The job's `IndexMap<OrcaIndex>` (unit 1d). Reads `jobs.index_map_json`: NULL for
-/// every row today → the DERIVED identity map from the input coordinate block's atom
-/// count, cross-checked against each artifact inside `verify()`. A present value is a
-/// LOUD, named error: minting/deserializing the map is unit 1e's job and no row
-/// should carry one yet — better a named refusal than a silent wrong-order parse.
-fn job_index_map(
+/// What `jobs.index_map_json` holds (unit 1e). Externally tagged, so the on-disk
+/// shapes are `{"minted":[<AtomId u32s in text-row order>]}` and
+/// `{"skipped":"<reason>"}` — the self-describing skip the parser records instead of a
+/// silent NULL.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+pub enum StoredIndexMap {
+    #[serde(rename = "minted")]
+    Minted(Vec<u32>),
+    #[serde(rename = "skipped")]
+    Skipped(String),
+}
+
+/// Mint the stored envelope at `create_job` (ADR-016 amendment). ALWAYS returns a
+/// value — a minted map or a self-describing skip — so the job is never blocked
+/// (input validity is ORCA's business; the map is ours). Reads the **submitted text**
+/// and verifies it against the scene; a scene-only mint is refused by construction
+/// (`orcastudio_core::mint_index_map`). This is the single mint site — a clone / "new
+/// iteration" runs through `create_job` and thus mints its OWN map, never inherited.
+pub fn mint_stored_index_map(input_content: &str, scene_json: Option<&str>) -> StoredIndexMap {
+    let Some(sj) = scene_json else {
+        return StoredIndexMap::Skipped(
+            "no scene snapshot on this job (created from raw text) — parse uses the derived identity map"
+                .into(),
+        );
+    };
+    match orcastudio_core::scene::deserialize_scene(sj) {
+        Err(e) => StoredIndexMap::Skipped(format!(
+            "scene snapshot unreadable ({e}) — derived identity map at parse"
+        )),
+        Ok(scene) => match orcastudio_core::mint_index_map(&scene, input_content) {
+            Ok(map) => StoredIndexMap::Minted(map.order().iter().map(|a| a.get()).collect()),
+            Err(reason) => StoredIndexMap::Skipped(reason),
+        },
+    }
+}
+
+/// The job's `IndexMap<OrcaIndex>` **and** the AtomId anchor to key references by
+/// (unit 1e). Reads `jobs.index_map_json`:
+/// - **Minted** + a readable scene → the stored map is used, and the anchor is the
+///   scene's `atom_order()` — read from `scene_json`, **independent of the stored
+///   map**, so a corrupted stored map is caught by the artifact cross-check in
+///   `verify()` rather than cancelling itself out.
+/// - **Skipped / NULL / minted-but-scene-gone** → the derived identity map (unit 1d
+///   path), anchor `0..n`. The derived path re-verifies against the artifact anyway.
+fn resolve_job_mapping(
     conn: &Connection,
     job_id: &str,
     reference: &ReferenceGeometry,
-) -> Result<IndexMap<OrcaIndex>, AppError> {
-    let stored: Option<String> = conn.query_row(
+) -> Result<(IndexMap<OrcaIndex>, Vec<AtomId>), AppError> {
+    let raw: Option<String> = conn.query_row(
         "SELECT index_map_json FROM jobs WHERE id = ?1",
         [job_id],
         |r| r.get(0),
     )?;
-    match stored {
-        None => Ok(identity_map_for(reference)),
-        Some(_) => Err(AppError::Internal(
-            "jobs.index_map_json is present, but minting/deserializing the IndexMap is unit 1e's job — \
-             no row should carry one in unit 1d"
-                .into(),
-        )),
+    let derived = || (identity_map_for(reference), derived_identity_ids(reference.z.len()));
+
+    let Some(raw) = raw else { return Ok(derived()) };
+    match serde_json::from_str::<StoredIndexMap>(&raw) {
+        Ok(StoredIndexMap::Minted(order)) => {
+            let scene_json: Option<String> = conn.query_row(
+                "SELECT scene_json FROM jobs WHERE id = ?1",
+                [job_id],
+                |r| r.get(0),
+            )?;
+            match scene_json.and_then(|s| orcastudio_core::scene::deserialize_scene(&s).ok()) {
+                Some(scene) => {
+                    let ids: Vec<AtomId> = order.iter().map(|&u| AtomId::new(u)).collect();
+                    let map = IndexMap::from_emit_order(&ids);
+                    // Anchor from the SCENE, not from the stored map (independence).
+                    Ok((map, scene.atom_order()))
+                }
+                // Minted but the scene snapshot is gone/unreadable — fall back to the
+                // derived path (still artifact-verified) rather than trust the map alone.
+                None => Ok(derived()),
+            }
+        }
+        // Skipped, or an unparseable envelope — the derived path (1d), artifact-verified.
+        Ok(StoredIndexMap::Skipped(_)) | Err(_) => Ok(derived()),
     }
 }
 
@@ -755,6 +818,68 @@ mod tests {
         let reference = input_reference(OPTFREQ_INP).unwrap();
         let map = identity_map_for(&reference);
         PropertyFile::parse(OPTFREQ).verify(&reference, &map).unwrap()
+    }
+
+    // An ethane scene (8 atoms, deliberately non-trivial AtomIds 10..17) whose element
+    // order matches the OPTFREQ fixture (C C H H H H H H).
+    const ETHANE_SCENE: &str = r#"{"version":2,"fragments":[{"id":"f","name":"ethane","atoms":[
+        {"id":10,"element":"C","x":0.0,"y":0.0,"z":0.0},{"id":11,"element":"C","x":0.0,"y":0.0,"z":1.5},
+        {"id":12,"element":"H","x":0.0,"y":0.0,"z":0.0},{"id":13,"element":"H","x":0.0,"y":0.0,"z":0.0},
+        {"id":14,"element":"H","x":0.0,"y":0.0,"z":0.0},{"id":15,"element":"H","x":0.0,"y":0.0,"z":0.0},
+        {"id":16,"element":"H","x":0.0,"y":0.0,"z":0.0},{"id":17,"element":"H","x":0.0,"y":0.0,"z":0.0}
+    ],"charge":0,"source":"editor"}],"multiplicity":1,"nextAtomId":18}"#;
+
+    fn jobs_db_with(scene: Option<&str>, index_map_json: Option<&str>) -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute(
+            "CREATE TABLE jobs (id TEXT PRIMARY KEY, scene_json TEXT, index_map_json TEXT)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO jobs (id, scene_json, index_map_json) VALUES ('job1', ?1, ?2)",
+            rusqlite::params![scene, index_map_json],
+        )
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn minted_map_is_load_bearing_permuted_stored_map_is_refused() {
+        // Negative control (b): a synthetic job whose stored minted map is PERMUTED
+        // (positions 0↔2, a C and an H) makes parse's verify refuse by the artifact
+        // cross-check — while the CORRECT minted map verifies. So the stored map is
+        // load-bearing, not decorative persistence.
+        // Correct: stored order == scene emit order.
+        let mut input_ref = input_reference(OPTFREQ_INP).unwrap();
+        let conn = jobs_db_with(Some(ETHANE_SCENE), Some(r#"{"minted":[10,11,12,13,14,15,16,17]}"#));
+        let (map, ids) = resolve_job_mapping(&conn, "job1", &input_ref).unwrap();
+        input_ref.ids = ids;
+        assert!(
+            PropertyFile::parse(OPTFREQ).verify(&input_ref, &map).is_ok(),
+            "the correct minted map verifies"
+        );
+
+        // Permuted stored order; the reference ids still come from the SCENE
+        // (independent of the stored map), so the permutation cannot cancel out.
+        let mut bad_ref = input_reference(OPTFREQ_INP).unwrap();
+        let conn2 = jobs_db_with(Some(ETHANE_SCENE), Some(r#"{"minted":[12,11,10,13,14,15,16,17]}"#));
+        let (pmap, pids) = resolve_job_mapping(&conn2, "job1", &bad_ref).unwrap();
+        bad_ref.ids = pids;
+        let err = PropertyFile::parse(OPTFREQ).verify(&bad_ref, &pmap).unwrap_err();
+        assert!(matches!(err, crate::parse::ParseError::OrderMismatch { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn skipped_and_null_fall_back_to_the_derived_identity_map() {
+        let reference = input_reference(OPTFREQ_INP).unwrap();
+        for stored in [Some(r#"{"skipped":"no scene snapshot"}"#), None] {
+            let conn = jobs_db_with(None, stored);
+            let (map, ids) = resolve_job_mapping(&conn, "job1", &reference).unwrap();
+            // Derived identity: ids are 0..n and the map is the identity.
+            assert_eq!(ids, derived_identity_ids(reference.z.len()));
+            assert_eq!(map.order(), identity_map_for(&reference).order());
+        }
     }
 
     #[test]

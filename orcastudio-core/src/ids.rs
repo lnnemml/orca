@@ -115,6 +115,16 @@ impl<T: SpaceIndex> IndexMap<T> {
     pub fn is_empty(&self) -> bool {
         self.reverse.is_empty()
     }
+
+    /// The emit order: `AtomId` at each position (position `i` == `T::from_position(i)`).
+    /// This is the single value that fully determines the map — [`from_emit_order`]
+    /// rebuilds an identical map from it — so it is what unit 1e serializes into
+    /// `jobs.index_map_json` (as the `AtomId` u32s) and reads back.
+    ///
+    /// [`from_emit_order`]: IndexMap::from_emit_order
+    pub fn order(&self) -> &[AtomId] {
+        &self.reverse
+    }
 }
 
 #[cfg(test)]

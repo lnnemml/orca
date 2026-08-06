@@ -89,13 +89,18 @@ survives a restart.
   **external-content** FTS5 over `manual_sections` so the body is not duplicated — and
   `manual_provenance`. Created via `create_manual_tables` (factored out, like `create_results_table`).
   Ingest + search live in `src/manual/index.rs`. Full schema: `modules/manual-index.md`.
-- **v10** — additive `ALTER TABLE jobs ADD COLUMN index_map_json TEXT` (nullable), the serialized
-  `IndexMap<OrcaIndex>` minted at `create_job` (Phase 4.2, ADR-016 unit 1e). Same guarded-`ALTER`
-  pattern as v6/v7. In **unit 1d every row is NULL**: `results::job_index_map` reads the column and,
-  on NULL, derives an **identity map** from the input coordinate block, cross-checked against each
-  artifact in the readers' `verify()` (see `modules/artifact-readers.md` — the map is verified, not
-  trusted). The column exists now so 1e's minting has a home and the migration is off 1e's critical
-  path. A *present* value in 1d is refused with a named error (deserializing is 1e's job).
+- **v10** — additive `ALTER TABLE jobs ADD COLUMN index_map_json TEXT` (nullable, guarded `ALTER` like
+  v6/v7). Holds the job's `IndexMap<OrcaIndex>` as one of two shapes (`results::StoredIndexMap`,
+  externally tagged), **written once at `create_job`** (unit 1e):
+  - `{"minted":[<AtomId u32s in text-row order>]}` — minted from the **submitted `input_content`**
+    verified against the scene (`orcastudio_core::mint_index_map`: element sequence + float-tolerant
+    coords, the `xyzMatchesScene` standard). Never from the scene alone — a scene/text drift SKIPS.
+  - `{"skipped":"<reason>"}` — a **self-describing skip**: text↔scene mismatch, or an input form we
+    cannot map (`* xyzfile`, `%coords`, no inline block). The job is not blocked.
+  `results::resolve_job_mapping` reads it at parse: a minted map is used (cross-checked against the
+  artifact via a **scene-sourced** anchor, so a corrupted stored map is caught — see
+  `modules/artifact-readers.md`); a skip / NULL / legacy row falls back to the derived identity map
+  (unit 1d). A clone / "new iteration" mints its OWN map (it runs through `create_job`).
 - The queue statuses (`queued`, `cancelled`) and `parsed` needed **no migration** — `status` is TEXT.
 - Migration tests assert preservation across each step (…`migrate_v6_to_v7_adds_homo_lumo_gap`,
   `migrate_v7_to_v8_backfills_energy_from_results`, `migrate_v8_to_v9_adds_manual_tables_and_preserves_data`,

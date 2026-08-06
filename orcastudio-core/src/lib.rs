@@ -19,7 +19,10 @@
 
 pub mod emit;
 pub mod ids;
+pub mod mint;
 pub mod scene;
+
+pub use mint::mint_index_map;
 
 /// Errors from deserialization / emit. Named and loud — never a silent default
 /// (CLAUDE.md rule #9: every boundary checks the result in our own terms).

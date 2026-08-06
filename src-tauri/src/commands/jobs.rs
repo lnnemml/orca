@@ -21,6 +21,14 @@ use crate::models::job::{Job, JobStatus};
 /// Insert a fresh `draft` job and return it fully hydrated. `scene_json` is the
 /// optional SceneFragment snapshot (ADR-008 #5), written once here at create
 /// time and never updated — the job's input is immutable, so its snapshot is too.
+///
+/// The authoritative act of unit 1e (ADR-016 amendment): mint the job's
+/// `IndexMap<OrcaIndex>` **from the submitted `input_content`, verified against the
+/// scene**, and store it in `jobs.index_map_json`. On any text↔scene mismatch or an
+/// input form we cannot map, a self-describing skip (`{"skipped": …}`) is stored
+/// instead — the job is NOT blocked, and parse falls back to the derived identity map.
+/// This is the single mint site, so a clone / "new iteration" (which also calls
+/// `create_job`) mints its OWN map from its OWN text — never inherited.
 fn create_job_conn(
     conn: &Connection,
     title: &str,
@@ -28,10 +36,22 @@ fn create_job_conn(
     scene_json: Option<&str>,
 ) -> Result<Job, AppError> {
     let id = Uuid::new_v4().to_string();
+    let index_map_json = serde_json::to_string(&crate::results::mint_stored_index_map(
+        input_content,
+        scene_json,
+    ))
+    .map_err(|e| AppError::Internal(format!("serialize index_map_json: {e}")))?;
     conn.execute(
-        "INSERT INTO jobs (id, title, input_content, status, scene_json) \
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![id, title, input_content, JobStatus::Draft.as_str(), scene_json],
+        "INSERT INTO jobs (id, title, input_content, status, scene_json, index_map_json) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            id,
+            title,
+            input_content,
+            JobStatus::Draft.as_str(),
+            scene_json,
+            index_map_json
+        ],
     )?;
     get_job_conn(conn, &id)
 }
@@ -525,6 +545,60 @@ mod tests {
         let listed = list_jobs_conn(&conn).unwrap();
         assert_eq!(listed[0].scene_json.as_deref(), Some(snap));
 
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // A v2 scene (HF) and an input whose coordinate block matches it in order.
+    const HF_SCENE: &str = r#"{"version":2,"fragments":[{"id":"a","name":"HF","atoms":[
+        {"id":0,"element":"F","x":0.0,"y":0.0,"z":0.0},
+        {"id":1,"element":"H","x":0.0,"y":0.0,"z":0.92}
+    ],"charge":0,"source":"editor"}],"multiplicity":1,"nextAtomId":2}"#;
+
+    fn stored_index_map(conn: &Connection, id: &str) -> crate::results::StoredIndexMap {
+        let raw: String = conn
+            .query_row("SELECT index_map_json FROM jobs WHERE id = ?1", [id], |r| r.get(0))
+            .unwrap();
+        serde_json::from_str(&raw).unwrap()
+    }
+
+    #[test]
+    fn create_mints_the_index_map_from_matching_text() {
+        let (conn, dir) = test_db();
+        let input = "! HF def2-SVP\n* xyz 0 1\nF 0.0 0.0 0.0\nH 0.0 0.0 0.92\n*\n";
+        let job = create_job_conn(&conn, "hf", input, Some(HF_SCENE)).unwrap();
+        assert_eq!(
+            stored_index_map(&conn, &job.id),
+            crate::results::StoredIndexMap::Minted(vec![0, 1])
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn create_skips_the_map_when_text_reorders_the_scene() {
+        // Negative control (a): the submitted text swaps F and H vs the scene → a
+        // self-describing SKIP, NOT a silent identity mint (which would mislabel
+        // per-atom data). The job is still created (input validity is ORCA's business).
+        let (conn, dir) = test_db();
+        let input = "! HF\n* xyz 0 1\nH 0.0 0.0 0.92\nF 0.0 0.0 0.0\n*\n"; // reordered
+        let job = create_job_conn(&conn, "hf", input, Some(HF_SCENE)).unwrap();
+        assert_eq!(job.status, JobStatus::Draft); // not blocked
+        match stored_index_map(&conn, &job.id) {
+            crate::results::StoredIndexMap::Skipped(reason) => {
+                assert!(reason.contains("element"), "reason: {reason}");
+            }
+            other => panic!("expected a self-describing skip, got {other:?}"),
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn create_without_a_scene_skips_the_map() {
+        let (conn, dir) = test_db();
+        let job = create_job_conn(&conn, "raw", "! HF\n* xyz 0 1\nF 0 0 0\nH 0 0 1\n*\n", None).unwrap();
+        assert!(matches!(
+            stored_index_map(&conn, &job.id),
+            crate::results::StoredIndexMap::Skipped(_)
+        ));
         std::fs::remove_dir_all(&dir).ok();
     }
 
