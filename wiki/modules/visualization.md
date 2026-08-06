@@ -94,10 +94,10 @@ comes from the theme's palette (see Themes).
   has no id for that drawn index, the callback emits **nothing** rather than a guessed id — an
   unresolvable click is dropped, never mapped to the wrong atom. `onAtomPick` is read through a **ref**
   so an inline parent handler doesn't rebuild the model every render.
-- **The 2c1→2c2 seam:** `selection`/`measure`/`edit-plan`/`constraints` still key on the positional
-  global index; `NewJobScreen` has one named adapter that converts the pick's `AtomId` back to a
-  global index via `buildViewerAtomTable(scene).viewerIndexOf(...)` (TODO(2c2): deleted when the
-  pipeline moves onto `AtomId`).
+- **Consumers key on `AtomId` (2c2):** the pick's `atomId` flows straight into an `AtomId[]`
+  selection; `measure`/`planEdit` input/`constraintFromSelection` input all take ids. The 2c1→2c2
+  adapter is gone. The ASE mask and the `%geom` constraint stay positional at their own emit seams
+  (see `wiki/modules/scene.md`).
 
 ## The overlay effect (one owner of all shapes & labels)
 
@@ -108,13 +108,14 @@ re-add → `render()` with **no `zoomTo` and no model reload**, so a selection/n
 never moves the camera. On a coordinate-only edit the model effect still re-renders (new `scene` ref)
 so overlays follow atoms to their new positions.
 
-- **Fed through the table (2c1).** The overlay builds `buildViewerAtomTable(scene)` and an `AtomId→atom`
-  map, and resolves each halo/mask entry by *global index → AtomId → atom* rather than indexing the
-  atom array directly. The **number** a label shows is the atom's viewer index **read from the table**
-  (`table.viewerIndexOf(id)`), not the loop counter that merely coincides with it — the source is the
-  table, not an accident. The value shown is unchanged (still the positional 0-based number; renaming
-  the index *space* in the UI is 2c2). `drawMeasurement` is still positional — it is driven by
-  `measure.ts`, a consumer frozen for 2c1 and moved to `AtomId` in 2c2.
+- **Fed through the table (2c1/2c2).** The overlay builds `buildViewerAtomTable(scene)` and an
+  `AtomId→atom` map. Since 2c2 the **`selection` prop is `AtomId[]`**, so a halo resolves an id
+  **directly** to its atom via the map — no positional round-trip. The **mask** (`maskHighlight`)
+  stays a positional global index (it is `EditPlan.mask`, the ASE emit seam) and resolves *index →
+  AtomId → atom* through the table. The **number** a label shows is the atom's viewer index read from
+  the table (`table.viewerIndexOf(id)`), not a loop counter. `drawMeasurement` now takes the `AtomId[]`
+  selection (`measureSelection` resolves it); its `m.atoms` are the resolved global indices it renders
+  against.
 
 - **Selection halo = translucent wireframe cage** (`addSphere`, not `setStyle` — a style override
   would clobber the per-fragment index-range colours). **Sized per element:** 3Dmol draws each atom

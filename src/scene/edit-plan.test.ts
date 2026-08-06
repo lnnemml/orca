@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 
 import type { Scene } from "./types";
-import { testScene, type RawFragment } from "./scene-test-util";
+import { testScene, idsFor, type RawFragment } from "./scene-test-util";
 import type { RawAtom } from "./types";
 import {
   planEdit,
@@ -12,7 +12,7 @@ import {
   explainSplitViolation,
 } from "./edit-plan";
 import { measureSelection } from "./measure";
-import { mergeToXyz } from "./scene";
+import { mergeToXyz, removeFragment } from "./scene";
 
 // Two fragments of different sizes: water (global 0,1,2) + BH4⁻ (global 3..7).
 function water(id = "wat"): RawFragment {
@@ -54,7 +54,7 @@ describe("planEdit — selection count", () => {
   const s = scene(water(), borohydride());
   it("rejects <2 or >4 atoms with a clear reason", () => {
     for (const sel of [[], [0], [0, 1, 2, 3, 4]]) {
-      const p = planEdit(s, sel);
+      const p = planEdit(s, idsFor(s, ...sel));
       expect(p.kind).toBe("unavailable");
       if (p.kind === "unavailable") expect(p.reason).toMatch(/2, 3 or 4/);
     }
@@ -100,7 +100,7 @@ describe("planEdit — both orientations (2.5.2d-2)", () => {
   it("2 atoms across fragments → moves the SMALLER fragment, OTHER as alternative", () => {
     // water(3 atoms) vs BH4⁻(5). Either side is movable → default moves the
     // SMALLER (water, 2.5.3b), BH4⁻ offered as the alternative.
-    const p = planEdit(s, [0, 3]);
+    const p = planEdit(s, idsFor(s, 0, 3));
     expect(p.kind).toBe("ready");
     if (p.kind === "ready") {
       expect(p.op).toBe("distance");
@@ -112,8 +112,8 @@ describe("planEdit — both orientations (2.5.2d-2)", () => {
   });
 
   it("smaller-fragment default is independent of click order", () => {
-    const bh4First = planEdit(s, [3, 0]); // BH4 clicked first
-    const bh4Last = planEdit(s, [0, 3]); // BH4 clicked last
+    const bh4First = planEdit(s, idsFor(s, 3, 0)); // BH4 clicked first
+    const bh4Last = planEdit(s, idsFor(s, 0, 3)); // BH4 clicked last
     // Whatever the order, the SMALLER fragment (water) moves by default.
     if (bh4First.kind === "ready") expect(bh4First.movingFragmentId).toBe("wat");
     if (bh4Last.kind === "ready") expect(bh4Last.movingFragmentId).toBe("wat");
@@ -123,7 +123,7 @@ describe("planEdit — both orientations (2.5.2d-2)", () => {
     const big = scene(bigSubstrate(), bh4Off());
     // an inter-fragment distance: an ibuprofen carbon (12) and BH4 boron (33).
     for (const sel of [[12, 33], [33, 12]]) {
-      const p = planEdit(big, sel);
+      const p = planEdit(big, idsFor(big, ...sel));
       expect(p.kind).toBe("ready");
       if (p.kind === "ready") {
         expect(p.movingFragmentId).toBe("bh4"); // the 5-atom reagent, not 33 atoms
@@ -134,8 +134,9 @@ describe("planEdit — both orientations (2.5.2d-2)", () => {
 
   it("current === measureSelection value (math is not duplicated)", () => {
     for (const sel of [[0, 3], [1, 0, 3], [0, 1, 2, 3]]) {
-      const p = planEdit(s, sel);
-      const m = measureSelection(s, sel);
+      const ids = idsFor(s, ...sel);
+      const p = planEdit(s, ids);
+      const m = measureSelection(s, ids);
       expect(p.kind).toBe("ready");
       if (p.kind === "ready" && m.kind !== "none") {
         expect(p.current).toBeCloseTo(m.value, 10);
@@ -149,7 +150,7 @@ describe("planEdit — both orientations (2.5.2d-2)", () => {
     // O(14). Last-clicked (O, ibuprofen) can't move — ref C#12 is in ibuprofen.
     // Read the other way, BH4⁻ moves with both refs (C#12, O#14) static.
     const big = scene(bigSubstrate(), bh4Off());
-    const p = planEdit(big, [33, 12, 14]);
+    const p = planEdit(big, idsFor(big, 33, 12, 14));
     expect(p.kind).toBe("ready");
     if (p.kind === "ready") {
       expect(p.op).toBe("angle");
@@ -163,8 +164,8 @@ describe("planEdit — both orientations (2.5.2d-2)", () => {
   // ── (b) the same angle in the convenient order + value identical ────────────
   it("(b) same selection reversed [14,12,33]: not reversed, same mask, SAME value", () => {
     const big = scene(bigSubstrate(), bh4Off());
-    const forward = planEdit(big, [33, 12, 14]); // screenshot order
-    const convenient = planEdit(big, [14, 12, 33]); // reagent last
+    const forward = planEdit(big, idsFor(big, 33, 12, 14)); // screenshot order
+    const convenient = planEdit(big, idsFor(big, 14, 12, 33)); // reagent last
     expect(convenient.kind).toBe("ready");
     if (convenient.kind === "ready" && forward.kind === "ready") {
       expect(convenient.movingFragmentId).toBe("bh4");
@@ -177,7 +178,7 @@ describe("planEdit — both orientations (2.5.2d-2)", () => {
 
   // ── (c) inter-fragment distance: alternative present, swap mirrors ──────────
   it("(c) distance: either side movable → alternative, swap gives the mirror", () => {
-    const p = planEdit(s, [0, 3]); // O(water) ··· B(bh4); default = water (smaller)
+    const p = planEdit(s, idsFor(s, 0, 3)); // O(water) ··· B(bh4); default = water (smaller)
     expect(p.kind).toBe("ready");
     if (p.kind !== "ready") return;
     expect(p.movingFragmentId).toBe("wat");
@@ -199,7 +200,7 @@ describe("planEdit — intra-fragment → needs-split (2.5.3b)", () => {
   const big = scene(bigSubstrate(), bh4Off()); // ibuprofen 0..32, BH4 33..37
 
   it("all atoms in one fragment → needs-split (not a refusal)", () => {
-    const p = planEdit(s, [3, 4, 5]); // all inside BH4⁻
+    const p = planEdit(s, idsFor(s, 3, 4, 5)); // all inside BH4⁻
     expect(p.kind).toBe("needs-split");
   });
 
@@ -207,7 +208,7 @@ describe("planEdit — intra-fragment → needs-split (2.5.3b)", () => {
     // within = the ibuprofen fragment's global indices (0..32).
     const within = Array.from({ length: 33 }, (_, i) => i);
     // distance(i,j) → cut (i,j), move j
-    const d = planEdit(big, [5, 12]);
+    const d = planEdit(big, idsFor(big, 5, 12));
     expect(d.kind).toBe("needs-split");
     if (d.kind === "needs-split") {
       expect(d.cut).toEqual([5, 12]);
@@ -215,7 +216,7 @@ describe("planEdit — intra-fragment → needs-split (2.5.3b)", () => {
       expect(d.within).toEqual(within);
     }
     // angle(i,v,j) → cut (v,j), move j
-    const a = planEdit(big, [5, 12, 20]);
+    const a = planEdit(big, idsFor(big, 5, 12, 20));
     if (a.kind === "needs-split") {
       expect(a.op).toBe("angle");
       expect(a.cut).toEqual([12, 20]);
@@ -225,7 +226,7 @@ describe("planEdit — intra-fragment → needs-split (2.5.3b)", () => {
       throw new Error("expected needs-split");
     }
     // dihedral(i,j,k,l) → cut (j,k), move l
-    const dih = planEdit(big, [5, 12, 20, 25]);
+    const dih = planEdit(big, idsFor(big, 5, 12, 20, 25));
     if (dih.kind === "needs-split") {
       expect(dih.op).toBe("dihedral");
       expect(dih.cut).toEqual([12, 20]);
@@ -237,8 +238,28 @@ describe("planEdit — intra-fragment → needs-split (2.5.3b)", () => {
 
   it("still needs-split when the fragment is the ONLY one in the scene", () => {
     const solo = scene(bigSubstrate()); // one fragment, whole scene
-    const p = planEdit(solo, [5, 12, 20, 25]);
+    const p = planEdit(solo, idsFor(solo, 5, 12, 20, 25));
     expect(p.kind).toBe("needs-split");
+  });
+
+  // On the divergent fixture (AtomId ≠ global) planEdit resolves the ids to the
+  // CURRENT positional indices at its emit seam: the plan's `indices`/`cut` are
+  // the post-removal global indices, not the ids. Green here only if the resolve
+  // is real (on a fresh scene id==index would hide a broken resolve).
+  it("resolves AtomIds to CURRENT global indices after a fragment removal", () => {
+    // water(0,1,2) + BH₄⁻(3..7); pick two BH₄⁻ atoms by id, THEN remove water so
+    // BH₄⁻ slides to global 0..4. The ids are stable; their indices are not.
+    const full = scene(water(), borohydride());
+    const [b, h] = idsFor(full, 3, 5); // boron (id 3) + an H (id 5)
+    const after = removeFragment(full, "wat"); // BH₄⁻ now global 0..4
+    const p = planEdit(after, [b, h]); // distance inside BH₄⁻ → needs-split
+    expect(p.kind).toBe("needs-split");
+    if (p.kind === "needs-split") {
+      // boron is global 0 now (not 3), the H is global 2 (not 5): cut on the
+      // resolved indices, move the second.
+      expect(p.cut).toEqual([0, 2]);
+      expect(p.moving).toBe(2);
+    }
   });
 });
 
@@ -270,7 +291,7 @@ describe("split-mask reference-atom rule (2.5.4a)", () => {
   const references = [3, 1]; // selection [3,1,2] minus the mover (2)
 
   it("sanity: the butane selection reaches needs-split with cut (1,2), moving 2", () => {
-    const p = planEdit(s, [3, 1, 2]);
+    const p = planEdit(s, idsFor(s, 3, 1, 2));
     expect(p.kind).toBe("needs-split");
     if (p.kind === "needs-split") {
       expect(p.op).toBe("angle");
@@ -320,7 +341,7 @@ describe("planEdit — the immovable-axis refusal (2.5.2d-2)", () => {
   it("(e) 2+2 dihedral across fragments → the immovable-axis reason, names culprits", () => {
     // dihedral [1,0,3,4]: water {1,0} | BH4 {3,4}. Whichever end moves, an axis
     // atom (0 or 3) moves with it → no orientation holds the j–k axis fixed.
-    const p = planEdit(s, [1, 0, 3, 4]);
+    const p = planEdit(s, idsFor(s, 1, 0, 3, 4));
     expect(p.kind).toBe("unavailable");
     if (p.kind === "unavailable") {
       expect(p.reason).not.toMatch(/bond-graph/); // NOT the intra reason

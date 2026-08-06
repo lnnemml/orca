@@ -1,6 +1,6 @@
 import type { Scene } from "./types";
 import { describeAtom } from "./selection";
-import { measureSelection, formatMeasurementValue } from "./measure";
+import { measureSelectionByIndex, formatMeasurementValue } from "./measure";
 import { atomCount } from "./scene";
 import {
   inspectConstraintsBlock,
@@ -81,6 +81,9 @@ export function ConstraintPanel({
     <div className="constraint-panel">
       <div className="constraint-head">
         Constraints <span className="muted">({constraints.length})</span>
+        <span className="muted" title="Constraint atoms are ORCA 0-based global indices — the numbers written into %geom and reported in the ORCA output">
+          {" "}· atoms are ORCA 0-based index
+        </span>
       </div>
 
       {compositionChanged ? (
@@ -107,7 +110,9 @@ export function ConstraintPanel({
       <div className="constraint-list">
         {constraints.map((c, i) => {
           const bad = badFor(c);
-          const current = formatMeasurementValue(measureSelection(scene, c.atoms));
+          // `c.atoms` are ORCA 0-based global indices (positional, from the text) —
+          // measured by index, not by AtomId (constraints are an ORCA-index seam).
+          const current = formatMeasurementValue(measureSelectionByIndex(scene, c.atoms));
           return (
             <div
               key={i}
@@ -125,8 +130,8 @@ export function ConstraintPanel({
               </span>
               {bad.length ? (
                 <span className="constraint-bad-note" title="ORCA segfaults on an out-of-range index">
-                  out of range: {bad.map((i2) => `#${i2}`).join(", ")} (input has {n}
-                  {" "}atoms, 0–{n - 1})
+                  out of range (ORCA index): {bad.map((i2) => `#${i2}`).join(", ")} (input has {n}
+                  {" "}atoms, ORCA index 0–{n - 1})
                 </span>
               ) : null}
               <button

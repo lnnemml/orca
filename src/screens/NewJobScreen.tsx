@@ -29,11 +29,7 @@ import {
   explainSplitViolation,
 } from "../scene/edit-plan";
 import { postSidecar } from "../sidecar-client";
-import {
-  toggleAtom,
-  validateSelection,
-  selectionSurvives,
-} from "../scene/selection";
+import { toggleAtom, filterSelection } from "../scene/selection";
 import { placeFragment } from "../scene/placement";
 import {
   FRAGMENT_LIBRARY,
@@ -42,7 +38,6 @@ import {
 } from "../scene/fragment-library";
 import {
   atomCount,
-  buildViewerAtomTable,
   compositionSignature,
   injectSceneIntoInput,
   mergeToAtomLines,
@@ -63,6 +58,7 @@ import { restoreSceneLog, type LogRejection } from "../scene/restore";
 import { serializeLog, type Op } from "../scene/oplog";
 import { goatInputForFragment } from "../scene/ensemble";
 import type { RawFragment, Scene, SceneFragment } from "../scene/types";
+import type { AtomId } from "../scene/ids";
 import {
   CATEGORY_LABELS,
   ORCA_TEMPLATES,
@@ -172,28 +168,14 @@ export function NewJobScreen({
   const undo = useSceneStore((s) => s.undo);
   const dismissResetNotice = useSceneStore((s) => s.dismissResetNotice);
 
-  // ── Atom selection (2.5.2a) — the geometry editor's pick list ───────────────
-  // Ordered global atom indices, held in component state (NOT the scene store —
-  // the store stays a pure geometry wrapper; ADR-008 #10). 2.5.2b reads this
-  // list positionally for distance/angle/dihedral.
-  const [selection, setSelection] = useState<number[]>([]);
-  // ── TEMPORARY SEAM 2c1→2c2 ──────────────────────────────────────────────────
-  // The viewer now speaks AtomId (2c1); selection/measure/edit-plan/constraints
-  // still key on the positional global index. This is the ONE explicit, named
-  // adapter that converts the pick's AtomId back to a global position, through the
-  // same table the viewer draws with (`buildViewerAtomTable` — the pure derivation
-  // of the current scene, so it agrees with the geometry that produced the pick).
-  // We deliberately do NOT read `pick.viewerIndex` (that is viewer space — using it
-  // as an app id is the coupling 2c1 severs). TODO(2c2): delete this adapter — the
-  // AtomId flows straight into an AtomId-keyed selection and `selectionSurvives`
-  // gains its removal dividend.
-  const onAtomPick = (pick: AtomPick) => {
-    const current = useSceneStore.getState().scene;
-    if (!current) return;
-    const globalIndex = buildViewerAtomTable(current).viewerIndexOf(pick.atomId);
-    if (globalIndex === undefined) return;
-    setSelection((sel) => toggleAtom(sel, globalIndex));
-  };
+  // ── Atom selection (2.5.2a; AtomId-native 2c2) — the geometry editor's pick list
+  // Ordered stable AtomIds, held in component state (NOT the scene store — the store
+  // stays a pure geometry wrapper; ADR-008 #10). measure/edit-plan/constraints
+  // resolve these ids to positional indices at their own seams. The pick's AtomId
+  // flows straight in — no viewer-index round-trip (the 2c1 seam is gone).
+  const [selection, setSelection] = useState<AtomId[]>([]);
+  const onAtomPick = (pick: AtomPick) =>
+    setSelection((sel) => toggleAtom(sel, pick.atomId));
   const clearSelection = () => setSelection([]);
 
   // Show every atom's global index in the 3D view (2.5.2e-1). Off by default;
@@ -323,26 +305,16 @@ export function NewJobScreen({
     setSaved(false);
   };
 
-  // React to a composition change via `compositionSignature` (the same
-  // primitive the viewer uses to decide when to re-zoom). A coordinate-only edit
-  // (same signature) leaves the selection untouched. On a real change, ask
-  // `selectionSurvives`: an unchanged signature or a pure append (a new fragment
-  // is always appended LAST, so existing indices don't shift) keeps the
-  // selection; any other change (fragment removed, composition changed, scene
-  // cleared) clears it OUTRIGHT — no remap. `validateSelection` stays a second
-  // echelon (mainly the append path and defensive `scene → null`), because a
-  // range-only check survives an index shift and would silently re-point a pick.
-  const lastSelCompRef = useRef<string | null>(null);
+  // Prune the selection to atoms still in the scene on any scene change (2c2's
+  // dividend). Because the pick list holds stable AtomIds, an atom survives ⟺ its
+  // id is still present: `filterSelection` drops only the ids whose fragment was
+  // removed and keeps everything else — so removing an UNRELATED fragment leaves
+  // the selection intact (the positional guards this replaces had to clear on any
+  // composition change; that clearing is gone). It returns the
+  // same array reference when nothing is dropped, so a coordinate-only edit is a
+  // no-op and doesn't churn state.
   useEffect(() => {
-    const sig = scene ? compositionSignature(scene) : null;
-    const prev = lastSelCompRef.current;
-    if (sig === prev) return;
-    lastSelCompRef.current = sig;
-    if (!selectionSurvives(prev, sig)) {
-      setSelection((sel) => (sel.length ? [] : sel));
-    } else {
-      setSelection((sel) => validateSelection(sel, scene));
-    }
+    setSelection((sel) => filterSelection(sel, scene));
   }, [scene]);
 
   // ── Constraint composition-change warning (2.5.4b, ЗАХИСТ 2) ────────────────
@@ -378,7 +350,10 @@ export function NewJobScreen({
   // path — parse the current text, append (no duplicate), write back through
   // `injectConstraints`; the panel re-reads the text. No parallel state.
   const constrainSelection = (value?: number) => {
-    const c = constraintFromSelection(selection, value);
+    if (!scene) return;
+    // Resolve the AtomId selection to ORCA indices NOW, at this emit seam (2c2):
+    // the constraint is frozen into the text as positional indices (2.5.4a).
+    const c = constraintFromSelection(scene, selection, value);
     if (!c) return;
     const ins = inspectConstraintsBlock(content);
     if (ins.kind === "unrecognised") return; // never rewrite a block we can't read (2.5.5)
@@ -849,14 +824,14 @@ export function NewJobScreen({
       ? "Can't create or run this job — " +
         `${indexIssues.length} constraint${indexIssues.length > 1 ? "s" : ""} ` +
         `reference atom indices that don't exist in this geometry (it has ` +
-        `${atomCount(scene)} atoms, valid 0–${atomCount(scene) - 1}). ORCA does ` +
+        `${atomCount(scene)} atoms, valid ORCA index 0–${atomCount(scene) - 1}). ORCA does ` +
         "NOT range-check constraint indices — it segfaults instead of reporting " +
         "an error, so the run is blocked until they are fixed or removed: " +
         indexIssues
           .map(
             (it) =>
               `${constraintTypeLabel(it.constraint.kind)} on ` +
-              `${it.badIndices.map((i) => `#${i}`).join(", ")}`,
+              `ORCA index ${it.badIndices.map((i) => `#${i}`).join(", ")}`,
           )
           .join("; ") +
         "."

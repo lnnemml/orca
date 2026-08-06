@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 
 import { useSceneStore } from "./store";
-import { canRedo, canUndo, describe } from "./oplog";
+import { canRedo, canUndo, describeInScene } from "./oplog";
 
 /**
  * The operation-log history panel (Phase 4.2 Stage 2 unit 2b) — the provenance
@@ -91,7 +91,7 @@ export function HistoryPanel() {
                 textOverflow: "ellipsis",
               }}
             >
-              {describe(entry.op)}
+              {describeInScene(entry.op, entry.scene)}
             </li>
           );
         })}

@@ -62,12 +62,18 @@ fire the observer under WebKitGTK, that is a new `debugging/` page, not a scatte
   [visualization.md](visualization.md) "Atom picking".
 - **Picking returns an `AtomId`.** `onAtomPick(pick: AtomPick)` where `AtomPick = { atomId, viewerIndex }`.
   `viewerIndex` is 3Dmol's raw `atom.index` — **viewer space, diagnostics only**, never an app id.
-- **The 2c1→2c2 seam.** `selection` / `measure` / `edit-plan` / `constraints` still key on the
-  positional global index (they move to `AtomId` in 2c2). At the boundary sits **one** explicit, named
-  adapter in `NewJobScreen.onAtomPick`: it converts the pick's `AtomId` back to a global index via
-  `buildViewerAtomTable(scene).viewerIndexOf(...)` (the same pure table derivation, recomputed from the
-  current scene — no stored copy to lag). It carries a `TODO(2c2)` and is deleted when the pipeline
-  keys on `AtomId` directly (and `selectionSurvives` gains its removal dividend — see below).
+- **Picking → selection is `AtomId` end to end (2c2).** The 2c1→2c2 adapter is **gone**:
+  `onAtomPick` feeds the pick's `AtomId` straight into an `AtomId[]` selection, and
+  `selection` / `measure` / `planEdit` input / `constraintFromSelection` input / the viewer
+  highlight all key on `AtomId`. Two things stay positional **at their own emit seam** (ADR-010:
+  order matters in exactly one place — the emitter): the **ASE mask** (`EditPlan.indices`/`mask`/
+  `cut`/`within`, `set-internal`, `rotatable-mask`) and the **`%geom` constraint** (a `Constraint`'s
+  atoms are ORCA 0-based indices, frozen into the text). The `AtomId → positional index` conversion
+  happens at **exactly those two seams** (`planEdit` resolves once on entry; `constraintFromSelection`
+  resolves at build time), via `globalIndexOfAtom`.
+- **The dividend.** Because the selection is ids, `filterSelection` keeps every picked atom still in
+  the scene — removing an *unrelated* fragment no longer clears the selection (the positional guards
+  `selectionSurvives`/`validateSelection` are removed). See `wiki/modules/scene.md`.
 
 ## Reads from 3Dmol — the ADR-011 audit (unit 2c1)
 
@@ -93,11 +99,28 @@ Not viewer reads (false positives worth recording so a future audit doesn't re-f
 `TrajectoryPlayer`, `MoleculesScreen`, `JobDetailScreen`, `NewJobScreen`) reads 3Dmol internals — they
 feed it via props only.
 
+## Labelling the index space is a whole-UI rule (unit 2c2)
+
+ADR-010 correction (iii) says: never show a **bare** index without naming its space (the fix for
+"the user reports an index from the UI that doesn't match the logs" is *labelling the space*, not
+*hiding the number* — OrcaStudio is a learning instrument). Unit 2c2 extends that from the coordinate
+panel to **the whole UI**, now that different panels genuinely show different spaces:
+
+- **`AtomInspector`** (Selection & Measure) — the primary readout keeps "global index M (both
+  0-based)"; the multi-chip list labels each chip "global #N". Resolved from the picked `AtomId`, so
+  the number is the atom's *current* global index, never a stale one.
+- **`ConstraintPanel`** — atoms are labelled **ORCA 0-based index** (a header hint + the out-of-range
+  note), because that is the number written into `%geom` and reported in the ORCA output — the one the
+  user must be able to cross-reference against the log.
+- **The 3D view** shows the 0-based **viewer index** on an atom (unchanged) — the same value as the
+  global index, and the panels name which space they mean.
+
+The principle: a panel names the space of every index it shows, and the *value* shown is the one that
+space actually uses (global for the inspector, ORCA for constraints). Same number today, named homes,
+so a future divergence can't reintroduce the "which index is this?" ambiguity.
+
 ## Where future panels go
 
-- **2c2 — index-space labels.** When the pipeline moves onto `AtomId` (`selection`/`measure`/
-  `edit-plan`), the space-labelled index readouts (ADR-010: never a bare index without naming its
-  space) live in the **Selection & Measure** section — a dock section, per the principle above.
 - **Phase 4.5 — reaction setup.** The reaction-center / scan-setup UI (ADR-007) is a **new dock
   section** (e.g. "Reaction"), not a new stack: it composes the existing selection/measure/constraint
   panels into a guided flow. Guided fragment placement (add a reagent at a distance/angle/dihedral)

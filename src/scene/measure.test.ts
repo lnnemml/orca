@@ -1,12 +1,13 @@
 import { describe, it, expect } from "vitest";
 
 import type { RawAtom, RawFragment, Scene, SceneAtom } from "./types";
-import { testScene } from "./scene-test-util";
+import { testScene, idsFor, borohydrideAfterWaterRemoved } from "./scene-test-util";
 import {
   distance,
   angle,
   dihedral,
   measureSelection,
+  measureSelectionByIndex,
 } from "./measure";
 import {
   FRAGMENT_LIBRARY,
@@ -282,17 +283,17 @@ describe("measureSelection", () => {
   it("0 or 1 atoms → none", () => {
     const s = libScene("water");
     expect(measureSelection(s, [])).toEqual({ kind: "none" });
-    expect(measureSelection(s, [0])).toEqual({ kind: "none" });
+    expect(measureSelection(s, idsFor(s, 0))).toEqual({ kind: "none" });
   });
 
   it("2 atoms → distance, positional", () => {
     const s = libScene("water");
-    const m = measureSelection(s, [0, 1]);
+    const m = measureSelection(s, idsFor(s, 0, 1));
     expect(m.kind).toBe("distance");
     if (m.kind === "distance") {
       expect(m.value).toBeCloseTo(0.9572, 4);
       expect(m.unit).toBe("Å");
-      expect(m.atoms).toEqual([0, 1]);
+      expect(m.atoms).toEqual([0, 1]); // resolved global indices, for rendering
       expect(m.sameFragment).toBe(true);
     }
   });
@@ -301,13 +302,14 @@ describe("measureSelection", () => {
     const s = libScene("water");
     // Pick order H(1), O(0), H(2): the vertex is O (the second pick), NOT the
     // smallest index. 104.52°, not something else.
-    const m = measureSelection(s, [1, 0, 2]);
+    const m = measureSelection(s, idsFor(s, 1, 0, 2));
     expect(m.kind).toBe("angle");
     if (m.kind === "angle") expect(m.value).toBeCloseTo(104.52, 2);
   });
 
   it("4 atoms → dihedral", () => {
-    const m = measureSelection(butaneScene(0), [0, 1, 2, 3]);
+    const s = butaneScene(0);
+    const m = measureSelection(s, idsFor(s, 0, 1, 2, 3));
     expect(m.kind).toBe("dihedral");
     if (m.kind === "dihedral") expect(m.value).toBeCloseTo(179.998, 2);
   });
@@ -323,17 +325,38 @@ describe("measureSelection", () => {
       atoms: [{ element: "Cl", x: 3, y: 0, z: 0 }],
     };
     const s = sceneOf(libScene("water").fragments[0], cl);
-    const m = measureSelection(s, [0, 3]);
+    const m = measureSelection(s, idsFor(s, 0, 3));
     expect(m.kind).toBe("distance");
     if (m.kind === "distance") expect(m.sameFragment).toBe(false);
     // ...while an intra-water distance is not inter-fragment.
-    const intra = measureSelection(s, [0, 1]);
+    const intra = measureSelection(s, idsFor(s, 0, 1));
     if (intra.kind === "distance") expect(intra.sameFragment).toBe(true);
   });
 
   it("a degenerate pick collapses to none", () => {
     const s = libScene("water");
-    expect(measureSelection(s, [0, 0])).toEqual({ kind: "none" });
-    expect(measureSelection(s, [0, 1, 99])).toEqual({ kind: "none" });
+    expect(measureSelection(s, idsFor(s, 0, 0))).toEqual({ kind: "none" });
+    expect(measureSelection(s, idsFor(s, 0, 1, 99))).toEqual({ kind: "none" });
+  });
+
+  // ── Negative control (b): the 2.5.2b bug is STRUCTURALLY dead ────────────────
+  // On the divergent fixture (BH₄⁻ after water removed, so AtomId 3 = boron sits
+  // at global 0), a measurement addressed by AtomId follows the boron; a
+  // measurement addressed by the STALE global index (3) reads a hydrogen instead.
+  it("addressed by AtomId, a measurement follows the physical atom past a removal", () => {
+    const { scene: s, boronId } = borohydrideAfterWaterRemoved();
+    const otherH = idsFor(s, 1)[0]; // some BH₄⁻ hydrogen (global 1 now)
+    // AtomId path: boron is at global 0 → distance boron···H is a B–H bond (~1.2 Å).
+    const byId = measureSelection(s, [boronId, otherH]);
+    expect(byId.kind).toBe("distance");
+    if (byId.kind === "distance") expect(byId.atoms[0]).toBe(0); // boron resolved to global 0
+    // The break the id-space prevents: reading the OLD global index 3 (a hydrogen
+    // now) instead of the boron's id. `measureSelectionByIndex` on [3,1] would
+    // measure H···H, a different coordinate — proof the two spaces truly diverge.
+    const byStaleIndex = measureSelectionByIndex(s, [3, 1]);
+    expect(byStaleIndex.kind).toBe("distance");
+    if (byStaleIndex.kind === "distance" && byId.kind === "distance") {
+      expect(byStaleIndex.value).not.toBeCloseTo(byId.value, 3);
+    }
   });
 });

@@ -13,6 +13,29 @@ import {
   constraintFromSelection,
   sameConstraint,
 } from "./constraints";
+import {
+  testScene,
+  idsFor,
+  borohydrideAfterWaterRemoved,
+} from "./scene-test-util";
+
+/** A single 41-carbon fragment, so indices up to 40 resolve. On this fresh scene
+ * AtomId == global index, so `constraintFromSelection(big, idsFor(big, …))` emits
+ * exactly the indices passed — the length→kind assertions read unchanged. */
+const big = testScene([
+  {
+    id: "m",
+    name: "M",
+    charge: 0,
+    source: "editor",
+    atoms: Array.from({ length: 41 }, (_, i) => ({
+      element: "C",
+      x: i,
+      y: 0,
+      z: 0,
+    })),
+  },
+]);
 
 const BASE = `! r2SCAN-3c Opt
 * xyz 0 1
@@ -244,22 +267,22 @@ describe("constraintIndexIssues — the range guard (ЗАХИСТ 1)", () => {
 
 describe("constraintFromSelection — length → kind (same rule as measureSelection)", () => {
   it("2/3/4 atoms → distance/angle/dihedral, frozen by default (no value)", () => {
-    expect(constraintFromSelection([12, 33])).toEqual({
+    expect(constraintFromSelection(big, idsFor(big, 12, 33))).toEqual({
       kind: "distance",
       atoms: [12, 33],
     });
-    expect(constraintFromSelection([5, 12, 20])).toEqual({
+    expect(constraintFromSelection(big, idsFor(big, 5, 12, 20))).toEqual({
       kind: "angle",
       atoms: [5, 12, 20],
     });
-    expect(constraintFromSelection([5, 12, 20, 25])).toEqual({
+    expect(constraintFromSelection(big, idsFor(big, 5, 12, 20, 25))).toEqual({
       kind: "dihedral",
       atoms: [5, 12, 20, 25],
     });
   });
 
   it("carries an explicit value when given", () => {
-    expect(constraintFromSelection([12, 33], 1.85)).toEqual({
+    expect(constraintFromSelection(big, idsFor(big, 12, 33), 1.85)).toEqual({
       kind: "distance",
       atoms: [12, 33],
       value: 1.85,
@@ -267,23 +290,46 @@ describe("constraintFromSelection — length → kind (same rule as measureSelec
   });
 
   it("returns null for a selection that isn't 2/3/4 atoms", () => {
-    expect(constraintFromSelection([])).toBeNull();
-    expect(constraintFromSelection([7])).toBeNull();
-    expect(constraintFromSelection([1, 2, 3, 4, 5])).toBeNull();
+    expect(constraintFromSelection(big, [])).toBeNull();
+    expect(constraintFromSelection(big, idsFor(big, 7))).toBeNull();
+    expect(constraintFromSelection(big, idsFor(big, 1, 2, 3, 4, 5))).toBeNull();
+  });
+
+  // ── Negative control (c): the constraint emits an ORCA INDEX, not an AtomId ──
+  // On the divergent fixture (boron is AtomId 3 but sits at global 0 after water
+  // is removed), a constraint built from the AtomId selection must carry the
+  // CURRENT 0-based ORCA indices (boron → 0), never the raw id (3). If it laid the
+  // id down, `atoms` would read [3, …] and the %geom line would freeze the wrong
+  // (or an out-of-range) atom — a silent, calculation-corrupting bug.
+  it("(c) emits CURRENT ORCA indices from an AtomId selection, not the ids", () => {
+    const { scene, boronId } = borohydrideAfterWaterRemoved();
+    const someH = idsFor(scene, 1)[0]; // a BH₄⁻ hydrogen, now at global 1
+    const c = constraintFromSelection(scene, [boronId, someH])!;
+    expect(c.atoms).toEqual([0, 1]); // boron→0, H→1 — NOT [3, 1] (the AtomIds)
+    // …and it round-trips through the %geom text as a valid 0-based line.
+    const text = injectConstraints(BASE, [c]);
+    expect(parseConstraintsBlock(text)).toEqual([c]);
+  });
+
+  it("returns null if a selected atom has left the scene", () => {
+    const { scene } = borohydrideAfterWaterRemoved();
+    const gone = idsFor(scene, 900)[0]; // a guaranteed-absent id
+    const present = idsFor(scene, 0)[0];
+    expect(constraintFromSelection(scene, [present, gone])).toBeNull();
   });
 });
 
 describe("panel round-trip — view over the text, no drift", () => {
   it("Constrain selection → inject → parse gives back exactly what the panel shows", () => {
     // The exact acceptance step: pick carbonyl C(12) and B(33), no value.
-    const built = constraintFromSelection([12, 33])!;
+    const built = constraintFromSelection(big, idsFor(big, 12, 33))!;
     const text = injectConstraints(BASE, [built]);
     // What the panel reads is what the text says — same object, no parallel state.
     expect(parseConstraintsBlock(text)).toEqual([built]);
   });
 
   it("a manual edit of the block is reflected immediately (different text → different list)", () => {
-    const a = injectConstraints(BASE, [constraintFromSelection([12, 33])!]);
+    const a = injectConstraints(BASE, [constraintFromSelection(big, idsFor(big, 12, 33))!]);
     // Simulate the user hand-editing the index 33 → 30 in Monaco.
     const b = a.replace("{B 12 33 C}", "{B 12 30 C}");
     expect(parseConstraintsBlock(a)).toEqual([{ kind: "distance", atoms: [12, 33] }]);
@@ -315,10 +361,10 @@ O 0 0 1.2
 
 describe("sameConstraint — dedupe guard for repeated Constrain selection", () => {
   it("true for identical kind + atoms, false otherwise", () => {
-    const a = constraintFromSelection([12, 33])!;
-    expect(sameConstraint(a, constraintFromSelection([12, 33])!)).toBe(true);
-    expect(sameConstraint(a, constraintFromSelection([33, 12])!)).toBe(false); // order matters
-    expect(sameConstraint(a, constraintFromSelection([12, 33, 40])!)).toBe(false);
+    const a = constraintFromSelection(big, idsFor(big, 12, 33))!;
+    expect(sameConstraint(a, constraintFromSelection(big, idsFor(big, 12, 33))!)).toBe(true);
+    expect(sameConstraint(a, constraintFromSelection(big, idsFor(big, 33, 12))!)).toBe(false); // order matters
+    expect(sameConstraint(a, constraintFromSelection(big, idsFor(big, 12, 33, 40))!)).toBe(false);
   });
 });
 

@@ -5151,3 +5151,36 @@ theory was built on the false absence. Rule: **an absence claim needs a whole-fi
 search or it is not measured.** Cross-ref `debugging/012`. Wiki: `editor-ui.md` (feed contract, seam,
 audit), `visualization.md` (feed source, picking, overlay), `adr-011`, `manual-sources.md` Part F,
 ROADMAP 2c1 → [x]. **Next:** 2c2 — pipeline onto `AtomId`, the `selectionSurvives` removal dividend.
+
+## [2026-08-06] session | feat(scene): selection/measure/edit-plan/constraints key on AtomId; drop the 2c1 seam (unit 2c2)
+The geometry editor's selection/measurement layer moved from positional global indices to stable
+**`AtomId`s** (ADR-010). **Resolver primitive:** `globalIndexOfAtom` / `atomIdAtIndex` in `scene.ts` —
+the bijection AtomId↔global-index over `allAtoms` order, independent of the viewer's `ViewerAtomTable`
+(that names indices for 3Dmol; these for the core). **On AtomId now:** `toggleAtom(AtomId[], AtomId)`;
+`measureSelection(scene, AtomId[])` (resolves → the unchanged index math); `planEdit(scene, AtomId[])`
+(resolves ONCE on entry); `constraintFromSelection(scene, AtomId[], value?)` (resolves at build time);
+`describeAtomById`; the viewer `selection` prop + halo/numbers. **Stays positional at its emit seam
+(ADR-010 correction i — order matters in exactly one place):** the **ASE mask** (`EditPlan.indices`/
+`mask`/`cut`/`within`) and the **`%geom` constraint** (a `Constraint`'s atoms are ORCA 0-based
+indices, frozen into the text). `AtomId → index` conversion happens at **exactly two seams**, both via
+`globalIndexOfAtom`. **The dividend:** `selectionSurvives` + `validateSelection` are **removed**;
+`filterSelection` keeps every id still in the scene, so removing an UNRELATED fragment leaves the
+selection intact (the 2.5.2b bug — a kept index silently re-pointing boron→hydrogen — is now
+**structurally impossible**). A conscious behaviour change (old clearing was correct for the positional
+space). **Journal (Variant A):** `describe(op)` stays pure/AtomId-native; new `describeInScene(op,
+entry.scene)` renders `set-internal` atoms by the global index they held in that snapshot (count+order
+preserved ⇒ always resolves; no `[removed]` case). **UI labels the index space per panel** (ADR-010
+correction iii extended to the whole UI): AtomInspector "global index M", ConstraintPanel "ORCA
+0-based index", the 3D view the viewer index. The **2c1→2c2 adapter is deleted** (`grep TEMPORARY
+SEAM` / `selectionSurvives` / `validateSelection` → empty, full-file). **Tests:** every 2c2 assertion
+is built on the canonical **divergent fixture** `borohydrideAfterWaterRemoved()` (water+BH₄⁻ then water
+removed → AtomId 3 = boron at global 0), because on a fresh scene id==index would be green under broken
+code too; `idsFor(scene, ...)` helper resolves indices→ids so the existing math tests read unchanged.
+**Negative controls, each demonstrated red then reverted:** (a) filterSelection clear-all → "unrelated
+removal keeps selection" red (`[] vs [3,4]`); (b) measure by stale index → boron read as H (`3 vs 0`);
+(c) constraint lays raw AtomId → `[3,4] vs [0,1]`; (d) journal joins raw ids → `Set angle 3-4-5 vs
+0-1-2`. `tsc` 0 errors; vitest 518 green; no Rust/sidecar touched. Wiki: `scene.md` (selection/measure/
+edit-plan/constraints/oplog + Index-space resolver + the removed guards), `editor-ui.md` (whole-UI
+space labelling + seam gone), `visualization.md` (AtomId selection + halo direct-resolve),
+`adr-017` (describeInScene amendment), ROADMAP 2c2 → [x]. **Next:** 2d — the Monaco xyz block becomes a
+read-only projection (coordinate hand-editing moves to "paste xyz → import a fragment").

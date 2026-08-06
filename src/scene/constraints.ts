@@ -11,6 +11,10 @@
  * index base.
  */
 
+import type { Scene } from "./types";
+import type { AtomId } from "./ids";
+import { globalIndexOfAtom } from "./scene";
+
 /** A geometry constraint, atoms in OrcaStudio's own 0-based global index space
  * (the merged-xyz / ASE-mask space, ADR-008). `value` optional: present → freeze
  * at that explicit value; absent → freeze at the current geometry.
@@ -369,27 +373,41 @@ export function constraintIndexIssues(
 }
 
 /**
- * Build a constraint from an ordered atom selection — the same length→kind rule
- * as `measureSelection` (2 → distance, 3 → angle, 4 → dihedral). `value` omitted
- * → freeze the coordinate as-is (the common TS-guess case). Returns `null` for a
- * selection that isn't 2/3/4 atoms. Atoms are in OrcaStudio's 0-based global
- * space, kept in click order (so the constraint reads the way the chemist picked).
+ * Build a constraint from an ordered {@link AtomId} selection (unit 2c2) — the
+ * same length→kind rule as `measureSelection` (2 → distance, 3 → angle, 4 →
+ * dihedral). `value` omitted → freeze the coordinate as-is (the common TS-guess
+ * case). Returns `null` for a selection that isn't 2/3/4 atoms, or if any id is no
+ * longer in the scene.
+ *
+ * **The AtomId → index conversion happens HERE, once, at build time** — this is
+ * the ORCA-index emit seam (ADR-010: order matters in exactly one place). A
+ * `Constraint` is **positional/textual by design** (it lives in the `%geom` block,
+ * and the input text is the source of truth — 2.5.4a): its atoms are 0-based
+ * global indices *as of when the constraint was made*. They deliberately do NOT
+ * track later edits (that is the no-remap rule the composition-change warning
+ * surfaces), so the id is resolved to a concrete index now and frozen into the
+ * text, never stored as an id. Kept in click order (so the line reads the way the
+ * chemist picked).
  */
 export function constraintFromSelection(
-  selection: number[],
+  scene: Scene,
+  selection: AtomId[],
   value?: number,
 ): Constraint | null {
   const withValue = value !== undefined && Number.isFinite(value) ? { value } : {};
-  if (selection.length === 2) {
-    return { kind: "distance", atoms: [selection[0], selection[1]], ...withValue };
+  const gi = selection.map((id) => globalIndexOfAtom(scene, id));
+  if (gi.some((i) => i === null)) return null; // an atom left the scene
+  const idx = gi as number[];
+  if (idx.length === 2) {
+    return { kind: "distance", atoms: [idx[0], idx[1]], ...withValue };
   }
-  if (selection.length === 3) {
-    return { kind: "angle", atoms: [selection[0], selection[1], selection[2]], ...withValue };
+  if (idx.length === 3) {
+    return { kind: "angle", atoms: [idx[0], idx[1], idx[2]], ...withValue };
   }
-  if (selection.length === 4) {
+  if (idx.length === 4) {
     return {
       kind: "dihedral",
-      atoms: [selection[0], selection[1], selection[2], selection[3]],
+      atoms: [idx[0], idx[1], idx[2], idx[3]],
       ...withValue,
     };
   }

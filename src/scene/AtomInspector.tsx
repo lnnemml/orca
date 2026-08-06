@@ -1,7 +1,9 @@
 import { useState } from "react";
 
 import type { Scene } from "./types";
-import { describeAtom } from "./selection";
+import type { AtomId } from "./ids";
+import { describeAtom, describeAtomById } from "./selection";
+import { globalIndexOfAtom } from "./scene";
 import { measureSelection, type Measurement } from "./measure";
 import { fragmentColor } from "../viewer/fragment-colors";
 
@@ -32,7 +34,7 @@ export function AtomInspector({
   constrainDisabledReason,
 }: {
   scene: Scene;
-  selection: number[];
+  selection: AtomId[];
   onClear: () => void;
   onConstrain?: (value?: number) => void;
   /** When set, "Constrain selection" is disabled with this as the tooltip — used
@@ -41,9 +43,12 @@ export function AtomInspector({
 }) {
   const [constrainValue, setConstrainValue] = useState("");
   if (selection.length === 0) return null;
-  const lastGlobal = selection[selection.length - 1];
-  const last = describeAtom(scene, lastGlobal);
-  if (!last) return null; // stale index — validateSelection normally prevents this
+  const lastId = selection[selection.length - 1];
+  const last = describeAtomById(scene, lastId);
+  if (!last) return null; // id left the scene — filterSelection normally prevents this
+  // The global index the last-picked atom occupies NOW — resolved from its id, so
+  // the labelled number is the current 0-based global/ORCA index (never a stale one).
+  const lastGlobal = globalIndexOfAtom(scene, lastId);
 
   // The measurement read off the pick list (2.5.2b), positionally: 2 → distance,
   // 3 → angle (middle pick = vertex), 4 → dihedral. `none` for 1 atom or a
@@ -136,14 +141,17 @@ export function AtomInspector({
       </div>
       {selection.length > 1 ? (
         <div className="atom-inspector-list">
-          {selection.map((gi) => {
-            const d = describeAtom(scene, gi);
+          {selection.map((id) => {
+            const d = describeAtomById(scene, id);
             if (!d) return null;
+            const gi = globalIndexOfAtom(scene, id);
             return (
-              <span key={gi} className="atom-chip" title={`${d.fragmentName}`}>
+              <span key={id} className="atom-chip" title={`${d.fragmentName}`}>
                 <span className="fragment-swatch" style={swatch(d.fragmentIndex)} />
                 {d.element}
-                <span className="muted">#{gi}</span>
+                <span className="muted" title="global index (0-based)">
+                  {" "}global #{gi}
+                </span>
               </span>
             );
           })}

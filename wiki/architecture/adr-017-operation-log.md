@@ -194,6 +194,24 @@ didn't spell out:
    (decision 3's "core contract untouched," made operational). Negative controls (a)/(b)/(c) —
    bypass, cross-check, collapse↔undo loop — all demonstrably bite.
 
+## Amendment (unit 2c2, 2026-08-06) — a scene-aware presentation, `describe` unchanged
+
+The four decisions **stand**. `describe(op)` remains the pure, AtomId-native provenance record
+(decision 1: the op is a lab-journal line, not a recipe) — untouched. Unit 2c2 adds
+**`describeInScene(op, scene)`** in `oplog.ts`: a thin *presentation* over `describe` for the history
+panel. For a `set-internal` op it renders the picked atoms by the **global index they occupy in the
+passed scene** (via `globalIndexOfAtom`), so the journal line reads in the same 0-based space the rest
+of the UI is labelled with (Variant A — global index primary; ADR-010 correction iii extended to the
+whole UI). Every other op variant delegates to `describe` verbatim.
+
+`HistoryPanel` calls it with the entry's **own** snapshot (`entry.scene`). A `set-internal` preserves
+atom count + order, so its atoms are always present in that snapshot and the resolve always succeeds —
+a `[removed]` case does not arise (an atom cannot be both edited-in and absent-from the scene the edit
+produced). This keeps `describe` a stable, id-native record (a persisted op's provenance never depends
+on a later scene) while the *rendering* speaks the user's index space. Negative control (d) — breaking
+the resolve to join the raw AtomId chain — turns the panel-line test red (`Set angle 3-4-5` vs
+`0-1-2`), then restored.
+
 ## References
 
 - [ADR-010](adr-010-editor-identity-state.md) — "state is a fold over a log of typed operations"; the

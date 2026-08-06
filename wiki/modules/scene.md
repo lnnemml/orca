@@ -59,22 +59,32 @@ functions, no imports from react / 3dmol / tauri. The reactive `store.ts` (added
   the log is rejected loudly if it diverges from `scene_json`).
 - `ensemble.ts` — GOAT conformer-ensemble parsing + input generation (2.5.1a),
   plus `isGoatInput` (2.5.2a — is this a conformer-search job?).
-- `selection.ts` — the geometry editor's atom pick list (2.5.2a): `toggleAtom`,
-  `validateSelection`, `describeAtom`, plus `selectionSurvives` (2.5.2b — the
-  composition-signature survival rule). Pure / node-tested, no React.
+- `selection.ts` — the geometry editor's atom pick list (2.5.2a; **AtomId-native
+  2c2**): `toggleAtom(AtomId[], AtomId)`, `filterSelection` (the 2c2 dividend —
+  keeps every id still in the scene), `describeAtom` (positional, for the
+  constraint panel) + `describeAtomById`. Pure / node-tested, no React. The old
+  positional guards `selectionSurvives` / `validateSelection` are **gone** — an
+  `AtomId` gives "the same atom" an operational meaning, so there is nothing to
+  remap or clear on a removal (see "Atom selection" below).
 - `measure.ts` — geometry measurement off the pick list (2.5.2b): `distance`,
-  `angle`, `dihedral`, `measureSelection`, `formatMeasurementValue`. Pure /
-  node-tested, React-free. **ASE conventions pinned to source** (see below).
-- `edit-plan.ts` — edit-mode planner (2.5.2d): `planEdit` (pick list → `ready` |
-  `needs-split` | `unavailable`), plus the pure apply helpers `applyResponseToScene` and
-  `applyResponseIssue`, and the shared reference-atom rule `maskRoleViolation` /
-  `explainSplitViolation` (2.5.4a). Pure / node-tested, no React, no fetch.
+  `angle`, `dihedral`, `measureSelectionByIndex` (positional core) and
+  `measureSelection(scene, AtomId[])` (resolves ids → indices, 2c2),
+  `formatMeasurementValue`. Pure / node-tested, React-free. **ASE conventions
+  pinned to source** (see below); the math is index-based and untouched.
+- `edit-plan.ts` — edit-mode planner (2.5.2d): `planEdit(scene, AtomId[])` resolves
+  the ids to current global indices ONCE, then the whole planner runs positionally
+  (`EditPlan` is the ASE-mask emit seam — positional by design). Plus the pure apply
+  helpers `applyResponseToScene` / `applyResponseIssue` and the shared reference-atom
+  rule `maskRoleViolation` / `explainSplitViolation` (2.5.4a). Pure, no React/fetch.
 - `constraints.ts` — ORCA `%geom Constraints` generate / parse / inject (2.5.4a):
   `Constraint` type (B/A/D/C), `ORCA_INDEX_BASE`/`toOrcaIndex`/`fromOrcaIndex`,
   `constraintsBlock`, `parseConstraintsBlock`, `injectConstraints`. Pure /
-  node-tested, no React, no fetch. **Input text is the source of truth** (see
-  below); the 2.5.4b panel will be a view over the text. Index base **0-based,
-  settled by a real ORCA 6.1.0 run** — `wiki/orca/constraints.md`.
+  node-tested, no React, no fetch. **Input text is the source of truth** — the
+  panel is a view over the text; a `Constraint` stays **positional/textual** (its
+  atoms are ORCA 0-based indices). `constraintFromSelection(scene, AtomId[], value?)`
+  resolves the id selection to ORCA indices **at build time** (the ORCA-index emit
+  seam, 2c2) — the id is never stored. Index base **0-based, settled by a real ORCA
+  6.1.0 run** — `wiki/orca/constraints.md`.
 - `AtomInspector.tsx` — the atom panel on New Job (React; reads a selection held
   in `NewJobScreen` state, uses the shared `fragmentColor` palette).
 - `EditPanel.tsx` — edit-mode UI in the Atom rail section (React): target field,
@@ -188,6 +198,12 @@ Aggregates:
   cross-couplings ADR-007 names) count electrons instead of silently declining.
 
 Index space:
+- `globalIndexOfAtom(scene, id): number | null` / `atomIdAtIndex(scene, gi): AtomId
+  | null` — the **bijection AtomId ↔ global index** over `allAtoms` order (= merged
+  xyz = viewer index). The resolver the 2c2 selection/measure/constraint pipeline
+  keys on: a selection holds ids, these map to where the atom sits now (and back).
+  Independent of the viewer's `ViewerAtomTable` on purpose — that names indices for
+  3Dmol, these for the core.
 - `globalIndex(scene, fragmentId, localIndex): number` — throws on unknown
   fragment / out-of-range local index.
 - `fragmentAtomIndices(scene, fragmentId): number[]` — **IS the ASE `mask`** sent to the sidecar
@@ -202,8 +218,9 @@ Index space:
   `MoleculeViewer` in 2.5.2a** — there must not be a second copy. Two consumers,
   both keying the *same* question off it: the viewer re-`zoomTo`s only on a
   signature change (a coordinate-only edit must not move the camera), and
-  `NewJobScreen` reconsiders the pick list only on a signature change — passing
-  the before/after signatures to `selectionSurvives` (2.5.2b).
+  `NewJobScreen`'s constraint composition-change warning (2.5.4b) fires on a
+  signature change. **The pick list no longer keys off this** — since 2c2 it is
+  pruned by AtomId (`filterSelection`), which needs no signature.
 - `fragmentRanges(scene): { fragmentId, start, end }[]` — **start inclusive, end
   exclusive** (same convention as `OutputMatch` col_start/col_end, Phase 2.7).
   **First consumer (2.5.0c):** `MoleculeViewer` styles each fragment by its
@@ -396,9 +413,14 @@ is the history-panel jump, and `SnapshotSource` covers the three whole-scene see
   `restore-snapshot`. The mutator↔Op table is in ADR-017 (so 2b finds no hole). Geometry ops
   reference atoms by **`AtomId`**, not a positional index — the log is AtomId-native ahead of the
   2c2 pipeline move.
-- **`describe(op): string`** — one human lab-journal line per variant ("Set dihedral 4-7-12-15 to
-  30°", "Add fragment BH₄⁻ (borohydride)"). Cheap and total; the journal reads from the moment the
-  types exist.
+- **`describe(op): string`** — one human lab-journal line per variant, **AtomId-native** provenance
+  (the id chain, e.g. "Set dihedral 4-7-12-15 to 30°"). Cheap and total. **`describeInScene(op,
+  scene): string`** (2c2, Variant A) is a *presentation* over it for the history panel: for a
+  `set-internal` op it renders the picked atoms by the **global index they occupy in the passed
+  scene** (so the journal reads in the same 0-based space the rest of the UI is labelled with),
+  delegating every other variant to `describe`. `HistoryPanel` calls it with the entry's **own**
+  snapshot; a `set-internal` preserves atom count + order, so its atoms are always present there and
+  the resolve always succeeds (no `[removed]` case arises).
 - **`SceneLog {entries, pointer}`**, `LogEntry {op, scene}` — `append` (truncates the redo tail),
   `undo`/`redo`/`current`, `logInvariant`. Pointer invariant **`-1 ≤ pointer < len`**, `-1` = the
   empty scene (`current → null`), so undo can reach a blank canvas.
@@ -547,70 +569,60 @@ cleanly.
 
 ## Atom selection (`selection.ts`, 2.5.2a)
 
-The geometry editor's pick list — pure, node-tested, React-free. A selection is
-an **ordered list of global atom indices** (the merged-xyz / ASE-mask space);
-2.5.2b reads it positionally as (a,b) distance / (a,vertex,b) angle / 4-atom
-dihedral chain. The UI (`NewJobScreen`) holds it in component state (**not** the
-scene store — the store stays a pure geometry wrapper, ADR-008 #10) and drives
-every change through these functions.
+The geometry editor's pick list — pure, node-tested, React-free. Since **unit
+2c2** a selection is an **ordered list of stable `AtomId`s**: a pick means "this
+physical atom", not "whatever is at index N". The UI (`NewJobScreen`) holds it in
+component state (**not** the scene store — the store stays a pure geometry
+wrapper, ADR-008 #10) and drives every change through these functions.
 
 - `MAX_SELECTION = 4` — a dihedral's four atoms.
-- `toggleAtom(selection, index): number[]` — one click, new array:
+- `toggleAtom(selection: AtomId[], id): AtomId[]` — one click, new array:
   already-selected → remove; new & under the cap → append (order kept); new &
-  **at the cap → the selection becomes `[index]`**. The full-list rule is the
+  **at the cap → the selection becomes `[id]`**. The full-list rule is the
   decision: **not FIFO.** Silently evicting the oldest atom would leave the user
   measuring a set different from the atoms they see highlighted — a wrong-atom
   measurement with no visible cause. A hard reset to the just-clicked atom is
   unambiguous ("fifth click resets").
-- `validateSelection(selection, scene): number[]` — drop indices **out of range**
-  (a fragment removed, scene cleared). Returns the **same array reference** when
-  nothing is dropped, so a no-op doesn't churn React state. **Range only:** it
-  *survives an index shift* — a picked index that is still in range but now points
-  at a different atom passes through unchanged. It is the **second echelon**, not
-  the primary removal guard (see `selectionSurvives`).
-- `selectionSurvives(prevSignature, nextSignature): boolean` (2.5.2b) — does a
-  selection survive a composition change, working on the two
-  `compositionSignature` strings alone (never sees the scene)? **true** iff the
-  signature is **unchanged** or a **pure append** (`next` starts with
-  `prev + "|"`); **false** on a removal, a recomposition, or a cleared/appeared
-  scene. The trailing `"|"` forces a whole-field match so `"a:3"` can't
-  append-match `"a:30|b:2"`. This is the **primary** guard `NewJobScreen` keys
-  the pick list off (see the survival rule below).
-- `describeAtom(scene, globalIndex): AtomDescription | null` — a thin wrapper over
-  `locateAtom` (no own fragment walk); adds `fragmentIndex` (the palette key) and
-  the atom's coordinates. `null` for out-of-range (same non-throwing contract).
+- `filterSelection(selection, scene): AtomId[]` — **the 2c2 dividend.** Drop only
+  the ids **no longer in the scene** (their fragment was removed); keep the rest in
+  click order. Returns the **same array reference** when nothing is dropped, so a
+  coordinate-only edit is a no-op that doesn't churn React state. Because the pick
+  list is ids, removing an **unrelated** fragment leaves the selection untouched —
+  the thing the old positional guards could not do.
+- `describeAtom(scene, globalIndex): AtomDescription | null` (positional — used by
+  the constraint panel, which speaks ORCA indices) and `describeAtomById(scene,
+  id)` (resolves the id, then the same body). Both `null` for absent, non-throwing.
 
-### The selection survival rule (2.5.2b)
+### The selection survival rule — 2c2 replaced two guards with one
 
-`addFragment` **always appends** the new fragment last, so an append leaves every
-existing atom's global index unchanged — a selection of the older atoms survives
-it. Any **other** composition change (a fragment removed, its atom count changed)
-shifts indices, and after a removal "the same atom" has **no operational
-definition**: a silent remap (index N now means a different atom) is worse than a
-lost click. So the rule is a clean binary:
-
-- signature unchanged (a coordinate-only edit) or pure append → **keep** the
-  selection;
-- anything else → **clear it outright**, no remap.
-
-`NewJobScreen` asks `selectionSurvives(prev, next)` on every signature change;
-`!survives → setSelection([])`. `validateSelection` stays a defensive second
-echelon (mainly the append path and `scene → null`). **Why the split matters:**
-`validateSelection` is range-only, so it *survives an index shift* — remove
-water(0,1,2) from water+BH₄⁻ with the boron (global 3) picked and global 3 is
-still in range but now addresses a BH₄⁻ hydrogen. Range validation keeps `[3]`
-silently pointing at the wrong atom; `selectionSurvives` (signature `wat:3|bh4:5`
-→ `bh4:5`, not an append) returns false and clears it. In 2.5.2d that index
-becomes an ASE mask, so a silent shift would mask the wrong atom.
+Before 2c2 the pick list was **positional global indices**, and a removal renumbers
+every later atom, so "the same atom" had **no operational definition**: a kept
+index would silently re-point at a different atom (remove water(0,1,2) from
+water+BH₄⁻ with the boron at global 3 picked → global 3 is now a BH₄⁻ hydrogen). Two
+guards handled that: `selectionSurvives` (a `compositionSignature` predicate that
+kept a selection only on an unchanged signature or a pure append, else cleared it
+whole) and `validateSelection` (a range-only second echelon). **Both are removed in
+2c2.** An `AtomId` *is* the operational "the same atom", so `filterSelection` keeps
+exactly the ids still present and clears nothing else — the boron stays selected
+through the water removal, now correctly resolving to global 0. This is a
+**conscious behaviour change** (the old clearing was *correct* for the positional
+space; ROADMAP 2c2 records it as intentional), and it is the reason the move to
+`AtomId` lives in Stage 2 rather than the identity-only Stage 1.
 
 ## Measurement (`measure.ts`, 2.5.2b)
 
-Reads the pick list **positionally**: 2 atoms → `distance(i,j)`, 3 → `angle(i,
-vertex, j)` with the **middle pick as the vertex**, 4 → `dihedral(i,j,k,l)` along
-the chain (axis `j–k`). `measureSelection(scene, selection)` returns a tagged
-`Measurement` (`none | distance | angle | dihedral`), each carrying `atoms` (the
-picks in click order) and `sameFragment` — inter-fragment distance is a future
-reaction coordinate (ADR-007) and must read apart from internal geometry.
+Reads a list of **global indices positionally**: 2 atoms → `distance(i,j)`, 3 →
+`angle(i, vertex, j)` with the **middle pick as the vertex**, 4 →
+`dihedral(i,j,k,l)` along the chain (axis `j–k`). Two entry points (2c2):
+`measureSelectionByIndex(scene, indices)` is the positional core (used by the
+constraint panel, ORCA-index space), and `measureSelection(scene, AtomId[])`
+resolves each id to its current global index and delegates — so a measurement
+follows the atoms it named across a fragment removal. Both return a tagged
+`Measurement` (`none | distance | angle | dihedral`), whose `atoms` field holds the
+**resolved global indices** (what the viewer/inspector render against) and
+`sameFragment` — inter-fragment distance is a future reaction coordinate (ADR-007)
+and must read apart from internal geometry. **The math is index-based and
+untouched**; only the addressing moved to ids.
 Degenerate inputs (coincident atoms, zero vector, collinear inner triple for the
 dihedral, out-of-range index) return **null, never NaN**; `measureSelection` maps
 null → `none`.

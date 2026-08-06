@@ -34,7 +34,7 @@
 
 import type { AtomId } from "./ids";
 import type { FragmentSource, Scene } from "./types";
-import { deserializeScene, serializeScene } from "./scene";
+import { deserializeScene, globalIndexOfAtom, serializeScene } from "./scene";
 
 // ── The operation vocabulary ─────────────────────────────────────────────────
 // One variant per existing Scene mutator (the checklist lives in ADR-017 so unit
@@ -215,6 +215,36 @@ export function describe(op: Op): string {
       return `${lead} — ${plural(op.fragmentCount, "fragment")}, ${plural(op.atomCount, "atom")}`;
     }
   }
+}
+
+/**
+ * A **scene-aware** rendering of an op — the history panel's line (unit 2c2,
+ * Variant A). {@link describe} is the pure provenance record and stays
+ * AtomId-native (ADR-017: the op is a lab-journal line, not a recipe); this is a
+ * *presentation* over it that shows the picked atoms by the **global index they
+ * occupied in the passed scene**, so the journal reads in the same 0-based space
+ * the rest of the UI is labelled with. Only `set-internal` names atoms; every
+ * other variant delegates to {@link describe} verbatim.
+ *
+ * Call it with the entry's OWN snapshot (`entry.scene`). A `set-internal` op
+ * preserves atom count + order, so its atoms are always present in that snapshot
+ * and the resolution always succeeds — a `[removed]` case does not arise (an atom
+ * cannot be both edited-in and absent-from the very scene the edit produced).
+ * Should an id somehow not resolve, it falls back to the AtomId so the line is
+ * never blank.
+ */
+export function describeInScene(op: Op, scene: Scene): string {
+  if (op.type === "replace-fragment-atoms" && op.edit.via === "set-internal") {
+    const e = op.edit;
+    const chain = e.atoms
+      .map((id) => {
+        const gi = globalIndexOfAtom(scene, id);
+        return gi === null ? String(id) : String(gi);
+      })
+      .join("-");
+    return `Set ${e.kind} ${chain} to ${formatTarget(e.target, e.unit)}`;
+  }
+  return describe(op);
 }
 
 // ── The log: a pointer into a list of {op, resultant snapshot} entries ────────

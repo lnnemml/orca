@@ -12,7 +12,8 @@
  */
 
 import type { Scene } from "./types";
-import { atomCount, locateAtom } from "./scene";
+import type { AtomId } from "./ids";
+import { globalIndexOfAtom, locateAtom } from "./scene";
 
 /**
  * The most atoms a measurement needs — a dihedral's four. The cap is a hard
@@ -21,12 +22,14 @@ import { atomCount, locateAtom } from "./scene";
 export const MAX_SELECTION = 4;
 
 /**
- * Apply one click to the pick list, returning a NEW list (never mutates):
+ * Apply one click to the pick list, returning a NEW list (never mutates). The
+ * list holds stable {@link AtomId}s (unit 2c2): an id survives a fragment
+ * removal, so the pick means "this physical atom", not "whatever is at index N".
  *  - click on an already-selected atom → remove it (a toggle-off);
  *  - click on a new atom with fewer than {@link MAX_SELECTION} picked → append
  *    it (order preserved — the measurement reads positionally);
  *  - click on a new atom when the list is FULL → the selection becomes just
- *    `[index]`.
+ *    `[id]`.
  *
  * The full-list rule is deliberately **not FIFO**. Silently dropping the oldest
  * atom and appending the new one would leave the user measuring a set that
@@ -34,62 +37,30 @@ export const MAX_SELECTION = 4;
  * wrong atoms with no visible cause. A hard reset to the single just-clicked
  * atom is unambiguous: the highlight collapses to exactly what was clicked.
  */
-export function toggleAtom(selection: number[], index: number): number[] {
-  if (selection.includes(index)) return selection.filter((i) => i !== index);
-  if (selection.length < MAX_SELECTION) return [...selection, index];
-  return [index];
+export function toggleAtom(selection: AtomId[], id: AtomId): AtomId[] {
+  if (selection.includes(id)) return selection.filter((x) => x !== id);
+  if (selection.length < MAX_SELECTION) return [...selection, id];
+  return [id];
 }
 
 /**
- * Does a selection **survive** a composition change from `prevSignature` to
- * `nextSignature` (both {@link compositionSignature} strings, or `null` for "no
- * scene")? Works on the signature strings alone — it never sees the scene.
+ * Drop any picked {@link AtomId} that is no longer in `scene` (its fragment was
+ * removed, the scene was cleared). Returns the **same array reference** when
+ * nothing is dropped, so a no-op doesn't churn React state / re-run effects.
+ * Click order of the survivors is preserved.
  *
- * The rule (2.5.2b architect decision):
- *  - **unchanged** (`next === prev`) → survives (nothing moved);
- *  - **pure append** (`next` starts with `prev + "|"`) → survives. `addFragment`
- *    always appends the new fragment LAST, so every existing atom keeps its
- *    global index; a selection of the older atoms still addresses the same
- *    atoms. The trailing `"|"` is load-bearing: it forces a whole-field match so
- *    `"a:3"` does not spuriously "append-match" `"a:30|b:2"` (id is a UUID, size
- *    could still prefix-collide without the delimiter).
- *  - **anything else** (a fragment removed, its atom count changed, the scene
- *    cleared, or a scene appearing from nothing) → does NOT survive.
- *
- * Why no remap on removal: after a fragment is deleted "the same atom" has no
- * operational definition — indices shifted and a silent guess (index N now
- * means a different atom) is worse than a lost click. `validateSelection` only
- * checks range, so it *survives an index shift* — a picked in-range index can
- * silently re-point at a different atom after a removal. This predicate is the
- * primary guard; `validateSelection` stays a second echelon (mainly the
- * `scene → null` path).
+ * **This is the 2c2 dividend** (ADR-010 gave `AtomId` an operational "the same
+ * atom" that positional indices never had): an atom survives ⟺ its id is still
+ * in the scene. Removing a fragment that does *not* contain any picked atom
+ * therefore leaves the selection **untouched** — the old positional guards
+ * (removed in 2c2) had to clear the whole selection on any composition change
+ * because a kept index would silently re-point at a different atom. There is no
+ * such ambiguity with an id, so there is no clear.
  */
-export function selectionSurvives(
-  prevSignature: string | null,
-  nextSignature: string | null,
-): boolean {
-  if (nextSignature === prevSignature) return true;
-  if (prevSignature === null || nextSignature === null) return false;
-  return nextSignature.startsWith(prevSignature + "|");
-}
-
-/**
- * Drop any picked index that no longer addresses an atom in `scene` (a fragment
- * was removed, the scene was cleared). Returns the **same array reference** when
- * nothing is dropped, so a no-op validation doesn't churn React state / re-run
- * effects. Order of the survivors is preserved.
- *
- * **Range only:** this survives an index *shift* — a picked index that is still
- * in range but now addresses a different atom passes through unchanged. That is
- * exactly why {@link selectionSurvives} (composition-signature based) is the
- * primary guard on removal; this function is the second echelon.
- */
-export function validateSelection(
-  selection: number[],
-  scene: Scene | null,
-): number[] {
-  const count = scene ? atomCount(scene) : 0;
-  const kept = selection.filter((i) => i >= 0 && i < count);
+export function filterSelection(selection: AtomId[], scene: Scene | null): AtomId[] {
+  const kept = scene
+    ? selection.filter((id) => globalIndexOfAtom(scene, id) !== null)
+    : [];
   return kept.length === selection.length ? selection : kept;
 }
 
@@ -131,4 +102,19 @@ export function describeAtom(
     fragmentIndex: scene.fragments.findIndex((f) => f.id === fragment.id),
     localIndex,
   };
+}
+
+/**
+ * Describe the atom carrying a stable {@link AtomId} — resolves the id to its
+ * current global index ({@link globalIndexOfAtom}) then reuses {@link describeAtom}.
+ * `null` for an id no longer in the scene. This is the id-native entry the 2c2 UI
+ * uses (the selection is `AtomId[]`); `describeAtom` stays for the positional
+ * consumers (the constraint panel, which speaks ORCA indices).
+ */
+export function describeAtomById(
+  scene: Scene,
+  id: AtomId,
+): AtomDescription | null {
+  const gi = globalIndexOfAtom(scene, id);
+  return gi === null ? null : describeAtom(scene, gi);
 }

@@ -39,9 +39,11 @@ interface MoleculeViewerProps {
   /**
    * Ordered global atom indices to highlight (2.5.2a). Optional; a changed
    * `selection` re-draws the highlight spheres only — never reloads the model or
-   * re-`zoomTo`s. Ignored unless `onAtomPick` is also given (picking off).
+   * re-`zoomTo`s. Ignored unless `onAtomPick` is also given (picking off). Holds
+   * stable {@link AtomId}s (2c2): a halo resolves an id straight to its atom, so
+   * the highlight follows the physical atom across a fragment removal.
    */
-  selection?: number[];
+  selection?: AtomId[];
   /**
    * Atom-pick callback (2.5.2a; AtomId in 2c1). **Presence of this prop is what
    * turns clickability on** — without it the viewer is display-only (Molecules
@@ -260,7 +262,7 @@ function drawAngleArc(
 function drawMeasurement(
   viewer: GLViewer,
   scene: Scene,
-  selection: number[],
+  selection: AtomId[],
   theme: ViewerTheme,
 ) {
   const m = measureSelection(scene, selection);
@@ -681,22 +683,24 @@ export const MoleculeViewer = forwardRef<MoleculeViewerHandle, MoleculeViewerPro
       return;
     }
     // The overlay is fed through the SAME table the geometry was built with (2c1):
-    // the atoms in viewer order, the table naming their indices, and an id→atom map
-    // so a halo/label follows an AtomId, not a raw array slot. A selection/mask
-    // entry is still a positional global index in 2c1 (the consumers move in 2c2) —
-    // it is resolved index → AtomId → atom through the table, so the atom a halo
-    // lands on and the NUMBER shown on it both come from the table, never from the
-    // loop counter coinciding with 3Dmol's index.
+    // the atoms in viewer order, the table naming their indices, and an id→atom map.
+    // Since 2c2 the **selection is `AtomId[]`**, so a halo resolves id → atom
+    // **directly** through `byId` — no positional round-trip (the id IS the atom).
+    // The **mask** stays a positional global index (`EditPlan.mask` is the ASE
+    // emit seam, positional by design), so it resolves index → AtomId → atom via
+    // the table. The NUMBER a label shows is the atom's viewer index read from the
+    // table, never a loop counter that merely coincides with 3Dmol's index.
     const atoms = scene.fragments.flatMap((f) => f.atoms);
     const table = buildViewerAtomTable(scene);
     const byId = new Map<AtomId, SceneAtom>(atoms.map((a) => [a.id, a]));
     const atomAtGlobalIndex = (gi: number): SceneAtom | undefined => {
-      const id = table.atomIdAt(gi); // global position → AtomId (through the table)
+      const id = table.atomIdAt(gi); // positional global index → AtomId (through the table)
       return id === undefined ? undefined : byId.get(id);
     };
 
     // Mask "will-move" glow (2.5.2d) — drawn FIRST (a soft solid sphere), so the
-    // crisp selection cage sits on top of it where they overlap.
+    // crisp selection cage sits on top of it where they overlap. Positional
+    // (ASE-mask space), resolved through the table.
     for (const gi of maskHighlight ?? []) {
       const atom = atomAtGlobalIndex(gi);
       if (!atom) continue;
@@ -710,9 +714,10 @@ export const MoleculeViewer = forwardRef<MoleculeViewerHandle, MoleculeViewerPro
     }
 
     // Selection halos — wireframe spheres sized per element (see highlight.ts),
-    // coloured by the theme.
-    for (const gi of selection ?? []) {
-      const atom = atomAtGlobalIndex(gi); // stale index → undefined; validateSelection guards
+    // coloured by the theme. `selection` is `AtomId[]` (2c2) → resolve directly;
+    // an id no longer in the scene (`filterSelection` guards) just draws nothing.
+    for (const id of selection ?? []) {
+      const atom = byId.get(id);
       if (!atom) continue;
       viewer.addSphere({
         center: { x: atom.x, y: atom.y, z: atom.z },
@@ -726,17 +731,17 @@ export const MoleculeViewer = forwardRef<MoleculeViewerHandle, MoleculeViewerPro
     drawMeasurement(viewer, scene, selection ?? [], theme);
 
     // Atom numbers — keyed by AtomId, valued by the table's viewer index (the same
-    // positional 0-based number as before, but now SOURCED from the table, not the
-    // loop counter). Every atom when the toggle is on; selected atoms ALWAYS (so a
-    // pick reads even with the toggle off). Renaming the index SPACE in the UI is
-    // 2c2 — the value shown is unchanged here.
+    // positional 0-based number as before, but SOURCED from the table). Every atom
+    // when the toggle is on; selected atoms ALWAYS (so a pick reads even with the
+    // toggle off). Renaming the index SPACE in the UI is done in the panels; the
+    // number the 3D view shows stays the 0-based viewer index.
     const numbered = new Map<AtomId, number>();
     if (showAtomNumbers) {
       for (const a of atoms) numbered.set(a.id, table.viewerIndexOf(a.id)!);
     }
-    for (const gi of selection ?? []) {
-      const id = table.atomIdAt(gi);
-      if (id !== undefined) numbered.set(id, table.viewerIndexOf(id)!);
+    for (const id of selection ?? []) {
+      const vi = table.viewerIndexOf(id);
+      if (vi !== undefined) numbered.set(id, vi);
     }
     for (const [id, n] of numbered) {
       const atom = byId.get(id);

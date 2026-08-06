@@ -8,6 +8,7 @@ import {
   current,
   deserializeLog,
   describe,
+  describeInScene,
   emptyLog,
   goto,
   logInvariant,
@@ -16,7 +17,7 @@ import {
   undo,
   type Op,
 } from "./oplog";
-import { testScene } from "./scene-test-util";
+import { testScene, idsFor, borohydrideAfterWaterRemoved } from "./scene-test-util";
 import type { Scene } from "./types";
 
 // ── Small scene fixtures (valid v2 scenes; ids minted like production) ─────────
@@ -320,6 +321,37 @@ vitestDescribe("describe() — one human line per variant", () => {
     for (const [op, expected] of cases) {
       expect(describe(op)).toBe(expected);
     }
+  });
+});
+
+// ── Negative control (d): the history line shows the GLOBAL INDEX of the record ─
+// describe() is the pure AtomId-native provenance (unchecked here — covered
+// above). describeInScene renders a set-internal op against a scene, showing the
+// atoms by the global index they occupy IN THAT scene. On the divergent fixture
+// (BH₄⁻ after water removed: AtomId 3 = boron sits at global 0) the two disagree,
+// which is what makes this bite: describe() shows the id chain 3-4-5, the panel
+// must show the global chain 0-1-2. Break (join op.atoms raw) → id chain → red.
+vitestDescribe("describeInScene() — global index of the record (Variant A)", () => {
+  it("renders set-internal atoms by their global index in the passed scene", () => {
+    const { scene, boronId } = borohydrideAfterWaterRemoved();
+    const [h1, h2] = idsFor(scene, 1, 2); // BH₄⁻ hydrogens at global 1, 2 (ids 4, 5)
+    const op: Op = {
+      type: "replace-fragment-atoms",
+      fragmentId: "bh4",
+      name: "BH4",
+      edit: { via: "set-internal", kind: "angle", atoms: [boronId, h1, h2], target: 109, unit: "°" },
+    };
+    // Panel line: GLOBAL indices 0-1-2 (boron is global 0 now).
+    expect(describeInScene(op, scene)).toBe("Set angle 0-1-2 to 109°");
+    // Pure provenance shows the AtomIds (3-4-5) — proving the two spaces diverge,
+    // so the panel line is not green by coincidence of id==index.
+    expect(describe(op)).toBe("Set angle 3-4-5 to 109°");
+  });
+
+  it("delegates non-set-internal ops to describe() verbatim", () => {
+    const { scene } = borohydrideAfterWaterRemoved();
+    const op: Op = { type: "replace-all-atoms", edit: { via: "xtb" } };
+    expect(describeInScene(op, scene)).toBe(describe(op));
   });
 });
 

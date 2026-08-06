@@ -1,15 +1,21 @@
 import { describe, it, expect } from "vitest";
 
 import type { Scene } from "./types";
-import { testScene, type RawFragment } from "./scene-test-util";
-import { removeFragment, compositionSignature } from "./scene";
+import type { AtomId } from "./ids";
+import { makeAtomId } from "./ids";
+import { testScene, idsFor, type RawFragment } from "./scene-test-util";
+import { removeFragment } from "./scene";
 import {
   MAX_SELECTION,
   toggleAtom,
-  validateSelection,
-  selectionSurvives,
+  filterSelection,
   describeAtom,
+  describeAtomById,
 } from "./selection";
+
+/** Bare integers → AtomIds, for the pure toggleAtom tests (the id is opaque). */
+const id = (n: number): AtomId => makeAtomId(n);
+const sel = (...ns: number[]): AtomId[] => ns.map(id);
 
 // ── Fixtures: three fragments of DIFFERENT sizes (3 + 5 + 1 = 9 atoms) ────────
 
@@ -62,129 +68,99 @@ function scene(...fragments: RawFragment[]): Scene {
 
 describe("toggleAtom", () => {
   it("appends a new atom to the end (order preserved)", () => {
-    expect(toggleAtom([], 2)).toEqual([2]);
-    expect(toggleAtom([2], 5)).toEqual([2, 5]);
-    expect(toggleAtom([2, 5], 0)).toEqual([2, 5, 0]);
+    expect(toggleAtom([], id(2))).toEqual(sel(2));
+    expect(toggleAtom(sel(2), id(5))).toEqual(sel(2, 5));
+    expect(toggleAtom(sel(2, 5), id(0))).toEqual(sel(2, 5, 0));
   });
 
   it("removes an already-selected atom (toggle-off)", () => {
-    expect(toggleAtom([2, 5, 0], 5)).toEqual([2, 0]);
-    expect(toggleAtom([7], 7)).toEqual([]);
+    expect(toggleAtom(sel(2, 5, 0), id(5))).toEqual(sel(2, 0));
+    expect(toggleAtom(sel(7), id(7))).toEqual([]);
   });
 
-  it("is idempotent in pairs — toggling the same index twice restores the set", () => {
-    const start = [1, 4];
-    for (const idx of [4 /* present */, 9 /* absent */]) {
+  it("is idempotent in pairs — toggling the same id twice restores the set", () => {
+    const start = sel(1, 4);
+    for (const idx of [id(4) /* present */, id(9) /* absent */]) {
       const twice = toggleAtom(toggleAtom(start, idx), idx);
       // Same *set* (order may differ: remove-then-add appends to the end).
       expect([...twice].sort()).toEqual([...start].sort());
     }
   });
 
-  it("never grows beyond MAX_SELECTION; a full-list new click resets to [index]", () => {
+  it("never grows beyond MAX_SELECTION; a full-list new click resets to [id]", () => {
     // Fill to the cap...
-    let sel: number[] = [];
-    for (let i = 0; i < MAX_SELECTION; i++) sel = toggleAtom(sel, i);
-    expect(sel).toHaveLength(MAX_SELECTION);
+    let s: AtomId[] = [];
+    for (let i = 0; i < MAX_SELECTION; i++) s = toggleAtom(s, id(i));
+    expect(s).toHaveLength(MAX_SELECTION);
     // ...one more NEW atom is not FIFO — it collapses to just that atom.
-    const after = toggleAtom(sel, 99);
-    expect(after).toEqual([99]);
+    expect(toggleAtom(s, id(99))).toEqual(sel(99));
   });
 
   it("length never exceeds MAX_SELECTION for any click sequence", () => {
-    let sel: number[] = [];
+    let s: AtomId[] = [];
     for (const idx of [0, 1, 2, 3, 4, 5, 2, 6, 7, 8, 1, 0]) {
-      sel = toggleAtom(sel, idx);
-      expect(sel.length).toBeLessThanOrEqual(MAX_SELECTION);
+      s = toggleAtom(s, id(idx));
+      expect(s.length).toBeLessThanOrEqual(MAX_SELECTION);
     }
   });
 
   it("does not mutate its input", () => {
-    const input = [1, 2];
-    toggleAtom(input, 3);
-    toggleAtom(input, 1);
-    expect(input).toEqual([1, 2]);
+    const input = sel(1, 2);
+    toggleAtom(input, id(3));
+    toggleAtom(input, id(1));
+    expect(input).toEqual(sel(1, 2));
   });
 });
 
-// ── validateSelection ────────────────────────────────────────────────────────
+// ── filterSelection (the 2c2 dividend) ───────────────────────────────────────
+// Every assertion is on ids that address atoms across fragments, so a removal
+// genuinely diverges "still in the scene" from "still in range".
 
-describe("validateSelection", () => {
-  it("returns the SAME reference when nothing is out of range", () => {
-    const s = scene(water(), borohydride()); // 8 atoms → indices 0..7
-    const sel = [0, 3, 7];
-    expect(validateSelection(sel, s)).toBe(sel);
+describe("filterSelection", () => {
+  it("keeps the selection (SAME reference) when an UNRELATED fragment is removed", () => {
+    const s = scene(water(), borohydride(), chloride()); // wat 0-2, bh4 3-7, cl 8
+    const picked = idsFor(s, 3, 4); // two BH₄⁻ atoms
+    // Removing water (before them) OR chloride (after them) touches neither id —
+    // the dividend: same reference back, no clear, no churn. The positional guard
+    // this replaces cleared the whole selection on ANY composition change.
+    expect(filterSelection(picked, removeFragment(s, "wat"))).toBe(picked);
+    expect(filterSelection(picked, removeFragment(s, "cl"))).toBe(picked);
   });
 
-  it("drops indices past the end of the scene", () => {
-    const s = scene(water()); // 3 atoms → 0..2
-    expect(validateSelection([0, 2, 5, 3], s)).toEqual([0, 2]);
+  it("drops only the ids whose fragment was removed, keeping click order", () => {
+    const s = scene(water(), borohydride(), chloride());
+    const [cl8, b3, b5] = idsFor(s, 8, 3, 5); // chloride atom, then two BH₄⁻ atoms
+    const after = removeFragment(s, "cl");
+    expect(filterSelection([cl8, b3, b5], after)).toEqual([b3, b5]);
   });
 
-  it("clears everything for a null scene", () => {
-    expect(validateSelection([0, 1, 2], null)).toEqual([]);
+  it("clears for a null scene; empty selection returns the same reference", () => {
+    const s = scene(water());
+    expect(filterSelection(idsFor(s, 0, 1), null)).toEqual([]);
+    const empty: AtomId[] = [];
+    expect(filterSelection(empty, s)).toBe(empty);
   });
+});
 
-  // The defect the 2.5.2b review found: range-only validation SURVIVES an index
-  // shift. Removing the first fragment slides every later atom down, so a picked
-  // index that is still in range silently re-points at a DIFFERENT atom. This
-  // test documents that `validateSelection` alone cannot catch it — which is why
-  // `selectionSurvives` (below) is the primary guard. (The old test here passed
-  // for the wrong reason: it used index 8, which merely fell out of range.)
-  it("does NOT clean an in-range index that a removal re-pointed (range-only)", () => {
-    // water(0,1,2) + BH4-(3..7); pick global 3 = the boron (BH4- local 0).
+// ── describeAtomById (the 2c2 id-native describe) ────────────────────────────
+
+describe("describeAtomById", () => {
+  it("follows the PHYSICAL atom after a removal shifts its global index", () => {
+    // water(0,1,2) + BH₄⁻(3..7); the boron is AtomId 3, global 3.
     const s = scene(water(), borohydride());
-    const sel = [3];
-    expect(describeAtom(s, 3)).toMatchObject({ element: "B", localIndex: 0 });
-    // Remove water → 5 atoms remain (0..4); global 3 is now an H (BH4- local 3).
+    const boron = idsFor(s, 3)[0];
+    expect(describeAtomById(s, boron)).toMatchObject({ element: "B", localIndex: 0 });
+    // Remove water → boron keeps its id but is now global 0. describeAtomById
+    // still names the boron; the STALE positional describeAtom(after, 3) names an H.
     const after = removeFragment(s, "wat");
-    expect(describeAtom(after, 3)).toMatchObject({ element: "H", localIndex: 3 });
-    // Range-only check keeps it — the selection silently moved boron → hydrogen.
-    expect(validateSelection(sel, after)).toEqual([3]);
-  });
-});
-
-// ── selectionSurvives (2.5.2b — the composition-signature guard) ──────────────
-
-describe("selectionSurvives", () => {
-  it("survives an unchanged signature (a coordinate-only edit)", () => {
-    const sig = "a:3|b:5";
-    expect(selectionSurvives(sig, sig)).toBe(true);
+    expect(describeAtomById(after, boron)).toMatchObject({ element: "B" });
+    expect(describeAtom(after, 3)).toMatchObject({ element: "H" }); // the bug id-space avoids
   });
 
-  it("survives a pure append (a fragment added LAST — indices don't shift)", () => {
-    expect(selectionSurvives("a:3", "a:3|b:5")).toBe(true);
-    expect(selectionSurvives("a:3|b:5", "a:3|b:5|c:1")).toBe(true);
-  });
-
-  it("does NOT append-match on a size prefix (the trailing '|' is load-bearing)", () => {
-    // "a:3" must not be read as a prefix of "a:30|b:2".
-    expect(selectionSurvives("a:3", "a:30|b:2")).toBe(false);
-  });
-
-  it("does not survive a removal, a recomposition, or a cleared scene", () => {
-    expect(selectionSurvives("a:3|b:5", "b:5")).toBe(false); // first removed
-    expect(selectionSurvives("a:3|b:5", "a:3")).toBe(false); // last removed
-    expect(selectionSurvives("a:3|b:5", "a:4|b:5")).toBe(false); // count changed
-    expect(selectionSurvives("a:3", null)).toBe(false); // scene cleared
-    expect(selectionSurvives(null, "a:3")).toBe(false); // scene appeared
-  });
-
-  it("survives when both are null (no scene throughout)", () => {
-    expect(selectionSurvives(null, null)).toBe(true);
-  });
-
-  // The full reproduction, driven through real signatures: removing the FIRST
-  // fragment must NOT survive, so NewJobScreen clears the selection instead of
-  // letting index 3 re-point boron → hydrogen (the defect above).
-  it("clears the selection on removeFragment of the FIRST fragment", () => {
-    const s = scene(water(), borohydride()); // sig: wat:3|bh4:5
-    const after = removeFragment(s, "wat"); // sig: bh4:5
-    const survives = selectionSurvives(
-      compositionSignature(s),
-      compositionSignature(after),
-    );
-    expect(survives).toBe(false); // → NewJobScreen setSelection([])
+  it("returns null for an id no longer in the scene", () => {
+    const s = scene(water(), borohydride());
+    const boron = idsFor(s, 3)[0];
+    expect(describeAtomById(removeFragment(s, "bh4"), boron)).toBeNull();
   });
 });
 

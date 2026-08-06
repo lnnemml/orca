@@ -1,9 +1,11 @@
 /**
  * Geometry measurement off the pick list (2.5.2b). Pure / node-tested,
  * React-free (ADR-008 decision 10) — no imports from react / 3dmol / tauri. The
- * pick list is an ordered list of global atom indices (`selection.ts`); this
- * module reads it **positionally**: 2 atoms → distance, 3 → angle with the
- * MIDDLE pick as the vertex, 4 → dihedral along the chain i-j-k-l.
+ * pick list is an ordered list of stable {@link AtomId}s (`selection.ts`, 2c2);
+ * `measureSelection` resolves each id to its global index and this module reads
+ * them **positionally**: 2 atoms → distance, 3 → angle with the MIDDLE pick as the
+ * vertex, 4 → dihedral along the chain i-j-k-l. `measureSelectionByIndex` is the
+ * same math over raw global indices, for the constraint panel (ORCA-index space).
  *
  * ## Why the conventions are pinned to ASE, verified against source
  *
@@ -47,7 +49,8 @@
  */
 
 import type { Scene } from "./types";
-import { locateAtom } from "./scene";
+import type { AtomId } from "./ids";
+import { globalIndexOfAtom, locateAtom } from "./scene";
 
 type Vec3 = [number, number, number];
 
@@ -202,11 +205,14 @@ function allSameFragment(scene: Scene, atoms: number[]): boolean {
 }
 
 /**
- * Interpret the pick list positionally: 2 → distance, 3 → angle (middle =
- * vertex), 4 → dihedral (chain i-j-k-l). 0/1 atoms, or any degenerate value,
- * → `{ kind: "none" }` (the panel then shows only the atom description).
+ * Interpret a list of **global indices** positionally: 2 → distance, 3 → angle
+ * (middle = vertex), 4 → dihedral (chain i-j-k-l). 0/1 atoms, or any degenerate
+ * value, → `{ kind: "none" }`. The `atoms` field of the result holds these
+ * **global indices** (what the viewer/inspector render against), regardless of
+ * how they were resolved. Used directly by the constraint panel, whose atoms live
+ * in the text as ORCA (0-based global) indices — a positional space by design.
  */
-export function measureSelection(scene: Scene, selection: number[]): Measurement {
+export function measureSelectionByIndex(scene: Scene, selection: number[]): Measurement {
   const atoms = [...selection];
   const sameFragment = allSameFragment(scene, atoms);
 
@@ -226,6 +232,19 @@ export function measureSelection(scene: Scene, selection: number[]): Measurement
     return { kind: "dihedral", value, unit: "°", atoms, sameFragment };
   }
   return { kind: "none" };
+}
+
+/**
+ * Measure a selection of stable {@link AtomId}s (unit 2c2): resolve each id to its
+ * current global index ({@link globalIndexOfAtom}) — an id no longer in the scene
+ * becomes `-1`, which the index-based math reads as out-of-range → `none` — then
+ * delegate to {@link measureSelectionByIndex}. The math is untouched; only the
+ * *addressing* moved from a positional index to a stable id, so a measurement now
+ * follows the atoms it named across a fragment removal instead of re-pointing.
+ */
+export function measureSelection(scene: Scene, selection: AtomId[]): Measurement {
+  const indices = selection.map((id) => globalIndexOfAtom(scene, id) ?? -1);
+  return measureSelectionByIndex(scene, indices);
 }
 
 /**

@@ -540,14 +540,17 @@ Stage 3, where it is actually needed.)
       drift); `onAtomPick` returns an `AtomId` (raw `atom.index` kept only as a diagnostic
       `viewerIndex`); reads-from-3Dmol audit clean (one import site, two sanctioned reads). Consumers
       stay positional behind one named `2c1→2c2` adapter. See `wiki/modules/editor-ui.md`.
-- [ ] **2c2 — the pipeline moves onto `AtomId` + the `selectionSurvives` dividend (agreed after
-      1b).** `selection.ts` / `measure.ts` / `edit-plan.ts` / `constraints.ts` key on `AtomId`
-      instead of a positional global index. Stable identity gives, for the first time, an operational
-      definition of "the same atom" *after a fragment is removed*, so `selectionSurvives` can
-      **preserve** a selection across a composition change instead of clearing it. Today's clearing is
-      **correct for the positional space** (ADR-008 — a removed fragment renumbers everything, so a
-      kept index would point at the wrong atom); moving to `AtomId` is a **conscious behaviour
-      change**, which is why it lives here in Stage 2, not in the identity-only Stage 1.
+- [x] **2c2 — the pipeline moves onto `AtomId` + the removal dividend.** `selection` / `measure` input
+      / `planEdit` input / `constraintFromSelection` input / the viewer highlight key on `AtomId`.
+      `selectionSurvives`/`validateSelection` are **removed**; `filterSelection` keeps every picked id
+      still in the scene, so removing an *unrelated* fragment no longer clears the selection — the
+      **conscious behaviour change** this unit exists for (the old clearing was correct for the
+      positional space). Two things stay positional at their emit seams: the **ASE mask** (`EditPlan`)
+      and the **`%geom` constraint** (`Constraint` atoms are ORCA indices); `AtomId → index` conversion
+      happens at exactly those two seams via `globalIndexOfAtom`. History panel shows the global index
+      of each record (`describeInScene`, `describe` stays pure). UI labels the index space per panel
+      (global for the inspector, ORCA for constraints). Negative controls (a)–(d) demonstrated red. See
+      `wiki/modules/scene.md`, `editor-ui.md`.
 - [ ] **2d — the Monaco xyz projection.** The xyz block in Monaco becomes a **generated read-only
       projection** of the Scene. **Cost to preserve:** today the author edits coordinates directly in
       Monaco — making the block read-only removes that path, so the capability is *replaced, not

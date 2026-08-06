@@ -38,12 +38,14 @@
  */
 
 import type { Scene } from "./types";
-import { measureSelection } from "./measure";
+import type { AtomId } from "./ids";
+import { measureSelectionByIndex } from "./measure";
 import { describeAtom } from "./selection";
 import {
   atomCount,
   fragmentAtomIndices,
   fragmentRanges,
+  globalIndexOfAtom,
   locateAtom,
   parseAtomLines,
   replaceFragmentAtoms,
@@ -210,17 +212,25 @@ function immovablePivotReason(
   );
 }
 
-export function planEdit(scene: Scene, selection: number[]): EditPlan {
-  if (selection.length < 2 || selection.length > 4) {
+export function planEdit(scene: Scene, atomIds: AtomId[]): EditPlan {
+  if (atomIds.length < 2 || atomIds.length > 4) {
     return {
       kind: "unavailable",
       reason: "Pick 2, 3 or 4 atoms to set a distance, angle or dihedral.",
     };
   }
 
+  // Resolve the stable AtomId selection to the CURRENT positional global indices
+  // ONCE, at the boundary (unit 2c2): the whole planner below — masks, cut/within,
+  // both orientations, the reference-atom rule — is positional, because its output
+  // (`EditPlan.indices`/`mask`/`cut`) is the ASE-mask emit seam, which is positional
+  // by design (ADR-010 correction i). An id that no longer resolves → -1, read as
+  // out-of-range by `measureSelectionByIndex` → `unavailable`.
+  const selection = atomIds.map((id) => globalIndexOfAtom(scene, id) ?? -1);
+
   // op + current value come from the ONE measurement implementation. `current`
   // is orientation-invariant (see the module note), so it's computed once.
-  const m = measureSelection(scene, selection);
+  const m = measureSelectionByIndex(scene, selection);
   if (m.kind === "none") {
     return {
       kind: "unavailable",

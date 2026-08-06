@@ -275,6 +275,42 @@ export function fragmentAtomIndices(scene: Scene, fragmentId: string): number[] 
   return Array.from({ length: fragment.atoms.length }, (_, i) => start + i);
 }
 
+/**
+ * The **bijection AtomId ↔ global index** over `allAtoms(scene)` order — the same
+ * order as the merged xyz and the viewer index (ADR-008 #3). This is the resolver
+ * the selection/measure/constraint pipeline keys on in unit 2c2: a `selection`
+ * holds stable {@link AtomId}s, and these two functions map an id to where the
+ * atom currently sits (and back). It is **independent of** the viewer's
+ * pre-compiled `ViewerAtomTable` (2c1) on purpose — that table names indices for
+ * *3Dmol*; these name indices for the *core*, so nothing outside the viewer sits
+ * on a structure called "viewer". Both return `null` for an absent id / an
+ * out-of-range index (the non-throwing contract of {@link locateAtom}).
+ */
+export function globalIndexOfAtom(scene: Scene, id: AtomId): number | null {
+  let i = 0;
+  for (const fragment of scene.fragments) {
+    for (const atom of fragment.atoms) {
+      if (atom.id === id) return i;
+      i++;
+    }
+  }
+  return null;
+}
+
+/** Inverse of {@link globalIndexOfAtom}: the {@link AtomId} at a global index in
+ * `allAtoms(scene)` order, or `null` if out of range. */
+export function atomIdAtIndex(scene: Scene, globalIdx: number): AtomId | null {
+  if (!Number.isInteger(globalIdx) || globalIdx < 0) return null;
+  let i = 0;
+  for (const fragment of scene.fragments) {
+    for (const atom of fragment.atoms) {
+      if (i === globalIdx) return atom.id;
+      i++;
+    }
+  }
+  return null;
+}
+
 /** Which fragment (and local index within it) a global index refers to. */
 export function locateAtom(
   scene: Scene,
@@ -320,8 +356,9 @@ export function fragmentRanges(
  *    coordinate-only edit must not move the camera (the 2.5.2 geometry loop —
  *    type an angle, apply, look, adjust — is unusable if the view re-zooms on
  *    every apply);
- *  - the atom-selection panel (2.5.2a) re-runs `validateSelection` exactly when
- *    the signature changes, never on a coordinate-only edit.
+ *  - the constraint composition-change warning (2.5.4b) fires exactly when the
+ *    signature moves (the selection itself is pruned by AtomId now — 2c2 — not
+ *    by this signature).
  */
 export function compositionSignature(scene: Scene): string {
   return scene.fragments.map((f) => `${f.id}:${f.atoms.length}`).join("|");
