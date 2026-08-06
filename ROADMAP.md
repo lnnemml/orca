@@ -626,8 +626,11 @@ Stage 3, where it is actually needed.) **Next: Stage 3 — operations over the c
 - [x] **Undo deeper than one step** — done in unit 2b: undo/redo/`jumpTo` fold over the whole
       operation log (superseding the old one-step `previous`/`undoReset`), so every op (drag included)
       is a full history step.
-- [ ] Ring torsions (rotate a torsion whose bond is inside a ring) — an `Op` over a
-      graph-derived mask, building on the 2.5.3 bond-graph split.
+- **Cut (2026-08-06):** manual ring torsions. Ring conformations (chair/boat/twist, ring flip) belong
+      to **GOAT** (Find conformers, unit 2.5.1) — the correct tool, which samples ring puckering without
+      deforming bonds. A manual ring-bond rotation would break the ring (an unphysical intermediate),
+      contradicting the "no plausible-but-wrong physics" ethos, and would duplicate GOAT. The 2.5.3
+      ring-bond **refusal stays** (it is correct) and now *points at GOAT* (`sidecar/app/geometry.py`).
 
 **Carried from Phase 2.5** (unchanged, still open)
 

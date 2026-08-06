@@ -375,7 +375,9 @@ def rotatable_mask(req: RotatableMaskRequest) -> RotatableMaskResponse:
             f"bond {i}–{j} is in a RING: removing it does not split the molecule "
             f"(atom {req.moving}'s side still reaches both ends), so there is no "
             "rotatable subgroup. Rotating a ring bond would deform the ring — pick "
-            "a bond that is not part of a cycle.",
+            "a bond that is not part of a cycle. To explore ring conformations "
+            "(chair/boat/twist, ring flip), use Find conformers (GOAT): that is the "
+            "correct tool — it samples ring puckering without deforming bonds.",
         )
     if i not in moving_comp and j not in moving_comp:
         raise HTTPException(
