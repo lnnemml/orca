@@ -4925,3 +4925,62 @@ everything else stayed green; reverted.
 **Verification.** `cargo test --workspace` green (166 src-tauri + core + roundtrip); `tsc --noEmit`
 clean; vitest 489/489. `create_job`, TS, and `xtb.rs` untouched (1e's scope). Next: **1e** — mint the map
 at `create_job`, brand the xtb serde boundary, resolve the display-vs-authoritative-emit tension.
+
+## [2026-08-06] session | feat(jobs)+refactor(xtb): unit 1e — mint the map at create_job, brand the xtb boundary, close Stage 1
+
+Phase 4.2 Stage 1 unit **1e** (the wiring unit). Two feature commits + this docs/lint commit.
+
+**Minting (feat commit).** `orcastudio_core::mint_index_map(&Scene, input_content)` parses the
+coordinate block of the **submitted text** and verifies it corresponds to the scene (element
+sequence exact + float-tolerant coords — the `xyzMatchesScene` standard, `normalize_element` the Rust
+twin). Mints from that verified correspondence — **never from the scene alone**: ORCA runs the text,
+so a scene/text drift SKIPS (`{"skipped":"<reason>"}`), it does not silently encode a lying map (the
+1d failure class, moved to mint time). `create_job` stores `results::StoredIndexMap`
+(`{"minted":[atomids]}` | `{"skipped":…}`) in `jobs.index_map_json`; the job is never blocked (input
+validity is ORCA's, the map is ours). Single mint site → a clone/"new iteration" mints its own map.
+`results::resolve_job_mapping` uses a minted map with a **scene-sourced AtomId anchor** (from
+`scene_json`, *independent of the stored map* — so a corrupted stored map is caught, not cancelled),
+else the derived identity map (1d). Only the anchor switches to scene for minted jobs; element/coord
+truth stays artifact/text-sourced.
+
+**xtb branding (refactor commit).** The `$constrain` 0→1 base flip was a bare `+ 1` at ~9 writer
+sites (a missed/doubled flip freezes the wrong coordinate on a clean run — rule #9). Branded the
+serde boundary: `SceneIndex` (0-based, `#[serde(transparent)]`, **no `Display`**) → `XtbIndex`
+(1-based) via one `to_xtb()`; `.zero_based()` is the named accessor for our own geometry. Not unified
+with `orcastudio_core::emit::Constraint` (different emit) — named `TODO(1e-followup)`.
+
+**Negative controls — all four demonstrably bite (reverted after):** (a) reordered/drifted/wrong-count
+text → skip with a named reason (core `mint::tests` + `create_skips_the_map_when_text_reorders_the_scene`);
+(b) a synthetic **permuted stored map** → parse verify refuses via the artifact cross-check, while the
+correct minted map verifies (`minted_map_is_load_bearing…`) — breaking the scene-independence of the
+anchor makes it green, proving the anchor holds it; (c) gutting the mint correspondence turns the (a)
+skips into scene-only mints, tests go red; (d) writing a bare `SceneIndex` into a line is a **compile
+error** (`doesn't implement Display`) + a source-grep test forbids a bare `atoms[N] + 1` in the writer.
+
+**Verification.** `cargo test --workspace` green (203); `tsc --noEmit` clean; vitest 489/489. Sync
+(Scene→Monaco) untouched; no submit-time text canonicalisation; no runtime display-vs-authoritative
+byte-check (deliberate). Real-window run (New Job → Create & Run → Results on a 2-fragment scene) is
+for the author — headless cannot exercise it.
+
+## [2026-08-06] decision | ADR-016 amendment — display/authoritative tension resolved; two minting paths
+
+Resolved the tension ADR-016 deferred to 1e (amendment section, history not rewritten): (1) the
+display emit stays TypeScript (sync untouched, no IPC on the debounce); (2) the authoritative act is
+at `create_job` — mint from the **submitted text verified against the scene**, never the scene alone;
+(3) **no** submit-time text canonicalisation (text is truth, 2.5.4b) and **no** runtime
+display-vs-authoritative byte-check (it cannot tell a legal edit from a drift — noise, not a guard;
+byte-identity lives in the golden/corpus gates), recorded so it is not "finished" into existence
+later; (4) two production minting paths named — **authored-by-app** (Phase 4.5 + gates) and
+**authored-by-text** (1e: verify text↔scene). Also amended **ADR-010**: its "type-level invariant"
+claim for the `emit`/`parse` pair is refined — type-level in-process, a required artifact-cross-checked
+post-condition across SQLite persistence.
+
+## [2026-08-06] lint | Stage-1 pages (ADR-010/016, orcastudio-core, artifact-readers, tauri-core, scene)
+
+Mini-lint on Stage-1 close. Findings + fixes: `orcastudio-core.md` "dead code until 1d/1e" and
+"unit 1e still owes" → updated to "Stage 1 complete" + `mint.rs` entry; `artifact-readers.md`
+"NULL for every row until 1e mints it" → the minted-vs-derived story with the scene-anchor
+independence; `tauri-core.md` v10 "every row is NULL" → the minted/skipped envelope; `ADR-010` line
+30–32 unqualified "type-level invariant" → pointer to the 1d–1e / ADR-016 refinement; `index.md`
+core + readers lines refreshed. No broken cross-references found; the ROADMAP marks 1e `[x]` and
+**Stage 1 COMPLETE**.

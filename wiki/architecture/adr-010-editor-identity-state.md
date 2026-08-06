@@ -29,7 +29,11 @@ The following are adopted as binding:
   emits the input hands back the inverse table used to parse the output.
 - **`emit_input` / `parse_output` are paired with an `IndexMap`.** `parse_output` cannot be
   called without the mapping produced by the corresponding `emit_input` — this is a type-level
-  invariant, not a convention.
+  invariant, not a convention. *(Refined in units 1d–1e / the [ADR-016](adr-016-emit-input-ownership.md)
+  amendment: type-level only **in-process**; the map is minted at `create_job` and serialized into
+  SQLite, so across that boundary it honestly degrades to a **required, artifact-cross-checked**
+  argument — a post-condition (rule #9), not a type guarantee. The over-claim this line would be if
+  left unqualified is exactly what the empirical addendum below warns against.)*
 - **State is a fold over a log of typed operations.** Undo/redo are free consequences; a new
   editor capability adds an *operation*, not a new piece of state.
 - **An ephemeral layer carries the drag.** 60-fps drag motion is **not** written to the log;

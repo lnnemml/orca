@@ -469,9 +469,21 @@ editor UI, method/basis form, and the geometry↔sidecar seam stay TS until Stag
       *type-level* invariant only *in-process* (same crate on both sides); across SQLite the provenance
       is serialized away, so the map is a **required, artifact-cross-checked argument** (post-condition,
       rule #9), NOT a type invariant — stated verbatim in code and on the module page.
-- [ ] **1e — wiring.** `create_job` mints the map; xtb indices are branded at the serde boundary;
-      resolve the display-emit (Scene→Monaco projection) vs authoritative-emit (mints the map at
-      `create_job`) tension named in ADR-016.
+- [x] **1e — wiring.** `create_job` mints the `IndexMap` from the **submitted text verified against
+      the scene** (`orcastudio_core::mint_index_map`; never from the scene alone — a scene/text drift
+      SKIPS, `{"skipped":…}`), stored in `jobs.index_map_json`. `results::resolve_job_mapping` uses a
+      minted map with a **scene-sourced anchor** (independent of the stored map, so a corrupted stored
+      map is caught), else the derived identity map (1d). The xtb constraint serde boundary is
+      **branded** — `SceneIndex` (0-based, no `Display`) → `XtbIndex` (1-based) via one `to_xtb()`, so
+      the `$constrain` `+1` flip is a single typed conversion (a bare index is a compile error). The
+      display-vs-authoritative tension is resolved in the **ADR-016 amendment**: display emit stays TS,
+      authoritative mint at `create_job`, and NO runtime byte-check (it cannot tell a legal edit from a
+      drift). Negative controls (a)–(d) all demonstrably bite.
+
+**Stage 1 is COMPLETE** — the identity core (ADR-016) is authored in Rust (`orcastudio-core`),
+emit-input is byte-identical to the TS source, the parsers are paired with the `IndexMap` and
+verify it against the artifact, the map is minted at `create_job` from verified text, and the xtb
+index-base seam is branded. Stage 2 (operation log) and Stage 3 (Scene→Rust/WASM) remain.
 
 **Stage 2 — operation log + ephemeral layer**
 
