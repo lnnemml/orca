@@ -48,6 +48,28 @@ const TOL_CARTESIAN_ANG: f64 = 0.01;
 
 const DEFAULT_TIMEOUT_SECS: u64 = 300;
 
+/// The MEASURED non-convergence marker (xtb 6.6.1, `builduser@buildhost`, real
+/// `--cycles 2` run — `wiki/orca/xtb.md`, `debugging/012`). The full line is
+/// `*** FAILED TO CONVERGE GEOMETRY OPTIMIZATION IN N ITERATIONS ***`; this stable
+/// substring is what the completion post-condition scans for. **Copied from a real
+/// run, not invented.** On non-convergence xtb 6.6.1 still writes `xtbopt.xyz` +
+/// `.xtboptok` AND prints `normal termination` AND exits 0 — so this line is the
+/// ONLY reliable non-convergence signal, and it must be checked first.
+const FAILED_TO_CONVERGE: &str = "FAILED TO CONVERGE GEOMETRY OPTIMIZATION";
+
+/// Measured (same run): xtb prints this to **stderr** near the end. It is NOT a
+/// gate — it can sit ~40 lines deep under the post-opt bond-order analysis (a small
+/// tail misses it → the false negative this hotfix fixes) AND it is printed even on
+/// a non-converged run. Kept only as a **named diagnostic**.
+const NORMAL_TERMINATION: &str = "normal termination of xtb";
+
+/// Size cap for reading `xtb.out` whole to scan for {@link FAILED_TO_CONVERGE}
+/// (which can sit hundreds of lines from the end — the full property analysis runs
+/// even after non-convergence, so a bounded tail can't catch it). A GFN2 pre-opt
+/// log is small (measured 42–91 KB); the cap (rule #5) refuses a pathological file
+/// rather than stream an unbounded one.
+const XTB_OUT_CAP_BYTES: u64 = 16 * 1024 * 1024;
+
 // ── Branded index bases (unit 1e) ─────────────────────────────────────────────
 //
 // The xtb serde boundary is branded so the 0→1 base flip is ONE typed conversion,
@@ -452,6 +474,90 @@ fn distance_between(a: V3, b: V3) -> f64 {
     norm(sub(a, b))
 }
 
+// ── Completion post-condition — anchored on RESULTS, not the binary's last words ─
+//
+// The 2b-hotfix. The old gate ("`normal termination` present in a 30-line tail")
+// was wrong in BOTH directions, measured on xtb 6.6.1 (`builduser@buildhost`):
+//  - FALSE NEGATIVE on a clean run — `normal termination` (stderr) sits ~41 lines
+//    from the end, buried under the post-opt bond-order table, so the small tail
+//    misses it and a perfectly good geometry is rejected;
+//  - FALSE POSITIVE latent on non-convergence — `--cycles 2` prints
+//    `*** FAILED TO CONVERGE GEOMETRY OPTIMIZATION IN N ITERATIONS ***`, yet exits
+//    0, writes `.xtboptok`, AND writes a (non-optimized!) `xtbopt.xyz`, AND prints
+//    `normal termination`. The old gate would silently accept that geometry.
+// So the exit code and `normal termination` do NOT gate (measured: both lie either
+// way) — they are named diagnostics. Success is defined in OUR terms: an optimized
+// geometry present + parseable, and NO `FAILED TO CONVERGE` line. See
+// `wiki/orca/xtb.md` (Pattern-2 correction) and `debugging/012`.
+
+/// The outcome of an xtb run, classified from the log + whether the optimized
+/// geometry is present and parseable. **Pure** — the same classifier the tests run
+/// on the three real fixtures (success / non-convergence / no-geometry).
+#[derive(Debug, PartialEq, Eq)]
+pub enum XtbCompletion {
+    /// Optimized geometry present and no non-convergence marker.
+    Ok,
+    /// xtb wrote a geometry but reported it did NOT converge (the quoted line +
+    /// the iteration count). The geometry is NOT optimized — must not be applied.
+    NonConvergence { line: String, iterations: Option<u32> },
+    /// No readable optimized geometry (xtb died before writing / wrote garbage).
+    NoGeometry,
+}
+
+/// Classify an xtb run from `out_text` (the whole size-capped `xtb.out`) and
+/// whether `xtbopt.xyz` exists and parsed. **Non-convergence is checked FIRST**:
+/// xtb writes `xtbopt.xyz` even when it fails to converge, so a present geometry is
+/// NOT success on its own.
+pub fn classify_completion(out_text: &str, geometry_ok: bool) -> XtbCompletion {
+    if let Some(line) = out_text.lines().find(|l| l.contains(FAILED_TO_CONVERGE)) {
+        return XtbCompletion::NonConvergence {
+            line: line.trim().to_string(),
+            iterations: parse_failed_iterations(line),
+        };
+    }
+    if !geometry_ok {
+        return XtbCompletion::NoGeometry;
+    }
+    XtbCompletion::Ok
+}
+
+/// Pull `N` out of `*** FAILED TO CONVERGE GEOMETRY OPTIMIZATION IN N ITERATIONS ***`.
+fn parse_failed_iterations(line: &str) -> Option<u32> {
+    line.split(" IN ").nth(1)?.split_whitespace().next()?.parse().ok()
+}
+
+/// Read `xtb.out` whole for the FAILED scan, size-capped (rule #5): the marker can
+/// be hundreds of lines from the end, so a tail won't do — but a pre-opt log is
+/// small, and a pathological one is refused rather than streamed.
+fn read_out_capped(path: &Path) -> Result<String, AppError> {
+    let len = std::fs::metadata(path)
+        .map_err(|_| AppError::Backend("xtb produced no xtb.out".into()))?
+        .len();
+    if len > XTB_OUT_CAP_BYTES {
+        return Err(AppError::Backend(format!(
+            "xtb.out is {len} bytes (over the {} MB scan cap) — refusing to load it whole",
+            XTB_OUT_CAP_BYTES / 1024 / 1024
+        )));
+    }
+    std::fs::read_to_string(path)
+        .map_err(|e| AppError::Backend(format!("could not read xtb.out: {e}")))
+}
+
+/// The named diagnostics that are NOT gates (measured to lie both ways): the exit
+/// code and whether `normal termination` was seen. Appended to a failure message so
+/// the reason is legible without gating on either.
+fn completion_diagnostics(out_text: &str, exit: std::process::ExitStatus) -> String {
+    let code = exit
+        .code()
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| "killed by signal".into());
+    format!(
+        "[xtb diagnostics, not gates] exit code: {code}; \"{NORMAL_TERMINATION}\" seen: {} \
+         (measured: both are unreliable in either direction — debugging/012)",
+        out_text.contains(NORMAL_TERMINATION)
+    )
+}
+
 // ── Runner state + commands ───────────────────────────────────────────────────
 
 /// The reserved slot for the one in-flight run. Just the cancel flag: `Some` means
@@ -734,13 +840,13 @@ fn run_in_dir(
     let deadline = start + Duration::from_secs(timeout_secs);
     let mut last_progress = Instant::now();
     let mut last_cycle_seen: Option<u32> = None;
-    loop {
+    let exit_status: std::process::ExitStatus = loop {
         if let Some(status) = child.try_wait()? {
-            if !status.success() {
-                // Terse — the thread appends the xtb.out tail to every error.
-                return Err(AppError::Backend("xtb exited with an error".into()));
-            }
-            break;
+            // The exit code is captured for DIAGNOSTICS, never gated on: measured,
+            // xtb 6.6.1 exits 0 on a non-converged optimization (`--cycles 2`) AND
+            // can exit non-zero on a clean run whose teardown trips an FP-exception
+            // signal. Completion is decided on RESULTS below (classify_completion).
+            break status;
         }
         if cancelled.load(Ordering::SeqCst) {
             terminate_job(pgid, dir);
@@ -762,19 +868,39 @@ fn run_in_dir(
             }
         }
         std::thread::sleep(Duration::from_millis(50));
-    }
+    };
 
-    // xtb prints "normal termination of xtb" ~14 lines from the end (measured); a
-    // 30-line bounded tail (rule #5) covers it with margin.
-    let out_text = tail(&dir.join("xtb.out"), 30);
-    if !out_text.contains("normal termination") {
-        return Err(AppError::Backend("xtb did not terminate normally".into()));
+    // Completion post-condition, anchored on RESULTS (the 2b-hotfix — see the block
+    // above `classify_completion`). Scan the WHOLE (size-capped) log for the
+    // measured non-convergence marker, and require a present + parseable optimized
+    // geometry. The exit code and "normal termination" are diagnostics, not gates.
+    let out_text = read_out_capped(&dir.join("xtb.out"))?;
+    let opt = std::fs::read_to_string(dir.join("xtbopt.xyz")).ok();
+    let parsed = opt.as_deref().and_then(|t| parse_xyz(t).ok());
+    match classify_completion(&out_text, parsed.is_some()) {
+        XtbCompletion::Ok => {}
+        XtbCompletion::NonConvergence { line, iterations } => {
+            let iters = iterations
+                .map(|n| format!(" in {n} iterations"))
+                .unwrap_or_default();
+            // Artifacts are KEPT (a genuine error → keep_dir_for_diagnostics), so the
+            // user can inspect the non-optimized geometry; it is NOT applied.
+            return Err(AppError::Backend(format!(
+                "xtb failed to converge the geometry optimization{iters}: \"{line}\". \
+                 The written geometry is NOT optimized, so it was not applied. {}",
+                completion_diagnostics(&out_text, exit_status)
+            )));
+        }
+        XtbCompletion::NoGeometry => {
+            return Err(AppError::Backend(format!(
+                "xtb produced no readable optimized geometry (xtbopt.xyz). {}",
+                completion_diagnostics(&out_text, exit_status)
+            )));
+        }
     }
-
-    // Read the optimized geometry.
-    let opt = std::fs::read_to_string(dir.join("xtbopt.xyz"))
-        .map_err(|_| AppError::Backend("xtb produced no xtbopt.xyz".into()))?;
-    let (elements_out, positions_out) = parse_xyz(&opt)?;
+    // `Ok` ⇒ geometry present and parsed.
+    let opt = opt.expect("classify_completion Ok ⇒ xtbopt.xyz present");
+    let (elements_out, positions_out) = parsed.expect("classify_completion Ok ⇒ geometry parsed");
 
     // Post-conditions (in the command, not only in tests — the price of a missed
     // error is the wrong geometry handed to a multi-hour ORCA run).
@@ -1088,5 +1214,100 @@ mod tests {
         .collect();
         assert_eq!(last_cycle(&lines), Some(2));
         assert_eq!(last_cycle(&["no cycles here".to_string()]), None);
+    }
+
+    // ── Completion post-condition — on the THREE real fixtures (2b-hotfix) ────────
+    // Real xtb 6.6.1 (`builduser@buildhost`) logs, not synthesized:
+    //  - SUCCESS: the author's dexketoprofen+BH₄ pre-opt (geometry good, but
+    //    `normal termination` sits 41 lines from the end — the false-negative case);
+    //  - FAIL: the same input re-run with `--cycles 2` (non-convergence; xtb still
+    //    wrote xtbopt.xyz + .xtboptok and printed `normal termination`, exit 0).
+
+    const SUCCESS_OUT: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/xtb_success_dexketoprofen_bh4.out"
+    ));
+    const FAIL_OUT: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/xtb_fail_cycles2.out"
+    ));
+
+    /// The OLD gate, reproduced: `normal termination` present in a 30-line tail.
+    fn old_gate_passes(out: &str) -> bool {
+        let lines: Vec<&str> = out.lines().collect();
+        let start = lines.len().saturating_sub(30);
+        lines[start..].join("\n").contains("normal termination")
+    }
+
+    #[test]
+    fn classify_success_on_the_real_clean_run() {
+        // Geometry present + no FAILED marker → Ok, even though `normal termination`
+        // is buried past a 30-line tail and the exit code is not consulted.
+        assert_eq!(classify_completion(SUCCESS_OUT, true), XtbCompletion::Ok);
+        // Sanity on the fixture itself.
+        assert!(SUCCESS_OUT.contains(NORMAL_TERMINATION));
+        assert!(!SUCCESS_OUT.contains(FAILED_TO_CONVERGE));
+    }
+
+    #[test]
+    fn classify_non_convergence_on_the_real_cycles2_run() {
+        // xtb WROTE a geometry (geometry_ok = true) but FAILED to converge → the
+        // classifier rejects it and quotes the measured line + iteration count.
+        match classify_completion(FAIL_OUT, true) {
+            XtbCompletion::NonConvergence { line, iterations } => {
+                assert!(line.contains(FAILED_TO_CONVERGE), "quoted: {line}");
+                assert_eq!(iterations, Some(2));
+            }
+            other => panic!("expected NonConvergence, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_no_geometry_when_xtbopt_absent() {
+        // No FAILED marker but no parseable geometry → NoGeometry (xtb died before
+        // writing / wrote garbage).
+        assert_eq!(classify_completion(SUCCESS_OUT, false), XtbCompletion::NoGeometry);
+    }
+
+    #[test]
+    fn parse_failed_iterations_reads_n() {
+        assert_eq!(
+            parse_failed_iterations("*** FAILED TO CONVERGE GEOMETRY OPTIMIZATION IN 2 ITERATIONS ***"),
+            Some(2)
+        );
+        assert_eq!(parse_failed_iterations("no number here"), None);
+    }
+
+    // NEGATIVE CONTROL (a): the author's real successful run through the OLD gate
+    // reproduces the FALSE NEGATIVE — documenting exactly why the gate was replaced.
+    // (`normal termination` is 41 lines from the end, so a 30-line tail misses it.)
+    #[test]
+    fn old_gate_false_negatives_on_the_real_clean_run() {
+        assert!(
+            !old_gate_passes(SUCCESS_OUT),
+            "the old 30-line-tail gate MISSES `normal termination` (it's buried) → \
+             a good geometry was rejected"
+        );
+        // The new post-condition gets it right on the very same log.
+        assert_eq!(classify_completion(SUCCESS_OUT, true), XtbCompletion::Ok);
+    }
+
+    // NEGATIVE CONTROL (b): a post-condition WITHOUT the FAILED scan would accept the
+    // non-converged geometry — green for the wrong reason. This asserts the real
+    // classifier catches it; removing the FAILED check turns this test red.
+    #[test]
+    fn a_gate_without_the_failed_scan_would_accept_the_non_converged_run() {
+        // The "broken" post-condition = geometry-present only (no FAILED scan).
+        let broken_accepts = /* xtbopt.xyz present */ true;
+        assert!(
+            broken_accepts,
+            "a geometry-only gate would ACCEPT the non-converged run (the latent false positive)"
+        );
+        // The real classifier REJECTS it — this is the line that reddens if the
+        // non-convergence check is ever removed.
+        assert!(
+            matches!(classify_completion(FAIL_OUT, true), XtbCompletion::NonConvergence { .. }),
+            "the real post-condition must reject a non-converged geometry"
+        );
     }
 }

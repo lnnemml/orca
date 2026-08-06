@@ -5096,3 +5096,27 @@ unchanged (no Rust). Wiki: +`modules/editor-ui.md` (viewer-first principle, the 
 mechanism, where future panels go — 2c2 index-space labels, Phase 4.5 reaction setup), index.md,
 ROADMAP 2b-ux `[x]`. **Window verification (checklist) is the author's — WebKitGTK layout can't be
 tested headless.** Next: 2c (dumb renderer + AtomId pipeline).
+
+## [2026-08-06] session | fix(xtb): completion post-condition anchored on results, not the binary's last words (2b-hotfix)
+
+The xTB pre-optimize completion gate was wrong in **both** directions (measured, xtb 6.6.1
+`builduser@buildhost`). **False negative:** the gate `tail(xtb.out,30).contains("normal termination")`
+missed the marker — it is stderr-only and sits **41 lines from the end**, buried under the post-opt
+Wiberg bond-order table — so a run that finished with a **correct** geometry was rejected (the
+author's dexketoprofen+BH₄ case). **Latent false positive:** a `--cycles 2` run prints
+`*** FAILED TO CONVERGE GEOMETRY OPTIMIZATION IN 2 ITERATIONS ***`, yet exits **0**, writes
+`.xtboptok` + a **non-optimized** `xtbopt.xyz`, AND prints `normal termination` — so the same gate
+would silently apply a non-optimized geometry to a multi-hour ORCA run. **Fix:** `classify_completion`
+(pure, tested) anchors on **results in our terms** — an optimized geometry present + parseable and
+**no `FAILED TO CONVERGE`** (scanned over the whole size-capped log, because that line can sit
+hundreds of lines from the end). `normal termination` and the exit code become **named diagnostics,
+never gates**; the exit-code gate in the poll loop is removed (capture-only). Non-convergence → a
+named error quoting the FAILED line + N iterations; artifacts **kept** (rule #3) so the user can
+inspect — the geometry is not applied. **Real fixtures** (`tests/fixtures/xtb_{success_dexketoprofen_bh4,
+fail_cycles2}.out`), classifier tested on both. **Negative controls:** (a) the clean fixture through
+the OLD gate reproduces the false negative (documents why it was replaced); (b) removing the FAILED
+scan makes the classifier accept the non-converged fixture — shown red, then restored. GOAT (`! XTB
+GOAT` via ORCA) does **not** share this gate — untouched. Spawn/killpg/isolation (`debugging/004`)
+untouched; cancel/timeout stay gates. `cargo test --workspace` green (+6 xtb tests, 182 lib);
+frontend unchanged. Wiki: `orca/xtb.md` (Pattern-2 correction — completion-signals table),
+`+debugging/012`, `tauri-core.md`, index.md.

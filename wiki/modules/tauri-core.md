@@ -340,6 +340,15 @@ Tool details: `wiki/orca/xtb.md`.
   **isolated dir** (`<data>/xtb/<uuid>`) in its own process group, polls `try_wait` + the
   `cancelled` flag every 50 ms, and reads `xtbopt.xyz`. The result rides `xtb:done`, an error
   `xtb:error`.
+- **Completion anchored on RESULTS, not the binary's last words (2b-hotfix, `debugging/012`).**
+  `classify_completion` (pure, tested on real fixtures): success = an optimized geometry present +
+  parseable **and NO `FAILED TO CONVERGE GEOMETRY OPTIMIZATION`** line (scanned over the whole
+  size-capped log — the marker can sit hundreds of lines from the end). Measured on xtb 6.6.1: both
+  `normal termination` (stderr, buried ~41 lines deep on a clean run) and the exit code (0 even on
+  non-convergence) **lie in both directions**, so they are **named diagnostics, never gates**.
+  Non-convergence → a named error quoting the FAILED line + iteration count; artifacts **kept** so the
+  user can inspect the (non-optimized) geometry — it is not applied. GOAT (`! XTB GOAT` via ORCA) does
+  not share this gate.
 - **Post-conditions INSIDE the command** (the price of a missed error is the wrong geometry into a
   multi-hour ORCA run): atom count unchanged; element sequence unchanged positionally; **each
   constraint held within tolerance** (`check_held`: 0.1 Å distance / 5° angle / 0.01 Å `$fix`; the

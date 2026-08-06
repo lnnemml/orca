@@ -133,6 +133,41 @@ startup** (2.5.5-fix-3, closing the accumulation issue — no setting). The `xco
 file holds the `$constrain` / `$fix` blocks in 1-based indices. See
 `wiki/modules/tauri-core.md` for the command and its post-conditions.
 
+## Completion signals — `normal termination` and the exit code both LIE (2b-hotfix, measured)
+
+**Pattern-2 correction of our own wiki.** An earlier claim — xtb "prints `normal
+termination` ~14 lines from the end (measured)" — was true for the *runs first
+observed*, but its scope did not include the output **stream**, the **build**, or the
+**exit path**. Re-measured on xtb **6.6.1 (`builduser@buildhost`, 2023-08-07)** with
+the author's real dexketoprofen+BH₄ run and a forced `--cycles 2` re-run
+(`debugging/012`):
+
+| signal | clean run | non-converged run (`--cycles 2`) |
+|---|---|---|
+| `normal termination of xtb` | printed to **stderr**, then **~41 lines of stdout** (the post-opt Wiberg bond-order table) follow it — so it is **buried**, NOT the last line | **also printed** (present at ~49 lines from the end) |
+| exit code | **0** (but a teardown FP-exception `IEEE_UNDERFLOW`/`DENORMAL` can flip it non-zero on the author's build) | **0** |
+| `.xtboptok` + `xtbopt.xyz` | written (optimized) | **written anyway** (NON-optimized geometry!) |
+| `*** FAILED TO CONVERGE GEOMETRY OPTIMIZATION IN N ITERATIONS ***` | absent | **printed** (the only reliable non-convergence signal) |
+
+**Consequences (the two-way lie):**
+- **False negative** — the old gate `tail(30).contains("normal termination")` MISSES
+  the buried line on a perfectly good run and rejects the geometry. (Measured: the
+  line sits 41 of 1533 lines from the end; a 30-line tail can't see it.)
+- **Latent false positive** — a non-converged run exits 0, prints `normal
+  termination`, and writes `xtbopt.xyz`, so a `normal-termination`-or-exit-code gate
+  would **silently apply a non-optimized geometry**.
+
+**The post-condition in force (results, not last words).** Success = an optimized
+geometry **present and parseable** + **no `FAILED TO CONVERGE`** line (scanned over
+the whole size-capped log, because that line can sit hundreds of lines from the end —
+the full property analysis runs even after non-convergence) + the existing count /
+element-order / `check_held` post-conditions. `normal termination` and the exit code
+are kept only as **named diagnostics** in a failure message, never as gates. The
+classifier (`xtb::classify_completion`) is pure and tested on the three real fixtures
+(`src-tauri/tests/fixtures/xtb_{success_dexketoprofen_bh4,fail_cycles2}.out`). This is
+NOT the GOAT path — GOAT runs via the ORCA binary (`! XTB GOAT`) and its own
+completion detection, so it does **not** share this gate.
+
 ## Diagnosed hang — an EMPTY `xcontrol` passed via `--input` freezes xtb (2.5.5-fix-2)
 
 **Symptom:** a no-constraint pre-optimization (dexketoprofen, C16H14O3, 33 atoms) ran
