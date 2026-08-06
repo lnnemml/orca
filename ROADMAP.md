@@ -585,7 +585,17 @@ Stage 3, where it is actually needed.) **Next: Stage 3 — operations over the c
       camera held; one history entry + one Undo; rotate+pick outside Move mode; ~1.3 ms/frame at 38
       atoms). See `wiki/modules/visualization.md`, `editor-ui.md`, `debugging/013`.
 - [ ] Rotation of a fragment about its approach axis (an `Op` over the mask).
-- [ ] vdW-overlap detection after a move (warn on clashes the coarse placement can produce).
+- [x] **vdW-overlap detection after a move (unit 3.2).** After any geometry change, **inter-fragment**
+      atoms closer than `k·(rᵢ+rⱼ)` of their cited vdW sum (Bondi/Mantina/Alvarez — `scene/vdw-radii.ts`,
+      **B** and **Pd/Pt** covered; uncovered → UNDETERMINED, skipped + surfaced, never guessed) are
+      flagged as a **warning, not a block**: a banner + a distinct **magenta danger glow** (apart from
+      the halo/mask). `k` is a **labeled heuristic slider** (default ≈0.65, app-owned, not in Scene).
+      **Pairs with an active distance constraint are excluded** (intentional contacts — read via the
+      existing `constraints.ts` parser), so a Bürgi–Dunitz reactive approach never false-alarms (mission
+      gate m4, confirmed live: 0 clashes at C···B ≈ 2.8 Å under default k; a constraint on the forming
+      pair drops the count while genuine peripheral clashes remain). Pure `detectClashes`; controls
+      c1–c5 (found pair / no false positive / UNDETERMINED / constraint-exclusion / k-monotone) each
+      demonstrated red; manual m1–m5 verified live. See `scene.md`, `editor-ui.md`, `chemistry/vdw-steric.md`.
 - [x] **Undo deeper than one step** — done in unit 2b: undo/redo/`jumpTo` fold over the whole
       operation log (superseding the old one-step `previous`/`undoReset`), so every op (drag included)
       is a full history step.

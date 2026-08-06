@@ -28,7 +28,7 @@ WebKitGTK webview is this module's hardest constraint (see Watchpoints).
 ## `MoleculeViewer` — props & effects
 
 Props: `xyzData?: string` (standard xyz) | `scene?: Scene` (`scene` wins), plus optional `style`,
-`onAtomPick?`, `selection?`, `maskHighlight?`, `showAtomNumbers?`, `theme?`. With neither `scene`
+`onAtomPick?`, `selection?`, `maskHighlight?`, `clashHighlight?`, `moveMode?`, `onFragmentDrag?`, `showAtomNumbers?`, `theme?`. With neither `scene`
 nor `xyzData` it renders an empty viewer, no crash. `NewJobScreen` passes `scene`; `MoleculesScreen`
 passes `xyzData` (stored xyz strings); the Job-detail conformer panel passes `xyzData`.
 
@@ -198,6 +198,21 @@ mask **coexist on the SAME atom by construction** (the last-clicked atom is alwa
 they are distinguished by **FORM** (cage vs fill) + lightness, and only **contrast against the
 background** is required of them. The mask therefore reuses `theme.haloColor` — that is the rule, not
 an exception (corrected in `[2026-07-29] 2.5.2d-1`; `theme.test.ts` splits the two overlay classes).
+
+### Steric-clash "danger glow" (unit 3.2)
+`clashHighlight?: AtomId[]` — atoms in an inter-fragment vdW clash (from
+`scene/clash.ts`, passed by `NewJobScreen`). Drawn as a **solid magenta sphere**
+(`CLASH_COLOR = "#ff2d95"`, `CLASH_OPACITY = 0.4`, radius = halo + a larger boost),
+before the selection cage. **Distinct from the halo AND the mask in BOTH hue and
+form:** the halo/mask share the theme's chartreuse `haloColor` (distinguished from
+each other only by form, since they coexist on one atom); the clash marks a
+**different** set of atoms and a different *kind* of thing (a warning, not a
+selection), so it takes a hue no CPK element uses (magenta) — deliberately NOT the
+chartreuse, because a semantic colour that collided with an element once already bit
+(the Pd/Pt-vs-halo case). A theme-independent constant, like the orbital-phase
+colours. It resolves an `AtomId` straight to its atom (like `selection`); a warning
+marker only — nothing here blocks Run/Apply. The banner dot in `NewJobScreen` uses
+the same magenta so the two read as one signal.
 
 ## Themes & colour (`theme.ts`)
 

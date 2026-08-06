@@ -94,6 +94,19 @@ functions, no imports from react / 3dmol / tauri. The reactive `store.ts` (added
   one row per constraint (type badge, atoms in our terms, set-vs-measured value, delete)
   plus the range and composition guards (2.5.4b); read-only on an `unrecognised` block
   (2.5.5).
+- `vdw-radii.ts` — **cited** van der Waals radii (Å) for steric-clash detection
+  (unit 3.2): Bondi 1964 (main group), Mantina 2009 (main-group gaps incl. **B**),
+  Alvarez 2013 (transition metals incl. **Pd/Pt**). `vdwRadius(el)` returns
+  `undefined` = **UNDETERMINED** for an uncovered element (rule #11 — skip + surface,
+  never a guess or 0). A physical table, deliberately **separate** from
+  `viewer/highlight.ts`'s 3Dmol-mirroring radii (see below). Pure / node-tested.
+- `clash.ts` — `detectClashes(scene, k, activeConstraints): ClashReport` (unit 3.2):
+  **inter-fragment** atom pairs closer than `k·(rᵢ+rⱼ)`. Reuses `measure.ts`
+  `distance`; excludes pairs with an active **distance constraint** (intentional
+  contacts) read via `constraints.ts` `fromOrcaIndex`; reports UNDETERMINED pairs
+  apart from clashes. Plus `clashAtomIds` / `undeterminedElements` for the UI. Pure /
+  node-tested. **A warning, not a block; clash state is derived over the Scene, `k` is
+  app-owned** (never in the Scene). See the section below.
 - `xtb-progress.ts` — `formatXtbProgress` (2.5.5-fix-2): renders the `xtb:progress`
   cycle count + an elapsed clock for the pre-optimize button. Pure / node-tested.
 - `__fixtures__/butane.finalensemble.xyz` — a real (3-structure) slice of an ORCA
@@ -748,6 +761,49 @@ operational definition after a removal — **the exact call made for `selection`
 2.5.4b response is the same in spirit: don't remap, *warn* — via the existing
 `compositionSignature` (no second notion of "composition changed"), listing what
 each constraint names now so the user verifies by eye.
+
+## Steric-clash detection (`clash.ts` + `vdw-radii.ts`, unit 3.2)
+
+After any geometry change (a rigid drag release, an edit apply, a placement — all
+mutate the Scene) the coarse positioning can overlap two fragments. `detectClashes(
+scene, k, activeConstraints)` flags **inter-fragment** atom pairs closer than
+`k·(rᵢ+rⱼ)` of their vdW sum, as a **warning, not a block** (the drag is coarse; a
+close contact at setup is expected and refined in the editor). Four decisions, each
+a rule:
+
+1. **Inter-fragment only.** A fragment is rigid, so its internal geometry — its own
+   bonds — can never self-clash; testing intra pairs would flag a fragment's own
+   bonds (control c2).
+2. **Reuse `measure.ts` `distance`** — one distance implementation.
+3. **Excludes intentional contacts.** A pair carrying an active **distance
+   constraint** is a deliberately forming bond (a Bürgi–Dunitz C···Nu approach) — NOT
+   a clash, even inside the vdW sum. Read from the SAME `constraints.ts` parser
+   (`fromOrcaIndex`); control **c4** is the mission gate, confirmed live (m4): at a
+   real BD distance (C···B ≈ 2.8 Å) the default `k = 0.65` raises **zero** clashes
+   even with no constraint (raw threshold `k·(r_C+r_B)` = 2.35 Å < 2.8 Å), and a
+   distance constraint on the forming pair drops the flagged count while genuine
+   peripheral clashes remain.
+4. **UNDETERMINED, not guessed.** A pair touching an element with no cited vdW radius
+   is **skipped and surfaced separately** (rule #11), never radius 0 (control c3).
+
+**The two vdW tables are deliberately separate** (documented so a lint doesn't merge
+them): `vdw-radii.ts` is the **physical, cited** (Bondi/Mantina/Alvarez) table with
+UNDETERMINED semantics — for the *chemistry* of a clash; `viewer/highlight.ts`'s
+`VDW_RADII` is a **verbatim mirror of 3Dmol's** radii (with a 1.5 Å fallback,
+runtime drift-guarded) — for *sizing a halo to the sphere 3Dmol draws*. If 3Dmol
+changed a radius, `highlight.ts` would follow it; `vdw-radii.ts` must not (it follows
+the literature). Same numbers mostly, different masters.
+
+**Surfacing (in `NewJobScreen`, not the Scene):** `k` is app-owned session state
+(a labeled heuristic slider — `k ≈ 0.65`, "van der Waals overlap threshold —
+heuristic, not a physical cutoff"), the clash report is a `useMemo` over
+`(scene, k, content)` (stable reference so the viewer overlay only redraws when the
+clash set changes), a warn banner shows the count, the clashing atoms get a distinct
+**magenta danger glow** (`MoleculeViewer` `clashHighlight`, apart from the chartreuse
+halo/mask in both hue and form), and UNDETERMINED elements get a **quiet, separate**
+notice. Controls c1–c5 (found pair / no false positive / UNDETERMINED skip /
+constraint exclusion / k monotonicity) each demonstrated red. See
+`wiki/modules/editor-ui.md`, `visualization.md`, `chemistry/vdw-steric.md`.
 
 ## Edit planning (`edit-plan.ts`, 2.5.2d; both-orientation fix 2.5.2d-2; intra-fragment 2.5.3b; split-mask re-check 2.5.4a)
 

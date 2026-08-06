@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
@@ -30,6 +30,12 @@ import {
 } from "../scene/edit-plan";
 import { postSidecar } from "../sidecar-client";
 import { toggleAtom, filterSelection } from "../scene/selection";
+import {
+  detectClashes,
+  clashAtomIds,
+  undeterminedElements,
+  type ClashReport,
+} from "../scene/clash";
 import { placeFragment } from "../scene/placement";
 import {
   FRAGMENT_LIBRARY,
@@ -202,6 +208,25 @@ export function NewJobScreen({
   // release — ADR-010). A drag on empty space still rotates; a click still picks.
   // Session-only (a view affordance, not persisted).
   const [moveMode, setMoveMode] = useState(false);
+
+  // Steric-clash threshold (unit 3.2) — a LABELED display-choice (like the IR FWHM
+  // slider), NOT a physical cutoff: flag inter-fragment atoms closer than
+  // `k·(rᵢ+rⱼ)` of their vdW sum. App-owned (ADR-011 style), never in the Scene;
+  // session-only. Default 0.65 — a common steric-overlap heuristic.
+  const [clashK, setClashK] = useState(0.65);
+  // Clashes are DERIVED over the committed scene + k + the text's active
+  // constraints (a distance-constrained pair is an intentional contact, excluded).
+  // Memoized so the highlight array keeps a stable reference (the overlay effect
+  // redraws only when the clash set actually changes). Reuses the SAME
+  // `inspectConstraintsBlock` parser the panel uses — no second constraint reader.
+  const clashReport: ClashReport = useMemo(() => {
+    if (!scene) return { clashes: [], undetermined: [] };
+    const ins = inspectConstraintsBlock(content);
+    const cs = ins.kind === "parsed" ? ins.cs : [];
+    return detectClashes(scene, clashK, cs);
+  }, [scene, clashK, content]);
+  const clashIds = useMemo(() => clashAtomIds(clashReport), [clashReport]);
+  const undetElements = useMemo(() => undeterminedElements(clashReport), [clashReport]);
 
   // Viewer theme (2.5.2e-2) — persisted in the `settings` table under
   // `viewer_theme`; loaded on mount, saved on change. `viewerTheme` falls back to
@@ -1084,6 +1109,29 @@ export function NewJobScreen({
             />
             Move mode — drag a fragment to reposition it
           </label>
+          {/* Steric-clash sensitivity — a LABELED heuristic (unit 3.2), not a
+              physical cutoff. Higher k flags contacts sooner. App-owned. */}
+          <div className="clash-slider">
+            <label className="clash-slider-label" htmlFor="clash-k">
+              vdW overlap threshold
+              <span className="muted"> — heuristic, not a physical cutoff</span>
+            </label>
+            <div className="clash-slider-row">
+              <input
+                id="clash-k"
+                type="range"
+                min={0.4}
+                max={0.9}
+                step={0.01}
+                value={clashK}
+                onChange={(e) => setClashK(Number(e.currentTarget.value))}
+              />
+              <span className="mono clash-slider-value">
+                k = {clashK.toFixed(2)} · {clashReport.clashes.length} clash
+                {clashReport.clashes.length === 1 ? "" : "es"}
+              </span>
+            </div>
+          </div>
           {editPlan && selection.length >= 2 ? (
             <EditPanel
               scene={scene}
@@ -1319,6 +1367,31 @@ export function NewJobScreen({
         </div>
       ) : null}
 
+      {/* Steric-clash WARNING (unit 3.2) — a warning, never a block. Derived over
+          the scene, so it clears itself when the fragments are pulled apart. The
+          clashing atoms are glowing magenta in the viewer. */}
+      {clashReport.clashes.length > 0 ? (
+        <div className="banner warn clash-warn">
+          <span className="clash-warn-dot" aria-hidden>
+            ●
+          </span>{" "}
+          {clashReport.clashes.length} steric{" "}
+          {clashReport.clashes.length === 1 ? "clash" : "clashes"} between fragments
+          — coarse placement; refine with the editor or pull the fragments apart.
+          The overlapping atoms are highlighted.
+        </div>
+      ) : null}
+
+      {/* UNDETERMINED — a separate, quiet notice: an element with no cited vdW
+          radius couldn't be steric-checked (rule #11: skipped, not guessed). */}
+      {undetElements.length > 0 ? (
+        <div className="banner muted clash-undetermined">
+          Couldn&apos;t steric-check {undetElements.join(", ")}: no cited van der
+          Waals radius, so pairs touching{" "}
+          {undetElements.length === 1 ? "it" : "them"} were skipped (not guessed).
+        </div>
+      ) : null}
+
       {/* Replace input — the confirm step (discards the scene lineage). */}
       {replaceConfirm ? (
         <div className="banner warn">
@@ -1496,6 +1569,7 @@ export function NewJobScreen({
                   onAtomPick={onAtomPick}
                   moveMode={moveMode}
                   onFragmentDrag={translateFragment}
+                  clashHighlight={clashIds}
                   showAtomNumbers={showNumbers}
                   theme={theme}
                   maskHighlight={

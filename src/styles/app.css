@@ -1033,6 +1033,37 @@ select:disabled,
   flex-wrap: wrap;
   gap: 6px;
 }
+/* Steric-clash warning (unit 3.2) — the magenta matches the viewer's danger glow
+   (CLASH_COLOR in MoleculeViewer), so the banner dot and the glowing atoms read as
+   the same signal. A quieter, un-alarming notice for the UNDETERMINED case. */
+.clash-warn-dot {
+  color: #ff2d95;
+}
+.clash-undetermined {
+  font-size: 12px;
+}
+.clash-slider {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 8px 0;
+}
+.clash-slider-label {
+  font-size: 12px;
+}
+.clash-slider-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.clash-slider-row input[type="range"] {
+  flex: 1;
+}
+.clash-slider-value {
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 /* Import xyz as fragment (unit 2d) — the paste-xyz source in the Fragments dock. */
 .paste-xyz {
   display: flex;

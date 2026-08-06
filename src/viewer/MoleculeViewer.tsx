@@ -84,6 +84,14 @@ interface MoleculeViewerProps {
    */
   maskHighlight?: number[];
   /**
+   * Steric-clash highlight (unit 3.2): the stable {@link AtomId}s of atoms in an
+   * inter-fragment vdW clash after a move. Drawn as a distinct **magenta danger
+   * glow** — visually apart from the selection halo and the edit mask (see the
+   * `CLASH_*` constants). Resolves an id straight to its atom (like `selection`), so
+   * it follows the physical atom. A warning only — nothing here blocks Run/Apply.
+   */
+  clashHighlight?: AtomId[];
+  /**
    * Trajectory playback (unit 3.8). When true, a change of `xyzData` that keeps
    * the SAME atom count updates coordinates in place WITHOUT re-`zoomTo` — so the
    * camera stays put while the frames advance (a per-frame `zoomTo` would make
@@ -186,6 +194,17 @@ const HALO_OPACITY = 0.85;
  * `maskHighlight` prop note on why hue can't distinguish them). */
 const MASK_OPACITY = 0.22;
 const MASK_RADIUS_BOOST = 0.15;
+
+/** Steric-clash "danger glow" (unit 3.2) — a SOLID sphere in a distinct **deep
+ * magenta**, larger and more opaque than the mask glow. Distinct from the selection
+ * halo (wireframe chartreuse cage) and the edit mask (translucent chartreuse) in
+ * BOTH hue and form: no CPK element colour is magenta, so a clash reads on any atom
+ * — deliberately not reusing the theme's chartreuse `haloColor` (the Pd/Pt-vs-halo
+ * colour collision already bit once; see wiki/modules/theme.ts). A theme-independent
+ * semantic colour, like the orbital-phase colours. */
+const CLASH_COLOR = "#ff2d95";
+const CLASH_OPACITY = 0.4;
+const CLASH_RADIUS_BOOST = 0.3;
 
 /** The flat molecule style. **Two representations only** (unit 3.16): the default
  * ball-and-stick, and thin **lines** — lines expose a core 1s isosurface that hides
@@ -408,6 +427,7 @@ export const MoleculeViewer = forwardRef<MoleculeViewerHandle, MoleculeViewerPro
       showAtomNumbers = false,
       theme = DEFAULT_THEME,
       maskHighlight,
+      clashHighlight,
       preserveCameraOnUpdate = false,
       bondTopologyReference,
       orbitalCube,
@@ -776,6 +796,22 @@ export const MoleculeViewer = forwardRef<MoleculeViewerHandle, MoleculeViewerPro
       });
     }
 
+    // Steric-clash danger glow (unit 3.2) — a SOLID magenta sphere, drawn before
+    // the selection cage so a crisp halo still reads on top where they overlap.
+    // `AtomId[]` → resolve directly (like `selection`); an id no longer in the scene
+    // just draws nothing. A warning marker only.
+    for (const id of clashHighlight ?? []) {
+      const atom = byId.get(id);
+      if (!atom) continue;
+      viewer.addSphere({
+        center: { x: atom.x, y: atom.y, z: atom.z },
+        radius: highlightRadius(atom.element) + CLASH_RADIUS_BOOST,
+        color: CLASH_COLOR,
+        opacity: CLASH_OPACITY,
+        wireframe: false,
+      });
+    }
+
     // Selection halos — wireframe spheres sized per element (see highlight.ts),
     // coloured by the theme. `selection` is `AtomId[]` (2c2) → resolve directly;
     // an id no longer in the scene (`filterSelection` guards) just draws nothing.
@@ -820,7 +856,7 @@ export const MoleculeViewer = forwardRef<MoleculeViewerHandle, MoleculeViewerPro
     }
 
     viewer.render();
-  }, [selection, scene, showAtomNumbers, theme, maskHighlight, orbitalCube]);
+  }, [selection, scene, showAtomNumbers, theme, maskHighlight, clashHighlight, orbitalCube]);
 
   // Rigid-body fragment drag — "Move mode" (unit 3.1). Active only on a pickable
   // scene with Move mode on and a drag callback wired. The whole interaction is a

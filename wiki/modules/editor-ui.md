@@ -1,6 +1,6 @@
 # Module: editor UI (the New Job workspace)
 
-**Status:** Phase 4.2 unit 3.1 (Stage 3 — operations over the core — begun). The New Job screen (`src/screens/NewJobScreen.tsx`) is a
+**Status:** Phase 4.2 unit 3.2 (Stage 3 — operations over the core). The New Job screen (`src/screens/NewJobScreen.tsx`) is a
 **viewer-first workspace**: the 3Dmol canvas is the primary surface, and the geometry panels live in
 a **right dock** (`src/scene/EditorDock.tsx`) that is a thin icon rail expanding per section. This
 page records the **layout principle and where future panels go** — not the current CSS pixel values
@@ -33,6 +33,18 @@ page records the **layout principle and where future panels go** — not the cur
   measure + constraint tools and the input editor. That division of labour is the point — the drag
   answers "roughly here", the editor answers "exactly this". A drag on empty space still rotates the
   camera; a click still picks; toggling Move off restores plain rotate/pick.
+- **Steric-clash warning — a warning, never a block (unit 3.2).** After any geometry change, atoms of
+  DIFFERENT fragments closer than `k·(rᵢ+rⱼ)` of their vdW sum are flagged: a warn banner ("N steric
+  clashes — coarse placement…") and a **magenta danger glow** on the clashing atoms, visually apart
+  from the selection halo and edit mask (its own hue AND form — no CPK element is magenta). It **does
+  not block** Create/Run: a close contact at setup is expected, and the drag is coarse by design. The
+  threshold `k` is a **labeled display-choice** in the Edit section — a slider captioned "vdW overlap
+  threshold — heuristic, not a physical cutoff" (like the IR FWHM slider), app-owned, defaulting to
+  ≈0.65 — surfaced, not a hidden constant. A pair carrying an active **distance constraint** is an
+  intentional contact and is never flagged (the mission's reactive approach doesn't false-alarm); an
+  element with no cited vdW radius gets a **quiet, separate** UNDETERMINED notice (skipped, not
+  guessed). Chemistry + the physics of the threshold: `chemistry/vdw-steric.md`; mechanism:
+  `modules/scene.md` / `visualization.md`.
 - **Sections, in order of use:** Selection & Measure (`AtomInspector`) · Edit (`EditPanel` + the Move-mode
   toggle) · Fragments (the Add-Fragment palette — reagents / import / SMILES / **Paste xyz** / library —
   **plus** `FragmentList`) · Constraints (`ConstraintPanel`) · History (`HistoryPanel`) · Actions (xTB

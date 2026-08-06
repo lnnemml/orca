@@ -5311,3 +5311,66 @@ the editor/constraints, division of labour), `scene.md` (store `translateFragmen
 touched (ADR-011 deferred):** no Scene→Rust/WASM, no renderer move; no vdW-clash warning (next Stage-3
 unit); no axis-constraint drag; the pure scene/oplog core, Rust, sidecar all untouched. **Next: Stage 3
 continues — vdW-overlap detection after a move, then fragment rotation about the approach axis.**
+
+## [2026-08-06] session | feat(editor): inter-fragment vdW clash warning — Bondi/Alvarez radii, constraint pairs excluded, tunable heuristic threshold (Phase 4.2 Stage 3, unit 3.2)
+The second Stage-3 unit — a **post-move** steric check (not a continuous interaction, far less risky
+than the drag). After any geometry change, atoms of **different fragments** closer than `k·(rᵢ+rⱼ)` of
+their van der Waals sum are flagged as a **WARNING, never a block** (the drag is coarse; a close contact
+at setup is expected and refined in the editor).
+
+**Cited radii, one physical table (`src/scene/vdw-radii.ts`), UNDETERMINED not guessed (rules #10/#11).**
+Bondi 1964 (main group), Mantina 2009 (main-group gaps — **B 1.92 Å**, the BH₄⁻ centre), Alvarez 2013
+(transition metals — **Pd 2.10 / Pt 2.13**, the cross-coupling metals Bondi lacks). Each radius is
+source-attributed (`VDW_SOURCE`, a test asserts every radius is cited and vice-versa). An element in
+**none** of the sources → `vdwRadius` returns `undefined` = **UNDETERMINED**: the clash check skips that
+pair and surfaces it, never radius 0 or a guess. **Deliberately SEPARATE from `viewer/highlight.ts`'s
+`VDW_RADII`** (which mirrors 3Dmol's radii for visual halo sizing, 1.5 Å fallback, drift-guarded): the
+two have different masters (literature vs 3Dmol) and different missing-element semantics (UNDETERMINED
+vs fallback), documented so a future lint doesn't merge them.
+
+**Pure `detectClashes(scene, k, activeConstraints): ClashReport` (`src/scene/clash.ts`).** Inter-fragment
+pairs only (a rigid fragment can't self-clash; testing intra would flag its own bonds); reuses
+`measure.ts` `distance` (no second distance impl); **excludes pairs carrying an active distance
+constraint** — an intentional forming bond — read via the SAME `constraints.ts` `fromOrcaIndex` (no
+second constraint reader); UNDETERMINED pairs reported apart from clashes. **Where the state lives (NOT
+in Scene):** clash state is DERIVED in `NewJobScreen` (`useMemo` over `scene`/`k`/`content`, stable ref
+so the viewer overlay only redraws when the clash set changes); `k` is app-owned session state
+(grep-confirmed: `clashK` absent from `src/scene/`). The clashing atoms get a distinct **magenta danger
+glow** in `MoleculeViewer` (`clashHighlight`, `CLASH_COLOR #ff2d95`) — apart from the chartreuse
+selection halo (wireframe) and edit mask (translucent) in BOTH hue and form (no CPK element is magenta;
+deliberately not the halo colour — that collision bit once with Pd/Pt). UNDETERMINED elements get a
+**quiet, separate** notice; `k` is a **labeled heuristic slider** ("vdW overlap threshold — heuristic,
+not a physical cutoff", default 0.65) in the Edit dock section, like the IR FWHM slider.
+
+**Gates.** Pure (vitest, each demonstrated red then reverted): **(c1)** a real inter-fragment clash is
+flagged for the RIGHT pair — swap `<`/`>` → red; **(c2)** well-separated fragments are clean and
+INTRA/own-bonds are never flagged — remove the inter-fragment guard → a fragment's C–C bond screams →
+red; **(c3)** an UNDETERMINED element (W) skips the pair + flags it, never radius 0 — `?? 0` on a missing
+radius → false clash → red; **(c4, the mission gate)** a distance-constrained pair is NOT a clash even at
+1.2 Å — ignore constraints → the intentional contact screams → red; **(c5)** monotone in k (proves k is
+used, not hardcoded). Plus a `vdw-radii.test.ts` (cited-coverage + B/Pd/Pt present + W/Nd UNDETERMINED).
+`tsc` clean, **vitest 530 green**, `vite build` implied clean.
+
+**Manual gates m1–m5 verified LIVE** (WebKitGTK dev server at :1420 via Chrome — real 3Dmol + React):
+**m1** dragging BH₄ into H₂O raised "12 steric clashes" + a magenta glow on the overlapping atoms
+(clearly distinct from the chartreuse halo), Run NOT blocked; **m2** pulling them apart cleared the
+banner and the glow (derived, auto-updates); **m3** raising k 0.65→0.90 on a grazing geometry (unchanged
+coords) raised the count 0→3 — k really applied, label reads as a heuristic; **m4 — THE MISSION VERDICT:**
+formaldehyde + BH₄⁻ dragged to a textbook Bürgi–Dunitz distance (**C···B = 2.83 Å**) shows **0 clashes at
+default k=0.65** — NO false alarm on the legitimate reactive approach even WITHOUT a constraint (raw
+threshold `k·(r_C+r_B)` = 2.35 Å < 2.83); then a distance constraint on the forming pair (written
+`%geom Constraints {B 4 1 C}`) at k=0.90 dropped the flagged count **6→5** — the intentional pair excluded
+while genuine peripheral clashes remain; **m5** a tungsten atom (no cited radius) → a **quiet separate
+notice** "Couldn't steric-check W: no cited van der Waals radius, so pairs touching it were skipped (not
+guessed)", NOT a clash, NO crash. (Positioning via remote-control mouse was fiddly on rotated/overlapping
+views — the drag itself is fine, m1 proved it; a fresh frontal view made the BD placement reliable.)
+
+**Wiki (same commit):** `scene.md` (`clash.ts` + `vdw-radii.ts` files + a dedicated section: four
+decisions, the two-tables-separate rationale, derived-state + app-owned k), `chemistry/vdw-steric.md`
+(NEW, Ukrainian — vdW radii, why the threshold is a heuristic, why a reactive contact isn't a clash,
+cross-ref burgi-dunitz), `editor-ui.md` (status → 3.2; clash-warn affordance, labeled k-slider, distinct
+glow), `visualization.md` (the danger-glow overlay + prop list), `index.md` (+chemistry/vdw-steric,
+count 72), ROADMAP (vdW-overlap → [x]), `app.css` (clash banner/notice/slider). **Not touched:** no
+sidecar computation (ratified TS), no bond-perception change, no intra-fragment, no axial rotation (next
+unit), no Run/Apply block. **Next: Stage 3 — rotation of a fragment about its approach axis (an `Op`
+over the mask).**
