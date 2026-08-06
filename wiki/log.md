@@ -5076,3 +5076,23 @@ type mirrors it. A GOAT search job writes NULL (no editing history → seeds fre
 contract is **untouched** — minting still reads `scene_json`, as before. `cargo test --workspace`
 green. Wiki: `tauri-core.md` (v11 migration + cross-check), ADR-017 amendment, `scene.md`. **Stage 2
 units 2a+2b done; next: 2c (dumb renderer + AtomId pipeline).**
+
+## [2026-08-06] session | feat(ui): editor workspace — viewer-first right dock, fullscreen as workspace (unit 2b-ux)
+
+Pure-layout unit: the New Job editor becomes **viewer-first**. The geometry panels moved from a stack
+**below** the viewer into a **right dock** (`src/scene/EditorDock.tsx`) — a thin always-visible icon
+rail that expands per section: Selection & Measure · Edit · Fragments · Constraints · History ·
+Actions (use-order), each toggling independently (session-only state; fresh screen starts with
+Fragments open so Add Fragment is discoverable). The **Add-Fragment palette** (reagents/import/SMILES/
+library) moved out of the top accordion into the Fragments section, so it's reachable **inside
+fullscreen** — the same one dock is used in both modes (fullscreen = workspace). Removed the
+fullscreen-only rail-collapse (closing sections is the clean canvas now). **Resize:** reuses the one
+existing mechanism — `MoleculeViewer`'s `ResizeObserver` fires `viewer.resize()` on the container box
+change (dock toggle flips the split ratio + changes dock width → viewer box changes), same path as
+the split-panel resize and fullscreen; **no per-toggle resize call**. **Zero model changes** —
+`git diff` touches only `NewJobScreen.tsx`, `app.css`, `+EditorDock.tsx`;
+`scene`/`oplog`/`store`/`constraints` untouched (verified). tsc 0; vitest 511 green (no drop); cargo
+unchanged (no Rust). Wiki: +`modules/editor-ui.md` (viewer-first principle, the one resize
+mechanism, where future panels go — 2c2 index-space labels, Phase 4.5 reaction setup), index.md,
+ROADMAP 2b-ux `[x]`. **Window verification (checklist) is the author's — WebKitGTK layout can't be
+tested headless.** Next: 2c (dumb renderer + AtomId pipeline).

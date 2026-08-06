@@ -10,6 +10,7 @@ import { InputBuilderForm } from "../input-builder/InputBuilderForm";
 import { useSceneStore } from "../scene/store";
 import { FragmentList } from "../scene/FragmentList";
 import { HistoryPanel } from "../scene/HistoryPanel";
+import { EditorDock, type DockSection } from "../scene/EditorDock";
 import { AtomInspector } from "../scene/AtomInspector";
 import { EditPanel } from "../scene/EditPanel";
 import { ConstraintPanel } from "../scene/ConstraintPanel";
@@ -135,8 +136,22 @@ export function NewJobScreen({
   // immediately. Opening one closes the other; picking a template or generating
   // an input collapses the accordion (the user has what they wanted).
   const [openSection, setOpenSection] = useState<
-    "add" | "builder" | "templates" | null
+    "builder" | "templates" | null
   >(null);
+  // The editor workspace dock (unit 2b-ux): which right-dock sections are open.
+  // Session-only state (not persisted — a fresh screen starts viewer-first with
+  // just Fragments open, so Add Fragment is discoverable). Each toggles alone.
+  const [openDock, setOpenDock] = useState<Record<string, boolean>>({
+    selection: false,
+    edit: false,
+    fragments: true,
+    constraints: false,
+    history: false,
+    actions: false,
+  });
+  const toggleDock = (id: string) =>
+    setOpenDock((o) => ({ ...o, [id]: !o[id] }));
+  const anyDockOpen = Object.values(openDock).some(Boolean);
   // Library molecules for the Add-Fragment "From library" source (lazy-loaded
   // when the panel opens).
   const [libMolecules, setLibMolecules] = useState<Molecule[]>([]);
@@ -193,9 +208,8 @@ export function NewJobScreen({
   const [fullscreen, setFullscreen] = useState(false);
   const fullscreenRef = useRef(false);
   fullscreenRef.current = fullscreen;
-  // Collapse the geometry rail in fullscreen for a clean canvas (2.5.2e-3b).
-  // Only meaningful in fullscreen; not persisted.
-  const [railCollapsed, setRailCollapsed] = useState(false);
+  // A clean canvas in either mode is just closing the dock sections (the icon
+  // rail stays) — no separate rail-collapse state since unit 2b-ux.
 
   // ── Edit mode (2.5.2d) ──────────────────────────────────────────────────────
   // `previewScene` is the sidecar's proposed geometry shown ONLY in the viewer —
@@ -496,13 +510,14 @@ export function NewJobScreen({
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  // Lazy-load saved molecules whenever the Add-Fragment panel opens.
+  // Lazy-load saved molecules whenever the Fragments dock section opens (its
+  // "From library" source lists them).
   useEffect(() => {
-    if (openSection !== "add") return;
+    if (!openDock.fragments) return;
     invoke<Molecule[]>("list_molecules")
       .then(setLibMolecules)
       .catch(() => setLibMolecules([]));
-  }, [openSection]);
+  }, [openDock.fragments]);
 
   /**
    * The single road every "add a fragment" source takes (ADR-008): place the new
@@ -834,6 +849,215 @@ export function NewJobScreen({
   const canCreate =
     content.trim().length > 0 && !creating && !constraintBlockMessage;
 
+  // The Add-Fragment sources (reagents / import / SMILES / library) — the palette
+  // half of the Fragments dock section. Reachable inside fullscreen (unit 2b-ux).
+  const addFragmentSources = (
+    <div className="add-fragment-body">
+      <div className="add-source">
+        <div className="add-source-title muted">Reagents</div>
+        <div className="reagent-chips">
+          {FRAGMENT_LIBRARY.map((lf) => (
+            <button
+              key={lf.key}
+              className="chip"
+              title={lf.provenance}
+              onClick={() => addReagent(lf)}
+            >
+              {lf.name}{" "}
+              <span className="muted">
+                {signed(lf.charge)} · {lf.atoms.length}a
+              </span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="add-source">
+        <div className="add-source-title muted">Import file or SMILES</div>
+        <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+          <button className="btn btn-sm" onClick={() => fileInputRef.current?.click()}>
+            Import file
+          </button>
+          <input
+            className="input mono import-smiles"
+            placeholder="SMILES, e.g. CCO"
+            value={smiles}
+            onChange={(e) => setSmiles(e.currentTarget.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") generateFromSmiles();
+            }}
+            spellCheck={false}
+          />
+          <button
+            className="btn btn-sm"
+            onClick={generateFromSmiles}
+            disabled={generating || !smiles.trim()}
+          >
+            {generating ? "Generating…" : "Generate 3D"}
+          </button>
+        </div>
+      </div>
+
+      <div className="add-source">
+        <div className="add-source-title muted">From library</div>
+        {libMolecules.length === 0 ? (
+          <div className="muted" style={{ fontSize: 13 }}>
+            No saved molecules yet.
+          </div>
+        ) : (
+          <div className="lib-mol-list">
+            {libMolecules.map((m) => (
+              <button
+                key={m.id}
+                className="lib-mol-row"
+                onClick={() => addLibraryMolecule(m)}
+              >
+                <span>{m.name}</span>
+                <span className="muted mono">
+                  {m.formula || "—"} · {signed(m.charge)}
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
+  // The six dock sections, in order of use (unit 2b-ux). Bodies are the EXISTING
+  // panels with their existing props / empty states — nothing new invented; only
+  // relocated from the old stacked rail into the viewer-first right dock.
+  const dockSections: DockSection[] = [
+    {
+      id: "selection",
+      label: "Selection & Measure",
+      short: "Sel",
+      glyph: "◎",
+      body: scene ? (
+        <AtomInspector
+          scene={scene}
+          selection={selection}
+          onClear={clearSelection}
+          onConstrain={constrainSelection}
+          constrainDisabledReason={
+            constraintsUnrecognised
+              ? "The constraint block contains syntax OrcaStudio doesn't recognise — edit it in the input editor."
+              : null
+          }
+        />
+      ) : null,
+    },
+    {
+      id: "edit",
+      label: "Edit geometry",
+      short: "Edit",
+      glyph: "✎",
+      body:
+        scene && editPlan && selection.length >= 2 ? (
+          <EditPanel
+            scene={scene}
+            plan={editPlan}
+            movingFragmentName={movingFragmentName}
+            alternativeFragmentName={alternativeFragmentName}
+            splitMask={splitMask}
+            splitError={splitError}
+            splitResolving={splitResolving}
+            onSwitchOrientation={() => setPreferAlternative((v) => !v)}
+            onPreview={setPreviewScene}
+            onApplied={applyEdit}
+          />
+        ) : null,
+    },
+    {
+      id: "fragments",
+      label: "Fragments",
+      short: "Frag",
+      glyph: "⬡",
+      body: (
+        <>
+          {addFragmentSources}
+          <FragmentList onFindConformers={findConformers} />
+        </>
+      ),
+    },
+    {
+      id: "constraints",
+      label: "Constraints",
+      short: "Cons",
+      glyph: "⊗",
+      body: scene ? (
+        <ConstraintPanel
+          scene={scene}
+          content={content}
+          onChange={setContent}
+          compositionChanged={constraintCompWarn}
+          onDismissComposition={() => setConstraintCompWarn(false)}
+        />
+      ) : null,
+    },
+    {
+      id: "history",
+      label: "History",
+      short: "Hist",
+      glyph: "↺",
+      body: <HistoryPanel />,
+    },
+    {
+      id: "actions",
+      label: "Actions",
+      short: "Act",
+      glyph: "▶",
+      body: scene ? (
+        <div className="xtb-panel">
+          <div className="xtb-row">
+            <button
+              className="btn btn-sm"
+              onClick={runXtbPreopt}
+              disabled={xtbBusy || constraintsUnrecognised}
+              title={
+                constraintsUnrecognised
+                  ? "The constraint block is unrecognised — fix it in the editor first."
+                  : "GFN2-xTB relax the geometry, holding the constraints in the input text."
+              }
+            >
+              {xtbBusy ? "Pre-optimizing…" : "xTB pre-optimize"}
+            </button>
+            {xtbBusy ? (
+              <button className="btn btn-sm" onClick={cancelXtb}>
+                Cancel
+              </button>
+            ) : null}
+          </div>
+          {xtbBusy ? (
+            <div className="muted xtb-note xtb-progress">
+              {formatXtbProgress(xtbCycle, xtbElapsed)}
+            </div>
+          ) : null}
+          {constraintsUnrecognised ? (
+            <div className="muted xtb-note">
+              constraint block unreadable — fix it in the editor to pre-optimize
+            </div>
+          ) : null}
+          {xtbNote ? <div className="muted xtb-note">{xtbNote}</div> : null}
+          {xtbError ? (
+            <div className="edit-error edit-error-severe xtb-error">
+              <div className="xtb-error-msg">{xtbError}</div>
+              {xtbErrorDir ? (
+                <input
+                  className="input mono xtb-error-dir"
+                  readOnly
+                  value={xtbErrorDir}
+                  onFocus={(e) => e.currentTarget.select()}
+                  title="Diagnostic files — select and copy this path"
+                />
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      ) : null,
+    },
+  ];
+
   return (
     <div className="screen new-job">
       <div className="row" style={{ gap: 16 }}>
@@ -884,14 +1108,9 @@ export function NewJobScreen({
         }}
       />
 
+      {/* Add Fragment moved into the workspace dock's Fragments section (unit
+          2b-ux) — reachable in fullscreen. Save to Library stays here. */}
       <div className="import-row">
-        <button
-          className="btn btn-sm"
-          onClick={() => setOpenSection((s) => (s === "add" ? null : "add"))}
-          aria-expanded={openSection === "add"}
-        >
-          {openSection === "add" ? "▾" : "＋"} Add Fragment
-        </button>
         <button
           className="btn btn-sm"
           onClick={saveToLibrary}
@@ -901,82 +1120,6 @@ export function NewJobScreen({
           {saving ? "Saving…" : "Save to Library"}
         </button>
       </div>
-
-      {openSection === "add" ? (
-        <div className="add-fragment-body">
-          <div className="add-source">
-            <div className="add-source-title muted">Reagents</div>
-            <div className="reagent-chips">
-              {FRAGMENT_LIBRARY.map((lf) => (
-                <button
-                  key={lf.key}
-                  className="chip"
-                  title={lf.provenance}
-                  onClick={() => addReagent(lf)}
-                >
-                  {lf.name}{" "}
-                  <span className="muted">
-                    {signed(lf.charge)} · {lf.atoms.length}a
-                  </span>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="add-source">
-            <div className="add-source-title muted">Import file or SMILES</div>
-            <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
-              <button
-                className="btn btn-sm"
-                onClick={() => fileInputRef.current?.click()}
-              >
-                Import file
-              </button>
-              <input
-                className="input mono import-smiles"
-                placeholder="SMILES, e.g. CCO"
-                value={smiles}
-                onChange={(e) => setSmiles(e.currentTarget.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") generateFromSmiles();
-                }}
-                spellCheck={false}
-              />
-              <button
-                className="btn btn-sm"
-                onClick={generateFromSmiles}
-                disabled={generating || !smiles.trim()}
-              >
-                {generating ? "Generating…" : "Generate 3D"}
-              </button>
-            </div>
-          </div>
-
-          <div className="add-source">
-            <div className="add-source-title muted">From library</div>
-            {libMolecules.length === 0 ? (
-              <div className="muted" style={{ fontSize: 13 }}>
-                No saved molecules yet.
-              </div>
-            ) : (
-              <div className="lib-mol-list">
-                {libMolecules.map((m) => (
-                  <button
-                    key={m.id}
-                    className="lib-mol-row"
-                    onClick={() => addLibraryMolecule(m)}
-                  >
-                    <span>{m.name}</span>
-                    <span className="muted mono">
-                      {m.formula || "—"} · {signed(m.charge)}
-                    </span>
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      ) : null}
 
       {error ? <div className="banner err">{error}</div> : null}
       {saved ? <div className="banner ok">Saved to library</div> : null}
@@ -1101,17 +1244,18 @@ export function NewJobScreen({
         ) : null}
       </div>
 
-      <div className="editor-viewer-split">
+      <div className={"editor-viewer-split" + (anyDockOpen ? " dock-open" : "")}>
         <div className="editor-wrap">
           <InputEditor value={content} onChange={setContent} />
         </div>
-        {/* The workbench holds BOTH the viewer and the geometry rail, in ONE
-            DOM structure for both modes (2.5.2e-3b). The fullscreen toggle
-            changes ONLY the className here (and the rail's) — MoleculeViewer and
-            the rail keep their tree positions, so React never remounts them and
-            the camera survives. Normal: a column (viewer over rail, the old
-            right column). Fullscreen: fixed, a row (viewer stretches, rail
-            ~320px on the right). */}
+        {/* The workbench holds BOTH the viewer and the workspace dock, in ONE DOM
+            structure for both modes (2.5.2e-3b / 2b-ux). The fullscreen toggle
+            changes ONLY the className here — MoleculeViewer and the dock keep their
+            tree positions, so React never remounts them and the camera survives. A
+            ROW in both modes now (viewer-first): the viewer takes the width, the
+            dock is a thin icon rail on the right (fullscreen just goes fixed). The
+            viewer's ResizeObserver fires viewer.resize() on the box change — the
+            one shared resize mechanism, same as before. */}
         <div
           className={
             "viewer-column" + (fullscreen ? " viewer-column-fullscreen" : "")
@@ -1144,15 +1288,6 @@ export function NewJobScreen({
                       </option>
                     ))}
                   </select>
-                  {fullscreen ? (
-                    <button
-                      className="btn btn-sm"
-                      onClick={() => setRailCollapsed((c) => !c)}
-                      title={railCollapsed ? "Show panel" : "Hide panel"}
-                    >
-                      {railCollapsed ? "Panel" : "Hide"}
-                    </button>
-                  ) : null}
                   <button
                     className="btn btn-sm"
                     onClick={() => setFullscreen((f) => !f)}
@@ -1182,102 +1317,12 @@ export function NewJobScreen({
               <div className="viewer-empty muted">No coordinates in input</div>
             )}
           </div>
-          {/* The geometry rail — ONE instance, shared by both modes (never
-              duplicated: two AtomInspectors would be two copies of selection
-              state). Collapsible only in fullscreen. */}
-          <div
-            className={
-              "viewer-rail" +
-              (fullscreen && railCollapsed ? " viewer-rail-collapsed" : "")
-            }
-          >
-            {scene ? (
-              <AtomInspector
-                scene={scene}
-                selection={selection}
-                onClear={clearSelection}
-                onConstrain={constrainSelection}
-                constrainDisabledReason={
-                  constraintsUnrecognised
-                    ? "The constraint block contains syntax OrcaStudio doesn't recognise — edit it in the input editor."
-                    : null
-                }
-              />
-            ) : null}
-            {scene && editPlan && selection.length >= 2 ? (
-              <EditPanel
-                scene={scene}
-                plan={editPlan}
-                movingFragmentName={movingFragmentName}
-                alternativeFragmentName={alternativeFragmentName}
-                splitMask={splitMask}
-                splitError={splitError}
-                splitResolving={splitResolving}
-                onSwitchOrientation={() => setPreferAlternative((v) => !v)}
-                onPreview={setPreviewScene}
-                onApplied={applyEdit}
-              />
-            ) : null}
-            <HistoryPanel />
-            <FragmentList onFindConformers={findConformers} />
-            {scene ? (
-              <ConstraintPanel
-                scene={scene}
-                content={content}
-                onChange={setContent}
-                compositionChanged={constraintCompWarn}
-                onDismissComposition={() => setConstraintCompWarn(false)}
-              />
-            ) : null}
-            {scene ? (
-              <div className="xtb-panel">
-                <div className="xtb-row">
-                  <button
-                    className="btn btn-sm"
-                    onClick={runXtbPreopt}
-                    disabled={xtbBusy || constraintsUnrecognised}
-                    title={
-                      constraintsUnrecognised
-                        ? "The constraint block is unrecognised — fix it in the editor first."
-                        : "GFN2-xTB relax the geometry, holding the constraints in the input text."
-                    }
-                  >
-                    {xtbBusy ? "Pre-optimizing…" : "xTB pre-optimize"}
-                  </button>
-                  {xtbBusy ? (
-                    <button className="btn btn-sm" onClick={cancelXtb}>
-                      Cancel
-                    </button>
-                  ) : null}
-                </div>
-                {xtbBusy ? (
-                  <div className="muted xtb-note xtb-progress">
-                    {formatXtbProgress(xtbCycle, xtbElapsed)}
-                  </div>
-                ) : null}
-                {constraintsUnrecognised ? (
-                  <div className="muted xtb-note">
-                    constraint block unreadable — fix it in the editor to pre-optimize
-                  </div>
-                ) : null}
-                {xtbNote ? <div className="muted xtb-note">{xtbNote}</div> : null}
-                {xtbError ? (
-                  <div className="edit-error edit-error-severe xtb-error">
-                    <div className="xtb-error-msg">{xtbError}</div>
-                    {xtbErrorDir ? (
-                      <input
-                        className="input mono xtb-error-dir"
-                        readOnly
-                        value={xtbErrorDir}
-                        onFocus={(e) => e.currentTarget.select()}
-                        title="Diagnostic files — select and copy this path"
-                      />
-                    ) : null}
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
-          </div>
+          {/* The workspace dock — ONE instance, shared by both modes (unit 2b-ux;
+              never duplicated: two AtomInspectors would be two copies of selection
+              state). Viewer-first: a thin icon rail that expands per section, the
+              SAME dock inside fullscreen so every section (incl. Add Fragment) is
+              reachable without leaving it. The panels are unchanged — only moved. */}
+          <EditorDock sections={dockSections} open={openDock} onToggle={toggleDock} />
         </div>
       </div>
     </div>

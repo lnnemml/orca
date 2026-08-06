@@ -523,6 +523,17 @@ Stage 3, where it is actually needed.)
       re-injects, no second collapse — control (c)). `jobs.scene_json` stays the v2 snapshot (ADR-017
       decision 3). Three `scene: null` consumers defined (sync / input builder / minting). Sizes: no
       cap (ADR-017 decision 4).
+- [x] **2b-ux — the editor workspace: viewer-first right dock, fullscreen as workspace.** Pure
+      layout (zero model changes — `scene`/`oplog`/`store`/`constraints` untouched): the 3Dmol canvas
+      becomes the primary surface and the panels move from a stack **below** the viewer into a **right
+      dock** — a thin always-visible icon rail that expands per section (Selection · Edit · Fragments ·
+      Constraints · History · Actions, in use-order), each toggling independently (session state). The
+      **same dock lives inside fullscreen** (the workspace mode), so Add Fragment / measure / History /
+      constraints are all reachable without leaving it. Resize uses the **one existing mechanism** —
+      `MoleculeViewer`'s `ResizeObserver` fires `viewer.resize()` on the container box change (dock
+      toggle + fullscreen), same as the split-panel resize; no per-toggle call. *Why before 2c:*
+      viewer-first is the frame the AtomId-picking work (2c) plugs into, and a usable workspace makes
+      testing the rest of Stage 2 far easier. See `wiki/modules/editor-ui.md`.
 - [ ] **2c1 — 3Dmol becomes a dumb renderer.** It is handed geometry + an `AtomId → viewer index`
       table and is never a source of truth (ADR-010 / ADR-011); picking resolves through the table to
       an `AtomId`.

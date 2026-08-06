@@ -529,16 +529,11 @@ select:disabled,
   border-radius: 0;
   min-height: 0;
 }
-.viewer-column-fullscreen .viewer-rail {
-  flex: 0 0 320px;
-  overflow-y: auto;
-  padding: 10px;
-  border-left: 1px solid var(--border);
-  background: var(--panel);
-}
-/* Collapsed rail (fullscreen only) → clean canvas. */
-.viewer-rail-collapsed {
-  display: none;
+/* In fullscreen the workspace dock is a little wider (there's room). Add Fragment
+   and every other section stay reachable without leaving fullscreen. */
+.viewer-column-fullscreen .dock-body {
+  flex-basis: 340px;
+  width: 340px;
 }
 
 /* 3Dmol appends an absolutely-positioned canvas — the container must be a
@@ -558,14 +553,16 @@ select:disabled,
   padding: 12px;
 }
 
-/* Right-hand column of the editor/viewer split: viewer on top, fragment list
-   below, sharing the fixed split height. */
+/* Right-hand area of the editor/viewer split — VIEWER-FIRST (unit 2b-ux): the
+   canvas is the primary surface, the workspace dock is a thin icon rail on its
+   right that expands per section. A ROW in both normal and fullscreen mode (was a
+   column stacking the rail below the viewer). */
 .viewer-column {
   flex: 1;
   min-width: 260px;
   min-height: 0;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   gap: 8px;
 }
 .viewer-column .viewer-panel {
@@ -573,18 +570,106 @@ select:disabled,
   min-width: 0;
   min-height: 120px;
 }
-/* Geometry rail (2.5.2e-3b) — the AtomInspector + FragmentList group. In normal
-   mode it's the lower part of the right column (content height); the wrapper is
-   visually inert (same 8px gaps as before), so New Job looks unchanged. In
-   fullscreen it becomes the fixed-width right column (rules above). */
-.viewer-rail {
+/* When a dock section is open, the geometry work gets more room: Monaco yields
+   width to the viewer+dock (viewer-first). Monaco stays present, just narrower. */
+.editor-viewer-split.dock-open .editor-wrap {
+  flex: 1;
+}
+.editor-viewer-split.dock-open .viewer-column {
+  flex: 2;
+}
+
+/* ── The workspace dock (unit 2b-ux) — pure layout, see EditorDock.tsx ────────
+   Layout: [dock-body (open sections)] [dock-rail (icon toggles, always shown)].
+   Opening/closing a section changes the dock width → the viewer's flex box
+   changes → MoleculeViewer's ResizeObserver fires viewer.resize() (the one shared
+   resize mechanism, same as fullscreen; no per-toggle call). */
+.editor-dock {
+  flex: none;
+  display: flex;
+  flex-direction: row;
+  min-height: 0;
+  background: var(--panel);
+}
+.dock-body {
+  flex: 0 0 300px;
+  width: 300px;
+  min-width: 0;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  min-height: 0;
+  padding: 4px;
 }
-.viewer-column > .viewer-rail {
-  flex: none;
+.dock-rail {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px 2px;
+  border-left: 1px solid var(--border);
+  overflow-y: auto;
+}
+.dock-rail-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  width: 46px;
+  padding: 6px 2px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.dock-rail-btn:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.05);
+}
+.dock-rail-btn.active {
+  color: var(--text);
+  border-color: var(--border);
+  background: rgba(255, 255, 255, 0.07);
+}
+.dock-glyph {
+  font-size: 16px;
+  line-height: 1;
+}
+.dock-rail-label {
+  font-size: 9px;
+  letter-spacing: 0.02em;
+}
+.dock-section {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.dock-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 2px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+}
+.dock-section-close {
+  padding: 0 4px;
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+.dock-section-close:hover {
+  color: var(--text);
+}
+.dock-section-body {
+  min-width: 0;
 }
 /* Viewer toolbar (2.5.2e-1, extended 2.5.2e-2) — Numbers toggle, theme select,
    Expand/Exit. An overlay in the top-right of the viewer so it travels with the
