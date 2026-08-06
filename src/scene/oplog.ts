@@ -109,6 +109,19 @@ export type Op =
       delta: [number, number, number];
     }
   | {
+      type: "rotate-fragment";
+      fragmentId: string;
+      name: string;
+      /** The two picked atoms that define the approach axis: `[P, Q]` with P the
+       * pivot (on the rotating fragment) and Q the direction. Stored as atoms, not
+       * a raw vector, because the axis IS two atoms by definition (ADR-007) and the
+       * journal "about O→C" serves the teaching mission — resolved at apply time in
+       * the op's own snapshot, where both are present by construction (ADR-017). */
+      axisAtoms: [AtomId, AtomId];
+      /** Signed rotation angle in radians (canonical unit; the UI collects degrees). */
+      angleRad: number;
+    }
+  | {
       type: "replace-fragment-atoms";
       fragmentId: string;
       name: string;
@@ -139,6 +152,7 @@ const OP_TYPES: readonly Op["type"][] = [
   "set-fragment-charge",
   "set-multiplicity",
   "translate-fragment",
+  "rotate-fragment",
   "replace-fragment-atoms",
   "replace-all-atoms",
   "collapse-from-text",
@@ -150,6 +164,12 @@ const OP_TYPES: readonly Op["type"][] = [
 /** Compact number: integers bare, else 3 decimals (`30` not `30.000`). */
 function num(x: number): string {
   return Number.isInteger(x) ? String(x) : x.toFixed(3);
+}
+
+/** Radians → degrees for display, rounded to 3 dp so float noise off a clean
+ * degree input (30° → rad → deg = 29.9999…) reads back as `30`, not `30.000`. */
+function deg(angleRad: number): number {
+  return Math.round((angleRad * 180) / Math.PI * 1000) / 1000;
 }
 
 /** Signed formal charge, e.g. `+1`, `-1`, `0`. */
@@ -204,6 +224,10 @@ export function describe(op: Op): string {
       const [dx, dy, dz] = op.delta;
       return `Move ${op.name} by (${num(dx)}, ${num(dy)}, ${num(dz)}) Å`;
     }
+    case "rotate-fragment": {
+      const [p, q] = op.axisAtoms;
+      return `Rotate ${op.name} ${num(deg(op.angleRad))}° about ${p}→${q}`;
+    }
     case "replace-fragment-atoms":
       return describeReplaceFragment(op);
     case "replace-all-atoms":
@@ -239,15 +263,21 @@ export function describe(op: Op): string {
  * never blank.
  */
 export function describeInScene(op: Op, scene: Scene): string {
+  // Resolve an AtomId to the global index it occupies in `scene`, falling back to
+  // the raw id so the line is never blank (the atom is present by construction —
+  // the op's own snapshot always carries the atoms it names).
+  const gi = (id: AtomId): string => {
+    const g = globalIndexOfAtom(scene, id);
+    return g === null ? String(id) : String(g);
+  };
   if (op.type === "replace-fragment-atoms" && op.edit.via === "set-internal") {
     const e = op.edit;
-    const chain = e.atoms
-      .map((id) => {
-        const gi = globalIndexOfAtom(scene, id);
-        return gi === null ? String(id) : String(gi);
-      })
-      .join("-");
+    const chain = e.atoms.map(gi).join("-");
     return `Set ${e.kind} ${chain} to ${formatTarget(e.target, e.unit)}`;
+  }
+  if (op.type === "rotate-fragment") {
+    const [p, q] = op.axisAtoms;
+    return `Rotate ${op.name} ${num(deg(op.angleRad))}° about ${gi(p)}→${gi(q)}`;
   }
   return describe(op);
 }
@@ -450,6 +480,15 @@ function isOp(v: unknown): v is Op {
         Array.isArray(o.delta) &&
         o.delta.length === 3 &&
         o.delta.every((n) => typeof n === "number")
+      );
+    case "rotate-fragment":
+      return (
+        str("fragmentId") &&
+        str("name") &&
+        Array.isArray(o.axisAtoms) &&
+        o.axisAtoms.length === 2 &&
+        o.axisAtoms.every((n) => typeof n === "number") &&
+        typeof o.angleRad === "number"
       );
     case "replace-fragment-atoms":
       return str("fragmentId") && str("name") && isFragmentVia(o.edit);

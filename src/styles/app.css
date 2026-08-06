@@ -1064,6 +1064,35 @@ select:disabled,
   white-space: nowrap;
 }
 
+/* Rotate about axis (unit 3.3) — the rigid whole-fragment rotation tool, sibling
+   of the set-internal edit panel above it in the Edit geometry section. */
+.rotate-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+}
+.rotate-axis-note {
+  font-size: 11px;
+}
+.rotate-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.rotate-slider {
+  flex: 1 1 120px;
+  min-width: 100px;
+}
+.rotate-angle {
+  width: 72px;
+}
+
 /* Import xyz as fragment (unit 2d) — the paste-xyz source in the Fragments dock. */
 .paste-xyz {
   display: flex;

@@ -92,6 +92,24 @@ interface MoleculeViewerProps {
    */
   clashHighlight?: AtomId[];
   /**
+   * The two picked atoms `[P, Q]` of an active "Rotate about axis" edit (unit 3.3),
+   * drawn as a distinct extended **axis cylinder** through P→Q so the eye reads the
+   * rotation axis (not a bond). Resolves ids straight to atoms; an absent id draws
+   * nothing. Purely decorative — a display of the axis the panel is turning about.
+   */
+  axisHighlight?: [AtomId, AtomId] | null;
+  /**
+   * EPHEMERAL coordinate-only overlay (unit 3.3) — the live preview of a rigid
+   * fragment rotation. A Scene with the SAME composition as `scene` but the rotating
+   * fragment's atoms turned. Rendered through the **frozen-topology coordinate-update
+   * path** (like the Move-mode drag and mode animation): the live model atoms' x/y/z
+   * are set from it and re-styled WITHOUT `addModel`/re-perception/`zoomTo`, so bonds
+   * don't flicker and the camera holds while the angle is turned live. The store/Scene
+   * is untouched (ADR-010); on Apply the committed `scene` changes and the model effect
+   * rebuilds at the final coords; on Cancel (`null`) the committed coords are restored.
+   */
+  ephemeralScene?: Scene | null;
+  /**
    * Trajectory playback (unit 3.8). When true, a change of `xyzData` that keeps
    * the SAME atom count updates coordinates in place WITHOUT re-`zoomTo` — so the
    * camera stays put while the frames advance (a per-frame `zoomTo` would make
@@ -401,6 +419,32 @@ function drawMeasurement(
   });
 }
 
+/** Radius of the rotation-axis cylinder (unit 3.3) — a touch thicker than the
+ * dihedral axis so it reads as "the axis this turns about", and the amount (Å) it
+ * extends beyond each picked atom so the line reads as an axis, not a P–Q bond. */
+const ROTATE_AXIS_RADIUS = 0.06;
+const ROTATE_AXIS_EXTEND = 0.7;
+
+/**
+ * Draw the rotation axis P→Q as an extended solid cylinder (unit 3.3). Extended a
+ * little past both atoms so it reads as an AXIS the fragment spins about, not a
+ * bond between them. Colour ties to the selection accent (these are picked atoms).
+ * No-op if the two coincide (no direction).
+ */
+function drawRotationAxis(viewer: GLViewer, a: SceneAtom, b: SceneAtom, color: string) {
+  const d = [b.x - a.x, b.y - a.y, b.z - a.z];
+  const len = Math.hypot(d[0], d[1], d[2]);
+  if (len < 1e-8) return;
+  const u = [d[0] / len, d[1] / len, d[2] / len];
+  const e = ROTATE_AXIS_EXTEND;
+  viewer.addCylinder({
+    start: { x: a.x - u[0] * e, y: a.y - u[1] * e, z: a.z - u[2] * e },
+    end: { x: b.x + u[0] * e, y: b.y + u[1] * e, z: b.z + u[2] * e },
+    radius: ROTATE_AXIS_RADIUS,
+    color,
+  });
+}
+
 /**
  * Ball-and-stick molecule viewer built on 3Dmol.js. Fills its parent; mouse
  * rotate/zoom/pan is 3Dmol's default behaviour. One WebGL context is created
@@ -428,6 +472,8 @@ export const MoleculeViewer = forwardRef<MoleculeViewerHandle, MoleculeViewerPro
       theme = DEFAULT_THEME,
       maskHighlight,
       clashHighlight,
+      axisHighlight,
+      ephemeralScene,
       preserveCameraOnUpdate = false,
       bondTopologyReference,
       orbitalCube,
@@ -827,6 +873,16 @@ export const MoleculeViewer = forwardRef<MoleculeViewerHandle, MoleculeViewerPro
       });
     }
 
+    // Rotation axis (unit 3.3) — the P→Q line the active "Rotate about axis" edit
+    // turns about, drawn as an extended cylinder so it reads as an axis. Both
+    // endpoints are fixed points of the rotation (P is the pivot; Q lies on the
+    // line), so drawing it at the committed coords stays correct during preview.
+    if (axisHighlight) {
+      const pa = byId.get(axisHighlight[0]);
+      const qa = byId.get(axisHighlight[1]);
+      if (pa && qa) drawRotationAxis(viewer, pa, qa, theme.haloColor);
+    }
+
     drawMeasurement(viewer, scene, selection ?? [], theme);
 
     // Atom numbers — keyed by AtomId, valued by the table's viewer index (the same
@@ -856,7 +912,46 @@ export const MoleculeViewer = forwardRef<MoleculeViewerHandle, MoleculeViewerPro
     }
 
     viewer.render();
-  }, [selection, scene, showAtomNumbers, theme, maskHighlight, clashHighlight, orbitalCube]);
+  }, [selection, scene, showAtomNumbers, theme, maskHighlight, clashHighlight, axisHighlight, orbitalCube]);
+
+  // Ephemeral coordinate-only overlay — the live rotation preview (unit 3.3). Reuses
+  // the SAME frozen-topology coordinate-update path the Move-mode drag and the mode
+  // animation use: the live model atoms' coords are set from `ephemeralScene` (same
+  // composition, one fragment turned) then `applySceneStyle` re-draws the sticks at
+  // the new coords — NO `addModel`, no bond re-perception (so an inter-fragment
+  // contact doesn't flicker a stick as the angle turns), no `zoomTo`. The Scene/store
+  // is untouched (ADR-010). On `null` we restore the committed coords (Cancel makes
+  // the preview vanish); on Apply the committed `scene` changes and the model effect
+  // rebuilds at the final coords. A ref tracks whether we currently hold an overlay so
+  // an unrelated re-render doesn't churn a restore.
+  const ephemeralActiveRef = useRef(false);
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer) return;
+    if (orbitalCube?.trim()) return; // the orbital viewer owns its own model
+    const model = viewer.getModel();
+    if (!model) return;
+    const live = model.selectedAtoms({}) as Array<{ x: number; y: number; z: number }>;
+    const writeCoords = (src: Scene): boolean => {
+      const atoms = src.fragments.flatMap((f) => f.atoms);
+      if (atoms.length !== live.length) return false; // composition mismatch → skip, never corrupt
+      for (let i = 0; i < live.length; i++) {
+        live[i].x = atoms[i].x;
+        live[i].y = atoms[i].y;
+        live[i].z = atoms[i].z;
+      }
+      applySceneStyle(viewer, src, theme); // nulls cached geometry → sticks redraw at new coords
+      viewer.render();
+      return true;
+    };
+    if (ephemeralScene) {
+      if (writeCoords(ephemeralScene)) ephemeralActiveRef.current = true;
+    } else if (ephemeralActiveRef.current && scene) {
+      // Preview cancelled/applied → put the committed coordinates back.
+      writeCoords(scene);
+      ephemeralActiveRef.current = false;
+    }
+  }, [ephemeralScene, scene, theme, orbitalCube]);
 
   // Rigid-body fragment drag — "Move mode" (unit 3.1). Active only on a pickable
   // scene with Move mode on and a drag callback wired. The whole interaction is a

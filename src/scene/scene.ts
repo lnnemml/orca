@@ -555,6 +555,127 @@ export function translateFragmentInScene(
   };
 }
 
+/** Below which an axis vector (Q − P, Å) is treated as degenerate: the two
+ * endpoints coincide, so no rotation direction is defined. Well under any real
+ * inter-atomic separation (≥ ~0.5 Å), well over float noise. */
+const AXIS_DEGENERATE_EPS = 1e-8;
+
+type Vec3 = [number, number, number];
+
+/**
+ * Rigid-body rotate a fragment by `angleRad` about the line through `pivot` with
+ * direction `axisDir` (Rodrigues' rotation formula). Pure/immutable — returns a
+ * new fragment with the same id, composition and internal geometry, only turned.
+ * Generic over Raw/Scene (`...a` preserves an `id` when present, its absence when
+ * not — a rigid turn keeps atom identity), the sibling of {@link translateFragment}.
+ *
+ * `axisDir` is normalized here, so a caller may pass a raw `Q − P`; a zero-length
+ * axis is a programming error (the degenerate case is caught upstream by
+ * {@link rotationAxis} / the store guard, never reaching here) and throws rather
+ * than emitting `NaN` — the same discipline as the non-finite-coordinate throw in
+ * the canonical xyz writer.
+ *
+ * **Rigid by construction:** every atom is mapped `p ↦ pivot + R·(p − pivot)` with
+ * the SAME rotation `R`, so all pairwise distances inside the fragment are
+ * preserved, any point on the axis (`pivot`, and the second axis atom Q which lies
+ * on the line) is a fixed point, and count/order are unchanged (domain rule #9 —
+ * proven by the c1/c2/c4 negative controls, `scene.test.ts`).
+ */
+export function rotateFragment<F extends RawFragment>(
+  fragment: F,
+  axisDir: Vec3,
+  angleRad: number,
+  pivot: Vec3,
+): F {
+  const len = Math.hypot(axisDir[0], axisDir[1], axisDir[2]);
+  if (!(len > 0)) {
+    throw new Error("rotateFragment: degenerate (zero-length) axis");
+  }
+  const kx = axisDir[0] / len;
+  const ky = axisDir[1] / len;
+  const kz = axisDir[2] / len;
+  const c = Math.cos(angleRad);
+  const s = Math.sin(angleRad);
+  const [px, py, pz] = pivot;
+  return {
+    ...fragment,
+    atoms: fragment.atoms.map((a) => {
+      // v = a − pivot, expressed relative to the axis.
+      const vx = a.x - px;
+      const vy = a.y - py;
+      const vz = a.z - pz;
+      // Rodrigues: v_rot = v·cosθ + (k×v)·sinθ + k·(k·v)·(1−cosθ).
+      const kdotv = kx * vx + ky * vy + kz * vz;
+      const crossx = ky * vz - kz * vy;
+      const crossy = kz * vx - kx * vz;
+      const crossz = kx * vy - ky * vx;
+      const rx = vx * c + crossx * s + kx * kdotv * (1 - c);
+      const ry = vy * c + crossy * s + ky * kdotv * (1 - c);
+      const rz = vz * c + crossz * s + kz * kdotv * (1 - c);
+      return { ...a, x: px + rx, y: py + ry, z: pz + rz };
+    }),
+  } as F;
+}
+
+/** Resolve the {@link SceneAtom} carrying an {@link AtomId}, or `null` if absent —
+ * the coordinate lookup `rotationAxis` needs (no positional round-trip). */
+function findAtomById(scene: Scene, id: AtomId): SceneAtom | null {
+  for (const f of scene.fragments) {
+    for (const a of f.atoms) if (a.id === id) return a;
+  }
+  return null;
+}
+
+/**
+ * The rotation axis two picked atoms define: `dir = normalize(Q − P)` and
+ * `pivot = P` (the attaching atom stays put). Returns `null` when either atom is
+ * absent from the scene or the two coincide (no direction is defined) — the single
+ * degeneracy test shared by {@link rotateFragmentInScene} (→ no-op) and the UI
+ * (→ Apply disabled with a reason), so the two never disagree. The axis is BY
+ * DEFINITION two atoms (the approach axis of the reaction, ADR-007), which is why
+ * the op stores the atoms, not this derived vector.
+ */
+export function rotationAxis(
+  scene: Scene,
+  p: AtomId,
+  q: AtomId,
+): { dir: Vec3; pivot: Vec3 } | null {
+  const pa = findAtomById(scene, p);
+  const qa = findAtomById(scene, q);
+  if (!pa || !qa) return null;
+  const dir: Vec3 = [qa.x - pa.x, qa.y - pa.y, qa.z - pa.z];
+  if (Math.hypot(dir[0], dir[1], dir[2]) < AXIS_DEGENERATE_EPS) return null;
+  return { dir, pivot: [pa.x, pa.y, pa.z] };
+}
+
+/**
+ * Rigid-body rotate ONE fragment (by id) within a scene by `angleRad` about the
+ * axis the two picked atoms `[P, Q]` define — `dir = normalize(Q − P)`,
+ * `pivot = P`. Pure/immutable; every other fragment is untouched and the moved
+ * fragment keeps its id, composition and atom order (`rotateFragment`), so atom
+ * identity and count/order are invariant (domain rule #9). The scene-level mutator
+ * the store's `rotateFragment` commits; the op stores `[P, Q]` and this resolves
+ * them **in the target scene** at commit time (they are present by construction —
+ * ADR-017). Returns the scene **unchanged (same reference)** when the axis is
+ * degenerate or the fragment/atoms are absent, so a no-op never appends a log entry.
+ */
+export function rotateFragmentInScene(
+  scene: Scene,
+  fragmentId: string,
+  axisAtoms: [AtomId, AtomId],
+  angleRad: number,
+): Scene {
+  const axis = rotationAxis(scene, axisAtoms[0], axisAtoms[1]);
+  if (!axis) return scene;
+  if (!scene.fragments.some((f) => f.id === fragmentId)) return scene;
+  return {
+    ...scene,
+    fragments: scene.fragments.map((f) =>
+      f.id === fragmentId ? rotateFragment(f, axis.dir, angleRad, axis.pivot) : f,
+    ),
+  };
+}
+
 // ── Parsing coordinate blocks into SceneAtoms ────────────────────────────────
 
 /**

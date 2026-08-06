@@ -584,7 +584,20 @@ Stage 3, where it is actually needed.) **Next: Stage 3 — operations over the c
       proven-biting negative control; manual gates **m1–m4** verified live (drag moves one fragment /
       camera held; one history entry + one Undo; rotate+pick outside Move mode; ~1.3 ms/frame at 38
       atoms). See `wiki/modules/visualization.md`, `editor-ui.md`, `debugging/013`.
-- [ ] Rotation of a fragment about its approach axis (an `Op` over the mask).
+- [x] **Rotation of a fragment about its approach axis (unit 3.3).** A rigid whole-fragment spin about
+      the axis two picked atoms define — P (pivot, on the rotating fragment) and Q (direction, typically
+      the substrate contact atom). **Pure TS, a sibling of — not routed through — the sidecar set-internal
+      edit** (`rotateFragment`/`rotateFragmentInScene` in `scene.ts`, Rodrigues; rigid transform vs
+      internal-coordinate solve). A **numeric** angle (reproducible; spin-drag deferred) drives a live
+      **ephemeral preview** through the same frozen-topology coordinate-update path as the drag (viewer
+      only, Scene untouched); **one** `rotate-fragment` op commits on Apply (the op stores the two axis
+      ATOMS + angle, so the journal reads "Rotate BH₄⁻ 30° about O→C"), Cancel drops the preview with
+      zero ops. Post-condition (rule #9): rigid (internal pairwise distances invariant), P and every
+      on-axis point fixed, other fragments untouched, ids/order invariant. Pure gates **c1** (rigid),
+      **c2** (Rodrigues — closed-form + round-trip + identity + on-axis), **c3** (one op on Apply; preview
+      never commits), **c4** (axis P→Q / pivot P), **c5** (degenerate axis → no-op), each with a
+      demonstrated-biting negative control. See `wiki/modules/scene.md`, `visualization.md`, `editor-ui.md`,
+      ADR-017. **Manual gates m1–m5 pending live verification in the Tauri window.**
 - [x] **vdW-overlap detection after a move (unit 3.2).** After any geometry change, **inter-fragment**
       atoms closer than `k·(rᵢ+rⱼ)` of their cited vdW sum (Bondi/Mantina/Alvarez — `scene/vdw-radii.ts`,
       **B** and **Pd/Pt** covered; uncovered → UNDETERMINED, skipped + surfaced, never guessed) are

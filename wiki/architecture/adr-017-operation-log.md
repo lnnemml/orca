@@ -121,6 +121,7 @@ stays legible after a fragment is removed. The correspondence to the existing mu
 | `setFragmentCharge` | `set-fragment-charge` | `Set charge of BH₄⁻ to -1` |
 | `setMultiplicity` | `set-multiplicity` | `Set multiplicity to 3` |
 | `translateFragment` | `translate-fragment` | `Move BH₄⁻ by (1.500, 0, -2) Å` |
+| `rotateFragment` | `rotate-fragment` `{axisAtoms: [P, Q], angleRad}` | `Rotate BH₄⁻ 30° about 4→7` |
 | `replaceFragmentAtoms` | `replace-fragment-atoms` `{edit: via 'set-internal'\|'xtb'\|'conformer'}` | `Set dihedral 4-7-12-15 to 30°` |
 | `replaceAllAtoms` | `replace-all-atoms` `{edit: via 'xtb'}` | `Pre-optimize all fragments (xtb)` |
 | `collapseToSingleFragment` (store) | `collapse-from-text` | `Edit coordinates as text (3 fragments → 1)` |
@@ -224,6 +225,25 @@ must read the same as it did), but **new code never emits it** (the store's `col
 and the Monaco→Scene collapse reaction are removed). History is not rewritten; the type stays in the
 union and `OP_TYPES`. Geometry hand-editing survives through two conscious doors (Import xyz as
 fragment / Replace input) — see `wiki/modules/scene.md`.
+
+## Amendment (2026-08-06, unit 3.3) — a `rotate-fragment` op, and `describeInScene` extended to it
+
+Stage 3's rigid fragment rotation adds one op variant, `rotate-fragment
+{fragmentId, name, axisAtoms: [P, Q], angleRad}`. Two points worth recording:
+
+- **It stores the two axis ATOMS, not the derived direction vector.** Unlike `translate-fragment`
+  (which stores a raw delta), the approach axis IS two atoms by definition (ADR-007), so keeping `[P, Q]`
+  makes the journal line "Rotate BH₄⁻ 30° about O→C" a **provenance record in the reaction's own terms**,
+  serving the teaching mission. The resolve stays safe under decision 1: the op applies to **its own
+  materialized snapshot**, where P and Q are present by construction — `rotateFragmentInScene` resolves
+  `dir = normalize(Q−P)`, `pivot = P` there, so the stored atoms never dangle.
+- **`describeInScene` now renders `rotate-fragment` too.** The 2c2 presentation (Variant A — picked atoms
+  by their **global index in the passed scene**) is extended from the `set-internal` case to the axis
+  pair P→Q; `describe` stays pure AtomId-native (`about 3→4`), the panel shows global (`about 0→1`). Same
+  divergent-fixture negative control as (d): breaking the resolve turns the panel line red, then restored.
+
+`describe` (decision 1) is otherwise untouched, and the mutator↔Op table gains one row
+(`rotateFragment` → `rotate-fragment`).
 
 ## References
 

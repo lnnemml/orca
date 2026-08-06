@@ -89,6 +89,9 @@ functions, no imports from react / 3dmol / tauri. The reactive `store.ts` (added
   in `NewJobScreen` state, uses the shared `fragmentColor` palette).
 - `EditPanel.tsx` — edit-mode UI in the Atom rail section (React): target field,
   Preview/Apply, and the direct `fetch` to the sidecar geometry endpoint.
+- `RotatePanel.tsx` — "Rotate about axis" UI (unit 3.3), a **sibling of `EditPanel`**
+  in the same Edit section but **pure TS** (no sidecar): two picked atoms = axis
+  (P pivot, Q direction), numeric angle, live ephemeral preview, one op on Apply.
 - `ConstraintPanel.tsx` — the constraint section of the geometry rail (React): a
   **view over the input text** (its only source is `parseConstraintsBlock(content)`),
   one row per constraint (type badge, atoms in our terms, set-vs-measured value, delete)
@@ -257,6 +260,24 @@ Immutable mutators (each returns a new Scene, never mutates the input):
 - `translateFragment(fragment, dx, dy, dz)` — rigid-body shift of one fragment
   (same id / composition / internal geometry). Used by placement and, later, the
   geometry editor (2.5.2).
+- `rotateFragment(fragment, axisDir, angleRad, pivot)` — rigid-body **rotation** of
+  one fragment about the line through `pivot` with direction `axisDir` (Rodrigues'
+  formula; `axisDir` normalized here, so a raw `Q − P` is fine — a zero-length axis
+  throws rather than emitting `NaN`). Generic over Raw/Scene, the sibling of
+  `translateFragment` (unit 3.3). **Rigid by construction:** every atom maps
+  `p ↦ pivot + R·(p − pivot)` with the SAME `R`, so all internal pairwise distances
+  are preserved and any point on the axis (`pivot`, and Q which lies on the line) is
+  a fixed point (rule #9; c1/c2/c4 in `rotate.test.ts`).
+- `rotationAxis(scene, P, Q)` — the axis two picked atoms define: `{ dir:
+  normalize(Q−P), pivot: P }`, or **`null`** when an atom is absent or the two
+  coincide (no direction). The **single degeneracy test** shared by the mutator
+  (→ no-op) and the UI (→ Apply disabled), so they never disagree.
+- `rotateFragmentInScene(scene, fragmentId, [P, Q], angleRad)` — rotate ONE fragment
+  about the `[P, Q]` axis, every other fragment untouched, ids/order invariant. The
+  scene-level mutator the store's `rotateFragment` commits; resolves `[P, Q]` **in the
+  target scene** (present by construction — ADR-017). Returns the scene **unchanged
+  (same reference)** on a degenerate axis / absent fragment, so a no-op appends no log
+  entry. **Rigid TS, not the sidecar** — see the split below.
 
 Parsing / reset detection:
 - `parseAtomLines(lines): SceneAtom[] | null` — skips blanks and `#` comments;
@@ -351,10 +372,14 @@ store's core invariant and what makes the "mutator bypasses the log" defect
 the three pointer moves `undo` / `redo` / `jumpTo`. Every write to `scene` in the
 store is `scene: current(log)` right after the log changed. Convenience mutators
 (`addFragment`, `removeFragment`, `renameFragment`, `setMultiplicity`,
-`replaceFragmentAtoms(via)`, and `translateFragment(id, dx, dy, dz)` — the rigid-body
+`replaceFragmentAtoms(via)`, `translateFragment(id, dx, dy, dz)` — the rigid-body
 drag commit, unit 3.1: `translateFragmentInScene` → a `translate-fragment` op, one
-op with the TOTAL delta on mouseup, a no-op on a zero delta) compute the result from
-the pure `scene.ts` functions and funnel through `commit`; `seedScene(scene, source)` is a
+op with the TOTAL delta on mouseup, a no-op on a zero delta — and
+`rotateFragment(id, [P, Q], angleRad)` — the rigid **rotation** commit, unit 3.3:
+`rotateFragmentInScene` → a `rotate-fragment` op, one op on Apply carrying the axis
+atoms + final angle, a no-op on a zero angle or a degenerate axis) compute the result
+from the pure `scene.ts` functions and funnel through `commit`; `seedScene(scene,
+source)` is a
 thin `installLog` of a fresh `restore-snapshot`-seeded log (or the empty log for a
 `null` scene). Undo/redo are **deep** now (the whole log), superseding the old
 one-step `previous`/`undoReset`. A store test asserts `scene === current(log)`
@@ -441,20 +466,25 @@ is the history-panel jump, and `SnapshotSource` covers the three whole-scene see
 
 - **`Op`** — a tagged union with **one variant per Scene mutator** (`add-fragment`,
   `remove-fragment`, `rename-fragment`, `set-fragment-charge`, `set-multiplicity`,
-  `translate-fragment`, `replace-fragment-atoms` `{edit: via 'set-internal'|'xtb'|'conformer'}`,
+  `translate-fragment`, `rotate-fragment` `{axisAtoms: [P, Q], angleRad}`,
+  `replace-fragment-atoms` `{edit: via 'set-internal'|'xtb'|'conformer'}`,
   `replace-all-atoms` `{edit: via 'xtb'}`) plus the store act `restore-snapshot`, and the
   **legacy** `collapse-from-text` (no post-2d path emits it — kept only to deserialize pre-2d
   logs). The mutator↔Op table is in ADR-017 (so 2b finds no hole). Geometry ops
   reference atoms by **`AtomId`**, not a positional index — the log is AtomId-native ahead of the
-  2c2 pipeline move.
+  2c2 pipeline move. **`rotate-fragment` stores the two axis ATOMS, not the derived vector** (unit
+  3.3): the approach axis IS two atoms by definition (ADR-007), the journal line "about O→C" serves
+  the teaching mission, and the resolve is safe — an op applies to its own snapshot, where P and Q
+  are present by construction.
 - **`describe(op): string`** — one human lab-journal line per variant, **AtomId-native** provenance
-  (the id chain, e.g. "Set dihedral 4-7-12-15 to 30°"). Cheap and total. **`describeInScene(op,
-  scene): string`** (2c2, Variant A) is a *presentation* over it for the history panel: for a
-  `set-internal` op it renders the picked atoms by the **global index they occupy in the passed
-  scene** (so the journal reads in the same 0-based space the rest of the UI is labelled with),
-  delegating every other variant to `describe`. `HistoryPanel` calls it with the entry's **own**
-  snapshot; a `set-internal` preserves atom count + order, so its atoms are always present there and
-  the resolve always succeeds (no `[removed]` case arises).
+  (the id chain, e.g. "Set dihedral 4-7-12-15 to 30°", "Rotate BH₄⁻ 30° about 4→7"). Cheap and total.
+  **`describeInScene(op, scene): string`** (2c2, Variant A) is a *presentation* over it for the
+  history panel: for a `set-internal` op it renders the picked atoms — and for a `rotate-fragment` op
+  the two axis atoms P→Q — by the **global index they occupy in the passed scene** (so the journal
+  reads in the same 0-based space the rest of the UI is labelled with), delegating every other
+  variant to `describe`. `HistoryPanel` calls it with the entry's **own** snapshot; both ops preserve
+  atom count + order, so their atoms are always present there and the resolve always succeeds (no
+  `[removed]` case arises).
 - **`SceneLog {entries, pointer}`**, `LogEntry {op, scene}` — `append` (truncates the redo tail),
   `undo`/`redo`/`current`, `logInvariant`. Pointer invariant **`-1 ≤ pointer < len`**, `-1` = the
   empty scene (`current → null`), so undo can reach a blank canvas.
@@ -891,6 +921,24 @@ The math is **not duplicated** — `op` and `current` come straight from
   `needs-split` case carrying the right `cut`/`moving`/`within` per op (including
   a single-fragment scene); the immovable-pivot refusal naming culprits `#0`,
   `#3`; the slice; the boundary check.
+
+## Rigid transforms are TS; internal-coordinate edits are the sidecar (the Stage-3 split)
+
+A hard boundary, so a future reader doesn't reach for the wrong tool:
+
+- **Rigid whole-fragment transforms — pure TS in `scene.ts`.** `translateFragment` (unit 3.1) and
+  `rotateFragment` (unit 3.3) move a fragment as one body; they change no bond, no internal
+  coordinate, so there is nothing for ASE to compute. They are Rodrigues/vector arithmetic, run
+  synchronously in the browser (which is what lets the rotation preview update live per slider tick,
+  no HTTP). Post-condition (rule #9): the same internal pairwise distances go in and out.
+- **Intra-fragment internal-coordinate edits — the ASE sidecar.** Setting a distance/angle/dihedral
+  (`set-internal`, 2.5.2–2.5.3) or a torsion about a bond needs a **bond-graph split** and a
+  coordinate solve only ASE can do — `POST /geometry/set-internal`, `/geometry/rotatable-mask`
+  (see `wiki/modules/sidecar.md`). These emit `replace-fragment-atoms`, not `rotate-fragment`.
+
+The two look similar in the UI (both are pick + value + preview + apply in the Edit section) but are
+**different operations on different math**. Do NOT route rigid rotation through the sidecar, and do
+NOT reimplement the bond-graph torsion in TS.
 
 ## Notes
 

@@ -13,6 +13,7 @@ import { HistoryPanel } from "../scene/HistoryPanel";
 import { EditorDock, type DockSection } from "../scene/EditorDock";
 import { AtomInspector } from "../scene/AtomInspector";
 import { EditPanel } from "../scene/EditPanel";
+import { RotatePanel } from "../scene/RotatePanel";
 import { ConstraintPanel } from "../scene/ConstraintPanel";
 import {
   parseConstraintsBlock,
@@ -186,6 +187,7 @@ export function NewJobScreen({
   const installLog = useSceneStore((s) => s.installLog);
   const seedScene = useSceneStore((s) => s.seedScene);
   const translateFragment = useSceneStore((s) => s.translateFragment);
+  const rotateFragment = useSceneStore((s) => s.rotateFragment);
 
   // ── Atom selection (2.5.2a; AtomId-native 2c2) — the geometry editor's pick list
   // Ordered stable AtomIds, held in component state (NOT the scene store — the store
@@ -259,6 +261,12 @@ export function NewJobScreen({
   // the store Scene and Monaco are untouched until Apply (the 2.5.1 decision).
   // Undo is now the operation log's undo (deep, not one-step) — unit 2b.
   const [previewScene, setPreviewScene] = useState<Scene | null>(null);
+  // ── Rotate about axis (unit 3.3) — app-owned rotate state, NOT in the Scene ──
+  // `rotateEphemeral` is the live rotation preview shown ONLY in the viewer (the
+  // frozen-topology coordinate-update path); `rotateAxis` is the two picked atoms
+  // the viewer draws the axis through. Both cleared on Apply/Cancel by `RotatePanel`.
+  const [rotateEphemeral, setRotateEphemeral] = useState<Scene | null>(null);
+  const [rotateAxis, setRotateAxis] = useState<[AtomId, AtomId] | null>(null);
   // "Move the other fragment instead" — flip to the plan's alternative orientation
   // (2.5.2d-2). Reset when the selection/scene changes (the plan is different).
   const [preferAlternative, setPreferAlternative] = useState(false);
@@ -1151,6 +1159,20 @@ export function NewJobScreen({
               for rough placement.
             </div>
           )}
+          {/* Rotate about axis (unit 3.3): a rigid whole-fragment spin about the
+              approach axis two picked atoms define — sibling of the set-internal
+              edit above, pure TS (no sidecar). Self-manages its active state on the
+              same 2-atom pick. */}
+          <RotatePanel
+            scene={scene}
+            selection={selection}
+            onEphemeral={setRotateEphemeral}
+            onAxis={setRotateAxis}
+            onApply={(fragmentId, axisAtoms, angleRad) => {
+              rotateFragment(fragmentId, axisAtoms, angleRad);
+              setSaved(false);
+            }}
+          />
         </div>
       ) : null,
     },
@@ -1565,6 +1587,8 @@ export function NewJobScreen({
                 </div>
                 <MoleculeViewer
                   scene={previewScene ?? scene}
+                  ephemeralScene={rotateEphemeral}
+                  axisHighlight={rotateAxis}
                   selection={selection}
                   onAtomPick={onAtomPick}
                   moveMode={moveMode}

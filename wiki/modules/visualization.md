@@ -28,7 +28,7 @@ WebKitGTK webview is this module's hardest constraint (see Watchpoints).
 ## `MoleculeViewer` — props & effects
 
 Props: `xyzData?: string` (standard xyz) | `scene?: Scene` (`scene` wins), plus optional `style`,
-`onAtomPick?`, `selection?`, `maskHighlight?`, `clashHighlight?`, `moveMode?`, `onFragmentDrag?`, `showAtomNumbers?`, `theme?`. With neither `scene`
+`onAtomPick?`, `selection?`, `maskHighlight?`, `clashHighlight?`, `axisHighlight?`, `ephemeralScene?`, `moveMode?`, `onFragmentDrag?`, `showAtomNumbers?`, `theme?`. With neither `scene`
 nor `xyzData` it renders an empty viewer, no crash. `NewJobScreen` passes `scene`; `MoleculesScreen`
 passes `xyzData` (stored xyz strings); the Job-detail conformer panel passes `xyzData`.
 
@@ -134,6 +134,30 @@ not logged; one op, one Undo). The pure accumulate/commit logic is `src/viewer/f
   c1/c3).** During the drag the store snapshot is `===` its pre-drag value; on commit `translateFragment`
   shifts every mover atom by the same delta (internal pairwise distances invariant, count/order/AtomId
   invariant), other fragments untouched.
+
+## Rigid fragment rotation preview — "Rotate about axis" (unit 3.3; ADR-010 ephemeral layer)
+
+The live preview of a rigid whole-fragment rotation reuses the SAME frozen-topology coordinate-update
+path as the Move-mode drag and mode animation — driven not by mouse events but by a **prop**, because
+the angle comes from a slider in `RotatePanel`, outside the viewer.
+
+- **`ephemeralScene?: Scene | null`** — the rotated preview scene (`rotateFragmentInScene` over the
+  committed scene; same composition, one fragment turned), computed in `NewJobScreen`. A dedicated
+  effect (`[ephemeralScene, scene, theme, orbitalCube]`) sets the live model atoms' `.x/.y/.z` from it
+  and `applySceneStyle` re-draws the sticks at the new coords — **no `addModel`, no bond re-perception,
+  no `zoomTo`**. Re-perception is deliberately avoided: a model rebuild would re-guess bonds every
+  slider tick and **flicker an inter-fragment stick** in and out exactly in the reactive-approach setup
+  this feature is for. On `null` (Cancel/Apply) the committed coords are written back (a ref tracks
+  whether an overlay is held, so an unrelated re-render doesn't churn a restore); on Apply the committed
+  `scene` changes and the model effect rebuilds at the final coords (no flick). The Scene/store is
+  untouched throughout (ADR-010) — this is why the model effect's `scene` dep does NOT include
+  `ephemeralScene`, so turning the angle re-runs only this cheap effect.
+- **`axisHighlight?: [AtomId, AtomId] | null`** — the two picked atoms of the active rotation, drawn in
+  the overlay effect as an **extended axis cylinder** through P→Q (a touch thicker than the dihedral
+  axis, extended ~0.7 Å past each atom so it reads as an axis, not a P–Q bond; coloured with the
+  selection accent). Drawn from the **committed** coords, which is correct throughout the preview:
+  **both endpoints are fixed points** of the rotation (P is the pivot; Q lies on the axis line), so
+  neither moves as the angle turns — and the selection halos on P and Q stay correct for the same reason.
 
 ## The overlay effect (one owner of all shapes & labels)
 

@@ -50,7 +50,9 @@ import {
   replaceFragmentAtoms as replaceFragmentAtomsPure,
   setMultiplicity as setMultiplicityPure,
   translateFragmentInScene,
+  rotateFragmentInScene,
 } from "./scene";
+import type { AtomId } from "./ids";
 import type { RawAtom, RawFragment, Scene } from "./types";
 
 export interface SceneStore {
@@ -86,6 +88,16 @@ export interface SceneStore {
    * lands here on mouseup). No-op on a zero delta or an absent id.
    */
   translateFragment(id: string, dx: number, dy: number, dz: number): void;
+  /**
+   * Rigid-body ROTATE a fragment by `angleRad` about the axis two picked atoms
+   * `[P, Q]` define (`dir = normalize(Q − P)`, `pivot = P`) — the single op the
+   * "Rotate about axis" tool commits on Apply (Stage 3, unit 3.3; ADR-010: the
+   * live ephemeral preview is a viewer-only overlay and is NOT logged; exactly one
+   * `rotate-fragment` op lands here). No-op on a zero angle, an absent id, or a
+   * degenerate axis (P ≡ Q). The op stores `[P, Q]` (the approach axis is two atoms
+   * by definition — ADR-007); the result is materialized here from the current scene.
+   */
+  rotateFragment(id: string, axisAtoms: [AtomId, AtomId], angleRad: number): void;
 
   // ── History navigation (undo/redo fall out of the log — ADR-010) ──
   undo(): void;
@@ -195,6 +207,22 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
     get().commit(
       { type: "translate-fragment", fragmentId: id, name: frag.name, delta: [dx, dy, dz] },
       translateFragmentInScene(cur, id, dx, dy, dz),
+    );
+  },
+
+  rotateFragment: (id, axisAtoms, angleRad) => {
+    const cur = current(get().log);
+    if (!cur) return;
+    const frag = cur.fragments.find((f) => f.id === id);
+    if (!frag) return;
+    if (angleRad === 0) return; // no turn → no op
+    // `rotateFragmentInScene` returns the SAME reference on a degenerate axis (P ≡ Q
+    // or an absent axis atom); an identity result must not append a log entry.
+    const next = rotateFragmentInScene(cur, id, axisAtoms, angleRad);
+    if (next === cur) return;
+    get().commit(
+      { type: "rotate-fragment", fragmentId: id, name: frag.name, axisAtoms, angleRad },
+      next,
     );
   },
 

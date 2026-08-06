@@ -241,6 +241,16 @@ vitestDescribe("describe() — one human line per variant", () => {
       ],
       [
         {
+          type: "rotate-fragment",
+          fragmentId: "bh4",
+          name: "BH₄⁻",
+          axisAtoms: [makeAtomId(4), makeAtomId(7)],
+          angleRad: (30 * Math.PI) / 180, // a clean degree reads back as "30", not "30.000"
+        },
+        "Rotate BH₄⁻ 30° about 4→7",
+      ],
+      [
+        {
           type: "replace-fragment-atoms",
           fragmentId: "sub",
           name: "Ibuprofen",
@@ -348,6 +358,23 @@ vitestDescribe("describeInScene() — global index of the record (Variant A)", (
     expect(describe(op)).toBe("Set angle 3-4-5 to 109°");
   });
 
+  it("renders a rotate-fragment axis by the GLOBAL indices of P and Q (Variant A, unit 3.3)", () => {
+    const { scene, boronId } = borohydrideAfterWaterRemoved();
+    const [h1] = idsFor(scene, 1); // a BH₄⁻ hydrogen at global 1 (id 4)
+    const op: Op = {
+      type: "rotate-fragment",
+      fragmentId: "bh4",
+      name: "BH4",
+      axisAtoms: [boronId, h1], // boron (id 3, global 0) → H (id 4, global 1)
+      angleRad: (45 * Math.PI) / 180,
+    };
+    // Panel line: GLOBAL indices (boron is global 0 now, H is global 1).
+    expect(describeInScene(op, scene)).toBe("Rotate BH4 45° about 0→1");
+    // Pure provenance stays AtomId-native (3→4) — the two spaces diverge, so the
+    // panel line is not green by coincidence of id == index.
+    expect(describe(op)).toBe("Rotate BH4 45° about 3→4");
+  });
+
   it("delegates non-set-internal ops to describe() verbatim", () => {
     const { scene } = borohydrideAfterWaterRemoved();
     const op: Op = { type: "replace-all-atoms", edit: { via: "xtb" } };
@@ -380,6 +407,19 @@ vitestDescribe("serialization round-trip", () => {
     expect(back!.entries[1].scene.fragments[1].atoms[0].id).toBe(
       undone.entries[1].scene.fragments[1].atoms[0].id,
     );
+  });
+
+  it("a rotate-fragment op survives the deserialize validator (isOp accepts it)", () => {
+    const rot: Op = {
+      type: "rotate-fragment",
+      fragmentId: "wat",
+      name: "Water",
+      axisAtoms: [makeAtomId(0), makeAtomId(4)],
+      angleRad: 0.5,
+    };
+    const back = deserializeLog(serializeLog(append(emptyLog(), rot, waterScene())));
+    expect(back).not.toBeNull();
+    expect(back!.entries[0].op).toEqual(rot);
   });
 
   it("deserialized entries are re-frozen (immutability survives persistence)", () => {

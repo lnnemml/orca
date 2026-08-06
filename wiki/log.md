@@ -5374,3 +5374,66 @@ count 72), ROADMAP (vdW-overlap → [x]), `app.css` (clash banner/notice/slider)
 sidecar computation (ratified TS), no bond-perception change, no intra-fragment, no axial rotation (next
 unit), no Run/Apply block. **Next: Stage 3 — rotation of a fragment about its approach axis (an `Op`
 over the mask).**
+
+## [2026-08-06] session | feat(editor): rigid fragment rotation about a picked approach axis (Phase 4.2 Stage 3, unit 3.3)
+The third Stage-3 unit — a **rigid whole-fragment rotation** about the reaction's approach axis. Two
+picked atoms ARE the axis: **P** (first pick, the pivot on the rotating fragment) and **Q** (second,
+the direction, typically the substrate contact atom). A **numeric** angle drives it (reproducible; the
+journal reads "Rotate BH₄⁻ 30° about O→C" — spin-drag deferred), with a live viewer-only preview and
+one op on Apply.
+
+**Architectural place — TS pure, a sibling of (NOT routed through) the sidecar.** A rigid transform
+changes no internal coordinate, so there is nothing for ASE to compute: `rotateFragment(fragment,
+axisDir, angleRad, pivot)` is Rodrigues' formula in `scene.ts`, parallel to `translateFragment`;
+`rotateFragmentInScene(scene, fragmentId, [P,Q], angleRad)` is the scene mutator, `rotationAxis(scene,
+P, Q)` the shared degeneracy test (`null` on P≡Q / absent → the mutator no-ops same-ref AND the UI
+disables Apply, so they never disagree). This is a hard boundary from the intra-fragment set-internal
+edit (bond-graph split + coordinate solve — the sidecar's job, emits `replace-fragment-atoms`), now
+recorded as its own section in `scene.md`. The rotation lives in the Edit section as a **sibling of
+`EditPanel`** (`RotatePanel.tsx`): pick + value + preview + apply, but pure TS.
+
+**The op stores the two axis ATOMS, not the derived vector (ADR-017 amendment).** Unlike
+`translate-fragment` (a raw delta), the approach axis IS two atoms by definition (ADR-007), so
+`rotate-fragment {fragmentId, name, axisAtoms:[P,Q], angleRad}` keeps the journal legible in the
+reaction's terms. The resolve is safe under decision 1: the op applies to its **own** snapshot, where
+P,Q are present by construction. `describeInScene` was extended (Variant A) to render P→Q by **global
+index** (`about 0→1`) while `describe` stays AtomId-native (`about 3→4`).
+
+**Preview = the frozen-topology coordinate-update path, driven by a prop (NOT the previewScene
+model-rebuild).** The set-internal preview passes a whole `previewScene` and the model effect rebuilds
+(removeAllModels/addModel) — fine for an on-demand button, but a **live slider** would re-perceive
+bonds every tick and **flicker an inter-fragment stick** in/out exactly in the reactive-approach setup
+this feature is for. So rotation reuses the SAME path the Move-mode drag (3.1) and mode animation use:
+a new `ephemeralScene?: Scene|null` prop → a viewer effect sets the live model atoms' coords +
+`applySceneStyle` (sticks redraw, no `addModel`, no re-perception, no `zoomTo`), restoring committed
+coords on `null`. The axis is drawn (`axisHighlight?: [AtomId,AtomId]`) as an extended cylinder through
+P→Q; **both endpoints are fixed points** of the rotation (P is the pivot, Q lies on the line), so
+drawing it — and the P/Q selection halos — at committed coords stays correct all through the preview.
+Rotate-state (angle/ephemeral/axis) is **app-owned** (angle in `RotatePanel`, ephemeral+axis in
+`NewJobScreen`), never in the Scene (grep-confirmed).
+
+**Gates.** Pure (vitest, `rotate.test.ts` + additions to `store.test.ts`/`oplog.test.ts`): **c1** RIGID
+(internal pairwise distances invariant, pivot P fixed, other fragments untouched, ids/order invariant);
+**c2** RODRIGUES (closed-form CCW rot(π/2), identity at 0/2π, round-trip rot(θ)∘rot(−θ), point-on-axis
+fixed, non-unit-axis normalized, zero-axis throws); **c3** ONE op on Apply (a pure preview recompute
+leaves the store `===`; Apply appends exactly one with the FINAL angle); **c4** axis P→Q / pivot P (P and
+on-axis M fixed, off-axis atoms actually moved); **c5** DEGENERATE (`rotationAxis` null on P≡Q/absent,
+mutator same-ref no-op, store no-op). **Bites demonstrated live and reverted:** a non-rigid break
+(`rx*1.5`) reddened c1/c2/c4; a Rodrigues **sign flip** (`+s`→`−s`) passed round-trip/identity/rigidity
+(all sign-invariant) but reddened the **closed-form CCW** assertion — proving that exact-value check
+earns its place. `tsc` clean, **vitest 540 green** (was 530), `vite build` clean. Grep gates: rotation
+math is pure TS in `scene.ts` (no sidecar/fetch in `RotatePanel`), `rotate-fragment` emitted only in
+`store.rotateFragment` (one door), rotate-state absent from `src/scene/`.
+
+**Not yet done — manual gates m1–m5 (pick→turn→Apply live in the Tauri/WebKitGTK window).** The pure
+logic + build are green; the live interaction gates are **pending** and flagged in ROADMAP — offered to
+the author to drive via the dev server, or for the author to run.
+
+**Wiki (same commit):** `scene.md` (the three `scene.ts` functions + `rotate-fragment` op + store
+mutator + a new "rigid transforms are TS; internal edits are the sidecar" split section + `RotatePanel`
+in Files), `visualization.md` (a new section — `ephemeralScene` frozen-topology preview, why not a
+model rebuild, `axisHighlight` axis cylinder + why committed coords stay correct), `editor-ui.md`
+(status → 3.3; the "Rotate about axis" affordance), ADR-017 (unit-3.3 amendment + table row), ROADMAP
+(rotation → [x], m1–m5 flagged). **Not touched:** no sidecar computation (ratified TS), no 2.5.3
+torsion / rotatable-mask, no spin-drag, no Move-drag change; Rust/sidecar untouched. **Next: Stage 3 —
+ring torsions (the last unit of Stage 3).**

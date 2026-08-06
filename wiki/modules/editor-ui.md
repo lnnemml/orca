@@ -1,6 +1,6 @@
 # Module: editor UI (the New Job workspace)
 
-**Status:** Phase 4.2 unit 3.2 (Stage 3 — operations over the core). The New Job screen (`src/screens/NewJobScreen.tsx`) is a
+**Status:** Phase 4.2 unit 3.3 (Stage 3 — operations over the core). The New Job screen (`src/screens/NewJobScreen.tsx`) is a
 **viewer-first workspace**: the 3Dmol canvas is the primary surface, and the geometry panels live in
 a **right dock** (`src/scene/EditorDock.tsx`) that is a thin icon rail expanding per section. This
 page records the **layout principle and where future panels go** — not the current CSS pixel values
@@ -45,8 +45,19 @@ page records the **layout principle and where future panels go** — not the cur
   element with no cited vdW radius gets a **quiet, separate** UNDETERMINED notice (skipped, not
   guessed). Chemistry + the physics of the threshold: `chemistry/vdw-steric.md`; mechanism:
   `modules/scene.md` / `visualization.md`.
+- **Rotate about axis — rigid whole-fragment spin (unit 3.3; `RotatePanel`, a sibling of `EditPanel`
+  in the Edit section).** Pick **two atoms** — P (first, the pivot, on the fragment to turn) and Q
+  (second, the direction, typically the substrate contact atom) — and a **numeric angle**; the fragment
+  spins rigidly about the P→Q **approach axis** in a live **ephemeral preview** (viewer-only, the Scene
+  is untouched), committing **one** `rotate-fragment` op on **Apply** (Cancel drops the preview with zero
+  ops). The axis is drawn as an extended cylinder through P→Q. **Numeric, not spin-drag** — a typed angle
+  is **reproducible** (the journal reads "Rotate BH₄⁻ 30° about O→C") and serves the reaction-mechanism
+  mission directly; spin-drag is deferred. A **swap** button flips which picked atom is the pivot. A
+  degenerate axis (P ≡ Q) disables Apply with a reason. It is **pure TS, a sibling of — not routed
+  through — the sidecar set-internal edit** (rigid transform vs internal-coordinate solve; see the split
+  in `modules/scene.md`). Mechanism / preview path: `visualization.md`.
 - **Sections, in order of use:** Selection & Measure (`AtomInspector`) · Edit (`EditPanel` + the Move-mode
-  toggle) · Fragments (the Add-Fragment palette — reagents / import / SMILES / **Paste xyz** / library —
+  toggle + `RotatePanel`) · Fragments (the Add-Fragment palette — reagents / import / SMILES / **Paste xyz** / library —
   **plus** `FragmentList`) · Constraints (`ConstraintPanel`) · History (`HistoryPanel`) · Actions (xTB
   pre-optimize). Each
   toggles **independently**; open-state is **session-only** (not persisted — a fresh screen starts

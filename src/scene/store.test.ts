@@ -5,12 +5,13 @@ import { append, current, emptyLog } from "./oplog";
 import {
   injectSceneIntoInput,
   mergeToAtomLines,
+  rotateFragmentInScene,
   sceneFromOrcaInput,
   sceneFromXyz,
   xyzMatchesScene,
 } from "./scene";
 import type { Scene } from "./types";
-import { testScene, type RawFragment } from "./scene-test-util";
+import { testScene, idsFor, type RawFragment } from "./scene-test-util";
 
 // Reset to the empty log between tests (the actions survive — they're closures).
 beforeEach(() => useSceneStore.setState({ log: emptyLog(), scene: null }));
@@ -260,6 +261,68 @@ describe("translateFragment (c1)", () => {
     get().seedScene(scene(1, frag("a", ["O", "H"])), "library");
     const len = get().log.entries.length;
     get().translateFragment("a", 0, 0, 0);
+    expect(get().log.entries.length).toBe(len);
+  });
+});
+
+// ── Rigid rotation commit (Stage 3, unit 3.3) — ONE op on Apply (c3), degenerate (c5) ─
+// The "Rotate about axis" tool's commit. The live ephemeral preview is a pure
+// `rotateFragmentInScene` shown in the viewer — it must NOT touch the store (c3);
+// exactly ONE `rotate-fragment` op lands, carrying the FINAL angle, on Apply.
+
+describe("rotateFragment (c3 store side, c5 degenerate)", () => {
+  // A mover fragment with OFF-axis atoms (so a rotation actually moves them) + a
+  // substrate carrying Q. `frag()` makes collinear atoms, unfit for a rotation test.
+  const mover: RawFragment = {
+    id: "m",
+    name: "reagent",
+    charge: 0,
+    source: "editor",
+    atoms: [
+      { element: "C", x: 0, y: 0, z: 0 }, // P (pivot)
+      { element: "H", x: 1, y: 0, z: 0 },
+      { element: "H", x: 0, y: 1, z: 0 },
+    ],
+  };
+  const sub: RawFragment = {
+    id: "s",
+    name: "substrate",
+    charge: 0,
+    source: "editor",
+    atoms: [{ element: "O", x: 0, y: 0, z: 2 }], // Q (direction), global 3
+  };
+
+  it("Apply commits exactly ONE op with the FINAL angle; a preview never commits (c3)", () => {
+    get().seedScene(scene(1, mover, sub), "library");
+    const s0 = get().scene!;
+    const [p, q] = idsFor(s0, 0, 3); // C at global 0, O at global 3
+    const len0 = get().log.entries.length;
+
+    // Live preview = a PURE recompute shown in the viewer; it must not touch the
+    // store. Break (commit in the preview) → the log grows here → red.
+    rotateFragmentInScene(s0, "m", [p, q], 0.3);
+    rotateFragmentInScene(s0, "m", [p, q], 0.6);
+    expect(get().log.entries.length).toBe(len0);
+    expect(get().scene).toBe(s0); // store scene reference is unchanged
+
+    // Apply once → exactly ONE op, carrying the final angle.
+    get().rotateFragment("m", [p, q], 0.6);
+    expect(get().log.entries.length).toBe(len0 + 1);
+    expect(get().log.entries[get().log.pointer].op).toMatchObject({
+      type: "rotate-fragment",
+      fragmentId: "m",
+      axisAtoms: [p, q],
+      angleRad: 0.6,
+    });
+  });
+
+  it("a zero angle or a degenerate axis (P ≡ Q) is a no-op — no op appended (c5)", () => {
+    get().seedScene(scene(1, mover, sub), "library");
+    const s0 = get().scene!;
+    const [p, q] = idsFor(s0, 0, 3);
+    const len = get().log.entries.length;
+    get().rotateFragment("m", [p, q], 0); // zero turn
+    get().rotateFragment("m", [p, p], 0.5); // degenerate axis (same atom)
     expect(get().log.entries.length).toBe(len);
   });
 });
