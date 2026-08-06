@@ -5032,3 +5032,13 @@ after append impossible" (len 3 ≠ 2); (b) neutering the deep-freeze reddens th
 Sizes measured (numbers in ADR-017). Full vitest green (502 + 13), `tsc` 0, `cargo test --workspace`
 green + unchanged (no Rust touched). Wiki: +ADR-017, scene.md op-log section, index.md, ROADMAP
 (Stage 2 units, ephemeral→Stage 3). **Next: 2b — the store on the log.**
+
+## [2026-08-06] ingest | Phase 3 tail — multi-fragment frontier-orbital labeling (verbatim)
+
+Closes the item the 2a ingest flagged `Open (blocked on the architect's verbatim wording)`. Added
+the Phase 3 `[ ]` **multi-fragment frontier-orbital labeling (teaching moment)** verbatim: per-fragment
+HOMO/LUMO localization from MO-coefficient weights in the cached `orca_2json`, with the **honesty
+caveat** (rule #11 spirit) that coefficient² weight without the overlap matrix is approximate
+(Mulliken-like sans S) — label the method, or use Loewdin per-MO populations if a determiner run
+shows ORCA prints them. Useful for Phase 4.5 donor/acceptor identification; explicitly not to be
+gold-plated before then. Phase 3 closing note updated: two carried-forward `[ ]` items now, not one.

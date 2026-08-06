@@ -309,6 +309,14 @@ the `[ ]` "Fragment library" item above.
       `MoleculeViewer` gained an `orbitalCube`/`orbitalIsoValue` path. **Density** cubes / the MO-coeff
       route are not done — only canonical MOs from the gbw. (Also: the frequency table now flows into
       three columns.)
+- [ ] **Multi-fragment frontier-orbital labeling (teaching moment).** For a scene with ≥2
+      fragments, the results card labels the gap as the SYSTEM gap and shows per-fragment
+      localization of HOMO/LUMO (e.g. "HOMO 99.7% on Butylamine · LUMO 93.1% on Acetaldehyde"),
+      derived from MO coefficient weights in the cached orca_2json. HONESTY CAVEAT (rule #11
+      spirit): coefficient-squared weight without the overlap matrix is approximate
+      (Mulliken-like sans S) — label the method, or use Loewdin per-MO populations if a
+      determiner run shows ORCA prints them. Genuinely useful for Phase 4.5 (identifying
+      donor/acceptor orbitals when building approach geometries) — do not gold-plate before then.
 - [x] IR spectrum: Lorentzian broadening of freq/intensity list, interactive recharts plot — **done**
       (unit 3.8, Part B; `src/spectrum/`). Area-normalized Lorentzian (∫ peak = km/mol intensity,
       tested), FWHM slider + explicit grid (plot choices, not molecule properties), trans/rot excluded
@@ -351,9 +359,11 @@ the `[ ]` "Fragment library" item above.
 
 **Phase 3 (the results dashboard) is complete** — for an Opt+Freq job the author can watch the
 trajectory, spin the HOMO isosurface, click IR peaks to see the vibrations, and export geometry /
-data / plots — all inside OrcaStudio. The one remaining `[ ]` above (the **unfixed-stereocenter flag
-on SMILES import**) is a small cross-cutting import-time TODO, not a dashboard feature — it belongs
-wherever an imported structure is first shown and is carried forward independently.
+data / plots — all inside OrcaStudio. Two `[ ]` items above are carried forward independently, neither
+a core dashboard feature: the **unfixed-stereocenter flag on SMILES import** (a small cross-cutting
+import-time TODO — it belongs wherever an imported structure is first shown), and **multi-fragment
+frontier-orbital labeling** (a teaching moment that becomes genuinely useful for Phase 4.5 donor/
+acceptor identification — explicitly *not* to be gold-plated before then).
 
 ---
 
