@@ -303,6 +303,13 @@ Parsing / reset detection:
   (case-insensitive) + coordinates within `tol`. **Float comparison, never
   string comparison** — formatting differs (`1.0` vs `1.00000000`). Different
   count / element sequence / `null` ⇒ `false`.
+- `adoptPreservesScene(current, newContent): boolean` (`debugging/014`) — should a
+  whole-buffer adopt **keep** the current (possibly multi-fragment) Scene instead of
+  collapsing it to one text-parsed "Molecule" fragment? **True** iff a scene exists
+  and `newContent`'s geometry matches it (reuses `xyzMatchesScene` /
+  `mergeToAtomLines` — no second comparison); a different/absent geometry ⇒ **false**
+  (a real re-adopt). The guard `adoptWholeInput` uses so **Generate Input** (new
+  `!`/`%` over the same coords) doesn't destroy the fragment layout.
 - `restoreScene(inputContent, sceneJson)` (`restore.ts`, pure) — reconcile a
   persisted snapshot with a job's input when opening/iterating it (ADR-008 #5
   amendment). Returns `{ scene, snapshotRejected }`. Four branches: **no coord
@@ -435,8 +442,24 @@ owns chemistry `!`/`%`, the Scene owns geometry):**
   different calculation, **Adopt** it as a fresh `text-adopt` Scene (a new log; the
   old lineage is discarded). After adoption the block re-locks (read-only again).
   Whole-buffer replacers that already existed (template pick, builder Generate) go
-  through the SAME conscious re-adopt (`adoptWholeInput` → `seedScene(text-adopt)`),
-  so they aren't caught by the revert.
+  through `adoptWholeInput`, **guarded by `adoptPreservesScene`** (see below), so they
+  aren't caught by the revert but also **don't blindly collapse a multi-fragment scene**.
+
+**The adopt-preserve rule (`adoptPreservesScene`, `debugging/014`).** `adoptWholeInput`
+(builder **Generate Input**, template pick) must NOT re-adopt the merged text as a
+single "Molecule" fragment when the geometry didn't actually change — **"Generate
+Input" rewrites only the `!`/`%` lines over the SAME coordinates**, and a blind
+`text-adopt` silently merged substrate+reagent into one fragment (breaking
+rotate/move/clash/per-fragment). `adoptPreservesScene(current, newContent)` returns
+**true — keep the Scene** — exactly when a scene exists and the new content's geometry
+matches it (same `xyzMatchesScene` primitive, no second comparison); a genuinely
+different geometry (Replace input with another molecule), no current scene, or no
+coordinate block returns **false — a real re-adopt**. This mirrors the Monaco→Scene
+"block matches → keep" branch: a text change that doesn't change geometry never
+disturbs the Scene, whether by hand-edit or by Generate/adopt. **On restore the
+source of truth is the persisted `scene_json`, never a re-adopt from text** —
+`restoreScene` was measured correct (it honours the snapshot via `xyzMatchesScene`);
+the merge bug was the adopt path, not restore.
 
 **Why no jsdom test for the revert loop.** The Monaco↔Scene *effect* is the manual
 gate (unit 2d m1–m5, real WebKitGTK) — jsdom has no Monaco. The pure **decision**

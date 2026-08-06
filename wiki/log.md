@@ -5474,3 +5474,50 @@ live verification** — flagged in ROADMAP.
 decision, Å from measure), `editor-ui.md` (the toggle under the Rotate affordance), ROADMAP (3.3b note),
 this entry. **Not touched:** the 3.3 rotation math/op, the ephemeral preview path, the measurement tool
 outside Rotate; Rust/sidecar untouched. **Next: Stage 3 — ring torsions (the last unit of Stage 3).**
+
+## [2026-08-06] session | fix(scene): restore preserves fragment boundaries — no silent re-adopt to a single "Molecule" fragment (debugging/014)
+A **fragment-merge bugfix**, not a feature. A substrate+reagent scene (2 fragments) silently collapsed
+into **one fragment named "Molecule"**, breaking everything that keys on the layout at once: rigid
+rotate (3.3), move (3.1), inter-fragment vdW clash (3.2), per-fragment charge/constraints.
+
+**The clue.** "Molecule" is the *default* name `sceneFromAtomLines` gives a fragment parsed from a
+coordinate block with no name — so something **re-adopted the merged xyz from text as one fragment**.
+History confirmed the op: "Adopt geometry from input text".
+
+**Measured, not assumed (rule #10).** The prompt's lead hypothesis was **restore/New-iteration
+re-adopting from text** — **measured FALSE**: a persist→restore round-trip of a 2-fragment scene keeps
+both (a scratch test showed `restoreScene`/`restoreSceneLog` honour `scene_json`, `xyzMatchesScene`
+true, `snapshotRejected: false`). Restore was never the bug. The culprit was found by a **live
+WebKitGTK repro** (`localhost:1420` in Chrome): H₂O + BH₄⁻ (viewer: CPK water + **teal** BH₄, "2
+fragments · 8 atoms") → click **Input Builder → Generate Input** → BH₄ recoloured **teal→CPK** and the
+DOM read **"1 fragment · 8 atoms"**, name **"Molecule"**. The action is **Generate Input**, not restore.
+
+**Root cause.** `handleGenerate`/`pickTemplate` → `adoptWholeInput` did an **unconditional**
+`seedScene(sceneFromOrcaInput(newContent), "text-adopt")`. But "Generate Input" rewrites only the
+`!`/`%` keyword lines over the **same** coordinates, and `sceneFromOrcaInput` parses a block into ONE
+"Molecule" fragment — so it merged 2→1 for nothing. (The Input Builder is itself fragment-blind — it
+parses `currentContent` into one fragment, which is why it showed "Σ of 1 fragment".)
+
+**Fix.** A pure guard, reusing the SAME `xyzMatchesScene` primitive that guards the Monaco↔Scene sync:
+`adoptPreservesScene(current, newContent)` → **true (keep the Scene)** iff a scene exists and the new
+content's geometry matches it; different/absent geometry → **false (real re-adopt)**. `adoptWholeInput`
+guards on it — Generate/same-geometry preserves the multi-fragment scene; Replace-input/new-molecule
+still re-adopts (its confirmed reset unchanged). Mirrors the "block matches → keep" branch: a text
+change that doesn't change geometry never disturbs the Scene.
+
+**Regression guard** (`adopt.test.ts`) — at the ADOPT seam (not the restore round-trip the hypothesis
+suggested): `adoptPreservesScene` true on same-geometry / false on different-geometry/null/no-block;
+store-level: seed 2 fragments → guarded adopt keeps **2** (`["Dexketoprofen","BH4"]`), while the
+**negative control** (blind `text-adopt`) collapses to **1 "Molecule"** — the measured bug. Forcing the
+guard to `false` (baseline) reddens both. `tsc` clean, **vitest 548 green** (+3), `vite build` clean;
+scratch repro removed.
+
+**Manual gate (WebKitGTK, live).** **m1 confirmed:** after the fix, "Generate Input" leaves **"2
+fragments · 8 atoms"**, names **["H₂O","BH₄⁻"]**, BH₄ still teal — layout survives. m2/m3
+(rotate/clash/per-fragment) follow from the restored 2-fragment scene + their own unit tests.
+
+**Wiki (same commit):** `debugging/014` (the "Molecule" clue, the measured culprit = Generate Input not
+restore, root cause, fix, what it silently broke), `scene.md` (the adopt-preserve rule + the
+`adoptPreservesScene` contract; restore's persist-is-truth clarified as measured-correct), `index.md`
+(+debugging/014), this entry. **Not touched:** `restore.ts` (measured correct), the rotate/clash/move
+ops, Rust/sidecar. **Next: Stage 3 — ring torsions (the last unit of Stage 3).**

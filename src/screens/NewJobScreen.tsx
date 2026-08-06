@@ -56,6 +56,7 @@ import {
   mergeToXyz,
   sceneFromAtomLines,
   sceneFromOrcaInput,
+  adoptPreservesScene,
   sceneFromXyz,
   serializeScene,
   totalCharge,
@@ -680,7 +681,14 @@ export function NewJobScreen({
   // over the new one). Same door as "Replace input", reached from the builder.
   const adoptWholeInput = (newContent: string) => {
     setContent(newContent);
-    seedScene(sceneFromOrcaInput(newContent), "text-adopt"); // null → clears the scene
+    // Guard the fragment layout (debugging/014). "Generate Input" rewrites only the
+    // `!`/`%` keyword lines over the SAME coordinates, so a blind `text-adopt` would
+    // collapse a substrate+reagent scene into one "Molecule" fragment (breaking
+    // rotate/move/clash). Keep the Scene when the adopted geometry matches it; only
+    // a genuinely different (or absent) geometry re-seeds as a fresh single fragment.
+    if (!adoptPreservesScene(useSceneStore.getState().scene, newContent)) {
+      seedScene(sceneFromOrcaInput(newContent), "text-adopt"); // null → clears the scene
+    }
     setReplaceMode(false);
     setCoordNotice(false);
   };

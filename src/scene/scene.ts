@@ -1020,3 +1020,25 @@ export function xyzMatchesScene(
   }
   return true;
 }
+
+/**
+ * Whether adopting `newContent` as a fresh geometry should **preserve** the current
+ * (possibly multi-fragment) Scene instead of collapsing it to a single text-parsed
+ * fragment (the `debugging/014` bugfix). `sceneFromOrcaInput` always parses a
+ * coordinate block into ONE fragment named "Molecule", so an *unconditional*
+ * `text-adopt` on a scene the geometry didn't actually change (the "Generate Input"
+ * case — it rewrites only the `!`/`%` keyword lines over the SAME coordinates)
+ * silently destroys the substrate+reagent fragment layout, breaking
+ * rotate/move/clash/per-fragment charge.
+ *
+ * Returns `true` — **keep the Scene** — exactly when a scene exists AND the new
+ * content's geometry matches it atom-for-atom (same primitive, `xyzMatchesScene`,
+ * that guards the live Scene↔Monaco sync — no second comparison). A genuinely
+ * different geometry (Replace input with another molecule) or an absent block
+ * (parse → `null`) returns `false`: a real re-adopt.
+ */
+export function adoptPreservesScene(current: Scene | null, newContent: string): boolean {
+  if (!current) return false;
+  const parsed = sceneFromOrcaInput(newContent);
+  return parsed !== null && xyzMatchesScene(current, mergeToAtomLines(parsed));
+}
