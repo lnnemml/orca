@@ -5559,3 +5559,41 @@ perceptible.
 accent + why, and the render-loop fix — memoize + split effects), ROADMAP (3.3b → DONE, both causes),
 this entry. **Not touched:** the toggle's pure decision (`chooseRotateOverlay` unchanged), the measure
 render, the rotate math/op, the merge fix. **Next: Stage 3 — ring torsions (the last unit of Stage 3).**
+
+## [2026-08-06] lint | Phase 4.2 arc lint (Stage 2→3) — status/drift reconciled, module pages verified against code
+A full health-check after the Phase 4.2 Stage-2→3 arc (op log → rigid drag → clash → rotation → overlay
+toggle → fragment-merge fix), plus the ring-torsion cut. Ran every CLAUDE.md lint check.
+
+**Unambiguous fixes applied (6 stale status/drift claims):**
+- ROADMAP: Stage 3 said "**begun**" and "**Next: Stage 3 — operations over the core**" while Stage 3 is
+  now COMPLETE → the recap says complete, the Stage-2 trailer points forward correctly, and the Stage-3
+  header gained a ✅ COMPLETE marker. (The "operations over the core, NOT Scene→Rust/WASM" wording from
+  the 3.1 fix is correct and was kept.)
+- `editor-ui.md` status: `unit 3.3` → `unit 3.3b (Stage 3 — COMPLETE)`.
+- `scene.md` and `frontend.md` status leads: `Phase 2.5 complete` → `current through Phase 4.2 Stage 3`
+  with a one-line arc summary (op-log fold, 3.1 drag, 3.2 clash, 3.3/3.3b rotation, `adoptPreservesScene`).
+  The bodies were already current; only the lead label under-sold the state.
+
+**Verified CLEAN (no change):**
+- **Orphans/dangling: none.** 73/73 wiki pages linked from `index.md`; the two folder READMEs catalogued.
+- **Module pages vs code: no false-about-current-code claims** (two Explore audits + spot checks). Every
+  cited symbol exists — `translateFragment`/`rotateFragment`/`rotationAxis`/`adoptPreservesScene`/
+  `detectClashes`, the `ephemeralScene`/`axisHighlight`/`rotateOverlay` props, the azure `axisColor`.
+  `filterSelection` is correctly the CURRENT selection prune; `selectionSurvives`/`validateSelection`
+  are correctly marked REMOVED (not presented as current). `collapse-from-text` correctly LEGACY.
+- log.md 2d-misread correction present; "Undo deeper than one step" is [x] (2b); debugging/013+014 in the
+  index bullet list; **ADR-011 coherent** (deferred behind a spike; "3Dmol stays a dumb renderer" affirmed
+  — ADRs are not rewritten).
+
+**Escalated to the architect (no page-vs-page contradiction needed a "which is right" choice — none found):**
+- **ROADMAP L601** honestly still says unit 3.3's manual rotation-APPLY gates **m1–m5 are pending**. That
+  is ACCURATE — the 3.3b-fix live session verified the axis/overlay/toggle + the render-loop, but never
+  applied a rotation live. Stage 3 is marked COMPLETE on code + pure gates; the 3.3 manual gates genuinely
+  remain un-run. Left as-is (honest); flagged for a decision on whether to run them.
+- Minor: ADR-011 (2026-07-30) argues 3Dmol's index space is safe "because the model is rebuilt on every
+  render"; the frozen-topology ephemeral path (3.1/3.14) updates coords in place on some frames instead,
+  but that does not change the AtomId↔index alignment, so the argument still holds. Not rewritten (ADR).
+
+**Correctly-historical, deliberately kept** (they explain evolution, they don't lie about the present):
+the `selectionSurvives→filterSelection` removal note, `collapse-from-text` legacy, the "2c1 adapter gone"
+mentions, and log.md's append-only "Next: ring torsions" trailers (history of what was planned then).

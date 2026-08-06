@@ -494,13 +494,14 @@ editor UI, method/basis form, and the geometry↔sidecar seam stay TS until Stag
 emit-input is byte-identical to the TS source, the parsers are paired with the `IndexMap` and
 verify it against the artifact, the map is minted at `create_job` from verified text, and the xtb
 index-base seam is branded. Stage 2 (operation log) is **complete**; Stage 3 (operations over the
-core — rigid drag first) is **begun**. (Scene→Rust/WASM is ADR-011, deferred behind a spike — it is
+core) is **complete** (rigid drag 3.1, vdW clash 3.2, rotation 3.3/3.3b; manual ring torsions cut —
+GOAT owns ring conformations). (Scene→Rust/WASM is ADR-011, deferred behind a spike — it is
 **not** what Stage 3 means; Stage 3 = operations over the core.)
 
 **Stage 2 — operation log** ✅ **COMPLETE** (units 2a–2d, once [ADR-017](wiki/architecture/adr-017-operation-log.md)
 fixed the log design: each entry **materializes** its resultant snapshot — provenance, not a
 recompile recipe, so history can't be rewritten by an ASE bump. The ephemeral drag layer moved to
-Stage 3, where it is actually needed.) **Next: Stage 3 — operations over the core.**
+Stage 3, where it is actually needed.) **Stage 3 is now COMPLETE (see below).**
 
 - [x] **2a — operation log: pure types + ingest.** `src/scene/oplog.ts` — pure, no store/viewer/
       Monaco/DB/Rust: the tagged-union `Op` (one variant per Scene mutator — checklist in ADR-017,
@@ -569,7 +570,7 @@ Stage 3, where it is actually needed.) **Next: Stage 3 — operations over the c
       (journal "Add fragment …"); Replace input adopts a fresh scene and re-locks the block. See
       `wiki/modules/scene.md`, `editor-ui.md`, `frontend.md`.
 
-**Stage 3 — operations over the core** (each item is an `Op`, not new state)
+**Stage 3 — operations over the core** ✅ **COMPLETE** (each item is an `Op`, not new state)
 
 - [x] **Rigid-body drag of a fragment (unit 3.1).** **The ephemeral layer landed here** (ADR-010):
       during the drag only the viewer moves (60 fps, **not** logged) via the frozen-topology

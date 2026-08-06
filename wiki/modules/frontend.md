@@ -1,9 +1,11 @@
 # Module: Frontend (src/)
 
-**Status:** Phase 2.5 complete — the frontend builds, views, persists and iterates multi-fragment
-scenes and drives the whole geometry editor: a Zustand scene store (`src/scene/store.ts`) synced
-two-way with Monaco, an Add-Fragment panel + `FragmentList` sidebar, atom picking + d/θ/φ
-measurement, edit mode (set distance/angle/dihedral from the viewer, inter- and intra-fragment), a
+**Status:** current through **Phase 4.2 Stage 3** — the frontend builds, views, persists and iterates
+multi-fragment scenes and drives the whole geometry editor: a Zustand scene store (`src/scene/store.ts`,
+a fold over the operation log) synced two-way with Monaco (the coordinate block a **read-only projection**
+since 2d), an Add-Fragment panel + `FragmentList` sidebar, atom picking + d/θ/φ measurement
+(AtomId-native, 2c2), edit mode (set distance/angle/dihedral from the viewer, inter- and intra-fragment),
+**Move-mode rigid drag (3.1)**, **Rotate-about-axis (3.3/3.3b)**, the **vdW clash warning (3.2)**, a
 constraint panel over the input text, and an xTB pre-optimize button. Phase 2 (jobs, editor,
 templates, molecule library, input builder, convergence dashboard, output search, multi-format
 import) is complete. **This page covers the editor/job frontend**; the Phase-3 **results** frontend

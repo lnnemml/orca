@@ -1,6 +1,8 @@
 # Module: scene (`src/scene/`)
 
-**Status:** Phase 2.5 complete. The Scene is the **source of truth for geometry on
+**Status:** current through **Phase 4.2 Stage 3** (the geometry-editor arc: the operation-log fold
+2a–2d, rigid drag 3.1, vdW clash 3.2, rigid rotation 3.3/3.3b, the `adoptPreservesScene` fragment-merge
+guard). The Scene is the **source of truth for geometry on
 New Job** — a Zustand store (`store.ts`) synced two-way with the Monaco buffer — and
 carries the whole reaction-geometry workflow: multi-fragment build (Add-Fragment panel
 + `FragmentList`), electron-parity validation (`parity.ts`), conformer search (GOAT,
