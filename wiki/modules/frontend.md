@@ -87,7 +87,12 @@ that an in-progress New Job draft is discarded on a tab switch (accepted).
   directive line, `%block`/`end`, `#` comments, `* xyz … *` delimiters, numbers
   (int/float/scientific/signed), quoted strings; `ignoreCase` (ORCA is case-insensitive).
   Deliberately structural, not a full keyword list. `InputEditor.tsx` wraps `@monaco-editor/react`
-  (vs-dark, full height), registering the language on `beforeMount`.
+  (vs-dark, full height), registering the language on `beforeMount`. **The `* xyz … *` coordinate
+  block is a read-only PROJECTION of the Scene (unit 2d):** the editor stays a plain controlled
+  component, and `NewJobScreen`'s Monaco→Scene effect **reverts** any hand-edit of the block (the
+  `!`/`%` keyword edits outside it are kept) — the enforcement is at the effect, not a Monaco
+  read-only range, so there is no second `* xyz` locator (one: `sceneFromOrcaInput`/
+  `injectSceneIntoInput`). See the sync + two-doors detail in `modules/scene.md`.
 - **Hover wiring (`orca-hover.ts`, `editor-options.ts`).** `registerOrcaHover` registers the
   keyword→manual hover **provider first** (mandatory), then the "open in drawer" command in a
   `try/catch` (optional — its failure must not vanish the hover), and flips its `registered` guard
@@ -166,9 +171,15 @@ Geometry flows through `useSceneStore` (Zustand, `src/scene/store.ts` — the ap
   an inline-editable name (uncontrolled, commits on blur/Enter → `renameFragment`, no per-keystroke
   store write), atom count + signed charge, a remove button; a totals line, and a note that removing
   fragment 0 recolours the next. Per-fragment **"Find conformers"** (`onFindConformers`) — see GOAT.
-- **Add-Fragment panel** (`openSection: "add"`) — four sources: **Reagents** (`FRAGMENT_LIBRARY`
-  chips, `title` = provenance), **Import file**, **SMILES**, **From library** (`list_molecules`,
-  lazy). All run `addFragmentToScene(f) = placeFragment(currentScene, f) → addFragment`.
+- **Add-Fragment panel** (`openSection: "add"`) — sources: **Reagents** (`FRAGMENT_LIBRARY`
+  chips, `title` = provenance), **Import file**, **SMILES**, **Paste xyz** (unit 2d — a textarea →
+  `sceneFromXyz` → add; soft failure on unparseable xyz), **From library** (`list_molecules`, lazy).
+  All run `addFragmentToScene(f) = placeFragment(currentScene, f) → addFragment` — including **Paste
+  xyz**, which is door 1 of the read-only coordinate block (the typical way coordinate hand-editing
+  survives, as a fresh fragment). **Replace input** (door 2, a button by *Save to Library*) is the
+  one-shot escape: a confirm → *Unlock editor* → paste a different calculation → *Adopt input*
+  (`seedScene(text-adopt)`, fresh log); the block re-locks after. Both doors are detailed under the
+  Scene↔Monaco sync in `modules/scene.md`.
 - **`AtomInspector.tsx`** (viewer column / rail, under the viewer, above `FragmentList`) — for the
   **last** picked atom: `atom N of <fragment> (<element>)` via `describeAtom`, x/y/z to 4 dp, and
   `local index N · global index N (both 0-based)` (0-based is the settled `%geom` constraint base —
@@ -178,9 +189,11 @@ Geometry flows through `useSceneStore` (Zustand, `src/scene/store.ts` — the ap
   future reaction coordinate), the angle vertex being the **middle pick**. A click-ordered chip row
   with fragment-colour swatches; a `Clear` button; **Esc** clears too. Also hosts **"Constrain
   selection"** (below). **Selection state lives in `NewJobScreen`**, not the store (the store stays a
-  pure geometry wrapper): picks go through `toggleAtom`, and on every `compositionSignature` change
-  the pick list is re-run through `selectionSurvives` (unchanged or pure append → keep; else clear) —
-  `validateSelection` is a defensive second echelon (see `modules/scene.md`).
+  pure geometry wrapper): picks are stable **`AtomId`s** (2c2), go through `toggleAtom`, and on every
+  scene change the pick list is pruned by `filterSelection` (per-atom, id-based — keeps every id
+  still present). Removing an UNRELATED fragment leaves the selection intact; the old positional
+  guards (`selectionSurvives`/`validateSelection`, which had to clear on any composition change) are
+  gone — the preservation dividend of the AtomId pipeline (see `modules/scene.md`).
 - **Viewer toolbar** (an overlay in the viewer's top-right, so it travels into fullscreen): a
   **"Numbers"** checkbox (drives `showAtomNumbers`, local `showNumbers` state, shown only when a scene
   is present), a **Theme `<select>`** (Dark/Black/Light/White → `changeTheme` sets `themeId` and
@@ -250,8 +263,8 @@ information, not an error), and a `×` that deletes the row by re-`injectConstra
 - **Composition guard.** Using the existing `compositionSignature` (no second notion), a ref tracks
   the last signature; when it moves while the text has constraints, a warning above the panel lists
   what each constraint names **now** (element + fragment, or "out of range"). We do **not** rewrite
-  or remap — "the same atom after a removal" has no operational definition (the same call as
-  `selectionSurvives`). Clears on Dismiss or when no constraints remain.
+  or remap — "the same atom after a removal" has no operational definition (the same call the
+  selection's `filterSelection` makes). Clears on Dismiss or when no constraints remain.
 - **Non-destructive rewrite.** The panel reads `inspectConstraintsBlock` → `absent` / `parsed` /
   `unrecognised`; on `unrecognised` (a `#` comment inside the block, or an unparseable token) it goes
   **read-only**, disables add + delete + "Constrain selection" + the xtb button, and never calls

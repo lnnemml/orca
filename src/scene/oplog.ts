@@ -85,8 +85,9 @@ export type SnapshotSource = "new-iteration" | "text-adopt" | "library";
 
 /**
  * A typed editor operation. The tagged union mirrors the Scene mutators of
- * `scene.ts` (plus the two store-level acts `collapse-from-text` and
- * `restore-snapshot`). ADR-017 carries the mutator↔Op correspondence table.
+ * `scene.ts` (plus the store-level act `restore-snapshot`, and the legacy
+ * `collapse-from-text` no post-2d path emits — see its member below).
+ * ADR-017 carries the mutator↔Op correspondence table.
  */
 export type Op =
   | {
@@ -114,10 +115,14 @@ export type Op =
       edit: FragmentGeometryVia;
     }
   | { type: "replace-all-atoms"; edit: WholeSceneVia }
-  // A manual text edit of the coordinate block IS an operation: provenance is
-  // honest that the block was hand-edited (unit 2d will narrow this op once the
-  // xyz block becomes a read-only projection). Carries the fragment count that
-  // collapsed to one (the store's `collapseToSingleFragment`).
+  // LEGACY — produced pre-2d; kept for deserialization, never emitted. Before 2d
+  // a manual text edit of the coordinate block collapsed the multi-fragment scene
+  // to one fragment and logged this op (the block was hand-editable). Unit 2d made
+  // the xyz block a **read-only projection of the Scene** (ADR-010 authority split:
+  // text owns chemistry, Scene owns geometry), so no path collapses-from-text any
+  // more — geometry changes go through the two doors (Import xyz as fragment /
+  // Replace input). The type + `describe` + the deserialize case remain so old
+  // jobs whose `scene_log_json` carries this op still open (persist not broken).
   | { type: "collapse-from-text"; fragmentCount: number }
   | {
       type: "restore-snapshot";

@@ -495,10 +495,10 @@ emit-input is byte-identical to the TS source, the parsers are paired with the `
 verify it against the artifact, the map is minted at `create_job` from verified text, and the xtb
 index-base seam is branded. Stage 2 (operation log) and Stage 3 (Scene→Rust/WASM) remain.
 
-**Stage 2 — operation log** (broken into units 2a–2d once [ADR-017](wiki/architecture/adr-017-operation-log.md)
+**Stage 2 — operation log** ✅ **COMPLETE** (units 2a–2d, once [ADR-017](wiki/architecture/adr-017-operation-log.md)
 fixed the log design: each entry **materializes** its resultant snapshot — provenance, not a
 recompile recipe, so history can't be rewritten by an ASE bump. The ephemeral drag layer moved to
-Stage 3, where it is actually needed.)
+Stage 3, where it is actually needed.) **Next: Stage 3 — operations over the core.**
 
 - [x] **2a — operation log: pure types + ingest.** `src/scene/oplog.ts` — pure, no store/viewer/
       Monaco/DB/Rust: the tagged-union `Op` (one variant per Scene mutator — checklist in ADR-017,
@@ -551,12 +551,21 @@ Stage 3, where it is actually needed.)
       of each record (`describeInScene`, `describe` stays pure). UI labels the index space per panel
       (global for the inspector, ORCA for constraints). Negative controls (a)–(d) demonstrated red. See
       `wiki/modules/scene.md`, `editor-ui.md`.
-- [ ] **2d — the Monaco xyz projection.** The xyz block in Monaco becomes a **generated read-only
-      projection** of the Scene. **Cost to preserve:** today the author edits coordinates directly in
-      Monaco — making the block read-only removes that path, so the capability is *replaced, not
-      deleted*, by a "paste xyz → import as a fragment" action (and this narrows the
-      `collapse-from-text` op — ADR-017). The ability to edit coordinates by hand **moves; it does not
-      disappear.**
+- [x] **2d — the Monaco xyz projection (Stage 2 closed).** The `* xyz … *` block in Monaco is a
+      **generated read-only projection** of the Scene (ADR-010 authority split: text owns chemistry
+      `!`/`%`, the Scene owns geometry). The Monaco→Scene effect **reverts** a block hand-edit (keeping
+      keyword edits), so no path adopts hand-typed coordinates into geometry — the pre-2d
+      `collapseFromText` store mutator + Monaco-collapse reaction are **removed**, and
+      `collapse-from-text` survives only as a **legacy** op type for deserializing pre-2d logs
+      (ADR-017 amendment). **Capability replaced, not deleted, by two doors:** *Paste xyz* (import as a
+      fragment — the typical path) and *Replace input* (a one-shot conscious escape: unlock the buffer,
+      paste a different calculation, Adopt it as a fresh `text-adopt` scene). Pure gates: **c1** (import
+      builds an `add-fragment` preserving atom count+order), **c2** (Replace re-seed installs a fresh
+      log, no lineage leak), plus the revert/keep/seed decision — each with a proven-biting negative
+      control. Manual gates **m1–m4** verified live (WebKitGTK dev server): a coordinate edit reverts
+      and the scene stays multi-fragment; a `!`/`%` edit passes through; Paste xyz adds a fragment
+      (journal "Add fragment …"); Replace input adopts a fresh scene and re-locks the block. See
+      `wiki/modules/scene.md`, `editor-ui.md`, `frontend.md`.
 
 **Stage 3 — operations over the core** (each item is an `Op`, not new state)
 

@@ -212,6 +212,19 @@ on a later scene) while the *rendering* speaks the user's index space. Negative 
 the resolve to join the raw AtomId chain — turns the panel-line test red (`Set angle 3-4-5` vs
 `0-1-2`), then restored.
 
+## Amendment (2026-08-06, unit 2d) — `collapse-from-text` is now legacy
+
+The vocabulary table above notes "unit 2d narrows [`collapse-from-text`] once the xyz block becomes a
+read-only projection." Unit 2d landed that: the coordinate block is a **read-only projection of the
+Scene** (ADR-010 authority split — text owns chemistry, the Scene owns geometry), so a manual
+text-edit of the block is **reverted, never adopted**. The `collapse-from-text` op therefore has **no
+producing path any more** — it is **legacy**: the type, its `describe` line, and its `deserialize`
+case are **kept so pre-2d `scene_log_json` still opens** (persist not broken; a real old job's history
+must read the same as it did), but **new code never emits it** (the store's `collapseFromText` mutator
+and the Monaco→Scene collapse reaction are removed). History is not rewritten; the type stays in the
+union and `OP_TYPES`. Geometry hand-editing survives through two conscious doors (Import xyz as
+fragment / Replace input) — see `wiki/modules/scene.md`.
+
 ## References
 
 - [ADR-010](adr-010-editor-identity-state.md) — "state is a fold over a log of typed operations"; the

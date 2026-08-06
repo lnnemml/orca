@@ -113,6 +113,22 @@ export function NewJobScreen({
   );
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [content, setContent] = useState(initialJob?.input_content ?? "");
+  // ── The coordinate block is a read-only projection of the Scene (unit 2d) ─────
+  // Variant C (ADR-010 authority split: input text owns chemistry `!`/`%`, the
+  // Scene owns geometry). A hand-edit of the `* xyz … *` rows never flows into the
+  // Scene — the Monaco→Scene effect REVERTS the block to the projection (keeping
+  // the `!`/`%` edits) instead of the pre-2d collapse. Geometry hand-editing moves
+  // to two conscious doors, not a silent text-edit:
+  //   • Import xyz as fragment — paste xyz → `addFragment` (the typical path);
+  //   • Replace input — a one-shot escape: unlock the whole buffer, paste a
+  //     different calculation, Adopt it as a fresh Scene (`text-adopt`). After
+  //     adoption the block is read-only again.
+  const [coordNotice, setCoordNotice] = useState(false); // a block hand-edit was reverted
+  const [importXyzOpen, setImportXyzOpen] = useState(false);
+  const [importXyz, setImportXyz] = useState("");
+  const [replaceConfirm, setReplaceConfirm] = useState(false); // "Replace input?" prompt shown
+  const [replaceMode, setReplaceMode] = useState(false); // buffer unlocked for a re-adopt
+  const replaceSnapshotRef = useRef(""); // content before unlock, restored on Cancel
   // Set when an iterated job's fragment snapshot was discarded because it no
   // longer matched its input (distinct from a plain no-snapshot job — no note).
   const [snapshotRejected, setSnapshotRejected] = useState(false);
@@ -159,14 +175,10 @@ export function NewJobScreen({
   // its identity and MoleculeViewer does not redraw on every keystroke.
   const scene = useSceneStore((s) => s.scene);
   const log = useSceneStore((s) => s.log);
-  const resetNotice = useSceneStore((s) => s.resetNotice);
   const addFragment = useSceneStore((s) => s.addFragment);
   const commit = useSceneStore((s) => s.commit);
   const installLog = useSceneStore((s) => s.installLog);
   const seedScene = useSceneStore((s) => s.seedScene);
-  const collapseFromText = useSceneStore((s) => s.collapseFromText);
-  const undo = useSceneStore((s) => s.undo);
-  const dismissResetNotice = useSceneStore((s) => s.dismissResetNotice);
 
   // ── Atom selection (2.5.2a; AtomId-native 2c2) — the geometry editor's pick list
   // Ordered stable AtomIds, held in component state (NOT the scene store — the store
@@ -578,41 +590,62 @@ export function NewJobScreen({
     });
   }, [scene]);
 
-  // content → Scene (ADR-008 #6): on the same 500 ms debounce the preview used,
-  // compare the editor's coordinate block against the scene via xyzMatchesScene
-  // (parsed floats, never string compare). Match → leave the scene (the user was
-  // editing keywords). Diverged → the text wins: collapse to it (a logged
-  // CollapseFromText op — undoing it re-injects the old coords so no second
-  // collapse fires, unit 2b test c). Block gone → clear the lineage (empty log).
-  // Scene absent but a block appeared (template / generated input) → adopt it.
+  // content → Scene (ADR-008 #6): on the same 500 ms debounce the preview used.
+  // Since unit 2d the coordinate block is a READ-ONLY PROJECTION of the Scene, so
+  // a block edit never flows into the geometry — the collapse-from-text path is
+  // gone. The four branches:
+  //   • replaceMode → the buffer is deliberately unlocked (Replace input); the
+  //     Adopt button commits it, so this effect stands down entirely.
+  //   • no scene yet → a block typed/pasted into an empty editor SEEDS the Scene
+  //     (`text-adopt`); this keeps template/generated-input adoption alive.
+  //   • block matches the scene (parsed floats, tol 1e-6, never string compare) →
+  //     leave it: the user edited `!`/`%` keywords (the common, allowed path).
+  //   • block gone or diverged, scene present → the block is read-only; REVERT it
+  //     from the Scene (keeping the `!`/`%` edits) and note the reverted edit.
+  // The single locator is `sceneFromOrcaInput`/`injectSceneIntoInput` (no second
+  // `* xyz` finder). Editing the geometry goes through the two doors below.
   useEffect(() => {
     const id = setTimeout(() => {
+      if (replaceMode) return; // buffer unlocked; Adopt commits it, not this effect
       const parsed = sceneFromOrcaInput(content);
       const current = useSceneStore.getState().scene;
-      if (!parsed) {
-        if (current) seedScene(null, "text-adopt");
-        return;
-      }
       if (!current) {
-        seedScene(parsed, "text-adopt");
+        if (parsed) seedScene(parsed, "text-adopt");
         return;
       }
-      if (xyzMatchesScene(current, mergeToAtomLines(parsed))) return;
-      collapseFromText(parsed.fragments[0].atoms);
+      if (parsed && xyzMatchesScene(current, mergeToAtomLines(parsed))) return;
+      // Read-only projection: a hand-edit (or deletion) of the block does NOT win.
+      // Restore the projection, keeping everything outside the block, and Scene is
+      // untouched (no collapse, geometry unchanged — the multi-fragment layout
+      // survives). This is the pure core of manual gate m1.
+      setContent((c) => injectSceneIntoInput(c, current));
+      setCoordNotice(true);
     }, 500);
     return () => clearTimeout(id);
-  }, [content, seedScene, collapseFromText]);
+  }, [content, seedScene, replaceMode]);
+
+  // Replace the whole buffer AND re-seed the Scene from its coordinate block in
+  // one conscious act (unit 2d). A template / generated input is a fresh geometry,
+  // so it is a deliberate `text-adopt` — NOT a block hand-edit — and must bypass
+  // the read-only revert (else the effect would restore the previous scene's block
+  // over the new one). Same door as "Replace input", reached from the builder.
+  const adoptWholeInput = (newContent: string) => {
+    setContent(newContent);
+    seedScene(sceneFromOrcaInput(newContent), "text-adopt"); // null → clears the scene
+    setReplaceMode(false);
+    setCoordNotice(false);
+  };
 
   const pickTemplate = (t: OrcaTemplate) => {
     setSelectedId(t.id);
-    setContent(t.inputContent);
+    adoptWholeInput(t.inputContent);
     if (!title.trim()) setTitle(t.name);
     setOpenSection(null); // got the input — collapse so the editor is visible
   };
 
   // Builder's "Generate Input" → replace editor content and collapse the panel.
   const handleGenerate = (newContent: string) => {
-    setContent(newContent);
+    adoptWholeInput(newContent);
     setOpenSection(null);
   };
 
@@ -620,6 +653,54 @@ export function NewJobScreen({
   const addReagent = (lf: LibraryFragment) => {
     setError(null);
     addFragmentToScene(libraryFragmentToScene(lf));
+  };
+
+  // ── Door 1: Import xyz as fragment (unit 2d) ────────────────────────────────
+  // The typical way coordinate hand-editing survives the read-only block: paste a
+  // plain xyz and it becomes a NEW fragment (a logged `add-fragment` op), placed
+  // clear of what's there. The composition invariant (count + order) is preserved
+  // by `addFragment`. Soft failure (a message, no throw) on unparseable xyz.
+  const importXyzAsFragment = () => {
+    const built = sceneFromXyz(importXyz, {
+      source: "import",
+      name: "Pasted xyz",
+      charge: 0,
+      multiplicity: 1,
+    });
+    if (!built) {
+      setError("That doesn't parse as xyz (expected: count, comment, then `El x y z` rows).");
+      return;
+    }
+    setError(null);
+    addFragmentToScene(built.fragments[0]);
+    setImportXyz("");
+    setImportXyzOpen(false);
+  };
+
+  // ── Door 2: Replace input (unit 2d) — a one-shot, conscious escape ───────────
+  // Unlock the WHOLE buffer once so the user can paste a different calculation
+  // (another molecule / another job type), then Adopt it as a fresh Scene. The
+  // block re-locks after adoption (review point 3: not a permanent unlock). Cancel
+  // restores the pre-unlock buffer. Confirmed first because it discards the scene
+  // lineage (the history starts over — a fresh `text-adopt` log).
+  const beginReplace = () => setReplaceConfirm(true);
+  const unlockReplace = () => {
+    replaceSnapshotRef.current = content;
+    setReplaceConfirm(false);
+    setReplaceMode(true);
+    setError(null);
+  };
+  const adoptReplace = () => {
+    // A conscious repeat `text-adopt`: seedScene installs a FRESH log, so the old
+    // scene does not leak into the new lineage (negative control c2).
+    seedScene(sceneFromOrcaInput(content), "text-adopt");
+    setReplaceMode(false);
+    setCoordNotice(false);
+  };
+  const cancelReplace = () => {
+    setContent(replaceSnapshotRef.current); // restore the buffer; the block re-locks
+    setReplaceMode(false);
+    setReplaceConfirm(false);
   };
 
   // Add a saved library molecule as a fragment.
@@ -890,6 +971,45 @@ export function NewJobScreen({
       </div>
 
       <div className="add-source">
+        <div className="add-source-title muted">Paste xyz</div>
+        {importXyzOpen ? (
+          <div className="paste-xyz">
+            <textarea
+              className="input mono paste-xyz-area"
+              placeholder={"3\nwater\nO  0.000  0.000  0.000\nH  0.757  0.586  0.000\nH -0.757  0.586  0.000"}
+              value={importXyz}
+              onChange={(e) => setImportXyz(e.currentTarget.value)}
+              spellCheck={false}
+              rows={5}
+            />
+            <div className="row" style={{ gap: 8 }}>
+              <button
+                className="btn btn-sm"
+                onClick={importXyzAsFragment}
+                disabled={!importXyz.trim()}
+                title="Parse the xyz and add it as a new fragment"
+              >
+                Add as fragment
+              </button>
+              <button
+                className="btn btn-sm"
+                onClick={() => {
+                  setImportXyz("");
+                  setImportXyzOpen(false);
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : (
+          <button className="btn btn-sm" onClick={() => setImportXyzOpen(true)}>
+            Paste xyz…
+          </button>
+        )}
+      </div>
+
+      <div className="add-source">
         <div className="add-source-title muted">From library</div>
         {libMolecules.length === 0 ? (
           <div className="muted" style={{ fontSize: 13 }}>
@@ -1110,6 +1230,18 @@ export function NewJobScreen({
         >
           {saving ? "Saving…" : "Save to Library"}
         </button>
+        {/* Door 2 (unit 2d): the deliberate escape from the read-only coordinate
+            block — paste a whole different calculation. Hidden while already
+            unlocked / confirming (the banners below own that flow). */}
+        {!replaceMode && !replaceConfirm ? (
+          <button
+            className="btn btn-sm"
+            onClick={beginReplace}
+            title="Unlock the whole input to paste a different calculation (starts the scene over)"
+          >
+            Replace input…
+          </button>
+        ) : null}
       </div>
 
       {error ? <div className="banner err">{error}</div> : null}
@@ -1141,23 +1273,65 @@ export function NewJobScreen({
           </button>
         </div>
       ) : null}
-      {resetNotice ? (
+      {/* The coordinate block is a read-only projection of the 3D scene (unit 2d):
+          a hand-edit was reverted. Point at the two doors instead of silently
+          discarding the keystrokes. */}
+      {coordNotice ? (
         <div className="banner warn">
-          Coordinates were edited manually — {resetNotice.fragmentCount} fragments
-          merged into one.
+          The coordinate block is generated from the 3D scene — edit the geometry
+          in the viewer, use <b>Paste xyz</b> to add a fragment, or{" "}
+          <b>Replace input</b> for a different calculation. Your text edit to the
+          coordinates was reverted.
           <button
             className="btn btn-sm"
             style={{ marginLeft: 10 }}
-            onClick={() => undo()}
+            onClick={() => setCoordNotice(false)}
           >
-            Undo
+            Dismiss
+          </button>
+        </div>
+      ) : null}
+
+      {/* Replace input — the confirm step (discards the scene lineage). */}
+      {replaceConfirm ? (
+        <div className="banner warn">
+          Replace the entire input and start the scene over? The current geometry
+          and its edit history will be discarded.
+          <button
+            className="btn btn-sm"
+            style={{ marginLeft: 10 }}
+            onClick={unlockReplace}
+          >
+            Unlock editor
           </button>
           <button
             className="btn btn-sm"
             style={{ marginLeft: 6 }}
-            onClick={() => dismissResetNotice()}
+            onClick={() => setReplaceConfirm(false)}
           >
-            Dismiss
+            Cancel
+          </button>
+        </div>
+      ) : null}
+
+      {/* Replace input — the buffer is unlocked; Adopt commits it as a fresh scene. */}
+      {replaceMode ? (
+        <div className="banner warn">
+          Editor unlocked — paste a new input (its own <code>* xyz … *</code>{" "}
+          block), then Adopt it as a fresh scene.
+          <button
+            className="btn btn-sm"
+            style={{ marginLeft: 10 }}
+            onClick={adoptReplace}
+          >
+            Adopt input
+          </button>
+          <button
+            className="btn btn-sm"
+            style={{ marginLeft: 6 }}
+            onClick={cancelReplace}
+          >
+            Cancel
           </button>
         </div>
       ) : null}

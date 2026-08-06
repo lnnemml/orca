@@ -6,16 +6,14 @@ import {
   injectSceneIntoInput,
   mergeToAtomLines,
   sceneFromOrcaInput,
-  totalCharge,
+  sceneFromXyz,
   xyzMatchesScene,
 } from "./scene";
-import type { RawAtom, Scene } from "./types";
+import type { Scene } from "./types";
 import { testScene, type RawFragment } from "./scene-test-util";
 
 // Reset to the empty log between tests (the actions survive — they're closures).
-beforeEach(() =>
-  useSceneStore.setState({ log: emptyLog(), scene: null, resetNotice: null }),
-);
+beforeEach(() => useSceneStore.setState({ log: emptyLog(), scene: null }));
 
 const get = () => useSceneStore.getState();
 
@@ -75,9 +73,6 @@ describe("scene === current(log) after every action (the bypass is impossible)",
     );
     check("commit");
 
-    get().collapseFromText([{ element: "O", x: 0, y: 0, z: 0 }]);
-    check("collapseFromText");
-
     get().undo();
     check("undo");
     get().redo();
@@ -98,7 +93,6 @@ describe("scene === current(log) after every action (the bypass is impossible)",
 
 describe("seedScene + reference stability", () => {
   it("seeds a fresh single-entry log and stores the exact (frozen) object", () => {
-    useSceneStore.setState({ resetNotice: { fragmentCount: 3 } });
     const s = scene(1, frag("a", ["O", "H", "H"]));
     get().seedScene(s, "library");
     expect(get().scene).toBe(s); // frozen in place → same reference
@@ -109,7 +103,6 @@ describe("seedScene + reference stability", () => {
       fragmentCount: 1,
       atomCount: 3,
     });
-    expect(get().resetNotice).toBeNull();
   });
 
   it("seedScene(null) installs the empty log (scene → null)", () => {
@@ -126,61 +119,78 @@ describe("seedScene + reference stability", () => {
   });
 });
 
-// ── collapseFromText ──────────────────────────────────────────────────────────
+// ── Door 1 (unit 2d): Import xyz as fragment — add-fragment op, count+order (c1) ─
+// The typical way coordinate hand-editing survives the now read-only block: paste
+// an xyz, it becomes a NEW fragment. Breaks (mint fresh ids that reorder / wrong
+// length in the parse→add path) turn the element-order / count assertions red.
 
-describe("collapseFromText", () => {
-  const atoms: RawAtom[] = [
-    { element: "O", x: 9, y: 0, z: 0 },
-    { element: "H", x: 9, y: 1, z: 0 },
-  ];
+describe("import xyz as a fragment (c1)", () => {
+  it("appends an add-fragment op adding exactly N atoms in input order", () => {
+    // A pre-existing fragment so the import is an ADD, not a seed.
+    get().seedScene(scene(1, frag("host", ["C", "C"])), "library");
 
-  it("appends a CollapseFromText op and collapses to one fragment", () => {
-    const before = scene(1, frag("a", ["O", "H"]), frag("b", ["N"]));
-    get().seedScene(before, "library");
-    get().collapseFromText(atoms);
-    expect(get().scene!.fragments).toHaveLength(1);
-    expect(get().scene).not.toBe(before);
-    expect(get().log.entries[get().log.pointer].op).toEqual({
-      type: "collapse-from-text",
-      fragmentCount: 2,
+    const xyz = "3\nwater\nO 0 0 0\nH 0.757 0.586 0\nH -0.757 0.586 0";
+    const built = sceneFromXyz(xyz, { source: "import", name: "water" });
+    expect(built).not.toBeNull();
+
+    get().addFragment(built!.fragments[0]);
+
+    const op = get().log.entries[get().log.pointer].op;
+    expect(op).toMatchObject({ type: "add-fragment", atomCount: 3 });
+
+    const frags = get().scene!.fragments;
+    const added = frags[frags.length - 1];
+    expect(added.atoms).toHaveLength(3);
+    // ORDER preserved: the xyz's row order, element by element.
+    expect(added.atoms.map((a) => a.element)).toEqual(["O", "H", "H"]);
+    // The host fragment is untouched (composition invariant across the add).
+    expect(get().scene!.fragments[0].atoms).toHaveLength(2);
+  });
+});
+
+// ── Door 2 (unit 2d): Replace input — a fresh text-adopt log, no leak (c2) ──────
+// "Replace input" adopts the buffer via seedScene(text-adopt), which installs a
+// FRESH log. Break (installLog appending instead of replacing) → the entries count
+// jumps and the old scene leaks in → red.
+
+describe("replace input re-seed (c2)", () => {
+  it("seedScene(text-adopt) replaces the whole log; the prior lineage does not leak", () => {
+    get().seedScene(scene(1, frag("a", ["O", "H", "H"])), "library");
+    get().addFragment(frag("b", ["N"])); // 2 entries, 2 fragments
+    expect(get().log.entries.length).toBeGreaterThan(1);
+
+    const pasted = sceneFromOrcaInput("! HF\n* xyz 0 1\nHe 0 0 0\n*");
+    expect(pasted).not.toBeNull();
+
+    get().seedScene(pasted, "text-adopt"); // the Replace-input adopt
+
+    expect(get().log.entries).toHaveLength(1); // FRESH log
+    expect(get().log.pointer).toBe(0);
+    expect(get().log.entries[0].op).toMatchObject({
+      type: "restore-snapshot",
+      source: "text-adopt",
     });
-  });
-
-  it("shows the notice only when >1 fragment was merged", () => {
-    get().seedScene(scene(1, frag("a", ["O"]), frag("b", ["H"])), "library");
-    get().collapseFromText(atoms);
-    expect(get().resetNotice).toEqual({ fragmentCount: 2 });
-  });
-
-  it("does NOT show the notice for a single-fragment scene", () => {
-    get().seedScene(scene(1, frag("a", ["O", "H"])), "library");
-    get().collapseFromText(atoms);
-    expect(get().resetNotice).toBeNull();
-  });
-
-  it("preserves total charge and multiplicity", () => {
-    get().seedScene(scene(3, frag("a", ["O"], -1), frag("b", ["H"], 0)), "library");
-    get().collapseFromText(atoms);
-    expect(totalCharge(get().scene!)).toBe(-1);
-    expect(get().scene!.multiplicity).toBe(3);
+    // The new molecule, not the old — the prior lineage did not leak in.
+    expect(get().scene!.fragments).toHaveLength(1);
+    expect(get().scene!.fragments[0].atoms.map((a) => a.element)).toEqual(["He"]);
   });
 });
 
 // ── Deep undo/redo (the dividend over the old one-step previous/undoReset) ─────
 
 describe("undo / redo over the log", () => {
-  it("undo restores the pre-collapse layout; redo re-applies it", () => {
+  it("undo restores the pre-op layout; redo re-applies it", () => {
     const before = scene(1, frag("a", ["O"]), frag("b", ["H"]));
     get().seedScene(before, "library");
-    get().collapseFromText([{ element: "O", x: 0, y: 0, z: 0 }]);
-    expect(get().resetNotice).not.toBeNull();
+    get().removeFragment("b");
+    expect(get().scene!.fragments).toHaveLength(1);
 
     get().undo();
     expect(get().scene).toBe(before); // the SAME frozen snapshot
-    expect(get().resetNotice).toBeNull();
+    expect(get().scene!.fragments).toHaveLength(2);
 
     get().redo();
-    expect(get().scene!.fragments).toHaveLength(1); // back to the collapse
+    expect(get().scene!.fragments).toHaveLength(1); // back to the removal
   });
 
   it("undoes MORE than one step (deep history)", () => {
@@ -191,17 +201,6 @@ describe("undo / redo over the log", () => {
     get().undo();
     get().undo();
     expect(get().scene!.fragments).toHaveLength(1); // back at entry 0
-  });
-});
-
-describe("dismissResetNotice", () => {
-  it("clears the notice without touching the scene", () => {
-    get().seedScene(scene(1, frag("a", ["O"]), frag("b", ["H"])), "library");
-    get().collapseFromText([{ element: "O", x: 0, y: 0, z: 0 }]);
-    const collapsed = get().scene;
-    get().dismissResetNotice();
-    expect(get().resetNotice).toBeNull();
-    expect(get().scene).toBe(collapsed);
   });
 });
 
@@ -216,51 +215,33 @@ describe("mutators are no-ops on a null scene (identity preserved)", () => {
   });
 });
 
-describe("sync decision (mirrors the NewJobScreen effect)", () => {
-  it("matching geometry ⇒ no collapse; diverged geometry ⇒ collapse to a new ref", () => {
-    get().seedScene(scene(1, frag("a", ["O", "H", "H"])), "library");
-    const before = get().scene!;
+// ── The coordinate block is a READ-ONLY PROJECTION of the Scene (unit 2d) ───────
+// Pure replay of the NewJobScreen Monaco→Scene effect body. A block hand-edit is
+// REVERTED (never collapsed into geometry — that path is gone); a keyword edit
+// outside the block passes through. This is the pure core of manual gates m1/m2;
+// the Monaco effect itself is exercised by the manual gate (no jsdom in the suite).
 
-    expect(xyzMatchesScene(before, mergeToAtomLines(before))).toBe(true);
-
-    const moved = before.fragments[0].atoms.map((a) => ({ ...a, x: a.x + 0.5 }));
-    const movedScene: Scene = {
-      ...before,
-      fragments: [{ ...before.fragments[0], atoms: moved }],
-    };
-    expect(xyzMatchesScene(before, mergeToAtomLines(movedScene))).toBe(false);
-
-    get().collapseFromText(moved);
-    expect(get().scene).not.toBe(before);
-  });
-});
-
-// ── Control (c): the collapse ↔ undo loop is DEAD (sync integration) ───────────
-// Replays the two NewJobScreen sync effects against the real store: a manual edit
-// diverges → collapse (a logged op) → Undo restores the multi-fragment layout →
-// Scene→Monaco re-injects it → Monaco→Scene sees a MATCH and does NOT re-collapse.
-// If collapse were a non-undoable reset (or undo didn't restore), step 5 would
-// re-collapse and the scene would stay at one fragment — the live loop.
-
-describe("collapse ↔ undo loop is dead (control c)", () => {
-  // The Monaco→Scene decision, verbatim from the NewJobScreen effect body.
-  function syncMonacoToScene(content: string): "match" | "collapse" | "adopt" | "clear" {
+describe("coordinate block is a read-only projection — Monaco→Scene decision", () => {
+  // The decision, verbatim from the effect: seed on an empty scene, keep on a
+  // matching block, revert on a diverged/absent one. It NEVER mutates geometry on
+  // a block edit.
+  function syncMonacoToScene(content: string): { action: string; content: string } {
     const parsed = sceneFromOrcaInput(content);
     const cur = get().scene;
-    if (!parsed) {
-      if (cur) get().seedScene(null, "text-adopt");
-      return "clear";
-    }
     if (!cur) {
-      get().seedScene(parsed, "text-adopt");
-      return "adopt";
+      if (parsed) {
+        get().seedScene(parsed, "text-adopt");
+        return { action: "seed", content };
+      }
+      return { action: "noop", content };
     }
-    if (xyzMatchesScene(cur, mergeToAtomLines(parsed))) return "match";
-    get().collapseFromText(parsed.fragments[0].atoms);
-    return "collapse";
+    if (parsed && xyzMatchesScene(cur, mergeToAtomLines(parsed))) {
+      return { action: "keep", content };
+    }
+    return { action: "revert", content: injectSceneIntoInput(content, cur) };
   }
 
-  it("a hand-edit collapses once; Undo + re-inject does not collapse again", () => {
+  it("a coordinate hand-edit is reverted; the multi-fragment scene is untouched (m1, pure)", () => {
     const two = scene(1, frag("a", ["O", "H", "H"]), frag("b", ["N", "H", "H"]));
     get().seedScene(two, "library");
 
@@ -273,23 +254,36 @@ describe("collapse ↔ undo loop is dead (control c)", () => {
           : f,
       ),
     };
-    const divergentContent = injectSceneIntoInput("! HF\n", moved);
+    const edited = injectSceneIntoInput("! HF\n", moved);
 
-    // 2) content→Scene: diverged → collapse to one fragment.
-    expect(syncMonacoToScene(divergentContent)).toBe("collapse");
-    expect(get().scene!.fragments).toHaveLength(1);
-
-    // 3) The user clicks Undo → the 2-fragment layout comes back (deep undo).
-    get().undo();
+    // 2) content→Scene: diverged → REVERT (not collapse). The scene is the SAME
+    //    frozen 2-fragment snapshot; geometry did not change and did not collapse.
+    const r = syncMonacoToScene(edited);
+    expect(r.action).toBe("revert");
     expect(get().scene).toBe(two);
     expect(get().scene!.fragments).toHaveLength(2);
 
-    // 4) Scene→Monaco re-injects the restored geometry into the text.
-    const reInjected = injectSceneIntoInput(divergentContent, get().scene!);
-
-    // 5) content→Scene runs again → MATCH, no second collapse (the loop is dead).
-    expect(syncMonacoToScene(reInjected)).toBe("match");
+    // 3) The reverted content's block matches the scene again (projection restored),
+    //    so a second pass is a no-op "keep" — there is no revert↔edit loop.
+    expect(syncMonacoToScene(r.content).action).toBe("keep");
     expect(get().scene).toBe(two);
-    expect(get().scene!.fragments).toHaveLength(2);
+  });
+
+  it("a keyword edit outside the block passes through — no revert (m2, pure)", () => {
+    const two = scene(1, frag("a", ["O", "H", "H"]), frag("b", ["N", "H", "H"]));
+    get().seedScene(two, "library");
+
+    // Same coordinates as the scene, only the `!` line / a `%` block differ.
+    const withKeywords = injectSceneIntoInput("! HF TightOpt\n%pal nprocs 4 end\n", get().scene!);
+    const r = syncMonacoToScene(withKeywords);
+    expect(r.action).toBe("keep"); // block matches → the keyword edit is accepted as-is
+    expect(get().scene).toBe(two); // geometry untouched
+  });
+
+  it("a block typed into an empty editor SEEDS the scene (text-adopt seed stays alive)", () => {
+    expect(get().scene).toBeNull();
+    const r = syncMonacoToScene("! HF\n* xyz 0 1\nHe 0 0 0\n*");
+    expect(r.action).toBe("seed");
+    expect(get().scene!.fragments[0].atoms.map((a) => a.element)).toEqual(["He"]);
   });
 });

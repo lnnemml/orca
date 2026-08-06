@@ -15,9 +15,7 @@ import {
 import type { Scene, RawFragment } from "./types";
 import { testScene } from "./scene-test-util";
 
-beforeEach(() =>
-  useSceneStore.setState({ log: emptyLog(), scene: null, resetNotice: null }),
-);
+beforeEach(() => useSceneStore.setState({ log: emptyLog(), scene: null }));
 
 const get = () => useSceneStore.getState();
 
@@ -131,14 +129,13 @@ describe("remove / rename / undo through the store", () => {
   it("undo restores both the scene and (via re-inject) its coordinates", () => {
     const two: Scene = testScene([water(), bh4()], 1);
     get().seedScene(two, "library");
-    // Simulate a manual coordinate edit collapsing the 2-fragment scene.
-    get().collapseFromText(water().atoms);
-    expect(get().resetNotice).toEqual({ fragmentCount: 2 });
+    // A geometry op (remove a fragment) → the log advances one step.
+    get().removeFragment(two.fragments[1].id);
+    expect(get().scene!.fragments).toHaveLength(1);
     get().undo();
     expect(get().scene).toBe(two);
     // The restored scene re-injects its (two-fragment) coordinates into content.
     const content = injectSceneIntoInput("! HF\n", get().scene!);
     expect(sceneFromOrcaInput(content)).not.toBeNull();
-    expect(get().resetNotice).toBeNull();
   });
 });

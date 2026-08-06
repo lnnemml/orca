@@ -1,6 +1,6 @@
 # Module: editor UI (the New Job workspace)
 
-**Status:** Phase 4.2 unit 2c1. The New Job screen (`src/screens/NewJobScreen.tsx`) is a
+**Status:** Phase 4.2 unit 2d (Stage 2 closed). The New Job screen (`src/screens/NewJobScreen.tsx`) is a
 **viewer-first workspace**: the 3Dmol canvas is the primary surface, and the geometry panels live in
 a **right dock** (`src/scene/EditorDock.tsx`) that is a thin icon rail expanding per section. This
 page records the **layout principle and where future panels go** — not the current CSS pixel values
@@ -18,9 +18,18 @@ page records the **layout principle and where future panels go** — not the cur
   Fullscreen is the **workspace mode**: the same dock is inside it, so every section — including Add
   Fragment — is reachable without leaving fullscreen. The fullscreen toggle changes only a className;
   `MoleculeViewer` keeps its tree position and is not remounted (the camera survives).
+- **Text owns chemistry, the Scene owns geometry (ADR-010 authority split; enforced in unit 2d).**
+  The editable surface of Monaco is the `!` line and `%` blocks — the chemistry. The `* xyz … *`
+  coordinate block is a **read-only projection of the 3D Scene**: a hand-edit of it is reverted (with
+  a notice pointing at the doors), never adopted, so there is one source of geometry (the viewer/Scene)
+  and one source of chemistry (the text). The capability to hand-enter coordinates is preserved through
+  two doors — **Paste xyz** (import as a fragment, the typical path) and **Replace input** (the
+  **named escape**: unlock the whole buffer once to paste a different calculation, then Adopt it as a
+  fresh scene). See `modules/scene.md` for the sync wiring; `modules/frontend.md` for the controls.
 - **Sections, in order of use:** Selection & Measure (`AtomInspector`) · Edit (`EditPanel`) ·
-  Fragments (the Add-Fragment palette — reagents / import / SMILES / library — **plus** `FragmentList`)
-  · Constraints (`ConstraintPanel`) · History (`HistoryPanel`) · Actions (xTB pre-optimize). Each
+  Fragments (the Add-Fragment palette — reagents / import / SMILES / **Paste xyz** / library — **plus**
+  `FragmentList`) · Constraints (`ConstraintPanel`) · History (`HistoryPanel`) · Actions (xTB
+  pre-optimize). Each
   toggles **independently**; open-state is **session-only** (not persisted — a fresh screen starts
   viewer-first with just Fragments open so Add Fragment is discoverable). Each section shows its
   panel's **existing** empty state (e.g. `AtomInspector`/`HistoryPanel` render nothing until there's

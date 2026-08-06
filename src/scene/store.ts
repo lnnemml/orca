@@ -9,7 +9,7 @@
  * ── Why there is NO `setScene` ───────────────────────────────────────────────
  * The predecessor store held `scene` as an independent field that actions wrote
  * directly. The danger (ADR-017 / the 2b main risk): any path — an xtb apply, a
- * conformer swap, a Monaco collapse, future code — could set the scene *without*
+ * conformer swap, a text re-adopt, future code — could set the scene *without*
  * a log entry, and the scene and the log would silently diverge (undo then rolls
  * back the wrong thing, or loses an edit). So `scene` is never independently
  * settable. Every write to `scene` in this file is `scene: current(log)` right
@@ -42,16 +42,13 @@ import {
   type SceneLog,
   type SnapshotSource,
 } from "./oplog";
-import { stampFreshIds } from "./ids";
 import {
   addFragment as addFragmentPure,
   atomCount,
-  makeFragmentId,
   removeFragment as removeFragmentPure,
   renameFragment as renameFragmentPure,
   replaceFragmentAtoms as replaceFragmentAtomsPure,
   setMultiplicity as setMultiplicityPure,
-  totalCharge,
 } from "./scene";
 import type { RawAtom, RawFragment, Scene } from "./types";
 
@@ -60,8 +57,6 @@ export interface SceneStore {
   log: SceneLog;
   /** DERIVED: `current(log)`. Never set except from the log (see file header). */
   scene: Scene | null;
-  /** Set when a manual coordinate edit collapsed a multi-fragment scene. */
-  resetNotice: { fragmentCount: number } | null;
 
   // ── Low-level doors (the only two ways the log changes, plus pointer moves) ──
   /** Append one operation with its resultant snapshot. */
@@ -83,15 +78,11 @@ export interface SceneStore {
   renameFragment(id: string, name: string): void;
   setMultiplicity(m: number): void;
   replaceFragmentAtoms(id: string, atoms: RawAtom[], via: FragmentGeometryVia): void;
-  /** A manual coordinate edit diverged from the scene → collapse to the text. */
-  collapseFromText(atoms: RawAtom[]): void;
 
   // ── History navigation (undo/redo fall out of the log — ADR-010) ──
   undo(): void;
   redo(): void;
   jumpTo(pointer: number): void;
-
-  dismissResetNotice(): void;
 }
 
 /** The identity element for `addFragment` on an empty log (ids start at 0). */
@@ -105,17 +96,15 @@ function base(log: SceneLog): Scene {
 export const useSceneStore = create<SceneStore>((set, get) => ({
   log: emptyLog(),
   scene: null,
-  resetNotice: null,
 
-  // The single low-level append. Clears the reset notice (a fresh op supersedes
-  // the "coordinates edited" warning). `scene` is re-derived, never set apart.
+  // The single low-level append. `scene` is re-derived, never set apart.
   commit: (op, resultScene) =>
     set((s) => {
       const log = append(s.log, op, resultScene);
-      return { log, scene: current(log), resetNotice: null };
+      return { log, scene: current(log) };
     }),
 
-  installLog: (log) => set({ log, scene: current(log), resetNotice: null }),
+  installLog: (log) => set({ log, scene: current(log) }),
 
   seedScene: (scene, source) => {
     if (scene === null) {
@@ -189,59 +178,21 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
     );
   },
 
-  // A manual coordinate edit diverged from the scene → the scene follows the
-  // text: one fragment holding the parsed atoms, preserving total charge and
-  // multiplicity. The notice fires only when >1 fragment was lost (a
-  // single-fragment collapse is geometrically a no-op — see NewJobScreen). This
-  // is a LOGGED op (append CollapseFromText), not a reset: undoing it brings the
-  // pre-collapse layout back, and the Scene→Monaco sync re-injects it so the
-  // text matches again and no second collapse fires (the dead loop, test c).
-  collapseFromText: (atoms) =>
-    set((s) => {
-      const prev = current(s.log);
-      const fragmentCount = prev ? prev.fragments.length : 0;
-      // Identity continuity with arbitrarily hand-edited coordinates is undefined,
-      // so the collapsed fragment gets FRESH ids from 0 (the Monaco identity
-      // boundary; goes away in 2d when the block becomes a read-only projection).
-      const { atoms: stamped, nextAtomId } = stampFreshIds(atoms, 0);
-      const collapsed: Scene = {
-        fragments: [
-          {
-            id: makeFragmentId(),
-            name: prev?.fragments[0]?.name ?? "Molecule",
-            atoms: stamped,
-            charge: prev ? totalCharge(prev) : 0,
-            source: "editor",
-          },
-        ],
-        multiplicity: prev?.multiplicity ?? 1,
-        nextAtomId,
-      };
-      const log = append(s.log, { type: "collapse-from-text", fragmentCount }, collapsed);
-      return {
-        log,
-        scene: current(log),
-        resetNotice: fragmentCount > 1 ? { fragmentCount } : null,
-      };
-    }),
-
   undo: () =>
     set((s) => {
       const log = undoLog(s.log);
-      return { log, scene: current(log), resetNotice: null };
+      return { log, scene: current(log) };
     }),
 
   redo: () =>
     set((s) => {
       const log = redoLog(s.log);
-      return { log, scene: current(log), resetNotice: null };
+      return { log, scene: current(log) };
     }),
 
   jumpTo: (pointer) =>
     set((s) => {
       const log = goto(s.log, pointer);
-      return { log, scene: current(log), resetNotice: null };
+      return { log, scene: current(log) };
     }),
-
-  dismissResetNotice: () => set({ resetNotice: null }),
 }));

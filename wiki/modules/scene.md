@@ -150,13 +150,15 @@ reader must not "simplify" `carryIds` into `stampFreshIds`: the input never carr
 an id, and the whole point is to reuse the old one.** A rigid move
 (`translateFragment`) is generic over Raw/Scene and preserves ids by construction.
 
-**Identity boundary — the Monaco collapse.** When a manual coordinate edit wins and
-the Scene collapses to one fragment (`collapseToSingleFragment`), the atoms get
-**fresh** ids: identity continuity across *arbitrarily* hand-edited text is
-undefined, so it is not claimed. This is a **deliberate boundary of identity**, not
-a bug — it holds until Stage 2 makes the xyz block a read-only projection of the
-Scene (ROADMAP Phase 4.2 Stage 2), after which the hand-edit path (and this
-boundary) goes away.
+**Identity boundary — the Monaco collapse (removed in unit 2d).** Before 2d, a
+manual coordinate edit could win and collapse the Scene to one fragment with
+**fresh** ids (identity continuity across arbitrarily hand-edited text is
+undefined). Unit 2d **made the xyz block a read-only projection of the Scene** — a
+hand-edit of the block is reverted, never adopted — so that path and its identity
+boundary are gone. Geometry hand-editing now enters through two conscious doors
+(Import xyz as fragment / Replace input); see the Scene ↔ Monaco sync section
+below. The `collapse-from-text` op survives only as a **legacy** type for
+deserializing pre-2d logs ([oplog.ts](../../src/scene/oplog.ts), ADR-017).
 
 ### `scene_json` v2 and the v1 migration
 
@@ -326,7 +328,7 @@ callers have different relationships to intermediate states.
 
 ## The store (`store.ts`) folds over the operation log (unit 2b) and Scene ↔ Monaco sync
 
-`useSceneStore` (Zustand) holds `{ log, scene, resetNotice }`. Since unit 2b the
+`useSceneStore` (Zustand) holds `{ log, scene }`. Since unit 2b the
 **`scene` is DERIVED**: `scene === current(log)`, always — that equality is the
 store's core invariant and what makes the "mutator bypasses the log" defect
 *impossible by construction* (ADR-017 / the 2b main risk). **There is no
@@ -336,7 +338,7 @@ store's core invariant and what makes the "mutator bypasses the log" defect
 the three pointer moves `undo` / `redo` / `jumpTo`. Every write to `scene` in the
 store is `scene: current(log)` right after the log changed. Convenience mutators
 (`addFragment`, `removeFragment`, `renameFragment`, `setMultiplicity`,
-`replaceFragmentAtoms(via)`, `collapseFromText`) compute the result from the pure
+`replaceFragmentAtoms(via)`) compute the result from the pure
 `scene.ts` functions and funnel through `commit`; `seedScene(scene, source)` is a
 thin `installLog` of a fresh `restore-snapshot`-seeded log (or the empty log for a
 `null` scene). Undo/redo are **deep** now (the whole log), superseding the old
@@ -369,34 +371,50 @@ than history). A legacy job (no log) seeds a fresh log ("history begins here"). 
 iteration boundary (`restore-snapshot`) is appended on top so history carries across
 iterations. `restore.test.ts` covers all branches incl. the diverged-log control (b).
 
-**Sync (ADR-008 #6), as wired in `NewJobScreen`:**
-- **Scene → Monaco:** on a scene change, `injectSceneIntoInput` writes the merged
-  block; a guard skips the write when the text already matches (prevents the echo
-  after a content→scene sync and never reformats a manual edit).
-- **Monaco → Scene:** on the 500 ms debounce, `xyzMatchesScene(scene, atomLines)`
-  (**parsed floats, tol 1e-6 — never string compare**) decides: match → leave the
-  scene (the user edited keywords, the common silent path); diverged → the text
-  wins, `collapseFromText` (a **logged `CollapseFromText` op**, unit 2b); block gone
-  → `seedScene(null, …)` (empty log); no scene yet but a block appeared (template /
-  generated input) → `seedScene(parsed, "text-adopt")`.
-- **Reset notice + Undo:** the notice ("N fragments merged into one" + Undo) shows
-  **only when >1 fragment was lost** — a single-fragment collapse is geometrically a
-  no-op, so it stays silent. Undo is now the **log's** `undo` (deep, not a one-step
-  `previous`): it restores the pre-collapse layout, which the Scene→Monaco sync
-  re-injects, so the text matches again and **no second collapse fires** — the
-  collapse↔undo loop is *dead*, proven by an integration test (control (c)), not
-  asserted.
+**Sync (ADR-008 #6), as wired in `NewJobScreen` — the coordinate block is a
+READ-ONLY PROJECTION of the Scene (unit 2d; ADR-010 authority split: input text
+owns chemistry `!`/`%`, the Scene owns geometry):**
+- **Scene → Monaco (one-way generator):** on a scene change, `injectSceneIntoInput`
+  writes the merged block; a guard skips the write when the text already matches
+  (prevents the echo after a content→scene sync and never reformats a manual edit).
+- **Monaco → Scene:** on the 500 ms debounce, using the **same** locator
+  (`sceneFromOrcaInput`) and `xyzMatchesScene(scene, atomLines)` (**parsed floats,
+  tol 1e-6 — never string compare**), four branches: **no scene yet** → a block
+  typed/pasted into an empty editor **seeds** it (`seedScene(parsed, "text-adopt")`
+  — keeps template/generated-input adoption alive); **block matches** → leave the
+  scene (the user edited `!`/`%` keywords — the common, allowed path, they flow to
+  the generated `.inp`); **block diverged or deleted, scene present** → the block is
+  read-only, so **revert** it from the Scene (`injectSceneIntoInput`, keeping the
+  `!`/`%` edits) and note the reverted edit. The pre-2d "diverged → the text wins →
+  `collapseFromText`" branch is **gone**; a block hand-edit no longer touches
+  geometry (there is no `setContent`-to-`collapse` path).
+- **Two doors carry geometry hand-editing** (ROADMAP requires the capability
+  survive the read-only block): **Import xyz as fragment** — paste xyz →
+  `sceneFromXyz` → `addFragment` (a logged `add-fragment`; the typical path); and
+  **Replace input** — a one-shot escape: confirm, unlock the whole buffer, paste a
+  different calculation, **Adopt** it as a fresh `text-adopt` Scene (a new log; the
+  old lineage is discarded). After adoption the block re-locks (read-only again).
+  Whole-buffer replacers that already existed (template pick, builder Generate) go
+  through the SAME conscious re-adopt (`adoptWholeInput` → `seedScene(text-adopt)`),
+  so they aren't caught by the revert.
+
+**Why no jsdom test for the revert loop.** The Monaco↔Scene *effect* is the manual
+gate (unit 2d m1–m5, real WebKitGTK) — jsdom has no Monaco. The pure **decision**
+(`store.test.ts`: revert on divergence, keep on a keyword edit, seed on an empty
+scene) and the two doors' invariants (**c1** import builds an `add-fragment` op
+preserving atom count+order; **c2** a Replace re-seed installs a fresh log with no
+lineage leak) are vitest-covered, each with a proven-biting negative control.
 
 **Regression guard on the round-trip (the subsystem's finest wire).** Adding a
 fragment makes the scene multi-fragment → Scene→Monaco injects → ~500 ms later
 Monaco→Scene re-parses and asks `xyzMatchesScene`. If ordering/formatting drift
-made that FALSE, the scene would **silently collapse back to one fragment half a
-second after the add** — no error, just "the sidebar blinked and the fragments
-merged". `add-fragment.test.ts` locks this: it drives the real inject → parse →
+made that FALSE, the block would **revert to the projection** right after the add
+(the multi-fragment layout survives in the Scene, but the text would churn).
+`add-fragment.test.ts` locks this: it drives the real inject → parse →
 `xyzMatchesScene` path a real add produces and asserts the comparison stays TRUE
-(so the effect leaves the scene at two fragments). It's a pure-function
-simulation, not a rendered-component + fake-timers test, because the suite has no
-jsdom — and the comparison is exactly where the bug would live.
+(so the effect leaves the block matching). It's a pure-function simulation, not a
+rendered-component + fake-timers test, because the suite has no jsdom — and the
+comparison is exactly where the bug would live.
 
 ## The operation log (`oplog.ts`, unit 2a; ADR-017) — the store folds over it (2b)
 
@@ -409,8 +427,9 @@ is the history-panel jump, and `SnapshotSource` covers the three whole-scene see
 - **`Op`** — a tagged union with **one variant per Scene mutator** (`add-fragment`,
   `remove-fragment`, `rename-fragment`, `set-fragment-charge`, `set-multiplicity`,
   `translate-fragment`, `replace-fragment-atoms` `{edit: via 'set-internal'|'xtb'|'conformer'}`,
-  `replace-all-atoms` `{edit: via 'xtb'}`) plus the two store acts `collapse-from-text` and
-  `restore-snapshot`. The mutator↔Op table is in ADR-017 (so 2b finds no hole). Geometry ops
+  `replace-all-atoms` `{edit: via 'xtb'}`) plus the store act `restore-snapshot`, and the
+  **legacy** `collapse-from-text` (no post-2d path emits it — kept only to deserialize pre-2d
+  logs). The mutator↔Op table is in ADR-017 (so 2b finds no hole). Geometry ops
   reference atoms by **`AtomId`**, not a positional index — the log is AtomId-native ahead of the
   2c2 pipeline move.
 - **`describe(op): string`** — one human lab-journal line per variant, **AtomId-native** provenance

@@ -1033,6 +1033,19 @@ select:disabled,
   flex-wrap: wrap;
   gap: 6px;
 }
+/* Import xyz as fragment (unit 2d) — the paste-xyz source in the Fragments dock. */
+.paste-xyz {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.paste-xyz-area {
+  width: 100%;
+  resize: vertical;
+  min-height: 96px;
+  font-size: 12px;
+  line-height: 1.4;
+}
 .lib-mol-list {
   display: flex;
   flex-direction: column;

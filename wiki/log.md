@@ -5184,3 +5184,59 @@ edit-plan/constraints/oplog + Index-space resolver + the removed guards), `edito
 space labelling + seam gone), `visualization.md` (AtomId selection + halo direct-resolve),
 `adr-017` (describeInScene amendment), ROADMAP 2c2 → [x]. **Next:** 2d — the Monaco xyz block becomes a
 read-only projection (coordinate hand-editing moves to "paste xyz → import a fragment").
+
+## [2026-08-06] session | feat(editor): xyz block is a read-only Scene projection; import-as-fragment + replace-input; close Stage 2 (unit 2d)
+The `* xyz … *` coordinate block in Monaco became a **generated read-only projection of the Scene**
+(Variant C; ADR-010 authority split: input text owns chemistry `!`/`%`, the Scene owns geometry).
+**Mechanism (review point 1): a guard+revert at the React content layer, not a Monaco read-only
+range** — the Monaco→Scene debounce effect in `NewJobScreen`, on a diverged/deleted block with a
+scene present, calls `setContent((c) => injectSceneIntoInput(c, current))` to restore the projection
+(keeping the `!`/`%` edits), and Scene is never touched. Chosen over a Monaco range because it reuses
+the ONE existing locator (`sceneFromOrcaInput`/`injectSceneIntoInput` — no second `* xyz` finder,
+invariant 3), the editor stays a plain controlled component (the controlled `value` makes the revert
+authoritative, no editor-instance race), and it is the minimal wiring the unit called for. **Where the
+Monaco→Scene collapse vanished (review point 2):** the effect's old `diverged → collapseFromText(...)`
+branch is gone, replaced by the revert; grep-verified full-file that `collapseFromText` has **no
+occurrences in `src/`** and `resetNotice`/`dismissResetNotice` are gone. The **`collapse-from-text`
+op type stays** — union member, `OP_TYPES`, `describe`, and the `deserialize` case — marked **legacy**
+(«kept for deserialization, never emitted»), so pre-2d `scene_log_json` still opens (persist not
+broken); the store's `collapseFromText` mutator + the `resetNotice` machinery are **removed** (dead
+once the collapse path is gone), which is what makes "never emitted" literally true.
+
+**Two doors preserve coordinate hand-editing** (ROADMAP requires the capability survive): **Import xyz
+as fragment** (Fragments dock — a textarea → `sceneFromXyz` → `addFragmentToScene`; soft failure on
+unparseable xyz) and **Replace input** (a button by *Save to Library* → confirm → *Unlock editor*
+[suppresses the revert for one round] → paste → *Adopt input* = `seedScene(text-adopt)`, a fresh log;
+**the block re-locks after adoption — review point 3: a one-shot escape, not a permanent unlock**).
+Whole-buffer replacers that already existed (template pick, builder Generate) route through the SAME
+conscious re-adopt (`adoptWholeInput` → `seedScene(text-adopt)`) so they aren't caught by the revert
+(this was a real trap: without it, picking a template while a scene existed would revert the template's
+block to the old scene).
+
+**Gates.** Pure (vitest): **(c1)** import xyz builds an `add-fragment` op adding exactly N atoms with
+count+order preserved — broke it (reversed the parser's atom order) → red, reverted; **(c2)** a
+Replace re-seed installs a FRESH `text-adopt` log with no lineage leak — broke it (`seedScene` appends
+to the live log instead of `emptyLog()`) → red, reverted; plus a read-only-projection decision test
+(revert on divergence / keep on a keyword edit / seed on an empty scene) — the pure core of m1/m2.
+`tsc` clean, **vitest 516 green**, `vite build` clean. **Manual gates m1–m4 verified LIVE** in the
+running app (the WebKitGTK dev server at :1420, driven via Chrome — the real React↔Monaco↔Scene effect
+wiring, not jsdom): **m1** a coordinate hand-edit reverts to the projection and the scene stays
+2-fragment (BH₄⁻ + H₂O), notice shown; **m2** `! HF TightOpt` is accepted and persists, block + scene
+untouched; **m3** Paste xyz adds an HF fragment to 3D + sidebar, journal shows "Add fragment Pasted
+xyz"; **m4** Replace input → confirm → unlock → paste N₂ → Adopt → fresh 1-fragment scene, journal
+reset to one `text-adopt` entry, and a coordinate edit on the new block reverts (block read-only
+again). **m5** (clone a legacy job carrying a `collapse-from-text` log) needs the Tauri/SQLite backend
+(unreachable from Chrome); 2d only *kept* the deserialize/describe path — grep-verified + the
+`oplog.test.ts` legacy describe case + `restore.test.ts` all green — so it is unit-covered; the
+end-to-end clone is left for the author's real backend.
+
+**Also closed the 2c2 wiki debt** (the 2c2 close ritual missed it): `frontend.md` lines describing
+`selectionSurvives`/`validateSelection` as the live pick-list mechanism now name **`filterSelection`**
+(per-atom, id-based, the preservation dividend). **Wiki:** `scene.md` (Scene↔Monaco sync rewritten —
+read-only projection, collapse branch gone, the two doors, the jsdom-vs-manual split; the identity
+boundary marked removed; op-vocabulary `collapse-from-text` → legacy), `frontend.md` (InputEditor
+read-only block + Paste xyz source + Replace input door + 2c2 debt fix), `editor-ui.md` (status → 2d;
+the authority-split / read-only-projection principle; Replace input as the named escape), ADR-017
+(unit-2d amendment: `collapse-from-text` is legacy), `app.css` (`.paste-xyz` textarea), ROADMAP (2d
+→ [x], **Stage 2 marked COMPLETE**, Stage 3 next). **Next: Stage 3 — operations over the core (rigid
+drag + the ephemeral layer; the first item is the Scene→Rust/WASM move).**
