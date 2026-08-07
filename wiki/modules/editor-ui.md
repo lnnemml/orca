@@ -46,6 +46,17 @@ page records the **layout principle and where future panels go** — not the cur
   element with no cited vdW radius gets a **quiet, separate** UNDETERMINED notice (skipped, not
   guessed). Chemistry + the physics of the threshold: `chemistry/vdw-steric.md`; mechanism:
   `modules/scene.md` / `visualization.md`.
+- **Bond display control — cations excluded by default + manual hide/show (unit bond-display-control;
+  Edit section).** 3Dmol draws bonds by distance, so an s-block metal cation (Na⁺/K⁺/Mg²⁺…) coordinated
+  to an O/N/aromatic-H gets a **spurious covalent stick**. Those are **hidden by default** (a "Show
+  cation coordinate bonds" checkbox reveals them). A general escape hatch: **select two atoms → "Hide
+  bond" / "Show bond"** toggles that specific bond, keyed by the **AtomId pair** so it survives
+  drag/rotate/re-perception (a positional key would hide the wrong bond after an index shift). A "N
+  bonds hidden · show all" reset appears when any are hidden. **DISPLAY-ONLY** — app-owned in
+  `NewJobScreen`, never in the Scene; it changes no geometry, so Monaco's xyz block, the total charge,
+  and the generated `.inp` are byte-identical (there is no bond list in an ORCA input —
+  `wiki/orca/parse-sources.md`). Mechanism (filters the perception 3Dmol already did, no second pass):
+  `modules/visualization.md`.
 - **Rotate about axis — rigid whole-fragment spin (unit 3.3; `RotatePanel`, a sibling of `EditPanel`
   in the Edit section).** Pick **two atoms** — P (first, the pivot, on the fragment to turn) and Q
   (second, the direction, typically the substrate contact atom) — and a **numeric angle**; the fragment

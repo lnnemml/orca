@@ -16,6 +16,7 @@ import { EditPanel } from "../scene/EditPanel";
 import { RotatePanel } from "../scene/RotatePanel";
 import { GuidedPlacementPanel } from "../scene/GuidedPlacementPanel";
 import { DEFAULT_ROTATE_OVERLAY, type RotateOverlay } from "../viewer/rotate-overlay";
+import { bondKey, type BondKey } from "../viewer/bond-display";
 import { ConstraintPanel } from "../scene/ConstraintPanel";
 import {
   parseConstraintsBlock,
@@ -303,6 +304,26 @@ export function NewJobScreen({
   useEffect(() => {
     setRotateOverlay(DEFAULT_ROTATE_OVERLAY);
   }, [rotateAxis]);
+  // ── Bond display control (unit bond-display-control) — DISPLAY-ONLY, app-owned,
+  // NOT in the Scene (ADR-010). `hiddenBonds` = manually hidden bonds keyed by AtomId
+  // PAIR (`bondKey`), so a hide survives re-perception / drag / rotate / index shifts.
+  // `showCationBonds` overrides the default s-block-cation exclusion. Neither touches
+  // geometry — Generate/Run are byte-identical whatever is hidden.
+  const [hiddenBonds, setHiddenBonds] = useState<ReadonlySet<BondKey>>(new Set());
+  const [showCationBonds, setShowCationBonds] = useState(false);
+  // Toggle the bond between the two currently-selected atoms (by AtomId pair).
+  const toggleSelectedBond = () => {
+    if (selection.length !== 2) return;
+    const key = bondKey(selection[0], selection[1]);
+    setHiddenBonds((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+  const selectedBondHidden =
+    selection.length === 2 && hiddenBonds.has(bondKey(selection[0], selection[1]));
   // "Move the other fragment instead" — flip to the plan's alternative orientation
   // (2.5.2d-2). Reset when the selection/scene changes (the plan is different).
   const [preferAlternative, setPreferAlternative] = useState(false);
@@ -1431,6 +1452,42 @@ export function NewJobScreen({
               </span>
             </div>
           </div>
+          {/* Bond display control (unit bond-display-control) — DISPLAY-ONLY. Cation
+              coordinate bonds (Na⁺/K⁺/Mg²⁺…) are hidden by default; this reveals them.
+              Hiding is a viewer choice — it never changes the geometry or the ORCA input. */}
+          <div className="bond-display-controls">
+            <label
+              className="move-mode-toggle"
+              title="s-block metal cations (Na⁺, K⁺, Mg²⁺, …) coordinate rather than bond covalently; 3Dmol draws a spurious stick. Off = hide those sticks (default). This is display-only."
+            >
+              <input
+                type="checkbox"
+                checked={showCationBonds}
+                onChange={(e) => setShowCationBonds(e.target.checked)}
+              />
+              Show cation coordinate bonds
+            </label>
+            <button
+              className="btn btn-sm"
+              onClick={toggleSelectedBond}
+              disabled={selection.length !== 2}
+              title={
+                selection.length === 2
+                  ? "Hide/show the bond between the two selected atoms (kept by AtomId — survives moves)"
+                  : "Select exactly two atoms to hide/show the bond between them"
+              }
+            >
+              {selectedBondHidden ? "Show bond" : "Hide bond"} between selection
+            </button>
+            {hiddenBonds.size > 0 ? (
+              <span className="muted bond-hidden-count">
+                {hiddenBonds.size} bond{hiddenBonds.size === 1 ? "" : "s"} hidden ·{" "}
+                <button className="link-btn" onClick={() => setHiddenBonds(new Set())}>
+                  show all
+                </button>
+              </span>
+            ) : null}
+          </div>
           {editPlan && selection.length >= 2 ? (
             <EditPanel
               scene={scene}
@@ -1901,6 +1958,8 @@ export function NewJobScreen({
                   onAtomPick={onAtomPick}
                   moveMode={moveMode}
                   onFragmentDrag={translateFragment}
+                  hiddenBonds={hiddenBonds}
+                  showCationBonds={showCationBonds}
                   clashHighlight={clashIds}
                   showAtomNumbers={showNumbers}
                   theme={theme}

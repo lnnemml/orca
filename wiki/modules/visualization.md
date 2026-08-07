@@ -187,6 +187,45 @@ the angle comes from a slider in `RotatePanel`, outside the viewer.
     verified live. (jsdom-less viewer + panel → the regression guard is the manual gate: no "Maximum
     update depth" after selecting a pair.)
 
+## Bond display filter — cations excluded + manual hide/show (unit bond-display-control)
+
+3Dmol perceives bonds from interatomic **distances**. That is right for covalent molecules but wrong
+for two cases the filter removes **from the drawing only** (`src/viewer/bond-display.ts`, pure /
+node-tested, **3Dmol-free** like `frozenTopology.ts`):
+
+- **Cation coordinate bonds — excluded by default.** An **s-block metal cation** (Na⁺/K⁺/Mg²⁺/… —
+  `CATION_ELEMENTS` = alkali group 1 + alkaline-earth group 2) *coordinates* an O/N/π face
+  electrostatically; it does not bond covalently, so the perceived stick is spurious (Na⁺ next to a
+  carbonyl O or an aromatic H). The list is **not** "anything with a + charge" and **not** the
+  transition metals: `H` (H⁺ is a proton; every C–H/O–H is real), `N` (NH₄⁺ is covalent), and Pd/Pt/Fe…
+  (organometallic M–L bonds are **real**, ADR-007) all bond normally. A `showCationBonds` toggle draws
+  them anyway for who wants to see the contact.
+- **Manual hide/show — the general escape hatch.** The user can hide/show any specific bond (e.g. a
+  forming C···Nu contact in a compressed TS guess 3Dmol draws as a bond). **Keyed by the AtomId PAIR**
+  (`bondKey`), never a viewer index — so a hide survives re-perception, geometry edits, and drag/rotate
+  (a positional key would hide the *wrong* bond after an index shift — the 2.5.2b defect class; the c2
+  negative control bites exactly this). App-owned in `NewJobScreen` (`hiddenBonds: Set<BondKey>`), NOT
+  in the Scene.
+
+**DISPLAY-ONLY, and it filters the perception 3Dmol already did — never a second perception.** After
+`addModel` (the ONLY place bonds are perceived — the scene path and the frozen-topology build),
+`applyBondFilter` removes the rejected bonds **in place** on the live atoms (`filterDrawnBonds` splices
+`bonds`/`bondOrder`, the same live-atom mutation `frozenTopology` uses), before `applySceneStyle`. So:
+- the **geometry is untouched** — `buildViewerFeed(scene).xyz`, the Scene, and the ORCA input (which is
+  coordinates + charge — there is **no** bond list, `wiki/orca/parse-sources.md`) are byte-identical
+  whatever is hidden; Generate/Run don't change (c3, and the m4 manual gate);
+- the **sidecar's mask perception is separate** (it has its own `within`) — this filter is purely the
+  viewer's;
+- the **ephemeral drag/rotate paths reuse the filtered model without re-perceiving**, so a hidden bond
+  stays hidden across an animation (c4 — orthogonal to `frozenTopology`; no double perception, no lost
+  bonds beyond the excluded ones). The scene-path resolver is the feed's `ViewerAtomTable`
+  (`atomIdAt`); the mode-animation build passes `() => undefined` (no table → only the element-based
+  cation rule applies, manual hides inert there).
+
+The model effect gains `hiddenBonds`/`showCationBonds` in its deps (a toggle re-perceives + re-filters;
+the zoom guard keeps the camera since the composition signature is unchanged). `hiddenBonds` defaults to
+a module-level empty set so an unspecified prop doesn't churn the effect.
+
 ## The overlay effect (one owner of all shapes & labels)
 
 Halos, measurement lines/labels, atom-number labels, and the edit-mask glow are all drawn in **one**

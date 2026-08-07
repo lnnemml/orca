@@ -5701,3 +5701,46 @@ with step-by-step Undo, and no bare integer crosses an app-owned boundary. **Nex
 Reaction modeling.** Recorded an EARLY Phase 4.5 item: *microsolvation (explicit solvent shell)* —
 install CREST, probe `--qcg` with xtb 6.6.1 (rule #10) BEFORE designing; builds on placement + xtb +
 GOAT; caveats: shell conformer sampling + quasi-RRHO.
+
+## [2026-08-07] session | feat(editor): bond display control — cations excluded by default + manual hide/show, per-AtomId-pair, display-only
+
+**Unit bond-display-control.** 3Dmol draws bonds by distance; an s-block cation (Na⁺/K⁺/Mg²⁺…) that
+*coordinates* an O/N/π gets a spurious covalent stick (surfaced by the tail-2 cation catalog).
+Architect's decision: (B) auto-exclude cations from viewer bond perception (default, root cause) +
+(A) manual hide/show any bond (escape hatch). Both **DISPLAY-ONLY**, app-owned, keyed by AtomId pair.
+
+**What landed.**
+- `src/viewer/bond-display.ts` (pure, 3Dmol-free like `frozenTopology`): `CATION_ELEMENTS` (alkali +
+  alkaline-earth — justified: s-block metals coordinate ionically; deliberately NOT H/N/transition
+  metals, whose bonds are real), `isCationBond`, `bondKey` (normalized AtomId pair), `shouldDrawBond`,
+  and `filterDrawnBonds` (splices `bonds`/`bondOrder` on the live 3Dmol atom array — the frozenTopology
+  technique).
+- `MoleculeViewer`: `hiddenBonds`/`showCationBonds` props; `applyBondFilter` runs right after the ONLY
+  two `addModel` perceptions (scene path → resolve via the feed's `ViewerAtomTable`; mode-animation
+  build → element-only). Filters the perception 3Dmol already did — **no second pass**. The ephemeral
+  drag/rotate paths reuse the filtered model without re-perceiving, so a hide survives an animation.
+- `NewJobScreen`: app-owned `hiddenBonds: Set<BondKey>` + `showCationBonds` (NOT in the Scene); a
+  "Show cation coordinate bonds" checkbox + a "Hide/Show bond between selection" button (2 atoms
+  selected) + a "N hidden · show all" reset, in the Edit section.
+
+**Why not in ORCA/sidecar (invariant 1).** An ORCA input is coordinates + charge — there is **no** bond
+list (`wiki/orca/parse-sources.md`); the sidecar's mask perception has its own `within`. This unit is
+purely the viewer's — geometry (Scene/Monaco xyz/total charge/generated `.inp`) is byte-identical
+whatever is hidden.
+
+**Gates.** tsc 0; vitest **583 pass** incl. `bond-display.test.ts` c1–c4 — bites verified red-then-green
+(drop Na from the list → c1 red; key on viewer index instead of AtomId → c2 red). c2 is the key test
+(AtomId pair survives a 2c2-style index shift; a positional key hides the wrong bond). `vite build`
+clean. Grep: bond-display state absent from `src/scene/`; the filter operates on `model.selectedAtoms`
+after `addModel` (no second `addModel` for bonds).
+
+**Manual gate m1–m5 (real Tauri/WebKitGTK window) — PENDING author verification** (native 3Dmol
+picking can't be driven from this session). m1 Na⁺ near aromatic-H/carbonyl-O → no fake bond, rest of
+the molecule intact; m2 hide/show a real disputed bond; m3 hide survives drag/rotate (AtomId, not
+position); m4 display-only live (Monaco/charge/`.inp` unchanged); m5 stick/line + mode animation work
+with the filter.
+
+**ROADMAP.** Bond display control `[x]` (viewer polish, post-4.2). Recorded EARLY Phase 4.5 items:
+transition-state methods (OptTS / NEB / NEB-CI / IRC) pulled from Phase 6 with a probe-then-design note
+(rule #10) — they are the point of reaction modeling, not a power feature. (Microsolvation CREST-probe
+item was recorded in tail-2.)

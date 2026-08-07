@@ -1180,6 +1180,25 @@ select:disabled,
   gap: 4px;
   margin: 8px 0;
 }
+/* Bond display control (unit bond-display-control) — display-only viewer toggles. */
+.bond-display-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 0;
+}
+.bond-hidden-count {
+  font-size: 11px;
+}
+.link-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+  text-decoration: underline;
+}
 .clash-slider-label {
   font-size: 12px;
 }

@@ -16,6 +16,11 @@ import { measureSelection, formatMeasurementValue } from "../scene/measure";
 import { highlightRadius, vdwTableDrift } from "./highlight";
 import { DEFAULT_THEME, cpkColorDrift, type ViewerTheme } from "./theme";
 import { parseXyzCoords, applyCoordsToAtoms, drawableBondCount } from "./frozenTopology";
+import {
+  filterDrawnBonds,
+  type BondKey,
+  type FilterableAtom,
+} from "./bond-display";
 import { makeDragController, type WorldDelta } from "./fragment-drag";
 import { chooseRotateOverlay, type RotateOverlay } from "./rotate-overlay";
 
@@ -186,6 +191,17 @@ interface MoleculeViewerProps {
    * mouseup (never per frame). The app commits it as one `translate-fragment` op.
    */
   onFragmentDrag?: (fragmentId: string, dx: number, dy: number, dz: number) => void;
+  /**
+   * Bond DISPLAY filter (unit bond-display-control) — DISPLAY-ONLY, app-owned
+   * (ADR-010), NOT in the Scene. After 3Dmol perceives bonds at `addModel`, bonds
+   * that fail `shouldDrawBond` are removed from the live atom array before styling
+   * (the frozenTopology technique — no second perception). `hiddenBonds` is the set
+   * of manually hidden AtomId pairs (`bondKey`); the pair key survives re-perception
+   * and index shifts. `showCationBonds` overrides the default s-block-cation exclusion.
+   * The geometry (xyz / Scene / ORCA input) is untouched. See `viewer/bond-display.ts`.
+   */
+  hiddenBonds?: ReadonlySet<BondKey>;
+  showCationBonds?: boolean;
   style?: React.CSSProperties;
 }
 
@@ -275,6 +291,33 @@ function applySceneStyle(viewer: GLViewer, scene: Scene, theme: ViewerTheme) {
     for (let i = range.start; i < range.end; i++) indices.push(i);
     viewer.setStyle({ index: indices }, { stick: { color }, sphere: { scale: 0.3, color } });
   });
+}
+
+/** Stable empty-set default for `hiddenBonds` (module-level so an unspecified prop
+ * keeps the same reference across renders and doesn't churn the model effect). */
+const EMPTY_HIDDEN_BONDS: ReadonlySet<BondKey> = new Set();
+
+/**
+ * Apply the bond DISPLAY filter to a model 3Dmol just perceived — remove the bonds
+ * that shouldn't be drawn (s-block-cation coordinate bonds by default; manually
+ * hidden AtomId pairs), IN PLACE on the live atoms so the stick pass draws only the
+ * survivors. This filters the perception 3Dmol already did (like `frozenTopology`);
+ * it is NOT a second perception. `resolveId` maps a viewer index to its AtomId (the
+ * scene feed's `ViewerAtomTable`), or `() => undefined` where there is no table (the
+ * mode-animation path — only the element-based cation rule can apply there).
+ */
+function applyBondFilter(
+  model: GLModel,
+  resolveId: (viewerIndex: number) => AtomId | undefined,
+  hidden: ReadonlySet<BondKey>,
+  showCationBonds: boolean,
+): void {
+  filterDrawnBonds(
+    model.selectedAtoms({}) as unknown as FilterableAtom[],
+    resolveId,
+    hidden,
+    { showCationBonds },
+  );
 }
 
 /**
@@ -513,6 +556,8 @@ export const MoleculeViewer = forwardRef<MoleculeViewerHandle, MoleculeViewerPro
       representation = "stick",
       moveMode = false,
       onFragmentDrag,
+      hiddenBonds = EMPTY_HIDDEN_BONDS,
+      showCationBonds = false,
       style,
     }: MoleculeViewerProps,
     ref,
@@ -681,6 +726,12 @@ export const MoleculeViewer = forwardRef<MoleculeViewerHandle, MoleculeViewerPro
       if (firstBuild) {
         viewer.removeAllModels();
         const model = viewer.addModel(frozenRef, "xyz"); // perceive bonds + set index, ONCE
+        // Same DISPLAY-ONLY bond filter, applied ONCE at build (the per-frame update
+        // only moves coordinates — it never re-perceives, so the filter persists for
+        // the whole animation). No AtomId table on this path (it's an xyz-only mode
+        // animation), so only the element-based cation rule applies (`() => undefined`
+        // → manual hides are inert here).
+        applyBondFilter(model, () => undefined, hiddenBonds, showCationBonds);
         anim = { source: frozenRef, model };
         animRef.current = anim;
       }
@@ -721,7 +772,14 @@ export const MoleculeViewer = forwardRef<MoleculeViewerHandle, MoleculeViewerPro
       // 3Dmol draws and the table the pick handler resolves through are the same
       // object, built from the same atom sequence — they cannot disagree.
       const feed = buildViewerFeed(scene);
-      viewer.addModel(feed.xyz, "xyz");
+      const sceneModel = viewer.addModel(feed.xyz, "xyz");
+      // DISPLAY-ONLY bond filter (unit bond-display-control): right after perception,
+      // drop cation coordinate bonds + manually hidden AtomId pairs from the live
+      // atoms — resolving each viewer index to its AtomId through the SAME feed table
+      // picks resolve through. Geometry (feed.xyz) is untouched; only which sticks
+      // draw changes. The ephemeral drag/rotate paths reuse this model without
+      // re-perceiving, so the filtered bonds stay filtered across an animation.
+      applyBondFilter(sceneModel, (vi) => feed.table.atomIdAt(vi), hiddenBonds, showCationBonds);
       viewerTableRef.current = feed.table;
       // Ball-and-stick: CPK for fragment 0, a flat palette colour per fragment 1+
       // (each reads as one object). The `index` selector is the merged-xyz line
@@ -779,7 +837,7 @@ export const MoleculeViewer = forwardRef<MoleculeViewerHandle, MoleculeViewerPro
     // per-fragment palette are re-applied). A theme switch keeps the same
     // composition signature, so the zoom guard fires no `zoomTo` — the camera is
     // preserved (background is handled in the separate [theme] effect below).
-  }, [xyzData, scene, pickable, theme, preserveCameraOnUpdate, bondTopologyReference, orbitalCube, representation]);
+  }, [xyzData, scene, pickable, theme, preserveCameraOnUpdate, bondTopologyReference, orbitalCube, representation, hiddenBonds, showCationBonds]);
 
   // Orbital isosurfaces (unit 3.15) — drawn SEPARATELY from the model so changing the
   // isovalue redraws only the two ± surfaces (the cube is parsed once into a VolumeData,

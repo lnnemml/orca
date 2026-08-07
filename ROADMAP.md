@@ -663,6 +663,14 @@ Stage 3, where it is actually needed.) **Stage 3 is now COMPLETE (see below).**
 fed an `AtomId` table, a fragment can be dragged rigidly with one Undo, and no bare integer
 crosses a boundary the app owns. **✅ MET — Phase 4.2 is COMPLETE** (Stages 1–3 + tails 1–2).
 
+- [x] **Bond display control (viewer polish, post-completion).** 3Dmol draws bonds by distance, so an
+      s-block cation (Na⁺/K⁺/Mg²⁺…) coordinated to O/N/π gets a spurious covalent stick — **excluded by
+      default** (a "show cation bonds" toggle reveals them) — plus a general **manual hide/show** of any
+      bond, keyed by the **AtomId pair** (survives drag/rotate/re-perception). **DISPLAY-ONLY**: filters
+      the perception 3Dmol already did (no second pass, like `frozenTopology`), changes no geometry —
+      Scene / Monaco xyz / total charge / generated `.inp` are byte-identical. `src/viewer/bond-display.ts`
+      + c1–c4 proven-biting. Builds on the tail-2 cation catalog (the elements that need it).
+
 ---
 
 ## Phase 4.5 — Reaction modeling (≈ 3–5 evenings)
@@ -722,6 +730,14 @@ ADR-010's `ReactionPath` (`fold(reactant, transform)`, atom mapping by construct
       ΔΔE‡ (electronic energy barrier difference) highlighted
 - [ ] TS refinement (late step): scan maximum geometry → OptTS → Freq → verify one
       imaginary frequency → ΔG‡ with thermochemistry (publication-quality result)
+- [ ] **Transition-state methods — pulled EARLY from Phase 6 into this phase's plan** (they are the
+      point of reaction modeling, not a "power feature"): **OptTS** (eigenvector-following from a scan
+      maximum), **NEB / NEB-CI** (climbing-image band between reactant and product for a first TS guess
+      without a good scan coordinate), and **IRC** (verify the TS connects the intended reactant and
+      product). **Probe-then-design (rule #10):** each needs a real ORCA 6 run recorded in the wiki
+      first — the input blocks (`%neb`, `OptTS`, `IRC`), the artifacts they emit, and the cost — before
+      any UI. NEB especially: per-iteration band energies + a path viewer. Sequence after the relaxed
+      scan (a scan maximum is the natural OptTS seed); IRC is the post-condition on a found TS.
 
 **Done when:** author defines two stereofacial attacks on a ketone (si vs re face),
 runs two native ORCA scans, and sees two energy profiles side by side with ΔΔE‡ —
