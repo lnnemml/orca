@@ -1,0 +1,302 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import {
+  CartesianGrid,
+  Line,
+  LineChart,
+  ReferenceDot,
+  ReferenceLine,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
+
+import type { ScanProfileJson, ScanGeometry } from "../types";
+import { MoleculeViewer } from "../viewer/MoleculeViewer";
+import { useContainerWidth } from "../charts/useContainerWidth";
+import { saveBytes, exportName } from "../export/save";
+import { svgToPngBytes } from "../export/png";
+import {
+  profileSeries,
+  maxIndex,
+  pointGeometryXyz,
+  pointReadout,
+  type EnergyChoice,
+  type RefChoice,
+} from "./scanProfile";
+
+/**
+ * Relaxed-scan energy-profile panel (Phase 4.5 Stage B2) — the first time a scan is
+ * *visible*. Reuses the trajectory disciplines (`results-ui.md`):
+ *  - **the current point is application state** (`selected`), never 3Dmol's frame
+ *    apparatus; the viewer is fed ONE geometry (ADR-011);
+ *  - **element-order identity is checked at the UI boundary** before a point renders;
+ *  - **honest labels**: y is ΔE in kcal/mol against a labelled reference; the maximum
+ *    is an *approximate* TS (a ΔE‡ estimate on a relaxed surface — ADR-007), never
+ *    "the transition state" and never ΔG‡;
+ *  - explicit chart width via `ResizeObserver` (no `ResponsiveContainer` — the
+ *    WebKitGTK 0×0 class).
+ *
+ * Re-parses nothing (ADR-012): the profile is B1's `ParsedResults.scan`; the point
+ * geometries are fetched once via `read_scan_geometries` (reads `input.NNN.xyz`).
+ */
+const CHART_HEIGHT = 190;
+
+export function ScanProfilePanel({
+  scan,
+  referenceElements,
+  jobId,
+  jobTitle,
+}: {
+  scan: ScanProfileJson;
+  /** The element order the result geometry is drawn in — a point geometry must
+   * match this before it is rendered. */
+  referenceElements: string[];
+  jobId: string;
+  jobTitle: string;
+}) {
+  const points = scan.points;
+  const unit = scan.coordinate_unit;
+  // The selected point is APPLICATION state — the viewer never owns it (ADR-011).
+  const [selected, setSelected] = useState(0);
+  const [energyChoice, setEnergyChoice] = useState<EnergyChoice>("act"); // act = composite (default)
+  const [refChoice, setRefChoice] = useState<RefChoice>("first");
+  const [geometries, setGeometries] = useState<ScanGeometry[] | null>(null);
+  const { ref, width } = useContainerWidth();
+  const chartRef = useRef<HTMLDivElement | null>(null);
+
+  // Fetch the per-point geometries once (lazy — the panel is only mounted on a
+  // completed scan job). A failure leaves the chart usable, viewer empty.
+  useEffect(() => {
+    let cancelled = false;
+    invoke<ScanGeometry[] | null>("read_scan_geometries", { id: jobId })
+      .then((g) => {
+        if (!cancelled) setGeometries(g ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setGeometries(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [jobId]);
+
+  const series = useMemo(
+    () => profileSeries(points, energyChoice, refChoice),
+    [points, energyChoice, refChoice],
+  );
+  const tsIndex = useMemo(() => maxIndex(points, energyChoice), [points, energyChoice]);
+  const clamped = Math.min(Math.max(selected, 0), points.length - 1);
+  const readout = pointReadout(points, clamped, energyChoice, refChoice, unit);
+
+  // The one geometry handed to the viewer — the selected point, element-order
+  // checked at the boundary. `null` until geometries load.
+  const viewerState = useMemo(() => {
+    const g = geometries?.[clamped];
+    if (!g) return null;
+    return pointGeometryXyz(g, referenceElements);
+  }, [geometries, clamped, referenceElements]);
+
+  // A single point (degenerate — e.g. a scan that silently ran one point) is a
+  // clear state, not a crash.
+  if (points.length < 2) {
+    return (
+      <section className="scan-profile" ref={ref}>
+        <div className="section-title" style={{ fontSize: 12 }}>
+          Scan profile
+        </div>
+        <div className="banner muted" style={{ marginTop: 6 }}>
+          This scan has only {points.length} point — no profile to plot. A relaxed
+          scan needs <code>! Opt</code> and ≥ 2 points.
+        </div>
+      </section>
+    );
+  }
+
+  const tsDatum = series[tsIndex];
+
+  return (
+    <section className="scan-profile" ref={ref}>
+      <div className="section-title" style={{ fontSize: 12 }}>
+        Scan profile{" "}
+        <span className="muted">
+          — {scan.kind === "B" ? "distance" : scan.kind === "A" ? "angle" : "dihedral"} scan on
+          atoms {scan.atoms.join(", ")} (0-based)
+        </span>
+      </div>
+
+      {/* The selected point's geometry — one frame to the viewer (ADR-011). */}
+      <div className="viewer-panel traj-viewer">
+        {viewerState && "xyz" in viewerState ? (
+          <MoleculeViewer xyzData={viewerState.xyz} preserveCameraOnUpdate />
+        ) : viewerState && "error" in viewerState ? (
+          <div className="banner err" style={{ margin: 8 }}>
+            {viewerState.error}
+          </div>
+        ) : (
+          <div className="viewer-empty muted">Loading point geometry…</div>
+        )}
+      </div>
+
+      <div className="scan-readout mono">
+        <span>
+          point {clamped + 1} / {points.length}
+        </span>
+        {readout ? (
+          <>
+            <span className="scan-coord">{readout.coordinate}</span>
+            <span className="muted">
+              ΔE {readout.delta} ({energyChoice === "act" ? "actual" : "SCF"})
+            </span>
+          </>
+        ) : null}
+        {clamped === tsIndex ? (
+          <span
+            className="scan-ts-badge"
+            title="The scan maximum is a ΔE‡ ESTIMATE on a relaxed surface — not a located saddle and not ΔG‡. Refine with OptTS (Stage E)."
+          >
+            approximate TS
+          </span>
+        ) : null}
+      </div>
+
+      {/* Display controls — each a LABELLED choice, not a molecule property. */}
+      <div className="scan-controls">
+        <label className="scan-control">
+          energy
+          <select
+            className="select select-sm"
+            value={energyChoice}
+            onChange={(e) => setEnergyChoice(e.target.value as EnergyChoice)}
+          >
+            <option value="act">actual (composite)</option>
+            <option value="scf">SCF only</option>
+          </select>
+        </label>
+        <label className="scan-control">
+          ΔE relative to
+          <select
+            className="select select-sm"
+            value={refChoice}
+            onChange={(e) => setRefChoice(e.target.value as RefChoice)}
+          >
+            <option value="first">point 1</option>
+            <option value="min">the minimum</option>
+          </select>
+        </label>
+      </div>
+
+      {width > 0 ? (
+        <div className="conv-chart" ref={chartRef}>
+          <div className="conv-chart-title">
+            ΔE ({energyChoice === "act" ? "actual" : "SCF"}, kcal/mol) vs coordinate ({unit}) —
+            click a point to view its geometry
+            <button
+              className="btn btn-sm"
+              style={{ marginLeft: 10 }}
+              onClick={async () => {
+                try {
+                  const svg = chartRef.current?.querySelector("svg");
+                  if (svg)
+                    await saveBytes(
+                      exportName(jobTitle, "scan-profile", "png"),
+                      await svgToPngBytes(svg),
+                    );
+                } catch (e) {
+                  console.error("[export]", e);
+                }
+              }}
+            >
+              PNG
+            </button>
+          </div>
+          <LineChart
+            width={width}
+            height={CHART_HEIGHT}
+            data={series}
+            margin={{ top: 8, right: 16, bottom: 18, left: 8 }}
+            onClick={(state: { activeTooltipIndex?: number | string | null }) => {
+              const i = state?.activeTooltipIndex;
+              if (typeof i === "number" && series[i]) setSelected(series[i].index);
+            }}
+          >
+            <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" />
+            <XAxis
+              dataKey="coordinate"
+              type="number"
+              domain={["dataMin", "dataMax"]}
+              stroke="var(--muted)"
+              fontSize={11}
+              tickLine={false}
+              tickFormatter={(v: number) => v.toFixed(2)}
+              label={{
+                value: `coordinate (${unit})`,
+                position: "insideBottom",
+                offset: -6,
+                fontSize: 11,
+                fill: "var(--muted-2)",
+              }}
+            />
+            <YAxis
+              stroke="var(--muted)"
+              fontSize={11}
+              width={70}
+              tickLine={false}
+              domain={["auto", "auto"]}
+              tickFormatter={(v: number) => v.toFixed(1)}
+              label={{
+                value: "ΔE (kcal/mol)",
+                angle: -90,
+                position: "insideLeft",
+                fontSize: 11,
+                fill: "var(--muted-2)",
+              }}
+            />
+            <Tooltip
+              isAnimationActive={false}
+              formatter={(v) => (typeof v === "number" ? `${v.toFixed(2)} kcal/mol` : String(v))}
+              labelFormatter={(l) => `coordinate ${Number(l).toFixed(3)} ${unit}`}
+              contentStyle={{
+                background: "var(--panel-2)",
+                border: "1px solid var(--border)",
+                borderRadius: 6,
+                fontSize: 11,
+              }}
+            />
+            {/* The current point — a vertical marker (app-owned index). */}
+            <ReferenceLine x={series[clamped]?.coordinate} stroke="var(--accent)" strokeWidth={1.5} />
+            {/* The approximate-TS point — highlighted, honestly labelled. */}
+            {tsDatum ? (
+              <ReferenceDot
+                x={tsDatum.coordinate}
+                y={tsDatum.relKcal}
+                r={5}
+                fill="#ff8c42"
+                stroke="none"
+                label={{
+                  value: "approx. TS",
+                  position: "top",
+                  fontSize: 10,
+                  fill: "#ff8c42",
+                }}
+              />
+            ) : null}
+            <Line
+              type="monotone"
+              dataKey="relKcal"
+              stroke="#4f8cff"
+              strokeWidth={1.5}
+              dot={{ r: 2.5 }}
+              activeDot={{ r: 4 }}
+              isAnimationActive={false}
+            />
+          </LineChart>
+          <div className="muted scan-ts-note">
+            The maximum is an <strong>approximate TS (scan maximum)</strong> — a ΔE‡ estimate on the
+            relaxed surface, not a located saddle and not ΔG‡. Refine with OptTS (Stage E).
+          </div>
+        </div>
+      ) : null}
+    </section>
+  );
+}

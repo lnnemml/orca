@@ -138,6 +138,21 @@ impl XyzFile {
         Some(((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt())
     }
 
+    /// The first frame's `(elements, Å coords)` — for the scan-profile viewer
+    /// (`read_scan_geometries` loads each relaxed-scan point `input.NNN.xyz`). A
+    /// **witness** read on the unverified handle, like [`Self::pair_distance_angstrom`]:
+    /// a scan point geometry is DISPLAY data whose element-order identity is checked at
+    /// the UI boundary (`elementsAgree`, exactly as the trajectory does), NOT
+    /// authoritative parsed output — so it does not go through the reference-based
+    /// geometry post-condition, which fails **by design** here (a relaxed-scan point is
+    /// not the input geometry). Coordinates are Å by the xyz format. `None` if empty.
+    pub fn first_frame(&self) -> Option<(Vec<String>, Vec<[f64; 3]>)> {
+        let f = self.frames.first()?;
+        let elements = f.atoms.iter().map(|(s, _)| s.clone()).collect();
+        let coords = f.atoms.iter().map(|(_, xyz)| *xyz).collect();
+        Some((elements, coords))
+    }
+
     /// Run the post-conditions; only on success return [`Verified`]. Unit 1d adds the
     /// job's `IndexMap<OrcaIndex>`: the per-frame element-order check becomes the map
     /// post-condition (identity map ⇒ the same check on every frame).

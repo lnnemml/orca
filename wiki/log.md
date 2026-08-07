@@ -5908,3 +5908,42 @@ The fifth artifact reader: the relaxed-scan **profile**. Rust-only, no manual ga
 
 Next: Stage B2 (energy-profile React view — recharts + click-a-point→load `.NNN.xyz`, max marked as
 approximate TS). ADR-012 template held (fifth reader, no bend).
+
+## [2026-08-07] session | Phase 4.5 Stage B2 — scan energy-profile view (ΔE vs coordinate, click→geometry, approximate-TS); author manual gate PENDING
+
+The first time a scan is *visible*. Reuses the trajectory disciplines; reads B1's `ParsedResults.scan`
+and re-parses nothing (ADR-012).
+
+- **New Rust command `read_scan_geometries(job_id)`** (`results.rs` + `commands/jobs.rs`, registered
+  in `lib.rs`) — loads each `input.NNN.xyz` in point order via a new `XyzFile::first_frame` witness
+  (a scan point geometry is display data whose element order is checked at the UI boundary, not
+  authoritative output — it does NOT go through the reference-based geometry post-condition, which
+  fails by design for a relaxed point). Writes nothing to the job dir (rule #3); reads point files
+  whole (rule #5). `None` for a non-scan job. Two cargo tests green on the real fixture (6 geometries,
+  C–C 1.4→2.4 Å, right file per index; None for non-scan).
+- **New `src/scan/scanProfile.ts`** (pure, node-tested): `profileSeries` (ΔE kcal/mol vs coordinate,
+  reference point exactly 0), `maxIndex` (approximate-TS point), `pointGeometryXyz` (element-order
+  identity at the boundary, reusing `elementsAgree`/`frameToXyz`), `pointReadout`.
+- **New `src/scan/ScanProfilePanel.tsx`** (wired into `ResultsCard` under `results.scan`): the
+  selected point index is **React state** (viewer never owns it, ADR-011) → feeds one geometry to
+  `MoleculeViewer`; recharts with `useContainerWidth` (no `ResponsiveContainer`); click a point → set
+  index. Labelled display choices: `act`(default)/`scf`, reference first/minimum. The maximum is
+  marked **"approximate TS (scan maximum)"** — a ΔE‡ estimate on a relaxed surface, never the TS /
+  ΔG‡ (ADR-007), with a forward pointer to OptTS (Stage E). `<2`-point and non-scan states handled.
+- **Three negative controls red-then-green** (`scanProfile.test.ts`): C-relative-energy (ref point
+  ==0; raw Eh would be ≈−79.78, not 0), C-app-owned-index (index i → geometry i's xyz; a 3Dmol-owned
+  frame would ignore i), C-element-order (mismatched sequence → loud refusal, no render).
+- Verify: `tsc` 0, `vitest` 628 green (8 scanProfile), `cargo test` 197 (2 new command), `vite build`
+  clean.
+
+**AUTHOR MANUAL GATE — PENDING (batches with A2 g1–g4; Claude Code cannot drive the 3Dmol window).**
+In the real Tauri/WebKitGTK window on a completed relaxed-scan job:
+- h1: the profile renders (coordinate Å × ΔE kcal/mol), points marked, the maximum labelled
+  "approximate TS (scan maximum)".
+- h2: click a point → that geometry loads in the viewer; the readout shows its coordinate + ΔE.
+- h3: toggle act↔scf and reference first↔minimum → the curve + the zero move, labels update.
+- h4: a non-scan job (Opt/SP) shows no scan panel; a 1-point degenerate case doesn't crash.
+
+Next: record h1–h4 (with A2 g1–g4), flip ROADMAP A2+B2 `[~]`→`[x]` + Stage A/B complete, then Stage C
+(Reaction object + comparative ΔΔE‡ — mission done-when). ADR-011/012 held (app-owned frame, no
+re-parse).

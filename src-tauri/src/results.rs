@@ -698,6 +698,48 @@ pub fn stored_final_energy(conn: &Connection, job_id: &str) -> Option<f64> {
     .flatten()
 }
 
+/// One relaxed-scan point geometry (`input.NNN.xyz`) for the profile viewer
+/// (Phase 4.5 B2). Its own element order — the UI cross-checks it against the
+/// result geometry before rendering (`elementsAgree`, like the trajectory).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScanGeometry {
+    pub elements: Vec<String>,
+    pub xyz_angstrom: Vec<[f64; 3]>,
+}
+
+/// Load the per-point geometries of a relaxed scan — `input.001.xyz … input.00N.xyz`
+/// in point order, N taken from the stored [`ScanProfileJson`] (Phase 4.5 B2). Reads
+/// each file whole via the `xyz` reader (small, rule #5); **writes nothing to the job
+/// dir** (rule #3). `Ok(None)` when the job is not a scan or has no dir yet
+/// (absent-is-normal). Re-parses no `.dat` (ADR-012): the profile is already stored;
+/// this only fetches the point geometries the chart's click-to-view needs.
+pub fn read_scan_geometries(
+    conn: &Connection,
+    job_id: &str,
+    job_dir: Option<&str>,
+) -> Result<Option<Vec<ScanGeometry>>, AppError> {
+    let Some(results) = read_job_results(conn, job_id)? else {
+        return Ok(None);
+    };
+    let Some(scan) = results.scan else {
+        return Ok(None); // not a scan job
+    };
+    let Some(job_dir) = job_dir else {
+        return Ok(None); // no dir → nothing to read
+    };
+    let dir = Path::new(job_dir);
+    let mut out = Vec::with_capacity(scan.points.len());
+    for k in 1..=scan.points.len() {
+        let path = dir.join(format!("input.{k:03}.xyz"));
+        let xyz = XyzFile::from_path(&path)?;
+        let (elements, xyz_angstrom) = xyz.first_frame().ok_or_else(|| {
+            AppError::Internal(format!("scan point {k} geometry ({}) is empty", path.display()))
+        })?;
+        out.push(ScanGeometry { elements, xyz_angstrom });
+    }
+    Ok(Some(out))
+}
+
 /// Read the stored results for a job (the full JSON structure), or `None`.
 pub fn read_job_results(conn: &Connection, job_id: &str) -> Result<Option<ParsedResults>, AppError> {
     let json: Option<String> = conn
@@ -1192,5 +1234,78 @@ mod tests {
             r.final_energy_eh, f.frequencies_cm.len(), trj.n_frames, gap
         );
         std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    // ── read_scan_geometries (Phase 4.5 B2) — the new command's point loader ──────
+
+    fn scan_fixture_dir() -> std::path::PathBuf {
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/scan-ethane-cc")
+    }
+
+    /// Only `data_json` is read by `read_job_results`, so a minimal `results` row is
+    /// enough to drive `read_scan_geometries` against the real point `.xyz` fixtures.
+    fn results_db_with(r: &ParsedResults) -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute("CREATE TABLE results (job_id TEXT PRIMARY KEY, data_json TEXT)", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO results (job_id, data_json) VALUES ('job1', ?1)",
+            params![serde_json::to_string(r).unwrap()],
+        )
+        .unwrap();
+        conn
+    }
+
+    fn scan_results(n_points: usize) -> ParsedResults {
+        let points = (0..n_points)
+            .map(|k| ScanPointJson {
+                coordinate: 1.4 + 0.2 * k as f64,
+                energy_act_eh: -79.0 - k as f64,
+                energy_scf_eh: -79.0 - k as f64 - 0.003,
+            })
+            .collect();
+        let scan = ScanProfileJson {
+            kind: "B".into(),
+            atoms: vec![0, 1],
+            coordinate_unit: "Å".into(),
+            points,
+        };
+        ParsedResults::from_verified(&verified(), None, None, None, Some(scan)).unwrap()
+    }
+
+    #[test]
+    fn read_scan_geometries_loads_each_point_file_in_order() {
+        let conn = results_db_with(&scan_results(6));
+        let dir = scan_fixture_dir();
+        let geoms = read_scan_geometries(&conn, "job1", dir.to_str())
+            .unwrap()
+            .expect("a scan job returns Some(geometries)");
+        // one geometry per scan point, in point order.
+        assert_eq!(geoms.len(), 6);
+        // each carries the ethane element order (its own, UI-checked at the boundary).
+        assert_eq!(geoms[0].elements, ["C", "C", "H", "H", "H", "H", "H", "H"]);
+        // the scanned C–C distance rises 1.4 → 2.4 Å across the points (the reader read
+        // the RIGHT file for each index).
+        let cc = |g: &ScanGeometry| {
+            let a = g.xyz_angstrom[0];
+            let b = g.xyz_angstrom[1];
+            ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+        };
+        assert!((cc(&geoms[0]) - 1.4).abs() < 1e-3);
+        assert!((cc(&geoms[5]) - 2.4).abs() < 1e-3);
+    }
+
+    #[test]
+    fn read_scan_geometries_is_none_for_a_non_scan_job() {
+        // A results row with no scan (scan: None) → Ok(None), absent-is-normal.
+        let non_scan =
+            ParsedResults::from_verified(&verified(), None, None, None, None).unwrap();
+        let conn = results_db_with(&non_scan);
+        assert!(read_scan_geometries(&conn, "job1", scan_fixture_dir().to_str())
+            .unwrap()
+            .is_none());
+        // …and no dir → None even for a scan job (nothing to read).
+        let conn2 = results_db_with(&scan_results(3));
+        assert!(read_scan_geometries(&conn2, "job1", None).unwrap().is_none());
     }
 }

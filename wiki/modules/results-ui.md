@@ -67,6 +67,35 @@ against a 50 ms (20 fps) tick, so playback is **timer-bound**, not rebuild-bound
 `addModel`/`render` time was not headlessly measured (the standing Tauri-GUI-drive limitation), but
 for ≤ 50 atoms it is far under the tick.
 
+## `src/scan/` — relaxed-scan energy profile (Phase 4.5 B2)
+
+The first time a scan is **visible**. Reuses the trajectory's three disciplines verbatim; it reads
+B1's `ParsedResults.scan` and **re-parses nothing** (ADR-012).
+
+- **`scanProfile.ts`** (pure, node-tested, React-free): `profileSeries(points, energyChoice, refChoice)`
+  → the chart data as **ΔE in kcal/mol** (a barrier is a *relative* quantity; raw Eh is unreadable),
+  with the reference point exactly 0 by construction; `referenceEh` / `maxIndex` (the maximum of the
+  shown series — the approximate-TS point); `pointGeometryXyz(geometry, referenceElements)` — the
+  UI-boundary **element-order identity check** (`elementsAgree`, reused from `trajectory/frame.ts`)
+  before a point renders, a loud refusal on mismatch, never a wrong molecule; `pointReadout`.
+- **`ScanProfilePanel.tsx`**: owns the **selected point index** (React state — the viewer never owns
+  it, ADR-011), the `act`/`scf` energy choice, and the `first`/`min` reference choice. Renders **one**
+  `MoleculeViewer` fed the selected point's `input.NNN.xyz` geometry (fetched once via
+  `read_scan_geometries`, `xyz.rs` `first_frame` witness). recharts with explicit `useContainerWidth`
+  (no `ResponsiveContainer` — the WebKitGTK 0×0 class); click a point → set the app index.
+- **Honest labelling (the teaching-moment discipline, like the IR "conventional depiction" and the
+  `imaginary_count` verdict).** x = scanned coordinate (Å for `B`, ° for `A`/`D`); y = ΔE kcal/mol
+  against a **labelled** reference; both `act` (composite, default) and `scf` are offered and labelled.
+  The maximum is marked and labelled **"approximate TS (scan maximum)"** — a ΔE‡ *estimate* on a
+  relaxed surface (ADR-007 §"ΔE‡ vs ΔG‡"), never "the transition state" and never ΔG‡; a note points
+  forward to OptTS (Stage E). A `< 2`-point scan is a clear empty state, not a crash; a non-scan job
+  hides the panel (`results.scan` is null).
+- **The point geometries are a witness read (`xyz.rs` `first_frame`), not authoritative output** — a
+  relaxed-scan point is not the input geometry, so it does not go through the reference-based geometry
+  post-condition (which fails by design); its identity is the UI-boundary `elementsAgree` check, the
+  same one the trajectory does. The `read_scan_geometries` command **writes nothing** to the job dir
+  (rule #3) and reads the small point files whole (rule #5).
+
 ## `src/spectrum/` — IR spectrum
 
 - **`ir.ts`** (pure, node-tested): the whole spectrum math.

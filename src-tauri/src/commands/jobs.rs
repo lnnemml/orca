@@ -223,6 +223,19 @@ pub fn read_job_results(
     crate::results::read_job_results(&conn, &id)
 }
 
+/// The per-point geometries of a relaxed scan (`input.NNN.xyz`), in point order,
+/// for the profile viewer's click-to-view (Phase 4.5 B2). `None` for a non-scan job.
+/// Reads the point files whole (small, rule #5); writes nothing (rule #3).
+#[tauri::command]
+pub fn read_scan_geometries(
+    db: State<'_, DbState>,
+    id: String,
+) -> Result<Option<Vec<crate::results::ScanGeometry>>, AppError> {
+    let conn = db.lock()?;
+    let job_dir = get_job_conn(&conn, &id)?.job_dir;
+    crate::results::read_scan_geometries(&conn, &id, job_dir.as_deref())
+}
+
 #[tauri::command]
 pub fn update_job_status(db: State<'_, DbState>, id: String, status: String) -> Result<(), AppError> {
     let conn = db.lock()?;

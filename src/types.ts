@@ -66,7 +66,29 @@ export interface ParsedResults {
     orbitals: [number, number][];
     homo_lumo: { homo_eh: number; lumo_eh: number; gap_eh: number } | null;
   } | null;
+  /** Relaxed-scan profile from .relaxscanact/.relaxscanscf.dat (Phase 4.5 B1),
+   * or null when the job is not a scan. One row per scan POINT (not opt cycle);
+   * `act` = composite/actual energy, `scf` = bare SCF (both, never conflated). */
+  scan: ScanProfileJson | null;
   unknown_blocks: string[];
+}
+
+/** Mirrors `src-tauri/src/results.rs::ScanProfileJson`. */
+export interface ScanProfileJson {
+  /** "B" (distance), "A" (angle), "D" (dihedral). */
+  kind: string;
+  /** Scanned atoms, 0-based. */
+  atoms: number[];
+  /** "Å" for a distance scan (cross-checked), "°" for angle/dihedral. */
+  coordinate_unit: string;
+  points: { coordinate: number; energy_act_eh: number; energy_scf_eh: number }[];
+}
+
+/** Mirrors `src-tauri/src/results.rs::ScanGeometry` — one relaxed-scan point
+ * geometry (`input.NNN.xyz`), loaded lazily via `read_scan_geometries`. */
+export interface ScanGeometry {
+  elements: string[];
+  xyz_angstrom: [number, number, number][];
 }
 
 /** Mirrors `src-tauri/src/cpu_presets.rs::CpuPresetInfo`. */

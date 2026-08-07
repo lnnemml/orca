@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { JobStatus, ParsedResults } from "../types";
 import { IrSpectrumPanel } from "../spectrum/IrSpectrumPanel";
 import { TrajectoryPlayer } from "../trajectory/TrajectoryPlayer";
+import { ScanProfilePanel } from "../scan/ScanProfilePanel";
 import { OrbitalPanel } from "../orbitals/OrbitalPanel";
 import {
   finalGeometryXyz,
@@ -110,6 +111,18 @@ export function ResultsCard({
             elements={results.trajectory.elements}
             frames={results.trajectory.frames}
             referenceElements={results.final_geometry.elements}
+            jobTitle={jobTitle}
+          />
+        )}
+
+        {/* Relaxed-scan energy profile (Phase 4.5 B2). Hidden for a non-scan job
+            (absent-is-normal). ΔE(coordinate) with the maximum as an approximate TS;
+            click a point to view its geometry. */}
+        {results.scan && (
+          <ScanProfilePanel
+            scan={results.scan}
+            referenceElements={results.final_geometry.elements}
+            jobId={jobId}
             jobTitle={jobTitle}
           />
         )}

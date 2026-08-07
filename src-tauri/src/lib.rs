@@ -90,6 +90,7 @@ pub fn run() {
             commands::jobs::read_job_ensemble,
             commands::jobs::read_job_convergence,
             commands::jobs::read_job_results,
+            commands::jobs::read_scan_geometries,
             commands::jobs::read_orbital_cube,
             commands::export::write_export_text,
             commands::export::write_export_bytes,

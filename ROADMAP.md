@@ -743,12 +743,18 @@ pending.)*
       post-condition. `act`/`scf` both stored, labelled, never conflated. Wired into `results.rs`
       (`ParsedResults.scan`, `data_json`, `parser_version` 3→4). Three negative controls green on real
       ethane fixtures. No manual gate (Rust reader).
-- [ ] **B2 — energy-profile view (React → manual gate).** Reaction coordinate vs energy (reuses the
-      recharts machinery + the trajectory click-to-frame pattern: click a scan point → load
-      `.NNN.xyz` of that point). Maximum marked as approximate TS. **Manual gate.**
+- [~] **B2 — energy-profile view (React → manual gate).** Reaction coordinate (Å) vs **ΔE kcal/mol**
+      (relative, labelled reference: point 1 / minimum; `act`/`scf` both, labelled). recharts +
+      `useContainerWidth`; click a scan point → app-owned index → load `input.NNN.xyz` of that point
+      into the viewer (one frame, ADR-011), element-order checked at the boundary. Maximum marked
+      **"approximate TS (scan maximum)"** — a ΔE‡ estimate, never the TS / ΔG‡. New Rust command
+      `read_scan_geometries` (reads point files, writes nothing). **Code + tests complete**
+      (`ScanProfilePanel` + `scanProfile.ts`; three negative controls green; `read_scan_geometries`
+      cargo tests green). **Manual gate (author) PENDING** — h1–h4 in the real window (batches with
+      A2 g1–g4); Stage B closes when it passes.
 
 **Stage B done when:** run a scan → see the profile → click the maximum → see that geometry. The
-single-pathway relaxed scan is fully usable end-to-end.
+single-pathway relaxed scan is fully usable end-to-end. *(B1 ✅; B2 code ✅, author h1–h4 gate pending.)*
 
 ### Stage C — Reaction as a first-class object + comparative ΔΔE‡ (data model earns its place here)
 
