@@ -1,11 +1,11 @@
 # Module: Artifact readers (`src-tauri/src/parse/`)
 
-**Status:** the authoritative result-parsing tier of ADR-012 is **complete** — all four own Rust
-parsers over ORCA's structured artifacts, replacing the abandoned cclib plan: `.property.txt`
-(unit 3.4/3.5, the template), `.hess` (unit 3.6, frequencies / IR / normal modes), `_trj.xyz`/`.xyz`
-(unit 3.7, trajectory), and `orca_2json` (unit 3.7, MO energies/occupancies → HOMO/LUMO). All are
-wired into the job pipeline via `results.rs`: on completion the job is parsed and advanced to
-`parsed`. Phase 3 beyond this point is pure visualization.
+**Status:** the authoritative result-parsing tier of ADR-012 — own Rust parsers over ORCA's
+structured artifacts, replacing the abandoned cclib plan: `.property.txt` (unit 3.4/3.5, the
+template), `.hess` (unit 3.6, frequencies / IR / normal modes), `_trj.xyz`/`.xyz` (unit 3.7,
+trajectory), `orca_2json` (unit 3.7, MO energies/occupancies → HOMO/LUMO), and (Phase 4.5 B1)
+`.relaxscanact/.relaxscanscf.dat` (the **fifth reader**, relaxed-scan profile). All are wired into
+the job pipeline via `results.rs`: on completion the job is parsed and advanced to `parsed`.
 
 ## Why this exists
 cclib 1.8.1 crashes on ORCA 6.1.0 output and ORCA 6 is outside its handled matrix
@@ -182,6 +182,34 @@ faith.
 This is the first reader whose input is *produced by spawning a binary* — the boundary is drawn so
 the spawn (orchestration, Rust) and the parse (pure) never mix in one function.
 
+## Fifth reader — `.relaxscanact/.relaxscanscf.dat` (Phase 4.5 B1): a runtime unit-confirmation
+`parse/relaxscan.rs` reads the relaxed-scan **profile** — the two `.dat` files, **one row per scan
+point** (N rows of `coordinate  energy`), NOT the per-cycle `.property.txt`/`_trj.xyz` (26 rows for a
+6-point scan — measured 3.3; the property/xyz readers document this, and there is a test on each side).
+It holds the template (two layers, `parse → verify → Verified`, post-conditions-as-errors), with two
+reader-specific facts:
+- **`act` and `scf` are different energies, kept both, labelled.** `act` = the final composite
+  (actual) energy — r²SCAN-3c carries gCP+D4 terms; `scf` = the bare SCF energy. They genuinely
+  differ (measured) and are **never conflated** to one "energy"; a cross-file post-condition asserts
+  the two `.dat` share an identical coordinate column (same geometries).
+- **The geometry cross-check is the runtime unit-confirmation (rule #11) — the load-bearing
+  post-condition.** A bare 2-column `.dat` has **no unit literal**, so a Bohr coordinate would not
+  crash, it would draw a plausible-but-wrong profile. So for a distance (`B`) scan `verify` recomputes
+  the scanned distance from each point geometry (`input.NNN.xyz`, Å via the `xyz` reader's
+  `pair_distance_angstrom` witness — no re-implemented xyz parsing) and asserts it equals column 1
+  within 1e-3 Å. A Bohr coordinate fails ≈1.889×, loudly (a `GeometryMismatch`). This is where the
+  coordinate stops being *measured-once* and becomes *confirmed-per-read*. Angle/dihedral (`A`/`D`)
+  parse the same but their coordinate cross-check is deferred (the coordinate is degrees).
+
+The scanned atom pair comes from a **minimal** parse of the input's `%geom Scan B a1 a2 = …` line
+(`parse_scan_spec`, a regex requiring the `=` that distinguishes a scan line from a brace-wrapped
+constraint — NOT the TS `scan.ts` parser), done in `results.rs` and passed in, so the reader never
+reads `input.inp`. Absent `.relaxscanact.dat` → `Ok(None)` (an SP/Opt/GOAT job has no scan — the
+absent-is-normal pattern). Rides in `data_json` as `ParsedResults.scan` (no new narrow column, no
+migration — like the trajectory, unit 3.7); `parser_version` 3 → 4. Three negative controls
+(`relaxscan/tests.rs`) bite red-then-green on real ethane-C–C fixtures: bohr-coordinate,
+act/scf-conflated, per-cycle-source (26 rows can't pass the 6-point-file cross-check).
+
 ## Files
 - `parse/mod.rs` — module overview + shared `ParseError` + shared `ReferenceGeometry`.
 - `parse/units.rs` — `Angstrom` (canonical length; the type guard).
@@ -190,6 +218,8 @@ the spawn (orchestration, Rust) and the parse (pure) never mix in one function.
 - `parse/hess.rs` — `.hess` (frequencies, IR, normal modes; distance-based geometry check).
 - `parse/xyz.rs` — `_trj.xyz` / `.xyz` (trajectory frames + comment energy).
 - `parse/mo.rs` — `orca_2json` JSON (MO energies/occupancies; streamed, coefficients skipped).
+- `parse/relaxscan.rs` — `.relaxscanact/.relaxscanscf.dat` (relaxed-scan profile; act+scf both, the
+  per-point geometry cross-check confirming Å; Phase 4.5 B1).
 - `orca_json.rs` (top level) — the `orca_2json` **spawn** (ADR-009), lazy-cached in the job dir.
 - `parse/*/tests.rs` — against real SP / Opt+Freq / GOAT / scan / saddle fixtures in
   `src-tauri/tests/fixtures/` (incl. a 198 KB gbw-json with coefficients, to exercise the skip).

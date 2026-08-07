@@ -5873,3 +5873,38 @@ broadens the guard's opt-keyword set to the measured truth.
 
 Next: record the g1–g4 result, flip ROADMAP A2 `[~]`→`[x]` + Stage A complete, then Stage B (scan
 output parser `relaxscan.rs` + energy profile). ADR-016 unchanged.
+
+## [2026-08-07] session | Phase 4.5 Stage B1 — relaxed-scan reader (.relaxscanact/.relaxscanscf.dat) + geometry cross-check
+
+The fifth artifact reader: the relaxed-scan **profile**. Rust-only, no manual gate — verified by
+`cargo` + the real ethane C–C scan artifacts (committed as fixtures).
+
+- **New `src-tauri/src/parse/relaxscan.rs`** on the `property.rs` template (two layers, typestate
+  `parse → verify → Verified`, post-conditions-as-errors). Reads the two `.dat` files as N rows of
+  `coordinate energy` (per **scan point**, NOT the 26 per-cycle rows of `.property.txt`/`_trj.xyz`).
+- **The load-bearing post-condition — the coordinate's Å is confirmed per-read (rule #11).** A bare
+  2-col `.dat` has no unit literal, and a Bohr coordinate would draw a plausible-but-wrong profile,
+  not crash. So for a `B` scan `verify` recomputes the scanned distance from each `input.NNN.xyz`
+  (Å, via a new `XyzFile::pair_distance_angstrom` witness — reuses the xyz reader, no re-implemented
+  parsing) and asserts it equals col1 within 1e-3 Å. A Bohr coordinate fails ≈1.889× (`GeometryMismatch`).
+  `A`/`D` parse the same but their cross-check is deferred (coordinate is degrees).
+- **act vs scf both stored, labelled, never conflated** — `act` = composite (gCP+D4), `scf` = bare
+  SCF; measured to differ. Cross-file post-condition: same N + identical coordinate column. Plus N≥2,
+  energies finite, coordinate strictly monotone.
+- **Wired into `results.rs`** — `ParsedResults.scan: Option<ScanProfileJson>`, populated when
+  `.relaxscanact.dat` is present, `None` otherwise (absent-is-normal, like `ensure_gbw_json`). Rides
+  in `data_json`; `parser_version` 3→4 (no narrow column, no migration — like the trajectory). The
+  scanned-atom spec is a minimal regex parse of the input's `%geom Scan` line (`parse_scan_spec`,
+  requires the `=` to skip a `{B..}` constraint), done in `results.rs` and passed in — the reader
+  never reads `input.inp`.
+- **Real-ORCA parse (checkpoint 3).** The committed fixtures (`tests/fixtures/scan-ethane-cc/`, copied
+  from the probe dir `~/.local/share/orcastudio/probe-scans/scan-ethane-cc`) ARE the real ORCA 6.1
+  output. Parse: **6 points**, coordinate 1.4→2.4 Å monotone, act≠scf (row 0: act −79.78236865, scf
+  −79.78571668), geometry cross-check green vs `input.001…006.xyz`.
+- **Three negative controls red-then-green** (`relaxscan/tests.rs`): C-bohr-coordinate (col1 ×1.889 →
+  GeometryMismatch >1), C-act-scf-conflated (scf:=act would collapse the >1e-6 gap), C-per-cycle-source
+  (26 rows can't pass the 6-point-file cross-check → Io on missing `input.007.xyz`).
+- Verify: `cargo test` 195 pass (11 relaxscan). No frontend change (tsc/vitest/build unaffected).
+
+Next: Stage B2 (energy-profile React view — recharts + click-a-point→load `.NNN.xyz`, max marked as
+approximate TS). ADR-012 template held (fifth reader, no bend).

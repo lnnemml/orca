@@ -122,6 +122,22 @@ impl XyzFile {
         Ok(XyzFile { frames })
     }
 
+    /// Cartesian distance (Å) between two 0-based atoms of a single frame — a
+    /// **witness** for the relaxed-scan coordinate cross-check (`relaxscan.rs`),
+    /// which uses each point geometry to confirm the `.dat` coordinate's unit at
+    /// runtime (rule #11), not as authoritative output. Coordinates are Å by the xyz
+    /// format (measured, `parse-sources.md`), so no conversion. `None` if the frame
+    /// or an atom index is out of range. Exposed on the **unverified** handle on
+    /// purpose: the scan reader is using this file as a measuring stick against which
+    /// the `.dat` is checked, exactly as `unknown_block_names` is a diagnostic that
+    /// does not need the value-verification typestate.
+    pub fn pair_distance_angstrom(&self, frame: usize, i: usize, j: usize) -> Option<f64> {
+        let f = self.frames.get(frame)?;
+        let a = f.atoms.get(i)?.1;
+        let b = f.atoms.get(j)?.1;
+        Some(((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt())
+    }
+
     /// Run the post-conditions; only on success return [`Verified`]. Unit 1d adds the
     /// job's `IndexMap<OrcaIndex>`: the per-frame element-order check becomes the map
     /// post-condition (identity map ⇒ the same check on every frame).

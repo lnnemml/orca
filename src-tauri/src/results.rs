@@ -27,6 +27,7 @@ use crate::error::AppError;
 use crate::parse::elements::symbol_of;
 use crate::parse::hess::HessFile;
 use crate::parse::property::{PopulationScheme, PropertyFile, Verified};
+use crate::parse::relaxscan::{parse_scan_spec, RelaxScan};
 use crate::parse::xyz::XyzFile;
 use crate::parse::{derived_identity_ids, identity_map_for, ReferenceGeometry};
 use orcastudio_core::ids::{AtomId, IndexMap, OrcaIndex};
@@ -35,7 +36,8 @@ use orcastudio_core::ids::{AtomId, IndexMap, OrcaIndex};
 /// - v1: property.txt only (unit 3.5).
 /// - v2: + `.hess` frequencies / IR / normal modes + thermo temperature (unit 3.6).
 /// - v3: + `_trj.xyz` trajectory + `orca_2json` MO energies/occupancies (unit 3.7).
-pub const PARSER_VERSION: u32 = 3;
+/// - v4: + relaxed-scan profile (`.relaxscanact/.relaxscanscf.dat`, Phase 4.5 B1).
+pub const PARSER_VERSION: u32 = 4;
 
 // --------------------------------------------------------------------------- //
 // The stored structure (goes into results.data_json verbatim)                   //
@@ -126,6 +128,30 @@ pub struct TrajFrame {
     pub xyz_angstrom: Vec<[f64; 3]>,
 }
 
+/// Relaxed-surface-scan profile (Phase 4.5 B1) from `.relaxscanact/.relaxscanscf.dat`
+/// — **one row per scan point** (NOT the per-cycle trajectory). `act` = composite
+/// energy (gCP+D4), `scf` = bare SCF — both kept, never conflated. The coordinate is
+/// Å for a `B` (distance) scan, confirmed at read time by the geometry cross-check
+/// against each `input.NNN.xyz` (rule #11); degrees for `A`/`D` (cross-check deferred).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScanProfileJson {
+    /// Scan kind: "B" (distance), "A" (angle), "D" (dihedral).
+    pub kind: String,
+    /// Scanned atoms, 0-based (the ORCA scan index space).
+    pub atoms: Vec<u32>,
+    /// "Å" for a distance scan (cross-checked), "°" for angle/dihedral.
+    pub coordinate_unit: String,
+    pub points: Vec<ScanPointJson>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScanPointJson {
+    /// Å (B, cross-checked) or degrees (A/D).
+    pub coordinate: f64,
+    pub energy_act_eh: f64,
+    pub energy_scf_eh: f64,
+}
+
 /// MO energies + occupancies from `orca_2json` (unit 3.7). `MOCoefficients` are
 /// NEVER stored (rule #5). Occupancy is kept so HOMO/LUMO can be re-derived.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -160,6 +186,9 @@ pub struct ParsedResults {
     pub trajectory: Option<TrajectoryJson>,
     /// MO energies/occupancies from `orca_2json`, or `None` (xTB/GOAT gbw — normal).
     pub orbitals: Option<OrbitalsJson>,
+    /// Relaxed-scan profile from `.relaxscanact/.relaxscanscf.dat`, or `None` when the
+    /// job is not a scan (SP/Opt/GOAT — normal, absent-is-not-an-error).
+    pub scan: Option<ScanProfileJson>,
     /// Blocks ORCA emitted that this reader has no accessor for (rule #10).
     pub unknown_blocks: Vec<String>,
 }
@@ -170,6 +199,7 @@ impl ParsedResults {
         hess: Option<&crate::parse::hess::Verified>,
         trajectory: Option<TrajectoryJson>,
         orbitals: Option<OrbitalsJson>,
+        scan: Option<ScanProfileJson>,
     ) -> Result<ParsedResults, AppError> {
         let geoms = v.geometries()?;
         let last = geoms
@@ -272,6 +302,7 @@ impl ParsedResults {
             frequencies,
             trajectory,
             orbitals,
+            scan,
             unknown_blocks: v.unknown_block_names(),
         })
     }
@@ -296,6 +327,44 @@ fn trajectory_json(xyz: &crate::parse::xyz::Verified) -> TrajectoryJson {
         })
         .collect();
     TrajectoryJson { n_frames: frames.len(), elements, frames: out_frames }
+}
+
+/// Parse + verify the relaxed-scan profile in `dir`, or `Ok(None)` when the job is
+/// not a scan (no `.relaxscanact.dat` — the absent-is-normal pattern, like
+/// `orca_json::ensure_gbw_json`). The scanned coordinate spec is parsed from
+/// `input_content` here (the reader never reads `input.inp`) and passed into
+/// `verify`, whose geometry cross-check confirms the coordinate is Å at read time.
+fn relaxscan_profile(
+    dir: &Path,
+    input_content: &str,
+) -> Result<Option<ScanProfileJson>, crate::parse::ParseError> {
+    let Some(raw) = RelaxScan::from_path(dir)? else {
+        return Ok(None);
+    };
+    // A present `.relaxscanact.dat` means there WAS a scan; if we cannot read the
+    // `%geom Scan` line from the input we cannot run the B geometry cross-check, so
+    // fail loudly (rule #9) rather than store an unconfirmed coordinate.
+    let spec = parse_scan_spec(input_content).ok_or_else(|| {
+        crate::parse::ParseError::Malformed {
+            field: "%geom Scan line".into(),
+            detail: "a .relaxscanact.dat is present but the input has no parseable Scan line".into(),
+        }
+    })?;
+    let v = raw.verify(&spec)?;
+    Ok(Some(ScanProfileJson {
+        kind: v.kind().to_string(),
+        atoms: v.atoms().to_vec(),
+        coordinate_unit: v.coordinate_unit().to_string(),
+        points: v
+            .points()
+            .iter()
+            .map(|p| ScanPointJson {
+                coordinate: p.coordinate,
+                energy_act_eh: p.energy_act_eh,
+                energy_scf_eh: p.energy_scf_eh,
+            })
+            .collect(),
+    }))
 }
 
 /// Build the MO JSON from a verified `orca_2json`. Coefficients are never included.
@@ -438,11 +507,24 @@ pub fn parse_and_store(
         },
     };
 
-    let results =
-        match ParsedResults::from_verified(&verified, hess_verified.as_ref(), trajectory, orbitals) {
-            Ok(r) => r,
-            Err(e) => return ParseOutcome::ParseFailed(e.to_string()),
-        };
+    // Relaxed-scan profile (`.relaxscanact/.relaxscanscf.dat`): present only for a
+    // scan job, `None` otherwise (absent-is-normal). Its geometry cross-check confirms
+    // the coordinate column is Å against each `input.NNN.xyz` (rule #11).
+    let scan = match relaxscan_profile(dir, input_content) {
+        Ok(s) => s,
+        Err(e) => return ParseOutcome::ParseFailed(format!("relaxscan: {e}")),
+    };
+
+    let results = match ParsedResults::from_verified(
+        &verified,
+        hess_verified.as_ref(),
+        trajectory,
+        orbitals,
+        scan,
+    ) {
+        Ok(r) => r,
+        Err(e) => return ParseOutcome::ParseFailed(e.to_string()),
+    };
     if let Err(e) = store(conn, job_id, &results) {
         return ParseOutcome::ParseFailed(e.to_string());
     }
@@ -884,7 +966,7 @@ mod tests {
 
     #[test]
     fn per_atom_charges_carry_their_element_order() {
-        let r = ParsedResults::from_verified(&verified(), None, None, None).unwrap();
+        let r = ParsedResults::from_verified(&verified(), None, None, None, None).unwrap();
         let mulliken = r.charges.iter().find(|c| c.scheme == "mulliken").unwrap();
         assert_eq!(mulliken.elements, ["C", "C", "H", "H", "H", "H", "H", "H"]);
         assert_eq!(mulliken.charges.len(), mulliken.elements.len());
@@ -897,7 +979,7 @@ mod tests {
     #[test]
     fn store_is_idempotent_on_job_id() {
         let conn = mem_db();
-        let r = ParsedResults::from_verified(&verified(), None, None, None).unwrap();
+        let r = ParsedResults::from_verified(&verified(), None, None, None, None).unwrap();
         store(&conn, "job1", &r).unwrap();
         store(&conn, "job1", &r).unwrap(); // re-parse → update, not duplicate
         let n: i64 = conn
@@ -909,7 +991,7 @@ mod tests {
     #[test]
     fn read_back_preserves_element_order() {
         let conn = mem_db();
-        let r = ParsedResults::from_verified(&verified(), None, None, None).unwrap();
+        let r = ParsedResults::from_verified(&verified(), None, None, None, None).unwrap();
         store(&conn, "job1", &r).unwrap();
         verify_stored(&conn, "job1", &r).expect("round-trip preserves per-atom order");
 
@@ -922,7 +1004,7 @@ mod tests {
     #[test]
     fn narrow_columns_match_the_json() {
         let conn = mem_db();
-        let r = ParsedResults::from_verified(&verified(), None, None, None).unwrap();
+        let r = ParsedResults::from_verified(&verified(), None, None, None, None).unwrap();
         store(&conn, "job1", &r).unwrap();
         let (energy, ts): (f64, f64) = conn
             .query_row(

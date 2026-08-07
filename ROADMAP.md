@@ -735,10 +735,14 @@ pending.)*
 
 ### Stage B — Scan output parser + single energy profile (spine, part 2)
 
-- [ ] **B1 — scan reader (Rust, over structured artifacts).** New `src-tauri/src/parse/relaxscan.rs`
+- [x] **B1 — scan reader (Rust, over structured artifacts).** `src-tauri/src/parse/relaxscan.rs`
       over `.relaxscanact.dat`/`.relaxscanscf.dat` (2 cols coordinate Å + energy Eh, measured 3.3),
-      artifact-reader template + post-conditions (rows == npoints; `act`/`scf` both surfaced, never
-      mixed; coordinate monotone within tolerance). Wired into `results.rs`.
+      artifact-reader template + post-conditions (act/scf same N + identical coordinate column, N≥2,
+      energies finite, coordinate strictly monotone). **The coordinate's Å is confirmed per-read** by
+      a geometry cross-check vs each `input.NNN.xyz` (rule #11; Bohr fails ≈1.889×) — the load-bearing
+      post-condition. `act`/`scf` both stored, labelled, never conflated. Wired into `results.rs`
+      (`ParsedResults.scan`, `data_json`, `parser_version` 3→4). Three negative controls green on real
+      ethane fixtures. No manual gate (Rust reader).
 - [ ] **B2 — energy-profile view (React → manual gate).** Reaction coordinate vs energy (reuses the
       recharts machinery + the trajectory click-to-frame pattern: click a scan point → load
       `.NNN.xyz` of that point). Maximum marked as approximate TS. **Manual gate.**

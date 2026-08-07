@@ -324,6 +324,14 @@ listing):
 - `input.001.xyz … input.006.xyz` + `input.001.gbw … input.006.gbw` — per-point final geometry
   and wavefunction.
 
+**Reader built (Phase 4.5 B1 — `parse/relaxscan.rs`).** The profile is now read by the fifth
+artifact reader. The coordinate column carries **no unit literal**, so col1's Å is not merely
+measured once — it is **confirmed at every read** by a geometry cross-check (rule #11, the
+load-bearing post-condition): for a `B` scan the reader recomputes the scanned distance from each
+`input.NNN.xyz` (Å, via the `xyz` reader) and asserts it equals col1 within 1e-3 Å; a Bohr
+coordinate fails ≈1.889×, loudly. `act` and `scf` are stored **both, labelled** (they differ by
+gCP+D4), never conflated. See `wiki/modules/artifact-readers.md` §"Fifth reader".
+
 **Where per-point energies + the scanned coordinate live** (the Phase-4.5 question): the clean
 **structured** source is `.relaxscanact.dat` / `.relaxscanscf.dat` (coordinate + energy, 6 rows).
 The **text** mirror is the `.out` `RELAXED SURFACE SCAN RESULTS` summary table ("The Calculated
