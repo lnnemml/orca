@@ -117,9 +117,16 @@ functions, no imports from react / 3dmol / tauri. The reactive `store.ts` (added
   (**composes into the one `%geom`** via `geomBlock`; insert/replace/remove the `Scan`
   sub-block as a sibling of `Constraints`, never a second `%geom`), `parseScanBlock` /
   `inspectScanBlock` (read-back for A2's view-over-text; non-destructive — a multi-coordinate
-  block or inline comment reads `unrecognised`), and `scanOptIssue` (the loud `! Opt` guard —
-  a relaxed scan without `Opt` is silently a single point, measured). Pure / node-tested.
-  `wiki/orca/scan.md`.
+  block or inline comment reads `unrecognised`), `scanOptIssue` (the loud Run-guard — a relaxed scan
+  without a **measured** opt keyword is silently a single point; the set
+  `{opt, optts, tightopt, verytightopt, looseopt}` is measured per rule #10, `wiki/orca/scan.md`),
+  and (A2) `scanFromSelection(scene, AtomId[], range)` — build a coordinate from a 2/3/4-atom
+  selection, resolving `AtomId → 0-based index` at build time (survives an index shift), mirroring
+  `constraintFromSelection`. Pure / node-tested. `wiki/orca/scan.md`.
+- `ScanPanel.tsx` (Phase 4.5 A2) — the Scan dock section: a **view over the input text** (source =
+  `inspectScanBlock(content)`, edits = `injectScan`; the number fields keep only a transient
+  keystroke draft, never scan state). Renders absent / parsed (editable start/end/npoints + remove) /
+  unrecognised, surfaces `scanOptIssue` inline. Add path = `AtomInspector` "Scan this coordinate".
 - `AtomInspector.tsx` — the atom panel on New Job (React; reads a selection held
   in `NewJobScreen` state, uses the shared `fragmentColor` palette).
 - `EditPanel.tsx` — edit-mode UI in the Atom rail section (React): target field,

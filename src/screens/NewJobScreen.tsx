@@ -18,6 +18,7 @@ import { GuidedPlacementPanel } from "../scene/GuidedPlacementPanel";
 import { DEFAULT_ROTATE_OVERLAY, type RotateOverlay } from "../viewer/rotate-overlay";
 import { bondKey, type BondKey } from "../viewer/bond-display";
 import { ConstraintPanel } from "../scene/ConstraintPanel";
+import { ScanPanel } from "../scene/ScanPanel";
 import {
   parseConstraintsBlock,
   inspectConstraintsBlock,
@@ -26,6 +27,13 @@ import {
   constraintFromSelection,
   sameConstraint,
 } from "../scene/constraints";
+import {
+  inspectScanBlock,
+  injectScan,
+  scanOptIssue,
+  scanFromSelection,
+} from "../scene/scan";
+import { measureSelection } from "../scene/measure";
 import {
   planEdit,
   swapToAlternative,
@@ -82,6 +90,15 @@ import type { Job, Molecule, SidecarStatus } from "../types";
 function signed(n: number): string {
   return n > 0 ? `+${n}` : String(n);
 }
+
+/** The default span (end − start) for a "Scan this coordinate" default range — an
+ * editable starting point: a 1 Å bond stretch, a 30° angle sweep, a 60° dihedral
+ * sweep. The panel lets the user change start/end/points afterwards. */
+const DEFAULT_SCAN_SPAN: Record<"distance" | "angle" | "dihedral", number> = {
+  distance: 1.0,
+  angle: 30,
+  dihedral: 60,
+};
 
 /** Human label for a constraint kind, for the range-block message. */
 function constraintTypeLabel(
@@ -171,6 +188,7 @@ export function NewJobScreen({
     edit: false,
     fragments: true,
     constraints: false,
+    scan: false,
     history: false,
     actions: false,
   });
@@ -470,6 +488,25 @@ export function NewJobScreen({
     const existing = ins.kind === "parsed" ? ins.cs : [];
     if (existing.some((e) => sameConstraint(e, c))) return;
     setContent(injectConstraints(content, [...existing, c]));
+    setError(null);
+  };
+
+  // "Scan this coordinate" (Stage A2): from the 2/3/4-atom selection, build a
+  // relaxed-scan coordinate with an editable default range and write it through
+  // `injectScan` — one data path, the ScanPanel re-reads the text. A scan is
+  // singular, so this REPLACES any existing (recognised) scan; an unrecognised
+  // block is never clobbered (mirror `constrainSelection`). Start defaults to the
+  // current measured value; the end/points are sensible, editable defaults.
+  const scanFromSelectionHandler = () => {
+    if (!scene) return;
+    if (inspectScanBlock(content).kind === "unrecognised") return; // don't clobber
+    const m = measureSelection(scene, selection);
+    if (m.kind === "none") return;
+    const start = Number(m.value.toFixed(m.kind === "distance" ? 3 : 1));
+    const end = Number((start + DEFAULT_SCAN_SPAN[m.kind]).toFixed(m.kind === "distance" ? 3 : 1));
+    const s = scanFromSelection(scene, selection, { start, end, npoints: 10 });
+    if (!s) return;
+    setContent(injectScan(content, s));
     setError(null);
   };
 
@@ -1050,6 +1087,12 @@ export function NewJobScreen({
       setError(constraintBlockMessage);
       return;
     }
+    if (scanBlockMessage) {
+      // Same rationale as the constraint block: an immutable input that will
+      // silently single-point instead of scanning must not be created or run.
+      setError(scanBlockMessage);
+      return;
+    }
     setCreating(true);
     setError(null);
     try {
@@ -1133,8 +1176,19 @@ export function NewJobScreen({
         "."
       : null;
 
+  // ── Scan Run-guard (Stage A2) ───────────────────────────────────────────────
+  // A `%geom Scan` with no measured optimization keyword on the `!` line runs a
+  // SINGLE POINT and silently ignores the scan (measured — `wiki/orca/scan.md`).
+  // The job's input is immutable once created, so an input that will silently do
+  // the wrong thing is a landmine — block Create AND Run, exactly as the
+  // out-of-range constraint does. `scanOptIssue` is the same guard the panel shows.
+  const scanBlockMessage = scanOptIssue(content);
+
   const canCreate =
-    content.trim().length > 0 && !creating && !constraintBlockMessage;
+    content.trim().length > 0 &&
+    !creating &&
+    !constraintBlockMessage &&
+    !scanBlockMessage;
 
   // The Add-Fragment sources (reagents / import / SMILES / library) — the palette
   // half of the Fragments dock section. Reachable inside fullscreen (unit 2b-ux).
@@ -1408,6 +1462,12 @@ export function NewJobScreen({
               ? "The constraint block contains syntax OrcaStudio doesn't recognise — edit it in the input editor."
               : null
           }
+          onScan={scanFromSelectionHandler}
+          scanDisabledReason={
+            inspectScanBlock(content).kind === "unrecognised"
+              ? "The scan block contains syntax OrcaStudio doesn't recognise — edit it in the input editor."
+              : null
+          }
         />
       ) : null,
     },
@@ -1568,6 +1628,15 @@ export function NewJobScreen({
       ) : null,
     },
     {
+      id: "scan",
+      label: "Scan",
+      short: "Scan",
+      glyph: "⇢",
+      body: scene ? (
+        <ScanPanel scene={scene} content={content} onChange={setContent} />
+      ) : null,
+    },
+    {
       id: "history",
       label: "History",
       short: "Hist",
@@ -1666,6 +1735,12 @@ export function NewJobScreen({
 
       {constraintBlockMessage ? (
         <div className="banner err constraint-block">{constraintBlockMessage}</div>
+      ) : null}
+
+      {scanBlockMessage ? (
+        <div className="banner err scan-block">
+          Can&apos;t create or run this job — {scanBlockMessage}
+        </div>
       ) : null}
 
       <input

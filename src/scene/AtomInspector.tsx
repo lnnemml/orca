@@ -32,6 +32,8 @@ export function AtomInspector({
   onClear,
   onConstrain,
   constrainDisabledReason,
+  onScan,
+  scanDisabledReason,
 }: {
   scene: Scene;
   selection: AtomId[];
@@ -40,6 +42,13 @@ export function AtomInspector({
   /** When set, "Constrain selection" is disabled with this as the tooltip — used
    * when the constraint block is unrecognised and must not be rewritten (2.5.5). */
   constrainDisabledReason?: string | null;
+  /** "Scan this coordinate" (Stage A2): build a relaxed-scan coordinate from the
+   * 2/3/4-atom selection (kind from count) with an editable default range. Mirrors
+   * `onConstrain` — one data path, `NewJobScreen` owns the input text. */
+  onScan?: () => void;
+  /** When set, "Scan this coordinate" is disabled with this tooltip — the scan
+   * block is unrecognised and must not be rewritten. */
+  scanDisabledReason?: string | null;
 }) {
   const [constrainValue, setConstrainValue] = useState("");
   if (selection.length === 0) return null;
@@ -129,6 +138,26 @@ export function AtomInspector({
           {constrainDisabledReason ? (
             <span className="muted atom-inspector-constrain-note">
               {constrainDisabledReason}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+      {onScan && selection.length >= 2 && selection.length <= 4 ? (
+        <div className="atom-inspector-scan">
+          <button
+            className="btn btn-sm"
+            disabled={!!scanDisabledReason}
+            onClick={onScan}
+            title={
+              scanDisabledReason ??
+              "Add a %geom relaxed scan over this coordinate — start defaults to the current value; edit the range in the Scan panel"
+            }
+          >
+            Scan this {constrainKindLabel(selection.length)}
+          </button>
+          {scanDisabledReason ? (
+            <span className="muted atom-inspector-constrain-note">
+              {scanDisabledReason}
             </span>
           ) : null}
         </div>

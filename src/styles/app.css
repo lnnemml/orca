@@ -1033,6 +1033,83 @@ select:disabled,
   font-size: 11px;
 }
 
+/* Scan panel (Phase 4.5 Stage A2) — a view over the %geom Scan text, sibling of
+   the Constraint panel. */
+.scan-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+}
+.scan-head {
+  font-size: 13px;
+  color: var(--text);
+}
+.scan-empty {
+  font-size: 12px;
+}
+.scan-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+.scan-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text);
+}
+.scan-current {
+  font-size: 11px;
+}
+.scan-del {
+  margin-left: auto;
+  padding: 0 8px;
+}
+.scan-range {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.scan-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+}
+.scan-num {
+  width: 84px;
+}
+.scan-num-int {
+  width: 64px;
+}
+.scan-step {
+  font-size: 11px;
+  align-self: center;
+}
+.input-invalid {
+  border-color: #ff6b6b;
+}
+.atom-inspector-scan {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+
 /* xTB pre-optimize (2.5.5) — in the geometry rail. */
 .xtb-panel {
   display: flex;

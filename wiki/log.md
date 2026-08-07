@@ -5829,3 +5829,47 @@ Stage A1 of the reaction-modeling scan spine: generate a `%geom Scan` relaxed-sc
   scan+constraints), `vite build` clean. New `wiki/orca/scan.md`; module pages + index updated.
 
 Next: Stage A2 (Scan panel + define-coordinate-from-selection, the manual gate). ADR-016 unchanged.
+
+## [2026-08-07] session | Phase 4.5 Stage A2 — Scan panel + Scan-from-selection + Run-guard (opt family measured); author manual gate PENDING
+
+Stage A2 builds the UI over the A1 scan core: a Scan panel (view over the input text), "Scan this
+coordinate" from a selection, and the `! Opt` Run-guard given teeth — plus a rule-#10 probe that
+broadens the guard's opt-keyword set to the measured truth.
+
+- **Task-1 probe (rule #10) — which opt keywords trigger a relaxed scan.** Ran real ORCA 6.1 ethane
+  C–C scans (`! r2SCAN-3c <kw> TightSCF` + the same `%geom Scan`): **TightOpt, VeryTightOpt, LooseOpt
+  all produce a 6-row `.relaxscanact.dat`** (relaxed scan), like `Opt`/`OptTS` (A1). So
+  `hasOptKeyword`'s set is now the measured `{opt, optts, tightopt, verytightopt, looseopt}` — NOT
+  widened from docs; a keyword enters only after a run confirms it. Table recorded in
+  `wiki/orca/scan.md`. This closes the "must not false-block a valid `! TightOpt`" risk with a
+  measurement, not an assumption.
+- **`ScanPanel.tsx`** — a **view over the input text**, mirror of `ConstraintPanel`: source =
+  `inspectScanBlock(content)`, every edit = `injectScan(content, …)`; NO React state that *is* the
+  scan (the number fields hold only a transient keystroke draft). Renders absent / parsed (editable
+  start/end/npoints + remove) / unrecognised, surfaces `scanOptIssue` inline. Sits in the editor dock
+  next to Constraints (new `scan` dock section).
+- **Scan-from-selection** — `AtomInspector` gains "Scan this {distance/angle/dihedral}" (mirrors
+  "Constrain selection"): a 2/3/4-atom pick → new `scanFromSelection(scene, AtomId[], range)` in
+  `scan.ts`, resolving `AtomId → 0-based global index` at build time (survives a fragment index
+  shift). Default range = current measured value → +1 Å / +30° / +60°, N = 10 (editable in the panel).
+- **Run-guard wired** — `scanBlockMessage = scanOptIssue(content)` feeds the SAME create/run gate as
+  the constraint range-check: a scan with no measured opt keyword blocks Create & Run with the
+  diagnostic (immutable input that would silently single-point is a landmine, like an out-of-range
+  constraint). Banner mirrors `constraintBlockMessage`.
+- **Three negative controls green** (`scan.test.ts`, +17 tests): C-view-over-text (every panel edit
+  is a pure `injectScan` transform; `inspectScanBlock` is the whole truth), C-tightopt-block (each
+  measured opt keyword NOT false-blocked; a no-opt scan bites), C-atomid-pick (boron id 3 → current
+  global 0 after water removed — emits `[0,1]`, not the ids). No Rust change.
+- Verify: `tsc` 0, `vitest` 620 green (37 in scan.test.ts), `vite build` clean, `cargo test`
+  unaffected.
+
+**AUTHOR MANUAL GATE — PENDING (unit stays open until this passes; Claude Code cannot drive the
+3Dmol window).** In the real Tauri/WebKitGTK window (`npm run tauri dev`):
+- g1: select two atoms → "Scan this distance" → a `%geom Scan B …` appears in Monaco + the Scan
+  panel; editing start/end/npoints rewrites only that block (any Constraints intact — one `%geom`).
+- g2: remove `Opt` from the `!` line → Run blocked with the scan diagnostic; add `Opt` → Run enabled.
+- g3: `! TightOpt` (measured) → Run NOT blocked.
+- g4: an unrecognised / multi-coordinate `Scan` block → panel shows hands-off, never clobbers it.
+
+Next: record the g1–g4 result, flip ROADMAP A2 `[~]`→`[x]` + Stage A complete, then Stage B (scan
+output parser `relaxscan.rs` + energy profile). ADR-016 unchanged.

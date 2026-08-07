@@ -7,8 +7,10 @@ import {
   inspectScanBlock,
   injectScan,
   scanOptIssue,
+  scanFromSelection,
 } from "./scan";
 import { injectConstraints, parseConstraintsBlock } from "./constraints";
+import { testScene, idsFor, borohydrideAfterWaterRemoved } from "./scene-test-util";
 
 /** BASE mirrors the constraints fixtures: a keyword line WITH `Opt`, then a 3-atom
  * geometry (indices 0,1,2 resolve). */
@@ -192,5 +194,126 @@ describe("inspectScanBlock — tells 'no block' from 'a block I can't fully own'
   it("npoints < 2 is malformed → unrecognised", () => {
     const bad = "%geom\n  Scan\n    B 0 1 = 1.4, 2.4, 1\n  end\nend\n";
     expect(parseScanBlock(bad)).toBeNull();
+  });
+});
+
+// ══ Stage A2 — panel/guard/selection pure logic + the three negative controls ══
+
+/** A single 41-carbon fragment: on this fresh scene AtomId == global index, so
+ * `scanFromSelection(big, idsFor(big, …))` emits exactly the indices passed. */
+const big = testScene([
+  {
+    id: "m",
+    name: "M",
+    charge: 0,
+    source: "editor",
+    atoms: Array.from({ length: 41 }, (_, i) => ({ element: "C", x: i, y: 0, z: 0 })),
+  },
+]);
+
+describe("scanFromSelection — length→kind, AtomId resolved at build time", () => {
+  it("2/3/4 atoms → B/A/D with the given range", () => {
+    expect(scanFromSelection(big, idsFor(big, 0, 1), { start: 1.4, end: 2.4, npoints: 6 })).toEqual({
+      kind: "B",
+      atoms: [0, 1],
+      start: 1.4,
+      end: 2.4,
+      npoints: 6,
+    });
+    expect(scanFromSelection(big, idsFor(big, 2, 1, 0), { start: 100, end: 120, npoints: 5 })).toEqual(
+      { kind: "A", atoms: [2, 1, 0], start: 100, end: 120, npoints: 5 },
+    );
+    expect(
+      scanFromSelection(big, idsFor(big, 0, 1, 2, 3), { start: 0, end: 180, npoints: 10 }),
+    ).toEqual({ kind: "D", atoms: [0, 1, 2, 3], start: 0, end: 180, npoints: 10 });
+  });
+
+  it("rejects a bad selection length or invalid range", () => {
+    const r = { start: 1, end: 2, npoints: 6 };
+    expect(scanFromSelection(big, idsFor(big, 7), r)).toBeNull(); // 1 atom
+    expect(scanFromSelection(big, idsFor(big, 1, 2, 3, 4, 5), r)).toBeNull(); // 5 atoms
+    expect(scanFromSelection(big, idsFor(big, 0, 1), { start: 1, end: 2, npoints: 1 })).toBeNull();
+    expect(
+      scanFromSelection(big, idsFor(big, 0, 1), { start: NaN, end: 2, npoints: 6 }),
+    ).toBeNull();
+  });
+
+  it("returns null if a selected atom has left the scene", () => {
+    const { scene } = borohydrideAfterWaterRemoved();
+    const gone = idsFor(scene, 900)[0];
+    const present = idsFor(scene, 0)[0];
+    expect(scanFromSelection(scene, [present, gone], { start: 1, end: 2, npoints: 6 })).toBeNull();
+  });
+});
+
+// ── C-atomid-pick — the coordinate survives a fragment index shift ─────────────
+describe("C-atomid-pick — emits CURRENT 0-based indices from an AtomId selection", () => {
+  it("boron (id 3, now global 0) + an H → atoms [0,1], NOT the raw ids", () => {
+    // water removed → BH₄⁻ keeps ids 3..7 but occupies global 0..4 (mirror
+    // constraints c2 / bond-display): the id-keyed pick must resolve to the CURRENT
+    // index, else the %geom Scan line would scan the wrong / out-of-range atom.
+    const { scene, boronId } = borohydrideAfterWaterRemoved();
+    const someH = idsFor(scene, 1)[0];
+    const s = scanFromSelection(scene, [boronId, someH], { start: 1.2, end: 2.2, npoints: 6 })!;
+    expect(s.atoms).toEqual([0, 1]); // NOT [3, 1] (the AtomIds)
+    // …and it round-trips through the %geom Scan text as a valid 0-based line.
+    const text = injectScan("! r2SCAN-3c Opt\n* xyz 0 1\nB 0 0 0\nH 1 0 0\n*\n", s);
+    expect(parseScanBlock(text)).toEqual(s);
+  });
+});
+
+// ── C-view-over-text — a panel edit is a pure content transform, no parallel store
+describe("C-view-over-text — every ScanPanel edit is a pure injectScan(content) transform", () => {
+  const base = "! r2SCAN-3c Opt\n* xyz 0 1\nC 0 0 0\nC 0 0 1.5\nH 0 0.9 -0.4\n*\n";
+  const scan: ScanCoordinate = { kind: "B", atoms: [0, 1], start: 1.4, end: 2.4, npoints: 6 };
+  const content = injectScan(base, scan);
+
+  it("editing npoints reflects EXACTLY in the text (inspect is the whole truth)", () => {
+    // The exact transform ScanPanel.setN performs — no React state that IS the scan.
+    const next = injectScan(content, { ...scan, npoints: 8 });
+    const read = inspectScanBlock(next);
+    expect(read.kind).toBe("parsed");
+    expect(read.kind === "parsed" && read.scan.npoints).toBe(8);
+  });
+
+  it("editing start preserves the exact typed text (setStart with startText)", () => {
+    // ScanPanel.setStart({ ...scan, start: Number("1.40"), startText: "1.40" }).
+    const next = injectScan(content, { ...scan, start: 1.4, startText: "1.40" });
+    expect(next).toContain("= 1.40, 2.4, 6");
+    const read = inspectScanBlock(next);
+    expect(read.kind === "parsed" && read.scan.startText).toBe("1.40");
+  });
+
+  it("a re-render from the edited content shows the edit — no stale parallel copy", () => {
+    // What a re-rendered panel reads (inspectScanBlock(content)) IS the new value;
+    // there is no second source that could disagree.
+    const edited = injectScan(content, { ...scan, end: 3.0, endText: "3.0", npoints: 12 });
+    const read = inspectScanBlock(edited);
+    expect(read.kind === "parsed" && read.scan).toMatchObject({ end: 3, npoints: 12 });
+  });
+});
+
+// ── C-tightopt-block — the guard family is MEASURED, not narrow ────────────────
+describe("C-tightopt-block — a measured opt keyword is NOT false-blocked", () => {
+  const geom = "\n* xyz 0 1\nC 0 0 0\nC 0 0 1.5\n*\n";
+  const scan: ScanCoordinate = { kind: "B", atoms: [0, 1], start: 1.4, end: 2.4, npoints: 6 };
+
+  // Each measured to trigger a relaxed scan (rule #10 — real ORCA runs, wiki/orca/scan.md).
+  for (const kw of ["Opt", "OptTS", "TightOpt", "VeryTightOpt", "LooseOpt"]) {
+    it(`! ${kw} scan is NOT blocked (measured relaxed-scan trigger)`, () => {
+      const input = injectScan(`! r2SCAN-3c ${kw} TightSCF${geom}`, scan);
+      expect(scanOptIssue(input)).toBeNull();
+    });
+  }
+
+  it("the control bites: a scan with NO opt keyword IS blocked", () => {
+    const input = injectScan(`! r2SCAN-3c TightSCF${geom}`, scan);
+    expect(scanOptIssue(input)).toMatch(/Opt/);
+  });
+
+  it("a non-opt keyword that merely contains 'opt'-ish text does not count", () => {
+    // `Optimizer`-like tokens aren't in the measured set — only exact keywords are.
+    const input = injectScan(`! r2SCAN-3c SP TightSCF${geom}`, scan);
+    expect(scanOptIssue(input)).toMatch(/Opt/);
   });
 });

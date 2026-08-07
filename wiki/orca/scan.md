@@ -32,11 +32,34 @@ end
 
 ## `! Opt` is REQUIRED (silent single-point otherwise) — measured
 
-A relaxed scan needs `! Opt` on the keyword line. **Without `Opt`, ORCA runs a single point and
-silently ignores the `Scan` block** — 1 energy, 1 geometry, no `.relaxscanact.dat` (measured,
-unit 3.3, `parse-sources.md`). This is a plausible-but-empty failure: the job finishes
+A relaxed scan needs an optimization keyword on the `!` line. **Without one, ORCA runs a single
+point and silently ignores the `Scan` block** — 1 energy, 1 geometry, no `.relaxscanact.dat`
+(measured, unit 3.3, `parse-sources.md`). This is a plausible-but-empty failure: the job finishes
 `NORMALLY`, so nothing flags it. OrcaStudio guards it with `scanOptIssue` (`scan.ts`): a scan
-present with no `Opt`/`OptTS` on the `!` line returns a loud diagnostic (A2 blocks Run on it).
+present with no measured opt keyword on the `!` line returns a loud diagnostic; Stage A2 blocks
+Run on it (`NewJobScreen`, the same gate the out-of-range constraint uses).
+
+### Which opt keywords trigger a relaxed scan (measured — rule #10)
+
+The guard must recognise **exactly** the keywords that actually drive a relaxed scan — too narrow
+and a legitimate `! TightOpt` scan is silently blocked. So the set is *measured*, never taken from
+docs. Each keyword below was run as a real ORCA 6.1 ethane C–C scan (`! r2SCAN-3c <kw> TightSCF` +
+`%geom Scan B 0 1 = 1.4, 2.4, 6 end end`, full-path, isolated dir) and checked for a **6-row**
+`.relaxscanact.dat`:
+
+| Keyword | Stage | 6-row `.relaxscanact.dat`? | Relaxed scan? |
+|---|---|---|---|
+| `Opt` | A1 | ✅ 6 rows | yes |
+| `OptTS` | A1 | ✅ 6 rows | yes |
+| `TightOpt` | A2 | ✅ 6 rows (coords 1.4→2.4) | yes |
+| `VeryTightOpt` | A2 | ✅ 6 rows (coords 1.4→2.4) | yes |
+| `LooseOpt` | A2 | ✅ 6 rows (coords 1.4→2.4) | yes |
+| *(none — SP)* | 3.3 | ✗ no file (single point) | no |
+
+`RELAXED_SCAN_OPT_KEYWORDS` (`scan.ts`) = `{opt, optts, tightopt, verytightopt, looseopt}`,
+matched case-insensitively as a whole token on a `!` line (comment-masked). A keyword **not** in
+this table is **not** recognised until a run confirms it (e.g. a Cartesian-opt or geometry-specific
+variant would be added only after its own probe) — the measurement decides, not convention.
 
 ## One `%geom` — Scan and Constraints compose, never duplicate
 
@@ -76,9 +99,21 @@ mirrors the terminal-run scan of unit 3.3), written with `! r2SCAN-3c Opt TightS
 This closes the loop unit 3.3 opened: our **generator** provably produces the measured artifacts.
 Run recorded in `wiki/log.md` (Stage A1 session entry).
 
+## The Scan panel + Scan-from-selection (Stage A2)
+
+`ScanPanel` (`src/scene/ScanPanel.tsx`) is a **view over the input text** — its only source is
+`inspectScanBlock(content)`, every edit is an `injectScan(content, …)` transform; there is no React
+state that *is* the scan (the number fields keep a transient keystroke draft only). It renders the
+three block states (absent → add-path hint; parsed → the coordinate + editable start/end/npoints +
+remove; unrecognised → a hands-off notice), and surfaces `scanOptIssue` inline. **Scan-from-
+selection** lives in `AtomInspector` ("Scan this {distance/angle/dihedral}"): a 2/3/4-atom pick →
+`scanFromSelection` (kind from count; atoms resolved from `AtomId` to the current 0-based global
+index at build time, so the coordinate survives a fragment index shift) with an editable default
+range (start = current measured value; +1 Å / +30° / +60° span; N = 10). The panel sits in the
+editor dock next to Constraints.
+
 ## Not yet covered (later stages)
 
-- **Multi-coordinate scans** (several coordinates in one `Scan` block — an N-D grid): A1 models a
+- **Multi-coordinate scans** (several coordinates in one `Scan` block — an N-D grid): A1/A2 model a
   single coordinate; a multi-line `Scan` block reads as `unrecognised` (won't be rewritten).
 - **Scan output parsing** into an energy profile: Stage B (`relaxscan.rs`).
-- **Define-coordinate-from-selection UI** (pick 2/3/4 atoms → panel): Stage A2.

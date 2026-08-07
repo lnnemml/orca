@@ -91,8 +91,16 @@ page records the **layout principle and where future panels go** — not the cur
 - **Sections, in order of use:** Selection & Measure (`AtomInspector`) · Edit (`EditPanel` + the Move-mode
   toggle + `RotatePanel`) · Fragments (the Add-Fragment palette — reagents / import / SMILES / **Paste xyz** / library —
   **plus** the guided `GuidedPlacementPanel` when a reagent is being placed, **plus** `FragmentList`) ·
-  Constraints (`ConstraintPanel`) · History (`HistoryPanel`) · Actions (xTB
-  pre-optimize). The Reagents palette shows **Built-in** (curated, reference-contract) and **My
+  Constraints (`ConstraintPanel`) · **Scan** (`ScanPanel`, Phase 4.5 A2) · History (`HistoryPanel`) · Actions (xTB
+  pre-optimize).
+- **Scan (`ScanPanel`, Stage A2)** — sibling of Constraints, same **view-over-text** discipline
+  (source = `inspectScanBlock(content)`, edits = `injectScan`; no scan state of its own). Renders
+  absent / parsed (editable start/end/npoints + remove) / unrecognised, and surfaces the `! Opt`
+  Run-guard (`scanOptIssue`) inline. The **add path** is in Selection & Measure: "Scan this
+  {distance/angle/dihedral}" on a 2/3/4-atom pick (`AtomInspector` `onScan` → `scanFromSelection`,
+  mirroring "Constrain selection"), keyed on `AtomId` so the coordinate survives an index shift. The
+  Run-guard is wired into the SAME create/run gate as the constraint range-check — a scan with no
+  measured opt keyword blocks Create & Run (`scanBlockMessage` in `NewJobScreen`; `wiki/orca/scan.md`). The Reagents palette shows **Built-in** (curated, reference-contract) and **My
   reagents** (user-saved, no contract) as visually distinct groups, plus a "+ Save" dialog that
   captures a fragment's or pasted geometry with a **required** charge (tail-2; `reagent-catalog.ts`,
   `modules/scene.md`). Each

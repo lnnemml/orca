@@ -19,8 +19,13 @@
  * `! Opt` requirement (a relaxed scan without `Opt` is silently a single point).
  */
 
+import type { Scene } from "./types";
+import type { AtomId } from "./ids";
+import { globalIndexOfAtom } from "./scene";
 import { toOrcaIndex, fromOrcaIndex } from "./constraints";
 import { scanTokens, locateGeom, leadingIndent } from "./geomBlock";
+// A2 view over this core: `ScanPanel.tsx` (edit) + `AtomInspector` "Scan this
+// coordinate" → `scanFromSelection` (add). See wiki/modules/scene.md, editor-ui.md.
 
 /** Scan coordinate kind → ORCA letter: distance (B), angle (A), dihedral (D).
  * No cartesian scan. */
@@ -256,15 +261,31 @@ export function injectScan(input: string, scan: ScanCoordinate | null): string {
 
 // ── `! Opt` guard ─────────────────────────────────────────────────────────────
 
-/** Does any `!` keyword line carry `Opt` (or `OptTS`)? Comment-masked so a
- * commented-out keyword doesn't count. */
+/**
+ * The optimization keywords **measured** to drive a relaxed scan (rule #10 — a
+ * real ORCA 6.1 ethane C–C scan, each producing a 6-row `.relaxscanact.dat`;
+ * recorded in `wiki/orca/scan.md`). NOT widened from memory/docs: a keyword only
+ * enters this set once a run confirms it triggers the scan, precisely so a
+ * legitimate `! TightOpt` scan is not false-blocked.
+ *   - `opt`, `optts`  — Stage A1
+ *   - `tightopt`, `verytightopt`, `looseopt` — Stage A2 probe
+ */
+const RELAXED_SCAN_OPT_KEYWORDS = new Set([
+  "opt",
+  "optts",
+  "tightopt",
+  "verytightopt",
+  "looseopt",
+]);
+
+/** Does any `!` keyword line carry a measured relaxed-scan optimization keyword?
+ * Comment-masked so a commented-out keyword doesn't count. */
 function hasOptKeyword(input: string): boolean {
   for (const raw of maskComments(input).split("\n")) {
     const line = raw.trim();
     if (!line.startsWith("!")) continue;
     for (const tok of line.slice(1).split(/\s+/).filter(Boolean)) {
-      const w = tok.toLowerCase();
-      if (w === "opt" || w === "optts") return true;
+      if (RELAXED_SCAN_OPT_KEYWORDS.has(tok.toLowerCase())) return true;
     }
   }
   return false;
@@ -282,4 +303,35 @@ export function scanOptIssue(input: string): string | null {
   if (!geom || !geom.subBlocks.has("scan")) return null;
   if (hasOptKeyword(input)) return null;
   return "relaxed scan needs `! Opt` (else ORCA does a single point and silently ignores the Scan block — measured, wiki/orca/parse-sources.md)";
+}
+
+// ── Build from a selection (A2 — the ORCA-index emit seam) ────────────────────
+
+/**
+ * Build a `ScanCoordinate` from an ordered {@link AtomId} selection — the same
+ * length→kind rule as `constraintFromSelection` (2 → B, 3 → A, 4 → D). The AtomId →
+ * 0-based global index resolution happens **HERE, once, at build time** (the emit
+ * seam, ADR-010): the scan is positional/textual by design (it lives in the `%geom`
+ * text), so the id is resolved to a concrete index now and frozen in — never stored
+ * as an id, and deliberately NOT re-tracked across later edits (the composition-
+ * change warning surfaces that, as for constraints). `range` supplies the (editable)
+ * start/end/npoints defaults. Returns `null` for a selection that isn't 2/3/4 atoms,
+ * an id no longer in the scene, or an invalid range.
+ */
+export function scanFromSelection(
+  scene: Scene,
+  selection: AtomId[],
+  range: { start: number; end: number; npoints: number },
+): ScanCoordinate | null {
+  const { start, end, npoints } = range;
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  if (!Number.isInteger(npoints) || npoints < 2) return null;
+  const gi = selection.map((id) => globalIndexOfAtom(scene, id));
+  if (gi.some((i) => i === null)) return null; // an atom left the scene
+  const idx = gi as number[];
+  const r = { start, end, npoints };
+  if (idx.length === 2) return { kind: "B", atoms: [idx[0], idx[1]], ...r };
+  if (idx.length === 3) return { kind: "A", atoms: [idx[0], idx[1], idx[2]], ...r };
+  if (idx.length === 4) return { kind: "D", atoms: [idx[0], idx[1], idx[2], idx[3]], ...r };
+  return null;
 }

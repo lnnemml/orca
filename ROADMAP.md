@@ -720,14 +720,18 @@ scan needs `! Opt` or ORCA silently does a single point — `wiki/orca/parse-sou
       (read-back for A2). `! Opt`-requirement guard (else silent single-point — measured).
       Verified by a real app-generated ethane C–C scan (mirrors 3.3): `.relaxscanact.dat` has
       npoints rows + `ORCA TERMINATED NORMALLY`.
-- [ ] **A2 — Scan panel + define-coordinate-from-selection (UI → manual gate).** Pick 2/3/4 atoms
+- [~] **A2 — Scan panel + define-coordinate-from-selection (UI → manual gate).** Pick 2/3/4 atoms
       via existing `selection`/`measure` → a Scan panel that is a **view over the input text**
       (mirror `ConstraintPanel`): start/end/npoints inputs → `injectScan`. Run-guard surfaced
-      (no `! Opt` → loud, blocks Run, like the constraint range-check). **Manual gate (author):**
-      pick a coordinate in the real window, generate, run, see the artifacts.
+      (no measured opt keyword → loud, blocks Create & Run, like the constraint range-check).
+      **Code + tests complete** (`ScanPanel.tsx`, `scanFromSelection`, `hasOptKeyword` broadened to
+      the measured set `{opt, optts, tightopt, verytightopt, looseopt}` — probe recorded in
+      `wiki/orca/scan.md`; three negative controls green). **Manual gate (author) PENDING** — g1–g4
+      in the real Tauri window (see the log entry); Stage A closes when it passes.
 
 **Stage A done when:** the author picks an approach coordinate, sets start/end/steps, generates a
-relaxed-scan input, and runs it — no hand-editing of `%geom`.
+relaxed-scan input, and runs it — no hand-editing of `%geom`. *(A1 ✅; A2 code ✅, author g1–g4 gate
+pending.)*
 
 ### Stage B — Scan output parser + single energy profile (spine, part 2)
 
