@@ -5769,3 +5769,29 @@ OptTS/IRC methods (no duplicate implementation).
 
 tsc 0; vitest green. wiki: editor-ui.md (rotate default now Distance). No manual gate beyond the one
 short rotate step (pick two atoms → Distance shown by default; toggle → Axis).
+
+## [2026-08-07] decision | Phase 4.5 staged (A–F); Reaction/Pathway data model deferred to Stage C
+
+Phase 4.5 restructured from a flat item list into six ordered stages, on the project's standing
+principle (probe before build · least risk first · every stage ends in a usable result · the
+Reaction object appears where grouping/comparison needs it, not as infrastructure ahead).
+
+- **A** scan input gen (A1 emit — pure+Rust golden+real ORCA; A2 panel+manual gate) · **B** scan
+  reader + single profile · **C** Reaction/Pathway data model + comparative ΔΔE‡ (= mission
+  done-when) · **D** conformer→reaction-center DFT-rigor layer · **E** TS methods (OptTS/IRC/NEB,
+  each probe-first) · **F** CREST microsolvation (probe-first).
+- **Spine A–C is de-risked already** — unit 3.3 measured the relaxed-scan artifacts
+  (`.relaxscanact.dat`/`.relaxscanscf.dat`, coord Å + energy Eh; `! Opt` required or silent SP).
+  Unmeasured work (TS, CREST) carries its own probe at the head of its stage (rule #10).
+- **Decision — data model deferred to Stage C** (was an early core item). A single relaxed scan is
+  standalone-usable (ADR-007 blesses standalone jobs); tables that serve only grouping/comparison
+  land with grouping/comparison. Same "earn its place" rule that cut ring-torsions + constraint-toggle.
+  Retrofit is minimal (Pathway = additive metadata + nullable FK; the scan job is unchanged).
+- **Architectural guard recorded for Stage A** (surfaced in review): `Scan` and `Constraints` are
+  both `%geom` sub-blocks — scan injection must **compose into the one `%geom`**, never emit a
+  second (ORCA would silently take one). Scan emit rides the same order-bearing 0-based
+  AtomId→OrcaIndex path as constraints (ADR-016), byte-identical Rust/TS pair.
+- Two standing gates preserved: symmetry re-probe per system before `! UseSym`; unfixed-stereocenter
+  flag on SMILES import (land before Stage C — si/re needs defined stereochemistry).
+
+Next: Stage A1 (scan-coordinate emit). ADR-007 / ADR-010 / ADR-016 unchanged.

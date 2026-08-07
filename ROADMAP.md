@@ -673,86 +673,119 @@ crosses a boundary the app owns. **✅ MET — Phase 4.2 is COMPLETE** (Stages 1
 
 ---
 
-## Phase 4.5 — Reaction modeling (≈ 3–5 evenings)
+## Phase 4.5 — Reaction modeling (staged)
 
 **Goal:** OrcaStudio becomes a reaction mechanism workstation. The researcher defines a
 reaction, explores pathways via native ORCA scans, and compares electronic energy
 barriers — the full computational experiment lifecycle. See ADR-007.
 
-**Depends on Phase 4.2 (✅ COMPLETE) + Phase 3 result parsing (✅ COMPLETE)** — the reaction-center
-and scan-setup UIs build on the finished geometry editor (typed operations, one authoritative core);
-the profile/frequency artifacts this phase reads (relaxed-scan `.dat`, `.hess`) are the Phase 3
-authoritative-parsing tier; product-from-reactant derivation is ADR-010's `ReactionPath`
-(`fold(reactant, transform)`, atom mapping by construction).
+**Depends on Phase 4.2 (✅ COMPLETE) + Phase 3 result parsing (✅ COMPLETE)** — the
+reaction-center / scan-setup UIs build on the finished geometry editor (typed operations,
+one authoritative core); the profile/frequency artifacts this phase reads (relaxed-scan
+`.dat`, `.hess`) are the Phase 3 authoritative-parsing tier; product-from-reactant derivation
+is ADR-010's `ReactionPath` (`fold(reactant, transform)`, atom mapping by construction).
 
-> **Open question — PARTLY SETTLED (unit 1a, 2026-08-05).** ORCA may reorder atoms in its output
-> when symmetry is active. This was measured for the common case:
-> [`wiki/orca/usesym-atom-order.md`](wiki/orca/usesym-atom-order.md) ran real `! UseSym` jobs and
-> found **no observable reorder** — ORCA reorients + symmetrizes but preserves input atom order —
-> for formaldehyde (C2v), methanol (Cs, SP + Opt+Freq), and water (C2v), across `.out` /
-> `.property.txt` / `_trj.xyz` / `.xyz` / `.hess`. So for these groups the `parse_output` map is
-> the identity, guarded by a post-condition (element-seq + fingerprint on real output — ADR-016).
-> **Still open for THIS phase:** the probe did **not** cover the D-groups, cubic groups, explicit
-> `%Symmetry PointGroup "..."`, or larger systems, and permutations of symmetry-**equivalent** atoms
-> are unobservable in principle. Before relying on symmetry for a *specific* reaction system here,
-> **re-run the probe on that system** (domain rule #10); if it reorders, that is a direct risk to
-> [ADR-008](wiki/architecture/adr-008-scene-fragment-model.md) (one index space, merged-xyz order)
-> and to ADR-010's `IndexMap`, and the post-condition catches it at the `parse_output` boundary
-> before scans are trusted.
+**Staging principle** (as everywhere in this project): probe/measure before build; least
+risk first; every stage ends with something the author actually uses; the Reaction object
+appears in the stage where grouping/comparison first needs it, not as infrastructure ahead.
+The **scan spine (Stages A–C) is already de-risked** — a real relaxed scan was measured in
+unit 3.3 (`.relaxscanact.dat`/`.relaxscanscf.dat`, 2 cols coordinate Å + energy Eh; a relaxed
+scan needs `! Opt` or ORCA silently does a single point — `wiki/orca/parse-sources.md`). The
+**unmeasured** work (TS methods, CREST) carries its own probe at the head of its stage.
 
-**Early — new tools to install + PROBE before the scan core (rule #10: probe first, then design):**
+### Standing gates (not stages — apply throughout)
 
-- [ ] **Microsolvation (explicit solvent shell).** Build an explicit first-solvation shell around a
-      solute — the natural extension of fragment placement + xtb + GOAT already in hand; the tail-2
-      cation catalog seeds the ion side. **Install CREST** (a *separate* binary that shells out to
-      xtb — **domain rule #2:** its build must match the installed **xtb 6.6.1**, an OpenMPI/version
-      compatibility check like ORCA's) → **PROBE `crest --qcg`** (quantum-cluster-growth) with a
-      minimal run and record what works, the artifacts, and the cost in the wiki (no fact from
-      docs/memory) → **THEN** design the UI/flow. **Caveats to settle in the probe:** solvent-shell
-      **conformer sampling** (the shell is floppy — many near-degenerate arrangements, not a single
-      shot) and **quasi-RRHO** thermochemistry for the low frequencies a loose cluster introduces.
-- [ ] **Transition-state methods** (moved from Phase 6 — this is the **core** of mechanism work, not a
-      power feature). All native ORCA, building on the editor (4.2) + the profile/frequency parsers (3);
-      each needs a real ORCA 6 run recorded first (the input block, the artifacts it emits, the cost)
-      before any UI:
-      - **OptTS** (`! OptTS`) — optimise to a first-order saddle by eigenvector following (a scan
-        maximum is the natural seed).
-      - **NEB / NEB-TS / NEB-CI** (`! NEB-TS`) — climbing-image band between reactant and product →
-        a reaction path + TS guess when there is no clean scan coordinate; needs per-iteration band
-        energies + a path viewer.
-      - **IRC** (`! IRC`) — validate that a found TS actually connects the intended reactant and
-        product (the post-condition on a TS).
+- [ ] **Symmetry re-probe (per system, before trusting `! UseSym`).** Measured NO reorder for
+      the common groups (`wiki/orca/usesym-atom-order.md`), but D-/cubic groups, explicit
+      `%Symmetry PointGroup`, and large systems are unmeasured; permutations of equivalent atoms
+      are unobservable in principle. Re-run the probe on a specific reaction system before relying
+      on symmetry there (domain rule #10); the `parse_output` post-condition catches a reorder at
+      the boundary (ADR-016) before scans are trusted.
+- [ ] **Unfixed-stereocenter flag on SMILES import** (carried from Phase 3). RDKit's ETKDG picks
+      an enantiomer arbitrarily for a SMILES with no stereo descriptors — a *silent substitution of
+      the compound* for stereoselectivity work. Cheap prerequisite for si/re work; land it before
+      Stage C.
 
-**Core — the native-scan pipeline:**
+---
 
-- [ ] Conformer ensemble → reaction-center pipeline: **Boltzmann weighting** of the
-      GOAT ensemble + **re-optimise the lowest 3–4 at DFT** → build reaction centers on
-      those. Mandatory before any pathway (see ADR-007). *(The GOAT primitive itself —
-      run + ensemble parse — was done in 2.5.1; this is the scientific layer on top.)*
-- [ ] Data model: `reactions`, `reaction_centers`, `pathways` tables; nullable FKs from
-      `jobs` (`reaction_id`, `pathway_id`)
-- [ ] Reaction setup UI: define substrate + reagent, pick reaction center atoms,
-      set approach geometry (distance, angle, dihedral) — reuses the tail-1 guided-placement flow.
-- [ ] Scan input generation: from ReactionCenter → ORCA `%geom Scan B a1 a2 = start, end, npoints end end`
-      (one job per pathway, native relaxed scan — NOT N separate jobs)
-- [ ] Scan output parser: per-point energies + scanned-coordinate values from the **structured**
-      `.relaxscanact.dat` / `.relaxscanscf.dat` (2 cols `coordinate energy`, one row per point;
-      `act` = composite/actual, `scf` = bare SCF) — **measured** in unit 3.3 ([parse-sources.md](wiki/orca/parse-sources.md)).
-      `.out` `RELAXED SURFACE SCAN RESULTS` is the text mirror; `.property.txt`/`_trj.xyz` are
-      per-opt-cycle, **not** per-point. Coordinate in Å, energy in Eh (both cross-checked).
-      Note for the scan *generator* (above): a relaxed scan needs `! Opt` — without it ORCA runs
-      a single point and silently ignores the `Scan` block (measured).
-- [ ] Energy profile visualization: reaction coordinate vs energy (recharts)
-- [ ] Comparative pathway view: overlay Pathway A vs Pathway B energy profiles;
-      ΔΔE‡ (electronic energy barrier difference) highlighted
-- [ ] TS refinement — the end-to-end result: scan maximum geometry → **OptTS** → Freq → verify **one**
-      imaginary frequency → **IRC** connectivity check → ΔG‡ with thermochemistry (publication-quality).
-      This is the *application* of the OptTS/IRC methods above in the scan pipeline — not a second
-      implementation of them.
+### Stage A — Scan input generation from a picked coordinate (spine, part 1)
 
-**Done when:** author defines two stereofacial attacks on a ketone (si vs re face),
-runs two native ORCA scans, and sees two energy profiles side by side with ΔΔE‡ —
-a computational screening of stereoselectivity.
+- [ ] **A1 — scan-coordinate emit (pure + Rust golden + real ORCA; no manual gate).**
+      `ScanCoordinate` (kind B/A/D, atoms [2|3|4], start/end as exact user text, npoints int),
+      0-based app index space (same as `Constraint`). `emit_scan_block` in
+      `orcastudio-core/src/emit.rs` (sibling of `emit_constraints_block`, same `to_orca_index`),
+      TS mirror `scanBlock` in a new `src/scene/scan.ts` — **byte-identical Rust/TS pair**
+      (ADR-016). `injectScan` **composes into the existing `%geom`** (Scan + Constraints as sibling
+      sub-blocks under one `end…end`), never a second `%geom`. `parseScanBlock`/`inspectScanBlock`
+      (read-back for A2). `! Opt`-requirement guard (else silent single-point — measured).
+      Verified by a real app-generated ethane C–C scan (mirrors 3.3): `.relaxscanact.dat` has
+      npoints rows + `ORCA TERMINATED NORMALLY`.
+- [ ] **A2 — Scan panel + define-coordinate-from-selection (UI → manual gate).** Pick 2/3/4 atoms
+      via existing `selection`/`measure` → a Scan panel that is a **view over the input text**
+      (mirror `ConstraintPanel`): start/end/npoints inputs → `injectScan`. Run-guard surfaced
+      (no `! Opt` → loud, blocks Run, like the constraint range-check). **Manual gate (author):**
+      pick a coordinate in the real window, generate, run, see the artifacts.
+
+**Stage A done when:** the author picks an approach coordinate, sets start/end/steps, generates a
+relaxed-scan input, and runs it — no hand-editing of `%geom`.
+
+### Stage B — Scan output parser + single energy profile (spine, part 2)
+
+- [ ] **B1 — scan reader (Rust, over structured artifacts).** New `src-tauri/src/parse/relaxscan.rs`
+      over `.relaxscanact.dat`/`.relaxscanscf.dat` (2 cols coordinate Å + energy Eh, measured 3.3),
+      artifact-reader template + post-conditions (rows == npoints; `act`/`scf` both surfaced, never
+      mixed; coordinate monotone within tolerance). Wired into `results.rs`.
+- [ ] **B2 — energy-profile view (React → manual gate).** Reaction coordinate vs energy (reuses the
+      recharts machinery + the trajectory click-to-frame pattern: click a scan point → load
+      `.NNN.xyz` of that point). Maximum marked as approximate TS. **Manual gate.**
+
+**Stage B done when:** run a scan → see the profile → click the maximum → see that geometry. The
+single-pathway relaxed scan is fully usable end-to-end.
+
+### Stage C — Reaction as a first-class object + comparative ΔΔE‡ (data model earns its place here)
+
+- [ ] **C1 — data model (migration v13).** `reactions`, `reaction_centers`, `pathways` tables +
+      nullable `jobs.reaction_id` / `jobs.pathway_id` FKs (ADR-007 schema). Standalone jobs
+      (`reaction_id = NULL`) stay fully functional.
+- [ ] **C2 — promote setup to Pathway + comparative view.** The Stage-A/B scan setup becomes a
+      `pathways` row; the scan job gets the FK. Overlay Pathway A vs B, **ΔΔE‡** (barrier
+      difference) highlighted. **Manual gate.**
+
+**Stage C done when (= mission "done-when"):** author defines si vs re facial attack on a ketone,
+runs two native scans, and sees two profiles side by side with ΔΔE‡ — a computational
+stereoselectivity screen.
+
+### Stage D — Conformer → reaction-center scientific-rigor layer
+
+- [ ] Boltzmann-weight the GOAT ensemble (primitive from 2.5.1) + **re-optimise the lowest 3–4 at
+      DFT** → build reaction centers on those (ADR-007: mandatory for valid science). Upgrades the
+      inputs to Stages A–C so ΔΔE‡ is defensible, not merely mechanically produced. No new probe
+      (GOAT measured); the DFT re-opt orchestration is the new code.
+
+### Stage E — Transition-state methods (each probe-first, rule #10)
+
+- [ ] **OptTS** (`! OptTS`) — probe (block, artifacts, cost) → then the scan-max → OptTS → Freq →
+      one imaginary → **IRC** connectivity check → ΔG‡ pipeline (the *application* of these methods
+      in the scan spine — the natural continuation of Stage B's "click the maximum").
+- [ ] **IRC** (`! IRC`) — probe → the post-condition that a found TS connects the intended
+      reactant/product.
+- [ ] **NEB / NEB-TS / NEB-CI** (`! NEB-TS`) — probe → the alternative path-finder when there is no
+      clean scan coordinate; needs a product geometry (ADR-010 `ReactionPath = fold(reactant,
+      transform)`) + a per-iteration band viewer. Highest effort; may trail.
+
+### Stage F — Microsolvation (explicit solvent shell), probe-first
+
+- [ ] Install **CREST** (a separate binary that shells xtb — **domain rule #2:** its build must
+      match the installed **xtb 6.6.1**) → **probe `crest --qcg`** (record artifacts, cost, what
+      works) → then design. Builds on fragment placement + xtb + GOAT; the tail-2 cation catalog
+      seeds the ion side. **Caveats to settle in the probe:** shell **conformer sampling** (floppy
+      shell, many near-degenerate arrangements) and **quasi-RRHO** thermochemistry for the low
+      frequencies a loose cluster introduces. Especially for the ionic/charged TS (Na⁺–BH₄–ketone;
+      **SMD over ALPB for ions**). Lowest immediate mission priority — last, or in parallel on demand.
+
+**Phase 4.5 done when:** author defines two stereofacial attacks on a ketone (si vs re), runs two
+native ORCA scans, and sees two energy profiles side by side with ΔΔE‡ — a computational
+screening of stereoselectivity (Stage C). Stages D–F deepen it toward publication-quality ΔG‡.
 
 ---
 
