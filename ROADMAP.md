@@ -799,6 +799,17 @@ single-pathway relaxed scan is fully usable end-to-end. *(B1 ✅; B2 ✅ — aut
       highlighted; reads coordinate/method/profile from the attached job (one source of truth); adds
       the comparability guards (same coordinate/method) that C2a's attach leaves advisory.
       **Manual gate.**
+      *Ratified for this stage (2026-08-07, [ADR-018](wiki/architecture/adr-018-reaction-energy-reference.md)
+      + [chemistry/reaction-barriers.md](wiki/chemistry/reaction-barriers.md)):* a relaxed scan yields
+      **three barriers** — **ΔΔE‡** (si/re) is **reference-free** (the shared reactant reference cancels),
+      **intrinsic** = E(max) − scan minimum (RC captured for free when the scan starts far enough), and
+      **absolute vs separated reactants** = E(max) − Σ E(reactant jobs). So C2b **ships ΔΔE‡ + intrinsic
+      barriers with the reactant reference OPTIONAL** (no reference → a note that absolute barriers need
+      one). The reference is a **summed, optional list of reference-job references** — `reaction_reference_jobs`
+      (reaction_id, job_id), **migration v14 when this data touch lands** — normalized and jobs-survive
+      like C1 (not a single FK, not a cached scalar). The comparability guard extends to the reference
+      jobs (shared method/basis/dispersion/solvation; SMD-not-ALPB for the ionic BH₄⁻). Full experimental
+      ΔG‡ comparison (OptTS+Freq+thermochemistry, association entropy, standard state) is **Stage E+**.
 
 **Stage C done when (= mission "done-when"):** author defines si vs re facial attack on a ketone,
 runs two native scans, and sees two profiles side by side with ΔΔE‡ — a computational

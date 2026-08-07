@@ -330,6 +330,13 @@ with a missing job/pathway return `AppError::NotFound` with no orphan/partial wr
 `delete_pathway`, `attach_job_to_pathway`, `detach_job_from_pathway`. Full schema +
 command semantics: `modules/tauri-core.md` (v13). C2 (comparative ΔΔE‡ view) builds on this.
 
+**Reactant reference for absolute barriers — [ADR-018](adr-018-reaction-energy-reference.md).** The
+comparative view's *absolute* barriers (vs separated reactants) need a reactant reference; ADR-018
+ratifies it as an **optional, summed list of reference-job references** (`reaction_reference_jobs`,
+migration v14 at C2b) — same normalization and jobs-survive rule as the pathway model above. The
+mission ΔΔE‡ number is **reference-free** (it cancels), so it ships without any reference configured.
+The three barriers and which reference each needs: [`chemistry/reaction-barriers.md`](../chemistry/reaction-barriers.md).
+
 ## References
 
 - Bürgi, H. B.; Dunitz, J. D. "From crystal statics to chemical dynamics."

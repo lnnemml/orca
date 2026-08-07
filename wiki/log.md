@@ -6133,3 +6133,38 @@ test` 207 (the additive `Job` column). Wiki: +`modules/reactions-ui.md`, `tauri-
 
 **Next.** Author runs m1–m4. Then C2b — promote reads coordinate/method/profile from the attached job,
 overlays Pathway A vs B with **ΔΔE‡**, and adds the comparability guards C2a leaves advisory.
+
+## [2026-08-07] decision | Reaction energy reference model ratified (three barriers; hybrid summed optional reference)
+
+**Ratified in the C2b design conversation.** Two wiki artifacts, no code (the table + overlay land in
+C2b).
+
+**The science** ([`chemistry/reaction-barriers.md`](chemistry/reaction-barriers.md), Ukrainian
+teaching note). One relaxed scan gives **three different barriers**, each off a different reference:
+1. **ΔΔE‡ (si/re selectivity)** = E(max_si) − E(max_re) — the shared reactant reference **cancels**, so
+   the number is **reference-independent**. The mission screening value (scan maxima, not saddles, not ΔG‡).
+2. **Intrinsic barrier** = E(max) − E(scan minimum) — a scan started far enough (Nu···C ≈ 2.5 Å+)
+   captures the **pre-reaction complex** as its minimum, so this is **free** from the scan.
+3. **Barrier vs separated reactants** = E(max) − [E(substrate) + E(reagent)], each reactant optimized
+   **separately in its own job** (BH₄⁻ with its −1 charge). The reference comparable to **solution
+   kinetics / Arrhenius**. Complex-formation energy = ref3 − ref2, **not small** for the ion-dipole pair,
+   so barriers 2 and 3 differ — always name which is shown. Experimental caveats named (association
+   entropy, standard-state, ΔG‡≠ΔE‡ → full comparison needs OptTS+Freq+thermochemistry, Stage E+).
+   Method commonality (same method/basis/dispersion/solvation, SMD-not-ALPB for ions) = the C2b guard.
+
+**The data-model decision** ([ADR-018](architecture/adr-018-reaction-energy-reference.md), cross-refed
+from ADR-007). A reaction's reactant reference = an **optional, summed list of references to
+optimized-reactant jobs** whose final energies SUM to E(ref). One job → pre-reaction complex; two+ →
+separated reactants; semantics user-labelled, the app sums+labels. **Not a single `reference_job_id`**
+(can't express two separated reactants) and **not a cached scalar** (`reference_energy_eh` drifts from
+its source — the two-sources-of-truth trap). One source of truth: each energy read from its job's
+parsed result at read time. **Representation:** a lean `reaction_reference_jobs(reaction_id, job_id)`
+join table, **migration v14 at C2b**, same normalization + jobs-survive rule as C1 (a reference row is
+grouping metadata, never deletes a job); a JSON job-id list on `reactions` is noted and rejected for the
+same reason `jobs.pathway_id` is a column. **ΔΔE‡ is reference-free**, so C2b ships ΔΔE‡ + intrinsic
+barriers with the reference **optional** — the stereoselectivity deliverable does not depend on the
+reference machinery.
+
+**Housekeeping.** `index.md` (+chemistry/reaction-barriers.md, +adr-018; page count 77→79), `ROADMAP.md`
+(Stage C2b now points at the ratified summed-optional reference + the three-barrier methodology). This
+commit is **documentation only** — `reaction_reference_jobs` + the ΔΔE‡/overlay are C2b.
