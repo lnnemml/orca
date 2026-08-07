@@ -249,6 +249,116 @@ pub fn emit_constraints_block(cs: &[Constraint]) -> Result<String, CoreError> {
     Ok(format!("%geom\n  Constraints\n{lines}\n  end\nend"))
 }
 
+// ── scan block (emit_scan_block) — Phase 4.5 Stage A1 ─────────────────────────
+
+/// A `%geom Scan` coordinate, atoms in OrcaStudio's 0-based global index space —
+/// the byte-identical twin of the TS `ScanCoordinate` (`src/scene/scan.ts`).
+/// `start`/`end` carry an optional `startText`/`endText` (the `value_text`
+/// analogue) so a user's exact numeric text round-trips; a programmatic endpoint
+/// too precise to round-trip is refused by the shared 17-digit guard (as for
+/// constraint values). The kind letter is the tag directly: B/A/D.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[serde(tag = "kind")]
+pub enum ScanCoordinate {
+    B {
+        atoms: [u32; 2],
+        start: f64,
+        end: f64,
+        #[serde(default, rename = "startText")]
+        start_text: Option<String>,
+        #[serde(default, rename = "endText")]
+        end_text: Option<String>,
+        npoints: u32,
+    },
+    A {
+        atoms: [u32; 3],
+        start: f64,
+        end: f64,
+        #[serde(default, rename = "startText")]
+        start_text: Option<String>,
+        #[serde(default, rename = "endText")]
+        end_text: Option<String>,
+        npoints: u32,
+    },
+    D {
+        atoms: [u32; 4],
+        start: f64,
+        end: f64,
+        #[serde(default, rename = "startText")]
+        start_text: Option<String>,
+        #[serde(default, rename = "endText")]
+        end_text: Option<String>,
+        npoints: u32,
+    },
+}
+
+impl ScanCoordinate {
+    fn letter(&self) -> char {
+        match self {
+            ScanCoordinate::B { .. } => 'B',
+            ScanCoordinate::A { .. } => 'A',
+            ScanCoordinate::D { .. } => 'D',
+        }
+    }
+    fn atom_indices(&self) -> &[u32] {
+        match self {
+            ScanCoordinate::B { atoms, .. } => atoms,
+            ScanCoordinate::A { atoms, .. } => atoms,
+            ScanCoordinate::D { atoms, .. } => atoms,
+        }
+    }
+    /// `(start, start_text, end, end_text, npoints)`.
+    fn range_parts(&self) -> (f64, Option<&String>, f64, Option<&String>, u32) {
+        match self {
+            ScanCoordinate::B { start, start_text, end, end_text, npoints, .. }
+            | ScanCoordinate::A { start, start_text, end, end_text, npoints, .. }
+            | ScanCoordinate::D { start, start_text, end, end_text, npoints, .. } => {
+                (*start, start_text.as_ref(), *end, end_text.as_ref(), *npoints)
+            }
+        }
+    }
+}
+
+/// One scan endpoint's text: the user's exact text if preserved, else the
+/// canonical render — refusing a programmatic value too precise to round-trip
+/// byte-identically (the same rule and 17-digit threshold as `constraint_line`).
+fn scan_endpoint(value: f64, text: Option<&String>) -> Result<String, CoreError> {
+    match text {
+        Some(t) => Ok(t.clone()),
+        None => {
+            let s = fmt_value(value);
+            let digits = significant_digits(&s);
+            if digits >= 17 {
+                return Err(CoreError::NonCanonicalConstraintValue { value: s, digits });
+            }
+            Ok(s)
+        }
+    }
+}
+
+/// The standalone `%geom Scan … end end` block, byte-identical to `scanBlock`
+/// (`src/scene/scan.ts`). No trailing newline (callers add separators). Indices
+/// via the same `to_orca_index` seam as constraints (0-based, order-bearing).
+pub fn emit_scan_block(s: &ScanCoordinate) -> Result<String, CoreError> {
+    let idx = s
+        .atom_indices()
+        .iter()
+        .map(|&g| to_orca_index(g).to_string())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let (start, start_text, end, end_text, npoints) = s.range_parts();
+    let start_s = scan_endpoint(start, start_text)?;
+    let end_s = scan_endpoint(end, end_text)?;
+    Ok(format!(
+        "%geom\n  Scan\n    {} {} = {}, {}, {}\n  end\nend",
+        s.letter(),
+        idx,
+        start_s,
+        end_s,
+        npoints
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -314,5 +424,79 @@ mod tests {
             emit_constraints_block(&cs).unwrap(),
             "%geom\n  Constraints\n    {B 0 1 1.234 C}\n    {C 4 C}\n  end\nend"
         );
+    }
+
+    // ── scan block (Stage A1) ─────────────────────────────────────────────────
+
+    /// The byte-identity gate: this EXACT string is mirrored in the TS vitest
+    /// golden (`src/scene/scan.test.ts`). It is also the ethane C–C scan block of
+    /// the real-ORCA run (indices 0,1; 1.4→2.4; 6 pts — mirrors unit 3.3).
+    #[test]
+    fn scan_block_golden_ethane() {
+        let s = ScanCoordinate::B {
+            atoms: [0, 1],
+            start: 1.4,
+            end: 2.4,
+            start_text: None,
+            end_text: None,
+            npoints: 6,
+        };
+        assert_eq!(
+            emit_scan_block(&s).unwrap(),
+            "%geom\n  Scan\n    B 0 1 = 1.4, 2.4, 6\n  end\nend"
+        );
+    }
+
+    #[test]
+    fn scan_block_angle_and_dihedral() {
+        let a = ScanCoordinate::A {
+            atoms: [2, 1, 0],
+            start: 100.0,
+            end: 120.0,
+            start_text: None,
+            end_text: None,
+            npoints: 5,
+        };
+        assert_eq!(
+            emit_scan_block(&a).unwrap(),
+            "%geom\n  Scan\n    A 2 1 0 = 100, 120, 5\n  end\nend"
+        );
+        // endText preserves exact user text a canonical render would flatten.
+        let d = ScanCoordinate::D {
+            atoms: [0, 1, 2, 3],
+            start: 0.0,
+            end: 180.0,
+            start_text: Some("0.0".to_string()),
+            end_text: None,
+            npoints: 10,
+        };
+        assert_eq!(
+            emit_scan_block(&d).unwrap(),
+            "%geom\n  Scan\n    D 0 1 2 3 = 0.0, 180, 10\n  end\nend"
+        );
+    }
+
+    #[test]
+    fn scan_refuses_a_programmatic_17_digit_endpoint() {
+        let bad = ScanCoordinate::B {
+            atoms: [0, 1],
+            start: -200.30410766601562, // 17-digit-canonical double, no preserved text
+            end: 2.4,
+            start_text: None,
+            end_text: None,
+            npoints: 6,
+        };
+        assert!(matches!(
+            emit_scan_block(&bad),
+            Err(CoreError::NonCanonicalConstraintValue { digits: 17, .. })
+        ));
+    }
+
+    /// The frontend serde boundary (unit 1e will wire it): kind tag + camelCase text.
+    #[test]
+    fn scan_deserializes_from_frontend_shape() {
+        let json = r#"{"kind":"B","atoms":[0,1],"start":1.4,"end":2.4,"npoints":6}"#;
+        let s: ScanCoordinate = serde_json::from_str(json).unwrap();
+        assert_eq!(emit_scan_block(&s).unwrap(), "%geom\n  Scan\n    B 0 1 = 1.4, 2.4, 6\n  end\nend");
     }
 }

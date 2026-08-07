@@ -14,6 +14,7 @@
 import type { Scene } from "./types";
 import type { AtomId } from "./ids";
 import { globalIndexOfAtom } from "./scene";
+import { scanTokens, locateGeom, leadingIndent } from "./geomBlock";
 
 /** A geometry constraint, atoms in OrcaStudio's own 0-based global index space
  * (the merged-xyz / ASE-mask space, ADR-008). `value` optional: present → freeze
@@ -231,72 +232,15 @@ export function parseConstraintsBlock(input: string): Constraint[] | null {
 }
 
 // ── Injection ────────────────────────────────────────────────────────────────
-
-interface Tok {
-  t: string;
-  start: number;
-  end: number;
-}
-function scanTokens(s: string): Tok[] {
-  const re = /\S+/g;
-  const out: Tok[] = [];
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(s))) out.push({ t: m[0], start: m.index, end: m.index + m[0].length });
-  return out;
-}
-
-/**
- * Locate the `%geom` block by tracking block depth (`Constraints` opens a
- * sub-block; every `end` closes one). Returns the char span of the `%geom`
- * closing `end` and, if present, the char span of the inner `Constraints … end`.
- * Handles both the inline (`%geom Constraints`) and separate-line forms. `null`
- * if there is no `%geom` or it never closes.
- */
-function locateGeom(
-  text: string,
-): { geomOpen: Tok; constraints: { start: number; end: number } | null } | null {
-  const toks = scanTokens(text);
-  const gi = toks.findIndex((t) => t.t.toLowerCase() === "%geom");
-  if (gi < 0) return null;
-
-  let depth = 1; // %geom consumed
-  let cStart: number | null = null;
-  let cEnd: number | null = null;
-  let cDepth = -1;
-  for (let i = gi + 1; i < toks.length; i++) {
-    const w = toks[i].t.toLowerCase();
-    if (w === "constraints") {
-      if (cStart === null) {
-        cStart = toks[i].start;
-        cDepth = depth;
-      }
-      depth++;
-    } else if (w === "end") {
-      depth--;
-      if (cStart !== null && cEnd === null && depth === cDepth) cEnd = toks[i].end;
-      if (depth === 0) {
-        return {
-          geomOpen: toks[gi],
-          constraints: cStart !== null && cEnd !== null ? { start: cStart, end: cEnd } : null,
-        };
-      }
-    }
-  }
-  return null;
-}
+// The `%geom` locator (`locateGeom`) and `leadingIndent` live in `geomBlock.ts`,
+// shared with `injectScan` so both compose into the single `%geom` — see that
+// module's note on why Scan and Constraints must share one depth-tracking parser.
 
 /** The `Constraints … end` sub-block at a given indent (first line un-indented so
  * a replace can keep the existing leading whitespace). */
 function constraintsSubBlock(cs: Constraint[], indent: string): string {
   const inner = cs.map((c) => indent + "  " + constraintLine(c)).join("\n");
   return `Constraints\n${inner}\n${indent}end`;
-}
-
-/** The whitespace before `pos` on its line (the line's indent when `pos` is the
- * first non-space char). */
-function leadingIndent(text: string, pos: number): string {
-  const lineStart = text.lastIndexOf("\n", pos - 1) + 1;
-  return text.slice(lineStart, pos).match(/^\s*/)![0];
 }
 
 /**
@@ -324,8 +268,9 @@ export function injectConstraints(input: string, cs: Constraint[]): string {
     return input + sep + block + "\n";
   }
 
-  if (geom.constraints) {
-    const { start, end } = geom.constraints;
+  const existing = geom.subBlocks.get("constraints");
+  if (existing) {
+    const { start, end } = existing;
     if (cs.length === 0) {
       // Remove the sub-block and the blank line it leaves behind.
       const lineStart = input.lastIndexOf("\n", start - 1) + 1;

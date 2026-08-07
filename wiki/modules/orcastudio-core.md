@@ -34,13 +34,19 @@ text does not (it carries no order) and stays in TS (`injectSceneIntoInput`).
   correction (ii)); `create_job` always hands this core fresh v2, so a v1 string is a
   **caller bug** and gets a loud, named `UnsupportedSceneVersion` (version + where
   migration lives), never a silent second migration.
-- `src/emit.rs` — `emit_coordinate_block(&Scene) -> (String, IndexMap<OrcaIndex>)` and
-  `emit_constraints_block(&[Constraint]) -> Result<String, CoreError>`, each
-  **byte-identical** to its TS source. Plus the two measured number formatters
-  (`fmt_coord`, `fmt_value`) and the `value_text_for` canonicality helper. Own
-  `Constraint` type **with `value_text`** — deliberately NOT unified with
-  `src-tauri/src/xtb.rs::Constraint` (that, and branding the xtb serde boundary, is
-  unit 1e; a `TODO(1e)` marks it).
+- `src/emit.rs` — `emit_coordinate_block(&Scene) -> (String, IndexMap<OrcaIndex>)`,
+  `emit_constraints_block(&[Constraint]) -> Result<String, CoreError>`, and (Phase 4.5
+  Stage A1) `emit_scan_block(&ScanCoordinate) -> Result<String, CoreError>` — the
+  **second order-bearing `%geom` emit**, byte-identical to TS `scanBlock`
+  (`src/scene/scan.ts`), pinned by the golden `scan_block_golden_ethane` (the same string
+  the TS vitest asserts). `ScanCoordinate` (kind `B`/`A`/`D`, 0-based atoms via the shared
+  `to_orca_index`, `start`/`end` with an optional `startText`/`endText`) reuses the
+  constraint value rule and the 17-digit guard (`scan_endpoint` shares `fmt_value` +
+  `significant_digits`). All three emits are **byte-identical** to their TS source. Plus the
+  two measured number formatters (`fmt_coord`, `fmt_value`) and the `value_text_for`
+  canonicality helper. Own `Constraint` type **with `value_text`** — deliberately NOT
+  unified with `src-tauri/src/xtb.rs::Constraint` (that, and branding the xtb serde
+  boundary, is unit 1e; a `TODO(1e)` marks it).
 - `tests/golden.rs` — byte-identity vs the committed TS-emitted fixtures
   (`tests/fixtures/`), the IndexMap↔rows coupling, and the measured-value round-trip.
 - `src/mint.rs` (unit 1e) — `mint_index_map(&Scene, input_content) -> Result<IndexMap<OrcaIndex>,

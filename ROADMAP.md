@@ -710,7 +710,7 @@ scan needs `! Opt` or ORCA silently does a single point — `wiki/orca/parse-sou
 
 ### Stage A — Scan input generation from a picked coordinate (spine, part 1)
 
-- [ ] **A1 — scan-coordinate emit (pure + Rust golden + real ORCA; no manual gate).**
+- [x] **A1 — scan-coordinate emit (pure + Rust golden + real ORCA; no manual gate).**
       `ScanCoordinate` (kind B/A/D, atoms [2|3|4], start/end as exact user text, npoints int),
       0-based app index space (same as `Constraint`). `emit_scan_block` in
       `orcastudio-core/src/emit.rs` (sibling of `emit_constraints_block`, same `to_orca_index`),

@@ -104,6 +104,22 @@ functions, no imports from react / 3dmol / tauri. The reactive `store.ts` (added
   resolves the id selection to ORCA indices **at build time** (the ORCA-index emit
   seam, 2c2) — the id is never stored. Index base **0-based, settled by a real ORCA
   6.1.0 run** — `wiki/orca/constraints.md`.
+- `geomBlock.ts` (Phase 4.5 Stage A1) — the **single `%geom` locator** shared by
+  `injectConstraints` and `injectScan`: `scanTokens`, `locateGeom` (depth-tracking over
+  the recognised sub-block set `constraints` + `scan`, returning each sub-block's char
+  span), `leadingIndent`. Lifted out of `constraints.ts` so the two injectors compose into
+  **one** `%geom` and cannot drift into emitting a second (which ORCA silently reduces to
+  one).
+- `scan.ts` (Phase 4.5 Stage A1) — ORCA `%geom Scan` generate / parse / inject / guard:
+  `ScanCoordinate` (kind B/A/D, 0-based atoms in the SAME space as `Constraint`,
+  `start`/`end` with the `startText`/`endText` value_text-analogue, `npoints` ≥ 2),
+  `scanBlock` (**byte-identical to Rust `emit_scan_block`** — the golden pair), `injectScan`
+  (**composes into the one `%geom`** via `geomBlock`; insert/replace/remove the `Scan`
+  sub-block as a sibling of `Constraints`, never a second `%geom`), `parseScanBlock` /
+  `inspectScanBlock` (read-back for A2's view-over-text; non-destructive — a multi-coordinate
+  block or inline comment reads `unrecognised`), and `scanOptIssue` (the loud `! Opt` guard —
+  a relaxed scan without `Opt` is silently a single point, measured). Pure / node-tested.
+  `wiki/orca/scan.md`.
 - `AtomInspector.tsx` — the atom panel on New Job (React; reads a selection held
   in `NewJobScreen` state, uses the shared `fragmentColor` palette).
 - `EditPanel.tsx` — edit-mode UI in the Atom rail section (React): target field,

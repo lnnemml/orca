@@ -5795,3 +5795,37 @@ Reaction object appears where grouping/comparison needs it, not as infrastructur
   flag on SMILES import (land before Stage C — si/re needs defined stereochemistry).
 
 Next: Stage A1 (scan-coordinate emit). ADR-007 / ADR-010 / ADR-016 unchanged.
+
+## [2026-08-07] session | Phase 4.5 Stage A1 — scan-coordinate emit (%geom Scan), byte-identical Rust/TS, composes with constraints
+
+Stage A1 of the reaction-modeling scan spine: generate a `%geom Scan` relaxed-scan block from a
+`ScanCoordinate`, pure + Rust golden + a real ORCA run. No UI (that is A2).
+
+- **New `src/scene/scan.ts`** — `ScanCoordinate` (kind B/A/D, 0-based atoms in the SAME index space
+  as `Constraint`, `start`/`end` carrying the `startText`/`endText` value_text-analogue, `npoints`
+  ≥ 2), `scanBlock` (emit), `injectScan`, `parseScanBlock`/`inspectScanBlock` (read-back for A2),
+  `scanOptIssue` (the `! Opt` guard). **New `orcastudio-core/src/emit.rs::emit_scan_block`** — the
+  second order-bearing `%geom` emit, **byte-identical** to `scanBlock`, pinned by a golden pair
+  (Rust `scan_block_golden_ethane` + the TS vitest assert the same literal
+  `%geom\n  Scan\n    B 0 1 = 1.4, 2.4, 6\n  end\nend`). Reuses `to_orca_index`, `fmt_value`, and
+  the 17-digit non-canonical-value guard.
+- **Composition (the unit's central property) — one `%geom`, never two.** `Scan` and `Constraints`
+  are both `%geom` sub-blocks. Lifted the depth-tracking `%geom` locator out of `constraints.ts`
+  into **new `src/scene/geomBlock.ts`** (`scanTokens`/`locateGeom`/`leadingIndent`), now tracking
+  BOTH sub-blocks (a constraints-only locator would mis-read a `Scan` block's `end` as closing
+  `%geom`). `injectConstraints` and `injectScan` share it; `injectScan` inserts/replaces/removes
+  only the `Scan` sub-block, as a sibling of any `Constraints`. Negative control **C-two-geom** in
+  `scan.test.ts` shows a deliberately-parallel injector produces two `%geom` (bites), the real one
+  exactly one holding both blocks.
+- **Four negative controls, red-then-green** (`scan.test.ts`): C-two-geom (two-%geom), C-index-base
+  (0-based app index vs a 1-based mis-emit), C-byte-parity (canonical form vs a formatting drift),
+  C-opt-guard (scan without `! Opt` fires; a commented-out `Opt` does not count).
+- **Real ORCA loop closed (rule #10).** The `scan.ts` emit generated an ethane C–C scan (indices
+  0,1; 1.4→2.4 Å; 6 pts — mirrors unit 3.3), run via `/opt/orca/orca` full-path in an isolated dir
+  with `! r2SCAN-3c Opt TightSCF`: `input.relaxscanact.dat`/`.relaxscanscf.dat` each **6 rows**
+  (coordinate Å 1.4…2.4 + energy Eh), `ORCA TERMINATED NORMALLY`. Our **generator** now provably
+  produces the artifacts unit 3.3 measured from a hand-written input.
+- Verify: `cargo test` (10 emit tests incl. 4 scan), `tsc` 0, `vitest` 606 green (64 in
+  scan+constraints), `vite build` clean. New `wiki/orca/scan.md`; module pages + index updated.
+
+Next: Stage A2 (Scan panel + define-coordinate-from-selection, the manual gate). ADR-016 unchanged.
