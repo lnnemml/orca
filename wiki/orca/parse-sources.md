@@ -341,6 +341,19 @@ frames — so property/trj are **per-cycle, not per-point**; they are *not* the 
 Atom-order gate ran on the scan dir: **PASS** — all 26 trj frames and all 26 `$Geometry` blocks
 keep the input element order (best available test for a silent mid-scan reorder).
 
+**Consequence — the single-structure readers do NOT apply to a scan (Phase 4.5 B1 fix).** Because a
+scan `.property.txt` is **multi-point**, its **first** `$Geometry` is scan point 1's
+constrained-optimized geometry (C–C already at the constraint), **not** the input — so
+`property.rs`'s `input_ref`-anchored geometry post-condition ("first structure == input") fails on
+a legitimate scan (the false-Bohr `0.056 Å` of `debugging/015`). Its charges appear at only some
+cycles and its single dipole at the end, so reading it as one structure would **mis-attribute**
+them. The `_trj.xyz` first frame is likewise scan point 1, not the input (a second latent
+`input_ref` failure). Therefore a scan's **authoritative result is the profile** (`.relaxscanact/
+.relaxscanscf.dat`) and its **units guard is the profile's coordinate cross-check** above —
+`parse_and_store` routes a scan (detected by `input.relaxscanact.dat`) to **profile-only** and
+skips property/`_trj`/hess/mo. No tolerance was loosened; the guard moved to where its premise
+holds. See `wiki/debugging/015-scan-property-post-condition.md`.
+
 ---
 
 ## Units — measured per array (unit 3.3)

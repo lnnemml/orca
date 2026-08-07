@@ -26,7 +26,7 @@ const SP: &str = fixture!("property_sp.property.txt");
 const SP_INP: &str = fixture!("property_sp.input.inp");
 const GOAT: &str = fixture!("property_goat.property.txt");
 const GOAT_INP: &str = fixture!("property_goat.input.inp");
-const SCAN: &str = fixture!("property_scan_ethane.property.txt");
+const SCAN: &str = fixture!("scan-ethane-cc/input.property.txt");
 
 /// Parse the `* xyz … *` block of an `.inp` into Å coordinates (kept for the
 /// `verify_geometry_atoms` post-condition test, which takes bare coords).
@@ -259,7 +259,7 @@ $End
 #[test]
 fn refuses_a_pathological_size() {
     let bytes = std::fs::metadata(
-        std::path::Path::new(FIX).join("property_scan_ethane.property.txt"),
+        std::path::Path::new(FIX).join("scan-ethane-cc/input.property.txt"),
     )
     .unwrap()
     .len();

@@ -18,7 +18,7 @@ macro_rules! fixture {
 
 const TRJ_ETHANE: &str = fixture!("xyz_trj_ethane.xyz");
 const FINAL_ETHANE: &str = fixture!("xyz_final_ethane.xyz");
-const TRJ_SCAN: &str = fixture!("xyz_trj_scan.xyz");
+const TRJ_SCAN: &str = fixture!("scan-ethane-cc/input_trj.xyz");
 const ETHANE_INP: &str = fixture!("property_optfreq_ethane.input.inp");
 
 /// Reference from a `.inp` `* xyz *` block (the start geometry).

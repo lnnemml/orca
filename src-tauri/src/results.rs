@@ -306,6 +306,49 @@ impl ParsedResults {
             unknown_blocks: v.unknown_block_names(),
         })
     }
+
+    /// Build a scan job's result from its profile alone (Phase 4.5 B1 fix). A multi-point
+    /// scan has no single structure, so the single-structure quantities
+    /// (charges/dipole/thermo/gradient/frequencies/orbitals/trajectory) are absent —
+    /// leaving them empty is correct, not a gap. Two fields the UI still needs:
+    /// - `final_energy_eh` = the profile's LAST point (the composite `act` energy) — the
+    ///   value the ResultsCard scan branch already shows; sourced from the profile, NOT
+    ///   from the skipped `property.rs`.
+    /// - `final_geometry` = that last point's optimized structure (`input.NNN.xyz`), so
+    ///   the viewer has a molecule and the scan panel's element cross-check
+    ///   (`referenceElements`) has an order. `.xyz` is Å (measured, parse-sources.md);
+    ///   the profile's own cross-check already confirmed this scan's coordinate units.
+    fn from_scan_profile(dir: &Path, scan: ScanProfileJson) -> Result<ParsedResults, AppError> {
+        let final_energy_eh = scan.points.last().map(|p| p.energy_act_eh);
+        let n = scan.points.len();
+        let final_geometry = if n > 0 {
+            let path = dir.join(format!("input.{n:03}.xyz"));
+            let (elements, xyz_angstrom) =
+                XyzFile::from_path(&path)?.first_frame().ok_or_else(|| {
+                    AppError::Internal(format!(
+                        "scan final-point geometry ({}) is empty",
+                        path.display()
+                    ))
+                })?;
+            FinalGeometry { elements, xyz_angstrom }
+        } else {
+            FinalGeometry { elements: Vec::new(), xyz_angstrom: Vec::new() }
+        };
+        Ok(ParsedResults {
+            parser_version: PARSER_VERSION,
+            final_energy_eh,
+            dipole: None,
+            charges: Vec::new(),
+            thermochemistry: None,
+            final_geometry,
+            gradient: None,
+            frequencies: None,
+            trajectory: None,
+            orbitals: None,
+            scan: Some(scan),
+            unknown_blocks: Vec::new(),
+        })
+    }
 }
 
 /// Build the trajectory JSON from a verified `_trj.xyz`. Element order stored once.
@@ -415,6 +458,22 @@ pub fn parse_and_store(
     if !path.exists() {
         return ParseOutcome::NoArtifact;
     }
+
+    // A relaxed scan is a MULTI-POINT job (Phase 4.5 B1 fix). Its `.property.txt` holds
+    // one `$Geometry` per optimization cycle across ALL scan points, so the
+    // single-structure authoritative readers do not apply: `property.rs` and the `_trj`
+    // `xyz.rs` verify anchor their geometry post-condition on the INPUT (premise: "first
+    // structure == input"), but a scan's first `$Geometry` is scan point 1's
+    // constrained-optimized geometry, not the input; and `hess.rs`/`mo.rs` anchor on a
+    // single FINAL structure, which a multi-point scan does not have. A scan's
+    // authoritative result is the PROFILE (B1), whose own per-point geometry cross-check
+    // is its live units guard (rule #11). Route a scan there and skip the
+    // single-structure readers — detection is the same `.relaxscanact.dat` presence B1
+    // already uses. See wiki/debugging/015-scan-property-post-condition.md.
+    if dir.join("input.relaxscanact.dat").exists() {
+        return parse_and_store_scan(conn, job_id, dir, input_content);
+    }
+
     // The input's start geometry (with elements) — the reference for `.property.txt`
     // (coords only; it checks element order internally) and for `_trj.xyz` (whose
     // first frame is the start).
@@ -530,6 +589,43 @@ pub fn parse_and_store(
     }
     // storage post-condition (rule #9): read back and check the per-atom arrays
     // survived serialization with their element order.
+    if let Err(e) = verify_stored(conn, job_id, &results) {
+        return ParseOutcome::ParseFailed(format!("stored results failed read-back: {e}"));
+    }
+    ParseOutcome::Parsed
+}
+
+/// Parse + store a relaxed-scan job from its PROFILE alone (Phase 4.5 B1 fix). The
+/// caller has already confirmed `input.relaxscanact.dat` is present, so this job IS a
+/// scan; the single-structure readers' premise ("first structure == input" /
+/// "one final structure") is false for it and they are skipped. The profile IS the
+/// scan's authoritative result and its per-point geometry cross-check is the scan's
+/// units guard (rule #11) — no tolerance is loosened, the guard simply moved to where
+/// its premise holds. A present `.relaxscanact.dat` that does not parse is a LOUD
+/// failure (rule #9), never a silent skip.
+fn parse_and_store_scan(
+    conn: &Connection,
+    job_id: &str,
+    dir: &Path,
+    input_content: &str,
+) -> ParseOutcome {
+    let scan = match relaxscan_profile(dir, input_content) {
+        Ok(Some(s)) => s,
+        Ok(None) => {
+            return ParseOutcome::ParseFailed(
+                "relaxscan: input.relaxscanact.dat is present but no scan profile parsed".into(),
+            )
+        }
+        Err(e) => return ParseOutcome::ParseFailed(format!("relaxscan: {e}")),
+    };
+    let results = match ParsedResults::from_scan_profile(dir, scan) {
+        Ok(r) => r,
+        Err(e) => return ParseOutcome::ParseFailed(e.to_string()),
+    };
+    if let Err(e) = store(conn, job_id, &results) {
+        return ParseOutcome::ParseFailed(e.to_string());
+    }
+    // storage post-condition (rule #9): read back and check the record survived.
     if let Err(e) = verify_stored(conn, job_id, &results) {
         return ParseOutcome::ParseFailed(format!("stored results failed read-back: {e}"));
     }
@@ -1307,5 +1403,97 @@ mod tests {
         // …and no dir → None even for a scan job (nothing to read).
         let conn2 = results_db_with(&scan_results(3));
         assert!(read_scan_geometries(&conn2, "job1", None).unwrap().is_none());
+    }
+
+    // ── Phase 4.5 B1 fix: scan jobs parse profile-only ───────────────────────────
+    // The B2 manual gate caught a real bug: a completed relaxed scan failed the full
+    // `parse_and_store`. The single-structure `property.rs` post-condition compared the
+    // first `$Geometry` (scan point 1, C–C ≈ 1.400 Å — constrained) against the input
+    // (C–C ≈ 1.51–1.53 Å) and failed with `GeometryMismatch` — its premise "first
+    // structure == input" is structurally false for a multi-point scan. The fix routes a
+    // scan to the profile (B1) and skips the single-structure readers. Root cause + the
+    // measured `.property.txt` structure: wiki/debugging/015-scan-property-post-condition.md.
+
+    /// C-scan-full-parse — the full pipeline on the REAL scan fixture dir. **RED before
+    /// the fix** (the 0.056-class `GeometryMismatch`), **GREEN after** (profile parsed,
+    /// `Parsed`, no error). Closes the test gap: B1 tested `relaxscan` in isolation, never
+    /// the full `parse_and_store` on a scan dir. Runs on real artifacts.
+    #[test]
+    fn scan_job_parses_profile_only_full_pipeline() {
+        let dir = scan_fixture_dir();
+        let input = std::fs::read_to_string(dir.join("input.inp")).unwrap();
+        let conn = mem_db();
+
+        let outcome = parse_and_store(&conn, "job1", dir.to_str().unwrap(), &input);
+        assert!(matches!(outcome, ParseOutcome::Parsed), "{outcome:?}");
+
+        let r = read_job_results(&conn, "job1").unwrap().unwrap();
+        // The profile IS the stored authoritative result: 6 points, coordinate in Å.
+        let scan = r.scan.as_ref().expect("scan profile stored");
+        assert_eq!(scan.points.len(), 6);
+        assert_eq!(scan.coordinate_unit, "Å");
+        // Header/summary energy sources from the profile's LAST point (act), not property.
+        let last_act = scan.points.last().unwrap().energy_act_eh;
+        assert!((r.final_energy_eh.unwrap() - last_act).abs() < 1e-12);
+        assert!((r.final_energy_eh.unwrap() - (-79.69075938)).abs() < 1e-6, "{:?}", r.final_energy_eh);
+        // Final geometry = the last scan point (C–C ≈ 2.4 Å); element order for the panel.
+        assert_eq!(r.final_geometry.elements, ["C", "C", "H", "H", "H", "H", "H", "H"]);
+        let a = r.final_geometry.xyz_angstrom[0];
+        let b = r.final_geometry.xyz_angstrom[1];
+        let cc = ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
+        assert!((cc - 2.4).abs() < 1e-3, "final geometry is the last scan point: {cc}");
+        // No single-structure quantities mis-attributed from a multi-point artifact.
+        assert!(r.charges.is_empty(), "no per-point charges collapsed into one");
+        assert!(r.thermochemistry.is_none() && r.trajectory.is_none() && r.orbitals.is_none());
+    }
+
+    /// The RED the fix routes AROUND, demonstrated as a still-biting guard: run the
+    /// SINGLE-STRUCTURE `property.rs` post-condition on the scan `.property.txt` against
+    /// the scan's own input and confirm it fails loudly. This is *why* a scan is routed
+    /// away from it — and proof the tolerance was NOT loosened (the guard still bites
+    /// where its premise is asserted). The delta is compression-scale (a real geometry
+    /// difference), far below the ≈1.889× a missed Bohr→Å conversion would produce.
+    #[test]
+    fn single_structure_property_check_bites_on_a_scan_artifact() {
+        let dir = scan_fixture_dir();
+        let input = std::fs::read_to_string(dir.join("input.inp")).unwrap();
+        let mut input_ref = input_reference(&input).unwrap();
+        let map = identity_map_for(&input_ref);
+        input_ref.ids = derived_identity_ids(input_ref.z.len());
+        let err = PropertyFile::from_path(&dir.join("input.property.txt"))
+            .unwrap()
+            .verify(&input_ref, &map)
+            .unwrap_err();
+        match err {
+            crate::parse::ParseError::GeometryMismatch { max_delta } => {
+                // C–C compression of scan point 1, not a Bohr blowup (which would be ~1 Å).
+                assert!(max_delta > 1e-4, "the guard fires: {max_delta}");
+                assert!(max_delta < 0.5, "compression-scale, not a 1.889× Bohr miss: {max_delta}");
+            }
+            other => panic!("expected GeometryMismatch, got {other:?}"),
+        }
+    }
+
+    /// C-nonscan-unaffected (routing) — a non-scan dir (no `.relaxscanact.dat`) still
+    /// goes through the single-structure `property.rs` reader: the scan branch did not
+    /// leak into the Opt/SP/Freq path. (The Bohr guard's *biting* on the non-scan path is
+    /// covered where its premise holds — `property::tests::missed_bohr_conversion_fails_loudly`.)
+    #[test]
+    fn non_scan_dir_still_runs_the_single_structure_readers() {
+        let tmp = std::env::temp_dir().join(format!("nonscan-route-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("input.property.txt"), OPTFREQ).unwrap();
+        std::fs::write(tmp.join("input.inp"), OPTFREQ_INP).unwrap();
+        // No input.relaxscanact.dat → must NOT take the scan branch. The non-scan path
+        // resolves the job's IndexMap, so the jobs table needs the full schema.
+        let conn = jobs_db_with(None, None);
+        crate::db::create_results_table(&conn).unwrap();
+        let outcome = parse_and_store(&conn, "job1", tmp.to_str().unwrap(), OPTFREQ_INP);
+        assert!(matches!(outcome, ParseOutcome::Parsed), "{outcome:?}");
+        let r = read_job_results(&conn, "job1").unwrap().unwrap();
+        assert!(r.scan.is_none(), "a non-scan job has no profile");
+        // property.rs actually ran: it produced the per-atom charges a scan does not.
+        assert!(!r.charges.is_empty(), "the single-structure property reader ran");
+        std::fs::remove_dir_all(&tmp).ok();
     }
 }

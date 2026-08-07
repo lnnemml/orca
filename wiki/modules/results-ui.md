@@ -95,6 +95,13 @@ B1's `ParsedResults.scan` and **re-parses nothing** (ADR-012).
   post-condition (which fails by design); its identity is the UI-boundary `elementsAgree` check, the
   same one the trajectory does. The `read_scan_geometries` command **writes nothing** to the job dir
   (rule #3) and reads the small point files whole (rule #5).
+- **A scan job parses profile-only (B1 fix).** The same "a scan point is not the input geometry"
+  fact holds one level up, at `parse_and_store`: a scan `.property.txt` is **multi-point** (its first
+  `$Geometry` is scan point 1, not the input), so it does not fit the single-structure readers. A
+  completed scan is routed (by `input.relaxscanact.dat`) to **profile-only** — parse the profile,
+  skip property/`_trj`/hess/mo; `final_energy_eh` and `final_geometry` come from the profile's **last
+  point**. That is what makes `results.scan` non-null (this panel visible) and gives it
+  `referenceElements`. See `wiki/debugging/015-scan-property-post-condition.md`.
 
 ## `src/spectrum/` — IR spectrum
 

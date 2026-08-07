@@ -5947,3 +5947,48 @@ In the real Tauri/WebKitGTK window on a completed relaxed-scan job:
 Next: record h1–h4 (with A2 g1–g4), flip ROADMAP A2+B2 `[~]`→`[x]` + Stage A/B complete, then Stage C
 (Reaction object + comparative ΔΔE‡ — mission done-when). ADR-011/012 held (app-owned frame, no
 re-parse).
+
+## [2026-08-07] session | fix(parse): scan jobs parse profile-only (Phase 4.5 B1 fix — unblocks B2 gate)
+
+**Bug (caught by the B2 manual gate).** The full `parse_and_store` on a completed relaxed scan
+failed with `geometry post-condition failed: max Δ 0.056013 Å exceeds 1e-4 (a missed Bohr→Å
+conversion looks like ≈1.889×)`. The calculation succeeded; our parse failed → job stuck at
+`completed` with an error, so the B2 profile panel had nothing to render.
+
+**Measured first (rule #10).** The Bohr hint is a red herring: 0.056 Å = the C–C compression
+(input 1.512 Å → scan point 1's constrained 1.400 Å = 0.056/carbon), not a 1.889× units miss. Root
+cause = `property.rs`'s geometry post-condition compares the **first `$Geometry`** to the **input**
+(`input_ref`), but a scan `.property.txt` is **multi-point**: 26 `$Geometry` blocks (opt cycles
+across 6 points), first = scan point 1's constrained geometry, charges only at some cycles, one
+dipole at the end, no thermochemistry. Premise "first structure == input" is structurally false.
+`_trj.xyz` first frame is likewise scan point 1 (a second latent `input_ref` failure); hess/mo
+anchor on a non-existent single final structure. Fixture max Δ = 0.0635 Å (its input C–C = 1.527).
+
+**Fix.** `parse_and_store` branches on `input.relaxscanact.dat` (B1's detection) to a new
+`parse_and_store_scan` → **profile-only**: parse the B1 profile (its coordinate cross-check is the
+live units guard), build the record via `ParsedResults::from_scan_profile` (header energy = last
+point's `act`; final geometry = last point's `input.NNN.xyz`, Å), skip property/`_trj`/hess/mo. The
+Opt/SP/Freq path is untouched; **no tolerance loosened, Bohr guard not skipped** — it moved to where
+its premise holds.
+
+**Fixtures consolidated.** `property_scan_ethane.property.txt` → `scan-ethane-cc/input.property.txt`
+and `xyz_trj_scan.xyz` → `scan-ethane-cc/input_trj.xyz` (git mv), refs in property/xyz tests
+updated — `scan-ethane-cc/` is now a complete scan job dir (single source of truth).
+
+**Tests (RED→GREEN, guard preserved, gap closed).**
+- `scan_job_parses_profile_only_full_pipeline` — full `parse_and_store` on the real `scan-ethane-cc/`
+  dir: RED before (the 0.056-class `GeometryMismatch`), GREEN after (profile stored, 6 points, energy
+  = last `act` −79.69075938, final geom C–C ≈ 2.4, no mis-attributed charges/thermo/trj). **Closes
+  the test gap** — B1/B2 tested `.dat`/point-`.xyz` in isolation, never the full pipeline on a scan.
+- `single_structure_property_check_bites_on_a_scan_artifact` — the routed-around guard still fires
+  (`GeometryMismatch`, max Δ 0.0635, compression-scale ≪ a 1.889× Bohr blow-up): tolerance intact.
+- `non_scan_dir_still_runs_the_single_structure_readers` — a non-scan dir still goes through
+  property (produces charges); scan branch did not leak. Bohr-guard biting on the non-scan path is
+  `property::tests::missed_bohr_conversion_fails_loudly`; the scan units guard is
+  `relaxscan::tests::c_bohr_coordinate_fails_the_cross_check_loudly` — both still green.
+
+**Verify.** `cargo test` 200 lib green (21 ignored real-data), `tsc` 0, `vitest` scan 8 green. Wiki:
++debugging/015, parse-sources.md + results-ui.md + ROADMAP.md B1 notes, index.md.
+
+**Next.** The scan now parses → the author re-runs the B2 manual gate h1–h4 (batched with A2 g1–g4);
+Stage B closes when it passes.

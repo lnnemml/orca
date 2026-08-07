@@ -743,6 +743,15 @@ pending.)*
       post-condition. `act`/`scf` both stored, labelled, never conflated. Wired into `results.rs`
       (`ParsedResults.scan`, `data_json`, `parser_version` 3→4). Three negative controls green on real
       ethane fixtures. No manual gate (Rust reader).
+      **B1 fix (scan jobs parse profile-only)** — the B2 manual gate caught a real bug: the full
+      `parse_and_store` on a completed scan failed the single-structure `property.rs` geometry
+      post-condition (first `$Geometry` = scan point 1, not the input — a false-Bohr `0.056 Å`). A
+      multi-point scan `.property.txt` does not fit the single-structure readers, so `parse_and_store`
+      now routes a scan (detected by `input.relaxscanact.dat`) to **profile-only**: parse the profile,
+      skip property/`_trj`/hess/mo, header energy + final geometry from the profile's last point. No
+      tolerance loosened; the units guard is the profile's coordinate cross-check. Full-pipeline test
+      on the real `scan-ethane-cc/` dir (RED→GREEN) closes the test gap. See
+      `wiki/debugging/015-scan-property-post-condition.md`.
 - [~] **B2 — energy-profile view (React → manual gate).** Reaction coordinate (Å) vs **ΔE kcal/mol**
       (relative, labelled reference: point 1 / minimum; `act`/`scf` both, labelled). recharts +
       `useContainerWidth`; click a scan point → app-owned index → load `input.NNN.xyz` of that point
