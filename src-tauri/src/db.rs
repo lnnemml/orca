@@ -42,7 +42,14 @@ use crate::error::AppError;
 ///   table doubles as the user reagent catalog: a user-saved reagent is a molecules
 ///   row with `is_reagent = 1` plus its (mandatory) `charge`. Existing rows default
 ///   to 0 (not reagents), so the molecule library is unchanged. Guarded ALTER.
-const SCHEMA_VERSION: i64 = 12;
+/// - v13: `reactions` + `pathways` tables and a nullable `jobs.pathway_id` (Phase 4.5
+///   Stage C1, ADR-007 as amended). Jobs are the work; reactions/pathways are grouping
+///   metadata — deleting a reaction/pathway NEVER deletes a job (the Rust commands null
+///   `pathway_id` instead). Normalized: a job carries `pathway_id` ONLY (reaction derived
+///   via `pathways`), no `reaction_id` on jobs. Nullable FK = standalone jobs unchanged.
+///   Referential integrity is enforced in the commands (this DB leaves SQLite FK
+///   enforcement off, as elsewhere); the `REFERENCES` clauses are documentation.
+const SCHEMA_VERSION: i64 = 13;
 
 /// Open (creating if needed) `orcastudio.db` under `data_dir` and migrate it to
 /// the current schema.
@@ -233,6 +240,41 @@ fn migrate(conn: &Connection) -> Result<(), AppError> {
             )?;
         }
         version = 12;
+    }
+
+    // --- v12 -> v13: reaction/pathway data model (Phase 4.5 Stage C1, ADR-007
+    // amended). Two grouping tables + a nullable jobs.pathway_id. Jobs are the work;
+    // reactions/pathways are grouping metadata — deleting either NEVER deletes a job
+    // (enforced in the Rust commands, which null pathway_id instead). Normalized: a
+    // job carries pathway_id ONLY; its reaction is derived via `pathways` (no
+    // reaction_id on jobs — deliberate deviation from ADR-007's both-FKs sketch, one
+    // source of truth). Additive + idempotent: the CREATEs are IF NOT EXISTS, the
+    // ALTER is column_exists-guarded (like v10/v11, on `jobs` existing). The
+    // REFERENCES clauses document intent; app-level integrity lives in the commands. ---
+    if version < 13 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS reactions (
+                id          TEXT PRIMARY KEY,
+                name        TEXT NOT NULL,
+                description TEXT,
+                created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE IF NOT EXISTS pathways (
+                id          TEXT PRIMARY KEY,
+                reaction_id TEXT NOT NULL REFERENCES reactions(id),
+                label       TEXT NOT NULL,
+                created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )?;
+        if column_exists(conn, "jobs", "id")? && !column_exists(conn, "jobs", "pathway_id")? {
+            // ADD COLUMN with a REFERENCES clause is permitted because the default is
+            // NULL (SQLite's only FK-on-ALTER restriction). Nullable + additive: every
+            // existing job stays a standalone job with pathway_id = NULL.
+            conn.execute_batch(
+                "ALTER TABLE jobs ADD COLUMN pathway_id TEXT REFERENCES pathways(id);",
+            )?;
+        }
+        version = 13;
     }
 
     // Persist the resulting version so subsequent runs skip completed steps.
@@ -745,6 +787,66 @@ mod tests {
             .unwrap();
         assert_eq!(input, "* xyz 0 1");
         assert_eq!(log, None, "legacy job: NULL log (seeds fresh on New iteration)");
+    }
+
+    #[test]
+    fn migrate_v12_to_v13_adds_reaction_tables_and_preserves_data() {
+        // A v12 DB: settings + jobs (one populated job) + molecules (one row). The
+        // v13 step adds `reactions`/`pathways` and a nullable `jobs.pathway_id`; the
+        // pre-existing data is untouched and the new column is NULL for the old job
+        // (invariant 3: pathway_id = NULL is the normal state for every existing job).
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO settings (key, value) VALUES ('schema_version', '12');
+             CREATE TABLE jobs (
+                id TEXT PRIMARY KEY, title TEXT NOT NULL, input_content TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'draft', energy REAL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );
+             INSERT INTO jobs (id, title, input_content, status, energy)
+                VALUES ('j1', 'ethane scan', '! r2SCAN-3c Opt', 'completed', -79.8);
+             CREATE TABLE molecules (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL, xyz TEXT NOT NULL,
+                is_reagent INTEGER NOT NULL DEFAULT 0
+             );
+             INSERT INTO molecules (id, name, xyz) VALUES ('m1', 'ethane', '* xyz 0 1');",
+        )
+        .unwrap();
+        assert!(!column_exists(&conn, "jobs", "pathway_id").unwrap());
+
+        migrate(&conn).expect("v12 -> v13");
+        assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
+
+        // The two grouping tables now exist and are empty.
+        let reactions: i64 = conn
+            .query_row("SELECT COUNT(*) FROM reactions", [], |r| r.get(0))
+            .expect("reactions table should exist");
+        assert_eq!(reactions, 0);
+        let pathways: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pathways", [], |r| r.get(0))
+            .expect("pathways table should exist");
+        assert_eq!(pathways, 0);
+
+        // jobs.pathway_id exists and is NULL for the pre-existing job; the rest of the
+        // job is intact.
+        assert!(column_exists(&conn, "jobs", "pathway_id").unwrap());
+        let (title, energy, pathway_id): (String, Option<f64>, Option<String>) = conn
+            .query_row(
+                "SELECT title, energy, pathway_id FROM jobs WHERE id = 'j1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("job preserved with a pathway_id column");
+        assert_eq!(title, "ethane scan");
+        assert_eq!(energy, Some(-79.8));
+        assert_eq!(pathway_id, None, "every existing job is standalone (pathway_id NULL)");
+
+        // The molecule row is intact.
+        let mol_name: String = conn
+            .query_row("SELECT name FROM molecules WHERE id = 'm1'", [], |r| r.get(0))
+            .expect("molecule preserved");
+        assert_eq!(mol_name, "ethane");
     }
 
     /// FTS5 build-gate. NOT a migration and NOT a table the app ships — a tripwire

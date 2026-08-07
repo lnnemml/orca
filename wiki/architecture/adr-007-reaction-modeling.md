@@ -1,6 +1,7 @@
 # ADR-007 — From molecular modeling to reaction modeling
 
-**Status:** accepted 
+**Status:** accepted; **amended 2026-08-07** (Phase 4.5 Stage C1 — ratified normalized schema; see
+the Amendment section below)  
 **Date:** 2026-07-27  
 **Supersedes:** —  
 **Context:** author's research experience (stereoselectivity proof for NaBH₄ reduction,
@@ -272,6 +273,62 @@ already works; it cannot substitute for missing primitives.
 - **MMFF force field gaps.** RDKit's MMFF may lack parameters for exotic reagent
   fragments (e.g. BH₄⁻). Mitigated by UFF fallback (`AllChem.UFFOptimizeMolecule`)
   which has broader atom-type coverage. Documented for Phase 2.5 fragment library.
+
+## Amendment (2026-08-07, Phase 4.5 Stage C1) — ratified normalized schema
+
+The "Data model impact" section above is a **sketch**. Stage C1 implements the first
+concrete slice of it (migration v13) and **deviates deliberately** on two points. This
+amendment records the ratified schema; the sketch is not edited (ADR history is
+append-only).
+
+**What C1 builds (migration v13):**
+
+```
+reactions
+  id TEXT PK, name TEXT NOT NULL, description TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+
+pathways
+  id TEXT PK, reaction_id TEXT NOT NULL REFERENCES reactions(id),
+  label TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+
+jobs
+  + pathway_id TEXT  (nullable, REFERENCES pathways(id))   -- and NOTHING else
+```
+
+**Deviation 1 — normalized: `jobs.pathway_id` ONLY, no `jobs.reaction_id`.** The sketch
+proposed *both* FKs on `jobs`. We normalize: a job carries `pathway_id` only; its reaction
+is derived by joining `pathways`. Two columns that can disagree (a job whose `reaction_id`
+and `pathway_id.reaction_id` differ) is exactly the class of bug this project keeps
+refusing — **one source of truth** wins over the one-join saving. A pathway always belongs
+to exactly one reaction, so the join is total and cheap.
+
+**Deviation 2 — a pathway is lean; `reaction_centers` and coordinate/method/profile are
+not in C1.** The sketch put `coordinate_type/param/start/end/steps/status` on `pathways`
+and added a `reaction_centers` table. C1 stores **none** of that on `pathways` — a pathway
+is `{ id, reaction_id, label }`. The scan coordinate, method, and energy profile already
+live in the attached job's input/results (Stages A/B); C2 reads them there. Storing them
+again on the pathway would be a second copy that can drift (same reason as Deviation 1).
+`reaction_centers` belongs with the reaction-center editor and is deferred to that unit.
+
+**Load-bearing invariant — jobs survive grouping-row deletion.** Jobs are the work;
+reactions/pathways are grouping metadata. `delete_reaction` removes its pathway rows and
+**nulls** the `pathway_id` of every job attached to them; `delete_pathway` nulls its jobs'
+`pathway_id` and removes the row. **Neither ever deletes a job.** A scan job that was
+promoted into a pathway and then un-grouped is exactly the standalone scan job it was
+before (Stages A/B still operate on it). `pathway_id = NULL` is the normal state for every
+job today and nothing about the standalone job/scan/results path changes — the reaction
+model is purely additive.
+
+**Referential integrity is enforced in the Rust commands**, not by SQLite: this DB leaves
+`PRAGMA foreign_keys` off (as elsewhere — even the `results` `ON DELETE CASCADE` is
+documentation), so `create_pathway` under a missing reaction and `attach_job_to_pathway`
+with a missing job/pathway return `AppError::NotFound` with no orphan/partial write. The
+`REFERENCES` clauses in the DDL document intent. Commands: `create_reaction`,
+`list_reactions`, `rename_reaction`, `delete_reaction`, `create_pathway`, `list_pathways`,
+`delete_pathway`, `attach_job_to_pathway`, `detach_job_from_pathway`. Full schema +
+command semantics: `modules/tauri-core.md` (v13). C2 (comparative ΔΔE‡ view) builds on this.
 
 ## References
 

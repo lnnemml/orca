@@ -6034,3 +6034,51 @@ index.md.
 
 **Next.** Author runs h2 + the trajectory regression (batched with the still-pending A2 g1–g4 / B2
 h1,h3,h4); Stage B closes when they pass.
+
+## [2026-08-07] session | Phase 4.5 Stage C1 — reaction/pathway data model (migration v13, no manual gate)
+
+**Built.** The first slice of the reaction data model (ADR-007), pure Rust + SQLite, fully
+cargo-verifiable — no UI, no manual gate.
+
+- **Migration v13** (`SCHEMA_VERSION` 12→13, guarded + idempotent like every prior arm):
+  `reactions(id, name, description?, created_at)`, `pathways(id, reaction_id→reactions, label,
+  created_at)`, and a nullable `ALTER TABLE jobs ADD COLUMN pathway_id TEXT REFERENCES pathways(id)`
+  (guarded on `jobs` existing; ADD-COLUMN-with-REFERENCES is legal because the default is NULL).
+- **Types + commands** (`models/reaction.rs` `Reaction`/`Pathway`; `commands/reactions.rs` thin
+  wrappers over `*_conn`): `create_reaction`/`list_reactions`/`rename_reaction`/`delete_reaction`,
+  `create_pathway`/`list_pathways`/`delete_pathway`, `attach_job_to_pathway`/`detach_job_from_pathway`.
+  Registered in `lib.rs`. Frontend `Reaction`/`Pathway` types in `src/types.ts` (no component — C2).
+
+**Decisions (ratified, deviating from ADR-007's sketch — amendment written this session).**
+1. **Normalized: `jobs.pathway_id` ONLY, no `jobs.reaction_id`.** Reaction is derived by joining
+   `pathways`. Two columns that can disagree is the trap the project refuses; one source of truth
+   over the one-join saving.
+2. **A pathway is lean** (`{ id, reaction_id, label }`) — no coordinate/method/profile and no
+   `reaction_centers` here. Those live in the attached job (Stages A/B); C2 reads them there.
+   `reaction_centers` is deferred to the reaction-center editor.
+3. **Jobs-survive invariant (load-bearing):** `delete_reaction`/`delete_pathway` null the attached
+   jobs' `pathway_id` and remove only grouping rows — **never a job**. Referential integrity is
+   enforced in the commands (this DB leaves SQLite FK enforcement off; `REFERENCES` is docs).
+
+**Negative controls (cargo, RED→GREEN).** `migrate_v12_to_v13_adds_reaction_tables_and_preserves_data`
+(reactions/pathways exist, `jobs.pathway_id` NULL for existing rows, prior job+molecule data intact);
+`delete_reaction_keeps_jobs` (**bite-verified**: a naive DELETE-instead-of-NULL cascade turns it red —
+"the job MUST survive" panics); `referential_integrity_is_enforced` (missing reaction/job/pathway →
+`NotFound`, no orphan row); `standalone_job_unaffected_by_reaction_model` (a `pathway_id = NULL` job
+is untouched while a whole reaction is built and torn down around it).
+
+**Verify.** `cargo test` 207 passed (0 failed; +7 new: 1 migration, 6 command); `tsc` 0; `vite build`
+clean. No manual gate (schema + Rust). Wiki: amended `adr-007` (Amendment section — ratified
+normalized schema), `modules/tauri-core.md` (v13 entry + commands + migration-test list),
+`ROADMAP.md`, `index.md`.
+
+**Housekeeping flushed (was deferred to this touch).** Stage A2 + Stage B2 flipped `[x]` and **Stage A
++ Stage B marked complete** — the author's manual gates (A2 g1–g4, B2 h1–h4) **PASSED** in the real
+Tauri window. The two B-stage fixes that landed against the B gate before it passed are recorded:
+**B1 fix** — scan jobs parse profile-only (`debugging/015`, the single-structure `.property.txt`
+post-condition does not apply to a multi-point scan); **B2 fix** — recharts-v3 chart-click via a
+shared, tested `resolveClickedIndex` (`debugging/016`, v3 delivers `activeTooltipIndex` as a string).
+
+**Next.** C2 — promote the Stage-A/B scan setup into a `pathways` row (`attach_job_to_pathway`),
+overlay Pathway A vs B, highlight **ΔΔE‡**. Reads coordinate/method/profile from the attached job
+(one source of truth). Manual gate returns at C2.

@@ -720,18 +720,18 @@ scan needs `! Opt` or ORCA silently does a single point — `wiki/orca/parse-sou
       (read-back for A2). `! Opt`-requirement guard (else silent single-point — measured).
       Verified by a real app-generated ethane C–C scan (mirrors 3.3): `.relaxscanact.dat` has
       npoints rows + `ORCA TERMINATED NORMALLY`.
-- [~] **A2 — Scan panel + define-coordinate-from-selection (UI → manual gate).** Pick 2/3/4 atoms
+- [x] **A2 — Scan panel + define-coordinate-from-selection (UI → manual gate).** Pick 2/3/4 atoms
       via existing `selection`/`measure` → a Scan panel that is a **view over the input text**
       (mirror `ConstraintPanel`): start/end/npoints inputs → `injectScan`. Run-guard surfaced
       (no measured opt keyword → loud, blocks Create & Run, like the constraint range-check).
       **Code + tests complete** (`ScanPanel.tsx`, `scanFromSelection`, `hasOptKeyword` broadened to
       the measured set `{opt, optts, tightopt, verytightopt, looseopt}` — probe recorded in
-      `wiki/orca/scan.md`; three negative controls green). **Manual gate (author) PENDING** — g1–g4
-      in the real Tauri window (see the log entry); Stage A closes when it passes.
+      `wiki/orca/scan.md`; three negative controls green). **Manual gate (author) PASSED** — g1–g4
+      in the real Tauri window.
 
 **Stage A done when:** the author picks an approach coordinate, sets start/end/steps, generates a
-relaxed-scan input, and runs it — no hand-editing of `%geom`. *(A1 ✅; A2 code ✅, author g1–g4 gate
-pending.)*
+relaxed-scan input, and runs it — no hand-editing of `%geom`. *(A1 ✅; A2 ✅ — author g1–g4 gate
+passed. **Stage A complete.**)*
 
 ### Stage B — Scan output parser + single energy profile (spine, part 2)
 
@@ -752,24 +752,38 @@ pending.)*
       tolerance loosened; the units guard is the profile's coordinate cross-check. Full-pipeline test
       on the real `scan-ethane-cc/` dir (RED→GREEN) closes the test gap. See
       `wiki/debugging/015-scan-property-post-condition.md`.
-- [~] **B2 — energy-profile view (React → manual gate).** Reaction coordinate (Å) vs **ΔE kcal/mol**
+- [x] **B2 — energy-profile view (React → manual gate).** Reaction coordinate (Å) vs **ΔE kcal/mol**
       (relative, labelled reference: point 1 / minimum; `act`/`scf` both, labelled). recharts +
       `useContainerWidth`; click a scan point → app-owned index → load `input.NNN.xyz` of that point
       into the viewer (one frame, ADR-011), element-order checked at the boundary. Maximum marked
       **"approximate TS (scan maximum)"** — a ΔE‡ estimate, never the TS / ΔG‡. New Rust command
       `read_scan_geometries` (reads point files, writes nothing). **Code + tests complete**
       (`ScanProfilePanel` + `scanProfile.ts`; three negative controls green; `read_scan_geometries`
-      cargo tests green). **Manual gate (author) PENDING** — h1–h4 in the real window (batches with
-      A2 g1–g4); Stage B closes when it passes.
+      read-only; cargo tests green). Two fixes landed against the manual gate before it passed:
+      **B1 fix** (scan jobs parse profile-only — `debugging/015`) and **B2 fix** (recharts-v3
+      chart-click via a shared, tested `resolveClickedIndex` — `debugging/016`). **Manual gate
+      (author) PASSED** — h1–h4 in the real window.
 
 **Stage B done when:** run a scan → see the profile → click the maximum → see that geometry. The
-single-pathway relaxed scan is fully usable end-to-end. *(B1 ✅; B2 code ✅, author h1–h4 gate pending.)*
+single-pathway relaxed scan is fully usable end-to-end. *(B1 ✅; B2 ✅ — author h1–h4 gate passed.
+**Stage B complete.**)*
 
 ### Stage C — Reaction as a first-class object + comparative ΔΔE‡ (data model earns its place here)
 
-- [ ] **C1 — data model (migration v13).** `reactions`, `reaction_centers`, `pathways` tables +
-      nullable `jobs.reaction_id` / `jobs.pathway_id` FKs (ADR-007 schema). Standalone jobs
-      (`reaction_id = NULL`) stay fully functional.
+- [x] **C1 — data model (migration v13).** `reactions` + `pathways` tables + a **nullable
+      `jobs.pathway_id` only** (migration v13, guarded like v10/v11). **Normalized deviation from
+      ADR-007's both-FKs sketch:** a job carries `pathway_id` only; its reaction is derived by
+      joining `pathways` — no `reaction_id` on jobs (one source of truth). `reaction_centers` is
+      **not** built here (it belongs with the reaction-center editor, later); a pathway stays lean
+      (`{ id, reaction_id, label }` — no coordinate/method/profile; C2 reads those from the job).
+      **Jobs-survive invariant:** deleting a reaction/pathway nulls the attached jobs' `pathway_id`
+      and never deletes a job (enforced in the Rust commands; app-level referential integrity, this
+      DB leaves SQLite FK enforcement off). Nullable FK = standalone jobs (`pathway_id = NULL`, every
+      job today) fully functional and unchanged. Commands: `create_reaction`/`list_reactions`/
+      `rename_reaction`/`delete_reaction`, `create_pathway`/`list_pathways`/`delete_pathway`,
+      `attach_job_to_pathway`/`detach_job_from_pathway`. Four cargo controls green (migration
+      preservation; delete-keeps-jobs, bite-verified; referential integrity; standalone-unaffected).
+      **No manual gate** (schema + Rust). See ADR-007 amendment + `modules/tauri-core.md`.
 - [ ] **C2 — promote setup to Pathway + comparative view.** The Stage-A/B scan setup becomes a
       `pathways` row; the scan job gets the FK. Overlay Pathway A vs B, **ΔΔE‡** (barrier
       difference) highlighted. **Manual gate.**

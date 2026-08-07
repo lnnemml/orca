@@ -154,6 +154,29 @@ export interface Molecule {
   is_reagent: boolean;
 }
 
+/** Mirrors `src-tauri/src/models/reaction.rs::Reaction` (schema v13, Phase 4.5 C1).
+ * The central object of the reaction workstation (ADR-007): a named transformation.
+ * A reaction contains one or more pathways; jobs group under a pathway. */
+export interface Reaction {
+  id: string;
+  name: string;
+  description: string | null;
+  created_at: string;
+}
+
+/** Mirrors `src-tauri/src/models/reaction.rs::Pathway`. One approach geometry under
+ * a reaction. Lean by design (one source of truth): it does NOT store the scan
+ * coordinate/method/profile — those live in the attached job, read by Stage C2.
+ * A job carries a nullable `pathway_id` ONLY; its reaction is derived via `pathways`
+ * (normalized — no `reaction_id` on jobs). Deleting a reaction/pathway never deletes
+ * a job; it nulls the job's `pathway_id`, and the job is standalone again. */
+export interface Pathway {
+  id: string;
+  reaction_id: string;
+  label: string;
+  created_at: string;
+}
+
 export type SidecarState = "healthy" | "starting" | "stale" | "down";
 
 export interface SidecarStatus {

@@ -16,13 +16,13 @@ never runs a binary). The runtime mechanics of running ORCA live in
 ## Files
 
 - `lib.rs` — Tauri builder, setup hook, exit handling, invoke-handler registration.
-- `db.rs` — SQLite open + versioned migrations (v1–v12).
+- `db.rs` — SQLite open + versioned migrations (v1–v13).
 - `results.rs` — store/read parsed results (all four artifact readers) into the `results` table
   (ADR-012); the completion hook lives in `local_backend`. See `modules/artifact-readers.md`.
 - `orca_json.rs` — spawn `orca_2json` (ADR-009), lazy-cached gbw→JSON in the job dir (unit 3.7).
 - `error.rs` — `AppError` (thiserror).
 - `sidecar.rs` — `SidecarManager`: spawn/health-poll/kill uvicorn; the version handshake.
-- `commands/{settings,jobs,molecules}.rs` — Tauri command surface (thin wrappers over `*_conn`).
+- `commands/{settings,jobs,molecules,reactions}.rs` — Tauri command surface (thin wrappers over `*_conn`).
 - `models/{job,molecule}.rs` — row structs (`COLUMNS` + `from_row`).
 - `local_backend.rs` — ORCA execution, queue, cancel (see `execution-backends.md`).
 - `cpu_presets.rs` — measured core-pinning presets (see `execution-backends.md`).
@@ -121,11 +121,45 @@ survives a restart.
   ADR-014 no-silent-charge rule) and `list_reagents` (`WHERE is_reagent = 1`); `list_molecules` now
   filters `WHERE is_reagent = 0`. `Molecule::COLUMNS`/`from_row` carry `is_reagent` (bool from the 0/1
   INTEGER) as the 9th column. Frontend converter + curated↔user split: `src/scene/reagent-catalog.ts`.
+- **v13** — the **reaction/pathway data model** (Phase 4.5 Stage C1, ADR-007 as amended). Two new
+  grouping tables + a nullable `jobs.pathway_id`:
+  - `reactions(id TEXT PK, name TEXT NOT NULL, description TEXT, created_at)` — a named transformation
+    (ADR-007's central object).
+  - `pathways(id TEXT PK, reaction_id TEXT NOT NULL REFERENCES reactions(id), label TEXT NOT NULL,
+    created_at)` — one approach geometry under a reaction. **Lean by design:** it does NOT store the
+    scan coordinate/method/profile (those live in the attached job's input/results; C2 reads them
+    there — one source of truth).
+  - `ALTER TABLE jobs ADD COLUMN pathway_id TEXT REFERENCES pathways(id)` — nullable, guarded `ALTER`
+    like v10/v11 (on `jobs` existing). ADD-COLUMN-with-REFERENCES is legal because the default is NULL.
+
+  **Normalized deviation from ADR-007's sketch:** a job carries `pathway_id` **only** — no
+  `reaction_id` on jobs; the reaction is derived by joining `pathways`. Two columns that can disagree
+  is the trap this project refuses; one source of truth wins over the one-join saving. **Jobs-survive
+  invariant (load-bearing):** jobs are the work, reactions/pathways are grouping metadata —
+  `delete_reaction` nulls the `pathway_id` of every job attached to its pathways and deletes the
+  pathway rows; `delete_pathway` nulls its jobs' `pathway_id` and deletes the row; **neither ever
+  deletes a job.** A promoted-then-ungrouped scan job is exactly the standalone job it was.
+  `pathway_id = NULL` is the normal state for every job today; the model is purely additive and the
+  `Job` struct is **unchanged** (C1 writes/reads the column via the reaction commands; C2 exposes it
+  on `Job` when it needs to). **Referential integrity lives in the commands** (this DB leaves SQLite FK
+  enforcement off, as elsewhere; the `REFERENCES` clauses are docs): `create_pathway` under a missing
+  reaction and `attach_job_to_pathway` with a missing job/pathway return `NotFound` with no orphan/
+  partial write. Commands (`commands/reactions.rs`, thin wrappers over `*_conn`, `Reaction`/`Pathway`
+  in `models/reaction.rs`): `create_reaction(name, description?)`, `list_reactions`,
+  `rename_reaction(id, name)`, `delete_reaction(id)`, `create_pathway(reaction_id, label)`,
+  `list_pathways(reaction_id)`, `delete_pathway(id)`, `attach_job_to_pathway(job_id, pathway_id)` (the
+  bottom-up **promote**, permissive about job kind — comparability guards are C2),
+  `detach_job_from_pathway(job_id)`. Four cargo controls: `migrate_v12_to_v13_adds_reaction_tables_and_preserves_data`
+  (db.rs) + `delete_reaction_keeps_jobs`/`referential_integrity_is_enforced`/
+  `standalone_job_unaffected_by_reaction_model` (commands::reactions); the delete-keeps-jobs control is
+  **bite-verified** (a naive DELETE-instead-of-NULL cascade turns it red). Frontend types:
+  `Reaction`/`Pathway` in `src/types.ts` (no component yet — that is C2).
 - The queue statuses (`queued`, `cancelled`) and `parsed` needed **no migration** — `status` is TEXT.
 - Migration tests assert preservation across each step (…`migrate_v6_to_v7_adds_homo_lumo_gap`,
   `migrate_v7_to_v8_backfills_energy_from_results`, `migrate_v8_to_v9_adds_manual_tables_and_preserves_data`,
   `migrate_v9_to_v10_adds_index_map_json_and_preserves_jobs`,
-  `migrate_v10_to_v11_adds_scene_log_json_and_preserves_jobs`; version assertions use `SCHEMA_VERSION`,
+  `migrate_v10_to_v11_adds_scene_log_json_and_preserves_jobs`,
+  `migrate_v12_to_v13_adds_reaction_tables_and_preserves_data`; version assertions use `SCHEMA_VERSION`,
   not a literal). The reagent role + persistence are covered in `commands::molecules`
   (`reagent_role_separates_from_the_molecule_library`, `reagent_persists_across_reopen`). A separate `fts5_is_available_with_ranking_and_snippet`
   test gates the bundled SQLite's FTS5 support (Phase 4 / ADR-013 stands on it) — not a migration.
