@@ -5992,3 +5992,45 @@ updated — `scan-ethane-cc/` is now a complete scan job dir (single source of t
 
 **Next.** The scan now parses → the author re-runs the B2 manual gate h1–h4 (batched with A2 g1–g4);
 Stage B closes when it passes.
+
+## [2026-08-07] session | fix(results): chart-click selects a point under recharts v3 (scan + trajectory) — B2 fix
+
+**Bug (B2 manual gate h2).** Clicking a scan point in the energy-profile chart did nothing — the
+readout stayed "point 1 / 6" and the molecule stayed point 1; hover tooltips worked.
+
+**Localized + measured (rule #10).** Readout unchanged on click → the bug is the click→`setSelected`
+layer, not the viewer feed / `read_scan_geometries` / profile math (all verified). recharts
+**3.10.1** (`package.json`); installed types show **`TooltipIndex = string | null`** — v3 delivers
+`activeTooltipIndex` as a **string**, so the inline `typeof i === "number"` guard was always false →
+**every click silently dropped**. Inline handlers are never unit-tested (jsdom can't fire a real
+recharts click) → pure tests stayed green. **Cross-cutting:** `TrajectoryPlayer` used the identical
+pattern → its click-to-jump (unit 3.8) had been silently broken since the v3 upgrade too. IR/table
+onClicks use the datum's own `m.index` (not `activeTooltipIndex`) — grep-confirmed unaffected.
+
+**Fix — the class, extracted + tested.** New `src/charts/clickIndex.ts` `resolveClickedIndex(state,
+series, getX?)`: number/string `activeTooltipIndex` → array position; else `activeLabel` (x value)
+matched via `getX` (`coordinate`/`cycle`) within 1e-6; `null` otherwise; never throws. Both
+`ScanProfilePanel` and `TrajectoryPlayer` route through it and map `series[pos].index` to their
+setter; each DEV-warns on an unresolved click. Redundant on-dot select uses the **function form** of
+`activeDot` (a `<circle onClick>`) — measured in the recharts source (`ActivePoints.js` +
+`adaptEventHandlers`): the **object** form's onClick receives the activeDot props object, **not** the
+datum, so it cannot select; the function form gets `ActiveDotProps` (`index`/`payload`). This
+corrects the plan's "object form delivers the datum" premise.
+
+**Tests (RED→GREEN, closes the wiring gap).** `clickIndex.test.ts` — C-v3-string-index (`"5"` → 5,
+with an inline old-guard assertion proving the number-only logic returns null on the string),
+C-number-index (v2 shape), C-label-fallback (x match + non-match → null + no-getX → null), C-garbage
+(`{}`/`"x"`/null/out-of-range/empty series → null, no throw).
+
+**Verify.** `tsc` 0; `vitest` 632 (48 files, +4 resolver); `vite build` clean. Grep: no
+`activeTooltipIndex` handler left on the old pattern (only the two new resolver-routed activeDot
+paths). Wiki: +debugging/016, results-ui.md (trajectory + scan click model → shared resolver),
+index.md.
+
+**Manual gate (author, real window) — PENDING, unit stays open until it passes:**
+- h2 (scan): click point 6 → readout "point 6 / 6 · 2.400 Å" AND the molecule shows two separated
+  CH₃ groups (no C–C bond at 2.4 Å); click point 1 → compact bonded ethane returns.
+- trajectory regression: open an Opt job, click the E(cycle) chart → the frame jumps to that cycle.
+
+**Next.** Author runs h2 + the trajectory regression (batched with the still-pending A2 g1–g4 / B2
+h1,h3,h4); Stage B closes when they pass.

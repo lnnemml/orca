@@ -39,7 +39,9 @@ whole `T×N×3` trajectory to drive it). **We do not use any of it.**
   ticks at that rate). It renders **one** `MoleculeViewer` fed `frameToXyz(current)` with
   `preserveCameraOnUpdate`, the cycle/energy/ΔE readout, and the **E(cycle) chart** (recharts,
   click a point to jump; the current cycle is a vertical `ReferenceLine`). The energy chart is the
-  learning core — you watch the curve descend and can step to any cycle.
+  learning core — you watch the curve descend and can step to any cycle. **The click-to-jump goes
+  through the shared `resolveClickedIndex` resolver** (see below) — it had been silently broken since
+  the recharts→v3 upgrade (`debugging/016`) and was fixed here in the same change as the scan chart.
 
 ### Identity check at the UI boundary
 Before anything is drawn, `elementsAgree(trajectory.elements, referenceElements)` compares the
@@ -83,6 +85,16 @@ B1's `ParsedResults.scan` and **re-parses nothing** (ADR-012).
   `MoleculeViewer` fed the selected point's `input.NNN.xyz` geometry (fetched once via
   `read_scan_geometries`, `xyz.rs` `first_frame` witness). recharts with explicit `useContainerWidth`
   (no `ResponsiveContainer` — the WebKitGTK 0×0 class); click a point → set the app index.
+- **Chart-click resolution is shared and tested — `src/charts/clickIndex.ts` (`resolveClickedIndex`).**
+  Both this panel and `TrajectoryPlayer` route their recharts `onClick` through it: recharts **v3**
+  delivers `activeTooltipIndex` as a **string** (`TooltipIndex = string | null`), so the old inline
+  `typeof i === "number"` guard silently dropped every click (`debugging/016`). The resolver takes a
+  number/string index, falls back to matching `activeLabel` (the x value) via a `getX` accessor
+  (`coordinate` here, `cycle` for trajectory), returns the array position (caller maps to
+  `series[pos].index`), and never throws. Each handler DEV-warns on an unresolved click; a redundant
+  **function-form** `activeDot` `<circle onClick>` selects on a direct dot hit (the object form does
+  not receive the datum — measured). Four pure controls in `clickIndex.test.ts` (v3 string, v2 number,
+  label fallback, garbage) close the inline-glue test gap.
 - **Honest labelling (the teaching-moment discipline, like the IR "conventional depiction" and the
   `imaginary_count` verdict).** x = scanned coordinate (Å for `B`, ° for `A`/`D`); y = ΔE kcal/mol
   against a **labelled** reference; both `act` (composite, default) and `scf` are offered and labelled.

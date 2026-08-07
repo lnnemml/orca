@@ -11,6 +11,7 @@ import {
 
 import { MoleculeViewer } from "../viewer/MoleculeViewer";
 import { useContainerWidth } from "../charts/useContainerWidth";
+import { resolveClickedIndex, type ChartClickState } from "../charts/clickIndex";
 import { saveBytes, exportName } from "../export/save";
 import { svgToPngBytes } from "../export/png";
 import {
@@ -244,11 +245,14 @@ export function TrajectoryPlayer({
             height={CHART_HEIGHT}
             data={series}
             margin={{ top: 8, right: 16, bottom: 4, left: 8 }}
-            onClick={(state: { activeTooltipIndex?: number | string | null }) => {
-              // recharts hands back the clicked category index; map it through
-              // the energy series to the ORIGINAL frame index.
-              const i = state?.activeTooltipIndex;
-              if (typeof i === "number" && series[i]) setFrame(series[i].index);
+            onClick={(state: ChartClickState) => {
+              // recharts v3 hands the clicked category index back as a STRING — resolve
+              // through the shared helper (number/string index, then activeLabel=cycle
+              // fallback), then map the array position to the ORIGINAL frame index (the
+              // series drops null-energy frames, so position ≠ frame index).
+              const pos = resolveClickedIndex(state, series, (d) => d.cycle);
+              if (pos != null) setFrame(series[pos].index);
+              else if (import.meta.env.DEV) console.warn("[chart click] trajectory unresolved", state);
             }}
           >
             <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" />
@@ -285,7 +289,22 @@ export function TrajectoryPlayer({
               stroke="#4f8cff"
               strokeWidth={1.5}
               dot={{ r: 2.5 }}
-              activeDot={{ r: 4 }}
+              // Redundant on-dot select (belt-and-suspenders, debugging/016): the FUNCTION
+              // form of activeDot is the one recharts calls with the datum props; a click
+              // ON a dot jumps to that cycle even if the chart-level payload regresses.
+              activeDot={(props: { cx?: number; cy?: number; index?: number }) => (
+                <circle
+                  cx={props.cx}
+                  cy={props.cy}
+                  r={4}
+                  fill="#4f8cff"
+                  style={{ cursor: "pointer" }}
+                  onClick={() => {
+                    const pos = resolveClickedIndex({ activeTooltipIndex: props.index }, series);
+                    if (pos != null) setFrame(series[pos].index);
+                  }}
+                />
+              )}
               isAnimationActive={false}
             />
           </LineChart>

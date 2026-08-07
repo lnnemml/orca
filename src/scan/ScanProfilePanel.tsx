@@ -14,6 +14,7 @@ import {
 import type { ScanProfileJson, ScanGeometry } from "../types";
 import { MoleculeViewer } from "../viewer/MoleculeViewer";
 import { useContainerWidth } from "../charts/useContainerWidth";
+import { resolveClickedIndex, type ChartClickState } from "../charts/clickIndex";
 import { saveBytes, exportName } from "../export/save";
 import { svgToPngBytes } from "../export/png";
 import {
@@ -215,9 +216,12 @@ export function ScanProfilePanel({
             height={CHART_HEIGHT}
             data={series}
             margin={{ top: 8, right: 16, bottom: 18, left: 8 }}
-            onClick={(state: { activeTooltipIndex?: number | string | null }) => {
-              const i = state?.activeTooltipIndex;
-              if (typeof i === "number" && series[i]) setSelected(series[i].index);
+            onClick={(state: ChartClickState) => {
+              // recharts v3 hands the index back as a STRING — resolve through the shared
+              // helper (number/string index, then activeLabel=coordinate fallback).
+              const pos = resolveClickedIndex(state, series, (d) => d.coordinate);
+              if (pos != null) setSelected(series[pos].index);
+              else if (import.meta.env.DEV) console.warn("[chart click] scan unresolved", state);
             }}
           >
             <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" />
@@ -287,7 +291,24 @@ export function ScanProfilePanel({
               stroke="#4f8cff"
               strokeWidth={1.5}
               dot={{ r: 2.5 }}
-              activeDot={{ r: 4 }}
+              // Redundant on-dot select (belt-and-suspenders): the FUNCTION form of
+              // activeDot is the one recharts calls with the datum props (index/payload);
+              // the object form's onClick receives the activeDot props object, not the
+              // datum (measured, debugging/016). A click ON a dot selects even if the
+              // chart-level payload ever regresses. Routed through the same resolver.
+              activeDot={(props: { cx?: number; cy?: number; index?: number }) => (
+                <circle
+                  cx={props.cx}
+                  cy={props.cy}
+                  r={4}
+                  fill="#4f8cff"
+                  style={{ cursor: "pointer" }}
+                  onClick={() => {
+                    const pos = resolveClickedIndex({ activeTooltipIndex: props.index }, series);
+                    if (pos != null) setSelected(series[pos].index);
+                  }}
+                />
+              )}
               isAnimationActive={false}
             />
           </LineChart>
