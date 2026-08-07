@@ -161,6 +161,32 @@ export function isGoatInput(content: string): boolean {
   });
 }
 
+/**
+ * Whether a job status is a **terminal success** — the run finished OK and its
+ * artifacts can be read. Both `completed` and `parsed` qualify: a GOAT job whose
+ * single-structure `.property.txt` happened to parse reaches `parsed` (its
+ * `.property.txt` has a first `$Geometry` ≈ the input and N opt cycles, so the
+ * single-structure readers accept it), yet its authoritative result is still the
+ * ensemble. The ensemble read must fire on ANY terminal success, never a single
+ * narrow status — the regression was reading it only on exactly `completed`, so a
+ * `parsed` GOAT job hid its ensemble. See `wiki/debugging/017-goat-parsed-hid-ensemble.md`.
+ */
+export function isTerminalSuccessStatus(status: string): boolean {
+  return status === "completed" || status === "parsed";
+}
+
+/**
+ * Whether to show the single-structure Results dashboard (`ResultsCard`) for a job.
+ * A **GOAT** conformer search is a special job type whose authoritative result is the
+ * ENSEMBLE, not a single-structure geometry — its `.property.txt`/`_trj.xyz` are the
+ * internal optimization *cycles*, not conformers, and there is no meaningful single
+ * "final" structure. So a GOAT job renders the ensemble panel and **suppresses** the
+ * misleading "N optimization cycles" trajectory. Non-GOAT jobs are unaffected.
+ */
+export function showsSingleStructureResults(inputContent: string): boolean {
+  return !isGoatInput(inputContent);
+}
+
 /** What "Use this conformer" should do, decided purely (so it's testable). */
 export type ConformerApply =
   | { action: "replace"; fragmentId: string; atoms: RawAtom[] }

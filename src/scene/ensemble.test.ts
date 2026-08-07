@@ -5,8 +5,10 @@ import {
   deltaEKcal,
   goatInputForFragment,
   isGoatInput,
+  isTerminalSuccessStatus,
   parseEnsemble,
   planConformerApply,
+  showsSingleStructureResults,
   type Conformer,
 } from "./ensemble";
 import { restoreScene } from "./restore";
@@ -232,5 +234,42 @@ describe("isGoatInput", () => {
   it("matches on word boundaries, not substrings", () => {
     expect(isGoatInput("! SCAPEGOATED")).toBe(false);
     expect(isGoatInput("! XTB GOAT MAXITER 100")).toBe(true);
+  });
+});
+
+// C-goat-parsed-shows-ensemble (the guard half): the ensemble read must fire on ANY
+// terminal success, not exactly `completed`. A GOAT job whose single-structure
+// `.property.txt` parsed reaches `parsed`; the old `status === "completed"` guard
+// returned false for it and hid the ensemble (debugging/017).
+describe("isTerminalSuccessStatus", () => {
+  it("is true for both completed and parsed", () => {
+    expect(isTerminalSuccessStatus("completed")).toBe(true);
+    expect(isTerminalSuccessStatus("parsed")).toBe(true);
+  });
+
+  it("is false for non-terminal / failure statuses", () => {
+    for (const s of ["draft", "queued", "running", "failed", "cancelled"]) {
+      expect(isTerminalSuccessStatus(s)).toBe(false);
+    }
+  });
+
+  // The bite: the regressed guard was `status === "completed"`, which returns false for
+  // a `parsed` GOAT job. This asserts the broadened guard accepts `parsed`.
+  it("accepts the `parsed` GOAT job the narrow guard rejected", () => {
+    expect(isTerminalSuccessStatus("parsed")).toBe(true);
+  });
+});
+
+// C-goat-parsed-shows-ensemble (the display half): a GOAT job suppresses the
+// single-structure Results dashboard (its "N optimization cycles" trajectory is
+// misleading for a conformer search); a non-GOAT job still shows it.
+describe("showsSingleStructureResults", () => {
+  it("is false for a GOAT job (ensemble is shown instead of the trajectory)", () => {
+    expect(showsSingleStructureResults("! XTB GOAT\n* xyz 0 1\nH 0 0 0\n*\n")).toBe(false);
+  });
+
+  it("is true for a normal Opt/SP job (C-nongoat-unaffected)", () => {
+    expect(showsSingleStructureResults("! r2SCAN-3c Opt Freq\n* xyz 0 1\nH 0 0 0\n*\n")).toBe(true);
+    expect(showsSingleStructureResults("! B3LYP def2-SVP\n")).toBe(true);
   });
 });

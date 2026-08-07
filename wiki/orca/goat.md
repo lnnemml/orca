@@ -18,6 +18,16 @@ A GOAT run litters the dir (~40 files for butane): per-candidate scratch
 
 Completion is the usual `****ORCA TERMINATED NORMALLY****` (domain rule #6).
 
+**A GOAT `.property.txt` must NOT be parsed as a single structure.** A GOAT run writes a
+`.property.txt` (and `_trj.xyz`) like any ORCA job, but its content is the internal optimization
+**cycles** of one candidate, not a meaningful single result — measured: a butanone GOAT has **17
+`$Geometry` blocks**, and the first `$Geometry` ≈ the input, so the single-structure readers would
+happily accept it and drive the job to `parsed`, surfacing a misleading "17 optimization cycles"
+trajectory and hiding the ensemble. So a GOAT job's authoritative result is the **ensemble**, and
+`results.rs::parse_and_store` **routes a GOAT input past the single-structure readers** (returns
+`NoArtifact` → the job stays `completed`), exactly as it routes a relaxed scan to profile-only. See
+`wiki/debugging/017-goat-parsed-hid-ensemble.md`.
+
 ## Comment-line format (verified — do not assume)
 
 **Ensemble** (`finalensemble.xyz`), per structure:

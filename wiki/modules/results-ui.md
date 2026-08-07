@@ -352,6 +352,16 @@ optimization-cycle energy sources (`.out` convergence vs `_trj.xyz` frames) afte
 so a silent drift is a recorded diagnostic. Details in
 [debugging/007](../debugging/007-phase1-decisions-phase3-outgrew.md).
 
+**A GOAT conformer search renders the ensemble, not the single-structure dashboard.** A GOAT job's
+`.property.txt`/`_trj.xyz` are one candidate's optimization *cycles*, not a meaningful single result, so
+`parse_and_store` routes GOAT past the single-structure readers and leaves the job **`completed`**
+(`orca/goat.md`, `debugging/017`). In the UI: the ensemble is read on **any terminal success**
+(`isTerminalSuccessStatus` = `completed` **or** `parsed` — a GOAT job that already reached `parsed` under
+older logic still shows its ensemble), and `showsSingleStructureResults(input)` (`= !isGoatInput`)
+**suppresses `ResultsCard`** for a GOAT job so its misleading "N optimization cycles" trajectory is never
+shown; a GOAT job with no readable ensemble shows a plain note. Non-GOAT jobs are unaffected. Regression
++ fix: [debugging/017](../debugging/017-goat-parsed-hid-ensemble.md).
+
 ## See also
 - [ADR-011](../architecture/adr-011-editor-graphics-stack.md) — 3Dmol is a dumb renderer until the
   spike passes; the reason the frame number may not live in the viewer.

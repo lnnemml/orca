@@ -6230,3 +6230,43 @@ change). Wiki: `modules/reactions-ui.md` (+compare view section), `ROADMAP.md` (
 
 **Next.** Author runs c1–c4 → the Phase 4.5 mission "done-when" is met. Then C2b-2 — `reaction_reference_jobs`
 (migration v14) + absolute barriers on the overlay (reference summed, optional; jobs-survive like C1).
+
+## [2026-08-07] session | fix(results): GOAT jobs render the conformer ensemble, not a single-structure trajectory (regression, debugging/017)
+
+**Symptom (author, real butanone GOAT).** A new GOAT job showed the standard Results dashboard ("17
+optimization cycles" trajectory) + status `parsed`, instead of the **Conformers (N)** ensemble the old
+ibuprofen GOAT job (`completed`) showed.
+
+**Measured first (rule #10) — corrected the stated hypothesis.** *Both* GOAT jobs have a `property.txt`
+(the "present vs absent" guess was wrong). The real trigger: the new job has a `results` row at the
+current `parser_version 4` — the current `parse_and_store` **ran the single-structure readers on the
+GOAT `property.txt` and they SUCCEEDED** (17 `$Geometry` cycles, first ≈ input) → status `parsed`. The
+old job predates that (no results row, stayed `completed`). The ensemble panel's guard keyed on exactly
+`status === "completed"`, so a `parsed` GOAT hid its ensemble. `finalensemble.xyz` present for both →
+display bug, not a missing-ensemble run.
+
+**Fix (GOAT is a special job type, like a scan — mirrors debugging/015).**
+1. `results.rs::parse_and_store` **routes a GOAT input past the single-structure readers**
+   (`input_is_goat` → `ParseOutcome::NoArtifact`), so the job stays `completed` and no results row is
+   stored; the ensemble is read separately. (`NoArtifact` doc generalized to "no single-structure
+   artifact / special job type read elsewhere".)
+2. `JobDetailScreen` reads the ensemble on any **terminal success** (`isTerminalSuccessStatus` =
+   `completed` **or** `parsed`) — so the already-`parsed` butanone job still shows its ensemble.
+3. `showsSingleStructureResults = !isGoatInput` **suppresses `ResultsCard`** for a GOAT job (its
+   "N optimization cycles" trajectory is misleading); a GOAT job with no readable ensemble shows a plain
+   note. Non-GOAT untouched.
+
+**Controls (RED→GREEN).** C-goat-not-parsed (Rust `goat_dir_is_routed_past_the_single_structure_readers`
+— **bite-verified**: removing the branch → outcome `Parsed`, the exact regression). C-goat-parsed-shows-
+ensemble (`isTerminalSuccessStatus("parsed")` true — the narrow guard returned false; `showsSingleStructureResults(goat)`
+false). C-nongoat-unaffected (`showsSingleStructureResults(opt)` true; the existing Opt→`Parsed` and
+scan-routing tests stay green).
+
+**Verify.** `cargo test` 208 (+1); `tsc` 0; `vitest` 655 (+5); `vite build` clean. Wiki:
++`debugging/017`, `orca/goat.md`, `modules/results-ui.md`, `index.md`.
+
+**Manual gate (author, real window) — PENDING.** Open the butanone GOAT job → the **Conformers (N)**
+panel shows (ΔE kcal/mol, "Use this conformer"), the "17 optimization cycles" trajectory is gone; a
+normal Opt job → still the Results dashboard; a scan job → still the profile. Note: the existing butanone
+job's DB row stays `parsed` (not mutated) — the frontend fix renders it correctly regardless; only
+FUTURE GOAT jobs stay `completed`.

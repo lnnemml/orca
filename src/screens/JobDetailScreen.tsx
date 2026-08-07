@@ -16,8 +16,10 @@ import { deserializeScene } from "../scene/scene";
 import {
   deltaEKcal,
   isGoatInput,
+  isTerminalSuccessStatus,
   parseEnsemble,
   planConformerApply,
+  showsSingleStructureResults,
   type Conformer,
 } from "../scene/ensemble";
 import type { Scene } from "../scene/types";
@@ -85,15 +87,19 @@ export function JobDetailScreen({
   const preRef = useRef<HTMLPreElement>(null);
   const didSubmit = useRef(false);
 
-  // GOAT conformer ensemble (2.5.1b): read lazily once the job is completed, and
-  // only if `input.finalensemble.xyz` exists + parses (so non-GOAT jobs show
-  // nothing). `null` = not a GOAT ensemble; a `[]` never happens (parse → null).
+  // GOAT conformer ensemble (2.5.1b): read lazily once the job reaches a TERMINAL
+  // SUCCESS status, and only if `input.finalensemble.xyz` exists + parses (so non-GOAT
+  // jobs show nothing). `null` = not a GOAT ensemble; a `[]` never happens (parse →
+  // null). The status guard must accept BOTH `completed` and `parsed`: a GOAT job whose
+  // single-structure `.property.txt` parsed reaches `parsed`, and the old `=== "completed"`
+  // guard hid its ensemble (regression, debugging/017).
   const [ensemble, setEnsemble] = useState<Conformer[] | null>(null);
   const [selectedConf, setSelectedConf] = useState(0);
+  const [ensembleChecked, setEnsembleChecked] = useState(false);
   const ensembleTried = useRef(false);
 
   useEffect(() => {
-    if (job?.status !== "completed" || ensembleTried.current) return;
+    if (!job || !isTerminalSuccessStatus(job.status) || ensembleTried.current) return;
     ensembleTried.current = true;
     invoke<string>("read_job_ensemble", { id: jobId })
       .then((text) => {
@@ -105,7 +111,8 @@ export function JobDetailScreen({
       })
       .catch(() => {
         /* no ensemble / not a GOAT job — leave the panel hidden */
-      });
+      })
+      .finally(() => setEnsembleChecked(true));
   }, [job?.status, jobId]);
 
   // The fragment this GOAT job ran on (its single-fragment snapshot) and the
@@ -417,7 +424,26 @@ export function JobDetailScreen({
         </div>
       ) : null}
 
-      {job ? <ResultsCard jobId={jobId} jobTitle={job.title} status={job.status} /> : null}
+      {/* A GOAT conformer search renders the ensemble panel below, NOT the
+          single-structure dashboard — its "N optimization cycles" trajectory is
+          the internal opt of one candidate, not conformers, and is misleading for a
+          conformer search (debugging/017). Non-GOAT jobs show ResultsCard as before. */}
+      {job && showsSingleStructureResults(job.input_content) ? (
+        <ResultsCard jobId={jobId} jobTitle={job.title} status={job.status} />
+      ) : null}
+
+      {/* A GOAT job that finished but produced no readable ensemble: say so plainly,
+          rather than falling back to the misleading trajectory dashboard. */}
+      {job &&
+      isGoatInput(job.input_content) &&
+      !ensemble &&
+      isTerminalSuccessStatus(job.status) &&
+      ensembleChecked ? (
+        <div className="banner muted" style={{ marginBottom: 10 }}>
+          This is a GOAT conformer search, but no conformer ensemble
+          (<code>input.finalensemble.xyz</code>) could be read from its job folder.
+        </div>
+      ) : null}
 
       {ensemble ? (
         <div className="ensemble-panel">

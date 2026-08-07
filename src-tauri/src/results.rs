@@ -436,7 +436,12 @@ fn orbitals_json(mo: &crate::parse::mo::Verified) -> OrbitalsJson {
 pub enum ParseOutcome {
     /// Parsed, verified, stored, read back — status should become `parsed`.
     Parsed,
-    /// No `.property.txt` in the job dir — nothing to parse (not a failure).
+    /// No single-structure artifact to parse — the job stays `completed` (not a
+    /// failure). Either `.property.txt` is absent, OR the job is a special type whose
+    /// authoritative result is read elsewhere and must NOT be driven to `parsed` by the
+    /// single-structure readers: a **GOAT** conformer search (result = the ensemble,
+    /// `read_job_ensemble`). (A relaxed scan is the other special type, but it stores a
+    /// profile row and returns `Parsed` — see `parse_and_store_scan`.)
     NoArtifact,
     /// The file exists but parsing/verification/storage failed — OUR problem, the
     /// calculation itself is fine. Status stays `completed`; this message is shown.
@@ -472,6 +477,22 @@ pub fn parse_and_store(
     // already uses. See wiki/debugging/015-scan-property-post-condition.md.
     if dir.join("input.relaxscanact.dat").exists() {
         return parse_and_store_scan(conn, job_id, dir, input_content);
+    }
+
+    // A GOAT conformer search is ANOTHER special job type whose authoritative result is
+    // the ENSEMBLE (`input.finalensemble.xyz`, read on demand by `read_job_ensemble`),
+    // not a single-structure Results dashboard — exactly like a scan's result is the
+    // profile. Its `.property.txt`/`_trj.xyz` are the internal optimization CYCLES of one
+    // candidate (measured: a butanone GOAT has 17 $Geometry cycles + an 18-frame trj),
+    // and its first `$Geometry` ≈ the input, so the single-structure readers would happily
+    // parse it and drive the job to `parsed` — surfacing a misleading "17 optimization
+    // cycles" trajectory and (via the ensemble panel's terminal-status guard) hiding the
+    // conformer ensemble. So route GOAT AWAY from the single-structure parse: do not run
+    // the readers, do not store a results row, and leave the job `completed` (NoArtifact →
+    // Completed in the caller). The ensemble is read separately. Mirrors the scan branch
+    // above and the absent-is-normal discipline. See wiki/debugging/017-goat-parsed-hid-ensemble.md.
+    if input_is_goat(input_content) {
+        return ParseOutcome::NoArtifact;
     }
 
     // The input's start geometry (with elements) — the reference for `.property.txt`
@@ -1494,6 +1515,40 @@ mod tests {
         assert!(r.scan.is_none(), "a non-scan job has no profile");
         // property.rs actually ran: it produced the per-atom charges a scan does not.
         assert!(!r.charges.is_empty(), "the single-structure property reader ran");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// C-goat-not-parsed (routing) — a GOAT job dir with a PRESENT `input.property.txt`
+    /// (and no scan `.dat`) is routed AWAY from the single-structure readers:
+    /// `parse_and_store` returns `NoArtifact`, so the caller leaves the job `completed`
+    /// and no results row is stored (its authoritative result is the ensemble, read by
+    /// `read_job_ensemble`). The bite: the GOAT input here scans the SAME ethane geometry
+    /// as the fixture, so WITHOUT the GOAT branch the single-structure readers parse
+    /// `OPTFREQ` and return `Parsed` — the job reaches `parsed` and the ensemble panel's
+    /// terminal-status guard hid it (the regression). See debugging/017.
+    #[test]
+    fn goat_dir_is_routed_past_the_single_structure_readers() {
+        let tmp = std::env::temp_dir().join(format!("goat-route-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("input.property.txt"), OPTFREQ).unwrap();
+        // A GOAT input over the same ethane geometry as the fixture (body after the ! line).
+        let body = OPTFREQ_INP.splitn(2, '\n').nth(1).unwrap();
+        let goat_inp = format!("! XTB GOAT\n{body}");
+        std::fs::write(tmp.join("input.inp"), &goat_inp).unwrap();
+        // Full jobs schema + results table: WITHOUT the GOAT branch this path would derive
+        // an identity map, verify OPTFREQ, and return Parsed. No input.relaxscanact.dat, so
+        // the scan branch is not taken — the GOAT branch must catch it first.
+        let conn = jobs_db_with(None, None);
+        crate::db::create_results_table(&conn).unwrap();
+        let outcome = parse_and_store(&conn, "job1", tmp.to_str().unwrap(), &goat_inp);
+        assert!(
+            matches!(outcome, ParseOutcome::NoArtifact),
+            "GOAT is routed past the single-structure parse (stays completed): {outcome:?}"
+        );
+        assert!(
+            read_job_results(&conn, "job1").unwrap().is_none(),
+            "no single-structure results row is stored for a GOAT job"
+        );
         std::fs::remove_dir_all(&tmp).ok();
     }
 }
