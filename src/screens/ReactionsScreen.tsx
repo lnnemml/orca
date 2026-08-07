@@ -5,6 +5,7 @@ import { confirm } from "@tauri-apps/plugin-dialog";
 import type { Job, ParsedResults, Pathway, Reaction } from "../types";
 import { formatTimestamp } from "../format";
 import { isScanJob, isValidPathwayLabel, normalizePathwayLabel } from "../reactions/pathway";
+import { CompareView, type ComparePathway } from "../reactions/CompareView";
 
 interface ReactionsScreenProps {
   /** Open a job in the Jobs detail screen — used to prove a grouped job is still a
@@ -210,7 +211,7 @@ interface ReactionDetailProps {
 function ReactionDetail({ reaction, onOpenJob, onError, onChanged, onDeleted }: ReactionDetailProps) {
   const [pathways, setPathways] = useState<Pathway[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
-  const [scanIds, setScanIds] = useState<Set<string>>(new Set());
+  const [resultsById, setResultsById] = useState<Map<string, ParsedResults>>(new Map());
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
@@ -222,24 +223,29 @@ function ReactionDetail({ reaction, onOpenJob, onError, onChanged, onDeleted }: 
       setPathways(ps);
       setJobs(js);
 
-      // Mark which completed/parsed jobs carry a scan profile — the picker's mark/warn.
-      // Only these jobs can ever be offered, so we only read their results.
+      // Read the parsed results of finished jobs once — reused for both the picker's
+      // scan mark/warn and the compare view's profiles (only these jobs can be offered).
       const finished = js.filter((j) => j.status === "completed" || j.status === "parsed");
-      const flags = await Promise.all(
+      const entries = await Promise.all(
         finished.map(async (j) => {
           try {
-            const r = await invoke<ParsedResults | null>("read_job_results", { id: j.id });
-            return [j.id, isScanJob(r)] as const;
+            return [j.id, await invoke<ParsedResults | null>("read_job_results", { id: j.id })] as const;
           } catch {
-            return [j.id, false] as const;
+            return [j.id, null] as const;
           }
         }),
       );
-      setScanIds(new Set(flags.filter(([, s]) => s).map(([id]) => id)));
+      setResultsById(new Map(entries.filter((e): e is [string, ParsedResults] => e[1] != null)));
     } catch (e) {
       onError(String(e));
     }
   }, [reaction.id, onError]);
+
+  // Jobs whose parsed results carry a scan profile (drives the picker's mark/warn).
+  const scanIds = useMemo(
+    () => new Set([...resultsById].filter(([, r]) => isScanJob(r)).map(([id]) => id)),
+    [resultsById],
+  );
 
   useEffect(() => {
     load();
@@ -254,6 +260,19 @@ function ReactionDetail({ reaction, onOpenJob, onError, onChanged, onDeleted }: 
     (pathwayId: string) => jobs.find((j) => j.pathway_id === pathwayId) ?? null,
     [jobs],
   );
+
+  // Pathways whose attached job carries a plottable scan profile (≥1 point) — the
+  // inputs to the comparative overlay. A pathway with no job / no scan is skipped.
+  const comparePathways: ComparePathway[] = useMemo(() => {
+    return pathways
+      .map((p) => {
+        const job = jobs.find((j) => j.pathway_id === p.id);
+        const results = job ? resultsById.get(job.id) : null;
+        if (!job || !results?.scan || results.scan.points.length === 0) return null;
+        return { id: p.id, label: p.label, scan: results.scan, input: job.input_content };
+      })
+      .filter((x): x is ComparePathway => x !== null);
+  }, [pathways, jobs, resultsById]);
 
   // Attach candidates: completed/parsed jobs NOT already grouped anywhere.
   const candidates: Candidate[] = useMemo(
@@ -465,6 +484,16 @@ function ReactionDetail({ reaction, onOpenJob, onError, onChanged, onDeleted }: 
         busy={busy}
         setBusy={setBusy}
       />
+
+      <h4 style={{ margin: "20px 0 8px" }}>Compare — ΔΔE‡</h4>
+      {comparePathways.length >= 2 ? (
+        <CompareView pathways={comparePathways} />
+      ) : (
+        <div className="empty">
+          Attach ≥ 2 scan pathways to compare their profiles and see ΔΔE‡. (Currently{" "}
+          {comparePathways.length} scan pathway{comparePathways.length === 1 ? "" : "s"}.)
+        </div>
+      )}
     </div>
   );
 }

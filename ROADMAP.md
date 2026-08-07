@@ -796,11 +796,24 @@ single-pathway relaxed scan is fully usable end-to-end. *(B1 ✅; B2 ✅ — aut
       (author) PASSED** — m1–m4 in the real window (plus an attach-form overflow fix: `flexWrap: wrap` +
       `minWidth: 0` on the select field so Attach stays inside the card). **Stage C2a complete.** See
       `modules/reactions-ui.md`.
-- [ ] **C2b — promote + comparative view.** Overlay Pathway A vs B, **ΔΔE‡** (barrier difference)
-      highlighted; reads coordinate/method/profile from the attached job (one source of truth); adds
-      the comparability guards (same coordinate/method) that C2a's attach leaves advisory.
-      **Manual gate.**
-      *Ratified for this stage (2026-08-07, [ADR-018](wiki/architecture/adr-018-reaction-energy-reference.md)
+- [~] **C2b-1 — comparative overlay + ΔΔE‡ (reference-free).** A "Compare" view in the reaction detail
+      (shown when ≥ 2 pathways carry a scan profile; < 2 → a clear empty state). Overlays the pathways'
+      profiles on one recharts chart on a **shared zero** (global minimum), one colour + legend label
+      each (explicit width, no `ResponsiveContainer`). Per-pathway **intrinsic barrier** = E(max) −
+      E(scan min); **ΔΔE‡** = E(max_A) − E(max_B), **reference-free** (ADR-018). The **comparability
+      guard** (`reactions/compare.ts`) parses the `!`-line method signature (+ `%cpcm smd true`) and the
+      scan coordinate; on a method/coordinate mismatch it **shows the curves but replaces ΔΔE‡ with the
+      reason** — never a faked number. Maxima labelled **approximate TS (screening)**; a note that
+      absolute barriers need a reactant reference (C2b-2). Pure logic unit-tested: **C-symmetry-zero**
+      (ΔΔE‡ ≈ 0 on identical/mirror profiles), **C-guard-refuses** (method/coordinate mismatch →
+      reason), **C-intrinsic** (both bite-verified). **Code + tests complete**: `tsc` 0, `vitest` 650
+      (+12), `vite build` clean, `cargo` 207 unaffected. **Manual gate (author) PENDING** — c1–c4 in the
+      real window (incl. the symmetry ≈ 0 sanity); C2b-1 closes when it passes. See `modules/reactions-ui.md`.
+- [ ] **C2b-2 — reactant reference + absolute barriers.** The `reaction_reference_jobs` table
+      (migration v14), a reference-management surface (add/remove reactant jobs, jobs-survive like C1),
+      and the **absolute** barrier E(max) − Σ E(reference jobs) added to the compare view; the
+      comparability guard extends to the reference jobs. **Manual gate.**
+      *Ratified 2026-08-07 ([ADR-018](wiki/architecture/adr-018-reaction-energy-reference.md)
       + [chemistry/reaction-barriers.md](wiki/chemistry/reaction-barriers.md)):* a relaxed scan yields
       **three barriers** — **ΔΔE‡** (si/re) is **reference-free** (the shared reactant reference cancels),
       **intrinsic** = E(max) − scan minimum (RC captured for free when the scan starts far enough), and
@@ -814,7 +827,8 @@ single-pathway relaxed scan is fully usable end-to-end. *(B1 ✅; B2 ✅ — aut
 
 **Stage C done when (= mission "done-when"):** author defines si vs re facial attack on a ketone,
 runs two native scans, and sees two profiles side by side with ΔΔE‡ — a computational
-stereoselectivity screen.
+stereoselectivity screen. *(C2b-1 code delivers exactly this overlay + ΔΔE‡; the mission "done-when"
+is **reached pending the author's c1–c4 manual gate**. C2b-2 adds absolute barriers on top.)*
 
 ### Stage D — Conformer → reaction-center scientific-rigor layer
 

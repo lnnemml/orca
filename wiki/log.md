@@ -6189,3 +6189,44 @@ line when narrow. Author confirmed by eye.
 **Next.** C2b — promote + comparative ΔΔE‡ overlay; `reaction_reference_jobs` (migration v14) per
 [ADR-018](architecture/adr-018-reaction-energy-reference.md); reads coordinate/method/profile from the
 attached job; comparability guards that C2a's attach leaves advisory.
+
+## [2026-08-07] session | Phase 4.5 Stage C2b-1 — comparative overlay + ΔΔE‡ (reference-free) + method-comparability guard (code complete; manual gate PENDING)
+
+**Built.** The mission "done-when" overlay: a **Compare view** in the reaction detail (shown when ≥ 2
+pathways carry a scan profile; < 2 → a clear empty state). `CompareView.tsx` overlays the pathways'
+B1 scan profiles on one recharts chart on a **shared zero** (global minimum), one colour + legend
+label each, explicit width (no `ResponsiveContainer`), each max marked. Reads nothing new — reuses
+`results.scan` (ADR-012), fetched once into a `resultsById` map reused by the attach picker too.
+
+**The numbers are pure + unit-tested** (`src/reactions/compare.ts`, `compare.test.ts` — 12 tests):
+- `intrinsicBarrierKcal` = (E(max) − E(min))·627.509 per pathway (self-contained, no reference).
+- `deltaDeltaEKcal` = E(max_A) − E(max_B), **reference-free** (ADR-018 — the shared reactant reference
+  cancels).
+- `pathwaysComparable` — parses the `!`-line **method signature** (identity keywords only; drops
+  run-type/SCF-conv/print/PAL; + SMD from `%cpcm smd true`) and the **scan coordinate** (kind+atoms+unit);
+  returns the **specific reason** on a mismatch. The UI shows the curves but **replaces ΔΔE‡ with the
+  reason** — never a faked number.
+
+**Negative controls (RED→GREEN, both load-bearing ones bite-demonstrated):**
+- **C-symmetry-zero** — ΔΔE‡ ≈ 0 on identical/mirror profiles (enantiomeric si/re → 0 by symmetry; a
+  sign/reference bug → non-zero). Sign-flip bite turns the "correctly signed" test red.
+- **C-guard-refuses** — method/coordinate mismatch → a `reason` (ok when matched); a compute-anyway
+  guard turns the three refuse tests red.
+- **C-intrinsic** — the (max−min)·627.509 factor on a known profile.
+
+**Honest + reference-free** (carried from B2): maxima are *approximate TS (scan maximum)* / a *screening*
+ΔE‡ estimate, never ΔG‡; a note says absolute (vs separated reactants) barriers need a reactant reference
+(C2b-2). No reactant reference required or built here (deliberately — ΔΔE‡ needs none).
+
+**Verify.** `tsc` 0; `vitest` 650 (50 files, +12); `vite build` clean; `cargo test` 207 (no Rust
+change). Wiki: `modules/reactions-ui.md` (+compare view section), `ROADMAP.md` (C2b split into **C2b-1
+`[~]`** + C2b-2), `index.md`.
+
+**Manual gate (author, real window) — PENDING; the unit stays open until it passes.**
+- c1: two scan pathways → both profiles overlaid, legend-labelled, shared zero; intrinsic barriers listed; maxima approximate-TS.
+- c2: ΔΔE‡ shown when method+coordinate match; **on two identical/mirror scans ΔΔE‡ ≈ 0** (symmetry sanity).
+- c3: two scans with different methods → curves shown, **ΔΔE‡ replaced by the reason**.
+- c4: < 2 scan pathways → the clear empty state, no crash.
+
+**Next.** Author runs c1–c4 → the Phase 4.5 mission "done-when" is met. Then C2b-2 — `reaction_reference_jobs`
+(migration v14) + absolute barriers on the overlay (reference summed, optional; jobs-survive like C1).
