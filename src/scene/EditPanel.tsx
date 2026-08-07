@@ -30,7 +30,7 @@ import { mergeToXyz } from "./scene";
  * Scene up as a preview scene; the store Scene and Monaco are untouched until Apply.
  */
 
-interface SidecarResponse {
+export interface SidecarResponse {
   xyz: string;
   measured: number;
   max_static_displacement: number;
@@ -79,9 +79,12 @@ function resolveActive(
   return null;
 }
 
-function callSetInternal(
+/** The one set-internal client call. Takes only the three fields the endpoint
+ * needs (`op`/`indices`/`mask`), so `ActiveEdit` satisfies it structurally AND the
+ * guided-placement panel reuses it without a second copy of the fetch. */
+export function callSetInternal(
   scene: Scene,
-  active: ActiveEdit,
+  active: { op: "distance" | "angle" | "dihedral"; indices: number[]; mask: number[] },
   value: number,
 ): Promise<SidecarResponse> {
   return postSidecar<SidecarResponse>("/geometry/set-internal", {

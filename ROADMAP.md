@@ -194,14 +194,13 @@ re-optimisation of the lowest 3–4 stay in Phase 4.5 (the scientific pipeline);
       - [x] **2.5.3b** — planEdit → `needs-split`; the UI resolves the mask (race-guarded)
         and drives glow + set-internal from it; `within` restricts perception to one
         fragment (metal–ligand trap); smaller fragment moves by default
-- [ ] Fragment library: common reagents (BH₄⁻, H₂O, common ligands), place at position
+- [x] Fragment library: common reagents (BH₄⁻, H₂O, common ligands), place at position
       with specified distance/angle
       — placement = set_distance/angle/dihedral with the mask on the newly added fragment
-      — **Partly built:** the reagent library (`src/scene/fragment-library.ts`) and
-        bounding-box placement (`placeFragment`, coarse ≥3.5 Å gap) exist and add a fragment;
-        what is NOT built is adding a reagent *at a specified distance/angle/dihedral* in one
-        step — today it is added coarsely, then positioned via the separate edit mode. Left
-        `[ ]` until the two are one guided action; carried to `Phase 4.2 — Geometry editor completion`.
+      — **Done (Phase 4.2 tail-1):** the reagent library (`src/scene/fragment-library.ts`) +
+        bounding-box `placeFragment` add a fragment, and the **guided placement panel** then drives
+        it to a target d/θ/φ in ONE flow (`src/scene/guided-placement.ts` + `GuidedPlacementPanel`),
+        reusing the `set-internal` edit path — the add-at-geometry action that was missing.
 - [x] Constraint manager: list of active constraints, delete, export to
       ORCA `%geom Constraints ... end` block in the input
       — constraints reference cross-fragment atom pairs
@@ -231,10 +230,11 @@ restorable on a job clone. **Done-when met:** the author can build a TS guess (B
 Bürgi-Dunitz approach to a carbonyl), constrain the distance, xTB pre-optimize, and iterate
 the angle on a cloned job without rebuilding the scene by hand.
 
-**Deferred out of 2.5 (carried to `Phase 4.2 — Geometry editor completion`):** *guided fragment placement* — adding a reagent
-*at a specified distance/angle/dihedral* in one step. The pieces exist (reagent library +
-bounding-box placement + edit mode); what is missing is the single add-at-geometry action. See
-the `[ ]` "Fragment library" item above.
+**Deferred out of 2.5, now DONE in `Phase 4.2 tail-1`:** *guided fragment placement* — adding a
+reagent *at a specified distance/angle/dihedral* in one flow. The pieces (reagent library +
+bounding-box placement + the `set-internal` edit path) are now composed into a single guided
+add-at-geometry action (`src/scene/guided-placement.ts` + `GuidedPlacementPanel`). See the
+now-`[x]` "Fragment library" item above.
 
 ---
 
@@ -635,9 +635,15 @@ Stage 3, where it is actually needed.) **Stage 3 is now COMPLETE (see below).**
 
 **Carried from Phase 2.5** (unchanged, still open)
 
-- [ ] Guided fragment placement: add a reagent *at a specified distance/angle/dihedral* in one
-      step (today: coarse bounding-box add, then position via edit mode). Reuses
-      `placeFragment` + the edit-mode `set-internal` path — the gap is the unified UI action.
+- [x] **Guided fragment placement (tail-1):** add a reagent *at a specified distance/angle/dihedral*
+      in one flow — pick a reagent (rough `placeFragment` + `add-fragment` op, unchanged), then the
+      **guided approach-geometry panel** (Fragments section): pick the reagent atom + 1–3 substrate
+      anchors, enter d (required) / θ / φ (each optional — an empty field is a SKIP, not a 0),
+      Preview → Apply. Reuses the edit-mode `set-internal` path VERBATIM: each given coordinate is one
+      `planEdit`/`applyResponseToScene` step masking the reagent fragment, committed as its own
+      `replace-fragment-atoms` op (Undo unwinds d/θ/φ one at a time). `src/scene/guided-placement.ts`
+      (pure planner + DI driver) + `GuidedPlacementPanel.tsx`; c1–c4 negative controls proven-biting.
+      Z-matrix nesting (d then θ then φ) so each edit preserves the earlier coordinate.
 - [ ] Constraint "toggle on/off" (currently delete + re-add covers it — see the 2.5.4b note).
 
 **Done when:** the editor's state is a fold over a typed operation log, 3Dmol is a dumb renderer

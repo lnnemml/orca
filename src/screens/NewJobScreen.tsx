@@ -14,6 +14,7 @@ import { EditorDock, type DockSection } from "../scene/EditorDock";
 import { AtomInspector } from "../scene/AtomInspector";
 import { EditPanel } from "../scene/EditPanel";
 import { RotatePanel } from "../scene/RotatePanel";
+import { GuidedPlacementPanel } from "../scene/GuidedPlacementPanel";
 import { DEFAULT_ROTATE_OVERLAY, type RotateOverlay } from "../viewer/rotate-overlay";
 import { ConstraintPanel } from "../scene/ConstraintPanel";
 import {
@@ -263,6 +264,16 @@ export function NewJobScreen({
   // the store Scene and Monaco are untouched until Apply (the 2.5.1 decision).
   // Undo is now the operation log's undo (deep, not one-step) — unit 2b.
   const [previewScene, setPreviewScene] = useState<Scene | null>(null);
+  // ── Guided fragment placement (Phase 4.2 tail-1) — APP-OWNED, NOT in the Scene ──
+  // The reagent whose approach geometry is being set (its `add-fragment` op is
+  // already committed at rough placement); `null` = no guided flow open. The panel
+  // reuses the shared `selection` pick list + the set-internal edit path.
+  const [guidedReagent, setGuidedReagent] = useState<{ fragmentId: string; name: string } | null>(
+    null,
+  );
+  // When on, clicking a reagent adds it AND opens the guided approach-geometry flow;
+  // off = the plain rough add (unchanged behaviour). Session-only.
+  const [guidedMode, setGuidedMode] = useState(false);
   // ── Rotate about axis (unit 3.3) — app-owned rotate state, NOT in the Scene ──
   // `rotateEphemeral` is the live rotation preview shown ONLY in the viewer (the
   // frozen-topology coordinate-update path); `rotateAxis` is the two picked atoms
@@ -712,6 +723,41 @@ export function NewJobScreen({
     addFragmentToScene(libraryFragmentToScene(lf));
   };
 
+  // Guided placement (Phase 4.2 tail-1): add the reagent roughly (same `placeFragment`
+  // + `add-fragment` op as `addReagent`), then OPEN the guided panel on the just-added
+  // fragment so the user sets its approach d/θ/φ in one flow. The store update is
+  // synchronous, so the new fragment is the last one right after the add.
+  const addReagentGuided = (lf: LibraryFragment) => {
+    setError(null);
+    addFragmentToScene(libraryFragmentToScene(lf));
+    const frags = useSceneStore.getState().scene?.fragments;
+    const added = frags && frags.length ? frags[frags.length - 1] : undefined;
+    if (added) {
+      setGuidedReagent({ fragmentId: added.id, name: added.name });
+      setSelection([]); // a clean pick list for the approach-geometry atoms
+      setOpenDock((o) => ({ ...o, fragments: true }));
+    }
+  };
+
+  // Commit the guided placement's op sequence (add-fragment is already in the log):
+  // one `replace-fragment-atoms` per given coordinate, in order (d, θ, φ), each with
+  // its own resultant snapshot — so Undo unwinds them step by step (ADR-017).
+  const applyGuided = (ops: { op: Op; scene: Scene }[]) => {
+    ops.forEach(({ op, scene: resultScene }) => commit(op, resultScene));
+    setGuidedReagent(null);
+    setPreviewScene(null);
+    setSaved(false);
+  };
+
+  // If the guided reagent leaves the scene (Undo past the add, a fragment removal),
+  // close the flow — there is nothing to place.
+  useEffect(() => {
+    if (guidedReagent && !scene?.fragments.some((f) => f.id === guidedReagent.fragmentId)) {
+      setGuidedReagent(null);
+      setPreviewScene(null);
+    }
+  }, [scene, guidedReagent]);
+
   // ── Door 1: Import xyz as fragment (unit 2d) ────────────────────────────────
   // The typical way coordinate hand-editing survives the read-only block: paste a
   // plain xyz and it becomes a NEW fragment (a logged `add-fragment` op), placed
@@ -984,13 +1030,24 @@ export function NewJobScreen({
     <div className="add-fragment-body">
       <div className="add-source">
         <div className="add-source-title muted">Reagents</div>
+        <label
+          className="guided-mode-toggle"
+          title="When on, adding a reagent opens the guided flow to set its approach distance / angle / dihedral to the substrate in one step."
+        >
+          <input
+            type="checkbox"
+            checked={guidedMode}
+            onChange={(e) => setGuidedMode(e.target.checked)}
+          />
+          Guided placement — set d / θ / φ on add
+        </label>
         <div className="reagent-chips">
           {FRAGMENT_LIBRARY.map((lf) => (
             <button
               key={lf.key}
               className="chip"
               title={lf.provenance}
-              onClick={() => addReagent(lf)}
+              onClick={() => (guidedMode ? addReagentGuided(lf) : addReagent(lf))}
             >
               {lf.name}{" "}
               <span className="muted">
@@ -1201,6 +1258,20 @@ export function NewJobScreen({
       glyph: "⬡",
       body: (
         <>
+          {scene && guidedReagent ? (
+            <GuidedPlacementPanel
+              scene={scene}
+              reagentFragmentId={guidedReagent.fragmentId}
+              reagentName={guidedReagent.name}
+              selection={selection}
+              onPreview={setPreviewScene}
+              onApplied={applyGuided}
+              onCancel={() => {
+                setGuidedReagent(null);
+                setPreviewScene(null);
+              }}
+            />
+          ) : null}
           {addFragmentSources}
           <FragmentList onFindConformers={findConformers} />
         </>

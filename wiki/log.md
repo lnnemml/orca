@@ -5597,3 +5597,51 @@ toggle → fragment-merge fix), plus the ring-torsion cut. Ran every CLAUDE.md l
 **Correctly-historical, deliberately kept** (they explain evolution, they don't lie about the present):
 the `selectionSurvives→filterSelection` removal note, `collapse-from-text` legacy, the "2c1 adapter gone"
 mentions, and log.md's append-only "Next: ring torsions" trailers (history of what was planned then).
+
+## [2026-08-07] session | feat(editor): guided fragment placement — add a reagent at d/θ/φ in one flow (Phase 4.2 tail-1)
+
+**Unit 4.2-tail-1 — guided fragment placement (carried from Phase 2.5).** The roadmap tail:
+today a reagent is added coarsely (`placeFragment`, ≥3.5 Å bbox gap) and then positioned in a
+SEPARATE edit-mode action — two steps. Architect's decision (B): full d/θ/φ, each optional, in
+ONE guided flow. Built by **composing existing ops, inventing no geometry.**
+
+**What landed.**
+- `src/scene/guided-placement.ts` (pure): `planGuidedPlacement` (reagent atom + 1–3 substrate
+  anchors + target d/θ/φ → a `GuidedStep[]`, one per GIVEN coordinate), `guidedStepOp`, and the
+  DI driver `runGuidedPlacement`. Each step is resolved through **`planEdit`** (reusing the mask /
+  reference-atom rule / both-orientation search), forcing the orientation whose mover IS the
+  reagent (`swapToAlternative` when planEdit defaulted to the smaller fragment). **No new d/θ/φ
+  math.** Z-matrix nesting (d → θ → φ, mover R last in each chain, each edit rotating about an axis
+  through anchor 1) so each coordinate preserves the earlier — the sidecar's existing
+  `test_sequential_burgi_dunitz_acceptance` is the numeric proof.
+- `src/scene/GuidedPlacementPanel.tsx` (React, Fragments section): splits the shared pick list by
+  fragment membership (one reagent atom + substrate anchors), d (required) / θ / φ (optional, a
+  field disabled with a reason until enough anchors are picked — empty ≠ 0), Preview (view-only) /
+  Apply. Reuses the now-exported `callSetInternal` from `EditPanel` (one set-internal client, no
+  second copy).
+- `EditPanel.tsx`: exported `callSetInternal` + `SidecarResponse`, generalized the param to
+  `{op,indices,mask}`.
+- `NewJobScreen.tsx`: **app-owned** `guidedReagent` / `guidedMode` (NOT in the Scene — `store.ts`
+  untouched). "Guided placement" toggle → clicking a reagent adds it roughly AND opens the panel on
+  the just-added fragment; `applyGuided` commits one `replace-fragment-atoms` (`set-internal`) op
+  per coordinate, in order — so **Undo unwinds d/θ/φ one at a time** (the `add-fragment` op is
+  already committed at rough add). Guided reagent leaving the scene (undo past the add) closes the flow.
+
+**Gates.** tsc 0; full vitest **560 passed** incl. `guided-placement.test.ts` c1–c4, each with a
+**proven-biting** negative control (verified red-then-green: c1 null-vs-0 → 3 red; c2 wrong mask →
+1 red; c3 bundled op → 2 red). pytest set-internal/geometry endpoint **14 passed, unchanged** (incl.
+the sequential Bürgi-Dunitz acceptance). `vite build` clean. Grep gates: guided state absent from
+`src/scene/store.ts` and from `src/scene/` (`guidedReagent`/`guidedMode` only in `src/screens`);
+`guided-placement.ts` carries no geometry math and drives everything through `planEdit` /
+`applyResponseToScene` / `applyResponseIssue`.
+
+**Manual gate m1–m5 (real Tauri/WebKitGTK window) — PENDING author verification.** This is the
+mandatory UI-unit gate and it is NOT yet run: the native WebKitGTK window + 3Dmol atom-picking
+cannot be driven from this session (the browser tooling targets Chrome, not the Tauri webview). The
+code + all automated gates are green; the live verdict — m1 the mission case (BH₄⁻ from the library
+→ guided → pick B + carbonyl C, d=2.5, θ=107° → Preview → Apply → reagent sits on the geometry,
+measured d/θ match, substrate unmoved), m2 step-by-step Undo, m3 d-only + φ, m4 degenerate pick
+disables the field, m5 Monaco block updates on Apply — is left for the author to run in the window.
+
+**Next:** run the manual gate m1–m5; then the constraint on/off toggle tail. Do NOT add a constraint
+automatically on placement (separate action, next tail) — untouched here.

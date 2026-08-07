@@ -1,6 +1,7 @@
 # Module: editor UI (the New Job workspace)
 
-**Status:** Phase 4.2 unit 3.3b (Stage 3 — operations over the core — **COMPLETE**). The New Job screen (`src/screens/NewJobScreen.tsx`) is a
+**Status:** Phase 4.2 tail-1 (guided fragment placement) on top of Stage 3 (operations over the
+core — **COMPLETE**). The New Job screen (`src/screens/NewJobScreen.tsx`) is a
 **viewer-first workspace**: the 3Dmol canvas is the primary surface, and the geometry panels live in
 a **right dock** (`src/scene/EditorDock.tsx`) that is a thin icon rail expanding per section. This
 page records the **layout principle and where future panels go** — not the current CSS pixel values
@@ -63,9 +64,22 @@ page records the **layout principle and where future panels go** — not the cur
     in both modes (single source: `measure` distance). App-owned state (`rotateOverlay` in `NewJobScreen`,
     like `clashK`), default Axis, reset to Axis when the pair changes or on Cancel; **the measurement
     tool outside Rotate is untouched**.
+- **Guided fragment placement — add a reagent at d/θ/φ in ONE flow (Phase 4.2 tail-1;
+  `GuidedPlacementPanel`, in the Fragments section).** With **Guided placement** on, clicking a reagent
+  adds it roughly (the same `placeFragment` + `add-fragment` op — unchanged) *and* opens the guided
+  panel on that fragment. Pick the **reagent atom** (the one on the just-added fragment) + **1–3
+  substrate anchors**, then enter **d** (required) / **θ** (optional, needs 2 anchors) / **φ** (optional,
+  needs 3) — a field is disabled with a reason until enough anchors are picked; an **empty field is a
+  SKIP, never a 0**. Preview is **view-only** (mirrors `EditPanel`); **Apply** commits one
+  `replace-fragment-atoms` (`set-internal`) op **per given coordinate**, in Z-matrix order (d, then θ,
+  then φ — each later edit rotates about an axis through anchor 1, preserving the earlier coordinate),
+  so **Undo unwinds each step**. It **reuses the inter-fragment `set-internal` edit path verbatim**
+  (`planEdit`/`applyResponseToScene`, mask = the reagent fragment) — no new d/θ/φ math. Guided state is
+  **app-owned in `NewJobScreen`, NOT in the Scene**. Mechanism: `modules/scene.md` "Guided placement".
 - **Sections, in order of use:** Selection & Measure (`AtomInspector`) · Edit (`EditPanel` + the Move-mode
   toggle + `RotatePanel`) · Fragments (the Add-Fragment palette — reagents / import / SMILES / **Paste xyz** / library —
-  **plus** `FragmentList`) · Constraints (`ConstraintPanel`) · History (`HistoryPanel`) · Actions (xTB
+  **plus** the guided `GuidedPlacementPanel` when a reagent is being placed, **plus** `FragmentList`) ·
+  Constraints (`ConstraintPanel`) · History (`HistoryPanel`) · Actions (xTB
   pre-optimize). Each
   toggles **independently**; open-state is **session-only** (not persisted — a fresh screen starts
   viewer-first with just Fragments open so Add Fragment is discoverable). Each section shows its
@@ -169,8 +183,8 @@ so a future divergence can't reintroduce the "which index is this?" ambiguity.
 
 - **Phase 4.5 — reaction setup.** The reaction-center / scan-setup UI (ADR-007) is a **new dock
   section** (e.g. "Reaction"), not a new stack: it composes the existing selection/measure/constraint
-  panels into a guided flow. Guided fragment placement (add a reagent at a distance/angle/dihedral)
-  extends the **Fragments** section.
+  panels into a guided flow. (Guided fragment placement — add a reagent at a distance/angle/dihedral —
+  is **built** as of Phase 4.2 tail-1; it extends the **Fragments** section, see above.)
 
 ## Related
 

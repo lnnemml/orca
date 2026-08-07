@@ -1,8 +1,8 @@
 # Module: scene (`src/scene/`)
 
-**Status:** current through **Phase 4.2 Stage 3** (the geometry-editor arc: the operation-log fold
-2a–2d, rigid drag 3.1, vdW clash 3.2, rigid rotation 3.3/3.3b, the `adoptPreservesScene` fragment-merge
-guard). The Scene is the **source of truth for geometry on
+**Status:** current through **Phase 4.2 tail-1** (guided fragment placement) on top of Stage 3 (the
+geometry-editor arc: the operation-log fold 2a–2d, rigid drag 3.1, vdW clash 3.2, rigid rotation
+3.3/3.3b, the `adoptPreservesScene` fragment-merge guard). The Scene is the **source of truth for geometry on
 New Job** — a Zustand store (`store.ts`) synced two-way with the Monaco buffer — and
 carries the whole reaction-geometry workflow: multi-fragment build (Add-Fragment panel
 + `FragmentList`), electron-parity validation (`parity.ts`), conformer search (GOAT,
@@ -78,6 +78,17 @@ functions, no imports from react / 3dmol / tauri. The reactive `store.ts` (added
   (`EditPlan` is the ASE-mask emit seam — positional by design). Plus the pure apply
   helpers `applyResponseToScene` / `applyResponseIssue` and the shared reference-atom
   rule `maskRoleViolation` / `explainSplitViolation` (2.5.4a). Pure, no React/fetch.
+- `guided-placement.ts` — **guided fragment placement** (Phase 4.2 tail-1): the pure
+  planner `planGuidedPlacement` (a reagent atom + 1–3 substrate anchors + target d/θ/φ →
+  a SEQUENCE of `set-internal` steps, each masking the reagent fragment) + `guidedStepOp`
+  + the DI driver `runGuidedPlacement`. **Reuses `edit-plan.ts` (`planEdit` /
+  `applyResponseToScene` / `applyResponseIssue`) — no new d/θ/φ math.** Pure /
+  node-tested (`guided-placement.test.ts`, c1–c4). No React, no direct fetch (the
+  sidecar call is injected). See "Guided placement" below.
+- `GuidedPlacementPanel.tsx` — the guided panel (React; Fragments section): resolves the
+  reagent atom + substrate anchors from the shared pick list, d/θ/φ fields, Preview
+  (view-only) / Apply. A thin wrapper over `guided-placement.ts` + the exported
+  `callSetInternal` — mirrors `EditPanel`.
 - `constraints.ts` — ORCA `%geom Constraints` generate / parse / inject (2.5.4a):
   `Constraint` type (B/A/D/C), `ORCA_INDEX_BASE`/`toOrcaIndex`/`fromOrcaIndex`,
   `constraintsBlock`, `parseConstraintsBlock`, `injectConstraints`. Pure /
@@ -946,6 +957,45 @@ The math is **not duplicated** — `op` and `current` come straight from
   `needs-split` case carrying the right `cut`/`moving`/`within` per op (including
   a single-fragment scene); the immovable-pivot refusal naming culprits `#0`,
   `#3`; the slice; the boundary check.
+
+## Guided placement (`guided-placement.ts` + `GuidedPlacementPanel`, Phase 4.2 tail-1)
+
+Adding a reagent *at a target approach geometry* in ONE flow, by **composing existing
+ops** — it invents no geometry. The reagent is added roughly first (`placeFragment` +
+an `add-fragment` op, unchanged); guided placement then drives it to the target d/θ/φ.
+
+- **One flow = a sequence of the EXISTING `set-internal` op.** `planGuidedPlacement(scene,
+  reagentFragmentId, reagentAtom, substrateRefs, targets)` returns a `GuidedStep[]`, one
+  per **given** coordinate. Each step is resolved through **`planEdit`** (the mask, the
+  reference-atom rule, the both-orientation search — all already tested in `edit-plan.ts`),
+  forcing the orientation whose moving fragment IS the reagent (`swapToAlternative` when
+  `planEdit` defaulted to the smaller fragment). So the **mask is the reagent fragment** —
+  exactly the inter-fragment case 2.5.2d. There is **no new d/θ/φ math here**.
+- **Only GIVEN coordinates apply (invariant 2).** d is required (`> 0`); θ/φ are emitted
+  ONLY when their target is non-null AND enough substrate anchors were picked. **An empty
+  field is a SKIP, never a 0** — `guided-placement.test.ts` (c1) proves the null-vs-0
+  distinction bites.
+- **Z-matrix nesting — why d → θ → φ, in that order.** With reagent atom R and anchors
+  A, B, C: d = distance(R, A) → chain `[A, R]`; θ = angle(R, A, B) → `[B, A, R]` (vertex A);
+  φ = dihedral(R, A, B, C) → `[C, B, A, R]` (axis A–B). `planEdit`'s mover is the LAST atom,
+  so R is last in every chain. Each later edit rotates the reagent about an axis **through
+  A**, so it **preserves** the earlier coordinate (the distance to A, then the angle at A) —
+  the standard internal-coordinate construction; the sidecar's sequential-apply acceptance
+  test (`test_sequential_burgi_dunitz_acceptance`) is the numeric proof the composition holds.
+- **A legible op per coordinate; Undo unwinds each (invariant 1).** `guidedStepOp` builds one
+  `replace-fragment-atoms` (`via: "set-internal"`) op per step — the SAME provenance shape
+  `EditPanel` writes, so the history reads "Set distance …", "Set angle …", "Set dihedral …".
+  **NOT one bundled, opaque op** (c3 bites a bundle). The `add-fragment` op is already
+  committed at rough placement, so the log reads `add-fragment` + one `set-internal` per
+  coordinate; `NewJobScreen`'s `applyGuided` commits them in order.
+- **Preview view-only; Apply enforces the post-condition.** `runGuidedPlacement` threads the
+  scene through each step, the sidecar call INJECTED (so tests drive it with a fake server).
+  Apply runs `applyResponseIssue` after every step (rule #9 — a moved static atom / wrong count
+  is REFUSED); Preview skips it (mirrors `EditPanel`). c4 proves the guard is the Apply path.
+- **Guided state is app-owned, NOT in the Scene.** `guidedReagent` / `guidedMode` live in
+  `NewJobScreen` (`store.ts` is untouched — no guided field). The panel reuses the shared
+  `selection` pick list, splitting it by fragment membership (the one atom on the reagent
+  fragment is R; the rest are substrate anchors in click order). See `modules/editor-ui.md`.
 
 ## Rigid transforms are TS; internal-coordinate edits are the sidecar (the Stage-3 split)
 

@@ -829,6 +829,65 @@ select:disabled,
   background: rgba(251, 113, 133, 0.12);
   font-weight: 600;
 }
+/* Guided fragment placement (Phase 4.2 tail-1) — sibling of the edit panel. */
+.guided-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+  border: 1px solid var(--accent, var(--border));
+  border-radius: 6px;
+  background: var(--panel-2);
+}
+.guided-mode-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 6px;
+  cursor: pointer;
+}
+.guided-picks {
+  font-size: 12px;
+  line-height: 1.5;
+}
+.guided-warn {
+  color: #fb923c;
+}
+.guided-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.guided-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.guided-field > label {
+  font-size: 11px;
+  color: var(--muted);
+}
+.guided-field .row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.guided-target {
+  width: 96px;
+}
+.guided-hint {
+  font-size: 11px;
+  font-style: italic;
+}
+.guided-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
 .edit-notice {
   display: flex;
   align-items: center;
