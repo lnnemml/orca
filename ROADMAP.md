@@ -679,9 +679,11 @@ crosses a boundary the app owns. **✅ MET — Phase 4.2 is COMPLETE** (Stages 1
 reaction, explores pathways via native ORCA scans, and compares electronic energy
 barriers — the full computational experiment lifecycle. See ADR-007.
 
-**Depends on Phase 4.2** — the reaction-center and scan setup UIs build on the completed
-geometry editor (typed operations, one authoritative core); product-from-reactant derivation is
-ADR-010's `ReactionPath` (`fold(reactant, transform)`, atom mapping by construction).
+**Depends on Phase 4.2 (✅ COMPLETE) + Phase 3 result parsing (✅ COMPLETE)** — the reaction-center
+and scan-setup UIs build on the finished geometry editor (typed operations, one authoritative core);
+the profile/frequency artifacts this phase reads (relaxed-scan `.dat`, `.hess`) are the Phase 3
+authoritative-parsing tier; product-from-reactant derivation is ADR-010's `ReactionPath`
+(`fold(reactant, transform)`, atom mapping by construction).
 
 > **Open question — PARTLY SETTLED (unit 1a, 2026-08-05).** ORCA may reorder atoms in its output
 > when symmetry is active. This was measured for the common case:
@@ -698,16 +700,31 @@ ADR-010's `ReactionPath` (`fold(reactant, transform)`, atom mapping by construct
 > and to ADR-010's `IndexMap`, and the post-condition catches it at the `parse_output` boundary
 > before scans are trusted.
 
-- [ ] **Microsolvation (explicit solvent shell) — EARLY probe-then-design (rule #10).** Build an
-      explicit first-solvation-shell around a solute, the natural extension of fragment placement +
-      xtb + GOAT already in hand. **Before designing:** install **CREST** and *probe* its `--qcg`
-      (quantum-cluster-growth) microsolvation with **xtb 6.6.1** on a small known case — record the
-      real invocation, output files, and cost in the wiki (no fact from docs/memory). Only then
-      design the UI/flow. **Caveats to settle in the probe:** solvent-shell **conformer sampling**
-      (the shell is floppy — many near-degenerate arrangements, GOAT/CREST territory) and
-      **quasi-RRHO** thermochemistry for the low frequencies a loose shell introduces. Depends on
-      the placement + xtb + GOAT primitives (all built); a counterion catalog (tail-2) already
-      seeds the ion side.
+**Early — new tools to install + PROBE before the scan core (rule #10: probe first, then design):**
+
+- [ ] **Microsolvation (explicit solvent shell).** Build an explicit first-solvation shell around a
+      solute — the natural extension of fragment placement + xtb + GOAT already in hand; the tail-2
+      cation catalog seeds the ion side. **Install CREST** (a *separate* binary that shells out to
+      xtb — **domain rule #2:** its build must match the installed **xtb 6.6.1**, an OpenMPI/version
+      compatibility check like ORCA's) → **PROBE `crest --qcg`** (quantum-cluster-growth) with a
+      minimal run and record what works, the artifacts, and the cost in the wiki (no fact from
+      docs/memory) → **THEN** design the UI/flow. **Caveats to settle in the probe:** solvent-shell
+      **conformer sampling** (the shell is floppy — many near-degenerate arrangements, not a single
+      shot) and **quasi-RRHO** thermochemistry for the low frequencies a loose cluster introduces.
+- [ ] **Transition-state methods** (moved from Phase 6 — this is the **core** of mechanism work, not a
+      power feature). All native ORCA, building on the editor (4.2) + the profile/frequency parsers (3);
+      each needs a real ORCA 6 run recorded first (the input block, the artifacts it emits, the cost)
+      before any UI:
+      - **OptTS** (`! OptTS`) — optimise to a first-order saddle by eigenvector following (a scan
+        maximum is the natural seed).
+      - **NEB / NEB-TS / NEB-CI** (`! NEB-TS`) — climbing-image band between reactant and product →
+        a reaction path + TS guess when there is no clean scan coordinate; needs per-iteration band
+        energies + a path viewer.
+      - **IRC** (`! IRC`) — validate that a found TS actually connects the intended reactant and
+        product (the post-condition on a TS).
+
+**Core — the native-scan pipeline:**
+
 - [ ] Conformer ensemble → reaction-center pipeline: **Boltzmann weighting** of the
       GOAT ensemble + **re-optimise the lowest 3–4 at DFT** → build reaction centers on
       those. Mandatory before any pathway (see ADR-007). *(The GOAT primitive itself —
@@ -715,7 +732,7 @@ ADR-010's `ReactionPath` (`fold(reactant, transform)`, atom mapping by construct
 - [ ] Data model: `reactions`, `reaction_centers`, `pathways` tables; nullable FKs from
       `jobs` (`reaction_id`, `pathway_id`)
 - [ ] Reaction setup UI: define substrate + reagent, pick reaction center atoms,
-      set approach geometry (distance, angle, dihedral)
+      set approach geometry (distance, angle, dihedral) — reuses the tail-1 guided-placement flow.
 - [ ] Scan input generation: from ReactionCenter → ORCA `%geom Scan B a1 a2 = start, end, npoints end end`
       (one job per pathway, native relaxed scan — NOT N separate jobs)
 - [ ] Scan output parser: per-point energies + scanned-coordinate values from the **structured**
@@ -728,16 +745,10 @@ ADR-010's `ReactionPath` (`fold(reactant, transform)`, atom mapping by construct
 - [ ] Energy profile visualization: reaction coordinate vs energy (recharts)
 - [ ] Comparative pathway view: overlay Pathway A vs Pathway B energy profiles;
       ΔΔE‡ (electronic energy barrier difference) highlighted
-- [ ] TS refinement (late step): scan maximum geometry → OptTS → Freq → verify one
-      imaginary frequency → ΔG‡ with thermochemistry (publication-quality result)
-- [ ] **Transition-state methods — pulled EARLY from Phase 6 into this phase's plan** (they are the
-      point of reaction modeling, not a "power feature"): **OptTS** (eigenvector-following from a scan
-      maximum), **NEB / NEB-CI** (climbing-image band between reactant and product for a first TS guess
-      without a good scan coordinate), and **IRC** (verify the TS connects the intended reactant and
-      product). **Probe-then-design (rule #10):** each needs a real ORCA 6 run recorded in the wiki
-      first — the input blocks (`%neb`, `OptTS`, `IRC`), the artifacts they emit, and the cost — before
-      any UI. NEB especially: per-iteration band energies + a path viewer. Sequence after the relaxed
-      scan (a scan maximum is the natural OptTS seed); IRC is the post-condition on a found TS.
+- [ ] TS refinement — the end-to-end result: scan maximum geometry → **OptTS** → Freq → verify **one**
+      imaginary frequency → **IRC** connectivity check → ΔG‡ with thermochemistry (publication-quality).
+      This is the *application* of the OptTS/IRC methods above in the scan pipeline — not a second
+      implementation of them.
 
 **Done when:** author defines two stereofacial attacks on a ketone (si vs re face),
 runs two native ORCA scans, and sees two energy profiles side by side with ΔΔE‡ —

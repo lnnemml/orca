@@ -4,7 +4,7 @@ import type { AtomId } from "./ids";
 import type { Scene } from "./types";
 import { globalIndexOfAtom, rotateFragmentInScene, rotationAxis } from "./scene";
 import { describeAtomById } from "./selection";
-import type { RotateOverlay } from "../viewer/rotate-overlay";
+import { DEFAULT_ROTATE_OVERLAY, type RotateOverlay } from "../viewer/rotate-overlay";
 
 /**
  * "Rotate about axis" — the rigid whole-fragment rotation tool (Phase 4.2 Stage 3,
@@ -80,7 +80,7 @@ export function RotatePanel({
   // (a) The drawn axis pair — fires ONLY when the pair / active flag changes. Were
   //     this to fire on every angle tick, `rotateAxis`'s identity would change each
   //     tick and `NewJobScreen`'s `[rotateAxis]` reset would snap the overlay toggle
-  //     back to "axis" — making Axis⇄Distance un-switchable.
+  //     back to the default overlay — making Axis⇄Distance un-switchable.
   useEffect(() => {
     onAxis(active && p !== null && q !== null ? [p, q] : null);
   }, [active, p, q, onAxis]);
@@ -135,7 +135,7 @@ export function RotatePanel({
   const cancel = () => {
     setAngleDeg("0");
     onEphemeral(null);
-    onOverlayChange("axis"); // back to the axis view on cancel (unit 3.3b)
+    onOverlayChange(DEFAULT_ROTATE_OVERLAY); // back to the default overlay on cancel (unit 3.3b)
   };
 
   return (

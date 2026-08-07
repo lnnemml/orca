@@ -73,8 +73,9 @@ page records the **layout principle and where future panels go** — not the cur
     small segmented toggle now shows **exactly one** overlay for the pair: **Axis** (cylinder + the Å
     value on the axis midpoint) or **Distance** (the measurement line + label). The Å number is the same
     in both modes (single source: `measure` distance). App-owned state (`rotateOverlay` in `NewJobScreen`,
-    like `clashK`), default Axis, reset to Axis when the pair changes or on Cancel; **the measurement
-    tool outside Rotate is untouched**.
+    like `clashK`), **default Distance** (`DEFAULT_ROTATE_OVERLAY` — on picking two atoms the researcher
+    reads the separation first; the axis cylinder is one toggle away), reset to that default when the
+    pair changes or on Cancel; **the measurement tool outside Rotate is untouched**.
 - **Guided fragment placement — add a reagent at d/θ/φ in ONE flow (Phase 4.2 tail-1;
   `GuidedPlacementPanel`, in the Fragments section).** With **Guided placement** on, clicking a reagent
   adds it roughly (the same `placeFragment` + `add-fragment` op — unchanged) *and* opens the guided

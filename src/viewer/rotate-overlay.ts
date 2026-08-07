@@ -13,8 +13,10 @@
 
 export type RotateOverlay = "axis" | "distance";
 
-/** The panel opens for rotating, so the axis view is the default. */
-export const DEFAULT_ROTATE_OVERLAY: RotateOverlay = "axis";
+/** Default to the **distance** overlay: on picking two atoms the researcher first
+ * wants to read the separation (the reaction coordinate), and the green measurement
+ * line reads unambiguously; the axis cylinder is one toggle away when actually rotating. */
+export const DEFAULT_ROTATE_OVERLAY: RotateOverlay = "distance";
 
 /** Flip the toggle. */
 export function flipRotateOverlay(o: RotateOverlay): RotateOverlay {

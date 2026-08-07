@@ -5744,3 +5744,28 @@ with the filter.
 transition-state methods (OptTS / NEB / NEB-CI / IRC) pulled from Phase 6 with a probe-then-design note
 (rule #10) — they are the point of reaction modeling, not a power feature. (Microsolvation CREST-probe
 item was recorded in tail-2.)
+
+## [2026-08-07] session | fix(editor): rotate-overlay defaults to distance; reconcile Phase 4.5 roadmap
+
+**A — rotate-overlay default: axis → distance.** On picking two atoms in the Rotate tool the
+researcher first wants the separation (the reaction coordinate), and the green measurement line reads
+unambiguously; the axis cylinder is one toggle away when actually rotating. Changed
+`DEFAULT_ROTATE_OVERLAY` (`rotate-overlay.ts`) to `"distance"`; the constant propagates to
+`NewJobScreen` init + `[rotateAxis]` reset and to `RotatePanel`'s Cancel (which now references the
+constant instead of a hardcoded `"axis"`). Toggle logic (`flipRotateOverlay`/`chooseRotateOverlay`),
+the azure axis colour, the "exactly one overlay per pair" invariant, and the Å label are unchanged.
+`rotate-overlay.test.ts` default assertion updated to `"distance"`; flip-symmetry + one-overlay tests
+untouched. vitest green.
+
+**B — ROADMAP Phase 4.5 reconciled into a clean ordered block.** Dependency line now names both
+completed prerequisites (Phase 4.2 + Phase 3 parsing). Items regrouped: **Early** (new tools, probe
+first — rule #10) = Microsolvation (install CREST → probe `crest --qcg` with xtb 6.6.1, domain rule #2
+compatibility; caveats: shell conformer sampling + quasi-RRHO) and **Transition-state methods** moved
+from Phase 6 (OptTS / NEB-TS / NEB-CI / IRC — the core of mechanism work, each probe-then-design);
+**Core** (existing native-scan pipeline, ordered) = conformer→reaction-center, data model, reaction
+setup UI (reuses tail-1 guided placement), scan input gen, scan output parser, energy-profile viz,
+comparative pathway view, and TS refinement — the last now framed as the *application* of the early
+OptTS/IRC methods (no duplicate implementation).
+
+tsc 0; vitest green. wiki: editor-ui.md (rotate default now Distance). No manual gate beyond the one
+short rotate step (pick two atoms → Distance shown by default; toggle → Axis).

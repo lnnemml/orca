@@ -14,8 +14,8 @@ import {
 // the viewer wiring — see grep gate). c1 = default/flip, c2 = the decision.
 
 describe("rotate overlay toggle state (c1)", () => {
-  it("defaults to axis (the panel opens for rotating)", () => {
-    expect(DEFAULT_ROTATE_OVERLAY).toBe("axis");
+  it("defaults to distance (read the separation first; axis is one toggle away)", () => {
+    expect(DEFAULT_ROTATE_OVERLAY).toBe("distance");
   });
 
   it("flips both ways and is its own inverse", () => {
