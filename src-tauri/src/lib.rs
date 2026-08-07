@@ -99,6 +99,8 @@ pub fn run() {
             cpu_presets::get_cpu_presets,
             commands::molecules::create_molecule,
             commands::molecules::list_molecules,
+            commands::molecules::create_reagent,
+            commands::molecules::list_reagents,
             commands::molecules::get_molecule,
             commands::molecules::update_molecule,
             commands::molecules::delete_molecule,

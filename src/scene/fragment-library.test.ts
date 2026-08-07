@@ -6,6 +6,8 @@ import {
   type LibraryFragment,
 } from "./fragment-library";
 import type { RawAtom } from "./types";
+import { testScene } from "./scene-test-util";
+import { totalCharge } from "./scene";
 
 const dist = (atoms: RawAtom[], i: number, j: number) =>
   Math.hypot(
@@ -73,6 +75,39 @@ describe("FRAGMENT_LIBRARY invariants", () => {
         expect(Math.abs(angle(bh4, i, 0, j) - 109.47)).toBeLessThanOrEqual(0.1);
       }
     }
+  });
+});
+
+describe("(c1) seed monatomic cations (Phase 4.2 tail-2)", () => {
+  const CATIONS: [string, number][] = [
+    ["na+", 1],
+    ["li+", 1],
+    ["k+", 1],
+    ["mg2+", 2],
+  ];
+
+  it.each(CATIONS)("%s: declared charge, monatomic, no internal reference", (key, charge) => {
+    const f = byKey(key);
+    expect(f.charge).toBe(charge);
+    expect(f.atoms).toHaveLength(1); // monatomic
+    expect(f.reference).toEqual({}); // no internal geometry (like H⁻/Cl⁻)
+  });
+
+  it("a cation's charge shifts the scene total: H₂O(0) + BH₄⁻(−1) + Na⁺(+1) = 0", () => {
+    const scene = testScene([
+      libraryFragmentToScene(byKey("water")), // 0
+      libraryFragmentToScene(byKey("bh4-")), // −1
+      libraryFragmentToScene(byKey("na+")), // +1
+    ]);
+    expect(totalCharge(scene)).toBe(0);
+
+    // The BITE: drop Na⁺ and the total is −1 — so the +1 really moved it. A Na⁺
+    // mis-declared as charge 0 would leave the three-fragment total at −1 → red.
+    const withoutNa = testScene([
+      libraryFragmentToScene(byKey("water")),
+      libraryFragmentToScene(byKey("bh4-")),
+    ]);
+    expect(totalCharge(withoutNa)).toBe(-1);
   });
 });
 

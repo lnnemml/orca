@@ -175,6 +175,41 @@ export const FRAGMENT_LIBRARY: readonly LibraryFragment[] = [
     provenance: "Monatomic chloride ion — no internal geometry.",
     reference: {},
   },
+  // Monatomic cations (counterions / Lewis-acid centres). All closed-shell (Na⁺/K⁺/
+  // Mg²⁺ isoelectronic with a noble gas, Li⁺ with He) → singlet, no radical hint. No
+  // internal geometry, so `reference` is empty like the other monatomics (H⁻/Cl⁻).
+  {
+    key: "na+",
+    name: "Na⁺",
+    charge: 1,
+    atoms: monatomic("Na"),
+    provenance: "Monatomic cation — no internal geometry.",
+    reference: {},
+  },
+  {
+    key: "li+",
+    name: "Li⁺",
+    charge: 1,
+    atoms: monatomic("Li"),
+    provenance: "Monatomic cation — no internal geometry.",
+    reference: {},
+  },
+  {
+    key: "k+",
+    name: "K⁺",
+    charge: 1,
+    atoms: monatomic("K"),
+    provenance: "Monatomic cation — no internal geometry.",
+    reference: {},
+  },
+  {
+    key: "mg2+",
+    name: "Mg²⁺",
+    charge: 2,
+    atoms: monatomic("Mg"),
+    provenance: "Monatomic cation — no internal geometry.",
+    reference: {},
+  },
   {
     key: "water",
     name: "H₂O",

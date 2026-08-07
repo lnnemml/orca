@@ -431,7 +431,7 @@ answers "how do I set up CPCM for water" in one search.
 
 ---
 
-## Phase 4.2 — Geometry editor completion
+## Phase 4.2 — Geometry editor completion ✅ COMPLETE
 
 **Goal:** finish the geometry editor on the identity and state model of
 [ADR-010](wiki/architecture/adr-010-editor-identity-state.md) — not as a list of ergonomic
@@ -644,11 +644,24 @@ Stage 3, where it is actually needed.) **Stage 3 is now COMPLETE (see below).**
       `replace-fragment-atoms` op (Undo unwinds d/θ/φ one at a time). `src/scene/guided-placement.ts`
       (pure planner + DI driver) + `GuidedPlacementPanel.tsx`; c1–c4 negative controls proven-biting.
       Z-matrix nesting (d then θ then φ) so each edit preserves the earlier coordinate.
-- [ ] Constraint "toggle on/off" (currently delete + re-add covers it — see the 2.5.4b note).
+- [x] **User-extensible reagent catalog + seed cations (tail-2):** the curated `FRAGMENT_LIBRARY`
+      gains monatomic cations (Na⁺/Li⁺/K⁺ +1, Mg²⁺ +2 — closed-shell, no internal geometry), and a
+      user can **save their own reagents** — a `molecules` row with a role flag (`is_reagent`,
+      schema **v12**) reusing the existing table (`charge` was already there). `create_reagent` /
+      `list_reagents` commands (charge **mandatory** at save, never a silent 0 — ADR-014);
+      `list_molecules` filters role 0 so the molecule library and its screen are unchanged. The
+      palette shows **Built-in** (reference-contract, curated) and **My reagents** (user provenance,
+      no reference) as visually distinct groups; a user reagent's charge flows into the scene total
+      by the same path as a built-in. `src/scene/reagent-catalog.ts` + cargo/vitest c1–c4
+      proven-biting. **This closes Phase 4.2.**
+- ~~Constraint "toggle on/off"~~ — **cut (decision 2026-08-07).** Delete + re-add already covers it
+      (the 2.5.4b note); a persistent enabled/disabled state would add a second source of truth over
+      the constraint text (the very drift `constraints.ts` was built to avoid) for marginal
+      ergonomics. Not worth the complication — the same reasoning as the manual ring-cut refusal.
 
 **Done when:** the editor's state is a fold over a typed operation log, 3Dmol is a dumb renderer
 fed an `AtomId` table, a fragment can be dragged rigidly with one Undo, and no bare integer
-crosses a boundary the app owns.
+crosses a boundary the app owns. **✅ MET — Phase 4.2 is COMPLETE** (Stages 1–3 + tails 1–2).
 
 ---
 
@@ -677,6 +690,16 @@ ADR-010's `ReactionPath` (`fold(reactant, transform)`, atom mapping by construct
 > and to ADR-010's `IndexMap`, and the post-condition catches it at the `parse_output` boundary
 > before scans are trusted.
 
+- [ ] **Microsolvation (explicit solvent shell) — EARLY probe-then-design (rule #10).** Build an
+      explicit first-solvation-shell around a solute, the natural extension of fragment placement +
+      xtb + GOAT already in hand. **Before designing:** install **CREST** and *probe* its `--qcg`
+      (quantum-cluster-growth) microsolvation with **xtb 6.6.1** on a small known case — record the
+      real invocation, output files, and cost in the wiki (no fact from docs/memory). Only then
+      design the UI/flow. **Caveats to settle in the probe:** solvent-shell **conformer sampling**
+      (the shell is floppy — many near-degenerate arrangements, GOAT/CREST territory) and
+      **quasi-RRHO** thermochemistry for the low frequencies a loose shell introduces. Depends on
+      the placement + xtb + GOAT primitives (all built); a counterion catalog (tail-2) already
+      seeds the ion side.
 - [ ] Conformer ensemble → reaction-center pipeline: **Boltzmann weighting** of the
       GOAT ensemble + **re-optimise the lowest 3–4 at DFT** → build reaction centers on
       those. Mandatory before any pathway (see ADR-007). *(The GOAT primitive itself —

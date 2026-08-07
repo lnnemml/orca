@@ -16,7 +16,7 @@ never runs a binary). The runtime mechanics of running ORCA live in
 ## Files
 
 - `lib.rs` — Tauri builder, setup hook, exit handling, invoke-handler registration.
-- `db.rs` — SQLite open + versioned migrations (v1–v11).
+- `db.rs` — SQLite open + versioned migrations (v1–v12).
 - `results.rs` — store/read parsed results (all four artifact readers) into the `results` table
   (ADR-012); the completion hook lives in `local_backend`. See `modules/artifact-readers.md`.
 - `orca_json.rs` — spawn `orca_2json` (ADR-009), lazy-cached gbw→JSON in the job dir (unit 3.7).
@@ -110,12 +110,24 @@ survives a restart.
   history. NULL for pre-v11 / no-scene jobs (a legacy job seeds a fresh log on New iteration). The
   `Job` struct + `Job::COLUMNS` carry `scene_log_json` as the 13th column so `get_job`/`list_jobs`
   return it to the UI.
+- **v12** — additive `ALTER TABLE molecules ADD COLUMN is_reagent INTEGER NOT NULL DEFAULT 0`
+  (guarded `ALTER` like v10/v11 — on the **table** existing, via `column_exists("molecules","id")`, so
+  the migration fixtures that stub a DB without `molecules` skip cleanly; Phase 4.2 tail-2). A **role
+  flag** so the `molecules` table doubles as the **user reagent catalog**: a user-saved reagent is a
+  molecules row with `is_reagent = 1` plus its (mandatory) `charge` — the `charge` column already
+  existed, so no new geometry storage. Existing rows and every `create_molecule` save default to 0, so
+  the molecule library and its screen are unchanged. Two new commands split the one table by role:
+  `create_reagent(name, xyz, charge)` (charge is a plain `i32`, **never** an `Option`/default — the
+  ADR-014 no-silent-charge rule) and `list_reagents` (`WHERE is_reagent = 1`); `list_molecules` now
+  filters `WHERE is_reagent = 0`. `Molecule::COLUMNS`/`from_row` carry `is_reagent` (bool from the 0/1
+  INTEGER) as the 9th column. Frontend converter + curated↔user split: `src/scene/reagent-catalog.ts`.
 - The queue statuses (`queued`, `cancelled`) and `parsed` needed **no migration** — `status` is TEXT.
 - Migration tests assert preservation across each step (…`migrate_v6_to_v7_adds_homo_lumo_gap`,
   `migrate_v7_to_v8_backfills_energy_from_results`, `migrate_v8_to_v9_adds_manual_tables_and_preserves_data`,
   `migrate_v9_to_v10_adds_index_map_json_and_preserves_jobs`,
   `migrate_v10_to_v11_adds_scene_log_json_and_preserves_jobs`; version assertions use `SCHEMA_VERSION`,
-  not a literal). A separate `fts5_is_available_with_ranking_and_snippet`
+  not a literal). The reagent role + persistence are covered in `commands::molecules`
+  (`reagent_role_separates_from_the_molecule_library`, `reagent_persists_across_reopen`). A separate `fts5_is_available_with_ranking_and_snippet`
   test gates the bundled SQLite's FTS5 support (Phase 4 / ADR-013 stands on it) — not a migration.
   Verified against a copy of the real DB: 13 existing jobs preserved across 3→4.
 

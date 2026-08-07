@@ -23,13 +23,17 @@ pub struct Molecule {
     /// Comma-separated free-text tags (simple LIKE search later).
     pub tags: String,
     pub created_at: String,
+    /// Role flag (schema v12): `true` = a user-saved **reagent** (shown in the
+    /// reagent catalog's "My reagents", not the molecule library). Existing rows
+    /// and molecules saved through `create_molecule` are `false`.
+    pub is_reagent: bool,
 }
 
 impl Molecule {
     /// Column list used by every `SELECT` that hydrates a [`Molecule`]. The
     /// order here is the contract [`Molecule::from_row`] relies on.
     pub const COLUMNS: &'static str =
-        "id, name, formula, xyz, charge, multiplicity, tags, created_at";
+        "id, name, formula, xyz, charge, multiplicity, tags, created_at, is_reagent";
 
     /// Build a [`Molecule`] from a row selected in [`Molecule::COLUMNS`] order.
     pub fn from_row(row: &Row) -> rusqlite::Result<Molecule> {
@@ -42,6 +46,8 @@ impl Molecule {
             multiplicity: row.get(5)?,
             tags: row.get(6)?,
             created_at: row.get(7)?,
+            // INTEGER 0/1 → bool (rusqlite's FromSql for bool).
+            is_reagent: row.get(8)?,
         })
     }
 }

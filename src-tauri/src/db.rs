@@ -38,7 +38,11 @@ use crate::error::AppError;
 /// - v11: `jobs.scene_log_json` — the serialized operation log (ADR-017 unit 2b),
 ///   co-written with `scene_json` at `create_job`. Nullable and additive; "New
 ///   iteration" restores it, cross-checked against the snapshot.
-const SCHEMA_VERSION: i64 = 11;
+/// - v12: `molecules.is_reagent` — a role flag (Phase 4.2 tail-2) so the molecules
+///   table doubles as the user reagent catalog: a user-saved reagent is a molecules
+///   row with `is_reagent = 1` plus its (mandatory) `charge`. Existing rows default
+///   to 0 (not reagents), so the molecule library is unchanged. Guarded ALTER.
+const SCHEMA_VERSION: i64 = 12;
 
 /// Open (creating if needed) `orcastudio.db` under `data_dir` and migrate it to
 /// the current schema.
@@ -209,6 +213,26 @@ fn migrate(conn: &Connection) -> Result<(), AppError> {
             conn.execute_batch("ALTER TABLE jobs ADD COLUMN scene_log_json TEXT;")?;
         }
         version = 11;
+    }
+
+    // --- v11 -> v12: molecules.is_reagent (Phase 4.2 tail-2). A role flag so the
+    // molecules table doubles as the user reagent catalog: a user-saved reagent is
+    // a molecules row with is_reagent=1 + its (mandatory) charge (the charge column
+    // already exists). Existing rows default to 0 (not reagents), so the molecule
+    // library and its screen are unchanged. Guarded ALTER, like v6/v7/v10/v11. ---
+    if version < 12 {
+        // Guard on the table existing (like v10/v11 guard on `jobs`): the migration
+        // fixtures stub a DB at a version WITHOUT `molecules`, and migrate() runs every
+        // remaining arm up to SCHEMA_VERSION. `column_exists` is Ok(false) for an absent
+        // table (PRAGMA table_info returns empty), so this skips cleanly there.
+        if column_exists(conn, "molecules", "id")?
+            && !column_exists(conn, "molecules", "is_reagent")?
+        {
+            conn.execute_batch(
+                "ALTER TABLE molecules ADD COLUMN is_reagent INTEGER NOT NULL DEFAULT 0;",
+            )?;
+        }
+        version = 12;
     }
 
     // Persist the resulting version so subsequent runs skip completed steps.

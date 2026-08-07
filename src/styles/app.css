@@ -1092,6 +1092,79 @@ select:disabled,
   flex-wrap: wrap;
   gap: 6px;
 }
+/* Reagent catalog (Phase 4.2 tail-2) — curated built-ins vs "My reagents". The two
+   groups are visually distinct so a user reagent (no reference contract) is never
+   mistaken for a curated one. */
+.reagent-group-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  margin: 8px 0 4px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.reagent-group-user {
+  margin-top: 12px;
+}
+.reagent-save-btn {
+  font-size: 10px;
+  padding: 1px 7px;
+}
+.reagent-empty {
+  font-size: 11px;
+  font-style: italic;
+}
+/* User chips carry a dashed border + accent tint — "you made this, no reference
+   guarantee", set apart from the solid curated chips. */
+.chip-user {
+  border-style: dashed;
+  border-color: var(--accent);
+}
+.chip-curated {
+  border-style: solid;
+}
+.reagent-save-dialog {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--accent, var(--border));
+  border-radius: 6px;
+  background: var(--panel-2);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.reagent-save-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.reagent-save-row > label {
+  font-size: 11px;
+  color: var(--muted);
+}
+.reagent-required {
+  color: #fb7185;
+  font-style: italic;
+}
+.input-invalid {
+  border-color: #fb7185;
+}
+.reagent-source-toggle {
+  display: flex;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--text);
+}
+.reagent-source-toggle label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.reagent-save-actions {
+  display: flex;
+  gap: 6px;
+}
 /* Steric-clash warning (unit 3.2) — the magenta matches the viewer's danger glow
    (CLASH_COLOR in MoleculeViewer), so the banner dot and the glowing atoms read as
    the same signal. A quieter, un-alarming notice for the UNDETERMINED case. */

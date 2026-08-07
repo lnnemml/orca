@@ -34,10 +34,13 @@ fn create_molecule_conn(
     get_molecule_conn(conn, &id)
 }
 
-/// All molecules, newest first.
+/// All **library** molecules (role 0), newest first. Reagents (`is_reagent = 1`)
+/// are deliberately excluded — they live in the reagent catalog (`list_reagents`),
+/// not the molecule library. Existing rows are role 0, so this is unchanged for
+/// pre-v12 data.
 fn list_molecules_conn(conn: &Connection) -> Result<Vec<Molecule>, AppError> {
     let sql = format!(
-        "SELECT {} FROM molecules ORDER BY created_at DESC",
+        "SELECT {} FROM molecules WHERE is_reagent = 0 ORDER BY created_at DESC",
         Molecule::COLUMNS
     );
     let mut stmt = conn.prepare(&sql)?;
@@ -45,6 +48,39 @@ fn list_molecules_conn(conn: &Connection) -> Result<Vec<Molecule>, AppError> {
         .query_map([], Molecule::from_row)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(molecules)
+}
+
+/// The user reagent catalog: molecules with `is_reagent = 1`, newest first. The
+/// sibling of `list_molecules_conn` over the same table, split by the role flag.
+fn list_reagents_conn(conn: &Connection) -> Result<Vec<Molecule>, AppError> {
+    let sql = format!(
+        "SELECT {} FROM molecules WHERE is_reagent = 1 ORDER BY created_at DESC",
+        Molecule::COLUMNS
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let reagents = stmt
+        .query_map([], Molecule::from_row)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(reagents)
+}
+
+/// Save a user reagent: a molecules row with `is_reagent = 1` and a **mandatory**
+/// `charge` (ADR-014 — charge is never defaulted silently; the caller UI requires
+/// it). Multiplicity is not asked (electron parity + charge determine it; the Scene
+/// validates it) and defaults to 1; formula/tags are empty.
+fn create_reagent_conn(
+    conn: &Connection,
+    name: &str,
+    xyz: &str,
+    charge: i32,
+) -> Result<Molecule, AppError> {
+    let id = Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO molecules (id, name, formula, xyz, charge, multiplicity, tags, is_reagent) \
+         VALUES (?1, ?2, '', ?3, ?4, 1, '', 1)",
+        params![id, name, xyz, charge],
+    )?;
+    get_molecule_conn(conn, &id)
 }
 
 /// A single molecule by id, or [`AppError::NotFound`].
@@ -110,6 +146,25 @@ pub fn list_molecules(db: State<'_, DbState>) -> Result<Vec<Molecule>, AppError>
 }
 
 #[tauri::command]
+pub fn list_reagents(db: State<'_, DbState>) -> Result<Vec<Molecule>, AppError> {
+    let conn = db.lock()?;
+    list_reagents_conn(&conn)
+}
+
+/// Save a user reagent. `charge` is required by the caller (ADR-014); this command
+/// takes it as a plain `i32`, never an `Option` — there is no silent default.
+#[tauri::command]
+pub fn create_reagent(
+    db: State<'_, DbState>,
+    name: String,
+    xyz: String,
+    charge: i32,
+) -> Result<Molecule, AppError> {
+    let conn = db.lock()?;
+    create_reagent_conn(&conn, &name, &xyz, charge)
+}
+
+#[tauri::command]
 pub fn get_molecule(db: State<'_, DbState>, id: String) -> Result<Molecule, AppError> {
     let conn = db.lock()?;
     get_molecule_conn(&conn, &id)
@@ -158,6 +213,76 @@ mod tests {
     }
 
     const ETHANOL_XYZ: &str = "3\nethanol\nC 0.0 0.0 0.0\nC 1.5 0.0 0.0\nO 2.1 1.2 0.0\n";
+    const NA_XYZ: &str = "1\nNa+\nNa 0.0 0.0 0.0\n";
+
+    /// A unique throwaway data dir (its DB kept for a manual reopen — NOT wiped by
+    /// `test_db`, which removes-then-inits). Returned so the caller can clean up.
+    fn fresh_dir(tag: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "orcastudio-reagent-{}-{}-{}",
+            tag,
+            std::process::id(),
+            n
+        ));
+        std::fs::remove_dir_all(&dir).ok();
+        dir
+    }
+
+    // (c3) The role flag separates reagents from library molecules over ONE table:
+    // a reagent carries its (mandatory) charge, does NOT leak into `list_molecules`,
+    // and an existing molecule (role 0) is untouched. The bite: if the v12 migration
+    // dropped the column or `from_row` didn't read it, `create_reagent_conn` would
+    // error (no such column) or `is_reagent` would read false → the asserts go red.
+    #[test]
+    fn reagent_role_separates_from_the_molecule_library() {
+        let (conn, dir) = test_db();
+
+        let mol =
+            create_molecule_conn(&conn, "ethanol", "C2H6O", ETHANOL_XYZ, 0, 1, "").unwrap();
+        assert!(!mol.is_reagent, "a create_molecule row is NOT a reagent");
+
+        let na = create_reagent_conn(&conn, "Na+", NA_XYZ, 1).unwrap();
+        assert!(na.is_reagent, "a create_reagent row IS a reagent");
+        assert_eq!(na.charge, 1, "the mandatory charge is stored, not defaulted");
+        assert_eq!(na.multiplicity, 1);
+
+        // list_molecules shows the molecule, NOT the reagent.
+        let mols = list_molecules_conn(&conn).unwrap();
+        assert_eq!(mols.len(), 1);
+        assert_eq!(mols[0].id, mol.id);
+
+        // list_reagents shows the reagent, NOT the molecule.
+        let reags = list_reagents_conn(&conn).unwrap();
+        assert_eq!(reags.len(), 1);
+        assert_eq!(reags[0].id, na.id);
+        assert_eq!(reags[0].charge, 1);
+        assert!(reags[0].is_reagent);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // (c3, persistence) A reagent survives a DB reopen with charge + role intact —
+    // the migration is idempotent and the row is durable (the m4 manual gate's core).
+    #[test]
+    fn reagent_persists_across_reopen() {
+        let dir = fresh_dir("reopen");
+        {
+            let conn = init_db(&dir).expect("init_db");
+            create_reagent_conn(&conn, "Mg2+", "1\nMg2+\nMg 0.0 0.0 0.0\n", 2).unwrap();
+        } // conn dropped — the file remains
+
+        let conn2 = init_db(&dir).expect("reopen init_db (idempotent migration)");
+        let reags = list_reagents_conn(&conn2).unwrap();
+        assert_eq!(reags.len(), 1);
+        assert_eq!(reags[0].name, "Mg2+");
+        assert_eq!(reags[0].charge, 2, "charge survived the reopen");
+        assert!(reags[0].is_reagent, "role survived the reopen");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn create_lists_molecule() {

@@ -52,8 +52,14 @@ functions, no imports from react / 3dmol / tauri. The reactive `store.ts` (added
 - `HistoryPanel.tsx` — the read-only history panel (unit 2b; React): `describe()` list, click =
   pointer jump, Undo/Redo + hotkeys. Reads the store log; no state of its own.
 - `placement.ts` — `placeFragment` (bounding-box separation for a new fragment).
-- `fragment-library.ts` — `FRAGMENT_LIBRARY` (curated reagents) +
-  `libraryFragmentToScene`.
+- `fragment-library.ts` — `FRAGMENT_LIBRARY` (curated reagents, incl. the tail-2
+  monatomic cations) + `libraryFragmentToScene`.
+- `reagent-catalog.ts` — the **user** side of the reagent catalog (tail-2):
+  `userReagentToFragment` (a saved `molecules` row → a scene fragment, charge carried
+  into the total like a built-in) + `fragmentToXyz` (capture one fragment's geometry
+  on save). Where the **curated↔user** distinction is made explicit (source `"library"`,
+  never `"fragment-library"`; no `reference` contract). Pure / node-tested. See
+  "Extensible reagent catalog" below.
 - `FragmentList.tsx` — the fragment sidebar (React; reads the store, uses the
   shared `fragmentColor` palette).
 - `restore.ts` — `restoreScene` (snapshot ↔ input reconciliation on job open) and
@@ -577,7 +583,8 @@ intra-fragment distance is preserved to 1e-9.
 ## Fragment library (`fragment-library.ts`, ADR-008 #9)
 
 `FRAGMENT_LIBRARY` is a curated list of the reagents a reaction study starts from:
-BH₄⁻, H⁻, OH⁻, CN⁻, Cl⁻, H₂O, NH₃, CH₃OH (the chemistry — why BH₄⁻ is tetrahedral,
+BH₄⁻, H⁻, OH⁻, CN⁻, Cl⁻, **Na⁺/Li⁺/K⁺ (+1), Mg²⁺ (+2)** (tail-2 counterions —
+monatomic, closed-shell, empty `reference` like H⁻/Cl⁻), H₂O, NH₃, CH₃OH (the chemistry — why BH₄⁻ is tetrahedral,
 why water is 104.5°, what a hydride nucleophile is — is in
 [`chemistry/reagent-geometry.md`](../chemistry/reagent-geometry.md)). Each `LibraryFragment` carries `atoms`,
 `charge`, a **non-empty `provenance`** (where the geometry came from), and a
@@ -606,6 +613,36 @@ on the numbers is `provenance` + review, not the test. This is why the worst bug
 class here (a wrong-but-converging bond length) is defended by naming the source,
 not by a green suite. No runtime RDKit generation (MMFF lacks params for ions like
 BH₄⁻).
+
+## Extensible reagent catalog — curated + user (`reagent-catalog.ts`, Phase 4.2 tail-2)
+
+The catalog has **two tiers, deliberately kept apart**:
+
+- **Curated (built-in)** — `FRAGMENT_LIBRARY` above. Each entry carries a **`reference`
+  internal-coordinate contract** the tests recompute from the coordinates, so a curated
+  geometry can't silently ship wrong. `libraryFragmentToScene` instantiates it, `source:
+  "fragment-library"`.
+- **User** — a reagent the researcher saves, persisted as a **`molecules` row with a role
+  flag** (`is_reagent`, schema **v12**; `wiki/modules/tauri-core.md`). **Reuses the molecules
+  table** — the `charge` column was already there — rather than a new table. `create_reagent`
+  / `list_reagents` are the role-split commands; `list_molecules` filters role 0, so the
+  molecule library and its screen are untouched (existing rows are all role 0). A user reagent
+  has **no `reference` contract** (user provenance — no verified geometry); `userReagentToFragment`
+  gives it `source: "library"` (a saved library item), **never** `"fragment-library"`.
+
+**The curated↔user distinction is a rule, not a display nicety (decision 2026-08-07).** A
+built-in reagent's geometry is verified; a user reagent's is not. The palette shows them as two
+visually distinct groups, and the two never merge by type (a `Molecule` has no `reference` field;
+a `LibraryFragment` does). Mislabelling a user reagent as `"fragment-library"` would let the UI
+imply a guarantee it can't make — `reagent-catalog.test.ts` (c4) guards against exactly that.
+
+**Charge is mandatory at save (ADR-014, no silent footgun).** `create_reagent` takes `charge`
+as a plain `i32` — never an `Option`, never a default. The save dialog refuses until a valid
+integer charge is entered; multiplicity is **not** asked (electron parity + charge determine it,
+and the Scene validates it — `parity.ts`). A user reagent's charge then **flows into the scene
+total by the same path as a built-in's** (Σ fragment charges, ADR-008 #8) — no special case
+(c1/c2). Geometry is captured on save via `fragmentToXyz` (a picked scene fragment) or a pasted
+xyz block.
 
 ## GOAT conformer ensemble (`ensemble.ts`, 2.5.1a/b)
 

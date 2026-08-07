@@ -45,6 +45,7 @@ import {
   libraryFragmentToScene,
   type LibraryFragment,
 } from "../scene/fragment-library";
+import { userReagentToFragment, fragmentToXyz } from "../scene/reagent-catalog";
 import {
   atomCount,
   compositionSignature,
@@ -178,6 +179,21 @@ export function NewJobScreen({
   // Library molecules for the Add-Fragment "From library" source (lazy-loaded
   // when the panel opens).
   const [libMolecules, setLibMolecules] = useState<Molecule[]>([]);
+  // User reagent catalog (Phase 4.2 tail-2): the "My reagents" palette subsection,
+  // lazy-loaded with the Fragments dock. Kept apart from `libMolecules` — a reagent
+  // is a molecules row with role reagent, listed by `list_reagents`, not mixed with
+  // the substrate library or the curated built-ins.
+  const [userReagents, setUserReagents] = useState<Molecule[]>([]);
+  // "Save to my reagents" dialog state (app-owned). Charge is a REQUIRED input
+  // (ADR-014 — never a silent 0); the xyz comes from a picked scene fragment or a
+  // pasted block.
+  const [reagentSaveOpen, setReagentSaveOpen] = useState(false);
+  const [reagentName, setReagentName] = useState("");
+  const [reagentCharge, setReagentCharge] = useState(""); // empty until the user types
+  const [reagentSource, setReagentSource] = useState<"fragment" | "paste">("fragment");
+  const [reagentFragmentId, setReagentFragmentId] = useState<string>("");
+  const [reagentPasteXyz, setReagentPasteXyz] = useState("");
+  const [reagentSaving, setReagentSaving] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // ── Scene store: the single source of truth for geometry (ADR-008) ──────────
@@ -581,6 +597,9 @@ export function NewJobScreen({
     invoke<Molecule[]>("list_molecules")
       .then(setLibMolecules)
       .catch(() => setLibMolecules([]));
+    invoke<Molecule[]>("list_reagents")
+      .then(setUserReagents)
+      .catch(() => setUserReagents([]));
   }, [openDock.fragments]);
 
   /**
@@ -723,13 +742,11 @@ export function NewJobScreen({
     addFragmentToScene(libraryFragmentToScene(lf));
   };
 
-  // Guided placement (Phase 4.2 tail-1): add the reagent roughly (same `placeFragment`
-  // + `add-fragment` op as `addReagent`), then OPEN the guided panel on the just-added
-  // fragment so the user sets its approach d/θ/φ in one flow. The store update is
-  // synchronous, so the new fragment is the last one right after the add.
-  const addReagentGuided = (lf: LibraryFragment) => {
-    setError(null);
-    addFragmentToScene(libraryFragmentToScene(lf));
+  // Guided placement (Phase 4.2 tail-1): after a reagent is added roughly, OPEN the
+  // guided panel on the just-added fragment so the user sets its approach d/θ/φ in
+  // one flow. The store update is synchronous, so the new fragment is the last one.
+  // Shared by the built-in and user-reagent guided-mode paths.
+  const openGuidedOnLastFragment = () => {
     const frags = useSceneStore.getState().scene?.fragments;
     const added = frags && frags.length ? frags[frags.length - 1] : undefined;
     if (added) {
@@ -737,6 +754,12 @@ export function NewJobScreen({
       setSelection([]); // a clean pick list for the approach-geometry atoms
       setOpenDock((o) => ({ ...o, fragments: true }));
     }
+  };
+
+  const addReagentGuided = (lf: LibraryFragment) => {
+    setError(null);
+    addFragmentToScene(libraryFragmentToScene(lf));
+    openGuidedOnLastFragment();
   };
 
   // Commit the guided placement's op sequence (add-fragment is already in the log):
@@ -818,6 +841,74 @@ export function NewJobScreen({
     setError(null);
     addFragmentToScene(s.fragments[0]);
     if (!title.trim()) setTitle(m.name);
+  };
+
+  // Add a user reagent (from "My reagents") as a fragment — its stored charge flows
+  // into the scene total exactly like a built-in reagent's (no special case).
+  const addUserReagent = (m: Molecule) => {
+    const frag = userReagentToFragment(m);
+    if (!frag) {
+      setError(`"${m.name}" has no readable geometry.`);
+      return;
+    }
+    setError(null);
+    addFragmentToScene(frag);
+    if (guidedMode) openGuidedOnLastFragment();
+  };
+
+  // Open the "Save to my reagents" dialog, pre-filled from a picked scene fragment
+  // when there is exactly one (the common case) so the charge starts at the known
+  // fragment charge — still editable and still REQUIRED (ADR-014).
+  const openReagentSave = () => {
+    const only = scene && scene.fragments.length === 1 ? scene.fragments[0] : null;
+    setReagentName(only?.name ?? "");
+    setReagentCharge(only ? String(only.charge) : "");
+    setReagentSource(scene && scene.fragments.length > 0 ? "fragment" : "paste");
+    setReagentFragmentId(only?.id ?? scene?.fragments[0]?.id ?? "");
+    setReagentPasteXyz("");
+    setReagentSaveOpen(true);
+  };
+
+  // The charge field must hold a valid INTEGER before Save is allowed — an empty or
+  // non-integer charge is refused, never coerced to 0 (ADR-014 footgun).
+  const reagentChargeValid =
+    reagentCharge.trim() !== "" && Number.isInteger(Number(reagentCharge));
+
+  const saveReagent = async () => {
+    if (!reagentChargeValid) return;
+    // Resolve the xyz from the chosen source: a picked scene fragment, or pasted text.
+    let xyz: string | null = null;
+    if (reagentSource === "fragment") {
+      const frag = scene?.fragments.find((f) => f.id === reagentFragmentId);
+      if (!frag) {
+        setError("Pick a fragment to save.");
+        return;
+      }
+      xyz = fragmentToXyz(frag, reagentName.trim() || frag.name);
+    } else {
+      const parsed = sceneFromXyz(reagentPasteXyz, { source: "import", name: "r", charge: 0 });
+      if (!parsed) {
+        setError("That doesn't parse as xyz (count, comment, then `El x y z` rows).");
+        return;
+      }
+      xyz = reagentPasteXyz;
+    }
+    setReagentSaving(true);
+    setError(null);
+    try {
+      await invoke<Molecule>("create_reagent", {
+        name: reagentName.trim() || "Untitled reagent",
+        xyz,
+        charge: Number(reagentCharge),
+      });
+      const reagents = await invoke<Molecule[]>("list_reagents");
+      setUserReagents(reagents);
+      setReagentSaveOpen(false);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setReagentSaving(false);
+    }
   };
 
   // Import a structure file: `.xyz` is parsed locally, other formats are
@@ -1041,11 +1132,14 @@ export function NewJobScreen({
           />
           Guided placement — set d / θ / φ on add
         </label>
+        {/* Curated built-ins — each carries a reference-geometry contract (its
+            provenance is the tooltip). Visually the "Built-in" group. */}
+        <div className="reagent-group-label muted">Built-in</div>
         <div className="reagent-chips">
           {FRAGMENT_LIBRARY.map((lf) => (
             <button
               key={lf.key}
-              className="chip"
+              className="chip chip-curated"
               title={lf.provenance}
               onClick={() => (guidedMode ? addReagentGuided(lf) : addReagent(lf))}
             >
@@ -1056,6 +1150,130 @@ export function NewJobScreen({
             </button>
           ))}
         </div>
+
+        {/* User reagents — a molecules row with role reagent (no reference contract:
+            user provenance). Deliberately a SEPARATE group + distinct chip style so
+            the two are never conflated. */}
+        <div className="reagent-group-label muted reagent-group-user">
+          My reagents
+          <button
+            className="btn reagent-save-btn"
+            onClick={openReagentSave}
+            title="Save a scene fragment or a pasted structure as a reusable reagent"
+          >
+            + Save
+          </button>
+        </div>
+        {userReagents.length === 0 ? (
+          <div className="muted reagent-empty">
+            None yet — Save captures a fragment’s geometry + charge for reuse.
+          </div>
+        ) : (
+          <div className="reagent-chips">
+            {userReagents.map((m) => (
+              <button
+                key={m.id}
+                className="chip chip-user"
+                title={`User reagent — no reference geometry. ${m.name}`}
+                onClick={() => addUserReagent(m)}
+              >
+                {m.name}{" "}
+                <span className="muted">{signed(m.charge)}</span>
+              </button>
+            ))}
+          </div>
+        )}
+
+        {reagentSaveOpen ? (
+          <div className="reagent-save-dialog">
+            <div className="reagent-save-row">
+              <label>Name</label>
+              <input
+                className="input"
+                value={reagentName}
+                onChange={(e) => setReagentName(e.currentTarget.value)}
+                placeholder="e.g. tetrabutylammonium"
+                spellCheck={false}
+              />
+            </div>
+            <div className="reagent-save-row">
+              <label>
+                Charge <span className="reagent-required">*required</span>
+              </label>
+              <input
+                className={"input" + (reagentChargeValid ? "" : " input-invalid")}
+                type="number"
+                step="1"
+                value={reagentCharge}
+                onChange={(e) => setReagentCharge(e.currentTarget.value)}
+                placeholder="e.g. +1, 0, -1"
+                aria-label="reagent formal charge (required)"
+              />
+            </div>
+            <div className="reagent-save-row">
+              <label>Geometry from</label>
+              <div className="reagent-source-toggle">
+                <label>
+                  <input
+                    type="radio"
+                    name="reagent-src"
+                    checked={reagentSource === "fragment"}
+                    disabled={!scene || scene.fragments.length === 0}
+                    onChange={() => setReagentSource("fragment")}
+                  />
+                  a scene fragment
+                </label>
+                <label>
+                  <input
+                    type="radio"
+                    name="reagent-src"
+                    checked={reagentSource === "paste"}
+                    onChange={() => setReagentSource("paste")}
+                  />
+                  pasted xyz
+                </label>
+              </div>
+            </div>
+            {reagentSource === "fragment" ? (
+              <select
+                className="input"
+                value={reagentFragmentId}
+                onChange={(e) => setReagentFragmentId(e.currentTarget.value)}
+              >
+                {(scene?.fragments ?? []).map((f) => (
+                  <option key={f.id} value={f.id}>
+                    {f.name} · {f.atoms.length}a · {signed(f.charge)}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <textarea
+                className="input mono paste-xyz-area"
+                placeholder={"3\nname\nO 0 0 0\nH 0.76 0.59 0\nH -0.76 0.59 0"}
+                value={reagentPasteXyz}
+                onChange={(e) => setReagentPasteXyz(e.currentTarget.value)}
+                spellCheck={false}
+              />
+            )}
+            <div className="reagent-save-actions">
+              <button
+                className="btn btn-sm btn-primary"
+                onClick={saveReagent}
+                disabled={reagentSaving || !reagentChargeValid}
+                title={reagentChargeValid ? undefined : "Enter the formal charge first"}
+              >
+                {reagentSaving ? "Saving…" : "Save reagent"}
+              </button>
+              <button
+                className="btn btn-sm"
+                onClick={() => setReagentSaveOpen(false)}
+                disabled={reagentSaving}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : null}
       </div>
 
       <div className="add-source">

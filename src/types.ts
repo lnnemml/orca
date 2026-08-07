@@ -127,6 +127,9 @@ export interface Molecule {
   multiplicity: number;
   tags: string;
   created_at: string;
+  /** Role flag (schema v12): a user-saved reagent (shown in "My reagents"), not a
+   * library molecule. `false` for existing molecules and `create_molecule` saves. */
+  is_reagent: boolean;
 }
 
 export type SidecarState = "healthy" | "starting" | "stale" | "down";

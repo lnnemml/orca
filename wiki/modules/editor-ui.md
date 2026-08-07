@@ -80,7 +80,10 @@ page records the **layout principle and where future panels go** — not the cur
   toggle + `RotatePanel`) · Fragments (the Add-Fragment palette — reagents / import / SMILES / **Paste xyz** / library —
   **plus** the guided `GuidedPlacementPanel` when a reagent is being placed, **plus** `FragmentList`) ·
   Constraints (`ConstraintPanel`) · History (`HistoryPanel`) · Actions (xTB
-  pre-optimize). Each
+  pre-optimize). The Reagents palette shows **Built-in** (curated, reference-contract) and **My
+  reagents** (user-saved, no contract) as visually distinct groups, plus a "+ Save" dialog that
+  captures a fragment's or pasted geometry with a **required** charge (tail-2; `reagent-catalog.ts`,
+  `modules/scene.md`). Each
   toggles **independently**; open-state is **session-only** (not persisted — a fresh screen starts
   viewer-first with just Fragments open so Add Fragment is discoverable). Each section shows its
   panel's **existing** empty state (e.g. `AtomInspector`/`HistoryPanel` render nothing until there's

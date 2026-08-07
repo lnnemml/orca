@@ -5645,3 +5645,59 @@ disables the field, m5 Monaco block updates on Apply — is left for the author 
 
 **Next:** run the manual gate m1–m5; then the constraint on/off toggle tail. Do NOT add a constraint
 automatically on placement (separate action, next tail) — untouched here.
+
+## [2026-08-07] session | feat(scene): user-extensible reagent catalog (molecules-table reuse) + seed cations — closes Phase 4.2
+
+**Unit 4.2-tail-2 — extensible reagent catalog + seed cations.** Architect's decisions: (1) reuse
+the `molecules` table (charge already there) + a role flag; (2) charge MANDATORY at save (never a
+silent 0 — ADR-014); (3) curated (built-in, reference contract) vs user (user provenance, no
+reference) distinguished in the palette. **This closes Phase 4.2.**
+
+**What landed.**
+- **Seed cations** (`fragment-library.ts`): Na⁺/Li⁺/K⁺ (+1), Mg²⁺ (+2) — monatomic, closed-shell
+  (singlet, no radical hint), empty `reference` like H⁻/Cl⁻, "Monatomic cation" provenance.
+- **DB schema v12** (`db.rs`): guarded `ALTER TABLE molecules ADD COLUMN is_reagent INTEGER NOT NULL
+  DEFAULT 0` (guarded on the table existing, like v10/v11, so the migration fixtures skip cleanly).
+  `Molecule` model + `COLUMNS`/`from_row` carry `is_reagent` (9th column). New commands
+  `create_reagent(name, xyz, charge)` (charge a plain `i32`, never defaulted) + `list_reagents`
+  (`WHERE is_reagent = 1`); `list_molecules` now filters `WHERE is_reagent = 0` (existing rows are
+  all role 0 → molecule library + screen unchanged). Registered in `lib.rs`.
+- **Frontend** (`reagent-catalog.ts` + `NewJobScreen`): `userReagentToFragment` (a saved reagent →
+  a scene fragment, charge carried into the total like a built-in — `source:"library"`, never
+  `"fragment-library"`) + `fragmentToXyz`. Palette shows **Built-in** vs **My reagents** as distinct
+  groups (solid vs dashed chips); a "+ Save" dialog captures a picked fragment or pasted xyz with a
+  **required** integer charge (Save disabled until valid). Guided mode (tail-1) now works for user
+  reagents too. `Molecule.is_reagent` added to the TS type.
+
+**Gates.** tsc 0; vitest **574 pass** incl. `fragment-library.test.ts` (c1 cations + scene total)
+and `reagent-catalog.test.ts` (c2 charge flow, c4 curated↔user) — bites verified red-then-green
+(Na⁺→0 reddens c1; charge→0 reddens c2). cargo **184 pass** incl. `reagent_role_separates_from_the_
+molecule_library` + `reagent_persists_across_reopen` (c3 — role + charge survive a DB reopen; the
+migration is idempotent). `vite build` clean.
+
+**Manual gate m1–m5 (real Tauri/WebKitGTK window) — PENDING author verification** (as tail-1: the
+native window + palette clicks can't be driven from this session). m1 Na⁺ add → total +1; m2 Save
+requires charge → appears in My reagents; m3 add user reagent → total correct; m4 restart persists;
+m5 curated vs user visually distinct.
+
+## [2026-08-07] decision | Curated↔user reagent distinction; constraint on/off toggle CUT
+
+- **Curated↔user reagent distinction is a rule, not a display nicety.** A built-in reagent carries a
+  verified `reference` internal-coordinate contract; a user reagent does not. The palette keeps them
+  in separate groups and the two never merge by type (`Molecule` has no `reference`; `LibraryFragment`
+  does). Recorded in `wiki/modules/scene.md` "Extensible reagent catalog" (no separate ADR — the rule
+  is small and lives with the module it governs). Guarded by `reagent-catalog.test.ts` (c4).
+- **Constraint "toggle on/off" — CUT.** Delete + re-add already covers it (the 2.5.4b note). A
+  persistent enabled/disabled state would introduce a second source of truth over the constraint
+  text — the exact drift `constraints.ts` exists to prevent — for marginal ergonomics. Struck from
+  the Phase 4.2 backlog (same reasoning as the ring-cut refusal). ROADMAP updated.
+
+## [2026-08-07] milestone | Phase 4.2 — Geometry editor completion — COMPLETE
+
+Stages 1–3 (identity core, operation log, operations over the core) + tails 1 (guided fragment
+placement) and 2 (extensible reagent catalog). The "Done when" is met: editor state is a fold over a
+typed operation log, 3Dmol is a dumb renderer fed an `AtomId` table, fragments drag/rotate rigidly
+with step-by-step Undo, and no bare integer crosses an app-owned boundary. **Next: Phase 4.5 —
+Reaction modeling.** Recorded an EARLY Phase 4.5 item: *microsolvation (explicit solvent shell)* —
+install CREST, probe `--qcg` with xtb 6.6.1 (rule #10) BEFORE designing; builds on placement + xtb +
+GOAT; caveats: shell conformer sampling + quasi-RRHO.
