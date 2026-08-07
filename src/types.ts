@@ -137,6 +137,12 @@ export interface Job {
    * jobs. Co-written with `scene_json`; "New iteration" restores it, cross-checked
    * against the snapshot (the log is rejected loudly on a mismatch). */
   scene_log_json: string | null;
+  /** Grouping FK into `pathways` (schema v13, Phase 4.5 C1), or null for a standalone
+   * job — the normal state for every job today. Set by `attach_job_to_pathway`, nulled
+   * by `detach_job_from_pathway` / a reaction-or-pathway deletion (which never delete
+   * the job — the jobs-survive invariant). The reaction UI maps a pathway to its job by
+   * matching `Job.pathway_id === Pathway.id`. */
+  pathway_id: string | null;
 }
 
 /** Mirrors `src-tauri/src/models/molecule.rs::Molecule`. */

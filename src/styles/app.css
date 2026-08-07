@@ -1475,6 +1475,26 @@ select:disabled,
   background: var(--panel);
 }
 
+/* A selected row (e.g. the open reaction in the Reactions list). */
+.jobs-table tr.clickable.active td {
+  background: var(--panel);
+}
+
+/* An inline text button that reads as a link (open the attached job from a pathway
+   row without a full button chrome). */
+.linkish {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.linkish:hover {
+  text-decoration: underline;
+}
+
 .muted {
   color: var(--muted);
   font-size: 12px;

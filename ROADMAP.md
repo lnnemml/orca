@@ -784,9 +784,21 @@ single-pathway relaxed scan is fully usable end-to-end. *(B1 ✅; B2 ✅ — aut
       `attach_job_to_pathway`/`detach_job_from_pathway`. Four cargo controls green (migration
       preservation; delete-keeps-jobs, bite-verified; referential integrity; standalone-unaffected).
       **No manual gate** (schema + Rust). See ADR-007 amendment + `modules/tauri-core.md`.
-- [ ] **C2 — promote setup to Pathway + comparative view.** The Stage-A/B scan setup becomes a
-      `pathways` row; the scan job gets the FK. Overlay Pathway A vs B, **ΔΔE‡** (barrier
-      difference) highlighted. **Manual gate.**
+- [~] **C2a — reaction/pathway management UI.** `ReactionsScreen.tsx` (new "Reactions" tab): create a
+      reaction, attach unattached completed **scan jobs** as labelled pathways, detach, rename, delete
+      — a thin view over the C1 commands (no energy/coordinate/ΔΔE‡ logic). The picker marks/warns
+      scan vs non-scan via `isScanJob` (attach stays permissive — C1). **Jobs-survive made visible:**
+      every delete/detach only un-groups (Tauri-dialog `confirm` copy says so; a pathway's job title
+      opens the still-standalone job). Exposes `jobs.pathway_id` on the `Job` model (14th column) so
+      the UI maps pathway→job (one source of truth; survives reload). Extracted logic
+      (`src/reactions/pathway.ts`) unit-tested: **C-scan-detection** (bite-verified) + **C-empty-label**.
+      **Code + tests complete**: `tsc` 0, `vitest` 638 (+6), `vite build` clean, `cargo` 207 (Job
+      column additive). **Manual gate (author) PENDING** — m1–m4 in the real window; C2a closes when it
+      passes. See `modules/reactions-ui.md`.
+- [ ] **C2b — promote + comparative view.** Overlay Pathway A vs B, **ΔΔE‡** (barrier difference)
+      highlighted; reads coordinate/method/profile from the attached job (one source of truth); adds
+      the comparability guards (same coordinate/method) that C2a's attach leaves advisory.
+      **Manual gate.**
 
 **Stage C done when (= mission "done-when"):** author defines si vs re facial attack on a ketone,
 runs two native scans, and sees two profiles side by side with ΔΔE‡ — a computational

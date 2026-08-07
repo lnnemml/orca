@@ -91,6 +91,13 @@ pub struct Job {
     /// `None` for jobs created before schema v11, or with no scene. "New
     /// iteration" restores it, cross-checked against the snapshot (`restoreSceneLog`).
     pub scene_log_json: Option<String>,
+    /// Grouping FK into `pathways` (schema v13, Phase 4.5 C1). `None` is the normal
+    /// state for a standalone job — every job today. Set by `attach_job_to_pathway`
+    /// and nulled by `detach_job_from_pathway` / a reaction-or-pathway deletion; the
+    /// job itself is never deleted by any of those (the jobs-survive invariant). The
+    /// reaction is derived by joining `pathways` — no `reaction_id` on jobs. Exposed
+    /// here so the reaction UI (C2a) can map a pathway to its attached job.
+    pub pathway_id: Option<String>,
 }
 
 impl Job {
@@ -98,7 +105,7 @@ impl Job {
     /// here is the contract [`Job::from_row`] relies on.
     pub const COLUMNS: &'static str = "id, title, input_content, status, job_dir, \
          energy, wall_time, error_message, created_at, started_at, completed_at, \
-         scene_json, scene_log_json";
+         scene_json, scene_log_json, pathway_id";
 
     /// Build a [`Job`] from a row selected in [`Job::COLUMNS`] order.
     pub fn from_row(row: &Row) -> rusqlite::Result<Job> {
@@ -125,6 +132,7 @@ impl Job {
             completed_at: row.get(10)?,
             scene_json: row.get(11)?,
             scene_log_json: row.get(12)?,
+            pathway_id: row.get(13)?,
         })
     }
 }

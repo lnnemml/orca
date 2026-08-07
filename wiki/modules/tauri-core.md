@@ -139,9 +139,11 @@ survives a restart.
   `delete_reaction` nulls the `pathway_id` of every job attached to its pathways and deletes the
   pathway rows; `delete_pathway` nulls its jobs' `pathway_id` and deletes the row; **neither ever
   deletes a job.** A promoted-then-ungrouped scan job is exactly the standalone job it was.
-  `pathway_id = NULL` is the normal state for every job today; the model is purely additive and the
-  `Job` struct is **unchanged** (C1 writes/reads the column via the reaction commands; C2 exposes it
-  on `Job` when it needs to). **Referential integrity lives in the commands** (this DB leaves SQLite FK
+  `pathway_id = NULL` is the normal state for every job today; the model is purely additive. In C1
+  the `Job` struct did not carry the column; **C2a adds `pathway_id` as `Job`'s 14th column**
+  (`Job::COLUMNS`/`from_row`, `Option<String>`) so the reaction UI can map a pathway to its attached
+  job by matching `Job.pathway_id == Pathway.id` (the job carries the FK; the pathway does not — one
+  source of truth). **Referential integrity lives in the commands** (this DB leaves SQLite FK
   enforcement off, as elsewhere; the `REFERENCES` clauses are docs): `create_pathway` under a missing
   reaction and `attach_job_to_pathway` with a missing job/pathway return `NotFound` with no orphan/
   partial write. Commands (`commands/reactions.rs`, thin wrappers over `*_conn`, `Reaction`/`Pathway`

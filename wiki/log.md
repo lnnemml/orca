@@ -6082,3 +6082,54 @@ shared, tested `resolveClickedIndex` (`debugging/016`, v3 delivers `activeToolti
 **Next.** C2 — promote the Stage-A/B scan setup into a `pathways` row (`attach_job_to_pathway`),
 overlay Pathway A vs B, highlight **ΔΔE‡**. Reads coordinate/method/profile from the attached job
 (one source of truth). Manual gate returns at C2.
+
+## [2026-08-07] session | Phase 4.5 Stage C2a — reaction/pathway management UI (code complete; manual gate PENDING)
+
+**Built.** The management UI over the C1 reaction/pathway commands — a new **"Reactions"** tab
+(`src/screens/ReactionsScreen.tsx`, wired in `App.tsx`). Thin over C1: it only calls
+`create_reaction`/`list_reactions`/`rename_reaction`/`delete_reaction`, `create_pathway`/
+`list_pathways`/`delete_pathway`, `attach_job_to_pathway`/`detach_job_from_pathway`, plus `list_jobs`
++ `read_job_results`. No energy/coordinate/ΔΔE‡ logic (that is C2b).
+
+- **List + create** a reaction (name required, description optional). **Detail**: its pathways, each
+  showing label + the attached job's title/status. **Attach a scan job as a pathway**: a label field
+  + a picker over unattached completed/parsed jobs → `create_pathway` then `attach_job_to_pathway`.
+- **Mark/warn scans**: the picker marks each candidate `✓ scan` / `(not a scan)` via `isScanJob`
+  (results carry a scan profile); a non-scan pick shows an advisory warning but is **allowed** (C1's
+  attach is permissive; the comparability guard is C2b).
+- **Jobs-survive, made visible**: detach / delete-pathway / delete-reaction each carry a Tauri-dialog
+  `confirm` whose copy says the scan job stays in the Jobs list (only the grouping is removed); a
+  pathway's job title is a link that **opens the still-standalone job**.
+
+**Extracted logic + controls** (`src/reactions/pathway.ts`, `pathway.test.ts`): `isScanJob`,
+`isValidPathwayLabel`/`normalizePathwayLabel`. **C-scan-detection** (true w/ scan profile, false
+without / null / zero-points — bite-demonstrated RED with `return true`) and **C-empty-label**
+(empty/whitespace rejected).
+
+**Decisions.**
+1. **Exposed `jobs.pathway_id` on the `Job` model** (14th column of `Job::COLUMNS`/`from_row`;
+   `pathway_id` on the TS `Job`). C1 deliberately left it off ("C2 exposes it when it needs to"); C2a
+   needs it to map pathway→job (`Job.pathway_id === Pathway.id`) so the mapping **survives reload**
+   and stays one-source-of-truth (the job carries the FK, not the pathway). Additive — `cargo test`
+   still 207 (jobs tests use `init_db`, which now has the column). This is the one Rust touch; the
+   prompt's "no Rust change" assumption didn't account for the reload-safe mapping need.
+2. **Tauri-dialog `confirm`, not `window.confirm`/`prompt`.** Native dialogs are unreliable under
+   WebKitGTK — a silently-false `confirm` would make delete a no-op (and fail the gate). Use
+   `@tauri-apps/plugin-dialog` `confirm` (already a dep, initialized in `lib.rs`, used in
+   `export/save.ts`). The plugin has no text prompt, so **rename is an inline edit** (input +
+   Save/Cancel), not a prompt.
+
+**Verify.** `tsc` 0; `vitest` 638 (49 files, +6 for the two controls); `vite build` clean; `cargo
+test` 207 (the additive `Job` column). Wiki: +`modules/reactions-ui.md`, `tauri-core.md` (v13 note:
+`Job` now carries `pathway_id`), `ROADMAP.md` (C2a `[~]`), `index.md`.
+
+**Manual gate (author, real window) — PENDING; the unit stays open until it passes.**
+- m1: create "Ketone + BH₄ (si vs re)" → appears, opens.
+- m2: attach two completed scan jobs as pathways "si face"/"re face" → both listed with job titles;
+  a non-scan job in the picker is marked/warned.
+- m3: detach one pathway's job → un-groups; the scan job is **still in Jobs**, openable with its
+  profile intact.
+- m4: delete the reaction → gone from the list; **both scan jobs still exist in Jobs**.
+
+**Next.** Author runs m1–m4. Then C2b — promote reads coordinate/method/profile from the attached job,
+overlays Pathway A vs B with **ΔΔE‡**, and adds the comparability guards C2a leaves advisory.
