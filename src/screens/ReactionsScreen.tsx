@@ -526,7 +526,7 @@ function AttachPathwayForm({
         </div>
       ) : (
         <>
-          <div className="row" style={{ gap: 16, alignItems: "flex-end" }}>
+          <div className="row" style={{ gap: 16, alignItems: "flex-end", flexWrap: "wrap" }}>
             <div className="field" style={{ width: 200 }}>
               <label className="label" htmlFor="pw-label">
                 Pathway label
@@ -540,7 +540,7 @@ function AttachPathwayForm({
                 spellCheck={false}
               />
             </div>
-            <div className="field" style={{ flex: 1 }}>
+            <div className="field" style={{ flex: 1, minWidth: 0 }}>
               <label className="label" htmlFor="pw-job">
                 Job
               </label>

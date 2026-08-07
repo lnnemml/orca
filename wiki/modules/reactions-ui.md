@@ -59,7 +59,7 @@ paper over or contradict this:
 Rename uses an **inline edit** (input + Save/Cancel), because the dialog plugin has `confirm`/`ask`/
 `message` but no text prompt.
 
-## Manual gate (author, real window) — PENDING (code complete; the unit stays open until it passes)
+## Manual gate (author, real window) — PASSED (m1–m4 in the real window; Stage C2a complete)
 
 - **m1** create "Ketone + BH₄ (si vs re)" → appears, opens.
 - **m2** attach two completed scan jobs as pathways "si face" / "re face" → both listed with their

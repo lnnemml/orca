@@ -6168,3 +6168,24 @@ reference machinery.
 **Housekeeping.** `index.md` (+chemistry/reaction-barriers.md, +adr-018; page count 77→79), `ROADMAP.md`
 (Stage C2b now points at the ratified summed-optional reference + the three-barrier methodology). This
 commit is **documentation only** — `reaction_reference_jobs` + the ΔΔE‡/overlay are C2b.
+
+## [2026-08-07] session | Phase 4.5 Stage C2a CLOSED — manual gate m1–m4 PASSED + attach-form overflow fix
+
+**Manual gate PASSED** (author, real Tauri window). m1 create "Ketone + BH₄ (si vs re)" → appears,
+opens. m2 attach two completed scan jobs as "si face"/"re face" → both listed with job titles; a
+non-scan job in the picker marked/warned. m3 detach one pathway's job → un-groups; **the scan job
+still in the Jobs list**, openable with its profile intact. m4 delete the reaction → gone; **both
+scan jobs still in Jobs** (jobs-survive, visible).
+
+**Overflow fix** (`AttachPathwayForm`, `ReactionsScreen.tsx`): the **Attach** button spilled past the
+card edge. Added `flexWrap: "wrap"` to the attach-form row and `minWidth: 0` to the `flex: 1` job-select
+field (the classic flex-item min-content overflow: a `flex:1` child won't shrink below its intrinsic
+width without `minWidth: 0`, pushing siblings out). Attach now stays inside the card; wraps to a second
+line when narrow. Author confirmed by eye.
+
+**Verify.** `tsc` 0, `vitest` 638, `vite build` clean (no cargo change). Wiki: `ROADMAP.md` (C2a
+`[~]`→`[x]`, **Stage C2a complete**), `modules/reactions-ui.md` (gate PASSED).
+
+**Next.** C2b — promote + comparative ΔΔE‡ overlay; `reaction_reference_jobs` (migration v14) per
+[ADR-018](architecture/adr-018-reaction-energy-reference.md); reads coordinate/method/profile from the
+attached job; comparability guards that C2a's attach leaves advisory.
