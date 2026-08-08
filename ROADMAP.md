@@ -865,13 +865,23 @@ r1–r4 manual gates. Next per the ratified reorder: CREST probe → Stage D →
 
 ### Stage F — Microsolvation (explicit solvent shell), probe-first
 
-- [ ] Install **CREST** (a separate binary that shells xtb — **domain rule #2:** its build must
-      match the installed **xtb 6.6.1**) → **probe `crest --qcg`** (record artifacts, cost, what
-      works) → then design. Builds on fragment placement + xtb + GOAT; the tail-2 cation catalog
-      seeds the ion side. **Caveats to settle in the probe:** shell **conformer sampling** (floppy
-      shell, many near-degenerate arrangements) and **quasi-RRHO** thermochemistry for the low
-      frequencies a loose cluster introduces. Especially for the ionic/charged TS (Na⁺–BH₄–ketone;
-      **SMD over ALPB for ions**). Lowest immediate mission priority — last, or in parallel on demand.
+- [x] **CREST installed + QCG probed** (2026-08-08, measure-only — `wiki/orca/crest.md`). **CREST
+      3.0.2** (`/opt/crest/crest`, GNU static, commit af7eb99). **Rule #2 linkage confirmed:** QCG
+      shells out to `/usr/bin/xtb` **6.6.1** (quoted program-call + version banner), `-alpb <solvent>`
+      reaches the cluster opt. `-grow` is cheap + clean (benzoic+water 10 s; **BH₄⁻+methanol 8.7 s**).
+      **Two blocking findings for the ionic case:** (1) **QCG grows/optimizes the anion cluster as
+      NEUTRAL** — `-chrg -1` reaches only the solute preopt; the grow docking + cluster opt run at
+      total charge 0 (rule #9 "terminated normally, wrong charge"); (2) **`-ensemble` crashes**
+      (reproducible CREGEN segfault; `-enslvl gfn2` → MTD non-convergence). ALPB/GBSA only — **no SMD**
+      at this level (that is the later ORCA refinement). **This is a probe, NOT the feature** — Stage F
+      stays open below.
+- [ ] **Design/build Stage F** on the probe. Recommendation from it: **do Stage E (gas-phase ΔG‡)
+      first — E before F** (F is not production-trustworthy for the anion until the charge-on-cluster
+      and ensemble-crash issues are resolved). Pragmatic path: take QCG's neutral grown shell as a
+      **geometry seed only**, then re-optimize the cluster **in ORCA at the correct charge with SMD**
+      (SMD-over-ALPB for ions). Still to settle: floppy-shell **conformer sampling** and **quasi-RRHO**
+      thermochemistry for the low frequencies a loose cluster introduces (Na⁺–BH₄–ketone). Lowest
+      immediate mission priority — after E, or in parallel on demand.
 
 **Phase 4.5 done when:** author defines two stereofacial attacks on a ketone (si vs re), runs two
 native ORCA scans, and sees two energy profiles side by side with ΔΔE‡ — a computational

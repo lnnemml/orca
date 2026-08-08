@@ -6343,3 +6343,37 @@ E(ref) + absolute barriers; r2 remove/unparsed → "incomplete", no number; r3 d
 passes.
 
 **Next** (ratified reorder): CREST probe → Stage D (conformer→reaction-center rigor) → Stage E/F (ΔG‡).
+
+## [2026-08-08] session | CREST 3.0.2 QCG microsolvation probe (Phase 4.5 Stage F probe — measure-only, xtb 6.6.1 linkage verified)
+
+Measure-only probe (rule #10) — no production code (nothing under src/ or src-tauri/). New page
+`wiki/orca/crest.md`; the only deliverables are the runs + the recorded measurements.
+
+**Rule #2 linkage — CONFIRMED.** CREST 3.0.2 (`/opt/crest/crest`, GNU static, commit af7eb99) QCG
+shells out to the external `/usr/bin/xtb` **6.6.1** (quoted: `* xtb version 6.6.1 …` + `program call
+: xtb solute --gfn2 --sp` from the kept `-keepdir` tmp). `-alpb <solvent>` reaches the cluster
+optimization. Nuance: `normal termination of xtb` is NOT in the kept dirs (CREST keeps xtb **stdout**;
+the banner is on **stderr**) — prove xtb ran via the version banner + program-call + `.xtboptok`, and
+CREST's own `CREST terminated normally.`
+
+**Per-rung (all `-T 4 -keepdir`, isolated dirs, rule #3):**
+- **Rung 0** benzoic acid + 3 H₂O `-grow -alpb water -nofix` → terminated normally, **10.15 s**, 24-atom cluster. Clean baseline.
+- **Rung 1** BH₄⁻ + 3 MeOH `-grow -alpb methanol -chrg -1 -fixsolute` → terminated normally, **8.68 s**, 23-atom cluster.
+- **Rung 2** same `-ensemble` → grow OK, **ensemble SEGFAULTS** (reproducible, CREGEN `newcregen_`); `-enslvl gfn2` → MTD non-convergence (exit 1). Ensemble unusable for this ionic system.
+
+**Two blocking findings for the ionic (mission) case:**
+1. **QCG grows/optimizes the anion cluster as NEUTRAL (rule #9 footgun).** `-chrg -1` reaches only
+   the solute monomer preopt (`.CHRG=-1`); the grow-phase docking (`charge of molecule A : 0.0`) and
+   cluster opt (no `.CHRG`, `total charge 0.0`) run neutral. "Terminated normally, wrong charge."
+2. **`-ensemble` crashes** on the ionic system (both GFN-FF default and `-enslvl gfn2`).
+
+**ALPB/GBSA only — no SMD** at this level (that is the later ORCA refinement; SMD-over-ALPB for ions).
+
+**E-vs-F implication:** **do Stage E (gas-phase ΔG‡) before Stage F.** QCG is cheap + correctly linked
+but not production-trustworthy for the anion until the charge-on-cluster + ensemble-crash issues are
+resolved (not our bug to fix). Pragmatic F path when built: use QCG's neutral grown shell as a
+**geometry seed only**, re-optimize the cluster **in ORCA at the correct charge with SMD**. ROADMAP
+Stage F: the install+probe item marked `[x]` (probe, not the feature); the design/build item stays open.
+
+**Next:** Stage E (OptTS + Freq + thermochemistry → true ΔG‡), per the sharpened reorder (E before F).
+Also still pending: the C2b-1 (c1–c4) and C2b-2b (r1–r4) author manual gates.
