@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
 
 import { aggregateReopt, type ReoptAggregateRaw, type ReoptChild } from "./reopt-aggregate";
-import type { Conformer } from "./ensemble";
+import { conformerMatchesFragment, type Conformer } from "./ensemble";
+import type { RawFragment } from "./types";
 
 /** A minimal xTB ensemble whose energies ascend with index (GOAT order). */
 function ensemble(energiesEh: number[]): Conformer[] {
@@ -18,6 +19,7 @@ function child(over: Partial<ReoptChild> & { source_conformer_index: number }): 
     gibbs_eh: null,
     imaginary_count: null,
     freq_requested: true,
+    method: "r2SCAN-3c",
     element_mismatch: false,
     ...over,
   };
@@ -145,6 +147,8 @@ describe("aggregateReopt — the teaching moment: DFT re-ranks xTB", () => {
     expect(conf1.xtbRank).toBe(2);
     expect(conf1.dftRank).toBe(1); // xTB #2 → DFT #1
     expect(conf0.rankChanged).toBe(true);
+    // The energies differ by ~31 kcal/mol — a genuine minimum change, not a tie.
+    expect(c.minimumChanged).toBe(true);
   });
 
   it("no reordering when DFT preserves the xTB order", () => {
@@ -155,6 +159,101 @@ describe("aggregateReopt — the teaching moment: DFT re-ranks xTB", () => {
     ]);
     const c = aggregateReopt(agg, ens);
     expect(c.reordered).toBe(false);
+    expect(c.minimumChanged).toBe(false);
+    expect(c.dismissedRoseToTop).toBe(false);
+  });
+});
+
+describe("aggregateReopt — caption scope (minimum held vs minimum changed vs tie)", () => {
+  it("minimum HELD, tail reordered (the ibuprofen shape): xTB#1 == DFT#1, dismissed #4 tied", () => {
+    // xTB order: conf0 < conf1 < conf2 < conf3 (conf3 dismissed at xTB rank 4).
+    const ens = ensemble([-100.0, -99.99, -99.98, -99.97]);
+    const agg = raw([
+      child({ source_conformer_index: 0, gibbs_eh: -200.1, imaginary_count: 0 }),
+      child({ source_conformer_index: 1, gibbs_eh: -200.098, imaginary_count: 0 }),
+      child({ source_conformer_index: 2, gibbs_eh: -200.097, imaginary_count: 0 }),
+      // conf3 ties conf0 at DFT (identical G) — a dismissed conformer rose to co-min.
+      child({ source_conformer_index: 3, gibbs_eh: -200.1, imaginary_count: 0 }),
+    ]);
+    const c = aggregateReopt(agg, ens);
+    // The xTB minimum (conf0) is among the DFT co-minima → the minimum did NOT change,
+    // so the strong "wrong minimum" caption must NOT fire.
+    expect(c.minimumChanged).toBe(false);
+    // ...but the dismissed conf3 joined the DFT top — the honest teaching point.
+    expect(c.dismissedRoseToTop).toBe(true);
+    expect(c.reordered).toBe(true); // conf3 moved from xTB#4 into the DFT top
+  });
+
+  it("minimum CHANGED: the xTB best is not a DFT co-minimum", () => {
+    const ens = ensemble([-100.0, -99.99]);
+    const agg = raw([
+      // xTB min conf0, but DFT puts conf1 clearly (>0.05 kcal/mol) below it.
+      child({ source_conformer_index: 0, gibbs_eh: -200.10, imaginary_count: 0 }),
+      child({ source_conformer_index: 1, gibbs_eh: -200.15, imaginary_count: 0 }),
+    ]);
+    const c = aggregateReopt(agg, ens);
+    expect(c.minimumChanged).toBe(true);
+  });
+
+  it("TIE within tolerance: xTB best is a DFT co-minimum → minimum NOT changed", () => {
+    const ens = ensemble([-100.0, -99.99]);
+    // conf1 is DFT-lowest by only 5e-5 Eh (~0.03 kcal/mol < 0.05) over conf0 (xTB min).
+    const agg = raw([
+      child({ source_conformer_index: 0, gibbs_eh: -200.10, imaginary_count: 0 }),
+      child({ source_conformer_index: 1, gibbs_eh: -200.10005, imaginary_count: 0 }),
+    ]);
+    const c = aggregateReopt(agg, ens);
+    // Ranks flip (conf1 is numerically lower) but they are practically degenerate,
+    // so the xTB min is still a DFT co-minimum — minimum held, tail note fires.
+    expect(c.reordered).toBe(true);
+    expect(c.minimumChanged).toBe(false);
+    expect(c.dismissedRoseToTop).toBe(true);
+  });
+
+  it("just OUTSIDE the tolerance: a real swap is a minimum change", () => {
+    const ens = ensemble([-100.0, -99.99]);
+    // conf1 lower by 1e-4 Eh (~0.063 kcal/mol > 0.05) — not degenerate.
+    const agg = raw([
+      child({ source_conformer_index: 0, gibbs_eh: -200.10, imaginary_count: 0 }),
+      child({ source_conformer_index: 1, gibbs_eh: -200.1001, imaginary_count: 0 }),
+    ]);
+    const c = aggregateReopt(agg, ens);
+    expect(c.minimumChanged).toBe(true);
+  });
+});
+
+describe("carry the DFT final geometry downstream — composition post-condition (D3)", () => {
+  // `useDftConformer` builds a Conformer from the child's parsed `final_geometry`
+  // (elements + xyz_angstrom) and applies it via planConformerApply, whose
+  // `conformerMatchesFragment` gate is the rule-#9 post-condition: the carried
+  // geometry must share the source fragment's atom count AND element order, or it is
+  // refused. Coordinates here are arbitrary (99…) to prove it's composition, not
+  // coordinates, that is checked.
+  const fragment: RawFragment = {
+    id: "f",
+    name: "butane",
+    charge: 0,
+    source: "smiles",
+    atoms: [
+      { element: "C", x: 0, y: 0, z: 0 },
+      { element: "C", x: 1, y: 0, z: 0 },
+      { element: "H", x: 2, y: 0, z: 0 },
+    ],
+  };
+  const dftConformer = (elements: string[]): Conformer => ({
+    atoms: elements.map((element, i) => ({ element, x: 99 + i, y: 99, z: 99 })),
+    energy: NaN,
+    index: 0,
+  });
+
+  it("accepts a DFT geometry with the same composition + order", () => {
+    expect(conformerMatchesFragment(fragment, dftConformer(["C", "C", "H"]))).toBe(true);
+  });
+  it("refuses a DFT geometry with a different element ORDER", () => {
+    expect(conformerMatchesFragment(fragment, dftConformer(["C", "H", "C"]))).toBe(false);
+  });
+  it("refuses a DFT geometry with a different atom COUNT", () => {
+    expect(conformerMatchesFragment(fragment, dftConformer(["C", "C"]))).toBe(false);
   });
 });
 

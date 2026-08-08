@@ -68,7 +68,18 @@ export type FragmentGeometryVia =
       unit: MeasurementUnit;
     }
   | { via: "xtb" }
-  | { via: "conformer"; conformerIndex: number; deltaEKcal: number | null };
+  | {
+      via: "conformer";
+      conformerIndex: number;
+      deltaEKcal: number | null;
+      /**
+       * Which level the carried geometry is at (D3). Absent/`"xTB"` = the raw GOAT
+       * frame (2.5.1b); `"DFT"` = the re-optimised child geometry, with `method`.
+       * The user must know which level they carried forward — so the log records it.
+       */
+      level?: "xTB" | "DFT";
+      method?: string;
+    };
 
 /** Provenance of a whole-scene geometry replacement (today: xtb pre-opt). */
 export type WholeSceneVia = { via: "xtb" };
@@ -195,11 +206,15 @@ function describeReplaceFragment(op: Extract<Op, { type: "replace-fragment-atoms
       return `Set ${e.kind} ${e.atoms.join("-")} to ${formatTarget(e.target, e.unit)}`;
     case "xtb":
       return `Pre-optimize ${op.name} (xtb)`;
-    case "conformer":
-      return (
-        `Replace ${op.name} with conformer #${e.conformerIndex}` +
-        (e.deltaEKcal === null ? "" : ` (ΔE ${num(e.deltaEKcal)} kcal/mol)`)
-      );
+    case "conformer": {
+      const kind =
+        e.level === "DFT"
+          ? `DFT-optimised conformer #${e.conformerIndex}` +
+            (e.method ? ` (${e.method})` : "")
+          : `conformer #${e.conformerIndex}` +
+            (e.deltaEKcal === null ? "" : ` (ΔE ${num(e.deltaEKcal)} kcal/mol)`);
+      return `Replace ${op.name} with ${kind}`;
+    }
   }
 }
 

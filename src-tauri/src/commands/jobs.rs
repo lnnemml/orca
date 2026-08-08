@@ -136,6 +136,18 @@ fn input_requested_freq(input: &str) -> bool {
     })
 }
 
+/// The method keyword of a re-opt child: the FIRST token on the `!` keyword line
+/// (ignoring comments). `buildReoptInput` always emits `! <method> Opt [Freq] …`, so
+/// the leading token is the composite/functional (`r2SCAN-3c`, …). Used only to label
+/// the carried geometry's level in the UI (D3); `None` if there is no `!` line.
+fn method_from_input(input: &str) -> Option<String> {
+    input.lines().find_map(|line| {
+        let code = line.split('#').next().unwrap_or("").trim();
+        let rest = code.strip_prefix('!')?;
+        rest.split_whitespace().next().map(str::to_string)
+    })
+}
+
 /// One DFT re-opt child in a GOAT job's fan-out, as read back for the D2b aggregate.
 /// Raw facts only — the TS side does the honest-or-absent weighting (one Boltzmann
 /// implementation lives in `src/scene/ensemble.ts`, never a second one in Rust).
@@ -155,6 +167,8 @@ pub struct ReoptChild {
     pub imaginary_count: Option<i64>,
     /// This child's input requested `Freq` (mode detection is derived, not stored).
     pub freq_requested: bool,
+    /// The method keyword (first `!`-line token), to label the carried geometry (D3).
+    pub method: Option<String>,
     /// The child's `* xyz` element list differs from the source ensemble's — a
     /// composition mismatch (should be impossible by construction; surfaced loudly).
     pub element_mismatch: bool,
@@ -225,6 +239,7 @@ fn read_conformer_reoptimization_conn(
             any_no_freq = true;
         }
         let element_mismatch = element_symbols_from_input(&input_content) != source_elements;
+        let method = method_from_input(&input_content);
         children.push(ReoptChild {
             source_conformer_index: idx,
             job_id,
@@ -234,6 +249,7 @@ fn read_conformer_reoptimization_conn(
             gibbs_eh: g,
             imaginary_count: imag,
             freq_requested,
+            method,
             element_mismatch,
         });
     }
@@ -853,6 +869,7 @@ mod tests {
         assert_eq!(agg.children[0].gibbs_eh, Some(-157.4));
         assert_eq!(agg.children[0].imaginary_count, Some(0));
         assert!(agg.children[0].freq_requested);
+        assert_eq!(agg.children[0].method.as_deref(), Some("r2SCAN-3c"));
         assert!(!agg.children[0].element_mismatch);
 
         // Child 1 — electronic present, G ABSENT (Freq failed), 1 imaginary (saddle).

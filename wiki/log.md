@@ -6521,3 +6521,45 @@ reaction center. Pinned in `chemistry/conformers.md` (real table).
 
 **Verification:** tsc clean; vitest 689 pass (+8 aggregate → 52 files); cargo 217 lib pass (+2 D2b).
 **Next: D3** — "use the best (DFT) conformer" into a reaction center + C2b-2b reference convergence.
+
+## [2026-08-08] session | Phase 4.5 Stage D unit D3 — carry the DFT winner downstream + scope-correct the re-rank caption (Stage D CLOSED)
+
+**Scope (one unit, closes Stage D).** (1) let the user carry the DFT-re-optimised winner downstream
+(not the raw xTB frame); (2) the caption honesty scope-fix. OUT: no reaction_reference_jobs/C2b-2b,
+no migration, no reaction_centers.
+
+**Task 1 — caption scope-fix (Pattern 2, honesty).** `reordered = rows.some(rankChanged)` is too weak
+to claim "the xTB minimum is not the DFT minimum" — false when the minimum holds and only the tail
+reorders. Split into two tie-aware flags in `aggregateReopt`, using `CO_MINIMUM_TIE_KCAL` (0.05
+kcal/mol, display-only — weighting uses exact energies): **`minimumChanged`** (no xTB-best is among
+the DFT co-minima → the strong "wrong conformer" case) and **`dismissedRoseToTop`** (a DFT co-minimum
+that wasn't an xTB best → a dismissed conformer rose to the top). Caption picks exactly one:
+minimumChanged → "xTB minimum is NOT the DFT minimum"; else dismissedRoseToTop → "minimum held, but a
+lower-ranked conformer is a DFT co-minimum"; else "re-ranked below the top". 4 tests: minimum-held-
+tail-reordered (ibuprofen shape), minimum-changed, tie-within-tolerance, just-outside-tolerance.
+
+**Task 2 — carry the DFT geometry downstream.** New `useDftConformer` in JobDetail: reads the child
+job's parsed **`results.final_geometry`** (Phase 3, the DFT-optimised structure — NOT the xTB frame),
+builds a Conformer, and applies it via the SAME 2.5.1b path (`planConformerApply` → replace/new/refuse).
+That path's composition refusal (atom count + element order) IS the rule-#9 post-condition — asserted,
+not assumed. Op-log records `level: "DFT"` + method (`FragmentGeometryVia.conformer` gained optional
+`level`/`method`), so the carried level is never ambiguous. Each D2b row gets a "Use (DFT)" button
+("Use best (DFT)" on DFT rank-1); only completed clean children (the `included` rows) are offered.
+`method` added to the Rust `ReoptChild` (first `!`-line token) → threaded to the row. Refactored the
+shared apply logic into `applyConformer` (used by both `useConformer` and `useDftConformer`). 3 tests:
+DFT-geometry composition post-condition (same order accepted; reordered/short refused).
+
+**Manual gate — REAL data (headless; could not click the app).** (a) Ran `aggregateReopt` on the real
+butane DFT G values (D2b run): `minimumChanged=false, dismissedRoseToTop=true` — the strong "minimum
+is not the minimum" caption NO LONGER fires (the D2b over-statement is fixed); conf #3 (xTB rank 3)
+rose to DFT co-minimum with conf #1 (anti held). (b) Ran r2SCAN-3c Opt on the anti conformer: optimised
+C1 `1.95200, 0.07815, 0.24081` ≠ xTB frame C1 `1.93939, 0.07737, 0.24304` (Δx ≈ 0.013 Å) — so "Use
+best (DFT)" carries a genuinely different, DFT-level geometry.
+
+**Verification:** tsc clean; vitest 696 pass (+7: 4 caption + 3 DFT-geom post-condition → 52 files);
+cargo 217 lib pass (method assertion added). **Stage D CLOSED.**
+
+**ROADMAP stub recorded (not lost):** new "Phase 4.7 — Job organization & lifecycle (planned)" with
+three `[ ]` bullets (ADR-019 job groups = a tree in SQLite, not a filesystem hierarchy; job deletion
+DB-only vs DB+files with FK links NULLed not cascaded + running-guard; job grouping + filter/search).
+**Next: ADR-019 + its decomposition (a separate session).**

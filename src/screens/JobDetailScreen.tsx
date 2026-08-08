@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
-import type { Job, JobStatus } from "../types";
+import type { Job, JobStatus, ParsedResults } from "../types";
+import type { FragmentGeometryVia } from "../scene/oplog";
 import { formatEnergy, formatWallTime } from "../format";
 import { ConvergenceDashboard } from "../convergence/ConvergenceDashboard";
 import type { ConvergenceEvent, ConvergencePayload } from "../convergence/types";
@@ -16,6 +17,7 @@ import { deserializeScene } from "../scene/scene";
 import { buildReoptInput, DEFAULT_REOPT_METHOD } from "../scene/reopt";
 import {
   aggregateReopt,
+  CO_MINIMUM_TIE_KCAL,
   type ReoptAggregateRaw,
   type ReoptComparison,
 } from "../scene/reopt-aggregate";
@@ -182,14 +184,19 @@ export function JobDetailScreen({
     };
   }, [ensemble, selectedConf, snapshotFragment]);
 
-  // "Use this conformer": replace the live fragment in place if it's still in the
-  // store scene, else start a fresh single-fragment scene — decided purely by
-  // `planConformerApply`, which refuses (no throw) if the composition changed.
-  const useConformer = () => {
-    const conf = ensemble?.[selectedConf];
-    if (!conf || !snapshotFragment || !job?.scene_json) {
+  // Apply a chosen conformer geometry to the scene store (2.5.1b path): replace the
+  // live fragment in place if it's still there, else seed a fresh single-fragment
+  // scene — decided purely by `planConformerApply`, which refuses (no throw, a
+  // banner) on a composition mismatch. That refusal IS the atom count/element-order
+  // post-condition (rule #9) — carrying a geometry with a different composition is
+  // rejected, never assumed away. Returns true on success. `provenance` labels the op.
+  const applyConformer = (
+    conf: Conformer,
+    provenance: FragmentGeometryVia & { via: "conformer" },
+  ): boolean => {
+    if (!snapshotFragment || !job?.scene_json) {
       setError("This job has no fragment snapshot to apply a conformer to.");
-      return;
+      return false;
     }
     const plan = planConformerApply(
       useSceneStore.getState().scene,
@@ -198,17 +205,12 @@ export function JobDetailScreen({
     );
     if (plan.action === "refuse") {
       setError(plan.reason);
-      return;
+      return false;
     }
     if (plan.action === "replace") {
-      // A logged geometry op — its provenance names the conformer (unit 2b).
       useSceneStore
         .getState()
-        .replaceFragmentAtoms(plan.fragmentId, plan.atoms, {
-          via: "conformer",
-          conformerIndex: conf.index,
-          deltaEKcal: null,
-        });
+        .replaceFragmentAtoms(plan.fragmentId, plan.atoms, provenance);
     } else {
       const mult = deserializeScene(job.scene_json)?.multiplicity ?? 1;
       // The store scene was cleared → seed a fresh lineage from the conformer.
@@ -221,7 +223,71 @@ export function JobDetailScreen({
         "new-iteration",
       );
     }
-    onUseConformer();
+    return true;
+  };
+
+  // "Use this conformer" — the RAW xTB frame from the GOAT ensemble (2.5.1b).
+  const useConformer = () => {
+    const conf = ensemble?.[selectedConf];
+    if (!conf) {
+      setError("This job has no fragment snapshot to apply a conformer to.");
+      return;
+    }
+    if (
+      applyConformer(conf, {
+        via: "conformer",
+        conformerIndex: conf.index,
+        deltaEKcal: null,
+      })
+    ) {
+      onUseConformer();
+    }
+  };
+
+  // Carry the DFT-RE-OPTIMISED geometry of a re-opt child downstream (D3). Unlike
+  // `useConformer` (the raw xTB frame), the source is the child job's PARSED FINAL
+  // DFT geometry (Phase 3 `results.final_geometry`), so the user carries the higher-
+  // level structure forward. Only offered for a completed clean child (the D2b rows).
+  // The op-log records `level: "DFT"` + method so the level is never ambiguous.
+  const useDftConformer = async (
+    childJobId: string,
+    conformerIndex: number,
+    method: string,
+  ) => {
+    setError(null);
+    try {
+      const res = await invoke<ParsedResults | null>("read_job_results", {
+        id: childJobId,
+      });
+      const geo = res?.final_geometry;
+      if (!geo || geo.elements.length === 0) {
+        setError("This re-opt job has no parsed final DFT geometry yet.");
+        return;
+      }
+      const dftConf: Conformer = {
+        atoms: geo.elements.map((element, i) => ({
+          element,
+          x: geo.xyz_angstrom[i][0],
+          y: geo.xyz_angstrom[i][1],
+          z: geo.xyz_angstrom[i][2],
+        })),
+        energy: NaN, // geometry only — the scene carries no energy
+        index: conformerIndex,
+      };
+      if (
+        applyConformer(dftConf, {
+          via: "conformer",
+          conformerIndex,
+          deltaEKcal: null,
+          level: "DFT",
+          method,
+        })
+      ) {
+        onUseConformer();
+      }
+    } catch (e) {
+      setError(String(e));
+    }
   };
 
   // "Re-optimize top-k at DFT" (Stage D unit D2a): fan out k queued DFT re-opt
@@ -751,6 +817,7 @@ export function JobDetailScreen({
                       <th>{reoptAgg.mode === "dG" ? "ΔG (DFT)" : "ΔE (DFT)"}</th>
                       <th>DFT pop</th>
                       <th>Σ</th>
+                      <th></th>
                     </tr>
                   </thead>
                   <tbody>
@@ -774,6 +841,26 @@ export function JobDetailScreen({
                         <td className="mono">+{r.dftDeltaKcal.toFixed(2)}</td>
                         <td className="mono">{(r.dftWeight * 100).toFixed(1)}%</td>
                         <td className="mono muted">{(r.dftCumulative * 100).toFixed(1)}%</td>
+                        <td>
+                          {/* Carry THIS child's DFT-re-optimised geometry downstream.
+                              Every row is a completed clean child (D2b `included`), so
+                              all are usable; the DFT rank-1 is the default best. */}
+                          <button
+                            className={
+                              "btn btn-sm" + (r.dftRank === 1 ? " btn-primary" : "")
+                            }
+                            title={`Use the ${r.method ?? "DFT"}-optimised geometry of conformer #${r.conformerIndex + 1}`}
+                            onClick={() =>
+                              useDftConformer(
+                                r.jobId,
+                                r.conformerIndex,
+                                r.method ?? "DFT",
+                              )
+                            }
+                          >
+                            {r.dftRank === 1 ? "Use best (DFT)" : "Use (DFT)"}
+                          </button>
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -784,10 +871,25 @@ export function JobDetailScreen({
                 </div>
               )}
 
-              {reoptAgg.reordered ? (
+              {/* The caption must claim exactly what happened — the strong "wrong
+                  minimum" wording ONLY when the xTB minimum truly is not a DFT
+                  minimum; otherwise the honest tail-reorder / dismissed-co-minimum
+                  wording (D3 scope-fix). */}
+              {reoptAgg.minimumChanged ? (
                 <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-                  ⚑ DFT re-ranked the xTB order — the xTB minimum is not the DFT
-                  minimum. This is exactly why the ensemble is re-optimized.
+                  ⚑ DFT re-ranked the ensemble — the xTB minimum is <strong>not</strong>{" "}
+                  the DFT minimum. Building on the xTB best would have used the wrong
+                  conformer; this is exactly why the ensemble is re-optimized.
+                </div>
+              ) : reoptAgg.dismissedRoseToTop ? (
+                <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                  ⚑ The xTB minimum held, but a conformer xTB ranked lower is a DFT
+                  co-minimum (≤{CO_MINIMUM_TIE_KCAL.toFixed(2)}&nbsp;kcal/mol) — xTB
+                  under-weighted it. Worth carrying forward alongside the xTB best.
+                </div>
+              ) : reoptAgg.reordered ? (
+                <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                  DFT re-ranked conformers below the top; the xTB minimum held.
                 </div>
               ) : null}
 

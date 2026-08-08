@@ -847,7 +847,7 @@ r1–r4 manual gates. Next per the ratified reorder: CREST probe → Stage D →
 
 ### Stage D — Conformer → reaction-center scientific-rigor layer
 
-- [~] Boltzmann-weight the GOAT ensemble (primitive from 2.5.1) + **re-optimise the lowest 3–4 at
+- [x] Boltzmann-weight the GOAT ensemble (primitive from 2.5.1) + **re-optimise the lowest 3–4 at
       DFT** → build reaction centers on those (ADR-007: mandatory for valid science). Upgrades the
       inputs to Stages A–C so ΔΔE‡ is defensible, not merely mechanically produced. No new probe
       (GOAT measured); the DFT re-opt orchestration is the new code.
@@ -868,8 +868,15 @@ r1–r4 manual gates. Next per the ratified reorder: CREST probe → Stage D →
       **honest-or-absent** (running/failed/saddle/no-G excluded + listed with reason) + xTB-vs-DFT
       re-ranking over the same subset; comparison UI on the GOAT JobDetail (provisional banner,
       ΔG/ΔE label, reordering highlight). Manual gate on real butane DFT (r2SCAN-3c Opt+Freq G).
-      **D3 (next):** "use the best (DFT) conformer" → feed it into a reaction center; + the C2b-2b
-      reference convergence. xTB- vs DFT-level populations sit in labelled columns, never conflated.
+      **D3 landed (2026-08-08) — Stage D COMPLETE:** (1) "Use best (DFT)" carries a re-opt child's
+      parsed FINAL DFT geometry (`results.final_geometry`) downstream via the existing
+      conformer-substitution path (the atom count/element-order refusal is the post-condition),
+      op-log records `level: "DFT"` + method; (2) caption scope-fix — split `reordered` into tie-aware
+      `minimumChanged` (strong "wrong minimum") vs `dismissedRoseToTop` (minimum held, a dismissed
+      conformer rose to a DFT co-minimum) so the claim matches what happened. Real butane gate:
+      minimum held, conf #3 (xTB rank 3) rose to DFT co-minimum; DFT geometry ≠ xTB frame.
+      xTB- vs DFT-level populations sit in labelled columns, never conflated. **Next (separate unit):**
+      the C2b-2b reference convergence (reactions domain — not part of Stage D).
 
 ### Stage E — Transition-state methods (each probe-first, rule #10)
 
@@ -905,6 +912,18 @@ r1–r4 manual gates. Next per the ratified reorder: CREST probe → Stage D →
 **Phase 4.5 done when:** author defines two stereofacial attacks on a ketone (si vs re), runs two
 native ORCA scans, and sees two energy profiles side by side with ΔΔE‡ — a computational
 screening of stereoselectivity (Stage C). Stages D–F deepen it toward publication-quality ΔG‡.
+
+---
+
+## Phase 4.7 — Job organization & lifecycle (planned)
+
+- [ ] **ADR-019 — job groups / projects as a TREE IN SQLITE**, never a filesystem hierarchy: jobs
+      keep their isolated run dirs (domain rule #3); grouping is metadata over the `jobs` table.
+- [ ] **Job deletion** — DB-only vs DB+files; FK links (pathway/reference/`source_ensemble_job_id`)
+      NULLed not cascaded (jobs-survive); guard on a `running` job.
+- [ ] **Job grouping + filter/search** over the job list.
+
+(ADR-019 + the decomposition into units is a separate session — this is only the stub.)
 
 ---
 

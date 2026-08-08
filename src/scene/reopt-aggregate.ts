@@ -21,9 +21,20 @@
 import {
   boltzmannWeights,
   deltaEKcal,
+  HARTREE_TO_KCAL_MOL,
   isTerminalSuccessStatus,
   type Conformer,
 } from "./ensemble";
+
+/**
+ * Energies within this (kcal/mol) are treated as **practically degenerate**
+ * co-minima for the re-rank CAPTION only — the "did the minimum change?" question
+ * is about whether the xTB best is still a DFT best, and two conformers this close
+ * are equally the best (at 298 K, RT ≈ 0.593 kcal/mol, so 0.05 kcal/mol is a
+ * ~92% population ratio — indistinguishable). Weighting and ranks use the EXACT
+ * energies; this tolerance never enters a population.
+ */
+export const CO_MINIMUM_TIE_KCAL = 0.05;
 
 /** One DFT re-opt child, as returned by the Rust `read_conformer_reoptimization`. */
 export interface ReoptChild {
@@ -35,6 +46,8 @@ export interface ReoptChild {
   gibbs_eh: number | null;
   imaginary_count: number | null;
   freq_requested: boolean;
+  /** The DFT method keyword (first `!`-line token), to label a carried geometry. */
+  method: string | null;
   element_mismatch: boolean;
 }
 
@@ -69,6 +82,8 @@ export interface ReoptIncludedRow {
   dftCumulative: number;
   /** The conformer's xTB and DFT ranks differ — the teaching moment. */
   rankChanged: boolean;
+  /** DFT method of this child, to label its geometry when carried downstream (D3). */
+  method: string | null;
 }
 
 /** An excluded conformer — listed with its reason, never given a fake weight. */
@@ -92,8 +107,20 @@ export interface ReoptComparison {
   notMinimumValidated: boolean;
   /** Some children requested Freq and some did not — no single mode is honest. */
   modeInconsistent: boolean;
-  /** At least one included conformer's xTB rank ≠ its DFT rank. */
+  /** At least one included conformer's xTB rank ≠ its DFT rank (any position). */
   reordered: boolean;
+  /**
+   * The xTB minimum is NOT a DFT minimum — the strong "you'd have picked the wrong
+   * conformer" case. Tie-aware: false when the xTB best is among the DFT co-minima
+   * (a swap within a practically-degenerate top does NOT change the minimum).
+   */
+  minimumChanged: boolean;
+  /**
+   * A conformer xTB ranked BELOW the top rose into the DFT co-minimum set — the
+   * teaching point when the minimum itself held (the ibuprofen shape: xTB#1 == DFT#1
+   * but a dismissed conformer joined it at the DFT level).
+   */
+  dismissedRoseToTop: boolean;
   /** Included conformers, ordered by DFT rank (best DFT first). */
   rows: ReoptIncludedRow[];
   /** Excluded conformers, in conformer-index order, each with a reason. */
@@ -212,12 +239,33 @@ export function aggregateReopt(
       dftWeight: dftW[i],
       dftCumulative: cum,
       rankChanged: xtbRank !== dftRank,
+      method: it.child.method,
     };
   });
 
   const terminalCount = agg.children.filter((c) =>
     isTerminalSuccessStatus(c.status),
   ).length;
+
+  // Tie-aware minimum analysis (over the included subset). "Co-minima" are the
+  // conformers within CO_MINIMUM_TIE_KCAL of the best at each level — so a swap
+  // within a practically-degenerate top does not count as the minimum changing.
+  let minimumChanged = false;
+  let dismissedRoseToTop = false;
+  if (included.length > 0) {
+    const minXtb = Math.min(...included.map((it) => it.xtb));
+    const minDft = Math.min(...included.map((it) => it.dft));
+    const withinTie = (e: number, min: number): boolean =>
+      (e - min) * HARTREE_TO_KCAL_MOL <= CO_MINIMUM_TIE_KCAL;
+    const xtbMinIds = new Set(
+      included.filter((it) => withinTie(it.xtb, minXtb)).map((it) => it.child.job_id),
+    );
+    const dftCoMinima = included.filter((it) => withinTie(it.dft, minDft));
+    // The minimum HELD iff at least one xTB-best conformer is also a DFT co-minimum.
+    minimumChanged = !dftCoMinima.some((it) => xtbMinIds.has(it.child.job_id));
+    // A DFT co-minimum that was NOT an xTB best — a dismissed conformer rose to the top.
+    dismissedRoseToTop = dftCoMinima.some((it) => !xtbMinIds.has(it.child.job_id));
+  }
 
   return {
     mode,
@@ -228,6 +276,8 @@ export function aggregateReopt(
     notMinimumValidated: mode === "dE",
     modeInconsistent: agg.mode_inconsistent,
     reordered: rows.some((r) => r.rankChanged),
+    minimumChanged,
+    dismissedRoseToTop,
     rows,
     excluded: excluded.sort((a, b) => a.conformerIndex - b.conformerIndex),
   };

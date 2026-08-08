@@ -104,10 +104,35 @@ contributing child lacks G), highlights reordered rows, lists excluded children 
 carries a **"n of k complete — provisional, not for decisions"** banner until every child is
 terminal, and a **"not frequency-validated as minima"** caveat in ΔE-mode. Nothing is stored.
 
+## Carrying the DFT winner downstream + the tie-aware caption (D3)
+
+**Minimum-changed vs tail-reorder (caption honesty).** `reordered` (any xTB rank ≠ DFT rank) is
+too weak to claim "the xTB minimum is not the DFT minimum" — that is false when the minimum holds
+and only the tail reorders. `aggregateReopt` derives two tie-aware flags over the included subset,
+using `CO_MINIMUM_TIE_KCAL` (0.05 kcal/mol — practically degenerate; display-only, weighting uses
+exact energies):
+
+- **`minimumChanged`** — no xTB-best conformer is among the DFT co-minima → the strong "you'd have
+  built on the wrong conformer" case;
+- **`dismissedRoseToTop`** — a DFT co-minimum that was NOT an xTB best → a conformer xTB ranked
+  lower joined the DFT top (the minimum may still have held).
+
+The caption picks exactly one: `minimumChanged` → "the xTB minimum is NOT the DFT minimum"; else
+`dismissedRoseToTop` → "the minimum held, but a lower-ranked conformer is a DFT co-minimum"; else a
+plain "re-ranked below the top". The claim matches what happened — no generic over-statement.
+
+**Use the DFT winner downstream.** Each D2b comparison row carries a "Use (DFT)" action ("Use best
+(DFT)" on the DFT rank-1). It carries the child job's **parsed FINAL DFT geometry**
+(`results.final_geometry`, Phase 3), NOT the raw xTB frame — so the user advances the higher-level
+structure. It reuses the 2.5.1b conformer-substitution path (`planConformerApply` → replace in
+place / new scene / refuse); that path's composition refusal (atom count + element order) IS the
+rule-#9 post-condition. The op-log records `level: "DFT"` + the method (`FragmentGeometryVia`'s
+`conformer` variant gained optional `level`/`method`), so the log never confuses the DFT geometry
+with the xTB one. Only completed clean children (the `included` rows) are offered.
+
 ## Status
 
-**Create side (D2a) + read/aggregate side (D2b) complete.** The full loop — fan out k DFT
-re-opts, then read them back re-ranked/re-weighted vs the xTB populations — is in. **Not built
-(D3):** "use the best conformer" wiring (feed the DFT winner into a reaction center) and the
-C2b-2b reference convergence. D2b is read-only: it never creates a job, never migrates, never
-caches a weight or rank.
+**Stage D COMPLETE (D1 + D2a + D2b + D3).** The full loop — populations → fan out k DFT re-opts →
+read them back re-ranked/re-weighted → carry the DFT winner downstream — is in. D2b/D3 are
+read-only over parsed results: no job creation, no migration, no cached weight/rank. Not part of
+Stage D (a separate later unit): the C2b-2b reference convergence in the reactions domain.
