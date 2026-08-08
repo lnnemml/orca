@@ -58,7 +58,14 @@ use crate::error::AppError;
 ///   authoritative `results` tier, NEVER cached on `reactions` (no two-sources-of-truth
 ///   drift). Same jobs-survive rule as v13: deleting a reaction removes its reference rows,
 ///   the referenced jobs stay standalone. Additive + idempotent (CREATE IF NOT EXISTS).
-const SCHEMA_VERSION: i64 = 14;
+/// - v15: two nullable `jobs` FKs — `source_ensemble_job_id` (TEXT) + `source_conformer_index`
+///   (INTEGER) — tagging a DFT re-opt child back to the GOAT ensemble job + conformer it came
+///   from (Phase 4.5 Stage D unit D2a). NO new table: the conformer set of a fan-out is DERIVED
+///   by `GROUP BY source_ensemble_job_id` in D2b (Fork 1), never stored. Both nullable + additive
+///   → every pre-existing job is a standalone job with both NULL. Jobs-survive: deleting the source
+///   GOAT job nulls the link (in the commands), never cascades to the children. Guarded ALTER
+///   (column_exists, like v10/v11). The REFERENCES clause documents intent, as elsewhere.
+const SCHEMA_VERSION: i64 = 15;
 
 /// Open (creating if needed) `orcastudio.db` under `data_dir` and migrate it to
 /// the current schema.
@@ -305,6 +312,29 @@ fn migrate(conn: &Connection) -> Result<(), AppError> {
             );",
         )?;
         version = 14;
+    }
+
+    // --- v14 -> v15: DFT re-opt fan-out linkage (Phase 4.5 Stage D unit D2a). Two nullable
+    // FKs on `jobs` tagging a re-opt child back to its source: `source_ensemble_job_id` (the
+    // GOAT ensemble job) + `source_conformer_index` (which conformer of that ensemble). NO new
+    // table — the conformer set of a fan-out is DERIVED later by GROUP BY source_ensemble_job_id
+    // (Fork 1), not stored. Nullable + additive: every existing job stays standalone with both
+    // NULL. Jobs-survive (like v13/v14): deleting the source GOAT job nulls these in the commands,
+    // never deletes the children. Guarded ALTER (column_exists on `jobs`, like v10/v11); the
+    // REFERENCES clause documents intent (app-level integrity in the commands). ---
+    if version < 15 {
+        if column_exists(conn, "jobs", "id")?
+            && !column_exists(conn, "jobs", "source_ensemble_job_id")?
+        {
+            // Nullable-default ADD COLUMN with a REFERENCES clause is permitted (SQLite's only
+            // FK-on-ALTER restriction is a non-NULL default). Two separate ALTERs (SQLite adds
+            // one column per statement).
+            conn.execute_batch(
+                "ALTER TABLE jobs ADD COLUMN source_ensemble_job_id TEXT REFERENCES jobs(id);
+                 ALTER TABLE jobs ADD COLUMN source_conformer_index INTEGER;",
+            )?;
+        }
+        version = 15;
     }
 
     // Persist the resulting version so subsequent runs skip completed steps.
@@ -938,6 +968,65 @@ mod tests {
 
         // Idempotent: a second migrate() is a no-op.
         migrate(&conn).expect("v14 -> v14 no-op");
+        assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn migrate_v14_to_v15_adds_source_fks_and_preserves_jobs() {
+        // A v14 DB: settings + jobs (one job). The v15 step adds the two nullable re-opt
+        // linkage columns; the pre-existing job is untouched and both new columns are NULL
+        // on it (every old job is standalone — not a re-opt child).
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO settings (key, value) VALUES ('schema_version', '14');
+             CREATE TABLE jobs (
+                id TEXT PRIMARY KEY, title TEXT NOT NULL, input_content TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'draft', energy REAL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')), pathway_id TEXT
+             );
+             INSERT INTO jobs (id, title, input_content, status, energy)
+                VALUES ('g1', 'Conformer search — butane', '! XTB GOAT', 'completed', -13.66);",
+        )
+        .unwrap();
+        assert!(!column_exists(&conn, "jobs", "source_ensemble_job_id").unwrap());
+        assert!(!column_exists(&conn, "jobs", "source_conformer_index").unwrap());
+
+        migrate(&conn).expect("v14 -> v15");
+        assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
+
+        // The two columns now exist and are NULL on the pre-existing job.
+        let (title, energy, src_job, src_idx): (String, Option<f64>, Option<String>, Option<i64>) =
+            conn.query_row(
+                "SELECT title, energy, source_ensemble_job_id, source_conformer_index
+                 FROM jobs WHERE id = 'g1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .expect("job preserved with the two new columns");
+        assert_eq!(title, "Conformer search — butane");
+        assert_eq!(energy, Some(-13.66));
+        assert_eq!(src_job, None, "an existing job is not a re-opt child (link NULL)");
+        assert_eq!(src_idx, None, "an existing job has no source conformer index");
+
+        // A child can carry both FKs (the shape D2a writes).
+        conn.execute_batch(
+            "INSERT INTO jobs (id, title, input_content, status, source_ensemble_job_id, source_conformer_index)
+             VALUES ('c1', 're-opt #0 — Conformer search — butane', '! r2SCAN-3c Opt Freq', 'queued', 'g1', 0);",
+        )
+        .unwrap();
+        let (src_job, src_idx): (Option<String>, Option<i64>) = conn
+            .query_row(
+                "SELECT source_ensemble_job_id, source_conformer_index FROM jobs WHERE id = 'c1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(src_job.as_deref(), Some("g1"));
+        assert_eq!(src_idx, Some(0));
+
+        // Idempotent: a second migrate() is a no-op.
+        migrate(&conn).expect("v15 -> v15 no-op");
         assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
     }
 

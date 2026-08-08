@@ -77,6 +77,7 @@ pub fn run() {
             commands::settings::get_settings,
             commands::settings::set_setting,
             commands::jobs::create_job,
+            commands::jobs::create_reopt_job,
             commands::jobs::list_jobs,
             commands::jobs::get_job,
             commands::jobs::update_job_status,

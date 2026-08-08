@@ -303,6 +303,12 @@ text's constraints, then replaces all coordinates.
   stored** (a cached scalar drifts); a `NaN` weight shows a dash. The cumulative is what D2's k-selection
   ("how many conformers to DFT re-optimise") reads. Count comes from the *file*, not the log summary
   (`goat.md`). Stage D unit D1 — see `log.md` [2026-08-08].
+- **"Re-optimize top-k at DFT"** (same panel, Stage D unit D2a) — fans out `k` queued DFT re-opt
+  children over the lowest-energy conformers (`buildReoptInput` → `create_reopt_job` → `submit_job`).
+  Controls: k (with the cumulative-% at k shown), method, an Opt+Freq/Opt-only mode toggle, and an SMD
+  toggle+solvent. Each child inherits the source's charge/multiplicity (the anion footgun, rule #9);
+  a mismatch aborts the whole fan-out before any job is created. Owner page:
+  `modules/conformer-reoptimization.md`.
 - **"Use this conformer"** — `planConformerApply` decides: **replace** the fragment in place (it
   survives the New Job → detail nav — the store is a singleton) → New Job with `keepScene`; else a
   **new** single-fragment scene; else **refuse** (a banner, no throw) on a composition mismatch.

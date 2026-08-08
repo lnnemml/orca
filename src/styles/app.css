@@ -1448,6 +1448,29 @@ select:disabled,
   min-width: 240px;
   height: 220px;
 }
+.reopt-form {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.reopt-head {
+  margin-bottom: 6px;
+}
+.reopt-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+.reopt-ctl {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+.reopt-smd input[type="text"]:disabled {
+  opacity: 0.5;
+}
 
 /* --- Jobs table ------------------------------------------------------- */
 

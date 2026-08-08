@@ -13,6 +13,7 @@ import { MoleculeViewer } from "../viewer/MoleculeViewer";
 import { useSceneStore } from "../scene/store";
 import { stampFreshIds } from "../scene/ids";
 import { deserializeScene } from "../scene/scene";
+import { buildReoptInput, DEFAULT_REOPT_METHOD } from "../scene/reopt";
 import {
   boltzmannWeights,
   deltaEKcal,
@@ -98,6 +99,16 @@ export function JobDetailScreen({
   const [selectedConf, setSelectedConf] = useState(0);
   const [ensembleChecked, setEnsembleChecked] = useState(false);
   const ensembleTried = useRef(false);
+
+  // "Re-optimize top-k at DFT" fan-out form (Stage D unit D2a). All local UI state;
+  // nothing is stored until the k child jobs are created on trigger.
+  const [reoptK, setReoptK] = useState(4);
+  const [reoptMethod, setReoptMethod] = useState(DEFAULT_REOPT_METHOD);
+  const [reoptFreq, setReoptFreq] = useState(true); // Opt+Freq (default) vs Opt-only
+  const [reoptSmd, setReoptSmd] = useState(false);
+  const [reoptSolvent, setReoptSolvent] = useState("water");
+  const [reoptBusy, setReoptBusy] = useState(false);
+  const [reoptMsg, setReoptMsg] = useState<string | null>(null);
 
   useEffect(() => {
     if (!job || !isTerminalSuccessStatus(job.status) || ensembleTried.current) return;
@@ -201,6 +212,55 @@ export function JobDetailScreen({
       );
     }
     onUseConformer();
+  };
+
+  // "Re-optimize top-k at DFT" (Stage D unit D2a): fan out k queued DFT re-opt
+  // children over the LOWEST-energy conformers. The child inputs are built AND
+  // charge-checked FIRST (buildReoptInput throws on any (c,m)/geometry mismatch —
+  // the anion footgun), so if any one fails we create NOTHING; only once all k
+  // inputs are proven do we create + queue them. Each child is tagged back to this
+  // GOAT job + its conformer index. All k share one mode (no mixing within a fan-out).
+  const reoptTopK = async () => {
+    if (!job || !ensemble) return;
+    const k = Math.max(1, Math.min(reoptK, ensemble.length));
+    setReoptBusy(true);
+    setReoptMsg(null);
+    setError(null);
+    try {
+      const opts = {
+        method: reoptMethod.trim() || DEFAULT_REOPT_METHOD,
+        freq: reoptFreq,
+        ...(reoptSmd
+          ? { solvation: { model: "smd" as const, solvent: reoptSolvent.trim() } }
+          : {}),
+      };
+      // Build + charge-check ALL k inputs before creating any job (create boundary:
+      // a mismatch aborts the whole fan-out, having created nothing).
+      const built = ensemble.slice(0, k).map((conf) => ({
+        conf,
+        input: buildReoptInput(job.input_content, conf, opts),
+      }));
+      // All proven → create each as a queued child and submit into the sequential
+      // queue (concurrency 1).
+      for (const { conf, input } of built) {
+        const child = await invoke<Job>("create_reopt_job", {
+          sourceEnsembleJobId: job.id,
+          sourceConformerIndex: conf.index,
+          title: `re-opt #${conf.index + 1} — ${job.title}`,
+          inputContent: input,
+        });
+        await invoke("submit_job", { id: child.id });
+      }
+      setReoptMsg(
+        `Queued ${built.length} DFT re-opt job${built.length === 1 ? "" : "s"} ` +
+          `(${reoptFreq ? "Opt+Freq" : "Opt-only"}${reoptSmd ? `, SMD ${reoptSolvent.trim()}` : ""}).`,
+      );
+    } catch (e) {
+      // A charge/geometry post-condition failure lands here — no job was created.
+      setError(`Re-opt fan-out aborted (no jobs created): ${String(e)}`);
+    } finally {
+      setReoptBusy(false);
+    }
   };
 
   const loadJob = useCallback(async () => {
@@ -514,7 +574,94 @@ export function JobDetailScreen({
             weight at 298.15&nbsp;K; Cumulative (Σ) is the running total down the
             energy-sorted list. These populations are <strong>xTB/GFN2-level</strong>{" "}
             — DFT re-optimisation of the lowest few (which will re-rank and
-            re-weight them) is Phase 4.5.
+            re-weight them) is below.
+          </div>
+
+          {/* Stage D unit D2a — DFT re-opt fan-out (create side). Re-optimises the
+              lowest-energy k conformers at DFT; the cumulative-% at k is shown so the
+              user SEES how much xTB population those k cover (Fork 3). */}
+          <div className="reopt-form">
+            <div className="reopt-head section-title">Re-optimize top-k at DFT</div>
+            <div className="reopt-controls">
+              <label className="reopt-ctl">
+                k
+                <input
+                  type="number"
+                  min={1}
+                  max={ensemble.length}
+                  value={reoptK}
+                  onChange={(e) =>
+                    setReoptK(
+                      Math.max(1, Math.min(Number(e.target.value) || 1, ensemble.length)),
+                    )
+                  }
+                  style={{ width: 56 }}
+                />
+                <span className="muted mono" style={{ fontSize: 12 }}>
+                  {(() => {
+                    const cum = cumulative[Math.min(reoptK, ensemble.length) - 1];
+                    return Number.isFinite(cum)
+                      ? `≈ ${(cum * 100).toFixed(1)}% of xTB population`
+                      : "";
+                  })()}
+                </span>
+              </label>
+              <label className="reopt-ctl">
+                Method
+                <input
+                  type="text"
+                  value={reoptMethod}
+                  onChange={(e) => setReoptMethod(e.target.value)}
+                  style={{ width: 120 }}
+                />
+              </label>
+              <label className="reopt-ctl">
+                Mode
+                <select
+                  value={reoptFreq ? "optfreq" : "opt"}
+                  onChange={(e) => setReoptFreq(e.target.value === "optfreq")}
+                >
+                  <option value="optfreq">Opt+Freq (ΔG path)</option>
+                  <option value="opt">Opt-only (quick screen)</option>
+                </select>
+              </label>
+              <label className="reopt-ctl reopt-smd">
+                <input
+                  type="checkbox"
+                  checked={reoptSmd}
+                  onChange={(e) => setReoptSmd(e.target.checked)}
+                />
+                SMD
+                <input
+                  type="text"
+                  value={reoptSolvent}
+                  disabled={!reoptSmd}
+                  onChange={(e) => setReoptSolvent(e.target.value)}
+                  placeholder="solvent"
+                  style={{ width: 96 }}
+                />
+              </label>
+              <button
+                className="btn btn-primary btn-sm"
+                onClick={reoptTopK}
+                disabled={reoptBusy}
+              >
+                {reoptBusy ? "Queuing…" : `Re-optimize top ${Math.min(reoptK, ensemble.length)}`}
+              </button>
+            </div>
+            <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+              Creates {Math.min(reoptK, ensemble.length)} job
+              {Math.min(reoptK, ensemble.length) === 1 ? "" : "s"} in the queue — each
+              inherits this molecule's charge/multiplicity.{" "}
+              {reoptFreq
+                ? "Opt+Freq on a heavy molecule is not cheap."
+                : "Opt-only skips the frequencies (no ΔG / no TS check)."}
+            </div>
+            {reoptMsg ? (
+              <div className="banner ok" style={{ marginTop: 6 }}>
+                {reoptMsg}
+              </div>
+            ) : null}
           </div>
         </div>
       ) : null}

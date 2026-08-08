@@ -61,6 +61,34 @@ fn create_job_conn(
     get_job_conn(conn, &id)
 }
 
+/// Create a DFT re-opt CHILD job (Phase 4.5 Stage D unit D2a) and tag it back to
+/// the GOAT ensemble job + conformer it came from (`jobs.source_ensemble_job_id` /
+/// `source_conformer_index`, migration v15). Reuses [`create_job_conn`] for the
+/// insert (so the child mints its OWN `index_map` from its OWN input, like any job)
+/// then stamps the two linkage FKs. No scene snapshot: the child is a normal DFT
+/// job whose input fully defines it (ADR-008 #5), and its "New iteration" restore
+/// uses the input-parse branch — it does not need the ensemble's fragment identity.
+///
+/// The (charge, multiplicity) post-condition — the anion footgun — is enforced in
+/// the TS `buildReoptInput` at the SINGLE construction point (it throws before this
+/// command is ever called, so a wrong-charge child input never reaches the create
+/// boundary). What this Rust boundary adds is referential integrity: the caller
+/// (`create_reopt_job`) refuses when the source ensemble job is gone.
+fn create_reopt_job_conn(
+    conn: &Connection,
+    title: &str,
+    input_content: &str,
+    source_ensemble_job_id: &str,
+    source_conformer_index: i64,
+) -> Result<Job, AppError> {
+    let job = create_job_conn(conn, title, input_content, None, None)?;
+    conn.execute(
+        "UPDATE jobs SET source_ensemble_job_id = ?1, source_conformer_index = ?2 WHERE id = ?3",
+        params![source_ensemble_job_id, source_conformer_index, job.id],
+    )?;
+    get_job_conn(conn, &job.id)
+}
+
 /// All jobs, newest first.
 fn list_jobs_conn(conn: &Connection) -> Result<Vec<Job>, AppError> {
     let sql = format!("SELECT {} FROM jobs ORDER BY created_at DESC", Job::COLUMNS);
@@ -204,6 +232,34 @@ pub fn create_job(
 pub fn list_jobs(db: State<'_, DbState>) -> Result<Vec<Job>, AppError> {
     let conn = db.lock()?;
     list_jobs_conn(&conn)
+}
+
+/// Create ONE DFT re-opt child of a GOAT conformer, tagged back to its source
+/// ensemble job + conformer index (Phase 4.5 Stage D unit D2a). The child is
+/// created as a `draft`; the caller then `submit_job`s it into the sequential
+/// queue (concurrency 1). `input_content` is built + charge-checked by the TS
+/// `buildReoptInput` before this call. Create-boundary post-condition (rule #9):
+/// the source ensemble job must still exist — otherwise `NotFound`, and no child
+/// is created (referential integrity; the jobs-survive rule works the other way —
+/// deleting the source would null this link, never cascade).
+#[tauri::command]
+pub fn create_reopt_job(
+    db: State<'_, DbState>,
+    source_ensemble_job_id: String,
+    source_conformer_index: i64,
+    title: String,
+    input_content: String,
+) -> Result<Job, AppError> {
+    let conn = db.lock()?;
+    // The source must exist (a clean NotFound instead of a dangling FK).
+    get_job_conn(&conn, &source_ensemble_job_id)?;
+    create_reopt_job_conn(
+        &conn,
+        &title,
+        &input_content,
+        &source_ensemble_job_id,
+        source_conformer_index,
+    )
 }
 
 #[tauri::command]
@@ -552,6 +608,51 @@ mod tests {
         assert_eq!(all[0].status, JobStatus::Draft);
         // No snapshot passed → NULL, not an empty string.
         assert_eq!(job.scene_json, None);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn create_reopt_job_tags_source_and_conformer() {
+        let (conn, dir) = test_db();
+
+        // A source GOAT ensemble job, then a re-opt child of its conformer #2.
+        let source = create_job_conn(&conn, "Conformer search — butane", "! XTB GOAT", None, None)
+            .unwrap();
+        let child = create_reopt_job_conn(
+            &conn,
+            "re-opt #2 — Conformer search — butane",
+            "! r2SCAN-3c Opt Freq\n* xyz 0 1\nC 0 0 0\n*\n",
+            &source.id,
+            2,
+        )
+        .unwrap();
+
+        // The child is a fresh draft (the caller submits it into the queue).
+        assert_eq!(child.status, JobStatus::Draft);
+        assert_ne!(child.id, source.id);
+
+        // The two linkage FKs are stored (read them directly — they're not on the
+        // Job model yet, that's D2b's read side).
+        let (src_job, src_idx): (Option<String>, Option<i64>) = conn
+            .query_row(
+                "SELECT source_ensemble_job_id, source_conformer_index FROM jobs WHERE id = ?1",
+                params![child.id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(src_job.as_deref(), Some(source.id.as_str()));
+        assert_eq!(src_idx, Some(2));
+
+        // The source job is untouched — no back-link, still a standalone job.
+        let (src_src, _): (Option<String>, Option<i64>) = conn
+            .query_row(
+                "SELECT source_ensemble_job_id, source_conformer_index FROM jobs WHERE id = ?1",
+                params![source.id],
+                |r| Ok((r.get(0)?, r.get::<_, Option<i64>>(1)?)),
+            )
+            .unwrap();
+        assert_eq!(src_src, None, "the source ensemble job is not itself a re-opt child");
 
         std::fs::remove_dir_all(&dir).ok();
     }

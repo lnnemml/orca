@@ -853,8 +853,17 @@ r1–r4 manual gates. Next per the ratified reorder: CREST probe → Stage D →
       (GOAT measured); the DFT re-opt orchestration is the new code.
       **D1 landed (2026-08-08):** Boltzmann populations + cumulative column in the ensemble panel
       (`boltzmannWeights`, xTB/GFN2-level, 298.15 K, derived-not-stored) — the cumulative is the
-      k-selection signal. **D2 (next):** DFT re-opt fan-out over the top-k (k from the cumulative
-      threshold), which re-ranks/re-weights; xTB- vs DFT-level populations must never be conflated.
+      k-selection signal.
+      **D2a landed (2026-08-08):** DFT re-opt fan-out **CREATE side** — migration v15 (two nullable
+      `jobs` FKs `source_ensemble_job_id`/`source_conformer_index`, no table), the pure charge-safe
+      `buildReoptInput` (`src/scene/reopt.ts`, reuses `buildOrcaInput`; the anion `* xyz -1 1`
+      footgun guarded by a rule-#9 post-condition), the "Re-optimize top-k at DFT" trigger UI
+      (k + cumulative-%, method, Opt+Freq/Opt-only mode, SMD toggle), and `create_reopt_job` (queued
+      children). SMD emit verified real via a rule-#10 determiner run (`wiki/orca/solvation.md`).
+      Manual gate on real BH₄⁻ anion (`-1 1` carried) + real k=3 fan-out.
+      **D2b (next):** aggregate the children's DFT energies (GROUP BY source_ensemble_job_id),
+      re-rank + re-weight vs the xTB populations, comparison UI; xTB- vs DFT-level populations must
+      never be conflated.
 
 ### Stage E — Transition-state methods (each probe-first, rule #10)
 

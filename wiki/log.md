@@ -6419,3 +6419,58 @@ present tense + pointer here); `index.md` conformers line.
 
 **Next: D2** — DFT re-opt fan-out over the top-k conformers (k chosen by the cumulative threshold),
 which will re-rank and re-weight; xTB- vs DFT-level populations must never be conflated.
+
+## [2026-08-08] session | Phase 4.5 Stage D unit D2a — DFT conformer re-opt fan-out (CREATE side) + migration v15 + SMD determiner run
+
+**Scope (one unit, create side only).** Fan out DFT re-opt children over a GOAT ensemble's
+lowest-k conformers: migration v15, a pure charge-safe child-input builder, the trigger UI, and
+k queued job creations tagged back to the source. OUT (D2b, next): reading child energies back,
+re-rank/re-weight, any xTB-vs-DFT comparison UI. Nothing reads the linkage FKs yet.
+
+**A1 — migration v15** (`db.rs`): two nullable `jobs` FKs — `source_ensemble_job_id TEXT` +
+`source_conformer_index INTEGER`. NO new table (the fan-out set is DERIVED by GROUP BY in D2b,
+Fork 1). Guarded ALTER; jobs-survive (deleting the source nulls the link, never cascades). Test
+`migrate_v14_to_v15_adds_source_fks_and_preserves_jobs` (pre-existing job intact + NULL, a child
+carries both FKs, second migrate no-op). **cargo test green — the container DID have a Rust
+toolchain (215 lib tests pass), contrary to the prompt's assumption.**
+
+**A2/A3 — pure builder** `buildReoptInput(sourceInputText, conformer, opts)` in new
+`src/scene/reopt.ts`. Reuses `sceneFromOrcaInput` (extract source c/m — the existing parser, NO
+new charge regex), `sceneFromAtomLines` (conformer scene), `buildOrcaInput` (assembly). TS-only,
+no `orcastudio-core` mirror (a proposal emit, not an order-bearing golden pair — reasoned in a
+comment). **Charge-footgun post-condition (rule #9):** re-parses the EMITTED child and asserts
+(c,m) == source AND atoms == conformer (count + element order), else throws. 10 byte-level tests:
+`-1 1` anion / `0 2` radical / `+2` cation propagation, throw-on-no-`* xyz`-block, default
+`r2SCAN-3c Opt Freq`, Freq-iff-opts, custom method, SMD-iff-solvation, count+order preserved
+(incl. a real 14-atom butane conformer).
+
+**SMD determiner run (rule #10, blocking Part B — settled by a real run, not memory).** Author
+flagged that "reuse build-input's SMD emit" (keyword `SMD(x)`) and the gate's `%cpcm smd true`
+block are different syntaxes. Ran 3 tiny water SPs (ORCA 6.1.0, full path, isolated dirs): the
+keyword form `! … SMD(methanol)` IS **real SMD** — "utilizes the SMD solvation module", SMD-CDS
+Gcds term present, FSPE `-76.430993230852` **bit-identical** to the explicit `%cpcm smd true /
+SMDsolvent "methanol" end` block; the `CPCM(methanol)` control has NO CDS and a different FSPE.
+**Conclusion: the input-builder's keyword `SMD(x)` emit is correct real SMD — no builder bug.**
+Pinned in NEW `wiki/orca/solvation.md`. Part B wired with the verified keyword form.
+
+**B1/B2/B3 — wiring.** JobDetail ensemble panel gains "Re-optimize top-k at DFT": k (+ the D1
+cumulative-% at k, Fork 3), method (default r2SCAN-3c), Opt+Freq(default)/Opt-only mode toggle,
+SMD toggle+solvent, "creates k jobs" note. On trigger: build+charge-check ALL k inputs FIRST (a
+mismatch aborts the fan-out having created nothing), then `create_reopt_job` (queued, tagged with
+the two FKs) + `submit_job` each. New Rust command `create_reopt_job` reuses `create_job_conn`
+then stamps the FKs; create-boundary post-condition = source ensemble job must exist (clean
+NotFound). Mode lives in the child input (D2b auto-detects). All k share one mode.
+
+**Manual gate (real data, headless — no GUI click-through).** (1) Ran a real **BH₄⁻ GOAT**
+(`* xyz -1 1`, `! XTB GOAT`, full path, isolated dir — TERMINATED NORMALLY); its ensemble
+(1 conformer, tetrahedral) built through `buildReoptInput` with SMD(methanol)+Opt+Freq → child
+carries **`* xyz -1 1`** (NOT `0 1`), `! r2SCAN-3c SMD(methanol) Opt Freq`, the 5-atom geometry —
+**the footgun proven on real anion data.** (2) Real 33-atom/29-conformer ensemble, k=3 → **3
+distinct children**, each `! r2SCAN-3c Opt Freq` / `* xyz 0 1` / 33 atoms with distinct
+per-conformer coordinates (multi-child loop). The DB-insert + queue path is covered by the Rust
+`create_reopt_job` unit test, not a live GUI click.
+
+**Verification:** `tsc` clean; vitest 681 pass (reopt +10 → 51 files); cargo 215 lib pass (v15 +
+reopt create tests). **Next: D2b** — aggregate the children's DFT energies (GROUP BY
+source_ensemble_job_id), re-rank + re-weight vs the xTB populations, and the comparison UI;
+xTB-level and DFT-level populations must never be conflated.
