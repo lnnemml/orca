@@ -809,10 +809,16 @@ single-pathway relaxed scan is fully usable end-to-end. *(B1 ✅; B2 ✅ — aut
       reason), **C-intrinsic** (both bite-verified). **Code + tests complete**: `tsc` 0, `vitest` 650
       (+12), `vite build` clean, `cargo` 207 unaffected. **Manual gate (author) PENDING** — c1–c4 in the
       real window (incl. the symmetry ≈ 0 sanity); C2b-1 closes when it passes. See `modules/reactions-ui.md`.
-- [ ] **C2b-2 — reactant reference + absolute barriers.** The `reaction_reference_jobs` table
-      (migration v14), a reference-management surface (add/remove reactant jobs, jobs-survive like C1),
-      and the **absolute** barrier E(max) − Σ E(reference jobs) added to the compare view; the
-      comparability guard extends to the reference jobs. **Manual gate.**
+- [~] **C2b-2 — reactant reference + absolute barriers.** Split into a data half and a UI half:
+  - [x] **C2b-2a — reference jobs (data touch).** `reaction_reference_jobs` (migration **v14**) + the
+        Rust commands `add_reference_job`/`remove_reference_job`/`list_reference_jobs`/
+        `reaction_reference_energy` — the last computing `E(ref) = Σ` on demand from parsed results with
+        **honest-or-absent** semantics (incomplete → `None`, jobs listed). Jobs-survive extended to
+        `delete_reaction`; no `delete_job` exists yet (noted future integrity point). Four cargo controls,
+        incomplete-not-summed + delete-keeps-jobs bite-verified. **No manual gate** (cargo-verifiable).
+  - [ ] **C2b-2b — absolute barriers in the overlay.** The reference-management UI (add/remove reactant
+        jobs, jobs-survive like C1) + the **absolute** barrier E(max) − Σ E(reference jobs) added to the
+        compare view; the comparability guard extends to the reference jobs. **Manual gate.**
       *Ratified 2026-08-07 ([ADR-018](wiki/architecture/adr-018-reaction-energy-reference.md)
       + [chemistry/reaction-barriers.md](wiki/chemistry/reaction-barriers.md)):* a relaxed scan yields
       **three barriers** — **ΔΔE‡** (si/re) is **reference-free** (the shared reactant reference cancels),

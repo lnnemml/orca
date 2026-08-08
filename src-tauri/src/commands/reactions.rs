@@ -1,5 +1,7 @@
 //! Reaction/Pathway commands: the CRUD + grouping surface over the `reactions` and
-//! `pathways` tables and the nullable `jobs.pathway_id` (schema v13, Phase 4.5 C1).
+//! `pathways` tables and the nullable `jobs.pathway_id` (schema v13, Phase 4.5 C1),
+//! plus the **summed reactant reference** — `reaction_reference_jobs` (schema v14,
+//! Phase 4.5 C2b-2a, ADR-018), the reference for ABSOLUTE barriers.
 //!
 //! Same shape as `commands::molecules`: each Tauri command is a thin wrapper that
 //! locks the shared connection and delegates to a `*_conn` helper taking a
@@ -9,9 +11,28 @@
 //! pathways are grouping metadata.** Deleting a reaction or a pathway NEVER deletes
 //! a job — it removes the grouping rows and nulls the `pathway_id` of any jobs that
 //! pointed at them. A job un-grouped this way is exactly the standalone job it was
-//! before. Referential integrity (a pathway's reaction must exist; an attached job
-//! and pathway must exist) is enforced HERE, in app code — this DB leaves SQLite's
-//! own FK enforcement off (as elsewhere), so the `REFERENCES` clauses are docs.
+//! before. `reaction_reference_jobs` rows follow the same rule: `delete_reaction`
+//! removes a reaction's reference rows, and neither that nor `remove_reference_job`
+//! ever deletes the underlying job. Referential integrity (a pathway's reaction must
+//! exist; an attached/referenced job and pathway must exist) is enforced HERE, in app
+//! code, so the caller gets a clean [`AppError::NotFound`] rather than a raw SQLite
+//! constraint error.
+//!
+//! NOTE (measured, rule #10 — contradicts the C1 comment that this DB "leaves FK
+//! enforcement off"): the `bundled` SQLite is compiled with `SQLITE_DEFAULT_FOREIGN_KEYS=1`
+//! (`PRAGMA foreign_keys` reads 1 on the init_db connection), so the `REFERENCES`
+//! clauses are **actively enforced**, not just documentation. This makes deletion
+//! ordering load-bearing: `delete_reaction` must drop the child `pathways` and
+//! `reaction_reference_jobs` rows BEFORE the parent `reactions` row, or SQLite raises
+//! error 787 (`SQLITE_CONSTRAINT_FOREIGNKEY`). The commands already order it that way.
+//!
+//! Honest-or-absent (ADR-018): a reaction's `E(ref)` is the SUM of its reference jobs'
+//! parsed final energies, computed on demand from the authoritative `results` tier —
+//! never cached on `reactions` (no two-sources-of-truth drift). If ANY reference job
+//! is unparsed, the reference is incomplete and `reaction_reference_energy` returns
+//! `energy_eh: None` (with the jobs listed so the caller sees which is missing) — a
+//! partial sum is never returned, because a wrong `E(ref)` silently poisons every
+//! absolute barrier built on it.
 
 use rusqlite::{params, Connection, OptionalExtension};
 use tauri::State;
@@ -19,7 +40,7 @@ use uuid::Uuid;
 
 use crate::commands::settings::DbState;
 use crate::error::AppError;
-use crate::models::reaction::{Pathway, Reaction};
+use crate::models::reaction::{Pathway, Reaction, ReferenceEnergy, ReferenceJob};
 
 // --- Existence probes (app-level referential integrity) ---------------------
 
@@ -116,6 +137,12 @@ fn delete_reaction_conn(conn: &Connection, id: &str) -> Result<(), AppError> {
         params![id],
     )?;
     conn.execute("DELETE FROM pathways WHERE reaction_id = ?1", params![id])?;
+    // Drop this reaction's reference-job rows too (v14). These are grouping metadata,
+    // never jobs — the referenced jobs stay standalone in the Jobs list (invariant 2).
+    conn.execute(
+        "DELETE FROM reaction_reference_jobs WHERE reaction_id = ?1",
+        params![id],
+    )?;
     conn.execute("DELETE FROM reactions WHERE id = ?1", params![id])?;
     Ok(())
 }
@@ -200,6 +227,97 @@ fn detach_job_from_pathway_conn(conn: &Connection, job_id: &str) -> Result<(), A
     Ok(())
 }
 
+// --- Reference jobs (summed reactant reference, v14, ADR-018) ---------------
+
+/// Add a job to a reaction's reactant reference. Errors ([`AppError::NotFound`]) if
+/// either the reaction or the job does not exist — no partial write. Idempotent on the
+/// `(reaction_id, job_id)` PK (`INSERT OR IGNORE`): adding the same job twice is a
+/// no-op, not an error. A reference row is grouping metadata — it never touches the job.
+fn add_reference_job_conn(
+    conn: &Connection,
+    reaction_id: &str,
+    job_id: &str,
+) -> Result<(), AppError> {
+    if !reaction_exists(conn, reaction_id)? {
+        return Err(AppError::NotFound(format!("reaction {reaction_id}")));
+    }
+    if !job_exists(conn, job_id)? {
+        return Err(AppError::NotFound(format!("job {job_id}")));
+    }
+    conn.execute(
+        "INSERT OR IGNORE INTO reaction_reference_jobs (reaction_id, job_id) VALUES (?1, ?2)",
+        params![reaction_id, job_id],
+    )?;
+    Ok(())
+}
+
+/// Remove a job from a reaction's reactant reference. Removes the grouping row only —
+/// the job survives as a standalone job (invariant 2). Idempotent: removing a pair that
+/// is not referenced is a no-op.
+fn remove_reference_job_conn(
+    conn: &Connection,
+    reaction_id: &str,
+    job_id: &str,
+) -> Result<(), AppError> {
+    conn.execute(
+        "DELETE FROM reaction_reference_jobs WHERE reaction_id = ?1 AND job_id = ?2",
+        params![reaction_id, job_id],
+    )?;
+    Ok(())
+}
+
+/// The reference jobs of a reaction, each with its title and its **per-job** parsed
+/// final energy read from the authoritative `results` tier (ADR-012) — `None` when that
+/// job is unparsed / still running / failed. Ordered by attachment (`created_at`, then
+/// `job_id` as a stable tiebreak). The energy is read on demand, never cached.
+fn list_reference_jobs_conn(
+    conn: &Connection,
+    reaction_id: &str,
+) -> Result<Vec<ReferenceJob>, AppError> {
+    // LEFT JOIN on `results`: a reference job with no parsed result yields a NULL
+    // final_energy_eh (the honest-or-absent signal), not a dropped row.
+    let mut stmt = conn.prepare(
+        "SELECT rrj.job_id, j.title, r.final_energy_eh
+         FROM reaction_reference_jobs rrj
+         JOIN jobs j ON j.id = rrj.job_id
+         LEFT JOIN results r ON r.job_id = rrj.job_id
+         WHERE rrj.reaction_id = ?1
+         ORDER BY rrj.created_at, rrj.job_id",
+    )?;
+    let jobs = stmt
+        .query_map(params![reaction_id], |row| {
+            Ok(ReferenceJob {
+                job_id: row.get(0)?,
+                title: row.get(1)?,
+                final_energy_eh: row.get(2)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(jobs)
+}
+
+/// A reaction's summed reactant reference: the provenance AND the honest total.
+/// `energy_eh` is `Some(Σ final_energy_eh)` **only if the list is non-empty and every
+/// reference job has a parsed final energy**; otherwise `None` (incomplete or empty).
+/// A partial reference is NEVER summed — the honest-or-absent property (ADR-018): a
+/// wrong `E(ref)` would silently poison every absolute barrier built on it.
+fn reaction_reference_energy_conn(
+    conn: &Connection,
+    reaction_id: &str,
+) -> Result<ReferenceEnergy, AppError> {
+    let jobs = list_reference_jobs_conn(conn, reaction_id)?;
+    // Honest-or-absent, expressed totally: `Option<f64>: Sum<Option<f64>>` yields `None`
+    // the moment ANY element is `None`, else `Some(Σ)` — exactly the incomplete-vs-complete
+    // semantics, no `unwrap`. The empty list would sum to `Some(0.0)`, so an explicit guard
+    // keeps an empty reference `None` (not "a reference of zero").
+    let energy_eh = if jobs.is_empty() {
+        None
+    } else {
+        jobs.iter().map(|j| j.final_energy_eh).sum::<Option<f64>>()
+    };
+    Ok(ReferenceEnergy { jobs, energy_eh })
+}
+
 // --- Tauri commands ---------------------------------------------------------
 
 #[tauri::command]
@@ -275,6 +393,44 @@ pub fn detach_job_from_pathway(db: State<'_, DbState>, job_id: String) -> Result
     detach_job_from_pathway_conn(&conn, &job_id)
 }
 
+#[tauri::command]
+pub fn add_reference_job(
+    db: State<'_, DbState>,
+    reaction_id: String,
+    job_id: String,
+) -> Result<(), AppError> {
+    let conn = db.lock()?;
+    add_reference_job_conn(&conn, &reaction_id, &job_id)
+}
+
+#[tauri::command]
+pub fn remove_reference_job(
+    db: State<'_, DbState>,
+    reaction_id: String,
+    job_id: String,
+) -> Result<(), AppError> {
+    let conn = db.lock()?;
+    remove_reference_job_conn(&conn, &reaction_id, &job_id)
+}
+
+#[tauri::command]
+pub fn list_reference_jobs(
+    db: State<'_, DbState>,
+    reaction_id: String,
+) -> Result<Vec<ReferenceJob>, AppError> {
+    let conn = db.lock()?;
+    list_reference_jobs_conn(&conn, &reaction_id)
+}
+
+#[tauri::command]
+pub fn reaction_reference_energy(
+    db: State<'_, DbState>,
+    reaction_id: String,
+) -> Result<ReferenceEnergy, AppError> {
+    let conn = db.lock()?;
+    reaction_reference_energy_conn(&conn, &reaction_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,6 +467,18 @@ mod tests {
             r.get::<_, Option<String>>(0)
         })
         .expect("job should exist")
+    }
+
+    /// Insert a parsed `results` row for a job with the given final energy — makes the
+    /// job "parsed" for the reference-energy sum. A job with no such row reads back with
+    /// `final_energy_eh = None` (unparsed / still running / failed).
+    fn insert_result(conn: &Connection, job_id: &str, energy: f64) {
+        conn.execute(
+            "INSERT INTO results (job_id, final_energy_eh, data_json, parser_version)
+             VALUES (?1, ?2, '{}', 3)",
+            params![job_id, energy],
+        )
+        .expect("insert result");
     }
 
     #[test]
@@ -467,6 +635,136 @@ mod tests {
             detach_job_from_pathway_conn(&conn, "no-such-job").unwrap_err(),
             AppError::NotFound(_)
         ));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- Reference jobs (v14, ADR-018) --------------------------------------
+
+    // C-referential-integrity (reference variant): add_reference_job with a missing
+    // reaction or a missing job → Err, no partial write. Idempotent on the PK.
+    #[test]
+    fn add_reference_job_integrity_and_idempotent() {
+        let (conn, dir) = test_db();
+
+        let r = create_reaction_conn(&conn, "R", None).unwrap();
+        insert_job(&conn, "j1");
+
+        // Missing reaction → Err, nothing written.
+        assert!(matches!(
+            add_reference_job_conn(&conn, "no-such-reaction", "j1").unwrap_err(),
+            AppError::NotFound(_)
+        ));
+        // Missing job → Err.
+        assert!(matches!(
+            add_reference_job_conn(&conn, &r.id, "no-such-job").unwrap_err(),
+            AppError::NotFound(_)
+        ));
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM reaction_reference_jobs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0, "no partial write on a failed add");
+
+        // Valid add, then a second identical add is a no-op (PK idempotent), not an error.
+        add_reference_job_conn(&conn, &r.id, "j1").unwrap();
+        add_reference_job_conn(&conn, &r.id, "j1").unwrap();
+        assert_eq!(list_reference_jobs_conn(&conn, &r.id).unwrap().len(), 1);
+
+        // remove_reference_job drops the row (job survives); idempotent when absent.
+        remove_reference_job_conn(&conn, &r.id, "j1").unwrap();
+        assert_eq!(list_reference_jobs_conn(&conn, &r.id).unwrap().len(), 0);
+        assert!(job_exists(&conn, "j1").unwrap(), "remove never deletes the job");
+        remove_reference_job_conn(&conn, &r.id, "j1").unwrap(); // no-op, no error
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // C-sum: two parsed reference jobs → energy_eh == Some(e1 + e2), exact.
+    #[test]
+    fn reference_energy_sums_when_all_parsed() {
+        let (conn, dir) = test_db();
+
+        let r = create_reaction_conn(&conn, "R", None).unwrap();
+        insert_job(&conn, "sub");
+        insert_job(&conn, "bh4");
+        insert_result(&conn, "sub", -270.123456);
+        insert_result(&conn, "bh4", -27.654321);
+        add_reference_job_conn(&conn, &r.id, "sub").unwrap();
+        add_reference_job_conn(&conn, &r.id, "bh4").unwrap();
+
+        let ref_e = reaction_reference_energy_conn(&conn, &r.id).unwrap();
+        assert_eq!(ref_e.jobs.len(), 2);
+        let expected = -270.123456 + -27.654321;
+        let got = ref_e.energy_eh.expect("complete reference sums");
+        assert!((got - expected).abs() < 1e-12, "sum {got} != {expected}");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // C-incomplete-not-summed (THE load-bearing property): one parsed, one unparsed →
+    // energy_eh is None (incomplete), and jobs lists BOTH with the missing one's energy
+    // None. The bite: an implementation that sums the present energy and returns a total
+    // fails the `energy_eh == None` assert — honest-or-absent, not a silent partial.
+    #[test]
+    fn reference_energy_incomplete_is_none_not_partial() {
+        let (conn, dir) = test_db();
+
+        let r = create_reaction_conn(&conn, "R", None).unwrap();
+        insert_job(&conn, "parsed");
+        insert_job(&conn, "unparsed"); // no results row → final_energy_eh None
+        insert_result(&conn, "parsed", -76.4);
+        add_reference_job_conn(&conn, &r.id, "parsed").unwrap();
+        add_reference_job_conn(&conn, &r.id, "unparsed").unwrap();
+
+        let ref_e = reaction_reference_energy_conn(&conn, &r.id).unwrap();
+
+        // Honest-or-absent: the incomplete reference has NO total.
+        assert_eq!(
+            ref_e.energy_eh, None,
+            "an incomplete reference must not present a partial sum"
+        );
+        // ...but the provenance is fully listed so the UI can name the missing job.
+        assert_eq!(ref_e.jobs.len(), 2);
+        let by_id = |id: &str| ref_e.jobs.iter().find(|j| j.job_id == id).unwrap();
+        assert_eq!(by_id("parsed").final_energy_eh, Some(-76.4));
+        assert_eq!(by_id("unparsed").final_energy_eh, None, "the missing one is flagged");
+
+        // Empty reference → also None, empty jobs (all() is vacuously true; the emptiness
+        // guard keeps it honest).
+        let empty = create_reaction_conn(&conn, "empty", None).unwrap();
+        let ref_empty = reaction_reference_energy_conn(&conn, &empty.id).unwrap();
+        assert_eq!(ref_empty.energy_eh, None);
+        assert!(ref_empty.jobs.is_empty());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // C-delete-reaction-keeps-jobs (reference variant): a reaction with reference jobs →
+    // delete_reaction → the jobs STILL EXIST, the reaction_reference_jobs rows are gone,
+    // no job deleted. The bite: a naive cascade that DELETEs the jobs fails the "job
+    // survives" assert.
+    #[test]
+    fn delete_reaction_keeps_reference_jobs() {
+        let (conn, dir) = test_db();
+
+        let r = create_reaction_conn(&conn, "R", None).unwrap();
+        insert_job(&conn, "sub");
+        insert_job(&conn, "bh4");
+        add_reference_job_conn(&conn, &r.id, "sub").unwrap();
+        add_reference_job_conn(&conn, &r.id, "bh4").unwrap();
+        assert_eq!(list_reference_jobs_conn(&conn, &r.id).unwrap().len(), 2);
+
+        delete_reaction_conn(&conn, &r.id).unwrap();
+
+        // The reference rows are gone with the reaction...
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM reaction_reference_jobs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0, "reference rows removed with the reaction");
+        assert!(!reaction_exists(&conn, &r.id).unwrap());
+        // ...but BOTH referenced jobs survive as standalone jobs.
+        assert!(job_exists(&conn, "sub").unwrap(), "the reference job MUST survive");
+        assert!(job_exists(&conn, "bh4").unwrap(), "the reference job MUST survive");
 
         std::fs::remove_dir_all(&dir).ok();
     }

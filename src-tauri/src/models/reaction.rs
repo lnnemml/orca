@@ -66,3 +66,31 @@ impl Pathway {
         })
     }
 }
+
+/// One reference job of a reaction (schema v14, Phase 4.5 Stage C2b-2a, ADR-018).
+///
+/// A reaction's **reactant reference** is a list of these — optimized-reactant jobs
+/// whose parsed final energies SUM to `E(ref)` for absolute barriers. `title` names
+/// the job in the UI; `final_energy_eh` is read from the authoritative `results` tier
+/// (ADR-012) at read time and is **`None` when the job is unparsed / still running /
+/// failed** — the "honest-or-absent" signal a caller uses to know the reference is
+/// incomplete (see [`ReferenceEnergy`]). The energy is NEVER cached on the reaction
+/// (ADR-018: one source of truth, no drift).
+#[derive(Debug, Clone, Serialize)]
+pub struct ReferenceJob {
+    pub job_id: String,
+    pub title: String,
+    pub final_energy_eh: Option<f64>,
+}
+
+/// A reaction's summed reactant reference: the provenance (`jobs`) AND the honest
+/// total (`energy_eh`). `energy_eh` is `Some(Σ final_energy_eh)` **only if the list is
+/// non-empty and every job has a parsed final energy**; otherwise `None` (incomplete
+/// or empty). A partial sum is never returned — a wrong `E(ref)` would silently poison
+/// every absolute barrier built on it (ADR-018). The UI (C2b-2b) shows `jobs` so the
+/// user can see which reference job is missing its energy.
+#[derive(Debug, Clone, Serialize)]
+pub struct ReferenceEnergy {
+    pub jobs: Vec<ReferenceJob>,
+    pub energy_eh: Option<f64>,
+}

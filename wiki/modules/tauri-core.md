@@ -143,10 +143,17 @@ survives a restart.
   the `Job` struct did not carry the column; **C2a adds `pathway_id` as `Job`'s 14th column**
   (`Job::COLUMNS`/`from_row`, `Option<String>`) so the reaction UI can map a pathway to its attached
   job by matching `Job.pathway_id == Pathway.id` (the job carries the FK; the pathway does not — one
-  source of truth). **Referential integrity lives in the commands** (this DB leaves SQLite FK
-  enforcement off, as elsewhere; the `REFERENCES` clauses are docs): `create_pathway` under a missing
-  reaction and `attach_job_to_pathway` with a missing job/pathway return `NotFound` with no orphan/
-  partial write. Commands (`commands/reactions.rs`, thin wrappers over `*_conn`, `Reaction`/`Pathway`
+  source of truth). **Referential integrity lives in the commands** (for clean `NotFound` errors and
+  correct delete ordering): `create_pathway` under a missing reaction and `attach_job_to_pathway` with a
+  missing job/pathway return `NotFound` with no orphan/partial write. **Correction (measured 2026-08-08,
+  rule #10):** the older claim here — "this DB leaves SQLite FK enforcement off, the `REFERENCES`
+  clauses are docs" — is **false**. The `bundled` SQLite is compiled with
+  `SQLITE_DEFAULT_FOREIGN_KEYS=1` (`PRAGMA foreign_keys` reads **1**, and
+  `pragma_compile_options` lists `DEFAULT_FOREIGN_KEYS`), so `REFERENCES` clauses are **actively
+  enforced** on every connection. The command-level checks are therefore belt-and-suspenders (nicer
+  errors), and **delete ordering is load-bearing** — a parent row must be deleted after its children or
+  SQLite raises error 787 (`SQLITE_CONSTRAINT_FOREIGNKEY`); the commands already order it child-first.
+  This corrects the same "FK off" phrasing wherever it recurs in the codebase comments. Commands (`commands/reactions.rs`, thin wrappers over `*_conn`, `Reaction`/`Pathway`
   in `models/reaction.rs`): `create_reaction(name, description?)`, `list_reactions`,
   `rename_reaction(id, name)`, `delete_reaction(id)`, `create_pathway(reaction_id, label)`,
   `list_pathways(reaction_id)`, `delete_pathway(id)`, `attach_job_to_pathway(job_id, pathway_id)` (the
@@ -156,12 +163,47 @@ survives a restart.
   `standalone_job_unaffected_by_reaction_model` (commands::reactions); the delete-keeps-jobs control is
   **bite-verified** (a naive DELETE-instead-of-NULL cascade turns it red). Frontend types:
   `Reaction`/`Pathway` in `src/types.ts` (no component yet — that is C2).
+- **v14** — the **summed reactant reference** for absolute barriers (Phase 4.5 Stage C2b-2a, ADR-018).
+  One lean join table:
+  - `reaction_reference_jobs(reaction_id TEXT NOT NULL REFERENCES reactions(id), job_id TEXT NOT NULL
+    REFERENCES jobs(id), created_at, PRIMARY KEY (reaction_id, job_id))` — a reaction's reactant
+    reference is a **list of references to optimized-reactant jobs whose parsed final energies SUM** to
+    `E(ref)`, and it is **optional** (0+). One job = pre-reaction complex; 2+ = separated reactants
+    (e.g. substrate + BH₄⁻). Additive + idempotent (`CREATE IF NOT EXISTS`); the `(reaction_id, job_id)`
+    PK makes `add_reference_job` idempotent.
+
+  **Honest-or-absent (load-bearing, ADR-018):** `E(ref) = Σ` of the reference jobs' `final_energy_eh`,
+  read on demand from the authoritative `results` tier (ADR-012) — **never cached** on `reactions` (no
+  two-sources-of-truth drift). `reaction_reference_energy(reaction_id) -> { jobs, energy_eh }` returns
+  `energy_eh = Some(Σ)` **only if the list is non-empty AND every job is parsed**; if ANY reference job
+  is unparsed/running/failed the reference is **incomplete → `energy_eh: None`**, with `jobs` still
+  listing all of them (the missing one's `final_energy_eh` is `None`) so the C2b-2b UI can name it. A
+  partial sum is never returned — a wrong `E(ref)` would silently poison every absolute barrier.
+  Expressed totally via `Option<f64>: Sum<Option<f64>>` (None if any element is None), no `unwrap`.
+  **Jobs-survive (same as v13):** `delete_reaction` also `DELETE FROM reaction_reference_jobs WHERE
+  reaction_id = ?` (before the parent row); `remove_reference_job(reaction_id, job_id)` drops the
+  grouping row only. Neither ever deletes the job — it stays standalone in the Jobs list.
+  Commands (`commands/reactions.rs`, `ReferenceJob`/`ReferenceEnergy` in `models/reaction.rs`):
+  `add_reference_job(reaction_id, job_id)` (errors `NotFound` if either is absent; idempotent),
+  `remove_reference_job(reaction_id, job_id)`, `list_reference_jobs(reaction_id) -> Vec<ReferenceJob {
+  job_id, title, final_energy_eh: Option<f64> }>`, `reaction_reference_energy(reaction_id)`. Four cargo
+  controls: `migrate_v13_to_v14_adds_reference_jobs_and_preserves_data` (db.rs) +
+  `reference_energy_incomplete_is_none_not_partial`/`reference_energy_sums_when_all_parsed`/
+  `delete_reaction_keeps_reference_jobs`/`add_reference_job_integrity_and_idempotent`
+  (commands::reactions). The incomplete-not-summed and delete-keeps-jobs controls are **bite-verified**
+  (a partial `filter_map` sum, and a naive job cascade, each turn them red). Frontend types mirror the
+  structs — `ReferenceJob`/`ReferenceEnergy` in `src/types.ts` — but no component yet (absolute
+  barriers in the overlay are C2b-2b).
+  **Future integrity point:** jobs are **not deletable today** (no `delete_job` command exists). When one
+  is added it MUST also `DELETE FROM reaction_reference_jobs WHERE job_id = ?` (and null `jobs.pathway_id`
+  cleanup, already the C1 pattern) — otherwise a deleted job leaves a dangling reference row.
 - The queue statuses (`queued`, `cancelled`) and `parsed` needed **no migration** — `status` is TEXT.
 - Migration tests assert preservation across each step (…`migrate_v6_to_v7_adds_homo_lumo_gap`,
   `migrate_v7_to_v8_backfills_energy_from_results`, `migrate_v8_to_v9_adds_manual_tables_and_preserves_data`,
   `migrate_v9_to_v10_adds_index_map_json_and_preserves_jobs`,
   `migrate_v10_to_v11_adds_scene_log_json_and_preserves_jobs`,
-  `migrate_v12_to_v13_adds_reaction_tables_and_preserves_data`; version assertions use `SCHEMA_VERSION`,
+  `migrate_v12_to_v13_adds_reaction_tables_and_preserves_data`,
+  `migrate_v13_to_v14_adds_reference_jobs_and_preserves_data`; version assertions use `SCHEMA_VERSION`,
   not a literal). The reagent role + persistence are covered in `commands::molecules`
   (`reagent_role_separates_from_the_molecule_library`, `reagent_persists_across_reopen`). A separate `fts5_is_available_with_ranking_and_snippet`
   test gates the bundled SQLite's FTS5 support (Phase 4 / ADR-013 stands on it) — not a migration.

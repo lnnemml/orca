@@ -49,7 +49,16 @@ use crate::error::AppError;
 ///   via `pathways`), no `reaction_id` on jobs. Nullable FK = standalone jobs unchanged.
 ///   Referential integrity is enforced in the commands (this DB leaves SQLite FK
 ///   enforcement off, as elsewhere); the `REFERENCES` clauses are documentation.
-const SCHEMA_VERSION: i64 = 13;
+/// - v14: `reaction_reference_jobs` — the summed reactant reference for absolute barriers
+///   (Phase 4.5 Stage C2b-2a, ADR-018). A lean join table: `(reaction_id, job_id)` PK, both
+///   `REFERENCES` clauses (actively enforced — the bundled SQLite is built with
+///   `SQLITE_DEFAULT_FOREIGN_KEYS=1`, measured; the commands additionally check existence for
+///   clean `NotFound` errors and order deletes child-first). A reaction has 0+ reference
+///   jobs whose parsed final energies SUM to E(ref); the sum is computed on demand from the
+///   authoritative `results` tier, NEVER cached on `reactions` (no two-sources-of-truth
+///   drift). Same jobs-survive rule as v13: deleting a reaction removes its reference rows,
+///   the referenced jobs stay standalone. Additive + idempotent (CREATE IF NOT EXISTS).
+const SCHEMA_VERSION: i64 = 14;
 
 /// Open (creating if needed) `orcastudio.db` under `data_dir` and migrate it to
 /// the current schema.
@@ -275,6 +284,27 @@ fn migrate(conn: &Connection) -> Result<(), AppError> {
             )?;
         }
         version = 13;
+    }
+
+    // --- v13 -> v14: reaction_reference_jobs (Phase 4.5 Stage C2b-2a, ADR-018). The
+    // summed reactant reference for ABSOLUTE barriers: a reaction has 0+ references to
+    // optimized-reactant jobs whose parsed final energies SUM to E(ref). A lean join
+    // table mirroring the v13 reactions/pathways normalization — a reference row is
+    // grouping metadata, NEVER a job (the same jobs-survive rule: delete_reaction removes
+    // these rows in the commands, the referenced jobs stay standalone). The (reaction_id,
+    // job_id) PK makes add_reference_job idempotent. Integrity (both ids must exist) is
+    // enforced in the commands; the REFERENCES clauses document intent, as elsewhere.
+    // Additive + idempotent: CREATE IF NOT EXISTS, no data touched. ---
+    if version < 14 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS reaction_reference_jobs (
+                reaction_id TEXT NOT NULL REFERENCES reactions(id),
+                job_id      TEXT NOT NULL REFERENCES jobs(id),
+                created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (reaction_id, job_id)
+            );",
+        )?;
+        version = 14;
     }
 
     // Persist the resulting version so subsequent runs skip completed steps.
@@ -847,6 +877,68 @@ mod tests {
             .query_row("SELECT name FROM molecules WHERE id = 'm1'", [], |r| r.get(0))
             .expect("molecule preserved");
         assert_eq!(mol_name, "ethane");
+    }
+
+    #[test]
+    fn migrate_v13_to_v14_adds_reference_jobs_and_preserves_data() {
+        // A v13 DB: settings + jobs (one job) + reactions + pathways (one each) with a
+        // job attached to the pathway. The v14 step adds `reaction_reference_jobs`; all
+        // pre-existing data (jobs, reactions, pathways, the pathway_id grouping) is
+        // untouched (C-migrate-preserves).
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO settings (key, value) VALUES ('schema_version', '13');
+             CREATE TABLE jobs (
+                id TEXT PRIMARY KEY, title TEXT NOT NULL, input_content TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'draft', energy REAL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')), pathway_id TEXT
+             );
+             CREATE TABLE reactions (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );
+             CREATE TABLE pathways (
+                id TEXT PRIMARY KEY, reaction_id TEXT NOT NULL, label TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );
+             INSERT INTO reactions (id, name) VALUES ('r1', 'NaBH4 reduction');
+             INSERT INTO pathways (id, reaction_id, label) VALUES ('p1', 'r1', 'si-face');
+             INSERT INTO jobs (id, title, input_content, status, energy, pathway_id)
+                VALUES ('j1', 'si scan', '! r2SCAN-3c Opt', 'completed', -79.8, 'p1');",
+        )
+        .unwrap();
+        assert!(!column_exists(&conn, "reaction_reference_jobs", "job_id").unwrap());
+
+        migrate(&conn).expect("v13 -> v14");
+        assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
+
+        // The new join table now exists and is empty.
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM reaction_reference_jobs", [], |r| r.get(0))
+            .expect("reaction_reference_jobs table should exist");
+        assert_eq!(n, 0);
+
+        // All pre-existing data is intact — reaction, pathway, and the attached job with
+        // its grouping FK preserved.
+        let rname: String = conn
+            .query_row("SELECT name FROM reactions WHERE id = 'r1'", [], |r| r.get(0))
+            .expect("reaction preserved");
+        assert_eq!(rname, "NaBH4 reduction");
+        let (title, energy, pathway_id): (String, Option<f64>, Option<String>) = conn
+            .query_row(
+                "SELECT title, energy, pathway_id FROM jobs WHERE id = 'j1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("job preserved");
+        assert_eq!(title, "si scan");
+        assert_eq!(energy, Some(-79.8));
+        assert_eq!(pathway_id.as_deref(), Some("p1"), "the grouping FK is untouched");
+
+        // Idempotent: a second migrate() is a no-op.
+        migrate(&conn).expect("v14 -> v14 no-op");
+        assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
     }
 
     /// FTS5 build-gate. NOT a migration and NOT a table the app ships — a tripwire

@@ -183,6 +183,28 @@ export interface Pathway {
   created_at: string;
 }
 
+/** Mirrors `src-tauri/src/models/reaction.rs::ReferenceJob` (schema v14, Phase 4.5
+ * C2b-2a, ADR-018). One reference job of a reaction's summed reactant reference for
+ * ABSOLUTE barriers. `final_energy_eh` is read from the authoritative parsed results
+ * on demand and is `null` when the job is unparsed / still running / failed — the
+ * "honest-or-absent" signal the C2b-2b UI uses to flag which reference job is missing. */
+export interface ReferenceJob {
+  job_id: string;
+  title: string;
+  final_energy_eh: number | null;
+}
+
+/** Mirrors `src-tauri/src/models/reaction.rs::ReferenceEnergy`. A reaction's summed
+ * reactant reference: provenance (`jobs`) AND the honest total (`energy_eh`). `energy_eh`
+ * is the sum `Σ final_energy_eh` ONLY when the list is non-empty and every job is parsed;
+ * otherwise `null` (incomplete or empty) — a partial sum is never presented (ADR-018:
+ * a wrong E(ref) would silently poison every absolute barrier). Never cached — computed
+ * on demand from live job energies (one source of truth). */
+export interface ReferenceEnergy {
+  jobs: ReferenceJob[];
+  energy_eh: number | null;
+}
+
 export type SidecarState = "healthy" | "starting" | "stale" | "down";
 
 export interface SidecarStatus {

@@ -6270,3 +6270,42 @@ panel shows (ΔE kcal/mol, "Use this conformer"), the "17 optimization cycles" t
 normal Opt job → still the Results dashboard; a scan job → still the profile. Note: the existing butanone
 job's DB row stays `parsed` (not mutated) — the frontend fix renders it correctly regardless; only
 FUTURE GOAT jobs stay `completed`.
+
+## [2026-08-08] session | Phase 4.5 Stage C2b-2a — reaction reference jobs (summed reactant reference, migration v14, honest-or-absent)
+
+The data half of C2b-2 (ADR-018): the summed reactant reference for **absolute** barriers. Pure
+Rust + SQLite + cargo, **no manual gate**.
+
+**Migration v14** (`SCHEMA_VERSION` 13 → 14, guarded + idempotent). New join table
+`reaction_reference_jobs(reaction_id TEXT REFERENCES reactions(id), job_id TEXT REFERENCES jobs(id),
+created_at, PRIMARY KEY (reaction_id, job_id))` — a reaction has 0+ references to optimized-reactant
+jobs whose parsed final energies SUM to `E(ref)`. Preservation test
+`migrate_v13_to_v14_adds_reference_jobs_and_preserves_data` (v13 data intact, idempotent).
+
+**Commands** (`commands/reactions.rs`, `ReferenceJob`/`ReferenceEnergy` in `models/reaction.rs`,
+registered in `lib.rs`): `add_reference_job` (NotFound if either id absent; idempotent on the PK via
+`INSERT OR IGNORE`), `remove_reference_job`, `list_reference_jobs → Vec<ReferenceJob{ job_id, title,
+final_energy_eh: Option<f64> }>`, `reaction_reference_energy → { jobs, energy_eh }`.
+
+**Honest-or-absent (load-bearing, ADR-018):** `E(ref) = Σ final_energy_eh`, read on demand from the
+authoritative `results` tier — **never cached** on `reactions`. `energy_eh = Some(Σ)` **only if the
+list is non-empty AND every reference job is parsed**; any unparsed job → incomplete → `None`, with
+`jobs` still listing all of them (missing one's energy `None`) so the C2b-2b UI can name it. A partial
+sum is never returned. Expressed totally via `Option<f64>: Sum<Option<f64>>` (no `unwrap`).
+**Jobs-survive:** `delete_reaction` also drops the reference rows (child-first); `remove_reference_job`
+drops the grouping row only — neither ever deletes the job. Four cargo controls
+(`reference_energy_incomplete_is_none_not_partial`, `reference_energy_sums_when_all_parsed`,
+`delete_reaction_keeps_reference_jobs`, `add_reference_job_integrity_and_idempotent`); the
+incomplete-not-summed (partial `filter_map` sum) and delete-keeps-jobs (naive job cascade) controls
+are **bite-verified**. 213 Rust tests green.
+
+**Decided/measured (rule #10):** jobs are **not deletable today** (no `delete_job` command) — noted as
+the future integrity point (a delete must also drop `reaction_reference_jobs` rows by `job_id`).
+**Correction:** the bundled SQLite is compiled with `SQLITE_DEFAULT_FOREIGN_KEYS=1` (measured:
+`PRAGMA foreign_keys` = 1, `pragma_compile_options` lists `DEFAULT_FOREIGN_KEYS`), so `REFERENCES`
+clauses are **actively enforced** — the older codebase comment "this DB leaves FK enforcement off" is
+false; delete ordering is load-bearing (child before parent, else error 787). Corrected in
+`db.rs`, `commands/reactions.rs`, and `modules/tauri-core.md`.
+
+**Next:** C2b-2b — the reference-management UI + absolute barrier E(max) − Σ E(ref job) in the compare
+overlay (manual gate).
