@@ -70,9 +70,44 @@ post-condition is **referential integrity** — the source ensemble job must sti
 clean `NotFound` and no child is created. No scene snapshot: the child is a normal DFT job whose
 input fully defines it (ADR-008 #5).
 
+## The read/aggregate side — `read_conformer_reoptimization` + `reopt-aggregate.ts` (D2b)
+
+The comparison view over the SAME GOAT job's detail. The set is DERIVED, never stored:
+`read_conformer_reoptimization(source_job_id)` (Rust, `commands/jobs.rs`) is
+`SELECT … FROM jobs WHERE source_ensemble_job_id = ?1 ORDER BY source_conformer_index`
+LEFT JOIN `results` — so a child that hasn't parsed yet still appears (with `None` energies,
+never dropped). Per child it returns raw facts only: status, DFT electronic energy
+(`results.final_energy_eh`), Gibbs G (`results.free_energy_g_eh`, `None` unless Freq ran),
+`imaginary_count`, whether the input requested Freq, and an `element_mismatch` flag. **No
+weighting in Rust** — one Boltzmann implementation lives in `ensemble.ts`.
+
+**Mode auto-detect (derived, not stored).** A child "intended ΔG" iff its input requested
+`Freq` (`input_requested_freq`, scanning `!` lines). The set is ΔG-mode iff *every* child
+requested Freq, ΔE-mode iff none did, and **`mode_inconsistent`** iff mixed (D2a shouldn't
+produce a mixed set; the TS side then refuses to pick a single mode and weights on electronic
+E with a warning). **Element-list post-condition (rule #9):** each child's `* xyz` composition
+is compared to the source ensemble job's; a mismatch is flagged, never silently ranked across.
+
+`aggregateReopt(raw, ensemble)` (TS, `src/scene/reopt-aggregate.ts`) reuses `boltzmannWeights`
+/ `deltaEKcal` and applies **honest-or-absent**: a child that is not a terminal success, has a
+composition mismatch, optimized to a saddle (`imaginary_count > 0` — a saddle is NOT a
+minimum), or lacks the mode's usable energy is EXCLUDED from the weighting and returned in
+`excluded` with a reason — never a fabricated weight. xTB and DFT populations are computed over
+the SAME included subset (same conformers, same normalization; only the energy LEVEL differs),
+so the columns are comparable and are never combined by arithmetic. Ranks are within that
+subset; a conformer whose xTB rank ≠ DFT rank is flagged (`rankChanged`) — the teaching moment.
+
+**The comparison UI** sits on the GOAT `JobDetail`, below the D1 populations panel and the D2a
+trigger, recomputed on open (read-time). It shows per conformer `xTB #/ΔE/pop | DFT #/ΔG-or-ΔE/pop`,
+the DFT column **labelled by the detected mode** (never unlabelled, never `ΔG` on a set where a
+contributing child lacks G), highlights reordered rows, lists excluded children with reasons,
+carries a **"n of k complete — provisional, not for decisions"** banner until every child is
+terminal, and a **"not frequency-validated as minima"** caveat in ΔE-mode. Nothing is stored.
+
 ## Status
 
-Create side complete (D2a): migration v15, the pure builder + charge post-condition, the
-trigger UI, and charge-safe queued job creation. **Not yet built (D2b):** reading the children's
-DFT energies back, re-ranking/re-weighting vs the xTB populations, and any comparison UI. Until
-then nothing reads `source_ensemble_job_id` — it is write-only.
+**Create side (D2a) + read/aggregate side (D2b) complete.** The full loop — fan out k DFT
+re-opts, then read them back re-ranked/re-weighted vs the xTB populations — is in. **Not built
+(D3):** "use the best conformer" wiring (feed the DFT winner into a reaction center) and the
+C2b-2b reference convergence. D2b is read-only: it never creates a job, never migrates, never
+caches a weight or rank.

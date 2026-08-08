@@ -15,6 +15,11 @@ import { stampFreshIds } from "../scene/ids";
 import { deserializeScene } from "../scene/scene";
 import { buildReoptInput, DEFAULT_REOPT_METHOD } from "../scene/reopt";
 import {
+  aggregateReopt,
+  type ReoptAggregateRaw,
+  type ReoptComparison,
+} from "../scene/reopt-aggregate";
+import {
   boltzmannWeights,
   deltaEKcal,
   isGoatInput,
@@ -109,6 +114,11 @@ export function JobDetailScreen({
   const [reoptSolvent, setReoptSolvent] = useState("water");
   const [reoptBusy, setReoptBusy] = useState(false);
   const [reoptMsg, setReoptMsg] = useState<string | null>(null);
+  // D2b read side: the xTB-vs-DFT comparison over this GOAT job's re-opt children.
+  // Derived at read time from `read_conformer_reoptimization` + the D1 ensemble;
+  // never stored. `null` = no children yet (no fan-out launched).
+  const [reoptAgg, setReoptAgg] = useState<ReoptComparison | null>(null);
+  const [reoptAggBusy, setReoptAggBusy] = useState(false);
 
   useEffect(() => {
     if (!job || !isTerminalSuccessStatus(job.status) || ensembleTried.current) return;
@@ -255,6 +265,9 @@ export function JobDetailScreen({
         `Queued ${built.length} DFT re-opt job${built.length === 1 ? "" : "s"} ` +
           `(${reoptFreq ? "Opt+Freq" : "Opt-only"}${reoptSmd ? `, SMD ${reoptSolvent.trim()}` : ""}).`,
       );
+      // Show the (provisional) aggregate immediately — the new children appear as
+      // queued/running and are surfaced as such, not weighted.
+      void loadReoptAgg();
     } catch (e) {
       // A charge/geometry post-condition failure lands here — no job was created.
       setError(`Re-opt fan-out aborted (no jobs created): ${String(e)}`);
@@ -262,6 +275,28 @@ export function JobDetailScreen({
       setReoptBusy(false);
     }
   };
+
+  // Read-time aggregate of this GOAT job's DFT re-opt children (D2b). Needs the D1
+  // ensemble (for the xTB side); recomputed on demand, never cached in the DB.
+  const loadReoptAgg = useCallback(async () => {
+    if (!job || !ensemble || !isGoatInput(job.input_content)) return;
+    setReoptAggBusy(true);
+    try {
+      const raw = await invoke<ReoptAggregateRaw>("read_conformer_reoptimization", {
+        sourceJobId: jobId,
+      });
+      setReoptAgg(raw.children.length ? aggregateReopt(raw, ensemble) : null);
+    } catch {
+      setReoptAgg(null);
+    } finally {
+      setReoptAggBusy(false);
+    }
+  }, [job, ensemble, jobId]);
+
+  // Load the aggregate once the ensemble is available (a GOAT job with children).
+  useEffect(() => {
+    void loadReoptAgg();
+  }, [loadReoptAgg]);
 
   const loadJob = useCallback(async () => {
     try {
@@ -663,6 +698,118 @@ export function JobDetailScreen({
               </div>
             ) : null}
           </div>
+
+          {/* Stage D unit D2b — DFT re-optimisation aggregate: xTB ranking vs DFT
+              ranking over the SAME re-optimized subset (comparable columns, no
+              cross-level arithmetic). Recomputed at read time, never stored. */}
+          {reoptAgg ? (
+            <div className="reopt-agg">
+              <div className="reopt-agg-head">
+                <span className="section-title">
+                  DFT re-optimisation — xTB vs{" "}
+                  {reoptAgg.mode === "dG" ? "ΔG (DFT)" : "ΔE (DFT)"}
+                </span>
+                <button
+                  className="btn btn-sm"
+                  onClick={loadReoptAgg}
+                  disabled={reoptAggBusy}
+                >
+                  {reoptAggBusy ? "…" : "Refresh"}
+                </button>
+              </div>
+
+              {reoptAgg.provisional ? (
+                <div className="banner warn" style={{ marginTop: 6 }}>
+                  {reoptAgg.terminalCount} of {reoptAgg.totalChildren} complete —{" "}
+                  <strong>provisional, not for decisions</strong>. The ranking will
+                  change as the remaining jobs finish.
+                </div>
+              ) : null}
+              {reoptAgg.modeInconsistent ? (
+                <div className="banner warn" style={{ marginTop: 6 }}>
+                  Mixed set — some children ran Freq and some did not. Weighted on
+                  electronic energy (ΔE); no single ΔG is honest here.
+                </div>
+              ) : null}
+              {reoptAgg.notMinimumValidated && !reoptAgg.modeInconsistent ? (
+                <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+                  Opt-only (no Freq): these geometries are{" "}
+                  <strong>not frequency-validated as minima</strong>, and ΔE carries no
+                  thermal/entropic terms.
+                </div>
+              ) : null}
+
+              {reoptAgg.rows.length ? (
+                <table className="reopt-table">
+                  <thead>
+                    <tr>
+                      <th>Conf.</th>
+                      <th>xTB #</th>
+                      <th>xTB ΔE</th>
+                      <th>xTB pop</th>
+                      <th>DFT #</th>
+                      <th>{reoptAgg.mode === "dG" ? "ΔG (DFT)" : "ΔE (DFT)"}</th>
+                      <th>DFT pop</th>
+                      <th>Σ</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {reoptAgg.rows.map((r) => (
+                      <tr
+                        key={r.jobId}
+                        className={r.rankChanged ? "reopt-reordered" : undefined}
+                      >
+                        <td className="mono">#{r.conformerIndex + 1}</td>
+                        <td className="mono">{r.xtbRank}</td>
+                        <td className="mono">+{r.xtbDeltaKcal.toFixed(2)}</td>
+                        <td className="mono">{(r.xtbWeight * 100).toFixed(1)}%</td>
+                        <td className="mono">
+                          {r.dftRank}
+                          {r.rankChanged ? (
+                            <span className="reopt-arrow" title="rank changed under DFT">
+                              {" ⚑"}
+                            </span>
+                          ) : null}
+                        </td>
+                        <td className="mono">+{r.dftDeltaKcal.toFixed(2)}</td>
+                        <td className="mono">{(r.dftWeight * 100).toFixed(1)}%</td>
+                        <td className="mono muted">{(r.dftCumulative * 100).toFixed(1)}%</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+                  No conformer has a usable DFT energy yet.
+                </div>
+              )}
+
+              {reoptAgg.reordered ? (
+                <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                  ⚑ DFT re-ranked the xTB order — the xTB minimum is not the DFT
+                  minimum. This is exactly why the ensemble is re-optimized.
+                </div>
+              ) : null}
+
+              {reoptAgg.excluded.length ? (
+                <div className="reopt-excluded muted" style={{ fontSize: 12, marginTop: 8 }}>
+                  <div>Excluded from the weighting (honest-or-absent):</div>
+                  <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
+                    {reoptAgg.excluded.map((e) => (
+                      <li key={e.jobId}>
+                        <span className="mono">#{e.conformerIndex + 1}</span> — {e.reason}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+
+              <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+                xTB and DFT populations are computed over the same re-optimized subset
+                — comparable columns at two energy levels. They are never combined.
+              </div>
+            </div>
+          ) : null}
         </div>
       ) : null}
 

@@ -6474,3 +6474,50 @@ per-conformer coordinates (multi-child loop). The DB-insert + queue path is cove
 reopt create tests). **Next: D2b** — aggregate the children's DFT energies (GROUP BY
 source_ensemble_job_id), re-rank + re-weight vs the xTB populations, and the comparison UI;
 xTB-level and DFT-level populations must never be conflated.
+
+## [2026-08-08] session | Phase 4.5 Stage D unit D2b — DFT re-opt aggregate + xTB-vs-DFT re-ranking (READ side)
+
+**Scope (one unit, read/aggregate side).** Read a GOAT job's DFT re-opt children back, re-rank +
+re-weight them vs the xTB populations, and show the comparison on the same job's detail. OUT (D3):
+no job creation, no migration, no "use best conformer" wiring, no reaction_centers.
+
+**Rust — `read_conformer_reoptimization(source_job_id)`** (`commands/jobs.rs`). The set is DERIVED:
+`WHERE source_ensemble_job_id = ?1 ORDER BY source_conformer_index` LEFT JOIN `results` (a child
+with no parsed results still appears — never dropped, rule #9). Per child: status + DFT electronic
+energy (`final_energy_eh`) + Gibbs G (`free_energy_g_eh`, None unless Freq) + `imaginary_count` +
+`freq_requested` (from the input) + `element_mismatch` (its `* xyz` composition vs the source
+ensemble's — the post-condition). NO weighting in Rust. `mode_inconsistent` flag when children
+disagree on Freq. Two tests: grouping + G-present/absent/no-results children; element-mismatch +
+mixed-mode flags.
+
+**TS — `aggregateReopt(raw, ensemble)`** (`src/scene/reopt-aggregate.ts`). REUSES `boltzmannWeights`
+/`deltaEKcal` (one Boltzmann impl). Mode auto-detect: ΔG iff every child ran Freq, ΔE iff none,
+else mixed (weighted on electronic E, warned). **Honest-or-absent:** not-terminal / composition-
+mismatch / saddle (imaginary>0) / no-usable-energy → EXCLUDED + listed with a reason, never a fake
+weight. xTB and DFT pops computed over the SAME included subset (comparable, never combined);
+within-subset ranks → `rankChanged` per conformer. 8 tests: ΔG weighting, ΔE fallback +
+not-minimum-validated, failed/imaginary/running exclusions, no-G-in-ΔG-mode exclusion, composition
+mismatch, rank-change detection, mixed-mode.
+
+**UI** on the GOAT JobDetail (below D1 panel + D2a trigger, recomputed on open): per-conformer
+`xTB #/ΔE/pop | DFT #/ΔG-or-ΔE/pop`, DFT column labelled by detected mode (never ΔG on a set
+missing a G), reordered rows highlighted, excluded children listed with reasons, "n of k complete
+— provisional, not for decisions" banner until all terminal, "not frequency-validated" caveat in
+ΔE-mode. Nothing stored.
+
+**Manual gate — REAL DFT data (headless; could not click the running app).** D2a only *built* the
+children (didn't run the slow 33-atom DFT jobs), so no completed children existed. Ran the pipeline's
+real functions end-to-end instead: r2SCAN-3c Opt+Freq (gas phase) on the 3 real butane fixture
+conformers via `/opt/orca/orca` (isolated dirs), parsed real Gibbs G, fed through the actual
+`aggregateReopt`. Result — a **dramatic real reorder** (all 0 imaginary, clean minima):
+- conf #3: xTB rank 3 (+2.57 kcal/mol, 1.0 % pop) → **DFT rank 1** (43.6 % pop)
+- conf #1: xTB rank 1 (72.5 % pop, the xTB "winner") → **DFT rank 2** (43.6 %)
+- conf #2: xTB rank 2 → DFT rank 3 (+0.73 kcal/mol ΔG, 12.7 %)
+
+`mode=dG, provisional=false, reordered=true, included=3/3`, pops sum to 100 %. Physically conf #3
+relaxed into the anti basin under DFT opt and tied conf #1 (both anti) — xTB had mis-ranked its
+energy. Exactly the teaching point: trusting the xTB winner could pick the wrong conformer for a
+reaction center. Pinned in `chemistry/conformers.md` (real table).
+
+**Verification:** tsc clean; vitest 689 pass (+8 aggregate → 52 files); cargo 217 lib pass (+2 D2b).
+**Next: D3** — "use the best (DFT) conformer" into a reaction center + C2b-2b reference convergence.

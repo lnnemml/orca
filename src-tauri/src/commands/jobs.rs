@@ -89,6 +89,163 @@ fn create_reopt_job_conn(
     get_job_conn(conn, &job.id)
 }
 
+/// The element symbols of an ORCA input's inline `* xyz <c> <m> … *` block, in
+/// order (`["C","C","H",…]`). Empty for an input with no inline block (e.g.
+/// `* xyzfile …`). Used ONLY for the D2b element-list post-condition (rule #9):
+/// a re-opt child must share the source ensemble's composition/order, or we refuse
+/// to rank across mismatched atoms. Deliberately narrow — first whitespace token of
+/// each row inside the block — not a coordinate parser.
+fn element_symbols_from_input(input: &str) -> Vec<String> {
+    let mut in_block = false;
+    let mut elements = Vec::new();
+    for line in input.lines() {
+        let t = line.trim();
+        if !in_block {
+            // Opening marker: `* xyz …` (but not `* xyzfile …`, external geometry).
+            if let Some(rest) = t.strip_prefix('*') {
+                let kw = rest.trim().to_ascii_lowercase();
+                if kw.starts_with("xyz") && !kw.starts_with("xyzfile") {
+                    in_block = true;
+                }
+            }
+            continue;
+        }
+        // Inside the block: a lone `*` closes it; otherwise the first token is the element.
+        if t.starts_with('*') {
+            break;
+        }
+        if let Some(sym) = t.split_whitespace().next() {
+            elements.push(sym.to_string());
+        }
+    }
+    elements
+}
+
+/// Whether an ORCA input requested a frequency calculation — a `Freq` (or `NumFreq`)
+/// token on a `!` keyword line, case-insensitive, ignoring comments. Drives D2b's
+/// mode detection (ΔG-mode iff every child requested Freq); NOT stored, derived from
+/// the child's own input text (the "mode lives in the child input" decision, D2a).
+fn input_requested_freq(input: &str) -> bool {
+    input.lines().any(|line| {
+        let code = line.split('#').next().unwrap_or("").trim();
+        if !code.starts_with('!') {
+            return false;
+        }
+        code.split_whitespace()
+            .any(|tok| tok.eq_ignore_ascii_case("freq") || tok.eq_ignore_ascii_case("numfreq"))
+    })
+}
+
+/// One DFT re-opt child in a GOAT job's fan-out, as read back for the D2b aggregate.
+/// Raw facts only — the TS side does the honest-or-absent weighting (one Boltzmann
+/// implementation lives in `src/scene/ensemble.ts`, never a second one in Rust).
+#[derive(Debug, Serialize)]
+pub struct ReoptChild {
+    /// 0-based conformer index in the source GOAT ensemble.
+    pub source_conformer_index: i64,
+    pub job_id: String,
+    pub title: String,
+    /// Job status string (`queued`/`running`/`completed`/`parsed`/`failed`/…).
+    pub status: String,
+    /// DFT electronic energy (Eh), `None` until the job's results are parsed.
+    pub electronic_energy_eh: Option<f64>,
+    /// Thermochemistry Gibbs free energy G (Eh), `None` unless Freq ran + parsed.
+    pub gibbs_eh: Option<f64>,
+    /// Imaginary-frequency count (Freq only). `Some(n>0)` ⇒ a saddle, not a minimum.
+    pub imaginary_count: Option<i64>,
+    /// This child's input requested `Freq` (mode detection is derived, not stored).
+    pub freq_requested: bool,
+    /// The child's `* xyz` element list differs from the source ensemble's — a
+    /// composition mismatch (should be impossible by construction; surfaced loudly).
+    pub element_mismatch: bool,
+}
+
+/// The DFT re-opt fan-out of ONE GOAT job, read back (Phase 4.5 Stage D unit D2b).
+/// The set is DERIVED by `source_ensemble_job_id` (Fork 1, no table); the aggregate
+/// is computed at read-time and never stored.
+#[derive(Debug, Serialize)]
+pub struct ReoptAggregate {
+    pub source_job_id: String,
+    pub children: Vec<ReoptChild>,
+    /// Children whose input requested Freq (for TS mode detection: ΔG-mode iff all).
+    pub freq_requested_count: usize,
+    /// Some children requested Freq and some did not — a mixed set (D2a shouldn't
+    /// produce this; the TS side refuses to pick a single mode when true).
+    pub mode_inconsistent: bool,
+}
+
+/// Read a GOAT job's DFT re-opt children and their DFT energies (Phase 4.5 D2b).
+/// Groups by `source_ensemble_job_id` (the derived set), LEFT JOINs `results` so a
+/// child that hasn't parsed yet still appears (with `None` energies — never dropped,
+/// rule #9 honest-or-absent). Returns raw per-child facts; the TS side re-ranks and
+/// re-weights (reusing `boltzmannWeights`). Element-list post-condition: each child's
+/// `* xyz` composition is compared to the source ensemble job's and a mismatch is
+/// flagged (`element_mismatch`), never silently ranked across.
+fn read_conformer_reoptimization_conn(
+    conn: &Connection,
+    source_job_id: &str,
+) -> Result<ReoptAggregate, AppError> {
+    // The source ensemble job's composition (its `* xyz` element order) is the
+    // reference every child must match. NotFound if the source is gone.
+    let source = get_job_conn(conn, source_job_id)?;
+    let source_elements = element_symbols_from_input(&source.input_content);
+
+    let mut stmt = conn.prepare(
+        "SELECT j.id, j.title, j.status, j.source_conformer_index, j.input_content, \
+                r.final_energy_eh, r.free_energy_g_eh, r.imaginary_count \
+         FROM jobs j LEFT JOIN results r ON r.job_id = j.id \
+         WHERE j.source_ensemble_job_id = ?1 \
+         ORDER BY j.source_conformer_index",
+    )?;
+    let rows = stmt.query_map(params![source_job_id], |r| {
+        let input_content: String = r.get(4)?;
+        Ok((
+            r.get::<_, i64>(3)?,             // source_conformer_index
+            r.get::<_, String>(0)?,          // id
+            r.get::<_, String>(1)?,          // title
+            r.get::<_, String>(2)?,          // status
+            r.get::<_, Option<f64>>(5)?,     // final_energy_eh
+            r.get::<_, Option<f64>>(6)?,     // free_energy_g_eh
+            r.get::<_, Option<i64>>(7)?,     // imaginary_count
+            input_content,
+        ))
+    })?;
+
+    let mut children = Vec::new();
+    let mut freq_requested_count = 0usize;
+    let mut any_freq = false;
+    let mut any_no_freq = false;
+    for row in rows {
+        let (idx, job_id, title, status, e_elec, g, imag, input_content) = row?;
+        let freq_requested = input_requested_freq(&input_content);
+        if freq_requested {
+            freq_requested_count += 1;
+            any_freq = true;
+        } else {
+            any_no_freq = true;
+        }
+        let element_mismatch = element_symbols_from_input(&input_content) != source_elements;
+        children.push(ReoptChild {
+            source_conformer_index: idx,
+            job_id,
+            title,
+            status,
+            electronic_energy_eh: e_elec,
+            gibbs_eh: g,
+            imaginary_count: imag,
+            freq_requested,
+            element_mismatch,
+        });
+    }
+
+    Ok(ReoptAggregate {
+        source_job_id: source_job_id.to_string(),
+        children,
+        freq_requested_count,
+        mode_inconsistent: any_freq && any_no_freq,
+    })
+}
+
 /// All jobs, newest first.
 fn list_jobs_conn(conn: &Connection) -> Result<Vec<Job>, AppError> {
     let sql = format!("SELECT {} FROM jobs ORDER BY created_at DESC", Job::COLUMNS);
@@ -260,6 +417,20 @@ pub fn create_reopt_job(
         &source_ensemble_job_id,
         source_conformer_index,
     )
+}
+
+/// Read a GOAT job's DFT re-opt fan-out for the D2b aggregate view: the derived set
+/// of children (by `source_ensemble_job_id`), each with its status + parsed DFT
+/// electronic energy / Gibbs G / imaginary count. Raw facts — the TS side re-ranks
+/// and re-weights (reusing `boltzmannWeights`), applies honest-or-absent, and labels
+/// ΔG vs ΔE. Read-time only; nothing is stored.
+#[tauri::command]
+pub fn read_conformer_reoptimization(
+    db: State<'_, DbState>,
+    source_job_id: String,
+) -> Result<ReoptAggregate, AppError> {
+    let conn = db.lock()?;
+    read_conformer_reoptimization_conn(&conn, &source_job_id)
 }
 
 #[tauri::command]
@@ -608,6 +779,136 @@ mod tests {
         assert_eq!(all[0].status, JobStatus::Draft);
         // No snapshot passed → NULL, not an empty string.
         assert_eq!(job.scene_json, None);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn read_reopt_groups_by_source_and_reads_energies() {
+        let (conn, dir) = test_db();
+
+        // Source GOAT job (butane: 4 C then 10 H).
+        let source_xyz = "! XTB GOAT\n* xyz 0 1\nC 0 0 0\nC 1 0 0\nH 2 0 0\n*\n";
+        let source = create_job_conn(&conn, "Conformer search — butane", source_xyz, None, None)
+            .unwrap();
+        // A DIFFERENT GOAT job whose children must NOT bleed into the aggregate.
+        let other = create_job_conn(&conn, "other search", source_xyz, None, None).unwrap();
+
+        // Child 0 — Opt+Freq, completed with G + 0 imaginary (a clean minimum).
+        let child0 = create_reopt_job_conn(
+            &conn,
+            "re-opt #0",
+            "! r2SCAN-3c Opt Freq\n* xyz 0 1\nC 0 0 0\nC 1 0 0\nH 2 0 0\n*\n",
+            &source.id,
+            0,
+        )
+        .unwrap();
+        // Child 1 — Opt+Freq, completed but Freq FAILED (no G), 1 imaginary (a saddle).
+        let child1 = create_reopt_job_conn(
+            &conn,
+            "re-opt #1",
+            "! r2SCAN-3c Opt Freq\n* xyz 0 1\nC 0 0 0\nC 1 0 0\nH 2 0 0\n*\n",
+            &source.id,
+            1,
+        )
+        .unwrap();
+        // Child 2 — still running: no results row at all.
+        let _child2 = create_reopt_job_conn(
+            &conn,
+            "re-opt #2",
+            "! r2SCAN-3c Opt Freq\n* xyz 0 1\nC 0 0 0\nC 1 0 0\nH 2 0 0\n*\n",
+            &source.id,
+            2,
+        )
+        .unwrap();
+        // Child of the OTHER job — must be excluded by grouping.
+        create_reopt_job_conn(&conn, "other child", "! r2SCAN-3c Opt Freq", &other.id, 0)
+            .unwrap();
+
+        // Parsed results: child0 has electronic + G; child1 has electronic only + imaginary.
+        conn.execute(
+            "INSERT INTO results (job_id, final_energy_eh, free_energy_g_eh, imaginary_count, data_json, parser_version) \
+             VALUES (?1, -157.5, -157.4, 0, '{}', 4)",
+            params![child0.id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO results (job_id, final_energy_eh, free_energy_g_eh, imaginary_count, data_json, parser_version) \
+             VALUES (?1, -157.49, NULL, 1, '{}', 4)",
+            params![child1.id],
+        )
+        .unwrap();
+
+        let agg = read_conformer_reoptimization_conn(&conn, &source.id).unwrap();
+
+        // Grouping: exactly the 3 children of `source`, ordered by conformer index.
+        assert_eq!(agg.children.len(), 3);
+        assert_eq!(
+            agg.children.iter().map(|c| c.source_conformer_index).collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+
+        // Child 0 — electronic + G present, 0 imaginary, Freq requested.
+        assert_eq!(agg.children[0].electronic_energy_eh, Some(-157.5));
+        assert_eq!(agg.children[0].gibbs_eh, Some(-157.4));
+        assert_eq!(agg.children[0].imaginary_count, Some(0));
+        assert!(agg.children[0].freq_requested);
+        assert!(!agg.children[0].element_mismatch);
+
+        // Child 1 — electronic present, G ABSENT (Freq failed), 1 imaginary (saddle).
+        assert_eq!(agg.children[1].electronic_energy_eh, Some(-157.49));
+        assert_eq!(agg.children[1].gibbs_eh, None);
+        assert_eq!(agg.children[1].imaginary_count, Some(1));
+
+        // Child 2 — no results row → all energies None, but still LISTED (never dropped).
+        assert_eq!(agg.children[2].electronic_energy_eh, None);
+        assert_eq!(agg.children[2].gibbs_eh, None);
+        assert_eq!(agg.children[2].imaginary_count, None);
+
+        // All 3 requested Freq → ΔG-mode, consistent.
+        assert_eq!(agg.freq_requested_count, 3);
+        assert!(!agg.mode_inconsistent);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn read_reopt_flags_element_mismatch_and_mode_inconsistency() {
+        let (conn, dir) = test_db();
+        let source = create_job_conn(
+            &conn,
+            "src",
+            "! XTB GOAT\n* xyz 0 1\nC 0 0 0\nC 1 0 0\nH 2 0 0\n*\n",
+            None,
+            None,
+        )
+        .unwrap();
+
+        // A child with a DIFFERENT composition (N instead of C) — must be flagged.
+        create_reopt_job_conn(
+            &conn,
+            "wrong-atoms",
+            "! r2SCAN-3c Opt Freq\n* xyz 0 1\nN 0 0 0\nC 1 0 0\nH 2 0 0\n*\n",
+            &source.id,
+            0,
+        )
+        .unwrap();
+        // An Opt-ONLY child (no Freq) alongside a Freq child → mixed mode.
+        create_reopt_job_conn(
+            &conn,
+            "opt-only",
+            "! r2SCAN-3c Opt\n* xyz 0 1\nC 0 0 0\nC 1 0 0\nH 2 0 0\n*\n",
+            &source.id,
+            1,
+        )
+        .unwrap();
+
+        let agg = read_conformer_reoptimization_conn(&conn, &source.id).unwrap();
+        assert!(agg.children[0].element_mismatch, "N≠C composition must be flagged");
+        assert!(!agg.children[1].element_mismatch);
+        assert!(agg.children[0].freq_requested);
+        assert!(!agg.children[1].freq_requested);
+        assert!(agg.mode_inconsistent, "one Freq + one Opt-only is a mixed set");
 
         std::fs::remove_dir_all(&dir).ok();
     }

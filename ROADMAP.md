@@ -861,9 +861,15 @@ r1–r4 manual gates. Next per the ratified reorder: CREST probe → Stage D →
       (k + cumulative-%, method, Opt+Freq/Opt-only mode, SMD toggle), and `create_reopt_job` (queued
       children). SMD emit verified real via a rule-#10 determiner run (`wiki/orca/solvation.md`).
       Manual gate on real BH₄⁻ anion (`-1 1` carried) + real k=3 fan-out.
-      **D2b (next):** aggregate the children's DFT energies (GROUP BY source_ensemble_job_id),
-      re-rank + re-weight vs the xTB populations, comparison UI; xTB- vs DFT-level populations must
-      never be conflated.
+      **D2b landed (2026-08-08):** the READ/aggregate side — `read_conformer_reoptimization` (derived
+      set by GROUP BY source_ensemble_job_id, LEFT JOIN results — never drops a child), **mode
+      auto-detect** (ΔG iff every child ran Freq, else ΔE, else mixed), element-list post-condition,
+      and `aggregateReopt` (`src/scene/reopt-aggregate.ts`, reuses `boltzmannWeights`) with
+      **honest-or-absent** (running/failed/saddle/no-G excluded + listed with reason) + xTB-vs-DFT
+      re-ranking over the same subset; comparison UI on the GOAT JobDetail (provisional banner,
+      ΔG/ΔE label, reordering highlight). Manual gate on real butane DFT (r2SCAN-3c Opt+Freq G).
+      **D3 (next):** "use the best (DFT) conformer" → feed it into a reaction center; + the C2b-2b
+      reference convergence. xTB- vs DFT-level populations sit in labelled columns, never conflated.
 
 ### Stage E — Transition-state methods (each probe-first, rule #10)
 

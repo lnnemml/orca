@@ -1471,6 +1471,43 @@ select:disabled,
 .reopt-smd input[type="text"]:disabled {
   opacity: 0.5;
 }
+.reopt-agg {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.reopt-agg-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.reopt-table {
+  width: 100%;
+  margin-top: 8px;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.reopt-table th,
+.reopt-table td {
+  padding: 4px 8px;
+  text-align: right;
+  border-bottom: 1px solid var(--border);
+}
+.reopt-table th:first-child,
+.reopt-table td:first-child {
+  text-align: left;
+}
+.reopt-table th {
+  color: var(--muted);
+  font-weight: 600;
+}
+.reopt-table tr.reopt-reordered {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.reopt-arrow {
+  color: var(--accent);
+}
 
 /* --- Jobs table ------------------------------------------------------- */
 
