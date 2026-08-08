@@ -796,7 +796,7 @@ single-pathway relaxed scan is fully usable end-to-end. *(B1 ✅; B2 ✅ — aut
       (author) PASSED** — m1–m4 in the real window (plus an attach-form overflow fix: `flexWrap: wrap` +
       `minWidth: 0` on the select field so Attach stays inside the card). **Stage C2a complete.** See
       `modules/reactions-ui.md`.
-- [~] **C2b-1 — comparative overlay + ΔΔE‡ (reference-free).** A "Compare" view in the reaction detail
+- [x] **C2b-1 — comparative overlay + ΔΔE‡ (reference-free).** A "Compare" view in the reaction detail
       (shown when ≥ 2 pathways carry a scan profile; < 2 → a clear empty state). Overlays the pathways'
       profiles on one recharts chart on a **shared zero** (global minimum), one colour + legend label
       each (explicit width, no `ResponsiveContainer`). Per-pathway **intrinsic barrier** = E(max) −
