@@ -40,6 +40,53 @@ export function deltaEKcal(conformers: Conformer[]): number[] {
   return conformers.map((c) => (c.energy - e0) * HARTREE_TO_KCAL_MOL);
 }
 
+/** R, the gas constant, in kcal/(mol·K) (CODATA). */
+export const GAS_CONSTANT_KCAL = 1.987204259e-3;
+/** Standard room temperature, K. */
+export const ROOM_TEMPERATURE_K = 298.15;
+
+/**
+ * Boltzmann populations w_i = exp(−ΔE_i / RT) / Σ_j exp(−ΔE_j / RT) over the
+ * conformer ensemble, at temperature `tempK`. Pure TS-only display analysis —
+ * NOT a Rust/TS byte-identical pair: this is derived weighting shown in the
+ * panel, not text emitted into an ORCA input file, so there is deliberately no
+ * `orcastudio-core` mirror (don't "fix" this by adding one). Populations are
+ * DERIVED, never persisted — computed on the fly from the parsed ensemble at
+ * render time (same one-source-of-truth rule the C2b absolute-barrier work
+ * settled: a cached scalar drifts from its source).
+ *
+ * Because the ensemble is xTB-level (GFN2), these are xTB-level populations —
+ * the panel labels them so; D2's DFT re-opt will re-rank and re-weight and the
+ * two must never be confused.
+ *
+ * Numerical stability: ΔE_i is taken relative to the lowest (`deltaEKcal`, min
+ * = 0), so every exp argument is ≤ 0 and every exp value ∈ (0, 1] — no overflow.
+ * The relative-to-min form IS the stability guard; there is no second one.
+ *
+ * NaN contract (mirrors `deltaEKcal`'s NaN pass-through — rule #9, honest-or-
+ * absent): a conformer whose energy is NaN gets weight NaN and is EXCLUDED from
+ * the normalization sum, so the finite weights still sum to 1. We never invent a
+ * population for a conformer with no energy.
+ *
+ * Empty input → []. `tempK` ≤ 0 → throw (a temperature must be positive; don't
+ * silently divide by zero or flip the sign of the exponent).
+ */
+export function boltzmannWeights(
+  conformers: Conformer[],
+  tempK = ROOM_TEMPERATURE_K,
+): number[] {
+  if (tempK <= 0) {
+    throw new Error(`temperature must be positive, got ${tempK} K`);
+  }
+  if (conformers.length === 0) return [];
+  const rt = GAS_CONSTANT_KCAL * tempK;
+  const deltas = deltaEKcal(conformers);
+  // exp(−ΔE/RT); NaN ΔE (no energy) → NaN, which drops out of the sum below.
+  const boltz = deltas.map((d) => Math.exp(-d / rt));
+  const z = boltz.reduce((acc, b) => (Number.isNaN(b) ? acc : acc + b), 0);
+  return boltz.map((b) => b / z);
+}
+
 /**
  * Energy from a GOAT comment line. The energy is the leading whitespace-token
  * (`"-13.6651277570 converged=true"` → -13.6651277570); anything else the line

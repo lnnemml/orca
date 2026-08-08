@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 
 import {
+  boltzmannWeights,
   conformerMatchesFragment,
   deltaEKcal,
   goatInputForFragment,
@@ -123,6 +124,64 @@ describe("deltaEKcal (real butane fixture)", () => {
     ];
     expect(deltaEKcal(c)[0]).toBe(0);
     expect(Number.isNaN(deltaEKcal(c)[1])).toBe(true);
+  });
+});
+
+describe("boltzmannWeights (real butane fixture — xTB-level populations)", () => {
+  const conformers = parseEnsemble(ENSEMBLE)!;
+
+  it("weights sum to 1.0 over the finite-energy conformers", () => {
+    const w = boltzmannWeights(conformers);
+    const sum = w.reduce((a, b) => a + b, 0);
+    expect(sum).toBeCloseTo(1.0, 12);
+  });
+
+  it("is monotonic: lower energy ⇒ higher weight; the global min is largest", () => {
+    const w = boltzmannWeights(conformers);
+    // The ensemble is sorted ascending by energy, so weights must be descending.
+    for (let i = 1; i < w.length; i++) {
+      expect(w[i]).toBeLessThan(w[i - 1]);
+    }
+    expect(Math.max(...w)).toBe(w[0]);
+  });
+
+  it("butane sanity: anti (global min) is most populated, but the spread is not ~100%", () => {
+    // butane's ΔE's are sub-kcal (conformers.md), so several conformers are
+    // populated — the teaching point that one conformer isn't a molecule. The
+    // anti minimum leads but does not swamp the ensemble.
+    const w = boltzmannWeights(conformers);
+    expect(w[0]).toBeGreaterThan(w[1]); // anti leads
+    expect(w[0]).toBeLessThan(0.9); // ...but far from a lone ~100% conformer
+    // the runners-up carry real population, not a rounding sliver.
+    expect(w[1]).toBeGreaterThan(0.1);
+  });
+
+  it("NaN-energy conformer → NaN weight; the finite weights still sum to 1", () => {
+    const c: Conformer[] = [
+      { atoms: [], energy: -13.66, index: 0 },
+      { atoms: [], energy: NaN, index: 1 },
+      { atoms: [], energy: -13.65, index: 2 },
+    ];
+    const w = boltzmannWeights(c);
+    expect(Number.isNaN(w[1])).toBe(true);
+    const finiteSum = w.filter((x) => Number.isFinite(x)).reduce((a, b) => a + b, 0);
+    expect(finiteSum).toBeCloseTo(1.0, 12);
+  });
+
+  it("higher temperature flattens the distribution (the min's weight decreases)", () => {
+    const cold = boltzmannWeights(conformers, 100);
+    const warm = boltzmannWeights(conformers, 298.15);
+    const hot = boltzmannWeights(conformers, 1000);
+    // As T rises the populations move toward uniform, so the dominant conformer
+    // strictly loses share.
+    expect(warm[0]).toBeLessThan(cold[0]);
+    expect(hot[0]).toBeLessThan(warm[0]);
+  });
+
+  it("empty input → [], and tempK ≤ 0 throws (a temperature must be positive)", () => {
+    expect(boltzmannWeights([])).toEqual([]);
+    expect(() => boltzmannWeights(conformers, 0)).toThrow(/positive/i);
+    expect(() => boltzmannWeights(conformers, -5)).toThrow(/positive/i);
   });
 });
 

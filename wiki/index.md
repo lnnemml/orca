@@ -69,7 +69,7 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 
 - [README.md](chemistry/README.md) — що тут живе і як вести нотатки
 - [reagent-geometry.md](chemistry/reagent-geometry.md) — геометрія реагентів-нуклеофілів: гідрид, чому BH₄⁻ тетраедричний, чому кут води 104.5°
-- [conformers.md](chemistry/conformers.md) — конформери і GOAT: anti/gauche-бутан, чому один конформер зі SMILES — випадковий знімок
+- [conformers.md](chemistry/conformers.md) — конформери і GOAT: anti/gauche-бутан, чому один конформер зі SMILES — випадковий знімок; **Больцман-заселеність** (R·T-масштаб, xTB-рівень, кумулятивна сума → k-відбір для D2)
 - [burgi-dunitz.md](chemistry/burgi-dunitz.md) — траєкторія Бюрґі–Дунітца: чому нуклеофіл атакує карбоніл під ~107°, метод структурної кореляції, звʼязок зі стереоселективністю NaBH₄ і з d/θ/φ у редакторі
 - [vdw-steric.md](chemistry/vdw-steric.md) — vdW-радіуси і стеричні зіткнення (unit 3.2): чому поріг — евристика (не фізична межа), джерела радіусів (Bondi/Mantina/Alvarez), UNDETERMINED замість вгадування, і чому реакційний контакт Бюрґі–Дунітца — не зіткнення
 - [normal-modes.md](chemistry/normal-modes.md) — нормальні моди: що таке мода й що показує анімація; чому амплітуда довільна (вибір подання); чому анімація уявної моди показує координату реакції; чому моди беруться «як є» (ворота Кабша)

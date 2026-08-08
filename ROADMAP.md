@@ -847,10 +847,14 @@ r1–r4 manual gates. Next per the ratified reorder: CREST probe → Stage D →
 
 ### Stage D — Conformer → reaction-center scientific-rigor layer
 
-- [ ] Boltzmann-weight the GOAT ensemble (primitive from 2.5.1) + **re-optimise the lowest 3–4 at
+- [~] Boltzmann-weight the GOAT ensemble (primitive from 2.5.1) + **re-optimise the lowest 3–4 at
       DFT** → build reaction centers on those (ADR-007: mandatory for valid science). Upgrades the
       inputs to Stages A–C so ΔΔE‡ is defensible, not merely mechanically produced. No new probe
       (GOAT measured); the DFT re-opt orchestration is the new code.
+      **D1 landed (2026-08-08):** Boltzmann populations + cumulative column in the ensemble panel
+      (`boltzmannWeights`, xTB/GFN2-level, 298.15 K, derived-not-stored) — the cumulative is the
+      k-selection signal. **D2 (next):** DFT re-opt fan-out over the top-k (k from the cumulative
+      threshold), which re-ranks/re-weights; xTB- vs DFT-level populations must never be conflated.
 
 ### Stage E — Transition-state methods (each probe-first, rule #10)
 

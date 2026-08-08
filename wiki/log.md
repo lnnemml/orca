@@ -6377,3 +6377,45 @@ Stage F: the install+probe item marked `[x]` (probe, not the feature); the desig
 
 **Next:** Stage E (OptTS + Freq + thermochemistry → true ΔG‡), per the sharpened reorder (E before F).
 Also still pending: the C2b-1 (c1–c4) and C2b-2b (r1–r4) author manual gates.
+
+## [2026-08-08] session | Phase 4.5 Stage D unit D1 — Boltzmann populations over the GOAT ensemble (xTB-level)
+
+**Scope (one unit).** Add Boltzmann populations to the conformer-ensemble panel: a pure function
+plus two display columns. Nothing else — no DFT re-opt, no orchestration, no migration, no new job,
+no data-model change. Those are D2 (next).
+
+**`boltzmannWeights(conformers, tempK = 298.15)`** in `src/scene/ensemble.ts` (TS-only; NOT a
+Rust/TS byte-identical pair — this is derived display analysis, not emit-to-input-file text, so no
+`orcastudio-core` mirror, stated in a comment). `w_i = exp(−ΔE_i/RT) / Σ exp(−ΔE_j/RT)` over the
+FINITE-energy conformers, `R = 1.987204259e-3` kcal/(mol·K), reusing `deltaEKcal` so every exp
+argument is ≤ 0 (the relative-to-min form IS the overflow guard). **NaN contract** mirrors
+`deltaEKcal` (rule #9, honest-or-absent): a NaN-energy conformer gets weight NaN and is EXCLUDED from
+the normalization sum, so the finite weights still sum to 1. Empty → `[]`; `tempK ≤ 0` throws.
+
+**Derived, never stored** (same one-source-of-truth rule the C2b absolute-barrier work settled):
+populations + cumulative computed at render in `JobDetailScreen` (`useMemo`), no migration, no column,
+nothing persisted. Beside ΔE the panel now shows **Population** (percent) and **Cumulative** (Σ,
+running total down the energy-sorted list — this is what D2's k-selection reads), NaN weight → "—",
+and an honest **xTB/GFN2-level, 298.15 K** label. No temperature UI yet (the `tempK` param exists for
+D2/later); no scope creep.
+
+**Tests** (`ensemble.test.ts`, real butane fixture, +7 → 33 file / 671 suite pass; `tsc` clean):
+sum-to-1 over finite conformers, monotonicity (min largest), butane sanity (anti leads but < 90 % —
+several conformers populated, the teaching point), NaN-weight-excluded-still-sums-to-1, and
+T-flattening (min's weight strictly decreases as T rises).
+
+**Manual gate (real data, through the actual panel functions).** No `sqlite3` on the box and the
+desktop GUI can't be click-driven headless, so verified the exact `deltaEKcal`/`boltzmannWeights`
+computation the panel calls against a **full real on-disk ensemble** (job
+`04aeca22…`/`input.finalensemble.xyz`, 29 conformers) via a throwaway test: populations sum to
+1.000000000; cumulative climbs 15.1 % → 100.0 %, reaching 100 % at #19 with the high-energy tail
+adding ~0 %; four near-degenerate conformers at ~15 % each dominate then a tail — chemically sane, and
+exactly the cumulative-threshold signal D2 needs. A live click-through of the running app was NOT
+performed (offered to the author).
+
+**Wiki:** `chemistry/conformers.md` (+«Больцман-заселеність» subsection, Ukrainian — R·T scale,
+xTB-level caveat, cumulative → k-selection tie to D2); `modules/frontend.md` (ensemble-panel line,
+present tense + pointer here); `index.md` conformers line.
+
+**Next: D2** — DFT re-opt fan-out over the top-k conformers (k chosen by the cumulative threshold),
+which will re-rank and re-weight; xTB- vs DFT-level populations must never be conflated.

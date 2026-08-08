@@ -14,6 +14,7 @@ import { useSceneStore } from "../scene/store";
 import { stampFreshIds } from "../scene/ids";
 import { deserializeScene } from "../scene/scene";
 import {
+  boltzmannWeights,
   deltaEKcal,
   isGoatInput,
   isTerminalSuccessStatus,
@@ -123,6 +124,23 @@ export function JobDetailScreen({
     [job?.scene_json],
   );
   const deltas = useMemo(() => (ensemble ? deltaEKcal(ensemble) : []), [ensemble]);
+  // Boltzmann populations (xTB/GFN2-level, 298.15 K) — DERIVED at render, never
+  // stored (a cached scalar drifts from its source). `cumulative` is a running
+  // sum down the energy-sorted list; it's what D2's k-selection ("how many
+  // conformers to DFT re-optimise") reads, so it earns its column now. A NaN
+  // weight (no energy) contributes nothing to the running sum and renders "—".
+  const weights = useMemo(
+    () => (ensemble ? boltzmannWeights(ensemble) : []),
+    [ensemble],
+  );
+  const cumulative = useMemo(() => {
+    let acc = 0;
+    return weights.map((w) => {
+      if (Number.isNaN(w)) return NaN;
+      acc += w;
+      return acc;
+    });
+  }, [weights]);
   const conformerScene = useMemo<Scene | null>(() => {
     const conf = ensemble?.[selectedConf];
     if (!conf) return null;
@@ -471,6 +489,16 @@ export function JobDetailScreen({
                       ? "—"
                       : `+${deltas[i].toFixed(2)} kcal/mol`}
                   </span>
+                  <span className="ensemble-pop mono">
+                    {Number.isNaN(weights[i])
+                      ? "—"
+                      : `${(weights[i] * 100).toFixed(1)}%`}
+                  </span>
+                  <span className="ensemble-cum muted mono">
+                    {Number.isNaN(cumulative[i])
+                      ? "—"
+                      : `Σ ${(cumulative[i] * 100).toFixed(1)}%`}
+                  </span>
                   <span className="ensemble-abs muted mono">
                     {Number.isNaN(c.energy) ? "—" : `${c.energy.toFixed(6)} Eh`}
                   </span>
@@ -482,8 +510,11 @@ export function JobDetailScreen({
             </div>
           </div>
           <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
-            ΔE relative to the lowest conformer (kcal/mol). Boltzmann weighting +
-            DFT re-optimisation of the lowest few is Phase 4.5.
+            ΔE relative to the lowest conformer (kcal/mol). Population = Boltzmann
+            weight at 298.15&nbsp;K; Cumulative (Σ) is the running total down the
+            energy-sorted list. These populations are <strong>xTB/GFN2-level</strong>{" "}
+            — DFT re-optimisation of the lowest few (which will re-rank and
+            re-weight them) is Phase 4.5.
           </div>
         </div>
       ) : null}

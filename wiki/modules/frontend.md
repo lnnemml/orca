@@ -297,9 +297,12 @@ text's constraints, then replaces all coordinates.
   under the list (GOAT is slow, holds the queue).
 - **Ensemble panel** (`JobDetailScreen`) — on a *completed* GOAT job it lazily calls `read_job_ensemble`
   (`input.finalensemble.xyz`) + `parseEnsemble`; non-GOAT jobs show nothing. Lists conformers with
-  **ΔE in kcal/mol** (`deltaEKcal`; `NaN` → a dash) + the absolute Eh secondary; the selected one
-  renders in a memoised `MoleculeViewer`. Count comes from the *file*, not the log summary
-  (`goat.md`).
+  **ΔE in kcal/mol** (`deltaEKcal`; `NaN` → a dash) + **Population** (`boltzmannWeights`, xTB/GFN2-level,
+  298.15 K) and a **Cumulative** running total down the energy-sorted list + the absolute Eh secondary;
+  the selected one renders in a memoised `MoleculeViewer`. Populations are **derived at render, never
+  stored** (a cached scalar drifts); a `NaN` weight shows a dash. The cumulative is what D2's k-selection
+  ("how many conformers to DFT re-optimise") reads. Count comes from the *file*, not the log summary
+  (`goat.md`). Stage D unit D1 — see `log.md` [2026-08-08].
 - **"Use this conformer"** — `planConformerApply` decides: **replace** the fragment in place (it
   survives the New Job → detail nav — the store is a singleton) → New Job with `keepScene`; else a
   **new** single-fragment scene; else **refuse** (a banner, no throw) on a composition mismatch.
