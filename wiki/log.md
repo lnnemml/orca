@@ -6563,3 +6563,36 @@ cargo 217 lib pass (method assertion added). **Stage D CLOSED.**
 three `[ ]` bullets (ADR-019 job groups = a tree in SQLite, not a filesystem hierarchy; job deletion
 DB-only vs DB+files with FK links NULLed not cascaded + running-guard; job grouping + filter/search).
 **Next: ADR-019 + its decomposition (a separate session).**
+
+## [2026-08-08] decision | ADR-019 job organization — groups as a SQLite tree (not disk), jobs-survive, Phase 4.7 decomposed
+
+Ingested a design decision settled in a Claude web session (documentation-only — no schema, no
+migration, no code). Context: the flat job list stops scaling once a researcher runs many reaction
+studies; the app needs **unlimited nested grouping** ("reduction of ibuprofen by LiAlH4" as a folder
+with sub-folders) plus the ability to **delete a job**.
+
+**ADR-019** (`wiki/architecture/adr-019-job-organization.md`) records:
+- **LOAD-BEARING INVARIANT (stated first):** job groups are a **TREE OF METADATA IN SQLITE, NEVER a
+  filesystem hierarchy**. A job keeps its isolated `job_dir` (rule #3) wherever it sits; moving a job
+  is `UPDATE jobs.group_id` — **zero filesystem ops**; the dir path never follows the logical group.
+  Preserves rule #3, crash-reconciliation, killpg-by-cwd. Cites **ADR-017** as the sibling precedent
+  (logical model decoupled from disk/backend).
+- **Schema (proposed, NOT applied):** `groups(id, name, parent_id NULL REFERENCES groups, created_at)`
+  adjacency list (parent_id NULL = root); `jobs.group_id … ON DELETE SET NULL` (one group per job — a
+  tree, not tags).
+- **Adjacency-list over closure-table / materialized-path** at hundreds-scale (rejected-alts recorded;
+  materialized-path's rename-rewrites-descendants is the same disk-coupling smell we reject).
+- **Jobs-survive:** group-delete orphans jobs to root via `SET NULL` (FK enforcement ON,
+  `SQLITE_DEFAULT_FOREIGN_KEYS=1` — load-bearing) and **PROMOTES** sub-groups + jobs to the deleted
+  group's parent. So `parent_id` is **NOT `ON DELETE CASCADE`** — promotion is re-parent-then-remove in
+  the command (post-condition: count conserved, no dangling FK, no `job_dir` touched).
+- **Generic tree, jobs-only FK now** (molecules/reactions `group_id` deferred, zero churn);
+  `group_id` **orthogonal** to the pipeline FKs (source_ensemble/reference/pathway — a job can be in a
+  group AND a re-opt child AND a reference). Term = "group", UI metaphor = "folder".
+- **Boundary:** deleting an actual JOB (DB-only vs DB+files, running-guard killpg+cwd-sweep) is a
+  SEPARATE 4.7 unit, named not designed here.
+
+**ROADMAP Phase 4.7** expanded from the stub into four ordered units referencing ADR-019: 4.7.1 job
+deletion (independent, can land first) · 4.7.2 groups schema + model (data + tests before UI) · 4.7.3
+group nav UI (tree sidebar, assign-on-create, move-leaves-job_dir-untouched gate) · 4.7.4 filter/search
+(plain LIKE, not FTS5). All `[ ]`. **Next: implement 4.7 units** (start 4.7.1 or 4.7.2).

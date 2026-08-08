@@ -917,13 +917,29 @@ screening of stereoselectivity (Stage C). Stages D–F deepen it toward publicat
 
 ## Phase 4.7 — Job organization & lifecycle (planned)
 
-- [ ] **ADR-019 — job groups / projects as a TREE IN SQLITE**, never a filesystem hierarchy: jobs
-      keep their isolated run dirs (domain rule #3); grouping is metadata over the `jobs` table.
-- [ ] **Job deletion** — DB-only vs DB+files; FK links (pathway/reference/`source_ensemble_job_id`)
-      NULLed not cascaded (jobs-survive); guard on a `running` job.
-- [ ] **Job grouping + filter/search** over the job list.
+**Model:** [ADR-019](wiki/architecture/adr-019-job-organization.md) — job groups are a **tree of
+metadata in SQLite, never a filesystem hierarchy**. A job keeps its isolated `job_dir` (domain rule
+#3) wherever it sits in the tree; moving a job is `UPDATE jobs.group_id`, zero filesystem ops.
+Group-delete **promotes** children (never a destructive cascade); jobs orphan to root via
+`ON DELETE SET NULL` (jobs-survive). Adjacency list (`parent_id`) at this scale.
 
-(ADR-019 + the decomposition into units is a separate session — this is only the stub.)
+- [ ] **4.7.1 — job deletion.** DB-only vs DB+files (the isolated `job_dir`); the running-guard
+      (killpg + cwd-sweep before removal); FK links (`pathway_id` / `reaction_reference_jobs` /
+      `source_ensemble_job_id`) **NULLed, not cascaded** (jobs-survive the other way too);
+      post-conditions (no dangling FK; a running job is not deleted out from under its process).
+      **Independent of grouping — can land first.**
+- [ ] **4.7.2 — groups schema + model (ADR-019).** Migration (`groups` table + `jobs.group_id`,
+      `ON DELETE SET NULL`; `parent_id` NOT cascade); Rust CRUD (create / rename / move / delete-with-
+      **promotion**); the group-delete promotion post-condition (children re-parented before the row
+      is removed, count conserved, no `job_dir` touched). **Data layer + tests before any UI** (the
+      project's data-then-UI rhythm).
+- [ ] **4.7.3 — group navigation UI.** A tree sidebar (folder metaphor) over the job list; move /
+      rename; **assign-on-create** (a new job inherits the active group, NULL if none); an "All jobs" /
+      ungrouped root. Manual gate: renders, and a real move leaves the moved job's `job_dir`
+      **untouched** (grep the path before/after).
+- [ ] **4.7.4 — filter / search over the job list.** Title / status / method, complementary to the
+      tree (at hundreds of jobs, search matters as much as browsing). Plain `LIKE` / column filter —
+      **NOT** the manual's FTS5 (a different mechanism for a different corpus).
 
 ---
 
