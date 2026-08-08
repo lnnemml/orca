@@ -816,9 +816,16 @@ single-pathway relaxed scan is fully usable end-to-end. *(B1 ✅; B2 ✅ — aut
         **honest-or-absent** semantics (incomplete → `None`, jobs listed). Jobs-survive extended to
         `delete_reaction`; no `delete_job` exists yet (noted future integrity point). Four cargo controls,
         incomplete-not-summed + delete-keeps-jobs bite-verified. **No manual gate** (cargo-verifiable).
-  - [ ] **C2b-2b — absolute barriers in the overlay.** The reference-management UI (add/remove reactant
-        jobs, jobs-survive like C1) + the **absolute** barrier E(max) − Σ E(reference jobs) added to the
-        compare view; the comparability guard extends to the reference jobs. **Manual gate.**
+  - [~] **C2b-2b — absolute barriers in the overlay.** *(Code complete; the author's r1–r4 manual gate
+        is PENDING — the unit stays open until it passes.)* The reference-management UI
+        (`ReferenceJobsSection`: add/remove reactant jobs, jobs-survive like C1) + a **"separated
+        reactants" zero** option in the overlay + the **absolute** barrier E(max) − Σ E(reference jobs)
+        as a barriers-table column. Guard extended: `referenceComparable` refuses the number on a
+        reference-vs-pathway method mismatch; honest-or-absent refuses it when E(ref) is incomplete
+        (shows the reason, never a partial sum). Pure logic (`absoluteBarrierKcal`,
+        `referenceComparable`, `absoluteBarrierCell`) unit-tested in `compare.ts`; controls
+        C-absolute-barrier / C-ref-method-mismatch / C-incomplete-no-number, the last two bite-verified.
+        **Manual gate (r1–r4).**
       *Ratified 2026-08-07 ([ADR-018](wiki/architecture/adr-018-reaction-energy-reference.md)
       + [chemistry/reaction-barriers.md](wiki/chemistry/reaction-barriers.md)):* a relaxed scan yields
       **three barriers** — **ΔΔE‡** (si/re) is **reference-free** (the shared reactant reference cancels),
@@ -833,8 +840,10 @@ single-pathway relaxed scan is fully usable end-to-end. *(B1 ✅; B2 ✅ — aut
 
 **Stage C done when (= mission "done-when"):** author defines si vs re facial attack on a ketone,
 runs two native scans, and sees two profiles side by side with ΔΔE‡ — a computational
-stereoselectivity screen. *(C2b-1 code delivers exactly this overlay + ΔΔE‡; the mission "done-when"
-is **reached pending the author's c1–c4 manual gate**. C2b-2 adds absolute barriers on top.)*
+stereoselectivity screen. *(C2b-1 code delivers exactly this overlay + ΔΔE‡; C2b-2b adds the reactant
+reference + absolute barriers vs separated reactants on top. **Phase 4.5 ΔΔE‡ story code-complete** —
+screening ΔΔE‡ + intrinsic + absolute-vs-separated-reactants barriers — pending the author's c1–c4 and
+r1–r4 manual gates. Next per the ratified reorder: CREST probe → Stage D → E/F for ΔG‡.)*
 
 ### Stage D — Conformer → reaction-center scientific-rigor layer
 

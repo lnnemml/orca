@@ -1,8 +1,9 @@
 # Module: reactions-ui (Reactions screen)
 
-*Phase 4.5 Stage C2a. The management UI over the C1 reaction/pathway commands: create a
-reaction, attach scan jobs as labelled pathways, detach, delete. The comparative overlay +
-ΔΔE‡ is C2b.*
+*Phase 4.5 Stage C2 (C2a + C2b). The management UI over the reaction/pathway commands (create a
+reaction, attach scan jobs as labelled pathways, detach, delete — C2a) plus the comparative overlay:
+ΔΔE‡ + intrinsic barriers (C2b-1, reference-free) and the reactant reference + absolute barriers vs
+separated reactants (C2b-2b).*
 
 ## What it is
 
@@ -90,11 +91,54 @@ recharts chart (`src/reactions/compare.ts` for the numbers, unit-tested; the cha
   scan coordinate …") — never a faked number (the C2b correctness gate; ADR-018,
   `chemistry/reaction-barriers.md`).
 - **Honest + reference-free notes** — maxima are *approximate TS (scan maximum)*, ΔΔE‡ is a *screening*
-  value, and a note says absolute (vs separated reactants) barriers need a reactant reference (**C2b-2**).
+  value, and a note says absolute (vs separated reactants) barriers need a reactant reference (added in
+  **C2b-2b**, below).
 
 The reaction detail reads each finished job's `results` once (`read_job_results`) into a `resultsById`
 map, reused for both the attach picker's scan mark/warn and the compare view's profiles — no re-parse
 (ADR-012); the profile is B1's `results.scan`.
+
+## Reactant reference + absolute barriers (C2b-2b)
+
+The UI half of C2b-2 (ADR-018): manage the summed reactant reference (the C2b-2a data model /
+commands) and show the **absolute barrier vs separated reactants** = E(max) − Σ E(reactant jobs)
+alongside the intrinsic barriers. **Additive** — ΔΔE‡ and intrinsic barriers are unchanged; the
+reference is optional (no reference → the overlay is exactly C2b-1).
+
+- **Reference management** (`ReferenceJobsSection` in `ReactionsScreen.tsx`) — reads
+  `reaction_reference_energy(reaction_id)` (C2b-2a) into `refEnergy`. Lists each reference job with its
+  `final_energy_eh` (or "no parsed energy") and a **Remove** (`remove_reference_job`); an add picker
+  over completed/parsed jobs **not already referenced** (marked `✓ optimized` / `(scan — usually not a
+  reference)`) → `add_reference_job`. Copy states the semantics (**the app sums + labels, the user
+  chooses**): one job = a pre-reaction complex; two+ = separated reactants. Candidates are **not**
+  filtered on `pathway_id` (a reference is an independent optimized reactant, unlike a pathway job).
+- **Honest-or-absent, surfaced** — when `reaction_reference_energy.energy_eh` is `null` (any reference
+  job unparsed), the section shows **"Reference incomplete — … Missing: job X"** and **no E(ref)
+  number**; the overlay likewise withholds the absolute barrier (never a partial sum). No reference at
+  all → the C2b-1 "needs a reactant reference" note.
+- **"Separated reactants" zero** — the overlay's **ΔE relative to** selector gains a third option
+  (`shared minimum` | `separated reactants`), **enabled only** when E(ref) is complete AND every
+  overlaid pathway is method-consistent with the reference. Selecting it re-zeros the curves on E(ref),
+  so each curve's max height reads as the absolute barrier; the chart title names the active zero.
+- **Absolute-barrier column** — the barriers table gains an "Absolute barrier (vs separated reactants)"
+  column (only when ≥ 1 reference job is set). Each cell shows the number **only** where the reference
+  is complete + method-matching; otherwise the **reason** (incomplete / method mismatch), never a
+  faked number.
+- **Guard extension** — `referenceComparable(referenceInputs, pathwayMethodSig)` (in `compare.ts`,
+  reusing `methodSignature`) refuses the absolute barrier when a reference job's method ≠ the pathway's
+  (a B3LYP reactant under an r2SCAN-3c scan max is nonsense — ADR-018). Coordinate comparability among
+  pathways is unchanged (C2b-1's `pathwaysComparable`).
+- **Honest labelling** — the absolute barrier is a **screening ΔE‡** on the relaxed surface vs
+  separated reactants (barrier 3), **not ΔG‡** (that is OptTS + thermochemistry, Stage E).
+
+**Pure logic (all in `compare.ts`, unit-tested — the chart carries no correctness weight, the B2
+lesson):** `absoluteBarrierKcal(maxEh, refEh)` = (max − ref)·627.509; `referenceComparable(...)`;
+`absoluteBarrierCell(maxEh, refEh|null, refInputs, pathwaySig, refJobCount)` — the honest-or-absent
+decision (`{ kcal } | { reason }`) that the UI renders verbatim, so a `null` reference cannot be
+treated as `0`. Controls in `compare.test.ts`: **C-absolute-barrier** (the factor),
+**C-ref-method-mismatch** (guard refuses — bite-verified: a compute-anyway guard turns three tests
+red), **C-incomplete-no-number** (`absoluteBarrierCell` with `refEh = null` → a reason, not a number —
+bite-verified: treating null as 0 turns it red).
 
 **Symmetry sanity (why it's a control, not a comment):** two mirror-image TSs (si/re of an achiral
 hydride on an achiral ketone) are enantiomeric → **ΔΔE‡ = 0 by symmetry**. So `deltaDeltaEKcal` on two
@@ -110,10 +154,23 @@ bites it. `C-guard-refuses` bites a compute-anyway guard; `C-intrinsic` pins the
 - **c3** two scans with **different methods** → curves shown, **ΔΔE‡ replaced by the reason**.
 - **c4** a reaction with < 2 scan pathways → the clear empty state, no crash.
 
+### Manual gate — C2b-2b (author, real window) — PENDING (code complete; the unit stays open until it passes)
+
+- **r1** add an optimized-substrate job + an optimized-BH₄ job as references → E(ref) shows as their
+  sum; the "separated reactants" zero option enables; absolute barriers appear per pathway.
+- **r2** remove one reference so a needed job is missing / add an unparsed job → **"incomplete — job X"**,
+  no absolute number (and the "separated reactants" zero stays disabled).
+- **r3** add a reference job computed with a **different method** than the pathways → the reference
+  shows but the absolute barrier is **refused with the reason**; ΔΔE‡ (reference-free) still shows.
+- **r4** no reference → the overlay is exactly C2b-1 (ΔΔE‡ + intrinsic + the "needs a reference" note).
+
 ## Related
 
 - `wiki/architecture/adr-007-reaction-modeling.md` (amendment) — the ratified normalized schema.
 - `wiki/architecture/adr-018-reaction-energy-reference.md` — reference-free ΔΔE‡; the comparability guard.
 - `wiki/chemistry/reaction-barriers.md` — the three barriers (ΔΔE‡ reference-free, intrinsic, absolute).
-- `wiki/modules/tauri-core.md` (v13) — the C1 commands + `jobs.pathway_id`, and the C2a `Job` column.
-- C2b-2 (next) — the reactant reference (`reaction_reference_jobs`, v14) + absolute barriers on the overlay.
+- `wiki/modules/tauri-core.md` (v13 + v14) — the C1 commands + `jobs.pathway_id` + the C2a `Job` column,
+  and the C2b-2a `reaction_reference_jobs` table + `reaction_reference_energy` (honest-or-absent).
+- Next — CREST probe → Stage D (conformer→reaction-center rigor) → Stage E/F (ΔG‡: OptTS + Freq +
+  thermochemistry), per the ratified reorder. The Phase 4.5 ΔΔE‡ story (screening ΔΔE‡ + intrinsic +
+  absolute-vs-separated-reactants barriers) is complete pending the C2b-2b manual gate.

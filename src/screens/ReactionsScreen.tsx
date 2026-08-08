@@ -2,10 +2,10 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { confirm } from "@tauri-apps/plugin-dialog";
 
-import type { Job, ParsedResults, Pathway, Reaction } from "../types";
+import type { Job, ParsedResults, Pathway, Reaction, ReferenceEnergy } from "../types";
 import { formatTimestamp } from "../format";
 import { isScanJob, isValidPathwayLabel, normalizePathwayLabel } from "../reactions/pathway";
-import { CompareView, type ComparePathway } from "../reactions/CompareView";
+import { CompareView, type ComparePathway, type CompareReference } from "../reactions/CompareView";
 
 interface ReactionsScreenProps {
   /** Open a job in the Jobs detail screen — used to prove a grouped job is still a
@@ -212,16 +212,19 @@ function ReactionDetail({ reaction, onOpenJob, onError, onChanged, onDeleted }: 
   const [pathways, setPathways] = useState<Pathway[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [resultsById, setResultsById] = useState<Map<string, ParsedResults>>(new Map());
+  const [refEnergy, setRefEnergy] = useState<ReferenceEnergy | null>(null);
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
     try {
-      const [ps, js] = await Promise.all([
+      const [ps, js, re] = await Promise.all([
         invoke<Pathway[]>("list_pathways", { reactionId: reaction.id }),
         invoke<Job[]>("list_jobs"),
+        invoke<ReferenceEnergy>("reaction_reference_energy", { reactionId: reaction.id }),
       ]);
       setPathways(ps);
       setJobs(js);
+      setRefEnergy(re);
 
       // Read the parsed results of finished jobs once — reused for both the picker's
       // scan mark/warn and the compare view's profiles (only these jobs can be offered).
@@ -284,6 +287,59 @@ function ReactionDetail({ reaction, onOpenJob, onError, onChanged, onDeleted }: 
         .map((j) => ({ job: j, isScan: scanIds.has(j.id) })),
     [jobs, scanIds],
   );
+
+  // The reactant reference for absolute barriers (C2b-2b, ADR-018): the reference jobs'
+  // inputs (for the method guard) + the honest summed E(ref) (null when incomplete) + the
+  // count (0 = no reference → the C2b-1 state). Energies are read on demand from the
+  // C2b-2a command — never cached here.
+  const reference: CompareReference = useMemo(() => {
+    const rjs = refEnergy?.jobs ?? [];
+    const inputs = rjs
+      .map((rj) => jobById.get(rj.job_id)?.input_content)
+      .filter((x): x is string => x != null);
+    return { inputs, energyEh: refEnergy?.energy_eh ?? null, jobCount: rjs.length };
+  }, [refEnergy, jobById]);
+
+  // Reference candidates: completed/parsed jobs not already in the reference. A reference
+  // is usually an optimized substrate/reagent (marked scan vs optimized in the picker),
+  // independent of the pathways — so, unlike attach, we do NOT filter on pathway_id.
+  const referencedIds = useMemo(
+    () => new Set((refEnergy?.jobs ?? []).map((j) => j.job_id)),
+    [refEnergy],
+  );
+  const referenceCandidates: Candidate[] = useMemo(
+    () =>
+      jobs
+        .filter(
+          (j) => (j.status === "completed" || j.status === "parsed") && !referencedIds.has(j.id),
+        )
+        .map((j) => ({ job: j, isScan: scanIds.has(j.id) })),
+    [jobs, referencedIds, scanIds],
+  );
+
+  const addReferenceJob = async (jobId: string) => {
+    setBusy(true);
+    try {
+      await invoke("add_reference_job", { reactionId: reaction.id, jobId });
+      await load();
+    } catch (e) {
+      onError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const removeReferenceJob = async (jobId: string) => {
+    setBusy(true);
+    try {
+      await invoke("remove_reference_job", { reactionId: reaction.id, jobId });
+      await load();
+    } catch (e) {
+      onError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState(reaction.name);
@@ -485,9 +541,17 @@ function ReactionDetail({ reaction, onOpenJob, onError, onChanged, onDeleted }: 
         setBusy={setBusy}
       />
 
+      <ReferenceJobsSection
+        refEnergy={refEnergy}
+        candidates={referenceCandidates}
+        onAdd={addReferenceJob}
+        onRemove={removeReferenceJob}
+        busy={busy}
+      />
+
       <h4 style={{ margin: "20px 0 8px" }}>Compare — ΔΔE‡</h4>
       {comparePathways.length >= 2 ? (
-        <CompareView pathways={comparePathways} />
+        <CompareView pathways={comparePathways} reference={reference} />
       ) : (
         <div className="empty">
           Attach ≥ 2 scan pathways to compare their profiles and see ΔΔE‡. (Currently{" "}
@@ -604,6 +668,143 @@ function AttachPathwayForm({
           ) : null}
         </>
       )}
+    </div>
+  );
+}
+
+interface ReferenceJobsSectionProps {
+  /** The summed reactant reference from `reaction_reference_energy` (C2b-2a): the jobs
+   *  (each with `final_energy_eh`, null when unparsed) + the honest total (null when any
+   *  job is unparsed). null before the first load. */
+  refEnergy: ReferenceEnergy | null;
+  /** Completed/parsed jobs not already in the reference — the add picker's options. */
+  candidates: Candidate[];
+  onAdd: (jobId: string) => Promise<void>;
+  onRemove: (jobId: string) => Promise<void>;
+  busy: boolean;
+}
+
+/**
+ * The reactant-reference management surface (Phase 4.5 C2b-2b, ADR-018): add/remove the
+ * optimized-reactant jobs whose energies SUM to E(ref) for absolute barriers. Shows each
+ * job's parsed energy and the summed E(ref) — or, **honest-or-absent**, "incomplete — job
+ * X has no parsed energy" when the C2b-2a command returns `energy_eh: null`, never a number
+ * from a partial sum. Semantics are the user's (the app sums + labels): one job = a
+ * pre-reaction complex; two+ = separated reactants.
+ */
+function ReferenceJobsSection({
+  refEnergy,
+  candidates,
+  onAdd,
+  onRemove,
+  busy,
+}: ReferenceJobsSectionProps) {
+  const [jobId, setJobId] = useState("");
+
+  const jobs = refEnergy?.jobs ?? [];
+  const total = refEnergy?.energy_eh ?? null;
+  const missing = jobs.filter((j) => j.final_energy_eh === null);
+
+  const add = async () => {
+    if (jobId === "") return;
+    await onAdd(jobId);
+    setJobId("");
+  };
+
+  return (
+    <div style={{ marginTop: 20 }}>
+      <h4 style={{ margin: "0 0 8px" }}>Reactant reference (absolute barriers)</h4>
+      <p className="muted" style={{ margin: "0 0 10px" }}>
+        Optimized-reactant jobs whose energies sum to E(ref) — the reference for the{" "}
+        <strong>absolute barrier</strong> vs separated reactants. One job = a pre-reaction complex;
+        two+ = separated reactants (e.g. substrate + BH₄⁻, each optimized separately). Optional; ΔΔE‡
+        and intrinsic barriers do not need it.
+      </p>
+
+      {jobs.length === 0 ? (
+        <div className="empty">
+          No reference jobs yet — add an optimized substrate/reagent below to enable absolute barriers.
+        </div>
+      ) : (
+        <>
+          <table className="jobs-table">
+            <thead>
+              <tr>
+                <th>Reference job</th>
+                <th style={{ textAlign: "right" }}>Final energy</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {jobs.map((j) => (
+                <tr key={j.job_id}>
+                  <td>{j.title}</td>
+                  <td className="mono" style={{ textAlign: "right" }}>
+                    {j.final_energy_eh !== null ? (
+                      `${j.final_energy_eh.toFixed(6)} Eh`
+                    ) : (
+                      <span className="muted">no parsed energy</span>
+                    )}
+                  </td>
+                  <td style={{ textAlign: "right" }}>
+                    <button
+                      className="btn btn-sm"
+                      onClick={() => onRemove(j.job_id)}
+                      disabled={busy}
+                      title="Remove from the reference — the job stays in your Jobs list"
+                    >
+                      Remove
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          {total !== null ? (
+            <div className="mono" style={{ marginTop: 8 }}>
+              E(ref) = Σ ={" "}
+              <strong>{total.toFixed(6)} Eh</strong>
+              {jobs.length === 1 ? (
+                <span className="muted"> (single job — a pre-reaction complex)</span>
+              ) : (
+                <span className="muted"> ({jobs.length} separated reactants)</span>
+              )}
+            </div>
+          ) : (
+            <div className="banner warn" style={{ marginTop: 8 }}>
+              Reference <strong>incomplete</strong> — no E(ref) until every reference job has a parsed
+              energy. Missing:{" "}
+              {missing.map((m) => m.title).join(", ")}. (Run/parse the job, or remove it.)
+            </div>
+          )}
+        </>
+      )}
+
+      <div className="row" style={{ gap: 12, alignItems: "flex-end", marginTop: 12, flexWrap: "wrap" }}>
+        <div className="field" style={{ flex: 1, minWidth: 0 }}>
+          <label className="label" htmlFor="ref-job">
+            Add a reference job
+          </label>
+          <select
+            id="ref-job"
+            className="input"
+            value={jobId}
+            onChange={(e) => setJobId(e.currentTarget.value)}
+          >
+            <option value="">Choose an optimized reactant job…</option>
+            {candidates.map((c) => (
+              <option key={c.job.id} value={c.job.id}>
+                {c.job.title}
+                {c.isScan ? "  (scan — usually not a reference)" : "  ✓ optimized"}
+              </option>
+            ))}
+          </select>
+        </div>
+        <button className="btn btn-primary" onClick={add} disabled={busy || jobId === ""}>
+          Add reference
+        </button>
+      </div>
     </div>
   );
 }

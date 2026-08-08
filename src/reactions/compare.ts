@@ -46,6 +46,15 @@ export function deltaDeltaEKcal(
   return (maxEnergyEh(a, which) - maxEnergyEh(b, which)) * HARTREE_TO_KCAL;
 }
 
+/** Absolute barrier (kcal/mol) vs a reactant reference = (E(max) − E(ref))·627.509 —
+ * barrier 3 (chemistry/reaction-barriers.md): from separated reactants (Σ E(reactant
+ * jobs)) to the approximate TS. Both energies in Eh. A **screening ΔE‡** on the relaxed
+ * surface, never a located saddle and never ΔG‡. Only meaningful when the reference is
+ * complete AND method-consistent with the pathway (see `referenceComparable`). */
+export function absoluteBarrierKcal(pathwayMaxEh: number, refEnergyEh: number): number {
+  return (pathwayMaxEh - refEnergyEh) * HARTREE_TO_KCAL;
+}
+
 // --- Comparability guard ----------------------------------------------------
 
 /** Keywords on the `!` line that are NOT part of the electronic-structure method
@@ -135,4 +144,56 @@ export function pathwaysComparable(
   }
 
   return { ok: true };
+}
+
+/**
+ * Whether the reactant-reference jobs are on the same electronic-structure scale as a
+ * pathway, so an absolute barrier E(max) − E(ref) is subtractable (ADR-018): a B3LYP
+ * reactant energy under an r2SCAN-3c scan maximum is nonsense. Reuses `methodSignature`.
+ * `referenceInputs` are the reference jobs' `input_content`; `pathwayMethodSig` is the
+ * pathway's `methodSignature(...).display`. **Every** reference job must match; the first
+ * mismatch names the reason. An empty reference is vacuously `ok` (completeness is a
+ * separate check — an incomplete reference has no number to guard).
+ */
+export function referenceComparable(
+  referenceInputs: string[],
+  pathwayMethodSig: string,
+): Comparability {
+  for (const input of referenceInputs) {
+    const sig = methodSignature(input);
+    if (sig.display !== pathwayMethodSig) {
+      return {
+        ok: false,
+        reason: `reference method differs — absolute barrier not comparable (${sig.display} vs ${pathwayMethodSig})`,
+      };
+    }
+  }
+  return { ok: true };
+}
+
+/** One pathway's absolute-barrier cell: a number, or the specific reason it is withheld. */
+export type BarrierCell = { kcal: number } | { reason: string };
+
+/**
+ * The absolute barrier for ONE pathway, **honest-or-absent** (properties 1+2, ADR-018).
+ * Returns a `kcal` number ONLY when the reference is present, **complete**
+ * (`refEnergyEh` non-null — the C2b-2a command already summed only when every reference
+ * job is parsed) AND **method-consistent** with the pathway; otherwise the specific
+ * `reason`. Centralizing the decision here is deliberate: the chart wiring cannot then
+ * accidentally treat a `null` (incomplete) reference as `0` and print a wrong number.
+ */
+export function absoluteBarrierCell(
+  pathwayMaxEh: number,
+  refEnergyEh: number | null,
+  referenceInputs: string[],
+  pathwayMethodSig: string,
+  refJobCount: number,
+): BarrierCell {
+  if (refJobCount === 0) return { reason: "no reactant reference set" };
+  if (refEnergyEh === null) {
+    return { reason: "reference incomplete — a reference job has no parsed energy" };
+  }
+  const guard = referenceComparable(referenceInputs, pathwayMethodSig);
+  if (!guard.ok) return { reason: guard.reason };
+  return { kcal: absoluteBarrierKcal(pathwayMaxEh, refEnergyEh) };
 }

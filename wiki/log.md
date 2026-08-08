@@ -6309,3 +6309,37 @@ false; delete ordering is load-bearing (child before parent, else error 787). Co
 
 **Next:** C2b-2b — the reference-management UI + absolute barrier E(max) − Σ E(ref job) in the compare
 overlay (manual gate).
+
+## [2026-08-08] session | Phase 4.5 Stage C2b-2b — reactant-reference UI + absolute barriers vs separated reactants (code complete; manual gate r1–r4 PENDING)
+
+The UI half of C2b-2 (ADR-018), closing the ΔΔE‡ story: manage the reactant reference (C2b-2a
+commands) and show the **absolute barrier vs separated reactants** = E(max) − Σ E(reactant jobs)
+alongside the intrinsic barriers. Additive — ΔΔE‡ + intrinsic (C2b-1) unchanged; the reference is
+optional (no reference → exactly C2b-1).
+
+**Pure logic** (`src/reactions/compare.ts`, unit-tested — the chart carries no correctness weight):
+`absoluteBarrierKcal(maxEh, refEh)` = (max − ref)·627.509; `referenceComparable(refInputs,
+pathwaySig)` reuses `methodSignature` to refuse a reference-vs-pathway method mismatch;
+`absoluteBarrierCell(maxEh, refEh|null, refInputs, pathwaySig, refJobCount)` centralizes the
+**honest-or-absent** decision (`{ kcal } | { reason }`) so the UI cannot treat a `null` (incomplete)
+reference as `0`. Controls in `compare.test.ts`: **C-absolute-barrier**, **C-ref-method-mismatch**
+(bite-verified — a compute-anyway guard turns 3 tests red), **C-incomplete-no-number** (bite-verified —
+treating null as 0 turns it red). 28 reactions tests, 665 vitest total, tsc + vite build clean;
+cargo unaffected (213).
+
+**UI** (`CompareView.tsx` + `ReactionsScreen.tsx`): `ReferenceJobsSection` reads
+`reaction_reference_energy`, lists each reference job's `final_energy_eh` (or "no parsed energy") + the
+summed E(ref) — or "**incomplete — Missing: job X**" when `energy_eh` is null; add/remove via
+`add_reference_job`/`remove_reference_job` (picker marks scan vs optimized; candidates not filtered on
+`pathway_id`). The overlay gains a **"separated reactants" zero** (enabled only when E(ref) complete +
+all pathways method-match the reference; re-zeros curves on E(ref)) and an **absolute-barrier column**
+(number only where complete + method-matching, else the reason). Honest labelling: absolute = screening
+ΔE‡ vs separated reactants, **not ΔG‡** (Stage E). Semantics user-labelled (1 job = complex; 2+ =
+separated reactants).
+
+**Manual gate (author, real window) — PENDING (r1–r4):** r1 two optimized reactant references → summed
+E(ref) + absolute barriers; r2 remove/unparsed → "incomplete", no number; r3 different-method reference
+→ refused with reason, ΔΔE‡ still shows; r4 no reference → exactly C2b-1. The unit stays open until it
+passes.
+
+**Next** (ratified reorder): CREST probe → Stage D (conformer→reaction-center rigor) → Stage E/F (ΔG‡).

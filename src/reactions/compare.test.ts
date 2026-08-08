@@ -7,6 +7,10 @@ import {
   methodSignature,
   coordinateSignature,
   pathwaysComparable,
+  absoluteBarrierKcal,
+  referenceComparable,
+  absoluteBarrierCell,
+  maxEnergyEh,
 } from "./compare";
 
 const HARTREE_TO_KCAL = 627.5094740631;
@@ -129,5 +133,78 @@ describe("pathwaysComparable (C-guard-refuses)", () => {
     const r = pathwaysComparable(inA, inA, scA, other);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.reason).toMatch(/different scan coordinate/);
+  });
+});
+
+describe("absoluteBarrierKcal (C-absolute-barrier)", () => {
+  it("= (max − ref)·627.509 on known inputs", () => {
+    // E(max) = -100.00, E(ref) = -100.20 (separated reactants lower than the TS by 0.20 Eh).
+    expect(absoluteBarrierKcal(-100.0, -100.2)).toBeCloseTo(0.2 * HARTREE_TO_KCAL, 6);
+  });
+
+  it("composes with maxEnergyEh on a real profile: barrier vs a summed reference", () => {
+    // SI's max is -100.00 Eh; a two-job separated reference summing to -100.15 Eh.
+    const refEh = -60.05 + -40.1; // = -100.15
+    expect(absoluteBarrierKcal(maxEnergyEh(SI), refEh)).toBeCloseTo(0.15 * HARTREE_TO_KCAL, 6);
+  });
+});
+
+describe("referenceComparable (C-ref-method-mismatch)", () => {
+  const pathSig = methodSignature("! r2SCAN-3c Opt").display;
+
+  it("ok when every reference job shares the pathway method", () => {
+    // r2SCAN-3c substrate + r2SCAN-3c reagent, run-type/PAL differences ignored.
+    expect(
+      referenceComparable(["! r2SCAN-3c Opt", "! r2SCAN-3c Opt TightSCF PAL8"], pathSig),
+    ).toEqual({ ok: true });
+  });
+
+  it("refuses with a reason when a reference job's method differs (B3LYP ref vs r2SCAN-3c scan)", () => {
+    const r = referenceComparable(["! r2SCAN-3c Opt", "! B3LYP def2-SVP Opt"], pathSig);
+    expect(r.ok).toBe(false);
+    // The bite: a compute-anyway path would subtract mismatched energies and show a number.
+    if (!r.ok) expect(r.reason).toMatch(/reference method differs/);
+  });
+
+  it("refuses on a solvation mismatch (SMD reference vs gas-phase pathway)", () => {
+    const smdRef = "! r2SCAN-3c Opt\n%cpcm\n smd true\nend";
+    const r = referenceComparable([smdRef], pathSig);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toMatch(/reference method differs/);
+  });
+
+  it("an empty reference is vacuously ok (completeness is a separate check)", () => {
+    expect(referenceComparable([], pathSig)).toEqual({ ok: true });
+  });
+});
+
+describe("absoluteBarrierCell (C-incomplete-no-number + honest-or-absent)", () => {
+  const pathSig = methodSignature("! r2SCAN-3c Opt").display;
+  const refInputs = ["! r2SCAN-3c Opt", "! r2SCAN-3c Opt"];
+
+  it("shows a number when the reference is present, complete AND method-consistent", () => {
+    const cell = absoluteBarrierCell(-100.0, -100.2, refInputs, pathSig, 2);
+    expect("kcal" in cell).toBe(true);
+    if ("kcal" in cell) expect(cell.kcal).toBeCloseTo(0.2 * HARTREE_TO_KCAL, 6);
+  });
+
+  it("C-incomplete-no-number: energyEh === null → a reason, NO number (never treats null as 0)", () => {
+    // The bite: a version doing absoluteBarrierKcal(max, refEnergyEh ?? 0) would return a
+    // (wrong, ~ +62751 kcal/mol) number here; this asserts the cell carries a reason instead.
+    const cell = absoluteBarrierCell(-100.0, null, refInputs, pathSig, 2);
+    expect("kcal" in cell).toBe(false);
+    if ("reason" in cell) expect(cell.reason).toMatch(/incomplete/);
+  });
+
+  it("no reference set → a reason (the C2b-1 'needs a reference' state), not a number", () => {
+    const cell = absoluteBarrierCell(-100.0, null, [], pathSig, 0);
+    expect("kcal" in cell).toBe(false);
+    if ("reason" in cell) expect(cell.reason).toMatch(/no reactant reference/);
+  });
+
+  it("method mismatch → the guard reason, not a number (even when complete)", () => {
+    const cell = absoluteBarrierCell(-100.0, -100.2, ["! B3LYP def2-SVP Opt"], pathSig, 1);
+    expect("kcal" in cell).toBe(false);
+    if ("reason" in cell) expect(cell.reason).toMatch(/reference method differs/);
   });
 });
