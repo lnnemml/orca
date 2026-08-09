@@ -549,13 +549,16 @@ function ReactionDetail({ reaction, onOpenJob, onError, onChanged, onDeleted }: 
         busy={busy}
       />
 
-      <h4 style={{ margin: "20px 0 8px" }}>Compare — ΔΔE‡</h4>
-      {comparePathways.length >= 2 ? (
+      <h4 style={{ margin: "20px 0 8px" }}>Compare — barriers &amp; ΔΔE‡</h4>
+      {comparePathways.length >= 1 ? (
+        // Per-pathway intrinsic + absolute barriers need ONE pathway; only ΔΔE‡ (a
+        // difference of two maxima) needs two. So render the overlay at ≥ 1 — a single
+        // pathway (e.g. an SN2 with no si/re face) still shows its barriers.
         <CompareView pathways={comparePathways} reference={reference} />
       ) : (
         <div className="empty">
-          Attach ≥ 2 scan pathways to compare their profiles and see ΔΔE‡. (Currently{" "}
-          {comparePathways.length} scan pathway{comparePathways.length === 1 ? "" : "s"}.)
+          Attach a scan pathway to see its profile and barriers (intrinsic + absolute).
+          Attach a second to also compute ΔΔE‡.
         </div>
       )}
     </div>

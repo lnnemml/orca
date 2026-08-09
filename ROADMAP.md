@@ -826,10 +826,20 @@ single-pathway relaxed scan is fully usable end-to-end. *(B1 ✅; B2 ✅ — aut
         `referenceComparable`, `absoluteBarrierCell`) unit-tested in `compare.ts`; controls
         C-absolute-barrier / C-ref-method-mismatch / C-incomplete-no-number, the last two bite-verified.
         **Manual gate (r1–r4).**
+      - **Gate-driven fix landed 2026-08-09** (the r1–r4 gate on a real single-pathway exothermic SN2 —
+        Menshutkin, DMF/SMD — surfaced two overlay defects; both fixed, C2b-2b stays open until r1–r4
+        passes on top): **(1)** the per-pathway barriers (intrinsic + absolute) now render at **≥ 1
+        pathway** (was gated behind ≥ 2 with ΔΔE‡ — a single-pathway reaction's absolute barrier, the
+        point of C2b-2b, was unreachable); ΔΔE‡ still needs ≥ 2 (a note at 1, never a NaN). **(2)** the
+        intrinsic barrier is measured from the **reactant-side** minimum (`points[0..argmax]`), not the
+        global scan minimum — for an exothermic scan past the barrier the global min is the product,
+        which gave the reverse barrier (~30 vs the forward ~7.87 kcal/mol). Pure fix in
+        `compare.ts` (`reactantSideMinEh`); exothermic headline test pins the forward value.
       *Ratified 2026-08-07 ([ADR-018](wiki/architecture/adr-018-reaction-energy-reference.md)
       + [chemistry/reaction-barriers.md](wiki/chemistry/reaction-barriers.md)):* a relaxed scan yields
       **three barriers** — **ΔΔE‡** (si/re) is **reference-free** (the shared reactant reference cancels),
-      **intrinsic** = E(max) − scan minimum (RC captured for free when the scan starts far enough), and
+      **intrinsic** = E(max) − reactant-side minimum (RC captured for free when the scan starts far
+      enough; reactant-side, not global — corrected 2026-08-09, see the gate-driven fix above), and
       **absolute vs separated reactants** = E(max) − Σ E(reactant jobs). So C2b **ships ΔΔE‡ + intrinsic
       barriers with the reactant reference OPTIONAL** (no reference → a note that absolute barriers need
       one). The reference is a **summed, optional list of reference-job references** — `reaction_reference_jobs`

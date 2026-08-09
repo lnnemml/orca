@@ -70,20 +70,30 @@ Rename uses an **inline edit** (input + Save/Cancel), because the dialog plugin 
 - **m4** delete the reaction → gone from the list; **both scan jobs still exist in Jobs** (the
   jobs-survive invariant, visible).
 
-## Compare view — ΔΔE‡ overlay (C2b-1)
+## Compare view — barriers + ΔΔE‡ overlay (C2b-1)
 
-Shown in the reaction detail when **≥ 2 pathways carry a scan profile** (`< 2` → a clear empty state,
-no crash). `CompareView` (`src/reactions/CompareView.tsx`) overlays the pathways' scan profiles on one
+Shown in the reaction detail when **≥ 1 pathway carries a scan profile** (`0` → a clear empty state,
+no crash). The gate is **≥ 1, not ≥ 2** (corrected by the C2b-2b manual gate): the per-pathway
+intrinsic and absolute barriers are **per-pathway** (need one pathway); only ΔΔE‡ (a difference of two
+maxima) needs two — so a single-pathway reaction (e.g. an SN2 with no si/re face) still shows its
+barriers. `CompareView` (`src/reactions/CompareView.tsx`) overlays the pathways' scan profiles on one
 recharts chart (`src/reactions/compare.ts` for the numbers, unit-tested; the chart only wires them):
 
 - **Overlay on a shared zero** — every curve is ΔE (kcal/mol) relative to the **global minimum**
-  absolute energy across all overlaid pathways, so they sit on one comparable scale. One colour +
-  legend label (the pathway label) each; explicit width via `useContainerWidth` (**no**
-  `ResponsiveContainer` — the WebKitGTK 0×0 class). Each maximum is marked in its pathway's colour.
-- **Intrinsic barrier per pathway** = E(max) − E(scan minimum), self-contained (needs no reference),
-  always listed with the pathway label.
+  absolute energy across all overlaid pathways, so they sit on one comparable scale. A single pathway
+  renders as one curve. One colour + legend label (the pathway label) each; explicit width via
+  `useContainerWidth` (**no** `ResponsiveContainer` — the WebKitGTK 0×0 class). Each maximum is marked
+  in its pathway's colour.
+- **Intrinsic barrier per pathway** = E(max) − E(**reactant-side** minimum), self-contained (needs no
+  reference), always listed with the pathway label. The reactant-side min is the minimum over
+  `points[0..argmax]` (the pre-barrier branch, scan reactant→product convention) — **not the global
+  minimum**: on an exothermic scan run past the barrier into a lower product the global min IS the
+  product, which would give the *reverse* barrier (corrected by the gate; see
+  `chemistry/reaction-barriers.md`).
 - **ΔΔE‡** = E(max_A) − E(max_B), **reference-free** (ADR-018 — the shared reactant reference cancels).
-  For > 2 pathways a **baseline selector** shows each other pathway's ΔΔE‡ vs the baseline.
+  **Shown only at ≥ 2 pathways**; at one pathway a note ("Attach a second pathway … to compute ΔΔE‡")
+  replaces the number — never a NaN. For > 2 pathways a **baseline selector** shows each other
+  pathway's ΔΔE‡ vs the baseline.
 - **Comparability guard** (`pathwaysComparable`) — parses each job input's **method signature** (the
   identity-bearing `!`-line keywords, dropping run-type/SCF-conv/print/PAL, + SMD from `%cpcm smd true`)
   and the **scan coordinate** (kind + atoms + unit). On a method **or** coordinate mismatch it **shows

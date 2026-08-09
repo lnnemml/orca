@@ -4,6 +4,8 @@ import type { ScanProfileJson } from "../types";
 import {
   deltaDeltaEKcal,
   intrinsicBarrierKcal,
+  reactantSideMinEh,
+  argMaxIndex,
   methodSignature,
   coordinateSignature,
   pathwaysComparable,
@@ -32,18 +34,49 @@ function scan(
   };
 }
 
-// A profile with a genuine barrier: min at the ends is lower than a mid maximum.
+// An EXOTHERMIC profile scanned reactant→product PAST the barrier into a lower product:
+// reactant complex -100.05 (point 0), approx-TS -100.00 (mid), product -100.09 (last, the
+// GLOBAL min). The forward intrinsic is E(max) − reactant-complex, NOT E(max) − product.
 const SI = scan([
-  [2.5, -100.05],
+  [2.5, -100.05], // reactant-side min (encounter complex)
   [2.0, -100.02],
   [1.7, -100.0], // max (approx TS)
-  [1.5, -100.09], // min (product side)
+  [1.5, -100.09], // product — GLOBAL min, but the WRONG reference for the forward barrier
 ]);
 
 describe("intrinsicBarrierKcal (C-intrinsic)", () => {
-  it("= (max − min)·627.509 on a known profile", () => {
-    // max = -100.00, min = -100.09 → 0.09 Eh
-    expect(intrinsicBarrierKcal(SI)).toBeCloseTo(0.09 * HARTREE_TO_KCAL, 6);
+  it("HEADLINE (exothermic): forward barrier from the reactant-side min, NOT the global (product) min", () => {
+    // max = -100.00, reactant-side min = -100.05 (point 0) → forward 0.05 Eh.
+    // The OLD global-min behaviour would give -100.00 − (-100.09) = 0.09 Eh (the REVERSE
+    // barrier) — this test pins the forward value so a regression to global-min is caught.
+    expect(intrinsicBarrierKcal(SI)).toBeCloseTo(0.05 * HARTREE_TO_KCAL, 6);
+    // Guard the primitives directly too: argmax is the mid TS point, and the reactant-side
+    // min excludes the lower product.
+    expect(argMaxIndex(SI)).toBe(2);
+    expect(reactantSideMinEh(SI)).toBeCloseTo(-100.05, 10);
+  });
+
+  it("endothermic / monotonic-uphill: reactant-side min == global min (point 0) → fix is a no-op", () => {
+    // Reactant complex is the global minimum; product sits ABOVE it. Old and new agree.
+    const ENDO = scan([
+      [2.5, -100.09], // reactant complex = global min
+      [2.0, -100.04],
+      [1.7, -100.0], // max (approx TS)
+      [1.5, -100.02], // product, higher than the reactant
+    ]);
+    expect(reactantSideMinEh(ENDO)).toBeCloseTo(-100.09, 10);
+    expect(intrinsicBarrierKcal(ENDO)).toBeCloseTo(0.09 * HARTREE_TO_KCAL, 6);
+  });
+
+  it("degenerate: max at the first point (monotonic downhill) → intrinsic 0", () => {
+    const DOWNHILL = scan([
+      [2.5, -100.0], // max IS point 0
+      [2.0, -100.03],
+      [1.5, -100.09],
+    ]);
+    expect(argMaxIndex(DOWNHILL)).toBe(0);
+    expect(reactantSideMinEh(DOWNHILL)).toBeCloseTo(-100.0, 10);
+    expect(intrinsicBarrierKcal(DOWNHILL)).toBeCloseTo(0, 9);
   });
 });
 

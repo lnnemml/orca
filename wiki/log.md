@@ -6830,3 +6830,39 @@ docs-only commit (no source, no schema, no tests).
 **Deliberately NOT changed:** the "FK off" / "not deletable today" survivors elsewhere in this
 `log.md` are **append-only correct history** (true when written) — left as-is per the log's
 append-only rule. No existing entry edited.
+
+## [2026-08-09] session | Phase 4.5 C2b — two overlay defects the manual gate surfaced (intrinsic reactant-side min + per-pathway barriers at ≥1)
+
+The C2b-2b r1–r4 manual gate, run on a REAL single-pathway exothermic SN2 (Menshutkin — methylamine +
+ethyl iodide, DMF/SMD), surfaced two hidden-assumption bugs in the comparative-overlay code — both
+invisible to the prior endothermic/symmetric fixtures. Fixed (frontend-only; no Rust, no schema).
+
+**Defect 1 — intrinsic barrier used the GLOBAL scan minimum.** `intrinsicBarrierKcal = E(max) −
+minEnergyEh`, and `minEnergyEh` is the min over ALL points. For an exothermic reaction scanned past
+the barrier into a lower product (Menshutkin product ≈ 22 kcal/mol below the reactant complex), the
+global min IS the product → the formula gave the **reverse** barrier (~30 kcal/mol), not the forward
+intrinsic (~7.87). The single-job view already showed the correct forward value; the overlay
+disagreed with it. **Fix (`src/reactions/compare.ts`):** new `argMaxIndex` + `reactantSideMinEh`
+(min over `points[0..argmax]` inclusive — the pre-barrier branch, scan reactant→product convention,
+assumption named in the docstring per rule #9); `intrinsicBarrierKcal` now uses it. `minEnergyEh`
+kept unchanged (the chart shared-zero still needs it — out of scope). Headline vitest: the `SI`
+fixture was itself the bug witness (global min = product), so its expectation moved from the reverse
+0.09 Eh to the forward 0.05 Eh; plus endothermic-no-op and max-at-first-point-→0 fixtures.
+
+**Defect 2 — per-pathway barriers gated behind ≥2 pathways.** `ReactionsScreen` rendered the entire
+`CompareView` (per-pathway intrinsic + absolute barrier table AND the chart) only at
+`comparePathways.length >= 2`. But intrinsic and absolute barriers are PER-PATHWAY (need 1); only
+ΔΔE‡ (a difference of two maxima) needs 2. So for a single-pathway reaction (SN2 has no si/re face)
+the absolute barrier — the whole point of C2b-2b — was unreachable. **Fix:** gate → `>= 1`;
+`CompareView` shows a single-curve chart + the per-pathway barriers at 1, and a **note** ("Attach a
+second pathway … to compute ΔΔE‡") replaces the ΔΔE‡ number at 1 — never a NaN. The ≥2 path renders
+exactly as before (pure superset). The ΔΔE‡/absolute MATH and the chart shared-zero are untouched.
+
+**Verification.** tsc clean; vitest **721** (was 719, +2 net intrinsic tests). **No cargo change**
+(frontend-only — a Rust delta would mean scope leaked; there was none). Live single-pathway overlay
+render is Anton's eyeball gate (r1–r4 stays open). **C2b-2b NOT marked done** — the gate re-runs on
+top of this fix.
+
+Wiki: `modules/reactions-ui.md` (overlay renders per-pathway barriers at ≥1; ΔΔE‡ at ≥2; intrinsic
+from the reactant-side min), `chemistry/reaction-barriers.md` (intrinsic = E(max) − reactant-side
+min, with the DMF-SMD Menshutkin witness), ROADMAP C2b-2b (gate-driven fix note; still `[~]`).

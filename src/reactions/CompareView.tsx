@@ -293,7 +293,7 @@ export function CompareView({
               <td
                 className="mono"
                 style={{ textAlign: "right" }}
-                title="E(max) − E(scan minimum): barrier vs this pathway's own encounter complex"
+                title="E(max) − E(reactant-side minimum): forward barrier vs this pathway's own encounter complex (the pre-barrier branch, not the global/product minimum)"
               >
                 +{s.intrinsicKcal.toFixed(2)} kcal/mol
               </td>
@@ -323,23 +323,31 @@ export function CompareView({
         <h4 style={{ margin: "0 0 6px" }}>
           ΔΔE‡ {series.length > 2 ? <span className="muted">(vs {baseline.label})</span> : null}
         </h4>
-        {comparisons.map((c) => (
-          <div key={c.id} style={{ marginBottom: 6 }}>
-            {c.guard.ok ? (
-              <div className="mono" style={{ fontSize: 15 }}>
-                ΔΔE‡({c.label} − {baseline.label}) ={" "}
-                <strong style={{ color: c.color }}>
-                  {c.ddeKcal! >= 0 ? "+" : ""}
-                  {c.ddeKcal!.toFixed(2)} kcal/mol
-                </strong>
-              </div>
-            ) : (
-              <div className="banner warn" style={{ margin: 0 }}>
-                {c.label} vs {baseline.label}: {c.guard.reason}
-              </div>
-            )}
-          </div>
-        ))}
+        {series.length < 2 ? (
+          // ΔΔE‡ is a difference of two pathways' maxima — undefined for one. Show a note,
+          // never a NaN/undefined number. The per-pathway barriers above still stand.
+          <p className="muted" style={{ margin: 0 }}>
+            Attach a second pathway (e.g. the other face) to compute ΔΔE‡.
+          </p>
+        ) : (
+          comparisons.map((c) => (
+            <div key={c.id} style={{ marginBottom: 6 }}>
+              {c.guard.ok ? (
+                <div className="mono" style={{ fontSize: 15 }}>
+                  ΔΔE‡({c.label} − {baseline.label}) ={" "}
+                  <strong style={{ color: c.color }}>
+                    {c.ddeKcal! >= 0 ? "+" : ""}
+                    {c.ddeKcal!.toFixed(2)} kcal/mol
+                  </strong>
+                </div>
+              ) : (
+                <div className="banner warn" style={{ margin: 0 }}>
+                  {c.label} vs {baseline.label}: {c.guard.reason}
+                </div>
+              )}
+            </div>
+          ))
+        )}
       </div>
 
       {refIncomplete ? (

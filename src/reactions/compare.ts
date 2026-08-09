@@ -24,16 +24,61 @@ export function maxEnergyEh(scan: ScanProfileJson, which: EnergyChoice = "act"):
   return Math.max(...scan.points.map((p: ScanPoint) => energyEh(p, which)));
 }
 
-/** The minimum absolute energy (Eh) over a scan's points — the scan's own reference
- * for its intrinsic barrier (the pre-reaction complex, when the scan starts far enough). */
+/** The minimum absolute energy (Eh) over ALL of a scan's points. **Used only for the
+ * chart shared-zero** (the display axis reference) — NOT for the intrinsic barrier (see
+ * `reactantSideMinEh` for why the global min is wrong there on an exothermic scan). */
 export function minEnergyEh(scan: ScanProfileJson, which: EnergyChoice = "act"): number {
   return Math.min(...scan.points.map((p: ScanPoint) => energyEh(p, which)));
 }
 
-/** Intrinsic barrier (kcal/mol) = E(max) − E(min) of one scan, self-contained: the
- * barrier relative to that pathway's own encounter complex. Needs no reference. */
+/** Index of the maximum-energy point (the approximate-TS point) — the boundary between
+ * the reactant side and the product side of a relaxed scan. */
+export function argMaxIndex(scan: ScanProfileJson, which: EnergyChoice = "act"): number {
+  let idx = 0;
+  let best = -Infinity;
+  scan.points.forEach((p: ScanPoint, i: number) => {
+    const e = energyEh(p, which);
+    if (e > best) {
+      best = e;
+      idx = i;
+    }
+  });
+  return idx;
+}
+
+/**
+ * The minimum absolute energy (Eh) over the **reactant side** — `points[0 .. argMax]`
+ * INCLUSIVE — i.e. the encounter complex, the correct reference for the *forward*
+ * intrinsic barrier.
+ *
+ * **Documented assumption (rule #9):** a relaxed scan is set up **reactant → product**
+ * (start at the encounter complex / far separation, scan toward the product — the
+ * conventional setup this project's scans use, and what the intrinsic barrier's "starts
+ * far enough" caveat already assumed). Under that convention `points[0..argMax]` is the
+ * pre-barrier reactant branch and its minimum is the encounter complex. The **global**
+ * minimum is wrong here: for an EXOTHERMIC reaction scanned past the barrier into a lower
+ * product (Menshutkin SN2 in DMF: product ≈ 22 kcal/mol below the reactant complex), the
+ * global min IS the product, so `E(max) − globalMin` yields the *reverse* barrier, not the
+ * forward one. (If a scan were instead defined product → reactant this would measure the
+ * reverse barrier — an acceptable, documented limitation, not a defect of this function.)
+ */
+export function reactantSideMinEh(scan: ScanProfileJson, which: EnergyChoice = "act"): number {
+  const end = argMaxIndex(scan, which);
+  let best = Infinity;
+  for (let i = 0; i <= end; i++) {
+    const e = energyEh(scan.points[i], which);
+    if (e < best) best = e;
+  }
+  return best;
+}
+
+/** Intrinsic barrier (kcal/mol) = E(max) − E(reactant-side min) of one scan,
+ * self-contained: the **forward** barrier relative to that pathway's own encounter
+ * complex, measured over the pre-barrier branch only (`reactantSideMinEh`). Needs no
+ * reference. Degenerate max-at-first-point (monotonic downhill) → reactant-side min ==
+ * points[0] == the max → intrinsic 0. */
 export function intrinsicBarrierKcal(scan: ScanProfileJson, which: EnergyChoice = "act"): number {
-  return (maxEnergyEh(scan, which) - minEnergyEh(scan, which)) * HARTREE_TO_KCAL;
+  return (maxEnergyEh(scan, which) - reactantSideMinEh(scan, which)) * HARTREE_TO_KCAL;
 }
 
 /** ΔΔE‡ (kcal/mol) = ΔE‡(A) − ΔE‡(B) = E(max_A) − E(max_B), **reference-free** (the
