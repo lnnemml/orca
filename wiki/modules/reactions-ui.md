@@ -189,7 +189,14 @@ bites it. `C-guard-refuses` bites a compute-anyway guard; `C-intrinsic` pins the
 - **c3** two scans with **different methods** → curves shown, **ΔΔE‡ replaced by the reason**.
 - **c4** a reaction with < 2 scan pathways → the clear empty state, no crash.
 
-### Manual gate — C2b-2b (author, real window) — PENDING (code complete; the unit stays open until it passes)
+### Manual gate — C2b-2b (author, real window) — **PASSED 2026-08-09** (Menshutkin SN2: methylamine + ethyl iodide, DMF/SMD)
+
+Passed live after the gate surfaced four hidden-assumption defects (all invisible to the prior
+endothermic/symmetric fixtures), each fixed first: intrinsic-from-reactant-side-min + per-pathway
+barriers at ≥ 1 (`9ea3ace`), `NON_METHOD` LooseOpt/NormalOpt (`2ed1473`), and the composition+charge
+**stoichiometry guard** (`39b39e7`) — r2 caught a confident wrong number (−60127 kcal/mol), the kind
+any green CI would pass. Screening result (approximate-TS ΔE‡, **not** ΔG‡): intrinsic ≈ +7.87,
+absolute vs separated reactants ≈ +6.23 kcal/mol.
 
 - **r1** add an optimized-substrate job + an optimized-BH₄ job as references → E(ref) shows as their
   sum; the "separated reactants" zero option enables; absolute barriers appear per pathway.
@@ -208,4 +215,6 @@ bites it. `C-guard-refuses` bites a compute-anyway guard; `C-intrinsic` pins the
   and the C2b-2a `reaction_reference_jobs` table + `reaction_reference_energy` (honest-or-absent).
 - Next — CREST probe → Stage D (conformer→reaction-center rigor) → Stage E/F (ΔG‡: OptTS + Freq +
   thermochemistry), per the ratified reorder. The Phase 4.5 ΔΔE‡ story (screening ΔΔE‡ + intrinsic +
-  absolute-vs-separated-reactants barriers) is complete pending the C2b-2b manual gate.
+  absolute-vs-separated-reactants barriers) is **code-complete; C2b-2b's r1–r4 gate PASSED**
+  (2026-08-09). Only C2b-1's **c1–c4** (ΔΔE‡) gate remains — it needs a two-pathway (si/re)
+  stereochemical case the single-pathway SN2 does not provide.

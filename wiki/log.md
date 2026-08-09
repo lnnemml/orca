@@ -6922,3 +6922,32 @@ shows "reference incomplete — reactant atoms … do not sum …" (a reason), n
 returns the number. C2b-2b stays open (r1–r4). Wiki: `modules/reactions-ui.md` (the three-refusal
 guard chain: complete → method → stoichiometry), `chemistry/reaction-barriers.md` (mass+charge balance
 requirement + the −60127 SN2 witness), ROADMAP C2b note.
+
+## [2026-08-09] milestone | Phase 4.5 C2b-2b closed — r1–r4 absolute-barrier gate passed (Menshutkin SN2)
+
+The C2b-2b manual gate (r1–r4) **PASSED live** — author, real Tauri window — on a real
+single-pathway exothermic SN2: **Menshutkin, methylamine + ethyl iodide, DMF/SMD**. The absolute
+barrier vs separated reactants now renders honestly, so C2b-2b is closed (`[x]`), and with it the
+parent C2b-2 (data half C2b-2a + UI half C2b-2b both done).
+
+**The gate earned its keep — it surfaced four hidden-assumption defects, ALL invisible to the prior
+endothermic/symmetric unit fixtures**, each fixed before r1–r4 passed:
+- **(i)** intrinsic barrier used the GLOBAL scan min → the **reverse** barrier on an exothermic scan
+  (global min = product); fixed to the reactant-side min — `9ea3ace`.
+- **(ii)** per-pathway barriers were gated behind ≥ 2 pathways → a single-pathway absolute barrier
+  (the whole point of C2b-2b) was unreachable; decoupled to render at ≥ 1, ΔΔE‡ at ≥ 2 — `9ea3ace`.
+- **(iii)** `NON_METHOD` missed `LooseOpt`/`NormalOpt` → the comparability guard spuriously refused
+  the absolute barrier when the scan used LooseOpt; Opt-preset family completed — `2ed1473`.
+- **(iv)** no stoichiometry guard → a composition-mismatched reference (EtI alone, 8 atoms, vs the
+  15-atom complex) produced a **confident garbage −60127 kcal/mol** instead of a refusal; composition
+  + charge balance guard added — `39b39e7`.
+
+**The manual-gate value, stated plainly:** defect (iv) — the r2 step — caught a **confident WRONG
+number** (−60127 kcal/mol), not a crash. Any green CI would have passed it; only a human reading a
+real result against physical intuition caught it. This is exactly why C2b units carry a live gate.
+
+**Screening result** (approximate-TS ΔE‡ on the relaxed surface — **not** ΔG‡; a located TS + Freq
+is Stage E): intrinsic ≈ **+7.87 kcal/mol**, absolute vs separated reactants ≈ **+6.23 kcal/mol**.
+
+**Still pending:** C2b-1's **c1–c4** (ΔΔE‡) gate — it needs a **two-pathway (si/re) stereochemical**
+case, which this single-pathway SN2 does not provide. It stays open until that case is run.

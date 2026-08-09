@@ -809,15 +809,16 @@ single-pathway relaxed scan is fully usable end-to-end. *(B1 ✅; B2 ✅ — aut
       reason), **C-intrinsic** (both bite-verified). **Code + tests complete**: `tsc` 0, `vitest` 650
       (+12), `vite build` clean, `cargo` 207 unaffected. **Manual gate (author) PENDING** — c1–c4 in the
       real window (incl. the symmetry ≈ 0 sanity); C2b-1 closes when it passes. See `modules/reactions-ui.md`.
-- [~] **C2b-2 — reactant reference + absolute barriers.** Split into a data half and a UI half:
+- [x] **C2b-2 — reactant reference + absolute barriers.** Split into a data half and a UI half (both done):
   - [x] **C2b-2a — reference jobs (data touch).** `reaction_reference_jobs` (migration **v14**) + the
         Rust commands `add_reference_job`/`remove_reference_job`/`list_reference_jobs`/
         `reaction_reference_energy` — the last computing `E(ref) = Σ` on demand from parsed results with
         **honest-or-absent** semantics (incomplete → `None`, jobs listed). Jobs-survive extended to
         `delete_reaction`; no `delete_job` exists yet (noted future integrity point). Four cargo controls,
         incomplete-not-summed + delete-keeps-jobs bite-verified. **No manual gate** (cargo-verifiable).
-  - [~] **C2b-2b — absolute barriers in the overlay.** *(Code complete; the author's r1–r4 manual gate
-        is PENDING — the unit stays open until it passes.)* The reference-management UI
+  - [x] **C2b-2b — absolute barriers in the overlay.** *(r1–r4 manual gate PASSED live 2026-08-09 —
+        author, real Tauri window, on the Menshutkin SN2: methylamine + ethyl iodide, DMF/SMD — after
+        the four gate-surfaced defect fixes below landed.)* The reference-management UI
         (`ReferenceJobsSection`: add/remove reactant jobs, jobs-survive like C1) + a **"separated
         reactants" zero** option in the overlay + the **absolute** barrier E(max) − Σ E(reference jobs)
         as a barriers-table column. Guard extended: `referenceComparable` refuses the number on a
@@ -848,6 +849,20 @@ single-pathway relaxed scan is fully usable end-to-end. *(B1 ✅; B2 ✅ — aut
         `referenceStoichiometryOk` (reuses `sceneFromOrcaInput`, NOT a regex) refuses unless Σ(reference
         atoms + charge) = the reacting complex's; both valid shapes pass (two-reactant sum OR a single
         whole-complex reference). Honest-or-absent restored (refuse with a reason, never a number).
+      - **r1–r4 PASSED 2026-08-09** on the Menshutkin SN2 after all four fixes. The gate surfaced four
+        hidden-assumption defects — all invisible to the prior endothermic/symmetric fixtures — and each
+        was fixed before it passed: **(i)** intrinsic used the GLOBAL scan min → the reverse barrier on
+        an exothermic scan; fixed to the reactant-side min (`9ea3ace`); **(ii)** per-pathway barriers
+        were gated behind ≥ 2 pathways → a single-pathway absolute barrier was unreachable; decoupled to
+        render at ≥ 1 (ΔΔE‡ still ≥ 2) (`9ea3ace`); **(iii)** `NON_METHOD` missed `LooseOpt`/`NormalOpt`
+        → the comparability guard spuriously refused the absolute barrier under a LooseOpt scan;
+        Opt-preset family completed (`2ed1473`); **(iv)** no stoichiometry guard → a composition-
+        mismatched reference produced confident garbage (−60127 kcal/mol) instead of an honest refusal;
+        composition + charge balance guard added (`39b39e7`). **Screening result** (approximate-TS ΔE‡
+        on the relaxed surface, **not** ΔG‡ — a located TS + Freq is Stage E): intrinsic ≈ **+7.87
+        kcal/mol**, absolute vs separated reactants ≈ **+6.23 kcal/mol**. **C2b-1's c1–c4** (ΔΔE‡) stays
+        **PENDING** — it needs a **two-pathway (si/re) stereochemical** case, which this SN2 does not
+        provide.
       *Ratified 2026-08-07 ([ADR-018](wiki/architecture/adr-018-reaction-energy-reference.md)
       + [chemistry/reaction-barriers.md](wiki/chemistry/reaction-barriers.md)):* a relaxed scan yields
       **three barriers** — **ΔΔE‡** (si/re) is **reference-free** (the shared reactant reference cancels),
