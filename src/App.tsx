@@ -10,6 +10,7 @@ import { ReactionsScreen } from "./screens/ReactionsScreen";
 import { ManualScreen } from "./screens/ManualScreen";
 import { SettingsScreen } from "./screens/SettingsScreen";
 import type { Job, Molecule, SidecarState, SidecarStatus } from "./types";
+import type { GroupSelection } from "./groups/tree";
 import "./styles/app.css";
 
 interface QueueInfo {
@@ -58,6 +59,12 @@ function App() {
   const [sidecar, setSidecar] = useState<SidecarStatus | null>(null);
   const [orcaPath, setOrcaPath] = useState("");
   const [queue, setQueue] = useState<QueueInfo>({ running: 0, queued: 0, paused: false });
+  // The active job-group selection (Phase 4.7.3). Lifted here — the SINGLE source of
+  // truth — because it must survive a tab switch to "New Job" (assign-on-create reads
+  // it) as well as drive the Jobs sidebar filter. React-only, not persisted across
+  // restarts. `activeGroupId` (a real group, else null) is the value new jobs inherit.
+  const [groupSelection, setGroupSelection] = useState<GroupSelection>({ kind: "all" });
+  const activeGroupId = groupSelection.kind === "group" ? groupSelection.id : null;
 
   const openDetail = useCallback((jobId: string, autoRun: boolean) => {
     setScreen({ kind: "job-detail", jobId, autoRun });
@@ -165,9 +172,15 @@ function App() {
           initialMolecule={screen.initialMolecule}
           initialJob={screen.initialJob}
           keepScene={screen.keepScene}
+          activeGroupId={activeGroupId}
         />
       ) : screen.kind === "jobs" ? (
-        <JobsScreen onOpenDetail={openDetail} queuePaused={queue.paused} />
+        <JobsScreen
+          onOpenDetail={openDetail}
+          queuePaused={queue.paused}
+          selection={groupSelection}
+          onSelectionChange={setGroupSelection}
+        />
       ) : screen.kind === "molecules" ? (
         <MoleculesScreen
           onUseMolecule={(mol) =>

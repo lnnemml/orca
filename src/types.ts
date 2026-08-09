@@ -143,6 +143,23 @@ export interface Job {
    * the job — the jobs-survive invariant). The reaction UI maps a pathway to its job by
    * matching `Job.pathway_id === Pathway.id`. */
   pathway_id: string | null;
+  /** Grouping FK into `groups` (schema v16, Phase 4.7.2, ADR-019), or null = ungrouped
+   * (the root / "All jobs" view). Set by `move_job`; nulled when its group is deleted
+   * (the command promotes jobs to the deleted group's parent — `ON DELETE SET NULL` is
+   * the fallback). Orthogonal to `pathway_id` and the re-opt/reference links. */
+  group_id: string | null;
+}
+
+/** Mirrors `src-tauri/src/models/group.rs::Group` (schema v16, Phase 4.7.2, ADR-019).
+ * One node in the job-organization tree (UI metaphor: a "folder"). Adjacency list:
+ * `parent_id` is the parent node, null = a root-level group. Groups are pure metadata —
+ * a job keeps its isolated `job_dir` wherever it sits; moving a job is `move_job`
+ * (`UPDATE jobs.group_id`), zero filesystem ops. */
+export interface Group {
+  id: string;
+  name: string;
+  parent_id: string | null;
+  created_at: string;
 }
 
 /** Mirrors `src-tauri/src/models/molecule.rs::Molecule`. */

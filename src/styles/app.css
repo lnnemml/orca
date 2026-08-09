@@ -2629,3 +2629,141 @@ button.ir-imaginary-mode.selected {
   border-left-color: var(--accent);
   background: rgba(79, 140, 255, 0.08);
 }
+
+/* ── Job groups: the Jobs view sidebar (Phase 4.7.3, ADR-019) ─────────────── */
+.jobs-layout {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+  min-height: 0;
+}
+.jobs-main {
+  flex: 1;
+  min-width: 0;
+}
+.group-sidebar {
+  flex: 0 0 220px;
+  width: 220px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  padding: 8px;
+  max-height: 70vh;
+  overflow-y: auto;
+}
+.group-special {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.group-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.group-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 6px;
+  border-radius: 5px;
+  font-size: 13px;
+  color: var(--text);
+}
+.group-row.special {
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  font-size: 13px;
+}
+.group-row:hover,
+.group-row.special:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+.group-row.selected,
+.group-row.special.selected {
+  background: rgba(79, 140, 255, 0.16);
+  color: var(--accent-hover);
+}
+.group-twisty {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 9px;
+  width: 14px;
+  padding: 0;
+  flex: 0 0 auto;
+}
+.group-name {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.group-rename {
+  flex: 1;
+  min-width: 0;
+  padding: 2px 6px;
+  font-size: 13px;
+}
+.group-actions {
+  display: none;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+.group-row:hover .group-actions {
+  display: flex;
+}
+.icon-btn {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 1px 3px;
+  border-radius: 4px;
+  line-height: 1;
+}
+.icon-btn:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
+}
+.group-create,
+.group-move {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px;
+}
+.group-create .input {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 6px;
+  font-size: 12px;
+}
+.group-move-select,
+.job-move-select {
+  font-size: 12px;
+  padding: 2px 24px 2px 8px;
+  max-width: 160px;
+}
+.group-new {
+  align-self: flex-start;
+  margin-top: 4px;
+}

@@ -126,6 +126,10 @@ interface NewJobScreenProps {
   /** Keep the scene store as-is on mount (a conformer was just applied to it —
    * "Use this conformer"); skip the usual reset. */
   keepScene?: boolean;
+  /** Assign-on-create (Phase 4.7.3): the active group in the Jobs sidebar, or null
+   * when "All jobs"/"Ungrouped" is active. A newly created job inherits it via
+   * `move_job` (pure composition — no Rust change). */
+  activeGroupId?: string | null;
 }
 
 export function NewJobScreen({
@@ -134,6 +138,7 @@ export function NewJobScreen({
   initialMolecule,
   initialJob,
   keepScene,
+  activeGroupId,
 }: NewJobScreenProps) {
   // Seed title/content from an iterated job (marked so kinship shows in the job
   // list) or a library molecule; both before first paint via useState.
@@ -1078,6 +1083,14 @@ export function NewJobScreen({
     }
   };
 
+  // Assign-on-create (Phase 4.7.3): a job created while a group is active in the
+  // Jobs sidebar inherits it. Pure composition of the existing `move_job` command —
+  // no Rust change. No-op when nothing is active ("All jobs"/"Ungrouped" → null).
+  const assignActiveGroup = async (jobId: string) => {
+    if (activeGroupId == null) return;
+    await invoke("move_job", { jobId, groupId: activeGroupId });
+  };
+
   const create = async (run: boolean) => {
     if (constraintBlockMessage) {
       // The single place the app refuses to run on input CONTENT — justified: the
@@ -1107,6 +1120,8 @@ export function NewJobScreen({
         // is no scene (empty log), keeping the two columns consistent.
         sceneLogJson: scene ? serializeLog(log) : null,
       });
+      // Inherit the active group before navigating (assign-on-create).
+      await assignActiveGroup(job.id);
       // The detail screen performs the actual submit (after attaching its log
       // listeners) so no early output lines are missed.
       if (run) onOpenDetail(job.id, true);
@@ -1139,6 +1154,8 @@ export function NewJobScreen({
         // seeds a fresh log from its snapshot (the "legacy" restore branch).
         sceneLogJson: null,
       });
+      // A conformer search started under an active group belongs in it too.
+      await assignActiveGroup(job.id);
       onOpenDetail(job.id, true); // queue + run, then open its detail
     } catch (e) {
       setError(String(e));

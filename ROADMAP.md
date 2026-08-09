@@ -938,10 +938,14 @@ Group-delete **promotes** children (never a destructive cascade); jobs orphan to
       group's parent in one transaction, count conserved, no `job_dir` touched — explicit, NOT the
       `SET NULL` drop-to-root). Both negative controls bite (cycle move errors; raw group-delete trips
       the RESTRICT FK). Zero filesystem access in the module. `modules/groups.md`.
-- [ ] **4.7.3 — group navigation UI.** A tree sidebar (folder metaphor) over the job list; move /
-      rename; **assign-on-create** (a new job inherits the active group, NULL if none); an "All jobs" /
-      ungrouped root. Manual gate: renders, and a real move leaves the moved job's `job_dir`
-      **untouched** (grep the path before/after).
+- [x] **4.7.3 — group navigation UI.** A `GroupSidebar` tree (folder metaphor) beside the jobs table
+      (two-pane Jobs view); create/rename/**Move-to picker**/delete compose the 4.7.2 commands; **deep
+      subtree filter** (a group shows its jobs + all descendants'); "All jobs" / "Ungrouped" roots;
+      **assign-on-create** (a new job inherits the active group via `move_job`, NULL if none). One
+      `GroupSelection` lifted to `App` drives filter + assign + Move-to exclusion; pure
+      `src/groups/tree.ts` (orphan-as-root, cycle-safe descendants, deep filter, self+descendant
+      exclusion) vitest-tested. **No drag-and-drop.** Only Rust touch: surfacing `Job.group_id` (no
+      command/migration). `modules/groups-ui.md`. Live WebKitGTK render is Anton's eyeball gate.
 - [ ] **4.7.4 — filter / search over the job list.** Title / status / method, complementary to the
       tree (at hundreds of jobs, search matters as much as browsing). Plain `LIKE` / column filter —
       **NOT** the manual's FTS5 (a different mechanism for a different corpus).

@@ -869,6 +869,9 @@ mod tests {
         assert_eq!(all[0].status, JobStatus::Draft);
         // No snapshot passed → NULL, not an empty string.
         assert_eq!(job.scene_json, None);
+        // v16: a plain create is ungrouped — group_id round-trips as NULL through COLUMNS.
+        assert_eq!(job.group_id, None);
+        assert_eq!(all[0].group_id, None);
 
         std::fs::remove_dir_all(&dir).ok();
     }

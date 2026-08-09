@@ -6692,3 +6692,55 @@ note is now false (delete_job landed in 4.7.1) — corrected; and v15/v16 added 
 catalog (the list had jumped v14 → gap).
 
 **Next: Phase 4.7.3** — the group navigation UI (tree sidebar, assign-on-create, move-leaves-job_dir).
+
+## [2026-08-09] session | Phase 4.7.3 — group navigation sidebar (tree, deep filter, move-to picker, assign-on-create)
+
+Built the group navigation **UI** over the Jobs view (ADR-019 Decision 3 + the group-aware-create
+consequence). Composes the 4.7.2 commands — the only Rust change is surfacing `Job.group_id`.
+
+**Pure logic** `src/groups/tree.ts` (vitest, no React/invoke): `buildGroupTree` (adjacency list →
+nested, deterministic order, **orphan-as-root** defense), `descendantGroupIds` (**cycle-safe**),
+`filterJobsByGroup` (three modes; group mode is **DEEP** — the group OR any descendant),
+`moveTargetsFor` (all groups EXCEPT self + descendants, so the Move-to picker can never offer a
+cycle). 12 new tests. **Filter and Move-to exclusion both derive from the same `descendantGroupIds`**
+— one subtree walk, reused.
+
+**Single source of truth:** one `GroupSelection` (`all | ungrouped | group{id}`) **lifted to `App`**
+(React-only, not persisted). It drives THREE things consistently: (1) the deep jobs filter, (2)
+assign-on-create (`App` derives `activeGroupId` → `NewJobScreen`; after `create_job`,
+`move_job(id, activeGroupId)` for both the normal path and the GOAT quick-action), (3) the Move-to
+exclusion.
+
+**Sidebar** `GroupSidebar.tsx`: "All jobs" + "Ungrouped" roots, then the tree with expand/collapse.
+Per-group inline actions (hover-revealed, **no DnD**): new subgroup / top-level new group (inline
+name input → `create_group`), rename (inline input → `rename_group`), Move to… (native `<select>` of
+`moveTargetsFor` + "(root)" → `move_group`; auto-themed by the element-level WebKitGTK select fix,
+`debugging/003`), delete (`confirm` "sub-groups and jobs move up to the parent — no job is deleted" →
+`delete_group`; selection falls back to "All jobs" if the deleted group was selected). Every mutation
+reloads groups + jobs.
+
+**Two-pane Jobs view** `JobsScreen.tsx`: owns groups + jobs lists; renders
+`filterJobsByGroup(jobs, selection, groups)` with a per-selection header + empty-state; each row gains
+a **"Move…"** `<select>` (all groups + "(ungrouped)" → `move_job`; a job has no cycle concern). A
+guard effect resets to "All jobs" if the selected group vanished. The sidebar re-implements NO cycle
+guard beyond hiding self+descendants — the backend `move_group` is the source of truth.
+
+**Rust (the only change):** `models/job.rs` — `group_id` appended to `Job::COLUMNS` (row 14),
+`from_row`, struct field. No new command, no migration, no schema change (v16 column + all group
+commands already exist). `types.ts` gained `Job.group_id` + the `Group` interface. Group sidebar CSS
+in `app.css`.
+
+**Verification.** `cargo test` **243** (unchanged — the `Job.group_id` touch strengthened
+`create_lists_job_as_draft` to assert `group_id` round-trips NULL); `tsc` clean; `vitest` **708**
+(was 696, +12 tree/filter tests). Checkpoints confirmed: one lifted selection drives all three (no
+duplicated subtree walk); no drag-and-drop / no new command / SCHEMA_VERSION unchanged (only Rust
+diff is `models/job.rs` + a jobs.rs test assertion); Move-to excludes self+descendants and the filter
+is deep. **Live WebKitGTK render + interactions are Anton's eyeball gate** (this is a render unit; no
+headless click-through fabricated) — eyeball: (1) create group+subgroup → tree nests; (2) create a
+job with a group active → it appears under that group; (3) select the parent → the subgroup's jobs
+show too (deep); (4) Move a job via the picker; (5) Move a group — the picker omits its own
+descendants; (6) delete a non-root group → children+jobs promote to the parent, none lost; (7) "All
+jobs" vs "Ungrouped".
+
+**Next: Phase 4.7.4** — filter/search over the job list (plain LIKE/column filter, complementary to
+the tree).

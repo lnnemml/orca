@@ -55,7 +55,14 @@ that an in-progress New Job draft is discarded on a tab switch (accepted).
   route to the existing `setError` banner. Both action buttons `stopPropagation` so the row-click
   (→ detail) doesn't also fire (the ReactionsScreen confirm pattern). Energy/Time via the shared
   formatters. Takes `queuePaused` from `App`: a `queued` job's badge reads **`queued (paused)`** with
-  a "Queue is paused" tooltip while paused, so a stalled job shows why.
+  a "Queue is paused" tooltip while paused, so a stalled job shows why. **Phase 4.7.3 — group
+  sidebar:** the Jobs view is now **two-pane** — a `GroupSidebar` (tree of folders + "All jobs" /
+  "Ungrouped" roots) beside the table. The table renders `filterJobsByGroup(jobs, selection, groups)`
+  (**deep**: a selected group shows its jobs + all descendants'), and each row gains a **"Move…"**
+  picker → `move_job`. The active `GroupSelection` is **lifted to `App`** (single source of truth —
+  it also feeds assign-on-create). Sidebar mutations compose the 4.7.2 commands; **no drag-and-drop**
+  (explicit Move-to picker only). Full contract: `modules/groups-ui.md`. `Job` now carries
+  **`group_id`** (v16 FK, null = ungrouped).
 - **`JobDetailScreen`** — loads the job, then **attaches `job:log` / `job:status` /
   `job:convergence` listeners FIRST, then (if `autoRun`) calls `submit_job`** so no early lines are
   missed (a `didSubmit` ref neutralises React StrictMode's dev double-submit; the backend slot mutex

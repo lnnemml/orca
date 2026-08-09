@@ -98,6 +98,13 @@ pub struct Job {
     /// reaction is derived by joining `pathways` — no `reaction_id` on jobs. Exposed
     /// here so the reaction UI (C2a) can map a pathway to its attached job.
     pub pathway_id: Option<String>,
+    /// Grouping FK into `groups` (schema v16, Phase 4.7.2, ADR-019). `None` = ungrouped
+    /// (root / "All jobs"). Set by `move_job`; nulled when its group is deleted (the
+    /// command re-parents to the deleted group's parent — [`Group`](crate::models::group::Group);
+    /// `ON DELETE SET NULL` is only the fallback). Orthogonal to `pathway_id` and the
+    /// re-opt/reference links: a job can sit in a group AND be a re-opt child AND be a
+    /// reaction reference at once (ADR-019 Decision 5).
+    pub group_id: Option<String>,
 }
 
 impl Job {
@@ -105,7 +112,7 @@ impl Job {
     /// here is the contract [`Job::from_row`] relies on.
     pub const COLUMNS: &'static str = "id, title, input_content, status, job_dir, \
          energy, wall_time, error_message, created_at, started_at, completed_at, \
-         scene_json, scene_log_json, pathway_id";
+         scene_json, scene_log_json, pathway_id, group_id";
 
     /// Build a [`Job`] from a row selected in [`Job::COLUMNS`] order.
     pub fn from_row(row: &Row) -> rusqlite::Result<Job> {
@@ -133,6 +140,7 @@ impl Job {
             scene_json: row.get(11)?,
             scene_log_json: row.get(12)?,
             pathway_id: row.get(13)?,
+            group_id: row.get(14)?,
         })
     }
 }
