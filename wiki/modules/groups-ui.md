@@ -1,11 +1,12 @@
 # Module: job groups UI (the Jobs-view sidebar)
 
-**Status:** built (Phase 4.7.3). The tree sidebar + deep filter + Move-to picker +
-assign-on-create over the Jobs view.
-**Files:** `src/groups/tree.ts` (pure logic), `src/groups/tree.test.ts`,
+**Status:** built (Phase 4.7.3–4.7.4, closing Phase 4.7). The tree sidebar + deep filter +
+Move-to picker + assign-on-create, plus a search/status filter, over the Jobs view.
+**Files:** `src/groups/tree.ts` (pure group logic), `src/groups/tree.test.ts`,
+`src/groups/search.ts` (pure search/status logic), `src/groups/search.test.ts`,
 `src/groups/GroupSidebar.tsx`, `src/screens/JobsScreen.tsx` (two-pane host),
 `src/App.tsx` (lifted selection), `src/screens/NewJobScreen.tsx` (assign-on-create),
-group styles in `src/styles/app.css`.
+group + filter styles in `src/styles/app.css`.
 **Data layer:** [groups.md](groups.md) (schema v16 + the CRUD commands this UI composes).
 **Decision record:** [ADR-019](../architecture/adr-019-job-organization.md) (Decision 3 +
 the "New-job creation should become group-aware" consequence).
@@ -65,13 +66,33 @@ target.
 ## Two-pane Jobs view (`JobsScreen.tsx`)
 
 `JobsScreen` owns the `groups` list (`list_groups`) and the jobs list (`list_jobs`), and lays the
-sidebar beside the table. It renders `filterJobsByGroup(jobs, selection, groups)` (not the raw list),
-with a header showing the active selection's name and an empty-state that distinguishes "no jobs at
-all" from "no jobs in this group". Each row keeps its existing click (open detail) + Cancel / Run /
-Delete, and gains a **"Move…"** action → a native `<select>` of all groups **plus "(ungrouped)"** →
+sidebar beside the table. Each row keeps its existing click (open detail) + Cancel / Run / Delete,
+and gains a **"Move…"** action → a native `<select>` of all groups **plus "(ungrouped)"** →
 `move_job(job.id, group | null)` (a job has no cycle concern, so every group is a valid target). A
 guard effect resets the selection to "All jobs" if the selected group vanished (deleted elsewhere),
 so the filter never points at a non-existent group.
+
+## Search / status filter, composed on the group filter (`search.ts`, Phase 4.7.4)
+
+The rendered rows are **`filterJobsBySearch(filterJobsByGroup(jobs, selection, groups), query,
+statuses)`** — the group filter runs **first**, the search/status filter **second**, so search
+narrows WITHIN the selected group's subtree and never re-widens to all jobs. Both are pure functions
+over `Job[]`; the composition is the single load-bearing invariant here (a regression would show jobs
+outside the selected group when a search is active — a `search.test.ts` composition test pins it).
+
+`filterJobsBySearch(jobs, query, statuses)` (`src/groups/search.ts`, unit-tested, no backend):
+- **query** — case-insensitive **substring** (not FTS5, not fuzzy) over `title` OR the job's
+  **method**, where method is `parseMethodLine(input_content)` = the first `!` keyword line stripped
+  of its `!` (client-side, NOT a column / SQL — e.g. `"! r2SCAN-3c Opt Freq"` → `"r2SCAN-3c Opt
+  Freq"`, `""` if there is no `!` line);
+- **status** — the job's status ∈ `statuses`, or all when `statuses` is empty;
+- ANDed; **empty query + empty statuses ⇒ identity** (drops nothing).
+
+The search box + the seven **status chips** (draft…cancelled toggles) + a Clear affordance are
+**local** state on `JobsScreen` (not lifted to `App`, not persisted). The empty-state is three-way:
+"No jobs yet" (`jobs` empty) vs "No jobs in this group" (`groupJobs` empty) vs **"No jobs match this
+filter"** (the search over-narrowed) — so an over-narrow combination reads as a filter, not an empty
+app.
 
 ## Assign-on-create (`NewJobScreen.tsx`)
 
@@ -89,5 +110,5 @@ no schema change** — the v16 column and all group commands already exist (4.7.
 
 ## Out of scope (deliberately)
 
-Filter/search box (4.7.4); drag-and-drop; molecules/reactions grouping; persisting the active group
-across restarts.
+Drag-and-drop; molecules/reactions grouping; persisting the active group or the search/status filter
+across restarts; a backend/FTS5 query (search is frontend substring over the in-memory list).

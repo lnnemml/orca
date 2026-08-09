@@ -62,7 +62,12 @@ that an in-progress New Job draft is discarded on a tab switch (accepted).
   picker → `move_job`. The active `GroupSelection` is **lifted to `App`** (single source of truth —
   it also feeds assign-on-create). Sidebar mutations compose the 4.7.2 commands; **no drag-and-drop**
   (explicit Move-to picker only). Full contract: `modules/groups-ui.md`. `Job` now carries
-  **`group_id`** (v16 FK, null = ungrouped).
+  **`group_id`** (v16 FK, null = ungrouped). **Phase 4.7.4 — search/status filter:** a search box
+  (case-insensitive substring over **title OR the `!`-line method**, parsed client-side) + seven
+  status **chips** + Clear, **local** to `JobsScreen`. Composed AFTER the group filter — the rendered
+  rows are `filterJobsBySearch(filterJobsByGroup(...))`, so search narrows within the selected group's
+  subtree. Three-way empty-state: "No jobs yet" / "No jobs in this group" / "No jobs match this
+  filter". Frontend-only (no backend/FTS5).
 - **`JobDetailScreen`** — loads the job, then **attaches `job:log` / `job:status` /
   `job:convergence` listeners FIRST, then (if `autoRun`) calls `submit_job`** so no early lines are
   missed (a `didSubmit` ref neutralises React StrictMode's dev double-submit; the backend slot mutex

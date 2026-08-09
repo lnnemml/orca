@@ -3,13 +3,25 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { confirm } from "@tauri-apps/plugin-dialog";
 
-import type { Group, Job } from "../types";
+import type { Group, Job, JobStatus } from "../types";
 import { formatEnergy, formatTimestamp, formatWallTime } from "../format";
 import { GroupSidebar } from "../groups/GroupSidebar";
 import { filterJobsByGroup, type GroupSelection } from "../groups/tree";
+import { filterJobsBySearch } from "../groups/search";
 
 /** Sentinel for the "(ungrouped)" option in the per-job move picker. */
 const ROOT_OPTION = "__root__";
+
+/** The status chips, in state-machine order. */
+const STATUS_CHIPS: JobStatus[] = [
+  "draft",
+  "queued",
+  "running",
+  "completed",
+  "parsed",
+  "failed",
+  "cancelled",
+];
 
 interface JobsScreenProps {
   onOpenDetail: (jobId: string, autoRun: boolean) => void;
@@ -33,6 +45,25 @@ export function JobsScreen({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [movingJobId, setMovingJobId] = useState<string | null>(null);
+  // Search/status filter — LOCAL to this screen (not lifted, not persisted). Composed
+  // AFTER the group filter: the rendered rows are always filterJobsBySearch(filter
+  // JobsByGroup(...)), so search narrows within the selected group's subtree.
+  const [query, setQuery] = useState("");
+  const [statuses, setStatuses] = useState<Set<JobStatus>>(new Set());
+
+  const toggleStatus = useCallback((s: JobStatus) => {
+    setStatuses((prev) => {
+      const next = new Set(prev);
+      if (next.has(s)) next.delete(s);
+      else next.add(s);
+      return next;
+    });
+  }, []);
+
+  const clearFilter = useCallback(() => {
+    setQuery("");
+    setStatuses(new Set());
+  }, []);
 
   const load = useCallback(async () => {
     try {
@@ -117,7 +148,10 @@ export function JobsScreen({
     }
   }, [selection, groups, onSelectionChange]);
 
-  const visibleJobs = filterJobsByGroup(jobs, selection, groups);
+  // Compose: group filter FIRST (4.7.3), then the search/status filter (4.7.4).
+  const groupJobs = filterJobsByGroup(jobs, selection, groups);
+  const visibleJobs = filterJobsBySearch(groupJobs, query, statuses);
+  const filterActive = query.trim() !== "" || statuses.size > 0;
 
   const selectionLabel =
     selection.kind === "all"
@@ -150,6 +184,34 @@ export function JobsScreen({
             </button>
           </div>
 
+          {/* Search + status filter (4.7.4) — composed over the group filter. */}
+          <div className="jobs-filter">
+            <input
+              className="input jobs-search"
+              type="text"
+              placeholder="Search title or method…"
+              value={query}
+              onChange={(e) => setQuery(e.currentTarget.value)}
+            />
+            <div className="status-chips">
+              {STATUS_CHIPS.map((s) => (
+                <button
+                  key={s}
+                  className={"chip" + (statuses.has(s) ? " active" : "")}
+                  onClick={() => toggleStatus(s)}
+                  title={`Filter by ${s}`}
+                >
+                  {s}
+                </button>
+              ))}
+            </div>
+            {filterActive ? (
+              <button className="btn btn-sm" onClick={clearFilter} title="Clear the filter">
+                Clear
+              </button>
+            ) : null}
+          </div>
+
           {error ? <div className="banner err">{error}</div> : null}
 
           {loading ? (
@@ -158,7 +220,9 @@ export function JobsScreen({
             <div className="empty">
               {jobs.length === 0
                 ? "No jobs yet — create one from “New Job”."
-                : "No jobs in this group."}
+                : groupJobs.length === 0
+                  ? "No jobs in this group."
+                  : "No jobs match this filter."}
             </div>
           ) : (
             <table className="jobs-table">

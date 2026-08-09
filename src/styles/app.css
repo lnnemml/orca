@@ -2767,3 +2767,42 @@ button.ir-imaginary-mode.selected {
   align-self: flex-start;
   margin-top: 4px;
 }
+
+/* ── Jobs list search + status chips (Phase 4.7.4) ─────────────────────────── */
+.jobs-filter {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.jobs-search {
+  flex: 0 1 260px;
+  min-width: 160px;
+  padding: 5px 10px;
+  font-size: 13px;
+}
+.status-chips {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.chip {
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  line-height: 1.4;
+}
+.chip:hover {
+  border-color: var(--muted-2);
+  color: var(--text);
+}
+.chip.active {
+  background: rgba(79, 140, 255, 0.18);
+  border-color: var(--accent);
+  color: var(--accent-hover);
+}

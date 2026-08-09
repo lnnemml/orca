@@ -6744,3 +6744,43 @@ jobs" vs "Ungrouped".
 
 **Next: Phase 4.7.4** — filter/search over the job list (plain LIKE/column filter, complementary to
 the tree).
+
+## [2026-08-09] session | Phase 4.7.4 — filter/search over the job list (composed on the group filter) — Phase 4.7 CLOSED
+
+Added a frontend search/status filter over the Jobs view, **composed on top of** the 4.7.3 group
+filter. Frontend-only — **no Rust, no new command, no migration, no SQL/FTS5** (verified: zero
+src-tauri changes in the diff).
+
+**Pure logic** `src/groups/search.ts` (vitest, no React/invoke): `parseMethodLine(input)` = the first
+`!` keyword line stripped of its `!` and trimmed (client-side method token, `""` if none), and
+`filterJobsBySearch(jobs, query, statuses)` = case-insensitive **substring** over title OR method,
+ANDed with the status set; **empty query + empty statuses ⇒ identity**. 11 new tests, incl. the
+**composition test (main risk):** `filterJobsBySearch(filterJobsByGroup(jobs, {group:R}, groups), q,
+…)` never returns a job outside R's subtree — search narrows WITHIN the group, never re-widens.
+
+**Composition order (load-bearing):** the rendered rows are
+`filterJobsBySearch(filterJobsByGroup(jobs, selection, groups), query, statuses)` — group filter
+FIRST, search SECOND. Both pure over `Job[]`.
+
+**UI** (`JobsScreen.tsx`): a search box (title-or-method placeholder) + seven status **chips**
+(draft…cancelled toggles) + a Clear affordance, **local** state (not lifted to `App`, not persisted).
+Three-way empty-state: "No jobs yet" (`jobs` empty) / "No jobs in this group" (`groupJobs` empty) /
+**"No jobs match this filter"** (search over-narrowed). Chip + filter-bar CSS in `app.css` (buttons,
+not `<select>` — no WebKitGTK fix needed).
+
+**Verification.** `tsc` clean; `vitest` **719** (was 708, +11 search tests); `cargo` **243
+UNCHANGED** (explicitly — a Rust count change would mean scope leaked; there was none). Checkpoints:
+rendered rows are the single composed `filterJobsBySearch(filterJobsByGroup(...))` expression; zero
+src-tauri/ in the diff (substring only, no FTS5/command/SQL); empty query+status is the identity
+(test-asserted). **Live search box + chips + empty state are Anton's eyeball gate** (render unit; no
+headless click-through) — eyeball: (1) title fragment narrows; (2) method fragment ("r2SCAN") matches
+via the `!` line; (3) a status chip filters to that status; (4) group + query → results stay within
+the group's subtree; (5) over-narrow → "No jobs match this filter"; (6) Clear → back to the
+group-filtered list.
+
+**Phase 4.7 CLOSED** — all four units done (4.7.1 delete · 4.7.2 groups data layer · 4.7.3 nav UI ·
+4.7.4 search). The Jobs view is a two-pane tree of folders with delete-with-promotion, assign-on-
+create, and a composed search filter; grouping never touches disk (rule #3). ROADMAP Phase 4.7 marked
+COMPLETE.
+
+**Next:** Phase 5 (remote execution over SSH) per the roadmap, or whatever Anton directs.

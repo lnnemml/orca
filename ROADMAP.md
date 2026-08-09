@@ -915,7 +915,12 @@ screening of stereoselectivity (Stage C). Stages D–F deepen it toward publicat
 
 ---
 
-## Phase 4.7 — Job organization & lifecycle (planned)
+## Phase 4.7 — Job organization & lifecycle ✅ COMPLETE
+
+**All four units done** (4.7.1 job deletion · 4.7.2 groups data layer · 4.7.3 group navigation UI ·
+4.7.4 filter/search). The Jobs view is a two-pane tree of folders (unlimited nesting, delete-with-
+promotion, jobs-survive) with assign-on-create and a frontend search/status filter composed on the
+group filter. Disk is never touched by any grouping op (rule #3 preserved).
 
 **Model:** [ADR-019](wiki/architecture/adr-019-job-organization.md) — job groups are a **tree of
 metadata in SQLite, never a filesystem hierarchy**. A job keeps its isolated `job_dir` (domain rule
@@ -946,9 +951,13 @@ Group-delete **promotes** children (never a destructive cascade); jobs orphan to
       `src/groups/tree.ts` (orphan-as-root, cycle-safe descendants, deep filter, self+descendant
       exclusion) vitest-tested. **No drag-and-drop.** Only Rust touch: surfacing `Job.group_id` (no
       command/migration). `modules/groups-ui.md`. Live WebKitGTK render is Anton's eyeball gate.
-- [ ] **4.7.4 — filter / search over the job list.** Title / status / method, complementary to the
-      tree (at hundreds of jobs, search matters as much as browsing). Plain `LIKE` / column filter —
-      **NOT** the manual's FTS5 (a different mechanism for a different corpus).
+- [x] **4.7.4 — filter / search over the job list.** A search box (case-insensitive **substring** over
+      title OR the `!`-line **method**, parsed client-side) + seven status **chips** + Clear, **local**
+      to `JobsScreen`. Composed AFTER the group filter — rendered rows are
+      `filterJobsBySearch(filterJobsByGroup(...))`, so search narrows within the selected group's
+      subtree (a `search.test.ts` composition test pins it; empty query+status = identity). Three-way
+      empty-state ("no jobs yet" / "none in this group" / "none match this filter"). **Frontend-only** —
+      no backend/command/SQL, **NOT** the manual's FTS5. `src/groups/search.ts`, `modules/groups-ui.md`.
 
 ---
 
