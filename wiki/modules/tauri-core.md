@@ -194,9 +194,23 @@ survives a restart.
   (a partial `filter_map` sum, and a naive job cascade, each turn them red). Frontend types mirror the
   structs — `ReferenceJob`/`ReferenceEnergy` in `src/types.ts` — but no component yet (absolute
   barriers in the overlay are C2b-2b).
-  **Future integrity point:** jobs are **not deletable today** (no `delete_job` command exists). When one
-  is added it MUST also `DELETE FROM reaction_reference_jobs WHERE job_id = ?` (and null `jobs.pathway_id`
-  cleanup, already the C1 pattern) — otherwise a deleted job leaves a dangling reference row.
+  **Integrity point (now built — Phase 4.7.1):** `delete_job` exists and DOES `DELETE FROM
+  reaction_reference_jobs WHERE job_id = ?` (plus NULLing re-opt children; `results` cascades) before
+  removing the job — see the "Deleting a job" section below. No deleted job leaves a dangling
+  reference row.
+- **v15** — DFT re-opt fan-out linkage (Phase 4.5 Stage D unit D2a). Two nullable FKs on `jobs`
+  tagging a re-opt child back to its source: `source_ensemble_job_id` (the GOAT ensemble job) +
+  `source_conformer_index`. **No new table** — the conformer set of a fan-out is DERIVED by `GROUP BY
+  source_ensemble_job_id`, not stored. Guarded ALTER; migration test
+  `migrate_v14_to_v15_adds_source_fks_and_preserves_jobs`.
+- **v16** — **job groups** (Phase 4.7.2, ADR-019). A `groups` table (adjacency list) + a nullable
+  `jobs.group_id`. `groups(id, name, parent_id TEXT REFERENCES groups(id), created_at)` —
+  `parent_id` is **NOT** `ON DELETE CASCADE` (a cascade would destroy a subtree; delete-with-promotion
+  is done in the command). `ALTER TABLE jobs ADD COLUMN group_id TEXT REFERENCES groups(id) ON DELETE
+  SET NULL` (one group per job — a tree, not tags). Groups are **pure metadata, never a filesystem
+  hierarchy** — moving a job is `UPDATE jobs.group_id`, zero fs ops (the `job_dir` never moves).
+  Guarded ALTER; migration test `migrate_v15_to_v16_adds_groups_table_and_group_id_and_preserves_jobs`.
+  Full data-layer contract (cycle guard on move, promotion-to-parent on delete): `modules/groups.md`.
 - The queue statuses (`queued`, `cancelled`) and `parsed` needed **no migration** — `status` is TEXT.
 - Migration tests assert preservation across each step (…`migrate_v6_to_v7_adds_homo_lumo_gap`,
   `migrate_v7_to_v8_backfills_energy_from_results`, `migrate_v8_to_v9_adds_manual_tables_and_preserves_data`,
@@ -227,7 +241,9 @@ iteration (a diverged log is rejected, the snapshot wins).
 
 ## Models (`models/`)
 
-`Job` and `Molecule` mirror their tables 1:1 (`#[derive(Serialize)]`). `from_row` hydrates from a
+`Job` and `Molecule` mirror their tables 1:1 (`#[derive(Serialize)]`); `Reaction`/`Pathway`
+(`models/reaction.rs`, v13) and `Group` (`models/group.rs`, v16 — `{ id, name, parent_id:
+Option<String>, created_at }`) follow the same shape. `from_row` hydrates from a
 row in `COLUMNS` order; `COLUMNS` is the single source of truth for the select list (`Job` gained
 `scene_json` as its 11th column in v4). `JobStatus` = `Draft | Queued | Running | Completed |
 Parsed | Failed | Cancelled`, serialized to/from lowercase strings on the wire and in the DB
@@ -288,6 +304,14 @@ runs `terminate_on_exit` synchronously; `Drop` on `SidecarManager` is the backst
 - **Molecules:** `create_molecule(name, formula, xyz, charge, multiplicity, tags)`,
   `list_molecules()` (newest first), `get_molecule(id)`, `update_molecule(id, …)` (full update),
   `delete_molecule(id)` — each `NotFound` on a missing id.
+- **Groups (v16, Phase 4.7.2, ADR-019; `commands/groups.rs`, `Group` in `models/group.rs`):**
+  `create_group(name, parent_id: Option<String>) -> Group` (parent must exist or `NotFound`),
+  `list_groups() -> Vec<Group>` (all nodes; the UI builds the tree from `parent_id`),
+  `rename_group(id, name) -> Group`, `move_group(id, new_parent_id: Option<String>)` (**cycle-guarded**
+  reparent; `None` = to root), `move_job(job_id, group_id: Option<String>)` (`None` = ungroup;
+  one-row `UPDATE`, **no fs op**), `delete_group(id)` (**promotion**: child groups + jobs re-parented
+  to the deleted group's parent, then the row removed). Pure metadata — **zero filesystem access** in
+  the whole module. Contract + the two load-bearing rules: `modules/groups.md`.
 - **CPU / xtb:** `get_cpu_presets() -> Vec<CpuPresetInfo>`; `xtb_version`, `xtb_optimize`,
   `xtb_cancel` (see below).
 - **API key (ADR-015, `secrets.rs` + `anthropic.rs`):** `api_key_status() -> KeySource`,

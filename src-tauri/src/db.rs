@@ -68,7 +68,17 @@ use crate::error::AppError;
 ///   → every pre-existing job is a standalone job with both NULL. Jobs-survive: deleting the source
 ///   GOAT job nulls the link (in the commands), never cascades to the children. Guarded ALTER
 ///   (column_exists, like v10/v11). The REFERENCES clause documents intent, as elsewhere.
-const SCHEMA_VERSION: i64 = 15;
+/// - v16: `groups` table (adjacency-list tree) + a nullable `jobs.group_id` (Phase 4.7.2,
+///   ADR-019). Job groups are a **tree of metadata in SQLite, never a filesystem hierarchy** —
+///   a job keeps its isolated `job_dir` (rule #3) wherever it sits; moving a job is `UPDATE
+///   jobs.group_id`, zero fs ops. `groups(id, name, parent_id NULL REFERENCES groups, created_at)`;
+///   `parent_id` is **NOT** `ON DELETE CASCADE` (a cascade would destroy a subtree — the opposite
+///   of the promotion ADR-019 Decision 3 mandates; delete-with-promotion is done in the command).
+///   `jobs.group_id … ON DELETE SET NULL` (one group per job — a tree, not tags). Both nullable +
+///   additive → every pre-existing job is ungrouped (`group_id` NULL). Guarded ALTER (column_exists,
+///   like v10/v11/v15). The `group_id` axis is ORTHOGONAL to pathway_id / source_ensemble_job_id /
+///   reference rows (ADR-019 Decision 5).
+const SCHEMA_VERSION: i64 = 16;
 
 /// Open (creating if needed) `orcastudio.db` under `data_dir` and migrate it to
 /// the current schema.
@@ -338,6 +348,34 @@ fn migrate(conn: &Connection) -> Result<(), AppError> {
             )?;
         }
         version = 15;
+    }
+
+    // --- v15 -> v16: job groups (Phase 4.7.2, ADR-019). An adjacency-list tree of grouping
+    // metadata (`groups`) plus a nullable `jobs.group_id`. Groups are NOT directories: a job
+    // keeps its isolated `job_dir` (rule #3) wherever it sits in the tree; moving a job is a
+    // one-row `UPDATE jobs.group_id` with ZERO filesystem ops (ADR-019 Decision 0). `parent_id`
+    // is deliberately NOT `ON DELETE CASCADE` — deleting a group PROMOTES its children to the
+    // deleted group's parent (Decision 3), done explicitly in `delete_group_conn`; a cascade would
+    // destroy the subtree. `jobs.group_id … ON DELETE SET NULL` is the fallback (an orphaned job
+    // drops to root) but the command re-parents jobs to the PARENT explicitly, so SET NULL only
+    // fires if a group row is ever removed outside the command. Additive + idempotent. ---
+    if version < 16 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS groups (
+                id         TEXT PRIMARY KEY,
+                name       TEXT NOT NULL,
+                parent_id  TEXT REFERENCES groups(id),
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )?;
+        if column_exists(conn, "jobs", "id")? && !column_exists(conn, "jobs", "group_id")? {
+            // Nullable-default ADD COLUMN with a REFERENCES clause is permitted (SQLite's only
+            // FK-on-ALTER restriction is a non-NULL default). `ON DELETE SET NULL` is legal here.
+            conn.execute_batch(
+                "ALTER TABLE jobs ADD COLUMN group_id TEXT REFERENCES groups(id) ON DELETE SET NULL;",
+            )?;
+        }
+        version = 16;
     }
 
     // Persist the resulting version so subsequent runs skip completed steps.
@@ -1030,6 +1068,65 @@ mod tests {
 
         // Idempotent: a second migrate() is a no-op.
         migrate(&conn).expect("v15 -> v15 no-op");
+        assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn migrate_v15_to_v16_adds_groups_table_and_group_id_and_preserves_jobs() {
+        // A v15 DB: settings + jobs (one job). The v16 step adds the `groups` table and a
+        // nullable `jobs.group_id`; the pre-existing job is untouched and `group_id` is NULL
+        // on it (every old job is ungrouped).
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO settings (key, value) VALUES ('schema_version', '15');
+             CREATE TABLE jobs (
+                id TEXT PRIMARY KEY, title TEXT NOT NULL, input_content TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'draft', energy REAL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')), pathway_id TEXT
+             );
+             INSERT INTO jobs (id, title, input_content, status, energy)
+                VALUES ('j1', 'water opt', '! r2SCAN-3c Opt', 'completed', -76.42);",
+        )
+        .unwrap();
+        assert!(!column_exists(&conn, "jobs", "group_id").unwrap());
+
+        migrate(&conn).expect("v15 -> v16");
+        assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
+
+        // The `groups` table exists and `jobs.group_id` is NULL on the pre-existing job.
+        assert!(column_exists(&conn, "groups", "id").unwrap());
+        assert!(column_exists(&conn, "jobs", "group_id").unwrap());
+        let (title, energy, group_id): (String, Option<f64>, Option<String>) = conn
+            .query_row(
+                "SELECT title, energy, group_id FROM jobs WHERE id = 'j1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("job preserved with a group_id column");
+        assert_eq!(title, "water opt");
+        assert_eq!(energy, Some(-76.42));
+        assert_eq!(group_id, None, "every existing job is ungrouped (group_id NULL)");
+
+        // A group with a self-referential parent chain is representable (adjacency list).
+        conn.execute_batch(
+            "INSERT INTO groups (id, name, parent_id) VALUES ('r', 'root study', NULL);
+             INSERT INTO groups (id, name, parent_id) VALUES ('s', 'sub', 'r');
+             UPDATE jobs SET group_id = 's' WHERE id = 'j1';",
+        )
+        .unwrap();
+        let (parent, gid): (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT g.parent_id, j.group_id FROM groups g, jobs j WHERE g.id = 's' AND j.id = 'j1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(parent.as_deref(), Some("r"));
+        assert_eq!(gid.as_deref(), Some("s"));
+
+        // Idempotent: a second migrate() is a no-op.
+        migrate(&conn).expect("v16 -> v16 no-op");
         assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
     }
 

@@ -6645,3 +6645,50 @@ and the commands.
 
 **Next: Phase 4.7.2** — groups schema + model (migration `groups` table + `jobs.group_id`, Rust CRUD
 with delete-as-promotion).
+
+## [2026-08-09] session | Phase 4.7.2 — job groups data layer (migration v16 + Rust CRUD; cycle-guard + promotion-on-delete)
+
+Built the groups **data layer** (ADR-019 Decisions 0–5) — schema + Rust CRUD, **no UI** (the tree
+sidebar is 4.7.3). Jobs-only FK for now (molecules/reactions `group_id` deferred — Decision 4).
+
+**Migration v16** (`db.rs`, SCHEMA_VERSION 15 → 16, one additive arm): `groups(id, name, parent_id
+TEXT REFERENCES groups(id), created_at)` — **adjacency list**, `parent_id` **NOT `ON DELETE CASCADE`**
+(a cascade would destroy a subtree — the opposite of promotion). Guarded `ALTER TABLE jobs ADD COLUMN
+group_id TEXT REFERENCES groups(id) ON DELETE SET NULL` (one group per job — a tree, not tags).
+Migration test `migrate_v15_to_v16_adds_groups_table_and_group_id_and_preserves_jobs`.
+
+**Model** `models/group.rs` — `Group { id, name, parent_id: Option<String>, created_at }` + `COLUMNS`
++ `from_row` (mirrors `Reaction`). Registered in `models/mod.rs`.
+
+**CRUD** `commands/groups.rs` (`_conn` helpers + thin `#[tauri::command]` wrappers; registered in
+`commands/mod.rs` + `lib.rs`): `create_group(name, parent_id?)` (parent must exist → NotFound else),
+`list_groups`, `rename_group`, `move_group(id, new_parent_id?)`, `move_job(job_id, group_id?)`,
+`delete_group(id)`.
+
+**Two load-bearing rules** (FK enforcement ON, `SQLITE_DEFAULT_FOREIGN_KEYS=1`):
+- **Cycle guard on `move_group`** (RISK 1): refuses a self-parent or a descendant-parent via a
+  **bounded** walk up the new parent's chain (bounded by `COUNT(*) FROM groups`, so a pre-existing
+  corrupt cycle can't hang the check either). Error → `AppError::Backend`.
+- **Promotion-to-parent on `delete_group`** (RISK 2, ADR-019 Decision 3): in one transaction —
+  `UPDATE groups SET parent_id=<parent> WHERE parent_id=?id`, then `UPDATE jobs SET group_id=<parent>
+  WHERE group_id=?id` (**explicit** — NOT the `ON DELETE SET NULL` drop-to-root), then `DELETE FROM
+  groups WHERE id=?id`. A deleted folder's contents rise one level; nothing under it is destroyed,
+  no job is ever deleted. Post-condition (rule #9): no dangling `group_id`, count conserved, no fs.
+
+**Pure metadata (Decision 0):** the whole module makes **zero filesystem calls** (production code) —
+moving a job is `UPDATE jobs.group_id`, the `job_dir` never moves, so rule #3 / crash-reconciliation /
+killpg-by-cwd are all preserved.
+
+**Verification.** `cargo test` **243** (was 231, +12: 11 group tests + 1 migration test); `tsc` clean;
+`vitest` **696** (frontend UNCHANGED — no .tsx touched). **Both negative controls bit red:**
+`move_group_refuses_cycle` (self- + descendant-parent both error, parents unchanged) and
+`raw_delete_without_reparent_hits_restrict_fk` (a bare `DELETE FROM groups` with a child trips the
+RESTRICT FK — proves enforcement is ON and the promotion re-parent is required). Headline
+`delete_group_promotes_children_to_parent_not_root` proves a job lands at the PARENT, not root (the
+SET NULL trap); `delete_group_conserves_count_under_parent` for conservation + no-dangling post-cond.
+
+**Adjacent stale-fact fixes (in the same commit):** the tauri-core.md "jobs are not deletable today"
+note is now false (delete_job landed in 4.7.1) — corrected; and v15/v16 added to the migrations
+catalog (the list had jumped v14 → gap).
+
+**Next: Phase 4.7.3** — the group navigation UI (tree sidebar, assign-on-create, move-leaves-job_dir).

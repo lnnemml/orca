@@ -930,11 +930,14 @@ Group-delete **promotes** children (never a destructive cascade); jobs orphan to
       re-opt children `source_ensemble_job_id`/`source_conformer_index` **NULLed**,
       `reaction_reference_jobs` rows **DELETEd**, `results` removed by **CASCADE** — jobs-survive both
       ways. Negative control proves the RESTRICT FKs bite. No schema change (all FKs exist at v15).
-- [ ] **4.7.2 — groups schema + model (ADR-019).** Migration (`groups` table + `jobs.group_id`,
-      `ON DELETE SET NULL`; `parent_id` NOT cascade); Rust CRUD (create / rename / move / delete-with-
-      **promotion**); the group-delete promotion post-condition (children re-parented before the row
-      is removed, count conserved, no `job_dir` touched). **Data layer + tests before any UI** (the
-      project's data-then-UI rhythm).
+- [x] **4.7.2 — groups schema + model (ADR-019).** Migration **v16** (`groups` adjacency-list table +
+      `jobs.group_id ON DELETE SET NULL`; `parent_id` NOT cascade); Rust CRUD (`commands/groups.rs`:
+      create / list / rename / move / move_job / delete-with-**promotion**). Two load-bearing rules:
+      **cycle guard** on `move_group` (bounded parent-walk refuses a self/descendant reparent) and
+      **promotion-to-parent** on `delete_group` (child groups + jobs re-parented to the deleted
+      group's parent in one transaction, count conserved, no `job_dir` touched — explicit, NOT the
+      `SET NULL` drop-to-root). Both negative controls bite (cycle move errors; raw group-delete trips
+      the RESTRICT FK). Zero filesystem access in the module. `modules/groups.md`.
 - [ ] **4.7.3 — group navigation UI.** A tree sidebar (folder metaphor) over the job list; move /
       rename; **assign-on-create** (a new job inherits the active group, NULL if none); an "All jobs" /
       ungrouped root. Manual gate: renders, and a real move leaves the moved job's `job_dir`
