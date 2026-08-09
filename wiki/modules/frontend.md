@@ -46,9 +46,16 @@ that an in-progress New Job draft is discarded on a tab switch (accepted).
   template or hitting **Generate Input** collapses the accordion (`setOpenSection(null)`).
 - **`JobsScreen`** — `list_jobs` on mount into a `.jobs-table`: Title / Status badge / Energy (Eh) /
   Time / Created, a Refresh button, empty + loading states. Rows are clickable (→ detail); an
-  actions column shows **Run** (draft) / **Running…** (running) / **Open**. Energy/Time via the
-  shared formatters. Takes `queuePaused` from `App`: a `queued` job's badge reads **`queued
-  (paused)`** with a "Queue is paused" tooltip while paused, so a stalled job shows why.
+  actions column shows **Cancel** for a running/queued job, else the primary action (**Run** for
+  draft, **Open** otherwise) **plus a `Delete`** button (`.btn-danger`). **Delete is on terminal
+  states only** (draft/completed/parsed/failed/cancelled) — a running/queued row shows Cancel alone,
+  matching the backend's terminal-states-only refusal ("cancel it first"). Delete → `confirm`
+  (`@tauri-apps/plugin-dialog`, `{ title: "Delete job", kind: "warning" }`, message states it
+  permanently removes the job **and its files**) → `invoke("delete_job", { id })` → reload; errors
+  route to the existing `setError` banner. Both action buttons `stopPropagation` so the row-click
+  (→ detail) doesn't also fire (the ReactionsScreen confirm pattern). Energy/Time via the shared
+  formatters. Takes `queuePaused` from `App`: a `queued` job's badge reads **`queued (paused)`** with
+  a "Queue is paused" tooltip while paused, so a stalled job shows why.
 - **`JobDetailScreen`** — loads the job, then **attaches `job:log` / `job:status` /
   `job:convergence` listeners FIRST, then (if `autoRun`) calls `submit_job`** so no early lines are
   missed (a `didSubmit` ref neutralises React StrictMode's dev double-submit; the backend slot mutex

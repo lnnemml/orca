@@ -6596,3 +6596,52 @@ with sub-folders) plus the ability to **delete a job**.
 deletion (independent, can land first) · 4.7.2 groups schema + model (data + tests before UI) · 4.7.3
 group nav UI (tree sidebar, assign-on-create, move-leaves-job_dir-untouched gate) · 4.7.4 filter/search
 (plain LIKE, not FTS5). All `[ ]`. **Next: implement 4.7 units** (start 4.7.1 or 4.7.2).
+
+## [2026-08-09] session | Phase 4.7.1 — delete a job (DB+files, guarded, FK cleanup, terminal-states-only)
+
+Implemented job deletion — the first Phase 4.7 unit (ADR-019's "delete an actual JOB" boundary,
+independent of grouping). **No schema change** (SCHEMA_VERSION stays 15 — every FK already exists).
+
+**DB core** (`commands/jobs.rs::delete_job_conn(&Connection, id) -> Option<String>`): not-found
+first (mirrors `delete_reaction_conn`); **terminal-states-only** guard — `Running`/`Queued` → `Err`
+("cancel it first"), **no killpg in the delete path** (the ratified simplification: terminating a
+live run is `cancel()`'s job). FK cleanup in **one `unchecked_transaction`, in this order**:
+(1) `UPDATE jobs SET source_ensemble_job_id = NULL, source_conformer_index = NULL WHERE
+source_ensemble_job_id = ?` (a DFT re-opt child becomes standalone); (2) `DELETE FROM
+reaction_reference_jobs WHERE job_id = ?` (the reaction survives, loses one reference);
+(3) `DELETE FROM jobs` — **cascades** to `results` (`ON DELETE CASCADE`; never deleted by hand).
+`pathway_id` points OUT, vanishes with the row. Returns the `job_dir` for the caller to remove after
+commit. **Jobs-survive both ways** (like v13 `delete_reaction`, v14 `remove_reference_job`).
+
+**Guarded fs removal** (`local_backend.rs`): `remove_job_dir(app, job_dir)` computes the jobs root
+as `runner.data_dir/jobs` and removes the dir **only if** `path_is_within(root, dir)` — canonicalized
+root-or-descendant; non-existent path or symlink escape → refuse. Best-effort (`eprintln` on error,
+never fails — the row is already gone). **Exactly one `remove_dir_all` in the diff, reached only
+through the guard.** Command `delete_job(app, id)` (registered in `lib.rs` next to `cancel_job`):
+locks the DB, calls `delete_job_conn`, drops the lock, then removes the dir if `Some`.
+
+**UI** (`JobsScreen.tsx`): a **Delete** button (`.btn-danger`, new CSS) on **terminal-state rows
+only** (draft/completed/parsed/failed/cancelled) beside Run/Open; running/queued keep Cancel alone.
+`confirm` (`@tauri-apps/plugin-dialog`, warning kind, "removes the job AND its files") →
+`invoke("delete_job")` → reload; `stopPropagation` on both action buttons. Errors → existing banner.
+
+**Two ratified decisions** (from the continuation spec): DB+files guarded; terminal-states-only.
+
+**Verification.** `cargo test` 231 passed (was 217, +14) + the second binary 24; `tsc` clean;
+`vitest` 696 passed (frontend count unchanged). **Negative control bit red** —
+`raw_delete_without_cleanup_hits_fk_constraint` asserts a bare `DELETE FROM jobs` (with a re-opt
+child / a reference row still pointing) errors on the RESTRICT FK, proving `SQLITE_DEFAULT_FOREIGN_KEYS=1`
+enforcement is ON and the cleanup is required. **Manual gate on real data (rule #9, throwaway test
+run then removed):** built a GOAT source + re-opt child + results row + `reaction_reference_jobs`
+row, real dirs at the source's `job_dir` and a sibling's under `data_dir/jobs/`; `delete_job_conn` +
+the guarded removal → (a) child `source_ensemble_job_id`/`source_conformer_index` NULL, (b) 0
+reference rows, (c) 0 results (cascade fired), (d) source dir gone AND sibling untouched, (e)
+reaction + child still exist. The live Delete-button + confirm render is Anton's eyeball gate.
+
+**db.rs comment fix (in-scope landmine):** the v13 doc-comment still claimed "this DB leaves SQLite
+FK enforcement off" — **false**, contradicting the measured v14 note (enforcement ON, `PRAGMA
+foreign_keys` reads 1). Corrected to state enforcement is ON and integrity is enforced both by SQLite
+and the commands.
+
+**Next: Phase 4.7.2** — groups schema + model (migration `groups` table + `jobs.group_id`, Rust CRUD
+with delete-as-promotion).

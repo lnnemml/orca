@@ -237,6 +237,19 @@ body {
   border-color: var(--accent-hover);
 }
 
+/* Destructive action (e.g. Delete job) — a restrained red affordance: red text
+   at rest, red fill on hover so the irreversible click reads clearly. */
+.btn-danger {
+  color: var(--err);
+  border-color: color-mix(in srgb, var(--err) 45%, var(--border));
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: var(--err);
+  border-color: var(--err);
+  color: #fff;
+}
+
 .row {
   display: flex;
   align-items: center;

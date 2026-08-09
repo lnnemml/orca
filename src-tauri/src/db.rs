@@ -47,8 +47,11 @@ use crate::error::AppError;
 ///   metadata — deleting a reaction/pathway NEVER deletes a job (the Rust commands null
 ///   `pathway_id` instead). Normalized: a job carries `pathway_id` ONLY (reaction derived
 ///   via `pathways`), no `reaction_id` on jobs. Nullable FK = standalone jobs unchanged.
-///   Referential integrity is enforced in the commands (this DB leaves SQLite FK
-///   enforcement off, as elsewhere); the `REFERENCES` clauses are documentation.
+///   Referential integrity is enforced BOTH by SQLite (FK enforcement is ON in this
+///   build — `SQLITE_DEFAULT_FOREIGN_KEYS=1`, measured; see the v14 note) AND by the
+///   commands (existence checks for clean `NotFound` errors, child-first delete order).
+///   [Corrected 2026-08-09: this note previously claimed enforcement was off — wrong,
+///   it contradicts the measured v14 reality.]
 /// - v14: `reaction_reference_jobs` — the summed reactant reference for absolute barriers
 ///   (Phase 4.5 Stage C2b-2a, ADR-018). A lean join table: `(reaction_id, job_id)` PK, both
 ///   `REFERENCES` clauses (actively enforced — the bundled SQLite is built with

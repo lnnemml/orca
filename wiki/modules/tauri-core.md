@@ -279,7 +279,8 @@ runs `terminate_on_exit` synchronously; `Drop` on `SidecarManager` is the backst
   `draft`, snapshot written once); `list_jobs() -> Vec<Job>` (`created_at DESC`); `get_job(id)`
   (`NotFound`); `update_job_status(id, status)` (stamps `started_at` on `running`, `completed_at`
   on `completed`/`failed`/`cancelled`); `submit_job(app, id)` (enqueues, returns at once — needs
-  `app: tauri::AppHandle` for `emit`); `cancel_job(id)`; `pause_queue()` / `resume_queue()` /
+  `app: tauri::AppHandle` for `emit`); `cancel_job(id)`; `delete_job(app, id)` (see below);
+  `pause_queue()` / `resume_queue()` /
   `is_queue_paused() -> bool`; `read_job_output(id, tail_lines: Option<usize>) -> Vec<String>`;
   `read_job_output_for_viewer(id) -> OutputContent`; `read_job_convergence(id)`;
   `read_job_ensemble(id) -> String`; `open_job_folder(id)`; `search_job_output(id, opts) ->
@@ -319,7 +320,42 @@ runs `terminate_on_exit` synchronously; `Drop` on `SidecarManager` is the backst
     A single "failed" would hide the cause. No logging of key or request/response body, even in debug.
 - **DB helpers** (`pub(crate)`, reused by the backend): `set_job_dir_conn`, `finalize_job_conn`
   (terminal status + `completed_at` + `error_message`), `set_job_results_conn`, `get_job_conn`,
-  `update_job_status_conn`.
+  `update_job_status_conn`, `delete_job_conn` (see below).
+
+### Deleting a job (`delete_job`, Phase 4.7.1 / ADR-019 boundary)
+
+`delete_job(app, id)` is the one command that **permanently removes** a job: its DB row **and**,
+guarded, its isolated `job_dir`. The contract, with the two ratified decisions:
+
+- **Terminal-states-only.** A `Running` or `Queued` job is **refused** (`AppError::Backend`,
+  "cancel it first") — terminating a live run is `cancel()`'s job, never delete's; there is **no
+  killpg in the delete path**. All other statuses proceed (draft/completed/parsed/failed/cancelled).
+- **DB+files, but the fs removal is guarded (rule #9).** The DB row is deleted first (under the
+  lock, in `delete_job_conn`); only then, and only if a `job_dir` was recorded, does
+  `local_backend::remove_job_dir` remove it — and **only if** `path_is_within(data_dir/jobs, dir)`
+  holds (canonicalized root-or-descendant; a non-existent path or a symlink escape → refuse). Never
+  `rm` an arbitrary path read from the DB. The removal is **best-effort**: the row is already gone,
+  so a leftover dir is an `eprintln` warning, never a user-facing "delete failed". Exactly **one**
+  `remove_dir_all` exists in this path, reached only through the guard.
+- **FK cleanup is load-bearing, in one transaction, in this order** (FK enforcement is **ON** —
+  `SQLITE_DEFAULT_FOREIGN_KEYS=1`, measured): (1) `UPDATE jobs SET source_ensemble_job_id = NULL,
+  source_conformer_index = NULL WHERE source_ensemble_job_id = ?` — a DFT re-opt **child** that
+  pointed at this GOAT source becomes a standalone job; (2) `DELETE FROM reaction_reference_jobs
+  WHERE job_id = ?` — the reaction survives, losing only this reference; (3) `DELETE FROM jobs` —
+  **cascades** to the `results` row (`results.job_id … ON DELETE CASCADE`; never deleted by hand).
+  `jobs.pathway_id` points OUT and vanishes with the row (no orphan). A raw `DELETE FROM jobs`
+  without steps (1)–(2) trips the RESTRICT FKs — proven by the **negative-control** test
+  `raw_delete_without_cleanup_hits_fk_constraint` (asserts `is_err()`; if enforcement were off it
+  would go green wrongly).
+- **Jobs-survive both ways** — like `delete_reaction` (v13) and `remove_reference_job` (v14):
+  deleting a job never deletes another job (the re-opt child is nulled, not cascaded) and never
+  deletes a reaction (its reference row is dropped, the reaction stays).
+
+Cargo controls (`commands::jobs`): `delete_job_removes_it_and_cascades_results`,
+`delete_job_nulls_reopt_children`, `delete_job_drops_reference_rows`, `delete_job_returns_its_job_dir`,
+`delete_job_absent_is_not_found`, `delete_job_refuses_running`/`_refuses_queued`, and the bite-verified
+negative control above; plus `path_is_within_*` (descendant/root/sibling/parent/nonexistent/symlink)
+in `local_backend`.
 
 `open_job_folder` spawns the platform file manager (`xdg-open` / macOS `open` / Windows
 `explorer`) — an app-defined command, so no capability entry is needed. The frontend `listen`s to

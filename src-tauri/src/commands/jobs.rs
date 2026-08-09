@@ -9,7 +9,7 @@ use std::io::{BufRead, BufReader};
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
-use tauri::State;
+use tauri::{Manager, State};
 use uuid::Uuid;
 
 use crate::commands::settings::DbState;
@@ -280,6 +280,61 @@ pub(crate) fn get_job_conn(conn: &Connection, id: &str) -> Result<Job, AppError>
         .ok_or_else(|| AppError::NotFound(format!("job {id}")))
 }
 
+/// Delete a job from the database and return its isolated `job_dir` (or `None`)
+/// for the caller to remove **after** the transaction commits (Phase 4.7.1).
+///
+/// Terminal-states-only: refuses a `Running`/`Queued` job ("cancel it first").
+/// Terminating a live run is [`crate::local_backend::cancel`]'s job, never
+/// delete's — there is no killpg in this path.
+///
+/// The FK cleanup runs in ONE transaction, in this exact order so any failure
+/// rolls back whole. FK enforcement is **ON** in this build
+/// (`SQLITE_DEFAULT_FOREIGN_KEYS=1`, measured — see the v14 note in `db.rs`), so
+/// this cleanup is **required**, not hygiene: a raw `DELETE FROM jobs` would trip
+/// a RESTRICT FK from a re-opt child or a reference row (the negative-control test
+/// proves it).
+///   1. NULL the re-opt link on any child that pointed at this job as its GOAT
+///      source (`source_ensemble_job_id` / `source_conformer_index`) — the child
+///      survives as a standalone job (jobs-survive).
+///   2. DELETE this job's reaction-reference rows — the reaction survives, it just
+///      loses this one reference (jobs-survive, the reaction side).
+///   3. DELETE the job — this **cascades** to its `results` row
+///      (`results.job_id … ON DELETE CASCADE`); never delete the results row by
+///      hand, or the test can't tell the cascade fired.
+/// `jobs.pathway_id` points OUT from this row and vanishes with it — no orphan,
+/// no action.
+pub(crate) fn delete_job_conn(conn: &Connection, id: &str) -> Result<Option<String>, AppError> {
+    // Not-found first: nothing is touched if the id is absent (mirrors
+    // delete_reaction_conn).
+    let job = get_job_conn(conn, id)?;
+
+    // Terminal-states-only guard: refuse a live job; cancel it first.
+    if matches!(job.status, JobStatus::Running | JobStatus::Queued) {
+        return Err(AppError::Backend(format!(
+            "job is running or queued — cancel it first (status: {})",
+            job.status.as_str()
+        )));
+    }
+
+    // One transaction (`unchecked_transaction` borrows the shared `&Connection`
+    // held behind the DbState mutex — the caller owns the only handle). A failure
+    // at any step rolls the whole delete back.
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
+        "UPDATE jobs SET source_ensemble_job_id = NULL, source_conformer_index = NULL \
+         WHERE source_ensemble_job_id = ?1",
+        params![id],
+    )?;
+    tx.execute(
+        "DELETE FROM reaction_reference_jobs WHERE job_id = ?1",
+        params![id],
+    )?;
+    tx.execute("DELETE FROM jobs WHERE id = ?1", params![id])?;
+    tx.commit()?;
+
+    Ok(job.job_dir)
+}
+
 /// Record the isolated job directory for a job (set once at submit time).
 pub(crate) fn set_job_dir_conn(conn: &Connection, id: &str, job_dir: &str) -> Result<(), AppError> {
     conn.execute(
@@ -497,6 +552,25 @@ pub fn submit_job(app: tauri::AppHandle, id: String) -> Result<(), AppError> {
 #[tauri::command]
 pub fn cancel_job(app: tauri::AppHandle, id: String) -> Result<(), AppError> {
     crate::local_backend::cancel(&app, &id)
+}
+
+/// Delete a job (Phase 4.7.1): its DB row (with FK cleanup; `results` cascade) and,
+/// **guarded**, its isolated `job_dir`. Terminal-states-only — a running/queued job
+/// is refused (cancel it first). The DB row is deleted first (under the lock); only
+/// then, and only if a `job_dir` was recorded, is the directory removed — and that
+/// removal is itself guarded to `data_dir/jobs/` (see
+/// [`crate::local_backend::remove_job_dir`]).
+#[tauri::command]
+pub fn delete_job(app: tauri::AppHandle, id: String) -> Result<(), AppError> {
+    let db = app.state::<DbState>();
+    let job_dir = {
+        let conn = db.lock()?;
+        delete_job_conn(&conn, &id)?
+    };
+    if let Some(dir) = job_dir {
+        crate::local_backend::remove_job_dir(&app, &dir);
+    }
+    Ok(())
 }
 
 /// Pause the sequential queue: the running job finishes, but no queued job
@@ -1143,6 +1217,205 @@ mod tests {
         assert_eq!(reloaded.status, JobStatus::Failed);
         assert_eq!(reloaded.error_message.as_deref(), Some("boom"));
         assert!(reloaded.completed_at.is_some());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- delete_job_conn (Phase 4.7.1): DB core + FK cleanup + terminal-states guard ---
+
+    /// Insert a minimal reaction row (id, name) — grouping metadata for the
+    /// reference-row test.
+    fn insert_reaction(conn: &Connection, id: &str, name: &str) {
+        conn.execute(
+            "INSERT INTO reactions (id, name) VALUES (?1, ?2)",
+            params![id, name],
+        )
+        .unwrap();
+    }
+
+    /// Insert a minimal parsed `results` row for `job_id` (proves ON DELETE CASCADE).
+    fn insert_results(conn: &Connection, job_id: &str) {
+        conn.execute(
+            "INSERT INTO results (job_id, final_energy_eh, data_json, parser_version) \
+             VALUES (?1, -76.4, '{}', 4)",
+            params![job_id],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn delete_job_removes_it_and_cascades_results() {
+        let (conn, dir) = test_db();
+
+        let job = create_job_conn(&conn, "j", "! HF", None, None).unwrap();
+        insert_results(&conn, &job.id);
+
+        let returned_dir = delete_job_conn(&conn, &job.id).unwrap();
+        assert!(returned_dir.is_none(), "no job_dir was set → None");
+
+        // Job gone.
+        assert!(matches!(
+            get_job_conn(&conn, &job.id),
+            Err(AppError::NotFound(_))
+        ));
+        // Results row removed AUTOMATICALLY by ON DELETE CASCADE (never by hand).
+        let results_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM results WHERE job_id = ?1",
+                params![job.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(results_count, 0, "results cascade should have fired");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn delete_job_returns_its_job_dir() {
+        let (conn, dir) = test_db();
+
+        let job = create_job_conn(&conn, "j", "! HF", None, None).unwrap();
+        set_job_dir_conn(&conn, &job.id, "/data/jobs/xyz").unwrap();
+
+        let returned_dir = delete_job_conn(&conn, &job.id).unwrap();
+        assert_eq!(returned_dir.as_deref(), Some("/data/jobs/xyz"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn delete_job_nulls_reopt_children() {
+        let (conn, dir) = test_db();
+
+        let source = create_job_conn(&conn, "GOAT source", "! XTB GOAT", None, None).unwrap();
+        let child = create_reopt_job_conn(&conn, "re-opt #0", "! r2SCAN-3c Opt", &source.id, 3)
+            .unwrap();
+
+        delete_job_conn(&conn, &source.id).unwrap();
+
+        // Child survives as a standalone job with BOTH linkage FKs nulled.
+        let reloaded = get_job_conn(&conn, &child.id).unwrap();
+        assert_eq!(reloaded.id, child.id, "child still present");
+        let (src, idx): (Option<String>, Option<i64>) = conn
+            .query_row(
+                "SELECT source_ensemble_job_id, source_conformer_index FROM jobs WHERE id = ?1",
+                params![child.id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(src, None, "source_ensemble_job_id nulled");
+        assert_eq!(idx, None, "source_conformer_index nulled");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn delete_job_drops_reference_rows() {
+        let (conn, dir) = test_db();
+
+        insert_reaction(&conn, "rxn1", "reduction");
+        let job = create_job_conn(&conn, "reference job", "! HF", None, None).unwrap();
+        conn.execute(
+            "INSERT INTO reaction_reference_jobs (reaction_id, job_id) VALUES (?1, ?2)",
+            params!["rxn1", job.id],
+        )
+        .unwrap();
+
+        delete_job_conn(&conn, &job.id).unwrap();
+
+        // The reference row is gone; the reaction row survives (jobs-survive, reaction side).
+        let ref_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM reaction_reference_jobs WHERE job_id = ?1",
+                params![job.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(ref_count, 0, "reference row dropped");
+        let rxn_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM reactions WHERE id = 'rxn1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(rxn_count, 1, "the reaction itself survives");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn delete_job_absent_is_not_found() {
+        let (conn, dir) = test_db();
+        assert!(matches!(
+            delete_job_conn(&conn, "no-such-job"),
+            Err(AppError::NotFound(_))
+        ));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn delete_job_refuses_running() {
+        let (conn, dir) = test_db();
+        let job = create_job_conn(&conn, "j", "! HF", None, None).unwrap();
+        update_job_status_conn(&conn, &job.id, JobStatus::Running.as_str()).unwrap();
+
+        assert!(matches!(
+            delete_job_conn(&conn, &job.id),
+            Err(AppError::Backend(_))
+        ));
+        // Still present — nothing was deleted.
+        assert!(get_job_conn(&conn, &job.id).is_ok());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn delete_job_refuses_queued() {
+        let (conn, dir) = test_db();
+        let job = create_job_conn(&conn, "j", "! HF", None, None).unwrap();
+        update_job_status_conn(&conn, &job.id, JobStatus::Queued.as_str()).unwrap();
+
+        assert!(matches!(
+            delete_job_conn(&conn, &job.id),
+            Err(AppError::Backend(_))
+        ));
+        assert!(get_job_conn(&conn, &job.id).is_ok());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// NEGATIVE CONTROL — proves FK enforcement is ON and the A1 cleanup is
+    /// REQUIRED, not decoration. With a re-opt child pointing at a job, a RAW
+    /// `DELETE FROM jobs` WITHOUT the pre-delete NULL trips the RESTRICT FK.
+    #[test]
+    fn raw_delete_without_cleanup_hits_fk_constraint() {
+        let (conn, dir) = test_db();
+
+        let source = create_job_conn(&conn, "GOAT source", "! XTB GOAT", None, None).unwrap();
+        let _child = create_reopt_job_conn(&conn, "re-opt #0", "! r2SCAN-3c Opt", &source.id, 0)
+            .unwrap();
+
+        // No cleanup — the child's source_ensemble_job_id still RESTRICT-references source.
+        let raw = conn.execute("DELETE FROM jobs WHERE id = ?1", params![source.id]);
+        assert!(
+            raw.is_err(),
+            "raw delete must fail the FK constraint (enforcement is ON)"
+        );
+        // And with the reference-row FK too.
+        insert_reaction(&conn, "rxn1", "r");
+        let refjob = create_job_conn(&conn, "ref", "! HF", None, None).unwrap();
+        conn.execute(
+            "INSERT INTO reaction_reference_jobs (reaction_id, job_id) VALUES (?1, ?2)",
+            params!["rxn1", refjob.id],
+        )
+        .unwrap();
+        let raw2 = conn.execute("DELETE FROM jobs WHERE id = ?1", params![refjob.id]);
+        assert!(
+            raw2.is_err(),
+            "raw delete of a referenced job must fail the FK constraint too"
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }

@@ -923,11 +923,13 @@ metadata in SQLite, never a filesystem hierarchy**. A job keeps its isolated `jo
 Group-delete **promotes** children (never a destructive cascade); jobs orphan to root via
 `ON DELETE SET NULL` (jobs-survive). Adjacency list (`parent_id`) at this scale.
 
-- [ ] **4.7.1 — job deletion.** DB-only vs DB+files (the isolated `job_dir`); the running-guard
-      (killpg + cwd-sweep before removal); FK links (`pathway_id` / `reaction_reference_jobs` /
-      `source_ensemble_job_id`) **NULLed, not cascaded** (jobs-survive the other way too);
-      post-conditions (no dangling FK; a running job is not deleted out from under its process).
-      **Independent of grouping — can land first.**
+- [x] **4.7.1 — job deletion.** DB+files: the row plus, **guarded by `path_is_within(data_dir/jobs)`**
+      (rule #9), its isolated `job_dir` (exactly one `remove_dir_all`, best-effort). **Terminal-states-
+      only** — a running/queued job is refused ("cancel it first"), no killpg in the delete path (the
+      ratified simplification over the original running-guard sketch). FK cleanup in one transaction:
+      re-opt children `source_ensemble_job_id`/`source_conformer_index` **NULLed**,
+      `reaction_reference_jobs` rows **DELETEd**, `results` removed by **CASCADE** — jobs-survive both
+      ways. Negative control proves the RESTRICT FKs bite. No schema change (all FKs exist at v15).
 - [ ] **4.7.2 — groups schema + model (ADR-019).** Migration (`groups` table + `jobs.group_id`,
       `ON DELETE SET NULL`; `parent_id` NOT cascade); Rust CRUD (create / rename / move / delete-with-
       **promotion**); the group-delete promotion post-condition (children re-parented before the row

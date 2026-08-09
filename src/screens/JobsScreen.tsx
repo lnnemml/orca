@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { confirm } from "@tauri-apps/plugin-dialog";
 
 import type { Job } from "../types";
 import { formatEnergy, formatTimestamp, formatWallTime } from "../format";
@@ -34,6 +35,24 @@ export function JobsScreen({ onOpenDetail, queuePaused }: JobsScreenProps) {
         await invoke("cancel_job", { id: jobId });
         // The terminal status arrives via job:status; reload to be safe.
         load();
+      } catch (e) {
+        setError(String(e));
+      }
+    },
+    [load],
+  );
+
+  const remove = useCallback(
+    async (job: Job) => {
+      const ok = await confirm(
+        `Permanently delete "${job.title}"? This removes the job and its files ` +
+          "from disk — it cannot be undone.",
+        { title: "Delete job", kind: "warning" },
+      );
+      if (!ok) return;
+      try {
+        await invoke("delete_job", { id: job.id });
+        await load();
       } catch (e) {
         setError(String(e));
       }
@@ -107,17 +126,9 @@ export function JobsScreen({ onOpenDetail, queuePaused }: JobsScreenProps) {
                 </td>
                 <td className="mono">{formatTimestamp(job.created_at)}</td>
                 <td style={{ textAlign: "right" }}>
-                  {job.status === "draft" ? (
-                    <button
-                      className="btn btn-primary btn-sm"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onOpenDetail(job.id, true);
-                      }}
-                    >
-                      Run
-                    </button>
-                  ) : job.status === "running" || job.status === "queued" ? (
+                  {job.status === "running" || job.status === "queued" ? (
+                    // Live job: cancel only. Deleting a running/queued job is
+                    // refused by the backend — cancel it first.
                     <button
                       className="btn btn-sm"
                       onClick={(e) => {
@@ -128,15 +139,35 @@ export function JobsScreen({ onOpenDetail, queuePaused }: JobsScreenProps) {
                       Cancel
                     </button>
                   ) : (
-                    <button
-                      className="btn btn-sm"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onOpenDetail(job.id, false);
-                      }}
+                    // Terminal states (draft/completed/parsed/failed/cancelled):
+                    // the primary action + Delete (removes the job and its files).
+                    <div
+                      className="row"
+                      style={{ gap: 8, justifyContent: "flex-end" }}
                     >
-                      Open
-                    </button>
+                      <button
+                        className={
+                          job.status === "draft"
+                            ? "btn btn-primary btn-sm"
+                            : "btn btn-sm"
+                        }
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onOpenDetail(job.id, job.status === "draft");
+                        }}
+                      >
+                        {job.status === "draft" ? "Run" : "Open"}
+                      </button>
+                      <button
+                        className="btn btn-sm btn-danger"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          remove(job);
+                        }}
+                      >
+                        Delete
+                      </button>
+                    </div>
                   )}
                 </td>
               </tr>

@@ -84,6 +84,7 @@ pub fn run() {
             commands::jobs::update_job_status,
             commands::jobs::submit_job,
             commands::jobs::cancel_job,
+            commands::jobs::delete_job,
             commands::jobs::pause_queue,
             commands::jobs::resume_queue,
             commands::jobs::is_queue_paused,

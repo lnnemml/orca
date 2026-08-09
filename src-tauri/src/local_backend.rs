@@ -502,6 +502,46 @@ pub fn cancel(app: &AppHandle, job_id: &str) -> Result<(), AppError> {
     }
 }
 
+/// Remove a **deleted** job's isolated directory — but ONLY if it is canonically
+/// a descendant of the managed jobs root (`data_dir/jobs/`). rule #9: check the
+/// destructive fs op in OUR terms before doing it; never `rm` an arbitrary path
+/// read from the DB.
+///
+/// **Best-effort.** The DB row is already gone by the time this runs (Phase 4.7.1
+/// deletes the row first, then removes the dir), so a leftover directory is a
+/// warning, never a user-facing "delete failed". On any error — path escapes the
+/// root, or `remove_dir_all` fails — it `eprintln`s a warning (the killpg-sweep
+/// idiom) and returns.
+pub(crate) fn remove_job_dir(app: &AppHandle, job_dir: &str) {
+    let runner = app.state::<JobRunner>();
+    let root = runner.data_dir.join("jobs");
+    let candidate = Path::new(job_dir);
+    if !path_is_within(&root, candidate) {
+        eprintln!(
+            "delete_job: refusing to remove {job_dir:?} — not within the managed jobs root {root:?}"
+        );
+        return;
+    }
+    if let Err(e) = std::fs::remove_dir_all(candidate) {
+        eprintln!("delete_job: could not remove job dir {job_dir:?}: {e}");
+    }
+}
+
+/// True iff `candidate`, canonicalized, is `root` or a descendant of `root` (also
+/// canonicalized). The rule #9 guard behind the single `remove_dir_all` in the
+/// delete path: we never remove a path read from the DB unless it is provably
+/// inside the managed jobs root.
+///
+/// A path that cannot be canonicalized (a non-existent `candidate` or `root`, or a
+/// symlink whose target is gone) yields `false` — refuse. `canonicalize` resolves
+/// symlinks, so a symlink escaping the root also yields `false`.
+fn path_is_within(root: &Path, candidate: &Path) -> bool {
+    match (root.canonicalize(), candidate.canonicalize()) {
+        (Ok(root), Ok(candidate)) => candidate.starts_with(&root),
+        _ => false,
+    }
+}
+
 /// Set the queue pause flag. Pausing leaves the running job alone; resuming
 /// immediately pulls the next queued job.
 pub fn set_paused(app: &AppHandle, paused: bool) {
@@ -1038,6 +1078,73 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    // --- path_is_within: the rule #9 guard behind the delete path's remove_dir_all ---
+
+    #[test]
+    fn path_is_within_accepts_a_descendant() {
+        let root = scratch("within-root");
+        let child = root.join("some-job-id");
+        std::fs::create_dir_all(&child).unwrap();
+        assert!(path_is_within(&root, &child));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn path_is_within_accepts_the_root_itself() {
+        let root = scratch("within-self");
+        assert!(path_is_within(&root, &root));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn path_is_within_rejects_a_sibling_outside() {
+        // `<parent>/jobs` is the root; `<parent>/jobs-evil` is a sibling that shares
+        // a textual prefix but is NOT inside — component-wise starts_with rejects it.
+        let parent = scratch("within-sibling");
+        let root = parent.join("jobs");
+        let sibling = parent.join("jobs-evil");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&sibling).unwrap();
+        assert!(!path_is_within(&root, &sibling));
+        std::fs::remove_dir_all(&parent).ok();
+    }
+
+    #[test]
+    fn path_is_within_rejects_the_parent() {
+        let parent = scratch("within-parent");
+        let root = parent.join("jobs");
+        std::fs::create_dir_all(&root).unwrap();
+        assert!(!path_is_within(&root, &parent));
+        std::fs::remove_dir_all(&parent).ok();
+    }
+
+    #[test]
+    fn path_is_within_rejects_a_nonexistent_candidate() {
+        let root = scratch("within-nonexistent");
+        let ghost = root.join("never-created");
+        // Can't canonicalize a non-existent path → refuse.
+        assert!(!path_is_within(&root, &ghost));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn path_is_within_rejects_a_symlink_escape() {
+        // A dir INSIDE the root that is actually a symlink pointing OUTSIDE it.
+        // canonicalize resolves the link, so the guard sees the real (outside)
+        // target and refuses.
+        use std::os::unix::fs::symlink;
+        let parent = scratch("within-symlink");
+        let root = parent.join("jobs");
+        let outside = parent.join("outside-target");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let link = root.join("escape");
+        symlink(&outside, &link).unwrap();
+        assert!(!path_is_within(&root, &link));
+        std::fs::remove_dir_all(&parent).ok();
     }
 
     /// A `sh -c 'sleep 30'` child with its cwd set to `dir`. `sh` execs `sleep`,
