@@ -159,7 +159,7 @@ development, the page names the **final rule** and points to the log entry in on
 than narrating each intermediate state. (Reason, recorded so this isn't relitigated: the phase-2.5
 lint found five stale claims, all of them the tail of ~42 accumulated `As built` sections in the
 module pages — a module page that doubles as a second chronicle drifts from the code by
-construction. Consolidating the existing `As built` sections is tracked as its own unit.)
+construction.)
 
 ### index.md and log.md
 

@@ -6784,3 +6784,49 @@ create, and a composed search filter; grouping never touches disk (rule #3). ROA
 COMPLETE.
 
 **Next:** Phase 5 (remote execution over SSH) per the roadmap, or whatever Anton directs.
+
+## [2026-08-09] lint | Full wiki lint — 4 findings applied (ADR-007 FK-off correction + 3 stale/index)
+
+Full health-check across all of `wiki/**` (88 pages), with extra depth on the Phase 4.5
+reaction-modeling corpus (Stages A–D). Measure-only report first, then this apply pass — a
+docs-only commit (no source, no schema, no tests).
+
+**Dimensions checked and CLEAN:**
+- **Contradictions — the Phase 4.5 measured-fact corpus is internally consistent.** Index base
+  (ORCA **0-based** / xtb **1-based**) stated consistently across ~15 pages; SMD keyword-form ==
+  `%cpcm` block bit-identical (`solvation.md`); GOAT preserves atom count+order (`goat.md`); `.hess`
+  normal modes **Cartesian** + `$atoms` frame pure-translation/Kabsch (`parse-sources.md` ⟷
+  `artifact-readers.md`); scan needs `! Opt` (`scan.md`); Boltzmann at **GFN2-xTB** level, honestly
+  labelled (`conformers.md` ⟷ `conformer-reoptimization.md`). No conflicts.
+- **cclib** — every live mention correctly "rejected/crashes on 6.1" (ADR-012 etc.).
+- **Module-vs-code** — `tauri-core.md` current (`SCHEMA_VERSION=16`, `delete_job`, all six group
+  commands, `Group` model); "**five** readers" matches `src-tauri/src/parse/`; guided placement built
+  and documented as built. Spot-checked, no drift.
+- **Orphans/xrefs** — every `index.md` link resolves; no orphans; **no broken in-page `.md` links
+  across all 88 pages**; no dangling ADR refs; no stale Phase-2.6 links.
+- **ROADMAP** — no drift (Stage D + Phase 4.7 correctly COMPLETE; the reactions-ui c1–c4 / r1–r4
+  manual gates read "PENDING" consistently in `reactions-ui.md`, `log.md`, and ROADMAP — a genuine
+  open state, not drift).
+- **Language** — chemistry/* Ukrainian, architecture/modules/orca English; the author's raw design
+  proposal (Ukrainian) is exempt. **log.md** — all prefixes well-formed, chronological, tail-5 parses.
+
+**Four fixes applied (quote-and-correct in place; no decision rewritten, no history edited):**
+- **F1 (HIGH) — `architecture/adr-007-reaction-modeling.md`:** the integrity paragraph's aside
+  claimed `PRAGMA foreign_keys` off and `results ON DELETE CASCADE` is "documentation" — measured
+  **false**. Added a correction note (mirrors `modules/tauri-core.md`:151): FK enforcement is **ON**
+  (`SQLITE_DEFAULT_FOREIGN_KEYS=1`, `PRAGMA` reads 1), the cascade **fires** (Phase 4.7.1 test
+  `delete_job_removes_it_and_cascades_results`), command checks are belt-and-suspenders. The one live
+  survivor the 2026-08-08 tauri-core sweep missed; ADR decision untouched.
+- **F2 (LOW) — `CLAUDE.md`:** trimmed the completed tail clause "Consolidating the existing `As
+  built` sections is tracked as its own unit" (no module page has `As built` sections anymore). Rule
+  + rationale kept.
+- **F3 (MEDIUM) — `architecture/adr-016-emit-input-ownership.md`:** the five-seams list item 3
+  (`%geom Scan`) said "not yet emitted (only in the manual index today)" — scan emit shipped in Stage
+  A1. Re-annotated "emitted since Stage A1 (`src/scene/scan.ts` + `geomBlock.ts`, Rust golden)".
+- **F4 (LOW) — `index.md` footer:** page count 84 → **86** (all catalogable pages = `wiki/**.md`
+  minus `index.md`/`log.md`; the two Phase-4.7 pages are the delta), date → 2026-08-09, prepended
+  `+groups.md` / `+groups-ui.md` to the structural-update narrative. Body links untouched.
+
+**Deliberately NOT changed:** the "FK off" / "not deletable today" survivors elsewhere in this
+`log.md` are **append-only correct history** (true when written) — left as-is per the log's
+append-only rule. No existing entry edited.

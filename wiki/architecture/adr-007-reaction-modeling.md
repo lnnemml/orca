@@ -325,7 +325,22 @@ model is purely additive.
 `PRAGMA foreign_keys` off (as elsewhere — even the `results` `ON DELETE CASCADE` is
 documentation), so `create_pathway` under a missing reaction and `attach_job_to_pathway`
 with a missing job/pathway return `AppError::NotFound` with no orphan/partial write. The
-`REFERENCES` clauses in the DDL document intent. Commands: `create_reaction`,
+`REFERENCES` clauses in the DDL document intent.
+
+> **Correction (measured 2026-08-08, rule #10 — mirrors `modules/tauri-core.md`:151):** the
+> aside above — "this DB leaves `PRAGMA foreign_keys` off … even the `results` `ON DELETE
+> CASCADE` is documentation … the `REFERENCES` clauses document intent" — is **false**. The
+> bundled SQLite is compiled with `SQLITE_DEFAULT_FOREIGN_KEYS=1` (`PRAGMA foreign_keys` reads
+> **1**; `pragma_compile_options` lists `DEFAULT_FOREIGN_KEYS`), so the `REFERENCES` clauses are
+> **actively enforced** on every connection and `results ON DELETE CASCADE` **does fire** —
+> proven by the Phase 4.7.1 test `delete_job_removes_it_and_cascades_results` (delete a job → its
+> `results` row is removed automatically). The command-level checks are therefore
+> **belt-and-suspenders** (clean `NotFound` errors + correct child-first delete order so a parent
+> is never removed before its children — error 787), **not** the sole integrity mechanism. The
+> ADR's decision (integrity-in-commands, jobs-survive, normalized `pathway_id`) stands; only this
+> factual aside was wrong.
+
+Commands: `create_reaction`,
 `list_reactions`, `rename_reaction`, `delete_reaction`, `create_pathway`, `list_pathways`,
 `delete_pathway`, `attach_job_to_pathway`, `detach_job_from_pathway`. Full schema +
 command semantics: `modules/tauri-core.md` (v13). C2 (comparative ΔΔE‡ view) builds on this.

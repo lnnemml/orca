@@ -53,7 +53,7 @@ Five kinds of seam currently move a **bare integer** across a boundary:
 
 1. **coordinate block** — Scene array position becomes ORCA's implicit atom index (`injectSceneIntoInput`);
 2. **`%geom Constraints`** — explicit ORCA **0-based** atom indices, B/A/D/C (`constraints.ts`);
-3. **`%geom Scan`** — same 0-based convention, **Phase 4.5**, not yet emitted (only in the manual index today);
+3. **`%geom Scan`** — same 0-based convention, **Phase 4.5**, emitted since Stage A1 (`src/scene/scan.ts` + `geomBlock.ts`, Rust golden — `wiki/orca/scan.md`);
 4. **xtb `$constrain`** — **1-based** indices (opposite base to ORCA — `wiki/orca/xtb.md`), `constraints.ts`;
 5. **sidecar `/geometry`** — positional arrays (`AseIndex`), request and response.
 
