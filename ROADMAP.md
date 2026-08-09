@@ -921,6 +921,9 @@ r1–r4 manual gates. Next per the ratified reorder: CREST probe → Stage D →
 - [ ] **OptTS** (`! OptTS`) — probe (block, artifacts, cost) → then the scan-max → OptTS → Freq →
       one imaginary → **IRC** connectivity check → ΔG‡ pipeline (the *application* of these methods
       in the scan spine — the natural continuation of Stage B's "click the maximum").
+      *Seam ready (2026-08-09):* the scan-max geometry is now **exportable** from the scan-profile
+      panel (default = approx-TS max; `scanPointExportXyz`, `debugging/018`) — the OptTS-refine seed
+      the E1 child job reuses.
 - [ ] **IRC** (`! IRC`) — probe → the post-condition that a found TS connects the intended
       reactant/product.
 - [ ] **NEB / NEB-TS / NEB-CI** (`! NEB-TS`) — probe → the alternative path-finder when there is no

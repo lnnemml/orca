@@ -15,13 +15,14 @@ import type { ScanProfileJson, ScanGeometry } from "../types";
 import { MoleculeViewer } from "../viewer/MoleculeViewer";
 import { useContainerWidth } from "../charts/useContainerWidth";
 import { resolveClickedIndex, type ChartClickState } from "../charts/clickIndex";
-import { saveBytes, exportName } from "../export/save";
+import { saveBytes, saveText, exportName } from "../export/save";
 import { svgToPngBytes } from "../export/png";
 import {
   profileSeries,
   maxIndex,
   pointGeometryXyz,
   pointReadout,
+  scanPointExportXyz,
   type EnergyChoice,
   type RefChoice,
 } from "./scanProfile";
@@ -59,7 +60,10 @@ export function ScanProfilePanel({
   const points = scan.points;
   const unit = scan.coordinate_unit;
   // The selected point is APPLICATION state — the viewer never owns it (ADR-011).
-  const [selected, setSelected] = useState(0);
+  // The panel OPENS on the approximate-TS maximum (act series) — its Stage-E purpose is
+  // "the maximum → refine with OptTS", so that is the point to land on (an intended B2
+  // behaviour change; before it opened on point 1).
+  const [selected, setSelected] = useState(() => maxIndex(points, "act"));
   const [energyChoice, setEnergyChoice] = useState<EnergyChoice>("act"); // act = composite (default)
   const [refChoice, setRefChoice] = useState<RefChoice>("first");
   const [geometries, setGeometries] = useState<ScanGeometry[] | null>(null);
@@ -159,6 +163,36 @@ export function ScanProfilePanel({
             approximate TS
           </span>
         ) : null}
+        {/* Export the SELECTED point's geometry (WYSIWYG with the viewer) — sourced from the
+            SAME read_scan_geometries array the viewer is fed, never the last-point result
+            geometry the top ExportBar exports. Honest-or-absent: enabled ONLY when the point
+            actually renders (element order agrees). This is the Stage-E seam — the approx-TS
+            max exported here is the OptTS-refine seed. */}
+        <button
+          className="btn btn-sm"
+          disabled={!(viewerState && "xyz" in viewerState)}
+          title={
+            viewerState && "xyz" in viewerState
+              ? "Export this point's geometry (.xyz) — the OptTS-refine seed (Stage E)"
+              : "geometry not rendered (element order disagrees, or still loading)"
+          }
+          onClick={async () => {
+            try {
+              const g = geometries?.[clamped];
+              const pt = points[clamped];
+              if (!g || !pt) return;
+              await saveText(
+                exportName(jobTitle, `scan-point-${clamped + 1}`, "xyz"),
+                scanPointExportXyz(g, pt, clamped, points.length, unit, clamped === tsIndex, jobTitle),
+                "xyz",
+              );
+            } catch (e) {
+              console.error("[export]", e);
+            }
+          }}
+        >
+          geometry .xyz
+        </button>
       </div>
 
       {/* Display controls — each a LABELLED choice, not a molecule property. */}

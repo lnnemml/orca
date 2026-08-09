@@ -6951,3 +6951,35 @@ is Stage E): intrinsic ≈ **+7.87 kcal/mol**, absolute vs separated reactants �
 
 **Still pending:** C2b-1's **c1–c4** (ΔΔE‡) gate — it needs a **two-pathway (si/re) stereochemical**
 case, which this single-pathway SN2 does not provide. It stays open until that case is run.
+
+## [2026-08-09] session | Scan geometry export — the SELECTED point (default approx-TS), not the last
+
+Frontend-only unit. **Symptom:** on the real Menshutkin scan the author selected the approximate-TS
+point in the scan-profile panel (point 8/12, N···C ≈ 2.418 Å) and exported geometry to seed an OptTS
+refine — but got the **last** point (≈ 1.8 Å), a silently wrong seed. **Root cause:** the only
+geometry export was the top `ExportBar` button, hardwired to `results.final_geometry`, which for a
+scan is built from the last `input.NNN.xyz` (profile-only routing, `debugging/015`); the panel had a
+per-point *viewer* but no per-point *export*, and opened on point 1.
+
+**Fix (no Rust / command / schema).**
+- `scanPointExportXyz` (`src/scan/scanProfile.ts`) — pure builder that **reuses the canonical
+  `finalGeometryXyz`** (no second xyz formatter; the atoms+2 post-condition, rule #9, inherited).
+  Comment carries point number + coordinate; `(approx TS / scan maximum)` tag only when `isMax`;
+  exported energy = `energy_act_eh` (the composite total / plotted energy — *always* act, independent
+  of the scf display toggle; an intended discipline, the approx-TS is defined on the default act view).
+- `ScanProfilePanel` — a `geometry .xyz` button in the readout row exports `geometries[clamped]` (the
+  SAME `read_scan_geometries` array the viewer shows), **never `results.final_geometry`**;
+  honest-or-absent (enabled only when `viewerState && "xyz" in viewerState`). Initial `selected`
+  defaults to `maxIndex(points, "act")` — an intended B2 behaviour change: the panel now **opens on
+  the approx-TS maximum** ("the maximum → refine").
+- `ResultsCard` ExportBar — for a scan job the top button is relabelled `geometry .xyz (last point)`
+  with a "last scan point" comment (conditional on `results.scan`); a non-scan job is unchanged.
+
+**This selected-max geometry is the Stage-E seam** — the OptTS-refine child job (E1) reuses exactly
+it as the saddle-search seed.
+
+**Verification.** tsc clean; vitest **732** (was 729, +3: `C-reuses-canonical`, `C-approx-ts-tag`,
+`C-atom-count-inherited`, the last two negative controls). cargo UNAFFECTED (no Rust). Wiki:
+`modules/results-ui.md` scan-profile section, `debugging/018`, `index.md`, ROADMAP Stage-E seam note.
+**Next:** author runs e1–e5 in the live Tauri/WebKitGTK window (e2 = the fix witness: the 2.418 Å
+point, not 1.8); then the OptTS-refine child job (E1) that consumes this seam.

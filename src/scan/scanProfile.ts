@@ -18,6 +18,7 @@
 
 import type { ScanProfileJson, ScanGeometry } from "../types";
 import { frameToXyz, elementsAgree } from "../trajectory/frame";
+import { finalGeometryXyz } from "../export/exporters";
 
 /** 1 Hartree = 627.509… kcal/mol — the named factor (shared with the trajectory). */
 export const HARTREE_TO_KCAL = 627.5094740631;
@@ -107,6 +108,32 @@ export function pointGeometryXyz(
       xyz_angstrom: geometry.xyz_angstrom,
     }),
   };
+}
+
+/**
+ * The SELECTED scan point's geometry as a standard `.xyz`, for export — the geometry the
+ * panel is SHOWING (default the approximate-TS maximum), NOT `results.final_geometry` (which
+ * is the LAST scan point; seeding OptTS from it is the bug this replaces — debugging/018).
+ *
+ * REUSES `finalGeometryXyz`: the xyz body + the atoms+2 post-condition (rule #9) come from the
+ * one canonical builder — there is no second xyz formatter. The point's own coordinate/number
+ * are composed into the comment; `point.energy_act_eh` (the composite total, the plotted energy)
+ * is the exported energy. The `(approx TS / scan maximum)` tag is honest — present ONLY when this
+ * point IS the shown-series maximum (`isMax`). This max-point extraction is the Stage-E seam:
+ * an OptTS-refine child job (E1) reuses exactly this selected geometry as its seed.
+ */
+export function scanPointExportXyz(
+  geometry: ScanGeometry,
+  point: ScanPoint,
+  pointIndex0: number,
+  npoints: number,
+  unit: string,
+  isMax: boolean,
+  jobTitle: string,
+): string {
+  const tag = isMax ? " (approx TS / scan maximum)" : "";
+  const comment = `${jobTitle} — scan point ${pointIndex0 + 1}/${npoints} @ ${point.coordinate.toFixed(3)} ${unit}${tag}`;
+  return finalGeometryXyz(geometry, comment, point.energy_act_eh);
 }
 
 /** A readout of the selected point: its coordinate (+ unit) and ΔE (kcal/mol). */

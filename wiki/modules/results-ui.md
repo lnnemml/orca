@@ -102,6 +102,22 @@ B1's `ParsedResults.scan` and **re-parses nothing** (ADR-012).
   relaxed surface (ADR-007 §"ΔE‡ vs ΔG‡"), never "the transition state" and never ΔG‡; a note points
   forward to OptTS (Stage E). A `< 2`-point scan is a clear empty state, not a crash; a non-scan job
   hides the panel (`results.scan` is null).
+- **Per-point geometry export — WYSIWYG, and the Stage-E seam.** The panel **opens on the
+  approximate-TS maximum** (`selected` initialises to `maxIndex(points, "act")`, not point 1 — an
+  intended B2 behaviour change: the panel's Stage-E purpose is "the maximum → refine"). A
+  `geometry .xyz` button in the readout row exports **the point the viewer is showing** — the same
+  `geometries[clamped]` from `read_scan_geometries` the viewer is fed, **never `results.final_geometry`**
+  (which is the *last* point — seeding OptTS from it was the bug: `debugging/018`). It reuses the one
+  canonical `finalGeometryXyz` via `scanPointExportXyz` (no second xyz builder; the atoms+2
+  post-condition, rule #9, is inherited). **Honest-or-absent:** enabled ONLY when the point actually
+  renders (`viewerState && "xyz" in viewerState`, i.e. element order agrees) — disabled otherwise.
+  The comment always carries `energy_act_eh` (the composite total, the plotted energy) regardless of
+  the `scf` toggle, and the `(approx TS / scan maximum)` tag appears only when the selected point IS
+  the maximum. **This selected-max extraction is the Stage-E seam** — the OptTS-refine child job (E1)
+  reuses exactly this geometry as its seed. Correspondingly the **top ExportBar geometry button is
+  relabelled `geometry .xyz (last point)` for a scan job** (`results.scan != null`) and its comment
+  says "last scan point", so the last point is offered honestly and is not confused with the
+  approx-TS selection; a non-scan job is unchanged (`geometry .xyz`, the optimized final geometry).
 - **The point geometries are a witness read (`xyz.rs` `first_frame`), not authoritative output** — a
   relaxed-scan point is not the input geometry, so it does not go through the reference-based geometry
   post-condition (which fails by design); its identity is the UI-boundary `elementsAgree` check, the

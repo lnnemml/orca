@@ -216,19 +216,28 @@ function ExportBar({ results, jobTitle }: { results: ParsedResults; jobTitle: st
   const hasCharges = results.charges.length > 0;
   const hasOrbitals = !!results.orbitals && results.orbitals.orbitals.length > 0;
   const hasThermo = !!results.thermochemistry;
+  // For a scan, `final_geometry` is the LAST scan point — label it honestly so it is not
+  // mistaken for the optimized/selected geometry. The per-point export (default the approx-TS
+  // maximum) lives in the ScanProfilePanel. A non-scan job is unchanged.
+  const isScan = results.scan != null;
   return (
     <div className="export-bar">
       <span className="export-label muted">export</span>
       <button
         className="btn btn-sm"
         disabled={busy}
+        title={isScan ? "The final scan point — pick the approx-TS point in the scan panel below" : ""}
         onClick={() =>
           run("geometry", "xyz", () =>
-            finalGeometryXyz(results.final_geometry, jobTitle, results.final_energy_eh),
+            finalGeometryXyz(
+              results.final_geometry,
+              isScan ? `${jobTitle} — last scan point` : jobTitle,
+              results.final_energy_eh,
+            ),
           )
         }
       >
-        geometry .xyz
+        {isScan ? "geometry .xyz (last point)" : "geometry .xyz"}
       </button>
       <button
         className="btn btn-sm"

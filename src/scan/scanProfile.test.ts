@@ -7,9 +7,11 @@ import {
   maxIndex,
   pointGeometryXyz,
   pointReadout,
+  scanPointExportXyz,
   HARTREE_TO_KCAL,
   energyEh,
 } from "./scanProfile";
+import { finalGeometryXyz } from "../export/exporters";
 
 /** The real ethane C–C scan (B1 fixture values): coordinate 1.4→2.4 Å, act ≠ scf. */
 const ETHANE: ScanProfileJson = {
@@ -112,5 +114,48 @@ describe("pointReadout — coordinate + ΔE of the selected point", () => {
   });
   it("out-of-range index → null (no crash)", () => {
     expect(pointReadout(ETHANE.points, 99, "act", "first", "Å")).toBeNull();
+  });
+});
+
+// ── scanPointExportXyz — the SELECTED point's geometry, reusing the canonical builder ──
+describe("scanPointExportXyz — export the selected scan point via the one xyz builder", () => {
+  const GEOM: ScanGeometry = {
+    elements: ["C", "C"],
+    xyz_angstrom: [
+      [0, 0, 1.209],
+      [0, 0, -1.209],
+    ],
+  };
+
+  it("C-reuses-canonical — the xyz BODY is byte-identical to finalGeometryXyz", () => {
+    const p = ETHANE.points[5];
+    const out = scanPointExportXyz(GEOM, p, 5, ETHANE.points.length, "Å", true, "ethane");
+    // The one canonical builder on the SAME geometry — atom lines must match byte-for-byte.
+    // Bite: a hand-rolled body (different formatting/precision) would fail this.
+    const canonical = finalGeometryXyz(GEOM, "any comment", p.energy_act_eh);
+    const body = (s: string) => s.split("\n").slice(2); // drop count + comment lines
+    expect(body(out)).toEqual(body(canonical));
+    // …and the post-condition still holds: count line + comment + one line per atom.
+    expect(out.split("\n").slice(0, 1)[0]).toBe("2");
+  });
+
+  it("C-approx-ts-tag — the (approx TS…) tag appears iff isMax; number+coord either way", () => {
+    const p = ETHANE.points[3];
+    const asMax = scanPointExportXyz(GEOM, p, 3, ETHANE.points.length, "Å", true, "ethane");
+    const notMax = scanPointExportXyz(GEOM, p, 3, ETHANE.points.length, "Å", false, "ethane");
+    expect(asMax).toContain("(approx TS");
+    // Bite: an always-tag version would fail this non-max assertion.
+    expect(notMax).not.toContain("(approx TS");
+    // The point number + coordinate are present regardless of isMax.
+    for (const s of [asMax, notMax]) {
+      expect(s).toContain("scan point 4/6");
+      expect(s).toContain("@ 2.000 Å");
+    }
+  });
+
+  it("C-atom-count-inherited — elements/coords length mismatch THROWS (rule #9)", () => {
+    // The finalGeometryXyz post-condition is inherited — never a silently short file.
+    const bad: ScanGeometry = { elements: ["C", "C", "H"], xyz_angstrom: [[0, 0, 0]] };
+    expect(() => scanPointExportXyz(bad, ETHANE.points[0], 0, 6, "Å", false, "ethane")).toThrow();
   });
 });
