@@ -195,7 +195,10 @@ fn delete_pathway_conn(conn: &Connection, id: &str) -> Result<(), AppError> {
 /// Attach a job to a pathway — the bottom-up **promote** action. Permissive about
 /// job kind (any job may be attached; comparability guards live in C2). Errors if
 /// either the job or the pathway does not exist — no partial write.
-fn attach_job_to_pathway_conn(
+///
+/// `pub(crate)` so the OptTS create-side (`commands::jobs::create_optts_job`) can attach a refined
+/// TS to its SOURCE job's pathway through this one mechanism (ADR-020) — no second attach path.
+pub(crate) fn attach_job_to_pathway_conn(
     conn: &Connection,
     job_id: &str,
     pathway_id: &str,

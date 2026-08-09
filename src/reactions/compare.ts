@@ -131,6 +131,34 @@ export interface MethodSig {
   display: string;
 }
 
+/**
+ * The identity-bearing `!`-line keywords (functional/composite, basis, aux, RI, dispersion,
+ * solvation) in **ORIGINAL case and order**, with the job-control / scf-conv / print tokens
+ * ({@link NON_METHOD}) and `PAL*` dropped. Unlike {@link methodSignature} — which uppercases +
+ * sorts these SAME tokens for *comparison* — this preserves them verbatim so a downstream job can
+ * **re-emit the same method + solvation** (comparability by construction, e.g. an OptTS refine of a
+ * scan point: `src/scene/optts.ts`). Shares one filter with `methodSignature` (the `NON_METHOD` set),
+ * so "what counts as method" is defined in exactly one place.
+ *
+ * Note: solvation stated as a `%cpcm … smd true … end` BLOCK (rather than an inline `SMD(<solvent>)`
+ * keyword) is NOT captured here — our own builder always emits the inline form, which this reads.
+ */
+export function methodSolvationKeywords(input: string): string[] {
+  const kept: string[] = [];
+  for (const raw of input.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line.startsWith("!")) continue;
+    for (const tok of line.slice(1).trim().split(/\s+/)) {
+      if (!tok) continue;
+      const up = tok.toUpperCase();
+      if (NON_METHOD.has(up)) continue;
+      if (/^PAL\d*$/.test(up)) continue; // parallelism, not method
+      kept.push(tok);
+    }
+  }
+  return kept;
+}
+
 export function methodSignature(input: string): MethodSig {
   const tokens = new Set<string>();
 

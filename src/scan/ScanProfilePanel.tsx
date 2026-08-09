@@ -11,7 +11,8 @@ import {
   YAxis,
 } from "recharts";
 
-import type { ScanProfileJson, ScanGeometry } from "../types";
+import type { ScanProfileJson, ScanGeometry, Job } from "../types";
+import { buildOptTSInput } from "../scene/optts";
 import { MoleculeViewer } from "../viewer/MoleculeViewer";
 import { useContainerWidth } from "../charts/useContainerWidth";
 import { resolveClickedIndex, type ChartClickState } from "../charts/clickIndex";
@@ -49,6 +50,7 @@ export function ScanProfilePanel({
   referenceElements,
   jobId,
   jobTitle,
+  onOpenJob,
 }: {
   scan: ScanProfileJson;
   /** The element order the result geometry is drawn in — a point geometry must
@@ -56,6 +58,9 @@ export function ScanProfilePanel({
   referenceElements: string[];
   jobId: string;
   jobTitle: string;
+  /** Navigate to a newly-created job (the OptTS-refine child). Optional so the panel
+   * renders in isolation (tests, storybook) without a router. */
+  onOpenJob?: (jobId: string) => void;
 }) {
   const points = scan.points;
   const unit = scan.coordinate_unit;
@@ -67,6 +72,10 @@ export function ScanProfilePanel({
   const [energyChoice, setEnergyChoice] = useState<EnergyChoice>("act"); // act = composite (default)
   const [refChoice, setRefChoice] = useState<RefChoice>("first");
   const [geometries, setGeometries] = useState<ScanGeometry[] | null>(null);
+  // OptTS-refine (Stage E1a): local busy/error state; nothing persists until the child
+  // job is created + submitted on click.
+  const [refining, setRefining] = useState(false);
+  const [refineError, setRefineError] = useState<string | null>(null);
   const { ref, width } = useContainerWidth();
   const chartRef = useRef<HTMLDivElement | null>(null);
 
@@ -193,7 +202,56 @@ export function ScanProfilePanel({
         >
           geometry .xyz
         </button>
+        {/* Refine with OptTS (Stage E1a) — the SCAN entry point into the source-agnostic
+            OptTS engine. Enabled ONLY on the approx-TS maximum AND when it renders: the scan
+            maximum is the TS guess (a clean 1-D coordinate; `wiki/orca/optts.md`). On click it
+            reads THIS scan job's own input (not reconstructed) as the context, seeds from the
+            max point's geometry, creates+submits a child, and navigates to it. */}
+        <button
+          className="btn btn-sm btn-primary"
+          disabled={
+            refining || !(clamped === tsIndex && viewerState && "xyz" in viewerState)
+          }
+          title={
+            clamped === tsIndex
+              ? "Refine this approximate TS into a located transition state (OptTS + Freq, Stage E)"
+              : "Select the approximate-TS maximum to refine it with OptTS"
+          }
+          onClick={async () => {
+            if (refining) return;
+            setRefining(true);
+            setRefineError(null);
+            try {
+              const seed = geometries?.[tsIndex];
+              if (!seed) return;
+              // Read the scan job's OWN input as the context (method/solvation/charge) —
+              // never reconstruct it. The pure engine inherits + asserts (c,m).
+              const source = await invoke<Job>("get_job", { id: jobId });
+              const input = buildOptTSInput(source.input_content, seed);
+              const child = await invoke<Job>("create_optts_job", {
+                sourceJobId: jobId,
+                title: `OptTS — ${jobTitle}`,
+                inputContent: input,
+              });
+              await invoke("submit_job", { id: child.id });
+              onOpenJob?.(child.id);
+            } catch (e) {
+              // A charge/Scan post-condition failure (buildOptTSInput) lands here — no job created.
+              console.error("[optts]", e);
+              setRefineError(String(e));
+            } finally {
+              setRefining(false);
+            }
+          }}
+        >
+          {refining ? "Refining…" : "Refine with OptTS (Stage E)"}
+        </button>
       </div>
+      {refineError ? (
+        <div className="banner err" style={{ marginTop: 6 }}>
+          OptTS refine failed (no job created): {refineError}
+        </div>
+      ) : null}
 
       {/* Display controls — each a LABELLED choice, not a molecule property. */}
       <div className="scan-controls">

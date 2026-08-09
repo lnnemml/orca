@@ -36,10 +36,13 @@ export function ResultsCard({
   jobId,
   jobTitle,
   status,
+  onOpenJob,
 }: {
   jobId: string;
   jobTitle: string;
   status: JobStatus;
+  /** Navigate to a newly-created job (e.g. the scan panel's OptTS-refine child). */
+  onOpenJob?: (jobId: string) => void;
 }) {
   const [results, setResults] = useState<ParsedResults | null>(null);
 
@@ -124,6 +127,7 @@ export function ResultsCard({
             referenceElements={results.final_geometry.elements}
             jobId={jobId}
             jobTitle={jobTitle}
+            onOpenJob={onOpenJob}
           />
         )}
 

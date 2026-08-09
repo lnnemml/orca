@@ -89,6 +89,38 @@ fn create_reopt_job_conn(
     get_job_conn(conn, &job.id)
 }
 
+/// Create an OptTS-refinement CHILD job (Phase 4.5 Stage E1a, ADR-020) from a TS-guess
+/// geometry. **SOURCE-AGNOSTIC:** `source_job_id` is ANY job — a relaxed scan (today's caller,
+/// the scan maximum) or a NEB climbing image (Stage E3). The child is a normal `draft` (the
+/// caller `submit_job`s it into the sequential queue), minting its OWN `index_map` from its OWN
+/// `! OptTS …` input like any job.
+///
+/// **No lineage column** (unlike the re-opt fan-out): the TS↔source relationship is expressed by
+/// the **shared pathway** + the **`! OptTS` role** derived from the child's own input — nothing
+/// stored. If the source is attached to a pathway, the refined TS **joins that same pathway**
+/// (reusing [`attach_job_to_pathway_conn`] — one attach mechanism, no second path), so the
+/// reaction view groups the guess and its TS together.
+///
+/// The (charge, multiplicity) and no-Scan/opt-leak post-conditions are enforced in the TS
+/// `buildOptTSInput` at the single construction point (it throws before this command is called),
+/// so a wrong-charge or Scan-leaking input never reaches this boundary. What this Rust boundary
+/// adds is referential integrity: it refuses (`NotFound`) when the source job is gone.
+fn create_optts_job_conn(
+    conn: &Connection,
+    title: &str,
+    input_content: &str,
+    source_job_id: &str,
+) -> Result<Job, AppError> {
+    // The source must exist (a clean NotFound instead of a dangling reference).
+    let source = get_job_conn(conn, source_job_id)?;
+    let child = create_job_conn(conn, title, input_content, None, None)?;
+    // The refined TS joins the SOURCE's pathway, if any — the same attach used everywhere.
+    if let Some(pathway_id) = source.pathway_id {
+        crate::commands::reactions::attach_job_to_pathway_conn(conn, &child.id, &pathway_id)?;
+    }
+    get_job_conn(conn, &child.id)
+}
+
 /// The element symbols of an ORCA input's inline `* xyz <c> <m> … *` block, in
 /// order (`["C","C","H",…]`). Empty for an input with no inline block (e.g.
 /// `* xyzfile …`). Used ONLY for the D2b element-list post-condition (rule #9):
@@ -490,6 +522,23 @@ pub fn create_reopt_job(
     )
 }
 
+/// Create ONE OptTS-refinement child of a TS guess (Phase 4.5 Stage E1a, ADR-020). The child is
+/// created as a `draft`; the caller then `submit_job`s it into the sequential queue.
+/// `input_content` is built + charge/Scan-checked by the TS `buildOptTSInput` before this call.
+/// **Source-agnostic:** `source_job_id` is any job (the scan is today's caller, NEB tomorrow).
+/// Create-boundary post-condition (rule #9): the source job must still exist — otherwise
+/// `NotFound`, and no child is created. If the source is on a pathway, the TS joins it.
+#[tauri::command]
+pub fn create_optts_job(
+    db: State<'_, DbState>,
+    source_job_id: String,
+    title: String,
+    input_content: String,
+) -> Result<Job, AppError> {
+    let conn = db.lock()?;
+    create_optts_job_conn(&conn, &title, &input_content, &source_job_id)
+}
+
 /// Read a GOAT job's DFT re-opt fan-out for the D2b aggregate view: the derived set
 /// of children (by `source_ensemble_job_id`), each with its status + parsed DFT
 /// electronic energy / Gibbs G / imaginary count. Raw facts — the TS side re-ranks
@@ -872,6 +921,63 @@ mod tests {
         // v16: a plain create is ungrouped — group_id round-trips as NULL through COLUMNS.
         assert_eq!(job.group_id, None);
         assert_eq!(all[0].group_id, None);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn create_optts_child_is_draft_generic_source_and_joins_source_pathway() {
+        let (conn, dir) = test_db();
+
+        // A GENERIC source job — a relaxed scan today (LooseOpt + a %geom Scan block); the engine
+        // does not care what produced it (source-agnostic, ADR-020).
+        let scan_input = "! r2SCAN-3c LooseOpt SMD(DMF) TightSCF\n\
+             %geom Scan B 0 1 = 3.0, 1.8, 12 end end\n* xyz 0 1\nN 0 0 0\nC 0 0 1.8\n*\n";
+        let source = create_job_conn(&conn, "Menshutkin scan", scan_input, None, None).unwrap();
+
+        // The OptTS child input the TS engine (`buildOptTSInput`) would have produced — no Scan,
+        // no LooseOpt (the create boundary trusts the pure builder's post-conditions).
+        let ts_input = "! r2SCAN-3c SMD(DMF) OptTS Freq TightSCF\n\
+             %geom Calc_Hess true end\n* xyz 0 1\nN 0 0 0\nC 0 0 2.353\n*\n";
+
+        // Source NOT on a pathway → the child is a plain draft, pathway_id NULL (the caller
+        // submits it to reach `queued`). No lineage column is stamped.
+        let child = create_optts_job_conn(&conn, "OptTS — Menshutkin", ts_input, &source.id).unwrap();
+        assert_eq!(child.status, JobStatus::Draft);
+        assert_eq!(child.pathway_id, None);
+
+        // Put the SOURCE on a pathway and refine again → the refined TS joins that SAME pathway
+        // (the reaction view groups guess + TS together), via the shared attach mechanism.
+        conn.execute(
+            "INSERT INTO reactions (id, name, description) VALUES ('rx1', 'Menshutkin', NULL)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO pathways (id, reaction_id, label) VALUES ('pw1', 'rx1', 'sn2')",
+            [],
+        )
+        .unwrap();
+        conn.execute("UPDATE jobs SET pathway_id = 'pw1' WHERE id = ?1", params![source.id])
+            .unwrap();
+
+        let ts2 = create_optts_job_conn(&conn, "OptTS #2", ts_input, &source.id).unwrap();
+        assert_eq!(
+            ts2.pathway_id.as_deref(),
+            Some("pw1"),
+            "the refined TS joins the source's pathway"
+        );
+
+        // Generic-source referential integrity: a missing source is a clean NotFound, and creates
+        // NOTHING (no dangling child).
+        let before = list_jobs_conn(&conn).unwrap().len();
+        let err = create_optts_job_conn(&conn, "orphan", ts_input, "no-such-job").unwrap_err();
+        assert!(matches!(err, AppError::NotFound(_)));
+        assert_eq!(
+            list_jobs_conn(&conn).unwrap().len(),
+            before,
+            "a NotFound source created nothing"
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }

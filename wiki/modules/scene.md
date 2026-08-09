@@ -67,6 +67,18 @@ functions, no imports from react / 3dmol / tauri. The reactive `store.ts` (added
   the log is rejected loudly if it diverges from `scene_json`).
 - `ensemble.ts` — GOAT conformer-ensemble parsing + input generation (2.5.1a),
   plus `isGoatInput` (2.5.2a — is this a conformer-search job?).
+- `optts.ts` — `buildOptTSInput(sourceInput, seedGeometry, options?)`: the **source-agnostic**
+  OptTS-refine create side (Phase 4.5 Stage E1a, ADR-020). A sibling of `reopt.ts` (documented in
+  `conformer-reoptimization.md`) sharing its **charge-footgun discipline** — inherits `(charge, mult)`
+  from `sourceInput`'s `* xyz` via `sceneFromOrcaInput` and **asserts them back out** of the emitted
+  input — but for a **TS guess from ANY source** (a scan maximum today, a NEB climbing image in E3; the
+  seed is a generic `TsGuessGeometry`, deliberately NOT `ScanGeometry`). Method + solvation **default to
+  the source's** (verbatim, via `methodSolvationKeywords` in `reactions/compare.ts` — one `!`-line
+  reader shared with the comparability guard, so re-emit and compare cannot drift); emits `! <method>
+  <solvation> OptTS Freq TightSCF` + `%geom Calc_Hess true end`. REUSES `buildOrcaInput` — no
+  order-bearing golden pair (Fork 2 of ADR-016; `wiki/orca/optts.md`), so the source's opt keyword /
+  `Scan` / `Constraints` cannot leak (fresh build). Pure / node-tested. The scan entry point is
+  `ScanProfilePanel`; the Rust create side is `create_optts_job` (`tauri-core.md`).
 - `selection.ts` — the geometry editor's atom pick list (2.5.2a; **AtomId-native
   2c2**): `toggleAtom(AtomId[], AtomId)`, `filterSelection` (the 2c2 dividend —
   keeps every id still in the scene), `describeAtom` (positional, for the

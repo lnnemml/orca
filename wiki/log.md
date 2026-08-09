@@ -6983,3 +6983,49 @@ it as the saddle-search seed.
 `modules/results-ui.md` scan-profile section, `debugging/018`, `index.md`, ROADMAP Stage-E seam note.
 **Next:** author runs e1–e5 in the live Tauri/WebKitGTK window (e2 = the fix witness: the 2.418 Å
 point, not 1.8); then the OptTS-refine child job (E1) that consumes this seam.
+
+## [2026-08-09] session | Phase 4.5 Stage E1a — source-agnostic OptTS-refine engine, wired to the scan maximum
+
+Landed the CREATE side of transition-state refinement as a **source-agnostic engine** (ADR-020,
+ingested this session), wired to its FIRST entry point (the relaxed-scan maximum). Rule #10 first:
+`wiki/orca/optts.md` written from the real Menshutkin scan-point-8 OptTS run BEFORE code — recipe
+`! r2SCAN-3c OptTS Freq SMD(DMF) TightSCF` + `%geom Calc_Hess true end`, **Calc_Hess true ALONE
+sufficed**, converged 3 min 8 s, **exactly one imaginary −385.31 cm⁻¹** (output.out & .hess agree) =
+the SN2 coordinate (N···C 2.353 forming / C···I 2.592 breaking, 161° backside); the scan max was an
+excellent seed (N···C moved 0.065 Å) — contrast the concerted/NEB case (no clean 1-D coordinate).
+
+**Design (ADR-020): one engine, per-source entry points.** OptTS is a downstream refinement of a TS
+guess from ANY source — a scan max now, a NEB climbing image in E3, a hand guess later. Rejected a
+scan-specific OptTS rebuilt for NEB (duplicates the charge-safe emit + pathway attach + located-TS
+parse → drift).
+
+**Pure core (`src/scene/optts.ts`):** `buildOptTSInput(sourceInput, seedGeometry, options?)` — REUSES
+`buildOrcaInput` (Fork 2, no golden pair). Two rule-#9 invariants: (1) **charge footgun** — inherits
+`(c,m)` from `sourceInput`'s `* xyz` via `sceneFromOrcaInput` and **asserts them back out**; (2)
+**comparability** — method+solvation DEFAULT to the source's, extracted verbatim via a NEW shared
+`methodSolvationKeywords` in `reactions/compare.ts` (reuses the module-local `NON_METHOD`; one `!`-line
+reader shared with the comparability guard, so re-emit and compare cannot drift; `methodSignature`
+untouched). Emits `! <method> <solvation> OptTS Freq TightSCF` + `%geom Calc_Hess true end`; the
+source's `LooseOpt`/`Scan`/`Constraints` cannot leak (fresh build). Seed is a generic `TsGuessGeometry`,
+NOT `ScanGeometry` — the E3 seam. 10 tests (4 bite/negative controls): C-charge-inherited,
+C-optts-freq-calchess, C-method-inherited (bite vs a hardcoded r2SCAN default), + seed/length.
+
+**Rust (`commands/jobs.rs`):** `create_optts_job(source_job_id, title, input_content)` — generic
+source; creates a `draft` child; if the source is on a pathway the TS **joins it** via
+`attach_job_to_pathway_conn` (made `pub(crate)` for this one reuse). **No lineage column** — the
+TS↔source relation is the shared pathway + the `! OptTS` role. One cargo test (draft + generic source +
+joins-source-pathway + NotFound-creates-nothing). Registered in `lib.rs`.
+
+**Wiring:** `ScanProfilePanel` — "Refine with OptTS (Stage E)" button on the approx-TS max, enabled
+only when it is the max AND renders; reads THIS scan job's own input (`get_job`, not reconstructed),
+seeds from the max geometry, `create_optts_job` → `submit_job` → navigate via `onOpenJob` (prop-drilled
+App → JobDetailScreen → ResultsCard → panel). A builder post-condition failure surfaces in a banner and
+creates no job.
+
+**Verification.** tsc clean; vitest **742** (was 732, +10, all in `optts.test.ts`; `compare.ts` change
+additive — `methodSignature` untouched); cargo **244 passed** (+1). Wiki: ADR-020, `orca/optts.md`
+(+Pattern-2 block-form caveat), `modules/scene.md`, `modules/tauri-core.md`, `modules/results-ui.md`,
+index (+2 pages → 88), ROADMAP Stage E (E1a `[x]`, E1b next). **Next:** author runs m1–m3 live (create
+a queued child inheriting charge 0 1 + r2SCAN-3c/SMD DMF, OptTS/Freq/TightSCF/Calc_Hess, no Scan/LooseOpt;
+run → the same located TS as the hand run; joins the pathway if the scan was in one). Then E1b (ΔG‡ +
+label retirement); E3 reuses this engine for NEB.

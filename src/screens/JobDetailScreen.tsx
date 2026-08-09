@@ -63,6 +63,8 @@ interface JobDetailScreenProps {
   onIterate: (job: Job) => void;
   /** A conformer was applied to the scene store — go to New Job, keeping it. */
   onUseConformer: () => void;
+  /** Open another job's detail screen (e.g. the scan panel's OptTS-refine child). */
+  onOpenJob: (jobId: string) => void;
 }
 
 export function JobDetailScreen({
@@ -71,6 +73,7 @@ export function JobDetailScreen({
   onBack,
   onIterate,
   onUseConformer,
+  onOpenJob,
 }: JobDetailScreenProps) {
   const [job, setJob] = useState<Job | null>(null);
   const [lines, setLines] = useState<string[]>([]);
@@ -608,7 +611,12 @@ export function JobDetailScreen({
           the internal opt of one candidate, not conformers, and is misleading for a
           conformer search (debugging/017). Non-GOAT jobs show ResultsCard as before. */}
       {job && showsSingleStructureResults(job.input_content) ? (
-        <ResultsCard jobId={jobId} jobTitle={job.title} status={job.status} />
+        <ResultsCard
+          jobId={jobId}
+          jobTitle={job.title}
+          status={job.status}
+          onOpenJob={onOpenJob}
+        />
       ) : null}
 
       {/* A GOAT job that finished but produced no readable ensemble: say so plainly,

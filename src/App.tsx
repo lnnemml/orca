@@ -200,6 +200,7 @@ function App() {
           onBack={() => setScreen({ kind: "jobs" })}
           onIterate={(job) => setScreen({ kind: "new-job", initialJob: job })}
           onUseConformer={() => setScreen({ kind: "new-job", keepScene: true })}
+          onOpenJob={(id) => openDetail(id, false)}
         />
       )}
 

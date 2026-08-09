@@ -301,6 +301,16 @@ runs `terminate_on_exit` synchronously; `Drop` on `SidecarManager` is the backst
   `read_job_output_for_viewer(id) -> OutputContent`; `read_job_convergence(id)`;
   `read_job_ensemble(id) -> String`; `open_job_folder(id)`; `search_job_output(id, opts) ->
   SearchResult`; `get_search_presets()`.
+- **Child-job create sides (source refuses on a missing source, rule #9):**
+  `create_reopt_job(source_ensemble_job_id, source_conformer_index, title, input_content) -> Job` —
+  a DFT re-opt child of a GOAT conformer, stamped with the two v15 linkage FKs (Stage D2a;
+  `modules/conformer-reoptimization.md`). `create_optts_job(source_job_id, title, input_content) ->
+  Job` — a **source-agnostic** OptTS-refine child (Stage E1a, ADR-020): `source_job_id` is **any**
+  job (a scan today, a NEB image in E3), **no lineage column** (the TS↔source relation is the shared
+  pathway + the `! OptTS` role); if the source is on a pathway the TS **joins it** via the shared
+  `attach_job_to_pathway_conn` (made `pub(crate)` for this one reuse). Both create a `draft`; the
+  caller `submit_job`s it. The (charge, mult) + no-Scan-leak post-conditions live in the pure TS
+  builders (`buildReoptInput` / `buildOptTSInput`), which throw before the command is called.
 - **Molecules:** `create_molecule(name, formula, xyz, charge, multiplicity, tags)`,
   `list_molecules()` (newest first), `get_molecule(id)`, `update_molecule(id, …)` (full update),
   `delete_molecule(id)` — each `NotFound` on a missing id.

@@ -118,6 +118,17 @@ B1's `ParsedResults.scan` and **re-parses nothing** (ADR-012).
   relabelled `geometry .xyz (last point)` for a scan job** (`results.scan != null`) and its comment
   says "last scan point", so the last point is offered honestly and is not confused with the
   approx-TS selection; a non-scan job is unchanged (`geometry .xyz`, the optimized final geometry).
+- **Refine with OptTS — the scan entry point into the source-agnostic refine engine (Stage E1a,
+  ADR-020).** Next to the geometry-export button, a `Refine with OptTS (Stage E)` button is enabled
+  **only on the approx-TS maximum AND when it renders** (`clamped === tsIndex && viewerState && "xyz"
+  in viewerState`) — the scan maximum is the TS *guess* (a clean 1-D coordinate; `wiki/orca/optts.md`).
+  On click it reads **this scan job's own input** (`get_job`, not reconstructed) as the method/
+  solvation/charge context, seeds from the max point's geometry, calls `buildOptTSInput`
+  (`src/scene/optts.ts` — the generic engine, NOT scan-specific), `create_optts_job(sourceJobId=jobId,
+  …)`, `submit_job`, then navigates to the child via `onOpenJob` (prop-drilled App → JobDetailScreen →
+  ResultsCard → panel). A `buildOptTSInput` post-condition failure (wrong charge / Scan leak) surfaces
+  in a banner and **creates no job**. The engine is deliberately source-agnostic: E3's NEB entry point
+  will call the SAME `buildOptTSInput` / `create_optts_job` with a climbing-image seed.
 - **The point geometries are a witness read (`xyz.rs` `first_frame`), not authoritative output** — a
   relaxed-scan point is not the input geometry, so it does not go through the reference-based geometry
   post-condition (which fails by design); its identity is the UI-boundary `elementsAgree` check, the

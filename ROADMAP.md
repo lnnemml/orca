@@ -918,12 +918,20 @@ r1–r4 manual gates. Next per the ratified reorder: CREST probe → Stage D →
 
 ### Stage E — Transition-state methods (each probe-first, rule #10)
 
-- [ ] **OptTS** (`! OptTS`) — probe (block, artifacts, cost) → then the scan-max → OptTS → Freq →
+- [~] **OptTS** (`! OptTS`) — probe (block, artifacts, cost) → then the scan-max → OptTS → Freq →
       one imaginary → **IRC** connectivity check → ΔG‡ pipeline (the *application* of these methods
       in the scan spine — the natural continuation of Stage B's "click the maximum").
       *Seam ready (2026-08-09):* the scan-max geometry is now **exportable** from the scan-profile
       panel (default = approx-TS max; `scanPointExportXyz`, `debugging/018`) — the OptTS-refine seed
       the E1 child job reuses.
+  - [x] **E1a — OptTS create side landed as a SOURCE-AGNOSTIC engine** (2026-08-09, ADR-020):
+        `buildOptTSInput` (pure, charge-safe, method+solvation inherited, no Scan/opt leak) +
+        `create_optts_job` (generic `source_job_id`, joins the source's pathway, no lineage column),
+        wired to the scan maximum's "Refine with OptTS (Stage E)" button. Probe run recorded:
+        `wiki/orca/optts.md` (Menshutkin SN2, one imaginary −385.31 cm⁻¹). The engine is generic by
+        construction so **E3's NEB entry point reuses it unchanged**. Manual gate m1–m3 pending.
+  - [ ] **E1b — consume the located TS:** ΔG‡ from OptTS+Freq+thermochemistry; retire the
+        "approximate TS" label on a pathway once a real TS exists (`reactions/compare.ts` / CompareView).
 - [ ] **IRC** (`! IRC`) — probe → the post-condition that a found TS connects the intended
       reactant/product.
 - [ ] **NEB / NEB-TS / NEB-CI** (`! NEB-TS`) — probe → the alternative path-finder when there is no
