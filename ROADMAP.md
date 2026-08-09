@@ -841,6 +841,13 @@ single-pathway relaxed scan is fully usable end-to-end. *(B1 ✅; B2 ✅ — aut
         as "method differs" and the absolute barrier was withheld. Added both, completing the
         {Loose,Normal,Tight,VeryTight}Opt convergence-preset family; a real functional/basis difference
         still refuses (bite test). Pure fix in `compare.ts`.
+      - **Stoichiometry guard landed 2026-08-09** (r2 gate — the most serious defect): the absolute
+        barrier E(max) − Σ E(ref) had **no composition/charge check**, so a wrong reference set produced
+        confident garbage — dropping one of the two SN2 references (EtI alone, 8 atoms) subtracted it
+        from the 15-atom E(max) and displayed **−60127 kcal/mol** (≈ −E(methylamine)). New pure
+        `referenceStoichiometryOk` (reuses `sceneFromOrcaInput`, NOT a regex) refuses unless Σ(reference
+        atoms + charge) = the reacting complex's; both valid shapes pass (two-reactant sum OR a single
+        whole-complex reference). Honest-or-absent restored (refuse with a reason, never a number).
       *Ratified 2026-08-07 ([ADR-018](wiki/architecture/adr-018-reaction-energy-reference.md)
       + [chemistry/reaction-barriers.md](wiki/chemistry/reaction-barriers.md)):* a relaxed scan yields
       **three barriers** — **ΔΔE‡** (si/re) is **reference-free** (the shared reactant reference cancels),

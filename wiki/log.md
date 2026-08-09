@@ -6891,3 +6891,34 @@ re-checks r1 live — the absolute barrier now shows a NUMBER for the LooseOpt s
 C2b-2b stays open (r1–r4). Wiki: `modules/reactions-ui.md` (NON_METHOD covers the full Opt family +
 the screening-level caveat: a LooseOpt max is slightly less converged than a tighter reference), ROADMAP
 C2b note.
+
+## [2026-08-09] session | Phase 4.5 C2b — 4th gate-surfaced defect: no stoichiometry guard → confident-garbage absolute barrier
+
+The r2 manual gate exposed the most serious C2b defect: the absolute barrier E(max) − Σ E(ref) had NO
+composition/charge guard, so with the wrong reference set it computed a CONFIDENT GARBAGE number
+instead of an honest refusal. On the real SN2 (methylamine + ethyl iodide, DMF/SMD), removing one of
+the two reactant references left a single EtI reference (8 atoms); the app subtracted E(EtI) from the
+15-atom E(max) and displayed **−60127.66 kcal/mol** (≈ −E(methylamine)). This violated honest-or-absent
+(ADR-018): a mismatched reference must be refused with a reason, never turned into a number.
+
+**Fix (pure, `src/reactions/compare.ts`):** new `referenceStoichiometryOk(complexInput,
+referenceInputs)` — **reuses `sceneFromOrcaInput`** (the app's one `* xyz` block reader, NOT a
+hand-rolled regex) to read the complex's and each reference's element multiset + charge, sums the
+references, and refuses unless Σ(reference atoms) = complex atoms AND Σ(reference charge) = complex
+charge. Specific Hill-formula reason on mismatch ("reactant atoms (C2H5I) do not sum to the reacting
+complex (C3H10IN) …") + a charge-note branch. Threaded into `absoluteBarrierCell` as a new last param
+`complexInput`, called AFTER the count/null/method guards, BEFORE the number. `CompareView` passes each
+pathway's own `p.input` (the scan complex's input_content) — the only render change.
+
+**Both valid shapes still pass:** two references summing to the complex (8 + 7 = 15 atoms) OR a single
+reference that IS the whole complex (15 atoms); only a reference whose atoms/charge ≠ the complex's is
+refused. Charge imbalance (a −1 reference vs a 0 complex) refuses too — guards the future ionic BH₄⁻
+case.
+
+**Verification.** tsc clean; vitest **729** (was 723, +6: the guard's own tests + the threaded
+`absoluteBarrierCell` cases). No cargo change (pure frontend). The r2 headline test asserts the
+EtI-only reference is REFUSED (no −60127 number). Anton re-runs r2 live: removing a reference now
+shows "reference incomplete — reactant atoms … do not sum …" (a reason), not −60127; putting it back
+returns the number. C2b-2b stays open (r1–r4). Wiki: `modules/reactions-ui.md` (the three-refusal
+guard chain: complete → method → stoichiometry), `chemistry/reaction-barriers.md` (mass+charge balance
+requirement + the −60127 SN2 witness), ROADMAP C2b note.

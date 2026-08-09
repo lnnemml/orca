@@ -15,6 +15,8 @@
 
 import type { ScanProfileJson } from "../types";
 import { HARTREE_TO_KCAL, energyEh, type EnergyChoice } from "../scan/scanProfile";
+import type { Scene } from "../scene/types";
+import { sceneFromOrcaInput, totalCharge } from "../scene/scene";
 
 type ScanPoint = ScanProfileJson["points"][number];
 
@@ -219,6 +221,92 @@ export function referenceComparable(
   return { ok: true };
 }
 
+// --- Stoichiometry guard ----------------------------------------------------
+
+/** Element → count over a whole Scene (all fragments flattened). */
+function sceneElementMultiset(scene: Scene): Map<string, number> {
+  const m = new Map<string, number>();
+  for (const f of scene.fragments) {
+    for (const a of f.atoms) m.set(a.element, (m.get(a.element) ?? 0) + 1);
+  }
+  return m;
+}
+
+/** Hill-system formula for a reason string (C, then H, then the rest alphabetical). */
+function hillFormula(m: Map<string, number>): string {
+  const rest = [...m.keys()].filter((e) => e !== "C" && e !== "H").sort();
+  const order = [...(m.has("C") ? ["C"] : []), ...(m.has("H") ? ["H"] : []), ...rest];
+  const s = order.map((e) => `${e}${m.get(e)! > 1 ? m.get(e) : ""}`).join("");
+  return s || "(no atoms)";
+}
+
+function multisetsEqual(a: Map<string, number>, b: Map<string, number>): boolean {
+  if (a.size !== b.size) return false;
+  for (const [k, v] of a) if (b.get(k) !== v) return false;
+  return true;
+}
+
+function signed(n: number): string {
+  return n >= 0 ? `+${n}` : `${n}`;
+}
+
+/**
+ * Whether the reactant-reference jobs are **mass- and charge-balanced** with the reacting
+ * complex (ADR-018 honest-or-absent): the absolute barrier E(max) − Σ E(ref) is only physical
+ * when the reference accounts for EXACTLY the complex's atoms and charge — the two barrier
+ * endpoints must be the same chemical system. Both compositions are read with the existing
+ * `sceneFromOrcaInput` parser (NOT a hand-rolled regex), so this reuses the app's one
+ * xyz-block reader and its charge handling.
+ *
+ * Refuses (with a specific reason) when: the complex or any reference has no readable
+ * coordinate block (can't verify → don't show a number); Σ(reference atoms) ≠ complex atoms;
+ * or Σ(reference charge) ≠ complex charge. **Both valid shapes pass:** two references summing
+ * to the complex (e.g. 8 + 7 = 15 atoms), OR a single reference that IS the whole complex.
+ *
+ * Why this exists: on the real SN2, a reference set left with EtI alone (8 atoms) was subtracted
+ * from the 15-atom E(max) and produced a confident **−60127 kcal/mol** (≈ −E(methylamine)) —
+ * garbage. A composition/charge mismatch must be an honest refusal, never a number.
+ */
+export function referenceStoichiometryOk(
+  complexInput: string,
+  referenceInputs: string[],
+): Comparability {
+  const complexScene = sceneFromOrcaInput(complexInput);
+  if (!complexScene) {
+    return { ok: false, reason: "cannot verify complex composition (no readable coordinate block)" };
+  }
+  const complexAtoms = sceneElementMultiset(complexScene);
+  const complexCharge = totalCharge(complexScene);
+
+  const refAtoms = new Map<string, number>();
+  let refCharge = 0;
+  for (const input of referenceInputs) {
+    const scene = sceneFromOrcaInput(input);
+    if (!scene) {
+      return {
+        ok: false,
+        reason: "cannot verify reference composition (a reference job has no readable coordinate block)",
+      };
+    }
+    for (const [el, n] of sceneElementMultiset(scene)) refAtoms.set(el, (refAtoms.get(el) ?? 0) + n);
+    refCharge += totalCharge(scene);
+  }
+
+  if (!multisetsEqual(refAtoms, complexAtoms)) {
+    return {
+      ok: false,
+      reason: `reference incomplete — reactant atoms (${hillFormula(refAtoms)}) do not sum to the reacting complex (${hillFormula(complexAtoms)}); a reactant is missing or mismatched`,
+    };
+  }
+  if (refCharge !== complexCharge) {
+    return {
+      ok: false,
+      reason: `reference charge (${signed(refCharge)}) ≠ complex charge (${signed(complexCharge)}) — barrier endpoints are different chemical systems`,
+    };
+  }
+  return { ok: true };
+}
+
 /** One pathway's absolute-barrier cell: a number, or the specific reason it is withheld. */
 export type BarrierCell = { kcal: number } | { reason: string };
 
@@ -236,12 +324,18 @@ export function absoluteBarrierCell(
   referenceInputs: string[],
   pathwayMethodSig: string,
   refJobCount: number,
+  complexInput: string,
 ): BarrierCell {
   if (refJobCount === 0) return { reason: "no reactant reference set" };
   if (refEnergyEh === null) {
     return { reason: "reference incomplete — a reference job has no parsed energy" };
   }
-  const guard = referenceComparable(referenceInputs, pathwayMethodSig);
-  if (!guard.ok) return { reason: guard.reason };
+  const method = referenceComparable(referenceInputs, pathwayMethodSig);
+  if (!method.ok) return { reason: method.reason };
+  // Composition + charge balance LAST (assumes the inputs are parseable + method-consistent):
+  // the reference must account for exactly the complex's atoms and charge, or the number is
+  // confident garbage (the −60127 SN2 case). Honest-or-absent: refuse, never fake.
+  const stoich = referenceStoichiometryOk(complexInput, referenceInputs);
+  if (!stoich.ok) return { reason: stoich.reason };
   return { kcal: absoluteBarrierKcal(pathwayMaxEh, refEnergyEh) };
 }

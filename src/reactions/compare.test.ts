@@ -11,6 +11,7 @@ import {
   pathwaysComparable,
   absoluteBarrierKcal,
   referenceComparable,
+  referenceStoichiometryOk,
   absoluteBarrierCell,
   maxEnergyEh,
 } from "./compare";
@@ -242,32 +243,87 @@ describe("referenceComparable (C-ref-method-mismatch)", () => {
   });
 });
 
-describe("absoluteBarrierCell (C-incomplete-no-number + honest-or-absent)", () => {
-  const pathSig = methodSignature("! r2SCAN-3c Opt").display;
-  const refInputs = ["! r2SCAN-3c Opt", "! r2SCAN-3c Opt"];
+// --- Coordinate-block fixtures for the stoichiometry guard -------------------
+// Methylamine (CH3NH2 = C1 N1 H5, 7 atoms), ethyl iodide (C2H5I = C2 H5 I, 8 atoms),
+// and their 15-atom reacting complex (C3 H10 I N) as ONE `* xyz` block (the merged scan
+// geometry). Coordinates are arbitrary — the parser reads element + charge only.
+const METHYLAMINE =
+  "! r2SCAN-3c SMD(DMF) Opt\n* xyz 0 1\nC 0 0 0\nN 1.47 0 0\nH -0.5 0.9 0\nH -0.5 -0.9 0\nH -0.5 0 0.9\nH 1.9 0.8 0\nH 1.9 -0.8 0\n*\n";
+const ETI =
+  "! r2SCAN-3c SMD(DMF) Opt\n* xyz 0 1\nC 0 0 0\nC 1.5 0 0\nI 3.6 0 0\nH -0.5 0.9 0\nH -0.5 -0.9 0\nH -0.5 0 0.9\nH 1.9 0.9 0\nH 1.9 -0.9 0\n*\n";
+const COMPLEX =
+  "! r2SCAN-3c SMD(DMF) LooseOpt\n* xyz 0 1\n" +
+  "C 0 0 0\nN 1.47 0 0\nH -0.5 0.9 0\nH -0.5 -0.9 0\nH -0.5 0 0.9\nH 1.9 0.8 0\nH 1.9 -0.8 0\n" +
+  "C 5 0 0\nC 6.5 0 0\nI 8.6 0 0\nH 4.5 0.9 0\nH 4.5 -0.9 0\nH 4.5 0 0.9\nH 6.9 0.9 0\nH 6.9 -0.9 0\n*\n";
 
-  it("shows a number when the reference is present, complete AND method-consistent", () => {
-    const cell = absoluteBarrierCell(-100.0, -100.2, refInputs, pathSig, 2);
+describe("referenceStoichiometryOk (composition + charge balance)", () => {
+  it("HEADLINE (the r2 defect): EtI-only reference does NOT sum to the complex → refuse", () => {
+    const r = referenceStoichiometryOk(COMPLEX, [ETI]);
+    expect(r.ok).toBe(false);
+    // Names the imbalance (C2H5I reference vs C3H10IN complex).
+    if (!r.ok) {
+      expect(r.reason).toMatch(/C2H5I/);
+      expect(r.reason).toMatch(/C3H10IN/);
+    }
+  });
+
+  it("two references summing to the complex (methylamine + EtI = 15 atoms) → ok", () => {
+    expect(referenceStoichiometryOk(COMPLEX, [METHYLAMINE, ETI])).toEqual({ ok: true });
+  });
+
+  it("a single reference that IS the whole complex → ok (the pre-reaction-complex mode)", () => {
+    expect(referenceStoichiometryOk(COMPLEX, [COMPLEX])).toEqual({ ok: true });
+  });
+
+  it("charge imbalance → refuse (guards the ionic case) even when atoms balance", () => {
+    // Same atoms as the complex, but the reference carries charge −1 vs the complex's 0.
+    const anionComplex = COMPLEX.replace("* xyz 0 1", "* xyz -1 1");
+    const r = referenceStoichiometryOk(COMPLEX, [anionComplex]);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toMatch(/charge/);
+  });
+
+  it("unreadable complex (no coordinate block) → refuse (cannot verify)", () => {
+    const r = referenceStoichiometryOk("! r2SCAN-3c Opt", [ETI]);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toMatch(/cannot verify complex/);
+  });
+});
+
+describe("absoluteBarrierCell (C-incomplete-no-number + honest-or-absent + stoichiometry)", () => {
+  const pathSig = methodSignature("! r2SCAN-3c SMD(DMF) Opt").display;
+  const refInputs = [METHYLAMINE, ETI]; // balanced against COMPLEX
+
+  it("shows a number when the reference is present, complete, method-consistent AND balanced", () => {
+    const cell = absoluteBarrierCell(-100.0, -100.2, refInputs, pathSig, 2, COMPLEX);
     expect("kcal" in cell).toBe(true);
     if ("kcal" in cell) expect(cell.kcal).toBeCloseTo(0.2 * HARTREE_TO_KCAL, 6);
   });
 
+  it("HEADLINE (r2): a composition-mismatched reference (EtI only) is REFUSED, not the −60127 number", () => {
+    // The −60127 kcal/mol garbage case: E(max) − E(EtI) ≈ −E(methylamine). Now a reason.
+    const cell = absoluteBarrierCell(-100.0, -108.0, [ETI], pathSig, 1, COMPLEX);
+    expect("kcal" in cell).toBe(false);
+    if ("reason" in cell) {
+      expect(cell.reason).toMatch(/do not sum to the reacting complex/);
+      expect(cell.reason).toMatch(/C2H5I/);
+    }
+  });
+
   it("C-incomplete-no-number: energyEh === null → a reason, NO number (never treats null as 0)", () => {
-    // The bite: a version doing absoluteBarrierKcal(max, refEnergyEh ?? 0) would return a
-    // (wrong, ~ +62751 kcal/mol) number here; this asserts the cell carries a reason instead.
-    const cell = absoluteBarrierCell(-100.0, null, refInputs, pathSig, 2);
+    const cell = absoluteBarrierCell(-100.0, null, refInputs, pathSig, 2, COMPLEX);
     expect("kcal" in cell).toBe(false);
     if ("reason" in cell) expect(cell.reason).toMatch(/incomplete/);
   });
 
   it("no reference set → a reason (the C2b-1 'needs a reference' state), not a number", () => {
-    const cell = absoluteBarrierCell(-100.0, null, [], pathSig, 0);
+    const cell = absoluteBarrierCell(-100.0, null, [], pathSig, 0, COMPLEX);
     expect("kcal" in cell).toBe(false);
     if ("reason" in cell) expect(cell.reason).toMatch(/no reactant reference/);
   });
 
-  it("method mismatch → the guard reason, not a number (even when complete)", () => {
-    const cell = absoluteBarrierCell(-100.0, -100.2, ["! B3LYP def2-SVP Opt"], pathSig, 1);
+  it("method mismatch fires BEFORE the stoichiometry check (order preserved)", () => {
+    const cell = absoluteBarrierCell(-100.0, -100.2, ["! B3LYP def2-SVP Opt"], pathSig, 1, COMPLEX);
     expect("kcal" in cell).toBe(false);
     if ("reason" in cell) expect(cell.reason).toMatch(/reference method differs/);
   });

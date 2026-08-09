@@ -143,18 +143,34 @@ reference is optional (no reference → the overlay is exactly C2b-1).
   column (only when ≥ 1 reference job is set). Each cell shows the number **only** where the reference
   is complete + method-matching; otherwise the **reason** (incomplete / method mismatch), never a
   faked number.
-- **Guard extension** — `referenceComparable(referenceInputs, pathwayMethodSig)` (in `compare.ts`,
-  reusing `methodSignature`) refuses the absolute barrier when a reference job's method ≠ the pathway's
-  (a B3LYP reactant under an r2SCAN-3c scan max is nonsense — ADR-018). Coordinate comparability among
-  pathways is unchanged (C2b-1's `pathwaysComparable`).
+- **Guard chain (three refusals, honest-or-absent)** — the absolute-barrier cell shows a number only
+  after ALL pass, else the specific reason:
+  1. **complete** — E(ref) non-null (every reference job parsed; else "reference incomplete — a
+     reference job has no parsed energy");
+  2. **method-consistent** — `referenceComparable(referenceInputs, pathwayMethodSig)` (reusing
+     `methodSignature`) refuses when a reference job's method ≠ the pathway's (a B3LYP reactant under an
+     r²SCAN-3c scan max is nonsense — ADR-018);
+  3. **mass- and charge-balanced** — `referenceStoichiometryOk(complexInput, referenceInputs)` reuses
+     **`sceneFromOrcaInput`** (the app's one `* xyz` reader, **not** a hand-rolled regex) to read each
+     `* xyz <c> <m> … *` block, sums the reference **element multisets + charges**, and refuses unless
+     they equal the reacting complex's atoms and charge. **Both valid shapes pass:** two references
+     summing to the complex (8 + 7 = 15 atoms) OR a single reference that IS the whole complex; only a
+     reference whose atoms/charge ≠ the complex's is refused. Why it exists: on the real SN2, dropping
+     one of the two references left EtI alone (8 atoms) and the app subtracted it from the 15-atom
+     E(max) → a confident **−60127 kcal/mol** (≈ −E(methylamine)). A composition/charge mismatch is now
+     an honest refusal, never a number (the r2-gate fix). Order: complete → method → stoichiometry
+     (the composition check assumes parseable, method-consistent inputs).
+
+  Coordinate comparability among pathways is unchanged (C2b-1's `pathwaysComparable`).
 - **Honest labelling** — the absolute barrier is a **screening ΔE‡** on the relaxed surface vs
   separated reactants (barrier 3), **not ΔG‡** (that is OptTS + thermochemistry, Stage E).
 
 **Pure logic (all in `compare.ts`, unit-tested — the chart carries no correctness weight, the B2
 lesson):** `absoluteBarrierKcal(maxEh, refEh)` = (max − ref)·627.509; `referenceComparable(...)`;
-`absoluteBarrierCell(maxEh, refEh|null, refInputs, pathwaySig, refJobCount)` — the honest-or-absent
-decision (`{ kcal } | { reason }`) that the UI renders verbatim, so a `null` reference cannot be
-treated as `0`. Controls in `compare.test.ts`: **C-absolute-barrier** (the factor),
+`referenceStoichiometryOk(complexInput, refInputs)` (composition + charge balance, reuses
+`sceneFromOrcaInput`); `absoluteBarrierCell(maxEh, refEh|null, refInputs, pathwaySig, refJobCount,
+complexInput)` — the honest-or-absent decision (`{ kcal } | { reason }`) that the UI renders verbatim,
+so a `null` reference cannot be treated as `0` and a mismatched reference cannot become a number. Controls in `compare.test.ts`: **C-absolute-barrier** (the factor),
 **C-ref-method-mismatch** (guard refuses — bite-verified: a compute-anyway guard turns three tests
 red), **C-incomplete-no-number** (`absoluteBarrierCell` with `refEh = null` → a reason, not a number —
 bite-verified: treating null as 0 turns it red).

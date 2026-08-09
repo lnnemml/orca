@@ -98,12 +98,15 @@ export function CompareView({
         maxDatum: data[mi],
         intrinsicKcal: intrinsicBarrierKcal(p.scan, which),
         // Absolute barrier vs separated reactants — honest-or-absent (compare.ts).
+        // `p.input` (the scan complex's input_content) is threaded so the stoichiometry
+        // guard can verify the reference's atoms + charge sum to this reacting complex.
         absoluteCell: absoluteBarrierCell(
           maxEnergyEh(p.scan, which),
           refEnergyEh,
           refInputs,
           methodSignature(p.input).display,
           refJobCount,
+          p.input,
         ),
       };
     });
