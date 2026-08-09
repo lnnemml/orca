@@ -930,8 +930,16 @@ r1–r4 manual gates. Next per the ratified reorder: CREST probe → Stage D →
         wired to the scan maximum's "Refine with OptTS (Stage E)" button. Probe run recorded:
         `wiki/orca/optts.md` (Menshutkin SN2, one imaginary −385.31 cm⁻¹). The engine is generic by
         construction so **E3's NEB entry point reuses it unchanged**. Manual gate m1–m3 pending.
-  - [ ] **E1b — consume the located TS:** ΔG‡ from OptTS+Freq+thermochemistry; retire the
-        "approximate TS" label on a pathway once a real TS exists (`reactions/compare.ts` / CompareView).
+  - [x] **E1b — consume the located TS** (2026-08-09, ADR-018 amended): a pathway's located TS (an
+        OptTS child parsed with Freq → G) yields a real **ΔG‡ = G(TS) − ΣG(ref)** + a located ΔE‡ in
+        the compare view, and **ΔΔG‡ = G(TS_A) − G(TS_B)** (reference-free, standard-state cancels) as
+        the two-face headline; the "approximate TS" label is retired where a TS exists. Honest-or-absent:
+        a missing G anywhere (TS or any reference lacks Freq) → ΔG‡ refused with a named reason, never a
+        partial sum; raw ORCA G, the 1 atm→1 M correction named not auto-applied (Fork A). ΣG on the same
+        discipline as Σ E. Pure fns + tests: `compare.ts`; ΣG partial-is-None: `reactions.rs`. **Live
+        gate:** g1/g2 pass on the Menshutkin TS; g3 (ΔΔG‡) unit-tested now, awaits a real 2-face si/re case.
+  - [ ] **E2 next — IRC** (`! IRC`): the connectivity post-condition that a located TS joins the
+        intended reactant/product (below).
 - [ ] **IRC** (`! IRC`) — probe → the post-condition that a found TS connects the intended
       reactant/product.
 - [ ] **NEB / NEB-TS / NEB-CI** (`! NEB-TS`) — probe → the alternative path-finder when there is no

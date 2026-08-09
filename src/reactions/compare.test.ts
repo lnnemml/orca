@@ -14,6 +14,10 @@ import {
   referenceStoichiometryOk,
   absoluteBarrierCell,
   maxEnergyEh,
+  isLocatedTsInput,
+  deltaGDoubleDaggerKcal,
+  locatedBarrierEKcal,
+  deltaDeltaGKcal,
 } from "./compare";
 
 const HARTREE_TO_KCAL = 627.5094740631;
@@ -326,5 +330,51 @@ describe("absoluteBarrierCell (C-incomplete-no-number + honest-or-absent + stoic
     const cell = absoluteBarrierCell(-100.0, -100.2, ["! B3LYP def2-SVP Opt"], pathSig, 1, COMPLEX);
     expect("kcal" in cell).toBe(false);
     if ("reason" in cell) expect(cell.reason).toMatch(/reference method differs/);
+  });
+});
+
+// ── Located-TS barriers (Stage E1b): ΔG‡ / located ΔE‡ / ΔΔG‡ ────────────────────
+describe("isLocatedTsInput (G-isLocatedTs)", () => {
+  it("an OptTS input is a located TS; a plain Opt / scan input is NOT", () => {
+    expect(isLocatedTsInput("! r2SCAN-3c OptTS Freq SMD(DMF) TightSCF")).toBe(true);
+    // Bite: matching a bare "Opt" substring would misfire on a plain Opt job — assert OptTS
+    // SPECIFICALLY. A geometry optimization and a relaxed scan are not transition states.
+    expect(isLocatedTsInput("! r2SCAN-3c Opt Freq")).toBe(false);
+    expect(isLocatedTsInput("! r2SCAN-3c LooseOpt SMD(DMF) TightSCF")).toBe(false);
+    // Case-insensitive, and only on the `!` line (a stray "optts" in a comment/coords is ignored).
+    expect(isLocatedTsInput("! R2SCAN-3C OPTTS FREQ")).toBe(true);
+    expect(isLocatedTsInput("! r2SCAN-3c Opt\n* xyz 0 1\nC 0 0 0\n*")).toBe(false);
+  });
+});
+
+describe("deltaGDoubleDaggerKcal / locatedBarrierEKcal (G-honest-absent)", () => {
+  it("computes ΔG‡ = (G(TS) − ΣG(ref))·627.509 when both are present", () => {
+    // Bimolecular: G(TS) − ΣG(reactants) is a POSITIVE barrier (association entropy already in G).
+    expect(deltaGDoubleDaggerKcal(-100.0, -100.2)).toBeCloseTo(0.2 * HARTREE_TO_KCAL, 6);
+    expect(locatedBarrierEKcal(-100.0, -100.25)).toBeCloseTo(0.25 * HARTREE_TO_KCAL, 6);
+  });
+
+  it("any null input → null (never treats a missing G as 0 — the fabricated-barrier bite)", () => {
+    // A version that read null as 0 would emit e.g. -100·627.509 — a garbage barrier.
+    expect(deltaGDoubleDaggerKcal(null, -100.2)).toBeNull();
+    expect(deltaGDoubleDaggerKcal(-100.0, null)).toBeNull();
+    expect(deltaGDoubleDaggerKcal(null, null)).toBeNull();
+    expect(locatedBarrierEKcal(null, -100.2)).toBeNull();
+    expect(locatedBarrierEKcal(-100.0, null)).toBeNull();
+    expect(deltaDeltaGKcal(null, -100.0)).toBeNull();
+    expect(deltaDeltaGKcal(-100.0, null)).toBeNull();
+  });
+});
+
+describe("deltaDeltaGKcal (G-ddg-reference-free)", () => {
+  it("ΔΔG‡ = G(TS_A) − G(TS_B), reading NO reference (the reactants cancel)", () => {
+    const gA = -543.21;
+    const gB = -543.19;
+    // The value is PURELY the two TS Gibbs energies — the function has no reference parameter, so a
+    // reactant sum cannot leak in (a version that subtracted one would double-count and differ).
+    expect(deltaDeltaGKcal(gA, gB)).toBeCloseTo((gA - gB) * HARTREE_TO_KCAL, 6);
+    // Antisymmetry + symmetry-zero (mirrors deltaDeltaEKcal).
+    expect(deltaDeltaGKcal(gB, gA)).toBeCloseTo(-(gA - gB) * HARTREE_TO_KCAL, 6);
+    expect(deltaDeltaGKcal(gA, gA)).toBe(0);
   });
 });

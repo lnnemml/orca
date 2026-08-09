@@ -7029,3 +7029,41 @@ index (+2 pages → 88), ROADMAP Stage E (E1a `[x]`, E1b next). **Next:** author
 a queued child inheriting charge 0 1 + r2SCAN-3c/SMD DMF, OptTS/Freq/TightSCF/Calc_Hess, no Scan/LooseOpt;
 run → the same located TS as the hand run; joins the pathway if the scan was in one). Then E1b (ΔG‡ +
 label retirement); E3 reuses this engine for NEB.
+
+## [2026-08-09] session | Phase 4.5 Stage E1b — ΔG‡ / ΔΔG‡ from a located TS; "approximate TS" label retired
+
+Generalized the C2b barriers from the scan MAXIMUM to a LOCATED TS (an OptTS child parsed with Freq
+→ G): a pathway with a located TS now shows a real **ΔG‡ = G(TS) − ΣG(ref)** + a located ΔE‡, and a
+two-face reaction shows **ΔΔG‡ = G(TS_A) − G(TS_B)** (reference-free, standard-state cancels) — the
+mission's selectivity number in free energy. Additive: a pathway with no located TS keeps the
+scan-max ΔE‡ screening + the "approximate TS" label.
+
+**Chemistry got right (reaction-barriers.md §"Барʼєр 4", укр.):** raw ORCA Final Gibbs is ideal-gas
+RRHO at 1 atm / 298.15 K and ALREADY contains the association entropy → **ΔG‡ ≫ ΔE‡ for a bimolecular
+step is EXPECTED**, not a bug (don't "correct" it). Standard state: absolute ΔG‡ vs a solution
+experiment needs a 1 atm→1 M correction (~1.9 kcal/mol per molecularity change) — **named in a caveat,
+NOT auto-applied** (Fork A; auto-applying embeds a molecularity/reference assumption). For ΔΔG‡ the
+correction **CANCELS** (same molecularity both faces), so the raw ΔΔG‡ is directly comparable.
+
+**Pure core (compare.ts, Part A — reviewed):** `isLocatedTsInput` (OptTS token, specific — not a bare
+"Opt" substring), `deltaGDoubleDaggerKcal`, `locatedBarrierEKcal`, `deltaDeltaGKcal` — all reuse the
+generic `absoluteBarrierKcal` (no second kcal converter) and all **null-propagate a missing G** (never
+null-as-0). 4 tests, 3 bites: G-isLocatedTs, G-honest-absent, G-ddg-reference-free.
+
+**Reference ΣG (Rust, reactions.rs / models/reaction.rs):** `ReferenceJob.free_energy_g_eh` +
+`ReferenceEnergy.free_energy_g_eh` = Σ over `results.free_energy_g_eh`, on the EXACT Σ energy_eh
+discipline (`Option<f64>: Sum` → None the moment any reference lacks G; empty → None). **No migration**
+— G is read from parsed results, summed on the fly. Test `reference_gibbs_sum_incomplete_is_none_but_
+energy_sums`: 2-of-3 have Freq → ΣG None while Σ E sums (the load-bearing partial-sum bite).
+
+**Wiring (frontend):** `ReactionDetail` (ReactionsScreen) — a pathway can hold TWO jobs now (scan +
+its OptTS child, both attached in E1a); pick the scan by its profile (the fix that keeps the curve when
+a TS is also attached) and the TS by `isLocatedTsInput` among parsed jobs; read E/G from its results.
+`CompareView` — a "Located TS — ΔE‡ · ΔG‡" column (gated on the same reference usability as the scan-max
+absolute barrier), a ΔΔG‡ headline line, the Fork-A caveat, and label retirement (approximate → located).
+G missing → "ΔG‡ — re-run w/ Freq", never fabricated.
+
+**Verification.** tsc clean; vitest **746** (was 742, +4 in compare.test.ts); cargo **245** (+1). Wiki:
+reaction-barriers.md, reactions-ui.md, adr-018 (amended), ROADMAP (E1b [x], E2 next), index. **Next:**
+author g1/g2 live (Menshutkin TS + G-bearing refs → real ΔG‡, caveat visible; refs without Freq → ΔG‡
+refused with reason, ΔE‡ still shown); g3 ΔΔG‡ awaits a real 2-face si/re case. Then E2 (IRC connectivity).

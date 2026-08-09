@@ -13,15 +13,30 @@ import {
   referenceComparable,
   absoluteBarrierCell,
   methodSignature,
+  locatedBarrierEKcal,
+  deltaGDoubleDaggerKcal,
+  deltaDeltaGKcal,
 } from "./compare";
 
+/** A pathway's LOCATED transition state (Stage E1b): an OptTS child of this pathway,
+ * parsed. `eEh` is its electronic energy; `gEh` its Gibbs G (null unless Freq parsed —
+ * the honest-or-absent signal for ΔG‡). `input` is the TS job's input (for the guards). */
+export interface LocatedTs {
+  input: string;
+  eEh: number | null;
+  gEh: number | null;
+}
+
 /** A pathway ready to compare: its label, the attached job's scan profile (B1), and
- * that job's input (for the method-comparability guard). */
+ * that job's input (for the method-comparability guard). `locatedTs` is present when the
+ * pathway has a parsed OptTS refinement (Stage E1b) — then a real ΔG‡ / located ΔE‡ replace
+ * the scan-max estimate and the "approximate TS" label is retired. */
 export interface ComparePathway {
   id: string;
   label: string;
   scan: ScanProfileJson;
   input: string;
+  locatedTs?: LocatedTs;
 }
 
 /** The reactant reference for absolute barriers (Phase 4.5 C2b-2b, ADR-018), read from
@@ -33,6 +48,9 @@ export interface CompareReference {
   inputs: string[];
   energyEh: number | null;
   jobCount: number;
+  /** Σ G(ref) in Eh (Stage E1b) — non-null ONLY when every reference job ran Freq; a partial
+   * ΣG is null, never summed (ADR-018). The denominator of ΔG‡; null → ΔG‡ is refused. */
+  gibbsEh: number | null;
 }
 
 type ZeroMode = "min" | "reactants";
@@ -60,6 +78,7 @@ export function CompareView({
   const { ref, width } = useContainerWidth();
 
   const refEnergyEh = reference?.energyEh ?? null;
+  const refGibbsEh = reference?.gibbsEh ?? null;
   const refJobCount = reference?.jobCount ?? 0;
   const refInputs = useMemo(() => reference?.inputs ?? [], [reference]);
   const refComplete = refEnergyEh != null;
@@ -91,29 +110,54 @@ export function CompareView({
         relKcal: (energyEh(pt, which) - zeroEh) * HARTREE_TO_KCAL,
       }));
       const mi = maxIndex(p.scan.points, which);
+      // Absolute barrier vs separated reactants — honest-or-absent (compare.ts).
+      // `p.input` (the scan complex's input_content) is threaded so the stoichiometry
+      // guard can verify the reference's atoms + charge sum to this reacting complex.
+      const absoluteCell = absoluteBarrierCell(
+        maxEnergyEh(p.scan, which),
+        refEnergyEh,
+        refInputs,
+        methodSignature(p.input).display,
+        refJobCount,
+        p.input,
+      );
+      // Stage E1b — a LOCATED TS supersedes the scan-max estimate where present. The located
+      // barriers are gated on the SAME reference usability as the scan-max absolute barrier
+      // (complete + method-consistent + balanced — same chemical system, same method as the
+      // scan): reuse `absoluteCell`'s verdict rather than re-deriving the guard.
+      const isLocated = !!p.locatedTs;
+      const refUsable = "kcal" in absoluteCell;
+      const locatedEKcal =
+        p.locatedTs && refUsable ? locatedBarrierEKcal(p.locatedTs.eEh, refEnergyEh) : null;
+      const deltaGKcal =
+        p.locatedTs && refUsable ? deltaGDoubleDaggerKcal(p.locatedTs.gEh, refGibbsEh) : null;
+      // A located TS with a usable reference but ΔG‡ still null ⇒ the TS or a reference lacks
+      // G (no Freq) — an HONEST named reason, never a fabricated/partial ΔG‡ (rule #9).
+      const gMissing = isLocated && refUsable && deltaGKcal === null;
+      // When the reference itself is unusable, the located barrier shares that reason.
+      const locatedReason = isLocated && !refUsable && "reason" in absoluteCell ? absoluteCell.reason : null;
       return {
         ...p,
         color: PALETTE[i % PALETTE.length],
         data,
         maxDatum: data[mi],
         intrinsicKcal: intrinsicBarrierKcal(p.scan, which),
-        // Absolute barrier vs separated reactants — honest-or-absent (compare.ts).
-        // `p.input` (the scan complex's input_content) is threaded so the stoichiometry
-        // guard can verify the reference's atoms + charge sum to this reacting complex.
-        absoluteCell: absoluteBarrierCell(
-          maxEnergyEh(p.scan, which),
-          refEnergyEh,
-          refInputs,
-          methodSignature(p.input).display,
-          refJobCount,
-          p.input,
-        ),
+        absoluteCell,
+        isLocated,
+        locatedEKcal,
+        deltaGKcal,
+        gMissing,
+        locatedReason,
+        gTsEh: p.locatedTs?.gEh ?? null,
       };
     });
-  }, [pathways, which, reactantsZeroActive, refEnergyEh, refInputs, refJobCount]);
+  }, [pathways, which, reactantsZeroActive, refEnergyEh, refGibbsEh, refInputs, refJobCount]);
 
   const baseline = series[Math.min(baselineIdx, series.length - 1)];
   const unit = pathways[0]?.scan.coordinate_unit ?? "Å";
+  // Any pathway with a parsed located TS → show the located-TS column + retire "approximate".
+  const anyLocated = series.some((s) => s.isLocated);
+  const sign = (v: number) => (v >= 0 ? `+${v.toFixed(2)}` : v.toFixed(2));
 
   // ΔΔE‡ of every other pathway vs the baseline — each GUARDED independently: a method
   // or coordinate mismatch shows the reason, never a faked number.
@@ -121,12 +165,21 @@ export function CompareView({
     .filter((s) => s.id !== baseline.id)
     .map((s) => {
       const cmp = pathwaysComparable(s.input, baseline.input, s.scan, baseline.scan);
+      // ΔΔG‡ — THE mission headline (Stage E1b): reference-free (the shared reactants cancel),
+      // over LOCATED-saddle G. Only when BOTH faces have a parsed G, and only under the same
+      // method/coordinate guard as ΔΔE‡. The 1 atm→1 M standard-state correction CANCELS here
+      // (same molecularity both faces) — so this raw number is directly comparable.
+      const ddgKcal =
+        cmp.ok && s.gTsEh != null && baseline.gTsEh != null
+          ? deltaDeltaGKcal(s.gTsEh, baseline.gTsEh)
+          : null;
       return {
         id: s.id,
         label: s.label,
         color: s.color,
         guard: cmp,
         ddeKcal: cmp.ok ? deltaDeltaEKcal(s.scan, baseline.scan, which) : null,
+        ddgKcal,
       };
     });
 
@@ -272,6 +325,14 @@ export function CompareView({
             {refJobCount > 0 ? (
               <th style={{ textAlign: "right" }}>Absolute barrier (vs separated reactants)</th>
             ) : null}
+            {anyLocated ? (
+              <th
+                style={{ textAlign: "right" }}
+                title="From a LOCATED transition state (OptTS+Freq), vs separated reactants — a real ΔG‡, not the scan-max estimate"
+              >
+                Located TS — ΔE‡ · ΔG‡
+              </th>
+            ) : null}
           </tr>
         </thead>
         <tbody>
@@ -315,10 +376,47 @@ export function CompareView({
                   </td>
                 )
               ) : null}
+              {anyLocated ? (
+                <td className="mono" style={{ textAlign: "right", fontSize: 12 }}>
+                  {!s.isLocated ? (
+                    <span className="muted" title="No parsed OptTS refinement for this pathway yet">
+                      — (refine with OptTS)
+                    </span>
+                  ) : s.locatedReason ? (
+                    <span className="muted">{s.locatedReason}</span>
+                  ) : (
+                    <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end" }}>
+                      <span title="E(TS) − Σ E(reactant jobs): electronic barrier from the located saddle">
+                        ΔE‡ {s.locatedEKcal != null ? sign(s.locatedEKcal) : "—"}
+                      </span>
+                      {s.deltaGKcal != null ? (
+                        <strong title="G(TS) − Σ G(reactant jobs): RAW ORCA ΔG‡ (ideal-gas RRHO, 1 atm, 298.15 K)">
+                          ΔG‡ {sign(s.deltaGKcal)}
+                        </strong>
+                      ) : s.gMissing ? (
+                        <span className="muted" title="ΔG‡ needs G for the TS AND every reference — re-run those with Freq">
+                          ΔG‡ — re-run w/ Freq
+                        </span>
+                      ) : (
+                        <span className="muted">ΔG‡ —</span>
+                      )}
+                    </div>
+                  )}
+                </td>
+              ) : null}
             </tr>
           ))}
         </tbody>
       </table>
+      {anyLocated ? (
+        <p className="muted" style={{ marginTop: 6, fontSize: 12 }}>
+          <strong>ΔG‡ is raw ORCA G</strong> (ideal-gas RRHO, 1 atm, 298.15 K) — it already includes the{" "}
+          <strong>association entropy</strong> (two reactants → one TS), so ΔG‡ ≫ ΔE‡ for a bimolecular
+          step is <em>expected</em>. Comparing an absolute ΔG‡ to a <strong>solution</strong> experiment
+          needs a 1 atm→1 M standard-state correction (~1.9 kcal/mol per molecularity change) — named
+          here, <strong>not</strong> auto-applied. (For ΔΔG‡ below the correction <strong>cancels</strong>.)
+        </p>
+      ) : null}
 
       {/* ΔΔE‡ — the mission number. Shown ONLY where the guard passes; a mismatch shows
           the reason, never a faked number. */}
@@ -336,13 +434,30 @@ export function CompareView({
           comparisons.map((c) => (
             <div key={c.id} style={{ marginBottom: 6 }}>
               {c.guard.ok ? (
-                <div className="mono" style={{ fontSize: 15 }}>
-                  ΔΔE‡({c.label} − {baseline.label}) ={" "}
-                  <strong style={{ color: c.color }}>
-                    {c.ddeKcal! >= 0 ? "+" : ""}
-                    {c.ddeKcal!.toFixed(2)} kcal/mol
-                  </strong>
-                </div>
+                <>
+                  <div className="mono" style={{ fontSize: 15 }}>
+                    ΔΔE‡({c.label} − {baseline.label}) ={" "}
+                    <strong style={{ color: c.color }}>
+                      {c.ddeKcal! >= 0 ? "+" : ""}
+                      {c.ddeKcal!.toFixed(2)} kcal/mol
+                    </strong>
+                    <span className="muted"> (scan-max screening)</span>
+                  </div>
+                  {c.ddgKcal != null ? (
+                    // THE mission headline: ΔΔG‡ over two LOCATED TSs — reference-free, and the
+                    // standard-state correction cancels (same molecularity both faces).
+                    <div className="mono" style={{ fontSize: 15, marginTop: 2 }}>
+                      ΔΔG‡({c.label} − {baseline.label}) ={" "}
+                      <strong style={{ color: c.color }}>
+                        {c.ddgKcal >= 0 ? "+" : ""}
+                        {c.ddgKcal.toFixed(2)} kcal/mol
+                      </strong>{" "}
+                      <span className="muted">
+                        (located TS · reference-free · standard-state cancels)
+                      </span>
+                    </div>
+                  ) : null}
+                </>
               ) : (
                 <div className="banner warn" style={{ margin: 0 }}>
                   {c.label} vs {baseline.label}: {c.guard.reason}
@@ -361,10 +476,21 @@ export function CompareView({
       ) : null}
 
       <p className="muted scan-ts-note" style={{ marginTop: 10 }}>
-        Each maximum is an <strong>approximate TS (scan maximum)</strong> — a ΔE‡ estimate on the
-        relaxed surface, not a located saddle and not ΔG‡ (refine with OptTS, Stage E). ΔΔE‡ is a{" "}
-        <strong>screening</strong> value; it is <strong>reference-free</strong> (the shared reactant
-        reference cancels).{" "}
+        {anyLocated ? (
+          <>
+            Pathways with a <strong>located TS</strong> (OptTS+Freq) show a real ΔE‡ / ΔG‡ from the
+            actual saddle. A pathway still on the scan maximum shows an{" "}
+            <strong>approximate TS (scan maximum)</strong> — a ΔE‡ estimate, not a located saddle and
+            not ΔG‡ (refine with OptTS, Stage E).{" "}
+          </>
+        ) : (
+          <>
+            Each maximum is an <strong>approximate TS (scan maximum)</strong> — a ΔE‡ estimate on the
+            relaxed surface, not a located saddle and not ΔG‡ (refine with OptTS, Stage E).{" "}
+          </>
+        )}
+        ΔΔE‡ is a <strong>screening</strong> value; it is <strong>reference-free</strong> (the shared
+        reactant reference cancels).{" "}
         {refJobCount === 0 ? (
           <>
             Absolute (vs separated reactants) barriers need a reactant reference — add optimized reactant

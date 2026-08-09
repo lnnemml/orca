@@ -81,6 +81,12 @@ pub struct ReferenceJob {
     pub job_id: String,
     pub title: String,
     pub final_energy_eh: Option<f64>,
+    /// The reference job's parsed Gibbs free energy G (Eh), read from the authoritative
+    /// `results` tier (ADR-012) at read time. **`None` unless the job ran `Freq` and its
+    /// thermochemistry parsed** — the honest-or-absent signal for ΔG‡ (Stage E1b): a
+    /// reference without G means the reaction has no complete ΣG(ref), so ΔG‡ must be
+    /// refused, never partially summed. Never cached (ADR-018: one source of truth).
+    pub free_energy_g_eh: Option<f64>,
 }
 
 /// A reaction's summed reactant reference: the provenance (`jobs`) AND the honest
@@ -93,4 +99,10 @@ pub struct ReferenceJob {
 pub struct ReferenceEnergy {
     pub jobs: Vec<ReferenceJob>,
     pub energy_eh: Option<f64>,
+    /// Σ Gibbs free energy G (Eh) of the reference jobs, on the SAME honest-or-absent
+    /// discipline as `energy_eh` but over `free_energy_g_eh`: `Some(ΣG)` **only if the list
+    /// is non-empty and EVERY reference job has a parsed G** (i.e. every one ran Freq);
+    /// otherwise `None`. A partial ΣG (some references without Freq) is NEVER returned — it
+    /// would look like a valid ΔG‡ denominator while being wrong (Stage E1b, ADR-018).
+    pub free_energy_g_eh: Option<f64>,
 }

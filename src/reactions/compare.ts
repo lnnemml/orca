@@ -102,6 +102,72 @@ export function absoluteBarrierKcal(pathwayMaxEh: number, refEnergyEh: number): 
   return (pathwayMaxEh - refEnergyEh) * HARTREE_TO_KCAL;
 }
 
+// --- Located-TS barriers (Stage E1b) — E → {E, G} over an actual saddle ------
+//
+// C2b's barriers estimate ΔE‡ from the SCAN MAXIMUM (an approximate TS on the relaxed
+// surface). E1b GENERALIZES them to a LOCATED TS (an OptTS child, parsed with Freq → G):
+// the electronic barrier from a real saddle (`locatedBarrierEKcal`, more accurate than the
+// scan-max estimate) and — the point of E1b — a real **ΔG‡** (`deltaGDoubleDaggerKcal`).
+// **Honest-or-absent (rule #9, ADR-018):** G is nullable (only Freq jobs have it); a null G
+// anywhere → the barrier is `null`, NEVER a fabricated or partial-sum number. Raw ORCA G
+// (ideal-gas RRHO, 1 atm, 298.15 K); the standard-state caveat is NAMED in the UI, never
+// auto-applied (Fork A; chemistry/reaction-barriers.md).
+
+/** True iff this input is a LOCATED transition state — its `!` line carries the `OptTS`
+ * token (the role marker; a located TS is an OptTS job). Same token scan as
+ * {@link methodSignature}: split each `!` line, compare case-insensitively. Matches `OptTS`
+ * **specifically**, NOT a bare `Opt` substring — a plain `! … Opt` geometry optimization is
+ * not a transition state. */
+export function isLocatedTsInput(input: string): boolean {
+  for (const raw of input.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line.startsWith("!")) continue;
+    for (const tok of line.slice(1).trim().split(/\s+/)) {
+      if (tok.toUpperCase() === "OPTTS") return true;
+    }
+  }
+  return false;
+}
+
+/** ΔG‡ (kcal/mol) from a located TS = (G(TS) − ΣG(reactant refs))·627.509, reusing the generic
+ * {@link absoluteBarrierKcal} converter. **`null` if either G is null** — a Freq job is required
+ * for G, and a missing G must NEVER be read as 0 (that fabricates a barrier). This null-guard is
+ * the entire point of the function. */
+export function deltaGDoubleDaggerKcal(
+  gTsEh: number | null,
+  gRefSumEh: number | null,
+): number | null {
+  if (gTsEh === null || gRefSumEh === null) return null;
+  return absoluteBarrierKcal(gTsEh, gRefSumEh);
+}
+
+/** The located-TS ΔE‡ (kcal/mol) = (E(TS) − ΣE(reactant refs))·627.509 — the ELECTRONIC barrier
+ * from an actual saddle, more accurate than the scan-max estimate {@link maxEnergyEh} gives.
+ * Reuses {@link absoluteBarrierKcal}; same honest-absent null-guard as ΔG‡ so the contract is
+ * uniform (E is present whenever a job parsed, but the guard keeps the two symmetric). */
+export function locatedBarrierEKcal(
+  eTsEh: number | null,
+  eRefSumEh: number | null,
+): number | null {
+  if (eTsEh === null || eRefSumEh === null) return null;
+  return absoluteBarrierKcal(eTsEh, eRefSumEh);
+}
+
+/** ΔΔG‡ (kcal/mol) = G(TS_A) − G(TS_B), **reference-free** — the shared reactants cancel (the same
+ * rationale as {@link deltaDeltaEKcal}, but over located-saddle Gibbs energies). THE mission
+ * headline for a two-face si/re comparison. Reuses the generic {@link absoluteBarrierKcal} converter
+ * `(a−b)·627.509`; reads **no reference** (a version that subtracted a reactant sum would
+ * double-count). `null` if either TS lacks G (honest-absent). The 1 atm→1 M standard-state
+ * correction CANCELS here (same molecularity on both faces), so this raw number is directly
+ * comparable — say so in the UI. */
+export function deltaDeltaGKcal(
+  gTsA: number | null,
+  gTsB: number | null,
+): number | null {
+  if (gTsA === null || gTsB === null) return null;
+  return absoluteBarrierKcal(gTsA, gTsB);
+}
+
 // --- Comparability guard ----------------------------------------------------
 
 /** Keywords on the `!` line that are NOT part of the electronic-structure method

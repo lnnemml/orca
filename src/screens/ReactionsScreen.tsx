@@ -5,6 +5,7 @@ import { confirm } from "@tauri-apps/plugin-dialog";
 import type { Job, ParsedResults, Pathway, Reaction, ReferenceEnergy } from "../types";
 import { formatTimestamp } from "../format";
 import { isScanJob, isValidPathwayLabel, normalizePathwayLabel } from "../reactions/pathway";
+import { isLocatedTsInput } from "../reactions/compare";
 import { CompareView, type ComparePathway, type CompareReference } from "../reactions/CompareView";
 
 interface ReactionsScreenProps {
@@ -268,11 +269,31 @@ function ReactionDetail({ reaction, onOpenJob, onError, onChanged, onDeleted }: 
   // inputs to the comparative overlay. A pathway with no job / no scan is skipped.
   const comparePathways: ComparePathway[] = useMemo(() => {
     return pathways
-      .map((p) => {
-        const job = jobs.find((j) => j.pathway_id === p.id);
-        const results = job ? resultsById.get(job.id) : null;
-        if (!job || !results?.scan || results.scan.points.length === 0) return null;
-        return { id: p.id, label: p.label, scan: results.scan, input: job.input_content };
+      .map((p): ComparePathway | null => {
+        // A pathway can now hold TWO jobs — the scan AND its OptTS refinement (E1a attaches
+        // the located TS to the same pathway). Pick the SCAN job by its scan profile (not
+        // just the first attached job), and the LOCATED TS by its `! OptTS` input, both parsed.
+        const attached = jobs.filter((j) => j.pathway_id === p.id);
+        const scanJob = attached.find((j) => {
+          const r = resultsById.get(j.id);
+          return r?.scan && r.scan.points.length > 0;
+        });
+        if (!scanJob) return null;
+        const scan = resultsById.get(scanJob.id)!.scan!;
+        // The located TS: a parsed OptTS job on this pathway. `eEh`/`gEh` from its parsed
+        // results (G null unless it ran Freq — honest-or-absent, Stage E1b).
+        const tsJob = attached.find(
+          (j) => isLocatedTsInput(j.input_content) && resultsById.has(j.id),
+        );
+        const tsResults = tsJob ? resultsById.get(tsJob.id) : null;
+        const locatedTs = tsJob
+          ? {
+              input: tsJob.input_content,
+              eEh: tsResults?.final_energy_eh ?? null,
+              gEh: tsResults?.thermochemistry?.free_energy_g_eh ?? null,
+            }
+          : undefined;
+        return { id: p.id, label: p.label, scan, input: scanJob.input_content, locatedTs };
       })
       .filter((x): x is ComparePathway => x !== null);
   }, [pathways, jobs, resultsById]);
@@ -297,7 +318,12 @@ function ReactionDetail({ reaction, onOpenJob, onError, onChanged, onDeleted }: 
     const inputs = rjs
       .map((rj) => jobById.get(rj.job_id)?.input_content)
       .filter((x): x is string => x != null);
-    return { inputs, energyEh: refEnergy?.energy_eh ?? null, jobCount: rjs.length };
+    return {
+      inputs,
+      energyEh: refEnergy?.energy_eh ?? null,
+      jobCount: rjs.length,
+      gibbsEh: refEnergy?.free_energy_g_eh ?? null,
+    };
   }, [refEnergy, jobById]);
 
   // Reference candidates: completed/parsed jobs not already in the reference. A reference

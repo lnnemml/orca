@@ -99,3 +99,19 @@ pathway solvation should be **SMD, not ALPB** — surfaced here, enforced at C2b
 - The absolute barrier is always recomputed from live job energies — no stored scalar to invalidate.
 - Full experimental comparison (ΔG‡ via OptTS + Freq + thermochemistry, association entropy, standard
   state) is **Stage E+**; this ADR lays only the reference infrastructure, deliberately.
+
+### Amendment (2026-08-09, Stage E1b) — the barrier now spans **E and G**; a located TS supersedes the scan max
+
+This ADR's machinery generalizes from `E` to `{E, G}` without a schema change. The reference-energy
+seam gains a **ΣG(ref)** alongside Σ E(ref), on the **identical honest-or-absent discipline**: `ΣG` is
+non-null only when the list is non-empty AND **every** reference job ran Freq (a partial ΣG is `None`,
+never summed — a wrong ΔG‡ denominator is as poisonous as a wrong E(ref)). Where a pathway has a
+**located TS** (an OptTS child parsed with Freq → G, Stage E1a / [ADR-020](adr-020-optts-refinement-source-agnostic.md)),
+the compare view shows a **real ΔG‡ = G(TS) − ΣG(ref)** and a located ΔE‡ = E(TS) − ΣE(ref), and
+**retires the "approximate TS" label** for that pathway; the scan-max ΔE‡ remains the screening
+fallback where no TS exists. **Reference-free ΔΔG‡** = G(TS_A) − G(TS_B) is the free-energy sibling of
+the reference-free ΔΔE‡ (shared reactants cancel; the 1 atm→1 M standard-state correction also cancels
+for equal molecularity). Standard state is **named, not auto-applied** (Fork A — auto-applying embeds a
+molecularity/reference-definition assumption). Same comparability guard governs the ΔG‡ barriers.
+Pure logic + honest-or-absent tests: `reactions/compare.ts`; the ΣG sum + its partial-is-None test:
+`commands/reactions.rs`. Story: `chemistry/reaction-barriers.md` §"Барʼєр 4".

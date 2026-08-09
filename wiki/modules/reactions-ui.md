@@ -180,6 +180,48 @@ hydride on an achiral ketone) are enantiomeric → **ΔΔE‡ = 0 by symmetry**.
 identical/mirror profiles is ~0; a sign or wrong-reference bug makes it non-zero — `C-symmetry-zero`
 bites it. `C-guard-refuses` bites a compute-anyway guard; `C-intrinsic` pins the (max−min)·627.509 factor.
 
+## ΔG‡ / ΔΔG‡ from a located TS — the scan-max estimate superseded (E1b)
+
+Stage E1b **generalizes the C2b barriers from the scan maximum to a LOCATED TS** (an OptTS child on
+the pathway, parsed with Freq → G) and **retires the "approximate TS" label** where one exists.
+Additive: a pathway with no located TS shows exactly the C2b behaviour above.
+
+- **Per-pathway located TS** (`ReactionDetail`, `ReactionsScreen.tsx`) — a pathway can now hold **two**
+  jobs (the scan AND its OptTS refinement, both attached in E1a). The compare builder picks the **scan**
+  job by its scan profile (not merely the first attached job — the fix that keeps the curve when a TS is
+  also attached) and the **located TS** by `isLocatedTsInput(input)` (an `OptTS` token, matched
+  **specifically**, never a bare `Opt` substring) among parsed jobs. From the TS's parsed results it
+  reads `E = final_energy_eh` and `G = thermochemistry.free_energy_g_eh` (`null` unless Freq parsed).
+- **Reference ΣG** — `reaction_reference_energy` now also returns `free_energy_g_eh` = Σ over the
+  reference jobs' `free_energy_g_eh`, on the **same honest-or-absent discipline as Σ E**: non-null
+  **only** when the list is non-empty AND **every** reference job ran Freq. A 2-of-3-have-Freq partial
+  ΣG is `null`, never summed (it would look like a valid ΔG‡ denominator while being wrong).
+- **What the compare view shows** (`CompareView`, a new "Located TS — ΔE‡ · ΔG‡" column, present only
+  when some pathway has a located TS):
+  - **Located ΔE‡** = `locatedBarrierEKcal(E(TS), ΣE(ref))` — the electronic barrier from the actual
+    saddle (more accurate than the scan-max estimate). **Real ΔG‡** = `deltaGDoubleDaggerKcal(G(TS),
+    ΣG(ref))` — **raw ORCA G** (ideal-gas RRHO, 1 atm), shown with a caveat (association entropy already
+    in G → ΔG‡ ≫ ΔE‡ expected; the 1 atm→1 M standard-state correction is **named, not auto-applied** —
+    Fork A). Both gated on the **same reference usability** as the scan-max absolute barrier (reuse
+    `absoluteBarrierCell`'s verdict — complete + method-consistent + balanced), so a located barrier is
+    never shown against an unusable reference.
+  - **Honest-or-absent for G:** a located TS with a usable reference but ΔG‡ still `null` (the TS or a
+    reference lacks Freq) shows **"ΔG‡ — re-run w/ Freq"**, never a fabricated/partial number.
+  - **Label retirement:** where a located TS exists the footer says **"located TS"** shows real ΔE‡/ΔG‡;
+    a pathway still on the scan maximum keeps **"approximate TS (scan maximum)"**.
+  - **ΔΔG‡ headline** — for two pathways that **both** have a located TS with G:
+    `deltaDeltaGKcal(G(TS_A), G(TS_B))`, **reference-free** (shared reactants cancel) and labelled
+    **"standard-state cancels"** (same molecularity both faces — the correction drops out, so the raw
+    ΔΔG‡ is directly comparable to experiment). This is the mission's selectivity number in free energy.
+
+**Pure logic (all in `compare.ts`, unit-tested):** `isLocatedTsInput` (OptTS-specific),
+`deltaGDoubleDaggerKcal` / `locatedBarrierEKcal` / `deltaDeltaGKcal` — all reuse the generic
+`absoluteBarrierKcal` converter and all **null-propagate a missing G** (never treat `null` as 0).
+Controls: **G-isLocatedTs** (OptTS true, plain Opt/scan false — bite vs a substring match),
+**G-honest-absent** (any null → null across ΔG‡, located ΔE‡, ΔΔG‡ — bite vs null-as-0), **G-ddg-
+reference-free** (ΔΔG‡ reads no reference — the function has no reference parameter). Rust:
+`reference_gibbs_sum_incomplete_is_none_but_energy_sums` (a 2-of-3-Freq ΣG is `None` while Σ E sums).
+
 ### Manual gate (author, real window) — PENDING (code complete; the unit stays open until it passes)
 
 - **c1** a reaction with two scan pathways → both profiles overlaid, legend-labelled, shared zero; each

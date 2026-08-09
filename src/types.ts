@@ -209,6 +209,9 @@ export interface ReferenceJob {
   job_id: string;
   title: string;
   final_energy_eh: number | null;
+  /** Parsed Gibbs free energy G (Eh), `null` unless the job ran Freq and its
+   * thermochemistry parsed — the honest-or-absent signal for ΔG‡ (Stage E1b). */
+  free_energy_g_eh: number | null;
 }
 
 /** Mirrors `src-tauri/src/models/reaction.rs::ReferenceEnergy`. A reaction's summed
@@ -220,6 +223,10 @@ export interface ReferenceJob {
 export interface ReferenceEnergy {
   jobs: ReferenceJob[];
   energy_eh: number | null;
+  /** Σ Gibbs free energy G (Eh), on the SAME honest-or-absent discipline as `energy_eh`
+   * but over `free_energy_g_eh`: non-null ONLY when every reference job ran Freq (has G);
+   * a partial ΣG (some references Opt-only) is `null`, never summed (Stage E1b, ADR-018). */
+  free_energy_g_eh: number | null;
 }
 
 export type SidecarState = "healthy" | "starting" | "stale" | "down";

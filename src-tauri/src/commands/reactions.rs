@@ -280,7 +280,7 @@ fn list_reference_jobs_conn(
     // LEFT JOIN on `results`: a reference job with no parsed result yields a NULL
     // final_energy_eh (the honest-or-absent signal), not a dropped row.
     let mut stmt = conn.prepare(
-        "SELECT rrj.job_id, j.title, r.final_energy_eh
+        "SELECT rrj.job_id, j.title, r.final_energy_eh, r.free_energy_g_eh
          FROM reaction_reference_jobs rrj
          JOIN jobs j ON j.id = rrj.job_id
          LEFT JOIN results r ON r.job_id = rrj.job_id
@@ -293,6 +293,9 @@ fn list_reference_jobs_conn(
                 job_id: row.get(0)?,
                 title: row.get(1)?,
                 final_energy_eh: row.get(2)?,
+                // `None` unless the job ran Freq and its thermochemistry parsed — the
+                // honest-or-absent signal for ΔG‡ (Stage E1b). LEFT JOIN keeps the row.
+                free_energy_g_eh: row.get(3)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -318,7 +321,15 @@ fn reaction_reference_energy_conn(
     } else {
         jobs.iter().map(|j| j.final_energy_eh).sum::<Option<f64>>()
     };
-    Ok(ReferenceEnergy { jobs, energy_eh })
+    // ΣG on the SAME discipline, over `free_energy_g_eh` (Stage E1b): `Option<f64>: Sum` yields
+    // `None` the moment ANY reference lacks a parsed G, so 2-of-3-have-Freq → `None`, never a
+    // partial sum that would look like a valid ΔG‡ denominator. Empty list stays `None` too.
+    let free_energy_g_eh = if jobs.is_empty() {
+        None
+    } else {
+        jobs.iter().map(|j| j.free_energy_g_eh).sum::<Option<f64>>()
+    };
+    Ok(ReferenceEnergy { jobs, energy_eh, free_energy_g_eh })
 }
 
 // --- Tauri commands ---------------------------------------------------------
@@ -482,6 +493,17 @@ mod tests {
             params![job_id, energy],
         )
         .expect("insert result");
+    }
+
+    /// Insert a parsed `results` row carrying BOTH final energy and a Gibbs G — a job that
+    /// ran Freq (thermochemistry parsed). Used for the ΣG honest-or-absent test (E1b).
+    fn insert_result_with_g(conn: &Connection, job_id: &str, energy: f64, g: f64) {
+        conn.execute(
+            "INSERT INTO results (job_id, final_energy_eh, free_energy_g_eh, data_json, parser_version)
+             VALUES (?1, ?2, ?3, '{}', 4)",
+            params![job_id, energy, g],
+        )
+        .expect("insert result with G");
     }
 
     #[test]
@@ -738,6 +760,56 @@ mod tests {
         let ref_empty = reaction_reference_energy_conn(&conn, &empty.id).unwrap();
         assert_eq!(ref_empty.energy_eh, None);
         assert!(ref_empty.jobs.is_empty());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // C-gibbs-partial-not-summed (E1b, THE load-bearing ΔG‡ property): the worst failure is a
+    // PARTIAL ΣG — 2 of 3 references ran Freq, so the sum LOOKS valid but is not a complete
+    // ΔG‡ denominator. free_energy_g_eh must be None, while energy_eh (all 3 parsed) is Some.
+    // The bite: an implementation that summed only the present G's fails the `None` assert.
+    #[test]
+    fn reference_gibbs_sum_incomplete_is_none_but_energy_sums() {
+        let (conn, dir) = test_db();
+
+        let r = create_reaction_conn(&conn, "R", None).unwrap();
+        insert_job(&conn, "a");
+        insert_job(&conn, "b");
+        insert_job(&conn, "c");
+        // a and b ran Freq (have G); c is Opt-only (energy but NO G).
+        insert_result_with_g(&conn, "a", -100.0, -99.9);
+        insert_result_with_g(&conn, "b", -50.0, -49.95);
+        insert_result(&conn, "c", -25.0); // no free_energy_g_eh
+        add_reference_job_conn(&conn, &r.id, "a").unwrap();
+        add_reference_job_conn(&conn, &r.id, "b").unwrap();
+        add_reference_job_conn(&conn, &r.id, "c").unwrap();
+
+        let ref_e = reaction_reference_energy_conn(&conn, &r.id).unwrap();
+        // Every job parsed → the ELECTRONIC sum is complete.
+        let e = ref_e.energy_eh.expect("all three have final energy");
+        assert!((e - (-175.0)).abs() < 1e-12);
+        // But one reference lacks G → the ΣG is honestly absent, NOT a 2-of-3 partial.
+        assert_eq!(
+            ref_e.free_energy_g_eh, None,
+            "a partial ΣG (c has no Freq) must be None, never a summed-present total"
+        );
+        // Provenance: the missing-G reference is flagged per-job.
+        let by_id = |id: &str| ref_e.jobs.iter().find(|j| j.job_id == id).unwrap();
+        assert_eq!(by_id("a").free_energy_g_eh, Some(-99.9));
+        assert_eq!(by_id("c").free_energy_g_eh, None, "the Opt-only reference has no G");
+
+        // All three with G → the ΣG becomes present and exact.
+        insert_job(&conn, "d");
+        insert_result_with_g(&conn, "d", -10.0, -9.99);
+        let r2 = create_reaction_conn(&conn, "R2", None).unwrap();
+        add_reference_job_conn(&conn, &r2.id, "a").unwrap();
+        add_reference_job_conn(&conn, &r2.id, "b").unwrap();
+        add_reference_job_conn(&conn, &r2.id, "d").unwrap();
+        let g = reaction_reference_energy_conn(&conn, &r2.id)
+            .unwrap()
+            .free_energy_g_eh
+            .expect("all three have G");
+        assert!((g - (-99.9 + -49.95 + -9.99)).abs() < 1e-12);
 
         std::fs::remove_dir_all(&dir).ok();
     }
