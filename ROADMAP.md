@@ -835,6 +835,12 @@ single-pathway relaxed scan is fully usable end-to-end. *(B1 ✅; B2 ✅ — aut
         global scan minimum — for an exothermic scan past the barrier the global min is the product,
         which gave the reverse barrier (~30 vs the forward ~7.87 kcal/mol). Pure fix in
         `compare.ts` (`reactantSideMinEh`); exothermic headline test pins the forward value.
+      - **Guard-completeness fix landed 2026-08-09** (r1 gate, same real LooseOpt scan): the
+        comparability `NON_METHOD` drop-set was missing `LOOSEOPT`/`NORMALOPT` (beside the present
+        `TIGHTOPT`/`VERYTIGHTOPT`), so a `! … LooseOpt` scan vs `! … Opt` references spuriously refused
+        as "method differs" and the absolute barrier was withheld. Added both, completing the
+        {Loose,Normal,Tight,VeryTight}Opt convergence-preset family; a real functional/basis difference
+        still refuses (bite test). Pure fix in `compare.ts`.
       *Ratified 2026-08-07 ([ADR-018](wiki/architecture/adr-018-reaction-energy-reference.md)
       + [chemistry/reaction-barriers.md](wiki/chemistry/reaction-barriers.md)):* a relaxed scan yields
       **three barriers** — **ΔΔE‡** (si/re) is **reference-free** (the shared reactant reference cancels),

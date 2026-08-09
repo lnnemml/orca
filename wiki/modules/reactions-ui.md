@@ -99,7 +99,16 @@ recharts chart (`src/reactions/compare.ts` for the numbers, unit-tested; the cha
   and the **scan coordinate** (kind + atoms + unit). On a method **or** coordinate mismatch it **shows
   the curves but replaces the ΔΔE‡ number with the specific reason** ("methods differ …" / "different
   scan coordinate …") — never a faked number (the C2b correctness gate; ADR-018,
-  `chemistry/reaction-barriers.md`).
+  `chemistry/reaction-barriers.md`). The `NON_METHOD` drop-set covers the **full
+  {Loose,Normal,Tight,VeryTight}Opt** geometry-opt convergence-preset family — these change convergence
+  tightness (energy at a small level), **not** the electronic-structure method, so a **`LooseOpt` scan
+  is comparable to an `Opt`/`TightOpt` reference** on the same functional/basis (r1-gate fix,
+  2026-08-09; `LOOSEOPT`/`NORMALOPT` had been omitted beside the already-present `TIGHTOPT`/
+  `VERYTIGHTOPT`). A genuine functional/basis/dispersion/solvation difference (B3LYP vs r²SCAN-3c, …)
+  still yields different signatures and still refuses — the presets are neutralized, the method is not.
+  **Screening-level caveat:** a `LooseOpt` maximum is slightly less converged than a tighter reference,
+  so the screening barrier carries a little extra uncertainty — acceptable at this level; tighten both
+  for a publication ΔG‡ (Stage E).
 - **Honest + reference-free notes** — maxima are *approximate TS (scan maximum)*, ΔΔE‡ is a *screening*
   value, and a note says absolute (vs separated reactants) barriers need a reactant reference (added in
   **C2b-2b**, below).

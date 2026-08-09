@@ -106,8 +106,11 @@ export function absoluteBarrierKcal(pathwayMaxEh: number, refEnergyEh: number): 
  * identity: run types, geometry/opt control, SCF-convergence thresholds, print level,
  * and parallelism. Two scans that differ ONLY in these are still comparable. */
 const NON_METHOD = new Set([
-  // run types / job control
-  "OPT", "OPTTS", "TIGHTOPT", "VERYTIGHTOPT", "COPT", "OPTH",
+  // run types / job control — incl. the full {Loose,Normal,Tight,VeryTight}Opt
+  // geometry-opt CONVERGENCE-preset family: these change convergence tightness (energy
+  // at a small level), NOT the electronic-structure method, so a LooseOpt scan is
+  // comparable to an Opt/TightOpt reference on the same functional/basis.
+  "OPT", "LOOSEOPT", "NORMALOPT", "TIGHTOPT", "VERYTIGHTOPT", "OPTTS", "COPT", "OPTH",
   "FREQ", "NUMFREQ", "ANFREQ", "SP", "ENGRAD", "GRAD", "MD", "GOAT",
   "NEB", "NEB-TS", "NEB-CI", "IRC", "SCANTS",
   // scf-convergence thresholds (affect energy only at µEh — not the method)

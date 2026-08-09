@@ -6866,3 +6866,28 @@ top of this fix.
 Wiki: `modules/reactions-ui.md` (overlay renders per-pathway barriers at ≥1; ΔΔE‡ at ≥2; intrinsic
 from the reactant-side min), `chemistry/reaction-barriers.md` (intrinsic = E(max) − reactant-side
 min, with the DMF-SMD Menshutkin witness), ROADMAP C2b-2b (gate-driven fix note; still `[~]`).
+
+## [2026-08-09] session | Phase 4.5 C2b — 3rd gate-surfaced defect: comparability NON_METHOD missing LooseOpt/NormalOpt
+
+The r1 manual gate (real scan using `! … LooseOpt` for floppy-complex convergence) exposed a third
+overlay defect: the comparability guard's `NON_METHOD` drop-set was missing the geometry-opt
+convergence presets `LOOSEOPT`/`NORMALOPT` (while `TIGHTOPT`/`VERYTIGHTOPT` were already present). So a
+`! r²SCAN-3c SMD(DMF) … LooseOpt` scan compared against `! … Opt` reference jobs produced **different**
+method signatures → spurious "reference method differs" → the absolute barrier was refused even though
+scan and reference are the SAME electronic-structure method.
+
+**Fix (pure, `src/reactions/compare.ts`):** added `"LOOSEOPT"` and `"NORMALOPT"` to `NON_METHOD`,
+completing the {Loose,Normal,Tight,VeryTight}Opt family (convergence tightness ≠ method). One-line set
+change + comment.
+
+**Bite test (`compare.test.ts`):** a LooseOpt scan vs Opt/TightOpt references →
+`referenceComparable` **ok** (+ the signatures are equal across the whole opt-preset family); and the
+**guard-against-over-broadening** — a `B3LYP def2-SVP D4 SMD(DMF) Opt` reference vs an `r²SCAN-3c
+SMD(DMF) LooseOpt` pathway still **refuses** (r3 depends on this). Presets neutralized, functional
+difference not.
+
+**Verification.** tsc clean; vitest **723** (was 721, +2). No cargo change (pure frontend logic). Anton
+re-checks r1 live — the absolute barrier now shows a NUMBER for the LooseOpt scan vs the Opt refs.
+C2b-2b stays open (r1–r4). Wiki: `modules/reactions-ui.md` (NON_METHOD covers the full Opt family +
+the screening-level caveat: a LooseOpt max is slightly less converged than a tighter reference), ROADMAP
+C2b note.

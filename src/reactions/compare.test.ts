@@ -209,6 +209,37 @@ describe("referenceComparable (C-ref-method-mismatch)", () => {
   it("an empty reference is vacuously ok (completeness is a separate check)", () => {
     expect(referenceComparable([], pathSig)).toEqual({ ok: true });
   });
+
+  // --- Opt-convergence presets are method-neutral (the r1-gate defect) ---------
+  // A real scan uses `! … LooseOpt` for the floppy-complex convergence; the reference
+  // jobs are `! … Opt`. Same electronic-structure method → the absolute barrier must be
+  // allowed, not refused as "method differs".
+  it("LooseOpt scan is comparable to Opt / TightOpt references (opt presets neutralized)", () => {
+    const looseSig = methodSignature("! r2SCAN-3c SMD(DMF) TightSCF LooseOpt").display;
+    // vs a plain-Opt reference, and vs a TightOpt reference — both the SAME method.
+    expect(
+      referenceComparable(
+        ["! r2SCAN-3c SMD(DMF) TightSCF Opt", "! r2SCAN-3c SMD(DMF) TightSCF TightOpt PAL8"],
+        looseSig,
+      ),
+    ).toEqual({ ok: true });
+    // And the signatures themselves are equal across the whole opt-preset family.
+    expect(methodSignature("! r2SCAN-3c LooseOpt").display).toBe(
+      methodSignature("! r2SCAN-3c NormalOpt").display,
+    );
+    expect(methodSignature("! r2SCAN-3c LooseOpt").display).toBe(
+      methodSignature("! r2SCAN-3c VeryTightOpt").display,
+    );
+  });
+
+  it("does NOT over-broaden: a functional difference still refuses under a LooseOpt scan", () => {
+    // The guard-against-over-broadening (r3 depends on it): LooseOpt is neutralized, but
+    // B3LYP vs r2SCAN-3c is a genuine method difference and MUST still refuse.
+    const looseSig = methodSignature("! r2SCAN-3c SMD(DMF) LooseOpt").display;
+    const r = referenceComparable(["! B3LYP def2-SVP D4 SMD(DMF) Opt"], looseSig);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toMatch(/reference method differs/);
+  });
 });
 
 describe("absoluteBarrierCell (C-incomplete-no-number + honest-or-absent)", () => {
