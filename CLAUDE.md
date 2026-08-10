@@ -115,9 +115,16 @@ npm run tauri build
     (2) a numeric cross-check with a stated ratio, or (3) a determiner run — never from
     convention or memory; what none settles is `UNDETERMINED`, not guessed. **Post-condition
     (rule #9, in our terms):** a reader whose artifact contains geometry we already know (the
-    first `$Geometry` vs the input xyz) recomputes it after conversion and asserts max Δ <
-    1e-4 Å — so a **missed Bohr→Å conversion fails loudly** (≈1.889× off) instead of animating
-    plausible-but-wrong physics. Named seam to preserve: `$SCF_Nuc_Gradient &grad` is a bare
+    first `$Geometry` vs the input xyz) recomputes it after conversion and a **missed Bohr→Å
+    conversion fails loudly** (≈1.889× off) instead of animating plausible-but-wrong physics.
+    The threshold-only readers (`property`/`hess`/`xyz`/`relaxscan`) assert max distance Δ below
+    their tolerance; the `orca_2json` (`mo`) reader — whose `.gbw` geometry legitimately lags the
+    property-final by a small **same-unit** amount on a plain `Opt` (measured 0.027 Å, no Freq) —
+    instead classifies the interatomic-distance **ratio**: a **~1.889× / 0.529× signature** is the
+    loud Bohr↔Å failure (either direction), a ratio ≈ 1 with small Δ is benign staleness that
+    passes, and a ratio ≈ 1 with large Δ is a different-structure mismatch (not a unit error). So
+    the unit guard is preserved by the ratio signature, not by a bare 1e-4 threshold
+    (`wiki/debugging/019`). Named seam to preserve: `$SCF_Nuc_Gradient &grad` is a bare
     positional array; its order comes from the co-located `$Geometry` block. Why this is a rule:
     the authoritative tier spans **two unit systems** — `.property.txt`/`.hess` geometry is
     **Bohr**, `orca_2json`/`.xyz`/`_trj.xyz` is **Å** (measured) — and a stray 1.889 on a normal-

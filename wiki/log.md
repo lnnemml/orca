@@ -7067,3 +7067,40 @@ G missing → "ΔG‡ — re-run w/ Freq", never fabricated.
 reaction-barriers.md, reactions-ui.md, adr-018 (amended), ROADMAP (E1b [x], E2 next), index. **Next:**
 author g1/g2 live (Menshutkin TS + G-bearing refs → real ΔG‡, caveat visible; refs without Freq → ΔG‡
 refused with reason, ΔE‡ still shown); g3 ΔΔG‡ awaits a real 2-face si/re case. Then E2 (IRC connectivity).
+
+## [2026-08-10] session | Stage E1c — orca_2json geometry check tolerates benign plain-Opt .gbw staleness; MO failure non-fatal
+
+**Problem.** Re-parsing the first **displaced-endpoint plain-`Opt`** jobs (MeNH₂+EtI forward/backward,
+`! Opt` **no `Freq`**) failed the WHOLE results parse with a misleading banner:
+`orca_2json: geometry post-condition failed: max Δ 0.027 Å … a missed Bohr→Å conversion looks like ≈1.889×`.
+0.027 Å is **not** a unit error (a missed Bohr→Å is a ×1.889 distance ratio, not a 0.027 Å same-unit lag).
+Two defects, both first exercised by these jobs (the first plain-`Opt` jobs with MO parsing): (1)
+`orca_2json`'s `Atoms.Coords` come from the `.gbw` (last **SCF**), which on a plain `Opt` lags the
+property-final geometry by a small **same-unit** amount — measured 0.027 Å; Opt+Freq masks it (Freq
+re-solves the wavefunction at the exact final geometry → byte-identical). `mo.rs` asserted `max Δ < 1e-4 Å`
+→ `GeometryMismatch`. (2) The MO branch was **fatal** (`return ParseFailed`), taking down energy/geometry/
+thermo/charges too.
+
+**Fix (Part A — `parse/mo.rs`).** A pure, unit-tested `classify_geometry(pairs) -> GeometryVerdict`
+replaces the single 1e-4 threshold (distance-matrix based, translation/rotation invariant): (1) Δ < 1e-4 →
+Pass (fast path, Opt+Freq/scan, unchanged); (2) median distance ratio (pairs > 0.9 Å) within ±8% of 1.889
+**or** 0.529 → `GeometryUnitError` (loud Bohr↔Å miss, either direction); (3) Δ < 0.5 Å with ratio ≈ 1 →
+Pass (benign staleness); (4) ratio ≈ 1 with Δ > 0.5 Å → `GeometryMismatch` (a different structure, not a
+unit error). Bands never overlap ([0.487,0.571]/[0.92,1.08]/[1.738,2.04]). New `ParseError::GeometryUnitError
+{ ratio }` carries the honest Bohr↔Å diagnostic; `GeometryMismatch`'s displayed message was **neutralised**
+(no Bohr→Å) because it is **shared** by four threshold-only readers (`property`/`hess`/`xyz`/`relaxscan`) —
+which were left otherwise untouched and still fail loudly on a real Bohr→Å.
+
+**Fix (Part B — `results.rs`).** The orbitals branch's two `return ParseOutcome::ParseFailed(...)` became
+`eprintln!("orca_2json (no orbitals): {e}")` + `orbitals = None` — an MO-pipeline failure is now **non-fatal**
+("No MO data is a normal state", unit 3.7). Everything else parses/displays; only orbitals may be absent.
+(`eprintln!` matches the crate's warning convention — no `log`/`tracing` dep.)
+
+**Verification.** cargo **249** (was 245; +4 net: +4 pure classifier tests, 1 updated). Bites: `unit_error_caught`
+(×1.889→UnitError; old code → Mismatch), `staleness_passes` (~0.03→Pass; old 1e-4 fails), `real_mismatch_fails`
+(r≈1, Δ~1→Mismatch), `fast_path_still_passes`. CP1 ×1.889→GeometryUnitError ✓; CP2 staleness+fast-path pass ✓;
+CP3 both `return ParseFailed(... orca_2json ...)` gone from results.rs:579/585 ✓. Wiki: +debugging/019,
+parse-sources.md (measured 0.027 Å lag + ratio post-condition), modules/artifact-readers.md (fourth reader),
+CLAUDE.md rule #11 (ratio signature replaces bare 1e-4), index. **Next:** author m1–m3 live (m1 forward Opt
+parses fully → product N–C ~1.51 / C–I ~4.12, thermo + orbitals, no banner; m2 backward → reactant; m3 neg —
+OptTS+Freq byte-identical, orbitals present, verdict "transition state"). Then E2 (displaced-endpoint connectivity).

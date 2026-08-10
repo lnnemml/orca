@@ -3,7 +3,7 @@
 
 use std::io::Write;
 
-use super::MoJson;
+use super::{classify_geometry, GeometryVerdict, MoJson};
 use crate::parse::elements::z_of;
 use crate::parse::{derived_identity_ids, identity_map_for, ParseError, ReferenceGeometry};
 use orcastudio_core::ids::{IndexMap, OrcaIndex};
@@ -67,7 +67,10 @@ fn coefficients_are_skipped_not_a_field() {
 #[test]
 fn missed_conversion_fails_loudly() {
     // Coords are Å (from_angstrom). A BOHR-magnitude reference makes distances
-    // disagree by ~1.889× → the geometry post-condition must reject it.
+    // disagree by ~0.529× → the ratio signature must reject it as a UNIT error.
+    // BITE: the old single-threshold code returned GeometryMismatch here, conflating
+    // a real unit error with any over-tolerance mismatch — the ratio test separates
+    // them so benign staleness (below) can pass without masking this.
     let bohr = 0.529_177_210_903_f64;
     let mut r = reference();
     for c in &mut r.xyz_angstrom {
@@ -76,9 +79,54 @@ fn missed_conversion_fails_loudly() {
         }
     }
     match MoJson::from_path(&ethane_json_path()).unwrap().verify(&r, &map_of(&r)) {
-        Err(ParseError::GeometryMismatch { .. }) => {}
-        other => panic!("expected GeometryMismatch, got {:?}", other.err()),
+        Err(ParseError::GeometryUnitError { .. }) => {}
+        other => panic!("expected GeometryUnitError, got {:?}", other.err()),
     }
+}
+
+// --- classify_geometry: the three-way verdict, pure (rule #11) ------------------ //
+// Reference distances of a small molecule (Å); the classifier is fed (json, ref)
+// pairs directly so each verdict is exercised without a full MoJson.
+const REF_DISTS: [f64; 5] = [1.09, 1.53, 2.18, 2.50, 3.00];
+
+#[test]
+fn unit_error_caught() {
+    // json distances = reference × 1.889 (a skipped Bohr→Å) → the ratio signature
+    // must classify this as a UNIT error, NOT a generic mismatch. BITE: the old
+    // single-threshold code called any over-tolerance delta a GeometryMismatch,
+    // conflating a unit error with a mere mismatch.
+    let pairs: Vec<(f64, f64)> = REF_DISTS.iter().map(|&r| (r * 1.8897, r)).collect();
+    match classify_geometry(&pairs) {
+        GeometryVerdict::UnitError { ratio } => assert!((ratio - 1.8897).abs() < 1e-2, "{ratio}"),
+        other => panic!("expected UnitError, got {other:?}"),
+    }
+}
+
+#[test]
+fn staleness_passes() {
+    // Reference perturbed by ~0.03 Å (SAME unit, small — measured `.gbw` staleness on
+    // the plain-Opt MeNH₂+EtI jobs) → PASS. BITE: the old 1e-4 single threshold FAILS
+    // at this magnitude, which is exactly the false ParseFailed this unit fixes.
+    let pairs: Vec<(f64, f64)> = REF_DISTS.iter().map(|&r| (r + 0.03, r)).collect();
+    assert_eq!(classify_geometry(&pairs), GeometryVerdict::Pass);
+}
+
+#[test]
+fn real_mismatch_fails() {
+    // Same unit (ratio ≈ 1) but a genuinely different structure (one pair off by
+    // ~1 Å) → GeometryMismatch, NOT UnitError and NOT pass.
+    let pairs = [(2.5_f64, 1.5), (2.6, 2.5), (3.1, 3.0), (4.2, 4.1), (1.2, 1.1)];
+    match classify_geometry(&pairs) {
+        GeometryVerdict::Mismatch { max_delta } => assert!(max_delta > 0.5, "{max_delta}"),
+        other => panic!("expected Mismatch, got {other:?}"),
+    }
+}
+
+#[test]
+fn fast_path_still_passes() {
+    // Δ < 1e-4 (Opt+Freq / scan common case) → PASS unchanged (no regression).
+    let pairs: Vec<(f64, f64)> = REF_DISTS.iter().map(|&r| (r + 1e-6, r)).collect();
+    assert_eq!(classify_geometry(&pairs), GeometryVerdict::Pass);
 }
 
 #[test]

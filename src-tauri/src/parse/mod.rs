@@ -170,10 +170,25 @@ pub enum ParseError {
     #[error("missing required field: {0}")]
     MissingField(String),
 
-    /// The geometry post-condition (rule #11): a missed Bohr→Å conversion shows up
-    /// here as ≈1.889×, far above the 1e-4 Å tolerance.
-    #[error("geometry post-condition failed: max Δ {max_delta:.6} Å exceeds 1e-4 (a missed Bohr→Å conversion looks like ≈1.889×)")]
+    /// The geometry post-condition (rule #11) over-tolerance failure. For the
+    /// threshold-only readers (`property`/`hess`/`xyz`/`relaxscan`) a missed Bohr→Å
+    /// conversion is the usual cause (it shows up as ≈1.889×). The `mo` reader does
+    /// NOT route a Bohr↔Å ratio signature here — it uses [`Self::GeometryUnitError`];
+    /// so for `mo` this variant means a genuinely different same-unit structure
+    /// (ratio ≈ 1, past the staleness tolerance). The message therefore stays
+    /// neutral — it states the fact (max Δ over tolerance) without asserting a cause,
+    /// which is accurate for every caller.
+    #[error("geometry post-condition failed: max interatomic-distance Δ {max_delta:.6} Å exceeds tolerance")]
     GeometryMismatch { max_delta: f64 },
+
+    /// The geometry post-condition (rule #11) caught a **unit** error: the interatomic
+    /// distances differ from the reference by the Bohr↔Å ratio signature (≈1.889 for a
+    /// skipped Bohr→Å, ≈0.529 for a spurious Å→Bohr). Distinct from
+    /// [`Self::GeometryMismatch`] (ratio ≈ 1) so a missed conversion still fails
+    /// loudly and is not confused with benign same-unit `.gbw` staleness. Emitted by
+    /// the `mo` reader's ratio classifier.
+    #[error("geometry post-condition failed: interatomic distances differ by a ratio of {ratio:.4}× — a missed Bohr↔Å conversion (≈1.889× skipped Bohr→Å, or ≈0.529× spurious Å→Bohr)")]
+    GeometryUnitError { ratio: f64 },
 
     #[error("atom order mismatch in {block}: element sequence differs from $Geometry at index {index}")]
     OrderMismatch { block: String, index: usize },

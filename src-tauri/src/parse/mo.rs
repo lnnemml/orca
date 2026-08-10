@@ -31,7 +31,99 @@ use orcastudio_core::ids::{IndexMap, OrcaIndex};
 use super::units::Angstrom;
 use super::{ParseError, ReferenceGeometry};
 
+/// Fast-path equality: below this the `.gbw`/orca_2json geometry is byte-identical
+/// to the property-final geometry — the Opt+Freq / scan common case (Freq recomputes
+/// the wavefunction at the exact final geometry). Unchanged; no regression there.
 const GEOMETRY_TOL_ANGSTROM: f64 = 1e-4;
+
+/// Benign same-unit `.gbw` staleness on a plain `Opt` (no Freq): the wavefunction was
+/// computed one opt-step from the final reported geometry, so the two geometries lag
+/// by a small amount in the SAME unit (ratio ≈ 1). Measured **0.027 Å** on the real
+/// MeNH₂+EtI forward/backward jobs (OptTS+Freq masked it — Freq re-solves at the exact
+/// final geometry). Below this Δ, with ratio ≈ 1, the geometry is fine for MO rendering.
+const GEOMETRY_STALENESS_TOL_ANGSTROM: f64 = 0.5;
+
+/// Distances shorter than this are dropped from the median ratio — a tiny reference
+/// distance turns division into noise. 0.9 Å sits just under the shortest real bond.
+const MIN_DIST_FOR_RATIO_ANGSTROM: f64 = 0.9;
+
+/// Fractional tolerance (±8%) on the ratio signatures below. The three bands
+/// (0.529, 1.0, 1.889) are far apart, so this never overlaps.
+const RATIO_TOL: f64 = 0.08;
+
+/// Å per Bohr — a coordinate left in Bohr reads ≈0.529× the true Å distance.
+const ANGSTROM_PER_BOHR: f64 = 0.529_177_210_903;
+/// Bohr per Å — a skipped Bohr→Å conversion reads ≈1.889× the true Å distance.
+const BOHR_PER_ANGSTROM: f64 = 1.0 / ANGSTROM_PER_BOHR;
+
+/// Verdict of the geometry post-condition, classified from paired interatomic
+/// distances (json vs reference). Distance-matrix based, so still translation- and
+/// rotation-invariant. Pure ⇒ unit-testable without a full [`MoJson`].
+#[derive(Debug, PartialEq)]
+enum GeometryVerdict {
+    /// Geometries agree — either the fast path (Δ < 1e-4, Opt+Freq) or benign
+    /// same-unit `.gbw` staleness (ratio ≈ 1, Δ < the staleness tolerance).
+    Pass,
+    /// A missed Bohr↔Å conversion — the distance ratio matches ≈1.889 or ≈0.529.
+    UnitError { ratio: f64 },
+    /// A genuinely different same-unit structure (ratio ≈ 1, Δ over the staleness
+    /// tolerance). NOT a unit error.
+    Mismatch { max_delta: f64 },
+}
+
+/// Classify the geometry post-condition from `pairs = (dist_json, dist_ref)` over
+/// every atom pair. Three-way (rule #11): fast-path equality → a Bohr↔Å ratio
+/// signature (loud unit error) → benign same-unit staleness → genuine mismatch. The
+/// ratio test is what lets benign `.gbw` staleness (ratio ≈ 1) pass while a real
+/// missed conversion (ratio ≈ 1.889 / 0.529) still fails loudly.
+fn classify_geometry(pairs: &[(f64, f64)]) -> GeometryVerdict {
+    let max_delta = pairs
+        .iter()
+        .map(|(j, r)| (j - r).abs())
+        .fold(0.0_f64, f64::max);
+
+    // 1. Fast path — byte-identical (Opt+Freq / scan). Unchanged behaviour.
+    if max_delta < GEOMETRY_TOL_ANGSTROM {
+        return GeometryVerdict::Pass;
+    }
+
+    // Median distance ratio over non-tiny reference pairs (robust to the odd short
+    // distance; the median, not the mean, so a few outliers cannot swing it).
+    let mut ratios: Vec<f64> = pairs
+        .iter()
+        .filter(|(_, r)| *r > MIN_DIST_FOR_RATIO_ANGSTROM)
+        .map(|(j, r)| j / r)
+        .collect();
+    let within = |x: f64, target: f64| (x - target).abs() <= RATIO_TOL * target;
+
+    if let Some(r) = median(&mut ratios) {
+        // 2. Bohr↔Å ratio signature ⇒ a real unit error, loud.
+        if within(r, BOHR_PER_ANGSTROM) || within(r, ANGSTROM_PER_BOHR) {
+            return GeometryVerdict::UnitError { ratio: r };
+        }
+        // 3. Same unit (ratio ≈ 1), small Δ ⇒ benign `.gbw` staleness.
+        if max_delta < GEOMETRY_STALENESS_TOL_ANGSTROM && within(r, 1.0) {
+            return GeometryVerdict::Pass;
+        }
+    }
+
+    // 4. A genuinely different structure — NOT a unit error.
+    GeometryVerdict::Mismatch { max_delta }
+}
+
+/// Median of a slice (sorts in place). `None` for an empty slice.
+fn median(xs: &mut [f64]) -> Option<f64> {
+    if xs.is_empty() {
+        return None;
+    }
+    xs.sort_by(|a, b| a.partial_cmp(b).expect("interatomic distances are finite"));
+    let n = xs.len();
+    Some(if n % 2 == 1 {
+        xs[n / 2]
+    } else {
+        (xs[n / 2 - 1] + xs[n / 2]) / 2.0
+    })
+}
 
 // --------------------------------------------------------------------------- //
 // Layer 1 — streaming deserialize (MOCoefficients deliberately absent)          //
@@ -130,17 +222,23 @@ impl MoJson {
             let (a, b) = (g[i], g[j]);
             ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
         };
-        let mut max_delta = 0.0_f64;
+        // Paired interatomic distances (json, reference) over every atom pair — the
+        // distance matrix, translation/rotation invariant. `classify_geometry`
+        // three-ways it: fast-path equality, the Bohr↔Å ratio signature (a real unit
+        // error, loud), benign same-unit `.gbw` staleness, or a genuine mismatch.
+        let mut pairs: Vec<(f64, f64)> = Vec::with_capacity(coords.len() * coords.len() / 2);
         for i in 0..coords.len() {
             for j in (i + 1)..coords.len() {
-                max_delta =
-                    max_delta.max((dist(&coords, i, j) - dist(&reference.xyz_angstrom, i, j)).abs());
+                pairs.push((dist(&coords, i, j), dist(&reference.xyz_angstrom, i, j)));
             }
         }
-        if max_delta >= GEOMETRY_TOL_ANGSTROM {
-            return Err(ParseError::GeometryMismatch { max_delta });
+        match classify_geometry(&pairs) {
+            GeometryVerdict::Pass => Ok(Verified(self)),
+            GeometryVerdict::UnitError { ratio } => Err(ParseError::GeometryUnitError { ratio }),
+            GeometryVerdict::Mismatch { max_delta } => {
+                Err(ParseError::GeometryMismatch { max_delta })
+            }
         }
-        Ok(Verified(self))
     }
 }
 

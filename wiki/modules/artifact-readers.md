@@ -60,7 +60,10 @@ typestate, the same shape as ADR-010's `parse_output` (uncallable without the
 
 ## Post-conditions (rule #9 + #11), errors not warnings
 - **Geometry** — given a known-Å reference (the input xyz), the reader recomputes the first
-  `$Geometry` after conversion and asserts max Δ < 1e-4 Å. A missed Bohr→Å fails here, loudly.
+  `$Geometry` after conversion and, for the threshold-only readers (`property`/`hess`/`xyz`/
+  `relaxscan`), asserts max Δ < 1e-4 Å (their tolerance). A missed Bohr→Å fails here, loudly.
+  The `mo` reader refines this into a **Bohr↔Å ratio signature** (below) so it still fails loudly
+  on a real unit error while tolerating benign same-unit `.gbw` staleness — see the fourth reader.
 - **Charge order** — each population block's `&ATNO` element sequence must equal the geometry's.
   Otherwise charges would render on the wrong atoms (the ADR-010/012 seam).
 - **Lengths, measured not trusted** — charges = N, `&ATNO` = N, `&grad` = 3N, `&FREQ` = 3N,
@@ -178,6 +181,17 @@ faith.
     the `.out` mistake. Coefficients are **never** stored in the DB (a test asserts they are not in
     the serialized results). Geometry check is distance-invariant (as `.hess`); the reference is
     the **final** geometry (orca_2json's coords are final, not the input).
+  - **The geometry post-condition is a three-way ratio classifier** (`classify_geometry`, pure,
+    unit-tested), NOT a single 1e-4 threshold. `orca_2json`'s coords come from the `.gbw`, and on a
+    **plain `Opt` (no Freq)** the `.gbw` lags the property-final geometry by a small **same-unit**
+    amount (measured **0.027 Å** on the MeNH₂+EtI jobs; Opt+Freq masks it — Freq re-solves the
+    wavefunction at the exact final geometry). So: (1) Δ < 1e-4 → fast-path pass (Opt+Freq / scan,
+    unchanged); (2) median distance ratio ≈ **1.889 or 0.529** → `GeometryUnitError` — a real missed
+    Bohr↔Å conversion, loud; (3) Δ < 0.5 Å with ratio ≈ 1 → pass (benign staleness); (4) ratio ≈ 1
+    but Δ over 0.5 Å → `GeometryMismatch` (a genuinely different structure, not a unit error). A
+    unit error in **either** direction still fails loudly; only benign same-unit lag passes. And an
+    MO-pipeline failure is **non-fatal** to the whole parse (`results.rs`: warn + `orbitals = None`)
+    — "No MO data is a normal state" (unit 3.7). See `wiki/debugging/019-orca2json-plain-opt-gbw-staleness.md`.
 
 This is the first reader whose input is *produced by spawning a binary* — the boundary is drawn so
 the spawn (orchestration, Rust) and the parse (pure) never mix in one function.

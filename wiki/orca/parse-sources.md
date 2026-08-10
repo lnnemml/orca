@@ -238,6 +238,20 @@ Invocation (measured): `orca_2json input.gbw` **with the extension** (`input` al
 `freq|hessian|thermo|enthalp|entropy|gibbs|vibration` → 0 hits). It is the wavefunction/MO +
 final-geometry source, nothing vibrational.
 
+**`orca_2json` geometry lags the property-final on a plain `Opt` — measured (unit E1c).** The
+`Atoms.Coords` come from the `.gbw`, which holds the wavefunction of the **last SCF**, not
+necessarily the last reported geometry. On **Opt+Freq** the two coincide byte-for-byte (Freq
+re-solves the wavefunction at the exact final geometry → max distance Δ < 1e-4 Å). On a **plain
+`Opt` (no Freq)** they differ by a small **same-unit** amount — measured **0.027 Å** on the real
+MeNH₂+EtI forward/backward jobs (the displaced-endpoint Opts). This is **not** a unit error (a
+missed Bohr→Å is a ×1.889 distance ratio, not a 0.027 Å same-unit lag). Consequence for the
+`mo` reader's rule-#11 post-condition: it can no longer be a single 1e-4 threshold — it
+classifies the interatomic-distance **ratio** (median over pairs > 0.9 Å): ratio ≈ **1.889 or
+0.529** → `GeometryUnitError` (a real Bohr↔Å miss, loud, either direction); ratio ≈ 1 with Δ <
+0.5 Å → **pass** (benign staleness); ratio ≈ 1 with Δ > 0.5 Å → `GeometryMismatch` (a different
+structure). The unit guard is preserved (rule #11), only benign same-unit lag is tolerated. See
+`wiki/debugging/019-orca2json-plain-opt-gbw-staleness.md`.
+
 Other converters present in `/opt/orca`: `orca_2aim`, `orca_2mkl`, `orca_chelpg` (not run here);
 `orca_mapspc` (spectrum broadening) **is now measured** — see the IR cross-check below.
 

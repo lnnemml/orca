@@ -573,16 +573,27 @@ pub fn parse_and_store(
     // MO energies/occupancies (`orca_2json` over `.gbw`): generated lazily via the
     // user-configured ORCA path (ADR-009); absent for xTB/GOAT gbw (normal). The
     // reference is the optimized (final) geometry — orca_2json's coords are final.
+    // An MO-pipeline failure (converter spawn OR the geometry verify) is NON-FATAL:
+    // "No MO data is a normal state" (unit 3.7). Energy/geometry/thermo/charges/
+    // frequencies still parse and display; only orbitals go absent. So a failure here
+    // WARNS and sets `orbitals = None` — it never aborts the whole results parse.
+    // (Convention: `eprintln!`, as elsewhere — the crate has no `log`/`tracing` dep.)
     let orbitals = match read_orca_path(conn) {
         None => None,
         Some(orca_path) => match crate::orca_json::ensure_gbw_json(&orca_path, dir) {
-            Err(e) => return ParseOutcome::ParseFailed(format!("orca_2json: {e}")),
+            Err(e) => {
+                eprintln!("orca_2json (no orbitals): {e}");
+                None
+            }
             Ok(None) => None,
             Ok(Some(json)) => match final_geometry_reference(&verified, &atom_ids)
                 .and_then(|r| Ok(crate::parse::mo::MoJson::from_path(&json)?.verify(&r, &job_map)?))
             {
                 Ok(mv) => Some(orbitals_json(&mv)),
-                Err(e) => return ParseOutcome::ParseFailed(format!("orca_2json: {e}")),
+                Err(e) => {
+                    eprintln!("orca_2json (no orbitals): {e}");
+                    None
+                }
             },
         },
     };
