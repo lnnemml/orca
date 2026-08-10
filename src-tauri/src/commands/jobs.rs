@@ -121,6 +121,44 @@ fn create_optts_job_conn(
     get_job_conn(conn, &child.id)
 }
 
+/// Create a NEB-TS child from a reactant + product pair (Phase 4.5 Stage E3a-1). MIRRORS
+/// [`create_optts_job_conn`] but the child carries a SECOND file — the product end image
+/// `product.xyz` the `%neb` block references. It travels as `aux_files_json` (a JSON
+/// `{name: content}` map) and is materialized into the isolated job dir at RUN time
+/// (`prepare_job_dir`), so the "one dir, created at run" invariant (rule #3) holds — no
+/// pre-created draft dir. The **same-order guard** (reactant/product atom order) is
+/// enforced in `buildNebInput` before this call, so a mismatched pair never reaches here.
+///
+/// Both endpoints must exist (referential integrity → `NotFound`, no child created). The
+/// child joins the **reactant's** pathway (generic attach); its NEB role is derived from
+/// its own `! NEB-TS` input, no lineage column (like OptTS). Nothing here is NEB-specific
+/// beyond the aux file — the create path stays generic for reuse.
+fn create_neb_job_conn(
+    conn: &Connection,
+    title: &str,
+    inp_content: &str,
+    product_xyz_content: &str,
+    reactant_job_id: &str,
+    product_job_id: &str,
+) -> Result<Job, AppError> {
+    // Both endpoints must exist (a clean NotFound instead of a dangling reference).
+    let reactant = get_job_conn(conn, reactant_job_id)?;
+    get_job_conn(conn, product_job_id)?;
+    let child = create_job_conn(conn, title, inp_content, None, None)?;
+    // The product end image travels as an aux file (rule #3: written into the isolated
+    // dir at run, not here). BTreeMap → stable JSON key order.
+    let aux = serde_json::json!({ "product.xyz": product_xyz_content }).to_string();
+    conn.execute(
+        "UPDATE jobs SET aux_files_json = ?1 WHERE id = ?2",
+        params![aux, child.id],
+    )?;
+    // The NEB job joins the REACTANT's pathway, if any — the same attach used everywhere.
+    if let Some(pathway_id) = reactant.pathway_id {
+        crate::commands::reactions::attach_job_to_pathway_conn(conn, &child.id, &pathway_id)?;
+    }
+    get_job_conn(conn, &child.id)
+}
+
 /// The element symbols of an ORCA input's inline `* xyz <c> <m> … *` block, in
 /// order (`["C","C","H",…]`). Empty for an input with no inline block (e.g.
 /// `* xyzfile …`). Used ONLY for the D2b element-list post-condition (rule #9):
@@ -537,6 +575,30 @@ pub fn create_optts_job(
 ) -> Result<Job, AppError> {
     let conn = db.lock()?;
     create_optts_job_conn(&conn, &title, &input_content, &source_job_id)
+}
+
+/// Create ONE NEB-TS child from a reactant + product pair (Phase 4.5 Stage E3a-1). The
+/// child is a `draft`; the caller then `submit_job`s it. `inp_content` (with the `%neb`
+/// block) and `product_xyz_content` are built + same-order/charge-checked by the frontend
+/// `buildNebInput` before this call. Both endpoint jobs must still exist (→ `NotFound`).
+#[tauri::command]
+pub fn create_neb_job(
+    db: State<'_, DbState>,
+    reactant_job_id: String,
+    product_job_id: String,
+    title: String,
+    inp_content: String,
+    product_xyz_content: String,
+) -> Result<Job, AppError> {
+    let conn = db.lock()?;
+    create_neb_job_conn(
+        &conn,
+        &title,
+        &inp_content,
+        &product_xyz_content,
+        &reactant_job_id,
+        &product_job_id,
+    )
 }
 
 /// Read a GOAT job's DFT re-opt fan-out for the D2b aggregate view: the derived set
@@ -978,6 +1040,43 @@ mod tests {
             before,
             "a NotFound source created nothing"
         );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn create_neb_child_stores_product_aux_and_joins_reactant_pathway() {
+        let (conn, dir) = test_db();
+
+        // A reactant + product pair (two parsed Opt jobs — the E2 connectivity endpoints).
+        let reactant = create_job_conn(&conn, "reactant", "! r2SCAN-3c Opt\n* xyz 0 1\nN 0 0 0\n*\n", None, None).unwrap();
+        let product = create_job_conn(&conn, "product", "! r2SCAN-3c Opt\n* xyz 0 1\nN 0 0 1.5\n*\n", None, None).unwrap();
+
+        let inp = "! r2SCAN-3c NEB-TS SMD(DMF) TightSCF\n%neb\n  NEB_End_XYZFile \"product.xyz\"\n  NImages 8\nend\n* xyz 0 1\nN 0 0 0\n*\n";
+        let product_xyz = "1\nproduct\nN 0 0 1.5\n";
+        let child = create_neb_job_conn(&conn, "NEB — Menshutkin", inp, product_xyz, &reactant.id, &product.id).unwrap();
+        assert_eq!(child.status, JobStatus::Draft);
+        assert_eq!(child.pathway_id, None);
+
+        // The product end image is stored as an aux file (materialized at run, rule #3).
+        let aux: String = conn
+            .query_row("SELECT aux_files_json FROM jobs WHERE id = ?1", params![child.id], |r| r.get(0))
+            .unwrap();
+        let map: std::collections::BTreeMap<String, String> = serde_json::from_str(&aux).unwrap();
+        assert_eq!(map.get("product.xyz").map(String::as_str), Some(product_xyz));
+
+        // Put the REACTANT on a pathway → the NEB child joins that SAME pathway.
+        conn.execute("INSERT INTO reactions (id, name, description) VALUES ('rx1','Menshutkin',NULL)", []).unwrap();
+        conn.execute("INSERT INTO pathways (id, reaction_id, label) VALUES ('pw1','rx1','sn2')", []).unwrap();
+        conn.execute("UPDATE jobs SET pathway_id = 'pw1' WHERE id = ?1", params![reactant.id]).unwrap();
+        let child2 = create_neb_job_conn(&conn, "NEB #2", inp, product_xyz, &reactant.id, &product.id).unwrap();
+        assert_eq!(child2.pathway_id.as_deref(), Some("pw1"), "the NEB child joins the reactant's pathway");
+
+        // Referential integrity: a missing endpoint is a clean NotFound, creating nothing.
+        let before = list_jobs_conn(&conn).unwrap().len();
+        let err = create_neb_job_conn(&conn, "orphan", inp, product_xyz, &reactant.id, "no-such-job").unwrap_err();
+        assert!(matches!(err, AppError::NotFound(_)));
+        assert_eq!(list_jobs_conn(&conn).unwrap().len(), before, "a NotFound endpoint created nothing");
 
         std::fs::remove_dir_all(&dir).ok();
     }

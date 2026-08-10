@@ -107,16 +107,32 @@ struct ConvergencePayload {
     events: Vec<ConvergenceEvent>,
 }
 
-/// Create `<data_dir>/jobs/<job_id>/` and write `input.inp` into it.
-/// Returns the absolute job directory.
+/// Create `<data_dir>/jobs/<job_id>/` and write `input.inp` into it, plus any
+/// `aux_files` (name, content) — e.g. a NEB job's `product.xyz` end image (Stage
+/// E3a-1). Aux files are written at RUN time here, not create time, so the "one dir,
+/// created at run" invariant (rule #3) holds. Returns the absolute job directory.
 pub fn prepare_job_dir(
     data_dir: &Path,
     job_id: &str,
     input_content: &str,
+    aux_files: &[(String, String)],
 ) -> Result<PathBuf, AppError> {
     let dir = data_dir.join("jobs").join(job_id);
     std::fs::create_dir_all(&dir)?;
     std::fs::write(dir.join("input.inp"), input_content)?;
+    for (name, content) in aux_files {
+        // Guard: an aux name is a plain basename inside THIS job dir — never a path that
+        // could escape it (rule #3 isolation). Refuse anything with a parent component.
+        let file_name = std::path::Path::new(name).file_name().ok_or_else(|| {
+            AppError::Internal(format!("invalid aux filename: {name:?}"))
+        })?;
+        if std::path::Path::new(name) != std::path::Path::new(file_name) {
+            return Err(AppError::Internal(format!(
+                "aux filename must be a plain basename, got {name:?}"
+            )));
+        }
+        std::fs::write(dir.join(file_name), content)?;
+    }
     Ok(dir)
 }
 
@@ -359,10 +375,22 @@ fn start_run(app: &AppHandle, job_id: &str, cancelled: Arc<AtomicBool>) -> Resul
     let db = app.state::<DbState>();
     let runner = app.state::<JobRunner>();
 
-    // Read input + ORCA path (full absolute path, domain rule #1) + CPU config.
-    let (input_content, orca_path, cpu_mask, nprocs, preset_label) = {
+    // Read input + ORCA path (full absolute path, domain rule #1) + CPU config + any
+    // aux files (a NEB job's product.xyz — Stage E3a-1).
+    let (input_content, aux_files, orca_path, cpu_mask, nprocs, preset_label) = {
         let conn = db.lock()?;
         let job = get_job_conn(&conn, job_id)?;
+        let aux_files: Vec<(String, String)> = conn
+            .query_row("SELECT aux_files_json FROM jobs WHERE id = ?1", [job_id], |r| {
+                r.get::<_, Option<String>>(0)
+            })
+            .optional()?
+            .flatten()
+            .and_then(|j| {
+                serde_json::from_str::<std::collections::BTreeMap<String, String>>(&j).ok()
+            })
+            .map(|m| m.into_iter().collect())
+            .unwrap_or_default();
         let orca_path = conn
             .query_row(
                 "SELECT value FROM settings WHERE key = 'orca_path'",
@@ -376,14 +404,14 @@ fn start_run(app: &AppHandle, job_id: &str, cancelled: Arc<AtomicBool>) -> Resul
             })?;
         let (mask, nprocs) = resolve_cpu_config(&conn);
         let label = resolve_cpu_label(&conn);
-        (job.input_content, orca_path, mask, nprocs, label)
+        (job.input_content, aux_files, orca_path, mask, nprocs, label)
     };
 
     // Align %pal to the pinned rank count (avoid oversubscribing the mask).
     let (aligned_input, rewritten) = align_pal_nprocs(&input_content, nprocs);
 
-    // Isolated job dir + aligned input.inp; persist the path.
-    let job_dir = prepare_job_dir(&runner.data_dir, job_id, &aligned_input)?;
+    // Isolated job dir + aligned input.inp + any aux files (product.xyz); persist path.
+    let job_dir = prepare_job_dir(&runner.data_dir, job_id, &aligned_input, &aux_files)?;
     {
         let conn = db.lock()?;
         set_job_dir_conn(&conn, job_id, &job_dir.to_string_lossy())?;
@@ -1239,10 +1267,32 @@ mod tests {
     #[test]
     fn prepare_job_dir_writes_input() {
         let data = scratch("prep");
-        let dir = prepare_job_dir(&data, "job-123", "! r2SCAN-3c\n").unwrap();
+        let dir = prepare_job_dir(&data, "job-123", "! r2SCAN-3c\n", &[]).unwrap();
         assert!(dir.ends_with("jobs/job-123"));
         let inp = std::fs::read_to_string(dir.join("input.inp")).unwrap();
         assert_eq!(inp, "! r2SCAN-3c\n");
+        std::fs::remove_dir_all(&data).ok();
+    }
+
+    #[test]
+    fn prepare_job_dir_materializes_aux_files() {
+        // A NEB job's product.xyz aux file lands beside input.inp in the isolated dir.
+        let data = scratch("prep-aux");
+        let aux = vec![("product.xyz".to_string(), "1\nproduct\nN 0 0 1.5\n".to_string())];
+        let dir = prepare_job_dir(&data, "neb-1", "! NEB-TS\n", &aux).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("product.xyz")).unwrap(),
+            "1\nproduct\nN 0 0 1.5\n"
+        );
+        std::fs::remove_dir_all(&data).ok();
+    }
+
+    #[test]
+    fn prepare_job_dir_refuses_a_path_traversal_aux_name() {
+        // An aux name that escapes the isolated dir (rule #3) is refused, never written.
+        let data = scratch("prep-escape");
+        let aux = vec![("../escape.xyz".to_string(), "x".to_string())];
+        assert!(prepare_job_dir(&data, "neb-2", "! NEB-TS\n", &aux).is_err());
         std::fs::remove_dir_all(&data).ok();
     }
 
@@ -1462,7 +1512,7 @@ mod tests {
         let input = "! r2SCAN-3c TightSCF\n\n%pal nprocs 1 end\n%maxcore 2000\n\n\
                      * xyz 0 1\n  O   0.0000   0.0000   0.1173\n  \
                      H   0.0000   0.7572  -0.4692\n  H   0.0000  -0.7572  -0.4692\n*\n";
-        let dir = prepare_job_dir(&data, "water-sp", input).unwrap();
+        let dir = prepare_job_dir(&data, "water-sp", input, &[]).unwrap();
 
         let mut child = run_orca(orca, &dir, None).unwrap();
 

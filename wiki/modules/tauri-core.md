@@ -16,7 +16,7 @@ never runs a binary). The runtime mechanics of running ORCA live in
 ## Files
 
 - `lib.rs` — Tauri builder, setup hook, exit handling, invoke-handler registration.
-- `db.rs` — SQLite open + versioned migrations (v1–v13).
+- `db.rs` — SQLite open + versioned migrations (v1–v17).
 - `results.rs` — store/read parsed results (all four artifact readers) into the `results` table
   (ADR-012); the completion hook lives in `local_backend`. See `modules/artifact-readers.md`.
 - `orca_json.rs` — spawn `orca_2json` (ADR-009), lazy-cached gbw→JSON in the job dir (unit 3.7).
@@ -211,6 +211,13 @@ survives a restart.
   hierarchy** — moving a job is `UPDATE jobs.group_id`, zero fs ops (the `job_dir` never moves).
   Guarded ALTER; migration test `migrate_v15_to_v16_adds_groups_table_and_group_id_and_preserves_jobs`.
   Full data-layer contract (cycle guard on move, promotion-to-parent on delete): `modules/groups.md`.
+- **v17** — **NEB two-file jobs** (Phase 4.5 Stage E3a-1). `ALTER TABLE jobs ADD COLUMN
+  aux_files_json TEXT` — a nullable JSON `{filename: content}` map for jobs that need a SECOND file in
+  their isolated dir (a NEB-TS job's `product.xyz` end image). Written at create time (`create_neb_job`),
+  **materialized into the job dir at RUN time** by `prepare_job_dir` (so the "one dir, created at run"
+  invariant, rule #3, is unchanged — no pre-created draft dirs), with a basename guard refusing any name
+  that could escape the dir. Generic (any job type could carry aux files); NULL for every normal job.
+  Guarded ALTER.
 - The queue statuses (`queued`, `cancelled`) and `parsed` needed **no migration** — `status` is TEXT.
 - Migration tests assert preservation across each step (…`migrate_v6_to_v7_adds_homo_lumo_gap`,
   `migrate_v7_to_v8_backfills_energy_from_results`, `migrate_v8_to_v9_adds_manual_tables_and_preserves_data`,
@@ -311,6 +318,12 @@ runs `terminate_on_exit` synchronously; `Drop` on `SidecarManager` is the backst
   `attach_job_to_pathway_conn` (made `pub(crate)` for this one reuse). Both create a `draft`; the
   caller `submit_job`s it. The (charge, mult) + no-Scan-leak post-conditions live in the pure TS
   builders (`buildReoptInput` / `buildOptTSInput`), which throw before the command is called.
+  `create_neb_job(reactant_job_id, product_job_id, title, inp_content, product_xyz_content) -> Job` —
+  a NEB-TS child (Stage E3a-1) that mirrors `create_optts_job` but carries a **second file**: the
+  product end image travels in `aux_files_json` (`{"product.xyz": …}`, v17) and is materialized into
+  the isolated dir at run (rule #3). Both endpoint jobs must exist (→ `NotFound`); the child joins the
+  **reactant's** pathway, its NEB role from `! NEB-TS`, no lineage column. The same-order + charge
+  post-conditions live in the pure `buildNebInput`, which throws before the command is called.
 - **Molecules:** `create_molecule(name, formula, xyz, charge, multiplicity, tags)`,
   `list_molecules()` (newest first), `get_molecule(id)`, `update_molecule(id, …)` (full update),
   `delete_molecule(id)` — each `NotFound` on a missing id.

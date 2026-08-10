@@ -79,6 +79,7 @@ pub fn run() {
             commands::jobs::create_job,
             commands::jobs::create_reopt_job,
             commands::jobs::create_optts_job,
+            commands::jobs::create_neb_job,
             commands::jobs::read_conformer_reoptimization,
             commands::jobs::list_jobs,
             commands::jobs::get_job,

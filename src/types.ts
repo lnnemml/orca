@@ -70,7 +70,34 @@ export interface ParsedResults {
    * or null when the job is not a scan. One row per scan POINT (not opt cycle);
    * `act` = composite/actual energy, `scf` = bare SCF (both, never conflated). */
   scan: ScanProfileJson | null;
+  /** NEB-TS band + MEP + converged TS (Phase 4.5 E3a-1), or null for a non-NEB job.
+   * The per-iteration band VIEWER is E3a-2; here the data is parsed and stored. */
+  neb: NebResults | null;
   unknown_blocks: string[];
+}
+
+/** Mirrors `src-tauri/src/results.rs::NebResultsJson`. */
+export interface NebResults {
+  iterations: NebIteration[];
+  /** The converged smooth minimum-energy path (relative energies, image 0 = 0). */
+  mep: NebImage[];
+  /** The final iteration's barrier (Eh) — the converged NEB-TS barrier estimate. */
+  final_barrier_eh: number | null;
+  /** The converged transition-state geometry (seeds OptTS in E3a-2). */
+  ts_geometry: { elements: string[]; xyz_angstrom: [number, number, number][] };
+}
+export interface NebIteration {
+  index: number;
+  images: NebImage[];
+  barrier_eh: number;
+  /** 0-based climbing-image index (once climbing is active), else null. */
+  climbing_image: number | null;
+}
+export interface NebImage {
+  /** Arc-length distance along the band (Å). */
+  distance_angstrom: number;
+  /** Eh — ABSOLUTE in `iterations`, RELATIVE (image 0 = 0) in `mep`. */
+  energy_eh: number;
 }
 
 /** Mirrors `src-tauri/src/results.rs::ScanProfileJson`. */

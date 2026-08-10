@@ -224,6 +224,28 @@ migration — like the trajectory, unit 3.7); `parser_version` 3 → 4. Three ne
 (`relaxscan/tests.rs`) bite red-then-green on real ethane-C–C fixtures: bohr-coordinate,
 act/scf-conflated, per-cycle-source (26 rows can't pass the 6-point-file cross-check).
 
+## Sixth reader — `.NEB.log` / `.final.interp` / `_NEB-TS_converged.xyz` (Phase 4.5 E3a-1)
+`parse/neb.rs` reads a **NEB-TS band** — three files measured on the real Menshutkin NEB probe
+(`wiki/orca/neb.md`), on the same template (pure `parse_neb_log` / `parse_final_interp` grammar
+layer → `NebBand::from_path` → `verify(reference, NImages+2) → Verified`). Reader-specific facts:
+- **Two energy references, kept apart.** `.NEB.log` per-iteration energies are **ABSOLUTE Eh**
+  (−472.768…); `.final.interp` smooth-MEP energies are **RELATIVE** (image 0 = 0). Conflating them
+  would be a silent bug — the reader labels each (`iterations` vs `mep`) and never mixes them.
+- **Bohr → Å at the boundary (rule #11).** Both the log's arc-length `distance` array and the
+  interp's distance column are **Bohr** → `Angstrom::from_bohr`; energies are Eh (canonical).
+- **The converged TS reuses the `xyz` reader** (`_NEB-TS_converged.xyz`, Å) — no re-implemented xyz
+  parsing; its element order is checked against the reactant/final order.
+- **Post-conditions (rule #9):** image count constant across iterations AND `== NImages + 2`
+  (`NImages` parsed from the job's own input in `results.rs`, passed in — the reader never reads
+  `input.inp`); arc-length distances monotonic non-decreasing per iteration; converged-TS order ==
+  reactant order. A truncated/ragged log is a loud error, never a silent partial band.
+
+Absent `.NEB.log` → `Ok(None)` (absent-is-normal). Rides in `data_json` as `ParsedResults.neb`. Eight
+controls (`neb/tests.rs`) run against the **real probe artifacts** (fixtures `tests/fixtures/neb/`):
+24 iterations × 10 images, climbing image `None`→`Some(5)`, the converged TS recovers N···C 2.353 /
+C···I 2.594; bites: ragged log → `LengthMismatch`, wrong image count → `LengthMismatch`, swapped
+reference order → `OrderMismatch`.
+
 ## Files
 - `parse/mod.rs` — module overview + shared `ParseError` + shared `ReferenceGeometry`.
 - `parse/units.rs` — `Angstrom` (canonical length; the type guard).
@@ -234,6 +256,8 @@ act/scf-conflated, per-cycle-source (26 rows can't pass the 6-point-file cross-c
 - `parse/mo.rs` — `orca_2json` JSON (MO energies/occupancies; streamed, coefficients skipped).
 - `parse/relaxscan.rs` — `.relaxscanact/.relaxscanscf.dat` (relaxed-scan profile; act+scf both, the
   per-point geometry cross-check confirming Å; Phase 4.5 B1).
+- `parse/neb.rs` — `.NEB.log` / `.final.interp` / `_NEB-TS_converged.xyz` (NEB-TS band + smooth MEP +
+  converged TS; absolute vs relative energies kept apart; Phase 4.5 E3a-1).
 - `orca_json.rs` (top level) — the `orca_2json` **spawn** (ADR-009), lazy-cached in the job dir.
 - `parse/*/tests.rs` — against real SP / Opt+Freq / GOAT / scan / saddle fixtures in
   `src-tauri/tests/fixtures/` (incl. a 198 KB gbw-json with coefficients, to exercise the skip).

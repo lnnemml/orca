@@ -169,6 +169,37 @@ pub struct HomoLumoJson {
     pub gap_eh: f64,
 }
 
+/// One image on a NEB band: arc-length distance (Å) + energy (Eh). In `iterations` the
+/// energy is ABSOLUTE (`.NEB.log`); in `mep` it is RELATIVE, image 0 = 0 (`.final.interp`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NebImageJson {
+    pub distance_angstrom: f64,
+    pub energy_eh: f64,
+}
+
+/// One NEB iteration: the discrete band + its barrier + (once climbing) the CI index.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NebIterationJson {
+    pub index: usize,
+    pub images: Vec<NebImageJson>,
+    pub barrier_eh: f64,
+    pub climbing_image: Option<usize>,
+}
+
+/// NEB-TS band results (Stage E3a-1) from `.NEB.log` / `.final.interp` /
+/// `_NEB-TS_converged.xyz`, or `None` when the job is not a NEB run (absent-is-normal).
+/// The converged TS geometry is exposed so E3a-2 can seed OptTS from it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NebResultsJson {
+    pub iterations: Vec<NebIterationJson>,
+    /// The converged smooth minimum-energy path (relative energies).
+    pub mep: Vec<NebImageJson>,
+    /// The final iteration's barrier (Eh) — the converged NEB-TS barrier estimate.
+    pub final_barrier_eh: Option<f64>,
+    /// The converged transition-state geometry (elements + Å).
+    pub ts_geometry: FinalGeometry,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParsedResults {
     pub parser_version: u32,
@@ -189,6 +220,9 @@ pub struct ParsedResults {
     /// Relaxed-scan profile from `.relaxscanact/.relaxscanscf.dat`, or `None` when the
     /// job is not a scan (SP/Opt/GOAT — normal, absent-is-not-an-error).
     pub scan: Option<ScanProfileJson>,
+    /// NEB-TS band + MEP + converged TS from `.NEB.log`/`.final.interp`/`_NEB-TS_
+    /// converged.xyz`, or `None` when the job is not a NEB run (absent-is-normal).
+    pub neb: Option<NebResultsJson>,
     /// Blocks ORCA emitted that this reader has no accessor for (rule #10).
     pub unknown_blocks: Vec<String>,
 }
@@ -200,6 +234,7 @@ impl ParsedResults {
         trajectory: Option<TrajectoryJson>,
         orbitals: Option<OrbitalsJson>,
         scan: Option<ScanProfileJson>,
+        neb: Option<NebResultsJson>,
     ) -> Result<ParsedResults, AppError> {
         let geoms = v.geometries()?;
         let last = geoms
@@ -303,6 +338,7 @@ impl ParsedResults {
             trajectory,
             orbitals,
             scan,
+            neb,
             unknown_blocks: v.unknown_block_names(),
         })
     }
@@ -346,6 +382,7 @@ impl ParsedResults {
             trajectory: None,
             orbitals: None,
             scan: Some(scan),
+            neb: None,
             unknown_blocks: Vec::new(),
         })
     }
@@ -606,12 +643,21 @@ pub fn parse_and_store(
         Err(e) => return ParseOutcome::ParseFailed(format!("relaxscan: {e}")),
     };
 
+    // NEB-TS band (`.NEB.log`/`.final.interp`/`_NEB-TS_converged.xyz`): present only for a
+    // NEB job, `None` otherwise (absent-is-normal). A present-but-malformed band is a LOUD
+    // failure (rule #9). The converged-TS order is checked against the final geometry.
+    let neb = match neb_results(dir, input_content, &verified, &atom_ids) {
+        Ok(n) => n,
+        Err(e) => return ParseOutcome::ParseFailed(format!("neb: {e}")),
+    };
+
     let results = match ParsedResults::from_verified(
         &verified,
         hess_verified.as_ref(),
         trajectory,
         orbitals,
         scan,
+        neb,
     ) {
         Ok(r) => r,
         Err(e) => return ParseOutcome::ParseFailed(e.to_string()),
@@ -668,6 +714,60 @@ fn parse_and_store_scan(
 /// geometry post-condition — the Freq geometry, not the input geometry. `atom_ids` is
 /// the job's AtomId anchor (scene-sourced when minted, synthetic when derived), keyed
 /// to the same emit order as the final geometry (== artifact order).
+/// NEB-TS band results, or `None` when the job is not a NEB run (absent-is-normal). A
+/// present `.NEB.log` that does not parse/verify is a LOUD failure (rule #9). The
+/// `NImages + 2` image-count post-condition uses `NImages` parsed from THIS job's input
+/// (the reader never reads `input.inp`); the converged-TS element order is checked
+/// against the job's final (TS) geometry (same order as the reactant — ORCA preserves it).
+fn neb_results(
+    dir: &Path,
+    input_content: &str,
+    verified: &Verified,
+    atom_ids: &[AtomId],
+) -> Result<Option<NebResultsJson>, AppError> {
+    let Some(band) = crate::parse::neb::NebBand::from_path(dir)? else {
+        return Ok(None);
+    };
+    let n_images = parse_nimages(input_content).ok_or_else(|| {
+        AppError::Internal("NEB job present but its input has no `NImages`".into())
+    })? + 2;
+    let reference = final_geometry_reference(verified, atom_ids)?;
+    let v = band.verify(&reference, n_images)?;
+    let map_images = |imgs: &[crate::parse::neb::BandImage]| -> Vec<NebImageJson> {
+        imgs.iter()
+            .map(|i| NebImageJson { distance_angstrom: i.distance_angstrom, energy_eh: i.energy_eh })
+            .collect()
+    };
+    let iterations = v
+        .iterations()
+        .iter()
+        .map(|it| NebIterationJson {
+            index: it.index,
+            images: map_images(&it.images),
+            barrier_eh: it.barrier_eh,
+            climbing_image: it.climbing_image,
+        })
+        .collect();
+    let (els, xyz) = v.ts_geometry();
+    let ts_geometry = FinalGeometry {
+        elements: els.to_vec(),
+        xyz_angstrom: xyz.to_vec(),
+    };
+    Ok(Some(NebResultsJson {
+        iterations,
+        mep: map_images(v.mep()),
+        final_barrier_eh: v.final_barrier_eh(),
+        ts_geometry,
+    }))
+}
+
+/// `NImages <n>` from a NEB input's `%neb` block (case-insensitive), or `None`.
+fn parse_nimages(input_content: &str) -> Option<usize> {
+    static RE: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"(?i)NImages\s+(\d+)").unwrap());
+    RE.captures(input_content)?.get(1)?.as_str().parse().ok()
+}
+
 fn final_geometry_reference(
     v: &Verified,
     atom_ids: &[AtomId],
@@ -1136,7 +1236,7 @@ mod tests {
 
     #[test]
     fn per_atom_charges_carry_their_element_order() {
-        let r = ParsedResults::from_verified(&verified(), None, None, None, None).unwrap();
+        let r = ParsedResults::from_verified(&verified(), None, None, None, None, None).unwrap();
         let mulliken = r.charges.iter().find(|c| c.scheme == "mulliken").unwrap();
         assert_eq!(mulliken.elements, ["C", "C", "H", "H", "H", "H", "H", "H"]);
         assert_eq!(mulliken.charges.len(), mulliken.elements.len());
@@ -1149,7 +1249,7 @@ mod tests {
     #[test]
     fn store_is_idempotent_on_job_id() {
         let conn = mem_db();
-        let r = ParsedResults::from_verified(&verified(), None, None, None, None).unwrap();
+        let r = ParsedResults::from_verified(&verified(), None, None, None, None, None).unwrap();
         store(&conn, "job1", &r).unwrap();
         store(&conn, "job1", &r).unwrap(); // re-parse → update, not duplicate
         let n: i64 = conn
@@ -1161,7 +1261,7 @@ mod tests {
     #[test]
     fn read_back_preserves_element_order() {
         let conn = mem_db();
-        let r = ParsedResults::from_verified(&verified(), None, None, None, None).unwrap();
+        let r = ParsedResults::from_verified(&verified(), None, None, None, None, None).unwrap();
         store(&conn, "job1", &r).unwrap();
         verify_stored(&conn, "job1", &r).expect("round-trip preserves per-atom order");
 
@@ -1174,7 +1274,7 @@ mod tests {
     #[test]
     fn narrow_columns_match_the_json() {
         let conn = mem_db();
-        let r = ParsedResults::from_verified(&verified(), None, None, None, None).unwrap();
+        let r = ParsedResults::from_verified(&verified(), None, None, None, None, None).unwrap();
         store(&conn, "job1", &r).unwrap();
         let (energy, ts): (f64, f64) = conn
             .query_row(
@@ -1398,7 +1498,7 @@ mod tests {
             coordinate_unit: "Å".into(),
             points,
         };
-        ParsedResults::from_verified(&verified(), None, None, None, Some(scan)).unwrap()
+        ParsedResults::from_verified(&verified(), None, None, None, Some(scan), None).unwrap()
     }
 
     #[test]
@@ -1427,7 +1527,7 @@ mod tests {
     fn read_scan_geometries_is_none_for_a_non_scan_job() {
         // A results row with no scan (scan: None) → Ok(None), absent-is-normal.
         let non_scan =
-            ParsedResults::from_verified(&verified(), None, None, None, None).unwrap();
+            ParsedResults::from_verified(&verified(), None, None, None, None, None).unwrap();
         let conn = results_db_with(&non_scan);
         assert!(read_scan_geometries(&conn, "job1", scan_fixture_dir().to_str())
             .unwrap()

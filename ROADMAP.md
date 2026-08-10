@@ -951,9 +951,22 @@ r1–r4 manual gates. Next per the ratified reorder: CREST probe → Stage D →
 - [ ] **IRC** (`! IRC`) — the RIGOROUS alternative to E2's displaced-endpoint check: probe → the
       post-condition that a found TS connects the intended reactant/product along the true steepest-
       descent path. A possible later mode; the E2 displaced-endpoint method covers the common case.
-- [ ] **NEB / NEB-TS / NEB-CI** (`! NEB-TS`) — probe → the alternative path-finder when there is no
-      clean scan coordinate; needs a product geometry (ADR-010 `ReactionPath = fold(reactant,
-      transform)`) + a per-iteration band viewer. Highest effort; may trail.
+- **NEB / NEB-TS / NEB-CI** (`! NEB-TS`) — the alternative path-finder when there is no clean scan
+  coordinate (the concerted case). Probe-first (rule #10), decomposed:
+  - [x] **E3a-1 — NEB-TS core** (2026-08-10): `buildNebInput(reactantInput, reactantGeom, productGeom)`
+        (the `buildOptTSInput` sibling — inherit+assert charge/method, multi-line `%neb`, the HARD
+        same-order guard) → the two-file Rust child `create_neb_job` (product.xyz as an `aux_files_json`
+        image materialized at run, v17; generic pathway attach) → the sixth band reader `parse/neb.rs`
+        (`.NEB.log`/`.final.interp`/`_NEB-TS_converged.xyz`; Bohr→Å; absolute vs relative energies kept
+        apart; post-conditions). Wired into `results.rs` (`ParsedResults.neb`) + a minimal `NebSetupPanel`.
+        **Probe recovered the KNOWN Menshutkin TS** (N···C 2.353 / C···I 2.594, Δ 0.002 vs OptTS) from the
+        two endpoints alone, 24 iterations, CI #5, ≈12 min. `wiki/orca/neb.md`. Manual gate m1–m3 pending.
+  - [ ] **E3a-2 next — the band viewer + Refine-with-OptTS**: the per-iteration PES / MEP energy-profile
+        viewer (recharts, over `ParsedResults.neb.iterations` / `.mep`) and a "Refine with OptTS from the
+        NEB-TS" action seeding `buildOptTSInput` from the converged TS geometry (the source-agnostic
+        engine's second entry point, ADR-020) — closing NEB → OptTS → located TS → ΔG‡ (E1b).
+  - [ ] **E3b** — derive the product geometry for a NEW reaction by geometric bond-editing (ADR-010
+        `ReactionPath = fold(reactant, transform)`), so NEB works without a ready product job.
 
 ### Stage F — Microsolvation (explicit solvent shell), probe-first
 
@@ -1074,7 +1087,10 @@ and OrcaStudio picks the job up, syncs results, and parses them — no terminal,
       **same structural need as ΔΔG‡** — aggregating **several jobs into one result** — which is why
       NMR waits until **Reaction is a first-class object** (Phase 4.5's data model), not before: the
       multi-job aggregation must exist first.
-- [ ] NEB: path setup UI + energy profile visualization per iteration
+- [~] NEB: path setup UI + energy profile visualization per iteration — **pulled into Phase 4.5
+  Stage E3** (the reaction workstation, not Phase 6): setup UI + core reader landed in **E3a-1**
+  (`NebSetupPanel`, `create_neb_job`, `parse/neb.rs`); the per-iteration energy-profile viewer is
+  **E3a-2** (see Stage E above).
 - [ ] Job comparison view: N jobs side by side (energies, geometries overlay, spectra)
 - [ ] Batch/parametric runs: same molecule × list of functionals or basis sets
 - [ ] SLURM backend (third `ExecutionBackend` implementation)

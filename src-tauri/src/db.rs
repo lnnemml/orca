@@ -78,7 +78,7 @@ use crate::error::AppError;
 ///   additive → every pre-existing job is ungrouped (`group_id` NULL). Guarded ALTER (column_exists,
 ///   like v10/v11/v15). The `group_id` axis is ORTHOGONAL to pathway_id / source_ensemble_job_id /
 ///   reference rows (ADR-019 Decision 5).
-const SCHEMA_VERSION: i64 = 16;
+const SCHEMA_VERSION: i64 = 17;
 
 /// Open (creating if needed) `orcastudio.db` under `data_dir` and migrate it to
 /// the current schema.
@@ -376,6 +376,20 @@ fn migrate(conn: &Connection) -> Result<(), AppError> {
             )?;
         }
         version = 16;
+    }
+
+    // --- v16 -> v17: NEB two-file jobs (Phase 4.5 Stage E3a-1). A NEB-TS job needs a
+    // SECOND file in its isolated dir — the product end image `product.xyz` the `%neb`
+    // block references by relative path. `aux_files_json` is a nullable JSON object
+    // {filename: content}, written at create time and MATERIALIZED into the job dir at
+    // run (`prepare_job_dir`), so the "one dir, created at run" invariant (rule #3) is
+    // unchanged — no pre-created draft dirs. Generic (any job type could carry aux
+    // files); NULL for every existing/normal job. Additive + idempotent. ---
+    if version < 17 {
+        if column_exists(conn, "jobs", "id")? && !column_exists(conn, "jobs", "aux_files_json")? {
+            conn.execute_batch("ALTER TABLE jobs ADD COLUMN aux_files_json TEXT;")?;
+        }
+        version = 17;
     }
 
     // Persist the resulting version so subsequent runs skip completed steps.

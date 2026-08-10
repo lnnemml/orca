@@ -7146,3 +7146,47 @@ rigorous alternative), index. **Next:** author m1–m3 live (m1 create two child
 ≈1.67 / ≈3.04 inheriting r2SCAN-3c/SMD(dmf)/charge 0 1; m2 run both → product / reactant, both parse
 via the E1c fix; m3 verdict "two distinct basins ✓" + coordinates, honest-pending while running).
 Then E3 (NEB) reuses the generic create path unchanged.
+
+## [2026-08-10] session | Stage E3a-1 — NEB-TS core: emit, two-file job, band parser; recovers a known TS
+
+**What.** NEB-TS is the path-finder for the concerted case with no clean scan coordinate: interpolate a
+band of images between a reactant and a product minimum, relax to the MEP, let the top image climb to the
+saddle. This unit landed the CORE — emit, the two-file job, and the band parser — validated end-to-end.
+
+**Probe first (rule #10, `wiki/orca/neb.md`).** A real NEB-TS run on the Menshutkin reactant+product (the
+E2 connectivity endpoints) **recovered the KNOWN saddle** — converged TS N···C 2.353 / C···I 2.594 vs the
+independent OptTS 2.353/2.592 (Δ 0.002 Å) — from ONLY the two endpoints, no scan, no TS guess. 24
+iterations, climbing image #5, ≈12 min, 10 images. The three band artifacts and their exact formats were
+read off the real files (fixtures copied into `src-tauri/tests/fixtures/neb/`).
+
+**A1 — `buildNebInput` (`src/scene/neb.ts`, the `buildOptTSInput` sibling).** Inherit (charge, mult) +
+method/solvation from the reactant (assert back), emit `! <m> <s> NEB-TS TightSCF` + a **multi-line
+`%neb` block** (the measured, converging form — single-line is unverified, rule #10) + the reactant
+`* xyz`; return `{ inp, productXyz }` (product image via `finalGeometryXyz`, no second builder). **HARD
+same-order guard**: throws if reactant/product atom order differs (element seq AND count) — NEB
+interpolates image-k↔image-k, a mismatch silently fails. +7 tests (bites: swap order → throw, count
+mismatch → throw, method inherited-not-defaulted, charge −1 propagated, no-`* xyz` → throw).
+
+**A2 — `parse/neb.rs` (sixth reader).** `parse_neb_log` → `Vec<Iteration{images[{distance_angstrom,
+energy_eh}], barrier_eh, climbing_image}>` (**Bohr→Å** at the boundary, absolute Eh); `parse_final_interp`
+→ smooth MEP (relative Eh, image 0 = 0); converged TS via the `xyz` reader. **Absolute (log) vs relative
+(interp) energies kept apart, never conflated.** Post-conditions (rule #9): image count constant AND ==
+NImages+2; distances monotonic; TS order == reactant order. +8 tests vs the REAL fixtures (recovers 2.353;
+bites: ragged log → LengthMismatch, wrong count → LengthMismatch, swapped order → OrderMismatch).
+
+**Part B — wiring.** Migration **v17** `jobs.aux_files_json` (nullable `{name:content}`). `create_neb_job`
+mirrors `create_optts_job_conn` but stores `{"product.xyz": …}`; `prepare_job_dir` materializes aux files
+into the isolated dir **at run** (rule #3 intact, basename guard against escape). Generic pathway attach
+(reactant's), role from `! NEB-TS`, no lineage column. `results.rs` parses the band into
+`ParsedResults.neb` (absent-is-normal; NImages parsed from the job's own input for the +2 check; a
+present-but-ragged band is loud). Minimal `NebSetupPanel` (pick reactant + product parsed jobs → the
+same-order refusal surfaces honestly). The band VIEWER + Refine-with-OptTS are E3a-2 (NOT built here); the
+converged TS geometry is exposed in `ParsedResults.neb.ts_geometry` for E3a-2 to seed OptTS.
+
+**Verification.** tsc clean; vitest **769** (+7 neb.ts; UI untested by design). cargo **260** (+8 neb.rs,
++1 create_neb, +2 prepare_job_dir aux). Wiki: +orca/neb.md, artifact-readers.md (sixth reader), scene.md,
+tauri-core.md (v17 + create_neb_job), ROADMAP (E3a-1 [x], E3a-2 next, Phase-6 item pulled up), index.
+**Next:** author m1–m3 live (m1 pick the Menshutkin backward+forward connectivity jobs → Create NEB → a
+job with input.inp + product.xyz, inheriting r2SCAN-3c/SMD(dmf)/charge 0 1; m2 run → converges, band
+parses 24×10, converged TS N···C ≈ 2.35; m3 neg — two different-order jobs → honest refusal, no job). Then
+E3a-2 (the per-iteration viewer + Refine-with-OptTS).

@@ -79,6 +79,17 @@ functions, no imports from react / 3dmol / tauri. The reactive `store.ts` (added
   order-bearing golden pair (Fork 2 of ADR-016; `wiki/orca/optts.md`), so the source's opt keyword /
   `Scan` / `Constraints` cannot leak (fresh build). Pure / node-tested. The scan entry point is
   `ScanProfilePanel`; the Rust create side is `create_optts_job` (`tauri-core.md`).
+- `neb.ts` — `buildNebInput(reactantInput, reactantGeom, productGeom, options?)`: the NEB-TS create
+  side (Phase 4.5 Stage E3a-1), the **sibling of `buildOptTSInput`** — same charge-footgun discipline
+  (inherit `(charge, mult)` from `reactantInput`, assert back out) and method/solvation inheritance
+  (verbatim via the shared `methodSolvationKeywords`). Emits `! <method> <solvation> NEB-TS TightSCF` +
+  a **multi-line `%neb` block** (`NEB_End_XYZFile "product.xyz"` / `NImages <n=8>`) — the measured,
+  converging block form (`wiki/orca/neb.md`), not the unverified single-line one (rule #10). Returns
+  **both** the `.inp` AND `productXyz` (the product end image, reusing `finalGeometryXyz` — no second
+  xyz builder). **THE SAME-ORDER GUARD** (the whole point): throws if reactant and product do not share
+  atom order (element sequence AND count) — NEB interpolates image-k↔image-k atom-by-atom, so a
+  mismatched pair silently fails; the builder refuses to emit one. Pure / vitest-tested. The Rust create
+  side is `create_neb_job` (a two-file child; `tauri-core.md`); the setup UI is `NebSetupPanel`.
 - `selection.ts` — the geometry editor's atom pick list (2.5.2a; **AtomId-native
   2c2**): `toggleAtom(AtomId[], AtomId)`, `filterSelection` (the 2c2 dividend —
   keeps every id still in the scene), `describeAtom` (positional, for the

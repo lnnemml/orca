@@ -18,6 +18,7 @@
 pub mod elements;
 pub mod hess;
 pub mod mo;
+pub mod neb;
 pub mod property;
 pub mod relaxscan;
 pub mod units;
