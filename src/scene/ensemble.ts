@@ -15,6 +15,7 @@
 import { stampFreshIds } from "./ids";
 import { normalizeElement } from "./scene";
 import type { RawAtom, RawFragment, Scene, SceneFragment } from "./types";
+import { HARTREE_TO_KCAL } from "../units";
 
 export interface Conformer {
   /** Raw geometry — a parsed ensemble carries no atom identity. */
@@ -25,8 +26,10 @@ export interface Conformer {
   index: number;
 }
 
-/** 1 Hartree in kcal/mol (CODATA). */
-export const HARTREE_TO_KCAL_MOL = 627.5094740631;
+/** 1 Hartree in kcal/mol (CODATA) — the single definition lives in `src/units.ts`.
+ * Kept under the `_MOL` name (aliased, not re-defined) so `reopt-aggregate`'s
+ * existing import site is undisturbed. */
+export const HARTREE_TO_KCAL_MOL = HARTREE_TO_KCAL;
 
 /**
  * ΔE of each conformer relative to the lowest (conformers[0]), in **kcal/mol** —

@@ -19,9 +19,11 @@
 import type { ScanProfileJson, ScanGeometry } from "../types";
 import { frameToXyz, elementsAgree } from "../trajectory/frame";
 import { finalGeometryXyz } from "../export/exporters";
+import { HARTREE_TO_KCAL } from "../units";
 
-/** 1 Hartree = 627.509… kcal/mol — the named factor (shared with the trajectory). */
-export const HARTREE_TO_KCAL = 627.5094740631;
+/** The Hartree→kcal/mol factor — single definition in `src/units.ts`. Re-exported
+ * here so `../scan/scanProfile` importers (compare.ts, CompareView.tsx) keep working. */
+export { HARTREE_TO_KCAL };
 
 /** Which energy column to plot: `act` = composite/actual (gCP+D4, the physically
  * meaningful total, default), `scf` = bare SCF. A labelled display choice. */

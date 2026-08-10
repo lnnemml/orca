@@ -7281,3 +7281,17 @@ band (Å)" XAxis label; converged MEP kept as a muted dashed reference (`strokeO
 prominent solid accent current-iteration band (the expected band↔MEP crossing is correct physics, not a
 glitch — left intact); "(Stage E)" removed from the Refine button label + its tooltip (internal phase
 comment stays). tsc clean; vitest 776 (no delta); cargo untouched. Author m1–m3 gate still pending.
+
+## [2026-08-10] session | Consolidated HARTREE_TO_KCAL to src/units.ts — 4 copies → 1
+
+Pure refactor (value identical everywhere, zero behaviour change). New `src/units.ts` holds the single
+`export const HARTREE_TO_KCAL = 627.5094740631` (the canonical frontend physical-constant home). The four
+former definitions now import it: `trajectory/frame.ts` + `scan/scanProfile.ts` re-export it (so their
+existing importers — compare.ts, CompareView.tsx, nebBand — are undisturbed); `convergence/
+ConvergenceDashboard.tsx` imports the local; `scene/ensemble.ts` keeps `HARTREE_TO_KCAL_MOL` as an
+**alias** (`= HARTREE_TO_KCAL`) rather than migrating reopt-aggregate's call site (fewer touches).
+`nebBand.ts` now imports from `../units` directly (the "pending dedup" comment removed — done). The test
+copy in `compare.test.ts` imports from `../units` too; `frame.test.ts`'s independent literal recompute is
+left as a deliberate self-contained check. Verify: `grep "= *627\.509" src/` → exactly one home
+(units.ts). tsc clean; vitest 776 (no delta — identical value → identical results); cargo untouched
+(frontend-only).

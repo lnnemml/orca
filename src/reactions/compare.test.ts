@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 
 import type { ScanProfileJson } from "../types";
+import { HARTREE_TO_KCAL } from "../units";
 import {
   deltaDeltaEKcal,
   intrinsicBarrierKcal,
@@ -19,8 +20,6 @@ import {
   locatedBarrierEKcal,
   deltaDeltaGKcal,
 } from "./compare";
-
-const HARTREE_TO_KCAL = 627.5094740631;
 
 /** Build a scan profile from (coordinate, act-Eh) pairs; scf mirrors act unless given. */
 function scan(

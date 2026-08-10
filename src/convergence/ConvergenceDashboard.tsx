@@ -11,9 +11,7 @@ import {
 import type { JobStatus } from "../types";
 import type { ConvergenceEvent, OptPoint, ScfPoint } from "./types";
 import { useContainerWidth } from "../charts/useContainerWidth";
-
-/** Hartree → kcal/mol, for the human-readable ΔE in the energy tooltip. */
-const HARTREE_TO_KCAL = 627.5094740631;
+import { HARTREE_TO_KCAL } from "../units";
 
 /** The gradient/step criteria plotted on the (log-scale) criteria chart. Energy
  * change is deliberately excluded — different sign and scale; it lives in the

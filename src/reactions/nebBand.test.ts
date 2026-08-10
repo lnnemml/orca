@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 
 import type { NebResults, NebIteration } from "../types";
-import { HARTREE_TO_KCAL } from "../scan/scanProfile";
+import { HARTREE_TO_KCAL } from "../units";
 import { iterationSeries, mepSeries, barrierSeries } from "./nebBand";
 
 /**

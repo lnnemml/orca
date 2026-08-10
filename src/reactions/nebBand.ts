@@ -16,12 +16,7 @@
 //! honestly relative to its own reactant, never a shared absolute quantity.
 
 import type { NebResults, NebIteration } from "../types";
-// Same converter symbol as the reactions neighbors (compare.ts / CompareView.tsx).
-// NOTE: the value 627.5094740631 is currently duplicated across four production
-// modules (frame.ts, scanProfile.ts, ConvergenceDashboard.tsx, ensemble.ts as
-// HARTREE_TO_KCAL_MOL) — a pending dedup tidy-up, tracked separately. This file
-// only imports; it never redeclares.
-import { HARTREE_TO_KCAL } from "../scan/scanProfile";
+import { HARTREE_TO_KCAL } from "../units";
 
 /** One point of a band/MEP line chart: arc-length distance (Å) vs ΔE (kcal/mol). */
 export interface BandPoint {

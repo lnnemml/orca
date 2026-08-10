@@ -12,6 +12,8 @@
 //! fed one frame's geometry (ADR-011). These functions build that one frame's
 //! xyz and the honest labels around it.
 
+import { HARTREE_TO_KCAL } from "../units";
+
 /** A stored trajectory frame (mirrors `results.rs::TrajFrame`). */
 export interface Frame {
   energy_eh: number | null;
@@ -57,9 +59,11 @@ export function frameEnergyText(frame: Frame): string {
 /**
  * ΔE of a frame relative to the FIRST frame, in kcal/mol — the number that shows
  * the descent (the learning value: "how far it fell"). `null` when either energy
- * is absent. 1 Hartree = 627.509… kcal/mol (the named factor).
+ * is absent. The Hartree→kcal/mol factor is the named constant in `src/units.ts`.
  */
-export const HARTREE_TO_KCAL = 627.5094740631;
+// Re-exported here so existing `../trajectory/frame` importers keep working; the
+// single definition lives in `src/units.ts`.
+export { HARTREE_TO_KCAL };
 export function frameDeltaKcal(frames: Frame[], frameIndex: number): number | null {
   const e = frames[frameIndex]?.energy_eh;
   const e0 = frames[0]?.energy_eh;
