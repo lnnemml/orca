@@ -153,6 +153,13 @@ impl XyzFile {
         Some((elements, coords))
     }
 
+    /// The first frame's comment-line energy (Eh) — a witness read, like
+    /// [`Self::first_frame`]. `None` if there is no frame or the comment carried no
+    /// number. Used by the NEB reader for the converged-TS energy (`… E <energy>`).
+    pub fn first_frame_energy(&self) -> Option<f64> {
+        parse_comment_energy(&self.frames.first()?.comment)
+    }
+
     /// Run the post-conditions; only on success return [`Verified`]. Unit 1d adds the
     /// job's `IndexMap<OrcaIndex>`: the per-frame element-order check becomes the map
     /// post-condition (identity map ⇒ the same check on every frame).

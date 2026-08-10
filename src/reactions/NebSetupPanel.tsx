@@ -89,10 +89,10 @@ export function NebSetupPanel({ onOpenJob }: { onOpenJob: (jobId: string) => voi
   );
 
   return (
-    <details className="input-builder" style={{ marginBottom: 14 }}>
-      <summary className="section-title" style={{ padding: "8px 10px", cursor: "pointer" }}>
+    <section className="input-builder" style={{ marginBottom: 14 }}>
+      <div className="section-title" style={{ padding: "8px 10px" }}>
         Create NEB-TS (reactant + product → saddle)
-      </summary>
+      </div>
       <div style={{ padding: 10, display: "grid", gap: 8 }}>
         <div className="mono" style={{ fontSize: 12, color: "var(--muted)" }}>
           Find a transition state between two optimized minima when there is no clean scan
@@ -129,6 +129,6 @@ export function NebSetupPanel({ onOpenJob }: { onOpenJob: (jobId: string) => voi
           <div className="banner err">NEB not created: {error}</div>
         ) : null}
       </div>
-    </details>
+    </section>
   );
 }

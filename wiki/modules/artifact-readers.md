@@ -246,6 +246,19 @@ controls (`neb/tests.rs`) run against the **real probe artifacts** (fixtures `te
 C···I 2.594; bites: ragged log → `LengthMismatch`, wrong image count → `LengthMismatch`, swapped
 reference order → `OrderMismatch`.
 
+**The NEB parse ROUTE (E3a-1 completion, `debugging/020`).** A NEB-TS job is **multi-geometry** — its
+`.property.txt` holds the BAND (measured 22 `$Geometry` blocks), its `.gbw`/`.xyz` the TS, and the
+input `* xyz` is the REACTANT — so the single-geometry reference model (input ≈ property-final) does
+NOT fit: `results.rs`'s `PropertyFile::verify(&input_ref)` fired a ~2.45 Å `GeometryMismatch` (reactant
+≠ a band image; `r ≈ 1`, not a unit error) and aborted before this reader ran. So `parse_and_store`
+detects a NEB job (`input_has_neb`, mirroring `input_is_goat`) and routes it to `parse_and_store_neb`
+**before** the fatal `input_ref` verify — the third special-job-type branch beside scan
+(`.relaxscanact.dat`) and GOAT. The NEB route parses the band, sets `final_geometry`/`final_energy` =
+the **converged TS** (`ParsedResults::from_neb`, single-structure quantities absent like
+`from_scan_profile`), and uses the reactant `* xyz` ONLY for the element-ORDER check (the mandatory NEB
+precondition) — never the reactant geometry match. The order guard is kept, only the mismatched
+geometry-match guard is dropped (rule #11: the guard moved to where its premise holds).
+
 ## Files
 - `parse/mod.rs` — module overview + shared `ParseError` + shared `ReferenceGeometry`.
 - `parse/units.rs` — `Angstrom` (canonical length; the type guard).

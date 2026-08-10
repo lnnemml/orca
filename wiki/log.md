@@ -7190,3 +7190,41 @@ tauri-core.md (v17 + create_neb_job), ROADMAP (E3a-1 [x], E3a-2 next, Phase-6 it
 job with input.inp + product.xyz, inheriting r2SCAN-3c/SMD(dmf)/charge 0 1; m2 run → converges, band
 parses 24×10, converged TS N···C ≈ 2.35; m3 neg — two different-order jobs → honest refusal, no job). Then
 E3a-2 (the per-iteration viewer + Refine-with-OptTS).
+
+## [2026-08-10] session | Stage E3a-1 completion — route NEB jobs through a band+TS parse (not the single-geometry reference); NEB setup → New Job
+
+**Problem.** A correctly-run NEB-TS job (`ORCA TERMINATED NORMALLY`, converged TS = the known saddle)
+**failed to parse**: `geometry post-condition failed: max Δ 2.45 Å`. Same class as debugging/015 (scan)
+and 017 (GOAT): a NEB-TS job is **multi-geometry** — its `.property.txt` holds the BAND (measured 22
+`$Geometry` blocks), its `.gbw`/`.xyz` the TS, and the input `* xyz` is the **REACTANT** — so
+`results.rs`'s single-geometry `PropertyFile::verify(&input_ref)` compared the reactant to a band image
+→ a real ~2.45 Å `GeometryMismatch` (`r≈1`, not a unit error, not staleness) and aborted **before**
+`neb.rs` ran.
+
+**Fix (Part A — Rust routing).** `input_has_neb(input_content)` (mirrors `input_is_goat`: whole-token,
+case-insensitive, split on non-alphanumeric so `NEB-TS`→`NEB`; not a regex). `parse_and_store` branches
+a NEB job to `parse_and_store_neb` **right after the GOAT branch, before the fatal `input_ref`** — the
+third special-job route beside scan (`.relaxscanact.dat`) and GOAT. `parse_and_store_neb` parses the
+band via `neb.rs`, builds the result with `ParsedResults::from_neb` (`final_geometry`/`final_energy` =
+the **converged TS**; single-structure quantities absent, like `from_scan_profile`), and uses the
+reactant `* xyz` ONLY for the element-ORDER check (mandatory NEB precondition, `neb.rs`-asserted) —
+never the reactant geometry match. The order guard is kept, only the mismatched geometry-match guard is
+dropped (rule #11: the guard moved to where its premise holds). Supporting: `neb_results` now takes a
+`&ReferenceGeometry`; added `XyzFile::first_frame_energy()` witness + `NebBand::ts_energy_eh()` +
+`NebResultsJson.ts_energy_eh` (the converged-TS comment energy = the NEB job's energy). Copied
+`input.inp` + `input.property.txt` into `tests/fixtures/neb/`.
+
+**Fix (Part B — placement).** `NebSetupPanel` moved JobsScreen → **NewJobScreen** as a labelled,
+**expanded** section (not a collapsed `<details>`), removed from Jobs. The IA principle (recorded in
+reactions-ui.md): New Job is where jobs are CREATED (including one that combines two existing jobs);
+OptTS/connectivity/IRC are result-derived actions that stay on a specific job's results.
+
+**Verification.** cargo **263** (+3: `neb_job_parses_via_the_band_route_not_the_reactant_reference` —
+the real fixture now Parses to 24 iterations + TS N···C 2.353 / energy −472.7549;
+`the_reactant_reference_would_fail_on_a_neb_property_file` — bite, old path → `GeometryMismatch > 1.0`;
+`input_has_neb_detects_the_keyword`). tsc clean; vitest **769** (panel move, no test delta). Standard
+non-NEB path byte-unchanged (SP/Opt/scan/GOAT tests green). Wiki: +debugging/020, artifact-readers.md
+(NEB route), reactions-ui.md (NEB on New Job + IA principle), index. **Next:** author m1–m3 live (m1 the
+failed NEB job re-parses cleanly — energy + TS geometry N···C ≈ 2.35 + `results.neb` band, no banner; m2
+a normal Opt/scan job parses identically; m3 NEB creation on New Job works end-to-end). Then E3a-2 (the
+per-iteration band viewer + Refine-with-OptTS from the NEB-TS).

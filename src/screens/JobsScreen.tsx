@@ -8,7 +8,6 @@ import { formatEnergy, formatTimestamp, formatWallTime } from "../format";
 import { GroupSidebar } from "../groups/GroupSidebar";
 import { filterJobsByGroup, type GroupSelection } from "../groups/tree";
 import { filterJobsBySearch } from "../groups/search";
-import { NebSetupPanel } from "../reactions/NebSetupPanel";
 
 /** Sentinel for the "(ungrouped)" option in the per-job move picker. */
 const ROOT_OPTION = "__root__";
@@ -214,9 +213,6 @@ export function JobsScreen({
           </div>
 
           {error ? <div className="banner err">{error}</div> : null}
-
-          {/* NEB-TS setup (Stage E3a-1) — combine two parsed minima into a saddle search. */}
-          <NebSetupPanel onOpenJob={(id) => onOpenDetail(id, false)} />
 
           {loading ? (
             <div className="empty">Loading…</div>

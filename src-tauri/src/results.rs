@@ -198,6 +198,9 @@ pub struct NebResultsJson {
     pub final_barrier_eh: Option<f64>,
     /// The converged transition-state geometry (elements + Å).
     pub ts_geometry: FinalGeometry,
+    /// The converged TS energy (Eh) from the `_NEB-TS_converged.xyz` comment — the NEB
+    /// job's authoritative single energy (`ParsedResults.final_energy_eh` for a NEB job).
+    pub ts_energy_eh: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -386,6 +389,31 @@ impl ParsedResults {
             unknown_blocks: Vec::new(),
         })
     }
+
+    /// Build a NEB-TS job's result from its BAND (Stage E3a-1 completion). A NEB job is
+    /// multi-geometry; its authoritative result is the band + the **converged TS**, which
+    /// becomes the job's `final_geometry` (element order == reactant, `neb.rs`-asserted) and
+    /// `final_energy_eh` (the converged-TS comment energy). The single-structure quantities
+    /// (charges/dipole/thermo/gradient/frequencies/orbitals/trajectory) are absent — a NEB-TS
+    /// run has no Freq and no single reference structure; leaving them empty is correct, not
+    /// a gap (same discipline as `from_scan_profile`). The band rides in `neb`.
+    fn from_neb(neb: NebResultsJson) -> Result<ParsedResults, AppError> {
+        Ok(ParsedResults {
+            parser_version: PARSER_VERSION,
+            final_energy_eh: neb.ts_energy_eh,
+            dipole: None,
+            charges: Vec::new(),
+            thermochemistry: None,
+            final_geometry: neb.ts_geometry.clone(),
+            gradient: None,
+            frequencies: None,
+            trajectory: None,
+            orbitals: None,
+            scan: None,
+            neb: Some(neb),
+            unknown_blocks: Vec::new(),
+        })
+    }
 }
 
 /// Build the trajectory JSON from a verified `_trj.xyz`. Element order stored once.
@@ -532,6 +560,18 @@ pub fn parse_and_store(
         return ParseOutcome::NoArtifact;
     }
 
+    // A NEB-TS job is a THIRD special job type — MULTI-geometry, like a scan. Its
+    // `.property.txt` holds the BAND (N `$Geometry` blocks), its `.gbw`/`.xyz` the TS, and
+    // the input `* xyz` is the REACTANT — so the single-geometry reference model (input ≈
+    // property-final, valid for SP/Opt) does not fit: `PropertyFile::verify(&input_ref)`
+    // would fire a ~2.45 Å `GeometryMismatch` (a real different-structure, r≈1 — not a unit
+    // error, not staleness) and abort before the band reader runs. Route a NEB job to its
+    // own band+TS parse and skip the reactant-referenced single-structure post-conditions.
+    // See wiki/debugging/020-neb-multigeometry-vs-single-geometry-reference.md.
+    if input_has_neb(input_content) {
+        return parse_and_store_neb(conn, job_id, dir, input_content);
+    }
+
     // The input's start geometry (with elements) — the reference for `.property.txt`
     // (coords only; it checks element order internally) and for `_trj.xyz` (whose
     // first frame is the start).
@@ -643,10 +683,14 @@ pub fn parse_and_store(
         Err(e) => return ParseOutcome::ParseFailed(format!("relaxscan: {e}")),
     };
 
-    // NEB-TS band (`.NEB.log`/`.final.interp`/`_NEB-TS_converged.xyz`): present only for a
-    // NEB job, `None` otherwise (absent-is-normal). A present-but-malformed band is a LOUD
-    // failure (rule #9). The converged-TS order is checked against the final geometry.
-    let neb = match neb_results(dir, input_content, &verified, &atom_ids) {
+    // NEB-TS band: on the STANDARD path this is always `None` — a NEB job is detected up
+    // front (`input_has_neb`) and routed to `parse_and_store_neb` before this point, so no
+    // NEB job reaches here (like a scan branching at `.relaxscanact.dat`). Kept for the
+    // absent-is-normal symmetry; the reference is the property-final only because a NEB
+    // job never gets this far.
+    let neb = match final_geometry_reference(&verified, &atom_ids)
+        .and_then(|r| neb_results(dir, input_content, &r))
+    {
         Ok(n) => n,
         Err(e) => return ParseOutcome::ParseFailed(format!("neb: {e}")),
     };
@@ -710,20 +754,70 @@ fn parse_and_store_scan(
     ParseOutcome::Parsed
 }
 
-/// The `.property.txt` optimized (last) geometry as the reference for the `.hess`
-/// geometry post-condition — the Freq geometry, not the input geometry. `atom_ids` is
-/// the job's AtomId anchor (scene-sourced when minted, synthetic when derived), keyed
-/// to the same emit order as the final geometry (== artifact order).
+/// Parse + store a NEB-TS job from its BAND + converged TS (Stage E3a-1 completion). The
+/// caller confirmed the input carries `NEB-TS`, so this job IS a NEB run: it is
+/// MULTI-geometry (band + TS + product) and the single-geometry, input-reactant-referenced
+/// post-conditions (`PropertyFile::verify` / `_trj` first-frame / `mo` geom) do NOT apply —
+/// they would fail on the reactant≠TS difference (`debugging/020`). The authoritative result
+/// is the band (`neb.rs`), and the job's `final_geometry`/energy are the **converged TS**.
+/// The reactant `* xyz` supplies ONLY the element ORDER the converged TS is checked against
+/// (order preserved, not a geometry match). A present-but-malformed band is LOUD (rule #9).
+fn parse_and_store_neb(
+    conn: &Connection,
+    job_id: &str,
+    dir: &Path,
+    input_content: &str,
+) -> ParseOutcome {
+    // Reactant reference from the input `* xyz` — for the TS element-ORDER check only.
+    let reactant_ref = match input_reference(input_content) {
+        Some(r) if !r.z.is_empty() => r,
+        _ => return ParseOutcome::ParseFailed("no * xyz * block in the NEB job input".into()),
+    };
+    let neb = match neb_results(dir, input_content, &reactant_ref) {
+        Ok(Some(n)) => n,
+        Ok(None) => {
+            return ParseOutcome::ParseFailed(
+                "NEB job but no `input.NEB.log` band was parsed".into(),
+            )
+        }
+        Err(e) => return ParseOutcome::ParseFailed(format!("neb: {e}")),
+    };
+    let results = match ParsedResults::from_neb(neb) {
+        Ok(r) => r,
+        Err(e) => return ParseOutcome::ParseFailed(e.to_string()),
+    };
+    if let Err(e) = store(conn, job_id, &results) {
+        return ParseOutcome::ParseFailed(e.to_string());
+    }
+    if let Err(e) = verify_stored(conn, job_id, &results) {
+        return ParseOutcome::ParseFailed(format!("stored results failed read-back: {e}"));
+    }
+    ParseOutcome::Parsed
+}
+
+/// Whether a job's input requests a NEB run — a `NEB`/`NEB-TS`/`NEB-CI` token on a `!`
+/// keyword line. Mirrors [`input_is_goat`]'s whole-token, case-insensitive tokenizer
+/// (split on non-alphanumeric, so `NEB-TS` yields the `NEB` token). NOT a fragile regex.
+fn input_has_neb(input_content: &str) -> bool {
+    input_content
+        .lines()
+        .filter(|l| l.trim_start().starts_with('!'))
+        .any(|l| {
+            l.split(|c: char| !c.is_ascii_alphanumeric())
+                .any(|w| w.eq_ignore_ascii_case("NEB"))
+        })
+}
+
 /// NEB-TS band results, or `None` when the job is not a NEB run (absent-is-normal). A
 /// present `.NEB.log` that does not parse/verify is a LOUD failure (rule #9). The
 /// `NImages + 2` image-count post-condition uses `NImages` parsed from THIS job's input
 /// (the reader never reads `input.inp`); the converged-TS element order is checked
-/// against the job's final (TS) geometry (same order as the reactant — ORCA preserves it).
+/// against `reference` — the REACTANT order (the input `* xyz` on the NEB route, or the
+/// property-final on the standard path; both equal the reactant order, ORCA preserves it).
 fn neb_results(
     dir: &Path,
     input_content: &str,
-    verified: &Verified,
-    atom_ids: &[AtomId],
+    reference: &ReferenceGeometry,
 ) -> Result<Option<NebResultsJson>, AppError> {
     let Some(band) = crate::parse::neb::NebBand::from_path(dir)? else {
         return Ok(None);
@@ -731,8 +825,7 @@ fn neb_results(
     let n_images = parse_nimages(input_content).ok_or_else(|| {
         AppError::Internal("NEB job present but its input has no `NImages`".into())
     })? + 2;
-    let reference = final_geometry_reference(verified, atom_ids)?;
-    let v = band.verify(&reference, n_images)?;
+    let v = band.verify(reference, n_images)?;
     let map_images = |imgs: &[crate::parse::neb::BandImage]| -> Vec<NebImageJson> {
         imgs.iter()
             .map(|i| NebImageJson { distance_angstrom: i.distance_angstrom, energy_eh: i.energy_eh })
@@ -758,8 +851,14 @@ fn neb_results(
         mep: map_images(v.mep()),
         final_barrier_eh: v.final_barrier_eh(),
         ts_geometry,
+        ts_energy_eh: v.ts_energy_eh(),
     }))
 }
+
+/// The `.property.txt` optimized (last) geometry as the reference for the `.hess`/`.mo`
+/// geometry post-condition — the Freq/final geometry, not the input geometry. `atom_ids`
+/// is the job's AtomId anchor (scene-sourced when minted, synthetic when derived), keyed
+/// to the same emit order as the final geometry (== artifact order).
 
 /// `NImages <n>` from a NEB input's `%neb` block (case-insensitive), or `None`.
 fn parse_nimages(input_content: &str) -> Option<usize> {
@@ -1468,6 +1567,69 @@ mod tests {
 
     fn scan_fixture_dir() -> std::path::PathBuf {
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/scan-ethane-cc")
+    }
+
+    fn neb_fixture_dir() -> std::path::PathBuf {
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/neb")
+    }
+
+    fn ts_pair_distance(g: &FinalGeometry, i: usize, j: usize) -> f64 {
+        let a = g.xyz_angstrom[i];
+        let b = g.xyz_angstrom[j];
+        ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+    }
+
+    #[test]
+    fn input_has_neb_detects_the_keyword() {
+        assert!(input_has_neb("! r2SCAN-3c NEB-TS SMD(dmf) TightSCF\n* xyz 0 1\n*\n"));
+        assert!(input_has_neb("! b3lyp neb-ci\n")); // case-insensitive, any NEB variant
+        // A plain optimization / a scan is NOT NEB (the standard path must run for it).
+        assert!(!input_has_neb("! r2SCAN-3c Opt Freq TightSCF\n"));
+        assert!(!input_has_neb("! r2SCAN-3c LooseOpt\n%geom Scan B 0 1 = 3.0, 1.8, 12 end end\n"));
+    }
+
+    #[test]
+    fn neb_job_parses_via_the_band_route_not_the_reactant_reference() {
+        // The FULL pipeline on the real NEB probe fixtures: a NEB job now PARSES (the E3a-1
+        // completion). Before the route it failed at PropertyFile::verify(&input_ref) with a
+        // ~2.45 Å GeometryMismatch (reactant ≠ TS) — the bite below proves that pre-state.
+        let dir = neb_fixture_dir();
+        let input = std::fs::read_to_string(dir.join("input.inp")).unwrap();
+        let conn = mem_db();
+
+        let outcome = parse_and_store(&conn, "job1", dir.to_str().unwrap(), &input);
+        assert!(matches!(outcome, ParseOutcome::Parsed), "{outcome:?}");
+
+        let r = read_job_results(&conn, "job1").unwrap().unwrap();
+        // The band is the authoritative result: 24 iterations.
+        let neb = r.neb.as_ref().expect("NEB band stored");
+        assert_eq!(neb.iterations.len(), 24);
+        assert_eq!(neb.iterations.last().unwrap().climbing_image, Some(5));
+        // final_geometry = the converged TS (N(1)···C(8) ≈ 2.35, the known saddle), NOT the
+        // reactant; final_energy = the converged-TS comment energy.
+        assert!((ts_pair_distance(&r.final_geometry, 1, 8) - 2.353).abs() < 0.01);
+        assert!((r.final_energy_eh.unwrap() - (-472.754853216551)).abs() < 1e-6, "{:?}", r.final_energy_eh);
+        // No single-structure quantities mis-attributed from a multi-geometry NEB job.
+        assert!(r.charges.is_empty() && r.thermochemistry.is_none());
+        assert!(r.frequencies.is_none() && r.trajectory.is_none() && r.scan.is_none());
+    }
+
+    #[test]
+    fn the_reactant_reference_would_fail_on_a_neb_property_file() {
+        // BITE: the OLD single-geometry path — PropertyFile::verify against the input
+        // reactant — fails on a NEB job (its property.txt band ≠ the reactant), which is
+        // exactly why the NEB route skips it. A large, r≈1 GeometryMismatch (not a unit error).
+        let dir = neb_fixture_dir();
+        let input = std::fs::read_to_string(dir.join("input.inp")).unwrap();
+        let reactant_ref = input_reference(&input).unwrap();
+        let map = identity_map_for(&reactant_ref);
+        let err = PropertyFile::from_path(&dir.join("input.property.txt"))
+            .and_then(|pf| pf.verify(&reactant_ref, &map))
+            .unwrap_err();
+        assert!(
+            matches!(err, crate::parse::ParseError::GeometryMismatch { max_delta } if max_delta > 1.0),
+            "expected a large GeometryMismatch, got {err:?}"
+        );
     }
 
     /// Only `data_json` is read by `read_job_results`, so a minimal `results` row is

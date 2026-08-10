@@ -77,6 +77,7 @@ import { formatXtbProgress } from "../scene/xtb-progress";
 import { restoreSceneLog, type LogRejection } from "../scene/restore";
 import { serializeLog, type Op } from "../scene/oplog";
 import { goatInputForFragment } from "../scene/ensemble";
+import { NebSetupPanel } from "../reactions/NebSetupPanel";
 import type { RawFragment, Scene, SceneFragment } from "../scene/types";
 import type { AtomId } from "../scene/ids";
 import {
@@ -1759,6 +1760,13 @@ export function NewJobScreen({
           Can&apos;t create or run this job — {scanBlockMessage}
         </div>
       ) : null}
+
+      {/* Create NEB-TS from two EXISTING parsed minima (Stage E3a-1) — a distinct create
+          path (it combines two computed jobs, it does not build one input in the editor),
+          so it lives here on New Job as its own expanded section. OptTS/connectivity are
+          result-derived actions that stay on a specific job's results (the IA principle,
+          wiki/modules/reactions-ui.md). */}
+      <NebSetupPanel onOpenJob={(id) => onOpenDetail(id, false)} />
 
       <input
         ref={fileInputRef}

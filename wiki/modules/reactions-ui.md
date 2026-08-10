@@ -251,6 +251,19 @@ construction. A scan/SP/minimum (no `.hess`, or `imaginary_count ≠ 1`) never s
   `wiki/orca/connectivity.md`. Validated on the real MeNH₂+EtI TS (forward → product, backward →
   reactant). Manual gate m1–m3 pending.
 
+## NEB-TS creation lives on New Job (Stage E3a-1) — the IA principle
+
+`NebSetupPanel` (pick a reactant job + a product job → `buildNebInput` → `create_neb_job`) lives on
+the **New Job screen** as a labelled, **expanded** section (not a collapsed `<details>`), NOT on the
+Jobs list where it first landed. The information-architecture rule (Anton's, recorded so it isn't
+relitigated): **New Job is where jobs are CREATED**, so a create path belongs there — including one
+that combines two *existing* jobs into a new one. By contrast **OptTS-refine / connectivity / (later)
+IRC are result-derived actions**: each depends on a specific *computed* job and its parsed results, so
+each stays on that job's Results (`ResultsCard` / `ScanProfilePanel`). The dividing line is "does this
+action need a specific job's results?" — if yes it lives on the results; if it only *creates* a job it
+lives on New Job. The same-order refusal (`buildNebInput` throws on an atom-order mismatch) surfaces as
+an honest banner in the panel, so no mismatched NEB job is ever created.
+
 ### Manual gate (author, real window) — PENDING (code complete; the unit stays open until it passes)
 
 - **c1** a reaction with two scan pathways → both profiles overlaid, legend-labelled, shared zero; each

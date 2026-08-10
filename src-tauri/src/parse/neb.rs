@@ -247,6 +247,9 @@ pub struct NebBand {
     mep: Vec<BandImage>,
     ts_elements: Vec<String>,
     ts_xyz_angstrom: Vec<[f64; 3]>,
+    /// The converged TS energy (Eh) from the `_NEB-TS_converged.xyz` comment line
+    /// (`… E <energy>`, measured), or `None` if the comment carried no number.
+    ts_energy_eh: Option<f64>,
 }
 
 impl NebBand {
@@ -257,13 +260,15 @@ impl NebBand {
         }
         let iterations = parse_neb_log(&read_capped(&log_path)?)?;
         let mep = parse_final_interp(&read_capped(&dir.join("input.final.interp"))?)?;
-        // Reuse the xyz reader for the converged TS — no re-implemented xyz parsing.
+        // Reuse the xyz reader for the converged TS — no re-implemented xyz parsing. The
+        // geometry + the comment-line TS energy are witness reads on the unverified handle.
         let ts_path = dir.join("input_NEB-TS_converged.xyz");
-        let (ts_elements, ts_xyz_angstrom) =
-            XyzFile::from_path(&ts_path)?.first_frame().ok_or_else(|| {
-                ParseError::MissingField("NEB-TS converged xyz has no frame".into())
-            })?;
-        Ok(Some(NebBand { iterations, mep, ts_elements, ts_xyz_angstrom }))
+        let ts = XyzFile::from_path(&ts_path)?;
+        let (ts_elements, ts_xyz_angstrom) = ts.first_frame().ok_or_else(|| {
+            ParseError::MissingField("NEB-TS converged xyz has no frame".into())
+        })?;
+        let ts_energy_eh = ts.first_frame_energy();
+        Ok(Some(NebBand { iterations, mep, ts_elements, ts_xyz_angstrom, ts_energy_eh }))
     }
 
     /// Post-conditions (rule #9), then [`Verified`]. `expected_images` is `NImages + 2`
@@ -333,6 +338,10 @@ impl Verified {
     /// The converged TS geometry `(elements, Å coords)`.
     pub fn ts_geometry(&self) -> (&[String], &[[f64; 3]]) {
         (&self.0.ts_elements, &self.0.ts_xyz_angstrom)
+    }
+    /// The converged TS energy (Eh) from the `_NEB-TS_converged.xyz` comment, or `None`.
+    pub fn ts_energy_eh(&self) -> Option<f64> {
+        self.0.ts_energy_eh
     }
     /// The final iteration's barrier (Eh) — the converged NEB-TS barrier estimate.
     pub fn final_barrier_eh(&self) -> Option<f64> {
