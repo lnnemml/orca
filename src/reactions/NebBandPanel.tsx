@@ -164,7 +164,7 @@ export function NebBandPanel({
         <LineChart
           width={width}
           height={BAND_CHART_HEIGHT}
-          margin={{ top: 8, right: 16, bottom: 18, left: 8 }}
+          margin={{ top: 28, right: 16, bottom: 18, left: 8 }}
         >
           <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" />
           <XAxis
@@ -209,28 +209,36 @@ export function NebBandPanel({
               fontSize: 11,
             }}
           />
-          <Legend wrapperStyle={{ fontSize: 11 }} />
-          {/* The converged smooth MEP — its OWN relative curve, drawn first so the
-              live band sits on top. */}
+          <Legend
+            verticalAlign="top"
+            align="center"
+            wrapperStyle={{ fontSize: 11, paddingBottom: 4 }}
+          />
+          {/* The converged smooth MEP — a MUTED DASHED reference, drawn first (under the
+              live band). The expected band↔MEP crossing (initial band overshoots the
+              converged path) is correct physics — the muted styling keeps it reading as a
+              reference, not a glitch. */}
           <Line
             data={mepData}
             dataKey="deltaE_kcal"
             name="converged MEP"
             type="monotone"
             stroke="var(--muted)"
+            strokeOpacity={0.6}
             strokeWidth={1.5}
             strokeDasharray="4 3"
             dot={false}
             isAnimationActive={false}
           />
-          {/* The current iteration's band — ΔE vs ITS OWN reactant end. */}
+          {/* The current iteration's band — ΔE vs ITS OWN reactant end. The prominent
+              SOLID accent line, drawn last so it sits on top of the MEP reference. */}
           <Line
             data={bandData}
             dataKey="deltaE_kcal"
             name={`iteration ${current.index}`}
             type="monotone"
             stroke="#4f8cff"
-            strokeWidth={2}
+            strokeWidth={2.25}
             dot={{ r: 2.5 }}
             isAnimationActive={false}
           />
@@ -363,7 +371,7 @@ export function NebBandPanel({
         <button
           className="btn btn-sm btn-primary"
           disabled={refining}
-          title="Refine the converged NEB climbing image into a located transition state (OptTS + Freq, Stage E)"
+          title="Refine the converged NEB climbing image into a located transition state (OptTS + Freq)"
           onClick={async () => {
             if (refining) return;
             setRefining(true);
@@ -389,7 +397,7 @@ export function NebBandPanel({
             }
           }}
         >
-          {refining ? "Refining…" : "Refine TS with OptTS (Stage E)"}
+          {refining ? "Refining…" : "Refine TS with OptTS"}
         </button>
       </div>
       {refineError ? (

@@ -7272,3 +7272,12 @@ Menshutkin NEB job → band viewer, slide 0→23, barrier-convergence, climbing 
 Refine → OptTS child seeded from NEB-TS N···C ≈ 2.35 inheriting r2SCAN-3c/SMD(dmf)/charge → located TS
 one imaginary ≈ −385 → ΔG‡ in the reaction compare; m3 neg — a non-NEB job shows no band panel). Then E3b
 (bond-editing).
+
+## [2026-08-10] session | NEB band chart cosmetic polish — legend above axis, drop "(Stage E)" label, clearer band/MEP styling
+
+Styling-only pass on `NebBandPanel.tsx` (no data/transform/behaviour change): band-chart `<Legend>`
+moved to top (`verticalAlign="top"`, `margin.top` 8→28) so it no longer overlaps the "arc length along
+band (Å)" XAxis label; converged MEP kept as a muted dashed reference (`strokeOpacity 0.6`) under the
+prominent solid accent current-iteration band (the expected band↔MEP crossing is correct physics, not a
+glitch — left intact); "(Stage E)" removed from the Refine button label + its tooltip (internal phase
+comment stays). tsc clean; vitest 776 (no delta); cargo untouched. Author m1–m3 gate still pending.
