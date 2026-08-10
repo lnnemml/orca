@@ -6,6 +6,7 @@ import { IrSpectrumPanel } from "../spectrum/IrSpectrumPanel";
 import { ConnectivityPanel } from "../spectrum/ConnectivityPanel";
 import { TrajectoryPlayer } from "../trajectory/TrajectoryPlayer";
 import { ScanProfilePanel } from "../scan/ScanProfilePanel";
+import { NebBandPanel } from "../reactions/NebBandPanel";
 import { OrbitalPanel } from "../orbitals/OrbitalPanel";
 import {
   finalGeometryXyz,
@@ -126,6 +127,20 @@ export function ResultsCard({
           <ScanProfilePanel
             scan={results.scan}
             referenceElements={results.final_geometry.elements}
+            jobId={jobId}
+            jobTitle={jobTitle}
+            onOpenJob={onOpenJob}
+          />
+        )}
+
+        {/* NEB band viewer (Phase 4.5 Stage E3a-2). Hidden for a non-NEB job
+            (absent-is-normal). The per-iteration ΔE band (relativized to its own
+            reactant end) + the converged smooth MEP overlaid + barrier convergence;
+            "Refine TS with OptTS" seeds the source-agnostic engine from the converged
+            climbing image, closing NEB → located TS → ΔG‡. */}
+        {results.neb && (
+          <NebBandPanel
+            neb={results.neb}
             jobId={jobId}
             jobTitle={jobTitle}
             onOpenJob={onOpenJob}

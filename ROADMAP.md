@@ -961,11 +961,17 @@ r1–r4 manual gates. Next per the ratified reorder: CREST probe → Stage D →
         apart; post-conditions). Wired into `results.rs` (`ParsedResults.neb`) + a minimal `NebSetupPanel`.
         **Probe recovered the KNOWN Menshutkin TS** (N···C 2.353 / C···I 2.594, Δ 0.002 vs OptTS) from the
         two endpoints alone, 24 iterations, CI #5, ≈12 min. `wiki/orca/neb.md`. Manual gate m1–m3 pending.
-  - [ ] **E3a-2 next — the band viewer + Refine-with-OptTS**: the per-iteration PES / MEP energy-profile
-        viewer (recharts, over `ParsedResults.neb.iterations` / `.mep`) and a "Refine with OptTS from the
-        NEB-TS" action seeding `buildOptTSInput` from the converged TS geometry (the source-agnostic
-        engine's second entry point, ADR-020) — closing NEB → OptTS → located TS → ΔG‡ (E1b).
-  - [ ] **E3b** — derive the product geometry for a NEW reaction by geometric bond-editing (ADR-010
+  - [x] **E3a-2 — the band viewer + Refine-with-OptTS** (2026-08-10): the per-iteration ΔE / MEP
+        energy-profile viewer (`reactions/NebBandPanel.tsx` + pure `reactions/nebBand.ts`, recharts over
+        `ParsedResults.neb.iterations` / `.mep`; the `TrajectoryPlayer` transport idiom for the iteration
+        slider; climbing image marked; barrier-convergence line) and a "Refine TS with OptTS" action
+        seeding the **generic** `create_optts_job` from the converged `neb.ts_geometry` via
+        `buildOptTSInput` (charge inherit+assert; the source-agnostic engine's second entry point,
+        ADR-020) — closing NEB → located TS → ΔG‡ (E1b) with no new code. The absolute (`.NEB.log`) vs
+        relative (`.final.interp`) energies are reconciled in `iterationSeries` (each iteration
+        relativized to its own image-0), never plotted as one absolute quantity (rule #11). **Stage E3a
+        (NEB) COMPLETE.** Manual gate m1–m3 pending.
+  - [ ] **E3b next** — derive the product geometry for a NEW reaction by geometric bond-editing (ADR-010
         `ReactionPath = fold(reactant, transform)`), so NEB works without a ready product job.
 
 ### Stage F — Microsolvation (explicit solvent shell), probe-first
@@ -1087,10 +1093,11 @@ and OrcaStudio picks the job up, syncs results, and parses them — no terminal,
       **same structural need as ΔΔG‡** — aggregating **several jobs into one result** — which is why
       NMR waits until **Reaction is a first-class object** (Phase 4.5's data model), not before: the
       multi-job aggregation must exist first.
-- [~] NEB: path setup UI + energy profile visualization per iteration — **pulled into Phase 4.5
-  Stage E3** (the reaction workstation, not Phase 6): setup UI + core reader landed in **E3a-1**
-  (`NebSetupPanel`, `create_neb_job`, `parse/neb.rs`); the per-iteration energy-profile viewer is
-  **E3a-2** (see Stage E above).
+- [x] NEB: path setup UI + energy profile visualization per iteration — **done in Phase 4.5
+  Stage E3a** (the reaction workstation, not Phase 6): setup UI + core reader in **E3a-1**
+  (`NebSetupPanel`, `create_neb_job`, `parse/neb.rs`); the per-iteration energy-profile viewer +
+  Refine-with-OptTS in **E3a-2** (`NebBandPanel`, `nebBand.ts`; see Stage E above). The 3D MEP-path
+  viewer (`_MEP_trj.xyz`) remains a deferred follow-up.
 - [ ] Job comparison view: N jobs side by side (energies, geometries overlay, spectra)
 - [ ] Batch/parametric runs: same molecule × list of functionals or basis sets
 - [ ] SLURM backend (third `ExecutionBackend` implementation)

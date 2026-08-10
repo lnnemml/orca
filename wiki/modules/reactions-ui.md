@@ -264,6 +264,50 @@ action need a specific job's results?" — if yes it lives on the results; if it
 lives on New Job. The same-order refusal (`buildNebInput` throws on an atom-order mismatch) surfaces as
 an honest banner in the panel, so no mismatched NEB job is ever created.
 
+## NEB band viewer + Refine-with-OptTS — closing NEB → located TS → ΔG‡ (Stage E3a-2)
+
+The **Results screen** (`ResultsCard`) grows a **NEB band** panel (`reactions/NebBandPanel.tsx`)
+rendered iff `results.neb != null` (absent-is-normal — a non-NEB job shows no band panel). It is
+presentation over the already-parsed `ParsedResults.neb` (E3a-1) plus one reuse action — **no new
+parser, no Rust**.
+
+- **Pure transforms** (`reactions/nebBand.ts`, unit-tested): `iterationSeries(it)` (each image's energy
+  **minus that iteration's own image-0**, ×`HARTREE_TO_KCAL` → kcal/mol), `mepSeries(neb)` (the
+  already-relative `.final.interp` MEP, ×`HARTREE_TO_KCAL`), `barrierSeries(neb)` (each iteration's
+  `barrier_eh` → kcal/mol — the convergence curve). Imports the converter symbol from `scan/scanProfile`
+  (same source as `compare.ts`; the value is still duplicated across four modules — a pending dedup
+  tidy-up, tracked separately).
+- **The absolute/relative firewall (rule #11, presentation side).** The `.NEB.log` per-iteration
+  energies are **ABSOLUTE** (Eh); the `.final.interp` MEP is **RELATIVE** (image 0 = 0). They are never
+  plotted as one absolute quantity: `iterationSeries` relativizes each iteration to its own reactant end
+  (so iterations overlay AND share the MEP's relative footing), and the MEP is its own labelled curve.
+  Both plotted series are ΔE-in-kcal/mol, each honestly relative to its own reactant; the y-axis says so.
+- **The viewer** reuses the `TrajectoryPlayer` transport idiom exactly (play/step/slider, the current
+  **iteration** is application state, not the chart's): each frame draws `iterationSeries(iteration)` as a
+  recharts line (arc length Å vs ΔE kcal/mol) with the converged smooth MEP (`mepSeries`) overlaid as a
+  distinct dashed labelled series, and the climbing image marked with a `ReferenceDot` once
+  `climbing_image` is `Some`. A small barrier-convergence chart (`barrierSeries`, barrier vs iteration,
+  the current iteration a vertical marker) sits below. Explicit chart width via `ResizeObserver` (the
+  WebKitGTK 0×0 class); two series with different x-domains, so each `<Line>` carries its own `data`.
+- **Refine TS with OptTS** MIRRORS `ScanProfilePanel`'s Stage-E1a action **exactly** (this is why E1a
+  was built source-agnostic, ADR-020): read THIS NEB job's own input via `get_job` (never reconstructed),
+  `buildOptTSInput(source.input_content, results.neb.ts_geometry)` (charge/method/solvation
+  inherited + asserted — never a 0-default), then the **generic** `create_optts_job` (source = the NEB
+  job) + `submit_job` + navigate. No NEB-specific refine path. A charge/post-condition failure surfaces
+  as an honest banner, no job created. The located TS it produces flows into the **existing E1b ΔG‡
+  machinery** (role from `! OptTS`, pathway inherited) with **no new code** — closing NEB → located TS →
+  ΔG‡.
+
+### Manual gate — NEB band viewer + Refine (author, real window) — PENDING
+
+- **m1** open the Menshutkin NEB job → the band viewer shows the energy profile per iteration (slide
+  0→23, the band relaxes onto the MEP), the barrier-convergence line, the climbing image marked; the
+  smooth MEP overlaid.
+- **m2** "Refine TS with OptTS" → an OptTS child seeded from the NEB-TS (N···C ≈ 2.35), inheriting
+  r2SCAN-3c/SMD(dmf)/charge → run → located TS (one imaginary ≈ −385) → its ΔG‡ appears in the reaction
+  compare (E1b), closing NEB → located TS → ΔG‡.
+- **m3** (negative) a non-NEB job shows no band panel (`results.neb` null).
+
 ### Manual gate (author, real window) — PENDING (code complete; the unit stays open until it passes)
 
 - **c1** a reaction with two scan pathways → both profiles overlaid, legend-labelled, shared zero; each

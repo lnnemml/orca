@@ -7228,3 +7228,47 @@ non-NEB path byte-unchanged (SP/Opt/scan/GOAT tests green). Wiki: +debugging/020
 failed NEB job re-parses cleanly — energy + TS geometry N···C ≈ 2.35 + `results.neb` band, no banner; m2
 a normal Opt/scan job parses identically; m3 NEB creation on New Job works end-to-end). Then E3a-2 (the
 per-iteration band viewer + Refine-with-OptTS from the NEB-TS).
+
+## [2026-08-10] session | Stage E3a-2 — NEB band viewer (energy profile per iteration + MEP) and Refine-with-OptTS closure; Stage E3a COMPLETE
+
+**Scope (one unit).** Presentation over the already-parsed `ParsedResults.neb` (E3a-1) + one reuse
+action — no new Rust/parser. Closes NEB → located TS → ΔG‡.
+
+**Part A — pure transforms** (`src/reactions/nebBand.ts`, node-tested, React-free): `iterationSeries(it)`
+(each image's energy MINUS that iteration's own image-0, ×`HARTREE_TO_KCAL` → kcal/mol — relativizing so
+iterations overlay AND share the MEP's relative footing), `mepSeries(neb)` (the already-relative
+`.final.interp` MEP, ×`HARTREE_TO_KCAL`), `barrierSeries(neb)` (each iteration's `barrier_eh` → kcal/mol,
+the convergence curve). **The firewall (rule #11, presentation side):** the `.NEB.log` per-iteration
+energies are ABSOLUTE Eh; the MEP is RELATIVE — never plotted as one absolute quantity. Imports the
+converter symbol from `scan/scanProfile` (same source as `compare.ts`).
+
+**Honest finding surfaced during review (Anton).** The "single `HARTREE_TO_KCAL`" invariant I'd asserted
+in prior checkpoints was aspirational, not real: the value `627.5094740631` is duplicated across **four**
+production modules (`trajectory/frame.ts`, `scan/scanProfile.ts`, `convergence/ConvergenceDashboard.tsx`,
+`scene/ensemble.ts` as `HARTREE_TO_KCAL_MOL`). Not a bug (value consistent) and E3a-2 only imports; but a
+**dedup tidy-up** (collapse to one canonical constant, e.g. a new `src/units.ts`) is now tracked as a
+separate unit, NOT folded into E3a-2. Cosmetic alignment done here: `nebBand.ts` imports from
+`scanProfile` like its `reactions/` neighbors.
+
+**Part B — viewer + refine.** `reactions/NebBandPanel.tsx`, rendered in `ResultsCard` iff
+`results.neb != null` (a non-NEB job shows no band panel). Iteration slider reusing the `TrajectoryPlayer`
+transport idiom (play/step/slider; the current ITERATION is application state, ADR-011); each frame draws
+`iterationSeries` as a recharts line (arc length Å vs ΔE kcal/mol) with the converged MEP overlaid as a
+distinct dashed labelled series and the climbing image marked (`ReferenceDot`) once `climbing_image` is
+`Some`; a small barrier-convergence chart below (current iteration a vertical marker). Two series with
+different x-domains → each `<Line>` carries its own `data`; explicit width via `ResizeObserver` (WebKitGTK
+0×0 class). **Refine TS with OptTS** MIRRORS `ScanProfilePanel:230` exactly: `get_job` → `buildOptTSInput
+(source.input_content, neb.ts_geometry)` (charge inherit+assert) → the **generic** `create_optts_job`
+(source = the NEB job) → `submit_job` → navigate. No NEB-specific refine path (ADR-020); a
+charge/post-condition failure surfaces as an honest banner, no job created. The located TS flows into the
+existing E1b ΔG‡ machinery with no new code.
+
+**Verification.** tsc clean; vitest **776** (+7 `nebBand.test.ts`, incl. 2 negatives: absolute-Eh does
+NOT overlay two iterations with drifting reactant ends; empty images → empty series). cargo **unaffected**
+(no Rust touched). UI untested by design. Wiki: reactions-ui.md (band viewer + Refine-with-OptTS closure
+section + m1–m3 gate), orca/neb.md (the absolute-vs-relative presentation note), ROADMAP (E3a-2 [x],
+Stage E3a COMPLETE, E3b next; Phase-6 NEB line closed). **Next:** author m1–m3 live (m1 open the
+Menshutkin NEB job → band viewer, slide 0→23, barrier-convergence, climbing image, MEP overlaid; m2
+Refine → OptTS child seeded from NEB-TS N···C ≈ 2.35 inheriting r2SCAN-3c/SMD(dmf)/charge → located TS
+one imaginary ≈ −385 → ΔG‡ in the reaction compare; m3 neg — a non-NEB job shows no band panel). Then E3b
+(bond-editing).

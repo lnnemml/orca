@@ -73,6 +73,21 @@ relative** (image 0 = 0) — the reader keeps them apart and never conflates the
 converged-TS element order equals the reactant order. A truncated/ragged log is a loud parse
 error, never a silent partial band.
 
+### Presentation note — never plot the two energy scales as one absolute quantity (E3a-2)
+
+The band viewer (`reactions/NebBandPanel.tsx`, `reactions/nebBand.ts`) draws the per-iteration
+band **and** the converged MEP on one ΔE (kcal/mol) axis — but they arrive in **different unit
+conventions** and must be reconciled first. The `.NEB.log` per-iteration energies are
+**absolute** Eh (≈ −472.7); the `.final.interp` MEP is **relative** (image 0 = 0). Plotting them
+directly on a shared absolute axis is the wrong-physics trap (the ≈ −296,600 kcal/mol offset that
+would flatten the barrier into a rounding error, and make successive iterations fail to overlay
+because their reactant ends drift by ~0.001 Eh). The fix is done once, in the transform:
+`iterationSeries` subtracts **each iteration's own image-0 energy** (absolute → relative to that
+iteration's reactant end), so every iteration starts at ΔE = 0 and overlays the already-relative
+MEP sensibly. Both plotted curves are then ΔE-in-kcal/mol, each honestly relative to its own
+reactant — the same absolute/relative firewall the reader keeps at the parse boundary, preserved
+at the presentation boundary (rule #11).
+
 ## See also
 
 - `wiki/orca/optts.md` — refining the NEB climbing image into a located TS (E3a-2 → E1b);
