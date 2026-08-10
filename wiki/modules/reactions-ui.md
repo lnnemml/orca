@@ -222,6 +222,35 @@ Controls: **G-isLocatedTs** (OptTS true, plain Opt/scan false — bite vs a subs
 reference-free** (ΔΔG‡ reads no reference — the function has no reference parameter). Rust:
 `reference_gibbs_sum_incomplete_is_none_but_energy_sums` (a 2-of-3-Freq ΣG is `None` while Σ E sums).
 
+## Connectivity check on a located TS (Stage E2)
+
+The **Results screen** (`ResultsCard`) grows a **Connectivity check** panel
+(`spectrum/ConnectivityPanel.tsx`) for a **located TS** — gated on the parsed **result**
+`frequencies.imaginary_count === 1`, NOT on `isLocatedTsInput(input)`. That is deliberate: the
+precondition for the check is *having one imaginary mode to displace along* (a genuine first-order
+saddle), which is the same signal the IR panel's "transition state" verdict uses and which a future
+**NEB-TS** result satisfies with no `OptTS` token — so the panel is E3-forward-compatible by
+construction. A scan/SP/minimum (no `.hess`, or `imaginary_count ≠ 1`) never shows it.
+
+- **The app builds BOTH displaced geometries** (`buildConnectivityChildren` → `displaceAlongImaginary
+  Mode(±δ)` → `buildReoptInput({freq:false})`): the imaginary mode (the single negative frequency's
+  `$normal_modes` column, reused not re-parsed) is normalized so the busiest atom moves δ (default
+  **0.5 Å**, user-adjustable), then `x_TS ± δ·v̂`. Method/solvation/charge are inherited from the TS
+  input verbatim and asserted (comparability + the charge footgun; same discipline as `reopt.ts`).
+- **Two plain-Opt children** are created via the **generic `create_optts_job`** path (source = the TS
+  job, so both join its pathway) — no scan/TS-specific branch, reused unchanged by E3's NEB. Their
+  ids are persisted in `localStorage` keyed by the TS job (no schema change), so the verdict survives
+  a reload.
+- **Verdict** once both parse — `connectivityVerdict`: `distinctBasins` ⟺ each endpoint left the TS
+  AND the two endpoints differ from each other (rotation/translation-invariant **max interatomic-
+  distance** metric, no Kabsch). `reactionCoordinateChanges` tables each endpoint's key bond
+  distances (forward / TS / backward) so the chemist reads reactant vs product. **Honest-pending:** no
+  verdict until both children parse; a failed child is reported, never smoothed over.
+- **Pure logic** (`spectrum/mode.ts`, `scene/connectivity.ts`, unit-tested): `displaceAlongImaginary
+  Mode`, `connectivityVerdict`, `reactionCoordinateChanges`, `buildConnectivityChildren`. Method:
+  `wiki/orca/connectivity.md`. Validated on the real MeNH₂+EtI TS (forward → product, backward →
+  reactant). Manual gate m1–m3 pending.
+
 ### Manual gate (author, real window) — PENDING (code complete; the unit stays open until it passes)
 
 - **c1** a reaction with two scan pathways → both profiles overlaid, legend-labelled, shared zero; each

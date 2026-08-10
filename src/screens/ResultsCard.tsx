@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 import type { JobStatus, ParsedResults } from "../types";
 import { IrSpectrumPanel } from "../spectrum/IrSpectrumPanel";
+import { ConnectivityPanel } from "../spectrum/ConnectivityPanel";
 import { TrajectoryPlayer } from "../trajectory/TrajectoryPlayer";
 import { ScanProfilePanel } from "../scan/ScanProfilePanel";
 import { OrbitalPanel } from "../orbitals/OrbitalPanel";
@@ -166,6 +167,18 @@ export function ResultsCard({
             f={results.frequencies}
             geometry={results.final_geometry}
             jobTitle={jobTitle}
+          />
+        )}
+
+        {/* Connectivity check (Stage E2). Rendered only for a LOCATED TS (exactly one
+            imaginary mode): displace ±δ along it into two plain-Opt basins. The panel
+            itself returns null when imaginary_count !== 1. */}
+        {results.frequencies && results.frequencies.imaginary_count === 1 && (
+          <ConnectivityPanel
+            tsJobId={jobId}
+            tsJobTitle={jobTitle}
+            results={results}
+            onOpenJob={onOpenJob}
           />
         )}
 

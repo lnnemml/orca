@@ -255,3 +255,201 @@ export function zeroPointAmplitudeAngstrom(
   const a0_m = Math.sqrt(HBAR_J_S / (2 * mu * omega));
   return a0_m * 1e10;
 }
+
+// --------------------------------------------------------------------------- //
+// Stage E2 — connectivity: displace a TS along its imaginary mode into 2 basins //
+// --------------------------------------------------------------------------- //
+//
+// The imaginary mode of a first-order saddle IS the reaction coordinate. Stepping
+// off the saddle a small distance ±δ along it and relaxing (plain Opt) lands in the
+// two minima the TS connects — a poor-man's IRC that answers "does this TS join the
+// two basins I meant?". Validated on the real MeNH₂+EtI TS: forward (N···C 1.668 →
+// product N–C 1.51 / C–I 4.12), backward (N···C 3.039 → reactant N–C 3.6 / C–I 2.2).
+// The displacement REUSES the animation math (`modeFrameCoords` at sin = ±1) — the
+// same normalized imaginary-mode vector, never re-parsed. See `wiki/orca/connectivity.md`.
+
+/** A molecular geometry: element symbols and Å coordinates, index-aligned.
+ * Structurally compatible with `optts.ts`'s `TsGuessGeometry`. */
+export interface Geometry {
+  elements: string[];
+  xyz_angstrom: Vec3[];
+}
+
+/**
+ * Default displacement off the TS along the imaginary mode, Å. **Measured**: 0.5 Å
+ * splits the MeNH₂+EtI TS cleanly into product/reactant; too small and an endpoint
+ * relaxes back to the saddle (no split). User-adjustable in the UI.
+ */
+export const DEFAULT_CONNECTIVITY_DELTA_ANGSTROM = 0.5;
+
+/**
+ * Displace a located-TS geometry ±δ along its imaginary normal mode → the two Opt
+ * seeds for the connectivity check. REUSES {@link modeFrameCoords}: at phase 0.25
+ * (sin = +1) it returns `x_TS + δ·v̂`, at 0.75 (sin = −1) `x_TS − δ·v̂`, where the
+ * mode is normalized so the busiest atom moves exactly δ (`maxAtomicNorm`) — the exact
+ * validated math, added once rather than oscillated.
+ *
+ * `mode` is the **flat 3N** imaginary-mode vector (`modeDisplacements(...).flat()` —
+ * do NOT re-parse it). `deltaAngstrom = 0` (or a zero mode) → both endpoints == TS.
+ * Throws on a 3N / atom-count mismatch (never a silent wrong-length displacement).
+ */
+export function displaceAlongImaginaryMode(
+  tsGeometry: Geometry,
+  mode: number[],
+  deltaAngstrom: number,
+): { forward: Geometry; backward: Geometry } {
+  const nAtoms = tsGeometry.elements.length;
+  if (tsGeometry.xyz_angstrom.length !== nAtoms) {
+    throw new Error(
+      `TS geometry has ${nAtoms} elements but ${tsGeometry.xyz_angstrom.length} coordinate rows`,
+    );
+  }
+  if (mode.length !== 3 * nAtoms) {
+    throw new Error(`imaginary mode has ${mode.length} entries, expected 3N = ${3 * nAtoms}`);
+  }
+  const disp: Vec3[] = [];
+  for (let a = 0; a < nAtoms; a++) {
+    disp.push([mode[3 * a], mode[3 * a + 1], mode[3 * a + 2]]);
+  }
+  const forward = modeFrameCoords(tsGeometry.xyz_angstrom, disp, deltaAngstrom, 0.25);
+  const backward = modeFrameCoords(tsGeometry.xyz_angstrom, disp, deltaAngstrom, 0.75);
+  return {
+    forward: { elements: tsGeometry.elements, xyz_angstrom: forward },
+    backward: { elements: tsGeometry.elements, xyz_angstrom: backward },
+  };
+}
+
+/**
+ * The largest change in any single interatomic distance between two index-aligned
+ * geometries (Å). Rotation- and translation-invariant by construction (it compares
+ * distances, never coordinates) — the same discipline the Rust geometry
+ * post-conditions use (`parse/mo.rs`, `parse/hess.rs`), so NO Kabsch/SVD alignment is
+ * needed. It is a **max, not a mean**: a single bond breaking/forming reads at its full
+ * magnitude, not diluted by the many unchanged pairs — so the connectivity thresholds
+ * are size-independent (a whole-matrix RMS would shrink with molecule size). Throws on
+ * an atom-count mismatch.
+ */
+export function maxInteratomicDistanceDelta(a: Vec3[], b: Vec3[]): number {
+  if (a.length !== b.length) {
+    throw new Error(`geometries differ in atom count: ${a.length} vs ${b.length}`);
+  }
+  const dist = (g: Vec3[], i: number, j: number) =>
+    Math.hypot(g[i][0] - g[j][0], g[i][1] - g[j][1], g[i][2] - g[j][2]);
+  let m = 0;
+  for (let i = 0; i < a.length; i++) {
+    for (let j = i + 1; j < a.length; j++) {
+      const d = Math.abs(dist(a, i, j) - dist(b, i, j));
+      if (d > m) m = d;
+    }
+  }
+  return m;
+}
+
+/** An endpoint must differ from the TS by ≥ this in some interatomic distance to have
+ * "left the saddle" (Å). Below it, the endpoint relaxed back to the TS (δ too small).
+ * Provisional default, confirmed by the E2 manual gate (validated case shifts ~1.8 Å). */
+export const MIN_SHIFT_FROM_TS_ANGSTROM = 0.3;
+/** The two endpoints must differ from EACH OTHER by ≥ this in some interatomic distance
+ * to be two DISTINCT basins (Å) — the validated Menshutkin case separates by ~2 Å
+ * (N–C 1.51 vs 3.6). Provisional default, confirmed by the manual gate. */
+export const MIN_ENDPOINT_SEPARATION_ANGSTROM = 0.5;
+
+export interface ConnectivityVerdict {
+  /** Both endpoints left the TS AND landed in different basins. */
+  distinctBasins: boolean;
+  /** Max interatomic-distance change, forward vs TS (Å). */
+  fwdShiftFromTs: number;
+  /** Max interatomic-distance change, backward vs TS (Å). */
+  bwdShiftFromTs: number;
+  /** Max interatomic-distance change between the two endpoints (Å). */
+  endpointSeparation: number;
+}
+
+/**
+ * Does a TS connect two distinct basins? A pure geometry test on the two relaxed
+ * endpoints + the TS: `distinctBasins` ⟺ each endpoint moved off the TS
+ * (≥ {@link MIN_SHIFT_FROM_TS_ANGSTROM}) AND the two endpoints differ from each other
+ * (≥ {@link MIN_ENDPOINT_SEPARATION_ANGSTROM}). The endpoint-separation clause is the
+ * one a δ-too-small run fails: if both relaxed back to the TS they sit close to it AND
+ * to each other, so the verdict is (correctly) false — not a trivial pass. WHICH basin
+ * is reactant vs product is read from the reaction-coordinate distance (Part B, the
+ * scanned pair); this only certifies "two distinct minima". Metric is
+ * rotation/translation-invariant, so ORCA's per-job reframing is irrelevant.
+ */
+export function connectivityVerdict(
+  forward: Geometry,
+  backward: Geometry,
+  ts: Geometry,
+): ConnectivityVerdict {
+  const fwdShiftFromTs = maxInteratomicDistanceDelta(forward.xyz_angstrom, ts.xyz_angstrom);
+  const bwdShiftFromTs = maxInteratomicDistanceDelta(backward.xyz_angstrom, ts.xyz_angstrom);
+  const endpointSeparation = maxInteratomicDistanceDelta(
+    forward.xyz_angstrom,
+    backward.xyz_angstrom,
+  );
+  const distinctBasins =
+    fwdShiftFromTs >= MIN_SHIFT_FROM_TS_ANGSTROM &&
+    bwdShiftFromTs >= MIN_SHIFT_FROM_TS_ANGSTROM &&
+    endpointSeparation >= MIN_ENDPOINT_SEPARATION_ANGSTROM;
+  return { distinctBasins, fwdShiftFromTs, bwdShiftFromTs, endpointSeparation };
+}
+
+export interface CoordinateChange {
+  /** Atom indices of the pair (i < j), 0-based. */
+  i: number;
+  j: number;
+  /** Element symbols of the pair, for the label (e.g. "N", "C"). */
+  elements: [string, string];
+  distForwardAngstrom: number;
+  distBackwardAngstrom: number;
+  distTsAngstrom: number;
+}
+
+/**
+ * The top-K interatomic distances that changed MOST between the two relaxed
+ * endpoints — the reaction coordinate(s) made legible. A bond forming in one basin
+ * and breaking in the other (e.g. Menshutkin N–C 1.51 ⇄ 3.6, C–I 4.12 ⇄ 2.2) surfaces
+ * here at the top, so the chemist reads WHICH endpoint is reactant vs product from the
+ * numbers. Pure, and deliberately **self-contained**: it needs no pathway / scanned-
+ * pair input — the endpoints themselves reveal the bonds that define the basins (so it
+ * also works for a hand-built or NEB-sourced TS with no scan ancestor). Sorted by
+ * |forward − backward| descending. Throws on an atom-count mismatch.
+ */
+export function reactionCoordinateChanges(
+  forward: Geometry,
+  backward: Geometry,
+  ts: Geometry,
+  topK = 3,
+): CoordinateChange[] {
+  const n = forward.elements.length;
+  if (backward.elements.length !== n || ts.elements.length !== n) {
+    throw new Error(
+      `geometries differ in atom count: fwd ${n}, bwd ${backward.elements.length}, ts ${ts.elements.length}`,
+    );
+  }
+  const d = (g: Geometry, i: number, j: number) =>
+    Math.hypot(
+      g.xyz_angstrom[i][0] - g.xyz_angstrom[j][0],
+      g.xyz_angstrom[i][1] - g.xyz_angstrom[j][1],
+      g.xyz_angstrom[i][2] - g.xyz_angstrom[j][2],
+    );
+  const out: CoordinateChange[] = [];
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      out.push({
+        i,
+        j,
+        elements: [forward.elements[i], forward.elements[j]],
+        distForwardAngstrom: d(forward, i, j),
+        distBackwardAngstrom: d(backward, i, j),
+        distTsAngstrom: d(ts, i, j),
+      });
+    }
+  }
+  out.sort(
+    (a, b) =>
+      Math.abs(b.distForwardAngstrom - b.distBackwardAngstrom) -
+      Math.abs(a.distForwardAngstrom - a.distBackwardAngstrom),
+  );
+  return out.slice(0, topK);
+}

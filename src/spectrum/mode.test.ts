@@ -10,6 +10,11 @@ import {
   atomicMasses,
   reducedMassAmu,
   zeroPointAmplitudeAngstrom,
+  displaceAlongImaginaryMode,
+  connectivityVerdict,
+  maxInteratomicDistanceDelta,
+  reactionCoordinateChanges,
+  type Geometry,
   DEFAULT_AMPLITUDE_ANGSTROM,
   MIN_SAFE_DISTANCE_ANGSTROM,
 } from "./mode";
@@ -170,5 +175,122 @@ describe("modeFrameXyz + collapse guard", () => {
     expect(collapse).toBeLessThan(MIN_SAFE_DISTANCE_ANGSTROM);
     const safe = modeMinDistanceOverPeriod(eqPair, [[0, 0.1, 0], [0, -0.1, 0]], 0.1);
     expect(safe).toBeGreaterThan(MIN_SAFE_DISTANCE_ANGSTROM);
+  });
+});
+
+describe("displaceAlongImaginaryMode — ±δ splits the scanned pair (Stage E2)", () => {
+  // A 2-atom TS at 1.8 Å; the imaginary mode separates the pair along +v.
+  const ts: Geometry = { elements: ["N", "C"], xyz_angstrom: [[0, 0, 0], [1.8, 0, 0]] };
+  const mode = [-1, 0, 0, 1, 0, 0]; // atom0 −x, atom1 +x → the pair separates along +v
+  const pairDist = (g: Geometry) =>
+    Math.hypot(
+      g.xyz_angstrom[0][0] - g.xyz_angstrom[1][0],
+      g.xyz_angstrom[0][1] - g.xyz_angstrom[1][1],
+      g.xyz_angstrom[0][2] - g.xyz_angstrom[1][2],
+    );
+
+  it("+δ and −δ move the scanned pair in OPPOSITE directions", () => {
+    const { forward, backward } = displaceAlongImaginaryMode(ts, mode, 0.5);
+    // busiest atom moves exactly δ=0.5; both atoms move 0.5 → ±1.0 on the pair distance
+    expect(pairDist(forward)).toBeCloseTo(2.8, 12); // longer
+    expect(pairDist(backward)).toBeCloseTo(0.8, 12); // shorter
+    expect(pairDist(forward) - 1.8).toBeGreaterThan(0);
+    expect(pairDist(backward) - 1.8).toBeLessThan(0);
+  });
+
+  it("δ = 0 → both endpoints EXACTLY the TS (bite: a sign bug makes them identical/one-sided)", () => {
+    const { forward, backward } = displaceAlongImaginaryMode(ts, mode, 0);
+    expect(forward.xyz_angstrom).toEqual(ts.xyz_angstrom);
+    expect(backward.xyz_angstrom).toEqual(ts.xyz_angstrom);
+  });
+
+  it("forward and backward are symmetric about the TS, not same-direction (bite)", () => {
+    const { forward, backward } = displaceAlongImaginaryMode(ts, mode, 0.5);
+    // midpoint(forward, backward) == TS for every atom; a same-sign bug breaks this
+    forward.xyz_angstrom.forEach((f, a) => {
+      const b = backward.xyz_angstrom[a];
+      expect((f[0] + b[0]) / 2).toBeCloseTo(ts.xyz_angstrom[a][0], 12);
+      expect((f[1] + b[1]) / 2).toBeCloseTo(ts.xyz_angstrom[a][1], 12);
+      expect((f[2] + b[2]) / 2).toBeCloseTo(ts.xyz_angstrom[a][2], 12);
+    });
+    expect(forward.xyz_angstrom).not.toEqual(backward.xyz_angstrom);
+  });
+
+  it("throws on a mode whose length is not 3N", () => {
+    expect(() => displaceAlongImaginaryMode(ts, [1, 0, 0], 0.5)).toThrow();
+  });
+});
+
+describe("connectivityVerdict — distinct basins vs δ-too-small (Stage E2)", () => {
+  // A collinear N···C···I model along x: N at 0, C at nc, I at nc+ci.
+  const geom = (nc: number, ci: number): Geometry => ({
+    elements: ["N", "C", "I"],
+    xyz_angstrom: [[0, 0, 0], [nc, 0, 0], [nc + ci, 0, 0]],
+  });
+  const ts = geom(2.0, 2.3); // saddle: N–C forming, C–I breaking
+  const product = geom(1.5, 4.1); // N–C bonded, I departed
+  const reactant = geom(3.6, 2.2); // N far, C–I intact
+
+  it("two well-separated endpoints → distinctBasins true", () => {
+    const v = connectivityVerdict(product, reactant, ts);
+    expect(v.distinctBasins).toBe(true);
+    expect(v.fwdShiftFromTs).toBeGreaterThan(0.3);
+    expect(v.bwdShiftFromTs).toBeGreaterThan(0.3);
+    expect(v.endpointSeparation).toBeGreaterThan(0.5);
+  });
+
+  it("both endpoints ≈ TS (δ too small, relaxed back) → distinctBasins false", () => {
+    const v = connectivityVerdict(geom(2.02, 2.31), geom(1.98, 2.29), ts);
+    expect(v.distinctBasins).toBe(false);
+    expect(v.endpointSeparation).toBeLessThan(0.5);
+  });
+
+  it("bite: BOTH endpoints far from TS but in the SAME basin → false (separation clause)", () => {
+    // A verdict that only checked "each endpoint moved off the TS" would trivially
+    // PASS here (both shifts large); the endpoint-separation clause makes it correctly
+    // false — the two relaxed to the same (product) minimum.
+    const v = connectivityVerdict(product, geom(1.52, 4.08), ts);
+    expect(v.fwdShiftFromTs).toBeGreaterThan(0.3);
+    expect(v.bwdShiftFromTs).toBeGreaterThan(0.3);
+    expect(v.endpointSeparation).toBeLessThan(0.5);
+    expect(v.distinctBasins).toBe(false);
+  });
+
+  it("maxInteratomicDistanceDelta is translation-invariant (0 for a rigid shift — why no Kabsch)", () => {
+    const a: Vec3[] = [[0, 0, 0], [1.5, 0, 0], [1.5, 1.1, 0]];
+    const shifted = a.map(([x, y, z]) => [x + 3.2, y - 1.0, z + 0.7] as Vec3);
+    expect(maxInteratomicDistanceDelta(a, shifted)).toBeCloseTo(0, 12);
+  });
+});
+
+describe("reactionCoordinateChanges — the bonds that define the two basins (Stage E2)", () => {
+  const geom = (nc: number, ci: number): Geometry => ({
+    elements: ["N", "C", "I"],
+    xyz_angstrom: [[0, 0, 0], [nc, 0, 0], [nc + ci, 0, 0]],
+  });
+  const ts = geom(2.0, 2.3);
+  const product = geom(1.5, 4.1); // N–C bonded, I departed
+  const reactant = geom(3.6, 2.2); // N far, C–I intact
+
+  it("surfaces the most-changed bond first, with forward/TS/backward distances", () => {
+    const top = reactionCoordinateChanges(product, reactant, ts, 3);
+    // N–C changes most: 1.5 (product) vs 3.6 (reactant), |Δ| = 2.1 > C–I's 1.9.
+    expect(top[0].elements).toEqual(["N", "C"]);
+    expect(top[0].i).toBe(0);
+    expect(top[0].j).toBe(1);
+    expect(top[0].distForwardAngstrom).toBeCloseTo(1.5, 9);
+    expect(top[0].distBackwardAngstrom).toBeCloseTo(3.6, 9);
+    expect(top[0].distTsAngstrom).toBeCloseTo(2.0, 9);
+    // C–I is the second reaction coordinate.
+    expect(top[1].elements).toEqual(["C", "I"]);
+    // Sorted by |forward − backward| descending.
+    const mag = (c: (typeof top)[number]) =>
+      Math.abs(c.distForwardAngstrom - c.distBackwardAngstrom);
+    expect(mag(top[0])).toBeGreaterThanOrEqual(mag(top[1]));
+  });
+
+  it("throws on an atom-count mismatch (never compares mismatched structures)", () => {
+    const two: Geometry = { elements: ["N", "C"], xyz_angstrom: [[0, 0, 0], [1.5, 0, 0]] };
+    expect(() => reactionCoordinateChanges(two, reactant, ts)).toThrow();
   });
 });

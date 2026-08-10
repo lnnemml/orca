@@ -7104,3 +7104,45 @@ parse-sources.md (measured 0.027 Å lag + ratio post-condition), modules/artifac
 CLAUDE.md rule #11 (ratio signature replaces bare 1e-4), index. **Next:** author m1–m3 live (m1 forward Opt
 parses fully → product N–C ~1.51 / C–I ~4.12, thermo + orbitals, no banner; m2 backward → reactant; m3 neg —
 OptTS+Freq byte-identical, orbitals present, verdict "transition state"). Then E2 (displaced-endpoint connectivity).
+
+## [2026-08-10] session | Stage E2 — connectivity check: displace a located TS along its imaginary mode into two Opt basins
+
+**What.** A located TS (`imaginary_count === 1`) grows a **Connectivity check** panel in the Results
+screen. It displaces the TS geometry **±δ along its single imaginary mode** (the reaction coordinate;
+δ default 0.5 Å, measured — user-adjustable) into TWO plain-`Opt` children, and, once both relax,
+reports whether they reached two distinct basins (reactant / product). Validated method on the real
+MeNH₂+EtI TS: forward → product (N–C 1.51, C–I 4.12), backward → reactant (N–C 3.6, C–I 2.2).
+
+**Pure core (`spectrum/mode.ts`, sibling of the animation math, REUSING it):**
+- `displaceAlongImaginaryMode(tsGeometry, mode3N, δ)` — `x_TS ± δ·v̂` via `modeFrameCoords` at
+  sin = ±1 (the same normalized imaginary-mode vector, never re-parsed). δ=0 → both == TS.
+- `connectivityVerdict(fwd, bwd, ts)` — `distinctBasins` ⟺ each endpoint left the TS AND the two
+  differ from each other, using **`maxInteratomicDistanceDelta`** — a rotation/translation-invariant
+  **max interatomic-distance** metric (NOT Kabsch RMSD: a max not a mean → size-independent
+  thresholds; the codebase's distance-matrix idiom, `parse/mo.rs`/`hess.rs`; author approved the
+  deviation from the spec's "Kabsch RMSD" wording). Thresholds 0.3 / 0.5 Å provisional (m3 confirms).
+- `reactionCoordinateChanges(fwd, bwd, ts, k)` — the top-k most-changed bonds (fwd/TS/bwd distances),
+  self-contained (no pathway/scanned-pair input) so the chemist reads reactant vs product.
+
+**Children builder (`scene/connectivity.ts`, pure):** `buildConnectivityChildren` → two
+`buildReoptInput(tsInput, seed, {freq:false})` (Fork B: plain Opt, no Freq). Method + solvation
+inherited from the TS `!` line verbatim (comparability, via the shared `methodSolvationKeywords`);
+charge inherited + asserted by `buildReoptInput` (the footgun). +6 tests (charge −1 propagation,
+SMD(DMF) not dropped, no-`* xyz` throws, plain-Opt not OptTS/Freq).
+
+**UI (`spectrum/ConnectivityPanel.tsx`, wired into `ResultsCard`):** gated on the parsed RESULT
+`imaginary_count === 1` (not `isLocatedTsInput` — the real precondition is having one imaginary mode;
+E3-NEB-forward-compatible, matches the IR "transition state" verdict). Two children created via the
+GENERIC `create_optts_job` path (source = TS job, join its pathway) — no scan/TS hardcode, reused by
+E3's NEB; **no Rust change** (cargo unchanged). Child ids persisted in `localStorage` keyed by the TS
+job (no schema/migration). Honest-pending: no verdict until BOTH parse; a failed child is reported.
+
+**Verification.** tsc clean; vitest **762** (was 754; +8 net = mode.test.ts +2 reactionCoordinate-
+Changes, connectivity.test.ts +6). The Part-A E2 suites (+8) were already counted in the 754. cargo
+**249** unchanged (Rust child path untouched). Wiki:
++orca/connectivity.md, chemistry/normal-modes.md (imaginary mode = reaction coordinate, proven by
+±displacement), modules/reactions-ui.md (the E2 panel), ROADMAP (E2 [x], `! IRC` reframed as the
+rigorous alternative), index. **Next:** author m1–m3 live (m1 create two children with seeds N···C
+≈1.67 / ≈3.04 inheriting r2SCAN-3c/SMD(dmf)/charge 0 1; m2 run both → product / reactant, both parse
+via the E1c fix; m3 verdict "two distinct basins ✓" + coordinates, honest-pending while running).
+Then E3 (NEB) reuses the generic create path unchanged.

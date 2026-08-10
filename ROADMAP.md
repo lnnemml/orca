@@ -938,10 +938,19 @@ r1–r4 manual gates. Next per the ratified reorder: CREST probe → Stage D →
         partial sum; raw ORCA G, the 1 atm→1 M correction named not auto-applied (Fork A). ΣG on the same
         discipline as Σ E. Pure fns + tests: `compare.ts`; ΣG partial-is-None: `reactions.rs`. **Live
         gate:** g1/g2 pass on the Menshutkin TS; g3 (ΔΔG‡) unit-tested now, awaits a real 2-face si/re case.
-  - [ ] **E2 next — IRC** (`! IRC`): the connectivity post-condition that a located TS joins the
-        intended reactant/product (below).
-- [ ] **IRC** (`! IRC`) — probe → the post-condition that a found TS connects the intended
-      reactant/product.
+  - [x] **E2 — connectivity check (displaced-endpoint method)** (2026-08-10): the located TS is
+        displaced ±δ along its single imaginary mode (δ=0.5 Å measured) into TWO plain-Opt children
+        (`buildConnectivityChildren` → `buildReoptInput({freq:false})`, method/solvation/charge
+        inherited + asserted; the app generates BOTH geometries, no manual mix-up). When both relax,
+        `connectivityVerdict` reports whether they reached two distinct basins (rotation/translation-
+        invariant max-interatomic-distance metric — no Kabsch), and `reactionCoordinateChanges` shows
+        each endpoint's key bond distances so the chemist reads reactant vs product. Children created
+        via the GENERIC `create_optts_job` path (source = TS job, join its pathway) — reused unchanged
+        by E3's NEB. Validated on the real MeNH₂+EtI TS (forward → product, backward → reactant).
+        `wiki/orca/connectivity.md`. Honest-pending until both parse. Manual gate m1–m3 pending.
+- [ ] **IRC** (`! IRC`) — the RIGOROUS alternative to E2's displaced-endpoint check: probe → the
+      post-condition that a found TS connects the intended reactant/product along the true steepest-
+      descent path. A possible later mode; the E2 displaced-endpoint method covers the common case.
 - [ ] **NEB / NEB-TS / NEB-CI** (`! NEB-TS`) — probe → the alternative path-finder when there is no
       clean scan coordinate; needs a product geometry (ADR-010 `ReactionPath = fold(reactant,
       transform)`) + a per-iteration band viewer. Highest effort; may trail.
