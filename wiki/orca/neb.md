@@ -38,6 +38,16 @@ end
   k of the reactant into image k of the product atom-by-atom; a different order interpolates
   *different atoms* and the method silently fails. `buildNebInput` refuses a mismatched pair
   (throws) — the guard is the whole point of the builder.
+- **Deriving a same-order product from the reactant (Stage E3b).** When there is no ready product
+  job, the researcher builds one **from the reactant** with **Form bond / Break bond** in the edit
+  mode (`wiki/modules/editor-ui.md`): a set-distance preset (form → covalent-radius sum so perception
+  draws the bond; break → past the perception window so it drops), then save-as-job → `Opt` → the
+  product. Because every form/break edit goes through `replaceFragmentAtoms` (atom count + order
+  invariant, ADR-008), the derived product has the **reactant's atom order by construction** — so this
+  same-order assert accepts the pair with no refusal. The Menshutkin check: from the reactant, form
+  N–C + break C–I → `Opt` relaxes to the known product (N–C ≈ 1.51, C–I ≈ 4.12), and NEB(reactant,
+  derived product) is accepted. **Nothing new is stored** to link them — the order invariant is the
+  only guard (no lineage column, no stored connectivity).
 - Method + solvation + charge **inherited from the reactant** verbatim (comparability + the
   charge footgun), exactly as `buildOptTSInput` inherits them. **Multi-line `%neb` block** —
   the exact form the converging run used; the single-line form is valid ORCA in principle

@@ -202,6 +202,37 @@ The principle: a panel names the space of every index it shows, and the *value* 
 space actually uses (global for the inspector, ORCA for constraints). Same number today, named homes,
 so a future divergence can't reintroduce the "which index is this?" ambiguity.
 
+## Form / break bond — a set-distance PRESET, not a new engine (Stage E3b)
+
+The Edit section (`EditPanel`) grows two buttons — **Form bond** / **Break bond** — shown only for a
+**two-atom distance** edit (`active.op === "distance"`). They are the researcher's way to **derive a
+product geometry from a reactant** (the concerted-reaction case NEB needs, `wiki/orca/neb.md`).
+
+The load-bearing insight (recorded so it isn't re-litigated): **form/break is NOT a new geometric
+primitive.** It is exactly `planEdit(op="distance")` with a **computed target** —
+`planFormBond`/`planBreakBond` (`src/scene/bond-edit.ts`) delegate the mask entirely to `planEdit`
+(the `active` plan already IS that, resolved upstream in `NewJobScreen`, including any `needs-split`
+bond-graph split from `/geometry/rotatable-mask`, 2.5.3b) and only **compute the distance**:
+
+- **Form** = the covalent-radius sum `rA + rB` (`covalent-radii.ts`, Cordero 2008) — the same basis
+  distance-based perception uses, so the pair lands **inside** the perception window (sidecar `×1.2`)
+  and a bond is drawn.
+- **Break** = `(rA + rB) × 2` — comfortably **past** the perception window, so the bond drops for any
+  pair; the later `Opt` relaxes the fragments into the product basin.
+
+The button pre-fills the target field and drives the **same** preview→apply path as a typed
+set-distance edit (`callSetInternal` → preview view-only; **Apply → `applyResponseToScene` →
+`replaceFragmentAtoms`**, one Undo). Only `.target` is taken from the planner (the distance is
+orientation-invariant, so it survives a "Move X instead" swap). A refused intra-fragment mask
+(reference-atom rule / ring) surfaces the **existing** honest message — no new refusal path.
+
+**Why this closes the product-derivation → NEB loop (the point of the unit).** Every form/break edit
+goes through `replaceFragmentAtoms`, which enforces the **atom count + order invariant** (ADR-008). So
+a product derived by form/break has the **same atom order as the reactant** — the NEB setup's same-order
+assert (E3a-1) accepts `(reactant job, derived product job)` with no refusal, and **nothing new is
+stored**: no connectivity, no bond edge-set, no reactant→product lineage column. Perception follows the
+distance; the order invariant is the only guard needed.
+
 ## Where future panels go
 
 - **Phase 4.5 — reaction setup.** The reaction-center / scan-setup UI (ADR-007) is a **new dock

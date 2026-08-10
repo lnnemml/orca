@@ -11,6 +11,7 @@ import {
   applyResponseToScene,
   type EditPlan,
 } from "./edit-plan";
+import { planFormBond, planBreakBond } from "./bond-edit";
 import { mergeToXyz } from "./scene";
 
 /**
@@ -167,12 +168,20 @@ export function EditPanel({
   const value = Number(target);
   const valid = target.trim() !== "" && Number.isFinite(value);
 
-  const runPreview = async () => {
-    if (!valid) return;
+  // Map the picked global indices to their (stable) AtomIds from the pre-edit scene
+  // — the provenance the op carries, and what the bond-edit planners take.
+  const pickedAtomIds = () =>
+    active.indices.map((i) => {
+      const loc = locateAtom(scene, i);
+      return loc ? loc.fragment.atoms[loc.localIndex].id : makeAtomId(i);
+    });
+
+  const runPreview = async (v: number) => {
+    if (!Number.isFinite(v)) return;
     setBusy(true);
     setError(null);
     try {
-      const resp = await callSetInternal(scene, active, value);
+      const resp = await callSetInternal(scene, active, v);
       onPreview(applyResponseToScene(scene, active.movingFragmentId, resp.xyz));
       setPreviewing(true);
     } catch (e) {
@@ -184,34 +193,50 @@ export function EditPanel({
     }
   };
 
-  const runApply = async () => {
-    if (!valid) return;
+  const runApply = async (v: number) => {
+    if (!Number.isFinite(v)) return;
     setBusy(true);
     setError(null);
     try {
-      const resp = await callSetInternal(scene, active, value);
+      const resp = await callSetInternal(scene, active, v);
       const issue = applyResponseIssue(scene, resp.xyz, resp.max_static_displacement);
       if (issue) throw new Error(issue);
       const newScene = applyResponseToScene(scene, active.movingFragmentId, resp.xyz);
       setPreviewing(false);
       onPreview(null);
-      // The op carries provenance in AtomIds (stable across a later removal): map
-      // the picked global indices to their atoms' ids from the pre-edit scene.
-      const atoms = active.indices.map((i) => {
-        const loc = locateAtom(scene, i);
-        return loc ? loc.fragment.atoms[loc.localIndex].id : makeAtomId(i);
-      });
       const op: Op = {
         type: "replace-fragment-atoms",
         fragmentId: active.movingFragmentId,
         name: movingFragmentName ?? "fragment",
-        edit: { via: "set-internal", kind: active.op, atoms, target: value, unit: active.unit },
+        edit: { via: "set-internal", kind: active.op, atoms: pickedAtomIds(), target: v, unit: active.unit },
       };
       onApplied(op, newScene);
     } catch (e) {
       setError(messageFor(e));
     } finally {
       setBusy(false);
+    }
+  };
+
+  // Form / break bond (Stage E3b) — a set-distance PRESET. `planFormBond`/
+  // `planBreakBond` delegate the mask to `planEdit` (the `active` plan already IS
+  // that, resolved upstream incl. any needs-split split) and compute the target from
+  // covalent radii (form = bonding distance so perception draws the bond; break =
+  // clearly past the perception window so it drops). We take only `.target` (the
+  // distance is orientation-invariant, so it's correct even after a "Move X instead"
+  // swap), pre-fill the field, and drive the SAME preview→apply path. Apply →
+  // `replaceFragmentAtoms` (count+order invariant), one Undo — so a derived product
+  // keeps the reactant's atom order (the NEB precondition).
+  const isDistancePair = active.op === "distance" && active.indices.length === 2;
+  const applyBondPreset = (kind: "form" | "break") => {
+    if (busy || !isDistancePair) return;
+    const [a, b] = pickedAtomIds();
+    try {
+      const bp = kind === "form" ? planFormBond(scene, a, b) : planBreakBond(scene, a, b);
+      setTarget(String(round(bp.target)));
+      void runPreview(bp.target);
+    } catch (e) {
+      setError(messageFor(e));
     }
   };
 
@@ -265,12 +290,12 @@ export function EditPanel({
           aria-label={`target ${active.op} in ${active.unit}`}
         />
         <span className="edit-unit">{active.unit}</span>
-        <button className="btn btn-sm" onClick={runPreview} disabled={!valid || busy}>
+        <button className="btn btn-sm" onClick={() => runPreview(value)} disabled={!valid || busy}>
           Preview
         </button>
         <button
           className="btn btn-sm btn-primary"
-          onClick={runApply}
+          onClick={() => runApply(value)}
           disabled={!valid || busy}
         >
           Apply
@@ -281,6 +306,28 @@ export function EditPanel({
           </button>
         ) : null}
       </div>
+      {/* Form / break bond — only for a two-atom distance edit. A preset target from
+          covalent radii, then the same preview→apply path (Apply commits it). */}
+      {isDistancePair ? (
+        <div className="edit-bond-presets">
+          <button
+            className="btn btn-sm"
+            onClick={() => applyBondPreset("form")}
+            disabled={busy}
+            title="Move the pair to a bonding distance (covalent-radius sum) so a bond forms; preview, then Apply"
+          >
+            Form bond
+          </button>
+          <button
+            className="btn btn-sm"
+            onClick={() => applyBondPreset("break")}
+            disabled={busy}
+            title="Move the pair clearly apart so the bond breaks; preview, then Apply"
+          >
+            Break bond
+          </button>
+        </div>
+      ) : null}
       {error ? (
         <div
           className={

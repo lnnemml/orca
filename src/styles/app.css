@@ -824,6 +824,11 @@ select:disabled,
   gap: 6px;
   flex-wrap: wrap;
 }
+.edit-bond-presets {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
 .edit-target {
   width: 84px;
 }

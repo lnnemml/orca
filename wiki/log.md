@@ -7295,3 +7295,40 @@ copy in `compare.test.ts` imports from `../units` too; `frame.test.ts`'s indepen
 left as a deliberate self-contained check. Verify: `grep "= *627\.509" src/` → exactly one home
 (units.ts). tsc clean; vitest 776 (no delta — identical value → identical results); cargo untouched
 (frontend-only).
+
+## [2026-08-10] session | Stage E3b — Form/Break bond as a set-distance preset; Stage E (NEB + bond-editing) COMPLETE
+
+**Scope (one unit).** "Form bond" / "Break bond" in the edit mode — derive a product geometry FROM a
+reactant with atom identity (index + order) preserved (the NEB precondition), reusing the existing edit
+path. No new geometric primitive, no stored connectivity (Anton's choice: GEOMETRIC form/break —
+perception follows the distance, nothing stored).
+
+**Part A — pure core** (`src/scene/covalent-radii.ts` + `src/scene/bond-edit.ts`). A frontend
+covalent-radius NUMBER table did not exist (only the sidecar's), so added Cordero 2008
+(`covalentRadius(el)`, case-insensitive, throws on unknown — a missing radius is loud, never guessed,
+rule #11). `bondingDistance = rA+rB` (the same basis perception uses; C–H 1.07 … C–I 2.15),
+`breakDistance = (rA+rB)×2` (clears the sidecar's ×1.2 perception window for any pair). `planFormBond`/
+`planBreakBond(scene,a,b)` **delegate the mask to `planEdit(op="distance")` verbatim** (needs-split
+passed through unchanged) and attach only the computed target → `BondEditPlan = {plan, target}`. +10 vitest
+(3 negatives: element-dependent not fixed-1.5; break clears the window; delegation `.plan` deep-equals
+`planEdit` for BOTH a ready and a needs-split pair).
+
+**Part B — wiring** (`EditPanel.tsx`). Two buttons shown only for a two-atom distance edit. On click:
+`planFormBond`/`planBreakBond` → take `.target` (orientation-invariant, so correct even after a "Move X
+instead" swap) → pre-fill the target field → drive the SAME preview→apply path (`callSetInternal` →
+preview view-only; **Apply → `applyResponseToScene` → `replaceFragmentAtoms`**, count+order invariant, one
+Undo). Refactored `runPreview`/`runApply` to take an explicit value (so a preset doesn't race the typed
+field's setState). A `needs-split` intra-fragment pair resolves via the EXISTING `/geometry/rotatable-mask`
+`splitMask` prop (2.5.3b) — not duplicated; a refused mask surfaces the existing honest message. No
+NewJobScreen change, no new props. Because the derived product goes through `replaceFragmentAtoms`, its
+atom order == the reactant's → the NEB same-order assert (E3a-1) accepts the pair with **nothing new
+stored** (no connectivity, no lineage).
+
+**Verification.** tsc clean; vitest **786** (+10 `bond-edit.test.ts`; UI untested by design). cargo **and
+sidecar untouched** (frontend-only — `set-internal` / `rotatable-mask` already exist). Wiki: editor-ui.md
+(form/break = set-distance preset over the existing path + the order-preservation that makes it NEB-ready),
+orca/neb.md (deriving a same-order product from the reactant), ROADMAP (E3b [x], **Stage E COMPLETE**,
+F1–F3 CREST next), log. **Next:** author m1–m3 live (m1 inter-fragment pair → Form bond → ≈1.5 Å,
+perception draws the bond, order unchanged; m2 bonded pair → Break bond → moves apart, bond drops; m3 from
+the Menshutkin reactant, form N–C + break C–I → save → Opt → known product (N–C ≈ 1.51, C–I ≈ 4.12) → NEB
+(reactant, derived product) accepted). Then Stage F (CREST microsolvation).

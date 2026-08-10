@@ -971,8 +971,16 @@ r1–r4 manual gates. Next per the ratified reorder: CREST probe → Stage D →
         relative (`.final.interp`) energies are reconciled in `iterationSeries` (each iteration
         relativized to its own image-0), never plotted as one absolute quantity (rule #11). **Stage E3a
         (NEB) COMPLETE.** Manual gate m1–m3 pending.
-  - [ ] **E3b next** — derive the product geometry for a NEW reaction by geometric bond-editing (ADR-010
-        `ReactionPath = fold(reactant, transform)`), so NEB works without a ready product job.
+  - [x] **E3b — Form bond / Break bond in the edit mode** (2026-08-10): derive a product geometry FROM a
+        reactant by geometric bond-editing — `planFormBond`/`planBreakBond` (`src/scene/bond-edit.ts`)
+        = `planEdit(op="distance")` with a covalent-radius target (`covalent-radii.ts`, Cordero: form =
+        rA+rB so perception draws the bond; break = ×2 past the perception window). Buttons in
+        `EditPanel` (two-atom distance edit) drive the **existing** preview→apply path; Apply goes
+        through `replaceFragmentAtoms` (count+order invariant, ADR-008), so the derived product keeps the
+        reactant's atom order — the NEB same-order assert accepts `(reactant, derived product)` with **no
+        new stored connectivity / lineage** (geometric-only; perception follows the distance). Closes the
+        product-derivation → NEB loop for a new reaction. **Stage E (NEB + bond-editing) COMPLETE.**
+        Manual gate m1–m3 pending.
 
 ### Stage F — Microsolvation (explicit solvent shell), probe-first
 
