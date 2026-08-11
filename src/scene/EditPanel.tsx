@@ -9,23 +9,32 @@ import { locateAtom } from "./scene";
 import {
   applyResponseIssue,
   applyResponseToScene,
+  axisTranslation,
+  pickedDistance,
+  resolveComponentMove,
+  type ComponentLookup,
   type EditPlan,
 } from "./edit-plan";
 import { planFormBond, planBreakBond } from "./bond-edit";
 import type { BondOrder } from "./covalent-radii";
-import { mergeToXyz } from "./scene";
+import { mergeToXyz, translateAtomsInScene } from "./scene";
 
 /**
  * Edit mode UI (2.5.2d; intra-fragment 2.5.3b) — lives in the Atom section of the
  * geometry rail. Given a `plan` (from `planEdit`), shows the op, current value, a
  * target field, Preview / Apply.
  *
- * Three plan kinds:
+ * Four plan kinds:
  * - `ready` — inter-fragment; the mask is the whole moving fragment (`plan.mask`);
  * - `needs-split` — intra-fragment torsion; the mask is a **bond-graph split** the
  *   sidecar computes. `NewJobScreen` resolves it (`/geometry/rotatable-mask`) and
  *   passes `splitMask` (or `splitError`/`splitResolving`); the SAME mask drives
  *   the viewer glow and the `set-internal` call — one source, not two;
+ * - `needs-component-move` — a DISTANCE between two DISCONNECTED pieces of ONE
+ *   fragment (the Diels-Alder diene + dienophile in one xyz). No bond to cut: one
+ *   component is RIGIDLY TRANSLATED toward the other, committed as ONE
+ *   `translate-atoms` op (count+order invariant, ADR-008) — never `set-internal`.
+ *   "Move the other piece instead" swaps the components. Form-bond routes here too;
  * - `unavailable` — the reason as calm text, no buttons.
  *
  * **Preview touches only the viewer** (2.5.1): it POSTs and hands the resulting
@@ -78,6 +87,24 @@ function resolveActive(
       movingFragmentId: frag,
     };
   }
+  if (plan.kind === "needs-component-move") {
+    // A distance across two disconnected pieces of one fragment. `mask` is the
+    // moving component, but this path does NOT call set-internal — the move is a
+    // pure translate (see `applyComponentMove`). The `active` shape only powers the
+    // shared header / target field / form-bond controls.
+    const [i, j] = plan.indices;
+    const mover = plan.moving.includes(i) ? i : j;
+    const frag = locateAtom(scene, mover)?.fragment.id;
+    if (!frag) return null;
+    return {
+      op: "distance",
+      indices: plan.indices,
+      mask: plan.moving,
+      current: plan.current,
+      unit: plan.unit,
+      movingFragmentId: frag,
+    };
+  }
   return null;
 }
 
@@ -106,6 +133,7 @@ export function EditPanel({
   splitMask,
   splitError,
   splitResolving,
+  components,
   onSwitchOrientation,
   onPreview,
   onApplied,
@@ -118,12 +146,19 @@ export function EditPanel({
   splitMask: number[] | null;
   splitError: string | null;
   splitResolving: boolean;
+  /** Perceived connectivity for the picked pair (from `/geometry/connected-component`),
+   * threaded into `planFormBond`/`planBreakBond` so a form-bond across two
+   * disconnected pieces plans a `needs-component-move` too (the Diels-Alder path). */
+  components?: ComponentLookup;
   onSwitchOrientation: () => void;
   onPreview: (previewScene: Scene | null) => void;
   /** Hand the store the typed op (provenance) + its resultant snapshot. */
   onApplied: (op: Op, newScene: Scene) => void;
 }) {
   const active = resolveActive(scene, plan, splitMask);
+  // The concrete component move (moving atoms + axis), when this is that plan kind.
+  const componentMove =
+    plan.kind === "needs-component-move" ? resolveComponentMove(scene, plan) : null;
   const [target, setTarget] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -146,6 +181,15 @@ export function EditPanel({
 
   if (plan.kind === "unavailable") {
     return <div className="edit-panel edit-unavailable muted">{plan.reason}</div>;
+  }
+  // A component move whose atoms no longer resolve (one left the scene) → don't offer
+  // controls that would silently no-op; ask for a fresh pick.
+  if (plan.kind === "needs-component-move" && !componentMove) {
+    return (
+      <div className="edit-panel edit-unavailable muted">
+        One of the atoms left the scene — re-pick the pair.
+      </div>
+    );
   }
 
   const intra = plan.kind === "needs-split";
@@ -177,8 +221,59 @@ export function EditPanel({
       return loc ? loc.fragment.atoms[loc.localIndex].id : makeAtomId(i);
     });
 
+  // ── Component move (needs-component-move): a PURE rigid translate along the i→j
+  // axis, previewed/applied through `translateAtoms` — no sidecar, no set-internal.
+  // The whole moving component shifts so the picked pair reaches the target.
+  const componentMoveScene = (v: number): Scene | null => {
+    if (!componentMove) return null;
+    const [dx, dy, dz] = axisTranslation(componentMove.movingPos, componentMove.refPos, v);
+    return translateAtomsInScene(scene, componentMove.movingAtomIds, dx, dy, dz);
+  };
+  const previewComponentMove = (v: number) => {
+    const newScene = componentMoveScene(v);
+    if (!newScene) return;
+    setError(null);
+    onPreview(newScene);
+    setPreviewing(true);
+  };
+  const applyComponentMove = (v: number) => {
+    if (!componentMove) return;
+    setError(null);
+    const [dx, dy, dz] = axisTranslation(componentMove.movingPos, componentMove.refPos, v);
+    if (dx === 0 && dy === 0 && dz === 0) {
+      // Target already met (or a coincident axis) → nothing to commit; drop preview.
+      setPreviewing(false);
+      onPreview(null);
+      return;
+    }
+    const newScene = translateAtomsInScene(scene, componentMove.movingAtomIds, dx, dy, dz);
+    // Post-condition (rule #9): the separation IS the target, re-derived in OUR terms
+    // from the resulting geometry — a translate that missed would fail loudly here.
+    const got = pickedDistance(newScene, active.indices);
+    if (got === null || Math.abs(got - v) > 1e-6) {
+      setError(
+        `component move did not reach the target (got ${got?.toFixed(4) ?? "?"} Å, wanted ${v}) — not applying.`,
+      );
+      return;
+    }
+    setPreviewing(false);
+    onPreview(null);
+    const op: Op = {
+      type: "translate-atoms",
+      fragmentId: componentMove.movingFragmentId,
+      name: movingFragmentName ?? "fragment",
+      atoms: componentMove.movingAtomIds,
+      delta: [dx, dy, dz],
+    };
+    onApplied(op, newScene);
+  };
+
   const runPreview = async (v: number) => {
     if (!Number.isFinite(v)) return;
+    if (plan.kind === "needs-component-move") {
+      previewComponentMove(v);
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -196,6 +291,10 @@ export function EditPanel({
 
   const runApply = async (v: number) => {
     if (!Number.isFinite(v)) return;
+    if (plan.kind === "needs-component-move") {
+      applyComponentMove(v);
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -236,7 +335,10 @@ export function EditPanel({
       // Form at `order` = a shorter geometric target (double/triple); the method
       // infers the order from geometry — ORCA reads geometry, not bond order. An
       // element with no double/triple radius throws loudly here (honest, not hidden).
-      const bp = kind === "form" ? planFormBond(scene, a, b, order) : planBreakBond(scene, a, b);
+      const bp =
+        kind === "form"
+          ? planFormBond(scene, a, b, order, components)
+          : planBreakBond(scene, a, b, components);
       setTarget(String(round(bp.target)));
       void runPreview(bp.target);
     } catch (e) {
@@ -249,7 +351,13 @@ export function EditPanel({
     onPreview(null);
   };
 
-  const header = intra ? (
+  const componentMoveKind = plan.kind === "needs-component-move";
+  const header = componentMoveKind ? (
+    <div className="edit-head">
+      Set distance · moving one disconnected piece of{" "}
+      <strong>{movingFragmentName ?? "the fragment"}</strong> toward the other
+    </div>
+  ) : intra ? (
     <div className="edit-head">
       Internal edit · rotating about{" "}
       {plan.kind === "needs-split" ? bondLabel(scene, plan.cut) : ""}
@@ -274,13 +382,15 @@ export function EditPanel({
       <div className="edit-current muted">
         current {round(active.current)} {active.unit}
       </div>
-      {plan.kind === "ready" && plan.alternative ? (
+      {(plan.kind === "ready" && plan.alternative) || componentMoveKind ? (
         <button
           className="btn btn-sm edit-switch"
           onClick={onSwitchOrientation}
           disabled={busy}
         >
-          Move {alternativeFragmentName ?? "the other fragment"} instead
+          {componentMoveKind
+            ? "Move the other piece instead"
+            : `Move ${alternativeFragmentName ?? "the other fragment"} instead`}
         </button>
       ) : null}
       <div className="edit-controls">

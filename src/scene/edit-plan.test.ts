@@ -10,9 +10,13 @@ import {
   applyResponseToScene,
   maskRoleViolation,
   explainSplitViolation,
+  axisTranslation,
+  resolveComponentMove,
+  pickedDistance,
+  type NeedsComponentMove,
 } from "./edit-plan";
 import { measureSelection } from "./measure";
-import { mergeToXyz, removeFragment } from "./scene";
+import { mergeToXyz, removeFragment, translateAtomsInScene } from "./scene";
 
 // Two fragments of different sizes: water (global 0,1,2) + BH4⁻ (global 3..7).
 function water(id = "wat"): RawFragment {
@@ -259,6 +263,153 @@ describe("planEdit — intra-fragment → needs-split (2.5.3b)", () => {
       // resolved indices, move the second.
       expect(p.cut).toEqual([0, 2]);
       expect(p.moving).toBe(2);
+    }
+  });
+});
+
+// ── Unified moving-set: a same-fragment distance across DISCONNECTED pieces ────
+// The Diels-Alder bug: a diene + dienophile imported as ONE xyz become ONE
+// fragment holding TWO molecules (two perceived connected components). Setting a
+// distance / forming a bond between a diene C and a dienophile C used to route to
+// `needs-split` → the sidecar 422'd "atoms i and j are not bonded" (there is no
+// bond to cut). It must instead yield `needs-component-move`, translating one
+// molecule toward the other. planEdit is pure: the components are INJECTED (the
+// `/geometry/connected-component` result), so the decision is testable without a
+// sidecar.
+describe("planEdit — same-fragment distance across components (needs-component-move)", () => {
+  // ONE fragment, TWO molecules: piece A = atoms {0,1}, piece B = atoms {2,3,4}.
+  // Geometry is irrelevant to the plan decision (planEdit does not perceive — the
+  // components are injected), only the distance must be measurable (non-coincident).
+  function combo(id = "combo"): RawFragment {
+    const atoms: RawAtom[] = [
+      { element: "C", x: 0, y: 0, z: 0 },
+      { element: "C", x: 1.4, y: 0, z: 0 },
+      { element: "C", x: 8, y: 0, z: 0 },
+      { element: "C", x: 9.4, y: 0, z: 0 },
+      { element: "C", x: 10.8, y: 0, z: 0 },
+    ];
+    return { id, name: "diene+dienophile", charge: 0, source: "editor", atoms };
+  }
+  // The perceived components the sidecar would return for this fragment.
+  const twoComponents = new Map<number, readonly number[]>([
+    [0, [0, 1]],
+    [1, [0, 1]],
+    [2, [2, 3, 4]],
+    [3, [2, 3, 4]],
+    [4, [2, 3, 4]],
+  ]);
+  // Everything in ONE component (a fully-bonded molecule / a real bond to stretch).
+  const oneComponent = new Map<number, readonly number[]>(
+    [0, 1, 2, 3, 4].map((k) => [k, [0, 1, 2, 3, 4]] as const),
+  );
+
+  it("distance between two disconnected atoms of one fragment → needs-component-move (the BITE)", () => {
+    const s = scene(combo());
+    const p = planEdit(s, idsFor(s, 0, 2), twoComponents);
+    // NOT needs-split (no bond to cut → would 422), NOT unavailable — the bug.
+    expect(p.kind).toBe("needs-component-move");
+    if (p.kind === "needs-component-move") {
+      expect(p.op).toBe("distance");
+      expect(p.indices).toEqual([0, 2]);
+      // Moves the SMALLER component {0,1}; the larger {2,3,4} is the "move other" set.
+      expect(p.moving).toEqual([0, 1]);
+      expect(p.other).toEqual([2, 3, 4]);
+    }
+  });
+
+  it("picks the smaller component as the default mover regardless of click order", () => {
+    const s = scene(combo());
+    // Click the larger piece's atom first (2), the smaller piece's atom last (0):
+    // the SMALLER {0,1} still moves by default.
+    const p = planEdit(s, idsFor(s, 2, 0), twoComponents);
+    expect(p.kind).toBe("needs-component-move");
+    if (p.kind === "needs-component-move") {
+      expect(p.moving).toEqual([0, 1]);
+      expect(p.other).toEqual([2, 3, 4]);
+    }
+  });
+
+  it("a bonded intra pair (SAME component) still → needs-split, not component-move (no regression)", () => {
+    const s = scene(combo());
+    // Same two atoms, but connectivity says they share ONE component (a real bond):
+    // this is a torsion/stretch, so it must stay needs-split.
+    const p = planEdit(s, idsFor(s, 0, 1), oneComponent);
+    expect(p.kind).toBe("needs-split");
+  });
+
+  it("without injected connectivity a same-fragment distance stays needs-split (backward compatible)", () => {
+    const s = scene(combo());
+    const p = planEdit(s, idsFor(s, 0, 2)); // no components arg
+    expect(p.kind).toBe("needs-split");
+  });
+
+  it("swapToAlternative swaps the two components (move the other instead)", () => {
+    const s = scene(combo());
+    const p = planEdit(s, idsFor(s, 0, 2), twoComponents);
+    if (p.kind !== "needs-component-move") throw new Error("expected needs-component-move");
+    const swapped = swapToAlternative(p);
+    expect(swapped.kind).toBe("needs-component-move");
+    if (swapped.kind === "needs-component-move") {
+      // BITE: an impl that didn't swap would leave moving = [0,1].
+      expect(swapped.moving).toEqual([2, 3, 4]);
+      expect(swapped.other).toEqual([0, 1]);
+    }
+  });
+
+  it("resolveComponentMove + axisTranslation set the distance EXACTLY via translateAtoms (the post-condition bite)", () => {
+    const s = scene(combo()); // atom0 at x=0, atom2 at x=8 → current 8 Å
+    const p = planEdit(s, idsFor(s, 0, 2), twoComponents) as NeedsComponentMove;
+    expect(p.current).toBeCloseTo(8, 9);
+    const r = resolveComponentMove(s, p);
+    expect(r).not.toBeNull();
+    if (!r) return;
+    // Moves the smaller component {0,1}; mover = atom0 (x=0), reference = atom2 (x=8).
+    expect(r.movingFragmentId).toBe("combo");
+    expect(r.movingAtomIds).toEqual(idsFor(s, 0, 1));
+    expect(r.movingPos).toEqual([0, 0, 0]);
+    expect(r.refPos).toEqual([8, 0, 0]);
+    // Set the pair to 1.5 Å by a rigid shift of the whole moving component.
+    const target = 1.5;
+    const [dx, dy, dz] = axisTranslation(r.movingPos, r.refPos, target);
+    const moved = translateAtomsInScene(s, r.movingAtomIds, dx, dy, dz);
+    // Post-condition (rule #9): the resulting separation IS the target — a wrong sign
+    // or magnitude in axisTranslation would fail here (the bite).
+    expect(pickedDistance(moved, p.indices)).toBeCloseTo(target, 9);
+    // And atom1 (the rest of the moving component) shifted by the SAME delta — the
+    // whole component moved rigidly, not just the picked atom.
+    expect(moved.fragments[0].atoms[1].x).toBeCloseTo(1.4 + dx, 9);
+    // The static component {2,3,4} did NOT move (count+order preserved by translateAtoms).
+    expect(moved.fragments[0].atoms[2].x).toBeCloseTo(8, 9);
+    expect(moved.fragments[0].atoms.map((a) => a.element)).toEqual(
+      s.fragments[0].atoms.map((a) => a.element),
+    );
+  });
+
+  it("axisTranslation moving the OTHER (larger) component also hits the target", () => {
+    const s = scene(combo());
+    const base = planEdit(s, idsFor(s, 0, 2), twoComponents) as NeedsComponentMove;
+    const swapped = swapToAlternative(base) as NeedsComponentMove;
+    const r = resolveComponentMove(s, swapped)!;
+    expect(r.movingAtomIds).toEqual(idsFor(s, 2, 3, 4)); // the larger piece now moves
+    const [dx, dy, dz] = axisTranslation(r.movingPos, r.refPos, 3);
+    const moved = translateAtomsInScene(s, r.movingAtomIds, dx, dy, dz);
+    expect(pickedDistance(moved, base.indices)).toBeCloseTo(3, 9);
+    expect(moved.fragments[0].atoms[0].x).toBeCloseTo(0, 9); // atom0 (reference side) stayed
+  });
+
+  it("inter-fragment distance is unaffected by injected connectivity (still moves the smaller fragment)", () => {
+    const s = scene(water(), borohydride()); // water 0..2, BH₄⁻ 3..7
+    // A components map is present but the atoms are in different FRAGMENTS — the
+    // inter-fragment path runs first and is unchanged.
+    const comps = new Map<number, readonly number[]>([
+      [0, [0, 1, 2]],
+      [3, [3, 4, 5, 6, 7]],
+    ]);
+    const p = planEdit(s, idsFor(s, 0, 3), comps);
+    expect(p.kind).toBe("ready");
+    if (p.kind === "ready") {
+      expect(p.movingFragmentId).toBe("wat"); // smaller fragment, as before
+      expect(p.alternative?.movingFragmentId).toBe("bh4");
     }
   });
 });

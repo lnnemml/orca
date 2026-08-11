@@ -7450,3 +7450,44 @@ the working tree (edit-plan.ts / guided-placement.ts / moving-set.ts) — left u
 commit. **Author m1–m3 live gate pending:** m1 butadiene result → two C=C double lines; m2 Menshutkin TS
 → forming C–N "Mayer ≈0.90 (authoritative)", breaking C–I "Mayer ≈0.68"; m3 an xTB job (no Mayer) →
 geometric lines + geometric-estimate label, no crash. **Next:** Stage F (CREST microsolvation).
+
+## [2026-08-11] session | Unified moving set — Fragment|Selection toggle + edits/bonds across disconnected pieces of one fragment
+
+**THE ONE RULE (`resolveMovingSet`, `src/scene/moving-set.ts`, pure).** The moving set for any drag or
+single-side edit = an explicit atom **selection** if present (wins over the toggle); else the
+**"Move: Fragment | Selection"** rail toggle — **Fragment** (whole grabbed fragment, synchronous) or
+**Selection** (the grabbed atom's perceived **connected component**, injected — perception has ONE home,
+the sidecar, ADR-010 corr. ii). Fragment/Selection differ only when a fragment has disconnected pieces.
+
+**Part A — pure core + `planEdit` branch (reviewed first).** `resolveMovingSet(input, fragmentAtoms,
+component)`. `planEdit(scene, atomIds, components?)` gains a new **`needs-component-move`** kind: for a
+same-fragment **distance** whose two atoms are in **disjoint** injected components (`ComponentLookup`
+= `Map<globalIndex, component>`), it carries `{moving: smaller, other: larger}` instead of routing to
+`needs-split` (which 422s "not bonded" — the Diels-Alder diene+dienophile-in-one-xyz bug). No components
+injected, or a shared component (a real bond) → `needs-split` unchanged; inter-fragment unchanged.
+Resolution helpers `resolveComponentMove` + `axisTranslation` + `pickedDistance` turn the plan into a
+pure rigid `translateAtoms` move (count+order invariant). `swapToAlternative` swaps the two components.
+
+**Part B — wiring (two review notes addressed).** (1) **Rail toggle** `moveGranularity` (owned in
+`NewJobScreen` like `hiddenBonds`, default **Fragment**), passed to the viewer. (2) **Drag** now reads
+THE ONE RULE live on mousedown via `resolveMovingSet` (selection/toggle through refs so listeners don't
+re-attach): Fragment + explicit-selection resolve synchronously (no sidecar); only the Selection-toggle
+component path calls `/geometry/connected-component`. The ephemeral overlay generalized to all atoms
+(a selection may span fragments); commit is ONE `translate-atoms` op. (3) **EditPanel handles
+`needs-component-move`** — `NewJobScreen` resolves BOTH picked atoms' components (a race-guarded effect,
+one fragment xyz, local→global) and injects them into `planEdit` (gating the rotatable-mask fetch while
+resolving, so a disjoint pair never 422s); EditPanel previews/applies the component move through
+`translateAtoms` with a rule-#9 post-condition (re-derived separation == target), and "**Move the other
+piece instead**" swaps. (4) **Form-bond across two pieces works** (the review's key point): the Form/Break
+buttons use the outer (component-injected) plan, so `applyBondPreset` routes through the component move;
+`planFormBond`/`planBreakBond` also take the injected `components` so their own returned plan is honest.
+
+**Verification.** vitest **832** (+13 this unit: 5 `moving-set.test.ts` + 8 `edit-plan.test.ts`, each ≥2
+biting negatives); **tsc clean**; **cargo + sidecar untouched** (`/geometry/connected-component` already
+existed — reused, no second component impl). Wiki: `editor-ui.md` (THE ONE RULE + the different-components
+move + form-bond note), `visualization.md` (the drag toggle), ROADMAP (unified moving-set [x]). **Author
+m1–m4 live gate pending:** m1 Diels-Alder **form-bond** 11↔3 across two molecules in one job → one
+molecule moves to bonding distance, NO "not bonded" refusal; m2 toggle=Fragment drags whole fragment,
+toggle=Selection with two atoms selected drags only those two; m3 toggle=Selection + broken bond → a
+piece drags its component (drag-fix intact); m4 (neg) a normal bonded torsion still edits via needs-split.
+**Next:** Stage F (CREST microsolvation).

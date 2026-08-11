@@ -10,8 +10,10 @@ import {
   buildViewerFeed,
   compositionSignature,
   fragmentRanges,
+  globalIndexOfAtom,
   type ViewerAtomTable,
 } from "../scene/scene";
+import { resolveMovingSet, type MoveMode } from "../scene/moving-set";
 import { measureSelection, formatMeasurementValue } from "../scene/measure";
 import { highlightRadius, vdwTableDrift } from "./highlight";
 import { DEFAULT_THEME, cpkColorDrift, type ViewerTheme } from "./theme";
@@ -198,6 +200,16 @@ interface MoleculeViewerProps {
    * pick). Requires `onAtomPick` (a pickable scene) and `onFragmentDrag`.
    */
   moveMode?: boolean;
+  /**
+   * The MOVING SET granularity toggle (unified moving-set unit; the edit rail's
+   * "Move: Fragment | Selection"). Decides what a drag moves when NO explicit
+   * `selection` is present: `"fragment"` (default) → the whole grabbed fragment,
+   * SYNCHRONOUS (no sidecar); `"selection"` → the grabbed atom's perceived connected
+   * component (resolved once on mousedown — a broken-off piece moves alone). An
+   * explicit `selection` ALWAYS wins over this toggle (move exactly the selection).
+   * The one rule lives in `resolveMovingSet` (`scene/moving-set.ts`).
+   */
+  moveGranularity?: MoveMode;
   /**
    * Release callback for a rigid drag (unit 3.1; Stage 3.x). Passes the grabbed
    * fragment's id, the stable {@link AtomId}s of the MOVING SET (the dragged atom's
@@ -595,6 +607,7 @@ export const MoleculeViewer = forwardRef<MoleculeViewerHandle, MoleculeViewerPro
       orbitalIsoValue,
       representation = "stick",
       moveMode = false,
+      moveGranularity = "fragment",
       onFragmentDrag,
       onFragmentDragFallback,
       hiddenBonds = EMPTY_HIDDEN_BONDS,
@@ -633,6 +646,13 @@ export const MoleculeViewer = forwardRef<MoleculeViewerHandle, MoleculeViewerPro
   // re-attach its listeners when only this inline callback changes.
   const onFragmentDragRef = useRef<typeof onFragmentDrag>(onFragmentDrag);
   onFragmentDragRef.current = onFragmentDrag;
+  // Latest selection + move granularity, read through refs so the drag effect reads
+  // THE ONE RULE's inputs live (on mousedown) without re-attaching listeners when the
+  // pick list or the toggle changes (that would tear down an idle listener each pick).
+  const selectionRef = useRef<AtomId[] | undefined>(selection);
+  selectionRef.current = selection;
+  const moveGranularityRef = useRef<MoveMode>(moveGranularity);
+  moveGranularityRef.current = moveGranularity;
   // Latest onXyzAtomPick through a ref — armed on the xyz/frozen paths without
   // adding it to the model effect's deps (same pattern as onAtomPick).
   const onXyzAtomPickRef = useRef<typeof onXyzAtomPick>(onXyzAtomPick);
@@ -1204,76 +1224,104 @@ export const MoleculeViewer = forwardRef<MoleculeViewerHandle, MoleculeViewerPro
       e.stopPropagation();
       e.preventDefault();
 
-      // The grabbed fragment's live atom refs + their pre-drag coords, and the
-      // grabbed atom's depth (for pixel-exact screen-plane tracking).
-      const fragAtoms = atoms.slice(range.start, range.end);
-      const orig = fragAtoms.map((a) => ({ x: a.x, y: a.y, z: a.z }));
+      // ALL atoms' live refs + pre-drag coords (the moving set may be a cross-fragment
+      // SELECTION, not just the grabbed fragment), and the grabbed atom's depth.
+      const orig = atoms.map((a) => ({ x: a.x, y: a.y, z: a.z }));
       const modelz = grabbedAtomDepth(viewer, atoms[best]);
       const fragData = scene.fragments[fi].atoms; // canonical (element + pre-drag Å)
       const localGrabbed = best - range.start; // the grabbed atom's index IN the fragment
 
-      // The MOVING SET as LOCAL indices into `fragAtoms`. `null` = "not resolved yet"
-      // → treated as the WHOLE fragment (the backward-compatible fallback), so an
-      // early drag frame or a sidecar failure still moves rigidly, never wrongly.
-      // Narrowed ONCE, on mousedown (below), to the dragged atom's perceived
-      // connected component. `settled` guards the async resolve from touching a
-      // finished drag; `fetchFailed` drives the honest fallback note on release.
-      let movingLocal: Set<number> | null = null;
+      // THE ONE RULE (`resolveMovingSet`): the MOVING SET as a Set of VIEWER indices
+      // (== global, normal parse). `null` = "not resolved yet" → the WHOLE grabbed
+      // fragment (the backward-compatible fallback), so an early frame or a sidecar
+      // failure still moves rigidly, never wrongly. `settled` guards a late resolve
+      // from touching a finished drag; `fetchFailed` drives the honest fallback note.
+      let movingViewer: Set<number> | null = null;
       let settled = false;
       let fetchFailed = false;
       let lastDelta: WorldDelta | null = null;
-      const inSet = (i: number) => movingLocal === null || movingLocal.has(i);
+      const inSet = (i: number) =>
+        movingViewer === null ? i >= range.start && i < range.end : movingViewer.has(i);
 
       // Draw the ephemeral overlay at `delta`: ONLY the moving-set atoms shift; the
       // rest stay pinned at `orig` (so after a bond break the other piece stays put).
       const drawAt = (delta: WorldDelta) => {
-        for (let i = 0; i < fragAtoms.length; i++) {
+        for (let i = 0; i < atoms.length; i++) {
           const move = inSet(i);
-          fragAtoms[i].x = orig[i].x + (move ? delta[0] : 0);
-          fragAtoms[i].y = orig[i].y + (move ? delta[1] : 0);
-          fragAtoms[i].z = orig[i].z + (move ? delta[2] : 0);
+          atoms[i].x = orig[i].x + (move ? delta[0] : 0);
+          atoms[i].y = orig[i].y + (move ? delta[1] : 0);
+          atoms[i].z = orig[i].z + (move ? delta[2] : 0);
         }
         applySceneStyle(viewer, scene, theme); // nulls cached geometry → sticks redraw at new coords
         viewer.render();
       };
       const restoreCoords = () => {
-        for (let i = 0; i < fragAtoms.length; i++) {
-          fragAtoms[i].x = orig[i].x;
-          fragAtoms[i].y = orig[i].y;
-          fragAtoms[i].z = orig[i].z;
+        for (let i = 0; i < atoms.length; i++) {
+          atoms[i].x = orig[i].x;
+          atoms[i].y = orig[i].y;
+          atoms[i].z = orig[i].z;
         }
         applySceneStyle(viewer, scene, theme);
         viewer.render();
       };
 
-      // Resolve the component ONCE per mousedown (not per frame): send the FRAGMENT's
-      // own xyz + the grabbed atom's local index; the sidecar returns the local
-      // indices that travel with it. A fully bonded fragment → all of them (== the
-      // whole fragment). On failure we keep the whole-fragment fallback and flag it.
-      const fragXyz =
-        `${fragData.length}\n\n` +
-        fragData.map((a) => `${a.element} ${a.x} ${a.y} ${a.z}`).join("\n") +
-        "\n";
-      postSidecar<{ component: number[] }>("/geometry/connected-component", {
-        xyz: fragXyz,
-        atom: localGrabbed,
-      })
-        .then((res) => {
-          if (settled) return; // the drag already finished → don't touch it
-          movingLocal = new Set(res.component);
-          if (lastDelta) drawAt(lastDelta); // narrow an already-moving ephemeral drag
+      // Apply THE ONE RULE with a (possibly empty) perceived component: selection wins;
+      // else "fragment" → the whole grabbed fragment; else "selection" → the component.
+      const grabbedId = viewerTableRef.current?.atomIdAt(best);
+      const sel = selectionRef.current ?? [];
+      const toggle = moveGranularityRef.current;
+      const fragIds = scene.fragments[fi].atoms.map((a) => a.id);
+      const applyMovingSet = (component: AtomId[]) => {
+        if (grabbedId === undefined) return; // no id table → keep whole-fragment fallback
+        const setIds = resolveMovingSet({ grabbed: grabbedId, selection: sel, toggle }, fragIds, component);
+        const vs = new Set<number>();
+        for (const id of setIds) {
+          const gi = globalIndexOfAtom(scene, id);
+          if (gi !== null) vs.add(gi);
+        }
+        movingViewer = vs.size > 0 ? vs : null; // empty (all ids stale) → whole-fragment fallback
+        if (lastDelta) drawAt(lastDelta); // narrow an already-moving ephemeral drag
+      };
+
+      // The component is needed ONLY for the "selection" toggle with no explicit pick.
+      // Fragment placement and an explicit selection resolve SYNCHRONOUSLY (no sidecar).
+      const needComponent = sel.length === 0 && toggle === "selection";
+      if (!needComponent) {
+        applyMovingSet([]); // component unused by the rule in these branches
+      } else {
+        // Resolve the grabbed atom's connected component ONCE (not per frame): send the
+        // FRAGMENT's own xyz + the grabbed atom's local index; map local → global. A
+        // fully bonded fragment → all of it (== the whole fragment). On failure keep
+        // the whole-fragment fallback and flag it.
+        const fragXyz =
+          `${fragData.length}\n\n` +
+          fragData.map((a) => `${a.element} ${a.x} ${a.y} ${a.z}`).join("\n") +
+          "\n";
+        postSidecar<{ component: number[] }>("/geometry/connected-component", {
+          xyz: fragXyz,
+          atom: localGrabbed,
         })
-        .catch(() => {
-          if (settled) return;
-          fetchFailed = true; // fall back to the whole fragment; note it on release
-        });
+          .then((res) => {
+            if (settled) return; // the drag already finished → don't touch it
+            const componentIds: AtomId[] = [];
+            for (const li of res.component) {
+              const id = viewerTableRef.current?.atomIdAt(range.start + li);
+              if (id !== undefined) componentIds.push(id);
+            }
+            applyMovingSet(componentIds);
+          })
+          .catch(() => {
+            if (settled) return;
+            fetchFailed = true; // fall back to the whole fragment; note it on release
+          });
+      }
 
       // The moving set as stable AtomIds, for the ONE commit on release.
       const movingAtomIds = (): AtomId[] => {
         const ids: AtomId[] = [];
-        for (let i = 0; i < fragAtoms.length; i++) {
+        for (let i = 0; i < atoms.length; i++) {
           if (!inSet(i)) continue;
-          const id = viewerTableRef.current?.atomIdAt(range.start + i);
+          const id = viewerTableRef.current?.atomIdAt(i);
           if (id !== undefined) ids.push(id);
         }
         return ids;

@@ -613,6 +613,20 @@ Stage 3, where it is actually needed.) **Stage 3 is now COMPLETE (see below).**
         shows `"Mayer <order> (authoritative)"` when computed, else the geometric `"≈ … (geometric
         estimate)"` — the honest split (`bondReadout.ts`). cargo +6, vitest +6, tsc clean; no editor/
         sidecar/CREST changes. **Author m1–m3 live gate pending.**
+  - [x] **Unified moving set — Fragment | Selection toggle, and edits/bonds across disconnected pieces
+        of one fragment.** THE ONE RULE (`resolveMovingSet`, `scene/moving-set.ts`): the moving set for
+        any drag or single-side edit = an explicit atom **selection** if present, else the rail toggle —
+        **Fragment** (whole grabbed fragment) or **Selection** (the grabbed atom's perceived connected
+        component). (BUG) a **distance / form-bond** between two atoms of ONE fragment that sit in
+        DIFFERENT connected components (Diels-Alder: diene + dienophile in one xyz) no longer refuses
+        "not bonded": `planEdit` (given injected `/geometry/connected-component` connectivity) returns a
+        new **`needs-component-move`** plan that rigidly translates the smaller component toward the other
+        via `translateAtoms` (count+order invariant, ADR-008; one Undo), with "move the other piece
+        instead"; components are injected on BOTH the set-distance and form-bond `planEdit` sites. Bonded
+        intra pair → `needs-split` (unchanged); inter-fragment → unchanged. Drag wired through
+        `resolveMovingSet` (Fragment = synchronous, no sidecar; Selection = component resolve, the
+        drag-fix). vitest +13, tsc clean; **cargo + sidecar untouched** (`connected-component` already
+        existed). See `wiki/modules/editor-ui.md`, `visualization.md`. **Author m1–m4 live gate pending.**
 - [x] **Rotation of a fragment about its approach axis (unit 3.3).** A rigid whole-fragment spin about
       the axis two picked atoms define — P (pivot, on the rotating fragment) and Q (direction, typically
       the substrate contact atom). **Pure TS, a sibling of — not routed through — the sidecar set-internal

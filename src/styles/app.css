@@ -1327,6 +1327,24 @@ select:disabled,
   gap: 4px;
   margin: 8px 0;
 }
+/* Moving-set granularity toggle (unified moving-set unit) — Fragment | Selection. */
+.move-granularity {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin: 2px 0 8px;
+  font-size: 12px;
+}
+.move-granularity-opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+.move-granularity-opt input:disabled {
+  cursor: default;
+}
 /* Bond display control (unit bond-display-control) — display-only viewer toggles. */
 .bond-display-controls {
   display: flex;

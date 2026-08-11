@@ -39,7 +39,9 @@ import {
   swapToAlternative,
   maskRoleViolation,
   explainSplitViolation,
+  type ComponentLookup,
 } from "../scene/edit-plan";
+import { type MoveMode } from "../scene/moving-set";
 import { postSidecar } from "../sidecar-client";
 import { toggleAtom, filterSelection } from "../scene/selection";
 import {
@@ -58,7 +60,9 @@ import { userReagentToFragment, fragmentToXyz } from "../scene/reagent-catalog";
 import {
   atomCount,
   compositionSignature,
+  globalIndexOfAtom,
   injectSceneIntoInput,
+  locateAtom,
   mergeToAtomLines,
   nextAtomIdFor,
   parseAtomLines,
@@ -258,6 +262,12 @@ export function NewJobScreen({
   // release — ADR-010). A drag on empty space still rotates; a click still picks.
   // Session-only (a view affordance, not persisted).
   const [moveMode, setMoveMode] = useState(false);
+  // The MOVING SET granularity (unified moving-set unit): what a drag with NO explicit
+  // selection moves — "fragment" (whole grabbed fragment, synchronous) or "selection"
+  // (the grabbed atom's perceived connected component — a broken-off piece moves alone).
+  // An explicit atom selection ALWAYS wins over this (THE ONE RULE in `resolveMovingSet`).
+  // Session-only view affordance, owned here like `hiddenBonds` (not in the Scene).
+  const [moveGranularity, setMoveGranularity] = useState<MoveMode>("fragment");
 
   // Steric-clash threshold (unit 3.2) — a LABELED display-choice (like the IR FWHM
   // slider), NOT a physical cutoff: flag inter-fragment atoms closer than
@@ -376,17 +386,85 @@ export function NewJobScreen({
   // "Move the other fragment instead" — flip to the plan's alternative orientation
   // (2.5.2d-2). Reset when the selection/scene changes (the plan is different).
   const [preferAlternative, setPreferAlternative] = useState(false);
-  // The base plan considers both chain orientations; `effectivePlan` applies the
-  // user's orientation choice. Both drive the edit UI AND the mask glow.
-  const basePlan = scene ? planEdit(scene, selection) : null;
-  const editPlan =
-    preferAlternative && basePlan?.kind === "ready" && basePlan.alternative
-      ? swapToAlternative(basePlan)
-      : basePlan;
+  // ── Component connectivity for a 2-atom pick (unified moving-set unit) ───────
+  // A DISTANCE / FORM-BOND between two atoms of ONE fragment that sit in DIFFERENT
+  // connected components (the Diels-Alder diene + dienophile in one xyz) must plan a
+  // `needs-component-move`, not a `needs-split` (there is no bond to cut → the sidecar
+  // would refuse "not bonded"). Perception has ONE home (the sidecar), so we resolve
+  // both picked atoms' components here and INJECT them into `planEdit`. RACE-GUARDED.
+  const [distanceComponents, setDistanceComponents] = useState<ComponentLookup | null>(null);
+  const [componentsResolving, setComponentsResolving] = useState(false);
+  const twoPickKey =
+    selection.length === 2 ? `${selection[0]}:${selection[1]}` : "";
+  useEffect(() => {
+    if (!scene || selection.length !== 2) {
+      setDistanceComponents(null);
+      setComponentsResolving(false);
+      return;
+    }
+    const gi0 = globalIndexOfAtom(scene, selection[0]);
+    const gi1 = globalIndexOfAtom(scene, selection[1]);
+    const loc0 = gi0 !== null ? locateAtom(scene, gi0) : null;
+    const loc1 = gi1 !== null ? locateAtom(scene, gi1) : null;
+    // Only a SAME-fragment pair can be a component move; inter-fragment (or a stale
+    // id) is handled by `planEdit`'s existing paths — no components needed.
+    if (!loc0 || !loc1 || gi0 === null || gi1 === null || loc0.fragment.id !== loc1.fragment.id) {
+      setDistanceComponents(null);
+      setComponentsResolving(false);
+      return;
+    }
+    let cancelled = false;
+    setDistanceComponents(null);
+    setComponentsResolving(true);
+    const frag = loc0.fragment;
+    const fragStart = gi0 - loc0.localIndex; // the fragment's global base
+    const fragXyz =
+      `${frag.atoms.length}\n\n` +
+      frag.atoms.map((a) => `${a.element} ${a.x} ${a.y} ${a.z}`).join("\n") +
+      "\n";
+    const fetchComp = (localAtom: number) =>
+      postSidecar<{ component: number[] }>("/geometry/connected-component", {
+        xyz: fragXyz,
+        atom: localAtom,
+      }).then((r) => r.component.map((li) => fragStart + li)); // local → global
+    Promise.all([fetchComp(loc0.localIndex), fetchComp(loc1.localIndex)])
+      .then(([c0, c1]) => {
+        if (cancelled) return;
+        setDistanceComponents(new Map([[gi0, c0], [gi1, c1]]));
+        setComponentsResolving(false);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        // Leave components unknown → `planEdit` falls back to `needs-split` (the
+        // existing rotatable-mask path surfaces its own error honestly).
+        setDistanceComponents(null);
+        setComponentsResolving(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [twoPickKey, scene]);
+
+  // The base plan considers both chain orientations AND (for a 2-atom same-fragment
+  // distance) the injected connectivity; `editPlan` applies the user's orientation /
+  // "move the other" choice. Both drive the edit UI AND the mask glow.
+  const basePlan = scene
+    ? planEdit(scene, selection, distanceComponents ?? undefined)
+    : null;
+  // `swapToAlternative` no-ops unless the plan is swappable (ready-with-alternative or
+  // needs-component-move), so it is safe to call whenever the user asked to swap.
+  const editPlan = preferAlternative && basePlan ? swapToAlternative(basePlan) : basePlan;
   const fragmentName = (id: string | undefined | null) =>
     (id && scene?.fragments.find((f) => f.id === id)?.name) || null;
+  const componentMoveFragmentName =
+    editPlan?.kind === "needs-component-move" && scene
+      ? fragmentName(locateAtom(scene, editPlan.moving[0])?.fragment.id)
+      : null;
   const movingFragmentName =
-    editPlan?.kind === "ready" ? fragmentName(editPlan.movingFragmentId) : null;
+    editPlan?.kind === "ready"
+      ? fragmentName(editPlan.movingFragmentId)
+      : componentMoveFragmentName;
   const alternativeFragmentName =
     editPlan?.kind === "ready"
       ? fragmentName(editPlan.alternative?.movingFragmentId)
@@ -406,7 +484,11 @@ export function NewJobScreen({
   const [splitMask, setSplitMask] = useState<number[] | null>(null);
   const [splitError, setSplitError] = useState<string | null>(null);
   const [splitResolving, setSplitResolving] = useState(false);
-  const splitPlan = editPlan?.kind === "needs-split" ? editPlan : null;
+  // Gate the rotatable-mask fetch while a 2-atom pair's components are still resolving:
+  // until then `basePlan` is the interim `needs-split` (no connectivity), and firing
+  // rotatable-mask on a DISCONNECTED pair would 422 "not bonded" (the Diels-Alder bug).
+  const splitPlan =
+    editPlan?.kind === "needs-split" && !componentsResolving ? editPlan : null;
   const splitKey = splitPlan
     ? `${splitPlan.op}:${splitPlan.indices.join(",")}`
     : null;
@@ -1535,6 +1617,38 @@ export function NewJobScreen({
             />
             Move mode — drag a fragment to reposition it
           </label>
+          {/* Moving-set granularity (unified moving-set unit) — what a drag with NO
+              explicit atom selection moves. Fragment = the whole grabbed fragment
+              (fast, no sidecar); Selection = the grabbed atom's connected component,
+              so a broken-off piece moves alone. An explicit selection always wins. */}
+          <div
+            className="move-granularity"
+            role="radiogroup"
+            aria-label="Drag moves"
+            title="With no atoms selected, a drag moves either the whole fragment or just the grabbed atom's connected component (a broken-off piece). Selecting atoms overrides this — a drag then moves exactly the selection."
+          >
+            <span className="muted">Drag moves:</span>
+            <label className="move-granularity-opt">
+              <input
+                type="radio"
+                name="move-granularity"
+                checked={moveGranularity === "fragment"}
+                disabled={!moveMode}
+                onChange={() => setMoveGranularity("fragment")}
+              />
+              Fragment
+            </label>
+            <label className="move-granularity-opt">
+              <input
+                type="radio"
+                name="move-granularity"
+                checked={moveGranularity === "selection"}
+                disabled={!moveMode}
+                onChange={() => setMoveGranularity("selection")}
+              />
+              Selection / connected piece
+            </label>
+          </div>
           {/* Steric-clash sensitivity — a LABELED heuristic (unit 3.2), not a
               physical cutoff. Higher k flags contacts sooner. App-owned. */}
           <div className="clash-slider">
@@ -1602,7 +1716,8 @@ export function NewJobScreen({
               alternativeFragmentName={alternativeFragmentName}
               splitMask={splitMask}
               splitError={splitError}
-              splitResolving={splitResolving}
+              splitResolving={splitResolving || componentsResolving}
+              components={distanceComponents ?? undefined}
               onSwitchOrientation={() => setPreferAlternative((v) => !v)}
               onPreview={setPreviewScene}
               onApplied={applyEdit}
@@ -2100,6 +2215,7 @@ export function NewJobScreen({
                   selection={selection}
                   onAtomPick={onAtomPick}
                   moveMode={moveMode}
+                  moveGranularity={moveGranularity}
                   onFragmentDrag={translateAtoms}
                   onFragmentDragFallback={setDragFallbackNotice}
                   hiddenBonds={hiddenBonds}
@@ -2113,7 +2229,9 @@ export function NewJobScreen({
                       ? editPlan.mask
                       : editPlan?.kind === "needs-split"
                         ? splitMask ?? undefined
-                        : undefined
+                        : editPlan?.kind === "needs-component-move"
+                          ? editPlan.moving
+                          : undefined
                   }
                 />
               </>

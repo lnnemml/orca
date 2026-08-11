@@ -43,6 +43,7 @@ import { measureSelectionByIndex } from "./measure";
 import { describeAtom } from "./selection";
 import {
   atomCount,
+  atomIdAtIndex,
   fragmentAtomIndices,
   fragmentRanges,
   globalIndexOfAtom,
@@ -91,7 +92,44 @@ export type EditPlan =
        * contact from fusing two fragments — see sidecar `within`). */
       within: number[];
     }
+  | {
+      // Unified moving-set unit: a DISTANCE whose two atoms are in the SAME
+      // fragment but DIFFERENT perceived connected components. This is NOT a
+      // torsion — there is no bond between them to cut, so it must NOT route to
+      // `needs-split` (which would 422 "not bonded" at the sidecar — the
+      // Diels-Alder "diene + dienophile in one xyz" bug). Instead one component is
+      // translated toward the other to set the distance. planEdit stays pure: the
+      // components are INJECTED (bond perception has one home, the sidecar —
+      // ADR-010 correction ii), and both moving sets are carried so the UI can
+      // offer "move the other component instead".
+      kind: "needs-component-move";
+      op: "distance";
+      /** The two picked global indices `[i, j]`. */
+      indices: number[];
+      current: number;
+      unit: "Å" | "°";
+      /** The moving component (global indices) — the SMALLER one, moved by default. */
+      moving: number[];
+      /** The other component (global indices) — the "move the other instead" set. */
+      other: number[];
+    }
   | { kind: "unavailable"; reason: string };
+
+/**
+ * Injected perceived connectivity for the same-fragment DISTANCE branch: a map from
+ * a global atom index to its connected component (global indices), as resolved by
+ * the sidecar `/geometry/connected-component`. planEdit does NOT compute this — bond
+ * perception has one home (ADR-010 correction ii), so the caller injects it (the
+ * same discipline `resolveMovingSet` follows). Absent ⇒ a same-fragment distance
+ * stays a `needs-split` torsion, exactly as before (backward compatible).
+ */
+export type ComponentLookup = ReadonlyMap<number, readonly number[]>;
+
+/** Do two index sets share no atom? (Same fragment, different components ⇒ disjoint.) */
+function disjoint(a: readonly number[], b: readonly number[]): boolean {
+  const setB = new Set(b);
+  return a.every((x) => !setB.has(x));
+}
 
 /**
  * The reference-atom rule that makes a rotation mask valid, extracted so ONE
@@ -212,7 +250,11 @@ function immovablePivotReason(
   );
 }
 
-export function planEdit(scene: Scene, atomIds: AtomId[]): EditPlan {
+export function planEdit(
+  scene: Scene,
+  atomIds: AtomId[],
+  components?: ComponentLookup,
+): EditPlan {
   if (atomIds.length < 2 || atomIds.length > 4) {
     return {
       kind: "unavailable",
@@ -259,6 +301,30 @@ export function planEdit(scene: Scene, atomIds: AtomId[]): EditPlan {
 
   // Neither orientation works with WHOLE fragments.
   if (allInOneFragment(scene, selection)) {
+    // Unified moving-set unit: a DISTANCE whose two atoms sit in DIFFERENT
+    // connected components of the same fragment is NOT a torsion — move one
+    // component toward the other (no bond to cut). Requires injected connectivity;
+    // without it (or when the two atoms share a component — a genuine
+    // bond/torsion) we fall through to `needs-split` unchanged.
+    if (m.kind === "distance" && components) {
+      const [i, j] = selection;
+      const ci = components.get(i);
+      const cj = components.get(j);
+      if (ci && cj && disjoint(ci, cj)) {
+        // Move the SMALLER component (mirrors the inter-fragment "move the smaller
+        // fragment" default); tie → the last-clicked atom's component (j).
+        const movingIsJ = cj.length <= ci.length;
+        return {
+          kind: "needs-component-move",
+          op: "distance",
+          indices: [i, j],
+          current: m.value,
+          unit: m.unit,
+          moving: movingIsJ ? [...cj] : [...ci],
+          other: movingIsJ ? [...ci] : [...cj],
+        };
+      }
+    }
     // Intra-fragment torsion → the mask is a bond-graph split the sidecar must
     // compute. Describe the request; the UI makes the call (see the module note).
     const fragmentId = locateAtom(scene, selection[0])!.fragment.id;
@@ -306,6 +372,10 @@ function cutAndMoving(
  * No-op if the plan has no alternative.
  */
 export function swapToAlternative(plan: EditPlan): EditPlan {
+  // For a component move, "move the other instead" simply swaps the two components.
+  if (plan.kind === "needs-component-move") {
+    return { ...plan, moving: plan.other, other: plan.moving };
+  }
   if (plan.kind !== "ready" || !plan.alternative) return plan;
   const alt = plan.alternative;
   return {
@@ -320,6 +390,93 @@ export function swapToAlternative(plan: EditPlan): EditPlan {
       mask: plan.mask,
     },
   };
+}
+
+// ── needs-component-move resolution (unified moving-set unit) ─────────────────
+// A `needs-component-move` plan sets a DISTANCE between two disconnected pieces of
+// ONE fragment by RIGIDLY TRANSLATING the moving component along the i→j axis — the
+// same net effect as ASE `set_distance` on that mask, but computed purely here and
+// committed through `translateAtoms` (count+order invariant, ADR-008; one Undo,
+// ADR-010) — never a bespoke mover. No sidecar round-trip for the move itself; the
+// component was already perceived by `/geometry/connected-component` upstream.
+
+type Vec3 = [number, number, number];
+
+/** A picked atom's position, or null if the global index has no atom. */
+function positionOf(scene: Scene, globalIdx: number): Vec3 | null {
+  const loc = locateAtom(scene, globalIdx);
+  if (!loc) return null;
+  const a = loc.fragment.atoms[loc.localIndex];
+  return [a.x, a.y, a.z];
+}
+
+/**
+ * The rigid translation (Å) that moves an atom at `movingPos` along the
+ * `refPos → movingPos` axis so the pair's separation becomes `target`. Applied to
+ * the WHOLE moving component (a rigid shift), it sets `|i − j| = target` exactly
+ * (the resulting distance is `target` by construction — a linear move along the
+ * axis). Coincident points have no axis → zero translation (guarded upstream: the
+ * plan is only built for a MEASURABLE distance). Pure.
+ */
+export function axisTranslation(movingPos: Vec3, refPos: Vec3, target: number): Vec3 {
+  const dx = movingPos[0] - refPos[0];
+  const dy = movingPos[1] - refPos[1];
+  const dz = movingPos[2] - refPos[2];
+  const d = Math.hypot(dx, dy, dz);
+  if (d === 0) return [0, 0, 0];
+  const s = (target - d) / d;
+  return [dx * s, dy * s, dz * s];
+}
+
+export type NeedsComponentMove = Extract<EditPlan, { kind: "needs-component-move" }>;
+
+/** The concrete component-move: the moving atoms (stable AtomIds → `translateAtoms`),
+ * their fragment, the two picked positions (mover / reference), and the current
+ * separation. `null` if any picked/moving atom no longer resolves. */
+export interface ResolvedComponentMove {
+  movingAtomIds: AtomId[];
+  movingFragmentId: string;
+  movingPos: Vec3;
+  refPos: Vec3;
+  current: number;
+}
+
+/**
+ * Resolve a `needs-component-move` plan against the CURRENT scene. The mover is the
+ * picked atom that lies in `plan.moving` (the smaller component by default, or the
+ * other after a "move the other instead" swap); the reference is the other picked
+ * atom. Returns the moving component as AtomIds so the caller commits ONE
+ * `translate-atoms` op. Pure / testable.
+ */
+export function resolveComponentMove(
+  scene: Scene,
+  plan: NeedsComponentMove,
+): ResolvedComponentMove | null {
+  const [i, j] = plan.indices;
+  const movingSet = new Set(plan.moving);
+  const movingPicked = movingSet.has(i) ? i : j;
+  const refPicked = movingPicked === i ? j : i;
+  const movingPos = positionOf(scene, movingPicked);
+  const refPos = positionOf(scene, refPicked);
+  const movingFragmentId = locateAtom(scene, movingPicked)?.fragment.id;
+  if (!movingPos || !refPos || !movingFragmentId) return null;
+  const movingAtomIds: AtomId[] = [];
+  for (const gi of plan.moving) {
+    const id = atomIdAtIndex(scene, gi);
+    if (id === null) return null; // a moving atom vanished — refuse rather than mis-move
+    movingAtomIds.push(id);
+  }
+  return { movingAtomIds, movingFragmentId, movingPos, refPos, current: plan.current };
+}
+
+/** The separation between the two picked atoms in `scene` — for the after-apply
+ * post-condition (rule #9: verify the move in OUR terms, not the mover's). `null`
+ * if either atom is gone. */
+export function pickedDistance(scene: Scene, indices: number[]): number | null {
+  const a = positionOf(scene, indices[0]);
+  const b = positionOf(scene, indices[1]);
+  if (!a || !b) return null;
+  return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
 }
 
 /** How many atoms a standard-xyz string declares on its first line. */

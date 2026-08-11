@@ -16,7 +16,7 @@ import type { Scene } from "./types";
 import type { AtomId } from "./ids";
 import { describeAtomById } from "./selection";
 import { covalentRadius, type BondOrder } from "./covalent-radii";
-import { planEdit, type EditPlan } from "./edit-plan";
+import { planEdit, type ComponentLookup, type EditPlan } from "./edit-plan";
 
 /** The bond-perception multiplier the sidecar uses ((rA+rB) × this = the
  * distance below which a bond is perceived; `wiki/modules/sidecar.md`, 2.5.3a).
@@ -123,9 +123,14 @@ export function planFormBond(
   a: AtomId,
   b: AtomId,
   order: BondOrder = 1,
+  components?: ComponentLookup,
 ): BondEditPlan {
   const [elemA, elemB] = elementsOf(scene, a, b);
-  return { plan: planEdit(scene, [a, b]), target: bondingDistance(elemA, elemB, order), order };
+  return {
+    plan: planEdit(scene, [a, b], components),
+    target: bondingDistance(elemA, elemB, order),
+    order,
+  };
 }
 
 /**
@@ -133,9 +138,14 @@ export function planFormBond(
  * perception drops the bond. Same delegation as {@link planFormBond} — no new mask
  * logic, `needs-split` preserved.
  */
-export function planBreakBond(scene: Scene, a: AtomId, b: AtomId): BondEditPlan {
+export function planBreakBond(
+  scene: Scene,
+  a: AtomId,
+  b: AtomId,
+  components?: ComponentLookup,
+): BondEditPlan {
   const [elemA, elemB] = elementsOf(scene, a, b);
-  return { plan: planEdit(scene, [a, b]), target: breakDistance(elemA, elemB), order: 1 };
+  return { plan: planEdit(scene, [a, b], components), target: breakDistance(elemA, elemB), order: 1 };
 }
 
 /** Exposed for the test that proves ×2 clears the perception window; not used at

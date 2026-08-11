@@ -27,22 +27,42 @@ page records the **layout principle and where future panels go** — not the cur
   two doors — **Paste xyz** (import as a fragment, the typical path) and **Replace input** (the
   **named escape**: unlock the whole buffer once to paste a different calculation, then Adopt it as a
   fresh scene). See `modules/scene.md` for the sync wiring; `modules/frontend.md` for the controls.
-- **Move mode — rough placement by dragging (unit 3.1; Stage 3.x; a toggle in the Edit section).** A
-  checkbox turns on rigid-body drag: grab any atom and drag in the plane of the screen (60fps, one Undo
-  step — see `modules/visualization.md`). The moving set is the grabbed atom's **perceived connected
-  component, not the whole fragment** (Approach A): on mousedown — **once, not per frame** — the viewer
-  asks the sidecar `/geometry/connected-component` for the fragment, so after a bond is **broken** the
-  two pieces drag **independently** (break H–C in HCN → drag H → only H moves; drag C → C and N move
-  together). **Backward-compatible:** a fully-bonded fragment's component **is** the whole fragment, so
-  an intact reagent still drags as one — identical to before. The commit is one **`translate-atoms`** op
-  carrying the component's AtomIds + total delta (count/order preserved via `translateAtomsInScene`,
-  ADR-008; one Undo, ADR-010). **No stored connectivity** — perception is re-derived each drag from the
-  geometry, nothing is kept. If the sidecar call fails the drag **falls back to a whole-fragment move
-  and shows an honest dismissible banner** (never a silent wrong move). It is deliberately **coarse**:
-  the drag sets *approximate* geometry; **exact** distances/angles/dihedrals come from the measure +
-  constraint tools and the input editor. The drag answers "roughly here", the editor "exactly this". A
-  drag on empty space still rotates the camera; a click still picks; toggling Move off restores plain
-  rotate/pick.
+- **THE ONE RULE — the moving set (unified moving-set unit; `resolveMovingSet`, `scene/moving-set.ts`).**
+  For any drag OR any single-side edit, the set of atoms that moves is decided by one pure rule:
+  1. an explicit atom **selection** is present → move **exactly the selection** (the researcher chose the
+     atoms; wins over the toggle);
+  2. else the **"Move: Fragment | Selection"** rail toggle decides — **Fragment** = the whole fragment of
+     the grabbed atom (rough placement, synchronous, no sidecar); **Selection** = the grabbed atom's
+     **perceived connected component** (a broken-off / disconnected piece moves alone).
+
+  `resolveMovingSet` is pure: the fragment atoms and the component are **injected** (perception has ONE
+  home — the sidecar — ADR-010 correction ii). Fragment and Selection differ **only** when the fragment
+  has disconnected pieces (a fully-bonded fragment's component IS its whole atom set → identical).
+- **Move mode — rough placement by dragging (unit 3.1; Stage 3.x; unified moving-set unit).** A checkbox
+  turns on rigid-body drag: grab any atom and drag in the plane of the screen (60fps, one Undo step —
+  see `modules/visualization.md`). The moving set follows THE ONE RULE above (the drag reads it live on
+  mousedown): **Fragment** resolves synchronously; **Selection** asks the sidecar
+  `/geometry/connected-component` **once, not per frame** (so after a bond is **broken** the two pieces
+  drag independently — break H–C in HCN → drag H → only H moves; drag C → C and N move together); an
+  explicit selection moves exactly those atoms (even across fragments). The commit is one
+  **`translate-atoms`** op carrying the moving set's AtomIds + total delta (count/order preserved via
+  `translateAtomsInScene`, ADR-008; one Undo, ADR-010). **No stored connectivity** — perception is
+  re-derived each drag, nothing is kept. If a `/geometry/connected-component` call fails the drag **falls
+  back to a whole-fragment move and shows an honest dismissible banner** (never a silent wrong move). It
+  is deliberately **coarse**: exact distances/angles/dihedrals come from the measure + constraint tools
+  and the input editor. A drag on empty space still rotates the camera; a click still picks.
+- **Edits & bonds ACROSS disconnected pieces of one fragment (`needs-component-move`).** A **distance**
+  or **Form/Break bond** between two atoms of ONE fragment that sit in **different** connected components
+  (the Diels-Alder case: a diene + a dienophile imported as one xyz = one fragment, two molecules) is
+  **not** a torsion — there is no bond to cut, so it must not route to `needs-split` (which 422s "not
+  bonded"). `NewJobScreen` resolves both picked atoms' components via `/geometry/connected-component` and
+  injects them into `planEdit`, which then returns a **`needs-component-move`** plan carrying the two
+  components. `EditPanel` translates the **smaller** component along the i→j axis to set the distance
+  (or the bonding distance for Form bond) — a **pure rigid `translateAtoms`** move (count+order invariant;
+  one Undo), **never** `set-internal`. **"Move the other piece instead"** swaps the components. A bonded
+  intra pair still resolves as `needs-split` (unchanged); an inter-fragment pair still moves the smaller
+  fragment (unchanged). The post-condition (rule #9) re-derives the resulting separation and refuses if
+  it is not the target.
 - **Steric-clash warning — a warning, never a block (unit 3.2).** After any geometry change, atoms of
   DIFFERENT fragments closer than `k·(rᵢ+rⱼ)` of their vdW sum are flagged: a warn banner ("N steric
   clashes — coarse placement…") and a **magenta danger glow** on the clashing atoms, visually apart
@@ -221,7 +241,10 @@ The load-bearing insight (recorded so it isn't re-litigated): **form/break is NO
 primitive.** It is exactly `planEdit(op="distance")` with a **computed target** —
 `planFormBond`/`planBreakBond` (`src/scene/bond-edit.ts`) delegate the mask entirely to `planEdit`
 (the `active` plan already IS that, resolved upstream in `NewJobScreen`, including any `needs-split`
-bond-graph split from `/geometry/rotatable-mask`, 2.5.3b) and only **compute the distance**:
+bond-graph split from `/geometry/rotatable-mask`, 2.5.3b, **or** a `needs-component-move` when the two
+atoms are in different disconnected pieces of one fragment — the Diels-Alder form-bond, which then
+routes through the pure `translateAtoms` component move; `bond-edit` also takes the injected `components`
+so its own returned plan is honest) and only **compute the distance**:
 
 - **Form** = the covalent-radius sum `rA + rB` (`covalent-radii.ts`, Cordero 2008) — the same basis
   distance-based perception uses, so the pair lands **inside** the perception window (sidecar `×1.2`)

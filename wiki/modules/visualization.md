@@ -102,19 +102,24 @@ comes from the theme's palette (see Themes).
 ## Rigid-body drag — "Move mode" (unit 3.1; Stage 3.x; ADR-010 ephemeral layer)
 
 When `moveMode` is on (scene path, pickable, with `onFragmentDrag` wired), a mouse-drag that STARTS on
-an atom grabs the **dragged atom's perceived connected component** (Stage 3.x — **not** the whole
-fragment) and moves it rigidly **in the plane of the screen at 60fps**. The moving set is resolved
-**once on mousedown** (never per frame) by asking the sidecar `/geometry/connected-component` for the
-dragged fragment's own xyz + the grabbed atom's fragment-local index; the returned local indices are
-the atoms that shift, everything else stays pinned at its pre-drag coords. So after a bond is **broken**
-the two pieces drag independently; a **fully-bonded fragment's component is the whole fragment**, so an
-intact molecule drags exactly as before (backward-compatible). The entire drag is a **viewer-only
-ephemeral overlay** — the Scene/store is untouched until release, when exactly ONE **`translate-atoms`**
-op is committed with the component's AtomIds + total delta (ADR-010: 60fps motion is not logged; one op,
-one Undo). **Until the async resolve returns** (or if it fails) the moving set defaults to the whole
-fragment — a `settled` flag stops a late resolve touching a finished drag, and a **failed** call falls
-back to a whole-fragment move **plus an honest banner** (`onFragmentDragFallback`), never a silent wrong
-move. The pure accumulate/commit logic is `src/viewer/fragment-drag.ts` (`makeDragController`),
+an atom moves a **moving set** decided by THE ONE RULE (`resolveMovingSet`, `scene/moving-set.ts`; see
+`editor-ui.md`) rigidly **in the plane of the screen at 60fps**. The rule, read live on mousedown from
+the `moveGranularity` prop (the **"Move: Fragment | Selection"** rail toggle) and the current `selection`:
+an explicit **selection** moves exactly those atoms (even across fragments); else **Fragment** moves the
+whole grabbed fragment **synchronously** (no sidecar); else **Selection** moves the grabbed atom's
+**perceived connected component**, resolved **once on mousedown** (never per frame) by asking the sidecar
+`/geometry/connected-component` for the dragged fragment's own xyz + the grabbed atom's fragment-local
+index. The moving set is held as a `Set` of **viewer indices** (`resolveMovingSet` → `globalIndexOfAtom`);
+everything else stays pinned at its pre-drag coords. So under the Selection toggle, after a bond is
+**broken** the two pieces drag independently; a **fully-bonded fragment's component is the whole
+fragment**, so an intact molecule drags exactly as before. The entire drag is a **viewer-only ephemeral
+overlay** — the Scene/store is untouched until release, when exactly ONE **`translate-atoms`** op is
+committed with the moving set's AtomIds + total delta (ADR-010: 60fps motion is not logged; one op, one
+Undo). Fragment placement and an explicit selection resolve synchronously; **only** the Selection-toggle
+component path hits the sidecar, so **until that async resolve returns** (or if it fails) the moving set
+defaults to the whole fragment — a `settled` flag stops a late resolve touching a finished drag, and a
+**failed** call falls back to a whole-fragment move **plus an honest banner** (`onFragmentDragFallback`),
+never a silent wrong move. The pure accumulate/commit logic is `src/viewer/fragment-drag.ts` (`makeDragController`),
 unit-tested without jsdom (the same split as `syncMonacoToScene` in 2d) — its contract is unchanged
 (the component/moving-set logic lives in the viewer's hook closures, not the controller); the
 3Dmol/mouse wiring is a separate effect in `MoleculeViewer`, keyed `[moveMode, pickable, scene, theme]`.

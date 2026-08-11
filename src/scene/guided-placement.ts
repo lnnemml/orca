@@ -79,11 +79,15 @@ function reagentOrientation(
 ):
   | { op: "distance" | "angle" | "dihedral"; indices: number[]; mask: number[]; unit: "Å" | "°" }
   | { error: string } {
+  // No `components` injected here → planEdit never yields `needs-component-move`
+  // (that needs the sidecar's connectivity); guided placement is inter-fragment by
+  // construction (one reagent atom + substrate refs).
   const plan = planEdit(scene, chain);
   if (plan.kind === "unavailable") return { error: plan.reason };
-  if (plan.kind === "needs-split") {
-    // Would only happen if the reagent + substrate atoms landed in one fragment,
-    // which the panel's "exactly one reagent atom" rule prevents. Guard anyway.
+  if (plan.kind !== "ready") {
+    // `needs-split` (all atoms in one fragment) — the panel's "exactly one reagent
+    // atom" rule prevents it; guard anyway. (`needs-component-move` cannot arise
+    // without injected connectivity.)
     return {
       error:
         "These atoms are all in one fragment — pick one atom on the reagent and the rest on the substrate.",
