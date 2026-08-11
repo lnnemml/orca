@@ -15,7 +15,7 @@
 import type { Scene } from "./types";
 import type { AtomId } from "./ids";
 import { describeAtomById } from "./selection";
-import { covalentRadius } from "./covalent-radii";
+import { covalentRadius, type BondOrder } from "./covalent-radii";
 import { planEdit, type EditPlan } from "./edit-plan";
 
 /** The bond-perception multiplier the sidecar uses ((rA+rB) × this = the
@@ -23,11 +23,58 @@ import { planEdit, type EditPlan } from "./edit-plan";
  * Named here only to justify `breakDistance`'s ×2 clearing it — not re-derived. */
 const PERCEPTION_MULTIPLIER = 1.2;
 
-/** The bonding distance (Å) for a pair — the covalent-radius SUM (rA + rB), the
- * same basis perception uses, so a pair set here reads as a single bond. Element-
- * dependent: C–H ≈ 1.07, C–C ≈ 1.52, C–I ≈ 2.15 (not a fixed default). */
-export function bondingDistance(elemA: string, elemB: string): number {
-  return covalentRadius(elemA) + covalentRadius(elemB);
+/** The bonding distance (Å) for a pair at bond `order` — the order-appropriate
+ * covalent-radius SUM (rA + rB). Order 1 (default) = Cordero single, the same basis
+ * perception uses, so the pair reads as a bond; order 2/3 = the Pyykkö double/triple
+ * sums, i.e. a SHORTER geometric target that the method then infers as a multiple
+ * bond (ORCA reads geometry, not bond order — the honest frame). Element-dependent:
+ * C–C ≈ 1.52, C=C ≈ 1.34, C≡C ≈ 1.20 (not a fixed default). Throws if either element
+ * lacks a radius at that order (rule #11). */
+export function bondingDistance(
+  elemA: string,
+  elemB: string,
+  order: BondOrder = 1,
+): number {
+  return covalentRadius(elemA, order) + covalentRadius(elemB, order);
+}
+
+/**
+ * A GEOMETRIC bond-order estimate: of the single/double/triple covalent sums for
+ * the pair, the one NEAREST to `distance` (min |d − sum|). Purely from geometry +
+ * radii — an estimate, never the computed (Mayer) order, which the editor does not
+ * have (that is a results-context follow-up). Orders whose radius is undefined for
+ * either element are simply not candidates (a metal with only a single radius →
+ * always `1`). Throws only if the pair has NO defined order at all (both single
+ * radii missing → an unknown element, rule #11). `refLength` is the reference sum
+ * of the chosen order (for the honest "≈ double · 1.34 Å" label).
+ */
+export function bondOrderEstimate(
+  elemA: string,
+  elemB: string,
+  distance: number,
+): { order: BondOrder; refLength: number } {
+  const candidates: { order: BondOrder; sum: number }[] = [];
+  for (const order of [1, 2, 3] as const) {
+    let sum: number;
+    try {
+      sum = bondingDistance(elemA, elemB, order);
+    } catch {
+      continue; // this order is not defined for one of the elements — skip it
+    }
+    candidates.push({ order, sum });
+  }
+  if (candidates.length === 0) {
+    // Not even a single-bond radius → the element is genuinely unknown. Re-invoke
+    // so the loud, element-naming error from `covalentRadius` surfaces (rule #11).
+    covalentRadius(elemA);
+    covalentRadius(elemB);
+    throw new Error("bondOrderEstimate: no covalent radius for the pair");
+  }
+  let best = candidates[0];
+  for (const c of candidates) {
+    if (Math.abs(distance - c.sum) < Math.abs(distance - best.sum)) best = c;
+  }
+  return { order: best.order, refLength: best.sum };
 }
 
 /** A "broken" distance (Å) — the covalent sum × 2, comfortably past the perception
@@ -46,6 +93,9 @@ export interface BondEditPlan {
   plan: EditPlan;
   /** Target separation (Å): `bondingDistance` for form, `breakDistance` for break. */
   target: number;
+  /** The bond order the target expresses (form: 1/2/3; break: always 1 — order is
+   * meaningless when clearing a bond). For the honest form label, not a stored fact. */
+  order: BondOrder;
 }
 
 /** Resolve the two picked atoms' element symbols, or throw if either id is stale.
@@ -61,14 +111,21 @@ function elementsOf(scene: Scene, a: AtomId, b: AtomId): [string, string] {
 }
 
 /**
- * Plan a "form bond": set the picked pair to their bonding distance (rA + rB) so
- * perception draws the bond. DELEGATES the mask/orientation entirely to
- * `planEdit(scene, [a, b])` — a `needs-split` (intra-fragment) result is returned
- * unchanged, so the existing `/geometry/rotatable-mask` path still resolves it.
+ * Plan a "form bond" at bond `order` (default single): set the picked pair to the
+ * order-appropriate bonding distance (rA + rB) so perception draws the bond and the
+ * method infers the order from the shorter geometry. DELEGATES the mask/orientation
+ * entirely to `planEdit(scene, [a, b])` — a `needs-split` (intra-fragment) result is
+ * returned unchanged, so the existing `/geometry/rotatable-mask` path still resolves
+ * it. Only `target` changes with `order`; the mask does not.
  */
-export function planFormBond(scene: Scene, a: AtomId, b: AtomId): BondEditPlan {
+export function planFormBond(
+  scene: Scene,
+  a: AtomId,
+  b: AtomId,
+  order: BondOrder = 1,
+): BondEditPlan {
   const [elemA, elemB] = elementsOf(scene, a, b);
-  return { plan: planEdit(scene, [a, b]), target: bondingDistance(elemA, elemB) };
+  return { plan: planEdit(scene, [a, b]), target: bondingDistance(elemA, elemB, order), order };
 }
 
 /**
@@ -78,7 +135,7 @@ export function planFormBond(scene: Scene, a: AtomId, b: AtomId): BondEditPlan {
  */
 export function planBreakBond(scene: Scene, a: AtomId, b: AtomId): BondEditPlan {
   const [elemA, elemB] = elementsOf(scene, a, b);
-  return { plan: planEdit(scene, [a, b]), target: breakDistance(elemA, elemB) };
+  return { plan: planEdit(scene, [a, b]), target: breakDistance(elemA, elemB), order: 1 };
 }
 
 /** Exposed for the test that proves ×2 clears the perception window; not used at

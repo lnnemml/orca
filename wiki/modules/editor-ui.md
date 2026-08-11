@@ -242,6 +242,46 @@ assert (E3a-1) accepts `(reactant job, derived product job)` with no refusal, an
 stored**: no connectivity, no bond edge-set, no reactant→product lineage column. Perception follows the
 distance; the order invariant is the only guard needed.
 
+## Geometric bond order + formal-charge bookkeeping (geometric-editor completion)
+
+**The honest frame — state it before anything else.** ORCA reads **geometry + total charge +
+multiplicity + method**. It does **not** read bond order, and it does **not** read per-atom charge.
+Everything in this section is either (a) a *geometric* target/estimate — a "double bond" is just a
+**shorter set-distance**, and the method infers the order from that geometry — or (b) *bookkeeping*
+that must sum to the total charge ORCA is actually given. Nothing here is a new physical input. The UI
+copy says so at every touchpoint; a future **Mayer bond order in the results context** (parsed from a
+finished calculation) will be the authoritative order — this editor never claims to have it.
+
+- **Set bond order (Form single / double / triple).** `EditPanel`'s Form affordance is now three
+  buttons; each calls `planFormBond(scene, a, b, order)` and drives the **same** preview→apply path.
+  Order only changes the **target distance**: `bondingDistance(elemA, elemB, order)` sums single
+  (Cordero) or double/triple (**Pyykkö & Atsumi 2009**) covalent radii — C–C 1.52 / C=C 1.34 / C≡C
+  1.20 Å. It is the **one** covalent-radii table (`covalent-radii.ts`) extended with `order`, and an
+  element with no double/triple radius throws loudly (rule #11) into the existing error banner. Break
+  is unchanged (order is meaningless when clearing a bond). **Perception is untouched — still
+  Cordero-single × 1.2**; order affects only the form target and the display.
+- **Bond-order analyzer (honest label).** Selecting a two-atom **distance** shows, under the measure
+  readout, `≈ double · 1.34 Å (geometric estimate)` — `bondOrderEstimate` picks the **nearest** of the
+  single/double/triple sums to the measured length (`AtomInspector.analyzeBondOrder`). It is shown
+  **only within bonding range** (≤ single sum × 1.3), so a through-space contact (a forming/breaking
+  ~2.2 Å distance) is **not** labelled an order. Always tagged "(geometric estimate)"; the tooltip
+  points at the Mayer-in-results follow-up. The estimate is discrete — a delocalised/aromatic ~1.40 Å
+  reads as the nearest integer ("double"); fractional orders await Mayer.
+- **Double/triple DISPLAY (2/3 lines).** `applyGeometricBondOrders` (`bond-display.ts`) overwrites each
+  drawn bond's 3Dmol `bondOrder` from the current geometry (via `bondOrderEstimate`), so the stick pass
+  draws 1/2/3 parallel cylinders. **DISPLAY-ONLY, nothing stored** — re-derived from geometry every time
+  the model is (re)built, exactly like perception (and like it, it mutates the throwaway 3Dmol array,
+  never the Scene). Runs right after `applyBondFilter`; an element with no radius stays a single line
+  (never a crash).
+- **Formal charge (per-atom bookkeeping).** `AtomInspector` gains a `+ / −` control on the last-picked
+  atom; the value is a **display annotation keyed by AtomId** (owned by `NewJobScreen` like
+  `hiddenBonds`, **not** in the Scene), shown as a `+1`/`−1` badge on the atom (a viewer label) and in
+  the chip list. A **Σ-formal-vs-total indicator** (`formalChargeConsistency`, `formal-charge.ts`)
+  reads `Σ formal = total ✓` or an honest mismatch that states *ORCA still uses the total*. The sum is
+  over the atoms **currently** in the scene (a stale entry for a removed atom isn't counted).
+  `totalCharge(scene) = Σ fragment.charge` (`scene.ts`) is the charge ORCA is given; formal charges
+  never change it — a mismatch is a bookkeeping flag, never a run blocker.
+
 ## Where future panels go
 
 - **Phase 4.5 — reaction setup.** The reaction-center / scan-setup UI (ADR-007) is a **new dock

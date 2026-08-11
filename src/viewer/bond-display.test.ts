@@ -4,11 +4,14 @@ import type { AtomId } from "../scene/ids";
 import {
   shouldDrawBond,
   filterDrawnBonds,
+  applyGeometricBondOrders,
   bondKey,
   isCationBond,
   type FilterableAtom,
   type BondKey,
+  type OrderableAtom,
 } from "./bond-display";
+import { bondOrderEstimate } from "../scene/bond-edit";
 import { testScene, type RawFragment } from "../scene/scene-test-util";
 import { buildViewerFeed } from "../scene/scene";
 
@@ -178,5 +181,47 @@ describe("(c4) filter removes only excluded bonds and is idempotent", () => {
     filterDrawnBonds(a, resolveId, NONE);
     const again = filterDrawnBonds(a, resolveId, NONE);
     expect(again).toBe(0);
+  });
+});
+
+// ── c5 — geometric bond order (2/3 lines) is re-derived from geometry, not stored ─
+// applyGeometricBondOrders overwrites each drawn bond's `bondOrder` from the current
+// interatomic distance (nearest single/double/triple sum), so 3Dmol draws 2/3 sticks.
+// DISPLAY-ONLY, nothing stored: the order is a function of geometry every rebuild.
+describe("(c5) geometric bond order — re-derived from geometry each pass", () => {
+  const estimate = (a: string, b: string, d: number) => bondOrderEstimate(a, b, d).order;
+
+  // Two carbons `dist` Å apart, each carrying a (deliberately wrong) stored order.
+  function ccPair(dist: number, storedOrder: number): OrderableAtom[] {
+    return [
+      { index: 0, elem: "C", x: 0, y: 0, z: 0, bonds: [1], bondOrder: [storedOrder] },
+      { index: 1, elem: "C", x: dist, y: 0, z: 0, bonds: [0], bondOrder: [storedOrder] },
+    ];
+  }
+
+  it("sets order 1 / 2 / 3 from a single / double / triple C–C length", () => {
+    for (const [dist, order] of [[1.54, 1], [1.34, 2], [1.2, 3]] as const) {
+      const atoms = ccPair(dist, 1);
+      applyGeometricBondOrders(atoms, estimate);
+      expect(atoms[0].bondOrder![0]).toBe(order);
+      expect(atoms[1].bondOrder![0]).toBe(order); // both half-edges agree
+    }
+  });
+
+  it("NEGATIVE control — reads GEOMETRY, not the stored bondOrder", () => {
+    // A long single-bond geometry (1.54) but a stored double-bond order → must be
+    // OVERWRITTEN to 1. A bite that trusted the stored order would keep 2.
+    const atoms = ccPair(1.54, 2);
+    applyGeometricBondOrders(atoms, estimate);
+    expect(atoms[0].bondOrder![0]).toBe(1);
+  });
+
+  it("an element with no double/triple radius (C–H) stays a single line, never throws", () => {
+    const atoms: OrderableAtom[] = [
+      { index: 0, elem: "C", x: 0, y: 0, z: 0, bonds: [1], bondOrder: [1] },
+      { index: 1, elem: "H", x: 1.09, y: 0, z: 0, bonds: [0], bondOrder: [1] },
+    ];
+    expect(() => applyGeometricBondOrders(atoms, estimate)).not.toThrow();
+    expect(atoms[0].bondOrder![0]).toBe(1);
   });
 });

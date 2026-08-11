@@ -116,6 +116,58 @@ function removeHalfEdge(atom: FilterableAtom, k: number): void {
   if (atom.bondOrder) atom.bondOrder.splice(k, 1);
 }
 
+/** A 3Dmol atom with coordinates — what the geometric bond-order pass needs (the
+ * order is a function of the interatomic DISTANCE, so it reads x/y/z). */
+export interface OrderableAtom extends FilterableAtom {
+  x: number;
+  y: number;
+  z: number;
+}
+
+/**
+ * Overwrite each drawn bond's `bondOrder` with a GEOMETRIC estimate re-derived from
+ * the current coordinates (`estimateOrder(elA, elB, distance)`), so 3Dmol's stick
+ * pass draws 1/2/3 parallel cylinders. **DISPLAY-ONLY, nothing stored** — the order
+ * is recomputed from geometry every time the model is (re)built, exactly like
+ * perception; it is never persisted to the Scene, and ORCA never sees it (ORCA reads
+ * geometry + total charge, not bond order). Mutates `bondOrder` in place on the
+ * throwaway 3Dmol array (the `frozenTopology`/`filterDrawnBonds` technique). Runs
+ * AFTER `filterDrawnBonds` so only surviving bonds get an order. `estimateOrder` is
+ * injected (the viewer wires `bondOrderEstimate`) to keep this module dependency-
+ * light and node-testable; a thrown estimate (an element with no radius) leaves that
+ * bond at order 1 — a single line, never a crash. Cheap: one pass, each undirected
+ * bond set once (from its lower-index end).
+ */
+export function applyGeometricBondOrders(
+  atoms: OrderableAtom[],
+  estimateOrder: (elA: string, elB: string, distance: number) => number,
+): void {
+  const setOrder = (atom: OrderableAtom, k: number, order: number) => {
+    if (!atom.bondOrder) atom.bondOrder = atom.bonds.map(() => 1);
+    atom.bondOrder[k] = order;
+  };
+  for (let i = 0; i < atoms.length; i++) {
+    const a = atoms[i];
+    if (!a || !a.bonds) continue;
+    for (let k = 0; k < a.bonds.length; k++) {
+      const j = a.bonds[k];
+      if (j < i) continue; // set each undirected bond once, from the lower index
+      const b = atoms[j];
+      if (!b) continue;
+      const d = Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+      let order = 1;
+      try {
+        order = estimateOrder(a.elem, b.elem, d);
+      } catch {
+        order = 1; // no radius for the pair → a single line, never a crash
+      }
+      setOrder(a, k, order);
+      const back = b.bonds.indexOf(i);
+      if (back >= 0) setOrder(b, back, order);
+    }
+  }
+}
+
 /**
  * Remove from the live 3Dmol atom array every bond `shouldDrawBond` rejects, mutating
  * `bonds`/`bondOrder` in place (the frozenTopology technique) so 3Dmol's stick pass

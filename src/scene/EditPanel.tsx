@@ -12,6 +12,7 @@ import {
   type EditPlan,
 } from "./edit-plan";
 import { planFormBond, planBreakBond } from "./bond-edit";
+import type { BondOrder } from "./covalent-radii";
 import { mergeToXyz } from "./scene";
 
 /**
@@ -228,11 +229,14 @@ export function EditPanel({
   // `replaceFragmentAtoms` (count+order invariant), one Undo — so a derived product
   // keeps the reactant's atom order (the NEB precondition).
   const isDistancePair = active.op === "distance" && active.indices.length === 2;
-  const applyBondPreset = (kind: "form" | "break") => {
+  const applyBondPreset = (kind: "form" | "break", order: BondOrder = 1) => {
     if (busy || !isDistancePair) return;
     const [a, b] = pickedAtomIds();
     try {
-      const bp = kind === "form" ? planFormBond(scene, a, b) : planBreakBond(scene, a, b);
+      // Form at `order` = a shorter geometric target (double/triple); the method
+      // infers the order from geometry — ORCA reads geometry, not bond order. An
+      // element with no double/triple radius throws loudly here (honest, not hidden).
+      const bp = kind === "form" ? planFormBond(scene, a, b, order) : planBreakBond(scene, a, b);
       setTarget(String(round(bp.target)));
       void runPreview(bp.target);
     } catch (e) {
@@ -307,19 +311,39 @@ export function EditPanel({
         ) : null}
       </div>
       {/* Form / break bond — only for a two-atom distance edit. A preset target from
-          covalent radii, then the same preview→apply path (Apply commits it). */}
+          covalent radii, then the same preview→apply path (Apply commits it). Form
+          offers single/double/triple: a higher order is just a SHORTER geometric
+          target (Pyykkö radii) — ORCA infers the order from geometry, it is not a
+          separate input. */}
       {isDistancePair ? (
         <div className="edit-bond-presets">
+          <span className="edit-bond-label muted">Form bond:</span>
           <button
             className="btn btn-sm"
-            onClick={() => applyBondPreset("form")}
+            onClick={() => applyBondPreset("form", 1)}
             disabled={busy}
-            title="Move the pair to a bonding distance (covalent-radius sum) so a bond forms; preview, then Apply"
+            title="Set the pair to the single-bond distance (covalent-radius sum); preview, then Apply"
           >
-            Form bond
+            single
           </button>
           <button
             className="btn btn-sm"
+            onClick={() => applyBondPreset("form", 2)}
+            disabled={busy}
+            title="Set the pair to the double-bond distance (Pyykkö radii, shorter). ORCA infers the order from geometry. Preview, then Apply"
+          >
+            double
+          </button>
+          <button
+            className="btn btn-sm"
+            onClick={() => applyBondPreset("form", 3)}
+            disabled={busy}
+            title="Set the pair to the triple-bond distance (Pyykkö radii, shortest). ORCA infers the order from geometry. Preview, then Apply"
+          >
+            triple
+          </button>
+          <button
+            className="btn btn-sm edit-bond-break"
             onClick={() => applyBondPreset("break")}
             disabled={busy}
             title="Move the pair clearly apart so the bond breaks; preview, then Apply"

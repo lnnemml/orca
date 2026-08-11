@@ -593,6 +593,18 @@ Stage 3, where it is actually needed.) **Stage 3 is now COMPLETE (see below).**
         fragment → component == whole fragment (backward-compat). Sidecar-fail → whole-fragment move +
         honest banner. No stored connectivity (perception each drag). pytest +4, vitest +7. **Author
         m1–m3 live gate pending.**
+  - [x] **Geometric-editor completion — geometric bond order (set + analyze + display) + formal-charge
+        bookkeeping.** HONEST FRAME: ORCA reads geometry + total charge + mult + method only — bond order
+        and per-atom charge are NOT inputs. **Set:** EditPanel Form → single/double/triple = a shorter
+        geometric target (`bondingDistance(...,order)`, Pyykkö double/triple radii added to the ONE
+        `covalent-radii.ts` table; perception unchanged, Cordero-single × 1.2). **Analyze:**
+        `bondOrderEstimate` = nearest single/double/triple sum → honest "≈ double · 1.34 Å (geometric
+        estimate)" on a bonded 2-atom selection. **Display:** `applyGeometricBondOrders` re-derives 3Dmol
+        `bondOrder` from geometry each render → 2/3 sticks (nothing stored). **Formal charge:** per-atom
+        `+/−` (annotation keyed by AtomId, not in the Scene) + a Σ-formal-vs-total indicator
+        (`formalChargeConsistency`; bookkeeping, ORCA still uses total). vitest +20 (tsc clean; cargo +
+        sidecar untouched). Follow-up: **Mayer bond order in the results context** (authoritative order
+        from a finished run — this editor only estimates from geometry). **Author m1–m4 live gate pending.**
 - [x] **Rotation of a fragment about its approach axis (unit 3.3).** A rigid whole-fragment spin about
       the axis two picked atoms define — P (pivot, on the rotating fragment) and Q (direction, typically
       the substrate contact atom). **Pure TS, a sibling of — not routed through — the sidecar set-internal

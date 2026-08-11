@@ -74,6 +74,7 @@ import {
   xyzMatchesScene,
 } from "../scene/scene";
 import { formatXtbProgress } from "../scene/xtb-progress";
+import { formalChargeConsistency } from "../scene/formal-charge";
 import { restoreSceneLog, type LogRejection } from "../scene/restore";
 import { serializeLog, type Op } from "../scene/oplog";
 import { goatInputForFragment } from "../scene/ensemble";
@@ -338,6 +339,27 @@ export function NewJobScreen({
   // geometry — Generate/Run are byte-identical whatever is hidden.
   const [hiddenBonds, setHiddenBonds] = useState<ReadonlySet<BondKey>>(new Set());
   const [showCationBonds, setShowCationBonds] = useState(false);
+  // Per-atom FORMAL CHARGES (geometric-editor completion) — DISPLAY-ONLY bookkeeping
+  // keyed by AtomId (like `hiddenBonds`, not in the Scene). ORCA is given only the
+  // TOTAL charge (`totalCharge(scene) = Σ fragment.charge`); these annotations let the
+  // chemist reason about where charge sits and their Σ is checked against that total.
+  const [formalCharges, setFormalCharges] = useState<ReadonlyMap<AtomId, number>>(new Map());
+  const setFormalCharge = (id: AtomId, value: number) =>
+    setFormalCharges((prev) => {
+      const next = new Map(prev);
+      if (value === 0) next.delete(id);
+      else next.set(id, value);
+      return next;
+    });
+  // Σ-formal-vs-total, computed over the atoms CURRENTLY in the scene (a stale entry
+  // for a removed atom is simply not summed). Only shown once any formal charge is set.
+  const formalChargeList = scene
+    ? scene.fragments.flatMap((f) => f.atoms.map((a) => formalCharges.get(a.id) ?? 0))
+    : [];
+  const chargeConsistency =
+    scene && formalChargeList.some((q) => q !== 0)
+      ? formalChargeConsistency(formalChargeList, totalCharge(scene))
+      : null;
   // Toggle the bond between the two currently-selected atoms (by AtomId pair).
   const toggleSelectedBond = () => {
     if (selection.length !== 2) return;
@@ -1489,6 +1511,9 @@ export function NewJobScreen({
               ? "The scan block contains syntax OrcaStudio doesn't recognise — edit it in the input editor."
               : null
           }
+          formalCharges={formalCharges}
+          onSetFormalCharge={setFormalCharge}
+          chargeConsistency={chargeConsistency}
         />
       ) : null,
     },
@@ -2081,6 +2106,7 @@ export function NewJobScreen({
                   showCationBonds={showCationBonds}
                   clashHighlight={clashIds}
                   showAtomNumbers={showNumbers}
+                  formalCharges={formalCharges}
                   theme={theme}
                   maskHighlight={
                     editPlan?.kind === "ready"

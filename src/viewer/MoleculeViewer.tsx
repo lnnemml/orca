@@ -18,9 +18,12 @@ import { DEFAULT_THEME, cpkColorDrift, type ViewerTheme } from "./theme";
 import { parseXyzCoords, applyCoordsToAtoms, drawableBondCount } from "./frozenTopology";
 import {
   filterDrawnBonds,
+  applyGeometricBondOrders,
   type BondKey,
   type FilterableAtom,
+  type OrderableAtom,
 } from "./bond-display";
+import { bondOrderEstimate } from "../scene/bond-edit";
 import { makeDragController, type WorldDelta } from "./fragment-drag";
 import { postSidecar } from "../sidecar-client";
 import { chooseRotateOverlay, type RotateOverlay } from "./rotate-overlay";
@@ -73,6 +76,13 @@ interface MoleculeViewerProps {
    * even with this off, so a pick is legible immediately.
    */
   showAtomNumbers?: boolean;
+  /**
+   * Per-atom FORMAL CHARGES (geometric-editor completion), keyed by stable AtomId.
+   * A nonzero charge is drawn as a small `+1` / `−1` label on the atom. DISPLAY-ONLY
+   * bookkeeping — not part of the Scene, never an ORCA input (ORCA reads geometry +
+   * total charge). Absent/empty → no charge labels (unchanged view).
+   */
+  formalCharges?: ReadonlyMap<AtomId, number>;
   /**
    * Viewer colour theme (2.5.2e-2). Default `dark` — the pre-2.5.2e-2 look. The
    * background is set via `setBackgroundColor` (no model reload, no zoomTo) and
@@ -562,6 +572,7 @@ export const MoleculeViewer = forwardRef<MoleculeViewerHandle, MoleculeViewerPro
       selection,
       onAtomPick,
       showAtomNumbers = false,
+      formalCharges,
       theme = DEFAULT_THEME,
       maskHighlight,
       clashHighlight,
@@ -803,6 +814,15 @@ export const MoleculeViewer = forwardRef<MoleculeViewerHandle, MoleculeViewerPro
       // draw changes. The ephemeral drag/rotate paths reuse this model without
       // re-perceiving, so the filtered bonds stay filtered across an animation.
       applyBondFilter(sceneModel, (vi) => feed.table.atomIdAt(vi), hiddenBonds, showCationBonds);
+      // DISPLAY-ONLY geometric bond order (geometric-editor completion): overwrite
+      // each surviving bond's order with the nearest single/double/triple from the
+      // current geometry, so 3Dmol draws 2/3 parallel sticks for short bonds. Nothing
+      // stored — re-derived from geometry every rebuild, like perception; ORCA reads
+      // geometry + total charge, never bond order.
+      applyGeometricBondOrders(
+        sceneModel.selectedAtoms({}) as unknown as OrderableAtom[],
+        (elA, elB, d) => bondOrderEstimate(elA, elB, d).order,
+      );
       viewerTableRef.current = feed.table;
       // Ball-and-stick: CPK for fragment 0, a flat palette colour per fragment 1+
       // (each reads as one object). The `index` selector is the merged-xyz line
@@ -1036,8 +1056,26 @@ export const MoleculeViewer = forwardRef<MoleculeViewerHandle, MoleculeViewerPro
       });
     }
 
+    // Formal-charge labels (geometric-editor completion) — a small `+1`/`−1` on any
+    // atom carrying a nonzero formal charge, nudged off the number label. DISPLAY-ONLY
+    // bookkeeping: re-read from the `formalCharges` map each overlay pass, never stored
+    // in the Scene, never an ORCA input.
+    for (const [id, q] of formalCharges ?? []) {
+      if (q === 0) continue;
+      const atom = byId.get(id);
+      if (!atom) continue;
+      viewer.addLabel(q > 0 ? `+${q}` : `−${Math.abs(q)}`, {
+        position: { x: atom.x, y: atom.y + 0.35, z: atom.z },
+        fontSize: 11,
+        fontColor: theme.labelText,
+        backgroundColor: theme.haloColor,
+        backgroundOpacity: 0.7,
+        inFront: true,
+      });
+    }
+
     viewer.render();
-  }, [selection, scene, showAtomNumbers, theme, maskHighlight, clashHighlight, axisHighlight, rotateOverlay, orbitalCube]);
+  }, [selection, scene, showAtomNumbers, formalCharges, theme, maskHighlight, clashHighlight, axisHighlight, rotateOverlay, orbitalCube]);
 
   // Ephemeral coordinate-only overlay — the live rotation preview (unit 3.3). Reuses
   // the SAME frozen-topology coordinate-update path the Move-mode drag and the mode

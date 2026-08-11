@@ -7373,3 +7373,42 @@ editor-ui.md + visualization.md (drag = connected component, Approach A, fallbac
 (`translateAtomsInScene` + the op). **Author m1–m3 live gate pending:** m1 HCN break H–C → drag H → only
 H moves, drag C → C+N move; m2 a normal fragment still drags whole (no regression); m3 HCN break H–C,
 move H by N, Form H–N, Opt → HNC, NEB(HCN, HNC) accepted (same atom order). **Next:** Stage F (CREST).
+
+## [2026-08-11] session | Geometric-editor completion — bond order (set + analyze + display) + formal-charge bookkeeping
+
+**Honest frame (recorded in editor-ui.md, stated in the UI at every touchpoint).** ORCA reads
+**geometry + total charge + multiplicity + method** — NOT bond order, NOT per-atom charge. So a
+"double/triple bond" = a **shorter geometric target** (the method infers the order); the analyzer is a
+geometric **estimate**; formal charges are **bookkeeping** that must sum to the total ORCA takes.
+Nothing here is a new physical input. A future **Mayer bond order in the results context** (parsed from
+a finished run) will be the authoritative order — the editor never claims to have it.
+
+**Part A — pure cores (reviewed first).** `covalent-radii.ts`: the ONE table extended with Pyykkö &
+Atsumi 2009 **double/triple** radii for `{B,C,N,O,Si,P,S}`; `covalentRadius(el, order=1)` (single=Cordero
+= the perception basis, unchanged), throws on unknown element **or** unknown (element,order). `bond-edit.ts`:
+`bondingDistance(a,b,order=1)` (C–C 1.52 / C=C 1.34 / C≡C 1.20); `bondOrderEstimate(a,b,d)` = **nearest**
+sum (geometric, not a threshold; a metal → single; unknown → loud throw); `planFormBond(...,order)`.
+`formal-charge.ts` (new): `formalChargeSum` + `formalChargeConsistency(charges,total) → {sum,total,matches}`.
+vitest **+17** (bites: order-not-ignored, "1.40→double" not a threshold, "a sum that drops an atom falsely
+matches"). Sulfur triple 0.95 > double 0.94 kept as-published.
+
+**Part B — wiring.** (1) **EditPanel** Form → three order buttons (single/double/triple) →
+`planFormBond(...,order)`, same preview→apply; Break unchanged; an impossible order (no double/triple
+radius) throws into the existing error banner. (2) **bond-display.ts** `applyGeometricBondOrders` runs
+right after `applyBondFilter`: overwrites each drawn bond's 3Dmol `bondOrder` from the current geometry
+via `bondOrderEstimate`, so the stick pass draws 1/2/3 cylinders — **display-only, nothing stored**,
+re-derived every model rebuild (like perception); vitest **+3** (bite: reads GEOMETRY not the stored
+order; C–H stays single, never throws). (3) **AtomInspector** analyzer line on a 2-atom distance within
+bonding range: `≈ double · 1.34 Å (geometric estimate)` — always tagged, tooltip points at Mayer. (4)
+**Formal charge**: per-atom `+/−` in AtomInspector (annotation keyed by AtomId, owned by NewJobScreen
+like `hiddenBonds`, **not** in the Scene), a `+1`/`−1` viewer label on the atom + chip, and a
+**Σ-formal-vs-total** indicator (`Σ formal = total ✓` / honest mismatch, "ORCA still uses total"). CSS
+for the new controls.
+
+**Verification.** tsc clean; vitest **813** (+20 total: +17 Part A, +3 bond-display). **cargo + sidecar
+untouched** (editor/frontend only). Wiki: editor-ui.md (the whole section + honest frame + Mayer
+follow-up), visualization.md (applyGeometricBondOrders + charge labels), chemistry/bond-order-from-geometry.md
+(UA), index.md (+page, count 93), ROADMAP. **Author m1–m4 live gate pending:** m1 Form double → 2 lines;
+m2 short C–C → "≈ double", normal → "≈ single"; m3 set formal −1 → shown on atom + Σ indicator; m4 the UI
+nowhere implies bond order / per-atom charge changes the calculation beyond geometry + total charge.
+**Next:** Mayer-bond-order in results (follow-up); Stage F (CREST microsolvation).

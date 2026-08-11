@@ -237,6 +237,18 @@ The model effect gains `hiddenBonds`/`showCationBonds` in its deps (a toggle re-
 the zoom guard keeps the camera since the composition signature is unchanged). `hiddenBonds` defaults to
 a module-level empty set so an unspecified prop doesn't churn the effect.
 
+**Geometric bond order — 2/3 parallel sticks (geometric-editor completion).** Right after
+`applyBondFilter`, `applyGeometricBondOrders` (`bond-display.ts`) overwrites each surviving bond's 3Dmol
+`bondOrder` with `bondOrderEstimate(elemA, elemB, distance).order` — the nearest of the single/double/
+triple covalent sums to the CURRENT interatomic distance — so the stick pass (no `singleBonds` set)
+draws 1/2/3 cylinders. **DISPLAY-ONLY, nothing stored:** the order is a function of geometry recomputed
+every model (re)build, exactly like perception; it never enters the Scene or the ORCA input (ORCA reads
+geometry + total charge, not bond order — the honest frame, `editor-ui.md`). Cheap: one pass, each
+undirected bond set once from its lower-index end; an element with no double/triple radius (H, metals)
+stays a single line, never a throw. **Formal-charge labels** ride the overlay effect that draws atom
+numbers/halos: a `+1`/`−1` label on any atom in the `formalCharges` map (display bookkeeping keyed by
+AtomId, not in the Scene) — the effect gains `formalCharges` in its deps.
+
 ## The overlay effect (one owner of all shapes & labels)
 
 Halos, measurement lines/labels, atom-number labels, and the edit-mask glow are all drawn in **one**
