@@ -1,8 +1,8 @@
 # Module: Python sidecar (sidecar/)
 
 **Status:** chemistry endpoints live — `/smiles-to-3d` (RDKit), `/convert` + `/formats` (ASE),
-`/geometry/set-internal` and `/geometry/rotatable-mask` (the ASE geometry kernel). Sidecar
-`__version__` `0.4.0`. **Result parsing is NOT a sidecar concern** — cclib was rejected and the
+`/geometry/set-internal`, `/geometry/rotatable-mask`, and `/geometry/connected-component` (the ASE
+geometry kernel). Sidecar `__version__` `0.5.0`. **Result parsing is NOT a sidecar concern** — cclib was rejected and the
 authoritative tier moved to Rust (ADR-012); see [artifact-readers.md](artifact-readers.md). **Manual
 indexing is Rust too, not the sidecar** — [ADR-013](../architecture/adr-013-manual-indexing-ownership.md)
 narrows ADR-006: the sidecar is not involved in Phase 4.
@@ -206,6 +206,27 @@ distance within each side unchanged (moving-side max dev **4.7e-11**, static-sid
 rigid rotation, not a deformation. Ibuprofen (via `/smiles-to-3d`): cut Cα–COOH → mask = the carboxyl
 group **{C, O, O, H} = 4 atoms**, `static_count` 29.
 
+## `POST /geometry/connected-component` — the atoms a drag moves (0.5.0)
+
+For the **Move-mode drag** the moving set is the dragged atom's **perceived connected component**,
+not the whole fragment — so after a bond is broken (geometrically, nothing stored) the two pieces
+drag independently. Request `{ xyz, atom, scale? }` → response `{ component, size }`, where
+`component` is the sorted indices (in the request's own index space) that travel with `atom`.
+
+- **Same perception as `rotatable-mask`** — `natural_cutoffs(atoms, mult=scale)` + `_bond_edges`;
+  `scale` defaults to `_COVALENT_SCALE_DEFAULT = 1.2`. **Reuses `_components` verbatim** (no second
+  graph impl); no `cut`, no `within` — it perceives over exactly the atoms it is given.
+- **A fully bonded fragment → one component** (== the whole fragment: the backward-compatible
+  whole-fragment drag). **An atom whose bonds are all broken → a singleton `[atom]`** (`_components`
+  seeds every node in `range(n)`) — the HCN→HNC case that surfaced this: break H–C, drag H, only H
+  moves. Out-of-range `atom` → **422**, never a guessed component.
+- **The frontend sends the dragged FRAGMENT's own xyz** and the grabbed atom's fragment-local index,
+  so the component is confined to that fragment (no cross-fragment fusion — the same guarantee
+  `within` gives `rotatable-mask`, achieved here by simply not sending the other fragments).
+
+Tests: `tests/test_connected_component.py` — bonded HCN = one component for every atom (backward-
+compat); broken H–C → H `[0]`, C `[1,2]` (the bite); out-of-range / negative `atom` → 422.
+
 ## Versioning + the stale-sidecar handshake
 
 **Versioning rule:** bump `app/__init__.py` `__version__` **minor** every time an endpoint is added
@@ -224,9 +245,11 @@ from `down`), and the status bar shows it prominently; `SidecarStatus` also carr
 `expected_version`. Mechanics in `wiki/modules/tauri-core.md`.
 
 **Human errors, one wrapper:** `src/sidecar-client.ts` (`postSidecar` + the pure, tested
-`describeSidecarError`) is the single path for EditPanel / import-file / smiles: 404 → "older build,
-restart" (naming the route); 422 → the `detail` verbatim; 5xx → the `detail` prominently; network →
-"isn't running". No caller sees a bare `Not Found`.
+`describeSidecarError`) is the single path for EditPanel / import-file / smiles / the Move-mode drag
+(`connected-component`): 404 → "older build, restart" (naming the route); 422 → the `detail`
+verbatim; 5xx → the `detail` prominently; network → "isn't running". No caller sees a bare `Not
+Found`. The drag additionally **falls back to a whole-fragment move + an honest banner** if this call
+fails, so a dead sidecar never yields a silent wrong move (see `wiki/modules/editor-ui.md`).
 
 **`--reload` in dev:** debug builds (`cfg!(debug_assertions)`) launch uvicorn with
 `--reload --reload-dir app`; `start` puts the sidecar in its **own process group** and `stop`/`Drop`

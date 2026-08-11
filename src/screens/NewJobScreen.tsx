@@ -159,6 +159,9 @@ export function NewJobScreen({
   //     different calculation, Adopt it as a fresh Scene (`text-adopt`). After
   //     adoption the block is read-only again.
   const [coordNotice, setCoordNotice] = useState(false); // a block hand-edit was reverted
+  // A drag fell back to a whole-fragment move because the sidecar couldn't resolve
+  // the connected component (Stage 3.x) — surfaced honestly, never a silent move.
+  const [dragFallbackNotice, setDragFallbackNotice] = useState<string | null>(null);
   const [importXyzOpen, setImportXyzOpen] = useState(false);
   const [importXyz, setImportXyz] = useState("");
   const [replaceConfirm, setReplaceConfirm] = useState(false); // "Replace input?" prompt shown
@@ -230,7 +233,7 @@ export function NewJobScreen({
   const commit = useSceneStore((s) => s.commit);
   const installLog = useSceneStore((s) => s.installLog);
   const seedScene = useSceneStore((s) => s.seedScene);
-  const translateFragment = useSceneStore((s) => s.translateFragment);
+  const translateAtoms = useSceneStore((s) => s.translateAtoms);
   const rotateFragment = useSceneStore((s) => s.rotateFragment);
 
   // ── Atom selection (2.5.2a; AtomId-native 2c2) — the geometry editor's pick list
@@ -1853,6 +1856,21 @@ export function NewJobScreen({
         </div>
       ) : null}
 
+      {/* Stage 3.x — a drag moved the WHOLE fragment because the sidecar could not
+          resolve the connected component. Honest, dismissible; never silent. */}
+      {dragFallbackNotice ? (
+        <div className="banner warn">
+          {dragFallbackNotice}
+          <button
+            className="btn btn-sm"
+            style={{ marginLeft: 10 }}
+            onClick={() => setDragFallbackNotice(null)}
+          >
+            Dismiss
+          </button>
+        </div>
+      ) : null}
+
       {/* Steric-clash WARNING (unit 3.2) — a warning, never a block. Derived over
           the scene, so it clears itself when the fragments are pulled apart. The
           clashing atoms are glowing magenta in the viewer. */}
@@ -2057,7 +2075,8 @@ export function NewJobScreen({
                   selection={selection}
                   onAtomPick={onAtomPick}
                   moveMode={moveMode}
-                  onFragmentDrag={translateFragment}
+                  onFragmentDrag={translateAtoms}
+                  onFragmentDragFallback={setDragFallbackNotice}
                   hiddenBonds={hiddenBonds}
                   showCationBonds={showCationBonds}
                   clashHighlight={clashIds}

@@ -585,6 +585,14 @@ Stage 3, where it is actually needed.) **Stage 3 is now COMPLETE (see below).**
       proven-biting negative control; manual gates **m1–m4** verified live (drag moves one fragment /
       camera held; one history entry + one Undo; rotate+pick outside Move mode; ~1.3 ms/frame at 38
       atoms). See `wiki/modules/visualization.md`, `editor-ui.md`, `debugging/013`.
+  - [x] **Stage 3.x — a drag moves the dragged atom's perceived connected component, not the whole
+        fragment.** After a bond is broken the two pieces drag independently (the HCN→HNC case). New
+        sidecar `POST /geometry/connected-component` (reuses `_components`; a fully-broken atom →
+        singleton) resolved **once on mousedown**; commit is one `translate-atoms` op over the
+        component's AtomIds (count/order invariant via `translateAtomsInScene`, one Undo). Fully-bonded
+        fragment → component == whole fragment (backward-compat). Sidecar-fail → whole-fragment move +
+        honest banner. No stored connectivity (perception each drag). pytest +4, vitest +7. **Author
+        m1–m3 live gate pending.**
 - [x] **Rotation of a fragment about its approach axis (unit 3.3).** A rigid whole-fragment spin about
       the axis two picked atoms define — P (pivot, on the rotating fragment) and Q (direction, typically
       the substrate contact atom). **Pure TS, a sibling of — not routed through — the sidecar set-internal

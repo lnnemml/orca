@@ -50,6 +50,7 @@ import {
   replaceFragmentAtoms as replaceFragmentAtomsPure,
   setMultiplicity as setMultiplicityPure,
   translateFragmentInScene,
+  translateAtomsInScene,
   rotateFragmentInScene,
 } from "./scene";
 import type { AtomId } from "./ids";
@@ -88,6 +89,23 @@ export interface SceneStore {
    * lands here on mouseup). No-op on a zero delta or an absent id.
    */
   translateFragment(id: string, dx: number, dy: number, dz: number): void;
+  /**
+   * Rigid-body translate an EXPLICIT SET of atoms (the dragged atom's perceived
+   * connected component — sidecar `/geometry/connected-component`) by a TOTAL
+   * (dx, dy, dz) Å. The single op a drag commits on release once the moving set is
+   * the component rather than the whole fragment (Stage 3.x; ADR-010: the ephemeral
+   * 60fps motion is a viewer-only overlay and is NOT logged; exactly one
+   * `translate-atoms` op lands on mouseup). When `atomIds` covers a whole fragment
+   * this is behaviourally identical to `translateFragment`. No-op on a zero delta,
+   * an empty set, or an absent id. `fragmentId` is provenance for the journal line.
+   */
+  translateAtoms(
+    fragmentId: string,
+    atomIds: AtomId[],
+    dx: number,
+    dy: number,
+    dz: number,
+  ): void;
   /**
    * Rigid-body ROTATE a fragment by `angleRad` about the axis two picked atoms
    * `[P, Q]` define (`dir = normalize(Q − P)`, `pivot = P`) — the single op the
@@ -207,6 +225,25 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
     get().commit(
       { type: "translate-fragment", fragmentId: id, name: frag.name, delta: [dx, dy, dz] },
       translateFragmentInScene(cur, id, dx, dy, dz),
+    );
+  },
+
+  translateAtoms: (fragmentId, atomIds, dx, dy, dz) => {
+    const cur = current(get().log);
+    if (!cur) return;
+    const frag = cur.fragments.find((f) => f.id === fragmentId);
+    if (!frag) return;
+    if (atomIds.length === 0) return; // nothing to move → no op
+    if (dx === 0 && dy === 0 && dz === 0) return; // a click with no drag → no op
+    get().commit(
+      {
+        type: "translate-atoms",
+        fragmentId,
+        name: frag.name,
+        atoms: atomIds,
+        delta: [dx, dy, dz],
+      },
+      translateAtomsInScene(cur, atomIds, dx, dy, dz),
     );
   },
 

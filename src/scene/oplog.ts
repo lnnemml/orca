@@ -120,6 +120,18 @@ export type Op =
       delta: [number, number, number];
     }
   | {
+      type: "translate-atoms";
+      fragmentId: string;
+      name: string;
+      /** The moving set: the dragged atom's PERCEIVED connected component, a
+       * subset of the fragment (AtomId-native like every geometry-carrying op, so
+       * the entry stays legible after later edits). When it covers the whole
+       * fragment this op is behaviourally identical to `translate-fragment` — the
+       * backward-compatible whole-fragment drag. */
+      atoms: AtomId[];
+      delta: [number, number, number];
+    }
+  | {
       type: "rotate-fragment";
       fragmentId: string;
       name: string;
@@ -163,6 +175,7 @@ const OP_TYPES: readonly Op["type"][] = [
   "set-fragment-charge",
   "set-multiplicity",
   "translate-fragment",
+  "translate-atoms",
   "rotate-fragment",
   "replace-fragment-atoms",
   "replace-all-atoms",
@@ -238,6 +251,12 @@ export function describe(op: Op): string {
     case "translate-fragment": {
       const [dx, dy, dz] = op.delta;
       return `Move ${op.name} by (${num(dx)}, ${num(dy)}, ${num(dz)}) Å`;
+    }
+    case "translate-atoms": {
+      const [dx, dy, dz] = op.delta;
+      // Names the moving-set size so a partial (post-bond-break) drag reads apart
+      // from a whole-fragment move in the lab journal.
+      return `Move ${plural(op.atoms.length, "atom")} of ${op.name} by (${num(dx)}, ${num(dy)}, ${num(dz)}) Å`;
     }
     case "rotate-fragment": {
       const [p, q] = op.axisAtoms;
@@ -492,6 +511,16 @@ function isOp(v: unknown): v is Op {
       return (
         str("fragmentId") &&
         str("name") &&
+        Array.isArray(o.delta) &&
+        o.delta.length === 3 &&
+        o.delta.every((n) => typeof n === "number")
+      );
+    case "translate-atoms":
+      return (
+        str("fragmentId") &&
+        str("name") &&
+        Array.isArray(o.atoms) &&
+        o.atoms.every((a) => typeof a === "number") &&
         Array.isArray(o.delta) &&
         o.delta.length === 3 &&
         o.delta.every((n) => typeof n === "number")

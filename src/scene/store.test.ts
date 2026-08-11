@@ -265,6 +265,56 @@ describe("translateFragment (c1)", () => {
   });
 });
 
+// ── translateAtoms (Stage 3.x) — a drag moves the perceived component ─────────
+// The store side of the component drag: ONE `translate-atoms` op on release,
+// carrying the component's AtomIds + total delta; scene stays derived from the
+// log (so undo restores the pre-drag geometry). Negative control: only the given
+// atoms move — the rest of the fragment (and other fragments) are untouched.
+describe("translateAtoms (Stage 3.x)", () => {
+  it("commits ONE op with the component ids; moves only them; undo restores", () => {
+    // One fragment [O, H, H]; ids == global index on a fresh seed.
+    get().seedScene(scene(1, frag("a", ["O", "H", "H"])), "library");
+    const before = get().scene!;
+    const [oId, h1Id] = [before.fragments[0].atoms[0].id, before.fragments[0].atoms[1].id];
+    const h2Before = { ...before.fragments[0].atoms[2] };
+    const lenBefore = get().log.entries.length;
+    const [dx, dy, dz] = [1.5, -2.0, 0.5];
+
+    // Move only {O, H1} — a partial component (as if H2's bond were broken off).
+    get().translateAtoms("a", [oId, h1Id], dx, dy, dz);
+
+    // Exactly one op, of the new type, carrying the picked ids + total delta.
+    expect(get().log.entries.length).toBe(lenBefore + 1);
+    expect(get().log.entries[get().log.pointer].op).toMatchObject({
+      type: "translate-atoms",
+      fragmentId: "a",
+      atoms: [oId, h1Id],
+      delta: [dx, dy, dz],
+    });
+    // scene is derived from the log (the store's core invariant).
+    expect(get().scene).toBe(current(get().log));
+
+    const after = get().scene!.fragments[0].atoms;
+    expect(after[0].x).toBeCloseTo(before.fragments[0].atoms[0].x + dx, 10);
+    expect(after[1].x).toBeCloseTo(before.fragments[0].atoms[1].x + dx, 10);
+    // The bite: H2 (not in the set) is UNTOUCHED — a whole-fragment move fails here.
+    expect(after[2]).toMatchObject({ x: h2Before.x, y: h2Before.y, z: h2Before.z });
+
+    // Undo restores the pre-drag geometry.
+    get().undo();
+    expect(get().scene).toEqual(before);
+  });
+
+  it("a zero delta or empty set is a no-op (no op appended)", () => {
+    get().seedScene(scene(1, frag("a", ["O", "H"])), "library");
+    const id0 = get().scene!.fragments[0].atoms[0].id;
+    const len = get().log.entries.length;
+    get().translateAtoms("a", [id0], 0, 0, 0);
+    get().translateAtoms("a", [], 1, 2, 3);
+    expect(get().log.entries.length).toBe(len);
+  });
+});
+
 // ── Rigid rotation commit (Stage 3, unit 3.3) — ONE op on Apply (c3), degenerate (c5) ─
 // The "Rotate about axis" tool's commit. The live ephemeral preview is a pure
 // `rotateFragmentInScene` shown in the viewer — it must NOT touch the store (c3);

@@ -22,6 +22,7 @@ import {
   type FilterableAtom,
 } from "./bond-display";
 import { makeDragController, type WorldDelta } from "./fragment-drag";
+import { postSidecar } from "../sidecar-client";
 import { chooseRotateOverlay, type RotateOverlay } from "./rotate-overlay";
 
 // Side-effect: force 3Dmol onto its direct-canvas WebGL path so it renders in
@@ -175,22 +176,40 @@ interface MoleculeViewerProps {
   representation?: Representation;
   /**
    * Rigid-body fragment drag — "Move mode" (Phase 4.2 Stage 3, unit 3.1). When
-   * true (scene path only), a mouse-drag STARTING on an atom grabs that atom's
-   * whole fragment and moves it rigidly in the plane of the screen at 60fps — a
-   * VIEWER-ONLY ephemeral overlay (the Scene is untouched, ADR-010). Camera
-   * rotation is suppressed for that drag (the grab intercepts the mousedown before
-   * 3Dmol). On release, the TOTAL delta is handed up via {@link onFragmentDrag} as
-   * ONE op. A drag on empty space still rotates the camera; a click still picks.
-   * When false, mouse behaviour is unchanged (rotate / pick). Requires `onAtomPick`
-   * (a pickable scene) and `onFragmentDrag`.
+   * true (scene path only), a mouse-drag STARTING on an atom grabs the dragged
+   * atom's PERCEIVED CONNECTED COMPONENT (Stage 3.x — resolved ONCE on mousedown
+   * via the sidecar) and moves it rigidly in the plane of the screen at 60fps — a
+   * VIEWER-ONLY ephemeral overlay (the Scene is untouched, ADR-010). For a fully
+   * bonded fragment the component IS the whole fragment (identical to before a bond
+   * was ever broken). Camera rotation is suppressed for that drag (the grab
+   * intercepts the mousedown before 3Dmol). On release, the TOTAL delta is handed
+   * up via {@link onFragmentDrag} as ONE op. A drag on empty space still rotates the
+   * camera; a click still picks. When false, mouse behaviour is unchanged (rotate /
+   * pick). Requires `onAtomPick` (a pickable scene) and `onFragmentDrag`.
    */
   moveMode?: boolean;
   /**
-   * Release callback for a rigid fragment drag (unit 3.1): the grabbed fragment's
-   * id and the TOTAL world displacement (Å). Called exactly once per drag, on
-   * mouseup (never per frame). The app commits it as one `translate-fragment` op.
+   * Release callback for a rigid drag (unit 3.1; Stage 3.x). Passes the grabbed
+   * fragment's id, the stable {@link AtomId}s of the MOVING SET (the dragged atom's
+   * perceived connected component — the whole fragment when nothing is broken), and
+   * the TOTAL world displacement (Å). Called exactly once per drag, on mouseup
+   * (never per frame). The app commits it as one `translate-atoms` op.
    */
-  onFragmentDrag?: (fragmentId: string, dx: number, dy: number, dz: number) => void;
+  onFragmentDrag?: (
+    fragmentId: string,
+    atomIds: AtomId[],
+    dx: number,
+    dy: number,
+    dz: number,
+  ) => void;
+  /**
+   * Honest-note callback (Stage 3.x): the sidecar could not resolve the dragged
+   * atom's connected component, so the drag fell back to moving the WHOLE fragment.
+   * Called at most once per drag, on release, only when a real move was committed
+   * under the fallback — so the user is never left with a silent whole-fragment
+   * move that should have been a component move. `message` is human-facing.
+   */
+  onFragmentDragFallback?: (message: string) => void;
   /**
    * Bond DISPLAY filter (unit bond-display-control) — DISPLAY-ONLY, app-owned
    * (ADR-010), NOT in the Scene. After 3Dmol perceives bonds at `addModel`, bonds
@@ -556,6 +575,7 @@ export const MoleculeViewer = forwardRef<MoleculeViewerHandle, MoleculeViewerPro
       representation = "stick",
       moveMode = false,
       onFragmentDrag,
+      onFragmentDragFallback,
       hiddenBonds = EMPTY_HIDDEN_BONDS,
       showCationBonds = false,
       style,
@@ -592,6 +612,9 @@ export const MoleculeViewer = forwardRef<MoleculeViewerHandle, MoleculeViewerPro
   // re-attach its listeners when only this inline callback changes.
   const onFragmentDragRef = useRef<typeof onFragmentDrag>(onFragmentDrag);
   onFragmentDragRef.current = onFragmentDrag;
+  const onFragmentDragFallbackRef =
+    useRef<typeof onFragmentDragFallback>(onFragmentDragFallback);
+  onFragmentDragFallbackRef.current = onFragmentDragFallback;
   // Picking is enabled iff a pick handler was provided. Captured as a boolean so
   // the model effect re-runs when it flips (it never flips in practice — a
   // screen either passes onAtomPick or doesn't — but keeps the effect honest).
@@ -1111,16 +1134,74 @@ export const MoleculeViewer = forwardRef<MoleculeViewerHandle, MoleculeViewerPro
       const fragAtoms = atoms.slice(range.start, range.end);
       const orig = fragAtoms.map((a) => ({ x: a.x, y: a.y, z: a.z }));
       const modelz = grabbedAtomDepth(viewer, atoms[best]);
+      const fragData = scene.fragments[fi].atoms; // canonical (element + pre-drag Å)
+      const localGrabbed = best - range.start; // the grabbed atom's index IN the fragment
 
-      const setFragCoords = (fn: (i: number) => { x: number; y: number; z: number }) => {
+      // The MOVING SET as LOCAL indices into `fragAtoms`. `null` = "not resolved yet"
+      // → treated as the WHOLE fragment (the backward-compatible fallback), so an
+      // early drag frame or a sidecar failure still moves rigidly, never wrongly.
+      // Narrowed ONCE, on mousedown (below), to the dragged atom's perceived
+      // connected component. `settled` guards the async resolve from touching a
+      // finished drag; `fetchFailed` drives the honest fallback note on release.
+      let movingLocal: Set<number> | null = null;
+      let settled = false;
+      let fetchFailed = false;
+      let lastDelta: WorldDelta | null = null;
+      const inSet = (i: number) => movingLocal === null || movingLocal.has(i);
+
+      // Draw the ephemeral overlay at `delta`: ONLY the moving-set atoms shift; the
+      // rest stay pinned at `orig` (so after a bond break the other piece stays put).
+      const drawAt = (delta: WorldDelta) => {
         for (let i = 0; i < fragAtoms.length; i++) {
-          const p = fn(i);
-          fragAtoms[i].x = p.x;
-          fragAtoms[i].y = p.y;
-          fragAtoms[i].z = p.z;
+          const move = inSet(i);
+          fragAtoms[i].x = orig[i].x + (move ? delta[0] : 0);
+          fragAtoms[i].y = orig[i].y + (move ? delta[1] : 0);
+          fragAtoms[i].z = orig[i].z + (move ? delta[2] : 0);
         }
         applySceneStyle(viewer, scene, theme); // nulls cached geometry → sticks redraw at new coords
         viewer.render();
+      };
+      const restoreCoords = () => {
+        for (let i = 0; i < fragAtoms.length; i++) {
+          fragAtoms[i].x = orig[i].x;
+          fragAtoms[i].y = orig[i].y;
+          fragAtoms[i].z = orig[i].z;
+        }
+        applySceneStyle(viewer, scene, theme);
+        viewer.render();
+      };
+
+      // Resolve the component ONCE per mousedown (not per frame): send the FRAGMENT's
+      // own xyz + the grabbed atom's local index; the sidecar returns the local
+      // indices that travel with it. A fully bonded fragment → all of them (== the
+      // whole fragment). On failure we keep the whole-fragment fallback and flag it.
+      const fragXyz =
+        `${fragData.length}\n\n` +
+        fragData.map((a) => `${a.element} ${a.x} ${a.y} ${a.z}`).join("\n") +
+        "\n";
+      postSidecar<{ component: number[] }>("/geometry/connected-component", {
+        xyz: fragXyz,
+        atom: localGrabbed,
+      })
+        .then((res) => {
+          if (settled) return; // the drag already finished → don't touch it
+          movingLocal = new Set(res.component);
+          if (lastDelta) drawAt(lastDelta); // narrow an already-moving ephemeral drag
+        })
+        .catch(() => {
+          if (settled) return;
+          fetchFailed = true; // fall back to the whole fragment; note it on release
+        });
+
+      // The moving set as stable AtomIds, for the ONE commit on release.
+      const movingAtomIds = (): AtomId[] => {
+        const ids: AtomId[] = [];
+        for (let i = 0; i < fragAtoms.length; i++) {
+          if (!inSet(i)) continue;
+          const id = viewerTableRef.current?.atomIdAt(range.start + i);
+          if (id !== undefined) ids.push(id);
+        }
+        return ids;
       };
 
       const controller = makeDragController({
@@ -1132,14 +1213,21 @@ export const MoleculeViewer = forwardRef<MoleculeViewerHandle, MoleculeViewerPro
           };
           return [wd.x, wd.y, wd.z];
         },
-        showEphemeral: (delta) =>
-          setFragCoords((i) => ({
-            x: orig[i].x + delta[0],
-            y: orig[i].y + delta[1],
-            z: orig[i].z + delta[2],
-          })),
-        commit: (fid, delta) => onFragmentDragRef.current?.(fid, delta[0], delta[1], delta[2]),
-        restore: () => setFragCoords((i) => orig[i]),
+        showEphemeral: (delta) => {
+          lastDelta = delta;
+          drawAt(delta);
+        },
+        commit: (fid, delta) => {
+          onFragmentDragRef.current?.(fid, movingAtomIds(), delta[0], delta[1], delta[2]);
+          // Honest note: a real move was committed but we could not perceive the
+          // component, so it moved the whole fragment (never a silent wrong move).
+          if (fetchFailed) {
+            onFragmentDragFallbackRef.current?.(
+              "Couldn't reach the chemistry sidecar to find the connected atoms — moved the whole fragment instead.",
+            );
+          }
+        },
+        restore: () => restoreCoords(),
       });
       controller.begin(fragmentId, [e.pageX, e.pageY]);
 
@@ -1165,6 +1253,7 @@ export const MoleculeViewer = forwardRef<MoleculeViewerHandle, MoleculeViewerPro
         cleanup();
       };
       const cleanup = () => {
+        settled = true; // a late connected-component resolve must not touch this drag
         window.removeEventListener("mousemove", onMove, true);
         window.removeEventListener("mouseup", onUp, true);
         dragCleanupRef.current = null;

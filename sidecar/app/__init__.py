@@ -7,4 +7,5 @@
 # wiki/modules/sidecar.md and wiki/debugging/005.
 # 0.3.0: +POST /geometry/rotatable-mask (bond-graph split for intra-fragment edits).
 # 0.4.0: rotatable-mask gained the `within` param (perception restricted to one fragment).
-__version__ = "0.4.0"
+# 0.5.0: +POST /geometry/connected-component (the perceived component a drag moves).
+__version__ = "0.5.0"

@@ -7332,3 +7332,44 @@ F1–F3 CREST next), log. **Next:** author m1–m3 live (m1 inter-fragment pair 
 perception draws the bond, order unchanged; m2 bonded pair → Break bond → moves apart, bond drops; m3 from
 the Menshutkin reactant, form N–C + break C–I → save → Opt → known product (N–C ≈ 1.51, C–I ≈ 4.12) → NEB
 (reactant, derived product) accepted). Then Stage F (CREST microsolvation).
+
+## [2026-08-11] session | Stage 3.x — a drag moves the dragged atom's perceived connected component, not the whole fragment
+
+**Root cause (recorded in visualization.md / editor-ui.md).** Move-mode committed `translate-fragment`
+(fragment-level). HCN is ONE fragment; breaking H–C drops the *perceived* bond but the fragment is
+unchanged, so dragging H moved all of {H,C,N}. Fix (Approach A, Anton confirmed): the moving set = the
+dragged atom's **perceived connected component**, derived from perception each drag — **no stored
+connectivity**. Backward-compatible: a fully-bonded fragment's component == the whole fragment.
+
+**Part A — sidecar endpoint + pure op core (reviewed before wiring).**
+- **`POST /geometry/connected-component`** (`sidecar/app/geometry.py`): request `{ xyz, atom, scale? }`
+  → same perception `rotatable-mask` uses (`natural_cutoffs(mult=1.2)` + `_bond_edges`) → **reuses
+  `_components` verbatim** (no second graph impl) → `{ component, size }` for the component containing
+  `atom`. A fully-broken atom → singleton `[atom]` (`_components` seeds every node). Version **0.4.0 →
+  0.5.0**. pytest `tests/test_connected_component.py` (**+4**): bonded HCN = one component (backward-
+  compat); broken H–C → H `[0]`, C `[1,2]` (the bite); out-of-range / negative → 422.
+- **`translate-atoms` op** (`src/scene/oplog.ts`): `{ fragmentId, name, atoms: AtomId[], delta }` — added
+  to the union / `OP_TYPES` / `describe` (`"Move N atoms of {name} by …"`) / `isOp`. `translate-fragment`
+  left intact (old logs deserialize). **`translateAtomsInScene`** (`src/scene/scene.ts`): shifts exactly
+  the given ids, count+order+id+element invariant by construction (ADR-008 inlined); whole-fragment set
+  == `translateFragmentInScene`; same-ref no-op on empty/zero. **`store.translateAtoms`** — one commit,
+  one op, one Undo. vitest **+7**: scene.test (the "moves ONLY given ids" bite + invariants + whole-frag
+  equivalence + no-op), store.test (ONE op, only-component moves, `scene===current(log)`, undo restores),
+  oplog.test (2 describe cases + isOp round-trip).
+
+**Part B — wired the drag** (`MoleculeViewer.tsx` + `NewJobScreen.tsx`). On mousedown — **once, not per
+frame** — the viewer calls `/geometry/connected-component` with the dragged **fragment's own xyz** +
+the grabbed atom's fragment-local index; the resolved local set narrows the moving atoms (`inSet`).
+`showEphemeral` shifts only that set (pinned atoms re-pinned each frame; a `settled` flag stops a late
+resolve touching a finished drag). On release ONE `translate-atoms` op with the component's AtomIds +
+total delta. `onFragmentDrag` prop now carries `atomIds`; `onFragmentDrag={translateAtoms}`. **Fallback:**
+a failed sidecar call → whole-fragment move (moving set defaults to whole) + an **honest dismissible
+banner** (`onFragmentDragFallback` → `dragFallbackNotice`), never a silent wrong move. The pure
+`fragment-drag.ts` controller is **unchanged** (moving-set logic lives in the viewer's hook closures).
+
+**Verification.** vitest **793** (+7); pytest **42** (+4); **tsc clean**; **cargo untouched** (only
+`sidecar/` + `src/` changed). Wiki: sidecar.md (new endpoint + status/version + `postSidecar` caller),
+editor-ui.md + visualization.md (drag = connected component, Approach A, fallback), scene.md
+(`translateAtomsInScene` + the op). **Author m1–m3 live gate pending:** m1 HCN break H–C → drag H → only
+H moves, drag C → C+N move; m2 a normal fragment still drags whole (no regression); m3 HCN break H–C,
+move H by N, Form H–N, Opt → HNC, NEB(HCN, HNC) accepted (same atom order). **Next:** Stage F (CREST).

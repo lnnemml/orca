@@ -99,14 +99,24 @@ comes from the theme's palette (see Themes).
   adapter is gone. The ASE mask and the `%geom` constraint stay positional at their own emit seams
   (see `wiki/modules/scene.md`).
 
-## Rigid-body fragment drag — "Move mode" (unit 3.1; ADR-010 ephemeral layer)
+## Rigid-body drag — "Move mode" (unit 3.1; Stage 3.x; ADR-010 ephemeral layer)
 
 When `moveMode` is on (scene path, pickable, with `onFragmentDrag` wired), a mouse-drag that STARTS on
-an atom grabs that atom's whole fragment and moves it rigidly **in the plane of the screen at 60fps**.
-The entire drag is a **viewer-only ephemeral overlay** — the Scene/store is untouched until release,
-when exactly ONE `translate-fragment` op is committed with the total delta (ADR-010: 60fps motion is
-not logged; one op, one Undo). The pure accumulate/commit logic is `src/viewer/fragment-drag.ts`
-(`makeDragController`), unit-tested without jsdom (the same split as `syncMonacoToScene` in 2d); the
+an atom grabs the **dragged atom's perceived connected component** (Stage 3.x — **not** the whole
+fragment) and moves it rigidly **in the plane of the screen at 60fps**. The moving set is resolved
+**once on mousedown** (never per frame) by asking the sidecar `/geometry/connected-component` for the
+dragged fragment's own xyz + the grabbed atom's fragment-local index; the returned local indices are
+the atoms that shift, everything else stays pinned at its pre-drag coords. So after a bond is **broken**
+the two pieces drag independently; a **fully-bonded fragment's component is the whole fragment**, so an
+intact molecule drags exactly as before (backward-compatible). The entire drag is a **viewer-only
+ephemeral overlay** — the Scene/store is untouched until release, when exactly ONE **`translate-atoms`**
+op is committed with the component's AtomIds + total delta (ADR-010: 60fps motion is not logged; one op,
+one Undo). **Until the async resolve returns** (or if it fails) the moving set defaults to the whole
+fragment — a `settled` flag stops a late resolve touching a finished drag, and a **failed** call falls
+back to a whole-fragment move **plus an honest banner** (`onFragmentDragFallback`), never a silent wrong
+move. The pure accumulate/commit logic is `src/viewer/fragment-drag.ts` (`makeDragController`),
+unit-tested without jsdom (the same split as `syncMonacoToScene` in 2d) — its contract is unchanged
+(the component/moving-set logic lives in the viewer's hook closures, not the controller); the
 3Dmol/mouse wiring is a separate effect in `MoleculeViewer`, keyed `[moveMode, pickable, scene, theme]`.
 
 - **Camera suppression.** 3Dmol binds `mousedown` on its canvas (`glDOM`). The Move effect binds
@@ -123,7 +133,8 @@ not logged; one op, one Undo). The pure accumulate/commit logic is `src/viewer/f
   `debugging/013`). The internal-API reach falls back to the default depth (≤~6% lag) if a 3Dmol upgrade
   moves it — accuracy only, never a crash.
 - **Ephemeral coordinate-update reuses the frozen-topology path (unit 3.14).** `showEphemeral` mutates
-  the grabbed fragment's live model-atom `.x/.y/.z` (= pre-drag coords + world delta) then
+  the live model-atom `.x/.y/.z` of the **moving-set atoms** (= pre-drag coords + world delta; the
+  pinned atoms are re-written to their `orig` each frame so a narrowing resolve snaps them back) then
   `applySceneStyle` (which `setStyle`-nulls the cached geometry so sticks redraw at the new coords) +
   `render()` — **no `addModel`, no bond re-perception, no `zoomTo`**, exactly like the mode-animation
   frame update. `applySceneStyle` is the styling extracted from the model effect so a drag frame keeps

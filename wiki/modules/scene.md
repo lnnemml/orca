@@ -323,8 +323,16 @@ Immutable mutators (each returns a new Scene, never mutates the input):
   length ≠ `atomCount(scene)`. The apply path for a whole-scene optimizer (xtb
   pre-opt hands back a merged geometry, same order — `wiki/orca/xtb.md`).
 - `translateFragment(fragment, dx, dy, dz)` — rigid-body shift of one fragment
-  (same id / composition / internal geometry). Used by placement and, later, the
-  geometry editor (2.5.2).
+  (same id / composition / internal geometry). Used by placement, and by
+  `translateFragmentInScene` (kept for old-log deserialization).
+- `translateAtomsInScene(scene, atomIds, dx, dy, dz)` — rigid-body shift of an
+  **explicit set of atoms** (by stable id), everything else fixed. The Move-mode
+  drag commit (Stage 3.x): the moving set is the dragged atom's perceived connected
+  component, not the whole fragment, so after a bond break the pieces move
+  independently. Count + order + id + element invariant **by construction** (every
+  atom keeps its slot; only selected ids shift — the ADR-008 discipline inlined).
+  A whole-fragment set equals `translateFragmentInScene` (backward-compat); a
+  no-op (same reference) on an empty set or zero delta.
 - `rotateFragment(fragment, axisDir, angleRad, pivot)` — rigid-body **rotation** of
   one fragment about the line through `pivot` with direction `axisDir` (Rodrigues'
   formula; `axisDir` normalized here, so a raw `Q − P` is fine — a zero-length axis
@@ -444,9 +452,11 @@ store's core invariant and what makes the "mutator bypasses the log" defect
 the three pointer moves `undo` / `redo` / `jumpTo`. Every write to `scene` in the
 store is `scene: current(log)` right after the log changed. Convenience mutators
 (`addFragment`, `removeFragment`, `renameFragment`, `setMultiplicity`,
-`replaceFragmentAtoms(via)`, `translateFragment(id, dx, dy, dz)` — the rigid-body
-drag commit, unit 3.1: `translateFragmentInScene` → a `translate-fragment` op, one
-op with the TOTAL delta on mouseup, a no-op on a zero delta — and
+`replaceFragmentAtoms(via)`, `translateAtoms(id, atomIds, dx, dy, dz)` — the
+rigid-body drag commit, Stage 3.x: `translateAtomsInScene` → a `translate-atoms`
+op over the dragged atom's connected component, one op with the TOTAL delta on
+mouseup, a no-op on a zero delta / empty set (`translateFragment(id, dx, dy, dz)`
+→ `translate-fragment` remains for the whole-fragment path and old logs) — and
 `rotateFragment(id, [P, Q], angleRad)` — the rigid **rotation** commit, unit 3.3:
 `rotateFragmentInScene` → a `rotate-fragment` op, one op on Apply carrying the axis
 atoms + final angle, a no-op on a zero angle or a degenerate axis) compute the result
@@ -554,7 +564,8 @@ is the history-panel jump, and `SnapshotSource` covers the three whole-scene see
 
 - **`Op`** — a tagged union with **one variant per Scene mutator** (`add-fragment`,
   `remove-fragment`, `rename-fragment`, `set-fragment-charge`, `set-multiplicity`,
-  `translate-fragment`, `rotate-fragment` `{axisAtoms: [P, Q], angleRad}`,
+  `translate-fragment`, `translate-atoms` `{atoms: AtomId[], delta}` — the drag's
+  connected-component move (Stage 3.x), `rotate-fragment` `{axisAtoms: [P, Q], angleRad}`,
   `replace-fragment-atoms` `{edit: via 'set-internal'|'xtb'|'conformer'}`,
   `replace-all-atoms` `{edit: via 'xtb'}`) plus the store act `restore-snapshot`, and the
   **legacy** `collapse-from-text` (no post-2d path emits it — kept only to deserialize pre-2d

@@ -555,6 +555,46 @@ export function translateFragmentInScene(
   };
 }
 
+/**
+ * Rigid-body translate an EXPLICIT SET of atoms (by stable {@link AtomId}) by
+ * (dx, dy, dz) Å, leaving every other atom fixed. This is the scene-level mutator
+ * a drag commits once the moving set is the dragged atom's PERCEIVED CONNECTED
+ * COMPONENT (Stage 3.x; sidecar `/geometry/connected-component`) rather than the
+ * whole fragment — so after a bond is broken the two pieces move independently.
+ * Pure/immutable. Count + atom order are invariant by construction: every atom
+ * keeps its exact array slot, only the selected ids have their coordinates shifted
+ * (the `replaceFragmentAtoms` discipline of ADR-008, here inlined because nothing
+ * about composition changes — same shape as `translateFragmentInScene`). When
+ * `atomIds` covers a whole fragment the result equals `translateFragmentInScene`
+ * for it — the backward-compatible whole-fragment drag. A no-op on an empty set or
+ * a zero delta (returns the SAME reference); ids not in the scene are ignored.
+ */
+export function translateAtomsInScene(
+  scene: Scene,
+  atomIds: readonly AtomId[],
+  dx: number,
+  dy: number,
+  dz: number,
+): Scene {
+  const moving = new Set(atomIds);
+  if (moving.size === 0 || (dx === 0 && dy === 0 && dz === 0)) return scene;
+  return {
+    ...scene,
+    fragments: scene.fragments.map((f) =>
+      f.atoms.some((a) => moving.has(a.id))
+        ? {
+            ...f,
+            atoms: f.atoms.map((a) =>
+              moving.has(a.id)
+                ? { ...a, x: a.x + dx, y: a.y + dy, z: a.z + dz }
+                : a,
+            ),
+          }
+        : f,
+    ),
+  };
+}
+
 /** Below which an axis vector (Q − P, Å) is treated as degenerate: the two
  * endpoints coincide, so no rotation direction is defined. Well under any real
  * inter-atomic separation (≥ ~0.5 Å), well over float noise. */

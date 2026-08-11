@@ -241,6 +241,26 @@ vitestDescribe("describe() — one human line per variant", () => {
       ],
       [
         {
+          type: "translate-atoms",
+          fragmentId: "hcn",
+          name: "HCN",
+          atoms: [makeAtomId(0)],
+          delta: [3, -1, 2],
+        },
+        "Move 1 atom of HCN by (3, -1, 2) Å",
+      ],
+      [
+        {
+          type: "translate-atoms",
+          fragmentId: "hcn",
+          name: "HCN",
+          atoms: [makeAtomId(1), makeAtomId(2)],
+          delta: [0.5, 0, 0],
+        },
+        "Move 2 atoms of HCN by (0.500, 0, 0) Å",
+      ],
+      [
+        {
           type: "rotate-fragment",
           fragmentId: "bh4",
           name: "BH₄⁻",
@@ -420,6 +440,19 @@ vitestDescribe("serialization round-trip", () => {
     const back = deserializeLog(serializeLog(append(emptyLog(), rot, waterScene())));
     expect(back).not.toBeNull();
     expect(back!.entries[0].op).toEqual(rot);
+  });
+
+  it("a translate-atoms op survives the deserialize validator (isOp accepts it)", () => {
+    const mv: Op = {
+      type: "translate-atoms",
+      fragmentId: "wat",
+      name: "Water",
+      atoms: [makeAtomId(0), makeAtomId(2)],
+      delta: [1.5, -2, 0.5],
+    };
+    const back = deserializeLog(serializeLog(append(emptyLog(), mv, waterScene())));
+    expect(back).not.toBeNull();
+    expect(back!.entries[0].op).toEqual(mv);
   });
 
   it("deserialized entries are re-frozen (immutability survives persistence)", () => {

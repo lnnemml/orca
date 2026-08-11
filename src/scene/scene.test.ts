@@ -29,6 +29,8 @@ import {
   setFragmentCharge,
   setMultiplicity,
   totalCharge,
+  translateAtomsInScene,
+  translateFragmentInScene,
   xyzMatchesScene,
 } from "./scene";
 
@@ -583,5 +585,76 @@ describe("injectSceneIntoInput", () => {
     expect(xyzMatchesScene(s, mergeToAtomLines(back))).toBe(true);
     expect(totalCharge(back)).toBe(-1);
     expect(back.multiplicity).toBe(2);
+  });
+});
+
+// ── translateAtomsInScene: a drag moves the dragged atom's connected component ─
+// (Stage 3.x) The moving set is an EXPLICIT set of AtomIds — the perceived
+// connected component, not the whole fragment — so after a bond break the pieces
+// move independently. The bite: a version that moved the whole fragment (like the
+// old translate-fragment) would displace the atoms this test asserts are fixed.
+describe("translateAtomsInScene (drag moves the connected component)", () => {
+  // One fragment, atoms in a known order; ids == global index on a fresh scene.
+  function hcn(): Scene {
+    return testScene([
+      {
+        id: "hcn",
+        name: "HCN",
+        charge: 0,
+        source: "editor",
+        atoms: [
+          { element: "H", x: 0, y: 0, z: 0 },
+          { element: "C", x: 1.07, y: 0, z: 0 },
+          { element: "N", x: 2.22, y: 0, z: 0 },
+        ],
+      },
+    ]);
+  }
+
+  it("moves ONLY the given ids, leaves every other atom fixed (the bite)", () => {
+    const s = hcn();
+    const [hId] = [s.fragments[0].atoms[0].id];
+    const before = s.fragments[0].atoms.map((a) => ({ ...a }));
+
+    // Move only H (a lone-atom component after a broken H–C bond).
+    const out = translateAtomsInScene(s, [hId], 3, -1, 2);
+    const a = out.fragments[0].atoms;
+
+    // H moved by exactly the delta...
+    expect(a[0].x).toBeCloseTo(before[0].x + 3, 10);
+    expect(a[0].y).toBeCloseTo(before[0].y - 1, 10);
+    expect(a[0].z).toBeCloseTo(before[0].z + 2, 10);
+    // ...C and N are UNTOUCHED (a whole-fragment move would have shifted them).
+    expect(a[1]).toMatchObject({ x: before[1].x, y: before[1].y, z: before[1].z });
+    expect(a[2]).toMatchObject({ x: before[2].x, y: before[2].y, z: before[2].z });
+  });
+
+  it("preserves atom count, order, ids and elements (ADR-008 invariant)", () => {
+    const s = hcn();
+    const cId = s.fragments[0].atoms[1].id;
+    const nId = s.fragments[0].atoms[2].id;
+    const before = s.fragments[0].atoms;
+
+    const out = translateAtomsInScene(s, [cId, nId], 0.5, 0, 0).fragments[0].atoms;
+    expect(out.length).toBe(before.length);
+    out.forEach((a, i) => {
+      expect(a.id).toBe(before[i].id); // order + identity invariant
+      expect(a.element).toBe(before[i].element);
+    });
+  });
+
+  it("a whole-fragment component equals translateFragmentInScene (backward-compat)", () => {
+    const s = hcn();
+    const allIds = s.fragments[0].atoms.map((a) => a.id);
+    const viaAtoms = translateAtomsInScene(s, allIds, 1, 2, 3);
+    const viaFragment = translateFragmentInScene(s, "hcn", 1, 2, 3);
+    expect(viaAtoms.fragments[0].atoms).toEqual(viaFragment.fragments[0].atoms);
+  });
+
+  it("a zero delta or empty set returns the SAME reference (no-op)", () => {
+    const s = hcn();
+    const allIds = s.fragments[0].atoms.map((a) => a.id);
+    expect(translateAtomsInScene(s, allIds, 0, 0, 0)).toBe(s);
+    expect(translateAtomsInScene(s, [], 1, 2, 3)).toBe(s);
   });
 });

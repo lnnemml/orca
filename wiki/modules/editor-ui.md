@@ -27,13 +27,22 @@ page records the **layout principle and where future panels go** — not the cur
   two doors — **Paste xyz** (import as a fragment, the typical path) and **Replace input** (the
   **named escape**: unlock the whole buffer once to paste a different calculation, then Adopt it as a
   fresh scene). See `modules/scene.md` for the sync wiring; `modules/frontend.md` for the controls.
-- **Move mode — rough placement by dragging (unit 3.1; a toggle in the Edit section).** A checkbox
-  turns on rigid-body fragment drag: grab any atom of a fragment and drag to move the whole fragment in
-  the plane of the screen (60fps, one Undo step — see `modules/visualization.md`). It is deliberately
-  **coarse**: the drag sets *approximate* geometry; **exact** distances/angles/dihedrals come from the
-  measure + constraint tools and the input editor. That division of labour is the point — the drag
-  answers "roughly here", the editor answers "exactly this". A drag on empty space still rotates the
-  camera; a click still picks; toggling Move off restores plain rotate/pick.
+- **Move mode — rough placement by dragging (unit 3.1; Stage 3.x; a toggle in the Edit section).** A
+  checkbox turns on rigid-body drag: grab any atom and drag in the plane of the screen (60fps, one Undo
+  step — see `modules/visualization.md`). The moving set is the grabbed atom's **perceived connected
+  component, not the whole fragment** (Approach A): on mousedown — **once, not per frame** — the viewer
+  asks the sidecar `/geometry/connected-component` for the fragment, so after a bond is **broken** the
+  two pieces drag **independently** (break H–C in HCN → drag H → only H moves; drag C → C and N move
+  together). **Backward-compatible:** a fully-bonded fragment's component **is** the whole fragment, so
+  an intact reagent still drags as one — identical to before. The commit is one **`translate-atoms`** op
+  carrying the component's AtomIds + total delta (count/order preserved via `translateAtomsInScene`,
+  ADR-008; one Undo, ADR-010). **No stored connectivity** — perception is re-derived each drag from the
+  geometry, nothing is kept. If the sidecar call fails the drag **falls back to a whole-fragment move
+  and shows an honest dismissible banner** (never a silent wrong move). It is deliberately **coarse**:
+  the drag sets *approximate* geometry; **exact** distances/angles/dihedrals come from the measure +
+  constraint tools and the input editor. The drag answers "roughly here", the editor "exactly this". A
+  drag on empty space still rotates the camera; a click still picks; toggling Move off restores plain
+  rotate/pick.
 - **Steric-clash warning — a warning, never a block (unit 3.2).** After any geometry change, atoms of
   DIFFERENT fragments closer than `k·(rᵢ+rⱼ)` of their vdW sum are flagged: a warn banner ("N steric
   clashes — coarse placement…") and a **magenta danger glow** on the clashing atoms, visually apart

@@ -400,3 +400,48 @@ def rotatable_mask(req: RotatableMaskRequest) -> RotatableMaskResponse:
         static_count=n - len(mask),
         cut_length=cut_length,
     )
+
+
+# ── Perceived connected component (drag-moves-the-component, Stage 3.x) ─────────
+# A drag/move acts on the PERCEIVED CONNECTED COMPONENT of the dragged atom, not
+# the whole fragment: after a bond is broken (geometrically — nothing is stored),
+# the two pieces must move independently. This endpoint answers exactly "which
+# atoms travel with atom `k`?" from the SAME geometric perception `rotatable-mask`
+# uses (covalent radii × scale). No cut, no `within`: the caller sends the atom
+# set it wants perceived (the frontend sends the dragged fragment's own xyz), and
+# `atom` is an index in THAT xyz. A fully-bonded fragment → one component (== the
+# whole thing, the backward-compatible whole-fragment drag); an atom with all its
+# bonds broken → a singleton `[atom]` (the HCN broken-H→HNC case that surfaced
+# this). The index space in equals the index space out (the 2.5.0 rule).
+
+
+class ConnectedComponentRequest(BaseModel):
+    xyz: str
+    atom: int  # 0-based index (in the request xyz) whose component to return
+    scale: float = _COVALENT_SCALE_DEFAULT  # covalent-radius multiplier
+
+
+class ConnectedComponentResponse(BaseModel):
+    component: list[int]  # sorted indices travelling with `atom` (incl. `atom`)
+    size: int
+
+
+@router.post(
+    "/geometry/connected-component", response_model=ConnectedComponentResponse
+)
+def connected_component(
+    req: ConnectedComponentRequest,
+) -> ConnectedComponentResponse:
+    atoms = _parse_xyz(req.xyz)
+    n = len(atoms)
+    if req.atom < 0 or req.atom >= n:
+        raise HTTPException(422, f"atom index {req.atom} out of range [0, {n})")
+    if req.scale <= 0:
+        raise HTTPException(422, "scale must be > 0")
+
+    cutoffs = natural_cutoffs(atoms, mult=req.scale)
+    edges = _bond_edges(atoms, cutoffs)
+    # `_components` seeds every node in range(n), so an atom with all its bonds
+    # broken comes back as its own singleton — no second graph impl (reuse #10).
+    comp = next(c for c in _components(n, edges) if req.atom in c)
+    return ConnectedComponentResponse(component=sorted(comp), size=len(comp))
