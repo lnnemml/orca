@@ -2022,6 +2022,21 @@ select:disabled,
 .traj-readout .traj-energy {
   color: var(--text);
 }
+/* Bond-order readout (Mayer authoritative / geometric estimate) — click two atoms. */
+.traj-bond-readout {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  margin-top: 4px;
+}
+.traj-bond-readout .traj-bond-pair {
+  font-weight: 600;
+}
+.traj-bond-readout .traj-bond-order {
+  color: var(--muted);
+}
 /* Scan-profile panel (Phase 4.5 B2) — reuses the trajectory viewer/readout idiom. */
 .scan-profile {
   display: flex;

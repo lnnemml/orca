@@ -249,6 +249,20 @@ stays a single line, never a throw. **Formal-charge labels** ride the overlay ef
 numbers/halos: a `+1`/`−1` label on any atom in the `formalCharges` map (display bookkeeping keyed by
 AtomId, not in the Scene) — the effect gains `formalCharges` in its deps.
 
+**The same order in the RESULTS/trajectory viewer (Mayer-in-results).** `applyGeometricBondOrders` is
+now ALSO called on the two non-scene render paths — the **frozen-topology animation** (per frame, after
+the coordinate update) and the **plain xyz** path — reusing the SAME call the scene path makes (no second
+impl). So a results/trajectory 3D view draws 1/2/3 lines **re-derived from each frame's geometry**
+(butadiene → two C=C); nothing is stored. Picking on these paths (no Scene/AtomId table) is armed via a
+separate `onXyzAtomPick(index)` prop that emits the **raw 0-based viewer index** (== the frame /
+`final_geometry` index, the identity `mayer_bond_orders` keys on). `TrajectoryPlayer` holds a 2-atom pick
+and shows the honest split (`bondReadout.ts`, pure + tested): a **Mayer** entry for the pair →
+`"Mayer <order> (authoritative)"` (the COMPUTED order of the final structure, `parse/mayer.rs`), else the
+geometric `"≈ <word> · <d> Å (geometric estimate)"` from the shown frame. The two are **never
+conflated** — the lines are the geometric estimate, the Mayer number is the computed order; a partial TS
+bond (long, geometrically "not a bond") still shows its computed Mayer value. No highlight overlay is
+drawn on the xyz paths (the picked atoms are named in the readout instead).
+
 ## The overlay effect (one owner of all shapes & labels)
 
 Halos, measurement lines/labels, atom-number labels, and the edit-mask glow are all drawn in **one**

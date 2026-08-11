@@ -259,6 +259,36 @@ the **converged TS** (`ParsedResults::from_neb`, single-structure quantities abs
 precondition) — never the reactant geometry match. The order guard is kept, only the mismatched
 geometry-match guard is dropped (rule #11: the guard moved to where its premise holds).
 
+## Seventh reader — `output.out` Mayer bond orders (Mayer-in-results)
+`parse/mayer.rs` is the first reader whose source is the **unbounded `output.out` log**, not a
+bounded structured artifact — so it **streams** (domain rule #5): read line-by-line, only ONE
+candidate block ever buffered. ORCA prints, near the end of an SCF, a block:
+```text
+  Mayer bond orders larger than 0.100000
+B(  0-C ,  1-N ) :   0.8996 B(  0-C ,  2-H ) :   0.9674 B(  1-N ,  8-C ) :   0.1030 ...
+```
+`B( i-El , j-El ) : order`, several per line, indices **0-based** (the `final_geometry` order). This
+is the **computed, authoritative** bond order — contrast the viewer's *geometric* estimate from bond
+length. Reader-specific facts:
+- **The LAST block wins** — for an Opt/OptTS that is the final (converged) structure. A run with no
+  such block (xTB, an SP that didn't print it) → `Ok(None)` (**absent-is-normal**, like every optional
+  reader; a file that won't open is also `Ok(None)`, not a failure).
+- **Post-condition (rule #9):** every pair is bounds-checked against the atom count (`natoms` from
+  `final_geometry.elements.len()`, passed in — the reader has no geometry of its own); an index ≥
+  `natoms` or a non-positive order is a **loud** `Malformed`, never a silently-kept bad pair.
+- **Two layers, like the others:** pure `parse_mayer_lines(&[&str], natoms)` (regex over the entries)
+  under a streaming `read_mayer(path, natoms)`. Rides in `data_json` as
+  `ParsedResults.mayer_bond_orders` (`#[serde(default)]` so pre-existing rows read back `None`);
+  `PARSER_VERSION` 4 → 5.
+
+Six controls (`mayer/tests.rs`) run against a **real Menshutkin SN2 excerpt** (`tests/fixtures/
+mayer_menshutkin.out`, two blocks): the LAST block wins (C–N 0.9056 not the first block's 0.8996), the
+partial TS bonds parse (forming N···C 0.187, breaking C–I 0.568), several-entries-per-line (C=O 2.017);
+bites: an out-of-range index → `Malformed`, and the SAME real table green at `natoms=15` / **red** at
+`natoms=10` (the bounds check bites). Absent (xTB) → `None`. Consumed by the results viewer as the
+**authoritative** label (`wiki/modules/visualization.md`); the geometric estimate (all frames) is the
+honest fallback.
+
 ## Files
 - `parse/mod.rs` — module overview + shared `ParseError` + shared `ReferenceGeometry`.
 - `parse/units.rs` — `Angstrom` (canonical length; the type guard).
@@ -271,6 +301,8 @@ geometry-match guard is dropped (rule #11: the guard moved to where its premise 
   per-point geometry cross-check confirming Å; Phase 4.5 B1).
 - `parse/neb.rs` — `.NEB.log` / `.final.interp` / `_NEB-TS_converged.xyz` (NEB-TS band + smooth MEP +
   converged TS; absolute vs relative energies kept apart; Phase 4.5 E3a-1).
+- `parse/mayer.rs` — `output.out` Mayer bond orders (the computed, authoritative order of the final
+  structure; **streamed**, last block wins, bounds-checked; absent-is-normal).
 - `orca_json.rs` (top level) — the `orca_2json` **spawn** (ADR-009), lazy-cached in the job dir.
 - `parse/*/tests.rs` — against real SP / Opt+Freq / GOAT / scan / saddle fixtures in
   `src-tauri/tests/fixtures/` (incl. a 198 KB gbw-json with coefficients, to exercise the skip).

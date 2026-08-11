@@ -249,8 +249,10 @@ multiplicity + method**. It does **not** read bond order, and it does **not** re
 Everything in this section is either (a) a *geometric* target/estimate — a "double bond" is just a
 **shorter set-distance**, and the method infers the order from that geometry — or (b) *bookkeeping*
 that must sum to the total charge ORCA is actually given. Nothing here is a new physical input. The UI
-copy says so at every touchpoint; a future **Mayer bond order in the results context** (parsed from a
-finished calculation) will be the authoritative order — this editor never claims to have it.
+copy says so at every touchpoint; the **Mayer bond order in the results context** (parsed from a
+finished calculation — `parse/mayer.rs`, shown authoritatively in the results viewer,
+`wiki/modules/visualization.md`) is the authoritative order — this editor never claims to have it, it
+only estimates from geometry.
 
 - **Set bond order (Form single / double / triple).** `EditPanel`'s Form affordance is now three
   buttons; each calls `planFormBond(scene, a, b, order)` and drives the **same** preview→apply path.

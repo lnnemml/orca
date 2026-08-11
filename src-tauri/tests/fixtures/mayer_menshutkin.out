@@ -1,0 +1,41 @@
+(excerpt from a real Menshutkin SN2 output.out — two Mayer blocks; the reader keeps
+the LAST, i.e. the final structure. 15 atoms, indices 0..14.)
+
+-------------------
+MULLIKEN POPULATIONS
+-------------------
+   0 C :   -0.1
+   ... (elided) ...
+
+  Mayer bond orders larger than 0.100000
+B(  0-C ,  1-N ) :   0.8996 B(  0-C ,  2-H ) :   0.9674 B(  0-C ,  3-H ) :   0.9527
+B(  0-C ,  4-H ) :   0.9710 B(  1-N ,  5-H ) :   0.8969 B(  1-N ,  6-H ) :   0.8995
+B(  1-N ,  8-C ) :   0.1030 B(  7-C ,  8-C ) :   0.8533 B(  7-C , 10-H ) :   0.9487
+B(  7-C , 11-H ) :   0.9677 B(  7-C , 12-H ) :   0.9655 B(  8-C ,  9-I ) :   0.6767
+B(  8-C , 13-H ) :   0.9449 B(  8-C , 14-H ) :   0.9439
+
+-------
+TIMINGS
+-------
+
+Total SCF time: 0 days 0 hours 0 min 4 sec
+
+------------------------------------------------------------------------------
+                                ORCA SCF
+------------------------------------------------------------------------------
+   ... (a later SCF on the converged structure) ...
+
+  Mayer bond orders larger than 0.100000
+B(  0-C ,  1-N ) :   0.9056 B(  0-C ,  2-H ) :   0.9637 B(  0-C ,  3-H ) :   0.9511
+B(  0-C ,  4-H ) :   0.9685 B(  1-N ,  5-H ) :   0.8904 B(  1-N ,  6-H ) :   0.8941
+B(  1-N ,  8-C ) :   0.1870 B(  7-C ,  8-C ) :   0.8621 B(  7-C , 10-H ) :   0.9429
+B(  7-C , 11-H ) :   0.9653 B(  7-C , 12-H ) :   0.9627 B(  8-C ,  9-I ) :   0.5679
+B(  8-C , 13-H ) :   0.9415 B(  8-C , 14-H ) :   0.9408
+
+-------
+TIMINGS
+-------
+
+Total SCF time: 0 days 0 hours 0 min 2 sec
+
+                             ****ORCA TERMINATED NORMALLY****

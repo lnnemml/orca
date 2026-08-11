@@ -117,6 +117,7 @@ export function ResultsCard({
             frames={results.trajectory.frames}
             referenceElements={results.final_geometry.elements}
             jobTitle={jobTitle}
+            mayerBondOrders={results.mayer_bond_orders}
           />
         )}
 

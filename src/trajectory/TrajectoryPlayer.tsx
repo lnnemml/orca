@@ -10,6 +10,8 @@ import {
 } from "recharts";
 
 import { MoleculeViewer } from "../viewer/MoleculeViewer";
+import { resultsBondLabel } from "./bondReadout";
+import type { MayerBond } from "../types";
 import { useContainerWidth } from "../charts/useContainerWidth";
 import { resolveClickedIndex, type ChartClickState } from "../charts/clickIndex";
 import { saveBytes, exportName } from "../export/save";
@@ -64,6 +66,10 @@ interface TrajectoryPlayerProps {
   referenceElements: string[];
   /** For export filenames (unit 3.16). */
   jobTitle: string;
+  /** Mayer bond orders (final structure), or null. When an entry exists for a picked
+   * pair its COMPUTED order is shown as authoritative; otherwise the readout falls
+   * back to the geometric estimate from the displayed frame (`bondReadout.ts`). */
+  mayerBondOrders?: MayerBond[] | null;
 }
 
 export function TrajectoryPlayer({
@@ -71,10 +77,16 @@ export function TrajectoryPlayer({
   frames,
   referenceElements,
   jobTitle,
+  mayerBondOrders,
 }: TrajectoryPlayerProps) {
   const [frame, setFrame] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [fps, setFps] = useState(DEFAULT_FPS);
+  // A 2-atom pick (0-based indices, == final_geometry/frame order) for the bond-order
+  // readout. Clicking an already-picked atom removes it; a third pick drops the oldest.
+  const [picked, setPicked] = useState<number[]>([]);
+  const pickAtom = (idx: number) =>
+    setPicked((p) => (p.includes(idx) ? p.filter((x) => x !== idx) : [...p, idx].slice(-2)));
   const { ref, width } = useContainerWidth();
   // The energy chart container — its recharts `<svg>` is grabbed for the PNG export.
   const energyChartRef = useRef<HTMLDivElement | null>(null);
@@ -95,6 +107,33 @@ export function TrajectoryPlayer({
   }, [frames, clamped, elements]);
 
   const series = useMemo(() => energySeries(frames), [frames]);
+
+  // The bond-order readout for the current 2-atom pick: geometric estimate from THIS
+  // frame's geometry, or the authoritative Mayer value when the run computed one for
+  // the pair. Rendered under whichever viewer is shown (single-frame or animated).
+  const bondReadout = () => {
+    if (picked.length !== 2) return null;
+    const [i, j] = picked;
+    const label = resultsBondLabel(
+      elements,
+      frames[clamped]?.xyz_angstrom ?? [],
+      mayerBondOrders ?? null,
+      i,
+      j,
+    );
+    const chip = (k: number) => `${elements[k] ?? "?"}#${k}`;
+    return (
+      <div className="traj-bond-readout mono">
+        <span className="traj-bond-pair">
+          {chip(i)} ··· {chip(j)}
+        </span>
+        <span className="traj-bond-order">{label ?? "not a bond (no computed order)"}</span>
+        <button className="btn btn-sm" onClick={() => setPicked([])} title="Clear bond selection">
+          Clear
+        </button>
+      </div>
+    );
+  };
 
   // The play timer — advance one frame per tick, stop at the last (a natural
   // "play once"; pressing play again from the end restarts). Lives here, not in
@@ -145,8 +184,9 @@ export function TrajectoryPlayer({
           Geometry
         </div>
         <div className="viewer-panel traj-viewer">
-          <MoleculeViewer xyzData={frameXyz} preserveCameraOnUpdate />
+          <MoleculeViewer xyzData={frameXyz} preserveCameraOnUpdate onXyzAtomPick={pickAtom} />
         </div>
+        {bondReadout()}
       </section>
     );
   }
@@ -161,8 +201,9 @@ export function TrajectoryPlayer({
       </div>
 
       <div className="viewer-panel traj-viewer">
-        <MoleculeViewer xyzData={frameXyz} preserveCameraOnUpdate />
+        <MoleculeViewer xyzData={frameXyz} preserveCameraOnUpdate onXyzAtomPick={pickAtom} />
       </div>
+      {bondReadout()}
 
       {/* Honest label — optimization CYCLES, never "scan steps". */}
       <div className="traj-readout mono">

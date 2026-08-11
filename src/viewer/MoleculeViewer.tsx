@@ -213,6 +213,15 @@ interface MoleculeViewerProps {
     dz: number,
   ) => void;
   /**
+   * Atom-pick callback for the **xyzData / frame** paths (results & trajectory), where
+   * there is no Scene/AtomId table. Emits the raw **0-based viewer index**, which on
+   * these paths equals the `final_geometry` / frame atom index — the identity the
+   * results bond-order readout (and `mayer_bond_orders`) key on. Presence of this prop
+   * arms picking on the xyz/frozen-topology models (harmless on the scene path, which
+   * uses `onAtomPick` instead). No highlight overlay is drawn on these paths.
+   */
+  onXyzAtomPick?: (index: number) => void;
+  /**
    * Honest-note callback (Stage 3.x): the sidecar could not resolve the dragged
    * atom's connected component, so the drag fell back to moving the WHOLE fragment.
    * Called at most once per drag, on release, only when a real move was committed
@@ -571,6 +580,7 @@ export const MoleculeViewer = forwardRef<MoleculeViewerHandle, MoleculeViewerPro
       scene,
       selection,
       onAtomPick,
+      onXyzAtomPick,
       showAtomNumbers = false,
       formalCharges,
       theme = DEFAULT_THEME,
@@ -623,6 +633,10 @@ export const MoleculeViewer = forwardRef<MoleculeViewerHandle, MoleculeViewerPro
   // re-attach its listeners when only this inline callback changes.
   const onFragmentDragRef = useRef<typeof onFragmentDrag>(onFragmentDrag);
   onFragmentDragRef.current = onFragmentDrag;
+  // Latest onXyzAtomPick through a ref — armed on the xyz/frozen paths without
+  // adding it to the model effect's deps (same pattern as onAtomPick).
+  const onXyzAtomPickRef = useRef<typeof onXyzAtomPick>(onXyzAtomPick);
+  onXyzAtomPickRef.current = onXyzAtomPick;
   const onFragmentDragFallbackRef =
     useRef<typeof onFragmentDragFallback>(onFragmentDragFallback);
   onFragmentDragFallbackRef.current = onFragmentDragFallback;
@@ -766,6 +780,11 @@ export const MoleculeViewer = forwardRef<MoleculeViewerHandle, MoleculeViewerPro
         // animation), so only the element-based cation rule applies (`() => undefined`
         // → manual hides are inert here).
         applyBondFilter(model, () => undefined, hiddenBonds, showCationBonds);
+        // Results/trajectory picking (Mayer readout): emit the raw 0-based viewer
+        // index (== the frame / final_geometry atom index). Armed once at build.
+        viewer.setClickable({}, true, (atom: { index: number }) =>
+          onXyzAtomPickRef.current?.(atom.index),
+        );
         anim = { source: frozenRef, model };
         animRef.current = anim;
       }
@@ -773,6 +792,13 @@ export const MoleculeViewer = forwardRef<MoleculeViewerHandle, MoleculeViewerPro
       applyCoordsToAtoms(
         anim!.model.selectedAtoms({}) as Array<{ x: number; y: number; z: number }>,
         parseXyzCoords(xyzData!), // frozenRef truthy ⇒ xyzData is a non-empty string
+      );
+      // Geometric bond order — the SAME call the scene path makes (reuse, no second
+      // impl): re-derive 1/2/3 from THIS frame's geometry so the results/trajectory
+      // view draws multiplicity (butadiene → two C=C). Per frame, nothing stored.
+      applyGeometricBondOrders(
+        anim!.model.selectedAtoms({}) as unknown as OrderableAtom[],
+        (elA, elB, d) => bondOrderEstimate(elA, elB, d).order,
       );
       anim!.model.setStyle({}, baseStyle(representation)); // (re)apply style + null the cached geometry
       if (firstBuild) {
@@ -852,7 +878,18 @@ export const MoleculeViewer = forwardRef<MoleculeViewerHandle, MoleculeViewerPro
         lastCompositionRef.current = signature;
       }
     } else if (xyzData && xyzData.trim().length > 0) {
-      viewer.addModel(xyzData, "xyz");
+      const xyzModel = viewer.addModel(xyzData, "xyz");
+      // Geometric bond order (reuse the scene-path call): 1/2/3 lines re-derived from
+      // this frame's geometry — display-only, nothing stored.
+      applyGeometricBondOrders(
+        xyzModel.selectedAtoms({}) as unknown as OrderableAtom[],
+        (elA, elB, d) => bondOrderEstimate(elA, elB, d).order,
+      );
+      // Results picking (Mayer readout): raw 0-based index. Re-armed each render
+      // because addModel above rebuilt the atom objects that carry the flag.
+      viewer.setClickable({}, true, (atom: { index: number }) =>
+        onXyzAtomPickRef.current?.(atom.index),
+      );
       viewer.setStyle({}, baseStyle(representation));
       if (preserveCameraOnUpdate) {
         // Trajectory playback: zoom only when the atom COUNT changes (a new

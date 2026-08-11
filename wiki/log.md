@@ -7412,3 +7412,41 @@ follow-up), visualization.md (applyGeometricBondOrders + charge labels), chemist
 m2 short C–C → "≈ double", normal → "≈ single"; m3 set formal −1 → shown on atom + Σ indicator; m4 the UI
 nowhere implies bond order / per-atom charge changes the calculation beyond geometry + total charge.
 **Next:** Mayer-bond-order in results (follow-up); Stage F (CREST microsolvation).
+
+## [2026-08-11] session | Mayer-in-results — bond multiplicity in results viewers (geometric lines) + Mayer bond order (authoritative)
+
+**The honest split (recorded in visualization.md / editor-ui.md).** A results 3D viewer draws bond
+multiplicity as **geometric lines** (an estimate from bond length, all frames); the **Mayer** number
+(when the run computed one) is the **authoritative** order of the final structure. ORCA reads
+geometry + total charge — bond order is inferred/computed, never an input. The two are never conflated.
+
+**Part A — Mayer parser (Rust, reviewed first).** New **seventh reader** `src-tauri/src/parse/mayer.rs`
+— the first over the **unbounded `output.out`**, so it **streams** (rule #5, only one block buffered).
+Parses `B( i-El , j-El ) : order` (0-based, several per line) → `Vec<MayerBond{i,j,order}>`; keeps the
+**LAST** block (final structure); absent block / unopenable file → `Ok(None)` (absent-is-normal). Post-
+condition (rule #9): index ≥ atom count or non-positive order → loud `Malformed`, never a silent bad
+pair. Wired into `ParsedResults.mayer_bond_orders` (`#[serde(default)]`; `PARSER_VERSION` 4→5), populated
+in `parse_and_store` from `output.out` with `natoms = final_geometry.elements.len()`. cargo **+6**
+(`mayer/tests.rs` vs a real Menshutkin two-block excerpt `tests/fixtures/mayer_menshutkin.out`): last-
+block-wins (C–N 0.9056 not 0.8996), partial TS bonds (forming N···C 0.187, breaking C–I 0.568), several-
+per-line (C=O 2.017); bites — out-of-range index → `Malformed`, and the SAME table green at natoms=15 /
+**red** at natoms=10.
+
+**Part B — frontend.** `types.ts` mirrors `MayerBond` + `mayer_bond_orders`. **Geometric lines in
+results:** `MoleculeViewer`'s frozen-topology (per frame, after the coord update) and plain-xyz paths now
+call `applyGeometricBondOrders` — the SAME call the scene path makes (reuse, no second impl), re-derived
+per frame, nothing stored. **Results picking:** a new `onXyzAtomPick(index)` prop arms picking on the
+xyz/frozen paths (no Scene → emits the raw 0-based index == `final_geometry`/frame index); `TrajectoryPlayer`
+holds a 2-atom pick and shows the readout. **The label** (`bondReadout.ts`, pure + vitest **+6**):
+`resultsBondLabel` → `"Mayer <order> (authoritative)"` when the pair has a Mayer entry, else the geometric
+`"≈ <word> · <d> Å (geometric estimate)"` from the shown frame (only within bonding range); a partial TS
+bond with a Mayer entry still reads its computed order. `ResultsCard` passes `results.mayer_bond_orders`.
+
+**Verification.** cargo 269 pass (+6); vitest 829 pass (+6 bondReadout); tsc clean. **sidecar untouched;
+no editor/CREST changes.** Wiki: artifact-readers.md (seventh reader + Files), visualization.md (results
+viewer bond order + the honest Mayer split), editor-ui.md (the follow-up is now landed), ROADMAP
+(Mayer-in-results [x]), log, index. **NOTE:** an unrelated uncommitted "unified moving-set" unit was in
+the working tree (edit-plan.ts / guided-placement.ts / moving-set.ts) — left untouched, NOT in this
+commit. **Author m1–m3 live gate pending:** m1 butadiene result → two C=C double lines; m2 Menshutkin TS
+→ forming C–N "Mayer ≈0.90 (authoritative)", breaking C–I "Mayer ≈0.68"; m3 an xTB job (no Mayer) →
+geometric lines + geometric-estimate label, no crash. **Next:** Stage F (CREST microsolvation).

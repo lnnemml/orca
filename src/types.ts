@@ -73,7 +73,19 @@ export interface ParsedResults {
   /** NEB-TS band + MEP + converged TS (Phase 4.5 E3a-1), or null for a non-NEB job.
    * The per-iteration band VIEWER is E3a-2; here the data is parsed and stored. */
   neb: NebResults | null;
+  /** Mayer bond orders from output.out — the COMPUTED, authoritative bond order of
+   * the final structure (contrast the viewer's geometric estimate from bond length).
+   * null when the run printed no table (xTB / an SP that didn't print it — normal). */
+  mayer_bond_orders: MayerBond[] | null;
   unknown_blocks: string[];
+}
+
+/** Mirrors `src-tauri/src/parse/mayer.rs::MayerBond`. Indices are 0-based, in the
+ * `final_geometry` atom order. `order` is fractional (e.g. a partial TS bond ≈0.68). */
+export interface MayerBond {
+  i: number;
+  j: number;
+  order: number;
 }
 
 /** Mirrors `src-tauri/src/results.rs::NebResultsJson`. */

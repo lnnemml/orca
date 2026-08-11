@@ -17,6 +17,7 @@
 
 pub mod elements;
 pub mod hess;
+pub mod mayer;
 pub mod mo;
 pub mod neb;
 pub mod property;

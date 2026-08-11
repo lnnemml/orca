@@ -603,8 +603,16 @@ Stage 3, where it is actually needed.) **Stage 3 is now COMPLETE (see below).**
         `bondOrder` from geometry each render → 2/3 sticks (nothing stored). **Formal charge:** per-atom
         `+/−` (annotation keyed by AtomId, not in the Scene) + a Σ-formal-vs-total indicator
         (`formalChargeConsistency`; bookkeeping, ORCA still uses total). vitest +20 (tsc clean; cargo +
-        sidecar untouched). Follow-up: **Mayer bond order in the results context** (authoritative order
-        from a finished run — this editor only estimates from geometry). **Author m1–m4 live gate pending.**
+        sidecar untouched). **Author m1–m4 live gate pending.**
+  - [x] **Bond multiplicity in the RESULTS context + Mayer bond order (Mayer-in-results).** (1) The
+        results/trajectory viewer's xyzData/frame paths now call `applyGeometricBondOrders` too (reuse —
+        no second impl), so a result draws 1/2/3 geometric lines re-derived per frame (butadiene → two
+        C=C). (2) New seventh reader `parse/mayer.rs` streams `output.out` (rule #5), keeps the LAST block
+        (final structure), bounds-checks each pair (rule #9), absent → `None`; wired to
+        `ParsedResults.mayer_bond_orders` (`PARSER_VERSION` 4→5). Selecting a bond in a results viewer
+        shows `"Mayer <order> (authoritative)"` when computed, else the geometric `"≈ … (geometric
+        estimate)"` — the honest split (`bondReadout.ts`). cargo +6, vitest +6, tsc clean; no editor/
+        sidecar/CREST changes. **Author m1–m3 live gate pending.**
 - [x] **Rotation of a fragment about its approach axis (unit 3.3).** A rigid whole-fragment spin about
       the axis two picked atoms define — P (pivot, on the rotating fragment) and Q (direction, typically
       the substrate contact atom). **Pure TS, a sibling of — not routed through — the sidecar set-internal

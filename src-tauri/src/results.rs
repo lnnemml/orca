@@ -37,7 +37,7 @@ use orcastudio_core::ids::{AtomId, IndexMap, OrcaIndex};
 /// - v2: + `.hess` frequencies / IR / normal modes + thermo temperature (unit 3.6).
 /// - v3: + `_trj.xyz` trajectory + `orca_2json` MO energies/occupancies (unit 3.7).
 /// - v4: + relaxed-scan profile (`.relaxscanact/.relaxscanscf.dat`, Phase 4.5 B1).
-pub const PARSER_VERSION: u32 = 4;
+pub const PARSER_VERSION: u32 = 5;
 
 // --------------------------------------------------------------------------- //
 // The stored structure (goes into results.data_json verbatim)                   //
@@ -226,6 +226,12 @@ pub struct ParsedResults {
     /// NEB-TS band + MEP + converged TS from `.NEB.log`/`.final.interp`/`_NEB-TS_
     /// converged.xyz`, or `None` when the job is not a NEB run (absent-is-normal).
     pub neb: Option<NebResultsJson>,
+    /// Mayer bond orders (`output.out`) — the **computed, authoritative** bond order
+    /// of the final structure (contrast the editor's geometric estimate). `None` when
+    /// the run printed no table (xTB / an SP that didn't print it — absent-is-normal).
+    /// `#[serde(default)]` so results rows stored before this field read back as `None`.
+    #[serde(default)]
+    pub mayer_bond_orders: Option<Vec<crate::parse::mayer::MayerBond>>,
     /// Blocks ORCA emitted that this reader has no accessor for (rule #10).
     pub unknown_blocks: Vec<String>,
 }
@@ -342,6 +348,9 @@ impl ParsedResults {
             orbitals,
             scan,
             neb,
+            // Populated by the caller (`parse_and_store`) from `output.out`, which this
+            // constructor does not have — the single place the atom count is known.
+            mayer_bond_orders: None,
             unknown_blocks: v.unknown_block_names(),
         })
     }
@@ -386,6 +395,7 @@ impl ParsedResults {
             orbitals: None,
             scan: Some(scan),
             neb: None,
+            mayer_bond_orders: None, // a scan is multi-structure — no single final table
             unknown_blocks: Vec::new(),
         })
     }
@@ -411,6 +421,7 @@ impl ParsedResults {
             orbitals: None,
             scan: None,
             neb: Some(neb),
+            mayer_bond_orders: None, // a NEB-TS run has no single final Mayer table
             unknown_blocks: Vec::new(),
         })
     }
@@ -695,7 +706,7 @@ pub fn parse_and_store(
         Err(e) => return ParseOutcome::ParseFailed(format!("neb: {e}")),
     };
 
-    let results = match ParsedResults::from_verified(
+    let mut results = match ParsedResults::from_verified(
         &verified,
         hess_verified.as_ref(),
         trajectory,
@@ -706,6 +717,17 @@ pub fn parse_and_store(
         Ok(r) => r,
         Err(e) => return ParseOutcome::ParseFailed(e.to_string()),
     };
+
+    // Mayer bond orders (`output.out`, streamed — rule #5): the computed authoritative
+    // order of the FINAL structure, keyed by the same 0-based atom indices as
+    // `final_geometry`. Absent for xTB / an SP that didn't print it (→ `None`, normal).
+    // A malformed/out-of-range table is a LOUD failure (rule #9), never a silent bad pair.
+    let natoms = results.final_geometry.elements.len();
+    match crate::parse::mayer::read_mayer(&dir.join("output.out"), natoms) {
+        Ok(m) => results.mayer_bond_orders = m,
+        Err(e) => return ParseOutcome::ParseFailed(format!("mayer: {e}")),
+    }
+
     if let Err(e) = store(conn, job_id, &results) {
         return ParseOutcome::ParseFailed(e.to_string());
     }
