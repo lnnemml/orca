@@ -218,6 +218,8 @@ This matches the ratified reorder (CREST probe → Stage D → E/F) and sharpens
 
 ## See also
 
+- `wiki/modules/crest-microsolvation.md` — the production code (Stage F F1a–F2) built on this probe:
+  the grow parse + completion, the ephemeral runner, the setup panel, and the ORCA re-opt handoff.
 - `wiki/orca/xtb.md` — standalone xtb 6.6.1 (same binary CREST drives); the stderr `normal
   termination` fact reused above; the exit-code-lies discipline.
 - `wiki/orca/goat.md` — the sibling external-tool probe (ORCA `! XTB GOAT` conformer search).

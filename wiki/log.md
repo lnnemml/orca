@@ -7917,3 +7917,24 @@ provenance header; Create & Run → runs + parses like any Opt+Freq; m2 a NEUTRA
 SMD; m3 the panel seed energy (xtb-ALPB) and the re-opt result (real SMD DFT) are clearly DIFFERENT
 numbers — the seed was never the answer. **Next:** the deferred Stage-F spike (ensemble + quasi-RRHO)
 only if conformer-averaged microsolvation becomes a mission need; otherwise Phase-6 power features.
+
+## [2026-08-12] chore | wiki lint pass — link/index/reference integrity
+
+**A read-only AUDIT → reviewed-ledger → apply pass** (no code, no content rewrite, no probe measurement
+touched). Ran seven checks over all 99 wiki pages: link integrity (.md + inline code-path + anchors),
+index↔disk, stale symbols (live pages), number consistency (ADR/migration/PARSER_VERSION), log headers +
+coverage, the language rule, and code-contradictions.
+
+**The wiki was healthy** — the per-unit "wiki travels with code" discipline held: **0 dead links, 0
+orphans, 0 phantoms, 0 stale symbols in live pages, all numbers match code** (SCHEMA_VERSION 17,
+PARSER_VERSION 5, ADRs 001–020 contiguous + all indexed), log headers well-formed with every unit
+N1a–F2 present, chemistry/ all Ukrainian. The `NebSetupPanel`/`useComposite`/`orca-hover.ts`/
+`inject-xyz` mentions are all correct historical context (retired/replaced, or in log.md/debugging fix
+records) — not stale, left untouched.
+
+**Two fixes applied** (reviewed): (1) `index.md` page-count summary **96 → 97** (the catalog already
+listed all 97 content pages; only the summary token lagged — the footer chronicle narrative left
+untouched). (2) `orca/crest.md` gained one **See-also pointer** to `modules/crest-microsolvation.md` (the
+F1a–F2 production code built on the probe) — the dated 2026-08-08 "No production code was written" probe
+record left **unchanged** (rule #10). Re-run confirms: 0 dead links, index == disk (count 97), the probe
+record intact. tsc/vitest/cargo/pytest untouched (wiki-only).
