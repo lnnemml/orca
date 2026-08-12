@@ -90,7 +90,7 @@ otherwise lose the `%neb` block.
 | `*.NEB.log` | per-iteration band (the E3a-2 "PES per iteration" source) | header (2 lines) then one block per iteration, `>`-delimited: `iteration : N`, `climbing : yes\|no`, `nim : 10`, `barrier : <Eh> (image: k)`, `distance : <10 floats>` (**arc length, Bohr**), `energy : <10 floats>` (**ABSOLUTE Eh**), plus force/step/angle rows (ignored) |
 | `*.final.interp` | converged **smooth MEP** | an `Interp.:` section, rows `<norm> <distance_Bohr> <energy_Eh>` — energy **RELATIVE**, image 0 = 0. (An earlier `Images:` section = the 10 discrete points; not read) |
 | `*_NEB-TS_converged.xyz` | the converged **TS geometry** | standard xyz, Å, reactant atom order |
-| `*_MEP_trj.xyz` | the MEP path geometries (E3a-2's 3D band) | multi-frame xyz; **not parsed here** |
+| `*_MEP_trj.xyz` | the converged MEP band geometries (the 3D band viewer, N3) | multi-frame xyz, **NImages + 2 frames** (im0 reactant end → imN product end), each comment `… E <Eh>`; read **on demand** by `read_neb_geometries`, NOT stored |
 
 **Units (rule #11):** log/interp distances are **Bohr → Å at the boundary**; energies are Eh.
 The **`.NEB.log` energy is absolute** (−472.768…) while the **`.final.interp` energy is
@@ -115,6 +115,24 @@ iteration's reactant end), so every iteration starts at ΔE = 0 and overlays the
 MEP sensibly. Both plotted curves are then ΔE-in-kcal/mol, each honestly relative to its own
 reactant — the same absolute/relative firewall the reader keeps at the parse boundary, preserved
 at the presentation boundary (rule #11).
+
+## The MEP band in the results viewer (N3) — read on demand, labelled by geometry+energy
+
+`input_MEP_trj.xyz` is read **on demand** for the band geometry viewer (`NebBandPanel`), NOT stored in
+the parsed JSON (so `PARSER_VERSION` is unchanged — it is a lazy read like `read_scan_geometries`). The
+command `read_neb_geometries` returns the **10 frames im0…im9** (NImages 8 + 2) in MEP order, each with
+its `E <Eh>` comment energy; the reader is gated on the job being a NEB run and returns `None` (honest
+absence) for a non-NEB job or an absent MEP file — it never fabricates a band. Measured on the HCN⇌HNC
+probe (`tests/fixtures/neb_mep/`): im0 −93.39966 (reactant end) rises to **im4 −93.32452 (the MAX)** then
+falls to im9 −93.37583 (product end); im4 ≈ the converged TS energy (`ts_energy_eh −93.324593`) within
+~1e-3 Eh — **the saddle lives in the band's interior**.
+
+The viewer labels each image by **geometry + energy only** — "Image k — E = … Eh", the interior max
+tagged "≈ saddle", the converged TS by its own energy — and **never by a reactant/product source-job
+title**. This is the HCN/HNC lesson made structural: a job title is human intent (someone *called* it
+"HCN → HNC"), but the geometry is truth; naming an endpoint or the saddle from a job title reintroduces
+the exact mislabel trap. The endpoints are "Image 0 / Image N", found by MEP order + energy, not by
+which job the user picked as reactant.
 
 ## See also
 

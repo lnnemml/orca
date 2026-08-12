@@ -12,10 +12,20 @@ import {
   YAxis,
 } from "recharts";
 
-import type { NebResults, Job } from "../types";
+import type { NebResults, Job, NebImageGeometry } from "../types";
 import { buildOptTSInput } from "../scene/optts";
+import { MoleculeViewer } from "../viewer/MoleculeViewer";
+import { finalGeometryXyz } from "../export/exporters";
+import { saveText, exportName } from "../export/save";
 import { useContainerWidth } from "../charts/useContainerWidth";
-import { iterationSeries, mepSeries, barrierSeries } from "./nebBand";
+import {
+  iterationSeries,
+  mepSeries,
+  barrierSeries,
+  bandMaxIndex,
+  imageGeometryXyz,
+  imageExportXyz,
+} from "./nebBand";
 
 /**
  * NEB band viewer (Phase 4.5 Stage E3a-2) — the first time the band is *visible*.
@@ -80,6 +90,47 @@ export function NebBandPanel({
   // created + submitted on click.
   const [refining, setRefining] = useState(false);
   const [refineError, setRefineError] = useState<string | null>(null);
+
+  // ── MEP band geometries (N3): the 3D image stepper + the saddle (TS) view ──────
+  // The band-image geometries are loaded on demand; the selected image AND the
+  // saddle-toggle are APPLICATION state (ADR-011) — the viewer is fed ONE geometry.
+  const [geometries, setGeometries] = useState<NebImageGeometry[] | null>(null);
+  const [selectedImage, setSelectedImage] = useState(0);
+  const [showTs, setShowTs] = useState(false);
+
+  // Fetch the band image geometries once (lazy — the panel is only mounted on a
+  // completed NEB job). A failure/absence leaves the charts usable, viewer absent.
+  useEffect(() => {
+    let cancelled = false;
+    invoke<NebImageGeometry[] | null>("read_neb_geometries", { id: jobId })
+      .then((g) => {
+        if (!cancelled) setGeometries(g ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setGeometries(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [jobId]);
+
+  const nImages = geometries?.length ?? 0;
+  // The ≈ saddle image (interior max energy) — labelled honestly, never an endpoint.
+  const maxImageIdx = useMemo(() => (geometries ? bandMaxIndex(geometries) : 0), [geometries]);
+  const clampedImage = Math.min(Math.max(selectedImage, 0), Math.max(nImages - 1, 0));
+  const selectedEnergy = geometries?.[clampedImage]?.energy_eh ?? null;
+  // The one geometry handed to the image viewer — the converged TS when toggled, else
+  // the selected MEP image (element-order checked at the boundary vs the TS order).
+  const imageViewerState = useMemo(() => {
+    if (showTs) {
+      return {
+        xyz: finalGeometryXyz(neb.ts_geometry, "converged TS", neb.ts_energy_eh ?? null),
+      };
+    }
+    const g = geometries?.[clampedImage];
+    if (!g) return null;
+    return imageGeometryXyz(g, neb.ts_geometry.elements);
+  }, [showTs, geometries, clampedImage, neb.ts_geometry, neb.ts_energy_eh]);
 
   const clamped = Math.min(Math.max(iter, 0), Math.max(last, 0));
   const current = iterations[clamped];
@@ -360,6 +411,159 @@ export function NebBandPanel({
               isAnimationActive={false}
             />
           </LineChart>
+        </div>
+      ) : null}
+
+      {/* Band geometries (converged MEP) — the 3D image stepper + the saddle (TS) view,
+          mirroring ScanProfilePanel's geometry viewer. LABELS by geometry + energy ONLY:
+          "Image k — E = …", the interior max is "≈ saddle", the toggle shows the converged
+          TS by ITS energy. NEVER a source endpoint job's title (the HCN/HNC mislabel lesson:
+          a job title is human intent, the geometry is truth). Honest-or-absent: the whole
+          block renders only when `read_neb_geometries` returned a band. */}
+      {geometries && geometries.length > 0 ? (
+        <div className="neb-geometries" style={{ marginTop: 12 }}>
+          <div className="section-title" style={{ fontSize: 12 }}>
+            Band geometries{" "}
+            <span className="muted">
+              — converged MEP, im0 (reactant end) → im{nImages - 1} (product end)
+            </span>
+          </div>
+
+          {/* One geometry to the viewer (ADR-011): the selected image, or the TS. */}
+          <div className="viewer-panel traj-viewer">
+            {imageViewerState && "xyz" in imageViewerState ? (
+              <MoleculeViewer xyzData={imageViewerState.xyz} preserveCameraOnUpdate />
+            ) : imageViewerState && "error" in imageViewerState ? (
+              <div className="banner err" style={{ margin: 8 }}>
+                {imageViewerState.error}
+              </div>
+            ) : (
+              <div className="viewer-empty muted">Loading band geometry…</div>
+            )}
+          </div>
+
+          <div className="neb-readout mono" style={{ fontSize: 12 }}>
+            {showTs ? (
+              <span>
+                Saddle (TS)
+                {neb.ts_energy_eh != null ? ` — E = ${neb.ts_energy_eh.toFixed(6)} Eh` : ""}
+              </span>
+            ) : (
+              <>
+                <span>
+                  Image {clampedImage} / {nImages - 1}
+                  {selectedEnergy != null ? ` — E = ${selectedEnergy.toFixed(6)} Eh` : ""}
+                </span>
+                {clampedImage === maxImageIdx ? (
+                  <span
+                    className="scan-ts-badge"
+                    style={{ marginLeft: 8 }}
+                    title="The highest-energy MEP image — the converged saddle lives here. Toggle 'Saddle (TS)' for the located climbing image."
+                  >
+                    ≈ saddle
+                  </span>
+                ) : null}
+              </>
+            )}
+            <button
+              className="btn btn-sm"
+              style={{ marginLeft: 8 }}
+              title={showTs ? "Show the MEP band images" : "Show the converged TS geometry"}
+              onClick={() => setShowTs((s) => !s)}
+            >
+              {showTs ? "Show band images" : "Saddle (TS)"}
+            </button>
+            {/* Export the SHOWN geometry (selected image, or the TS when toggled) — honest-or-
+                absent (disabled until it renders). File name/comment carry the NEB job's own
+                title + the image index/energy, never a reactant/product endpoint title. */}
+            <button
+              className="btn btn-sm"
+              disabled={!(imageViewerState && "xyz" in imageViewerState)}
+              title="Export the shown geometry (.xyz)"
+              onClick={async () => {
+                try {
+                  if (showTs) {
+                    await saveText(
+                      exportName(jobTitle, "neb-ts", "xyz"),
+                      finalGeometryXyz(
+                        neb.ts_geometry,
+                        `${jobTitle} — NEB converged TS (saddle)`,
+                        neb.ts_energy_eh ?? null,
+                      ),
+                      "xyz",
+                    );
+                    return;
+                  }
+                  const g = geometries?.[clampedImage];
+                  if (!g) return;
+                  await saveText(
+                    exportName(jobTitle, `neb-image-${clampedImage}`, "xyz"),
+                    imageExportXyz(g, nImages, clampedImage === maxImageIdx, jobTitle),
+                    "xyz",
+                  );
+                } catch (e) {
+                  console.error("[export]", e);
+                }
+              }}
+            >
+              geometry .xyz
+            </button>
+          </div>
+
+          {/* Image stepper — im0…imN. The selected image is app state (ADR-011); the
+              controls are disabled while the TS is shown (a distinct, single geometry). */}
+          <div className="traj-transport">
+            <button
+              className="btn btn-sm"
+              disabled={showTs}
+              onClick={() => setSelectedImage(0)}
+              title="Reactant end (im0)"
+            >
+              ⏮
+            </button>
+            <button
+              className="btn btn-sm"
+              disabled={showTs}
+              onClick={() => setSelectedImage((i) => Math.max(i - 1, 0))}
+              title="Previous image"
+            >
+              ◀
+            </button>
+            <button
+              className="btn btn-sm"
+              disabled={showTs}
+              onClick={() => setSelectedImage((i) => Math.min(i + 1, nImages - 1))}
+              title="Next image"
+            >
+              ▶
+            </button>
+            <button
+              className="btn btn-sm"
+              disabled={showTs}
+              onClick={() => setSelectedImage(nImages - 1)}
+              title={`Product end (im${nImages - 1})`}
+            >
+              ⏭
+            </button>
+            <input
+              className="traj-slider"
+              type="range"
+              min={0}
+              max={Math.max(nImages - 1, 0)}
+              value={clampedImage}
+              disabled={showTs}
+              onChange={(e) => setSelectedImage(Number(e.target.value))}
+              aria-label="NEB MEP image"
+            />
+            <button
+              className="btn btn-sm"
+              disabled={showTs}
+              onClick={() => setSelectedImage(maxImageIdx)}
+              title="Jump to the ≈ saddle (the max-energy MEP image)"
+            >
+              ≈ saddle
+            </button>
+          </div>
         </div>
       ) : null}
 

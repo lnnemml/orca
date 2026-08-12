@@ -1,8 +1,15 @@
 import { describe, it, expect } from "vitest";
 
-import type { NebResults, NebIteration } from "../types";
+import type { NebResults, NebIteration, NebImageGeometry } from "../types";
 import { HARTREE_TO_KCAL } from "../units";
-import { iterationSeries, mepSeries, barrierSeries } from "./nebBand";
+import {
+  iterationSeries,
+  mepSeries,
+  barrierSeries,
+  bandMaxIndex,
+  imageGeometryXyz,
+  imageExportXyz,
+} from "./nebBand";
 
 /**
  * A small NEB fixture in the shape the parser produces for the Menshutkin SN2:
@@ -57,6 +64,7 @@ const NEB: NebResults = {
   ],
   final_barrier_eh: 0.01555,
   ts_geometry: { elements: ["N", "C"], xyz_angstrom: [[0, 0, 0], [2.353, 0, 0]] },
+  ts_energy_eh: -472.754853,
 };
 
 describe("iterationSeries — ΔE relative to the iteration's own image-0 (never absolute Eh)", () => {
@@ -127,5 +135,55 @@ describe("barrierSeries — the convergence curve, final == converged barrier", 
     const s = barrierSeries(NEB);
     expect(s[0].barrier_kcal).toBeLessThan(s[1].barrier_kcal);
     expect(s[1].barrier_kcal).toBeLessThan(s[2].barrier_kcal);
+  });
+});
+
+// A 3-image MEP band in the HCN⇌HNC shape: [C,N,H] order, the barrier in the MIDDLE.
+const BAND: NebImageGeometry[] = [
+  { index: 0, energy_eh: -93.39966, elements: ["C", "N", "H"], xyz_angstrom: [[0, 0, 0], [1.07, 0, 0], [-1.05, 0, 0]] },
+  { index: 1, energy_eh: -93.32452, elements: ["C", "N", "H"], xyz_angstrom: [[0, 0, 0], [1.13, 0, 0], [0.6, 0.9, 0]] },
+  { index: 2, energy_eh: -93.37583, elements: ["C", "N", "H"], xyz_angstrom: [[0, 0, 0], [1.17, 0, 0], [1.9, 0, 0]] },
+];
+
+describe("bandMaxIndex — the ≈ saddle is the interior max, never an endpoint", () => {
+  it("returns the argmax over per-image energy (the barrier is in the middle)", () => {
+    expect(bandMaxIndex(BAND)).toBe(1); // the −93.32452 image, not the lower-energy ends
+  });
+  it("null energies sort lowest; empty → 0", () => {
+    const withNull: NebImageGeometry[] = [
+      { index: 0, energy_eh: null, elements: ["C"], xyz_angstrom: [[0, 0, 0]] },
+      { index: 1, energy_eh: -100, elements: ["C"], xyz_angstrom: [[0, 0, 0]] },
+    ];
+    expect(bandMaxIndex(withNull)).toBe(1);
+    expect(bandMaxIndex([])).toBe(0);
+  });
+});
+
+describe("imageGeometryXyz — element-order checked at the boundary (never a wrong molecule)", () => {
+  it("renders an image whose element order matches the reference", () => {
+    const r = imageGeometryXyz(BAND[1], ["C", "N", "H"]);
+    expect("xyz" in r).toBe(true);
+    if ("xyz" in r) {
+      expect(r.xyz.split(/\r?\n/)[0]).toBe("3"); // count line
+      expect(r.xyz).toContain("C ");
+    }
+  });
+  it("REFUSES (no render) when the atom order disagrees — the mislabel bite", () => {
+    // BITE: rendering anyway would draw a different molecule under the same label.
+    const r = imageGeometryXyz(BAND[1], ["N", "C", "H"]); // C↔N swapped vs the image
+    expect("error" in r).toBe(true);
+    if ("error" in r) expect(r.error).toMatch(/atom order/);
+  });
+});
+
+describe("imageExportXyz — labelled by index + energy, tags only the ≈ saddle", () => {
+  it("carries the image index and energy, and the saddle tag only when isMax", () => {
+    const max = imageExportXyz(BAND[1], BAND.length, true, "hcn-hnc-neb");
+    expect(max).toContain("NEB image 1/2");
+    expect(max).toContain("≈ saddle");
+    expect(max).toContain("-93.32452"); // its own energy in the comment
+    const plain = imageExportXyz(BAND[0], BAND.length, false, "hcn-hnc-neb");
+    expect(plain).toContain("NEB image 0/2");
+    expect(plain).not.toContain("≈ saddle");
   });
 });

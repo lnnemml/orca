@@ -160,6 +160,24 @@ impl XyzFile {
         parse_comment_energy(&self.frames.first()?.comment)
     }
 
+    /// Every frame's `(elements, Å coords, comment energy)` in **file order** — the
+    /// multi-frame witness sibling of [`Self::first_frame`] + [`Self::first_frame_energy`],
+    /// read on the **unverified** handle on purpose. NEB MEP band images
+    /// (`input_MEP_trj.xyz`) span reactant→product, so they are DISPLAY data (element
+    /// order checked at the UI boundary, exactly like relaxed-scan points), NOT the input
+    /// geometry — they must NOT go through the reference-based geometry post-condition
+    /// (which fails here **by design**, a band image is not the input). Coordinates are Å.
+    pub fn frames_witness(&self) -> Vec<(Vec<String>, Vec<[f64; 3]>, Option<f64>)> {
+        self.frames
+            .iter()
+            .map(|f| {
+                let elements = f.atoms.iter().map(|(s, _)| s.clone()).collect();
+                let coords = f.atoms.iter().map(|(_, xyz)| *xyz).collect();
+                (elements, coords, parse_comment_energy(&f.comment))
+            })
+            .collect()
+    }
+
     /// Run the post-conditions; only on success return [`Verified`]. Unit 1d adds the
     /// job's `IndexMap<OrcaIndex>`: the per-frame element-order check becomes the map
     /// post-condition (identity map ⇒ the same check on every frame).

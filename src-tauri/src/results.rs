@@ -1089,6 +1089,63 @@ pub fn read_scan_geometries(
     Ok(Some(out))
 }
 
+/// One converged-MEP band image geometry (`input_MEP_trj.xyz` frame) for the NEB
+/// band viewer (N3). Carries its own element order (the UI cross-checks it, like
+/// [`ScanGeometry`]) and the frame's `E <Eh>` comment energy. **Distinct from
+/// [`NebImageJson`]** — that is a band *point* (distance + energy, no geometry);
+/// this is the actual per-image geometry the 3D viewer/stepper renders.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NebImageGeometry {
+    /// 0-based MEP index (im0 = reactant end … imN = product end), file order.
+    pub index: usize,
+    /// The frame's comment energy (Eh), or `None` if the comment carried no number.
+    pub energy_eh: Option<f64>,
+    pub elements: Vec<String>,
+    pub xyz_angstrom: Vec<[f64; 3]>,
+}
+
+/// Load the converged NEB MEP band images (`input_MEP_trj.xyz`) in MEP order — the
+/// sibling of [`read_scan_geometries`] for the band viewer (N3). Gated on the job
+/// being a NEB run (`results.neb` is `Some`); reads the multi-frame `.xyz` whole via
+/// the `xyz` reader (small, rule #5) as a **witness** (the band images are display
+/// geometries, not the input — no reference post-condition); **writes nothing** to the
+/// job dir (rule #3). Re-parses nothing already stored (ADR-012): the band POINTS and
+/// the TS geometry are in the stored `NebResultsJson`; this only fetches the per-image
+/// geometries the 3D viewer needs. `Ok(None)` — honest absence — when the job is not a
+/// NEB run, has no dir yet, **or the MEP file is absent** (never fabricate a band).
+pub fn read_neb_geometries(
+    conn: &Connection,
+    job_id: &str,
+    job_dir: Option<&str>,
+) -> Result<Option<Vec<NebImageGeometry>>, AppError> {
+    let Some(results) = read_job_results(conn, job_id)? else {
+        return Ok(None);
+    };
+    if results.neb.is_none() {
+        return Ok(None); // not a NEB job
+    }
+    let Some(job_dir) = job_dir else {
+        return Ok(None); // no dir → nothing to read
+    };
+    let path = Path::new(job_dir).join("input_MEP_trj.xyz");
+    if !path.exists() {
+        return Ok(None); // absent MEP file → honest absence, never a fabricated band
+    }
+    let xyz = XyzFile::from_path(&path)?;
+    let out = xyz
+        .frames_witness()
+        .into_iter()
+        .enumerate()
+        .map(|(index, (elements, xyz_angstrom, energy_eh))| NebImageGeometry {
+            index,
+            energy_eh,
+            elements,
+            xyz_angstrom,
+        })
+        .collect();
+    Ok(Some(out))
+}
+
 /// Read the stored results for a job (the full JSON structure), or `None`.
 pub fn read_job_results(conn: &Connection, job_id: &str) -> Result<Option<ParsedResults>, AppError> {
     let json: Option<String> = conn
@@ -1719,6 +1776,80 @@ mod tests {
         // …and no dir → None even for a scan job (nothing to read).
         let conn2 = results_db_with(&scan_results(3));
         assert!(read_scan_geometries(&conn2, "job1", None).unwrap().is_none());
+    }
+
+    // ── read_neb_geometries (N3) — the band viewer's MEP image loader ─────────────
+
+    fn neb_mep_fixture_dir() -> std::path::PathBuf {
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/neb_mep")
+    }
+
+    /// A minimal NEB results row — `read_neb_geometries` only gates on `neb` being
+    /// `Some`, so the band content is nominal; `ts_energy_eh` = the converged HCN⇌HNC TS.
+    fn neb_results() -> ParsedResults {
+        let neb = NebResultsJson {
+            iterations: Vec::new(),
+            mep: Vec::new(),
+            final_barrier_eh: None,
+            ts_geometry: FinalGeometry {
+                elements: vec!["C".into(), "N".into(), "H".into()],
+                xyz_angstrom: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]],
+            },
+            ts_energy_eh: Some(-93.324593),
+        };
+        ParsedResults::from_neb(neb).unwrap()
+    }
+
+    #[test]
+    fn read_neb_geometries_loads_mep_band_in_order() {
+        let conn = results_db_with(&neb_results());
+        let dir = neb_mep_fixture_dir();
+        let geoms = read_neb_geometries(&conn, "job1", dir.to_str())
+            .unwrap()
+            .expect("a NEB job returns Some(band geometries)");
+        // 10 MEP images (NImages 8 + 2), each the 3-atom HCN⇌HNC frame in [C,N,H] order.
+        assert_eq!(geoms.len(), 10);
+        for g in &geoms {
+            assert_eq!(g.elements, ["C", "N", "H"], "element order preserved per image");
+        }
+        // `index` mirrors file position (0-based MEP order).
+        assert_eq!(geoms[0].index, 0);
+        assert_eq!(geoms[9].index, 9);
+        // Endpoints carry their OWN comment energies, read in MEP order im0→im9 — a
+        // reversed read would swap these.
+        assert!((geoms[0].energy_eh.unwrap() - (-93.39966)).abs() < 1e-3, "{:?}", geoms[0].energy_eh);
+        assert!((geoms[9].energy_eh.unwrap() - (-93.37583)).abs() < 1e-3, "{:?}", geoms[9].energy_eh);
+        // The barrier is in the MIDDLE: the argmax over per-image energy is im4. A
+        // reversed or mis-indexed read fails this.
+        let argmax = geoms
+            .iter()
+            .enumerate()
+            .max_by(|a, b| {
+                a.1.energy_eh.unwrap().partial_cmp(&b.1.energy_eh.unwrap()).unwrap()
+            })
+            .unwrap()
+            .0;
+        assert_eq!(argmax, 4, "the saddle image is im4, not an endpoint");
+        assert!((geoms[4].energy_eh.unwrap() - (-93.32452)).abs() < 1e-3, "{:?}", geoms[4].energy_eh);
+        // …and that max image ≈ the converged TS energy — the saddle lives in the band.
+        assert!((geoms[4].energy_eh.unwrap() - (-93.324593)).abs() < 1e-3);
+    }
+
+    #[test]
+    fn read_neb_geometries_is_none_for_a_non_neb_job() {
+        // A results row with no NEB (neb: None) → Ok(None), absent-is-normal (the gate).
+        let non_neb =
+            ParsedResults::from_verified(&verified(), None, None, None, None, None).unwrap();
+        let conn = results_db_with(&non_neb);
+        assert!(read_neb_geometries(&conn, "job1", neb_mep_fixture_dir().to_str())
+            .unwrap()
+            .is_none());
+        // …and an absent MEP file → None even for a NEB job (never a fabricated band):
+        // a real dir that has no `input_MEP_trj.xyz`.
+        let conn2 = results_db_with(&neb_results());
+        assert!(read_neb_geometries(&conn2, "job1", std::env::temp_dir().to_str())
+            .unwrap()
+            .is_none());
     }
 
     // ── Phase 4.5 B1 fix: scan jobs parse profile-only ───────────────────────────

@@ -1199,8 +1199,19 @@ behaviour is involved, rule #10).
       `%neb` splice re-anchored on the family-independent `* xyz`; +`hasNebKeyword`. The old
       `NebSetupPanel` (immediate-submit New-Job section) is retired. No Rust change (reuses
       `create_neb_job`). **N-series → N3 next.**
-- [ ] **N3 — NEB result parsing/viewer** and **N4 — compare view** — track with the existing
-      "Job comparison view" item above. **N3 is next in the N-series.**
+- [x] **N3 — NEB band geometry viewer** (2026-08-12). The band/MEP/barrier parsing already landed in
+      E3a-1/E3a-2; N3 adds the **3D band geometry viewer** to `NebBandPanel`, mirroring
+      `ScanProfilePanel`. New `read_neb_geometries` command (sibling of `read_scan_geometries`) reads
+      `input_MEP_trj.xyz` **on demand** via a new `xyz.rs` `frames_witness` unverified read → the 10 MEP
+      images im0…im9 with per-frame `E <Eh>` energy, in MEP order; `Ok(None)` for a non-NEB job or an
+      absent MEP file (no fabricated band); **`PARSER_VERSION` unchanged** (on-demand read, not a stored
+      field). Viewer: image stepper + a "Saddle (TS)" toggle (both app state, ADR-011), labelled by
+      **geometry + energy only** (the interior-max image "≈ saddle", the TS by `ts_energy_eh`) — never a
+      source job title (the HCN/HNC mislabel lesson). Export honest-or-absent. +2 cargo bites (real
+      HCN⇌HNC `neb_mep` fixture: argmax==im4 + endpoint energies; non-NEB/absent → None), +5 vitest
+      (`bandMaxIndex`/`imageGeometryXyz`/`imageExportXyz`). **N-series → N4 next.**
+- [ ] **N4 — NEB in the compare view** — track with the existing "Job comparison view" item above.
+      **Next (final N-series unit).**
 
 ---
 

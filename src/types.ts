@@ -97,6 +97,9 @@ export interface NebResults {
   final_barrier_eh: number | null;
   /** The converged transition-state geometry (seeds OptTS in E3a-2). */
   ts_geometry: { elements: string[]; xyz_angstrom: [number, number, number][] };
+  /** The converged TS energy (Eh) from `_NEB-TS_converged.xyz` — the saddle's energy,
+   * used to label the "Saddle (TS)" view in the band viewer (N3). */
+  ts_energy_eh: number | null;
 }
 export interface NebIteration {
   index: number;
@@ -126,6 +129,18 @@ export interface ScanProfileJson {
 /** Mirrors `src-tauri/src/results.rs::ScanGeometry` — one relaxed-scan point
  * geometry (`input.NNN.xyz`), loaded lazily via `read_scan_geometries`. */
 export interface ScanGeometry {
+  elements: string[];
+  xyz_angstrom: [number, number, number][];
+}
+
+/** Mirrors `src-tauri/src/results.rs::NebImageGeometry` — one converged-MEP band
+ * image geometry (`input_MEP_trj.xyz` frame), loaded lazily via `read_neb_geometries`.
+ * Distinct from {@link NebImage} (a band point: distance+energy, no geometry). */
+export interface NebImageGeometry {
+  /** 0-based MEP index (im0 = reactant end … imN = product end). */
+  index: number;
+  /** The frame's `E <Eh>` comment energy, or null. */
+  energy_eh: number | null;
   elements: string[];
   xyz_angstrom: [number, number, number][];
 }

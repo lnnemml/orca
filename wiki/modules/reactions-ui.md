@@ -298,6 +298,23 @@ parser, no Rust**.
   `climbing_image` is `Some`. A small barrier-convergence chart (`barrierSeries`, barrier vs iteration,
   the current iteration a vertical marker) sits below. Explicit chart width via `ResizeObserver` (the
   WebKitGTK 0×0 class); two series with different x-domains, so each `<Line>` carries its own `data`.
+- **Band geometries — the 3D image stepper + saddle (N3).** The panel also shows the **converged MEP
+  band geometries** in a 3D viewer, mirroring `ScanProfilePanel`'s geometry viewer. The images are read
+  **on demand** by `read_neb_geometries` (the sibling of `read_scan_geometries`: reads
+  `<job_dir>/input_MEP_trj.xyz` via the `xyz.rs` `frames_witness` unverified read — band images are
+  display data, not the input geometry; `Ok(None)` for a non-NEB job or an absent MEP file — honest
+  absence, never a fabricated band; **writes nothing**, does NOT bump `PARSER_VERSION` — it is an
+  on-demand read, not a stored field). Pure helpers in `nebBand.ts`: `bandMaxIndex` (argmax over
+  per-image energy — the **≈ saddle**, the interior max), `imageGeometryXyz` (element-order checked at
+  the boundary vs the converged-TS order before render — a mismatch is a loud refusal, like the scan
+  point), `imageExportXyz`. The selected image AND a **"Saddle (TS)" toggle** are application state
+  (ADR-011); a stepper (⏮◀▶⏭ + slider + a "≈ saddle" jump) drives the selected image; the viewer is fed
+  ONE geometry (`imageGeometryXyz` for an image, `finalGeometryXyz(neb.ts_geometry, …)` for the TS).
+  **Labels are geometry + energy ONLY** — "Image k — E = … Eh", the interior max tagged "≈ saddle", the
+  TS labelled by `neb.ts_energy_eh` — **never a reactant/product source-job title** (a job title is
+  human intent, the geometry is truth; the HCN/HNC mislabel lesson). Export (`saveText`/`exportName`) is
+  honest-or-absent — the shown image (`neb-image-{k}`) or the TS (`neb-ts`), disabled until it renders.
+  `NebResults.ts_energy_eh` (long present in the Rust `NebResultsJson`) is now mirrored in `types.ts`.
 - **Refine TS with OptTS** MIRRORS `ScanProfilePanel`'s Stage-E1a action **exactly** (this is why E1a
   was built source-agnostic, ADR-020): read THIS NEB job's own input via `get_job` (never reconstructed),
   `buildOptTSInput(source.input_content, results.neb.ts_geometry)` (charge/method/solvation

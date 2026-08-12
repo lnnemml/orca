@@ -645,6 +645,20 @@ pub fn read_scan_geometries(
     crate::results::read_scan_geometries(&conn, &id, job_dir.as_deref())
 }
 
+/// The converged NEB MEP band image geometries (`input_MEP_trj.xyz`), in MEP order,
+/// for the band viewer's 3D stepper (N3). `None` for a non-NEB job or when the MEP
+/// file is absent. Reads the multi-frame file whole (small, rule #5); writes nothing
+/// (rule #3).
+#[tauri::command]
+pub fn read_neb_geometries(
+    db: State<'_, DbState>,
+    id: String,
+) -> Result<Option<Vec<crate::results::NebImageGeometry>>, AppError> {
+    let conn = db.lock()?;
+    let job_dir = get_job_conn(&conn, &id)?.job_dir;
+    crate::results::read_neb_geometries(&conn, &id, job_dir.as_deref())
+}
+
 #[tauri::command]
 pub fn update_job_status(db: State<'_, DbState>, id: String, status: String) -> Result<(), AppError> {
     let conn = db.lock()?;

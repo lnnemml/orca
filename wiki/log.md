@@ -7633,3 +7633,51 @@ shows `! XTB NEB-TS` + `%neb …` + reactant `* xyz` (NO run), edit NImages, Cre
 (band appears); m3 (neg) −1 reactant → emitted `* xyz` carries -1; m4 (neg) different atom order →
 honest refusal, no job. **Next:** N3 (NEB result parsing/viewer — likely already landed in E3a-2; verify
 then N4 compare view).
+
+## [2026-08-12] session | NEB band geometry viewer — MEP images + saddle, mirroring scan (N3)
+
+**Scope: one unit (N3).** The NEB band viewer gains a **3D geometry viewer** — an on-demand reader for
+the converged MEP band images (`input_MEP_trj.xyz`), a `read_neb_geometries` command, and an image
+stepper + saddle (TS) view added to `NebBandPanel` — the geometry parity `ScanProfilePanel` already has.
+Out of scope (untouched): the NEB parser's band/MEP/TS parsing (reused, not re-parsed); the compare view
+(N4); scan; the input builder / NEB creation (N2); **`PARSER_VERSION` (unchanged = 5** — this is an
+on-demand read, not a parsed-JSON field).
+
+**Part A — Rust reader + command + fixture + test (reviewed, approved).** Real fixture
+`src-tauri/tests/fixtures/neb_mep/input_MEP_trj.xyz` (COPIED from the HCN⇌HNC job dir, not hand-typed) —
+10 frames, 3 atoms `[C,N,H]`, `E <Eh>` comments. `results.rs`: +`NebImageGeometry { index, energy_eh,
+elements, xyz_angstrom }` (plain snake_case like `ScanGeometry`; distinct from the band-point
+`NebImageJson`), +`read_neb_geometries(conn, job_id, job_dir)` — mirrors `read_scan_geometries`: gates
+on `results.neb.is_some()`, reads `input_MEP_trj.xyz` via a new `xyz.rs` **`frames_witness()`** (the
+multi-frame witness sibling of `first_frame`/`first_frame_energy`, on the UNVERIFIED handle — band
+images span reactant→product, so they are display data, not the input geometry, and must not go through
+the reference post-condition), maps each frame in file order → `NebImageGeometry`; `Ok(None)` for a
+non-NEB job, no dir, **or an absent MEP file** (honest absence, never a fabricated band). `commands/jobs.rs`
++thin wrapper, registered in `lib.rs` beside `read_scan_geometries`. `types.ts` +`NebImageGeometry`.
+Bites: `read_neb_geometries_loads_mep_band_in_order` (argmax==im4 + endpoint energies im0 −93.39966 /
+im9 −93.37583 prove MEP order + per-frame energy; im4 ≈ ts_energy within 1e-3 — the saddle is in the
+band), `read_neb_geometries_is_none_for_a_non_neb_job` (the gate + absent-file → None). cargo 271 (+2).
+
+**Part B — viewer wiring.** `nebBand.ts` +pure helpers `bandMaxIndex` (argmax over per-image energy —
+the ≈ saddle, interior max; nulls sort lowest), `imageGeometryXyz` (element-order checked at the
+boundary vs the converged-TS order — a mismatch is a loud refusal, mirrors `scanProfile.pointGeometryXyz`),
+`imageExportXyz` (reuses `finalGeometryXyz`; labelled by index+energy). `NebBandPanel.tsx`: fetches
+`read_neb_geometries` once; the selected image AND a **"Saddle (TS)" toggle** are app state (ADR-011); a
+stepper (⏮◀▶⏭ + slider + "≈ saddle" jump) drives the selected image; `<MoleculeViewer xyzData
+preserveCameraOnUpdate>` shows the one geometry (image, or `neb.ts_geometry` when toggled). **Labels are
+geometry + energy ONLY** — "Image k — E = … Eh", interior max "≈ saddle", TS by `ts_energy_eh` — NEVER a
+source endpoint job title (the HCN/HNC mislabel lesson; the panel has no access to endpoint titles).
+Export honest-or-absent (`neb-image-{k}` / `neb-ts`, disabled until it renders). `types.ts`
+`NebResults` +`ts_energy_eh` (long in the Rust struct, now mirrored). The existing band/MEP/barrier
+charts + Refine-with-OptTS are untouched.
+
+**Verification.** cargo **271 (+2)**; tsc clean; vitest **849 (+5** nebBand helper bites**)**; pytest
+untouched. Wiki: `orca/neb.md` (MEP read on demand, the geometry+energy labelling / HCN-HNC lesson),
+`modules/reactions-ui.md` (the geometry viewer/stepper/export/saddle + `read_neb_geometries`), `index.md`,
+ROADMAP (N3 [x], N4 next).
+
+**Author manual gate pending:** m1 open a completed NEB result → band charts AND a 3D viewer with an
+image stepper; step im0→im9, geometry morphs reactant→product, energies shown; m2 the max-energy image
+flagged "≈ saddle"; toggle "Saddle (TS)" → the converged TS with its energy; m3 export an image + the TS
+→ two distinct `.xyz`, correct atom order; m4 (neg) a NEB whose dir lacks `input_MEP_trj.xyz` → viewer
+honestly absent, charts still render. **Next:** N4 — NEB in the compare view (final N-series unit).
