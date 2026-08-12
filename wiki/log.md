@@ -7726,3 +7726,50 @@ Stage F the next phase target), index.md.
 ΔG‡ refused (—) "NEB TS (unrefined estimate)"; m2 refine it via OptTS(+Freq) → real ΔG‡, estimate label
 retires; m3 two NEB pathways → MEPs overlay on a normalized 0→1 axis, ΔΔE‡ shows; m4 (neg) xtb-NEB + DFT
 scan → table FLAGS not-comparable (method guard), no ΔΔE‡ number. **Next:** Stage F (CREST microsolvation).
+
+## [2026-08-12] session | CREST/QCG grow parse + completion — the microsolvation seed reader (Stage F F1a)
+
+**Scope: one unit (F1a), Stage F started.** The pure data core: classify a CREST QCG-grow run's
+completion and parse the grown microsolvated cluster (geometry + seed energy + intended charge) from a
+real `grow/` dir. **The cluster is a geometry SEED for a later ORCA re-opt (F2), NEVER a solvated
+result.** Out of scope (NOT built): the process runner / spawn / events (F1b); the persistent CREST job
+record + migration + setup form (F1c); the ORCA re-opt handoff (F2); `qcg_energy.dat` growth-table parse
+(F1b display); the ensemble path (segfaults at v3.0.2) + quasi-RRHO thermo (deferred).
+
+**Probe facts encoded (rule #10, from `wiki/orca/crest.md`, two real grow runs).** Completion sentinel
+= **`CREST terminated normally.`** in crest.out (NOT `normal termination of xtb` — xtb stderr CREST
+does not keep). The cluster comment is CREST's `energy: <Eh> gnorm: … xtb: 6.6.1`. `crest.out` carries
+`Molecular charge : <n>` — the INTENDED (solute) charge. **QCG grows an ion's cluster NEUTRAL**, so a
+nonzero intended charge means the seed energy is the wrong species' — encoded once, not re-derived.
+
+**Part A — Rust parse + completion core (reviewed, approved; one fix applied).** New module
+`src-tauri/src/crest.rs` (`mod crest;` in lib.rs): `enum CrestCompletion { Ok, NoCluster, Failed }` +
+`classify_crest_completion` (Ok = sentinel AND cluster present); `parse_crest_energy_comment` (matches
+CREST's `energy:` token, deliberately NOT ORCA's `E` form — one home each; a new
+`XyzFile::first_frame_comment()` exposes the raw comment so the foreign format parses its own energy,
+not a second xyz parser); `struct CrestGrowResult { cluster: FinalGeometry, seed_energy_eh: Option<f64>,
+intended_charge: Option<i32>, n_atoms }` (seed_energy_eh named so "seed, not solvated" is
+self-documenting); `parse_crest_grow(grow_dir, crest_out)` — reads `cluster_optimized.xyz` via
+`XyzFile::first_frame()`, energy from its comment, charge from crest.out's `Molecular charge` line;
+`Ok(None)` on an absent cluster (honest absence). Computes no solvation energy, derives no charge from
+the geometry. **Review fix:** `CrestGrowResult` is plain **snake_case** serde (dropped the camelCase
+rename) — consistent with `ScanGeometry`/`NebImageGeometry`/`FinalGeometry` (the nested FinalGeometry is
+snake_case; a camelCase wrapper would have been mixed). Scoped `#![allow(dead_code)]` (documented) covers
+the pub items F1b/F1c will call — the module is otherwise unreachable until the runner lands; the project
+stays warning-clean.
+
+**Fixtures (real, copied — not hand-typed):** `tests/fixtures/crest_grow_neutral/` (rung0 benzoic + 3
+H₂O, charge 0, 24 atoms, −41.452349) and `crest_grow_anion/` (rung1 BH₄⁻ + 3 MeOH, charge −1, 23 atoms,
+−27.915061) — each cluster.xyz + cluster_optimized.xyz + crest.out + qcg_energy.dat.
+
+**Tests (5 bites):** `crest_completion_ok_needs_sentinel_and_cluster` (both edges incl. the xtb-stderr
+string → Failed), `crest_energy_comment_parses_energy_colon_form` (CREST yes / ORCA no),
+`parse_neutral_grow_rung0` (charge-clean), `parse_anion_grow_rung1` (**the −1 intended charge surfaced**
+for the F1b warning; no charge from geometry, seed energy not a solvated result),
+`parse_crest_grow_none_when_no_cluster` (honest absence).
+
+**Verification.** cargo **276 (+5)**; build warning-clean; **tsc/vitest untouched** (no frontend this
+unit — state so); pytest untouched. Wiki: +`modules/crest-microsolvation.md` (Stage-F overview,
+grow-as-seed → ORCA re-opt, seed-not-solvated, nonzero-charge⇒wrong-charge-seed; links `orca/crest.md`
+as the probe of record), `index.md` (+page, 95→96), ROADMAP (Stage F **started**; F1a [x]; F1b/F1c/F2
+pending; ensemble + quasi-RRHO deferred). **Next:** F1b (the CREST runner, mirroring XtbRunner).

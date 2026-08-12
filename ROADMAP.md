@@ -1040,13 +1040,24 @@ r1–r4 manual gates. Next per the ratified reorder: CREST probe → Stage D →
       (reproducible CREGEN segfault; `-enslvl gfn2` → MTD non-convergence). ALPB/GBSA only — **no SMD**
       at this level (that is the later ORCA refinement). **This is a probe, NOT the feature** — Stage F
       stays open below.
-- [ ] **Design/build Stage F** on the probe. Recommendation from it: **do Stage E (gas-phase ΔG‡)
-      first — E before F** (F is not production-trustworthy for the anion until the charge-on-cluster
-      and ensemble-crash issues are resolved). Pragmatic path: take QCG's neutral grown shell as a
-      **geometry seed only**, then re-optimize the cluster **in ORCA at the correct charge with SMD**
-      (SMD-over-ALPB for ions). Still to settle: floppy-shell **conformer sampling** and **quasi-RRHO**
-      thermochemistry for the low frequencies a loose cluster introduces (Na⁺–BH₄–ketone). Lowest
-      immediate mission priority — after E, or in parallel on demand.
+- [~] **Design/build Stage F** on the probe — **STARTED (2026-08-12)**. The chosen path (from the
+      probe): take QCG's neutral grown shell as a **geometry seed only**, then re-optimize the cluster
+      **in ORCA at the correct charge with SMD** (SMD-over-ALPB for ions). Staged:
+      - [x] **F1a — grow PARSE + COMPLETION** (2026-08-12). `src-tauri/src/crest.rs`: `CrestCompletion`
+        + `classify_crest_completion` (sentinel `CREST terminated normally.` **and** cluster present —
+        NOT `normal termination of xtb`, which is xtb stderr CREST does not keep), `parse_crest_energy_comment`
+        (CREST `energy:` form, kept apart from ORCA's `E`; +`XyzFile::first_frame_comment`),
+        `parse_crest_grow` → `CrestGrowResult { cluster, seed_energy_eh, intended_charge, n_atoms }` —
+        the SEED reader: `seed_energy_eh` is xtb-level (never solvated), `intended_charge` from
+        `crest.out` (the solute's — nonzero ⇒ wrong-charge seed to warn on later), `Ok(None)` on an
+        absent cluster. +5 cargo bites vs real `crest_grow_neutral`/`crest_grow_anion` fixtures.
+        `wiki/modules/crest-microsolvation.md`.
+      - [ ] **F1b — the process runner** (spawn CREST/QCG, stream events, isolated dir — mirrors
+        `XtbRunner`; `qcg_energy.dat` growth-table parse for display).
+      - [ ] **F1c — persistent CREST job record + migration + setup form.**
+      - [ ] **F2 — the ORCA re-opt handoff** (seed cluster → an ORCA `Opt` at the correct charge + SMD).
+      - **Deferred:** the `-ensemble` path (segfaults at v3.0.2) and QCG **quasi-RRHO** thermochemistry
+        (soft on the floppy shell). Still the lowest immediate mission priority — after E, or on demand.
 
 **Phase 4.5 done when:** author defines two stereofacial attacks on a ketone (si vs re), runs two
 native ORCA scans, and sees two energy profiles side by side with ΔΔE‡ — a computational

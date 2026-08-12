@@ -160,6 +160,14 @@ impl XyzFile {
         parse_comment_energy(&self.frames.first()?.comment)
     }
 
+    /// The first frame's raw comment line (line 2 of the xyz). Exposed so a foreign-format
+    /// reader can parse its OWN energy convention — e.g. CREST's `energy: <Eh>` comment
+    /// (`crest.rs`), which is a DIFFERENT format from ORCA's `E <Eh>` (kept apart, one
+    /// parser each — never cross-matched). `None` if there is no frame.
+    pub fn first_frame_comment(&self) -> Option<&str> {
+        Some(self.frames.first()?.comment.as_str())
+    }
+
     /// Every frame's `(elements, Å coords, comment energy)` in **file order** — the
     /// multi-frame witness sibling of [`Self::first_frame`] + [`Self::first_frame_energy`],
     /// read on the **unverified** handle on purpose. NEB MEP band images

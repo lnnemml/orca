@@ -2,6 +2,7 @@ mod anthropic;
 mod commands;
 mod convergence;
 mod cpu_presets;
+mod crest;
 mod db;
 mod error;
 mod local_backend;
