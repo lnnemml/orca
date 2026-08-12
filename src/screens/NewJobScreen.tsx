@@ -1886,7 +1886,10 @@ export function NewJobScreen({
             </div>
           ) : null}
         </div>
-        <CrestPanel scene={scene} />
+        <CrestPanel
+          scene={scene}
+          onRefine={(input) => adoptWholeInput(input)}
+        />
         </>
       ) : null,
     },

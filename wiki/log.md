@@ -7871,3 +7871,49 @@ done → cluster viewer + the "coarse seed" NOTE; m2 an ANION scene (charge −1
 "geometry seed only — grown neutral, refine at −1 with SMD" WARNING; m3 (neg) crest binary missing →
 `crest:error` panel, window responsive; m4 cancel mid-grow → stops, panel resets. **Next:** F2 — the ORCA
 re-opt handoff (the persistence point: seed cluster → an ORCA `Opt` at the correct charge + SMD).
+
+## [2026-08-12] session | Seed → ORCA re-opt at the solute charge + SMD — the microsolvation payoff (Stage F F2) — Stage F v1 COMPLETE
+
+**Scope: one unit (F2), the Stage F payoff.** The grown cluster becomes an ORCA `Opt Freq` input at the
+SOLUTE's charge with SMD, populated into the editor for review; the user runs it via the normal Create &
+Run, and its result feeds the existing ΔG machinery. **K3: no migration, no new persistence path** —
+provenance rides an input `#` comment + the job title; the re-opt is a normal ORCA job. Out of scope
+(NOT built): a microsolvation column / any migration; the ensemble path; a new create_job path (reuses
+`adoptWholeInput`); more solvents.
+
+**The footgun (rule #9), the twin of `scene/reopt.ts`.** There the (c, m) are INHERITED from a source
+input; here **passed EXPLICITLY** — the solute's charge, never 0, never read from the neutral-grown
+cluster. The cluster was grown at charge 0 (a seed); the re-opt goes at the real −1 (for the anion).
+
+**Part A — pure core (`src/crest/reopt.ts`, reviewed, approved — no changes).**
+`buildClusterReoptInput(cluster, charge, multiplicity, { solvent, method?, freq? })` mirrors
+`buildReoptInput` (reuses `sceneFromAtomLines` + `buildOrcaInput`, no Rust mirror): a single-fragment
+scene from the cluster atoms (order preserved) carrying the EXPLICIT (c, m); emit `! r2SCAN-3c
+SMD(<solvent>) Opt Freq`; a `#` provenance header (solvent + solute charge + seed/neutral/SMD, metadata
+only); a rule-#9 post-condition (re-parse the emit, assert (c,m)==passed and atom count/order==cluster).
+6 bites: `cluster_reopt_uses_explicit_solute_charge` (−1 → `* xyz -1 1`), `cluster_reopt_emits_smd_opt_freq`,
+`cluster_reopt_preserves_atom_order`, `cluster_reopt_provenance_comment_present`, +multiplicity-passed-not-default,
+empty-throws.
+
+**Part B — wiring (two reviewer consistency notes honoured).** `CrestPanel`: the "Refine in ORCA
+(Opt+Freq · SMD)" button (was the disabled placeholder) → `buildClusterReoptInput(done.result.cluster,
+done.result.intended_charge ?? launchedChargeRef.current, launchedMultRef.current, { solvent:
+launchedSolventRef.current })` → `onRefine(input)`. **(1)** The multiplicity + solvent are captured at
+LAUNCH (`launchedMultRef`/`launchedSolventRef`), not read from the form controls after `done` (they can
+change post-run) — footgun-consistent with the charge. **(2)** `NewJobScreen` passes `onRefine={(input)
+=> adoptWholeInput(input)}` — which already **clears `pendingNeb`** (N2), so the stale-NEB-payload gate
+can't misfire and the ordinary `create_job` path applies. The re-opt input lands in Monaco; the user runs
+it via the existing Create & Run (deferred, N2 pattern).
+
+**Verification.** tsc clean; vitest **864 (+6** Part A bites; Part B is UI — no new unit test, manual-
+gated**)**; **cargo/pytest untouched** (no Rust/Python this unit — state so). Wiki:
+`modules/crest-microsolvation.md` (F2 payoff — explicit solute charge, SMD+Opt+Freq, provenance-in-comment,
+K3 no-migration, seed≠answer), ROADMAP (F2 [x] + **Stage F v1 COMPLETE**; ensemble+quasi-RRHO remain the
+deferred spike), index.md.
+
+**Author manual gate pending (live window):** m1 grow an ANION cluster (BH₄⁻ + 3 MeOH, −1) → Refine in
+ORCA → editor shows `! r2SCAN-3c SMD(methanol) Opt Freq` + `* xyz -1 1` + the cluster atoms + a `#`
+provenance header; Create & Run → runs + parses like any Opt+Freq; m2 a NEUTRAL cluster → `* xyz 0 1` +
+SMD; m3 the panel seed energy (xtb-ALPB) and the re-opt result (real SMD DFT) are clearly DIFFERENT
+numbers — the seed was never the answer. **Next:** the deferred Stage-F spike (ensemble + quasi-RRHO)
+only if conformer-averaged microsolvation becomes a mission need; otherwise Phase-6 power features.

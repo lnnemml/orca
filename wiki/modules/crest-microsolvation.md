@@ -28,7 +28,7 @@ never the solvated answer. This framing is why the reader names the field `seed_
 | **F1a** | **grow PARSE + COMPLETION** — `crest.rs`: classify a run, read the grown cluster (geometry + seed energy + intended charge) from a real `grow/` dir | **done (2026-08-12)** |
 | **F1b** | the **ephemeral runner** — spawn CREST/QCG grow off-thread, parse, emit events (mirrors `XtbRunner`); the arg vector + `qcg_energy.dat` growth-table parse (display) | **done (2026-08-12)** |
 | **F1c** | the **setup form + solvent library + transient result panel** (the first Stage-F frontend; consumes `crest:done`/`crest:error`) | **done (2026-08-12)** |
-| F2 | the **ORCA re-opt handoff** — the seed cluster → an ORCA `Opt` at the correct charge + SMD | pending |
+| **F2** | the **ORCA re-opt handoff** — the seed cluster → an ORCA `Opt Freq` at the SOLUTE charge + SMD, into the editor | **done (2026-08-12) — Stage F v1 COMPLETE** |
 | — | the **ensemble** path (`-ensemble`) and QCG **quasi-RRHO thermo** | **deferred** (ensemble segfaults at v3.0.2; thermo is soft on the floppy shell) |
 
 ## F1a — the seed reader (`src-tauri/src/crest.rs`)
@@ -130,8 +130,38 @@ the xtb pre-opt (`modules/editor-ui.md`) — both are scene-operating helpers.
   (`result.intended_charge` from `crest.out`, what actually ran) — falling back to the launched scene
   charge only if that line was unreadable — so it reflects what CREST did, a free cross-check against the
   footgun. On `crest:error`: the message + kept-dir path (mirrors the xtb error panel). **Nothing is
-  committed to the scene.** A **disabled "Refine in ORCA (next)"** button marks where F2's accept action
-  (the persisted ORCA re-opt) will go.
+  committed to the scene.** The **"Refine in ORCA (Opt+Freq · SMD)"** button is the F2 accept action
+  (below).
+
+## F2 — seed → ORCA re-opt at the solute charge + SMD (the payoff, `src/crest/reopt.ts`)
+
+The Stage-F payoff: the grown cluster stops being a seed and becomes a **defensible solvated number** —
+the first (and only) point that happens. `buildClusterReoptInput(cluster, charge, multiplicity, { solvent })`
+mirrors `scene/reopt.ts::buildReoptInput`, with the load-bearing difference that **(charge, multiplicity)
+are passed EXPLICITLY** — the twin of that module's inherit-from-source footgun:
+
+- **The re-opt charge is the SOLUTE's, never the cluster's, never 0.** The cluster was grown NEUTRAL, so
+  its geometry is a seed and its energy is the wrong species'. `CrestPanel` passes **CREST's own parsed
+  `result.intended_charge`** (from `crest.out`, what actually ran; falling back to the launched scene
+  charge only if that line was unreadable), and the **multiplicity is the launched solute's** (closed-shell
+  solvent doesn't change it — never a `1`-default). A `#` provenance header + a rule-#9 post-condition
+  (re-parse the emit, assert (c, m) == passed and atom order == cluster) guard it — a wrong-charge input
+  never reaches the editor.
+- **SMD + Opt + Freq.** The emit is `! r2SCAN-3c SMD(<solvent>) Opt Freq` — SMD (verified real SMD in 6.1,
+  `orca/solvation.md`, SMD-over-ALPB for ions, ADR-018) turns the xtb-ALPB seed into a defensible
+  solvated calculation, and `Freq` puts it on the ΔG path (the existing E1b/compare machinery consumes it
+  with no new code).
+- **K3 — no migration, no new persistence path.** Provenance rides the **input `#` comment** + the job
+  title; the re-opt is a **normal ORCA job**. The button calls `onRefine(input)` →
+  `NewJobScreen.adoptWholeInput(input)` — the input lands in the Monaco editor for review, `pendingNeb` is
+  cleared (this is not a NEB — the ordinary `create_job` path applies), and the user runs it via the
+  existing **Create & Run** (deferred run, the N2 pattern). No microsolvation column, no new create path.
+- **The seed was never the answer.** The panel's `seed_energy_eh` (xtb-ALPB) and the re-opt's parsed
+  energy (real SMD DFT) are clearly different numbers — the whole discipline of Stage F made visible.
+
+Pure logic + bites (`crest/reopt.test.ts`): `cluster_reopt_uses_explicit_solute_charge` (−1 →
+`* xyz -1`), `cluster_reopt_emits_smd_opt_freq`, `cluster_reopt_preserves_atom_order`,
+`cluster_reopt_provenance_comment_present` (+ multiplicity-passed-not-default, empty-throws).
 
 ## See also
 

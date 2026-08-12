@@ -1040,9 +1040,10 @@ r1–r4 manual gates. Next per the ratified reorder: CREST probe → Stage D →
       (reproducible CREGEN segfault; `-enslvl gfn2` → MTD non-convergence). ALPB/GBSA only — **no SMD**
       at this level (that is the later ORCA refinement). **This is a probe, NOT the feature** — Stage F
       stays open below.
-- [~] **Design/build Stage F** on the probe — **STARTED (2026-08-12)**. The chosen path (from the
-      probe): take QCG's neutral grown shell as a **geometry seed only**, then re-optimize the cluster
-      **in ORCA at the correct charge with SMD** (SMD-over-ALPB for ions). Staged:
+- [x] **Design/build Stage F** on the probe — **v1 COMPLETE (2026-08-12)** (F1a–F2; ensemble + quasi-RRHO
+      remain a deferred spike). The chosen path (from the probe): take QCG's neutral grown shell as a
+      **geometry seed only**, then re-optimize the cluster **in ORCA at the correct charge with SMD**
+      (SMD-over-ALPB for ions). Staged:
       - [x] **F1a — grow PARSE + COMPLETION** (2026-08-12). `src-tauri/src/crest.rs`: `CrestCompletion`
         + `classify_crest_completion` (sentinel `CREST terminated normally.` **and** cluster present —
         NOT `normal termination of xtb`, which is xtb stderr CREST does not keep), `parse_crest_energy_comment`
@@ -1070,9 +1071,19 @@ r1–r4 manual gates. Next per the ratified reorder: CREST probe → Stage D →
         the transient cluster viewer + growth table + the seed banner reading CREST's OWN parsed
         `intended_charge`. **No persistence** — a disabled "Refine in ORCA (next)" marks the F2 accept
         action. +3 vitest bites. (NOT a persistent job/migration — that reframing is F2, below.)
-      - [ ] **F2 — the ORCA re-opt handoff** (seed cluster → an ORCA `Opt` at the correct charge + SMD).
-      - **Deferred:** the `-ensemble` path (segfaults at v3.0.2) and QCG **quasi-RRHO** thermochemistry
-        (soft on the floppy shell). Still the lowest immediate mission priority — after E, or on demand.
+      - [x] **F2 — the ORCA re-opt handoff** (2026-08-12) — **Stage F v1 COMPLETE**. `src/crest/reopt.ts`
+        `buildClusterReoptInput(cluster, charge, multiplicity, { solvent })` — the grown cluster → an
+        ORCA `! r2SCAN-3c SMD(<solvent>) Opt Freq` at the **SOLUTE charge** (passed EXPLICITLY — CREST's
+        parsed `intended_charge`, never 0/never the cluster's) + the launched multiplicity, with a `#`
+        provenance header and a rule-#9 (c,m)+atom-order post-condition. `CrestPanel`'s "Refine in ORCA"
+        button → `onRefine` → `NewJobScreen.adoptWholeInput` (into the editor, `pendingNeb` cleared) → the
+        normal Create & Run. **K3: no migration, no jobs column** — provenance rides the input comment +
+        the job title; the re-opt is a normal ORCA job whose result feeds the existing ΔG machinery.
+        +6 vitest bites. The seed (xtb-ALPB) vs the re-opt (real SMD DFT) are clearly different numbers —
+        the seed was never the answer.
+      - **Deferred spike:** the `-ensemble` path (segfaults at v3.0.2) and QCG **quasi-RRHO**
+        thermochemistry (soft on the floppy shell). Not needed for v1 (a single grown cluster → SMD re-opt
+        is a defensible solvated point); revisit on demand when conformer-averaged microsolvation matters.
 
 **Phase 4.5 done when:** author defines two stereofacial attacks on a ketone (si vs re), runs two
 native ORCA scans, and sees two energy profiles side by side with ΔΔE‡ — a computational

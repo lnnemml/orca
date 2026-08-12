@@ -9,6 +9,7 @@ import { MoleculeViewer } from "../viewer/MoleculeViewer";
 import { SOLVENT_LIBRARY } from "./solvents";
 import { crestSeedNote } from "./seed-note";
 import { formatCrestProgress } from "./crest-progress";
+import { buildClusterReoptInput } from "./reopt";
 
 /** The `crest:done` payload — mirrors Rust `CrestGrowDone` (snake_case serde). The cluster
  * is a GEOMETRY SEED; `seed_energy_eh` is xtb-level, never a solvated result. */
@@ -39,7 +40,15 @@ interface CrestGrowDone {
  *    solvated)", and `crestSeedNote(result.intended_charge)` ALWAYS renders — a nonzero charge
  *    is a loud warning (QCG grew the cluster neutral, so the energy is the wrong species').
  */
-export function CrestPanel({ scene }: { scene: Scene }) {
+export function CrestPanel({
+  scene,
+  onRefine,
+}: {
+  scene: Scene;
+  /** F2: the "Refine in ORCA" input (a QCG-seed re-opt at the solute charge + SMD) →
+   * the parent drops it into the editor for review (the normal Create & Run then runs it). */
+  onRefine: (input: string) => void;
+}) {
   const [solventIdx, setSolventIdx] = useState(0);
   const [nsolv, setNsolv] = useState(3);
   const [busy, setBusy] = useState(false);
@@ -52,6 +61,11 @@ export function CrestPanel({ scene }: { scene: Scene }) {
   // crest.out's charge line was somehow unreadable (bias toward warning). CREST's own
   // parsed value (`result.intended_charge`) is preferred.
   const launchedChargeRef = useRef(0);
+  // The multiplicity + solvent the grow was LAUNCHED with — the re-opt uses the solute's
+  // multiplicity (closed-shell solvent doesn't change it) and the grown solvent, not
+  // whatever the form controls happen to read after `done` (they can change post-run).
+  const launchedMultRef = useRef(1);
+  const launchedSolventRef = useRef(SOLVENT_LIBRARY[0].alpbName);
 
   // Charge comes from the SCENE (ADR-014 — never a silent 0). A scene always has a
   // total charge (Σ fragment.charge); the panel only renders when a scene exists.
@@ -67,6 +81,8 @@ export function CrestPanel({ scene }: { scene: Scene }) {
     setElapsed(0);
     startRef.current = Date.now();
     launchedChargeRef.current = sceneCharge;
+    launchedMultRef.current = scene.multiplicity;
+    launchedSolventRef.current = solvent.alpbName;
     setBusy(true);
     try {
       await invoke("crest_grow", {
@@ -263,14 +279,28 @@ export function CrestPanel({ scene }: { scene: Scene }) {
             </table>
           ) : null}
 
-          {/* F2 — the persistence point. Disabled here so the flow reads end-to-end. */}
+          {/* F2 — the payoff. Build an ORCA Opt+Freq re-opt at the SOLUTE charge (CREST's own
+              parsed `intended_charge`, falling back to the launched scene charge) + SMD, and
+              hand it to the editor for review. The seed becomes a real solvated number here. */}
           <div>
             <button
-              className="btn btn-sm"
-              disabled
-              title="F2: re-optimize this cluster in ORCA at the correct charge with SMD (the persisted result)"
+              className="btn btn-sm btn-primary"
+              title="Re-optimize this cluster in ORCA at the correct charge with SMD (Opt+Freq) — the defensible solvated result. Opens in the editor for review."
+              onClick={() => {
+                try {
+                  const input = buildClusterReoptInput(
+                    done.result.cluster,
+                    done.result.intended_charge ?? launchedChargeRef.current,
+                    launchedMultRef.current,
+                    { solvent: launchedSolventRef.current },
+                  );
+                  onRefine(input);
+                } catch (e) {
+                  setError(e instanceof Error ? e.message : String(e));
+                }
+              }}
             >
-              Refine in ORCA (next)
+              Refine in ORCA (Opt+Freq · SMD)
             </button>
           </div>
         </div>
