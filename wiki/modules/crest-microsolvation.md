@@ -26,7 +26,7 @@ never the solvated answer. This framing is why the reader names the field `seed_
 | unit | what | status |
 |---|---|---|
 | **F1a** | **grow PARSE + COMPLETION** — `crest.rs`: classify a run, read the grown cluster (geometry + seed energy + intended charge) from a real `grow/` dir | **done (2026-08-12)** |
-| F1b | the process **runner** — spawn CREST/QCG, stream events, isolated dir (mirrors `XtbRunner`); `qcg_energy.dat` growth-table parse (display) | pending |
+| **F1b** | the **ephemeral runner** — spawn CREST/QCG grow off-thread, parse, emit events (mirrors `XtbRunner`); the arg vector + `qcg_energy.dat` growth-table parse (display) | **done (2026-08-12)** |
 | F1c | the persistent CREST **job record + migration + setup form** | pending |
 | F2 | the **ORCA re-opt handoff** — the seed cluster → an ORCA `Opt` at the correct charge + SMD | pending |
 | — | the **ensemble** path (`-ensemble`) and QCG **quasi-RRHO thermo** | **deferred** (ensemble segfaults at v3.0.2; thermo is soft on the floppy shell) |
@@ -66,6 +66,41 @@ atoms, −27.915061]): `crest_completion_ok_needs_sentinel_and_cluster` (the sen
 edges), `crest_energy_comment_parses_energy_colon_form` (CREST `energy:` yes, ORCA `E` no),
 `parse_neutral_grow_rung0` (charge-clean), `parse_anion_grow_rung1` (the nonzero intended charge
 surfaced), `parse_crest_grow_none_when_no_cluster` (honest absence).
+
+## F1b — the ephemeral runner (`crest.rs`, mirrors `crate::xtb`)
+
+**K3: nothing here persists.** A CREST grow is a helper (seconds), exactly like an xtb pre-opt — the
+grown cluster is returned as an **event**, not a jobs row; the persisted artifact is the F2 ORCA re-opt.
+The runner is a byte-for-byte mirror of `XtbRunner` (the whole 2.5.5 lesson: a synchronous long command
+freezes the GTK/WebKit window AND blocks cancel).
+
+- **The arg vector** — `build_crest_args(opts)` returns what follows `crest solute.xyz`:
+  `-qcg solvent.xyz -grow -nsolv <n> -alpb <solvent> [-chrg <c>] [-uhf <u>] (-fixsolute|-nofix) -T <n>`.
+  **ALWAYS `-grow`, NEVER `-ensemble`** (reproducibly segfaults on the ionic system, `crest.md`) and
+  **no `-keepdir`** in production (probe-only). `-chrg`/`-uhf` are emitted **only when nonzero** — the
+  two probed invocations exactly (neutral omits `-chrg`; the anion passes `-chrg -1`). ⚠️ **`-uhf`: only
+  `uhf = 0` (singlets) was probed** — a nonzero `-uhf` is emitted by the same pattern but is **unverified**.
+- **`crest_grow(app, db, runner, solute_xyz, solvent_xyz, opts)`** — a *starter* mirroring
+  `xtb_optimize`: validate synchronously (`nsolv ≥ 1`, `uhf ≥ 0`, a solvent name), **reserve the single
+  slot** (reject a concurrent run) before returning, then `std::thread::spawn` → `run_crest_in_dir`. The
+  thread's cleanup: **SUCCESS → remove the dir AFTER parsing** (rule #3 scratch-litter), **CANCEL →
+  remove**, **any other FAILURE → KEEP** (crest.out is the only evidence of where it failed, tailed into
+  the error); the slot is freed unconditionally. Emits `crest:done` (a `CrestGrowDone { result, growth }`
+  — the F1a `CrestGrowResult` seed + the display growth table) or `crest:error` (`{ message, dir? }`).
+- **`run_crest_in_dir`** — isolated `data_dir/orcastudio/crest/<uuid>` → write `solute.xyz` +
+  `solvent.xyz` → spawn `crest solute.xyz <args>` (cwd = the dir, own process group, stdout+stderr →
+  `crest.out`) → poll for exit/cancel/timeout (`terminate_job` killpg + cwd sweep on cancel, mirroring
+  xtb; `CREST_TIMEOUT_SECS = 600`) → **classify completion from `crest.out` + `grow/cluster.xyz`
+  presence** (F1a, never the exit code) → **`parse_crest_grow` + `parse_qcg_energy` BEFORE returning**,
+  so the cluster is read before the caller's `remove_dir_all` on success. `seed_energy_eh` flows straight
+  through — never relabelled solvated.
+- **`crest_cancel(runner)`** — flips the `AtomicBool` (must not block the main thread); the worker's poll
+  loop does the killpg. Mirrors `xtb_cancel`.
+- **`crest_path` is a user setting** (`settings` key `crest_path`, default `/opt/crest/crest`) — full
+  path, **never bundled** (rule #7); reuses `xtb`'s `resolve_binary` `$PATH` resolver (one home).
+
+Events: **`crest:done`** / **`crest:error`** on the frontend event bus, beside `xtb:*` (`tauri-core.md`).
+No frontend consumes them yet — that is F1c (the setup form + solvent-monomer library + result panel).
 
 ## See also
 

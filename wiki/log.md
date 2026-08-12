@@ -7773,3 +7773,51 @@ unit — state so); pytest untouched. Wiki: +`modules/crest-microsolvation.md` (
 grow-as-seed → ORCA re-opt, seed-not-solvated, nonzero-charge⇒wrong-charge-seed; links `orca/crest.md`
 as the probe of record), `index.md` (+page, 95→96), ROADMAP (Stage F **started**; F1a [x]; F1b/F1c/F2
 pending; ensemble + quasi-RRHO deferred). **Next:** F1b (the CREST runner, mirroring XtbRunner).
+
+## [2026-08-12] session | Ephemeral QCG grow runner — off-thread spawn + events, mirroring xtb (Stage F F1b)
+
+**Scope: one unit (F1b).** The ephemeral CrestRunner: spawn a CREST QCG **grow** off-thread, parse the
+grown cluster (via F1a), emit events; plus the two pure helpers it needs (the arg vector + the growth
+table). **K3: NO persistence, NO jobs row** — the runner is a helper (seconds, like `XtbRunner`); the
+grown cluster is returned as an event, and the persisted artifact is the F2 ORCA re-opt. Out of scope
+(NOT built): the setup form / solvent library / result panel (F1c); the ORCA re-opt handoff + migration
+(F2); the ensemble path (deferred — segfaults); `-keepdir` in production (probe-only, omitted).
+
+**Part A — pure helpers (reviewed, approved — no changes).** `crest.rs`: `struct CrestGrowOpts` +
+`build_crest_args` (the vector after `crest solute.xyz`: `-qcg solvent.xyz -grow -nsolv <n> -alpb
+<solvent> [-chrg <c>] [-uhf <u>] (-fixsolute|-nofix) -T <n>` — **always `-grow`, never `-ensemble`/
+`-keepdir`**; `-chrg`/`-uhf` only when nonzero, matching the two probed invocations); `struct
+QcgGrowthPoint` + `parse_qcg_energy` (`grow/qcg_energy.dat` `<size> <E> <ΔEtot>` rows, ragged line
+dropped not fatal — display-only). 5 bites: `crest_args_grow_never_ensemble`,
+`crest_args_chrg_only_when_nonzero`, `crest_args_water_nofix_else_fixsolute`,
+`crest_args_carry_qcg_alpb_nsolv` (+`-keepdir` absent), `parse_qcg_energy_rung0` (real fixture).
+
+**Part B — the runner (mirrors `crate::xtb` exactly).** `struct CrestRun { cancelled }` +
+`#[derive(Default)] CrestRunner { running: Mutex<Option<CrestRun>> }` (managed State in lib.rs).
+`crest_path(db)` — the `crest_path` setting (default `/opt/crest/crest`, never bundled #7), reusing
+xtb's now-`pub(crate)` `resolve_binary` (one home for `$PATH` resolution). `crest_grow(app, db, runner,
+solute_xyz, solvent_xyz, opts)` — a starter: validate synchronously (`nsolv ≥ 1`, `uhf ≥ 0`, solvent
+name), **reserve the single slot** before returning, `std::thread::spawn` → `run_crest_in_dir`; the
+thread's cleanup = SUCCESS remove-after-parse / CANCEL remove / other-FAILURE keep (crest.out tailed into
+the error), slot freed unconditionally; emit `crest:done` (`CrestGrowDone { result, growth }`) or
+`crest:error` (`{ message, dir? }`). `run_crest_in_dir` — isolated `crest/<uuid>` dir → write solute.xyz
++ solvent.xyz → spawn `crest solute.xyz <args>` (cwd, own process group, stdout+stderr → crest.out) →
+poll exit/cancel/timeout (`terminate_job` killpg, `CREST_TIMEOUT_SECS=600`) → **classify from crest.out
++ grow/cluster.xyz (F1a, never the exit code)** → **`parse_crest_grow` + `parse_qcg_energy` BEFORE the
+caller's cleanup**, so the cluster is read before `remove_dir_all` on success. `seed_energy_eh` flows
+through, never relabelled solvated. `crest_cancel(runner)` flips the AtomicBool (mirror `xtb_cancel`).
+This links F1a's classify/parse → the module **`#![allow(dead_code)]` is removed**.
+
+**Verification.** cargo **281** (Part A +5 helper bites; Part B is runner code verified by `cargo build`
+clean + the byte-for-byte xtb mirror + the live manual gate — no new unit test, same as `xtb_optimize`
+which is manual-gated); **build warning-clean**; **tsc/vitest untouched** (no frontend this unit —
+state so); pytest untouched. Wiki: `modules/crest-microsolvation.md` (the F1b runner: the arg vector,
+`-grow`-only/no-`-ensemble`/no-`-keepdir`, `-chrg` only when nonzero + the **uhf=0-only-measured**
+note, crest:done carries the seed + growth, K3 no-persistence), `modules/tauri-core.md` (the `crest:*`
+events + `crest_path` setting beside `xtb:*`/`xtb_path`), ROADMAP (F1b [x]; F1c/F2 pending), index.md.
+
+**Author manual gate pending (live window):** m1 real grow (benzoic + 3 H₂O) → `crest:done` with a
+24-atom cluster + seed energy; the isolated dir removed on success; m2 anion (BH₄⁻ + 3 MeOH, charge −1)
+→ `intended_charge -1` in the payload; m3 (neg) `crest_path` at a missing binary → `crest:error` with a
+readable message, window responsive; m4 cancel mid-run → stops, slot frees (a second run starts clean).
+**Next:** F1c (the setup form + solvent-monomer library + result panel — the first frontend of Stage F).

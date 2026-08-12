@@ -47,6 +47,8 @@ pub fn run() {
 
             // --- xtb pre-optimizer: its own single-slot runner (2.5.5). ---
             app.manage(xtb::XtbRunner::default());
+            // --- CREST QCG grow: its own single-slot runner (Stage F F1b). ---
+            app.manage(crest::CrestRunner::default());
             // Prune old kept diagnostic dirs (keep the newest few) off-thread so
             // setup returns promptly (2.5.5-fix-3).
             let prune_dir = data_dir.clone();
@@ -142,6 +144,8 @@ pub fn run() {
             xtb::xtb_version,
             xtb::xtb_optimize,
             xtb::xtb_cancel,
+            crest::crest_grow,
+            crest::crest_cancel,
             secrets::api_key_status,
             secrets::set_api_key,
             secrets::delete_api_key,

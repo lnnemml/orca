@@ -337,6 +337,13 @@ runs `terminate_on_exit` synchronously; `Drop` on `SidecarManager` is the backst
   the whole module. Contract + the two load-bearing rules: `modules/groups.md`.
 - **CPU / xtb:** `get_cpu_presets() -> Vec<CpuPresetInfo>`; `xtb_version`, `xtb_optimize`,
   `xtb_cancel` (see below).
+- **CREST (Stage F F1b, `crest.rs`):** `crest_grow(solute_xyz, solvent_xyz, opts) -> ()` and
+  `crest_cancel()` — the **ephemeral QCG-grow runner**, a byte-for-byte mirror of `xtb_optimize` /
+  `xtb_cancel` (off-thread starter, single-slot mutex, killpg cancel). Emits **`crest:done`**
+  (`CrestGrowDone { result, growth }` — the F1a seed cluster + the display growth table) / **`crest:error`**
+  (`{ message, dir? }`), beside `xtb:done` / `xtb:error`. Binary is the `crest_path` setting (default
+  `/opt/crest/crest`, never bundled — #7). **K3: no jobs row, no persistence** — the persisted artifact is
+  the later F2 ORCA re-opt. See `modules/crest-microsolvation.md`.
 - **API key (ADR-015, `secrets.rs` + `anthropic.rs`):** `api_key_status() -> KeySource`,
   `set_api_key(key)`, `delete_api_key()`, `verify_api_key() -> String`. **No command returns the
   key** — the frontend learns only the source *state*. `KeySource` is a four-variant enum
@@ -498,7 +505,9 @@ Tool details: `wiki/orca/xtb.md`.
 
 - **`xtb_path`** setting (seeded `'xtb'`, a `settings` row like `orca_path`; never bundled — #7).
   `xtb_version` runs `<path> --version` and parses the banner for the Settings "Check" button;
-  `resolve_binary` turns a bare name into an absolute path via `$PATH`.
+  `resolve_binary` turns a bare name into an absolute path via `$PATH`. **`crest_path`** is the sibling
+  setting for CREST (Stage F, default `/opt/crest/crest`; `crest.rs::crest_path` reuses the same
+  `resolve_binary`) — never bundled either (#7).
 - **`xtb_optimize(xyz, charge, multiplicity, constraints, timeout_secs?) -> ()`** — a **starter**:
   it validates synchronously (multiplicity, parse xyz, resolve targets → an out-of-range index
   rejects here for immediate feedback), **reserves the single slot** (rejecting a concurrent run)

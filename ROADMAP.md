@@ -1052,8 +1052,15 @@ r1–r4 manual gates. Next per the ratified reorder: CREST probe → Stage D →
         `crest.out` (the solute's — nonzero ⇒ wrong-charge seed to warn on later), `Ok(None)` on an
         absent cluster. +5 cargo bites vs real `crest_grow_neutral`/`crest_grow_anion` fixtures.
         `wiki/modules/crest-microsolvation.md`.
-      - [ ] **F1b — the process runner** (spawn CREST/QCG, stream events, isolated dir — mirrors
-        `XtbRunner`; `qcg_energy.dat` growth-table parse for display).
+      - [x] **F1b — the ephemeral runner** (2026-08-12). `crest.rs`: `CrestRunner` (single-slot mutex +
+        cancel) + `crest_grow`/`crest_cancel` commands + `run_crest_in_dir` — a byte-for-byte mirror of
+        `XtbRunner` (off-thread starter, isolated dir, killpg cancel, keep-on-genuine-failure). The arg
+        vector `build_crest_args` (**always `-grow`, never `-ensemble`/`-keepdir`; `-chrg`/`-uhf` only
+        when nonzero**) + `parse_qcg_energy` (display growth table). Emits `crest:done`
+        (`CrestGrowDone { result, growth }` — the F1a seed) / `crest:error`. `crest_path` user setting
+        (default `/opt/crest/crest`, never bundled). K3: no jobs row, no persistence. +5 cargo bites
+        (arg-vector invariants + the real `qcg_energy.dat`). Links F1a → the module `#![allow(dead_code)]`
+        is gone.
       - [ ] **F1c — persistent CREST job record + migration + setup form.**
       - [ ] **F2 — the ORCA re-opt handoff** (seed cluster → an ORCA `Opt` at the correct charge + SMD).
       - **Deferred:** the `-ensemble` path (segfaults at v3.0.2) and QCG **quasi-RRHO** thermochemistry

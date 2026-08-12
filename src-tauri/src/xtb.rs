@@ -602,7 +602,7 @@ struct XtbProgressPayload {
 /// always invoked by full path (domain rule #7 spirit; a bare name works for xtb
 /// since it has no MPI, but we prefer explicit). Returns the input unchanged if it
 /// already looks like a path or nothing matches (Command then fails cleanly).
-fn resolve_binary(configured: &str) -> String {
+pub(crate) fn resolve_binary(configured: &str) -> String {
     if configured.contains('/') {
         return configured.to_string();
     }
