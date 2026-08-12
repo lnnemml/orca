@@ -4,9 +4,14 @@ import { confirm } from "@tauri-apps/plugin-dialog";
 
 import type { Job, ParsedResults, Pathway, Reaction, ReferenceEnergy } from "../types";
 import { formatTimestamp } from "../format";
-import { isScanJob, isValidPathwayLabel, normalizePathwayLabel } from "../reactions/pathway";
+import { isScanJob, isNebJob, isValidPathwayLabel, normalizePathwayLabel } from "../reactions/pathway";
 import { isLocatedTsInput } from "../reactions/compare";
-import { CompareView, type ComparePathway, type CompareReference } from "../reactions/CompareView";
+import {
+  CompareView,
+  type ComparePathway,
+  type CompareReference,
+  type LocatedTs,
+} from "../reactions/CompareView";
 
 interface ReactionsScreenProps {
   /** Open a job in the Jobs detail screen — used to prove a grouped job is still a
@@ -19,6 +24,9 @@ interface ReactionsScreenProps {
 interface Candidate {
   job: Job;
   isScan: boolean;
+  /** Its results carry a NEB band with a converged TS — comparable as a pathway (N4), so
+   * the attach picker marks it "✓ NEB", never "won't compare". */
+  isNeb: boolean;
 }
 
 export function ReactionsScreen({ onOpenJob }: ReactionsScreenProps) {
@@ -250,6 +258,12 @@ function ReactionDetail({ reaction, onOpenJob, onError, onChanged, onDeleted }: 
     () => new Set([...resultsById].filter(([, r]) => isScanJob(r)).map(([id]) => id)),
     [resultsById],
   );
+  // Jobs whose parsed results carry a NEB band with a converged TS — also comparable (N4),
+  // so the attach picker marks them "✓ NEB" instead of "won't compare".
+  const nebIds = useMemo(
+    () => new Set([...resultsById].filter(([, r]) => isNebJob(r)).map(([id]) => id)),
+    [resultsById],
+  );
 
   useEffect(() => {
     load();
@@ -270,30 +284,56 @@ function ReactionDetail({ reaction, onOpenJob, onError, onChanged, onDeleted }: 
   const comparePathways: ComparePathway[] = useMemo(() => {
     return pathways
       .map((p): ComparePathway | null => {
-        // A pathway can now hold TWO jobs — the scan AND its OptTS refinement (E1a attaches
-        // the located TS to the same pathway). Pick the SCAN job by its scan profile (not
-        // just the first attached job), and the LOCATED TS by its `! OptTS` input, both parsed.
+        // A pathway can hold the primary job (scan OR NEB) AND its OptTS refinement (E1a/N4
+        // attach the located TS to the same pathway). The refine is shared by both kinds.
         const attached = jobs.filter((j) => j.pathway_id === p.id);
-        const scanJob = attached.find((j) => {
-          const r = resultsById.get(j.id);
-          return r?.scan && r.scan.points.length > 0;
-        });
-        if (!scanJob) return null;
-        const scan = resultsById.get(scanJob.id)!.scan!;
-        // The located TS: a parsed OptTS job on this pathway. `eEh`/`gEh` from its parsed
-        // results (G null unless it ran Freq — honest-or-absent, Stage E1b).
+        // The OptTS refine: a parsed `! OptTS` job on this pathway. `eEh`/`gEh` from its
+        // parsed results (G null unless it ran Freq — honest-or-absent, Stage E1b). A refine
+        // ALWAYS wins over a NEB G1 estimate.
         const tsJob = attached.find(
           (j) => isLocatedTsInput(j.input_content) && resultsById.has(j.id),
         );
         const tsResults = tsJob ? resultsById.get(tsJob.id) : null;
-        const locatedTs = tsJob
+        const refinedTs: LocatedTs | undefined = tsJob
           ? {
               input: tsJob.input_content,
               eEh: tsResults?.final_energy_eh ?? null,
               gEh: tsResults?.thermochemistry?.free_energy_g_eh ?? null,
             }
           : undefined;
-        return { id: p.id, label: p.label, scan, input: scanJob.input_content, locatedTs };
+
+        // A scan job → the scan pathway (as before).
+        const scanJob = attached.find((j) => {
+          const r = resultsById.get(j.id);
+          return r?.scan && r.scan.points.length > 0;
+        });
+        if (scanJob) {
+          const scan = resultsById.get(scanJob.id)!.scan!;
+          return { id: p.id, label: p.label, scan, input: scanJob.input_content, locatedTs: refinedTs };
+        }
+
+        // Else a NEB job → the NEB pathway (N4). Its located TS is the OptTS refine if
+        // present, else the G1 ESTIMATE: the converged NEB-TS energy as a first-pass located
+        // ΔE‡ (gEh null → ΔG‡ refused; labelled "NEB TS (unrefined estimate)").
+        const nebJob = attached.find((j) => isNebJob(resultsById.get(j.id)));
+        if (nebJob) {
+          const neb = resultsById.get(nebJob.id)!.neb!;
+          const estimate: LocatedTs = {
+            input: nebJob.input_content,
+            eEh: neb.ts_energy_eh,
+            gEh: null,
+            isEstimate: true,
+          };
+          return {
+            id: p.id,
+            label: p.label,
+            nebMep: neb,
+            input: nebJob.input_content,
+            locatedTs: refinedTs ?? estimate,
+          };
+        }
+
+        return null;
       })
       .filter((x): x is ComparePathway => x !== null);
   }, [pathways, jobs, resultsById]);
@@ -305,8 +345,8 @@ function ReactionDetail({ reaction, onOpenJob, onError, onChanged, onDeleted }: 
         .filter(
           (j) => (j.status === "completed" || j.status === "parsed") && j.pathway_id === null,
         )
-        .map((j) => ({ job: j, isScan: scanIds.has(j.id) })),
-    [jobs, scanIds],
+        .map((j) => ({ job: j, isScan: scanIds.has(j.id), isNeb: nebIds.has(j.id) })),
+    [jobs, scanIds, nebIds],
   );
 
   // The reactant reference for absolute barriers (C2b-2b, ADR-018): the reference jobs'
@@ -339,8 +379,8 @@ function ReactionDetail({ reaction, onOpenJob, onError, onChanged, onDeleted }: 
         .filter(
           (j) => (j.status === "completed" || j.status === "parsed") && !referencedIds.has(j.id),
         )
-        .map((j) => ({ job: j, isScan: scanIds.has(j.id) })),
-    [jobs, referencedIds, scanIds],
+        .map((j) => ({ job: j, isScan: scanIds.has(j.id), isNeb: nebIds.has(j.id) })),
+    [jobs, referencedIds, scanIds, nebIds],
   );
 
   const addReferenceJob = async (jobId: string) => {
@@ -613,7 +653,10 @@ function AttachPathwayForm({
   const [label, setLabel] = useState("");
   const [jobId, setJobId] = useState("");
 
-  const selectedIsScan = candidates.find((c) => c.job.id === jobId)?.isScan ?? true;
+  // A job compares as a pathway if it is a scan OR a NEB (N4). Only a plain job (neither) is
+  // warned "won't appear in the comparison".
+  const selectedCand = candidates.find((c) => c.job.id === jobId);
+  const selectedComparable = (selectedCand?.isScan || selectedCand?.isNeb) ?? true;
   const canAttach = isValidPathwayLabel(label) && jobId !== "" && jobById.has(jobId);
 
   const attach = async () => {
@@ -676,7 +719,7 @@ function AttachPathwayForm({
                 {candidates.map((c) => (
                   <option key={c.job.id} value={c.job.id}>
                     {c.job.title}
-                    {c.isScan ? "  ✓ scan" : "  (not a scan)"}
+                    {c.isScan ? "  ✓ scan" : c.isNeb ? "  ✓ NEB" : "  (not scan/NEB)"}
                   </option>
                 ))}
               </select>
@@ -689,10 +732,10 @@ function AttachPathwayForm({
               Attach
             </button>
           </div>
-          {jobId !== "" && !selectedIsScan ? (
+          {jobId !== "" && !selectedComparable ? (
             <div className="banner warn" style={{ marginTop: 10 }}>
-              This job has no scan profile. C2b compares scan profiles (ΔΔE‡) — attaching
-              it is allowed, but it won't appear in that comparison.
+              This job is neither a scan nor a NEB. The comparison plots scan profiles and NEB
+              paths (ΔΔE‡/ΔΔG‡) — attaching it is allowed, but it won&apos;t appear there.
             </div>
           ) : null}
         </>

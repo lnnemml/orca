@@ -115,3 +115,32 @@ for equal molecularity). Standard state is **named, not auto-applied** (Fork A �
 molecularity/reference-definition assumption). Same comparability guard governs the ΔG‡ barriers.
 Pure logic + honest-or-absent tests: `reactions/compare.ts`; the ΣG sum + its partial-is-None test:
 `commands/reactions.rs`. Story: `chemistry/reaction-barriers.md` §"Барʼєр 4".
+
+### Amendment (2026-08-12, N4) — NEB pathways enter the comparison; the located-TS ΔΔ is origin-agnostic
+
+A pathway backed by a **NEB job** is now comparable alongside scan pathways — the last Phase-4.5 unit.
+Two honesty invariants shape it:
+
+- **The cross-origin number is the located-TS ΔΔE‡/ΔΔG‡ table, method-guarded.** A NEB pathway's
+  number goes through the **SAME** `locatedBarrierEKcal(eEh, ref)` / `deltaGDoubleDaggerKcal` +
+  `methodSignature` path as a scan pathway — the located-TS math is coordinate-agnostic (it's over
+  saddle energies, not scan maxima), so a scan-refined TS and a NEB TS at the same level of theory
+  compare directly, while different methods are **flagged, not silently averaged**. This works because
+  `NEB-TS` is a **job-control token dropped by `methodSignature`** (NON_METHOD), so `! XTB NEB-TS` vs
+  `! r2SCAN-3c … Opt` differ by their real method (xtb vs r2SCAN-3c) and are refused, while
+  `! r2SCAN-3c … NEB-TS` vs `! r2SCAN-3c … Opt` share a signature and compare. For a scan↔scan pair the
+  coordinate guard (`coordinateSignature`) still applies; any NEB-involving pair uses the **method-only**
+  guard (there is no shared physical coordinate).
+- **A NEB has no physical reaction coordinate — its MEP curve is illustrative only.** When any NEB
+  pathway is overlaid, ALL series drop to a **normalized 0→1 reaction-coordinate axis** (scans via
+  `normalizedScanCurve`, the MEP via `nebMepCurve`), labelled *illustrative*: the shapes overlay, but
+  the rigorous cross-pathway number is the ΔΔ table, never the curve. The all-scan overlay keeps its
+  physical coordinate axis + `coordinateSignature` guard unchanged.
+
+**Decision G1 (the unrefined-NEB estimate).** A NEB pathway with **no OptTS refine yet** uses its
+converged NEB-TS energy (`ts_energy_eh`) as the located-TS `eEh` — a **first-pass ΔE‡ ESTIMATE**,
+labelled "NEB TS (unrefined estimate)". Its `gEh` is **null**, so **ΔG‡ is refused for free** (the
+honest-or-absent null-guard) — an unrefined NEB TS is not a ΔG‡ source. An **OptTS(+Freq) refine on the
+pathway upgrades it** to a real located TS (a refine always wins over the estimate), retiring the
+estimate label and unlocking ΔG‡. Pure logic + bites: `reactions/compare.ts` (`nebMepCurve`,
+`normalizedScanCurve`, the `LocatedTs.isEstimate` flag), `reactions/pathway.ts` (`isNebJob`).

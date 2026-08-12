@@ -17,6 +17,9 @@ separated reactants (C2b-2b).*
 The only extracted, unit-tested logic lives in `src/reactions/pathway.ts`:
 - `isScanJob(results)` — a completed job's results carry a relaxed-scan profile
   (`results.scan` non-null with ≥1 point). Drives the attach picker's **mark/warn**.
+- `isNebJob(results)` — results carry a NEB band with a converged TS (`results.neb` present,
+  `ts_energy_eh`/`ts_geometry`). Also comparable (N4), so the picker marks it **`✓ NEB`**, not
+  "won't compare". Mirrors `isScanJob`.
 - `isValidPathwayLabel(label)` / `normalizePathwayLabel(label)` — non-empty-after-trim validation.
 
 Tested in `src/reactions/pathway.test.ts` (two negative controls): **C-scan-detection** (true with
@@ -31,10 +34,11 @@ and **C-empty-label** (empty/whitespace rejected). The scan-detection bite was d
   the **attached job's title + status**. Rename (inline edit → `rename_reaction`), delete reaction
   (`delete_reaction`), detach a pathway's job (`detach_job_from_pathway`), delete a pathway
   (`delete_pathway`).
-- **Attach a scan job as a pathway** — a label field + a job picker over **unattached completed/parsed
-  jobs**. Each option is marked `✓ scan` or `(not a scan)` via `isScanJob`; picking a non-scan job
-  shows an **advisory warning** ("C2b compares scan profiles — this job has none") but **does not
-  block** (C1's `attach_job_to_pathway` is permissive; the comparability guard is C2b). Attach =
+- **Attach a scan OR NEB job as a pathway** — a label field + a job picker over **unattached
+  completed/parsed jobs**. Each option is marked `✓ scan` (via `isScanJob`), `✓ NEB` (via `isNebJob`,
+  N4), or `(not scan/NEB)`; only a job that is **neither** shows an **advisory warning** ("the
+  comparison plots scan profiles and NEB paths — this job is neither") but attaching **does not block**
+  (C1's `attach_job_to_pathway` is permissive; the comparability guard is C2b/N4). Attach =
   `create_pathway(reaction_id, label)` then `attach_job_to_pathway(job_id, pathway.id)`.
 
 ## Pathway → job mapping (one source of truth)
@@ -221,6 +225,38 @@ Controls: **G-isLocatedTs** (OptTS true, plain Opt/scan false — bite vs a subs
 **G-honest-absent** (any null → null across ΔG‡, located ΔE‡, ΔΔG‡ — bite vs null-as-0), **G-ddg-
 reference-free** (ΔΔG‡ reads no reference — the function has no reference parameter). Rust:
 `reference_gibbs_sum_incomplete_is_none_but_energy_sums` (a 2-of-3-Freq ΣG is `None` while Σ E sums).
+
+## NEB pathways in the comparison (N4) — the last Phase-4.5 unit
+
+A pathway backed by a **NEB job** compares alongside scan pathways. `ComparePathway` now carries
+**exactly one** of `scan?` / `nebMep?` (plus the shared `input` + `locatedTs?`); `ReactionsScreen`'s
+`comparePathways` relaxes the gate to **scan OR NEB** (`isNebJob` via `resultsById`). See
+[ADR-018 §N4](../architecture/adr-018-reaction-energy-reference.md) for the decision; the two honesty
+invariants it enforces show up here as:
+
+- **The rigorous number is the located-TS ΔΔ table, method-guarded — a NEB number never bypasses it.**
+  A NEB pathway's ΔE‡/ΔG‡ go through the **same** `locatedBarrierEKcal` / `deltaGDoubleDaggerKcal` +
+  `methodSignature` path as a scan pathway (the located-TS math is coordinate-agnostic). scan↔scan keeps
+  the coordinate + method guard (`pathwaysComparable`); **any NEB-involving pair uses a method-only
+  guard** (no shared physical coordinate). Because `methodSignature` drops `NEB-TS` as a job-control
+  token, `! XTB NEB-TS` vs a DFT scan is **flagged not-comparable** (real methods differ), while a
+  same-method NEB and scan compare. The reference-free **ΔΔE‡** for a NEB-involving pair is over the two
+  TS electronic energies (`absoluteBarrierKcal(eA, eB)`), the E-sibling of the reference-free ΔΔG‡.
+- **The MEP curve is shape-illustrative only.** When any NEB pathway is present, the overlay switches to
+  a **normalized 0→1 reaction-coordinate axis** (`nebMepCurve` for the MEP, `normalizedScanCurve` for
+  scans), the x-axis labelled *"normalized reaction coordinate (illustrative)"*. The all-scan overlay is
+  **unchanged** — physical coordinate axis + `coordinateSignature` guard, the "separated reactants" zero
+  control offered only there.
+
+**Decision G1 — the unrefined-NEB estimate.** A NEB pathway with no OptTS refine uses its converged
+NEB-TS energy (`ts_energy_eh`) as the located-TS `eEh` — a first-pass ΔE‡ **estimate**, `gEh` null so
+**ΔG‡ is refused** (honest-or-absent), labelled **"NEB TS (unrefined estimate)"** with ΔG‡ shown as
+"— (estimate, no Freq)". Its scan-max "Absolute barrier" cell reads "— (NEB → located TS)" (a NEB has no
+scan maximum). An **OptTS(+Freq) refine on the pathway wins over the estimate** (`refinedTs ?? estimate`),
+retiring the label and unlocking ΔG‡. New pure logic: `nebMepCurve` / `normalizedScanCurve` +
+`LocatedTs.isEstimate` (`compare.ts`), `isNebJob` (`pathway.ts`). Bites (`compare.test.ts`):
+**neb_mep_curve_normalizes_arc_to_0_1** (+ degenerate→[]), **neb_estimate_refuses_gibbs_gives_electronic**
+(ΔG‡ null, ΔE‡ stands), **method_guard_flags_xtb_neb_vs_dft_scan** (the load-bearing cross-method flag).
 
 ## Connectivity check on a located TS (Stage E2)
 

@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { CartesianGrid, Line, LineChart, ReferenceDot, Tooltip, XAxis, YAxis } from "recharts";
 
-import type { ScanProfileJson } from "../types";
+import type { ScanProfileJson, NebResults } from "../types";
 import { useContainerWidth } from "../charts/useContainerWidth";
 import { energyEh, maxIndex, HARTREE_TO_KCAL, type EnergyChoice } from "../scan/scanProfile";
 import {
@@ -12,10 +12,15 @@ import {
   pathwaysComparable,
   referenceComparable,
   absoluteBarrierCell,
+  absoluteBarrierKcal,
   methodSignature,
   locatedBarrierEKcal,
   deltaGDoubleDaggerKcal,
   deltaDeltaGKcal,
+  nebMepCurve,
+  normalizedScanCurve,
+  type BarrierCell,
+  type Comparability,
 } from "./compare";
 
 /** A pathway's LOCATED transition state (Stage E1b): an OptTS child of this pathway,
@@ -25,6 +30,11 @@ export interface LocatedTs {
   input: string;
   eEh: number | null;
   gEh: number | null;
+  /** True for the **G1 unrefined NEB-TS estimate** (N4): `eEh` = the converged
+   * `neb.ts_energy_eh` used as a first-pass located-TS ΔE‡, `gEh` = null (no Freq → ΔG‡
+   * refused for free). Drives the "NEB TS (unrefined estimate)" label. Absent for a real
+   * OptTS refinement (which always wins over the estimate). */
+  isEstimate?: boolean;
 }
 
 /** A pathway ready to compare: its label, the attached job's scan profile (B1), and
@@ -34,7 +44,12 @@ export interface LocatedTs {
 export interface ComparePathway {
   id: string;
   label: string;
-  scan: ScanProfileJson;
+  /** The scan profile (a scan pathway). Exactly ONE of `scan` / `nebMep` is set. */
+  scan?: ScanProfileJson;
+  /** The NEB band (a NEB pathway, N4): its MEP feeds the normalized overlay curve, and
+   * its converged TS feeds the located-TS ΔΔ table (via `locatedTs`, a G1 estimate or an
+   * OptTS refine). Exactly ONE of `scan` / `nebMep` is set. */
+  nebMep?: NebResults;
   input: string;
   locatedTs?: LocatedTs;
 }
@@ -84,102 +99,181 @@ export function CompareView({
   const refComplete = refEnergyEh != null;
   const refIncomplete = refJobCount > 0 && !refComplete;
 
-  // The "separated reactants" zero is offerable only when E(ref) is complete AND every
-  // overlaid pathway shares the reference's method (else re-zeroing on E(ref) would place
-  // a mismatched curve on an incomparable scale). Same guard as the per-row barrier.
+  // A NEB pathway has no physical scan coordinate — so when ANY NEB is overlaid, the whole
+  // overlay drops to a NORMALIZED 0→1 reaction-coordinate axis (illustrative shape only; the
+  // rigorous cross-pathway number is the located-TS ΔΔ table). All-scan → physical axis.
+  const anyNeb = pathways.some((p) => p.nebMep != null);
+  const normalizedAxis = anyNeb;
+
+  // The "separated reactants" zero is offerable only on the PHYSICAL (all-scan) axis, when
+  // E(ref) is complete AND every overlaid pathway shares the reference's method (else
+  // re-zeroing on E(ref) would place a mismatched curve on an incomparable scale). It is a
+  // physical-axis concept — meaningless on the normalized illustrative axis.
   const canUseReactantsZero = useMemo(
     () =>
+      !normalizedAxis &&
       refComplete &&
       pathways.length > 0 &&
       pathways.every((p) => referenceComparable(refInputs, methodSignature(p.input).display).ok),
-    [refComplete, pathways, refInputs],
+    [normalizedAxis, refComplete, pathways, refInputs],
   );
   const reactantsZeroActive = zeroMode === "reactants" && canUseReactantsZero;
 
-  // Shared zero: by default the global minimum absolute energy across ALL overlaid
-  // pathways (the C2b-1 behaviour). When "separated reactants" is chosen AND offerable,
-  // the zero is E(ref) instead, so each curve's max height is the ABSOLUTE barrier.
+  // Shared zero (physical axis only): by default the global minimum absolute energy across
+  // ALL overlaid pathways (the C2b-1 behaviour). When "separated reactants" is chosen AND
+  // offerable, the zero is E(ref) instead, so each curve's max height is the ABSOLUTE barrier.
   // ΔΔE‡ is a difference, so it never depends on this choice — the zero is only the axis.
   const series = useMemo(() => {
-    const globalMinEh = Math.min(...pathways.map((p) => minEnergyEh(p.scan, which)));
-    const zeroEh = reactantsZeroActive && refEnergyEh != null ? refEnergyEh : globalMinEh;
+    const zeroEh = normalizedAxis
+      ? 0
+      : reactantsZeroActive && refEnergyEh != null
+        ? refEnergyEh
+        : Math.min(...pathways.map((p) => minEnergyEh(p.scan!, which)));
     return pathways.map((p, i) => {
-      const data = p.scan.points.map((pt, index) => ({
-        index,
-        coordinate: pt.coordinate,
-        relKcal: (energyEh(pt, which) - zeroEh) * HARTREE_TO_KCAL,
-      }));
-      const mi = maxIndex(p.scan.points, which);
-      // Absolute barrier vs separated reactants — honest-or-absent (compare.ts).
-      // `p.input` (the scan complex's input_content) is threaded so the stoichiometry
-      // guard can verify the reference's atoms + charge sum to this reacting complex.
-      const absoluteCell = absoluteBarrierCell(
-        maxEnergyEh(p.scan, which),
-        refEnergyEh,
-        refInputs,
-        methodSignature(p.input).display,
-        refJobCount,
-        p.input,
-      );
-      // Stage E1b — a LOCATED TS supersedes the scan-max estimate where present. The located
-      // barriers are gated on the SAME reference usability as the scan-max absolute barrier
-      // (complete + method-consistent + balanced — same chemical system, same method as the
-      // scan): reuse `absoluteCell`'s verdict rather than re-deriving the guard.
+      const isNeb = p.nebMep != null;
+      const nebCurve = p.nebMep ? nebMepCurve(p.nebMep) : [];
+
+      // The chart curve: normalized 0→1 (mixed scan+NEB) or the physical scan axis (all-scan).
+      // The TS marker is the max-energy point of whichever curve.
+      let data: { x?: number; coordinate?: number; relKcal: number }[];
+      let maxDatum: { x?: number; coordinate?: number; relKcal: number } | undefined;
+      if (normalizedAxis) {
+        const pts = isNeb ? nebCurve : normalizedScanCurve(p.scan!, which);
+        data = pts.map((q) => ({ x: q.x, relKcal: q.energyKcal }));
+        let mi = 0;
+        let mv = -Infinity;
+        pts.forEach((q, k) => {
+          if (q.energyKcal > mv) {
+            mv = q.energyKcal;
+            mi = k;
+          }
+        });
+        maxDatum = data[mi];
+      } else {
+        data = p.scan!.points.map((pt, index) => ({
+          index,
+          coordinate: pt.coordinate,
+          relKcal: (energyEh(pt, which) - zeroEh) * HARTREE_TO_KCAL,
+        }));
+        maxDatum = data[maxIndex(p.scan!.points, which)];
+      }
+
+      // Intrinsic (self-contained) barrier: scan → E(max) − reactant-side min; NEB → the
+      // MEP's max relative energy (the forward barrier from the reactant end, image 0 = 0).
+      const intrinsicKcal = isNeb
+        ? nebCurve.reduce((m, q) => Math.max(m, q.energyKcal), 0)
+        : intrinsicBarrierKcal(p.scan!, which);
+
+      // Reference usability (method + completeness + stoichiometry balance) — a dummy energy
+      // gets the VERDICT (the OK/reason decision ignores the pathway energy), so a NEB row
+      // (no scan maximum) is gated by the SAME reference guard as a scan for its located ΔE‡.
+      const methodSig = methodSignature(p.input).display;
+      const refGuard = absoluteBarrierCell(0, refEnergyEh, refInputs, methodSig, refJobCount, p.input);
+      const refUsable = "kcal" in refGuard;
+      const refReason = "reason" in refGuard ? refGuard.reason : null;
+
+      // Scan-max absolute barrier column — SCAN ONLY (a NEB has no scan maximum; its barrier
+      // is the located-TS estimate in the next column). `p.input` threads the complex for the
+      // stoichiometry guard.
+      const absoluteCell: BarrierCell | null = isNeb
+        ? null
+        : absoluteBarrierCell(
+            maxEnergyEh(p.scan!, which),
+            refEnergyEh,
+            refInputs,
+            methodSig,
+            refJobCount,
+            p.input,
+          );
+
+      // Located TS (Stage E1b for a scan-refine; N4 G1 estimate for a NEB) — the ELECTRONIC
+      // barrier from the actual saddle, and a real ΔG‡ where G exists. Gated on the reference
+      // being usable. An estimate's `gEh` is null → ΔG‡ refused for free (honest-or-absent).
       const isLocated = !!p.locatedTs;
-      const refUsable = "kcal" in absoluteCell;
-      const locatedEKcal =
-        p.locatedTs && refUsable ? locatedBarrierEKcal(p.locatedTs.eEh, refEnergyEh) : null;
-      const deltaGKcal =
-        p.locatedTs && refUsable ? deltaGDoubleDaggerKcal(p.locatedTs.gEh, refGibbsEh) : null;
-      // A located TS with a usable reference but ΔG‡ still null ⇒ the TS or a reference lacks
-      // G (no Freq) — an HONEST named reason, never a fabricated/partial ΔG‡ (rule #9).
+      const isEstimate = p.locatedTs?.isEstimate ?? false;
+      const eTsEh = p.locatedTs?.eEh ?? null;
+      const gTsEh = p.locatedTs?.gEh ?? null;
+      const locatedEKcal = p.locatedTs && refUsable ? locatedBarrierEKcal(eTsEh, refEnergyEh) : null;
+      const deltaGKcal = p.locatedTs && refUsable ? deltaGDoubleDaggerKcal(gTsEh, refGibbsEh) : null;
       const gMissing = isLocated && refUsable && deltaGKcal === null;
-      // When the reference itself is unusable, the located barrier shares that reason.
-      const locatedReason = isLocated && !refUsable && "reason" in absoluteCell ? absoluteCell.reason : null;
+      const locatedReason = isLocated && !refUsable ? refReason : null;
       return {
         ...p,
         color: PALETTE[i % PALETTE.length],
+        isNeb,
         data,
-        maxDatum: data[mi],
-        intrinsicKcal: intrinsicBarrierKcal(p.scan, which),
+        maxDatum,
+        intrinsicKcal,
         absoluteCell,
         isLocated,
+        isEstimate,
         locatedEKcal,
         deltaGKcal,
         gMissing,
         locatedReason,
-        gTsEh: p.locatedTs?.gEh ?? null,
+        eTsEh,
+        gTsEh,
       };
     });
-  }, [pathways, which, reactantsZeroActive, refEnergyEh, refGibbsEh, refInputs, refJobCount]);
+  }, [pathways, which, normalizedAxis, reactantsZeroActive, refEnergyEh, refGibbsEh, refInputs, refJobCount]);
 
   const baseline = series[Math.min(baselineIdx, series.length - 1)];
-  const unit = pathways[0]?.scan.coordinate_unit ?? "Å";
-  // Any pathway with a parsed located TS → show the located-TS column + retire "approximate".
+  const unit = pathways[0]?.scan?.coordinate_unit ?? "Å";
+  // Any pathway with a located TS (scan-refine OR a NEB, incl. the G1 estimate) → show the
+  // located-TS column + retire "approximate".
   const anyLocated = series.some((s) => s.isLocated);
   const sign = (v: number) => (v >= 0 ? `+${v.toFixed(2)}` : v.toFixed(2));
 
-  // ΔΔE‡ of every other pathway vs the baseline — each GUARDED independently: a method
-  // or coordinate mismatch shows the reason, never a faked number.
+  // ΔΔ of every other pathway vs the baseline — each GUARDED independently: a method (and,
+  // for scan↔scan, coordinate) mismatch shows the reason, never a faked number.
   const comparisons = series
     .filter((s) => s.id !== baseline.id)
     .map((s) => {
-      const cmp = pathwaysComparable(s.input, baseline.input, s.scan, baseline.scan);
-      // ΔΔG‡ — THE mission headline (Stage E1b): reference-free (the shared reactants cancel),
-      // over LOCATED-saddle G. Only when BOTH faces have a parsed G, and only under the same
-      // method/coordinate guard as ΔΔE‡. The 1 atm→1 M standard-state correction CANCELS here
-      // (same molecularity both faces) — so this raw number is directly comparable.
+      // scan↔scan keeps the coordinate + method guard (unchanged). Any NEB involved → a
+      // method-ONLY guard (there is no shared physical coordinate; the located-TS ΔΔ is
+      // coordinate-agnostic — it's over saddle energies, not scan maxima).
+      const bothScan = !s.isNeb && !baseline.isNeb && !!s.scan && !!baseline.scan;
+      const guard: Comparability = bothScan
+        ? pathwaysComparable(s.input, baseline.input, s.scan!, baseline.scan!)
+        : (() => {
+            const a = methodSignature(s.input);
+            const b = methodSignature(baseline.input);
+            return a.display === b.display
+              ? { ok: true }
+              : {
+                  ok: false,
+                  reason: `methods differ — ΔΔ‡ not comparable (${a.display} vs ${b.display})`,
+                };
+          })();
+      // ΔΔE‡: scan↔scan → the scan-max screening value (unchanged). Any NEB involved → the
+      // LOCATED ΔΔE‡ over the two TS electronic energies (reference-free — the shared
+      // reactants cancel; `absoluteBarrierKcal(a,b) = (a−b)·627.509`), when both have one.
+      let ddeKcal: number | null = null;
+      let ddeLocated = false;
+      if (guard.ok) {
+        if (bothScan) {
+          ddeKcal = deltaDeltaEKcal(s.scan!, baseline.scan!, which);
+        } else if (s.eTsEh != null && baseline.eTsEh != null) {
+          ddeKcal = absoluteBarrierKcal(s.eTsEh, baseline.eTsEh);
+          ddeLocated = true;
+        }
+      }
+      // ΔΔG‡ — reference-free, over LOCATED-saddle G, only when BOTH faces have a parsed G
+      // (a NEB estimate has none → refused). The standard-state correction cancels (same
+      // molecularity both faces).
       const ddgKcal =
-        cmp.ok && s.gTsEh != null && baseline.gTsEh != null
+        guard.ok && s.gTsEh != null && baseline.gTsEh != null
           ? deltaDeltaGKcal(s.gTsEh, baseline.gTsEh)
           : null;
       return {
         id: s.id,
         label: s.label,
         color: s.color,
-        guard: cmp,
-        ddeKcal: cmp.ok ? deltaDeltaEKcal(s.scan, baseline.scan, which) : null,
+        guard,
+        ddeKcal,
+        ddeLocated,
         ddgKcal,
+        estimate: s.isEstimate || baseline.isEstimate,
       };
     });
 
@@ -213,28 +307,41 @@ export function CompareView({
             </select>
           </label>
         ) : null}
-        <label className="scan-control">
-          ΔE relative to
-          <select
-            className="select select-sm"
-            value={reactantsZeroActive ? "reactants" : "min"}
-            onChange={(e) => setZeroMode(e.target.value as ZeroMode)}
-          >
-            <option value="min">shared minimum</option>
-            <option value="reactants" disabled={!canUseReactantsZero}>
-              separated reactants{canUseReactantsZero ? "" : " (needs a complete, matching reference)"}
-            </option>
-          </select>
-        </label>
+        {!normalizedAxis ? (
+          <label className="scan-control">
+            ΔE relative to
+            <select
+              className="select select-sm"
+              value={reactantsZeroActive ? "reactants" : "min"}
+              onChange={(e) => setZeroMode(e.target.value as ZeroMode)}
+            >
+              <option value="min">shared minimum</option>
+              <option value="reactants" disabled={!canUseReactantsZero}>
+                separated reactants{canUseReactantsZero ? "" : " (needs a complete, matching reference)"}
+              </option>
+            </select>
+          </label>
+        ) : null}
       </div>
 
       {width > 0 ? (
         <div className="conv-chart">
           <div className="conv-chart-title">
-            ΔE ({which === "act" ? "actual" : "SCF"}, kcal/mol) vs coordinate ({unit}) —{" "}
-            {reactantsZeroActive
-              ? "zero at separated reactants (E(ref)); each max = absolute barrier"
-              : "shared zero (global minimum)"}
+            {normalizedAxis ? (
+              <>
+                ΔE ({which === "act" ? "actual" : "SCF"}, kcal/mol) vs{" "}
+                <strong>normalized reaction coordinate</strong> (illustrative) — a NEB pathway has no
+                physical scan coordinate, so shapes are overlaid on a 0→1 axis; the rigorous number is
+                the ΔΔ‡ table below.
+              </>
+            ) : (
+              <>
+                ΔE ({which === "act" ? "actual" : "SCF"}, kcal/mol) vs coordinate ({unit}) —{" "}
+                {reactantsZeroActive
+                  ? "zero at separated reactants (E(ref)); each max = absolute barrier"
+                  : "shared zero (global minimum)"}
+              </>
+            )}
           </div>
           <LineChart
             width={width}
@@ -243,15 +350,17 @@ export function CompareView({
           >
             <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" />
             <XAxis
-              dataKey="coordinate"
+              dataKey={normalizedAxis ? "x" : "coordinate"}
               type="number"
-              domain={["dataMin", "dataMax"]}
+              domain={normalizedAxis ? [0, 1] : ["dataMin", "dataMax"]}
               stroke="var(--muted)"
               fontSize={11}
               tickLine={false}
               tickFormatter={(v: number) => v.toFixed(2)}
               label={{
-                value: `coordinate (${unit})`,
+                value: normalizedAxis
+                  ? "normalized reaction coordinate (illustrative)"
+                  : `coordinate (${unit})`,
                 position: "insideBottom",
                 offset: -6,
                 fontSize: 11,
@@ -276,7 +385,11 @@ export function CompareView({
             <Tooltip
               isAnimationActive={false}
               formatter={(v) => (typeof v === "number" ? `${v.toFixed(2)} kcal/mol` : String(v))}
-              labelFormatter={(l) => `coordinate ${Number(l).toFixed(3)} ${unit}`}
+              labelFormatter={(l) =>
+                normalizedAxis
+                  ? `reaction coordinate ${Number(l).toFixed(2)} (normalized)`
+                  : `coordinate ${Number(l).toFixed(3)} ${unit}`
+              }
               contentStyle={{
                 background: "var(--panel-2)",
                 border: "1px solid var(--border)",
@@ -296,12 +409,12 @@ export function CompareView({
                 isAnimationActive={false}
               />
             ))}
-            {/* Each pathway's maximum — the approximate TS, in that pathway's colour. */}
+            {/* Each pathway's maximum — the approximate/≈ saddle point, in that pathway's colour. */}
             {series.map((s) =>
               s.maxDatum ? (
                 <ReferenceDot
                   key={`ts-${s.id}`}
-                  x={s.maxDatum.coordinate}
+                  x={normalizedAxis ? s.maxDatum.x : s.maxDatum.coordinate}
                   y={s.maxDatum.relKcal}
                   r={5}
                   fill={s.color}
@@ -362,7 +475,17 @@ export function CompareView({
                 +{s.intrinsicKcal.toFixed(2)} kcal/mol
               </td>
               {refJobCount > 0 ? (
-                "kcal" in s.absoluteCell ? (
+                s.absoluteCell === null ? (
+                  // A NEB pathway has no scan maximum — its barrier is the located-TS value
+                  // in the next column (the G1 estimate or an OptTS refine), not a scan-max.
+                  <td
+                    className="muted"
+                    style={{ textAlign: "right", fontSize: 12 }}
+                    title="A NEB pathway has no scan-maximum estimate — its barrier is the located TS →"
+                  >
+                    — (NEB → located TS)
+                  </td>
+                ) : "kcal" in s.absoluteCell ? (
                   <td
                     className="mono"
                     style={{ textAlign: "right" }}
@@ -386,6 +509,15 @@ export function CompareView({
                     <span className="muted">{s.locatedReason}</span>
                   ) : (
                     <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end" }}>
+                      {s.isEstimate ? (
+                        <span
+                          className="muted"
+                          style={{ fontSize: 11 }}
+                          title="The converged NEB-TS energy used as a first-pass ΔE‡ estimate — refine with OptTS+Freq for a located saddle and a real ΔG‡"
+                        >
+                          NEB TS (unrefined estimate)
+                        </span>
+                      ) : null}
                       <span title="E(TS) − Σ E(reactant jobs): electronic barrier from the located saddle">
                         ΔE‡ {s.locatedEKcal != null ? sign(s.locatedEKcal) : "—"}
                       </span>
@@ -393,6 +525,10 @@ export function CompareView({
                         <strong title="G(TS) − Σ G(reactant jobs): RAW ORCA ΔG‡ (ideal-gas RRHO, 1 atm, 298.15 K)">
                           ΔG‡ {sign(s.deltaGKcal)}
                         </strong>
+                      ) : s.isEstimate ? (
+                        <span className="muted" title="An unrefined NEB-TS estimate has no Freq — ΔG‡ is refused. Refine with OptTS+Freq.">
+                          ΔG‡ — (estimate, no Freq)
+                        </span>
                       ) : s.gMissing ? (
                         <span className="muted" title="ΔG‡ needs G for the TS AND every reference — re-run those with Freq">
                           ΔG‡ — re-run w/ Freq
@@ -435,14 +571,28 @@ export function CompareView({
             <div key={c.id} style={{ marginBottom: 6 }}>
               {c.guard.ok ? (
                 <>
-                  <div className="mono" style={{ fontSize: 15 }}>
-                    ΔΔE‡({c.label} − {baseline.label}) ={" "}
-                    <strong style={{ color: c.color }}>
-                      {c.ddeKcal! >= 0 ? "+" : ""}
-                      {c.ddeKcal!.toFixed(2)} kcal/mol
-                    </strong>
-                    <span className="muted"> (scan-max screening)</span>
-                  </div>
+                  {c.ddeKcal != null ? (
+                    <div className="mono" style={{ fontSize: 15 }}>
+                      ΔΔE‡({c.label} − {baseline.label}) ={" "}
+                      <strong style={{ color: c.color }}>
+                        {c.ddeKcal >= 0 ? "+" : ""}
+                        {c.ddeKcal.toFixed(2)} kcal/mol
+                      </strong>
+                      <span className="muted">
+                        {" "}
+                        {c.ddeLocated
+                          ? `(located TS · reference-free${c.estimate ? " · incl. NEB estimate" : ""})`
+                          : "(scan-max screening)"}
+                      </span>
+                    </div>
+                  ) : (
+                    // Guard passes (same method) but a located ΔΔE‡ needs a TS energy on BOTH
+                    // pathways — one side is an unrefined scan with no located TS. Honest note.
+                    <div className="muted" style={{ fontSize: 13 }}>
+                      ΔΔE‡({c.label} − {baseline.label}): refine both pathways&apos; TS (OptTS) to
+                      compare located barriers.
+                    </div>
+                  )}
                   {c.ddgKcal != null ? (
                     // THE mission headline: ΔΔG‡ over two LOCATED TSs — reference-free, and the
                     // standard-state correction cancels (same molecularity both faces).

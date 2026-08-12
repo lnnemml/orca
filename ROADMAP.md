@@ -715,7 +715,11 @@ crosses a boundary the app owns. **✅ MET — Phase 4.2 is COMPLETE** (Stages 1
 
 ---
 
-## Phase 4.5 — Reaction modeling (staged)
+## Phase 4.5 — Reaction modeling (staged) — ✅ CORE COMPLETE (spine + N-series closed)
+
+> **Spine + the N-series (input builder → NEB → compare) are done** (2026-08-12, N4 closed Phase 4.5).
+> The remaining open items in this phase are **Stage F — Microsolvation** (probe done; design/build
+> pending) — the next phase target — and the N1b-follow-on correlated-tier probes noted under Phase 6.
 
 **Goal:** OrcaStudio becomes a reaction mechanism workstation. The researcher defines a
 reaction, explores pathways via native ORCA scans, and compares electronic energy
@@ -1149,6 +1153,11 @@ and OrcaStudio picks the job up, syncs results, and parses them — no terminal,
   Refine-with-OptTS in **E3a-2** (`NebBandPanel`, `nebBand.ts`; see Stage E above). The 3D MEP-path
   viewer (`_MEP_trj.xyz`) remains a deferred follow-up.
 - [ ] Job comparison view: N jobs side by side (energies, geometries overlay, spectra)
+- [ ] **3D PES from a 2D relaxed scan** — a two-coordinate `%geom Scan` (two B/A/D coordinates) →
+      a surface (energy over a grid) rather than a 1-D profile: the natural extension of the Phase-4.5
+      scan/compare machinery to a 2-D reaction coordinate (e.g. a concerted bond-forming/breaking pair).
+      Needs a grid-scan parser + a surface/contour viewer; the located-TS refine seeds from a saddle of
+      the surface. (Recorded here so the idea from the N-series isn't lost.)
 - [ ] Batch/parametric runs: same molecule × list of functionals or basis sets
 - [ ] SLURM backend (third `ExecutionBackend` implementation)
 - [ ] Markdown notes attached to jobs/projects → the app becomes a lab journal
@@ -1210,8 +1219,16 @@ behaviour is involved, rule #10).
       source job title (the HCN/HNC mislabel lesson). Export honest-or-absent. +2 cargo bites (real
       HCN⇌HNC `neb_mep` fixture: argmax==im4 + endpoint energies; non-NEB/absent → None), +5 vitest
       (`bandMaxIndex`/`imageGeometryXyz`/`imageExportXyz`). **N-series → N4 next.**
-- [ ] **N4 — NEB in the compare view** — track with the existing "Job comparison view" item above.
-      **Next (final N-series unit).**
+- [x] **N4 — NEB pathways in the compare view** (2026-08-12) — **Phase 4.5 CLOSED**. A NEB-backed
+      pathway is comparable: `ComparePathway` carries one of `scan?`/`nebMep?`; `comparePathways`
+      accepts scan **OR** NEB (`isNebJob`). Its located ΔE‡ (and ΔG‡ once refined) join the same
+      **located-TS + `methodSignature`-guarded** ΔΔ table as a scan (coordinate-agnostic; `NEB-TS` is a
+      dropped job-control token, so xtb-NEB vs DFT-scan is flagged not-comparable). Its MEP joins the
+      overlay on a **normalized 0→1 illustrative axis** (`nebMepCurve`/`normalizedScanCurve`); the
+      all-scan physical-axis + `coordinateSignature` path is unchanged. **Decision G1:** an unrefined
+      NEB pathway uses its converged `ts_energy_eh` as a first-pass ΔE‡ estimate, **ΔG‡ refused**
+      (gEh null), labelled "NEB TS (unrefined estimate)"; an OptTS refine upgrades it. +6 vitest bites.
+      See [ADR-018 §N4](wiki/architecture/adr-018-reaction-energy-reference.md).
 
 ---
 

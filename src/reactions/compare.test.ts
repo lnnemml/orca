@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 
-import type { ScanProfileJson } from "../types";
+import type { ScanProfileJson, NebResults } from "../types";
 import { HARTREE_TO_KCAL } from "../units";
 import {
   deltaDeltaEKcal,
@@ -19,6 +19,8 @@ import {
   deltaGDoubleDaggerKcal,
   locatedBarrierEKcal,
   deltaDeltaGKcal,
+  nebMepCurve,
+  normalizedScanCurve,
 } from "./compare";
 
 /** Build a scan profile from (coordinate, act-Eh) pairs; scf mirrors act unless given. */
@@ -375,5 +377,76 @@ describe("deltaDeltaGKcal (G-ddg-reference-free)", () => {
     // Antisymmetry + symmetry-zero (mirrors deltaDeltaEKcal).
     expect(deltaDeltaGKcal(gB, gA)).toBeCloseTo(-(gA - gB) * HARTREE_TO_KCAL, 6);
     expect(deltaDeltaGKcal(gA, gA)).toBe(0);
+  });
+});
+
+/** A NEB result with a given MEP (distance, RELATIVE energy image0=0) + converged TS. */
+function neb(mep: [number, number][], tsEnergyEh: number | null): NebResults {
+  return {
+    iterations: [],
+    mep: mep.map(([distance_angstrom, energy_eh]) => ({ distance_angstrom, energy_eh })),
+    final_barrier_eh: null,
+    ts_geometry: { elements: ["C", "N", "H"], xyz_angstrom: [[0, 0, 0], [1, 0, 0], [2, 0, 0]] },
+    ts_energy_eh: tsEnergyEh,
+  };
+}
+
+describe("nebMepCurve (N4 — normalized MEP shape)", () => {
+  it("neb_mep_curve_normalizes_arc_to_0_1", () => {
+    // BITE: arc length / last-point → x ∈ [0,1]; energy (already relative) → kcal/mol.
+    const curve = nebMepCurve(neb([[0, 0], [0.5, 0.01], [1.2, 0.02], [2.0, 0.005]], -93.3246));
+    expect(curve.map((p) => p.x)).toEqual([0, 0.25, 0.6, 1.0]);
+    expect(curve[0].energyKcal).toBe(0); // image 0 is exactly 0 (already relative)
+    expect(curve[2].energyKcal).toBeCloseTo(0.02 * HARTREE_TO_KCAL, 9);
+  });
+
+  it("neb_mep_curve_empty_for_degenerate_band", () => {
+    // BITE: a 1-point (or zero-length) MEP, or a zero total arc, is [] — never a divide-by-
+    // zero or a single dot posing as a path.
+    expect(nebMepCurve(neb([[0, 0]], -93.0))).toEqual([]);
+    expect(nebMepCurve(neb([], -93.0))).toEqual([]);
+    expect(nebMepCurve(neb([[0, 0], [0, 0.01]], -93.0))).toEqual([]); // zero total arc
+  });
+});
+
+describe("normalizedScanCurve (N4 — a scan on the same 0→1 axis, mixed overlay)", () => {
+  it("maps coordinate min→max to 0→1 and energy relative to the reactant-side min", () => {
+    // A 3-point scan: coord 2.5→1.5, max energy in the middle. x normalizes min→max.
+    const s = scan([[2.5, -100.05], [2.0, -100.0], [1.5, -100.03]]);
+    const curve = normalizedScanCurve(s);
+    expect(curve.map((p) => p.x)).toEqual([1.0, 0.5, 0.0]); // (2.5−1.5)/1.0, (2.0−1.5)/1.0, 0
+    // Zero = the reactant-side minimum (−100.05, the pre-barrier branch), so its ΔE is 0.
+    const zero = reactantSideMinEh(s);
+    expect(zero).toBe(-100.05);
+    expect(curve[0].energyKcal).toBeCloseTo(0, 9);
+    expect(curve[1].energyKcal).toBeCloseTo((-100.0 - -100.05) * HARTREE_TO_KCAL, 9);
+  });
+
+  it("degenerate scan (<2 points or all-equal coordinate) → []", () => {
+    expect(normalizedScanCurve(scan([[1.5, -100]]))).toEqual([]);
+    expect(normalizedScanCurve(scan([[1.5, -100], [1.5, -100.1]]))).toEqual([]); // zero span
+  });
+});
+
+describe("N4 — a NEB estimate is guarded like a scan (honesty invariants)", () => {
+  it("neb_estimate_refuses_gibbs_gives_electronic", () => {
+    // The G1 estimate: eEh = the converged NEB-TS energy, gEh = null (no Freq). ΔG‡ is refused
+    // for free (the null-guard), while the electronic ΔE‡ from the same eEh still stands.
+    const tsEh = -93.3246;
+    const refEh = -93.45; // Σ E(reactant refs) on the same scale
+    // BITE: a version that read null-G as 0 would emit a garbage ΔG‡; it must be null.
+    expect(deltaGDoubleDaggerKcal(null, -100.2)).toBeNull();
+    // …and the electronic barrier from the SAME estimate energy is a real number.
+    expect(locatedBarrierEKcal(tsEh, refEh)).toBeCloseTo((tsEh - refEh) * HARTREE_TO_KCAL, 9);
+  });
+
+  it("method_guard_flags_xtb_neb_vs_dft_scan", () => {
+    // BITE: a xtb-NEB estimate must NOT be silently ΔΔ-compared against a DFT scan — the SAME
+    // methodSignature guard that governs scan↔scan flags the cross-method mismatch.
+    const xtbNeb = methodSignature("! XTB NEB-TS");
+    const dftScan = methodSignature("! r2SCAN-3c def2-TZVP Opt");
+    expect(xtbNeb.display).not.toBe(dftScan.display);
+    // And it is comparable to another DFT pathway on the same method (the guard is symmetric).
+    expect(methodSignature("! r2SCAN-3c def2-TZVP NEB-TS").display).toBe(dftScan.display);
   });
 });

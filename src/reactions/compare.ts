@@ -13,7 +13,7 @@
 //! solvation AND scan the same coordinate. On any mismatch the UI shows the curves but
 //! replaces the number with the specific reason; `pathwaysComparable` returns that reason.
 
-import type { ScanProfileJson } from "../types";
+import type { ScanProfileJson, NebResults } from "../types";
 import { HARTREE_TO_KCAL, energyEh, type EnergyChoice } from "../scan/scanProfile";
 import type { Scene } from "../scene/types";
 import { sceneFromOrcaInput, totalCharge } from "../scene/scene";
@@ -100,6 +100,66 @@ export function deltaDeltaEKcal(
  * complete AND method-consistent with the pathway (see `referenceComparable`). */
 export function absoluteBarrierKcal(pathwayMaxEh: number, refEnergyEh: number): number {
   return (pathwayMaxEh - refEnergyEh) * HARTREE_TO_KCAL;
+}
+
+// --- Normalized overlay curves (N4) — the mixed scan+NEB shape-illustrative axis ---
+//
+// A NEB has NO physical scan coordinate: its MEP rides an arc-length band, a scan rides a
+// bond distance/angle/dihedral. They cannot share a physical x-axis. So when a NEB pathway
+// enters the overlay, ALL series are placed on a NORMALIZED 0→1 reaction-coordinate axis —
+// an ILLUSTRATIVE shape comparison only. The RIGOROUS cross-pathway number is the located-TS
+// ΔΔE‡/ΔΔG‡ table (method-guarded), never the curve. (The all-scan overlay keeps its physical
+// axis + `coordinateSignature` guard — this path is only taken when a NEB is present.)
+
+/** A point on the normalized 0→1 reaction-coordinate overlay: `x` ∈ [0,1] along the path,
+ * `energyKcal` = ΔE (kcal/mol) relative to the reactant side. Shape-illustrative only. */
+export interface NormalizedCurvePoint {
+  x: number;
+  energyKcal: number;
+}
+
+/**
+ * The converged NEB MEP as a normalized 0→1 curve: each mep point's `distance_angstrom`
+ * divided by the LAST point's distance (arc length → fractional progress), and its
+ * `energy_eh` — ALREADY relative (image 0 = 0, from `.final.interp`) — converted to
+ * kcal/mol (no subtraction; point 0 is exactly 0). A degenerate band (< 2 points, or a
+ * zero total arc length) yields `[]` — never a divide-by-zero or a single dot masquerading
+ * as a path.
+ */
+export function nebMepCurve(neb: NebResults): NormalizedCurvePoint[] {
+  const mep = neb.mep;
+  if (mep.length < 2) return [];
+  const last = mep[mep.length - 1].distance_angstrom;
+  if (last === 0) return [];
+  return mep.map((img) => ({
+    x: img.distance_angstrom / last,
+    energyKcal: img.energy_eh * HARTREE_TO_KCAL,
+  }));
+}
+
+/**
+ * A scan profile on the SAME normalized 0→1 axis (for the mixed scan+NEB overlay only):
+ * the coordinate mapped min→max → 0→1, the energy relative to the reactant-side minimum
+ * (`reactantSideMinEh` — the forward-barrier reference, consistent with the intrinsic
+ * barrier) → kcal/mol. A degenerate scan (< 2 points, or all coordinates equal) → `[]`.
+ * The physical-axis path (all-scan overlay) does NOT use this — it keeps the real
+ * coordinate and the `coordinateSignature` guard.
+ */
+export function normalizedScanCurve(
+  scan: ScanProfileJson,
+  which: EnergyChoice = "act",
+): NormalizedCurvePoint[] {
+  const pts = scan.points;
+  if (pts.length < 2) return [];
+  const coords = pts.map((p) => p.coordinate);
+  const cMin = Math.min(...coords);
+  const span = Math.max(...coords) - cMin;
+  if (span === 0) return [];
+  const zeroEh = reactantSideMinEh(scan, which);
+  return pts.map((p) => ({
+    x: (p.coordinate - cMin) / span,
+    energyKcal: (energyEh(p, which) - zeroEh) * HARTREE_TO_KCAL,
+  }));
 }
 
 // --- Located-TS barriers (Stage E1b) — E → {E, G} over an actual saddle ------

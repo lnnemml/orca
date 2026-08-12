@@ -7681,3 +7681,48 @@ image stepper; step im0→im9, geometry morphs reactant→product, energies show
 flagged "≈ saddle"; toggle "Saddle (TS)" → the converged TS with its energy; m3 export an image + the TS
 → two distinct `.xyz`, correct atom order; m4 (neg) a NEB whose dir lacks `input_MEP_trj.xyz` → viewer
 honestly absent, charts still render. **Next:** N4 — NEB in the compare view (final N-series unit).
+
+## [2026-08-12] session | NEB pathways in the reactions comparison — located-TS ΔΔ + normalized MEP (N4) — Phase 4.5 CLOSED
+
+**Scope: one unit (N4), the last Phase-4.5 unit.** A pathway backed by a NEB job becomes comparable —
+its located ΔE‡ (and ΔG‡ once refined) join the ΔΔ table, its MEP joins the overlay as a normalized
+curve. Out of scope (untouched): the NEB parser/viewer (N3); the input builder (N1/N2); the scan math
+for scan pathways (only ADDED the NEB branch beside it); the attach flow; the C2b reference command.
+
+**Decision G1 (author).** A NEB pathway with NO OptTS refine yet uses its converged NEB-TS
+(`ts_energy_eh`) as the located-TS `eEh` — a first-pass ΔE‡ ESTIMATE, ΔG‡ REFUSED (gEh null, no Freq),
+labelled "NEB TS (unrefined estimate)"; an OptTS refine on the pathway upgrades it to a real located TS
+(a refine always wins over the estimate).
+
+**Part A — pure core (reviewed, approved).** `pathway.ts` +`isNebJob` (mirrors `isScanJob`).
+`compare.ts` +`nebMepCurve` (arc length / last-point → x∈[0,1]; energy already relative → kcal; degenerate
+band → []) +`normalizedScanCurve` (coordinate min→max → 0→1, energy vs `reactantSideMinEh`; degenerate →
+[]) — for the mixed overlay only; the physical all-scan axis does NOT use it. `CompareView` `LocatedTs`
++`isEstimate?`. 6 bites incl. **method_guard_flags_xtb_neb_vs_dft_scan** (the load-bearing one — same
+`methodSignature` guard flags xtb-NEB vs DFT-scan, AND a same-method NEB matches a scan because `NEB-TS`
+is dropped as job-control) and **neb_estimate_refuses_gibbs_gives_electronic** (ΔG‡ null, ΔE‡ stands).
+vitest compare 42 (+6).
+
+**Part B — wiring.** `ComparePathway` `scan?` made OPTIONAL + `nebMep?: NebResults` (exactly one set).
+`ReactionsScreen.comparePathways` relaxed: scan OR NEB (`isNebJob`); the NEB branch supplies `nebMep` +
+the G1 estimate `locatedTs` (`refinedTs ?? estimate`). `CompareView`: **two honesty invariants** — (1)
+the ΔΔ table routes a NEB number through the SAME `locatedBarrierEKcal`/`deltaGDoubleDaggerKcal` +
+`methodSignature` guard (scan↔scan keeps `pathwaysComparable`'s coordinate guard; any NEB-involving pair
+→ method-only, no shared coordinate; reference-free ΔΔE‡ over the two TS energies via
+`absoluteBarrierKcal`). (2) when any NEB is present, the overlay drops to a **normalized 0→1
+illustrative axis** (`nebMepCurve`/`normalizedScanCurve`, x-axis relabelled, the reactants-zero control
+hidden); the all-scan physical-axis + `coordinateSignature` path is byte-unchanged. Estimate rows show
+"NEB TS (unrefined estimate)" + "ΔG‡ — (estimate, no Freq)"; the scan-max absolute cell reads "— (NEB →
+located TS)". Attach picker: `Candidate` +`isNeb`; mark `✓ scan` / `✓ NEB` / `(not scan/NEB)`, warn only
+when neither.
+
+**Verification.** tsc clean; vitest **855 (+6)**; **cargo + sidecar untouched** (state so — no Rust
+change). Wiki: ADR-018 §N4 amendment (the located-TS-agnostic ΔΔ + G1 + normalized axis + method guard
+spanning scan+NEB), `modules/reactions-ui.md` (picker offers NEB, the overlay axis switch, the G1
+section), ROADMAP (N4 [x] — **Phase 4.5 CORE COMPLETE**; +Phase-6 "3D PES from a 2D relaxed scan";
+Stage F the next phase target), index.md.
+
+**Author manual gate pending:** m1 attach a NEB job → appears in the compare (not warned), ΔE‡ shows,
+ΔG‡ refused (—) "NEB TS (unrefined estimate)"; m2 refine it via OptTS(+Freq) → real ΔG‡, estimate label
+retires; m3 two NEB pathways → MEPs overlay on a normalized 0→1 axis, ΔΔE‡ shows; m4 (neg) xtb-NEB + DFT
+scan → table FLAGS not-comparable (method guard), no ΔΔE‡ number. **Next:** Stage F (CREST microsolvation).
