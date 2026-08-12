@@ -1180,11 +1180,18 @@ behaviour is involved, rule #10).
       Solvation/SCF. +4 bite tests. Probe facts + rule #10 in `wiki/orca/xtb-method.md`
       (ORCA's `! XTB` = GFN2-xTB via bundled `otool_xtb` 6.7.1). **Only GFN2 verified** — GFN1/0/FF
       not offered.
-- [ ] **N1b — correlated wave-function tier** (MP2 / CCSD / DLPNO-CCSD(T)) — **gated on a
-      DLPNO-CCSD(T) probe** (rule #10): keyword form, the AuxC correlation-fitting-basis requirement,
-      and which artifacts carry the correlation energy must be measured before this ships.
+- [x] **N1b — correlated wave-function tier** (2026-08-12). A `wavefunction` family — MP2 / RI-MP2 /
+      DLPNO-MP2 / CCSD / CCSD(T) / DLPNO-CCSD(T) / DLPNO-CCSD(T1). **Probe** (rule #10, ORCA 6.1, HCN
+      SP): `! DLPNO-CCSD(T) def2-TZVP def2-TZVP/C def2/J RIJCOSX` terminated normally, both aux used.
+      The measured emit: **RI/DLPNO → `<basis>/C <Coulomb-aux> RIJCOSX`; canonical MP2/CCSD/CCSD(T) →
+      no aux** (`methodNeedsCorrelationAux` off the per-method `needsCorrelationAux`); **no dispersion**
+      (correlation is the dispersion); def2 → native `/C` (`correlationAux`), non-def2 → bare `AutoAux`
+      (consistent with N1a, the unmeasured mixed `/C AutoAux` form deliberately NOT shipped — a future
+      refinement `cc-*/C def2/J` pending its own probe). WF keeps the solvation+SCF tail (not xtb). Form
+      gains a 4th family (Dispersion/RI hidden, solvation/SCF kept). +6 bite tests.
+      `wiki/orca/correlated-methods.md`. **N-series → N2 next.**
 - [ ] **N2 — NEB job type in the builder** (NEB-TS entry in `JOB_TYPES` + the band setup) — the
-      builder-side complement to Phase 4.5 Stage E3a's `NebSetupPanel`.
+      builder-side complement to Phase 4.5 Stage E3a's `NebSetupPanel`. **Next in the N-series.**
 - [ ] **N3 — NEB result parsing/viewer** and **N4 — compare view** — track with the existing
       "Job comparison view" item above.
 

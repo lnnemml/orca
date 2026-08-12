@@ -12,6 +12,7 @@ import {
   SCF_CONV,
   SOLVATION_MODELS,
   SOLVENTS,
+  WAVEFUNCTION_METHODS,
   XTB_METHODS,
   type OrcaOption,
 } from "./orca-options";
@@ -116,6 +117,7 @@ export function InputBuilderForm({
   const FAMILIES: { value: MethodFamily; label: string }[] = [
     { value: "composite", label: "Composite (3c)" },
     { value: "dft", label: "Functional + Basis" },
+    { value: "wavefunction", label: "Wave-function (correlated)" },
     { value: "xtb", label: "GFN2-xTB (semi-emp.)" },
   ];
 
@@ -169,6 +171,50 @@ export function InputBuilderForm({
           />
           <div className="builder-note muted">
             Gas phase, no basis/RI/SCFConv — semi-empirical is self-contained.
+          </div>
+        </div>
+      ) : family === "wavefunction" ? (
+        <div className="builder-row">
+          <div className="field">
+            <label className="label">Method</label>
+            <select
+              className="input select"
+              value={state.wavefunction}
+              onChange={(e) => set("wavefunction", e.currentTarget.value)}
+            >
+              {WAVEFUNCTION_METHODS.map((g) => (
+                <optgroup key={g.label} label={g.label}>
+                  {g.options.map((o) => (
+                    <option key={o.keyword} value={o.keyword}>
+                      {o.label}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+          </div>
+          <div className="field">
+            <label className="label">Basis set</label>
+            <select
+              className="input select"
+              value={state.basis}
+              onChange={(e) => set("basis", e.currentTarget.value)}
+            >
+              {BASIS_GROUPS.map((g) => (
+                <optgroup key={g.label} label={g.label}>
+                  {g.options.map((o) => (
+                    <option key={o.keyword} value={o.keyword}>
+                      {o.label}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+          </div>
+          <div className="builder-note muted">
+            Correlated: DLPNO variants add the /C correlation aux + RIJCOSX
+            automatically. (T) has no analytic gradient — single-point
+            recommended; Opt/Freq is numerical &amp; expensive.
           </div>
         </div>
       ) : (

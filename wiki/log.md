@@ -7534,3 +7534,52 @@ families, Rule 2 non-def2→AutoAux, Rule 2b basis families), `index.md` (+page,
 Solvation/SCF controls disabled; m2 Functional+Basis + cc-pVTZ + RIJCOSX → `cc-pVTZ AutoAux RIJCOSX`;
 m3 (neg) composite r2SCAN-3c still bare, no basis/aux; + eyeball a Pople `**` basis in the live preview.
 **Next:** N1b (correlated tier) behind a DLPNO-CCSD(T) probe, or N2 (NEB in the builder).
+
+## [2026-08-12] session | Correlated wave-function tier (MP2 … DLPNO-CCSD(T)) with measured aux emit (N1b)
+
+**Scope: one unit (N1b).** Added a fourth builder method family, `wavefunction` — MP2 / RI-MP2 /
+DLPNO-MP2 / CCSD / CCSD(T) / DLPNO-CCSD(T) / DLPNO-CCSD(T1) — with the MEASURED aux-basis emit. Out
+of scope (untouched): NEB-in-builder (N2), NEB parse/viewer (N3), compare view (N4), composite/dft/xtb
+branches (only ADDED beside them), JOB_TYPES.
+
+**Probe first (rule #10, ORCA 6.1.0, HCN single point — +`wiki/orca/correlated-methods.md`).**
+`! DLPNO-CCSD(T) def2-TZVP def2-TZVP/C def2/J RIJCOSX TightSCF` → **ORCA TERMINATED NORMALLY**, BOTH
+aux used (quoted: "utilizes the auxiliary basis: def2/J" AND "def2-TZVP/C … AVAILABLE"; "K(C) Formation
+… RI-DLPNO"; "DLPNO BASED TRIPLES CORRECTION"); FINAL SINGLE POINT ENERGY −93.274453; benign post-HF
+warnings only. The `/C` (correlation fit) is a DISTINCT basis from `/J` (Coulomb) — both required.
+
+**The rule.** RI/DLPNO variants → `<basis>/C <Coulomb-aux> RIJCOSX`; canonical MP2/CCSD/CCSD(T) → **no
+aux** (a spurious /C is a different, RI-approximated run). No dispersion on any WF line (correlation IS
+the dispersion). WF keeps the solvation+SCFConv tail (it is NOT xtb — C-PCM/CCSD valid, post-HF needs a
+tight SCF; the tail guard stays `methodFamily !== "xtb"`).
+
+**Part A — pure core (reviewed; one targeted fix applied).** `orca-options.ts`: +`WAVEFUNCTION_METHODS`
+(two groups MP2 / Coupled cluster), +`OrcaOption.needsCorrelationAux` (true for RI-MP2/DLPNO-MP2/
+DLPNO-CCSD(T)/DLPNO-CCSD(T1)). `build-input.ts`: `MethodFamily` +`"wavefunction"`; `BuilderState`
++`wavefunction` (default `DLPNO-CCSD(T)`); +`methodNeedsCorrelationAux` (fact lives once) +`correlationAux`;
+WF branch in `buildKeywordLine`. **Review fix:** `correlationAux` returns `<basis>/C` for **def2 only**
+(the sole probed combination) — cc-*/aug-cc-* now fall into the non-def2 **bare `AutoAux`** path with
+Pople, so we never emit the UNMEASURED mixed `cc-pVTZ/C AutoAux` form (AutoAux's global flag vs an
+explicit /C = unknown ORCA behaviour). This also keeps N1b consistent with N1a's `auxBasisFor`. The
+tighter `cc-pVTZ/C def2/J RIJCOSX` is recorded as a future refinement pending its own probe.
+
+**Verified emits:** `DLPNO-CCSD(T) def2-TZVP def2-TZVP/C def2/J RIJCOSX SP TightSCF` (measured);
+`CCSD(T) def2-TZVP SP TightSCF` (canonical, no aux); `RI-MP2 cc-pVTZ AutoAux RIJCOSX SMD(water) SP
+TightSCF` (non-def2 → bare AutoAux, tail kept).
+
+**Part B — form.** `InputBuilderForm.tsx`: 4th family option "Wave-function (correlated)"; Row 2 =
+`WAVEFUNCTION_METHODS` select (optgroups) + basis select (`BASIS_GROUPS`) + a muted note (DLPNO adds
+/C+RIJCOSX automatically; (T) no analytic gradient → single-point recommended). For WF, Dispersion + RI
+controls are absent (hidden — RI is implied by the method); **Solvation/Solvent/SCF stay ENABLED**
+(unlike xtb). No value clearing on family switch.
+
+**Verification.** tsc clean; vitest **842 passed (+6)** (6 WF bites: `dlpno_ccsdt_def2_emits_c_j_rijcosx`,
+`canonical_ccsdt_emits_no_aux`, `dlpno_with_pople_falls_back_to_autoaux`,
+`dlpno_dunning_uses_autoaux_not_explicit_C`, `wf_keeps_solvation_and_scfconv`, `wf_emits_no_dispersion`);
+**cargo + sidecar untouched**. Wiki: +`orca/correlated-methods.md`, updated `orca/input-format.md`
+(Rule 0 WF row + Rule 2c), `index.md` (+page, 94→95), ROADMAP (N1b [x], N2 next).
+
+**Author manual gate pending:** m1 DLPNO-CCSD(T)+def2-TZVP → `! DLPNO-CCSD(T) def2-TZVP def2-TZVP/C
+def2/J RIJCOSX <jobtype> …`; m2 canonical CCSD(T)+def2-TZVP → `! CCSD(T) def2-TZVP …` no /C/RIJCOSX;
+m3 (neg) DLPNO-CCSD(T)+6-31G* → `AutoAux RIJCOSX`, no `6-31G*/C`; m4 RI-MP2+SMD(water)+TightSCF → both
+present. **Next:** N2 (NEB job type in the builder).

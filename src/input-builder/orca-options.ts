@@ -17,6 +17,13 @@ export interface OrcaOption {
    * so the builder must NOT add a separate dispersion keyword. See `build-input.ts`.
    */
   builtInDispersion?: boolean;
+  /**
+   * A correlated WF method that uses the RI/DLPNO approximation and so needs a
+   * `<basis>/C` correlation-fit aux + Coulomb aux + RIJCOSX. Canonical methods
+   * (plain MP2/CCSD/CCSD(T)) leave this absent — they take NO aux. See
+   * `methodNeedsCorrelationAux` in `build-input.ts`.
+   */
+  needsCorrelationAux?: boolean;
 }
 
 /** Job types. Empty keyword = plain Single Point (ORCA's default). */
@@ -103,6 +110,58 @@ export const XTB_METHODS: OrcaOption[] = [
     keyword: "XTB",
     label: "GFN2-xTB",
     description: "Semi-empirical tight-binding. Very fast — geometry/TS screening.",
+  },
+];
+
+/**
+ * Correlated wave-function methods, grouped by rung. The RI/DLPNO variants
+ * (`needsCorrelationAux: true`) add a `<basis>/C` correlation-fit aux + a Coulomb
+ * aux + RIJCOSX; the canonical variants take NO aux (a spurious /C would run a
+ * different, wrong calculation — see `wiki/orca/correlated-methods.md`, measured
+ * on ORCA 6.1). None takes a separate dispersion keyword: the correlation IS the
+ * dispersion. `(T)` has no analytic gradient — single-point-oriented.
+ */
+export const WAVEFUNCTION_METHODS: { label: string; options: OrcaOption[] }[] = [
+  {
+    label: "MP2",
+    options: [
+      { keyword: "MP2", label: "MP2", description: "Canonical MP2. No aux — exact RI-free." },
+      {
+        keyword: "RI-MP2",
+        label: "RI-MP2",
+        description: "RI-approximated MP2. Adds the /C correlation aux.",
+        needsCorrelationAux: true,
+      },
+      {
+        keyword: "DLPNO-MP2",
+        label: "DLPNO-MP2",
+        description: "Linear-scaling local MP2. Adds the /C correlation aux.",
+        needsCorrelationAux: true,
+      },
+    ],
+  },
+  {
+    label: "Coupled cluster",
+    options: [
+      { keyword: "CCSD", label: "CCSD", description: "Canonical CCSD. No aux." },
+      {
+        keyword: "CCSD(T)",
+        label: "CCSD(T)",
+        description: "Gold-standard canonical. Single-point; no analytic gradient.",
+      },
+      {
+        keyword: "DLPNO-CCSD(T)",
+        label: "DLPNO-CCSD(T)",
+        description: "Near-CCSD(T) accuracy, linear scaling. Single-point; no analytic gradient.",
+        needsCorrelationAux: true,
+      },
+      {
+        keyword: "DLPNO-CCSD(T1)",
+        label: "DLPNO-CCSD(T1)",
+        description: "Iterative triples — tighter than (T0). Single-point; no analytic gradient.",
+        needsCorrelationAux: true,
+      },
+    ],
   },
 ];
 

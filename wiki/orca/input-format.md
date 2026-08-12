@@ -23,12 +23,14 @@ The rules below are baked into `build-input.ts` and checked against the ORCA 6.1
 (https://www.faccts.de/docs/orca/6.1/manual/).
 
 ### Rule 0 — The method comes from one of three families
-`buildKeywordLine` branches on `state.methodFamily: "composite" | "dft" | "xtb"` (N1a):
+`buildKeywordLine` branches on `state.methodFamily: "composite" | "dft" | "wavefunction" | "xtb"`
+(N1a added composite/dft/xtb; N1b added wavefunction):
 
 | Family | Emits | Basis / aux / RI / disp | Solvation + SCFConv tail |
 |---|---|---|---|
 | `composite` | the 3c method name only | never (self-contained, Rule 1) | applies |
 | `dft` | functional + basis (+ aux/RI/dispersion) | per Rules 1–2 | applies |
+| `wavefunction` | correlated method + basis (RI/DLPNO add `/C`+Coulomb-aux+RIJCOSX) | per Rule 2c; **never dispersion** | applies |
 | `xtb` | the xTB method keyword **only** (`XTB` = GFN2-xTB) | **never** | **suppressed** |
 
 `xtb` is fully self-contained: a `! XTB` line carries the method + job type and **nothing else** —
@@ -37,6 +39,10 @@ invalid, so the whole basis block *and* the solvation+scfConv tail are guarded o
 (`state.methodFamily !== "xtb"`). Job type is still emitted for every family (`! XTB Opt`,
 `! XTB NEB-TS`). See `wiki/orca/xtb-method.md` for the probe facts (ORCA's `! XTB` = GFN2-xTB via
 the bundled `otool_xtb`, distinct from the standalone `xtb.md` binary).
+
+The `wavefunction` family keeps the solvation + SCFConv tail (it is **not** xtb — C-PCM/CCSD is
+valid, and post-HF *needs* a tight SCF) but emits **no dispersion keyword** (the correlation *is*
+the dispersion). Its aux chain is Rule 2c. See `wiki/orca/correlated-methods.md` for the probe.
 
 ### Rule 1 — Composite methods and dispersion-inclusive functionals are self-contained
 `r2SCAN-3c`, `B97-3c`, `PBEh-3c`, `wB97X-3c`, `HF-3c` **already include their own basis set,
@@ -97,6 +103,30 @@ auxiliary. It is the honest choice: ORCA fails loud on a bad/absent aux, never s
 **Dunning** (`cc-pVDZ/TZ/QZ`, `aug-cc-pV{D,T,Q}Z`), and **Pople** (`6-31G*`, `6-31G**`, `6-311G**`,
 `6-311+G**`, `6-311++G**`). A flat `BASIS_SETS = BASIS_GROUPS.flatMap(...)` is kept for importers.
 Only def2-* gets a tuned aux (Rule 2); everything else pairs with `AutoAux` under RI.
+
+### Rule 2c — Correlated methods need a *correlation* aux (`/C`), and only RI/DLPNO variants
+Post-HF RI needs **two** fit sets: `/J` (Coulomb, as Rule 2) **and** `/C` (correlation — fits the
+MP2/CC amplitudes, a different basis you cannot substitute for `/J`). The rule splits by method:
+
+- **RI/DLPNO** (`RI-MP2`, `DLPNO-MP2`, `DLPNO-CCSD(T)`, `DLPNO-CCSD(T1)`) → emit
+  `<basis>/C <Coulomb-aux> RIJCOSX`. `<Coulomb-aux>` follows Rule 2 (def2 → `def2/J`, else nothing
+  because — see below — the `/C` also falls away for non-def2).
+- **Canonical** (`MP2`, `CCSD`, `CCSD(T)`) → emit **no aux at all**. A spurious `/C RIJCOSX` on a
+  canonical method is a *different, RI-approximated* calculation, not the one requested.
+
+Only the **def2** family has a probed native `/C`, so the builder emits `<basis>/C` **for def2
+only**; every non-def2 basis (Dunning, Pople) falls back to bare **`AutoAux`** (covers J+C
+together) — consistent with Rule 2's non-def2 path and guaranteed valid.
+
+```
+! DLPNO-CCSD(T) def2-TZVP def2-TZVP/C def2/J RIJCOSX TightSCF   ← measured (ORCA 6.1, HCN SP)
+! CCSD(T)       def2-TZVP TightSCF                              ← canonical: NO aux chain
+! DLPNO-CCSD(T) cc-pVTZ AutoAux RIJCOSX                         ← non-def2 → bare AutoAux
+```
+
+No dispersion keyword ever joins a wavefunction line. The tighter Dunning form
+(`cc-pVTZ/C def2/J RIJCOSX`) is a deliberate future refinement pending its own probe — see
+`wiki/orca/correlated-methods.md`.
 
 ### Rule 3 — Canonical keyword order (for readability)
 ORCA is order-insensitive, but the builder emits a fixed order so the line reads consistently:

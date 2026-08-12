@@ -199,6 +199,113 @@ describe("buildKeywordLine", () => {
     expect(tokens).not.toContain("RIJCOSX");
     expect(tokens).not.toContain("D4");
   });
+
+  // DLPNO/RI WF with a native-/C basis → the measured chain `<basis> <basis>/C
+  // <Coulomb-aux> RIJCOSX`. BITE: proves the /C + /J + RIJCOSX chain is emitted
+  // for an RI/DLPNO method (canonical would emit none of it).
+  it("dlpno_ccsdt_def2_emits_c_j_rijcosx", () => {
+    const line = buildKeywordLine(
+      state({
+        methodFamily: "wavefunction",
+        wavefunction: "DLPNO-CCSD(T)",
+        basis: "def2-TZVP",
+        jobType: "",
+        scfConv: "",
+      }),
+    );
+    expect(line).toContain("def2-TZVP def2-TZVP/C def2/J RIJCOSX");
+  });
+
+  // Canonical CCSD(T) → method + basis ONLY, no aux chain. BITE: a blanket
+  // "correlated → add /C" impl would emit a spurious /C+RIJCOSX here, running a
+  // different (wrong) calculation.
+  it("canonical_ccsdt_emits_no_aux", () => {
+    const line = buildKeywordLine(
+      state({
+        methodFamily: "wavefunction",
+        wavefunction: "CCSD(T)",
+        basis: "def2-TZVP",
+        jobType: "",
+        scfConv: "",
+      }),
+    );
+    expect(line).not.toContain("/C");
+    expect(line).not.toContain("def2/J");
+    expect(line).not.toContain("RIJCOSX");
+    expect(line).not.toContain("AutoAux");
+  });
+
+  // DLPNO WF with a Pople basis (no native /C) → bare AutoAux (covers J+C).
+  // BITE: the no-native-/C fallback; a `${basis}/C` emitted for 6-31G* is wrong.
+  it("dlpno_with_pople_falls_back_to_autoaux", () => {
+    const line = buildKeywordLine(
+      state({
+        methodFamily: "wavefunction",
+        wavefunction: "DLPNO-CCSD(T)",
+        basis: "6-31G*",
+        jobType: "",
+        scfConv: "",
+      }),
+    );
+    expect(line).toContain("AutoAux");
+    expect(line).toContain("RIJCOSX");
+    expect(line).not.toContain("6-31G*/C");
+  });
+
+  // WF is NOT xtb — it keeps the solvation + SCFConv tail (C-PCM/CCSD exists,
+  // and post-HF NEEDS a tight SCF). BITE: proves the xtb tail-suppression does
+  // not sweep up the wavefunction family. Uses cc-pVTZ so it also pins the
+  // non-def2 aux form (bare AutoAux, no mixed `cc-pVTZ/C AutoAux`).
+  it("wf_keeps_solvation_and_scfconv", () => {
+    const line = buildKeywordLine(
+      state({
+        methodFamily: "wavefunction",
+        wavefunction: "RI-MP2",
+        basis: "cc-pVTZ",
+        solvationModel: "SMD",
+        solvent: "water",
+        scfConv: "TightSCF",
+        jobType: "",
+      }),
+    );
+    expect(line).toContain("cc-pVTZ AutoAux RIJCOSX");
+    expect(line).not.toContain("cc-pVTZ/C");
+    expect(line).toContain("SMD(water)");
+    expect(line).toContain("TightSCF");
+  });
+
+  // Dunning (cc-*/aug-cc-*) under DLPNO uses bare AutoAux — the SAME non-def2
+  // path as Pople — NOT the unmeasured mixed `<basis>/C AutoAux` form (kept
+  // consistent with N1a's auxBasisFor). BITE: an over-eager cc-* /C emit fails.
+  it("dlpno_dunning_uses_autoaux_not_explicit_C", () => {
+    const line = buildKeywordLine(
+      state({
+        methodFamily: "wavefunction",
+        wavefunction: "DLPNO-CCSD(T)",
+        basis: "cc-pVTZ",
+        jobType: "",
+        scfConv: "",
+      }),
+    );
+    expect(line).toContain("AutoAux");
+    expect(line).not.toContain("cc-pVTZ/C");
+  });
+
+  // No WF line ever carries a dispersion keyword — the correlation IS the
+  // dispersion. BITE: a D4 set in the state must not leak onto a WF line.
+  it("wf_emits_no_dispersion", () => {
+    const line = buildKeywordLine(
+      state({
+        methodFamily: "wavefunction",
+        wavefunction: "DLPNO-CCSD(T)",
+        basis: "def2-TZVP",
+        dispersion: "D4",
+        jobType: "",
+        scfConv: "",
+      }),
+    );
+    expect(line.split(/\s+/)).not.toContain("D4");
+  });
 });
 
 describe("buildOrcaInput", () => {
