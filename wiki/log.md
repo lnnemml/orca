@@ -7821,3 +7821,53 @@ events + `crest_path` setting beside `xtb:*`/`xtb_path`), ROADMAP (F1b [x]; F1c/
 → `intended_charge -1` in the payload; m3 (neg) `crest_path` at a missing binary → `crest:error` with a
 readable message, window responsive; m4 cancel mid-run → stops, slot frees (a second run starts clean).
 **Next:** F1c (the setup form + solvent-monomer library + result panel — the first frontend of Stage F).
+
+## [2026-08-12] session | Microsolvation setup + transient cluster panel with charge-aware seed warning (Stage F F1c)
+
+**Scope: one unit (F1c), the first Stage-F frontend.** The CREST microsolvation setup form + solvent
+library + transient result panel — consumer of `crest:done`/`crest:error`. It RUNS a QCG grow from the
+current scene and DISPLAYS the grown cluster with an honest, always-on charge-aware seed warning. Out of
+scope (NOT built): the "Create ORCA re-opt job" accept action + its migration + buildReopt reuse (F2 —
+the persistence point); any jobs row; the ensemble path (deferred); solvents beyond water+methanol.
+
+**Two footguns the panel is built around (both reviewer-flagged, both honoured).** (1) **Charge from the
+SCENE, never a silent 0** (ADR-014): `opts.charge = totalCharge(scene)` — the same discipline the xtb
+pre-opt uses; the panel only renders under a live scene. (2) **The seed is not the answer:**
+`seed_energy_eh` is labelled "xtb-ALPB seed energy (not solvated)", and the `crestSeedNote` banner ALWAYS
+renders — and it reads **CREST's OWN parsed `result.intended_charge`** (from crest.out, what actually
+ran), not the form value, so it reflects what CREST did (a free cross-check against the footgun; falls
+back to the launched scene charge only if that line was unreadable).
+
+**Part A — pure core (`src/crest/`, reviewed, approved — no changes).** `solvents.ts` — `SOLVENT_LIBRARY`
+= exactly the two probed solvents (water, methanol), each with the ALPB name CREST accepts + the **exact
+probed monomer geometry** (rung0 `water.xyz`, rung1 `methanol.xyz`, verbatim; extensible only after a
+rule-#10 run). `seed-note.ts` — `crestSeedNote(intendedCharge)`: nonzero → severity `warning` (grown
+NEUTRAL, wrong species, geometry-seed-only, refine at charge C with SMD); zero → severity `note` (coarse
+xtb-ALPB seed, refine in SMD). Bites: `seed_note_warns_for_nonzero_charge`, `seed_note_is_coarse_for_neutral`,
+`solvent_library_has_water_and_methanol_with_alpb_names`.
+
+**Part B — panel + wiring.** `crest-progress.ts` (`formatCrestProgress(elapsed)` — the elapsed-only
+sibling of `formatXtbProgress`; CREST prints no cycle counter). `CrestPanel.tsx` mounted in
+`NewJobScreen`'s **Actions dock** beside the xtb pre-opt: solvent `<select>` + `nsolv` (default 3) +
+read-only scene charge + auto `-fixsolute` (water → `-nofix`, else `-fixsolute` — matches the probe);
+"Grow" → `crest_grow({ soluteXyz: mergeToXyz(scene), solventXyz, opts:{ solvent_name, nsolv, charge:
+totalCharge(scene), uhf: mult−1, fix_solute, threads }})`; "Cancel" → `crest_cancel`. Event handling
+mirrors xtb (`listen` `crest:done`/`crest:error`; a live elapsed ticker). On done: the transient panel —
+`<MoleculeViewer>` of the cluster (canonical `frameToXyz`, no second formatter), the atom count,
+`seed_energy_eh` labelled "not solvated", the growth table, and the ALWAYS-on `crestSeedNote` banner
+(severity styles it). On error: message + kept-dir (mirrors the xtb error panel). A **disabled "Refine in
+ORCA (next)"** placeholder marks the F2 accept point — nothing is committed to the scene, nothing
+persisted.
+
+**Verification.** tsc clean; vitest **858 (+3** Part A bites; Part B is UI — no new unit test, same as the
+xtb panel, manual-gated**)**; **cargo/pytest untouched** (no Rust/Python this unit — state so). Wiki:
+`modules/crest-microsolvation.md` (the F1c form + two-solvent library + transient panel + the always-on
+charge-aware note + the scene-charge/CREST-parsed-charge cross-check + the F2 placeholder),
+`modules/editor-ui.md` (the Actions-dock mount), ROADMAP (F1c [x]; F2 = the ORCA re-opt/persistence next),
+index.md.
+
+**Author manual gate pending (live window):** m1 a NEUTRAL scene + methanol + nsolv 3 → Grow → progress →
+done → cluster viewer + the "coarse seed" NOTE; m2 an ANION scene (charge −1) → done → the STRONG
+"geometry seed only — grown neutral, refine at −1 with SMD" WARNING; m3 (neg) crest binary missing →
+`crest:error` panel, window responsive; m4 cancel mid-grow → stops, panel resets. **Next:** F2 — the ORCA
+re-opt handoff (the persistence point: seed cluster → an ORCA `Opt` at the correct charge + SMD).

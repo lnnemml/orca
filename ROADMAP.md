@@ -1061,7 +1061,15 @@ r1–r4 manual gates. Next per the ratified reorder: CREST probe → Stage D →
         (default `/opt/crest/crest`, never bundled). K3: no jobs row, no persistence. +5 cargo bites
         (arg-vector invariants + the real `qcg_energy.dat`). Links F1a → the module `#![allow(dead_code)]`
         is gone.
-      - [ ] **F1c — persistent CREST job record + migration + setup form.**
+      - [x] **F1c — the setup form + solvent library + transient panel** (2026-08-12). `src/crest/`:
+        `SOLVENT_LIBRARY` (the two probed monomers water/methanol, verbatim geometries),
+        `crestSeedNote(intendedCharge)` (ALWAYS-on charge-aware label — nonzero → a loud "grown-neutral,
+        seed only, refine at charge C with SMD" warning; neutral → a coarse-seed note), `CrestPanel.tsx`
+        (mounted in NewJobScreen's Actions dock beside the xtb pre-opt): solvent select + nsolv +
+        **scene-derived charge (ADR-014, no silent 0)** + auto `-fixsolute`, `crest_grow`/`crest_cancel`,
+        the transient cluster viewer + growth table + the seed banner reading CREST's OWN parsed
+        `intended_charge`. **No persistence** — a disabled "Refine in ORCA (next)" marks the F2 accept
+        action. +3 vitest bites. (NOT a persistent job/migration — that reframing is F2, below.)
       - [ ] **F2 — the ORCA re-opt handoff** (seed cluster → an ORCA `Opt` at the correct charge + SMD).
       - **Deferred:** the `-ensemble` path (segfaults at v3.0.2) and QCG **quasi-RRHO** thermochemistry
         (soft on the floppy shell). Still the lowest immediate mission priority — after E, or on demand.

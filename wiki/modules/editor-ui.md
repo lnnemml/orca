@@ -121,7 +121,9 @@ page records the **layout principle and where future panels go** — not the cur
   toggle + `RotatePanel`) · Fragments (the Add-Fragment palette — reagents / import / SMILES / **Paste xyz** / library —
   **plus** the guided `GuidedPlacementPanel` when a reagent is being placed, **plus** `FragmentList`) ·
   Constraints (`ConstraintPanel`) · **Scan** (`ScanPanel`, Phase 4.5 A2) · History (`HistoryPanel`) · Actions (xTB
-  pre-optimize).
+  pre-optimize **+ the CREST/QCG microsolvation panel** `crest/CrestPanel.tsx`, Stage F F1c — both
+  scene-operating helpers; the CREST panel runs a QCG grow from the scene and shows the grown cluster with
+  an always-on charge-aware seed warning, `modules/crest-microsolvation.md`).
 - **Scan (`ScanPanel`, Stage A2)** — sibling of Constraints, same **view-over-text** discipline
   (source = `inspectScanBlock(content)`, edits = `injectScan`; no scan state of its own). Renders
   absent / parsed (editable start/end/npoints + remove) / unrecognised, and surfaces the `! Opt`

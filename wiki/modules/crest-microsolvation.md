@@ -27,7 +27,7 @@ never the solvated answer. This framing is why the reader names the field `seed_
 |---|---|---|
 | **F1a** | **grow PARSE + COMPLETION** — `crest.rs`: classify a run, read the grown cluster (geometry + seed energy + intended charge) from a real `grow/` dir | **done (2026-08-12)** |
 | **F1b** | the **ephemeral runner** — spawn CREST/QCG grow off-thread, parse, emit events (mirrors `XtbRunner`); the arg vector + `qcg_energy.dat` growth-table parse (display) | **done (2026-08-12)** |
-| F1c | the persistent CREST **job record + migration + setup form** | pending |
+| **F1c** | the **setup form + solvent library + transient result panel** (the first Stage-F frontend; consumes `crest:done`/`crest:error`) | **done (2026-08-12)** |
 | F2 | the **ORCA re-opt handoff** — the seed cluster → an ORCA `Opt` at the correct charge + SMD | pending |
 | — | the **ensemble** path (`-ensemble`) and QCG **quasi-RRHO thermo** | **deferred** (ensemble segfaults at v3.0.2; thermo is soft on the floppy shell) |
 
@@ -100,7 +100,38 @@ freezes the GTK/WebKit window AND blocks cancel).
   path, **never bundled** (rule #7); reuses `xtb`'s `resolve_binary` `$PATH` resolver (one home).
 
 Events: **`crest:done`** / **`crest:error`** on the frontend event bus, beside `xtb:*` (`tauri-core.md`).
-No frontend consumes them yet — that is F1c (the setup form + solvent-monomer library + result panel).
+
+## F1c — the setup form + solvent library + transient panel (`src/crest/`)
+
+The first Stage-F frontend — it RUNS a grow from the current scene and DISPLAYS the cluster; it does
+**not** persist anything (F2 is the accept action). Mounted in **`NewJobScreen`'s Actions dock**, below
+the xtb pre-opt (`modules/editor-ui.md`) — both are scene-operating helpers.
+
+- **`solvents.ts`** — `SOLVENT_LIBRARY`: exactly the **two probed** solvents (water, methanol), each with
+  the ALPB name CREST accepts and the **exact probed monomer geometry** (rung0 `water.xyz`, rung1
+  `methanol.xyz` — not re-invented). Extensible, but every new `alpbName` must be **run once** first
+  (rule #10) — a name CREST rejects is a "terminated normally, wrong chemistry" trap.
+- **`seed-note.ts`** — `crestSeedNote(intendedCharge)`: the **ALWAYS-on**, charge-aware label. Nonzero
+  charge → a **`warning`** (QCG grew the cluster NEUTRAL, so its energy is the neutral species' — a
+  GEOMETRY SEED only; refine in ORCA at the real charge with SMD). Neutral → a **`note`** (still a coarse
+  xtb-ALPB seed; refine in SMD). Pure; bites `seed_note_warns_for_nonzero_charge` /
+  `seed_note_is_coarse_for_neutral`.
+- **`CrestPanel.tsx`** — solvent `<select>` + `nsolv` (default 3) + a **read-only charge from the scene**
+  (`totalCharge(scene)`, ADR-014 — **never a silent 0**, the same discipline as the xtb pre-opt; the
+  panel only renders when a scene exists). `-fixsolute` is **auto** (water → `-nofix`, else `-fixsolute` —
+  matches the probe), not a user control. "Grow" → `crest_grow({ soluteXyz: mergeToXyz(scene), solventXyz:
+  <library xyz>, opts: { solvent_name, nsolv, charge: totalCharge(scene), uhf: mult−1, fix_solute,
+  threads } })`; "Cancel" → `crest_cancel`. Mirrors the xtb event handling (`listen` `crest:done`/
+  `crest:error`; a live **elapsed** ticker `formatCrestProgress` — no cycle counter, CREST prints none).
+- **The transient result** (on `crest:done`): a `<MoleculeViewer>` of the grown cluster (built from
+  `result.cluster` via the canonical `frameToXyz`), the atom count, `seed_energy_eh` labelled **"xtb-ALPB
+  seed energy (not solvated)"**, the `qcg_energy.dat` growth table, and — ALWAYS — the
+  `crestSeedNote(result.intended_charge)` banner. **The banner reads CREST's OWN parsed charge**
+  (`result.intended_charge` from `crest.out`, what actually ran) — falling back to the launched scene
+  charge only if that line was unreadable — so it reflects what CREST did, a free cross-check against the
+  footgun. On `crest:error`: the message + kept-dir path (mirrors the xtb error panel). **Nothing is
+  committed to the scene.** A **disabled "Refine in ORCA (next)"** button marks where F2's accept action
+  (the persisted ORCA re-opt) will go.
 
 ## See also
 

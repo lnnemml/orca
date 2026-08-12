@@ -9,6 +9,7 @@ import { importStructureFile, IMPORT_ACCEPT } from "../viewer/import-file";
 import { InputBuilderForm } from "../input-builder/InputBuilderForm";
 import type { NebPayload } from "../reactions/NebBuilderSection";
 import { hasNebKeyword } from "../scene/neb";
+import { CrestPanel } from "../crest/CrestPanel";
 import { useSceneStore } from "../scene/store";
 import { FragmentList } from "../scene/FragmentList";
 import { HistoryPanel } from "../scene/HistoryPanel";
@@ -1838,6 +1839,7 @@ export function NewJobScreen({
       short: "Act",
       glyph: "▶",
       body: scene ? (
+        <>
         <div className="xtb-panel">
           <div className="xtb-row">
             <button
@@ -1884,6 +1886,8 @@ export function NewJobScreen({
             </div>
           ) : null}
         </div>
+        <CrestPanel scene={scene} />
+        </>
       ) : null,
     },
   ];
