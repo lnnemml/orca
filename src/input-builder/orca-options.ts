@@ -34,6 +34,7 @@ export const JOB_TYPES: OrcaOption[] = [
   { keyword: "Opt Freq", label: "Opt + Freq" },
   { keyword: "OptTS Freq", label: "Transition State + Freq" },
   { keyword: "NumFreq", label: "Numerical Frequencies" },
+  { keyword: "NEB-TS", label: "NEB-TS (reactant + product → saddle)" },
 ];
 
 /**

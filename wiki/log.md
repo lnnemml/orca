@@ -7583,3 +7583,53 @@ controls are absent (hidden — RI is implied by the method); **Solvation/Solven
 def2/J RIJCOSX <jobtype> …`; m2 canonical CCSD(T)+def2-TZVP → `! CCSD(T) def2-TZVP …` no /C/RIJCOSX;
 m3 (neg) DLPNO-CCSD(T)+6-31G* → `AutoAux RIJCOSX`, no `6-31G*/C`; m4 RI-MP2+SMD(water)+TightSCF → both
 present. **Next:** N2 (NEB job type in the builder).
+
+## [2026-08-12] session | NEB-TS creation moves INTO the Input Builder — pick endpoints, review input, deferred run (N2)
+
+**Scope: one unit (N2).** NEB-TS creation moved from the standalone `NebSetupPanel` into the Input
+Builder: job type NEB-TS reveals reactant/product pickers, Generate builds the NEB input (+ product.xyz)
+INTO the editor for review/edit, and the standard Create / Create & Run creates it via `create_neb_job`
+(DEFERRED — Generate never submits). The builder's method/basis/family drives the NEB level (so NEB runs
+on GFN2-xTB from DFT endpoints). Out of scope (untouched): NEB result parsing / MEP / band viewer (N3);
+compare view (N4); the Rust `create_neb_job` (reused as-is); OptTS/connectivity result-derived actions.
+
+**Two load-bearing invariants preserved (the review's checkpoints).** (1) The **charge footgun** —
+`buildNebInput` parses (charge, mult) from the REACTANT input's `* xyz`, never the builder's charge
+field, never 0; a −1 reactant emits `* xyz -1`. (2) The **same-order guard** still throws on an
+element-order/count mismatch (surfaced as an honest refusal, no generation).
+
+**Part A — pure core (`src/scene/neb.ts`, reviewed; one dofor applied).** New signature
+`buildNebInput(state, reactantInput, reactantGeom, productGeom, options?)` — the METHOD now comes from
+the builder's `BuilderState` (family-aware `buildOrcaInput` at `{ ...state, jobType: "NEB-TS", charge,
+multiplicity }`), NOT inherited from the reactant's `!` line (dropped `methodSolvationKeywords` +
+`options.method/solvation`). This is the NEB-on-xtb point. **Dofor:** the `%neb` splice re-anchored on the
+family-independent `* xyz` block (was `%maxcore` — a self-contained family that omits `%` directives must
+not silently lose `%neb`); a bite in `neb_line_uses_builder_method_not_reactant` asserts `%neb` +
+`NEB_End_XYZFile` survive the xtb emit and precede `* xyz`. +`hasNebKeyword(content)` (any `!` line
+carries a NEB token — mirrors Rust `input_has_neb`). Tests migrated to the new signature; new bites
+`neb_line_uses_builder_method_not_reactant`, `neb_xtb_line_has_no_solvation_or_scfconv`,
+`neb_charge_mult_from_reactant_not_builder`, `neb_same_order_guard_still_throws`, `hasNebKeyword`.
+
+**Part B — wiring.** `orca-options.ts`: +`{ keyword: "NEB-TS" }` in JOB_TYPES. New
+`reactions/NebBuilderSection.tsx` (adapted from NebSetupPanel — picker + async get_job/read_job_results
++ honest refusal, but **generate-into-editor, no submit**; exports `NebPayload`). `InputBuilderForm.tsx`:
+`onGenerate` contract extended to `(content, neb?: NebPayload)`; when jobType === "NEB-TS" it renders
+`NebBuilderSection` instead of the scene-based Generate (method/basis controls above still set the level).
+`NewJobScreen.tsx`: `pendingNeb` state; `handleGenerate(content, neb?)` sets it AFTER `adoptWholeInput`
+(which CLEARS it — so any non-NEB buffer replace drops a stale payload); `create()` routes to
+`create_neb_job` iff `pendingNeb && hasNebKeyword(content)`, else the ordinary `create_job`, then the
+same deferred-run branch (run ? onOpenDetail(id,true) : onCreatedDraft()). **`NebSetupPanel` deleted**
+(import + mount + file; grep → 0 references).
+
+**Verification.** tsc clean; vitest **844 passed (+2 net** in neb.test.ts: 5 new bites − 3 removed
+inherit tests + the hasNebKeyword describe**)**; **cargo + sidecar untouched** (no Rust/sidecar change —
+`create_neb_job` reused). Wiki: `orca/neb.md` (creation-in-builder note + method-drives-level),
+`modules/scene.md` (new signature + hasNebKeyword + the `* xyz` anchor), `modules/reactions-ui.md`
+(NebSetupPanel → NebBuilderSection, IA note updated), `index.md`, ROADMAP (N2 [x], N3 next).
+
+**Author manual gate pending:** m1 job type NEB-TS → reactant/product pickers appear in the builder,
+scene-Generate replaced by "Generate NEB input"; m2 two parsed minima + GFN2-xTB → Generate → editor
+shows `! XTB NEB-TS` + `%neb …` + reactant `* xyz` (NO run), edit NImages, Create & Run → runs + parses
+(band appears); m3 (neg) −1 reactant → emitted `* xyz` carries -1; m4 (neg) different atom order →
+honest refusal, no job. **Next:** N3 (NEB result parsing/viewer — likely already landed in E3a-2; verify
+then N4 compare view).

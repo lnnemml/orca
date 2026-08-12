@@ -1190,10 +1190,17 @@ behaviour is involved, rule #10).
       refinement `cc-*/C def2/J` pending its own probe). WF keeps the solvation+SCF tail (not xtb). Form
       gains a 4th family (Dispersion/RI hidden, solvation/SCF kept). +6 bite tests.
       `wiki/orca/correlated-methods.md`. **N-series → N2 next.**
-- [ ] **N2 — NEB job type in the builder** (NEB-TS entry in `JOB_TYPES` + the band setup) — the
-      builder-side complement to Phase 4.5 Stage E3a's `NebSetupPanel`. **Next in the N-series.**
+- [x] **N2 — NEB-TS creation in the builder** (2026-08-12). Job type **NEB-TS** in `JOB_TYPES` reveals
+      a reactant/product picker (`reactions/NebBuilderSection.tsx`); **Generate builds the `.inp` +
+      `product.xyz` INTO the editor** for review/edit; the ordinary Create / Create & Run then routes to
+      `create_neb_job` (**deferred run** — Generate never submits), gated `pendingNeb && hasNebKeyword`.
+      `buildNebInput` now takes a **`BuilderState`** — the builder's method/basis drives the NEB level
+      (**NEB-on-xtb** from DFT endpoints), charge/mult still inherited from the reactant (the footgun);
+      `%neb` splice re-anchored on the family-independent `* xyz`; +`hasNebKeyword`. The old
+      `NebSetupPanel` (immediate-submit New-Job section) is retired. No Rust change (reuses
+      `create_neb_job`). **N-series → N3 next.**
 - [ ] **N3 — NEB result parsing/viewer** and **N4 — compare view** — track with the existing
-      "Job comparison view" item above.
+      "Job comparison view" item above. **N3 is next in the N-series.**
 
 ---
 

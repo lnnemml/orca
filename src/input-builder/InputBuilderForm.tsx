@@ -24,12 +24,17 @@ import {
   type BuilderState,
   type MethodFamily,
 } from "./build-input";
+import { NebBuilderSection, type NebPayload } from "../reactions/NebBuilderSection";
 
 interface InputBuilderFormProps {
   /** Current editor content — the coordinate block is preserved. */
   currentContent: string;
-  /** Called with the regenerated input when the user applies the form. */
-  onGenerate: (newContent: string) => void;
+  /**
+   * Called with the regenerated input when the user applies the form. For a NEB-TS
+   * job the second arg carries the product.xyz + the two source job ids (the NEB path
+   * builds from picked endpoints, not the scene); undefined for every other job type.
+   */
+  onGenerate: (content: string, neb?: NebPayload) => void;
 }
 
 /** A labelled `<select>` over a list of {@link OrcaOption}s. */
@@ -380,13 +385,22 @@ export function InputBuilderForm({
         </div>
       )}
 
-      {/* Row 5: generate + live preview of the ! line */}
-      <div className="builder-row builder-actions">
-        <button className="btn btn-primary" onClick={generate}>
-          Generate Input
-        </button>
-        <code className="builder-preview mono">! {buildKeywordLine(state)}</code>
-      </div>
+      {/* Row 5: generate + live preview of the ! line. NEB-TS builds from picked
+          endpoints (not the scene), so its "Generate" is the NebBuilderSection; the
+          method/basis controls above still set the NEB level (the `!` preview shows it). */}
+      {state.jobType === "NEB-TS" ? (
+        <NebBuilderSection
+          state={state}
+          onGenerateNeb={(inp, payload) => onGenerate(inp, payload)}
+        />
+      ) : (
+        <div className="builder-row builder-actions">
+          <button className="btn btn-primary" onClick={generate}>
+            Generate Input
+          </button>
+          <code className="builder-preview mono">! {buildKeywordLine(state)}</code>
+        </div>
+      )}
     </div>
   );
 }

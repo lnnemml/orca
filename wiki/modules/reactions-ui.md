@@ -251,18 +251,27 @@ construction. A scan/SP/minimum (no `.hess`, or `imaginary_count ≠ 1`) never s
   `wiki/orca/connectivity.md`. Validated on the real MeNH₂+EtI TS (forward → product, backward →
   reactant). Manual gate m1–m3 pending.
 
-## NEB-TS creation lives on New Job (Stage E3a-1) — the IA principle
+## NEB-TS creation lives in the Input Builder (N2) — the IA principle
 
-`NebSetupPanel` (pick a reactant job + a product job → `buildNebInput` → `create_neb_job`) lives on
-the **New Job screen** as a labelled, **expanded** section (not a collapsed `<details>`), NOT on the
-Jobs list where it first landed. The information-architecture rule (Anton's, recorded so it isn't
-relitigated): **New Job is where jobs are CREATED**, so a create path belongs there — including one
-that combines two *existing* jobs into a new one. By contrast **OptTS-refine / connectivity / (later)
-IRC are result-derived actions**: each depends on a specific *computed* job and its parsed results, so
-each stays on that job's Results (`ResultsCard` / `ScanProfilePanel`). The dividing line is "does this
-action need a specific job's results?" — if yes it lives on the results; if it only *creates* a job it
-lives on New Job. The same-order refusal (`buildNebInput` throws on an atom-order mismatch) surfaces as
-an honest banner in the panel, so no mismatched NEB job is ever created.
+NEB creation is a job type in the **Input Builder**: picking job type **NEB-TS** swaps the builder's
+scene-based "Generate Input" for `NebBuilderSection` (`reactions/NebBuilderSection.tsx`) — pick a
+reactant job + a product job → `buildNebInput(state, …)` → **generate the `.inp` (+ product.xyz) INTO
+the editor** for review/edit. It does **not** submit; the ordinary **Create / Create & Run** then
+routes to `create_neb_job` (deferred run), gated by `pendingNeb && hasNebKeyword(content)` so a stale
+payload after a buffer replace can never create a NEB job. This **supersedes** the retired
+`NebSetupPanel` (which lived as its own New-Job section and submitted immediately).
+
+Why the builder, not a separate panel: the builder's **method/basis/family drives the NEB level**, so
+NEB runs at whatever the user picked — including **GFN2-xTB from DFT-optimized endpoints** — instead of
+inheriting the reactant's method. Charge/multiplicity still come from the reactant input (the footgun,
+in `buildNebInput`). The information-architecture rule still holds: **New Job / the builder is where
+jobs are CREATED**, so a create path that combines two *existing* jobs belongs there. By contrast
+**OptTS-refine / connectivity / (later) IRC are result-derived actions** — each depends on a specific
+*computed* job's parsed results, so each stays on that job's Results (`ResultsCard` / `ScanProfilePanel`).
+The dividing line is "does this action need a specific job's results?" — if yes it lives on the results;
+if it only *creates* a job it lives in the builder. The same-order refusal (`buildNebInput` throws on an
+atom-order mismatch) surfaces as an honest banner in the section, so no mismatched NEB job is ever
+generated.
 
 ## NEB band viewer + Refine-with-OptTS — closing NEB → located TS → ΔG‡ (Stage E3a-2)
 

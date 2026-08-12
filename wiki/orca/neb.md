@@ -48,10 +48,28 @@ end
   N–C + break C–I → `Opt` relaxes to the known product (N–C ≈ 1.51, C–I ≈ 4.12), and NEB(reactant,
   derived product) is accepted. **Nothing new is stored** to link them — the order invariant is the
   only guard (no lineage column, no stored connectivity).
-- Method + solvation + charge **inherited from the reactant** verbatim (comparability + the
-  charge footgun), exactly as `buildOptTSInput` inherits them. **Multi-line `%neb` block** —
-  the exact form the converging run used; the single-line form is valid ORCA in principle
-  but UNMEASURED, so the app emits what was measured to work (rule #10).
+- **Charge + multiplicity** inherited from the reactant verbatim (the footgun), exactly as
+  `buildOptTSInput` inherits them. **Method + basis + solvation come from the Input Builder**
+  (the `BuilderState`), NOT from the reactant's `!` line — see the "Creation lives in the
+  builder" note below. **Multi-line `%neb` block** — the exact form the converging run used; the
+  single-line form is valid ORCA in principle but UNMEASURED, so the app emits what was measured
+  to work (rule #10).
+
+## Creation lives in the Input Builder (N2) — the method drives the NEB level
+
+NEB-TS is a **job type in the Input Builder**: pick job type *NEB-TS* → the builder shows a
+reactant/product picker (`reactions/NebBuilderSection.tsx`) → *Generate NEB input* builds the `.inp`
+(+ `product.xyz`) **into the editor** for review; the ordinary *Create / Create & Run* then creates
+it via `create_neb_job` (**deferred run** — Generate never submits). This replaced the earlier
+`NebSetupPanel` (a New-Job section that submitted immediately, Stage E3a-1).
+
+The load-bearing change: `buildNebInput(state, reactantInput, …)` takes a **`BuilderState`**, so the
+**method/basis/family the user picked drives the NEB level** — e.g. `! XTB NEB-TS` runs GFN2-xTB NEB
+from DFT-optimized endpoints (fast path-finding, then refine the climbing image at DFT). The reactant's
+own `!` line no longer leaks into the NEB (a plain `Opt` reactant no longer forces the NEB to r2SCAN-3c).
+Charge/multiplicity still come from the reactant (the footgun is unchanged). The `%neb` splice anchors
+on the family-independent `* xyz` block — a self-contained family (xtb) that emitted no `%maxcore` could
+otherwise lose the `%neb` block.
 
 ## The result (measured) — it recovered the KNOWN saddle
 
