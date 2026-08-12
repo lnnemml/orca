@@ -91,18 +91,74 @@ export const FUNCTIONAL_GROUPS: { label: string; options: OrcaOption[] }[] = [
   },
 ];
 
-export const BASIS_SETS: OrcaOption[] = [
-  { keyword: "def2-SVP", label: "def2-SVP", description: "Small, fast. Screening only." },
-  { keyword: "def2-TZVP", label: "def2-TZVP", description: "Standard workhorse. Recommended." },
-  { keyword: "def2-TZVPP", label: "def2-TZVPP", description: "Larger, for accurate energies" },
-  { keyword: "def2-QZVPP", label: "def2-QZVPP", description: "Near basis-set limit, expensive" },
+/**
+ * Semi-empirical tight-binding methods. `! XTB` on ORCA 6.1 = **GFN2-xTB**
+ * (measured — see `wiki/orca/xtb-method.md`), run via ORCA's bundled
+ * `otool_xtb`. Self-contained: NO basis, dispersion, RI, or SCFConv — the
+ * emit must carry the method keyword + job type ONLY. GFN1/GFN0/GFN-FF are
+ * unverified and deliberately NOT offered here.
+ */
+export const XTB_METHODS: OrcaOption[] = [
   {
-    keyword: "def2-TZVPD",
-    label: "def2-TZVPD",
-    description: "With diffuse functions (anions, excited states)",
+    keyword: "XTB",
+    label: "GFN2-xTB",
+    description: "Semi-empirical tight-binding. Very fast — geometry/TS screening.",
   },
-  { keyword: "def2-SVPD", label: "def2-SVPD", description: "Small with diffuse" },
 ];
+
+/**
+ * Orbital basis sets, grouped by family (mirrors {@link FUNCTIONAL_GROUPS}).
+ * The form renders these as `<optgroup>`s. Aux-basis pairing lives in
+ * `build-input.ts`: def2-* → `def2/J`|`def2/JK`; anything else under RI →
+ * ORCA's general `AutoAux`.
+ */
+export const BASIS_GROUPS: { label: string; options: OrcaOption[] }[] = [
+  {
+    label: "Karlsruhe def2",
+    options: [
+      { keyword: "def2-SVP", label: "def2-SVP", description: "Small, fast. Screening only." },
+      { keyword: "def2-TZVP", label: "def2-TZVP", description: "Standard workhorse. Recommended." },
+      { keyword: "def2-TZVPP", label: "def2-TZVPP", description: "Larger, for accurate energies" },
+      { keyword: "def2-QZVPP", label: "def2-QZVPP", description: "Near basis-set limit, expensive" },
+      {
+        keyword: "def2-TZVPD",
+        label: "def2-TZVPD",
+        description: "With diffuse functions (anions, excited states)",
+      },
+      { keyword: "def2-SVPD", label: "def2-SVPD", description: "Small with diffuse" },
+      { keyword: "ma-def2-SVP", label: "ma-def2-SVP", description: "Minimally augmented (diffuse)" },
+      { keyword: "ma-def2-TZVP", label: "ma-def2-TZVP", description: "Minimally augmented triple-ζ" },
+      { keyword: "ma-def2-TZVPP", label: "ma-def2-TZVPP", description: "Minimally augmented, larger" },
+    ],
+  },
+  {
+    label: "Dunning",
+    options: [
+      { keyword: "cc-pVDZ", label: "cc-pVDZ", description: "Correlation-consistent double-ζ" },
+      { keyword: "cc-pVTZ", label: "cc-pVTZ", description: "Correlation-consistent triple-ζ" },
+      { keyword: "cc-pVQZ", label: "cc-pVQZ", description: "Correlation-consistent quadruple-ζ" },
+      { keyword: "aug-cc-pVDZ", label: "aug-cc-pVDZ", description: "Augmented (diffuse) double-ζ" },
+      { keyword: "aug-cc-pVTZ", label: "aug-cc-pVTZ", description: "Augmented (diffuse) triple-ζ" },
+      { keyword: "aug-cc-pVQZ", label: "aug-cc-pVQZ", description: "Augmented (diffuse) quadruple-ζ" },
+    ],
+  },
+  {
+    label: "Pople",
+    options: [
+      { keyword: "6-31G*", label: "6-31G*", description: "Legacy double-ζ, one polarization set" },
+      { keyword: "6-31G**", label: "6-31G**", description: "Legacy double-ζ, H polarization too" },
+      { keyword: "6-311G**", label: "6-311G**", description: "Legacy triple-ζ" },
+      { keyword: "6-311+G**", label: "6-311+G**", description: "Triple-ζ with diffuse on heavy" },
+      { keyword: "6-311++G**", label: "6-311++G**", description: "Triple-ζ with diffuse on all" },
+    ],
+  },
+];
+
+/**
+ * Flat list of every basis (concat of {@link BASIS_GROUPS}). Kept for importers
+ * that want a simple array; the FORM uses `BASIS_GROUPS` for its optgroups.
+ */
+export const BASIS_SETS: OrcaOption[] = BASIS_GROUPS.flatMap((g) => g.options);
 
 export const DISPERSION: OrcaOption[] = [
   { keyword: "", label: "None" },

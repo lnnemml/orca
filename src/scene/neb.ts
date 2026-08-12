@@ -137,7 +137,7 @@ export function buildNebInput(
   const nImages = options.nImages ?? DEFAULT_NIMAGES;
   const state: BuilderState = {
     ...DEFAULT_BUILDER_STATE,
-    useComposite: true,
+    methodFamily: "composite",
     composite: [method, solvation].filter((t) => t.length > 0).join(" "),
     jobType: "NEB-TS",
     solvationModel: "", // carried inside the composite slot, verbatim

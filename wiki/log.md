@@ -7491,3 +7491,46 @@ molecule moves to bonding distance, NO "not bonded" refusal; m2 toggle=Fragment 
 toggle=Selection with two atoms selected drags only those two; m3 toggle=Selection + broken bond → a
 piece drags its component (drag-fix intact); m4 (neg) a normal bonded torsion still edits via needs-split.
 **Next:** Stage F (CREST microsolvation).
+
+## [2026-08-12] session | Input builder method families (composite/DFT/xTB), grouped basis sets, GFN2-xTB (N1a)
+
+**Scope: one unit (N1a).** Replaced the builder's binary `useComposite` toggle with a **method
+family** selector, expanded the basis catalog, and added **GFN2-xTB** as a self-contained method.
+Out of scope (untouched): NEB-in-builder (N2), the correlated tier MP2/CCSD/DLPNO (N1b, probe-gated),
+NEB parsing/viewer (N3), compare view (N4), xtb solvation.
+
+**Probe facts first (rule #10, ORCA 6.1.0, +`wiki/orca/xtb-method.md`).** ORCA's internal `! XTB` =
+**GFN2-xTB** (output: "utilizes the semiempirical GFN2-xTB method"), run via the **bundled**
+`/opt/orca/otool_xtb` v6.7.1 — a DIFFERENT binary from the standalone xtb 6.6.1 of `xtb.md`. Two real
+NEB runs (HCN⇌HNC): `! XTB NEB-TS` produced the **same artifact set** as a DFT NEB (log/interp/
+`_MEP_trj.xyz` 10 frames `E <Eh>`/converged.xyz) — same formats, energy on the xtb scale (≈ −5.5 Eh).
+Gas phase only. **Only GFN2 verified** — GFN1/GFN0/GFN-FF NOT offered.
+
+**Part A — pure core (reviewed first, approved).** `orca-options.ts`: +`XTB_METHODS` (`XTB`=GFN2 only),
++`BASIS_GROUPS` (Karlsruhe def2 incl. `ma-def2-SVP/TZVP/TZVPP` / Dunning `cc-pV{D,T,Q}Z`+aug / Pople
+`6-31G*`…`6-311++G**`); flat `BASIS_SETS = flatMap` kept for importers. `build-input.ts`: +`MethodFamily`
+type; `BuilderState` `useComposite:boolean` → `methodFamily`, +`xtbMethod`; `auxBasisFor` non-def2+RI →
+**`AutoAux`** (def2→`def2/J`|`def2/JK` unchanged); `buildKeywordLine` branches per family — **xtb pushes
+the method keyword ONLY, and the solvation+scfConv tail is guarded off** (`methodFamily!=="xtb"`), jobType
+emitted for all. Engines `optts.ts`/`neb.ts`/`reopt.ts`: mechanical `useComposite:true` →
+`methodFamily:"composite"` (composite-slot semantics identical). **+4 bite tests**:
+`xtb_line_is_method_and_jobtype_only` (basis+SMD+TightSCF+RI+D4 set → line is exactly `XTB Opt` — the
+carrying bite), `non_def2_basis_with_ri_emits_autoaux` (`cc-pVTZ AutoAux RIJCOSX`),
+`def2_basis_with_ri_still_emits_def2J` (regression), `composite_still_self_contained` (regression).
+
+**Part B — form wiring (two review notes baked in).** `InputBuilderForm.tsx`: two-radio toggle →
+**3-way family selector** (Composite (3c) | Functional + Basis | GFN2-xTB); Row 2 per family — composite
+select / xtb `XTB_METHODS` select + muted "gas phase, self-contained" note / dft functional+basis
+(basis now `BASIS_GROUPS` optgroups)+disp+RI. **xtb DISABLES Solvation/Solvent/SCF** (title "Not
+applicable to semi-empirical xTB) — **disabled, not cleared**, so switching back to DFT restores the
+user's choice (note 1). Note 2 (Pople `**` render through the `!` preview) is an author manual-gate item.
+
+**Verification.** tsc clean; vitest **836 passed (+4)**; **cargo + sidecar untouched** (state so — no
+Rust/sidecar/command change). Wiki: +`orca/xtb-method.md`, updated `orca/input-format.md` (Rule 0 method
+families, Rule 2 non-def2→AutoAux, Rule 2b basis families), `index.md` (+page, count 93→94), ROADMAP
+(N-series subsection: N1a [x], N1b pending a DLPNO-CCSD(T) probe, N2/N3/N4 noted).
+
+**Author manual gate pending:** m1 pick GFN2-xTB → `! XTB <jobtype>` with no basis/solvation/SCFConv,
+Solvation/SCF controls disabled; m2 Functional+Basis + cc-pVTZ + RIJCOSX → `cc-pVTZ AutoAux RIJCOSX`;
+m3 (neg) composite r2SCAN-3c still bare, no basis/aux; + eyeball a Pople `**` basis in the live preview.
+**Next:** N1b (correlated tier) behind a DLPNO-CCSD(T) probe, or N2 (NEB in the builder).

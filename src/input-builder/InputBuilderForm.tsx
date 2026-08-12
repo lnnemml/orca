@@ -3,7 +3,7 @@ import { useMemo, useState } from "react";
 import { sceneFromOrcaInput, setMultiplicity, totalCharge } from "../scene/scene";
 import { checkElectronParity } from "../scene/parity";
 import {
-  BASIS_SETS,
+  BASIS_GROUPS,
   COMPOSITE_METHODS,
   DISPERSION,
   FUNCTIONAL_GROUPS,
@@ -12,6 +12,7 @@ import {
   SCF_CONV,
   SOLVATION_MODELS,
   SOLVENTS,
+  XTB_METHODS,
   type OrcaOption,
 } from "./orca-options";
 import {
@@ -20,6 +21,7 @@ import {
   DEFAULT_BUILDER_STATE,
   functionalHasBuiltInDispersion,
   type BuilderState,
+  type MethodFamily,
 } from "./build-input";
 
 interface InputBuilderFormProps {
@@ -103,12 +105,23 @@ export function InputBuilderForm({
     onGenerate(buildOrcaInput(state, scene));
   };
 
-  const compositeMode = state.useComposite;
+  const family = state.methodFamily;
   const dispersionBuiltIn = functionalHasBuiltInDispersion(state.functional);
+  // Semi-empirical xTB is self-contained — solvation and SCF-convergence do not
+  // apply (the emit already suppresses them; here we only DISABLE the controls,
+  // never clear the stored values, so switching back to DFT restores the choice).
+  const isXtb = family === "xtb";
+  const notForXtb = "Not applicable to semi-empirical xTB";
+
+  const FAMILIES: { value: MethodFamily; label: string }[] = [
+    { value: "composite", label: "Composite (3c)" },
+    { value: "dft", label: "Functional + Basis" },
+    { value: "xtb", label: "GFN2-xTB (semi-emp.)" },
+  ];
 
   return (
     <div className="builder-body">
-      {/* Row 1: job type + mode toggle */}
+      {/* Row 1: job type + method-family selector */}
       <div className="builder-row">
         <OptionSelect
           label="Job type"
@@ -119,28 +132,22 @@ export function InputBuilderForm({
         <div className="field">
           <label className="label">Method</label>
           <div className="radio-row">
-            <label className="radio">
-              <input
-                type="radio"
-                checked={compositeMode}
-                onChange={() => set("useComposite", true)}
-              />
-              Composite (3c)
-            </label>
-            <label className="radio">
-              <input
-                type="radio"
-                checked={!compositeMode}
-                onChange={() => set("useComposite", false)}
-              />
-              Functional + Basis
-            </label>
+            {FAMILIES.map((f) => (
+              <label className="radio" key={f.value}>
+                <input
+                  type="radio"
+                  checked={family === f.value}
+                  onChange={() => set("methodFamily", f.value)}
+                />
+                {f.label}
+              </label>
+            ))}
           </div>
         </div>
       </div>
 
-      {/* Row 2: method-specific controls */}
-      {compositeMode ? (
+      {/* Row 2: method-specific controls, per family */}
+      {family === "composite" ? (
         <div className="builder-row">
           <OptionSelect
             label="Composite method"
@@ -150,6 +157,18 @@ export function InputBuilderForm({
           />
           <div className="builder-note muted">
             Basis, dispersion and RI are built into the composite method.
+          </div>
+        </div>
+      ) : family === "xtb" ? (
+        <div className="builder-row">
+          <OptionSelect
+            label="Semi-empirical method"
+            value={state.xtbMethod}
+            options={XTB_METHODS}
+            onChange={(v) => set("xtbMethod", v)}
+          />
+          <div className="builder-note muted">
+            Gas phase, no basis/RI/SCFConv — semi-empirical is self-contained.
           </div>
         </div>
       ) : (
@@ -172,12 +191,24 @@ export function InputBuilderForm({
               ))}
             </select>
           </div>
-          <OptionSelect
-            label="Basis set"
-            value={state.basis}
-            options={BASIS_SETS}
-            onChange={(v) => set("basis", v)}
-          />
+          <div className="field">
+            <label className="label">Basis set</label>
+            <select
+              className="input select"
+              value={state.basis}
+              onChange={(e) => set("basis", e.currentTarget.value)}
+            >
+              {BASIS_GROUPS.map((g) => (
+                <optgroup key={g.label} label={g.label}>
+                  {g.options.map((o) => (
+                    <option key={o.keyword} value={o.keyword}>
+                      {o.label}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+          </div>
           <OptionSelect
             label="Dispersion"
             value={state.dispersion}
@@ -197,13 +228,15 @@ export function InputBuilderForm({
         </div>
       )}
 
-      {/* Row 3: solvation + SCF */}
+      {/* Row 3: solvation + SCF — not applicable to xTB (disabled, not cleared) */}
       <div className="builder-row">
         <OptionSelect
           label="Solvation"
           value={state.solvationModel}
           options={SOLVATION_MODELS}
           onChange={(v) => set("solvationModel", v)}
+          disabled={isXtb}
+          title={isXtb ? notForXtb : undefined}
         />
         <div className="field">
           <label className="label">Solvent</label>
@@ -211,7 +244,8 @@ export function InputBuilderForm({
             className="input select"
             value={state.solvent}
             onChange={(e) => set("solvent", e.currentTarget.value)}
-            disabled={!state.solvationModel}
+            disabled={isXtb || !state.solvationModel}
+            title={isXtb ? notForXtb : undefined}
           >
             {SOLVENTS.map((s) => (
               <option key={s} value={s}>
@@ -225,6 +259,8 @@ export function InputBuilderForm({
           value={state.scfConv}
           options={SCF_CONV}
           onChange={(v) => set("scfConv", v)}
+          disabled={isXtb}
+          title={isXtb ? notForXtb : undefined}
         />
       </div>
 

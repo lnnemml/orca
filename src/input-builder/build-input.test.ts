@@ -38,7 +38,7 @@ describe("buildKeywordLine", () => {
   it("emits only the composite method — no basis, dispersion, or RI", () => {
     const line = buildKeywordLine(
       state({
-        useComposite: true,
+        methodFamily: "composite",
         composite: "r2SCAN-3c",
         // These would be wrong to emit for a 3c method:
         basis: "def2-TZVP",
@@ -57,7 +57,7 @@ describe("buildKeywordLine", () => {
   it("adds def2/J for RIJCOSX with a def2 basis", () => {
     const line = buildKeywordLine(
       state({
-        useComposite: false,
+        methodFamily: "dft",
         functional: "B3LYP",
         basis: "def2-TZVP",
         ri: "RIJCOSX",
@@ -72,7 +72,7 @@ describe("buildKeywordLine", () => {
   it("adds def2/JK for RI-JK", () => {
     const line = buildKeywordLine(
       state({
-        useComposite: false,
+        methodFamily: "dft",
         functional: "B3LYP",
         basis: "def2-TZVP",
         ri: "RI-JK",
@@ -88,7 +88,7 @@ describe("buildKeywordLine", () => {
   it("does not double-count dispersion for a functional with built-in D4", () => {
     const line = buildKeywordLine(
       state({
-        useComposite: false,
+        methodFamily: "dft",
         functional: "wB97X-D4",
         basis: "def2-TZVP",
         ri: "",
@@ -114,6 +114,90 @@ describe("buildKeywordLine", () => {
     const line = buildKeywordLine(state({ solvationModel: "", solvent: "water" }));
     expect(line).not.toContain("CPCM");
     expect(line).not.toContain("SMD");
+  });
+
+  // GFN2-xTB is self-contained: method + job type ONLY. Even with basis,
+  // solvation and SCFConv set in the state, none may leak onto the `!` line.
+  // BITE: a shared-tail impl (basis block or solvation/SCFConv tail running
+  // for xtb) would emit `XTB def2-TZVP SMD(water) Opt TightSCF` and fail here.
+  it("xtb_line_is_method_and_jobtype_only", () => {
+    const line = buildKeywordLine(
+      state({
+        methodFamily: "xtb",
+        xtbMethod: "XTB",
+        jobType: "Opt",
+        solvationModel: "SMD",
+        solvent: "water",
+        scfConv: "TightSCF",
+        basis: "def2-TZVP",
+        ri: "RIJCOSX",
+        dispersion: "D4",
+      }),
+    );
+    expect(line).toBe("XTB Opt");
+    expect(line).not.toContain("def2-TZVP");
+    expect(line).not.toContain("SMD");
+    expect(line).not.toContain("TightSCF");
+    expect(line).not.toContain("RIJCOSX");
+    expect(line).not.toContain("D4");
+  });
+
+  // A non-def2 basis (Dunning/Pople) under RI has no def2 fit set — the aux is
+  // ORCA's general AutoAux. BITE: the old auxBasisFor emitted no aux at all for
+  // cc-pVTZ (it only matched def2*), so this line would be `... cc-pVTZ RIJCOSX`.
+  it("non_def2_basis_with_ri_emits_autoaux", () => {
+    const line = buildKeywordLine(
+      state({
+        methodFamily: "dft",
+        functional: "B3LYP",
+        basis: "cc-pVTZ",
+        ri: "RIJCOSX",
+        dispersion: "",
+        jobType: "",
+        scfConv: "",
+      }),
+    );
+    expect(line).toContain("cc-pVTZ AutoAux RIJCOSX");
+  });
+
+  // Regression: def2 bases still pair with the tuned def2/J — an over-eager
+  // AutoAux switch that fired for every basis would break this.
+  it("def2_basis_with_ri_still_emits_def2J", () => {
+    const line = buildKeywordLine(
+      state({
+        methodFamily: "dft",
+        functional: "B3LYP",
+        basis: "def2-TZVP",
+        ri: "RIJCOSX",
+        dispersion: "",
+        jobType: "",
+        scfConv: "",
+      }),
+    );
+    expect(line).toContain("def2/J");
+    expect(line).not.toContain("AutoAux");
+  });
+
+  // Regression: a composite method stays self-contained under the new branch —
+  // no basis/aux/RI/dispersion tokens ever join a 3c line.
+  it("composite_still_self_contained", () => {
+    const line = buildKeywordLine(
+      state({
+        methodFamily: "composite",
+        composite: "r2SCAN-3c",
+        basis: "def2-TZVP",
+        ri: "RIJCOSX",
+        dispersion: "D4",
+        jobType: "",
+        scfConv: "",
+      }),
+    );
+    const tokens = line.split(/\s+/);
+    expect(tokens).not.toContain("def2-TZVP");
+    expect(tokens).not.toContain("def2/J");
+    expect(tokens).not.toContain("AutoAux");
+    expect(tokens).not.toContain("RIJCOSX");
+    expect(tokens).not.toContain("D4");
   });
 });
 

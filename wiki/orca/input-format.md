@@ -22,6 +22,22 @@ The Phase 2.4 input builder (`src/input-builder/`) generates the `!` line from d
 The rules below are baked into `build-input.ts` and checked against the ORCA 6.1 manual
 (https://www.faccts.de/docs/orca/6.1/manual/).
 
+### Rule 0 — The method comes from one of three families
+`buildKeywordLine` branches on `state.methodFamily: "composite" | "dft" | "xtb"` (N1a):
+
+| Family | Emits | Basis / aux / RI / disp | Solvation + SCFConv tail |
+|---|---|---|---|
+| `composite` | the 3c method name only | never (self-contained, Rule 1) | applies |
+| `dft` | functional + basis (+ aux/RI/dispersion) | per Rules 1–2 | applies |
+| `xtb` | the xTB method keyword **only** (`XTB` = GFN2-xTB) | **never** | **suppressed** |
+
+`xtb` is fully self-contained: a `! XTB` line carries the method + job type and **nothing else** —
+no basis, aux, RI, dispersion, solvation, or SCFConv. `! XTB def2-TZVP SMD(water) TightSCF` is
+invalid, so the whole basis block *and* the solvation+scfConv tail are guarded off for that family
+(`state.methodFamily !== "xtb"`). Job type is still emitted for every family (`! XTB Opt`,
+`! XTB NEB-TS`). See `wiki/orca/xtb-method.md` for the probe facts (ORCA's `! XTB` = GFN2-xTB via
+the bundled `otool_xtb`, distinct from the standalone `xtb.md` binary).
+
 ### Rule 1 — Composite methods and dispersion-inclusive functionals are self-contained
 `r2SCAN-3c`, `B97-3c`, `PBEh-3c`, `wB97X-3c`, `HF-3c` **already include their own basis set,
 dispersion correction, and (where needed) geometric/BSSE corrections.** When a 3c method is
@@ -64,6 +80,23 @@ The builder adds the aux basis automatically when an RI method is chosen with a 
 ! B3LYP def2-TZVP def2/J  RIJCOSX Opt      ← RIJCOSX / RI-J → def2/J
 ! B3LYP def2-TZVP def2/JK RI-JK   Opt      ← RI-JK        → def2/JK
 ```
+
+**Non-def2 bases (Dunning, Pople) → `AutoAux`.** The tuned `def2/J`/`def2/JK` fit sets exist only
+for the Karlsruhe def2 family. When an RI method is chosen with a `cc-pV*Z`, `aug-cc-pV*Z`, or
+`6-31G*`…`6-311++G**` basis, `auxBasisFor` emits ORCA's general **`AutoAux`** — an auto-generated
+auxiliary. It is the honest choice: ORCA fails loud on a bad/absent aux, never silently wrong, so
+`AutoAux` is safe as the fallback rather than guessing a mismatched def2 fit set.
+
+```
+! B3LYP cc-pVTZ AutoAux RIJCOSX Opt        ← non-def2 basis + RI → AutoAux
+```
+
+### Rule 2b — Basis families offered by the builder
+`BASIS_GROUPS` (`orca-options.ts`) groups the catalog as `<optgroup>`s: **Karlsruhe def2**
+(`def2-SVP`…`def2-QZVPP`, the diffuse `def2-*D`, and minimally-augmented `ma-def2-SVP/TZVP/TZVPP`),
+**Dunning** (`cc-pVDZ/TZ/QZ`, `aug-cc-pV{D,T,Q}Z`), and **Pople** (`6-31G*`, `6-31G**`, `6-311G**`,
+`6-311+G**`, `6-311++G**`). A flat `BASIS_SETS = BASIS_GROUPS.flatMap(...)` is kept for importers.
+Only def2-* gets a tuned aux (Rule 2); everything else pairs with `AutoAux` under RI.
 
 ### Rule 3 — Canonical keyword order (for readability)
 ORCA is order-insensitive, but the builder emits a fixed order so the line reads consistently:

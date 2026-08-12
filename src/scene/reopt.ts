@@ -99,7 +99,7 @@ export function buildReoptInput(
   const freq = opts.freq ?? true;
   const state: BuilderState = {
     ...DEFAULT_BUILDER_STATE,
-    useComposite: true,
+    methodFamily: "composite",
     composite: opts.method ?? DEFAULT_REOPT_METHOD,
     jobType: freq ? "Opt Freq" : "Opt",
     solvationModel: opts.solvation ? "SMD" : "",

@@ -8,12 +8,24 @@ import { FUNCTIONAL_GROUPS } from "./orca-options";
 import { mergeToAtomLines, totalCharge } from "../scene/scene";
 import type { Scene } from "../scene/types";
 
+/**
+ * Which family of method the `!` line is built from. Each family drives a
+ * different branch of {@link buildKeywordLine}:
+ *  - `composite` — a self-contained 3c method (no basis/disp/RI).
+ *  - `dft`       — an explicit functional + basis (+ aux/RI/dispersion).
+ *  - `xtb`       — a semi-empirical tight-binding method, self-contained
+ *                  (no basis/disp/RI AND no solvation/SCFConv tail).
+ */
+export type MethodFamily = "composite" | "dft" | "xtb";
+
 /** Everything the form collects. Mirrors the controls 1:1. */
 export interface BuilderState {
   jobType: string;
-  /** Toggle: a composite (3c) method vs an explicit functional + basis. */
-  useComposite: boolean;
+  /** Which method family drives the `!` line (composite | dft | xtb). */
+  methodFamily: MethodFamily;
   composite: string;
+  /** The semi-empirical method keyword (only "XTB"/GFN2 verified). */
+  xtbMethod: string;
   functional: string;
   basis: string;
   dispersion: string;
@@ -30,8 +42,9 @@ export interface BuilderState {
 /** Sensible starting point: the recommended composite method, Opt+Freq, tight SCF. */
 export const DEFAULT_BUILDER_STATE: BuilderState = {
   jobType: "Opt Freq",
-  useComposite: true,
+  methodFamily: "composite",
   composite: "r2SCAN-3c",
+  xtbMethod: "XTB",
   functional: "B3LYP",
   basis: "def2-TZVP",
   dispersion: "D4",
@@ -47,12 +60,15 @@ export const DEFAULT_BUILDER_STATE: BuilderState = {
 
 /**
  * The Coulomb/exchange fitting basis an RI approximation needs, or `""` when
- * none applies. Only def2-* orbital bases get an automatic auxiliary basis:
- * RIJCOSX and RI-J pair with `def2/J`, RI-JK with `def2/JK`.
+ * none applies. def2-* orbital bases pair with the tuned Weigend auxiliaries:
+ * RIJCOSX and RI-J with `def2/J`, RI-JK with `def2/JK`. Any other basis
+ * (Dunning, Pople) has no matching def2 fit set, so under RI we fall back to
+ * ORCA's general `AutoAux` — an auto-generated auxiliary. ORCA fails loud on a
+ * bad aux (never silently wrong), so AutoAux is the honest default here.
  */
 function auxBasisFor(basis: string, ri: string): string {
   if (!ri) return "";
-  if (!basis.toLowerCase().startsWith("def2")) return "";
+  if (!basis.toLowerCase().startsWith("def2")) return "AutoAux";
   return ri === "RI-JK" ? "def2/JK" : "def2/J";
 }
 
@@ -78,10 +94,16 @@ export function functionalHasBuiltInDispersion(functional: string): boolean {
 export function buildKeywordLine(state: BuilderState): string {
   const tokens: string[] = [];
 
-  if (state.useComposite) {
+  if (state.methodFamily === "composite") {
     // Composite methods are self-contained: no basis, dispersion, or RI.
     tokens.push(state.composite);
+  } else if (state.methodFamily === "xtb") {
+    // Semi-empirical tight-binding is fully self-contained: the method keyword
+    // ONLY. No basis/aux/RI/dispersion here, and no solvation/SCFConv tail
+    // below — `! XTB def2-TZVP SMD(water) TightSCF` would be invalid.
+    tokens.push(state.xtbMethod);
   } else {
+    // dft: an explicit functional + basis (+ aux/RI/dispersion).
     tokens.push(state.functional);
     tokens.push(state.basis);
     const aux = auxBasisFor(state.basis, state.ri);
@@ -94,11 +116,16 @@ export function buildKeywordLine(state: BuilderState): string {
     }
   }
 
-  if (state.solvationModel && state.solvent) {
-    tokens.push(`${state.solvationModel}(${state.solvent})`);
+  // Solvation and SCF-convergence are electronic-structure concepts that do
+  // not apply to semi-empirical xTB — suppress the whole tail for that family.
+  if (state.methodFamily !== "xtb") {
+    if (state.solvationModel && state.solvent) {
+      tokens.push(`${state.solvationModel}(${state.solvent})`);
+    }
   }
+  // Job type is valid for every family (`! XTB Opt`, `! r2SCAN-3c Opt Freq`).
   if (state.jobType) tokens.push(state.jobType);
-  if (state.scfConv) tokens.push(state.scfConv);
+  if (state.methodFamily !== "xtb" && state.scfConv) tokens.push(state.scfConv);
 
   return tokens.filter((t) => t.length > 0).join(" ");
 }

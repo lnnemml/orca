@@ -1164,6 +1164,30 @@ and OrcaStudio picks the job up, syncs results, and parses them — no terminal,
 - [ ] TS refinement automation: scan maximum → OptTS → Freq → ΔG‡ pipeline
       (if not completed in Phase 4.5)
 
+### Input-builder method expansion (N-series)
+
+Broadening what the New-Job form can express, unit by unit (each probe-first where a new binary
+behaviour is involved, rule #10).
+
+- [x] **N1a — method families + basis expansion + xTB tier** (2026-08-12). The builder's binary
+      `useComposite` toggle became a **method-family selector** `composite | dft | xtb`
+      (`build-input.ts` `MethodFamily`). Basis catalog grouped into `BASIS_GROUPS` (Karlsruhe def2
+      incl. `ma-def2-*` / Dunning `cc-pV*Z`,`aug-cc-pV*Z` / Pople `6-31G*`…`6-311++G**`; flat
+      `BASIS_SETS` kept). **GFN2-xTB** shipped as a self-contained method (`! XTB <jobtype>` only —
+      no basis/RI/disp/SCFConv/solvation; the emit guards the whole basis block *and* the
+      solvation+scfConv tail for the xtb family). `auxBasisFor`: non-def2 basis under RI → `AutoAux`
+      (def2→`def2/J`|`def2/JK` unchanged). Form: 3-way family radio, per-family Row 2, xtb disables
+      Solvation/SCF. +4 bite tests. Probe facts + rule #10 in `wiki/orca/xtb-method.md`
+      (ORCA's `! XTB` = GFN2-xTB via bundled `otool_xtb` 6.7.1). **Only GFN2 verified** — GFN1/0/FF
+      not offered.
+- [ ] **N1b — correlated wave-function tier** (MP2 / CCSD / DLPNO-CCSD(T)) — **gated on a
+      DLPNO-CCSD(T) probe** (rule #10): keyword form, the AuxC correlation-fitting-basis requirement,
+      and which artifacts carry the correlation energy must be measured before this ships.
+- [ ] **N2 — NEB job type in the builder** (NEB-TS entry in `JOB_TYPES` + the band setup) — the
+      builder-side complement to Phase 4.5 Stage E3a's `NebSetupPanel`.
+- [ ] **N3 — NEB result parsing/viewer** and **N4 — compare view** — track with the existing
+      "Job comparison view" item above.
+
 ---
 
 ## Explicit non-goals (for now)

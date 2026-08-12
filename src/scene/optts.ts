@@ -119,7 +119,7 @@ export function buildOptTSInput(
   //    leak — buildOrcaInput builds `!` + body fresh from THIS state + scene.
   const state: BuilderState = {
     ...DEFAULT_BUILDER_STATE,
-    useComposite: true,
+    methodFamily: "composite",
     composite: [method, solvation].filter((t) => t.length > 0).join(" "),
     jobType: "OptTS Freq",
     solvationModel: "", // solvation is carried inside the composite slot, verbatim
