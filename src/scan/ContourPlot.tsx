@@ -11,6 +11,8 @@
 import Plotly from "plotly.js-cartesian-dist-min";
 import createPlotlyComponent from "react-plotly.js/factory";
 
+import { nearestIndex } from "./nearestIndex";
+
 const Plot = createPlotlyComponent(Plotly);
 
 export interface ContourPlotProps {
@@ -104,11 +106,14 @@ export function ContourPlot({
       layout={layout}
       config={{ displayModeBar: false, responsive: true }}
       style={{ width: "100%" }}
-      onClick={(e: { points?: Array<{ curveNumber: number; pointNumber: number }> }) => {
-        const p = (e.points ?? []).find((pt) => pt.curveNumber === 1); // the markers trace
-        if (!p) return;
-        const k = p.pointNumber;
-        onNodeClick(Math.floor(k / n2), k % n2);
+      onClick={(e: { points?: Array<{ x?: number; y?: number }> }) => {
+        // Any point (contour OR marker) carries the click's DATA-space x/y — so `[0]` is enough;
+        // the old marker-only gate (`curveNumber === 1`) silently dropped every click that wasn't
+        // pixel-exact on a 6px node (the m2 bug). SNAP to the nearest node: x = coord2 (X axis),
+        // y = coord1 (Y axis) — do NOT swap, or OptTS gets the transposed node.
+        const p = e.points?.[0];
+        if (p?.x == null || p?.y == null) return;
+        onNodeClick(nearestIndex(axis1, p.y), nearestIndex(axis2, p.x));
       }}
     />
   );

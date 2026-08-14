@@ -809,6 +809,10 @@ passed. **Stage A complete.**)*
       build pass. **Runtime plotly render = the m0 live gate** (`ContourPlot` isolates the d3 fallback). No
       change to `read_scan_geometries` / `create_optts_job` / `buildOptTSInput` / the 1D panel; no migration.
       `modules/scan-surface-2d.md`. **The Diels-Alder concerted-TS validation is now unblocked.**
+      **Handoff fix (m2):** the contour click now **snaps to the nearest grid node** (`nearestIndex`,
+      x=coord2/y=coord1, not swapped) — the whole surface is clickable; the earlier marker-only hit-test
+      silently dropped any click that wasn't pixel-exact on a node. `src/scan/ContourPlot.tsx` +
+      `nearestIndex.ts` (+6 vitest); no panel/handoff/parser change.
 
 ### Stage B — Scan output parser + single energy profile (spine, part 2)
 

@@ -8325,3 +8325,36 @@ result-reading flow + stand-down); index 99→100; ROADMAP Stage 4b landed. Depe
 
 **Next:** a saddle / minimum-energy-path finder over the 2D grid (a clearly-labelled follow-up, deliberately
 not auto-picked here).
+
+## [2026-08-14] session | fix: 2D contour click snaps to nearest grid node (whole-surface clickable)
+
+**Bug (m2 = "click does nothing", measured).** `ContourPlot.onClick` gated on
+`e.points.find(curveNumber === 1)` — the 6px node-marker trace. A click that wasn't pixel-exact on a
+marker returned only the contour point (curveNumber 0), so `find` → undefined → early return, silently. So
+the surface looked clickable but only dead-on-marker hits fired.
+
+**Fix (isolated to `ContourPlot.tsx` + one pure helper).** Drop the marker-only gate; read the click's
+DATA-space `x`/`y` from `e.points[0]` (any point — contour or marker — carries it) and **SNAP to the nearest
+grid node**: `i2 = nearestIndex(axis2, x)` (coord2 = X), `i1 = nearestIndex(axis1, y)` (coord1 = Y) — **not
+swapped** (a swap sends OptTS to the transposed node — the identity class we guard). New pure
+`src/scan/nearestIndex.ts` = argmin `|v − target|` (ties → first; empty → −1; clamps; correct for a
+DESCENDING axis, which the real coord1 3.446→1.50 is — selects by value, not index arithmetic). The node
+markers stay as the visual affordance; only the hit-test changed.
+
+**No change** to `ScanSurface2dPanel` (`onNodeClick(i1,i2) → nodeRow → geometries[row-1] → OptTS` is
+correct + bite-pinned), the handoff, the parser, or `read_scan_surface` — only HOW `(i1,i2)` is derived
+from a click.
+
+**Tests:** +6 vitest bites (`nearestIndex.test.ts`): exact→index; between-two→CLOSER (a naive
+floor/round-to-lower goes red); clamp below-min→0 / above-max→last; DESCENDING axis snaps by value; ties→
+first; single→0 / empty→−1. **Demonstrated:** a naive round-to-lower impl turns the closer-index +
+descending tests red — restored. `vitest` → **900 passed** (+6); `tsc` clean; no cargo delta.
+
+**Manual gate (Anton, live WebKitGTK):** m2 click ANYWHERE near the col → OptTS launches with the nearest
+node's geometry, in the scan's group; m2b (identity) click the product corner (deep purple) → the child's
+geometry is that corner's (both bonds ~1.5 Å), not a transposed one. **Fallback if it STILL does nothing:**
+then plotly's `onClick` itself isn't firing in WebKitGTK → STOP and report (attach a container-level DOM
+click handler instead of relying on plotly's onClick).
+
+**Wiki (same commit):** modules/scan-surface-2d.md (the snap-to-nearest note + the m2 marker-only bug);
+ROADMAP Stage 4b (handoff fixed). No index count change.

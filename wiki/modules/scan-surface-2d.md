@@ -65,11 +65,18 @@ Gated on the INPUT (not results), because a 2D scan has no `results.scan`; the p
   and hover `(c1, c2, ΔE)`. The four corners are labelled by **bond length** ("reactant — both long",
   "product — both short", "stepwise — 1 long, 1 short"; long/short is per-axis, correct whichever way the
   scan steps) — **orientation facts, never a TS claim**.
-- **Clickable grid nodes** (a scatter overlay) → `nodeRow` → `geometries[row-1]` → the **verbatim
-  `ScanProfilePanel` OptTS handoff**: `buildOptTSInput(source.input_content, seed)` (rebuilds a fresh OptTS
-  input — the Scan block can't leak) → `create_optts_job` → the **2b `useGroupPicker`** (default = the scan's
-  group, overridable) → `submit_job` → navigate. **No node is preselected** — the user reads the surface and
-  clicks the col.
+- **The whole surface is clickable — a click SNAPS to the nearest grid node.** `ContourPlot`'s `onClick`
+  reads the click's DATA-space `x`/`y` from `e.points[0]` and snaps: `i2 = nearestIndex(axis2, x)` (coord2 =
+  X), `i1 = nearestIndex(axis1, y)` (coord1 = Y) — **not swapped**, or OptTS would get the transposed node
+  (`src/scan/nearestIndex.ts`, `nearestIndex` = argmin `|v − target|`, clamps, correct for a descending
+  axis; bite-tested). The node markers stay as the visual affordance, but the hit-test is no longer
+  marker-only. *(The m2 bug: the old `onClick` gated on `e.points.find(curveNumber === 1)` — the 6px marker
+  trace — so a click that wasn't pixel-exact on a node returned only the contour point and was silently
+  dropped. Snapping makes the whole contour clickable.)*
+- The snapped node → `nodeRow` → `geometries[row-1]` → the **verbatim `ScanProfilePanel` OptTS handoff**:
+  `buildOptTSInput(source.input_content, seed)` (rebuilds a fresh OptTS input — the Scan block can't leak) →
+  `create_optts_job` → the **2b `useGroupPicker`** (default = the scan's group, overridable) → `submit_job`
+  → navigate. **No node is preselected** — the user reads the surface and clicks the col.
 
 ## The plotly dependency (and the WebKitGTK gate)
 
