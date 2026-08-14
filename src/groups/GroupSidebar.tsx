@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { confirm } from "@tauri-apps/plugin-dialog";
+import { confirm, message } from "@tauri-apps/plugin-dialog";
 
 import type { Group } from "../types";
+import { exportGroup, type CopyMode } from "../export/save";
 import {
   buildGroupTree,
   moveTargetsFor,
@@ -48,6 +49,8 @@ export function GroupSidebar({
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [movingId, setMovingId] = useState<string | null>(null);
+  // Inline export-mode chooser (mirrors the move picker). `null` = not exporting.
+  const [exportingId, setExportingId] = useState<string | null>(null);
 
   const tree = buildGroupTree(groups);
 
@@ -104,6 +107,20 @@ export function GroupSidebar({
         onSelect({ kind: "all" });
       }
       await onChanged();
+    } catch (e) {
+      onError(String(e));
+    }
+  };
+
+  const runExport = async (group: Group, mode: CopyMode) => {
+    setExportingId(null);
+    try {
+      const path = await exportGroup(group.id, mode);
+      if (path) {
+        await message(`Exported “${group.name}” to:\n${path}`, {
+          title: "Export complete",
+        });
+      }
     } catch (e) {
       onError(String(e));
     }
@@ -195,6 +212,13 @@ export function GroupSidebar({
             </button>
             <button
               className="icon-btn"
+              title="Export…"
+              onClick={() => setExportingId(exportingId === group.id ? null : group.id)}
+            >
+              ⭳
+            </button>
+            <button
+              className="icon-btn"
               title="Delete group"
               onClick={() => removeGroup(group)}
             >
@@ -202,6 +226,21 @@ export function GroupSidebar({
             </button>
           </span>
         </div>
+
+        {exportingId === group.id ? (
+          <div className="group-export" style={{ paddingLeft: 8 + depth * 14 + 20 }}>
+            <span className="muted">Export:</span>
+            <button className="btn btn-sm" onClick={() => runExport(group, "curated")}>
+              Curated…
+            </button>
+            <button className="btn btn-sm" onClick={() => runExport(group, "full")}>
+              Full…
+            </button>
+            <button className="icon-btn" title="Cancel" onClick={() => setExportingId(null)}>
+              ✕
+            </button>
+          </div>
+        ) : null}
 
         {movingId === group.id ? (
           <div className="group-move" style={{ paddingLeft: 8 + depth * 14 + 20 }}>

@@ -563,7 +563,7 @@ pub(crate) fn remove_job_dir(app: &AppHandle, job_dir: &str) {
 /// A path that cannot be canonicalized (a non-existent `candidate` or `root`, or a
 /// symlink whose target is gone) yields `false` — refuse. `canonicalize` resolves
 /// symlinks, so a symlink escaping the root also yields `false`.
-fn path_is_within(root: &Path, candidate: &Path) -> bool {
+pub(crate) fn path_is_within(root: &Path, candidate: &Path) -> bool {
     match (root.canonicalize(), candidate.canonicalize()) {
         (Ok(root), Ok(candidate)) => candidate.starts_with(&root),
         _ => false,

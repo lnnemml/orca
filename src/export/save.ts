@@ -2,7 +2,7 @@
 //! dir — rule #3, enforced again in Rust) + the Rust write commands (ADR-009 owns I/O).
 //! Kept thin: the pure builders (`exporters.ts`) make the content, this just persists it.
 
-import { save } from "@tauri-apps/plugin-dialog";
+import { save, open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 
 /** A filesystem-safe default filename: `{job}-{what}.{ext}` with spaces/odd chars tamed. */
@@ -20,6 +20,21 @@ export async function saveText(defaultName: string, content: string, ext: string
   if (!path) return false;
   await invoke("write_export_text", { path, content });
   return true;
+}
+
+/** Curated = only the pinned scientific-artifact allowlist; Full = the whole job dir. */
+export type CopyMode = "curated" | "full";
+
+/**
+ * Export a whole job group (and its sub-groups) to a folder the user picks — a
+ * self-contained, readable, UUID-traceable projection with a `manifest.json` (ADR-021).
+ * The canonical `<UUID>/` dirs are untouched (the Rust command only reads them).
+ * Returns the created export path, or `null` if the user cancelled the folder picker.
+ */
+export async function exportGroup(groupId: string, mode: CopyMode): Promise<string | null> {
+  const dir = await open({ directory: true, title: "Choose export destination" });
+  if (!dir || typeof dir !== "string") return null;
+  return invoke<string>("export_group", { groupId, destParent: dir, copyMode: mode });
 }
 
 /** Write binary bytes (PNG) via a save dialog. Returns false if the user cancelled. */

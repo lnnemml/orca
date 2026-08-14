@@ -1093,10 +1093,11 @@ screening of stereoselectivity (Stage C). Stages D–F deepen it toward publicat
 
 ## Phase 4.7 — Job organization & lifecycle ✅ COMPLETE
 
-**All four units done** (4.7.1 job deletion · 4.7.2 groups data layer · 4.7.3 group navigation UI ·
-4.7.4 filter/search). The Jobs view is a two-pane tree of folders (unlimited nesting, delete-with-
-promotion, jobs-survive) with assign-on-create and a frontend search/status filter composed on the
-group filter. Disk is never touched by any grouping op (rule #3 preserved).
+**Five units done** (4.7.1 job deletion · 4.7.2 groups data layer · 4.7.3 group navigation UI ·
+4.7.4 filter/search · 4.7.5 group export). The Jobs view is a two-pane tree of folders (unlimited nesting,
+delete-with-promotion, jobs-survive) with assign-on-create, a frontend search/status filter composed on the
+group filter, and a first-class **Export…** action that projects a group onto a readable directory tree.
+Disk is never touched by any grouping op, and export only ever READS the canonical dirs (rule #3 preserved).
 
 **Model:** [ADR-019](wiki/architecture/adr-019-job-organization.md) — job groups are a **tree of
 metadata in SQLite, never a filesystem hierarchy**. A job keeps its isolated `job_dir` (domain rule
@@ -1134,6 +1135,21 @@ Group-delete **promotes** children (never a destructive cascade); jobs orphan to
       subtree (a `search.test.ts` composition test pins it; empty query+status = identity). Three-way
       empty-state ("no jobs yet" / "none in this group" / "none match this filter"). **Frontend-only** —
       no backend/command/SQL, **NOT** the manual's FTS5. `src/groups/search.ts`, `modules/groups-ui.md`.
+- [x] **4.7.5 — group export ([ADR-021](wiki/architecture/adr-021-group-export-projection.md)).** A first-class
+      **Export…** action **projects** a group + all its sub-groups onto a self-contained, human-readable,
+      `created_at`-ordered (`01_hcn-opt`), UUID-traceable directory tree + `manifest.json`. The canonical
+      `<UUID>/` dirs and SQLite rows are the source of truth and are **never touched** — projection only: **no
+      migration, no new column, no canonical-dir write**. Removes the manual-rename step that silently swapped
+      `HCN-opt` ↔ `HNC-opt`. **Pure core** (`commands/export_group.rs`): `slugify` (a title can't escape its
+      leaf — `a/b→c`→`a-b-c`), `numbered_prefix` (lexical sort == creation order), `curated_match` (a
+      **probe-pinned** scientific-artifact allowlist, rule #10), `build_manifest`. **Wiring**
+      (`commands/export.rs`): descendant walk, dir listing, copy, **inverted `path_is_within` guard** (refuse a
+      dest inside `data_dir/jobs`), fresh never-clobber dir, **rule-#9 post-condition** (re-read the written
+      manifest: each job once / dirs unique+on-disk / uuids resolve). **Honest-or-absent:** curated records
+      omitted `.gbw`/`.densities`/cubes in `files.omitted`; a draft job (`job_dir` NULL) gets a manifest entry
+      but no dir; `results`/`computed_identity`/`job_type` are null (not fabricated) in v1. Frontend: a per-group
+      Curated/Full chooser in `GroupSidebar` → folder picker → toast. **Deferred:** `.zip` packaging, the
+      connectivity-based `computed_identity` stamp. `modules/group-export.md`.
 
 ---
 

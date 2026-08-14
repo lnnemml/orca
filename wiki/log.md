@@ -7938,3 +7938,65 @@ untouched). (2) `orca/crest.md` gained one **See-also pointer** to `modules/cres
 F1a–F2 production code built on the probe) — the dated 2026-08-08 "No production code was written" probe
 record left **unchanged** (rule #10). Re-run confirms: 0 dead links, index == disk (count 97), the probe
 record intact. tsc/vitest/cargo/pytest untouched (wiki-only).
+
+## [2026-08-14] session | Group export — first-class projection of a job group (Phase 4.7 unit 4.7.5)
+
+**Done.** Landed a first-class **"Export…"** action on a job group: it PROJECTS the group (and all its
+sub-groups) onto a self-contained, human-readable, `created_at`-ordered, UUID-traceable directory tree +
+`manifest.json`. The canonical `{data_dir}/jobs/<UUID>/` dirs and the SQLite rows are the source of truth and
+are **never touched** — read-only projection: no migration, no new column, no canonical-dir write. Removes the
+manual-rename step that historically swapped `HCN-opt` ↔ `HNC-opt` by hand. Design: **ADR-021**.
+
+**Part A — pure core** (`src-tauri/src/commands/export_group.rs`, no fs/DB/clock; `exported_at` injected so it
+is deterministic): `slugify` (only `[a-z0-9]` survive, every other byte → separator → collapse to `-` → no
+path escape: `a/b→c`→`a-b-c`, `../../etc/passwd`→`etc-passwd`, empty→`job`); `numbered_prefix` (1-based,
+width = digits of group size, so a lexical dir sort == creation order); `curated_match` (the **probe-pinned**
+scientific-artifact allowlist); `build_manifest` (order by `created_at` asc tie-broken by id, `exported_dir`,
+FK-only lineage, honest-null results/`computed_identity`/`job_type`, the honesty `notes`). `ManifestV1`
+serde structs derive Deserialize (Part B re-reads) with NO `skip_serializing_if` (nulls serialize present).
+
+**Rule #10 probe (recorded before pinning the allowlist):** `ls -a` on real COMPLETED / SCAN / NEB job dirs.
+Refinements vs the proposed list: `*_trj.xyz` subsumes `*_MEP_trj.xyz` (+ `input_MEP_ALL_trj.xyz`,
+`input_initial_path_trj.xyz`); `*.property.txt` catches fragment outputs (`input_atom53.property.txt`);
+`input.[0-9]*.xyz` matches `input.001.xyz` but not `input.xyz` (digit required). **Ratified widening:**
+`*_NEB-TS_converged.xyz` → `*_converged.xyz` — rule "curated NEVER discards a converged/final geometry", so
+`input_NEB-CI_converged.xyz` (a NEB-CI located TS) is exported, not relegated to `omitted`. Pinned allowlist:
+exact `input.inp output.out input.xyz .exit_code`; suffix `*.property.txt *.hess *_trj.xyz *.NEB.log
+*.final.interp *_converged.xyz`; special `*.relaxscan*.dat`, `input.[0-9]*.xyz`.
+
+**Part B — wiring** (`src-tauri/src/commands/export.rs`, the `export_group` Tauri command + testable
+`export_group_conn`): resolve group + all descendant sub-groups (bounded downward `parent_id` walk, mirrors
+`groups.rs`); collect their jobs; list each `job_dir`; a **draft/never-run** job (`job_dir` NULL) is a manifest
+entry with empty files and **no directory**; create a **fresh never-clobber** export dir under the chosen dest
+(SQLite `datetime`/`strftime` stamps — no new date/time dependency); **inverted path guard** reuses
+`local_backend::path_is_within` (made `pub(crate)`) to REFUSE a dest inside `data_dir/jobs` (rule #3); copy
+curated|full per mode; write `manifest.json`; **rule-#9 post-condition** re-reads the written manifest and
+asserts every collected job appears exactly once, every `exported_dir` is unique + (if copied) exists on disk,
+and every uuid resolves to a real `jobs` row — loud `AppError::Internal` on any mismatch. Registered in
+`lib.rs`.
+
+**Frontend:** `src/export/save.ts` `exportGroup(groupId, mode)` (native folder picker → `invoke("export_group")`,
+`null` on cancel) + a per-group inline **Curated / Full** chooser in `GroupSidebar` (mirrors the Move-to
+picker) → native `message()` dialog reporting the export path.
+
+**Verified (on the dev machine — rustc IS available here):** `cargo test --lib` → **298 passed, 0 failed,
+21 ignored, 0 warnings** (+17 Rust bites: 11 pure export_group — slugify escape, prefix width, curated
+partition, order, honest-null; 6 export integration — m1 headline projection, m2 no-clobber, m3 canonical
+byte-unchanged, m4 curated `.gbw` omitted, inverted guard, draft, never-clobber, NotFound). `save.test.ts` →
+**3 vitest** (the project's first `@tauri-apps` mocks: exportGroup arg-pass-through curated/full, cancel =
+no invoke). `tsc --noEmit` clean.
+
+**Manual gate (Anton, live window):** m1 export the real HCN⇌HNC group → readable ordered dirs, manifest
+round-trips UUID↔name; m2 two "Opt" jobs → no overwrite; m3 canonical `<UUID>/` dirs + DB rows byte-unchanged
+after export; m4 curated → `.gbw` absent on disk AND in `manifest.omitted`.
+
+**Wiki (same commit):** +architecture/adr-021-group-export-projection.md, +modules/group-export.md; index.md
+count 97→99; ROADMAP Phase 4.7 gains landed unit 4.7.5.
+
+**Decisions ratified this session:** `job_type` = null in v1 (no such column; a guessed type is the identity-
+mislabel error we remove — the reader infers type from the curated `input.inp` + `results.imaginary_count`).
+`computed_identity` = null in v1 (a formula stamp is blind to constitutional isomers HCN/HNC = CHN; the
+connectivity stamp is a follow-up). The source DAG (ADR-020) is not persisted and is NOT asserted.
+
+**Next:** `.zip`/archive packaging of an export; the connectivity-based `computed_identity` stamp; a
+"assign job to group at spawn time" picker.
