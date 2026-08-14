@@ -309,6 +309,13 @@ only estimates from geometry.
   `totalCharge(scene) = Σ fragment.charge` (`scene.ts`) is the charge ORCA is given; formal charges
   never change it — a mismatch is a bookkeeping flag, never a run blocker.
 
+## New Job header — the group picker (unit 2a)
+
+Beside the Job-title field the form carries an explicit **Group** picker (`<GroupSelect>`) that sets
+the created job's destination group — default = the active sidebar group, overridable to any group or
+ungrouped. It composes `move_job` (no editor/scene coupling); the mechanism lives in
+[`modules/groups-ui.md`](groups-ui.md).
+
 ## Where future panels go
 
 - **Phase 4.5 — reaction setup.** The reaction-center / scan-setup UI (ADR-007) is a **new dock

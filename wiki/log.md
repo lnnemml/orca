@@ -8043,3 +8043,48 @@ orthogonal to pathway); ROADMAP Phase 4.7 gains the group-inheritance default (e
 index.md count change (no new page).
 
 **Next:** the explicit group **picker / override** at spawn time (Unit 2).
+
+## [2026-08-14] session | Explicit group picker on New Job — reusable GroupSelect over move_job (Phase 4.7 unit 2a)
+
+**Done.** The New Job form gains an **explicit destination-group picker** so the user chooses where a job
+lands at creation — superseding the 4.7.3 implicit active-group assign. Frontend-only; reuses `move_job`, no
+Rust change.
+
+**Part A — the reusable component** (`src/groups/GroupSelect.tsx`): a purely presentational controlled
+`<select>` of existing groups + an "(ungrouped)" option. No `invoke`/store/`move_job` — the consumer decides.
+The sentinel-leak contract: a `<select>` value can't be `null`, so ungrouped uses `ROOT_OPTION = "__root__"`
+internally, but `onChange` emits a **clean `string | null`** (`groupIdFromOptionValue` / `optionValueFromGroupId`,
+exported pure inverses). `ROOT_OPTION` is now the **canonical** copy — imported by `JobsScreen` and
+`GroupSidebar` (the two duplicate local consts removed; purely mechanical).
+
+**Part B — New Job wiring** (`src/screens/NewJobScreen.tsx`): `pickedGroupId` state **defaults to
+`activeGroupId` and FOLLOWS it until touched** — a `groupTouched` flag + a sync effect, NOT a naive
+`useState(activeGroupId)` init that would freeze on the first render and ignore a later sidebar switch (the
+subtle bug Anton flagged). `groups` is loaded locally (`list_groups` on mount), mirroring `JobsScreen`. The
+assign is a **pure decision** `resolveGroupAssignment(groupTouched, pickedGroupId)` → `move_job`, applied to
+**all three** create paths (`create_job` normal + GOAT "Find conformers" + builder `create_neb_job`):
+- untouched + no active group (`null`) → **NO-OP** — exactly today's behavior, and it does NOT clobber a
+  create-path default (a NEB-TS inherits its reactant's group in Rust, Unit 1);
+- untouched + an active group → assign it (as 4.7.3);
+- an explicit pick → the picker **WINS**, including "(ungrouped)" (`null`), overriding any default.
+
+**Tests (+11 vitest, `GroupSelect.test.tsx`):** the two pure mappers (sentinel-leak bite: ungrouped →
+`null`, never `"__root__"`); SSR (`renderToStaticMarkup` — no jsdom in this project) for renders-every-group
+and value→selected; the real `onChange` handler driven directly (invoke the function component, drive
+`props.onChange` — exercises the actual wiring, not a copy); and the four `resolveGroupAssignment` cases.
+**Demonstrated bite:** weakening the guard to drop the `!groupTouched` term turns the touched-`null` override
+case red (an explicit "(ungrouped)" would wrongly fall into the untouched no-op) — restored.
+
+**Verified** (frontend-only): `npx vitest run` → **878 passed** (66 files; delta +11, +1 file). `tsc --noEmit`
+clean. No cargo delta.
+
+**Manual gate (Anton, live WebKitGTK):** m1 picker left default while a group active → job in that group;
+m2 picker overridden to a different group → job there; m3 picker set to (ungrouped) while a group active →
+job ungrouped; m4 a builder NEB-TS with the picker set to group X → the NEB job lands in X.
+
+**Wiki (same commit):** modules/groups-ui.md gains "The reusable picker" + "Explicit destination-group picker
+on New Job" sections (+refreshed Status/Files, +consolidated `ROOT_OPTION` note); modules/editor-ui.md gains a
+"New Job header — the group picker" note; ROADMAP Phase 4.7 records unit 2a (derived-spawn override = 2b next).
+No index.md count change (no new page).
+
+**Next:** Unit 2b — an override picker at the 4 derived-spawn sites (Scan/NEB/Connectivity/reopt).

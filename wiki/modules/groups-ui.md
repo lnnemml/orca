@@ -1,11 +1,13 @@
 # Module: job groups UI (the Jobs-view sidebar)
 
 **Status:** built (Phase 4.7.3–4.7.4, closing Phase 4.7). The tree sidebar + deep filter +
-Move-to picker + assign-on-create, plus a search/status filter, over the Jobs view.
+Move-to picker + assign-on-create, plus a search/status filter, over the Jobs view. Unit 2a adds a
+reusable `<GroupSelect>` and an **explicit destination-group picker on New Job**.
 **Files:** `src/groups/tree.ts` (pure group logic), `src/groups/tree.test.ts`,
 `src/groups/search.ts` (pure search/status logic), `src/groups/search.test.ts`,
+`src/groups/GroupSelect.tsx` (+`.test.tsx`, the reusable picker + pure helpers),
 `src/groups/GroupSidebar.tsx`, `src/screens/JobsScreen.tsx` (two-pane host),
-`src/App.tsx` (lifted selection), `src/screens/NewJobScreen.tsx` (assign-on-create),
+`src/App.tsx` (lifted selection), `src/screens/NewJobScreen.tsx` (the New Job picker),
 group + filter styles in `src/styles/app.css`.
 **Data layer:** [groups.md](groups.md) (schema v16 + the CRUD commands this UI composes).
 **Decision record:** [ADR-019](../architecture/adr-019-job-organization.md) (Decision 3 +
@@ -20,8 +22,9 @@ switch to "New Job" (assign-on-create reads it there). That one selection drives
 things, so they can never disagree:
 
 1. **The deep jobs filter** — `JobsScreen` renders `filterJobsByGroup(jobs, selection, groups)`.
-2. **Assign-on-create** — `App` derives `activeGroupId = selection.kind === "group" ? selection.id
-   : null` and passes it to `NewJobScreen`; a newly created job inherits it.
+2. **The New Job destination picker's default** — `App` derives `activeGroupId = selection.kind ===
+   "group" ? selection.id : null` and passes it to `NewJobScreen`, where it is the **default** of the
+   explicit `<GroupSelect>` (overridable — see "Explicit destination-group picker" below).
 3. **The Move-to exclusion** — a group's move picker offers `moveTargetsFor(groups, id)`.
 
 Filter (1) and exclusion (3) both derive from the **same** pure `descendantGroupIds` (one subtree
@@ -94,12 +97,44 @@ The search box + the seven **status chips** (draft…cancelled toggles) + a Clea
 filter"** (the search over-narrowed) — so an over-narrow combination reads as a filter, not an empty
 app.
 
-## Assign-on-create (`NewJobScreen.tsx`)
+## The reusable picker (`GroupSelect.tsx`)
 
-`App` passes `activeGroupId`. After `create_job` returns the new `Job`, `assignActiveGroup(id)` calls
-`move_job(id, activeGroupId)` when it is non-null — for **both** the normal create path and the
-"Find conformers" GOAT quick-action. Pure composition of the existing command, **no Rust change**.
-When "All jobs"/"Ungrouped" is active, `activeGroupId` is null and the new job stays ungrouped.
+`<GroupSelect groups value onChange>` is a **purely presentational** controlled `<select>` of the
+existing groups plus an "(ungrouped)" choice — no `invoke` / store / `move_job`; the consumer decides
+what to do with the emitted value. Two invariants, both pure-tested:
+
+- **The sentinel never escapes.** A `<select>` value can't be `null`, so the ungrouped option needs a
+  sentinel (`ROOT_OPTION = "__root__"`) — but `onChange` emits a **clean `string | null`** via
+  `groupIdFromOptionValue` (`"__root__"` → `null`, else the id); `value` is shown via
+  `optionValueFromGroupId` (`null` → `"__root__"`). `ROOT_OPTION` lives **here** and is imported by
+  `JobsScreen` and `GroupSidebar` (the two duplicate local copies were consolidated onto this export).
+- **The New-Job assign decision is a pure function** — `resolveGroupAssignment(groupTouched,
+  pickedGroupId)` (see below).
+
+## Explicit destination-group picker on New Job (`NewJobScreen.tsx`, unit 2a)
+
+The New Job form mounts a `<GroupSelect>` (a "Group" field beside the title) so the user **explicitly
+chooses** where the job lands. It supersedes the 4.7.3 implicit active-group assign:
+
+- **Default follows the active group until touched.** `pickedGroupId` initializes to `activeGroupId`,
+  and an effect keeps it in sync **while `groupTouched` is false** — so switching the sidebar group
+  before creating updates the default (a `groupTouched` flag, NOT a naive `useState(activeGroupId)`
+  init that would freeze on the first render). The first explicit pick sets `groupTouched` and freezes
+  the default.
+- **`groups` is loaded locally** (`list_groups` on mount), mirroring how `JobsScreen` loads its own —
+  `App` holds only the `GroupSelection`, not the list.
+- **The assign is `resolveGroupAssignment(groupTouched, pickedGroupId)`**, then `move_job` when it says
+  assign — the **same `null`-for-ungrouped semantics** as `JobsScreen.moveJob`, applied to **all three**
+  create paths (`create_job` normal + GOAT "Find conformers" + the builder `create_neb_job`). The rule:
+  - **untouched + no active group** (`null`) → **NO-OP**: exactly today's behavior, and — load-bearing
+    — it does **not** clobber a create-path default, e.g. a NEB-TS's **reactant-inherited group**
+    (Unit 1, stamped in Rust);
+  - **untouched + an active group** → assign it (the 4.7.3 assign-on-create);
+  - **an explicit pick** → the picker **WINS**, including "(ungrouped)" (`null`), overriding any default.
+
+  Bite-verified in `GroupSelect.test.tsx`: the four `resolveGroupAssignment` cases (the touched-`null`
+  override is a distinct bite — it must NOT fall into the untouched no-op), plus the sentinel-leak and
+  render bites. Pure composition of `move_job`, **no Rust change**.
 
 ## The one Rust touch
 

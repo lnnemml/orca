@@ -92,7 +92,8 @@ import {
   ORCA_TEMPLATES,
   type OrcaTemplate,
 } from "../templates/orca-templates";
-import type { Job, Molecule, SidecarStatus } from "../types";
+import type { Group, Job, Molecule, SidecarStatus } from "../types";
+import { GroupSelect, resolveGroupAssignment } from "../groups/GroupSelect";
 
 /** Charge with an explicit sign: `0`, `-1`, `+1`. */
 function signed(n: number): string {
@@ -180,6 +181,22 @@ export function NewJobScreen({
   const [logRejected, setLogRejected] = useState<LogRejection | null>(null);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // ── Destination group (explicit picker, Phase 4.7 unit 2a) ──────────────────
+  // The group the created job lands in. DEFAULT = the active sidebar group, and it FOLLOWS
+  // the active group until the user touches the picker — a `groupTouched` flag, NOT a naive
+  // `useState(activeGroupId)` init that would freeze on the first render and ignore a later
+  // sidebar switch. After an explicit pick the picker WINS (see `assignPickedGroup`).
+  const [groups, setGroups] = useState<Group[]>([]);
+  const [pickedGroupId, setPickedGroupId] = useState<string | null>(activeGroupId ?? null);
+  const [groupTouched, setGroupTouched] = useState(false);
+  useEffect(() => {
+    invoke<Group[]>("list_groups")
+      .then(setGroups)
+      .catch(() => setGroups([]));
+  }, []);
+  useEffect(() => {
+    if (!groupTouched) setPickedGroupId(activeGroupId ?? null);
+  }, [activeGroupId, groupTouched]);
   // Set by the builder when the current buffer is a generated NEB-TS input; carries the
   // product.xyz + the two source job ids so `create()` can route to `create_neb_job`.
   // CLEARED whenever the buffer is replaced by anything else (adoptWholeInput) so a stale
@@ -1206,12 +1223,20 @@ export function NewJobScreen({
     }
   };
 
-  // Assign-on-create (Phase 4.7.3): a job created while a group is active in the
-  // Jobs sidebar inherits it. Pure composition of the existing `move_job` command —
-  // no Rust change. No-op when nothing is active ("All jobs"/"Ungrouped" → null).
-  const assignActiveGroup = async (jobId: string) => {
-    if (activeGroupId == null) return;
-    await invoke("move_job", { jobId, groupId: activeGroupId });
+  // Assign the created job to the PICKED destination group (unit 2a — explicit picker over
+  // the 4.7.3 implicit active-group assign). Pure composition of the existing `move_job`
+  // command — no Rust change, same `null`-for-ungrouped semantics as `JobsScreen.moveJob`.
+  //
+  // The `groupTouched` guard preserves zero regression AND makes an explicit pick authoritative:
+  //   • untouched + no active group (pickedGroupId == null) → NO-OP — exactly today's behavior,
+  //     and it does NOT clobber a create-path default (a NEB-TS inherits its reactant's group in
+  //     Rust, Unit 1);
+  //   • untouched + an active group → assign it (as the 4.7.3 assign-on-create did);
+  //   • an explicit pick → the picker WINS, including "(ungrouped)" (null), overriding any default.
+  const assignPickedGroup = async (jobId: string) => {
+    const decision = resolveGroupAssignment(groupTouched, pickedGroupId);
+    if (!decision.assign) return;
+    await invoke("move_job", { jobId, groupId: decision.groupId });
   };
 
   const create = async (run: boolean) => {
@@ -1257,8 +1282,8 @@ export function NewJobScreen({
             // is no scene (empty log), keeping the two columns consistent.
             sceneLogJson: scene ? serializeLog(log) : null,
           });
-      // Inherit the active group before navigating (assign-on-create).
-      await assignActiveGroup(job.id);
+      // Assign the picked destination group before navigating (unit 2a).
+      await assignPickedGroup(job.id);
       // The detail screen performs the actual submit (after attaching its log
       // listeners) so no early output lines are missed.
       if (run) onOpenDetail(job.id, true);
@@ -1292,7 +1317,7 @@ export function NewJobScreen({
         sceneLogJson: null,
       });
       // A conformer search started under an active group belongs in it too.
-      await assignActiveGroup(job.id);
+      await assignPickedGroup(job.id);
       onOpenDetail(job.id, true); // queue + run, then open its detail
     } catch (e) {
       setError(String(e));
@@ -1909,6 +1934,20 @@ export function NewJobScreen({
             value={title}
             onChange={(e) => setTitle(e.currentTarget.value)}
             spellCheck={false}
+          />
+        </div>
+        <div className="field">
+          <label className="label" htmlFor="job-group">
+            Group
+          </label>
+          <GroupSelect
+            id="job-group"
+            groups={groups}
+            value={pickedGroupId}
+            onChange={(g) => {
+              setGroupTouched(true);
+              setPickedGroupId(g);
+            }}
           />
         </div>
         <div className="row" style={{ alignSelf: "flex-end" }}>

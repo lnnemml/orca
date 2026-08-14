@@ -8,9 +8,7 @@ import { formatEnergy, formatTimestamp, formatWallTime } from "../format";
 import { GroupSidebar } from "../groups/GroupSidebar";
 import { filterJobsByGroup, type GroupSelection } from "../groups/tree";
 import { filterJobsBySearch } from "../groups/search";
-
-/** Sentinel for the "(ungrouped)" option in the per-job move picker. */
-const ROOT_OPTION = "__root__";
+import { ROOT_OPTION } from "../groups/GroupSelect";
 
 /** The status chips, in state-machine order. */
 const STATUS_CHIPS: JobStatus[] = [

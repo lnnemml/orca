@@ -1157,6 +1157,17 @@ Group-delete **promotes** children (never a destructive cascade); jobs orphan to
       orthogonal to `pathway_id` (ADR-019 Decision 5). Rust-only, no migration/column, no UI — the New Job
       path stays `group_id NULL` at insert. `commands/jobs.rs` (+5 bites). **Next:** the explicit group
       **picker / override** at spawn time (Unit 2). `modules/groups.md`.
+- [x] **explicit group picker on New Job (Unit 2a).** A reusable **`<GroupSelect>`** (pure presentational
+      controlled `<select>`: existing groups + "(ungrouped)"; the `ROOT_OPTION` sentinel **never escapes** —
+      `onChange` emits a clean `string | null`; the two duplicate `ROOT_OPTION` copies in
+      `JobsScreen`/`GroupSidebar` consolidated onto its export) mounted in the New Job form. The picker
+      **defaults to the active sidebar group and follows it until touched** (a `groupTouched` flag, not a
+      naive init), then an explicit pick **wins** (incl. "(ungrouped)"). Assign via
+      `resolveGroupAssignment(groupTouched, pickedGroupId)` → `move_job`, across **all three** create paths
+      (`create_job` + GOAT + builder `create_neb_job`) — untouched-no-active-group is a NO-OP so it never
+      clobbers a NEB-TS's Unit-1 reactant-inherited group. Frontend-only: no Rust/migration/column.
+      `src/groups/GroupSelect.tsx` (+11 vitest bites). **Next (Unit 2b):** an override picker at the 4
+      derived-spawn sites. `modules/groups-ui.md`.
 
 ---
 

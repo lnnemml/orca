@@ -4,6 +4,7 @@ import { confirm, message } from "@tauri-apps/plugin-dialog";
 
 import type { Group } from "../types";
 import { exportGroup, type CopyMode } from "../export/save";
+import { ROOT_OPTION } from "./GroupSelect";
 import {
   buildGroupTree,
   moveTargetsFor,
@@ -20,10 +21,6 @@ interface GroupSidebarProps {
   onChanged: () => void | Promise<void>;
   onError: (msg: string) => void;
 }
-
-/** Sentinel value for the "(root)" option in a native <select> (a select value
- * can't be null). */
-const ROOT_OPTION = "__root__";
 
 /**
  * The group tree sidebar of the Jobs view (Phase 4.7.3, ADR-019). Renders the two
