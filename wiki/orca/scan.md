@@ -1,11 +1,12 @@
 # ORCA `%geom Scan` — relaxed surface scan input
 
-The `Scan` sub-block of `%geom` drives ORCA's **relaxed surface scan**: it steps one
-internal coordinate from a start to an end value over N points, re-optimising the rest of
-the geometry at each point. OrcaStudio's Stage-A1 emit (`src/scene/scan.ts` / Rust
-`orcastudio-core::emit::emit_scan_block`) generates this block; the artifacts it produces are
-parsed per `parse-sources.md` §"Relaxed scan artifacts". See also `constraints.md` (the sibling
-sub-block and the shared index base) and `adr-016-emit-input-ownership.md`.
+The `Scan` sub-block of `%geom` drives ORCA's **relaxed surface scan**: it steps one (or several —
+see the 2D grid below) internal coordinate(s) from a start to an end value over N points, re-optimising
+the rest of the geometry at each point. OrcaStudio's **frontend `src/scene/scan.ts` generates this block**
+(`injectScan`, 1..N coordinates — the input text is the source of truth, ADR-008); the Rust
+`orcastudio-core::emit::emit_scan_block` is a **1-coordinate golden-only twin** (see the 2D section). The
+artifacts are parsed per `parse-sources.md` §"Relaxed scan artifacts". See also `constraints.md` (the
+sibling sub-block and the shared index base) and `adr-016-emit-input-ownership.md`.
 
 ## Block syntax
 
@@ -85,6 +86,53 @@ a single `%geom` locator (`src/scene/geomBlock.ts`) between `injectScan` and `in
 tracks block depth over the full recognised sub-block set (`constraints` + `scan`) — a locator
 that knew only `Constraints` would mis-read a `Scan` block's `end` as closing `%geom`.
 
+## Two-coordinate (2D) relaxed surface scan — a native nested grid (Stage 4a)
+
+A `Scan` block may hold **more than one coordinate**: ORCA then runs a **native nested N₁×N₂ relaxed
+surface scan** (every combination of coordinate-1 × coordinate-2 values, re-optimising the rest at
+each grid point). This is how a **concerted** reaction (Diels-Alder: two forming bonds) is mapped as a
+2D potential-energy surface. **Probe-measured** (rule #10, a real XTB run, 2026 — fact, not memory):
+
+```
+%geom Scan
+  B 11 3 = 3.446, 1.5, 4
+  B 10 0 = 3.4, 1.5, 4
+end
+end
+```
+
+- **4 × 4 = 16 grid points.** `output.out` reports **`There are 2 parameter to be scanned`**.
+- **The two `end`s:** the FIRST closes `Scan`, the SECOND closes `%geom` — one `Scan` block, one
+  `%geom`. Indices are 0-based verbatim (`B 11 3`, `B 10 0`), same base as the 1D scan.
+- **Emit form.** OrcaStudio emits the **separate-line** form (`%geom` / `Scan` on their own lines,
+  byte-identical in style to the gated 1D emit), NOT the probe's **inline** `%geom Scan`. The two are
+  **ORCA-equivalent**; that ORCA accepts our *separate-line two-coordinate* form specifically is
+  confirmed by a real app-**generated** run (the Stage-4a manual gate m2), not by the inline probe —
+  "our form ≠ the measured-good form" until a run on OUR bytes says so.
+- **Rust twin is 1-coordinate only.** `orcastudio-core::emit::emit_scan_block` is a **golden-only**
+  `pub fn` (its only callers are its own `#[cfg(test)]` byte-identity tests — it is NOT composed into
+  `emit_input` or any run/re-emit path). The **frontend `injectScan` owns the emitted scan text**
+  (ADR-008: the input text is the source of truth). So the 2-coordinate emit lives in the frontend
+  only; the Rust golden was deliberately left 1-coordinate. **If a future re-emit path** (a server-side
+  input regeneration in Phase 5/6 SSH/SLURM) is ever added, the Rust twin must be widened to match — a
+  divergence recorded here so it is not a silent trap.
+
+### The `.dat`/point-file layout for the 2D parser (measured — pinned for Stage 4b)
+
+Recorded now, from the probe, so Stage 4b's surface parser reads the grid correctly:
+
+- **`input.relaxscanact.dat` is row-major with coordinate 1 as the OUTER loop and coordinate 2 as the
+  INNER loop** — i.e. coordinate 2 varies fastest; the first N₂ rows are coordinate-1 point 0 × all
+  coordinate-2 points, and so on. (The list order of the coordinates in the `Scan` block IS this
+  outer→inner axis order — `injectScan` preserves it, which is why the emit order is load-bearing.)
+- **`input.relaxscanscf.dat` is all zeros for an XTB scan** (the SCF-energy column has no meaning under
+  the semiempirical driver) — the parser must read the **act** curve, not scf, for XTB.
+- **Point geometry files `input.NNN.xyz` map NNN ↔ row NNN** of the act table (the same 1:1 the 1D
+  reader uses), so a grid point's geometry is `input.<rowIndex>.xyz`.
+
+(Stage 4a is **input only** — this layout is not parsed yet; the heatmap + OptTS-from-a-grid-saddle
+handoff is Stage 4b.)
+
 ## Real run that confirmed the app-generated input (Stage A1, 2026-08-07)
 
 Domain rules #1/#3/#10: the emit is only trusted once a real invocation confirms it. The
@@ -101,19 +149,34 @@ Run recorded in `wiki/log.md` (Stage A1 session entry).
 
 ## The Scan panel + Scan-from-selection (Stage A2)
 
-`ScanPanel` (`src/scene/ScanPanel.tsx`) is a **view over the input text** — its only source is
-`inspectScanBlock(content)`, every edit is an `injectScan(content, …)` transform; there is no React
-state that *is* the scan (the number fields keep a transient keystroke draft only). It renders the
-three block states (absent → add-path hint; parsed → the coordinate + editable start/end/npoints +
-remove; unrecognised → a hands-off notice), and surfaces `scanOptIssue` inline. **Scan-from-
-selection** lives in `AtomInspector` ("Scan this {distance/angle/dihedral}"): a 2/3/4-atom pick →
-`scanFromSelection` (kind from count; atoms resolved from `AtomId` to the current 0-based global
-index at build time, so the coordinate survives a fragment index shift) with an editable default
-range (start = current measured value; +1 Å / +30° / +60° span; N = 10). The panel sits in the
-editor dock next to Constraints.
+`ScanPanel` (`src/scene/ScanPanel.tsx`) is a **view over the input text** — its source is
+`parseScanCoordinates(content)` (the N-aware read), every edit is an `injectScan(content, …)` transform;
+there is no React state that *is* the scan (the number fields keep a transient keystroke draft only). It
+renders the states (absent → add-path hint; parsed → coordinate 1 + editable start/end/npoints + remove,
+**plus an optional second coordinate**; unrecognised, i.e. a `#` comment or an unparsable line → a
+hands-off notice), surfaces `scanOptIssue` inline, and shows the **point count** (N₁×N₂) so the run cost
+is visible before submitting. **Scan-from-selection** lives in `AtomInspector` ("Scan this
+{distance/angle/dihedral}"): a 2/3/4-atom pick → `scanFromSelection` (kind from count; atoms resolved
+from `AtomId` to the current 0-based global index at build time, so the coordinate survives a fragment
+index shift) with an editable default range (start = current measured value; +1 Å / +30° / +60° span;
+N = 10) — this creates/replaces the **first** coordinate.
+
+**The second coordinate (Stage 4a)** is an atom-**PAIR** (a bond, `B`) entered in the panel: "+ Add 2nd
+coordinate" seeds a valid default (its range from coordinate 1), then its two 0-based atom indices +
+range are editable in place; removing it returns to a 1D scan. Because `inspectScanBlock` still flags a
+>1-line block as `unrecognised`, the selection add-path is guarded off while a 2D scan is present
+(`scanIsMultiCoord` in `NewJobScreen` gives the honest "a 2D scan is already set — edit it in the Scan
+panel" reason, not a false "unrecognised") — so a single-coordinate "Scan this" can never clobber the
+grid. The panel sits in the editor dock next to Constraints.
 
 ## Not yet covered (later stages)
 
-- **Multi-coordinate scans** (several coordinates in one `Scan` block — an N-D grid): A1/A2 model a
-  single coordinate; a multi-line `Scan` block reads as `unrecognised` (won't be rewritten).
-- **Scan output parsing** into an energy profile: Stage B (`relaxscan.rs`).
+- **2D scan OUTPUT parsing + visualization + handoff** (Stage 4b): reading the N₁×N₂ act table into a
+  surface (heatmap), and an OptTS-from-a-grid-saddle handoff. The `.dat`/point-file layout is pinned
+  above from the probe. **The 2D INPUT is landed (Stage 4a)** — `injectScan` emits 1..N coordinates,
+  `parseScanCoordinates` reads them, `ScanPanel` builds a 2-coordinate grid.
+- **3-D (or higher) grids** — the pure builder/parser already loop over 1..N coordinates; the UI caps at
+  2 (the driving Diels-Alder case). A 3rd coordinate is a UI-only extension.
+- **A/D second coordinates** — the second-coordinate UI is an atom-**pair** (`B`) only; the model
+  supports `A`/`D`, so this is a UI extension. A hand-written `A`/`D` second coordinate round-trips
+  (range-editable, atoms shown read-only).

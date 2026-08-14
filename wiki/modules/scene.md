@@ -143,20 +143,28 @@ functions, no imports from react / 3dmol / tauri. The reactive `store.ts` (added
 - `scan.ts` (Phase 4.5 Stage A1) — ORCA `%geom Scan` generate / parse / inject / guard:
   `ScanCoordinate` (kind B/A/D, 0-based atoms in the SAME space as `Constraint`,
   `start`/`end` with the `startText`/`endText` value_text-analogue, `npoints` ≥ 2),
-  `scanBlock` (**byte-identical to Rust `emit_scan_block`** — the golden pair), `injectScan`
-  (**composes into the one `%geom`** via `geomBlock`; insert/replace/remove the `Scan`
-  sub-block as a sibling of `Constraints`, never a second `%geom`), `parseScanBlock` /
-  `inspectScanBlock` (read-back for A2's view-over-text; non-destructive — a multi-coordinate
-  block or inline comment reads `unrecognised`), `scanOptIssue` (the loud Run-guard — a relaxed scan
+  `scanBlock` (the 1-coordinate rendering is **byte-identical to Rust `emit_scan_block`** — the golden
+  pair; the Rust twin is 1-coord golden-only, the frontend owns the 2D emit), `injectScan`
+  (accepts **one coordinate OR a list (1..N)** — a list emits every coordinate inside the ONE `Scan`
+  block, a **native N₁×N₂ relaxed grid** for a 2D PES; **composes into the one `%geom`** via `geomBlock`;
+  insert/replace/remove the `Scan` sub-block as a sibling of `Constraints`, never a second `%geom`; a
+  1-coordinate call is byte-identical to before), `parseScanBlock` (the 1-coordinate read) /
+  `parseScanCoordinates` (**the N-aware superset — all coordinates in order, outer→inner; null on
+  absent/comment/any-bad-line**) / `inspectScanBlock` (read-back for the absent/unrecognised distinction;
+  still flags a >1-line block as `unrecognised`, which guards the single-coordinate add-path off a 2D
+  scan), `scanOptIssue` (the loud Run-guard — a relaxed scan
   without a **measured** opt keyword is silently a single point; the set
   `{opt, optts, tightopt, verytightopt, looseopt}` is measured per rule #10, `wiki/orca/scan.md`),
   and (A2) `scanFromSelection(scene, AtomId[], range)` — build a coordinate from a 2/3/4-atom
   selection, resolving `AtomId → 0-based index` at build time (survives an index shift), mirroring
   `constraintFromSelection`. Pure / node-tested. `wiki/orca/scan.md`.
-- `ScanPanel.tsx` (Phase 4.5 A2) — the Scan dock section: a **view over the input text** (source =
-  `inspectScanBlock(content)`, edits = `injectScan`; the number fields keep only a transient
-  keystroke draft, never scan state). Renders absent / parsed (editable start/end/npoints + remove) /
-  unrecognised, surfaces `scanOptIssue` inline. Add path = `AtomInspector` "Scan this coordinate".
+- `ScanPanel.tsx` (Phase 4.5 A2; 2D grid = Stage 4a) — the Scan dock section: a **view over the input
+  text** (source = `parseScanCoordinates(content)`, edits = `injectScan`; the number fields keep only a
+  transient keystroke draft, never scan state). Renders absent / parsed (coordinate 1 editable +
+  **an optional 2nd coordinate** = a native N₁×N₂ grid) / unrecognised, surfaces `scanOptIssue` inline,
+  and shows the **N₁×N₂ point count**. The 2nd coordinate is an atom-**pair** (`B`) entered in the panel
+  (a `CoordEditor` with two 0-based `AtomIndexField`s); coordinate 1's add path is still `AtomInspector`
+  "Scan this coordinate".
 - `AtomInspector.tsx` — the atom panel on New Job (React; reads a selection held
   in `NewJobScreen` state, uses the shared `fragmentColor` palette).
 - `EditPanel.tsx` — edit-mode UI in the Atom rail section (React): target field,

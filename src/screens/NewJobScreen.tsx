@@ -33,6 +33,7 @@ import {
 import {
   inspectScanBlock,
   injectScan,
+  parseScanCoordinates,
   scanOptIssue,
   scanFromSelection,
 } from "../scene/scan";
@@ -1334,6 +1335,11 @@ export function NewJobScreen({
   const constraints =
     constraintsInspection.kind === "parsed" ? constraintsInspection.cs : [];
   const constraintsUnrecognised = constraintsInspection.kind === "unrecognised";
+  // A 2D scan reads as N coordinates — recognised, but the selection add-path (which
+  // creates/replaces ONE coordinate) must not clobber it; the 2nd coordinate is edited in
+  // the Scan panel. `inspectScanBlock` still flags >1 line as unrecognised, so distinguish
+  // "we DO recognise a 2D scan" from a genuinely unrecognised block for an honest reason.
+  const scanIsMultiCoord = (parseScanCoordinates(content)?.length ?? 0) > 1;
   const indexIssues = scene
     ? constraintIndexIssues(constraints, atomCount(scene))
     : [];
@@ -1643,7 +1649,9 @@ export function NewJobScreen({
           }
           onScan={scanFromSelectionHandler}
           scanDisabledReason={
-            inspectScanBlock(content).kind === "unrecognised"
+            scanIsMultiCoord
+              ? "A 2D scan is already set — edit its coordinates in the Scan panel below."
+              : inspectScanBlock(content).kind === "unrecognised"
               ? "The scan block contains syntax OrcaStudio doesn't recognise — edit it in the input editor."
               : null
           }

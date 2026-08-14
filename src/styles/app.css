@@ -1169,6 +1169,28 @@ select:disabled,
   font-size: 11px;
   align-self: center;
 }
+/* 2D scan (Stage 4a): the N₁×N₂ point-count hint, the second-coordinate section, and its
+   two editable 0-based atom-index inputs. */
+.scan-count {
+  font-size: 11px;
+}
+.scan-second-head {
+  font-size: 11px;
+  margin-top: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.scan-add-second {
+  margin-top: 8px;
+}
+.scan-atoms-edit {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.scan-atom-idx {
+  width: 52px;
+}
 .input-invalid {
   border-color: #ff6b6b;
 }

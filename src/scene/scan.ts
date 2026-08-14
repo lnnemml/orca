@@ -76,8 +76,16 @@ function scanLine(s: ScanCoordinate): string {
   return `${s.kind} ${idx} = ${start}, ${end}, ${s.npoints}`;
 }
 
+/** Normalize the injectScan/emit argument to an ordered coordinate list. A bare
+ * `ScanCoordinate` → `[coord]` (so the 1-coordinate path is byte-identical to before);
+ * an array is passed through (its ORDER is the grid's outer→inner scan order). */
+function coerceCoords(scan: ScanCoordinate | ScanCoordinate[]): ScanCoordinate[] {
+  return Array.isArray(scan) ? scan : [scan];
+}
+
 /**
- * The standalone block for an input that has no `%geom` yet:
+ * The standalone block for an input that has no `%geom` yet. A ONE-coordinate scan is
+ * byte-identical to before:
  *
  *     %geom
  *       Scan
@@ -85,17 +93,35 @@ function scanLine(s: ScanCoordinate): string {
  *       end
  *     end
  *
- * No trailing newline (callers add separators). **Byte-identical to Rust
- * `emit_scan_block`** — the golden pair pins this exact string.
+ * A TWO-coordinate scan is a NATIVE nested N₁×N₂ relaxed surface grid — the same one
+ * `Scan` block holds both lines, then one `end` closes `Scan` and one closes `%geom`
+ * (the measured probe shape, `wiki/orca/scan.md`):
+ *
+ *     %geom
+ *       Scan
+ *         B 11 3 = 3.446, 1.5, 4
+ *         B 10 0 = 3.4, 1.5, 4
+ *       end
+ *     end
+ *
+ * No trailing newline (callers add separators). The 1-coordinate rendering is
+ * **byte-identical to Rust `emit_scan_block`** — the golden pair pins that exact string.
  */
-export function scanBlock(s: ScanCoordinate): string {
-  return `%geom\n  Scan\n    ${scanLine(s)}\n  end\nend`;
+export function scanBlock(scan: ScanCoordinate | ScanCoordinate[]): string {
+  const body = coerceCoords(scan)
+    .map((c) => `    ${scanLine(c)}`)
+    .join("\n");
+  return `%geom\n  Scan\n${body}\n  end\nend`;
 }
 
-/** The `Scan … end` sub-block at a given indent (first line un-indented so a
- * replace can keep the existing leading whitespace). */
-function scanSubBlock(s: ScanCoordinate, indent: string): string {
-  return `Scan\n${indent}  ${scanLine(s)}\n${indent}end`;
+/** The `Scan … end` sub-block at a given indent (first line un-indented so a replace can
+ * keep the existing leading whitespace). One line per coordinate, in order — a
+ * single-coordinate call renders byte-identically to before. */
+function scanSubBlock(scan: ScanCoordinate | ScanCoordinate[], indent: string): string {
+  const body = coerceCoords(scan)
+    .map((c) => `${indent}  ${scanLine(c)}`)
+    .join("\n");
+  return `Scan\n${body}\n${indent}end`;
 }
 
 // ── Parsing ──────────────────────────────────────────────────────────────────
@@ -218,15 +244,22 @@ export function parseScanBlock(input: string): ScanCoordinate | null {
  *  - `%geom` present, no `Scan` → insert the sub-block just inside it (sibling of
  *    any `Constraints`) — NEVER a second `%geom`;
  *  - `%geom` with a `Scan` → replace that sub-block in place (no duplicate);
- *  - `scan === null` → remove an existing `Scan`, leaving any `Constraints` intact
+ *  - empty / `null` → remove an existing `Scan`, leaving any `Constraints` intact
  *    (a no-op when there is none).
+ *
+ * `scan` is **one coordinate OR a list** (1..N): a list emits every coordinate inside the
+ * ONE `Scan` block (a native N₁×…×N_k relaxed grid), still one `%geom`. A single coordinate
+ * (or a 1-element list) renders byte-identically to the pre-2D emit. `null` or an empty list
+ * removes. The list order is the grid's scan order (outer→inner).
  */
-export function injectScan(input: string, scan: ScanCoordinate | null): string {
+export function injectScan(input: string, scan: ScanCoordinate | ScanCoordinate[] | null): string {
+  const coords = scan === null ? [] : coerceCoords(scan);
+  const isEmpty = coords.length === 0;
   const geom = locateGeom(input);
 
   if (!geom) {
-    if (scan === null) return input;
-    const block = scanBlock(scan);
+    if (isEmpty) return input;
+    const block = scanBlock(coords);
     const coordIdx = input.search(/^[ \t]*\*/m);
     if (coordIdx >= 0) {
       const before = input.slice(0, coordIdx);
@@ -240,7 +273,7 @@ export function injectScan(input: string, scan: ScanCoordinate | null): string {
   const existing = geom.subBlocks.get("scan");
   if (existing) {
     const { start, end } = existing;
-    if (scan === null) {
+    if (isEmpty) {
       // Remove the sub-block and the blank line it leaves behind.
       const lineStart = input.lastIndexOf("\n", start - 1) + 1;
       let after = end;
@@ -248,15 +281,48 @@ export function injectScan(input: string, scan: ScanCoordinate | null): string {
       return input.slice(0, lineStart) + input.slice(after);
     }
     const indent = leadingIndent(input, start);
-    return input.slice(0, start) + scanSubBlock(scan, indent) + input.slice(end);
+    return input.slice(0, start) + scanSubBlock(coords, indent) + input.slice(end);
   }
 
   // %geom exists, no Scan → insert right after the %geom line (sibling of Constraints).
-  if (scan === null) return input;
+  if (isEmpty) return input;
   const nl = input.indexOf("\n", geom.geomOpen.end);
   const at = nl < 0 ? input.length : nl + 1;
-  const block = "  " + scanSubBlock(scan, "  ") + "\n";
+  const block = "  " + scanSubBlock(coords, "  ") + "\n";
   return input.slice(0, at) + block + input.slice(at);
+}
+
+/**
+ * Parse **every** coordinate line of the `Scan … end` sub-block into an ordered list — the
+ * N-aware superset of {@link parseScanBlock} (which owns only the 1-coordinate case). `null`
+ * for absent, an empty block, an inner `#` comment, or **any** line that fails to parse
+ * (all-or-nothing — the same non-destructive safety: we never half-understand a scan). The
+ * order is the grid's outer→inner scan order (row-major, matching the ORCA `.dat` layout —
+ * `wiki/orca/scan.md`). A 1-coordinate block returns `[coord]`.
+ *
+ * The closing token is the FIRST `end` after `Scan` — coordinate lines (`B i j = …`) hold no
+ * `end`, so this correctly bounds the block whether it has one line or many (the single-`%geom`
+ * footgun lives in {@link locateGeom}, not here).
+ */
+export function parseScanCoordinates(input: string): ScanCoordinate[] | null {
+  const masked = maskComments(input);
+  const toks = scanTokens(masked);
+  const gi = toks.findIndex((t) => t.t.toLowerCase() === "scan");
+  if (gi < 0) return null;
+  const endTok = toks.slice(gi + 1).find((t) => t.t.toLowerCase() === "end");
+  if (!endTok) return null;
+  const innerRaw = input.slice(toks[gi].end, endTok.start);
+  if (innerRaw.includes("#")) return null;
+
+  const lines = innerRaw.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
+  if (lines.length === 0) return null;
+  const coords: ScanCoordinate[] = [];
+  for (const line of lines) {
+    const c = parseScanLine(line);
+    if (!c) return null;
+    coords.push(c);
+  }
+  return coords;
 }
 
 // ── `! Opt` guard ─────────────────────────────────────────────────────────────

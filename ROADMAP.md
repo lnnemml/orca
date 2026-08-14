@@ -779,6 +779,21 @@ scan needs `! Opt` or ORCA silently does a single point — `wiki/orca/parse-sou
 relaxed-scan input, and runs it — no hand-editing of `%geom`. *(A1 ✅; A2 ✅ — author g1–g4 gate
 passed. **Stage A complete.**)*
 
+- [x] **Stage 4a — two-coordinate (2D) relaxed surface scan INPUT.** A `Scan` block holds 1..N
+      coordinates → a native nested N₁×N₂ relaxed grid, so a **concerted reaction (Diels-Alder)** is
+      mapped as a 2D PES (the Diels-Alder unblock). Probe-verified shape (rule #10, real XTB run: two
+      `B` lines in one `Scan`, `end`/`end`, `output.out` = "There are 2 parameter to be scanned").
+      Frontend scene only: `injectScan`/`scanBlock`/`scanSubBlock` widened to a coordinate **list**
+      (1-coord byte-identical; the single-`%geom` invariant holds — geomBlock **unchanged**, a Scan
+      `end` is never the `%geom` end, pinned by a bite), a new N-aware `parseScanCoordinates`, and
+      `ScanPanel` gains an optional 2nd bond coordinate + the N₁×N₂ point-count readout. 0-based indices
+      verbatim; the coordinate list ORDER is the grid's outer→inner axis order (load-bearing for 4b).
+      `src/scene/scan.ts` (+6 vitest bites), `ScanPanel.tsx`. No backend/run/migration; the Rust twin
+      `emit_scan_block` stays 1-coord golden-only (frontend owns the 2D emit; divergence documented).
+      `wiki/orca/scan.md`. **Next (Stage 4b):** parse the N₁×N₂ act table → a heatmap + an
+      OptTS-from-a-grid-saddle handoff (the `.dat`/point-file layout is **pinned** in `scan.md`:
+      act.dat row-major outer=coord1/inner=coord2, scf.dat zeros for XTB, point-file `NNN` ↔ row `NNN`).
+
 ### Stage B — Scan output parser + single energy profile (spine, part 2)
 
 - [x] **B1 — scan reader (Rust, over structured artifacts).** `src-tauri/src/parse/relaxscan.rs`

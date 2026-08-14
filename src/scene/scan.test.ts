@@ -4,11 +4,13 @@ import {
   type ScanCoordinate,
   scanBlock,
   parseScanBlock,
+  parseScanCoordinates,
   inspectScanBlock,
   injectScan,
   scanOptIssue,
   scanFromSelection,
 } from "./scan";
+import { locateGeom } from "./geomBlock";
 import { injectConstraints, parseConstraintsBlock } from "./constraints";
 import { testScene, idsFor, borohydrideAfterWaterRemoved } from "./scene-test-util";
 
@@ -315,5 +317,88 @@ describe("C-tightopt-block — a measured opt keyword is NOT false-blocked", () 
     // `Optimizer`-like tokens aren't in the measured set — only exact keywords are.
     const input = injectScan(`! r2SCAN-3c SP TightSCF${geom}`, scan);
     expect(scanOptIssue(input)).toMatch(/Opt/);
+  });
+});
+
+// ── Two-coordinate (2D) nested relaxed surface scan (Stage 4a) ─────────────────
+describe("2D scan — a native N₁×N₂ grid in ONE Scan block (the probe shape)", () => {
+  // The measured probe (a real XTB run, 0-based indices): two B lines, end/end, 4×4=16.
+  const COORD1: ScanCoordinate = { kind: "B", atoms: [11, 3], start: 3.446, end: 1.5, npoints: 4 };
+  const COORD2: ScanCoordinate = { kind: "B", atoms: [10, 0], start: 3.4, end: 1.5, npoints: 4 };
+  // Our canonical rendering: the SEPARATE-LINE `%geom` / `Scan` form (byte-identical style to
+  // our shipped-and-gated 1D emit), NOT the probe's inline `%geom Scan` bytes. This asserts we
+  // emit OUR form consistently; that ORCA ACCEPTS this 2-coordinate separate-line form is
+  // ORCA-equivalent to the (measured, inline) probe but is itself proven only by the live gate
+  // m2 on an app-GENERATED input (rule #10 — "our form ≠ the measured-good form"; see
+  // wiki/orca/scan.md). Structure matches the probe: both coords in one Scan, `end`/`end`.
+  const CANONICAL_2D =
+    "%geom\n  Scan\n    B 11 3 = 3.446, 1.5, 4\n    B 10 0 = 3.4, 1.5, 4\n  end\nend";
+
+  it("two_coordinate_scan_emits_our_canonical_two_coord_block", () => {
+    // Two B lines in ONE Scan, then `end` (closes Scan) then `end` (closes %geom) — our form.
+    expect(scanBlock([COORD1, COORD2])).toBe(CANONICAL_2D);
+    const out = injectScan(BASE, [COORD1, COORD2]);
+    expect(out).toContain("B 11 3 = 3.446, 1.5, 4");
+    expect(out).toContain("B 10 0 = 3.4, 1.5, 4");
+    expect(countGeom(out)).toBe(1);
+    // Exactly one Scan keyword; the two B lines live under it.
+    expect((out.match(/\bScan\b/gi) ?? []).length).toBe(1);
+    // Round-trips through the N-aware parser, in order.
+    expect(parseScanCoordinates(out)).toEqual([COORD1, COORD2]);
+  });
+
+  it("geomblock_locates_single_geom_with_two_coordinate_scan", () => {
+    // The footgun: a Scan `end` must NOT be read as closing %geom. The locator must find the
+    // ONE %geom and the Scan sub-block whose close is the FIRST `end` (after both B lines),
+    // leaving a SECOND `end` to close %geom.
+    const out = injectScan(BASE, [COORD1, COORD2]);
+    const geom = locateGeom(out);
+    expect(geom).not.toBeNull();
+    const scanSpan = geom!.subBlocks.get("scan");
+    expect(scanSpan).toBeDefined();
+    const scanText = out.slice(scanSpan!.start, scanSpan!.end);
+    // The Scan sub-block holds BOTH coordinates and closes with its own `end`.
+    expect(scanText).toContain("B 11 3 =");
+    expect(scanText).toContain("B 10 0 =");
+    expect(scanText.trimEnd().endsWith("end")).toBe(true);
+    // There is a %geom close AFTER the Scan's end — i.e. two `end`s, not one mis-eaten.
+    expect((out.match(/^\s*end\s*$/gim) ?? []).length).toBe(2);
+    // The %geom is genuinely located (would be null if the Scan end were mistaken for it).
+    expect(geom!.geomOpen.t.toLowerCase()).toBe("%geom");
+  });
+
+  it("one_coordinate_scan_unchanged", () => {
+    // A 1-element list is byte-identical to the bare single coordinate AND to the pre-2D golden.
+    expect(scanBlock([ETHANE_CC])).toBe(CANONICAL);
+    expect(scanBlock(ETHANE_CC)).toBe(CANONICAL);
+    expect(injectScan(BASE, [ETHANE_CC])).toBe(injectScan(BASE, ETHANE_CC));
+    // The single-coordinate parse still owns the 1D block (parseScanCoordinates is a superset).
+    expect(parseScanBlock(injectScan(BASE, ETHANE_CC))).toEqual(ETHANE_CC);
+    expect(parseScanCoordinates(injectScan(BASE, ETHANE_CC))).toEqual([ETHANE_CC]);
+  });
+
+  it("scan_indices_are_zero_based_verbatim", () => {
+    // Stored 0-based indices [11,3] / [10,0] emit exactly, with no +1 off-by-one.
+    const block = scanBlock([COORD1, COORD2]);
+    expect(block).toContain("B 11 3 =");
+    expect(block).toContain("B 10 0 =");
+    expect(block).not.toContain("B 12 4 ="); // a +1 shift would look like this
+  });
+
+  it("constraints_and_2d_scan_coexist_in_one_geom", () => {
+    // A pre-existing Constraints block + a 2-coordinate Scan → ONE %geom holds both.
+    const withConstraint = injectConstraints(BASE, [
+      { kind: "distance", atoms: [1, 2], value: 1.5 },
+    ]);
+    const out = injectScan(withConstraint, [COORD1, COORD2]);
+    expect(countGeom(out)).toBe(1);
+    expect(parseConstraintsBlock(out)).not.toBeNull(); // Constraints intact
+    expect(parseScanCoordinates(out)).toEqual([COORD1, COORD2]); // both scan coords present
+  });
+
+  it("an empty coordinate list removes the scan (same as null)", () => {
+    const both = injectScan(BASE, [COORD1, COORD2]);
+    expect(injectScan(both, [])).toBe(injectScan(both, null));
+    expect(parseScanCoordinates(injectScan(both, []))).toBeNull();
   });
 });

@@ -8188,3 +8188,69 @@ agnostic, non-retroactive); groups-ui.md (the `<InlineRename>` component + the J
 
 **Next:** — (Phase 4.7 job-organization units complete: delete · groups · nav · filter · export · group
 inherit · explicit picker 2a+2b · rename).
+
+## [2026-08-14] session | Two-coordinate (2D) relaxed surface scan INPUT — the Diels-Alder unblock (Stage 4a)
+
+**Done.** A `%geom Scan` block can now hold **1..N coordinates** → ORCA runs a **native nested N₁×N₂
+relaxed surface grid**, so a concerted reaction (Diels-Alder: two forming bonds) is mapped as a 2D PES.
+INPUT building only (frontend scene layer) — a 2D scan is an ordinary ORCA job; no backend/run/migration.
+
+**Probe (rule #10 — recorded in `wiki/orca/scan.md` as fact, not memory):** a real XTB run showed the
+two-coordinate shape — two `B` lines in ONE `Scan`, then `end` (closes Scan) then `end` (closes %geom),
+4×4=16 points, `output.out` = "There are 2 parameter to be scanned". 0-based indices verbatim.
+
+**Part A — pure builder** (`src/scene/scan.ts`): `injectScan`/`scanBlock`/`scanSubBlock` **widened** to
+accept `ScanCoordinate | ScanCoordinate[] | null` (a list emits every coordinate inside the one `Scan`;
+a single coordinate / 1-element list is **byte-identical** to the pre-2D emit). New N-aware
+`parseScanCoordinates` (all coords in order, outer→inner; null on absent/comment/any-bad-line). Left
+`inspectScanBlock`/`parseScanBlock` (the single-coordinate pair) **untouched** — so the 1D path is
+structurally regression-free and no UI needed changing to keep Part A green.
+
+**The single-`%geom` footgun needed NO geomBlock change** — coordinate lines (`B i j = …`) aren't
+sub-block keywords, so the depth-tracking locator already treats a multi-line `Scan … end` as one
+sub-block. Measured that it's unaffected and **pinned it with a bite** rather than editing the
+load-bearing locator on a guess.
+
++6 vitest bites: `two_coordinate_scan_emits_our_canonical_two_coord_block` (renamed per review — asserts
+OUR canonical **separate-line** form, ORCA-equivalent to the inline probe, NOT byte-identical to it),
+`geomblock_locates_single_geom_with_two_coordinate_scan` (the footgun — two `end`s, not one mis-eaten),
+`one_coordinate_scan_unchanged` (regression), `scan_indices_are_zero_based_verbatim`,
+`constraints_and_2d_scan_coexist_in_one_geom`, empty-list=null. **Demonstrated bite:** capping the
+builder at one coordinate turned 4 of the 2D tests red while `one_coordinate_scan_unchanged` stayed
+green — restored.
+
+**Emit-form discipline (from review):** we emit the separate-line `%geom`/`Scan` form (byte-identical
+style to the shipped 1D emit), NOT the probe's inline `%geom Scan`. The clean test proves only that we
+emit OUR form consistently; that ORCA accepts our *separate-line two-coordinate* form is confirmed by
+the live gate m2 on an app-**generated** input, not by the inline probe (rule #10 — "our form ≠ the
+measured-good form"). Recorded in `scan.md`.
+
+**Rust twin (from review):** confirmed `orcastudio-core::emit::emit_scan_block` is **golden-only** — its
+only callers are its own `#[cfg(test)]` byte-identity tests; it is NOT composed into `emit_input` or any
+run/re-emit path. The frontend `injectScan` owns the emitted scan text (ADR-008), so the 2D emit lives
+in the frontend and the Rust golden was deliberately left 1-coordinate. Documented the divergence in
+`scan.md` (a future Phase 5/6 server-side re-emit must widen the twin — flagged so it's not a silent trap).
+
+**Part B — UI** (`src/scene/ScanPanel.tsx`): migrated the panel to `parseScanCoordinates`; it renders
+coordinate 1 + an **optional second coordinate** (an atom-**pair** = a bond `B`, entered via two 0-based
+`AtomIndexField`s + range), and shows the **N₁×N₂ point count** so the cost is visible before running.
+"+ Add 2nd coordinate" seeds a valid default (range from coord 1); removing it returns to 1D. A shared
+`CoordEditor` renders each coordinate's row + range fields. In `NewJobScreen`, `scanIsMultiCoord`
+(`parseScanCoordinates`) gives the honest "a 2D scan is already set — edit it in the Scan panel" reason
+for the disabled "Scan this coordinate" button (instead of a false "unrecognised"), so a
+single-coordinate add can never clobber the grid. Minimal CSS for the new controls.
+
+**Verified:** `npx vitest run` → **888 passed** (67 files; delta +6). `tsc --noEmit` clean. No cargo delta.
+
+**Manual gate (Anton, live WebKitGTK):** m1 build a 2-coordinate scan → `input.inp` matches the probe
+shape (two B lines, end/end), one `%geom`; **m2 run a tiny 2D scan from an app-GENERATED (separate-line)
+input** → ORCA reports "2 parameter to be scanned", terminates normally, N₁×N₂ point files appear (this
+is the rule-#10 close on OUR emit form); m3 (negative) a 1-coordinate scan still builds/runs as before;
+m4 (negative) a scan WITH a constraint → one `%geom` holds both.
+
+**Wiki (same commit):** `wiki/orca/scan.md` (the 2D grid section + probe facts pinned for the 4b parser
++ the separate-line/inline divergence + the Rust-twin-1-coord note), `wiki/modules/scene.md` (injectScan
+list / parseScanCoordinates / ScanPanel 2D), ROADMAP Stage 4a landed (4b next, format pinned). No index
+count change (a `scan.md` update sufficed).
+
+**Next:** Stage 4b — parse the N₁×N₂ act table → heatmap + OptTS-from-a-grid-saddle handoff.
