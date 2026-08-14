@@ -86,6 +86,7 @@ pub fn run() {
             commands::jobs::read_conformer_reoptimization,
             commands::jobs::list_jobs,
             commands::jobs::get_job,
+            commands::jobs::rename_job,
             commands::jobs::update_job_status,
             commands::jobs::submit_job,
             commands::jobs::cancel_job,

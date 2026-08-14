@@ -17,6 +17,7 @@ import { deserializeScene } from "../scene/scene";
 import { buildReoptInput, DEFAULT_REOPT_METHOD } from "../scene/reopt";
 import { GroupSelect } from "../groups/GroupSelect";
 import { useGroupPicker } from "../groups/useGroupPicker";
+import { InlineRename } from "../jobs/InlineRename";
 import {
   aggregateReopt,
   CO_MINIMUM_TIE_KCAL,
@@ -588,7 +589,17 @@ export function JobDetailScreen({
       {job ? (
         <div style={{ marginBottom: 10 }}>
           <h2 className="section-title" style={{ marginBottom: 4 }}>
-            {job.title}
+            <InlineRename
+              value={job.title}
+              onCommit={async (title) => {
+                try {
+                  const updated = await invoke<Job>("rename_job", { id: job.id, title });
+                  setJob(updated);
+                } catch (e) {
+                  setError(String(e));
+                }
+              }}
+            />
           </h2>
           <div className="mono" style={{ color: "var(--muted)", fontSize: 12 }}>
             created {job.created_at}

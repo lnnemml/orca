@@ -388,6 +388,30 @@ pub(crate) fn get_job_conn(conn: &Connection, id: &str) -> Result<Job, AppError>
         .ok_or_else(|| AppError::NotFound(format!("job {id}")))
 }
 
+/// Rename a job's display **title** (unit 3). Mirrors [`rename_group_conn`] but ADDS an
+/// empty-title guard the group rename lacks: **"a job always has a non-empty display title"** is
+/// a data-model invariant, so the refusal lives HERE, at the boundary that owns it (rule #9) —
+/// a frontend-only guard is bypassable, and an MCP/programmatic rename must be held too. The
+/// STORED value is the **trimmed** title; a title empty or whitespace-only after trimming is
+/// REFUSED (`AppError::Backend`, the project's user-facing validation-refusal variant — the same
+/// `move_group`'s cycle guard uses), never silently coerced (a naive `UPDATE` would store `""`,
+/// break the row render, and make export's `slugify` fall back to `"job"` — identity conflation).
+/// **NotFound-first:** a gone id refuses before the empty check.
+///
+/// **State-agnostic** (unlike delete): rename touches no `job_dir`, queue, or process — a running
+/// job renames fine; title is metadata, NOT the ORCA input. **Non-retroactive:** a child that
+/// baked `— <old title>` into its OWN title at create time keeps it (a create-time snapshot).
+fn rename_job_conn(conn: &Connection, id: &str, title: &str) -> Result<Job, AppError> {
+    // NotFound first — nothing is touched (not even validated) if the id is absent.
+    get_job_conn(conn, id)?;
+    let trimmed = title.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::Backend("a job title cannot be empty".into()));
+    }
+    conn.execute("UPDATE jobs SET title = ?1 WHERE id = ?2", params![trimmed, id])?;
+    get_job_conn(conn, id)
+}
+
 /// Delete a job from the database and return its isolated `job_dir` (or `None`)
 /// for the caller to remove **after** the transaction commits (Phase 4.7.1).
 ///
@@ -657,6 +681,14 @@ pub fn read_conformer_reoptimization(
 pub fn get_job(db: State<'_, DbState>, id: String) -> Result<Job, AppError> {
     let conn = db.lock()?;
     get_job_conn(&conn, &id)
+}
+
+/// Rename a job's display title (unit 3). Trims + refuses an empty result; `NotFound` if the id
+/// is gone. State-agnostic (a running job renames fine); no `job_dir`/fs touch.
+#[tauri::command]
+pub fn rename_job(db: State<'_, DbState>, id: String, title: String) -> Result<Job, AppError> {
+    let conn = db.lock()?;
+    rename_job_conn(&conn, &id, &title)
 }
 
 /// The parsed `.property.txt` results for a job (the full structure, incl. per-atom
@@ -1036,6 +1068,66 @@ mod tests {
         assert_eq!(job.group_id, None);
         assert_eq!(all[0].group_id, None);
 
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- rename_job (unit 3): trim + empty-refusal + NotFound, at the Rust boundary ---
+
+    #[test]
+    fn rename_job_updates_title() {
+        let (conn, dir) = test_db();
+        let job = create_job_conn(&conn, "old title", "! r2SCAN-3c Opt", None, None).unwrap();
+
+        let renamed = rename_job_conn(&conn, &job.id, "new title").unwrap();
+        assert_eq!(renamed.title, "new title");
+        // Persisted — a fresh read agrees.
+        assert_eq!(get_job_conn(&conn, &job.id).unwrap().title, "new title");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn rename_job_trims_whitespace() {
+        let (conn, dir) = test_db();
+        let job = create_job_conn(&conn, "x", "! r2SCAN-3c Opt", None, None).unwrap();
+
+        let renamed = rename_job_conn(&conn, &job.id, "  foo  ").unwrap();
+        // The STORED value is trimmed — not "  foo  ".
+        assert_eq!(renamed.title, "foo");
+        assert_eq!(get_job_conn(&conn, &job.id).unwrap().title, "foo");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// BITE: an empty or whitespace-only title is REFUSED and the stored title is UNCHANGED —
+    /// a naive `UPDATE … SET title = ?` would store `""` and go green here.
+    #[test]
+    fn rename_job_refuses_empty() {
+        let (conn, dir) = test_db();
+        let job = create_job_conn(&conn, "keep me", "! r2SCAN-3c Opt", None, None).unwrap();
+
+        for bad in ["", "   ", "\t\n "] {
+            let err = rename_job_conn(&conn, &job.id, bad).unwrap_err();
+            assert!(matches!(err, AppError::Backend(_)), "empty title must be refused, got {err:?}");
+            // The title is untouched by a refused rename.
+            assert_eq!(get_job_conn(&conn, &job.id).unwrap().title, "keep me");
+        }
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn rename_job_missing_is_not_found() {
+        let (conn, dir) = test_db();
+        // NotFound-first: even with an empty title, a gone id is NotFound (not the empty-refusal).
+        assert!(matches!(
+            rename_job_conn(&conn, "no-such-job", "whatever"),
+            Err(AppError::NotFound(_))
+        ));
+        assert!(matches!(
+            rename_job_conn(&conn, "no-such-job", "   "),
+            Err(AppError::NotFound(_))
+        ));
         std::fs::remove_dir_all(&dir).ok();
     }
 

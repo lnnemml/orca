@@ -71,10 +71,28 @@ cycle guard beyond hiding self+descendants from the Move-to targets — the back
 source of truth (it re-validates and would reject a cycle); the UI just avoids offering an invalid
 target.
 
+## Inline job rename (`jobs/InlineRename.tsx`, unit 3)
+
+A small reusable `<InlineRename value onCommit onCancel>` edits a job's **display title** in place,
+used at BOTH the Jobs-list row (below) and the job-detail header ([results-ui.md](results-ui.md)).
+Display = the title + a pencil; the pencil (or a double-click on the title, for the non-clickable
+header) opens an `<input>`. **Enter** commits, **Esc** cancels, **blur** (click-away) commits — with
+Esc/blur **disambiguated explicitly** (a `handledRef`: Enter/Esc already resolved the edit, so the
+`blur` fired by the input's unmount is a no-op — otherwise Esc would commit through the follow-on
+blur). Commit is `sanitizeRenameInput(draft)` (`jobs/rename.ts`) — the **UX echo** of the Rust guard:
+`String.prototype.trim()` (leading/trailing only, matching `str::trim` — no internal collapsing),
+`null` when empty, so it can never disagree with what `rename_job` stores/refuses (bite-tested in
+`rename.test.ts`). Commit is skipped when the result is null (empty) or unchanged; the Rust
+`rename_job` stays authoritative. In the clickable row the pencil and the editing `<input>`
+**`stopPropagation`** so an edit never triggers open-detail navigation. **Not retroactive:** a
+derived child's baked-in `— <old title>` (e.g. a re-opt child) is a create-time snapshot and is not
+rewritten.
+
 ## Two-pane Jobs view (`JobsScreen.tsx`)
 
 `JobsScreen` owns the `groups` list (`list_groups`) and the jobs list (`list_jobs`), and lays the
-sidebar beside the table. Each row keeps its existing click (open detail) + Cancel / Run / Delete,
+sidebar beside the table. Each row's title cell is an `<InlineRename>` (→ `rename_job` then `load()`
+to reload); the row keeps its existing click (open detail) + Cancel / Run / Delete,
 and gains a **"Move…"** action → a native `<select>` of all groups **plus "(ungrouped)"** →
 `move_job(job.id, group | null)` (a job has no cycle concern, so every group is a valid target). A
 guard effect resets the selection to "All jobs" if the selected group vanished (deleted elsewhere),

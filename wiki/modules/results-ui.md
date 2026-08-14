@@ -363,6 +363,13 @@ share one copy.
 
 ## The Job-detail screen: one layout, and where the header energy comes from (unit 3.9)
 
+**The header title is inline-renamable (unit 3).** The `<h2>` job title hosts an `<InlineRename>`
+(`jobs/InlineRename.tsx`, documented in [groups-ui.md](groups-ui.md#inline-job-rename-jobsinlinerenametsx-unit-3))
+→ `rename_job(id, title)` then `setJob(updated)` (the header updates in place, no reload). The Rust
+command trims + refuses an empty title and is **state-agnostic** (a running job renames fine). Rename
+touches only `jobs.title` — not `input_content`, not the `job_dir`, and it is **not retroactive** to a
+derived child that baked `— <old title>` into its own title at create time.
+
 **One scrolling layout, not two.** The Job-detail screen (`JobDetailScreen`) scrolls as a normal
 column (`.screen.detail { overflow-y: auto }`); the live log console and the Browse-mode Monaco viewer
 get a **fixed** height (`60vh`), not `flex: 1`. Before unit 3.9 the screen was `overflow: hidden` with

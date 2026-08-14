@@ -9,6 +9,7 @@ import { GroupSidebar } from "../groups/GroupSidebar";
 import { filterJobsByGroup, type GroupSelection } from "../groups/tree";
 import { filterJobsBySearch } from "../groups/search";
 import { ROOT_OPTION } from "../groups/GroupSelect";
+import { InlineRename } from "../jobs/InlineRename";
 
 /** The status chips, in state-machine order. */
 const STATUS_CHIPS: JobStatus[] = [
@@ -241,7 +242,19 @@ export function JobsScreen({
                     className="clickable"
                     onClick={() => onOpenDetail(job.id, false)}
                   >
-                    <td>{job.title}</td>
+                    <td>
+                      <InlineRename
+                        value={job.title}
+                        onCommit={async (title) => {
+                          try {
+                            await invoke<Job>("rename_job", { id: job.id, title });
+                            await load();
+                          } catch (e) {
+                            setError(String(e));
+                          }
+                        }}
+                      />
+                    </td>
                     <td>
                       {job.status === "queued" && queuePaused ? (
                         <span className="badge queued" title="Queue is paused">

@@ -300,7 +300,15 @@ runs `terminate_on_exit` synchronously; `Drop` on `SidecarManager` is the backst
   `get_sidecar_status() -> SidecarStatus { status, port, version, expected_version }`.
 - **Jobs:** `create_job(title, input_content, scene_json: Option<String>, scene_log_json: Option<String>) -> Job` (UUID, inserts
   `draft`, snapshot written once); `list_jobs() -> Vec<Job>` (`created_at DESC`); `get_job(id)`
-  (`NotFound`); `update_job_status(id, status)` (stamps `started_at` on `running`, `completed_at`
+  (`NotFound`); `rename_job(id, title) -> Job` — rename a job's **display title** only (unit 3):
+  **NotFound-first** (a gone id refuses before any validation), then the stored value is the
+  **trimmed** title and an **empty/whitespace-only** result is **REFUSED** (`AppError::Backend`, not a
+  silent coerce — "a job always has a non-empty title" is a data-model invariant enforced at the Rust
+  boundary because a frontend guard is bypassable and an MCP rename must be held too; an empty title
+  would break the row render and make export's `slugify` fall back to `"job"`). **State-agnostic**
+  (unlike `delete_job` — a running job renames fine; no `job_dir`/queue/process touch, title ≠ the ORCA
+  input) and **non-retroactive** (a derived child's baked-in `— <old title>` is a create-time snapshot,
+  left as-is); `update_job_status(id, status)` (stamps `started_at` on `running`, `completed_at`
   on `completed`/`failed`/`cancelled`); `submit_job(app, id)` (enqueues, returns at once — needs
   `app: tauri::AppHandle` for `emit`); `cancel_job(id)`; `delete_job(app, id)` (see below);
   `pause_queue()` / `resume_queue()` /

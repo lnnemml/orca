@@ -1178,6 +1178,17 @@ Group-delete **promotes** children (never a destructive cascade); jobs orphan to
       the Rust default), an explicit "(ungrouped)" force-moves. Frontend-only: no Rust/command/param/
       migration, `GroupSelect`/`resolveGroupAssignment` reused not forked. `src/groups/useGroupPicker.ts`
       (vitest unchanged — glue over the tested pure core; tsc clean). `modules/groups-ui.md`.
+- [x] **job rename in the UI (Unit 3).** A job's **display title** is renamable in place from BOTH the
+      Jobs-list row and the job-detail header, via a new **authoritative `rename_job(id, title) -> Job`**
+      Rust command: **NotFound-first**, stores the **trimmed** title, and **REFUSES** an empty/whitespace
+      result at the Rust boundary (`AppError::Backend` — a frontend guard is bypassable; an empty title
+      breaks the row render + export `slugify`). **State-agnostic** (a running job renames fine — no
+      `job_dir`/queue touch) and **non-retroactive** (a derived child's baked-in `— <old title>` is a
+      create-time snapshot). Frontend: a pure `sanitizeRenameInput` (the UX echo of the guard, same
+      `trim` contract) + a reusable `<InlineRename>` (Enter commits / Esc cancels / blur commits, Esc-blur
+      disambiguated; `stopPropagation` in the clickable row). No migration/column (`jobs.title` since v2),
+      no `job_dir`/fs, no `input_content`. `commands/jobs.rs` (+4 cargo bites), `src/jobs/*` (+4 vitest).
+      `modules/tauri-core.md`, `modules/groups-ui.md`, `modules/results-ui.md`.
 
 ---
 

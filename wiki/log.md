@@ -8138,3 +8138,53 @@ source-seeded picker; ROADMAP Phase 4.7 marks the explicit picker COMPLETE (2a +
 change (no new page).
 
 **Next:** job RENAME (Unit 3) — a separate unit.
+
+## [2026-08-14] session | Job rename in the UI — authoritative rename_job with empty-refusal (Phase 4.7 unit 3)
+
+**Done.** A job's **display title** (`jobs.title`) is renamable in place from BOTH the Jobs-list row and
+the job-detail header, via a new authoritative `rename_job` Rust command. Title is the display label only
+— the UUID `job_dir`, `input_content`, and all artifacts are untouched (rule #3; title ≠ the ORCA input).
+
+**Part A — the Rust command** (`commands/jobs.rs`): `rename_job_conn` mirrors `rename_group_conn`'s shape
+(existence → UPDATE → return updated) and **adds the empty-title guard the group rename lacks**:
+**NotFound-first** (a gone id refuses before any validation — so renaming an absent job with an empty
+title is `NotFound`, not the empty-refusal), then the stored value is the **trimmed** title and an empty/
+whitespace-only result is **REFUSED** (`AppError::Backend` — the project's user-facing validation-refusal
+variant, the same one `move_group`'s cycle guard uses; there is no dedicated bad-input variant, and
+`create_*` don't refuse empty titles). Why at the Rust boundary (rule #9): "a job always has a non-empty
+display title" is a data-model invariant — a frontend guard is bypassable, and an MCP/programmatic rename
+must be held too; an empty title breaks the row render and makes export's `slugify` fall back to `"job"`
+(the identity conflation the export unit defended). **State-agnostic** (unlike delete — a running job
+renames fine; no `job_dir`/queue/process touch) and **non-retroactive** (a derived child's baked-in
+`— <old title>` is a create-time snapshot, left as-is). `pub rename_job` registered in `lib.rs`.
+
++4 cargo bites: `rename_job_updates_title`, `rename_job_trims_whitespace` (`"  foo  "` → stored `"foo"`),
+`rename_job_refuses_empty` (`""`/`"   "`/`"\t\n "` → `Err(Backend)` AND title UNCHANGED — the bite),
+`rename_job_missing_is_not_found` (incl. NotFound-first over an empty title). **Demonstrated bite:**
+replacing the guard with a naive `UPDATE … title = ?title` turned `rename_job_refuses_empty` red, restored.
+
+**Part B — frontend** (`src/jobs/`): a pure `sanitizeRenameInput(raw): string | null` — the **UX echo**
+of the Rust guard, the SAME contract (`String.prototype.trim()`, leading/trailing only — no internal
+collapsing, matching `str::trim` — `null` when empty), so the two can never disagree (bite-tested incl.
+"does NOT collapse internal whitespace" to pin the sync). A reusable `<InlineRename value onCommit
+onCancel>`: pencil / double-click → `<input>`; **Enter** commits, **Esc** cancels, **blur** commits, with
+Esc/blur **disambiguated explicitly** via a `handledRef` (Enter/Esc already resolved → the unmount-blur is
+a no-op, so Esc never commits through the follow-on blur). Commit skipped when null (empty) or unchanged;
+the Rust command stays authoritative. In the clickable Jobs row the pencil + editing `<input>`
+**`stopPropagation`** so an edit never triggers open-detail navigation. Wired at both sites: JobsScreen row
+(→ `rename_job` then `load()`), JobDetailScreen header (→ `rename_job` then `setJob(updated)`).
+
+**Verified:** `cargo test --lib` → **307 passed, 0 failed, 0 warnings** (delta +4). `npx vitest run` →
+**882 passed** (67 files; +4, +1 file). `tsc --noEmit` clean.
+
+**Manual gate (Anton, live WebKitGTK):** m1 rename from the row → shows in row + detail; m2 rename from the
+header → persists + shows in list; m3 (negative) empty/whitespace → refused, old title stays; m4 (negative)
+clicking the inline editor in a row does NOT navigate into the job; m5 rename a RUNNING job → allowed.
+
+**Wiki (same commit):** tauri-core.md (the `rename_job` command — trim + empty-refusal + NotFound, state-
+agnostic, non-retroactive); groups-ui.md (the `<InlineRename>` component + the Jobs-row site); results-ui.md
+(the detail-header site + the non-retroactive note); ROADMAP Phase 4.7 unit 3 landed. No index count change
+(InlineRename documented inside groups-ui.md, no new page).
+
+**Next:** — (Phase 4.7 job-organization units complete: delete · groups · nav · filter · export · group
+inherit · explicit picker 2a+2b · rename).
