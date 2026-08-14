@@ -3,6 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 
 import type { Job, JobStatus, ParsedResults } from "../types";
 import { buildConnectivityChildren } from "../scene/connectivity";
+import { GroupSelect } from "../groups/GroupSelect";
+import { useGroupPicker, useJobGroupId } from "../groups/useGroupPicker";
 import {
   connectivityVerdict,
   reactionCoordinateChanges,
@@ -40,6 +42,9 @@ export function ConnectivityPanel({
   const [delta, setDelta] = useState(DEFAULT_CONNECTIVITY_DELTA_ANGSTROM);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // ONE destination-group picker governs BOTH children (forward + backward): defaults to the
+  // TS job's group (the source), overridable. Not the active sidebar group (unit 2b).
+  const picker = useGroupPicker(useJobGroupId(tsJobId));
   const [children, setChildren] = useState<{ forwardId: string; backwardId: string } | null>(
     () => {
       try {
@@ -130,6 +135,10 @@ export function ConnectivityPanel({
         title: `Connectivity ← backward — ${tsJobTitle}`,
         inputContent: backwardInput,
       });
+      // ONE picker → BOTH children land in the one picked group (default = the TS's group)
+      // before submitting (unit 2b). No-op each when untouched + ungrouped source.
+      await picker.assignPicked(forward.id);
+      await picker.assignPicked(backward.id);
       await invoke("submit_job", { id: forward.id });
       await invoke("submit_job", { id: backward.id });
       const next = { forwardId: forward.id, backwardId: backward.id };
@@ -149,7 +158,7 @@ export function ConnectivityPanel({
     } finally {
       setCreating(false);
     }
-  }, [disabled, creating, imaginaryMode, tsJobId, tsJobTitle, results, delta, storageKey]);
+  }, [disabled, creating, imaginaryMode, tsJobId, tsJobTitle, results, delta, storageKey, picker]);
 
   const onReset = useCallback(() => {
     try {
@@ -202,6 +211,19 @@ export function ConnectivityPanel({
           >
             {creating ? "Creating…" : "Verify connectivity (± imaginary mode)"}
           </button>
+          <label
+            className="scan-control"
+            title="Destination group for BOTH connectivity children (forward + backward)"
+          >
+            group
+            <GroupSelect
+              className="select select-sm"
+              groups={picker.groups}
+              value={picker.pickedGroupId}
+              onChange={picker.onChange}
+              aria-label="Destination group for the connectivity children"
+            />
+          </label>
         </div>
       ) : (
         <ConnectivityVerdict

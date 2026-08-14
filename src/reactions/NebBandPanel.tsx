@@ -14,6 +14,8 @@ import {
 
 import type { NebResults, Job, NebImageGeometry } from "../types";
 import { buildOptTSInput } from "../scene/optts";
+import { GroupSelect } from "../groups/GroupSelect";
+import { useGroupPicker, useJobGroupId } from "../groups/useGroupPicker";
 import { MoleculeViewer } from "../viewer/MoleculeViewer";
 import { finalGeometryXyz } from "../export/exporters";
 import { saveText, exportName } from "../export/save";
@@ -90,6 +92,9 @@ export function NebBandPanel({
   // created + submitted on click.
   const [refining, setRefining] = useState(false);
   const [refineError, setRefineError] = useState<string | null>(null);
+  // Destination-group picker for the OptTS-refine child (unit 2b): defaults to THIS NEB
+  // job's group (the source), overridable. Not the active sidebar group.
+  const picker = useGroupPicker(useJobGroupId(jobId));
 
   // ── MEP band geometries (N3): the 3D image stepper + the saddle (TS) view ──────
   // The band-image geometries are loaded on demand; the selected image AND the
@@ -590,6 +595,9 @@ export function NebBandPanel({
                 title: `OptTS — ${jobTitle}`,
                 inputContent: input,
               });
+              // Move the child into the picked group (default = this NEB job's group) before
+              // submitting/navigating (unit 2b). No-op when untouched + ungrouped source.
+              await picker.assignPicked(child.id);
               await invoke("submit_job", { id: child.id });
               onOpenJob?.(child.id);
             } catch (e) {
@@ -603,6 +611,20 @@ export function NebBandPanel({
         >
           {refining ? "Refining…" : "Refine TS with OptTS"}
         </button>
+        <label
+          className="scan-control"
+          style={{ marginLeft: 8 }}
+          title="Destination group for the refined child job"
+        >
+          group
+          <GroupSelect
+            className="select select-sm"
+            groups={picker.groups}
+            value={picker.pickedGroupId}
+            onChange={picker.onChange}
+            aria-label="Destination group for the refined child"
+          />
+        </label>
       </div>
       {refineError ? (
         <div className="banner err" style={{ marginTop: 6 }}>

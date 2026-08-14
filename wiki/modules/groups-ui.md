@@ -2,12 +2,17 @@
 
 **Status:** built (Phase 4.7.3–4.7.4, closing Phase 4.7). The tree sidebar + deep filter +
 Move-to picker + assign-on-create, plus a search/status filter, over the Jobs view. Unit 2a adds a
-reusable `<GroupSelect>` and an **explicit destination-group picker on New Job**.
+reusable `<GroupSelect>` + an **explicit destination-group picker on New Job**; unit 2b mounts that
+picker at the **four result-derived spawn sites** (Scan / NEB / Connectivity / re-opt), seeded from
+the **source** job's group — the explicit group picker is now **COMPLETE**.
 **Files:** `src/groups/tree.ts` (pure group logic), `src/groups/tree.test.ts`,
 `src/groups/search.ts` (pure search/status logic), `src/groups/search.test.ts`,
 `src/groups/GroupSelect.tsx` (+`.test.tsx`, the reusable picker + pure helpers),
+`src/groups/useGroupPicker.ts` (the shared derived-spawn hook + `useJobGroupId` seed fetch),
 `src/groups/GroupSidebar.tsx`, `src/screens/JobsScreen.tsx` (two-pane host),
 `src/App.tsx` (lifted selection), `src/screens/NewJobScreen.tsx` (the New Job picker),
+the four spawn sites (`scan/ScanProfilePanel.tsx`, `reactions/NebBandPanel.tsx`,
+`spectrum/ConnectivityPanel.tsx`, `screens/JobDetailScreen.tsx`),
 group + filter styles in `src/styles/app.css`.
 **Data layer:** [groups.md](groups.md) (schema v16 + the CRUD commands this UI composes).
 **Decision record:** [ADR-019](../architecture/adr-019-job-organization.md) (Decision 3 +
@@ -135,6 +140,38 @@ chooses** where the job lands. It supersedes the 4.7.3 implicit active-group ass
   Bite-verified in `GroupSelect.test.tsx`: the four `resolveGroupAssignment` cases (the touched-`null`
   override is a distinct bite — it must NOT fall into the untouched no-op), plus the sentinel-leak and
   render bites. Pure composition of `move_job`, **no Rust change**.
+
+## The derived-spawn picker (unit 2b)
+
+The same `<GroupSelect>` is mounted at the **four result-derived spawn sites**, so a refined/re-opt
+child's destination is overridable at the moment it is spawned — the mirror of the New Job picker, with
+**one crucial difference in the seed**:
+
+> **New Job seeds the picker from the ACTIVE sidebar group; a derived child seeds it from its SOURCE
+> job's group.** (This is the same "defaults-backwards" invariant as the Rust Unit-1 inherit — a refined
+> child belongs with the job it came from, not with whatever folder is selected in the sidebar.)
+
+The wiring is factored into a thin hook `useGroupPicker(seedGroupId)` (`src/groups/useGroupPicker.ts`) —
+impure glue (like `useContainerWidth`) composing the *proven* pure `resolveGroupAssignment` + `move_job`;
+`groups` via `list_groups`, `pickedGroupId` + `groupTouched` + the follow-until-touched sync, and an
+`assignPicked(jobId)` the site calls after each child create. A companion `useJobGroupId(jobId)` fetches
+the source's `group_id` (the seed) for the three sites that hold only the source id. The seed **FOLLOWS**
+until touched, so a seed that arrives after the async fetch still lands.
+
+The four sites (each already fetched its source Job at the action — the picker only adds the seed read
+and the `assignPicked` call; **no Rust/command/param change**, override = the existing `move_job`):
+
+| Site | Source (seed) | Children moved |
+|---|---|---|
+| `scan/ScanProfilePanel.tsx` — Refine with OptTS | `useJobGroupId(jobId)` | the OptTS child |
+| `reactions/NebBandPanel.tsx` — Refine TS with OptTS | `useJobGroupId(jobId)` | the OptTS child |
+| `spectrum/ConnectivityPanel.tsx` — Verify connectivity | `useJobGroupId(tsJobId)` | **both** forward + backward |
+| `screens/JobDetailScreen.tsx` — Re-optimize top-k | `job.group_id` (in hand) | **all k** fan-out children |
+
+The `resolveGroupAssignment` no-op rule is what makes the redundant `move_job` on an untouched grouped
+source harmless and, crucially, keeps an untouched picker from clobbering the Rust Unit-1 default on an
+**ungrouped** source (no-op → the child keeps the source's group); an explicit "(ungrouped)" pick
+force-moves it out. No equality-gating of the `move_job` (frontend authoritative, Rust the fallback).
 
 ## The one Rust touch
 

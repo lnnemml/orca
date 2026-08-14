@@ -277,6 +277,11 @@ construction. A scan/SP/minimum (no `.hess`, or `imaginary_count ≠ 1`) never s
   job, so both join its pathway) — no scan/TS-specific branch, reused unchanged by E3's NEB. Their
   ids are persisted in `localStorage` keyed by the TS job (no schema change), so the verdict survives
   a reload.
+- **Destination group (unit 2b).** A `<GroupSelect>` beside the Verify button (via `useGroupPicker`)
+  sets where the children land — **ONE picker governs BOTH** (`assignPicked(forward.id)` +
+  `assignPicked(backward.id)`). It **defaults to the TS job's own group** (seeded by
+  `useJobGroupId(tsJobId)`, NOT the active sidebar group); an explicit pick overrides for both. See
+  [groups-ui.md](groups-ui.md#the-derived-spawn-picker-unit-2b).
 - **Verdict** once both parse — `connectivityVerdict`: `distinctBasins` ⟺ each endpoint left the TS
   AND the two endpoints differ from each other (rotation/translation-invariant **max interatomic-
   distance** metric, no Kabsch). `reactionCoordinateChanges` tables each endpoint's key bond
@@ -358,7 +363,8 @@ parser, no Rust**.
   job) + `submit_job` + navigate. No NEB-specific refine path. A charge/post-condition failure surfaces
   as an honest banner, no job created. The located TS it produces flows into the **existing E1b ΔG‡
   machinery** (role from `! OptTS`, pathway inherited) with **no new code** — closing NEB → located TS →
-  ΔG‡.
+  ΔG‡. A `<GroupSelect>` beside the button (via `useGroupPicker`) sets the child's destination group,
+  **defaulting to this NEB job's group** (`useJobGroupId(jobId)`, not the active sidebar group; unit 2b).
 
 ### Manual gate — NEB band viewer + Refine (author, real window) — PENDING
 

@@ -15,6 +15,8 @@ import { useSceneStore } from "../scene/store";
 import { stampFreshIds } from "../scene/ids";
 import { deserializeScene } from "../scene/scene";
 import { buildReoptInput, DEFAULT_REOPT_METHOD } from "../scene/reopt";
+import { GroupSelect } from "../groups/GroupSelect";
+import { useGroupPicker } from "../groups/useGroupPicker";
 import {
   aggregateReopt,
   CO_MINIMUM_TIE_KCAL,
@@ -124,6 +126,9 @@ export function JobDetailScreen({
   // never stored. `null` = no children yet (no fan-out launched).
   const [reoptAgg, setReoptAgg] = useState<ReoptComparison | null>(null);
   const [reoptAggBusy, setReoptAggBusy] = useState(false);
+  // Destination-group picker for the DFT re-opt fan-out children (unit 2b): defaults to THIS
+  // GOAT job's group (the source, already in hand), overridable. Not the active sidebar group.
+  const reoptGroupPicker = useGroupPicker(job?.group_id ?? null);
 
   useEffect(() => {
     if (!job || !isTerminalSuccessStatus(job.status) || ensembleTried.current) return;
@@ -328,6 +333,9 @@ export function JobDetailScreen({
           title: `re-opt #${conf.index + 1} — ${job.title}`,
           inputContent: input,
         });
+        // Move each fan-out child into the picked group (default = this job's group) before
+        // submitting (unit 2b). No-op when untouched + ungrouped source.
+        await reoptGroupPicker.assignPicked(child.id);
         await invoke("submit_job", { id: child.id });
       }
       setReoptMsg(
@@ -748,6 +756,15 @@ export function JobDetailScreen({
                   onChange={(e) => setReoptSolvent(e.target.value)}
                   placeholder="solvent"
                   style={{ width: 96 }}
+                />
+              </label>
+              <label className="reopt-ctl" title="Destination group for the re-opt children">
+                Group
+                <GroupSelect
+                  groups={reoptGroupPicker.groups}
+                  value={reoptGroupPicker.pickedGroupId}
+                  onChange={reoptGroupPicker.onChange}
+                  aria-label="Destination group for the re-opt children"
                 />
               </label>
               <button

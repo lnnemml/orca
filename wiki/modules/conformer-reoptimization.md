@@ -54,9 +54,11 @@ garbage (the exact class that made CREST QCG useless on the anion). The builder 
 The ensemble panel carries a **"Re-optimize top-k at DFT"** form: `k` (default 4, with the
 D1 cumulative-% at k shown beside it so the user SEES how much xTB population those k cover —
 Fork 3), method (default `r2SCAN-3c`), a **mode toggle** (Opt+Freq default = the ΔG path /
-Opt-only = an explicit quick screen), an SMD toggle + solvent, and an honest "creates k jobs"
-note. **Mode lives in the child input** (`! … Opt` vs `! … Opt Freq`); D2b auto-detects it
-from the input rather than a stored flag.
+Opt-only = an explicit quick screen), an SMD toggle + solvent, a **destination-group `<GroupSelect>`**
+(unit 2b — via `useGroupPicker`, seeded from **this GOAT job's own group** `job.group_id`, NOT the
+active sidebar group; one picker moves **all k** fan-out children via `assignPicked(child.id)`), and an
+honest "creates k jobs" note. **Mode lives in the child input** (`! … Opt` vs `! … Opt Freq`); D2b
+auto-detects it from the input rather than a stored flag.
 
 On trigger (`reoptTopK`): the k lowest-energy conformers' inputs are **built + charge-checked
 FIRST**; if any `buildReoptInput` throws, the whole fan-out aborts having created nothing (the

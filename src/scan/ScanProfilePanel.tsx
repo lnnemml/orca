@@ -13,6 +13,8 @@ import {
 
 import type { ScanProfileJson, ScanGeometry, Job } from "../types";
 import { buildOptTSInput } from "../scene/optts";
+import { GroupSelect } from "../groups/GroupSelect";
+import { useGroupPicker, useJobGroupId } from "../groups/useGroupPicker";
 import { MoleculeViewer } from "../viewer/MoleculeViewer";
 import { useContainerWidth } from "../charts/useContainerWidth";
 import { resolveClickedIndex, type ChartClickState } from "../charts/clickIndex";
@@ -76,6 +78,9 @@ export function ScanProfilePanel({
   // job is created + submitted on click.
   const [refining, setRefining] = useState(false);
   const [refineError, setRefineError] = useState<string | null>(null);
+  // Destination-group picker for the OptTS-refine child (unit 2b): defaults to THIS scan
+  // job's group (the source), overridable. Not the active sidebar group.
+  const picker = useGroupPicker(useJobGroupId(jobId));
   const { ref, width } = useContainerWidth();
   const chartRef = useRef<HTMLDivElement | null>(null);
 
@@ -233,6 +238,9 @@ export function ScanProfilePanel({
                 title: `OptTS — ${jobTitle}`,
                 inputContent: input,
               });
+              // Move the child into the picked group (default = this scan's group) before
+              // submitting/navigating (unit 2b). No-op when untouched + ungrouped source.
+              await picker.assignPicked(child.id);
               await invoke("submit_job", { id: child.id });
               onOpenJob?.(child.id);
             } catch (e) {
@@ -246,6 +254,16 @@ export function ScanProfilePanel({
         >
           {refining ? "Refining…" : "Refine with OptTS (Stage E)"}
         </button>
+        <label className="scan-control" title="Destination group for the refined child job">
+          group
+          <GroupSelect
+            className="select select-sm"
+            groups={picker.groups}
+            value={picker.pickedGroupId}
+            onChange={picker.onChange}
+            aria-label="Destination group for the refined child"
+          />
+        </label>
       </div>
       {refineError ? (
         <div className="banner err" style={{ marginTop: 6 }}>

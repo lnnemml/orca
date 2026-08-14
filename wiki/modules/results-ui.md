@@ -129,6 +129,9 @@ B1's `ParsedResults.scan` and **re-parses nothing** (ADR-012).
   ResultsCard → panel). A `buildOptTSInput` post-condition failure (wrong charge / Scan leak) surfaces
   in a banner and **creates no job**. The engine is deliberately source-agnostic: E3's NEB entry point
   will call the SAME `buildOptTSInput` / `create_optts_job` with a climbing-image seed.
+  A `<GroupSelect>` beside the button (via `useGroupPicker`) sets the child's destination group,
+  **defaulting to this scan job's group** (`useJobGroupId(jobId)`, NOT the active sidebar group;
+  `assignPicked(child.id)` before submit — unit 2b, [groups-ui.md](groups-ui.md#the-derived-spawn-picker-unit-2b)).
 - **The point geometries are a witness read (`xyz.rs` `first_frame`), not authoritative output** — a
   relaxed-scan point is not the input geometry, so it does not go through the reference-based geometry
   post-condition (which fails by design); its identity is the UI-boundary `elementsAgree` check, the

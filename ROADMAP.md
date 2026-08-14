@@ -1168,6 +1168,16 @@ Group-delete **promotes** children (never a destructive cascade); jobs orphan to
       clobbers a NEB-TS's Unit-1 reactant-inherited group. Frontend-only: no Rust/migration/column.
       `src/groups/GroupSelect.tsx` (+11 vitest bites). **Next (Unit 2b):** an override picker at the 4
       derived-spawn sites. `modules/groups-ui.md`.
+- [x] **explicit group picker on the derived-spawn sites (Unit 2b) — the explicit picker COMPLETE.** The
+      same `<GroupSelect>` mounted at all **four** result-derived spawn sites (Scan `Refine with OptTS`,
+      NEB `Refine TS`, Connectivity `Verify` → **both** children, JobDetail `Re-optimize top-k` → **all
+      k**), so a refined/re-opt child's destination is overridable at spawn — **seeded from the SOURCE
+      job's group**, NOT the active sidebar group (the derived mirror of Unit-1's Rust inherit). Factored
+      into a thin `useGroupPicker(seedGroupId)` hook (+ `useJobGroupId` seed fetch) composing the *proven*
+      `resolveGroupAssignment` + `move_job`; an untouched picker on an ungrouped source is a no-op (keeps
+      the Rust default), an explicit "(ungrouped)" force-moves. Frontend-only: no Rust/command/param/
+      migration, `GroupSelect`/`resolveGroupAssignment` reused not forked. `src/groups/useGroupPicker.ts`
+      (vitest unchanged — glue over the tested pure core; tsc clean). `modules/groups-ui.md`.
 
 ---
 

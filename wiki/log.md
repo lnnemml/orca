@@ -8088,3 +8088,53 @@ on New Job" sections (+refreshed Status/Files, +consolidated `ROOT_OPTION` note)
 No index.md count change (no new page).
 
 **Next:** Unit 2b — an override picker at the 4 derived-spawn sites (Scan/NEB/Connectivity/reopt).
+
+## [2026-08-14] session | Explicit group picker on all derived-spawn sites — GroupSelect + useGroupPicker (Phase 4.7 unit 2b)
+
+**Done.** Mounted the proven `<GroupSelect>` (2a) at the **four result-derived spawn sites** so the user
+can OVERRIDE the destination group when refining/re-optimizing — completing the explicit picker (2a New
+Job + 2b derived sites). Frontend-only; reuses `GroupSelect` + `resolveGroupAssignment` + `move_job`, no
+Rust/command/param/migration change.
+
+**The load-bearing seed rule (mirror of Unit-1's Rust inherit):** New Job seeds the picker from the
+**active sidebar group**; a **derived child seeds from its SOURCE job's group** — a refined child belongs
+with the job it came from, not with whatever the sidebar has selected. Getting the seed wrong is the
+headline bug (unit tests won't see it — the live gate must).
+
+**Factoring:** a thin hook `useGroupPicker(seedGroupId)` (`src/groups/useGroupPicker.ts`) — impure glue
+(like `useContainerWidth`) composing the *proven* pure `resolveGroupAssignment` + `move_job`: `groups`
+via `list_groups`, `pickedGroupId` + `groupTouched` + the follow-until-touched sync, and
+`assignPicked(jobId)` the site calls after each child create. A companion `useJobGroupId(jobId)` fetches
+the source's `group_id` (the seed) for the three sites holding only the source id. The seed FOLLOWS until
+touched, so a seed arriving after the async fetch still lands. No new pure core — the verifiable invariant
+stays `resolveGroupAssignment` (already bite-tested in 2a).
+
+**The four sites** (each already fetched its source Job at the action; the picker adds the seed read + the
+`assignPicked` call):
+- `scan/ScanProfilePanel.tsx` (Refine with OptTS) — seed `useJobGroupId(jobId)`; moves the OptTS child.
+- `reactions/NebBandPanel.tsx` (Refine TS with OptTS) — seed `useJobGroupId(jobId)`; moves the OptTS child.
+- `spectrum/ConnectivityPanel.tsx` (Verify connectivity) — seed `useJobGroupId(tsJobId)`; **ONE** picker
+  moves **BOTH** children (`assignPicked(forward.id)` + `assignPicked(backward.id)`).
+- `screens/JobDetailScreen.tsx` (Re-optimize top-k) — seed `job.group_id` (in hand, no fetch); moves
+  **all k** fan-out children.
+
+**No-clobber (reused rule):** an untouched picker on an ungrouped source is a no-op → the child keeps the
+Rust Unit-1 source-group default; an explicit "(ungrouped)" pick force-moves it out. The redundant no-op
+`move_job` on an untouched grouped source is intentional (frontend authoritative, Rust fallback) — NOT
+equality-gated.
+
+**Verified** (frontend-only): `npx vitest run` → **878 passed** (66 files; **unchanged** — the hook is
+glue over the already-tested pure core, no new pure logic, as scoped). `tsc --noEmit` clean. No cargo delta.
+
+**Manual gate (Anton, live WebKitGTK):** m1 Refine OptTS from a scan in group A, untouched → child in A;
+m2 overridden to B → child in B; m3 set to (ungrouped) → child ungrouped (override beats Unit-1 inherit);
+m4 Connectivity forward+backward → BOTH in the one picked group; m5 NEB refine + reopt (JobDetail) → child
+in the picked group.
+
+**Wiki (same commit):** modules/groups-ui.md gains "The derived-spawn picker (unit 2b)" (the seed rule +
+the four-site table + the hook) + refreshed Status/Files; reactions-ui.md (NEB refine + Connectivity
+pickers), results-ui.md (Scan refine picker), conformer-reoptimization.md (the reopt picker) each note the
+source-seeded picker; ROADMAP Phase 4.7 marks the explicit picker COMPLETE (2a + 2b). No index.md count
+change (no new page).
+
+**Next:** job RENAME (Unit 3) — a separate unit.
