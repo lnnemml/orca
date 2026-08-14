@@ -18,6 +18,8 @@ import { buildReoptInput, DEFAULT_REOPT_METHOD } from "../scene/reopt";
 import { GroupSelect } from "../groups/GroupSelect";
 import { useGroupPicker } from "../groups/useGroupPicker";
 import { InlineRename } from "../jobs/InlineRename";
+import { parseScanCoordinates } from "../scene/scan";
+import { ScanSurface2dPanel } from "../scan/ScanSurface2dPanel";
 import {
   aggregateReopt,
   CO_MINIMUM_TIE_KCAL,
@@ -636,6 +638,14 @@ export function JobDetailScreen({
           status={job.status}
           onOpenJob={onOpenJob}
         />
+      ) : null}
+
+      {/* 2D relaxed-surface scan (Stage 4b): a job whose INPUT is a 2-coordinate scan has no
+          `results.scan` (the 1D reader stands down on the 3-column .dat), so its surface is
+          shown separately here, gated on the input — NOT on results. A 1D scan is a different
+          branch (its ScanProfilePanel lives inside ResultsCard, unchanged). */}
+      {job && parseScanCoordinates(job.input_content)?.length === 2 ? (
+        <ScanSurface2dPanel jobId={jobId} jobTitle={job.title} onOpenJob={onOpenJob} />
       ) : null}
 
       {/* A GOAT job that finished but produced no readable ensemble: say so plainly,

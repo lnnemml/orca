@@ -8254,3 +8254,74 @@ list / parseScanCoordinates / ScanPanel 2D), ROADMAP Stage 4a landed (4b next, f
 count change (a `scan.md` update sufficed).
 
 **Next:** Stage 4b — parse the N₁×N₂ act table → heatmap + OptTS-from-a-grid-saddle handoff.
+
+## [2026-08-14] session | 2D PES contour viewer + node→OptTS handoff — the Diels-Alder unblock (Stage 4b)
+
+**Done.** Parse a 2D relaxed-surface scan into a grid, visualise it as a filled contour / heatmap (a 2D
+PES), let the user CLICK a grid node, and hand THAT node's geometry to OptTS (reusing the source-agnostic
+engine + the 2b group picker). Unblocks Diels-Alder concerted-TS finding.
+
+**Part A — pure parser** (`src/scan/scanSurface2d.ts`, approved): `parseScanSurface2d(datText)` → `{axis1,
+axis2, energies, nodeRow}`; row-major OUTER=coord1/INNER=coord2; **`nodeRow(i1,i2)=i1*N2+i2+1`** = point-file
+NNN = `geometries[row-1]` — the identity seam, pinned by a bite against the REAL 10×10 Diels-Alder fixture
+(`scanSurface2d.fixture.ts`, verbatim from job `d6d2c3b0`): (0,0)→1, (9,9)→100, (0,9)→10, (9,0)→91
+(asymmetric → catches transposition even on a square grid); global max = a stepwise corner (rows 10 & 91),
+not a saddle. All-or-nothing (refuses a transposed/ragged grid). +6 vitest.
+
+**MEASURED finding that reshaped Part B (rule #10, ratified):** `read_scan_geometries` returns None for a
+2D scan — it gates on `results.scan`, which is **None**: the B1 1D reader is 2-column and its coordinate is
+the OUTER loop (repeats), so its monotone guard rejects the 3-column .dat. The real 10×10 job is
+`completed` with **no results row** (error: *"not strictly monotone at point 1 (3.446 then 3.446)"*). So
+the task's "reuse read_scan_geometries as-is" didn't hold. Anton ratified **Option A + the B1 stand-down**:
+
+- **`read_scan_surface(job_dir) → Option<{dat_text, geometries}>`** (`results.rs`) — a **file-gated sibling**
+  (on `input.relaxscanact.dat` existing, NOT results.scan): returns the .dat text + `input.NNN.xyz` in row
+  order (`geometries[NNN-1]` ↔ row NNN). None for no dir/no .dat. Reads whole (capped, rule #5); writes
+  nothing (rule #3). **Does NOT touch `read_scan_geometries`.** Tauri wrapper + registered in lib.rs.
+- **B1 stand-down** (`parse/relaxscan.rs` `RelaxScan::from_path` + `dat_is_multicoordinate`): a 3-column (2D)
+  .dat → the 1D reader **stands down cleanly** (`Ok(None)`, NOT a Malformed error), so a successful 2D scan
+  finishes without the scary monotone failure; a 2-column (1D) .dat → the full monotone + Å guard runs
+  UNCHANGED. Does NOT parse 2D into results.scan (rejected — a 1D-profile shape, not a grid).
+- **Count-assert (identity gate):** the panel asserts `geometries.length === N₁×N₂` before enabling
+  click-to-refine; a partial run (fewer point files than rows) → "incomplete", handoff disabled, never a
+  wrong geometry.
+
++3 cargo bites: `read_scan_surface_loads_dat_and_geometries_in_order` (temp dir, row-order pinned +
+absent→None), `from_path_stands_down_on_a_2d_dat_no_malformed_error`, `a_2column_1d_dat_...monotone_guard
+_still_bites` (control — the 1D guard is not weakened). **Demonstrated:** removing the discriminator turns
+the stand-down test red — restored.
+
+**Part B — viz + handoff:** `ContourPlot.tsx` isolates ALL plotly (dep **`plotly.js-cartesian-dist-min`** —
+the SVG cartesian bundle, NOT WebGL/scattergl; recharts has no contour trace) — the one file to swap if
+the d3-contour fallback is needed. `ScanSurface2dPanel.tsx` (routed from JobDetailScreen when
+`parseScanCoordinates(job.input_content)?.length === 2` — a **branch**, 1D still → ScanProfilePanel inside
+ResultsCard, unchanged; gated on the INPUT because a 2D scan has no results.scan): filled contour of ΔE
+(kcal/mol vs the global min), corner labels as bond-length facts ("reactant — both long" / "product — both
+short" / "stepwise"), **no node preselected** (the global max is a stepwise corner — the user picks the
+col), clickable nodes → `nodeRow` → `geometries[row-1]` → the **verbatim OptTS handoff**
+(`buildOptTSInput` rebuilds fresh — the Scan block can't leak; verified) → `create_optts_job` → the 2b
+`useGroupPicker` (default = the scan's group) → submit → navigate.
+
+**Plotly de-risk (m0):** static integration PASSES — `tsc` clean + `vite build` succeeds (plotly resolves,
+bundles; main chunk +~1 MB gzip, fine for a local desktop app). **The runtime WebKitGTK render (m0) is
+Anton's live gate** — I can't see the Tauri window; if plotly renders heavy/blank, the swap is contained to
+`ContourPlot`.
+
+**Verified:** `cargo test --lib` → **310 passed, 0 failed, 0 warnings** (+3). `npx vitest run` → **894
+passed** (68 files; +6 from Part A). `tsc --noEmit` clean. `vite build` succeeds.
+
+**Manual gate (Anton, live WebKitGTK):** **m0** plotly renders a trivial contour in the REAL Tauri window
+(do FIRST — if heavy/blank, STOP → d3-contour fallback); m1 open the real 10×10 → the 2D PES contour shows
+the concerted topology, hover reads (c1,c2,ΔE) [may need a re-run/re-parse so the job carries a results row
++ the surface reads — the .dat + 100 point files are already on disk, so the surface panel renders on the
+input route regardless]; m2 click the col node → OptTS launches with THAT geometry, in the scan's group; m3
+(negative) the global-max stepwise corner is NOT preselected; m4 (negative) a 1D scan still shows the old
+ScanProfilePanel.
+
+**Wiki (same commit):** +modules/scan-surface-2d.md (the parse, the reader + stand-down, the contour, the
+no-auto-pick + count-assert discipline, the plotly SVG choice + WebKitGTK m0 gate); orca/scan.md (the 4b
+result-reading flow + stand-down); index 99→100; ROADMAP Stage 4b landed. Dependency: plotly.js-cartesian
+-dist-min + react-plotly.js added.
+
+**Next:** a saddle / minimum-energy-path finder over the 2D grid (a clearly-labelled follow-up, deliberately
+not auto-picked here).

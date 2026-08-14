@@ -1089,6 +1089,65 @@ pub fn read_scan_geometries(
     Ok(Some(out))
 }
 
+/// A 2D relaxed-surface scan for the surface viewer (Phase 4.5 Stage 4b): the raw
+/// `input.relaxscanact.dat` TEXT (the frontend `parseScanSurface2d` shapes it — the surface is
+/// deliberately NOT stored in `results`, ADR-012) plus the per-node point geometries in row order.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScanSurface2d {
+    /// The raw `input.relaxscanact.dat` (space-delimited `c1 c2 E_act` triples).
+    pub dat_text: String,
+    /// `input.NNN.xyz` for `N = 1..row_count`, in row order — `geometries[NNN - 1]` is the
+    /// geometry of `.dat` row `NNN` (= the point-file `NNN`).
+    pub geometries: Vec<ScanGeometry>,
+}
+
+/// Read a 2D relaxed-surface scan (Stage 4b) — the sibling of [`read_scan_geometries`] for the
+/// surface viewer. Returns the `.dat` TEXT + the point geometries in row order.
+///
+/// **Gated on `input.relaxscanact.dat` EXISTING, NOT on `results.scan`** — a 2D scan legitimately
+/// has no `results.scan` (the 1D reader stands down on a 3-column `.dat`, so no results row is
+/// stored — measured, `wiki/orca/scan.md`). `Ok(None)` when there is no dir or no `.dat` (a
+/// non-scan / not-yet-run job — absent-is-normal, mirroring [`read_scan_geometries`]). Reads each
+/// file whole (small, rule #5) with a defensive size cap; **writes nothing** (rule #3).
+///
+/// **The geometry order is the identity seam:** one geometry per `.dat` data row, `input.NNN.xyz`
+/// for `N = 1..row_count`. The frontend derives the grid from `dat_text` and asserts
+/// `geometries.len() == N₁ × N₂` before enabling the OptTS handoff, so a partial run (fewer point
+/// files than rows) fails the count assert and disables the handoff rather than handing OptTS the
+/// wrong node's geometry. Does NOT touch [`read_scan_geometries`] — a file-gated sibling.
+pub fn read_scan_surface(job_dir: Option<&str>) -> Result<Option<ScanSurface2d>, AppError> {
+    let Some(job_dir) = job_dir else {
+        return Ok(None); // no dir → nothing to read
+    };
+    let dir = Path::new(job_dir);
+    let act_path = dir.join("input.relaxscanact.dat");
+    if !act_path.exists() {
+        return Ok(None); // not a scan (or not run yet) — absent-is-normal
+    }
+    // Defensive cap: rows (N₁×N₂) × ~40 bytes — KB-scale even for a large grid.
+    const MAX_DAT_BYTES: u64 = 8 * 1024 * 1024;
+    let meta = std::fs::metadata(&act_path)?;
+    if meta.len() > MAX_DAT_BYTES {
+        return Err(AppError::Internal(format!(
+            "relaxscanact.dat is implausibly large ({} bytes) — refusing to read",
+            meta.len()
+        )));
+    }
+    let dat_text = std::fs::read_to_string(&act_path)?;
+    // One geometry per NON-EMPTY data row, in order (row NNN ↔ input.NNN.xyz ↔ geometries[NNN-1]).
+    let row_count = dat_text.lines().filter(|l| !l.trim().is_empty()).count();
+    let mut geometries = Vec::with_capacity(row_count);
+    for k in 1..=row_count {
+        let path = dir.join(format!("input.{k:03}.xyz"));
+        let xyz = XyzFile::from_path(&path)?;
+        let (elements, xyz_angstrom) = xyz.first_frame().ok_or_else(|| {
+            AppError::Internal(format!("scan point {k} geometry ({}) is empty", path.display()))
+        })?;
+        geometries.push(ScanGeometry { elements, xyz_angstrom });
+    }
+    Ok(Some(ScanSurface2d { dat_text, geometries }))
+}
+
 /// One converged-MEP band image geometry (`input_MEP_trj.xyz` frame) for the NEB
 /// band viewer (N3). Carries its own element order (the UI cross-checks it, like
 /// [`ScanGeometry`]) and the frame's `E <Eh>` comment energy. **Distinct from
@@ -1776,6 +1835,54 @@ mod tests {
         // …and no dir → None even for a scan job (nothing to read).
         let conn2 = results_db_with(&scan_results(3));
         assert!(read_scan_geometries(&conn2, "job1", None).unwrap().is_none());
+    }
+
+    // ── read_scan_surface (Stage 4b) — the 2D surface reader (file-gated sibling) ──
+
+    /// The `.dat` text round-trips AND the point geometries load **in row order**
+    /// (`geometries[k-1]` ↔ `input.00k.xyz`) — the identity seam the frontend `nodeRow` map
+    /// rides on. Gated on the `.dat` existing (NOT `results.scan`); `None` when absent.
+    #[test]
+    fn read_scan_surface_loads_dat_and_geometries_in_order() {
+        let tmp = std::env::temp_dir().join(format!("scan-surface-2d-{}", std::process::id()));
+        std::fs::remove_dir_all(&tmp).ok();
+        std::fs::create_dir_all(&tmp).unwrap();
+        // A 2×2 grid `.dat` (3 columns `c1 c2 E`), row-major.
+        let dat = "  1.0  2.0 -10.0\n  1.0  2.1 -10.1\n  1.1  2.0 -10.2\n  1.1  2.1 -10.3\n";
+        std::fs::write(tmp.join("input.relaxscanact.dat"), dat).unwrap();
+        // One point geometry per row; the H atom's z encodes the row number so ORDER is checkable.
+        for k in 1..=4 {
+            std::fs::write(
+                tmp.join(format!("input.{k:03}.xyz")),
+                format!("2\npoint {k}\nC 0.0 0.0 0.0\nH 0.0 0.0 {k}.0\n"),
+            )
+            .unwrap();
+        }
+
+        let surf = read_scan_surface(tmp.to_str())
+            .unwrap()
+            .expect("Some for a present .dat");
+        assert_eq!(surf.dat_text, dat, "dat_text round-trips verbatim");
+        assert_eq!(surf.geometries.len(), 4, "one geometry per non-empty row");
+        for k in 1..=4 {
+            let hz = surf.geometries[k - 1].xyz_angstrom[1][2];
+            assert!(
+                (hz - k as f64).abs() < 1e-9,
+                "geometries[{}] must be input.{:03}.xyz (row order), got H.z={hz}",
+                k - 1,
+                k
+            );
+        }
+
+        // Absent-is-normal: no `.dat` → None (mirrors read_scan_geometries); no dir → None.
+        let empty = std::env::temp_dir().join(format!("scan-surface-empty-{}", std::process::id()));
+        std::fs::remove_dir_all(&empty).ok();
+        std::fs::create_dir_all(&empty).unwrap();
+        assert!(read_scan_surface(empty.to_str()).unwrap().is_none());
+        assert!(read_scan_surface(None).unwrap().is_none());
+
+        std::fs::remove_dir_all(&tmp).ok();
+        std::fs::remove_dir_all(&empty).ok();
     }
 
     // ── read_neb_geometries (N3) — the band viewer's MEP image loader ─────────────

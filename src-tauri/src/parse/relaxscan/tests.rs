@@ -181,3 +181,51 @@ fn absent_scan_is_none_not_an_error() {
     let tmp = std::env::temp_dir();
     assert!(RelaxScan::from_path(&tmp).unwrap().is_none());
 }
+
+// ── 2D stand-down (Stage 4b): the 1D reader stands down on a 3-column .dat ─────
+
+#[test]
+fn from_path_stands_down_on_a_2d_dat_no_malformed_error() {
+    // A 2D (3-column `c1 c2 E`) relaxscanact.dat → the 1-coordinate reader STANDS DOWN cleanly:
+    // Ok(None), NOT a Malformed error. So a successful 2D scan finishes without a spurious
+    // "coordinate column not strictly monotone" failure (its result is the surface, read
+    // separately). No scf.dat is needed — from_path returns before reading it.
+    let tmp = std::env::temp_dir().join(format!("relaxscan-2d-standdown-{}", std::process::id()));
+    std::fs::remove_dir_all(&tmp).ok();
+    std::fs::create_dir_all(&tmp).unwrap();
+    std::fs::write(
+        tmp.join("input.relaxscanact.dat"),
+        "  3.446  3.446 -17.82302505\n  3.446  3.230 -17.82297457\n",
+    )
+    .unwrap();
+
+    let r = RelaxScan::from_path(&tmp);
+    assert!(matches!(r, Ok(None)), "3-column (2D) .dat → Ok(None), got {r:?}");
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+#[test]
+fn a_2column_1d_dat_is_still_owned_and_the_monotone_guard_still_bites() {
+    // CONTROL — the 1D guard is NOT weakened: a 2-column (1D) .dat is still OWNED (Some), and a
+    // non-monotone coordinate column still errors via verify. (Angle scan → skips the B geometry
+    // cross-check, so no point files are needed to exercise the monotone guard.)
+    let tmp = std::env::temp_dir().join(format!("relaxscan-1d-guard-{}", std::process::id()));
+    std::fs::remove_dir_all(&tmp).ok();
+    std::fs::create_dir_all(&tmp).unwrap();
+    // coordinate column (100, 100) is NOT strictly monotone → verify must reject.
+    std::fs::write(tmp.join("input.relaxscanact.dat"), "100.0 -10.0\n100.0 -10.1\n").unwrap();
+    std::fs::write(tmp.join("input.relaxscanscf.dat"), "100.0 0.0\n100.0 0.0\n").unwrap();
+
+    let raw = RelaxScan::from_path(&tmp)
+        .expect("read ok")
+        .expect("a 2-column .dat is still OWNED (Some)");
+    let spec = parse_scan_spec("%geom Scan\n A 0 1 2 = 100, 120, 2\nend\nend")
+        .expect("an angle scan spec");
+    assert!(
+        raw.verify(&spec).is_err(),
+        "the 1D monotone guard must still bite a non-monotone 2-column .dat"
+    );
+
+    std::fs::remove_dir_all(&tmp).ok();
+}

@@ -169,12 +169,24 @@ range are editable in place; removing it returns to a 1D scan. Because `inspectS
 panel" reason, not a false "unrecognised") — so a single-coordinate "Scan this" can never clobber the
 grid. The panel sits in the editor dock next to Constraints.
 
-## Not yet covered (later stages)
+## Reading a 2D scan back (Stage 4b — landed)
 
-- **2D scan OUTPUT parsing + visualization + handoff** (Stage 4b): reading the N₁×N₂ act table into a
-  surface (heatmap), and an OptTS-from-a-grid-saddle handoff. The `.dat`/point-file layout is pinned
-  above from the probe. **The 2D INPUT is landed (Stage 4a)** — `injectScan` emits 1..N coordinates,
-  `parseScanCoordinates` reads them, `ScanPanel` builds a 2-coordinate grid.
+A 2D scan does **not** parse into `results.scan`: the B1 1D reader is 2-column and its coordinate column
+is the OUTER loop, which repeats (`3.446, 3.446, …`), so its **monotone post-condition** rejects the
+3-column `.dat`. Measured: the real 10×10 job was `completed` with **no results row** (`error_message`:
+*"relaxscan: malformed scan coordinate column: not strictly monotone at point 1"*). Two consequences,
+both handled in Stage 4b (`modules/scan-surface-2d.md`):
+
+- **The 1D reader stands down on a 3-column `.dat`** (`RelaxScan::from_path` — a column discriminator: 3+
+  columns → `Ok(None)`, NOT a `Malformed` error), so a **successful 2D scan finishes cleanly** without a
+  spurious monotone failure. Its "result" is the surface, read separately. A 2-column (1D) `.dat` still
+  gets the full monotone + Å cross-check guard — unchanged.
+- **The surface is read by a file-gated sibling** `read_scan_surface` (gated on `input.relaxscanact.dat`
+  existing, NOT `results.scan`): it returns the `.dat` text + the point geometries `input.NNN.xyz` in row
+  order. The frontend `parseScanSurface2d` shapes the grid; `ScanSurface2dPanel` draws the contour and
+  hands a clicked node's geometry to OptTS (`geometries[nodeRow-1]`, a count-asserted identity seam).
+
+## Not yet covered (later stages)
 - **3-D (or higher) grids** — the pure builder/parser already loop over 1..N coordinates; the UI caps at
   2 (the driving Diels-Alder case). A 3rd coordinate is a UI-only extension.
 - **A/D second coordinates** — the second-coordinate UI is an atom-**pair** (`B`) only; the model

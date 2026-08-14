@@ -106,6 +106,16 @@ impl RelaxScan {
         if !act_path.exists() {
             return Ok(None);
         }
+        // A 2D (multi-coordinate) scan writes **3+ columns** per row (`c1 c2 … E`). The
+        // 1-coordinate reader does not own that shape, so it **stands DOWN cleanly** — `Ok(None)`,
+        // NOT a `Malformed` error — so a successful 2D scan finishes without a spurious "coordinate
+        // column not strictly monotone" failure (`c1` repeats across the outer loop). A 2D scan's
+        // "result" is the surface, read separately by `results::read_scan_surface`. A **2-column**
+        // `.dat` is a 1D scan → the full monotone + Å cross-check guard below runs UNCHANGED (the
+        // 1D guard is not weakened — this only removes a false-positive on the 3-column case).
+        if dat_is_multicoordinate(&act_path)? {
+            return Ok(None);
+        }
         let scf_path = dir.join("input.relaxscanscf.dat");
         let act = read_dat(&act_path)?;
         let scf = read_dat(&scf_path)?;
@@ -231,6 +241,30 @@ impl RelaxScan {
 /// Read one `.dat` file: N rows of `coordinate  energy` (2 columns). Size-capped
 /// (rule #5). A non-blank line that does not yield two finite floats is a loud
 /// `Malformed` error (rule #9), not a silent skip; blank lines are ignored.
+/// The column-count discriminator behind the 1D reader's stand-down: `true` iff the first
+/// non-empty data row has **3+ whitespace columns** (a 2D+ scan `c1 c2 … E`). A 1D scan writes
+/// exactly 2 (`coordinate energy`). Reads only up to the first data row (bounded — never loads a
+/// large 2D grid the 1D reader will discard anyway).
+fn dat_is_multicoordinate(path: &Path) -> Result<bool, ParseError> {
+    use std::io::{BufRead, BufReader};
+    let file = std::fs::File::open(path).map_err(|e| ParseError::Io {
+        path: path.display().to_string(),
+        source: e,
+    })?;
+    for line in BufReader::new(file).lines() {
+        let line = line.map_err(|e| ParseError::Io {
+            path: path.display().to_string(),
+            source: e,
+        })?;
+        let n = line.split_whitespace().count();
+        if n == 0 {
+            continue;
+        }
+        return Ok(n >= 3);
+    }
+    Ok(false) // empty file → not multi-coordinate (read_dat handles emptiness)
+}
+
 fn read_dat(path: &Path) -> Result<Vec<(f64, f64)>, ParseError> {
     let meta = std::fs::metadata(path).map_err(|e| ParseError::Io {
         path: path.display().to_string(),

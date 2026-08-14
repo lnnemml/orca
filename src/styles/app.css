@@ -1194,6 +1194,21 @@ select:disabled,
 .input-invalid {
   border-color: #ff6b6b;
 }
+/* 2D relaxed-surface scan viewer (Stage 4b). */
+.scan-surface-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.scan-surface-hint {
+  font-size: 11px;
+}
+.scan-surface-grouprow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+}
 .atom-inspector-scan {
   display: flex;
   align-items: center;

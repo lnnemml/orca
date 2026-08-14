@@ -793,6 +793,22 @@ passed. **Stage A complete.**)*
       `wiki/orca/scan.md`. **Next (Stage 4b):** parse the N₁×N₂ act table → a heatmap + an
       OptTS-from-a-grid-saddle handoff (the `.dat`/point-file layout is **pinned** in `scan.md`:
       act.dat row-major outer=coord1/inner=coord2, scf.dat zeros for XTB, point-file `NNN` ↔ row `NNN`).
+- [x] **Stage 4b — 2D PES contour viewer + node→OptTS handoff (the Diels-Alder unblock).** Parse the
+      N₁×N₂ `relaxscanact.dat` into a grid (`parseScanSurface2d`, row-major OUTER=coord1/INNER=coord2;
+      `nodeRow(i1,i2)=i1*N2+i2+1` = point-file NNN = `geometries[row-1]` — the identity seam, pinned by a
+      bite against the REAL 10×10 Diels-Alder fixture). **Measured (rule #10):** `read_scan_geometries`
+      returns None for a 2D scan (gated on `results.scan`=None — the B1 monotone guard rejects the 3-col
+      .dat; the 10×10 job is `completed`, no results row). So a **file-gated sibling `read_scan_surface`**
+      returns `{dat_text, geometries}`, and the **B1 reader stands down** on a 3-col .dat (`Ok(None)`, not
+      malformed — a good 2D scan finishes clean; the 2-col 1D guard is unchanged). Neither touches
+      `read_scan_geometries`. `ScanSurface2dPanel` (routed when `parseScanCoordinates===2`, a **branch** —
+      1D → ScanProfilePanel unchanged) draws a filled contour via the isolated `ContourPlot.tsx`
+      (`plotly.js-cartesian-dist-min` — SVG, not WebGL; recharts has no contour), **no auto-pick** (global
+      max is a stepwise corner), a **count-assert** gates the handoff off a partial run, clickable nodes →
+      the **verbatim OptTS handoff** (2b group picker rides along). +3 cargo + 6 vitest bites; tsc + vite
+      build pass. **Runtime plotly render = the m0 live gate** (`ContourPlot` isolates the d3 fallback). No
+      change to `read_scan_geometries` / `create_optts_job` / `buildOptTSInput` / the 1D panel; no migration.
+      `modules/scan-surface-2d.md`. **The Diels-Alder concerted-TS validation is now unblocked.**
 
 ### Stage B — Scan output parser + single energy profile (spine, part 2)
 

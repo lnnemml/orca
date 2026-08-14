@@ -133,6 +133,15 @@ export interface ScanGeometry {
   xyz_angstrom: [number, number, number][];
 }
 
+/** Mirrors `src-tauri/src/results.rs::ScanSurface2d` — a 2D relaxed-surface scan for
+ * the surface viewer (Stage 4b), loaded via `read_scan_surface` (file-gated, NOT
+ * `results.scan`). `dat_text` is the raw `input.relaxscanact.dat` (the frontend
+ * `parseScanSurface2d` shapes it); `geometries[NNN-1]` is the geometry of `.dat` row NNN. */
+export interface ScanSurface2d {
+  dat_text: string;
+  geometries: ScanGeometry[];
+}
+
 /** Mirrors `src-tauri/src/results.rs::NebImageGeometry` — one converged-MEP band
  * image geometry (`input_MEP_trj.xyz` frame), loaded lazily via `read_neb_geometries`.
  * Distinct from {@link NebImage} (a band point: distance+energy, no geometry). */
