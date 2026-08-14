@@ -86,6 +86,25 @@ fn create_reopt_job_conn(
         "UPDATE jobs SET source_ensemble_job_id = ?1, source_conformer_index = ?2 WHERE id = ?3",
         params![source_ensemble_job_id, source_conformer_index, job.id],
     )?;
+    // The re-opt child DEFAULTS into the SOURCE ensemble job's group, if any (ADR-019 group
+    // inherit) — the DFT re-opt lands beside the GOAT ensemble it came from. Only the source's
+    // id is known here (not the row), so read its CURRENT group_id directly; a missing source
+    // (referential integrity is the caller's concern) or an ungrouped one → no stamp, i.e. an
+    // ungrouped child (never a fabricated root). Orthogonal to the source FKs stamped above.
+    let source_group: Option<String> = conn
+        .query_row(
+            "SELECT group_id FROM jobs WHERE id = ?1",
+            params![source_ensemble_job_id],
+            |r| r.get(0),
+        )
+        .optional()?
+        .flatten();
+    if let Some(group_id) = source_group {
+        conn.execute(
+            "UPDATE jobs SET group_id = ?1 WHERE id = ?2",
+            params![group_id, job.id],
+        )?;
+    }
     get_job_conn(conn, &job.id)
 }
 
@@ -117,6 +136,16 @@ fn create_optts_job_conn(
     // The refined TS joins the SOURCE's pathway, if any — the same attach used everywhere.
     if let Some(pathway_id) = source.pathway_id {
         crate::commands::reactions::attach_job_to_pathway_conn(conn, &child.id, &pathway_id)?;
+    }
+    // The child DEFAULTS into the SOURCE's group, if any (ADR-019 group inherit): a refined
+    // TS lands in the same folder as the job it came from — no manual re-filing. Copied
+    // verbatim from the source's CURRENT group_id; an ungrouped source → an ungrouped child
+    // (never a fabricated root). Orthogonal to the pathway attach above (ADR-019 Decision 5).
+    if let Some(group_id) = source.group_id {
+        conn.execute(
+            "UPDATE jobs SET group_id = ?1 WHERE id = ?2",
+            params![group_id, child.id],
+        )?;
     }
     get_job_conn(conn, &child.id)
 }
@@ -155,6 +184,15 @@ fn create_neb_job_conn(
     // The NEB job joins the REACTANT's pathway, if any — the same attach used everywhere.
     if let Some(pathway_id) = reactant.pathway_id {
         crate::commands::reactions::attach_job_to_pathway_conn(conn, &child.id, &pathway_id)?;
+    }
+    // The child DEFAULTS into the REACTANT's group, if any (ADR-019 group inherit) — same
+    // folder as the reactant it came from; ungrouped reactant → ungrouped child. Orthogonal
+    // to the pathway attach above.
+    if let Some(group_id) = reactant.group_id {
+        conn.execute(
+            "UPDATE jobs SET group_id = ?1 WHERE id = ?2",
+            params![group_id, child.id],
+        )?;
     }
     get_job_conn(conn, &child.id)
 }
@@ -1091,6 +1129,153 @@ mod tests {
         let err = create_neb_job_conn(&conn, "orphan", inp, product_xyz, &reactant.id, "no-such-job").unwrap_err();
         assert!(matches!(err, AppError::NotFound(_)));
         assert_eq!(list_jobs_conn(&conn).unwrap().len(), before, "a NotFound endpoint created nothing");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- Group inheritance: a result-derived child DEFAULTS into the source's group ---
+    // (ADR-019 group inherit; orthogonal to pathway_id / the source FKs). The New Job path
+    // (plain `create_job`) is UNCHANGED — see `create_lists_job_as_draft` (group_id NULL).
+
+    /// Insert a root group and put `job_id` in it (mirrors the group data layer inline, without
+    /// importing `commands::groups`).
+    fn put_in_group(conn: &Connection, group_id: &str, name: &str, job_id: &str) {
+        conn.execute(
+            "INSERT INTO groups (id, name, parent_id) VALUES (?1, ?2, NULL)",
+            params![group_id, name],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE jobs SET group_id = ?1 WHERE id = ?2",
+            params![group_id, job_id],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn optts_child_inherits_source_group() {
+        let (conn, dir) = test_db();
+        let source =
+            create_job_conn(&conn, "scan", "! r2SCAN-3c LooseOpt\n* xyz 0 1\nN 0 0 0\n*\n", None, None)
+                .unwrap();
+        put_in_group(&conn, "g1", "Menshutkin", &source.id);
+
+        let ts_input = "! r2SCAN-3c OptTS Freq\n%geom Calc_Hess true end\n* xyz 0 1\nN 0 0 0\n*\n";
+        let child = create_optts_job_conn(&conn, "OptTS", ts_input, &source.id).unwrap();
+        // BITE: without the inherit, child.group_id is NULL → this goes red.
+        assert_eq!(
+            child.group_id.as_deref(),
+            Some("g1"),
+            "OptTS child lands in the source's group"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn neb_child_inherits_reactant_group() {
+        let (conn, dir) = test_db();
+        let reactant =
+            create_job_conn(&conn, "reactant", "! r2SCAN-3c Opt\n* xyz 0 1\nN 0 0 0\n*\n", None, None)
+                .unwrap();
+        let product =
+            create_job_conn(&conn, "product", "! r2SCAN-3c Opt\n* xyz 0 1\nN 0 0 1.5\n*\n", None, None)
+                .unwrap();
+        put_in_group(&conn, "g1", "study", &reactant.id);
+
+        let inp = "! r2SCAN-3c NEB-TS\n%neb\n NEB_End_XYZFile \"product.xyz\"\nend\n* xyz 0 1\nN 0 0 0\n*\n";
+        let child = create_neb_job_conn(
+            &conn,
+            "NEB",
+            inp,
+            "1\np\nN 0 0 1.5\n",
+            &reactant.id,
+            &product.id,
+        )
+        .unwrap();
+        assert_eq!(
+            child.group_id.as_deref(),
+            Some("g1"),
+            "NEB child lands in the reactant's group"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn reopt_child_inherits_ensemble_group() {
+        let (conn, dir) = test_db();
+        let source =
+            create_job_conn(&conn, "GOAT", "! XTB GOAT\n* xyz 0 1\nC 0 0 0\n*\n", None, None).unwrap();
+        put_in_group(&conn, "g1", "conformers", &source.id);
+
+        let child = create_reopt_job_conn(
+            &conn,
+            "re-opt",
+            "! r2SCAN-3c Opt Freq\n* xyz 0 1\nC 0 0 0\n*\n",
+            &source.id,
+            0,
+        )
+        .unwrap();
+        assert_eq!(
+            child.group_id.as_deref(),
+            Some("g1"),
+            "re-opt child lands in the ensemble's group"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// BITE: an ungrouped source → an ungrouped child, and NO group row is fabricated (an impl
+    /// that invents a root group goes red on both asserts).
+    #[test]
+    fn child_of_ungrouped_source_is_ungrouped() {
+        let (conn, dir) = test_db();
+        let source =
+            create_job_conn(&conn, "scan", "! r2SCAN-3c LooseOpt\n* xyz 0 1\nN 0 0 0\n*\n", None, None)
+                .unwrap();
+        assert_eq!(source.group_id, None);
+
+        let ts_input = "! r2SCAN-3c OptTS Freq\n* xyz 0 1\nN 0 0 0\n*\n";
+        let child = create_optts_job_conn(&conn, "OptTS", ts_input, &source.id).unwrap();
+        assert_eq!(
+            child.group_id, None,
+            "ungrouped source → ungrouped child (no invented group)"
+        );
+        let groups: i64 = conn
+            .query_row("SELECT COUNT(*) FROM groups", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(groups, 0, "no group row invented for an ungrouped source");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// ORTHOGONALITY BITE: a source with BOTH a pathway and a group → the child inherits BOTH,
+    /// independently (ADR-019 Decision 5 — group_id is orthogonal to pathway_id).
+    #[test]
+    fn inherit_does_not_disturb_pathway_attach() {
+        let (conn, dir) = test_db();
+        let source =
+            create_job_conn(&conn, "scan", "! r2SCAN-3c LooseOpt\n* xyz 0 1\nN 0 0 0\n*\n", None, None)
+                .unwrap();
+        put_in_group(&conn, "g1", "Menshutkin", &source.id);
+        conn.execute(
+            "INSERT INTO reactions (id, name, description) VALUES ('rx1','Menshutkin',NULL)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO pathways (id, reaction_id, label) VALUES ('pw1','rx1','sn2')",
+            [],
+        )
+        .unwrap();
+        conn.execute("UPDATE jobs SET pathway_id = 'pw1' WHERE id = ?1", params![source.id])
+            .unwrap();
+
+        let ts_input = "! r2SCAN-3c OptTS Freq\n* xyz 0 1\nN 0 0 0\n*\n";
+        let child = create_optts_job_conn(&conn, "OptTS", ts_input, &source.id).unwrap();
+        assert_eq!(child.pathway_id.as_deref(), Some("pw1"), "pathway attach preserved");
+        assert_eq!(child.group_id.as_deref(), Some("g1"), "group inherited independently");
 
         std::fs::remove_dir_all(&dir).ok();
     }

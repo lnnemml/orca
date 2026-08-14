@@ -1,9 +1,9 @@
 # Module: job groups (data layer)
 
-**Status:** data layer built (Phase 4.7.2). Schema v16 + Rust CRUD. **No UI yet** — the
-tree sidebar (folder metaphor) is Phase 4.7.3.
+**Status:** data layer built (Phase 4.7.2). Schema v16 + Rust CRUD. The group **navigation UI** is
+Phase 4.7.3 ([groups-ui.md](groups-ui.md)); group **export** is 4.7.5 ([group-export.md](group-export.md)).
 **Files:** `src-tauri/src/models/group.rs`, `src-tauri/src/commands/groups.rs`, the v16 arm in
-`src-tauri/src/db.rs`.
+`src-tauri/src/db.rs`; the derived-child inherit lives in `src-tauri/src/commands/jobs.rs`.
 **Decision record:** [ADR-019](../architecture/adr-019-job-organization.md) (Decisions 0–5).
 
 ## What a group is
@@ -71,6 +71,31 @@ re-parented first — the same load-bearing cleanup shape as job deletion (Phase
 **Post-conditions (rule #9, asserted in tests):** after a delete, (a) no job's `group_id` points at a
 non-existent group; (b) the count of (jobs + child-groups) that were under `id` is conserved under
 `parent` — promoted, none lost; (c) no `job_dir` / filesystem is touched anywhere.
+
+## How a job's `group_id` is set
+
+Two write paths populate `group_id`; both are one-row `UPDATE`s, **no filesystem** (rule #3):
+
+- **New Job (create-from-scratch).** A plainly-created job (`create_job`) is inserted **ungrouped**
+  (`group_id NULL`). The frontend then assigns the **active sidebar group** via `move_job` (Phase 4.7.3
+  assign-on-create). The insert itself never sets a group — pinned by `create_lists_job_as_draft`.
+- **Result-derived children (the inherit default, Phase 4.7.5).** A child produced by refining or
+  re-optimizing an existing job — **OptTS** (`create_optts_job`, and therefore the connectivity check,
+  which routes through it), **NEB-TS** (`create_neb_job`), **DFT re-opt** (`create_reopt_job`) —
+  **defaults its `group_id` to the SOURCE job's current `group_id`**, copied verbatim at create time,
+  immediately after the pathway inherit. A refined child thus lands in the **same folder** as the job it
+  came from — no manual re-filing. Rules: read the source's *current* group (**not** the active sidebar
+  group — that is the New Job path's concern); an **ungrouped source → an ungrouped child** (inherit
+  `NULL`, never a fabricated root); the inherit is **orthogonal** to the pathway attach (Decision 5) — a
+  source with both a pathway and a group yields a child with both. `create_reopt_job` knows only the
+  source ensemble *id*, so it reads `group_id` directly (`.optional()?.flatten()`), preserving the
+  helper's contract that referential integrity stays the caller's concern (it does not newly fail on a
+  missing source).
+
+Bite-verified in `commands::jobs::tests`: `optts_child_inherits_source_group`,
+`neb_child_inherits_reactant_group`, `reopt_child_inherits_ensemble_group`,
+`child_of_ungrouped_source_is_ungrouped` (also asserts `COUNT(groups)==0` — kills an invent-a-root impl),
+`inherit_does_not_disturb_pathway_attach`.
 
 ## CRUD surface (`commands/groups.rs`)
 

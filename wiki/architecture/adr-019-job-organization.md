@@ -159,5 +159,10 @@ unit; it is independent of grouping and can land first.
 - The UI grows a **small tree-walk** over a hundreds-scale set (a sidebar), plus move/rename actions.
 - **New-job creation should become group-aware:** a job created while a group is "active" inherits that
   `group_id` (NULL if none). Flagged here as a **Phase 4.7.3 UI concern**, not decided in this ADR.
+- **Result-derived children inherit the SOURCE's group by default** (Phase 4.7.5): an OptTS / NEB-TS /
+  DFT-re-opt child (and connectivity, which routes through OptTS) defaults its `group_id` to the source
+  job's current `group_id`, so a refined child lands in the source's folder. An ungrouped source → an
+  ungrouped child (never a fabricated root). A **default**, and **orthogonal** to the pathway inherit
+  (Decision 5) — a source with both gives a child with both. See [modules/groups.md](../modules/groups.md).
 - No performance concern at this scale; the adjacency-list choice is revisitable (Decision 2) if a real
   measurement ever demands bulk-descendant queries.

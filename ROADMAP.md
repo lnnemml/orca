@@ -1150,6 +1150,13 @@ Group-delete **promotes** children (never a destructive cascade); jobs orphan to
       but no dir; `results`/`computed_identity`/`job_type` are null (not fabricated) in v1. Frontend: a per-group
       Curated/Full chooser in `GroupSidebar` → folder picker → toast. **Deferred:** `.zip` packaging, the
       connectivity-based `computed_identity` stamp. `modules/group-export.md`.
+- [x] **group-inheritance default (Unit 1).** A result-derived child job — **OptTS** / **NEB-TS** /
+      **DFT re-opt** (and connectivity, via OptTS) — **defaults its `group_id` to the source job's current
+      group**, stamped verbatim right after the pathway inherit, so a refined child lands in the source's
+      folder with zero manual re-filing. Ungrouped source → ungrouped child (never a fabricated root);
+      orthogonal to `pathway_id` (ADR-019 Decision 5). Rust-only, no migration/column, no UI — the New Job
+      path stays `group_id NULL` at insert. `commands/jobs.rs` (+5 bites). **Next:** the explicit group
+      **picker / override** at spawn time (Unit 2). `modules/groups.md`.
 
 ---
 

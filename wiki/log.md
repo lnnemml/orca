@@ -8000,3 +8000,46 @@ connectivity stamp is a follow-up). The source DAG (ADR-020) is not persisted an
 
 **Next:** `.zip`/archive packaging of an export; the connectivity-based `computed_identity` stamp; a
 "assign job to group at spawn time" picker.
+
+## [2026-08-14] session | Result-derived child jobs inherit the source job's group by default (Phase 4.7 group inherit)
+
+**Done.** A result-derived **child** job now DEFAULTS its `group_id` to the SOURCE job's current group, so a
+refined/re-optimized child lands in the same folder as the job it came from — no manual re-filing. Three
+one-line inherits in `src-tauri/src/commands/jobs.rs`, each mirroring the pathway-inherit line directly above
+it (`group_id` is ORTHOGONAL to `pathway_id` — ADR-019 Decision 5):
+
+- `create_optts_job_conn` — after the pathway attach, stamp `child.group_id = source.group_id` if `Some`.
+  (Disjoint field access: `source.pathway_id` is moved in the `if let` above; `source.group_id` — a different
+  field — still reads. Covers connectivity too, which routes through OptTS.)
+- `create_neb_job_conn` — same, from `reactant.group_id`.
+- `create_reopt_job_conn` — knows only the source ensemble **id**, so it reads the source's group directly:
+  `SELECT group_id … .optional()?.flatten()`, stamp if `Some`. Deliberately NOT `get_job_conn` — that would
+  silently change the helper's failure semantics (start failing on a missing source); referential integrity
+  stays the caller's (`create_reopt_job`) concern, as before.
+
+**Invariants:** read the source's CURRENT group and copy verbatim — never guess, never a hardcoded root, never
+the active-sidebar group (that is the New Job path's concern). Ungrouped source (`group_id NULL`) → ungrouped
+child. `job_dir` untouched (rule #3 — metadata only). No migration, no new column (`group_id` exists at v16;
+this only POPULATES it).
+
+**Tests (+5 bites, `commands::jobs::tests`):** `optts_child_inherits_source_group`,
+`neb_child_inherits_reactant_group`, `reopt_child_inherits_ensemble_group`,
+`child_of_ungrouped_source_is_ungrouped` (also asserts `COUNT(groups)==0` — kills an invent-a-root impl),
+`inherit_does_not_disturb_pathway_attach` (source with BOTH → child has BOTH — orthogonality). **Demonstrated
+bite** (convention): neutralized the OptTS inherit → `optts_child_inherits_source_group` FAILED → restored.
+The New Job path is UNCHANGED: `create_lists_job_as_draft` still asserts `group_id NULL` at insert.
+
+**Verified** (dev machine, rustc available): `cargo test --lib` → **303 passed, 0 failed, 21 ignored, 0
+warnings** (delta +5). No frontend touch → no vitest/tsc delta.
+
+**Manual gate (Anton, live):** m1 scan inside a named group → Refine with OptTS → the OptTS child appears IN
+that group; m2 (negative) same from an ungrouped scan → child stays ungrouped (no invented group); m3 a NEB
+refine and a GOAT re-opt inside a group → children land in that group.
+
+**Wiki (same commit):** modules/groups.md gains a "How a job's `group_id` is set" section (New Job = active
+group via `move_job`; derived children = inherit source's group) + a refreshed Status line (UI 4.7.3 / export
+4.7.5 landed); adr-019 Consequences gains a one-line note (children inherit source group — a default,
+orthogonal to pathway); ROADMAP Phase 4.7 gains the group-inheritance default (explicit picker = next). No
+index.md count change (no new page).
+
+**Next:** the explicit group **picker / override** at spawn time (Unit 2).
