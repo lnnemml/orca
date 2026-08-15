@@ -1106,6 +1106,22 @@ r1–r4 manual gates. Next per the ratified reorder: CREST probe → Stage D →
         geometry still parsed). No new JobStatus; rule #6 + the OptTS recipe untouched. +4 reader bites
         (real fixtures) + 2 real-data gates. **This unblocks the real question: why r2SCAN-3c OptTS does
         not find the TS from the XTB Diels-Alder seed (a chemistry/seed-quality concern, next).**
+  - [x] **Geometry carry-forward resolves to the converged OUTPUT, not the input seed** (2026-08-15,
+        `debugging/021`) — the most critical data-corruption fix after the convergence guard. **New
+        iteration** seeded a downstream job from the parent's `input_content` (`* xyz` SEED) + `scene_json`
+        (creation-time snapshot), NOT its converged output — **silent** (washed out by any downstream
+        relaxation, invisible on minima), biting only on **TS single-points** (no relaxation, seed far
+        from the saddle) → a wrong barrier on a non-stationary geometry. Confirmed on the real DA OptTS
+        `661a60a5`: forming C0–C10 seed **2.364** vs converged **2.289**. Fix (TS-only, no migration):
+        pure `src/scene/carryForward.ts` `resolveCarryForwardGeometry` reads `results.final_geometry`
+        (same source as the viewer/`finalGeometryXyz`) for a converged opt, else an **honest refusal**
+        (scan/NEB/non-converged, reusing `results.converged`); `NewJobScreen` seeds a fresh scene from the
+        output (variant a — parent edit log dropped) + a green banner + a `# geometry:` provenance
+        comment; the `geometryMatchesFinal` **guard** bit-matches the final frame and rejects the seed
+        (the negative control). +8 vitest bites. **Deferred:** a structured `source_geometry_job_id`
+        jobs-column + manifest field (needs a migration; the input-comment provenance already makes the
+        swap non-silent + exported). **This closes the silent TS-barrier corruption that was poisoning
+        the benchmarks.**
 
 ### Stage F — Microsolvation (explicit solvent shell), probe-first
 

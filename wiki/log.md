@@ -8568,3 +8568,39 @@ reactant → located ΔE‡ (ΔG‡ once the reactant has Freq) vs the basin; m2
 ΔG‡ absent (never fabricated); m3 scan/NEB pathway renders exactly as before; reactant designation is
 swappable. **Wiki:** chemistry/reaction-barriers.md (Барʼєр 5), modules/reactions-ui.md (third origin),
 ROADMAP.
+
+## [2026-08-15] fix | Carry-forward resolves to the converged output geometry, not the input seed (debugging/021)
+
+**Root cause (measured).** New iteration seeded a new job from the parent's `input_content` (the `.inp`
+`* xyz` SEED) + `scene_json` (creation-time snapshot) — NOT its converged output. Silent: washed out by
+any downstream relaxation, invisible on minima (seed ≈ converged); bit only on **TS single-points**
+(SP/Freq, no relaxation, seed far from the saddle) → a wrong barrier on a non-stationary geometry.
+Confirmed on the real DA OptTS `661a60a5`: forming C0–C10 seed = **2.3636** (input_content ≡ first trj
+frame) vs converged = **2.2893** (input.xyz ≡ last trj frame ≡ results.final_geometry). The subtlety
+(Nota 1): NOT "input is bad" — `input.xyz` the FILE is correct (2.289); the leak was the DB
+`input_content` text + `scene_json` snapshot. Only New iteration leaked; Export/"Use best DFT"/all
+derived spawns already read `results.final_geometry`.
+
+**Fix (TS-only, no migration, no cargo).** Pure `src/scene/carryForward.ts`:
+`resolveCarryForwardGeometry(job, results)` → the converged `results.final_geometry` (same source as the
+viewer / `finalGeometryXyz`) for a converged opt, or an **honest refusal** (scan/NEB → pick a
+point/image; **non-converged** → not stationary, reuses `results.converged` the convergence verdict;
+no-result → unparsed/GOAT); a single point carries its geometry (final == input). `NewJobScreen`
+(variant a): a converged carry seeds a **fresh** scene from the output (parent edit log NOT carried) +
+a green banner + a `# geometry: converged output of job <id>` provenance comment; refusals surface as a
+warning (never a silent seed). **Guard** `geometryMatchesFinal`: the carried geometry must **bit-match**
+the parsed final frame — the seed (2.364) is rejected even under a future re-route.
+
+**Tests.** +8 vitest bites (`carryForward.test.ts`): converged→final_geometry, non-converged→refuse,
+scan/NEB→refuse, no-result→refuse, single-point→carry; the guard **negative control** (converged bit-
+matches, the SEED 2.364 rejected against converged 2.289); provenance idempotent. vitest **923 passed**
+(+8); tsc clean; no cargo.
+
+**Deferred (flagged):** a structured jobs-column `source_geometry_job_id` + a manifest field (needs a
+migration + create_job/export threading) — the input-comment provenance already makes the swap
+non-silent + exported.
+
+**Manual gate (Anton, live):** m1 New iteration from the DA OptTS → seats on 2.289 + the converged-output
+banner + provenance comment; m2 (negative) hand-feed the 2.364 seed → guard rejects; restore → passes;
+m3 New iteration from an Opt minimum → still the converged frame, happy-path intact. **Wiki:**
+debugging/021, modules/frontend.md (the invariant), ROADMAP, index +1.

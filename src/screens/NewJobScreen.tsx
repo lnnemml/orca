@@ -84,6 +84,13 @@ import {
 import { formatXtbProgress } from "../scene/xtb-progress";
 import { formalChargeConsistency } from "../scene/formal-charge";
 import { restoreSceneLog, type LogRejection } from "../scene/restore";
+import {
+  resolveCarryForwardGeometry,
+  geometryMatchesFinal,
+  carryForwardProvenanceComment,
+  withProvenanceComment,
+} from "../scene/carryForward";
+import { finalGeometryXyz } from "../export/exporters";
 import { serializeLog, type Op } from "../scene/oplog";
 import { goatInputForFragment } from "../scene/ensemble";
 import type { RawFragment, Scene, SceneFragment } from "../scene/types";
@@ -93,7 +100,7 @@ import {
   ORCA_TEMPLATES,
   type OrcaTemplate,
 } from "../templates/orca-templates";
-import type { Group, Job, Molecule, SidecarStatus } from "../types";
+import type { Group, Job, Molecule, ParsedResults, SidecarStatus } from "../types";
 import { GroupSelect, resolveGroupAssignment } from "../groups/GroupSelect";
 
 /** Charge with an explicit sign: `0`, `-1`, `+1`. */
@@ -180,6 +187,12 @@ export function NewJobScreen({
   // longer matched its input (distinct from a plain no-snapshot job — no note).
   const [snapshotRejected, setSnapshotRejected] = useState(false);
   const [logRejected, setLogRejected] = useState<LogRejection | null>(null);
+  // Geometry carry-forward (the input-vs-output fix): when New iteration seeds from a completed
+  // job, the geometry must be the parent's CONVERGED output (results.final_geometry), never the
+  // seed (input_content/scene_json). `carryBanner` = the converged-output note (green); `carryRefusal`
+  // = an honest refusal (scan/NEB/non-converged) shown as a warning, never a silent seed.
+  const [carryBanner, setCarryBanner] = useState<string | null>(null);
+  const [carryRefusal, setCarryRefusal] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // ── Destination group (explicit picker, Phase 4.7 unit 2a) ──────────────────
@@ -853,6 +866,60 @@ export function NewJobScreen({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Geometry carry-forward resolution (the input-vs-output fix). The sync effect above seeded the
+  // parent's SEED scene as a fast placeholder; here we fetch the parent's PARSED results and, for a
+  // CONVERGED optimization, REPLACE it with a fresh scene from the converged OUTPUT — the same source
+  // the viewer / `finalGeometryXyz` use (`results.final_geometry`), never `input_content`/`scene_json`.
+  // Variant (a): the parent's edit LOG is NOT carried (it produced the seed, not the output) — a fresh
+  // scene, with a provenance comment + banner so this reads as "from the output", not seed-editing. A
+  // scan/NEB/non-converged source is an honest REFUSAL (a warning; never a silent seed); a single point
+  // needs no change (its final geometry is its input).
+  useEffect(() => {
+    if (!initialJob) return;
+    let live = true;
+    (async () => {
+      const results = await invoke<ParsedResults | null>("read_job_results", { id: initialJob.id }).catch(
+        () => null,
+      );
+      if (!live) return;
+      const cf = resolveCarryForwardGeometry(initialJob, results);
+      if (!cf.ok) {
+        setCarryRefusal(cf.reason);
+        return;
+      }
+      // A single point's final geometry IS its input — the sync-seeded scene is already correct.
+      if (cf.origin !== "converged" || !results) return;
+      // Guard (defense-in-depth): the carried geometry MUST bit-match the parsed final frame; the
+      // seed (2.364) would not (this is the negative-control target).
+      if (!geometryMatchesFinal(cf.geometry, results)) {
+        setCarryRefusal(
+          "Carried geometry did not match the parent's parsed final geometry — refusing to seed (guard).",
+        );
+        return;
+      }
+      // Charge/multiplicity from the parent's input header (an .xyz carries none).
+      const parent = sceneFromOrcaInput(initialJob.input_content);
+      const xyz = finalGeometryXyz(cf.geometry, initialJob.title, results.final_energy_eh);
+      const fresh = sceneFromXyz(xyz, {
+        name: `${initialJob.title} (converged)`,
+        charge: parent ? totalCharge(parent) : 0,
+        multiplicity: parent ? parent.multiplicity : 1,
+        source: "editor",
+      });
+      if (!fresh) return;
+      seedScene(fresh, "text-adopt"); // fresh log — the parent's seed edit history is not carried
+      setContent((c) => withProvenanceComment(c, carryForwardProvenanceComment(cf)));
+      setCarryBanner(cf.note);
+      // The converged-output seed supersedes any snapshot/log-reject warning from the sync restore.
+      setSnapshotRejected(false);
+      setLogRejected(null);
+    })();
+    return () => {
+      live = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialJob]);
 
   // Scene → content (ADR-008 #6): inject the merged coordinate block, leaving
   // the `!` line / `%` blocks / comments untouched. The guard skips the write
@@ -2025,6 +2092,22 @@ export function NewJobScreen({
 
       {error ? <div className="banner err">{error}</div> : null}
       {saved ? <div className="banner ok">Saved to library</div> : null}
+      {carryBanner ? (
+        <div className="banner ok">
+          {carryBanner}
+          <button className="btn btn-sm" style={{ marginLeft: 10 }} onClick={() => setCarryBanner(null)}>
+            Dismiss
+          </button>
+        </div>
+      ) : null}
+      {carryRefusal ? (
+        <div className="banner warn">
+          {carryRefusal}
+          <button className="btn btn-sm" style={{ marginLeft: 10 }} onClick={() => setCarryRefusal(null)}>
+            Dismiss
+          </button>
+        </div>
+      ) : null}
       {snapshotRejected ? (
         <div className="banner warn">
           The fragment layout from the source job didn't match its input, so it

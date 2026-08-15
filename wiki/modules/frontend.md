@@ -344,6 +344,22 @@ A `snapshotRejected` state drives a `.banner.warn` **only** when a snapshot was 
 (didn't match the input); a plain `scene_json = NULL` job shows **no** note. `create_job` is the one
 write path: `NewJobScreen.create()` passes `sceneJson: scene ? serializeScene(scene) : null`.
 
+**Invariant — carry-forward ≡ the parent's converged OUTPUT (`debugging/021`).** `content =
+job.input_content` and the `restoreScene` snapshot are the parent's creation-time **SEED**, NOT its
+converged output (for an OptTS they differ: seed forming C–C 2.364 Å vs converged 2.289 Å). So the sync
+restore is only a **fast placeholder**: an async effect fetches `read_job_results(parent)` and, via the
+pure `src/scene/carryForward.ts`, **resolves** the carry-forward:
+- a **converged optimization** → a **fresh** scene from `results.final_geometry` (the same source the
+  viewer / `finalGeometryXyz` use ≡ `input.xyz` ≡ last `_trj.xyz` frame), the parent's edit log NOT
+  carried (variant a — it produced the seed, not the output), a green banner + a `# geometry: converged
+  output of job <id>` provenance comment in `content`;
+- a **scan / NEB / non-converged / no-result** source → an **honest refusal** (`.banner.warn`), never a
+  silent seed (reuses `results.converged`, the convergence verdict);
+- a **single point** → no change (its final geometry is its input).
+`geometryMatchesFinal` is the **defense-in-depth guard**: the carried geometry must bit-match the parsed
+final frame; the seed (2.364) is rejected. Only New iteration leaked — Export geometry / "Use best
+(DFT)" / every derived spawn already read `results.final_geometry`.
+
 ## Convergence dashboard (`src/convergence/`)
 
 A learning instrument on Job detail: watch energy per cycle and the criteria live instead of reading
