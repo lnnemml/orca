@@ -51,9 +51,14 @@ export function OptTSMethodPicker({
     <MethodPicker
       value={slice}
       onChange={(patch) => {
+        // Touching the method IS the override: an explicit family/method pick turns inherit
+        // OFF and emits `{ methodState }`. Emitting with the STALE `inherit` (still true until
+        // the next render) is the bug that silently dropped the override — the refine ran at the
+        // source's method. So flip inherit here and emit with `false`, not the stale value.
         const next = { ...slice, ...patch };
         setSlice(next);
-        emit(inherit, next);
+        setInherit(false);
+        emit(false, next);
       }}
       inherit={{
         active: inherit,

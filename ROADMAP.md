@@ -1072,6 +1072,11 @@ r1–r4 manual gates. Next per the ratified reorder: CREST probe → Stage D →
         `buildOptTSInput` sites (1D/2D scan + NEB band); `ConnectivityPanel` excluded (plain-Opt children
         stay at the TS method). +9 vitest; `wiki/modules/method-picker.md`. **m5 DFT-refine convergence =
         the live validation (pending).**
+        - [x] **Fix (2026-08-15): picking a method now turns inherit off** — `OptTSMethodPicker` emitted
+              with the STALE `inherit` (still true on a pick) → `{}` → the source's method, so m2 picked
+              r2SCAN-3c but ran XTB. The pick handler now `setInherit(false)` + `emit(false, next)`;
+              +3 vitest bites (`picking_a_family_emits_the_override` verified red on the stale impl).
+              Isolated to the picker — engine/site/New Job untouched.
 
 ### Stage F — Microsolvation (explicit solvent shell), probe-first
 

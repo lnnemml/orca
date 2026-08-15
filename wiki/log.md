@@ -8404,3 +8404,28 @@ connects reactant↔product.
 
 **Wiki (same commit):** +modules/method-picker.md; orca/optts.md (§"Method override — the `methodState`
 seam"); modules/frontend.md (InputBuilderForm consumes MethodPicker); index +1 (101); ROADMAP.
+
+## [2026-08-15] fix | OptTS method pick now turns inherit off — the override was silently dropped
+
+**Symptom (manual gate m2).** Picking r2SCAN-3c for a scan→OptTS refine still ran the child at the
+source's XTB — the override was dropped.
+
+**Root cause.** In `OptTSMethodPicker`, `MethodPicker.onChange` (a family/method pick) emitted with the
+STALE `inherit` state. `inherit` starts `true`; a pick called `emit(inherit, next)` with `inherit`
+still `true` (React hadn't re-rendered) → `onChange({})` → the inherit path → the source's method.
+Touching a method never turned inherit off, so the override never reached `buildOptTSInput`. The engine
+(Part A `methodState`) and the site wiring were both correct — only the picker's emit gate was wrong.
+
+**Fix (isolated to `OptTSMethodPicker.tsx`).** The method-pick handler now `setInherit(false)` and
+`emit(false, next)` — touching the method IS the override. The inherit toggle's own handler is
+unchanged (active → `{}`, inactive → `{ methodState }`).
+
+**Tests (+3 vitest, jsdom).** `picking_a_family_emits_the_override` (the exact gate-failure bite —
+last emit is `{ methodState: composite r2SCAN-3c }`, NOT `{}`; **verified red on the stale-inherit
+impl**, 2 tests go red), `untouched_picker_stays_inherit` (no emit → the byte-identical `{}` default
+preserved), `toggling_inherit_back_on_returns_to_inherit`. `vitest` → **911 passed** (+3); `tsc` clean;
+no cargo delta. Engine / site / New Job untouched.
+
+**Manual gate (Anton, live):** m2 pick r2SCAN-3c → child `!` line is r2SCAN-3c (not XTB); m1 untouched
+picker → still XTB (no regression); m5 (validation) DFT OptTS from the XTB Diels-Alder seed → one
+imaginary, IRC R↔P. **Wiki (same commit):** modules/method-picker.md (inherit = untouched-only), ROADMAP.

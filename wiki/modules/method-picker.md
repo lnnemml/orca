@@ -26,6 +26,11 @@ from source" default so a refine can run at a chosen level). Phase 4.5 / 4.7.
   verbatim (the byte-identical path of `src/scene/optts.ts`). There is **no reconstruction** of the
   source method into a slice — that would be a back-door reverse-parse of the source `!` line;
   inherit literally sends no override, so the default is unchanged for anyone who does not touch it.
+  **Inherit is only the UNTOUCHED state: an explicit method/family pick turns inherit OFF** and emits
+  `{ methodState }`. `MethodPicker.onChange` must flip inherit *and emit with `false`* — emitting with
+  the stale `inherit` (still `true` until the next render) silently drops the override and the refine
+  runs at the source's method (the m2 XTB→XTB regression; `picking_a_family_emits_the_override` bite,
+  red on a stale-inherit impl). Toggling "Inherit from source" back on returns to `{}`.
 
 ## `MethodSlice` (in `build-input.ts`)
 
