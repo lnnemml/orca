@@ -1210,6 +1210,15 @@ Group-delete **promotes** children (never a destructive cascade); jobs orphan to
       but no dir; `results`/`computed_identity`/`job_type` are null (not fabricated) in v1. Frontend: a per-group
       Curated/Full chooser in `GroupSidebar` → folder picker → toast. **Deferred:** `.zip` packaging, the
       connectivity-based `computed_identity` stamp. `modules/group-export.md`.
+  - [x] **Single-job export landed** (2026-08-15) — the sibling of group export for ONE open job. `export_job`
+        (+ testable `export_job_conn`) reuses the SAME machinery (`reject_if_in_data_dir`/`path_is_within` guard,
+        `fresh_export_dir`, the shared `copy_manifest_job_dirs` loop, `verify_export_postcondition`), minus the
+        group tree. Exports to a dir **named after the job** (`{slug(title)}-export/{slug(title)}/`, NO numeric
+        prefix) + `manifest.json` via the pure `build_single_job_manifest` (shares `manifest_job_entry`). An
+        ungrouped job → `source.group = null` (never fabricated; `ManifestSource` group fields made
+        `Option<String>`, group manifests byte-identical). UI: **"Export Folder…"** beside "Open Folder"
+        (Curated/Full + path toast). +3 pure bites + 5 integration bites (round-trip, data-dir refused, curated
+        omitted, ungrouped-null, draft, NotFound); no migration; group export untouched.
 - [x] **group-inheritance default (Unit 1).** A result-derived child job — **OptTS** / **NEB-TS** /
       **DFT re-opt** (and connectivity, via OptTS) — **defaults its `group_id` to the source job's current
       group**, stamped verbatim right after the pathway inherit, so a refined child lands in the source's

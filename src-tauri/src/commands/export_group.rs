@@ -105,8 +105,12 @@ pub enum CopyMode {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManifestSource {
-    pub group_id: String,
-    pub group_name: String,
+    /// The source group's id/name. **Optional** so the single-job export can carry
+    /// `null` for an ungrouped job (honest, never a fabricated group). A group export
+    /// always fills `Some(...)`, which serializes to the same bare string as before — the
+    /// manifest JSON of a group export is byte-identical.
+    pub group_id: Option<String>,
+    pub group_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -267,6 +271,39 @@ fn partition_files(present_files: &[String], copy_mode: &CopyMode) -> ManifestFi
     ManifestFiles { included, omitted }
 }
 
+/// Build ONE `ManifestJob` entry from a job row (+ its optional result), the pre-computed
+/// `exported_dir` and `group_path`. The single seam both `build_manifest` (group export) and
+/// `build_single_job_manifest` (single-job export) construct a job entry through — so lineage,
+/// results honest-null, and `computed_identity: None` are defined in exactly one place.
+fn manifest_job_entry(
+    job: &JobRow,
+    result: Option<&ResultRow>,
+    exported_dir: String,
+    group_path: Vec<String>,
+    copy_mode: &CopyMode,
+) -> ManifestJob {
+    ManifestJob {
+        exported_dir,
+        uuid: job.id.clone(),
+        display_name: job.title.clone(),
+        job_type: job.job_type.clone(),
+        status: job.status.clone(),
+        created_at: job.created_at.clone(),
+        group_path,
+        pathway_id: job.pathway_id.clone(),
+        lineage: ManifestLineage {
+            source_ensemble_job_id: job.source_ensemble_job_id.clone(),
+            source_conformer_index: job.source_conformer_index,
+        },
+        results: result.map(|r| ManifestResults {
+            energy_eh: r.energy_eh,
+            imaginary_count: r.imaginary_count,
+        }),
+        files: partition_files(&job.present_files, copy_mode),
+        computed_identity: None,
+    }
+}
+
 /// Group names from the topmost ancestor down to the job's own group. Walks `parent_id`
 /// over `by_id`, bounded by the node count so a corrupt cycle can't hang the projection.
 fn group_path_for(group_id: Option<&str>, by_id: &HashMap<&str, &GroupNode>) -> Vec<String> {
@@ -320,27 +357,13 @@ pub fn build_manifest(
         .map(|(i, job)| {
             let exported_dir =
                 format!("{}_{}", numbered_prefix(i, group_size), slugify(&job.title));
-            let results = results_by_job.get(job.id.as_str()).map(|r| ManifestResults {
-                energy_eh: r.energy_eh,
-                imaginary_count: r.imaginary_count,
-            });
-            ManifestJob {
+            manifest_job_entry(
+                job,
+                results_by_job.get(job.id.as_str()).copied(),
                 exported_dir,
-                uuid: job.id.clone(),
-                display_name: job.title.clone(),
-                job_type: job.job_type.clone(),
-                status: job.status.clone(),
-                created_at: job.created_at.clone(),
-                group_path: group_path_for(job.group_id.as_deref(), &by_id),
-                pathway_id: job.pathway_id.clone(),
-                lineage: ManifestLineage {
-                    source_ensemble_job_id: job.source_ensemble_job_id.clone(),
-                    source_conformer_index: job.source_conformer_index,
-                },
-                results,
-                files: partition_files(&job.present_files, &copy_mode),
-                computed_identity: None,
-            }
+                group_path_for(job.group_id.as_deref(), &by_id),
+                &copy_mode,
+            )
         })
         .collect();
 
@@ -349,10 +372,43 @@ pub fn build_manifest(
         exported_at,
         copy_mode,
         source: ManifestSource {
-            group_id: group_meta.id.clone(),
-            group_name: group_meta.name.clone(),
+            // A group export always names its root group — `Some(...)` serializes to the same
+            // bare string as the pre-`Option` shape (byte-identical group manifest).
+            group_id: Some(group_meta.id.clone()),
+            group_name: Some(group_meta.name.clone()),
         },
         jobs: manifest_jobs,
+        notes: vec![HONESTY_NOTE.to_string()],
+    }
+}
+
+/// Build a `ManifestV1` for a **single** job — the single-job-export sibling of
+/// [`build_manifest`] (same machinery, no group tree). Pure: no fs, no DB, no clock.
+///
+/// One `jobs` entry via the shared [`manifest_job_entry`]. Differences from the group form:
+/// - `exported_dir = slugify(title)` with **no numeric prefix** (a lone job needs no ordinal);
+/// - `source.group` is the job's group **if it has one, else null** — an ungrouped job carries
+///   `ManifestSource { group_id: None, group_name: None }`, NEVER a fabricated group. The group
+///   (id + name) is resolved by the caller and passed in (`None` = ungrouped);
+/// - `group_path` is the single group's name when grouped, else empty.
+pub fn build_single_job_manifest(
+    job: &JobRow,
+    result: Option<&ResultRow>,
+    group: Option<&GroupMeta>,
+    copy_mode: CopyMode,
+    exported_at: String,
+) -> ManifestV1 {
+    let group_path = group.map(|g| vec![g.name.clone()]).unwrap_or_default();
+    let entry = manifest_job_entry(job, result, slugify(&job.title), group_path, &copy_mode);
+    ManifestV1 {
+        manifest_version: 1,
+        exported_at,
+        copy_mode,
+        source: ManifestSource {
+            group_id: group.map(|g| g.id.clone()),
+            group_name: group.map(|g| g.name.clone()),
+        },
+        jobs: vec![entry],
         notes: vec![HONESTY_NOTE.to_string()],
     }
 }
@@ -587,6 +643,72 @@ mod tests {
         assert_eq!(m.exported_at, "stamp");
         assert_eq!(m.manifest_version, 1);
         assert!(m.notes[0].contains("is NOT asserted here"));
+    }
+
+    // --- build_single_job_manifest (the single-job sibling) -------------------
+
+    fn group_meta_named(id: &str, name: &str) -> GroupMeta {
+        GroupMeta { id: id.to_string(), name: name.to_string() }
+    }
+
+    /// The single-job manifest: exactly one entry, `exported_dir = slug(title)` with NO
+    /// numeric prefix, and the whole thing round-trips through JSON (the Part B post-condition
+    /// re-reads it as a `ManifestV1`).
+    #[test]
+    fn single_job_manifest_round_trips() {
+        let j = job("j1", "HCN Opt Freq", "2026-08-14T10:00:00");
+        let g = group_meta_named("g-root", "HCN reduction");
+        let m = build_single_job_manifest(&j, None, Some(&g), CopyMode::Curated, "stamp".into());
+
+        assert_eq!(m.jobs.len(), 1, "a single-job manifest has exactly one entry");
+        assert_eq!(m.jobs[0].uuid, "j1");
+        assert_eq!(m.jobs[0].display_name, "HCN Opt Freq");
+        // slug(title), NO numeric prefix (contrast the group form's "1_hcn-opt-freq").
+        assert_eq!(m.jobs[0].exported_dir, "hcn-opt-freq");
+        assert_eq!(m.source.group_name.as_deref(), Some("HCN reduction"));
+
+        let json = serde_json::to_string_pretty(&m).unwrap();
+        let back: ManifestV1 = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.jobs.len(), 1);
+        assert_eq!(back.jobs[0].uuid, "j1");
+        assert_eq!(back.jobs[0].exported_dir, "hcn-opt-freq");
+    }
+
+    /// BITE (never fabricate a group): an UNGROUPED job → `source.group_id`/`group_name` are
+    /// **null**, serialized as JSON null — not an invented placeholder group.
+    #[test]
+    fn ungrouped_job_source_group_is_null() {
+        let j = job("j1", "scratch calc", "2026-08-14T10:00:00");
+        let m = build_single_job_manifest(&j, None, None, CopyMode::Curated, "stamp".into());
+        assert!(m.source.group_id.is_none(), "ungrouped → null group id, not a fabrication");
+        assert!(m.source.group_name.is_none());
+        assert!(m.jobs[0].group_path.is_empty(), "ungrouped → empty group path");
+
+        let json = serde_json::to_string_pretty(&m).unwrap();
+        assert!(json.contains("\"group_id\": null"), "null must be present in the JSON: {json}");
+        assert!(json.contains("\"group_name\": null"));
+    }
+
+    /// BITE (silent omission — mirror the group-export honesty bite): curated mode records a
+    /// present `.gbw` in `files.omitted`, never dropping it; Full includes it.
+    #[test]
+    fn single_job_curated_records_omitted() {
+        let mut j = job("j1", "Opt", "2026-08-14T10:00:00");
+        j.present_files = vec!["input.property.txt".into(), "input.gbw".into()];
+        let m = build_single_job_manifest(&j, None, None, CopyMode::Curated, "T".into());
+        let files = &m.jobs[0].files;
+        assert!(files.included.contains(&"input.property.txt".to_string()));
+        assert!(
+            files.omitted.contains(&"input.gbw".to_string()),
+            "curated: .gbw must be recorded as omitted, not dropped"
+        );
+        assert!(!files.included.contains(&"input.gbw".to_string()));
+
+        let mut j2 = job("j1", "Opt", "2026-08-14T10:00:00");
+        j2.present_files = vec!["input.gbw".into()];
+        let full = build_single_job_manifest(&j2, None, None, CopyMode::Full, "T".into());
+        assert!(full.jobs[0].files.included.contains(&"input.gbw".to_string()));
+        assert!(full.jobs[0].files.omitted.is_empty());
     }
 
     /// The manifest round-trips through JSON and null fields serialize as JSON null

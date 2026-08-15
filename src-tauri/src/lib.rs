@@ -106,6 +106,7 @@ pub fn run() {
             commands::export::write_export_text,
             commands::export::write_export_bytes,
             commands::export::export_group,
+            commands::export::export_job,
             commands::jobs::open_job_folder,
             output_search::search_job_output,
             output_search::get_search_presets,

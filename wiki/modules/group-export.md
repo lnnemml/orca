@@ -99,3 +99,22 @@ re-reads this file.
   so no new date/time dependency was added.
 - **Copy is best-effort per file** — a source file that vanished between listing and copy is skipped, still
   recorded as intended-`included` in the manifest.
+
+## Single-job export — the sibling (`export_job`)
+
+Exporting ONE open job reuses this exact machinery, minus the group tree. `export_job(job_id, dest_parent,
+copy_mode)` (a testable `export_job_conn` core, mirroring `export_group_conn`) reads the one `jobs` row + its
+`results` row, then reuses the **same** `reject_if_in_data_dir`/`path_is_within` guard, `fresh_export_dir`,
+the shared `copy_manifest_job_dirs` copy loop, and `verify_export_postcondition` (one job). The export dir is
+**named after the job** — `{slug(title)}-export/{slug(title)}/…` — with **no numeric prefix** (a lone job needs
+no ordinal). The manifest is `build_single_job_manifest` (the pure sibling of `build_manifest`, sharing the
+`manifest_job_entry` per-job construction), still a `ManifestV1`.
+
+- **`source.group` is nullable for the single-job case.** `ManifestSource.group_id`/`group_name` are now
+  `Option<String>`: a grouped job names its own group, an **ungrouped** job carries `null` — never a fabricated
+  group (honest-or-absent). A group export always fills `Some(...)`, which serializes to the same bare string,
+  so a group manifest's JSON is **byte-identical** and `verify_export_postcondition` is reused unchanged.
+- Same invariants as the group export: curated omissions recorded (not dropped), a draft/never-run job
+  (`job_dir` NULL) is a manifest entry with no artifact dir, the canonical `<UUID>/` dir + DB rows are untouched,
+  no migration. UI: an **"Export Folder…"** action beside "Open Folder" on the job detail screen, with the same
+  Curated/Full chooser and the path toast (`src/export/save.ts` `exportJob`).

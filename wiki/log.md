@@ -8466,3 +8466,36 @@ a real converged Opt+Freq → `Some(true)` with freqs (no regression).
 fails is the NEXT question). **Verification:** cargo 314 non-ignored + the 2 real-data gates pass; tsc
 + 911 vitest clean; no migration. **Wiki:** +orca/convergence-status.md, modules/artifact-readers.md
 (verdict-before-.hess), ROADMAP, index +1.
+
+## [2026-08-15] feat | Single-job export — the group-export sibling (job-named folder + manifest)
+
+**What.** Export a SINGLE open job's folder to a chosen location as a readable, UUID-traceable
+directory **named after the job** (slug of its title) + `manifest.json` — the single-job sibling of
+group export (ADR-021). No group resolution beyond naming the job's own group in `source`.
+
+**Reuse, not reimplement.** `export_job(job_id, dest_parent, copy_mode)` (+ testable `export_job_conn`,
+mirroring `export_group_conn`) reuses the group-export machinery verbatim: the inverted
+`path_is_within` rule-#3 guard, `fresh_export_dir` (`{slug(title)}-export`, no-clobber), the **shared**
+`copy_manifest_job_dirs` copy loop (extracted from `export_group_conn`, now used by both), and
+`verify_export_postcondition` (one job). The manifest is the pure `build_single_job_manifest` (Part A),
+sharing a new `manifest_job_entry` helper with `build_manifest`. Exported dir = `slugify(title)` with
+**NO numeric prefix** (a lone job needs no ordinal). Registered `export_job` in lib.rs.
+
+**Honest-or-absent.** An **ungrouped** job → `source.group = null`, NOT a fabricated group. This
+required making `ManifestSource.group_id`/`group_name` `Option<String>`; a group export passes
+`Some(...)`, which serializes to the same bare string, so **group manifests are byte-identical** and
+`verify_export_postcondition` is reused unchanged (the one mechanical ripple: `export.rs:508` group test
+assertion → `.as_deref()`). Curated omissions recorded (`.gbw` in `files.omitted`, not dropped); a
+draft/never-run job (`job_dir` NULL) → manifest entry, no artifact dir; the canonical `<UUID>/` dir + DB
+rows byte-unchanged (projection only); no migration.
+
+**UI.** An **"Export Folder…"** action beside "Open Folder" on `JobDetailScreen`, with the same
+Curated/Full chooser + path toast as the group export (`src/export/save.ts` `exportJob`).
+
+**Tests.** +3 pure bites (`single_job_manifest_round_trips`, `ungrouped_job_source_group_is_null`,
+`single_job_curated_records_omitted`) + 5 integration bites (m1 round-trip + m3 canonical-untouched, m2
+data-dir refused, m4 ungrouped-null, draft manifest-only, NotFound). cargo **322 passed** (+8); tsc +
+**911 vitest** clean; no cargo migration. **Manual gate (Anton, live):** m1 Export Folder… → job-named
+folder + artifacts + manifest that round-trips UUID↔name; m2 data-dir dest refused; m3 curated → `.gbw`
+absent + in `manifest.omitted`, canonical dir + row unchanged; m4 ungrouped → `source.group` null.
+**Wiki:** modules/group-export.md (the sibling section), ROADMAP.

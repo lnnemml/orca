@@ -37,6 +37,18 @@ export async function exportGroup(groupId: string, mode: CopyMode): Promise<stri
   return invoke<string>("export_group", { groupId, destParent: dir, copyMode: mode });
 }
 
+/**
+ * Export a SINGLE open job's folder to a location the user picks — the same projection as
+ * {@link exportGroup}, into a directory named after the job (slug of its title) + a
+ * `manifest.json` (ADR-021 sibling). The canonical `<UUID>/` dir is untouched. Returns the
+ * created export path, or `null` if the user cancelled the folder picker.
+ */
+export async function exportJob(jobId: string, mode: CopyMode): Promise<string | null> {
+  const dir = await open({ directory: true, title: "Choose export destination" });
+  if (!dir || typeof dir !== "string") return null;
+  return invoke<string>("export_job", { jobId, destParent: dir, copyMode: mode });
+}
+
 /** Write binary bytes (PNG) via a save dialog. Returns false if the user cancelled. */
 export async function saveBytes(defaultName: string, bytes: Uint8Array): Promise<boolean> {
   const path = await save({

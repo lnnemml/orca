@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { message } from "@tauri-apps/plugin-dialog";
 
 import type { Job, JobStatus, ParsedResults } from "../types";
 import type { FragmentGeometryVia } from "../scene/oplog";
@@ -36,6 +37,7 @@ import {
   showsSingleStructureResults,
   type Conformer,
 } from "../scene/ensemble";
+import { exportJob, type CopyMode } from "../export/save";
 import type { Scene } from "../scene/types";
 
 /** Mirrors `commands::jobs::OutputContent`. */
@@ -537,6 +539,29 @@ export function JobDetailScreen({
     }
   };
 
+  // Export the job's folder to a chosen location as a readable, job-named projection +
+  // manifest.json (the single-job sibling of group export). The Curated/Full choice mirrors
+  // the group export chooser; the canonical <UUID>/ dir is untouched (Rust only reads it).
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exportBusy, setExportBusy] = useState(false);
+  const runJobExport = async (copyMode: CopyMode) => {
+    if (exportBusy) return;
+    setExportOpen(false);
+    setExportBusy(true);
+    try {
+      const path = await exportJob(jobId, copyMode);
+      if (path) {
+        await message(`Exported “${job?.title ?? "job"}” to:\n${path}`, {
+          title: "Export complete",
+        });
+      }
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setExportBusy(false);
+    }
+  };
+
   const cancel = async () => {
     // The backend kills the ORCA tree off-thread, so this invoke returns fast;
     // keep the button in a disabled "Cancelling…" state until the terminal
@@ -569,6 +594,41 @@ export function JobDetailScreen({
             <button className="btn btn-sm" onClick={openFolder}>
               Open Folder
             </button>
+          ) : null}
+          {job ? (
+            exportOpen ? (
+              <span className="row" style={{ gap: 4 }}>
+                <span className="muted">Export:</span>
+                <button
+                  className="btn btn-sm"
+                  disabled={exportBusy}
+                  title="Only the pinned scientific artifacts (no .gbw/cubes/scratch)"
+                  onClick={() => runJobExport("curated")}
+                >
+                  Curated…
+                </button>
+                <button
+                  className="btn btn-sm"
+                  disabled={exportBusy}
+                  title="The whole job folder, verbatim"
+                  onClick={() => runJobExport("full")}
+                >
+                  Full…
+                </button>
+                <button className="icon-btn" title="Cancel" onClick={() => setExportOpen(false)}>
+                  ✕
+                </button>
+              </span>
+            ) : (
+              <button
+                className="btn btn-sm"
+                disabled={exportBusy}
+                title="Export this job's folder — named after the job — to a chosen location (+ manifest.json)"
+                onClick={() => setExportOpen(true)}
+              >
+                {exportBusy ? "Exporting…" : "Export Folder…"}
+              </button>
+            )
           ) : null}
           {job ? (
             <button
