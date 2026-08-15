@@ -8499,3 +8499,34 @@ data-dir refused, m4 ungrouped-null, draft manifest-only, NotFound). cargo **322
 folder + artifacts + manifest that round-trips UUID↔name; m2 data-dir dest refused; m3 curated → `.gbw`
 absent + in `manifest.omitted`, canonical dir + row unchanged; m4 ungrouped → `source.group` null.
 **Wiki:** modules/group-export.md (the sibling section), ROADMAP.
+
+## [2026-08-15] fix | A 2D relaxed scan parses to a clean result (surface via read_scan_surface), not ParseFailed
+
+**Symptom.** A 2D relaxed scan completed and its contour rendered (`read_scan_surface`, unit 4b), yet
+the job read `ParseFailed("relaxscan: input.relaxscanact.dat is present but no scan profile parsed")`.
+
+**Root cause (deterministic).** A 2D scan writes a **3-column** `.relaxscanact.dat`; the 1D B1 reader
+correctly **stands down** (`relaxscan.rs` `from_path` → `Ok(None)`, not an error — `c1` repeats across
+the outer loop). But the `.dat` IS present, so `parse_and_store` routes to `parse_and_store_scan`, whose
+`Ok(None)` arm treated the stand-down as a failure and returned `ParseFailed`.
+
+**Fix (`results.rs`, one arm + one constructor).** `parse_and_store_scan`'s three outcomes are now
+distinct: `Ok(Some)` (1D) → `from_scan_profile` UNCHANGED; `Ok(None)` (present `.dat` + 1D reader stood
+down = **2D**) → a clean `ParsedResults::from_2d_scan()` (`scan: None`, no single-structure data — the
+surface is `read_scan_surface`, never duplicated), `store` + `verify_stored` → `Parsed`; `Err` (a
+malformed `.dat`) → `ParseFailed` UNCHANGED (a real failure is not swallowed).
+
+**Tests (+3 bites, real fixture).** `two_d_scan_parses_not_failed` — the **real** 10×10 Diels-Alder 2D
+`.dat` (`tests/fixtures/scan_2d_diels_alder.relaxscanact.dat`, copied from job `d6d2c3b0`) → `Parsed`,
+`results.scan` None (**verified red** on the old ParseFailed arm); `one_d_scan_profile_unchanged` — the
+real ethane 2-column `.dat` → `Parsed`, `scan` Some(6) (no regression); `reader_error_is_still_parsefailed`
+— a malformed 2-column `.dat` (`Err`) → `ParseFailed` (not swallowed). cargo **325 passed** (+3); no
+migration; B1 reader / routing / `read_scan_surface` / cross-check untouched.
+
+**Flagged (not done — bugfix scope):** with `scan: None` + empty single-structure data, `ResultsCard`
+renders an empty "Results" card above the contour (harmless, absence-is-normal). A "2D surface — see the
+contour" note / suppression is an optional follow-up.
+
+**Manual gate (Anton, live):** m1 the 2D Diels-Alder scan reads `parsed` with its contour (no banner);
+m2 a 1D scan still shows its `ScanProfilePanel`; m3 a malformed `.dat` still ParseFails. **Wiki:**
+orca/parse-sources.md (2D scan = surface, `results.scan` None), ROADMAP.

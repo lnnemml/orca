@@ -813,6 +813,13 @@ passed. **Stage A complete.**)*
       x=coord2/y=coord1, not swapped) — the whole surface is clickable; the earlier marker-only hit-test
       silently dropped any click that wasn't pixel-exact on a node. `src/scan/ContourPlot.tsx` +
       `nearestIndex.ts` (+6 vitest); no panel/handoff/parser change.
+      **Parse fix (2026-08-15):** a 2D scan was reaching `ParseFailed("relaxscan: … no scan profile
+      parsed")` even though it completed and its contour rendered — `parse_and_store_scan`'s `Ok(None)`
+      arm treated the B1 reader's (correct) 3-column stand-down as a failure. Now `Ok(None)` (present
+      `.dat` + 1D reader stood down = **2D**) → `ParsedResults::from_2d_scan()` (`scan: None`, surface via
+      `read_scan_surface`) → `parsed`; `Ok(Some)` (1D) and `Err` (malformed → ParseFailed) unchanged.
+      +3 cargo bites (real 10×10 DA `.dat` fixture; the 2D bite verified red on the old arm); no
+      migration; B1 reader / routing / `read_scan_surface` untouched. `orca/parse-sources.md`.
 
 ### Stage B — Scan output parser + single energy profile (spine, part 2)
 

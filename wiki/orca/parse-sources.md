@@ -368,6 +368,19 @@ them. The `_trj.xyz` first frame is likewise scan point 1, not the input (a seco
 skips property/`_trj`/hess/mo. No tolerance was loosened; the guard moved to where its premise
 holds. See `wiki/debugging/015-scan-property-post-condition.md`.
 
+**A 2D (two-coordinate) scan's authoritative result is the SURFACE, and `results.scan` is `None`
+(a clean `parsed` state, not a failure).** A 2D relaxed scan writes a **3-column** `.relaxscanact.dat`
+(`c1 c2 E`), so the 1D B1 reader (`relaxscan.rs` `from_path`) **stands down cleanly** → `Ok(None)`
+(not a `Malformed` error — `c1` repeats across the outer loop, which the 1D monotone guard would
+false-positive on). The `.relaxscanact.dat` **is** present, so `parse_and_store` routes to
+`parse_and_store_scan` — and there `Ok(None)` means **"2D scan", not a failure**: it builds
+`ParsedResults::from_2d_scan()` (`scan: None`, no single-structure data) and reaches `parsed`. The 2D
+surface itself (the filled contour) is served on demand by `read_scan_surface` (unit 4b), the ONE
+source of truth — it is deliberately **not** duplicated into `results.scan`. Only a genuine reader
+`Err` (a malformed `.dat`) is still a loud `ParseFailed` (rule #9). (The bug this fixed: the `Ok(None)`
+stand-down was read as `ParseFailed("… no scan profile parsed")` even though the scan completed and
+its contour renders.)
+
 ---
 
 ## Units — measured per array (unit 3.3)

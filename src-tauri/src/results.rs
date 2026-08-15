@@ -421,6 +421,35 @@ impl ParsedResults {
         })
     }
 
+    /// Build a **2D** relaxed-scan job's result. A two-coordinate scan's authoritative result
+    /// is the SURFACE — served on demand by `read_scan_surface` (unit 4b, a filled contour) —
+    /// NOT a 1D profile: the B1 reader correctly **stands down** on the 3-column `.dat`
+    /// (`relaxscan.rs` `from_path`), so `scan` is `None` here and NO 2D grid is duplicated into
+    /// `results` (it lives in `read_scan_surface`, one source of truth). Every single-structure
+    /// quantity is absent — the job's headline energy comes from `job.energy` (set at
+    /// completion) and its per-node geometries from the surface's `input.NNN.xyz`. A **clean
+    /// `parsed` state, not a failure** (the bug this fixes: the `Ok(None)` stand-down was read as
+    /// a ParseFailed). Infallible: it reads nothing. See `wiki/orca/parse-sources.md`.
+    fn from_2d_scan() -> ParsedResults {
+        ParsedResults {
+            parser_version: PARSER_VERSION,
+            final_energy_eh: None,
+            dipole: None,
+            charges: Vec::new(),
+            thermochemistry: None,
+            final_geometry: FinalGeometry { elements: Vec::new(), xyz_angstrom: Vec::new() },
+            gradient: None,
+            frequencies: None,
+            trajectory: None,
+            orbitals: None,
+            scan: None, // the surface is served by `read_scan_surface`, never duplicated here
+            neb: None,
+            mayer_bond_orders: None,
+            converged: None,
+            unknown_blocks: Vec::new(),
+        }
+    }
+
     /// Build a NEB-TS job's result from its BAND (Stage E3a-1 completion). A NEB job is
     /// multi-geometry; its authoritative result is the band + the **converged TS**, which
     /// becomes the job's `final_geometry` (element order == reactant, `neb.rs`-asserted) and
@@ -790,26 +819,31 @@ pub fn parse_and_store(
 /// "one final structure") is false for it and they are skipped. The profile IS the
 /// scan's authoritative result and its per-point geometry cross-check is the scan's
 /// units guard (rule #11) — no tolerance is loosened, the guard simply moved to where
-/// its premise holds. A present `.relaxscanact.dat` that does not parse is a LOUD
-/// failure (rule #9), never a silent skip.
+/// its premise holds. Three outcomes: a **1D** scan (`Ok(Some)`) → the profile result; a
+/// **2D** scan (`Ok(None)` — the B1 reader stood down on the 3-column `.dat`, whose result is
+/// the SURFACE via `read_scan_surface`) → a clean `scan: None` result; a genuine reader
+/// **error** (`Err`) → a LOUD ParseFailed (rule #9), never a silent skip.
 fn parse_and_store_scan(
     conn: &Connection,
     job_id: &str,
     dir: &Path,
     input_content: &str,
 ) -> ParseOutcome {
-    let scan = match relaxscan_profile(dir, input_content) {
-        Ok(Some(s)) => s,
-        Ok(None) => {
-            return ParseOutcome::ParseFailed(
-                "relaxscan: input.relaxscanact.dat is present but no scan profile parsed".into(),
-            )
-        }
+    let results = match relaxscan_profile(dir, input_content) {
+        // 1D scan: the profile parsed — the existing authoritative-profile result, UNCHANGED.
+        Ok(Some(scan)) => match ParsedResults::from_scan_profile(dir, scan) {
+            Ok(r) => r,
+            Err(e) => return ParseOutcome::ParseFailed(e.to_string()),
+        },
+        // 2D scan: `.relaxscanact.dat` IS present (we routed here on its presence), but the 1D
+        // B1 reader stood down on the 3-column `.dat` (`relaxscan.rs` `from_path` → `Ok(None)`).
+        // `Ok(None)` HERE means "2D scan", NOT a failure: its result is the SURFACE, served by
+        // `read_scan_surface` (unit 4b). Build a clean 2D-scan result (`scan: None`) and reach
+        // `parsed` — never the old "no scan profile parsed" ParseFailed.
+        Ok(None) => ParsedResults::from_2d_scan(),
+        // A genuine reader ERROR is still a loud ParseFailed (rule #9) — only the present-dat +
+        // stood-down (= 2D) case above becomes a clean result; a malformed `.dat` is not swallowed.
         Err(e) => return ParseOutcome::ParseFailed(format!("relaxscan: {e}")),
-    };
-    let results = match ParsedResults::from_scan_profile(dir, scan) {
-        Ok(r) => r,
-        Err(e) => return ParseOutcome::ParseFailed(e.to_string()),
     };
     if let Err(e) = store(conn, job_id, &results) {
         return ParseOutcome::ParseFailed(e.to_string());
@@ -2162,6 +2196,67 @@ mod tests {
             }
             other => panic!("expected GeometryMismatch, got {other:?}"),
         }
+    }
+
+    // ── 2D relaxed scan: the B1 stand-down is a CLEAN result, not a ParseFailed ──────────
+    const SCAN_2D_DAT: &str =
+        include_str!("../tests/fixtures/scan_2d_diels_alder.relaxscanact.dat");
+
+    /// BITE (the gate failure): a REAL 2D relaxed scan (3-column `.relaxscanact.dat` — the
+    /// 10×10 Diels-Alder surface) parses to a CLEAN result — `Parsed`, `results.scan` None —
+    /// instead of the old `ParseFailed("relaxscan: … no scan profile parsed")`. The surface
+    /// itself is served by `read_scan_surface` (unit 4b), never duplicated into `results.scan`.
+    #[test]
+    fn two_d_scan_parses_not_failed() {
+        let tmp = std::env::temp_dir().join(format!("scan-2d-parse-{}", std::process::id()));
+        std::fs::remove_dir_all(&tmp).ok();
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("input.relaxscanact.dat"), SCAN_2D_DAT).unwrap();
+        let conn = mem_db();
+        // input_content is unused on the 2D arm (the B1 reader stands down before reading it).
+        let outcome = parse_and_store_scan(&conn, "job1", &tmp, "! XTB Opt\n");
+        assert!(matches!(outcome, ParseOutcome::Parsed), "2D scan must parse cleanly: {outcome:?}");
+        let r = read_job_results(&conn, "job1").unwrap().unwrap();
+        assert!(
+            r.scan.is_none(),
+            "a 2D scan carries no 1D profile — the surface lives in read_scan_surface"
+        );
+        assert!(r.final_geometry.elements.is_empty() && r.frequencies.is_none());
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// NEGATIVE control (no 1D regression): a 2-column `.relaxscanact.dat` (the real ethane 1D
+    /// scan) still parses its PROFILE — `Parsed`, `results.scan` Some(6 points).
+    #[test]
+    fn one_d_scan_profile_unchanged() {
+        let dir = scan_fixture_dir();
+        let input = std::fs::read_to_string(dir.join("input.inp")).unwrap();
+        let conn = mem_db();
+        let outcome = parse_and_store_scan(&conn, "job1", &dir, &input);
+        assert!(matches!(outcome, ParseOutcome::Parsed), "{outcome:?}");
+        let r = read_job_results(&conn, "job1").unwrap().unwrap();
+        let scan = r.scan.as_ref().expect("1D scan still stores its profile");
+        assert_eq!(scan.points.len(), 6, "the 1D reader + profile are unchanged");
+    }
+
+    /// NEGATIVE control (a real failure is not swallowed): a genuinely malformed 2-column
+    /// `.relaxscanact.dat` (an `Err` from the reader) is still a ParseFailed — the 2D
+    /// clean-result arm must catch only the `Ok(None)` stand-down, never a reader error.
+    #[test]
+    fn reader_error_is_still_parsefailed() {
+        let tmp = std::env::temp_dir().join(format!("scan-2d-bad-{}", std::process::id()));
+        std::fs::remove_dir_all(&tmp).ok();
+        std::fs::create_dir_all(&tmp).unwrap();
+        // A 2-column first row (so the reader does NOT stand down as 2D), but non-numeric →
+        // `read_dat` fails → `Err` → ParseFailed.
+        std::fs::write(tmp.join("input.relaxscanact.dat"), "foo bar\nbaz qux\n").unwrap();
+        let conn = mem_db();
+        let outcome = parse_and_store_scan(&conn, "job1", &tmp, "! XTB Opt\n");
+        assert!(
+            matches!(outcome, ParseOutcome::ParseFailed(_)),
+            "a malformed .dat must still ParseFail, not be swallowed as a 2D result: {outcome:?}"
+        );
+        std::fs::remove_dir_all(&tmp).ok();
     }
 
     /// C-nonscan-unaffected (routing) — a non-scan dir (no `.relaxscanact.dat`) still
