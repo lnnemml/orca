@@ -23,6 +23,7 @@ import {
   normalizedScanCurve,
   optTsStudy,
   reactantHint,
+  locatedTsBarrierVsRefs,
 } from "./compare";
 
 /** Build a scan profile from (coordinate, act-Eh) pairs; scf mirrors act unless given. */
@@ -534,5 +535,52 @@ describe("F3 — OptTS-origin reaction study (located ΔE‡/ΔG‡ vs the conne
       reactant: { eEh: null, gEh: null }, // no anchor
       product: { eEh: P, gEh: null },
     }).profile).toEqual([]);
+  });
+});
+
+describe("F3+1 — standalone located-TS: ABSOLUTE barrier vs separated reactants (not the basin)", () => {
+  // Anton's case: Ethylene + butadiene, Σ E(ref) = −234.778 Eh; the OptTS TS at −234.700 Eh.
+  const TS_E = -234.7;
+  const REF_SUM_E = -234.778;
+
+  it("located_ts_absolute_barrier_vs_refs", () => {
+    const cell = locatedTsBarrierVsRefs(
+      { eEh: TS_E, gEh: TS_E + 0.03 },
+      { sumEEh: REF_SUM_E, sumGEh: REF_SUM_E + 0.02 },
+    );
+    // ΔE‡ = (E_TS − Σ E(ref))·627.5 — the benchmark absolute barrier vs separated reactants.
+    expect(cell.deltaEKcal).toBeCloseTo((TS_E - REF_SUM_E) * HARTREE_TO_KCAL, 9);
+    expect(cell.deltaGKcal).toBeCloseTo((TS_E + 0.03 - (REF_SUM_E + 0.02)) * HARTREE_TO_KCAL, 9);
+    expect(cell.label).toBe("vs separated reactants");
+  });
+
+  it("gibbs_absent_when_a_ref_lacks_freq", () => {
+    // A reference without Freq → Σ G(ref) is null (honest-absent, already so in the Rust sum) →
+    // ΔG‡ null (never 0/partial); ΔE‡ still shows. BITE: a null-G read as 0 would fabricate a ΔG‡.
+    const cell = locatedTsBarrierVsRefs(
+      { eEh: TS_E, gEh: TS_E + 0.03 },
+      { sumEEh: REF_SUM_E, sumGEh: null },
+    );
+    expect(cell.deltaGKcal).toBeNull();
+    expect(cell.deltaEKcal).toBeCloseTo((TS_E - REF_SUM_E) * HARTREE_TO_KCAL, 9);
+    // Symmetric: the TS without Freq also refuses ΔG‡.
+    expect(
+      locatedTsBarrierVsRefs({ eEh: TS_E, gEh: null }, { sumEEh: REF_SUM_E, sumGEh: REF_SUM_E }).deltaGKcal,
+    ).toBeNull();
+  });
+
+  it("origin_is_located_ts_not_optts", () => {
+    // The discriminator is EXPLICIT + the label is baked in — never confused with F3's basin barrier.
+    const cell = locatedTsBarrierVsRefs({ eEh: TS_E, gEh: null }, { sumEEh: REF_SUM_E, sumGEh: null });
+    expect(cell.origin).toBe("located-ts");
+    expect(cell.label).toBe("vs separated reactants");
+    // And it uses a DIFFERENT reference than F3's connectivity basin: vs the fragment SUM
+    // (−234.778) it differs from vs a single basin child (say −234.760) → distinct quantities.
+    const vsBasin = optTsStudy({
+      ts: { eEh: TS_E, gEh: null },
+      reactant: { eEh: -234.76, gEh: null }, // one associated-complex basin child
+      product: { eEh: -234.8, gEh: null },
+    });
+    expect(cell.deltaEKcal).not.toBeCloseTo(vsBasin.deltaEKcal!, 3); // vs refs ≠ vs basin
   });
 });

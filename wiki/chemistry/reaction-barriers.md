@@ -169,6 +169,27 @@ Reference-машинерія (сума реактант-джобів) кладе
 (два басейни) → **Study from this OptTS** → located ΔE‡/ΔG‡ vs reactant basin. DA-workflow стає
 first-class reaction study.
 
+### Барʼєр 5 vs Барʼєр 3/4 — дві опорні точки, обидві валідні, **різні reference**
+
+Той самий located TS дає **дві різні** абсолютні величини — залежно від того, **проти чого** міряти:
+
+- **vs connectivity reactant basin** (Барʼєр 5, F3, seed з `ConnectivityPanel`): проти
+  **асоційованого комплексу** (±δ-дитина). Внутрішньо-послідовна для механізму, але **НЕ** те, що
+  зазвичай репортить література.
+- **vs separated reactants** (Барʼєр 3-стиль над located TS — цей юніт, F3+1): проти **суми
+  розділених фрагментів** (Σ E(ref) / Σ G(ref) реакції). Це **benchmark-число** — саме його
+  наводять у papers (напр. Diels-Alder етилен+бутадієн, барʼєр vs розділені C₂H₄ + бутадієн). Тут
+  standalone OptTS-TS **приатачується прямо до реакції** як `located-ts` патвей і показує ΔE‡/ΔG‡ у
+  **тій самій located-TS ΔΔ таблиці**, що й scan-refinement — та сама located-математика
+  (`locatedBarrierEKcal` / `deltaGDoubleDaggerKcal`), лише fragment-сума як reference замість basin.
+
+**Яку брати:** для зіставлення з експериментом/літературою — **vs separated reactants**; для
+внутрішнього механізму (наскільки TS вище передреакційного комплексу) — **vs basin**. Різниця між
+ними = **енергія комплексоутворення**. Обидві **лейбльовані на самому числі** («vs separated
+reactants» / «vs connectivity reactant basin»), тож при перенесенні в нотатки їх не сплутати.
+ΔG‡ vs separated reactants — honest-absent (Σ G(ref) = `None` щойно будь-який ref без Freq, той
+самий `Sum<Option>` патерн, що й stoichiometry-guard), той самий standard-state caveat, що Барʼєр 4.
+
 ## Спільність методу — це не побажання, а гвард
 
 Усі енергії, що входять у будь-яку з різниць вище (реактанти, скани, згодом TS),

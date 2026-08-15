@@ -61,8 +61,11 @@ export interface OptTsOrigin {
 export interface ComparePathway {
   id: string;
   label: string;
-  /** Which kind of pathway this is — the additive Stage-F3 third case adds `"optts"`. */
-  origin: "scan" | "neb" | "optts";
+  /** Which kind of pathway this is. `"scan"`/`"neb"` render the overlay; `"optts"` (F3,
+   * connectivity-basin study) renders in the sibling `OptTsStudyView`; `"located-ts"` (F3+1) is a
+   * standalone OptTS TS whose ABSOLUTE located ΔE‡/ΔG‡ vs the reaction's separated-reactant
+   * references renders in the existing located-TS ΔΔ table (via `locatedTs`, no scan/neb primary). */
+  origin: "scan" | "neb" | "optts" | "located-ts";
   /** The scan profile (a scan pathway). Set iff `origin === "scan"`. */
   scan?: ScanProfileJson;
   /** The NEB band (a NEB pathway, N4): its MEP feeds the normalized overlay curve, and
@@ -145,12 +148,48 @@ export function CompareView({
   // offerable, the zero is E(ref) instead, so each curve's max height is the ABSOLUTE barrier.
   // ΔΔE‡ is a difference, so it never depends on this choice — the zero is only the axis.
   const series = useMemo(() => {
+    // The shared-min zero is over the SCAN pathways only — a standalone located-TS pathway
+    // (`origin === "located-ts"`) has no scan curve, so it must not be dereferenced here.
+    const scanOnly = pathways.filter((p) => p.scan);
     const zeroEh = normalizedAxis
       ? 0
       : reactantsZeroActive && refEnergyEh != null
         ? refEnergyEh
-        : Math.min(...pathways.map((p) => minEnergyEh(p.scan!, which)));
+        : scanOnly.length
+          ? Math.min(...scanOnly.map((p) => minEnergyEh(p.scan!, which)))
+          : 0;
     return pathways.map((p, i) => {
+      // A standalone located-TS pathway (F3+1): NO scan/NEB curve — it contributes ONLY the
+      // absolute located ΔE‡/ΔG‡ vs the reaction's separated-reactant references to the ΔΔ TABLE,
+      // never a point to the overlay chart. Skip the whole scan/NEB curve machinery (which would
+      // dereference the absent `p.scan`).
+      if (p.origin === "located-ts") {
+        const eTsEh = p.locatedTs?.eEh ?? null;
+        const gTsEh = p.locatedTs?.gEh ?? null;
+        const methodSig = methodSignature(p.input).display;
+        const refGuard = absoluteBarrierCell(0, refEnergyEh, refInputs, methodSig, refJobCount, p.input);
+        const refUsable = "kcal" in refGuard;
+        const refReason = "reason" in refGuard ? refGuard.reason : null;
+        const locatedEKcal = refUsable ? locatedBarrierEKcal(eTsEh, refEnergyEh) : null;
+        const deltaGKcal = refUsable ? deltaGDoubleDaggerKcal(gTsEh, refGibbsEh) : null;
+        return {
+          ...p,
+          color: PALETTE[i % PALETTE.length],
+          isNeb: false,
+          data: [] as { x?: number; coordinate?: number; relKcal: number }[],
+          maxDatum: undefined as { x?: number; coordinate?: number; relKcal: number } | undefined,
+          intrinsicKcal: null as number | null, // a bare TS has no self-contained/intrinsic barrier
+          absoluteCell: null as BarrierCell | null, // no scan maximum — its barrier is the located ΔE‡
+          isLocated: true,
+          isEstimate: false,
+          locatedEKcal,
+          deltaGKcal,
+          gMissing: refUsable && deltaGKcal === null,
+          locatedReason: !refUsable ? refReason : null,
+          eTsEh,
+          gTsEh,
+        };
+      }
       const isNeb = p.nebMep != null;
       const nebCurve = p.nebMep ? nebMepCurve(p.nebMep) : [];
 
@@ -418,18 +457,22 @@ export function CompareView({
                 fontSize: 11,
               }}
             />
-            {series.map((s) => (
-              <Line
-                key={s.id}
-                data={s.data}
-                dataKey="relKcal"
-                name={s.label}
-                stroke={s.color}
-                strokeWidth={1.5}
-                dot={{ r: 2 }}
-                isAnimationActive={false}
-              />
-            ))}
+            {/* A located-TS pathway has no scan/NEB curve — it appears in the ΔΔ table below, NOT
+                the overlay chart, so exclude it from the plotted Lines + dots (its `data` is []). */}
+            {series
+              .filter((s) => s.origin !== "located-ts")
+              .map((s) => (
+                <Line
+                  key={s.id}
+                  data={s.data}
+                  dataKey="relKcal"
+                  name={s.label}
+                  stroke={s.color}
+                  strokeWidth={1.5}
+                  dot={{ r: 2 }}
+                  isAnimationActive={false}
+                />
+              ))}
             {/* Each pathway's maximum — the approximate/≈ saddle point, in that pathway's colour. */}
             {series.map((s) =>
               s.maxDatum ? (
@@ -493,18 +536,20 @@ export function CompareView({
                 style={{ textAlign: "right" }}
                 title="E(max) − E(reactant-side minimum): forward barrier vs this pathway's own encounter complex (the pre-barrier branch, not the global/product minimum)"
               >
-                +{s.intrinsicKcal.toFixed(2)} kcal/mol
+                {/* A standalone located-TS pathway has no scan curve → no intrinsic barrier; its
+                    barrier is the ABSOLUTE located ΔE‡/ΔG‡ in the Located-TS column. */}
+                {s.intrinsicKcal != null ? `+${s.intrinsicKcal.toFixed(2)} kcal/mol` : "—"}
               </td>
               {refJobCount > 0 ? (
                 s.absoluteCell === null ? (
-                  // A NEB pathway has no scan maximum — its barrier is the located-TS value
-                  // in the next column (the G1 estimate or an OptTS refine), not a scan-max.
+                  // A NEB / standalone located-TS pathway has no scan maximum — its barrier is the
+                  // located-TS value in the next column, not a scan-max estimate.
                   <td
                     className="muted"
                     style={{ textAlign: "right", fontSize: 12 }}
-                    title="A NEB pathway has no scan-maximum estimate — its barrier is the located TS →"
+                    title="No scan-maximum estimate — the barrier is the located TS →"
                   >
-                    — (NEB → located TS)
+                    {s.origin === "located-ts" ? "— (located TS →)" : "— (NEB → located TS)"}
                   </td>
                 ) : "kcal" in s.absoluteCell ? (
                   <td

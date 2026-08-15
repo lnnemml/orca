@@ -1048,6 +1048,18 @@ r1–r4 manual gates. Next per the ratified reorder: CREST probe → Stage D →
         ΔG‡ honest-or-absent (children are plain Opt → re-run the reactant with Freq for ΔG‡). The DA
         workflow (2D scan → OptTS → connectivity → study) is now a first-class reaction study.
         vitest +4, no cargo. `chemistry/reaction-barriers.md` §"Барʼєр 5", `modules/reactions-ui.md`.
+  - [x] **F3+1 — standalone OptTS TS → ABSOLUTE located ΔE‡/ΔG‡ vs separated reactants** (2026-08-15):
+        a FOURTH `ComparePathway.origin` (`"located-ts"`) — a standalone OptTS TS attached directly to a
+        reaction (no scan/NEB, no children) shows its absolute located barrier vs the reaction's
+        **separated-reactant** references (Σ E(ref)/Σ G(ref)) — the **benchmark** number (literature
+        reports vs separated reactants). Distinct from F3's connectivity-**basin** barrier; both
+        labelled. **Probe-confirmed:** `reaction_reference_energy` already sums Σ G(ref) honest-absent
+        (`Sum<Option>`) → ΔG‡ vs refs live when refs have Freq, else absent — no Σ G machinery. Pure
+        `locatedTsBarrierVsRefs` reuses the located converters (+3 bites); attach recognises
+        `isLocatedTsInput` ("✓ located TS", reuses `create_pathway`/`attach_job_to_pathway`); rendered
+        in the **existing** located-TS ΔΔ table (not the overlay chart — an additive `origin` split in
+        CompareView; scan/NEB/F3 byte-identical). +3 vitest, **no cargo, no migration**. This is the
+        literature-comparison barrier (m1: Diels-Alder ethylene+butadiene vs Σ = −234.778).
 - [ ] **IRC** (`! IRC`) — the RIGOROUS alternative to E2's displaced-endpoint check: probe → the
       post-condition that a found TS connects the intended reactant/product along the true steepest-
       descent path. A possible later mode; the E2 displaced-endpoint method covers the common case.

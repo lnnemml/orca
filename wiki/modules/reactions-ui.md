@@ -430,6 +430,33 @@ state + its two connectivity children** (Stage E2) — a reaction study with a *
   reference section). Reuses `create_reaction` / `create_pathway` / `attach_job_to_pathway` /
   `add_reference_job` — **no new command, no migration, no role table**.
 
+## Fourth pathway origin — standalone located-TS, absolute barrier vs separated reactants (F3+1)
+
+A **fourth** `ComparePathway.origin`, `"located-ts"`: a **standalone OptTS transition state** attached
+directly to a reaction (no scan/NEB primary, no connectivity children). Its **absolute** located
+ΔE‡/ΔG‡ vs the reaction's **separated-reactant** references renders in the **EXISTING located-TS ΔΔ
+table** — the benchmark quantity (literature reports vs separated reactants).
+
+- **Attach recognition:** `AttachPathwayForm` marks an `isLocatedTsInput` candidate **"✓ located TS"**
+  (not the "won't compare" warning) and attaches it as a normal pathway (`create_pathway` +
+  `attach_job_to_pathway` — same wiring as a scan attach, **no new command**).
+- **Build:** `ReactionsScreen`'s `comparePathways` builder — a TS pathway with **no** attached non-TS
+  jobs → `origin: "located-ts"`, `locatedTs` from the TS's own results. (Gating on ALL attached non-TS
+  jobs, not just parsed ones, keeps an F3 study with a transiently-unparsed child from mislabelling its
+  basin reference as "separated reactants".)
+- **Render split by `origin` (never a null guess):** a `located-ts` pathway goes to `CompareView`
+  (with scan/NEB), but inside CompareView it is routed to the **ΔΔ table only, NOT the overlay chart**
+  (it has no scan curve): the series builder has an early `origin === "located-ts"` branch
+  (`data: []`, `intrinsicKcal: null`, `absoluteCell: null`, `isLocated: true`, `locatedEKcal`/
+  `deltaGKcal` vs Σ E(ref)/Σ G(ref)); the chart Lines filter it out; the intrinsic/absolute cells show
+  "—". Its ΔE‡/ΔG‡ appears in the Located-TS column (labelled **"vs separated reactants"** by the
+  column header) — the SAME math + column as a scan-refinement (`locatedBarrierEKcal` /
+  `deltaGDoubleDaggerKcal`), so **no rebuilt table**. Σ G(ref) was already summed honest-absent by
+  `reaction_reference_energy` — ΔG‡ vs refs is live when the refs have Freq, else absent.
+- **Distinct from F3 (`"optts"`)** — that renders in `OptTsStudyView` vs the connectivity **basin**;
+  this renders in CompareView vs **separated fragments**. Both labelled on the number; scan/NEB/F3
+  rendering unchanged.
+
 ## Related
 
 - `wiki/architecture/adr-007-reaction-modeling.md` (amendment) — the ratified normalized schema.

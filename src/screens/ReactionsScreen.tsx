@@ -28,6 +28,10 @@ interface Candidate {
   /** Its results carry a NEB band with a converged TS — comparable as a pathway (N4), so
    * the attach picker marks it "✓ NEB", never "won't compare". */
   isNeb: boolean;
+  /** Its input is a LOCATED transition state (`! OptTS`) — attachable as a `located-ts` pathway
+   * (F3+1: an absolute ΔE‡/ΔG‡ vs the reaction's separated-reactant references), so the picker
+   * marks it "✓ located TS" instead of "won't compare". */
+  isLocatedTs: boolean;
 }
 
 export function ReactionsScreen({ onOpenJob }: ReactionsScreenProps) {
@@ -335,13 +339,38 @@ function ReactionDetail({ reaction, onOpenJob, onError, onChanged, onDeleted }: 
           };
         }
 
-        // Else an OptTS-ORIGIN pathway (Stage F3): a located TS with its two connectivity
-        // children, no scan/NEB. The barrier is vs the USER-DESIGNATED reactant child (the one
-        // in the reactant reference — a Σ of one; ADR-018 reused), else the higher-energy HINT.
+        // A TS pathway with NO scan/NEB primary — either a standalone located TS (F3+1) or an
+        // OptTS-origin connectivity-basin study (F3, if children are attached).
         if (tsJob && tsResults) {
-          const childJobs = attached.filter(
-            (j) => j.id !== tsJob.id && resultsById.has(j.id) && !isLocatedTsInput(j.input_content),
+          // All non-TS jobs attached (parsed or not) — distinguishes a STANDALONE TS (none) from an
+          // F3 study (its two connectivity children). Gating on ALL (not just parsed) jobs keeps an
+          // F3 study with a transiently-unparsed child from falling through to `located-ts` and
+          // mislabelling its BASIN reference as "separated reactants".
+          const attachedNonTs = attached.filter(
+            (j) => j.id !== tsJob.id && !isLocatedTsInput(j.input_content),
           );
+
+          // STANDALONE located TS (F3+1): its ABSOLUTE located ΔE‡/ΔG‡ vs the reaction's
+          // SEPARATED-REACTANT references, in the existing located-TS ΔΔ table. `locatedTs` from the
+          // TS's own results; no scan/NEB primary, no children.
+          if (attachedNonTs.length === 0) {
+            return {
+              id: p.id,
+              label: p.label,
+              origin: "located-ts",
+              input: tsJob.input_content,
+              locatedTs: {
+                input: tsJob.input_content,
+                eEh: tsResults.final_energy_eh ?? null,
+                gEh: tsResults.thermochemistry?.free_energy_g_eh ?? null,
+              },
+            };
+          }
+
+          // Else an OptTS-ORIGIN study (Stage F3): a located TS with its two connectivity children.
+          // The barrier is vs the USER-DESIGNATED reactant child (the one in the reactant reference —
+          // a Σ of one; ADR-018 reused), else the higher-energy HINT.
+          const childJobs = attachedNonTs.filter((j) => resultsById.has(j.id));
           if (childJobs.length === 2) {
             const [c0, c1] = childJobs;
             const eOf = (j: Job) => resultsById.get(j.id)?.final_energy_eh ?? null;
@@ -371,6 +400,8 @@ function ReactionDetail({ reaction, onOpenJob, onError, onChanged, onDeleted }: 
               },
             };
           }
+          // An F3 study whose two children have not both parsed yet — pending, not a located-ts.
+          return null;
         }
 
         return null;
@@ -378,8 +409,10 @@ function ReactionDetail({ reaction, onOpenJob, onError, onChanged, onDeleted }: 
       .filter((x): x is ComparePathway => x !== null);
   }, [pathways, jobs, resultsById, refEnergy]);
 
-  // Scan/NEB pathways feed the existing overlay unchanged; OptTS-origin pathways (F3) render in
-  // the dedicated view — the discriminator is the explicit `origin`, never a null-field guess.
+  // Scan / NEB / standalone located-TS pathways feed `CompareView` (a located-TS pathway shows in
+  // its ΔΔ table but NOT its overlay chart — split by `origin` inside CompareView); only F3
+  // OptTS-origin (connectivity-basin) studies render in the dedicated `OptTsStudyView`. The
+  // discriminator is the explicit `origin`, never a null-field guess.
   const scanNebPathways = useMemo(
     () => comparePathways.filter((p) => p.origin !== "optts"),
     [comparePathways],
@@ -396,7 +429,7 @@ function ReactionDetail({ reaction, onOpenJob, onError, onChanged, onDeleted }: 
         .filter(
           (j) => (j.status === "completed" || j.status === "parsed") && j.pathway_id === null,
         )
-        .map((j) => ({ job: j, isScan: scanIds.has(j.id), isNeb: nebIds.has(j.id) })),
+        .map((j) => ({ job: j, isScan: scanIds.has(j.id), isNeb: nebIds.has(j.id), isLocatedTs: isLocatedTsInput(j.input_content) })),
     [jobs, scanIds, nebIds],
   );
 
@@ -430,7 +463,7 @@ function ReactionDetail({ reaction, onOpenJob, onError, onChanged, onDeleted }: 
         .filter(
           (j) => (j.status === "completed" || j.status === "parsed") && !referencedIds.has(j.id),
         )
-        .map((j) => ({ job: j, isScan: scanIds.has(j.id), isNeb: nebIds.has(j.id) })),
+        .map((j) => ({ job: j, isScan: scanIds.has(j.id), isNeb: nebIds.has(j.id), isLocatedTs: isLocatedTsInput(j.input_content) })),
     [jobs, referencedIds, scanIds, nebIds],
   );
 
@@ -709,10 +742,11 @@ function AttachPathwayForm({
   const [label, setLabel] = useState("");
   const [jobId, setJobId] = useState("");
 
-  // A job compares as a pathway if it is a scan OR a NEB (N4). Only a plain job (neither) is
-  // warned "won't appear in the comparison".
+  // A job compares as a pathway if it is a scan OR a NEB (N4) OR a located OptTS TS (F3+1). Only a
+  // plain job (none of these) is warned "won't appear in the comparison".
   const selectedCand = candidates.find((c) => c.job.id === jobId);
-  const selectedComparable = (selectedCand?.isScan || selectedCand?.isNeb) ?? true;
+  const selectedComparable =
+    (selectedCand?.isScan || selectedCand?.isNeb || selectedCand?.isLocatedTs) ?? true;
   const canAttach = isValidPathwayLabel(label) && jobId !== "" && jobById.has(jobId);
 
   const attach = async () => {
@@ -775,7 +809,13 @@ function AttachPathwayForm({
                 {candidates.map((c) => (
                   <option key={c.job.id} value={c.job.id}>
                     {c.job.title}
-                    {c.isScan ? "  ✓ scan" : c.isNeb ? "  ✓ NEB" : "  (not scan/NEB)"}
+                    {c.isScan
+                      ? "  ✓ scan"
+                      : c.isNeb
+                        ? "  ✓ NEB"
+                        : c.isLocatedTs
+                          ? "  ✓ located TS"
+                          : "  (not scan/NEB/TS)"}
                   </option>
                 ))}
               </select>
@@ -790,8 +830,9 @@ function AttachPathwayForm({
           </div>
           {jobId !== "" && !selectedComparable ? (
             <div className="banner warn" style={{ marginTop: 10 }}>
-              This job is neither a scan nor a NEB. The comparison plots scan profiles and NEB
-              paths (ΔΔE‡/ΔΔG‡) — attaching it is allowed, but it won&apos;t appear there.
+              This job is not a scan, a NEB, or an OptTS transition state. The comparison plots scan
+              profiles, NEB paths, and located-TS barriers — attaching it is allowed, but it won&apos;t
+              appear there.
             </div>
           ) : null}
         </>

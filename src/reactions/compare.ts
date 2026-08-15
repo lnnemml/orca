@@ -312,6 +312,45 @@ export function reactantHint(aEh: number | null, bEh: number | null): "a" | "b" 
   return aEh >= bEh ? "a" : "b";
 }
 
+// --- Standalone located-TS pathway — ABSOLUTE barrier vs SEPARATED REACTANTS -----------------
+//
+// A FOURTH pathway origin: a standalone OptTS transition state attached to a reaction directly (no
+// scan/NEB primary, no connectivity children). Its barrier is the located ΔE‡/ΔG‡ vs the reaction's
+// SEPARATED-FRAGMENT references (Σ E(ref) / Σ G(ref)) — the **benchmark** quantity (literature
+// reports barriers vs separated reactants). This is a DIFFERENT reference than F3's connectivity
+// reactant BASIN ({@link optTsStudy}, one associated complex): both are valid barriers, but they must
+// be LABELLED so they are never confused (they differ by the association energy). Reuses the GENERIC
+// located converters — no new barrier math, same as the scan-refinement located barrier.
+
+/** The ΔΔ-table cell for a standalone located-TS pathway. `origin`/`label` are baked in so the
+ * value is never mistaken for F3's connectivity-basin barrier. ΔE‡ shows whenever E(TS) and
+ * Σ E(ref) exist; ΔG‡ is `null` unless the TS AND every reference have a Freq G ({@link
+ * deltaGDoubleDaggerKcal}'s null-guard over the already-honest-absent Σ G(ref)). */
+export interface LocatedTsBarrierCell {
+  origin: "located-ts";
+  deltaEKcal: number | null;
+  deltaGKcal: number | null;
+  label: "vs separated reactants";
+}
+
+/**
+ * The absolute located barrier of a standalone OptTS TS vs the reaction's separated-reactant
+ * references (Σ E(ref) / Σ G(ref)). Reuses {@link locatedBarrierEKcal} (ΔE‡) and
+ * {@link deltaGDoubleDaggerKcal} (ΔG‡, honest-absent) verbatim — the SAME math the scan-refinement
+ * located barrier uses. NOT the connectivity-basin reference of {@link optTsStudy} (F3).
+ */
+export function locatedTsBarrierVsRefs(
+  ts: StationaryPointEnergies,
+  refs: { sumEEh: number | null; sumGEh: number | null },
+): LocatedTsBarrierCell {
+  return {
+    origin: "located-ts",
+    deltaEKcal: locatedBarrierEKcal(ts.eEh, refs.sumEEh),
+    deltaGKcal: deltaGDoubleDaggerKcal(ts.gEh, refs.sumGEh),
+    label: "vs separated reactants",
+  };
+}
+
 // --- Comparability guard ----------------------------------------------------
 
 /** Keywords on the `!` line that are NOT part of the electronic-structure method

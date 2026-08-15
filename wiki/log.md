@@ -8604,3 +8604,39 @@ non-silent + exported.
 banner + provenance comment; m2 (negative) hand-feed the 2.364 seed → guard rejects; restore → passes;
 m3 New iteration from an Opt minimum → still the converged frame, happy-path intact. **Wiki:**
 debugging/021, modules/frontend.md (the invariant), ROADMAP, index +1.
+
+## [2026-08-15] feat | Standalone OptTS TS → absolute located ΔE‡/ΔG‡ vs separated reactants (F3+1)
+
+**What.** A FOURTH `ComparePathway.origin`, `"located-ts"`: a standalone OptTS transition state attached
+directly to a reaction (no scan/NEB primary, no connectivity children) shows its **absolute** located
+ΔE‡/ΔG‡ vs the reaction's **separated-reactant** references — the benchmark quantity (literature reports
+barriers vs separated reactants, e.g. Diels-Alder ethylene+butadiene vs Σ C₂H₄ + butadiene). Distinct
+from F3's connectivity-basin barrier (`"optts"`, OptTsStudyView): both valid, DIFFERENT references, both
+labelled on the number.
+
+**Probe (confirmed, not assumed):** `reaction_reference_energy` already sums BOTH Σ E(ref) and Σ G(ref)
+with honest-or-absent (`Sum<Option<f64>>` → `None` the instant any ref lacks a value) — so ΔG‡ vs
+separated reactants is already wired; no Σ G machinery to add.
+
+**Part A — pure builder (`compare.ts`).** `locatedTsBarrierVsRefs(ts, refs)` reuses `locatedBarrierEKcal`
+(ΔE‡) + `deltaGDoubleDaggerKcal` (ΔG‡, honest-absent) verbatim against Σ E/Σ G(ref); `origin`/`label`
+baked in. +3 bites (absolute barrier vs refs on Anton's −234.778; ΔG‡ absent when a ref lacks Freq,
+symmetric; origin/label = located-ts / "vs separated reactants", and the fragment-sum barrier differs
+from optTsStudy's basin barrier — anti-confusion).
+
+**Part B — attach + ΔΔ-table inclusion (TS-only, no cargo).** `AttachPathwayForm` recognises an
+`isLocatedTsInput` candidate → "✓ located TS" (attaches via `create_pathway`/`attach_job_to_pathway`,
+unchanged). `ReactionsScreen` builds a `located-ts` pathway from a standalone TS (gated on ALL attached
+non-TS jobs = 0, so an F3-pending study never mislabels). **CompareView surgery (additive):** a
+`located-ts` early branch in the series builder (no scan/NEB deref); `zeroEh` filtered to scan
+pathways; the overlay chart Lines/dots exclude located-ts; the intrinsic/absolute cells show "—"; the
+Located-TS column renders ΔE‡/ΔG‡ vs Σ E/Σ G(ref), labelled "vs separated reactants" by its header —
+the SAME column + math as a scan-refinement. Scan/NEB rows render byte-identical (their branches
+untouched; the guards are no-ops for scan/NEB-only).
+
+**Verification.** vitest **926 passed** (+3); tsc clean; **no cargo delta** (attach reuses existing
+commands), no migration. **Manual gate (Anton, live):** m1 attach the OptTS TS in "Ethylene+butadiene"
+(Σ E(ref) = −234.778) → located-TS ΔΔ table shows ΔE‡ = (E_TS − (−234.778))·627.5 vs separated
+reactants; m2 refs with Freq → ΔG‡ shows, Opt-only → absent (not 0); m3 F3 (basin) still works from
+ConnectivityPanel, scan/NEB unchanged. **Wiki:** chemistry/reaction-barriers.md (Барʼєр 5 vs 3/4 — the
+two references), modules/reactions-ui.md (fourth origin), ROADMAP.
