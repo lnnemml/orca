@@ -8429,3 +8429,40 @@ no cargo delta. Engine / site / New Job untouched.
 **Manual gate (Anton, live):** m2 pick r2SCAN-3c → child `!` line is r2SCAN-3c (not XTB); m1 untouched
 picker → still XTB (no regression); m5 (validation) DFT OptTS from the XTB Diels-Alder seed → one
 imaginary, IRC R↔P. **Wiki (same commit):** modules/method-picker.md (inherit = untouched-only), ROADMAP.
+
+## [2026-08-15] feat | Surface optimization convergence verdict — a non-converged opt no longer reads as COMPLETED
+
+**Why (measured).** The Diels-Alder OptTS `! r2SCAN-3c OptTS Freq TightSCF` **exhausted its 50-cycle
+budget without converging**, yet ORCA printed `****ORCA TERMINATED NORMALLY****` and exited 0 → the
+completion detector (rule #6) marked it `Completed`, reading as a clean success. Worse, its
+seed-computed `.hess` (`Calc_Hess true` at the START) no longer matched the moved final geometry, so
+the parse ParseFailed on `.hess: geometry mismatch` — a CONSEQUENCE of non-convergence surfaced as a
+parser bug. This unit makes the tool honest about status.
+
+**Two measured markers (rule #10, `wiki/orca/convergence-status.md`).** Converged =
+`*** OPTIMIZATION RUN DONE ***` (dexketoprofen tail:1061); NotConverged =
+`The optimization did not converge but reached the maximum` (DA OptTS `output.out:44735`, wrapped →
+prefix match); neither → NotApplicable (SP/scan/GOAT). Both tail-only (rule #5).
+
+**Part A — pure reader** (`convergence.rs`): `optimization_verdict(&str) -> OptVerdict{Converged,
+NotConverged, NotApplicable}` + `as_flag() -> Option<bool>`. +4 bites vs REAL fixtures: converged
+(dexketoprofen), not-converged (**real** DA tail `optts_not_converged_tail.out`, swapped from a
+synthetic one on review — a honesty guard can't stand on a constructed fixture), single-point→NA
+(the sharp bite: an SP prints `SCF CONVERGED`, a lazy "any converge word" impl would flag it),
+both-absent→NA.
+
+**Part B — surface + gate** (`results.rs`, PARSER_VERSION 5→6, no migration — JSON field
+`#[serde(default)]`): the verdict is read from the output tail **BEFORE** the `.hess` branch; on
+NotConverged the `.hess` is skipped (`hess.exists() && !not_converged`) so no `.hess` ParseFailed and
+frequencies are suppressed; `results.converged: Option<bool>` stored. Energy/geometry/trajectory still
+parse. The job still reaches `parsed` (rule #6 unchanged) carrying the flag. UI (`ResultsCard`): a
+`converged === false` banner "did not converge (max cycles)"; `true`/`null` render as today (no new
+badge for SP/scan/converged). +2 `#[ignore]` real-data gates (**verified here**): the real DA OptTS →
+`Parsed`, `converged==Some(false)`, freqs suppressed, energy+geometry present (was ParseFailed .hess);
+a real converged Opt+Freq → `Some(true)` with freqs (no regression).
+
+**Scope.** No new `JobStatus`; completion detector (rule #6) untouched; per-cycle `converged: bool`
+(convergence.rs) untouched; OptTS recipe / `Calc_Hess` untouched (the *chemistry* of why the seed
+fails is the NEXT question). **Verification:** cargo 314 non-ignored + the 2 real-data gates pass; tsc
++ 911 vitest clean; no migration. **Wiki:** +orca/convergence-status.md, modules/artifact-readers.md
+(verdict-before-.hess), ROADMAP, index +1.

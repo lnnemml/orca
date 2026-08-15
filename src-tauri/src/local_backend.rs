@@ -1029,8 +1029,9 @@ fn detect_completion(
 }
 
 /// Read the last `max_bytes` of a file (lossy UTF-8). Seeks from the end so a
-/// multi-MB output is never fully loaded (domain rule #5).
-fn read_tail(path: &Path, max_bytes: u64) -> std::io::Result<String> {
+/// multi-MB output is never fully loaded (domain rule #5). `pub(crate)` so the
+/// results parser can read the same bounded tail for the convergence verdict.
+pub(crate) fn read_tail(path: &Path, max_bytes: u64) -> std::io::Result<String> {
     let mut f = File::open(path)?;
     let len = f.metadata()?.len();
     f.seek(SeekFrom::Start(len.saturating_sub(max_bytes)))?;

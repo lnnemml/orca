@@ -73,6 +73,18 @@ export function ResultsCard({
         Results
       </div>
       <div style={{ padding: 10, display: "grid", gap: 10 }}>
+        {/* A non-converged optimization is surfaced honestly: it TERMINATED NORMALLY (so the
+            job is not a red parse error) but did NOT reach a stationary point, so the geometry/
+            energy below are the last cycle, NOT a converged minimum/TS, and frequencies are
+            absent by design (the seed-computed .hess no longer matches — a consequence, not a
+            bug). Only `converged === false` shows this; `true`/`null` render as a clean job. */}
+        {results.converged === false && (
+          <div className="banner warn" role="status">
+            ⚠ Optimization did not converge (reached max cycles). The geometry and energy below
+            are the <strong>last cycle</strong>, not a converged stationary point — frequencies
+            are not reported. Re-run with more cycles or a better starting geometry.
+          </div>
+        )}
         <ExportBar results={results} jobTitle={jobTitle} />
         <div className="mono" style={{ fontSize: 13 }}>
           {results.final_energy_eh != null && (

@@ -1077,6 +1077,16 @@ r1–r4 manual gates. Next per the ratified reorder: CREST probe → Stage D →
               r2SCAN-3c but ran XTB. The pick handler now `setInherit(false)` + `emit(false, next)`;
               +3 vitest bites (`picking_a_family_emits_the_override` verified red on the stale impl).
               Isolated to the picker — engine/site/New Job untouched.
+  - [x] **Convergence-status guard landed** (2026-08-15) — a non-converged optimization no longer reads
+        as a clean COMPLETED. The DA OptTS exhausted its 50-cycle budget, printed `ORCA TERMINATED
+        NORMALLY` + exit 0, and its seed-computed `.hess` mismatched the moved final geometry →
+        previously a misleading COMPLETED + `.hess: geometry mismatch` ParseFailed. Now
+        `convergence::optimization_verdict(tail)` (two measured markers, `wiki/orca/convergence-status.md`)
+        is read **before** `.hess`; on NotConverged the `.hess` is skipped, frequencies suppressed, and
+        `ParsedResults.converged: Option<bool>` drives a "did not converge (max cycles)" banner (energy/
+        geometry still parsed). No new JobStatus; rule #6 + the OptTS recipe untouched. +4 reader bites
+        (real fixtures) + 2 real-data gates. **This unblocks the real question: why r2SCAN-3c OptTS does
+        not find the TS from the XTB Diels-Alder seed (a chemistry/seed-quality concern, next).**
 
 ### Stage F — Microsolvation (explicit solvent shell), probe-first
 

@@ -22,6 +22,11 @@ export interface AtomCharges {
 }
 export interface ParsedResults {
   parser_version: number;
+  /** Overall optimization convergence verdict: `true` = converged, `false` = reached the
+   * max cycle budget without converging (frequencies suppressed; the .hess mismatch is its
+   * expected consequence, not a parse error), `null` = no optimization (SP/scan/GOAT — never
+   * flagged). Only `false` drives a UI state; `true`/`null` render as a clean completed job. */
+  converged: boolean | null;
   final_energy_eh: number | null;
   dipole: { magnitude_au: number; total_au: [number, number, number] } | null;
   charges: AtomCharges[];

@@ -1,0 +1,326 @@
+          ----------------------|Geometry convergence|-------------------------
+          Item                value                   Tolerance       Converged
+          ---------------------------------------------------------------------
+          Energy change      -0.0001109676            0.0000050000      NO
+          RMS gradient        0.0009446990            0.0001000000      NO
+          MAX gradient        0.0085600638            0.0003000000      NO
+          RMS step            0.0078086881            0.0020000000      NO
+          MAX step            0.0308969931            0.0040000000      NO
+          -------------------------------------------------------------------------
+          ........................................................
+          Max(Bonds)      0.0163      Max(Angles)    0.76
+          Max(Dihed)        0.81      Max(Improp)    0.00
+          ---------------------------------------------------------------------
+
+The optimization has not yet converged - more geometry cycles are needed
+
+
+    ---------------------------------------------------------------------------
+                         Redundant Internal Coordinates
+                            (Angstroem and degrees)
+
+        Definition                    Value    dE/dq     Step     New-Value  comp.(TS mode)
+    ----------------------------------------------------------------------------
+     1. B(C   1,C   0)                1.3390  0.001053 -0.0002    1.3389   
+     2. B(C   2,C   1)                1.4588  0.000056  0.0002    1.4590   
+     3. B(C   3,C   2)                1.3356 -0.001192  0.0001    1.3357   
+     4. B(H   4,C   0)                1.0747 -0.004310  0.0007    1.0754   
+     5. B(H   5,C   0)                1.0676 -0.008560  0.0016    1.0692   
+     6. B(H   6,C   1)                1.0896 -0.000000  0.0000    1.0896   
+     7. B(H   7,C   2)                1.0900  0.000018  0.0000    1.0900   
+     8. B(H   8,C   3)                1.0857  0.000021  0.0000    1.0857   
+     9. B(H   9,C   3)                1.0847  0.000022  0.0001    1.0848   
+    10. B(C  10,C   0)                3.1367  0.000116  0.0119    3.1486   
+    11. B(C  10,H   8)                3.3716  0.000113  0.0025    3.3741   
+    12. B(C  10,H   4)                2.4436  0.000456 -0.0008    2.4428   
+    13. B(C  10,C   1)                3.7000  0.000046  0.0151    3.7151   
+    14. B(C  10,H   5)                3.7562 -0.003261  0.0163    3.7725   
+    15. B(C  11,C   2)                3.3940 -0.000748  0.0103    3.4043   
+    16. B(C  11,C  10)                1.3303  0.001084 -0.0003    1.3300   
+    17. B(C  11,C   3)                2.9201 -0.000591  0.0063    2.9264   
+    18. B(C  11,H   4)                3.0145  0.001665  0.0018    3.0163   
+    19. B(C  11,H   8)                2.9140 -0.000350  0.0040    2.9179   
+    20. B(C  11,H   9)                3.1450 -0.000767  0.0037    3.1487   
+    21. B(H  12,H   5)                3.7024 -0.002628  0.0163    3.7188          0.25
+    22. B(H  12,H   4)                2.3638  0.001355  0.0050    2.3688   
+    23. B(H  12,C   0)                3.2482 -0.000217  0.0149    3.2631   
+    24. B(H  12,C  10)                1.0884  0.000979 -0.0001    1.0883   
+    25. B(H  13,C   1)                3.5696  0.000447  0.0146    3.5843          0.26
+    26. B(H  13,H   5)                3.5271 -0.001253  0.0157    3.5429   
+    27. B(H  13,C  10)                1.0852 -0.000223  0.0001    1.0854   
+    28. B(H  13,C   0)                3.0753  0.000528  0.0086    3.0839   
+    29. B(H  13,H   4)                2.7166 -0.001156 -0.0077    2.7089          0.27
+    30. B(H  14,H   9)                3.0008 -0.000644  0.0051    3.0059   
+    31. B(H  14,C  11)                1.0868  0.000060 -0.0000    1.0868   
+    32. B(H  14,C   3)                2.9523 -0.000412  0.0076    2.9599   
+    33. B(H  14,H   8)                2.7241 -0.000188  0.0063    2.7304   
+    34. B(H  15,H   9)                2.9382 -0.000667  0.0032    2.9413   
+    35. B(H  15,C  11)                1.0850 -0.000031  0.0001    1.0850   
+    36. B(H  15,C   2)                3.2132 -0.000443  0.0093    3.2225   
+    37. B(H  15,C   3)                2.9266 -0.000419  0.0050    2.9316   
+    38. B(H  15,H   8)                3.2970 -0.000159  0.0026    3.2995   
+    39. A(C   1,C   0,C  10)          104.18 -0.000319    0.21    104.39   
+    40. A(H   5,C   0,C  10)          117.87  0.001612    0.39    118.25   
+    41. A(H   4,C   0,H   5)          115.63  0.000694    0.11    115.74   
+    42. A(C   1,C   0,H   5)          122.93 -0.000435   -0.12    122.81   
+    43. A(C   1,C   0,H   4)          121.44 -0.000256   -0.00    121.44   
+    44. A(H   4,C   0,C  10)           41.84 -0.001082   -0.76     41.08   
+    45. A(C   2,C   1,C  10)           79.53 -0.000062   -0.17     79.36   
+    46. A(H   6,C   1,C  10)          141.61  0.000428    0.56    142.17   
+    47. A(C   0,C   1,H   6)          119.06 -0.000011   -0.01    119.05   
+    48. A(C   0,C   1,C   2)          124.47  0.000160    0.01    124.48   
+    49. A(C   0,C   1,C  10)           55.28  0.000135   -0.10     55.17   
+    50. A(C   2,C   1,H   6)          116.41 -0.000133   -0.00    116.41   
+    51. A(H   7,C   2,C  11)          113.32 -0.000048    0.05    113.38   
+    52. A(C   1,C   2,C  11)           98.67  0.000219    0.18     98.85   
+    53. A(C   3,C   2,H   7)          118.67 -0.000018    0.01    118.68   
+    54. A(C   1,C   2,C   3)          125.25  0.000029   -0.02    125.24   
+    55. A(C   3,C   2,C  11)           58.21 -0.000035   -0.14     58.07   
+    56. A(C   1,C   2,H   7)          116.06 -0.000007    0.01    116.07   
+    57. A(H   9,C   3,C  11)           91.69 -0.000116   -0.12     91.57   
+    58. A(H   8,C   3,C  11)           78.96  0.000097   -0.10     78.86   
+    59. A(C   2,C   3,C  11)           98.91  0.000198    0.23     99.14   
+    60. A(H   8,C   3,H   9)          117.04  0.000051    0.01    117.05   
+    61. A(C   2,C   3,H   8)          121.54 -0.000040   -0.02    121.52   
+    62. A(C   2,C   3,H   9)          121.43 -0.000011    0.00    121.43   
+    63. A(H  12,C  10,H  13)          116.28  0.000141    0.04    116.32   
+    64. A(C  11,C  10,H  13)          121.65 -0.000145   -0.01    121.64   
+    65. A(C  11,C  10,H  12)          122.04 -0.000002   -0.04    122.00   
+    66. A(C   0,C  10,H  13)           76.76  0.000219   -0.14     76.62   
+    67. A(C   0,C  10,H  12)           86.03 -0.000297    0.20     86.23   
+    68. A(C   0,C  10,C   1)           20.54  0.000184   -0.11     20.43   
+    69. A(C   0,C  10,C  11)          104.51 -0.000048   -0.03    104.48   
+    70. A(C   1,C  10,H  13)           74.66  0.000200    0.01     74.66   
+    71. A(C   1,C  10,H  12)          105.35 -0.000149    0.05    105.40   
+    72. A(C   1,C  10,C  11)           88.14 -0.000220   -0.03     88.12   
+    73. A(C   3,C  11,H  15)           79.64  0.000068   -0.04     79.60   
+    74. A(C   3,C  11,H  14)           81.01  0.000063    0.10     81.10   
+    75. A(C   3,C  11,C  10)          107.66 -0.000035   -0.05    107.61   
+    76. A(C   2,C  11,C   3)           22.88 -0.000163   -0.09     22.79   
+    77. A(C   2,C  11,H  15)           71.21  0.000130   -0.03     71.19   
+    78. A(H  14,C  11,H  15)          116.39 -0.000019    0.01    116.41   
+    79. A(C   2,C  11,H  14)          103.80 -0.000099    0.01    103.81   
+    80. A(C   2,C  11,C  10)           93.60  0.000059    0.01     93.62   
+    81. A(C  10,C  11,H  15)          121.61 -0.000014   -0.01    121.60   
+    82. A(C  10,C  11,H  14)          121.98  0.000036   -0.01    121.98   
+    83. D(H   6,C   1,C   0,H   5)     -2.66 -0.001191   -0.13     -2.79   
+    84. D(C   2,C   1,C   0,H   4)     -0.20 -0.001254   -0.21     -0.41   
+    85. D(C   2,C   1,C   0,H   5)   -179.50 -0.001550   -0.23   -179.73   
+    86. D(C  10,C   1,C   0,H   4)     41.74 -0.001435   -0.78     40.96   
+    87. D(C   2,C   1,C   0,C  10)    -41.94  0.000181    0.58    -41.36   
+    88. D(H   6,C   1,C   0,C  10)    134.90  0.000539    0.68    135.58   
+    89. D(C  10,C   1,C   0,H   5)   -137.56 -0.001730   -0.81   -138.37   
+    90. D(H   6,C   1,C   0,H   4)    176.64 -0.000896   -0.11    176.53   
+    91. D(H   7,C   2,C   1,C   0)    154.26 -0.000029   -0.29    153.97   
+    92. D(H   7,C   2,C   1,C  10)    120.29  0.000036    0.17    120.46   
+    93. D(H   7,C   2,C   1,H   6)    -22.66 -0.000382   -0.39    -23.05   
+    94. D(C   3,C   2,C   1,C  10)    -58.06 -0.000160    0.03    -58.03   
+    95. D(C   3,C   2,C   1,C   0)    -24.09 -0.000225   -0.43    -24.53   
+    96. D(C  11,C   2,C   1,C   0)     32.90 -0.000114   -0.48     32.42   
+    97. D(C   3,C   2,C   1,H   6)    158.99 -0.000578   -0.53    158.46   
+    98. D(C  11,C   2,C   1,H   6)   -144.02 -0.000467   -0.57   -144.59   
+    99. D(C  11,C   3,C   2,H   7)   -101.07  0.000066    0.00   -101.07   
+   100. D(H   8,C   3,C   2,H   7)    176.47 -0.000164   -0.02    176.46   
+   101. D(H   9,C   3,C   2,C   1)    174.76  0.000252    0.15    174.91   
+   102. D(H   9,C   3,C   2,C  11)     97.52 -0.000015    0.00     97.52   
+   103. D(H   9,C   3,C   2,H   7)     -3.55  0.000051    0.00     -3.55   
+   104. D(C  11,C   3,C   2,C   1)     77.24  0.000267    0.15     77.39   
+   105. D(H   8,C   3,C   2,C  11)    -82.46 -0.000230   -0.02    -82.47   
+   106. D(H   8,C   3,C   2,C   1)     -5.22  0.000037    0.13     -5.08   
+   107. D(H  12,C  10,C   0,C   1)    160.27 -0.000210   -0.38    159.88   
+   108. D(C  11,C  10,C   0,H   5)    178.33  0.000506    0.07    178.40   
+   109. D(C  11,C  10,C   0,H   4)    -83.45 -0.000521   -0.44    -83.90   
+   110. D(H  12,C  10,C   0,H   5)    -59.58  0.000423    0.08    -59.49   
+   111. D(C  11,C  10,C   0,C   1)     38.17 -0.000126   -0.40     37.77   
+   112. D(H  13,C  10,C   0,C   1)    -81.56 -0.000017   -0.37    -81.92   
+   113. D(H  12,C  10,C   0,H   4)     38.64 -0.000605   -0.43     38.21   
+   114. D(C   0,C  10,C   1,H   6)    -94.41  0.000110    0.47    -93.94   
+   115. D(C   0,C  10,C   1,C   2)    145.92  0.000202    0.42    146.34   
+   116. D(H  13,C  10,C   1,H   6)     -1.23  0.000126    0.10     -1.13   
+   117. D(H  13,C  10,C   1,C   0)     93.18  0.000016   -0.37     92.81   
+   118. D(H  12,C  10,C   1,H   6)   -114.86 -0.000085    0.06   -114.79   
+   119. D(H  12,C  10,C   1,C   2)    125.47  0.000007    0.02    125.49   
+   120. D(C  11,C  10,C   1,H   6)    122.36  0.000005    0.10    122.46   
+   121. D(C  11,C  10,C   1,C   0)   -143.23 -0.000106   -0.37   -143.60   
+   122. D(C  11,C  10,C   1,C   2)      2.69  0.000097    0.05      2.74   
+   123. D(C   1,C  10,C   0,H   5)    140.16  0.000633    0.47    140.62   
+   124. D(H  13,C  10,C   1,C   2)   -120.90  0.000218    0.05   -120.85   
+   125. D(C   1,C  10,C   0,H   4)   -121.63 -0.000395   -0.05   -121.67   
+   126. D(H  12,C  10,C   1,C   0)    -20.45 -0.000195   -0.41    -20.85   
+   127. D(H  13,C  10,C   0,H   5)     58.60  0.000616    0.10     58.70   
+   128. D(H  13,C  10,C   0,H   4)    156.82 -0.000412   -0.41    156.40   
+   129. D(H  14,C  11,C   3,H   8)    -54.44 -0.000080   -0.09    -54.53   
+   130. D(H  14,C  11,C   3,C   2)   -175.03 -0.000019   -0.04   -175.07   
+   131. D(C  10,C  11,C   3,H   9)   -176.39  0.000044   -0.03   -176.41   
+   132. D(C  10,C  11,C   3,C   2)    -54.20  0.000036   -0.02    -54.22   
+   133. D(C   3,C  11,C   2,H   7)    110.33 -0.000005   -0.04    110.28   
+   134. D(C   3,C  11,C   2,C   1)   -126.33  0.000099    0.10   -126.23   
+   135. D(H  15,C  11,C   2,H   7)      1.81 -0.000047   -0.09      1.72   
+   136. D(H  15,C  11,C   2,C   3)   -108.52 -0.000042   -0.05   -108.57   
+   137. D(H  15,C  11,C   2,C   1)    125.15  0.000057    0.05    125.20   
+   138. D(H  14,C  11,C   2,H   7)    115.38 -0.000026   -0.08    115.30   
+   139. D(H  14,C  11,C   2,C   3)      5.06 -0.000021   -0.04      5.02   
+   140. D(C  10,C  11,C   3,H   8)     66.38 -0.000026   -0.07     66.31   
+   141. D(H  14,C  11,C   2,C   1)   -121.27  0.000078    0.06   -121.21   
+   142. D(C  10,C  11,C   2,H   7)   -120.42  0.000008   -0.08   -120.50   
+   143. D(C  10,C  11,C   2,C   3)    129.25  0.000013   -0.04    129.21   
+   144. D(H  14,C  11,C   3,H   9)     62.79 -0.000011   -0.04     62.74   
+   145. D(C  10,C  11,C   2,C   1)      2.92  0.000112    0.06      2.98   
+   146. D(C   2,C  11,C  10,H  13)     69.53  0.000087   -0.02     69.51   
+   147. D(C   2,C  11,C  10,H  12)   -108.12  0.000276   -0.06   -108.18   
+   148. D(C   3,C  11,C  10,C   1)     17.28 -0.000180   -0.08     17.20   
+   149. D(C   3,C  11,C  10,H  13)     87.95 -0.000049   -0.09     87.86   
+   150. D(C   3,C  11,C  10,H  12)    -89.70  0.000139   -0.12    -89.82   
+   151. D(H  15,C  11,C  10,C   1)    -71.25 -0.000237    0.00    -71.25   
+   152. D(H  15,C  11,C  10,C   0)    -83.78 -0.000312    0.18    -83.60   
+   153. D(H  15,C  11,C  10,H  13)     -0.58 -0.000107   -0.00     -0.58   
+   154. D(H  15,C  11,C  10,H  12)   -178.23  0.000082   -0.04   -178.27   
+   155. D(H  14,C  11,C  10,C   1)    107.59 -0.000113    0.00    107.60   
+   156. D(H  14,C  11,C  10,C   0)     95.06 -0.000188    0.18     95.24   
+   157. D(H  14,C  11,C  10,H  13)    178.27  0.000017   -0.00    178.26   
+   158. D(H  14,C  11,C  10,H  12)      0.61  0.000206   -0.04      0.58   
+   159. D(C   2,C  11,C   3,H   9)   -122.18  0.000008   -0.01   -122.19   
+   160. D(C   3,C  11,C  10,C   0)      4.75 -0.000254    0.10      4.85   
+   161. D(C   2,C  11,C   3,H   8)    120.59 -0.000061   -0.05    120.54   
+   162. D(H  15,C  11,C   3,H   9)    -56.32  0.000048   -0.04    -56.36   
+   163. D(H  15,C  11,C   3,H   8)   -173.55 -0.000022   -0.09   -173.64   
+   164. D(H  15,C  11,C   3,C   2)     65.86  0.000039   -0.04     65.83   
+    ----------------------------------------------------------------------------
+
+Geometry step timings:
+Preparation and reading OPT file:      0.000 s ( 0.383 %)
+Internal coordinates            :      0.000 s ( 0.426 %)
+B/P matrices and projection     :      0.002 s (31.951 %)
+Hessian update/contruction      :      0.002 s (23.459 %)
+Making the step                 :      0.002 s (33.556 %)
+Converting the step to Cartesian:      0.000 s ( 3.025 %)
+Storing new data                :      0.000 s ( 0.554 %)
+Checking convergence            :      0.000 s ( 0.398 %)
+Final printing                  :      0.000 s ( 6.234 %)
+Total time                      :      0.007 s
+
+Time for energy+gradient        :      9.635 s
+Time for complete geometry iter :     10.821 s
+
+
+
+
+    ----------------------------------------------------------------------------
+                                   ERROR !!!
+       The optimization did not converge but reached the maximum 
+       number of optimization cycles.
+       As a subsequent Frequencies calculation has been requested
+       ORCA will abort at this point of the run.
+       Please restart the calculation with the lowest energy geometry and/or
+       a larger maxiter for the geometry optimization.
+    ----------------------------------------------------------------------------
+
+
+
+--------------------------------
+SUGGESTED CITATIONS FOR THIS RUN
+--------------------------------
+
+Below you find a list of papers that are relevant to this ORCA run
+We neither can nor want to force you to cite these papers, but we appreciate if you do
+You receive ORCA, which is the product of decades of hard work by many enthusiastic individuals, for free
+The only thing we kindly ask in return is that you cite our papers,
+We deeply appreciate it, if you show your appreciation for ORCA by not just citing the generic ORCA reference.
+
+Please note that relegating all ORCA citations to the supporting information does *not* help us.
+SI sections are not indexed - citations you put there will not count into any citation statistics
+But we need these citations in order to attract the funding resources that allow us to do what we are doing
+
+Therefore, if you are a happy ORCA user, please consider citing a few of the papers listed below in the main body of your paper
+
+In addition to the list printed below, the program has created the file input.bibtex that contains the list in bibtex format
+You can import this file easily into all common literature databanks and citation aid programs
+
+
+List of essential papers. We consider these as the minimum necessary citations
+
+  1. Grimme, S.; Hansen, A.; Ehlert, S.; Mewes, J.
+     r2SCAN-3c: A 'Swiss army knife' composite electronic-structure method
+     J. Chem. Phys. 2021 154 , 064103
+     doi.org/10.1063/5.0040021
+  2. Neese, F.
+     Software update: the ORCA program system, version 6.0
+     WIRES Comput. Molec. Sci. 2025 15(1), e70019
+     doi.org/10.1002/wcms.7019
+
+List of papers to cite with high priority. The work reported in these papers was absolutely
+necessary for this run to complete.
+Our perspective: the developers of density functionals and basis sets usually get cited in chemistry papers
+Good! But without the algorithms to do something with them, the functionals or basis sets would not do anything.
+Hence, in our opinion, the algorithm design and method developments papers are equally worthy of getting cited
+
+  1. Neese, F.
+     An improvement of the resolution of the identity approximation for the formation of the Coulomb matrix
+     J. Comp. Chem. 2003 24(14), 1740-1747
+     doi.org/10.1002/jcc.10318
+  2. Bykov, D.; Petrenko, T.; Izsak, R.; Kossmann, S.; Becker, U.; Valeev, E.; Neese, F.
+     Efficient implementation of the analytic second derivatives of Hartree-Fock and hybrid DFT energies: a detailed analysis of different approximations
+     Molec. Phys. 2015 113 , 1961-1977
+     doi.org/10.1080/00268976.2015.1025114
+  3. Caldeweyher, E.; Bannwarth, C.; Grimme, S.
+     Extension of the D3 dispersion coefficient model
+     J. Chem. Phys. 2017 147 , 034112
+     doi.org/10.1063/1.4993215
+  4. Lehtola, S.; Steigemann, C.; Oliveira, M.; Marques, M.
+     Recent developments in Libxc - A comprehensive library of functionals for density functional theory
+     Software X 2018 7 , 
+     doi.org/10.1016/j.softx.2017.11.002
+  5. Caldeweyher, E.; Ehlert, S.; Hansen, A.; Neugebauer, H.; Spicher, S.; Bannwarth, C.; Grimme, S.
+     A generally applicable atomic-charge dependent London dispersion correction
+     J. Chem. Phys. 2019 150 , 154122
+     doi.org/10.1063/1.5090222
+  6. Caldeweyher, E.; Mewes, J.; Ehlert, S.; Grimme, S.
+     Extension and evaluation of the D4 London-dispersion model for periodic systems
+     Phys. Chem. Chem. Phys. 2020 22(16), 8499-8512
+     doi.org/10.1039/D0CP00502A
+  7. Neese, F.
+     The SHARK Integral Generation and Digestion System
+     J. Comp. Chem. 2022 44(3), 381
+     doi.org/10.1002/jcc.26942
+  8. Wittmann, L.; Gordiy, I.; Friede, M.; Helmich-Paris, B.; Grimme, S.; Hansen, A.; Bursch, M.
+     Extension of the D3 and D4 London Dispersion Corrections to the full Actinides Series
+     Phys. Chem. Chem. Phys. 2024 26(32), 21379-21394
+     doi.org/10.1039/D4CP01514B
+
+List of suggested additional citations. These are papers that are important in the 'surrounding' of 
+of this run, or papers that preceded the highly important papers. If you like your results we are grateful for a citation.
+
+  1. Neese, F.
+     The ORCA program system
+     WIRES Comput. Molec. Sci. 2012 2(1), 73-78
+     doi.org/10.1002/wcms.81
+  2. Neese, F.
+     Software update: the ORCA program system, version 4.0
+     WIRES Comput. Molec. Sci. 2018 8(1), 1-6
+     doi.org/10.1002/wcms.1327
+  3. Neese, F.; Wennmohs, F.; Becker, U.; Riplinger, C.
+     The ORCA quantum chemistry program package
+     J. Chem. Phys. 2020 152(22), 224108
+     doi.org/10.1063/5.0004608
+  4. Neese, F.
+     Software update: The ORCA program system—Version 5.0
+     WIRES Comput. Molec. Sci. 2022 12(1), e1606
+     doi.org/10.1002/wcms.1606
+
+List of optional additional citations
+
+  1. Neese, F.
+     Approximate second-order SCF convergence for spin unrestricted wavefunctions
+     Chem. Phys. Lett. 2000 325(1-3), 93-98
+     doi.org/10.1016/s0009-2614(00)00662-x
+
+Timings for individual modules:
+
+Sum of individual times          ...      492.488 sec (=   8.208 min)
+Startup calculation              ...       79.098 sec (=   1.318 min)  16.1 %
+SCF iterations                   ...      235.624 sec (=   3.927 min)  47.8 %
+Property integrals               ...       61.931 sec (=   1.032 min)  12.6 %
+SCF Gradient evaluation          ...      115.483 sec (=   1.925 min)  23.4 %
+Geometry relaxation              ...        0.351 sec (=   0.006 min)   0.1 %
+                             ****ORCA TERMINATED NORMALLY****
+TOTAL RUN TIME: 0 days 0 hours 10 minutes 10 seconds 511 msec

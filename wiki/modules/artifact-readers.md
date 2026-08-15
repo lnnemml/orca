@@ -69,6 +69,20 @@ typestate, the same shape as ADR-010's `parse_output` (uncallable without the
 - **Lengths, measured not trusted** — charges = N, `&ATNO` = N, `&grad` = 3N, `&FREQ` = 3N,
   checked against N from the geometry, never read off `&Dim`.
 
+## Optimization convergence verdict (v6) — read BEFORE `.hess`
+`parse_and_store` reads `convergence::optimization_verdict(output_tail)` (two exact tail markers,
+`wiki/orca/convergence-status.md`) **before** the `.hess` branch and stores it as
+`ParsedResults.converged: Option<bool>` (`Some(true)`/`Some(false)`/`None`). The ordering is
+load-bearing: an OptTS that **reached max cycles** has a final geometry far from the seed where
+`Calc_Hess true` computed the Hessian, so the `.hess` geometry post-condition (above) legitimately
+fires a mismatch — the **consequence** of non-convergence, not a parser defect. So on `NotConverged`
+the flow **skips `.hess`** (`hess.exists() && !not_converged`), suppressing frequencies and reporting
+"did not converge (max cycles)" instead of the misleading `.hess: geometry mismatch` `ParseFailed`.
+Energy/geometry/trajectory still parse (the honest partial result). A converged opt (`Some(true)`) and
+a non-optimization job (`None` — SP/scan/GOAT, never flagged) take the normal path unchanged.
+Rule #6 (completion = marker + exit) is untouched; the job still reaches `parsed`, carrying the flag.
+Verified on the **real** DA OptTS + a real converged Opt+Freq (two `#[ignore]` real-data gates).
+
 ## The `IndexMap` post-condition (unit 1d) — one function per reader, verified not trusted
 Unit 1d pairs the readers with the ADR-016 identity core. `verify()` now takes the job's
 `IndexMap<OrcaIndex>` (from `orcastudio-core`) alongside the reference, and the element-order

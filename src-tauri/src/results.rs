@@ -22,7 +22,7 @@ use std::path::Path;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
-use crate::convergence::{ConvergenceEvent, ConvergenceParser};
+use crate::convergence::{optimization_verdict, ConvergenceEvent, ConvergenceParser, OptVerdict};
 use crate::error::AppError;
 use crate::parse::elements::symbol_of;
 use crate::parse::hess::HessFile;
@@ -37,7 +37,16 @@ use orcastudio_core::ids::{AtomId, IndexMap, OrcaIndex};
 /// - v2: + `.hess` frequencies / IR / normal modes + thermo temperature (unit 3.6).
 /// - v3: + `_trj.xyz` trajectory + `orca_2json` MO energies/occupancies (unit 3.7).
 /// - v4: + relaxed-scan profile (`.relaxscanact/.relaxscanscf.dat`, Phase 4.5 B1).
-pub const PARSER_VERSION: u32 = 5;
+/// - v5: + Mayer bond orders (`output.out`).
+/// - v6: + optimization convergence verdict (`converged: Option<bool>`), read from the
+///   output tail BEFORE `.hess` so a non-converged optimization is surfaced honestly and
+///   its expected `.hess` geometry mismatch is not a ParseFailed (`wiki/orca/convergence-status.md`).
+pub const PARSER_VERSION: u32 = 6;
+
+/// Bytes of the `output.out` tail read for the convergence verdict. The not-converged marker
+/// sits within ~120 lines of `ORCA TERMINATED NORMALLY` (the failed opt is the last thing that
+/// runs), so 64 KB catches it with wide margin — and never loads a multi-MB output (rule #5).
+const VERDICT_TAIL_BYTES: u64 = 64 * 1024;
 
 // --------------------------------------------------------------------------- //
 // The stored structure (goes into results.data_json verbatim)                   //
@@ -232,6 +241,15 @@ pub struct ParsedResults {
     /// `#[serde(default)]` so results rows stored before this field read back as `None`.
     #[serde(default)]
     pub mayer_bond_orders: Option<Vec<crate::parse::mayer::MayerBond>>,
+    /// Overall optimization convergence verdict (from the output tail — [`OptVerdict`]).
+    /// `Some(true)` = converged (`*** OPTIMIZATION RUN DONE ***`); `Some(false)` = reached
+    /// the max cycle budget without converging (frequencies are suppressed and the `.hess`
+    /// geometry mismatch is its expected CONSEQUENCE, not a parse failure); `None` = no
+    /// optimization verdict (SP / scan / GOAT — never flagged). Set by `parse_and_store`
+    /// from the tail; the constructors default it to `None`. `#[serde(default)]` so pre-v6
+    /// results rows read back as `None`.
+    #[serde(default)]
+    pub converged: Option<bool>,
     /// Blocks ORCA emitted that this reader has no accessor for (rule #10).
     pub unknown_blocks: Vec<String>,
 }
@@ -351,6 +369,8 @@ impl ParsedResults {
             // Populated by the caller (`parse_and_store`) from `output.out`, which this
             // constructor does not have — the single place the atom count is known.
             mayer_bond_orders: None,
+            // Likewise the caller sets the convergence verdict from the output tail.
+            converged: None,
             unknown_blocks: v.unknown_block_names(),
         })
     }
@@ -396,6 +416,7 @@ impl ParsedResults {
             scan: Some(scan),
             neb: None,
             mayer_bond_orders: None, // a scan is multi-structure — no single final table
+            converged: None,         // a scan has no single-optimization verdict (NotApplicable)
             unknown_blocks: Vec::new(),
         })
     }
@@ -422,6 +443,7 @@ impl ParsedResults {
             scan: None,
             neb: Some(neb),
             mayer_bond_orders: None, // a NEB-TS run has no single final Mayer table
+            converged: None,         // NEB has its own convergence; no single-opt verdict here
             unknown_blocks: Vec::new(),
         })
     }
@@ -613,11 +635,30 @@ pub fn parse_and_store(
         Err(e) => return ParseOutcome::ParseFailed(e.to_string()),
     };
 
+    // Overall optimization convergence verdict (`OptVerdict`) from the output TAIL (rule #5:
+    // both markers live there; the completion detector already tails, so no unbounded read is
+    // added). Read BEFORE `.hess` so a non-converged optimization SHORT-CIRCUITS to an honest
+    // verdict: ORCA computes the Freq Hessian at the SEED (`Calc_Hess true`), but a run that
+    // exhausted its cycle budget has a FINAL geometry many steps away, so the `.hess`-vs-final
+    // geometry check legitimately mismatches — that mismatch is the CONSEQUENCE of
+    // non-convergence, not a parse bug. On NotConverged we skip `.hess` (frequencies off a
+    // non-stationary point are meaningless) and never surface `.hess: geometry mismatch`; the
+    // verdict is stored in `results.converged` so the job never reads as a clean COMPLETED.
+    // See wiki/orca/convergence-status.md.
+    let verdict = optimization_verdict(
+        &crate::local_backend::read_tail(&dir.join("output.out"), VERDICT_TAIL_BYTES)
+            .unwrap_or_default(),
+    );
+    let not_converged = verdict == OptVerdict::NotConverged;
+
     // `.hess` is optional: SP/GOAT have none (a normal state). When present, verify
     // it against the OPTIMIZED geometry (the Freq geometry) — the `.property.txt`
-    // final `$Geometry`, which we already have — not `input.inp` (the start).
+    // final `$Geometry`, which we already have — not `input.inp` (the start). Skipped
+    // when the optimization did NOT converge: the seed-computed Hessian legitimately
+    // mismatches the moved final geometry, and reporting frequencies off a non-stationary
+    // point would be dishonest.
     let hess_path = dir.join("input.hess");
-    let hess_verified = if hess_path.exists() {
+    let hess_verified = if hess_path.exists() && !not_converged {
         match final_geometry_reference(&verified, &atom_ids)
             .and_then(|r| Ok(HessFile::from_path(&hess_path)?.verify(&r, &job_map)?))
         {
@@ -717,6 +758,10 @@ pub fn parse_and_store(
         Ok(r) => r,
         Err(e) => return ParseOutcome::ParseFailed(e.to_string()),
     };
+
+    // Surface the convergence verdict on the results (three-state, `wiki/orca/convergence-status.md`):
+    // Some(true) converged, Some(false) reached max cycles, None no optimization (SP/scan/GOAT).
+    results.converged = verdict.as_flag();
 
     // Mayer bond orders (`output.out`, streamed — rule #5): the computed authoritative
     // order of the FINAL structure, keyed by the same 0-based atom indices as
@@ -1637,6 +1682,97 @@ mod tests {
         let e = stored_final_energy(&conn, "dexket").expect("authoritative energy");
         assert!((e - (-843.690395750533)).abs() < 1e-5, "got {e}");
         eprintln!("dexketoprofen authoritative final energy = {e} Eh (tail regex missed it by 164 KB)");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// Part B gate on the REAL Diels-Alder OptTS job that did NOT converge (reached max
+    /// cycles at cycle 50). The seed-computed `.hess` (Calc_Hess true) legitimately
+    /// mismatches the moved final geometry — which BEFORE this unit surfaced as
+    /// `ParseFailed(".hess: geometry mismatch")` and a misleading COMPLETED. Assert the
+    /// honest outcome instead: `Parsed` (results stored), `converged == Some(false)`,
+    /// frequencies suppressed — and crucially NOT a `.hess` parse failure. Energy +
+    /// geometry are still parsed (the available partial result). Ignored: reads the real
+    /// ~2 MB job dir from ~/.local/share.
+    #[test]
+    #[ignore = "reads the real Diels-Alder OptTS job dir from ~/.local/share"]
+    fn real_da_optts_not_converged_is_honest_not_hess_parsefail() {
+        let src = format!(
+            "{}/.local/share/orcastudio/jobs/e710c8b8-7ab6-4324-af5c-b88d5c1b72eb",
+            std::env::var("HOME").unwrap()
+        );
+        if !Path::new(&src).join("input.property.txt").exists() {
+            eprintln!("skipping: real Diels-Alder OptTS job dir not present");
+            return;
+        }
+        let tmp = std::env::temp_dir().join(format!("da-optts-e2e-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        for f in ["input.property.txt", "input.inp", "input.hess", "input_trj.xyz", "output.out"] {
+            std::fs::copy(Path::new(&src).join(f), tmp.join(f)).unwrap();
+        }
+        let input = std::fs::read_to_string(tmp.join("input.inp")).unwrap();
+
+        let conn = Connection::open_in_memory().unwrap();
+        // `index_map_json` NULL → resolve_job_mapping falls back to the DERIVED identity map.
+        conn.execute("CREATE TABLE jobs (id TEXT PRIMARY KEY, index_map_json TEXT)", []).unwrap();
+        conn.execute("INSERT INTO jobs (id) VALUES ('da')", []).unwrap();
+        crate::db::create_results_table(&conn).unwrap();
+        // No orca_path → orbitals are skipped (non-fatal), keeping the test off /opt/orca.
+        conn.execute("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)", [])
+            .unwrap();
+
+        // BEFORE this unit: `ParseFailed(".hess: geometry mismatch")`. Now: an honest `Parsed`.
+        let outcome = parse_and_store(&conn, "da", tmp.to_str().unwrap(), &input);
+        assert!(
+            matches!(outcome, ParseOutcome::Parsed),
+            "a non-converged OptTS must parse honestly, not ParseFail on .hess; got {outcome:?}"
+        );
+
+        let r = read_job_results(&conn, "da").unwrap().unwrap();
+        assert_eq!(r.converged, Some(false), "the non-converged opt must be flagged Some(false)");
+        assert!(
+            r.frequencies.is_none(),
+            "frequencies must be suppressed off a non-stationary point"
+        );
+        // The available partial result is still there — energy + final geometry parsed.
+        assert!(r.final_energy_eh.is_some(), "the last-cycle energy is still reported");
+        assert!(!r.final_geometry.elements.is_empty(), "the final geometry is still reported");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// Negative control for the SAME unit: a real CONVERGED Opt+Freq must read
+    /// `converged == Some(true)` and STILL parse its `.hess` frequencies — the verdict gate
+    /// must not regress a converged job (no spurious "did not converge", no suppressed freqs).
+    /// Ignored: reads the real job dir; no orca_2json (orbitals skipped, non-fatal).
+    #[test]
+    #[ignore = "reads a real converged Opt+Freq job dir from ~/.local/share"]
+    fn real_converged_optfreq_is_some_true_with_freqs() {
+        let src = format!(
+            "{}/.local/share/orcastudio/jobs/d7992449-10e3-47c9-9a16-8e22d60b955d",
+            std::env::var("HOME").unwrap()
+        );
+        if !Path::new(&src).join("input.property.txt").exists() {
+            eprintln!("skipping: real converged Opt+Freq job dir not present");
+            return;
+        }
+        let tmp = std::env::temp_dir().join(format!("conv-optfreq-e2e-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        for f in ["input.property.txt", "input.inp", "input.hess", "input_trj.xyz", "output.out"] {
+            std::fs::copy(Path::new(&src).join(f), tmp.join(f)).unwrap();
+        }
+        let input = std::fs::read_to_string(tmp.join("input.inp")).unwrap();
+
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute("CREATE TABLE jobs (id TEXT PRIMARY KEY, index_map_json TEXT)", []).unwrap();
+        conn.execute("INSERT INTO jobs (id) VALUES ('conv')", []).unwrap();
+        crate::db::create_results_table(&conn).unwrap();
+        conn.execute("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)", [])
+            .unwrap();
+
+        let outcome = parse_and_store(&conn, "conv", tmp.to_str().unwrap(), &input);
+        assert!(matches!(outcome, ParseOutcome::Parsed), "{outcome:?}");
+        let r = read_job_results(&conn, "conv").unwrap().unwrap();
+        assert_eq!(r.converged, Some(true), "a converged opt must read Some(true)");
+        assert!(r.frequencies.is_some(), "a converged Opt+Freq must still parse its .hess freqs");
         std::fs::remove_dir_all(&tmp).ok();
     }
 

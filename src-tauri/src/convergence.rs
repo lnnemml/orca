@@ -241,6 +241,66 @@ fn parse_criterion(line: &str) -> Option<Criterion> {
     })
 }
 
+// --------------------------------------------------------------------------- //
+// Overall optimization-convergence verdict (from the output tail)               //
+// --------------------------------------------------------------------------- //
+
+/// The **overall** verdict of a geometry optimization, distinct from the per-cycle
+/// [`Criterion::converged`] flags. A geometry optimization either converges
+/// (`*** OPTIMIZATION RUN DONE ***`) or exhausts its cycle budget (`The optimization
+/// did not converge but reached the maximum ...`); a job with **no** optimization at
+/// all (single point, relaxed scan, GOAT) prints neither and is `NotApplicable`.
+///
+/// This is why the app can now report a max-cycles OptTS honestly: ORCA still prints
+/// `ORCA TERMINATED NORMALLY` and exits 0 on a non-converged optimization (the job is
+/// `Completed`), so the completion detector (rule #6) alone cannot tell a converged
+/// result from an unconverged one — the verdict is a **quality flag**, read here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub enum OptVerdict {
+    /// `*** OPTIMIZATION RUN DONE ***` present — the optimization converged.
+    Converged,
+    /// Reached the maximum number of cycles without converging.
+    NotConverged,
+    /// No optimization verdict in the output — a single point / scan / GOAT.
+    NotApplicable,
+}
+
+impl OptVerdict {
+    /// The stored three-state flag (`ParsedResults::converged`): converged → `Some(true)`,
+    /// not-converged → `Some(false)`, not-applicable → `None`. Only `Some(false)` drives a UI
+    /// state change; `Some(true)` and `None` render identically (a clean COMPLETED).
+    pub fn as_flag(self) -> Option<bool> {
+        match self {
+            OptVerdict::Converged => Some(true),
+            OptVerdict::NotConverged => Some(false),
+            OptVerdict::NotApplicable => None,
+        }
+    }
+}
+
+/// The exact converged marker ORCA prints at the end of a converged optimization.
+const CONVERGED_MARKER: &str = "*** OPTIMIZATION RUN DONE ***";
+/// The exact max-cycles marker (measured — `wiki/orca/convergence-status.md`). ORCA
+/// wraps the sentence, so we match only the leading, stable prefix.
+const NOT_CONVERGED_MARKER: &str = "The optimization did not converge but reached the maximum";
+
+/// Classify a geometry optimization's overall convergence from the **output tail**.
+///
+/// Both markers live in the tail (rule #5: the completion detector already tails, so
+/// no unbounded read is added). Exact substrings, not fuzzy: a non-converged run is
+/// checked FIRST so honesty dominates if both were ever present; a job with neither
+/// (SP / scan / GOAT) is [`OptVerdict::NotApplicable`] and must never be flagged as
+/// not-converged.
+pub fn optimization_verdict(output_tail: &str) -> OptVerdict {
+    if output_tail.contains(NOT_CONVERGED_MARKER) {
+        OptVerdict::NotConverged
+    } else if output_tail.contains(CONVERGED_MARKER) {
+        OptVerdict::Converged
+    } else {
+        OptVerdict::NotApplicable
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -399,6 +459,50 @@ FINAL SINGLE POINT ENERGY       -76.418000000000
                 "a near-zero 'SCF' energy leaked from the Freq eigenvector matrix in {path}"
             );
         }
+    }
+
+    // ── Overall optimization verdict (from the output tail) ──────────────────
+
+    const CONVERGED_TAIL: &str = include_str!("../tests/fixtures/dexketoprofen_output_tail.out");
+    const NOT_CONVERGED_TAIL: &str = include_str!("../tests/fixtures/optts_not_converged_tail.out");
+
+    #[test]
+    fn converged_tail_is_converged() {
+        // The real dexketoprofen Opt tail carries `*** OPTIMIZATION RUN DONE ***`.
+        assert_eq!(optimization_verdict(CONVERGED_TAIL), OptVerdict::Converged);
+    }
+
+    #[test]
+    fn not_converged_tail_is_not_converged() {
+        // The DA OptTS max-cycles tail carries the did-not-converge marker.
+        assert_eq!(
+            optimization_verdict(NOT_CONVERGED_TAIL),
+            OptVerdict::NotConverged
+        );
+    }
+
+    #[test]
+    fn single_point_or_scan_tail_is_not_applicable() {
+        // A single-point tail: SCF converges + TERMINATED NORMALLY, but NO optimization
+        // verdict. BITE: a false NotConverged here would flag every SP job — the marker
+        // must be the OPTIMIZATION verdict, not any "converge" word (SCF CONVERGED is present).
+        let sp_tail = "\
+               *           SCF CONVERGED AFTER   2 CYCLES          *
+TOTAL SCF ENERGY
+FINAL SINGLE POINT ENERGY       -76.418000000000
+                             ****ORCA TERMINATED NORMALLY****
+TOTAL RUN TIME: 0 days 0 hours 0 minutes 1 seconds
+";
+        assert_eq!(optimization_verdict(sp_tail), OptVerdict::NotApplicable);
+    }
+
+    #[test]
+    fn both_markers_absent_is_not_applicable() {
+        assert_eq!(
+            optimization_verdict("just some prose with no ORCA markers at all\n"),
+            OptVerdict::NotApplicable
+        );
+        assert_eq!(optimization_verdict(""), OptVerdict::NotApplicable);
     }
 
     #[test]

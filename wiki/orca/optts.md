@@ -56,6 +56,14 @@ scan (today), a NEB climbing image (Stage E3), or a hand guess.
   system along the wrong path). There, NEB/NEB-CI finds the true saddle, and **OptTS then refines
   THAT climbing image** — through the *same* engine (`buildOptTSInput`), only a different entry point
   supplies the guess. This is why the refine engine is **source-agnostic** (ADR-020).
+- **When the seed is poor, the tool now says so.** A Diels-Alder OptTS seeded from an **XTB** scan
+  point exhausted its cycle budget without converging — and because ORCA still printed `TERMINATED
+  NORMALLY`, it read as a clean COMPLETED (with a confusing `.hess` mismatch, itself a *consequence*
+  of the moved geometry). The **convergence-status guard** (`orca/convergence-status.md`) surfaces
+  this honestly: a non-converged OptTS reads "did not converge (max cycles)", frequencies are
+  suppressed, and the `.hess` mismatch is no longer a parse error. The guard makes the status honest;
+  *why* the XTB seed is too poor for the r2SCAN-3c saddle (seed quality / method) is the separate
+  chemistry question it unblocks.
 
 ## Cost
 
