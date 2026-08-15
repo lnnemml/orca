@@ -1,6 +1,19 @@
 import { describe, it, expect } from "vitest";
 
 import { buildOptTSInput, type TsGuessGeometry } from "./optts";
+import { DEFAULT_BUILDER_STATE, type MethodSlice } from "../input-builder/build-input";
+
+/** A full method slice = the defaults; each test spreads the fields it overrides on top. */
+const BASE_SLICE: MethodSlice = {
+  methodFamily: DEFAULT_BUILDER_STATE.methodFamily,
+  composite: DEFAULT_BUILDER_STATE.composite,
+  functional: DEFAULT_BUILDER_STATE.functional,
+  basis: DEFAULT_BUILDER_STATE.basis,
+  dispersion: DEFAULT_BUILDER_STATE.dispersion,
+  ri: DEFAULT_BUILDER_STATE.ri,
+  xtbMethod: DEFAULT_BUILDER_STATE.xtbMethod,
+  wavefunction: DEFAULT_BUILDER_STATE.wavefunction,
+};
 
 /** A tiny N···C seed (the SN2 forming bond), easy to eyeball. */
 const SEED: TsGuessGeometry = {
@@ -124,5 +137,90 @@ describe("buildOptTSInput — the seed geometry is emitted exactly (count + orde
     const bad: TsGuessGeometry = { elements: ["N", "C", "H"], xyz_angstrom: [[0, 0, 0]] };
     const source = "! r2SCAN-3c\n* xyz 0 1\nN 0 0 0\n*\n";
     expect(() => buildOptTSInput(source, bad)).toThrow();
+  });
+});
+
+// ── C-method-override — a <MethodPicker> methodState overrides the inherited method ──
+// The XTB-scan → XTB-OptTS pain this unit fixes: a refine can now run at a chosen level.
+describe("buildOptTSInput — methodState override (family model, not a flattened string)", () => {
+  const xtbScan = "! XTB LooseOpt\n%pal nprocs 4 end\n%maxcore 2000\n\n* xyz 0 1\nN 0 0 0\nC 0 0 1.8\n*\n";
+
+  // BITE 1 — inherit-default is byte-identical: an absent/empty/undefined methodState must
+  // produce EXACTLY today's output. A regression in the default path fails this three ways.
+  it("inherit_default_is_byte_identical — no methodState → unchanged output", () => {
+    const source = "! r2SCAN-3c LooseOpt SMD(DMF) TightSCF\n* xyz 0 1\nN 0 0 0\nC 0 0 1.8\n*\n";
+    const baseline = buildOptTSInput(source, SEED);
+    // The three "no override" spellings must all equal the baseline, byte for byte.
+    expect(buildOptTSInput(source, SEED, {})).toBe(baseline);
+    expect(buildOptTSInput(source, SEED, { methodState: undefined })).toBe(baseline);
+    // And the baseline itself is pinned — the composite slot carries method + solvation verbatim.
+    expect(baseline).toMatchInlineSnapshot(`
+      "! r2SCAN-3c SMD(DMF) OptTS Freq TightSCF
+      %pal nprocs 4 end
+      %maxcore 2000
+      %geom Calc_Hess true end
+
+      * xyz 0 1
+      N     0.00000000    0.00000000    0.00000000
+      C     0.00000000    0.00000000    2.35300000
+      *
+      "
+    `);
+  });
+
+  // BITE 2 — a composite override (r2SCAN-3c) emits a self-contained `!` line: no basis, no RI.
+  // Fixes XTB-scan → the child runs r2SCAN-3c, not XTB.
+  it("composite_override — r2SCAN-3c replaces XTB, no basis/RI leaks in", () => {
+    const kw = keywordLine(
+      buildOptTSInput(xtbScan, SEED, { methodState: { ...BASE_SLICE, methodFamily: "composite", composite: "r2SCAN-3c" } }),
+    );
+    expect(kw).toContain("r2SCAN-3c");
+    expect(kw).toContain("OptTS");
+    expect(kw).not.toContain("XTB");
+    expect(kw).not.toContain("def2");
+    expect(kw).not.toContain("RIJCOSX");
+  });
+
+  // BITE 3 — a DFT override pairs the RI aux via buildOrcaInput's dft branch. A string-flatten
+  // impl (jamming "B3LYP def2-TZVP" into the composite slot) emits NO aux → this goes red.
+  it("dft_override_pairs_ri_aux — functional+basis carries the paired def2/J aux + RIJCOSX + D4", () => {
+    const kw = keywordLine(
+      buildOptTSInput(xtbScan, SEED, {
+        methodState: { ...BASE_SLICE, methodFamily: "dft", functional: "B3LYP", basis: "def2-TZVP", ri: "RIJCOSX", dispersion: "D4" },
+      }),
+    );
+    expect(kw).toContain("B3LYP");
+    expect(kw).toContain("def2-TZVP");
+    expect(kw).toContain("def2/J"); // ← the paired Coulomb aux; a flattened string would drop it
+    expect(kw).toContain("RIJCOSX");
+    expect(kw).toContain("D4");
+    expect(kw).not.toContain("XTB");
+  });
+
+  // Solvation still DEFAULTS to the source's under an override (comparability), carried per-family.
+  it("inherits the source solvation under a dft override (emitted for dft, per-family)", () => {
+    const source = "! r2SCAN-3c LooseOpt SMD(DMF) TightSCF\n* xyz 0 1\nN 0 0 0\nC 0 0 1.8\n*\n";
+    const kw = keywordLine(
+      buildOptTSInput(source, SEED, {
+        methodState: { ...BASE_SLICE, methodFamily: "dft", functional: "B3LYP", basis: "def2-TZVP" },
+      }),
+    );
+    expect(kw).toContain("SMD(DMF)");
+    expect(kw).not.toContain("r2SCAN-3c");
+  });
+
+  // BITE 4 — the override still inherits (charge, mult) from the source AND the post-condition
+  // still bites: an anion's -1 survives, and a length-mismatch seed throws under an override too.
+  it("charge_mult_and_postcondition_unchanged — (c,m) inherited under an override", () => {
+    const source = "! r2SCAN-3c SMD(DMF) LooseOpt\n* xyz -1 1\nB 0 0 0\nH 1 1 1\n*\n";
+    const child = buildOptTSInput(source, SEED, {
+      methodState: { ...BASE_SLICE, methodFamily: "dft", functional: "B3LYP", basis: "def2-TZVP" },
+    });
+    expect(xyzHeader(child)).toBe("* xyz -1 1");
+    // The seed-preservation post-condition (rule #9) still fires under an override.
+    const bad: TsGuessGeometry = { elements: ["N", "C", "H"], xyz_angstrom: [[0, 0, 0]] };
+    expect(() =>
+      buildOptTSInput(source, bad, { methodState: { ...BASE_SLICE, methodFamily: "dft" } }),
+    ).toThrow();
   });
 });

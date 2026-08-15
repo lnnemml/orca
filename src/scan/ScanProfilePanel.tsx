@@ -13,6 +13,11 @@ import {
 
 import type { ScanProfileJson, ScanGeometry, Job } from "../types";
 import { buildOptTSInput } from "../scene/optts";
+import {
+  OptTSMethodPicker,
+  useSourceIsXtb,
+  type OptTSMethodOverride,
+} from "../input-builder/OptTSMethodPicker";
 import { GroupSelect } from "../groups/GroupSelect";
 import { useGroupPicker, useJobGroupId } from "../groups/useGroupPicker";
 import { MoleculeViewer } from "../viewer/MoleculeViewer";
@@ -78,6 +83,11 @@ export function ScanProfilePanel({
   // job is created + submitted on click.
   const [refining, setRefining] = useState(false);
   const [refineError, setRefineError] = useState<string | null>(null);
+  // OptTS method override (default = inherit → `{}` → the byte-identical path). Only a
+  // deliberate family pick fills `methodState`; `sourceIsXtb` drives the "pick a DFT level"
+  // note (the XTB-scan → semi-empirical-OptTS pain this control fixes).
+  const [methodOverride, setMethodOverride] = useState<OptTSMethodOverride>({});
+  const sourceIsXtb = useSourceIsXtb(jobId);
   // Destination-group picker for the OptTS-refine child (unit 2b): defaults to THIS scan
   // job's group (the source), overridable. Not the active sidebar group.
   const picker = useGroupPicker(useJobGroupId(jobId));
@@ -232,7 +242,9 @@ export function ScanProfilePanel({
               // Read the scan job's OWN input as the context (method/solvation/charge) —
               // never reconstruct it. The pure engine inherits + asserts (c,m).
               const source = await invoke<Job>("get_job", { id: jobId });
-              const input = buildOptTSInput(source.input_content, seed);
+              // `methodOverride` is `{}` (inherit) unless the user picked a level — so the
+              // default refine is byte-identical to before this control existed.
+              const input = buildOptTSInput(source.input_content, seed, methodOverride);
               const child = await invoke<Job>("create_optts_job", {
                 sourceJobId: jobId,
                 title: `OptTS — ${jobTitle}`,
@@ -265,6 +277,9 @@ export function ScanProfilePanel({
           />
         </label>
       </div>
+      {/* OptTS method — default "Inherit from source" (byte-identical), or pick a level to
+          refine at (fixes XTB scan → XTB OptTS). */}
+      <OptTSMethodPicker sourceIsXtb={sourceIsXtb} onChange={setMethodOverride} />
       {refineError ? (
         <div className="banner err" style={{ marginTop: 6 }}>
           OptTS refine failed (no job created): {refineError}

@@ -3,6 +3,11 @@ import { invoke } from "@tauri-apps/api/core";
 
 import type { Job, ScanSurface2d } from "../types";
 import { buildOptTSInput } from "../scene/optts";
+import {
+  OptTSMethodPicker,
+  useSourceIsXtb,
+  type OptTSMethodOverride,
+} from "../input-builder/OptTSMethodPicker";
 import { HARTREE_TO_KCAL } from "../units";
 import { GroupSelect } from "../groups/GroupSelect";
 import { useGroupPicker, useJobGroupId } from "../groups/useGroupPicker";
@@ -40,6 +45,10 @@ export function ScanSurface2dPanel({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [refining, setRefining] = useState(false);
   const [refineError, setRefineError] = useState<string | null>(null);
+  // OptTS method override (default = inherit → `{}` → byte-identical). `sourceIsXtb` drives
+  // the "pick a DFT level" note.
+  const [methodOverride, setMethodOverride] = useState<OptTSMethodOverride>({});
+  const sourceIsXtb = useSourceIsXtb(jobId);
 
   // 2b group picker — default = THIS scan job's group; rides the create_optts_job handoff.
   const picker = useGroupPicker(useJobGroupId(jobId));
@@ -120,7 +129,8 @@ export function ScanSurface2dPanel({
       // Reuse the ScanProfilePanel handoff verbatim: read THIS job's own input (method/charge),
       // seed the source-agnostic OptTS engine from the picked node, create + submit + navigate.
       const source = await invoke<Job>("get_job", { id: jobId });
-      const input = buildOptTSInput(source.input_content, seed);
+      // `methodOverride` is `{}` (inherit) unless the user picked a level — default is byte-identical.
+      const input = buildOptTSInput(source.input_content, seed, methodOverride);
       const child = await invoke<Job>("create_optts_job", {
         sourceJobId: jobId,
         title: `OptTS — ${jobTitle}`,
@@ -173,6 +183,10 @@ export function ScanSurface2dPanel({
           aria-label="Destination group for the refined child"
         />
       </div>
+
+      {/* OptTS method for the clicked-node refine — default "Inherit from source" (byte-identical);
+          pick a level to refine at (fixes XTB scan → XTB OptTS). */}
+      <OptTSMethodPicker sourceIsXtb={sourceIsXtb} onChange={setMethodOverride} />
 
       <ContourPlot
         axis1={grid.axis1}

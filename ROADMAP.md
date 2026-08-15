@@ -1062,6 +1062,16 @@ r1–r4 manual gates. Next per the ratified reorder: CREST probe → Stage D →
         new stored connectivity / lineage** (geometric-only; perception follows the distance). Closes the
         product-derivation → NEB loop for a new reaction. **Stage E (NEB + bond-editing) COMPLETE.**
         Manual gate m1–m3 pending.
+  - [x] **OptTS method override landed** (2026-08-15, Phase 4.7) — a scan→OptTS refine can now run at a
+        **chosen** level, not only the inherited source method. Fixes the **XTB scan → XTB OptTS** trap
+        (the XTB Diels-Alder seed can now be refined at DFT). `buildOptTSInput`'s `OptTSOptions` gains
+        `methodState?: MethodSlice` built through `buildOrcaInput`'s family logic (a DFT override keeps
+        its **paired** RI aux — never flattened); default = **inherit = pass nothing**, byte-identical to
+        before (snapshot bite). Reusable `<MethodPicker>` extracted from `InputBuilderForm` (no-behaviour-
+        change, pinned by the first component test) + `OptTSMethodPicker` mounted at the three
+        `buildOptTSInput` sites (1D/2D scan + NEB band); `ConnectivityPanel` excluded (plain-Opt children
+        stay at the TS method). +9 vitest; `wiki/modules/method-picker.md`. **m5 DFT-refine convergence =
+        the live validation (pending).**
 
 ### Stage F — Microsolvation (explicit solvent shell), probe-first
 

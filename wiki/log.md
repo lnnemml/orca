@@ -8358,3 +8358,49 @@ click handler instead of relying on plotly's onClick).
 
 **Wiki (same commit):** modules/scan-surface-2d.md (the snap-to-nearest note + the m2 marker-only bug);
 ROADMAP Stage 4b (handoff fixed). No index count change.
+
+## [2026-08-15] session | Reusable <MethodPicker> + OptTS-derived method override (inherit default) — Phase 4.7
+
+**Why.** A scan→OptTS refine inherited the SOURCE method (ADR-020 comparability), so an **XTB scan
+gave an XTB OptTS** — not publication-grade. A refine now runs at a **chosen** level; the default stays
+inherit, byte-identical to before, so nobody who doesn't touch the picker is affected.
+
+**Part A — engine (`src/scene/optts.ts` + `MethodSlice`).** `OptTSOptions` gains
+`methodState?: MethodSlice` (`Pick<BuilderState, methodFamily|composite|functional|basis|dispersion|ri|
+xtbMethod|wavefunction>`, added to `build-input.ts` with `methodSliceOf`). Present → child `state` =
+`{...DEFAULT_BUILDER_STATE, ...methodState, jobType:"OptTS Freq", scfConv:"TightSCF", ...splitSolvation(
+sourceSolvation), charge, multiplicity}` → the `!` line is built through **`buildOrcaInput`'s family
+logic**, so a **DFT override carries its PAIRED RI aux (`def2/J`) + dispersion** — NEVER flattened into
+the composite string (the MAIN RISK). Absent → the ORIGINAL composite-string path, **byte-identical**.
+Solvation still inherits from the source, carried via `splitSolvation("SMD(DMF)")→{solvationModel,
+solvent}` (a solvation-TOKEN split, not a method-family reverse-parse), so the per-family rule applies
+(emitted dft/composite/wf, suppressed xtb). Charge/mult inheritance + the rule-#9 post-condition run
+after the fork → unchanged on both paths. **+6 vitest bites:** `inherit_default_is_byte_identical`
+(snapshot, three spellings), `composite_override` (r2SCAN-3c replaces XTB), `dft_override_pairs_ri_aux`
+(asserts `def2/J` — red on a flatten impl), source-solvation-inherited-under-override,
+`charge_mult_and_postcondition_unchanged` (anion −1 survives, length-mismatch seed throws).
+
+**Part B — extract + mount.** `MethodPicker.tsx` (family selector + per-family controls, over
+`MethodSlice` + `onChange` patch; optional `leading` slot + `inherit` object) + shared
+`OptionSelect.tsx`, both extracted from `InputBuilderForm` verbatim. The form consumes `<MethodPicker>`
+via a `leading` slot for Job type — a **no-behaviour-change refactor**. `OptTSMethodPicker.tsx` (+
+`useSourceIsXtb`) wraps it with the "Inherit from source" default + the XTB-source note, and hands the
+parent `{methodState?}` for `buildOptTSInput`; **inherit = pass `{}`** (NOT a reconstructed
+equals-source slice — that would be a back-door reverse-parse). Mounted at the three `buildOptTSInput`
+sites: `ScanProfilePanel` (1D), `ScanSurface2dPanel` (2D), `NebBandPanel`. **`ConnectivityPanel`
+deliberately excluded** (asked + confirmed): it uses `buildConnectivityChildren` (plain-Opt children
+that must stay at the TS method to locate the basins), which has no `methodState`.
+
+**Test harness added** (first component test): `jsdom` + `@testing-library/react` devDeps;
+`InputBuilderForm.test.tsx` — `new_job_default_input_is_byte_identical` (inline snapshot of the emitted
+input; a whitespace change goes red), family-switch flows to the `!` line (`… def2/J RIJCOSX D4 …`),
+New Job has no inherit option. **+3 vitest component.**
+
+**Verification.** `vitest` → **908 passed** (+9: 6 engine, 3 component); `tsc --noEmit` clean; no cargo
+delta. **Manual gate (Anton, live):** m1 scan→OptTS on "Inherit" = today (XTB→XTB); m2 override →
+r2SCAN-3c child `!` line; m3 override → full DFT with correct aux/RI; m4 New Job method UI unchanged;
+m5 (the real probe) a DFT OptTS from the XTB Diels-Alder seed CONVERGES to a TS (one imaginary), IRC
+connects reactant↔product.
+
+**Wiki (same commit):** +modules/method-picker.md; orca/optts.md (§"Method override — the `methodState`
+seam"); modules/frontend.md (InputBuilderForm consumes MethodPicker); index +1 (101); ROADMAP.

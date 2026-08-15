@@ -3,27 +3,19 @@ import { useMemo, useState } from "react";
 import { sceneFromOrcaInput, setMultiplicity, totalCharge } from "../scene/scene";
 import { checkElectronParity } from "../scene/parity";
 import {
-  BASIS_GROUPS,
-  COMPOSITE_METHODS,
-  DISPERSION,
-  FUNCTIONAL_GROUPS,
   JOB_TYPES,
-  RI_METHODS,
   SCF_CONV,
   SOLVATION_MODELS,
   SOLVENTS,
-  WAVEFUNCTION_METHODS,
-  XTB_METHODS,
-  type OrcaOption,
 } from "./orca-options";
 import {
   buildKeywordLine,
   buildOrcaInput,
   DEFAULT_BUILDER_STATE,
-  functionalHasBuiltInDispersion,
   type BuilderState,
-  type MethodFamily,
 } from "./build-input";
+import { OptionSelect } from "./OptionSelect";
+import { MethodPicker } from "./MethodPicker";
 import { NebBuilderSection, type NebPayload } from "../reactions/NebBuilderSection";
 
 interface InputBuilderFormProps {
@@ -35,43 +27,6 @@ interface InputBuilderFormProps {
    * builds from picked endpoints, not the scene); undefined for every other job type.
    */
   onGenerate: (content: string, neb?: NebPayload) => void;
-}
-
-/** A labelled `<select>` over a list of {@link OrcaOption}s. */
-function OptionSelect({
-  label,
-  value,
-  options,
-  onChange,
-  disabled,
-  title,
-}: {
-  label: string;
-  value: string;
-  options: OrcaOption[];
-  onChange: (v: string) => void;
-  disabled?: boolean;
-  /** Tooltip on the control — e.g. why it is disabled. */
-  title?: string;
-}) {
-  return (
-    <div className="field">
-      <label className="label">{label}</label>
-      <select
-        className="input select"
-        value={value}
-        onChange={(e) => onChange(e.currentTarget.value)}
-        disabled={disabled}
-        title={title}
-      >
-        {options.map((o) => (
-          <option key={o.keyword || "__none__"} value={o.keyword}>
-            {o.label}
-          </option>
-        ))}
-      </select>
-    </div>
-  );
 }
 
 export function InputBuilderForm({
@@ -111,173 +66,29 @@ export function InputBuilderForm({
     onGenerate(buildOrcaInput(state, scene));
   };
 
-  const family = state.methodFamily;
-  const dispersionBuiltIn = functionalHasBuiltInDispersion(state.functional);
   // Semi-empirical xTB is self-contained — solvation and SCF-convergence do not
   // apply (the emit already suppresses them; here we only DISABLE the controls,
   // never clear the stored values, so switching back to DFT restores the choice).
-  const isXtb = family === "xtb";
+  const isXtb = state.methodFamily === "xtb";
   const notForXtb = "Not applicable to semi-empirical xTB";
-
-  const FAMILIES: { value: MethodFamily; label: string }[] = [
-    { value: "composite", label: "Composite (3c)" },
-    { value: "dft", label: "Functional + Basis" },
-    { value: "wavefunction", label: "Wave-function (correlated)" },
-    { value: "xtb", label: "GFN2-xTB (semi-emp.)" },
-  ];
 
   return (
     <div className="builder-body">
-      {/* Row 1: job type + method-family selector */}
-      <div className="builder-row">
-        <OptionSelect
-          label="Job type"
-          value={state.jobType}
-          options={JOB_TYPES}
-          onChange={(v) => set("jobType", v)}
-        />
-        <div className="field">
-          <label className="label">Method</label>
-          <div className="radio-row">
-            {FAMILIES.map((f) => (
-              <label className="radio" key={f.value}>
-                <input
-                  type="radio"
-                  checked={family === f.value}
-                  onChange={() => set("methodFamily", f.value)}
-                />
-                {f.label}
-              </label>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      {/* Row 2: method-specific controls, per family */}
-      {family === "composite" ? (
-        <div className="builder-row">
+      {/* Rows 1+2: job type (leading) + the reusable method sub-UI (family + per-family
+          controls). The extraction is byte-identical for New Job — no `inherit` option here,
+          so the picker is a concrete family exactly as before. */}
+      <MethodPicker
+        value={state}
+        onChange={(patch) => setState((s) => ({ ...s, ...patch }))}
+        leading={
           <OptionSelect
-            label="Composite method"
-            value={state.composite}
-            options={COMPOSITE_METHODS}
-            onChange={(v) => set("composite", v)}
+            label="Job type"
+            value={state.jobType}
+            options={JOB_TYPES}
+            onChange={(v) => set("jobType", v)}
           />
-          <div className="builder-note muted">
-            Basis, dispersion and RI are built into the composite method.
-          </div>
-        </div>
-      ) : family === "xtb" ? (
-        <div className="builder-row">
-          <OptionSelect
-            label="Semi-empirical method"
-            value={state.xtbMethod}
-            options={XTB_METHODS}
-            onChange={(v) => set("xtbMethod", v)}
-          />
-          <div className="builder-note muted">
-            Gas phase, no basis/RI/SCFConv — semi-empirical is self-contained.
-          </div>
-        </div>
-      ) : family === "wavefunction" ? (
-        <div className="builder-row">
-          <div className="field">
-            <label className="label">Method</label>
-            <select
-              className="input select"
-              value={state.wavefunction}
-              onChange={(e) => set("wavefunction", e.currentTarget.value)}
-            >
-              {WAVEFUNCTION_METHODS.map((g) => (
-                <optgroup key={g.label} label={g.label}>
-                  {g.options.map((o) => (
-                    <option key={o.keyword} value={o.keyword}>
-                      {o.label}
-                    </option>
-                  ))}
-                </optgroup>
-              ))}
-            </select>
-          </div>
-          <div className="field">
-            <label className="label">Basis set</label>
-            <select
-              className="input select"
-              value={state.basis}
-              onChange={(e) => set("basis", e.currentTarget.value)}
-            >
-              {BASIS_GROUPS.map((g) => (
-                <optgroup key={g.label} label={g.label}>
-                  {g.options.map((o) => (
-                    <option key={o.keyword} value={o.keyword}>
-                      {o.label}
-                    </option>
-                  ))}
-                </optgroup>
-              ))}
-            </select>
-          </div>
-          <div className="builder-note muted">
-            Correlated: DLPNO variants add the /C correlation aux + RIJCOSX
-            automatically. (T) has no analytic gradient — single-point
-            recommended; Opt/Freq is numerical &amp; expensive.
-          </div>
-        </div>
-      ) : (
-        <div className="builder-row">
-          <div className="field">
-            <label className="label">Functional</label>
-            <select
-              className="input select"
-              value={state.functional}
-              onChange={(e) => set("functional", e.currentTarget.value)}
-            >
-              {FUNCTIONAL_GROUPS.map((g) => (
-                <optgroup key={g.label} label={g.label}>
-                  {g.options.map((o) => (
-                    <option key={o.keyword} value={o.keyword}>
-                      {o.label}
-                    </option>
-                  ))}
-                </optgroup>
-              ))}
-            </select>
-          </div>
-          <div className="field">
-            <label className="label">Basis set</label>
-            <select
-              className="input select"
-              value={state.basis}
-              onChange={(e) => set("basis", e.currentTarget.value)}
-            >
-              {BASIS_GROUPS.map((g) => (
-                <optgroup key={g.label} label={g.label}>
-                  {g.options.map((o) => (
-                    <option key={o.keyword} value={o.keyword}>
-                      {o.label}
-                    </option>
-                  ))}
-                </optgroup>
-              ))}
-            </select>
-          </div>
-          <OptionSelect
-            label="Dispersion"
-            value={state.dispersion}
-            options={DISPERSION}
-            onChange={(v) => set("dispersion", v)}
-            disabled={dispersionBuiltIn}
-            title={
-              dispersionBuiltIn ? "Included in the functional" : undefined
-            }
-          />
-          <OptionSelect
-            label="RI approximation"
-            value={state.ri}
-            options={RI_METHODS}
-            onChange={(v) => set("ri", v)}
-          />
-        </div>
-      )}
+        }
+      />
 
       {/* Row 3: solvation + SCF — not applicable to xTB (disabled, not cleared) */}
       <div className="builder-row">

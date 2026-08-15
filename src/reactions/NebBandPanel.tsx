@@ -14,6 +14,11 @@ import {
 
 import type { NebResults, Job, NebImageGeometry } from "../types";
 import { buildOptTSInput } from "../scene/optts";
+import {
+  OptTSMethodPicker,
+  useSourceIsXtb,
+  type OptTSMethodOverride,
+} from "../input-builder/OptTSMethodPicker";
 import { GroupSelect } from "../groups/GroupSelect";
 import { useGroupPicker, useJobGroupId } from "../groups/useGroupPicker";
 import { MoleculeViewer } from "../viewer/MoleculeViewer";
@@ -92,6 +97,10 @@ export function NebBandPanel({
   // created + submitted on click.
   const [refining, setRefining] = useState(false);
   const [refineError, setRefineError] = useState<string | null>(null);
+  // OptTS method override (default = inherit → `{}` → byte-identical). `sourceIsXtb` drives the
+  // "pick a DFT level" note (a NEB from an XTB band → the same semi-empirical-OptTS pain).
+  const [methodOverride, setMethodOverride] = useState<OptTSMethodOverride>({});
+  const sourceIsXtb = useSourceIsXtb(jobId);
   // Destination-group picker for the OptTS-refine child (unit 2b): defaults to THIS NEB
   // job's group (the source), overridable. Not the active sidebar group.
   const picker = useGroupPicker(useJobGroupId(jobId));
@@ -589,7 +598,8 @@ export function NebBandPanel({
               // Read the NEB job's OWN input as the context — never reconstruct it. The pure
               // engine inherits + asserts (charge, multiplicity); a failure throws before create.
               const source = await invoke<Job>("get_job", { id: jobId });
-              const input = buildOptTSInput(source.input_content, neb.ts_geometry);
+              // `methodOverride` is `{}` (inherit) unless the user picked a level — default byte-identical.
+              const input = buildOptTSInput(source.input_content, neb.ts_geometry, methodOverride);
               const child = await invoke<Job>("create_optts_job", {
                 sourceJobId: jobId,
                 title: `OptTS — ${jobTitle}`,
@@ -626,6 +636,9 @@ export function NebBandPanel({
           />
         </label>
       </div>
+      {/* OptTS method for the climbing-image refine — default "Inherit from source"
+          (byte-identical); pick a level to refine at. */}
+      <OptTSMethodPicker sourceIsXtb={sourceIsXtb} onChange={setMethodOverride} />
       {refineError ? (
         <div className="banner err" style={{ marginTop: 6 }}>
           OptTS refine failed (no job created): {refineError}

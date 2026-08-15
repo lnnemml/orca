@@ -45,6 +45,46 @@ export interface BuilderState {
   maxcore: number; // MB per core
 }
 
+/**
+ * The **method-relevant** slice of {@link BuilderState} — the fields that drive
+ * {@link buildKeywordLine}'s family branch (`methodFamily` + the per-family method
+ * keywords). Everything else (jobType, solvation, SCF, charge/mult, pal/maxcore) is
+ * NOT here: those are supplied by the caller that consumes a slice.
+ *
+ * The point of extracting this as its own type is that a slice can be spread into a
+ * full `BuilderState` and let `buildOrcaInput` apply the correct family logic — so a
+ * DFT override still carries its functional + basis + **paired** RI aux + dispersion
+ * (the pairing lives in the `dft` branch, never flattened into a composite string).
+ * Produced by the reusable `<MethodPicker>` and consumed by `buildOptTSInput`.
+ */
+export type MethodSlice = Pick<
+  BuilderState,
+  | "methodFamily"
+  | "composite"
+  | "functional"
+  | "basis"
+  | "dispersion"
+  | "ri"
+  | "xtbMethod"
+  | "wavefunction"
+>;
+
+/** Project a full {@link BuilderState} (or another slice) down to its {@link MethodSlice} —
+ * the single place the slice's exact fields are enumerated, reused by `<MethodPicker>` callers
+ * that seed an override from the defaults (`methodSliceOf(DEFAULT_BUILDER_STATE)`). */
+export function methodSliceOf(state: MethodSlice): MethodSlice {
+  return {
+    methodFamily: state.methodFamily,
+    composite: state.composite,
+    functional: state.functional,
+    basis: state.basis,
+    dispersion: state.dispersion,
+    ri: state.ri,
+    xtbMethod: state.xtbMethod,
+    wavefunction: state.wavefunction,
+  };
+}
+
 /** Sensible starting point: the recommended composite method, Opt+Freq, tight SCF. */
 export const DEFAULT_BUILDER_STATE: BuilderState = {
   jobType: "Opt Freq",

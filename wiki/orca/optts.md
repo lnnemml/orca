@@ -87,6 +87,34 @@ non-issue now — but it is a **named limit**, not a silent assumption: when a N
 (Stage E3) can carry a `%cpcm` block, `buildOptTSInput` must be extended to read it (or the entry point
 must pass `options.solvation` explicitly). Recorded here so the gap is visible before that caller exists.
 
+### Method override — the `methodState` seam (default = inherit)
+
+Inheriting the source method is the DEFAULT, but a refine can now run at a **chosen** level:
+`OptTSOptions.methodState?: MethodSlice` (the [`<MethodPicker>`](../modules/method-picker.md) family
+model). This exists to fix the **XTB-scan → XTB-OptTS** trap: a scan run at semi-empirical GFN2-xTB
+inherited an XTB OptTS, which is not publication-grade. Now the researcher can refine the XTB Diels-
+Alder seed at DFT.
+
+- **`methodState` present** → the child `state` is `{...DEFAULT_BUILDER_STATE, ...methodState}` and the
+  `!` line is built through `buildOrcaInput`'s **family logic**. This is the crux: a DFT override
+  carries functional + basis + the **paired** RI aux (`def2/J`) + dispersion, because the pairing
+  lives in the `dft` branch. It is **NOT** flattened into the composite string — a flatten would drop
+  the aux and emit a mismatched `!` line (the MAIN RISK; a `dft_override_pairs_ri_aux` bite asserts
+  `def2/J` is present, red on a flatten impl).
+- **Solvation still inherits from the source** under an override (comparability), carried via
+  `splitSolvation("SMD(DMF)") → {solvationModel, solvent}` so `buildKeywordLine` applies the per-family
+  rule (emitted for dft/composite/wf, suppressed for xtb). This is a solvation-**token** split, not a
+  reverse-parse of the method family.
+- **`methodState` absent** → the ORIGINAL composite-string path, **byte-identical** to before the seam
+  existed (an `inherit_default_is_byte_identical` snapshot bite pins it three ways: `{}`,
+  `{methodState: undefined}`, no-arg). Charge/mult inheritance + the rule-#9 post-condition run after
+  the fork, so they are unchanged on either path.
+
+**"Inherit" = pass nothing.** The UI default at the refine sites is "Inherit from source", which sends
+`{}` — NOT a slice reconstructed to "equal" the source (that would be a back-door reverse-parse of the
+`!` line and could drift from this byte-identical path). When the source is XTB, the picker shows an
+inline note nudging a DFT level (`sourceMethodIsXtb`, a UI hint only — never touches the emit).
+
 ## See also
 
 - `chemistry/reaction-barriers.md` — ΔE‡ (relaxed-scan estimate) vs ΔG‡ (a located TS + Freq +

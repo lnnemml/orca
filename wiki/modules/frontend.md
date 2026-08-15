@@ -166,7 +166,10 @@ Dropdowns → a valid `.inp`, still hand-editable in Monaco (`form → text` one
   appears under the numeric row — informational, Generate still works. The composite-vs-functional
   radio disables the basis/dispersion/RI selects; the solvent select is disabled in gas phase. A
   **live `!`-line preview** (`buildKeywordLine`) is the learning element. Generate → `onGenerate(
-  buildOrcaInput(state, scene))`.
+  buildOrcaInput(state, scene))`. The method-family selector + per-family controls are the reusable
+  **`<MethodPicker>`** (the form consumes it via a `leading` slot for Job type — a no-behaviour-change
+  extraction pinned byte-for-byte by `InputBuilderForm.test.tsx`); the same control gains an "Inherit
+  from source" default at the OptTS-refine sites. See [method-picker.md](method-picker.md).
 
 ## Scene store & the geometry-editor UI
 
