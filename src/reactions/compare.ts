@@ -228,6 +228,90 @@ export function deltaDeltaGKcal(
   return absoluteBarrierKcal(gTsA, gTsB);
 }
 
+// --- OptTS-origin reaction study (Stage F3) ---------------------------------
+//
+// A THIRD pathway origin alongside scan (B1) and NEB (N4): a reaction study built FROM a located
+// OptTS transition state + its two connectivity children (Stage E2). Unlike scan/NEB, there is no
+// reaction coordinate — just three stationary points (reactant basin, TS, product basin). The
+// barrier is the LOCATED ΔE‡/ΔG‡ vs the USER-DESIGNATED reactant child (a Σ of ONE — the associated
+// complex the connectivity check reached), NOT a separated-fragment sum. Reuses the located-TS
+// converters ({@link locatedBarrierEKcal} / {@link deltaGDoubleDaggerKcal}), so the honest-or-absent
+// null-guard (ΔG‡ null unless the TS has Freq G AND the reactant has G) is inherited, not re-derived.
+
+/** One stationary point's energies for an OptTS study: electronic `eEh` and Gibbs `gEh` (null
+ * unless a Freq parsed — the honest-or-absent signal). */
+export interface StationaryPointEnergies {
+  eEh: number | null;
+  gEh: number | null;
+}
+
+/** The three jobs of an OptTS-origin study: the located TS, the user-DESIGNATED reactant
+ * connectivity child (the barrier's reference basin), and the other child (the product). */
+export interface OptTsStudyInput {
+  ts: StationaryPointEnergies;
+  reactant: StationaryPointEnergies;
+  product: StationaryPointEnergies;
+}
+
+/** One point of the 3-point reaction profile, relative to the reactant basin (reactant = 0),
+ * placed on the illustrative 0→1 axis (no physical reaction coordinate — like the NEB overlay). */
+export interface OptTsProfilePoint {
+  x: number;
+  role: "reactant" | "ts" | "product";
+  energyKcal: number;
+}
+
+/** The result of an OptTS-origin study: the located barriers + the 3-point overlay profile. */
+export interface OptTsStudyResult {
+  /** Located electronic barrier ΔE‡ = (E(TS) − E(reactant child))·627.509; `null` if either E
+   * is absent (honest — reuses {@link locatedBarrierEKcal}'s null-guard). The reactant is the
+   * ONE designated child (Σ of one), NOT a separated-fragment sum. */
+  deltaEKcal: number | null;
+  /** Located ΔG‡ = (G(TS) − G(reactant child))·627.509; `null` unless BOTH have a Freq G
+   * (honest — reuses {@link deltaGDoubleDaggerKcal}'s null-guard, never a fabricated 0). */
+  deltaGKcal: number | null;
+  /** reactant → TS → product, relative to the reactant basin (reactant = 0), on the 0→1 axis.
+   * A point whose electronic energy is absent is OMITTED (never plotted as a fabricated 0); an
+   * absent reactant E yields `[]` (nothing to anchor the profile to). */
+  profile: OptTsProfilePoint[];
+}
+
+/**
+ * Build an OptTS-origin reaction study from its TS + the user-designated reactant/product
+ * connectivity children. Pure. The barrier is vs the **connectivity reactant basin** (the one
+ * designated child — an associated complex), a distinct and valid quantity from a separated-
+ * fragments ΔE‡ (label it so; `chemistry/reaction-barriers.md`). Swapping which child is the
+ * reactant changes the barrier — that designation is the user's explicit choice, not auto-picked.
+ */
+export function optTsStudy(input: OptTsStudyInput): OptTsStudyResult {
+  const deltaEKcal = locatedBarrierEKcal(input.ts.eEh, input.reactant.eEh);
+  const deltaGKcal = deltaGDoubleDaggerKcal(input.ts.gEh, input.reactant.gEh);
+
+  // The 3-point profile, relative to the reactant basin. Anchored on the reactant's E; without
+  // it there is nothing to zero against, so the profile is empty (honest, not a guessed axis).
+  const rE = input.reactant.eEh;
+  const profile: OptTsProfilePoint[] = [];
+  if (rE !== null) {
+    profile.push({ x: 0, role: "reactant", energyKcal: 0 });
+    if (input.ts.eEh !== null) {
+      profile.push({ x: 0.5, role: "ts", energyKcal: (input.ts.eEh - rE) * HARTREE_TO_KCAL });
+    }
+    if (input.product.eEh !== null) {
+      profile.push({ x: 1, role: "product", energyKcal: (input.product.eEh - rE) * HARTREE_TO_KCAL });
+    }
+  }
+  return { deltaEKcal, deltaGKcal, profile };
+}
+
+/** A HINT (not a decision) for which connectivity child defaults to the reactant: the
+ * HIGHER-energy endpoint (an early-TS / uphill-to-products reading). Returns `"a"` or `"b"`, or
+ * `null` when the two energies can't be compared (either absent). The user always overrides —
+ * this only seeds the default (Variant 1: the designation is the user's explicit choice). */
+export function reactantHint(aEh: number | null, bEh: number | null): "a" | "b" | null {
+  if (aEh === null || bEh === null) return null;
+  return aEh >= bEh ? "a" : "b";
+}
+
 // --- Comparability guard ----------------------------------------------------
 
 /** Keywords on the `!` line that are NOT part of the electronic-structure method

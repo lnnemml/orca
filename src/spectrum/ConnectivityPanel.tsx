@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
-import type { Job, JobStatus, ParsedResults } from "../types";
+import type { Job, JobStatus, ParsedResults, Pathway, Reaction } from "../types";
 import { buildConnectivityChildren } from "../scene/connectivity";
+import { reactantHint } from "../reactions/compare";
 import { GroupSelect } from "../groups/GroupSelect";
 import { useGroupPicker, useJobGroupId } from "../groups/useGroupPicker";
 import {
@@ -57,6 +58,16 @@ export function ConnectivityPanel({
   );
   const [fwd, setFwd] = useState<ChildState | null>(null);
   const [bwd, setBwd] = useState<ChildState | null>(null);
+
+  // "Study from this OptTS" (Stage F3): once BOTH connectivity children are parsed, turn the TS +
+  // its two children into a reaction study. The user DESIGNATES which child is the reactant basin
+  // (default = the higher-energy endpoint HINT — an early-TS reading; the user chooses). `""` =
+  // use the hint. Isolated in its own fresh reaction so the reactant-reference (a Σ of one) never
+  // collides with a scan pathway's fragment-sum reference.
+  const [reactantSel, setReactantSel] = useState<"forward" | "backward" | "">("");
+  const [studyBusy, setStudyBusy] = useState(false);
+  const [studyMsg, setStudyMsg] = useState<string | null>(null);
+  const [studyError, setStudyError] = useState<string | null>(null);
 
   // The imaginary mode vector — extracted ONCE from the parsed .hess (reused, never
   // re-parsed): the single negative frequency's column of $normal_modes, flat 3N.
@@ -240,7 +251,146 @@ export function ConnectivityPanel({
           Connectivity check failed (no jobs created): {error}
         </div>
       ) : null}
+
+      {/* Stage F3 — a reaction STUDY from this OptTS: shown once both children are parsed. */}
+      {children && fwd?.results && bwd?.results ? (
+        <StudyFromOptTs
+          tsJobId={tsJobId}
+          tsJobTitle={tsJobTitle}
+          forwardId={children.forwardId}
+          backwardId={children.backwardId}
+          forwardEnergy={fwd.results.final_energy_eh}
+          backwardEnergy={bwd.results.final_energy_eh}
+          reactantSel={reactantSel}
+          setReactantSel={setReactantSel}
+          busy={studyBusy}
+          setBusy={setStudyBusy}
+          msg={studyMsg}
+          setMsg={setStudyMsg}
+          error={studyError}
+          setError={setStudyError}
+        />
+      ) : null}
     </section>
+  );
+}
+
+/**
+ * "Study from this OptTS" (Stage F3): create a FRESH, isolated reaction from the located TS + its
+ * two connectivity children, attach all three to one pathway, and add the user-designated reactant
+ * child as the reactant reference (a Σ of one — the connectivity reactant BASIN). Reuses the
+ * existing reaction/pathway/reference commands (no new command). The reactant defaults to the
+ * higher-energy endpoint (a hint) but is the user's explicit choice, changeable later in the
+ * Reactions screen's reactant-reference section.
+ */
+function StudyFromOptTs({
+  tsJobId,
+  tsJobTitle,
+  forwardId,
+  backwardId,
+  forwardEnergy,
+  backwardEnergy,
+  reactantSel,
+  setReactantSel,
+  busy,
+  setBusy,
+  msg,
+  setMsg,
+  error,
+  setError,
+}: {
+  tsJobId: string;
+  tsJobTitle: string;
+  forwardId: string;
+  backwardId: string;
+  forwardEnergy: number | null;
+  backwardEnergy: number | null;
+  reactantSel: "forward" | "backward" | "";
+  setReactantSel: (v: "forward" | "backward" | "") => void;
+  busy: boolean;
+  setBusy: (b: boolean) => void;
+  msg: string | null;
+  setMsg: (m: string | null) => void;
+  error: string | null;
+  setError: (e: string | null) => void;
+}) {
+  // The default reactant = the higher-energy endpoint (hint); null if energies can't be compared.
+  const hint = reactantHint(forwardEnergy, backwardEnergy);
+  const effectiveReactant = reactantSel || (hint === "b" ? "backward" : "forward");
+
+  const createStudy = async () => {
+    if (busy || msg) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const reactantId = effectiveReactant === "backward" ? backwardId : forwardId;
+      const reaction = await invoke<Reaction>("create_reaction", {
+        name: `Study: ${tsJobTitle}`,
+        description: "OptTS TS + connectivity children (located ΔE‡/ΔG‡ vs the reactant basin)",
+      });
+      const pathway = await invoke<Pathway>("create_pathway", {
+        reactionId: reaction.id,
+        label: "located TS",
+      });
+      // Attach the TS + both children to the one pathway (the compare builder gathers them).
+      await invoke("attach_job_to_pathway", { jobId: tsJobId, pathwayId: pathway.id });
+      await invoke("attach_job_to_pathway", { jobId: forwardId, pathwayId: pathway.id });
+      await invoke("attach_job_to_pathway", { jobId: backwardId, pathwayId: pathway.id });
+      // The designated reactant child = the reactant reference (a Σ of one — the basin).
+      await invoke("add_reference_job", { reactionId: reaction.id, jobId: reactantId });
+      setMsg(
+        `Created reaction “${reaction.name}” with the ${effectiveReactant} child as the reactant ` +
+          `basin. Open the Reactions screen for the located ΔE‡/ΔG‡ (change the reactant there anytime).`,
+      );
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const fmt = (e: number | null) => (e != null ? `${e.toFixed(6)} Eh` : "no energy");
+
+  return (
+    <div style={{ marginTop: 12, borderTop: "1px solid var(--border)", paddingTop: 10 }}>
+      <div className="section-title" style={{ fontSize: 12 }}>
+        Reaction study from this TS (located ΔE‡/ΔG‡)
+      </div>
+      {msg ? (
+        <div className="banner ok" style={{ marginTop: 6 }}>
+          {msg}
+        </div>
+      ) : (
+        <>
+          <div className="mono" style={{ fontSize: 12, color: "var(--muted)", marginBottom: 6 }}>
+            Turn this TS + its two basins into a reaction study. Designate which basin is the{" "}
+            <strong>reactant</strong> (the barrier is measured vs it — the associated complex, not
+            separated fragments). Default = the higher-energy endpoint.
+          </div>
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+            <label className="scan-control" style={{ fontSize: 12 }}>
+              reactant basin
+              <select
+                className="select select-sm"
+                value={effectiveReactant}
+                onChange={(e) => setReactantSel(e.target.value as "forward" | "backward")}
+              >
+                <option value="forward">forward ({fmt(forwardEnergy)})</option>
+                <option value="backward">backward ({fmt(backwardEnergy)})</option>
+              </select>
+            </label>
+            <button className="btn btn-sm btn-primary" disabled={busy} onClick={createStudy}>
+              {busy ? "Creating…" : "Study from this OptTS"}
+            </button>
+          </div>
+        </>
+      )}
+      {error ? (
+        <div className="banner err" style={{ marginTop: 6 }}>
+          Could not create the study: {error}
+        </div>
+      ) : null}
+    </div>
   );
 }
 

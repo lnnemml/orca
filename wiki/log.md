@@ -8530,3 +8530,41 @@ contour" note / suppression is an optional follow-up.
 **Manual gate (Anton, live):** m1 the 2D Diels-Alder scan reads `parsed` with its contour (no banner);
 m2 a 1D scan still shows its `ScanProfilePanel`; m3 a malformed `.dat` still ParseFails. **Wiki:**
 orca/parse-sources.md (2D scan = surface, `results.scan` None), ROADMAP.
+
+## [2026-08-15] feat | OptTS-origin reaction study — located ΔE‡/ΔG‡ from a TS + connectivity children (Stage F3)
+
+**What.** A THIRD pathway origin alongside scan (B1) and NEB (N4): a reaction study built FROM a
+located OptTS transition state + its two connectivity children (Stage E2), giving a **located ΔE‡/ΔG‡**
+vs the **user-designated reactant child** (the connectivity reactant BASIN — an associated complex,
+NOT separated fragments). This closes the DA workflow into a first-class reaction study:
+2D scan → node → OptTS → connectivity → **Study from this OptTS** → located barrier.
+
+**Part A — pure builder (`reactions/compare.ts`).** `optTsStudy({ts, reactant, product})` reuses the
+located-TS converters: ΔE‡ = `locatedBarrierEKcal(E_TS, E_reactant)`, ΔG‡ =
+`deltaGDoubleDaggerKcal(G_TS, G_reactant)` (reactant ref = the ONE designated child, a Σ of one) +
+a 3-point reactant→TS→product profile relative to the reactant basin (null point omitted, null
+anchor → []). `reactantHint(a, b)` = higher-energy endpoint (default only, null if either absent).
++4 bites: barrier-from-ts-and-reactant, gibbs-null-without-Freq (TS OR reactant), reactant-is-the-
+designated-child-not-a-fragment-sum (swap changes the barrier), 3-point-profile-order.
+
+**Part B — seed + render (TS-only, no cargo).** `ComparePathway` gains an **explicit `origin`
+discriminator** (`"scan"|"neb"|"optts"`) + `optTs`. Rendered by a **sibling `OptTsStudyView`**, NOT
+inside `CompareView` — so scan/NEB stay **byte-identical** (`ReactionsScreen` splits by `origin`).
+The located barrier is labelled **"vs connectivity reactant basin" on the number** (not a
+separated-reactants ΔE‡); ΔG‡ honest-or-absent + the raw-G/standard-state caveat inherited. Seed
+**"Study from this OptTS"** (`ConnectivityPanel`, once both children parsed): a **fresh isolated**
+reaction (avoids the reference-table clash with a scan pathway), attaches TS + both children,
+adds the **user-designated** reactant child (default = higher-energy hint, swappable) as the
+reactant reference — reuses `create_reaction`/`create_pathway`/`attach_job_to_pathway`/
+`add_reference_job` (**no new command, no migration, no role table**).
+
+**Honest note (design, not a bug):** connectivity children are plain Opt (no Freq), so ΔG‡ shows
+absent ("needs Freq on TS + reactant") until the reactant basin is re-run with Freq — ΔG‡ needs G on
+both endpoints.
+
+**Verification.** vitest **915 passed** (+4 F3 bites); tsc clean; **no cargo delta** (all commands
+reused). **Manual gate (Anton, live):** m1 DA OptTS + children → "Study from this OptTS" → designate
+reactant → located ΔE‡ (ΔG‡ once the reactant has Freq) vs the basin; m2 a TS/reactant without Freq →
+ΔG‡ absent (never fabricated); m3 scan/NEB pathway renders exactly as before; reactant designation is
+swappable. **Wiki:** chemistry/reaction-barriers.md (Барʼєр 5), modules/reactions-ui.md (third origin),
+ROADMAP.

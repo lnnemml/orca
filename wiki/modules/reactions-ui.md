@@ -402,6 +402,34 @@ absolute vs separated reactants ≈ +6.23 kcal/mol.
   shows but the absolute barrier is **refused with the reason**; ΔΔE‡ (reference-free) still shows.
 - **r4** no reference → the overlay is exactly C2b-1 (ΔΔE‡ + intrinsic + the "needs a reference" note).
 
+## Third pathway origin — OptTS-origin study (Stage F3)
+
+Alongside **scan** (B1) and **NEB** (N4), a pathway can originate from a **located OptTS transition
+state + its two connectivity children** (Stage E2) — a reaction study with a **located ΔE‡/ΔG‡**.
+
+- **`ComparePathway.origin`** is now an **explicit discriminator** (`"scan" | "neb" | "optts"`) —
+  never inferred from which field is null. `origin: "optts"` carries `optTs: { study, reactantLabel,
+  productLabel, reactantDesignated }`, where `study` is `optTsStudy(...)` from `reactions/compare.ts`
+  (Part A, pure + bite-tested): ΔE‡ = `locatedBarrierEKcal(E_TS, E_reactant)`, ΔG‡ =
+  `deltaGDoubleDaggerKcal(G_TS, G_reactant)` (reactant ref = the ONE designated child, a Σ of one),
+  and a 3-point reactant→TS→product profile relative to the reactant basin.
+- **Rendered by a SIBLING component `OptTsStudyView`, NOT inside `CompareView`** — so the scan/NEB
+  overlay is byte-identical (it never sees an OptTS pathway; `ReactionsScreen` splits
+  `comparePathways` by `origin` and renders `CompareView` for scan/NEB, `OptTsStudyView` for optts).
+  The located barrier is **labelled on the number itself** "vs connectivity reactant basin" — a
+  DIFFERENT reference than the scan/NEB "vs separated reactants" columns (they differ by the
+  association energy; `chemistry/reaction-barriers.md` §"Барʼєр 5"). ΔG‡ is honest-or-absent
+  (null until the TS AND the reactant child both ran Freq — connectivity children are plain Opt by
+  default, so ΔG‡ shows absent until the reactant basin is re-run with Freq) and inherits the raw-G /
+  standard-state caveat.
+- **Seed: "Study from this OptTS"** (`ConnectivityPanel`, shown once both children are parsed) —
+  creates a **fresh, isolated** reaction (not mixed into a scan-pathway reaction, so the reactant
+  reference — a Σ of one, the basin — never collides with a fragment-sum reference), attaches the TS
+  + both children to one pathway, and adds the **user-designated** reactant child as the reactant
+  reference (default = the higher-energy endpoint HINT via `reactantHint`, changeable in the reactant-
+  reference section). Reuses `create_reaction` / `create_pathway` / `attach_job_to_pathway` /
+  `add_reference_job` — **no new command, no migration, no role table**.
+
 ## Related
 
 - `wiki/architecture/adr-007-reaction-modeling.md` (amendment) — the ratified normalized schema.

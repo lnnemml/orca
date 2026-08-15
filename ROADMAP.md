@@ -1036,6 +1036,18 @@ r1–r4 manual gates. Next per the ratified reorder: CREST probe → Stage D →
         via the GENERIC `create_optts_job` path (source = TS job, join its pathway) — reused unchanged
         by E3's NEB. Validated on the real MeNH₂+EtI TS (forward → product, backward → reactant).
         `wiki/orca/connectivity.md`. Honest-pending until both parse. Manual gate m1–m3 pending.
+  - [x] **F3 — OptTS-origin reaction study landed** (2026-08-15): a THIRD pathway origin (alongside
+        scan B1 / NEB N4) — a study built FROM a located TS + its two E2 connectivity children, giving
+        a **located ΔE‡/ΔG‡ vs the user-designated reactant basin** (an associated complex, NOT
+        separated fragments — labelled so on the number). Pure `optTsStudy` (`reactions/compare.ts`,
+        reuses `locatedBarrierEKcal`/`deltaGDoubleDaggerKcal`, reactant ref = a Σ of one; +4 bites);
+        `ComparePathway.origin` explicit discriminator + a **sibling `OptTsStudyView`** (scan/NEB
+        overlay byte-identical); seed **"Study from this OptTS"** (`ConnectivityPanel`) creates a fresh
+        isolated reaction, attaches TS + both children, adds the designated reactant (higher-energy
+        hint default, swappable) as the reference — **no new command, no migration, no role table**.
+        ΔG‡ honest-or-absent (children are plain Opt → re-run the reactant with Freq for ΔG‡). The DA
+        workflow (2D scan → OptTS → connectivity → study) is now a first-class reaction study.
+        vitest +4, no cargo. `chemistry/reaction-barriers.md` §"Барʼєр 5", `modules/reactions-ui.md`.
 - [ ] **IRC** (`! IRC`) — the RIGOROUS alternative to E2's displaced-endpoint check: probe → the
       post-condition that a found TS connects the intended reactant/product along the true steepest-
       descent path. A possible later mode; the E2 displaced-endpoint method covers the common case.

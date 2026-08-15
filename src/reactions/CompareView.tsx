@@ -21,6 +21,7 @@ import {
   normalizedScanCurve,
   type BarrierCell,
   type Comparability,
+  type OptTsStudyResult,
 } from "./compare";
 
 /** A pathway's LOCATED transition state (Stage E1b): an OptTS child of this pathway,
@@ -37,19 +38,39 @@ export interface LocatedTs {
   isEstimate?: boolean;
 }
 
-/** A pathway ready to compare: its label, the attached job's scan profile (B1), and
- * that job's input (for the method-comparability guard). `locatedTs` is present when the
- * pathway has a parsed OptTS refinement (Stage E1b) — then a real ΔG‡ / located ΔE‡ replace
- * the scan-max estimate and the "approximate TS" label is retired. */
+/** An OptTS-ORIGIN pathway (Stage F3): a reaction study built from a located OptTS transition
+ * state + its two connectivity children (no scan coordinate — three stationary points). The
+ * barrier is vs the USER-DESIGNATED reactant child (the connectivity reactant BASIN, an
+ * associated complex), NOT separated fragments — rendered by the dedicated `OptTsStudyView`. */
+export interface OptTsOrigin {
+  /** The located barriers + 3-point profile from {@link optTsStudy}. */
+  study: OptTsStudyResult;
+  /** The designated reactant child's job title (the barrier's basis, for the label). */
+  reactantLabel: string;
+  /** The other connectivity child's job title. */
+  productLabel: string;
+  /** True when the reactant is the user's explicit designation (a reference job); false when it
+   * is the energy-HINT default (no reference set yet) — surfaced so the label stays honest. */
+  reactantDesignated: boolean;
+}
+
+/** A pathway ready to compare. **`origin` is the explicit discriminator** (never inferred from
+ * which field is null): `"scan"` → `scan` set; `"neb"` → `nebMep` set; `"optts"` → `optTs` set
+ * (scan & nebMep both absent). `locatedTs` is present when a scan/NEB pathway has a parsed OptTS
+ * refinement (Stage E1b) — then a real ΔG‡ / located ΔE‡ replace the scan-max estimate. */
 export interface ComparePathway {
   id: string;
   label: string;
-  /** The scan profile (a scan pathway). Exactly ONE of `scan` / `nebMep` is set. */
+  /** Which kind of pathway this is — the additive Stage-F3 third case adds `"optts"`. */
+  origin: "scan" | "neb" | "optts";
+  /** The scan profile (a scan pathway). Set iff `origin === "scan"`. */
   scan?: ScanProfileJson;
   /** The NEB band (a NEB pathway, N4): its MEP feeds the normalized overlay curve, and
    * its converged TS feeds the located-TS ΔΔ table (via `locatedTs`, a G1 estimate or an
-   * OptTS refine). Exactly ONE of `scan` / `nebMep` is set. */
+   * OptTS refine). Set iff `origin === "neb"`. */
   nebMep?: NebResults;
+  /** The OptTS-origin study (F3). Set iff `origin === "optts"`. */
+  optTs?: OptTsOrigin;
   input: string;
   locatedTs?: LocatedTs;
 }

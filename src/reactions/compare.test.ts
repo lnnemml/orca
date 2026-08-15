@@ -21,6 +21,8 @@ import {
   deltaDeltaGKcal,
   nebMepCurve,
   normalizedScanCurve,
+  optTsStudy,
+  reactantHint,
 } from "./compare";
 
 /** Build a scan profile from (coordinate, act-Eh) pairs; scf mirrors act unless given. */
@@ -448,5 +450,89 @@ describe("N4 — a NEB estimate is guarded like a scan (honesty invariants)", ()
     expect(xtbNeb.display).not.toBe(dftScan.display);
     // And it is comparable to another DFT pathway on the same method (the guard is symmetric).
     expect(methodSignature("! r2SCAN-3c def2-TZVP NEB-TS").display).toBe(dftScan.display);
+  });
+});
+
+describe("F3 — OptTS-origin reaction study (located ΔE‡/ΔG‡ vs the connectivity reactant basin)", () => {
+  // The Diels-Alder scale: TS above both basins; reactant designated as the higher-energy child.
+  const R = -234.489_9; // reactant basin (associated complex) Eh
+  const TS = -234.470_0; // located TS Eh
+  const P = -234.560_0; // product basin Eh (downhill, exothermic)
+
+  it("optts_pathway_barrier_from_ts_and_reactant", () => {
+    // ΔE‡ = (E_TS − E_reactant)·627.5; ΔG‡ likewise when both have G.
+    const out = optTsStudy({
+      ts: { eEh: TS, gEh: TS + 0.03 },
+      reactant: { eEh: R, gEh: R + 0.01 },
+      product: { eEh: P, gEh: P + 0.02 },
+    });
+    expect(out.deltaEKcal).toBeCloseTo((TS - R) * HARTREE_TO_KCAL, 9);
+    expect(out.deltaGKcal).toBeCloseTo((TS + 0.03 - (R + 0.01)) * HARTREE_TO_KCAL, 9);
+  });
+
+  it("gibbs_null_when_ts_has_no_freq", () => {
+    // BITE: a TS without a Freq G → ΔG‡ null (honest, NOT 0); ΔE‡ still present.
+    const out = optTsStudy({
+      ts: { eEh: TS, gEh: null }, // no Freq on the TS
+      reactant: { eEh: R, gEh: R + 0.01 },
+      product: { eEh: P, gEh: null },
+    });
+    expect(out.deltaGKcal).toBeNull();
+    expect(out.deltaEKcal).toBeCloseTo((TS - R) * HARTREE_TO_KCAL, 9);
+    // …and symmetric: reactant without G also refuses ΔG‡.
+    const out2 = optTsStudy({
+      ts: { eEh: TS, gEh: TS + 0.03 },
+      reactant: { eEh: R, gEh: null },
+      product: { eEh: P, gEh: null },
+    });
+    expect(out2.deltaGKcal).toBeNull();
+  });
+
+  it("reactant_is_the_designated_child_not_a_fragment_sum", () => {
+    // The barrier uses the ONE designated child (Σ of one). Swapping which child is the reactant
+    // changes the barrier — proving it is the user's designation, NOT a fixed fragment sum.
+    const withR = optTsStudy({
+      ts: { eEh: TS, gEh: null },
+      reactant: { eEh: R, gEh: null }, // designate the higher-energy basin
+      product: { eEh: P, gEh: null },
+    });
+    const withP = optTsStudy({
+      ts: { eEh: TS, gEh: null },
+      reactant: { eEh: P, gEh: null }, // designate the OTHER child instead
+      product: { eEh: R, gEh: null },
+    });
+    expect(withR.deltaEKcal).toBeCloseTo((TS - R) * HARTREE_TO_KCAL, 9);
+    expect(withP.deltaEKcal).toBeCloseTo((TS - P) * HARTREE_TO_KCAL, 9);
+    expect(withR.deltaEKcal).not.toBeCloseTo(withP.deltaEKcal!, 3); // the designation matters
+    // The default HINT is the higher-energy endpoint — a suggestion the user overrides.
+    expect(reactantHint(R, P)).toBe("a"); // R (-234.4899) > P (-234.56) → the reactant default
+    expect(reactantHint(null, P)).toBeNull(); // can't hint without both energies
+  });
+
+  it("three_point_profile_orders_reactant_ts_product", () => {
+    const out = optTsStudy({
+      ts: { eEh: TS, gEh: null },
+      reactant: { eEh: R, gEh: null },
+      product: { eEh: P, gEh: null },
+    });
+    expect(out.profile.map((p) => p.role)).toEqual(["reactant", "ts", "product"]);
+    expect(out.profile.map((p) => p.x)).toEqual([0, 0.5, 1]);
+    // Relative to the reactant basin: reactant = 0, TS = +ΔE‡ (uphill), product below 0 (exothermic).
+    expect(out.profile[0].energyKcal).toBe(0);
+    expect(out.profile[1].energyKcal).toBeCloseTo((TS - R) * HARTREE_TO_KCAL, 9);
+    expect(out.profile[1].energyKcal).toBeGreaterThan(0);
+    expect(out.profile[2].energyKcal).toBeLessThan(0);
+    // Honest-or-absent: a null point-energy is OMITTED (never a fabricated 0); a null reactant → [].
+    const partial = optTsStudy({
+      ts: { eEh: null, gEh: null },
+      reactant: { eEh: R, gEh: null },
+      product: { eEh: P, gEh: null },
+    });
+    expect(partial.profile.map((p) => p.role)).toEqual(["reactant", "product"]); // TS omitted
+    expect(optTsStudy({
+      ts: { eEh: TS, gEh: null },
+      reactant: { eEh: null, gEh: null }, // no anchor
+      product: { eEh: P, gEh: null },
+    }).profile).toEqual([]);
   });
 });

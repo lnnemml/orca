@@ -5,13 +5,14 @@ import { confirm } from "@tauri-apps/plugin-dialog";
 import type { Job, ParsedResults, Pathway, Reaction, ReferenceEnergy } from "../types";
 import { formatTimestamp } from "../format";
 import { isScanJob, isNebJob, isValidPathwayLabel, normalizePathwayLabel } from "../reactions/pathway";
-import { isLocatedTsInput } from "../reactions/compare";
+import { isLocatedTsInput, optTsStudy, reactantHint } from "../reactions/compare";
 import {
   CompareView,
   type ComparePathway,
   type CompareReference,
   type LocatedTs,
 } from "../reactions/CompareView";
+import { OptTsStudyView } from "../reactions/OptTsStudyView";
 
 interface ReactionsScreenProps {
   /** Open a job in the Jobs detail screen — used to prove a grouped job is still a
@@ -309,7 +310,7 @@ function ReactionDetail({ reaction, onOpenJob, onError, onChanged, onDeleted }: 
         });
         if (scanJob) {
           const scan = resultsById.get(scanJob.id)!.scan!;
-          return { id: p.id, label: p.label, scan, input: scanJob.input_content, locatedTs: refinedTs };
+          return { id: p.id, label: p.label, origin: "scan", scan, input: scanJob.input_content, locatedTs: refinedTs };
         }
 
         // Else a NEB job → the NEB pathway (N4). Its located TS is the OptTS refine if
@@ -327,16 +328,66 @@ function ReactionDetail({ reaction, onOpenJob, onError, onChanged, onDeleted }: 
           return {
             id: p.id,
             label: p.label,
+            origin: "neb",
             nebMep: neb,
             input: nebJob.input_content,
             locatedTs: refinedTs ?? estimate,
           };
         }
 
+        // Else an OptTS-ORIGIN pathway (Stage F3): a located TS with its two connectivity
+        // children, no scan/NEB. The barrier is vs the USER-DESIGNATED reactant child (the one
+        // in the reactant reference — a Σ of one; ADR-018 reused), else the higher-energy HINT.
+        if (tsJob && tsResults) {
+          const childJobs = attached.filter(
+            (j) => j.id !== tsJob.id && resultsById.has(j.id) && !isLocatedTsInput(j.input_content),
+          );
+          if (childJobs.length === 2) {
+            const [c0, c1] = childJobs;
+            const eOf = (j: Job) => resultsById.get(j.id)?.final_energy_eh ?? null;
+            const gOf = (j: Job) => resultsById.get(j.id)?.thermochemistry?.free_energy_g_eh ?? null;
+            const refIds = new Set((refEnergy?.jobs ?? []).map((rj) => rj.job_id));
+            // Reactant = the designated reference child; else the energy-hint default (higher E,
+            // `reactantHint`), which the user overrides via the reactant-reference section.
+            const designatedChild = childJobs.find((j) => refIds.has(j.id)) ?? null;
+            const reactant =
+              designatedChild ?? (reactantHint(eOf(c0), eOf(c1)) === "b" ? c1 : c0);
+            const product = reactant.id === c0.id ? c1 : c0;
+            const study = optTsStudy({
+              ts: { eEh: tsResults.final_energy_eh ?? null, gEh: tsResults.thermochemistry?.free_energy_g_eh ?? null },
+              reactant: { eEh: eOf(reactant), gEh: gOf(reactant) },
+              product: { eEh: eOf(product), gEh: gOf(product) },
+            });
+            return {
+              id: p.id,
+              label: p.label,
+              origin: "optts",
+              input: tsJob.input_content,
+              optTs: {
+                study,
+                reactantLabel: reactant.title,
+                productLabel: product.title,
+                reactantDesignated: designatedChild !== null,
+              },
+            };
+          }
+        }
+
         return null;
       })
       .filter((x): x is ComparePathway => x !== null);
-  }, [pathways, jobs, resultsById]);
+  }, [pathways, jobs, resultsById, refEnergy]);
+
+  // Scan/NEB pathways feed the existing overlay unchanged; OptTS-origin pathways (F3) render in
+  // the dedicated view — the discriminator is the explicit `origin`, never a null-field guess.
+  const scanNebPathways = useMemo(
+    () => comparePathways.filter((p) => p.origin !== "optts"),
+    [comparePathways],
+  );
+  const optTsPathways = useMemo(
+    () => comparePathways.filter((p) => p.origin === "optts"),
+    [comparePathways],
+  );
 
   // Attach candidates: completed/parsed jobs NOT already grouped anywhere.
   const candidates: Candidate[] = useMemo(
@@ -616,17 +667,22 @@ function ReactionDetail({ reaction, onOpenJob, onError, onChanged, onDeleted }: 
       />
 
       <h4 style={{ margin: "20px 0 8px" }}>Compare — barriers &amp; ΔΔE‡</h4>
-      {comparePathways.length >= 1 ? (
+      {/* Scan/NEB pathways go through the existing overlay UNCHANGED; OptTS-origin pathways
+          (Stage F3) render in the dedicated OptTsStudyView (a different reference — the
+          connectivity reactant basin, not separated reactants — so it is not mixed in). */}
+      {scanNebPathways.length >= 1 ? (
         // Per-pathway intrinsic + absolute barriers need ONE pathway; only ΔΔE‡ (a
         // difference of two maxima) needs two. So render the overlay at ≥ 1 — a single
         // pathway (e.g. an SN2 with no si/re face) still shows its barriers.
-        <CompareView pathways={comparePathways} reference={reference} />
-      ) : (
+        <CompareView pathways={scanNebPathways} reference={reference} />
+      ) : null}
+      {optTsPathways.length >= 1 ? <OptTsStudyView pathways={optTsPathways} /> : null}
+      {comparePathways.length === 0 ? (
         <div className="empty">
-          Attach a scan pathway to see its profile and barriers (intrinsic + absolute).
-          Attach a second to also compute ΔΔE‡.
+          Attach a scan pathway to see its profile and barriers (intrinsic + absolute), or start a
+          study from an OptTS transition state (its connectivity children become the reactant/product).
         </div>
-      )}
+      ) : null}
     </div>
   );
 }
