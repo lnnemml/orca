@@ -8872,3 +8872,46 @@ a search hiding one ticked job keeps the count at 2, Clear empties it; m3 at 0 s
 m4 Full mode → each entry's `files.omitted` empty. **Wiki:** modules/group-export.md (third projection),
 modules/groups-ui.md (the Set + checkbox column + toolbar + two forks), ADR-021 (amendment — three
 projections). **Next:** the manual gates on Anton's live WebKitGTK; `.zip` packaging still deferred.
+
+## [2026-08-26] feat | F1 — distance/angle/dihedral on a parsed-job trajectory geometry (measureByCoords; ASE conventions shared with the editor)
+
+**What.** The results `TrajectoryPlayer` now surfaces geometry measurements — 2 picks → distance, 3 →
+angle, 4 → dihedral — off the **displayed frame's** coordinates, reusing the editor's ASE-verified measure
+core. No new ADR, no schema/DB/sidecar change.
+
+**MAIN RISK — the ASE-convention seam, closed by construction.** A silently diverged dihedral fold or
+angle-vertex would give a plausible wrong number on a TS the researcher trusts. Guard: the extraction is
+**behavior-preserving** and both paths route through ONE core.
+
+**Part A — pure (`measure.ts`), a behavior-preserving extraction.** The ASE math moved into coord-level
+primitives `distanceCoords(p,q)` / `angleCoords(a,vertex,b)` / `dihedralCoords(p0,p1,p2,p3)` (returning
+`number | null`, carrying the geometric degeneracy contract). `Vec3` is now exported. The Scene-based
+`distance/angle/dihedral(scene,…)` became **thin delegates** keeping only index-space concerns (index→point
+resolution + the repeated-**index** `Set.size < N → null` rejection). `measureByCoords(coords, picked)` is the
+coord-array sibling of `measureSelectionByIndex` — same positional rule and `none` contract, `sameFragment:
+true` (a results geometry is one geometry). +5 bites: `measure_by_coords_matches_scene_path` (deep-equals the
+two paths on butane gauche for 2/3/4 picks + pins **67.523°**, the 60-side — flip the `[0,360)` fold →
+this reddens on the butane pin), `..._repeated_index_matches_scene_path` (**added on review** — the declared
+Scene-parity guard was unbitten; this pins `[0,1,0]`/`[0,1,1,2]` → none, and its negative control reddens
+ONLY it while the different-index cross-check stays green), `..._angle_vertex_is_middle` (90° at the middle,
+45° on a permutation), `..._dihedral_reversal_invariant`, `..._degenerate_is_none`. **26 pre-existing
+Scene-based tests stayed green unchanged** — the extraction's behavior-preserving negative control.
+
+**Part B — wiring (`TrajectoryPlayer.tsx` + `app.css`).** Pick cap `.slice(-2)` → `.slice(-4)` (2/3/4 →
+distance/angle/dihedral). `measurement = useMemo(measureByCoords(frames[clamped].xyz_angstrom, picked), […,
+clamped, picked])` — **recomputes per frame**, so scrubbing shows a forming bond's distance change live.
+`bondReadout` → `measurementReadout`: picked-atom chips for all picks; primary = `formatMeasurementValue`
+(degenerate → muted `—`); **2-atom only** keeps `resultsBondLabel` as a **secondary** line beneath the raw
+distance (a forming/through-space pair now always shows its distance, bond-order as extra); 0/1 picks → a
+quiet hint; Clear stays. Rendered under **both** viewer mounts (static "Geometry" + animated). New
+`traj-measure-*` CSS beside the kept `traj-bond-*`.
+
+**Verification.** tsc clean; vitest **948 passed** (+5). Reuse: `formatMeasurementValue`, `Measurement`,
+`resultsBondLabel` reused not reimplemented; the ASE conventions live in ONE place (`*Coords`), both the Scene
+path and `measureByCoords` route through them. **Manual gate (Anton, live) — PENDING:** m1 a COMPLETED
+opt/OptTS trajectory → 2 atoms of a forming/long contact show the raw distance even out of bonding range,
+bond-order line beneath, distance updates per cycle on scrub; m2 3 atoms → angle with the middle pick as
+vertex (~109°/~120°); m3 4 atoms → dihedral in `[0,360)`; m4 a 5th pick drops the oldest (cap 4), clicking a
+picked atom removes it, Clear empties; m5 a single-frame job shows the same readout. **Wiki:** modules/scene.md
+(the `*Coords` extraction + `measureByCoords`), modules/results-ui.md (the F1 measurement readout). **Next:**
+Anton may add a Ukrainian forming-bond note to chemistry/bond-order-from-geometry.md (his domain).

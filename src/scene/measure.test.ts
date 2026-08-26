@@ -6,8 +6,11 @@ import {
   distance,
   angle,
   dihedral,
+  dihedralCoords,
+  measureByCoords,
   measureSelection,
   measureSelectionByIndex,
+  type Vec3,
 } from "./measure";
 import {
   FRAGMENT_LIBRARY,
@@ -358,5 +361,132 @@ describe("measureSelection", () => {
     if (byStaleIndex.kind === "distance" && byId.kind === "distance") {
       expect(byStaleIndex.value).not.toBeCloseTo(byId.value, 3);
     }
+  });
+});
+
+// ── measureByCoords — the results-viewer coord path (F1) ──────────────────────
+// The TrajectoryPlayer measures a frame's raw coordinates (Frame.xyz_angstrom, in
+// frame/elements order) rather than a Scene. These pin that the coord path is
+// bit-identical to the Scene path on the SAME geometry (the ASE-convention seam),
+// and that xyz_angstrom's 0-based order needs no re-mapping.
+
+/** The Vec3 coords of a single-fragment scene, in global-index order. */
+function coordsFromScene(scene: Scene): Vec3[] {
+  return scene.fragments.flatMap((f) => f.atoms.map((a): Vec3 => [a.x, a.y, a.z]));
+}
+
+describe("measureByCoords (results-viewer coord path)", () => {
+  // MAIN RISK bite: the coord path must produce bit-identical Measurements to the
+  // Scene path on the same geometry, for 2/3/4 picks — incl. the butane gauche
+  // dihedral (the 60-side value, so the [0,360) fold is pinned through the coord
+  // path). Flipping the fold sign in dihedralCoords makes the 4-pick case go red.
+  it("measure_by_coords_matches_scene_path", () => {
+    const scene = butaneScene(1); // gauche — the 4 carbons are atoms 0,1,2,3
+    const coords = coordsFromScene(scene);
+
+    for (const picked of [
+      [0, 3], // distance
+      [0, 1, 2], // angle (middle vertex)
+      [0, 1, 2, 3], // dihedral (chain)
+    ]) {
+      expect(measureByCoords(coords, picked)).toEqual(
+        measureSelectionByIndex(scene, picked),
+      );
+    }
+
+    // Pin the butane gauche dihedral through the COORD path: 67.523° (the 60 side),
+    // NOT 300 — exactly what the ASE [0,360) fold produces.
+    const dih = measureByCoords(coords, [0, 1, 2, 3]);
+    expect(dih.kind).toBe("dihedral");
+    if (dih.kind === "dihedral") {
+      expect(dih.value).toBeCloseTo(67.523, 2);
+      expect(dih.value).toBeGreaterThan(0);
+      expect(dih.value).toBeLessThan(180);
+    }
+  });
+
+  // Closes the parity hole on the MAIN RISK seam: *Coords no longer carry the
+  // repeated-INDEX guard (it lives in the Scene wrapper), and measureByCoords calls
+  // *Coords directly — so measureByCoords must re-apply that guard to stay bit-
+  // identical to the Scene path on a REPEATED pick. angleCoords(a,v,a) is 0° (not
+  // null), dihedralCoords with a repeat is a number (not null); both Scene paths are
+  // none via Set().size < N. Negative control: drop measureByCoords's repeated-index
+  // guard → this bite goes red (0° / a number instead of none) while the different-
+  // index cross-check above STAYS green — proving this bite covers exactly that seam.
+  it("measure_by_coords_repeated_index_matches_scene_path", () => {
+    const scene = butaneScene(1);
+    const coords = coordsFromScene(scene);
+    // angle with i == j (a repeated index): Scene → none (Set size 2 < 3).
+    expect(measureByCoords(coords, [0, 1, 0])).toEqual(
+      measureSelectionByIndex(scene, [0, 1, 0]),
+    );
+    expect(measureByCoords(coords, [0, 1, 0])).toEqual({ kind: "none" });
+    // dihedral with a repeated index: Scene → none (Set size 3 < 4).
+    expect(measureByCoords(coords, [0, 1, 1, 2])).toEqual(
+      measureSelectionByIndex(scene, [0, 1, 1, 2]),
+    );
+    expect(measureByCoords(coords, [0, 1, 1, 2])).toEqual({ kind: "none" });
+  });
+
+  it("measure_by_coords_angle_vertex_is_middle", () => {
+    // A right-angle L: a=(1,0,0), vertex=(0,0,0), b=(0,1,0) → 90° at the middle pick.
+    const L: Vec3[] = [
+      [1, 0, 0],
+      [0, 0, 0],
+      [0, 1, 0],
+    ];
+    const m = measureByCoords(L, [0, 1, 2]);
+    expect(m.kind).toBe("angle");
+    if (m.kind === "angle") expect(m.value).toBeCloseTo(90, 6);
+
+    // Permutation putting a DIFFERENT atom (coords[0]) in the middle → a different
+    // value (45°): the vertex is positional, not the smallest index.
+    const perm = measureByCoords(L, [1, 0, 2]);
+    expect(perm.kind).toBe("angle");
+    if (perm.kind === "angle") {
+      expect(perm.value).toBeCloseTo(45, 6);
+      expect(perm.value).not.toBeCloseTo(90, 3);
+    }
+  });
+
+  it("measure_by_coords_dihedral_reversal_invariant", () => {
+    // A deterministic generic geometry (no symmetry to accidentally satisfy it).
+    const p: Vec3[] = [
+      [0.13, 0.21, -0.34],
+      [1.42, 0.02, 0.51],
+      [2.11, 1.33, -0.22],
+      [3.05, 0.71, 1.14],
+    ];
+    const fwd = dihedralCoords(p[0], p[1], p[2], p[3]);
+    const rev = dihedralCoords(p[3], p[2], p[1], p[0]);
+    expect(fwd).not.toBeNull();
+    expect(fwd!).toBeCloseTo(rev!, 10);
+  });
+
+  it("measure_by_coords_degenerate_is_none", () => {
+    // Coincident pair → none.
+    const dup: Vec3[] = [
+      [1, 1, 1],
+      [1, 1, 1],
+      [2, 2, 2],
+    ];
+    expect(measureByCoords(dup, [0, 1])).toEqual({ kind: "none" });
+
+    // Collinear dihedral → none (every inner angle planar).
+    const line: Vec3[] = [
+      [0, 0, 0],
+      [1, 0, 0],
+      [2, 0, 0],
+      [3, 0, 0],
+      [4, 0, 0], // a 5th point, for the ≥5 case below
+    ];
+    expect(measureByCoords(line, [0, 1, 2, 3])).toEqual({ kind: "none" });
+
+    // Out-of-range index → none.
+    expect(measureByCoords(line, [0, 99])).toEqual({ kind: "none" });
+
+    // 1 atom and ≥5 atoms → none.
+    expect(measureByCoords(line, [0])).toEqual({ kind: "none" });
+    expect(measureByCoords(line, [0, 1, 2, 3, 4])).toEqual({ kind: "none" });
   });
 });

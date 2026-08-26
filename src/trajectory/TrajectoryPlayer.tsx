@@ -11,6 +11,7 @@ import {
 
 import { MoleculeViewer } from "../viewer/MoleculeViewer";
 import { resultsBondLabel } from "./bondReadout";
+import { measureByCoords, formatMeasurementValue } from "../scene/measure";
 import type { MayerBond } from "../types";
 import { useContainerWidth } from "../charts/useContainerWidth";
 import { resolveClickedIndex, type ChartClickState } from "../charts/clickIndex";
@@ -82,11 +83,12 @@ export function TrajectoryPlayer({
   const [frame, setFrame] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [fps, setFps] = useState(DEFAULT_FPS);
-  // A 2-atom pick (0-based indices, == final_geometry/frame order) for the bond-order
-  // readout. Clicking an already-picked atom removes it; a third pick drops the oldest.
+  // The pick list (0-based indices, == final_geometry/frame order) driving the geometry
+  // readout: 2 → distance, 3 → angle, 4 → dihedral (F1). Clicking an already-picked atom
+  // removes it; a 5th pick drops the oldest (cap 4).
   const [picked, setPicked] = useState<number[]>([]);
   const pickAtom = (idx: number) =>
-    setPicked((p) => (p.includes(idx) ? p.filter((x) => x !== idx) : [...p, idx].slice(-2)));
+    setPicked((p) => (p.includes(idx) ? p.filter((x) => x !== idx) : [...p, idx].slice(-4)));
   const { ref, width } = useContainerWidth();
   // The energy chart container — its recharts `<svg>` is grabbed for the PNG export.
   const energyChartRef = useRef<HTMLDivElement | null>(null);
@@ -108,29 +110,63 @@ export function TrajectoryPlayer({
 
   const series = useMemo(() => energySeries(frames), [frames]);
 
-  // The bond-order readout for the current 2-atom pick: geometric estimate from THIS
-  // frame's geometry, or the authoritative Mayer value when the run computed one for
-  // the pair. Rendered under whichever viewer is shown (single-frame or animated).
-  const bondReadout = () => {
-    if (picked.length !== 2) return null;
-    const [i, j] = picked;
-    const label = resultsBondLabel(
-      elements,
-      frames[clamped]?.xyz_angstrom ?? [],
-      mayerBondOrders ?? null,
-      i,
-      j,
-    );
+  // The geometry measurement for the current pick, computed off THIS frame's raw
+  // coordinates (F1). Recomputes on frame change (reads `clamped`), so scrubbing a
+  // trajectory shows a forming bond's distance change live. Routes through the same
+  // ASE-verified core as the editor (`measureByCoords`); `xyz_angstrom` is in the same
+  // 0-based order as the picks, so no re-mapping.
+  const measurement = useMemo(
+    () => measureByCoords(frames[clamped]?.xyz_angstrom ?? [], picked),
+    [frames, clamped, picked],
+  );
+
+  // The geometry readout for the current pick: the distance/angle/dihedral value, plus
+  // — for a 2-atom pick only — the bond-order line (Mayer authoritative / geometric
+  // estimate) as a SECONDARY annotation beneath the raw distance. Rendered under
+  // whichever viewer is shown (single-frame or animated).
+  const measurementReadout = () => {
+    // 0/1 picks: a quiet hint, no value.
+    if (picked.length < 2) {
+      return (
+        <div className="traj-measure-readout mono">
+          <span className="traj-measure-hint muted">
+            Pick 2–4 atoms to measure distance / angle / dihedral
+          </span>
+        </div>
+      );
+    }
+
     const chip = (k: number) => `${elements[k] ?? "?"}#${k}`;
+    const primary = formatMeasurementValue(measurement); // null on a degenerate value
+    // 2-atom only: the bond-order line stays as a secondary annotation under the distance.
+    const bondLine =
+      picked.length === 2
+        ? resultsBondLabel(
+            elements,
+            frames[clamped]?.xyz_angstrom ?? [],
+            mayerBondOrders ?? null,
+            picked[0],
+            picked[1],
+          )
+        : null;
+
     return (
-      <div className="traj-bond-readout mono">
-        <span className="traj-bond-pair">
-          {chip(i)} ··· {chip(j)}
-        </span>
-        <span className="traj-bond-order">{label ?? "not a bond (no computed order)"}</span>
-        <button className="btn btn-sm" onClick={() => setPicked([])} title="Clear bond selection">
-          Clear
-        </button>
+      <div className="traj-measure-readout mono">
+        <div className="traj-measure-row">
+          <span className="traj-measure-atoms">
+            {picked.map((k, idx) => (
+              <span key={k}>
+                {idx > 0 ? " · " : ""}
+                {chip(k)}
+              </span>
+            ))}
+          </span>
+          <span className="traj-measure-value">{primary ?? "—"}</span>
+          <button className="btn btn-sm" onClick={() => setPicked([])} title="Clear selection">
+            Clear
+          </button>
+        </div>
+        {bondLine ? <div className="traj-bond-order traj-measure-secondary">{bondLine}</div> : null}
       </div>
     );
   };
@@ -186,7 +222,7 @@ export function TrajectoryPlayer({
         <div className="viewer-panel traj-viewer">
           <MoleculeViewer xyzData={frameXyz} preserveCameraOnUpdate onXyzAtomPick={pickAtom} />
         </div>
-        {bondReadout()}
+        {measurementReadout()}
       </section>
     );
   }
@@ -203,7 +239,7 @@ export function TrajectoryPlayer({
       <div className="viewer-panel traj-viewer">
         <MoleculeViewer xyzData={frameXyz} preserveCameraOnUpdate onXyzAtomPick={pickAtom} />
       </div>
-      {bondReadout()}
+      {measurementReadout()}
 
       {/* Honest label — optimization CYCLES, never "scan steps". */}
       <div className="traj-readout mono">

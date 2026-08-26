@@ -52,7 +52,7 @@ import type { Scene } from "./types";
 import type { AtomId } from "./ids";
 import { globalIndexOfAtom, locateAtom } from "./scene";
 
-type Vec3 = [number, number, number];
+export type Vec3 = [number, number, number];
 
 const RAD_TO_DEG = 180 / Math.PI;
 
@@ -91,36 +91,31 @@ function collinear(a: Vec3, b: Vec3): boolean {
   return norm(cross(a, b)) / (na * nb) < COLLINEAR_SIN;
 }
 
+// ── Coord-level primitives — the ASE conventions live HERE, in ONE place ──────
+// These take already-resolved points (not scene indices), so BOTH the Scene-based
+// `distance/angle/dihedral` below AND `measureByCoords` (the results-viewer path)
+// route through the SAME ASE-verified math. The Scene functions add only the
+// *index-space* concerns (index→point resolution, repeated-index rejection); the
+// geometric degeneracy contract (zero vector / collinearity → null, never NaN)
+// lives in the primitives.
+
 /**
- * Bond length `i–j` in Å, or null if either index is out of range or the two
- * atoms coincide (same index, or identical coordinates → a zero vector).
+ * Bond length `‖p − q‖` in Å, or null if the two points coincide (a zero vector,
+ * within 1e-12).
  */
-export function distance(scene: Scene, i: number, j: number): number | null {
-  const p = positionAt(scene, i);
-  const q = positionAt(scene, j);
-  if (!p || !q) return null;
+export function distanceCoords(p: Vec3, q: Vec3): number | null {
   const d = norm(sub(p, q));
   return d < 1e-12 ? null : d;
 }
 
 /**
- * Angle `i–vertex–j` in degrees `[0, 180]`, the MIDDLE argument being the
- * vertex (ASE `get_angle(a1, a2, a3)` convention: vertex `a2`). Null on an
- * out-of-range index, a repeated index, or a zero bond vector.
+ * Angle `a–vertex–b` in degrees `[0, 180]`, the MIDDLE argument being the vertex
+ * (ASE `get_angle(a1, a2, a3)` convention: vertex `a2`). Null on a zero bond
+ * vector (a point coincident with the vertex).
  */
-export function angle(
-  scene: Scene,
-  i: number,
-  vertex: number,
-  j: number,
-): number | null {
-  if (new Set([i, vertex, j]).size < 3) return null;
-  const a = positionAt(scene, i);
-  const v = positionAt(scene, vertex);
-  const b = positionAt(scene, j);
-  if (!a || !v || !b) return null;
-  const u = sub(a, v); // vertex → i  (ASE v12 = a1 - a2)
-  const w = sub(b, v); // vertex → j  (ASE v32 = a3 - a2)
+export function angleCoords(a: Vec3, vertex: Vec3, b: Vec3): number | null {
+  const u = sub(a, vertex); // vertex → a  (ASE v12 = a1 - a2)
+  const w = sub(b, vertex); // vertex → b  (ASE v32 = a3 - a2)
   const nu = norm(u);
   const nw = norm(w);
   if (nu === 0 || nw === 0) return null;
@@ -129,25 +124,17 @@ export function angle(
 }
 
 /**
- * Dihedral `i–j–k–l` in degrees `[0, 360)`, ASE `get_dihedral(a0,a1,a2,a3)`
+ * Dihedral `p0–p1–p2–p3` in degrees `[0, 360)`, ASE `get_dihedral(a0,a1,a2,a3)`
  * convention exactly (see the module header for the verified derivation). The
- * axis is `j–k`. Null on an out-of-range index, a repeated index, or a collinear
- * inner angle (either end triplet planar → dihedral undefined).
+ * axis is `p1–p2`. Null on a zero axis or a collinear inner angle (either end
+ * triplet planar → dihedral undefined).
  */
-export function dihedral(
-  scene: Scene,
-  i: number,
-  j: number,
-  k: number,
-  l: number,
+export function dihedralCoords(
+  p0: Vec3,
+  p1: Vec3,
+  p2: Vec3,
+  p3: Vec3,
 ): number | null {
-  if (new Set([i, j, k, l]).size < 4) return null;
-  const p0 = positionAt(scene, i);
-  const p1 = positionAt(scene, j);
-  const p2 = positionAt(scene, k);
-  const p3 = positionAt(scene, l);
-  if (!p0 || !p1 || !p2 || !p3) return null;
-
   const v0 = sub(p1, p0); // a0 → a1
   const v1 = sub(p2, p1); // a1 → a2  (the axis)
   const v2 = sub(p3, p2); // a2 → a3
@@ -167,6 +154,61 @@ export function dihedral(
   let deg = Math.atan2(y, x) * RAD_TO_DEG; // [-180, 180]
   if (deg < 0) deg += 360; // fold to [0, 360) — the ASE convention
   return deg;
+}
+
+/**
+ * Bond length `i–j` in Å, or null if either index is out of range or the two
+ * atoms coincide (same index, or identical coordinates → a zero vector). Thin
+ * over {@link distanceCoords}.
+ */
+export function distance(scene: Scene, i: number, j: number): number | null {
+  const p = positionAt(scene, i);
+  const q = positionAt(scene, j);
+  if (!p || !q) return null;
+  return distanceCoords(p, q);
+}
+
+/**
+ * Angle `i–vertex–j` in degrees `[0, 180]`, the MIDDLE argument being the
+ * vertex (ASE `get_angle(a1, a2, a3)` convention: vertex `a2`). Null on an
+ * out-of-range index, a repeated index, or a zero bond vector. Thin over
+ * {@link angleCoords}; the repeated-index guard is an index-space concern kept here.
+ */
+export function angle(
+  scene: Scene,
+  i: number,
+  vertex: number,
+  j: number,
+): number | null {
+  if (new Set([i, vertex, j]).size < 3) return null;
+  const a = positionAt(scene, i);
+  const v = positionAt(scene, vertex);
+  const b = positionAt(scene, j);
+  if (!a || !v || !b) return null;
+  return angleCoords(a, v, b);
+}
+
+/**
+ * Dihedral `i–j–k–l` in degrees `[0, 360)`, ASE `get_dihedral(a0,a1,a2,a3)`
+ * convention exactly (see the module header for the verified derivation). The
+ * axis is `j–k`. Null on an out-of-range index, a repeated index, or a collinear
+ * inner angle (either end triplet planar → dihedral undefined). Thin over
+ * {@link dihedralCoords}; the repeated-index guard is an index-space concern kept here.
+ */
+export function dihedral(
+  scene: Scene,
+  i: number,
+  j: number,
+  k: number,
+  l: number,
+): number | null {
+  if (new Set([i, j, k, l]).size < 4) return null;
+  const p0 = positionAt(scene, i);
+  const p1 = positionAt(scene, j);
+  const p2 = positionAt(scene, k);
+  const p3 = positionAt(scene, l);
+  if (!p0 || !p1 || !p2 || !p3) return null;
+  return dihedralCoords(p0, p1, p2, p3);
 }
 
 /** The result of measuring the current pick list. `sameFragment` distinguishes
@@ -228,6 +270,62 @@ export function measureSelectionByIndex(scene: Scene, selection: number[]): Meas
   }
   if (atoms.length === 4) {
     const value = dihedral(scene, atoms[0], atoms[1], atoms[2], atoms[3]);
+    if (value == null) return { kind: "none" };
+    return { kind: "dihedral", value, unit: "°", atoms, sameFragment };
+  }
+  return { kind: "none" };
+}
+
+/**
+ * The coord-array sibling of {@link measureSelectionByIndex}: interpret `picked`
+ * (0-based indices into `coords`) positionally — 2 → distance, 3 → angle (middle =
+ * vertex), 4 → dihedral (chain), everything else / any out-of-range index /
+ * degenerate value → `{ kind: "none" }`. Used by the results TrajectoryPlayer,
+ * which holds a frame's coordinates (`Frame.xyz_angstrom`, in frame/elements order
+ * — the SAME 0-based order the picks are in, so no re-mapping) rather than a
+ * `Scene`. Routes through the SAME ASE-verified `*Coords` primitives as the Scene
+ * path, so the two can never diverge (pinned by `measure_by_coords_matches_scene_path`).
+ *
+ * `sameFragment` is always `true`: a parsed results geometry is ONE geometry, so a
+ * coord measurement is always intra-geometry. The field is inert for this consumer
+ * but the {@link Measurement} shape is reused whole.
+ */
+export function measureByCoords(coords: Vec3[], picked: number[]): Measurement {
+  const atoms = [...picked];
+  const sameFragment = true;
+  // An index outside the coord array (incl. negative) → null, mirroring the Scene
+  // path's out-of-range → null contract.
+  const at = (idx: number): Vec3 | null => {
+    const p = coords[idx];
+    return p ? [p[0], p[1], p[2]] : null;
+  };
+
+  if (atoms.length === 2) {
+    const p = at(atoms[0]);
+    const q = at(atoms[1]);
+    if (!p || !q) return { kind: "none" };
+    const value = distanceCoords(p, q);
+    if (value == null) return { kind: "none" };
+    return { kind: "distance", value, unit: "Å", atoms, sameFragment };
+  }
+  if (atoms.length === 3) {
+    if (new Set(atoms).size < 3) return { kind: "none" }; // repeated-index guard (Scene parity)
+    const a = at(atoms[0]);
+    const v = at(atoms[1]);
+    const b = at(atoms[2]);
+    if (!a || !v || !b) return { kind: "none" };
+    const value = angleCoords(a, v, b);
+    if (value == null) return { kind: "none" };
+    return { kind: "angle", value, unit: "°", atoms, sameFragment };
+  }
+  if (atoms.length === 4) {
+    if (new Set(atoms).size < 4) return { kind: "none" }; // repeated-index guard (Scene parity)
+    const p0 = at(atoms[0]);
+    const p1 = at(atoms[1]);
+    const p2 = at(atoms[2]);
+    const p3 = at(atoms[3]);
+    if (!p0 || !p1 || !p2 || !p3) return { kind: "none" };
+    const value = dihedralCoords(p0, p1, p2, p3);
     if (value == null) return { kind: "none" };
     return { kind: "dihedral", value, unit: "°", atoms, sameFragment };
   }

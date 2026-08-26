@@ -2092,6 +2092,33 @@ select:disabled,
 .traj-bond-readout .traj-bond-order {
   color: var(--muted);
 }
+/* Geometry measurement readout (F1) — distance/angle/dihedral for 2/3/4 picks; the
+   bond-order line is a secondary annotation under a 2-atom distance. */
+.traj-measure-readout {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+  margin-top: 4px;
+}
+.traj-measure-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.traj-measure-atoms {
+  font-weight: 600;
+}
+.traj-measure-value {
+  color: var(--text);
+}
+.traj-measure-secondary {
+  padding-left: 2px;
+}
+.traj-measure-hint {
+  font-size: 12px;
+}
 /* Scan-profile panel (Phase 4.5 B2) — reuses the trajectory viewer/readout idiom. */
 .scan-profile {
   display: flex;

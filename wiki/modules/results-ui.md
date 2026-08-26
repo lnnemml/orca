@@ -54,6 +54,23 @@ enforce on their artifacts (ADR-010/012 seam), applied one layer out.
 - **no trajectory** (a single-point job — `results.trajectory` is `null`) → the section is **not
   rendered** at all (`ResultsCard`).
 
+### Geometry measurement readout (distance / angle / dihedral, F1)
+Clicking atoms in the viewer builds a **pick list** (`pickAtom`; a click on a picked atom removes it,
+a 5th pick drops the oldest — **cap 4**). The readout measures the **currently displayed frame's raw
+coordinates** through `measureByCoords(frames[clamped].xyz_angstrom, picked)` ([scene.md](scene.md) →
+Measurement) — the **same ASE-verified core as the editor**, so the numbers match the input builder
+exactly. `xyz_angstrom` is in frame/elements order, the same 0-based order the picks are in, so no
+re-mapping. Positional: **2 → distance** (3 dp Å), **3 → angle** (middle pick = vertex, 1 dp °),
+**4 → dihedral** (chain, `[0,360)`, 1 dp °); 0/1 picks show a quiet hint, a degenerate value shows `—`.
+Because it reads `clamped`, the value **recomputes as you scrub** — a forming bond's distance changes
+live across the trajectory. The measurement is rendered under **both** viewer mounts (the static
+"Geometry" single-frame case and the animated case).
+
+For a **2-atom** pick, the distance is now **always shown raw**, and the previous **bond-order** line
+(`resultsBondLabel` — Mayer authoritative / geometric estimate, [`bondReadout.ts`]) is kept as a
+**secondary annotation beneath** it (so a forming/through-space pair shows its real distance always,
+with the bond-order note as extra). A **Clear** button empties the pick list.
+
 ### The viewer's coordinate-update path (`MoleculeViewer` `preserveCameraOnUpdate`)
 A new opt-in prop: when set, an `xyzData` change that keeps the **same atom count** redraws the
 frame **without** re-`zoomTo` (the camera stays put through playback); a count change still zooms.

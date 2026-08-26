@@ -850,6 +850,31 @@ Degenerate inputs (coincident atoms, zero vector, collinear inner triple for the
 dihedral, out-of-range index) return **null, never NaN**; `measureSelection` maps
 null → `none`.
 
+### Coord-level primitives + `measureByCoords` (the results-viewer sibling, F1)
+
+The ASE math lives in ONE place: `distanceCoords(p,q)`, `angleCoords(a,vertex,b)`,
+`dihedralCoords(p0,p1,p2,p3)` take already-resolved `Vec3` points (now exported) and
+carry the geometric degeneracy contract (zero vector / collinearity → null). The
+Scene-based `distance/angle/dihedral(scene,…)` became **thin delegates** over them —
+they keep only the *index-space* concerns (index→point resolution, and the
+repeated-**index** `Set(...).size < N → null` rejection, which is an index concern, not
+a geometric one). A behavior-preserving extraction: the 2.5.2b Scene tests stayed green
+unchanged.
+
+`measureByCoords(coords: Vec3[], picked: number[])` is the coord-array sibling of
+`measureSelectionByIndex` — same positional rule (2→distance, 3→angle middle-vertex,
+4→dihedral), same degenerate/out-of-range/0-1/≥5 → `none`, routing through the same
+`*Coords` core. It is used by the results **TrajectoryPlayer** ([results-ui](results-ui.md),
+F1), which holds a frame's raw coordinates (`Frame.xyz_angstrom`, frame/elements order —
+the SAME 0-based order the picks are in) rather than a `Scene`. `sameFragment` is always
+`true` (a parsed results geometry is one geometry — the field is inert here but the
+`Measurement` shape is reused whole). Because both paths delegate to the same `*Coords`,
+they can never diverge on the ASE conventions; `measure_by_coords_matches_scene_path`
+deep-equals the two on the butane gauche fixture (the 60-side dihedral is the tripwire),
+and `measure_by_coords_repeated_index_matches_scene_path` pins that `measureByCoords`
+re-applies the repeated-index guard the `*Coords` primitives shed (its negative control:
+drop that guard → red, while the different-index cross-check stays green).
+
 ### Conventions, pinned to ASE source (the 2.5.2c dependency)
 
 These are not just a user readout: 2.5.2c's acceptance test applies a target
