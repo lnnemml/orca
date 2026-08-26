@@ -114,3 +114,113 @@ export function withProvenanceComment(content: string, comment: string): string 
   if (content.split(/\r?\n/).some((l) => l.trim() === comment.trim())) return content;
   return `${comment}\n${content}`;
 }
+
+// --- Explicit geometry-frame picker at New iteration (debugging/022) -------------------------------
+//
+// `resolveCarryForwardGeometry` seeds the CONVERGED output, but it classifies by the convergence
+// VERDICT — and a post-GOAT `! Opt` whose `OPTIMIZATION RUN DONE` marker sits beyond the 64 KB
+// output tail parses `converged === null`, which the resolver misreads as "single-point" → the
+// override is skipped → New iteration silently seeds the INITIAL geometry (the bug). The robust
+// root fix is to stop inferring from the verdict and instead offer an EXPLICIT frame picker over
+// the parent's optimization trajectory, DEFAULTING to the last frame (the optimized output) — a
+// real trajectory frame, correct regardless of the verdict. Scan/NEB keep their per-point/per-image
+// handoff (they REFUSE the picker); a single point has no trajectory to pick from.
+
+/** One selectable geometry frame from a parent optimization's trajectory. `geometry` is taken
+ * DIRECTLY from `results.trajectory.frames[index]` (never reconstructed from `input_content`);
+ * `energyEh` is that frame's comment energy (null if the frame carried none); `label` is the
+ * honest human tag (see {@link iterationFrames}). */
+export interface FrameChoice {
+  index: number;
+  geometry: FinalGeometry;
+  energyEh: number | null;
+  label: string;
+}
+
+/** The frame model for New iteration: the ordered trajectory frames + the DEFAULT selection (the
+ * last = optimized output), OR an honest refusal (scan/NEB/no-result reuse the carry-forward
+ * reasons; a single point has no trajectory). `kind` lets the caller route "no-trajectory" to the
+ * silent seed-keep (a single point's seed IS its geometry) vs the rest to a refusal banner. */
+export type IterationFrames =
+  | { ok: true; frames: FrameChoice[]; defaultIndex: number }
+  | { ok: false; reason: string; kind: "no-result" | "scan" | "neb" | "no-trajectory" };
+
+/** The last frame's label — the ONLY frame whose stationarity the verdict speaks to. `true` →
+ * "final (converged)"; `false` → the non-stationary warning (the opt hit its cycle budget — the
+ * user may still pick it, but informed); `null` → the verdict was unreadable (e.g. the post-GOAT
+ * marker beyond the tail), so it is honestly "the optimized output" WITHOUT claiming convergence
+ * OR non-convergence (claiming either would be a guess). */
+function lastFrameLabel(converged: boolean | null): string {
+  if (converged === true) return "final (converged)";
+  if (converged === false) return "last frame — did not converge (not stationary)";
+  return "final frame (optimized output)";
+}
+
+/**
+ * Build the New-iteration frame model from a parent job's parsed optimization trajectory. An
+ * optimization with ≥ 1 trajectory frame → the picker, **regardless of `results.converged`** (the
+ * null-verdict robustness fix — this is the whole point): the DEFAULT is the LAST frame (the
+ * optimized output), never frame 0 (the initial geometry) and never the `input_content` seed. This
+ * check comes BEFORE the carry-forward refusals so a NON-converged opt still gets a picker (its
+ * last frame labeled "not stationary"), rather than being refused.
+ *
+ * Otherwise it refuses, reusing {@link resolveCarryForwardGeometry}'s reasons verbatim for
+ * scan / NEB / no-result (a frame picker is for a single-optimization job; scan/NEB keep their
+ * per-point/per-image handoff), or a distinct `no-trajectory` refusal for a single point (its
+ * geometry IS its input — there are no frames to pick).
+ */
+export function iterationFrames(job: Job, results: ParsedResults | null): IterationFrames {
+  const traj = results?.trajectory;
+  // A genuine optimization trajectory → the picker, verdict-independent. Guarded on the same
+  // scan/NEB/no-result exclusions the refusals cover, so those fall through to the reused reasons.
+  if (
+    results &&
+    results.final_geometry.elements.length > 0 &&
+    !results.scan &&
+    !results.neb &&
+    traj &&
+    traj.frames.length > 0
+  ) {
+    const n = traj.frames.length;
+    const frames: FrameChoice[] = traj.frames.map((f, i) => {
+      const label =
+        i === n - 1 ? lastFrameLabel(results.converged) : i === 0 ? "initial geometry" : `cycle ${i}`;
+      return {
+        index: i,
+        // Geometry straight from the trajectory frame — elements shared across frames (stored once),
+        // per-frame Å coords. NEVER reconstructed from input_content (the guard the tests assert).
+        geometry: { elements: traj.elements, xyz_angstrom: f.xyz_angstrom },
+        energyEh: f.energy_eh,
+        label,
+      };
+    });
+    return { ok: true, frames, defaultIndex: n - 1 };
+  }
+
+  // No pickable trajectory → reuse the carry-forward refusals (scan/NEB/no-result), or refuse a
+  // single point distinctly (it has results but no trajectory; its geometry is its input).
+  const cf = resolveCarryForwardGeometry(job, results);
+  if (!cf.ok) {
+    const kind: "no-result" | "scan" | "neb" =
+      !results || results.final_geometry.elements.length === 0
+        ? "no-result"
+        : results.scan
+          ? "scan"
+          : results.neb
+            ? "neb"
+            : "no-result"; // a non-converged opt with no trajectory — banner, treated as no-result
+    return { ok: false, reason: cf.reason, kind };
+  }
+  return {
+    ok: false,
+    kind: "no-trajectory",
+    reason: `“${job.title}” is a single point — its geometry is its input; there is no optimization trajectory to pick a frame from.`,
+  };
+}
+
+/** Provenance header line for a frame-picked New iteration — records the exact frame index + its
+ * honest label + the source job IN the input (same purpose as {@link carryForwardProvenanceComment}:
+ * an input-vs-output/frame swap cannot ship silently). */
+export function frameProvenanceComment(jobId: string, choice: FrameChoice): string {
+  return `# geometry: frame ${choice.index} (${choice.label}) of job ${jobId}`;
+}

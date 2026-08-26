@@ -1148,6 +1148,22 @@ r1–r4 manual gates. Next per the ratified reorder: CREST probe → Stage D →
         jobs-column + manifest field (needs a migration; the input-comment provenance already makes the
         swap non-silent + exported). **This closes the silent TS-barrier corruption that was poisoning
         the benchmarks.**
+  - [x] **Explicit geometry-frame picker at New iteration — default is the optimized output, not the
+        seed** (2026-08-26, `debugging/022`) — the SECOND HALF of `021`. `resolveCarryForwardGeometry`
+        classified the carry by the convergence **verdict**, but a **post-GOAT `! Opt`** whose
+        `OPTIMIZATION RUN DONE` marker sits **beyond the bounded output tail** parses `converged === null`
+        → misread as **single-point** → early-return → New iteration silently seeded the **INITIAL**
+        geometry again. The verdict answers *stationarity*, not *is-this-an-optimization* (`null` =
+        unknown). Fix: pure `iterationFrames(job, results)` keys on **`results.trajectory.frames`** (checked
+        BEFORE the verdict) → a frame picker, **default = the LAST (optimized) frame**, geometry sourced
+        directly from the trajectory (never `input_content`); the verdict drives the last frame's **label
+        only** (`null` → "final frame (optimized output)", no false claim; `false` → "not stationary",
+        still selectable). `NewJobScreen` seeds the default **unconditionally** (kills the "maybe override"
+        race) + a `<select>` frame picker (re-pick reseeds a real frame) + provenance. Honest edges: a
+        `no-trajectory` refusal keeps the seed silently **only** for a genuine single point
+        (`isSinglePoint`), else an Opt with an unparsed trajectory is **warned**; scan/NEB keep their
+        refusal. +4 vitest bites, **no cargo, no migration**. **Next:** frame choice on ALL derived spawns
+        (scan→OptTS / reopt / connectivity / F3 — they already default to `final_geometry` correctly).
 
 ### Stage F — Microsolvation (explicit solvent shell), probe-first
 

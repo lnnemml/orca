@@ -65,6 +65,20 @@ functions, no imports from react / 3dmol / tauri. The reactive `store.ts` (added
 - `restore.ts` — `restoreScene` (snapshot ↔ input reconciliation on job open) and
   `restoreSceneLog` (unit 2b: the log ↔ snapshot cross-check for New iteration —
   the log is rejected loudly if it diverges from `scene_json`).
+- `carryForward.ts` — **New-iteration geometry provenance** (`debugging/021`, `debugging/022`). Pure,
+  React/Tauri-free.
+  - `resolveCarryForwardGeometry(job, results)` — the 021 half: carry the **converged output**
+    (`results.final_geometry`), or an honest refusal (scan/NEB → per-point/image handoff; non-converged
+    → not stationary; no result). `geometryMatchesFinal` — the bit-match guard (rejects the seed).
+  - `iterationFrames(job, results)` — the **022 explicit frame picker** that supersedes the verdict
+    classification: an optimization with ≥ 1 `results.trajectory.frames` → `{ frames, defaultIndex }`,
+    **checked BEFORE `results.converged`** so a null-verdict post-GOAT Opt still gets a picker. The
+    **default is the LAST frame** (optimized output), each `FrameChoice.geometry` sourced **directly**
+    from `trajectory.frames[i]` (never `input_content`). The verdict drives the last frame's **label
+    only** (`true`→"final (converged)", `false`→"…did not converge (not stationary)" *still selectable*,
+    **`null`→"final frame (optimized output)"** — no false convergence claim). Refusals reuse 021's
+    reasons (scan/NEB/no-result) + a `no-trajectory` kind for a single point. `frameProvenanceComment`
+    → the `# geometry: frame <i> (<label>) of job <id>` header.
 - `ensemble.ts` — GOAT conformer-ensemble parsing + input generation (2.5.1a),
   plus `isGoatInput` (2.5.2a — is this a conformer-search job?).
 - `optts.ts` — `buildOptTSInput(sourceInput, seedGeometry, options?)`: the **source-agnostic**

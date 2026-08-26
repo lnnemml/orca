@@ -85,11 +85,13 @@ import { formatXtbProgress } from "../scene/xtb-progress";
 import { formalChargeConsistency } from "../scene/formal-charge";
 import { restoreSceneLog, type LogRejection } from "../scene/restore";
 import {
-  resolveCarryForwardGeometry,
-  geometryMatchesFinal,
-  carryForwardProvenanceComment,
   withProvenanceComment,
+  iterationFrames,
+  frameProvenanceComment,
+  type FrameChoice,
+  type IterationFrames,
 } from "../scene/carryForward";
+import { isSinglePoint } from "../reactions/compare";
 import { finalGeometryXyz } from "../export/exporters";
 import { serializeLog, type Op } from "../scene/oplog";
 import { goatInputForFragment } from "../scene/ensemble";
@@ -193,6 +195,12 @@ export function NewJobScreen({
   // = an honest refusal (scan/NEB/non-converged) shown as a warning, never a silent seed.
   const [carryBanner, setCarryBanner] = useState<string | null>(null);
   const [carryRefusal, setCarryRefusal] = useState<string | null>(null);
+  // The explicit geometry-frame picker at New iteration (debugging/022): the parent's optimization
+  // trajectory frames (default = the last = optimized output) + the app-state selected index (mirrors
+  // ScanProfilePanel's selected-point-as-app-state). `null` until the parent's results resolve / for a
+  // non-optimization source. Replaces the fragile verdict classification that silently seeded frame 0.
+  const [iterFrames, setIterFrames] = useState<Extract<IterationFrames, { ok: true }> | null>(null);
+  const [selectedFrame, setSelectedFrame] = useState<number | null>(null);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // ── Destination group (explicit picker, Phase 4.7 unit 2a) ──────────────────
@@ -867,14 +875,45 @@ export function NewJobScreen({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Geometry carry-forward resolution (the input-vs-output fix). The sync effect above seeded the
-  // parent's SEED scene as a fast placeholder; here we fetch the parent's PARSED results and, for a
-  // CONVERGED optimization, REPLACE it with a fresh scene from the converged OUTPUT — the same source
-  // the viewer / `finalGeometryXyz` use (`results.final_geometry`), never `input_content`/`scene_json`.
-  // Variant (a): the parent's edit LOG is NOT carried (it produced the seed, not the output) — a fresh
-  // scene, with a provenance comment + banner so this reads as "from the output", not seed-editing. A
-  // scan/NEB/non-converged source is an honest REFUSAL (a warning; never a silent seed); a single point
-  // needs no change (its final geometry is its input).
+  // Seed the iteration scene from ONE explicit trajectory frame (the default = last, or a user re-pick
+  // from the frame picker). A FRESH scene from that real trajectory frame — never `input_content` — with
+  // a frame-exact provenance comment + banner so an input-vs-frame swap can't ship silently. The parent's
+  // edit LOG is not carried (it produced the seed, not this frame). Called from the async default seed
+  // AND the picker's onChange; the provenance line is stripped-and-replaced so re-picking never stacks.
+  const seedIterationFrame = (choice: FrameChoice) => {
+    if (!initialJob) return;
+    const parent = sceneFromOrcaInput(initialJob.input_content); // charge/mult from the header (.xyz has none)
+    const xyz = finalGeometryXyz(choice.geometry, initialJob.title, choice.energyEh);
+    const fresh = sceneFromXyz(xyz, {
+      name: `${initialJob.title} — ${choice.label}`,
+      charge: parent ? totalCharge(parent) : 0,
+      multiplicity: parent ? parent.multiplicity : 1,
+      source: "editor",
+    });
+    if (!fresh) return;
+    seedScene(fresh, "text-adopt"); // fresh log — the parent's seed edit history is not carried
+    setContent((c) => {
+      const stripped = c
+        .split(/\r?\n/)
+        .filter((l) => !l.trim().startsWith("# geometry:"))
+        .join("\n");
+      return withProvenanceComment(stripped, frameProvenanceComment(initialJob.id, choice));
+    });
+    setCarryBanner(
+      `Seeded from ${choice.label} (frame ${choice.index}) of “${initialJob.title}”. Pick another frame below to reseed.`,
+    );
+    // A real trajectory frame supersedes any snapshot/log-reject warning from the sync restore.
+    setSnapshotRejected(false);
+    setLogRejected(null);
+  };
+
+  // Geometry carry-forward at New iteration (debugging/022). The sync effect above seeded the parent's
+  // SEED scene as a fast placeholder; here we fetch the parent's PARSED results and resolve the explicit
+  // frame picker. For an optimization, the DEFAULT (last = optimized output) is seeded UNCONDITIONALLY —
+  // not the fragile "converged? maybe override" of the old path that silently kept frame 0 on a null
+  // verdict (the post-GOAT bug). Scan/NEB keep their per-point/per-image refusal; a GENUINE single point
+  // keeps its seed silently (final == input), but an optimization whose trajectory failed to PARSE is
+  // warned (never a silent seed — watch-item 2).
   useEffect(() => {
     if (!initialJob) return;
     let live = true;
@@ -883,37 +922,26 @@ export function NewJobScreen({
         () => null,
       );
       if (!live) return;
-      const cf = resolveCarryForwardGeometry(initialJob, results);
-      if (!cf.ok) {
-        setCarryRefusal(cf.reason);
+      const fr = iterationFrames(initialJob, results);
+      if (!fr.ok) {
+        if (fr.kind === "no-trajectory") {
+          // A genuine single point (no Opt/OptTS/Scan/NEB/GOAT/IRC keyword) → seed IS its geometry, keep
+          // silently. But an input that DOES request an optimization with no parsed trajectory is a
+          // parse glitch — DON'T silently keep the seed; warn that the shown geometry is the input seed.
+          if (!isSinglePoint(initialJob.input_content)) {
+            setCarryRefusal(
+              `“${initialJob.title}” is an optimization but its trajectory could not be read — there is no frame to pick, and the geometry shown is the INPUT SEED, not the optimized output. Re-run or re-parse before iterating.`,
+            );
+          }
+          return;
+        }
+        setCarryRefusal(fr.reason); // scan/NEB/no-result — the existing per-point/per-image handoff
         return;
       }
-      // A single point's final geometry IS its input — the sync-seeded scene is already correct.
-      if (cf.origin !== "converged" || !results) return;
-      // Guard (defense-in-depth): the carried geometry MUST bit-match the parsed final frame; the
-      // seed (2.364) would not (this is the negative-control target).
-      if (!geometryMatchesFinal(cf.geometry, results)) {
-        setCarryRefusal(
-          "Carried geometry did not match the parent's parsed final geometry — refusing to seed (guard).",
-        );
-        return;
-      }
-      // Charge/multiplicity from the parent's input header (an .xyz carries none).
-      const parent = sceneFromOrcaInput(initialJob.input_content);
-      const xyz = finalGeometryXyz(cf.geometry, initialJob.title, results.final_energy_eh);
-      const fresh = sceneFromXyz(xyz, {
-        name: `${initialJob.title} (converged)`,
-        charge: parent ? totalCharge(parent) : 0,
-        multiplicity: parent ? parent.multiplicity : 1,
-        source: "editor",
-      });
-      if (!fresh) return;
-      seedScene(fresh, "text-adopt"); // fresh log — the parent's seed edit history is not carried
-      setContent((c) => withProvenanceComment(c, carryForwardProvenanceComment(cf)));
-      setCarryBanner(cf.note);
-      // The converged-output seed supersedes any snapshot/log-reject warning from the sync restore.
-      setSnapshotRejected(false);
-      setLogRejected(null);
+      // Unconditional default = the LAST (optimized) frame — the whole fix. Never frame 0, never the seed.
+      setIterFrames(fr);
+      setSelectedFrame(fr.defaultIndex);
+      seedIterationFrame(fr.frames[fr.defaultIndex]);
     })();
     return () => {
       live = false;
@@ -2098,6 +2126,33 @@ export function NewJobScreen({
           <button className="btn btn-sm" style={{ marginLeft: 10 }} onClick={() => setCarryBanner(null)}>
             Dismiss
           </button>
+        </div>
+      ) : null}
+      {iterFrames ? (
+        <div className="banner" style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <label className="label" htmlFor="iter-frame" style={{ margin: 0 }}>
+            Iterate from frame
+          </label>
+          <select
+            id="iter-frame"
+            className="select select-sm"
+            value={selectedFrame ?? iterFrames.defaultIndex}
+            onChange={(e) => {
+              const idx = Number(e.currentTarget.value);
+              setSelectedFrame(idx);
+              seedIterationFrame(iterFrames.frames[idx]);
+            }}
+          >
+            {iterFrames.frames.map((f) => (
+              <option key={f.index} value={f.index}>
+                #{f.index} · {f.label}
+                {f.energyEh != null ? ` · ${f.energyEh.toFixed(6)} Eh` : ""}
+              </option>
+            ))}
+          </select>
+          <span className="muted" style={{ fontSize: 12 }}>
+            default = the optimized output (last frame); the seeded geometry is a real trajectory frame.
+          </span>
         </div>
       ) : null}
       {carryRefusal ? (

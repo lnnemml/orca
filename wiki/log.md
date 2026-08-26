@@ -8680,3 +8680,53 @@ SP on a DIFFERENT geometry → "⚠ matches no OptTS here"; m3 DLPNO arm vs r2SC
 matching-method → no warning; m4 ΔG‡ ABSENT, ΔE‡ still shows. **Next unit:** composite ΔG‡ (SP
 electronic + OptTS thermal correction). **Wiki:** chemistry/reaction-barriers.md (Барʼєр 6 — CCSD(T)//
 DFT), modules/reactions-ui.md (fifth energy source), ROADMAP.
+
+## [2026-08-26] fix | Explicit geometry-frame picker at New iteration — default is the optimized output, not the seed (debugging/022)
+
+**What.** The SECOND HALF of `021`. `resolveCarryForwardGeometry` decides the carry from the convergence
+**verdict** `results.converged`, but a **post-GOAT `! Opt`** whose `OPTIMIZATION RUN DONE` marker sits
+**beyond the bounded output tail** parses `converged === null` — misread as **single-point** →
+early-return → New iteration silently seeded the **INITIAL** geometry (frame 0 / the seed), re-opening
+the exact silent input-vs-output swap `021` closed. The verdict answers *stationarity*, not
+*is-this-an-optimization* (`null` = unknown, not no-opt), so classifying the carry ACTION by it is the
+defect.
+
+**Root fix — key on the trajectory, not the verdict.** Replace the classification with an explicit
+frame picker over `results.trajectory.frames`.
+
+**Part A — pure model (`scene/carryForward.ts`).** `iterationFrames(job, results)` → `{ frames,
+defaultIndex }` for any optimization with ≥ 1 trajectory frame, **checked BEFORE `results.converged`**
+so a null-verdict post-GOAT Opt still gets a picker; **`defaultIndex` = the LAST frame** (optimized
+output). Each `FrameChoice.geometry` comes **directly** from `trajectory.frames[i]` (elements stored
+once, per-frame Å coords) — never reconstructed from `input_content`. Verdict → the last frame's **label
+only** (my improvement over the prompt's two labels: `true`→"final (converged)", `false`→"…did not
+converge (not stationary)" *still selectable*, **`null`→"final frame (optimized output)"** — a `null`
+verdict is *unknown*, so it claims neither convergence nor non-convergence). Refusals reuse `021`'s
+reasons (scan/NEB/no-result) + a distinct `no-trajectory` kind; `frameProvenanceComment`. +4 bites:
+`default_is_the_last_optimized_frame_not_the_seed` (converged===null still defaults to the last, real DA
+2.2893 not seed 2.3636 — the bug bite), `non_converged_last_frame_is_labeled_not_stationary` (labeled,
+still selectable), `scan_or_neb_refuses_the_frame_picker` (+ single-point → no-trajectory kind),
+`every_frame_geometry_comes_from_the_trajectory`.
+
+**Part B — picker UI + wiring (`NewJobScreen`).** The async carry-forward effect now resolves
+`iterationFrames` and seeds the default (last) frame **UNCONDITIONALLY** — killing the old "converged?
+*maybe* override" race that left the seed. A compact **`<select>` of frames** (labels + energies) — the
+selected index is app state (mirrors `ScanProfilePanel`) — lets the user re-pick; `seedIterationFrame`
+reseeds a fresh scene from that real frame + a `# geometry: frame <i> (<label>) of job <id>` provenance
+(stripped & replaced on re-pick, never stacks) + banner. **Two honest edges (review watch-items):**
+(1) a `no-trajectory` refusal keeps the seed **silently only** for a genuine single point
+(`isSinglePoint(input)` — reused from `reactions/compare.ts`); an **optimization with an unparsed
+trajectory is WARNED** ("the geometry shown is the INPUT SEED, not the optimized output"), never a
+silent seed; (2) the default seed is unconditional, so the seed placeholder is only a brief local-read
+flicker, always replaced. Scan/NEB keep their refusal + handoff.
+
+**Verification.** vitest **935 passed** (+4); tsc clean (`noUnusedLocals` on — the dropped
+`resolveCarryForwardGeometry`/`geometryMatchesFinal`/`carryForwardProvenanceComment` imports confirmed
+gone); **no cargo delta** (reuses `read_job_results`/`results.trajectory`), no migration. **Manual gate
+(Anton, live) — PENDING:** m1 New iteration from the post-GOAT r2SCAN Opt → DEFAULT = the final
+optimized structure (not the initial), provenance banner; m2 pick cycle 3 → seeds THAT frame; m3 a
+non-converged opt → last frame "did not converge (not stationary)", still selectable; scan/NEB refuse.
+**Scope:** New-iteration only — derived spawns (scan→OptTS, reopt, connectivity, F3) already read
+`results.final_geometry` (**all-spawns frame choice = next unit**); no composite ΔG‡. **Wiki:**
+debugging/022, modules/scene.md (`carryForward.ts` frame model) + editor-ui.md (the picker), index.md,
+ROADMAP.

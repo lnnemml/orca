@@ -6,6 +6,7 @@ import {
   geometryMatchesFinal,
   carryForwardProvenanceComment,
   withProvenanceComment,
+  iterationFrames,
 } from "./carryForward";
 
 /** A minimal Job (only the fields the resolver reads). */
@@ -104,6 +105,84 @@ describe("geometryMatchesFinal — the guard rejects the seed (the negative cont
     const r = results({ final_geometry: CONVERGED });
     expect(geometryMatchesFinal({ elements: ["C"], xyz_angstrom: [[0, 0, 0]] }, r)).toBe(false);
     expect(geometryMatchesFinal({ elements: ["C", "N"], xyz_angstrom: CONVERGED.xyz_angstrom }, r)).toBe(false);
+  });
+});
+
+describe("iterationFrames — explicit frame picker, default = the optimized output (debugging/022)", () => {
+  // A 3-cycle optimization trajectory: initial (frame 0), a middle cycle, the optimized output (last).
+  // The last frame's forming C–C = 2.2893 (the converged output); frame 0 = the initial seed 2.3636.
+  const TRAJ = {
+    n_frames: 3,
+    elements: ["C", "C"],
+    frames: [
+      { energy_eh: -234.30, xyz_angstrom: [[0, 0, 0], [0, 0, 2.3636]] as [number, number, number][] },
+      { energy_eh: -234.48, xyz_angstrom: [[0, 0, 0], [0, 0, 2.31]] as [number, number, number][] },
+      { energy_eh: -234.50, xyz_angstrom: [[0, 0, 0], [0, 0, 2.2893]] as [number, number, number][] },
+    ],
+  };
+
+  it("default_is_the_last_optimized_frame_not_the_seed", () => {
+    // The bug bite: a post-GOAT Opt parses converged === null, but it HAS a full trajectory — the
+    // picker must still DEFAULT to the last (optimized) frame, never frame 0 / the input seed.
+    const fr = iterationFrames(job(), results({ converged: null, trajectory: TRAJ }));
+    expect(fr.ok).toBe(true);
+    if (!fr.ok) return;
+    expect(fr.defaultIndex).toBe(2); // the LAST frame, not 0
+    // The default geometry is the OPTIMIZED output (2.2893), NOT the initial seed (2.3636).
+    expect(fr.frames[fr.defaultIndex].geometry.xyz_angstrom[1][2]).toBe(2.2893);
+    expect(fr.frames[0].geometry.xyz_angstrom[1][2]).toBe(2.3636); // frame 0 IS the seed — but not the default
+    // Labels: last = optimized output (verdict null → no false convergence claim), 0 = initial, mid = cycle.
+    expect(fr.frames[2].label).toMatch(/optimized output/i);
+    expect(fr.frames[0].label).toBe("initial geometry");
+    expect(fr.frames[1].label).toBe("cycle 1");
+    // A converged verdict names the last frame "final (converged)".
+    const conv = iterationFrames(job(), results({ converged: true, trajectory: TRAJ }));
+    if (conv.ok) expect(conv.frames[2].label).toMatch(/final \(converged\)/i);
+  });
+
+  it("non_converged_last_frame_is_labeled_not_stationary", () => {
+    // converged === false → the last frame is NOT stationary: label warns, but it stays SELECTABLE
+    // (a real frame in the list, default still last) — informed, never refused/silent.
+    const fr = iterationFrames(job(), results({ converged: false, trajectory: TRAJ }));
+    expect(fr.ok).toBe(true);
+    if (!fr.ok) return;
+    expect(fr.defaultIndex).toBe(2);
+    expect(fr.frames[2].label).toMatch(/did not converge|not stationary/i);
+  });
+
+  it("scan_or_neb_refuses_the_frame_picker", () => {
+    // A scan / NEB has a trajectory field shape but keeps its per-point/per-image handoff — the frame
+    // picker REFUSES, reusing the carry-forward reasons (never a whole-band single seed).
+    const scan = iterationFrames(job(), results({ scan: {} as never, trajectory: TRAJ }));
+    expect(scan.ok).toBe(false);
+    if (!scan.ok) {
+      expect(scan.kind).toBe("scan");
+      expect(scan.reason).toMatch(/scan/i);
+    }
+    const neb = iterationFrames(job(), results({ neb: {} as never, trajectory: TRAJ }));
+    expect(neb.ok).toBe(false);
+    if (!neb.ok) {
+      expect(neb.kind).toBe("neb");
+      expect(neb.reason).toMatch(/NEB/i);
+    }
+    // A single point (no trajectory) refuses distinctly — its geometry IS its input, nothing to pick.
+    const sp = iterationFrames(job(), results({ converged: null, trajectory: null }));
+    expect(sp.ok).toBe(false);
+    if (!sp.ok) expect(sp.kind).toBe("no-trajectory");
+  });
+
+  it("every_frame_geometry_comes_from_the_trajectory", () => {
+    // The guard: no frame's geometry is reconstructed from input_content — each equals the matching
+    // results.trajectory.frames[i] (elements shared, per-frame coords), value-for-value.
+    const fr = iterationFrames(job(), results({ converged: true, trajectory: TRAJ }));
+    expect(fr.ok).toBe(true);
+    if (!fr.ok) return;
+    fr.frames.forEach((choice, i) => {
+      expect(choice.index).toBe(i);
+      expect(choice.geometry.elements).toEqual(TRAJ.elements);
+      expect(choice.geometry.xyz_angstrom).toEqual(TRAJ.frames[i].xyz_angstrom);
+      expect(choice.energyEh).toBe(TRAJ.frames[i].energy_eh);
+    });
   });
 });
 

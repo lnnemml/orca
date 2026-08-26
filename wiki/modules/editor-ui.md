@@ -316,6 +316,21 @@ the created job's destination group — default = the active sidebar group, over
 ungrouped. It composes `move_job` (no editor/scene coupling); the mechanism lives in
 [`modules/groups-ui.md`](groups-ui.md).
 
+## New iteration — the geometry-frame picker (`debugging/022`)
+
+When New iteration is seeded from a completed **optimization**, `NewJobScreen` reads the parent's parsed
+results and resolves `iterationFrames` (`scene/carryForward.ts`). The default seeded geometry is the
+**last (optimized) frame** of the parent's trajectory, seeded **unconditionally** (the fix — the old
+path classified by the convergence *verdict* and silently kept frame 0 on a `null` verdict; the
+post-GOAT Opt bug). A compact **`<select>` of the trajectory frames** (labels + energies) lets the user
+re-pick any frame — the selected index is **application state** (mirrors `ScanProfilePanel`'s
+selected-point pattern), and a re-pick reseeds a fresh scene from **that real trajectory frame** (never
+`input_content`), replacing the `# geometry: frame …` provenance line (stripped, so re-picks never
+stack) + banner. Scan/NEB keep their per-point/per-image refusal; a genuine single point keeps its seed
+silently, but an **optimization whose trajectory failed to parse** is **warned** (the shown geometry is
+the input seed), never a silent seed. New-iteration only — the derived spawns already read
+`results.final_geometry` (extending the picker to them is the next unit).
+
 ## Where future panels go
 
 - **Phase 4.5 — reaction setup.** The reaction-center / scan-setup UI (ADR-007) is a **new dock
