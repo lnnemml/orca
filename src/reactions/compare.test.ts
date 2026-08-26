@@ -21,6 +21,7 @@ import {
   deltaDeltaGKcal,
   nebMepCurve,
   normalizedScanCurve,
+  hasOverlayCurve,
   optTsStudy,
   reactantHint,
   locatedTsBarrierVsRefs,
@@ -586,6 +587,23 @@ describe("F3+1 — standalone located-TS: ABSOLUTE barrier vs separated reactant
       product: { eEh: -234.8, gEh: null },
     });
     expect(cell.deltaEKcal).not.toBeCloseTo(vsBasin.deltaEKcal!, 3); // vs refs ≠ vs basin
+  });
+});
+
+describe("hasOverlayCurve — hide the overlay chart only when NO series has a curve", () => {
+  it("located_ts_only_hides_the_overlay", () => {
+    // A located-TS / SP-only reaction: every series carries `data: []` (its barrier is the ΔΔ table,
+    // not a curve) → false → the caller hides the empty chart frame. BITE: an unconditional chart
+    // renders an empty frame that reads as broken.
+    expect(hasOverlayCurve([{ data: [] }, { data: [] }])).toBe(false);
+    expect(hasOverlayCurve([])).toBe(false);
+  });
+
+  it("a_scan_pathway_still_shows_the_overlay", () => {
+    // The over-hiding guard: a MIXED reaction (a scan pathway WITH curve data + a located-TS with none)
+    // must STILL plot — the presence of any curve → true. Never keyed on origin.
+    expect(hasOverlayCurve([{ data: [{ relKcal: 1 }, { relKcal: 2 }] }, { data: [] }])).toBe(true);
+    expect(hasOverlayCurve([{ data: [{ relKcal: 0 }] }])).toBe(true);
   });
 });
 

@@ -20,6 +20,7 @@ import {
   deltaDeltaGKcal,
   nebMepCurve,
   normalizedScanCurve,
+  hasOverlayCurve,
   type BarrierCell,
   type Comparability,
   type OptTsStudyResult,
@@ -310,6 +311,11 @@ export function CompareView({
 
   const baseline = series[Math.min(baselineIdx, series.length - 1)];
   const unit = pathways[0]?.scan?.coordinate_unit ?? "Å";
+  // A located-TS / SP-only reaction has every series at `data: []` → the overlay chart frame would
+  // render empty. Guard the chart (+ its curve-only "ΔE relative to" control) on curve PRESENCE, not
+  // origin, so a mixed reaction (scan + located-TS) still plots the scan curve. The ΔΔ table renders
+  // regardless (below). Interim until the Stage-6.x energy-level diagram.
+  const showOverlay = hasOverlayCurve(series);
   // Any pathway with a located TS (scan-refine OR a NEB, incl. the G1 estimate) → show the
   // located-TS column + retire "approximate".
   const anyLocated = series.some((s) => s.isLocated);
@@ -398,7 +404,7 @@ export function CompareView({
             </select>
           </label>
         ) : null}
-        {!normalizedAxis ? (
+        {!normalizedAxis && showOverlay ? (
           <label className="scan-control">
             ΔE relative to
             <select
@@ -415,7 +421,11 @@ export function CompareView({
         ) : null}
       </div>
 
-      {width > 0 ? (
+      {!showOverlay ? (
+        <p className="muted" style={{ marginTop: 8, marginBottom: 0 }}>
+          No scan or NEB pathway to plot — the located-TS / SP barriers are in the table below.
+        </p>
+      ) : width > 0 ? (
         <div className="conv-chart">
           <div className="conv-chart-title">
             {normalizedAxis ? (

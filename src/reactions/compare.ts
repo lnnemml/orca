@@ -162,6 +162,18 @@ export function normalizedScanCurve(
   }));
 }
 
+/**
+ * Whether ANY overlay series carries a plottable curve (≥ 1 point). A located-TS / SP-only reaction
+ * has every series at `data: []` (its barrier lives in the ΔΔ TABLE, not a coordinate curve), so the
+ * `<LineChart>` frame would render EMPTY — the caller hides it and shows a note instead. The guard is
+ * on curve **presence**, NOT on `origin`, so a MIXED reaction (a scan pathway alongside a located-TS)
+ * still shows the scan curve — hide only when no series has any data. (Interim until the Stage-6.x
+ * energy-level diagram, which is the right genre for a levels-only reaction.)
+ */
+export function hasOverlayCurve(series: readonly { data: readonly unknown[] }[]): boolean {
+  return series.some((s) => s.data.length > 0);
+}
+
 // --- Located-TS barriers (Stage E1b) — E → {E, G} over an actual saddle ------
 //
 // C2b's barriers estimate ΔE‡ from the SCAN MAXIMUM (an approximate TS on the relaxed

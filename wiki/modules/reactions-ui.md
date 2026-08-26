@@ -456,6 +456,15 @@ table** — the benchmark quantity (literature reports vs separated reactants).
 - **Distinct from F3 (`"optts"`)** — that renders in `OptTsStudyView` vs the connectivity **basin**;
   this renders in CompareView vs **separated fragments**. Both labelled on the number; scan/NEB/F3
   rendering unchanged.
+- **The overlay chart is guarded on curve presence.** A reaction with ONLY located-TS / SP pathways has
+  every series at `data: []`, so the `<LineChart>` frame would render **empty** (the barrier is correct
+  and shown in the ΔΔ table — only the empty frame reads as broken). `hasOverlayCurve(series)` (pure, in
+  `reactions/compare.ts`) = `series.some((s) => s.data.length > 0)` gates the chart block + its
+  curve-only **"ΔE relative to"** control; when false, a one-line note ("No scan or NEB pathway to plot —
+  the located-TS / SP barriers are in the table below") replaces the frame. The guard is on curve
+  **presence, not `origin`** — a MIXED reaction (a scan pathway + a located-TS) still plots the scan
+  curve (over-hiding guard). The **ΔΔ table renders regardless.** Interim until the Stage-6.x
+  energy-level diagram (the right genre for a levels-only reaction; ROADMAP Phase 6).
 
 ## Fifth energy source for the TS arm — SP on an OptTS geometry (CCSD(T)//DFT, F4)
 

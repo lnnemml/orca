@@ -8759,3 +8759,24 @@ geometry, already in Phase 6) is the one realistic bridge — a spectroscopy rea
 chemistry. **Why now:** the deferred diagram's "mixed-provenance / hand-entered levels" fork is only
 honest if the boundary of what the pipeline CAN compute is written down — so the two land together.
 **Wiki:** ROADMAP (Stage 6.x), architecture/overview.md (boundary section).
+
+## [2026-08-26] fix | Hide the overlay chart when there is no scan/NEB curve (located-TS/SP-only reaction)
+
+**What.** A reaction with ONLY located-TS / SP pathways (no scan/NEB) rendered an **empty overlay chart
+frame**: `CompareView` rendered `<LineChart>` unconditionally, but a located-TS/SP series carries
+`data: []` (its barrier is the ΔΔ table, not a coordinate curve) — the barrier was correct and shown in
+the table; only the empty frame read as broken. **Fix:** `hasOverlayCurve(series)` (pure, in
+`reactions/compare.ts`) = `series.some((s) => s.data.length > 0)` gates the chart block + its curve-only
+**"ΔE relative to"** control; when false, a one-line note ("No scan or NEB pathway to plot — the
+located-TS / SP barriers are in the table below") replaces the frame. **Over-hiding guard:** the test is
+curve **presence, not `origin`**, so a MIXED reaction (a scan pathway + a located-TS) still plots the
+scan curve. The ΔΔ **table renders regardless**. Interim until the Stage-6.x energy-level diagram (the
+right genre for a levels-only reaction).
+
+**Verification.** vitest **937 passed** (+2 bites: `located_ts_only_hides_the_overlay` — all `data: []`
+→ false; `a_scan_pathway_still_shows_the_overlay` — one series with data → true, the anti-over-hide
+bite); tsc clean; no cargo. Scope held: no table/math/scan-NEB change, no located-TS plotted, no
+level-diagram, no composite ΔG‡. **Manual gate (Anton, live) — PENDING:** m1 "Ethylene+butadiene"
+(located-TS/SP only) → no empty frame, note → table, ΔE‡ +18.74 still in the table; m2 a scan-pathway
+reaction → the overlay curve still renders. **Wiki:** modules/reactions-ui.md (overlay guarded on curve
+presence).
