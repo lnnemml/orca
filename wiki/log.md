@@ -8730,3 +8730,32 @@ non-converged opt → last frame "did not converge (not stationary)", still sele
 `results.final_geometry` (**all-spawns frame choice = next unit**); no composite ΔG‡. **Wiki:**
 debugging/022, modules/scene.md (`carryForward.ts` frame model) + editor-ui.md (the picker), index.md,
 ROADMAP.
+
+## [2026-08-26] decision | Deferred: publication energy-level diagram (Phase 6 Stage 6.x) + the ground-state computational boundary
+
+**Planning-only — no code.** Two forward-looking records so the intent isn't lost.
+
+**ROADMAP Phase 6 — Stage 6.x — Publication-grade reaction energy-level diagram.** A connected
+energy-level (reaction-coordinate) diagram renderer — the publication genre (horizontal state levels +
+sloped connectors + energy/label annotations), **distinct** from the scan/NEB overlay (a coordinate
+*curve*). It consumes the **located-TS/SP stationary energies the ΔΔ table already has** — a rendering
+of existing numbers, no new physics. **Deferred rationale:** a publication tier, NOT needed for
+pipeline-validation / benchmarking (the ΔΔ table suffices); sequenced after the core mechanistic
+capability is proven on benchmark reactions. **Open forks recorded (to resolve when the stage begins):**
+the "reaction profile as ordered states" data model (job-lineage-derived vs an explicit ordered-states
+model — the ΔΔ table only knows TS-vs-reference); MVP (one path: levels + connectors + energies) vs full
+(competing paths, ΔΔ annotations, SVG export, embedded structures/MOs); ΔG-vs-ΔE labeling + the
+standard-state caveat carried onto the figure (never draw ΔG levels when ΔG is absent — honest-or-absent);
+mixed-provenance levels (genre-agnostic renderer accepts hand-entered ISC/excited-state values, LABELED
+pipeline-computed vs user-entered).
+
+**architecture/overview.md — the computational boundary.** Added a "Computational boundary" section: the
+tool is **ground-state, single-reference, thermal mechanisms** — every guard/parser/barrier
+(located-TS math, stationarity verdict, RRHO thermo, imaginary-mode count, comparability guard) assumes
+one electronic state on one adiabatic surface. **Excited-state**, **multireference** (CASSCF/CASPT2/
+NEVPT2/DMRG), and **spin-crossing** (MECP/ISC) need a *different* surface/barrier/stationary-point
+definition, not a new keyword → out of scope. **TD-DFT UV-Vis** (vertical excitations on a ground-state
+geometry, already in Phase 6) is the one realistic bridge — a spectroscopy readout, not excited-state
+chemistry. **Why now:** the deferred diagram's "mixed-provenance / hand-entered levels" fork is only
+honest if the boundary of what the pipeline CAN compute is written down — so the two land together.
+**Wiki:** ROADMAP (Stage 6.x), architecture/overview.md (boundary section).

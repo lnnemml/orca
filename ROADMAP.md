@@ -1377,6 +1377,29 @@ and OrcaStudio picks the job up, syncs results, and parses them — no terminal,
         states** — semilocal/composite functionals systematically underestimate charge-transfer
         states. A **hybrid or range-separated** functional (e.g. ωB97X-D4, CAM-B3LYP) is required;
         the app should steer the user there, not silently accept the ground-state method.
+- [ ] **Stage 6.x — Publication-grade reaction energy-level diagram** — *a publication tier, deferred.*
+      A connected **energy-level (reaction-coordinate) diagram** renderer — the publication genre
+      (horizontal state levels + sloped connectors + energy/label annotations), **distinct** from the
+      scan/NEB overlay (a coordinate *curve*). It consumes the **located-TS / SP stationary energies the
+      ΔΔ table already has** (no new physics — a rendering of the existing numbers).
+      - **Deferred rationale:** a publication tier, **NOT** needed for pipeline-validation / benchmarking
+        (the ΔΔ table suffices there). Sequenced **after** the tool's core mechanistic capability is
+        proven on benchmark reactions — the diagram makes proven numbers *presentable*, it does not make
+        them *correct*.
+      - **Open design forks (resolve when the stage begins, not now):**
+        - **The "reaction profile as ordered states" data model** — derive the state order from **job
+          lineage** vs an **explicit ordered-states model**. The ΔΔ table only knows *TS-vs-reference*; a
+          diagram needs an ordered sequence (reactants → complex → TS → product …), which that pairwise
+          view does not carry.
+        - **MVP vs full** — MVP = **one path** (levels + connectors + energies); full = competing paths,
+          ΔΔ annotations, **SVG export**, embedded structures / MOs on the levels.
+        - **ΔG vs ΔE labeling + the standard-state caveat** carried onto the diagram — **never draw ΔG
+          levels when ΔG is absent** (honest-or-absent, the same rule the ΔΔ table already enforces); the
+          1 atm→1 M caveat rides onto the figure, not silently applied.
+        - **Mixed-provenance levels** — the renderer is **genre-agnostic** and accepts **hand-entered**
+          energies (e.g. ISC / excited-state values the ground-state pipeline **cannot** compute; see the
+          computational-boundary note in `architecture/overview.md`), **LABELED** pipeline-computed vs
+          user-entered so the figure never implies the tool computed a level it did not.
 - [ ] **NMR (shielding → chemical shift)** — *after Phase 4.5, and here is why.* ORCA computes an
       **absolute shielding σ**, but a spectrum needs the **shift δ = σ_reference − σ_sample**, i.e. a
       **second calculation** (the reference, e.g. TMS) **with the exact same method/basis** — so a

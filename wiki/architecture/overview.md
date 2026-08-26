@@ -86,3 +86,36 @@ never stored by the app — it delegates entirely to the user's `~/.ssh` setup. 
 same "give the secret to the OS" posture applies: the Anthropic key lives in the **system
 keyring**, not in `orcastudio.db`, and the network call is made by **Rust** so the key never
 enters the webview — see [ADR-015](adr-015-api-key-storage.md).
+
+## Computational boundary — ground-state, single-reference thermal mechanisms
+
+The tool's scientific scope is **ground-state, single-reference, thermal reaction mechanisms**: a
+molecule sits in one electronic state on one adiabatic potential-energy surface, and a reaction is a
+path over that surface between stationary points (minima + first-order saddles). **Every** current
+guard, parser, and barrier definition assumes exactly this — the located-TS ΔE‡/ΔG‡ math (one TS, one
+surface), the convergence/stationarity verdict, the RRHO thermochemistry, the imaginary-frequency
+count (0 = minimum, 1 = TS), the method-comparability guard (one functional/basis/solvation scale).
+
+The following are **out of scope** because they need a **different definition of a surface, a barrier,
+or a stationary point** than that assumption — not merely a new keyword:
+
+- **Excited-state chemistry** — reactions on an *excited* surface (photochemistry): a different surface
+  per state, and "the barrier" is state-specific.
+- **Multireference methods** (CASSCF / CASPT2 / NEVPT2 / DMRG) — where a single Slater determinant /
+  KS reference is qualitatively wrong (bond-breaking, diradicals, near-degeneracies); the very notion
+  of "the" reference the comparability guard rests on dissolves.
+- **Spin-crossing / non-adiabatic** (MECP, ISC) — the reactive event is a **crossing between two
+  surfaces of different spin**, not a saddle on one; there is no single-surface TS to locate, and the
+  RRHO/imaginary-mode guards do not apply.
+
+**The one realistic future bridge** is **TD-DFT UV-Vis** — *vertical* excitations computed **on a
+ground-state geometry** (already noted in Phase 6). That reads excited-state *energies at a fixed
+ground-state structure*; it does **not** optimize, locate a TS on, or run thermochemistry over an
+excited surface, so it stays inside the ground-state-geometry assumption. It is a spectroscopy readout,
+not excited-state *chemistry*. Anything beyond it (excited-state optimization, MECP, multireference) is
+a separate tool, not a feature of this one.
+
+Consequence for the UI (honest-or-absent): where a genre is genre-agnostic about *where a number came
+from* — e.g. the future publication energy-level diagram (ROADMAP Phase 6 Stage 6.x) accepting
+hand-entered ISC / excited-state levels — such values are **user-entered, labeled as such**, never
+implied to be pipeline-computed.
