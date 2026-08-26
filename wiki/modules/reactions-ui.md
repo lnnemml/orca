@@ -457,6 +457,37 @@ table** — the benchmark quantity (literature reports vs separated reactants).
   this renders in CompareView vs **separated fragments**. Both labelled on the number; scan/NEB/F3
   rendering unchanged.
 
+## Fifth energy source for the TS arm — SP on an OptTS geometry (CCSD(T)//DFT, F4)
+
+A **fifth** energy source for a `located-ts` pathway's TS arm: a standalone **single-point (SPE)** job
+run **on an OptTS geometry** — the `CCSD(T)//DFT` protocol (a cheap DFT geometry, an accurate SP
+energy). Same `origin: "located-ts"`, same located ΔΔ table, same located math
+(`locatedBarrierEKcal`) — the SP electronic energy simply **replaces** the OptTS's own for the TS-arm
+ΔE‡. The honest differences: **ΔG‡ is structurally absent** (an SP has no Freq → no G) and the label
+carries **"(SP energy)"**. See `wiki/chemistry/reaction-barriers.md` Барʼєр 6.
+
+- **Builder** (`src/reactions/compare.ts`): `locatedTsBarrierFromSp(spEnergyEh, sumEEh)` — reuses
+  `locatedBarrierEKcal` verbatim; signature takes **only** `sumEEh` (no `sumGEh` — an SP arm can
+  never yield a ΔG‡, so the parameter would lie about what it consumes), `deltaGKcal` a typed `null`.
+  `isSinglePoint(input)` — a **soft** picker hint (no Opt/OptTS/Scan/NEB/GOAT/IRC keyword), NOT a gate.
+- **Attach recognition:** `AttachPathwayForm` marks an `isSinglePoint` candidate **"✓ SP → TS arm"**
+  (the user may still attach any completed job); `create_pathway` + `attach_job_to_pathway`, **no new
+  command**.
+- **Build:** `comparePathways` — a pathway whose sole attached job is a parsed single-point (not
+  scan/NEB/OptTS) → `origin: "located-ts"`, `locatedTs.eEh` = the SP energy, `gEh: null`, plus
+  `spOnOptTs.matchedOptTsTitle`. That match is computed **at render, no persistence** (no migration):
+  the SP's `final_geometry` (≡ its input) is bit-matched with `geometryMatchesFinal` (the **carry-
+  forward** guard, reused verbatim) against **every** OptTS job in the reaction; the first match names
+  the provenance, no match → `null`.
+- **Render** (CompareView Located-TS cell): the geometry provenance as **visible text on the barrier**
+  (not a tooltip) — **"SP energy (`<method>`) on “`<OptTS>`” geometry ✓"** when matched (the job name
+  is shown so a match against a *minimum*'s geometry, not the TS, is legible), **"⚠ … matches no OptTS
+  in this reaction — you are responsible for the geometry"** when none. The method-comparability
+  warning reuses `referenceComparable` (inside `absoluteBarrierCell`) — a DLPNO SP arm vs r2SCAN-3c
+  refs withholds the number and names the reason. **ΔG‡ shows "absent (SP — no Freq)"**, never 0.
+- **Scope:** F3/scan/NEB/OptTS-native-TS-arm rendering unchanged; no rebuilt geometry-match or located
+  math; no migration; no composite ΔG‡ (SP electronic + OptTS thermal correction — a **follow-up** unit).
+
 ## Related
 
 - `wiki/architecture/adr-007-reaction-modeling.md` (amendment) — the ratified normalized schema.

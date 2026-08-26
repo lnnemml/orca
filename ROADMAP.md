@@ -1060,6 +1060,20 @@ r1–r4 manual gates. Next per the ratified reorder: CREST probe → Stage D →
         in the **existing** located-TS ΔΔ table (not the overlay chart — an additive `origin` split in
         CompareView; scan/NEB/F3 byte-identical). +3 vitest, **no cargo, no migration**. This is the
         literature-comparison barrier (m1: Diels-Alder ethylene+butadiene vs Σ = −234.778).
+  - [x] **F4 — SP on an OptTS geometry as the TS arm → high-accuracy ΔE‡ (CCSD(T)//DFT)** (2026-08-26):
+        a FIFTH energy source for a `located-ts` TS arm — a standalone **single-point (SPE)** on an OptTS
+        geometry (cheap DFT geometry, accurate SP energy). The SP electronic energy replaces the OptTS's
+        own for the TS-arm ΔE‡ vs the separated-reactant refs; same `origin: "located-ts"`, same located
+        ΔΔ table, same `locatedBarrierEKcal`. Honest differences: **ΔG‡ structurally absent** (an SP has
+        no Freq — the builder `locatedTsBarrierFromSp(spEnergyEh, sumEEh)` takes **only** `sumEEh`,
+        `deltaGKcal` a typed `null`, never 0) and the "(SP energy)" label. **Geometry provenance shown,
+        not enforced (Variant B):** the SP's `final_geometry` is bit-matched **at render (no migration)**
+        with `geometryMatchesFinal` (the carry-forward guard, reused) against every OptTS in the reaction
+        → "on “`<OptTS>`” geometry ✓" (job name shown) / "⚠ matches no OptTS here", as **visible text on
+        the barrier**. Method-comparability reuses `referenceComparable` (a DLPNO arm vs r2SCAN-3c refs
+        withholds the number). `isSinglePoint` = a soft picker hint ("✓ SP → TS arm"), not a gate. +5
+        vitest (931), **no cargo, no migration**. Scan/NEB/F3/OptTS-native-TS-arm unchanged. **Follow-up:
+        composite ΔG‡** (SP electronic + OptTS thermal correction: G ≈ E_SP + (G_OptTS − E_OptTS)).
 - [ ] **IRC** (`! IRC`) — the RIGOROUS alternative to E2's displaced-endpoint check: probe → the
       post-condition that a found TS connects the intended reactant/product along the true steepest-
       descent path. A possible later mode; the E2 displaced-endpoint method covers the common case.

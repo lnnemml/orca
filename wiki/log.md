@@ -8640,3 +8640,43 @@ commands), no migration. **Manual gate (Anton, live):** m1 attach the OptTS TS i
 reactants; m2 refs with Freq → ΔG‡ shows, Opt-only → absent (not 0); m3 F3 (basin) still works from
 ConnectivityPanel, scan/NEB unchanged. **Wiki:** chemistry/reaction-barriers.md (Барʼєр 5 vs 3/4 — the
 two references), modules/reactions-ui.md (fourth origin), ROADMAP.
+
+## [2026-08-26] feat | SP on an OptTS geometry as the TS arm — high-accuracy ΔE‡ (CCSD(T)//DFT), geometry-provenance shown (F4)
+
+**What.** A FIFTH energy source for a `located-ts` pathway's TS arm: a standalone **single-point (SPE)**
+job run **on an OptTS geometry** — the `CCSD(T)//DFT` protocol (a cheap DFT geometry, an accurate SP
+energy). The SP electronic energy replaces the OptTS's own for the TS-arm ΔE‡ vs the reaction's
+separated-reactant references — a more accurate electronic barrier at the SAME saddle. Honest
+differences only: **ΔG‡ is structurally absent** (an SP has no Freq → no G — never a fabricated 0) and
+the label carries **"(SP energy)"**. Same `origin: "located-ts"`, same located ΔΔ table, same located
+math — no rebuilt anything.
+
+**Part A — pure builder (`compare.ts`).** `locatedTsBarrierFromSp(spEnergyEh, sumEEh)` reuses
+`locatedBarrierEKcal` verbatim; **signature takes only `sumEEh`** (the review fold — an SP arm can
+never yield a ΔG‡, so a `sumGEh` param would lie about what the function consumes), `deltaGKcal` a
+typed `null`. `isSinglePoint(input)` — a **soft** picker hint (no Opt/OptTS/Scan/NEB/GOAT/IRC), NOT a
+gate. +5 bites: ΔE‡ from the SP energy + "(SP energy)" label; ΔG‡ null even when refs carry G (+ null
+ref → null ΔE‡, never 0); `geometryMatchesFinal(sp.final_geometry, optTs.results)` true on the OptTS
+geometry / false on a seed (the identity-swap bite, mirroring carry-forward `debugging/021`); a DLPNO
+SP arm vs r2SCAN-3c refs → `referenceComparable` warns / matching → ok; the `isSinglePoint` hint.
+
+**Part B — attach + provenance/match/warning render (TS-only, no cargo).** `AttachPathwayForm` marks an
+`isSinglePoint` candidate **"✓ SP → TS arm"** (attaches via the existing `create_pathway`/
+`attach_job_to_pathway`, no new command). `ReactionsScreen`'s `comparePathways` builds a `located-ts`
+pathway from a standalone parsed SP job (not scan/NEB/OptTS), threading `spOnOptTs.matchedOptTsTitle` —
+bit-matched **at render, no persistence, no migration** with `geometryMatchesFinal` (the carry-forward
+guard, reused) against every OptTS job in the reaction. **CompareView** (additive): the `located-ts`
+series branch computes the SP ΔE‡ via `locatedTsBarrierFromSp` and renders, in the Located-TS cell,
+the geometry provenance as **visible text on the barrier** (not a tooltip) — "SP energy (`<method>`) on
+“`<OptTS>`” geometry ✓" (job name shown, so a match against a *minimum* geometry is legible) / "⚠
+matches no OptTS in this reaction — you are responsible for the geometry" — plus the method-
+comparability warning (reused `referenceComparable`, withholds the number on a mixed-method arm) and
+**ΔG‡ "absent (SP — no Freq)"**, never 0.
+
+**Verification.** vitest **931 passed** (+5); tsc clean; **no cargo delta**, no migration. Scan/NEB/F3/
+OptTS-native-TS-arm rendering unchanged. **Manual gate (Anton, live) — PENDING:** m1 a DLPNO SPE on the
+DA OptTS geometry → ΔE‡ vs separated reactants from the DLPNO energy, "on `<OptTS>` geometry ✓"; m2 an
+SP on a DIFFERENT geometry → "⚠ matches no OptTS here"; m3 DLPNO arm vs r2SCAN-3c refs → warns,
+matching-method → no warning; m4 ΔG‡ ABSENT, ΔE‡ still shows. **Next unit:** composite ΔG‡ (SP
+electronic + OptTS thermal correction). **Wiki:** chemistry/reaction-barriers.md (Барʼєр 6 — CCSD(T)//
+DFT), modules/reactions-ui.md (fifth energy source), ROADMAP.

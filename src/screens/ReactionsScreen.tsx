@@ -5,7 +5,8 @@ import { confirm } from "@tauri-apps/plugin-dialog";
 import type { Job, ParsedResults, Pathway, Reaction, ReferenceEnergy } from "../types";
 import { formatTimestamp } from "../format";
 import { isScanJob, isNebJob, isValidPathwayLabel, normalizePathwayLabel } from "../reactions/pathway";
-import { isLocatedTsInput, optTsStudy, reactantHint } from "../reactions/compare";
+import { isLocatedTsInput, isSinglePoint, optTsStudy, reactantHint } from "../reactions/compare";
+import { geometryMatchesFinal } from "../scene/carryForward";
 import {
   CompareView,
   type ComparePathway,
@@ -32,6 +33,10 @@ interface Candidate {
    * (F3+1: an absolute ΔE‡/ΔG‡ vs the reaction's separated-reactant references), so the picker
    * marks it "✓ located TS" instead of "won't compare". */
   isLocatedTs: boolean;
+  /** Its input is a single-point energy (no Opt/OptTS/Scan/NEB/GOAT/IRC keyword) — a SOFT HINT
+   * (F4) that it can be an SP-on-an-OptTS-geometry TS arm (CCSD(T)//DFT). The user may still attach
+   * any completed job; the picker just marks a likely SP candidate "✓ SP → TS arm". */
+  isSinglePoint: boolean;
 }
 
 export function ReactionsScreen({ onOpenJob }: ReactionsScreenProps) {
@@ -287,6 +292,17 @@ function ReactionDetail({ reaction, onOpenJob, onError, onChanged, onDeleted }: 
   // Pathways whose attached job carries a plottable scan profile (≥1 point) — the
   // inputs to the comparative overlay. A pathway with no job / no scan is skipped.
   const comparePathways: ComparePathway[] = useMemo(() => {
+    // The reaction's LOCATED-TS (OptTS) jobs — parsed jobs on THIS reaction's pathways whose input
+    // is an `! OptTS`. Computed once here (render-time, NO persistence) so an SP-on-an-OptTS-geometry
+    // TS arm (F4) can bit-match its geometry against every OptTS in the reaction (geometryMatchesFinal).
+    const pathwayIds = new Set(pathways.map((p) => p.id));
+    const optTsJobsInReaction = jobs.filter(
+      (j) =>
+        j.pathway_id != null &&
+        pathwayIds.has(j.pathway_id) &&
+        isLocatedTsInput(j.input_content) &&
+        resultsById.has(j.id),
+    );
     return pathways
       .map((p): ComparePathway | null => {
         // A pathway can hold the primary job (scan OR NEB) AND its OptTS refinement (E1a/N4
@@ -404,6 +420,43 @@ function ReactionDetail({ reaction, onOpenJob, onError, onChanged, onDeleted }: 
           return null;
         }
 
+        // A standalone SINGLE-POINT (SPE) job attached with no scan/NEB/OptTS primary → the
+        // SP-on-an-OptTS-geometry TS arm (Stage F4): its electronic energy is the high-accuracy ΔE‡
+        // source (CCSD(T)//DFT). An SP is NOT an OptTS, so it never enters the `tsJob` path above;
+        // it lands here. The geometry provenance is bit-matched (render-time) against the reaction's
+        // OptTS jobs and SHOWN (✓/⚠), never enforced — the user is responsible for the geometry.
+        const spJob = attached.find((j) => {
+          const r = resultsById.get(j.id);
+          return (
+            r != null &&
+            !r.scan &&
+            !r.neb &&
+            !isLocatedTsInput(j.input_content) &&
+            isSinglePoint(j.input_content)
+          );
+        });
+        if (spJob) {
+          const spResults = resultsById.get(spJob.id)!;
+          // Reuse geometryMatchesFinal (the carry-forward bit-match) verbatim: the SP's final
+          // geometry ≡ its input, so it matches an OptTS iff the SP ran on that OptTS's converged
+          // saddle. The FIRST match names the provenance; no match → the ⚠ case at render.
+          const matchedOptTs = optTsJobsInReaction.find((tj) =>
+            geometryMatchesFinal(spResults.final_geometry, resultsById.get(tj.id)!),
+          );
+          return {
+            id: p.id,
+            label: p.label,
+            origin: "located-ts",
+            input: spJob.input_content,
+            locatedTs: {
+              input: spJob.input_content,
+              eEh: spResults.final_energy_eh ?? null,
+              gEh: null, // an SP has no Freq → no G → ΔG‡ absent by construction (never a fabricated 0)
+              spOnOptTs: { matchedOptTsTitle: matchedOptTs?.title ?? null },
+            },
+          };
+        }
+
         return null;
       })
       .filter((x): x is ComparePathway => x !== null);
@@ -429,7 +482,7 @@ function ReactionDetail({ reaction, onOpenJob, onError, onChanged, onDeleted }: 
         .filter(
           (j) => (j.status === "completed" || j.status === "parsed") && j.pathway_id === null,
         )
-        .map((j) => ({ job: j, isScan: scanIds.has(j.id), isNeb: nebIds.has(j.id), isLocatedTs: isLocatedTsInput(j.input_content) })),
+        .map((j) => ({ job: j, isScan: scanIds.has(j.id), isNeb: nebIds.has(j.id), isLocatedTs: isLocatedTsInput(j.input_content), isSinglePoint: isSinglePoint(j.input_content) })),
     [jobs, scanIds, nebIds],
   );
 
@@ -463,7 +516,7 @@ function ReactionDetail({ reaction, onOpenJob, onError, onChanged, onDeleted }: 
         .filter(
           (j) => (j.status === "completed" || j.status === "parsed") && !referencedIds.has(j.id),
         )
-        .map((j) => ({ job: j, isScan: scanIds.has(j.id), isNeb: nebIds.has(j.id), isLocatedTs: isLocatedTsInput(j.input_content) })),
+        .map((j) => ({ job: j, isScan: scanIds.has(j.id), isNeb: nebIds.has(j.id), isLocatedTs: isLocatedTsInput(j.input_content), isSinglePoint: isSinglePoint(j.input_content) })),
     [jobs, referencedIds, scanIds, nebIds],
   );
 
@@ -742,11 +795,16 @@ function AttachPathwayForm({
   const [label, setLabel] = useState("");
   const [jobId, setJobId] = useState("");
 
-  // A job compares as a pathway if it is a scan OR a NEB (N4) OR a located OptTS TS (F3+1). Only a
-  // plain job (none of these) is warned "won't appear in the comparison".
+  // A job compares as a pathway if it is a scan OR a NEB (N4) OR a located OptTS TS (F3+1) OR a
+  // single-point that can be an SP-on-an-OptTS-geometry TS arm (F4). Only a plain job (none of
+  // these) is warned "won't appear in the comparison".
   const selectedCand = candidates.find((c) => c.job.id === jobId);
   const selectedComparable =
-    (selectedCand?.isScan || selectedCand?.isNeb || selectedCand?.isLocatedTs) ?? true;
+    (selectedCand?.isScan ||
+      selectedCand?.isNeb ||
+      selectedCand?.isLocatedTs ||
+      selectedCand?.isSinglePoint) ??
+    true;
   const canAttach = isValidPathwayLabel(label) && jobId !== "" && jobById.has(jobId);
 
   const attach = async () => {
@@ -815,7 +873,9 @@ function AttachPathwayForm({
                         ? "  ✓ NEB"
                         : c.isLocatedTs
                           ? "  ✓ located TS"
-                          : "  (not scan/NEB/TS)"}
+                          : c.isSinglePoint
+                            ? "  ✓ SP → TS arm"
+                            : "  (not scan/NEB/TS)"}
                   </option>
                 ))}
               </select>
@@ -830,9 +890,9 @@ function AttachPathwayForm({
           </div>
           {jobId !== "" && !selectedComparable ? (
             <div className="banner warn" style={{ marginTop: 10 }}>
-              This job is not a scan, a NEB, or an OptTS transition state. The comparison plots scan
-              profiles, NEB paths, and located-TS barriers — attaching it is allowed, but it won&apos;t
-              appear there.
+              This job is not a scan, a NEB, an OptTS transition state, or a single-point. The
+              comparison plots scan profiles, NEB paths, located-TS barriers, and SP-on-an-OptTS-geometry
+              ΔE‡ — attaching it is allowed, but it won&apos;t appear there.
             </div>
           ) : null}
         </>

@@ -24,7 +24,11 @@ import {
   optTsStudy,
   reactantHint,
   locatedTsBarrierVsRefs,
+  locatedTsBarrierFromSp,
+  isSinglePoint,
 } from "./compare";
+import { geometryMatchesFinal } from "../scene/carryForward";
+import type { ParsedResults } from "../types";
 
 /** Build a scan profile from (coordinate, act-Eh) pairs; scf mirrors act unless given. */
 function scan(
@@ -582,5 +586,78 @@ describe("F3+1 — standalone located-TS: ABSOLUTE barrier vs separated reactant
       product: { eEh: -234.8, gEh: null },
     });
     expect(cell.deltaEKcal).not.toBeCloseTo(vsBasin.deltaEKcal!, 3); // vs refs ≠ vs basin
+  });
+});
+
+describe("F4 — SP on an OptTS geometry as the TS arm (CCSD(T)//DFT electronic ΔE‡)", () => {
+  // Anton's protocol: the DA OptTS geometry (DFT), a DLPNO-CCSD(T) SPE on it, vs separated reactants.
+  const SP_E = -234.712; // the accurate DLPNO SP electronic energy on the OptTS geometry (Eh)
+  const REF_SUM_E = -234.778; // Σ E(separated reactants) at the SAME level
+
+  it("sp_ts_arm_barrier_uses_sp_energy", () => {
+    // ΔE‡ = (E_SP − Σ E(ref))·627.5 — the electronic barrier from the SP energy, NOT the OptTS's own.
+    const cell = locatedTsBarrierFromSp(SP_E, REF_SUM_E);
+    expect(cell.deltaEKcal).toBeCloseTo((SP_E - REF_SUM_E) * HARTREE_TO_KCAL, 9);
+    expect(cell.origin).toBe("located-ts");
+    // BITE: the label MUST carry "(SP energy)" so the ΔΔ table never confuses it with an OptTS-native ΔE‡.
+    expect(cell.label).toBe("vs separated reactants (SP energy)");
+    expect(cell.label).toContain("(SP energy)");
+  });
+
+  it("sp_ts_arm_deltaG_absent", () => {
+    // An SP has no Freq → no G → ΔG‡ ABSENT (null) BY CONSTRUCTION — the signature carries no Σ G(ref)
+    // to even consume. BITE: a fabricated 0 or a partial-sum ΔG‡ would be a lie — the SP arm can
+    // never contribute Gibbs energy here.
+    const cell = locatedTsBarrierFromSp(SP_E, REF_SUM_E);
+    expect(cell.deltaGKcal).toBeNull();
+    // …and ΔE‡ still shows — honest ΔE‡-only, not a suppressed row.
+    expect(cell.deltaEKcal).toBeCloseTo((SP_E - REF_SUM_E) * HARTREE_TO_KCAL, 9);
+    // An absent reference E → ΔE‡ null too (inherited honest-absent guard), never 0.
+    expect(locatedTsBarrierFromSp(SP_E, null).deltaEKcal).toBeNull();
+  });
+
+  it("sp_geometry_matches_optts", () => {
+    // The identity-swap bite: an SP energy is a valid TS barrier ONLY on the OptTS geometry. The SP
+    // job's final_geometry IS its input, so geometryMatchesFinal(sp.final_geometry, optTs.results)
+    // is true iff the SP ran on that OptTS's converged geometry.
+    const optTsResults = {
+      final_geometry: { elements: ["C", "C"], xyz_angstrom: [[0, 0, 0], [0, 0, 2.2893]] },
+    } as ParsedResults;
+    const spOnOptTs: ParsedResults["final_geometry"] = {
+      elements: ["C", "C"],
+      xyz_angstrom: [[0, 0, 0], [0, 0, 2.2893]], // bit-identical to the OptTS output
+    };
+    const spOnOther: ParsedResults["final_geometry"] = {
+      elements: ["C", "C"],
+      xyz_angstrom: [[0, 0, 0], [0, 0, 2.3636]], // a DIFFERENT geometry (the OptTS seed, not output)
+    };
+    expect(geometryMatchesFinal(spOnOptTs, optTsResults)).toBe(true);
+    expect(geometryMatchesFinal(spOnOther, optTsResults)).toBe(false);
+  });
+
+  it("sp_method_mismatch_warns", () => {
+    // A DLPNO SP TS arm vs r2SCAN-3c refs → the comparability guard fires (a benchmark wants BOTH
+    // arms at the SAME SP level: CCSD(T)//DFT on both). Reuses referenceComparable verbatim.
+    const spMethodSig = methodSignature("! DLPNO-CCSD(T) def2-TZVPP def2-TZVPP/C").display;
+    const mixed = referenceComparable(["! r2SCAN-3c", "! r2SCAN-3c"], spMethodSig);
+    expect(mixed.ok).toBe(false);
+    if (!mixed.ok) expect(mixed.reason).toMatch(/reference method differs/);
+    // Matching-method refs (DLPNO refs vs a DLPNO SP arm) → no warning.
+    const matched = referenceComparable(
+      ["! DLPNO-CCSD(T) def2-TZVPP def2-TZVPP/C", "! DLPNO-CCSD(T) def2-TZVPP def2-TZVPP/C"],
+      spMethodSig,
+    );
+    expect(matched).toEqual({ ok: true });
+  });
+
+  it("isSinglePoint is a soft hint — SP inputs pass, geometry-moving run types fail", () => {
+    // A bare method line (ORCA defaults to SP) and an explicit `! … SP` both read as single-point.
+    expect(isSinglePoint("! DLPNO-CCSD(T) def2-TZVPP def2-TZVPP/C")).toBe(true);
+    expect(isSinglePoint("! r2SCAN-3c SP TightSCF")).toBe(true);
+    // The geometry-moving / multi-structure run types are NOT single points — the hint declines.
+    expect(isSinglePoint("! r2SCAN-3c OptTS Freq")).toBe(false);
+    expect(isSinglePoint("! r2SCAN-3c Opt")).toBe(false);
+    expect(isSinglePoint("! XTB2 NEB-TS")).toBe(false);
+    expect(isSinglePoint("! r2SCAN-3c GOAT")).toBe(false);
   });
 });

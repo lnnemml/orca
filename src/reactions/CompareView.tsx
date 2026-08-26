@@ -15,6 +15,7 @@ import {
   absoluteBarrierKcal,
   methodSignature,
   locatedBarrierEKcal,
+  locatedTsBarrierFromSp,
   deltaGDoubleDaggerKcal,
   deltaDeltaGKcal,
   nebMepCurve,
@@ -36,6 +37,17 @@ export interface LocatedTs {
    * refused for free). Drives the "NEB TS (unrefined estimate)" label. Absent for a real
    * OptTS refinement (which always wins over the estimate). */
   isEstimate?: boolean;
+  /** SP-on-an-OptTS-geometry provenance (Stage F4): set when this TS-arm energy comes from a
+   * standalone SINGLE-POINT (SPE) job run on an OptTS geometry — the CCSD(T)//DFT protocol (a cheap
+   * DFT geometry, an accurate SP energy). `eEh` is the SP electronic energy; `gEh` is ALWAYS null
+   * (an SP has no Freq → no G → ΔG‡ absent BY CONSTRUCTION, never a fabricated 0). Drives the
+   * "(SP energy)" label + the geometry-provenance match line. Absent for an OptTS-native TS. */
+  spOnOptTs?: {
+    /** The bit-matched OptTS job's title (geometryMatchesFinal, computed at render vs the reaction's
+     * OptTS jobs) when the SP ran ON one OptTS's converged geometry; `null` when it matches NONE —
+     * the ⚠ case (the SP is only a valid TS barrier ON an OptTS geometry; the user is responsible). */
+    matchedOptTsTitle: string | null;
+  };
 }
 
 /** An OptTS-ORIGIN pathway (Stage F3): a reaction study built from a located OptTS transition
@@ -166,12 +178,25 @@ export function CompareView({
       if (p.origin === "located-ts") {
         const eTsEh = p.locatedTs?.eEh ?? null;
         const gTsEh = p.locatedTs?.gEh ?? null;
+        const spOnOptTs = p.locatedTs?.spOnOptTs;
+        const isSp = spOnOptTs != null;
         const methodSig = methodSignature(p.input).display;
         const refGuard = absoluteBarrierCell(0, refEnergyEh, refInputs, methodSig, refJobCount, p.input);
         const refUsable = "kcal" in refGuard;
         const refReason = "reason" in refGuard ? refGuard.reason : null;
-        const locatedEKcal = refUsable ? locatedBarrierEKcal(eTsEh, refEnergyEh) : null;
-        const deltaGKcal = refUsable ? deltaGDoubleDaggerKcal(gTsEh, refGibbsEh) : null;
+        // SP-on-an-OptTS geometry (F4): the ΔE‡ comes from locatedTsBarrierFromSp (the SP electronic
+        // energy vs Σ E(ref)), and ΔG‡ is ABSENT BY CONSTRUCTION — an SP has no Freq (the cell's
+        // deltaGKcal is a typed `null`, never a fabricated 0). An OptTS-native TS (F3+1) keeps the
+        // located ΔE‡ + a real ΔG‡ where G exists. Both gated on the reference being usable — the
+        // SAME method/completeness/stoichiometry guard (referenceComparable inside absoluteBarrierCell)
+        // fires the mixed-method warning (a DLPNO SP arm vs r2SCAN-3c refs is not subtractable).
+        const spCell = isSp ? locatedTsBarrierFromSp(eTsEh, refEnergyEh) : null;
+        const locatedEKcal = refUsable
+          ? isSp
+            ? spCell!.deltaEKcal
+            : locatedBarrierEKcal(eTsEh, refEnergyEh)
+          : null;
+        const deltaGKcal = refUsable && !isSp ? deltaGDoubleDaggerKcal(gTsEh, refGibbsEh) : null;
         return {
           ...p,
           color: PALETTE[i % PALETTE.length],
@@ -184,10 +209,13 @@ export function CompareView({
           isEstimate: false,
           locatedEKcal,
           deltaGKcal,
-          gMissing: refUsable && deltaGKcal === null,
+          gMissing: refUsable && !isSp && deltaGKcal === null,
           locatedReason: !refUsable ? refReason : null,
           eTsEh,
           gTsEh,
+          isSp,
+          spMethod: isSp ? methodSig : null,
+          spMatchedOptTsTitle: isSp ? spOnOptTs!.matchedOptTsTitle : undefined,
         };
       }
       const isNeb = p.nebMep != null;
@@ -273,6 +301,9 @@ export function CompareView({
         locatedReason,
         eTsEh,
         gTsEh,
+        isSp: false,
+        spMethod: null as string | null,
+        spMatchedOptTsTitle: undefined as string | null | undefined,
       };
     });
   }, [pathways, which, normalizedAxis, reactantsZeroActive, refEnergyEh, refGibbsEh, refInputs, refJobCount]);
@@ -571,6 +602,46 @@ export function CompareView({
                     <span className="muted" title="No parsed OptTS refinement for this pathway yet">
                       — (refine with OptTS)
                     </span>
+                  ) : s.isSp ? (
+                    // SP-on-an-OptTS geometry (F4): the geometry-provenance ✓/⚠, the SP method, the
+                    // high-accuracy electronic ΔE‡ (or the comparability/incompleteness reason), and
+                    // ΔG‡ ABSENT (an SP has no Freq — never 0). All as VISIBLE text (never a tooltip) so
+                    // the provenance + match + warning survive a copy into notes.
+                    <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2 }}>
+                      {s.spMatchedOptTsTitle != null ? (
+                        <span
+                          className="muted"
+                          style={{ fontSize: 11 }}
+                          title="The SP job's final geometry (≡ its input) bit-matches this OptTS job's converged saddle (geometryMatchesFinal) — the SP energy is on that OptTS geometry"
+                        >
+                          SP energy ({s.spMethod}) on “{s.spMatchedOptTsTitle}” geometry ✓
+                        </span>
+                      ) : (
+                        <span
+                          className="banner warn"
+                          style={{ fontSize: 11, margin: 0, padding: "2px 6px", textAlign: "left" }}
+                          title="The SP geometry bit-matches no OptTS job in this reaction — an SP energy is only a valid TS barrier ON an OptTS geometry. Shown, not enforced: you are responsible for the geometry."
+                        >
+                          ⚠ SP energy ({s.spMethod}) matches no OptTS in this reaction — you are
+                          responsible for the geometry
+                        </span>
+                      )}
+                      {s.locatedReason ? (
+                        // Mixed-method (DLPNO SP vs r2SCAN-3c refs) / incomplete / unbalanced reference
+                        // → the number is withheld with the specific reason (referenceComparable inside).
+                        <span className="muted">{s.locatedReason}</span>
+                      ) : (
+                        <span title="E(SP) − Σ E(reactant jobs): the high-accuracy electronic barrier (CCSD(T)//DFT) from the SP energy on the OptTS geometry, vs separated reactants">
+                          ΔE‡ {s.locatedEKcal != null ? sign(s.locatedEKcal) : "—"}
+                        </span>
+                      )}
+                      <span
+                        className="muted"
+                        title="A single-point has no Freq → no Gibbs energy → ΔG‡ is ABSENT (never 0). A composite ΔG‡ (SP electronic + the OptTS thermal correction) is a separate step."
+                      >
+                        ΔG‡ absent (SP — no Freq)
+                      </span>
+                    </div>
                   ) : s.locatedReason ? (
                     <span className="muted">{s.locatedReason}</span>
                   ) : (

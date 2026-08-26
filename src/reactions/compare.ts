@@ -351,6 +351,80 @@ export function locatedTsBarrierVsRefs(
   };
 }
 
+// --- SP-on-an-OptTS-geometry TS arm (Stage F4) — CCSD(T)//DFT electronic ΔE‡ ----------------
+//
+// A FIFTH energy source for a located-ts pathway's TS arm: a standalone SINGLE-POINT (SPE) job run
+// ON an OptTS geometry — the CCSD(T)//DFT protocol (a cheap DFT geometry, an accurate SP energy).
+// The barrier is the located ΔE‡ vs the reaction's separated-reactant references, using the SP's
+// electronic energy in place of the OptTS's own — MORE accurate electronically, at the SAME saddle.
+// It reuses the standalone located-TS math VERBATIM ({@link locatedBarrierEKcal}); the ONLY
+// differences from {@link locatedTsBarrierVsRefs} are honest ones:
+//   - ΔG‡ is **structurally absent** (`null`): an SP has no Freq → no G → no ΔG‡ here (never a
+//     fabricated 0). A composite ΔG‡ (SP electronic + OptTS thermal correction) is the NEXT unit.
+//   - the `label` carries `(SP energy)` so the ΔΔ table never confuses it with an OptTS-native ΔE‡.
+// The geometry provenance (is the SP actually on an OptTS geometry?) is checked at RENDER with the
+// existing {@link geometryMatchesFinal} bit-match — shown (✓/⚠), never enforced (the user is
+// responsible; the tool INFORMS). The SP-method-vs-reference-method comparability warning reuses
+// {@link referenceComparable} verbatim (a DLPNO SP arm vs r2SCAN-3c refs MUST warn).
+
+/** The ΔΔ-table cell for an SP-on-an-OptTS-geometry TS arm. `origin`/`label` are baked in so the
+ * value is never mistaken for an OptTS-native located ΔE‡. ΔE‡ shows whenever the SP energy and
+ * Σ E(ref) exist; ΔG‡ is **always `null`** — an SP has no G (honest-absent, NOT a fabricated 0). */
+export interface SpTsArmBarrierCell {
+  origin: "located-ts";
+  deltaEKcal: number | null;
+  /** Always `null`: a single-point has no Freq → no Gibbs energy → no ΔG‡. Never 0. */
+  deltaGKcal: null;
+  label: "vs separated reactants (SP energy)";
+}
+
+/**
+ * The located electronic barrier of a single-point (SPE) run — on an OptTS geometry — vs the
+ * reaction's separated-reactant references. Reuses {@link locatedBarrierEKcal} verbatim (the SAME
+ * math as {@link locatedTsBarrierVsRefs}), so there is NO new barrier arithmetic. Takes exactly
+ * `sumEEh` — the ONLY reference energy it can consume: ΔG‡ is structurally `null` (an SP has no
+ * Freq → no G), so unlike {@link locatedTsBarrierVsRefs} this signature carries NO `sumGEh` — a
+ * Σ G(ref) here would be a lie about what the function produces (an SP TS arm can never yield a
+ * ΔG‡; the composite ΔG‡ is a separate, later unit). The `(SP energy)` label distinguishes this
+ * high-accuracy electronic barrier from an OptTS-native ΔE‡.
+ */
+export function locatedTsBarrierFromSp(
+  spEnergyEh: number | null,
+  sumEEh: number | null,
+): SpTsArmBarrierCell {
+  return {
+    origin: "located-ts",
+    deltaEKcal: locatedBarrierEKcal(spEnergyEh, sumEEh),
+    deltaGKcal: null,
+    label: "vs separated reactants (SP energy)",
+  };
+}
+
+/** A SOFT hint (for the attach picker, NEVER a gate) that an input is a single-point energy: its
+ * `!` lines carry NONE of the geometry-moving / multi-structure run types (Opt/OptTS/Scan/NEB/
+ * GOAT/IRC — and their convergence-preset variants). A bare `! r2SCAN-3c` with no run type IS an
+ * SP by ORCA default. The user may still attach ANY completed job; this only marks likely SP
+ * candidates. Shares the token scan with {@link methodSignature}: split each `!` line, compare
+ * case-insensitively. */
+export function isSinglePoint(input: string): boolean {
+  for (const raw of input.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line.startsWith("!")) continue;
+    for (const tok of line.slice(1).trim().split(/\s+/)) {
+      const up = tok.toUpperCase();
+      // Any geometry-moving or multi-structure run type disqualifies the SP hint. `OPT` as a
+      // substring covers the {Loose,Normal,Tight,VeryTight}Opt family + OptTS + OptH + COpt.
+      if (up.includes("OPT")) return false;
+      if (up === "SCAN" || up === "SCANTS") return false;
+      if (up.startsWith("NEB")) return false;
+      if (up === "GOAT") return false;
+      if (up === "IRC") return false;
+      if (up === "MD") return false;
+    }
+  }
+  return true;
+}
+
 // --- Comparability guard ----------------------------------------------------
 
 /** Keywords on the `!` line that are NOT part of the electronic-structure method
