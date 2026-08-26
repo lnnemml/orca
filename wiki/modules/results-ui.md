@@ -54,22 +54,22 @@ enforce on their artifacts (ADR-010/012 seam), applied one layer out.
 - **no trajectory** (a single-point job — `results.trajectory` is `null`) → the section is **not
   rendered** at all (`ResultsCard`).
 
-### Geometry measurement readout (distance / angle / dihedral, F1)
+### Geometry measurement readout (distance / angle / dihedral, F1 + F1c)
 Clicking atoms in the viewer builds a **pick list** (`pickAtom`; a click on a picked atom removes it,
-a 5th pick drops the oldest — **cap 4**). The readout measures the **currently displayed frame's raw
-coordinates** through `measureByCoords(frames[clamped].xyz_angstrom, picked)` ([scene.md](scene.md) →
-Measurement) — the **same ASE-verified core as the editor**, so the numbers match the input builder
-exactly. `xyz_angstrom` is in frame/elements order, the same 0-based order the picks are in, so no
-re-mapping. Positional: **2 → distance** (3 dp Å), **3 → angle** (middle pick = vertex, 1 dp °),
-**4 → dihedral** (chain, `[0,360)`, 1 dp °); 0/1 picks show a quiet hint, a degenerate value shows `—`.
-Because it reads `clamped`, the value **recomputes as you scrub** — a forming bond's distance changes
-live across the trajectory. The measurement is rendered under **both** viewer mounts (the static
-"Geometry" single-frame case and the animated case).
+a 5th pick drops the oldest — **cap 4**). The picks are passed to the viewer as **`xyzSelection={picked}`**
+on **both** mounts, and the measurement now renders **ON the molecule** (F1c) — selection halos + the
+distance line / angle arc / dihedral axis + the value label — exactly like the geometry editor, drawn by
+the viewer's overlay effect off the **currently displayed frame's coords** via `measureByCoords`
+([visualization.md](visualization.md) → overlay effect). Positional: **2 → distance** (3 dp Å),
+**3 → angle** (middle pick = vertex, 1 dp °), **4 → dihedral** (chain, `[0,360)`, 1 dp °). Because the
+overlay has `xyzData` in its deps, it **redraws per frame** — the halos + line + label follow the atoms
+and the value updates as you scrub/play (a forming bond's distance changes live).
 
-For a **2-atom** pick, the distance is now **always shown raw**, and the previous **bond-order** line
-(`resultsBondLabel` — Mayer authoritative / geometric estimate, [`bondReadout.ts`]) is kept as a
-**secondary annotation beneath** it (so a forming/through-space pair shows its real distance always,
-with the bond-order note as extra). A **Clear** button empties the pick list.
+The **bottom text line** is now just the annotation the in-scene overlay can't show: the picked-atom
+**chips** (`{elem}#{k}`), a **Clear** button, and — for a **2-atom** pick only — the **bond-order** line
+(`resultsBondLabel` — Mayer authoritative / geometric estimate, `bondReadout.ts`), which has no in-scene
+form. 0/1 picks show a quiet hint. (Editor parity: the editor shows both an in-scene overlay AND a text
+panel; here the in-scene overlay is primary and the only text is the bond-order note.)
 
 ### The viewer's coordinate-update path (`MoleculeViewer` `preserveCameraOnUpdate`)
 A new opt-in prop: when set, an `xyzData` change that keeps the **same atom count** redraws the

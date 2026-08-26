@@ -8915,3 +8915,47 @@ vertex (~109°/~120°); m3 4 atoms → dihedral in `[0,360)`; m4 a 5th pick drop
 picked atom removes it, Clear empties; m5 a single-frame job shows the same readout. **Wiki:** modules/scene.md
 (the `*Coords` extraction + `measureByCoords`), modules/results-ui.md (the F1 measurement readout). **Next:**
 Anton may add a Ukrainian forming-bond note to chemistry/bond-order-from-geometry.md (his domain).
+
+## [2026-08-26] fix | F1c — render distance/angle/dihedral ON the trajectory molecule (xyz overlay reuses the editor's drawing primitives)
+
+**What.** A live gate on F1 found the measurement only showed as a **text** readout under the trajectory
+viewer — not drawn ON the molecule the way the geometry editor draws it (selection halos + in-scene
+distance line / angle arc / dihedral axis + value label). F1c gives the xyz/trajectory path the SAME
+in-scene overlay by extracting position-based drawing primitives and adding an xyz overlay branch to the
+existing overlay effect. No `measure.ts` change (F1 Part A stands), no ADR, no schema change.
+
+**MAIN RISK — a regression in the shipped geometry editor.** The extraction had to be behavior-preserving
+for the Scene path. Guard: `drawMeasurement` + the halo loop now delegate to the extracted primitives with
+byte-identical shapes (same order/params); the editor manual gate (m1) is the proof (drawing is 3Dmol-
+coupled, not unit-tested).
+
+**Part A — extraction (`MoleculeViewer.tsx`, editor preserved).** `type Pt = {x,y,z}` (a structural
+supertype of `SceneAtom`, so broadening `xyz`/`midpoint`/`drawAngleArc` to `Pt` changes nothing for Scene
+callers). Two new position-based primitives: `drawSelectionHalos(viewer, points{x,y,z,element}[], theme)`
+(the wireframe-cage loop) and `drawMeasurementFromPoints(viewer, m, pts: Pt[], theme)` (the dihedral-axis
+cylinder + dashed lines / angle arc / distance line / anchor / value label — everything after `measure`).
+`drawMeasurement(scene,…)` became thin (measure → resolve pts from rows, same stale-index bail →
+delegate) and the Scene halo loop calls `drawSelectionHalos` with ids resolved in selection order. The
+`!scene` bail stayed intact through Part A (xyz branch is Part B). 948 vitest unchanged.
+
+**Part B — xyz overlay + wiring.** New prop `xyzSelection?: number[]` (viewer indices, the xyz analog of
+`selection: AtomId[]`). The `!scene` bail became an **xyz branch INSIDE the one overlay effect** (single
+shape/label owner — a second `removeAllShapes` would wipe halos, the documented hazard; `if (orbitalCube)
+return` stays first): build `coords: Vec3[]` from `viewer.selectedAtoms({})` in `atom.index` order (== the
+index `onXyzAtomPick` emits — no re-mapping), `measureByCoords(coords, xyzSelection)`, then the SAME
+`drawSelectionHalos` + `drawMeasurementFromPoints`, then `render()`. `xyzData` + `xyzSelection` added to the
+effect deps so it **redraws per frame** — the model effect (declared first) rebuilds the frame before this
+reads it, so halos + line follow the atoms during playback. `TrajectoryPlayer` passes `xyzSelection={picked}`
+to **both** mounts and **trims** the bottom text to just the 2-atom bond-order annotation + chips + Clear
+(the value now renders in-scene); the `measureByCoords`/`formatMeasurementValue` imports + the per-frame
+`measurement` memo were dropped from the player (the viewer owns the value now).
+
+**Verification.** tsc clean; vitest **948 passed** (no new pure tests — drawing is 3Dmol-coupled, gated
+live). **Manual gates (Anton, live) — PENDING:** m1 (editor unchanged) — pick 2/3/4 atoms in the geometry
+editor → halos + line/arc/axis + label exactly as before (the byte-identity proof); m2 (xyz overlay) — a
+completed opt/OptTS trajectory, 2/3/4 picks → halo(s) + distance line+Å / angle arc+° / dihedral axis+° on
+the molecule; m3 (live per frame) — scrub/play a 2-atom forming-bond pick → halos + line + label follow the
+atoms, value updates each cycle; m4 — bottom text is only the bond-order note (2-atom) + chips + Clear,
+Clear removes the in-scene overlay too; m5 — a single-frame "Geometry" job shows the in-scene overlay.
+**Wiki:** modules/visualization.md (the position-based primitives + the overlay effect serving both paths),
+modules/results-ui.md (measurement renders on the molecule, live). **Next:** Anton's live gates m1–m5.

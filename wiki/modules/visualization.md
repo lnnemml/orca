@@ -271,11 +271,27 @@ drawn on the xyz paths (the picked atoms are named in the readout instead).
 ## The overlay effect (one owner of all shapes & labels)
 
 Halos, measurement lines/labels, atom-number labels, and the edit-mask glow are all drawn in **one**
-effect keyed on `[selection, scene, showAtomNumbers, theme]` — the **only** place that calls
-`removeAllShapes()` / `removeAllLabels()` (a second owner would erase the first). It does clear →
-re-add → `render()` with **no `zoomTo` and no model reload**, so a selection/number/theme change
-never moves the camera. On a coordinate-only edit the model effect still re-renders (new `scene` ref)
-so overlays follow atoms to their new positions.
+effect keyed on `[selection, scene, showAtomNumbers, theme, …, xyzData, xyzSelection]` — the **only**
+place that calls `removeAllShapes()` / `removeAllLabels()` (a second owner would erase the first). It
+does clear → re-add → `render()` with **no `zoomTo` and no model reload**, so a selection/number/theme
+change never moves the camera. On a coordinate-only edit the model effect still re-renders (new `scene`
+ref) so overlays follow atoms to their new positions.
+
+**Position-based drawing primitives (F1c) — the effect serves BOTH the Scene path and the xyz path.**
+The two drawing primitives take **already-resolved points**, not a Scene, so the editor (`selection:
+AtomId[]`) and the results/trajectory viewer (`xyzSelection: number[]`) share one drawing core:
+- `drawSelectionHalos(viewer, points: {x,y,z,element}[], theme)` — the wireframe-cage loop.
+- `drawMeasurementFromPoints(viewer, m: Measurement, pts: Pt[], theme)` — the distance line / angle arc
+  / dihedral axis + value label, everything below the `measure` call. (`Pt = {x,y,z}`; `SceneAtom` is
+  structurally a `Pt`, so the Scene callers are unchanged — a behavior-preserving extraction.)
+`drawMeasurement(viewer, scene, selection, theme)` is now thin: `measureSelection` → resolve `m.atoms`
+to scene rows (same stale-index bail) → `drawMeasurementFromPoints`. The **xyz branch** (inside the
+`!scene` path, below) builds `coords: Vec3[]` from the loaded model's atoms (`viewer.selectedAtoms({})`
+in `atom.index` order — the SAME 0-based index `onXyzAtomPick` emits and `xyzSelection` holds, so no
+re-mapping), runs `measureByCoords(coords, xyzSelection)`, then calls the SAME two primitives. Because
+`xyzData` + `xyzSelection` are in the deps, the xyz overlay **redraws per frame** — halos + line + label
+follow the atoms during trajectory playback (the model effect, declared first, rebuilds the frame's
+model before this effect reads it).
 
 - **Fed through the table (2c1/2c2).** The overlay builds `buildViewerAtomTable(scene)` and an
   `AtomId→atom` map. Since 2c2 the **`selection` prop is `AtomId[]`**, so a halo resolves an id
@@ -306,7 +322,10 @@ so overlays follow atoms to their new positions.
   when rays are (anti)parallel); **dihedral** → the j–k axis as a thick `addCylinder`
   (`AXIS_RADIUS = 0.05`), outer i–j / k–l bonds thin dashed.
 - **`removeAllShapes()`/`removeAllLabels()` run BEFORE the `!scene` early return** — else halos and
-  labels linger when the last fragment is removed. Clear first, then bail.
+  labels linger when the last fragment is removed. Clear first, then bail. **The `!scene` path is no
+  longer a bare bail:** when `xyzData` + a non-empty `xyzSelection` are present it draws the xyz overlay
+  (halos + measurement via the shared primitives, off `measureByCoords`) before `render()`; otherwise it
+  renders empty and returns. `if (orbitalCube) return` stays FIRST — the orbital effect owns its shapes.
 - **Shapes and labels are NOT clickable** — 3Dmol shapes/labels default non-clickable and we never
   `setClickable` them, so a label lying over a selected atom can't intercept the pick (repeat-click
   toggle-off is preserved). Verified in MiniBrowser: a "1" label placed over atom index 1, a real

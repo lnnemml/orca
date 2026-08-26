@@ -14,7 +14,13 @@ import {
   type ViewerAtomTable,
 } from "../scene/scene";
 import { resolveMovingSet, type MoveMode } from "../scene/moving-set";
-import { measureSelection, formatMeasurementValue } from "../scene/measure";
+import {
+  measureSelection,
+  measureByCoords,
+  formatMeasurementValue,
+  type Measurement,
+  type Vec3,
+} from "../scene/measure";
 import { highlightRadius, vdwTableDrift } from "./highlight";
 import { DEFAULT_THEME, cpkColorDrift, type ViewerTheme } from "./theme";
 import { parseXyzCoords, applyCoordsToAtoms, drawableBondCount } from "./frozenTopology";
@@ -234,6 +240,15 @@ interface MoleculeViewerProps {
    */
   onXyzAtomPick?: (index: number) => void;
   /**
+   * The picked atoms on the **xyzData / frame** paths (results & trajectory) as raw
+   * 0-based **viewer indices** — the xyz analog of `selection: AtomId[]` (there is no
+   * AtomId table on this path). When set (and non-empty), the overlay effect draws the
+   * SAME on-molecule geometry the editor draws (halos + distance line / angle arc /
+   * dihedral axis + value label), computed off the CURRENT frame's coords via
+   * `measureByCoords` (F1c). Ignored on the Scene path (which uses `selection`).
+   */
+  xyzSelection?: number[];
+  /**
    * Honest-note callback (Stage 3.x): the sidecar could not resolve the dragged
    * atom's connected component, so the drag fell back to moving the WHOLE fragment.
    * Called at most once per drag, on release, only when a real move was committed
@@ -408,8 +423,13 @@ const GRAB_RADIUS_PX = 22;
  * crossing it starts a DRAG (move). Small, so a deliberate drag registers at once. */
 const DRAG_THRESHOLD_PX = 3;
 
-const xyz = (a: SceneAtom) => ({ x: a.x, y: a.y, z: a.z });
-const midpoint = (a: SceneAtom, b: SceneAtom) => ({
+/** A bare 3D point. The measurement/halo drawing primitives operate on these, so the
+ * Scene path (`SceneAtom`) AND the xyz/trajectory path (frame coords) feed the SAME
+ * drawing code — `SceneAtom` is structurally a `Pt` (has x/y/z), so nothing changes for
+ * the Scene callers. */
+type Pt = { x: number; y: number; z: number };
+const xyz = (a: Pt) => ({ x: a.x, y: a.y, z: a.z });
+const midpoint = (a: Pt, b: Pt) => ({
   x: (a.x + b.x) / 2,
   y: (a.y + b.y) / 2,
   z: (a.z + b.z) / 2,
@@ -425,9 +445,9 @@ const midpoint = (a: SceneAtom, b: SceneAtom) => ({
  */
 function drawAngleArc(
   viewer: GLViewer,
-  a: SceneAtom,
-  vertex: SceneAtom,
-  b: SceneAtom,
+  a: Pt,
+  vertex: Pt,
+  b: Pt,
   color: string,
 ) {
   const u = [a.x - vertex.x, a.y - vertex.y, a.z - vertex.z];
@@ -478,30 +498,48 @@ function drawValueLabel(
 }
 
 /**
- * Draw the measurement geometry for the current pick list and a value label,
- * marking WHICH atom is the vertex/axis geometrically (2.5.2e-2) — never with a
- * second number (the "one number per atom" rule from e-1 holds):
+ * Selection halos — a wireframe cage sphere per picked atom, sized per element
+ * (`highlightRadius`) and coloured by the theme. Position-based (unit F1c): takes
+ * already-resolved points, so the **Scene** path (ids → atoms) and the **xyz** path
+ * (frame coords) draw the SAME halo shapes. Order = the order of `points`.
+ */
+function drawSelectionHalos(
+  viewer: GLViewer,
+  points: Array<{ x: number; y: number; z: number; element: string }>,
+  theme: ViewerTheme,
+) {
+  for (const p of points) {
+    viewer.addSphere({
+      center: { x: p.x, y: p.y, z: p.z },
+      radius: highlightRadius(p.element),
+      color: theme.haloColor,
+      opacity: HALO_OPACITY,
+      wireframe: true,
+    });
+  }
+}
+
+/**
+ * Draw the measurement geometry for a resolved `Measurement` + its atom points, and a
+ * value label, marking WHICH atom is the vertex/axis geometrically (2.5.2e-2) — never
+ * with a second number (the "one number per atom" rule from e-1 holds):
  * - **distance:** one dashed line, label at the bond midpoint;
  * - **angle:** two dashed rays + a solid ARC at the vertex, label at the vertex;
  * - **dihedral:** the j–k axis as a thick solid cylinder, the i–j / k–l bonds as
  *   thin dashed lines, label at the axis midpoint.
- * Colours come from `theme`. No-op for 0/1 atoms or any degenerate pick
- * (`measureSelection` → `none`). Caller has already run `removeAllShapes` /
- * `removeAllLabels` and will `render()`.
+ * Colours come from `theme`. No-op for a `none` measurement. **Position-based (F1c):**
+ * `pts` are already-resolved points (Scene rows OR xyz frame coords), so this is the
+ * single drawing path for both the editor and the trajectory viewer. Caller has already
+ * run `removeAllShapes` / `removeAllLabels` and will `render()`.
  */
-function drawMeasurement(
+function drawMeasurementFromPoints(
   viewer: GLViewer,
-  scene: Scene,
-  selection: AtomId[],
+  m: Measurement,
+  pts: Pt[],
   theme: ViewerTheme,
 ) {
-  const m = measureSelection(scene, selection);
   const label = formatMeasurementValue(m);
   if (m.kind === "none" || !label) return;
-
-  const rows = scene.fragments.flatMap((f) => f.atoms);
-  const pts = m.atoms.map((gi) => rows[gi]);
-  if (pts.some((a) => a == null)) return; // stale index — bail (guarded upstream)
 
   const line = theme.measurementLine;
 
@@ -531,6 +569,28 @@ function drawMeasurement(
         : midpoint(pts[0], pts[1]); // distance: midpoint of the bond
 
   drawValueLabel(viewer, anchor, label, theme);
+}
+
+/**
+ * The Scene-path measurement overlay: measure the `AtomId[]` selection, resolve its
+ * atoms' positions from the scene rows, then delegate to {@link drawMeasurementFromPoints}
+ * — the shared, position-based drawing core. No-op for 0/1 atoms or any degenerate pick
+ * (`measureSelection` → `none`) or a stale index.
+ */
+function drawMeasurement(
+  viewer: GLViewer,
+  scene: Scene,
+  selection: AtomId[],
+  theme: ViewerTheme,
+) {
+  const m = measureSelection(scene, selection);
+  if (m.kind === "none") return;
+
+  const rows = scene.fragments.flatMap((f) => f.atoms);
+  const pts = m.atoms.map((gi) => rows[gi]);
+  if (pts.some((a) => a == null)) return; // stale index — bail (guarded upstream)
+
+  drawMeasurementFromPoints(viewer, m, pts as Pt[], theme);
 }
 
 /**
@@ -593,6 +653,7 @@ export const MoleculeViewer = forwardRef<MoleculeViewerHandle, MoleculeViewerPro
       selection,
       onAtomPick,
       onXyzAtomPick,
+      xyzSelection,
       showAtomNumbers = false,
       formalCharges,
       theme = DEFAULT_THEME,
@@ -998,6 +1059,48 @@ export const MoleculeViewer = forwardRef<MoleculeViewerHandle, MoleculeViewerPro
     viewer.removeAllShapes();
     viewer.removeAllLabels();
     if (!scene) {
+      // xyz / trajectory path (F1c): no Scene/AtomId table, but the results viewer can
+      // still carry an `xyzSelection` of viewer indices. Draw the SAME on-molecule
+      // overlay the editor draws, computed off the CURRENTLY-loaded frame's coords —
+      // this runs inside the ONE overlay effect (single shape/label owner), and because
+      // `xyzData` + `xyzSelection` are in the deps it redraws per frame, so halos + line
+      // follow the atoms during playback. No re-mapping: the model's `atom.index` IS the
+      // 0-based index `onXyzAtomPick` emitted and `xyzSelection` holds.
+      if (xyzData?.trim() && xyzSelection && xyzSelection.length > 0) {
+        const modelAtoms = viewer.selectedAtoms({}) as unknown as OrderableAtom[];
+        const coords: Vec3[] = [];
+        const elemAt: string[] = [];
+        for (const a of modelAtoms) {
+          if (a.index == null) continue;
+          coords[a.index] = [a.x, a.y, a.z];
+          elemAt[a.index] = a.elem ?? "";
+        }
+
+        // Selection halos on the picked atoms (viewer-index order, missing dropped).
+        drawSelectionHalos(
+          viewer,
+          xyzSelection
+            .map((i) => (coords[i] ? { i, c: coords[i] } : null))
+            .filter((e): e is { i: number; c: Vec3 } => e != null)
+            .map(({ i, c }) => ({ x: c[0], y: c[1], z: c[2], element: elemAt[i] ?? "" })),
+          theme,
+        );
+
+        // The distance/angle/dihedral overlay + value label, via the SAME position-based
+        // core as the Scene path — measured off this frame's coords.
+        const m = measureByCoords(coords, xyzSelection);
+        if (m.kind !== "none") {
+          const pts = m.atoms.map((i) => coords[i]);
+          if (pts.every((c) => c != null)) {
+            drawMeasurementFromPoints(
+              viewer,
+              m,
+              pts.map((c) => ({ x: c[0], y: c[1], z: c[2] })),
+              theme,
+            );
+          }
+        }
+      }
       viewer.render();
       return;
     }
@@ -1051,17 +1154,16 @@ export const MoleculeViewer = forwardRef<MoleculeViewerHandle, MoleculeViewerPro
     // Selection halos — wireframe spheres sized per element (see highlight.ts),
     // coloured by the theme. `selection` is `AtomId[]` (2c2) → resolve directly;
     // an id no longer in the scene (`filterSelection` guards) just draws nothing.
-    for (const id of selection ?? []) {
-      const atom = byId.get(id);
-      if (!atom) continue;
-      viewer.addSphere({
-        center: { x: atom.x, y: atom.y, z: atom.z },
-        radius: highlightRadius(atom.element),
-        color: theme.haloColor,
-        opacity: HALO_OPACITY,
-        wireframe: true,
-      });
-    }
+    // Resolve ids → points in selection order, then draw through the shared
+    // position-based primitive (F1c — the SAME one the xyz path uses).
+    drawSelectionHalos(
+      viewer,
+      (selection ?? [])
+        .map((id) => byId.get(id))
+        .filter((a): a is SceneAtom => a != null)
+        .map((a) => ({ x: a.x, y: a.y, z: a.z, element: a.element })),
+      theme,
+    );
 
     // Rotation axis vs measurement — EXACTLY ONE overlay for the picked pair (unit
     // 3.3b). While the Rotate panel holds an axis `[P, Q]` the toggle picks which:
@@ -1132,7 +1234,9 @@ export const MoleculeViewer = forwardRef<MoleculeViewerHandle, MoleculeViewerPro
     }
 
     viewer.render();
-  }, [selection, scene, showAtomNumbers, formalCharges, theme, maskHighlight, clashHighlight, axisHighlight, rotateOverlay, orbitalCube]);
+    // `xyzData` + `xyzSelection`: the trajectory overlay redraws on a pick change AND on
+    // a frame advance (atom positions move) — the measurement follows the atoms (F1c).
+  }, [selection, scene, showAtomNumbers, formalCharges, theme, maskHighlight, clashHighlight, axisHighlight, rotateOverlay, orbitalCube, xyzData, xyzSelection]);
 
   // Ephemeral coordinate-only overlay — the live rotation preview (unit 3.3). Reuses
   // the SAME frozen-topology coordinate-update path the Move-mode drag and the mode

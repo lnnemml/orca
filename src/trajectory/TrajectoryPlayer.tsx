@@ -11,7 +11,6 @@ import {
 
 import { MoleculeViewer } from "../viewer/MoleculeViewer";
 import { resultsBondLabel } from "./bondReadout";
-import { measureByCoords, formatMeasurementValue } from "../scene/measure";
 import type { MayerBond } from "../types";
 import { useContainerWidth } from "../charts/useContainerWidth";
 import { resolveClickedIndex, type ChartClickState } from "../charts/clickIndex";
@@ -110,35 +109,25 @@ export function TrajectoryPlayer({
 
   const series = useMemo(() => energySeries(frames), [frames]);
 
-  // The geometry measurement for the current pick, computed off THIS frame's raw
-  // coordinates (F1). Recomputes on frame change (reads `clamped`), so scrubbing a
-  // trajectory shows a forming bond's distance change live. Routes through the same
-  // ASE-verified core as the editor (`measureByCoords`); `xyz_angstrom` is in the same
-  // 0-based order as the picks, so no re-mapping.
-  const measurement = useMemo(
-    () => measureByCoords(frames[clamped]?.xyz_angstrom ?? [], picked),
-    [frames, clamped, picked],
-  );
-
-  // The geometry readout for the current pick: the distance/angle/dihedral value, plus
-  // — for a 2-atom pick only — the bond-order line (Mayer authoritative / geometric
-  // estimate) as a SECONDARY annotation beneath the raw distance. Rendered under
-  // whichever viewer is shown (single-frame or animated).
+  // The geometry readout under the viewer. The distance/angle/dihedral VALUE now renders
+  // IN-SCENE on the molecule (F1c — `xyzSelection` drives the viewer's overlay: halos +
+  // line/arc/axis + label), so the only text left here is the 2-atom **bond-order**
+  // annotation (which has no in-scene form: Mayer authoritative / geometric estimate),
+  // plus the picked-atom chips and Clear. Rendered under whichever viewer is shown.
   const measurementReadout = () => {
     // 0/1 picks: a quiet hint, no value.
     if (picked.length < 2) {
       return (
         <div className="traj-measure-readout mono">
           <span className="traj-measure-hint muted">
-            Pick 2–4 atoms to measure distance / angle / dihedral
+            Pick 2–4 atoms to measure distance / angle / dihedral (shown on the molecule)
           </span>
         </div>
       );
     }
 
     const chip = (k: number) => `${elements[k] ?? "?"}#${k}`;
-    const primary = formatMeasurementValue(measurement); // null on a degenerate value
-    // 2-atom only: the bond-order line stays as a secondary annotation under the distance.
+    // 2-atom only: the bond-order line (no in-scene form, so it stays as text).
     const bondLine =
       picked.length === 2
         ? resultsBondLabel(
@@ -161,12 +150,13 @@ export function TrajectoryPlayer({
               </span>
             ))}
           </span>
-          <span className="traj-measure-value">{primary ?? "—"}</span>
+          {bondLine ? (
+            <span className="traj-bond-order traj-measure-secondary">{bondLine}</span>
+          ) : null}
           <button className="btn btn-sm" onClick={() => setPicked([])} title="Clear selection">
             Clear
           </button>
         </div>
-        {bondLine ? <div className="traj-bond-order traj-measure-secondary">{bondLine}</div> : null}
       </div>
     );
   };
@@ -220,7 +210,12 @@ export function TrajectoryPlayer({
           Geometry
         </div>
         <div className="viewer-panel traj-viewer">
-          <MoleculeViewer xyzData={frameXyz} preserveCameraOnUpdate onXyzAtomPick={pickAtom} />
+          <MoleculeViewer
+            xyzData={frameXyz}
+            preserveCameraOnUpdate
+            onXyzAtomPick={pickAtom}
+            xyzSelection={picked}
+          />
         </div>
         {measurementReadout()}
       </section>
@@ -237,7 +232,12 @@ export function TrajectoryPlayer({
       </div>
 
       <div className="viewer-panel traj-viewer">
-        <MoleculeViewer xyzData={frameXyz} preserveCameraOnUpdate onXyzAtomPick={pickAtom} />
+        <MoleculeViewer
+          xyzData={frameXyz}
+          preserveCameraOnUpdate
+          onXyzAtomPick={pickAtom}
+          xyzSelection={picked}
+        />
       </div>
       {measurementReadout()}
 
