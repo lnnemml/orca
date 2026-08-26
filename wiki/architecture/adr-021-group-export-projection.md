@@ -92,6 +92,34 @@ manifest asserting a structure the DB cannot prove — the exact failure class t
   exists (4.7.3).
 - **No migration, no new column, no canonical-dir write** — projection only.
 
+## Amendment (2026-08-26) — a THIRD projection: explicit multi-job selection
+
+Export now has **three** projections, all built on the same pure core and the same impure wiring:
+
+1. **Group** (`build_manifest` / `export_group`) — a group + all its sub-groups; `source.group` names the
+   root group.
+2. **Single job** (`build_single_job_manifest` / `export_job`) — one job; `source.group` is the job's own
+   group **if it has one, else null** (never fabricated).
+3. **Explicit selection** (`build_selection_manifest` / `export_selection`) — a hand-picked, **possibly
+   cross-group** set of jobs, exported to a `selected-jobs-export/` tree.
+
+The through-line is unchanged: **honest-or-absent on `source.group`.** A selection is **not a group**, so its
+manifest carries **`source.group = null` by design** (`group_id: None, group_name: None`) — fabricating a
+source group for a hand-picked set (e.g. the first job's) would be the exact false-provenance failure this ADR
+exists to remove. The manifest additionally carries a second note, the **`SELECTION_NOTE`**, stating in the
+artifact itself that this is a selection, not a group. Per-job provenance is preserved: each job's `group_path`
+is resolved against **ALL** groups (`build_selection_manifest`'s `by_id` comes from every group node, not a
+subtree), so a cross-group job keeps its full path rather than silently getting an empty one.
+
+Reuse, not reinvention: the ordering/numbering is the single extracted helper **`ordered_manifest_jobs`**
+(shared by the group and selection forms — a behavior-preserving extraction from `build_manifest`); the wiring
+reuses the inverted rule-#3 guard, `fresh_export_dir`, `copy_manifest_job_dirs`, and
+`verify_export_postcondition` unchanged. Selection-specific input hygiene: an **empty** selection is refused
+before any write, ids are **deduped on ingest** (so the post-condition's "appears exactly once" stays a second
+line of defense, not the first), and an **unknown id fails loudly** (`AppError::NotFound` naming it) rather
+than exporting a partial set. **No struct, schema, or migration change** — `ManifestSource.group_id`/
+`group_name` were already `Option<String>` (from the single-job projection).
+
 ## Consequences
 
 - A researcher shares/archives a study with one action; the exported tree reads as folders and the manifest

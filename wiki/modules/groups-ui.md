@@ -120,6 +120,34 @@ The search box + the seven **status chips** (draft…cancelled toggles) + a Clea
 filter"** (the search over-narrowed) — so an over-narrow combination reads as a filter, not an empty
 app.
 
+## Multi-job selection export (the third export projection, driven from Jobs view)
+
+The Jobs table carries a **multi-select** that drives the selection export (`export_selection`, see
+[group-export.md](group-export.md)). It is a `selected: Set<string>` state **local** to `JobsScreen` —
+like the search/status filter it is **NOT lifted to `App` and NOT persisted** across restarts. The `Set` is
+**authoritative**, which yields two ratified forks:
+
+- **Selection persists across filter changes.** Toggling search / status / the sidebar group does not touch
+  `selected` — a picked job stays picked even when the current filter hides it, and the toolbar count reflects
+  the **full** `Set`, not the visible subset. This is deliberate (a cross-group selection is the whole point of
+  the third projection — the picked jobs may live in different groups and be filtered out of the current view).
+- **Clear selection is always available when the selection is non-empty** (it empties the `Set` and closes the
+  chooser), independent of any filter.
+
+UI pieces:
+
+- **A leading checkbox column.** The header checkbox is **select-all-visible**: it adds/removes **exactly the
+  currently visible jobs** (`visibleJobs`), leaving any selected-but-filtered-out job untouched; it renders
+  checked only when every visible job is already selected. Each row's checkbox toggles that one id and
+  **`stopPropagation`s** (both the cell and the input) so ticking a box never triggers the row's open-detail
+  navigation — the same row-action pattern as `InlineRename` and Move…/Delete.
+- **A selection toolbar beside Refresh**, shown only when `selected.size > 0`: **"Export selected (N)…"** opens
+  the **same Curated/Full chooser** as `GroupSidebar.runExport` (an inline `exportChoosing` toggle → Curated…/
+  Full… → `exportSelection([...selected], mode)`), reporting the created path via the native `message()` toast;
+  plus an always-present **"Clear selection"**. `exportSelection` (`src/export/save.ts`) mirrors `exportGroup`
+  exactly (folder-open → `invoke("export_selection", { jobIds, destParent, copyMode })`). The selection is left
+  intact after a successful export.
+
 ## The reusable picker (`GroupSelect.tsx`)
 
 `<GroupSelect groups value onChange>` is a **purely presentational** controlled `<select>` of the

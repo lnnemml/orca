@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { confirm } from "@tauri-apps/plugin-dialog";
+import { confirm, message } from "@tauri-apps/plugin-dialog";
 
 import type { Group, Job, JobStatus } from "../types";
 import { formatEnergy, formatTimestamp, formatWallTime } from "../format";
@@ -10,6 +10,7 @@ import { filterJobsByGroup, type GroupSelection } from "../groups/tree";
 import { filterJobsBySearch } from "../groups/search";
 import { ROOT_OPTION } from "../groups/GroupSelect";
 import { InlineRename } from "../jobs/InlineRename";
+import { exportSelection, type CopyMode } from "../export/save";
 
 /** The status chips, in state-machine order. */
 const STATUS_CHIPS: JobStatus[] = [
@@ -49,6 +50,27 @@ export function JobsScreen({
   // JobsByGroup(...)), so search narrows within the selected group's subtree.
   const [query, setQuery] = useState("");
   const [statuses, setStatuses] = useState<Set<JobStatus>>(new Set());
+  // Multi-select for the selection export (the third projection, ADR-021). LOCAL to this
+  // screen — like the search/status filter, it is NOT lifted and NOT persisted across restarts.
+  // The Set is authoritative: a selection survives search/status/group-filter changes, so its
+  // count reflects the FULL set even when some picked jobs are currently filtered out of view.
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  // Whether the Curated/Full chooser (mirroring GroupSidebar.runExport) is open.
+  const [exportChoosing, setExportChoosing] = useState(false);
+
+  const toggleSelected = useCallback((id: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const clearSelection = useCallback(() => {
+    setSelected(new Set());
+    setExportChoosing(false);
+  }, []);
 
   const toggleStatus = useCallback((s: JobStatus) => {
     setStatuses((prev) => {
@@ -152,6 +174,40 @@ export function JobsScreen({
   const visibleJobs = filterJobsBySearch(groupJobs, query, statuses);
   const filterActive = query.trim() !== "" || statuses.size > 0;
 
+  // Select-all-visible: adds/removes EXACTLY the currently visible jobs (leaving any selected-
+  // but-filtered-out jobs untouched). The header box is checked only when every visible job is
+  // already selected.
+  const allVisibleSelected =
+    visibleJobs.length > 0 && visibleJobs.every((j) => selected.has(j.id));
+  const toggleSelectAllVisible = () => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (allVisibleSelected) {
+        for (const j of visibleJobs) next.delete(j.id);
+      } else {
+        for (const j of visibleJobs) next.add(j.id);
+      }
+      return next;
+    });
+  };
+
+  // Run the selection export in the chosen copy mode (native folder picker → path toast),
+  // mirroring GroupSidebar.runExport. The selection is left intact after a successful export.
+  const runSelectionExport = async (mode: CopyMode) => {
+    setExportChoosing(false);
+    const ids = [...selected];
+    try {
+      const path = await exportSelection(ids, mode);
+      if (path) {
+        await message(`Exported ${ids.length} selected job(s) to:\n${path}`, {
+          title: "Export complete",
+        });
+      }
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
   const selectionLabel =
     selection.kind === "all"
       ? "All jobs"
@@ -178,9 +234,41 @@ export function JobsScreen({
             <h2 className="section-title" style={{ margin: 0 }}>
               Jobs — <span className="muted">{selectionLabel}</span>
             </h2>
-            <button className="btn" onClick={load}>
-              Refresh
-            </button>
+            <div className="row" style={{ gap: 8 }}>
+              {/* Selection-export toolbar — only when at least one job is selected. */}
+              {selected.size > 0 ? (
+                exportChoosing ? (
+                  <div className="row" style={{ gap: 8 }}>
+                    <span className="muted">Export {selected.size}:</span>
+                    <button className="btn btn-sm" onClick={() => runSelectionExport("curated")}>
+                      Curated…
+                    </button>
+                    <button className="btn btn-sm" onClick={() => runSelectionExport("full")}>
+                      Full…
+                    </button>
+                    <button
+                      className="icon-btn"
+                      title="Cancel"
+                      onClick={() => setExportChoosing(false)}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <button className="btn btn-sm" onClick={() => setExportChoosing(true)}>
+                      Export selected ({selected.size})…
+                    </button>
+                    <button className="btn btn-sm" onClick={clearSelection}>
+                      Clear selection
+                    </button>
+                  </>
+                )
+              ) : null}
+              <button className="btn" onClick={load}>
+                Refresh
+              </button>
+            </div>
           </div>
 
           {/* Search + status filter (4.7.4) — composed over the group filter. */}
@@ -227,6 +315,14 @@ export function JobsScreen({
             <table className="jobs-table">
               <thead>
                 <tr>
+                  <th style={{ width: 28 }}>
+                    <input
+                      type="checkbox"
+                      checked={allVisibleSelected}
+                      onChange={toggleSelectAllVisible}
+                      title="Select all visible"
+                    />
+                  </th>
                   <th>Title</th>
                   <th>Status</th>
                   <th style={{ textAlign: "right" }}>Energy (Eh)</th>
@@ -242,6 +338,15 @@ export function JobsScreen({
                     className="clickable"
                     onClick={() => onOpenDetail(job.id, false)}
                   >
+                    <td onClick={(e) => e.stopPropagation()}>
+                      <input
+                        type="checkbox"
+                        checked={selected.has(job.id)}
+                        onChange={() => toggleSelected(job.id)}
+                        onClick={(e) => e.stopPropagation()}
+                        title="Select for export"
+                      />
+                    </td>
                     <td>
                       <InlineRename
                         value={job.title}

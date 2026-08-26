@@ -8824,3 +8824,51 @@ collision; scan/NEB/F3/F4 unchanged; reuses `geometryMatchesFinal` + the verdict
 / 2-imaginary TS freq → absent, named; m3 SP geometry ≠ freq geometry → "geometry-mismatch"; m4 a reactant
 without Freq → "reactant …: no Freq". **Wiki:** chemistry/reaction-barriers.md (Барʼєр 7), modules/
 reactions-ui.md (F5), ROADMAP. **Next:** the publication energy-level diagram (Stage 6.x) consumes these.
+
+## [2026-08-26] feat | Multi-job selection export — the third projection (null source, per-job group_path)
+
+**What.** A third export projection beside group + single-job: `export_selection` exports an EXPLICIT,
+possibly cross-group set of hand-picked jobs to a `selected-jobs-export/` tree + `manifest.json`, driven by a
+new Jobs-view multi-select. Built on the same pure core / impure wiring; **no struct, schema, or migration
+change** (`ManifestSource.group_id`/`group_name` were already `Option<String>` from the single-job form).
+
+**The identity/provenance seam (MAIN RISK, addressed head-on).** A selection is NOT a group, so
+`build_selection_manifest` carries **`source.group = null` by design** (`group_id: None, group_name: None`) —
+fabricating the first job's group would be the exact false-provenance failure ADR-021 removes — plus a second
+note, the **`SELECTION_NOTE`** (a group/single-job manifest still has ONLY the `HONESTY_NOTE`). Each job's
+`group_path` resolves against **ALL** groups (`by_id` from `all_group_nodes`, not a subtree), so a cross-group
+job keeps its full path; a subtree-scoped lookup would silently empty it (the negative control pins this).
+
+**Part A — pure (`export_group.rs`), behavior-preserving extraction.** `ordered_manifest_jobs(jobs, results,
+by_id, copy_mode)` extracted from `build_manifest` (the created_at-asc/id-tiebreak sort + `numbered_prefix` +
+`manifest_job_entry` loop) — the single ordering/numbering path for BOTH the group and selection forms; the 14
+pre-existing group/single-job tests stayed green unchanged (the extraction's own negative control).
+`build_selection_manifest` builds `by_id` from `all_group_nodes`, `source = {None, None}`, `notes =
+[HONESTY_NOTE, SELECTION_NOTE]`. +4 bites: source-null-never-fabricated (red if source→first job's group);
+group_path-against-all-groups (with an in-test subtree negative control emptying the cross-group job);
+created_at-order+numbering (real id tie-break); notes-carry-both (and a group manifest still has exactly one).
+
+**Part B — wiring (`export.rs`) + UI.** `all_group_nodes(conn)` (whole tree); `fetch_jobs_by_ids` **dedups on
+ingest** then `WHERE id IN (…)` over `JOB_EXPORT_COLUMNS`, fills `present_files`, and fails **`NotFound`
+naming** any unknown id (no partial export); `export_selection_conn` mirrors `export_group_conn` — inverted
+rule-#3 guard first, **empty selection → Err before any write**, `build_selection_manifest`,
+`fresh_export_dir(dest, "selected jobs")` → `selected-jobs-export/`, then reuses `copy_manifest_job_dirs` +
+`verify_export_postcondition` unchanged; `export_selection` command registered after `export_job`. +5 bites
+(empty-reject, unknown-id-names-it, cross-group-projects-both, dedup-repeated-id, refuses-inside-jobs-root).
+UI: a `selected: Set<string>` LOCAL to `JobsScreen` (not lifted, not persisted) — a leading checkbox column
+(header = select-all-visible over exactly `visibleJobs`; row box toggles + `stopPropagation`s so the row still
+navigates), and a toolbar beside Refresh (shown when non-empty) with the same Curated/Full chooser as
+`GroupSidebar` → `exportSelection([...selected], mode)` + native path toast + always-present Clear selection.
+**Two ratified forks:** the selection persists across search/status/group-filter changes (the Set is
+authoritative; the count reflects the full Set even when picks are filtered out of view); Clear is always
+available when non-empty.
+
+**Verification.** `cargo test commands::export` **36 passed** (14 group + single-job unchanged, +4 pure, +5
+wiring); `cargo build` no warnings; **tsc clean**; vitest **943 passed** (save.ts thin — coverage is the Rust
+bites + manual gates). **Manual gate (Anton, live) — PENDING:** m1 two jobs in two DIFFERENT groups → "Export
+selected (2)…" → Curated → folder → toast; `1_`/`2_` dirs + `manifest.json` with `"source": {"group_id":
+null, "group_name": null}`, two distinct `group_path`s, the SELECTION_NOTE; m2 header box ticks all visible,
+a search hiding one ticked job keeps the count at 2, Clear empties it; m3 at 0 selected the toolbar is hidden;
+m4 Full mode → each entry's `files.omitted` empty. **Wiki:** modules/group-export.md (third projection),
+modules/groups-ui.md (the Set + checkbox column + toolbar + two forks), ADR-021 (amendment — three
+projections). **Next:** the manual gates on Anton's live WebKitGTK; `.zip` packaging still deferred.

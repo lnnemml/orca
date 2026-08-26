@@ -118,3 +118,41 @@ no ordinal). The manifest is `build_single_job_manifest` (the pure sibling of `b
   (`job_dir` NULL) is a manifest entry with no artifact dir, the canonical `<UUID>/` dir + DB rows are untouched,
   no migration. UI: an **"Export Folder…"** action beside "Open Folder" on the job detail screen, with the same
   Curated/Full chooser and the path toast (`src/export/save.ts` `exportJob`).
+
+## Multi-job selection export — the third projection (`export_selection`)
+
+Exporting an **explicit, possibly cross-group set of hand-picked jobs** — the third export projection beside
+the group and single-job forms. Driven from a Jobs-view multi-select (see [groups-ui](groups-ui.md)); the pure
+core is `build_selection_manifest`, the impure wiring is `export_selection_conn` + the `export_selection`
+Tauri command. A selection is **not a group**, so two identity-critical things differ from the group export
+(both live in `build_selection_manifest`, the exact failure ADR-021 exists to remove):
+
+- **`source.group` is null by design.** `ManifestSource { group_id: None, group_name: None }` — never the
+  first job's group. Fabricating a source group for a hand-picked set is false provenance; the manifest also
+  carries a second note, the **`SELECTION_NOTE`**, stating in the artifact itself that this is a selection, not
+  a group, and that `source.group` is null by design. (A selection manifest therefore has **two** notes —
+  `HONESTY_NOTE` + `SELECTION_NOTE` — where a group/single-job manifest has only the `HONESTY_NOTE`.)
+- **Each job's `group_path` resolves against ALL groups**, not a subtree. `build_selection_manifest` builds
+  its `by_id` map from `all_group_nodes(conn)` (`SELECT id, name, parent_id FROM groups`), so a job in ANY
+  group keeps its full `group_path`. A subtree-scoped lookup would silently leave a cross-group job's
+  `group_path` empty — losing its real provenance (the negative control in
+  `selection_resolves_each_group_path_against_all_groups`).
+
+Ordering/numbering are the **same** as the group export: both `build_manifest` and `build_selection_manifest`
+go through the single extracted helper **`ordered_manifest_jobs(jobs, results, by_id, copy_mode)`** (the
+`created_at`-asc / id-tiebreak sort + `numbered_prefix` + `manifest_job_entry` loop), so a selection's dirs are
+`1_…`/`2_…`/… in creation order exactly like a group.
+
+Wiring (`export_selection_conn`, mirroring `export_group_conn`) reuses the group machinery unchanged — the
+inverted rule-#3 guard, `fresh_export_dir`, `copy_manifest_job_dirs`, `verify_export_postcondition`:
+
+- **Root is `selected-jobs-export/`** — `fresh_export_dir(dest_parent, "selected jobs", stamp)` (never-clobber
+  as usual).
+- **Empty selection → `Err`** (`AppError::Internal`) **before any write** — a selection is a caller error, not
+  an empty export; nothing is created under the destination.
+- **Unknown id → `AppError::NotFound` naming the missing id(s).** `fetch_jobs_by_ids` **dedups the ids on
+  ingest** (a repeated id exports exactly once — the post-condition's "appears exactly once" is the second
+  line, not the first), runs `WHERE id IN (…)` over `JOB_EXPORT_COLUMNS`, fills `present_files`, and fails
+  loudly if any distinct requested id resolved to no row (no partial export).
+- Same invariants otherwise: curated omissions recorded, draft/never-run job is a manifest entry with no dir,
+  canonical dirs + rows untouched, no migration/struct/schema change.

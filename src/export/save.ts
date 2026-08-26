@@ -49,6 +49,19 @@ export async function exportJob(jobId: string, mode: CopyMode): Promise<string |
   return invoke<string>("export_job", { jobId, destParent: dir, copyMode: mode });
 }
 
+/**
+ * Export an EXPLICIT, possibly cross-group selection of jobs to a folder the user picks — the
+ * third projection (ADR-021), into a `selected-jobs-export/` tree + a `manifest.json` whose
+ * `source.group` is null (a selection is not a group) and whose per-job `group_path` preserves
+ * each job's real provenance. The canonical `<UUID>/` dirs are untouched. Returns the created
+ * export path, or `null` if the user cancelled the folder picker.
+ */
+export async function exportSelection(jobIds: string[], mode: CopyMode): Promise<string | null> {
+  const dir = await open({ directory: true, title: "Choose export destination" });
+  if (!dir || typeof dir !== "string") return null;
+  return invoke<string>("export_selection", { jobIds, destParent: dir, copyMode: mode });
+}
+
 /** Write binary bytes (PNG) via a save dialog. Returns false if the user cancelled. */
 export async function saveBytes(defaultName: string, bytes: Uint8Array): Promise<boolean> {
   const path = await save({

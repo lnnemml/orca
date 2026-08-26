@@ -166,6 +166,14 @@ const HONESTY_NOTE: &str = "Order = job creation order; structure = group tree +
 membership. The fine OptTS/NEB/connectivity source lineage is not persisted and is NOT \
 asserted here.";
 
+/// The extra note carried ONLY by a multi-job selection export (`build_selection_manifest`).
+/// A selection is an explicit set of hand-picked jobs, NOT a group — the picked jobs may live
+/// in different groups, so `source.group` is null by design and each job's real provenance is
+/// preserved in its own `group_path`.
+const SELECTION_NOTE: &str = "This is an explicit multi-job selection, not a group. The \
+selected jobs may belong to different groups (see each job's group_path); source.group is \
+null by design.";
+
 // ---------------------------------------------------------------------------
 // Pure functions
 // ---------------------------------------------------------------------------
@@ -323,6 +331,46 @@ fn group_path_for(group_id: Option<&str>, by_id: &HashMap<&str, &GroupNode>) -> 
     chain
 }
 
+/// Order the jobs and project each to a `ManifestJob` — the single ordering/numbering path
+/// shared by [`build_manifest`] (group export) and [`build_selection_manifest`] (explicit
+/// multi-job selection). Jobs are sorted by `created_at` ascending, tie-broken by `id`, so the
+/// assigned numbered prefix reflects creation order; each job's `group_path` is resolved by
+/// walking `by_id` (for a selection that map spans ALL groups, so a cross-group job keeps its
+/// real provenance). Pure — no fs, no DB, no clock.
+fn ordered_manifest_jobs(
+    jobs: &[JobRow],
+    results: &[ResultRow],
+    by_id: &HashMap<&str, &GroupNode>,
+    copy_mode: &CopyMode,
+) -> Vec<ManifestJob> {
+    let results_by_job: HashMap<&str, &ResultRow> =
+        results.iter().map(|r| (r.job_id.as_str(), r)).collect();
+
+    let mut ordered: Vec<&JobRow> = jobs.iter().collect();
+    ordered.sort_by(|a, b| {
+        a.created_at
+            .cmp(&b.created_at)
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    let group_size = ordered.len();
+
+    ordered
+        .iter()
+        .enumerate()
+        .map(|(i, job)| {
+            let exported_dir =
+                format!("{}_{}", numbered_prefix(i, group_size), slugify(&job.title));
+            manifest_job_entry(
+                job,
+                results_by_job.get(job.id.as_str()).copied(),
+                exported_dir,
+                group_path_for(job.group_id.as_deref(), by_id),
+                copy_mode,
+            )
+        })
+        .collect()
+}
+
 /// Build a `ManifestV1` from the in-memory rows. Pure: no fs, no DB, no clock —
 /// `exported_at` is passed in so the result is fully deterministic (and testable).
 ///
@@ -340,32 +388,7 @@ pub fn build_manifest(
 ) -> ManifestV1 {
     let by_id: HashMap<&str, &GroupNode> =
         group_tree.iter().map(|n| (n.id.as_str(), n)).collect();
-    let results_by_job: HashMap<&str, &ResultRow> =
-        results.iter().map(|r| (r.job_id.as_str(), r)).collect();
-
-    let mut ordered: Vec<&JobRow> = jobs.iter().collect();
-    ordered.sort_by(|a, b| {
-        a.created_at
-            .cmp(&b.created_at)
-            .then_with(|| a.id.cmp(&b.id))
-    });
-    let group_size = ordered.len();
-
-    let manifest_jobs = ordered
-        .iter()
-        .enumerate()
-        .map(|(i, job)| {
-            let exported_dir =
-                format!("{}_{}", numbered_prefix(i, group_size), slugify(&job.title));
-            manifest_job_entry(
-                job,
-                results_by_job.get(job.id.as_str()).copied(),
-                exported_dir,
-                group_path_for(job.group_id.as_deref(), &by_id),
-                &copy_mode,
-            )
-        })
-        .collect();
+    let manifest_jobs = ordered_manifest_jobs(jobs, results, &by_id, &copy_mode);
 
     ManifestV1 {
         manifest_version: 1,
@@ -410,6 +433,43 @@ pub fn build_single_job_manifest(
         },
         jobs: vec![entry],
         notes: vec![HONESTY_NOTE.to_string()],
+    }
+}
+
+/// Build a `ManifestV1` for an **explicit multi-job selection** — the third export projection
+/// (ADR-021 amendment), a sibling of [`build_manifest`] and [`build_single_job_manifest`]. The
+/// selected jobs are hand-picked and may span DIFFERENT groups, so this differs from a group
+/// export in exactly two identity-critical ways:
+///
+/// - **`source.group` is null by design** — a selection is not a group, so fabricating a source
+///   group (e.g. the first job's) would be the exact false-provenance error ADR-021 removes.
+///   Each job's real provenance is preserved individually in its own `group_path`.
+/// - **`by_id` is built from `all_group_nodes` (ALL groups), not one subtree** — so a job whose
+///   group is anywhere in the tree resolves to its full `group_path`; a subtree-scoped map would
+///   silently leave a cross-group job's `group_path` empty, losing its provenance.
+///
+/// Ordering/numbering go through the shared [`ordered_manifest_jobs`], identical to the group
+/// export. Carries BOTH the [`HONESTY_NOTE`] and the [`SELECTION_NOTE`]. Pure: no fs, no DB, no
+/// clock (`exported_at` injected).
+pub fn build_selection_manifest(
+    jobs: &[JobRow],
+    results: &[ResultRow],
+    all_group_nodes: &[GroupNode],
+    copy_mode: CopyMode,
+    exported_at: String,
+) -> ManifestV1 {
+    let by_id: HashMap<&str, &GroupNode> =
+        all_group_nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+    let manifest_jobs = ordered_manifest_jobs(jobs, results, &by_id, &copy_mode);
+
+    ManifestV1 {
+        manifest_version: 1,
+        exported_at,
+        copy_mode,
+        // A selection is NOT a group — never fabricate a source group (MAIN RISK a).
+        source: ManifestSource { group_id: None, group_name: None },
+        jobs: manifest_jobs,
+        notes: vec![HONESTY_NOTE.to_string(), SELECTION_NOTE.to_string()],
     }
 }
 
@@ -725,5 +785,134 @@ mod tests {
         assert_eq!(back.jobs.len(), 1);
         assert_eq!(back.jobs[0].uuid, "j1");
         assert_eq!(back.copy_mode, CopyMode::Curated);
+    }
+
+    // --- build_selection_manifest (the multi-job selection sibling) -----------
+
+    /// Two groups A and B, and a job in each — the setup every selection bite reuses.
+    fn two_groups_two_jobs() -> (Vec<GroupNode>, JobRow, JobRow) {
+        let groups = vec![
+            GroupNode { id: "g-a".into(), name: "group A".into(), parent_id: None },
+            GroupNode { id: "g-b".into(), name: "group B".into(), parent_id: None },
+        ];
+        let mut ja = job("ja", "job in A", "2026-08-14T10:00:00");
+        ja.group_id = Some("g-a".into());
+        let mut jb = job("jb", "job in B", "2026-08-14T11:00:00");
+        jb.group_id = Some("g-b".into());
+        (groups, ja, jb)
+    }
+
+    /// BITE (MAIN RISK a — never fabricate a source group): two jobs in DIFFERENT groups →
+    /// the selection manifest's `source.group_id` AND `source.group_name` are BOTH null. If the
+    /// null-source guard were replaced with the first job's group, this goes red.
+    #[test]
+    fn selection_manifest_source_group_is_null_never_fabricated() {
+        let (groups, ja, jb) = two_groups_two_jobs();
+        let m = build_selection_manifest(&[ja, jb], &[], &groups, CopyMode::Curated, "T".into());
+        assert!(
+            m.source.group_id.is_none(),
+            "a selection spans groups — source.group_id must be null, never the first job's group"
+        );
+        assert!(m.source.group_name.is_none(), "source.group_name must be null for a selection");
+
+        // And the null is present-as-null in the serialized JSON (post-condition re-reads it).
+        let json = serde_json::to_string_pretty(&m).unwrap();
+        assert!(json.contains("\"group_id\": null"), "null must be present in JSON: {json}");
+        assert!(json.contains("\"group_name\": null"));
+    }
+
+    /// BITE (MAIN RISK b — resolve each group_path against ALL groups): the job-in-A gets A's
+    /// full path, the job-in-B gets B's; neither is empty and they differ. Negative control:
+    /// building `by_id` from only ONE group's subtree leaves the OTHER job's group_path empty.
+    #[test]
+    fn selection_resolves_each_group_path_against_all_groups() {
+        let (groups, ja, jb) = two_groups_two_jobs();
+        let m = build_selection_manifest(
+            &[ja.clone(), jb.clone()],
+            &[],
+            &groups,
+            CopyMode::Curated,
+            "T".into(),
+        );
+        let by_uuid: HashMap<&str, &ManifestJob> =
+            m.jobs.iter().map(|j| (j.uuid.as_str(), j)).collect();
+        assert_eq!(by_uuid["ja"].group_path, vec!["group A"]);
+        assert_eq!(by_uuid["jb"].group_path, vec!["group B"]);
+        assert!(!by_uuid["ja"].group_path.is_empty());
+        assert!(!by_uuid["jb"].group_path.is_empty());
+        assert_ne!(by_uuid["ja"].group_path, by_uuid["jb"].group_path);
+
+        // Negative control: with only group A's node, job-in-B's group_path goes EMPTY —
+        // exactly the provenance loss the "all groups" lookup prevents.
+        let only_a = vec![GroupNode { id: "g-a".into(), name: "group A".into(), parent_id: None }];
+        let partial =
+            build_selection_manifest(&[ja, jb], &[], &only_a, CopyMode::Curated, "T".into());
+        let by_uuid2: HashMap<&str, &ManifestJob> =
+            partial.jobs.iter().map(|j| (j.uuid.as_str(), j)).collect();
+        assert_eq!(by_uuid2["ja"].group_path, vec!["group A"]);
+        assert!(
+            by_uuid2["jb"].group_path.is_empty(),
+            "a subtree-scoped lookup silently loses the cross-group job's provenance"
+        );
+    }
+
+    /// Three cross-group jobs get `1_`/`2_`/`3_` prefixes in created_at order (id tie-break),
+    /// through the SAME `ordered_manifest_jobs` path as the group export.
+    #[test]
+    fn selection_orders_by_created_at_and_numbers() {
+        let groups = vec![
+            GroupNode { id: "g-a".into(), name: "A".into(), parent_id: None },
+            GroupNode { id: "g-b".into(), name: "B".into(), parent_id: None },
+            GroupNode { id: "g-c".into(), name: "C".into(), parent_id: None },
+        ];
+        // Deliberately out of order; also a created_at tie broken by id.
+        let mut j_late = job("j-z", "third", "2026-08-14T12:00:00");
+        j_late.group_id = Some("g-c".into());
+        let mut j_tie_b = job("j-b", "tie-b", "2026-08-14T10:00:00");
+        j_tie_b.group_id = Some("g-b".into());
+        let mut j_tie_a = job("j-a", "tie-a", "2026-08-14T10:00:00");
+        j_tie_a.group_id = Some("g-a".into());
+
+        let m = build_selection_manifest(
+            &[j_late, j_tie_b, j_tie_a],
+            &[],
+            &groups,
+            CopyMode::Curated,
+            "T".into(),
+        );
+        // created_at asc, ties broken by id: j-a (10:00) then j-b (10:00) then j-z (12:00).
+        assert_eq!(m.jobs[0].uuid, "j-a");
+        assert_eq!(m.jobs[0].exported_dir, "1_tie-a");
+        assert_eq!(m.jobs[1].uuid, "j-b");
+        assert_eq!(m.jobs[1].exported_dir, "2_tie-b");
+        assert_eq!(m.jobs[2].uuid, "j-z");
+        assert_eq!(m.jobs[2].exported_dir, "3_third");
+    }
+
+    /// The selection manifest carries BOTH the honesty note and the selection note; a GROUP
+    /// manifest still carries ONLY the honesty note — the extraction did not leak the selection
+    /// note into the group form.
+    #[test]
+    fn selection_notes_carry_both_honesty_and_selection() {
+        let (groups, ja, jb) = two_groups_two_jobs();
+        let sel = build_selection_manifest(&[ja, jb], &[], &groups, CopyMode::Curated, "T".into());
+        assert_eq!(sel.notes.len(), 2, "selection carries both notes");
+        assert!(sel.notes[0].contains("is NOT asserted here"), "honesty note present");
+        assert!(
+            sel.notes[1].contains("explicit multi-job selection"),
+            "selection note present"
+        );
+
+        // A group manifest is unchanged: exactly ONE note (the honesty note).
+        let grp = build_manifest(
+            &group_meta(),
+            &[job("j1", "Opt", "2026-08-14T10:00:00")],
+            &[],
+            &[],
+            CopyMode::Curated,
+            "T".into(),
+        );
+        assert_eq!(grp.notes.len(), 1, "group manifest still has ONLY the honesty note");
+        assert!(!grp.notes[0].contains("explicit multi-job selection"));
     }
 }

@@ -15,8 +15,8 @@ use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 use tauri::State;
 
 use crate::commands::export_group::{
-    build_manifest, build_single_job_manifest, slugify, CopyMode, GroupMeta, GroupNode, JobRow,
-    ManifestV1, ResultRow,
+    build_manifest, build_selection_manifest, build_single_job_manifest, slugify, CopyMode,
+    GroupMeta, GroupNode, JobRow, ManifestV1, ResultRow,
 };
 use crate::commands::settings::DbState;
 use crate::error::AppError;
@@ -518,6 +518,172 @@ pub fn export_job(
     Ok(path.to_string_lossy().into_owned())
 }
 
+// ===========================================================================
+// Multi-job selection export (ADR-021 third projection) — the SAME projection for an
+// EXPLICIT, possibly cross-group set of hand-picked jobs, into `selected-jobs-export/`.
+// Reuses the group-export machinery (the inverted rule-#3 guard, fresh_export_dir, the copy
+// loop, the manifest post-condition). Two identity-critical differences (both in
+// `build_selection_manifest`): `source.group` is null (a selection is NOT a group), and each
+// job's `group_path` is resolved against ALL groups so a cross-group job keeps its provenance.
+// ===========================================================================
+
+/// Every group in the DB as `GroupNode`s — the WHOLE tree, so a selection's `group_path`
+/// resolves for a job in ANY group (not a subtree). Field order matches `group_subtree`'s rows
+/// and `group_path_for`'s expected `GroupNode { id, name, parent_id }`.
+fn all_group_nodes(conn: &Connection) -> Result<Vec<GroupNode>, AppError> {
+    let mut stmt = conn.prepare("SELECT id, name, parent_id FROM groups")?;
+    let nodes = stmt
+        .query_map([], |r| {
+            Ok(GroupNode { id: r.get(0)?, name: r.get(1)?, parent_id: r.get(2)? })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(nodes)
+}
+
+/// The `JobRow`s for an explicit list of job ids (+ each dir listing). The ids are **deduped
+/// before the query** so a repeated id projects ONCE (the post-condition's "appears exactly
+/// once" is the second line, not the first). If any distinct requested id resolves to no row,
+/// this fails loudly with [`AppError::NotFound`] naming the missing id(s) — a partial export is
+/// never written.
+fn fetch_jobs_by_ids(conn: &Connection, job_ids: &[String]) -> Result<Vec<JobRow>, AppError> {
+    // Dedup on ingest, preserving first-seen order (only used for the "missing" report).
+    let mut seen: HashSet<&str> = HashSet::new();
+    let mut wanted: Vec<&str> = Vec::new();
+    for id in job_ids {
+        if seen.insert(id.as_str()) {
+            wanted.push(id.as_str());
+        }
+    }
+    if wanted.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let placeholders = wanted.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let sql = format!("SELECT {JOB_EXPORT_COLUMNS} FROM jobs WHERE id IN ({placeholders})");
+    let mut stmt = conn.prepare(&sql)?;
+    let mut jobs = stmt
+        .query_map(params_from_iter(wanted.iter()), |r| {
+            Ok(JobRow {
+                id: r.get(0)?,
+                title: r.get(1)?,
+                job_type: None, // no `job_type` column — honest null (ADR-021)
+                status: r.get(2)?,
+                created_at: r.get(3)?,
+                job_dir: r.get(4)?,
+                group_id: r.get(5)?,
+                pathway_id: r.get(6)?,
+                source_ensemble_job_id: r.get(7)?,
+                source_conformer_index: r.get(8)?,
+                present_files: Vec::new(),
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    // Fail loudly on any unknown id — name every one that resolved to no row.
+    let returned: HashSet<&str> = jobs.iter().map(|j| j.id.as_str()).collect();
+    let missing: Vec<&str> = wanted.iter().copied().filter(|id| !returned.contains(id)).collect();
+    if !missing.is_empty() {
+        return Err(AppError::NotFound(format!(
+            "selection export: job id(s) not found: {}",
+            missing.join(", ")
+        )));
+    }
+
+    for job in &mut jobs {
+        if let Some(dir) = &job.job_dir {
+            job.present_files = list_present_files(Path::new(dir));
+        }
+    }
+    Ok(jobs)
+}
+
+/// The testable core of `export_selection` (takes `&Connection` + resolved paths + injected
+/// timestamps). Mirrors [`export_group_conn`] but over an EXPLICIT id list: no group tree walk,
+/// `source.group` is null, and `group_path` resolves against ALL groups.
+#[allow(clippy::too_many_arguments)]
+fn export_selection_conn(
+    conn: &Connection,
+    job_ids: &[String],
+    dest_parent: &Path,
+    copy_mode: CopyMode,
+    jobs_root: &Path,
+    exported_at: String,
+    dir_stamp: &str,
+) -> Result<PathBuf, AppError> {
+    // Same inverted rule-#3 guard as the other two projections: refuse to export INTO the
+    // managed jobs root, so an export can never litter or overwrite a canonical job dir.
+    if path_is_within(jobs_root, dest_parent) {
+        return Err(AppError::Internal(
+            "refusing to export into the managed jobs directory — canonical job artifacts \
+             live there (rule #3); choose another location"
+                .into(),
+        ));
+    }
+
+    // An empty selection is a caller error, not an empty export — reject BEFORE any write.
+    if job_ids.is_empty() {
+        return Err(AppError::Internal(
+            "selection export: no jobs selected — nothing to export".into(),
+        ));
+    }
+
+    let jobs = fetch_jobs_by_ids(conn, job_ids)?; // dedups; NotFound on any unknown id
+    let collected_ids: Vec<String> = jobs.iter().map(|j| j.id.clone()).collect();
+    let results = results_for_jobs(conn, &collected_ids)?;
+    let all_groups = all_group_nodes(conn)?;
+
+    let manifest =
+        build_selection_manifest(&jobs, &results, &all_groups, copy_mode, exported_at);
+
+    // Fresh, never-clobber export root: `selected-jobs-export/`.
+    let export_root = fresh_export_dir(dest_parent, "selected jobs", dir_stamp)?;
+
+    let job_dir_by_id: std::collections::HashMap<&str, Option<&String>> =
+        jobs.iter().map(|j| (j.id.as_str(), j.job_dir.as_ref())).collect();
+    let copied_uuids = copy_manifest_job_dirs(&export_root, &manifest, &job_dir_by_id)?;
+
+    let json = serde_json::to_string_pretty(&manifest)
+        .map_err(|e| AppError::Internal(format!("serializing manifest: {e}")))?;
+    let mut f = std::fs::File::create(export_root.join("manifest.json"))?;
+    f.write_all(json.as_bytes())?;
+
+    let collected: HashSet<String> = collected_ids.into_iter().collect();
+    verify_export_postcondition(conn, &export_root, &collected, &copied_uuids)?;
+
+    Ok(export_root)
+}
+
+/// Export an EXPLICIT, possibly cross-group selection of jobs to `dest_parent` as a readable,
+/// UUID-traceable `selected-jobs-export/` tree + `manifest.json` (ADR-021 third projection).
+/// Returns the created export directory. The canonical `<UUID>/` dirs and SQLite rows are
+/// untouched — this is a projection. `source.group` is null (a selection is not a group); each
+/// job's real provenance is preserved in its own `group_path`.
+#[tauri::command]
+pub fn export_selection(
+    db: State<'_, DbState>,
+    job_ids: Vec<String>,
+    dest_parent: String,
+    copy_mode: CopyMode,
+) -> Result<String, AppError> {
+    let conn = db.lock()?;
+    let jobs_root = dirs::data_dir()
+        .map(|d| d.join("orcastudio").join("jobs"))
+        .unwrap_or_else(|| PathBuf::from("/nonexistent-jobs-root"));
+    let exported_at: String = conn.query_row("SELECT datetime('now')", [], |r| r.get(0))?;
+    let dir_stamp: String =
+        conn.query_row("SELECT strftime('%Y%m%dT%H%M%S', 'now')", [], |r| r.get(0))?;
+    let path = export_selection_conn(
+        &conn,
+        &job_ids,
+        Path::new(&dest_parent),
+        copy_mode,
+        &jobs_root,
+        exported_at,
+        &dir_stamp,
+    )?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -932,6 +1098,160 @@ mod tests {
         assert_eq!(m.jobs.len(), 1);
         assert!(m.jobs[0].files.included.is_empty() && m.jobs[0].files.omitted.is_empty());
         assert!(!out.join(&m.jobs[0].exported_dir).exists(), "draft gets no artifact dir");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    // --- Multi-job selection export (Part B) ----------------------------------
+
+    /// An empty selection is a caller error — Err, and NOTHING is written under dest.
+    #[test]
+    fn export_selection_rejects_empty() {
+        let (conn, root) = scratch("sel-empty");
+        let dest = root.join("dest");
+        std::fs::create_dir_all(&dest).unwrap();
+
+        let err = export_selection_conn(
+            &conn, &[], &dest, CopyMode::Curated, &root.join("jobs"), "t".into(), "s",
+        );
+        assert!(matches!(err, Err(AppError::Internal(_))), "empty selection must be refused");
+        // Nothing created under dest.
+        assert_eq!(std::fs::read_dir(&dest).unwrap().count(), 0, "no export dir on empty selection");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// BITE (unknown id): a selection containing a ghost id fails loudly, NAMING the ghost, and
+    /// no export dir is written. Removing the missing-id guard would let it export the real job
+    /// only — a silent partial export.
+    #[test]
+    fn export_selection_unknown_id_fails_naming_it() {
+        let (conn, root) = scratch("sel-ghost");
+        let jobs_root = root.join("jobs");
+        let dest = root.join("dest");
+        std::fs::create_dir_all(&dest).unwrap();
+
+        mk_group(&conn, "g", "study", None);
+        mk_job_with_dir(&conn, &jobs_root, "real", "Opt", "g", "2026-08-14T10:00:00", &["input.inp"]);
+
+        let err = export_selection_conn(
+            &conn,
+            &["real".into(), "ghost".into()],
+            &dest,
+            CopyMode::Curated,
+            &jobs_root,
+            "t".into(),
+            "s",
+        );
+        match err {
+            Err(AppError::NotFound(msg)) => assert!(msg.contains("ghost"), "must name the missing id: {msg}"),
+            other => panic!("expected NotFound naming the ghost, got {other:?}"),
+        }
+        assert_eq!(std::fs::read_dir(&dest).unwrap().count(), 0, "no export dir on unknown id");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// m1: two REAL jobs in two DIFFERENT groups → `selected-jobs-export/` has `1_`/`2_` dirs with
+    /// the curated files + `manifest.json` where `source.group_id` is null, 2 entries, 2 distinct
+    /// non-empty `group_path`s; the post-condition passes.
+    #[test]
+    fn export_selection_cross_group_projects_both() {
+        let (conn, root) = scratch("sel-cross");
+        let jobs_root = root.join("jobs");
+        let dest = root.join("dest");
+        std::fs::create_dir_all(&dest).unwrap();
+
+        mk_group(&conn, "g-a", "group A", None);
+        mk_group(&conn, "g-b", "group B", None);
+        mk_job_with_dir(
+            &conn, &jobs_root, "ja", "job in A", "g-a", "2026-08-14T10:00:00",
+            &["input.inp", "input.property.txt"],
+        );
+        mk_job_with_dir(
+            &conn, &jobs_root, "jb", "job in B", "g-b", "2026-08-14T11:00:00",
+            &["input.inp", "input.property.txt"],
+        );
+
+        let out = export_selection_conn(
+            &conn,
+            &["ja".into(), "jb".into()],
+            &dest,
+            CopyMode::Curated,
+            &jobs_root,
+            "2026-08-14 12:00:00".into(),
+            "stamp",
+        )
+        .expect("cross-group selection export should succeed");
+
+        assert_eq!(out.file_name().unwrap(), "selected-jobs-export");
+
+        let m: ManifestV1 =
+            serde_json::from_str(&std::fs::read_to_string(out.join("manifest.json")).unwrap()).unwrap();
+        assert_eq!(m.jobs.len(), 2);
+        // source.group is null — a selection is NOT a group (never fabricated).
+        assert!(m.source.group_id.is_none(), "selection source.group_id must be null");
+        assert!(m.source.group_name.is_none());
+        // Two distinct, non-empty group_paths (provenance preserved against ALL groups).
+        let paths: Vec<&Vec<String>> = m.jobs.iter().map(|j| &j.group_path).collect();
+        assert!(paths.iter().all(|p| !p.is_empty()), "each job keeps a non-empty group_path");
+        assert_ne!(paths[0], paths[1], "the two jobs' group_paths differ");
+        // Ordered 1_/2_ by created_at; the curated files landed on disk.
+        assert_eq!(m.jobs[0].exported_dir, "1_job-in-a");
+        assert_eq!(m.jobs[1].exported_dir, "2_job-in-b");
+        assert!(out.join("1_job-in-a").join("input.property.txt").exists());
+        assert!(out.join("2_job-in-b").join("input.property.txt").exists());
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// BITE (dedup): the SAME id passed twice exports ONCE — the dedup on ingest means the
+    /// post-condition's "appears exactly once" never trips (it stays the second line, not the
+    /// first). Without ingest dedup the manifest would carry the job twice and fail.
+    #[test]
+    fn export_selection_dedups_repeated_id() {
+        let (conn, root) = scratch("sel-dedup");
+        let jobs_root = root.join("jobs");
+        let dest = root.join("dest");
+        std::fs::create_dir_all(&dest).unwrap();
+
+        mk_group(&conn, "g", "study", None);
+        mk_job_with_dir(&conn, &jobs_root, "j1", "Opt", "g", "2026-08-14T10:00:00", &["input.inp"]);
+
+        let out = export_selection_conn(
+            &conn,
+            &["j1".into(), "j1".into()],
+            &dest,
+            CopyMode::Full,
+            &jobs_root,
+            "t".into(),
+            "s",
+        )
+        .expect("a duplicate id must dedup and export once");
+
+        let m: ManifestV1 =
+            serde_json::from_str(&std::fs::read_to_string(out.join("manifest.json")).unwrap()).unwrap();
+        assert_eq!(m.jobs.len(), 1, "a repeated id is exported exactly once");
+        assert!(out.join(&m.jobs[0].exported_dir).join("input.inp").exists());
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Inverted path guard (rule #3): a selection export INTO the managed jobs root is refused —
+    /// reuses the same guard as the group/single-job projections.
+    #[test]
+    fn export_selection_refuses_inside_jobs_root() {
+        let (conn, root) = scratch("sel-guard");
+        let jobs_root = root.join("jobs");
+        mk_group(&conn, "g", "study", None);
+        mk_job_with_dir(&conn, &jobs_root, "j1", "Opt", "g", "2026-08-14T10:00:00", &["input.inp"]);
+
+        let inside = jobs_root.join("sneaky");
+        std::fs::create_dir_all(&inside).unwrap();
+        let err = export_selection_conn(
+            &conn, &["j1".into()], &inside, CopyMode::Curated, &jobs_root, "t".into(), "s",
+        );
+        assert!(matches!(err, Err(AppError::Internal(_))), "must refuse export into jobs root");
 
         std::fs::remove_dir_all(&root).ok();
     }
