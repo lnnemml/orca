@@ -8780,3 +8780,47 @@ level-diagram, no composite ΔG‡. **Manual gate (Anton, live) — PENDING:** m
 (located-TS/SP only) → no empty frame, note → table, ΔE‡ +18.74 still in the table; m2 a scan-pathway
 reaction → the overlay curve still renders. **Wiki:** modules/reactions-ui.md (overlay guarded on curve
 presence).
+
+## [2026-08-26] feat | Composite ΔG‡ (DLPNO//r²SCAN-3c) — high-level electronic barrier + low-level thermal, three tiers on one geometry (Stage F5)
+
+**What.** The CCSD(T)//DFT+thermal composite barrier: the high-level electronic ΔE‡ (a DLPNO SP) + the
+low-level thermal/entropic correction ((G−E) from an r²SCAN-3c OptFreq), all on ONE r²SCAN-3c-converged
+stationary geometry per species. `ΔG‡ = ΔE‡_high + Δ(G−E)`, decomposable; computed via per-species
+`G = E_high + (G−E)_low`. **Naming:** "composite ΔG‡ (DLPNO//r²SCAN-3c)" — deliberately NOT the "energy:
+actual (composite)" method-energy dropdown (that is the 3c COMPOSITE METHOD's own energy).
+
+**THE INVARIANT — three tiers on ONE geometry per species** (a thermal correction is valid only on a
+stationary point of the SAME method — the DA seed-Hessian lesson; subtracting states on different
+geometries is garbage): tier 1a the OptFreq `converged === true` (`null`→blocked, the post-GOAT lesson:
+unknown status ≠ ok); tier 1b `imaginary_count === 1` TS / `0` reactant (2-imaginary "TS" → reject);
+tier 2 `geometryMatchesFinal(sp, optFreq)` (SP E_high ≡ OptFreq (G−E) geometry). Any tier fails →
+composite ABSENT, naming the species/tier.
+
+**Part A — pure (`reactions/compare.ts`).** `compositeGibbsBarrierKcal({ ts, reactants })` (null if any
+field null OR **no reactants** — the edge I closed unprompted: never Σ of nothing); `compositeGuardTier`
+→ `{ ok } | { blocked: not-converged | wrong-saddle-order | geometry-mismatch | no-thermal }`. +5 bites
+(barrier = ΔE‡_high + Δ(G−E) on real DA numbers; absent-when-any-null; wrong-saddle-order; geometry-
+mismatch; non-converged + null-verdict + no-Freq).
+
+**Part B — orchestrate + render.** `buildCompositeGibbs(ts, reactants)` (pure) pairs each species' SP to
+its OptFreq thermal **by geometry** from all parsed Freq jobs, guards the tiers, computes — **zero**
+matches → absent (named species), **multiple** → the first WITH a `note` (never a silent pick, the review
+watch-item). +1 bite (`buildComposite_thermal_pairing_zero_multiple_explicit`). `ReactionsScreen` builds
+it in the SP-arm branch (`freqPool` = every parsed Freq job; TS = the SP, reactants = the reference jobs)
+and attaches to `locatedTs.composite` (render-time, no persistence). CompareView renders it **inside the
+non-`locatedReason` branch** — so a mixed-method/incomplete reference withholds the composite too (same
+`referenceComparable` gate as ΔE‡_high) — as "composite ΔG‡ (DLPNO//r²SCAN-3c) +X.XX" + "✓ three tiers on
+one geometry" + the **two VISIBLE caveats** (the disclosed `//`-validity limit + the standard-state
+caveat, text not tooltips so they survive a copy into notes), or "absent — `<reason>`".
+
+**Verifiable-vs-disclosed provenance.** The three tiers are what the guard CAN enforce; the `//`-validity
+limit (r²SCAN-3c stationary point ≈ DLPNO minimum — uncheckable without a CCSD(T) gradient) is a DISCLOSED
+caveat on the number, not enforced.
+
+**Verification.** vitest **943 passed** (+6); tsc clean; **no cargo**, no migration. Scope: no dropdown
+collision; scan/NEB/F3/F4 unchanged; reuses `geometryMatchesFinal` + the verdict + `thermochemistry`.
+**Manual gate (Anton, live) — PENDING:** m1 the DA reaction (TS OptTS+Freq + DLPNO-SP; reactants OptFreq
++ DLPNO-SP refs) → composite ΔG‡ with "✓ three tiers on one geometry" + the //-caveat; m2 a non-converged
+/ 2-imaginary TS freq → absent, named; m3 SP geometry ≠ freq geometry → "geometry-mismatch"; m4 a reactant
+without Freq → "reactant …: no Freq". **Wiki:** chemistry/reaction-barriers.md (Барʼєр 7), modules/
+reactions-ui.md (F5), ROADMAP. **Next:** the publication energy-level diagram (Stage 6.x) consumes these.

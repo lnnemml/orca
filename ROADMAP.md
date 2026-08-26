@@ -1074,6 +1074,22 @@ r1–r4 manual gates. Next per the ratified reorder: CREST probe → Stage D →
         withholds the number). `isSinglePoint` = a soft picker hint ("✓ SP → TS arm"), not a gate. +5
         vitest (931), **no cargo, no migration**. Scan/NEB/F3/OptTS-native-TS-arm unchanged. **Follow-up:
         composite ΔG‡** (SP electronic + OptTS thermal correction: G ≈ E_SP + (G_OptTS − E_OptTS)).
+  - [x] **F5 — composite ΔG‡ (DLPNO//r²SCAN-3c): high-level E + low-level thermal, three tiers on one
+        geometry** (2026-08-26): the CCSD(T)//DFT+thermal benchmark barrier on the SP TS arm —
+        `ΔG‡ = ΔE‡_high(DLPNO SP) + Δ(G−E)`, each `(G−E)` from an r²SCAN-3c OptFreq, per-species
+        `G = E_high + (G−E)_low`. Computed ONLY when the **three-tier one-geometry invariant** holds per
+        species (`compositeGuardTier`): tier 1a OptFreq `converged === true` (`null`→blocked, the
+        post-GOAT lesson); tier 1b `imaginary_count === 1` TS / `0` reactant (2-imaginary "TS" → reject,
+        the DA seed-Hessian lesson); tier 2 `geometryMatchesFinal(sp, optFreq)`. Absent-with-named-reason
+        (species/tier) otherwise; never partial. `buildCompositeGibbs` pairs each species' SP to its
+        OptFreq thermal **by geometry** from all parsed Freq jobs — zero → absent (named), multiple → the
+        first + a `note` (never silent). **Verifiable-vs-disclosed split:** the tiers are enforced; the
+        `//`-validity limit (r²SCAN-3c stationary point ≈ DLPNO minimum, uncheckable without a CCSD(T)
+        gradient) is a **disclosed caveat VISIBLE on the number** + the standard-state caveat. Rendered
+        only inside the non-`locatedReason` branch (a mixed-method reference withholds it too, same
+        `referenceComparable` gate). Naming ≠ the "energy: actual (composite)" dropdown. +6 vitest (943),
+        **no cargo, no migration**; reuses `geometryMatchesFinal` + the verdict + `thermochemistry`.
+        **Next:** the publication energy-level diagram (Stage 6.x) consumes these composite barriers.
 - [ ] **IRC** (`! IRC`) — the RIGOROUS alternative to E2's displaced-endpoint check: probe → the
       post-condition that a found TS connects the intended reactant/product along the true steepest-
       descent path. A possible later mode; the E2 displaced-endpoint method covers the common case.

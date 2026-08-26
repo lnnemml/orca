@@ -27,6 +27,9 @@ import {
   locatedTsBarrierVsRefs,
   locatedTsBarrierFromSp,
   isSinglePoint,
+  compositeGibbsBarrierKcal,
+  compositeGuardTier,
+  buildCompositeGibbs,
 } from "./compare";
 import { geometryMatchesFinal } from "../scene/carryForward";
 import type { ParsedResults } from "../types";
@@ -677,5 +680,159 @@ describe("F4 — SP on an OptTS geometry as the TS arm (CCSD(T)//DFT electronic 
     expect(isSinglePoint("! r2SCAN-3c Opt")).toBe(false);
     expect(isSinglePoint("! XTB2 NEB-TS")).toBe(false);
     expect(isSinglePoint("! r2SCAN-3c GOAT")).toBe(false);
+  });
+});
+
+describe("F5 — composite ΔG‡ (DLPNO//r²SCAN-3c): high-level E + low-level thermal, three tiers on one geometry", () => {
+  // Real-ish DA numbers (illustrative): each species has a DLPNO SP electronic energy (highEh) and an
+  // r²SCAN-3c OptFreq's electronic + Gibbs (elLowEh / gLowEh). Thermal correction = gLowEh − elLowEh.
+  const TS = { highEh: -234.712, elLowEh: -234.7, gLowEh: -234.6 }; // (G−E)_TS = +0.100
+  const ETH = { highEh: -78.4, elLowEh: -78.39, gLowEh: -78.34 }; // ethylene, (G−E) = +0.050
+  const BUT = { highEh: -156.3, elLowEh: -156.29, gLowEh: -156.2 }; // butadiene, (G−E) = +0.090
+  const gOf = (s: { highEh: number; elLowEh: number; gLowEh: number }) => s.highEh + (s.gLowEh - s.elLowEh);
+
+  it("composite_barrier_from_high_and_thermal", () => {
+    const got = compositeGibbsBarrierKcal({ ts: TS, reactants: [ETH, BUT] });
+    const expected = (gOf(TS) - (gOf(ETH) + gOf(BUT))) * HARTREE_TO_KCAL;
+    expect(got).toBeCloseTo(expected, 9);
+    // BITE: the composite IS ΔE‡_high + Δ(G−E) — the high-level electronic barrier plus the low-level
+    // thermal correction, decomposable. (Proves it is not just the located ΔG‡ or the SP ΔE‡.)
+    const deltaEHigh = (TS.highEh - (ETH.highEh + BUT.highEh)) * HARTREE_TO_KCAL;
+    const deltaThermal =
+      ((TS.gLowEh - TS.elLowEh) - ((ETH.gLowEh - ETH.elLowEh) + (BUT.gLowEh - BUT.elLowEh))) *
+      HARTREE_TO_KCAL;
+    expect(got).toBeCloseTo(deltaEHigh + deltaThermal, 9);
+  });
+
+  it("absent_when_any_thermal_null", () => {
+    // A reactant missing its thermal (no OptFreq G) → composite null, NEVER a partial sum.
+    expect(
+      compositeGibbsBarrierKcal({ ts: TS, reactants: [ETH, { ...BUT, gLowEh: null }] }),
+    ).toBeNull();
+    // The TS missing any tier's energy → null too.
+    expect(compositeGibbsBarrierKcal({ ts: { ...TS, highEh: null }, reactants: [ETH, BUT] })).toBeNull();
+    // No reactants → null (a barrier needs a reference; never Σ of nothing).
+    expect(compositeGibbsBarrierKcal({ ts: TS, reactants: [] })).toBeNull();
+  });
+
+  // --- The three-tier guard (over the species' OptFreq results + its SP geometry) ---
+  const GEOM_A: ParsedResults["final_geometry"] = {
+    elements: ["C", "C"],
+    xyz_angstrom: [[0, 0, 0], [0, 0, 2.2893]],
+  };
+  const GEOM_B: ParsedResults["final_geometry"] = {
+    elements: ["C", "C"],
+    xyz_angstrom: [[0, 0, 0], [0, 0, 2.3636]], // a DIFFERENT geometry
+  };
+  /** A minimal OptFreq ParsedResults — only the fields the guard reads. */
+  const optFreq = (over: Partial<ParsedResults> = {}): ParsedResults =>
+    ({
+      converged: true,
+      final_geometry: GEOM_A,
+      frequencies: { imaginary_count: 1 } as ParsedResults["frequencies"],
+      thermochemistry: { el_energy_eh: -234.7, free_energy_g_eh: -234.6 } as ParsedResults["thermochemistry"],
+      ...over,
+    }) as ParsedResults;
+
+  it("tier1_rejects_wrong_saddle_order", () => {
+    // A "TS" OptFreq with imaginary_count 2 → its thermal correction is garbage (the DA seed lesson).
+    const r = compositeGuardTier({
+      optFreq: optFreq({ frequencies: { imaginary_count: 2 } as ParsedResults["frequencies"] }),
+      spGeometry: GEOM_A,
+      expectedImaginary: 1,
+    });
+    expect(r).toEqual({ blocked: "wrong-saddle-order" });
+    // A reactant (expected 0) with 1 imaginary → also wrong-saddle-order; with 0 → ok.
+    expect(
+      compositeGuardTier({
+        optFreq: optFreq({ frequencies: { imaginary_count: 1 } as ParsedResults["frequencies"] }),
+        spGeometry: GEOM_A,
+        expectedImaginary: 0,
+      }),
+    ).toEqual({ blocked: "wrong-saddle-order" });
+    expect(
+      compositeGuardTier({
+        optFreq: optFreq({ frequencies: { imaginary_count: 0 } as ParsedResults["frequencies"] }),
+        spGeometry: GEOM_A,
+        expectedImaginary: 0,
+      }),
+    ).toEqual({ ok: true });
+  });
+
+  it("tier2_rejects_geometry_mismatch", () => {
+    // The SP (E_high) geometry ≠ the OptFreq ((G−E)) geometry → subtracting states on different
+    // geometries; reject. Reuses geometryMatchesFinal (the SP-arm's own pairing).
+    const r = compositeGuardTier({ optFreq: optFreq(), spGeometry: GEOM_B, expectedImaginary: 1 });
+    expect(r).toEqual({ blocked: "geometry-mismatch" });
+    // The matching geometry passes all three tiers.
+    expect(compositeGuardTier({ optFreq: optFreq(), spGeometry: GEOM_A, expectedImaginary: 1 })).toEqual({
+      ok: true,
+    });
+  });
+
+  it("tier1_rejects_non_converged", () => {
+    // A non-converged OptFreq is not a stationary point → its Hessian/thermo is dirty. Reuse the verdict.
+    expect(
+      compositeGuardTier({ optFreq: optFreq({ converged: false }), spGeometry: GEOM_A, expectedImaginary: 1 }),
+    ).toEqual({ blocked: "not-converged" });
+    // A null verdict (unverifiable) is also not confirmed-stationary → not-converged.
+    expect(
+      compositeGuardTier({ optFreq: optFreq({ converged: null }), spGeometry: GEOM_A, expectedImaginary: 1 }),
+    ).toEqual({ blocked: "not-converged" });
+    // No Freq at all → no-thermal (distinct from a present-but-wrong-order Freq).
+    expect(
+      compositeGuardTier({ optFreq: optFreq({ frequencies: null }), spGeometry: GEOM_A, expectedImaginary: 1 }),
+    ).toEqual({ blocked: "no-thermal" });
+  });
+
+  it("buildComposite_thermal_pairing_zero_multiple_explicit", () => {
+    // The end-to-end orchestration: pair each species' SP to its OptFreq thermal BY GEOMETRY, guard the
+    // tiers, compute. Watch-item: zero AND multiple thermal matches must be EXPLICIT, never silent.
+    const GEOM_R: ParsedResults["final_geometry"] = {
+      elements: ["C", "C"],
+      xyz_angstrom: [[0, 0, 0], [0, 0, 1.5]], // a reactant geometry, distinct from GEOM_A/GEOM_B
+    };
+    const tsFreq = {
+      title: "TS OptTS+Freq",
+      results: optFreq({
+        final_geometry: GEOM_A,
+        frequencies: { imaginary_count: 1 } as ParsedResults["frequencies"], // a genuine TS
+      }),
+    };
+    const rFreq = {
+      title: "ethylene OptFreq",
+      results: optFreq({
+        final_geometry: GEOM_R,
+        frequencies: { imaginary_count: 0 } as ParsedResults["frequencies"], // a minimum
+        thermochemistry: { el_energy_eh: -78.39, free_energy_g_eh: -78.34 } as ParsedResults["thermochemistry"],
+      }),
+    };
+    const pool = [tsFreq, rFreq];
+    const ts = { label: "TS", expectedImaginary: 1 as const, spEnergyEh: -234.712, spGeometry: GEOM_A, thermalCandidates: pool };
+    const eth = { label: "ethylene", expectedImaginary: 0 as const, spEnergyEh: -78.4, spGeometry: GEOM_R, thermalCandidates: pool };
+
+    // Happy path: all tiers hold on one geometry per species → a number, no reason.
+    const ok = buildCompositeGibbs(ts, [eth]);
+    expect(ok.kcal).not.toBeNull();
+    expect(ok.reason).toBeNull();
+    expect(ok.note).toBeNull();
+
+    // ZERO thermal: the reactant's geometry (GEOM_B) matches nothing in the pool → ABSENT, NAMED with
+    // the species. BITE: a silent skip would fabricate a composite from an incomplete Σ.
+    const zero = buildCompositeGibbs(ts, [{ ...eth, spGeometry: GEOM_B }]);
+    expect(zero.kcal).toBeNull();
+    expect(zero.reason).toMatch(/ethylene: no Freq/);
+
+    // MULTIPLE thermal at one geometry (a duplicate run) → the first is used WITH a note, never silent.
+    const dupPool = [...pool, { title: "ethylene OptFreq (rerun)", results: rFreq.results }];
+    const multi = buildCompositeGibbs(
+      { ...ts, thermalCandidates: dupPool },
+      [{ ...eth, thermalCandidates: dupPool }],
+    );
+    expect(multi.kcal).not.toBeNull();
+    expect(multi.note).toMatch(/multiple thermal sources/);
+
+    // No reactant reference at all → absent, named (never Σ of nothing).
+    expect(buildCompositeGibbs(ts, []).reason).toMatch(/no reactant reference/);
   });
 });

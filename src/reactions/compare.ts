@@ -13,10 +13,11 @@
 //! solvation AND scan the same coordinate. On any mismatch the UI shows the curves but
 //! replaces the number with the specific reason; `pathwaysComparable` returns that reason.
 
-import type { ScanProfileJson, NebResults } from "../types";
+import type { ScanProfileJson, NebResults, ParsedResults } from "../types";
 import { HARTREE_TO_KCAL, energyEh, type EnergyChoice } from "../scan/scanProfile";
 import type { Scene } from "../scene/types";
 import { sceneFromOrcaInput, totalCharge } from "../scene/scene";
+import { geometryMatchesFinal } from "../scene/carryForward";
 
 type ScanPoint = ScanProfileJson["points"][number];
 
@@ -435,6 +436,186 @@ export function isSinglePoint(input: string): boolean {
     }
   }
   return true;
+}
+
+// --- Composite ΔG‡ (DLPNO//r²SCAN-3c) — high-level electronic + low-level thermal (Stage F5) --------
+//
+// The benchmark composite barrier: the HIGH-level electronic barrier (a DLPNO-CCSD(T) single point) +
+// the LOW-level thermal/entropic correction ((G−E) from an r²SCAN-3c OptFreq), for the TS and every
+// reactant. G(species) = E_high + (G−E)_low; ΔG‡ = G(TS) − Σ G(reactant). NAMING: this is the
+// "composite ΔG‡ (DLPNO//r²SCAN-3c)" — the `//` means "high energy on the low geometry" — NOT the
+// "energy: actual (composite)" dropdown (that is the r²SCAN-3c COMPOSITE METHOD's own energy, a
+// different thing; do not conflate).
+//
+// THE LOAD-BEARING INVARIANT — three tiers on ONE geometry per species:
+//   opt r²SCAN-3c → geometry; freq r²SCAN-3c on THAT geometry (a thermal correction is valid ONLY on a
+//   stationary point of the SAME method — a non-stationary Hessian gives spurious imaginaries + dirty
+//   thermochemistry, the DA seed-Hessian lesson); DLPNO SP on THAT SAME geometry. Subtracting states on
+//   DIFFERENT geometries is garbage. So the guard ({@link compositeGuardTier}) enforces, per species:
+//     tier 1a — the OptFreq is `converged === true`;
+//     tier 1b — `imaginary_count === 1` for the TS, `=== 0` for each reactant (wrong order → reject);
+//     tier 2  — `geometryMatchesFinal(spGeometry, optFreq)` — the SP (E_high) IS the OptFreq's geometry.
+//   Any tier fails → the composite is ABSENT for that species, naming which tier.
+//
+// The VERIFIABLE / DISCLOSED provenance split: the tiers above are what the guard CAN check. What it
+// CANNOT check — and so must be a DISCLOSED caveat on the number (not enforced) — is the `//`-validity
+// limit: the composite is meaningful only when the r²SCAN-3c stationary point ≈ the DLPNO minimum. The
+// tool has no CCSD(T) gradient, so the geometry bit-match PASSES even when the low-level point is a
+// wrong stationary point on the high surface. That caveat is rendered VISIBLE on the number (Part B),
+// alongside the inherited standard-state ΔG‡ caveat.
+
+/** One species' three energies for the composite ΔG‡: `highEh` = the DLPNO SP electronic energy;
+ * `elLowEh` / `gLowEh` = the r²SCAN-3c OptFreq's electronic E and Gibbs G (from `thermochemistry`).
+ * The thermal correction is `gLowEh − elLowEh` (method-cancelling to a good approximation). Any field
+ * `null` → that species contributes no composite G (honest-absent). */
+export interface CompositeSpecies {
+  highEh: number | null;
+  elLowEh: number | null;
+  gLowEh: number | null;
+}
+
+/** One species' composite Gibbs energy G = E_high + (G−E)_low, or `null` if ANY of the three energies
+ * is absent (never a partial sum). Pure. */
+function compositeSpeciesGEh(s: CompositeSpecies): number | null {
+  if (s.highEh === null || s.elLowEh === null || s.gLowEh === null) return null;
+  return s.highEh + (s.gLowEh - s.elLowEh);
+}
+
+/**
+ * The composite ΔG‡ (DLPNO//r²SCAN-3c) in kcal/mol = (G(TS) − Σ G(reactant))·627.509, where each
+ * species' G = E_high + (G−E)_low ({@link compositeSpeciesGEh}). Returns `null` — never a partial or
+ * fabricated number — if the TS or ANY reactant is missing any of its three energies, OR if there are
+ * no reactants (a barrier needs a reference). Pure; the three-tier provenance guard is
+ * {@link compositeGuardTier}, applied per species BEFORE the energies are gathered (Part B).
+ */
+export function compositeGibbsBarrierKcal(input: {
+  ts: CompositeSpecies;
+  reactants: CompositeSpecies[];
+}): number | null {
+  if (input.reactants.length === 0) return null; // no reference → no barrier (never Σ of nothing)
+  const gTs = compositeSpeciesGEh(input.ts);
+  if (gTs === null) return null;
+  let sumReactants = 0;
+  for (const r of input.reactants) {
+    const g = compositeSpeciesGEh(r);
+    if (g === null) return null; // any reactant incomplete → absent, never partial
+    sumReactants += g;
+  }
+  return (gTs - sumReactants) * HARTREE_TO_KCAL;
+}
+
+/** The three-tier provenance verdict for ONE species: `ok`, or `blocked` with the NAMED failing tier.
+ * `no-thermal` = no Freq/thermochemistry to take (G−E) from (distinct from a present-but-wrong-order
+ * Freq, which is `wrong-saddle-order`). */
+export type CompositeTier =
+  | { ok: true }
+  | { blocked: "not-converged" | "wrong-saddle-order" | "geometry-mismatch" | "no-thermal" };
+
+/**
+ * Verify the three-tier one-geometry invariant for one species, over its r²SCAN-3c OptFreq results and
+ * the geometry of its DLPNO SP. Order: converged (tier 1a) → a Freq exists (else `no-thermal`) →
+ * saddle order matches `expectedImaginary` (tier 1b; 1 for the TS, 0 for a reactant) → the SP geometry
+ * bit-matches the OptFreq's (tier 2, reusing {@link geometryMatchesFinal}) → thermochemistry parsed
+ * (else `no-thermal`). Pure; the reasons are NAMED so Part B can say which tier/species failed.
+ */
+export function compositeGuardTier(species: {
+  optFreq: ParsedResults;
+  spGeometry: ParsedResults["final_geometry"];
+  expectedImaginary: 0 | 1;
+}): CompositeTier {
+  const { optFreq, spGeometry, expectedImaginary } = species;
+  // Tier 1a — the OptFreq must be a CONVERGED stationary point (reuse the convergence verdict). A
+  // non-converged (or unverifiable-null) geometry is not stationary → its Hessian/thermo is dirty.
+  if (optFreq.converged !== true) return { blocked: "not-converged" };
+  // No Freq at all → no saddle order to check and no (G−E) to take.
+  if (!optFreq.frequencies) return { blocked: "no-thermal" };
+  // Tier 1b — the saddle order must match: exactly 1 imaginary for the TS, 0 for a reactant. A
+  // 2-imaginary "TS" thermal correction is garbage (the DA seed-Hessian lesson).
+  if (optFreq.frequencies.imaginary_count !== expectedImaginary) return { blocked: "wrong-saddle-order" };
+  // Tier 2 — the SP (E_high) and the OptFreq ((G−E)) must be the SAME geometry (bit-match).
+  if (!geometryMatchesFinal(spGeometry, optFreq)) return { blocked: "geometry-mismatch" };
+  // The thermal numbers themselves must be present.
+  if (!optFreq.thermochemistry) return { blocked: "no-thermal" };
+  return { ok: true };
+}
+
+/** A human sentence for a blocked tier — the NAMED reason shown on the absent composite ΔG‡. */
+function describeCompositeBlock(b: Exclude<CompositeTier, { ok: true }>["blocked"]): string {
+  switch (b) {
+    case "not-converged":
+      return "its OptFreq did not converge (not a stationary point — a dirty Hessian/thermo)";
+    case "wrong-saddle-order":
+      return "wrong saddle order (imaginary-frequency count ≠ expected — a non-TS / multi-imaginary Hessian)";
+    case "geometry-mismatch":
+      return "the SP geometry ≠ the OptFreq geometry (states on different geometries)";
+    case "no-thermal":
+      return "no Freq/thermochemistry to take the thermal correction from";
+  }
+}
+
+/** The composite ΔG‡ display cell: the number (or `null` when absent), the NAMED absence `reason`, and
+ * a non-blocking `note` (e.g. multiple thermal sources). Rendered by CompareView with the disclosed
+ * //-caveat + standard-state caveat (Part B). */
+export interface CompositeGibbsCell {
+  kcal: number | null;
+  reason: string | null;
+  note: string | null;
+}
+
+/** One species' inputs for {@link buildCompositeGibbs}: its high-level (DLPNO SP) energy + geometry,
+ * the expected imaginary count (1 TS / 0 reactant), and the candidate thermal (Freq) sources to pair
+ * BY GEOMETRY (all parsed Freq jobs — `geometryMatchesFinal` is the identity, the same principle as the
+ * SP arm). */
+export interface CompositeSpeciesInput {
+  label: string;
+  expectedImaginary: 0 | 1;
+  spEnergyEh: number | null;
+  spGeometry: ParsedResults["final_geometry"];
+  thermalCandidates: { title: string; results: ParsedResults }[];
+}
+
+/**
+ * Orchestrate the composite ΔG‡ over the TS + reactant species: pair each species' high-level SP with
+ * its r²SCAN-3c OptFreq thermal source BY GEOMETRY ({@link geometryMatchesFinal}), verify the three
+ * tiers ({@link compositeGuardTier}), and — only if EVERY species holds — compute
+ * {@link compositeGibbsBarrierKcal}. Absent with a NAMED reason (which species/tier) otherwise; never a
+ * partial number. Pure. The multiple/zero thermal-source cases are EXPLICIT: zero → an absent reason,
+ * multiple → the first (bit-identical geometry ⇒ same thermal) WITH a `note`, never a silent pick.
+ */
+export function buildCompositeGibbs(
+  ts: CompositeSpeciesInput,
+  reactants: CompositeSpeciesInput[],
+): CompositeGibbsCell {
+  const notes: string[] = [];
+  const resolve = (sp: CompositeSpeciesInput): CompositeSpecies | { reason: string } => {
+    if (sp.spEnergyEh === null) return { reason: `${sp.label}: no high-level SP energy` };
+    const matches = sp.thermalCandidates.filter((c) => geometryMatchesFinal(sp.spGeometry, c.results));
+    if (matches.length === 0) {
+      return { reason: `${sp.label}: no Freq — run OptFreq on this geometry for the thermal correction` };
+    }
+    if (matches.length > 1) {
+      notes.push(`${sp.label}: multiple thermal sources match the geometry — used “${matches[0].title}”`);
+    }
+    const optFreq = matches[0].results;
+    const tier = compositeGuardTier({ optFreq, spGeometry: sp.spGeometry, expectedImaginary: sp.expectedImaginary });
+    if ("blocked" in tier) return { reason: `${sp.label}: ${describeCompositeBlock(tier.blocked)}` };
+    const th = optFreq.thermochemistry!; // the guard (no-thermal) guarantees this is present
+    return { highEh: sp.spEnergyEh, elLowEh: th.el_energy_eh, gLowEh: th.free_energy_g_eh };
+  };
+
+  if (reactants.length === 0) return { kcal: null, reason: "no reactant reference set", note: null };
+  const finish = (reason: string): CompositeGibbsCell => ({ kcal: null, reason, note: notes.join("; ") || null });
+
+  const tsSpecies = resolve(ts);
+  if ("reason" in tsSpecies) return finish(tsSpecies.reason);
+  const reactantSpecies: CompositeSpecies[] = [];
+  for (const r of reactants) {
+    const res = resolve(r);
+    if ("reason" in res) return finish(res.reason);
+    reactantSpecies.push(res);
+  }
+  const kcal = compositeGibbsBarrierKcal({ ts: tsSpecies, reactants: reactantSpecies });
+  return { kcal, reason: kcal === null ? "incomplete thermal data" : null, note: notes.join("; ") || null };
 }
 
 // --- Comparability guard ----------------------------------------------------

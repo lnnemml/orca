@@ -497,6 +497,35 @@ carries **"(SP energy)"**. See `wiki/chemistry/reaction-barriers.md` Барʼє�
 - **Scope:** F3/scan/NEB/OptTS-native-TS-arm rendering unchanged; no rebuilt geometry-match or located
   math; no migration; no composite ΔG‡ (SP electronic + OptTS thermal correction — a **follow-up** unit).
 
+## Composite ΔG‡ (DLPNO//r²SCAN-3c) on the SP TS arm — high-level E + low-level thermal (F5)
+
+The SP TS arm (F4) gives a high-accuracy **electronic** ΔE‡ but no ΔG‡. **F5** adds the **thermal /
+entropic correction** from the low level to make a benchmark **ΔG‡**: `ΔG‡ = ΔE‡_high + Δ(G−E)`, where
+each species' `G = E_high(DLPNO SP) + (G−E)_low`, `(G−E)_low = free_energy_g_eh − el_energy_eh` from an
+**r²SCAN-3c OptFreq**. Computed **only** when the three-tier one-geometry invariant holds per species;
+absent-with-a-named-reason otherwise. See `wiki/chemistry/reaction-barriers.md` Барʼєр 7. **Naming:**
+"composite ΔG‡ (DLPNO//r²SCAN-3c)" — NOT the "energy: actual (composite)" method-energy dropdown.
+
+- **Pure core** (`reactions/compare.ts`): `compositeGibbsBarrierKcal({ ts, reactants })` (per-species
+  `G = E_high + (G−E)_low`; `null` if any field null OR no reactants — never Σ of nothing);
+  `compositeGuardTier(species)` → `{ ok } | { blocked }` (tier 1a `converged === true`, `null`→blocked;
+  tier 1b `imaginary_count === 1` TS / `0` reactant; tier 2 `geometryMatchesFinal(sp, optFreq)`);
+  `buildCompositeGibbs(ts, reactants)` orchestrates — pairs each species' SP to its OptFreq thermal **by
+  geometry** from all parsed Freq jobs, runs the guard, computes; **zero** matches → absent (named),
+  **multiple** → the first WITH a `note` (never a silent pick).
+- **Wiring** (`ReactionsScreen`): in the SP-arm branch, `freqPool` = every parsed job with `frequencies`;
+  the TS species = the SP's energy/geometry, each reactant = a reference job's energy/geometry; the
+  composite cell is attached to `locatedTs.composite`. Render-time, no persistence, no migration.
+- **Render** (CompareView, SP cell): the composite ΔG‡ shows **only inside the non-`locatedReason`
+  branch** — so a mixed-method / incomplete reference (which already withholds ΔE‡_high) withholds the
+  composite too. When present: **"composite ΔG‡ (DLPNO//r²SCAN-3c) +X.XX"** + **"✓ three tiers on one
+  geometry"** + (any multiple-source note) + **two VISIBLE caveats** (not tooltips, so they survive a
+  copy into notes): the disclosed `//`-validity caveat ("assumes the r²SCAN-3c stationary point ≈ the
+  DLPNO minimum; reliable for closed-shell organics, suspect on flat / dissociative / multireference
+  surfaces") and the inherited standard-state caveat. Absent → **"composite ΔG‡ … absent — `<reason>`"**.
+- **Scope:** scan/NEB/F3/F4/OptTS-native rendering unchanged; reuses `geometryMatchesFinal` + the
+  `converged` verdict + `thermochemistry`; no dropdown-name collision; no migration.
+
 ## Related
 
 - `wiki/architecture/adr-007-reaction-modeling.md` (amendment) — the ratified normalized schema.

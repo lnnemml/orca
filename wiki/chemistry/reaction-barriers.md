@@ -222,6 +222,50 @@ CCSD(T)//DFT і на TS, **і** на реактантах. DLPNO-SP-плече �
 CCSD(T)-числа від DFT-чисел, беззмістовне; `referenceComparable` при розбіжності методу **відмовляє
 в числі** й називає причину (той самий honest-or-absent, що Барʼєр 3/4/5). Збіжні методи → число.
 
+## Барʼєр 7 — композитна ΔG‡ (DLPNO//r²SCAN-3c): high-level E + low-level thermal (Stage F5)
+
+Барʼєр 6 дає високоточну **електронну** ΔE‡, але без ΔG‡ (SP не має Freq). Композитна ΔG‡ додає
+**термо/ентропійну поправку** з дешевого рівня до точної електронної енергії — стандарт для
+benchmark-числа, яке можна зіставляти з експериментом:
+
+> **ΔG‡ = ΔE‡_high (DLPNO SP) + Δ(G−E)**, де для кожного виду **G = E_high + (G−E)_low**, а
+> (G−E)_low = `free_energy_g_eh − el_energy_eh` з r²SCAN-3c OptFreq (термопоправка, метод-скорочувана).
+
+Розкладається точно: композитна ΔG‡ = [E_high(TS) − Σ E_high(reactant)] + [(G−E)_low(TS) −
+Σ(G−E)_low(reactant)] — тобто **ΔE‡_high + Δ(термопоправка)**. Реалізовано через per-species G
+(`compositeGibbsBarrierKcal`), не через окремі різниці.
+
+**НАЗВА — не плутати.** Це «composite ΔG‡ (DLPNO//r²SCAN-3c)» — `//` = «висока енергія на низькій
+геометрії». Це **НЕ** дропдаун «energy: actual (composite)» (там composite = власна енергія
+3c-**композитного методу** r²SCAN-3c, інша річ).
+
+### Навантажений інваріант — три яруси на ОДНІЙ геометрії на вид
+
+Термопоправка валідна **лише** на стаціонарній точці **того самого методу**: opt r²SCAN-3c → геометрія;
+freq r²SCAN-3c на **тій** геометрії; DLPNO SP на **тій самій**. Віднімати стани на **різних** геометріях
+= сміття. `compositeGuardTier` enforce-ить, на вид:
+
+- **ярус 1a** — OptFreq `converged === true` (реюз verdict; `null` = «не підтверджено стаціонарним» →
+  блок, той самий урок post-GOAT frame-picker-а: невідомий статус ≠ ок);
+- **ярус 1b** — `imaginary_count === 1` для TS, `=== 0` для кожного реактанта (не той порядок сідла →
+  блок: 2-уявний «TS» дає брудну термохімію — **урок seed-Hessian на DA**);
+- **ярус 2** — `geometryMatchesFinal(sp.geometry, optFreq)`: SP (E_high) і OptFreq ((G−E)) — **та сама**
+  геометрія (той самий bit-match, що SP-плече й carry-forward).
+
+Будь-який ярус падає → композитна ΔG‡ **ВІДСУТНЯ** для реакції, з **іменем виду/ярусу** («reactant
+C4H6: no Freq — run OptFreq…», «wrong saddle order…»). Ніколи часткова/сфабрикована.
+
+### Дві провенанс-межі — verifiable vs disclosed
+
+- **VERIFIABLE** (guard enforce-ить): три яруси вище — те, що інструмент **може** перевірити.
+- **NON-VERIFIABLE, DISCLOSED** (guard **не може** — межа `//`-наближення): композит валідний лише коли
+  **r²SCAN-3c стаціонарна точка ≈ DLPNO-мінімум**. Інструмент не має CCSD(T)-градієнта, тож bit-match
+  геометрій **проходить** навіть коли низькорівнева точка — хибний стаціонар на високій поверхні. Тому —
+  **CAVEAT НА САМОМУ ЧИСЛІ** (видимий текст, не tooltip; іде з числом у нотатки): «Composite ΔG‡
+  (DLPNO//r²SCAN-3c) — assumes the r²SCAN-3c stationary point ≈ the DLPNO minimum; reliable for
+  closed-shell organics, suspect on flat / dissociative / multireference surfaces.» Плюс успадкований
+  standard-state caveat (raw ORCA G, 1 atm→1 M названо, не застосовано).
+
 ## Спільність методу — це не побажання, а гвард
 
 Усі енергії, що входять у будь-яку з різниць вище (реактанти, скани, згодом TS),

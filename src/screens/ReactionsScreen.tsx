@@ -5,7 +5,14 @@ import { confirm } from "@tauri-apps/plugin-dialog";
 import type { Job, ParsedResults, Pathway, Reaction, ReferenceEnergy } from "../types";
 import { formatTimestamp } from "../format";
 import { isScanJob, isNebJob, isValidPathwayLabel, normalizePathwayLabel } from "../reactions/pathway";
-import { isLocatedTsInput, isSinglePoint, optTsStudy, reactantHint } from "../reactions/compare";
+import {
+  isLocatedTsInput,
+  isSinglePoint,
+  optTsStudy,
+  reactantHint,
+  buildCompositeGibbs,
+  type CompositeSpeciesInput,
+} from "../reactions/compare";
 import { geometryMatchesFinal } from "../scene/carryForward";
 import {
   CompareView,
@@ -303,6 +310,13 @@ function ReactionDetail({ reaction, onOpenJob, onError, onChanged, onDeleted }: 
         isLocatedTsInput(j.input_content) &&
         resultsById.has(j.id),
     );
+    // Candidate THERMAL (Freq) sources for the composite ΔG‡ (F5): every parsed job that ran a Freq
+    // (has vibrational data). Pairing to a species is BY GEOMETRY (geometryMatchesFinal, inside
+    // buildCompositeGibbs), not by attachment — a bit-identical geometry IS the same optimized
+    // structure, so its thermal is valid regardless of which pathway the OptFreq lives on.
+    const freqPool = jobs
+      .map((j) => ({ title: j.title, results: resultsById.get(j.id) }))
+      .filter((c): c is { title: string; results: ParsedResults } => c.results?.frequencies != null);
     return pathways
       .map((p): ComparePathway | null => {
         // A pathway can hold the primary job (scan OR NEB) AND its OptTS refinement (E1a/N4
@@ -443,6 +457,34 @@ function ReactionDetail({ reaction, onOpenJob, onError, onChanged, onDeleted }: 
           const matchedOptTs = optTsJobsInReaction.find((tj) =>
             geometryMatchesFinal(spResults.final_geometry, resultsById.get(tj.id)!),
           );
+          // Composite ΔG‡ (F5): the TS's DLPNO SP (highEh) + its r²SCAN-3c OptFreq thermal, vs each
+          // reactant reference's DLPNO SP + its OptFreq thermal. Every thermal source is paired BY
+          // GEOMETRY from `freqPool` (buildCompositeGibbs enforces the three-tier one-geometry
+          // invariant per species; absent-with-named-reason otherwise). The reactant references are the
+          // reaction's reference jobs (their DLPNO SP energies feed Σ E(ref) for the F4 ΔE‡ too).
+          const reactantRefs: CompositeSpeciesInput[] = (refEnergy?.jobs ?? [])
+            .map((rj) => jobById.get(rj.job_id))
+            .filter((j): j is Job => j != null && resultsById.has(j.id))
+            .map((j) => {
+              const r = resultsById.get(j.id)!;
+              return {
+                label: j.title,
+                expectedImaginary: 0,
+                spEnergyEh: r.final_energy_eh ?? null,
+                spGeometry: r.final_geometry,
+                thermalCandidates: freqPool,
+              };
+            });
+          const composite = buildCompositeGibbs(
+            {
+              label: `TS (${spJob.title})`,
+              expectedImaginary: 1,
+              spEnergyEh: spResults.final_energy_eh ?? null,
+              spGeometry: spResults.final_geometry,
+              thermalCandidates: freqPool,
+            },
+            reactantRefs,
+          );
           return {
             id: p.id,
             label: p.label,
@@ -453,6 +495,7 @@ function ReactionDetail({ reaction, onOpenJob, onError, onChanged, onDeleted }: 
               eEh: spResults.final_energy_eh ?? null,
               gEh: null, // an SP has no Freq → no G → ΔG‡ absent by construction (never a fabricated 0)
               spOnOptTs: { matchedOptTsTitle: matchedOptTs?.title ?? null },
+              composite,
             },
           };
         }
@@ -460,7 +503,7 @@ function ReactionDetail({ reaction, onOpenJob, onError, onChanged, onDeleted }: 
         return null;
       })
       .filter((x): x is ComparePathway => x !== null);
-  }, [pathways, jobs, resultsById, refEnergy]);
+  }, [pathways, jobs, resultsById, refEnergy, jobById]);
 
   // Scan / NEB / standalone located-TS pathways feed `CompareView` (a located-TS pathway shows in
   // its ΔΔ table but NOT its overlay chart — split by `origin` inside CompareView); only F3

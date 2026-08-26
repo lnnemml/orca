@@ -24,6 +24,7 @@ import {
   type BarrierCell,
   type Comparability,
   type OptTsStudyResult,
+  type CompositeGibbsCell,
 } from "./compare";
 
 /** A pathway's LOCATED transition state (Stage E1b): an OptTS child of this pathway,
@@ -49,6 +50,12 @@ export interface LocatedTs {
      * the ⚠ case (the SP is only a valid TS barrier ON an OptTS geometry; the user is responsible). */
     matchedOptTsTitle: string | null;
   };
+  /** The composite ΔG‡ (DLPNO//r²SCAN-3c) for an SP TS arm (Stage F5): the high-level electronic
+   * barrier + the low-level thermal correction ((G−E) from each species' r²SCAN-3c OptFreq), computed
+   * ONLY when the three-tier one-geometry invariant holds per species — else absent with a NAMED
+   * reason ({@link buildCompositeGibbs}). Set only on the SP arm (a plain OptTS-native TS already has
+   * its own r²SCAN ΔG‡). Rendered with the disclosed //-caveat + standard-state caveat. */
+  composite?: CompositeGibbsCell;
 }
 
 /** An OptTS-ORIGIN pathway (Stage F3): a reaction study built from a located OptTS transition
@@ -217,6 +224,7 @@ export function CompareView({
           isSp,
           spMethod: isSp ? methodSig : null,
           spMatchedOptTsTitle: isSp ? spOnOptTs!.matchedOptTsTitle : undefined,
+          composite: (p.locatedTs?.composite ?? null) as CompositeGibbsCell | null,
         };
       }
       const isNeb = p.nebMep != null;
@@ -305,6 +313,7 @@ export function CompareView({
         isSp: false,
         spMethod: null as string | null,
         spMatchedOptTsTitle: undefined as string | null | undefined,
+        composite: null as CompositeGibbsCell | null,
       };
     });
   }, [pathways, which, normalizedAxis, reactantsZeroActive, refEnergyEh, refGibbsEh, refInputs, refJobCount]);
@@ -638,19 +647,46 @@ export function CompareView({
                       )}
                       {s.locatedReason ? (
                         // Mixed-method (DLPNO SP vs r2SCAN-3c refs) / incomplete / unbalanced reference
-                        // → the number is withheld with the specific reason (referenceComparable inside).
+                        // → the ΔE‡_high (and so the composite ΔG‡ that builds on it) is withheld with
+                        // the specific reason (referenceComparable inside). Nothing else shown.
                         <span className="muted">{s.locatedReason}</span>
                       ) : (
-                        <span title="E(SP) − Σ E(reactant jobs): the high-accuracy electronic barrier (CCSD(T)//DFT) from the SP energy on the OptTS geometry, vs separated reactants">
-                          ΔE‡ {s.locatedEKcal != null ? sign(s.locatedEKcal) : "—"}
-                        </span>
+                        <>
+                          <span title="E(SP) − Σ E(reactant jobs): the high-accuracy electronic barrier (CCSD(T)//DFT) from the SP energy on the OptTS geometry, vs separated reactants">
+                            ΔE‡ {s.locatedEKcal != null ? sign(s.locatedEKcal) : "—"}
+                          </span>
+                          {/* Composite ΔG‡ (DLPNO//r²SCAN-3c) = ΔE‡_high + Δ(G−E) (Stage F5) — shown ONLY
+                              when the three-tier one-geometry invariant holds per species; else absent with
+                              the NAMED tier/species reason. Both caveats are VISIBLE text (not tooltips) so
+                              they survive a copy into notes — the number is NOT an unconditional CCSD(T) ΔG‡. */}
+                          {s.composite && s.composite.kcal != null ? (
+                            <>
+                              <strong title="G(TS) − Σ G(reactant); G(species) = E_high(DLPNO SP) + (G−E)_low(r²SCAN-3c OptFreq)">
+                                composite ΔG‡ (DLPNO//r²SCAN-3c) {sign(s.composite.kcal)}
+                              </strong>
+                              <span className="muted" style={{ fontSize: 11 }}>
+                                ✓ three tiers on one geometry
+                              </span>
+                              {s.composite.note ? (
+                                <span className="muted" style={{ fontSize: 11 }}>{s.composite.note}</span>
+                              ) : null}
+                              <span className="muted" style={{ fontSize: 10, textAlign: "left", maxWidth: 340 }}>
+                                Composite ΔG‡ (DLPNO//r²SCAN-3c) — assumes the r²SCAN-3c stationary point ≈
+                                the DLPNO minimum; reliable for closed-shell organics, suspect on flat /
+                                dissociative / multireference surfaces.
+                              </span>
+                              <span className="muted" style={{ fontSize: 10, textAlign: "left", maxWidth: 340 }}>
+                                Raw ORCA G (ideal-gas RRHO, 1 atm, 298.15 K) — the 1 atm→1 M standard-state
+                                correction is named here, not applied.
+                              </span>
+                            </>
+                          ) : (
+                            <span className="muted" style={{ fontSize: 11, textAlign: "left", maxWidth: 340 }}>
+                              composite ΔG‡ (DLPNO//r²SCAN-3c) absent — {s.composite?.reason ?? "no thermal correction"}
+                            </span>
+                          )}
+                        </>
                       )}
-                      <span
-                        className="muted"
-                        title="A single-point has no Freq → no Gibbs energy → ΔG‡ is ABSENT (never 0). A composite ΔG‡ (SP electronic + the OptTS thermal correction) is a separate step."
-                      >
-                        ΔG‡ absent (SP — no Freq)
-                      </span>
                     </div>
                   ) : s.locatedReason ? (
                     <span className="muted">{s.locatedReason}</span>
