@@ -2349,7 +2349,7 @@ button.ir-imaginary-mode.selected {
 }
 .orbital-row {
   display: grid;
-  grid-template-columns: 2.6em 3.2em 1fr 2em;
+  grid-template-columns: 2.6em 3.2em 1fr 2em 1.8em;
   gap: 6px;
   width: 100%;
   text-align: right;
@@ -2360,6 +2360,22 @@ button.ir-imaginary-mode.selected {
   color: var(--text);
   font-family: inherit;
   cursor: pointer;
+}
+/* The ± phase colour pair — shown on an active picker row and in the MO legend. */
+.orbital-swatch-pair {
+  display: inline-flex;
+  align-items: center;
+  min-width: 24px;
+}
+/* Per-MO legend (F2): one line per selected orbital, with its pair swatch + energy. */
+.orbital-mo-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.orbital-mo.dropped {
+  text-decoration: line-through;
+  color: var(--muted);
 }
 .orbital-row:hover {
   background: var(--panel);

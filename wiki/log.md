@@ -8959,3 +8959,52 @@ atoms, value updates each cycle; m4 — bottom text is only the bond-order note 
 Clear removes the in-scene overlay too; m5 — a single-frame "Geometry" job shows the in-scene overlay.
 **Wiki:** modules/visualization.md (the position-based primitives + the overlay effect serving both paths),
 modules/results-ui.md (measurement renders on the molecule, live). **Next:** Anton's live gates m1–m5.
+
+## [2026-08-27] feat | F2 — simultaneous multiple MOs (HOMO-LUMO overlap): orbitalCubes array + capped multi-select picker with colour pairs
+
+Extends the orbital viewer from ONE MO (two ± phase isosurfaces) to an ARRAY of MOs, each with its
+own ± colour PAIR, so a HOMO/LUMO overlap is visible for FMO reading. **Backend untouched** —
+`read_orbital_cube(jobId, moIndex)` is already per-MO and lazily cached; F2 calls it once per
+selected MO. No Rust/schema change.
+
+**Part A — `MoleculeViewer.tsx`.** New prop `orbitalCubes?: Array<{ cube; posColor; negColor }>`.
+A memoized `cubes` normalizes: `orbitalCubes` wins when both are passed; else the `orbitalCube`
+(string) prop is an ALIAS → a **1-element list with the blue/red default at 0.85** (single-orbital
+**byte-identical**). The three orbital-mode guards flipped `orbitalCube?.trim()` → `cubes.length > 0`.
+Model builds ONCE from `cubes[0]`; the model effect keys on the string primitive `modelCube =
+cubes[0].cube` (a sibling colour/selection change never rebuilds the model — only a shared-geometry
+change does; `zoomTo` still gates on `orbital:${atomCount}`). `volDataRef` became a
+`Map<cubeText, VolumeData>` (parse once per cube, reuse across isovalue + siblings, prune non-live —
+no leak). The isosurface effect now draws **2N surfaces**, staying the **single owner** of the ±
+shapes: `isoShapesRef` holds the full 2N set, `removeShape` each on change, **never
+`removeAllShapes`**. `orbitalIsoOpacity(n)`: `n===1 → 0.85` (`ORBITAL_ISO_OPACITY`), `n>=2 → 0.55`
+(`ORBITAL_MULTI_ISO_OPACITY`, live-tunable). Effect deps `[cubes, orbitalIsoValue]`.
+
+**Part B — `orbitalPalette.ts` (new, pure) + `OrbitalPanel.tsx`.** `orbitalPalette.ts`:
+`ORBITAL_PHASE_PAIRS` (pair 0 = blue/red default → single orbital unchanged; pairs 1-3
+distinguishable, live-tunable), `MAX_ORBITALS = 4`, `assignPairs(selected)` (each MO → pair by its
+**position in the ordered selection**), `toggleOrbital` (add under cap / remove if present / no-op at
+cap, never mutates). `OrbitalPanel`: `selected: number` → ordered `number[]` (init `[HOMO]`); the
+picker multi-selects with a per-row ± swatch; a **"HOMO+LUMO" button** (guarded when no LUMO); a
+**swatch legend** per selected MO. Fetch via **`Promise.allSettled`** (one MO failing drops itself,
+not the set) → assembles `orbitalCubes` for fulfilled+non-null MOs only, **honest-or-absent** (a
+dropped MO is struck through in the legend with a reason, never a blank surface).
+
+**Seam (identity stability).** The isosurface effect deps `[cubes, orbitalIsoValue]` + `cubes`
+memoized on the raw props means `orbitalCubes` MUST be reference-stable across stray re-renders
+(isovalue drag, representation toggle) — else 2N surfaces re-parse/redraw every frame. Guard:
+`OrbitalPanel` holds `orbitalCubes` in **state**, set once per fetch (content-hashing impossible —
+each cube ≈6.9 MB; reference stability is the mechanism).
+
+**Verification.** tsc clean; vitest **956 passed** (was 948; +8 pure palette tests). The three bites
+(`assign_pairs_by_selection_order`, `cap_blocks_beyond_max`, `pairs_reassign_on_removal`) shown to
+**bite** — breaking the cap no-op + reversing `assignPairs` order turned exactly those 4 tests red;
+restore → green. Drawing is 3Dmol-coupled (not unit-testable), gated live. **Manual gates (Anton,
+live) — PENDING:** m1 single unchanged (blue/red, one pair — the byte-identity proof); m2 HOMO+LUMO
+→ four lobes in two pairs overlapping + legend; m3 multi toggle + cap (5th refused with "max 4",
+removal re-colours); m4 shared isovalue updates all; m5 legibility — TUNE `ORBITAL_MULTI_ISO_OPACITY`
+/ palette hexes on the real render; m6 honest fetch — a MO with no cube dropped with a note.
+**Wiki:** modules/visualization.md (the `orbitalCubes` array + normalization, 2N loop, `volDataRef`
+Map, `orbitalIsoOpacity(n)`, single-owner discipline, the seam), modules/results-ui.md (multi-select
+picker, colour pairs, swatch legend, HOMO+LUMO button, per-MO fetch, honest-or-absent).
+**Next:** Anton's live gates m1–m6, especially m5 (palette/opacity tuning).

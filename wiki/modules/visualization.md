@@ -35,7 +35,8 @@ passes `xyzData` (stored xyz strings); the Job-detail conformer panel passes `xy
 **Phase-3 results props** (details in [results-ui.md](results-ui.md)): `preserveCameraOnUpdate`
 (trajectory / animation — redraw same-count frames without `zoomTo`); `bondTopologyReference` (freeze
 bond topology from an equilibrium geometry and coordinate-update per frame — mode animation, unit
-3.14); `orbitalCube` / `orbitalIsoValue` (a `.cube`'s molecule + ± phase isosurfaces, unit 3.15);
+3.14); `orbitalCube` / `orbitalCubes` / `orbitalIsoValue` (one `.cube` — or an ARRAY of them, F2 —
+drawn as molecule + ± phase isosurfaces, unit 3.15; `orbitalCube` is the single-orbital alias);
 `representation` (`"stick"` | `"line"`, unit 3.16). The component is also a `forwardRef` exposing
 `toPngBytes()` (3Dmol `pngURI()` readback, for PNG export). App-owned state throughout (ADR-011).
 
@@ -159,7 +160,7 @@ the angle comes from a slider in `RotatePanel`, outside the viewer.
 
 - **`ephemeralScene?: Scene | null`** — the rotated preview scene (`rotateFragmentInScene` over the
   committed scene; same composition, one fragment turned), computed in `NewJobScreen`. A dedicated
-  effect (`[ephemeralScene, scene, theme, orbitalCube]`) sets the live model atoms' `.x/.y/.z` from it
+  effect (`[ephemeralScene, scene, theme, cubes]`) sets the live model atoms' `.x/.y/.z` from it
   and `applySceneStyle` re-draws the sticks at the new coords — **no `addModel`, no bond re-perception,
   no `zoomTo`**. Re-perception is deliberately avoided: a model rebuild would re-guess bonds every
   slider tick and **flicker an inter-fragment stick** in and out exactly in the reactive-approach setup
@@ -325,7 +326,7 @@ model before this effect reads it).
   labels linger when the last fragment is removed. Clear first, then bail. **The `!scene` path is no
   longer a bare bail:** when `xyzData` + a non-empty `xyzSelection` are present it draws the xyz overlay
   (halos + measurement via the shared primitives, off `measureByCoords`) before `render()`; otherwise it
-  renders empty and returns. `if (orbitalCube) return` stays FIRST — the orbital effect owns its shapes.
+  renders empty and returns. `if (cubes.length > 0) return` stays FIRST — the orbital effect owns its shapes.
 - **Shapes and labels are NOT clickable** — 3Dmol shapes/labels default non-clickable and we never
   `setClickable` them, so a label lying over a selected atom can't intercept the pick (repeat-click
   toggle-off is preserved). Verified in MiniBrowser: a "1" label placed over atom index 1, a real
@@ -490,14 +491,43 @@ change is the opt-in **`preserveCameraOnUpdate`** prop — an `xyzData` change t
 count redraws without `zoomTo` (the camera holds through playback); a count change still zooms.
 Default false, so the Molecules/preview path is unchanged.
 
-## Orbitals / densities (unit 3.15 — DONE)
+## Orbitals / densities (unit 3.15 — DONE; F2 — simultaneous MOs DONE)
 `orca_plot` (driven over stdin, not the unusable `plot-inputfile` mode — measured, `orca/orca-plot.md`)
 generates a `.cube` from `.gbw`; the viewer draws the molecule from the cube + two ± phase isosurfaces
 (the sign is the wavefunction **phase, not charge**), with an isovalue slider. Default grid 80³
 (measured ≈6.9 MB); cubes cached in the job dir, never in the DB; generated lazily on MO selection.
-The `.cube` string is parsed once into a `VolumeData`, so an isovalue change redraws only the
+Each `.cube` string is parsed once into a `VolumeData`, so an isovalue change redraws only the
 surfaces. WebKitGTK renders the isosurface — gated via MiniBrowser (`debugging/002` technique).
 Detail: [results-ui.md](results-ui.md). Density cubes / the MO-coefficient route are **not** done.
+
+**F2 — several MOs at once (HOMO–LUMO overlap for FMO reading).** The viewer takes an
+ARRAY prop `orbitalCubes: Array<{ cube; posColor; negColor }>` — N cubes, each with its own
+± phase colour pair. Normalization (memoized `cubes`): `orbitalCubes` wins when both are
+passed; else the `orbitalCube` (string) prop is an ALIAS normalized to a **1-element list
+with the default blue/red pair** → the single-orbital path is byte-identical (one cube,
+`#3b6fd4`/`#d43b3b`, opacity 0.85, same shape order). Key mechanics preserved from the
+single-orbital design:
+- **One model, built once** from `cubes[0]` (the simultaneous MOs of one job share
+  geometry). The model effect keys on the string primitive `modelCube = cubes[0].cube`, so a
+  colour/selection change on a sibling never rebuilds the model — only a change of the shared
+  geometry does. `zoomTo` still gates on the `orbital:${atomCount}` signature (camera holds
+  across MO switches).
+- **`volDataRef` is a `Map<cubeText, VolumeData>`** — each cube parsed once, reused across
+  isovalue changes AND siblings; entries not in the current set are pruned each draw (no
+  `VolumeData` leak between selections).
+- **The isosurface effect draws 2N surfaces** and stays the **single owner** of the ±
+  surfaces: `isoShapesRef` holds the full 2N set and `removeShape`s exactly that set on each
+  change — **never `removeAllShapes`** (which would wipe the selection-halo path). Opacity via
+  `orbitalIsoOpacity(n)`: `n === 1 → 0.85` (`ORBITAL_ISO_OPACITY`), `n >= 2 → 0.55`
+  (`ORBITAL_MULTI_ISO_OPACITY`, live-tunable — a back lobe reads through a front one).
+- **Seam (identity stability):** the isosurface effect deps are `[cubes, orbitalIsoValue]`
+  and `cubes` is memoized on the raw props, so the parent (`OrbitalPanel`) MUST hold
+  `orbitalCubes` in state with a stable reference (set once per fetch) — otherwise a stray
+  re-render (isovalue drag, representation toggle) would re-parse/redraw 2N surfaces every
+  frame. Content-hashing is not an option (each cube ≈6.9 MB); reference stability is the
+  guard.
+- The three orbital-mode guards (model-build, overlay-bail, ephemeral-model-bail) key on
+  `cubes.length > 0` (was `orbitalCube?.trim()`).
 
 ## Spectra (units 3.8–3.12 — IR + mode animation DONE)
 IR: Lorentzian broadening over (freq, intensity) → recharts, in `src/spectrum/` — see
