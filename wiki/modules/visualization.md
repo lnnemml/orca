@@ -279,6 +279,14 @@ does clear → re-add → `render()` with **no `zoomTo` and no model reload**, s
 change never moves the camera. On a coordinate-only edit the model effect still re-renders (new `scene`
 ref) so overlays follow atoms to their new positions.
 
+> **Label note — the "F1/F2" collision.** This module documents two 2026-08-2x viewer works whose
+> unit labels reuse letters that ALSO name an unrelated, ROADMAP-load-bearing family. Decode:
+> **this session's** `F1`/`F1c` = on-molecule **geometry measurement** (distance/angle/dihedral on a
+> trajectory frame, drawn on the molecule); `F2`/`F2b` = **orbital overlap** (simultaneous MOs +
+> wireframe mesh). These are **distinct from the CREST Stage F microsolvation `F1a–F2`** (grow-parse →
+> ORCA re-opt handoff), which keeps its labels in ROADMAP. Older `log.md` entries are append-only and
+> keep their original `F1`/`F2` titles — this note is the bridge that decodes them.
+
 **Position-based drawing primitives (F1c) — the effect serves BOTH the Scene path and the xyz path.**
 The two drawing primitives take **already-resolved points**, not a Scene, so the editor (`selection:
 AtomId[]`) and the results/trajectory viewer (`xyzSelection: number[]`) share one drawing core:

@@ -118,11 +118,15 @@ functions, no imports from react / 3dmol / tauri. The reactive `store.ts` (added
   positional guards `selectionSurvives` / `validateSelection` are **gone** — an
   `AtomId` gives "the same atom" an operational meaning, so there is nothing to
   remap or clear on a removal (see "Atom selection" below).
-- `measure.ts` — geometry measurement off the pick list (2.5.2b): `distance`,
-  `angle`, `dihedral`, `measureSelectionByIndex` (positional core) and
-  `measureSelection(scene, AtomId[])` (resolves ids → indices, 2c2),
-  `formatMeasurementValue`. Pure / node-tested, React-free. **ASE conventions
-  pinned to source** (see below); the math is index-based and untouched.
+- `measure.ts` — geometry measurement off the pick list (2.5.2b): the pure `*Coords`
+  primitives `distanceCoords`/`angleCoords`/`dihedralCoords` (the ASE-verified geometric
+  core, over already-resolved points), the Scene-based thin delegates `distance`/`angle`/
+  `dihedral`, `measureSelectionByIndex` (positional core), `measureSelection(scene, AtomId[])`
+  (resolves ids → indices, 2c2), and `measureByCoords(coords, picked)` — the coord-array
+  sibling used by the results **TrajectoryPlayer** (F1, no Scene), plus
+  `formatMeasurementValue`. Pure / node-tested, React-free. **ASE conventions pinned to
+  source**; both the Scene and the coord-array paths route through the same `*Coords` core, so
+  they can never diverge (detail + tripwire tests below).
 - `edit-plan.ts` — edit-mode planner (2.5.2d): `planEdit(scene, AtomId[])` resolves
   the ids to current global indices ONCE, then the whole planner runs positionally
   (`EditPlan` is the ASE-mask emit seam — positional by design). Plus the pure apply
@@ -865,8 +869,11 @@ unchanged.
 `measureSelectionByIndex` — same positional rule (2→distance, 3→angle middle-vertex,
 4→dihedral), same degenerate/out-of-range/0-1/≥5 → `none`, routing through the same
 `*Coords` core. It is used by the results **TrajectoryPlayer** ([results-ui](results-ui.md),
-F1), which holds a frame's raw coordinates (`Frame.xyz_angstrom`, frame/elements order —
-the SAME 0-based order the picks are in) rather than a `Scene`. `sameFragment` is always
+the 2026-08-26 geometry-analysis **F1**), which holds a frame's raw coordinates
+(`Frame.xyz_angstrom`, frame/elements order — the SAME 0-based order the picks are in) rather
+than a `Scene`. The measured value is then **drawn on the molecule** by the same halo /
+distance-line / angle-arc / dihedral-axis primitives the editor uses (F1c — the xyz-overlay
+path in [visualization](visualization.md)). `sameFragment` is always
 `true` (a parsed results geometry is one geometry — the field is inert here but the
 `Measurement` shape is reused whole). Because both paths delegate to the same `*Coords`,
 they can never diverge on the ASE conventions; `measure_by_coords_matches_scene_path`

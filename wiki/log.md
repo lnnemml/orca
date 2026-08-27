@@ -9045,3 +9045,43 @@ opacity and TUNE `ORBITAL_WIRE_OPACITY` / `ORBITAL_WIRE_LINEWIDTH`; m3 toggle so
 default (2-orbital → mesh, 1 → solid, explicit toggle sticks across isovalue). **Wiki:**
 modules/visualization.md (the `orbitalWireframe` prop + mesh opacity + the probe), modules/results-ui.md
 (the surface/mesh toggle, default mesh at ≥2). **Next:** Anton's live gates m1–m4, esp. m2 tuning.
+
+## [2026-08-27] lint | Detailed wiki lint — export/measurement/orbital surfaces reconciled; type vocab expanded; F1/F2 label collision bridged
+
+Full lint per the CLAUDE.md protocol, run after the five 2026-08-2x units landed (multi-job
+selection export; geometry-analysis F1/F1c; orbital-overlap F2/F2b).
+
+**Mechanical sweeps (re-run fresh, not trusting prior greps) — all clean:** 0 orphans (104 files =
+104 index link-targets, exact), 0 dangling index targets, 0 broken wiki→wiki cross-refs, 0 `As built`
+sections in modules/, ADRs 1–21 continuous. log.md: all 253 entries match the header shape. Language:
+chemistry/ all Ukrainian; modules/orca/architecture English (the Cyrillic in adr-018/reactions-ui is
+legitimate — quoted Ukrainian chemistry-page section titles).
+
+**Module-vs-code deep check — clean except one stale quick-ref:** group-export.md, groups-ui.md,
+adr-021 (amendment appended, not rewritten), visualization.md, results-ui.md all match current code
+(verified `export_selection`/`build_selection_manifest`/null `source.group`/`ordered_manifest_jobs`/
+two-notes; `JobsScreen` `selected: Set<string>` + select-all-visible; `orbitalWireframe`/`surfaceStyle`/
+`defaultSurfaceStyle`; `drawSelectionHalos`/`drawMeasurementFromPoints` module-local fns). **Fixed
+(B1-1):** scene.md's `measure.ts` quick-ref bullet omitted the `*Coords` primitives + `measureByCoords`
+added in F1 — extended (the detailed section below it was already correct).
+
+**Fixes applied.** B1-1 scene.md measure bullet. **B1-2** ROADMAP: added a "Multi-job selection export
+landed" sub-bullet under 4.7.5 (the third projection had no ROADMAP line while single-job export did).
+**B1-3/B1-4** ROADMAP orbital + trajectory-playback items gained one-line pointers to the F2/F2b and
+F1/F1c follow-ons. **B1-5** scene.md measure detail now cross-refs visualization.md (the shared drawing
+primitives). No literal `[ ]`→`[x]` flips existed — all five units were already `[x]` or had no
+checkbox; the drift was missing lines. ROADMAP:1426 ("multi-job aggregation must exist first") left
+unchanged on record: it means NMR reaction-as-object aggregation (ΔΔG‡-style), a different sense of
+"multi-job" than `export_selection` — NOT closable by the export work.
+
+**Author rulings.** (B2-a) CLAUDE.md's documented log-type set expanded to seven — `{session, decision,
+ingest, lint, milestone, feat, fix}` — with a note that the single historical `chore` (2026-08-12)
+predates the rule, reads as a lint, is NOT re-titled (append-only), and `chore` is not blessed going
+forward. (B2-b) The "F1/F2" label collision: this session's labels disambiguated in the EDITABLE pages
+(ROADMAP + module pages) as geometry-analysis (F1/F1c) / orbital-overlap (F2/F2b), Stage F keeps
+`F1a–F2`; past log entries are append-only and keep their titles, bridged by a durable label-decode note
+in visualization.md. (B2-c) `proposals/editor-architecture-2026-07-30.md` (Ukrainian) left as-is — a
+dated design artifact, exempt.
+
+**Diff scope:** wiki/ (log.md, modules/scene.md, modules/visualization.md), CLAUDE.md, ROADMAP.md — no
+source, no file renames (so index.md untouched). Post-fix sweeps re-run: still 0/0/0/0.

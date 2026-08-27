@@ -295,8 +295,10 @@ now-`[x]` "Fragment library" item above.
       3Dmol's frame apparatus** — the viewer is fed one frame (ADR-011). Frames are labelled honestly
       as optimization **cycles** (not scan points, measured). Empty states: 1 frame → static, no
       controls; no trajectory (SP) → hidden. Element-order identity checked at the UI boundary. See
-      `wiki/modules/results-ui.md`.
-- [x] Orbital isosurfaces: wrap `orca_plot` → `.cube` → 3Dmol.js volumetric rendering; MO picker with
+      `wiki/modules/results-ui.md`. **Extended by the 2026-08-26 geometry-analysis units** (distinct from
+      Stage F microsolvation F1a–F2): **F1** — pick 2/3/4 atoms on a parsed-job trajectory geometry →
+      distance/angle/dihedral (`measureByCoords`, ASE conventions shared with the editor); **F1c** — that
+      measurement drawn ON the molecule (the xyz overlay reuses the editor's drawing primitives).
       energies and occupations — **done** (unit 3.15). Gated first (measured, `wiki/orca/orca-plot.md`):
       `orca_plot`'s advertised `plot-inputfile` batch mode was unusable (undocumented "state density"
       field → FATAL, no cube), so generation drives its interactive menu over **stdin**; cube sizes
@@ -308,7 +310,10 @@ now-`[x]` "Fragment library" item above.
       not charge** (labelled). State (orbital/isovalue/visibility) is app-owned (ADR-011);
       `MoleculeViewer` gained an `orbitalCube`/`orbitalIsoValue` path. **Density** cubes / the MO-coeff
       route are not done — only canonical MOs from the gbw. (Also: the frequency table now flows into
-      three columns.)
+      three columns.) **Extended by the 2026-08-27 orbital-overlap units** (distinct from Stage F
+      microsolvation F1a–F2): **F2** — simultaneous MOs (`orbitalCubes` array + capped multi-select
+      picker with colour pairs, for HOMO–LUMO overlap); **F2b** — wireframe-mesh option so overlapping
+      isosurfaces don't occlude (default mesh at ≥2). See `wiki/log.md` + `modules/visualization.md`.
 - [ ] **Multi-fragment frontier-orbital labeling (teaching moment).** For a scene with ≥2
       fragments, the results card labels the gap as the SYSTEM gap and shows per-fragment
       localization of HOMO/LUMO (e.g. "HOMO 99.7% on Butylamine · LUMO 93.1% on Acetaldehyde"),
@@ -1312,6 +1317,16 @@ Group-delete **promotes** children (never a destructive cascade); jobs orphan to
         `Option<String>`, group manifests byte-identical). UI: **"Export Folder…"** beside "Open Folder"
         (Curated/Full + path toast). +3 pure bites + 5 integration bites (round-trip, data-dir refused, curated
         omitted, ungrouped-null, draft, NotFound); no migration; group export untouched.
+  - [x] **Multi-job selection export landed** (2026-08-26) — the THIRD projection ([ADR-021](wiki/architecture/adr-021-group-export-projection.md)
+        amendment): an explicit, possibly **cross-group** set of hand-picked jobs. `export_selection`
+        (+ testable `export_selection_conn`) + the pure `build_selection_manifest` reuse the SAME machinery
+        (inverted rule-#3 guard, `fresh_export_dir`, `copy_manifest_job_dirs`, `verify_export_postcondition`)
+        via the extracted `ordered_manifest_jobs` helper. A selection is **not a group**, so `source.group` is
+        **null by design** + a second `SELECTION_NOTE` in the manifest; each job's `group_path` resolves against
+        **ALL** groups (`all_group_nodes`), so a cross-group job keeps its full provenance. Empty selection
+        refused, ids deduped on ingest, unknown id fails loudly (`NotFound`). UI: a Jobs-view multi-select
+        (`selected: Set<string>`, select-all-visible, persists across filters) → "Export selected (N)…". No
+        struct/schema/migration change. `modules/group-export.md`, `modules/groups-ui.md`.
 - [x] **group-inheritance default (Unit 1).** A result-derived child job — **OptTS** / **NEB-TS** /
       **DFT re-opt** (and connectivity, via OptTS) — **defaults its `group_id` to the source job's current
       group**, stamped verbatim right after the pathway inherit, so a refined child lands in the source's
