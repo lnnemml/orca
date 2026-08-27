@@ -9,7 +9,14 @@ import {
 import { RepresentationToggle } from "../viewer/RepresentationToggle";
 import { saveBytes, exportName } from "../export/save";
 import { orbitalRows, defaultOrbital, coreOrbitals, homoIndex } from "./orbitalList";
-import { assignPairs, toggleOrbital, MAX_ORBITALS, type AssignedOrbital } from "./orbitalPalette";
+import {
+  assignPairs,
+  toggleOrbital,
+  defaultSurfaceStyle,
+  MAX_ORBITALS,
+  type AssignedOrbital,
+  type SurfaceStyle,
+} from "./orbitalPalette";
 
 /** 1 Hartree in eV (CODATA 2018) — chemists read orbital energies in eV. */
 const EH_TO_EV = 27.211_386_245_988;
@@ -64,6 +71,10 @@ export function OrbitalPanel({
   const [selected, setSelected] = useState<number[]>(() => [defaultOrbital(orbitals)]);
   const [isoValue, setIsoValue] = useState(DEFAULT_ISOVALUE);
   const [representation, setRepresentation] = useState<Representation>("stick");
+  // Surface vs wireframe mesh (F2b — overlap legibility). `null` = follow the count-based
+  // default (`defaultSurfaceStyle`: mesh at ≥2, solid at 1); once the user toggles it becomes
+  // a sticky explicit choice that survives selection/isovalue changes.
+  const [surfaceOverride, setSurfaceOverride] = useState<SurfaceStyle | null>(null);
   // The cubes to draw, held in STATE with a STABLE identity — set once per fetch, never
   // rebuilt inline in render (seam 2: the viewer's `cubes` memo + isosurface effect key on
   // this array's reference, so a stray re-render — isovalue drag, representation toggle —
@@ -159,6 +170,10 @@ export function OrbitalPanel({
 
   const droppedSet = useMemo(() => new Set(dropped.map((d) => d.mo)), [dropped]);
 
+  // The effective surface style: the user's sticky choice if they've toggled, else the
+  // count-based default (mesh once ≥2 orbitals overlap, solid for one).
+  const surfaceStyle: SurfaceStyle = surfaceOverride ?? defaultSurfaceStyle(selected.length);
+
   return (
     <section className="orbital-panel">
       <div className="section-title" style={{ fontSize: 12 }}>
@@ -176,6 +191,7 @@ export function OrbitalPanel({
                 ref={viewerRef}
                 orbitalCubes={orbitalCubes}
                 orbitalIsoValue={isoValue}
+                orbitalWireframe={surfaceStyle === "mesh"}
                 representation={representation}
               />
             ) : (
@@ -244,6 +260,25 @@ export function OrbitalPanel({
               />
             </label>
             <RepresentationToggle value={representation} onChange={setRepresentation} />
+            <span className="orbital-surface-toggle">
+              <div className="ir-view-toggle" role="group" aria-label="orbital surface style">
+                <button
+                  type="button"
+                  className={surfaceStyle === "solid" ? "active" : ""}
+                  onClick={() => setSurfaceOverride("solid")}
+                >
+                  surface
+                </button>
+                <button
+                  type="button"
+                  className={surfaceStyle === "mesh" ? "active" : ""}
+                  onClick={() => setSurfaceOverride("mesh")}
+                >
+                  mesh
+                </button>
+              </div>
+              <span className="muted" style={{ fontSize: 11 }}>mesh recommended for overlap</span>
+            </span>
             {capHint ? (
               <span className="muted" style={{ fontSize: 11 }}>max {MAX_ORBITALS} orbitals</span>
             ) : null}

@@ -2423,6 +2423,12 @@ button.ir-imaginary-mode.selected {
   font-size: 11px;
   color: var(--muted);
 }
+/* Surface/mesh toggle + its hint (F2b) sit together in the controls row. */
+.orbital-surface-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
 .orbital-swatch {
   display: inline-block;
   width: 11px;

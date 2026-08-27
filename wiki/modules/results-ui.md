@@ -311,7 +311,7 @@ peak↔row highlight, and the imaginary/scaled logic are unchanged — each row 
 `onSelect(m.index)`. On a narrow window the flex row (`.ir-table-columns`) **wraps**, it doesn't
 overflow. Cosmetic only.
 
-## `src/orbitals/` — orbital isosurfaces (unit 3.15; F2 — simultaneous MOs)
+## `src/orbitals/` — orbital isosurfaces (unit 3.15; F2 — simultaneous MOs; F2b — mesh overlap)
 The last Phase-3 visualization. The MO energies + occupancies were already parsed (`orca_2json`,
 `data_json.orbitals`); this adds the orbitals as **volume**. Gated behind a measured three-part gate
 ([`orca/orca-plot.md`](../orca/orca-plot.md)): `orca_plot` batch invocation, cube sizes/times, and —
@@ -327,6 +327,8 @@ the real unknown — whether WebKitGTK renders a 3Dmol isosurface (it does; Mini
   to a pair **by its position in the ordered selection** (order drives the palette → picker swatch,
   legend and drawn surface all agree; removal re-colours deterministically). `toggleOrbital` adds
   under the cap, removes if present, and is a **no-op at the cap** (pure, never mutates).
+  `defaultSurfaceStyle(count)` (F2b) → `count >= 2 ? "mesh" : "solid"` — the count-based default for
+  the surface/mesh toggle.
 - **`OrbitalPanel.tsx`**: the picker is now **multi-select (cap 4)** — each active row shows its ±
   colour-pair swatch, a **"HOMO+LUMO" button** selects the frontier pair (guarded when there is no
   LUMO), and a **legend** lists each selected MO with its swatch + energy. On any selection change it
@@ -353,6 +355,15 @@ the real unknown — whether WebKitGTK renders a 3Dmol isosurface (it does; Mini
   per fetch) so a stray re-render doesn't churn the viewer's cube array (each cube ≈6.9 MB — reference
   stability, not content-hashing, is the guard). **One scene, one mode:** the orbital viewer shows a
   static molecule + surfaces; it never also animates a normal mode (that lives in the IR panel).
+- **Surface / mesh toggle (F2b — overlap legibility).** Translucent solid isosurfaces depth-sort
+  poorly in WebGL, so with ≥2 orbitals the front one occluded the back (live gate). A **surface / mesh**
+  toggle (mirrors the ball-and-stick / lines control) picks solid vs **wireframe mesh** — the mesh
+  doesn't occlude, so overlapping HOMO/LUMO lobes are both readable. Default derives from the count via
+  the pure `defaultSurfaceStyle` (**mesh at ≥2, solid at 1** — a single orbital is unchanged, opening
+  HOMO+LUMO is readable) and is **sticky once the user toggles** (an explicit choice survives selection
+  /isovalue changes; state `surfaceOverride: SurfaceStyle | null` in the panel, `null` = follow the
+  default). Passed to the viewer as `orbitalWireframe={surfaceStyle === "mesh"}`; a "mesh recommended
+  for overlap" hint sits by the toggle.
 - **Absence is normal:** an xTB/GOAT `.gbw` yields no JSON MOs (measured), so `results.orbitals` is
   absent and the whole section is not rendered; if `orca_plot` produces nothing, the viewer shows a
   note, never crashes.

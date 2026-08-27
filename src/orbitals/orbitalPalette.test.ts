@@ -5,6 +5,7 @@ import {
   MAX_ORBITALS,
   assignPairs,
   toggleOrbital,
+  defaultSurfaceStyle,
 } from "./orbitalPalette";
 
 /** Pair 0 must be the viewer's single-orbital default (blue / red). The viewer's
@@ -61,6 +62,19 @@ describe("cap_blocks_beyond_max", () => {
     const input = [5, 6];
     toggleOrbital(input, 7);
     expect(input).toEqual([5, 6]);
+  });
+});
+
+describe("default_surface_style_by_count", () => {
+  it("defaults to solid for a single orbital (unchanged look)", () => {
+    expect(defaultSurfaceStyle(1)).toBe("solid");
+  });
+  it("defaults to mesh for two or more (readable overlap — the F2b fix)", () => {
+    expect(defaultSurfaceStyle(2)).toBe("mesh");
+    expect(defaultSurfaceStyle(4)).toBe("mesh");
+  });
+  it("is solid for the degenerate empty/zero case", () => {
+    expect(defaultSurfaceStyle(0)).toBe("solid");
   });
 });
 

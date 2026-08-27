@@ -35,8 +35,9 @@ passes `xyzData` (stored xyz strings); the Job-detail conformer panel passes `xy
 **Phase-3 results props** (details in [results-ui.md](results-ui.md)): `preserveCameraOnUpdate`
 (trajectory / animation — redraw same-count frames without `zoomTo`); `bondTopologyReference` (freeze
 bond topology from an equilibrium geometry and coordinate-update per frame — mode animation, unit
-3.14); `orbitalCube` / `orbitalCubes` / `orbitalIsoValue` (one `.cube` — or an ARRAY of them, F2 —
-drawn as molecule + ± phase isosurfaces, unit 3.15; `orbitalCube` is the single-orbital alias);
+3.14); `orbitalCube` / `orbitalCubes` / `orbitalIsoValue` / `orbitalWireframe` (one `.cube` — or an
+ARRAY of them, F2 — drawn as molecule + ± phase isosurfaces, solid or wireframe mesh (F2b), unit 3.15;
+`orbitalCube` is the single-orbital alias);
 `representation` (`"stick"` | `"line"`, unit 3.16). The component is also a `forwardRef` exposing
 `toPngBytes()` (3Dmol `pngURI()` readback, for PNG export). App-owned state throughout (ADR-011).
 
@@ -517,9 +518,22 @@ single-orbital design:
   `VolumeData` leak between selections).
 - **The isosurface effect draws 2N surfaces** and stays the **single owner** of the ±
   surfaces: `isoShapesRef` holds the full 2N set and `removeShape`s exactly that set on each
-  change — **never `removeAllShapes`** (which would wipe the selection-halo path). Opacity via
-  `orbitalIsoOpacity(n)`: `n === 1 → 0.85` (`ORBITAL_ISO_OPACITY`), `n >= 2 → 0.55`
-  (`ORBITAL_MULTI_ISO_OPACITY`, live-tunable — a back lobe reads through a front one).
+  change — **never `removeAllShapes`** (which would wipe the selection-halo path). Solid
+  opacity via `orbitalIsoOpacity(n)`: `n === 1 → 0.85` (`ORBITAL_ISO_OPACITY`), `n >= 2 → 0.55`
+  (`ORBITAL_MULTI_ISO_OPACITY`, live-tunable).
+- **F2b — wireframe mesh for overlap legibility.** Translucent SOLID surfaces depth-sort
+  poorly in WebGL, so the front orbital occluded the back one (live gate). Prop
+  **`orbitalWireframe?: boolean`** (in the effect deps): when true both `addIsosurface` specs
+  get `wireframe: true` + `linewidth: ORBITAL_WIRE_LINEWIDTH (1.5)` and opacity
+  `ORBITAL_WIRE_OPACITY (0.85)` — a mesh doesn't occlude, so it can be near-opaque and you see
+  THROUGH it to the other orbital. When false the surfaces stay solid at `orbitalIsoOpacity(n)`.
+  **Probe (Rule #10, verified on the installed build):** `IsoSurfaceSpec extends ShapeSpec`,
+  and `ShapeSpec.wireframe?: boolean` is consumed by `GLShape.ts` (`shape.wireframe = …`,
+  `if (this.wireframe)`, passed to the THREE material as `wireframe`/`wireframeLinewidth`);
+  `linewidth` is a best-effort hint (WebGL clamps line width to ~1px on most drivers — the
+  type def warns), so legibility comes from the mesh itself, not the stroke. The app defaults
+  it on for ≥2 orbitals and off for one (single orbital unchanged — solid 0.85); see
+  [results-ui.md](results-ui.md).
 - **Seam (identity stability):** the isosurface effect deps are `[cubes, orbitalIsoValue]`
   and `cubes` is memoized on the raw props, so the parent (`OrbitalPanel`) MUST hold
   `orbitalCubes` in state with a stable reference (set once per fetch) — otherwise a stray

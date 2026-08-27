@@ -199,6 +199,16 @@ interface MoleculeViewerProps {
    * not charge. Ignored unless `orbitalCube`/`orbitalCubes` is set. Shared across all
    * simultaneous orbitals. */
   orbitalIsoValue?: number;
+  /**
+   * Draw the orbital isosurfaces as WIREFRAME mesh instead of solid (F2b — overlap
+   * legibility). Translucent SOLID surfaces depth-sort poorly in WebGL, so a front orbital
+   * occludes the back one; a wireframe mesh lets you see THROUGH to the other orbital. The
+   * app defaults this on for ≥2 orbitals (readable overlap) and off for one (the single
+   * orbital stays a solid 0.85 surface — byte-identical to before F2b). App-owned (ADR-011);
+   * ignored unless an orbital is set. When true the surfaces use `ORBITAL_WIRE_OPACITY`
+   * (mesh doesn't occlude, so it's near-opaque), not `orbitalIsoOpacity(n)`.
+   */
+  orbitalWireframe?: boolean;
   /** Molecule representation (unit 3.16): `stick` (default) or `line`. App-owned
    * (ADR-011). Honoured on the orbital, mode-animation and single-xyz paths; the
    * scene editor is always ball-and-stick. */
@@ -310,6 +320,15 @@ const ORBITAL_MULTI_ISO_OPACITY = 0.55;
 function orbitalIsoOpacity(n: number): number {
   return n >= 2 ? ORBITAL_MULTI_ISO_OPACITY : ORBITAL_ISO_OPACITY;
 }
+/** Wireframe-mesh opacity (F2b — overlap legibility). A wireframe does NOT occlude what is
+ * behind it (you see THROUGH the mesh to the other orbital), so it can be near-opaque — the
+ * translucent-solid depth-sort artefact is what made overlapping orbitals unreadable. Live-
+ * tunable on the render gate (m2). */
+const ORBITAL_WIRE_OPACITY = 0.85;
+/** Wireframe line width (F2b). Maps to THREE `wireframeLinewidth`; WebGL clamps line width to
+ * ~1px on most drivers (the 3Dmol type def warns of this), so this is a best-effort hint, not
+ * a guarantee — legibility comes from the mesh itself, not the stroke. Live-tunable (m2). */
+const ORBITAL_WIRE_LINEWIDTH = 1.5;
 
 /** Selection-halo wireframe opacity (2.5.2e-1). The colour comes from the theme
  * (`haloColor`); a constant-radius halo was invisible on carbon, so the RADIUS
@@ -688,6 +707,7 @@ export const MoleculeViewer = forwardRef<MoleculeViewerHandle, MoleculeViewerPro
       orbitalCube,
       orbitalCubes,
       orbitalIsoValue,
+      orbitalWireframe = false,
       representation = "stick",
       moveMode = false,
       moveGranularity = "fragment",
@@ -1071,7 +1091,13 @@ export const MoleculeViewer = forwardRef<MoleculeViewerHandle, MoleculeViewerPro
     for (const key of [...volDataRef.current.keys()]) {
       if (!live.has(key)) volDataRef.current.delete(key);
     }
-    const opacity = orbitalIsoOpacity(cubes.length);
+    // Solid vs wireframe mesh (F2b): a wireframe doesn't occlude what's behind it, so it can
+    // be near-opaque (`ORBITAL_WIRE_OPACITY`); a solid surface keeps the count-based opacity.
+    // `linewidth` maps to THREE `wireframeLinewidth` (WebGL may clamp it to 1px — a hint).
+    const opacity = orbitalWireframe ? ORBITAL_WIRE_OPACITY : orbitalIsoOpacity(cubes.length);
+    const shared = orbitalWireframe
+      ? { opacity, wireframe: true, linewidth: ORBITAL_WIRE_LINEWIDTH }
+      : { opacity };
     const shapes: GLShape[] = [];
     for (const { cube, posColor, negColor } of cubes) {
       // Parse each cube ONCE (per cube text); reuse across isovalue changes and siblings.
@@ -1081,13 +1107,13 @@ export const MoleculeViewer = forwardRef<MoleculeViewerHandle, MoleculeViewerPro
         volDataRef.current.set(cube, vol);
       }
       shapes.push(
-        viewer.addIsosurface(vol, { isoval: orbitalIsoValue, color: posColor, opacity }),
-        viewer.addIsosurface(vol, { isoval: -orbitalIsoValue, color: negColor, opacity }),
+        viewer.addIsosurface(vol, { isoval: orbitalIsoValue, color: posColor, ...shared }),
+        viewer.addIsosurface(vol, { isoval: -orbitalIsoValue, color: negColor, ...shared }),
       );
     }
     isoShapesRef.current = shapes;
     viewer.render();
-  }, [cubes, orbitalIsoValue]);
+  }, [cubes, orbitalIsoValue, orbitalWireframe]);
 
   // The overlay effect — the SINGLE owner of every shape and label in the
   // viewer: selection halos, measurement lines/labels (2.5.2b), and atom-number

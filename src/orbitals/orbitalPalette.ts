@@ -67,3 +67,16 @@ export function toggleOrbital(selected: readonly number[], mo: number): number[]
   if (selected.length >= MAX_ORBITALS) return [...selected];
   return [...selected, mo];
 }
+
+/** How the isosurfaces are drawn (F2b): `solid` translucent surface, or `mesh` wireframe. */
+export type SurfaceStyle = "solid" | "mesh";
+
+/**
+ * The surface style to DEFAULT to for a given number of simultaneous orbitals: **`mesh` at
+ * ≥2** (a wireframe doesn't occlude, so overlapping HOMO/LUMO lobes are both readable) and
+ * **`solid` for one** (a lone orbital keeps its filled 0.85 look — unchanged from F2). This
+ * is only the default: once the user toggles, their choice is sticky (owned in the panel).
+ */
+export function defaultSurfaceStyle(count: number): SurfaceStyle {
+  return count >= 2 ? "mesh" : "solid";
+}

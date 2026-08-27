@@ -9008,3 +9008,40 @@ removal re-colours); m4 shared isovalue updates all; m5 legibility — TUNE `ORB
 Map, `orbitalIsoOpacity(n)`, single-owner discipline, the seam), modules/results-ui.md (multi-select
 picker, colour pairs, swatch legend, HOMO+LUMO button, per-MO fetch, honest-or-absent).
 **Next:** Anton's live gates m1–m6, especially m5 (palette/opacity tuning).
+
+## [2026-08-27] fix | F2b — orbital overlap legibility: wireframe mesh option (default mesh for ≥2 MOs)
+
+F2 drew N orbitals as SOLID translucent isosurfaces; a live gate showed the front orbital
+occludes the back one (translucent solids depth-sort poorly in WebGL). Fix: draw overlapping
+orbitals as **wireframe mesh** (you see through the mesh to the other orbital), with a
+surface/mesh toggle so the chemist picks per system. A single orbital stays SOLID.
+
+**Probe first (Rule #10) — verified on the installed 3Dmol build.** `IsoSurfaceSpec extends
+ShapeSpec`, and `ShapeSpec.wireframe?: boolean` ("draw as wireframe, not surface") is consumed by
+`node_modules/3dmol/src/GLShape.ts`: `shape.wireframe = stylespec.wireframe ? true : false` (616),
+`if (this.wireframe)` (1444), passed to the THREE material as `wireframe` / `wireframeLinewidth`
+(1456–1469). `linewidth` maps to `wireframeLinewidth` but the type def warns it's "No longer
+supported by most browsers" (WebGL clamps to ~1px) — a best-effort hint, legibility comes from the
+mesh, not the stroke. Flag confirmed live before coding.
+
+**MoleculeViewer.tsx.** New prop `orbitalWireframe?: boolean` (in the isosurface effect deps). When
+true both `addIsosurface` specs get `wireframe: true` + `linewidth: ORBITAL_WIRE_LINEWIDTH (1.5)` and
+opacity `ORBITAL_WIRE_OPACITY (0.85)` (mesh doesn't occlude → near-opaque); when false, solid at
+`orbitalIsoOpacity(n)`. The isosurface effect stays the **single ± surface owner** (isoShapesRef, the
+full 2N set, removeShape each — unchanged). N=1 solid 0.85 is untouched (the wireframe path only
+engages when the app passes it, which it does not for a single orbital).
+
+**orbitalPalette.ts (+1 bite).** `defaultSurfaceStyle(count)` → `count >= 2 ? "mesh" : "solid"`, and a
+`SurfaceStyle = "solid" | "mesh"` type. **OrbitalPanel.tsx:** a `surfaceOverride: SurfaceStyle | null`
+state (`null` = follow the count-based default; toggling makes it a sticky explicit choice surviving
+selection/isovalue changes), a surface/mesh toggle mirroring the ball-and-stick/lines control, a "mesh
+recommended for overlap" hint, and `orbitalWireframe={surfaceStyle === "mesh"}` to the viewer.
+
+**Verification.** tsc clean; vitest **959 passed** (was 956; +3 `default_surface_style_by_count`,
+shown to bite — forcing `defaultSurfaceStyle` to always-"solid" reddened the ≥2 case, restore → green).
+Drawing is 3Dmol-coupled (gated live). **Manual gates (Anton, live) — PENDING:** m1 single solid
+unchanged; m2 mesh overlap (THE fix) — HOMO+LUMO both readable as wireframe, judge linewidth / mesh
+opacity and TUNE `ORBITAL_WIRE_OPACITY` / `ORBITAL_WIRE_LINEWIDTH`; m3 toggle solid↔mesh live; m4
+default (2-orbital → mesh, 1 → solid, explicit toggle sticks across isovalue). **Wiki:**
+modules/visualization.md (the `orbitalWireframe` prop + mesh opacity + the probe), modules/results-ui.md
+(the surface/mesh toggle, default mesh at ≥2). **Next:** Anton's live gates m1–m4, esp. m2 tuning.
