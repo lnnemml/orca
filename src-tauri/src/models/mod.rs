@@ -4,3 +4,4 @@ pub mod group;
 pub mod job;
 pub mod molecule;
 pub mod reaction;
+pub mod server_profile;

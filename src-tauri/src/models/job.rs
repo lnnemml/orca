@@ -105,6 +105,15 @@ pub struct Job {
     /// re-opt/reference links: a job can sit in a group AND be a re-opt child AND be a
     /// reaction reference at once (ADR-019 Decision 5).
     pub group_id: Option<String>,
+    /// Execution-backend FK into `server_profiles` (schema v18, Phase 5 unit 5.1, ADR-023).
+    /// **`None` = the local backend** — the normal state for every job today. There is NO
+    /// `'local'` profile row (the v13 `pathway_id` precedent): a `NULL` here *is* "run
+    /// locally". A non-null value names the remote `ServerProfile` a job runs on; the
+    /// per-job "Run on:" selector (a later Phase 5 unit) is a `match` on this. Nulled if
+    /// its profile is deleted (`delete_server_profile` nulls children explicitly AND
+    /// `ON DELETE SET NULL` is enforced) — the job survives, dropping back to local.
+    /// Orthogonal to `pathway_id` / `group_id` / the re-opt links.
+    pub backend_id: Option<String>,
 }
 
 impl Job {
@@ -112,7 +121,7 @@ impl Job {
     /// here is the contract [`Job::from_row`] relies on.
     pub const COLUMNS: &'static str = "id, title, input_content, status, job_dir, \
          energy, wall_time, error_message, created_at, started_at, completed_at, \
-         scene_json, scene_log_json, pathway_id, group_id";
+         scene_json, scene_log_json, pathway_id, group_id, backend_id";
 
     /// Build a [`Job`] from a row selected in [`Job::COLUMNS`] order.
     pub fn from_row(row: &Row) -> rusqlite::Result<Job> {
@@ -141,6 +150,62 @@ impl Job {
             scene_log_json: row.get(12)?,
             pathway_id: row.get(13)?,
             group_id: row.get(14)?,
+            backend_id: row.get(15)?,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    /// A minimal `jobs` table carrying the two columns that changed in v18-adjacent
+    /// work, so `Job::COLUMNS` + `Job::from_row` round-trip `backend_id` in BOTH states:
+    /// NULL (local) and a set value (a remote profile). Guards the COLUMNS-order contract
+    /// against a drift where `backend_id`'s SELECT position and `row.get(15)` disagree.
+    fn setup(conn: &Connection) {
+        conn.execute_batch(
+            "CREATE TABLE jobs (
+                id TEXT PRIMARY KEY, title TEXT NOT NULL, input_content TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'draft', job_dir TEXT, energy REAL,
+                wall_time REAL, error_message TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')), started_at TEXT,
+                completed_at TEXT, scene_json TEXT, scene_log_json TEXT,
+                pathway_id TEXT, group_id TEXT, backend_id TEXT
+            );",
+        )
+        .unwrap();
+    }
+
+    fn get(conn: &Connection, id: &str) -> Job {
+        let sql = format!("SELECT {} FROM jobs WHERE id = ?1", Job::COLUMNS);
+        conn.query_row(&sql, rusqlite::params![id], Job::from_row).unwrap()
+    }
+
+    #[test]
+    fn from_row_round_trips_backend_id_null_and_set() {
+        let conn = Connection::open_in_memory().unwrap();
+        setup(&conn);
+        conn.execute_batch(
+            "INSERT INTO jobs (id, title, input_content, status) \
+                VALUES ('local', 'runs local', '! SP', 'draft');
+             INSERT INTO jobs (id, title, input_content, status, backend_id) \
+                VALUES ('remote', 'runs remote', '! SP', 'draft', 'profile-1');",
+        )
+        .unwrap();
+
+        assert_eq!(
+            get(&conn, "local").backend_id,
+            None,
+            "NULL backend_id hydrates to None (= local backend, ADR-023)"
+        );
+        assert_eq!(
+            get(&conn, "remote").backend_id.as_deref(),
+            Some("profile-1"),
+            "a set backend_id hydrates to the named profile id"
+        );
+        // Sanity that COLUMNS order is still coherent: an adjacent field survives too.
+        assert_eq!(get(&conn, "local").title, "runs local");
     }
 }

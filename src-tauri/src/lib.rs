@@ -1,5 +1,11 @@
 mod anthropic;
 mod commands;
+// Part A of unit 5.1 lands the pure connection-test parsers with full test coverage; their
+// production caller (Part B's SSH connection-test) is the next unit, so the parsers are
+// exercised only by their own tests until then. Scoped allow so the build stays warning-
+// clean without a faked caller — removed when Part B wires them in.
+#[allow(dead_code)]
+mod connection_test;
 mod convergence;
 mod cpu_presets;
 mod crest;
@@ -133,6 +139,11 @@ pub fn run() {
             commands::reactions::remove_reference_job,
             commands::reactions::list_reference_jobs,
             commands::reactions::reaction_reference_energy,
+            commands::server_profiles::create_server_profile,
+            commands::server_profiles::list_server_profiles,
+            commands::server_profiles::update_server_profile,
+            commands::server_profiles::delete_server_profile,
+            commands::server_profiles::set_profile_verified,
             commands::groups::create_group,
             commands::groups::list_groups,
             commands::groups::rename_group,

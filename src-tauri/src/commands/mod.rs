@@ -7,4 +7,5 @@ pub mod jobs;
 pub mod manual;
 pub mod molecules;
 pub mod reactions;
+pub mod server_profiles;
 pub mod settings;

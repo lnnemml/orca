@@ -9197,3 +9197,71 @@ removal + targeted allows + scope-note doc), wiki.
 
 Next: verifier push-time ritual + Anton commit approval. Then the `SshBackend` unit (ADR-023):
 `enum Backend`, `jobs.backend_id` migration, `ServerProfile`, connection-test.
+
+## [2026-08-27] session | Prober: unit 5.1 connection-test stdout formats measured (rule #10)
+
+Measured the real stdout/stderr/exit-code shapes of the three commands the unit-5.1
+connection-test will run on a remote server, using the dev laptop as a stand-in
+(same Linux distribution family, same ORCA + OpenMPI install).
+
+Findings recorded in wiki/orca/remote-server-probe-commands.md (page 104):
+
+1. ORCA path resolution: `which orca` / `command -v orca` both exit 0 here (ORCA is on
+   $PATH), but the correct strategy is `test -x <configured-absolute-path>` per rule #1 —
+   `which` will be absent on university clusters with private installs. ORCA 6.1.0 is at
+   /opt/orca/orca. Version line from `<path> --version 2>&1`: heavy-indented
+   `Program Version 6.1.0  -  RELEASE   -`; regex `Program Version\s+(\d+\.\d+\.\d+)`.
+
+2. OpenMPI version: `ompi_info --version` → 3 lines, line 1 = `Open MPI v4.1.6`; exit 0.
+   Regex `Open MPI v(\d+\.\d+\.\d+)`. `mpirun --version` agrees (`mpirun (Open MPI) 4.1.6`).
+   Full `ompi_info` (no flags) key-value form: `                Open MPI: 4.1.6`.
+
+3. Core count: `nproc` → single integer `16\n`, no label, exit 0. `nproc --all` = 16 here
+   (no offline CPUs). lscpu shows hybrid topology (i5-12500H: 4 P-cores HT + 8 E-cores =
+   16 logical total); `nproc` is the authoritative scheduler-visible ceiling.
+
+Not-found cases documented for all three. wiki/index.md updated (page count 103→104).
+
+---
+
+## [2026-08-27] feat | Phase 5 unit 5.1 Part A — server-profile data layer + connection-test parsers
+
+Remote-execution data layer (ADR-023), Part A only — no SSH, no UI, no `enum Backend`.
+Built on the orchestrator's already-landed v18 migration (`server_profiles` table +
+`jobs.backend_id` nullable FK), `Job.backend_id`, and the `ServerProfile` model.
+
+Landed:
+
+1. **CRUD** — new `src-tauri/src/commands/server_profiles.rs` (mirrors `commands/reactions.rs`:
+   thin Tauri command → `*_conn(&Connection, …)` helper, `Result<T, AppError>`, `Uuid` ids).
+   `create` / `list` / `update` (user fields ONLY — never the verified_* columns) /
+   `delete` (**nulls child jobs' `backend_id` first, jobs survive** — the `delete_reaction`
+   invariant) / `set_profile_verified` (stamps orca/openmpi/core_count + `verified_at`, the
+   pure DB-write half of the connection-test Part B will call). 5 tests: create→list
+   round-trips all fields; a new profile is honestly unverified; update preserves a stamp;
+   `set_profile_verified` flips the `verified_at IS NOT NULL` usability gate;
+   **`delete_profile_nulls_children_and_jobs_survive`** — the biting control (demonstrated
+   red when delete is made a naive `DELETE FROM jobs` cascade → "the job MUST survive").
+
+2. **Pure connection-test parsers** — new `src-tauri/src/connection_test.rs`. Parsers ONLY
+   (no `std::process::Command`, no ssh — Part B). `parse_orca_version` /
+   `parse_openmpi_version` (+`mpirun` fallback) / `parse_nproc` (`Result<u32, AppError>`,
+   garbage → `AppError::Backend`, never a guessed ceiling) / `parse_presence`. Reuses the
+   existing `regex` dep (result-extraction) rather than hand-rolling. 9 tests against the
+   prober's verbatim fixtures + empty/not-found/garbage edges;
+   **`orca_version_does_not_scrape_unrelated_digits`** — the biting control (demonstrated red
+   when the ORCA regex is loosened to grab any `x.y.z`), proving the `Program Version` anchor
+   is load-bearing.
+
+Registrations: `mod connection_test;` (scoped `#[allow(dead_code)]` until Part B links the
+parsers) + `pub mod server_profiles;` + 5 commands in the `lib.rs` `invoke_handler!`.
+
+`cargo build` warning-clean (the 2 `ServerProfile` dead-code warnings are gone — CRUD
+consumes it); `cargo test` 353 passed / 0 failed / 23 ignored.
+
+Wiki: +`modules/server-profiles.md`; amended `adr-023` (nullable-FK `NULL = local`, no
+`'local'` row, no backfill — v13 `pathway_id` precedent); `index.md` updated (page 105).
+
+Next (Part B, live gate): `SshBackend` + `enum Backend`, the settings UI, the REAL SSH
+connection-test that measures the university server and calls `set_profile_verified`, and the
+"Run on:" selector wired into job creation.

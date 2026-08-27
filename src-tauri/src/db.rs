@@ -78,7 +78,22 @@ use crate::error::AppError;
 ///   additive → every pre-existing job is ungrouped (`group_id` NULL). Guarded ALTER (column_exists,
 ///   like v10/v11/v15). The `group_id` axis is ORTHOGONAL to pathway_id / source_ensemble_job_id /
 ///   reference rows (ADR-019 Decision 5).
-const SCHEMA_VERSION: i64 = 17;
+/// - v18: server profiles for remote execution (Phase 5 unit 5.1, ADR-023). A NEW
+///   `server_profiles` table (the flat `settings` k/v store is unsuitable for a
+///   multi-row entity with typed, per-profile columns) + a nullable `jobs.backend_id`.
+///   `backend_id` is a **nullable FK to `server_profiles(id)`, `NULL = local` backend** —
+///   the exact v13 `pathway_id` precedent: NO `'local'` profile row, NO backfill, every
+///   pre-existing job stays local (`backend_id` NULL). Verified specs (connection-test,
+///   ADR-023 rule-#10 measurement) are DISCRETE typed columns (`orca_version`,
+///   `openmpi_version`, `core_count`, `verified_at`), never a JSON blob; the profile
+///   usability gate is `verified_at IS NOT NULL` (a profile that has not passed the
+///   connection-test is not a run target). `ON DELETE SET NULL` is enforced on the
+///   init_db connection (bundled SQLite compiles `SQLITE_DEFAULT_FOREIGN_KEYS=1` — see
+///   `commands::reactions`), but deletion also nulls children explicitly in the Rust
+///   command (jobs-survive, like v13/v16) so a job NEVER dies with its profile even on
+///   a connection where the PRAGMA is off. Additive + idempotent: CREATE IF NOT EXISTS,
+///   column_exists-guarded ALTER.
+const SCHEMA_VERSION: i64 = 18;
 
 /// Open (creating if needed) `orcastudio.db` under `data_dir` and migrate it to
 /// the current schema.
@@ -390,6 +405,45 @@ fn migrate(conn: &Connection) -> Result<(), AppError> {
             conn.execute_batch("ALTER TABLE jobs ADD COLUMN aux_files_json TEXT;")?;
         }
         version = 17;
+    }
+
+    // --- v17 -> v18: server profiles for remote execution (Phase 5 unit 5.1, ADR-023). A
+    // NEW `server_profiles` table (the flat `settings` k/v store cannot hold a multi-row
+    // entity with typed per-profile columns) + a nullable `jobs.backend_id`. `backend_id` is
+    // a nullable FK to `server_profiles(id)`, `NULL = local` backend — the v13 `pathway_id`
+    // precedent EXACTLY: no `'local'` row, no backfill, every existing job stays local
+    // (backend_id NULL). Verified specs (the connection-test measurement, rule #10) are
+    // DISCRETE typed columns, never a JSON blob; a profile is a run target only once
+    // `verified_at IS NOT NULL` (ADR-023). `core_mask` (rule #8 taskset) and the four
+    // verified_* columns are nullable until measured. `ON DELETE SET NULL` is honoured on the
+    // init_db connection (bundled `SQLITE_DEFAULT_FOREIGN_KEYS=1`), and `delete_server_profile`
+    // ALSO nulls children explicitly (jobs-survive, like v13/v16) — a job never dies with its
+    // profile. Additive + idempotent: CREATE IF NOT EXISTS, column_exists-guarded ALTER. ---
+    if version < 18 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS server_profiles (
+                id                 TEXT PRIMARY KEY,
+                name               TEXT NOT NULL,
+                host               TEXT NOT NULL,           -- ~/.ssh/config alias (ADR-005)
+                remote_orca_path   TEXT NOT NULL,           -- absolute path (rule #1)
+                remote_scratch_dir TEXT NOT NULL,           -- isolated job dirs live here (rule #3)
+                core_mask          TEXT,                    -- taskset mask (rule #8), NULL until measured
+                orca_version       TEXT,                    -- verified spec, NULL until connection-test
+                openmpi_version    TEXT,                    -- rule #2, NULL until connection-test
+                core_count         INTEGER,                 -- nproc ceiling, NULL until connection-test
+                verified_at        TEXT,                    -- NULL = not verified = not a run target (ADR-023)
+                created_at         TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )?;
+        if column_exists(conn, "jobs", "id")? && !column_exists(conn, "jobs", "backend_id")? {
+            // Nullable-default ADD COLUMN with a REFERENCES clause is permitted (SQLite's only
+            // FK-on-ALTER restriction is a non-NULL default). `ON DELETE SET NULL` is legal.
+            conn.execute_batch(
+                "ALTER TABLE jobs ADD COLUMN backend_id TEXT \
+                 REFERENCES server_profiles(id) ON DELETE SET NULL;",
+            )?;
+        }
+        version = 18;
     }
 
     // Persist the resulting version so subsequent runs skip completed steps.
@@ -1142,6 +1196,107 @@ mod tests {
         // Idempotent: a second migrate() is a no-op.
         migrate(&conn).expect("v16 -> v16 no-op");
         assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn migrate_v17_to_v18_adds_server_profiles_and_backend_id_and_preserves_jobs() {
+        // A v17 DB with `PRAGMA foreign_keys = ON` (mirroring the init_db connection, where
+        // the bundled SQLite enforces FKs). The v18 step adds the `server_profiles` table and
+        // a nullable `jobs.backend_id`; the pre-existing job is untouched and `backend_id` is
+        // NULL on it (every old job is local — the NULL = local decision, ADR-023).
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO settings (key, value) VALUES ('schema_version', '17');
+             CREATE TABLE jobs (
+                id TEXT PRIMARY KEY, title TEXT NOT NULL, input_content TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'draft', energy REAL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')), pathway_id TEXT
+             );
+             INSERT INTO jobs (id, title, input_content, status, energy)
+                VALUES ('j1', 'water opt', '! r2SCAN-3c Opt', 'completed', -76.42);",
+        )
+        .unwrap();
+        assert!(!column_exists(&conn, "jobs", "backend_id").unwrap());
+
+        migrate(&conn).expect("v17 -> v18");
+        assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
+
+        // The `server_profiles` table exists and `jobs.backend_id` is NULL on the old job.
+        assert!(column_exists(&conn, "server_profiles", "id").unwrap());
+        assert!(column_exists(&conn, "jobs", "backend_id").unwrap());
+        let (title, energy, backend_id): (String, Option<f64>, Option<String>) = conn
+            .query_row(
+                "SELECT title, energy, backend_id FROM jobs WHERE id = 'j1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("job preserved with a backend_id column");
+        assert_eq!(title, "water opt");
+        assert_eq!(energy, Some(-76.42));
+        assert_eq!(
+            backend_id, None,
+            "every existing job stays local (backend_id NULL, no 'local' row) — ADR-023"
+        );
+
+        // NEGATIVE CONTROL (bites): backend_id must be a NULLABLE column added WITHOUT a
+        // non-null default. Inserting a job that names NO backend must succeed and leave
+        // backend_id NULL. If the migration had added the column `NOT NULL DEFAULT '...'`
+        // (a backfill to a phantom 'local' row), this INSERT-without-backend would either
+        // fail or the read below would be Some(...), and the assert flips red.
+        conn.execute(
+            "INSERT INTO jobs (id, title, input_content, status) \
+             VALUES ('j2', 'no backend', '! SP', 'draft')",
+            [],
+        )
+        .expect("a job with no backend_id must be insertable (column is nullable)");
+        let b2: Option<String> = conn
+            .query_row("SELECT backend_id FROM jobs WHERE id = 'j2'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(b2, None, "a fresh job defaults to local, not a phantom 'local' profile");
+
+        // A profile row is representable and the discrete verified_* columns hold typed specs;
+        // an UNVERIFIED profile carries NULL verified_at (not a run target).
+        conn.execute_batch(
+            "INSERT INTO server_profiles (id, name, host, remote_orca_path, remote_scratch_dir)
+                VALUES ('p1', 'uni cluster', 'uni', '/opt/orca/orca', '/scratch/anton');
+             UPDATE jobs SET backend_id = 'p1' WHERE id = 'j1';",
+        )
+        .unwrap();
+        let verified_at: Option<String> = conn
+            .query_row(
+                "SELECT verified_at FROM server_profiles WHERE id = 'p1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(verified_at, None, "a profile is unverified (not a run target) until stamped");
+
+        // ON DELETE SET NULL fires on this FK-enforcing connection: deleting the profile
+        // NULLS the child job's backend_id (the job survives, dropping back to local).
+        conn.execute("DELETE FROM server_profiles WHERE id = 'p1'", [])
+            .expect("delete profile");
+        assert!(job_still_exists(&conn, "j1"), "the job MUST survive its profile's deletion");
+        let after: Option<String> = conn
+            .query_row("SELECT backend_id FROM jobs WHERE id = 'j1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(after, None, "ON DELETE SET NULL nulled backend_id — the job is local again");
+
+        // Idempotent: a second migrate() is a no-op.
+        migrate(&conn).expect("v18 -> v18 no-op");
+        assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
+    }
+
+    fn job_still_exists(conn: &Connection, id: &str) -> bool {
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM jobs WHERE id = ?1",
+                rusqlite::params![id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        count == 1
     }
 
     /// FTS5 build-gate. NOT a migration and NOT a table the app ships — a tripwire

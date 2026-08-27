@@ -57,3 +57,15 @@ This refines ADR-003 (the `ExecutionBackend` trait) and rides on ADR-005 (system
   `remote-server.md` sibling of `performance.md`), one section per profiled host.
 - **Extends, does not supersede.** ADR-003 still owns the trait; ADR-005 still owns the
   transport. This ADR names how `SshBackend` is parameterized and how servers are configured.
+
+**Amended 2026-08-27 (unit 5.1 Part A):** the Consequences above sketched
+`jobs.backend_id (default 'local')`. Unit 5.1 refines this to a **nullable FK with no default
+row**: `jobs.backend_id TEXT REFERENCES server_profiles(id) ON DELETE SET NULL`, where
+**`NULL = local`**. There is no `'local'` sentinel row and no backfill of existing jobs —
+following the v13 `pathway_id` precedent (a nullable grouping FK carries "none" as `NULL`, not
+as a magic row). A `NULL` `backend_id` is exactly "no remote target = run locally", so the
+per-job selector becomes `match backend_id { None => Local, Some(id) => Ssh(profile) }` with no
+sentinel to special-case. The `server_profiles` table and the connection-test's **pure**
+parsers + `set_profile_verified` DB-write landed in 5.1 Part A (schema v18); the `SshBackend`,
+the `enum Backend`, the settings UI, and the **real** SSH connection-test that stamps
+`verified_at` are Part B. See `wiki/modules/server-profiles.md`.
