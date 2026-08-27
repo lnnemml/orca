@@ -9085,3 +9085,12 @@ dated design artifact, exempt.
 
 **Diff scope:** wiki/ (log.md, modules/scene.md, modules/visualization.md), CLAUDE.md, ROADMAP.md — no
 source, no file renames (so index.md untouched). Post-fix sweeps re-run: still 0/0/0/0.
+
+## [2026-08-27] decision | Agentic development workflow adopted (ADR-022) — prober/explorer/implementer/verifier subagents; human gates kept structural
+
+Moved the intra-session architect→implement→verify loop into Claude Code via `.claude/agents/`
+(prober `sonnet`, explorer `haiku`, implementer `opus`, verifier `opus`+worktree). Orchestrator =
+main session, not `--agent`. Implementer never commits; verifier runs tsc/vitest/cargo/pytest for
+real (closes the web-review cargo-on-trust gap) and proves negative controls bite in its worktree.
+Chemistry sanity, live WebKitGTK, and design-fork resolution remain Anton's — enforced by
+construction, not convention. See ADR-022.

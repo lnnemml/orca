@@ -228,6 +228,34 @@ Report findings, propose fixes, apply approved ones, log a `lint` entry.
   Wiki updates ride in the same commit as the change they document.
 - Small, reviewable increments. The author reads the diffs — write code to be read.
 
+## Agentic development workflow (in Claude Code)
+
+Within a Claude Code session the architect → implement → verify loop runs as subagents
+(`.claude/agents/`, ADR-022). Roles:
+
+- **orchestrator-architect** = the main session (not a subagent, not `--agent`). Holds the ROADMAP,
+  decomposes, writes sub-task prompts, presents forks with a lean, spawns workers, commits. Does
+  **not** write code and **does not review its own plan**.
+- **prober** (`sonnet`) — settles third-party facts from real runs only (domain rule #10).
+- **explorer** (`haiku`) — read-only codebase/wiki archaeology; returns `file:line` anchors + reuse
+  candidates; separates ADR intent from code reality.
+- **implementer** (`claude-opus-4-8`) — one unit, STOP-AND-REPORT (Part A pure+tested → STOP → Part B wiring),
+  reuse over rebuild, wiki in the same change. **Never commits.**
+- **verifier** (`claude-opus-4-8`, worktree-isolated) — fresh-context push ritual; runs `tsc`/`vitest`/`cargo`/
+  `pytest` for real; proves each negative control bites. Marks render/chemistry units REQUIRES LIVE
+  GATE and hands them to Anton.
+
+Loop: probe → decompose → *(fork? Anton decides, ADR same session)* → anchors → implementer Part A →
+**STOP** → verifier → *(Anton greenlight)* → implementer Part B → verifier → *(Anton live gate if
+render; chemistry gate if science)* → commit on Anton's approval.
+
+**The human gates are structural, not optional.** The implementer cannot commit; the verifier cannot
+certify render or chemistry correctness. Anton is the merge approver, the live WebKitGTK gate, the
+chemistry sanity gate, and the sole resolver of design forks — by construction.
+
+**Run the main session in default (manual) or plan mode, not auto** — in auto mode a subagent's
+`permissionMode` is ignored and edits can auto-apply, weakening the diff-review gate.
+
 ## Division of labor
 
 - **Claude web/desktop** (chat): architecture discussions, research, planning.
