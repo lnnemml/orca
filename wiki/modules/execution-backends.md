@@ -1,10 +1,88 @@
-# Module: Execution backends (src-tauri/src/backends/)
+# Module: Execution backends
 
 **Status:** `LocalBackend` runs ORCA end-to-end — isolated job dir, CPU core pinning, a sequential
-in-SQLite queue, cancellation with an MPI-rank sweep, and startup reconciliation. `SshBackend` is
-Phase 5. Implemented as a single module `src-tauri/src/local_backend.rs`, **not** a `backends/`
-trait dir yet — the `ExecutionBackend` trait (ADR-003) is extracted when the second backend arrives
-(ROADMAP Phase 5 makes the seam explicit).
+in-SQLite queue, cancellation with an MPI-rank sweep, and startup reconciliation. The
+`ExecutionBackend` trait (ADR-003) exists (`src-tauri/src/execution_backend.rs`); `LocalBackend`
+implements it, and **the Tauri command layer dispatches through the trait** — `submit_job` /
+`cancel_job` construct a `LocalBackend` and call `submit` / `cancel` on it. The running machinery
+still lives in `src-tauri/src/local_backend.rs` (queue, process tree, cancellation) — each trait
+method **delegates** there. `SshBackend` is a later Phase 5 unit.
+
+## The `ExecutionBackend` trait (`execution_backend.rs`, ADR-003)
+
+The trait uses ADR-003's five signatures verbatim; all methods return `Result<_, AppError>` and are
+**Tauri-type-free** (no `AppHandle` in a signature) so `SshBackend` — which has no `AppHandle` to
+reach app state — can implement them:
+
+```rust
+fn submit(&self, job: &Job) -> Result<JobHandle>;
+fn poll_log(&self, h: &JobHandle, offset: u64) -> Result<LogChunk>;
+fn status(&self, h: &JobHandle) -> Result<JobStatus>;
+fn fetch_results(&self, h: &JobHandle, policy: FetchPolicy) -> Result<()>;
+fn cancel(&self, h: &JobHandle) -> Result<()>;
+```
+
+- **`JobHandle(pub String)`** — a backend-opaque reference wrapping the job id (the stable key both
+  backends state-key on: the DB row locally, the remote scratch dir over SSH).
+- **`LogChunk { offset: u64, data: String }`** — one incremental log slice; `offset` is the **new**
+  byte offset *after* `data`, fed back on the next poll so reads resume where they stopped (and
+  survive an app restart once persisted — ADR-003).
+- **`FetchPolicy { include_gbw: bool }`** — output/xyz/hess always; the large `.gbw` is opt-in.
+  **Degenerate for local** (everything is already on disk); it exists now because it shapes
+  `SshBackend` (ADR-023).
+
+**`poll_log` is the offset-pull name.** The ROADMAP's `stream_log` wording folds into `poll_log`:
+there is one log method and it is pull-based (offset-in, chunk-out), per ADR-003's "pull, not push"
+so the same interface serves a local file and a remote `tail -c +<offset>`. Note the live UI today
+still uses the **push** `job:log` event (the tailing thread) — Part B does **not** flip push→pull;
+`poll_log` is the additive pull path, wired to callers in a later unit.
+
+**Command dispatch (Part B).** `commands::jobs::submit_job` and `cancel_job` route through the trait:
+each constructs a `LocalBackend::new(app)` from the `AppHandle` it already receives and calls
+`backend.submit(&job)` / `backend.cancel(&JobHandle(id))`. No new managed state and no command-
+signature change — the backend is a zero-cost `AppHandle` wrapper, so construct-at-call-site is the
+least-churn seat. The Tauri command names, signatures, return types, and the `job:log` / `job:status`
+/ `job:convergence` events are **byte-identical** to the pre-Part-B direct `local_backend::` calls:
+the trait method delegates to the same free function. The queue-control and log-read free functions
+that have **no** trait method (`set_paused` / `is_paused` / `remove_job_dir` / `read_tail_lines` /
+`read_convergence` / `read_scan_surface`) stay direct `local_backend::` calls — they are not part of
+the five-method `ExecutionBackend` surface.
+
+**No crate-level `dead_code` allow.** Part A's `#![allow(dead_code)]` is removed. `submit` / `cancel`
+/ `JobHandle` / `LocalBackend` are now reached by live callers. The still-unrouted trait surface —
+`poll_log`, `status`, `fetch_results`, and `FetchPolicy` — carries a **targeted** `#[allow(dead_code)]`
+per item, each with a comment naming where it gets routed (the push→pull flip for `poll_log`, the
+`SshBackend` unit for `status` / `fetch_results` / `FetchPolicy`). Targeted over blanket so a
+*genuinely* unrouted item stays visible while any *accidentally* dead code elsewhere still warns.
+
+**`LocalBackend { app: AppHandle }` — delegation map** (trait method → existing free function):
+
+| Trait method | Delegates to |
+|---|---|
+| `submit` | `local_backend::submit(&app, &job.id)` → returns `JobHandle(job.id)` |
+| `poll_log` | `local_backend::read_log_chunk(output.out, offset, cap)` (new bounded offset read) |
+| `status` | `get_job_conn(conn, id)?.status` |
+| `fetch_results` | no-op (`Ok(())`) — artifacts already on disk; policy only bites over SSH |
+| `cancel` | `local_backend::cancel(&app, &id)` |
+
+`read_log_chunk(path, offset, max_bytes) -> (String, u64)` is the additive pull read: seeks to
+`offset`, reads at most `max_bytes` forward, returns the slice + the new offset; at/past EOF returns
+empty data with the offset clamped to the file length. It is the mirror of `read_tail`'s seek-from-
+end and never loads the whole log (domain rule #5). Unit-tested — sequential chunks reassemble the
+original byte-exact, EOF holds the offset, the cap is respected — with a **negative control** (a
+wrong-offset reader) proven to make the reassembly gate go red.
+
+**Dispatch is `enum`-deferred.** There is one concrete backend and no `enum` / `dyn` dispatch layer.
+Commands dispatch through the trait on a **concrete** `LocalBackend` — no runtime backend selection
+yet. The `enum Backend { Local(LocalBackend), Ssh(SshBackend) }` static-dispatch selector and the
+`jobs.backend_id` column land in the `SshBackend` unit (ADR-023), where a second implementation
+forces the still-maturing `poll_log(offset)` / `fetch_results(policy)` shapes and a `match` on
+`backend_id` becomes the "Run on:" selector. See `wiki/log.md` (unit 5.0 Part A / Part B).
+
+## Where the code lives
+
+Implemented across two modules, **not** a `backends/` trait dir: the trait + `LocalBackend` in
+`src-tauri/src/execution_backend.rs`, the running machinery below in `src-tauri/src/local_backend.rs`.
 
 ## How a local job runs (`local_backend.rs`)
 

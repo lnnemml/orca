@@ -5,6 +5,7 @@ mod cpu_presets;
 mod crest;
 mod db;
 mod error;
+mod execution_backend;
 mod local_backend;
 mod manual;
 mod models;

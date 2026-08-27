@@ -1376,8 +1376,13 @@ Group-delete **promotes** children (never a destructive cascade); jobs orphan to
 and the dev laptop is a development machine, not a compute node. See
 `wiki/orca/performance.md`.
 
-- [ ] Formalize `ExecutionBackend` trait (submit / stream_log / status / fetch_results / cancel);
-      refactor `LocalBackend` onto it (the seam exists since Phase 1 — this makes it explicit)
+- [x] Formalize `ExecutionBackend` trait (submit / **poll_log** / status / fetch_results / cancel);
+      refactor `LocalBackend` onto it (the seam exists since Phase 1 — this makes it explicit).
+      **Unit 5.0 (2026-08-27):** trait + `JobHandle`/`LogChunk`/`FetchPolicy` in `execution_backend.rs`,
+      `LocalBackend` delegates to the existing helpers, Tauri commands dispatch through it byte-identically.
+      Dispatch stays a single concrete backend (`enum` deferred to `SshBackend`, ADR-023); `poll_log`'s
+      offset-pull is additive (live UI still uses the push `job:log` event — the push→pull flip rides with
+      `SshBackend`). ADR-023 records the server-agnostic model (one `SshBackend` per `ServerProfile`).
 - [ ] Server profiles in settings: host alias (reuses `~/.ssh/config`), remote ORCA path,
       remote scratch dir; connection test button
 - [ ] `SshBackend` via system `ssh`/`rsync`: rsync job dir up → `nohup` runner script with

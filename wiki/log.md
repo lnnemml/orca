@@ -9094,3 +9094,106 @@ main session, not `--agent`. Implementer never commits; verifier runs tsc/vitest
 real (closes the web-review cargo-on-trust gap) and proves negative controls bite in its worktree.
 Chemistry sanity, live WebKitGTK, and design-fork resolution remain Anton's — enforced by
 construction, not convention. See ADR-022.
+
+## [2026-08-27] decision | Phase 5 opens: server-agnostic remote execution (ADR-023) + unit 5.0 scoped
+
+First agentic-loop phase. explorer mapped `local_backend.rs` (1563 lines of free functions) vs
+ADR-003: the `ExecutionBackend` trait does NOT exist yet; the five operations live as functions
++ events (submit `local_backend.rs:297`, cancel `:474`, status = `job:status` event, `poll_log` =
+push `job:log` (no pull), `fetch_results` = local `parse_results_after_completion:601`); missing
+types `JobHandle`/`LogChunk`/`FetchPolicy`; no `backend_id` column; behaviour-preservation tests
+at `:1114–1356`; module page accurate. prober confirmed (rule #10) the **university server's specs
+are UNDETERMINED across every dimension** — `~/.ssh/config` holds only `github.com`, no wiki record
+of remote ORCA path / OpenMPI version / cores / scratch; closing it is a live gate only Anton can run.
+
+Decisions (Anton): (1) **ADR-023** — remote execution is server-agnostic: one `SshBackend`
+parameterized by a `ServerProfile`, `enum Backend { Local, Ssh }` static dispatch, per-server specs
+are settings/SQLite data established by a rule-#10 connection-test per profile, NOT hardcoded; the
+university server is just the first profile. (2) **Full ADR-003 trait surface** in unit 5.0 (not the
+minimal set). (3) Dispatch mechanism (enum vs dyn) **deferred out of 5.0** to the SshBackend unit,
+with the lean recorded as `enum` — don't pick a polymorphism before there's a second thing to
+dispatch between. Fixed a lint gap: ADR-022 was never added to `index.md` (added, + ADR-023).
+
+Next: unit 5.0 — behaviour-preserving trait extraction, Part-A-STOP. Part A = trait + types +
+`impl ExecutionBackend for LocalBackend` delegating to existing helpers (additive, no caller
+touched, `poll_log` an additive unused offset path over adapted `read_tail`); STOP → verifier.
+Part B = route `commands/jobs.rs` + `lib.rs` through the concrete `LocalBackend`, byte-identical.
+See ADR-023.
+
+## [2026-08-27] feat | Unit 5.0 Part A — ExecutionBackend trait extracted (additive), LocalBackend implements it
+
+Behaviour-preserving, additive: no caller rewired (that is Part B). New
+`src-tauri/src/execution_backend.rs` (registered in `lib.rs`, the only `lib.rs` edit) holds the
+`ExecutionBackend` trait with ADR-003's five signatures **verbatim** and Tauri-type-free (no
+`AppHandle` in a signature — `SshBackend` must implement them), plus `JobHandle(String)`,
+`LogChunk { offset, data }`, `FetchPolicy { include_gbw }`. `LocalBackend { app: AppHandle }`
+implements the trait by **delegating** to existing `local_backend` free functions: `submit` →
+`local_backend::submit`, `cancel` → `local_backend::cancel`, `status` → `get_job_conn(..).status`,
+`fetch_results` → no-op (`Ok(())`, local artifacts already on disk — `FetchPolicy` only bites over
+SSH), `poll_log` → the one new bit.
+
+`poll_log`'s offset read is a new `pub(crate) read_log_chunk(path, offset, max_bytes) -> (String,
+u64)` in `local_backend.rs` — the mirror of `read_tail`: seeks to `offset`, reads at most
+`max_bytes` forward, returns the slice + new offset; at/past EOF returns empty + offset clamped to
+file length (never loads the whole log, rule #5). Folds the ROADMAP's `stream_log` wording into
+ADR-003's `poll_log`; the live UI's push `job:log` event is untouched (no push→pull flip here).
+
+Tests: `cargo build` clean, `cargo test` **338 passed / 0 failed / 23 ignored** (the pre-existing
+`:1114–1356` behaviour-preservation tests stay green, unchanged, as the negative control that the
+extraction changed nothing). Four new `read_log_chunk` tests: sequential-chunk reassembly is
+byte-exact, EOF holds the offset, the cap is respected, plus a **negative control**
+(`read_log_chunk_negative_control_wrong_offset_corrupts_reassembly`, `#[should_panic]`) driving the
+same reassembly gate with a wrong-offset reader — **proven to bite**: swapping in the correct reader
+makes it fail with "test did not panic as expected", so the gate distinguishes a correct offset read
+from a broken one.
+
+Dispatch stays `enum`-deferred to the SshBackend unit (ADR-023): no `enum Backend`, no
+`backend_id`/migration, no SSH code. `#![allow(dead_code)]` marks the whole additive surface unused
+until Part B wires it.
+
+Next: verifier + Anton greenlight → unit 5.0 Part B (route `commands/jobs.rs` + `lib.rs` through the
+concrete `LocalBackend`, byte-identical live flow).
+
+## [2026-08-27] feat | Unit 5.0 Part B — Tauri commands dispatch through the ExecutionBackend trait (byte-identical reseat)
+
+The wiring half of the trait extraction. `commands::jobs::submit_job` and `cancel_job` now route
+through the `ExecutionBackend` trait on a **concrete** `LocalBackend` instead of calling the
+`local_backend` free functions directly — the trait is the real execution seam now, so `SshBackend`
+slots in behind the same `submit(&job)` / `cancel(&handle)` calls. `submit_job` loads the `Job` via
+`get_job_conn` then calls `backend.submit(&job)`; `cancel_job` calls `backend.cancel(&JobHandle(id))`.
+
+**Least-churn seat: construct-at-call-site.** The backend is a zero-cost wrapper over the `AppHandle`
+each command already receives (`LocalBackend::new(app)`), so it is built in the command body — **no
+new managed state, no command-signature change**. Storing a `LocalBackend` in managed state would add
+a `State<LocalBackend>` param to each command (a signature change the byte-identical constraint
+forbids) for no benefit, since the wrapper is an `Arc`-clone of the `AppHandle`. The queue-control /
+log-read free functions with no trait method (`set_paused` / `is_paused` / `remove_job_dir` /
+`read_tail_lines` / `read_convergence` / `read_scan_surface`) stay direct calls — not part of the
+five-method surface.
+
+**Contract byte-identical.** Command names, signatures, return types, and the `job:log` /
+`job:status` / `job:convergence` events are unchanged — the trait method delegates to the same free
+function the command used to call. The frontend `invoke(...)` contract does not move. No queue
+semantics (concurrency=1, rule #4), completion detection (rule #6), or cancellation (killpg + sweep)
+change; no `backend_id` / migration / SSH; the live log stays the push `job:log` event (`poll_log`
+remains the additive pull path, unused by the UI — that flip is a later unit).
+
+**`#![allow(dead_code)]` removed.** With the surface wired, `submit` / `cancel` / `JobHandle` /
+`LocalBackend` are reached live. The still-unrouted trait surface — `poll_log`, `status`,
+`fetch_results`, `FetchPolicy` (+ its consts) — carries a **targeted** `#[allow(dead_code)]` per item
+with a comment naming where it gets routed (push→pull flip for `poll_log`; `SshBackend` for the rest),
+not the removed crate-level blanket: a genuinely-unrouted item stays visible while accidentally dead
+code elsewhere still warns.
+
+Tests: `cargo build` **warning-clean without the crate-level allow**; `cargo test` **338 passed / 0
+failed / 23 ignored** — identical to the Part A baseline, so the unchanged suite (incl. the
+`:1114–1356` behaviour-preservation tests) is the negative control proving the reseat changed no
+behaviour. **No new runtime test added, honestly:** the only real exercise of the trait dispatch
+needs a live `AppHandle` (Tauri managed state) or `/opt/orca`, neither constructible in `cargo test`;
+the delegation targets are already covered and `poll_log`'s new logic is guarded by Part A's
+`read_log_chunk_negative_control_wrong_offset_corrupts_reassembly` (proven to bite). Files touched:
+`src-tauri/src/commands/jobs.rs` (rewire + import), `src-tauri/src/execution_backend.rs` (allow
+removal + targeted allows + scope-note doc), wiki.
+
+Next: verifier push-time ritual + Anton commit approval. Then the `SshBackend` unit (ADR-023):
+`enum Backend`, `jobs.backend_id` migration, `ServerProfile`, connection-test.

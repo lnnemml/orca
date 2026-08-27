@@ -14,6 +14,7 @@ use uuid::Uuid;
 
 use crate::commands::settings::DbState;
 use crate::error::AppError;
+use crate::execution_backend::{ExecutionBackend, JobHandle, LocalBackend};
 use crate::models::job::{Job, JobStatus};
 
 // --- Connection-level helpers (testable) ------------------------------------
@@ -749,18 +750,39 @@ pub fn update_job_status(db: State<'_, DbState>, id: String, status: String) -> 
     update_job_status_conn(&conn, &id, &status)
 }
 
-/// Submit a draft job to the LocalBackend: prepare its dir, spawn ORCA, and
+/// Submit a draft job to the `LocalBackend`: prepare its dir, spawn ORCA, and
 /// stream the log. Returns immediately — the run proceeds on a background
-/// thread. See [`crate::local_backend`].
+/// thread.
+///
+/// Dispatches through the [`ExecutionBackend`] trait on a concrete
+/// [`LocalBackend`] (unit 5.0 Part B) rather than calling
+/// `local_backend::submit` directly: the trait is the real execution seam now,
+/// so `SshBackend` slots in behind the same `submit(&job)` call. The backend is
+/// a zero-cost wrapper over the `AppHandle` this command already receives — no
+/// new managed state, no signature change (the `String` id is loaded into the
+/// `Job` the trait method takes). The `job:log`/`job:status` events and the IPC
+/// contract are byte-identical: the trait method delegates to the same free
+/// function this used to call.
 #[tauri::command]
 pub fn submit_job(app: tauri::AppHandle, id: String) -> Result<(), AppError> {
-    crate::local_backend::submit(&app, &id)
+    let job = {
+        let db = app.state::<DbState>();
+        let conn = db.lock()?;
+        get_job_conn(&conn, &id)?
+    };
+    let backend = LocalBackend::new(app);
+    backend.submit(&job)?;
+    Ok(())
 }
 
-/// Cancel a running or queued job (see [`crate::local_backend::cancel`]).
+/// Cancel a running or queued job. Dispatches through the [`ExecutionBackend`]
+/// trait on a concrete [`LocalBackend`] (unit 5.0 Part B); the trait method
+/// delegates to `local_backend::cancel`, so the killpg + cwd-sweep behaviour and
+/// the terminal `job:status` event are byte-identical.
 #[tauri::command]
 pub fn cancel_job(app: tauri::AppHandle, id: String) -> Result<(), AppError> {
-    crate::local_backend::cancel(&app, &id)
+    let backend = LocalBackend::new(app);
+    backend.cancel(&JobHandle(id))
 }
 
 /// Delete a job (Phase 4.7.1): its DB row (with FK cleanup; `results` cascade) and,

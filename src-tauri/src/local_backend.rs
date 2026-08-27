@@ -1040,6 +1040,45 @@ pub(crate) fn read_tail(path: &Path, max_bytes: u64) -> std::io::Result<String> 
     Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
+/// Read a job log **forward** from `offset`, returning at most `max_bytes` and the
+/// new byte offset after the returned slice. The additive **pull** path for
+/// [`crate::execution_backend::ExecutionBackend::poll_log`] (ADR-003): the caller
+/// stores the returned offset and passes it back next poll, so reads resume exactly
+/// where they stopped and the whole file is never loaded (domain rule #5 — this
+/// seeks to `offset` and caps, the mirror of [`read_tail`]'s seek-from-end).
+///
+/// Bytes are decoded lossily as UTF-8. Contract, exercised by the unit tests:
+///   - reading from 0, then from each returned offset, reassembles the exact file;
+///   - at (or past) EOF, `data` is empty and the offset is returned unchanged;
+///   - the returned offset never exceeds the file length, so the cap can never make
+///     the caller skip bytes.
+///
+/// `pub(crate)` so `execution_backend` can delegate to it without duplicating the
+/// seek logic.
+// Unused until unit 5.0 Part B wires `poll_log` through the trait; the allow goes
+// with that wiring. Its tests already exercise it now.
+#[allow(dead_code)]
+pub(crate) fn read_log_chunk(
+    path: &Path,
+    offset: u64,
+    max_bytes: u64,
+) -> std::io::Result<(String, u64)> {
+    let mut f = File::open(path)?;
+    let len = f.metadata()?.len();
+    // At or past EOF: nothing new. Clamp the offset to the length so a caller that
+    // over-shot (e.g. the file was truncated/rotated) doesn't keep a stale offset
+    // beyond the end.
+    if offset >= len {
+        return Ok((String::new(), len));
+    }
+    f.seek(SeekFrom::Start(offset))?;
+    let to_read = (len - offset).min(max_bytes);
+    let mut buf = vec![0u8; to_read as usize];
+    f.read_exact(&mut buf)?;
+    let new_offset = offset + to_read;
+    Ok((String::from_utf8_lossy(&buf).into_owned(), new_offset))
+}
+
 /// The last `n` non-empty-trimmed lines of `text`, joined with newlines.
 fn last_lines(text: &str, n: usize) -> String {
     let all: Vec<&str> = text.lines().collect();
@@ -1495,6 +1534,130 @@ mod tests {
         let (status, msg) = detect_completion(&out, &stderr, Some(0));
         assert_eq!(status, JobStatus::Failed);
         assert!(msg.unwrap().contains("SCF not converged"));
+
+        std::fs::remove_dir_all(&data).ok();
+    }
+
+    // --- read_log_chunk: the additive offset-pull path behind poll_log (ADR-003) ---
+
+    /// A deliberately corrupted chunk reader used only as the **negative control**
+    /// below: it reads from `offset + 1` instead of `offset`, dropping one byte at
+    /// every chunk boundary. If the reassembly gate below is real, this variant
+    /// must make it go RED — proving the gate distinguishes a correct offset read
+    /// from a broken one, not merely that the correct one passes (CLAUDE.md: a gate
+    /// whose ability to fail is not demonstrated is green for an unknown reason).
+    fn read_log_chunk_wrong_offset(
+        path: &Path,
+        offset: u64,
+        max_bytes: u64,
+    ) -> std::io::Result<(String, u64)> {
+        let mut f = File::open(path)?;
+        let len = f.metadata()?.len();
+        if offset >= len {
+            return Ok((String::new(), len));
+        }
+        // The bug: skip the byte AT `offset`.
+        let start = (offset + 1).min(len);
+        f.seek(SeekFrom::Start(start))?;
+        let to_read = (len - start).min(max_bytes);
+        let mut buf = vec![0u8; to_read as usize];
+        f.read_exact(&mut buf)?;
+        Ok((String::from_utf8_lossy(&buf).into_owned(), start + to_read))
+    }
+
+    /// Drive a chunk reader to EOF from offset 0, concatenating every chunk. Shared
+    /// by the real test and the negative control so the ONLY difference between them
+    /// is which reader is used.
+    fn reassemble_via<F>(path: &Path, max_bytes: u64, reader: F) -> String
+    where
+        F: Fn(&Path, u64, u64) -> std::io::Result<(String, u64)>,
+    {
+        let mut acc = String::new();
+        let mut offset = 0u64;
+        loop {
+            let (data, new_offset) = reader(path, offset, max_bytes).unwrap();
+            if new_offset == offset {
+                break; // no progress → at EOF
+            }
+            acc.push_str(&data);
+            offset = new_offset;
+        }
+        acc
+    }
+
+    #[test]
+    fn read_log_chunk_sequential_chunks_reassemble_the_original() {
+        let data = scratch("chunk-reassemble");
+        let path = data.join("output.out");
+        // A body larger than the tiny cap below so several chunks are needed.
+        let body: String = (1..=500).map(|i| format!("line {i}\n")).collect();
+        std::fs::write(&path, &body).unwrap();
+
+        // Small cap forces multiple round-trips; the offset must stitch them exactly.
+        let reassembled = reassemble_via(&path, 64, read_log_chunk);
+        assert_eq!(reassembled, body, "sequential chunk reads must be byte-exact");
+
+        std::fs::remove_dir_all(&data).ok();
+    }
+
+    /// Negative control: the SAME reassembly gate, driven by a reader that reads
+    /// from the wrong offset (drops one byte per chunk). It MUST fail to reproduce
+    /// the file — demonstrating the gate above bites. (`#[should_panic]` on the
+    /// inner `assert_eq!` is how we show RED without failing the suite.)
+    #[test]
+    #[should_panic(expected = "assertion")]
+    fn read_log_chunk_negative_control_wrong_offset_corrupts_reassembly() {
+        let data = scratch("chunk-negctl");
+        let path = data.join("output.out");
+        let body: String = (1..=500).map(|i| format!("line {i}\n")).collect();
+        std::fs::write(&path, &body).unwrap();
+
+        let reassembled = reassemble_via(&path, 64, read_log_chunk_wrong_offset);
+        // With a small cap over a long file, the corrupt reader drops many bytes;
+        // this assert MUST fire (the test passes precisely because it panics here).
+        // Cleanup can't run after a panic, so do it before the assertion.
+        std::fs::remove_dir_all(&data).ok();
+        assert_eq!(reassembled, body, "corrupt reader unexpectedly reassembled the file");
+    }
+
+    #[test]
+    fn read_log_chunk_at_eof_returns_empty_and_holds_offset() {
+        let data = scratch("chunk-eof");
+        let path = data.join("output.out");
+        let body = "abc\ndef\n";
+        std::fs::write(&path, body).unwrap();
+        let len = body.len() as u64;
+
+        // Read exactly at EOF: empty data, offset clamped to len.
+        let (d, o) = read_log_chunk(&path, len, 1024).unwrap();
+        assert_eq!(d, "");
+        assert_eq!(o, len);
+
+        // Read PAST EOF (a stale over-shot offset): still empty, clamped to len.
+        let (d, o) = read_log_chunk(&path, len + 100, 1024).unwrap();
+        assert_eq!(d, "");
+        assert_eq!(o, len, "an over-shot offset is clamped to the file length");
+
+        std::fs::remove_dir_all(&data).ok();
+    }
+
+    #[test]
+    fn read_log_chunk_respects_the_cap() {
+        let data = scratch("chunk-cap");
+        let path = data.join("output.out");
+        let body = "0123456789ABCDEF"; // 16 bytes
+        std::fs::write(&path, body).unwrap();
+
+        // Cap of 4 from offset 0 → exactly the first 4 bytes, offset advances by 4.
+        let (d, o) = read_log_chunk(&path, 0, 4).unwrap();
+        assert_eq!(d, "0123");
+        assert_eq!(o, 4);
+
+        // Continue from the returned offset with a cap that would over-read: the
+        // read is bounded by the remaining length, not the cap.
+        let (d, o) = read_log_chunk(&path, 12, 999).unwrap();
+        assert_eq!(d, "CDEF");
+        assert_eq!(o, 16);
 
         std::fs::remove_dir_all(&data).ok();
     }
