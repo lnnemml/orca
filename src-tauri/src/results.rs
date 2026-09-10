@@ -306,10 +306,22 @@ impl ParsedResults {
             });
         }
 
-        let dipole = v.dipole().map(|d| DipoleJson {
-            magnitude_au: d.magnitude_au,
-            total_au: d.total_au,
-        });
+        // Dipole is honest-or-absent (rule #9, `wiki/debugging/024`): absent block →
+        // `Ok(None)` → quietly `None` (a dipole-less job stays silent); a present-but-
+        // malformed block → `Err` → `None` PLUS a VISIBLE `parse_warnings` entry so the
+        // UI shows *why* — never a fabricated `(0,0,0)`. `results` doesn't exist yet, so
+        // (as with orbitals below) the warning is buffered here and seeds `parse_warnings`.
+        let mut dipole_warnings: Vec<String> = Vec::new();
+        let dipole = match v.dipole() {
+            Ok(opt) => opt.map(|d| DipoleJson {
+                magnitude_au: d.magnitude_au,
+                total_au: d.total_au,
+            }),
+            Err(e) => {
+                dipole_warnings.push(format!("Dipole not parsed: {e}"));
+                None
+            }
+        };
 
         let thermochemistry = v.thermochemistry().map(|t| ThermoJson {
             temperature_k: t.temperature_k,
@@ -381,9 +393,11 @@ impl ParsedResults {
             // Likewise the caller sets the convergence verdict from the output tail.
             converged: None,
             unknown_blocks: v.unknown_block_names(),
-            // Populated by `parse_and_store` when an auxiliary reader (Mayer) fails
-            // non-fatally; empty here (the essential readers already errored loudly).
-            parse_warnings: Vec::new(),
+            // Seeded with any dipole warning (an auxiliary reader that failed non-fatally
+            // here); the caller (`parse_and_store`) then `append`s orbital warnings and
+            // `push`es the Mayer warning — the three coexist, none clobbers another. The
+            // essential readers (geometry/energy) already error loudly, not into here.
+            parse_warnings: dipole_warnings,
         })
     }
 
@@ -2477,6 +2491,89 @@ mod tests {
         assert!(
             r.parse_warnings.iter().any(|w| w.contains("Orbitals")),
             "the failure is VISIBLE in parse_warnings and carries the property name, got {:?}",
+            r.parse_warnings
+        );
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// Splice the OPTFREQ property.txt so `f` mutates ONLY its `$SCF_Dipole_Moment` block
+    /// (from the header to the following `$End`, exclusive) — geometry/energy untouched, so
+    /// the job still reaches `Parsed`. Used to build the malformed / absent dipole fixtures.
+    fn optfreq_with_dipole_block(f: impl Fn(&str) -> String) -> String {
+        let src = OPTFREQ;
+        let start = src.find("$SCF_Dipole_Moment").expect("OPTFREQ has a dipole block");
+        let end_rel = src[start + 1..].find("\n$").expect("a $End follows the block");
+        let end = start + 1 + end_rel + 1; // stop at the next `$` (the block's `$End`)
+        format!("{}{}{}", &src[..start], f(&src[start..end]), &src[end..])
+    }
+
+    /// Dipole is AUXILIARY and honest-or-absent (rule #9, debugging/024): a job whose
+    /// `$SCF_Dipole_Moment` block is PRESENT but malformed (here `&dipoleTotal` truncated to
+    /// two components) must still reach `Parsed` — essential results survive — while `dipole`
+    /// goes `None` (NOT a fabricated `(0,0,0)`) AND a VISIBLE `parse_warnings` entry records
+    /// *why*. Same visibility convention Mayer/orbitals got.
+    #[test]
+    fn malformed_dipole_is_non_fatal_and_leaves_a_visible_warning() {
+        let tmp = std::env::temp_dir().join(format!("dipole-nonfatal-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        // Drop the `2  <z>` component row → &dipoleTotal has only two components → malformed.
+        let mangled = optfreq_with_dipole_block(|b| {
+            b.lines()
+                .filter(|l| !l.trim_start().starts_with("2 "))
+                .collect::<Vec<_>>()
+                .join("\n")
+                + "\n"
+        });
+        std::fs::write(tmp.join("input.property.txt"), &mangled).unwrap();
+        std::fs::write(tmp.join("input.inp"), OPTFREQ_INP).unwrap();
+        let conn = jobs_db_with(None, None);
+        crate::db::create_results_table(&conn).unwrap();
+
+        let outcome = parse_and_store(&conn, "job1", tmp.to_str().unwrap(), OPTFREQ_INP);
+        assert!(matches!(outcome, ParseOutcome::Parsed), "malformed dipole must not abort: {outcome:?}");
+
+        let r = read_job_results(&conn, "job1").unwrap().unwrap();
+        // Essential results survived to storage (Parsed, not ParseFailed).
+        assert!(r.final_energy_eh.is_some(), "energy still parsed and stored");
+        assert!(!r.final_geometry.elements.is_empty(), "geometry still parsed and stored");
+        // Dipole is absent BECAUSE it failed — NOT fabricated as (0,0,0).
+        assert!(r.dipole.is_none(), "the malformed dipole is dropped to None, never (0,0,0)");
+        assert!(
+            r.parse_warnings.iter().any(|w| w.contains("Dipole")),
+            "the failure is VISIBLE in parse_warnings and carries the property name, got {:?}",
+            r.parse_warnings
+        );
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// The regression that pins honest-or-absent's QUIET half: a job whose property.txt has
+    /// NO `$SCF_Dipole_Moment` block (26/117 real files) reaches `Parsed`, stores `dipole:
+    /// None`, and leaves NO dipole warning. Absent is normal — a naive `Option → Err` would
+    /// spew a warning on every legitimately dipole-less job; this test holds that line.
+    #[test]
+    fn absent_dipole_block_stays_quiet() {
+        let tmp = std::env::temp_dir().join(format!("dipole-absent-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        // Remove the whole block (header .. its $End inclusive) → no dipole block at all.
+        let src = OPTFREQ;
+        let start = src.find("$SCF_Dipole_Moment").unwrap();
+        let end_rel = src[start..].find("$End\n").expect("block terminates with $End");
+        let end = start + end_rel + "$End\n".len();
+        let no_dipole = format!("{}{}", &src[..start], &src[end..]);
+        assert!(!no_dipole.contains("$SCF_Dipole_Moment"), "block fully removed");
+        std::fs::write(tmp.join("input.property.txt"), &no_dipole).unwrap();
+        std::fs::write(tmp.join("input.inp"), OPTFREQ_INP).unwrap();
+        let conn = jobs_db_with(None, None);
+        crate::db::create_results_table(&conn).unwrap();
+
+        let outcome = parse_and_store(&conn, "job1", tmp.to_str().unwrap(), OPTFREQ_INP);
+        assert!(matches!(outcome, ParseOutcome::Parsed), "{outcome:?}");
+
+        let r = read_job_results(&conn, "job1").unwrap().unwrap();
+        assert!(r.dipole.is_none(), "absent block → dipole None");
+        assert!(
+            !r.parse_warnings.iter().any(|w| w.contains("Dipole")),
+            "an absent block must NOT warn (absent is normal), got {:?}",
             r.parse_warnings
         );
         std::fs::remove_dir_all(&tmp).ok();

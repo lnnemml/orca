@@ -219,6 +219,19 @@ frame = input natom (8/19/33). `input.xyz` = **1 frame** = the final geometry.
   one `$Geometry`. Has `$SCF_Dipole_Moment` and the three population analyses.
 - **GOAT** (2 blocks only): `Geometry (×18)`, `Single_Point_Data`. No charges/dipole/thermo.
 
+**`$SCF_Dipole_Moment` shape (probe, rule #10 — 141 blocks / 91 `.property.txt` files, ORCA 6.1.0).**
+When the block is present, `&dipoleMagnitude` (an inline scalar Double, `&Units "a.u."`) and
+`&dipoleTotal` are **ALWAYS co-present — zero exceptions**. `&dipoleTotal` is an
+`[&Type "ArrayOfDoubles", &Dim (3,1)]` **indexed 3-row array** (`0 x` / `1 y` / `2 z`), read by the
+tokenizer's `numbers()` accessor (rows `rowindex value`; the lone `0` column-header and blank line are
+skipped by the ≥2-token rule). There is **NO** legitimate "present block without magnitude or total"
+format — so a present block missing either key, or a `&dipoleTotal` with `!= 3` components, is
+**malformed** (a corruption), not an absent-optional field. Separately, **26/117** files carry no
+`$SCF_Dipole_Moment` block at all (GOAT, some xTB, SPs that didn't request it) — block-absent is a
+common, legitimate state. This is why `property.rs` `dipole()` is `Result<Option<Dipole>>`:
+absent → `Ok(None)` (quiet), present-but-malformed → `Err` (loud, into `parse_warnings`). See
+[debugging/024](../debugging/024-dipole-total-silent-zero-default.md).
+
 IR: `.property.txt` contains IR references (11 grep hits) but the clean structured IR source
 is `.hess $ir_spectrum`; `.out` also prints an `IR SPECTRUM` table (line 3704 in the min run).
 

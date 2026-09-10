@@ -9350,3 +9350,39 @@ accessor (`PropertyFile` + callers semantics change) as a SEPARATE unit. Marked 
 
 Wiki: new `debugging/024`, `modules/parser.md` (fatal-vs-auxiliary matrix: orbitals now VISIBLE, class
 closed + dipole debt as a distinct open class), `index.md`. NOT committed — awaiting verifier + Anton.
+
+## [2026-09-10] fix | Dipole honest-or-absent: absent block Ok(None), present-but-malformed Err into parse_warnings (debugging/024 fixed)
+
+Closed `debugging/024`: `property.rs` `dipole()` no longer fabricates `(0,0,0)` for a present-but-
+malformed `$SCF_Dipole_Moment` block. Signature `Option<Dipole>` → **`Result<Option<Dipole>, ParseError>`**.
+Block **absent** (`last_block(...)` `None`) → `Ok(None)` — quiet, absent-is-normal. Block **present** →
+valid COMPLETELY or malformed COMPLETELY (no partial dipole): `&dipoleMagnitude` key-absent or
+not-a-number → `Err(Malformed)`; `&dipoleTotal` key-absent or `!= 3` components → `Err(Malformed)`
+carrying the observed count. No `unwrap_or_default()` / `unwrap_or(&0.0)` — a component is never invented.
+
+Probe (rule #10, settled the design — 141 `$SCF_Dipole_Moment` blocks / 91 `.property.txt` files, ORCA
+6.1.0): `&dipoleMagnitude` + `&dipoleTotal` ALWAYS co-present (zero exceptions), so both mandatory-when-
+present; 26/117 files carry NO block (block-absent is common). This is why a naive `Option→Err` would
+have been a trap — treating whole-block-absent as `Err` would warn on every legitimately dipole-less job.
+
+Consumer (`results.rs` `from_verified`): dipole computes before the struct literal (same shape as the
+orbitals fix), so an `Err` buffers into a local `dipole_warnings` `Vec` that SEEDS `parse_warnings`; the
+caller then `append`s orbital warnings and `push`es the Mayer warning — the three coexist. Dipole is
+AUXILIARY/non-fatal: malformed → `dipole: None` + visible warning, essential results still reach
+`Parsed`. `from_scan_profile`/`from_2d_scan`/`from_neb` unchanged (`dipole: None`, no warning).
+
+Tests: unit `dipole_present_but_total_truncated_is_malformed`, `..magnitude_garbage..`,
+`..magnitude_key_absent..` (replaces the old N/A "absent-magnitude → Some" assumption the probe
+overturned); `sp_has_charges_and_dipole_but_no_thermo` now asserts the EXACT valid value (magnitude
+1.1257352328353853, total ≈ [-0.6031, -0.5904, 0.7450]) as the green-path regression; integration
+`malformed_dipole_is_non_fatal_and_leaves_a_visible_warning` and `absent_dipole_block_stays_quiet`
+(the quiet half). `cargo test --lib` **365 passed / 0 failed / 24 ignored**. Negative control that
+BITES: restoring `*total.get(n).unwrap_or(&0.0)` fabricates `total_au: [.., .., 0.0]` on the truncated
+block → the property unit test AND the integration test go RED (`Some(Dipole{ .. 0.0})` / "never (0,0,0)")
+→ reverted to green.
+
+Wiki: `debugging/024` flipped to FIXED (final design + why naive Option→Err is a trap + the probe cite),
+`orca/parse-sources.md` (probe fact: magnitude+total co-present, `&dipoleTotal` indexed 3-row array),
+`modules/parser.md` (honest-or-absent matrix — dipole now distinguishes absent vs malformed; `ir_spectrum`
+`t_au` noted as the remaining known-benign default, unconsumed), `index.md`. NOT committed — awaiting
+verifier + Anton.

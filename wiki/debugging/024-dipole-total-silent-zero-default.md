@@ -1,13 +1,12 @@
-# 024 — A malformed dipole block silently fabricates `(0,0,0)` instead of null — NOT YET FIXED
+# 024 — A malformed dipole block silently fabricated `(0,0,0)` instead of null — FIXED
 
-**Status: TRACKED DEBT, NOT YET FIXED.** This page records a known honest-or-absent violation as an
-explicit next unit. No code fix ships with it; the visibility unit that surfaced it
-([debugging/023](023-mayer-negative-bond-order-and-fatal-auxiliary.md), orbitals visibility,
-2026-09-10) is deliberately scoped NOT to touch `property.rs`.
+**Status: FIXED (2026-09-10).** `dipole()` is now honest-or-absent: it distinguishes an absent
+block (`Ok(None)`, normal) from a present-but-malformed one (`Err → parse_warnings`), and never
+fabricates a dipole component. The fix ships with a negative control that bites (below).
 
-## Symptom (latent — no observed failure yet)
+## Symptom (was latent — no observed failure, caught by inspection)
 
-`src-tauri/src/parse/property.rs:404`, in `dipole()`:
+`src-tauri/src/parse/property.rs`, in the old `dipole()`:
 
 ```rust
 let total = b.prop("dipoleTotal").map(|p| p.numbers()).unwrap_or_default();
@@ -18,48 +17,86 @@ let total_au = [
 ];
 ```
 
-If the `SCF_Dipole_Moment` block is **present** but its `dipoleTotal` property is **missing or
-malformed** (`prop("dipoleTotal")` is `None`, or `numbers()` yields fewer than three components), the
-`unwrap_or_default()` / `unwrap_or(&0.0)` chain silently substitutes a fabricated dipole vector of
-`(0.0, 0.0, 0.0)`.
+If the `SCF_Dipole_Moment` block was **present** but its `dipoleTotal` property was **missing or
+truncated** (`prop("dipoleTotal")` was `None`, or `numbers()` yielded fewer than three components),
+the `unwrap_or_default()` / `unwrap_or(&0.0)` chain silently substituted a fabricated dipole vector
+of `(0.0, 0.0, 0.0)`.
 
-## Why this is a defect — a default masquerading as data
+## Why this was a defect — a default masquerading as data
 
 `(0, 0, 0)` is **indistinguishable from a valid zero dipole** (a symmetric molecule genuinely has a
-near-zero dipole). So a *present-but-broken* dipole block is recorded as if the physics said "zero",
-not "unparseable". This is the **honest-or-absent violation** of domain rule #9: a dropped/failed value
-must be recorded as absent WITH A REASON, never as a plausible invented stand-in. It is the **−60127
-class** (a wrong number that renders as believable physics), NOT the orbitals `eprintln!`-class (a clean
-`None` that merely lacked a UI trail — that class is now closed by 023).
+near-zero dipole). So a *present-but-broken* dipole block was recorded as if the physics said "zero",
+not "unparseable". This is the **honest-or-absent violation** of domain rule #9: a dropped/failed
+value must be recorded as absent WITH A REASON, never as a plausible invented stand-in. It is the
+**−60127 class** (a wrong number that renders as believable physics), NOT the orbitals
+`eprintln!`-class (a clean `None` that merely lacked a UI trail — that class was closed by 023).
 
-Note the contrast with the block-level guard: `dipole()` correctly returns `None` when the *whole*
-`SCF_Dipole_Moment` block is absent (`last_block(...)?`) and when `dipoleMagnitude` is absent
-(`.scalar_f64()?`) — those are absent-is-normal. It is only the `dipoleTotal` **vector** that defaults
-instead of failing.
+## Probe (rule #10) — what settled the design
 
-## Priority — HIGHER than cosmetic
+Measured on **141 real `$SCF_Dipole_Moment` blocks across 91 `.property.txt` files** (the author's own
+runs, ORCA 6.1.0): `&dipoleMagnitude` and `&dipoleTotal` are **ALWAYS co-present when the block
+exists — zero exceptions**. There is NO legitimate "present block without a magnitude/total" format.
+Separately, **26/117 files carry no `SCF_Dipole_Moment` block at all** (GOAT, some xTB, SPs that
+didn't request it) — block-absent is a common, legitimate state.
 
-The electric (and magnetic) **transition dipole moments** feed **ECD rotatory strength**. A silent
-`(0,0,0)` there does not blank a spectrum — it produces a **plausible WRONG spectrum** (a rotatory
-strength computed from a fabricated-zero dipole). This is exactly the failure mode rule #9 exists to
-prevent, so this debt is **not deferred namelessly**: it is a tracked next unit above cosmetic work.
+This overturned the OLD page's claim that a present block missing `&dipoleMagnitude` was
+absent-is-normal (`.scalar_f64()?` → `None`). The probe establishes magnitude is **mandatory when the
+block is present**, so its absence is a corruption, not an optional-field `None`.
 
-## The fix (a SEPARATE unit — semantics change)
+## The final design (the fix that shipped)
 
-Make the accessor **fallible**: `dipoleTotal` (and the transition-dipole accessors it generalizes to)
-should return `Result`/`Option` distinguishing "absent → `None` dipole (absent-is-normal)" from
-"present-but-malformed → a loud error / recorded warning", never a defaulted zero vector. That is a
-semantics change to `PropertyFile` and **all its callers**, so it is its own unit with its own
-negative control (a present-but-truncated `dipoleTotal` fixture must NOT read as `(0,0,0)`), not a
-rider on the orbitals-visibility change.
+`dipole()` returns `Result<Option<Dipole>, ParseError>`:
+
+- **block absent** (`last_block("SCF_Dipole_Moment")` is `None`) → `Ok(None)`. No warning, no error —
+  absent is normal.
+- **block present**, then the block is valid COMPLETELY or malformed COMPLETELY (no partial /
+  half-fabricated dipole):
+  - `&dipoleMagnitude` key absent → `Err(Malformed)`; present-but-not-a-number (`scalar_f64` → `None`)
+    → `Err(Malformed)`.
+  - `&dipoleTotal` key absent → `Err(Malformed)`; component count `!= 3` (empty / truncated / garbage)
+    → `Err(Malformed)` carrying the observed count.
+  - both valid → `Ok(Some(Dipole { .. }))`.
+- No `unwrap_or_default()`, no `unwrap_or(&0.0)` — a component is never fabricated.
+
+`ParseError::Malformed { field: "SCF_Dipole_Moment", detail }` — same variant/shape the Mayer reader
+uses; `detail` names WHICH key was absent vs unparseable, and for total the observed component count.
+
+### Why a naive `Option → Err` would have been a trap
+
+Treating **whole-block-absent as `Err`** (the obvious "just make it fallible") would spew a warning on
+**every legitimately dipole-less job** — 26/117 real files. The probe is what let the design draw the
+line precisely: *absent block* = `Ok(None)` (quiet), *present-but-malformed* = `Err` (loud). The two
+halves are tested separately (`absent_dipole_block_stays_quiet` pins the quiet half).
+
+## Consumer wiring (results.rs, `from_verified`)
+
+Dipole is computed in `from_verified` **before** the `ParsedResults` struct literal exists (same shape
+as the orbitals fix). So the `Err` warning is buffered into a local `dipole_warnings: Vec<String>` and
+used to **seed** `parse_warnings` in the struct literal; the caller (`parse_and_store`) then `append`s
+orbital warnings and `push`es the Mayer warning — the three coexist, none clobbers another. Dipole is
+**AUXILIARY, non-fatal** (like Mayer/orbitals): a malformed dipole warns and sets `dipole: None` but
+the essential results (geometry/energy) still reach `Parsed`, not `ParseFailed`. The other constructors
+(`from_scan_profile`/`from_2d_scan`/`from_neb`) set `dipole: None` without calling `v.dipole()` and
+leave `parse_warnings` empty — correct, no dipole warning there.
+
+## Negative control that bites (rule / `d9a6492` convention)
+
+Temporarily restoring `*total.get(n).unwrap_or(&0.0)` on `dipoleTotal` fabricates
+`total_au: [-0.60.., -0.59.., 0.0]` for a truncated block, and:
+
+- `parse::property::tests::dipole_present_but_total_truncated_is_malformed` fails
+  (`Some(Dipole { .. total_au: [.., .., 0.0] })` where an `Err` was asserted),
+- `results::tests::malformed_dipole_is_non_fatal_and_leaves_a_visible_warning` fails
+  ("the malformed dipole is dropped to None, never (0,0,0)").
+
+Reverting the three lines to `total.as_slice().try_into()` returns both to green — so the guards
+distinguish "invariant holds" from "test checks nothing".
 
 ## Related
 
-- Same class this debt is NOT: the caught-`Err` auxiliary visibility class (Mayer + orbitals), now
-  **closed** — both surface via `parse_warnings`. See
-  [modules/parser.md](../modules/parser.md) (fatal-vs-auxiliary matrix) and
-  [debugging/023](023-mayer-negative-bond-order-and-fatal-auxiliary.md).
-- The distinct open class this debt belongs to: **absent-is-normal `Option` accessors that silently
-  default** rather than distinguishing absent from malformed.
+- The caught-`Err` auxiliary visibility class (Mayer + orbitals): dipole now joins it — all three
+  surface via `parse_warnings`. See [modules/parser.md](../modules/parser.md) (fatal-vs-auxiliary
+  matrix) and [debugging/023](023-mayer-negative-bond-order-and-fatal-auxiliary.md).
+- The domain-fact home for the probe: [orca/parse-sources.md](../orca/parse-sources.md).
 - Units-and-post-conditions discipline (rule #11) and the honest-or-absent surface: same lineage as
   [debugging/019](019-orca2json-plain-opt-gbw-staleness.md).

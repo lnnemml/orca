@@ -114,6 +114,7 @@ hostage — it goes `None`, the essential result still stores, and the job still
 | `_trj.xyz` (trajectory) + cycle-energy cross-check | **essential** | `ParseFailed` — abort |
 | `orca_2json` (orbitals) | **auxiliary** | `None`, `eprintln!` **+ a visible `parse_warnings` entry** |
 | **Mayer** bond orders | **auxiliary** | `None`, `eprintln!` **+ a visible `parse_warnings` entry** |
+| **dipole** (`.property.txt $SCF_Dipole_Moment`) | **auxiliary** | `None` **+ a visible `parse_warnings` entry** (present-but-malformed only) |
 
 Both auxiliary readers surface the SAME way now: a caught `Err` pushes a `parse_warnings` string
 ("Mayer bond orders not parsed: …" / "Orbitals not parsed: …"), rendered VISIBLY in `ResultsCard`, so
@@ -129,13 +130,24 @@ a visible reason.
 Not warned (correctly): the orbital pipeline's two non-`Err` absences — `None` (no configured ORCA
 path) and `Ok(None)` (no `.gbw`) — are **absent-is-normal**, not failures, and push nothing.
 
-**Still open — a DIFFERENT class.** A distinct, unclosed concern is the **absent-is-normal `Option`
-accessor that silently defaults** instead of distinguishing absent from malformed. The tracked instance
-is `property.rs:404` `dipole()`: a present-but-malformed `dipoleTotal` block fabricates `(0,0,0)`
-(indistinguishable from a valid zero dipole; feeds ECD rotatory strength → a plausible WRONG spectrum),
-rather than surfacing null-with-a-reason. This is NOT the caught-`Err` visibility class this change
-closes — it needs a fallible accessor (a `PropertyFile` + callers semantics change), its own unit. See
-[debugging/024](../debugging/024-dipole-total-silent-zero-default.md) (NOT YET FIXED).
+**The absent-vs-malformed class — `dipole()` now honest (2026-09-10).** A related concern is the
+**absent-is-normal accessor that silently defaults** instead of distinguishing absent from malformed.
+`dipole()` was the tracked instance: a present-but-malformed `dipoleTotal` block fabricated `(0,0,0)`
+(indistinguishable from a valid zero dipole; feeds ECD rotatory strength → a plausible WRONG spectrum).
+It is now `Result<Option<Dipole>, ParseError>`: block **absent → `Ok(None)`** (quiet, absent-is-normal
+— probe: 26/117 files carry no block), block **present but malformed → `Err`** routed into
+`parse_warnings` (the same visible sink, seeded in `from_verified` since dipole is computed before the
+struct literal exists). A probe (141 blocks / 91 files, ORCA 6.1.0) established `&dipoleMagnitude` +
+`&dipoleTotal` are always co-present, so both are mandatory-when-present — the block is valid
+COMPLETELY or malformed COMPLETELY, never half-fabricated. Negative control:
+`dipole_present_but_total_truncated_is_malformed` +
+`malformed_dipole_is_non_fatal_and_leaves_a_visible_warning` go red if `unwrap_or(&0.0)` is restored.
+See [debugging/024](../debugging/024-dipole-total-silent-zero-default.md) (FIXED).
+
+**Remaining known-benign default (honest completeness).** `hess.rs` `ir_spectrum` returns
+`t_au` (transition-dipole magnitude) defaulted for a legitimately-short IR row format; that column is
+**unconsumed** downstream, so a default there animates nothing wrong. It is left as-is intentionally —
+recorded here so the matrix is complete and honest, not silently omitted.
 
 **Retiring a stale failure — `reparse_job`.** A job whose parse failed sits `completed` with an
 `error_message`. After a parser fix lands, `reparse_job` (Tauri command in `commands/jobs.rs`, testable

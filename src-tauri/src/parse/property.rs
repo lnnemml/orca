@@ -398,20 +398,60 @@ impl PropertyFile {
 
     // ---- dipole (a.u.) ---------------------------------------------------- //
 
-    fn dipole(&self) -> Option<Dipole> {
-        let b = self.last_block("SCF_Dipole_Moment")?;
-        let magnitude_au = b.prop("dipoleMagnitude")?.scalar_f64()?;
-        let total = b.prop("dipoleTotal").map(|p| p.numbers()).unwrap_or_default();
-        let total_au = [
-            *total.first().unwrap_or(&0.0),
-            *total.get(1).unwrap_or(&0.0),
-            *total.get(2).unwrap_or(&0.0),
-        ];
-        Some(Dipole {
+    /// The last `$SCF_Dipole_Moment`, honest-or-absent (rule #9, `wiki/debugging/024`):
+    /// - **block absent** → `Ok(None)` — a dipole-less job (GOAT / some xTB) is normal,
+    ///   NOT a warning and NOT an error (probe: 26/117 property.txt files carry no block).
+    /// - **block present** → the block is valid COMPLETELY or malformed COMPLETELY; there
+    ///   is no partial dipole. The probe (141 blocks / 91 files, ORCA 6.1.0) found
+    ///   `&dipoleMagnitude` and `&dipoleTotal` ALWAYS co-present, so a present block that
+    ///   is missing either — or whose values don't parse — is malformed, a loud
+    ///   [`ParseError::Malformed`], never a fabricated `(0,0,0)`.
+    fn dipole(&self) -> Result<Option<Dipole>, ParseError> {
+        let Some(b) = self.last_block("SCF_Dipole_Moment") else {
+            // Absent block is normal — no dipole was computed. Not an error.
+            return Ok(None);
+        };
+        // Magnitude is mandatory when the block is present (probe). Key absent OR
+        // present-but-not-a-number → malformed; NEVER defaulted.
+        let magnitude_au = match b.prop("dipoleMagnitude") {
+            None => {
+                return Err(ParseError::Malformed {
+                    field: "SCF_Dipole_Moment".into(),
+                    detail: "block present but &dipoleMagnitude key is absent".into(),
+                })
+            }
+            Some(p) => p.scalar_f64().ok_or_else(|| ParseError::Malformed {
+                field: "SCF_Dipole_Moment".into(),
+                detail: format!(
+                    "block present but &dipoleMagnitude is not a number: {:?}",
+                    p.inline
+                ),
+            })?,
+        };
+        // Total is mandatory too, and must carry exactly the three (x, y, z) components.
+        // Key absent OR wrong component count (empty / truncated / garbage) → malformed;
+        // NEVER back-filled from &0.0.
+        let total = match b.prop("dipoleTotal") {
+            None => {
+                return Err(ParseError::Malformed {
+                    field: "SCF_Dipole_Moment".into(),
+                    detail: "block present but &dipoleTotal key is absent".into(),
+                })
+            }
+            Some(p) => p.numbers(),
+        };
+        let total_au: [f64; 3] = total.as_slice().try_into().map_err(|_| ParseError::Malformed {
+            field: "SCF_Dipole_Moment".into(),
+            detail: format!(
+                "&dipoleTotal must have 3 components (x, y, z), observed {}",
+                total.len()
+            ),
+        })?;
+        Ok(Some(Dipole {
             geometry_index: b.geometry_index.unwrap_or(0),
             magnitude_au,
             total_au,
-        })
+        }))
     }
 
     // ---- gradient (Eh/Bohr, bare positional, bound to its $Geometry) ------- //
@@ -549,8 +589,10 @@ impl Verified {
     pub fn charges(&self) -> Charges {
         self.0.charges()
     }
-    /// Dipole (a.u.), or `None`.
-    pub fn dipole(&self) -> Option<Dipole> {
+    /// Dipole (a.u.): `Ok(None)` when the block is absent (normal), `Err` when the
+    /// block is present but malformed — honest-or-absent, never fabricated (rule #9,
+    /// `wiki/debugging/024`).
+    pub fn dipole(&self) -> Result<Option<Dipole>, ParseError> {
         self.0.dipole()
     }
     /// The last SCF gradient (Eh/Bohr, bare positional), or `None`.

@@ -174,7 +174,8 @@ fn goat_verifies_and_absent_blocks_are_none() {
     assert!(v.final_single_point_energy().is_some());
     let ch = v.charges();
     assert!(ch.mulliken.is_none() && ch.loewdin.is_none() && ch.mayer.is_none());
-    assert!(v.dipole().is_none());
+    // Absent block → Ok(None), not an error and not a fabricated dipole.
+    assert!(v.dipole().unwrap().is_none());
     assert!(v.thermochemistry().is_none());
     assert!(v.last_gradient().is_none());
 }
@@ -184,8 +185,105 @@ fn sp_has_charges_and_dipole_but_no_thermo() {
     let r = reference(SP_INP);
     let v = PropertyFile::parse(SP).verify(&r, &map_of(&r)).unwrap();
     assert!(v.charges().mulliken.is_some());
-    assert!(v.dipole().is_some());
+    // A present, VALID block parses to the exact probe-confirmed value — the
+    // regression that honest parsing didn't break the valid path (`wiki/debugging/024`).
+    let d = v
+        .dipole()
+        .expect("valid block does not error")
+        .expect("valid block is Some");
+    assert!((d.magnitude_au - 1.1257352328353853).abs() < 1e-12);
+    let expect = [-0.60312812185945486, -0.59037359853012172, 0.74496664168794879];
+    for (got, want) in d.total_au.iter().zip(expect.iter()) {
+        assert!((got - want).abs() < 1e-12, "total_au {got} != {want}");
+    }
     assert!(v.thermochemistry().is_none(), "SP has no thermochemistry");
+}
+
+/// Isolate the `$SCF_Dipole_Moment` block of the SP fixture and let `f` mutate it,
+/// then splice it back so the file still verifies (geometry/energy untouched). The
+/// block spans from `$SCF_Dipole_Moment` to the next top-level `$` line.
+fn sp_with_mangled_dipole_block(f: impl Fn(&str) -> String) -> String {
+    let src = SP;
+    let start = src.find("$SCF_Dipole_Moment").expect("SP has a dipole block");
+    // The block ends at the next line beginning with `$` (the following top-level block).
+    let rest = &src[start + 1..];
+    let end_rel = rest.find("\n$").expect("a block follows the dipole block");
+    let end = start + 1 + end_rel + 1; // keep the trailing newline, cut at the next `$`
+    let block = &src[start..end];
+    format!("{}{}{}", &src[..start], f(block), &src[end..])
+}
+
+/// A present block whose `&dipoleTotal` is truncated to < 3 components is MALFORMED —
+/// a loud `Err`, never a fabricated `(0,0,0)`. (Symmetry: total mandatory when present.)
+#[test]
+fn dipole_present_but_total_truncated_is_malformed() {
+    // Drop the `2  <z>` component row of `&dipoleTotal` → only two components remain.
+    let mangled = sp_with_mangled_dipole_block(|b| {
+        b.lines()
+            .filter(|l| !l.trim_start().starts_with("2 "))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n"
+    });
+    let r = reference(SP_INP);
+    let v = PropertyFile::parse(&mangled).verify(&r, &map_of(&r)).unwrap();
+    let err = v.dipole().expect_err("truncated total is malformed, not None");
+    match err {
+        ParseError::Malformed { field, detail } => {
+            assert_eq!(field, "SCF_Dipole_Moment");
+            assert!(detail.contains("3 components"), "detail: {detail}");
+            assert!(detail.contains("observed 2"), "detail: {detail}");
+        }
+        other => panic!("expected Malformed, got {other:?}"),
+    }
+}
+
+/// A present block whose `&dipoleMagnitude` inline value is non-numeric is MALFORMED —
+/// the magnitude branch bites the same way the total branch does.
+#[test]
+fn dipole_present_but_magnitude_garbage_is_malformed() {
+    let mangled = sp_with_mangled_dipole_block(|b| {
+        b.replace(
+            "&dipoleMagnitude [&Type \"Double\", &Units \"a.u.\"]       1.1257352328353853e+00",
+            "&dipoleMagnitude [&Type \"Double\", &Units \"a.u.\"]       not_a_number",
+        )
+    });
+    let r = reference(SP_INP);
+    let v = PropertyFile::parse(&mangled).verify(&r, &map_of(&r)).unwrap();
+    let err = v.dipole().expect_err("garbage magnitude is malformed, not None");
+    match err {
+        ParseError::Malformed { field, detail } => {
+            assert_eq!(field, "SCF_Dipole_Moment");
+            assert!(detail.contains("dipoleMagnitude"), "detail: {detail}");
+            assert!(detail.contains("not a number"), "detail: {detail}");
+        }
+        other => panic!("expected Malformed, got {other:?}"),
+    }
+}
+
+/// A present block with NO `&dipoleMagnitude` line is MALFORMED — the probe established
+/// magnitude is mandatory when the block exists (141 blocks / 91 files, always co-present),
+/// so its absence is a corruption, not an optional-field `None`. This REPLACES the old
+/// N/A "absent-optional magnitude → Ok(Some)" assumption (`wiki/debugging/024`).
+#[test]
+fn dipole_present_but_magnitude_key_absent_is_malformed() {
+    let mangled = sp_with_mangled_dipole_block(|b| {
+        b.lines()
+            .filter(|l| !l.contains("&dipoleMagnitude"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n"
+    });
+    let r = reference(SP_INP);
+    let v = PropertyFile::parse(&mangled).verify(&r, &map_of(&r)).unwrap();
+    let err = v.dipole().expect_err("missing magnitude key is malformed, not None");
+    match err {
+        ParseError::Malformed { field, detail } => {
+            assert_eq!(field, "SCF_Dipole_Moment");
+            assert!(detail.contains("&dipoleMagnitude key is absent"), "detail: {detail}");
+        }
+        other => panic!("expected Malformed, got {other:?}"),
+    }
 }
 
 #[test]
