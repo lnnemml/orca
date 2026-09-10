@@ -750,12 +750,20 @@ pub fn parse_and_store(
     // "No MO data is a normal state" (unit 3.7). Energy/geometry/thermo/charges/
     // frequencies still parse and display; only orbitals go absent. So a failure here
     // WARNS and sets `orbitals = None` — it never aborts the whole results parse.
-    // (Convention: `eprintln!`, as elsewhere — the crate has no `log`/`tracing` dep.)
+    // Visibility (honest-or-absent, rule #9): like Mayer (below), a *caught Err* here
+    // — the converter spawn (`ensure_gbw_json` Err) OR the reader/geometry verify —
+    // both `eprintln!`s (console convention: the crate has no `log`/`tracing` dep) AND
+    // pushes a VISIBLE `parse_warnings` entry, so the UI shows *why* orbitals are empty:
+    // they FAILED, not "weren't computed". The two non-Err absences — `None` (no ORCA
+    // path) and `Ok(None)` (no gbw) — are absent-is-normal, NOT errors: no warning.
+    // See `wiki/debugging/019` (staleness classifier) and `wiki/modules/parser.md`.
+    let mut orbital_warnings: Vec<String> = Vec::new();
     let orbitals = match read_orca_path(conn) {
         None => None,
         Some(orca_path) => match crate::orca_json::ensure_gbw_json(&orca_path, dir) {
             Err(e) => {
                 eprintln!("orca_2json (no orbitals): {e}");
+                orbital_warnings.push(format!("Orbitals not parsed: {e}"));
                 None
             }
             Ok(None) => None,
@@ -765,6 +773,7 @@ pub fn parse_and_store(
                 Ok(mv) => Some(orbitals_json(&mv)),
                 Err(e) => {
                     eprintln!("orca_2json (no orbitals): {e}");
+                    orbital_warnings.push(format!("Orbitals not parsed: {e}"));
                     None
                 }
             },
@@ -806,6 +815,12 @@ pub fn parse_and_store(
     // Surface the convergence verdict on the results (three-state, `wiki/orca/convergence-status.md`):
     // Some(true) converged, Some(false) reached max cycles, None no optimization (SP/scan/GOAT).
     results.converged = verdict.as_flag();
+
+    // Drain the orbital-pipeline warnings collected above into the SAME visible sink the
+    // Mayer site uses (`results.parse_warnings`). The orbitals are computed before `results`
+    // exists (it is assembled from `orbitals`), so the caught-Err warnings are buffered in
+    // `orbital_warnings` and folded in here — evaluation order and `None` semantics unchanged.
+    results.parse_warnings.append(&mut orbital_warnings);
 
     // Mayer bond orders (`output.out`, streamed — rule #5): the computed authoritative
     // order of the FINAL structure, keyed by the same 0-based atom indices as
@@ -2409,6 +2424,61 @@ mod tests {
             .expect("the negative through-space pair is kept");
         assert_eq!(neg.order, -0.1016, "the exact negative order round-trips through storage");
         assert!(r.parse_warnings.is_empty(), "a valid table leaves no warning: {:?}", r.parse_warnings);
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// Orbitals are AUXILIARY, exactly like Mayer: a job whose MO pipeline FAILS (here a
+    /// malformed, fresh `input.json` that `MoJson::from_path` cannot deserialize — the
+    /// `verify` Err arm) but whose geometry + energy parse cleanly must still reach
+    /// `Parsed`. The essential results survive; only `orbitals` goes `None`, AND a VISIBLE
+    /// `parse_warnings` entry records *why* (honest-or-absent, rule #9) — the same visibility
+    /// convention Mayer got in b970a51. This test exercises the SECOND Err arm (the reader/
+    /// geometry `verify`), driven via `ensure_gbw_json`'s freshness fast-path so no ORCA
+    /// binary is needed: a `.gbw` plus an `input.json` newer than it returns `Ok(Some(json))`,
+    /// then the garbage JSON errors in `MoJson::from_path`. The `ensure_gbw_json` Err arm
+    /// (converter spawn failure) shares the exact same push, but is not reachable from a unit
+    /// test — a non-zero exit / missing output is `Ok(None)`, only a spawn error is `Err`.
+    #[test]
+    fn failed_orbitals_are_non_fatal_and_leave_a_visible_warning() {
+        let tmp = std::env::temp_dir().join(format!("orbitals-nonfatal-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("input.property.txt"), OPTFREQ).unwrap();
+        std::fs::write(tmp.join("input.inp"), OPTFREQ_INP).unwrap();
+        // A gbw must exist for ensure_gbw_json to look further; contents don't matter here
+        // because the fresh input.json below short-circuits generation (is_fresh fast-path:
+        // json mtime >= gbw mtime → Ok(Some(json)), no orca_2json spawn). We write the gbw
+        // FIRST so input.json is at least as new (is_fresh uses json >= gbw).
+        std::fs::write(tmp.join("input.gbw"), b"not a real gbw").unwrap();
+        // Malformed JSON: MoJson::from_path -> ParseError::Malformed -> the verify Err arm.
+        std::fs::write(tmp.join("input.json"), b"{ this is not valid orca_2json output").unwrap();
+
+        let conn = jobs_db_with(None, None);
+        crate::db::create_results_table(&conn).unwrap();
+        // read_orca_path must return Some so we reach ensure_gbw_json (the None arm is
+        // absent-is-normal and would skip orbitals entirely, warning nothing).
+        conn.execute("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT)", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('orca_path', '/nonexistent/orca')",
+            [],
+        )
+        .unwrap();
+
+        let outcome = parse_and_store(&conn, "job1", tmp.to_str().unwrap(), OPTFREQ_INP);
+        // The whole parse is NOT held hostage by the auxiliary orbitals failure.
+        assert!(matches!(outcome, ParseOutcome::Parsed), "failed orbitals must not abort: {outcome:?}");
+
+        let r = read_job_results(&conn, "job1").unwrap().unwrap();
+        // Essential results survived and reached storage.
+        assert!(r.final_energy_eh.is_some(), "energy still parsed and stored");
+        assert!(!r.final_geometry.elements.is_empty(), "geometry still parsed and stored");
+        // Orbitals are absent BECAUSE they failed — with a visible reason, not a silent null.
+        assert!(r.orbitals.is_none(), "the failed orbital pipeline is dropped to None");
+        assert!(
+            r.parse_warnings.iter().any(|w| w.contains("Orbitals")),
+            "the failure is VISIBLE in parse_warnings and carries the property name, got {:?}",
+            r.parse_warnings
+        );
         std::fs::remove_dir_all(&tmp).ok();
     }
 }

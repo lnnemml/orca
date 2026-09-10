@@ -9316,3 +9316,37 @@ error cleared, 50 Mayer bonds incl. `B(10,18)=-0.1016` exact, `E=-979.2184121930
 intact. `npx tsc --noEmit` exit 0; `npx vitest run` 1926 passed / 146 files. Wiki: new
 `debugging/023`, `modules/parser.md` (Mayer section + fatal-vs-auxiliary matrix + reparse), `index.md`.
 NOT committed — awaiting verifier + Anton.
+
+## [2026-09-10] refactor | Orbitals join the parse_warnings visibility convention (caught-Err auxiliary class closed)
+
+Extended the `parse_warnings` visibility convention (introduced for Mayer in `b970a51`) to the
+`orca_2json` orbitals auxiliary parser — the only other silent-degrading, caught-`Err` auxiliary
+reader. VISIBILITY-only: no fatal/non-fatal status change, no `None` degradation-semantics change. The
+two caught-`Err` arms in `results.rs` (`ensure_gbw_json` spawn error; the reader/geometry `verify`
+error) keep their existing `eprintln!` (console convention) and now ALSO push a
+`parse_warnings` entry (`"Orbitals not parsed: …"`), reusing the EXACT Mayer mechanism — no second
+visibility path. Because the orbital pipeline computes before `results` is assembled, the warnings
+buffer in a local `orbital_warnings` `Vec` and are `append`ed onto `results.parse_warnings` right after
+the results are built (evaluation order + `None` semantics unchanged). The two non-`Err` absences —
+`None` (no ORCA path) and `Ok(None)` (no `.gbw`) — stay absent-is-normal, no warning. **With this, the
+caught-`Err` auxiliary class is CLOSED**: Mayer + orbitals both surface via `parse_warnings`.
+
+Test: `results::tests::failed_orbitals_are_non_fatal_and_leave_a_visible_warning` drives the SECOND Err
+arm (the reader/geometry `verify`) via `ensure_gbw_json`'s freshness fast-path — a `.gbw` plus an
+`input.json` newer than it returns `Ok(Some(json))` with no ORCA binary, then a malformed `input.json`
+errors in `MoJson::from_path`. Asserts `Parsed` (not `ParseFailed`), essential energy+geometry stored,
+`orbitals == None`, and a `parse_warnings` entry containing "Orbitals". The `ensure_gbw_json` Err arm
+(converter spawn failure) shares the identical push but is not unit-reachable (a non-zero exit / missing
+output is `Ok(None)`; only a spawn error is `Err`) — reported honestly, not faked. `cargo test --lib`
+360 passed / 0 failed / 24 ignored. Negative control that BITES: removing the push from the `verify`
+Err arm turns the visibility test RED (`parse_warnings` `[]`, no "Orbitals"; `eprintln!` still fires,
+confirming the arm ran) → reverted to green. Mayer visibility test stays green (regression — shared
+mechanism intact).
+
+Dipole-debt recorded (write-only, no code fix): new `debugging/024` tracks `property.rs:404` `dipole()`
+`unwrap_or_default()` fabricating `(0,0,0)` for a present-but-malformed `dipoleTotal` — honest-or-absent
+violation, −60127 class (feeds ECD rotatory strength → plausible WRONG spectrum), fix = a fallible
+accessor (`PropertyFile` + callers semantics change) as a SEPARATE unit. Marked NOT YET FIXED.
+
+Wiki: new `debugging/024`, `modules/parser.md` (fatal-vs-auxiliary matrix: orbitals now VISIBLE, class
+closed + dipole debt as a distinct open class), `index.md`. NOT committed — awaiting verifier + Anton.

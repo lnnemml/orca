@@ -112,14 +112,30 @@ hostage — it goes `None`, the essential result still stores, and the job still
 | `.property.txt` (energy/geometry/charges/dipole/thermo) | **essential** | `ParseFailed` — abort |
 | `.hess` (frequencies) when present + converged | **essential** | `ParseFailed` — abort |
 | `_trj.xyz` (trajectory) + cycle-energy cross-check | **essential** | `ParseFailed` — abort |
-| `orca_2json` (orbitals) | **auxiliary** | `None`, `eprintln!` only — no UI trace |
-| **Mayer** bond orders | **auxiliary** | `None` **+ a visible `parse_warnings` entry** |
+| `orca_2json` (orbitals) | **auxiliary** | `None`, `eprintln!` **+ a visible `parse_warnings` entry** |
+| **Mayer** bond orders | **auxiliary** | `None`, `eprintln!` **+ a visible `parse_warnings` entry** |
 
-Mayer joins orbitals as the second auxiliary reader — the canonical non-fatal convention Mayer was
-wrongly excluded from. It goes one step further than orbitals: a Mayer failure also pushes a
-`parse_warnings` string ("Mayer bond orders not parsed: …"), rendered VISIBLY in `ResultsCard`, so the
-UI says *why* the table is empty (it FAILED, not "wasn't computed") — the honest-or-absent surface
-(rule #9) orbitals lacks.
+Both auxiliary readers surface the SAME way now: a caught `Err` pushes a `parse_warnings` string
+("Mayer bond orders not parsed: …" / "Orbitals not parsed: …"), rendered VISIBLY in `ResultsCard`, so
+the UI says *why* the property is empty (it FAILED, not "wasn't computed") — the honest-or-absent
+surface (rule #9). Orbitals joined this convention on 2026-09-10 via the exact Mayer mechanism (no
+second visibility path): the orbital pipeline computes before `results` is assembled, so its two caught-
+`Err` arms (`ensure_gbw_json` spawn error, and the reader/geometry `verify` error) buffer into a local
+`orbital_warnings` that is `append`ed onto `results.parse_warnings` right after the results are built —
+same sink, evaluation order and `None` semantics unchanged. **With that, the caught-`Err` auxiliary
+class is CLOSED**: every silent-degrading, caught-`Err` auxiliary reader (Mayer + orbitals) now carries
+a visible reason.
+
+Not warned (correctly): the orbital pipeline's two non-`Err` absences — `None` (no configured ORCA
+path) and `Ok(None)` (no `.gbw`) — are **absent-is-normal**, not failures, and push nothing.
+
+**Still open — a DIFFERENT class.** A distinct, unclosed concern is the **absent-is-normal `Option`
+accessor that silently defaults** instead of distinguishing absent from malformed. The tracked instance
+is `property.rs:404` `dipole()`: a present-but-malformed `dipoleTotal` block fabricates `(0,0,0)`
+(indistinguishable from a valid zero dipole; feeds ECD rotatory strength → a plausible WRONG spectrum),
+rather than surfacing null-with-a-reason. This is NOT the caught-`Err` visibility class this change
+closes — it needs a fallible accessor (a `PropertyFile` + callers semantics change), its own unit. See
+[debugging/024](../debugging/024-dipole-total-silent-zero-default.md) (NOT YET FIXED).
 
 **Retiring a stale failure — `reparse_job`.** A job whose parse failed sits `completed` with an
 `error_message`. After a parser fix lands, `reparse_job` (Tauri command in `commands/jobs.rs`, testable
