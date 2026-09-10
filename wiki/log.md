@@ -9265,3 +9265,23 @@ Wiki: +`modules/server-profiles.md`; amended `adr-023` (nullable-FK `NULL = loca
 Next (Part B, live gate): `SshBackend` + `enum Backend`, the settings UI, the REAL SSH
 connection-test that measures the university server and calls `set_profile_verified`, and the
 "Run on:" selector wired into job creation.
+
+## [2026-09-10] feat | CPCM alongside SMD in the DFT re-opt fan-out (keyword form verified 6.1.0)
+
+The DFT re-opt fan-out's SMD checkbox becomes a three-way solvation `<select>` — **{None (gas
+phase), CPCM, SMD}**, default **None**. `JobDetailScreen` swaps the `reoptSmd` boolean for a
+`reoptSolvation: "none" | "cpcm" | "smd"` state; the payload spread narrows the branch to
+`"cpcm" | "smd"` (no `as const`), the solvent field is disabled only while None, and the status
+message reports the model by name (`CPCM water` / `SMD water`). `buildReoptInput`'s `opts.solvation`
+already accepted `{ model: "cpcm" | "smd" }` (Part A), so this is UI-only wiring — the SMD path is
+**byte-identical** to before; only the new CPCM token differs.
+
+Rule #10: before wiring the CPCM branch, `! r2SCAN-3c CPCM(water) Opt` was confirmed by a run
+(ORCA 6.1.0) to emit real CPCM aqueous solvation — `CPCM SOLVATION MODEL`, `Epsilon 80.1510`,
+solvent echoed `WATER`, no SMD-CDS block — so both branches reuse the same verified keyword emit
+(`wiki/orca/solvation.md`; job dir `/tmp/cpcm-water-probe`, scratch).
+
+`npx tsc --noEmit` exit 0; `npx vitest run` 963 passed / 73 files. No new tests (UI-only reseat
+over the Part-A-tested builder). Wiki: `orca/solvation.md` (+CPCM(water) Opt entry),
+`modules/conformer-reoptimization.md` (solvation section → {None, CPCM, SMD}, present tense).
+NOT committed — awaiting verifier + Anton.

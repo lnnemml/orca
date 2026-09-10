@@ -65,3 +65,26 @@ form can't express), but is not required for the standard solvent case.
 Artifacts: `/tmp/smd-probe/{f1-keyword,f2-block,f3-cpcm}/output.out` (this run; scratch, not
 committed). Related: `wiki/orca/crest.md` (ALPB/GBSA at the xTB level — a *different* solvation
 tier; SMD-over-ALPB for ions is the later ORCA refinement noted there).
+
+## CPCM(water) keyword form on an Opt — confirmed (rule #10)
+
+Determiner run **2026-09-10** (Phase 4.5 Stage D, adding CPCM alongside SMD in the DFT re-opt
+fan-out). The re-opt now offers a three-way solvation choice {None, CPCM, SMD}; before wiring the
+CPCM branch, its keyword-line emit was confirmed by a run to be honored as real CPCM aqueous
+solvation on an optimization (not just the SP above). One tiny job on a single water molecule
+(neutral, singlet — isolates "which model" from any charge concern), `/opt/orca/orca` full path,
+isolated dir (domain rules #1/#3). **ORCA Program Version 6.1.0.**
+
+- **Form:** `! r2SCAN-3c CPCM(water) Opt` — the keyword form `build-input.ts` emits, with
+  `solvationModel = "CPCM"`.
+- **What ORCA reported:** `CPCM SOLVATION MODEL`, `Epsilon = 80.1510` (bulk water), solvent
+  **echoed `WATER`**; **TERMINATED NORMALLY**. No `utilizes the SMD solvation module` line and no
+  SMD-CDS block — i.e. plain CPCM electrostatics, exactly as expected for CPCM without SMD (the
+  contrast is the form-3 CPCM control above).
+
+**Verified conclusion (ORCA 6.1.0):** the keyword form `! <method> CPCM(<solvent>) …` produces
+real CPCM aqueous solvation — `Epsilon 80.1510`, solvent `WATER` — with no SMD-CDS term. So the
+re-opt's CPCM branch reuses the same verified keyword emit as its SMD branch; only the model token
+differs (`CPCM` vs `SMD`), and the SMD path is **byte-identical** to before this change.
+
+Artifacts: `/tmp/cpcm-water-probe/output.out` (this run; scratch, not committed).

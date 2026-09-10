@@ -32,8 +32,11 @@ header so a future reader doesn't "fix" it by adding one.
 
 - `opts.method` — DFT method keyword, default `r2SCAN-3c` (`DEFAULT_REOPT_METHOD`).
 - `opts.freq` — emit `Freq` (the defensible ΔG path), default `true`. `false` → `Opt` only.
-- `opts.solvation` — `{ model: "smd", solvent }` → the keyword-line `SMD(<solvent>)` emit,
-  **verified real SMD in ORCA 6.1.0** (rule #10 determiner run, `wiki/orca/solvation.md`).
+- `opts.solvation` — `{ model: "cpcm" | "smd", solvent }` → the keyword-line
+  `CPCM(<solvent>)` / `SMD(<solvent>)` emit (model token upper-cased at the emit boundary).
+  Both forms are **verified in ORCA 6.1.0** by a rule-#10 determiner run: SMD carries the
+  Cramer–Truhlar CDS term, CPCM(water) gives `Epsilon 80.1510` with no CDS
+  (`wiki/orca/solvation.md`). Omitted → gas phase.
 
 ### The charge footgun (rule #9) — the load-bearing invariant
 
@@ -54,7 +57,8 @@ garbage (the exact class that made CREST QCG useless on the anion). The builder 
 The ensemble panel carries a **"Re-optimize top-k at DFT"** form: `k` (default 4, with the
 D1 cumulative-% at k shown beside it so the user SEES how much xTB population those k cover —
 Fork 3), method (default `r2SCAN-3c`), a **mode toggle** (Opt+Freq default = the ΔG path /
-Opt-only = an explicit quick screen), an SMD toggle + solvent, a **destination-group `<GroupSelect>`**
+Opt-only = an explicit quick screen), a three-way **solvation `<select>`** ({None (gas phase), CPCM,
+SMD} — default None) with a solvent field (disabled while None), a **destination-group `<GroupSelect>`**
 (unit 2b — via `useGroupPicker`, seeded from **this GOAT job's own group** `job.group_id`, NOT the
 active sidebar group; one picker moves **all k** fan-out children via `assignPicked(child.id)`), and an
 honest "creates k jobs" note. **Mode lives in the child input** (`! … Opt` vs `! … Opt Freq`); D2b

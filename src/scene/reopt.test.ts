@@ -97,6 +97,46 @@ describe("buildReoptInput — method / Freq / SMD emission", () => {
     expect(plain).not.toMatch(/SMD/i);
     expect(solv).toContain("SMD(methanol)");
   });
+
+  it("emits NO solvation token when model is undefined (gas phase = none)", () => {
+    // "none" is modeled by ABSENCE — the UI maps its None selector to `undefined`.
+    const kw = keywordLine(buildReoptInput(source, conf));
+    expect(kw).not.toMatch(/SMD\(/i);
+    expect(kw).not.toMatch(/CPCM\(/i);
+  });
+
+  it("emits exactly CPCM(<solvent>) for model=cpcm, and no SMD", () => {
+    const kw = keywordLine(
+      buildReoptInput(source, conf, { solvation: { model: "cpcm", solvent: "water" } }),
+    );
+    expect(kw).toContain("CPCM(water)");
+    expect(kw).not.toMatch(/SMD/i);
+    expect(kw).not.toContain("smd");
+  });
+
+  it("pins the exact SMD(<solvent>) bytes for model=smd (byte-identical to prior)", () => {
+    const kw = keywordLine(
+      buildReoptInput(source, conf, { solvation: { model: "smd", solvent: "methanol" } }),
+    );
+    // The verified keyword form; no CPCM leaks in.
+    expect(kw).toContain("SMD(methanol)");
+    expect(kw).not.toMatch(/CPCM/i);
+  });
+
+  it("uppercases the model (the `.toUpperCase()` at reopt.ts is load-bearing)", () => {
+    // The type-fork is lowercase ("cpcm"|"smd"); ORCA's verified form is uppercase.
+    // If the toUpperCase() were dropped, these would emit `cpcm(...)`/`smd(...)`.
+    const cpcm = keywordLine(
+      buildReoptInput(source, conf, { solvation: { model: "cpcm", solvent: "water" } }),
+    );
+    const smd = keywordLine(
+      buildReoptInput(source, conf, { solvation: { model: "smd", solvent: "water" } }),
+    );
+    expect(cpcm).toContain("CPCM(water)");
+    expect(cpcm).not.toContain("cpcm(");
+    expect(smd).toContain("SMD(water)");
+    expect(smd).not.toContain("smd(");
+  });
 });
 
 describe("buildReoptInput — conformer geometry (count + order preserved)", () => {

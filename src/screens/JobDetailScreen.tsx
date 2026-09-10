@@ -122,7 +122,10 @@ export function JobDetailScreen({
   const [reoptK, setReoptK] = useState(4);
   const [reoptMethod, setReoptMethod] = useState(DEFAULT_REOPT_METHOD);
   const [reoptFreq, setReoptFreq] = useState(true); // Opt+Freq (default) vs Opt-only
-  const [reoptSmd, setReoptSmd] = useState(false);
+  // Implicit solvation for the DFT re-opt: none (gas phase, default), CPCM (fast
+  // electrostatic continuum) or SMD (adds the Cramer–Truhlar CDS term). The chosen
+  // model is passed straight to `buildReoptInput`'s keyword-line emit.
+  const [reoptSolvation, setReoptSolvation] = useState<"none" | "cpcm" | "smd">("none");
   const [reoptSolvent, setReoptSolvent] = useState("water");
   const [reoptBusy, setReoptBusy] = useState(false);
   const [reoptMsg, setReoptMsg] = useState<string | null>(null);
@@ -319,8 +322,10 @@ export function JobDetailScreen({
       const opts = {
         method: reoptMethod.trim() || DEFAULT_REOPT_METHOD,
         freq: reoptFreq,
-        ...(reoptSmd
-          ? { solvation: { model: "smd" as const, solvent: reoptSolvent.trim() } }
+        // TS narrows `reoptSolvation` to "cpcm" | "smd" inside this branch, which is
+        // exactly the shape `solvation.model` wants — no `as const` needed.
+        ...(reoptSolvation !== "none"
+          ? { solvation: { model: reoptSolvation, solvent: reoptSolvent.trim() } }
           : {}),
       };
       // Build + charge-check ALL k inputs before creating any job (create boundary:
@@ -345,7 +350,7 @@ export function JobDetailScreen({
       }
       setReoptMsg(
         `Queued ${built.length} DFT re-opt job${built.length === 1 ? "" : "s"} ` +
-          `(${reoptFreq ? "Opt+Freq" : "Opt-only"}${reoptSmd ? `, SMD ${reoptSolvent.trim()}` : ""}).`,
+          `(${reoptFreq ? "Opt+Freq" : "Opt-only"}${reoptSolvation !== "none" ? `, ${reoptSolvation.toUpperCase()} ${reoptSolvent.trim()}` : ""}).`,
       );
       // Show the (provisional) aggregate immediately — the new children appear as
       // queued/running and are surfaced as such, not weighted.
@@ -824,16 +829,21 @@ export function JobDetailScreen({
                 </select>
               </label>
               <label className="reopt-ctl reopt-smd">
-                <input
-                  type="checkbox"
-                  checked={reoptSmd}
-                  onChange={(e) => setReoptSmd(e.target.checked)}
-                />
-                SMD
+                Solvation
+                <select
+                  value={reoptSolvation}
+                  onChange={(e) =>
+                    setReoptSolvation(e.target.value as "none" | "cpcm" | "smd")
+                  }
+                >
+                  <option value="none">None (gas phase)</option>
+                  <option value="cpcm">CPCM</option>
+                  <option value="smd">SMD</option>
+                </select>
                 <input
                   type="text"
                   value={reoptSolvent}
-                  disabled={!reoptSmd}
+                  disabled={reoptSolvation === "none"}
                   onChange={(e) => setReoptSolvent(e.target.value)}
                   placeholder="solvent"
                   style={{ width: 96 }}

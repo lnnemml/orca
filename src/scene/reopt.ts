@@ -42,8 +42,14 @@ export interface ReoptOptions {
   method?: string;
   /** Emit `Freq` (the defensible ΔG path). Defaults to `true`. */
   freq?: boolean;
-  /** Implicit solvation. Only SMD is offered here (the ionic case needs it). */
-  solvation?: { model: "smd"; solvent: string };
+  /**
+   * Implicit solvation. Both CPCM and SMD are offered here: CPCM for the aqueous
+   * ECD/spectroscopy case (per ORCA tutorials), SMD for the ionic case that needs
+   * its non-electrostatic terms. Absence (undefined) means gas phase — there is
+   * deliberately NO "none" variant; "none" lives only in the UI selector and is
+   * mapped to `undefined` at the payload boundary.
+   */
+  solvation?: { model: "cpcm" | "smd"; solvent: string };
 }
 
 /**
@@ -93,16 +99,18 @@ export function buildReoptInput(
     throw new Error("re-opt: conformer has no atoms to re-optimize");
   }
 
-  // 3. Assemble via the existing builder — same `!`-line / SMD / `* xyz` emit as
-  //    the New Job form. The scene OVERRIDES state.charge/state.multiplicity inside
-  //    `buildOrcaInput`, so (c, m) come from the scene we just built.
+  // 3. Assemble via the existing builder — same `!`-line / solvation / `* xyz` emit
+  //    as the New Job form. The scene OVERRIDES state.charge/state.multiplicity inside
+  //    `buildOrcaInput`, so (c, m) come from the scene we just built. The generic
+  //    emission layer (`build-input.ts`) formats `${solvationModel}(${solvent})`, so
+  //    passing the uppercased model (CPCM/SMD) yields the verified keyword form.
   const freq = opts.freq ?? true;
   const state: BuilderState = {
     ...DEFAULT_BUILDER_STATE,
     methodFamily: "composite",
     composite: opts.method ?? DEFAULT_REOPT_METHOD,
     jobType: freq ? "Opt Freq" : "Opt",
-    solvationModel: opts.solvation ? "SMD" : "",
+    solvationModel: opts.solvation ? opts.solvation.model.toUpperCase() : "",
     solvent: opts.solvation?.solvent ?? DEFAULT_BUILDER_STATE.solvent,
     charge,
     multiplicity,
