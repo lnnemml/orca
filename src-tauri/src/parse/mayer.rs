@@ -19,9 +19,17 @@
 //!
 //! # Post-condition (rule #9)
 //! Every parsed pair is checked against the structure's atom count: an index ≥
-//! `natoms`, or a non-positive order, is a **loud** [`ParseError::Malformed`] — never
-//! a silently-kept bad pair. The reader recomputes nothing else (it has no geometry),
-//! so this bounds check is its entire in-our-terms guard.
+//! `natoms` is a **loud** [`ParseError::Malformed`] — never a silently-kept bad pair.
+//! The reader recomputes nothing else (it has no geometry), so the bounds check plus
+//! the float-parse guard are its entire in-our-terms boundary.
+//!
+//! **A negative bond order is VALID data, not malformed.** ORCA prints *every* pair
+//! with `|BO| > threshold`; a through-space, non-bonded pair is legitimately negative
+//! (measured: real r²SCAN-3c CPCM codeine-cation re-opt prints
+//! `B( 10-O , 18-C ) :  -0.1016`). We store it EXACTLY — no `abs()`, no flip, no drop
+//! (honest data, domain rule #9 / honest-or-absent). The old
+//! `!(order > 0.0) → Malformed` guard held that premise falsely and rejected a valid,
+//! converged job's whole results-parse — removed (`wiki/debugging/023`).
 
 use std::fs::File;
 use std::io::{BufRead, BufReader};
@@ -54,9 +62,10 @@ static ENTRY_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 /// Parse the data lines of ONE Mayer block into bonds. Pure. `natoms` bounds-checks
-/// the indices (rule #9): an index ≥ `natoms` or a non-positive order is a loud
-/// error, not a silently-kept bad pair. Element symbols in the table are matched but
-/// not used — the 0-based indices are the atom identity.
+/// the indices (rule #9): an index ≥ `natoms` is a loud error, not a silently-kept bad
+/// pair; an un-parseable number is likewise loud. A **negative** order is VALID (a
+/// through-space non-bonded pair) and stored exactly — not rejected. Element symbols in
+/// the table are matched but not used — the 0-based indices are the atom identity.
 pub fn parse_mayer_lines(lines: &[&str], natoms: usize) -> Result<Vec<MayerBond>, ParseError> {
     let mut bonds = Vec::new();
     for line in lines {
@@ -80,12 +89,10 @@ pub fn parse_mayer_lines(lines: &[&str], natoms: usize) -> Result<Vec<MayerBond>
                     ),
                 });
             }
-            if !(order > 0.0) {
-                return Err(ParseError::Malformed {
-                    field: "Mayer bond orders".into(),
-                    detail: format!("non-positive bond order {order} for B({i}, {j})"),
-                });
-            }
+            // A negative/zero order is VALID (a through-space, non-bonded pair — ORCA
+            // prints every pair with |BO| > threshold). It is kept EXACTLY, never
+            // abs()'d, flipped or dropped (honest data, rule #9). The old
+            // `!(order > 0.0)` reject held a false "non-positive = malformed" premise.
             bonds.push(MayerBond { i, j, order });
         }
     }

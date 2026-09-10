@@ -106,6 +106,7 @@ pub fn run() {
             commands::jobs::read_job_ensemble,
             commands::jobs::read_job_convergence,
             commands::jobs::read_job_results,
+            commands::jobs::reparse_job,
             commands::jobs::read_scan_geometries,
             commands::jobs::read_scan_surface,
             commands::jobs::read_neb_geometries,

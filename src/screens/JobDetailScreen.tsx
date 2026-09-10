@@ -393,6 +393,23 @@ export function JobDetailScreen({
     }
   }, [jobId]);
 
+  // Re-run the authoritative parse on a completed job whose parse previously failed
+  // (e.g. after a parser fix landed). The command is idempotent and returns the reloaded
+  // record, so on success the status advances to `parsed` and the stale error clears in
+  // one round-trip. Only offered for `completed && error_message` (see the button gate).
+  const [reparsing, setReparsing] = useState(false);
+  const reparse = useCallback(async () => {
+    setReparsing(true);
+    setError(null);
+    try {
+      setJob(await invoke<Job>("reparse_job", { jobId }));
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setReparsing(false);
+    }
+  }, [jobId]);
+
   useEffect(() => {
     let unlistenLog: UnlistenFn | undefined;
     let unlistenStatus: UnlistenFn | undefined;
@@ -689,6 +706,17 @@ export function JobDetailScreen({
       {job?.error_message ? (
         <div className="banner err" style={{ marginBottom: 10, whiteSpace: "pre-wrap" }}>
           {job.error_message}
+          {/* Re-parse is offered ONLY for a completed job carrying a parse-failure
+              message — the calculation ran fine, only OUR parse of it did not, and a
+              parser fix may now succeed. Not shown for a `failed` calculation (nothing to
+              re-parse) nor an already-`parsed` job (no stale error). */}
+          {job.status === "completed" ? (
+            <div style={{ marginTop: 8 }}>
+              <button type="button" onClick={reparse} disabled={reparsing}>
+                {reparsing ? "Re-parsing…" : "Re-parse results"}
+              </button>
+            </div>
+          ) : null}
         </div>
       ) : null}
 

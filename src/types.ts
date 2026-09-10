@@ -83,6 +83,12 @@ export interface ParsedResults {
    * null when the run printed no table (xTB / an SP that didn't print it — normal). */
   mayer_bond_orders: MayerBond[] | null;
   unknown_blocks: string[];
+  /** Non-fatal parse warnings surfaced to the user (mirrors `ParsedResults::parse_warnings`).
+   * Populated when an AUXILIARY reader fails but the essential results still parse — currently
+   * Mayer bond orders. Empty on a clean parse. This is the honest-or-absent surface (rule #9):
+   * when `mayer_bond_orders` is null because the table FAILED (not "wasn't computed"), the reason
+   * appears here so the UI can show *why* it is empty. */
+  parse_warnings: string[];
 }
 
 /** Mirrors `src-tauri/src/parse/mayer.rs::MayerBond`. Indices are 0-based, in the

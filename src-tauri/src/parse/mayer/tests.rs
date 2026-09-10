@@ -45,6 +45,37 @@ fn parses_the_last_block_including_partial_ts_bonds() {
 }
 
 #[test]
+fn negative_bond_order_is_valid_data_stored_exactly() {
+    // The real ground-truth defect (r²SCAN-3c CPCM codeine-cation re-opt): ORCA prints
+    // every pair with |BO| > threshold, so a through-space, non-bonded O···C pair is
+    // legitimately NEGATIVE. It must parse (not be rejected) and be stored EXACTLY —
+    // no abs(), no flip, no drop.
+    let lines = [
+        "B(  9-C , 10-O ) :   0.7899 B( 10-O , 11-C ) :   1.1010 B( 10-O , 18-C ) :  -0.1016",
+        "B( 11-C , 12-C ) :   1.5264",
+    ];
+    let bonds = parse_mayer_lines(&lines, 20).unwrap();
+    assert_eq!(bonds.len(), 4);
+    // The exact negative value is preserved bit-for-bit (honest data, rule #9).
+    let neg = find(&bonds, 10, 18).expect("the negative O···C pair is kept");
+    assert_eq!(neg, -0.1016, "the -0.1016 through-space order is stored exactly");
+    // The positive siblings on the same lines are unaffected.
+    assert_eq!(find(&bonds, 9, 10), Some(0.7899));
+    assert_eq!(find(&bonds, 11, 12), Some(1.5264));
+}
+
+#[test]
+fn a_non_numeric_order_matches_no_entry_nothing_is_kept() {
+    // The entry regex only accepts a signed decimal for the order, so a non-numeric
+    // token (`abc`) simply produces NO match — no bond, no panic, no silent bad pair.
+    // (This documents the honest floor; the guard that LOUDLY bites on corrupt data is
+    // the bounds check — see the two `negative_control_*` bounds tests below.)
+    let lines = ["B(  1-C ,  2-C ) :   abc"];
+    let bonds = parse_mayer_lines(&lines, 5).unwrap();
+    assert!(bonds.is_empty(), "a non-numeric order matches no entry — nothing kept");
+}
+
+#[test]
 fn absent_block_is_none_not_an_error() {
     // An xTB run prints no Mayer table — absent-is-normal, Ok(None), never an error.
     let path = fixtures_dir().join("xtb_success_dexketoprofen_bh4.out");

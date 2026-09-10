@@ -86,6 +86,48 @@ tier** (ADR-012, [artifact-readers.md](artifact-readers.md)), which runs on comp
 the header energy is re-sourced from (`jobs.energy` is overwritten from `results` — a 64 KB tail can
 miss the final energy on a large molecule; see [debugging/007](../debugging/007-phase1-decisions-phase3-outgrew.md)).
 
+## Mayer bond orders (`src-tauri/src/parse/mayer.rs`) — the seventh reader
+
+The **computed, authoritative** bond order of the final structure (contrast the editor's *geometric*
+estimate from bond length). Source is the **unbounded `output.out` log**, so it is **streamed** (rule
+#5): one candidate block at a time, keep the LAST (for an Opt/OptTS the converged structure). Format:
+`B( i-El , j-El ) : order`, several per line, indices **0-based**, keyed by the same order as
+`final_geometry`. Post-condition (rule #9): every pair's index is bounds-checked against the atom
+count — an index ≥ `natoms` is a **loud** `Malformed`, never a silently-kept bad pair.
+
+**A negative bond order is VALID data, not malformed.** ORCA prints *every* pair with `|BO| >
+threshold`; a through-space, non-bonded pair is legitimately negative (real codeine-cation re-opt:
+`B( 10-O , 18-C ) : -0.1016`). Stored EXACTLY — no `abs()`, no flip, no drop (honest-or-absent). An
+earlier `!(order > 0.0) → Malformed` guard held that premise falsely and rejected a valid, converged
+job's *whole* results-parse; removed in [debugging/023](../debugging/023-mayer-negative-bond-order-and-fatal-auxiliary.md).
+
+## Fatal vs auxiliary readers
+
+Not every reader failure is fatal. An **essential** reader failing aborts the whole parse (the result
+would be meaningless without it); an **auxiliary** reader failing must NOT hold the essential results
+hostage — it goes `None`, the essential result still stores, and the job still reaches `parsed`.
+
+| Reader | Class | On failure |
+|---|---|---|
+| `.property.txt` (energy/geometry/charges/dipole/thermo) | **essential** | `ParseFailed` — abort |
+| `.hess` (frequencies) when present + converged | **essential** | `ParseFailed` — abort |
+| `_trj.xyz` (trajectory) + cycle-energy cross-check | **essential** | `ParseFailed` — abort |
+| `orca_2json` (orbitals) | **auxiliary** | `None`, `eprintln!` only — no UI trace |
+| **Mayer** bond orders | **auxiliary** | `None` **+ a visible `parse_warnings` entry** |
+
+Mayer joins orbitals as the second auxiliary reader — the canonical non-fatal convention Mayer was
+wrongly excluded from. It goes one step further than orbitals: a Mayer failure also pushes a
+`parse_warnings` string ("Mayer bond orders not parsed: …"), rendered VISIBLY in `ResultsCard`, so the
+UI says *why* the table is empty (it FAILED, not "wasn't computed") — the honest-or-absent surface
+(rule #9) orbitals lacks.
+
+**Retiring a stale failure — `reparse_job`.** A job whose parse failed sits `completed` with an
+`error_message`. After a parser fix lands, `reparse_job` (Tauri command in `commands/jobs.rs`, testable
+core `reparse_job_conn`) re-runs the same idempotent `parse_and_store`; on success it advances the job to
+`parsed`, overwrites the header energy from the authoritative tier (like the live-finish path), **and
+clears the stale error** — the one behaviour the finish path deliberately omits. `ResultsCard` offers a
+"Re-parse results" button only for `completed && error_message` jobs.
+
 ## Notes
 
 - Keep a fixtures library of real artifacts (per ORCA version, per job type) — `.property.txt`,

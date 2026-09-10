@@ -120,6 +120,28 @@ export function ResultsCard({
           )}
         </div>
 
+        {/* Non-fatal parse warnings (rule #9, honest-or-absent). An AUXILIARY reader
+            (currently Mayer bond orders) failed while the essential results still parsed;
+            `mayer_bond_orders` is null because it FAILED, not because it wasn't computed —
+            so we say WHY, VISIBLY, one line per warning. Hidden on a clean parse. */}
+        {results.parse_warnings.length > 0 && (
+          <div
+            role="status"
+            style={{
+              border: "1px solid var(--warn-border, #a86b00)",
+              background: "var(--warn-bg, rgba(168, 107, 0, 0.12))",
+              color: "var(--warn-fg, #d18e00)",
+              borderRadius: 4,
+              padding: "6px 10px",
+              fontSize: 12,
+            }}
+          >
+            {results.parse_warnings.map((w, i) => (
+              <div key={i}>{w}</div>
+            ))}
+          </div>
+        )}
+
         {/* Optimization-trajectory playback (unit 3.8, Part A). Hidden for a
             single-point job (no trajectory). The reference element order is the
             final geometry's — the player refuses to animate on a mismatch. */}

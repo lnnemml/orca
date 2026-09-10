@@ -539,6 +539,19 @@ pub(crate) fn set_job_parse_error_conn(
     Ok(())
 }
 
+/// Clear a stale parse-error message after a *successful* re-parse. The live-finish
+/// path never sets a parse error on success (it only ever calls
+/// [`set_job_parse_error_conn`] on failure), so this is the counterpart used by
+/// `reparse_job`: once the fixed parser succeeds, the recorded reason is no longer
+/// true and must not linger in the UI. Idempotent (`NULL`-on-`NULL` is a no-op).
+pub(crate) fn clear_job_parse_error_conn(conn: &Connection, id: &str) -> Result<(), AppError> {
+    conn.execute(
+        "UPDATE jobs SET error_message = NULL WHERE id = ?1",
+        params![id],
+    )?;
+    Ok(())
+}
+
 /// Transition a job to `status`, stamping the matching timestamp:
 /// `started_at` on entering `running`, `completed_at` on `completed`/`failed`.
 pub(crate) fn update_job_status_conn(conn: &Connection, id: &str, status: &str) -> Result<(), AppError> {
@@ -701,6 +714,55 @@ pub fn read_job_results(
 ) -> Result<Option<crate::results::ParsedResults>, AppError> {
     let conn = db.lock()?;
     crate::results::read_job_results(&conn, &id)
+}
+
+/// Re-run the authoritative results parse on an already-`completed` job whose parse
+/// previously failed (e.g. after a parser fix landed). Idempotent: it re-invokes the
+/// same [`crate::results::parse_and_store`] the live-finish path uses, so a job that
+/// already parses cleanly is simply re-parsed with no ill effect.
+///
+/// On [`ParseOutcome::Parsed`] the job advances to `parsed`, the header/list energy is
+/// overwritten from the authoritative tier (mirroring the finish path), **and** the now-
+/// stale `error_message` is cleared ([`clear_job_parse_error_conn`]) — the recorded reason
+/// is no longer true. On `ParseFailed` the reason is re-recorded and the job stays
+/// `completed`; on `NoArtifact` nothing changes. Distinct from the live-finish path in one
+/// way only: that path never clears the error, and this one must, because the whole point
+/// of a re-parse is to retire a stale failure. Returns the reloaded job so the UI reflects
+/// the new status/error in one round-trip.
+#[tauri::command]
+pub fn reparse_job(db: State<'_, DbState>, job_id: String) -> Result<Job, AppError> {
+    let conn = db.lock()?;
+    reparse_job_conn(&conn, &job_id)
+}
+
+/// The testable core of [`reparse_job`] (thin-wrapper convention, top of this file):
+/// re-run the authoritative parse and reconcile the job's status/energy/error, returning
+/// the reloaded record. Deliberately mirrors `parse_results_after_completion` (the live-
+/// finish path) with ONE added step — clearing the stale error on success — so a job that
+/// already parses cleanly re-parses with no behaviour change.
+pub(crate) fn reparse_job_conn(conn: &Connection, job_id: &str) -> Result<Job, AppError> {
+    let job = get_job_conn(conn, job_id)?;
+    let Some(dir) = job.job_dir.as_deref() else {
+        // Nothing on disk to re-parse (a draft/never-run job): return the record as-is.
+        return Ok(job);
+    };
+    match crate::results::parse_and_store(conn, job_id, dir, &job.input_content) {
+        crate::results::ParseOutcome::Parsed => {
+            update_job_status_conn(conn, job_id, "parsed")?;
+            // Same authoritative-energy overwrite as the finish path (ADR-012): the
+            // header/list energy comes from `.property.txt`, not the output tail estimate.
+            if let Some(e) = crate::results::stored_final_energy(conn, job_id) {
+                set_job_energy_conn(conn, job_id, e)?;
+            }
+            // The re-parse succeeded — retire the stale failure reason.
+            clear_job_parse_error_conn(conn, job_id)?;
+        }
+        crate::results::ParseOutcome::ParseFailed(msg) => {
+            set_job_parse_error_conn(conn, job_id, &format!("results parse failed: {msg}"))?;
+        }
+        crate::results::ParseOutcome::NoArtifact => {}
+    }
+    get_job_conn(conn, job_id)
 }
 
 /// The per-point geometries of a relaxed scan (`input.NNN.xyz`), in point order,
@@ -1952,6 +2014,163 @@ mod tests {
             "raw delete of a referenced job must fail the FK constraint too"
         );
 
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- reparse_job (B/1) : re-parse a completed job & retire the stale error --------
+
+    /// Fixtures dir (checked-in ORCA artifacts). Same root the results.rs tests use.
+    fn fixtures() -> std::path::PathBuf {
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
+    }
+
+    /// Build a `completed` job carrying a parse-failure `error_message`, with a real
+    /// (checked-in ethane Opt+Freq) `.property.txt` + input laid out in its own job_dir.
+    /// This is the exact on-disk shape `reparse_job` re-parses.
+    fn completed_job_with_parse_error(conn: &Connection, root: &std::path::Path) -> String {
+        let input = std::fs::read_to_string(
+            fixtures().join("property_optfreq_ethane.input.inp"),
+        )
+        .unwrap();
+        let job = create_job_conn(conn, "ethane reparse", &input, None, None).unwrap();
+        let job_dir = root.join(format!("jobdir-{}", &job.id));
+        std::fs::create_dir_all(&job_dir).unwrap();
+        std::fs::copy(
+            fixtures().join("property_optfreq_ethane.property.txt"),
+            job_dir.join("input.property.txt"),
+        )
+        .unwrap();
+        std::fs::copy(fixtures().join("property_optfreq_ethane.input.inp"), job_dir.join("input.inp"))
+            .unwrap();
+        set_job_dir_conn(conn, &job.id, job_dir.to_str().unwrap()).unwrap();
+        finalize_job_conn(conn, &job.id, JobStatus::Completed, None).unwrap();
+        set_job_parse_error_conn(
+            conn,
+            &job.id,
+            "results parse failed: mayer: malformed Mayer bond orders: non-positive bond order",
+        )
+        .unwrap();
+        job.id
+    }
+
+    #[test]
+    fn reparse_advances_to_parsed_and_clears_the_stale_error() {
+        let (conn, dir) = test_db();
+        let id = completed_job_with_parse_error(&conn, &dir);
+
+        // Precondition: the job is stuck `completed` WITH a recorded parse failure.
+        let before = get_job_conn(&conn, &id).unwrap();
+        assert_eq!(before.status, JobStatus::Completed);
+        assert!(before.error_message.is_some());
+
+        let after = reparse_job_conn(&conn, &id).unwrap();
+        // The fixed parser succeeds → status advances and the stale reason is retired.
+        assert_eq!(after.status, JobStatus::Parsed);
+        assert_eq!(after.error_message, None, "a successful re-parse must clear the error");
+        // The returned record equals a fresh read (the command returns the reloaded row).
+        assert_eq!(get_job_conn(&conn, &id).unwrap().error_message, None);
+        // The authoritative energy was written (ADR-012 overwrite, mirrors the finish path).
+        assert!(after.energy.is_some(), "authoritative energy stored on parse");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// BITE: a re-parse that STILL fails must NOT clear the error — it re-records it. A
+    /// naive "clear on every reparse" would wrongly go green (retire a live failure). Here
+    /// the job_dir has a `.property.txt` whose geometry cannot be verified against a
+    /// DIFFERENT input, so `parse_and_store` returns `ParseFailed`.
+    #[test]
+    fn reparse_that_still_fails_keeps_the_error_not_cleared() {
+        let (conn, dir) = test_db();
+        // A job whose INPUT geometry is a single He atom, but whose job_dir holds the
+        // 8-atom ethane `.property.txt` — the property verify fails loudly (mismatch).
+        let mismatched_input = "! r2SCAN-3c Opt\n* xyz 0 1\nHe 0 0 0\n*\n";
+        let job = create_job_conn(&conn, "mismatch", mismatched_input, None, None).unwrap();
+        let job_dir = dir.join(format!("jobdir-{}", &job.id));
+        std::fs::create_dir_all(&job_dir).unwrap();
+        std::fs::copy(
+            fixtures().join("property_optfreq_ethane.property.txt"),
+            job_dir.join("input.property.txt"),
+        )
+        .unwrap();
+        set_job_dir_conn(&conn, &job.id, job_dir.to_str().unwrap()).unwrap();
+        finalize_job_conn(&conn, &job.id, JobStatus::Completed, None).unwrap();
+        set_job_parse_error_conn(&conn, &job.id, "results parse failed: original reason").unwrap();
+
+        let after = reparse_job_conn(&conn, &job.id).unwrap();
+        // Still completed, and the error is PRESENT (re-recorded), never cleared.
+        assert_eq!(after.status, JobStatus::Completed);
+        assert!(
+            after.error_message.is_some(),
+            "a re-parse that fails must NOT clear the error (clear-on-success only)"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The REAL failed codeine-cation re-opt (`91cd2f6c…`): its output.out prints
+    /// `B( 10-O , 18-C ) : -0.1016` (a valid negative Mayer BO), which the OLD guard
+    /// rejected — driving the whole results-parse to `ParseFailed` and stamping the job
+    /// `completed` with `results parse failed: mayer: … non-positive bond order -0.1016 …`.
+    /// After the Part A fix, `reparse_job` on the REAL job_dir must: succeed (→ `parsed`),
+    /// store the Mayer table WITH the exact -0.1016 entry, leave the final geometry intact,
+    /// and clear the stale error. Ignored: reads the real ~MB job dir from ~/.local/share
+    /// and (if orca_path is set) may spawn orca_2json for orbitals (non-fatal either way).
+    #[test]
+    #[ignore = "reads the real codeine re-opt job dir 91cd2f6c… from ~/.local/share"]
+    fn real_codeine_reparse_clears_error_and_stores_negative_mayer() {
+        let src = format!(
+            "{}/.local/share/orcastudio/jobs/91cd2f6c-75ed-450a-9e8c-de10884017e4",
+            std::env::var("HOME").unwrap()
+        );
+        if !std::path::Path::new(&src).join("input.property.txt").exists() {
+            eprintln!("skipping: real codeine job dir 91cd2f6c… not present");
+            return;
+        }
+        let (conn, dir) = test_db();
+        let input = std::fs::read_to_string(std::path::Path::new(&src).join("input.inp")).unwrap();
+        let job = create_job_conn(&conn, "codeine reparse", &input, None, None).unwrap();
+        // Copy the real artifacts (property + input + output.out at minimum) into a job_dir.
+        let job_dir = dir.join(format!("jobdir-{}", &job.id));
+        std::fs::create_dir_all(&job_dir).unwrap();
+        for f in ["input.property.txt", "input.inp", "output.out", "input_trj.xyz", "input.hess"] {
+            let s = std::path::Path::new(&src).join(f);
+            if s.exists() {
+                std::fs::copy(&s, job_dir.join(f)).unwrap();
+            }
+        }
+        set_job_dir_conn(&conn, &job.id, job_dir.to_str().unwrap()).unwrap();
+        finalize_job_conn(&conn, &job.id, JobStatus::Completed, None).unwrap();
+        set_job_parse_error_conn(
+            &conn,
+            &job.id,
+            "results parse failed: mayer: malformed Mayer bond orders: non-positive bond order -0.1016 for B(10, 18)",
+        )
+        .unwrap();
+
+        let after = reparse_job_conn(&conn, &job.id).unwrap();
+        assert_eq!(after.status, JobStatus::Parsed, "the fixed parser must succeed on real data");
+        assert_eq!(after.error_message, None, "the stale error must clear");
+
+        let r = crate::results::read_job_results(&conn, &job.id).unwrap().unwrap();
+        let mayer = r.mayer_bond_orders.as_ref().expect("Mayer table stored");
+        let neg = mayer
+            .iter()
+            .find(|b| b.i == 10 && b.j == 18)
+            .expect("the B(10,18) O-C through-space pair is stored");
+        assert!(
+            (neg.order - (-0.1016)).abs() < 1e-4,
+            "the negative BO is stored EXACTLY, not abs()'d or dropped: got {}",
+            neg.order
+        );
+        // Geometry untouched: 46-atom codeine cation, elements present and non-empty.
+        assert!(!r.final_geometry.elements.is_empty(), "final geometry intact");
+        eprintln!(
+            "real codeine reparse: {} Mayer bonds, B(10,18)={} Eh, E={:?}",
+            mayer.len(),
+            neg.order,
+            r.final_energy_eh
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 }

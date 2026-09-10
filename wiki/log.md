@@ -9285,3 +9285,34 @@ solvent echoed `WATER`, no SMD-CDS block — so both branches reuse the same ver
 over the Part-A-tested builder). Wiki: `orca/solvation.md` (+CPCM(water) Opt entry),
 `modules/conformer-reoptimization.md` (solvation section → {None, CPCM, SMD}, present tense).
 NOT committed — awaiting verifier + Anton.
+
+## [2026-09-10] fix | Mayer negative bond order no longer aborts a converged parse; Mayer is auxiliary; reparse_job retires stale errors
+
+A cleanly-converged r²SCAN-3c codeine-cation re-opt (`91cd2f6c…`) sat `completed` with an empty
+dashboard and `results parse failed: mayer: malformed Mayer bond orders: non-positive bond order
+-0.1016 for B(10, 18)`. Two defects: (1) the Mayer reader's `!(order > 0.0) → Malformed` guard held a
+false premise — a **negative** bond order is valid data (ORCA prints every `|BO| > threshold` pair; a
+through-space O···C pair is legitimately `-0.1016`), stored EXACTLY; (2) Mayer, an **auxiliary**
+property, aborted the whole parse — whereas orbitals have always been non-fatal. Mayer now joins that
+convention (`None` + continue) and adds a **visible `parse_warnings`** surface orbitals lacks.
+
+Part A (already landed, cargo 357→): sign guard removed (index bounds check retained as the sole
+post-condition), non-fatal Mayer read pushing `parse_warnings`. Part B (this change): `parse_warnings`
+in `types.ts` + a visible warning banner in `ResultsCard`; a `reparse_job` Tauri command (testable
+core `reparse_job_conn` in `commands/jobs.rs`) that re-runs the fixed idempotent `parse_and_store` on a
+`completed && error_message` job → advances to `parsed`, overwrites the header energy from the
+authoritative tier, and **clears the stale error** (`clear_job_parse_error_conn`) — the one behaviour
+the live-finish path deliberately omits; a "Re-parse results" button in `JobDetailScreen`, shown only
+for `completed && error_message`. Registered in `lib.rs`.
+
+Also fixed a stale-reference collision: Part A's code comments pointed at `wiki/debugging/021`, which
+was already an unrelated page — corrected to `023` (mayer.rs + results.rs, 4 refs).
+
+`cargo test --lib` 359 passed / 0 failed / 24 ignored (+2 non-ignored command tests, +1 ignored
+real-data). Negative controls that bite: `reparse_that_still_fails_keeps_the_error_not_cleared`
+(clear-on-success is guarded), the retained Mayer bounds-check controls, and the ignored
+`real_codeine_reparse_clears_error_and_stores_negative_mayer` — RUN against the real dir: `parsed`,
+error cleared, 50 Mayer bonds incl. `B(10,18)=-0.1016` exact, `E=-979.218412193007 Eh`, geometry
+intact. `npx tsc --noEmit` exit 0; `npx vitest run` 1926 passed / 146 files. Wiki: new
+`debugging/023`, `modules/parser.md` (Mayer section + fatal-vs-auxiliary matrix + reparse), `index.md`.
+NOT committed — awaiting verifier + Anton.

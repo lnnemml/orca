@@ -252,6 +252,15 @@ pub struct ParsedResults {
     pub converged: Option<bool>,
     /// Blocks ORCA emitted that this reader has no accessor for (rule #10).
     pub unknown_blocks: Vec<String>,
+    /// Human-readable warnings for AUXILIARY properties that failed to parse but did NOT
+    /// abort the whole results-parse (currently: Mayer bond orders). This is the
+    /// honest-or-absent surface (rule #9): when Mayer goes `None` because it FAILED — as
+    /// opposed to "was never computed" — the UI shows *why*, rather than silently
+    /// dropping it (contrast the orbitals path, which is `eprintln!`-only with no UI
+    /// trace). `#[serde(default)]` so results rows stored before this field read back as
+    /// empty (same rationale as `unknown_blocks`/`mayer_bond_orders`).
+    #[serde(default)]
+    pub parse_warnings: Vec<String>,
 }
 
 impl ParsedResults {
@@ -372,6 +381,9 @@ impl ParsedResults {
             // Likewise the caller sets the convergence verdict from the output tail.
             converged: None,
             unknown_blocks: v.unknown_block_names(),
+            // Populated by `parse_and_store` when an auxiliary reader (Mayer) fails
+            // non-fatally; empty here (the essential readers already errored loudly).
+            parse_warnings: Vec::new(),
         })
     }
 
@@ -418,6 +430,7 @@ impl ParsedResults {
             mayer_bond_orders: None, // a scan is multi-structure — no single final table
             converged: None,         // a scan has no single-optimization verdict (NotApplicable)
             unknown_blocks: Vec::new(),
+            parse_warnings: Vec::new(),
         })
     }
 
@@ -447,6 +460,7 @@ impl ParsedResults {
             mayer_bond_orders: None,
             converged: None,
             unknown_blocks: Vec::new(),
+            parse_warnings: Vec::new(),
         }
     }
 
@@ -474,6 +488,7 @@ impl ParsedResults {
             mayer_bond_orders: None, // a NEB-TS run has no single final Mayer table
             converged: None,         // NEB has its own convergence; no single-opt verdict here
             unknown_blocks: Vec::new(),
+            parse_warnings: Vec::new(),
         })
     }
 }
@@ -795,11 +810,20 @@ pub fn parse_and_store(
     // Mayer bond orders (`output.out`, streamed — rule #5): the computed authoritative
     // order of the FINAL structure, keyed by the same 0-based atom indices as
     // `final_geometry`. Absent for xTB / an SP that didn't print it (→ `None`, normal).
-    // A malformed/out-of-range table is a LOUD failure (rule #9), never a silent bad pair.
+    // Mayer is an AUXILIARY property — like orbitals, a failure here must NOT hold the
+    // essential results (geometry/energy/freq/trajectory, all assembled ABOVE) hostage.
+    // So a corrupt/out-of-range table WARNS and sets `None` rather than aborting the whole
+    // parse. Unlike orbitals (eprintln!-only, no UI trace), it also pushes a VISIBLE
+    // `parse_warnings` entry (honest-or-absent, rule #9): the UI shows *why* Mayer is
+    // empty — it FAILED, not "wasn't computed". See `wiki/debugging/023`.
     let natoms = results.final_geometry.elements.len();
     match crate::parse::mayer::read_mayer(&dir.join("output.out"), natoms) {
         Ok(m) => results.mayer_bond_orders = m,
-        Err(e) => return ParseOutcome::ParseFailed(format!("mayer: {e}")),
+        Err(e) => {
+            eprintln!("Mayer bond orders (non-fatal): {e}");
+            results.parse_warnings.push(format!("Mayer bond orders not parsed: {e}"));
+            results.mayer_bond_orders = None;
+        }
     }
 
     if let Err(e) = store(conn, job_id, &results) {
@@ -2313,6 +2337,78 @@ mod tests {
             read_job_results(&conn, "job1").unwrap().is_none(),
             "no single-structure results row is stored for a GOAT job"
         );
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// Mayer is AUXILIARY, not fatal (debugging/023): a job whose Mayer block is corrupt
+    /// (here an out-of-range atom index — the reachable loud error) but whose geometry +
+    /// energy parse cleanly must still reach `Parsed`. The essential results survive; only
+    /// `mayer_bond_orders` goes `None`, AND a VISIBLE `parse_warnings` entry records *why*
+    /// (honest-or-absent, rule #9) — it is not silently dropped.
+    #[test]
+    fn corrupt_mayer_is_non_fatal_and_leaves_a_visible_warning() {
+        let tmp = std::env::temp_dir().join(format!("mayer-nonfatal-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("input.property.txt"), OPTFREQ).unwrap();
+        std::fs::write(tmp.join("input.inp"), OPTFREQ_INP).unwrap();
+        // Ethane has 8 atoms (indices 0..7); index 20 is out of range → read_mayer errors.
+        std::fs::write(
+            tmp.join("output.out"),
+            "Mayer bond orders larger than 0.100000\nB(  0-C , 20-N ) :   0.5\n\n",
+        )
+        .unwrap();
+        let conn = jobs_db_with(None, None);
+        crate::db::create_results_table(&conn).unwrap();
+
+        let outcome = parse_and_store(&conn, "job1", tmp.to_str().unwrap(), OPTFREQ_INP);
+        // The whole parse is NOT held hostage by the auxiliary Mayer failure.
+        assert!(matches!(outcome, ParseOutcome::Parsed), "corrupt Mayer must not abort: {outcome:?}");
+
+        let r = read_job_results(&conn, "job1").unwrap().unwrap();
+        // Essential results survived.
+        assert!(r.final_energy_eh.is_some(), "energy still parsed");
+        assert!(!r.final_geometry.elements.is_empty(), "geometry still parsed");
+        // Mayer is absent BECAUSE it failed — with a visible reason, not a silent null.
+        assert!(r.mayer_bond_orders.is_none(), "the corrupt Mayer table is dropped to None");
+        assert!(
+            r.parse_warnings.iter().any(|w| w.contains("Mayer bond orders not parsed")),
+            "the failure is VISIBLE in parse_warnings, got {:?}",
+            r.parse_warnings
+        );
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// The positive control for the same seam: a VALID Mayer block (including a
+    /// legitimately-NEGATIVE through-space order, the real codeine-cation defect) parses,
+    /// is stored EXACTLY, and leaves NO warning. The -0.1016 pair proves negatives are
+    /// honest data (debugging/023), not rejected. Ethane has 8 atoms; all indices < 8.
+    #[test]
+    fn valid_mayer_with_a_negative_order_parses_and_is_stored_exactly() {
+        let tmp = std::env::temp_dir().join(format!("mayer-negative-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("input.property.txt"), OPTFREQ).unwrap();
+        std::fs::write(tmp.join("input.inp"), OPTFREQ_INP).unwrap();
+        std::fs::write(
+            tmp.join("output.out"),
+            "Mayer bond orders larger than 0.100000\n\
+             B(  0-C ,  1-C ) :   1.0100 B(  0-C ,  7-H ) :  -0.1016\n\n",
+        )
+        .unwrap();
+        let conn = jobs_db_with(None, None);
+        crate::db::create_results_table(&conn).unwrap();
+
+        let outcome = parse_and_store(&conn, "job1", tmp.to_str().unwrap(), OPTFREQ_INP);
+        assert!(matches!(outcome, ParseOutcome::Parsed), "{outcome:?}");
+
+        let r = read_job_results(&conn, "job1").unwrap().unwrap();
+        let bonds = r.mayer_bond_orders.expect("a valid table is stored");
+        assert_eq!(bonds.len(), 2);
+        let neg = bonds
+            .iter()
+            .find(|b| (b.i == 0 && b.j == 7) || (b.i == 7 && b.j == 0))
+            .expect("the negative through-space pair is kept");
+        assert_eq!(neg.order, -0.1016, "the exact negative order round-trips through storage");
+        assert!(r.parse_warnings.is_empty(), "a valid table leaves no warning: {:?}", r.parse_warnings);
         std::fs::remove_dir_all(&tmp).ok();
     }
 }
