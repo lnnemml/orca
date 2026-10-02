@@ -9493,3 +9493,25 @@ is a **previously-failed disk the owner reinstalled as a spare** — 1 pending s
 auto-mounted since 2026-08-27**, **known unreliable, used for nothing (no scratch, no data)**. So
 there is no third-party archive and no "back up before fsck" concern; the operational rule is
 unchanged and simpler — **do not use/mount `sda`**. `sdb` single-copy backup-by-design stands.
+
+## [2026-10-02] infra | ORCA 6.1.1 parity on laptop and server
+
+Upgraded the default ORCA to **6.1.1** on the laptop and the `uni` server, with parity
+established before changing any version claim. **Install scheme:** `/opt/orca-<version>` per
+version, `/opt/orca` a symlink to the active one (6.1.1); 6.1.0 retained for reproducing old
+results (`/opt/orca-6.1.0/orca`). **Parity evidence:** `sha256(/opt/orca/orca)` identical
+laptop↔server (`335aef8b…c4ea`); water r2SCAN-3c Opt+Freq bit-identical laptop↔server and
+matching laptop-6.1.0 to reported precision; and a **6.1.0↔6.1.1 parser cross-version
+regression** — **10 checks bit-identical, Δ=0, no tolerance consumed** (property SP, Opt+Freq
+energy/geometry/frequencies/IR, `_trj.xyz`, Mayer, SMD SP, DLPNO-CCSD(T) SP, relaxed scan,
+OptTS+Freq, open-shell CH3), plus `orca_plot` menu + cubes byte-identical. Harness
+`src-tauri/src/parse/cross_version_6_1_1.rs` + fixtures `tests/fixtures/xver/` (commits
+`626c8bf` Part A, `c92c592` release-notes/orca_plot/xTB probes; this commit = A4 + docs).
+**NEB-TS cross-version parity NOT checked** — HCN↔HNC r2SCAN-3c is laptop-non-reproducible
+(initial-path generation sensitive to endpoint geometry: a 0.003 Å product shift → 1 vs 42/129
+attempts; band unconverged in 15 min; both failure modes identical across versions) → **deferred
+to the server** (ADR-023/024), `#[ignore]` kept. Measured 6.1.1 gotchas recorded
+(`wiki/orca/gotchas.md`): `.hess $multiplicity` wrong for open-shell in both versions (never
+read), `!XTB2 NEB-TS` NumFreq failure (use NEB-CI + OptTS), `%geom MaxIter` now honored (manual
+inputs only), MaxCore 4000 MB/proc default (manual-input server-RAM risk), orca_plot unchanged.
+Pages: `orca/orca-basics.md` (version scheme + parity), `orca/gotchas.md`, `infrastructure/uni-server.md`.

@@ -362,11 +362,14 @@ fn negative_control_energy_gate_bites() {
 // ── NEB-TS: explicitly deferred, not silently dropped ───────────────────────────
 
 #[test]
-#[ignore = "No clean NEB-TS 6.1.1 pair on the laptop. r2SCAN-3c: the band converges but the \
-            climbing-image TS + numerical-Hessian tail exceeds the 10-min guard. Native XTB2 \
-            NEB-TS fails at the TS-frequency step on BOTH versions identically (no per-image \
-            .gbw for orca_numfreq) and produces NONE of the three reader artifacts. \
-            Candidate for a server run. See the session report + wiki."]
+#[ignore = "NEB-TS cross-version parity is NOT a laptop check — retired to the server (ADR-023/024). \
+            HCN<->HNC r2SCAN-3c has TWO failure modes, both measured, both IDENTICAL across 6.1.0/6.1.1 \
+            (so not a version issue): (1) with a good initial path the band converges but the \
+            climbing-image TS + numerical-Hessian tail exceeds the guard; (2) the initial-path generator \
+            is acutely sensitive to the endpoint geometry (deterministic per input, NOT random) — a 0.003 A \
+            shift in the HNC product flipped it from 1 to 42 of 129 attempts and the band did not converge \
+            in 15 min. Native XTB2 NEB-TS additionally fails at the final NumFreq (no per-image .gbw) on \
+            both versions. See wiki/orca/gotchas.md + the session report."]
 fn neb_ts_cross_version_deferred() {
     // Intentionally empty: this marker keeps the gap VISIBLE in `cargo test` output
     // (`ignored`) instead of pretending NEB was covered.

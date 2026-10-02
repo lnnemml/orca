@@ -50,9 +50,14 @@ row once the connection-test passes ([ADR-023](../architecture/adr-023-server-ag
   `libmpi.so.40` → the **system** lib (so MPI uses the system OpenMPI 4.1.6 — rule #2).
   - **Version parity CONFIRMED** (2026-10-02): a water **r2SCAN-3c Opt+Freq** benchmark on 4
     procs gives **E = −76.418938720745 Ha**, freqs **1653.28 / 3813.59 / 3932.72 cm⁻¹**, *ORCA
-    TERMINATED NORMALLY* — **matches the laptop (ORCA 6.1.0) to reported precision**. Parity no
-    longer blocks anything. (The project's canonical ORCA reference stays 6.1.0 — this only
-    records that the server's 6.1.1 install produces matching numbers; `CLAUDE.md` is unchanged.)
+    TERMINATED NORMALLY* — **matches the laptop (ORCA 6.1.0) to reported precision**, and
+    `sha256(/opt/orca/orca)` is identical on laptop and server (`335aef8b…c4ea`). Parity is
+    further backed by the **6.1.0↔6.1.1 parser cross-version regression** (10 checks bit-identical;
+    commits `626c8bf`, `c92c592`; `src-tauri/src/parse/cross_version_6_1_1.rs`). **NEB-TS
+    cross-version parity is NOT checked** (laptop-non-reproducible — see
+    [orca/gotchas.md](../orca/gotchas.md)); it is deferred to this server (ADR-023/024). 6.1.1 is
+    now the current default on both hosts — see
+    [orca/orca-basics.md](../orca/orca-basics.md#orca-611-install-scheme--laptopserver-parity-2026-10-02).
 - **Legacy lab ORCA installs:** `/home/yats/calc/orca/{303,504,601,611}` — **leave untouched**.
 - Packages we installed: `openssh-server`, `tmux`, `rsync`, `tailscale`.
 

@@ -74,7 +74,10 @@ npm run tauri build
 ## Domain rules (hard-won ORCA knowledge — do not violate)
 
 1. **Always invoke ORCA with its full absolute path** (`/opt/orca/orca input.inp`),
-   otherwise OpenMPI parallelization silently fails. See `wiki/orca/orca-basics.md`.
+   otherwise OpenMPI parallelization silently fails. Current version **6.1.1**; `/opt/orca`
+   is a symlink to `/opt/orca-<version>` (6.1.0 retained for reproducing old results), and
+   6.1.1 is bit-identical to 6.1.0 across the parser cross-version regression + laptop/server
+   `sha256`. See `wiki/orca/orca-basics.md`.
 2. **OpenMPI version must exactly match** the version the ORCA build expects.
 3. **One job directory per calculation**, always. ORCA litters scratch files;
    isolation + post-run cleanup is mandatory.

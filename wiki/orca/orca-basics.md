@@ -7,8 +7,8 @@ working install on the author's laptop.
 
 | Item | Value |
 |---|---|
-| ORCA version | **6.1.0** |
-| Install path | **`/opt/orca`** (binary: `/opt/orca/orca`) |
+| ORCA version | **6.1.1** — current default (see [install scheme & parity](#orca-611-install-scheme--laptopserver-parity-2026-10-02)); the 2026-07-26 numbers below were on **6.1.0**, retained for reproducibility |
+| Install path | **`/opt/orca`** (binary: `/opt/orca/orca`) — a symlink to `/opt/orca-<version>` |
 | OpenMPI version | **4.1.6** (system OpenMPI, compatible with this ORCA build) |
 | Host | Laptop-main, Linux Mint |
 
@@ -17,6 +17,33 @@ Verification test (`water_optfreq`): r²SCAN-3c `Opt Freq TightSCF`, `%pal nproc
 **−76.418938719971 Eh**; harmonic frequencies **1653.26 / 3813.32 / 3932.49 cm⁻¹**
 (all positive → confirmed minimum); run ended with `ORCA TERMINATED NORMALLY`.
 Full-path invocation with `%pal nprocs 4` parallelized correctly — the domain rule holds.
+
+## ORCA 6.1.1 install scheme & laptop/server parity (2026-10-02)
+
+**Install scheme.** Each version lives in its own dir `/opt/orca-<version>`
+(`/opt/orca-6.1.0`, `/opt/orca-6.1.1`); **`/opt/orca` is a symlink** to the active one
+(currently `/opt/orca-6.1.1`). So the domain-rule-#1 path `/opt/orca/orca` always resolves
+to the current default, and an older version stays runnable by absolute path
+(`/opt/orca-6.1.0/orca`) for reproducing old results. The app still invokes the
+settings-configured path (rule #7) — the symlink is a host convenience, not an app
+assumption.
+
+**Laptop/server parity** — 6.1.1 is the default on both the laptop and the `uni` server
+([infrastructure/uni-server.md](../infrastructure/uni-server.md)):
+- **Binary identity:** `sha256(/opt/orca/orca)` is **identical** on laptop and server
+  (`335aef8b…c4ea`).
+- **Water r2SCAN-3c Opt+Freq** (4 procs) is **bit-identical** laptop↔server and matches the
+  laptop's 6.1.0 to reported precision: E = −76.418938720745 Eh, 1653.28 / 3813.59 / 3932.72 cm⁻¹.
+- **6.1.0 ↔ 6.1.1 parser cross-version regression** (commits `626c8bf`, `c92c592`;
+  `src-tauri/src/parse/cross_version_6_1_1.rs`, fixtures `tests/fixtures/xver/`): **10 checks
+  bit-identical** (Δ = 0, no tolerance consumed) — property SP energy, Opt+Freq
+  (energy / final geometry / frequencies / IR intensities), `_trj.xyz` trajectory, Mayer bond
+  orders, SMD SP energy, DLPNO-CCSD(T) SP energy, relaxed scan (`act`+`scf`), OptTS+Freq
+  (energy / TS geometry / frequencies), and an open-shell CH3 doublet (energy + frequencies).
+  `orca_plot` menu + cubes byte-identical (see [gotchas](gotchas.md)).
+- **NEB-TS cross-version parity is NOT checked** — the HCN↔HNC r2SCAN-3c case is not
+  completable within a laptop time guard (see [gotchas](gotchas.md)); it is **deferred to the
+  server** (ADR-023/024), not asserted.
 
 ## Installation
 - ORCA 6.x: free academic/personal license via FAccTs registration; download tarball,

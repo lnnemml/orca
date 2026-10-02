@@ -5,6 +5,50 @@ Living page. Add every trap encountered, newest at top, format:
 
 ---
 
+### 6.1.0 → 6.1.1 upgrade probe (2026-10-02)
+
+Measured during the 6.1.0→6.1.1 parity work (fixtures `src-tauri/tests/fixtures/xver/`,
+harness `src-tauri/src/parse/cross_version_6_1_1.rs`; commits `626c8bf`, `c92c592`). Parity
+summary: [orca-basics.md](orca-basics.md#orca-611-install-scheme--laptopserver-parity-2026-10-02).
+
+- **`.hess $multiplicity` is wrong for open-shell → stored as `1` even for a doublet → never
+  read it.** A CH3 radical (`* xyz 0 2`) r2SCAN-3c Freq writes `$multiplicity 1` in the `.hess`
+  (should be 2) on **both 6.1.0 AND 6.1.1** — the 6.1.1 release notes do not fix it. Harmless
+  here only because `parse/hess.rs` lists `multiplicity` under *"recognized but deliberately not
+  read"*; the parsed frequencies/energy are unaffected and were bit-identical across versions.
+  Rule: **do not add a reader for `$multiplicity`** — multiplicity comes from the job's input,
+  not the `.hess`. Witness: `tests/fixtures/xver/ch3_openshell/`.
+- **`! XTB2 NEB-TS` fails at the final NumFreq → `ERROR: GBW-File <base>_im1.gbw not found` →
+  don't use NEB-TS with native xTB.** The band runs, but the closing TS frequency step calls
+  `orca_numfreq`, which expects a per-image `.gbw` that native xTB does not produce → fails on
+  **both 6.1.0 and 6.1.1**, yielding none of the NEB reader's artifacts. Fix: for an xTB NEB,
+  use **`NEB-CI`** (climbing image, no final Freq) and then a **separate `OptTS`** on the located
+  image.
+- **`%geom MaxIter` was ignored in 6.1.0, is honored from 6.1.1 → a geom-opt that silently ran
+  the default cycle cap in 6.1.0 now obeys the user's cap.** OrcaStudio never emits `%geom
+  MaxIter` (only the `%scf MaxIter` / `%geom maxiter` a user hand-types is preserved by the
+  constraint/scan splicers), so **only hand-written editor inputs are affected**.
+- **Default `%MaxCore` = 4000 MB/proc (since 6.1.0) → a manual input with no `%maxcore` can
+  exceed RAM on a many-core host.** On the `uni` server (24 procs, 62 GiB) an input lacking
+  `%maxcore` defaults to 24 × 4000 ≈ 96 GB → swap/failure. Every OrcaStudio builder emits
+  `%maxcore` (default 2000), so this bites **only hand-written editor inputs** run remotely.
+  (Future-unit candidate: a preflight `%maxcore × nprocs vs profile RAM` guard.)
+- **`orca_plot` interactive menu is unchanged 6.1.0 → 6.1.1 → the pinned stdin script
+  (`2`/`4`/`11`/`12`) is safe.** Re-probed on water HOMO/LUMO: the menu text at every step is
+  identical and the emitted `.cube` files are **byte-identical** between versions
+  (`src-tauri/src/orca_plot.rs`). No electron-density path exists in the app (MO cubes only).
+- **HCN↔HNC NEB-TS is a poor choice for a fast NEB fixture → the initial-path generator is
+  acutely sensitive to the endpoint geometry → pick a reaction with no atom migration.** A
+  0.003 Å shift in the HNC product flipped the initial-path generator from **1** to **42 of 129**
+  attempts (deterministic per input, identical on both versions — **not** randomness), and the
+  band did not converge in **15 min** on the laptop; even with a good initial path the
+  climbing-image TS + numerical-Hessian tail overran the guard. Fix: for a quick cross-version NEB
+  fixture choose a reaction where atoms **don't migrate between centers** (e.g. a
+  rotation/inversion); the HCN↔HNC cross-version NEB check is **deferred to the server**
+  (ADR-023/024), not run on the laptop.
+
+---
+
 - **`%pal nprocs` larger than the pinned core count → job runs *slower*, not faster** → when ORCA
   is pinned with `taskset -c <mask>`, an `%pal nprocs` that exceeds the masked core count
   oversubscribes: e.g. 12 ranks fighting over 4 cores is ~3× slower than 4 ranks. Fix: OrcaStudio
