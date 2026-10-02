@@ -11,7 +11,9 @@
 //! advertised batch `plot-inputfile` mode was not usable (an undocumented field it names
 //! "state density" — every attempt exited FATAL with no cube). What works is driving its
 //! interactive menu over **stdin** — a deterministic script of the menu's own answers.
-//! Menu numbers are pinned to ORCA 6.1.0; re-probe on upgrade.
+//! Menu numbers are pinned to ORCA 6.1.0; re-probe on upgrade. Re-probed on 6.1.1
+//! (2026-10-02, water HOMO/LUMO): the interactive menu text is identical and the emitted
+//! `.cube` files are byte-identical to 6.1.0 — the pinned script is unchanged.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};

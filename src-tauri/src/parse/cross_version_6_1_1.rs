@@ -290,6 +290,31 @@ fn optts_hcn_property_and_frequencies_identical() {
 }
 
 #[test]
+fn ch3_openshell_property_and_frequencies_identical() {
+    // Open-shell (doublet) coverage. NOTE: the `.hess` `$multiplicity` section reads `1`
+    // (wrong — CH3 is mult 2) in BOTH versions; the hess reader deliberately does NOT read
+    // it (it is in the "recognized but not read" list), so no parsed value is affected.
+    let r = reference(&read("ch3_openshell", "v610", "input.inp"));
+    let m = map_of(&r);
+    assert_final_energy_identical("ch3_openshell", &r, &m);
+    assert_final_geometry_identical("ch3_openshell", &r, &m);
+    let rh = reference_from_xyz(&read("ch3_openshell", "v610", "input.xyz"));
+    let mh = map_of(&rh);
+    let load = |v: &str| {
+        HessFile::parse(&read("ch3_openshell", v, "input.hess"))
+            .verify(&rh, &mh)
+            .unwrap()
+    };
+    let (a, b) = (load("v610"), load("v611"));
+    let (fa, fb) = (a.frequencies().unwrap(), b.frequencies().unwrap());
+    assert_eq!(fa.values_cm.len(), fb.values_cm.len(), "ch3 freq count");
+    for (i, (x, y)) in fa.values_cm.iter().zip(&fb.values_cm).enumerate() {
+        assert_close(&format!("ch3 freq[{i}]"), *x, *y, F_TOL);
+    }
+    assert_eq!(fa.imaginary_count, fb.imaginary_count, "ch3 imaginary_count");
+}
+
+#[test]
 fn scan_ethane_relaxscan_identical() {
     let spec_a =
         parse_scan_spec(&read("scan_ethane", "v610", "input.inp")).expect("scan line present");
@@ -337,8 +362,10 @@ fn negative_control_energy_gate_bites() {
 // ── NEB-TS: explicitly deferred, not silently dropped ───────────────────────────
 
 #[test]
-#[ignore = "NEB-TS HCN↔HNC at r2SCAN-3c does not finish within the 10-min laptop guard \
-            (climbing-image TS + numerical Hessian tail); no clean 6.1.1 pair yet. \
+#[ignore = "No clean NEB-TS 6.1.1 pair on the laptop. r2SCAN-3c: the band converges but the \
+            climbing-image TS + numerical-Hessian tail exceeds the 10-min guard. Native XTB2 \
+            NEB-TS fails at the TS-frequency step on BOTH versions identically (no per-image \
+            .gbw for orca_numfreq) and produces NONE of the three reader artifacts. \
             Candidate for a server run. See the session report + wiki."]
 fn neb_ts_cross_version_deferred() {
     // Intentionally empty: this marker keeps the gap VISIBLE in `cargo test` output
