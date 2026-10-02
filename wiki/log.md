@@ -9386,3 +9386,64 @@ Wiki: `debugging/024` flipped to FIXED (final design + why naive Option→Err is
 `modules/parser.md` (honest-or-absent matrix — dipole now distinguishes absent vs malformed; `ir_spectrum`
 `t_au` noted as the remaining known-benign default, unconsumed), `index.md`. NOT committed — awaiting
 verifier + Anton.
+
+## [2026-09-10] ingest | ORCA remote-deploy recipe (Phase 5 groundwork) + CPCM validated end-to-end in real research
+
+New `wiki/orca/remote-deploy.md`: the procedure to stand ORCA 6.1.0 up on a clean remote Linux,
+feeding the future Phase 5 `SshBackend` (ADR-023). **Source-honest** — captured from ONE live
+session on a rented Hetzner CPX62 (Ubuntu 24.04, 16 vCPU), reconstructed from memory of the steps;
+the box is **destroyed**, so this is weaker than rule #10 (not re-verifiable now) and the page flags
+that up front. Steps: `build-essential`+`gfortran` → **OpenMPI 4.1.6 built from source** (apt gives
+the wrong version, rule #2; check `mpirun --version`) → **`rsync /opt/orca/`** from a working box
+(~20 GB; RPATH absolute → `PATH`-only, no `LD_LIBRARY_PATH`, identical path) → **mandatory non-root
+user** (OpenMPI refuses root; the override is the wrong answer for a backend) → **Probe #0** known-good
+water r2SCAN-3c (TERMINATED NORMALLY + E≈−76.4189 Ha + nprocs really parallelizes ⇒ MPI matches the
+build). Perf point (planning aid): CAM-B3LYP/ma-def2-TZVP/RIJCOSX/CPCM TD-DFT, 25 roots, 44-atom
+cation, 16 vCPU → ~9.5 min, ~1.5 GB peak RSS ⇒ CPU/time-bound, not memory-bound. Explicitly does
+NOT cover `SshBackend` prober targets (exit-code prop / ControlMaster / rsync) — unmeasured, the box
+was destroyed before those were probed; they belong on the permanent target server. index.md updated.
+
+Separately: this week's **CPCM solvation feature** (commit 4dbc9f2 row) ran end-to-end in a real
+water-solvation ECD workflow on that box — the tool was used in actual research, not just tests.
+
+## [2026-10-02] infra | University server provisioned
+
+New `wiki/infrastructure/uni-server.md` (new `infrastructure/` category) — OrcaStudio's first
+permanent remote execution target, measured during provisioning. HP ProLiant `yats-ProLiant`,
+Ubuntu 24.04.1, 48 logical / 24 physical cores, 62 GiB RAM + 119 GiB swap (swap = failure →
+conservative `%maxcore`), ~79 G free on `/home`. System OpenMPI **4.1.6** (`/usr/bin/mpirun`,
+conda base does not shadow it); ORCA **6.1.1** being copied to `/opt/orca` from the lab install
+(H2 smoke test TERMINATED NORMALLY) — **version parity vs the laptop's 6.1.0 is pending, so no
+ORCA version is changed anywhere**. Key-only SSH (hardening drop-in, `PermitRootLogin no`) over
+Tailscale, laptop alias `uni` (ControlMaster/ControlPersist 10m). **University cuts internet
+22:00–08:00 Europe/Kyiv — computation continues, access does not.** UPS good for a few minutes
+(signal-to-host unknown). Shared lab account `yats` (sudo). DO/DON'T recorded (absolute ORCA
+path — rule #1; never `do-release-upgrade` — rule #2; `apt-get update` fails on others' third-party
+repos; leave legacy `/home/yats/calc/orca/{303,504,601,611}` untouched). All pending/unknown facts
+(CPU model, rpath check, water benchmark, UTC window, UPS→nut, parallel slots, connection-test
+specs) parked in **Open items**, never guessed (rule #10). **No network identifiers (IP, host keys,
+fingerprints) in the wiki by policy.** index.md gains an Infrastructure section.
+
+## [2026-10-02] decision | ADR-024 remote execution under intermittent connectivity
+
+New `wiki/architecture/adr-024-remote-execution-intermittent-connectivity.md` (**Proposed**). The
+university link dies nightly and the server is on a few-minute UPS, so a job routinely outlives any
+connected session. Decisions: (a) the **queue lives on the server** — `task-spooler`/`tsp` for the
+MVP, slots per-profile; (b) a **detached** per-job wrapper launched via `tsp`, independent of the
+ssh session, writing `.exit_code` (rule #6), absolute-path ORCA (rule #1), one dir per job (rule #3);
+(c) the **server filesystem is the source of truth**, local SQLite a reconciled cache; (d) a
+**reconnect protocol** classifying each non-terminal remote job queued/running/completed/failed from
+directory contents + a **new terminal state `lost`** (process gone AND no `.exit_code`); (e)
+`lost`-restart is a separate restart-from-last-geometry path that **bypasses
+`resolveCarryForwardGeometry`** (which refuses on non-converged) — seed rules left as an **open
+question**; (f) **concurrency per backend/profile** (Local = 1; uni-server = 1 until parallel slots
+are measured — rule #10); (g) profile gains an **optional availability window** → "unreachable —
+outside expected window", not an error. Rejected: queue-on-laptop (idles the server 22:00–08:00),
+a custom server daemon (surface for an MVP), single-node SLURM (Phase 6), tmux/screen-per-job (no
+queue, nothing to reconcile), `systemd-run --user` (needs linger, no queue semantics). **Amends
+ADR-003** (job state machine gains `lost`; server FS authoritative over the reconciliation sketch)
+and **domain rule #4** (concurrency per-profile, not a global constant — re-wording proposed in the
+session report, NOT applied to CLAUDE.md). **Extends ADR-023** (ServerProfile gains slot count +
+availability window). Rules #1/#3/#6 reaffirmed. The task left the `lost`-restart seed, the exact
+UTC window, UPS→nut, and parallel slots as open questions. index.md + the tauri-core / execution-
+backends module pages get a `See ADR-024` pointer.

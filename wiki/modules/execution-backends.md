@@ -6,7 +6,9 @@ in-SQLite queue, cancellation with an MPI-rank sweep, and startup reconciliation
 implements it, and **the Tauri command layer dispatches through the trait** — `submit_job` /
 `cancel_job` construct a `LocalBackend` and call `submit` / `cancel` on it. The running machinery
 still lives in `src-tauri/src/local_backend.rs` (queue, process tree, cancellation) — each trait
-method **delegates** there. `SshBackend` is a later Phase 5 unit.
+method **delegates** there. `SshBackend` is a later Phase 5 unit. See ADR-024 (proposed): the
+remote queue lives on the server (`tsp`), the server FS is the source of truth, and concurrency
+becomes a per-backend/profile setting rather than the global rule-#4 constant.
 
 ## The `ExecutionBackend` trait (`execution_backend.rs`, ADR-003)
 

@@ -261,7 +261,9 @@ it succeeded too. The two failure modes are kept distinct — a `failed` job is 
 failed; a `completed` job with an `error_message` is a calculation that ran fine but whose results
 would not parse (OUR problem, not the run's); and a completed job with no `.property.txt` is
 "nothing to parse", not a failure. Remote states (uploading/syncing) are still deferred. An unknown
-status string from the DB → `AppError::Internal` via `from_db`.
+status string from the DB → `AppError::Internal` via `from_db`. See ADR-024 (proposed): remote
+execution adds a terminal `lost` state (process gone, no `.exit_code`) and makes the server FS
+authoritative over this cache.
 
 **Completion → parse hook** (`local_backend::parse_results_after_completion`, shared by the live
 finish path and startup reconciliation): once a job is `completed`, read `input.property.txt`,
