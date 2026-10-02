@@ -1,6 +1,6 @@
 # ADR-024: Remote execution under intermittent connectivity
 
-**Status:** Proposed · 2026-10-02
+**Status:** Accepted · 2026-10-02 (Proposed → Accepted after the review + acceptance amendments below)
 
 Refines [ADR-003](adr-003-execution-backend.md) (the `ExecutionBackend` trait + job state
 machine) and extends [ADR-023](adr-023-server-agnostic-remote-execution.md) (one `SshBackend`
@@ -102,6 +102,17 @@ return the job to **`queued`**. Conflating the two would force a clean re-submis
 seed-selection path (an open question, e) for no reason, and would mislabel a job as "interrupted
 mid-run" when it never ran. So `never-started` is a **non-terminal reconciliation outcome** that
 transitions the job back to `queued`; only a genuinely-interrupted run becomes `lost`.
+
+**Amended 2026-10-02 (acceptance) — bounded re-enqueue.** Two tightenings make the
+`never-started` path safe to automate:
+- The wrapper writes **`.started` as its very first action**, before any other logic, so the
+  window in which a started job looks like `never-started` is as small as possible.
+- Automatic re-enqueue of a `never-started` job is capped at **once per job** (a counter in the
+  local DB); a **second** `never-started` on the same job becomes **`failed`** with reason
+  *"wrapper never started"* and requires a user decision. Rationale: `never-started` also covers
+  a **wrapper that crashed before writing `.started`** (not only a restart-dropped queue entry) —
+  without a bound, such a job would re-enqueue, crash, and re-enqueue forever. One retry absorbs
+  the benign restart-drop case; a repeat is a real fault the user must see.
 
 **e) Restart of a `lost` job is a separate path.** Re-running a `lost` job is
 **restart-from-last-geometry**, a distinct flow that seeds from the last geometry written to the

@@ -1385,11 +1385,18 @@ and the dev laptop is a development machine, not a compute node. See
       `SshBackend`). ADR-023 records the server-agnostic model (one `SshBackend` per `ServerProfile`).
 - [ ] Server profiles in settings: host alias (reuses `~/.ssh/config`), remote ORCA path,
       remote scratch dir; connection test button
-- [ ] `SshBackend` via system `ssh`/`rsync`: rsync job dir up → `nohup` runner script with
-      `.pid` + `.exit_code` markers → byte-offset polling of output → selective rsync down
+- [ ] **Server probe unit (before `SshBackend`):** task-spooler on `uni-server` — does the `tsp`
+      daemon survive the launching ssh session exiting, how does it behave after a server restart,
+      and the process-group kill of an MPI job (ADR-024 Open questions a–c). Measure first (rule #10).
+- [ ] `SshBackend` via system `ssh`/`rsync`: rsync job dir up → per-job wrapper via task-spooler
+      (per-slot `TS_SOCKET`) writing `.started` (PID, `boot_id`) + `.exit_code`, stdout/stderr into
+      the job dir (ADR-024) → byte-offset polling of output → selective rsync down
       (output/xyz/hess always; gbw opt-in)
-- [ ] Job state machine extended: `uploading → running → syncing`; reconciliation on app start
-      (check markers for every job that was `running`)
+- [ ] Preflight: `nprocs`/`%maxcore` vs the profile (cores + RAM budget) and free disk space in the
+      profile working dir; no-`%maxcore` → warn-and-propose, never silent-insert (ADR-024 h)
+- [ ] Job state machine extended: `uploading → running → syncing`, plus the terminal state `lost`
+      and the `never-started` reconciliation outcome (re-enqueue ≤ 1, then `failed`); reconciliation
+      on app start checks markers for every job that was `running` (ADR-024 d)
 - [ ] Remote `orca_plot` option: generate cubes server-side, download only `.cube`
 - [ ] Job pause/cancel (the sequential queue itself lands in Phase 2)
 

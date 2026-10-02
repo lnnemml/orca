@@ -81,8 +81,7 @@ npm run tauri build
 2. **OpenMPI version must exactly match** the version the ORCA build expects.
 3. **One job directory per calculation**, always. ORCA litters scratch files;
    isolation + post-run cleanup is mandatory.
-4. **Default concurrency = 1.** ORCA parallelizes itself via `%pal`; the queue runs
-   jobs sequentially unless the user explicitly overrides.
+4. **Concurrency is per backend.** ORCA parallelizes itself via `%pal`. `LocalBackend` runs one job at a time; each server profile has a slot count (default 1 until measured, rule #10). Concurrent slots never share cores (rule #8). See ADR-024.
 5. **Never load the unbounded `output.out` whole** — it reaches tens of MB; stream/tail it
    (streaming convergence parse, output search, the two tail regexes). The **small, bounded
    structured artifacts** ARE read whole and that is correct: `.property.txt` (≈344 KB max measured)

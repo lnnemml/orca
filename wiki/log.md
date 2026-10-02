@@ -9537,3 +9537,17 @@ process group (probe, not fact — `debugging/004` precedent). **Consequences:**
 backup by design (`sdb` single copy). **Open questions +3:** tsp-survives-ssh-exit (only tmux
 measured), tsp-across-restart, MPI process-group kill over SSH. Also `uni-server.md`: laptop now
 on 6.1.1 too, water benchmark bit-identical laptop↔server; `%maxcore` DO cross-refs gotchas.
+
+## [2026-10-02] decision | ADR-024 accepted; rule #4 per-backend; Phase 5 roadmap updated
+
+ADR-024 **Proposed → Accepted**. Acceptance amendment to Decision d (`never-started`): the wrapper
+writes `.started` as its **first action**; automatic re-enqueue of a `never-started` job is capped
+at **once per job** (local-DB counter), a second occurrence → `failed` ("wrapper never started"),
+user decision required — because `never-started` also covers a wrapper that died before `.started`,
+so an unbounded retry would loop forever. **CLAUDE.md rule #4** replaced: "Default concurrency = 1"
+→ "Concurrency is per backend" (LocalBackend one-at-a-time; per-profile slot count, default 1 until
+measured per rule #10; concurrent slots never share cores per rule #8; see ADR-024). **ROADMAP.md
+Phase 5**: SshBackend bullet now task-spooler per-slot wrapper with `.started`(PID,boot_id)+`.exit_code`
+and job-dir stdout/stderr (was `nohup` + `.pid`); state bullet adds terminal `lost` + `never-started`
+(re-enqueue ≤1); new server-probe unit before SshBackend (ADR-024 Open questions a–c); new preflight
+unit (ADR-024 h). Rest of Phase 5 untouched.
