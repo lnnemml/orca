@@ -51,7 +51,10 @@ row once the connection-test passes ([ADR-023](../architecture/adr-023-server-ag
   - **Version parity CONFIRMED** (2026-10-02): a water **r2SCAN-3c Opt+Freq** benchmark on 4
     procs gives **E = −76.418938720745 Ha**, freqs **1653.28 / 3813.59 / 3932.72 cm⁻¹**, *ORCA
     TERMINATED NORMALLY* — **matches the laptop (ORCA 6.1.0) to reported precision**, and
-    `sha256(/opt/orca/orca)` is identical on laptop and server (`335aef8b…c4ea`). Parity is
+    `sha256(/opt/orca/orca)` is identical on laptop and server (`335aef8b…c4ea`). **The laptop
+    now also defaults to 6.1.1** (via its own `/opt/orca`→`/opt/orca-6.1.1` symlink), and this
+    water benchmark is **bit-identical laptop-6.1.1 ↔ server-6.1.1** (same binary hash → same
+    numbers). Parity is
     further backed by the **6.1.0↔6.1.1 parser cross-version regression** (10 checks bit-identical;
     commits `626c8bf`, `c92c592`; `src-tauri/src/parse/cross_version_6_1_1.rs`). **NEB-TS
     cross-version parity is NOT checked** (laptop-non-reproducible — see
@@ -96,6 +99,9 @@ source of truth live **on the server**, not the laptop (ADR-024).
   ORCA `PATH` entries — never rely on `PATH`.
 - Install packages with `apt-get install <pkg>` **directly**.
 - Keep `%maxcore` conservative given the swap-is-failure rule; measure before trusting a value.
+  A manual input with **no** `%maxcore` inherits ORCA's default **4000 MB/proc** (since 6.1.0),
+  so 24 procs ≈ 96 GB > RAM — see [orca/gotchas.md](../orca/gotchas.md) (and ADR-024 Decision h's
+  preflight).
 - Locate ORCA installs via a real binary, e.g. `orca_scfgrad` (ORCA 6 has **no** `orca_scf`
   binary, and Ubuntu's `orca` screen-reader shares the binary name).
 - **Pull results down to the laptop — the server is NOT a backup.** `sdb` is a single aging HDD

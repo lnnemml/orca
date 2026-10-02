@@ -9515,3 +9515,25 @@ to the server** (ADR-023/024), `#[ignore]` kept. Measured 6.1.1 gotchas recorded
 read), `!XTB2 NEB-TS` NumFreq failure (use NEB-CI + OptTS), `%geom MaxIter` now honored (manual
 inputs only), MaxCore 4000 MB/proc default (manual-input server-RAM risk), orca_plot unchanged.
 Pages: `orca/orca-basics.md` (version scheme + parity), `orca/gotchas.md`, `infrastructure/uni-server.md`.
+
+## [2026-10-02] decision | ADR-024 amended after review
+
+Review pass on ADR-024 (stays **Proposed**), hardening the `tsp` mechanism against the
+shared-account + server-restart realities so `SshBackend` doesn't inherit the gaps. Each change
+tagged "Amended 2026-10-02 (review)". **Decision b:** the wrapper applies the profile core mask
+(`OMPI_MCA_hwloc_base_binding_policy=none taskset -c <mask>`, rule #8); slot count > 1 = **one
+`tsp` queue per slot** (own `TS_SOCKET`, 1 slot, own mask, naturally per NUMA node) because `tsp`
+never tells a task its slot index; dedicated `TS_SOCKET` under OrcaStudio's dir (shared `yats`);
+wrapper/ORCA stdout+stderr into the job dir (not `tsp`'s `/tmp` sink, cleared on reboot); the
+in-memory `tsp` queue is lost on restart. **Decision d:** boot-id-anchored liveness — wrapper
+writes `.started` (PID, `boot_id`, start time); `running` requires same `boot_id` + live PID +
+our cmdline (PID-reuse safe); different `boot_id` + no `.exit_code` → `lost`; **new
+`never-started` sub-case** (dir but no `.started`, `tsp` unaware) argued as a **non-terminal**
+outcome → re-enqueue to `queued`, explicitly NOT folded into terminal `lost` (nothing computed →
+no seed/trust question). **New Decision h:** resource-invariant preflight (`nprocs ≤` slot cores;
+`nprocs × %maxcore ≤` RAM budget; no-`%maxcore` → warn-and-propose, silent insertion forbidden;
+free-space check). **New Decision i:** cancel → existing `Cancelled` state; running = kill the
+process group (probe, not fact — `debugging/004` precedent). **Consequences:** `fetch_results` =
+backup by design (`sdb` single copy). **Open questions +3:** tsp-survives-ssh-exit (only tmux
+measured), tsp-across-restart, MPI process-group kill over SSH. Also `uni-server.md`: laptop now
+on 6.1.1 too, water benchmark bit-identical laptop↔server; `%maxcore` DO cross-refs gotchas.

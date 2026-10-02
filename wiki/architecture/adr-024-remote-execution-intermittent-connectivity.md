@@ -37,6 +37,30 @@ wrapper:
 - invokes ORCA by absolute path `/opt/orca/orca` (**rule #1**);
 - runs in **one directory per job** (**rule #3**).
 
+**Amended 2026-10-02 (review) — core pinning (rule #8).** The wrapper pins ORCA to the
+profile's measured core mask and disables OpenMPI's own binding so the two don't fight:
+`OMPI_MCA_hwloc_base_binding_policy=none taskset -c <mask> /opt/orca/orca …` (domain rule #8,
+`../orca/performance.md`). For a **slot count > 1** the slot↔mask assignment must be
+deterministic, so run **one `tsp` queue per slot** — each its own `TS_SOCKET`, each with **1
+slot** and **its own mask** (the natural split is one slot per NUMA node, e.g. the uni server's
+node0 `0–11,24–35` / node1 `12–23,36–47`, once measured — rule #10, still UNDETERMINED). **Not**
+one `tsp` daemon with `-S N`: `tsp` does not pass the task its slot index, so a single N-slot
+queue cannot map a job to a fixed mask, and two jobs could land on the same cores while another
+node sits idle. One-queue-per-slot makes the mapping explicit and keeps `%pal`/mask aligned
+(`align_pal_nprocs`, gotchas).
+
+**Amended 2026-10-02 (review) — isolation & queue survival** (Decision a/b). The account `yats`
+is **shared** (uni-server.md), so nothing may rely on the user's default `tsp` state:
+- Each queue uses a **dedicated `TS_SOCKET`** under OrcaStudio's own server directory (not the
+  shared default socket), so OrcaStudio's queue is isolated from anything else `yats` runs.
+- The wrapper's and ORCA's **stdout/stderr are redirected into the job directory**, not left to
+  `tsp`'s default sink in `/tmp` (which the OS clears on reboot — the logs would vanish exactly
+  when a restart makes them most needed).
+- The **`tsp` queue lives in the daemon's memory and is lost on a server restart**: a job that
+  was *enqueued but not yet started* simply disappears from `tsp` after a reboot. This is not a
+  loss of results (nothing ran) but it **is** a reconciliation case — see Decision d's
+  **never-started** sub-case.
+
 **c) The server filesystem is the source of truth.** The local SQLite is a **cache** that is
 **reconciled** against the server's job directories after the link is restored. Where the two
 disagree, the server's on-disk state wins. (Consistent with ADR-003's reconciliation-on-startup;
@@ -52,6 +76,32 @@ still live):
 - **lost** — a **new terminal state**: the process is gone **and** no `.exit_code` was ever
   written (e.g. the server restarted mid-run, or the UPS gave out). Neither running nor cleanly
   finished — the run was interrupted and cannot be trusted.
+
+**Amended 2026-10-02 (review) — boot-id-anchored liveness.** A bare "PID alive?" check is unsafe
+across a server restart: the kernel reuses PIDs, so after a reboot some unrelated process may
+hold the old PID and a dead job would read as `running`. So the wrapper, **at start**, writes a
+`.started` marker into the job directory: its **PID**, the host **boot id**
+(`/proc/sys/kernel/random/boot_id` — a fresh UUID every boot), and the start time. The classifier
+then uses:
+- **running** = `.started` present **and** its `boot_id` equals the host's *current* `boot_id`
+  **and** that PID is alive **and** `/proc/<pid>/cmdline` is **our** wrapper/ORCA (all three —
+  boot-id guards against a stale marker surviving a reboot; the cmdline check guards against PID
+  reuse *within* the same boot).
+- **lost** = `.started` present, its `boot_id` ≠ current `boot_id`, and no `.exit_code` (something
+  ran, then the machine rebooted under it).
+- **never-started** (**new sub-case**) = the job directory exists but there is **no `.started`**
+  and `tsp` does not know the job. Nothing ever executed (the enqueued-but-unstarted job the
+  restart dropped from `tsp`'s in-memory queue, per Decision b).
+
+**`never-started` is NOT folded into `lost`, and is NOT a new terminal state.** Argument: `lost`
+is *terminal* and means "a run began and was interrupted" → its recovery is
+**restart-from-last-geometry** (Decision e), which must select and validate a seed from partial
+output. `never-started` means **nothing computed** → there is no seed, no partial data, no
+trust question; the safe and correct action is to simply **re-enqueue the original input** and
+return the job to **`queued`**. Conflating the two would force a clean re-submission through the
+seed-selection path (an open question, e) for no reason, and would mislabel a job as "interrupted
+mid-run" when it never ran. So `never-started` is a **non-terminal reconciliation outcome** that
+transitions the job back to `queued`; only a genuinely-interrupted run becomes `lost`.
 
 **e) Restart of a `lost` job is a separate path.** Re-running a `lost` job is
 **restart-from-last-geometry**, a distinct flow that seeds from the last geometry written to the
@@ -70,6 +120,33 @@ see uni-server.md Open items). Each profile carries its own slot count.
 availability window (the 08:00–22:00 cutoff). Outside it, the UI shows **"unreachable — outside
 expected window"**, an informational state — **not** an error. A failed connection *inside* the
 window is still a real error.
+
+**h) Resource invariants + preflight (Amended 2026-10-02, review).** Before a job is enqueued to
+a profile, a **preflight** checks, in the profile's measured terms (rule #10):
+- **`nprocs ≤ physical cores of the slot`** — oversubscribing a slot's mask runs *slower*, not
+  faster (gotchas / `align_pal_nprocs`).
+- **`nprocs × %maxcore ≤ the profile's RAM budget`** — `%maxcore` is per-process, so the whole
+  job's peak is `nprocs × %maxcore`; swapping is a failure mode (uni-server.md: swap-is-failure).
+- An input **without `%maxcore`** (a hand-written Monaco input — the builders always emit it)
+  inherits ORCA's **default 4000 MB/proc since 6.1.0** (`../orca/gotchas.md`); on a 24-proc,
+  62 GiB host that is ~96 GB → over RAM. Preflight raises a **warning that proposes a concrete
+  value for the user to confirm**; **silent insertion is forbidden** (honest-or-absent — we do
+  not mutate the user's input behind their back).
+- Preflight also checks **free space in the profile's working directory** (ORCA litters scratch;
+  a full disk fails mid-run). The remote disk is a single aging HDD with no redundancy
+  (uni-server.md), so this is not hypothetical.
+
+**i) Cancel (Amended 2026-10-02, review).** A remote cancel maps to the **existing `Cancelled`**
+state (no new state):
+- **queued** → delete the job from its `tsp` queue; nothing ran, mark `cancelled`.
+- **running** → kill the **entire process group** (the wrapper, `mpirun`, and every MPI rank it
+  forked), then **no `.exit_code` is written** → the reconnect classifier must not read a killed
+  job as `lost`; the local record marks it `cancelled` directly.
+- The **process-group kill mechanism is a probe, not a fact.** Locally this is already hard —
+  `mpirun` `setpgid`s each rank into its own group, so a single `killpg` misses the ranks and a
+  cwd-sweep is needed (`../debugging/004-mpi-ranks-escape-process-group.md`, gotchas). The
+  equivalent over SSH (e.g. `pkill -g` / `fuser -k <job_dir>` / a recorded rank list) is
+  **UNDETERMINED until measured on the server** (Open questions).
 
 ## Alternatives rejected
 
@@ -107,6 +184,12 @@ window is still a real error.
   per-profile measured/configured data, exactly "specs as data, not code."
 - **Rules #1, #3, #6 — reaffirmed, not changed.** The `tsp` wrapper preserves absolute-path
   invocation, one-dir-per-job, and `.exit_code` + normal-termination completion.
+- **`fetch_results` to the laptop is backup by design, not just convenience** (Amended
+  2026-10-02, review). The server's results live on a single aging HDD with no redundancy
+  (`sdb` — uni-server.md); it is **not** a backup. So pulling results down after each job
+  (ADR-003 `fetch_results` / rsync-down) is the only durable copy, and the reconnect
+  reconciliation (Decision c/d) is also what drives that pull. This makes the laptop cache's
+  job both "source of UI truth after a disconnect" and "the backup of record."
 
 ## Open questions
 
@@ -119,3 +202,14 @@ window is still a real error.
   `lost` actually occurs (uni-server.md).
 - **Parallel slots on the university server** — whether 2×12-core slots are safe is unmeasured;
   the profile stays at 1 slot until a rule-#10 measurement (f, uni-server.md).
+- **(a) Does the `tsp` daemon survive the ssh session that launched it exiting?** (Amended
+  2026-10-02, review.) The detach premise (Decision b) requires yes, but it is only **measured
+  for `tmux`** so far (uni-server.md, 2026-10-02); `tsp`'s own daemon lifetime vs the launching
+  session is a **probe**, not a fact.
+- **(b) `tsp` behaviour across a server restart** (Amended 2026-10-02, review). We assert the
+  in-memory queue is lost (Decision b) and reconcile via `never-started` (Decision d), but the
+  exact post-reboot `tsp` state — does the daemon auto-restart, does `tsp -C`/socket survive,
+  are partially-written job dirs left clean — is **unmeasured** (probe).
+- **(c) Process-group kill for an MPI job over SSH** (Amended 2026-10-02, review). The remote
+  mechanism that reliably kills the wrapper + `mpirun` + all ranks (Decision i) is UNDETERMINED;
+  the local analogue needed a cwd-sweep (`debugging/004`). Probe before relying on remote cancel.
