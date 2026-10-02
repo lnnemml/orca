@@ -9461,3 +9461,14 @@ project's canonical ORCA reference stays 6.1.0; `CLAUDE.md` unchanged). Separate
 open items: 6.1.1 install, rpath/self-contained check, water benchmark, parity. Still open: CPU
 model (`lscpu`), root-fs size + disk type, UPS→nut, exact UTC window, Tailscale ACL, parallel
 slots, SshBackend connection-test specs.
+
+## [2026-10-02] session | uni-server CPU/NUMA + disk topology measured
+
+Resolves two more uni-server.md open items (rule #10). **CPU:** 2× Intel Xeon E5-2673 v3 (Haswell,
+12c/24t each = 24 physical / 48 logical, 2.4/3.1 GHz, AVX2, **no AVX-512**), **2 NUMA nodes**
+(node0 0–11,24–35; node1 12–23,36–47) — the natural candidate for a 2×12 slot layout, but
+unmeasured. **Disks:** `sda` + `sdb` both **rotational HDD**, 465.8 G each; `/` and `/home` both on
+`sdb` — ORCA scratch hits a spinning disk, so one isolated job dir per calc (rule #3) stays the
+discipline. Closed: CPU model, disk type/layout. Still open: `sda` contents, UPS→nut, UTC window,
+Tailscale ACL, and the sharpened **1×24-vs-2×12 + OpenMPI concurrent-run binding** measurement
+(rule #8; profile stays at 1 slot until measured — ADR-024 f).

@@ -22,12 +22,17 @@ row once the connection-test passes ([ADR-023](../architecture/adr-023-server-ag
 
 ## Hardware
 
-- **CPU:** 48 logical / 24 physical cores (hyper-threading on). CPU model: **unknown** (`lscpu`
-  pending).
+- **CPU** (measured 2026-10-02): **2× Intel Xeon E5-2673 v3** (Haswell, 12c/24t each → 24
+  physical / 48 logical, hyper-threading on), 2.4 GHz base / 3.1 GHz turbo. **AVX2, no AVX-512.**
+  **2 NUMA nodes** — node0: cores 0–11,24–35; node1: 12–23,36–47. The NUMA split is the natural
+  candidate for a 2×12 slot layout (one slot per socket/node), but that is **unmeasured** — see
+  Open items + rule #8 (taskset masks are measured, not assumed).
 - **RAM:** 62 GiB. **Swap:** 119 GiB. Swapping during a calculation is a **failure mode**, so
   ORCA `%maxcore` must stay conservative (see Operational DO/DON'T).
-- **Disk:** `/home` on `/dev/sdb4` — 201 G total, ~79 G free at provisioning. Root filesystem
-  size and disk type (HDD/SSD) **unknown**.
+- **Disk** (measured 2026-10-02): `sda` and `sdb` **both rotational HDD**, 465.8 G each. `/` and
+  `/home` both live on **`sdb`** (`/home` on `/dev/sdb4`, ~79 G free at provisioning). ORCA
+  scratch I/O therefore hits a spinning disk — one isolated job dir per calculation (rule #3)
+  stays the discipline. `sda` contents **unknown**.
 
 ## Software (OS, MPI, ORCA)
 
@@ -94,16 +99,17 @@ source of truth live **on the server**, not the laptop (ADR-024).
 
 **Resolved 2026-10-02:** ORCA 6.1.1 install (copy done), self-contained `ldd` (libs inside
 `/opt/orca`, MPI = system), the water r2SCAN-3c Opt+Freq benchmark, and 6.1.1↔6.1.0 parity — all
-confirmed above. tmux detachment confirmed.
+confirmed above. tmux detachment confirmed. CPU model + NUMA topology and disk type/layout measured.
 
 ## Open items (pending / unknown)
 
-- **CPU model** — `lscpu` pending.
-- **Root filesystem size** and **disk type** (HDD/SSD) — unknown.
+- **`sda` contents** — unknown (both disks are HDD, 465.8 G; `/` and `/home` are on `sdb`).
 - **UPS → clean shutdown:** does the UPS signal the server? (`lsusb` / `nut` pending.)
 - **Exact nightly cutoff window in UTC** — to confirm (stated as 08:00–22:00 Europe/Kyiv).
 - **Tailscale ACL** (laptop → server only) pending; confirm node-key expiry disabled.
-- **Per-profile parallel slots:** whether the box can run parallel ORCA slots (e.g. 2×12 cores)
-  is **unmeasured** — until measured the profile runs **1 slot** (rule #10, ADR-024 Decision f).
+- **Parallel-slot layout + OpenMPI binding for concurrent runs** — whether to run **1×24** or
+  **2×12** (one slot per NUMA node) and how OpenMPI's default binding behaves for **concurrent
+  independent** ORCA runs are **to measure** (rule #8/#10). Until measured the profile runs
+  **1 slot** (ADR-024 Decision f).
 - **`SshBackend` connection-test specs** (remote ORCA path resolution, OpenMPI version, `nproc`)
   are UNDETERMINED until the Phase 5 connection-test runs (ADR-023, `server-profiles.md`).
