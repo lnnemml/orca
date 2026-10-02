@@ -9484,3 +9484,12 @@ use/mount** (owner notified to back up before fsck); added as an Operational DON
 results to the laptop (ADR-024 `fetch_results` / rsync-down) is backup by design, not
 convenience** — added as an Operational DO. Still open: UPS→nut, UTC window, Tailscale ACL,
 1×24-vs-2×12 + OpenMPI concurrent-run binding.
+
+## [2026-10-02] session | Correction: sda is the owner's reinstalled spare, not a lab archive
+
+Corrects the earlier same-day entry (and uni-server.md) that described `sda` as a ~105 G lab
+archive "not ours" with a failed boot-time `fsck`. **Corrected fact:** `sda` (label `Samsung_OLD`)
+is a **previously-failed disk the owner reinstalled as a spare** — 1 pending sector, **not
+auto-mounted since 2026-08-27**, **known unreliable, used for nothing (no scratch, no data)**. So
+there is no third-party archive and no "back up before fsck" concern; the operational rule is
+unchanged and simpler — **do not use/mount `sda`**. `sdb` single-copy backup-by-design stands.

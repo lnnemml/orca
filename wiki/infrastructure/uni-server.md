@@ -35,10 +35,9 @@ row once the connection-test passes ([ADR-023](../architecture/adr-023-server-ag
     **healthy** (0 reallocated, 0 pending sectors), ~29k power-on hours. ORCA scratch I/O hits a
     spinning disk — one isolated job dir per calculation (rule #3) stays the discipline.
     **`sdb` holds the single copy of all server-side results** (see the backup DO below).
-  - **`sda`** — label `Samsung_OLD`, ext4, a **lab archive (~105 G), not ours**. **Failing:** 1
-    pending unreadable sector; boot-time `fsck` failed 2026-08-27 and auto-mount was **silently
-    skipped** (`nofail`). **Do not use or mount it** — the owner was notified to back up before
-    `fsck`.
+  - **`sda`** — label `Samsung_OLD`: a **previously-failed disk the owner reinstalled as a spare**
+    (not a data archive). 1 pending sector; **not auto-mounted since 2026-08-27**. **Known
+    unreliable — not used for anything (no scratch, no data).**
 
 ## Software (OS, MPI, ORCA)
 
@@ -95,12 +94,13 @@ source of truth live **on the server**, not the laptop (ADR-024).
 - Locate ORCA installs via a real binary, e.g. `orca_scfgrad` (ORCA 6 has **no** `orca_scf`
   binary, and Ubuntu's `orca` screen-reader shares the binary name).
 - **Pull results down to the laptop — the server is NOT a backup.** `sdb` is a single aging HDD
-  with no redundancy and holds the only copy of server-side results; its sibling `sda` is already
-  failing. So fetching results to the laptop (ADR-024 `fetch_results` / rsync-down) is **backup by
-  design**, not just convenience.
+  with no redundancy and holds the only copy of server-side results; its sibling `sda` is a
+  known-unreliable spare, not a fallback. So fetching results to the laptop (ADR-024
+  `fetch_results` / rsync-down) is **backup by design**, not just convenience.
 
 **DON'T**
-- **Never** use or mount **`sda`** — it is a failing disk owned by someone else (see Disk).
+- **Never** use or mount **`sda`** — a known-unreliable spare (1 pending sector, not auto-mounted;
+  see Disk). No scratch, no data there.
 - **Never** run `do-release-upgrade` — it would replace OpenMPI and break rule #2 (MPI must
   match the ORCA build).
 - **Don't** `apt-get update`-gate installs: it exits non-zero because of third-party repos owned
@@ -111,7 +111,7 @@ source of truth live **on the server**, not the laptop (ADR-024).
 **Resolved 2026-10-02:** ORCA 6.1.1 install (copy done), self-contained `ldd` (libs inside
 `/opt/orca`, MPI = system), the water r2SCAN-3c Opt+Freq benchmark, and 6.1.1↔6.1.0 parity — all
 confirmed above. tmux detachment confirmed. CPU model + NUMA topology and disk type/layout measured.
-`sda` identified (lab archive, failing, not ours — do not use); `sdb` SMART healthy.
+`sda` identified (owner's reinstalled spare, known unreliable — do not use); `sdb` SMART healthy.
 
 ## Open items (pending / unknown)
 
