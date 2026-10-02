@@ -29,10 +29,16 @@ row once the connection-test passes ([ADR-023](../architecture/adr-023-server-ag
   Open items + rule #8 (taskset masks are measured, not assumed).
 - **RAM:** 62 GiB. **Swap:** 119 GiB. Swapping during a calculation is a **failure mode**, so
   ORCA `%maxcore` must stay conservative (see Operational DO/DON'T).
-- **Disk** (measured 2026-10-02): `sda` and `sdb` **both rotational HDD**, 465.8 G each. `/` and
-  `/home` both live on **`sdb`** (`/home` on `/dev/sdb4`, ~79 G free at provisioning). ORCA
-  scratch I/O therefore hits a spinning disk — one isolated job dir per calculation (rule #3)
-  stays the discipline. `sda` contents **unknown**.
+- **Disk** (measured 2026-10-02): `sda` and `sdb` **both rotational HDD**, 465.8 G each, **no
+  redundancy** (not RAID).
+  - **`sdb`** — system + `/home` (`/home` on `/dev/sdb4`, ~79 G free at provisioning). SMART
+    **healthy** (0 reallocated, 0 pending sectors), ~29k power-on hours. ORCA scratch I/O hits a
+    spinning disk — one isolated job dir per calculation (rule #3) stays the discipline.
+    **`sdb` holds the single copy of all server-side results** (see the backup DO below).
+  - **`sda`** — label `Samsung_OLD`, ext4, a **lab archive (~105 G), not ours**. **Failing:** 1
+    pending unreadable sector; boot-time `fsck` failed 2026-08-27 and auto-mount was **silently
+    skipped** (`nofail`). **Do not use or mount it** — the owner was notified to back up before
+    `fsck`.
 
 ## Software (OS, MPI, ORCA)
 
@@ -88,8 +94,13 @@ source of truth live **on the server**, not the laptop (ADR-024).
 - Keep `%maxcore` conservative given the swap-is-failure rule; measure before trusting a value.
 - Locate ORCA installs via a real binary, e.g. `orca_scfgrad` (ORCA 6 has **no** `orca_scf`
   binary, and Ubuntu's `orca` screen-reader shares the binary name).
+- **Pull results down to the laptop — the server is NOT a backup.** `sdb` is a single aging HDD
+  with no redundancy and holds the only copy of server-side results; its sibling `sda` is already
+  failing. So fetching results to the laptop (ADR-024 `fetch_results` / rsync-down) is **backup by
+  design**, not just convenience.
 
 **DON'T**
+- **Never** use or mount **`sda`** — it is a failing disk owned by someone else (see Disk).
 - **Never** run `do-release-upgrade` — it would replace OpenMPI and break rule #2 (MPI must
   match the ORCA build).
 - **Don't** `apt-get update`-gate installs: it exits non-zero because of third-party repos owned
@@ -100,10 +111,10 @@ source of truth live **on the server**, not the laptop (ADR-024).
 **Resolved 2026-10-02:** ORCA 6.1.1 install (copy done), self-contained `ldd` (libs inside
 `/opt/orca`, MPI = system), the water r2SCAN-3c Opt+Freq benchmark, and 6.1.1↔6.1.0 parity — all
 confirmed above. tmux detachment confirmed. CPU model + NUMA topology and disk type/layout measured.
+`sda` identified (lab archive, failing, not ours — do not use); `sdb` SMART healthy.
 
 ## Open items (pending / unknown)
 
-- **`sda` contents** — unknown (both disks are HDD, 465.8 G; `/` and `/home` are on `sdb`).
 - **UPS → clean shutdown:** does the UPS signal the server? (`lsusb` / `nut` pending.)
 - **Exact nightly cutoff window in UTC** — to confirm (stated as 08:00–22:00 Europe/Kyiv).
 - **Tailscale ACL** (laptop → server only) pending; confirm node-key expiry disabled.

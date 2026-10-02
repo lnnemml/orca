@@ -9472,3 +9472,15 @@ unmeasured. **Disks:** `sda` + `sdb` both **rotational HDD**, 465.8 G each; `/` 
 discipline. Closed: CPU model, disk type/layout. Still open: `sda` contents, UPS→nut, UTC window,
 Tailscale ACL, and the sharpened **1×24-vs-2×12 + OpenMPI concurrent-run binding** measurement
 (rule #8; profile stays at 1 slot until measured — ADR-024 f).
+
+## [2026-10-02] session | uni-server disk health: sda failing (not ours), sdb single-copy → backup by design
+
+Resolves the `sda` open item + surfaces a durability rule (rule #10). **`sda`** (label
+`Samsung_OLD`, ext4, ~105 G lab archive, **not ours**) is **failing**: 1 pending unreadable
+sector, boot-time `fsck` failed 2026-08-27, auto-mount silently skipped via `nofail` — **do not
+use/mount** (owner notified to back up before fsck); added as an Operational DON'T. **`sdb`**
+(system + `/home`) is SMART **healthy** (0 reallocated / 0 pending, ~29k power-on hours) but a
+**single aging HDD with no redundancy holding the only copy of server-side results** → **pulling
+results to the laptop (ADR-024 `fetch_results` / rsync-down) is backup by design, not
+convenience** — added as an Operational DO. Still open: UPS→nut, UTC window, Tailscale ACL,
+1×24-vs-2×12 + OpenMPI concurrent-run binding.
