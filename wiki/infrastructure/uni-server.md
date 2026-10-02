@@ -35,11 +35,14 @@ row once the connection-test passes ([ADR-023](../architecture/adr-023-server-ag
 - **MPI:** system OpenMPI **4.1.6** at `/usr/bin/mpirun`. A conda base auto-activates in the
   login shell but does **not** shadow `mpirun`. `ldd` of `orca_scfgrad_mpi` resolves
   `libmpi.so.40` to the system lib.
-- **ORCA (ours):** **6.1.1** being installed to `/opt/orca`, copied from the lab install
-  (copy in progress at provisioning). H2 HF/STO-3G smoke test: *Program Version 6.1.1* and
-  *ORCA TERMINATED NORMALLY*.
-  - Version parity is **pending**: the laptop runs ORCA **6.1.0**. Do **not** change the ORCA
-    version in `CLAUDE.md` or the wiki until 6.1.1 parity is established.
+- **ORCA (ours):** **6.1.1** installed at `/opt/orca`, copied from the lab install.
+  **Self-contained** (measured 2026-10-02): `ldd` shows `liborca_*` → `/opt/orca/lib` and
+  `libmpi.so.40` → the **system** lib (so MPI uses the system OpenMPI 4.1.6 — rule #2).
+  - **Version parity CONFIRMED** (2026-10-02): a water **r2SCAN-3c Opt+Freq** benchmark on 4
+    procs gives **E = −76.418938720745 Ha**, freqs **1653.28 / 3813.59 / 3932.72 cm⁻¹**, *ORCA
+    TERMINATED NORMALLY* — **matches the laptop (ORCA 6.1.0) to reported precision**. Parity no
+    longer blocks anything. (The project's canonical ORCA reference stays 6.1.0 — this only
+    records that the server's 6.1.1 install produces matching numbers; `CLAUDE.md` is unchanged.)
 - **Legacy lab ORCA installs:** `/home/yats/calc/orca/{303,504,601,611}` — **leave untouched**.
 - Packages we installed: `openssh-server`, `tmux`, `rsync`, `tailscale`.
 
@@ -63,6 +66,11 @@ row once the connection-test passes ([ADR-023](../architecture/adr-023-server-ag
 - **Power:** on a UPS good for a few minutes. Whether the UPS signals the server (clean
   shutdown) is **unknown**.
 
+- **Detachment works** (measured 2026-10-02): a detached `tmux` session **survives ssh logout** —
+  the OS-level substrate ADR-024 (b) relies on for jobs that outlive the connection. (ADR-024's MVP
+  queue is `task-spooler`, not tmux-per-job — this only confirms detached processes outlive the
+  link, it does not reopen the rejected tmux-per-job alternative.)
+
 These two facts — a nightly link cutoff and a short UPS window — are why the queue and the
 source of truth live **on the server**, not the laptop (ADR-024).
 
@@ -84,11 +92,12 @@ source of truth live **on the server**, not the laptop (ADR-024).
 - **Don't** touch the legacy `/home/yats/calc/orca/{303,504,601,611}` installs.
 - **Don't** assume ORCA is parallelizing — confirm MPI resolves inside `/opt/orca` (rule #1/#2).
 
+**Resolved 2026-10-02:** ORCA 6.1.1 install (copy done), self-contained `ldd` (libs inside
+`/opt/orca`, MPI = system), the water r2SCAN-3c Opt+Freq benchmark, and 6.1.1↔6.1.0 parity — all
+confirmed above. tmux detachment confirmed.
+
 ## Open items (pending / unknown)
 
-- **ORCA 6.1.1 install:** finish the `/opt/orca` copy; **rpath check** that `/opt/orca` libs
-  resolve inside `/opt/orca`; water **r2SCAN-3c Opt+Freq benchmark** vs the laptop
-  (E = −76.4189 Ha; 1653 / 3813 / 3932 cm⁻¹). Version parity (6.1.1 vs laptop 6.1.0) pending.
 - **CPU model** — `lscpu` pending.
 - **Root filesystem size** and **disk type** (HDD/SSD) — unknown.
 - **UPS → clean shutdown:** does the UPS signal the server? (`lsusb` / `nut` pending.)

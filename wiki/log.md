@@ -9447,3 +9447,17 @@ session report, NOT applied to CLAUDE.md). **Extends ADR-023** (ServerProfile ga
 availability window). Rules #1/#3/#6 reaffirmed. The task left the `lost`-restart seed, the exact
 UTC window, UPS→nut, and parallel slots as open questions. index.md + the tauri-core / execution-
 backends module pages get a `See ADR-024` pointer.
+
+## [2026-10-02] session | ORCA 6.1.1 verified on uni-server (parity + self-contained) + tmux detachment probe
+
+Measured facts resolving uni-server.md provisioning open items (rule #10). ORCA **6.1.1** at
+`/opt/orca` is **self-contained**: `ldd` shows `liborca_*` → `/opt/orca/lib` and `libmpi.so.40` →
+the **system** OpenMPI 4.1.6 (rule #2). A water **r2SCAN-3c Opt+Freq** benchmark (4 procs) gives
+**E = −76.418938720745 Ha**, freqs **1653.28 / 3813.59 / 3932.72 cm⁻¹**, TERMINATED NORMALLY —
+**matches the laptop's ORCA 6.1.0 to reported precision**, so **version parity is confirmed** (the
+project's canonical ORCA reference stays 6.1.0; `CLAUDE.md` unchanged). Separately, a detached
+**`tmux` session survives ssh logout** — the OS-level detachment substrate ADR-024 (b) relies on
+(does not reopen the rejected tmux-per-job alternative; MVP queue is still `task-spooler`). Closed
+open items: 6.1.1 install, rpath/self-contained check, water benchmark, parity. Still open: CPU
+model (`lscpu`), root-fs size + disk type, UPS→nut, exact UTC window, Tailscale ACL, parallel
+slots, SshBackend connection-test specs.
