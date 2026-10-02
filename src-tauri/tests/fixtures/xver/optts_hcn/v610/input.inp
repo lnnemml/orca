@@ -1,0 +1,9 @@
+! r2SCAN-3c OptTS Freq TightSCF
+%pal nprocs 4 end
+%maxcore 2000
+%geom Calc_Hess true end
+* xyz 0 1
+C   0.0000   0.0000   0.0000
+N   1.1700   0.0000   0.0000
+H   0.5900   0.9000   0.0000
+*

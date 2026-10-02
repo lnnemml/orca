@@ -1,0 +1,8 @@
+! DLPNO-CCSD(T) def2-TZVP def2-TZVP/C def2/J RIJCOSX TightSCF
+%pal nprocs 4 end
+%maxcore 2000
+* xyz 0 1
+H   0.0000   0.0000  -1.0646
+C   0.0000   0.0000   0.0000
+N   0.0000   0.0000   1.1560
+*

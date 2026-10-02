@@ -25,6 +25,10 @@ pub mod relaxscan;
 pub mod units;
 pub mod xyz;
 
+/// Cross-version parser regression (ORCA 6.1.0 vs 6.1.1), fixture-based — test-only.
+#[cfg(test)]
+mod cross_version_6_1_1;
+
 use orcastudio_core::ids::{AtomId, IndexMap, OrcaIndex, SpaceIndex};
 
 /// A reference geometry the **caller** supplies to a reader's `verify` — a geometry
