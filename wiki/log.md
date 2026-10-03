@@ -9777,3 +9777,123 @@ Side measurements:
 
 Also fixed: ADR-022 LOW-N1 (round 4) — the hook-precedence sentence now quotes the docs instead of
 pointing at a quote that wasn't there.
+
+## [2026-10-03] probe | Probe 5.2 — tsp argv, wrapper cmdline, running-script replacement, `tsp -l`
+
+Settles the four third-party facts ADR-024 (l) rests on. Measured on `uni` (user `anton`, tsp 1.0.1,
+bash 5.2.21) and on the laptop (bash 5.2.21); recorded in `architecture/task-spooler-uni-probe.md`.
+- **P1:** `tsp` execs argv verbatim — 8 hostile arguments arrived byte-for-byte, and nothing was
+  executed. Plain ssh argv is **injection-capable**: it word-split, expanded `$HOME`, ended the command
+  at `;` and ran `*`. A NUL-separated list on stdin preserved every argument.
+- **P2:** wrapper cmdline fixture `bash|<bin>/wrapper.sh|<job dir>|<mask>|<orca>|`; PID = PGID = SID;
+  `taskset` execs (it never appears in a cmdline); the tsp daemon's argv is rewritten to the first
+  job's command.
+- **P3:** an in-place overwrite (`cp`/`>`) of a running bash script runs the new content from the
+  old byte offset — on uni a mid-line fragment ran as a command. A `mv` (rename) is safe.
+- **P4:** `tsp -l` format recorded verbatim. A 256-char line was not truncated. Rows are ordered
+  running → queued → finished. The command column is unquoted. After `tsp -K` + a fresh daemon, ids
+  restart at 0; a running job survives `tsp -K`, and a queued runner dies. Per-task `/tmp/ts-out.*`
+  litter → a 5.3 item.
+
+## [2026-10-03] decision | ADR-024 (l): unit 5.2 script and classifier shape; Phase 5 unit numbering
+
+- **Phase 5 numbering, fixed by Anton** in ROADMAP:
+  - 5.1 server profiles (Part B open; `SshBackend` / `enum Backend` move to 5.3 — ADR-023 amended);
+  - 5.2 wrapper + cancel script + pure classifier;
+  - 5.3 `SshBackend` wiring;
+  - 5.4 cancel/pending cancel + reconnect + `Lost`/`Cancelling` + v19;
+  - 5.5 preflight.
+
+  ADR-024 Open question b counts as covered by simulation for our logic. The tsp reboot facts stay
+  open.
+- **ADR-024 (l)**, every fork decided by Anton:
+  - static `.sh` scripts with positional arguments, uploaded content-addressed by rename;
+  - per-job arguments cross ssh only as a NUL list on stdin;
+  - `classify(snapshot, reenqueue_count)` is a pure Rust function over **raw facts**, collected in a
+    fixed order with a final re-read of `.started`;
+  - the re-enqueue count is an input, and the v19 column lands in 5.4 (persisted before the
+    re-enqueue);
+  - an `.enqueued` marker (socket + id), never trusted bare;
+  - a current boot with a dead wrapper and no `.exit_code` → `Lost` at once, and its cwd-filtered
+    orphans are swept;
+  - a late cancel of a clean run → `Completed { late_cancel }`;
+  - `Cancelling` holds while the cwd-filtered job session is non-empty, and the user is told after 3
+    sweeps;
+  - the cancel script verifies the tsp id before `tsp -r`, never uses `tsp -k`, and sends TERM only
+    to the verified wrapper's group;
+  - the SID sweep is filtered by cwd = job dir;
+  - an 11-row precedence table, with `Indeterminate` when a `tsp -l` query fails;
+  - every marker, including `.exit_code`, is written by rename.
+- **DESIGN review:** round 1 → PASS WITH FINDINGS (3 HIGH), round 2 → PASS WITH FINDINGS (1 HIGH). All
+  were fixed above, and round 3 is pending.
+- **ADR-022:** the "Open questions" section records five deferred gate-hardening forks (admin key,
+  `allowManagedHooksOnly`, `commit-tree`, mods, broad local allows). Nothing is decided there.
+- Also fixed: `modules/execution-backends.md` (stale remote sketch: `.pid`, `pkill -f`, ssh-argv
+  poll) and `modules/server-profiles.md`.
+
+Next: DESIGN round 3 on (l) → implementer 5.2 Part A (`model: opus`).
+
+## [2026-10-03] probe | Probe 5.2b — `tsp` on missing/stale sockets; session cwd
+
+DESIGN round 3 on ADR-024 (l) → PASS WITH FINDINGS (0 HIGH, 1 MED, 7 LOW; tree `062c21a2…`). The MED
+(and LOW-C) were settled by probe instead of being deferred. Recorded in
+`architecture/task-spooler-uni-probe.md`.
+- **`tsp -l`, `-s` and `-r` on a missing or stale socket silently start a new daemon**: rc 0 and a
+  header only for `-l`. A SIGKILLed daemon leaves its socket file behind.
+- `test -S` cannot tell a stale socket from a live one. `/proc/net/unix` / `ss -xl` can. A `tsp`
+  call can no longer be used to "look".
+- **Every member of a job session** (wrapper, orca, mpirun, `_mpi` ranks, `orca_numfreq`,
+  displacement `orca_leanscf`) had cwd = the job dir and the wrapper's SID, in an MPI run and in a
+  NumFreq run.
+
+Applied to (l):
+- the per-socket snapshot field is `NoDaemon` / `Rows` / `Error`, read via `/proc/net/unix`;
+- `NoDaemon` counts as no rows; only submit / `tsp -K` may touch a socket with no daemon;
+- socket paths stay short;
+- wrapper step 0 is `cd "$job_dir"`.
+
+Round-3 LOWs were fixed: `tsp -r` only on a `queued` row; SID-reuse guard + own-SID exclusion; the
+collector never `cd`s into a job dir; inference labelled; bounds on retake, `Cancelling` and
+`Indeterminate`; `tsp -k` mentions given superseded-by-(l) pointers; (l) added to the index.
+
+## [2026-10-03] decision | ADR-024 (l): DESIGN round 4 fixes; start-time SID guard (probe 5.2c)
+
+DESIGN round 4 (delta, tree `d96bd1d6…`) → PASS WITH FINDINGS (0 HIGH, 1 MED, 6 LOW). Anton decided:
+- **N-2 (MED)**, the SID-reuse guard skipping a sweep when the wrapper is a zombie → `.started` records
+  the wrapper's own `starttime` (`/proc/$$/stat` field 22). A SID counts as reused only if a process
+  at that number has a **different** start time. "Alive" = state not `Z` + the same start time.
+  Probe 5.2c measured that a zombie keeps its start time (laptop), along with state `Z` and an empty
+  cmdline (laptop + uni). It also fixed the stat parse (after the last `) `; `read </proc/$$/stat`).
+- **N-1** → the 5.3 slot check runs on **every** submit, whether or not a daemon is alive. The
+  `/proc/net/unix` → `tsp -l` window becomes an accepted residual.
+
+LOWs fixed:
+- inline superseded-by-(l) pointers at b step 1, i "run in the job directory", and i steps 2–3;
+- rows 10/11 reworded to the `NoDaemon`/`Rows`/`Error` field;
+- a failed `cd` exits before `.started`;
+- `tsp -K` on a dead socket removed from the allowed list (not measured);
+- the `sun_path` limit is 108 bytes (unix(7) + `linux/un.h`), and socket paths are asserted ≤ 100;
+- the queued-runner fate after a daemon SIGKILL is labelled as inference;
+- the index mentions probe 5.2b.
+
+Next: DESIGN round 5 on N-1/N-2 only (Anton) → commit the design → implementer 5.2 Part A.
+
+## [2026-10-03] decision | ADR-024 (l): DESIGN round 5 fixes
+
+DESIGN round 5 (N-1/N-2 only, tree `eaa66f38…`) → PASS WITH FINDINGS (0 HIGH, 1 MED, 6 LOW). N-2 was
+closed faithfully.
+- **MED-1** was a wording error of mine in N-1. "No live session holds the mask on every submit"
+  would refuse to queue behind a running job. It is corrected to the only reading consistent with
+  Anton's decision and Decision a: every live job session on the slot's mask must be accounted for by
+  a `running` row of that slot's daemon (`NoDaemon` or `Error` → block). A blocked submit stays
+  pending locally, and the check → submit window is an accepted residual.
+- **LOWs:**
+  - the cancel running path uses the new alive predicate;
+  - inline "alive redefined" pointers at d, d′ and i step 3;
+  - the shell-vs-Rust liveness test names fixtures (a)–(e) (live, zombie, forged starttime, zombie
+    member, foreign cwd);
+  - a cwd ENOENT on a member = not in the job session;
+  - the sweep and SID guard run only with a current `boot_id`;
+  - `sun_path` quoted from unix(7) and `linux/un.h`, plus a 5.3 post-condition that the socket path
+    appears verbatim in `/proc/net/unix`;
+  - the index mentions probe 5.2c.

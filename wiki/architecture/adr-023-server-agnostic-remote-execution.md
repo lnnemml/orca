@@ -69,3 +69,7 @@ sentinel to special-case. The `server_profiles` table and the connection-test's 
 parsers + `set_profile_verified` DB-write landed in 5.1 Part A (schema v18); the `SshBackend`,
 the `enum Backend`, the settings UI, and the **real** SSH connection-test that stamps
 `verified_at` are Part B. See `wiki/modules/server-profiles.md`.
+
+**Amended 2026-10-03 (Phase 5 unit numbering, ROADMAP):** `SshBackend` and the `enum Backend`
+move out of 5.1 Part B into **unit 5.3** (`SshBackend` wiring). 5.1 Part B is now only the settings
+UI and the real SSH connection test. Unit order: ROADMAP Phase 5.

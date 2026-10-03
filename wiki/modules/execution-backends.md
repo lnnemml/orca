@@ -6,7 +6,7 @@ in-SQLite queue, cancellation with an MPI-rank sweep, and startup reconciliation
 implements it, and **the Tauri command layer dispatches through the trait** — `submit_job` /
 `cancel_job` construct a `LocalBackend` and call `submit` / `cancel` on it. The running machinery
 still lives in `src-tauri/src/local_backend.rs` (queue, process tree, cancellation) — each trait
-method **delegates** there. `SshBackend` is a later Phase 5 unit. See ADR-024 (proposed): the
+method **delegates** there. `SshBackend` is Phase 5 unit 5.3. See ADR-024 (accepted): the
 remote queue lives on the server (`tsp`), the server FS is the source of truth, and concurrency
 becomes a per-backend/profile setting rather than the global rule-#4 constant.
 
@@ -214,20 +214,23 @@ marker file (preserving a valid `.gbw` + last geometry). This could **not** be c
 hard kill (killpg + sweep) is implemented. See `wiki/orca/gotchas.md` — revisit "Stop after current
 cycle" once the manual is indexed.
 
-## SshBackend (Phase 5)
+## SshBackend (Phase 5 — not built yet)
 
-- Upload: `rsync -az <job_dir>/ <host>:<scratch>/<job_id>/`
-- Launch: `ssh <host> 'cd <dir> && nohup bash run.sh > /dev/null 2>&1 & echo $! > .pid'`, where
-  `run.sh` = the ORCA invocation + a `.exit_code` writer.
-  - **Cancel gotcha (same as local):** ORCA's MPI ranks escape the parent's process group
-    (`orca_*_mp`, each its own PGID — `debugging/004`). Killing the `.pid` parent (or its group)
-    remotely leaves the ranks burning the remote node's cores. The remote cancel must sweep by cwd
-    too, e.g. `ssh <host> "fuser -k <dir>"` or `pkill -f <dir>`; a `.pid` marker for the parent
-    alone is **not** enough. Design the remote runner so every rank inherits `cwd = <dir>`.
-- Poll: `ssh <host> "tail -c +<offset> <dir>/output.out"` every 5–10 s; offset persisted in SQLite
-  so polling resumes across app restarts.
-- Fetch: `rsync` back per `FetchPolicy` (output/xyz/hess always, gbw opt-in, cubes on demand).
-- Remote cube generation: `ssh <host> 'cd <dir> && <orca_bin_dir>/orca_plot ...'`.
+Not implemented yet. The design is in ADR-024 (Decisions a–l); this section only points to it.
+Unit order is ROADMAP Phase 5: 5.2 scripts + classifier, 5.3 wiring, 5.4 cancel/reconnect, 5.5
+preflight.
+- **Queue and launch:** a static wrapper script (`include_str!`, uploaded content-addressed by
+  rename) runs through a per-slot `tsp` queue. It writes the markers `.started` / `.exit_code` and
+  `.enqueued` / `.cancelled` by temp file + `rename`.
+- **Transport:** per-job arguments cross ssh only as a NUL-separated list on stdin, never as ssh argv
+  (measured as injection-capable, ADR-024 l / P1). Job-dir paths match `[A-Za-z0-9._/-]+`.
+- **Cancel:** one cancel script — `.cancelled` first, a `tsp -r` only after the id is verified, TERM
+  to the verified wrapper's group, and a **cwd-filtered SID sweep** (ADR-024 i, l). It never kills by
+  `tsp` id or by name.
+- **Status:** a pure classifier over a raw-fact snapshot from the server (ADR-024 l, precedence
+  table). The server filesystem is the source of truth (ADR-024 c).
+- **Poll / fetch:** byte-offset `poll_log` and selective rsync down per `FetchPolicy` (output/xyz/hess
+  always, gbw opt-in), wired in 5.3.
 
 ## Invariants (both backends)
 

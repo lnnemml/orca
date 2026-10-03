@@ -213,3 +213,170 @@ server for inspection.
   boot-id liveness logic does not use time, but any cross-host time comparison (`started_at` vs the
   laptop's clock, "stale for N minutes") would be skewed. Recorded as an open item in uni-server.md.
 - The server runs in `Etc/UTC`; the 08:00–22:00 Kyiv window is 05:00–19:00 UTC in summer time (EEST).
+
+> **Note (2026-10-03):** ADR-024 Decision l later **replaced `tsp -k`** in the running-cancel path.
+> It now sends TERM to the verified wrapper's process group and runs a cwd-filtered SID sweep with a
+> SID-reuse guard. The measurements above stay valid; only the adopted mechanism changed.
+
+## Probe 5.2 — argv, cmdline fixtures, script replacement, `tsp -l` (2026-10-03)
+
+Settles the four facts ADR-024 (l) depends on (DESIGN review round 1: H1, H3, M1, M2). Measured on
+`uni` (user `anton`, tsp 1.0.1, bash 5.2.21) under `/home/anton/.orcastudio/probe-5.2/`, with its own
+`TS_SOCKET`s, never the default socket; P3 was also run on the laptop (bash 5.2.21). Cleaned up: every
+probe daemon was stopped with `tsp -K`, and survivors were killed by PID.
+
+**P1 — argv.**
+- **`tsp` execs the argv verbatim.** A script uploaded with `ssh uni 'cat > f' <<'EOF'` ran
+  `tsp bash …/args-wrapper.sh 'a b' '$HOME' "it's" ';' '*' '' 'x;touch …/INJECT' '`id`'`. The stub
+  (`printf '%s\n' "$#" "$@"`) recorded `8`, then each argument byte-for-byte. No `INJECT` file was
+  created.
+- **The ssh hop is the lossy step.** `ssh uni bash $W 'a b' '$HOME' "it's" …` failed with
+  `unexpected EOF while looking for matching '''`. Without the quote, the wrapper saw
+  `3 / a / b / /home/anton`, and `*: command not found` was printed: word-splitting, expansion and
+  command separation all happened. This is injection-capable.
+- **Safe forms:**
+  - a NUL-separated list on stdin — `printf '%s\0' … | ssh uni 'bash nul-reader.sh'`, read with
+    `while IFS= read -r -d '' a`. It preserved all 9 arguments, including an embedded newline and an
+    empty one;
+  - `printf '%q '` into one command string — also preserved them, but depends on bash being the
+    remote login shell.
+
+  ADR-024 (l) adopts stdin.
+
+**P2 — cmdline fixtures** (verbatim, NUL → `|`). The wrapper was launched as
+`tsp bash $D/bin/wrapper.sh $D/jobs/j1 0-3 /opt/orca`:
+```
+bash|/home/anton/.orcastudio/probe-5.2/bin/wrapper.sh|/home/anton/.orcastudio/probe-5.2/jobs/j1|0-3|/opt/orca|
+```
+Its child, started as `taskset -c 0 sleep 60`, shows `sleep|60|`. `taskset` execs: the child's `comm`
+is `sleep`, its `Cpus_allowed_list` is `0`, and its PID equals `$!`. `ps -o pid,ppid,pgid,sid,cmd`:
+```
+ 376681  376679  376681  376681 bash /home/anton/.orcastudio/probe-5.2/bin/wrapper.sh /home/anton/.orcastudio/probe-5.2/jobs/j1 0-3 /opt/orca
+ 376682  376681  376681  376681 sleep 60
+```
+- The parent, 376679, is the per-task tsp runner. `tsp -p` printed the wrapper PID.
+- The tsp **daemon's** argv is rewritten to the first enqueued job's command (`tsp bash …`), and each
+  runner shows as `tsp <job argv>`. No sweep may assume a fixed daemon cmdline or anchor on
+  `taskset`.
+
+**P3 — replacing a running bash script** (gotcha). Test script: `sleep 3; echo A` and then `echo B`,
+`C`, `D`. The file was replaced at t = 1 s.
+- **In-place overwrite** (`cp new s.sh` or `cat new > s.sh`; the inode is unchanged): bash resumes at
+  its old byte offset **in the new file**.
+  - Aligned new content: `A NEW-B NEW-C`, so the new lines ran.
+  - Misaligned new content on the laptop: `A`, then a parse error.
+  - Misaligned new content on uni: `A`, then `XXXXXXXXXXXXXXXXX: command not found`, so a mid-line
+    fragment ran as a command.
+- **`mv` over the script** (new inode): the old content ran to the end (`A B C D` / `A B C`).
+- **Rule:** deploy scripts by temp file + rename, or under a new name, never by `cp`/`>` over a script
+  that may be running.
+- Not run: `rsync`'s default (temp + rename), hardlinks, NFS.
+
+**P4 — `tsp -l` format, and the daemon restart.** Output under a non-tty `ssh uni 'bash p4.sh'` with 1
+slot, verbatim:
+```
+ID   State      Output               E-Level  Times(r/u/s)   Command [run=1/1]
+3    running    /tmp/ts-out.S0SWpm                           bash -c sleep 100 /home/anton/.orcastudio/probe-5.2/jobs/job-with-a-very-long-name-0123456789-0123456789-0123456789-0123456789-0123456789-0123456789-0123456789-0123456789-0123456789 4-7 /opt/orca
+4    queued     (file)                                       bash -c sleep 100 /home/anton/.orcastudio/probe-5.2/jobs/j_queued 8-11 /opt/orca
+0    finished   /tmp/ts-out.QG5j6G   0        0.00/0.00/0.00 bash -c exit 0 /home/anton/.orcastudio/probe-5.2/jobs/j_ok 0-3 /opt/orca
+1    finished   /tmp/ts-out.NlzNMk   3        0.00/0.00/0.00 bash -c exit 3 /home/anton/.orcastudio/probe-5.2/jobs/j_fail 0-3 /opt/orca
+2    finished   /tmp/ts-out.JzAIe7   -1       1.00/0.00/0.00 bash -c sleep 100 /home/anton/.orcastudio/probe-5.2/jobs/j_killed 0-3 /opt/orca
+```
+- **Rows:** ordered running → queued → finished, not by id.
+- **E-Level:** `0`, the exit code, or `-1` after `tsp -k`.
+- **No truncation:** the 256-char line came through intact, and the output was identical under
+  `COLUMNS=40` and under `ssh -tt` with `stty cols 60`.
+- **The command is argv joined by single spaces, unquoted**, so it is lossy for arguments with
+  spaces. A job dir is matched as a whole token, and job-dir paths must contain no whitespace.
+- `tsp -s <id>` prints the state alone.
+- **Output files:** the Output column is a `/tmp/ts-out.XXXXXX` file per task, which litters `/tmp`.
+  5.3 must stop that, e.g. with a `TMPDIR` for `tsp` itself or the no-output option — **not probed**.
+- **`tsp -K`, then a fresh daemon on the same socket path:**
+  - `tsp -K` returned rc 0 and removed the socket.
+  - The **running** job survived: its runner and its `sleep` stayed alive.
+  - The **queued** task's runner died.
+  - The fresh `tsp -l` showed only the header, so the old rows were gone, and the next id was **0**.
+  - `TS_SAVELIST` was not tested.
+
+## Probe 5.2b — missing/stale socket, session cwd (2026-10-03)
+
+Settles DESIGN round 3 MED-A and LOW-C for ADR-024 (l). Measured on `uni` (user `anton`, tsp 1.0.1)
+under `/home/anton/.orcastudio/probe-5.2b/` with dedicated sockets. Cleaned up: every daemon was
+stopped with `tsp -K`, and the only SIGKILLs went to server PIDs the probe itself had started.
+
+**Q1 — `tsp` on a missing or stale socket.**
+
+| Case | `-l` | `-s 0` / `-r 0` | Daemon started? |
+|---|---|---|---|
+| path absent, parent exists | rc 0, header only | rc 255, `Error in the request: The job 0 cannot be stated.` / `… removed.` | **yes** (ppid 1, own SID; socket created) |
+| stale socket file (its daemon was SIGKILLed; the file survives) | rc 0, header only | rc 255, same text | **yes** (socket rebound) |
+| parent dir absent | rc 255, `The server didn't come up.` | same | no |
+
+- `-s`/`-r` give the same text for "no daemon" and "no such job", so rc cannot tell them apart.
+- **Telling a stale socket from a live one without spawning:**
+  - `test -S` is true for both, so it cannot.
+  - Both `ss -xlp` and `/proc/net/unix` were read. A **live** socket appears in both, as
+    `ss`: `u_str LISTEN … …/live.sock … users:(("tsp",pid=…))` and `/proc/net/unix`:
+    `…: 00000002 00000000 00010000 0001 01 2960949 …/live.sock`. A **stale** one appears in neither
+    (nor in `ss -xa`).
+  - A Python `AF_UNIX` connect gets `ECONNREFUSED` on a stale socket.
+- **Rule:** never run `tsp` to test liveness. Socket paths stay short: `sun_path` is 108 bytes including the NUL (sourced: `man 7 unix`
+  *"char sun_path[108]"*, `linux/un.h` `UNIX_PATH_MAX 108`; not measured), and
+  `ss` truncates long ones.
+
+**Q2 — cwd of every process in a job session.** Wrapper:
+`cd "$job_dir"; OMPI_MCA_hwloc_base_binding_policy=none HWLOC_COMPONENTS=-gl TMPDIR="$job_dir/.tmp" taskset -c 0-3 /opt/orca/orca input.inp`,
+launched via `tsp`. Two runs, sampled in a tight loop:
+- (a) water `! HF def2-QZVPP`, `%pal nprocs 4`, 18 samples, 8.2 s;
+- (b) water `! HF def2-TZVP NumFreq`, `%pal nprocs 4`, 34 samples, 14.6 s.
+
+Both ended with exit 0 and `ORCA TERMINATED NORMALLY`.
+
+These members had cwd **exactly the job dir** in every sample, and **all of them had the wrapper's
+SID**:
+- the wrapper;
+- `orca`;
+- `sh -c -- mpirun`, then `mpirun`;
+- the ranks `orca_{guess,startup,util,prop,leanscf,scfgrad}_mpi`;
+- `orca_numfreq` (whose parent is `orca`, wrapper PGID/SID);
+- the per-displacement `orca_leanscf input_D000NN.gbw`.
+
+An independent scan of `/proc/*/cwd` found no process outside the SID with the job dir as cwd. A few
+empty `sid=` rows were processes that exited mid-sample (`/proc/<pid>/cmdline: No such file`), not
+escapes.
+
+**Consequence:** on this host, a cwd sweep and a SID sweep select the same set.
+
+**Not measured:** Opt/Freq, other ORCA tools, and processes that `chdir`/`setsid` themselves.
+
+## Probe 5.2c — `/proc/<pid>/stat` start time, zombies (2026-10-03)
+
+Supports ADR-024 (l) N-2: the SID-reuse guard compares start times. Measured on the laptop (Linux
+6.14, bash 5.2.21). On uni (Linux 6.8.0, via tsp) only the parts noted below were measured.
+- **Reading its own stat from bash.**
+  - Correct: `read -r l </proc/$$/stat` (and `/proc/self/stat` via a builtin redirect in the main
+    shell).
+  - Wrong: `/proc/self` read inside `$(…)`, via `cat`, or via `readlink`. Each reports the child's
+    PID.
+- **Parsing.** A script named `w q) x.sh` gave the line
+  `66186 (w q) x.sh) R 66182 66186 66182 0 -1 … 1890507 …`. The parse
+  `rest="${l##*) }"; set -- $rest; state=$1 pgrp=$3 session=$4 starttime=${20}` returned
+  `state=R pgrp=66186 session=66182 starttime=1890507`. Field N = token N−2 after the last `) `.
+- **Zombie** (a perl parent that does not wait):
+  - live: `66401 (bash) S … 1891976 13090816 991 …`;
+  - zombie: `66401 (bash) Z … 1891976 0 0 …`.
+
+  So field 22 is **unchanged**. In the zombie state:
+  - `/proc/<pid>/status` shows `State: Z (zombie)`;
+  - the cmdline is 0 bytes (30 when live);
+  - `readlink /proc/<pid>/cwd` fails with ENOENT;
+  - `ls -d /proc/<pid>` still succeeds.
+
+  After reaping, `/proc/<pid>` is gone.
+
+  On uni the zombie showed the same Z / empty cmdline / cwd ENOENT, but its start time was not
+  compared against a recorded live value.
+- **Resolution.** `getconf CLK_TCK` = 100 (also on uni). Three reads of one live process gave the same
+  value, and two `sleep`s 50 ms apart differed by 5 ticks. Forced PID reuse was not tested (`pid_max`
+  is 4194304).
+- **Under tsp on uni.** The same parse works: `pgrp = session = own PID`, `starttime=319395485`.

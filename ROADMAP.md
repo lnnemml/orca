@@ -1383,8 +1383,17 @@ and the dev laptop is a development machine, not a compute node. See
       Dispatch stays a single concrete backend (`enum` deferred to `SshBackend`, ADR-023); `poll_log`'s
       offset-pull is additive (live UI still uses the push `job:log` event — the push→pull flip rides with
       `SshBackend`). ADR-023 records the server-agnostic model (one `SshBackend` per `ServerProfile`).
-- [ ] Server profiles in settings: host alias (reuses `~/.ssh/config`), remote ORCA path,
-      remote scratch dir; connection test button. Connection-test checks added on 2026-10-03
+**Unit numbering (fixed 2026-10-03 by Anton — use these numbers, do not re-derive):**
+5.0 trait ✅ · **5.1** server profiles (Part A ✅, Part B open) · **5.2** wrapper + cancel script +
+reconciliation classifier, pure and tested on synthetic job dirs · **5.3** `SshBackend` wiring ·
+**5.4** cancel / pending cancel + reconnect loop + `Lost`/`Cancelling` in `JobStatus` · **5.5**
+preflight. The remaining items (remote `orca_plot`, pause) are not numbered yet.
+
+- [ ] **Unit 5.1 — server profiles** in settings: host alias (reuses `~/.ssh/config`), remote ORCA path,
+      remote scratch dir; connection test button. **Part A ✅ 2026-08-27** (schema v18
+      `server_profiles`, pure connection-test parsers, `set_profile_verified`). **Part B open:** the
+      settings UI + the real SSH connection test. `SshBackend` + `enum Backend`, which ADR-023's
+      amendment had put in Part B, move to 5.3. Connection-test checks added on 2026-10-03
       (ADR-024 Consequences + k):
       - **`KillUserProcesses=false`** on the host — **mandatory**; without it, detached jobs die at
         logout;
@@ -1392,23 +1401,36 @@ and the dev laptop is a development machine, not a compute node. See
         (dedicated-account rule);
       - ORCA at the **profile's path is readable and executable by that user**, checked by actually
         running it, not just by `ls`.
-- [ ] **Server probe unit (before `SshBackend`):** task-spooler on `uni-server` — does the `tsp`
+- [x] **Server probe unit (before `SshBackend`)** — done for what blocks implementation; the tsp
+      reboot facts of b stay open (see below): task-spooler on `uni-server` — does the `tsp`
       daemon survive the launching ssh session exiting, how does it behave after a server restart,
       and the process-group kill of an MPI job (ADR-024 Open questions a–c). Measure first (rule #10).
-      **Partly done 2026-10-03** ([task-spooler-uni-probe.md](wiki/architecture/task-spooler-uni-probe.md)):
-      a ✅ survives logout (via `KillUserProcesses=false`), c ✅ `tsp -k` + SID sweep, slot masks ✅.
-      **b (restart) still open** — needs an author-run reboot.
-- [ ] `SshBackend` via system `ssh`/`rsync`: rsync job dir up → per-job wrapper via task-spooler
-      (per-slot `TS_SOCKET`) writing `.started` (PID, `boot_id`) + `.exit_code`, stdout/stderr into
-      the job dir (ADR-024) → byte-offset polling of output → selective rsync down
-      (output/xyz/hess always; gbw opt-in)
-- [ ] Preflight: `nprocs`/`%maxcore` vs the profile (cores + RAM budget) and free disk space in the
-      profile working dir; no-`%maxcore` → warn-and-propose, never silent-insert (ADR-024 h)
-- [ ] Job state machine extended: `uploading → running → syncing`, plus the terminal state `lost`
-      and the `never-started` reconciliation outcome (re-enqueue ≤ 1, then `failed`); reconciliation
-      on app start checks markers for every job that was `running` (ADR-024 d)
+      **Done 2026-10-03** ([task-spooler-uni-probe.md](wiki/architecture/task-spooler-uni-probe.md)):
+      a ✅ survives logout (via `KillUserProcesses=false`), c ✅ `tsp -k` + SID sweep (running-cancel later revised by ADR-024 l: TERM to the verified wrapper's group + a cwd-filtered sweep), slot masks ✅.
+      **b (restart) is covered by simulation** (ADR-024 Open question b, amended 2026-10-03): `tsp -K`
+      plus a substituted `boot_id` in `.started`, exercised in 5.2. No deliberate reboot; a real one is
+      recorded at the first natural occasion. The third-party tsp facts of b (daemon
+      auto-restart, socket survival, partial dirs) stay ADR-024 Open question b.
+- [ ] **Unit 5.2 — wrapper + cancel script + reconciliation classifier** (ADR-024 b, d, d′, i, k, l).
+      The classifier is a **pure function** over a job-dir snapshot. It is tested on **synthetic job
+      dirs**: restart simulations (stale `boot_id` → `lost`, `tsp -K` → `never-started`), the
+      re-enqueue limit of 1 (then `failed`), and the cancel/start race of d′. No server needed.
+      High-risk → implementer on `opus`.
+- [ ] **Unit 5.3 — `SshBackend` wiring** via system `ssh`/`rsync`: rsync job dir up → the 5.2
+      wrapper via task-spooler (per-slot `TS_SOCKET`) → byte-offset `poll_log` of output → selective
+      rsync down (output/xyz/hess always; gbw opt-in); `enum Backend` (ADR-023).
+- [ ] **Unit 5.4 — cancel, pending cancel, reconnect loop, new states.** The 5.2 cancel script over
+      ssh; a cancel made outside the window is stored as pending and runs first on reconnect
+      (ADR-024 i); the reconnect loop runs the 5.2 classifier for every non-terminal remote job;
+      `Lost` (terminal) and `Cancelling` (transient) join `JobStatus` (ADR-024 d); schema v19 adds
+      the re-enqueue counter (incremented **before** the re-enqueue, ADR-024 l) and the pending-cancel
+      record. The
+      `uploading`/`syncing` transient states are not yet assigned to a unit.
+- [ ] **Unit 5.5 — preflight:** `nprocs`/`%maxcore` vs the profile (cores + RAM budget) and free disk
+      space in the profile working dir; no-`%maxcore` → warn-and-propose, never silent-insert
+      (ADR-024 h)
 - [ ] Remote `orca_plot` option: generate cubes server-side, download only `.cube`
-- [ ] Job pause/cancel (the sequential queue itself lands in Phase 2)
+- [ ] Job pause (local only; remote cancel is unit 5.4; the sequential queue itself lands in Phase 2)
 
 **Done when:** author submits a job to the server, closes the laptop, reopens it hours later,
 and OrcaStudio picks the job up, syncs results, and parses them — no terminal, no lost state.

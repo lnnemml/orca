@@ -376,3 +376,42 @@ Consequences:
 
 **Human gates unchanged:** merge approval (now enforced by managed `ask` rules, provided no
 `tool.check` mod is installed — §6), the live WebKitGTK gate, the chemistry gate, design forks.
+
+## Open questions
+
+**Recorded 2026-10-03 — gate-hardening forks, deferred.** Five items left open by the §6–§7
+amendment and the managed-layer probe. Each is a design fork for Anton; none is decided or
+implemented here, and the gates in §5–§6 stand as they are until one is.
+
+1. **Admin-access boundary.** The admin ssh alias uses the same key as `uni`, so only the text
+   `deny` rules keep agents off it (§6, known limits). Options: a separate passphrase-protected key
+   that is never loaded into the agent's ssh-agent, or the Bash sandbox. Open measurement in the
+   same area: can a sudo ticket Anton just created in another terminal be reused from the agent's
+   tty-less Bash (§6)?
+2. **`allowManagedHooksOnly`.** It would close the hook execution channel (§6, hooks), but it also
+   switches off `vercel-plugin`'s hooks unless managed settings force-enable that plugin. Related
+   loose end: the managed **deny** layer is still undetermined; it needs the discriminating re-run in
+   default (manual) mode (§6, result 3).
+3. **`git commit-tree <verified hash>`** instead of today's detect-after (§7): commit exactly the
+   tree the verifier reported, so a `-a`/pathspec commit or an index-rewriting hook cannot change
+   it, rather than only being caught by the post-commit `HEAD^{tree}` assertion.
+4. **Mods.** A `tool.check` mod can approve what a managed `ask` would prompt for (§6). Today this
+   holds only by the prose rule "no mod without Anton re-checking". Option: the managed-settings
+   controls over mods ("Manage mods for your organization" — not yet read, so not sourced).
+5. **Broad `allow` rules in `.claude/settings.local.json`** (Anton's file; agents have `Edit`
+   denied on it). Allow rules resolve before the auto-mode classifier, so these run with no
+   second check:
+   - interpreter wildcards — `Bash(node *)`, `Bash(.venv/bin/python *)`,
+     `Bash(sidecar/.venv/bin/python -c ' *)`: a script can write any file the user can, including
+     the project and local settings files that the `Edit` deny does not cover against scripts (§6);
+   - work-discarding git — `Bash(git checkout *)`, `Bash(git stash *)`, `Bash(git branch *)`;
+   - `Bash(git commit *)`, `Bash(git merge *)` — harmless while the managed `ask` outranks them, but
+     they would silently re-open the gate if the `ask` ever failed to load;
+   - `Bash(sudo -n true)` — already overridden by the `deny`, dead weight.
+   - and others of the same classes, e.g. package installs and run scripts that execute arbitrary
+     code (`Bash(.venv/bin/pip install *)`, `Bash(npm install *)`, `Bash(npm run *)`,
+     `Bash(npm create *)`), two more `git commit -m …` patterns, and name-based kills
+     (`Bash(pkill -KILL -x orca)`, `Bash(pkill -KILL -x mpirun)`) — the "never `pkill` by name" class
+     ADR-024 k cites. The list above is a sample, not an inventory.
+
+   Option: prune to read-only and test commands; the wildcards go back to the classifier.

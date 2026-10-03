@@ -5,7 +5,7 @@
 
 A **server profile** is the runtime configuration of one remote execution target, stored as
 data (never code): "add a server" is a settings action, not a build (ADR-023). One
-`SshBackend` (Part B) is parameterized by any number of these rows.
+`SshBackend` (unit 5.3) is parameterized by any number of these rows.
 
 ## Table: `server_profiles` (schema v18)
 
