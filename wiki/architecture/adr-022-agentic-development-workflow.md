@@ -192,15 +192,24 @@ Sourced facts the fix rests on:
   world-readable (0644)**; a 0600 file would silently disable every gate.
 - A settings file created mid-session is loaded only *"if its folder existed when the session
   started"* (settings). `/etc/claude-code/` did not exist → **restart the session after
-  installing**.
+  installing**. *Measured 2026-10-03 (Claude Code 2.1.288):* the managed file **was** applied in the
+  running session **without** a restart, even though `/etc/claude-code/` was created mid-session (see
+  the managed-layer controls below). A run beats the docs, but a restart after installing stays the
+  safe default — the docs promise nothing else.
 
 Decision:
 - The `ask`/`deny` lists above live in **managed settings**, installed by Anton with `sudo`. **The OS
   boundary is file ownership plus the sudo password the agent does not have.** The `sudo` deny rule
   is only a text guardrail on top of that: it is bypassable like any Bash rule, e.g. `S=sudo; $S`.
-  *Open question (unmeasured):* is there any `NOPASSWD` sudoers entry, and can a sudo ticket that
-  Anton creates be reused from the agent's tty-less Bash? So Anton **installs from a separate
-  terminal, never via `!` inside the session, and ends with `sudo -k`**.
+  - *Partly measured 2026-10-03:* `sudo install …` run through `!` in the session shell (no tty)
+    failed with *"a terminal is required to read the password … a password is required"*. So there is
+    no `NOPASSWD` for those commands, and no usable ticket in that shell at that moment.
+  - *Still open:* can a ticket that Anton has just created in another terminal be reused from the
+    agent's tty-less Bash?
+
+  So Anton **installs from a separate terminal, never via `!` inside the session, and ends with
+  `sudo -k`**. (*Measured:* the `!sudo …` run reached sudo's password check despite the `Bash(sudo*)`
+  deny, so the permission rules did not apply to a command Anton ran with `!`.)
 - **Reference copy** of the managed file — `/etc/claude-code/managed-settings.json`, root:root 0644,
   in directory `/etc/claude-code` root:root 0755. Its sha256 is
   `dfc4d453dda14dc072451329f3c6cf856ff52e520c49840cc70ae8c10755189e` (the scratchpad staging copy
@@ -247,7 +256,8 @@ Decision:
   `rsync … uni-admin:…` and `sudo -n true` were all **denied**; `sudo -n true` was denied despite an
   existing local `allow`, as documented. The positive control `ssh uni whoami` → `anton` is still
   allowed. A no-op `sed -i` and an `Edit` of `.claude/settings.json` were both **denied**.
-- *Managed layer* — after Anton installs the file and **restarts** the session. Because the project
+- *Managed layer* — after Anton installs the file and **restarts** the session. (The 2026-10-03
+  results below were taken **without** a restart; see the mid-session-load note above.) Because the project
   file mirrors the managed rules, "still denied" alone cannot tell the layers apart. So the managed
   layer is proven by:
   1. `/status` (or `claude doctor`) listing the managed source as loaded, with no read failure;
@@ -256,7 +266,27 @@ Decision:
      --dry-run` still prompts and `ssh <admin-alias> true` is still denied; then restoring the file
      byte-for-byte (sha256).
 
-  The results go in `wiki/log.md`.
+  **Results, 2026-10-03** — installed by Anton from a separate terminal: `/etc/claude-code`
+  root:root 0755, `managed-settings.json` root:root 0644, sha256 `dfc4d453…189e` (= reference).
+  1. **OS boundary:** the agent's `touch /etc/claude-code/managed-settings.json` → `Permission denied`.
+  2. **Managed `ask` — proven.** `Bash(*git*commit*)` was removed from the project file. No other
+     project, local or user `ask` rule matched `git commit --dry-run -m "managed ask control"`; the
+     local file has no `ask` list. The local file does contain `allow` `Bash(git commit *)`, which would
+     otherwise have run the command **silently**. The command **prompted** Anton (confirmed by him), so
+     the prompt can only have come from the managed `ask` rule. This proves the managed layer was
+     loaded.
+  3. **Managed `deny` — consistent, not discriminating.** With the admin-alias rule removed from the
+     project file, `ssh` to the admin alias was **denied**. In auto mode an unmatched command goes to
+     the classifier, which might also block it, and the refusal text is the same. So this is
+     *consistent with* the managed `deny`, but the layer is **undetermined** — the same caveat as the
+     `cp` measurement above. To discriminate, re-run in default (manual) mode, where an unmatched
+     command prompts instead of being denied. Not done.
+  4. **Restore:** the project file was restored byte-for-byte; its sha256 equals the committed value
+     `95e90074…1082b`. The first restore attempt failed: Anton copied a placeholder (`uni-…admin`)
+     from the orchestrator's instructions, and the sha256 check caught it. Lesson: give humans exact
+     rule text, never a disguised placeholder.
+
+  `/status` was not captured.
 
 *Known limits (honest) — the threat model is a cooperative agent making a mistake, not an adversary:*
 - The Bash rules match **command text**. The docs: a deny or ask rule *"covers the invocation Claude
@@ -285,8 +315,10 @@ Decision:
   **no mod is installed without Anton re-running this check.** Option for Anton (fork, not adopted
   here): the managed-settings controls over mods ("Manage mods for your organization", not yet read).
 - **Hooks** are shell commands that Claude Code itself runs, outside the Bash tool. That the Bash
-  `ask`/`deny` rules do not gate them is **our inference** — the docs quoted above only say hook
-  *decisions* cannot override deny/ask rules. Settings files reload live, so an agent that manages to
+  `ask`/`deny` rules do not gate them is **our inference**. The docs say only that hook *decisions*
+  cannot override the rules: *"PreToolUse hook decisions don't bypass permission rules. Claude Code
+  evaluates deny and ask rules regardless of what a PreToolUse hook returns"* (permissions, "Extend
+  permissions with hooks"). Settings files reload live, so an agent that manages to
   write one (a script; see the cp measurement above) would gain an execution channel.
   - Project scope has no hooks today.
   - **Plugin scope does:** `vercel-plugin` 0.24.0 runs hooks; a `SubagentStart` hook injected

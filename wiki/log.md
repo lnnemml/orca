@@ -9751,3 +9751,29 @@ ADR-022, not recalled.
   2. `allowManagedHooksOnly` (it also disables plugin hooks);
   3. `git commit-tree <verified hash>` instead of detect-after;
   4. managed controls over mods.
+
+## [2026-10-03] probe | managed-settings layer installed and proven
+
+Anton installed `/etc/claude-code/managed-settings.json` from a separate terminal:
+root:root 0644, directory 0755, sha256 `dfc4d453…189e` = the ADR-022 §6 reference. Controls
+(ADR-022 §6):
+- **OS:** the agent's `touch` on the file → `Permission denied`.
+- **Managed `ask` — proven:** project commit rule removed → `git commit --dry-run` still prompted
+  Anton, although a local `allow` would otherwise have run it silently. So the managed layer is
+  loaded.
+- **Managed `deny` — consistent, layer undetermined:** project admin-alias rule removed → `ssh` to
+  the alias still denied. But auto mode's classifier could also deny it, and the refusal text is the
+  same. Discriminating re-run in default mode: not done.
+- **Restore:** the project file is back to sha256 `95e90074…1082b`. A first restore failed because
+  a placeholder (`uni-…admin`) from my instructions was copied verbatim; the hash check caught it.
+  Lesson: give humans exact rule text.
+
+Side measurements:
+- **Mid-session load:** the managed file was applied **without a session restart**, although the
+  docs say a folder created mid-session is not watched (Claude Code 2.1.288). A run beats the docs;
+  restart after installing stays the safe default.
+- **sudo:** `sudo` through `!` (no tty) → "a password is required". So there is no `NOPASSWD` for
+  `install`; ticket reuse from another terminal is still open.
+
+Also fixed: ADR-022 LOW-N1 (round 4) — the hook-precedence sentence now quotes the docs instead of
+pointing at a quote that wasn't there.
