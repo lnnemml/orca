@@ -50,7 +50,9 @@ row once the connection-test passes ([ADR-023](../architecture/adr-023-server-ag
 - **MPI:** system OpenMPI **4.1.6** at `/usr/bin/mpirun`. A conda base auto-activates in the
   login shell but does **not** shadow `mpirun`. `ldd` of `orca_scfgrad_mpi` resolves
   `libmpi.so.40` to the system lib.
-- **ORCA (ours):** **6.1.1** installed at `/opt/orca`, copied from the lab install.
+- **ORCA (ours):** **6.1.1** in **`/opt/orca-6.1.1`**, with **`/opt/orca` → `/opt/orca-6.1.1`** as a
+  symlink — the same `/opt/orca-<version>` + symlink scheme as the laptop (since 2026-10-03; see the
+  check below). Copied from the lab install.
   **Self-contained** (measured 2026-10-02): `ldd` shows `liborca_*` → `/opt/orca/lib` and
   `libmpi.so.40` → the **system** lib (so MPI uses the system OpenMPI 4.1.6 — rule #2).
   - **Version parity CONFIRMED** (2026-10-02): a water **r2SCAN-3c Opt+Freq** benchmark on 4
@@ -74,10 +76,18 @@ row once the connection-test passes ([ADR-023](../architecture/adr-023-server-ag
   `tsp/slot0.sock`; job dirs; the account check in `verify/`). Its tsp queues use dedicated sockets
   there, never the default `/tmp/socket-ts.<uid>`. **`/home/yats/.orcastudio/probe/`** contains the
   2026-10-03 probe artefacts from the `yats` era. It is **historical and no longer used**.
-- **`/opt/orca` permissions:** made `a+rX` by the admin. Measured as `anton` on 2026-10-03:
-  `/opt/orca` is `drwxr-xr-x yats`, `orca` is `-rwxrwxr-x yats`, **0 files unreadable** by `anton`,
-  **0 world-writable**, the directory is not writable by `anton`. On this host `/opt/orca` is a
-  **plain directory** — there is no `/opt/orca-6.1.1` and no symlink (unlike the laptop's scheme).
+- **`/opt/orca` layout & permissions** (measured as `anton`, 2026-10-03, after the admin moved the
+  install to the versioned scheme): `/opt/orca -> /opt/orca-6.1.1` (`lrwxrwxrwx root`);
+  `/opt/orca-6.1.1` is `drwxr-xr-x yats` (made `a+rX`); `readlink -f /opt/orca/orca` →
+  `/opt/orca-6.1.1/orca`; **0 files unreadable** by `anton` (through the symlink), **0
+  world-writable**, and `/opt/orca-6.1.1` is not writable by `anton`. `ldd orca_scfgrad_mpi` still
+  resolves `liborca_tools_6_1_1_mpi.so.6 → /opt/orca/lib/…` and the system `libmpi.so.40`, with no
+  `not found`. The water benchmark in `verify/water-symlink/`, run with `HWLOC_COMPONENTS=-gl`, gives
+  **−76.418938720745 Eh**, `ORCA TERMINATED NORMALLY`, `Program Version 6.1.1`, and an **empty
+  stderr (0 bytes)**. (Earlier the same day, `/opt/orca` was a plain directory. The account checks
+  below were made on that layout.)
+- **Job root filesystem:** `/home` (and so `/home/anton/.orcastudio/`) is local **ext4** on
+  `/dev/sdb4` (`findmnt`, 2026-10-03) — the local-FS premise of ADR-024's cancel-race argument.
 - **Clock:** the server runs `Etc/UTC` and is **not NTP-synchronised**. `timedatectl` (2026-10-03)
   reports `System clock synchronized: no` and `NTP service: active`; the RTC also differs from the
   system time. The clock was **~2 min 52 s ahead** of the laptop (same offset in the morning probe and
@@ -141,7 +151,8 @@ Every check was run as `anton` over the `uni` alias (Part A of the account switc
   is unset. With **`HWLOC_COMPONENTS=-gl`**, stderr is **empty** and the energy is unchanged
   (−76.418938720745). Our reading: hwloc's GL plugin probes the X display `:0`, which belongs to
   `yats`'s desktop session; under `yats` the noise was absent. The results are unaffected; it only
-  floods `stderr.log`.
+  floods `stderr.log`. **The wrapper therefore exports `HWLOC_COMPONENTS=-gl`** (ADR-024 Decision b,
+  amended 2026-10-03, d′ resolution).
 - `anton`'s `systemd --user` instance starts `pipewire`/`wireplumber` on login (socket activation).
   These are not OrcaStudio processes.
 

@@ -1,6 +1,6 @@
 # ADR-024: Remote execution under intermittent connectivity
 
-**Status:** Accepted · 2026-10-02 (Proposed → Accepted after the review + acceptance amendments below) · amended 2026-10-03 (probe; probe review — ready for implementation)
+**Status:** Accepted · 2026-10-02 (Proposed → Accepted after the review + acceptance amendments below) · amended 2026-10-03 (probe; probe review; d′ resolution — ready for implementation)
 
 Refines [ADR-003](adr-003-execution-backend.md) (the `ExecutionBackend` trait + job state
 machine) and extends [ADR-023](adr-023-server-agnostic-remote-execution.md) (one `SshBackend`
@@ -84,6 +84,20 @@ path (Decision i) **removes it** after the kill. Rationale (probe): a tsp task i
 it. A per-job `TMPDIR` keeps that litter inside the one directory that belongs to the job (rule #3).
 A shared directory would collect it without limit.
 
+**Amended 2026-10-03 (d′ resolution) — `HWLOC_COMPONENTS=-gl`.** The wrapper also exports
+**`HWLOC_COMPONENTS=-gl`** for ORCA. Measured on the uni host (`../infrastructure/uni-server.md`):
+without it, hwloc running under a non-GUI user writes **~310 lines** of `Authorization required, but
+no authorization protocol specified` to `stderr.log` per water run. With it, stderr is **empty** and
+the energy is **bit-identical** (−76.418938720745 Eh). The variable only switches off hwloc's GL
+plugin; it does not touch the numerics.
+
+**Amended 2026-10-03 (d′ resolution) — wrapper start sequence.** The wrapper's order is now:
+1. write `.started` — still the first action (atomically, via a temp file + `rename`);
+2. **check for `.cancelled`** — if present, **exit at once without launching ORCA**. It writes no
+   `.exit_code`; `.cancelled` alone decides the classification (Decision d);
+3. export `TMPDIR` and `HWLOC_COMPONENTS`, then run the pinned ORCA (rules #1, #8);
+4. write `.exit_code` last.
+
 **c) The server filesystem is the source of truth.** The local SQLite is a **cache** that is
 **reconciled** against the server's job directories after the link is restored. Where the two
 disagree, the server's on-disk state wins. (Consistent with ADR-003's reconciliation-on-startup;
@@ -145,6 +159,20 @@ holding only `input.inp`. That is byte-for-byte the `never-started` shape, so wi
 marker a cancelled queued job cannot be told apart from a restart-dropped one. A purely local
 "cancelled" flag is not a fix, because it would contradict Decision c (the server filesystem is the
 source of truth).
+
+**Amended 2026-10-03 (d′ resolution) — classifying a cancelled job.** `.cancelled` is still checked
+first. If it is present:
+- **process still alive** — `.started` exists, its `boot_id` is current, its PID is alive and
+  `/proc/<pid>/cmdline` is ours (the same three-part test as `running`) → transient
+  **`cancelling`**. The reconcile **repeats the session sweep** (Decision i) and checks again next
+  time.
+- **process dead, or no `.started` at all** → **`cancelled`**, **whatever the `boot_id`**. A
+  cancelled job is never `lost` and never `never-started`, so it is never re-enqueued or restarted.
+
+This closes the gap where a running job killed by cancel (current `boot_id`, dead PID, no
+`.exit_code`) matched none of the rules above. `cancelling` is **non-terminal**: a job sits there only
+while a cancelled process tree is still alive. That is a new transient status next to
+`Cancelled` in `JobStatus` (`src-tauri/src/models/job.rs`); the implementation unit adds it.
 
 **e) Restart of a `lost` job is a separate path.** Re-running a `lost` job is
 **restart-from-last-geometry**, a distinct flow that seeds from the last geometry written to the
@@ -222,6 +250,37 @@ when `mpirun` dies. Rationale: on the laptop (`../debugging/004-mpi-ranks-escape
 the same group kill **did** leave orphaned ranks, and the cause of the difference is not established.
 A cancel that silently depends on an unexplained host behaviour would regress on the next host. The
 sweep is cheap (one `ps -s <sid>`), guarded by `boot_id`, and harmless when there is nothing to kill.
+
+**Amended 2026-10-03 (d′ resolution) — one cancel script for every state.** A cancel is **one remote
+script**, run on the server in the job directory, the same for queued and running jobs. It supersedes
+the queued-only `.cancelled` amendment above.
+1. **write `.cancelled`** (atomically: temp file + `rename`);
+2. **`tsp -r <id>`**, **ignoring its error** — the job may already be running, finished or gone;
+3. **if `.started` exists and the process is alive** (current `boot_id` + live PID + our cmdline, as
+   in Decision d) → **`tsp -k <id>`** + the **SID sweep** (TERM+CONT → wait → KILL);
+4. remove the job's own `TMPDIR` (`<job_dir>/.tmp/`, Decision b).
+
+**Why there is no race.** The two sides use mirror-image orders on the **same local filesystem**:
+- the wrapper **writes `.started`, then checks `.cancelled`**;
+- the cancel script **writes `.cancelled`, then checks `.started`**.
+
+Whichever side's write lands second, that side's own check comes after *both* writes, so it sees the
+other side's marker. There are only two outcomes:
+- **the wrapper sees `.cancelled`** → it exits before launching ORCA (if the script also saw
+  `.started`, step 3 finds a dying or dead process — harmless);
+- **the cancel script sees `.started`** → it kills the process tree in step 3.
+
+Either way, ORCA is never left running under a `.cancelled` marker. Both markers are created by
+`rename` in the same directory on one local filesystem, so visibility is immediate. The argument would
+**not** hold over NFS-style caching; on the uni host the job root `/home/<user>/.orcastudio/` is on local `ext4` (`/dev/sdb4`, measured with `findmnt` on 2026-10-03; uni-server.md).
+
+**Amended 2026-10-03 (d′ resolution) — cancel outside the connection window.** If the user cancels
+while the server is unreachable (e.g. outside the 08:00–22:00 window, Decision g), the request is
+**stored locally as a pending cancel** and **executed first on reconnect**, before reconciliation.
+Until then the job's status **does not change** — it shows its last known server state with a
+"cancel pending" indication. Rationale: Decision c — the server's state is the truth, and a job
+marked `cancelled` locally while it is in fact still running would be a lie that reconciliation then
+has to undo.
 
 **j) Single-host time (Amended 2026-10-03, probe review).** The app **never compares a laptop
 timestamp with a server timestamp**. Durations and event order are always computed from times taken
@@ -328,16 +387,12 @@ apply, now under the dedicated user's root.
   must reconcile to `lost`. A real restart is observed at the **first natural occasion** (e.g. a power
   event) and recorded then. It is **not** triggered on purpose: an unattended HP ProLiant may stop at
   POST after a reboot, and nobody has physical access to it.
-- **(d′) Running-cancel classification and the cancel/start race** (Amended 2026-10-03, probe
-  review — found while writing the `.cancelled` rule, not decided here):
-  - A **running** job killed by cancel has `.started` with the **current** `boot_id`, a dead PID and
-    no `.exit_code`. None of Decision d's rules matches it, because `lost` requires a *different*
-    `boot_id`.
-  - Between writing `.cancelled` and `tsp -r`, a queued job may start, so the wrapper would run with
-    `.cancelled` already present.
-  - Candidate (not adopted): write `.cancelled` before **every** cancel, queued or running, and have
-    the wrapper exit right after `.started` if `.cancelled` exists. The implementation unit must
-    settle this before reconciliation is built.
+- ~~**(d′) Running-cancel classification and the cancel/start race**~~ — **Resolved 2026-10-03.**
+  Resolved by the "d′ resolution" amendments:
+  - one cancel script for every state that writes `.cancelled` first (Decision i);
+  - a wrapper that checks `.cancelled` right after writing `.started` (Decision b);
+  - `.cancelled` classified as `cancelling` / `cancelled` regardless of `boot_id` (Decision d).
+  The race is closed by the mirror-image write-then-check order on one local filesystem.
 - **(c) Process-group kill for an MPI job over SSH** (Amended 2026-10-02, review). **Resolved by probe
   2026-10-03:** `tsp -k` plus a session-id sweep (Decision i's 2026-10-03 amendment) left no survivors,
   including when `mpirun` and the ranks were SIGSTOPped. This differs from the laptop (`debugging/004`) —

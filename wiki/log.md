@@ -9629,3 +9629,41 @@ Also changed:
 - `index.md`: ADR-024 entry updated (it still said Proposed).
 
 **Next:** settle d′, then the `SshBackend` implementation unit.
+
+## [2026-10-03] decision | ADR-024 d′ resolved; HWLOC_COMPONENTS; server symlink scheme
+
+**Check (as `anton`).** The admin moved the server ORCA to the versioned scheme.
+- `/opt/orca -> /opt/orca-6.1.1` (a symlink owned by root); `/opt/orca-6.1.1` is
+  `drwxr-xr-x yats` and not writable by `anton`; 0 unreadable and 0 world-writable files.
+- `ldd orca_scfgrad_mpi`: `liborca_*` → `/opt/orca/lib`, system `libmpi`, no `not found`.
+- Water r2SCAN-3c Opt+Freq in `verify/water-symlink/` with `HWLOC_COMPONENTS=-gl`:
+  **−76.418938720745 Eh**, `TERMINATED NORMALLY`, 6.1.1, **stderr 0 bytes**.
+- The job root is on local ext4 (`/dev/sdb4`, `findmnt`).
+
+**ADR-024** (stays Accepted), amended "2026-10-03 (d′ resolution)":
+- **b:** the wrapper exports `HWLOC_COMPONENTS=-gl` (without it, ~310 X11 lines per run under a
+  non-GUI user; energy unchanged). The start order is now `.started` → check `.cancelled` (exit
+  without ORCA if present) → `TMPDIR`/`HWLOC` → pinned ORCA → `.exit_code`.
+- **i:** one cancel script for every state:
+  - write `.cancelled`;
+  - `tsp -r` (error ignored);
+  - if `.started` exists and the process is alive (boot_id + PID + cmdline) → `tsp -k` + SID
+    sweep;
+  - remove `TMPDIR`.
+
+  No race: the wrapper writes `.started` and then checks `.cancelled`, while the cancel script
+  writes `.cancelled` and then checks `.started`. On one local FS, at least one check sees the
+  other side's marker.
+- **i:** a cancel made outside the window is stored as a local pending request and executed first
+  on reconnect; the status does not change until then.
+- **d:** `.cancelled` is checked first. Process alive → transient **`cancelling`** (the sweep
+  repeats). Dead or never started → `cancelled` regardless of `boot_id`. The new transient
+  `JobStatus` is added in the implementation unit.
+- Open question **d′ → Resolved 2026-10-03**.
+
+**Hosts:**
+- `orca-basics.md`: the earlier note that the server uses a plain directory is reverted; both
+  hosts now use `/opt/orca-<version>` + a symlink.
+- `uni-server.md`: layout, permissions and the check above; `HWLOC_COMPONENTS` is cross-referenced
+  to ADR-024 b.
+- CLAUDE.md rule #1 is unchanged; it is now true for both hosts.
