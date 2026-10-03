@@ -180,9 +180,10 @@ construction.)
   ## [YYYY-MM-DD] type | Short title
   ```
 
-  where `type ∈ {session, decision, ingest, lint, milestone, feat, fix}`.
+  where `type ∈ {session, decision, ingest, lint, milestone, feat, fix, probe}`.
   (`feat`/`fix` carry a real signal — a landed feature vs a bug fix — and are used
-  consistently; the vocabulary is these seven. One historical `chore` entry, 2026-08-12,
+  consistently; `probe` = a measurement of a third-party program's or a host's behaviour under
+  Rule #10; the vocabulary is these eight. One historical `chore` entry, 2026-08-12,
   predates this rule and reads as a `lint` pass — it is NOT re-titled, the log is
   append-only, and `chore` is not a blessed type going forward.)
   `grep "^## \[" wiki/log.md | tail -5` must always show the 5 latest events.

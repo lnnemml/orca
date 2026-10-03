@@ -9582,3 +9582,50 @@ are in `scripts/probes/uni-tsp/`. Record: `architecture/task-spooler-uni-probe.m
   job dirs kept on the server.
 - ADR-024: Decision b/i amended (2026-10-03 probe), Open questions a/c resolved, the parallel-slots
   question partly measured. Also updated: uni-server.md, gotchas, index, ROADMAP.
+
+## [2026-10-03] decision | ADR-024 finalized after probe; dedicated server account
+
+Two parts: Part A measured the dedicated account first; Part B, the docs, came only after Part A
+passed. No production code changed.
+
+**Part A — `anton` account on `uni` (all measured as `anton`).**
+- No sudo: `groups` = `anton users`.
+- Isolation, negative controls: `touch`/`rm` in `/home/yats` → `Permission denied`.
+  `/home/yats` is `750`, so even reading is denied.
+- `/opt/orca` is readable and executable but not writable: 0 unreadable files, 0 world-writable
+  files. It is a plain directory on this host, not a symlink.
+- `ldd` resolves `liborca_*` → `/opt/orca/lib` and `libmpi` → the system library.
+- Water r2SCAN-3c Opt+Freq: **−76.418938720745 Eh**, bit-identical, `TERMINATED NORMALLY`.
+- tsp on `/home/anton/.orcastudio/tsp/slot0.sock` works; after `-K` the socket is gone and no
+  processes are left.
+- `Linger=no`; effective `KillUserProcesses` = `false`.
+- Clock not NTP-synced (`NTP service: active`, not synchronised), ~+2 min 52 s vs the laptop.
+- New finding: under `anton`, hwloc writes 310 X11 `Authorization required` lines to stderr per
+  run. With `HWLOC_COMPONENTS=-gl` stderr is empty and the energy is unchanged.
+
+**Part B — ADR-024 stays Accepted, amended "2026-10-03 (probe review)":**
+- A queued cancel writes `.cancelled` before `tsp -r`; Decision d checks `.cancelled` first,
+  before `never-started`.
+- The wrapper owns `TMPDIR` in the job dir and removes it on cancel.
+- Consequences: `KillUserProcesses=false` is a mandatory connection-test precondition
+  (candidate hardening: linger + a `systemd --user` tsp service).
+- The SID sweep stays (laptop counter-example, debugging/004).
+- New **j**: never compare laptop and server times.
+- New **k**: dedicated no-sudo account, root `/home/<user>/.orcastudio/`. OS permissions, not
+  prompt discipline, hold the boundary → agents' auto mode is acceptable on a shared host.
+- Open question b → covered by simulation (`tsp -K` + substituted `boot_id`). A real reboot is
+  recorded at the first natural occasion, never triggered on purpose (ProLiant POST risk).
+- New open question **d′**: a running job killed by cancel (same `boot_id`, dead PID, no
+  `.exit_code`) is not classified by d, and there is a race between `.cancelled` and `tsp -r`.
+  Candidate: `.cancelled` for every cancel + the wrapper checking it. To settle in the
+  implementation unit.
+
+Also changed:
+- `uni-server.md`: accounts `anton` / `uni-admin`, a measured account table, root
+  `/home/anton/.orcastudio/`; `/home/yats/.orcastudio/probe` is historical.
+- `orca-basics.md`: the `/opt/orca` symlink scheme applies to the laptop only.
+- ROADMAP Phase 5 connection test: three checks added.
+- CLAUDE.md: `probe` added to the log-type vocabulary.
+- `index.md`: ADR-024 entry updated (it still said Proposed).
+
+**Next:** settle d′, then the `SshBackend` implementation unit.

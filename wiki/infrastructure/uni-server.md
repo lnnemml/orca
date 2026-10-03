@@ -16,9 +16,14 @@ row once the connection-test passes ([ADR-023](../architecture/adr-023-server-ag
 - A dedicated compute node for the author's ORCA mechanism studies. A full study is 300–800
   jobs — the dev laptop is a development machine, not a compute node (`orca/performance.md`).
 - Hardware is an HP ProLiant, hostname `yats-ProLiant`.
-- **Shared lab account** `yats` (with sudo). The server is dedicated to Anton in practice;
-  others ask before using it. Treat it as shared: do not disrupt other users' files or installs.
-- Laptop SSH alias: `uni` (see Access).
+- **Accounts (since 2026-10-03, ADR-024 k):**
+  - **`anton`** — the **dedicated OrcaStudio account**, no sudo. Laptop alias **`uni`**. Everything
+    OrcaStudio does on the server (tsp queues, job dirs) runs as `anton` under
+    `/home/anton/.orcastudio/`.
+  - **`yats`** — the **shared lab account**, with sudo. Laptop alias **`uni-admin`**, used **only for
+    administration** (packages, `/opt/orca`, system settings), never by the app or by agents. The
+    server is dedicated to Anton in practice; others ask before using it. Do not disrupt other
+    users' files or installs.
 
 ## Hardware
 
@@ -65,10 +70,18 @@ row once the connection-test passes ([ADR-023](../architecture/adr-023-server-ag
 - Packages we installed: `openssh-server`, `tmux`, `rsync`, `tailscale`, `task-spooler`
   (**1.0.1+dfsg1-1**, `/usr/bin/tsp`; behaviour measured 2026-10-03 in
   [task-spooler-uni-probe.md](../architecture/task-spooler-uni-probe.md)).
-- **OrcaStudio's server dir** is `/home/yats/.orcastudio/` (probe artefacts in `probe/`). Its tsp
-  queues use dedicated sockets there — never the account's default socket.
-- **Clock:** the server runs `Etc/UTC` and is **not NTP-synchronised** (`NTPSynchronized=no`);
-  measured **~2 min 52 s ahead** of the laptop on 2026-10-03.
+- **OrcaStudio's server root** is **`/home/anton/.orcastudio/`** (tsp sockets in `tsp/`, e.g.
+  `tsp/slot0.sock`; job dirs; the account check in `verify/`). Its tsp queues use dedicated sockets
+  there, never the default `/tmp/socket-ts.<uid>`. **`/home/yats/.orcastudio/probe/`** contains the
+  2026-10-03 probe artefacts from the `yats` era. It is **historical and no longer used**.
+- **`/opt/orca` permissions:** made `a+rX` by the admin. Measured as `anton` on 2026-10-03:
+  `/opt/orca` is `drwxr-xr-x yats`, `orca` is `-rwxrwxr-x yats`, **0 files unreadable** by `anton`,
+  **0 world-writable**, the directory is not writable by `anton`. On this host `/opt/orca` is a
+  **plain directory** — there is no `/opt/orca-6.1.1` and no symlink (unlike the laptop's scheme).
+- **Clock:** the server runs `Etc/UTC` and is **not NTP-synchronised**. `timedatectl` (2026-10-03)
+  reports `System clock synchronized: no` and `NTP service: active`; the RTC also differs from the
+  system time. The clock was **~2 min 52 s ahead** of the laptop (same offset in the morning probe and
+  in the `anton` check). ADR-024 j: the app never compares laptop and server times.
 
 ## Access
 
@@ -77,7 +90,8 @@ row once the connection-test passes ([ADR-023](../architecture/adr-023-server-ag
   A drop-in is used because sshd is first-match and `sshd_config.d` is read before the main file.
 - **Reachability via Tailscale.** Laptop SSH alias `uni` configured with ControlMaster /
   ControlPersist 10m and ServerAliveInterval 30 (the persistent-connection substrate ADR-024
-  relies on for detach/reconnect).
+  relies on for detach/reconnect). `uni` logs in as `anton`. The separate `uni-admin` alias
+  (`yats`, no ControlMaster) is for administration only.
 - Auth stays entirely with the user's SSH config (ADR-005); the app stores no credentials
   (ADR-023).
 
@@ -104,9 +118,38 @@ row once the connection-test passes ([ADR-023](../architecture/adr-023-server-ag
 These two facts — a nightly link cutoff and a short UPS window — are why the queue and the
 source of truth live **on the server**, not the laptop (ADR-024).
 
+## Dedicated account `anton` — measured 2026-10-03
+
+Every check was run as `anton` over the `uni` alias (Part A of the account switch):
+
+| Check | Result |
+|---|---|
+| `whoami; id; groups` | `anton`, `uid=1001 gid=1001 groups=anton,users` — **no `sudo`** |
+| `touch /home/yats/.orcastudio_write_test` (negative control) | `Permission denied`, rc 1 — file not created |
+| `rm /home/yats/.bashrc` (no `-f`, negative control) | `cannot remove … Permission denied`, rc 1 |
+| `touch` inside `/home/yats/.orcastudio/probe/` | `Permission denied` |
+| `ls /home/yats/calc` | `Permission denied` — `/home/yats` is `drwxr-x---`, so `anton` cannot even **read** it (stricter than required) |
+| `ls -l /opt/orca/orca` | `-rwxrwxr-x yats yats … /opt/orca/orca` |
+| `ldd /opt/orca/orca_scfgrad_mpi` | `liborca_tools_6_1_1_mpi.so.6 → /opt/orca/lib/…`, `libmpi.so.40 → /lib/x86_64-linux-gnu/libmpi.so.40`, no `not found` |
+| water r2SCAN-3c Opt+Freq, 4 procs, `%maxcore 2000`, `/opt/orca/orca`, `taskset -c 0-3` | **E = −76.418938720745 Eh** (bit-identical to the reference), freqs 1653.28 / 3813.59 cm⁻¹, `ORCA TERMINATED NORMALLY`, 25.1 s |
+| `which tsp`; one job on `TS_SOCKET=/home/anton/.orcastudio/tsp/slot0.sock`; `tsp -K` | `/usr/bin/tsp`; job ran as `anton` in `user-1001.slice/session-N.scope`; after `-K` the socket is gone, no tsp processes are left, and no default `/tmp/socket-ts.*` was created |
+| `loginctl show-user anton -p Linger` | `Linger=no` |
+| `KillUserProcesses` | `#KillUserProcesses=no` in `logind.conf`, no drop-ins; effective value (`busctl`) **`false`** |
+
+- **hwloc X11 noise under `anton`.** Every ORCA run writes **310 lines** of
+  `Authorization required, but no authorization protocol specified` to stderr, even though `DISPLAY`
+  is unset. With **`HWLOC_COMPONENTS=-gl`**, stderr is **empty** and the energy is unchanged
+  (−76.418938720745). Our reading: hwloc's GL plugin probes the X display `:0`, which belongs to
+  `yats`'s desktop session; under `yats` the noise was absent. The results are unaffected; it only
+  floods `stderr.log`.
+- `anton`'s `systemd --user` instance starts `pipewire`/`wireplumber` on login (socket activation).
+  These are not OrcaStudio processes.
+
 ## Operational DO / DON'T
 
 **DO**
+- Run everything OrcaStudio does as **`anton`** (alias `uni`); use **`uni-admin`** (`yats`, sudo) only
+  for administration.
 - Invoke ORCA by **absolute path** `/opt/orca/orca` (rule #1). `yats`'s `~/.bashrc` has stale
   ORCA `PATH` entries — never rely on `PATH`.
 - Install packages with `apt-get install <pkg>` **directly**.
@@ -147,10 +190,14 @@ confirmed above. tmux detachment confirmed. CPU model + NUMA topology and disk t
   `binding_policy=none` keep every ORCA/MPI thread inside their own mask
   ([task-spooler-uni-probe.md](../architecture/task-spooler-uni-probe.md)). **Throughput** is
   still unmeasured. Until it is, the profile runs **1 slot** (ADR-024 Decision f).
-- **tsp across a server restart** (ADR-024 Open question b) — needs an author-run reboot; pending.
-- **Clock not NTP-synchronised** (~2 min 52 s ahead of the laptop, 2026-10-03) — enabling NTP needs
-  sudo (author). Any cross-host time comparison is skewed until then.
+- **tsp across a server restart** (ADR-024 Open question b) — **covered by simulation** in the
+  implementation unit (`tsp -K` + a substituted `boot_id`). A real restart is recorded at the first
+  natural occasion and is not triggered on purpose (an unattended ProLiant may stop at POST).
+- **Clock not NTP-synchronised** (~2 min 52 s ahead of the laptop, 2026-10-03; `NTP service: active`
+  but not synchronised) — fixing it needs `uni-admin`. The app never compares cross-host times
+  (ADR-024 j), so this is hygiene, not a blocker.
 - **`KillUserProcesses=false` is load-bearing** for detached jobs — if the host config ever changes
-  it to `yes`, jobs die at logout.
+  it to `yes`, jobs die at logout. The ADR-023 connection test checks it as a mandatory precondition
+  (ADR-024 Consequences).
 - **`SshBackend` connection-test specs** (remote ORCA path resolution, OpenMPI version, `nproc`)
   are UNDETERMINED until the Phase 5 connection-test runs (ADR-023, `server-profiles.md`).

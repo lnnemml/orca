@@ -1384,7 +1384,14 @@ and the dev laptop is a development machine, not a compute node. See
       offset-pull is additive (live UI still uses the push `job:log` event — the push→pull flip rides with
       `SshBackend`). ADR-023 records the server-agnostic model (one `SshBackend` per `ServerProfile`).
 - [ ] Server profiles in settings: host alias (reuses `~/.ssh/config`), remote ORCA path,
-      remote scratch dir; connection test button
+      remote scratch dir; connection test button. Connection-test checks added on 2026-10-03
+      (ADR-024 Consequences + k):
+      - **`KillUserProcesses=false`** on the host — **mandatory**; without it, detached jobs die at
+        logout;
+      - the profile user is **not in the `sudo` group** — a **warning, not a block**
+        (dedicated-account rule);
+      - ORCA at the **profile's path is readable and executable by that user**, checked by actually
+        running it, not just by `ls`.
 - [ ] **Server probe unit (before `SshBackend`):** task-spooler on `uni-server` — does the `tsp`
       daemon survive the launching ssh session exiting, how does it behave after a server restart,
       and the process-group kill of an MPI job (ADR-024 Open questions a–c). Measure first (rule #10).

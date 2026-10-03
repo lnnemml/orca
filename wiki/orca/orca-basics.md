@@ -26,7 +26,9 @@ Full-path invocation with `%pal nprocs 4` parallelized correctly — the domain 
 to the current default, and an older version stays runnable by absolute path
 (`/opt/orca-6.1.0/orca`) for reproducing old results. The app still invokes the
 settings-configured path (rule #7) — the symlink is a host convenience, not an app
-assumption.
+assumption. **This scheme applies to the laptop only:** on the `uni` server, `/opt/orca` is a
+**plain directory** holding 6.1.1, with no `/opt/orca-6.1.1` beside it (measured 2026-10-03,
+[uni-server.md](../infrastructure/uni-server.md)). The server path is still `/opt/orca/orca`.
 
 **Laptop/server parity** — 6.1.1 is the default on both the laptop and the `uni` server
 ([infrastructure/uni-server.md](../infrastructure/uni-server.md)):

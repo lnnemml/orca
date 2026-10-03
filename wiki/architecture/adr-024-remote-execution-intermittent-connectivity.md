@@ -1,6 +1,6 @@
 # ADR-024: Remote execution under intermittent connectivity
 
-**Status:** Accepted · 2026-10-02 (Proposed → Accepted after the review + acceptance amendments below)
+**Status:** Accepted · 2026-10-02 (Proposed → Accepted after the review + acceptance amendments below) · amended 2026-10-03 (probe; probe review — ready for implementation)
 
 Refines [ADR-003](adr-003-execution-backend.md) (the `ExecutionBackend` trait + job state
 machine) and extends [ADR-023](adr-023-server-agnostic-remote-execution.md) (one `SshBackend`
@@ -77,6 +77,13 @@ On the uni host (task-spooler 1.0.1):
 - **`TMPDIR` must be set by the wrapper** (e.g. to the job dir): the task inherits tsp's `TMPDIR`,
   and OpenMPI leaves `pmix-gds-shmem.*` / `ompi.*` litter there after every killed run.
 
+**Amended 2026-10-03 (probe review) — wrapper-owned `TMPDIR`.** The wrapper exports its **own
+`TMPDIR` inside the job directory** (e.g. `<job_dir>/.tmp/`) before launching ORCA, and the cancel
+path (Decision i) **removes it** after the kill. Rationale (probe): a tsp task inherits the daemon's
+`TMPDIR`, and every killed MPI run left `pmix-gds-shmem.*` files and `ompi.*` session-dir entries in
+it. A per-job `TMPDIR` keeps that litter inside the one directory that belongs to the job (rule #3).
+A shared directory would collect it without limit.
+
 **c) The server filesystem is the source of truth.** The local SQLite is a **cache** that is
 **reconciled** against the server's job directories after the link is restored. Where the two
 disagree, the server's on-disk state wins. (Consistent with ADR-003's reconciliation-on-startup;
@@ -129,6 +136,15 @@ transitions the job back to `queued`; only a genuinely-interrupted run becomes `
   a **wrapper that crashed before writing `.started`** (not only a restart-dropped queue entry) —
   without a bound, such a job would re-enqueue, crash, and re-enqueue forever. One retry absorbs
   the benign restart-drop case; a repeat is a real fault the user must see.
+
+**Amended 2026-10-03 (probe review) — `.cancelled` is checked first.** The classifier checks for a
+**`.cancelled`** marker in the job directory **before every other rule**, and in particular before
+`never-started`. If it is present, the job is **`cancelled`** and is never re-enqueued. Rationale: the
+probe (C, queued cancel) showed that a job removed from the queue with `tsp -r` leaves a directory
+holding only `input.inp`. That is byte-for-byte the `never-started` shape, so without a server-side
+marker a cancelled queued job cannot be told apart from a restart-dropped one. A purely local
+"cancelled" flag is not a fix, because it would contradict Decision c (the server filesystem is the
+source of truth).
 
 **e) Restart of a `lost` job is a separate path.** Re-running a `lost` job is
 **restart-from-last-geometry**, a distinct flow that seeds from the last geometry written to the
@@ -194,6 +210,41 @@ state (no new state):
   0** → `.exit_code = 0` without `TERMINATED NORMALLY`. Rule #6's two-part completion check catches
   this; `.exit_code` alone must never mean success.
 
+**Amended 2026-10-03 (probe review) — queued cancel writes `.cancelled`.** To cancel a **queued**
+job, the app first writes **`.cancelled`** into the job's server directory, **then** runs `tsp -r <id>`.
+Decision d checks `.cancelled` first, so the job reconciles to `cancelled` from the server's own
+state. This replaces the 2026-10-03 (probe) wording above that the local record must be set "before
+the next reconcile".
+
+**Amended 2026-10-03 (probe review) — the SID sweep stays.** The session-id sweep after `tsp -k`
+remains part of the running-cancel path, **even though** on the uni host the ranks die by themselves
+when `mpirun` dies. Rationale: on the laptop (`../debugging/004-mpi-ranks-escape-process-group.md`)
+the same group kill **did** leave orphaned ranks, and the cause of the difference is not established.
+A cancel that silently depends on an unexplained host behaviour would regress on the next host. The
+sweep is cheap (one `ps -s <sid>`), guarded by `boot_id`, and harmless when there is nothing to kill.
+
+**j) Single-host time (Amended 2026-10-03, probe review).** The app **never compares a laptop
+timestamp with a server timestamp**. Durations and event order are always computed from times taken
+on **one** host — server times (`.started`'s `started_at`, file mtimes) are compared only with other
+server times, and laptop times only with laptop times. Rationale (measured): the uni server's clock is
+**not NTP-synchronised** and was **~2 min 52 s ahead** of the laptop on 2026-10-03. Any cross-host
+difference ("stale for N minutes", "started before submit") would be skewed by an unknown, drifting
+offset. The boot-id liveness rule (d) already uses no time at all.
+
+**k) Dedicated server account (Amended 2026-10-03, probe review).** A server profile runs under a
+**dedicated user without sudo**. OrcaStudio's server root is **`/home/<user>/.orcastudio/`**: the tsp
+sockets (`TS_SOCKET`, one per slot) and the job directories live under it. Administration (packages,
+`/opt/orca`, logind/NTP settings) is done separately, through an admin account the app never uses.
+Rationale: the boundary between our jobs and other people's data is then held by **OS permissions,
+not by prompt discipline** (e.g. "never `pkill` by name", "never touch the legacy installs"). This is
+what makes automatic agent mode acceptable on a shared host: a mistake can at worst damage the
+dedicated user's own tree. Measured for the uni host (user `anton`, 2026-10-03): no `sudo` group;
+writing or deleting in the shared account's home fails with `Permission denied`; `/opt/orca` is
+readable and executable but not writable; the water benchmark is bit-identical
+(`../infrastructure/uni-server.md`). The 2026-10-02 "isolation & queue survival" amendment (b) was
+written for the shared `yats` account. Its rules (dedicated `TS_SOCKET`, job-dir stdout/stderr) still
+apply, now under the dedicated user's root.
+
 ## Alternatives rejected
 
 - **Queue on the laptop.** The laptop is offline 22:00–08:00, so a laptop-side queue would idle
@@ -236,6 +287,13 @@ state (no new state):
   (ADR-003 `fetch_results` / rsync-down) is the only durable copy, and the reconnect
   reconciliation (Decision c/d) is also what drives that pull. This makes the laptop cache's
   job both "source of UI truth after a disconnect" and "the backup of record."
+- **Job survival depends on a host setting** (Amended 2026-10-03, probe review). A tsp job outlives
+  the ssh session only because logind leaves the abandoned session scope alone —
+  **`KillUserProcesses=false`** (probe A). This is not a guarantee given by tsp. So the ADR-023
+  **connection test checks `KillUserProcesses=false` as a mandatory precondition**: a profile whose
+  host would kill user processes at logout is not offered as a run target. *Candidate hardening (not
+  now):* enable linger for the profile user and run the tsp daemon as a `systemd --user` service. That
+  would take the queue out of the login-session scope and remove the dependency.
 
 ## Open questions
 
@@ -263,6 +321,23 @@ state (no new state):
   are partially-written job dirs left clean — is **unmeasured** (probe). *Still open after the
   2026-10-03 probe* (it needs an author-run reboot). Measured since then: a queued task also holds a
   live runner process, and `TS_SAVELIST` saves the queue only on SIGTERM of the server (`man tsp`).
+  **Amended 2026-10-03 (probe review) — covered by simulation.** The reconciliation logic does not
+  need a real reboot to be tested. In the implementation unit, (1) **`tsp -K`** simulates the lost
+  in-memory queue — queued jobs must reconcile to `never-started` and re-enqueue at most once — and
+  (2) a **substituted `boot_id`** in `.started` simulates "this run began in an earlier boot" — the job
+  must reconcile to `lost`. A real restart is observed at the **first natural occasion** (e.g. a power
+  event) and recorded then. It is **not** triggered on purpose: an unattended HP ProLiant may stop at
+  POST after a reboot, and nobody has physical access to it.
+- **(d′) Running-cancel classification and the cancel/start race** (Amended 2026-10-03, probe
+  review — found while writing the `.cancelled` rule, not decided here):
+  - A **running** job killed by cancel has `.started` with the **current** `boot_id`, a dead PID and
+    no `.exit_code`. None of Decision d's rules matches it, because `lost` requires a *different*
+    `boot_id`.
+  - Between writing `.cancelled` and `tsp -r`, a queued job may start, so the wrapper would run with
+    `.cancelled` already present.
+  - Candidate (not adopted): write `.cancelled` before **every** cancel, queued or running, and have
+    the wrapper exit right after `.started` if `.cancelled` exists. The implementation unit must
+    settle this before reconciliation is built.
 - **(c) Process-group kill for an MPI job over SSH** (Amended 2026-10-02, review). **Resolved by probe
   2026-10-03:** `tsp -k` plus a session-id sweep (Decision i's 2026-10-03 amendment) left no survivors,
   including when `mpirun` and the ranks were SIGSTOPped. This differs from the laptop (`debugging/004`) —
