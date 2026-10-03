@@ -30,6 +30,16 @@ pub enum AppError {
     #[error("internal error: {0}")]
     Internal(String),
 
+    /// User input refused by save-time validation (e.g. a server profile field, ADR-024 n
+    /// items 2–4). Nothing was written.
+    #[error("invalid input: {0}")]
+    Invalid(String),
+
+    /// A write refused because the row changed since the caller read it (e.g. a verification
+    /// stamp for a target the profile no longer has, ADR-024 n item 5).
+    #[error("conflict: {0}")]
+    Conflict(String),
+
     /// An artifact reader (ADR-012) failed to parse or a post-condition tripped.
     #[error("parse error: {0}")]
     Parse(#[from] crate::parse::ParseError),

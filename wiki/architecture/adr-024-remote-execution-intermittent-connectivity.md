@@ -712,6 +712,14 @@ review pending, together with the 5.3 decomposition).**
    - **Full pass** = every item-8 check passes.
    - Item-9 values are stored when present and NULL otherwise, so `openmpi_version` becomes optional
      in the stamp (round 2 F2).
+6c. **The stamp is bound to the target that was tested** (orchestrator, 5.1 Part B Part A). The
+   stamp is written only if the profile still has the exact target that was tested (host, ORCA
+   path, root, mask, slot count); otherwise it is refused as a conflict. An edit made while the ssh
+   test was running must never be certified.
+6d. **Post-condition of the transport** (refines item 11). The script echoes every received
+   **value**, not only the count, and Rust compares them with what it sent. A script line after the
+   read loop lands *inside* value 0 while the count stays correct, so a count alone would not catch
+   it (shown by a negative control).
 6a. **`verified_at` gates new submits only.** Reconcile, cancel and fetch of existing jobs never
    consult it, so a transient failure cannot cut off monitoring or cancel (round 2 F1).
 6b. **Jobs keep their own coordinates** (Anton, round 2 F1).

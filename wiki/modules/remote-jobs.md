@@ -68,7 +68,11 @@ file. Every marker is published atomically from a temp file, never written in pl
 Each script is `scripts/head.sh` (shebang, `set -u`, the shared parsers and readers) concatenated at
 compile time with its body (`scripts/<name>.sh`), so all three ship the same parser code and the
 tests run exactly the uploaded bytes. Every per-job value is a positional argument. 5.3 uploads each
-as `<root>/bin/<name>-<sha256>.sh` (content-addressed; `sha256_hex` gives the sha).
+as `<root>/bin/<name>-<sha256>.sh` (content-addressed; `sha256_hex` gives the sha). The same head
+also fronts the profile connection test (`CONNTEST`), which is not uploaded but fed through
+`bash -s` stdin, and which reuses the collector's record `wire::Reader` for its output
+([server-profiles.md](server-profiles.md)). That is why the head holds only definitions and
+stdin-free commands.
 
 **Shared head.** A strict `key=value` loader (each key once, nothing else, every line
 newline-terminated, byte count checked so a NUL cannot hide); `started_parse_file` with the rules of

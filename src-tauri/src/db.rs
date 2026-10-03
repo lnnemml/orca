@@ -93,7 +93,14 @@ use crate::error::AppError;
 ///   command (jobs-survive, like v13/v16) so a job NEVER dies with its profile even on
 ///   a connection where the PRAGMA is off. Additive + idempotent: CREATE IF NOT EXISTS,
 ///   column_exists-guarded ALTER.
-const SCHEMA_VERSION: i64 = 18;
+/// - v19: two `server_profiles` columns (Phase 5 unit 5.1 Part B, ADR-024 n items 1 and 3).
+///   `slot_count INTEGER NOT NULL DEFAULT 1 CHECK (slot_count = 1)`: a profile has ONE
+///   `core_mask` and Decision b needs one disjoint mask per slot, so until parallel slots are
+///   measured a profile has exactly one slot and the database rejects any other value;
+///   existing rows backfill to 1. `availability_window TEXT NULL`: `HH:MM-HH:MM` in the
+///   laptop's local time, validated on write (`models::server_profile::validate_window`); NULL = no window.
+///   Guarded ALTERs (column_exists), like v10/v11/v15.
+const SCHEMA_VERSION: i64 = 19;
 
 /// Open (creating if needed) `orcastudio.db` under `data_dir` and migrate it to
 /// the current schema.
@@ -444,6 +451,29 @@ fn migrate(conn: &Connection) -> Result<(), AppError> {
             )?;
         }
         version = 18;
+    }
+
+    // --- v18 -> v19: the 5.1 Part B profile columns (ADR-024 n items 1 and 3). `slot_count`
+    // is pinned to 1 by a CHECK: one profile has one `core_mask`, and parallel slots need one
+    // disjoint mask each (Decision b) — they arrive with a later migration, together with the
+    // measurement. Existing rows backfill to 1 through the DEFAULT. `availability_window` is a
+    // nullable informational label (`HH:MM-HH:MM`, validated on write). Guarded on the table
+    // existing (a fixture may stub a DB without it) and on each column being absent. ---
+    if version < 19 {
+        if column_exists(conn, "server_profiles", "id")? {
+            if !column_exists(conn, "server_profiles", "slot_count")? {
+                conn.execute_batch(
+                    "ALTER TABLE server_profiles ADD COLUMN slot_count INTEGER NOT NULL \
+                     DEFAULT 1 CHECK (slot_count = 1);",
+                )?;
+            }
+            if !column_exists(conn, "server_profiles", "availability_window")? {
+                conn.execute_batch(
+                    "ALTER TABLE server_profiles ADD COLUMN availability_window TEXT;",
+                )?;
+            }
+        }
+        version = 19;
     }
 
     // Persist the resulting version so subsequent runs skip completed steps.
@@ -1286,6 +1316,106 @@ mod tests {
         // Idempotent: a second migrate() is a no-op.
         migrate(&conn).expect("v18 -> v18 no-op");
         assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
+    }
+
+    /// A v18 database exactly as the v18 arm creates it, holding one existing profile row.
+    fn v18_db_with_a_profile() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO settings (key, value) VALUES ('schema_version', '18');
+             CREATE TABLE server_profiles (
+                id                 TEXT PRIMARY KEY,
+                name               TEXT NOT NULL,
+                host               TEXT NOT NULL,
+                remote_orca_path   TEXT NOT NULL,
+                remote_scratch_dir TEXT NOT NULL,
+                core_mask          TEXT,
+                orca_version       TEXT,
+                openmpi_version    TEXT,
+                core_count         INTEGER,
+                verified_at        TEXT,
+                created_at         TEXT NOT NULL DEFAULT (datetime('now'))
+             );
+             INSERT INTO server_profiles
+                (id, name, host, remote_orca_path, remote_scratch_dir, core_mask,
+                 orca_version, openmpi_version, core_count, verified_at)
+                VALUES ('p1', 'uni', 'uni', '/opt/orca/orca', '/home/anton/.orcastudio', '0-23',
+                        '6.1.1', '4.1.6', 48, '2026-10-03 10:00:00');",
+        )
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn migrate_v18_to_v19_backfills_slot_count_and_keeps_the_row() {
+        let conn = v18_db_with_a_profile();
+        migrate(&conn).expect("v18 -> v19");
+        assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
+
+        let (slot_count, window, host, verified_at): (i64, Option<String>, String, Option<String>) = conn
+            .query_row(
+                "SELECT slot_count, availability_window, host, verified_at
+                 FROM server_profiles WHERE id = 'p1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(slot_count, 1, "an existing profile backfills to one slot");
+        assert_eq!(window, None, "no window unless the user sets one");
+        assert_eq!(host, "uni");
+        assert_eq!(verified_at.as_deref(), Some("2026-10-03 10:00:00"), "the migration changes no stamp");
+
+        // Idempotent: a second migrate() is a no-op.
+        migrate(&conn).expect("v19 -> v19 no-op");
+        assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
+    }
+
+    // NEGATIVE CONTROL (bites): the CHECK is what keeps a second slot out until per-slot masks
+    // exist (ADR-024 n item 1). A migration without it lets 2 and 0 through and these go red.
+    #[test]
+    fn migrate_v19_slot_count_check_rejects_anything_but_one() {
+        let conn = v18_db_with_a_profile();
+        migrate(&conn).expect("v18 -> v19");
+        for bad in [2, 0, -1] {
+            let err = conn.execute(
+                "UPDATE server_profiles SET slot_count = ?1 WHERE id = 'p1'",
+                rusqlite::params![bad],
+            );
+            assert!(err.is_err(), "slot_count = {bad} must be rejected by the CHECK");
+            let err = conn.execute(
+                "INSERT INTO server_profiles (id, name, host, remote_orca_path, remote_scratch_dir, slot_count)
+                 VALUES ('p2', 'x', 'x', '/o', '/r', ?1)",
+                rusqlite::params![bad],
+            );
+            assert!(err.is_err(), "inserting slot_count = {bad} must be rejected by the CHECK");
+        }
+        conn.execute("UPDATE server_profiles SET slot_count = 1 WHERE id = 'p1'", [])
+            .expect("1 is the one allowed value");
+    }
+
+    #[test]
+    fn fresh_db_has_the_v19_columns_with_their_defaults() {
+        let dir = std::env::temp_dir().join(format!("orcastudio-test-v19-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        let conn = init_db(&dir).unwrap();
+        assert!(column_exists(&conn, "server_profiles", "slot_count").unwrap());
+        assert!(column_exists(&conn, "server_profiles", "availability_window").unwrap());
+        conn.execute(
+            "INSERT INTO server_profiles (id, name, host, remote_orca_path, remote_scratch_dir)
+             VALUES ('p1', 'x', 'x', '/o', '/r')",
+            [],
+        )
+        .unwrap();
+        let slot_count: i64 = conn
+            .query_row("SELECT slot_count FROM server_profiles WHERE id = 'p1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(slot_count, 1);
+        assert!(conn
+            .execute("UPDATE server_profiles SET slot_count = 2 WHERE id = 'p1'", [])
+            .is_err());
+        drop(conn);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     fn job_still_exists(conn: &Connection, id: &str) -> bool {

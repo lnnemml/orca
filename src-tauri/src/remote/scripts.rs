@@ -1,4 +1,4 @@
-//! The three static server-side scripts of ADR-024 Decision l, embedded at build time.
+//! The static server-side scripts of ADR-024 Decisions l and n, embedded at build time.
 //!
 //! Each script is the shared head (`scripts/head.sh`: shebang, `set -u`, the strict `.started` /
 //! `.enqueued` / stat parsers and the ENOENT-vs-error readers) followed by its own body. The
@@ -10,6 +10,10 @@
 //!   its predicates without writing or signalling.
 //! - [`COLLECT`] — `collect.sh <job_dir> [<socket>...]`: one raw-fact snapshot on stdout, parsed
 //!   by [`super::wire::parse_snapshot`].
+//! - [`CONNTEST`] — the profile connection test (ADR-024 n). Unlike the three job scripts it is not
+//!   uploaded: it is fed to `bash -s` on stdin followed by its values as a NUL list
+//!   ([`crate::connection_test::conntest_stdin`]), and its records are parsed by
+//!   [`crate::connection_test::parse_output`]. Of the head it uses only `valid_path`.
 //!
 //! Every per-job value is a positional argument; nothing is substituted into the script text.
 //! Unit 5.3 uploads each one as `<root>/bin/<name>-<sha>.sh` (content-addressed, by temp file +
@@ -20,6 +24,7 @@ use sha2::{Digest, Sha256};
 pub const WRAPPER: &str = concat!(include_str!("scripts/head.sh"), include_str!("scripts/wrapper.sh"));
 pub const CANCEL: &str = concat!(include_str!("scripts/head.sh"), include_str!("scripts/cancel.sh"));
 pub const COLLECT: &str = concat!(include_str!("scripts/head.sh"), include_str!("scripts/collect.sh"));
+pub const CONNTEST: &str = concat!(include_str!("scripts/head.sh"), include_str!("scripts/conntest.sh"));
 
 /// Lowercase hex sha256 of a script's bytes — the `<sha>` of its upload name.
 pub fn sha256_hex(script: &str) -> String {
@@ -36,7 +41,7 @@ mod tests {
     #[test]
     fn every_script_starts_with_the_shebang_and_shares_the_head() {
         let head = include_str!("scripts/head.sh");
-        for script in [WRAPPER, CANCEL, COLLECT] {
+        for script in [WRAPPER, CANCEL, COLLECT, CONNTEST] {
             assert!(script.starts_with("#!/bin/bash\n"));
             assert!(script.starts_with(head));
             // Exactly one shebang: the bodies must not carry their own.

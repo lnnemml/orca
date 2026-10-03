@@ -61,7 +61,7 @@ pub enum WireError {
     /// The collector stopped on a read error it must not read as "absent".
     #[error("the collector reported an error: {0}")]
     Collector(String),
-    #[error("malformed snapshot at byte {offset}: {what}")]
+    #[error("malformed record stream at byte {offset}: {what}")]
     Malformed { offset: usize, what: String },
     #[error("inconsistent snapshot: {0}")]
     Inconsistent(String),
@@ -243,19 +243,30 @@ fn check_socket_list(facts: &[SocketFact], slots: &[String], job_dir: &str) -> R
     }
 }
 
-struct Reader<'a> {
+/// The strict record reader shared by the collector's snapshot and the connection test's output
+/// (`crate::connection_test`): record lines, counts and length-prefixed byte records.
+pub(crate) struct Reader<'a> {
     buf: &'a [u8],
     pos: usize,
 }
 
 impl<'a> Reader<'a> {
-    fn malformed(&self, what: String) -> WireError {
+    pub(crate) fn new(buf: &'a [u8]) -> Self {
+        Reader { buf, pos: 0 }
+    }
+
+    /// Whether every byte has been consumed.
+    pub(crate) fn at_end(&self) -> bool {
+        self.pos == self.buf.len()
+    }
+
+    pub(crate) fn malformed(&self, what: String) -> WireError {
         WireError::Malformed { offset: self.pos, what }
     }
 
     /// The next record line as `(name, arg)`. An `error` record ends the parse with
     /// [`WireError::Collector`].
-    fn line(&mut self) -> Result<(&'a str, Option<&'a str>), WireError> {
+    pub(crate) fn line(&mut self) -> Result<(&'a str, Option<&'a str>), WireError> {
         let rest = &self.buf[self.pos..];
         let len = rest
             .iter()
@@ -280,7 +291,7 @@ impl<'a> Reader<'a> {
         Ok((name, arg))
     }
 
-    fn expect(&mut self, want: &str) -> Result<Option<&'a str>, WireError> {
+    pub(crate) fn expect(&mut self, want: &str) -> Result<Option<&'a str>, WireError> {
         let (name, arg) = self.line()?;
         if name != want {
             return Err(self.malformed(format!("expected {want:?}, got {name:?}")));
@@ -289,13 +300,13 @@ impl<'a> Reader<'a> {
     }
 
     /// `<name> <word>`.
-    fn word(&mut self, want: &str) -> Result<&'a str, WireError> {
+    pub(crate) fn word(&mut self, want: &str) -> Result<&'a str, WireError> {
         self.expect(want)?
             .ok_or_else(|| self.malformed(format!("{want} needs an argument")))
     }
 
     /// `<name> <n>`, a bounded count.
-    fn count(&mut self, want: &str) -> Result<usize, WireError> {
+    pub(crate) fn count(&mut self, want: &str) -> Result<usize, WireError> {
         let arg = self.word(want)?;
         self.parse_count(arg)
     }
@@ -308,7 +319,7 @@ impl<'a> Reader<'a> {
     }
 
     /// A byte record: `Some(bytes)`, or `None` for `<name> -`.
-    fn bytes(&mut self, want: &str) -> Result<Option<Vec<u8>>, WireError> {
+    pub(crate) fn bytes(&mut self, want: &str) -> Result<Option<Vec<u8>>, WireError> {
         match self.expect(want)? {
             Some("-") => Ok(None),
             arg => self.payload(arg).map(Some),

@@ -1398,7 +1398,8 @@ preflight. The remaining items (remote `orca_plot`, pause) are not numbered yet.
       amendment had put in Part B, move to 5.3. **Scope per ADR-024 (n):** schema v19 (`slot_count` fixed
       at 1, `availability_window`); `remote_scratch_dir` is the root; edits and failed re-tests clear
       `verified_at`; run target = verified + valid `core_mask`. The mandatory checks are ORCA version,
-      `nproc`, `KillUserProcesses`, and the root on a local FS (allow-list `{ext4}`). OpenMPI is recorded,
+      `nproc` and `core_mask` within `0..nproc-1`, `KillUserProcesses`, and the root on a local FS
+      (allow-list `{ext4}`). OpenMPI is recorded,
       not matched; sudo is a warning; tsp and a reader self-test are not checked. Connection-test checks
       first added on 2026-10-03 (ADR-024 Consequences + k):
       - **`KillUserProcesses=false`** on the host — **mandatory**; without it, detached jobs die at

@@ -10180,3 +10180,39 @@ The orchestrator applied the rest:
 - the transport shape allows a prepended `head.sh`; the `mpirun` environment equivalence is labelled
   inference;
 - equal window endpoints are rejected.
+
+## [2026-10-03] feat | Unit 5.1 Part B (A) — v19, verification lifecycle, connection-test script + evaluation
+
+The pure, tested backend half of 5.1 Part B (ADR-024 n). No ssh, no UI, nothing committed yet
+(awaiting the verifier and Anton).
+- **Schema v19:** `server_profiles.slot_count INTEGER NOT NULL DEFAULT 1 CHECK (slot_count = 1)`
+  and `availability_window TEXT NULL`, guarded ALTERs; existing rows backfill to 1.
+- **Save-time validation** (`models/server_profile.rs`, `AppError::Invalid`, nothing written):
+  - absolute ORCA path;
+  - the root under the one path rule (reuses `classify::is_valid_path`), with every slot socket
+    `<root>/tsp/slot<N>.sock` (`remote::slot_socket_path`, the one place this layout is spelled
+    out) ≤ 100 bytes, so a root is at most 85 bytes;
+  - the mask: the wrapper's regex plus `N`/ascending `N-M` elements (`1-2-3` and `5-2` are
+    refused, because how `taskset` reads them is not measured);
+  - the window: `HH:MM-HH:MM`, may wrap, equal ends rejected.
+- **Lifecycle:**
+  - `update_server_profile` clears `verified_at` **and** the three facts iff a `ProfileTarget`
+    value changed; a rename, a window edit or a same-value save keeps them. The old "update
+    preserves the stamp" test is inverted for target fields;
+  - `set_profile_verified` takes `openmpi_version: Option`, plus the target that was tested, and
+    refuses with `AppError::Conflict` if the profile changed meanwhile — an orchestrator-level
+    call, beyond (n);
+  - `clear_profile_verified` is new;
+  - `is_run_target` gives a reason per failure.
+- **Connection test:** `remote/scripts/conntest.sh` (`head.sh` + body, `include_str!`).
+  - Transport shape per n item 11. The script echoes the **values**, not just their count, so a
+    script line after the loop, which lands inside value 0 with the count still 3, is caught.
+  - Output reuses the collector's record `Reader`, now `pub(crate)`. `WireError::Malformed` now
+    reads "malformed record stream".
+  - `evaluate` returns `FullPass{facts,warnings}` or `NotPassed{failures,warnings}`.
+- **Tests:** 523 passed / 0 failed / 25 ignored (baseline 485). `cargo build` has 0 warnings.
+  - The real script runs locally under `bash -s` with stubs on PATH; each stub exits 99 unless its
+    stdin is `/dev/null`.
+  - All eight negative controls (a)–(h) went red and were restored.
+- **Next:** 5.1 Part B wiring. A Tauri command runs `ssh <host> bash -s` with a timeout, stamps on
+  `FullPass` and clears otherwise (also on `Err`); then the settings UI and Anton's live gate.

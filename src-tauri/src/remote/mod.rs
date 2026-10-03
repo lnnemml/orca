@@ -36,6 +36,18 @@ mod race_model;
 #[cfg(test)]
 mod script_tests;
 
+/// Upper bound on a `tsp` socket path, in bytes. The kernel's `sun_path` is 108 bytes including
+/// the NUL (`man 7 unix`, `UNIX_PATH_MAX`); submit and profile save keep a margin below it
+/// (ADR-024 l, round 4 N-3).
+pub const MAX_SOCKET_PATH_BYTES: usize = 100;
+
+/// The socket path of slot `slot` under the remote root: `<root>/tsp/slot<slot>.sock` (ADR-024 n
+/// item 4: the `tsp/` sockets live under the root). The one place this layout is spelled out;
+/// profile save bounds it by [`MAX_SOCKET_PATH_BYTES`], and 5.3's submit uses it.
+pub fn slot_socket_path(root: &str, slot: u32) -> String {
+    format!("{root}/tsp/slot{slot}.sock")
+}
+
 /// A raw fact from the server that does not parse. Every parser here is strict: a malformed
 /// input is this error, never a default value (rule #9). Where the precedence table assigns a
 /// meaning to a parse failure (a corrupt `.started` is row 1, a bad `.exit_code` is row 6), the

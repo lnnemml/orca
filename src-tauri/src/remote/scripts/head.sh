@@ -1,8 +1,10 @@
 #!/bin/bash
 # OrcaStudio remote-job script (ADR-024 Decision l).
 #
-# This head is shared by wrapper.sh, cancel.sh and collect.sh: the build concatenates it in front
-# of each body (src-tauri/src/remote/scripts.rs), so all three ship the same parsers byte for byte.
+# This head is shared by wrapper.sh, cancel.sh, collect.sh and conntest.sh: the build concatenates
+# it in front of each body (src-tauri/src/remote/scripts.rs), so all of them ship the same parsers
+# byte for byte. It holds only definitions and stdin-free commands, so conntest.sh, which is fed
+# through `bash -s` stdin, may carry it (ADR-024 n item 11).
 # Every per-job value arrives as a positional argument; nothing is ever evaluated as shell code.
 set -u
 
