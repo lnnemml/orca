@@ -403,7 +403,12 @@ decomposition; Anton decided every fork, before and after DESIGN review rounds 1
   - for each member of `ps -s <sid>`, its PID and raw `/proc/<pid>/cwd` (taken only when `boot_id` is
     current; Anton, M7). Rust keeps only the members whose cwd is this job's dir — the **job
     session** (Anton, round 2 MED-5). A member whose cwd cannot be read (ENOENT: it exited, or it is
-    a zombie, per probe 5.2c) is **not** in the job session; this is not an `Error` (round 5 LOW-3);
+    a zombie, per probe 5.2c) is **not** in the job session; this is not an `Error` (round 5 LOW-3). **The classifier applies the same SID-reuse guard** as the cancel
+    script (Anton, 5.2 Part A): if the SID is reused (a process at that number has a different
+    start time), the job session is **empty**. Otherwise a foreign process in the job dir would hold a
+    cancelled job in `Cancelling` forever, because the guarded sweep signals nothing, or it would show
+    up as phantom `Lost` orphans. For this the snapshot also carries the raw `/proc/<sid>/stat` line
+    (or "absent");
   - for **each of the profile's slot sockets, plus the socket recorded in `.enqueued`** (it may have
     left the profile after a slot-count change), a three-way raw fact (round 3 MED-A):
     - `NoDaemon` — nothing listens on the socket path: the path is absent, or the socket file is

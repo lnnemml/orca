@@ -36,7 +36,18 @@ const LOG_BATCH_LINES: usize = 50;
 /// ...or when this many milliseconds have elapsed since the last flush.
 const LOG_BATCH_MILLIS: u64 = 100;
 /// How many bytes from the end of a file to inspect for markers / errors.
-const TAIL_BYTES: u64 = 5 * 1024;
+/// `pub(crate)`: the remote classifier inspects the same window of a remote tail
+/// (`remote::classify`, ADR-024 l), so both backends apply rule #6 identically.
+pub(crate) const TAIL_BYTES: u64 = 5 * 1024;
+/// The normal-termination marker ORCA prints last (domain rule #6).
+const NORMAL_TERMINATION_MARKER: &str = "ORCA TERMINATED NORMALLY";
+
+/// Does this output tail carry ORCA's normal-termination marker? The single
+/// definition of the marker test behind rule #6, shared by [`detect_completion`]
+/// (local) and the remote classifier, so the two backends cannot drift apart.
+pub(crate) fn has_normal_termination(tail: &str) -> bool {
+    tail.contains(NORMAL_TERMINATION_MARKER)
+}
 /// Larger tail for result extraction: a Freq/Opt run prints the final energy
 /// well before the end (normal modes + thermochemistry follow), so 5 KB isn't
 /// enough — 64 KB comfortably reaches back to the last `FINAL SINGLE POINT ENERGY`.
@@ -1012,7 +1023,7 @@ fn detect_completion(
     exit_code: Option<i32>,
 ) -> (JobStatus, Option<String>) {
     let tail = read_tail(out_path, TAIL_BYTES).unwrap_or_default();
-    if tail.contains("ORCA TERMINATED NORMALLY") && exit_code == Some(0) {
+    if has_normal_termination(&tail) && exit_code == Some(0) {
         return (JobStatus::Completed, None);
     }
     let stderr_tail = read_tail(stderr_path, TAIL_BYTES).unwrap_or_default();

@@ -228,7 +228,8 @@ preflight.
   to the verified wrapper's group, and a **cwd-filtered SID sweep** (ADR-024 i, l). It never kills by
   `tsp` id or by name.
 - **Status:** a pure classifier over a raw-fact snapshot from the server (ADR-024 l, precedence
-  table). The server filesystem is the source of truth (ADR-024 c).
+  table). The server filesystem is the source of truth (ADR-024 c). The classifier itself exists
+  (pure, unwired): [remote-jobs.md](remote-jobs.md).
 - **Poll / fetch:** byte-offset `poll_log` and selective rsync down per `FetchPolicy` (output/xyz/hess
   always, gbw opt-in), wired in 5.3.
 

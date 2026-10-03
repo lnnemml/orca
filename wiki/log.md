@@ -9897,3 +9897,33 @@ closed faithfully.
   - `sun_path` quoted from unix(7) and `linux/un.h`, plus a 5.3 post-condition that the socket path
     appears verbatim in `/proc/net/unix`;
   - the index mentions probe 5.2c.
+
+## [2026-10-03] feat | Unit 5.2 Part A — pure remote-job classifier
+
+New module `src-tauri/src/remote/` (`markers`, `procfs`, `tsp`, `snapshot`, `classify`, test-only
+`race_model`), no I/O, under a scoped `#[allow(dead_code)]` until 5.3/5.4 wire it
+([modules/remote-jobs.md](modules/remote-jobs.md)).
+- **What:** the raw-fact `Snapshot` of ADR-024 l; strict parsers for `.started` (format fixed here:
+  six `key=value` lines — `pid`, `pgid`, `sid`, `boot_id`, `starttime`, `started_at`), `.exit_code`,
+  `boot_id`, `/proc/<pid>/stat` (after the last `) `), cmdline, `/proc/net/unix`, and `tsp -l` rows
+  (job dir as a whole token); the alive / ours / job-session / SID-reuse predicates; and
+  `classify(snapshot, reenqueue_count)` — the 11-row table in order, returning `Retake` once when the
+  bracketing `.started` reads differ, `Indeterminate` if a retake still differs, and a
+  `SnapshotError` (no action) for a broken collection, e.g. a garbled wrapper stat line.
+- **Reuse:** `local_backend::has_normal_termination` + `TAIL_BYTES` are now `pub(crate)`, the single
+  rule-#6 marker test for both backends; `detect_completion` goes through it, its test unchanged and
+  green.
+- **Tests:** 57 new (`cargo test`: 432 passed, 0 failed, 25 ignored). Fixtures are the recorded probe
+  5.2/5.2b/5.2c strings; the elided (`…`) stat and `/proc/net/unix` fields are filled from a laptop
+  read and marked.
+- **Negative controls, each shown red then restored:** rows 2/4 swapped; `state ≠ Z` dropped; the
+  starttime equality dropped; socket `Error` read as no rows; substring row match (`/jobs/j1` vs
+  `/jobs/j10`); the wrapper checking `.cancelled` before writing `.started` (race model).
+- **Follow-up (Anton, ambiguity #1 = the lean):** the classifier applies the cancel script's
+  SID-reuse guard to the job session. The snapshot carries the raw `/proc/<sid>/stat`; a reused SID
+  empties the session, so row 3 gives `Cancelled` and row 8 `Lost { orphans: [] }` for a foreign
+  process in the job dir. 4 more tests (61 in the module; `cargo test` 436 passed, 25 ignored);
+  negative control 7 (guard removed) turned both reused-SID tests red.
+
+Next: verifier CODE on Part A → Anton's greenlight → Part B (wrapper + cancel scripts, the collector,
+shell-vs-Rust liveness parity on materialised fixtures (a)–(e)).

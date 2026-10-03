@@ -19,6 +19,11 @@ mod orca_json;
 mod orca_plot;
 mod output_search;
 mod parse;
+// Unit 5.2 Part A lands the pure remote-job classifier (ADR-024 l) with its tests; its callers
+// (the snapshot collector in 5.2 Part B, SshBackend reconcile in 5.3/5.4) do not exist yet.
+// Scoped allow until 5.3/5.4 wires it, so the build stays warning-clean without a faked caller.
+#[allow(dead_code)]
+mod remote;
 mod result_extraction;
 mod results;
 mod secrets;
