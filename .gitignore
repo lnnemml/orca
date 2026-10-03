@@ -23,3 +23,6 @@ sidecar/probes/_*_runs/
 # committed; the corpus itself is not.
 scripts/_float-parity-corpus.txt
 scripts/_constraint-value-corpus.txt
+
+# Claude Code worktrees (verifier / subagent isolation) — never tracked
+.claude/worktrees/

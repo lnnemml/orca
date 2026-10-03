@@ -1,0 +1,45 @@
+{
+  "worktree": {
+    "baseRef": "head"
+  },
+  "permissions": {
+    "ask": [
+      "Bash(*git*commit*)",
+      "Bash(*git*push*)",
+      "Bash(*git*merge*)",
+      "Bash(*git*cherry-pick*)",
+      "Bash(*git*revert*)",
+      "Bash(*git*rebase*)",
+      "Bash(*git*pull*)",
+      "Bash(*git am*)",
+      "Bash(*git * am *)",
+      "Bash(*git*'am'*)",
+      "Bash(*git*\"am\"*)",
+      "Bash(*git*alias.*)"
+    ],
+    "deny": [
+      "Bash(sudo*)",
+      "Bash(* sudo*)",
+      "Bash(*/sudo*)",
+      "Bash(*'sudo*)",
+      "Bash(*\"sudo*)",
+      "Bash(*(sudo*)",
+      "Bash(*pkexec*)",
+      "Bash(*doas *)",
+      "Bash(su)",
+      "Bash(su *)",
+      "Bash(* su *)",
+      "Bash(*uni-admin*)",
+      "Bash(*yats@*)",
+      "Bash(*User=yats*)",
+      "Bash(*User yats*)",
+      "Bash(*-l yats*)",
+      "Bash(*-lyats*)",
+      "Bash(*-l 'yats'*)",
+      "Bash(*-l \"yats\"*)",
+      "Edit(/.claude/settings.json)",
+      "Edit(/.claude/settings.local.json)",
+      "Edit(~/.claude/settings.json)"
+    ]
+  }
+}

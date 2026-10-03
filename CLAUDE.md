@@ -233,36 +233,110 @@ Report findings, propose fixes, apply approved ones, log a `lint` entry.
 
 ## Agentic development workflow (in Claude Code)
 
-Within a Claude Code session the architect → implement → verify loop runs as subagents
-(`.claude/agents/`, ADR-022). Roles:
+The whole loop — strategy, architecture, implementation, verification — runs inside Claude Code as
+the main session plus subagents (`.claude/agents/`, ADR-022). Claude Web is not part of the loop.
+Roles:
 
-- **orchestrator-architect** = the main session (not a subagent, not `--agent`). Holds the ROADMAP,
-  decomposes, writes sub-task prompts, presents forks with a lean, spawns workers, commits. Does
-  **not** write code and **does not review its own plan**.
+- **orchestrator-architect** = the main session (not a subagent, not `--agent`). It is also the
+  **cross-session strategic architect**:
+  - keeps `ROADMAP.md` and `wiki/log.md` as the memory between sessions;
+  - decomposes phases into units;
+  - writes delegation prompts in a fixed shape: **main risk first** → steps with references to the
+    rules → checks with a **negative control** → wiki updates → commit → **STOP-AND-REPORT**;
+  - brings every design fork to Anton with its own lean;
+  - runs **every ADR (or ADR change) through the verifier in DESIGN mode before acceptance**.
+
+  It does **not** write code and does **not** review its own plan.
 - **prober** (`sonnet`) — settles third-party facts from real runs only (domain rule #10).
 - **explorer** (`haiku`) — read-only codebase/wiki archaeology; returns `file:line` anchors + reuse
   candidates; separates ADR intent from code reality.
-- **implementer** (`claude-opus-4-8`) — one unit, STOP-AND-REPORT (Part A pure+tested → STOP → Part B wiring),
-  reuse over rebuild, wiki in the same change. **Never commits.**
-- **verifier** (`claude-opus-4-8`, worktree-isolated) — fresh-context push ritual; runs `tsc`/`vitest`/`cargo`/
-  `pytest` for real; proves each negative control bites. Marks render/chemistry units REQUIRES LIVE
-  GATE and hands them to Anton.
+- **implementer** (`sonnet`; the orchestrator invokes it with **`model: opus`** for high-risk units:
+  state machine, concurrency, reconciliation, DB migrations, parsers with chemical consequences) — one
+  unit, STOP-AND-REPORT (Part A pure+tested → STOP → Part B wiring), reuse over rebuild, wiki in the
+  same change. **Never commits.**
+- **verifier** (`opus`, worktree-isolated), two modes:
+  - **CODE** — fresh-context push ritual. It applies the orchestrator's patch of the uncommitted
+    change in its own worktree, runs `tsc`/`vitest`/`cargo`/`pytest` for real, and proves each
+    negative control bites. It marks render/chemistry units REQUIRES LIVE GATE and hands them to
+    Anton.
+  - **DESIGN** — a checklist review of an ADR before acceptance; report only.
 
-Loop: probe → decompose → *(fork? Anton decides, ADR same session)* → anchors → implementer Part A →
-**STOP** → verifier → *(Anton greenlight)* → implementer Part B → verifier → *(Anton live gate if
-render; chemistry gate if science)* → commit on Anton's approval.
+Loop: probe → decompose → *(fork? Anton decides, ADR same session → verifier DESIGN)* → anchors →
+implementer Part A → **STOP** → verifier CODE → *(Anton greenlight)* → implementer Part B → verifier
+CODE → *(Anton live gate if render; chemistry gate if science)* → commit on Anton's approval.
+**Two verifier FAILs in a row on the same unit or ADR → stop and escalate to Anton**; there is no
+third automatic round.
 
-**The human gates are structural, not optional.** The implementer cannot commit; the verifier cannot
-certify render or chemistry correctness. Anton is the merge approver, the live WebKitGTK gate, the
-chemistry sanity gate, and the sole resolver of design forks — by construction.
+**Mandatory commit binding (tree hash).**
+1. The orchestrator builds the verifier's patch and the expected `git write-tree` hash in a throwaway
+   index (`GIT_INDEX_FILE=<tmp>`: `read-tree HEAD` → `add -A` → `diff --cached --binary HEAD` +
+   `write-tree`).
+2. The verifier reports the tree hash it actually verified.
+3. **Immediately before `git commit`**, the orchestrator runs `git add -A` + `git write-tree` in the
+   main checkout and compares the result with the verified hash. Any difference → verify again;
+   never commit a tree the verifier did not see. A **second** mismatch on the same unit is escalated
+   to Anton, like two FAILs.
+4. The commit is a plain `git commit` of that index, never `-a` and never with pathspecs. **Right after
+   it**, `git rev-parse HEAD^{tree}` must equal the verified hash; if not, stop and report to Anton
+   before anything else.
+5. Before every commit Anton sees `git diff --stat`, the verifier's report and the matching tree
+   hash.
 
-**Run the main session in default (manual) or plan mode, not auto** — in auto mode a subagent's
-`permissionMode` is ignored and edits can auto-apply, weakening the diff-review gate.
+**The human gates are structural, not optional.** Anton is:
+- the merge approver — the usual invocations of commit-creating or publishing git commands
+  (`commit`, `push`, `merge`, `cherry-pick`, `revert`, `rebase`, `pull`, `am`, inline aliases) hit an
+  **`ask`** rule;
+- the live WebKitGTK gate;
+- the chemistry sanity gate;
+- the sole resolver of design forks.
+
+The `ask` rules prompt even in auto mode and even when an `allow` rule also matches. The verifier
+cannot certify render or chemistry correctness.
+
+**Auto mode is allowed**, because the gates do not rely on anyone remembering them:
+1. **Managed settings** (`/etc/claude-code/managed-settings.json`, root-owned, installed by Anton) hold
+   the gate rules:
+   - `ask` on the git commands above;
+   - `deny` on `sudo`/`su`/`pkexec`/`doas`, on anything naming the admin ssh alias, and on any ssh-style
+     login as the `yats` account.
+
+   No project, local or user rule can override a managed rule. The **OS** boundary is that the file
+   is root-owned and the agent has no sudo password. The `sudo` deny rule is only a text guardrail on
+   top of that; whether a sudo ticket could be reused from the agent's Bash is an open question
+   (ADR-022 §6). The same rules are mirrored in `.claude/settings.json`, which also denies `Edit` on
+   the settings files themselves. Deny and ask rules resolve before auto mode's classifier and apply
+   to subagents.
+2. **OS isolation on the server**: agent work on the server runs as the dedicated no-sudo user `anton`
+   (ADR-024 k). The admin alias uses the **same ssh key**, so the `deny` rules are what keep agents off
+   it on the laptop side.
+3. **The verifier's own worktree**: Claude Code blocks tool edits, commands run from the main checkout,
+   and git redirects into it. It does not block a plain Bash write to an absolute path, and the
+   implementer works in the main checkout.
+
+**Limits, stated honestly.** The Bash rules match **command text**, and the docs say such a rule
+*"isn't a security boundary around the program"*.
+- Ordinary one-liners slip past them: split quoting (`git com''mit`), variables (`S=sudo; $S`),
+  plumbing (`git send-pack`, `git fetch . topic:main`), script files.
+- Auto mode's classifier **allows pushing to the current repository by default**, so a push the
+  patterns miss gets no second check.
+- An installed **mod that handles `tool.check` can approve a call an `ask` rule would prompt for**,
+  even a managed one (managed `deny` still holds). **No mod is installed without Anton re-checking
+  this gate** (ADR-022 §6).
+- The threat model is therefore a **cooperative agent making a mistake, not an adversary**.
+
+The boundaries that hold against more than that are OS-level: root-owned managed settings, the
+no-sudo `anton` account, and the verifier's worktree. The full list of residual risks is in
+ADR-022 §6–§8.
+
+Two more points:
+- In auto mode a subagent's `permissionMode` frontmatter is ignored (documented), so no gate may
+  depend on it.
+- Subagents take CLAUDE.md as it was **when the main session started** (documented; measured), so
+  every delegation prompt restates the rules and protocol it relies on.
 
 ## Division of labor
 
-- **Claude web/desktop** (chat): architecture discussions, research, planning.
-  Outcomes get ingested into the wiki as ADRs/notes — by Claude Code, on the author's request
-  ("ingest this decision: ...").
-- **Claude Code** (you): implementation, wiki maintenance, lint. Use plan mode for
-  multi-file features. Ask before destructive operations.
+- **Claude Code** (you): the whole loop — strategy, architecture (ADRs), decomposition,
+  implementation, verification, wiki maintenance, lint. Ask before destructive operations.
+- **Claude Web/desktop**: **not in the loop**. Optionally used for an external review at a **phase
+  boundary**; any outcome is ingested into the wiki by Claude Code on the author's request.

@@ -9667,3 +9667,87 @@ Also changed:
 - `uni-server.md`: layout, permissions and the check above; `HWLOC_COMPONENTS` is cross-referenced
   to ADR-024 b.
 - CLAUDE.md rule #1 is unchanged; it is now true for both hosts.
+
+## [2026-10-03] decision | fully in-session agentic loop; auto mode with structural gates
+
+The agentic loop now runs entirely inside Claude Code; Claude Web is out of the loop (optional
+external review at phase boundaries). Docs/config only. Claude Code facts were taken from the current
+docs (code.claude.com: permissions, permission-modes, sub-agents, worktrees, settings) and quoted in
+ADR-022, not recalled.
+
+- **Agents:** models as aliases — explorer `haiku`, prober `sonnet`, implementer `sonnet`, verifier
+  `opus`; the `claude-opus-4-8` pins are removed. The implementer gets per-invocation `model: opus`
+  for high-risk units (state machine, concurrency, reconciliation, DB migrations, chemistry-relevant
+  parsers). The verifier has **CODE** and **DESIGN** modes; DESIGN is a 9-item checklist built from
+  the 2026-10 review findings, report only. The implementer's log-type list was synced (`probe`).
+- **Correction found while checking the docs:** a subagent worktree branches from the **default
+  branch** and has only tracked files, so the verifier never saw uncommitted work.
+  → `worktree.baseRef: "head"` in `.claude/settings.json`.
+- **DESIGN review round 1 → FAIL** (2 HIGH, 4 MED, 6 LOW). Anton decided the two forks:
+  - **HIGH-1** (the gate file is editable by the gated, and auto mode routes `.claude/` writes to the
+    classifier) → **managed settings** `/etc/claude-code/managed-settings.json` (root-owned, 0644,
+    installed by Anton with sudo), plus a project layer mirroring the rules and denying `Edit` on the
+    settings files. `allowManagedPermissionRulesOnly` is not adopted (it would drop ~130 local allows
+    and the project `Edit` denies).
+  - **HIGH-2** (nothing bound the commit to the verified bytes) → a **tree-hash binding**. The patch
+    and the expected `git write-tree` are built in a throwaway index; the verifier reports the hash
+    it verified; the orchestrator recomputes it immediately before `git commit` and re-verifies on
+    any difference.
+  - MED/LOW accepted:
+    - `ask` widened to every commit-creating/publishing git command and alias forms;
+    - `deny` widened to `su`/`pkexec`/`doas`, anything naming the admin alias, and every `yats`
+      login spelling;
+    - two FAILs in a row → escalate to Anton;
+    - "measured" vs "sourced" labelling; superseded markers;
+    - `.claude/worktrees/` gitignored;
+    - prose-only gates listed honestly (ADR-022 §7);
+    - agent-definition hot reload opened as an Open question (§8) — the verifier received the
+      pre-edit body ~100 s after the edit.
+- **Sourced corrections to the plan:** `Write(path)` rules are never consulted (use `Edit`). `Edit`
+  denies also cover Bash `sed`/`tee` and `>`, but not `cp` or scripts. A root-only (0600) managed
+  file silently disables every gate. A settings folder created mid-session is not watched → restart
+  after installing.
+- **Negative controls (project layer):**
+  - `ssh uni-admin true`, the `bash -c` wrapper, `rsync … uni-admin:` and `sudo -n true` (despite a
+    local allow) → all denied;
+  - a no-op `sed -i` and an `Edit` of `.claude/settings.json` → denied;
+  - `ssh uni whoami` → `anton` (positive control).
+
+  Managed-layer controls follow after installation.
+- **CLAUDE.md:** agentic-workflow section rewritten — the orchestrator is the cross-session architect,
+  with a fixed delegation-prompt shape and DESIGN review of every ADR. The mandatory tree-hash binding
+  and the escalation bound are added. Auto mode is allowed because the gates are structural (managed
+  settings + `anton` + the worktree). The limits are stated. Division of labor: Web is not in the loop.
+- **ADR-022** amended §1–§8.
+- **Local allow rules overlapping the gates** were reported to Anton and left untouched (his file).
+- **DESIGN review round 2 → PASS WITH FINDINGS.** The tree-hash binding held (start = end =
+  `1bb5da73…`); the staged managed file equals the project mirror. Fixed in the docs:
+  - **MED-A** — CLAUDE.md overclaimed. The rules match text and are *"not a security boundary"*;
+    split quoting, variables, plumbing and script files slip past; auto mode allows pushes to the
+    current repo by default. The threat model is now stated as "cooperative agent".
+  - **MED-B** — subagents get **session-start** CLAUDE.md (sourced: worktrees; measured: round 2 saw
+    the `ce610f7`-era text). Agent-definition reload stays an open question: round 2 saw an
+    intermediate body, and its tools lacked Grep/Glob. Rule: restate the protocol in every
+    delegation, and restart after editing CLAUDE.md or an agent definition.
+  - **MED-C** — the OS boundary is the root-owned file plus the sudo password, not the `sudo` text
+    rule. `NOPASSWD` and sudo-ticket reuse are open. Install from a separate terminal, then `sudo -k`.
+  - **MED-D** — the managed-layer proof is `/status`, plus Anton temporarily removing the project
+    copy's rules.
+  - **LOW-E** — post-commit `HEAD^{tree}` assertion; no `-a`/pathspec.
+  - **LOW-F** — `cp` onto/from settings.json was denied, mechanism undetermined.
+  - **LOW-G** — a second tree mismatch escalates.
+  - **LOW-H** — managed JSON + sha256 `dfc4d453…` recorded in ADR-022 §6.
+  - **LOW-I** — fallback-relay line marked superseded.
+- **DESIGN review round 3 → PASS WITH FINDINGS** (tree `5e561a28…` start = end; every round-2 item
+  fixed). Fixed after it:
+  - **MED-1** — a `tool.check` mod can approve calls an `ask` rule would prompt for, even managed
+    ones (sourced, permissions). So the commit gate holds only while no such mod is installed.
+    Measured: none is. Rule: no mod without Anton re-checking.
+  - **LOW-1** — the managed-settings page was snapshotted; both quotes verified.
+  - **LOW-2** — the "hooks have no permission check" claim is relabelled as inference. The
+    `vercel-plugin` hooks are active (measured), and `allowManagedHooksOnly` would turn them off too.
+- **Open design forks for Anton** (not resolved):
+  1. the admin-access boundary — a separate passphrase key, or the Bash sandbox;
+  2. `allowManagedHooksOnly` (it also disables plugin hooks);
+  3. `git commit-tree <verified hash>` instead of detect-after;
+  4. managed controls over mods.
