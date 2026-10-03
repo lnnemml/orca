@@ -6,9 +6,10 @@
 //! `/proc` lines, `tsp -l` rows) and decides the job's state here, in Rust (rule #9: never a
 //! remote verdict such as `alive=yes`).
 //!
-//! This module is that decision, and nothing else. It does **no** I/O: no ssh, no files, no
-//! processes. The collector that fills a [`snapshot::Snapshot`] and the wrapper/cancel scripts
-//! are unit 5.2 Part B; the wiring into `SshBackend` and the DB is units 5.3/5.4.
+//! The decision does **no** I/O: no ssh, no files, no processes. The facts come from three
+//! static scripts that run on the server ([`scripts`]): the wrapper that starts ORCA, the cancel
+//! script, and the collector, whose length-prefixed output [`wire`] parses into a
+//! [`snapshot::Snapshot`]. The wiring into `SshBackend` and the DB is units 5.3/5.4.
 //!
 //! - [`markers`] — strict parsers for the job-dir markers `.started` and `.exit_code`, and for a
 //!   `boot_id`.
@@ -19,15 +20,21 @@
 //! - [`snapshot`] — the raw-fact snapshot and the job's identity.
 //! - [`classify`] — the predicates ("alive", "ours", job session, SID-reuse guard) and
 //!   [`classify::classify`], the 11-row precedence table.
+//! - [`scripts`] — the embedded `wrapper.sh`, `cancel.sh` and `collect.sh`, and their sha256.
+//! - [`wire`] — the strict parser of the collector's output into a snapshot.
 
 pub mod classify;
 pub mod markers;
 pub mod procfs;
+pub mod scripts;
 pub mod snapshot;
 pub mod tsp;
+pub mod wire;
 
 #[cfg(test)]
 mod race_model;
+#[cfg(test)]
+mod script_tests;
 
 /// A raw fact from the server that does not parse. Every parser here is strict: a malformed
 /// input is this error, never a default value (rule #9). Where the precedence table assigns a

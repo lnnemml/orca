@@ -271,7 +271,7 @@ other side's marker. There are only two outcomes:
 - **the cancel script sees `.started`** → it kills the process tree in step 3.
 
 Either way, ORCA is never left running under a `.cancelled` marker. Both markers are created by
-`rename` in the same directory on one local filesystem, so visibility is immediate. The argument would
+`rename` in the same directory on one local filesystem, so visibility is immediate. *(`.started` is now published by a no-clobber hard link, `ln -T` = one `linkat`, per Decision l Part B item 5; still atomic in the same directory, so the argument holds)* The argument would
 **not** hold over NFS-style caching; on the uni host the job root `/home/<user>/.orcastudio/` is on local `ext4` (`/dev/sdb4`, measured with `findmnt` on 2026-10-03; uni-server.md).
 
 **Amended 2026-10-03 (d′ resolution) — cancel outside the connection window.** If the user cancels
@@ -338,7 +338,7 @@ decomposition; Anton decided every fork, before and after DESIGN review rounds 1
   `.enqueued` (temp file + `rename`) holding the slot's `TS_SOCKET` path and the `tsp` id. The cancel
   script uses it to find the queue entry. Nothing trusts the bare id: `tsp` ids are per daemon and
   restart at 0 after a daemon restart (P4), which is the tsp version of PID reuse.
-- **Every marker is written by temp file + `rename`** — `.started`, `.cancelled`, `.enqueued`, and
+- **Every marker is written by temp file + `rename`** *(`.started` is now published by a no-clobber hard link, `ln -T` = one `linkat`, per Decision l Part B item 5; still atomic in the same directory, so the argument holds)* — `.started`, `.cancelled`, `.enqueued`, and
   also **`.exit_code`**, including the 97 path below (review round 2, MED-3). A snapshot must never see
   a half-written `.exit_code`: row 6 would make a job that is completing permanently `Failed`.
 - **Cancel script, revised** (Anton, round 2 HIGH-1 and MED-5). This supersedes steps 2–3 of Decision
@@ -457,7 +457,7 @@ decomposition; Anton decided every fork, before and after DESIGN review rounds 1
     - Row order is running → queued → finished, not id order.
     - E-Level is `0`, the exit code, or `-1` after `tsp -k`.
     - The command column is argv **joined by single spaces, unquoted**. So a job dir is matched as a
-      whole space-separated token. **Job-dir paths must match `[A-Za-z0-9._/-]+`**, which the submit
+      whole space-separated token. **Job-dir paths must match `[A-Za-z0-9._/-]+`** *(narrowed by Part B item 4: one path rule that also rejects `//`, `.` and `..`, for job dirs, the root and sockets alike)*, which the submit
       step asserts (round 2 LOW-7). That also keeps every per-job path that 5.3's rsync/poll commands
       carry free of shell metacharacters.
     - After `tsp -K` and a fresh daemon on the same socket, the old rows are gone and ids **restart
@@ -528,7 +528,7 @@ decomposition; Anton decided every fork, before and after DESIGN review rounds 1
   round 4 N-7) → 1 `.started` → 1a the
   self-check below → 2 `.cancelled` check → 3 env + pinned ORCA → 4 `.exit_code` by `rename`.
 - **The wrapper checks its own marker** (rule #9). This is step 1a in Decision b's start sequence
-  (round 2 LOW-4). After the `rename`, the wrapper reads `.started` back and parses it. If that fails,
+  (round 2 LOW-4). After the `rename` *(`.started` is now published by a no-clobber hard link, `ln -T` = one `linkat`, per Decision l Part B item 5; still atomic in the same directory, so the argument holds)*, the wrapper reads `.started` back and parses it. If that fails,
   it exits without launching ORCA and writes `.exit_code` = 97 (by `rename`), so row 1 or row 6
   explains the failure. Exit code 97 is our own choice, not an ORCA code.
 - **The outcome type is the classifier's own enum:** `Queued`, `Running`, `Completed { late_cancel }`,
@@ -537,6 +537,41 @@ decomposition; Anton decided every fork, before and after DESIGN review rounds 1
 - **The re-enqueue count is an input.** The `jobs` column (schema v19) lands in **unit 5.4**. The bound
   holds only if 5.4 **persists the increment before** it issues the re-enqueue (review M5). Otherwise
   a crash between `tsp` submit and the DB write would re-enqueue again, without limit.
+
+*Details fixed while building 5.2 Part B (2026-10-03).* Items 1–4 are the orchestrator's calls
+within (l); items 5–6 are Anton's decisions.
+1. **`.enqueued` format:** `socket=<abs path>\nid=<decimal>\n`, keys in any order, each exactly
+   once. 5.3's submit writes exactly this, by `rename`.
+2. **An unparsable `.enqueued`** is a socket `Error` fact. So with no `.started` the job is row 10
+   `Indeterminate`; with a `.started` it does not block classification.
+3. **Failure classes:**
+   - a failed `tsp -l` is a socket `Error` fact (row 10);
+   - a failed read of `/proc/net/unix` fails the whole snapshot, like any read error other than
+     ENOENT/ESRCH (verifier Part A, LOW-1).
+4. **Paths:** Rust and shell use **one** validity rule. It rejects `//` and `.`/`..` components (the
+   shell rule, which is stricter). The cwd filter compares the kernel's canonical cwd, so **5.3's
+   submit asserts that the job dir equals its `realpath`**; a symlink component would never match.
+5. **A `.started` that already exists** (Anton): the wrapper **refuses**. It exits at once, runs no
+   ORCA, and touches neither `.started` nor `.exit_code`. The test and the creation of the marker
+   are atomic, so two wrappers can never run in one job dir. Re-enqueue happens only when there is
+   no `.started` (row 11), so this case is a fault, never a normal path. This is also what makes the
+   accepted residual ReEnqueue window harmless: after a daemon SIGKILL the fate of a queued runner is
+   not measured, but if that runner later starts its wrapper, the second of the two wrappers refuses
+   (verifier Part B, D4). `.started` is published by `ln -T` (one `linkat`; it fails on an existing
+   file, dir or dangling symlink — measured on the laptop and re-measured by the verifier; **uni not
+   yet measured**, 5.3 probe list).
+6. **Failure to create `<job>/.tmp`** (Anton): the wrapper writes `.exit_code` = **96** by `rename`
+   and exits without ORCA. With a `TMPDIR` outside the job dir, OpenMPI litter would escape it
+   (rule #3), so the run is not allowed. Row 6 → `Failed`. Like 97, 96 is our own code, not ORCA's.
+   **Open (rule #10):** ORCA's own exit-code range is not measured, so 96/97 are not *shown* to be
+   disjoint from it. They map to `Failed` either way. **Fork for Anton, later (5.4 UI):** whether
+   `FailReason` should name 96/97 (e.g. "TMPDIR not creatable", "self-check failed") or keep them as
+   `NonZeroExit` (verifier Part B, D5).
+7. **`.tmp` is removed at the end of every cancel, unconditionally** (verifier Part B, F6). This keeps
+   Decision i step 4 as stated. It is safe: a wrapper that starts later sees `.cancelled` at step 2,
+   before it creates `.tmp` at step 3.
+8. **The wrapper's core mask is validated** as `^[0-9]+([,-][0-9]+)*$` before `taskset` (verifier
+   Part B, F3). A value starting with `-` would otherwise be parsed as an option.
 
 *Tests (5.2 needs no server).*
 - **Classifier:** a table test over synthetic snapshots, one or more per row. That includes the

@@ -12,6 +12,7 @@ use super::markers::{parse_exit_code, parse_started, BootId, Started};
 use super::procfs::{parse_stat, split_cmdline, ProcStat};
 use super::snapshot::{Attempt, JobIdentity, SessionMember, Snapshot, SocketState};
 use super::tsp::{match_job_row, TspState};
+use super::wire::WireError;
 use super::FactError;
 use crate::local_backend::{has_normal_termination, TAIL_BYTES};
 
@@ -91,6 +92,10 @@ pub enum SnapshotError {
     SidStat(FactError),
     #[error("SID stat is for pid {found}, .started's sid is {expected}")]
     SidStatPidMismatch { expected: u32, found: u32 },
+    /// The collector's output is unusable: it reported a read error other than ENOENT/ESRCH, or
+    /// its records are malformed or contradict themselves ([`super::wire`]).
+    #[error("snapshot collection: {0}")]
+    Collection(#[from] WireError),
 }
 
 /// Classify one job from its snapshot. `reenqueue_count` is how many times the job was already
@@ -327,22 +332,33 @@ fn is_sid_reused(sid_stat: Option<&ProcStat>, started: &Started) -> bool {
     sid_stat.is_some_and(|stat| stat.starttime != started.starttime)
 }
 
-/// The job dir and root must be absolute paths over `[A-Za-z0-9._/-]` without a trailing `/` —
-/// what submit asserts. Re-checked here because whole-token row matching and exact cwd
-/// comparison both depend on it.
+/// The job dir and root must satisfy [`is_valid_path`] — what submit asserts. Re-checked here
+/// because whole-token row matching and exact cwd comparison both depend on it.
 fn validate_identity(identity: &JobIdentity) -> Result<(), SnapshotError> {
     for (name, path) in [("job_dir", &identity.job_dir), ("root", &identity.root)] {
-        let ok = path.len() > 1
-            && path.starts_with('/')
-            && !path.ends_with('/')
-            && path
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'/' | b'-'));
-        if !ok {
+        if !is_valid_path(path) {
             return Err(SnapshotError::BadIdentity(format!("{name} {path:?}")));
         }
     }
     Ok(())
+}
+
+/// **The** path rule for job dirs, roots and socket paths (ADR-024 l, Part B detail 4) — the same
+/// rule as `valid_path` in the shipped scripts' `head.sh`: absolute, one or more components over
+/// `[A-Za-z0-9._-]`, none of them empty (`//`, a trailing `/`), `.` or `..`. The cwd filter
+/// compares the kernel's canonical cwd, so a path that is not already canonical could never match.
+pub fn is_valid_path(path: &str) -> bool {
+    match path.strip_prefix('/') {
+        None => false,
+        Some(rest) => rest.split('/').all(|component| {
+            !component.is_empty()
+                && component != "."
+                && component != ".."
+                && component
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+        }),
+    }
 }
 
 #[cfg(test)]
@@ -856,7 +872,17 @@ mod tests {
             Err(SnapshotError::StatPidMismatch { expected: 66401, found: 66402 })
         );
 
-        for bad in ["jobs/j1", "/home/anton/jobs/j1/", "/home/anton/jobs/j 1", "/"] {
+        for bad in [
+            "jobs/j1",
+            "/home/anton/jobs/j1/",
+            "/home/anton/jobs/j 1",
+            "/",
+            "/home//anton/jobs/j1",
+            "/home/anton/./jobs/j1",
+            "/home/anton/jobs/../j1",
+            "/home/anton/jobs/j1/.",
+            "/home/anton/jobs/j1/..",
+        ] {
             let mut snap = running();
             snap.identity.job_dir = bad.into();
             assert!(matches!(classify(&snap, 0), Err(SnapshotError::BadIdentity(_))), "{bad:?}");

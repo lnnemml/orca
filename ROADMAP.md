@@ -1411,11 +1411,15 @@ preflight. The remaining items (remote `orca_plot`, pause) are not numbered yet.
       plus a substituted `boot_id` in `.started`, exercised in 5.2. No deliberate reboot; a real one is
       recorded at the first natural occasion. The third-party tsp facts of b (daemon
       auto-restart, socket survival, partial dirs) stay ADR-024 Open question b.
-- [ ] **Unit 5.2 — wrapper + cancel script + reconciliation classifier** (ADR-024 b, d, d′, i, k, l).
+- [x] **Unit 5.2 — wrapper + cancel script + reconciliation classifier** (ADR-024 b, d, d′, i, k, l).
       The classifier is a **pure function** over a job-dir snapshot. It is tested on **synthetic job
       dirs**: restart simulations (stale `boot_id` → `lost`, `tsp -K` → `never-started`), the
       re-enqueue limit of 1 (then `failed`), and the cancel/start race of d′. No server needed.
       High-risk → implementer on `opus`.
+      **Done 2026-10-03:** Part A = the pure classifier; Part B = the embedded `wrapper.sh` /
+      `cancel.sh` / `collect.sh`, the length-prefixed snapshot wire format and its strict parser,
+      run for real on the laptop (stub `tsp`/ORCA, fixtures (a)–(e), d′ orders) —
+      [modules/remote-jobs.md](wiki/modules/remote-jobs.md).
 - [ ] **Unit 5.3 — `SshBackend` wiring** via system `ssh`/`rsync`: rsync job dir up → the 5.2
       wrapper via task-spooler (per-slot `TS_SOCKET`) → byte-offset `poll_log` of output → selective
       rsync down (output/xyz/hess always; gbw opt-in); `enum Backend` (ADR-023).

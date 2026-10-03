@@ -9927,3 +9927,112 @@ New module `src-tauri/src/remote/` (`markers`, `procfs`, `tsp`, `snapshot`, `cla
 
 Next: verifier CODE on Part A → Anton's greenlight → Part B (wrapper + cancel scripts, the collector,
 shell-vs-Rust liveness parity on materialised fixtures (a)–(e)).
+
+## [2026-10-03] feat | Unit 5.2 Part B — wrapper, cancel and collector scripts
+
+The three static server-side scripts of ADR-024 l, embedded in `src-tauri/src/remote/scripts/`
+(`head.sh` + `wrapper.sh` / `cancel.sh` / `collect.sh`, concatenated at compile time in
+`scripts.rs`), the collector's length-prefixed wire format with a strict parser (`wire.rs`), and
+tests that run the real scripts on the laptop ([modules/remote-jobs.md](modules/remote-jobs.md)).
+Unit 5.2 is complete (ROADMAP).
+- **Design calls:** one shared head concatenated into every script, so the parsers ship byte-identical
+  and the tests run the uploaded bytes; `cancel.sh check` prints the predicates from the same
+  functions (the shell side of the parity tests) and signals nothing; the wire parser re-derives the
+  collector's own decisions (`/proc` collected or not, `nodaemon` vs the emitted `/proc/net/unix`
+  evidence) and rejects a disagreement; `SnapshotError::Collection` carries a `WireError`; `.enqueued`
+  format fixed as `socket=` + `id=` lines (5.3 writes it); the group TERM additionally requires the
+  wrapper to lead its group and never targets the script's own session or group; cancel and collect
+  start with `cd /`; `sha2` declared (already in `Cargo.lock`).
+- **Tests:** 34 new (95 in the module; `cargo test`: 470 passed, 0 failed, 25 ignored; `cargo build`
+  0 warnings). `bash -n` passes on the three composed scripts; `shellcheck` is not installed (not run).
+- **Negative controls, each shown red then restored byte-identically:** (1) a collector read error
+  mapped to absent — `cat` and `readlink` each separately → `collector_read_error_fails_the_whole_snapshot`;
+  (2) sweep without the cwd filter → `cancel_terms_the_group_and_sweeps_an_escaped_member_but_not_a_foreign_cwd`,
+  `fixture_e_…`; (3) no SID-reuse guard → `cancel_with_a_reused_sid_signals_nothing`, `fixture_c_…`;
+  (4) no own-session exclusion → `cancel_never_signals_its_own_session`; (5) `.cancelled` checked
+  before `.started` → `dprime_cancel_before_the_wrapper_starts_orca_never_runs`,
+  `wrapper_under_cancelled_writes_started_but_never_runs_orca`; (6) `.exit_code` by `>` →
+  `wrapper_runs_orca_pinned_in_its_job_dir_and_publishes_markers_by_rename` (inotify sees
+  `IN_CREATE`/`IN_MODIFY`, not only `IN_MOVED_TO`); (7) `tsp -r` without verification →
+  `cancel_removes_a_queued_task_only_for_a_verified_queued_row`; (8) collector `tsp -l` on a dead
+  socket → `collector_reads_tsp_only_on_a_listening_socket` (+8 others via the parser's
+  consistency check); (9) cancel `tsp` on a dead socket → `cancel_with_no_daemon_never_runs_tsp`.
+- **Laptop measurements (rule #10; Linux 6.14, bash 5.2.21, coreutils 9.4, procps-ng 4.0.4):**
+  - C-locale error messages: `cat: P: No such file or directory`, `tail: cannot open 'P' for
+    reading: No such file or directory`, `stat: cannot statx 'P': No such file or directory`,
+    `readlink: P: No such file or directory`; EACCES gives `…: Permission denied`; `cat` on a dir
+    gives `Is a directory`. All rc 1.
+  - **Plain `readlink -n` prints nothing and exits 1 on EACCES** (`/proc/1/cwd`); only `-v` says why.
+  - `/proc/<pid>/cwd` of an own-uid process that set `PR_SET_DUMPABLE 0` → EACCES (`Permission
+    denied`); its `stat` and `cmdline` stay readable. `/proc/1/cwd` as a non-root user → EACCES.
+  - A zombie member: listed by `ps -s`, state `Z`, cmdline 0 bytes, `readlink` cwd → ENOENT
+    (agrees with probe 5.2c).
+  - `ps -o pid= -s <sid>` with no such session: rc 1, empty stdout and stderr; a syntax error: rc 1
+    with a message on stderr.
+  - `mapfile` on a directory returns rc 0 with no lines; `mapfile` drops the bytes after a NUL in a
+    line (so the shell parser checks the byte count).
+  - `local LC_ALL=C` in a bash function makes `${#s}` count bytes and is exported to commands run
+    inside it; the outer value is restored on return.
+  - Builtin `kill -TERM -- -<pgid>` reaches the whole group; a non-interactive bash waiting on a
+    foreground child dies on TERM (status 143) without running further commands.
+  - A perl `IO::Socket::UNIX` listener appears in `/proc/net/unix` as `…: 00000002 00000000
+    00010000 0001 01 <inode> <path>` (the probe 5.2b shape); after SIGKILL the socket file stays and
+    the line is gone.
+  - `sun_path` limit hit by a 109-byte path (perl warns and truncates), so test sockets live under
+    `std::env::temp_dir()`.
+- **Not measured / open:** coreutils messages on uni (a different message fails closed as an error);
+  `shellcheck`; the window between `tsp -l` and `tsp -r` (accepted in ADR-024 l).
+
+- **Follow-up (ADR-024 l, "Details fixed while building 5.2 Part B", items 1–6):**
+  - items 1–4 were already as built (`.enqueued` = `socket=` + `id=` lines, any order, each once;
+    unparsable → socket `Error`; failed `tsp -l` → `Error` fact; failed `/proc/net/unix` read →
+    snapshot error);
+  - **one path rule:** Rust `classify::is_valid_path` now rejects `//`, `.` and `..` components like
+    the shell's `valid_path`; a test runs the shipped `head.sh` and Rust over the same 18 cases;
+  - **existing `.started` → refuse** (Anton): the wrapper publishes `.started` with `ln -T` (no
+    clobber) and, if one exists, exits 1 with no ORCA and both markers untouched. The self-check
+    test now injects an `ln` on `PATH` that publishes an empty `.started` (the disk-full shape);
+  - **`.tmp` not creatable → `.exit_code` = 96** by rename, no ORCA (Anton);
+  - 4 new tests (99 in the module; `cargo test` 474 passed, 0 failed, 25 ignored; build 0 warnings;
+    `bash -n` clean). New negative controls, red then restored: (10) `.started` by `mv -fT` →
+    `wrapper_refuses_a_job_dir_that_already_has_started`,
+    `two_wrappers_started_together_on_one_job_dir_run_orca_once`, the happy-path inotify test and the
+    self-check test; (11) the `mkdir .tmp` failure ignored →
+    `wrapper_that_cannot_create_its_tmp_dir_writes_96_and_never_runs_orca`; (12) Rust rule without
+    the `..` check → `broken_snapshots_are_errors_not_verdicts`, `shell_and_rust_share_one_path_rule`.
+    Controls 1–9 re-run on the final bytes, all still red.
+  - **Laptop measurements (rule #10):** `ln -T src dst` is one `linkat(AT_FDCWD, src, AT_FDCWD, dst,
+    0)` (strace) and fails rc 1 `File exists` when `dst` is a file, a directory or a dangling symlink;
+    **without `-T`, `ln` silently links into an existing directory** (rc 0). `mv -n` refused with rc 1
+    (`not replacing`), but its syscall was not traced, so it is not used. A hard link appears to
+    inotify as one `IN_CREATE` with no `IN_MODIFY`/`IN_CLOSE_WRITE` on that name. `mkdir -p` over an
+    existing regular file fails rc 1 (`File exists`).
+
+- **Follow-up (verifier Part B CODE FAIL, F1–F6; ADR-024 l Part B items 7–8):**
+  - F1 — guards that no test demonstrated now each have one, shown red with the guard removed:
+    (a) cancel's boot gate → `cancel_does_not_touch_a_started_from_another_boot`;
+    (b) `ours` for the group TERM → `cancel_never_terms_the_group_of_a_process_that_is_not_ours`;
+    (c) `leader` for the group TERM → `cancel_never_terms_a_group_the_wrapper_does_not_lead` (the
+    real wrapper exec'd by a perl session leader without its own group; the leader sits outside the
+    job dir, so only a group TERM could reach it); (d) the collector's boot gate →
+    `collector_skips_proc_for_a_started_from_another_boot_and_the_job_is_lost`, and the Rust side
+    (`check_proc_scope` accepting "collected" for a stale boot) → `proc_scope_must_match_rusts_own_reading_of_started`;
+    (e) `kv_load` duplicates → `shell_and_rust_agree_on_which_started_files_are_corrupt` (13 cases,
+    shell `check` vs `parse_started`).
+  - F2 — the wrapper refuses whenever `.started` was not published and one exists, including a
+    failed temp write → `wrapper_refuses_when_it_cannot_even_write_its_temp_file_and_started_exists`.
+  - F3 — core mask validated before step 0 (exit 2, nothing written) →
+    `wrapper_rejects_a_bad_core_mask_before_writing_anything`.
+  - F5 — byte-exact cwd compare in cancel (`read -r -d ''`) →
+    `cwd_comparison_is_byte_exact_a_trailing_newline_is_another_dir`.
+  - F6 — `<job>/.tmp` removed at the end of every cancel →
+    `cancel_removes_tmp_even_for_a_job_that_never_started` (+ the running-cancel test).
+  - Correction: control 6's test is `wrapper_runs_orca_pinned_in_its_job_dir_and_publishes_markers_atomically`.
+  - All controls 1–12 re-run on the final bytes with the new ones: every one red, each restored
+    byte-identical. 9 new tests (108 in the module; `cargo test` 483 passed, 0 failed, 25 ignored;
+    build 0 warnings; `bash -n` clean; `script_tests` 3× green).
+  - Laptop measurement: `taskset -c 12-23` on this 16-CPU machine is accepted (the range is partly
+    present), so the mask test asserts only the validation, not taskset's verdict.
+
+Next: verifier CODE on Part B → Anton → commit; then unit 5.3 (`SshBackend` wiring, upload, submit,
+`.enqueued`, slot check).

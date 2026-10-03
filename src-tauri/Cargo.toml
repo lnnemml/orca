@@ -46,6 +46,10 @@ flate2 = "1"
 # (measured: wiki/architecture/keyring-availability.md). The HTTP call reuses the
 # existing `ureq` (rustls TLS) — no new HTTP dependency.
 keyring = "4.1.6"
+# Remote scripts (Phase 5 unit 5.2, ADR-024 l): the sha256 of each embedded script names its
+# content-addressed upload (`<name>-<sha>.sh`). Already transitive in Cargo.lock (0.10.9, via
+# keyring/tauri-codegen) — this adds only the declaration, no new crate enters the build.
+sha2 = "0.10"
 
 # Job cancellation (Phase 2): killpg the ORCA MPI process group. Unix-only.
 [target.'cfg(unix)'.dependencies]
