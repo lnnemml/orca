@@ -92,7 +92,7 @@ the energy is **bit-identical** (−76.418938720745 Eh). The variable only switc
 plugin; it does not touch the numerics.
 
 **Amended 2026-10-03 (d′ resolution) — wrapper start sequence.** The wrapper's order is now:
-1. write `.started` — still the first action (atomically, via a temp file + `rename`); *(superseded by Decision l: step 0 is now `cd "$job_dir"`, and a self-check follows step 1)*
+1. write `.started` — still the first action (atomically, via a temp file + `rename`); *(superseded by Decision l: step 0 is now `cd "$job_dir"`, `.started` is published by a no-clobber `ln -T` (refused if present), and a self-check follows step 1)*
 2. **check for `.cancelled`** — if present, **exit at once without launching ORCA**. It writes no
    `.exit_code`; `.cancelled` alone decides the classification (Decision d);
 3. export `TMPDIR` and `HWLOC_COMPONENTS`, then run the pinned ORCA (rules #1, #8);
@@ -512,7 +512,7 @@ decomposition; Anton decided every fork, before and after DESIGN review rounds 1
 
   | # | Condition | Outcome |
   |---|---|---|
-  | 1 | `.started` exists but does not parse (empty or missing fields — a disk-full `rename` can publish an empty file) | `Failed` ("corrupt `.started`"). The cancel sweep is impossible without `sid`; the reason says so. |
+  | 1 | `.started` exists but does not parse (empty or missing fields — a disk-full write can publish an empty file, whether by `rename` or by `ln -T`) | `Failed` ("corrupt `.started`"). The cancel sweep is impossible without `sid`; the reason says so. |
   | 2 | `.cancelled` + `.exit_code` = 0 + `ORCA TERMINATED NORMALLY` | `Completed { late_cancel: true }` (Anton, M6). A clean result is never discarded, and the UI shows that the cancel came too late. |
   | 3 | `.cancelled`, `boot_id` current, and the wrapper PID is alive and ours **or** the job session is non-empty | `Cancelling` (transient). The reconcile re-runs the cancel script, which sweeps on the same trigger. 5.4 counts the sweeps. **Progress** = the job session shrinks. After 3 sweeps without progress (e.g. a D-state process), the **automatic sweeps stop**, and the job stays `Cancelling` with a user-visible notice and a manual retry (round 2 MED-2, round 3 LOW-D). |
   | 4 | `.cancelled` (anything else) | `Cancelled` |
@@ -568,7 +568,8 @@ within (l); items 5–6 are Anton's decisions.
    disjoint from it. They map to `Failed` either way. **Fork for Anton, later (5.4 UI):** whether
    `FailReason` should name 96/97 (e.g. "TMPDIR not creatable", "self-check failed") or keep them as
    `NonZeroExit` (verifier Part B, D5).
-7. **`.tmp` is removed at the end of every cancel, unconditionally** (verifier Part B, F6). This keeps
+7. **`.tmp` is removed at the end of every cancel that completes** (verifier Part B, F6; a cancel that
+   stops on a read error fails closed with exit 3 before this step, per the hardening review N4). This keeps
    Decision i step 4 as stated. It is safe: a wrapper that starts later sees `.cancelled` at step 2,
    before it creates `.tmp` at step 3.
 8. **The wrapper's core mask is validated** as `^[0-9]+([,-][0-9]+)*$` before `taskset` (verifier

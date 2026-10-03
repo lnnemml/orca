@@ -10058,3 +10058,48 @@ Recorded in `architecture/task-spooler-uni-probe.md`.
   ESRCH gap, *(prober-reported)* labels, the strace scope, the slot-prefix wording, tail cases, the
   `TMPDIR` rule marked as a proposal, the inferred origin of the deleted file).
 - **Hygiene:** the prober's broad glob deleted one pre-existing stray `ts-out` file on uni.
+
+## [2026-10-03] fix | Unit 5.2 hardening — refusal forms, .tmp ordering, test hygiene
+
+Closes the verifier's LOW findings N1–N5 from the Part B second pass. Script bytes unchanged; tests
+and wiki only.
+- **N1:** new `wrapper_refuses_a_job_dir_whose_started_is_a_dangling_symlink_or_a_directory` — both
+  forms refuse with exit 1 (never 97), leave the symlink target / directory contents as they were,
+  write no `.exit_code` and no temp file, and never run ORCA.
+- **N2:** new `cancel_removes_tmp_after_the_sweep_so_a_late_tmpdir_write_cannot_survive` — the stub
+  ORCA can trap TERM and, ~0.5 s later, recreate `TMPDIR` and write into it, then leave
+  `orca.trapped`; after a real mid-run cancel the test asserts the trap ran, no sweep KILL was
+  needed, and `<job>/.tmp` is gone.
+- **N3:** `cancel_never_terms_a_group_the_wrapper_does_not_lead` now tracks the wrapper C (not the
+  test's own child) from `.started`. `Lab::drop` now SIGSTOPs every live process it knows of (unreaped
+  children, start-time-verified tracked PIDs), then SIGKILLs them, then retries the dir removal for
+  up to 2 s: a wrapper still running when its ORCA died could fork `mv` to publish `.exit_code`
+  into the dir being removed (seen once in this session as a leftover `/tmp/os52-*` lab dir holding
+  `jobs/a/.exit_code`; not reproduced in 15 further runs). New `assert_no_process_left(root)`: after
+  the drop, no process has a cwd in or an argument under the lab root (bounded wait); used by the
+  N2 test and test (c). Assertion text "the sweep removes" → "the cancel removes".
+- **N4/N5 wiki:** `remote-jobs.md` — `.tmp` removal "at the end of every cancel that completes" (a
+  read error fails closed with exit 3 first), and after the sweep; `execution-backends.md`
+  SshBackend section in the present tense — scripts and classifier exist, `.started` by no-clobber
+  `ln -T`, other markers by rename, the backend wiring (5.3) not built.
+- **Negative controls** (each mutation applied, named test red, file restored byte-identical by
+  sha256; re-run on the final bytes):
+  1. `wrapper.sh` drop `|| -L .started` → the N1 test red at "dangling symlink: refused" (97 ≠ 1).
+  2. `wrapper.sh` drop `-e .started ||` → the N1 test red at "directory: refused" (97 ≠ 1); also
+     the two older refusal tests red.
+  3. `cancel.sh` move `rm -rf -- "$JOB/.tmp"` before `running_cancel` → the N2 test red at "removed
+     after the sweep, not before"; the nine other cancel tests stay green under this mutation (the
+     gap was real).
+  4. `Lab::drop` with no signals and no reaping → test (c) red at "processes outlived the lab"
+     (the perl parent; it exits by itself after 20 s).
+  The C-tracking line itself has no deterministic control: the sweep already kills C in that test.
+- **Counts:** 110 tests in `remote` (2 new); `cargo test` 485 passed, 0 failed, 25 ignored;
+  `cargo build` 0 warnings; `remote::script_tests` 40/40 green over 13+ repeated runs; no stray
+  processes and no leftover `/tmp/os52-*` dirs afterwards.
+
+- **Verifier round (PASS WITH FINDINGS, L1–L3):** the stub's TERM trap now writes `orca.trapped` only
+  if the late `TMPDIR` write succeeded (`&&`, not `;`), so the N2 test cannot pass with no late write
+  (control 5: late write removed from the trap → N2 red on the `orca.trapped` self-check); a
+  module-page sentence and a code comment about reaping corrected; this entry retyped `fix`.
+
+Next: verifier CODE → Anton → commit; then unit 5.3.

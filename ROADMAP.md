@@ -1384,7 +1384,7 @@ and the dev laptop is a development machine, not a compute node. See
       offset-pull is additive (live UI still uses the push `job:log` event — the push→pull flip rides with
       `SshBackend`). ADR-023 records the server-agnostic model (one `SshBackend` per `ServerProfile`).
 **Unit numbering (fixed 2026-10-03 by Anton — use these numbers, do not re-derive):**
-5.0 trait ✅ · **5.1** server profiles (Part A ✅, Part B open) · **5.2** wrapper + cancel script +
+5.0 trait ✅ · **5.1** server profiles (Part A ✅, Part B open) · **5.2** ✅ wrapper + cancel script +
 reconciliation classifier, pure and tested on synthetic job dirs · **5.3** `SshBackend` wiring ·
 **5.4** cancel / pending cancel + reconnect loop + `Lost`/`Cancelling` in `JobStatus` · **5.5**
 preflight. The remaining items (remote `orca_plot`, pause) are not numbered yet.

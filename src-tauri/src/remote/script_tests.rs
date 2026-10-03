@@ -65,6 +65,12 @@ open("nodump.ready", "w").close()
 time.sleep(20)' & echo "$!" >nodump.pid ;;
     esac
 done
+if [[ -n ${STUB_ORCA_TERM_LATE_FILE-} ]]; then
+    # A shutdown that writes into TMPDIR late, after a TERM (an MPI runtime's session files, say):
+    # it recreates the dir if it is gone and, only if that late write succeeded, leaves orca.trapped.
+    # Set before orca.pid is written, so a test that has orca.pid knows the trap is in place.
+    trap 'sleep 0.5; mkdir -p -- "$TMPDIR" && : >"$TMPDIR/$STUB_ORCA_TERM_LATE_FILE" && : >orca.trapped; exit 143' TERM
+fi
 echo "ORCA stub output"
 if [[ ${STUB_ORCA_SLEEP-0} != 0 ]]; then
     sleep "$STUB_ORCA_SLEEP" &
@@ -325,21 +331,40 @@ impl Drop for Lab {
                 }
             }
         }
-        for t in &self.tracked {
-            if stat_of(t.pid).is_some_and(|s| s.starttime == t.starttime) {
-                // SAFETY: plain kill(2) on a PID we verified is still the process we caused.
-                unsafe { libc::kill(t.pid as i32, libc::SIGKILL) };
+        // Stop everything before killing anything: a wrapper still running when its ORCA is
+        // killed would fork `mv` to publish .exit_code, and that orphaned `mv` can land in the job
+        // dir while it is being removed. A stopped process forks nothing; SIGKILL still ends it.
+        let ours: Vec<Tracked> = self.tracked.iter().copied().filter(|t| stat_of(t.pid).is_some_and(|s| s.starttime == t.starttime)).collect();
+        for sig in [libc::SIGSTOP, libc::SIGKILL] {
+            for child in &mut self.children {
+                // Only a child not yet reaped: once reaped, its PID may belong to anyone.
+                if matches!(child.try_wait(), Ok(None)) {
+                    // SAFETY: kill(2) on our own unreaped child: its PID cannot have been reused.
+                    unsafe { libc::kill(child.id() as i32, sig) };
+                }
+            }
+            for t in &ours {
+                if stat_of(t.pid).is_some_and(|s| s.starttime == t.starttime) {
+                    // SAFETY: plain kill(2) on a PID we verified is still the process we caused.
+                    unsafe { libc::kill(t.pid as i32, sig) };
+                }
             }
         }
         for child in &mut self.children {
-            let _ = child.kill();
             let _ = child.wait();
         }
         // A test may have made a job dir read-only; give it back its write bit so it can go.
         for job in fs::read_dir(self.root.join("jobs")).into_iter().flatten().flatten() {
             let _ = fs::set_permissions(job.path(), fs::Permissions::from_mode(0o755));
         }
-        let _ = fs::remove_dir_all(&self.root);
+        // Bounded retry: a killed process may still be finishing a write (ENOTEMPTY).
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while let Err(e) = fs::remove_dir_all(&self.root) {
+            if e.kind() == std::io::ErrorKind::NotFound || Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 }
 
@@ -375,6 +400,43 @@ fn read_link(pid: u32) -> Option<PathBuf> {
 /// Gone, a zombie, or another process at that PID.
 fn is_dead(t: Tracked) -> bool {
     stat_of(t.pid).is_none_or(|s| s.is_zombie() || s.starttime != t.starttime)
+}
+
+/// After a lab is dropped: no live process anywhere has its cwd in, or an argument naming, that
+/// lab's root (`<root>` or `<root>/…` — never a sibling lab whose name extends it). Zombies have no
+/// cwd and an empty cmdline, so a dead-but-unreaped process does not count; a bounded wait covers a
+/// killed process that has not finished exiting.
+fn assert_no_process_left(root: &Path) {
+    let root = root.as_os_str().as_bytes().to_vec();
+    let mut prefix = root.clone();
+    prefix.push(b'/');
+    let ours = |bytes: &[u8]| bytes == root.as_slice() || bytes.windows(prefix.len()).any(|w| w == prefix.as_slice());
+    let me = std::process::id();
+    let left = || -> Vec<u32> {
+        fs::read_dir("/proc")
+            .unwrap()
+            .flatten()
+            .filter_map(|e| e.file_name().to_str().and_then(|n| n.parse::<u32>().ok()))
+            .filter(|&pid| pid != me)
+            .filter(|&pid| {
+                let cwd = read_link(pid).is_some_and(|c| {
+                    let c = c.as_os_str().as_bytes();
+                    c == root.as_slice() || c.starts_with(&prefix)
+                });
+                let argv = fs::read(format!("/proc/{pid}/cmdline")).is_ok_and(|a| a.split(|b| *b == 0).any(|arg| ours(arg)));
+                cwd || argv
+            })
+            .collect()
+    };
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let pids = left();
+        if pids.is_empty() {
+            return;
+        }
+        assert!(Instant::now() < deadline, "processes outlived the lab: {pids:?}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 fn tracked(pid: u32) -> Tracked {
@@ -653,6 +715,48 @@ fn wrapper_refuses_a_job_dir_that_already_has_started() {
     assert_eq!(lab.orca_runs(), 1, "the second wrapper never runs ORCA");
 }
 
+/// A `.started` that is not a regular file still blocks a start (ADR-024 l, Part B detail 5):
+/// `ln -T` fails with EEXIST on a dangling symlink and on a directory alike, and the refusal test
+/// must see both forms (`-e` alone misses the dangling symlink and would fall to the 97 path).
+#[test]
+fn wrapper_refuses_a_job_dir_whose_started_is_a_dangling_symlink_or_a_directory() {
+    let mut lab = Lab::new();
+
+    let job = lab.job("started-dangling");
+    let target = lab.root.join("nowhere");
+    std::os::unix::fs::symlink(&target, job.join(".started")).unwrap();
+    let status = lab.run_wrapper(&job, &[]);
+    assert_eq!(status.code(), Some(1), "dangling symlink: refused");
+    assert_eq!(fs::read_link(job.join(".started")).unwrap(), target, "the symlink is untouched");
+    assert!(!target.exists(), "nothing was written through the symlink");
+    assert!(!job.join(".exit_code").exists(), "dangling symlink: no .exit_code");
+    assert_no_temp_markers(&job);
+
+    let job = lab.job("started-dir");
+    fs::create_dir(job.join(".started")).unwrap();
+    fs::write(job.join(".started").join("inside"), "keep").unwrap();
+    let status = lab.run_wrapper(&job, &[]);
+    assert_eq!(status.code(), Some(1), "directory: refused");
+    assert!(job.join(".started").is_dir());
+    assert_eq!(fs::read_dir(job.join(".started")).unwrap().count(), 1, "the directory is untouched");
+    assert_eq!(fs::read_to_string(job.join(".started").join("inside")).unwrap(), "keep");
+    assert!(!job.join(".exit_code").exists(), "directory: no .exit_code");
+    assert_no_temp_markers(&job);
+
+    assert_eq!(lab.orca_runs(), 0, "a refused wrapper never runs ORCA");
+}
+
+/// No `.<marker>.tmp.<pid>` left behind in a job dir.
+fn assert_no_temp_markers(job: &Path) {
+    let leftovers: Vec<String> = fs::read_dir(job)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.contains(".tmp."))
+        .collect();
+    assert!(leftovers.is_empty(), "temp files left: {leftovers:?}");
+}
+
 #[test]
 fn two_wrappers_started_together_on_one_job_dir_run_orca_once() {
     let mut lab = Lab::new();
@@ -825,8 +929,34 @@ fn cancel_terms_the_group_and_sweeps_an_escaped_member_but_not_a_foreign_cwd() {
     assert!(!is_dead(foreign), "a member with a foreign cwd is never signalled");
     assert!(!job.join(".exit_code").exists());
     assert!(job.join(".cancelled").exists());
-    assert!(!job.join(".tmp").exists(), "the sweep removes <job>/.tmp");
+    assert!(!job.join(".tmp").exists(), "the cancel removes <job>/.tmp");
     assert_eq!(lab.classify(&job, &[]), Outcome::Cancelled);
+}
+
+#[test]
+fn cancel_removes_tmp_after_the_sweep_so_a_late_tmpdir_write_cannot_survive() {
+    let mut lab = Lab::new();
+    let job = lab.job("late-tmp");
+    let wrapper =
+        lab.spawn_wrapper(&job, &[("STUB_ORCA_SLEEP", "20"), ("STUB_ORCA_TERM_LATE_FILE", "late.session")]);
+    let orca = tracked(lab.tracked_pid(&job.join("orca.pid")));
+    lab.tracked_pid(&job.join("sleep.pid"));
+    assert!(job.join(".tmp").is_dir());
+
+    let out = lab.cancel("cancel", &job);
+    let text = stdout(&out);
+    assert!(out.status.success(), "{text}\n{}", String::from_utf8_lossy(&out.stderr));
+    assert!(text.contains(&format!("group: TERM -{wrapper}")), "{text}");
+    // The fixture is what it claims: the sweep waited for ORCA, whose TERM trap wrote into TMPDIR
+    // ~0.5 s after the TERM — before the cancel returned, and not killed by the sweep's KILL.
+    assert!(job.join("orca.trapped").exists(), "the stub's TERM trap ran to completion: {text}");
+    assert!(!text.contains("sweep: KILL"), "{text}");
+    wait_for("orca exited", || is_dead(orca));
+    assert!(!job.join(".tmp").exists(), "<job>/.tmp is removed after the sweep, not before: {text}");
+    assert_eq!(lab.wait_child(wrapper).signal(), Some(libc::SIGTERM));
+    let root = lab.root.clone();
+    drop(lab);
+    assert_no_process_left(&root);
 }
 
 #[test]
@@ -1161,6 +1291,10 @@ fn cancel_never_terms_a_group_the_wrapper_does_not_lead() {
     lab.tracked_pid(&job.join("orca.pid"));
     lab.tracked_pid(&job.join("sleep.pid"));
     let started = parse_started(&fs::read(job.join(".started")).unwrap()).unwrap();
+    // The wrapper C is P's child, not ours: track it so Drop kills it too (otherwise it could
+    // outlive Drop and write .exit_code into a dir being removed). Once P is killed, C is
+    // re-parented to init (or the user's systemd) and reaped there, not by the test.
+    lab.tracked.push(tracked(started.pid));
     assert_eq!((started.pgid, started.sid), (parent.pid, parent.pid), "the fixture's shape");
     assert_ne!(started.pid, started.pgid);
 
@@ -1171,6 +1305,9 @@ fn cancel_never_terms_a_group_the_wrapper_does_not_lead() {
     assert!(text.contains("group: skip alive=yes ours=yes leader=no"), "{text}");
     std::thread::sleep(Duration::from_millis(300));
     assert!(!is_dead(parent), "the group's real leader must never get the group TERM");
+    let root = lab.root.clone();
+    drop(lab);
+    assert_no_process_left(&root);
 }
 
 #[test]

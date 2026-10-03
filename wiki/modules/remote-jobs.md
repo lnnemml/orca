@@ -111,8 +111,10 @@ only for a parsing `.started` from the current boot and never for its own sessio
 TERM `-<pgid>` iff the wrapper is alive, ours, and leads its group (live pgrp = `.started` pgid =
 pid); then, unless the SID is reused, the sweep iff (alive and ours) or the job session is
 non-empty — TERM+CONT each job-session PID, re-evaluate up to 50 × 0.1 s, KILL what is left → at
-the end of every cancel (queued, running, nothing found), remove `<job>/.tmp` unconditionally (a
-wrapper starting later sees `.cancelled` before it creates `.tmp`). The cwd comparison is
+the end of every cancel that completes (queued, running, nothing found; a cancel that hits a read
+error fails closed with exit 3 first), remove `<job>/.tmp` unconditionally — after the sweep, so a
+process that writes into `TMPDIR` while it dies cannot leave it behind (a wrapper starting later
+sees `.cancelled` before it creates `.tmp`). The cwd comparison is
 byte-exact (`read -r -d ''`, no trailing-newline stripping), like Rust's. Prints one line per
 decision (`queued: …`, `group: …`, `sweep: …`, `tmp: …`) and `done`. A fact
 it cannot read stops it with `error …` and exit 3 before any further signal. No `tsp -k`, no kill
@@ -218,7 +220,7 @@ action this pass, like `Indeterminate`.
 
 ## Tests
 
-108 tests in the module.
+110 tests in the module.
 - **Pure (classifier, parsers, wire):** strict-parser garbage cases, the recorded probe fixtures (P2
   cmdline, P4 `tsp -l`, 5.2b `/proc/net/unix` line, 5.2c stat lines including `w q) x.sh` and the
   zombie), at least one snapshot per table row, the d′ race model over all 6 interleavings, and the
@@ -227,13 +229,15 @@ action this pass, like `Indeterminate`.
   laptop read, marked in comments.
 - **Real scripts (`script_tests.rs`)**, on this machine: a stub `tsp` on `PATH` (logs its argv;
   `-l` prints the P4 header and rows, `-r` succeeds) and a stub ORCA (records cwd, `TMPDIR`, env,
-  args and affinity; can sleep, fail, or start extra session members: an escaped "rank" with its own
+  args and affinity; can sleep, fail, trap TERM and write into `TMPDIR` ~0.5 s later (recreating it
+  if gone), or start extra session members: an escaped "rank" with its own
   PGID, a foreign-cwd member, a zombie member, a non-dumpable member whose cwd is EACCES). Wrappers
   start in their own session like under tsp; a perl `IO::Socket::UNIX` listener stands in for a
   live daemon's socket, and a killed one leaves a stale socket file. Covered: the wrapper's happy path
   (inotify sees `.started` as one `IN_CREATE` and `.exit_code` as one `IN_MOVED_TO`, nothing else),
   cd failure, bad arguments, `.cancelled` preset, forced self-check failure (97, via an `ln` on `PATH`
-  that publishes an empty `.started`), an existing `.started` (refused, both markers byte-identical),
+  that publishes an empty `.started`), an existing `.started` (refused, both markers byte-identical), a dangling-symlink or directory
+  `.started` (refused with 1, never 97: left as it was, no `.exit_code`, no ORCA),
   two wrappers launched together (exactly one runs ORCA), `.tmp` not creatable (96), ORCA's non-zero
   code, a temp-write failure next to an existing `.started` (refused, never 97), bad core masks
   (`-p`, `0-3x`, … → exit 2, nothing written); one path rule (shell `valid_path` = Rust
@@ -242,10 +246,14 @@ action this pass, like `Indeterminate`.
   `<job>\n` twin dir is foreign); the cancel paths (group TERM + escaped member swept, foreign cwd
   untouched, reused SID, own session, a `.started` from another boot, a live leader that is not our
   wrapper, our wrapper that does not lead its group, verified-queued `tsp -r`, no daemon → no tsp
-  call, `.tmp` removed for a never-started job); both d′ orders; the collector round trip through
+  call, `.tmp` removed for a never-started job and removed after the sweep when a dying ORCA writes
+  into it late); both d′ orders; the collector round trip through
   `classify` (Running, Completed, Cancelled, Queued, ReEnqueue, Indeterminate, `Lost` for a
-  `.started` from another boot with `proc skipped`) and its read errors. Each test signals only processes it started, by recorded PID and start time, and cleans up
-  in `Drop`.
+  `.started` from another boot with `proc skipped`) and its read errors. Each test signals only processes it started, by recorded PID and start
+  time (a wrapper that is not the test's own child is tracked from its `.started`), and cleans up in
+  `Drop`: SIGSTOP to every live process it knows of, then SIGKILL, then a bounded retry of the dir
+  removal, so a tracked wrapper is stopped before its ORCA is killed. Two cancel tests also
+  assert, after the drop, that no process has a cwd in or an argument under the lab root.
 
 Negative controls (each guard broken, the named tests red, restored): listed per unit in
 [log.md](../log.md) (Part A 2026-10-03, Part B 2026-10-03).

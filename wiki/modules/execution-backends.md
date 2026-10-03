@@ -216,12 +216,15 @@ cycle" once the manual is indexed.
 
 ## SshBackend (Phase 5 — not built yet)
 
-Not implemented yet. The design is in ADR-024 (Decisions a–l); this section only points to it.
-Unit order is ROADMAP Phase 5: 5.2 scripts + classifier, 5.3 wiring, 5.4 cancel/reconnect, 5.5
-preflight.
-- **Queue and launch:** a static wrapper script (`include_str!`, uploaded content-addressed by
-  rename) runs through a per-slot `tsp` queue. It writes the markers `.started` / `.exit_code` and
-  `.enqueued` / `.cancelled` by temp file + `rename`.
+The `SshBackend` itself is not wired yet (unit 5.3). The design is in ADR-024 (Decisions a–l). Its
+server-side parts exist and are tested on this machine: the three scripts and the pure classifier,
+in `src-tauri/src/remote/` ([remote-jobs.md](remote-jobs.md)). Unit order is ROADMAP Phase 5: 5.2
+scripts + classifier (done), 5.3 wiring, 5.4 cancel/reconnect, 5.5 preflight.
+- **Queue and launch:** a static wrapper script (`include_str!`, to be uploaded content-addressed by
+  rename in 5.3) runs through a per-slot `tsp` queue. It publishes `.started` with a no-clobber
+  `ln -T` (an existing `.started` in any form refuses the start), and `.exit_code` by temp file +
+  `rename`. `.cancelled` (cancel script) and `.enqueued` (5.3) are also published by temp file +
+  `rename`.
 - **Transport:** per-job arguments cross ssh only as a NUL-separated list on stdin, never as ssh argv
   (measured as injection-capable, ADR-024 l / P1). Job-dir paths match `[A-Za-z0-9._/-]+`.
 - **Cancel:** one cancel script — `.cancelled` first, a `tsp -r` only after the id is verified, TERM
