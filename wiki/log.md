@@ -9551,3 +9551,34 @@ Phase 5**: SshBackend bullet now task-spooler per-slot wrapper with `.started`(P
 and job-dir stdout/stderr (was `nohup` + `.pid`); state bullet adds terminal `lost` + `never-started`
 (re-enqueue ≤1); new server-probe unit before SshBackend (ADR-024 Open questions a–c); new preflight
 unit (ADR-024 h). Rest of Phase 5 untouched.
+
+## [2026-10-03] probe | task-spooler on uni-server
+
+Rule-#10 probe of task-spooler 1.0.1 on the `uni` host (shared `yats` account; own sockets under
+`/home/yats/.orcastudio/probe/`, never the default socket). No production code changed; probe scripts
+are in `scripts/probes/uni-tsp/`. Record: `architecture/task-spooler-uni-probe.md`.
+
+- **Wrapper prototype:** `.started` → pinned ORCA → `.exit_code`. Water reproduces
+  **−76.418938720745 Eh** bit-identically through tsp.
+- **A — survival (Open question a, resolved):** a job enqueued over a one-shot ssh survived the
+  ControlMaster being closed for 140 s and finished normally (benzene NumFreq, 4 min 33 s). The
+  reason is **logind**, not tsp: everything stays in the ssh `session-N.scope`, which is left
+  `active (abandoned)` because `KillUserProcesses=false` (`Linger=no`).
+- **C — cancel (Open question c, resolved):** tsp makes every task a **session leader**. MPI ranks
+  get their own PGID but keep the **SID** and the job-dir cwd. `tsp -k`, `kill -TERM -pgid`, and even
+  group TERM/KILL with `mpirun` and ranks SIGSTOPped all left **0 survivors**: the kernel SIGKILLs
+  the ranks <50 ms after `mpirun` dies (parent-death behaviour). This **differs from the laptop
+  (debugging/004)** and is unexplained. Adopted: `tsp -k` + a SID sweep from `.started` (boot_id
+  guarded). `tsp -r` removes a queued job, leaving a dir with the `never-started` shape → mark it
+  cancelled locally before reconcile.
+- **D — masks (Decision b):** two concurrent queues `0-11`/`12-23` — every ORCA/MPI thread stays
+  inside its mask, and OpenMPI with `binding_policy=none` does not rebind. Only the idle wrapper
+  `bash` is unpinned. Throughput not interpreted.
+- **Side findings:** ORCA **exits 0 on `error termination`** (→ gotchas; rule #6 catches it).
+  The tsp `TMPDIR` leaks into the job, so MPI litter accumulates after kills → the wrapper should set
+  `TMPDIR`. The server clock is **not NTP-synced (~2 min 52 s ahead)**.
+- **B — restart:** not run (no "REBOOT OK"); Open question b stays open.
+- Cleanup verified: no processes of ours left, sockets gone; `.tmp`/`.gbw` removed (1.3 G → 51 M);
+  job dirs kept on the server.
+- ADR-024: Decision b/i amended (2026-10-03 probe), Open questions a/c resolved, the parallel-slots
+  question partly measured. Also updated: uni-server.md, gotchas, index, ROADMAP.

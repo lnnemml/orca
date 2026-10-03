@@ -69,6 +69,18 @@ summary: [orca-basics.md](orca-basics.md#orca-611-install-scheme--laptopserver-p
   SIGKILL. See `debugging/004-mpi-ranks-escape-process-group.md`. Same problem hits `SshBackend`
   remotely (Phase 5) — a parent `.pid` marker is not enough; sweep by cwd there too
   (`fuser -k <dir>` / `pkill -f <dir>`).
+  **Host-dependent (measured on the uni server, 2026-10-03):** there the ranks are SIGKILLed by the
+  kernel within <50 ms of `mpirun` dying, even when SIGSTOPped (parent-death-signal behaviour), so a
+  group kill left no orphans. Under tsp the ranks also keep the wrapper's **session id**, so the remote
+  safety net is a sweep by **SID** from `.started` rather than `pkill -f` (name/path matching is
+  forbidden on the shared account). See `../architecture/task-spooler-uni-probe.md`. Why the laptop
+  behaves differently is not explained — keep the cwd sweep locally.
+- **ORCA exits 0 on "error termination"** (measured 6.1.1, uni server, 2026-10-03). When `mpirun` was
+  SIGKILLed mid-SCF, ORCA printed `ORCA finished by error termination in LEANSCF` / `aborting the run`
+  and `/opt/orca/orca` returned **status 0**, so the wrapper wrote `.exit_code = 0` without
+  `ORCA TERMINATED NORMALLY`. **Never treat exit status 0 as success.** Domain rule #6 (`.exit_code`
+  **and** the normal-termination marker) is what classifies this as failed
+  (`../architecture/task-spooler-uni-probe.md`, c06/c07).
 - **Graceful "stop after current optimization cycle" — UNCONFIRMED for 6.1** → ORCA is *said* to
   support stopping a geometry optimization cleanly via a marker file in the job dir (preserving a
   valid `.gbw` + last geometry), which would beat a hard kill. This could not be verified: the

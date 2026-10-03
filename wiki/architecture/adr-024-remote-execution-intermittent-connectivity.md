@@ -61,6 +61,22 @@ is **shared** (uni-server.md), so nothing may rely on the user's default `tsp` s
   loss of results (nothing ran) but it **is** a reconciliation case — see Decision d's
   **never-started** sub-case.
 
+**Amended 2026-10-03 (probe) — measured mechanism** ([task-spooler-uni-probe.md](task-spooler-uni-probe.md)).
+On the uni host (task-spooler 1.0.1):
+- **tsp makes every task a session leader** (wrapper `PID == PGID == SID`); a separate `setsid` in
+  the wrapper is unnecessary. MPI ranks get their own PGID but **keep the wrapper's SID** and the job
+  dir as cwd.
+- **Survival of logout is a logind property, not a tsp one.** Daemon, runner and job stay in the ssh
+  session's scope (`session-N.scope`), which logind leaves `active (abandoned)` because
+  `KillUserProcesses=false` (`Linger=no`). The `SshBackend` connection test should check this setting —
+  if it were `yes`, every job would die at logout.
+- **Per-slot masks hold.** Two queues (`0-11`, `12-23`) ran concurrently; every thread of `orca`,
+  `mpirun` and the ranks had `Cpus_allowed_list` exactly the slot mask, and OpenMPI with
+  `binding_policy=none` did not rebind. Only the wrapper's own idle `bash` (taskset's parent) is
+  unpinned — pin it too (`taskset -c <mask> wrapper`) if a clean invariant is wanted.
+- **`TMPDIR` must be set by the wrapper** (e.g. to the job dir): the task inherits tsp's `TMPDIR`,
+  and OpenMPI leaves `pmix-gds-shmem.*` / `ompi.*` litter there after every killed run.
+
 **c) The server filesystem is the source of truth.** The local SQLite is a **cache** that is
 **reconciled** against the server's job directories after the link is restored. Where the two
 disagree, the server's on-disk state wins. (Consistent with ADR-003's reconciliation-on-startup;
@@ -159,6 +175,25 @@ state (no new state):
   equivalent over SSH (e.g. `pkill -g` / `fuser -k <job_dir>` / a recorded rank list) is
   **UNDETERMINED until measured on the server** (Open questions).
 
+**Amended 2026-10-03 (probe) — measured cancel mechanism** ([task-spooler-uni-probe.md](task-spooler-uni-probe.md)):
+- **queued** → `tsp -r <id>` removes it (its runner process exits too); the job dir keeps only
+  `input.inp`. That is the same on-disk shape as `never-started` (d), so the local record must be set
+  to `cancelled` **before** the next reconcile, or the reconciler would re-enqueue the job.
+- **running** → `tsp -k <id>` (SIGTERM to the wrapper's group), then a **session sweep**: take `sid` +
+  `boot_id` from `.started`; if the `boot_id` is current and the `sid` is not the sweeping shell's own,
+  TERM+CONT every PID in `ps -s <sid>`, wait, then KILL whatever remains. `tsp -k` alone left **0
+  survivors** in every measured case; the sweep is belt-and-braces and does not depend on OpenMPI.
+- **Discrepancy with the assumption above:** on the uni host the ranks **do not** survive a group
+  kill. They escape the PGID as expected, but the kernel SIGKILLs them within <50 ms of `mpirun`
+  dying — even when the ranks were SIGSTOPped (parent-death-signal behaviour; that OpenMPI sets it is
+  an inference). So the `debugging/004` orphan scenario did not reproduce here. Why it differs from
+  the laptop is **not explained** (not re-measured). The session sweep replaces the cwd sweep as the
+  remote safety net; both cover the ranks.
+- A killed job has `.started`, **no `.exit_code`**, and `tsp -l` shows it as `finished` with E-Level
+  −1 (no distinction from a crash). If only `mpirun` dies, ORCA reports `error termination` but **exits
+  0** → `.exit_code = 0` without `TERMINATED NORMALLY`. Rule #6's two-part completion check catches
+  this; `.exit_code` alone must never mean success.
+
 ## Alternatives rejected
 
 - **Queue on the laptop.** The laptop is offline 22:00–08:00, so a laptop-side queue would idle
@@ -212,15 +247,23 @@ state (no new state):
 - **UPS → clean shutdown** — does the UPS signal the server (`lsusb` / `nut`)? Affects how often
   `lost` actually occurs (uni-server.md).
 - **Parallel slots on the university server** — whether 2×12-core slots are safe is unmeasured;
-  the profile stays at 1 slot until a rule-#10 measurement (f, uni-server.md).
+  the profile stays at 1 slot until a rule-#10 measurement (f, uni-server.md). *Partly measured
+  2026-10-03:* the **binding** half is settled (two concurrent queues with masks `0-11`/`12-23` stay
+  inside their masks — [task-spooler-uni-probe.md](task-spooler-uni-probe.md#probe-d--two-queues-two-masks-decision-b-rule-8-not-performance)).
+  The **throughput** half is still unmeasured.
 - **(a) Does the `tsp` daemon survive the ssh session that launched it exiting?** (Amended
-  2026-10-02, review.) The detach premise (Decision b) requires yes, but it is only **measured
-  for `tmux`** so far (uni-server.md, 2026-10-02); `tsp`'s own daemon lifetime vs the launching
-  session is a **probe**, not a fact.
+  2026-10-02, review.) **Resolved by probe 2026-10-03:** **yes**. A job was enqueued over a one-shot
+  ssh, the ControlMaster was closed, and the job ran on for over 2 minutes with no connection, then
+  finished normally. The reason is logind's `KillUserProcesses=false` (the session scope is left
+  `abandoned`), not tsp itself — see Decision b's 2026-10-03 amendment and
+  [task-spooler-uni-probe.md](task-spooler-uni-probe.md#probe-a--survival-after-the-ssh-session-exits-open-question-a).
 - **(b) `tsp` behaviour across a server restart** (Amended 2026-10-02, review). We assert the
   in-memory queue is lost (Decision b) and reconcile via `never-started` (Decision d), but the
   exact post-reboot `tsp` state — does the daemon auto-restart, does `tsp -C`/socket survive,
-  are partially-written job dirs left clean — is **unmeasured** (probe).
-- **(c) Process-group kill for an MPI job over SSH** (Amended 2026-10-02, review). The remote
-  mechanism that reliably kills the wrapper + `mpirun` + all ranks (Decision i) is UNDETERMINED;
-  the local analogue needed a cwd-sweep (`debugging/004`). Probe before relying on remote cancel.
+  are partially-written job dirs left clean — is **unmeasured** (probe). *Still open after the
+  2026-10-03 probe* (it needs an author-run reboot). Measured since then: a queued task also holds a
+  live runner process, and `TS_SAVELIST` saves the queue only on SIGTERM of the server (`man tsp`).
+- **(c) Process-group kill for an MPI job over SSH** (Amended 2026-10-02, review). **Resolved by probe
+  2026-10-03:** `tsp -k` plus a session-id sweep (Decision i's 2026-10-03 amendment) left no survivors,
+  including when `mpirun` and the ranks were SIGSTOPped. This differs from the laptop (`debugging/004`) —
+  see [task-spooler-uni-probe.md](task-spooler-uni-probe.md#probe-c--cancel-open-question-c).

@@ -1388,6 +1388,9 @@ and the dev laptop is a development machine, not a compute node. See
 - [ ] **Server probe unit (before `SshBackend`):** task-spooler on `uni-server` — does the `tsp`
       daemon survive the launching ssh session exiting, how does it behave after a server restart,
       and the process-group kill of an MPI job (ADR-024 Open questions a–c). Measure first (rule #10).
+      **Partly done 2026-10-03** ([task-spooler-uni-probe.md](wiki/architecture/task-spooler-uni-probe.md)):
+      a ✅ survives logout (via `KillUserProcesses=false`), c ✅ `tsp -k` + SID sweep, slot masks ✅.
+      **b (restart) still open** — needs an author-run reboot.
 - [ ] `SshBackend` via system `ssh`/`rsync`: rsync job dir up → per-job wrapper via task-spooler
       (per-slot `TS_SOCKET`) writing `.started` (PID, `boot_id`) + `.exit_code`, stdout/stderr into
       the job dir (ADR-024) → byte-offset polling of output → selective rsync down

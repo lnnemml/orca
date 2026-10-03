@@ -62,7 +62,13 @@ row once the connection-test passes ([ADR-023](../architecture/adr-023-server-ag
     now the current default on both hosts — see
     [orca/orca-basics.md](../orca/orca-basics.md#orca-611-install-scheme--laptopserver-parity-2026-10-02).
 - **Legacy lab ORCA installs:** `/home/yats/calc/orca/{303,504,601,611}` — **leave untouched**.
-- Packages we installed: `openssh-server`, `tmux`, `rsync`, `tailscale`.
+- Packages we installed: `openssh-server`, `tmux`, `rsync`, `tailscale`, `task-spooler`
+  (**1.0.1+dfsg1-1**, `/usr/bin/tsp`; behaviour measured 2026-10-03 in
+  [task-spooler-uni-probe.md](../architecture/task-spooler-uni-probe.md)).
+- **OrcaStudio's server dir** is `/home/yats/.orcastudio/` (probe artefacts in `probe/`). Its tsp
+  queues use dedicated sockets there — never the account's default socket.
+- **Clock:** the server runs `Etc/UTC` and is **not NTP-synchronised** (`NTPSynchronized=no`);
+  measured **~2 min 52 s ahead** of the laptop on 2026-10-03.
 
 ## Access
 
@@ -88,6 +94,12 @@ row once the connection-test passes ([ADR-023](../architecture/adr-023-server-ag
   the OS-level substrate ADR-024 (b) relies on for jobs that outlive the connection. (ADR-024's MVP
   queue is `task-spooler`, not tmux-per-job — this only confirms detached processes outlive the
   link, it does not reopen the rejected tmux-per-job alternative.)
+
+- **task-spooler jobs survive logout** (measured 2026-10-03): a job enqueued over a one-shot ssh kept
+  running after the ControlMaster was closed. This works because logind's `KillUserProcesses=false`
+  leaves the ssh session scope `abandoned` instead of killing it (`Linger=no`). The `yats` desktop
+  session `c1` is permanently logged in. Details, plus cancel and per-slot core masks, are in
+  [task-spooler-uni-probe.md](../architecture/task-spooler-uni-probe.md).
 
 These two facts — a nightly link cutoff and a short UPS window — are why the queue and the
 source of truth live **on the server**, not the laptop (ADR-024).
@@ -130,8 +142,15 @@ confirmed above. tmux detachment confirmed. CPU model + NUMA topology and disk t
 - **Exact nightly cutoff window in UTC** — to confirm (stated as 08:00–22:00 Europe/Kyiv).
 - **Tailscale ACL** (laptop → server only) pending; confirm node-key expiry disabled.
 - **Parallel-slot layout + OpenMPI binding for concurrent runs** — whether to run **1×24** or
-  **2×12** (one slot per NUMA node) and how OpenMPI's default binding behaves for **concurrent
-  independent** ORCA runs are **to measure** (rule #8/#10). Until measured the profile runs
-  **1 slot** (ADR-024 Decision f).
+  **2×12** (one slot per NUMA node) are **to measure** (rule #8/#10). The **binding** part is
+  measured (2026-10-03): two tsp queues with `taskset` masks `0-11` / `12-23` and
+  `binding_policy=none` keep every ORCA/MPI thread inside their own mask
+  ([task-spooler-uni-probe.md](../architecture/task-spooler-uni-probe.md)). **Throughput** is
+  still unmeasured. Until it is, the profile runs **1 slot** (ADR-024 Decision f).
+- **tsp across a server restart** (ADR-024 Open question b) — needs an author-run reboot; pending.
+- **Clock not NTP-synchronised** (~2 min 52 s ahead of the laptop, 2026-10-03) — enabling NTP needs
+  sudo (author). Any cross-host time comparison is skewed until then.
+- **`KillUserProcesses=false` is load-bearing** for detached jobs — if the host config ever changes
+  it to `yes`, jobs die at logout.
 - **`SshBackend` connection-test specs** (remote ORCA path resolution, OpenMPI version, `nproc`)
   are UNDETERMINED until the Phase 5 connection-test runs (ADR-023, `server-profiles.md`).
