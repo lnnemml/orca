@@ -270,5 +270,5 @@ Negative controls (each guard broken, the named tests red, restored): listed per
   - `ln -T` is one `linkat` there too;
   - the shipped scripts ran end to end, and their wire output classified correctly with the Rust
     parser.
-- Reconcile wiring, the DB re-enqueue counter (schema v19), `Lost`/`Cancelling` in `JobStatus`,
+- Reconcile wiring, the DB re-enqueue counter (schema v20; v19 is the 5.1 Part B profile columns), `Lost`/`Cancelling` in `JobStatus`,
   sweep counting — unit 5.4.

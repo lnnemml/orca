@@ -1,6 +1,6 @@
 # ADR-024: Remote execution under intermittent connectivity
 
-**Status:** Accepted · 2026-10-02 (Proposed → Accepted after the review + acceptance amendments below) · amended 2026-10-03 (probe; probe review; d′ resolution — ready for implementation; l — unit 5.2 script and classifier shape)
+**Status:** Accepted · 2026-10-02 (Proposed → Accepted after the review + acceptance amendments below) · amended 2026-10-03 (probe; probe review; d′ resolution — ready for implementation; l — unit 5.2 script and classifier shape; m — 5.3 submit rules; n — 5.1 Part B profile and connection test)
 
 Refines [ADR-003](adr-003-execution-backend.md) (the `ExecutionBackend` trait + job state
 machine) and extends [ADR-023](adr-023-server-agnostic-remote-execution.md) (one `SshBackend`
@@ -291,7 +291,7 @@ difference ("stale for N minutes", "started before submit") would be skewed by a
 offset. The boot-id liveness rule (d) already uses no time at all.
 
 **k) Dedicated server account (Amended 2026-10-03, probe review).** A server profile runs under a
-**dedicated user without sudo**. OrcaStudio's server root is **`/home/<user>/.orcastudio/`**: the tsp
+**dedicated user without sudo**. OrcaStudio's server root is **`/home/<user>/.orcastudio/`** *(narrowed by Decision n: the root is the profile's `remote_scratch_dir`; this path is the suggested default)*: the tsp
 sockets (`TS_SOCKET`, one per slot) and the job directories live under it. Administration (packages,
 `/opt/orca`, logind/NTP settings) is done separately, through an admin account the app never uses.
 Rationale: the boundary between our jobs and other people's data is then held by **OS permissions,
@@ -327,7 +327,7 @@ decomposition; Anton decided every fork, before and after DESIGN review rounds 1
     `printf '%q'` into one command string also worked, but needs bash as the remote login shell, so it
     is not adopted.
 - **Upload: content-addressed, never overwritten** (review M1). 5.3 uploads each script as
-  `/home/<user>/.orcastudio/bin/<name>-<sha256 prefix>.sh` via a temp file + `rename`, then checks
+  `<root>/bin/<name>-<sha256 prefix>.sh` (the root per Decision n) via a temp file + `rename`, then checks
   the remote `sha256sum` against the embedded bytes (rule #9). A running wrapper keeps executing its
   own file, because a new version gets a new name. Measured 2026-10-03 (probe P3, laptop and uni,
   bash 5.2.21): when a running script is overwritten **in place** (`cp`/`cat >`, same inode), bash
@@ -479,7 +479,7 @@ decomposition; Anton decided every fork, before and after DESIGN review rounds 1
     reads still differ (including present → absent, which should not happen), the outcome is
     `Indeterminate`.
 - **"Ours"** (review M2): the PID is ours only if its cmdline runs our wrapper from
-  `.orcastudio/bin/` **and** carries **this job's dir** as its positional argument. Without the second
+  `<root>/bin/` **and** carries **this job's dir** as its positional argument. Without the second
   condition, another job's wrapper reusing the PID would pass. The fixture cmdline strings come from a
   recorded run, never invented. Measured (probe P2), a tsp-launched wrapper's `/proc/<pid>/cmdline`
   with NULs shown as `|`:
@@ -534,7 +534,7 @@ decomposition; Anton decided every fork, before and after DESIGN review rounds 1
 - **The outcome type is the classifier's own enum:** `Queued`, `Running`, `Completed { late_cancel }`,
   `Failed { reason }`, `Lost { orphans }`, `Cancelling`, `Cancelled`, `Indeterminate`, `ReEnqueue`.
   `Lost` and `Cancelling` join `JobStatus` only in 5.4, so 5.2 does not change `JobStatus`.
-- **The re-enqueue count is an input.** The `jobs` column (schema v19) lands in **unit 5.4**. The bound
+- **The re-enqueue count is an input.** The `jobs` column (schema v19 *(renumbered v20 by Decision n: v19 is the 5.1 Part B profile columns)*) lands in **unit 5.4**. The bound
   holds only if 5.4 **persists the increment before** it issues the re-enqueue (review M5). Otherwise
   a crash between `tsp` submit and the DB write would re-enqueue again, without limit.
 
@@ -624,6 +624,148 @@ within (l); items 5–6 are Anton's decisions.
 - **The d′ race:** a model test that enumerates all 6 interleavings of the wrapper's `.started` → check
   and the cancel script's `.cancelled` → check. In every one, ORCA never runs under `.cancelled`.
   The real scripts are also run in both sequential orders, with a stub ORCA.
+
+**m) Unit 5.3 submit rules (Amended 2026-10-03; Anton accepted the orchestrator's leans; DESIGN
+review pending, together with the 5.3 decomposition).**
+1. **Where `tsp` writes its output file:** in a per-job subdirectory **`<job>/.tsp-out/`**. The
+   submit step creates it and passes it as `TMPDIR` on **every** `tsp` enqueue; probe 5.3 measured
+   that the client's `TMPDIR` decides where the file goes.
+   - The name differs from `.tmp`, which cancel removes.
+   - The file holds only the wrapper's own messages (ORCA writes to `output.out`), so it stays with
+     the job: it is **always fetched** with the job's results (round 1 MED-8; the always-fetched set
+     becomes output/xyz/hess/`.tsp-out/`) and goes away with the job dir (rule #3).
+   - **Open (5.3/5.4):** the policy for removing a job dir on the server after a successful fetch is
+     not decided. Until it is, nothing removes remote job dirs.
+   - Creation is idempotent (`mkdir -p`, also on a ReEnqueue). If it fails, the submit refuses and
+     nothing is enqueued.
+   - Open, not measured: the `tsp` daemon is started by the first enqueue and inherits that job's
+     `TMPDIR`. What happens once that job dir is gone is unknown. It is likely harmless because
+     `TS_SOCKET` is always explicit.
+   - *Rejected:* a shared directory under the root. It grows without bound and needs its own
+     cleanup.
+2. **A blocked submit** (the slot check of l refuses):
+   - The submit stays pending locally and is **re-checked on every reconcile**. The check only reads
+     state; it signals nothing and changes nothing.
+   - After 3 refusals the user is told, and the notice **names the blocking job(s)**.
+   - The user may withdraw the pending submit, cancel the blocking job, or keep waiting.
+   - **No automatic action** ever frees a slot: a blocked slot almost always means something really
+     is still computing on those cores (rule #8).
+   - **Persistence and sequencing** (round 1 MED-9): the pending submit and its refusal counter live
+     in the local DB. Unit **5.4** adds them with the v20 migration, next to the re-enqueue counter,
+     and runs the re-check from its reconcile loop. Until 5.4, a refused submit simply fails with
+     the blocking job named.
+3. **"On the slot's mask" means the cores intersect.**
+   - A session's cores come from the wrapper's mask argument (argv[3]) or, for an orphan, from
+     `Cpus_allowed_list` in `/proc/<pid>/status`.
+   - The check covers **every non-terminal job of the profile**, across all sockets, including
+     `.enqueued` ones — not just the jobs of this slot.
+   - This is what stays safe when the slot count changes: a job still running on an old `0-23`
+     mask blocks a new `12-23` slot.
+   - **This extends the 5.2 collector** (round 1 MED-10). Per member, the snapshot gains the raw
+     `Cpus_allowed_list` from `/proc/<pid>/status`; the wrapper's mask is argv[3] of its cmdline,
+     which is already collected. The wire format, its strict parser and the shell/Rust parity tests
+     grow accordingly in 5.3. The cross-job enumeration is one collect per non-terminal job of the
+     profile.
+   - Residual: a live session from a job the local DB no longer knows (e.g. its row was deleted
+     while it ran) is outside the enumeration. 5.4 decides whether deleting a non-terminal remote
+     job is allowed.
+
+**n) Unit 5.1 Part B: profile columns, connection test, verification lifecycle (Amended
+2026-10-03; Anton decided every fork; DESIGN review round 1 → FAIL, rewritten).**
+
+*Profile data (schema v19).*
+1. `slot_count INTEGER NOT NULL DEFAULT 1 CHECK (slot_count = 1)` (Anton, round 1 HIGH-1).
+   - The profile has **one** `core_mask`, and Decision b requires one disjoint mask per slot.
+   - So until parallel slots are measured (Decision f), a profile has **exactly one slot**: the
+     UI shows it fixed, and the database rejects any other value.
+   - Per-slot masks arrive with a later migration, together with the measurement.
+   - Existing rows backfill to 1.
+2. **A run target** = `verified_at IS NOT NULL` **and** a valid `core_mask`. A valid mask has the
+   `taskset` list syntax that the wrapper validates (`^[0-9]+([,-][0-9]+)*$`), and every CPU in it
+   lies within `0..core_count-1` (rule #8). A profile with `core_mask` NULL is not a run target, so
+   submit refuses.
+3. `availability_window TEXT NULL` (Decision g; Anton): `HH:MM-HH:MM`, in the **laptop's local time
+   zone**, evaluated only against the laptop's own clock (Decision j).
+   - A window may wrap past midnight, e.g. `22:00-08:00`. Equal endpoints (`08:00-08:00`) are
+     rejected on write (round 2 F8).
+   - A malformed value is rejected on write; NULL means no window.
+   - The result is only an informational label, never an error.
+4. **`remote_scratch_dir` is the root** of Decision k (Anton, round 1 MED-4). The job dirs, the
+   `tsp/` sockets and `bin/` all live under it.
+   - When a profile is **saved**, the root is validated:
+     - an absolute path;
+     - the one path rule of (l) item 4;
+     - the socket paths under it fit the ≤ 100-byte bound of (l).
+   - The realpath rule is checked by the connection test.
+   - `remote_orca_path` must be absolute (rule #1).
+
+*The verification lifecycle* (round 1 HIGH-2).
+5. **Changing the value** of any of `host`, `remote_orca_path`, `remote_scratch_dir`, `core_mask`
+   or `slot_count` sets `verified_at` and the verified_* facts back to **NULL**: a changed target is
+   not the target that was verified.
+   - Renaming a profile or editing its `availability_window` keeps the stamp. A save that rewrites
+     a field with its unchanged value is not a change (round 2 F3).
+   - The existing test that asserts the stamp survives an update is inverted for target fields, not
+     deleted.
+6. A re-test that is not a **full pass** also sets `verified_at` and the verified_* facts to NULL. A
+   stamp never outlives the facts it certified.
+   - **Full pass** = every item-8 check passes.
+   - Item-9 values are stored when present and NULL otherwise, so `openmpi_version` becomes optional
+     in the stamp (round 2 F2).
+6a. **`verified_at` gates new submits only.** Reconcile, cancel and fetch of existing jobs never
+   consult it, so a transient failure cannot cut off monitoring or cancel (round 2 F1).
+6b. **Jobs keep their own coordinates** (Anton, round 2 F1).
+   - **At submit:** each job records its absolute job dir, its socket and the profile host it was
+     submitted to. Reconcile, cancel and fetch use these, never the profile's current values (5.3).
+   - **While non-terminal jobs exist:** the UI refuses to change a profile's `host` or
+     `remote_scratch_dir` as long as the profile still has non-terminal jobs (enforced from 5.3 on,
+     when such jobs can first exist).
+7. **Every submit re-checks `KillUserProcesses`** (Anton): one `busctl` read in the same ssh call.
+   Anything other than `b false` refuses the submit and sets `verified_at` to NULL. This is the one
+   host setting that silently kills jobs (Consequences).
+
+*The connection test.*
+8. **Mandatory — each one must pass, and "undetermined" counts as "not passed"** (round 1 LOW-7):
+   - **ORCA:** `test -x`, then `<path> --version </dev/null 2>&1`. It passes only with a `Program
+     Version x.y.z` line. ORCA exits **2** on `--version` (measured), so the rc is not the signal;
+     rc 127 or 126 means not runnable.
+   - **cores:** `nproc` parses as an integer.
+   - **the core mask** (Anton, round 2 F3): when `core_mask` is set, every CPU in it lies within
+     `0..nproc-1`, checked in the same test. One test is then enough to make the profile a run
+     target. With no mask, or a mask out of range, the profile is not a run target, and the UI says
+     why.
+   - **KillUserProcesses:** `busctl` prints exactly `b false` with rc 0. `b true`, any other output or
+     any rc ≠ 0 means not passed. So a host without logind cannot be a run target; this is accepted
+     for now (measured only on systemd 255).
+   - **the root:** created with `mkdir -p` if absent (Anton: the test may write inside the profile
+     user's own tree). It must equal its `realpath`. `findmnt -no FSTYPE --target <root>` must print
+     a type on the **allow-list = `{ext4}`** — the only type measured; any other type, or empty
+     output, means not passed. A type joins the allow-list only after a run measures it (rule #10).
+9. **Recorded, not gating** (Anton, round 1 MED-3):
+   - **OpenMPI:** the version is **recorded**. Rule #2's *match* is **not** checked here: no
+     expected version is sourced. The match is shown in practice by a real run (water on uni was
+     bit-identical). The stored version is the one `ompi_info --version` reports.
+     `mpirun --version` was measured in the connection test's non-tty `bash -s` context. That this
+     equals the wrapper's environment under `tsp` is **inference**. Both report 4.1.6 from
+     `openmpi-bin` (probe 5.1c).
+   - **`sudo` group membership:** a warning (Decision k).
+10. **Not checked, by Anton's choice:** that `tsp` is present, and a self-test of the readers. They
+    surface at the first submit or collect, which fails closed.
+11. **Transport (measured, probe 5.1c):** one static, embedded script followed, on the **same
+    `bash -s` stdin**, by the profile's values as a NUL-separated list. This works on both hosts and
+    preserved an empty value, an embedded newline, `'`, `$HOME` and `;`, but only with a strict
+    shape:
+    - bash reads its script from the pipe one command at a time, so any script line after the
+      `read` loop is itself read as "values" — silently, rc 0 (measured);
+    - the script's **last line** is therefore `args=(); while IFS= read -r -d '' a; do args+=("$a");
+      done; main "${args[@]}"; exit`. Before it there may be only definitions and commands that do
+      not read stdin (each with `</dev/null`), e.g. a prepended `head.sh` (round 2 F7). Nothing may
+      follow it but the NUL list;
+    - **every child command gets `</dev/null`**, because a child that reads stdin swallows the rest of
+      the script and the data, silently (measured with `cat`);
+    - post-condition (rule #9): the script echoes the received argument count, and the Rust side
+      asserts it equals what was sent;
+    - **the same rule applies to 5.3:** any script fed through ssh stdin follows this shape.
 
 ## Alternatives rejected
 

@@ -1392,9 +1392,15 @@ preflight. The remaining items (remote `orca_plot`, pause) are not numbered yet.
 - [ ] **Unit 5.1 — server profiles** in settings: host alias (reuses `~/.ssh/config`), remote ORCA path,
       remote scratch dir; connection test button. **Part A ✅ 2026-08-27** (schema v18
       `server_profiles`, pure connection-test parsers, `set_profile_verified`). **Part B open:** the
-      settings UI + the real SSH connection test. `SshBackend` + `enum Backend`, which ADR-023's
-      amendment had put in Part B, move to 5.3. Connection-test checks added on 2026-10-03
-      (ADR-024 Consequences + k):
+      settings UI + the real SSH connection test. **Pending gate: Anton's live WebKitGTK check of the
+      settings UI** (requested 2026-10-03 while he is away from the machine; the UI is not committed
+      until he has looked). `SshBackend` + `enum Backend`, which ADR-023's
+      amendment had put in Part B, move to 5.3. **Scope per ADR-024 (n):** schema v19 (`slot_count` fixed
+      at 1, `availability_window`); `remote_scratch_dir` is the root; edits and failed re-tests clear
+      `verified_at`; run target = verified + valid `core_mask`. The mandatory checks are ORCA version,
+      `nproc`, `KillUserProcesses`, and the root on a local FS (allow-list `{ext4}`). OpenMPI is recorded,
+      not matched; sudo is a warning; tsp and a reader self-test are not checked. Connection-test checks
+      first added on 2026-10-03 (ADR-024 Consequences + k):
       - **`KillUserProcesses=false`** on the host — **mandatory**; without it, detached jobs die at
         logout;
       - the profile user is **not in the `sudo` group** — a **warning, not a block**
@@ -1422,13 +1428,21 @@ preflight. The remaining items (remote `orca_plot`, pause) are not numbered yet.
       [modules/remote-jobs.md](wiki/modules/remote-jobs.md).
 - [ ] **Unit 5.3 — `SshBackend` wiring** via system `ssh`/`rsync`: rsync job dir up → the 5.2
       wrapper via task-spooler (per-slot `TS_SOCKET`) → byte-offset `poll_log` of output → selective
-      rsync down (output/xyz/hess always; gbw opt-in); `enum Backend` (ADR-023).
+      rsync down (output/xyz/hess/`.tsp-out/` always; gbw opt-in); `enum Backend` (ADR-023). Also per
+      ADR-024 (m)/(n):
+      - `TMPDIR=<job>/.tsp-out` on every enqueue;
+      - re-check `KillUserProcesses` on every submit;
+      - the slot check (cores intersect, all non-terminal jobs);
+      - the collector gains `Cpus_allowed_list`;
+      - the ssh-stdin script shape (n item 11);
+      - each job stores its own job dir, socket and host;
+      - refuse host/root edits while jobs are non-terminal.
 - [ ] **Unit 5.4 — cancel, pending cancel, reconnect loop, new states.** The 5.2 cancel script over
       ssh; a cancel made outside the window is stored as pending and runs first on reconnect
       (ADR-024 i); the reconnect loop runs the 5.2 classifier for every non-terminal remote job;
-      `Lost` (terminal) and `Cancelling` (transient) join `JobStatus` (ADR-024 d); schema v19 adds
-      the re-enqueue counter (incremented **before** the re-enqueue, ADR-024 l) and the pending-cancel
-      record. The
+      `Lost` (terminal) and `Cancelling` (transient) join `JobStatus` (ADR-024 d); schema v20 (renumbered: v19 = the 5.1 Part B profile columns, ADR-024 n) adds
+      the re-enqueue counter (incremented **before** the re-enqueue, ADR-024 l), the pending-cancel
+      record, and the pending submit with its refusal counter (ADR-024 m). The
       `uploading`/`syncing` transient states are not yet assigned to a unit.
 - [ ] **Unit 5.5 — preflight:** `nprocs`/`%maxcore` vs the profile (cores + RAM budget) and free disk
       space in the profile working dir; no-`%maxcore` → warn-and-propose, never silent-insert

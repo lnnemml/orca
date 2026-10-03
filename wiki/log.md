@@ -10103,3 +10103,80 @@ and wiki only.
   module-page sentence and a code comment about reaping corrected; this entry retyped `fix`.
 
 Next: verifier CODE → Anton → commit; then unit 5.3.
+
+## [2026-10-03] decision | ADR-024 (m), (n): 5.3 submit rules and 5.1 Part B scope; connection-test formats probed
+
+- **Correction to the 5.2 hardening entry:** its control line "late write removed from the trap →
+  N2 red" should read "late write **made to fail** → N2 red". Deleting the write clause from the
+  fixture text entirely leaves N2 green, as expected for any self-check (verifier, delta pass).
+- **ADR-024 (m), 5.3 submit rules.** Anton accepted the orchestrator's leans; DESIGN review comes
+  with the 5.3 decomposition.
+  - `tsp` writes its output to `<job>/.tsp-out/`, via `TMPDIR` on every enqueue.
+  - A blocked submit is re-checked on every reconcile; it only reads state. After 3 refusals a
+    notice names the blocking job(s), and nothing is done automatically.
+  - "On the slot's mask" means the cores intersect, checked across all non-terminal jobs of the
+    profile.
+- **ADR-024 (n), 5.1 Part B scope** (Anton decided):
+  - schema **v19** adds `slot_count` (default 1) and `availability_window` (laptop clock only);
+  - the 5.4 re-enqueue counter moves to **v20**;
+  - the connection test's mandatory checks: an ORCA version, OpenMPI, `nproc`,
+    `KillUserProcesses=false`, and a job root on a local filesystem;
+  - `sudo` membership is a warning only;
+  - `tsp` presence and a reader self-test are not checked;
+  - transport: profile values reach the script as a NUL list on stdin.
+- **Probe** (uni, as `anton`; recorded in `orca/remote-server-probe-commands.md`):
+  - `busctl` gives `b false`, and `loginctl show` is not on systemd 255;
+  - `id -nG` gives `anton users`;
+  - `findmnt` reports `ext4`, while `stat -f` names it `ext2/ext3`;
+  - **ORCA `--version` exits 2**, measured on the laptop and on uni. The page's earlier "exit 0" was
+    corrected — most likely the pipeline status;
+  - a missing ORCA path gives rc 127, a non-executable one rc 126;
+  - the whole set takes ≈0.17 s on the server.
+- **Pending gate (Anton):** a live WebKitGTK check of the 5.1 Part B settings UI. Anton is away from
+  the machine, so the UI stays uncommitted until he has looked.
+
+## [2026-10-03] decision | ADR-024 (n) rewritten after DESIGN round 1 FAIL; probe 5.1c
+
+- **DESIGN round 1 on (m)+(n) → FAIL** (2 HIGH, both in n). Anton decided the forks:
+  - HIGH-1: `slot_count` is fixed at 1 (`CHECK (slot_count = 1)`) until per-slot masks are measured;
+    run target = verified + a valid `core_mask` within `0..core_count-1`;
+  - MED-4: `remote_scratch_dir` **is** the root, and the test may `mkdir -p` it;
+  - MED-3: the OpenMPI version is recorded, not matched;
+  - every submit re-checks `KillUserProcesses`;
+  - the window is laptop-local `HH:MM-HH:MM` and may wrap past midnight;
+  - `.tsp-out/` is always fetched; remote job-dir removal is open.
+- **Orchestrator's fixes:**
+  - HIGH-2: editing a target field, or a re-test that is not a full pass, sets `verified_at` to
+    NULL;
+  - LOW-7: "undetermined" counts as "not passed";
+  - the local-FS allow-list is `{ext4}`;
+  - the root is validated on save;
+  - in (m): pending submit and its counter go in v20 (5.4), the collector gains `Cpus_allowed_list`
+    in 5.3, `.tsp-out` creation is idempotent and refuses on failure;
+  - ROADMAP, the probe-page superseded rows and the ADR status line are updated.
+- **Probe 5.1c** (laptop + uni, recorded in `orca/remote-server-probe-commands.md`):
+  - the script and a NUL value list can share one `bash -s` stdin only if the **last line**
+    consumes the list and ends with `exit`. A later script line is otherwise read as data, silently;
+  - every child command needs `</dev/null`;
+  - `mpirun` and `ompi_info` are both Open MPI 4.1.6 from `openmpi-bin` on both hosts;
+  - ORCA execs `mpirun` from PATH — inference from strings.
+
+## [2026-10-03] decision | ADR-024 (m)+(n): DESIGN round 2 → PASS WITH FINDINGS; findings applied
+
+Round 2 found nothing that blocks 5.1 Part B; all round-1 findings are closed. Anton decided both
+new forks:
+- **F1:** each job records its own job dir, socket and host at submit, and reconcile/cancel/fetch
+  use those (5.3). The UI refuses host/root edits while the profile has non-terminal jobs. Stated
+  too: `verified_at` gates new submits only.
+- **F3:** the connection test range-checks `core_mask` against the measured `nproc`, so one test
+  makes a profile a run target.
+
+The orchestrator applied the rest:
+- "full pass" defined; `openmpi_version` becomes optional in the stamp;
+- a stamp is cleared on a *changed value* only, and the existing test is inverted;
+- Decision k annotated (root = `remote_scratch_dir`), with `<root>/bin/` in (l);
+- superseded OpenMPI rows on the probe page;
+- ROADMAP 5.3/5.4 list the (m)/(n) obligations;
+- the transport shape allows a prepended `head.sh`; the `mpirun` environment equivalence is labelled
+  inference;
+- equal window endpoints are rejected.
