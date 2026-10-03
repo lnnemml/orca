@@ -380,3 +380,72 @@ Supports ADR-024 (l) N-2: the SID-reuse guard compares start times. Measured on 
   value, and two `sleep`s 50 ms apart differed by 5 ticks. Forced PID reuse was not tested (`pid_max`
   is 4194304).
 - **Under tsp on uni.** The same parse works: `pgrp = session = own PID`, `starttime=319395485`.
+
+## Probe 5.3 — shipped scripts on uni (2026-10-03)
+
+Run on `uni` as `anton` under `/home/anton/.orcastudio/probe-5.3/` (now removed), with its own
+`TS_SOCKET`. Host: bash 5.2.21, coreutils 9.4, procps-ng 4.0.4, kernel 6.8.0-138, tsp 1.0.1, `strace`
+present. Raw outputs were kept only in the session scratchpad (temporary). Claims marked
+*(prober-reported)* below have no retained raw output.
+
+**Q1 — the error messages the readers in `head.sh` match** (C locale). **Every ENOENT case matches**
+the literal strings, and EACCES / EISDIR / EINVAL are read as errors, never as "absent" (all rc 1).
+The readers' ESRCH alternatives (`cat: <p>: No such process`, `readlink: <p>: No such process`) were
+**not exercised**; a different ESRCH message would fail closed.
+
+| Reader | ENOENT | Other cases (all treated as errors, never as "absent") |
+|---|---|---|
+| `cat` | `cat: <p>: No such file or directory` | `Permission denied` (`/proc/1/environ`, a mode-000 file); `Is a directory` |
+| `readlink -v` | `readlink: <p>: No such file or directory` | `Permission denied` (`/proc/1/cwd`); `Invalid argument` (target is not a symlink) |
+| `stat` | `stat: cannot statx '<p>': No such file or directory` | `Permission denied` |
+| `tail` | `tail: cannot open '<p>' for reading: No such file or directory` | `tail: cannot open '<p>' for reading: Permission denied`; `tail: error reading '<p>': Is a directory` |
+
+- `ps -o pid= -s <sid>` on a session with no processes: rc 1 with empty stdout and stderr, which the
+  readers treat as an empty session.
+- `ps` with a non-numeric argument: rc 1 plus `error: process ID list syntax error`, which fails
+  closed.
+- An unreadable `output.out` makes the collector emit an `error` record and exit 3.
+
+**Q2 — `ln -T`.** It fails with rc 1 `File exists` on an existing file, an existing directory and a
+dangling symlink, and leaves the target unchanged. Without `-T`, `ln` onto a directory links **into**
+it (rc 0). `strace` shows exactly **one `linkat(AT_FDCWD,"src",AT_FDCWD,"dst",0)`**, with no
+stat/lstat/newfstatat call, and no access call on the target, before it. The only other traced call
+is the loader's `access("/etc/ld.so.preload")`; `statx` was not in the trace filter. It returned
+`-1 EEXIST` for an existing **file**; for the directory and the dangling symlink, EEXIST is inferred
+from the `File exists` message (its strerror text).
+
+**Q3 — the shipped scripts, end to end.** The scripts were composed exactly as `scripts.rs` composes
+them and uploaded as `bin/<name>-<sha256>.sh`. ORCA was a stub. The wrapper was enqueued as
+`TS_SOCKET=… TMPDIR=… tsp bash <wrapper> <job> 0-3 <stub>`.
+
+| Step | Result |
+|---|---|
+| (a) run j1 | `.started` written with pid = pgid = sid; `.exit_code` `0`; `.tmp` left in place after a normal finish *(prober-reported)*. |
+| (b) j1 mid-run | collect exit 0: `proc collected`, 3 members, all with cwd = the job dir, 1 `running` row. `cancel.sh check`: `alive=yes ours=yes leader=yes sid_reused=no own_session=no`. |
+| (c) j1 finished | `members 0`, row `finished`, `exit_code 0`. |
+| (d) j2 cancelled mid-run | `cancel.sh` printed `queued: skip no verified queued row`, then `group: TERM -<pgid>`, `sweep: TERM+CONT <3 pids>`, `tmp: removed`. Afterwards the collector saw `members 0`, `exit_code -` and `cancelled yes`; the tsp row was `finished` with E-Level −1. That `.tmp` was gone rests on the script's own `tmp: removed` line plus the prober's `ls` *(prober-reported)*. |
+| (e) foreign `boot_id`, stale and absent sockets | `proc skipped`, `nodaemon` for both sockets (wire). **No tsp daemon was started**: `ps` before and after was identical, and `absent.sock` was never created *(prober-reported)*. |
+
+- The wire files were parsed **locally with the real Rust parser and classifier** (from a scratch copy
+  of the crate at HEAD `53996f8`). Results:
+  - j1 mid-run → `Running`;
+  - j1 finished → `Completed { late_cancel: false }`;
+  - j2 before the cancel → `Running`;
+  - j2 after the cancel → `Cancelled`;
+  - j3 (foreign boot) → `Lost { orphans: [] }`;
+  - j4 (no `.started`, no daemon) → `ReEnqueue`.
+- The parser's slot consistency check correctly rejected one run in which the slot list given to
+  the parser was not a prefix of the collected socket facts.
+
+**Q4 — the `/tmp/ts-out.*` litter.**
+- `tsp -n` leaves `/tmp` clean. Its Output column says `stdout`, but where a `-n` task's output goes
+  was **not measured**, so it is not adopted.
+- **`TMPDIR` on the `tsp` call** puts `ts-out.*` in that directory instead. It is the **client's**
+  `TMPDIR` at enqueue time that counts, not the daemon's. **Proposal for 5.3** (not yet decided; the
+  directory under the root and its cleanup go to Anton with 5.3): set `TMPDIR` on **every** `tsp`
+  enqueue.
+
+**Probe hygiene.** The cleanup glob `rm -f /tmp/ts-out.*` also removed one pre-existing,
+anton-owned, 174-byte `/tmp/ts-out.RMtkcp` (mtime 09:41). That it was left by an earlier probe is an
+inference. A stray `cp -r` to `/tmp/ignore` was removed after checking its contents
+*(prober-reported)*. Lesson: delete only paths recorded at creation.

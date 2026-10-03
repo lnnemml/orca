@@ -10036,3 +10036,25 @@ Unit 5.2 is complete (ROADMAP).
 
 Next: verifier CODE on Part B → Anton → commit; then unit 5.3 (`SshBackend` wiring, upload, submit,
 `.enqueued`, slot check).
+
+## [2026-10-03] probe | Probe 5.3 — unit 5.2 scripts on uni; F4/D6 closed
+
+Recorded in `architecture/task-spooler-uni-probe.md`.
+- **F4:** every ENOENT message the `head.sh`/`collect.sh` readers match is identical on uni (bash
+  5.2.21, coreutils 9.4, procps-ng 4.0.4); EACCES/EISDIR/EINVAL are read as errors. The ESRCH
+  alternatives were not exercised (they fail closed if different).
+- **D6:** `ln -T` gives `File exists` on a file, a directory and a dangling symlink; strace on uni
+  showed one `linkat`, and EEXIST for the file case. ADR-024 (l) item 5 updated.
+- **End to end:** the shipped `wrapper`/`cancel`/`collect` ran through tsp with a stub ORCA,
+  including a mid-run cancel: group TERM, sweep, `.tmp` removed *(prober-reported)*, no strays
+  (`members 0`). The collector did not start a daemon on stale or absent sockets *(prober-reported)*.
+- **Parser:** the six collected wire files were parsed with the real Rust parser and classifier, in
+  a scratch copy of the crate. Outcomes: Running, Completed, Running, Cancelled, Lost, ReEnqueue — all
+  as expected.
+- **For 5.3 (proposal, not decided):** set `TMPDIR` on every `tsp` enqueue; it is the client's
+  `TMPDIR` that decides where `ts-out.*` goes. `tsp -n` is not adopted, because where its output goes
+  was not measured.
+- DESIGN check of this record → PASS WITH FINDINGS (8 wording/evidence findings; applied after a re-check round: the
+  ESRCH gap, *(prober-reported)* labels, the strace scope, the slot-prefix wording, tail cases, the
+  `TMPDIR` rule marked as a proposal, the inferred origin of the deleted file).
+- **Hygiene:** the prober's broad glob deleted one pre-existing stray `ts-out` file on uni.

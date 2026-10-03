@@ -254,9 +254,13 @@ Negative controls (each guard broken, the named tests red, restored): listed per
 
 - Upload of the scripts, the NUL-separated stdin argument transport, submit and `.enqueued`, the
   slot check on submit, the socket-path post-condition, the job-dir `realpath` assertion — unit 5.3.
-- **5.3 probe list (rule #10, measured on the laptop only):** on uni, the exact C-locale messages of
-  coreutils (`cat`, `tail`, `stat`, `readlink -v`) and procps (`ps -s` exit codes) that the readers
-  match — a different message fails closed, as a snapshot error; and `ln -T` as one `linkat` that
-  refuses an existing file, directory or dangling symlink.
+- **The uni measurements behind these scripts are done** (probe 5.3, 2026-10-03,
+  `architecture/task-spooler-uni-probe.md`):
+  - every ENOENT message the readers match is **identical** on uni (bash 5.2.21, coreutils 9.4,
+    procps-ng 4.0.4), and EACCES/EISDIR/EINVAL read as errors; the ESRCH alternatives are not
+    exercised (they fail closed if different);
+  - `ln -T` is one `linkat` there too;
+  - the shipped scripts ran end to end, and their wire output classified correctly with the Rust
+    parser.
 - Reconcile wiring, the DB re-enqueue counter (schema v19), `Lost`/`Cancelling` in `JobStatus`,
   sweep counting — unit 5.4.

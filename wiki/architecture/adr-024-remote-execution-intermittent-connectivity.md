@@ -558,8 +558,9 @@ within (l); items 5–6 are Anton's decisions.
    accepted residual ReEnqueue window harmless: after a daemon SIGKILL the fate of a queued runner is
    not measured, but if that runner later starts its wrapper, the second of the two wrappers refuses
    (verifier Part B, D4). `.started` is published by `ln -T` (one `linkat`; it fails on an existing
-   file, dir or dangling symlink — measured on the laptop and re-measured by the verifier; **uni not
-   yet measured**, 5.3 probe list).
+   file, dir or dangling symlink — measured on the laptop and re-measured by the verifier; **measured on uni
+   too**, probe 5.3: one `linkat`, `File exists` in all three forms; strace EEXIST shown for the
+   file case).
 6. **Failure to create `<job>/.tmp`** (Anton): the wrapper writes `.exit_code` = **96** by `rename`
    and exits without ORCA. With a `TMPDIR` outside the job dir, OpenMPI litter would escape it
    (rule #3), so the run is not allowed. Row 6 → `Failed`. Like 97, 96 is our own code, not ORCA's.
@@ -606,7 +607,9 @@ within (l); items 5–6 are Anton's decisions.
       user after 3 refusals.
     - **Accepted residual:** the daemon could die between this check and the `tsp` submit, leaving a
       survivor unaccounted for. This window is not closed.
-  - **Also for 5.3:** tsp writes a `/tmp/ts-out.*` file per task (P4); not yet prevented.
+  - **Also for 5.3:** tsp writes a `/tmp/ts-out.*` file per task (P4); not yet prevented. Probe 5.3
+    measured a candidate remedy: a `TMPDIR` on every `tsp` enqueue (the client's `TMPDIR` decides).
+    Where that directory lives and how it is cleaned is decided with 5.3.
 - **Shell and Rust liveness agree:** only the **liveness predicate** ("ours and alive") and the
   **cwd filter** of the job session are compared between shell and Rust. A materialiser builds a real job dir and starts a real local process whose
   cmdline has the recorded shape. Both predicates must give the same answer for every fixture. The
