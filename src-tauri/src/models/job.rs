@@ -137,8 +137,7 @@ impl Job {
     /// nulled when a profile is deleted. Keyed on `remote_host`, the same column every local-only
     /// query filters on (`remote_host IS NULL`), so this predicate and that SQL cannot disagree;
     /// the v20 CHECK keeps the other two coordinates set exactly when `remote_host` is.
-    // Its callers are 5.3 Part B's dispatch (`enum Backend`) and the cancel/delete refusals.
-    #[allow(dead_code)]
+    // Its callers: the cancel/delete refusal `ssh_backend::refuse_if_remote_live`.
     pub fn is_remote(&self) -> bool {
         self.remote_host.is_some()
     }

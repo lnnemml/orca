@@ -39,7 +39,7 @@ static SERIAL: Mutex<()> = Mutex::new(());
 
 /// The machine-wide serialisation of the tests whose scan sees, or whose processes are seen by,
 /// another submit test. A panic in one test must not fail the rest.
-fn serial() -> MutexGuard<'static, ()> {
+pub(super) fn serial() -> MutexGuard<'static, ()> {
     SERIAL.lock().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -54,7 +54,7 @@ fn slot_cpus() -> (usize, usize) {
     }
 }
 
-fn mask() -> String {
+pub(super) fn mask() -> String {
     match slot_cpus() {
         (a, b) if a == b => a.to_string(),
         (a, b) => format!("{a}-{b}"),
@@ -62,7 +62,7 @@ fn mask() -> String {
 }
 
 /// Run `script` as `bash -s` with `values` after it, as the ssh call will (n item 11).
-fn run(lab: &Lab, script: &str, values: &[String], env: &[(&str, &str)]) -> Output {
+pub(super) fn run(lab: &Lab, script: &str, values: &[String], env: &[(&str, &str)]) -> Output {
     let stdin = stdin_with_values(script, values).unwrap();
     let mut child = Command::new("bash")
         .arg("-s")
@@ -81,7 +81,7 @@ fn run(lab: &Lab, script: &str, values: &[String], env: &[(&str, &str)]) -> Outp
 
 /// `script` with exactly one occurrence of `from` replaced: a negative control's mutant. Panics
 /// if `from` is not there exactly once, so a control can never pass by mutating nothing.
-fn mutate(script: &str, from: &str, to: &str) -> String {
+pub(super) fn mutate(script: &str, from: &str, to: &str) -> String {
     assert_eq!(script.matches(from).count(), 1, "the mutation target {from:?} must occur once");
     script.replacen(from, to, 1)
 }
@@ -103,7 +103,7 @@ fn stdin_scripts_pass_bash_n() {
 // ---- submit ----------------------------------------------------------------------------------
 
 /// The lab's slot socket, `<root>/tsp/slot<n>.sock` (the layout the slot check recognises).
-fn slot_socket(lab: &Lab, n: u32) -> PathBuf {
+pub(super) fn slot_socket(lab: &Lab, n: u32) -> PathBuf {
     fs::create_dir_all(lab.root.join("tsp")).unwrap();
     lab.root.join("tsp").join(format!("slot{n}.sock"))
 }

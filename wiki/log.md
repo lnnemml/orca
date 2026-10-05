@@ -10486,3 +10486,94 @@ profile was never verified. Next: **5.3** `SshBackend` wiring.
 - New side fact: `tsp -K` leaves a running job's runner alive. A probe running `submit.sh` must set
   `HOME=<scratch>` (this one briefly created the real `~/.orcastudio-submit.lock`, then removed it).
 - Record: `wiki/orca/remote-sync-probe.md` § Probe 5.3 B0; `modules/remote-jobs.md` updated.
+
+## [2026-10-05] decision | ADR-024 o14 — B1 amendments
+- Forks found by the B1 Part A implementer, decided by Anton; DESIGN review PASS WITH FINDINGS,
+  findings applied (MED-3 decided by Anton). ADR-024 Decision (o) item 14:
+  - **14.1 (F1) trampoline:** every call of an uploaded `cancel.sh`/`collect.sh` is one `bash -s` call
+    of a stdin trampoline (NUL list `<root> <name> <sha> <args…>`; closed allow-list `cancel`,
+    `collect`; the script built as `<root>/bin/<name>-<sha>.sh`, a regular file at its own realpath
+    with that sha256, else refused, absent → "not installed"; run under `timeout -k 1 <N>` with stdin
+    at EOF; rc/stdout/stderr records, exit 0 when complete). Prepare and install cover all three
+    uploaded scripts; withdraw = label → prepare → install → prepare → mkdir + o-1 shapes after it →
+    cancel → collect → `classify`, no `verified_at` gate.
+  - **14.2 (F2 + DESIGN MED-3) `%pal` downward only:** on every attempt, from `input_content` with the
+    attempt's mask, `nprocs = min(input's, distinct CPUs)`; no `%pal` → the CPU count; written before
+    `upload_expected`; announced; post-condition one `%pal` stating N.
+  - **14.3 (G2):** `<root>/tsp/` created by the install call and asserted by prepare; tsp's behaviour
+    with a missing socket dir stays unmeasured (B4 records it).
+  - **14.4:** a failed attempt after the persist leaves `queued` + coordinates + the reason in
+    `error_message`; a failure before it leaves the row untouched.
+  - **14.5:** `local_backend::cancel` refuses a live remote job at function entry.
+
+## [2026-10-05] feat | Unit 5.3 B1 Part A — remote backend core: submit, retry, label, withdraw; enum Backend
+- **Landed (pure + tested, no command wired):** `src-tauri/src/ssh_backend.rs`, the Tauri-free core
+  over `&DbState` (never locked across an ssh call) and an injected `CommandRunner`:
+  - `submit_remote` → `SubmitAttempt { outcome, pal }`: no-ssh checks (draft, run target, the input's
+    `%pal` aligned downward to the mask by `align_remote_pal`, written with the aux files — via the
+    extracted `local_backend::read_aux_files` — into the local dir, ≤ 1000 files) → **persist `queued` +
+    `backend_id` + coordinates + local `job_dir` in one transaction before any ssh** (o 3.1) →
+    prepare → install + prepare again when `bin/`, `tsp/` or any of the three scripts is missing →
+    rsync upload → the submit call. Everything after the persist leaves the row `queued` with its
+    coordinates; the one write is `error_message` (cleared on `Enqueued`) and, **only for
+    `RefusedKup`**, `clear_verified`. `SubmitOutcome::{Enqueued, NotClaimed {step}, KillUserProcesses,
+    FailedAfterClaim, Unknown}`.
+  - `resubmit_remote` (label "not on the server" only; the local input re-derived with the current
+    mask), `label_remote`, `withdraw_remote` (o 14.1 sequence; cancel and collect through the
+    trampoline; only `Cancelled` sets the row `cancelled`).
+  - `refuse_if_remote_live` — `delete_job_conn`, and `local_backend::cancel` at entry (o 14.5); profile
+    `update` (host/root) and `delete` refused while `live_remote_jobs` is non-empty (o 2, n 6b).
+  - `align_remote_pal` over `local_backend::read_pal_nprocs` (new) and the unchanged
+    `align_pal_nprocs`; `models::server_profile::distinct_cpus` (new).
+- `execution_backend.rs`: `backend_kind(&job)` keyed on the coordinates, `enum Backend { Local, Ssh }`
+  (`for_job`/`for_submit`), `SshBackend` (AppHandle wrapper; dead until Part B).
+- **Four new stdin scripts** (spec of record: `modules/remote-jobs.md` § Readying the server, and
+  running the uploaded scripts): `prepare.sh` (read-only shapes of root/jobs/job/bin/tsp and the three
+  scripts' sha256), `install.sh` (`mkdir -p bin tsp`, realpath asserts, each script by unique `mktemp`
+  + sha check + `mv -fT`, `kept`/`installed`), `run.sh` (the trampoline; `BUDGET` cancel 20 s, collect
+  15 s; streams capped at 400 000 bytes) and `mkjob.sh` (`mkdir -p` + realpaths after it); parsed by
+  `remote/prepare.rs` and `remote/run.rs`.
+- **Tests:** `cargo test` 682 passed, 27 ignored (baseline 633/27): `remote::prepare` 7, `remote::run`
+  3, `ssh_backend::tests` 20 (fake runner), `remote::backend_e2e_tests` 13 (the real scripts on the
+  `Lab`), `distinct_cpus` 1, dispatch 1, local cancel guard position 1, profile refusals 2, delete
+  refusal 1. The remote + ssh_backend subset ran 3× green before the o14 rework.
+- **Negative controls** (each mutated, red, restored with `cmp`):
+  - (a) the first ssh call moved before the persist → `a_failure_at_the_first_ssh_leaves_a_recoverable_row`
+    red: "persisted before the first ssh: RowState { status: Draft, coords: None, error: None }";
+  - (b) `record_attempt` also clears on a `NotClaimed` whose reason starts `KillUserProcesses:` →
+    `only_refused_kup_clears_the_profile_stamp` red: "a plain refusal never clears the stamp";
+  - (c) `backend_kind` keyed on `backend_id` → `dispatch_keys_on_the_coordinates_never_on_backend_id`
+    red: "coordinates, profile deleted: left Local, right Ssh(…)";
+  - (d) `bin` dropped from `check_prepare` → three red (`a_component_with_the_wrong_shape…`,
+    `a_symlinked_bin_refuses_the_upload_at_the_prepare_step` → `NotClaimed { step: Install }`,
+    `every_failure_point…` → "prepare: symlinked bin: Enqueued");
+  - (e) `refuse_while_live` dropped from `delete_server_profile_conn` → `a_profile_with_live_remote_jobs_cannot_be_deleted`
+    red;
+  - (f) the post-install prepare replaced by trusting the install → `an_install_that_leaves_the_wrapper_wrong_uploads_nothing`
+    red: `Enqueued { tsp_id: 3 }`; install.sh's own sha check removed → `install_never_publishes_bytes…` red;
+  - (o14) the trampoline's allow-list line removed → `the_trampoline_runs_only_an_allowed_installed_script_by_its_sha`
+    red ("unterminated record line": the `wrapper` call no longer refused); its sha check removed →
+    the same test red: "forged bytes: expected a refusal, got Ran { rc: 0, … }"; its realpath check
+    removed → red: "symlinked bin: expected a refusal, got Ran { rc: 2, … }";
+  - (o14.2) `min` replaced by the mask's CPU count → `pal_is_capped_by_the_distinct_cpus_of_the_mask_and_never_raised`
+    red: "2 on a 12-CPU mask";
+  - (o14.1 mkjob) the shape check after the mkdir disabled → `mkjob_checks_the_shapes_after_the_mkdir`
+    red: "a symlinked job dir";
+  - (o14.5) the cancel guard moved below the running branch → `cancel_refuses_a_live_remote_job_before_any_branch`
+    red: "the remote guard must come before `running_lock()`".
+  - (MED-1) mkjob's `real job "$job"` → `emit_text job "$job"` → `mkjob_makes_the_dir_and_refuses_a_symlinked_component_after_the_mkdir`
+    red: "jobs/w3 -> jobs/w1 is refused" (the new sibling-link case; also a permanent `mutate()` check);
+  - (LOW-2) the local dir written before the retry's label call → `a_retry_refused_by_the_label_leaves_the_local_dir_unchanged`
+    red: "untouched".
+  - Observation, not a control (as ADR-024 o 14.1): a script that reads stdin gets EOF — the `bash -s`
+    read loop drains stdin first, so removing `</dev/null` cannot turn a test red.
+- **Verifier CODE (PASS WITH FINDINGS) fixes:** MED-1 the sibling-link mkjob case; LOW-2 the retry's
+  label call before any write (`retry_checks` read-only, then label, then write); LOW-4 `CALL_TIMEOUT`
+  and `RUN_TIMEOUT` raised to 60 s, derived from the scripts' bounds (46 s / 43 s worst case,
+  `remote-jobs.md`); LOW-5 the EOF wording aligned with the ADR.
+- **Part B needs:** commands over `submit_remote`/`resubmit_remote`/`withdraw_remote` in
+  `spawn_blocking`, showing `SubmitAttempt.pal.notice()`; `cancel_job` through `Backend::for_job`; the
+  per-job in-flight guard (o4); **LOW-3** `update_job_status` (`commands/jobs.rs:814`) can set any
+  status on a live remote job — guard it or unregister it; **LOW-6** an input with `! PALn` and no
+  `%pal` gets `%pal nprocs <mask count>` inserted, as a local run does (ADR open question) — no action.
+- Next: re-verify, commit on Anton's approval, then B1 Part B.

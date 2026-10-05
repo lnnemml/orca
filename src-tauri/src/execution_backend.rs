@@ -11,11 +11,10 @@
 //! it; the Tauri command layer now **dispatches through it** — `submit_job` and
 //! `cancel_job` (`commands::jobs`) construct a `LocalBackend` from their
 //! `AppHandle` and call `submit` / `cancel` on the trait, so the trait is the real
-//! execution seam. Dispatch is a single concrete type today — the
-//! `enum Backend { Local, Ssh }` static-dispatch selector and the
-//! `jobs.backend_id` column are deferred to the `SshBackend` unit (ADR-023), where
-//! the trait's still-maturing `poll_log(offset)` / `fetch_results(policy)` shapes
-//! are forced by a second implementation. `poll_log` / `status` / `fetch_results`
+//! execution seam. The `enum Backend { Local, Ssh }` static-dispatch selector
+//! ([`Backend`], keyed on a job's coordinates by [`backend_kind`]) and `SshBackend`
+//! exist (unit 5.3 B1 Part A) but the commands still construct a `LocalBackend`
+//! directly; they route through the enum in B1 Part B. `poll_log` / `status` / `fetch_results`
 //! are wired-but-quiet: the live UI still uses the **push** `job:log` event, so the
 //! pull path is exercised by tests until the push→pull flip (a later unit).
 //!
@@ -299,6 +298,163 @@ impl ExecutionBackend for LocalBackend {
     }
 }
 
+// --- Dispatch (ADR-023, ADR-024 o item 1) ----------------------------------------------------
+
+/// Which backend an existing job belongs to. **Keyed on the job's coordinates, never on
+/// `backend_id`** (ADR-024 o item 1): `backend_id` only names a profile, and a job whose profile
+/// was deleted after it finished keeps its coordinates and stays remote.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BackendKind {
+    /// No coordinates: this machine.
+    Local,
+    /// On a server, at these recorded coordinates.
+    Ssh(crate::ssh_backend::RemoteCoordinates),
+}
+
+/// The backend of `job`, from its coordinates. A partial set of coordinates is an error, never
+/// "local".
+pub fn backend_kind(job: &Job) -> Result<BackendKind, AppError> {
+    Ok(match crate::ssh_backend::coordinates(job)? {
+        None => BackendKind::Local,
+        Some(coords) => BackendKind::Ssh(coords),
+    })
+}
+
+/// Static dispatch over the backends (ADR-023: an `enum`, not `dyn`). An existing job's backend
+/// comes from [`backend_kind`]; a draft's from the run target chosen next to Submit
+/// ([`Backend::for_submit`], o item 5).
+// Not routed yet: `commands::jobs` dispatches through it in unit 5.3 B1 Part B.
+#[allow(dead_code)]
+pub enum Backend {
+    Local(LocalBackend),
+    Ssh(SshBackend),
+}
+
+#[allow(dead_code)] // routed in unit 5.3 B1 Part B, with the enum
+impl Backend {
+    /// The backend of an existing job, by its coordinates.
+    pub fn for_job(app: AppHandle, job: &Job) -> Result<Backend, AppError> {
+        Ok(match backend_kind(job)? {
+            BackendKind::Local => Backend::Local(LocalBackend::new(app)),
+            BackendKind::Ssh(_) => Backend::Ssh(SshBackend::new(app, None)),
+        })
+    }
+
+    /// The backend a draft is submitted to: `None` = this machine, `Some(profile id)` = that
+    /// server profile (o item 5).
+    pub fn for_submit(app: AppHandle, target: Option<String>) -> Backend {
+        match target {
+            None => Backend::Local(LocalBackend::new(app)),
+            Some(profile_id) => Backend::Ssh(SshBackend::new(app, Some(profile_id))),
+        }
+    }
+}
+
+impl ExecutionBackend for Backend {
+    fn submit(&self, job: &Job) -> Result<JobHandle, AppError> {
+        match self {
+            Backend::Local(b) => b.submit(job),
+            Backend::Ssh(b) => b.submit(job),
+        }
+    }
+
+    fn poll_log(&self, h: &JobHandle, offset: u64) -> Result<LogChunk, AppError> {
+        match self {
+            Backend::Local(b) => b.poll_log(h, offset),
+            Backend::Ssh(b) => b.poll_log(h, offset),
+        }
+    }
+
+    fn status(&self, h: &JobHandle) -> Result<JobStatus, AppError> {
+        match self {
+            Backend::Local(b) => b.status(h),
+            Backend::Ssh(b) => b.status(h),
+        }
+    }
+
+    fn fetch_results(&self, h: &JobHandle, policy: FetchPolicy) -> Result<(), AppError> {
+        match self {
+            Backend::Local(b) => b.fetch_results(h, policy),
+            Backend::Ssh(b) => b.fetch_results(h, policy),
+        }
+    }
+
+    fn cancel(&self, h: &JobHandle) -> Result<(), AppError> {
+        match self {
+            Backend::Local(b) => b.cancel(h),
+            Backend::Ssh(b) => b.cancel(h),
+        }
+    }
+}
+
+/// The remote backend (ADR-023, ADR-024): a thin `AppHandle` wrapper over the Tauri-free core in
+/// [`crate::ssh_backend`], like [`LocalBackend`] over `local_backend`. It runs the real ssh/rsync
+/// ([`SystemRunner`](crate::remote::ssh::SystemRunner)). `target` is the profile a draft is
+/// submitted to; an existing job's calls use its recorded coordinates instead (n 6b).
+// Not routed yet: unit 5.3 B1 Part B.
+#[allow(dead_code)]
+pub struct SshBackend {
+    app: AppHandle,
+    target: Option<String>,
+}
+
+#[allow(dead_code)] // routed in unit 5.3 B1 Part B
+impl SshBackend {
+    pub fn new(app: AppHandle, target: Option<String>) -> Self {
+        SshBackend { app, target }
+    }
+}
+
+impl ExecutionBackend for SshBackend {
+    /// Blocks for the whole sequence (up to the submit call's 60 s after the upload): call it off
+    /// the main thread. Only `Enqueued` is an `Ok`; every other outcome is an `Err` carrying it,
+    /// while the row stays `queued` with its coordinates for the label call to resolve.
+    fn submit(&self, job: &Job) -> Result<JobHandle, AppError> {
+        let profile_id = self
+            .target
+            .as_deref()
+            .ok_or_else(|| AppError::Backend("no server profile was chosen to run on".into()))?;
+        let db = self.app.state::<DbState>();
+        let runner = self.app.state::<crate::local_backend::JobRunner>();
+        let attempt = crate::ssh_backend::submit_remote(
+            &db,
+            &crate::remote::ssh::SystemRunner,
+            runner.data_dir(),
+            &job.id,
+            profile_id,
+        )?;
+        // The trait has no room for the %pal notice (`attempt.pal`); a command that must show it
+        // calls `ssh_backend::submit_remote` directly (B1 Part B).
+        match attempt.outcome.failure() {
+            None => Ok(JobHandle(job.id.clone())),
+            Some(failure) => Err(AppError::Backend(failure)),
+        }
+    }
+
+    fn poll_log(&self, _h: &JobHandle, _offset: u64) -> Result<LogChunk, AppError> {
+        Err(AppError::Backend("the remote log arrives with the poller (unit 5.3 B2)".into()))
+    }
+
+    fn status(&self, h: &JobHandle) -> Result<JobStatus, AppError> {
+        let db = self.app.state::<DbState>();
+        let conn = db.lock()?;
+        Ok(get_job_conn(&conn, &h.0)?.status)
+    }
+
+    fn fetch_results(&self, _h: &JobHandle, _policy: FetchPolicy) -> Result<(), AppError> {
+        Err(AppError::Backend("fetching remote results arrives with the poller (unit 5.3 B2)".into()))
+    }
+
+    /// Refused for a live remote job (o item 2) — never a local `Cancelled`.
+    fn cancel(&self, h: &JobHandle) -> Result<(), AppError> {
+        let db = self.app.state::<DbState>();
+        let conn = db.lock()?;
+        let job = get_job_conn(&conn, &h.0)?;
+        crate::ssh_backend::refuse_if_remote_live(&job)?;
+        Err(AppError::Backend(format!("job {} is '{}': there is nothing to cancel", job.id, job.status.as_str())))
+    }
+}
+
 /// Bytes read per `poll_log` call, by either backend. Bounds memory per poll (rule #5); the pull
 /// loop advances the offset so a large log is still fully delivered across polls. The remote
 /// reply carries this many bytes plus a little framing, so it must stay well under the ssh
@@ -308,6 +464,51 @@ pub const POLL_LOG_MAX_BYTES: u64 = 256 * 1024;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A job with these coordinates and this `backend_id`, through the real `Job::from_row`.
+    fn job(coords: Option<(&str, &str, &str)>, backend_id: Option<&str>) -> Job {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE jobs (id TEXT, title TEXT, input_content TEXT, status TEXT, job_dir TEXT, energy REAL,
+                 wall_time REAL, error_message TEXT, created_at TEXT, started_at TEXT, completed_at TEXT,
+                 scene_json TEXT, scene_log_json TEXT, pathway_id TEXT, group_id TEXT, backend_id TEXT,
+                 remote_host TEXT, remote_job_dir TEXT, remote_socket TEXT);",
+        )
+        .unwrap();
+        let (h, d, s) = coords.map_or((None, None, None), |(h, d, s)| (Some(h), Some(d), Some(s)));
+        conn.execute(
+            "INSERT INTO jobs (id, title, input_content, status, created_at, backend_id, remote_host, remote_job_dir, remote_socket)
+             VALUES ('j1', 't', '! HF', 'queued', 'now', ?1, ?2, ?3, ?4)",
+            rusqlite::params![backend_id, h, d, s],
+        )
+        .unwrap();
+        conn.query_row(&format!("SELECT {} FROM jobs", Job::COLUMNS), [], Job::from_row).unwrap()
+    }
+
+    /// NEGATIVE CONTROL target (c): dispatch keys on the coordinates, never on `backend_id`
+    /// (ADR-024 o item 1). Make `backend_kind` look at `job.backend_id` and the first two rows go
+    /// red: a remote job whose profile was deleted would run locally, and a job naming a profile
+    /// but never submitted would be treated as on a server.
+    #[test]
+    fn dispatch_keys_on_the_coordinates_never_on_backend_id() {
+        let coords = Some(("uni", "/r/jobs/j1", "/r/tsp/slot0.sock"));
+        let remote = BackendKind::Ssh(crate::ssh_backend::RemoteCoordinates {
+            host: "uni".into(),
+            job_dir: "/r/jobs/j1".into(),
+            socket: "/r/tsp/slot0.sock".into(),
+        });
+        for (case, job, want) in [
+            ("coordinates, profile deleted", job(coords, None), remote.clone()),
+            ("a profile named, never submitted", job(None, Some("p1")), BackendKind::Local),
+            ("coordinates and a profile", job(coords, Some("p1")), remote),
+            ("neither", job(None, None), BackendKind::Local),
+        ] {
+            assert_eq!(backend_kind(&job).unwrap(), want, "{case}");
+        }
+        let mut partial = job(coords, Some("p1"));
+        partial.remote_job_dir = None;
+        assert!(backend_kind(&partial).is_err(), "partial coordinates are an error, never local");
+    }
 
     fn chunk(bytes: &[u8]) -> LogChunk {
         LogChunk { offset: 0, bytes: bytes.to_vec(), reset: false }

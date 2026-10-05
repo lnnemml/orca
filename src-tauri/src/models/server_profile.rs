@@ -196,6 +196,25 @@ fn parse_cpu(text: &str) -> Result<u32, String> {
     text.parse::<u32>().map_err(|_| format!("CPU {text:?} does not fit a u32"))
 }
 
+/// How many distinct CPUs a parsed mask names: overlapping ranges count once (`0-3,2-5` is 6).
+/// The remote input's `%pal nprocs` is capped at this (ADR-024 o item 14.2).
+pub fn distinct_cpus(ranges: &[CpuRange]) -> u64 {
+    let mut sorted: Vec<CpuRange> = ranges.to_vec();
+    sorted.sort_by_key(|r| r.first);
+    let mut count = 0u64;
+    let mut covered_to: Option<u32> = None; // the highest CPU counted so far
+    for r in sorted {
+        let start = match covered_to {
+            Some(top) if r.last <= top => continue,
+            Some(top) if r.first <= top => top + 1,
+            _ => r.first,
+        };
+        count += u64::from(r.last - start) + 1;
+        covered_to = Some(r.last);
+    }
+    count
+}
+
 /// The highest CPU a parsed mask names.
 fn max_cpu(ranges: &[CpuRange]) -> Option<u32> {
     ranges.iter().map(|r| r.last).max()
@@ -345,6 +364,14 @@ mod tests {
             created_at: "2026-10-03 09:00:00".into(),
             slot_count: 1,
             availability_window: None,
+        }
+    }
+
+    /// 14.2's count: overlaps once, adjacent and disjoint ranges summed.
+    #[test]
+    fn distinct_cpus_counts_overlaps_once() {
+        for (mask, want) in [("0", 1), ("0-3", 4), ("0-3,2-5", 6), ("2-5,0-3", 6), ("0-11,24-35", 24), ("0-3,1-2", 4), ("0,0,0", 1), ("0-3,4-7", 8)] {
+            assert_eq!(distinct_cpus(&parse_core_mask(mask).unwrap()), want, "{mask}");
         }
     }
 

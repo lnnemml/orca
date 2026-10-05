@@ -6,10 +6,13 @@ decides the job's state from a **snapshot of raw facts** they collect, per
 server filesystem is the source of truth (ADR-024 c); the decision is made in Rust, never accepted
 from the server (rule #9).
 
-The Rust side does no remote I/O itself: no ssh, no processes. The scripts are embedded bytes;
-nothing uploads or runs them yet (the ssh/rsync wiring is unit 5.3 Part B). The one exception is
-`sync.rs`, which lists and hashes the **local** job dir for the transfer post-conditions. The module is registered in `lib.rs` under a scoped
-`#[allow(dead_code)]` until units 5.3/5.4 call it.
+The module itself does no remote I/O: no ssh, no processes. The scripts are embedded bytes, and
+the pure parts here build each call's values and parse its reply. The one exception is `sync.rs`,
+which lists and hashes the **local** job dir for the transfer post-conditions. The calls are run by
+the remote backend's core, `src-tauri/src/ssh_backend.rs` (submit, retry, label, withdraw over an
+injected `CommandRunner`; [execution-backends.md](execution-backends.md#sshbackend-ssh_backendrs)),
+which no Tauri command calls yet (unit 5.3 B1 Part B). The module is registered in `lib.rs` under a
+scoped `#[allow(dead_code)]` until units 5.3/5.4 call all of it.
 
 ## What exists
 
@@ -21,15 +24,18 @@ nothing uploads or runs them yet (the ssh/rsync wiring is unit 5.3 Part B). The 
 | `tsp.rs` | `match_job_row` → `Option<TspRow { id, state }>` |
 | `snapshot.rs` | `Snapshot`, `JobIdentity`, `Attempt`, `SessionMember`, `SocketFact`, `SocketState` |
 | `classify.rs` | `classify`, `Outcome`, `FailReason`, `Classification`, `SnapshotError`; predicates `is_alive`, `is_our_wrapper`, `job_session`, `sid_reused` |
-| `scripts.rs` + `scripts/` | the uploaded job scripts `WRAPPER`, `CANCEL`, `COLLECT`; the stdin-fed calls `CONNTEST`, `SUBMIT`, `LABEL`, `POLL_LOG`, `LIST` (`STDIN_SCRIPTS`, each ending in `READ_LOOP`); `stdin_with_values` (script + NUL list), `upload_path` (`<root>/bin/<name>-<sha256>.sh`), `sha256_hex` |
+| `scripts.rs` + `scripts/` | the uploaded job scripts `WRAPPER`, `CANCEL`, `COLLECT`; the stdin-fed calls `CONNTEST`, `SUBMIT`, `LABEL`, `POLL_LOG`, `LIST`, `PREPARE`, `INSTALL`, `RUN` (the trampoline), `MKJOB` (`STDIN_SCRIPTS`, each ending in `READ_LOOP`); `stdin_with_values` (script + NUL list), `upload_path` (`<root>/bin/<name>-<sha256>.sh`), `sha256_hex` |
 | `wire.rs` | `parse_snapshot` — the collector's output → `Snapshot`; `WireError` |
 | `ssh.rs` | `ssh_bash_argv` (`ssh -o BatchMode=yes -o ConnectTimeout=10 -- <host> bash -s`, host re-validated), `ssh_options` (the two `-o` options, shared with rsync's `-e`) and `CommandRunner`/`SystemRunner` (stdin and both streams on threads, 1 MiB cap, process group killed on timeout). Used by the 5.1 connection test (`modules/server-profiles.md`); meant for 5.3's submit too |
 | `sync.rs` | rsync argv (`upload_argv`, `download_argv`), the download filter `download_filter_args`, its leaf patterns `download_patterns` and its Rust mirror `download_selects`, `list_dir`/`upload_expected`/`expected_values` (local file lists with sha256), `ListArgs` + `parse_list_reply` (the server's listing), `compare_download` (the download post-condition) |
 | `poll.rs` | `PollLogArgs`, `parse_poll_reply` → `LogChunk` with the length post-condition; `check_echo` (the n-6d echo check every 5.3 reply shares) |
 | `submit.rs` | `remote_job_dir`, `SubmitArgs`, `parse_submit_reply` → `SubmitReply`; `LabelArgs`, `parse_label_reply` → `LabelFacts`, `label` → `Label` (the label rules) |
+| `prepare.rs` | the calls that ready the server before an upload or a withdraw: `UPLOADED` (wrapper, cancel, collect), `PrepareArgs`, `parse_prepare_reply` → `PrepareFacts`, `check_prepare` → `Prepared` or `ShapeRefusal`; `InstallArgs`, `parse_install_reply` → `[Installed; 3]` |
+| `run.rs` | the trampoline's `RunArgs` (`JobScript::{Cancel, Collect}`) and `parse_run_reply` → `RunReply`; the withdraw's `MkjobArgs` and `parse_mkjob_reply` (o 14.1) |
 | `race_model.rs` | test-only model of the d′ race (`.started`/`.cancelled`) |
 | `script_tests.rs` | test-only: the real job scripts run on this machine; the shared `Lab` harness (see Tests) |
 | `call_script_tests.rs` | test-only: the real 5.3 calls through `bash -s`, read by their Rust parsers (see Tests) |
+| `backend_e2e_tests.rs` | test-only: `ssh_backend`'s submit, retry, label and withdraw end to end against the `Lab` (see Tests) |
 
 Rule #6 is shared with the local backend: `local_backend::has_normal_termination` (the one
 `ORCA TERMINATED NORMALLY` test, also used by `detect_completion`) over the last
@@ -246,6 +252,125 @@ in this order: no dir → `NotOnServer`; any of `.started`, `.exit_code`, `.canc
 row → `Classifier`; a socket `Error` → `Classifier`; `.submitting` → `SubmitInterrupted`; otherwise →
 `NotOnServer`.
 
+## Readying the server, and running the uploaded scripts (`prepare.rs`, `run.rs`, ADR-024 o items 3.2, 13.1, 14)
+
+Three scripts are uploaded to `<root>/bin/<name>-<sha256>.sh` (`prepare::UPLOADED`): the **wrapper**
+(tsp runs it), **`cancel`** and **`collect`** (the trampoline runs them). Before an upload or a
+withdraw, two calls make sure nothing is written through a symlink and that all three exist with the
+right bytes. This section is the wire formats' spec of record (like the label call's, o item 13.5).
+
+**The `PREPARE` call** — read-only; values: the root, the job dir (`<root>/jobs/<id>` exactly), and
+the sha256 of the wrapper, cancel and collect scripts (5 values). For `<root>`, `<root>/jobs`, the job
+dir, `<root>/bin`, `<root>/tsp` and the three scripts, in that order, it reports whether the path
+exists (only ENOENT is `absent`; any other `stat` failure is an `error` record and exit 3), its kind
+(`stat -c %F`, which does not follow a symlink) and its `realpath -e` (`-` when it does not resolve).
+For each script it adds the sha256, computed only for a regular file (a fifo would block
+`sha256sum`), under `timeout -k 1 5`.
+
+```text
+orcastudio-prepare 1
+argc 5, arg <len> × 5          the values, verbatim
+<name> absent|present          root, jobs, job, bin, tsp, wrapper, cancel, collect — in this order
+  kind <len>                   ┐ only for present
+  realpath <len>|-             │
+  sha256 <hex>|-               ┘ scripts only: a regular file's sha256, else -
+end
+```
+
+`parse_prepare_reply` → `PrepareFacts` re-checks what it can (rule #9): a sha256 appears exactly for a
+regular file (`regular file` or `regular empty file`), and no path exists below a component reported
+absent (`jobs`/`bin`/`tsp` under `root`, the job dir under `jobs`, a script under `bin`).
+`check_prepare` decides:
+- every component that **exists** — `<root>/tsp` included (o 14.3) — must have kind `directory` and a
+  realpath equal to its own path; the first that does not is a `ShapeRefusal` naming it (a symlinked
+  `<root>/bin` refuses even when the scripts inside it have the right bytes, o item 13.1). A component
+  that does not exist is fine: rsync `--mkpath` and the install call create them;
+- a script **hashes right** iff it is a regular file whose realpath is its own path and whose sha256 is
+  the one its name carries. Anything else (absent, other bytes, a symlink) is not a refusal: the
+  install call replaces it. `Prepared::missing()` names those that do not.
+- `Prepared::ready()` = all three hash right and `bin/` and `tsp/` exist.
+
+**The `INSTALL` call** — values: the root, then for the wrapper, cancel and collect in that order its
+sha256 and its bytes (7 values; the bytes are echoed too, n item 6d). `mkdir -p <root>/bin <root>/tsp`
+— `tsp/` holds the slot sockets and nothing else creates it; what real tsp does when the socket's
+directory is missing is **not measured** (rule #10; probe 5.2b had the parent present; the B4 live run
+records it) — then the root, `bin/` and `tsp/` must each be a directory, not a symlink, equal to its
+realpath. Per script: one already a regular file with the right sha256 is left as it is (`kept`);
+otherwise the bytes go to a unique `mktemp` name `.<name>-<sha>.XXXXXX` in `<root>/bin/` (two profiles
+aliasing one host cannot clobber each other), the temp's sha256 must be `<sha>`, and `mv -fT` renames
+it over the name (`installed`) — a running script keeps its own inode (probe P3); a temp is removed
+on any failure.
+
+```text
+orcastudio-install 1
+argc 7, arg <len> × 7          the values, verbatim
+wrapper installed|kept
+cancel installed|kept
+collect installed|kept
+end
+```
+
+Any failure is an `error` record and exit 3. The answer is not the post-condition: the caller runs the
+prepare call again and requires `ready()`.
+
+**The `RUN` trampoline** (o item 14.1) — the one way an uploaded `cancel.sh`/`collect.sh` runs, so no
+per-job value is re-parsed by the remote login shell (`ssh host cmd args` joins and re-parses argv,
+(l)): it is fed through `bash -s` with the NUL list `<root> <name> <sha> <args…>` and hands the args on
+as argv. In order:
+1. `<root>` by the one path rule; `<name>` in the **closed allow-list** `BUDGET` — exactly `cancel`
+   and `collect` (never `wrapper`: run here it would start ORCA outside tsp); `<sha>` exactly 64
+   lowercase hex. Otherwise `refused`.
+2. `<root>/bin/<name>-<sha>.sh`, built by the script: absent (ENOENT) → `not-installed`; otherwise it
+   must be a `regular file` (not a symlink) whose `realpath` (under `timeout -k 1 5`) is itself — so
+   `<root>/bin` is not a symlink either — and whose `sha256sum` (same bound) is `<sha>`, else `refused`.
+3. `timeout -k 1 <N> bash <path> <args…> </dev/null` — **N per script: cancel 20 s** (its sweep waits
+   up to 5 s after the TERM, plus `tsp -l`/`-r`), **collect 15 s** (`/proc` reads and a few `tsp -l`);
+   the script's stdin is at EOF; stdout and stderr go to temp files, each capped at 400 000 bytes (two
+   of them plus the echo stay under the laptop's 1 MiB `MAX_OUTPUT_BYTES`; over the cap → an `error`
+   record).
+4. The reply carries the script's rc and both streams; the trampoline exits 0 whenever the reply is
+   complete, whatever the script's rc.
+
+```text
+orcastudio-run 1
+argc <n>, arg <len> × n        the values, verbatim
+refused <len> | not-installed | ran
+rc <n>                         ┐
+stdout <len>                   │ only after `ran`: the script's exit status (124: timed out)
+stderr <len>                   ┘ and its streams, verbatim
+end
+```
+
+`run::RunArgs::new(root, JobScript::{Cancel, Collect}, args)` takes the sha from the embedded bytes;
+`parse_run_reply` → `RunReply::{Refused, NotInstalled, Ran { rc, stdout, stderr }}`. The collector's
+snapshot is the `stdout` payload, unwrapped before `wire::parse_snapshot`. A test-only variant of the
+trampoline (its allow-list extended by one `probe` entry, in the test only; a test pins the shipped
+line `declare -A BUDGET=([cancel]=20 [collect]=15)`) shows an argument with `'`, `$`, a space and a
+newline arriving byte-identical and a non-zero rc in a complete reply. Stdin at EOF is an
+**observation, not a control**: the `bash -s` read loop drains stdin before the script runs, so
+removing `</dev/null` cannot turn a test red; `</dev/null` stays as defence in depth against a future
+framing change (ADR-024 o 14.1).
+
+**Laptop-side bounds** (`ssh_backend`), derived from the scripts' own bounds with margin, never
+below them: `CALL_TIMEOUT` 60 s for prepare, install, label and mkjob (ssh's 10 s connect + at worst
+the install's six `sha256sum`s at `timeout -k 1 5`, 36 s = 46 s); `RUN_TIMEOUT` 60 s for the
+trampoline (10 s connect + `realpath` 6 s + `sha256sum` 6 s + cancel's 20 s budget + 1 s kill-after =
+43 s); `SUBMIT_TIMEOUT` 60 s (o 3.3.1).
+
+**The `MKJOB` call** (o items 2, 14.1) — values: the root, the job dir. `mkdir -p <job dir>`, then,
+**after** the mkdir, the realpaths of the job dir and of its parent as facts:
+
+```text
+orcastudio-mkjob 1
+argc 2, arg <len> × 2          the values, verbatim
+job <len>                      realpath -e <job>
+parent <len>                   realpath -e <job>/..
+end
+```
+
+`parse_mkjob_reply` requires exactly `<job>` and `<root>/jobs` (o item 1), so a withdraw never
+publishes `.cancelled` through a symlinked component.
+
 ## The `.started` format
 
 The wrapper publishes `.started` from a temp file by a no-clobber hard link (`ln -T`, one
@@ -441,7 +566,7 @@ action this pass, like `Indeterminate`.
 
 ## Tests
 
-182 tests in the module.
+214 tests in the module.
 - **Pure (classifier, parsers, wire):** strict-parser garbage cases, the recorded probe fixtures (P2
   cmdline, P4 `tsp -l`, 5.2b `/proc/net/unix` line, 5.2c stat lines including `w q) x.sh` and the
   zombie), at least one snapshot per table row, the d′ race model over all 6 interleavings, and the
@@ -501,15 +626,39 @@ action this pass, like `Indeterminate`.
   every stdin script. **The slot check scans this machine's real own-uid processes**, so these tests
   hold one mutex and use the mask `8-11`, clear of every CPU the 5.2 tests pin.
 
+- **The backend core end to end (`backend_e2e_tests.rs`)**: `ssh_backend`'s functions with a runner
+  that runs each call locally against the `Lab` — `env PATH=<stubs> HOME=<lab> bash -s` for the
+  exact production ssh argv (asserted), and the production rsync argv with `-e` dropped and
+  `<host>:` stripped; `cancel.sh` and `collect.sh` run through the real trampoline. Covered: a submit
+  to a root with no wrapper and no `tsp/` (prepare → install → prepare → rsync → submit;
+  `Enqueued(0)`, the coordinates, `%pal` inserted at the mask's CPU count and announced, the upload
+  byte for byte, no install temp left, label `Classifier`, the 5.2 collector `Queued`, withdraw
+  refused); a failed enqueue → `FailedAfterClaim` → label `SubmitInterrupted` → retry refused →
+  withdraw (label, prepare, mkjob, run cancel, run collect) → classifier `Cancelled` → row
+  `cancelled`; `b true` from busctl → `KillUserProcesses`, stamp cleared, label `NotOnServer`, no ssh
+  for an unverified profile, retry after re-stamping → `Enqueued`, a second such job withdrawn with the
+  profile unverified → `cancelled`; `%pal nprocs 48` uploaded as the 4-CPU mask's 4 (the server's hash
+  check accepts it) and a retry after the mask narrows to 1 CPU uploading `nprocs 1`, the database
+  keeping the original; a symlinked `<root>/bin` → refused at the prepare step, nothing uploaded. The
+  scripts on their own: install readies a fresh root (all three), `kept` on a second install, wrong
+  bytes under the cancel script's name replaced by rename (new inode, the others kept), bytes that do
+  not hash to the name never published (no temp left), a symlinked `bin/` or `tsp/` refused with
+  nothing written through it; mkjob makes the dir and refuses, after the mkdir, a job dir linked outside `jobs/` and a sibling link `jobs/w3 -> jobs/w1` (only the job dir's own realpath catches that one; a permanent mutant that reports the job dir unresolved must miss it); the
+  trampoline refuses `wrapper`, a path or upper-case name, a bad sha, forged bytes, a symlinked script
+  and a symlinked `bin/`, answers `not-installed` for a missing script, runs the real cancel and
+  collect, and — through its test-only `probe` entry — passes a hostile argument byte-identical with
+  stdin at EOF and rc 7 in a complete reply. (Stdin at EOF is an observation, not a control; it cannot bite
+  here: the read loop has already consumed `bash -s`'s stdin before the script runs.)
+
 Negative controls (each guard broken, the named tests red, restored): listed per unit in
-[log.md](../log.md) (Part A 2026-10-03, Part B 2026-10-03, 5.3 A2 2026-10-05). The five of 5.3 A2 are
+[log.md](../log.md) (Part A 2026-10-03, Part B 2026-10-03, 5.3 A2 2026-10-05, 5.3 B1 Part A
+2026-10-05). The five of 5.3 A2 are
 also permanent tests: each runs its guard's check on a mutated copy of the script (exactly one
 occurrence replaced) and requires it to fail.
 
 ## Not built yet
 
-- The upload of the job scripts (content-addressed, with the `sha256sum` check), the ssh/rsync calls
-  that run the 5.3 scripts, the poller, the commands and the UI — 5.3 Part B.
+- The Tauri commands and the UI over `ssh_backend` (5.3 B1 Part B, B3), the poller (B2).
 - **Measured on uni** (probe 5.3 B0, 2026-10-05, [remote-sync-probe.md](../orca/remote-sync-probe.md#probe-53-b0-2026-10-05)):
   real `tsp <command>` prints `<id>\n` (accepted by the submit's regex); with `9>&-` neither a fresh
   nor an existing daemon nor its jobs hold the lock; `tsp -l` on a stale socket starts a daemon;

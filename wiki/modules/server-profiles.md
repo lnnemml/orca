@@ -87,10 +87,15 @@ logic is testable without Tauri. Every command returns `Result<T, AppError>`.
   availability_window?)` validates, then writes in one transaction. If the **value** of any
   `ProfileTarget` field differs from the stored one, `verified_at` **and** the three verified facts
   are set to `NULL` together (n item 5). A rename, a window edit, or a save that rewrites a field
-  with its current value keeps the stamp. `slot_count` is not editable; it is carried over.
-- `delete_server_profile(id)` **nulls `backend_id` on every job of the profile first**, then deletes
-  the row, so the jobs survive as local jobs. This is the load-bearing invariant, the same as
-  `delete_reaction`.
+  with its current value keeps the stamp. `slot_count` is not editable; it is carried over. A change
+  of `host` or `remote_scratch_dir` is refused (`AppError::Conflict`, naming the jobs) while the
+  profile has **live remote jobs** — `live_remote_jobs`: `backend_id` = the profile, coordinates
+  set, status `queued`/`running` (ADR-024 n 6b): their coordinates name that host and root.
+- `delete_server_profile(id)` is refused the same way while the profile has live remote jobs
+  (ADR-024 o item 2). Otherwise it **nulls `backend_id` on every job of the profile first**, then
+  deletes the row, so the jobs survive. This is the load-bearing invariant, the same as
+  `delete_reaction`. A finished remote job keeps its coordinates, so it stays remote without a
+  profile (`Job::is_remote`).
 - `set_profile_verified_conn(id, tested, orca_version, openmpi_version?, core_count)` stamps a
   **full pass**. `tested` is the `ProfileTarget` the test ran against. The `UPDATE` matches on it,
   so if the profile was edited while the test ran, the write is refused with `AppError::Conflict`
@@ -315,7 +320,12 @@ check in a fixed order (`orca`, `cores`, `core_mask` only when a mask is set, `k
     same-value save). Negative control: clearing on every save goes red;
   - `a_stamp_for_a_target_the_profile_no_longer_has_is_refused`;
   - `clear_profile_verified_clears_stamp_and_facts`;
-  - `delete_profile_nulls_children_and_jobs_survive`.
+  - `delete_profile_nulls_children_and_jobs_survive`;
+  - `a_profile_with_live_remote_jobs_cannot_be_deleted` (queued/running refused; finished remote and
+    local jobs do not hold the profile). Negative control: drop the `refuse_while_live` call from
+    `delete_server_profile_conn` and it goes red;
+  - `a_profile_with_live_remote_jobs_keeps_its_host_and_root` (host and root refused; name, ORCA
+    path and mask still editable; free again once the job is finished).
 - **`connection_test.rs` (`conntest_tests`)** uses fixtures copied verbatim from
   `orca/remote-server-probe-commands.md` (rule #10): busctl `b false` and the bad-property stderr,
   `anton users`, `ext4   /dev/sdb4 /home`, ORCA line 54 with rc 2, the rc 127/126 shapes, the three

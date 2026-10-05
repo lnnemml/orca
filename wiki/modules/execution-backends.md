@@ -6,9 +6,11 @@ in-SQLite queue, cancellation with an MPI-rank sweep, and startup reconciliation
 implements it, and **the Tauri command layer dispatches through the trait** — `submit_job` /
 `cancel_job` construct a `LocalBackend` and call `submit` / `cancel` on it. The running machinery
 still lives in `src-tauri/src/local_backend.rs` (queue, process tree, cancellation) — each trait
-method **delegates** there. `SshBackend` is Phase 5 unit 5.3. See ADR-024 (accepted): the
-remote queue lives on the server (`tsp`), the server FS is the source of truth, and concurrency
-becomes a per-backend/profile setting rather than the global rule-#4 constant.
+method **delegates** there. The remote backend's core — submit, retry, label and withdraw of a
+remote job — is `src-tauri/src/ssh_backend.rs` (unit 5.3 B1 Part A, below); the commands do not
+dispatch to it yet (B1 Part B). See ADR-024 (accepted): the remote queue lives on the server
+(`tsp`), the server FS is the source of truth, and concurrency becomes a per-backend/profile setting
+rather than the global rule-#4 constant.
 
 ## The `ExecutionBackend` trait (`execution_backend.rs`, ADR-003)
 
@@ -88,17 +90,27 @@ sequential chunks (with Å/ü/→) reassemble the original byte-exact, EOF holds
 resets, the cap is respected — with a **negative control** (a wrong-offset reader) proven to make the
 reassembly gate go red.
 
-**Dispatch is `enum`-deferred.** There is one concrete backend and no `enum` / `dyn` dispatch layer.
-Commands dispatch through the trait on a **concrete** `LocalBackend` — no runtime backend selection
-yet. The `enum Backend { Local(LocalBackend), Ssh(SshBackend) }` static-dispatch selector lands in
-5.3 Part B. It keys on the job's **coordinates** (`Job::is_remote`: `remote_host` non-NULL, schema
-v20), never on `backend_id`, which only names the profile and is nulled when a profile is deleted
-(ADR-024 o item 1). See `wiki/log.md` (unit 5.0 Part A / Part B).
+**Dispatch.** `enum Backend { Local(LocalBackend), Ssh(SshBackend) }` is the static-dispatch selector
+(ADR-023: an `enum`, not `dyn`); it implements the trait by delegating to its variant.
+- An existing job's backend is `backend_kind(&job)`: **keyed on the job's coordinates, never on
+  `backend_id`** (ADR-024 o item 1) — no coordinates → `Local`; all three → `Ssh(RemoteCoordinates)`;
+  a partial set is an error, never "local". `backend_id` only names the profile; a finished remote
+  job whose profile was deleted keeps its coordinates and stays remote. `Backend::for_job` builds the
+  enum from it.
+- A draft's backend is the run target chosen next to Submit (o item 5): `Backend::for_submit(app,
+  None | Some(profile id))`.
+- `dispatch_keys_on_the_coordinates_never_on_backend_id` pins the rule (negative control: key on
+  `backend_id` and it goes red).
+
+The commands still construct a `LocalBackend` directly; routing them through `Backend` is unit 5.3
+B1 Part B. See `wiki/log.md` (unit 5.0 Part A / Part B, 5.3 B1 Part A).
 
 ## Where the code lives
 
-Implemented across two modules, **not** a `backends/` trait dir: the trait + `LocalBackend` in
-`src-tauri/src/execution_backend.rs`, the running machinery below in `src-tauri/src/local_backend.rs`.
+Implemented across three modules, **not** a `backends/` trait dir: the trait, `LocalBackend`,
+`SshBackend`, `enum Backend` and `backend_kind` in `src-tauri/src/execution_backend.rs`; the local
+running machinery in `src-tauri/src/local_backend.rs`; the remote backend's Tauri-free core in
+`src-tauri/src/ssh_backend.rs` (over the scripts and parsers of `src-tauri/src/remote/`).
 
 ## How a local job runs (`local_backend.rs`)
 
@@ -212,7 +224,10 @@ directory. *(Changed in `[2026-07-28] fix: MPI ranks escape process group on can
   `terminate_job` **synchronously** — a spawned thread would die with the process before the ranks
   do, stranding them.
 - `cancel(app, job_id)`: **queued** → finalize as `cancelled` (nothing to kill); **running** → set
-  the `cancelled` flag, then spawn `terminate_job`; other status → `Backend(...)`. `drive_job`
+  the `cancelled` flag, then spawn `terminate_job`; other status → `Backend(...)`. A **remote** job
+  that is queued or running is refused first (`ssh_backend::refuse_if_remote_live`, "remote cancel
+  arrives in unit 5.4"): it is queued on its server, and a local `cancelled` would be a state the
+  server contradicts (ADR-024 i, o item 2). `drive_job`
   checks the flag after `child.wait()` and records `cancelled` with a clean message.
 
 ## Startup reconciliation
@@ -232,33 +247,127 @@ marker file (preserving a valid `.gbw` + last geometry). This could **not** be c
 hard kill (killpg + sweep) is implemented. See `wiki/orca/gotchas.md` — revisit "Stop after current
 cycle" once the manual is indexed.
 
-## SshBackend (Phase 5 — not built yet)
+## SshBackend (`ssh_backend.rs`)
 
-The `SshBackend` itself is not wired yet (unit 5.3). The design is in ADR-024 (Decisions a–l). Its
-server-side parts exist and are tested on this machine: the three scripts and the pure classifier,
-in `src-tauri/src/remote/` ([remote-jobs.md](remote-jobs.md)). Unit order is ROADMAP Phase 5: 5.2
-scripts + classifier (done), 5.3 wiring, 5.4 cancel/reconnect, 5.5 preflight.
-- **Queue and launch:** a static wrapper script (`include_str!`, to be uploaded content-addressed by
-  rename in 5.3) runs through a per-slot `tsp` queue. It publishes `.started` with a no-clobber
-  `ln -T` (an existing `.started` in any form refuses the start), and `.exit_code` by temp file +
-  `rename`. `.cancelled` (cancel script) and `.enqueued` (5.3) are also published by temp file +
-  `rename`.
-- **Transport:** per-job arguments cross ssh only as a NUL-separated list on stdin, never as ssh argv
-  (measured as injection-capable, ADR-024 l / P1). Job-dir paths match `[A-Za-z0-9._/-]+`.
-- **Cancel:** one cancel script — `.cancelled` first, a `tsp -r` only after the id is verified, TERM
-  to the verified wrapper's group, and a **cwd-filtered SID sweep** (ADR-024 i, l). It never kills by
-  `tsp` id or by name.
-- **Status:** a pure classifier over a raw-fact snapshot from the server (ADR-024 l, precedence
-  table). The server filesystem is the source of truth (ADR-024 c). The classifier itself exists
-  (pure, unwired): [remote-jobs.md](remote-jobs.md).
-- **Submit:** upload, then one atomic server call under a per-account `flock` (values checked,
-  `KillUserProcesses` (its own outcome `refused-kup`), realpath, the wrapper named by its sha, no marker/row, the upload's names and sha256, the slot
-  scan, the `.submitting` claim, the enqueue with `9>&-`), and a read-only label call for every remote
-  `Queued` job (ADR-024 o item 3). The scripts and their parsers exist and are tested on this machine
-  ([remote-jobs.md](remote-jobs.md)); the ssh calls are wired in 5.3 Part B.
-- **Poll / fetch:** byte-offset `poll_log` and selective rsync down per `FetchPolicy`, with a server
-  listing for the download post-condition. The scripts and the pure parts exist (`remote/poll.rs`,
-  `remote/sync.rs`, [remote-jobs.md](remote-jobs.md)); the ssh calls are wired in 5.3 Part B.
+The design is ADR-024 (Decisions a–o). The server-side scripts, the pure classifier and the wire
+parsers are in `src-tauri/src/remote/` ([remote-jobs.md](remote-jobs.md)). The backend's **core** is
+`src-tauri/src/ssh_backend.rs`: Tauri-free functions over the database (`&DbState`, locked only
+around their own reads and writes — never across an ssh call, which a test checks with `try_lock`)
+and a `CommandRunner` (the real `SystemRunner`, ADR-005: system `ssh`/`rsync`). `SshBackend` in
+`execution_backend.rs` is the thin `AppHandle` wrapper over it, like `LocalBackend` over
+`local_backend`; no command calls either yet (unit 5.3 B1 Part B). Unit order is ROADMAP Phase 5.
+
+**Coordinates.** A job is remote iff `remote_host`, `remote_job_dir`, `remote_socket` are set
+(`coordinates(&job)`; schema v20). They are written once at submit and every later call uses them,
+never the profile's current values (n 6b); `recorded_root` reads the root back from the job dir
+`<root>/jobs/<id>`.
+
+**Submit** — `submit_remote(db, runner, data_dir, job_id, profile_id) -> Result<SubmitAttempt>`
+(`SubmitAttempt { outcome: SubmitOutcome, pal: PalAlignment }`):
+
+| step | what | the row after a failure here |
+|---|---|---|
+| 1 | no ssh: a draft without coordinates; the profile a run target (`is_run_target`, one slot, a valid host); the local job dir `<data_dir>/jobs/<id>` prepared by `local_backend::prepare_job_dir` with the input from `jobs.input_content`, its `%pal` **aligned downward** to the mask (`align_remote_pal`, below), and the aux files (`read_aux_files`, shared with the local run), then listed by `upload_expected` (an unreadable `%pal`, over 1000 files or a name outside the path rule refuses) | the row unchanged (a draft, no coordinates) — `Err`; the local dir may be written and is rewritten on the next attempt (o 14.4) |
+| 2 | **persist** (o 3.1), in the same lock as step 1: one transaction sets `queued`, `backend_id`, the coordinates (`<root>/jobs/<id>`, `<root>/tsp/slot0.sock`) and the local `job_dir`, guarded on `status = 'draft' AND remote_host IS NULL` | rolled back: a draft |
+| 3 | **prepare** call (read-only, o 3.2/13.1/14.1): every existing component of the root a directory at its own realpath, `<root>/bin` and `<root>/tsp` included; does each uploaded script (wrapper, cancel, collect) hash right | `queued` + coordinates; label "not on the server" |
+| 4 | when `bin/`, `tsp/` or any script is missing: **install** call, then **prepare again** — every script must now hash right (post-condition) | same |
+| 5 | **upload**: `rsync -a --checksum --mkpath`, never `--delete`, timeout 60 s + 1 s per 256 KiB (a floor, not measured) | same |
+| 6 | **the submit call** (o 3.3, 60 s): `Enqueued`, `Refused`, `RefusedKup`, `FailedAfterClaim`, or no readable reply | `queued` + coordinates; the label call decides |
+
+Steps 3–6 never change the status: whatever happens, the row stays `queued` with its coordinates
+and the label call (o 3.4) resolves it from the server (Decision c). Their one write
+(`record_attempt`): `error_message` = the attempt's failure for people (`NULL` after `Enqueued`),
+and — **only** for `SubmitReply::RefusedKup` — the profile's stamp and the facts it certified are
+cleared (`clear_verified`; n item 7, o 13.3). A refusal is never matched by its text. The outcome:
+
+| `SubmitOutcome` | from | offered next |
+|---|---|---|
+| `Enqueued { tsp_id }` | `enqueued <id>` | (the poller, B2) |
+| `NotClaimed { step, reason }` | a failure in steps 3–5, or `refused` | retry or withdraw ("not on the server") |
+| `KillUserProcesses { evidence }` | `refused-kup` | the profile is no run target until a connection test passes; withdraw |
+| `FailedAfterClaim { reason }` | `failed-after-claim` | withdraw only ("submit interrupted") |
+| `Unknown { reason }` | a timeout, ssh exit 255, an unreadable reply or an echo that differs | the label call decides |
+
+Every stdin-fed call goes through one helper: `ssh -o BatchMode=yes -o ConnectTimeout=10 -- <host>
+bash -s` with the script and its NUL list (n item 11); the reply is parsed first, ssh exit 255 is
+ssh's own failure, and a complete reply with any exit status but 0 is not trusted.
+
+**`%pal`, aligned downward only** (o item 14.2, domain rule #8) — `align_remote_pal(input, mask)`, on
+every attempt, from `jobs.input_content` (the database keeps the user's original) with the
+**attempt's** mask: `nprocs = min(the input's %pal nprocs, the distinct CPUs of the mask)`
+(`models::server_profile::distinct_cpus`: `0-3,2-5` is 6); no `%pal` → the distinct-CPU count, as a
+local run. A small `%pal` is never raised (a per-rank `%maxcore` multiplies with it). The input's
+`nprocs` is read by `local_backend::read_pal_nprocs` (the first `%pal`, single-line or block form; a
+`%pal` without a readable positive `nprocs` refuses, never guessed); the text is rewritten by the local
+run's own `align_pal_nprocs` (local behaviour unchanged). Post-condition: exactly one `%pal` directive,
+stating that `nprocs`. The aligned input is written into the local job dir before `upload_expected`,
+so the local dir = the uploaded bytes = the hashed list. `PalAlignment { input_nprocs, nprocs,
+mask_cpus, rewritten }` comes back with every attempt; `notice()` is the visible line `[OrcaStudio]
+%pal nprocs aligned to N (the server profile's core mask has K CPUs; the input had …)`, `None` when
+nothing changed — **Part B shows it with the submit/retry result** (it is not an error, so never
+`error_message`). Open (not measured; the local path shares it): which of a `%pal` block and a
+`PALn` keyword ORCA honours when both are present.
+
+**Label** — `label_remote(runner, &job)`: the read-only label call by the recorded coordinates →
+`LabelReport { facts, label }`. Writes nothing.
+
+**Retry** — `resubmit_remote(db, runner, data_dir, job_id) -> SubmitAttempt`: for a remote `queued`
+job, only when the label call says **"not on the server"** ("submit interrupted" is never retried:
+the interrupted call may still be running on the server, o item 8). The profile (by `backend_id`)
+supplies the mask and the ORCA path and must still be a run target with the recorded host and root;
+only then (the label call comes first, so a refused retry writes nothing) is the local dir (the
+recorded `job_dir`) written again from `input_content` with the **current** mask — a retry after a
+mask change uploads the new `nprocs` — and steps 3–6 run.
+
+**Withdraw** — `withdraw_remote(db, runner, job_id)` (o items 2, 14.1), with no `verified_at` gate
+(n 6a): only for a remote `queued` job the label call finds "not on the server" or "submit
+interrupted" (otherwise it is in the server's hands: remote cancel, unit 5.4). Then: prepare →
+install if any script is missing → prepare again → **mkjob** (`mkdir -p <job dir>` and the o-1 shapes
+re-asserted after it, one call) → `cancel.sh cancel <job> <root>` **through the trampoline** (rc 0
+required; it publishes `.cancelled` first) → `collect.sh <job> <recorded socket>` through the
+trampoline, its snapshot unwrapped from the `stdout` record → `classify` (with the one retake it may
+ask for; `reenqueue_count` 0) decides: `Cancelled` → the row becomes `cancelled`; anything else
+(`Completed { late_cancel }`, `Cancelling`, `Failed`, …) leaves it `queued` for the poller or 5.4,
+with the verdict in `error_message`. Never a hard-coded `Cancelled` (Decision c). A failure at any
+step leaves the row as it was.
+
+**The trampoline** (o item 14.1; format and controls in [remote-jobs.md](remote-jobs.md)): every call
+of an uploaded `cancel.sh`/`collect.sh` is one `bash -s` call whose stdin is the trampoline and the
+NUL list `<root> <name> <sha> <args…>`, so no per-job value passes through the remote login shell. It
+runs only a name of its closed allow-list (`cancel`, `collect`), by its sha, as a regular file at its
+own realpath, under a per-script time budget, with stdin at EOF.
+
+**Refusals** (o item 2, n 6b): `refuse_if_remote_live(&job)` refuses a local cancel or delete of a
+remote job that is `queued`/`running` ("remote cancel arrives in unit 5.4") — `delete_job_conn` and
+`local_backend::cancel` call it — the latter **at function entry, before any branch** (o 14.5), so
+no caller reaches a local kill or a local `Cancelled` for a remote job; a profile with such jobs keeps its host and root and cannot be
+deleted ([server-profiles.md](server-profiles.md)).
+
+**The `SshBackend` trait methods**: `submit` runs `submit_remote` with the real runner and blocks
+for the whole sequence (call it off the main thread); only `Enqueued` is `Ok`, any other outcome an
+`Err` carrying its failure (the row is `queued` either way). The trait has no room for the `%pal`
+notice, so a command that must show it calls `submit_remote` directly. `status` reads the row; `cancel` refuses
+(above); `poll_log` and `fetch_results` refuse until the poller (B2).
+
+**Tests.** Over a fake runner (`ssh_backend/tests.rs`): the call order (prepare → upload → submit;
+prepare → install → prepare → … on a fresh server), the row at every call (persisted before the
+first), every failure point after the persist (each leaves `queued` + coordinates + the failure,
+nothing after it runs, the stamp kept), only `RefusedKup` clearing the stamp, refusals before any
+ssh writing nothing, retry and withdraw gating, the withdraw's sequence (prepare → install → prepare →
+mkjob → cancel → collect, no stamp gate), each withdraw failure leaving the row as it was, the
+withdraw's classifier mapping (with a retake), and `%pal` (48 on 4 CPUs → 4, 2 on 12 → 2, `0-3,2-5` →
+6, the block form, an unreadable or doubled `%pal` refused before anything is written, a retry
+aligning to the current mask).
+End to end against the real scripts: [remote-jobs.md](remote-jobs.md) (`backend_e2e_tests.rs`).
+Negative controls: [log.md](../log.md) (5.3 B1 Part A, 2026-10-05).
+
+**How the job runs there:** a static wrapper (`include_str!`, uploaded content-addressed as
+`<root>/bin/wrapper-<sha>.sh` by the install call, with `cancel.sh` and `collect.sh` beside it) runs through a per-slot `tsp` queue. It
+publishes `.started` with a no-clobber `ln -T` and `.exit_code` by temp file + `rename`; the cancel
+script is `.cancelled` first, a verified `tsp -r`, TERM to the verified wrapper's group and a
+cwd-filtered SID sweep (ADR-024 i, l); status is the pure classifier over a raw-fact snapshot. Per-job
+arguments cross ssh only as a NUL list on stdin, never as ssh argv (measured injection-capable, ADR-024
+l / P1).
 
 ## The shared artifact list (`src-tauri/src/artifacts.rs`, ADR-024 o item 6)
 

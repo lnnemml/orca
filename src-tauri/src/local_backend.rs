@@ -89,6 +89,14 @@ impl JobRunner {
         }
     }
 
+    /// The app's data dir: local job dirs live under `<data_dir>/jobs/` (rule #3), for remote
+    /// jobs too (their upload source and download target).
+    // Its caller, `SshBackend::submit`, is routed in unit 5.3 B1 Part B.
+    #[allow(dead_code)]
+    pub(crate) fn data_dir(&self) -> &Path {
+        &self.data_dir
+    }
+
     fn running_lock(&self) -> Result<std::sync::MutexGuard<'_, Option<RunningJob>>, AppError> {
         self.running
             .lock()
@@ -255,6 +263,38 @@ pub(crate) fn align_pal_nprocs(input: &str, nprocs: u32) -> (String, bool) {
     (out, true)
 }
 
+/// The `nprocs` of the input's first `%pal` directive — the one [`align_pal_nprocs`] rewrites —
+/// in either form (`%pal nprocs N end`, or a block whose line `nprocs N` precedes `end`).
+/// `Ok(None)`: no `%pal` at all. An `Err`: a `%pal` without a readable positive `nprocs`, which
+/// is never guessed. Used by the remote submit's downward alignment (ADR-024 o item 14.2); the
+/// local run does not read it.
+pub(crate) fn read_pal_nprocs(input: &str) -> Result<Option<u32>, String> {
+    let lines: Vec<&str> = input.lines().collect();
+    let Some(idx) = lines.iter().position(|l| l.trim_start().to_ascii_lowercase().starts_with("%pal")) else {
+        return Ok(None);
+    };
+    // The directive's extent, by align_pal_nprocs's own rule.
+    let mut last = idx;
+    if !lines[idx].trim().to_ascii_lowercase().contains("end") {
+        while last + 1 < lines.len() {
+            last += 1;
+            if lines[last].trim().eq_ignore_ascii_case("end") {
+                break;
+            }
+        }
+    }
+    let text = lines[idx..=last].join(" ").to_ascii_lowercase();
+    let tokens: Vec<&str> = text.split_whitespace().collect();
+    tokens
+        .iter()
+        .position(|t| *t == "nprocs")
+        .and_then(|i| tokens.get(i + 1))
+        .and_then(|n| n.parse::<u32>().ok())
+        .filter(|n| *n >= 1)
+        .map(Some)
+        .ok_or_else(|| format!("the %pal directive has no readable nprocs: {:?}", lines[idx..=last].join("\n")))
+}
+
 /// Spawn ORCA on `input.inp` inside `job_dir`. When `cpu_mask` is `Some`, ORCA
 /// is launched under `taskset -c <mask>` with OpenMPI's own binding disabled so
 /// the two don't fight (domain rule #8); otherwise it's invoked directly.
@@ -387,6 +427,22 @@ pub(crate) fn next_local_queued_job(conn: &Connection) -> Result<Option<String>,
         .optional()?)
 }
 
+/// A job's aux files (name, content) — e.g. a NEB job's `product.xyz` end image (Stage E3a-1),
+/// stored as a JSON object in `jobs.aux_files_json`. Written into the job dir at run time by
+/// [`prepare_job_dir`]; shared by the local run and the remote submit (`ssh_backend`), so both
+/// upload exactly the same files.
+pub(crate) fn read_aux_files(conn: &Connection, job_id: &str) -> Result<Vec<(String, String)>, AppError> {
+    Ok(conn
+        .query_row("SELECT aux_files_json FROM jobs WHERE id = ?1", [job_id], |r| {
+            r.get::<_, Option<String>>(0)
+        })
+        .optional()?
+        .flatten()
+        .and_then(|j| serde_json::from_str::<std::collections::BTreeMap<String, String>>(&j).ok())
+        .map(|m| m.into_iter().collect())
+        .unwrap_or_default())
+}
+
 /// Prepare the dir, spawn ORCA (pinned per settings), mark running, and hand off
 /// to the tailing thread. The slot is already reserved by [`try_start_next`];
 /// `cancelled` is that slot's flag, shared with [`drive_job`].
@@ -399,17 +455,7 @@ fn start_run(app: &AppHandle, job_id: &str, cancelled: Arc<AtomicBool>) -> Resul
     let (input_content, aux_files, orca_path, cpu_mask, nprocs, preset_label) = {
         let conn = db.lock()?;
         let job = get_job_conn(&conn, job_id)?;
-        let aux_files: Vec<(String, String)> = conn
-            .query_row("SELECT aux_files_json FROM jobs WHERE id = ?1", [job_id], |r| {
-                r.get::<_, Option<String>>(0)
-            })
-            .optional()?
-            .flatten()
-            .and_then(|j| {
-                serde_json::from_str::<std::collections::BTreeMap<String, String>>(&j).ok()
-            })
-            .map(|m| m.into_iter().collect())
-            .unwrap_or_default();
+        let aux_files = read_aux_files(&conn, job_id)?;
         let orca_path = conn
             .query_row(
                 "SELECT value FROM settings WHERE key = 'orca_path'",
@@ -493,6 +539,13 @@ fn start_run(app: &AppHandle, job_id: &str, cancelled: Arc<AtomicBool>) -> Resul
 pub fn cancel(app: &AppHandle, job_id: &str) -> Result<(), AppError> {
     let db = app.state::<DbState>();
     let runner = app.state::<JobRunner>();
+
+    // First, before any branch (ADR-024 o item 14.5): a remote job that is queued or running lives
+    // on its server — no local kill and no local `Cancelled`, whatever the caller.
+    {
+        let conn = db.lock()?;
+        crate::ssh_backend::refuse_if_remote_live(&get_job_conn(&conn, job_id)?)?;
+    }
 
     // Is this the currently running job? Grab its pgid + cancel flag.
     let running_info = {
@@ -1169,6 +1222,24 @@ mod tests {
     }
 
     // --- path_is_within: the rule #9 guard behind the delete path's remove_dir_all ---
+
+    /// ADR-024 o item 14.5: `cancel` refuses a live remote job **at entry, before any branch**, so
+    /// neither the running-job kill nor the queued `Cancelled` can be reached for it. `cancel` needs
+    /// an `AppHandle`, so this pins the position in the source; the refusal itself is tested in
+    /// `ssh_backend::tests::a_live_remote_job_is_refused_locally_and_nothing_else_is`.
+    /// NEGATIVE CONTROL: move the guard below the `running_lock` branch and this goes red.
+    #[test]
+    fn cancel_refuses_a_live_remote_job_before_any_branch() {
+        let src = include_str!("local_backend.rs");
+        let start = src.find(concat!("pub fn ", "cancel(app: &AppHandle")).expect("cancel exists");
+        let body = &src[start..start + src[start..].find("\n}\n").expect("cancel ends")];
+        let guard = body.find(concat!("refuse_if_", "remote_live(")).expect("cancel calls the remote guard");
+        for branch in ["running_lock()", "if let Some(", "match status"] {
+            let at = body.find(branch).unwrap_or_else(|| panic!("{branch} is in cancel"));
+            assert!(guard < at, "the remote guard must come before `{branch}`");
+        }
+        assert_eq!(body.matches(concat!("refuse_if_", "remote_live(")).count(), 1);
+    }
 
     #[test]
     fn path_is_within_accepts_a_descendant() {

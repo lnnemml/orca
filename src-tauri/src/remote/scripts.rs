@@ -15,7 +15,7 @@
 //!   ([`crate::connection_test::conntest_stdin`]), and its records are parsed by
 //!   [`crate::connection_test::parse_output`]. Of the head it uses only `valid_path`.
 //!
-//! The four calls of unit 5.3 (ADR-024 o) are fed the same way ([`stdin_with_values`]; n item 11:
+//! The stdin-fed calls of unit 5.3 (ADR-024 o) are fed the same way ([`stdin_with_values`]; n item 11:
 //! the read loop is each script's last line):
 //! - [`SUBMIT`] — the one atomic submit call; values [`super::submit::SubmitArgs::values`], reply
 //!   [`super::submit::parse_submit_reply`].
@@ -25,6 +25,16 @@
 //!   [`super::poll::parse_poll_reply`].
 //! - [`LIST`] — the server's listing for the download post-condition; values
 //!   [`super::sync::ListArgs::values`], reply [`super::sync::parse_list_reply`].
+//! - [`PREPARE`] — the read-only pre-upload call of a submit (o items 3.2, 13.1): the shapes of
+//!   the root's components and whether the wrapper already hashes right; values
+//!   [`super::prepare::PrepareArgs::values`], reply [`super::prepare::parse_prepare_reply`].
+//! - [`INSTALL`] — `mkdir -p <root>/bin <root>/tsp` and the upload of the wrapper, `cancel.sh` and
+//!   `collect.sh` by unique temp name + rename; values [`super::prepare::InstallArgs::values`], reply
+//!   [`super::prepare::parse_install_reply`].
+//! - [`RUN`] — the trampoline: the one way an uploaded `cancel.sh`/`collect.sh` runs (o item 14.1);
+//!   values [`super::run::RunArgs::values`], reply [`super::run::parse_run_reply`].
+//! - [`MKJOB`] — a withdraw's `mkdir -p <job dir>` and the o-1 shapes after it; values
+//!   [`super::run::MkjobArgs::values`], reply [`super::run::parse_mkjob_reply`].
 //!
 //! Every per-job value is a positional argument or a NUL-list value; nothing is substituted into
 //! the script text. Unit 5.3 uploads the job scripts as `<root>/bin/<name>-<sha>.sh`
@@ -41,9 +51,13 @@ pub const SUBMIT: &str = concat!(include_str!("scripts/head.sh"), include_str!("
 pub const LABEL: &str = concat!(include_str!("scripts/head.sh"), include_str!("scripts/label.sh"));
 pub const POLL_LOG: &str = concat!(include_str!("scripts/head.sh"), include_str!("scripts/poll_log.sh"));
 pub const LIST: &str = concat!(include_str!("scripts/head.sh"), include_str!("scripts/list.sh"));
+pub const PREPARE: &str = concat!(include_str!("scripts/head.sh"), include_str!("scripts/prepare.sh"));
+pub const INSTALL: &str = concat!(include_str!("scripts/head.sh"), include_str!("scripts/install.sh"));
+pub const RUN: &str = concat!(include_str!("scripts/head.sh"), include_str!("scripts/run.sh"));
+pub const MKJOB: &str = concat!(include_str!("scripts/head.sh"), include_str!("scripts/mkjob.sh"));
 
 /// The scripts fed through `bash -s` stdin, followed by their values (ADR-024 n item 11).
-pub const STDIN_SCRIPTS: [&str; 5] = [CONNTEST, SUBMIT, LABEL, POLL_LOG, LIST];
+pub const STDIN_SCRIPTS: [&str; 9] = [CONNTEST, SUBMIT, LABEL, POLL_LOG, LIST, PREPARE, INSTALL, RUN, MKJOB];
 
 /// The last line of every stdin-fed script: the read loop that takes the NUL list. Anything after
 /// it would be read as values (probe 5.1c), so it must be the last line, exactly.
@@ -87,7 +101,7 @@ mod tests {
     #[test]
     fn every_script_starts_with_the_shebang_and_shares_the_head() {
         let head = include_str!("scripts/head.sh");
-        for script in [WRAPPER, CANCEL, COLLECT, CONNTEST, SUBMIT, LABEL, POLL_LOG, LIST] {
+        for script in [WRAPPER, CANCEL, COLLECT, CONNTEST, SUBMIT, LABEL, POLL_LOG, LIST, PREPARE, INSTALL, RUN, MKJOB] {
             assert!(script.starts_with("#!/bin/bash\n"));
             assert!(script.starts_with(head));
             // Exactly one shebang: the bodies must not carry their own.

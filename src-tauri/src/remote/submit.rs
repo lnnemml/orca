@@ -189,7 +189,7 @@ pub enum SubmitReply {
 }
 
 /// What the step-2 `busctl` did, as the script saw it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct KupEvidence {
     /// Its exit status (124: `timeout` ended it).
     pub rc: u8,
@@ -272,7 +272,8 @@ pub struct LabelFacts {
 }
 
 /// What the poller does with a remote `Queued` job before any collect.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Label {
     /// Nothing of the job is on the server: offer retry and withdraw.
     NotOnServer,

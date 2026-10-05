@@ -29,6 +29,10 @@ mod result_extraction;
 mod results;
 mod secrets;
 mod sidecar;
+// Unit 5.3 B1 Part A: the remote backend's core (submit, retry, label, withdraw). Its refusal is
+// already live (delete_job, local cancel); the rest is wired into the commands in B1 Part B.
+#[allow(dead_code)]
+mod ssh_backend;
 mod xtb;
 
 use std::path::Path;

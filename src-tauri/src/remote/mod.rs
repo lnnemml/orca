@@ -21,13 +21,19 @@
 //! - [`classify`] — the predicates ("alive", "ours", job session, SID-reuse guard) and
 //!   [`classify::classify`], the 11-row precedence table.
 //! - [`scripts`] — the embedded `wrapper.sh`, `cancel.sh` and `collect.sh` and their sha256, and
-//!   the stdin-fed calls of 5.3: `submit`, `label`, `poll_log`, `list`.
+//!   the stdin-fed calls of 5.3: `submit`, `label`, `poll_log`, `list`, `prepare`, `install`, `run`,
+//!   `mkjob`.
 //! - [`wire`] — the strict parser of the collector's output into a snapshot.
 //! - [`ssh`] — the one `ssh … -- <host> bash -s` argv and a process runner with a hard timeout.
 //! - [`poll`] — `poll_log` over ssh: the values sent and the strict reply parser with its
 //!   length post-condition (ADR-024 o item 7).
 //! - [`submit`] — the remote job dir, the one atomic submit call's values and reply, and the
 //!   read-only label call's values, reply and label rules (ADR-024 o items 1, 3).
+//! - [`prepare`] — the read-only pre-upload call (the shapes of the root's components, whether the
+//!   wrapper already hashes right) and the install call (`bin/`, `tsp/`, the wrapper by unique temp
+//!   name + rename) that ready the server before an upload (ADR-024 o items 3.2, 13.1).
+//! - [`run`] — the trampoline that runs an uploaded `cancel.sh`/`collect.sh` with its values read
+//!   from stdin, and a withdraw's mkjob call (ADR-024 o items 2, 14.1).
 //! - [`sync`] — the rsync argv of upload and download, the download filter (from the shared
 //!   artifact list, `crate::artifacts`), the file lists the transfer post-conditions compare and
 //!   the parser of the server's listing.
@@ -35,7 +41,9 @@
 pub mod classify;
 pub mod markers;
 pub mod poll;
+pub mod prepare;
 pub mod procfs;
+pub mod run;
 pub mod scripts;
 pub mod snapshot;
 pub mod ssh;
@@ -50,6 +58,8 @@ mod race_model;
 mod script_tests;
 #[cfg(test)]
 mod call_script_tests;
+#[cfg(test)]
+mod backend_e2e_tests;
 
 /// Upper bound on a `tsp` socket path, in bytes. The kernel's `sun_path` is 108 bytes including
 /// the NUL (`man 7 unix`, `UNIX_PATH_MAX`); submit and profile save keep a margin below it

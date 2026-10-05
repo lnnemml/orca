@@ -1,6 +1,6 @@
 # ADR-024: Remote execution under intermittent connectivity
 
-**Status:** Accepted · 2026-10-02 (Proposed → Accepted after the review + acceptance amendments below) · amended 2026-10-03 (probe; probe review; d′ resolution — ready for implementation; l — unit 5.2 script and classifier shape; m — 5.3 submit rules; n — 5.1 Part B profile and connection test) · amended 2026-10-05 (o — 5.3 transport, sync and monitoring; accepted after DESIGN round 4; o13 — Part A2 amendments, accepted after DESIGN review 2026-10-05)
+**Status:** Accepted · 2026-10-02 (Proposed → Accepted after the review + acceptance amendments below) · amended 2026-10-03 (probe; probe review; d′ resolution — ready for implementation; l — unit 5.2 script and classifier shape; m — 5.3 submit rules; n — 5.1 Part B profile and connection test) · amended 2026-10-05 (o — 5.3 transport, sync and monitoring; accepted after DESIGN round 4; o13 — Part A2 amendments, accepted after DESIGN review 2026-10-05; o14 — B1 amendments, accepted after DESIGN review 2026-10-05)
 
 Refines [ADR-003](adr-003-execution-backend.md) (the `ExecutionBackend` trait + job state
 machine) and extends [ADR-023](adr-023-server-agnostic-remote-execution.md) (one `SshBackend`
@@ -322,11 +322,13 @@ decomposition; Anton decided every fork, before and after DESIGN review rounds 1
   - **Plain ssh argv is injection-capable.** `ssh uni bash $W <args>` word-split them, expanded
     `$HOME`, ended the command at `;` and ran `*` as a command.
   - **Transport rule:** per-job arguments cross ssh **only as a NUL-separated list on stdin**, read
-    by an uploaded script (`while IFS= read -r -d '' a`). That form preserved every argument,
+    by an uploaded script (`while IFS= read -r -d '' a`) *(for cancel/collect: by the stdin trampoline
+    that runs the uploaded script, o14.1)*. That form preserved every argument,
     including an embedded newline and an empty one, and it does not depend on the remote login shell.
     `printf '%q'` into one command string also worked, but needs bash as the remote login shell, so it
     is not adopted.
-- **Upload: content-addressed, never overwritten** (review M1). 5.3 uploads each script as
+- **Upload: content-addressed, never overwritten** (review M1). 5.3 uploads each script *(wrapper,
+  cancel, collect — o14.1)* as
   `<root>/bin/<name>-<sha256 prefix>.sh` *(full 64-hex, o13.2)* (the root per Decision n) via a temp file + `rename`, then checks
   the remote `sha256sum` against the embedded bytes (rule #9). A running wrapper keeps executing its
   own file, because a new version gets a new name. Measured 2026-10-03 (probe P3, laptop and uni,
@@ -803,7 +805,7 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
      turn the job local).
    - **Withdraw** (Anton, round 2 fork, closes round 2 HIGH-2): a job in the **"not on the server"**
      or **"submit interrupted"** state (item 3.5) can be withdrawn **while the host answers**:
-     `mkdir -p <job dir>` then the 5.2 `cancel.sh cancel` (it needs the dir; it publishes
+     `mkdir -p <job dir>` then the 5.2 `cancel.sh cancel` *(sequence and transport: o14.1)* (it needs the dir; it publishes
      `.cancelled` first, so a late enqueue's wrapper refuses at its step 2, and it only `tsp -r`s a
      verified row). On rc 0 **one collect + `classify` decides the status** (Anton, round 3): row 4
      `Cancelled`, row 3 `Cancelling` (shown, 5.4's), or row 2 `Completed{late_cancel}` — a job that
@@ -818,10 +820,10 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
 3. **Submit = upload + one atomic server-side call** (Anton, round 3; closes round 3 HIGH-B/C, MED-4
    and removes the two-call TOCTOU of round 2 MED-1). The DB knows the coordinates before any remote
    side effect; the server is the source of truth (Decision c).
-   1. Derive the coordinates and persist them with status `Queued` in one transaction — before any
+   1. Derive the coordinates and persist them with status `Queued` *(failures after it: o14.4)* in one transaction — before any
       ssh. Submits are serialised **per account** by the server lock (3.3.1), aliases included; the
       app adds no per-host guard. The per-job in-flight guard (item 4) keeps one operation per job.
-   2. **Upload:** `rsync -a --checksum --mkpath <local job>/ <host>:<remote job>/` (item 6). rc must
+   2. **Upload** *(input aligned first, o14.2; prepare/install cover three scripts + `tsp/`, o14.1/14.3)*: `rsync -a --checksum --mkpath <local job>/ <host>:<remote job>/` (item 6). rc must
       be 0. `--checksum` so a retry does not trust size+mtime over a wrong remote file (rsync semantics,
       **inference** — not load-bearing: the 3.3.4 hash check is the post-condition). **No
       `--delete`**: it would run before the no-marker assert and could touch a live dir. **Before**
@@ -1054,7 +1056,7 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
        `failed-after-claim`). Every child of this check (`realpath`, `sha256sum`) runs under `timeout`
        within MED-B's budget (sum < 40 s). The client never sends a wrapper path, so the enqueued argv
        cannot point outside `<root>/bin/`.
-       - **Wrapper upload precedes the submit** (part of 3.2, outside the lock): the same read-only
+       - **Wrapper upload precedes the submit** *(extended to cancel, collect and `tsp/`, o14.1/14.3)* (part of 3.2, outside the lock): the same read-only
          call that asserts 3.2's realpath shapes also asserts `realpath <root>/bin == <root>/bin` when
          it exists and reports whether `<root>/bin/wrapper-<sha>.sh` already hashes right; if not, the
          wrapper is uploaded per (l) — a unique temp name in `<root>/bin/`, then `rename` — so two
@@ -1103,6 +1105,85 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
     blocks its cores until reaped. Consequence: a transient zombie of the slot's own running ORCA
     child refuses a same-slot submit as "slot busy" (retryable) until reaped — item 9's control "a
     running job of the same slot is accepted" must not leave such a zombie, or it is flaky.
+14. **B1 amendments** (2026-10-05; forks found by the B1 Part A implementer, decided by Anton).
+    They refine (l)'s transport and upload rules, items 2, 3.1–3.3 and o13.1, and n 11; nothing else
+    changes. Accepted after DESIGN review (PASS WITH FINDINGS, findings applied; MED-3 decided by
+    Anton) on 2026-10-05.
+    1. **Uploaded job scripts are run through one stdin trampoline** (Anton, F1). (l) uploads the
+       cancel script — and, new here, `collect.sh` — and gives them positional arguments, but
+       `ssh host cmd args` re-parses the joined string in the remote login shell ((l)'s own re-parse
+       point). Every call of an uploaded script (`cancel`, `collect`; the wrapper stays tsp's) is one
+       `bash -s` call whose stdin is the trampoline (head + body, n 11 framing, every value echoed per
+       item 10) followed by the NUL list `<root> <name> <sha> <args…>`. The per-job values stay
+       positional arguments of the static scripts ((l) holds); only the reader of the NUL list
+       changes — it is the stdin-fed trampoline, not the uploaded script. The trampoline:
+       - checks `<root>` against (l)'s one path rule, `<name>` against a **closed allow-list**
+         (`cancel`, `collect`), `<sha>` = exactly 64 lowercase hex;
+       - builds `<root>/bin/<name>-<sha>.sh` itself and requires a regular file equal to its
+         `realpath` whose `sha256sum` equals `<sha>` (o13.1's check; each child under `timeout -k`);
+         an absent file is a distinct "not installed" refusal;
+       - runs it as `timeout -k 1 <N> bash <path> <args…> </dev/null` (N per script, stated in the
+         module page; a hung `tsp` inside cancel/collect is thus bounded — B0 measured `timeout -k`
+         ending a hung client), with stdout and stderr captured into temp files, each capped below
+         the laptop's `MAX_OUTPUT_BYTES` (1 MiB);
+       - replies with length-framed `rc`, `stdout`, `stderr` records and exits 0 whenever its reply is
+         complete, whatever the script's rc (the script's rc lives in the record). The collector's
+         snapshot is the verbatim payload of the `stdout` record; Rust unwraps it before
+         `parse_snapshot`.
+       None of **these calls'** values passes through the remote login shell (the rsync upload's remote
+       path still does, made safe by (l)'s path rule). Residual, as o13.1: the sha binds the bytes only
+       until `bash` opens the file; (l)'s never-overwrite rule closes that window.
+       - **Prepare and install** (o3.2, o13.1) cover all three uploaded scripts (wrapper, cancel,
+         collect), each by its own sha, plus `<root>/tsp/` (14.3).
+       - **Withdraw's sequence** (item 2), with no `verified_at` gate (n 6a): prepare → install if any
+         script is missing → prepare again as post-condition → one call that runs `mkdir -p <job dir>`
+         and then re-asserts o1's shapes (`realpath <job> == <job>`, `realpath <job>/.. ==
+         <root>/jobs`) **after** the `mkdir`, in the same call → cancel via the trampoline → collect
+         via the trampoline → `classify`.
+       - Negative controls: `<name>` = `wrapper` (outside the allow-list; it would start ORCA outside
+         tsp) refuses; a sha that is not 64 lowercase hex refuses; a script whose bytes differ from its
+         sha refuses; a symlinked script or `<root>/bin` refuses; a missing script is "not installed";
+         a script exiting non-zero yields a complete reply with
+         that rc; an argument containing `'`, `$`, a space and a newline reaches the script
+         byte-identical (observed with a test-only allow-list entry that echoes its argv — `cancel`
+         and `collect` themselves reject such values with `valid_path`).
+       - Observation, not a control: a script that reads stdin gets EOF — the `bash -s` read loop drains
+         stdin before the script runs, so removing `</dev/null` cannot turn a test red (verifier, B1);
+         `</dev/null` stays as defence in depth against a future framing change.
+    2. **The remote input's `%pal` is aligned downward only** (Anton, F2 + DESIGN MED-3; domain rule
+       #8, `orca/performance.md` "Memory ceiling on nprocs"). On **every attempt** (first submit and
+       each retry) the input is derived from `jobs.input_content` (the DB keeps the user's original)
+       with the **attempt's** profile mask: `nprocs = min(the input's %pal nprocs, the number of
+       distinct CPUs in core_mask)`; an input with no `%pal` gets the distinct-CPU count, as a local
+       run does. A deliberately small `%pal` is never raised (raising it multiplies the memory of a
+       per-rank `%maxcore`; 5.5's preflight owns `%maxcore`/RAM/disk). The result is written into the
+       local job dir **before** `upload_expected`, so the local dir = the uploaded bytes = the hashed
+       list and o3.3.4's server-side set check binds it. A change is announced visibly, like the local
+       `[OrcaStudio] %pal nprocs aligned to N` notice. Post-condition (rule #9): the rewritten input
+       holds exactly one `%pal` directive stating that N. Negative controls: `%pal nprocs 48 end` on a
+       4-CPU mask uploads `nprocs 4`; `%pal nprocs 2 end` on a 12-CPU mask uploads `nprocs 2`; a retry
+       after a mask change uploads the new N. Open (not measured; the local path shares it): which of a
+       `%pal` block and a `PALn` simple keyword ORCA honours when both are present — `align_pal_nprocs`
+       rewrites only the first `%pal`.
+    3. **`<root>/tsp/` is created by the install call** (Anton, G2): `mkdir -p <root>/bin <root>/tsp`,
+       then both asserted equal to their `realpath`; the prepare call asserts `tsp/`'s realpath too.
+       What real tsp does when the socket's directory is missing is **not measured** (rule #10; probe
+       5.2b had the parent present) — the B4 live run records it.
+    4. **A failed attempt leaves the row `Queued` with its coordinates and the reason in
+       `error_message`** (Anton): every failure after the o3.1 persist — prepare, install, upload,
+       `refused`, `refused-kup`, `failed-after-claim`, a transport error — keeps `status = queued` and
+       the coordinates; the label call (3.4) then decides "not on the server" / "submit interrupted" /
+       the classifier's. `Enqueued` clears `error_message`. A failure **before** the persist (run
+       target, `MAX_UPLOAD_FILES`, a bad name) leaves the **row** untouched (the local job dir may
+       already be written; it is rewritten on the next attempt).
+    5. **The local cancel path refuses a live remote job** (Anton): `local_backend::cancel` refuses a
+       non-terminal job with coordinates **at function entry**, before any branch, so no caller can
+       reach a local kill or a local `Cancelled` for a remote job.
+    6. **Propagation** (marked where they stand): (l)'s transport rule and upload rule; item 2's
+       withdraw; items 3.1 and 3.2; o13.1. Moving with B1 (code and module pages):
+       `modules/remote-jobs.md` and `modules/execution-backends.md` ("fork F1 … not decided"), the doc
+       comment on `ssh_backend.rs`'s withdraw, the "input verbatim" comment in `ssh_backend.rs`, and
+       `install.sh`'s comment on the tsp directory.
 
 ## Alternatives rejected
 

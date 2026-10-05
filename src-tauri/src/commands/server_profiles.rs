@@ -69,7 +69,7 @@ fn profile_exists(conn: &Connection, id: &str) -> Result<bool, AppError> {
 }
 
 /// A single profile by id, or [`AppError::NotFound`].
-fn get_profile_conn(conn: &Connection, id: &str) -> Result<ServerProfile, AppError> {
+pub(crate) fn get_profile_conn(conn: &Connection, id: &str) -> Result<ServerProfile, AppError> {
     let sql = format!(
         "SELECT {} FROM server_profiles WHERE id = ?1",
         ServerProfile::COLUMNS
@@ -146,7 +146,9 @@ fn list_server_profiles_conn(conn: &Connection) -> Result<Vec<ServerProfile>, Ap
 }
 
 /// Edit the user-owned fields of a profile. Validates first ([`AppError::Invalid`], nothing
-/// written). If the **value** of any target field changes, the verification stamp and the facts
+/// written). A change of `host` or `remote_scratch_dir` is refused ([`AppError::Conflict`]) while
+/// the profile has remote jobs that are not terminal (ADR-024 n 6b): their coordinates name that
+/// host and root. If the **value** of any target field changes, the verification stamp and the facts
 /// it certified are cleared in the same transaction (ADR-024 n item 5); otherwise they are kept.
 /// `slot_count` is not editable (the CHECK pins it to 1), so it is carried over. [`AppError::NotFound`]
 /// if the id is absent. Returns the updated profile.
@@ -158,6 +160,9 @@ fn update_server_profile_conn(
     let tx = conn.unchecked_transaction()?;
     let old = get_profile_conn(&tx, id)?;
     fields.validate(old.slot_count)?;
+    if old.host != fields.host || old.remote_scratch_dir != fields.remote_scratch_dir {
+        refuse_while_live(&tx, id, "change the host or the remote root of")?;
+    }
     let target_changed = old.target() != fields.target(old.slot_count);
     tx.execute(
         "UPDATE server_profiles
@@ -181,8 +186,9 @@ fn update_server_profile_conn(
     get_profile_conn(conn, id)
 }
 
-/// Set `verified_at` and the facts it certified back to NULL, together.
-fn clear_verified(conn: &Connection, id: &str) -> Result<usize, AppError> {
+/// Set `verified_at` and the facts it certified back to NULL, together. Also the remote submit's
+/// one writer of a clear: only a `SubmitReply::RefusedKup` reaches it (ADR-024 n item 7, o 13.3).
+pub(crate) fn clear_verified(conn: &Connection, id: &str) -> Result<usize, AppError> {
     Ok(conn.execute(
         "UPDATE server_profiles
          SET verified_at = NULL, orca_version = NULL, openmpi_version = NULL, core_count = NULL
@@ -191,15 +197,47 @@ fn clear_verified(conn: &Connection, id: &str) -> Result<usize, AppError> {
     )?)
 }
 
-/// Delete a profile. **Nulls the `backend_id` of every job that ran on it FIRST** (the jobs
-/// revert to `NULL = local`, ADR-023), then removes the profile row — the jobs survive as
-/// standalone jobs, exactly like `delete_reaction` (the load-bearing invariant). The
-/// explicit null holds even if the FK's `ON DELETE SET NULL` were not enforced.
+/// The profile's remote jobs that are not terminal (`queued`/`running` with coordinates), oldest
+/// first. While any exists, the profile's host and root cannot change and the profile cannot be
+/// deleted (ADR-024 n 6b, o item 2): those jobs live on that server.
+pub(crate) fn live_remote_jobs(conn: &Connection, profile_id: &str) -> Result<Vec<String>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT id FROM jobs WHERE backend_id = ?1 AND remote_host IS NOT NULL \
+         AND status IN ('queued', 'running') ORDER BY created_at, id",
+    )?;
+    let ids = stmt
+        .query_map(params![profile_id], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(ids)
+}
+
+/// [`AppError::Conflict`] naming the live jobs, if the profile has any.
+fn refuse_while_live(conn: &Connection, profile_id: &str, action: &str) -> Result<(), AppError> {
+    let live = live_remote_jobs(conn, profile_id)?;
+    if live.is_empty() {
+        return Ok(());
+    }
+    Err(AppError::Conflict(format!(
+        "cannot {action} server profile {profile_id}: it has {} job(s) on the server that are not finished ({}); \
+         withdraw them, or wait until they finish (remote cancel arrives in unit 5.4)",
+        live.len(),
+        live.join(", ")
+    )))
+}
+
+/// Delete a profile. Refused while the profile has remote jobs that are not terminal
+/// ([`live_remote_jobs`], ADR-024 o item 2): nulling their `backend_id` would orphan jobs that
+/// live on that server. Otherwise **nulls the `backend_id` of every job that ran on it FIRST**
+/// (the jobs revert to `NULL = local`, ADR-023), then removes the profile row — the jobs survive
+/// as standalone jobs, exactly like `delete_reaction` (the load-bearing invariant). The
+/// explicit null holds even if the FK's `ON DELETE SET NULL` were not enforced. A finished remote
+/// job keeps its coordinates, so it stays remote (`Job::is_remote`) without a profile.
 /// [`AppError::NotFound`] if the profile is absent (nothing is touched in that case).
 fn delete_server_profile_conn(conn: &Connection, id: &str) -> Result<(), AppError> {
     if !profile_exists(conn, id)? {
         return Err(AppError::NotFound(format!("server profile {id}")));
     }
+    refuse_while_live(conn, id, "delete")?;
     // Null the run-target FK on jobs that used this profile FIRST — never DELETE a job.
     conn.execute(
         "UPDATE jobs SET backend_id = NULL WHERE backend_id = ?1",
@@ -876,6 +914,73 @@ mod tests {
         assert_eq!(cleared.target(), p.target(), "clearing touches no user field");
         assert_eq!(usable_count(&conn), 0);
         assert!(matches!(clear_profile_verified_conn(&conn, "no-such"), Err(AppError::NotFound(_))));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A remote job of profile `p` in `status`, with coordinates.
+    fn insert_remote_job(conn: &Connection, id: &str, p: &str, status: &str) {
+        conn.execute(
+            "INSERT INTO jobs (id, title, input_content, status, backend_id, remote_host, remote_job_dir, remote_socket) \
+             VALUES (?1, 'remote', '! HF', ?2, ?3, 'uni', '/home/anton/.orcastudio/jobs/' || ?1, '/home/anton/.orcastudio/tsp/slot0.sock')",
+            params![id, status, p],
+        )
+        .unwrap();
+    }
+
+    /// NEGATIVE CONTROL target (e): a profile with a remote job that is not terminal cannot be
+    /// deleted (ADR-024 o item 2) — nulling the job's `backend_id` would orphan a job that lives on
+    /// that server. Drop the `refuse_while_live` call from `delete_server_profile_conn` and the
+    /// `queued`/`running` rows go red.
+    #[test]
+    fn a_profile_with_live_remote_jobs_cannot_be_deleted() {
+        for status in ["queued", "running"] {
+            let (conn, dir) = test_db();
+            let p = create_server_profile_conn(&conn, uni()).unwrap();
+            insert_remote_job(&conn, "r1", &p.id, status);
+            let err = delete_server_profile_conn(&conn, &p.id).unwrap_err();
+            assert!(matches!(&err, AppError::Conflict(m) if m.contains("r1")), "{status}: {err}");
+            assert!(profile_exists(&conn, &p.id).unwrap(), "{status}: the profile stays");
+            assert_eq!(job_backend(&conn, "r1").as_deref(), Some(p.id.as_str()), "{status}: the job keeps its profile");
+            std::fs::remove_dir_all(&dir).ok();
+        }
+        // Finished remote jobs, and local jobs of any status, do not hold the profile.
+        for status in ["completed", "parsed", "failed", "cancelled"] {
+            let (conn, dir) = test_db();
+            let p = create_server_profile_conn(&conn, uni()).unwrap();
+            insert_remote_job(&conn, "r1", &p.id, status);
+            insert_job(&conn, "local");
+            conn.execute("UPDATE jobs SET status = 'queued', backend_id = ?1 WHERE id = 'local'", params![p.id]).unwrap();
+            delete_server_profile_conn(&conn, &p.id).unwrap_or_else(|e| panic!("{status}: {e}"));
+            assert_eq!(job_backend(&conn, "r1"), None, "{status}: nulled, as before");
+            std::fs::remove_dir_all(&dir).ok();
+        }
+    }
+
+    /// n 6b: while a remote job is live, the profile's host and root cannot change; any other edit
+    /// (name, ORCA path, mask, window) still can.
+    #[test]
+    fn a_profile_with_live_remote_jobs_keeps_its_host_and_root() {
+        let (conn, dir) = test_db();
+        let p = create_server_profile_conn(&conn, uni()).unwrap();
+        insert_remote_job(&conn, "r1", &p.id, "running");
+        let base = uni();
+        for (case, fields) in [
+            ("host", ProfileFields { host: "other", ..base }),
+            ("root", ProfileFields { remote_scratch_dir: "/srv/os", ..base }),
+        ] {
+            let err = update_server_profile_conn(&conn, &p.id, fields).unwrap_err();
+            assert!(matches!(&err, AppError::Conflict(m) if m.contains("r1")), "{case}: {err}");
+            assert_eq!(get_profile_conn(&conn, &p.id).unwrap().target(), p.target(), "{case}: nothing written");
+        }
+        for (case, fields) in [
+            ("name", ProfileFields { name: "renamed", ..base }),
+            ("ORCA path", ProfileFields { remote_orca_path: "/opt/orca-6.1.0/orca", ..base }),
+            ("mask", ProfileFields { core_mask: Some("0-11"), ..base }),
+        ] {
+            update_server_profile_conn(&conn, &p.id, fields).unwrap_or_else(|e| panic!("{case}: {e}"));
+        }
+        conn.execute("UPDATE jobs SET status = 'completed' WHERE id = 'r1'", []).unwrap();
+        update_server_profile_conn(&conn, &p.id, ProfileFields { host: "other", ..base }).expect("a finished job holds nothing");
         std::fs::remove_dir_all(&dir).ok();
     }
 

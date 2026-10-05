@@ -441,6 +441,10 @@ pub(crate) fn delete_job_conn(conn: &Connection, id: &str) -> Result<Option<Stri
     // delete_reaction_conn).
     let job = get_job_conn(conn, id)?;
 
+    // A remote job that is not terminal lives on its server: refused with the remote reason
+    // (ADR-024 o item 2), before the local "cancel it first" below, which it cannot follow yet.
+    crate::ssh_backend::refuse_if_remote_live(&job)?;
+
     // Terminal-states-only guard: refuse a live job; cancel it first.
     if matches!(job.status, JobStatus::Running | JobStatus::Queued) {
         return Err(AppError::Backend(format!(
@@ -1980,6 +1984,26 @@ mod tests {
         ));
         assert!(get_job_conn(&conn, &job.id).is_ok());
 
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A live remote job is refused with the remote reason (ADR-024 o item 2); a finished one is
+    /// deleted like any other (its server dir stays: nothing is deleted on the server in 5.3).
+    #[test]
+    fn delete_job_refuses_a_live_remote_job_with_the_remote_reason() {
+        let (conn, dir) = test_db();
+        let job = create_job_conn(&conn, "j", "! HF", None, None).unwrap();
+        conn.execute(
+            "UPDATE jobs SET status = 'queued', remote_host = 'uni', remote_job_dir = '/r/jobs/' || id, \
+             remote_socket = '/r/tsp/slot0.sock' WHERE id = ?1",
+            params![job.id],
+        )
+        .unwrap();
+        let err = delete_job_conn(&conn, &job.id).unwrap_err();
+        assert!(err.to_string().contains("remote cancel arrives in unit 5.4"), "{err}");
+        assert!(get_job_conn(&conn, &job.id).is_ok());
+        update_job_status_conn(&conn, &job.id, "failed").unwrap();
+        delete_job_conn(&conn, &job.id).unwrap();
         std::fs::remove_dir_all(&dir).ok();
     }
 
