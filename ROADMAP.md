@@ -1445,7 +1445,7 @@ preflight. The remaining items (remote `orca_plot`, pause) are not numbered yet.
       - one shared artifact-pattern list for `curated_match` and the rsync filter (o6);
       - run-target dropdown next to Submit (o5). Probes 5.3a–c done (o12).
       - **Part B decomposition** (2026-10-05; anchors from an explorer pass, `wiki/log.md` same date):
-        - [ ] **B0 — probe on uni** (prober, as `anton`): the A2 facts deferred to the server — real
+        - [x] **B0 — probe on uni** (✅ 2026-10-05: every fact confirmed, no script change; only an other-uid slot socket stays unmeasured — `wiki/orca/remote-sync-probe.md` § B0) (prober, as `anton`): the A2 facts deferred to the server — real
               `tsp <cmd>` enqueue output (submit.sh accepts `^[0-9]+\n?$`), lock fd 9 with a real daemon,
               `tsp -l` on a stale socket inside the lock, `timeout -k` on a hung client, real `busctl`
               output, the coreutils `cannot statx` ENOENT text, slot-scan cost, pinned zombie. First,

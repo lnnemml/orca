@@ -510,11 +510,12 @@ occurrence replaced) and requires it to fail.
 
 - The upload of the job scripts (content-addressed, with the `sha256sum` check), the ssh/rsync calls
   that run the 5.3 scripts, the poller, the commands and the UI — 5.3 Part B.
-- **Not measured on uni yet** (rule #10; the laptop has no `tsp`): what real `tsp <command>` prints on
-  enqueue (the submit accepts one decimal line and fails after the claim on anything else); the lock
-  fd with a real daemon (the stub daemon inherits fds as probe 5.3c measured tsp's does); `tsp -l` on
-  a stale socket inside the lock; `timeout` on a hung `tsp` client; an unowned socket with the slot
-  layout (`-O` false; no second uid here); the scan's cost on uni.
+- **Measured on uni** (probe 5.3 B0, 2026-10-05, [remote-sync-probe.md](../orca/remote-sync-probe.md#probe-53-b0-2026-10-05)):
+  real `tsp <command>` prints `<id>\n` (accepted by the submit's regex); with `9>&-` neither a fresh
+  nor an existing daemon nor its jobs hold the lock; `tsp -l` on a stale socket starts a daemon;
+  `timeout -k 1 2` ends a hung client with rc 124; `busctl` prints exactly `b false\n` (8 bytes); the
+  scan takes 0.57–0.79 s; a full `submit.sh` run returned `enqueued 0`. **Still unmeasured:** an
+  other-uid socket with the slot layout (`-O` false; needs a second account).
 - The Full-mode export skip of rsync temp names (`.*.??????`, ADR-024 o6 residual) — 5.3 Part B,
   with the first real download.
 - **The uni measurements behind these scripts are done** (probe 5.3, 2026-10-03,

@@ -320,3 +320,48 @@ a symlink <p>/lnk -> <root>/jobs: realpath(<p>/lnk/<id>) = <root>/jobs/<id>  (sy
 
 ### Not measured (5.3c)
 A kill of the lock holder with SIGKILL on the server (as opposed to the client); `flock` on NFS/other filesystems (home is local ext4 here); a daemon forked by the 2nd call of a submit while a daemon already exists (only the fresh-daemon case was asked); `tsp -l` with a command containing spaces or quotes; lines beyond 552 chars.
+
+## Probe 5.3 B0 (2026-10-05)
+The facts unit 5.3 Part A2 (`ff0b5e1`) deferred to the server. Host uni as `anton`; tsp "Task Spooler
+v1.0.1", GNU coreutils 9.4, systemd 255 `busctl`, bash 5.2.21, nproc 48; 586 processes (12 own), 613
+lines in `/proc/net/unix`. Scratch `~/.orcastudio-probe-b0/` with its own `TS_SOCKET`s; only
+`sleep`/`true` enqueued; scratch, daemons and leftovers removed and checked afterwards.
+
+### Facts (B0)
+1. **Enqueue output.** `tsp <cmd>` prints `<id>\n` — `0 \n` from a fresh daemon, `1 \n` from an
+   existing one (2 bytes, rc 0, stderr empty), with `TMPDIR` set and `9>&-`. `submit.sh`'s acceptance
+   `^[0-9]+\n?$` holds.
+2. **Lock fd with a real daemon.** With `9>&-` on every tsp call the lock is free after the script:
+   for a fresh daemon, for an **already running** daemon on a second submit (closes the 5.3c "not
+   measured" case), and for the job the daemon later starts (it forks from its own fd table). Control
+   without `9>&-`: the daemon **and its job runner** show `9 -> lock` and a second `flock -w 2` gets
+   rc 1. A running tsp job is two processes (daemon + runner), both with cmdline `tsp <cmd>`.
+3. **`tsp -K` kills the daemon but not a running job's runner**; the runner (and its child) survive
+   until killed by pid. Matters only if the lock were ever leaked.
+4. **Stale or missing socket.** `tsp -l` on a socket whose daemon was `kill -9`ed (file left, no
+   `/proc/net/unix` line), or on a path that does not exist, returns rc 0 with an empty table and
+   **starts a new daemon** (cmdline `tsp -l`); with `9>&-` it holds no fd 9, without it it holds the
+   lock. This is why the scripts check `/proc/net/unix` before any `tsp -l`.
+5. **Hung client.** Against a unix listener that accepts and never answers, `timeout -k 1 2 tsp -l`
+   returns rc 124 after 2.004 s (twice); TERM sufficed (the `-k` step was not exercised); no client
+   left.
+6. **`busctl get-property … KillUserProcesses`** (as `submit.sh` calls it): rc 0, stdout exactly
+   `b false\n` (8 bytes), stderr empty.
+7. **ENOENT texts** (`LC_ALL=C`): `stat: cannot statx '<p>': No such file or directory` (matches
+   `head.sh`); ENOTDIR gives `… Not a directory` (an error, as designed); a vanished `/proc/<pid>` gives
+   ENOENT from `readlink` and `cat`.
+8. **Slot-scan cost** (the production `timeout -k 1 8 bash -c … slot_scan` call, no slot daemon):
+   0.57–0.79 s over 9 runs (masks 0, 3, 47), rc 0, no blockers — budget 8 s.
+9. **Pinned zombie:** `State: Z`, `Cpus_allowed_list` keeps the pin, `readlink /proc/<pid>/cwd` rc 1
+   ENOENT, cmdline empty; gone after reaping. Matches the laptop (ADR-024 o13 "Not changed").
+10. **Full `submit.sh` end-to-end** (scratch root, real wrapper bytes, mask 47, ORCA = `/bin/true`):
+    1.04 s, reply `orcastudio-submit 1` / `argc 8` / echoes / `enqueued 0` / `end`; the wrapper wrote
+    `.started` and `.exit_code` = 0; `.enqueued` = `socket=…\nid=0\n`; lock free after. Resubmit:
+    `refused` `marker: …/.started exists`. A `taskset -c 46 sleep` with cwd in another job dir refused
+    a mask-46 submit (`slot busy: mask 46 is held by pid … (pinned …)`); mask 45 enqueued.
+11. `[[ -O ]]` is false for other-uid sockets (`/run/systemd/resolve/io.systemd.Resolve`).
+
+### Not measured (B0)
+An **other-uid socket with the slot layout** `<dir>/tsp/slot<N>.sock` (needs a second account; the
+admin account is not used by agents). **Repeat note:** `submit.sh` uses `$HOME/.orcastudio-submit.lock`;
+a probe running it must set `HOME=<scratch>` (this run created and then removed the real lock file).

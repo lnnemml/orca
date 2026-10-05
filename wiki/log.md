@@ -10473,3 +10473,16 @@ profile was never verified. Next: **5.3** `SshBackend` wiring.
   **B2** poller (opus); **B3** UI (sonnet, live gate); **B4** live run on uni.
 - Known fork for Anton at B2: remote log to the view by the poller emitting push `job:log` vs the view
   flipping to pull `poll_log`. Correction to the explorer: `Lost`/`Cancelling` are unit 5.4, not 5.3.
+
+## [2026-10-05] probe | 5.3 B0 — A2-deferred facts on uni: all confirmed, no script change
+- Real `tsp` 1.0.1 prints `<id>\n` on enqueue (submit regex holds); with `9>&-` neither a fresh nor
+  an already running daemon nor its jobs hold the account lock (control without it: daemon + runner
+  hold fd 9); `tsp -l` on a stale/missing socket starts a daemon; `timeout -k 1 2` ends a hung client
+  (rc 124, 2.004 s); `busctl` prints exactly `b false\n` (8 bytes); ENOENT texts match `head.sh`;
+  slot scan 0.57–0.79 s (budget 8 s); a pinned zombie keeps its pin with cwd ENOENT; a full real
+  `submit.sh` run → `enqueued 0`, the wrapper ran, the slot check refused a pinned blocker.
+- Closes the ADR-024 o12 open questions "a daemon already running during a second submit" and
+  "`timeout` on a hung `tsp` client". Still unmeasured: an other-uid socket with the slot layout.
+- New side fact: `tsp -K` leaves a running job's runner alive. A probe running `submit.sh` must set
+  `HOME=<scratch>` (this one briefly created the real `~/.orcastudio-submit.lock`, then removed it).
+- Record: `wiki/orca/remote-sync-probe.md` § Probe 5.3 B0; `modules/remote-jobs.md` updated.
