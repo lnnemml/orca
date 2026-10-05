@@ -10461,3 +10461,15 @@ profile was never verified. Next: **5.3** `SshBackend` wiring.
   on uni closing the deferred facts (real `tsp` enqueue output, lock fd with a real daemon, stale-socket
   `tsp -l`, `timeout` on a hung client, unowned socket, scan cost, pinned zombie, `statx` ENOENT text,
   real `busctl` output) + Anton's UI gate.
+
+## [2026-10-05] decision | 5.3 Part B decomposed (B0 probe, B1 submit, B2 poller, B3 UI, B4 live)
+- Explorer anchors: `ExecutionBackend` (`execution_backend.rs:189`) has only `LocalBackend`, built
+  per call in `commands/jobs.rs:829/845`; no `enum Backend`/`SshBackend` yet; `CommandRunner`/
+  `SystemRunner` (`remote/ssh.rs:86`) is the reusable ssh runner; startup in `lib.rs:43-91` (reconcile
+  + queue thread) is where the poller starts; the live log is still the push `job:log` event
+  (`JobDetailScreen.tsx:429`); TS `Job` (`src/types.ts:195`) lacks `backend_id` and the v20 coordinates.
+- Order (ROADMAP 5.3): **B0** probe the A2-deferred facts on uni first (a mismatch changes the
+  scripts); **B1** `enum Backend` + `SshBackend` submit path (opus, Part A pure → STOP → wiring);
+  **B2** poller (opus); **B3** UI (sonnet, live gate); **B4** live run on uni.
+- Known fork for Anton at B2: remote log to the view by the poller emitting push `job:log` vs the view
+  flipping to pull `poll_log`. Correction to the explorer: `Lost`/`Cancelling` are unit 5.4, not 5.3.

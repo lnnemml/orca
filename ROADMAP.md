@@ -1444,6 +1444,31 @@ preflight. The remaining items (remote `orca_plot`, pause) are not numbered yet.
         collector/classifier; fetching outcomes download + sha256-verify (o4, o6, o7);
       - one shared artifact-pattern list for `curated_match` and the rsync filter (o6);
       - run-target dropdown next to Submit (o5). Probes 5.3a–c done (o12).
+      - **Part B decomposition** (2026-10-05; anchors from an explorer pass, `wiki/log.md` same date):
+        - [ ] **B0 — probe on uni** (prober, as `anton`): the A2 facts deferred to the server — real
+              `tsp <cmd>` enqueue output (submit.sh accepts `^[0-9]+\n?$`), lock fd 9 with a real daemon,
+              `tsp -l` on a stale socket inside the lock, `timeout -k` on a hung client, real `busctl`
+              output, the coreutils `cannot statx` ENOENT text, slot-scan cost, pinned zombie. First,
+              because a mismatch changes the scripts before anything is wired.
+        - [ ] **B1 — `enum Backend` + `SshBackend` submit path** (implementer `opus`; Part A pure with an
+              injected `CommandRunner` → STOP → wiring into `commands/jobs.rs`): the 3.2 pre-upload
+              read-only call (realpath incl. `<root>/bin`, wrapper "already hashes right") + wrapper
+              upload (temp + rename, o13.1); coordinates persisted `Queued` before any ssh (o3.1); rsync
+              upload; submit call → `SubmitReply` handling (`RefusedKup` alone clears `verified_at`);
+              label call + withdraw; refusals of cancel/delete and profile edit/delete while
+              non-terminal (o2).
+        - [ ] **B2 — the poller** (implementer `opus`): one loop started in `lib.rs` setup, resumed at
+              launch; in-flight guard per job; label → collect (recorded + `.enqueued` socket) →
+              `classify`; fetching outcomes → download + `LIST` post-condition + `detect_completion`
+              on the downloaded files; 3-strike fetch retries; remote `poll_log` into the live view;
+              Full-mode rsync temp-name skip. **Fork for Anton at B2 start:** how the remote log reaches
+              the view — the poller emits the existing push `job:log` event, or the view flips to the
+              pull `poll_log` path (today `JobDetailScreen.tsx:429` listens to the push event).
+        - [ ] **B3 — UI** (implementer `sonnet`): TS `Job` gains `backend_id`, `remote_host`,
+              `remote_job_dir`, `remote_socket`; run-target dropdown (n2 predicate, disabled reasons,
+              last choice per project); "not on the server" / "submit interrupted" / "handled in 5.4"
+              states with retry/withdraw; refusal messages. Anton's live WebKitGTK gate.
+        - [ ] **B4 — live run on uni** + Anton's gate: submit → close laptop → reopen → result.
 - [ ] **Unit 5.4 — cancel, pending cancel, reconnect loop, new states.** The 5.2 cancel script over
       ssh; a cancel made outside the window is stored as pending and runs first on reconnect
       (ADR-024 i); the reconnect loop runs the 5.2 classifier for every non-terminal remote job;
