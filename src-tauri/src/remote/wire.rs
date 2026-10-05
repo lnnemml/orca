@@ -326,6 +326,11 @@ impl<'a> Reader<'a> {
         }
     }
 
+    /// The payload of a byte record that cannot be absent, as raw bytes.
+    pub(crate) fn bytes_after(&mut self, arg: Option<&str>) -> Result<Vec<u8>, WireError> {
+        self.payload(arg)
+    }
+
     /// The payload of a byte record that cannot be absent, as UTF-8 text.
     pub(crate) fn text_after(&mut self, arg: Option<&str>) -> Result<String, WireError> {
         let bytes = self.payload(arg)?;

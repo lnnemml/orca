@@ -251,9 +251,14 @@ scripts + classifier (done), 5.3 wiring, 5.4 cancel/reconnect, 5.5 preflight.
 - **Status:** a pure classifier over a raw-fact snapshot from the server (ADR-024 l, precedence
   table). The server filesystem is the source of truth (ADR-024 c). The classifier itself exists
   (pure, unwired): [remote-jobs.md](remote-jobs.md).
-- **Poll / fetch:** byte-offset `poll_log` and selective rsync down per `FetchPolicy`. The pure parts
-  exist (`remote/poll.rs`, `remote/sync.rs`, [remote-jobs.md](remote-jobs.md)); the ssh calls are wired
-  in 5.3 Part B.
+- **Submit:** upload, then one atomic server call under a per-account `flock` (values checked,
+  `KillUserProcesses` (its own outcome `refused-kup`), realpath, the wrapper named by its sha, no marker/row, the upload's names and sha256, the slot
+  scan, the `.submitting` claim, the enqueue with `9>&-`), and a read-only label call for every remote
+  `Queued` job (ADR-024 o item 3). The scripts and their parsers exist and are tested on this machine
+  ([remote-jobs.md](remote-jobs.md)); the ssh calls are wired in 5.3 Part B.
+- **Poll / fetch:** byte-offset `poll_log` and selective rsync down per `FetchPolicy`, with a server
+  listing for the download post-condition. The scripts and the pure parts exist (`remote/poll.rs`,
+  `remote/sync.rs`, [remote-jobs.md](remote-jobs.md)); the ssh calls are wired in 5.3 Part B.
 
 ## The shared artifact list (`src-tauri/src/artifacts.rs`, ADR-024 o item 6)
 

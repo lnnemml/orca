@@ -84,41 +84,84 @@ echo "                             ****ORCA TERMINATED NORMALLY****"
 exit "${STUB_ORCA_EXIT-0}"
 "#;
 
-/// The stub `tsp`: logs `<TS_SOCKET> <args>` to `tsp.log` beside itself; `-l` prints
-/// `<TS_SOCKET>.rows` (or fails if `<TS_SOCKET>.fail` exists); `-r` succeeds; nothing else is
-/// supported.
+/// The stub `tsp`: logs `<TS_SOCKET> <args>` to `tsp.log` beside itself, and to `tsp.fd9.log`
+/// too when it was started with fd 9 open (the submit lock's fd, ADR-024 o item 3.3.1); `-l`
+/// prints `<TS_SOCKET>.rows` (or fails if `<TS_SOCKET>.fail` exists; first sleeps the seconds in
+/// `<TS_SOCKET>.sleep` if that exists); `-r` succeeds; a command
+/// (no leading `-`) is enqueued: unless `<TS_SOCKET>.enqueue-fail` exists, it appends a `queued`
+/// row in the recorded shape to `<TS_SOCKET>.rows`, records `TMPDIR` in `<TS_SOCKET>.tmpdir`,
+/// starts a "daemon" if nothing listens on the socket, and prints the id (0, 1, … per socket).
+/// The daemon is a setsid'd perl listener that inherits the client's fds, as tsp's own daemon
+/// forks from its first client (probe 5.3c); its PID goes to `daemon.pids`.
 const STUB_TSP: &str = r#"#!/bin/bash
 # Stub tsp for the remote-script tests. Never the real task-spooler.
 set -u
-printf '%s %s\n' "${TS_SOCKET-unset}" "$*" >>"${BASH_SOURCE[0]%/*}/tsp.log"
+dir=${BASH_SOURCE[0]%/*}
+printf '%s %s\n' "${TS_SOCKET-unset}" "$*" >>"$dir/tsp.log"
+if [[ -e /proc/$$/fd/9 ]]; then
+    printf '%s %s\n' "${TS_SOCKET-unset}" "$*" >>"$dir/tsp.fd9.log"
+fi
+listening() {
+    awk -v p="$TS_SOCKET" '$NF == p { found = 1 } END { exit !found }' /proc/net/unix
+}
 case ${1-} in
     -l) if [[ -e $TS_SOCKET.fail ]]; then echo "stub: request failed" >&2; exit 255; fi
+        if [[ -e $TS_SOCKET.sleep ]]; then sleep "$(<"$TS_SOCKET.sleep")"; fi
         cat -- "$TS_SOCKET.rows" ;;
     -r) exit 0 ;;
-    *) exit 99 ;;
+    -*|'') exit 99 ;;
+    *) if [[ -e $TS_SOCKET.enqueue-fail ]]; then echo "stub: enqueue failed" >&2; exit 1; fi
+       id=0
+       [[ -e $TS_SOCKET.nextid ]] && id=$(<"$TS_SOCKET.nextid")
+       echo "$(( id + 1 ))" >"$TS_SOCKET.nextid"
+       if [[ ! -e $TS_SOCKET.rows ]]; then
+           echo "ID   State      Output               E-Level  Times(r/u/s)   Command [run=1/1]" >"$TS_SOCKET.rows"
+       fi
+       printf '%-4s queued     (file)                                       %s\n' "$id" "$*" >>"$TS_SOCKET.rows"
+       printf '%s\n' "${TMPDIR-unset}" >>"$TS_SOCKET.tmpdir"
+       if ! listening; then
+           ( cd -- "$dir" && exec setsid perl -MIO::Socket::UNIX -e \
+               'unlink $ARGV[0] if -S $ARGV[0];
+                my $s = IO::Socket::UNIX->new(Type => SOCK_STREAM(), Local => $ARGV[0], Listen => 1) or die $!;
+                sleep 60' "$TS_SOCKET" </dev/null >/dev/null 2>&1 ) &
+           echo "$!" >>"$dir/daemon.pids"
+           for _ in $(seq 250); do listening && break; sleep 0.02; done
+       fi
+       printf '%s\n' "$id" ;;
 esac
+"#;
+
+/// The stub `busctl`: after sleeping `STUB_KUP_SLEEP` seconds (default 0), the
+/// `KillUserProcesses` property as `STUB_KUP` says (default `b false`), with exit status
+/// `STUB_KUP_RC` (default 0); with `STUB_KUP_NUL` set, `b false\n\0junk` and exit 0.
+const STUB_BUSCTL: &str = r#"#!/bin/bash
+# Stub busctl for the remote-script tests.
+sleep "${STUB_KUP_SLEEP-0}"
+if [[ -n ${STUB_KUP_NUL-} ]]; then printf 'b false\n\0junk'; exit 0; fi
+printf '%s\n' "${STUB_KUP-b false}"
+exit "${STUB_KUP_RC-0}"
 "#;
 
 /// A process the test caused, identified by PID **and** start time, so cleanup can never signal
 /// a process that reused the PID.
 #[derive(Clone, Copy, Debug)]
-struct Tracked {
-    pid: u32,
+pub(super) struct Tracked {
+    pub(super) pid: u32,
     starttime: u64,
 }
 
-struct Lab {
-    root: PathBuf,
-    wrapper: PathBuf,
+pub(super) struct Lab {
+    pub(super) root: PathBuf,
+    pub(super) wrapper: PathBuf,
     cancel: PathBuf,
     collect: PathBuf,
-    stub_dir: PathBuf,
+    pub(super) stub_dir: PathBuf,
     children: Vec<Child>,
-    tracked: Vec<Tracked>,
+    pub(super) tracked: Vec<Tracked>,
 }
 
 impl Lab {
-    fn new() -> Lab {
+    pub(super) fn new() -> Lab {
         let n = NEXT_LAB.fetch_add(1, Ordering::SeqCst);
         // Short on purpose: a socket path must fit sun_path (108 bytes).
         let root = std::env::temp_dir().join(format!("os52-{}-{n}", std::process::id()));
@@ -135,7 +178,7 @@ impl Lab {
         fs::write(&wrapper, WRAPPER).unwrap();
         fs::write(&cancel, CANCEL).unwrap();
         fs::write(&collect, COLLECT).unwrap();
-        for (name, text) in [("orca", STUB_ORCA), ("tsp", STUB_TSP)] {
+        for (name, text) in [("orca", STUB_ORCA), ("tsp", STUB_TSP), ("busctl", STUB_BUSCTL)] {
             let path = stub_dir.join(name);
             fs::write(&path, text).unwrap();
             fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
@@ -144,15 +187,15 @@ impl Lab {
         Lab { root, wrapper, cancel, collect, stub_dir, children: Vec::new(), tracked: Vec::new() }
     }
 
-    fn str(path: &Path) -> &str {
+    pub(super) fn str(path: &Path) -> &str {
         path.to_str().expect("lab paths are UTF-8")
     }
 
-    fn path_env(&self) -> String {
+    pub(super) fn path_env(&self) -> String {
         format!("{}:{}", Lab::str(&self.stub_dir), std::env::var("PATH").unwrap_or_default())
     }
 
-    fn ran_log(&self) -> PathBuf {
+    pub(super) fn ran_log(&self) -> PathBuf {
         self.root.join("orca-ran.log")
     }
 
@@ -160,16 +203,16 @@ impl Lab {
         fs::read_to_string(self.ran_log()).map(|s| s.lines().count()).unwrap_or(0)
     }
 
-    fn tsp_log(&self) -> String {
+    pub(super) fn tsp_log(&self) -> String {
         fs::read_to_string(self.stub_dir.join("tsp.log")).unwrap()
     }
 
-    fn clear_tsp_log(&self) {
+    pub(super) fn clear_tsp_log(&self) {
         fs::write(self.stub_dir.join("tsp.log"), "").unwrap();
     }
 
     /// A fresh job dir with an input.
-    fn job(&self, name: &str) -> PathBuf {
+    pub(super) fn job(&self, name: &str) -> PathBuf {
         let dir = self.root.join("jobs").join(name);
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("input.inp"), "! HF\n").unwrap();
@@ -206,14 +249,14 @@ impl Lab {
         self.wait_child(pid)
     }
 
-    fn spawn(&mut self, mut cmd: Command) -> u32 {
+    pub(super) fn spawn(&mut self, mut cmd: Command) -> u32 {
         let child = cmd.spawn().expect("spawn");
         let pid = child.id();
         self.children.push(child);
         pid
     }
 
-    fn wait_child(&mut self, pid: u32) -> ExitStatus {
+    pub(super) fn wait_child(&mut self, pid: u32) -> ExitStatus {
         let child = self.children.iter_mut().find(|c| c.id() == pid).expect("our child");
         let deadline = Instant::now() + WAIT;
         loop {
@@ -226,7 +269,7 @@ impl Lab {
     }
 
     /// Wait for a PID file written by a process the test caused, and track that process.
-    fn tracked_pid(&mut self, file: &Path) -> u32 {
+    pub(super) fn tracked_pid(&mut self, file: &Path) -> u32 {
         wait_for(&format!("{}", file.display()), || {
             fs::read_to_string(file).is_ok_and(|s| s.ends_with('\n'))
         });
@@ -268,7 +311,7 @@ impl Lab {
 
     /// Collect and classify. With no sockets given, the lab's slot socket is used: a path no
     /// daemon listens on (NoDaemon), since a real collection always carries the profile's slots.
-    fn classify(&self, job: &Path, sockets: &[PathBuf]) -> Outcome {
+    pub(super) fn classify(&self, job: &Path, sockets: &[PathBuf]) -> Outcome {
         let slot = [self.root.join("slot.sock")];
         let sockets = if sockets.is_empty() { &slot[..] } else { sockets };
         let snap = self.snapshot(job, sockets).expect("snapshot");
@@ -291,7 +334,7 @@ impl Lab {
 
     /// A listening Unix socket at `path`, as a live tsp daemon's would be (only the listening
     /// matters: the collector and cancel script read `/proc/net/unix`, never connect).
-    fn listen(&mut self, path: &Path) -> u32 {
+    pub(super) fn listen(&mut self, path: &Path) -> u32 {
         let mut cmd = Command::new("perl");
         cmd.arg("-MIO::Socket::UNIX")
             .arg("-e")
@@ -306,7 +349,7 @@ impl Lab {
     }
 
     /// A stale socket file: its listener was killed, the file stays (probe 5.2b).
-    fn stale_socket(&mut self, path: &Path) {
+    pub(super) fn stale_socket(&mut self, path: &Path) {
         let pid = self.listen(path);
         let child = self.children.iter_mut().find(|c| c.id() == pid).unwrap();
         child.kill().unwrap();
@@ -317,6 +360,15 @@ impl Lab {
 
 impl Drop for Lab {
     fn drop(&mut self) {
+        // The stub tsp's daemons (perl listeners started in the stub dir).
+        let daemons = fs::read_to_string(self.stub_dir.join("daemon.pids")).unwrap_or_default();
+        for pid in daemons.lines().filter_map(|l| l.trim().parse::<u32>().ok()) {
+            if let Some(stat) = stat_of(pid) {
+                if read_link(pid).is_some_and(|cwd| cwd.starts_with(&self.root)) {
+                    self.tracked.push(Tracked { pid, starttime: stat.starttime });
+                }
+            }
+        }
         // PID files written after the last `tracked_pid` call are picked up here, so a test that
         // failed early still leaves nothing behind.
         for name in ["orca.pid", "sleep.pid", "rank.pid", "foreign.pid", "zparent.pid", "nodump.pid", "member.pid"] {
@@ -369,7 +421,7 @@ impl Drop for Lab {
 }
 
 /// Make the command's process a session leader, as tsp does for every task.
-fn new_session(cmd: &mut Command) {
+pub(super) fn new_session(cmd: &mut Command) {
     // SAFETY: setsid(2) is async-signal-safe, the only requirement on a pre_exec closure.
     unsafe {
         cmd.pre_exec(|| {
@@ -381,7 +433,7 @@ fn new_session(cmd: &mut Command) {
     }
 }
 
-fn wait_for(what: &str, mut cond: impl FnMut() -> bool) {
+pub(super) fn wait_for(what: &str, mut cond: impl FnMut() -> bool) {
     let deadline = Instant::now() + WAIT;
     while !cond() {
         assert!(Instant::now() < deadline, "timed out waiting for {what}");
@@ -389,7 +441,7 @@ fn wait_for(what: &str, mut cond: impl FnMut() -> bool) {
     }
 }
 
-fn stat_of(pid: u32) -> Option<ProcStat> {
+pub(super) fn stat_of(pid: u32) -> Option<ProcStat> {
     fs::read(format!("/proc/{pid}/stat")).ok().and_then(|raw| parse_stat(&raw).ok())
 }
 
@@ -398,7 +450,7 @@ fn read_link(pid: u32) -> Option<PathBuf> {
 }
 
 /// Gone, a zombie, or another process at that PID.
-fn is_dead(t: Tracked) -> bool {
+pub(super) fn is_dead(t: Tracked) -> bool {
     stat_of(t.pid).is_none_or(|s| s.is_zombie() || s.starttime != t.starttime)
 }
 
@@ -406,7 +458,7 @@ fn is_dead(t: Tracked) -> bool {
 /// lab's root (`<root>` or `<root>/…` — never a sibling lab whose name extends it). Zombies have no
 /// cwd and an empty cmdline, so a dead-but-unreaped process does not count; a bounded wait covers a
 /// killed process that has not finished exiting.
-fn assert_no_process_left(root: &Path) {
+pub(super) fn assert_no_process_left(root: &Path) {
     let root = root.as_os_str().as_bytes().to_vec();
     let mut prefix = root.clone();
     prefix.push(b'/');
@@ -439,7 +491,7 @@ fn assert_no_process_left(root: &Path) {
     }
 }
 
-fn tracked(pid: u32) -> Tracked {
+pub(super) fn tracked(pid: u32) -> Tracked {
     Tracked { pid, starttime: stat_of(pid).expect("process exists").starttime }
 }
 
@@ -1017,7 +1069,7 @@ wait"#;
 }
 
 /// The P4 header plus `rows`, as `tsp -l` prints it.
-fn tsp_listing(rows: &[String]) -> String {
+pub(super) fn tsp_listing(rows: &[String]) -> String {
     let header = TSP_L_P4.lines().next().unwrap();
     let mut text = format!("{header}\n");
     for row in rows {

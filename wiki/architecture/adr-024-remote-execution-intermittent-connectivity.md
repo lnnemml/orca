@@ -1,6 +1,6 @@
 # ADR-024: Remote execution under intermittent connectivity
 
-**Status:** Accepted · 2026-10-02 (Proposed → Accepted after the review + acceptance amendments below) · amended 2026-10-03 (probe; probe review; d′ resolution — ready for implementation; l — unit 5.2 script and classifier shape; m — 5.3 submit rules; n — 5.1 Part B profile and connection test) · amended 2026-10-05 (o — 5.3 transport, sync and monitoring; accepted after DESIGN round 4)
+**Status:** Accepted · 2026-10-02 (Proposed → Accepted after the review + acceptance amendments below) · amended 2026-10-03 (probe; probe review; d′ resolution — ready for implementation; l — unit 5.2 script and classifier shape; m — 5.3 submit rules; n — 5.1 Part B profile and connection test) · amended 2026-10-05 (o — 5.3 transport, sync and monitoring; accepted after DESIGN round 4; o13 — Part A2 amendments, accepted after DESIGN review 2026-10-05)
 
 Refines [ADR-003](adr-003-execution-backend.md) (the `ExecutionBackend` trait + job state
 machine) and extends [ADR-023](adr-023-server-agnostic-remote-execution.md) (one `SshBackend`
@@ -327,7 +327,7 @@ decomposition; Anton decided every fork, before and after DESIGN review rounds 1
     `printf '%q'` into one command string also worked, but needs bash as the remote login shell, so it
     is not adopted.
 - **Upload: content-addressed, never overwritten** (review M1). 5.3 uploads each script as
-  `<root>/bin/<name>-<sha256 prefix>.sh` (the root per Decision n) via a temp file + `rename`, then checks
+  `<root>/bin/<name>-<sha256 prefix>.sh` *(full 64-hex, o13.2)* (the root per Decision n) via a temp file + `rename`, then checks
   the remote `sha256sum` against the embedded bytes (rule #9). A running wrapper keeps executing its
   own file, because a new version gets a new name. Measured 2026-10-03 (probe P3, laptop and uni,
   bash 5.2.21): when a running script is overwritten **in place** (`cp`/`cat >`, same inode), bash
@@ -729,7 +729,8 @@ review pending, together with the 5.3 decomposition).**
    read loop lands *inside* value 0 while the count stays correct, so a count alone would not catch
    it (shown by a negative control).
 7. **Every submit re-checks `KillUserProcesses`** (Anton): one `busctl` read in the same ssh call.
-   Anything other than `b false` refuses the submit and sets `verified_at` to NULL. This is the one
+   Anything other than `b false` refuses the submit and sets `verified_at` to NULL *(signalled by
+   `refused-kup`, o13.3)*. This is the one
    host setting that silently kills jobs (Consequences).
 
 *The connection test.*
@@ -849,7 +850,7 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
            (N per call, sum < 40 s); a timeout refuses (before the claim) or is `failed-after-claim`
            (after it). The laptop-side 60 s does **not** bound the remote script (5.3b fact 4, 5.3c
            C1) — only the waiters' 20 s is bounded by `flock -w`.
-         - **A "lock busy" refusal names the holder PIDs** (own-uid `/proc/*/fd` entries resolving
+         - **A "lock busy" refusal names the holder PIDs** *(all openers, o13.4)* (own-uid `/proc/*/fd` entries resolving
            to the lock file) and their cmdlines, so a stuck holder can be found and killed by hand.
       2. `KillUserProcesses` re-check; the realpath asserts of item 1.
       3. **No marker** (`.started`, `.enqueued`, `.exit_code`, `.cancelled`, `.submitting`) and **no
@@ -872,7 +873,7 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
          -o` both prevent it). Then publish `.enqueued` (the (l) atomic form) and the (l)
          post-condition (the socket verbatim in `/proc/net/unix`, measured verbatim for a 90-byte
          path).
-      9. The script reports one of: `refused <reason>` (nothing claimed), `enqueued <id>`, or
+      9. The script reports one of *(o13.3 adds `refused-kup`)*: `refused <reason>` (nothing claimed), `enqueued <id>`, or
          `failed-after-claim <reason>` (claim stays; the label call of 3.4 decides from the server).
       Negative controls: a fresh daemon started by a submit does not hold the lock afterwards
       (`flock -n` succeeds); a slot-check refusal leaves no `.submitting`; a concurrent second submit
@@ -1040,6 +1041,68 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
     dying mid-session; whether `orca_2json`/`orca_plot` on the laptop read a `.gbw` from the server's
     ORCA when the recorded versions differ; `--timeout`, `ServerAlive` on a dead link and rsync rc
     23/24/30 under a real drop.
+13. **Part A2 amendments** (2026-10-05). They refine items 3.2, 3.3, 3.4, 6 and 7 of (o), n7, and
+    (l)'s upload name; nothing else changes. Accepted after DESIGN review (PASS WITH FINDINGS, findings
+    applied) on 2026-10-05.
+    1. **The wrapper is named by its sha, never by a path** (Anton; closes a gap: 3.3.3's list had no
+       wrapper, but 3.3.8 runs it). The submit's NUL list is: job dir, root, slot socket, slot mask,
+       ORCA path, **the wrapper's sha256** (exactly 64 lowercase hex digits; anything else refuses at
+       the value check), then two values per file — **6 + 2n**. The script itself builds
+       `<root>/bin/wrapper-<sha>.sh`; in step 2 (inside the lock, before the claim) it requires that
+       path to be a regular file equal to its `realpath` (so neither the file nor `<root>/bin` is a
+       symlink) and its `sha256sum` to equal `<sha>`, else it refuses (`refused`, never
+       `failed-after-claim`). Every child of this check (`realpath`, `sha256sum`) runs under `timeout`
+       within MED-B's budget (sum < 40 s). The client never sends a wrapper path, so the enqueued argv
+       cannot point outside `<root>/bin/`.
+       - **Wrapper upload precedes the submit** (part of 3.2, outside the lock): the same read-only
+         call that asserts 3.2's realpath shapes also asserts `realpath <root>/bin == <root>/bin` when
+         it exists and reports whether `<root>/bin/wrapper-<sha>.sh` already hashes right; if not, the
+         wrapper is uploaded per (l) — a unique temp name in `<root>/bin/`, then `rename` — so two
+         aliased profiles uploading at once cannot clobber each other.
+       - Negative controls: a wrapper whose bytes differ from its name refuses; a symlinked wrapper
+         refuses; `<root>/bin` a symlink to a directory holding a correct-bytes wrapper refuses; a 6th
+         value that is a path, or not 64 lowercase hex, refuses at the value check; an absent wrapper
+         is `refused`, not `failed-after-claim`.
+       - **Residual:** the check binds the bytes at submit time only; tsp opens the path at dequeue,
+         possibly hours later. A later replacement or deletion is excluded only by (l)'s
+         never-overwrite rule and by nothing being deleted in 5.3. **A future `bin/` cleanup must keep
+         every wrapper referenced by a queued or running row.** A wrapper deleted anyway surfaces as
+         a wrapper that never starts (the `NeverStarted` family), not as a refusal.
+    2. **Upload names carry the full sha** (orchestrator; acknowledged by Anton 2026-10-05). (l)'s
+       `<root>/bin/<name>-<sha256 prefix>.sh` is narrowed to the **full 64-hex** sha256 — the form the
+       code already uses (`scripts.rs` `upload_path`) and the submit now requires. The slot scan's
+       "ours" shape (`wrapper-<hex>.sh`, item 9) is unchanged and matches it.
+    3. **`KillUserProcesses` has its own outcome** (Anton; item 7/n7 needs a signal that is not free
+       text). **Every** result of the step-2 `busctl` other than rc 0 + exactly `b false` — `b true`,
+       other output, any rc ≠ 0, a `timeout` (rc 124) — is reported as `refused-kup <len>` with the
+       evidence (`rc`, stdout verbatim, first stderr line) instead of `refused`. Like `refused`, it
+       means nothing was claimed and the job stays retryable. The parser maps it to its own
+       `SubmitReply` variant and treats a `refused-kup` whose evidence is rc 0 + `b false` as a
+       protocol error (rule #9). **Only that variant** sets `verified_at` to NULL; Part B never
+       matches a refusal's text. Negative controls: a stub `busctl` printing `b true` yields the
+       variant; a stub `busctl` exiting 1, and one sleeping past its timeout, yield it too; a plain
+       `refused` whose text starts `KillUserProcesses:` does not; Part B: a non-KUP refusal leaves
+       `verified_at` set.
+    4. **"Lock busy" lists the lock file's openers, not "the holder"** (Anton). Refines 3.3.1's last
+       bullet. The refusal keeps the step-prefix convention — shape `lock busy: lock file open in:
+       <pid> <cmdline> …` (a shape, not a byte literal) — and lists every own-uid process with the
+       lock file open: the holder, any other waiting submit, and a daemon that leaked fd 9 (5.3c C2,
+       the case the list exists for). It does not claim which one holds the lock. If none is found
+       (the holder exited before the scan), it says so.
+    5. **Reply formats of the label (3.4) and listing (item 6) calls** (orchestrator; acknowledged by
+       Anton 2026-10-05) were left open by (o); A2 defines them and `modules/remote-jobs.md` is their
+       spec of record (a wire format between our own script and parser is a module interface, like
+       o6's "the code is the list"). The decision-weight rules stay here: both follow item 10 (n-11
+       framing, echo of every value), both carry the raw evidence and Rust re-derives the result
+       (rule #9): the label parser re-checks the `/proc/net/unix` evidence and counts a row only on a
+       whole-token match of the job dir; the listing describes a symlink by its `readlink` target,
+       never following it, and Rust re-derives every selection from the shared pattern list.
+    Not changed: item 9's "zombies are skipped unless pinned" is implemented literally. Measured on
+    the laptop (kernel 6.14, DESIGN review 2026-10-05; **not measured on the server**): a pinned
+    zombie keeps its `Cpus_allowed_list` and its cwd reads ENOENT, so it is never accounted for and
+    blocks its cores until reaped. Consequence: a transient zombie of the slot's own running ORCA
+    child refuses a same-slot submit as "slot busy" (retryable) until reaped — item 9's control "a
+    running job of the same slot is accepted" must not leave such a zombie, or it is flaky.
 
 ## Alternatives rejected
 

@@ -74,7 +74,6 @@ Everything a job dir also holds — `.gbw`, `.densities`/`.densitiesinfo`, `orbi
 `stderr.log`, `input.allxyz`, `input.interp` — is **not** curated and is recorded in `files.omitted` (honest-
 or-absent), never silently dropped. **Full** mode copies everything and leaves `omitted` empty.
 
-
 ## Manifest schema (`ManifestV1`)
 
 ```json

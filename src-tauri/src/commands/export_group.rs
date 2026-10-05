@@ -561,10 +561,10 @@ mod tests {
     }
 
     /// The hand-written allowlist `curated_match` had before it was derived from
-        /// `artifacts::ARTIFACT_PATTERNS` (ADR-024 o item 6), kept verbatim as the oracle that the
-        /// derivation changed no answer.
-        ///
-        /// (Original doc:) Whether `filename` (a leaf name, no path) is selected by the pinned curated allowlist.
+    /// `artifacts::ARTIFACT_PATTERNS` (ADR-024 o item 6), kept verbatim as the oracle that the
+    /// derivation changed no answer.
+    ///
+    /// (Original doc:) Whether `filename` (a leaf name, no path) is selected by the pinned curated allowlist.
     ///
     /// Pinned from a real-machine probe (rule #10 — confirmed against actual COMPLETED, SCAN,
     /// and NEB job dirs before pinning; see `wiki/modules/group-export.md`). The scientific

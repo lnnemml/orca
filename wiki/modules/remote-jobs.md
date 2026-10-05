@@ -7,8 +7,8 @@ server filesystem is the source of truth (ADR-024 c); the decision is made in Ru
 from the server (rule #9).
 
 The Rust side does no remote I/O itself: no ssh, no processes. The scripts are embedded bytes;
-nothing uploads or runs them yet. The one exception is `sync.rs`, which lists and hashes the **local**
-job dir for the transfer post-conditions. The module is registered in `lib.rs` under a scoped
+nothing uploads or runs them yet (the ssh/rsync wiring is unit 5.3 Part B). The one exception is
+`sync.rs`, which lists and hashes the **local** job dir for the transfer post-conditions. The module is registered in `lib.rs` under a scoped
 `#[allow(dead_code)]` until units 5.3/5.4 call it.
 
 ## What exists
@@ -21,14 +21,15 @@ job dir for the transfer post-conditions. The module is registered in `lib.rs` u
 | `tsp.rs` | `match_job_row` → `Option<TspRow { id, state }>` |
 | `snapshot.rs` | `Snapshot`, `JobIdentity`, `Attempt`, `SessionMember`, `SocketFact`, `SocketState` |
 | `classify.rs` | `classify`, `Outcome`, `FailReason`, `Classification`, `SnapshotError`; predicates `is_alive`, `is_our_wrapper`, `job_session`, `sid_reused` |
-| `scripts.rs` + `scripts/` | `WRAPPER`, `CANCEL`, `COLLECT` (embedded scripts) and `sha256_hex` |
+| `scripts.rs` + `scripts/` | the uploaded job scripts `WRAPPER`, `CANCEL`, `COLLECT`; the stdin-fed calls `CONNTEST`, `SUBMIT`, `LABEL`, `POLL_LOG`, `LIST` (`STDIN_SCRIPTS`, each ending in `READ_LOOP`); `stdin_with_values` (script + NUL list), `upload_path` (`<root>/bin/<name>-<sha256>.sh`), `sha256_hex` |
 | `wire.rs` | `parse_snapshot` — the collector's output → `Snapshot`; `WireError` |
 | `ssh.rs` | `ssh_bash_argv` (`ssh -o BatchMode=yes -o ConnectTimeout=10 -- <host> bash -s`, host re-validated), `ssh_options` (the two `-o` options, shared with rsync's `-e`) and `CommandRunner`/`SystemRunner` (stdin and both streams on threads, 1 MiB cap, process group killed on timeout). Used by the 5.1 connection test (`modules/server-profiles.md`); meant for 5.3's submit too |
-| `sync.rs` | rsync argv (`upload_argv`, `download_argv`), the download filter `download_filter_args` and its Rust mirror `download_selects`, `list_dir`/`upload_expected`/`expected_values` (local file lists with sha256), `compare_download` (the download post-condition) |
+| `sync.rs` | rsync argv (`upload_argv`, `download_argv`), the download filter `download_filter_args`, its leaf patterns `download_patterns` and its Rust mirror `download_selects`, `list_dir`/`upload_expected`/`expected_values` (local file lists with sha256), `ListArgs` + `parse_list_reply` (the server's listing), `compare_download` (the download post-condition) |
 | `poll.rs` | `PollLogArgs`, `parse_poll_reply` → `LogChunk` with the length post-condition; `check_echo` (the n-6d echo check every 5.3 reply shares) |
-| `submit.rs` | `remote_job_dir`, `SubmitArgs`, `parse_submit_reply` → `SubmitReply`; `LabelFacts`, `label` → `Label` (the label rules) |
+| `submit.rs` | `remote_job_dir`, `SubmitArgs`, `parse_submit_reply` → `SubmitReply`; `LabelArgs`, `parse_label_reply` → `LabelFacts`, `label` → `Label` (the label rules) |
 | `race_model.rs` | test-only model of the d′ race (`.started`/`.cancelled`) |
-| `script_tests.rs` | test-only: the real scripts run on this machine (see Tests) |
+| `script_tests.rs` | test-only: the real job scripts run on this machine; the shared `Lab` harness (see Tests) |
+| `call_script_tests.rs` | test-only: the real 5.3 calls through `bash -s`, read by their Rust parsers (see Tests) |
 
 Rule #6 is shared with the local backend: `local_backend::has_normal_termination` (the one
 `ORCA TERMINATED NORMALLY` test, also used by `detect_completion`) over the last
@@ -65,6 +66,24 @@ must be one component.
   files. The local side is `list_dir(dir, download_selects)`, the filter-selected subset. A symlink is
   listed by its target (`Digest::Symlink`), since the `.submitting` claim is a dangling symlink with
   nothing to hash.
+- **The server side** is the `LIST` call (values: the job dir, then `download_patterns(policy)` — the
+  filter's leaf patterns, sent, so the list is never restated in shell). For every top-level entry
+  except `.tsp-out` it reports the name and, if a pattern selects it, a regular file's sha256 (one
+  `sha256sum` per file on stdin, so no name reaches its output), a symlink's **target** (`readlink`,
+  never followed), `dir` or `other`; an unselected entry is `unselected` and not read. Nothing below
+  the top level is read (the download's `--exclude=*` keeps rsync out of every directory but
+  `.tsp-out/`). The reply:
+
+  ```text
+  orcastudio-list 1
+  argc <n>, arg <len> × n     the values, verbatim
+  entries <n>                 then n × (entry <len> + sha256 <hex> | link <len> | dir | other | unselected)
+  end
+  ```
+
+  `parse_list_reply` returns the selected entries, sorted. It **re-derives the selection** (rule #9):
+  every verdict must equal `download_selects(name, policy)`, in both directions; a selected `other`,
+  a duplicate, a name with `/`, or `.tsp-out` is `SyncError::Listing`.
 
 ## `poll_log` over ssh (`poll.rs`, ADR-024 o item 7)
 
@@ -86,25 +105,140 @@ end
 with no file, no bytes and the offset unchanged. Anything else is `PollError::PostCondition`, never a
 plausible chunk.
 
+The `POLL_LOG` script reads the size first (`stat -c %s`; only the exact ENOENT message is "no file",
+any other failure an `error` record), prints `size`, and — only when `size > offset` — takes `head -c
+<size> | tail -c +<offset+1> | head -c <cap>` into a temp file whose length is the `bytes` record. A
+shrunken file (`size < offset`) gets no bytes, which the parser reads as a reset. The first two stages
+may end by SIGPIPE (141) when the last `head` stops early; any other status is an `error` record.
+
 ## Submit (`submit.rs`, ADR-024 o item 3)
 
 `SubmitArgs::new(root, job_id, socket, mask, orca_path, files)` checks every value before anything
 leaves the laptop (the derived job dir, the socket's path rule and ≤ 100-byte bound, the mask syntax,
-an absolute ORCA path, files with a sha256). Values: job dir, root, socket, mask, ORCA path, then name +
-sha256 per file. The reply:
+an absolute ORCA path, files with a sha256) and takes the wrapper's sha256 from the embedded
+`WRAPPER` (`wrapper_sha`). Values (6 + 2n): job dir, root, socket, mask, ORCA path, **the wrapper's
+sha256** (never a path: the script builds `<root>/bin/wrapper-<sha>.sh` itself, so the enqueued argv
+cannot point outside `<root>/bin`; ADR-024 o item 13.1), then name + sha256 per file. Upload names
+carry the full 64-hex sha (`scripts::upload_path`, o item 13.2). The reply:
 
 ```text
 orcastudio-submit 1
 argc <n>
 arg <len>                  × n, each value verbatim
 refused <len>              exactly one outcome: reason bytes (nothing claimed)
+refused-kup <len>          KillUserProcesses is not `b false` (nothing claimed): the evidence
 enqueued <id>              decimal tsp id (.enqueued published)
 failed-after-claim <len>   reason bytes (.submitting stays)
 end
 ```
 
-`parse_submit_reply` → `SubmitReply::{Refused, Enqueued, FailedAfterClaim}`; a broken reply or an
-`error` record is an error, never an outcome.
+`parse_submit_reply` → `SubmitReply::{Refused, RefusedKup, Enqueued, FailedAfterClaim}`; a broken
+reply or an `error` record is an error, never an outcome.
+
+**`refused-kup` evidence** (o item 13.3) — the record's bytes are themselves records:
+
+```text
+rc <n>              busctl's exit status, decimal 0–255 (124: `timeout` ended it)
+stdout <len>        its stdout, verbatim
+stderr <len>        its first stderr line (at most 200 bytes)
+```
+
+so the reply reads `refused-kup <len>\n<evidence>\nend\n`. `SubmitReply::RefusedKup(KupEvidence { rc,
+stdout, stderr })`. Evidence of rc 0 with stdout exactly `b false\n` — the one passing result — is a
+protocol error (`SubmitError::Kup`), never the variant. **Only this variant** clears the profile's
+`verified_at` (n item 7); no caller decides on a `refused` reason's text.
+
+**The `SUBMIT` script** (one `bash -s` call; every refusal stops before any later step and wrote no
+claim):
+- **0** the values' form, before the lock: count 6 + 2n (n ≤ 1000), the root and socket by the path
+  rule, the job dir exactly `<root>/jobs/<one component>`, socket ≤ 100 bytes, the mask
+  `^[0-9]+([,-][0-9]+)*$`, an absolute ORCA path, the wrapper sha exactly 64 lowercase hex digits (a
+  path or anything else refuses here), each file name by the path rule with a 64-hex sha256, no name
+  twice;
+- **1** `exec 9>"$HOME/.orcastudio-submit.lock"; flock -w 20 9` — one lock per account. A timeout
+  refuses `lock busy: lock file open in: <pid> <cmdline>; …` — every process (other than itself)
+  that has the lock file open, from one `find /proc/[0-9]*/fd` (only own processes' fds are
+  readable): the holder, any other waiting submit, a daemon that leaked fd 9. It does not say which
+  one holds the lock (o item 13.4). With none found: `lock busy: lock file open in: no process found
+  (the holder may have exited)`;
+- **2** `busctl … KillUserProcesses` exits 0 printing exactly the 8 bytes `b false\n` (content and
+  size both checked: `read -d ''` alone stops at a NUL) — anything else (`b true`, other output, a
+  NUL, rc ≠ 0, a `timeout` 124) is `refused-kup` with the evidence (n item 7, o item 13.3);
+  `realpath -e <job> <job>/..` prints exactly `<job>` and `<root>/jobs` (a job dir reached through a
+  symlink refuses); `<root>/bin/wrapper-<sha>.sh` is a regular file, not a symlink, whose `realpath`
+  is itself (so `<root>/bin` is not a symlink either) and whose `sha256sum` is `<sha>` — an absent
+  or mismatched wrapper is `refused`, never `failed-after-claim`;
+- **3** no `.started`, `.enqueued`, `.exit_code`, `.cancelled`, `.submitting` in any form
+  (`path_exists`, a dangling symlink counts), and — only if `/proc/net/unix` lists the slot socket —
+  no `tsp -l` row of the slot holding the job dir as a whole token (a failed `tsp -l` refuses);
+- **4** the upload post-condition: `find <job> -path <job>/.tsp-out -prune` lists every entry; the
+  regular files must be exactly the expected names, and one `sha256sum` over them must give every
+  expected hash. A refusal names `missing […]`, `extra […]` (an rsync temp, a non-file) and
+  `differing […]` (a changed byte, or an expected name that is not a regular file);
+- **5** the slot check (o item 9), below;
+- **6** `mkdir -p <job>/.tsp-out`, which must then be a directory and not a symlink;
+- **7** the claim `ln -sT x <job>/.submitting` — no-clobber; it fails if anything took the name
+  since step 3;
+- **8** `TMPDIR=<job>/.tsp-out TS_SOCKET=<sock> tsp bash <wrapper> <job> <mask> <orca>`; its stdout
+  must be one decimal id (an optional final newline). Then `.enqueued` (`socket=…\nid=…\n`, temp
+  file + `mv -fT`), then the post-condition: the socket is listed verbatim in `/proc/net/unix`. A
+  failure from here on is `failed-after-claim` (the claim stays).
+
+Every `refused` reason starts with its step (`values:`, `lock busy:`, `lock:`, `realpath:`,
+`wrapper:`, `marker:`, `slot socket:`, `row:`, `upload:`, `slot check:`, `slot busy:`, `tsp-out:`,
+`claim:`), for people reading it.
+
+**The lock fd and the bounds.** Every `tsp` call (`-l` too), every child under `timeout` and the
+claim/publish commands run with `</dev/null` and `9>&-`, so no daemon tsp starts can inherit the
+account lock (probe 5.3c); the head's short readers (`stat`, `cat`) still inherit it and exit at once.
+Every child that can block while the lock is held runs under `timeout -k 1 N` (TERM after N s, KILL
+1 s later): busctl 2 s, realpath 2, the wrapper's realpath 1, the wrapper's sha256 2, the slot's
+`tsp -l` 2, the upload `find` 2, the upload `sha256sum` 6, the slot scan 8 (its own `tsp -l` calls
+each under `timeout -k 1 2` inside it), the enqueue 3 — 28 s, and 37 s worst case with the nine
+kill-afters, under the 40 s of o item 3.3.1; a timeout is a refusal (`refused-kup` for busctl,
+`failed-after-claim` after the claim). The short file operations — `stat`, `cat`, `mkdir`, `ln`,
+`mv` on the job dir and its markers — are deliberately **not** wrapped: they touch only the root,
+which is local ext4, measured on uni (`findmnt` in the connection test, ADR-024 n item 8 allow-list
+`{ext4}`; [uni-server.md](../infrastructure/uni-server.md), 2026-10-03), not a network mount that
+could hang.
+
+**The slot check** runs as one `bash -c` child under `timeout` (its functions passed by `declare
+-f`, its values as arguments). It reads `/proc` with builtins and forks only `readlink` for a pinned
+process and `tsp -l` for a qualifying socket:
+- the full set is the scanning shell's own `Cpus_allowed_list` (unreadable → refuse);
+- **candidates**, own uid only (`Uid:` of `/proc/<pid>/status` = `$UID`; a failed read is "gone"):
+  every **wrapper** — argv element by element `bash`, `*/bin/wrapper-<hex>.sh` of any root, job dir,
+  mask — with its argv[3] mask; and every process whose `Cpus_allowed_list` differs from the full set,
+  with that list and its cwd (byte-exact; none for a zombie or an unreadable cwd);
+- **queued work**: every socket in `/proc/net/unix` with the layout `<dir>/tsp/slot<N>.sock`, a valid
+  path and `[[ -O ]]`, other than the slot's own, is read with `tsp -l`; each `queued` row whose
+  command holds `…/bin/wrapper-<hex>.sh` contributes the mask two tokens after it. A failed `tsp -l`
+  there refuses;
+- **accounted for**: a candidate whose job dir (a wrapper's argv[2], a pinned process's cwd) is the
+  job dir of a `running` row of the slot's own daemon; the slot's own queued rows never block. With no
+  daemon on the slot nothing is accounted for;
+- **blocks**: any other candidate or queued row whose CPUs meet the mask (an unreadable CPU list meets
+  every mask: fail closed). The refusal is `slot busy: mask <m> is held by pid <n> (wrapper|pinned,
+  cores <list>, job dir <dir>|cwd not readable); queued row <id> on <socket> (…)`.
+
+**The `LABEL` call** (read-only; values: the recorded job dir and socket) reports the facts in the
+order of o item 3.4:
+
+```text
+orcastudio-label 1
+argc 2, arg <len> × 2          the values, verbatim
+dir yes|no                     no → end; only ENOENT is "no"
+started|exit_code|cancelled|enqueued|submitting yes|no     in this order, any form
+net_unix <len>                 /proc/net/unix header + the lines naming the socket, then
+  nodaemon | rows <n> + n × row <len> | tsp_error <len>
+end
+```
+
+`tsp -l` runs only on a socket `/proc/net/unix` lists, under `timeout -k 1 3`: a hung or failed
+client is `tsp_error`, so the job goes to the classifier as a socket Error. `parse_label_reply` → `LabelFacts` re-checks
+`nodaemon`/`rows`/`tsp_error` against `unix_socket_listed` over the evidence, requires every row to
+mention the job dir, and sets `row_holds_job` only for a **whole-token** match; `tsp_error` sets
+`socket_error`. Any `error` record or a contradiction is an error, never facts.
 
 **Labels** (o item 3.4) — `label(&LabelFacts) -> Label` over the read-only label call's facts (dir
 exists, markers present, a row holding the job dir on the recorded socket, a socket `Error`), checked
@@ -307,7 +441,7 @@ action this pass, like `Indeterminate`.
 
 ## Tests
 
-152 tests in the module.
+182 tests in the module.
 - **Pure (classifier, parsers, wire):** strict-parser garbage cases, the recorded probe fixtures (P2
   cmdline, P4 `tsp -l`, 5.2b `/proc/net/unix` line, 5.2c stat lines including `w q) x.sh` and the
   zombie), at least one snapshot per table row, the d′ race model over all 6 interleavings, and the
@@ -342,15 +476,45 @@ action this pass, like `Indeterminate`.
   removal, so a tracked wrapper is stopped before its ORCA is killed. Two cancel tests also
   assert, after the drop, that no process has a cwd in or an argument under the lab root.
 
+- **Real 5.3 calls (`call_script_tests.rs`)**: each script runs as `bash -s` with its NUL list (the
+  ssh call's exact stdin, `stdin_with_values`) and its stdout goes to its **Rust parser** — never
+  compared with a hand-written string. The `Lab` adds a stub `busctl` and a stub `tsp` that enqueues
+  (a `queued` row in the recorded shape, the id on stdout, `TMPDIR` recorded), starts a setsid'd
+  "daemon" listener that inherits its fds, and logs every call that inherited fd 9; `HOME` is the
+  lab root, so each lab has its own account lock. Covered: the happy submit (claim, `.enqueued`,
+  `.tsp-out` as `TMPDIR`, argv verbatim, lock free after, collector → `Queued`); a second submit of
+  the job; two concurrent submits of one job (one enqueue); a claim taken between the marker check
+  and the claim (fault-injected `mkdir`); a busy lock (refused after the 20 s wait, the opener
+  listed, nothing enqueued); a corrupted byte (top level and in a subdirectory), a missing and an
+  extra file; `refused-kup` for `b true`, rc 1, other output, `b false\n` + NUL + bytes, and a
+  busctl sleeping past its timeout (124); the wrapper (bytes ≠ name, a symlinked wrapper, a symlinked `<root>/bin` holding the right
+  bytes, an absent wrapper, a path or an uppercase sha as value 5); a symlinked job dir, a job dir
+  outside `<root>/jobs`, every marker as a dangling symlink, a row already holding the job; a failed enqueue → `failed-after-claim`
+  → label `SubmitInterrupted`; the slot check (a running job of the same slot accounted; the same
+  without its row blocked, wrapper and pinned ORCA named, no claim — the test first waits until the
+  running job's session holds no zombie, since a pinned zombie is never accounted for (o item 13); no daemon → blocked; a queued row
+  on another own slot socket; a failed `tsp -l` there; a pinned stray on vs off the mask); every
+  label rule and precedence boundary; a read error in the label call; a hung `tsp -l` in the label
+  call (bounded, a socket Error); poll (absent file, absent dir,
+  full, capped, no growth, shrunken, reassembled from 7-byte chunks with NUL and non-UTF-8 bytes, an
+  unreadable log); the listing against `list_dir` of the same dir under both policies; `bash -n` on
+  every stdin script. **The slot check scans this machine's real own-uid processes**, so these tests
+  hold one mutex and use the mask `8-11`, clear of every CPU the 5.2 tests pin.
+
 Negative controls (each guard broken, the named tests red, restored): listed per unit in
-[log.md](../log.md) (Part A 2026-10-03, Part B 2026-10-03).
+[log.md](../log.md) (Part A 2026-10-03, Part B 2026-10-03, 5.3 A2 2026-10-05). The five of 5.3 A2 are
+also permanent tests: each runs its guard's check on a mutated copy of the script (exactly one
+occurrence replaced) and requires it to fail.
 
 ## Not built yet
 
-- The 5.3 scripts (submit, label call, poll, the server-side listing for the download post-condition)
-  and their upload, `.enqueued`, the slot check on submit, the socket-path post-condition, the job-dir
-  `realpath` assertion — unit 5.3 A2; the ssh/rsync calls, the poller, the commands and the UI — 5.3
-  Part B.
+- The upload of the job scripts (content-addressed, with the `sha256sum` check), the ssh/rsync calls
+  that run the 5.3 scripts, the poller, the commands and the UI — 5.3 Part B.
+- **Not measured on uni yet** (rule #10; the laptop has no `tsp`): what real `tsp <command>` prints on
+  enqueue (the submit accepts one decimal line and fails after the claim on anything else); the lock
+  fd with a real daemon (the stub daemon inherits fds as probe 5.3c measured tsp's does); `tsp -l` on
+  a stale socket inside the lock; `timeout` on a hung `tsp` client; an unowned socket with the slot
+  layout (`-O` false; no second uid here); the scan's cost on uni.
 - The Full-mode export skip of rsync temp names (`.*.??????`, ADR-024 o6 residual) — 5.3 Part B,
   with the first real download.
 - **The uni measurements behind these scripts are done** (probe 5.3, 2026-10-03,

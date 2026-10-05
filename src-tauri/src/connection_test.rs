@@ -47,7 +47,7 @@ use serde::Serialize;
 use crate::error::AppError;
 use crate::models::server_profile::{cpu_out_of_range, parse_core_mask, ProfileTarget};
 use crate::remote::classify::is_valid_path;
-use crate::remote::scripts::CONNTEST;
+use crate::remote::scripts::{stdin_with_values, CONNTEST};
 use crate::remote::wire::{Reader, WireError};
 
 // The patterns are static literals verified by the unit tests below, so each `expect`
@@ -186,15 +186,7 @@ impl From<WireError> for ConnTestError {
 
 /// The bytes for `ssh <host> bash -s`'s stdin: the script, then each value followed by a NUL.
 pub fn conntest_stdin(args: &ConnTestArgs) -> Result<Vec<u8>, ConnTestError> {
-    let mut stdin = CONNTEST.as_bytes().to_vec();
-    for value in args.values() {
-        if value.contains('\0') {
-            return Err(ConnTestError::ValueHasNul);
-        }
-        stdin.extend_from_slice(value.as_bytes());
-        stdin.push(0);
-    }
-    Ok(stdin)
+    stdin_with_values(CONNTEST, &args.values()).map_err(|_| ConnTestError::ValueHasNul)
 }
 
 /// One check as the script ran it: its exit status and raw output, or not run.

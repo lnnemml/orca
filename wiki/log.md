@@ -10364,3 +10364,88 @@ profile was never verified. Next: **5.3** `SshBackend` wiring.
   (three FAILs escalated, single-call submit adopted); 5.3 Part A1 (`d47623d`), pushed.
 - **Pending (Anton, next session):** 5.3 Part A2 — the server scripts (submit, label, poll, listing)
   emitting the reply shapes A1 parses; plus the A1 review's cosmetic leftovers. Then Part B.
+
+## [2026-10-05] decision | ADR-024 o13 — Part A2 amendments
+- **Anton decided the three forks the A2 implementer reported:**
+  - **the wrapper is named by its sha** (13.1): the submit's value 5 is the wrapper's 64-hex sha256,
+    never a path; the script builds `<root>/bin/wrapper-<sha>.sh` and, inside the lock, requires a
+    regular file equal to its realpath whose sha256 is `<sha>` — else `refused`. The pre-upload
+    `<root>/bin` realpath check and the wrapper upload (temp name + rename) belong to 3.2 (Part B);
+  - **`refused-kup`** (13.3): every `busctl` result other than rc 0 + `b false` is its own outcome
+    carrying the evidence; only it clears `verified_at`; no caller reads a refusal's text;
+  - **"lock busy" lists the lock file's openers** (13.4), not "the holder".
+- **Orchestrator, acknowledged by Anton:** upload names carry the full 64-hex sha (13.2); the label
+  and listing reply formats have `modules/remote-jobs.md` as their spec of record (13.5). Not
+  changed: "zombies are skipped unless pinned" stays literal; the same-slot control must not leave a
+  pinned zombie.
+- DESIGN review: PASS WITH FINDINGS, findings applied (propagation list for A2).
+
+## [2026-10-05] feat | Unit 5.3 Part A2 — the server scripts: submit, label, poll_log, listing
+- **Landed (scripts + their Rust parsers, no ssh):** four stdin-fed scripts in
+  `src-tauri/src/remote/scripts/` (`submit.sh`, `label.sh`, `poll_log.sh`, `list.sh`), each the shared
+  head + its body, ending in the n-11 read loop (`scripts::READ_LOOP`, checked by a test);
+  `scripts::stdin_with_values` (the connection test now routes through it) and `upload_path`.
+  - **submit** — ADR-024 o3.3 in order: values → `flock -w 20` on fd 9 (busy → the lock file's
+    openers, PID and cmdline) → `KillUserProcesses` (`refused-kup`), `realpath`, the wrapper by its
+    sha (regular file, realpath, sha256) → no marker,
+    no row → the upload's names and sha256 → the o9 slot scan (one `bash -c` child under `timeout`) →
+    `mkdir .tsp-out` → `ln -sT` claim → enqueue (`TMPDIR=<job>/.tsp-out`, `9>&-`), `.enqueued`,
+    `/proc/net/unix` post-condition. Every `tsp` call has `9>&-`; every bounded child runs under
+    `timeout -k 1`, 28 s of budgets, 37 s worst case with the kill-afters; `stat`/`cat`/`mkdir`/`ln`/
+    `mv` stay unwrapped (the root is local ext4, measured on uni). KUP passes only on exactly the 8
+    bytes `b false\n`. Every `refused` reason starts with its step (for people; Part B never reads it).
+  - **label** — read-only facts in the o3.4 order; its `tsp -l` runs under `timeout -k 1 3` (a
+    hang is a socket Error); `submit::parse_label_reply` re-checks the
+    `/proc/net/unix` evidence and whole-token rows.
+  - **poll_log** — size first, then `head -c size | tail -c +off+1 | head -c cap`.
+  - **list** — the server side of the download post-condition: the filter's leaf patterns are sent
+    as values (`sync::download_patterns`, so the list is not restated in shell); symlinks are read by
+    `readlink`, never followed; `sync::parse_list_reply` re-derives every selection with
+    `download_selects`.
+- **Final shapes (ADR-024 o13, entry above):** values 6 + 2n with the wrapper's **sha** as value 5
+  (`SubmitArgs::wrapper_sha`); the script checks `<root>/bin/wrapper-<sha>.sh` is a regular file equal
+  to its realpath with that sha256 (`refused` otherwise); a new outcome `refused-kup <len>` carries
+  the busctl evidence (`rc`, `stdout`, `stderr` records) and parses into
+  `SubmitReply::RefusedKup(KupEvidence)` — passing evidence is a protocol error; "lock busy: lock file
+  open in: <pid> <cmdline>; …". Reply formats of label and listing: `modules/remote-jobs.md`.
+- **Tests:** `call_script_tests.rs` runs each real script through `bash -s` with its NUL list and
+  feeds stdout to its parser (30 tests); the 5.2 `Lab` gains a stub `busctl`, an enqueuing stub
+  `tsp` (it starts a setsid'd "daemon" that inherits its fds and logs any call that inherited fd 9).
+  The slot scan reads this machine's real processes, so these tests hold one mutex and use mask
+  `8-11`; the same-slot test waits until the running job's session holds no zombie. `cargo test`:
+  633 passed, 27 ignored (A1: 594/27).
+- **Negative controls** (each run once by editing the real script, red, restored; each also a
+  permanent mutation test):
+  - (a) `9>&-` dropped from the enqueue → `the_lock_fd_never_reaches_tsp_or_its_daemon` red: the stub
+    daemon keeps the lock ("lock busy … open in: pid … perl -MIO::Socket::UNIX …", "lock free
+    false"); dropped from `tsp -l` → the call is in the fd-9 log;
+  - (b) claim `ln -sT` → `ln -sfT` → `the_claim_is_no_clobber` red: `Enqueued(0)`;
+  - (c) one byte added after the poll bytes → `poll_log_round_trips_every_case` red: `Malformed { …
+    "45 bytes and a newline expected" }`;
+  - (d) the sha256 comparison removed → `a_broken_upload_is_refused_naming_the_file` red:
+    `one-byte: Enqueued(0)`;
+  - (e) `find -printf %y` → `%Y` (follows symlinks) →
+    `the_server_listing_matches_the_local_listing_of_the_same_dir` red on `.submitting`;
+  - (13.1) the wrapper's realpath clause removed (the `-f`/`! -L` test kept) →
+    `the_wrapper_is_checked_by_its_sha_and_its_realpath` red: `symlinked bin: Enqueued(0)`;
+  - (13.3) `refuse_kup` replaced by a plain `refused "KillUserProcesses: rc $rc"` →
+    `kill_user_processes_failures_are_refused_kup_with_their_evidence` red: `b true:
+    Refused("KillUserProcesses: rc 0")`; the parser refuses
+    `refused-kup` with rc 0 + `b false` and reads a plain `refused "KillUserProcesses: …"` as
+    `Refused`;
+  - (LOW-3) the 8-byte size check removed → the same test red: `nul: Enqueued(0)` (`b false\n\0junk`
+    passed `read -d ''`);
+  - (LOW-4) the label call's `timeout -k 1 3` removed → `a_hung_tsp_in_the_label_call_is_a_socket_error`
+    red: after 6.06 s, `socket_error: false … → SubmitInterrupted`.
+- **Deferred to uni** (rule #10; no `tsp` on the laptop): what real `tsp <command>` prints on enqueue;
+  the lock fd with a real daemon; `tsp -l` on a stale socket inside the lock; `timeout` on a hung
+  `tsp` client; an unowned socket with the slot layout; the scan's cost there. `shellcheck` is not
+  installed; every stdin script passes `bash -n`.
+- **Correction to the A1 entry above:** the ≤ 1000-file bound is `sync::MAX_UPLOAD_FILES`
+  (`upload_expected`), not in `submit.rs`; the submit script checks the same bound again.
+- Carry-overs from the A1 review: the `legacy_curated_match` doc indent, a blank line in
+  `group-export.md`, and the stale "until unit 5.0 Part B" comment on `read_log_chunk`.
+- Left for Part B: the 3.2 pre-upload read-only call (realpath of `<root>`, `<root>/jobs`, the job
+  dir and `<root>/bin`, plus "does the wrapper already hash right") and the wrapper upload by unique
+  temp name + rename (o13.1) — no pre-upload script exists yet.
+- Next: verifier CODE on A2; then Part B (ssh/rsync wiring, script upload, the poller, UI).

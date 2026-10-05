@@ -26,7 +26,9 @@ use std::path::Path;
 use sha2::{Digest as _, Sha256};
 
 use super::classify::is_valid_path;
+use super::poll::{check_echo, PollError};
 use super::ssh::ssh_options;
+use super::wire::{Reader, WireError};
 use crate::artifacts::{glob_match, is_artifact, ARTIFACT_PATTERNS};
 use crate::execution_backend::FetchPolicy;
 use crate::models::server_profile::{validate_host, InvalidProfile};
@@ -66,18 +68,44 @@ pub enum SyncError {
     NotARegularFile(String),
     #[error("{path}: {message}")]
     Io { path: String, message: String },
+    #[error(transparent)]
+    Reply(#[from] PollError),
+    #[error("listing reply: {0}")]
+    Listing(String),
 }
 
-/// The rsync filter of a download, in order: every artifact pattern, `stderr.log`, the markers,
-/// `.tsp-out/` and its contents, `*.gbw` if opted in, then `--exclude=*`.
-pub fn download_filter_args(policy: FetchPolicy) -> Vec<String> {
-    let mut includes: Vec<&str> = Vec::new();
+impl From<WireError> for SyncError {
+    fn from(e: WireError) -> Self {
+        SyncError::Reply(PollError::Wire(e))
+    }
+}
+
+/// Every artifact pattern, `stderr.log` and the markers, each once, in that order.
+fn leaf_includes() -> Vec<&'static str> {
+    let mut includes: Vec<&'static str> = Vec::new();
     for name in ARTIFACT_PATTERNS.iter().chain([&STDERR_LOG]).chain(MARKERS) {
         if !includes.contains(name) {
             includes.push(name);
         }
     }
-    let mut args: Vec<String> = includes.iter().map(|p| format!("--include={p}")).collect();
+    includes
+}
+
+/// The leaf-name patterns the download selects at the top of the job dir: [`leaf_includes`] plus
+/// `*.gbw` if opted in. `.tsp-out/` is not among them (the post-condition leaves it out). These
+/// are the values the server's listing ([`super::scripts::LIST`]) matches names against.
+pub fn download_patterns(policy: FetchPolicy) -> Vec<&'static str> {
+    let mut patterns = leaf_includes();
+    if policy.include_gbw {
+        patterns.push(GBW_PATTERN);
+    }
+    patterns
+}
+
+/// The rsync filter of a download, in order: every artifact pattern, `stderr.log`, the markers,
+/// `.tsp-out/` and its contents, `*.gbw` if opted in, then `--exclude=*`.
+pub fn download_filter_args(policy: FetchPolicy) -> Vec<String> {
+    let mut args: Vec<String> = leaf_includes().iter().map(|p| format!("--include={p}")).collect();
     args.push(format!("--include={TSP_OUT_DIR}/"));
     args.push(format!("--include={TSP_OUT_DIR}/**"));
     if policy.include_gbw {
@@ -271,6 +299,108 @@ pub fn compare_download(local: &[FileDigest], server: &[FileDigest]) -> Result<(
     } else {
         Err(mismatch)
     }
+}
+
+/// The first line of every listing reply; the number is the format version.
+pub const LIST_HEADER: &str = "orcastudio-list 1";
+
+/// What one server listing sends: the job's recorded dir and the download's patterns.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListArgs {
+    pub job_dir: String,
+    pub policy: FetchPolicy,
+}
+
+impl ListArgs {
+    pub fn new(job_dir: &str, policy: FetchPolicy) -> Result<Self, SyncError> {
+        if !is_valid_path(job_dir) {
+            return Err(SyncError::RemotePath(job_dir.to_string()));
+        }
+        Ok(ListArgs { job_dir: job_dir.to_string(), policy })
+    }
+
+    /// The NUL-list values: the job dir, then [`download_patterns`].
+    pub fn values(&self) -> Vec<String> {
+        let mut values = vec![self.job_dir.clone()];
+        values.extend(download_patterns(self.policy).into_iter().map(String::from));
+        values
+    }
+}
+
+/// Parse the server's listing into the selected entries, sorted — the `server` side of
+/// [`compare_download`]. The reply (records, the 5.2 format):
+///
+/// ```text
+/// orcastudio-list 1
+/// argc <n>
+/// arg <len>              × n: the job dir, then the patterns, verbatim
+/// entries <n>            then n times:
+///   entry <len>          a top-level name (never `.tsp-out`), then one of
+///     sha256 <hex>       selected regular file
+///     link <len>         selected symlink: its target bytes (never followed)
+///     dir                selected directory (not entered)
+///     other              selected, but not a file, symlink or directory
+///     unselected         not selected (not read)
+/// end
+/// ```
+///
+/// Rust re-derives the selection (rule #9): every verdict must equal [`download_selects`] for the
+/// name, so a script that matched the patterns differently is caught, not trusted. A selected
+/// `other` (a fifo named `output.out`, say), a name listed twice, a name with `/`, or `.tsp-out`
+/// is [`SyncError::Listing`].
+pub fn parse_list_reply(output: &[u8], sent: &ListArgs) -> Result<Vec<FileDigest>, SyncError> {
+    let mut r = Reader::new(output);
+    let (name, arg) = r.line()?;
+    if LIST_HEADER.split_once(' ') != Some((name, arg.unwrap_or_default())) {
+        return Err(r.malformed(format!("expected {LIST_HEADER:?}")).into());
+    }
+    check_echo(&mut r, &sent.values())?;
+    let mut seen = BTreeSet::new();
+    let mut out = Vec::new();
+    for _ in 0..r.count("entries")? {
+        let raw = r.bytes("entry")?.ok_or_else(|| r.malformed("entry is required".into()))?;
+        let name = String::from_utf8_lossy(&raw).into_owned();
+        if name.is_empty() || name.contains('/') || name == "." || name == ".." || name == TSP_OUT_DIR {
+            return Err(SyncError::Listing(format!("{name:?} is not a top-level entry the listing may report")));
+        }
+        if !seen.insert(name.clone()) {
+            return Err(SyncError::Listing(format!("{name:?} is listed twice")));
+        }
+        let (kind, arg) = r.line()?;
+        let digest = match (kind, arg) {
+            ("unselected", None) => None,
+            ("dir", None) => None,
+            ("other", None) => {
+                return Err(SyncError::Listing(format!("{name:?} is selected but is not a file, symlink or directory")))
+            }
+            ("sha256", Some(hex)) if hex.len() == 64 && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) => {
+                Some(Digest::Sha256(hex.to_string()))
+            }
+            ("link", arg) => {
+                Some(Digest::Symlink(r.text_after(arg)?))
+            }
+            _ => return Err(r.malformed(format!("expected an entry kind for {name:?}, got {kind:?}")).into()),
+        };
+        let selected = kind != "unselected";
+        if selected != download_selects(&name, sent.policy) {
+            return Err(SyncError::Listing(format!(
+                "the server {} {name:?}, the download filter {}",
+                if selected { "selected" } else { "did not select" },
+                if selected { "does not" } else { "does" }
+            )));
+        }
+        if let Some(digest) = digest {
+            out.push(FileDigest { name, digest });
+        }
+    }
+    if r.line()? != ("end", None) {
+        return Err(r.malformed("expected end".into()).into());
+    }
+    if !r.at_end() {
+        return Err(r.malformed("bytes after end".into()).into());
+    }
+    out.sort();
+    Ok(out)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -717,6 +847,68 @@ mod tests {
             compare_download(&[link("y")], &[link("x")]).unwrap_err().differing,
             [".submitting"]
         );
+    }
+
+    // --- the server listing's reply ---------------------------------------------------------
+
+    fn list_wire(args: &ListArgs, entries: &[(&str, &str)]) -> Vec<u8> {
+        let values = args.values();
+        let mut out = format!("{LIST_HEADER}\nargc {}\n", values.len());
+        for v in values {
+            out.push_str(&format!("arg {}\n{v}\n", v.len()));
+        }
+        out.push_str(&format!("entries {}\n", entries.len()));
+        for (name, kind) in entries {
+            out.push_str(&format!("entry {}\n{name}\n{kind}\n", name.len()));
+        }
+        out.push_str("end\n");
+        out.into_bytes()
+    }
+
+    #[test]
+    fn a_listing_reply_parses_into_the_selected_entries() {
+        let args = ListArgs::new(JOB, FetchPolicy::SMALL_ONLY).unwrap();
+        let hex = sha("a");
+        let wire = list_wire(
+            &args,
+            &[
+                ("output.out", &format!("sha256 {hex}")),
+                (".submitting", "link 1\nx"),
+                ("input.gbw", "unselected"),
+                (".tmp", "unselected"),
+                ("input.inp", "dir"),
+            ],
+        );
+        assert_eq!(
+            parse_list_reply(&wire, &args).unwrap(),
+            [
+                FileDigest { name: ".submitting".into(), digest: Digest::Symlink("x".into()) },
+                FileDigest { name: "output.out".into(), digest: Digest::Sha256(hex) },
+            ]
+        );
+        assert_eq!(args.values()[1..], download_patterns(FetchPolicy::SMALL_ONLY).iter().map(|p| p.to_string()).collect::<Vec<_>>()[..]);
+        assert!(download_patterns(FetchPolicy::WITH_GBW).contains(&GBW_PATTERN));
+        assert!(!download_patterns(FetchPolicy::SMALL_ONLY).contains(&GBW_PATTERN));
+    }
+
+    /// NEGATIVE CONTROLS of the re-derivation: the server's verdict must be Rust's filter's, in
+    /// both directions; a duplicate, `.tsp-out`, a path or a selected non-file is refused.
+    #[test]
+    fn a_listing_reply_that_disagrees_with_the_filter_is_refused() {
+        let args = ListArgs::new(JOB, FetchPolicy::SMALL_ONLY).unwrap();
+        let hex = format!("sha256 {}", sha("a"));
+        let cases: &[&[(&str, &str)]] = &[
+            &[("output.out", "unselected")],
+            &[("input.gbw", &hex)],
+            &[("output.out", &hex), ("output.out", &hex)],
+            &[(".tsp-out", "unselected")],
+            &[("sub/deep.xyz", "unselected")],
+            &[("output.out", "other")],
+            &[("output.out", "sha256 ABC")],
+        ];
+        for entries in cases {
+            assert!(parse_list_reply(&list_wire(&args, entries), &args).is_err(), "{entries:?}");
+        }
     }
 
     /// The local side of the post-condition: the filter-selected subset of a real downloaded dir,

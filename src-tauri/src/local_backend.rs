@@ -1082,8 +1082,8 @@ pub(crate) fn read_tail(path: &Path, max_bytes: u64) -> std::io::Result<String> 
 ///     skip bytes.
 ///
 /// `pub(crate)` so `execution_backend` can delegate to it without duplicating the seek logic.
-// Unused until unit 5.0 Part B wires `poll_log` through the trait; the allow goes
-// with that wiring. Its tests already exercise it now.
+// Its only caller is `LocalBackend::poll_log`, which has no live caller until the push→pull
+// log flip (a later unit); the allow goes with that wiring. Its tests exercise it now.
 #[allow(dead_code)]
 pub(crate) fn read_log_chunk(path: &Path, offset: u64, max_bytes: u64) -> std::io::Result<LogChunk> {
     let mut f = File::open(path)?;
