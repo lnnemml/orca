@@ -789,7 +789,8 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
    - **A job is remote iff its coordinates are non-NULL.** Dispatch (`enum Backend`) keys on the
      coordinates, never on `backend_id`. Remote jobs keep `Queued`/`Running` in `jobs.status`
      (Anton); **every local-only query filters `remote_host IS NULL`** — today exactly
-     `try_start_next` (`local_backend.rs:350`) and `reconcile_on_startup` (`:644`).
+     `next_local_queued_job` (used by `try_start_next`) and `reconcile_on_startup`, both in
+     `local_backend.rs`.
    - The remote job dir is `<remote_scratch_dir>/jobs/<job_id>`. Before any ssh it is checked against
      the path rule of (l) detail 4 (the root as the connection test stamped it). On the server,
      the submit call asserts `realpath <job> == <job>` and `realpath <job>/.. == <root>/jobs` (l
@@ -887,7 +888,9 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
          running on the server);
       4. otherwise → **"not on the server"**.
       A socket **`Error`** (a failed `tsp -l`) hands the job to the classifier (row 10
-      `Indeterminate`), never to "not on the server" (round 4 LOW-4).
+      `Indeterminate`), never to "not on the server" (round 4 LOW-4). It is checked **before**
+      `.submitting`: an unreadable queue may hold the job, so "submit interrupted" (withdraw-only) is
+      not claimed on missing evidence.
       "Not on the server" offers **retry** (3.2–3.3) and **withdraw** (item 2); "submit interrupted"
       offers **withdraw** only, never retry in 5.3. A withdraw's `.cancelled` moves the job to rule 2,
       so a lost withdraw reply is not a dead end. The collector is never run on a missing dir.
@@ -934,7 +937,9 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
      upload is a no-op (measured). Whether a partial multi-file upload leaves the earlier files
      complete under their final names is **inference** (only a single-file drop was measured) — the
      set-and-hash post-condition of item 3.3 makes that irrelevant.
-   - **Down: never `--partial`.** With it an interrupted transfer leaves the half file under its
+   - **Down: never `--partial`; always `--checksum`** (Anton, 5.3 Part A1: a fetch retried after a
+     hash mismatch must not skip a corrupted local file with the same size and mtime — mirror of the
+     upload). With `--partial` an interrupted transfer leaves the half file under its
      **final name** (rc 12, measured). Without it, a killed ssh child left nothing (single file,
      measured; a real network drop is not measured).
    - **The download set has one source** (rounds 1 M1, 2 MED-4): one `pub const` list of glob

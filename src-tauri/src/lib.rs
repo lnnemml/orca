@@ -1,4 +1,5 @@
 mod anthropic;
+mod artifacts;
 mod commands;
 // The connection test's transport, output parser and verdict (unit 5.1 Part B, Part A: pure and
 // tested). Its production caller — the Tauri command that runs `ssh <host> bash -s` — is the

@@ -100,7 +100,16 @@ use crate::error::AppError;
 ///   existing rows backfill to 1. `availability_window TEXT NULL`: `HH:MM-HH:MM` in the
 ///   laptop's local time, validated on write (`models::server_profile::validate_window`); NULL = no window.
 ///   Guarded ALTERs (column_exists), like v10/v11/v15.
-const SCHEMA_VERSION: i64 = 19;
+/// - v20: the job coordinates of a remote job (Phase 5 unit 5.3, ADR-024 o item 1 / n 6b):
+///   `jobs.remote_host`, `jobs.remote_job_dir` (absolute, `<root>/jobs/<job_id>`) and
+///   `jobs.remote_socket`, nullable TEXT, written once at submit and never rewritten from the
+///   profile. **A job is remote iff its coordinates are non-NULL** ([`Job::is_remote`]); every
+///   local-only query filters `remote_host IS NULL`. A CHECK on the last column keeps the three
+///   all-NULL or all-set, so `remote_host IS NULL` and "no coordinates" can never disagree.
+///   Existing rows stay local (all NULL). Guarded ALTERs (column_exists).
+///
+/// [`Job::is_remote`]: crate::models::job::Job::is_remote
+const SCHEMA_VERSION: i64 = 20;
 
 /// Open (creating if needed) `orcastudio.db` under `data_dir` and migrate it to
 /// the current schema.
@@ -474,6 +483,32 @@ fn migrate(conn: &Connection) -> Result<(), AppError> {
             }
         }
         version = 19;
+    }
+
+    // --- v19 -> v20: a remote job's coordinates (ADR-024 o item 1, n 6b). Written once at
+    // submit, before any ssh, and never rewritten from the profile: reconcile, cancel and fetch
+    // use these, never the profile's current host/root. A job is remote iff they are non-NULL
+    // (`Job::is_remote`), never by `backend_id`. The CHECK rides on the last column (an ADD
+    // COLUMN may carry a CHECK naming earlier columns; SQLite tests it against existing rows,
+    // which are all NULL here) and keeps the three all-NULL or all-set, so the local-only
+    // filter `remote_host IS NULL` is exactly "has no coordinates". Guarded like v19. ---
+    if version < 20 {
+        if column_exists(conn, "jobs", "id")? {
+            if !column_exists(conn, "jobs", "remote_host")? {
+                conn.execute_batch("ALTER TABLE jobs ADD COLUMN remote_host TEXT;")?;
+            }
+            if !column_exists(conn, "jobs", "remote_job_dir")? {
+                conn.execute_batch("ALTER TABLE jobs ADD COLUMN remote_job_dir TEXT;")?;
+            }
+            if !column_exists(conn, "jobs", "remote_socket")? {
+                conn.execute_batch(
+                    "ALTER TABLE jobs ADD COLUMN remote_socket TEXT CHECK ( \
+                         (remote_host IS NULL) = (remote_job_dir IS NULL) \
+                         AND (remote_host IS NULL) = (remote_socket IS NULL));",
+                )?;
+            }
+        }
+        version = 20;
     }
 
     // Persist the resulting version so subsequent runs skip completed steps.
@@ -1416,6 +1451,119 @@ mod tests {
             .is_err());
         drop(conn);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A v19 database holding one local job and one profile — the jobs columns as a real v19
+    /// database has them (every arm up to v19 applied by `migrate` itself).
+    fn v19_db_with_a_job() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO settings (key, value) VALUES ('schema_version', '1');",
+        )
+        .unwrap();
+        // Bring a fresh DB to v19 by running the real arms, then pin the version back so the
+        // v20 arm is what runs next.
+        migrate(&conn).unwrap();
+        conn.execute_batch(
+            "UPDATE settings SET value = '19' WHERE key = 'schema_version';",
+        )
+        .unwrap();
+        for col in ["remote_socket", "remote_job_dir", "remote_host"] {
+            conn.execute_batch(&format!("ALTER TABLE jobs DROP COLUMN {col};")).unwrap();
+        }
+        conn.execute_batch(
+            "INSERT INTO jobs (id, title, input_content, status, energy)
+                VALUES ('j1', 'water opt', '! r2SCAN-3c Opt', 'running', -76.42);",
+        )
+        .unwrap();
+        assert!(!column_exists(&conn, "jobs", "remote_host").unwrap());
+        conn
+    }
+
+    #[test]
+    fn migrate_v19_to_v20_adds_null_coordinates_and_keeps_the_job() {
+        let conn = v19_db_with_a_job();
+        migrate(&conn).expect("v19 -> v20");
+        assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
+
+        let (title, status, host, dir, socket): (String, String, Option<String>, Option<String>, Option<String>) =
+            conn.query_row(
+                "SELECT title, status, remote_host, remote_job_dir, remote_socket FROM jobs WHERE id = 'j1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap();
+        assert_eq!((title.as_str(), status.as_str()), ("water opt", "running"));
+        assert_eq!((host, dir, socket), (None, None, None), "an existing job stays local");
+
+        migrate(&conn).expect("v20 -> v20 no-op");
+        assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
+    }
+
+    // NEGATIVE CONTROL (bites): the CHECK is what makes `remote_host IS NULL` mean "no
+    // coordinates". Without it a half-written row (host set, dir NULL) would pass the local-only
+    // filter one way and `Job::is_remote` another; these inserts go through and the test is red.
+    #[test]
+    fn migrate_v20_check_rejects_partial_coordinates() {
+        let conn = v19_db_with_a_job();
+        migrate(&conn).expect("v19 -> v20");
+        let insert = |id: &str, host: Option<&str>, dir: Option<&str>, sock: Option<&str>| {
+            conn.execute(
+                "INSERT INTO jobs (id, title, input_content, status, remote_host, remote_job_dir, remote_socket)
+                 VALUES (?1, 't', '! SP', 'queued', ?2, ?3, ?4)",
+                rusqlite::params![id, host, dir, sock],
+            )
+        };
+        let (h, d, s) = (Some("uni"), Some("/r/jobs/x"), Some("/r/tsp/slot0.sock"));
+        for (id, host, dir, sock) in [
+            ("p1", h, None, None),
+            ("p2", None, d, None),
+            ("p3", None, None, s),
+            ("p4", h, d, None),
+            ("p5", h, None, s),
+            ("p6", None, d, s),
+        ] {
+            assert!(insert(id, host, dir, sock).is_err(), "{id}: partial coordinates must be rejected");
+        }
+        insert("full", h, d, s).expect("all three set is a remote job");
+        insert("none", None, None, None).expect("all three NULL is a local job");
+        assert!(
+            conn.execute("UPDATE jobs SET remote_socket = NULL WHERE id = 'full'", []).is_err(),
+            "an UPDATE that leaves a partial row is rejected too"
+        );
+    }
+
+    /// The migration on a copy of a real v19 database (rule #9 on the one place a migration can
+    /// lose data). Run by hand: copy the user's DB into a scratch dir first — this test migrates
+    /// the file it is given — and pass its path:
+    /// `ORCASTUDIO_V19_DB_COPY=/scratch/orcastudio.db cargo test real_v19_db_copy -- --ignored`.
+    #[test]
+    #[ignore = "needs ORCASTUDIO_V19_DB_COPY = a scratch copy of a real v19 orcastudio.db"]
+    fn real_v19_db_copy_migrates_to_v20_without_touching_jobs() {
+        let Ok(path) = std::env::var("ORCASTUDIO_V19_DB_COPY") else {
+            panic!("set ORCASTUDIO_V19_DB_COPY to a scratch copy of a v19 database");
+        };
+        let conn = Connection::open(&path).unwrap();
+        assert_eq!(current_version(&conn).unwrap(), 19, "the copy must be a v19 database");
+        let snapshot = |conn: &Connection| -> Vec<(String, String, Option<String>, Option<f64>)> {
+            let mut stmt = conn
+                .prepare("SELECT id, status, job_dir, energy FROM jobs ORDER BY id")
+                .unwrap();
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect()
+        };
+        let before = snapshot(&conn);
+        migrate(&conn).expect("v19 -> v20 on the real copy");
+        assert_eq!(current_version(&conn).unwrap(), 20);
+        assert_eq!(snapshot(&conn), before, "no job row changed");
+        let remote: i64 = conn
+            .query_row("SELECT COUNT(*) FROM jobs WHERE remote_host IS NOT NULL", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(remote, 0, "every existing job stays local");
+        eprintln!("migrated {} jobs", before.len());
     }
 
     fn job_still_exists(conn: &Connection, id: &str) -> bool {

@@ -26,12 +26,25 @@ fn cancel(&self, h: &JobHandle) -> Result<()>;
 
 - **`JobHandle(pub String)`** — a backend-opaque reference wrapping the job id (the stable key both
   backends state-key on: the DB row locally, the remote scratch dir over SSH).
-- **`LogChunk { offset: u64, data: String }`** — one incremental log slice; `offset` is the **new**
-  byte offset *after* `data`, fed back on the next poll so reads resume where they stopped (and
-  survive an app restart once persisted — ADR-003).
-- **`FetchPolicy { include_gbw: bool }`** — the shared artifact-pattern list always (ADR-024 o6, wired in 5.3); the large `.gbw` is opt-in.
-  **Degenerate for local** (everything is already on disk); it exists now because it shapes
-  `SshBackend` (ADR-023).
+- **`LogChunk { offset: u64, bytes: Vec<u8>, reset: bool }`** — one incremental log slice of **raw
+  bytes**; `offset` is the **new** byte offset *after* `bytes`, fed back on the next poll. Bytes are
+  never decoded at the transport: a chunk boundary can fall inside a multi-byte UTF-8 character
+  (measured, `orca/remote-sync-probe.md`). `reset` means the log is now **shorter than the requested
+  offset** (replaced or truncated): `offset` is 0, `bytes` empty, and the consumer drops its carry and
+  live state and reads again from 0 (ADR-024 o item 7). An absent log is `LogChunk::unchanged(offset)`,
+  not an error.
+- **`plan_log_read(size, offset, cap) -> LogRead`** — the one rule both backends follow: `size < offset`
+  ⇒ `Reset`, else `Range { start: offset, len: min(cap, size − offset) }`. The local read uses it to
+  decide what to read; the remote reply parser uses it as its post-condition.
+- **`LineAssembler`** — the consumer side: keeps the bytes after the last `\n` as a carry and decodes
+  only complete lines (a trailing `\r` dropped, as `BufRead::lines`), so a split character is decoded
+  whole and no byte is lost or repeated across polls; a `reset` chunk drops the carry; `take_partial`
+  returns an unterminated last line. The carry is bounded (`MAX_LINE_CARRY`, 1 MiB): past it the valid
+  UTF-8 prefix is emitted. Its caller is the remote log poller (5.3 Part B); the local live log is
+  still the push `job:log` event.
+- **`FetchPolicy { include_gbw: bool }`** — over SSH every fetch brings down the shared artifact list
+  (below) plus `stderr.log`, the markers and `.tsp-out/`; the large `.gbw` is the opt-in.
+  **Degenerate for local** (everything is already on disk).
 
 **`poll_log` is the offset-pull name.** The ROADMAP's `stream_log` wording folds into `poll_log`:
 there is one log method and it is pull-based (offset-in, chunk-out), per ADR-003's "pull, not push"
@@ -67,19 +80,20 @@ per item, each with a comment naming where it gets routed (the push→pull flip 
 | `fetch_results` | no-op (`Ok(())`) — artifacts already on disk; policy only bites over SSH |
 | `cancel` | `local_backend::cancel(&app, &id)` |
 
-`read_log_chunk(path, offset, max_bytes) -> (String, u64)` is the additive pull read: seeks to
-`offset`, reads at most `max_bytes` forward, returns the slice + the new offset; at/past EOF returns
-empty data with the offset clamped to the file length. It is the mirror of `read_tail`'s seek-from-
-end and never loads the whole log (domain rule #5). Unit-tested — sequential chunks reassemble the
-original byte-exact, EOF holds the offset, the cap is respected — with a **negative control** (a
-wrong-offset reader) proven to make the reassembly gate go red.
+`read_log_chunk(path, offset, max_bytes) -> LogChunk` is the pull read: it plans with `plan_log_read`,
+seeks to `offset`, reads at most `max_bytes` (`POLL_LOG_MAX_BYTES`, 256 KiB, shared with the remote
+poll) and returns raw bytes + the new offset; at EOF the offset holds, past EOF it is a `reset`. It is
+the mirror of `read_tail`'s seek-from-end and never loads the whole log (domain rule #5). Unit-tested —
+sequential chunks (with Å/ü/→) reassemble the original byte-exact, EOF holds the offset, past EOF
+resets, the cap is respected — with a **negative control** (a wrong-offset reader) proven to make the
+reassembly gate go red.
 
 **Dispatch is `enum`-deferred.** There is one concrete backend and no `enum` / `dyn` dispatch layer.
 Commands dispatch through the trait on a **concrete** `LocalBackend` — no runtime backend selection
-yet. The `enum Backend { Local(LocalBackend), Ssh(SshBackend) }` static-dispatch selector and the
-`jobs.backend_id` column land in the `SshBackend` unit (ADR-023), where a second implementation
-forces the still-maturing `poll_log(offset)` / `fetch_results(policy)` shapes and a `match` on
-`backend_id` becomes the "Run on:" selector. See `wiki/log.md` (unit 5.0 Part A / Part B).
+yet. The `enum Backend { Local(LocalBackend), Ssh(SshBackend) }` static-dispatch selector lands in
+5.3 Part B. It keys on the job's **coordinates** (`Job::is_remote`: `remote_host` non-NULL, schema
+v20), never on `backend_id`, which only names the profile and is nulled when a profile is deleted
+(ADR-024 o item 1). See `wiki/log.md` (unit 5.0 Part A / Part B).
 
 ## Where the code lives
 
@@ -149,9 +163,12 @@ end-to-end `real_orca_water_single_point_completes` that runs a real water singl
 
 ## Sequential queue — in SQLite, not in memory
 
-- **No worker thread / channel.** The queue *is* the set of jobs with `status='queued'`.
-  `try_start_next(app)` picks the oldest queued job (`ORDER BY created_at ASC`) and starts it if the
-  slot is free and the queue isn't paused. Called after enqueue, after each job finishes
+- **No worker thread / channel.** The local queue *is* the set of **local** jobs with
+  `status='queued'`. `try_start_next(app)` picks the oldest one (`next_local_queued_job`:
+  `status = 'queued' AND remote_host IS NULL ORDER BY created_at ASC`) and starts it if the
+  slot is free and the queue isn't paused. A remote job is also `queued` while it waits in its
+  server's `tsp` queue, so the `remote_host IS NULL` filter is what keeps the laptop from running it
+  (ADR-024 o item 1; a test with the filter removed goes red). Called after enqueue, after each job finishes
   (`drive_job`), and on resume. This survives an app restart for free.
 - `JobRunner` = `data_dir` + `Mutex<Option<RunningJob>>` (the single slot) + an `AtomicBool` pause
   flag. `RunningJob { job_id, pgid, cancelled }`. Concurrency = 1 (domain rule #4).
@@ -201,7 +218,8 @@ directory. *(Changed in `[2026-07-28] fix: MPI ranks escape process group on can
 ## Startup reconciliation
 
 `reconcile_on_startup(&Connection)` (called in `lib.rs` setup before the connection is managed):
-every job still `running` in the DB is re-checked — if its dir shows a finished ORCA run
+every **local** job still `running` in the DB (`remote_host IS NULL`; a remote job keeps computing on
+its server while the app is closed and is decided only by the server's facts) is re-checked — if its dir shows a finished ORCA run
 (`.exit_code` + banner) it is finalized (with results); otherwise it is marked `failed` with "app
 was closed while this job was running". `queued` jobs are left for the startup `try_start_next` to
 resume. This closes the Phase 1 gap where a crashed `running` job stayed `running`.
@@ -233,8 +251,34 @@ scripts + classifier (done), 5.3 wiring, 5.4 cancel/reconnect, 5.5 preflight.
 - **Status:** a pure classifier over a raw-fact snapshot from the server (ADR-024 l, precedence
   table). The server filesystem is the source of truth (ADR-024 c). The classifier itself exists
   (pure, unwired): [remote-jobs.md](remote-jobs.md).
-- **Poll / fetch:** byte-offset `poll_log` and selective rsync down per `FetchPolicy` (the shared artifact-pattern
-  set, ADR-024 o6; gbw opt-in), wired in 5.3.
+- **Poll / fetch:** byte-offset `poll_log` and selective rsync down per `FetchPolicy`. The pure parts
+  exist (`remote/poll.rs`, `remote/sync.rs`, [remote-jobs.md](remote-jobs.md)); the ssh calls are wired
+  in 5.3 Part B.
+
+## The shared artifact list (`src-tauri/src/artifacts.rs`, ADR-024 o item 6)
+
+`ARTIFACT_PATTERNS` is the **one** list of a job's result artifacts, as leaf-name globs (`input.inp`,
+`output.out`, `input.xyz`, `.exit_code`, `*.property.txt`, `*.hess`, `*_trj.xyz`, `*.NEB.log`,
+`*.final.interp`, `*_converged.xyz`, `*.relaxscan*.dat`, `input.[0-9]*.xyz`, `*.finalensemble.xyz`). `is_artifact(name)` matches
+a name against it with rsync's wildcard meaning (`glob_match`: `*` and `?` stop at `/`, `[a-z]`
+classes). Two consumers derive from it and nothing else:
+- the curated group export, `export_group::curated_match` ([group-export.md](group-export.md));
+- the remote download filter, `remote::sync::download_filter_args(policy)`: one `--include=` per
+  pattern, then `stderr.log` and the markers (`.exit_code`, `.started`, `.enqueued`, `.cancelled`,
+  `.submitting`), `--include=.tsp-out/` **and** `--include=.tsp-out/**`, `--include=*.gbw` only when
+  `FetchPolicy.include_gbw`, and `--exclude=*` last.
+
+Gates, run against the **real local rsync** (3.2.7) dir to dir: a fixture with example names of every
+pattern plus negatives (`input.gbw`, `input.tmp`, `input.densities`, `.tmp/x`, `sub/deep.xyz`, an rsync
+temp name …) must come down exactly — nothing missing, nothing extra — under both policies; dropping
+**any one** filter rule, or `*.gbw` without the opt-in, turns it red (permanent negative-control
+tests). Parity: for every leaf fixture name, `curated_match` equals "came down", minus the download-only
+extras; a rule added only to the curated side turns it red. `download_selects(path, policy)` — the
+Rust mirror of the filter, for the local side of the download post-condition — is checked against the
+same rsync runs. A reader inventory test asserts every file a reader opens comes down, with no
+allowed gap (the GOAT `input.finalensemble.xyz` included). The download argv is `rsync -a --checksum
+<filter> -e '…'`, so a retried fetch re-sends a locally corrupted file whose size and mtime match. The class syntax `[0-9]` in an
+rsync filter is confirmed by these runs (not by the 5.3a probe, which used only `*`).
 
 ## Invariants (both backends)
 

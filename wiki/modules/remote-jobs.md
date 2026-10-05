@@ -6,8 +6,9 @@ decides the job's state from a **snapshot of raw facts** they collect, per
 server filesystem is the source of truth (ADR-024 c); the decision is made in Rust, never accepted
 from the server (rule #9).
 
-The Rust side does no I/O itself: no ssh, no file reads, no processes. The scripts are embedded
-bytes; nothing uploads or runs them yet. The module is registered in `lib.rs` under a scoped
+The Rust side does no remote I/O itself: no ssh, no processes. The scripts are embedded bytes;
+nothing uploads or runs them yet. The one exception is `sync.rs`, which lists and hashes the **local**
+job dir for the transfer post-conditions. The module is registered in `lib.rs` under a scoped
 `#[allow(dead_code)]` until units 5.3/5.4 call it.
 
 ## What exists
@@ -22,13 +23,94 @@ bytes; nothing uploads or runs them yet. The module is registered in `lib.rs` un
 | `classify.rs` | `classify`, `Outcome`, `FailReason`, `Classification`, `SnapshotError`; predicates `is_alive`, `is_our_wrapper`, `job_session`, `sid_reused` |
 | `scripts.rs` + `scripts/` | `WRAPPER`, `CANCEL`, `COLLECT` (embedded scripts) and `sha256_hex` |
 | `wire.rs` | `parse_snapshot` — the collector's output → `Snapshot`; `WireError` |
-| `ssh.rs` | `ssh_bash_argv` (`ssh -o BatchMode=yes -o ConnectTimeout=10 -- <host> bash -s`, host re-validated) and `CommandRunner`/`SystemRunner` (stdin and both streams on threads, 1 MiB cap, process group killed on timeout). Used by the 5.1 connection test (`modules/server-profiles.md`); meant for 5.3's submit too |
+| `ssh.rs` | `ssh_bash_argv` (`ssh -o BatchMode=yes -o ConnectTimeout=10 -- <host> bash -s`, host re-validated), `ssh_options` (the two `-o` options, shared with rsync's `-e`) and `CommandRunner`/`SystemRunner` (stdin and both streams on threads, 1 MiB cap, process group killed on timeout). Used by the 5.1 connection test (`modules/server-profiles.md`); meant for 5.3's submit too |
+| `sync.rs` | rsync argv (`upload_argv`, `download_argv`), the download filter `download_filter_args` and its Rust mirror `download_selects`, `list_dir`/`upload_expected`/`expected_values` (local file lists with sha256), `compare_download` (the download post-condition) |
+| `poll.rs` | `PollLogArgs`, `parse_poll_reply` → `LogChunk` with the length post-condition; `check_echo` (the n-6d echo check every 5.3 reply shares) |
+| `submit.rs` | `remote_job_dir`, `SubmitArgs`, `parse_submit_reply` → `SubmitReply`; `LabelFacts`, `label` → `Label` (the label rules) |
 | `race_model.rs` | test-only model of the d′ race (`.started`/`.cancelled`) |
 | `script_tests.rs` | test-only: the real scripts run on this machine (see Tests) |
 
 Rule #6 is shared with the local backend: `local_backend::has_normal_termination` (the one
 `ORCA TERMINATED NORMALLY` test, also used by `detect_completion`) over the last
 `local_backend::TAIL_BYTES` (5 KiB) of the snapshot's output tail.
+
+## A remote job in the database (schema v20)
+
+`jobs` carries the job's **coordinates**: `remote_host`, `remote_job_dir` (absolute,
+`<root>/jobs/<job_id>`) and `remote_socket`, nullable TEXT, written once at submit before any ssh and
+never rewritten from the profile (ADR-024 o item 1, n 6b). A CHECK on the last column keeps the three
+all-NULL or all-set. **A job is remote iff its coordinates are non-NULL**: `Job::is_remote()` is
+`remote_host.is_some()`, the same column every local-only query filters on (`remote_host IS NULL`) —
+today `local_backend::next_local_queued_job` (behind `try_start_next`) and `reconcile_on_startup`.
+`backend_id` never decides it. A remote job keeps `queued`/`running` in `jobs.status`.
+`submit::remote_job_dir(root, job_id)` builds the dir and checks it with `is_valid_path`; the job id
+must be one component.
+
+## Transfers (`sync.rs`, ADR-024 o items 3.2, 3.3.4, 6)
+
+- **Upload:** `rsync -a --checksum --mkpath -e 'ssh -o BatchMode=yes -o ConnectTimeout=10' <local>/
+  <host>:<remote>/`. **Download:** `rsync -a --checksum <filter> -e '…' <host>:<remote>/ <local>/` —
+  `--checksum` both ways, so a retry never trusts size+mtime over a wrong file (on the download, a
+  local file corrupted with its size and mtime intact would otherwise fail the hash post-condition on
+  every retry). Never `--partial`, never `--delete` (a test asserts it). The host is validated as for ssh, the remote dir by
+  `is_valid_path`, the local dir must be absolute.
+- **The download filter** comes from the shared artifact list (`crate::artifacts`), see
+  [execution-backends.md](execution-backends.md#the-shared-artifact-list-src-taurisrcartifactsrs-adr-024-o-item-6).
+- **Upload expected list:** `upload_expected(dir)` walks the local job dir and returns every file with its
+  sha256, sorted; it refuses more than 1000 files (`MAX_UPLOAD_FILES`), a name outside the path rule's
+  characters, or anything that is not a regular file. `expected_values` turns it into the submit call's
+  two NUL values per file (name, sha256).
+- **Download post-condition:** `compare_download(local, server)` — both lists of `FileDigest { name,
+  digest }`, `.tsp-out/` left out on both sides — names the **missing**, **extra** and **differing**
+  files. The local side is `list_dir(dir, download_selects)`, the filter-selected subset. A symlink is
+  listed by its target (`Digest::Symlink`), since the `.submitting` claim is a dangling symlink with
+  nothing to hash.
+
+## `poll_log` over ssh (`poll.rs`, ADR-024 o item 7)
+
+The values sent (NUL list): the job dir, the offset, the cap (`POLL_LOG_MAX_BYTES`, 256 KiB — a
+compile-time assert keeps it plus a 64 KiB framing margin under the runner's 1 MiB output cap). The
+reply, in the 5.2 record format:
+
+```text
+orcastudio-log 1
+argc 3
+arg <len>      × 3, each value verbatim
+size <n>|-     output.out's size, or - when it does not exist
+bytes <len>    then the raw bytes and \n
+end
+```
+
+`parse_poll_reply` checks the echo, then the post-condition through `plan_log_read`: with a size,
+`len == min(cap, size − offset)` when `size ≥ offset`, no bytes and a `reset` when `size < offset`;
+with no file, no bytes and the offset unchanged. Anything else is `PollError::PostCondition`, never a
+plausible chunk.
+
+## Submit (`submit.rs`, ADR-024 o item 3)
+
+`SubmitArgs::new(root, job_id, socket, mask, orca_path, files)` checks every value before anything
+leaves the laptop (the derived job dir, the socket's path rule and ≤ 100-byte bound, the mask syntax,
+an absolute ORCA path, files with a sha256). Values: job dir, root, socket, mask, ORCA path, then name +
+sha256 per file. The reply:
+
+```text
+orcastudio-submit 1
+argc <n>
+arg <len>                  × n, each value verbatim
+refused <len>              exactly one outcome: reason bytes (nothing claimed)
+enqueued <id>              decimal tsp id (.enqueued published)
+failed-after-claim <len>   reason bytes (.submitting stays)
+end
+```
+
+`parse_submit_reply` → `SubmitReply::{Refused, Enqueued, FailedAfterClaim}`; a broken reply or an
+`error` record is an error, never an outcome.
+
+**Labels** (o item 3.4) — `label(&LabelFacts) -> Label` over the read-only label call's facts (dir
+exists, markers present, a row holding the job dir on the recorded socket, a socket `Error`), checked
+in this order: no dir → `NotOnServer`; any of `.started`, `.exit_code`, `.cancelled`, `.enqueued`, or a
+row → `Classifier`; a socket `Error` → `Classifier`; `.submitting` → `SubmitInterrupted`; otherwise →
+`NotOnServer`.
 
 ## The `.started` format
 
@@ -225,7 +307,7 @@ action this pass, like `Indeterminate`.
 
 ## Tests
 
-110 tests in the module.
+152 tests in the module.
 - **Pure (classifier, parsers, wire):** strict-parser garbage cases, the recorded probe fixtures (P2
   cmdline, P4 `tsp -l`, 5.2b `/proc/net/unix` line, 5.2c stat lines including `w q) x.sh` and the
   zombie), at least one snapshot per table row, the d′ race model over all 6 interleavings, and the
@@ -265,9 +347,12 @@ Negative controls (each guard broken, the named tests red, restored): listed per
 
 ## Not built yet
 
-- Upload of the scripts, the NUL-separated stdin argument transport for the job scripts (the 5.1
-  connection test already uses it), submit and `.enqueued`, the
-  slot check on submit, the socket-path post-condition, the job-dir `realpath` assertion — unit 5.3.
+- The 5.3 scripts (submit, label call, poll, the server-side listing for the download post-condition)
+  and their upload, `.enqueued`, the slot check on submit, the socket-path post-condition, the job-dir
+  `realpath` assertion — unit 5.3 A2; the ssh/rsync calls, the poller, the commands and the UI — 5.3
+  Part B.
+- The Full-mode export skip of rsync temp names (`.*.??????`, ADR-024 o6 residual) — 5.3 Part B,
+  with the first real download.
 - **The uni measurements behind these scripts are done** (probe 5.3, 2026-10-03,
   `architecture/task-spooler-uni-probe.md`):
   - every ENOENT message the readers match is **identical** on uni (bash 5.2.21, coreutils 9.4,

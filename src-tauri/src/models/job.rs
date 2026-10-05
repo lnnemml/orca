@@ -114,6 +114,14 @@ pub struct Job {
     /// `ON DELETE SET NULL` is enforced) — the job survives, dropping back to local.
     /// Orthogonal to `pathway_id` / `group_id` / the re-opt links.
     pub backend_id: Option<String>,
+    /// The remote job's coordinates (schema v20, ADR-024 o item 1 / n 6b): the profile host it was
+    /// submitted to, its absolute job dir (`<root>/jobs/<job_id>`) and its `tsp` slot socket.
+    /// Written once at submit, before any ssh, and never rewritten from the profile — reconcile,
+    /// cancel and fetch use these, never the profile's current values. All three are `None` for a
+    /// local job; the database keeps them all-set or all-NULL (a CHECK). See [`Job::is_remote`].
+    pub remote_host: Option<String>,
+    pub remote_job_dir: Option<String>,
+    pub remote_socket: Option<String>,
 }
 
 impl Job {
@@ -121,7 +129,19 @@ impl Job {
     /// here is the contract [`Job::from_row`] relies on.
     pub const COLUMNS: &'static str = "id, title, input_content, status, job_dir, \
          energy, wall_time, error_message, created_at, started_at, completed_at, \
-         scene_json, scene_log_json, pathway_id, group_id, backend_id";
+         scene_json, scene_log_json, pathway_id, group_id, backend_id, \
+         remote_host, remote_job_dir, remote_socket";
+
+    /// Whether this job runs on a server. **A job is remote iff its coordinates are non-NULL**
+    /// (ADR-024 o item 1) — never decided by `backend_id`, which only names the profile and is
+    /// nulled when a profile is deleted. Keyed on `remote_host`, the same column every local-only
+    /// query filters on (`remote_host IS NULL`), so this predicate and that SQL cannot disagree;
+    /// the v20 CHECK keeps the other two coordinates set exactly when `remote_host` is.
+    // Its callers are 5.3 Part B's dispatch (`enum Backend`) and the cancel/delete refusals.
+    #[allow(dead_code)]
+    pub fn is_remote(&self) -> bool {
+        self.remote_host.is_some()
+    }
 
     /// Build a [`Job`] from a row selected in [`Job::COLUMNS`] order.
     pub fn from_row(row: &Row) -> rusqlite::Result<Job> {
@@ -151,6 +171,9 @@ impl Job {
             pathway_id: row.get(13)?,
             group_id: row.get(14)?,
             backend_id: row.get(15)?,
+            remote_host: row.get(16)?,
+            remote_job_dir: row.get(17)?,
+            remote_socket: row.get(18)?,
         })
     }
 }
@@ -172,7 +195,8 @@ mod tests {
                 wall_time REAL, error_message TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')), started_at TEXT,
                 completed_at TEXT, scene_json TEXT, scene_log_json TEXT,
-                pathway_id TEXT, group_id TEXT, backend_id TEXT
+                pathway_id TEXT, group_id TEXT, backend_id TEXT,
+                remote_host TEXT, remote_job_dir TEXT, remote_socket TEXT
             );",
         )
         .unwrap();
@@ -207,5 +231,29 @@ mod tests {
         );
         // Sanity that COLUMNS order is still coherent: an adjacent field survives too.
         assert_eq!(get(&conn, "local").title, "runs local");
+    }
+
+    /// `is_remote` follows the coordinates, never `backend_id`: a job whose profile was deleted
+    /// (`backend_id` nulled) but which has coordinates is still remote, and a job naming a profile
+    /// without coordinates (not yet submitted) is not.
+    #[test]
+    fn is_remote_follows_the_coordinates_not_backend_id() {
+        let conn = Connection::open_in_memory().unwrap();
+        setup(&conn);
+        conn.execute_batch(
+            "INSERT INTO jobs (id, title, input_content, status, remote_host, remote_job_dir, remote_socket) \
+                VALUES ('orphaned', 't', '! SP', 'running', 'uni', '/r/jobs/orphaned', '/r/tsp/slot0.sock');
+             INSERT INTO jobs (id, title, input_content, status, backend_id) \
+                VALUES ('draft', 't', '! SP', 'draft', 'profile-1');
+             INSERT INTO jobs (id, title, input_content, status) VALUES ('local', 't', '! SP', 'queued');",
+        )
+        .unwrap();
+        let orphaned = get(&conn, "orphaned");
+        assert!(orphaned.is_remote());
+        assert_eq!(orphaned.backend_id, None);
+        assert_eq!(orphaned.remote_job_dir.as_deref(), Some("/r/jobs/orphaned"));
+        assert_eq!(orphaned.remote_socket.as_deref(), Some("/r/tsp/slot0.sock"));
+        assert!(!get(&conn, "draft").is_remote(), "a profile without coordinates is not remote yet");
+        assert!(!get(&conn, "local").is_remote());
     }
 }

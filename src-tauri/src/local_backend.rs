@@ -29,6 +29,7 @@ use crate::commands::settings::DbState;
 use crate::convergence::{ConvergenceEvent, ConvergenceParser};
 use crate::cpu_presets::{CpuPreset, DEFAULT_PRESET_ID};
 use crate::error::AppError;
+use crate::execution_backend::{plan_log_read, LogChunk, LogRead};
 use crate::models::job::JobStatus;
 
 /// Flush the log batch to the UI when it reaches this many lines...
@@ -346,14 +347,7 @@ pub fn try_start_next(app: &AppHandle) {
                 Ok(c) => c,
                 Err(_) => return,
             };
-            conn.query_row(
-                "SELECT id FROM jobs WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1",
-                [],
-                |r| r.get::<_, String>(0),
-            )
-            .optional()
-            .ok()
-            .flatten()
+            next_local_queued_job(&conn).ok().flatten()
         };
         let Some(job_id) = next else {
             return;
@@ -377,6 +371,20 @@ pub fn try_start_next(app: &AppHandle) {
         emit_status(app, &job_id, JobStatus::Failed);
         try_start_next(app);
     }
+}
+
+/// The oldest `queued` job this machine should run. **Local jobs only** (`remote_host IS NULL`,
+/// ADR-024 o item 1): a remote job is `queued` in its server's `tsp` queue and must never be
+/// started on the laptop.
+pub(crate) fn next_local_queued_job(conn: &Connection) -> Result<Option<String>, AppError> {
+    Ok(conn
+        .query_row(
+            "SELECT id FROM jobs WHERE status = 'queued' AND remote_host IS NULL \
+             ORDER BY created_at ASC LIMIT 1",
+            [],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()?)
 }
 
 /// Prepare the dir, spawn ORCA (pinned per settings), mark running, and hand off
@@ -639,9 +647,15 @@ fn parse_results_after_completion(conn: &Connection, job_id: &str) -> JobStatus 
     }
 }
 
+/// Re-check every **local** job still `running` in the DB after a restart: finalize it from its
+/// dir's markers, or mark it failed. Remote jobs (`remote_host IS NOT NULL`) are skipped — they
+/// keep computing on their server while the app is closed, and only the server's own facts
+/// decide them (ADR-024 c, o item 1).
 pub fn reconcile_on_startup(conn: &Connection) {
     let stale: Vec<(String, Option<String>)> = {
-        let mut stmt = match conn.prepare("SELECT id, job_dir FROM jobs WHERE status = 'running'") {
+        let mut stmt = match conn.prepare(
+            "SELECT id, job_dir FROM jobs WHERE status = 'running' AND remote_host IS NULL",
+        ) {
             Ok(s) => s,
             Err(_) => return,
         };
@@ -1051,43 +1065,38 @@ pub(crate) fn read_tail(path: &Path, max_bytes: u64) -> std::io::Result<String> 
     Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
-/// Read a job log **forward** from `offset`, returning at most `max_bytes` and the
-/// new byte offset after the returned slice. The additive **pull** path for
-/// [`crate::execution_backend::ExecutionBackend::poll_log`] (ADR-003): the caller
-/// stores the returned offset and passes it back next poll, so reads resume exactly
-/// where they stopped and the whole file is never loaded (domain rule #5 — this
-/// seeks to `offset` and caps, the mirror of [`read_tail`]'s seek-from-end).
+/// Read a job log **forward** from `offset`, at most `max_bytes`, as a [`LogChunk`] whose
+/// `offset` is the new byte offset after the returned bytes. The **pull** path behind
+/// [`crate::execution_backend::ExecutionBackend::poll_log`] (ADR-003): the caller stores the
+/// returned offset and passes it back next poll, so reads resume exactly where they stopped and
+/// the whole file is never loaded (domain rule #5 — this seeks to `offset` and caps, the mirror of
+/// [`read_tail`]'s seek-from-end).
 ///
-/// Bytes are decoded lossily as UTF-8. Contract, exercised by the unit tests:
+/// The bytes are raw (a cap can split a UTF-8 character; the consumer decodes complete lines).
+/// What to read is [`plan_log_read`], the rule the remote backend shares. Contract, exercised by
+/// the unit tests:
 ///   - reading from 0, then from each returned offset, reassembles the exact file;
-///   - at (or past) EOF, `data` is empty and the offset is returned unchanged;
-///   - the returned offset never exceeds the file length, so the cap can never make
-///     the caller skip bytes.
+///   - at EOF the bytes are empty and the offset is returned unchanged;
+///   - past EOF (the file shrank below the offset) the chunk is a `reset`: offset 0, no bytes;
+///   - the returned offset never exceeds the file length, so the cap can never make the caller
+///     skip bytes.
 ///
-/// `pub(crate)` so `execution_backend` can delegate to it without duplicating the
-/// seek logic.
+/// `pub(crate)` so `execution_backend` can delegate to it without duplicating the seek logic.
 // Unused until unit 5.0 Part B wires `poll_log` through the trait; the allow goes
 // with that wiring. Its tests already exercise it now.
 #[allow(dead_code)]
-pub(crate) fn read_log_chunk(
-    path: &Path,
-    offset: u64,
-    max_bytes: u64,
-) -> std::io::Result<(String, u64)> {
+pub(crate) fn read_log_chunk(path: &Path, offset: u64, max_bytes: u64) -> std::io::Result<LogChunk> {
     let mut f = File::open(path)?;
-    let len = f.metadata()?.len();
-    // At or past EOF: nothing new. Clamp the offset to the length so a caller that
-    // over-shot (e.g. the file was truncated/rotated) doesn't keep a stale offset
-    // beyond the end.
-    if offset >= len {
-        return Ok((String::new(), len));
+    let size = f.metadata()?.len();
+    match plan_log_read(size, offset, max_bytes) {
+        LogRead::Reset => Ok(LogChunk::reset()),
+        LogRead::Range { start, len } => {
+            f.seek(SeekFrom::Start(start))?;
+            let mut bytes = vec![0u8; len as usize];
+            f.read_exact(&mut bytes)?;
+            Ok(LogChunk { offset: start + len, bytes, reset: false })
+        }
     }
-    f.seek(SeekFrom::Start(offset))?;
-    let to_read = (len - offset).min(max_bytes);
-    let mut buf = vec![0u8; to_read as usize];
-    f.read_exact(&mut buf)?;
-    let new_offset = offset + to_read;
-    Ok((String::from_utf8_lossy(&buf).into_owned(), new_offset))
 }
 
 /// The last `n` non-empty-trimmed lines of `text`, joined with newlines.
@@ -1549,6 +1558,65 @@ mod tests {
         std::fs::remove_dir_all(&data).ok();
     }
 
+    // --- remote jobs never leak into the local queue (ADR-024 o item 1) ---
+
+    fn migrated_db(tag: &str) -> (Connection, PathBuf) {
+        let dir = scratch(tag);
+        let conn = crate::db::init_db(&dir).unwrap();
+        (conn, dir)
+    }
+
+    fn insert_job(conn: &Connection, id: &str, status: &str, created_at: &str, remote: bool) {
+        let (host, dir, sock) = if remote {
+            (Some("uni"), Some(format!("/home/anton/.orcastudio/jobs/{id}")), Some("/home/anton/.orcastudio/tsp/slot0.sock"))
+        } else {
+            (None, None, None)
+        };
+        conn.execute(
+            "INSERT INTO jobs (id, title, input_content, status, created_at, remote_host, remote_job_dir, remote_socket)
+             VALUES (?1, ?1, '! SP', ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![id, status, created_at, host, dir, sock],
+        )
+        .unwrap();
+    }
+
+    // NEGATIVE CONTROL: drop `AND remote_host IS NULL` from `next_local_queued_job` and the older
+    // remote job is picked — the laptop would run a job that belongs to a server queue.
+    #[test]
+    fn next_local_queued_job_never_picks_a_remote_job() {
+        let (conn, dir) = migrated_db("queue-remote");
+        insert_job(&conn, "remote-old", "queued", "2026-10-01 08:00:00", true);
+        assert_eq!(next_local_queued_job(&conn).unwrap(), None, "a remote queued job is not started");
+        insert_job(&conn, "local-new", "queued", "2026-10-02 08:00:00", false);
+        assert_eq!(next_local_queued_job(&conn).unwrap().as_deref(), Some("local-new"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // NEGATIVE CONTROL: drop `AND remote_host IS NULL` from `reconcile_on_startup` and the remote
+    // job is marked failed ("app was closed while this job was running") while it still computes.
+    #[test]
+    fn reconcile_on_startup_leaves_a_remote_running_job_unchanged() {
+        let (conn, dir) = migrated_db("reconcile-remote");
+        insert_job(&conn, "remote", "running", "2026-10-01 08:00:00", true);
+        insert_job(&conn, "local", "running", "2026-10-01 08:00:00", false);
+        let row = |id: &str| -> (String, Option<String>, Option<String>) {
+            conn.query_row(
+                "SELECT status, error_message, completed_at FROM jobs WHERE id = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap()
+        };
+        let before = row("remote");
+
+        reconcile_on_startup(&conn);
+
+        assert_eq!(row("remote"), before, "the remote row is untouched");
+        assert_eq!(row("remote").0, "running");
+        assert_eq!(row("local").0, "failed", "the local stale row is still reconciled");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     // --- read_log_chunk: the additive offset-pull path behind poll_log (ADR-003) ---
 
     /// A deliberately corrupted chunk reader used only as the **negative control**
@@ -1557,41 +1625,38 @@ mod tests {
     /// must make it go RED — proving the gate distinguishes a correct offset read
     /// from a broken one, not merely that the correct one passes (CLAUDE.md: a gate
     /// whose ability to fail is not demonstrated is green for an unknown reason).
-    fn read_log_chunk_wrong_offset(
-        path: &Path,
-        offset: u64,
-        max_bytes: u64,
-    ) -> std::io::Result<(String, u64)> {
+    fn read_log_chunk_wrong_offset(path: &Path, offset: u64, max_bytes: u64) -> std::io::Result<LogChunk> {
         let mut f = File::open(path)?;
         let len = f.metadata()?.len();
         if offset >= len {
-            return Ok((String::new(), len));
+            return Ok(LogChunk::unchanged(len));
         }
         // The bug: skip the byte AT `offset`.
         let start = (offset + 1).min(len);
         f.seek(SeekFrom::Start(start))?;
         let to_read = (len - start).min(max_bytes);
-        let mut buf = vec![0u8; to_read as usize];
-        f.read_exact(&mut buf)?;
-        Ok((String::from_utf8_lossy(&buf).into_owned(), start + to_read))
+        let mut bytes = vec![0u8; to_read as usize];
+        f.read_exact(&mut bytes)?;
+        Ok(LogChunk { offset: start + to_read, bytes, reset: false })
     }
 
-    /// Drive a chunk reader to EOF from offset 0, concatenating every chunk. Shared
+    /// Drive a chunk reader to EOF from offset 0, concatenating every chunk's bytes. Shared
     /// by the real test and the negative control so the ONLY difference between them
     /// is which reader is used.
-    fn reassemble_via<F>(path: &Path, max_bytes: u64, reader: F) -> String
+    fn reassemble_via<F>(path: &Path, max_bytes: u64, reader: F) -> Vec<u8>
     where
-        F: Fn(&Path, u64, u64) -> std::io::Result<(String, u64)>,
+        F: Fn(&Path, u64, u64) -> std::io::Result<LogChunk>,
     {
-        let mut acc = String::new();
+        let mut acc = Vec::new();
         let mut offset = 0u64;
         loop {
-            let (data, new_offset) = reader(path, offset, max_bytes).unwrap();
-            if new_offset == offset {
+            let chunk = reader(path, offset, max_bytes).unwrap();
+            assert!(!chunk.reset, "a growing-only file never resets");
+            if chunk.offset == offset {
                 break; // no progress → at EOF
             }
-            acc.push_str(&data);
-            offset = new_offset;
+            acc.extend_from_slice(&chunk.bytes);
+            offset = chunk.offset;
         }
         acc
     }
@@ -1600,13 +1665,14 @@ mod tests {
     fn read_log_chunk_sequential_chunks_reassemble_the_original() {
         let data = scratch("chunk-reassemble");
         let path = data.join("output.out");
-        // A body larger than the tiny cap below so several chunks are needed.
-        let body: String = (1..=500).map(|i| format!("line {i}\n")).collect();
+        // A body larger than the tiny cap below so several chunks are needed, with multi-byte
+        // characters so some chunk boundaries fall inside one.
+        let body: String = (1..=500).map(|i| format!("line {i} Å ü →\n")).collect();
         std::fs::write(&path, &body).unwrap();
 
         // Small cap forces multiple round-trips; the offset must stitch them exactly.
         let reassembled = reassemble_via(&path, 64, read_log_chunk);
-        assert_eq!(reassembled, body, "sequential chunk reads must be byte-exact");
+        assert_eq!(reassembled, body.as_bytes(), "sequential chunk reads must be byte-exact");
 
         std::fs::remove_dir_all(&data).ok();
     }
@@ -1628,26 +1694,23 @@ mod tests {
         // this assert MUST fire (the test passes precisely because it panics here).
         // Cleanup can't run after a panic, so do it before the assertion.
         std::fs::remove_dir_all(&data).ok();
-        assert_eq!(reassembled, body, "corrupt reader unexpectedly reassembled the file");
+        assert_eq!(reassembled, body.as_bytes(), "corrupt reader unexpectedly reassembled the file");
     }
 
     #[test]
-    fn read_log_chunk_at_eof_returns_empty_and_holds_offset() {
+    fn read_log_chunk_at_eof_holds_the_offset_and_past_eof_resets() {
         let data = scratch("chunk-eof");
         let path = data.join("output.out");
         let body = "abc\ndef\n";
         std::fs::write(&path, body).unwrap();
         let len = body.len() as u64;
 
-        // Read exactly at EOF: empty data, offset clamped to len.
-        let (d, o) = read_log_chunk(&path, len, 1024).unwrap();
-        assert_eq!(d, "");
-        assert_eq!(o, len);
+        // Read exactly at EOF: no bytes, offset unchanged, no reset.
+        assert_eq!(read_log_chunk(&path, len, 1024).unwrap(), LogChunk::unchanged(len));
 
-        // Read PAST EOF (a stale over-shot offset): still empty, clamped to len.
-        let (d, o) = read_log_chunk(&path, len + 100, 1024).unwrap();
-        assert_eq!(d, "");
-        assert_eq!(o, len, "an over-shot offset is clamped to the file length");
+        // Read PAST EOF (the file shrank below the offset — replaced or truncated): a reset to 0
+        // (ADR-024 o item 7), never a clamp that would splice the new log onto the old.
+        assert_eq!(read_log_chunk(&path, len + 100, 1024).unwrap(), LogChunk::reset());
 
         std::fs::remove_dir_all(&data).ok();
     }
@@ -1660,15 +1723,13 @@ mod tests {
         std::fs::write(&path, body).unwrap();
 
         // Cap of 4 from offset 0 → exactly the first 4 bytes, offset advances by 4.
-        let (d, o) = read_log_chunk(&path, 0, 4).unwrap();
-        assert_eq!(d, "0123");
-        assert_eq!(o, 4);
+        let c = read_log_chunk(&path, 0, 4).unwrap();
+        assert_eq!((c.bytes.as_slice(), c.offset), (&b"0123"[..], 4));
 
         // Continue from the returned offset with a cap that would over-read: the
         // read is bounded by the remaining length, not the cap.
-        let (d, o) = read_log_chunk(&path, 12, 999).unwrap();
-        assert_eq!(d, "CDEF");
-        assert_eq!(o, 16);
+        let c = read_log_chunk(&path, 12, 999).unwrap();
+        assert_eq!((c.bytes.as_slice(), c.offset), (&b"CDEF"[..], 16));
 
         std::fs::remove_dir_all(&data).ok();
     }

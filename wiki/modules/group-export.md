@@ -48,7 +48,12 @@ Relates to [groups](groups.md) (the tree it exports) and [groups-ui](groups-ui.m
 ## The curated allowlist (pinned from a probe — rule #10)
 
 `ls -a` was run against real COMPLETED, SCAN, and NEB job dirs before pinning, so the globs match actual
-filenames (not memory). `curated_match(filename)` selects:
+filenames (not memory). The globs live in **one list**, `ARTIFACT_PATTERNS` in `src-tauri/src/artifacts.rs`,
+which also drives the remote download's rsync filter (ADR-024 o item 6, [execution-backends](execution-backends.md)):
+`curated_match(filename)` is `artifacts::is_artifact(filename)`, a leaf-name glob match over that list
+(`*`, `?`, `[0-9]` classes, rsync's meaning). A test keeps the old hand-written matcher as an oracle and
+asserts the list gives the same answer on every edge-case name (except the deliberate GOAT addition below), and a real-rsync parity test asserts the
+curated export and the download take the same files. The list selects:
 
 - **Exact:** `input.inp`, `output.out`, `input.xyz`, `.exit_code` (the run, its log, the input geometry, the
   completion marker — rule #6).
@@ -57,6 +62,9 @@ filenames (not memory). `curated_match(filename)` selects:
   `input_MEP_ALL_trj.xyz`, `input_initial_path_trj.xyz`), `*.NEB.log`, `*.final.interp`, `*_converged.xyz`.
 - **Special:** `*.relaxscan*.dat` (relaxed-scan curve), `input.[0-9]*.xyz` (per-step scan geometries
   `input.001.xyz` … — requires the digit, so `input.xyz` is matched only by the exact rule).
+- **GOAT:** `*.finalensemble.xyz` — the conformer ensemble `read_job_ensemble` reads. It joined the list on
+  2026-10-05 (Anton) so a remote GOAT job downloads it, and so a curated export includes it too; the
+  legacy-oracle test names it as the one intended difference from the old allowlist.
 
 **Rule applied to `*_converged.xyz`, not `*_NEB-TS_converged.xyz`:** curated **never discards a
 converged/final geometry**, so a NEB-CI run's `input_NEB-CI_converged.xyz` (the located TS) is exported, not
@@ -65,6 +73,7 @@ relegated to `omitted`. Nothing scratch ends in `_converged.xyz`.
 Everything a job dir also holds — `.gbw`, `.densities`/`.densitiesinfo`, `orbital.*.cube`, `.tmp` scratch,
 `stderr.log`, `input.allxyz`, `input.interp` — is **not** curated and is recorded in `files.omitted` (honest-
 or-absent), never silently dropped. **Full** mode copies everything and leaves `omitted` empty.
+
 
 ## Manifest schema (`ManifestV1`)
 

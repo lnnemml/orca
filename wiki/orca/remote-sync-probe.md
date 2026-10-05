@@ -100,6 +100,10 @@ Without taskset: `Cpus_allowed:	ffff,ffffffff` / `Cpus_allowed_list:	0-47` (`npr
   both (killed after 1 s). No `tail` left on the remote afterwards.
 
 ## Facts (summary)
+0. **Filter globs beyond `*`** (`[0-9]` classes, `*.relaxscan*.dat`) were not run in this probe; they
+   are pinned by the laptop gate `remote::sync::tests::real_rsync_downloads_exactly_the_artifact_set`
+   (real rsync 3.2.7, protocol 31 — the same version as uni's sender, fact 1), which runs the derived
+   filter over a fixture dir in both directions (unit 5.3 Part A1, 2026-10-05).
 1. rsync 3.2.7 / tail 9.4 / bash 5.2.21 identical on laptop and uni; `--mkpath` works. Without it, >=1 missing
    parent level of the destination fails rc=11 (`mkdir ... failed`), except the single last level.
 2. Trailing slash on SRC: `src/` copies contents; `src` nests under the dest. Second identical upload is a silent no-op (`-i` empty).

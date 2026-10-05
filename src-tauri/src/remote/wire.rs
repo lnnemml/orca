@@ -327,7 +327,7 @@ impl<'a> Reader<'a> {
     }
 
     /// The payload of a byte record that cannot be absent, as UTF-8 text.
-    fn text_after(&mut self, arg: Option<&str>) -> Result<String, WireError> {
+    pub(crate) fn text_after(&mut self, arg: Option<&str>) -> Result<String, WireError> {
         let bytes = self.payload(arg)?;
         String::from_utf8(bytes).map_err(|_| self.malformed("text record is not UTF-8".into()))
     }
@@ -349,7 +349,7 @@ impl<'a> Reader<'a> {
 }
 
 /// ASCII digits, no sign, no leading zero (except `0` itself).
-fn parse_decimal(text: &str) -> Option<u64> {
+pub(crate) fn parse_decimal(text: &str) -> Option<u64> {
     let canonical = !text.is_empty()
         && text.bytes().all(|b| b.is_ascii_digit())
         && (text == "0" || !text.starts_with('0'));

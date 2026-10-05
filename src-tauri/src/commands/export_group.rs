@@ -219,47 +219,14 @@ pub fn numbered_prefix(index: usize, group_size: usize) -> String {
 
 /// Whether `filename` (a leaf name, no path) is selected by the pinned curated allowlist.
 ///
-/// Pinned from a real-machine probe (rule #10 — confirmed against actual COMPLETED, SCAN,
-/// and NEB job dirs before pinning; see `wiki/modules/group-export.md`). The scientific
-/// artifacts OrcaStudio's own parsers read, plus the run's input/geometry/completion
-/// marker — never `.gbw`/`.densities`/`.tmp` scratch/cubes.
+/// The allowlist is [`crate::artifacts::ARTIFACT_PATTERNS`] — the one list of a job's result
+/// artifacts, which also drives the remote download's rsync filter (ADR-024 o item 6), so the
+/// curated export and a fetched remote job always hold the same files. It was pinned from a
+/// real-machine probe (rule #10 — real COMPLETED, SCAN and NEB job dirs; see
+/// `wiki/modules/group-export.md`): the scientific artifacts OrcaStudio's own parsers read, plus
+/// the run's input/geometry/completion marker — never `.gbw`/`.densities`/`.tmp` scratch/cubes.
 pub fn curated_match(filename: &str) -> bool {
-    // Exact names.
-    const EXACT: &[&str] = &["input.inp", "output.out", "input.xyz", ".exit_code"];
-    if EXACT.contains(&filename) {
-        return true;
-    }
-    // Suffix rules. `*_trj.xyz` subsumes the proposed `*_MEP_trj.xyz` and also catches
-    // `input_MEP_ALL_trj.xyz` / `input_initial_path_trj.xyz` (all trajectory artifacts).
-    // `*.property.txt` catches fragment outputs like `input_atom53.property.txt` too.
-    // `*_converged.xyz` (not just `*_NEB-TS_converged.xyz`) enforces the rule "curated
-    // NEVER discards a converged/final geometry": it also captures `input_NEB-CI_converged.xyz`
-    // (the climbing-image converged TS) so a NEB-CI run's headline geometry is exported, not
-    // relegated to `omitted`. Nothing scratch ends in `_converged.xyz`.
-    const SUFFIX: &[&str] = &[
-        ".property.txt",
-        ".hess",
-        "_trj.xyz",
-        ".NEB.log",
-        ".final.interp",
-        "_converged.xyz",
-    ];
-    if SUFFIX.iter().any(|s| filename.ends_with(s)) {
-        return true;
-    }
-    // `*.relaxscan*.dat` — a relaxed-surface-scan curve (`input.relaxscanact.dat`,
-    // `input.relaxscanscf.dat`).
-    if filename.contains(".relaxscan") && filename.ends_with(".dat") {
-        return true;
-    }
-    // `input.[0-9]*.xyz` — the per-step scan geometries (`input.001.xyz` …). Requires a
-    // DIGIT immediately after `input.`, so `input.xyz` (no digit) does NOT match here.
-    if let Some(rest) = filename.strip_prefix("input.") {
-        if rest.ends_with(".xyz") && rest.chars().next().is_some_and(|c| c.is_ascii_digit()) {
-            return true;
-        }
-    }
-    false
+    crate::artifacts::is_artifact(filename)
 }
 
 /// Partition a job's on-disk files into `{included, omitted}` for the chosen copy mode.
@@ -591,6 +558,101 @@ mod tests {
     fn numbered_scan_rule_requires_a_digit() {
         assert!(curated_match("input.xyz")); // exact rule
         assert!(!curated_match("input.foo.xyz")); // no digit after `input.` → not a scan step
+    }
+
+    /// The hand-written allowlist `curated_match` had before it was derived from
+        /// `artifacts::ARTIFACT_PATTERNS` (ADR-024 o item 6), kept verbatim as the oracle that the
+        /// derivation changed no answer.
+        ///
+        /// (Original doc:) Whether `filename` (a leaf name, no path) is selected by the pinned curated allowlist.
+    ///
+    /// Pinned from a real-machine probe (rule #10 — confirmed against actual COMPLETED, SCAN,
+    /// and NEB job dirs before pinning; see `wiki/modules/group-export.md`). The scientific
+    /// artifacts OrcaStudio's own parsers read, plus the run's input/geometry/completion
+    /// marker — never `.gbw`/`.densities`/`.tmp` scratch/cubes.
+    fn legacy_curated_match(filename: &str) -> bool {
+        // Exact names.
+        const EXACT: &[&str] = &["input.inp", "output.out", "input.xyz", ".exit_code"];
+        if EXACT.contains(&filename) {
+            return true;
+        }
+        // Suffix rules. `*_trj.xyz` subsumes the proposed `*_MEP_trj.xyz` and also catches
+        // `input_MEP_ALL_trj.xyz` / `input_initial_path_trj.xyz` (all trajectory artifacts).
+        // `*.property.txt` catches fragment outputs like `input_atom53.property.txt` too.
+        // `*_converged.xyz` (not just `*_NEB-TS_converged.xyz`) enforces the rule "curated
+        // NEVER discards a converged/final geometry": it also captures `input_NEB-CI_converged.xyz`
+        // (the climbing-image converged TS) so a NEB-CI run's headline geometry is exported, not
+        // relegated to `omitted`. Nothing scratch ends in `_converged.xyz`.
+        const SUFFIX: &[&str] = &[
+            ".property.txt",
+            ".hess",
+            "_trj.xyz",
+            ".NEB.log",
+            ".final.interp",
+            "_converged.xyz",
+        ];
+        if SUFFIX.iter().any(|s| filename.ends_with(s)) {
+            return true;
+        }
+        // `*.relaxscan*.dat` — a relaxed-surface-scan curve (`input.relaxscanact.dat`,
+        // `input.relaxscanscf.dat`).
+        if filename.contains(".relaxscan") && filename.ends_with(".dat") {
+            return true;
+        }
+        // `input.[0-9]*.xyz` — the per-step scan geometries (`input.001.xyz` …). Requires a
+        // DIGIT immediately after `input.`, so `input.xyz` (no digit) does NOT match here.
+        if let Some(rest) = filename.strip_prefix("input.") {
+            if rest.ends_with(".xyz") && rest.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Names the old allowlist decided, chosen at each rule's edges (suffix vs. infix, the digit
+    /// after `input.`, dot-names, near-misses) plus every name the tests above use.
+    const PARITY_NAMES: &[&str] = &[
+        "input.inp", "output.out", "input.xyz", ".exit_code", "input.property.txt",
+        "input_atom53.property.txt", ".property.txt", "input.property.txt.bak", "property.txt",
+        "input.hess", ".hess", "input.hess~", "input_trj.xyz", "input_MEP_trj.xyz",
+        "input_MEP_ALL_trj.xyz", "input_initial_path_trj.xyz", "_trj.xyz", "input.trj.xyz",
+        "input.relaxscanact.dat", "input.relaxscanscf.dat", "input.relaxscan.dat",
+        "x.relaxscan.y.dat", "input.relaxscandat", "relaxscan.dat", "input.relaxscanact.dat.1",
+        "input.001.xyz", "input.010.xyz", "input.9.xyz", "input.1xyz", "input.1.xyz.tmp",
+        "input.a01.xyz", "input.foo.xyz", "input..xyz", "Input.001.xyz", "input.NEB.log",
+        "x.NEB.log", "input.neb.log", "input.final.interp", "input.interp",
+        "input_NEB-TS_converged.xyz", "input_NEB-CI_converged.xyz", "_converged.xyz",
+        "input_converged.xyz.bak", "input.gbw", "input.densities", "input.densitiesinfo",
+        "orbital.mo7.g80.cube", "input.grid.tmp", "input.allxyz", "stderr.log", "input.json",
+        "input.finalensemble.xyz", "x.finalensemble.xyz", "finalensemble.xyz", ".started", ".input.gbw.lMlWCT", "input.inp.bak", "output.out2",
+        "input.xyz2", "", ".", "input",
+    ];
+
+    /// Names whose answer changed ON PURPOSE after the derivation: `*.finalensemble.xyz` (the
+    /// GOAT ensemble, read by `read_job_ensemble`) joined the shared list on 2026-10-05 (Anton) so
+    /// a remote GOAT job downloads it — and so the curated export now includes it too.
+    const INTENDED_CHANGES: &[&str] = &["input.finalensemble.xyz", "x.finalensemble.xyz"];
+
+    /// Deriving `curated_match` from the shared pattern list changed no answer, except the
+    /// deliberate additions in `INTENDED_CHANGES`, which the old allowlist rejected and the
+    /// list accepts.
+    #[test]
+    fn curated_match_equals_the_legacy_allowlist() {
+        for name in PARITY_NAMES {
+            if INTENDED_CHANGES.contains(name) {
+                assert!(!legacy_curated_match(name), "{name:?}: the old allowlist rejected it");
+                assert!(curated_match(name), "{name:?}: the shared list must now include it");
+                continue;
+            }
+            assert_eq!(
+                curated_match(name),
+                legacy_curated_match(name),
+                "{name:?}: the shared pattern list disagrees with the old allowlist"
+            );
+        }
+        for name in INTENDED_CHANGES {
+            assert!(PARITY_NAMES.contains(name), "{name:?} must be checked above");
+        }
     }
 
     // --- build_manifest -------------------------------------------------------

@@ -43,16 +43,21 @@ pub const MAX_OUTPUT_BYTES: usize = 1 << 20;
 /// is validated and placed right after `--`.
 pub fn ssh_bash_argv(host: &str) -> Result<Vec<String>, InvalidProfile> {
     validate_host(host)?;
-    Ok(vec![
+    let mut argv = ssh_options();
+    argv.extend(["--".into(), host.into(), "bash".into(), "-s".into()]);
+    Ok(argv)
+}
+
+/// The ssh options every OrcaStudio ssh carries: never prompt (`BatchMode=yes`), and a bounded
+/// connect. One list, so the script calls ([`ssh_bash_argv`]) and rsync's `-e` transport
+/// (`remote::sync`) cannot drift apart (ADR-024 o item 6).
+pub fn ssh_options() -> Vec<String> {
+    vec![
         "-o".into(),
         "BatchMode=yes".into(),
         "-o".into(),
         format!("ConnectTimeout={CONNECT_TIMEOUT_SECS}"),
-        "--".into(),
-        host.into(),
-        "bash".into(),
-        "-s".into(),
-    ])
+    ]
 }
 
 /// How a process ended, and what it printed.

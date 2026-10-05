@@ -10339,3 +10339,22 @@ profile was never verified. Next: **5.3** `SshBackend` wiring.
   recorded + `.enqueued` socket; socket `Error` → classifier; ≤ 1000 files, two NUL values per file;
   inference labels).
 - Next: commit the ADR + probe pages (docs only), then unit 5.3 Part A (implementer, `opus`).
+
+## [2026-10-05] feat | Unit 5.3 Part A1 — schema v20 coordinates, shared artifact list, LogChunk bytes+reset, poll/submit/sync pure parts
+- **Landed (pure Rust + DB, no ssh):** schema **v20** (`remote_host`, `remote_job_dir`,
+  `remote_socket`, CHECK all-or-none — SQLite enforces a CHECK added by `ALTER TABLE ADD COLUMN`,
+  shown by the negative control); `Job::is_remote`; `next_local_queued_job` and
+  `reconcile_on_startup` filter remote rows; one artifact pattern list (`artifacts.rs`) behind both
+  `curated_match` and the rsync download filter, gated by the real local rsync in both directions and a
+  reader-file inventory; upload/download argv (`--checksum`, never `--partial`/`--delete`, ssh options
+  shared with `ssh_bash_argv`); `LogChunk { offset, bytes, reset }` with `LineAssembler` and
+  `plan_log_read` for both backends; `remote/poll.rs`, `remote/submit.rs` (args, echo, reply, label
+  rules, ≤ 1000-file expected list), the download comparator.
+- **Anton decided:** the reader inventory found that `input.finalensemble.xyz` (GOAT ensemble) was in
+  no list — added, so curated export now includes it (an intended change, named in the oracle test);
+  the download gains `--checksum` (ADR-024 o6 amended).
+- Migration proven on a copy of the real v19 DB (87 jobs, none remote after). 594 passed, 27
+  ignored; 13 negative controls bite (verifier, tree `1c572d11`, FAIL only on this missing entry).
+  `cargo clippy` is not installed on the toolchain.
+- Label order clarified in ADR o3.4: a socket `Error` is checked before `.submitting`.
+- Next: 5.3 A2 — the server scripts (submit, label, poll, listing) with the Lab harness.

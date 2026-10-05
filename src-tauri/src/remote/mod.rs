@@ -23,13 +23,22 @@
 //! - [`scripts`] — the embedded `wrapper.sh`, `cancel.sh` and `collect.sh`, and their sha256.
 //! - [`wire`] — the strict parser of the collector's output into a snapshot.
 //! - [`ssh`] — the one `ssh … -- <host> bash -s` argv and a process runner with a hard timeout.
+//! - [`poll`] — `poll_log` over ssh: the values sent and the strict reply parser with its
+//!   length post-condition (ADR-024 o item 7).
+//! - [`submit`] — the remote job dir, the one atomic submit call's values and reply, and the
+//!   label rules of the read-only label call (ADR-024 o items 1, 3).
+//! - [`sync`] — the rsync argv of upload and download, the download filter (from the shared
+//!   artifact list, `crate::artifacts`) and the file lists the transfer post-conditions compare.
 
 pub mod classify;
 pub mod markers;
+pub mod poll;
 pub mod procfs;
 pub mod scripts;
 pub mod snapshot;
 pub mod ssh;
+pub mod submit;
+pub mod sync;
 pub mod tsp;
 pub mod wire;
 
