@@ -712,14 +712,6 @@ review pending, together with the 5.3 decomposition).**
    - **Full pass** = every item-8 check passes.
    - Item-9 values are stored when present and NULL otherwise, so `openmpi_version` becomes optional
      in the stamp (round 2 F2).
-6c. **The stamp is bound to the target that was tested** (orchestrator, 5.1 Part B Part A). The
-   stamp is written only if the profile still has the exact target that was tested (host, ORCA
-   path, root, mask, slot count); otherwise it is refused as a conflict. An edit made while the ssh
-   test was running must never be certified.
-6d. **Post-condition of the transport** (refines item 11). The script echoes every received
-   **value**, not only the count, and Rust compares them with what it sent. A script line after the
-   read loop lands *inside* value 0 while the count stays correct, so a count alone would not catch
-   it (shown by a negative control).
 6a. **`verified_at` gates new submits only.** Reconcile, cancel and fetch of existing jobs never
    consult it, so a transient failure cannot cut off monitoring or cancel (round 2 F1).
 6b. **Jobs keep their own coordinates** (Anton, round 2 F1).
@@ -728,6 +720,14 @@ review pending, together with the 5.3 decomposition).**
    - **While non-terminal jobs exist:** the UI refuses to change a profile's `host` or
      `remote_scratch_dir` as long as the profile still has non-terminal jobs (enforced from 5.3 on,
      when such jobs can first exist).
+6c. **The stamp is bound to the target that was tested** (orchestrator, 5.1 Part B Part A; acknowledged by Anton 2026-10-03). The
+   stamp is written only if the profile still has the exact target that was tested (host, ORCA
+   path, root, mask, slot count); otherwise it is refused as a conflict. An edit made while the ssh
+   test was running must never be certified.
+6d. **Post-condition of the transport** (refines item 11; acknowledged by Anton 2026-10-03). The script echoes every received
+   **value**, not only the count, and Rust compares them with what it sent. A script line after the
+   read loop lands *inside* value 0 while the count stays correct, so a count alone would not catch
+   it (shown by a negative control).
 7. **Every submit re-checks `KillUserProcesses`** (Anton): one `busctl` read in the same ssh call.
    Anything other than `b false` refuses the submit and sets `verified_at` to NULL. This is the one
    host setting that silently kills jobs (Consequences).
@@ -772,7 +772,7 @@ review pending, together with the 5.3 decomposition).**
     - **every child command gets `</dev/null`**, because a child that reads stdin swallows the rest of
       the script and the data, silently (measured with `cat`);
     - post-condition (rule #9): the script echoes the received argument count, and the Rust side
-      asserts it equals what was sent;
+      asserts it equals what was sent (values too, see 6d);
     - **the same rule applies to 5.3:** any script fed through ssh stdin follows this shape.
 
 ## Alternatives rejected

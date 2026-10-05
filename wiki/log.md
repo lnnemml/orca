@@ -10216,3 +10216,55 @@ The pure, tested backend half of 5.1 Part B (ADR-024 n). No ssh, no UI, nothing 
   - All eight negative controls (a)–(h) went red and were restored.
 - **Next:** 5.1 Part B wiring. A Tauri command runs `ssh <host> bash -s` with a timeout, stamps on
   `FullPass` and clears otherwise (also on `Err`); then the settings UI and Anton's live gate.
+
+## [2026-10-03] feat | Unit 5.1 Part B (B) — connection-test command, host validation, settings UI
+
+The wiring half of 5.1 Part B (ADR-024 n). Nothing committed: awaiting the verifier and Anton.
+**Pending: Anton's live WebKitGTK check of Settings → Servers.**
+- **`test_server_profile(id)`** (async; `commands/server_profiles.rs`): read the profile, release
+  the lock, run `ssh -o BatchMode=yes -o ConnectTimeout=10 -- <host> bash -s` with the script plus
+  the NUL value list on stdin, under a 30 s overall timeout. Rust's verdict decides:
+  - `FullPass` → stamp, bound to the tested target (an edit meanwhile → `conflict`, not stamped);
+  - `NotPassed` or no verdict (invalid profile, spawn failure, timeout, ssh 255, unreadable output,
+    a non-zero exit after a complete output) → clear.
+  - It returns per-check results, facts, warnings, the profile with its run-target status, and the
+    wall time.
+- **`remote/ssh.rs`:** `ssh_bash_argv` (the host is re-validated and placed right after `--`) and
+  `CommandRunner`/`SystemRunner`: stdin and both streams on threads, a 1 MiB cap per stream, and the
+  process group killed on timeout. 5.3's submit can reuse it.
+- **F2:** `validate_host` refuses empty, more than 253 bytes, a leading `-`, and anything outside
+  `[A-Za-z0-9._@-]`. **F3:** the `set_profile_verified` IPC command is removed; the `_conn` fn
+  stays, and only the test command calls it. **F6:** the index entry is a present-tense summary.
+- **The commands that return a profile now return `ServerProfileView`** (the row plus
+  `run_target { is_run_target, reason }` from `is_run_target`).
+- **UI:** `src/servers/ServersSection.tsx` in Settings: list (the headline is the run-target status
+  and its reason, never "verified"), add/edit form with Rust's validation error inline, slots fixed
+  at 1, two-step delete, and "Test connection" with a spinner, then per-check pass/FAIL, facts and
+  warnings. `status.ts` is the pure mapping.
+- **Live run on uni (rule #10, throwaway DB):** a full pass (ORCA 6.1.1, OpenMPI 4.1.6, 48 CPUs);
+  1114 ms cold, 353/285 ms warm. F1 settled: on uni, `findmnt -no FSTYPE --target` prints one column
+  `ext4` and `realpath -e` prints the root. A bogus ORCA path is `not_passed` at `test -x`, not
+  rc 127, because the script never runs a path that fails `test -x`. ssh's `--` is measured too.
+  Raw stream in `orca/remote-server-probe-commands.md`.
+- **Tests:** cargo 543 passed / 0 failed / 26 ignored (was 523/25); `cargo build` has 0 warnings.
+  vitest `--dir src` 977 passed in 75 files (was 963 in 73). `tsc --noEmit` is clean.
+  - Negative controls, each red then green after restoring: a leading `-` accepted; stamping on
+    `NotPassed`; no clear on the no-verdict path; `--` dropped from the argv; the stamp re-exposed
+    over IPC; the UI headline mapped from `verified_at`.
+- **Verifier follow-up (PASS WITH FINDINGS), fixed before the live gate:**
+  - The grandchild test now proves the group kill: the `sleep 30` the child starts writes its pid to
+    a pidfile, and it must be gone after the timeout, both while the child still runs and after the
+    child has exited. A guard kills it if the test fails. Negative control: remove `libc::killpg` →
+    red in each case, with no strays left.
+  - The runner now waits on its reader threads' events: a stream past the 1 MiB cap kills the group
+    at once (`OutputTooLarge`) instead of timing out. `an_unbounded_stream_is_refused_promptly` gets
+    it in about 1 s with a 20 s timeout. Negative control: treat `TooLarge` like bytes → a 20 s
+    `Timeout`, red.
+  - A known limit is recorded on the module page: the CAS binds the tested target, not the test
+    generation.
+  - The rc 127/126 notes on the probe page now say that `test -x` fails first.
+  - Counts: cargo 544 passed / 0 failed / 26 ignored, 0 warnings; `tsc` clean. vitest `--dir src`
+    is 977 passed (75 files) in the main checkout, and **975 passed + 2 skipped (977 tests, 75
+    files)** in the verifier's worktree. The two manual-corpus tests skip there because
+    `resources/manual/` is absent.
+- **Next:** Anton's live UI check, then the commit, then the ROADMAP tick for 5.1.

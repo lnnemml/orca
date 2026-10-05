@@ -22,6 +22,7 @@ bytes; nothing uploads or runs them yet. The module is registered in `lib.rs` un
 | `classify.rs` | `classify`, `Outcome`, `FailReason`, `Classification`, `SnapshotError`; predicates `is_alive`, `is_our_wrapper`, `job_session`, `sid_reused` |
 | `scripts.rs` + `scripts/` | `WRAPPER`, `CANCEL`, `COLLECT` (embedded scripts) and `sha256_hex` |
 | `wire.rs` | `parse_snapshot` — the collector's output → `Snapshot`; `WireError` |
+| `ssh.rs` | `ssh_bash_argv` (`ssh -o BatchMode=yes -o ConnectTimeout=10 -- <host> bash -s`, host re-validated) and `CommandRunner`/`SystemRunner` (stdin and both streams on threads, 1 MiB cap, process group killed on timeout). Used by the 5.1 connection test (`modules/server-profiles.md`); meant for 5.3's submit too |
 | `race_model.rs` | test-only model of the d′ race (`.started`/`.cancelled`) |
 | `script_tests.rs` | test-only: the real scripts run on this machine (see Tests) |
 
@@ -264,7 +265,8 @@ Negative controls (each guard broken, the named tests red, restored): listed per
 
 ## Not built yet
 
-- Upload of the scripts, the NUL-separated stdin argument transport, submit and `.enqueued`, the
+- Upload of the scripts, the NUL-separated stdin argument transport for the job scripts (the 5.1
+  connection test already uses it), submit and `.enqueued`, the
   slot check on submit, the socket-path post-condition, the job-dir `realpath` assertion — unit 5.3.
 - **The uni measurements behind these scripts are done** (probe 5.3, 2026-10-03,
   `architecture/task-spooler-uni-probe.md`):

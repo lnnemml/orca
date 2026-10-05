@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
+import { ServersSection } from "../servers/ServersSection";
 import type { CpuPresetInfo, KeySource, ModelInfo } from "../types";
 
 /** Seed/fallback default — the review-conditioned value (ADR-015 amendment); the live list drives options. */
@@ -495,6 +496,8 @@ export function SettingsScreen() {
           ) : null}
         </div>
       </div>
+
+      <ServersSection />
 
       {error ? (
         <div className="banner err" style={{ marginTop: 12 }}>

@@ -2982,3 +2982,21 @@ button.ir-imaginary-mode.selected {
   border-color: var(--accent);
   color: var(--accent-hover);
 }
+
+/* --- Busy spinner (Settings → Servers "Test connection") --------------- */
+.spinner {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--muted-2);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  vertical-align: -1px;
+  animation: spinner-turn 0.8s linear infinite;
+}
+
+@keyframes spinner-turn {
+  to {
+    transform: rotate(360deg);
+  }
+}

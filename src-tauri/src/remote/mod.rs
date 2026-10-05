@@ -22,12 +22,14 @@
 //!   [`classify::classify`], the 11-row precedence table.
 //! - [`scripts`] — the embedded `wrapper.sh`, `cancel.sh` and `collect.sh`, and their sha256.
 //! - [`wire`] — the strict parser of the collector's output into a snapshot.
+//! - [`ssh`] — the one `ssh … -- <host> bash -s` argv and a process runner with a hard timeout.
 
 pub mod classify;
 pub mod markers;
 pub mod procfs;
 pub mod scripts;
 pub mod snapshot;
+pub mod ssh;
 pub mod tsp;
 pub mod wire;
 

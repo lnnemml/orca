@@ -63,7 +63,7 @@ Leading whitespace is significant (heavy indent). The version token is at word p
 after stripping whitespace: `["Program", "Version", "6.1.0", "-", "RELEASE", "-"]`.
 
 ### Parser must expect
-- **Primary strategy:** `test -x <configured-path> && echo ok` — exit 0 means executable exists. *(superseded 2026-10-03: see "Connection-test formats on uni" below — ORCA exits 2 on `--version`; classify a non-runnable ORCA by rc 127/126)*
+- **Primary strategy:** `test -x <configured-path> && echo ok` — exit 0 means executable exists. *(superseded 2026-10-03: see "Connection-test formats on uni" and "Live connection test on uni" below — ORCA exits 2 on `--version`, so success is a `Program Version` line, never the rc. The connection test runs `test -x` first and does not run ORCA when it fails, so a missing or non-executable path is reported as a `test -x` failure; rc 127/126 classify ORCA only when it is actually executed)*
 - **Version extraction:** run `<configured-path> --version 2>&1`, grep for the line containing
   `Program Version`, extract the third whitespace-delimited token (e.g. `6.1.0`).
 - **Empty/not-found case:** if `test -x` exits non-zero, report "ORCA not found at `<path>`" and
@@ -186,7 +186,7 @@ performance probe (see `wiki/orca/performance.md`); the connection-test only est
 
 | Fact | Command | Parse target | Not-found behaviour |
 |---|---|---|---|
-| ORCA executable present + version | `test -x <path> && <path> --version 2>&1` | Line matching `Program Version`, token 3 | Exit non-zero from `test -x` → abort *(superseded 2026-10-03: see "Connection-test formats on uni" below — ORCA exits 2 on `--version`; classify a non-runnable ORCA by rc 127/126)* |
+| ORCA executable present + version | `test -x <path> && <path> --version 2>&1` | Line matching `Program Version`, token 3 | Exit non-zero from `test -x` → abort *(superseded 2026-10-03: see "Connection-test formats on uni" and "Live connection test on uni" below — ORCA exits 2 on `--version`, so success is a `Program Version` line, never the rc. The connection test runs `test -x` first and does not run ORCA when it fails, so a missing or non-executable path is reported as a `test -x` failure; rc 127/126 classify ORCA only when it is actually executed)* |
 | OpenMPI version | `ompi_info --version` | Line 1: `Open MPI v(\d+\.\d+\.\d+)` | Command not found / non-zero → report missing |
 | Logical CPU count | `nproc` | Entire stdout trimmed, parsed as `u32` | Non-zero exit → report missing |
 
@@ -222,7 +222,7 @@ will run the connection test. Host: Ubuntu, systemd 255.4, ORCA 6.1.1.
 
 **Timing.** The whole set takes ≈0.17 s on the server, and ≈1.4 s wall time from the laptop over
 an existing ControlMaster. The cold-connect cost was not measured, so "a 10 s timeout is enough" is
-**inference**.
+**inference**. *(Measured 2026-10-03 in the live connection test below: 1.1 s cold, ≈0.3 s warm.)*
 
 
 ## 5.1 Part B probes — script plus data on one stdin; mpirun (2026-10-03, probe 5.1c)
@@ -257,3 +257,117 @@ script text followed by `printf '%s\0'` of the values.
 - `strings /opt/orca/orca` contains a bare `mpirun` and no absolute path. So ORCA most likely execs
   `mpirun` from PATH — **inference from strings, not confirmed by a run**.
 - No other Open MPI was found (`/opt/openmpi*`, `/usr/local/bin/mpirun*` are absent).
+
+
+## Live connection test on uni (2026-10-03, unit 5.1 Part B)
+
+The app's own command path (`live_uni_connection_test`, a throwaway database), run from the laptop
+as `anton` over the `uni` alias with values `/opt/orca/orca`, `/home/anton/.orcastudio`, `0-3`.
+OpenSSH 9.6p1 on the laptop. The uni ssh config has `ControlMaster auto`, `ControlPersist 10m`; no
+master was running before the cold run.
+
+**argv**, exactly: `ssh -o BatchMode=yes -o ConnectTimeout=10 -- uni bash -s`. ssh's stderr was
+empty.
+
+**Raw record stream** (verbatim; the 12 742-byte ORCA banner is elided to its version line and its
+tail):
+
+```text
+orcastudio-conntest 1
+argc 3
+arg 14
+/opt/orca/orca
+arg 23
+/home/anton/.orcastudio
+arg 3
+0-3
+mkdir 0
+out 0
+
+err 0
+
+realpath 0
+out 24
+/home/anton/.orcastudio
+
+err 0
+
+findmnt 0
+out 5
+ext4
+
+err 0
+
+busctl 0
+out 8
+b false
+
+err 0
+
+id 0
+out 12
+anton users
+
+err 0
+
+nproc 0
+out 3
+48
+
+err 0
+
+orca_x 0
+out 0
+
+err 0
+
+orca 2
+out 12742
+[…]
+                         Program Version 6.1.1  -  RELEASE   -
+[…]
+[file orca_main/run.cpp, line 393]: Cannot open input file: --version
+
+
+err 0
+
+ompi 0
+out 57
+Open MPI v4.1.6
+
+http://www.open-mpi.org/community/help/
+
+err 0
+
+end
+```
+
+Verdict: `FullPass { orca_version: "6.1.1", openmpi_version: Some("4.1.6"), core_count: 48 }`, no
+warnings.
+
+What this settles (verifier F1, previously seen only on the laptop):
+- **`findmnt -no FSTYPE --target <root>`** prints **one column**, `ext4\n`, rc 0, on uni too.
+- **`realpath -e -- <root>`** prints the root itself, `/home/anton/.orcastudio\n`, rc 0 (the root is
+  not behind a symlink).
+- `mkdir -p` of the existing root: rc 0, no output.
+
+**A bogus ORCA path** (`/opt/orca/no-such-orca`): `orca_x` rc 1, `orca` skipped, so the verdict is
+"ORCA is missing or not executable (test -x failed)". The rc 127 shape above is not reached for a
+missing path, because `test -x` runs first.
+
+**Wall time** (laptop clock; the raw run times ssh alone, the command runs time the whole
+command including its database reads and writes):
+
+| Run | ControlMaster | Time |
+|---|---|---|
+| raw run, cold | none (this run started one) | 1114 ms |
+| command path, warm | reused | 353 ms |
+| bogus ORCA, warm | reused | 285 ms |
+
+ssh's `ControlPersist` master did **not** keep the runner's pipes open: the cold run returned as soon
+as the client exited. The test closed the master it had started (`ssh -O exit uni`) afterwards.
+
+**`--` before the host** (OpenSSH 9.6p1, `ssh -G`, no connection made):
+`ssh -G '-oProxyCommand=echo PWNED' somehost` resolves `proxycommand echo PWNED`, so a host value
+that starts with `-` is an option. `ssh -G -- '-oProxyCommand=echo PWNED' somehost` refuses it:
+`hostname contains invalid characters`.

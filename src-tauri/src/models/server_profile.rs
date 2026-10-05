@@ -116,6 +116,8 @@ pub struct ProfileTarget {
 pub enum InvalidProfile {
     #[error("the host alias is empty")]
     EmptyHost,
+    #[error("the host alias {host:?} {why}; use a ~/.ssh/config alias of letters, digits and . _ @ - that does not start with '-'")]
+    Host { host: String, why: String },
     #[error("the remote ORCA path must be absolute (rule #1): {0:?}")]
     OrcaPathNotAbsolute(String),
     #[error("the remote root must be an absolute path over [A-Za-z0-9._-] components with no empty, '.' or '..' component and no trailing '/': {0:?}")]
@@ -242,15 +244,45 @@ pub fn validate_root(root: &str, slot_count: u32) -> Result<(), InvalidProfile> 
     Ok(())
 }
 
+/// The longest host alias accepted. A DNS name is at most 253 bytes; an alias longer than that is
+/// not a plausible `~/.ssh/config` entry.
+pub const MAX_HOST_BYTES: usize = 253;
+
+/// Validate the host alias (ADR-024 n; verifier F2). The host is handed to `ssh` as one argv element
+/// after `--`, so the shell never sees it; this check is the second layer and keeps the value to a
+/// conservative ssh-alias charset:
+/// - not empty, at most [`MAX_HOST_BYTES`];
+/// - only `[A-Za-z0-9._@-]` — no whitespace, no control character, no shell metacharacter, no `:`
+///   or `%` (IPv6 literals and ssh tokens are not supported: configure an alias instead);
+/// - **no leading `-`**: OpenSSH reads such an argument as an option (measured: without `--`,
+///   `ssh -G '-oProxyCommand=echo PWNED' somehost` resolves `proxycommand echo PWNED`).
+pub fn validate_host(host: &str) -> Result<(), InvalidProfile> {
+    let bad = |why: &str| InvalidProfile::Host { host: host.to_string(), why: why.to_string() };
+    if host.is_empty() {
+        return Err(InvalidProfile::EmptyHost);
+    }
+    if host.starts_with('-') {
+        return Err(bad("starts with '-', which ssh would read as an option"));
+    }
+    if host.len() > MAX_HOST_BYTES {
+        return Err(bad(&format!("is longer than {MAX_HOST_BYTES} bytes")));
+    }
+    if let Some(c) = host
+        .chars()
+        .find(|c| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '@' | '-')))
+    {
+        return Err(bad(&format!("contains {c:?}")));
+    }
+    Ok(())
+}
+
 /// Save-time validation of every user-owned target field and the window (ADR-024 n items 2–4).
 /// Called before any write; an error means nothing is written.
 pub fn validate_profile(
     target: &ProfileTarget,
     availability_window: Option<&str>,
 ) -> Result<(), InvalidProfile> {
-    if target.host.trim().is_empty() {
-        return Err(InvalidProfile::EmptyHost);
-    }
+    validate_host(&target.host)?;
     if !target.remote_orca_path.starts_with('/') {
         return Err(InvalidProfile::OrcaPathNotAbsolute(target.remote_orca_path.clone()));
     }
@@ -271,8 +303,6 @@ pub fn validate_profile(
 /// Is this profile a run target (ADR-024 n item 2)? Verified, with a core mask whose every CPU
 /// lies within `0..core_count-1` of the verified core count (rule #8). Gates **new submits only**
 /// (item 6a): reconcile, cancel and fetch never consult it.
-// The caller is 5.3's submit; until it lands this is exercised by its tests only.
-#[allow(dead_code)]
 pub fn is_run_target(profile: &ServerProfile) -> Result<(), NotRunTarget> {
     if profile.verified_at.is_none() {
         return Err(NotRunTarget::NotVerified);
@@ -325,6 +355,36 @@ mod tests {
         let mut t = target();
         t.core_mask = None;
         assert_eq!(validate_profile(&t, Some("08:00-18:30")), Ok(()));
+    }
+
+    #[test]
+    fn plausible_host_aliases_are_accepted() {
+        for good in ["uni", "uni-admin2", "login.cluster.example.org", "anton@uni", "my_host", "10.0.0.7"] {
+            assert_eq!(validate_host(good), Ok(()), "{good:?}");
+        }
+        assert_eq!(validate_host(&"a".repeat(MAX_HOST_BYTES)), Ok(()));
+    }
+
+    // F2. The host reaches ssh as one argv element after `--`; this is the second layer. NEGATIVE
+    // CONTROL: drop the leading-'-' rule and `-oProxyCommand=…` (an ssh option) is accepted → red.
+    #[test]
+    fn a_host_that_could_be_an_option_or_shell_text_is_refused() {
+        assert_eq!(validate_host(""), Err(InvalidProfile::EmptyHost));
+        for bad in ["-oProxyCommand=sh", "-uni", "uni host", "uni\thost", "uni\n", " uni", "uni ",
+                    "uni;rm", "uni$HOME", "$(id)", "uni`id`", "uni|x", "uni&", "uni'", "uni\"",
+                    "uni/x", "uni:22", "[::1]", "uni%h", "uni\0", "uni\u{7f}", "ünï"] {
+            let mut t = target();
+            t.host = bad.into();
+            assert!(
+                matches!(validate_profile(&t, None), Err(InvalidProfile::Host { .. })),
+                "{bad:?} must be refused"
+            );
+        }
+        let mut t = target();
+        t.host = "a".repeat(MAX_HOST_BYTES + 1);
+        assert!(matches!(validate_profile(&t, None), Err(InvalidProfile::Host { .. })));
+        t.host = String::new();
+        assert_eq!(validate_profile(&t, None), Err(InvalidProfile::EmptyHost));
     }
 
     #[test]

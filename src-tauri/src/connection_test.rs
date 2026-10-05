@@ -1,6 +1,7 @@
 //! The remote connection test (Phase 5 unit 5.1, ADR-023, ADR-024 n): the transport bytes, the
-//! strict parser of the script's output, and the verdict. Pure — no ssh, no process. Part B's
-//! Tauri command runs `ssh <host> bash -s` with [`conntest_stdin`] and hands the stdout to [`run`].
+//! strict parser of the script's output, and the verdict. Pure — no ssh, no process. The Tauri
+//! command `commands::server_profiles::test_server_profile` runs `ssh … -- <host> bash -s`
+//! (`remote::ssh::ssh_bash_argv`) with [`conntest_stdin`] and hands the stdout to [`run`].
 //!
 //! **Transport (ADR-024 n item 11, probe 5.1c).** One `bash -s` stdin carries the static script
 //! [`CONNTEST`] and then the values as a NUL-separated list: ORCA path, root, core mask (empty when
@@ -613,7 +614,7 @@ Build 3.14.1 tag
 /// real script run locally under `bash -s` (stub `busctl`/`findmnt`/`id`/`nproc`/`ompi_info` on
 /// `PATH`, a stub ORCA at an absolute path; nothing outside the test's own temp dir is touched).
 #[cfg(test)]
-mod conntest_tests {
+pub(crate) mod conntest_tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
@@ -653,7 +654,7 @@ mod conntest_tests {
         text.into_bytes()
     }
 
-    fn ran(rc: u8, out: &[u8]) -> CheckRun {
+    pub(crate) fn ran(rc: u8, out: &[u8]) -> CheckRun {
         CheckRun::Ran { rc, out: out.to_vec(), err: Vec::new() }
     }
 
@@ -666,7 +667,7 @@ mod conntest_tests {
     }
 
     /// Every check passing, in the recorded formats.
-    fn uni_facts() -> RawFacts {
+    pub(crate) fn uni_facts() -> RawFacts {
         RawFacts {
             mkdir: ran(0, b""),
             realpath: ran(0, format!("{ROOT}\n").as_bytes()),
@@ -681,7 +682,7 @@ mod conntest_tests {
     }
 
     /// The script's output for `values` and `facts`, in the documented record format.
-    fn encode(values: &[&str], facts: &RawFacts) -> Vec<u8> {
+    pub(crate) fn encode(values: &[&str], facts: &RawFacts) -> Vec<u8> {
         let mut w = format!("{OUTPUT_HEADER}\nargc {}\n", values.len()).into_bytes();
         let bytes = |w: &mut Vec<u8>, name: &str, b: &[u8]| {
             w.extend_from_slice(format!("{name} {}\n", b.len()).as_bytes());
@@ -716,7 +717,7 @@ mod conntest_tests {
         }
     }
 
-    fn with(f: impl FnOnce(&mut RawFacts)) -> RawFacts {
+    pub(crate) fn with(f: impl FnOnce(&mut RawFacts)) -> RawFacts {
         let mut facts = uni_facts();
         f(&mut facts);
         facts

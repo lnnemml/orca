@@ -313,3 +313,76 @@ export interface SidecarStatus {
   /** The minimum version this app build expects. */
   expected_version?: string;
 }
+
+// --- Server profiles (Phase 5 unit 5.1, ADR-023, ADR-024 n) -----------------------------------
+
+/** Mirrors `commands/server_profiles.rs::RunTargetStatus`. Computed in Rust (`is_run_target`);
+ *  the UI never re-derives the rule. `reason` is null exactly when `is_run_target` is true. */
+export interface RunTargetStatus {
+  is_run_target: boolean;
+  reason: string | null;
+}
+
+/** Mirrors `ServerProfileView`: the `server_profiles` row (schema v19) plus its run-target status.
+ *  The verified_* fields are written only by Rust's connection test; `verified_at` is SQLite
+ *  `datetime('now')`, i.e. UTC `YYYY-MM-DD HH:MM:SS`. */
+export interface ServerProfile {
+  id: string;
+  name: string;
+  host: string;
+  remote_orca_path: string;
+  remote_scratch_dir: string;
+  core_mask: string | null;
+  orca_version: string | null;
+  openmpi_version: string | null;
+  core_count: number | null;
+  verified_at: string | null;
+  created_at: string;
+  slot_count: number;
+  availability_window: string | null;
+  run_target: RunTargetStatus;
+}
+
+/** Mirrors `connection_test::Check` (ADR-024 n item 8). */
+export type ConnTestCheck = "orca" | "cores" | "core_mask" | "kill_user_processes" | "root";
+
+/** Mirrors `commands/server_profiles.rs::CheckResult`. */
+export interface ConnTestCheckResult {
+  check: ConnTestCheck;
+  passed: boolean;
+  reason: string | null;
+}
+
+/** Mirrors `connection_test::Warning` (serde `tag = "kind", content = "detail"`). */
+export type ConnTestWarning =
+  | { kind: "sudo_group" }
+  | { kind: "groups_undetermined"; detail: string }
+  | { kind: "open_mpi_not_reported"; detail: string };
+
+/** Mirrors `connection_test::VerifiedFacts`: what a full pass stamps. */
+export interface VerifiedFacts {
+  orca_version: string;
+  openmpi_version: string | null;
+  core_count: number;
+}
+
+/** Mirrors `ConnTestOutcome` (serde `tag = "outcome"`). */
+export type ConnTestOutcome =
+  | {
+      outcome: "verified";
+      checks: ConnTestCheckResult[];
+      facts: VerifiedFacts;
+      warnings: ConnTestWarning[];
+    }
+  | {
+      outcome: "conflict";
+      reason: string;
+      checks: ConnTestCheckResult[];
+      facts: VerifiedFacts;
+      warnings: ConnTestWarning[];
+    }
+  | { outcome: "not_passed"; checks: ConnTestCheckResult[]; warnings: ConnTestWarning[] }
+  | { outcome: "failed"; reason: string };
+
+/** Mirrors `ConnTestReport` (the outcome is flattened into it). */
+export type ConnTestReport = ConnTestOutcome & { profile: ServerProfile; elapsed_ms: number };
