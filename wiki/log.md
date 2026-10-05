@@ -10268,3 +10268,10 @@ The wiring half of 5.1 Part B (ADR-024 n). Nothing committed: awaiting the verif
     files)** in the verifier's worktree. The two manual-corpus tests skip there because
     `resources/manual/` is absent.
 - **Next:** Anton's live UI check, then the commit, then the ROADMAP tick for 5.1.
+
+## [2026-10-05] milestone | Unit 5.1 complete — Part B live gate passed, committed
+Anton ran the full live WebKitGTK checklist for the Settings → Servers card (steps 1–8, including
+steps 4–6 against `uni`, which were blocked on 2026-10-04 while the server was offline) and passed it.
+Tree re-checked against the verified hash `ff0bfacb` before and after the commit (`9801597`); ROADMAP
+5.1 ticked. Open cosmetic nit, not blocking: "the verification was cleared" is shown even when the
+profile was never verified. Next: **5.3** `SshBackend` wiring.

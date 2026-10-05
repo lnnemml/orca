@@ -1384,17 +1384,15 @@ and the dev laptop is a development machine, not a compute node. See
       offset-pull is additive (live UI still uses the push `job:log` event — the push→pull flip rides with
       `SshBackend`). ADR-023 records the server-agnostic model (one `SshBackend` per `ServerProfile`).
 **Unit numbering (fixed 2026-10-03 by Anton — use these numbers, do not re-derive):**
-5.0 trait ✅ · **5.1** server profiles (Part A ✅, Part B open) · **5.2** ✅ wrapper + cancel script +
+5.0 trait ✅ · **5.1** ✅ server profiles · **5.2** ✅ wrapper + cancel script +
 reconciliation classifier, pure and tested on synthetic job dirs · **5.3** `SshBackend` wiring ·
 **5.4** cancel / pending cancel + reconnect loop + `Lost`/`Cancelling` in `JobStatus` · **5.5**
 preflight. The remaining items (remote `orca_plot`, pause) are not numbered yet.
 
-- [ ] **Unit 5.1 — server profiles** in settings: host alias (reuses `~/.ssh/config`), remote ORCA path,
+- [x] **Unit 5.1 — server profiles** in settings: host alias (reuses `~/.ssh/config`), remote ORCA path,
       remote scratch dir; connection test button. **Part A ✅ 2026-08-27** (schema v18
-      `server_profiles`, pure connection-test parsers, `set_profile_verified`). **Part B open:** the
-      settings UI + the real SSH connection test. **Pending gate: Anton's live WebKitGTK check of the
-      settings UI** (requested 2026-10-03 while he is away from the machine; the UI is not committed
-      until he has looked). `SshBackend` + `enum Backend`, which ADR-023's
+      `server_profiles`, pure connection-test parsers, `set_profile_verified`). **Part B ✅ 2026-10-05** (`9801597`): the
+      settings UI + the real SSH connection test; verifier CODE PASS + Anton's live WebKitGTK gate. `SshBackend` + `enum Backend`, which ADR-023's
       amendment had put in Part B, move to 5.3. **Scope per ADR-024 (n):** schema v19 (`slot_count` fixed
       at 1, `availability_window`); `remote_scratch_dir` is the root; edits and failed re-tests clear
       `verified_at`; run target = verified + valid `core_mask`. The mandatory checks are ORCA version,
