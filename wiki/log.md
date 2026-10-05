@@ -10449,3 +10449,15 @@ profile was never verified. Next: **5.3** `SshBackend` wiring.
   dir and `<root>/bin`, plus "does the wrapper already hash right") and the wrapper upload by unique
   temp name + rename (o13.1) — no pre-upload script exists yet.
 - Next: verifier CODE on A2; then Part B (ssh/rsync wiring, script upload, the poller, UI).
+
+## [2026-10-05] session | 5.3 Part A2 landed (ADR-024 o13)
+- Done: 5.3 Part A2 (`ff0b5e1`, tree `08e954a4`) — the four server scripts with their parsers.
+  Anton decided three forks the implementer surfaced (wrapper by sha, `refused-kup`, lock-busy
+  wording) → ADR-024 o13, DESIGN PASS WITH FINDINGS (applied). Verifier CODE: PASS WITH 4 LOWs →
+  Anton chose fix-before-commit → re-verify PASS (633 passed / 27 ignored, ×2).
+- **Next: 5.3 Part B** — SshBackend + enum Backend, the 3.2 pre-upload read-only call + wrapper
+  upload (o13.1), poller (resume on launch), refusals + withdraw, `verified_at` cleared only on
+  `RefusedKup`, run-target dropdown, Full-mode rsync temp-name skip, TS `Job` fields, then a live run
+  on uni closing the deferred facts (real `tsp` enqueue output, lock fd with a real daemon, stale-socket
+  `tsp -l`, `timeout` on a hung client, unowned socket, scan cost, pinned zombie, `statx` ENOENT text,
+  real `busctl` output) + Anton's UI gate.

@@ -1425,7 +1425,7 @@ preflight. The remaining items (remote `orca_plot`, pause) are not numbered yet.
       `cancel.sh` / `collect.sh`, the length-prefixed snapshot wire format and its strict parser,
       run for real on the laptop (stub `tsp`/ORCA, fixtures (a)–(e), d′ orders) —
       [modules/remote-jobs.md](wiki/modules/remote-jobs.md).
-- [ ] **Unit 5.3 — `SshBackend` wiring** (**A1 ✅ 2026-10-05** `d47623d`: v20, artifact list, LogChunk, pure parsers; **next: A2** server scripts, then Part B) via system `ssh`/`rsync`: rsync job dir up → the 5.2
+- [ ] **Unit 5.3 — `SshBackend` wiring** (**A1 ✅ 2026-10-05** `d47623d`: v20, artifact list, LogChunk, pure parsers; **A2 ✅ 2026-10-05** `ff0b5e1`: server scripts submit/label/poll_log/list, ADR-024 o13; **next: Part B**) via system `ssh`/`rsync`: rsync job dir up → the 5.2
       wrapper via task-spooler (per-slot `TS_SOCKET`) → byte-offset `poll_log` of output → selective
       rsync down (the shared artifact-pattern list + markers + `.tsp-out/`; gbw opt-in, ADR-024 o6); `enum Backend` (ADR-023). Also per
       ADR-024 (m)/(n)/(o):
