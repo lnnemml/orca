@@ -1450,7 +1450,7 @@ preflight. The remaining items (remote `orca_plot`, pause) are not numbered yet.
               `tsp -l` on a stale socket inside the lock, `timeout -k` on a hung client, real `busctl`
               output, the coreutils `cannot statx` ENOENT text, slot-scan cost, pinned zombie. First,
               because a mismatch changes the scripts before anything is wired.
-        - [ ] **B1 — `enum Backend` + `SshBackend` submit path** (implementer `opus`; Part A pure with an
+        - [ ] **B1 — `enum Backend` + `SshBackend` submit path** (**Part A ✅ 2026-10-05** `b0c2d0c`: core + scripts + ADR-024 o14; **next: Part B** wiring) (implementer `opus`; Part A pure with an
               injected `CommandRunner` → STOP → wiring into `commands/jobs.rs`): the 3.2 pre-upload
               read-only call (realpath incl. `<root>/bin`, wrapper "already hashes right") + wrapper
               upload (temp + rename, o13.1); coordinates persisted `Queued` before any ssh (o3.1); rsync

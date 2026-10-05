@@ -10577,3 +10577,17 @@ profile was never verified. Next: **5.3** `SshBackend` wiring.
   status on a live remote job — guard it or unregister it; **LOW-6** an input with `! PALn` and no
   `%pal` gets `%pal nprocs <mask count>` inserted, as a local run does (ADR open question) — no action.
 - Next: re-verify, commit on Anton's approval, then B1 Part B.
+
+## [2026-10-05] session | 5.3 A2, B0 and B1 Part A landed
+- Done this session: 5.3 Part A2 (`ff0b5e1`, ADR-024 o13); Part B decomposed into B0–B4
+  (`a8421d3`); B0 probe on uni (`367d63a`, all A2-deferred facts confirmed); B1 Part A (`b0c2d0c`,
+  ADR-024 o14: trampoline, `%pal` downward-only, `tsp/` by install, error_message, cancel guard).
+  A2 through B0 pushed; `b0c2d0c` and this entry not yet pushed.
+- **Next (Anton: next session): B1 Part B** — wire into commands: `submit_job(app, id, target)`
+  (remote via `ssh_backend::submit_remote` in `spawn_blocking`, returning `SubmitAttempt` incl. the
+  `%pal` notice), `cancel_job` via `Backend::for_job`, new retry / withdraw / label commands, the
+  per-job in-flight guard (o4, shared with B2), status events for remote rows.
+- Carried into B1 Part B from the verifier: **LOW-3** `update_job_status` (`commands/jobs.rs:814`) can
+  set any status on a live remote job — guard or unregister; **LOW-7** the post-label coordinate
+  re-check in `resubmit_remote` has no test that bites — add a fake-runner test or drop it with a
+  "coordinates are write-once" comment. **LOW-6** (`! PALn` without `%pal`) stays an ADR open question.
