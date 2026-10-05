@@ -29,7 +29,7 @@ fn cancel(&self, h: &JobHandle) -> Result<()>;
 - **`LogChunk { offset: u64, data: String }`** — one incremental log slice; `offset` is the **new**
   byte offset *after* `data`, fed back on the next poll so reads resume where they stopped (and
   survive an app restart once persisted — ADR-003).
-- **`FetchPolicy { include_gbw: bool }`** — output/xyz/hess always; the large `.gbw` is opt-in.
+- **`FetchPolicy { include_gbw: bool }`** — the shared artifact-pattern list always (ADR-024 o6, wired in 5.3); the large `.gbw` is opt-in.
   **Degenerate for local** (everything is already on disk); it exists now because it shapes
   `SshBackend` (ADR-023).
 
@@ -233,8 +233,8 @@ scripts + classifier (done), 5.3 wiring, 5.4 cancel/reconnect, 5.5 preflight.
 - **Status:** a pure classifier over a raw-fact snapshot from the server (ADR-024 l, precedence
   table). The server filesystem is the source of truth (ADR-024 c). The classifier itself exists
   (pure, unwired): [remote-jobs.md](remote-jobs.md).
-- **Poll / fetch:** byte-offset `poll_log` and selective rsync down per `FetchPolicy` (output/xyz/hess
-  always, gbw opt-in), wired in 5.3.
+- **Poll / fetch:** byte-offset `poll_log` and selective rsync down per `FetchPolicy` (the shared artifact-pattern
+  set, ADR-024 o6; gbw opt-in), wired in 5.3.
 
 ## Invariants (both backends)
 

@@ -1427,19 +1427,27 @@ preflight. The remaining items (remote `orca_plot`, pause) are not numbered yet.
       [modules/remote-jobs.md](wiki/modules/remote-jobs.md).
 - [ ] **Unit 5.3 — `SshBackend` wiring** via system `ssh`/`rsync`: rsync job dir up → the 5.2
       wrapper via task-spooler (per-slot `TS_SOCKET`) → byte-offset `poll_log` of output → selective
-      rsync down (output/xyz/hess/`.tsp-out/` always; gbw opt-in); `enum Backend` (ADR-023). Also per
-      ADR-024 (m)/(n):
+      rsync down (the shared artifact-pattern list + markers + `.tsp-out/`; gbw opt-in, ADR-024 o6); `enum Backend` (ADR-023). Also per
+      ADR-024 (m)/(n)/(o):
       - `TMPDIR=<job>/.tsp-out` on every enqueue;
       - re-check `KillUserProcesses` on every submit;
-      - the slot check (cores intersect, all non-terminal jobs);
-      - the collector gains `Cpus_allowed_list`;
+      - the slot check scans the server (o9: every own-uid wrapper/pinned process + live queues,
+        accounted by this slot's running rows), inside the submit call's per-account `flock` (o3.3, o9);
       - the ssh-stdin script shape (n item 11);
-      - each job stores its own job dir, socket and host;
-      - refuse host/root edits while jobs are non-terminal.
+      - schema v20: each job stores its own job dir, socket and host (o1); local queries filter them out;
+      - refuse host/root edits, cancel/delete and profile delete while jobs are non-terminal; the one
+        exit is **withdraw** of a job not (fully) on the server (o2, o3.4);
+      - submit = upload `--checksum` → **one atomic server call** under `flock -w` (expected sha256 in
+        the NUL list, slot scan, then the `.submitting` claim, enqueue with `9>&-`) (o3.3); a read-only
+        label call per queued job (o3.4); withdraw status from the classifier (o2);
+      - one poller, resumed at launch: offset `poll_log` (`LogChunk` → bytes + `reset`) and
+        collector/classifier; fetching outcomes download + sha256-verify (o4, o6, o7);
+      - one shared artifact-pattern list for `curated_match` and the rsync filter (o6);
+      - run-target dropdown next to Submit (o5). Probes 5.3a–c done (o12).
 - [ ] **Unit 5.4 — cancel, pending cancel, reconnect loop, new states.** The 5.2 cancel script over
       ssh; a cancel made outside the window is stored as pending and runs first on reconnect
       (ADR-024 i); the reconnect loop runs the 5.2 classifier for every non-terminal remote job;
-      `Lost` (terminal) and `Cancelling` (transient) join `JobStatus` (ADR-024 d); schema v20 (renumbered: v19 = the 5.1 Part B profile columns, ADR-024 n) adds
+      `Lost` (terminal) and `Cancelling` (transient) join `JobStatus` (ADR-024 d); schema v21 (renumbered: v19 = the 5.1 Part B profile columns, ADR-024 n; v20 = the 5.3 job coordinates, ADR-024 o) adds
       the re-enqueue counter (incremented **before** the re-enqueue, ADR-024 l), the pending-cancel
       record, and the pending submit with its refusal counter (ADR-024 m). The
       `uploading`/`syncing` transient states are not yet assigned to a unit.

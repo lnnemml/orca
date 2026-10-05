@@ -10275,3 +10275,67 @@ steps 4–6 against `uni`, which were blocked on 2026-10-04 while the server was
 Tree re-checked against the verified hash `ff0bfacb` before and after the commit (`9801597`); ROADMAP
 5.1 ticked. Open cosmetic nit, not blocking: "the verification was cleared" is shown even when the
 profile was never verified. Next: **5.3** `SshBackend` wiring.
+
+## [2026-10-05] decision | ADR-024 (o): unit 5.3 transport, sync and monitoring; probe 5.3a
+- **Anton decided** (orchestrator leans accepted):
+  - schema **v20** = the 5.3 job coordinates (host, remote job dir, socket); 5.4's columns → **v21**;
+  - 5.3 monitors by **online-only polling**: offset `poll_log` + collector/classifier on a timer;
+    only `Exited` acts (final download + parse), the rest is shown, 5.4 adds the actions;
+  - the run target is a dropdown next to Submit (Local + current run targets, per-project memory);
+  - nothing is deleted on the server in 5.3.
+- **Probe 5.3a** (uni, as `anton`) → [orca/remote-sync-probe.md](orca/remote-sync-probe.md). Key
+  facts: `--mkpath` needed for a missing parent (rc 11 otherwise); `--partial` publishes a half file
+  under its final name; `tail -c +K` past EOF is empty with rc 0, so the reader must compare the
+  `stat` size; byte-offset polling rebuilt a UTF-8 file sha256-exact; a SIGKILLed rsync orphans the
+  remote sender ≥ 40 s.
+- **Orchestrator catch:** the probe's hand-written download filter omitted `input.property.txt`
+  (the ADR-012 parse source), `.relaxscan*.dat` and `.final.interp`. ADR-024 (o) item 5 therefore
+  derives the set from the readers' filenames, gated by a negative-control test.
+- Next: verifier DESIGN on (o), then 5.3 Part A.
+
+## [2026-10-05] decision | ADR-024 (o): DESIGN rounds 1–2 FAIL → escalated; Anton: apply all + round 3
+- **Round 1 FAIL** (H1–H4): local paths could not tell a remote job from a local one (the local queue
+  would run it, startup reconcile would fail it, cancel would mark it `Cancelled` while it ran);
+  "Exited" was not a classifier outcome; no upload post-condition; no submit ordering. **Anton**:
+  remote jobs keep `Queued`/`Running` with local queries filtered by coordinates; the poller resumes
+  on launch (read + fetch only); cancel/delete and profile delete refused until 5.4; the slot check
+  scans the server's processes (own uid).
+- **Probe 5.3b** ([orca/remote-sync-probe.md](orca/remote-sync-probe.md)): the wrapper bash is not
+  pinned (only ORCA under `taskset` is); `Cpus_allowed_list` is inherited; own-uid scan 0.65 s with
+  builtins; an app-spawned persisted master does not hold the runner's pipes after a session, but
+  does during one; a laptop-side kill does not stop remote work.
+- **Round 2 FAIL** (HIGH-1: my rewrite refused any core overlap, which defeated the server queue and
+  dropped (l) round-5 MED-1's accounting rule; HIGH-2: a failed submit was stuck in `Queued` with no
+  exit). Second FAIL in a row → escalated. **Anton**: apply every finding and run round 3; a job not
+  (fully) on the server leaves `Queued` by **withdraw** through the 5.2 `cancel.sh` while the host
+  answers.
+- Rewrite: submit = upload `--checksum` → verify call → enqueue call under a per-account `flock`
+  with a `.submitting` claim; two labelled states ("not on the server", "submit interrupted"); the
+  slot check counts every own-uid wrapper/pinned process and live queue, accounted by this slot's
+  running rows; one shared pattern list for `curated_match` and rsync; `LogChunk` → bytes + `reset`.
+  Probe 5.3c (`flock` across ssh sessions, queued-row command column) is due before Part B.
+
+## [2026-10-05] decision | ADR-024 (o): round 3 FAIL → Anton: single atomic submit call; probe 5.3c
+- **Round 3 FAIL** (HIGH-A: the submit labels were incomplete and a withdraw hard-set `Cancelled`;
+  HIGH-B: the `.submitting` claim came before the refusal points, so a "slot busy" refusal became
+  withdraw-only; HIGH-C: a fresh `tsp` daemon could inherit the `flock` fd). Third FAIL → Anton.
+- **Anton:** stop patching the two-call protocol — the submit becomes **upload + one atomic server
+  call** (expected sha256 in the NUL list; lock → checks → slot scan → claim → enqueue); the status
+  after a withdraw comes from collect + `classify`. DESIGN round 4 reviews o3/o9 only.
+- **Probe 5.3c** ([orca/remote-sync-probe.md](orca/remote-sync-probe.md)): HIGH-C is real — without
+  `flock -o`/`9>&-` a fresh tsp daemon and its task keep the account lock for life; with either, no.
+  `flock -w` works across ssh sessions, and a laptop-side kill does not release the lock (the remote
+  script keeps it until it ends). `tsp -l` rows of 552 chars come back whole; the mask is the token two
+  after `wrapper-<hex>.sh` in every row state. `ln -sT` claim: rc 1 "File exists" on the second try.
+  `/proc/net/unix` has no uid column, so qualifying sockets are filtered by layout + `-O`.
+
+## [2026-10-05] decision | ADR-024 (o) accepted — DESIGN round 4 PASS WITH FINDINGS, findings applied
+- Round 4 reviewed items 2, 3, 9 (single-call submit, label call, withdraw, server scan): all round-3
+  findings closed. New: **MED-A** — every `tsp` call inside the lock (`-l` too) gets `9>&-`, since a
+  `tsp -l` on a stale socket can start a daemon that inherits the lock; **MED-B** — the laptop timeout
+  does not bound the remote holder. **Anton:** each blocking child under `timeout N`, and "lock busy"
+  names the holder PIDs. LOW-1…8 applied (withdraw may yield row 1; per-account serialisation is the
+  server lock's; realpath pre-check before rsync; stale extra file → withdraw; collect always gets the
+  recorded + `.enqueued` socket; socket `Error` → classifier; ≤ 1000 files, two NUL values per file;
+  inference labels).
+- Next: commit the ADR + probe pages (docs only), then unit 5.3 Part A (implementer, `opus`).

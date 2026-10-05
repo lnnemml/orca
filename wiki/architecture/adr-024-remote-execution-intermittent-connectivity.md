@@ -1,6 +1,6 @@
 # ADR-024: Remote execution under intermittent connectivity
 
-**Status:** Accepted · 2026-10-02 (Proposed → Accepted after the review + acceptance amendments below) · amended 2026-10-03 (probe; probe review; d′ resolution — ready for implementation; l — unit 5.2 script and classifier shape; m — 5.3 submit rules; n — 5.1 Part B profile and connection test)
+**Status:** Accepted · 2026-10-02 (Proposed → Accepted after the review + acceptance amendments below) · amended 2026-10-03 (probe; probe review; d′ resolution — ready for implementation; l — unit 5.2 script and classifier shape; m — 5.3 submit rules; n — 5.1 Part B profile and connection test) · amended 2026-10-05 (o — 5.3 transport, sync and monitoring; accepted after DESIGN round 4)
 
 Refines [ADR-003](adr-003-execution-backend.md) (the `ExecutionBackend` trait + job state
 machine) and extends [ADR-023](adr-023-server-agnostic-remote-execution.md) (one `SshBackend`
@@ -534,7 +534,7 @@ decomposition; Anton decided every fork, before and after DESIGN review rounds 1
 - **The outcome type is the classifier's own enum:** `Queued`, `Running`, `Completed { late_cancel }`,
   `Failed { reason }`, `Lost { orphans }`, `Cancelling`, `Cancelled`, `Indeterminate`, `ReEnqueue`.
   `Lost` and `Cancelling` join `JobStatus` only in 5.4, so 5.2 does not change `JobStatus`.
-- **The re-enqueue count is an input.** The `jobs` column (schema v19 *(renumbered v20 by Decision n: v19 is the 5.1 Part B profile columns)*) lands in **unit 5.4**. The bound
+- **The re-enqueue count is an input.** The `jobs` column (schema v19 *(renumbered v20 by Decision n: v19 is the 5.1 Part B profile columns; then v21 by Decision o: v20 is the 5.3 job coordinates)*) lands in **unit 5.4**. The bound
   holds only if 5.4 **persists the increment before** it issues the re-enqueue (review M5). Otherwise
   a crash between `tsp` submit and the DB write would re-enqueue again, without limit.
 
@@ -633,7 +633,7 @@ review pending, together with the 5.3 decomposition).**
    - The name differs from `.tmp`, which cancel removes.
    - The file holds only the wrapper's own messages (ORCA writes to `output.out`), so it stays with
      the job: it is **always fetched** with the job's results (round 1 MED-8; the always-fetched set
-     becomes output/xyz/hess/`.tsp-out/`) and goes away with the job dir (rule #3).
+     becomes output/xyz/hess/`.tsp-out/`; *superseded by o item 6: one shared artifact-pattern list feeds `curated_match` and the rsync filter*) and goes away with the job dir (rule #3).
    - **Open (5.3/5.4):** the policy for removing a job dir on the server after a successful fetch is
      not decided. Until it is, nothing removes remote job dirs.
    - Creation is idempotent (`mkdir -p`, also on a ReEnqueue). If it fails, the submit refuses and
@@ -651,10 +651,10 @@ review pending, together with the 5.3 decomposition).**
    - **No automatic action** ever frees a slot: a blocked slot almost always means something really
      is still computing on those cores (rule #8).
    - **Persistence and sequencing** (round 1 MED-9): the pending submit and its refusal counter live
-     in the local DB. Unit **5.4** adds them with the v20 migration, next to the re-enqueue counter,
+     in the local DB. Unit **5.4** adds them with the v21 migration *(renumbered from v20 by Decision o: v20 is the 5.3 job coordinates)*, next to the re-enqueue counter,
      and runs the re-check from its reconcile loop. Until 5.4, a refused submit simply fails with
      the blocking job named.
-3. **"On the slot's mask" means the cores intersect.**
+3. **"On the slot's mask" means the cores intersect.** *(Scope widened by o item 9: the scan covers every process and live queue of the account, not only the profile's jobs, and runs once inside the submit call instead of through per-job collects; the accounting rule of l round-5 MED-1 stays.)*
    - A session's cores come from the wrapper's mask argument (argv[3]) or, for an orphan, from
      `Cpus_allowed_list` in `/proc/<pid>/status`.
    - The check covers **every non-terminal job of the profile**, across all sockets, including
@@ -774,6 +774,267 @@ review pending, together with the 5.3 decomposition).**
     - post-condition (rule #9): the script echoes the received argument count, and the Rust side
       asserts it equals what was sent (values too, see 6d);
     - **the same rule applies to 5.3:** any script fed through ssh stdin follows this shape.
+
+**o) Unit 5.3 — transport, sync and monitoring** (2026-10-05; decided by Anton in four rounds, the
+rest derived from probes 5.3a/5.3b/5.3c — [orca/remote-sync-probe.md](../orca/remote-sync-probe.md).
+DESIGN rounds 1–3 FAILed, each escalated to Anton. After round 3 Anton chose to **simplify the submit
+to one atomic server-side call** (items 3, 9) rather than patch the two-call protocol, and that the
+status after a withdraw comes from the classifier. DESIGN round 4 → PASS WITH FINDINGS (MED-A/B, LOW-1…8),
+findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a holder notice).
+**Accepted** 2026-10-05.)
+
+1. **Schema v20 = the job coordinates of n 6b** (Anton). `jobs` gains `remote_host`, the absolute
+   remote job dir and the socket, written once and never rewritten from the profile. 5.4's columns
+   (re-enqueue counter, pending cancel, pending submit) move to **v21**.
+   - **A job is remote iff its coordinates are non-NULL.** Dispatch (`enum Backend`) keys on the
+     coordinates, never on `backend_id`. Remote jobs keep `Queued`/`Running` in `jobs.status`
+     (Anton); **every local-only query filters `remote_host IS NULL`** — today exactly
+     `try_start_next` (`local_backend.rs:350`) and `reconcile_on_startup` (`:644`).
+   - The remote job dir is `<remote_scratch_dir>/jobs/<job_id>`. Before any ssh it is checked against
+     the path rule of (l) detail 4 (the root as the connection test stamped it). On the server,
+     the submit call asserts `realpath <job> == <job>` and `realpath <job>/.. == <root>/jobs` (l
+     detail 4; shapes measured, probe 5.3c — a path reached through a symlink fails the first).
+2. **Refusals and the one exit, until 5.4** (Anton; extends n 6b).
+   - For a non-terminal remote job, `cancel_job` and `delete_job` refuse with "remote cancel arrives
+     in unit 5.4" — never a local `Cancelled` (Decision i). `delete_server_profile` refuses while the
+     profile has non-terminal jobs (today it NULLs `backend_id`, `server_profiles.rs:205`, which would
+     turn the job local).
+   - **Withdraw** (Anton, round 2 fork, closes round 2 HIGH-2): a job in the **"not on the server"**
+     or **"submit interrupted"** state (item 3.5) can be withdrawn **while the host answers**:
+     `mkdir -p <job dir>` then the 5.2 `cancel.sh cancel` (it needs the dir; it publishes
+     `.cancelled` first, so a late enqueue's wrapper refuses at its step 2, and it only `tsp -r`s a
+     verified row). On rc 0 **one collect + `classify` decides the status** (Anton, round 3): row 4
+     `Cancelled`, row 3 `Cancelling` (shown, 5.4's), or row 2 `Completed{late_cancel}` — a job that
+     did run cleanly keeps its result — or row 1 `Failed{CorruptStarted}` (a wrapper that started
+     before `.cancelled` and left a corrupt `.started`; stays `Queued`, shown, 5.4's, item 4). Never a hard-coded `Cancelled` (Decision c). Once terminal, the
+     profile can be edited or deleted.
+   - Negative controls: a remote `queued` row is not started by `try_start_next`; a remote `running`
+     row survives `reconcile_on_startup` unchanged; cancel of a remote queued job and delete of its
+     profile are refused; withdraw of a "not on the server" job leaves `.cancelled` on the server and
+     the row `Cancelled` via the classifier; withdraw of a job that has `.exit_code` 0 and a normal
+     termination yields `Completed`.
+3. **Submit = upload + one atomic server-side call** (Anton, round 3; closes round 3 HIGH-B/C, MED-4
+   and removes the two-call TOCTOU of round 2 MED-1). The DB knows the coordinates before any remote
+   side effect; the server is the source of truth (Decision c).
+   1. Derive the coordinates and persist them with status `Queued` in one transaction — before any
+      ssh. Submits are serialised **per account** by the server lock (3.3.1), aliases included; the
+      app adds no per-host guard. The per-job in-flight guard (item 4) keeps one operation per job.
+   2. **Upload:** `rsync -a --checksum --mkpath <local job>/ <host>:<remote job>/` (item 6). rc must
+      be 0. `--checksum` so a retry does not trust size+mtime over a wrong remote file (rsync semantics,
+      **inference** — not load-bearing: the 3.3.4 hash check is the post-condition). **No
+      `--delete`**: it would run before the no-marker assert and could touch a live dir. **Before**
+      the rsync, a read-only call asserts the realpath shapes of item 1 for every existing component
+      (`<root>`, `<root>/jobs`, `<root>/jobs/<id>` if present), so the upload never writes through a
+      symlinked component (round 4 LOW-6). **A stale extra file** (e.g. an rsync temp left by a
+      killed upload — whether the remote receiver leaves one is **not measured**) makes every retry
+      refuse with that file named; the exit is **withdraw** and a new job (round 4 LOW-5).
+   3. **One submit call** (n-11 shape). Its NUL list carries the job dir, root, slot socket, slot
+      mask, ORCA path and the **expected name + sha256 of every uploaded file** — **two NUL values per
+      file**, within n-11's echoed count; Rust refuses a job dir of more than 1000 files before any
+      ssh — so the server checks the upload itself and no Rust step sits inside the protocol. In order:
+      1. `exec 9>"$HOME/.orcastudio-submit.lock"; flock -w 20 9` — one lock per account, outside
+         every root, so submits from profiles aliasing one host serialise. Timeout → refuse "lock
+         busy". (Measured, probe 5.3c: `-w` returns rc 1 after the wait across ssh sessions; the lock
+         is released when the script exits; **a laptop-side kill does not release it** — the
+         remote script keeps it until it ends, which the 20 s wait and the call's own bound limit.)
+         The call's ssh timeout is 60 s (> wait + scan + enqueue).
+         - **Every `tsp` invocation inside the lock (`-l` included) and every child that may outlive
+           the script runs with `9>&-`**, like `</dev/null` (round 4 MED-A): a `tsp -l` on a stale
+           socket starts a daemon by the same fork path (5.2b), and a daemon that inherits fd 9 keeps
+           the account lock for life (5.3c C2). Negative control: a `tsp -l` on a stale socket inside
+           the lock leaves `flock -n` succeeding after the script exits.
+         - **The holder is bounded on the server** (Anton, round 4 MED-B): every child that can block
+           inside the lock (`tsp`, `busctl`, `sha256sum`, the scan's reads) runs under `timeout N`
+           (N per call, sum < 40 s); a timeout refuses (before the claim) or is `failed-after-claim`
+           (after it). The laptop-side 60 s does **not** bound the remote script (5.3b fact 4, 5.3c
+           C1) — only the waiters' 20 s is bounded by `flock -w`.
+         - **A "lock busy" refusal names the holder PIDs** (own-uid `/proc/*/fd` entries resolving
+           to the lock file) and their cmdlines, so a stuck holder can be found and killed by hand.
+      2. `KillUserProcesses` re-check; the realpath asserts of item 1.
+      3. **No marker** (`.started`, `.enqueued`, `.exit_code`, `.cancelled`, `.submitting`) and **no
+         row holding this job dir** on the slot socket (after the `/proc/net/unix` check; `NoDaemon`
+         = no rows; a failed `tsp -l` refuses).
+      4. **Upload post-condition (rule #9):** the set of files under the job dir (excluding
+         `.tsp-out/`) and their sha256 equal the expected list; a refusal **names** the missing,
+         extra and differing files (an rsync temp left by a killed upload is an "extra"). Negative
+         control: one corrupted uploaded byte → refused.
+      5. **The slot check of item 9.**
+      6. `mkdir -p .tsp-out` (not a marker; harmless if the submit later refuses).
+      7. **Claim:** `ln -sT x .submitting` — no-clobber, rc 1 "File exists" on a second claim
+         (measured, probe 5.3c; a symlink claim — (l) publishes `.started` by a hard-link `ln -T` and
+         `.enqueued` by rename; all three are no-clobber). **Every refusal so far wrote no
+         claim**, so the job stays "not on the server" and retry — or 5.4's pending re-check — remains
+         possible (round 3 HIGH-B).
+      8. Enqueue: `TMPDIR=<job>/.tsp-out TS_SOCKET=<sock> tsp bash <wrapper> <job> <mask> <orca>
+         9>&-`. **The lock fd is closed for tsp** — without that a fresh daemon and its task inherit
+         it and hold the account lock for their whole life (measured, probe 5.3c; `9>&-` and `flock
+         -o` both prevent it). Then publish `.enqueued` (the (l) atomic form) and the (l)
+         post-condition (the socket verbatim in `/proc/net/unix`, measured verbatim for a 90-byte
+         path).
+      9. The script reports one of: `refused <reason>` (nothing claimed), `enqueued <id>`, or
+         `failed-after-claim <reason>` (claim stays; the label call of 3.4 decides from the server).
+      Negative controls: a fresh daemon started by a submit does not hold the lock afterwards
+      (`flock -n` succeeds); a slot-check refusal leaves no `.submitting`; a concurrent second submit
+      for the same host waits on the lock and then sees the first one's claim/row.
+   4. **The label call** (round 3 HIGH-A). For every remote `Queued` job, before any collect, the
+      poller runs one **read-only** call reporting: the dir exists, which markers exist, and the
+      rows holding the job dir on the recorded socket (after `/proc/net/unix`). Labels, **checked in
+      this order**:
+      1. no dir → **"not on the server"**;
+      2. any of `.started`, `.exit_code`, `.cancelled`, `.enqueued`, or a row → **the classifier's**
+         (collect + `classify`, item 4);
+      3. `.submitting` → **"submit interrupted"** (claimed, never enqueued, or the call is still
+         running on the server);
+      4. otherwise → **"not on the server"**.
+      A socket **`Error`** (a failed `tsp -l`) hands the job to the classifier (row 10
+      `Indeterminate`), never to "not on the server" (round 4 LOW-4).
+      "Not on the server" offers **retry** (3.2–3.3) and **withdraw** (item 2); "submit interrupted"
+      offers **withdraw** only, never retry in 5.3. A withdraw's `.cancelled` moves the job to rule 2,
+      so a lost withdraw reply is not a dead end. The collector is never run on a missing dir.
+   5. **5.4's `ReEnqueue` is a different variant** (round 3 MED-3): a restart-dropped job already has
+      `.submitting` and `.enqueued`, so this call would refuse it. The variant asserts no `.started`,
+      `.exit_code`, `.cancelled` and no row, claims a name keyed by the v21 counter
+      (`.reenqueue-<n>`, `ln -sT`), re-checks the slot and replaces `.enqueued` by rename. Its exact
+      form is 5.4's; it is never a bare `tsp` re-enqueue.
+4. **Monitoring is polling while the host answers; it resumes on launch** (Anton). One loop over all
+   non-terminal remote jobs, started at app launch; 5.4 **extends this loop**, it does not add a
+   second one.
+   - `poll_log` by byte offset (item 7) feeds the live convergence view while the job's view is open.
+   - The collector + classifier run on a timer for jobs the label call (3.4) hands to the classifier.
+     **Collect is always passed the job's recorded socket (o1) plus the `.enqueued` socket**, never
+     the profile's current sockets (n 6b) — so a withdrawn job without `.enqueued`, or a
+     failed-after-claim job with a row but no `.enqueued`, still has a socket fact (`classify`
+     errors with `NoSocketFacts` on none, `classify.rs:105`) (round 4 LOW-3). **The fetching
+     outcomes** are exactly the rows that need `.exit_code`: `Completed{..}` (rows 2, 5) and
+     `Failed{NonZeroExit | BadExitCode | NoNormalTermination}` (row 6). Both download (item 6); the
+     final status comes from `detect_completion` on the **downloaded** files (rule #6). A failed
+     job's output is downloaded too — it is the debugging evidence.
+   - Every other outcome (`Queued`, `Running`, `Indeterminate`, `ReEnqueue`, `Lost`, `Cancelling`,
+     `Cancelled`, `Failed{CorruptStarted}`) is **shown, with "handled in unit 5.4" where it needs an
+     action**; the row stays `Queued`/`Running` (so it still blocks profile edits and deletion).
+     5.3 passes `reenqueue_count = 0` (the column is v21's), so `Failed{WrapperNeverStarted}` cannot
+     occur in 5.3.
+   - **One in-flight guard per job** covers submit, withdraw, collect and fetch: a tick skips a job
+     with an operation still running.
+   - **Bounded retries:** after 3 consecutive failed fetches of a fetching outcome, automatic retries
+     stop, the reason is shown, and a manual retry is offered.
+   - The retry counter, the in-flight guard and the log offset live in memory and **reset on
+     launch**; the bound holds per launch.
+   - Initial periods: log 2 s while the view is open, status 15 s. Tunable; not a contract.
+5. **The run target is chosen next to Submit** (Anton): `Local` plus every profile that passes the
+   same run-target predicate submit uses (n item 2); the others are listed disabled with their
+   reason. Default `Local`; the last choice is remembered per project. **Nothing is deleted on the
+   server in 5.3** (Anton): the remote job dir stays after download; cleanup is a later unit, once
+   disk use is measured.
+6. **rsync rules (measured, probe 5.3a):**
+   - **Both transports get the same ssh options:** rsync runs with `-e 'ssh -o BatchMode=yes -o
+     ConnectTimeout=10'` (as `ssh_bash_argv`), through `SystemRunner` (own process group, timeout
+     kill). The timeout scales with the expected bytes (an opt-in `.gbw` is large).
+   - **Up:** item 3.2. Without `--mkpath` a missing parent fails with rc 11 (measured); a repeated
+     upload is a no-op (measured). Whether a partial multi-file upload leaves the earlier files
+     complete under their final names is **inference** (only a single-file drop was measured) — the
+     set-and-hash post-condition of item 3.3 makes that irrelevant.
+   - **Down: never `--partial`.** With it an interrupted transfer leaves the half file under its
+     **final name** (rc 12, measured). Without it, a killed ssh child left nothing (single file,
+     measured; a real network drop is not measured).
+   - **The download set has one source** (rounds 1 M1, 2 MED-4): one `pub const` list of glob
+     patterns in one module. **Both** `export_group::curated_match` and the rsync filter args are
+     derived from it (the readers use its names). It is not restated here — the code is the list.
+     The markers (`.exit_code`, `.started`, `.enqueued`, `.cancelled`, `.submitting`), `stderr.log`
+     and `.tsp-out/` (needs **both** `--include=.tsp-out/` and `--include=.tsp-out/**`, measured) are
+     added for the download; `*.gbw` only when the job opts in. **Gates:** (a) a fixture dir with
+     every pattern's example names plus negatives (`input.gbw`, `input.tmp`, `input.densities`,
+     `.tmp/x`, `sub/deep.xyz`) goes through the **real local rsync** with the derived args, asserted
+     in both directions; (b) **parity:** for every fixture name, `curated_match(name)` == "came down
+     via rsync" (minus the download-only extras). Negative controls: drop one include → red; `*.gbw`
+     without opt-in → red; a pattern added to `curated_match` only → parity red.
+   - **Post-condition of the final download:** after rsync rc 0, one server call lists name + `sha256`
+     of every file the same filter selects (excluding `.tsp-out/`); the **filter-selected local
+     subset** must equal that set and every hash match. A mismatch is a failed fetch (item 4's
+     bound), not a parse. That the files are static once `.exit_code` exists is **inference** (the
+     wrapper writes `.exit_code` last, (l)); the hash check catches it if it is ever wrong.
+   - **Residual (measured under a different kill):** a SIGKILL of the rsync *process alone* left a
+     `.<name>.XXXXXX` temp file locally and an orphan remote sender alive ≥ 40 s. `SystemRunner`
+     kills the *group*; that case is not measured. `export_group`'s Full mode skips `.*.??????` rsync
+     temp names ([modules/group-export.md](../modules/group-export.md) updated in the same change).
+7. **`poll_log` over ssh (measured):** one call, size first —
+   `sz=$(stat -c %s f); echo "$sz"; head -c "$sz" f | tail -c +$((off+1)) | head -c CAP`, framed in
+   the 5.2 length-prefixed wire format.
+   - **`LogChunk` changes:** raw `bytes` and `reset: bool` instead of a lossily decoded `String`; the
+     consumer keeps a byte carry and decodes complete lines only (66 polls rebuilt a file with Å/ü/→
+     sha256-exact). `LocalBackend` implements the same shape.
+   - `tail -c +K` past the end returns empty with **rc 0** (measured): **`size < offset` ⇒ `reset`** —
+     offset to 0, the live state dropped. (Inference: a replacement that grows past the offset is
+     invisible; `.started` refuses a second wrapper in one dir.)
+   - Post-condition: ssh rc 0, the size header parses, and `len(bytes) == min(CAP, sz − off)` when
+     `sz ≥ off`. An absent `output.out` returns no bytes at the same offset, not an error. `CAP` stays
+     under `MAX_OUTPUT_BYTES` (1 MiB) minus framing.
+   - Live parsing is an estimate; completion is decided by item 4 only.
+8. **ssh multiplexing is the user's `~/.ssh/config`'s business** — OrcaStudio adds no `ControlPath`
+   (≥ 108 bytes fails with rc 255, measured). Probe 5.3b (a Python emulation of the runner's pipes;
+   its `communicate()` waits for EOF, so it is not exact on the kill path):
+   - an app-spawned ssh that becomes the persisted master does not hold the caller's pipes after the
+     session (separate reparented process, fds 0–2 on `/dev/null`): 0.71 s cold, 0.11–0.13 s warm;
+     rsync with the item 6 `-e` options 0.95 s / 0.28 s;
+   - during a session the master holds the session's pipes, so a reader that waits for EOF after a
+     kill waits until the remote command ends. **`SystemRunner` already returns at the deadline right
+     after `killpg` without draining** (`ssh.rs:225-228`); keep that. New negative control: a muxed
+     `sleep 30` with a 2 s timeout returns in < 5 s. Reader threads are left until the remote command
+     ends;
+   - **a laptop-side kill does not stop remote work** (with or without the mux) — hence item 3.4's
+     "submit interrupted" is never retried.
+9. **The slot check scans the server** (Anton; restates (l) round-5 MED-1, which stays in force).
+   Inside the submit call's lock (3.3.5):
+   - **"Full set"** = the scanning shell's own `Cpus_allowed_list` (reasoning, not measured: so a cpuset
+     cgroup would not mark everything pinned); unreadable → refuse (fail closed).
+   - **Candidates** (own uid only; other users' cwd is EACCES — measured): every **wrapper** —
+     argv element-wise `bash`, a path of the shape `*/bin/wrapper-<hex>.sh` (any root of this
+     account), job dir, mask — with its argv[3] mask (the wrapper bash itself is **not** pinned,
+     `0-47`, measured); and **every process whose `Cpus_allowed_list` differs from the full set,
+     whatever its cwd** (rule #8; the list is inherited by children and grandchildren, measured).
+     Match argv element-wise, never a grep of the joined cmdline (measured: the scanning `bash -c`
+     holds the wrapper text). A failed read means "gone" (ENOENT races measured); unreadable-cwd
+     own processes and zombies are skipped unless pinned.
+   - **Queued work:** every socket in `/proc/net/unix` whose path has the layout
+     `<dir>/tsp/slot<N>.sock` (`remote/mod.rs:49`) **and** is owned by us (`[[ -O path ]]` — the
+     file has no uid column; `-O` measured true for ours, false for root's) is read with `tsp -l`;
+     each **queued** row contributes its mask = the token two after the `wrapper-<hex>.sh` token
+     (measured in queued, running and finished rows, lines up to 552 chars, no truncation with or
+     without a tty/`COLUMNS`; parse from the command side, never by column index — the Output column
+     is `(file)` for queued rows and a path otherwise). **A failed `tsp -l` on a qualifying socket
+     refuses** (`Error`). Other paths are ignored.
+   - **Accounted for:** a wrapper whose argv[2], or a pinned process whose **cwd equals** a job-dir
+     token (exact equality, as (l)'s cwd filter), matches a `running` row of **this slot's own
+     daemon**; and this daemon's own queued rows. **Blocks:** any other candidate whose cores
+     intersect the slot's mask. `NoDaemon` on this slot → every intersecting candidate blocks;
+     `Error` → the submit refuses. Refusals name the blockers. Until 5.4 a refused submit fails with
+     the blockers named (m2); it wrote no claim (3.3.7), so it stays retryable.
+   - Cost ≈ 0.65 s with bash builtins vs 1.2 s forking per pid (measured) — the builtin form is
+     required.
+   - Negative controls: a submit to a slot with a running job of the same slot is accepted; the same
+     job with its row removed is refused; a queued row on another own socket with an overlapping mask
+     refuses; a pinned `sleep` outside any root with an overlapping mask refuses; an unowned socket
+     matching the layout is ignored.
+   - **Residuals:** processes of **other accounts** on the same host are not checked (Anton's own-uid
+     decision; M6 closed for one account only); a user's own pinned process whose cwd is a running
+     job's dir counts as accounted for; a late queued row left by a withdraw that raced an enqueue
+     blocks other profiles with an overlapping mask until it runs (its wrapper then exits at step 2);
+     the (l) residual (daemon dies between check and submit) stays.
+10. **Every script 5.3 sends through ssh stdin follows n item 11.**
+11. **Propagation.** Superseded by this item and marked where they stand: m1's hand-listed fetch set,
+    m3's per-profile slot scope and its collect-based mechanism (item 9: one scan inside the submit
+    call, over the account), ROADMAP 5.3,
+    `modules/execution-backends.md`, the `FetchPolicy` doc comments (the implementer updates code
+    comments in the same change), and `modules/group-export.md` (item 6's temp-name skip and the
+    shared pattern list).
+12. **Measured for this item:** probes 5.3a, 5.3b, 5.3c. **Open questions:** what `timeout` does
+    to a hung `tsp` client inside the lock; whether rsync's remote receiver leaves a temp file after a
+    laptop-side kill (upload direction); SIGKILL of the lock holder on the server itself; a daemon already running during a second submit (lock inheritance
+    was measured for a fresh daemon); `tsp -l` lines longer than 552 chars; real mpirun/ORCA rank
+    allowed-lists and masks like `0,2,4-5`; scan cost with hundreds of own-uid processes; a master
+    dying mid-session; whether `orca_2json`/`orca_plot` on the laptop read a `.gbw` from the server's
+    ORCA when the recorded versions differ; `--timeout`, `ServerAlive` on a dead link and rsync rc
+    23/24/30 under a real drop.
 
 ## Alternatives rejected
 
