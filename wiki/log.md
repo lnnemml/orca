@@ -10358,3 +10358,9 @@ profile was never verified. Next: **5.3** `SshBackend` wiring.
   `cargo clippy` is not installed on the toolchain.
 - Label order clarified in ADR o3.4: a socket `Error` is checked before `.submitting`.
 - Next: 5.3 A2 — the server scripts (submit, label, poll, listing) with the Lab harness.
+
+## [2026-10-05] session | ADR-024 (o) accepted; 5.3 Part A1 landed; A2 pending
+- Done: 5.1 committed after Anton's live gate; probes 5.3a–c; ADR-024 (o) through four DESIGN rounds
+  (three FAILs escalated, single-call submit adopted); 5.3 Part A1 (`d47623d`), pushed.
+- **Pending (Anton, next session):** 5.3 Part A2 — the server scripts (submit, label, poll, listing)
+  emitting the reply shapes A1 parses; plus the A1 review's cosmetic leftovers. Then Part B.
