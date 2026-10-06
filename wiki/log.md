@@ -10889,3 +10889,20 @@ profile was never verified. Next: **5.3** `SshBackend` wiring.
   - F-4: `modules/tauri-core.md` "Startup sequence" lists `InFlight`, `LiveLog`, `PollerMemory`, the
     `remote-poller` start, and the exit behaviour (o18).
 - Next: verifier CODE on the fixes; then B3 (the view).
+
+## [2026-10-06] session | 5.3 B1 Part B, ADR-024 o15–o18, B2 (poller) landed
+- Done this session: B1 Part B (`e6211f0`; Anton's live check of a local submit passed), ADR-024 o15
+  (`5d95a7c`, the guard's scope incl. cancel), o16 (`7e325e4`, the remote live log is pushed —
+  `watch_job_log`, re-stream, generation counter, unguarded log poll, tail drain), B2 Part A
+  (`1bd4dfe`, the poller core over the fake runner; o17: a classifier `Cancelled` is terminal, drain
+  while watched), B2 Part B (`e154996`, the `remote-poller` loop, `retry_remote_fetch`,
+  `job:log-reset`, the `delete_job` guard; o18: exit leaves in-flight ssh/rsync to the OS).
+  `cargo test` 682 → 761. Not pushed at the time of writing.
+- Anton decided: LOW-3 unregister `update_job_status`; LOW-7 add the test; the cancel guard; delete
+  joins the guard in B2; push for the live log; no guard on the log poll; the poller drains the tail;
+  `Cancelled` terminal; exit leaves children to the OS; F-2 (synchronized ssh bursts) measured in B4
+  before any stagger; a partial-coordinate row shown by B3.
+- Open for 5.4 (ADR-024 Open questions, o17): fetch the evidence of a started-then-cancelled job?
+- **Next session: B3 — UI** (o16.7 view obligations, run-target dropdown, retry/withdraw states,
+  `retry_remote_fetch`, "corrupt coordinates"; Anton's WebKitGTK gate), then **B4** — the live uni
+  run with the measurement list in ROADMAP B4.
