@@ -1,6 +1,6 @@
 # ADR-024: Remote execution under intermittent connectivity
 
-**Status:** Accepted · 2026-10-02 (Proposed → Accepted after the review + acceptance amendments below) · amended 2026-10-03 (probe; probe review; d′ resolution — ready for implementation; l — unit 5.2 script and classifier shape; m — 5.3 submit rules; n — 5.1 Part B profile and connection test) · amended 2026-10-05 (o — 5.3 transport, sync and monitoring; accepted after DESIGN round 4; o13 — Part A2 amendments, accepted after DESIGN review 2026-10-05; o14 — B1 amendments, accepted after DESIGN review 2026-10-05) · amended 2026-10-06 (o15 — B1 Part B: the in-flight guard's scope, accepted after DESIGN review 2026-10-06)
+**Status:** Accepted · 2026-10-02 (Proposed → Accepted after the review + acceptance amendments below) · amended 2026-10-03 (probe; probe review; d′ resolution — ready for implementation; l — unit 5.2 script and classifier shape; m — 5.3 submit rules; n — 5.1 Part B profile and connection test) · amended 2026-10-05 (o — 5.3 transport, sync and monitoring; accepted after DESIGN round 4; o13 — Part A2 amendments, accepted after DESIGN review 2026-10-05; o14 — B1 amendments, accepted after DESIGN review 2026-10-05) · amended 2026-10-06 (o15 — B1 Part B: the in-flight guard's scope, accepted after DESIGN review 2026-10-06; o16 — B2: the remote live log is pushed, accepted after DESIGN review 2026-10-06)
 
 Refines [ADR-003](adr-003-execution-backend.md) (the `ExecutionBackend` trait + job state
 machine) and extends [ADR-023](adr-023-server-agnostic-remote-execution.md) (one `SshBackend`
@@ -905,7 +905,8 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
 4. **Monitoring is polling while the host answers; it resumes on launch** (Anton). One loop over all
    non-terminal remote jobs, started at app launch; 5.4 **extends this loop**, it does not add a
    second one.
-   - `poll_log` by byte offset (item 7) feeds the live convergence view while the job's view is open.
+   - `poll_log` by byte offset (item 7) feeds the live convergence view while the job's view is open
+     *(pushed as the local `job:log`/`job:convergence` events, opened by `watch_job_log` — o16)*.
    - The collector + classifier run on a timer for jobs the label call (3.4) hands to the classifier.
      **Collect is always passed the job's recorded socket (o1) plus the `.enqueued` socket**, never
      the profile's current sockets (n 6b) — so a withdrawn job without `.enqueued`, or a
@@ -1190,7 +1191,8 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
     concurrency; nothing else changes. Accepted after DESIGN review (PASS WITH FINDINGS, findings
     applied; MED-3 decided by Anton) on 2026-10-06.
     1. **The guard covers every operation on one job that reaches the server** — submit to a server,
-       retry, withdraw, label, collect, fetch — **plus cancel**, local or remote. Cancel needs it
+       retry, withdraw, label, collect, fetch — **plus cancel**, local or remote *(the read-only log
+       poll excepted, o16.5)*. Cancel needs it
        because of a race item 4's list leaves open: cancel reads a draft (dispatch picks the local
        backend; `local_backend::cancel`'s o14.5 entry check sees the draft and passes), a concurrent
        remote submit persists it as `Queued` with coordinates (o3.1), and the local cancel's later,
@@ -1220,6 +1222,105 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
     5. **Propagation:** item 4's guard bullet and o14.5 (marked); `modules/execution-backends.md`'s
        guard section; the header comment of `src-tauri/src/in_flight.rs`; ROADMAP B2 (delete joins the
        guard).
+16. **B2: the remote live log is pushed** (2026-10-06; fork raised at B2 start, decided by Anton).
+    It refines item 4's `poll_log` bullet, item 7's consumer and o15.1's guard scope; it adds one
+    command (`watch_job_log`) and one event (`job:log-reset`), and it settles the earlier plan to
+    flip the view from push to pull: the view stays push. Accepted after DESIGN review (PASS WITH
+    FINDINGS, findings applied; MED-3 and HIGH-2 decided by Anton) on 2026-10-06.
+    1. **One live path for both backends.** The poller turns a remote job's `poll_log` chunks into
+       the **existing** `job:log` and `job:convergence` events, with the local payloads and the local
+       emitters (`local_backend::emit_log` / `emit_convergence`, made `pub(crate)` with their
+       payloads, as `emit_status` already is), so the view listens to the same events whatever the
+       backend. Per job it keeps a `LineAssembler` (item 7: raw bytes in, complete lines out, split
+       UTF-8 carried) and a `ConvergenceParser` fed line by line, as the local tail does. One poll is
+       one batch (up to item 7's `CAP`), not the local 50-line / 100 ms batching. Rejected: the view
+       pulling `poll_log` itself — a second code path in the view for remote jobs and a second
+       convergence parse outside Rust.
+    2. **The view says when it is open.** A command `watch_job_log(id, open)` keeps an in-memory
+       count of open views **per job id, whatever the backend** (empty on launch, like item 4's
+       state). Only the poller decides what to poll: the log of a job is polled every 2 s while its
+       count is > 0 **and** it is remote **and** non-terminal **and** no fetching outcome has been
+       classified for it (16.6). So a draft watched before its remote submit is polled once its
+       coordinates exist, a watched local job gets no ssh call, and an open on a terminal job creates
+       no state. The status tick (15 s, item 4) runs for every non-terminal remote job, watched or
+       not.
+    3. **Every open re-streams.** Each `watch_job_log(id, true)` increments the count and resets the
+       job's log state to offset 0 (assembler and parser recreated), emitting `job:log-reset
+       { job_id }` first if state existed, so every open view — new or existing — rebuilds from the
+       start. A close decrements, saturating at 0 (a close with no matching open is a no-op). The
+       last close drops the state, and so do the job turning terminal and its row vanishing, so a
+       lost close (a webview reload, an IPC reorder — not measured) leaks at most until the job ends.
+       Streaming from 0 is the remote job's backfill: nothing is downloaded before the fetch, and
+       `read_job_output` returns an empty list while there is no local `output.out`. **Catch-up:**
+       while a poll returns exactly `CAP` bytes, the job's next poll follows without the 2 s wait,
+       still one call at a time and bounded by the file's size. Memory per job stays bounded: one
+       `CAP` chunk, the assembler's carry (≤ 1 MiB) and the parser's state. **Generation:** the job's
+       log state carries a generation, bumped by every open, reset and drop; the generation comes
+       from one counter that never resets within a launch (it outlives a dropped state). A poll or
+       drain step records it when it starts and applies its chunk only if the generation is
+       unchanged — otherwise the chunk is discarded (the next poll starts from the state's offset).
+       The generation check, the state update and the emit of that step's events happen under one
+       mutex, and so does an open's reset and its `job:log-reset` emit (that a Tauri emit returns promptly is
+       an inference, not measured; the rule holds even if it blocks briefly); the mutex is never held
+       across an ssh call.
+    4. **Reset** (item 7: `size < offset`): offset to 0, assembler and parser recreated, and
+       `job:log-reset { job_id }` tells the view to drop the lines and convergence points it holds
+       before the re-streamed ones arrive.
+    5. **The log poll takes no in-flight guard** (Anton, MED-3) — the one exception to o15.1's "every
+       operation that reaches the server". It is read-only and touches no state machine; guarding it
+       would make Retry, Withdraw and Cancel in the watching view refuse whenever they landed inside
+       a poll. Instead the loop runs each job's operations off the loop thread and **sequences, per
+       job, the log poll and the status step itself** — never concurrent with each other, the status
+       step first when both are due — so a log poll can never make the status step skip, and the
+       guard arbitrates between the status step (label/collect/fetch) and commands, and among
+       commands, as before. A slow job does
+       not hold up other jobs. The log poll's ssh timeout is short (≤ 10 s, stated in the module
+       page). A failed poll (transport or `PollError`) leaves the state and offset unchanged, emits
+       nothing and does not touch the status. Like the rest of item 4, the log is polled only while
+       the host answers. The DB lock is never held across a poll.
+    6. **The tail is drained from the downloaded copy** (Anton, HIGH-2). The live stream is an
+       estimate (item 7) and its convergence points are not stored (nor are a local job's: the
+       local view re-parses `output.out`). Once the classifier returns a fetching outcome the remote
+       log is final and is no longer polled. When the fetch has downloaded and hash-verified
+       `output.out` (o6), the poller drains the job's live state from the **local** copy before it
+       emits the terminal `job:status`: `read_log_chunk` from the stored offset until no bytes remain
+       (the same `plan_log_read` rule; the copy is sha256-equal to the remote file), then the
+       assembler's `take_partial`, each batch through the same emitters — so a watching view holds
+       the whole log and every convergence point, as for a local job. Then the state is dropped. A
+       fetch that fails leaves the state as it was (the row stays non-terminal, item 4's 3 strikes),
+       and a watching view stays empty until a fetch succeeds. The drain runs only when state exists
+       (no watcher, nothing to emit). The "fetching outcome classified" flag lives in memory like
+       item 4's state; status-first sequencing sets it again on the first tick after a launch.
+    7. **Testability and B3's side.** The poller's log step is an `AppHandle`-free core that takes an
+       event sink (as `status_to_emit` does), tested with a recording sink over the fake runner.
+       B3's view: calls `watch_job_log(id, true)` only after its `job:log`, `job:convergence` and
+       `job:log-reset` listeners have resolved (else the offset-0 chunk is lost); closes only if its
+       open was sent; skips the `read_job_output` / `read_job_convergence` backfill for a **remote
+       non-terminal** job (during a failing fetch a local `output.out` exists while the row is still
+       non-terminal, and backfill plus re-stream would duplicate lines and convergence points).
+    8. Negative controls: **parity** — a fixture `output.out` streamed through the remote path in
+       `CAP`-sized and odd-sized chunks yields exactly the lines and `ConvergenceEvent`s that
+       `read_convergence` gives on the same file; an unwatched job gets no `poll_log` call while its
+       status step still runs; a watched local job gets no ssh call; a watched draft is polled once
+       its coordinates exist; open, open, close keeps polling; a close at count 0 stays at 0; a
+       second open emits one reset and the next poll asks for offset 0; a terminal job's state is
+       dropped with the count > 0; a chunk boundary inside a multi-byte character yields the same
+       lines as one chunk; a reset recreates the state and emits `job:log-reset` once; a failed poll
+       leaves the offset unchanged; a due status step of a watched job is not skipped because of its
+       own log poll; a fixture whose last lines (and an unterminated last line) arrive only in the
+       downloaded copy has them emitted before the terminal `job:status`; a job with a fetching
+       outcome gets no further `poll_log`; an unwatched job's successful fetch reads no log chunk; an
+       open issued while a (fake) poll is blocked makes the next poll ask for offset 0 and no line of
+       the stale chunk is emitted after the reset; open, a poll blocked, last close, open again,
+       then the poll released — the stale chunk is discarded.
+    9. **Propagation:** item 4's `poll_log` bullet and o15.1 (marked); ROADMAP B2 (fork decided:
+       push) and B3 (the watch order, `job:log-reset`, no backfill for a live remote job). Moving
+       with B2's code: ROADMAP 5.0's "push→pull flip rides with `SshBackend`";
+       `modules/execution-backends.md` (the "push→pull flip" lines and "`poll_log` … refuse until
+       the poller"); `modules/remote-jobs.md` (the poller's log step, the command, the event); the
+       code comments that still predict the flip (`execution_backend.rs` module and trait docs,
+       `local_backend.rs`'s `poll_log` doc); `in_flight.rs`'s header (the log poll is not guarded).
+       ADR-003's "pull, not push" still holds at the backend layer; the UI stays push.
 
 ## Alternatives rejected
 

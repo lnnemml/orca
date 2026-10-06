@@ -10674,3 +10674,23 @@ profile was never verified. Next: **5.3** `SshBackend` wiring.
   `in_flight.rs` header comment; o14.5 marked "holds under concurrency through o15".
 - Next: B2, the poller. Fork for Anton at its start: push `job:log` vs pull `poll_log` for the
   remote live log.
+
+## [2026-10-06] decision | ADR-024 o16 — B2: the remote live log is pushed
+- Fork at B2 start (Anton): **push** — the poller emits the existing `job:log`/`job:convergence`
+  events for remote jobs; the view stays on one live path. Rejected: the view pulling `poll_log`.
+- o16 (my design, four DESIGN rounds): `watch_job_log(id, open)` keeps a per-id open count
+  (whatever the backend; a watched draft is polled once remote); every open re-streams from offset 0
+  (the remote backfill) behind `job:log-reset`; a saturating close; state dropped on terminal / row
+  gone; catch-up while a poll returns `CAP`; a launch-long generation counter discards a stale chunk,
+  check + update + emit under one mutex (never across ssh).
+- Anton decided two forks from round 1: **MED-3** the log poll takes **no** in-flight guard (the one
+  exception to o15.1; the loop sequences each job's log poll and status step, status first) so the
+  watching view's Retry/Withdraw/Cancel never refuse because of the log; **HIGH-2** the poller drains
+  the tail from the sha256-verified local `output.out` (+ `take_partial`) before the terminal
+  `job:status`, after the remote log stopped being polled at a fetching outcome.
+- B3 obligations recorded (o16.7, ROADMAP B3): watch only after the three listeners resolve, close
+  only if opened, handle `job:log-reset`, no backfill for a remote non-terminal job.
+- DESIGN review: round 1 PASS WITH FINDINGS (2 HIGH, 4 MED, 5 LOW), round 2 (1 MED stale-chunk race,
+  3 LOW), round 3 (2 LOW: generation outlives the state; check+emit atomic), round 4 PASS; the
+  unmeasured "an emit does not block" relabelled an inference (rule #10).
+- Next: B2 Part A (pure + fake runner) per o16 and item 4.
