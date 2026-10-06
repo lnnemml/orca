@@ -1376,6 +1376,134 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
     they survive, still append to `output.out`/`stderr.log` after `.exit_code` exists — plausible,
     not seen in a run (rule #10). **Propagation:** `modules/execution-backends.md` ("On exit"),
     `modules/tauri-core.md` (startup and exit), ROADMAP B4 (the measurements).
+19. **B3: the poller's per-job remote state reaches the view** (2026-10-06; fork raised at B3 start,
+    decided by Anton). Accepted after DESIGN review (three rounds, each PASS WITH FINDINGS, findings
+    applied; MED-1 / MED-3 / LOW-2 and round-2 LOW-d decided by Anton) on 2026-10-06. It refines item 4's "shown, with 'handled in unit 5.4'", item 4's
+    bounded retries ("the reason is shown, and a manual retry is offered") and item 3.4's "not on the
+    server" / "submit interrupted" offers. **The gap it closes:** the row's `error_message` already
+    carries the words of every `Shown` outcome except `Indeterminate` (o19.3) (`shown_message`, with "handled in unit 5.4") and of
+    every strike / stop (`Poller::strike`), and they reach the view through `job:status`. What the
+    view cannot see is the **structure**: the labels of `Labelled` (which decide retry vs withdraw),
+    `CheckFailed` (the host is away), and a structured "fetch stopped" flag for the retry button —
+    the loop (`poller/app.rs` `spawn_step`) drops the `StatusStep`.
+    1. **One in-memory record per job.** Beside `PollerMemory`, a `RemoteState` per non-terminal
+       remote job: `known: Option<Known>` (`Labelled(Label)` or `Shown(Outcome)`), `check_error:
+       Option<String>`, and `fetch: { strikes, stopped }` **re-read from `PollerMemory`'s strike
+       counter on every apply** (Anton, MED-1; equality suppresses the emit) — the counter the bound acts on stays the
+       one source; `stopped = strikes >= MAX_FETCH_STRIKES`, so the third `FetchFailed` already
+       reads stopped. It lives for one launch and starts empty, like item 4's counter, guard and
+       offset.
+    2. **Words come from the row; structure from the record** (Anton, MED-3). The view shows the
+       row's `error_message` as the text of a remote non-terminal job. While the record has no `known`
+       state (no record before the first status step of a launch, or a record holding only
+       `check_error`) that text is labelled **"from the last check"** beside
+       "checking": it may be stale across a restart (e.g. "automatic fetches stopped" while the
+       strikes have reset to 0 and automatic fetches resume), and no action button is offered from it. The record decides the badges and the
+       offered actions; it carries text only where the row has none: the `check_error` reason. The
+       view keeps **no** TypeScript copy of item 4's "handled in 5.4" list or of `shown_message`.
+    3. **What each `StatusStep` does to the record** — one function, a `match` with **no wildcard**
+       (a new variant fails to compile):
+       - `Labelled(l)` → `known = Labelled(l)`, clear `check_error`;
+       - `Shown(Indeterminate)` → **keep** `known`, set `check_error` to its `shown_message` (Anton,
+         LOW-2: "could not be decided on this check" is a check error, not a new state). And
+         `record_shown` **no longer writes the row's `error_message`** for `Indeterminate` (Anton,
+         round-2 LOW-d — a code change in B3 Part A; it still re-checks the live row and returns
+         `Written::Yes(None)`, so `RowChanged` keeps its meaning and no `job:status` is emitted): the row keeps the text of the last known state
+         (e.g. `Lost`'s "handled in unit 5.4"), and the explanation lives only in `check_error`, so
+         the view never shows one sentence twice;
+       - `Shown(o)` otherwise → `known = Shown(o)`, clear `check_error`;
+       - `FetchFailed` / `FetchStopped` → clear `check_error`; `known` kept (`fetch` is re-read on
+         every apply, o19.1);
+       - `CheckFailed(why)` → set `check_error`, **keep** `known` (a host away does not erase what
+         was last seen; the view shows it as "last seen"). With no `known` yet (host away at
+         launch) the record holds only `check_error` and the view says "server unreachable: why";
+       - `Busy`, `RowChanged` → nothing;
+       - `NotLive`, `Cancelled`, `Finalised` → **remove** the record (the terminal status arrives
+         as `job:status`).
+       `clear_strikes` (the manual `retry_remote_fetch`) refreshes `fetch`, so a retry whose own
+       step is `CheckFailed` no longer reads stopped. **Any** `retry_remote_submit` or
+       `withdraw_remote_job` outcome — success, refusal or transport failure — removes the record
+       (the next status step re-derives it): inside the guarded closure the removal runs **first**,
+       whatever the inner `Result`, and only then is that result propagated (a `?` must not skip it).
+       A refusal by the in-flight guard itself (`Conflict`, before the closure) leaves the record
+       alone — writing without the guard would break o19.4; so no stale `NotOnServer` keeps offering a retry the
+       server would refuse. The existing `label_remote_job` command does not feed the record and the
+       B3 view does not call it.
+    4. **Every write holds the job's in-flight guard** (review HIGH-1). The record change and its
+       emit happen **before** the guard is released: in the loop inside the status step (a wrapper
+       around the step's body applying it while the guard is alive), never in `spawn_step`, which
+       sees the step only after the guard is gone; in `retry_remote_fetch` inside its guarded
+       closure; for retry and withdraw inside the `run_guarded` work closure, not after its
+       `.await`. So every writer of a job's record holds that job's guard, writes are serialised per
+       job, and a step cannot land after a later command — e.g. a `Labelled(NotOnServer)` step
+       finishing after a withdraw made the row `cancelled` cannot resurrect the record. The one
+       unguarded writer is `sweep` (5), which touches only non-candidates and skips jobs with a step
+       in progress.
+    5. **Every exit path removes, and every removal emits** (review MED-2). `sweep` filters the
+       records by the current candidates (keeping jobs with a step in progress), so a job that left
+       the candidates without a step on it (another writer, a `RowChanged`) loses its record. All
+       removals — the step mapping, `sweep`, the commands — go through the one emitting function;
+       none drops a record silently (e.g. inside `forget`). Removing an absent record emits nothing.
+       **Lock order** (review round 2 MED-A): the record map's lock R before `PollerMemory`'s M;
+       nothing takes R while holding M or the database lock. `retry_fetch` calls `clear_strikes`,
+       releases M, then applies; `sweep` snapshots the in-progress ids from M, releases it, then
+       filters R (never inside `memory.retain`'s closure). The sink never calls back into R. Emitting
+       under R relies on a Tauri emit returning promptly — the same inference as o16.3, measured in
+       B4.
+    6. **Push, read, and order** (review HIGH-2). Every record change (set or removal) takes the
+       next value of one launch-wide sequence counter that never resets (like o16.3's generation),
+       and is emitted under the record map's mutex, so emit order equals change order on the Rust
+       side. The event is `job:remote-state { job_id, seq, state: RemoteState | null }` through a
+       new `PollerSink` method (the `AppSink` emits it, its name pinned like `LOG_RESET_EVENT`; the
+       recording sink records it). A command `remote_job_state(id) -> { seq, state: RemoteState |
+       null }` returns the current record and the **global counter's current value**, taken under R,
+       whatever the state (so any event emitted after the read has a greater seq by construction). A change that
+       leaves the record equal emits nothing (a repeated `Shown(Running)` every 15 s). The view
+       attaches its `job:remote-state` listener **first**, then reads `remote_job_state`, and
+       applies any value — event or read — only if its `seq` is greater than the one it holds. So
+       neither an older read nor an older event delivered late overwrites a newer state, whatever
+       order Tauri delivers an event and a command response in (unmeasured — open question below).
+    7. **What the view offers** (B3): `Labelled(NotOnServer)` → retry submit + withdraw;
+       `Labelled(SubmitInterrupted)` → withdraw only; `Shown(o)` → the row's text (which already
+       says "handled in unit 5.4" where an action is needed); `fetch.stopped` → a "retry fetch"
+       button (`retry_remote_fetch`); `check_error` → "server unreachable / not decided: <why>"
+       beside the last-seen state; no record → "checking". Cancel and delete stay refused by the
+       backend for a non-terminal remote job (o2); the view shows the refusal text.
+    8. **Not in the record.** A row with partial coordinates (B2 F-3, set aside by `candidates`
+       before any step) gets no record; the view derives "corrupt coordinates" from the row itself
+       (some but not all of `remote_host` / `remote_job_dir` / `remote_socket` set). The record is
+       not persisted: it is a view of the server's facts, re-derived by the next status step after a
+       launch (item 4).
+    9. Negative controls (each must be shown to bite):
+       - `Labelled(NotOnServer)` → `CheckFailed` keeps the label (removing the keep branch → red);
+       - `Shown(Running)` → `Shown(Indeterminate)` keeps `Running` and sets `check_error`;
+       - `Shown(Lost)` → `Shown(Indeterminate)` leaves the row's `error_message` equal to `Lost`'s
+         text (restoring the `Indeterminate` write in `record_shown` → red);
+       - `Busy` does not overwrite; `Finalised`, `Cancelled` and `NotLive` each remove;
+       - the guard scope, behavioural: when `Poller::status_step` returns, the record and the
+         recording sink already show its change; a following withdraw / `retry_remote_submit` removes
+         it and later ticks do not set it again — moving the apply out of `status_step` leaves the
+         record unset at return (red);
+       - the guard scope, source pin (like `every_handed_out_step_is_ended`): `spawn_step` contains no
+         record apply; `retry_remote_submit` and `withdraw_remote_job` call the removal inside their
+         `run_guarded` closure, before propagating the inner result;
+       - the lock order, deterministic source pin: the bodies of `clear_strikes` and
+         `PollerMemory::retain` never reference the record map, and `sweep` does not filter R inside
+         `memory.retain`'s closure (a looped concurrency test may be added, stated as probabilistic);
+       - `sweep`: a job dropped from the candidates with no step loses its record and emits `null`;
+         a silent `forget`-style removal turns it red;
+       - one `job:remote-state` per change, none for an unchanged repeat; seqs strictly increase;
+       - a `retry_remote_fetch` whose step is `CheckFailed` leaves `fetch.stopped == false`;
+       - the view: an event with a lower seq delivered after the read leaves the read's state;
+         an event emitted between the listener's resolve and the read's resolve with a higher seq
+         wins; dropping the seq comparison turns one of them red.
+    10. **Propagation:** ROADMAP B3; `modules/execution-backends.md` (command table:
+        `remote_job_state`; the `PollerSink`/`AppSink` section: the new sink method and the pinned
+        event name); `modules/remote-jobs.md` ("Not built yet"); `modules/tauri-core.md` (command
+        list); the `PollerSink` doc comment in `poller.rs`; Open questions (the cross-channel order). With the
+        `Indeterminate` change: `modules/execution-backends.md` ("every other outcome writes
+        `shown_message`"), and in `poller.rs` the `shown_message` doc ("What `error_message` shows")
+        and the module doc's step 4 ("`error_message` says what the server reports").
 
 ## Alternatives rejected
 
@@ -1429,6 +1557,10 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
 
 ## Open questions
 
+- **(o19) Does Tauri deliver an event emitted before a command's response ahead of that response?**
+  Events and command responses travel different IPC paths; the order is unmeasured. o19.6 does not
+  depend on it (the seq comparison), and no other design relies on this order (o16.7 needs only the
+  listeners registered before the emit). Measure in B4 or B3's live gate if it ever matters.
 - **(o17) Fetch a started-then-cancelled job's evidence?** Classifier row 4 (`Cancelled`) includes a
   job that ran and wrote `.exit_code` before the cancel; o17.1 makes it terminal `cancelled` with no
   download, so its output stays on the server. Rarely reachable in 5.3; in 5.4 every cancelled

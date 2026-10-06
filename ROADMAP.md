@@ -1472,7 +1472,12 @@ preflight. The remaining items (remote `orca_plot`, pause) are not numbered yet.
               states with retry/withdraw; refusal messages; the live view per o16.7 (`watch_job_log`
               only after the three listeners resolve, close only if opened, handle `job:log-reset`, no
               backfill for a remote non-terminal job); a row with partial remote coordinates (skipped
-              by the poller, logged once — B2 F-3) is shown as "corrupt coordinates" (Anton). Anton's
+              by the poller, logged once — B2 F-3) is shown as "corrupt coordinates" (Anton). **ADR-024 o19**
+              (Anton): the poller's per-job `RemoteState` (in memory, written under the in-flight guard,
+              strikes re-read from `PollerMemory`) reaches the view via `job:remote-state` (seq) +
+              `remote_job_state`; words from the row's `error_message`, structure from the record;
+              `Indeterminate` is a check error and no longer rewrites the row. Part A (implementer
+              `opus`: Rust record + TS pure logic) → STOP → Part B (screens). Anton's
               live WebKitGTK gate.
         - [ ] **B4 — live run on uni** + Anton's gate: submit → close laptop → reopen → result. Also
               measure (rule #10, from B2): the rsync-down / LIST timeouts (300 s; 1800 s with `.gbw`),

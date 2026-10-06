@@ -10906,3 +10906,17 @@ profile was never verified. Next: **5.3** `SshBackend` wiring.
 - **Next session: B3 — UI** (o16.7 view obligations, run-target dropdown, retry/withdraw states,
   `retry_remote_fetch`, "corrupt coordinates"; Anton's WebKitGTK gate), then **B4** — the live uni
   run with the measurement list in ROADMAP B4.
+
+## [2026-10-06] decision | ADR-024 o19 — B3: the poller's remote state reaches the view
+- Fork at B3 start (explorer pass): the status step's `StatusStep` is dropped by `spawn_step`, so the
+  view cannot show the labels (retry vs withdraw), a check failure, or a structured "fetch stopped".
+  Anton chose an in-memory per-job `RemoteState` + `job:remote-state` event + `remote_job_state`
+  command over UI-only `label_remote_job` calls or a DB column.
+- DESIGN review: three rounds, each PASS WITH FINDINGS, all applied — every write under the job's
+  in-flight guard (HIGH-1), a launch-wide seq on every change so neither a stale read nor a late
+  older event wins (HIGH-2), `sweep` removes and every removal emits, lock order R before M.
+- Anton decided: strikes re-read from `PollerMemory` (one source); words from the row's
+  `error_message`, structure from the record; `Shown(Indeterminate)` is a check error that keeps the
+  last known state, and `record_shown` stops writing the row for it.
+- Open question added: Tauri's event-vs-command-response delivery order (nothing relies on it).
+- Next: B3 Part A (implementer `opus`).
