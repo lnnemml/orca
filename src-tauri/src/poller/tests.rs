@@ -12,6 +12,7 @@ use std::sync::{Barrier, Mutex};
 use std::time::{Duration, Instant};
 
 use super::plan::{candidates, plan, plan_inputs, sweep, Periods, PollerMemory, Step};
+use super::remote_state::{FetchState, Known};
 use super::*;
 use crate::local_backend::read_convergence;
 use crate::remote::poll::OUTPUT_HEADER as LOG_HEADER;
@@ -34,6 +35,7 @@ struct Remote {
     in_flight: InFlight,
     memory: PollerMemory,
     live: std::sync::Arc<LiveLog>,
+    remote: std::sync::Arc<RemoteStates>,
     sink: RecordingSink,
 }
 
@@ -56,7 +58,9 @@ impl Remote {
         std::fs::create_dir_all(&server).unwrap();
         std::fs::write(server.join("input.inp"), "! HF def2-SVP\n").unwrap();
         let (live, sink) = RecordingSink::with_live();
-        Remote { w, in_flight: InFlight::default(), memory: PollerMemory::new(), live, sink }
+        let remote = std::sync::Arc::new(RemoteStates::new());
+        let sink = sink.under_remote(remote.clone());
+        Remote { w, in_flight: InFlight::default(), memory: PollerMemory::new(), live, remote, sink }
     }
 
     fn local(&self) -> PathBuf {
@@ -84,6 +88,7 @@ impl Remote {
             in_flight: &self.in_flight,
             memory: &self.memory,
             live: &self.live,
+            remote: &self.remote,
             sink: &self.sink,
             policy: POLICY,
         }
@@ -810,7 +815,7 @@ fn an_unwatched_fetch_emits_no_log() {
 
 fn tick(r: &Remote, now: Instant) -> Vec<(String, Step)> {
     let c = candidates(&r.w.db.lock().unwrap()).unwrap().jobs;
-    sweep(&c, &r.live, &r.memory);
+    sweep(&c, &r.live, &r.memory, &r.remote, &r.sink);
     plan(&plan_inputs(&c, &r.live, &r.memory), &Periods::INITIAL, now)
 }
 
@@ -962,7 +967,7 @@ fn fetching_outcomes_are_exactly_item_4s() {
 use super::run::{run_step, tick as run_tick, Planned, StepRan};
 
 fn ticked(r: &Remote, at: Instant) -> Vec<Planned> {
-    run_tick(&r.w.db, &r.live, &r.memory, &Periods::INITIAL, at).unwrap()
+    run_tick(&r.w.db, &r.live, &r.memory, &r.remote, &r.sink, &Periods::INITIAL, at).unwrap()
 }
 
 /// A due status step is handed out once, marked in progress; while it is not ended no later tick
@@ -1025,4 +1030,236 @@ fn a_tick_gives_a_watched_job_log_steps_and_an_unwatched_one_none() {
     assert!(matches!(ran, StepRan::Log(LogStep::Applied(Applied::Lines { lines: 1, .. }))), "{ran:?}");
     assert!(!r.memory.get(JOB).in_progress);
     assert_eq!(log_lines(&r.sink.take()), ["line 1"]);
+}
+
+// ---- the remote record (ADR-024 o19, unit 5.3 B3 Part A) ---------------------------------------
+
+/// The record of `JOB` now.
+fn record(r: &Remote) -> Option<RemoteState> {
+    r.remote.read(JOB).state
+}
+
+/// A `.started` written in an earlier boot (the collector skips `/proc` for it).
+const STARTED_EARLIER_BOOT: &str = "pid=4242\npgid=4242\nsid=4242\nboot_id=9b1d0e2f-3a4c-4d5e-8f60-718293a4b5c6\nstarttime=777\nstarted_at=1\n";
+
+/// The job started in an earlier boot and left no `.exit_code`: `Lost` (row 8).
+fn lost() -> Vec<u8> {
+    snapshot(false, None, None, (Some(STARTED_EARLIER_BOOT), Some(STARTED_EARLIER_BOOT)))
+}
+
+/// The two `.started` reads disagree, on the first snapshot and on its retake: `Indeterminate`.
+fn indeterminate() -> Vec<u8> {
+    snapshot(false, None, None, (None, Some(STARTED_EARLIER_BOOT)))
+}
+
+/// o19.9, the guard scope, behavioural: while the step runs it holds the job's guard (a withdraw
+/// or retry would be refused); when `status_step` returns, the record and the sink already show its
+/// change; a following withdraw — its removal inside the guard, the row made `cancelled` — removes
+/// it with a `null` event, and later ticks never set it again. NEGATIVE CONTROL: apply the step's
+/// record after `status_step` returns (in the loop shell) instead of inside it → red ("set at
+/// return").
+#[test]
+fn a_status_steps_record_is_set_before_it_returns_and_a_withdraw_removes_it_for_good() {
+    let r = Remote::new();
+    let fake = Fake::new(&r, |kind, values| {
+        assert!(r.in_flight.acquire(JOB).is_err(), "a command on the job is refused while the step runs");
+        match kind {
+            LabelCall => label_reply(values, NOT_ON_SERVER),
+            _ => panic!("nothing after the label call"),
+        }
+    });
+    let poller = r.poller(&fake);
+    assert_eq!(poller.status_step(JOB).unwrap(), StatusStep::Labelled(Label::NotOnServer));
+    let labelled = RemoteState { known: Some(Known::Labelled(Label::NotOnServer)), ..RemoteState::default() };
+    assert_eq!(record(&r), Some(labelled.clone()), "set at return");
+    assert_eq!(r.sink.take_remote_states(), [(JOB.to_string(), 1, Some(labelled))], "emitted at return");
+
+    // The withdraw: under the job's guard, the work, then the removal (`forget_after`).
+    {
+        let _guard = r.in_flight.acquire(JOB).unwrap();
+        r.w.sql("UPDATE jobs SET status = 'cancelled'");
+        crate::commands::remote_jobs::forget_after(&r.remote, &r.sink, JOB, Ok(())).unwrap();
+    }
+    assert_eq!(record(&r), None);
+    assert_eq!(r.sink.take_remote_states(), [(JOB.to_string(), 2, None)]);
+
+    let t0 = Instant::now();
+    assert!(ticked(&r, t0).is_empty(), "a cancelled job is no candidate");
+    assert_eq!(poller.status_step(JOB).unwrap(), StatusStep::NotLive, "a stray step finds the row terminal");
+    assert_eq!(record(&r), None, "never set again");
+    assert!(r.sink.take_remote_states().is_empty(), "removing an absent record emits nothing");
+}
+
+/// o19.3/o19.9, round-2 LOW-d: an `Indeterminate` check after `Lost` writes nothing to the row —
+/// it keeps `Lost`'s text, and no `job:status` is owed — while the record keeps `Lost` and carries
+/// the "could not be decided" text in `check_error`. NEGATIVE CONTROL: restore the `Indeterminate`
+/// write in `record_shown` (drop its early return) → red (the row says "could not be decided").
+#[test]
+fn indeterminate_after_lost_leaves_the_rows_text_and_sets_the_check_error() {
+    let r = Remote::new();
+    r.w.sql("UPDATE jobs SET status = 'running'");
+    let snap = Mutex::new(lost());
+    let fake = Fake::new(&r, |kind, values| match kind {
+        Collect => collected(values, snap.lock().unwrap().clone()),
+        _ => panic!("a running row: only the collector"),
+    });
+    let poller = r.poller(&fake);
+    let first = poller.status_step(JOB).unwrap();
+    let StatusStep::Shown(lost @ Outcome::Lost { .. }) = first else { panic!("the fixture is Lost: {first:?}") };
+    let lost_text = shown_message(&lost);
+    assert_eq!(r.row().1, lost_text);
+    r.sink.take();
+
+    *snap.lock().unwrap() = indeterminate();
+    assert_eq!(poller.status_step(JOB).unwrap(), StatusStep::Shown(Outcome::Indeterminate));
+    assert_eq!(r.row(), (JobStatus::Running, lost_text), "the row keeps the last known state's text");
+    assert!(r.sink.take().is_empty(), "no job:status");
+    let after = record(&r).unwrap();
+    assert_eq!(after.known, Some(Known::Shown(lost)), "the record keeps Lost");
+    assert_eq!(after.check_error, shown_message(&Outcome::Indeterminate));
+}
+
+/// `record_shown` for `Indeterminate` still re-checks the live row: a row gone terminal under the
+/// step is `RowChanged`, as for every outcome.
+#[test]
+fn indeterminate_on_a_changed_row_is_still_row_changed() {
+    let r = Remote::new();
+    let fake = Fake::new(&r, |_, _| panic!("no call"));
+    let poller = r.poller(&fake);
+    let c = expected_coords();
+    assert!(matches!(poller.record_shown(JOB, &c, &Outcome::Indeterminate).unwrap(), Written::Yes(None)));
+    r.w.sql("UPDATE jobs SET status = 'cancelled'");
+    assert!(matches!(poller.record_shown(JOB, &c, &Outcome::Indeterminate).unwrap(), Written::No));
+}
+
+/// o19.9: a busy step leaves the record; `Finalised`, `Cancelled` and `NotLive` each remove it with
+/// one `null` event.
+#[test]
+fn busy_keeps_the_record_and_each_terminal_step_removes_it() {
+    let label_first = |r: &Remote| {
+        let fake = Fake::new(r, |kind, values| match kind {
+            LabelCall => label_reply(values, NOT_ON_SERVER),
+            _ => panic!("nothing after the label call"),
+        });
+        r.poller(&fake).status_step(JOB).unwrap();
+        assert!(record(r).is_some());
+        r.sink.take_remote_states();
+    };
+
+    let r = Remote::new();
+    label_first(&r);
+    let held = r.in_flight.acquire(JOB).unwrap();
+    let fake = Fake::new(&r, |_, _| panic!("no call"));
+    assert_eq!(r.poller(&fake).status_step(JOB).unwrap(), StatusStep::Busy);
+    assert_eq!(record(&r).unwrap().known, Some(Known::Labelled(Label::NotOnServer)), "busy does not overwrite");
+    assert!(r.sink.remote_states().is_empty());
+    drop(held);
+
+    // Finalised: the job finished on the server.
+    let r = Remote::new();
+    label_first(&r);
+    r.finished(OUTPUT, "0\n");
+    let fake = Fake::new(&r, server(&r, completed()));
+    assert!(matches!(r.poller(&fake).status_step(JOB).unwrap(), StatusStep::Finalised { .. }));
+    assert_eq!((record(&r), r.sink.take_remote_states()), (None, vec![(JOB.to_string(), 2, None)]), "Finalised");
+
+    // Cancelled: the classifier's row 4.
+    let r = Remote::new();
+    label_first(&r);
+    let fake = Fake::new(&r, server(&r, snapshot(true, None, None, (None, None))));
+    assert_eq!(r.poller(&fake).status_step(JOB).unwrap(), StatusStep::Cancelled);
+    assert_eq!((record(&r), r.sink.take_remote_states()), (None, vec![(JOB.to_string(), 2, None)]), "Cancelled");
+
+    // NotLive: another writer finished the row.
+    let r = Remote::new();
+    label_first(&r);
+    r.w.sql("UPDATE jobs SET status = 'failed'");
+    let fake = Fake::new(&r, |_, _| panic!("no call"));
+    assert_eq!(r.poller(&fake).status_step(JOB).unwrap(), StatusStep::NotLive);
+    assert_eq!((record(&r), r.sink.take_remote_states()), (None, vec![(JOB.to_string(), 2, None)]), "NotLive");
+}
+
+/// o19.5/o19.9: a job that left the candidates with no step on it (here a delete-like writer made it
+/// terminal) loses its record at the next tick's sweep, with a `null` event; a job with a step in
+/// progress keeps it. NEGATIVE CONTROL: make `RemoteStates::retain` drop the records without
+/// `change` (a silent `forget`-style removal) → red (no `null` event).
+#[test]
+fn the_sweep_removes_a_record_whose_job_left_the_candidates_with_an_event() {
+    let r = Remote::new();
+    let fake = Fake::new(&r, |kind, values| match kind {
+        LabelCall => label_reply(values, NOT_ON_SERVER),
+        _ => panic!("nothing after the label call"),
+    });
+    r.poller(&fake).status_step(JOB).unwrap();
+    r.sink.take_remote_states();
+    r.w.sql("UPDATE jobs SET status = 'cancelled'");
+
+    // A step still in progress keeps the record: its step decides.
+    let t0 = Instant::now();
+    assert!(r.memory.begin_step(JOB, Step::Status, t0));
+    assert!(ticked(&r, t0).is_empty());
+    assert!(record(&r).is_some(), "kept while its step runs");
+    assert!(r.sink.remote_states().is_empty());
+    r.memory.end_step(JOB);
+
+    assert!(ticked(&r, t0 + Duration::from_secs(1)).is_empty());
+    assert_eq!(record(&r), None);
+    assert_eq!(r.sink.take_remote_states(), [(JOB.to_string(), 2, None)], "one null event");
+    ticked(&r, t0 + Duration::from_secs(2));
+    assert!(r.sink.remote_states().is_empty(), "nothing more for an absent record");
+}
+
+/// o19.9: a manual fetch retry whose own step cannot reach the host leaves the record's fetch not
+/// stopped — the cleared counter is re-read — and keeps what was seen. NEGATIVE CONTROL: make
+/// `CheckFailed` keep the old record's `fetch` in `remote_state::next` instead of the counter read
+/// now → red (`stopped` stays true).
+#[test]
+fn a_fetch_retry_whose_check_fails_no_longer_reads_stopped() {
+    let r = Remote::new();
+    r.w.sql("UPDATE jobs SET status = 'running'");
+    r.finished(OUTPUT, "0\n");
+    let away = std::sync::atomic::AtomicBool::new(false);
+    let base = server(&r, completed());
+    let fake = Fake::new(&r, |kind, values| {
+        if away.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(TransportError::Timeout { program: "ssh".into(), secs: 60 });
+        }
+        if kind == Download {
+            return exited(23, vec![]);
+        }
+        base(kind, values)
+    });
+    let poller = r.poller(&fake);
+    for _ in 0..3 {
+        assert!(matches!(poller.status_step(JOB).unwrap(), StatusStep::FetchFailed { .. }));
+    }
+    assert_eq!(record(&r).unwrap().fetch, FetchState { strikes: 3, stopped: true }, "the third strike reads stopped");
+    assert_eq!(record(&r).unwrap().known, Some(Known::Fetching), "a failing fetch reads Fetching (o19.11)");
+    assert_eq!(poller.status_step(JOB).unwrap(), StatusStep::FetchStopped);
+    assert!(record(&r).unwrap().fetch.stopped);
+
+    away.store(true, std::sync::atomic::Ordering::SeqCst);
+    let guard = r.in_flight.acquire(JOB).unwrap();
+    assert!(matches!(poller.retry_fetch(&guard).unwrap(), StatusStep::CheckFailed(_)));
+    let after = record(&r).unwrap();
+    assert_eq!(after.fetch, FetchState { strikes: 0, stopped: false }, "the retry's own check failed: not stopped");
+    assert_eq!(after.known, Some(Known::Fetching), "the failed check keeps Fetching");
+    assert!(after.check_error.is_some());
+}
+
+/// o19.6: every record event of a step is emitted with the record map's lock held (the recording
+/// sink asserts it), and the same outcome seen every 15 s emits once.
+#[test]
+fn a_repeated_outcome_emits_one_record_event() {
+    let r = Remote::new();
+    r.w.sql("UPDATE jobs SET status = 'running'");
+    let fake = Fake::new(&r, server(&r, lost()));
+    let poller = r.poller(&fake);
+    for _ in 0..3 {
+        let step = poller.status_step(JOB).unwrap();
+        assert_eq!(step, StatusStep::Shown(Outcome::Lost { orphans: vec![] }), "the fixture is Lost");
+    }
+    let events = r.sink.take_remote_states();
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].2.as_ref().and_then(|s| s.known.clone()), Some(Known::Shown(Outcome::Lost { orphans: vec![] })));
 }

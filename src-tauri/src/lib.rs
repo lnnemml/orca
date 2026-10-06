@@ -66,6 +66,9 @@ pub fn run() {
             // both empty on launch. ---
             app.manage(poller::live_log::LiveLog::new());
             app.manage(poller::plan::PollerMemory::new());
+            // --- The poller's per-job remote records, the view's structure (ADR-024 o19); empty on
+            // launch, re-derived by the first status steps. ---
+            app.manage(poller::remote_state::RemoteStates::new());
 
             // --- xtb pre-optimizer: its own single-slot runner (2.5.5). ---
             app.manage(xtb::XtbRunner::default());
@@ -120,6 +123,7 @@ pub fn run() {
             commands::remote_jobs::label_remote_job,
             commands::remote_jobs::retry_remote_fetch,
             commands::remote_jobs::watch_job_log,
+            commands::remote_jobs::remote_job_state,
             commands::jobs::delete_job,
             commands::jobs::pause_queue,
             commands::jobs::resume_queue,

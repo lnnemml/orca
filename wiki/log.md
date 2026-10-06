@@ -10920,3 +10920,19 @@ profile was never verified. Next: **5.3** `SshBackend` wiring.
   last known state, and `record_shown` stops writing the row for it.
 - Open question added: Tauri's event-vs-command-response delivery order (nothing relies on it).
 - Next: B3 Part A (implementer `opus`).
+
+## [2026-10-06] feat | Unit 5.3 B3 Part A — the remote record (ADR-024 o19) and the view's pure logic
+- Rust: `poller/remote_state.rs` — `RemoteStates` (per-job `RemoteState`: `known`, `check_error`,
+  `fetch` re-read from `PollerMemory`), one launch-wide seq, `job:remote-state` emitted under the
+  record lock only on a real change; applied inside `status_step` / `retry_fetch` while the in-flight
+  guard is held (never in `spawn_step`); retry/withdraw remove it inside `run_guarded` on every
+  outcome (`forget_after`); `sweep` removes with a `null` emit; lock order R before M (source pins).
+  `remote_job_state` command. `record_shown` no longer rewrites the row for `Indeterminate`.
+- o19.11 (Anton, from the Part A verifier): `FetchFailed`/`FetchStopped` set `known = Fetching`; a
+  missing row in retry/withdraw is left to `sweep`.
+- TS: `Job` gains `backend_id`/`remote_host`/`remote_job_dir`/`remote_socket`; wire types for the
+  remote commands; `src/jobs/remote.ts` — `coordinateState` (incl. "corrupt"), `mergeRemoteState`
+  (seq rule), `remoteView` (badges + actions, no copy of `shown_message`), `runTargetOptions`.
+- `cargo test` 761 → 781; vitest (`--dir src`) 977 → 994. Every o19.9 / o19.11 negative control
+  shown to bite (implementer and verifier). Verifier round 1 FAIL was the missing log/ROADMAP only.
+- Next: B3 Part B — screens, listener order (o16.7 + o19.6), run-target dropdown; Anton's live gate.

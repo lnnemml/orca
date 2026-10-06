@@ -1425,7 +1425,7 @@ preflight. The remaining items (remote `orca_plot`, pause) are not numbered yet.
       `cancel.sh` / `collect.sh`, the length-prefixed snapshot wire format and its strict parser,
       run for real on the laptop (stub `tsp`/ORCA, fixtures (a)–(e), d′ orders) —
       [modules/remote-jobs.md](wiki/modules/remote-jobs.md).
-- [ ] **Unit 5.3 — `SshBackend` wiring** (**A1 ✅ 2026-10-05** `d47623d`: v20, artifact list, LogChunk, pure parsers; **A2 ✅ 2026-10-05** `ff0b5e1`: server scripts submit/label/poll_log/list, ADR-024 o13; **B1 ✅ 2026-10-06** `e6211f0`; **B2 ✅ 2026-10-06** (poller core + wiring, ADR-024 o17/o18); **next: B3**) via system `ssh`/`rsync`: rsync job dir up → the 5.2
+- [ ] **Unit 5.3 — `SshBackend` wiring** (**A1 ✅ 2026-10-05** `d47623d`: v20, artifact list, LogChunk, pure parsers; **A2 ✅ 2026-10-05** `ff0b5e1`: server scripts submit/label/poll_log/list, ADR-024 o13; **B1 ✅ 2026-10-06** `e6211f0`; **B2 ✅ 2026-10-06** (poller core + wiring, ADR-024 o17/o18); **B3 Part A ✅ 2026-10-06** (remote record, ADR-024 o19); **next: B3 Part B**) via system `ssh`/`rsync`: rsync job dir up → the 5.2
       wrapper via task-spooler (per-slot `TS_SOCKET`) → byte-offset `poll_log` of output → selective
       rsync down (the shared artifact-pattern list + markers + `.tsp-out/`; gbw opt-in, ADR-024 o6); `enum Backend` (ADR-023). Also per
       ADR-024 (m)/(n)/(o):
@@ -1466,7 +1466,7 @@ preflight. The remaining items (remote `orca_plot`, pause) are not numbered yet.
               `job:log`/`job:convergence` for watched remote jobs (`watch_job_log`, refcounted, every open
               re-streams from 0, `job:log-reset`), the log poll unguarded and sequenced with the status
               step per job, the tail drained from the verified local copy before the terminal status.
-        - [ ] **B3 — UI** (implementer `sonnet`): TS `Job` gains `backend_id`, `remote_host`,
+        - [ ] **B3 — UI** (**Part A ✅ 2026-10-06**: `RemoteState` record + `job:remote-state` + `remote_job_state`, TS types and pure view logic, ADR-024 o19/o19.11; **next: Part B** screens) (implementer `sonnet`): TS `Job` gains `backend_id`, `remote_host`,
               `remote_job_dir`, `remote_socket`; run-target dropdown (n2 predicate, disabled reasons,
               last choice per project); "not on the server" / "submit interrupted" / "handled in 5.4"
               states with retry/withdraw; refusal messages; the live view per o16.7 (`watch_job_log`

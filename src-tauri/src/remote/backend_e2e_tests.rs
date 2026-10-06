@@ -600,12 +600,19 @@ struct PollerWorld {
     in_flight: crate::in_flight::InFlight,
     memory: crate::poller::plan::PollerMemory,
     live: crate::poller::live_log::LiveLog,
+    remote: crate::poller::remote_state::RemoteStates,
     sink: crate::poller::RecordingSink,
 }
 
 impl PollerWorld {
     fn new() -> Self {
-        PollerWorld { in_flight: Default::default(), memory: Default::default(), live: Default::default(), sink: Default::default() }
+        PollerWorld {
+            in_flight: Default::default(),
+            memory: Default::default(),
+            live: Default::default(),
+            remote: Default::default(),
+            sink: Default::default(),
+        }
     }
 
     fn poller<'a>(&'a self, laptop: &'a Laptop, runner: &'a dyn CommandRunner) -> crate::poller::Poller<'a> {
@@ -615,6 +622,7 @@ impl PollerWorld {
             in_flight: &self.in_flight,
             memory: &self.memory,
             live: &self.live,
+            remote: &self.remote,
             sink: &self.sink,
             policy: crate::execution_backend::FetchPolicy::SMALL_ONLY,
         }

@@ -222,6 +222,15 @@ export interface Job {
    * (the command promotes jobs to the deleted group's parent — `ON DELETE SET NULL` is
    * the fallback). Orthogonal to `pathway_id` and the re-opt/reference links. */
   group_id: string | null;
+  /** The server profile a job runs on (schema v18), or null = local. Names the profile only:
+   * nulled when the profile is deleted, so it never decides whether a job is remote. */
+  backend_id: string | null;
+  /** The remote job's coordinates (schema v20, ADR-024 o item 1): written once at submit, all
+   * three set or all null. **A job is remote iff they are set**; a row with some but not all set
+   * is corrupt (`coordinateState`, o19.8). */
+  remote_host: string | null;
+  remote_job_dir: string | null;
+  remote_socket: string | null;
 }
 
 /** Mirrors `src-tauri/src/models/group.rs::Group` (schema v16, Phase 4.7.2, ADR-019).
@@ -386,3 +395,117 @@ export type ConnTestOutcome =
 
 /** Mirrors `ConnTestReport` (the outcome is flattened into it). */
 export type ConnTestReport = ConnTestOutcome & { profile: ServerProfile; elapsed_ms: number };
+
+// --- Remote jobs (Phase 5 unit 5.3, ADR-024 o) -------------------------------------------------
+
+/** Mirrors `remote::submit::Label` — the label call's verdict on a remote `queued` job (o 3.4). */
+export type Label = "not_on_server" | "submit_interrupted" | "classifier";
+
+/** Mirrors `remote::classify::FailReason` (serde `tag = "reason"`). */
+export type FailReason =
+  | { reason: "corrupt_started"; detail: string }
+  | { reason: "non_zero_exit"; code: number }
+  | { reason: "bad_exit_code"; detail: string }
+  | { reason: "no_normal_termination" }
+  | { reason: "wrapper_never_started" };
+
+/** Mirrors `remote::classify::Outcome` (serde `tag = "outcome"`) — the classifier's verdict. */
+export type Outcome =
+  | { outcome: "queued" }
+  | { outcome: "running" }
+  | { outcome: "completed"; late_cancel: boolean }
+  | { outcome: "failed"; reason: FailReason }
+  | { outcome: "lost"; orphans: number[] }
+  | { outcome: "cancelling" }
+  | { outcome: "cancelled" }
+  | { outcome: "indeterminate" }
+  | { outcome: "re_enqueue" };
+
+/** Mirrors `poller::remote_state::Known` (serde `tag = "kind", content = "detail"`). `fetching`:
+ *  the server reports a fetching outcome and the download is failing (o19.11). */
+export type Known = { kind: "labelled"; detail: Label } | { kind: "shown"; detail: Outcome } | { kind: "fetching" };
+
+/** Mirrors `poller::remote_state::FetchState`: `stopped` = automatic fetches stopped until
+ *  `retry_remote_fetch` (computed in Rust from the strike counter). */
+export interface FetchState {
+  strikes: number;
+  stopped: boolean;
+}
+
+/** Mirrors `poller::remote_state::RemoteState` — the structure of a non-terminal remote job's last
+ *  check (ADR-024 o19.1). The words stay in the row's `error_message` (o19.2). */
+export interface RemoteState {
+  known: Known | null;
+  check_error: string | null;
+  fetch: FetchState;
+}
+
+/** Payload of the `job:remote-state` event (o19.6): change `seq` of one launch-wide sequence; a
+ *  null `state` means the record was removed. */
+export interface RemoteStateEvent {
+  job_id: string;
+  seq: number;
+  state: RemoteState | null;
+}
+
+/** Mirrors `RemoteStateRead`, the reply of `remote_job_state(id)` (o19.6). */
+export interface RemoteStateRead {
+  seq: number;
+  state: RemoteState | null;
+}
+
+/** Mirrors `ssh_backend::SubmitStep`. */
+export type SubmitStep = "prepare" | "install" | "upload" | "submit";
+
+/** Mirrors `remote::submit::KupEvidence`. */
+export interface KupEvidence {
+  rc: number;
+  stdout: string;
+  stderr: string;
+}
+
+/** Mirrors `ssh_backend::SubmitOutcome` (serde `tag = "outcome"`). */
+export type SubmitOutcome =
+  | { outcome: "enqueued"; tsp_id: number }
+  | { outcome: "not_claimed"; step: SubmitStep; reason: string }
+  | { outcome: "kill_user_processes"; evidence: KupEvidence }
+  | { outcome: "failed_after_claim"; reason: string }
+  | { outcome: "unknown"; reason: string };
+
+/** Mirrors `ssh_backend::PalAlignment` (ADR-024 o 14.2). */
+export interface PalAlignment {
+  input_nprocs: number | null;
+  nprocs: number;
+  mask_cpus: number;
+  rewritten: boolean;
+}
+
+/** Mirrors `commands/remote_jobs.rs::SubmitResponse` — what `submit_job` to a server and
+ *  `retry_remote_submit` return (`submit_job` to this machine returns null). */
+export interface SubmitResponse {
+  outcome: SubmitOutcome;
+  pal: PalAlignment;
+  notice: string | null;
+  failure: string | null;
+}
+
+/** Mirrors `ssh_backend::WithdrawReport`. */
+export interface WithdrawReport {
+  label: Label;
+  outcome: Outcome;
+  status: JobStatus;
+}
+
+/** Mirrors `poller::StatusStep` (serde `tag = "step", content = "detail"`) — what
+ *  `retry_remote_fetch` returns. */
+export type StatusStep =
+  | { step: "busy" }
+  | { step: "not_live" }
+  | { step: "fetch_stopped" }
+  | { step: "labelled"; detail: Label }
+  | { step: "check_failed"; detail: string }
+  | { step: "shown"; detail: Outcome }
+  | { step: "cancelled" }
+  | { step: "fetch_failed"; detail: { strikes: number; reason: string } }
+  | { step: "finalised"; detail: { outcome: Outcome; status: JobStatus; drain_error: string | null } }
+  | { step: "row_changed" };

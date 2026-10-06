@@ -12,7 +12,8 @@ use std::time::Instant;
 
 use super::live_log::LiveLog;
 use super::plan::{candidates, plan, plan_inputs, sweep, Candidates, Periods, PollerMemory, Step};
-use super::{log_step, LogStep, Poller, StatusStep};
+use super::remote_state::RemoteStates;
+use super::{log_step, LogStep, Poller, PollerSink, StatusStep};
 use crate::commands::settings::DbState;
 use crate::error::AppError;
 use crate::ssh_backend::RemoteCoordinates;
@@ -26,16 +27,25 @@ pub struct Planned {
 }
 
 /// One tick at `now`: the due steps, each marked in progress. The database is locked only for the
-/// candidates query. A row that does not read as a remote job is skipped (and reported once per
-/// launch, `eprintln!`), so it cannot stop the other jobs' polling.
-pub fn tick(db: &DbState, live: &LiveLog, memory: &PollerMemory, periods: &Periods, now: Instant) -> Result<Vec<Planned>, AppError> {
+/// candidates query (and released before the sweep takes the record map's lock). A row that does
+/// not read as a remote job is skipped (and reported once per launch, `eprintln!`), so it cannot
+/// stop the other jobs' polling; it gets no remote record (o19.8).
+pub fn tick(
+    db: &DbState,
+    live: &LiveLog,
+    memory: &PollerMemory,
+    remote: &RemoteStates,
+    sink: &dyn PollerSink,
+    periods: &Periods,
+    now: Instant,
+) -> Result<Vec<Planned>, AppError> {
     let Candidates { jobs: candidates, unreadable } = candidates(&*db.lock()?)?;
     for (id, why) in unreadable {
         if memory.first_report(&id) {
             eprintln!("[OrcaStudio] remote poller: job {id} is not polled: {why}");
         }
     }
-    sweep(&candidates, live, memory);
+    sweep(&candidates, live, memory, remote, sink);
     let due = plan(&plan_inputs(&candidates, live, memory), periods, now);
     Ok(due
         .into_iter()

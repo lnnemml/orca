@@ -27,6 +27,10 @@ function j(
     scene_log_json: null,
     pathway_id: null,
     group_id,
+    backend_id: null,
+    remote_host: null,
+    remote_job_dir: null,
+    remote_socket: null,
   };
 }
 

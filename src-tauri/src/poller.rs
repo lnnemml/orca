@@ -18,7 +18,9 @@
 //! 4. any other **non-fetching outcome** is shown — `error_message` says what the server reports, and
 //!    "handled in unit 5.4" where it needs an action — and the row stays `queued`/`running`; the
 //!    classifier's `Running` moves a `queued` row to `running` (o item 1: a remote job keeps
-//!    `queued`/`running` in `jobs.status`);
+//!    `queued`/`running` in `jobs.status`). `Indeterminate` writes nothing: the row keeps the text
+//!    of the last known state, and "could not be decided on this check" goes only to the job's
+//!    remote record (o19.3);
 //! 5. a **fetching outcome** (`Completed`, `Failed{NonZeroExit | BadExitCode |
 //!    NoNormalTermination}`) sets the in-memory fetching flag (the live log stops, o16.6), then
 //!    **fetches**: rsync down with the shared filter, then the server's listing must equal the local
@@ -30,6 +32,10 @@
 //! 6. A failed fetch changes no status: a strike is counted and shown; after
 //!    [`MAX_FETCH_STRIKES`] in a row, automatic fetches stop until [`Poller::retry_fetch`].
 //!
+//! Every step's [`StatusStep`] then updates the job's **remote record** ([`remote_state`], o19) —
+//! the labels, the last outcome, a failed check, the fetch bound — while the guard is still held,
+//! and the change reaches the view as `job:remote-state`.
+//!
 //! **The log step** ([`log_step`]), every 2 s while the job is watched (o16): no in-flight guard
 //! (o16.5), no database; see [`live_log`].
 //!
@@ -40,6 +46,7 @@
 pub mod app;
 pub mod live_log;
 pub mod plan;
+pub mod remote_state;
 pub mod run;
 
 use std::io;
@@ -68,17 +75,22 @@ use crate::ssh_backend::{
 };
 use live_log::{Applied, Drained, LiveLog};
 use plan::{PollerMemory, MAX_FETCH_STRIKES};
+use remote_state::{RemoteState, RemoteStates};
 
 /// Where the poller's events go. The app's sink (`app::AppSink`) maps each to exactly the local event and
 /// payload — `job:log` (`local_backend::emit_log`), `job:convergence` (`emit_convergence`),
-/// `job:status` (`emit_status`) — plus the one new event `job:log-reset { job_id }` (o16.3). The
-/// poller calls `log`/`convergence` only with a non-empty batch.
+/// `job:status` (`emit_status`) — plus two events of its own: `job:log-reset { job_id }` (o16.3) and
+/// `job:remote-state { job_id, seq, state }` (o19.6). The poller calls `log`/`convergence` only
+/// with a non-empty batch.
 pub trait PollerSink: Send + Sync {
     fn log(&self, job_id: &str, lines: Vec<String>);
     fn convergence(&self, job_id: &str, events: Vec<ConvergenceEvent>);
     /// Drop every line and convergence point held for the job: the stream restarts at 0.
     fn log_reset(&self, job_id: &str);
     fn status(&self, job_id: &str, status: JobStatus);
+    /// The job's remote record changed: change number `seq`, the record now (`None`: removed).
+    /// Called with the record map's lock held ([`RemoteStates`]); it must not call back into it.
+    fn remote_state(&self, job_id: &str, seq: u64, state: Option<&RemoteState>);
 }
 
 /// The outcomes that need `.exit_code` and so download the job's files (o item 4): `Completed`
@@ -94,8 +106,10 @@ pub fn is_fetching(outcome: &Outcome) -> bool {
     )
 }
 
-/// What `error_message` shows for a non-fetching outcome (o item 4: "shown, with 'handled in unit
-/// 5.4' where it needs an action"); `None` clears it — the job is plainly queued or running.
+/// What a non-fetching outcome says (o item 4: "shown, with 'handled in unit 5.4' where it needs an
+/// action"): the row's `error_message` for every outcome but `Indeterminate`, whose text is the
+/// job's remote record's `check_error` instead and never reaches the row (o19.3); `None` clears the
+/// message — the job is plainly queued or running.
 pub fn shown_message(outcome: &Outcome) -> Option<String> {
     const LATER: &str = "handled in unit 5.4";
     match outcome {
@@ -156,6 +170,8 @@ pub struct Poller<'a> {
     pub in_flight: &'a InFlight,
     pub memory: &'a PollerMemory,
     pub live: &'a LiveLog,
+    /// The per-job records the view reads (o19).
+    pub remote: &'a RemoteStates,
     pub sink: &'a dyn PollerSink,
     /// What the fetch downloads. There is no per-job `.gbw` opt-in yet, so the app passes
     /// `FetchPolicy::SMALL_ONLY` (`app::with_poller`).
@@ -164,20 +180,32 @@ pub struct Poller<'a> {
 
 impl Poller<'_> {
     /// The loop's status step for `job_id`: claim the in-flight guard without waiting — a busy job is
-    /// skipped (o15.3) — and run it.
+    /// skipped (o15.3), its record untouched — and run it.
     pub fn status_step(&self, job_id: &str) -> Result<StatusStep, AppError> {
         match self.in_flight.try_acquire(job_id) {
             None => Ok(StatusStep::Busy),
-            Some(guard) => self.run_status(&guard),
+            Some(guard) => self.run_and_record(&guard),
         }
     }
 
     /// The manual retry after the strikes stopped automatic fetches (o item 4): the bound starts
     /// over and one status step runs. The caller (a command) holds `guard`, the job's in-flight
-    /// guard, as every command does; the guard names the job.
+    /// guard, as every command does; the guard names the job. `clear_strikes` releases
+    /// `PollerMemory`'s lock before the record is applied (R before M, o19.5), and the record re-reads
+    /// the cleared counter, so a retry whose own step is `CheckFailed` no longer reads stopped.
     pub fn retry_fetch(&self, guard: &InFlightGuard) -> Result<StatusStep, AppError> {
         self.memory.clear_strikes(guard.job_id());
-        self.run_status(guard)
+        self.run_and_record(guard)
+    }
+
+    /// One status step of the job `guard` holds, then its change to the job's remote record — made
+    /// and emitted **while the guard is still held** (o19.4), so a later command on the job (a
+    /// withdraw, a retry) can never be overtaken by this step's record. A step that fails with an
+    /// error changes no record.
+    fn run_and_record(&self, guard: &InFlightGuard) -> Result<StatusStep, AppError> {
+        let step = self.run_status(guard)?;
+        self.remote.apply(guard, &step, self.memory, self.sink);
+        Ok(step)
     }
 
     /// One status step of the job `guard` holds.
@@ -334,12 +362,18 @@ impl Poller<'_> {
     }
 
     /// Show a non-fetching outcome: the classifier's `Running` moves a `queued` row to `running`;
-    /// every outcome sets `error_message` to [`shown_message`].
+    /// every other outcome but `Indeterminate` sets `error_message` to [`shown_message`].
+    /// `Indeterminate` writes nothing (o19.3: the row keeps the last known state's text; the record's
+    /// `check_error` says this check decided nothing), but the live row is still re-checked, so a
+    /// row that changed under the step is `RowChanged` as for every outcome.
     fn record_shown(&self, job_id: &str, coords: &RemoteCoordinates, outcome: &Outcome) -> Result<Written, AppError> {
         let conn = self.db.lock()?;
         let Some(before) = live_row(&conn, job_id, coords)? else {
             return Ok(Written::No);
         };
+        if *outcome == Outcome::Indeterminate {
+            return Ok(Written::Yes(None));
+        }
         if *outcome == Outcome::Running && before.status == JobStatus::Queued {
             conn.execute(
                 "UPDATE jobs SET status = 'running', started_at = datetime('now'), error_message = NULL \
@@ -463,6 +497,11 @@ pub(crate) struct RecordingSink {
     /// When set, every `log`, `convergence` and `log_reset` asserts this live log's mutex is held:
     /// the event is emitted inside the locked step that decided it (o16.3).
     live: Option<std::sync::Arc<LiveLog>>,
+    /// `job:remote-state` events `(job_id, seq, state)`, kept apart from `events` so the stream and
+    /// status assertions read as before.
+    remote_states: std::sync::Mutex<Vec<(String, u64, Option<RemoteState>)>>,
+    /// When set, every `remote_state` asserts this record map's mutex is held (o19.6).
+    remote: Option<std::sync::Arc<RemoteStates>>,
 }
 
 #[cfg(test)]
@@ -470,7 +509,22 @@ impl RecordingSink {
     /// A live log and a sink that checks every stream event is emitted under its mutex.
     pub(crate) fn with_live() -> (std::sync::Arc<LiveLog>, RecordingSink) {
         let live = std::sync::Arc::new(LiveLog::new());
-        (live.clone(), RecordingSink { events: Default::default(), live: Some(live) })
+        (live.clone(), RecordingSink { live: Some(live), ..Default::default() })
+    }
+
+    /// This sink, checking every `job:remote-state` is emitted under `remote`'s mutex (o19.6).
+    pub(crate) fn under_remote(self, remote: std::sync::Arc<RemoteStates>) -> RecordingSink {
+        RecordingSink { remote: Some(remote), ..self }
+    }
+
+    /// Every `job:remote-state` so far.
+    pub(crate) fn remote_states(&self) -> Vec<(String, u64, Option<RemoteState>)> {
+        self.remote_states.lock().unwrap().clone()
+    }
+
+    /// Every `job:remote-state` so far, emptying that record.
+    pub(crate) fn take_remote_states(&self) -> Vec<(String, u64, Option<RemoteState>)> {
+        std::mem::take(&mut *self.remote_states.lock().unwrap())
     }
 
     fn under_the_mutex(&self, what: &str) {
@@ -511,6 +565,12 @@ impl PollerSink for RecordingSink {
     }
     fn status(&self, job_id: &str, status: JobStatus) {
         self.push(Event::Status(job_id.into(), status));
+    }
+    fn remote_state(&self, job_id: &str, seq: u64, state: Option<&RemoteState>) {
+        if let Some(remote) = &self.remote {
+            assert!(remote.is_locked(), "job:remote-state emitted outside the record map's mutex (o19.6)");
+        }
+        self.remote_states.lock().unwrap().push((job_id.into(), seq, state.cloned()));
     }
 }
 

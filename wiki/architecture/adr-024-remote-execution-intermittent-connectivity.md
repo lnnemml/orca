@@ -1504,6 +1504,21 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
         `Indeterminate` change: `modules/execution-backends.md` ("every other outcome writes
         `shown_message`"), and in `poller.rs` the `shown_message` doc ("What `error_message` shows")
         and the module doc's step 4 ("`error_message` says what the server reports").
+    11. **B3 Part A amendments** (2026-10-06; found by the Part A verifier, decided by Anton).
+        1. **`Known::Fetching`** (verifier MED; also the implementer's point A). o19.3's
+           "`FetchFailed` / `FetchStopped` → `known` kept" let a job last seen `Shown(Running)` whose
+           fetch then failed show "running" beside the row's "fetch failed" text, and a job with no
+           `known` label its fresh strike text "from the last check". Amended: `FetchFailed` and
+           `FetchStopped` set `known = Fetching` (the server reports a fetching outcome; the download
+           is failing) and clear `check_error`; `fetch` is re-read as before. A later `CheckFailed`
+           keeps `Fetching` like any known state. The view shows "fetching results" with the fetch
+           state; since `known` is set, the "from the last check" label (o19.2) does not apply.
+           Negative control: `Shown(Running)` → `FetchFailed` reads `known == Fetching`; keeping
+           `known` turns it red.
+        2. **A retry or withdraw whose row cannot be loaded** (verifier LOW): `run_guarded` loads
+           the job before the work closure, so a missing row skips the closure's removal. Accepted:
+           the row is gone, so the job is not a candidate and the next `sweep` removes the record
+           with a `null` emit (o19.5).
 
 ## Alternatives rejected
 

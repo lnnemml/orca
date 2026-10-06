@@ -292,7 +292,8 @@ revisit when the UI needs error codes.
 open + migrate SQLite → `local_backend::reconcile_on_startup(&conn)` (advance any job left
 `running` by a crash — see `execution-backends.md`) → manage `DbState(Mutex<Connection>)` (the
 `Connection` is `Send`, not `Sync`) + `JobRunner` + `InFlight` (the per-job in-flight guard) +
-`LiveLog` + `PollerMemory` (the remote poller's state, empty on launch) + `XtbRunner` + `CrestRunner`
+`LiveLog` + `PollerMemory` + `RemoteStates` (the remote poller's state and the per-job remote records
+the view reads, all empty on launch) + `XtbRunner` + `CrestRunner`
 → `prune_diagnostic_dirs` off-thread (xtb) → a thread that runs `try_start_next` to resume `queued`
 jobs → spawn the sidecar + `Arc<SidecarManager>` + a background health-poll thread → last, the
 `remote-poller` thread (`poller::app::start`), which resumes monitoring every non-terminal remote job
@@ -322,7 +323,10 @@ in-flight steps (own process groups) are left to the OS (ADR-024 o18, decided by
   only — [execution-backends.md](execution-backends.md#sshbackend-ssh_backendrs) "Commands and the
   in-flight guard"); `retry_remote_fetch(id) -> StatusStep` (async; the manual fetch retry after
   3 failed fetches, guarded); `watch_job_log(id, open: bool)` (a job view's live log opened/closed;
-  never calls ssh — the remote poller, `execution-backends.md` "The remote poller"); `delete_job(app,
+  never calls ssh — the remote poller, `execution-backends.md` "The remote poller");
+  `remote_job_state(id) -> RemoteStateRead { seq, state }` (sync, memory only: the job's remote
+  record and the launch-wide change number, read together — `execution-backends.md` "The remote
+  record"); `delete_job(app,
   id)` (see below; claims the in-flight guard and refuses a busy job). No command sets an arbitrary status: the
   generic setter is internal only (`update_job_status_conn`), since it could mark a live remote job
   anything;

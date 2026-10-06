@@ -664,9 +664,17 @@ occurrence replaced) and requires it to fail.
 
 ## Not built yet
 
-- The UI over the remote job commands and the live log (B3: the view calls `watch_job_log` after its
-  `job:log`, `job:convergence` and `job:log-reset` listeners resolve, and skips the backfill for a
-  live remote job, o16.7). The poller runs: one loop thread started at launch monitors every
+- The UI over the remote job commands and the live log (B3 Part B: the view calls `watch_job_log`
+  after its `job:log`, `job:convergence` and `job:log-reset` listeners resolve, and skips the backfill
+  for a live remote job, o16.7; it attaches its `job:remote-state` listener, then reads
+  `remote_job_state`, keeping the greatest `seq`, o19.6; the "Run on" choice sits next to Submit, o5).
+  What the view will bind to exists now (B3 Part A): each non-terminal remote job's **remote record**
+  (`RemoteStates`: the label, the last outcome or "fetching", a failed check, the fetch bound) set by every status
+  step under the job's guard and pushed as `job:remote-state { job_id, seq, state }`; the
+  `remote_job_state(id)` read; and the pure TypeScript in `src/jobs/remote.ts` — `coordinateState`
+  (local / remote / corrupt), the seq rule (`mergeRemoteState`, `applyRemoteStateEvent`),
+  `remoteView` (badges and offered actions, o19.7; the words stay the row's) and `runTargetOptions`
+  ([execution-backends.md](execution-backends.md), "The remote record"). The poller runs: one loop thread started at launch monitors every
   non-terminal remote job (status every 15 s; the log every 2 s while a view watches it), emitting
   the local `job:log` / `job:convergence` / `job:status` events and `job:log-reset { job_id }`;
   `watch_job_log(id, open)` counts a job's open views and `retry_remote_fetch(id)` is the manual

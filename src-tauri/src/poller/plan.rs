@@ -24,6 +24,8 @@ use std::time::{Duration, Instant};
 use rusqlite::Connection;
 
 use super::live_log::LiveLog;
+use super::remote_state::RemoteStates;
+use super::PollerSink;
 use crate::error::AppError;
 use crate::models::job::{Job, JobStatus};
 use crate::ssh_backend::{coordinates, RemoteCoordinates};
@@ -151,11 +153,17 @@ pub fn plan_inputs(candidates: &[Candidate], live: &LiveLog, memory: &PollerMemo
 }
 
 /// Forget every job that is no longer a candidate (terminal, or its row vanished): its live state
-/// (the open count stays, o16.3) and its memory.
-pub fn sweep(candidates: &[Candidate], live: &LiveLog, memory: &PollerMemory) {
+/// (the open count stays, o16.3), its memory, and its remote record — a job that left the
+/// candidates without a step on it (another writer, a `RowChanged`) loses its record with a `null`
+/// event (o19.5). A job with a step in progress keeps its memory and its record: its step decides.
+/// The records come last and outside `PollerMemory`'s lock: the in-progress ids are snapshotted,
+/// the lock released, then the records filtered (R is never taken under M).
+pub fn sweep(candidates: &[Candidate], live: &LiveLog, memory: &PollerMemory, remote: &RemoteStates, sink: &dyn PollerSink) {
     let live_ids = |id: &str| candidates.iter().any(|c| c.id == id);
     live.retain(live_ids);
     memory.retain(live_ids);
+    let in_progress = memory.in_progress();
+    remote.retain(|id| live_ids(id) || in_progress.contains(id), sink);
 }
 
 /// What the poller remembers about one job during a launch.
@@ -248,6 +256,11 @@ impl PollerMemory {
     pub fn retain(&self, keep: impl Fn(&str) -> bool) {
         self.lock().retain(|id, m| m.in_progress || keep(id));
     }
+
+    /// The jobs with a step running now (a snapshot; the lock is released on return).
+    pub fn in_progress(&self) -> std::collections::HashSet<String> {
+        self.lock().iter().filter(|(_, m)| m.in_progress).map(|(id, _)| id.clone()).collect()
+    }
 }
 
 #[cfg(test)]
@@ -334,6 +347,36 @@ mod tests {
         let j = PlanJob { fetching: true, catch_up: true, ..ran(job(true), t0) };
         assert_eq!(due(&j, &p, t0 + 5 * S), None);
         assert_eq!(due(&j, &p, t0 + 15 * S), Some(Step::Status));
+    }
+
+    /// The body of `fn <signature>` in `src`, up to the first line that closes it at `close`.
+    fn body<'a>(src: &'a str, signature: &str, close: &str) -> &'a str {
+        let start = src.find(signature).unwrap_or_else(|| panic!("{signature} exists"));
+        &src[start..start + src[start..].find(close).expect("it ends")]
+    }
+
+    /// o19.5/o19.9, the lock order pinned in the source (deterministic; a looped race test would only
+    /// be probabilistic): R (the record map) before M (this memory). `clear_strikes` and
+    /// `PollerMemory::retain` run under M and never reach the records, and `sweep` filters the
+    /// records only after `memory.retain` has returned and the in-progress snapshot released M.
+    /// NEGATIVE CONTROL: filter the records inside `memory.retain`'s closure → red.
+    #[test]
+    fn the_record_map_is_never_taken_under_the_memory_lock() {
+        let src = include_str!("plan.rs");
+        let record_map = [concat!("Remote", "States"), concat!("remote", "."), concat!("remote_", "state")];
+        for signature in [concat!("pub fn ", "clear_strikes("), concat!("pub fn ", "retain(&self")] {
+            let b = body(src, signature, "\n    }\n");
+            for r in record_map {
+                assert!(!b.contains(r), "{signature} references the record map (`{r}`)");
+            }
+        }
+        let sweep = body(src, concat!("pub fn ", "sweep("), "\n}\n");
+        let memory_retain = sweep.find(concat!("memory.", "retain(")).expect("sweep filters the memory");
+        let memory_call = &sweep[memory_retain..memory_retain + sweep[memory_retain..].find(";\n").expect("one statement")];
+        assert!(!memory_call.contains(concat!("remote", ".")), "the records are filtered inside memory.retain: {memory_call}");
+        let snapshot = sweep.find(concat!("memory.", "in_progress()")).expect("sweep snapshots the in-progress ids");
+        let records = sweep.find(concat!("remote.", "retain(")).expect("sweep filters the records");
+        assert!(memory_retain < snapshot && snapshot < records, "the records last, after M is released");
     }
 
     #[test]

@@ -655,6 +655,23 @@ hover — it is gone, not kept alongside).** Three reasons, in order of weight:
   `isArgumentToken`) — only the trigger and input normalization changed, not the logic — and the
   `manual-open.ts` channel (Monaco-decoupled, survived the trigger change unedited; was `orca-hover.ts`).
 
+## Remote job view logic (`src/jobs/remote.ts`) — ADR-024 o19
+
+Pure functions over Rust's values; no screen calls them yet (unit 5.3 B3 Part B wires them).
+`coordinateState(job)` reads `Job.remote_host` / `remote_job_dir` / `remote_socket` (mirrored in
+`types.ts` with `backend_id`): none set → local, all three → remote, some → corrupt (shown, never
+acted on). `mergeRemoteState` / `applyRemoteStateEvent` keep, per job, whichever of the
+`remote_job_state` read and the `job:remote-state` events has the greatest `seq`, so arrival order
+does not matter. `remoteView(job, record)` gives a remote `queued`/`running` job its badges and
+offered actions: "not on the server" → retry submit + withdraw, "submit interrupted" → withdraw,
+`known: fetching` → "fetching results" with the failed attempts so far, `fetch.stopped` → retry fetch, `check_error` → "server unreachable / not decided" beside the last
+seen state, no record → "checking"; the row's `error_message` is the text, labelled "from the last
+check" while the record holds no decided state, and no action comes from it. The module copies none
+of Rust's outcome texts (a test reads the source to hold that). `runTargetOptions(profiles)` is the
+"Run on" list: `Local` plus every profile, enabled iff `run_target.is_run_target`, a disabled one with
+Rust's reason. The remote IPC shapes (`Outcome`, `Label`, `RemoteState`, `SubmitResponse`,
+`WithdrawReport`, `StatusStep`, …) live in `types.ts`.
+
 ## Queue control (status bar)
 
 - The **Pause/Resume button always renders** (you can pause *ahead* of stacking jobs, and the
