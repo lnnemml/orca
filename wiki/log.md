@@ -10936,3 +10936,17 @@ profile was never verified. Next: **5.3** `SshBackend` wiring.
 - `cargo test` 761 → 781; vitest (`--dir src`) 977 → 994. Every o19.9 / o19.11 negative control
   shown to bite (implementer and verifier). Verifier round 1 FAIL was the missing log/ROADMAP only.
 - Next: B3 Part B — screens, listener order (o16.7 + o19.6), run-target dropdown; Anton's live gate.
+
+## [2026-10-06] session | 5.3 B3: ADR-024 o19 and Part A landed
+- Done this session: explorer pass for B3; the fork "the poller's `StatusStep` never reaches the
+  view" → ADR-024 o19 (`7a8d312`, three DESIGN rounds, PASS WITH FINDINGS each, applied); B3 Part A
+  (`5992db6`): the `RemoteState` record, `job:remote-state` + seq, `remote_job_state`, TS types and
+  `src/jobs/remote.ts`; o19.11 `Known::Fetching`. `cargo test` 761 → 781, vitest 977 → 994.
+  Verifier CODE round 1 FAIL (the missing log/ROADMAP only), round 2 PASS WITH FINDINGS.
+- Anton decided: in-memory record + event + read command (over UI-only label calls or a DB column);
+  strikes read from `PollerMemory`; words from the row, structure from the record; `Indeterminate`
+  is a check error and stops rewriting the row; `Known::Fetching` for a failing fetch.
+- Carried to Part B: three verifier LOWs ("(amended by o19.11)" pointers in o19.1/o19.3; the
+  `remote_state.rs` module doc omits `Fetching`; hide "(0 failed attempts)").
+- **Next session: B3 Part B** — screens (run-target dropdown, remote states and actions, o16.7 +
+  o19.6 listener order), Anton's WebKitGTK gate; then **B4** — the live uni run.
