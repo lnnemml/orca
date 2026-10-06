@@ -353,8 +353,8 @@ failure (the row is `queued` either way) — the trait has no room for the `%pal
 a live job gets `refuse_if_remote_live`'s reason (checked first), a terminal one "nothing to cancel";
 `poll_log` and `fetch_results` refuse until the poller (B2).
 
-**Commands and the in-flight guard** (`commands/remote_jobs.rs`, `in_flight.rs`; ADR-024 o items 4
-and 5):
+**Commands and the in-flight guard** (`commands/remote_jobs.rs`, `in_flight.rs`; ADR-024 o items 4,
+5 and 15):
 
 | command (TS `invoke`) | returns | does |
 |---|---|---|
@@ -368,7 +368,7 @@ and 5):
 `outcome.failure()` in words. Retry, withdraw and label dispatch on the job's coordinates
 (`Backend::for_job`) and refuse a local job. Every remote operation (`run_guarded`, over the `AppHandle`-free `guarded_blocking`; every remote
 entry point is pinned to go through it):
-- claims the job's **in-flight guard** first, on the IPC thread, and **refuses** a job that already
+- claims the job's **in-flight guard** first, before `spawn_blocking`, and **refuses** a job that already
   has an operation in flight (`AppError::Conflict` "an operation on job … is already in progress");
 - runs in `tauri::async_runtime::spawn_blocking` (the commands are `async`), never holding the
   database lock across an ssh call (the core's rule), the guard moved into the task so the job stays
@@ -386,7 +386,9 @@ touched by one insert or remove). `cancel_job` also claims the guard, **before**
 remote submit holds it from before its persist step, so a cancel cannot read the draft and then act on
 the `queued` row the submit persisted meanwhile. The local submit claims nothing (the persist step's
 `WHERE status = 'draft' AND remote_host IS NULL` already decides between a local and a remote submit
-of the same draft).
+of the same draft). `delete_job` claims nothing yet: `delete_job_conn` decides under one lock and
+refuses a non-terminal remote job (o2, o15.2); it joins the guard in B2, whose poller may write to a
+job around its terminal transition.
 
 **Tests.** Over a fake runner (`ssh_backend/tests.rs`): the call order (prepare → upload → submit;
 prepare → install → prepare → … on a fresh server), the row at every call (persisted before the

@@ -1425,7 +1425,7 @@ preflight. The remaining items (remote `orca_plot`, pause) are not numbered yet.
       `cancel.sh` / `collect.sh`, the length-prefixed snapshot wire format and its strict parser,
       run for real on the laptop (stub `tsp`/ORCA, fixtures (a)–(e), d′ orders) —
       [modules/remote-jobs.md](wiki/modules/remote-jobs.md).
-- [ ] **Unit 5.3 — `SshBackend` wiring** (**A1 ✅ 2026-10-05** `d47623d`: v20, artifact list, LogChunk, pure parsers; **A2 ✅ 2026-10-05** `ff0b5e1`: server scripts submit/label/poll_log/list, ADR-024 o13; **next: Part B**) via system `ssh`/`rsync`: rsync job dir up → the 5.2
+- [ ] **Unit 5.3 — `SshBackend` wiring** (**A1 ✅ 2026-10-05** `d47623d`: v20, artifact list, LogChunk, pure parsers; **A2 ✅ 2026-10-05** `ff0b5e1`: server scripts submit/label/poll_log/list, ADR-024 o13; **B1 ✅ 2026-10-06** `e6211f0`; **next: B2**) via system `ssh`/`rsync`: rsync job dir up → the 5.2
       wrapper via task-spooler (per-slot `TS_SOCKET`) → byte-offset `poll_log` of output → selective
       rsync down (the shared artifact-pattern list + markers + `.tsp-out/`; gbw opt-in, ADR-024 o6); `enum Backend` (ADR-023). Also per
       ADR-024 (m)/(n)/(o):
@@ -1450,7 +1450,7 @@ preflight. The remaining items (remote `orca_plot`, pause) are not numbered yet.
               `tsp -l` on a stale socket inside the lock, `timeout -k` on a hung client, real `busctl`
               output, the coreutils `cannot statx` ENOENT text, slot-scan cost, pinned zombie. First,
               because a mismatch changes the scripts before anything is wired.
-        - [ ] **B1 — `enum Backend` + `SshBackend` submit path** (**Part A ✅ 2026-10-05** `b0c2d0c`: core + scripts + ADR-024 o14; **next: Part B** wiring) (implementer `opus`; Part A pure with an
+        - [x] **B1 — `enum Backend` + `SshBackend` submit path** (**Part A ✅ 2026-10-05** `b0c2d0c`: core + scripts + ADR-024 o14; **Part B ✅ 2026-10-06** `e6211f0`: commands, in-flight guard, ADR-024 o15) (implementer `opus`; Part A pure with an
               injected `CommandRunner` → STOP → wiring into `commands/jobs.rs`): the 3.2 pre-upload
               read-only call (realpath incl. `<root>/bin`, wrapper "already hashes right") + wrapper
               upload (temp + rename, o13.1); coordinates persisted `Queued` before any ssh (o3.1); rsync
@@ -1458,7 +1458,8 @@ preflight. The remaining items (remote `orca_plot`, pause) are not numbered yet.
               label call + withdraw; refusals of cancel/delete and profile edit/delete while
               non-terminal (o2).
         - [ ] **B2 — the poller** (implementer `opus`): one loop started in `lib.rs` setup, resumed at
-              launch; in-flight guard per job; label → collect (recorded + `.enqueued` socket) →
+              launch; in-flight guard per job (`InFlight::try_acquire`, skip; `delete_job` joins the guard,
+              ADR-024 o15.2, with a negative control); label → collect (recorded + `.enqueued` socket) →
               `classify`; fetching outcomes → download + `LIST` post-condition + `detect_completion`
               on the downloaded files; 3-strike fetch retries; remote `poll_log` into the live view;
               Full-mode rsync temp-name skip. **Fork for Anton at B2 start:** how the remote log reaches

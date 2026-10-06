@@ -1,5 +1,6 @@
-//! The per-job in-flight guard (ADR-024 o item 4): **at most one remote operation per job at a
-//! time** — submit, retry, withdraw and label today; the poller's collect and fetch in unit 5.3 B2.
+//! The per-job in-flight guard (ADR-024 o item 4): **at most one guarded operation per job at a
+//! time** — submit, retry, withdraw, label and cancel today (cancel, local or remote: ADR-024 o15);
+//! the poller's collect and fetch, and delete, in unit 5.3 B2.
 //! Two operations on the same job must not interleave: a double-clicked Submit, a Retry while a
 //! Withdraw is still talking to the server, a poller tick collecting a job a withdraw is
 //! cancelling — each would race the server/database state machine of o item 3.

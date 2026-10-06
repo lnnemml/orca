@@ -10658,3 +10658,19 @@ profile was never verified. Next: **5.3** `SshBackend` wiring.
   worker instead of the main thread (same calls, same events). `cancel_job` claiming the guard closes a
   race between a local cancel's re-read and a concurrent remote persist of the same draft.
 - Next: verifier CODE; then B2 (the poller, using `InFlight::try_acquire`) and B3 (the UI).
+
+## [2026-10-06] decision | ADR-024 o15 — the in-flight guard's scope
+- B1 Part B committed `e6211f0` (tree `73f1b8df`, verifier CODE PASS round 2). Anton's live sanity
+  check of a local submit through the now-async `submit_job` passed (queued → running, live log,
+  cancel, next queued job starts, double Submit runs once).
+- **o15** (ADR-024): the guard covers every operation that reaches the server plus cancel (local or
+  remote) — cancel's claim closes a draft → remote-`Queued` race that o14.5's entry check alone does
+  not; local submit stays outside (atomic under the DB lock). **Delete joins the guard in B2**
+  (Anton, MED-3): the poller writes to a job after it turns terminal, so delete's one-lock decision
+  stops being enough then.
+- DESIGN review: PASS WITH FINDINGS — MED-1 race mechanism re-described (two separately locked reads
+  in `local_backend::cancel`), MED-2 "nothing else claims a local id" corrected, MED-3 decided by
+  Anton, LOW-1 selection criterion, LOW-2 claim point for `cancel_job`, LOW-3 module page, LOW-4 the
+  `in_flight.rs` header comment; o14.5 marked "holds under concurrency through o15".
+- Next: B2, the poller. Fork for Anton at its start: push `job:log` vs pull `poll_log` for the
+  remote live log.
