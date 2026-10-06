@@ -10820,3 +10820,72 @@ profile was never verified. Next: **5.3** `SshBackend` wiring.
   live state dropped, one `job:status`. Tested on a `queued` and a `running` row.
 - Next: verifier CODE on Part A; then Part B (loop thread, `AppHandle` sink, `watch_job_log`,
   `delete_job` claims the guard, propagation of o16.9).
+
+## [2026-10-06] feat | Unit 5.3 B2 Part B — the remote poller wired into the app
+- **What landed** (not committed):
+  - `poller/run.rs` — the loop's `AppHandle`-free body: `tick(db, live, memory, periods, now)` (one
+    candidates query, `sweep`, `plan`, every due step marked in progress **before** it is handed out)
+    and `run_step(poller, planned)`, which always ends the step through a drop guard (`StepEnd`) —
+    on return, early return and panic.
+  - `poller/app.rs` — the shell: `AppSink` (`job:log` / `job:convergence` / `job:status` through the
+    local emitters, plus `job:log-reset { job_id }`), `with_poller` (`SystemRunner`, `SMALL_ONLY`),
+    `start` (one `remote-poller` thread, `TICK` = 500 ms) and `spawn_step` (one short-lived thread
+    per step; a step whose thread cannot start is ended at once).
+  - `lib.rs` manages `LiveLog` and `PollerMemory` next to `InFlight` and starts the loop last in
+    setup; the scoped `#[allow(dead_code)]` on `mod poller` and on `InFlightGuard::job_id` are gone,
+    and so are those on `LineAssembler`, `read_log_chunk` and `FetchPolicy` (now live), leaving
+    `FetchPolicy::WITH_GBW` and the three unrouted trait methods with targeted allows.
+  - Commands: `watch_job_log(id, open: bool) -> ()` (`LiveLog::open`/`close`, never ssh) and
+    `retry_remote_fetch(id) -> StatusStep` (through the new `guarded_blocking_held`, which lends the
+    job's guard to `Poller::retry_fetch`; a busy job is refused). `StatusStep` serializes as
+    `{ "step": "<snake_case>", "detail": … }`.
+  - `delete_job` claims the in-flight guard (o15.2) through `delete_job_guarded`, and drops the
+    deleted job's live state and poller memory (the next tick's `sweep` would as well).
+  - `SshBackend::fetch_results` still refuses (doc points to the poller): routing it would bypass
+    the guard and the strikes.
+  - o16.9 propagation: ROADMAP 5.0's push→pull line, the module and trait docs of
+    `execution_backend.rs`, `read_log_chunk`'s doc, the `in_flight.rs` header (the log poll is not
+    guarded), `modules/execution-backends.md` (push/pull, `poll_log`, the loop, the commands,
+    `delete_job`), `modules/remote-jobs.md`, `modules/tauri-core.md`.
+- **Exit:** nothing is joined; the process ends and takes the loop and step threads with it. The
+  ssh/rsync children of in-flight steps (own process groups) are left to the OS, as for the B1
+  commands — **ADR-024 o18, decided by Anton (leave to the OS)**.
+- **Tests:** `cargo test` 761 passed / 27 ignored (was 749 / 27; 758 before the verifier's
+  findings); `cargo build` 0 warnings; `npx tsc --noEmit` clean; `npx vitest run --dir src` 977
+  passed (75 files), run in the **main checkout** (with `resources/manual/`; a checkout without it
+  gives 975 passed + 2 skipped of 977).
+- **Negative controls** (each mutated, red, restored, `cmp` identical):
+  - D1 the step ended after the match instead of by the drop guard → `a_step_that_panics_still_ends`
+    red "the in-progress mark is cleared while the panic unwinds";
+  - D2 `tick` not marking steps in progress → `a_tick_hands_out_a_due_status_step_once…` red
+    "assertion failed: r.memory.get(JOB).in_progress";
+  - D3 the spawn-failure `end_step` removed → `every_handed_out_step_is_ended` red "a step that could
+    not start is ended";
+  - D4 `delete_job_guarded` without its `acquire` → `delete_job_refuses_a_busy_job…` red "Ok(None)";
+  - D5 `retry_remote_fetch` claiming and spawning itself → `retry_remote_fetch_goes_through…` red
+    "goes through guarded_blocking_held";
+  - D6 the claim moved into the task in `guarded_blocking_held` → the same test red
+    "guarded_blocking_held claims the guard";
+  - D7 the lent guard released before the work → `guarded_blocking_held_lends…` red "busy during the
+    work … left: (\"j1\", false), right: (\"j1\", true)";
+  - D8 `watch` mapping open to close → `watch_job_log_opens_and_closes_the_live_log` red "left: 0,
+    right: 2".
+- **Verifier CODE (PASS WITH FINDINGS, tree 67c9dd67) — fixes:**
+  - F-1: the B3 wire contract is pinned — `app::LOG_RESET_EVENT = "job:log-reset"`, a serde test of
+    `LogResetPayload` (exactly `{"job_id": …}`), and a source pin of the four `AppSink` bodies to
+    `emit_log` / `emit_convergence` / `emit_status` / `LOG_RESET_EVENT`. Controls: E1 the const set to
+    `"job:log_reset"` → `the_log_reset_event_and_its_payload` red "left: \"job:log_reset\", right:
+    \"job:log-reset\""; E2 `log_reset` emitting the literal `"job:log_reset"` (the verifier's E3) →
+    `the_app_sink_maps_each_event_to_its_local_emitter` red "fn log_reset( goes to
+    `self.0.emit(LOG_RESET_EVENT, LogResetPayload {`".
+  - F-3: `candidates` returns `Candidates { jobs, unreadable }`; one row that does not read as a
+    remote job is set aside (never polled, never taken for local) and `tick` reports it once per
+    launch (`PollerMemory::first_report`), so the others keep polling. Test
+    `an_unreadable_row_does_not_stop_the_other_jobs` (a partial-coordinates row written with
+    `PRAGMA ignore_check_constraints`). E3, the row failing the whole tick → red
+    "Internal(\"job bad: internal error: job bad: partial remote coordinates\")".
+  - Info: `tick` finds a step's coordinates before `begin_step`, so no mark is set for a step that is
+    not handed out.
+  - F-4: `modules/tauri-core.md` "Startup sequence" lists `InFlight`, `LiveLog`, `PollerMemory`, the
+    `remote-poller` start, and the exit behaviour (o18).
+- Next: verifier CODE on the fixes; then B3 (the view).

@@ -15,8 +15,9 @@
 //! static-dispatch selector ([`Backend`]): `submit_job` by the run target chosen next to
 //! Submit ([`Backend::for_submit`]), `cancel_job` and the remote job commands by the job's
 //! coordinates ([`Backend::for_job`], [`backend_kind`]). `poll_log` / `status` / `fetch_results`
-//! are wired-but-quiet: the live UI still uses the **push** `job:log` event, so the
-//! pull path is exercised by tests until the push→pull flip (a later unit).
+//! are pulls at the backend layer (ADR-003). The UI stays **push** (ADR-024 o16): a local job's log
+//! reaches the view as the `job:log` / `job:convergence` events of its tailing thread, and a remote
+//! job's as the same events, emitted by the poller (`crate::poller`) from its `poll_log` chunks.
 //!
 //! **Tauri-free signatures.** No method takes an `AppHandle`: the trait must be
 //! implementable by `SshBackend` (which has no `AppHandle` to reach app state).
@@ -107,9 +108,8 @@ pub struct LineAssembler {
 /// The longest incomplete line [`LineAssembler`] holds before emitting it.
 pub const MAX_LINE_CARRY: usize = 1 << 20;
 
-// Not routed live yet: the consumer is the 5.3 Part B log poller (remote `poll_log`); the local
-// live log is still the push `job:log` event.
-#[allow(dead_code)]
+// Its consumer is the remote poller's live log (`poller::live_log`); a local job's tailing thread
+// reads lines with `BufRead` instead.
 impl LineAssembler {
     pub fn new() -> Self {
         Self::default()
@@ -165,11 +165,7 @@ fn decode_line(bytes: &[u8]) -> String {
 /// the opt-in (it dominates transfer time); cubes are generated on demand. The filter
 /// is `remote::sync::download_filter_args` (ADR-024 o items 6 and 11).
 //
-// Not-yet-routed after Part B: `FetchPolicy` is only meaningful over SSH, and
-// `fetch_results` is a no-op locally with no live caller. Routed when `SshBackend`
-// lands (ADR-023). Targeted allow (not the removed crate-level one) so unrelated
-// dead code still warns.
-#[allow(dead_code)]
+// Only meaningful over SSH: the poller's fetch (`ssh_backend::fetch_remote`) takes it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FetchPolicy {
     /// Pull the large `.gbw` wavefunction back. The shared artifact list always comes
@@ -177,11 +173,12 @@ pub struct FetchPolicy {
     pub include_gbw: bool,
 }
 
-#[allow(dead_code)] // consts land with the SshBackend caller (ADR-023); see FetchPolicy above.
 impl FetchPolicy {
-    /// The default fetch: the shared artifact list, no `.gbw`.
+    /// The default fetch: the shared artifact list, no `.gbw`. The poller's, until a per-job opt-in.
     pub const SMALL_ONLY: FetchPolicy = FetchPolicy { include_gbw: false };
     /// Everything, including the `.gbw` wavefunction.
+    // Not routed yet: there is no per-job `.gbw` opt-in (a later unit); the tests use it.
+    #[allow(dead_code)]
     pub const WITH_GBW: FetchPolicy = FetchPolicy { include_gbw: true };
 }
 
@@ -192,13 +189,12 @@ impl FetchPolicy {
 /// must be able to implement them without an `AppHandle`. All methods return
 /// `Result<_, AppError>`.
 ///
-/// **Routing status after Part B.** `submit` / `cancel` are routed live —
-/// `commands::jobs::{submit_job, cancel_job}` dispatch through them. `poll_log` /
-/// `status` / `fetch_results` are implemented and tested but have no live caller
-/// yet, so each carries a targeted `#[allow(dead_code)]` naming where it gets
-/// routed (the push→pull flip and `SshBackend`), rather than the removed
-/// crate-level allow — a genuinely-unrouted item stays visible, an *accidentally*
-/// dead one still warns.
+/// **Routing.** `submit` / `cancel` are routed live — `commands::jobs::{submit_job,
+/// cancel_job}` dispatch through them. `poll_log` / `status` / `fetch_results` are implemented and
+/// tested but have no live caller: the remote poller calls the Tauri-free cores
+/// (`ssh_backend::poll_log_remote`, `fetch_remote`) directly, under its own sequencing and guard, and
+/// the UI stays push (ADR-024 o16). Each carries a targeted `#[allow(dead_code)]` saying so, so an
+/// *accidentally* dead item still warns.
 pub trait ExecutionBackend {
     /// Submit a job for execution and return its handle. Locally: enqueue on the
     /// single-slot SQLite queue (domain rule #4) and try to start it.
@@ -209,8 +205,8 @@ pub trait ExecutionBackend {
     /// file and a remote `tail -c +<offset>` over SSH. Never loads the whole log
     /// (domain rule #5): the read is bounded and seeks to `offset`.
     //
-    // Not routed live yet: the UI log is still the push `job:log` event; this pull
-    // path is exercised by tests until the push→pull flip (a later unit).
+    // No live caller: the UI stays push (ADR-024 o16) — the remote poller calls
+    // `ssh_backend::poll_log_remote` itself, and a local job's view gets its tailing thread's events.
     #[allow(dead_code)]
     fn poll_log(&self, h: &JobHandle, offset: u64) -> Result<LogChunk, AppError>;
 
@@ -225,7 +221,8 @@ pub trait ExecutionBackend {
     /// Retrieve the job's result artifacts per `policy`. Locally this is a no-op
     /// (the artifacts are already on disk); remotely it `rsync`s them back.
     //
-    // Not routed live yet: degenerate locally; the live caller is `SshBackend` (ADR-023).
+    // No live caller: degenerate locally, and a remote job's files are fetched by the poller's
+    // guarded status step (`ssh_backend::fetch_remote`); `SshBackend` refuses it.
     #[allow(dead_code)]
     fn fetch_results(&self, h: &JobHandle, policy: FetchPolicy) -> Result<(), AppError>;
 

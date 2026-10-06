@@ -669,7 +669,7 @@ pub struct WithdrawReport {
 /// 5. `collect.sh <job> <recorded socket>` through the trampoline (one retake if `classify` asks),
 ///    and **`classify` decides**: `Cancelled` (row 4) → the row becomes `cancelled`; anything else
 ///    (`Completed { late_cancel }`, `Cancelling`, `Failed`, …) → the row stays `queued` for the poller
-///    (B2) or unit 5.4, with the verdict in `error_message`. Never a hard-coded `Cancelled`
+///    (`crate::poller`) or unit 5.4, with the verdict in `error_message`. Never a hard-coded `Cancelled`
 ///    (Decision c). `reenqueue_count` is 0 (the counter is v21's, o item 4).
 pub fn withdraw_remote(db: &DbState, runner: &dyn CommandRunner, job_id: &str) -> Result<WithdrawReport, AppError> {
     let (coords, root) = {

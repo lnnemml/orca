@@ -21,10 +21,6 @@ mod orca_json;
 mod orca_plot;
 mod output_search;
 mod parse;
-// Unit 5.3 B2 Part A lands the remote poller's core (ADR-024 o item 4, o16) with its tests; the
-// loop thread, the `AppHandle` sink and the `watch_job_log` command that call it are Part B. Scoped
-// allow until then, so the build stays warning-clean without a faked caller.
-#[allow(dead_code)]
 mod poller;
 // Unit 5.2 Part A lands the pure remote-job classifier (ADR-024 l) with its tests; its callers
 // (the snapshot collector in 5.2 Part B, SshBackend reconcile in 5.3/5.4) do not exist yet.
@@ -66,6 +62,10 @@ pub fn run() {
             app.manage(local_backend::JobRunner::new(data_dir.clone()));
             // --- Remote jobs: one operation in flight per job (ADR-024 o item 4); empty on launch. ---
             app.manage(in_flight::InFlight::default());
+            // --- The remote poller (ADR-024 o item 4, o16): the live log and the per-launch memory,
+            // both empty on launch. ---
+            app.manage(poller::live_log::LiveLog::new());
+            app.manage(poller::plan::PollerMemory::new());
 
             // --- xtb pre-optimizer: its own single-slot runner (2.5.5). ---
             app.manage(xtb::XtbRunner::default());
@@ -96,6 +96,10 @@ pub fn run() {
             let health_handle = sidecar.clone();
             std::thread::spawn(move || health_handle.health_check());
 
+            // Resume monitoring every non-terminal remote job (ADR-024 o item 4). Last, once the
+            // database and the poller's state are managed; it never blocks setup.
+            poller::app::start(app.handle().clone())?;
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -114,6 +118,8 @@ pub fn run() {
             commands::remote_jobs::retry_remote_submit,
             commands::remote_jobs::withdraw_remote_job,
             commands::remote_jobs::label_remote_job,
+            commands::remote_jobs::retry_remote_fetch,
+            commands::remote_jobs::watch_job_log,
             commands::jobs::delete_job,
             commands::jobs::pause_queue,
             commands::jobs::resume_queue,

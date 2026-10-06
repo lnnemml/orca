@@ -809,7 +809,7 @@ fn an_unwatched_fetch_emits_no_log() {
 // ---- the planner over the database ---------------------------------------------------------
 
 fn tick(r: &Remote, now: Instant) -> Vec<(String, Step)> {
-    let c = candidates(&r.w.db.lock().unwrap()).unwrap();
+    let c = candidates(&r.w.db.lock().unwrap()).unwrap().jobs;
     sweep(&c, &r.live, &r.memory);
     plan(&plan_inputs(&c, &r.live, &r.memory), &Periods::INITIAL, now)
 }
@@ -828,9 +828,9 @@ fn a_watched_draft_is_polled_once_it_has_coordinates_and_a_local_job_never() {
     let (live, memory, sink) = (LiveLog::new(), PollerMemory::new(), RecordingSink::default());
     live.open(JOB, &sink);
     let t0 = Instant::now();
-    assert!(candidates(&w.db.lock().unwrap()).unwrap().is_empty(), "a draft has no coordinates");
+    assert!(candidates(&w.db.lock().unwrap()).unwrap().jobs.is_empty(), "a draft has no coordinates");
     w.sql("UPDATE jobs SET status = 'queued'");
-    assert!(candidates(&w.db.lock().unwrap()).unwrap().is_empty(), "a local queued job is not the poller's");
+    assert!(candidates(&w.db.lock().unwrap()).unwrap().jobs.is_empty(), "a local queued job is not the poller's");
     drop((live, memory));
 
     let r = Remote::new();
@@ -890,6 +890,33 @@ fn a_terminal_job_is_swept_with_its_count_kept() {
     assert_eq!(r.live.open_count(JOB), 1);
 }
 
+/// F-3: one row that does not read as a remote job (partial coordinates, written past the v20 CHECK)
+/// is set aside and reported once per launch; the good job beside it still gets its step. NEGATIVE
+/// CONTROL: make `candidates` fail on such a row (`?` instead of `unreadable`) → red.
+#[test]
+fn an_unreadable_row_does_not_stop_the_other_jobs() {
+    let r = Remote::new();
+    {
+        let conn = r.w.db.lock().unwrap();
+        conn.execute_batch("PRAGMA ignore_check_constraints = ON;").unwrap();
+        conn.execute(
+            "INSERT INTO jobs (id, title, input_content, status, remote_host, remote_job_dir) \
+             VALUES ('bad', 't', '! HF', 'queued', 'uni', '/r/jobs/bad')",
+            [],
+        )
+        .unwrap();
+        conn.execute_batch("PRAGMA ignore_check_constraints = OFF;").unwrap();
+    }
+    let c = candidates(&r.w.db.lock().unwrap()).unwrap();
+    assert_eq!(c.jobs.iter().map(|j| j.id.as_str()).collect::<Vec<_>>(), [JOB]);
+    assert_eq!(c.unreadable.len(), 1);
+    assert_eq!(c.unreadable[0].0, "bad");
+    assert!(c.unreadable[0].1.contains("partial remote coordinates"), "{:?}", c.unreadable);
+    let planned = ticked(&r, Instant::now());
+    assert_eq!(planned.iter().map(|p| p.job_id.as_str()).collect::<Vec<_>>(), [JOB], "the good job is still polled");
+    assert!(!r.memory.first_report("bad"), "reported once, by that tick");
+}
+
 /// A row with partial coordinates is an error, never a local job skipped in silence.
 #[test]
 fn candidates_refuse_partial_coordinates() {
@@ -899,7 +926,7 @@ fn candidates_refuse_partial_coordinates() {
     let mut partial = job.clone();
     partial.remote_socket = None;
     assert!(coordinates(&partial).is_err());
-    assert_eq!(candidates(&r.w.db.lock().unwrap()).unwrap().len(), 1);
+    assert_eq!(candidates(&r.w.db.lock().unwrap()).unwrap().jobs.len(), 1);
 }
 
 #[test]
@@ -928,4 +955,74 @@ fn fetching_outcomes_are_exactly_item_4s() {
         assert_eq!(shown_message(o).is_none(), matches!(o, Outcome::Queued | Outcome::Running), "{o:?}");
     }
     assert!(shown_message(&Outcome::Cancelling).unwrap().contains("handled in unit 5.4"));
+}
+
+// ---- the loop's body: tick and run_step (unit 5.3 B2 Part B) --------------------------------
+
+use super::run::{run_step, tick as run_tick, Planned, StepRan};
+
+fn ticked(r: &Remote, at: Instant) -> Vec<Planned> {
+    run_tick(&r.w.db, &r.live, &r.memory, &Periods::INITIAL, at).unwrap()
+}
+
+/// A due status step is handed out once, marked in progress; while it is not ended no later tick
+/// hands out another step for the job, however much time passes; `run_step` ends it, and the next
+/// one is due a status period later.
+#[test]
+fn a_tick_hands_out_a_due_status_step_once_and_run_step_ends_it() {
+    let r = Remote::new();
+    let fake = Fake::new(&r, |kind, values| match kind {
+        LabelCall => label_reply(values, NOT_ON_SERVER),
+        _ => panic!("nothing after the label call"),
+    });
+    let t0 = Instant::now();
+    let planned = ticked(&r, t0);
+    assert_eq!(planned, [Planned { job_id: JOB.into(), step: Step::Status, coords: expected_coords() }]);
+    assert!(r.memory.get(JOB).in_progress);
+    for later in [0, 2, 20, 60] {
+        assert!(ticked(&r, t0 + Duration::from_secs(later)).is_empty(), "a step is running: nothing more at +{later} s");
+    }
+    let ran = run_step(&r.poller(&fake), &planned[0]);
+    assert!(matches!(ran, StepRan::Status(Ok(StatusStep::Labelled(Label::NotOnServer)))), "{ran:?}");
+    assert!(!r.memory.get(JOB).in_progress, "ended");
+    assert!(ticked(&r, t0 + Duration::from_secs(14)).is_empty());
+    assert_eq!(ticked(&r, t0 + Duration::from_secs(15)).len(), 1, "the next status step is due a period later");
+}
+
+/// A step that panics still ends: the job is planned again, and its in-flight guard is free.
+/// NEGATIVE CONTROL: end the step after the match instead of through the drop guard (so a panic
+/// skips it) → red.
+#[test]
+fn a_step_that_panics_still_ends() {
+    let r = Remote::new();
+    let fake = Fake::new(&r, |_, _| panic!("a bug inside a step"));
+    let t0 = Instant::now();
+    let planned = ticked(&r, t0);
+    let poller = r.poller(&fake);
+    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_step(&poller, &planned[0])));
+    assert!(unwound.is_err(), "the step panicked");
+    assert!(!r.memory.get(JOB).in_progress, "the in-progress mark is cleared while the panic unwinds");
+    assert!(!r.in_flight.is_busy(JOB), "the guard too");
+    assert_eq!(ticked(&r, t0 + Duration::from_secs(15)).len(), 1, "the job is planned again");
+}
+
+/// A watched remote job gets log steps between its status steps; an unwatched one does not.
+#[test]
+fn a_tick_gives_a_watched_job_log_steps_and_an_unwatched_one_none() {
+    let r = Remote::new();
+    let fake = Fake::new(&r, |kind, values| match kind {
+        LabelCall => label_reply(values, NOT_ON_SERVER),
+        PollLog => log_reply(values, b"line 1\n", 7),
+        _ => panic!("unexpected {kind:?}"),
+    });
+    let t0 = Instant::now();
+    run_step(&r.poller(&fake), &ticked(&r, t0)[0]);
+    assert!(ticked(&r, t0 + Duration::from_secs(2)).is_empty(), "unwatched: no log step");
+    r.live.open(JOB, &r.sink);
+    let planned = ticked(&r, t0 + Duration::from_secs(2));
+    assert_eq!(planned.iter().map(|p| p.step).collect::<Vec<_>>(), [Step::Log]);
+    let ran = run_step(&r.poller(&fake), &planned[0]);
+    assert!(matches!(ran, StepRan::Log(LogStep::Applied(Applied::Lines { lines: 1, .. }))), "{ran:?}");
+    assert!(!r.memory.get(JOB).in_progress);
+    assert_eq!(log_lines(&r.sink.take()), ["line 1"]);
 }

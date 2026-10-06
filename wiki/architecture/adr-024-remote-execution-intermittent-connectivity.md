@@ -1,6 +1,6 @@
 # ADR-024: Remote execution under intermittent connectivity
 
-**Status:** Accepted · 2026-10-02 (Proposed → Accepted after the review + acceptance amendments below) · amended 2026-10-03 (probe; probe review; d′ resolution — ready for implementation; l — unit 5.2 script and classifier shape; m — 5.3 submit rules; n — 5.1 Part B profile and connection test) · amended 2026-10-05 (o — 5.3 transport, sync and monitoring; accepted after DESIGN round 4; o13 — Part A2 amendments, accepted after DESIGN review 2026-10-05; o14 — B1 amendments, accepted after DESIGN review 2026-10-05) · amended 2026-10-06 (o15 — B1 Part B: the in-flight guard's scope, accepted after DESIGN review 2026-10-06; o16 — B2: the remote live log is pushed, accepted after DESIGN review 2026-10-06; o17 — B2 Part A: classifier `Cancelled` terminal, drain while watched, accepted after DESIGN review 2026-10-06)
+**Status:** Accepted · 2026-10-02 (Proposed → Accepted after the review + acceptance amendments below) · amended 2026-10-03 (probe; probe review; d′ resolution — ready for implementation; l — unit 5.2 script and classifier shape; m — 5.3 submit rules; n — 5.1 Part B profile and connection test) · amended 2026-10-05 (o — 5.3 transport, sync and monitoring; accepted after DESIGN round 4; o13 — Part A2 amendments, accepted after DESIGN review 2026-10-05; o14 — B1 amendments, accepted after DESIGN review 2026-10-05) · amended 2026-10-06 (o15 — B1 Part B: the in-flight guard's scope, accepted after DESIGN review 2026-10-06; o16 — B2: the remote live log is pushed, accepted after DESIGN review 2026-10-06; o17 — B2 Part A: classifier `Cancelled` terminal, drain while watched, accepted after DESIGN review 2026-10-06; o18 — B2 Part B: exit leaves in-flight ssh/rsync to the OS, accepted after DESIGN review 2026-10-06)
 
 Refines [ADR-003](adr-003-execution-backend.md) (the `ExecutionBackend` trait + job state
 machine) and extends [ADR-023](adr-023-server-agnostic-remote-execution.md) (one `SshBackend`
@@ -1349,6 +1349,33 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
        holds).
     3. **Propagation:** item 4's outcome list and o16.6 (marked); `modules/remote-jobs.md` and
        `modules/execution-backends.md` move with B2's code.
+18. **B2 Part B: exit leaves in-flight ssh/rsync to the OS** (2026-10-06; fork raised by the B2 Part B
+    implementer, decided by Anton). Accepted after DESIGN review (PASS WITH FINDINGS, findings
+    applied) on 2026-10-06. App exit joins neither the poller loop nor its step threads, so
+    it never waits for a step (a download may take up to its unmeasured 300 s bound). The ssh and
+    rsync children of in-flight steps run in their own process groups (`SystemRunner`) and are left
+    to the OS — as the B1 remote commands already are. This is safe because every such call is
+    read-only on the server or idempotent, the in-flight guard and the poller memory reset on launch
+    (item 4), and the next launch redoes the step from the server's facts. A leftover rsync from the
+    previous run can still rename a whole file into the local job dir **after** the new run's LIST +
+    sha256 post-condition (o6), which is a point-in-time snapshot. That is content-neutral only
+    because of **finality**: a fetching outcome is classified only after `.exit_code` is published,
+    which `wrapper.sh` step 4 does only after ORCA has returned, right before the wrapper exits, so
+    the selected artifacts on the server no longer change and both transfers bring the same bytes,
+    each written to a temp file and renamed whole (`.tsp-out/` may still change but is outside the
+    comparison and decides nothing; rsync temp names are not selected). A future change that lets a
+    server artifact change after a fetching outcome breaks this argument. Rejected: tracking live
+    process groups in `SystemRunner` and killing them on `ExitRequested` — extra shared state for no
+    correctness gain. Residuals (not measured, B4): an orphaned ssh/rsync loses its 60 s / 300 s
+    timeout (it was enforced by the dead process's thread; no `ServerAliveInterval`, no `rsync
+    --timeout`), so on a silently dropped link it may hang for an unknown time — B4 decides whether
+    to add those options; an orphaned rsync can recreate files under a job dir the new launch has
+    just deleted (orphan files, not corruption); that the children survive the parent's exit is
+    asserted, not yet observed; classifier row 6 does not inspect the job session, so ORCA children
+    (MPI ranks, `orca_*` helpers) orphaned by a main process that died with a non-zero exit could, if
+    they survive, still append to `output.out`/`stderr.log` after `.exit_code` exists — plausible,
+    not seen in a run (rule #10). **Propagation:** `modules/execution-backends.md` ("On exit"),
+    `modules/tauri-core.md` (startup and exit), ROADMAP B4 (the measurements).
 
 ## Alternatives rejected
 

@@ -664,9 +664,13 @@ occurrence replaced) and requires it to fail.
 
 ## Not built yet
 
-- The UI over the remote job commands (B3); the poller's loop thread, its `AppHandle` sink, the
-  `watch_job_log` command and `delete_job`'s guard claim (B2 Part B). The poller's core — the status
-  step, the fetch with its listing post-condition, the live log and the planner — exists
+- The UI over the remote job commands and the live log (B3: the view calls `watch_job_log` after its
+  `job:log`, `job:convergence` and `job:log-reset` listeners resolve, and skips the backfill for a
+  live remote job, o16.7). The poller runs: one loop thread started at launch monitors every
+  non-terminal remote job (status every 15 s; the log every 2 s while a view watches it), emitting
+  the local `job:log` / `job:convergence` / `job:status` events and `job:log-reset { job_id }`;
+  `watch_job_log(id, open)` counts a job's open views and `retry_remote_fetch(id)` is the manual
+  retry after 3 failed fetches
   ([execution-backends.md](execution-backends.md#the-remote-pollers-core-pollerrs-poller-adr-024-o-item-4-o15-o16)).
 - **Known limitation — `started_at` of a remote job** is stamped with the time of the status check
   that first sees the classifier's `Running` (`queued` → `running`, `crate::poller`), not the time the

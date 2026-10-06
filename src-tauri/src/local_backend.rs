@@ -1140,10 +1140,10 @@ pub(crate) fn read_tail(path: &Path, max_bytes: u64) -> std::io::Result<String> 
 ///   - the returned offset never exceeds the file length, so the cap can never make the caller
 ///     skip bytes.
 ///
-/// `pub(crate)` so `execution_backend` can delegate to it without duplicating the seek logic.
-// Its only caller is `LocalBackend::poll_log`, which has no live caller until the push→pull
-// log flip (a later unit); the allow goes with that wiring. Its tests exercise it now.
-#[allow(dead_code)]
+/// `pub(crate)` so `execution_backend` can delegate to it without duplicating the seek logic. Its live
+/// caller is the remote poller's drain, which streams a fetched job's verified local copy into a
+/// watching view (ADR-024 o16.6); a local job's view gets its tailing thread's push events instead
+/// (the UI stays push, o16).
 pub(crate) fn read_log_chunk(path: &Path, offset: u64, max_bytes: u64) -> std::io::Result<LogChunk> {
     let mut f = File::open(path)?;
     let size = f.metadata()?.len();

@@ -1,7 +1,9 @@
 //! The remote poller's core (ADR-024 o item 4, o15, o16; unit 5.3 B2 Part A): one loop over every
 //! non-terminal remote job, started at launch. **`AppHandle`-free**: every step takes the database,
 //! a [`CommandRunner`] and a [`PollerSink`] for its events, so the tests drive it with a fake runner
-//! and a recording sink; Part B adds the loop thread, the `AppHandle` sink and the commands.
+//! and a recording sink. The loop's body is [`run`]; its `AppHandle` shell (the loop thread, the
+//! sink that emits the app's events) is [`app`]; the commands are `commands::remote_jobs`
+//! (`watch_job_log`, `retry_remote_fetch`).
 //!
 //! Two steps per job, sequenced per job by the loop, never concurrent ([`plan`]):
 //!
@@ -35,8 +37,10 @@
 //! under the lock and writes only if it is still this non-terminal remote job (same recorded job
 //! dir), so a concurrent change wins and the step reports it.
 
+pub mod app;
 pub mod live_log;
 pub mod plan;
+pub mod run;
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -65,7 +69,7 @@ use crate::ssh_backend::{
 use live_log::{Applied, Drained, LiveLog};
 use plan::{PollerMemory, MAX_FETCH_STRIKES};
 
-/// Where the poller's events go. Part B's `AppHandle` sink maps each to exactly the local event and
+/// Where the poller's events go. The app's sink (`app::AppSink`) maps each to exactly the local event and
 /// payload — `job:log` (`local_backend::emit_log`), `job:convergence` (`emit_convergence`),
 /// `job:status` (`emit_status`) — plus the one new event `job:log-reset { job_id }` (o16.3). The
 /// poller calls `log`/`convergence` only with a non-empty batch.
@@ -115,8 +119,9 @@ pub fn shown_message(outcome: &Outcome) -> Option<String> {
     }
 }
 
-/// What one status step did.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// What one status step did. `retry_remote_fetch` returns it: `{ "step": "<snake_case>", "detail": … }`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "step", content = "detail", rename_all = "snake_case")]
 pub enum StatusStep {
     /// Another operation holds the job's in-flight guard: skipped this tick (o15.3).
     Busy,
@@ -152,8 +157,8 @@ pub struct Poller<'a> {
     pub memory: &'a PollerMemory,
     pub live: &'a LiveLog,
     pub sink: &'a dyn PollerSink,
-    /// What the fetch downloads. There is no per-job `.gbw` opt-in yet, so Part B passes
-    /// `FetchPolicy::SMALL_ONLY`.
+    /// What the fetch downloads. There is no per-job `.gbw` opt-in yet, so the app passes
+    /// `FetchPolicy::SMALL_ONLY` (`app::with_poller`).
     pub policy: FetchPolicy,
 }
 

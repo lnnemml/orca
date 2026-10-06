@@ -1,6 +1,8 @@
 //! The per-job in-flight guard (ADR-024 o item 4): **at most one guarded operation per job at a
-//! time** — submit, retry, withdraw, label and cancel today (cancel, local or remote: ADR-024 o15);
-//! the poller's collect and fetch, and delete, in unit 5.3 B2.
+//! time** — submit, retry, withdraw, label, cancel (local or remote, o15), delete (o15.2), the
+//! manual fetch retry, and the poller's status step (label, collect, fetch). **The poller's log poll
+//! is not guarded** (o16.5): it is read-only, and the loop sequences it with the job's status step
+//! instead, so Retry, Withdraw and Cancel are never refused because of it.
 //! Two operations on the same job must not interleave: a double-clicked Submit, a Retry while a
 //! Withdraw is still talking to the server, a poller tick collecting a job a withdraw is
 //! cancelling — each would race the server/database state machine of o item 3.
@@ -56,7 +58,7 @@ impl InFlight {
     }
 
     /// Whether an operation on `job_id` is in flight now.
-    // Not routed yet: the poller (unit 5.3 B2) and the job list's busy state (B3) read it.
+    // Not routed yet: the job list's busy state (B3) reads it.
     #[allow(dead_code)]
     pub fn is_busy(&self, job_id: &str) -> bool {
         lock(&self.0).contains(job_id)
@@ -66,8 +68,6 @@ impl InFlight {
 impl InFlightGuard {
     /// The job this guard holds. The poller's held-guard entry point (`Poller::retry_fetch`) takes
     /// its job from the guard instead of a separate id, so it always works on the job it holds.
-    // Not routed yet: the poller core (unit 5.3 B2 Part A) has no live caller until Part B.
-    #[allow(dead_code)]
     pub fn job_id(&self) -> &str {
         &self.job_id
     }

@@ -1,8 +1,9 @@
-//! Remote job commands (ADR-024 o, unit 5.3 B1): retry, withdraw and label a job on a server
-//! profile, and the remote arm of `submit_job` (`commands::jobs`). Thin shells over
-//! [`SshBackend`], which wraps the Tauri-free core in `ssh_backend`.
+//! Remote job commands (ADR-024 o, units 5.3 B1 and B2): retry, withdraw and label a job on a server
+//! profile, the remote arm of `submit_job` (`commands::jobs`), the manual fetch retry
+//! (`retry_remote_fetch`) and the live-log watch (`watch_job_log`, which only counts views and never
+//! calls ssh). Thin shells over [`SshBackend`] (the Tauri-free core in `ssh_backend`) and the poller.
 //!
-//! Every remote operation here:
+//! Every remote operation here (all but `watch_job_log`):
 //! - holds the job's [`InFlightGuard`](crate::in_flight::InFlightGuard) for its whole run (o item
 //!   4): a second operation on the same job is **refused** while one is in flight;
 //! - runs in `spawn_blocking`, never on the IPC thread: each ssh call can take up to 60 s, and the
@@ -17,7 +18,9 @@ use crate::commands::jobs::get_job_conn;
 use crate::commands::settings::DbState;
 use crate::error::AppError;
 use crate::execution_backend::{Backend, SshBackend};
-use crate::in_flight::InFlight;
+use crate::in_flight::{InFlight, InFlightGuard};
+use crate::poller::live_log::LiveLog;
+use crate::poller::{PollerSink, StatusStep};
 use crate::models::job::{Job, JobStatus};
 use crate::ssh_backend::{LabelReport, PalAlignment, SubmitAttempt, SubmitOutcome, WithdrawReport};
 
@@ -84,6 +87,23 @@ where
     .map_err(|e| AppError::Backend(format!("{what} of job: the background task failed: {e}")))?
 }
 
+/// [`guarded_blocking`] for work that needs the guard itself (the poller's manual fetch retry takes
+/// the job from it, `Poller::retry_fetch`): claimed **before** the task is spawned, refusing a busy
+/// job, moved into the task and lent to `work`, dropped when the task ends.
+pub(crate) async fn guarded_blocking_held<T, W>(in_flight: &InFlight, id: &str, what: &'static str, work: W) -> Result<T, AppError>
+where
+    T: Send + 'static,
+    W: FnOnce(&InFlightGuard) -> Result<T, AppError> + Send + 'static,
+{
+    let guard = in_flight.acquire(id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let guard = guard;
+        work(&guard)
+    })
+    .await
+    .map_err(|e| AppError::Backend(format!("{what} of job: the background task failed: {e}")))?
+}
+
 /// Run `op` on job `id` through [`guarded_blocking`], then emit `job:status` if the row changed
 /// ([`status_to_emit`]). Every remote command goes through here.
 async fn run_guarded<T, F>(app: AppHandle, id: String, what: &'static str, op: F) -> Result<T, AppError>
@@ -130,6 +150,38 @@ pub async fn withdraw_remote_job(app: AppHandle, id: String) -> Result<WithdrawR
 #[tauri::command]
 pub async fn label_remote_job(app: AppHandle, id: String) -> Result<LabelReport, AppError> {
     run_guarded(app, id, "label", |app, job| remote_backend(app, job)?.label(job)).await
+}
+
+/// Retry fetching a remote job's results after automatic fetches stopped (ADR-024 o item 4: 3 failed
+/// fetches in a row). Claims the job's in-flight guard — a busy job is refused — and runs one status
+/// step with the strikes reset (`Poller::retry_fetch`). The step emits `job:status` itself when it
+/// changes the row (the poller's sink, the same emitter as every remote command).
+#[tauri::command]
+pub async fn retry_remote_fetch(app: AppHandle, id: String) -> Result<StatusStep, AppError> {
+    let in_flight = app.state::<InFlight>().inner().clone();
+    guarded_blocking_held(&in_flight, &id, "fetch retry", move |guard| {
+        crate::poller::app::with_poller(&app, |poller| poller.retry_fetch(guard))
+    })
+    .await
+}
+
+/// A job view opened (`open: true`) or closed (`open: false`) its live log (ADR-024 o16.2–16.3).
+/// Counts views per job id, whatever the backend; an open of a job whose stream exists restarts it at
+/// offset 0 behind `job:log-reset`. Never calls ssh: only the poller decides what to poll.
+#[tauri::command]
+pub fn watch_job_log(app: AppHandle, id: String, open: bool) -> Result<(), AppError> {
+    let live = app.state::<LiveLog>();
+    watch(&live, &crate::poller::app::AppSink(app.clone()), &id, open);
+    Ok(())
+}
+
+/// The `AppHandle`-free body of [`watch_job_log`].
+pub(crate) fn watch(live: &LiveLog, sink: &dyn PollerSink, id: &str, open: bool) {
+    if open {
+        live.open(id, sink);
+    } else {
+        live.close(id);
+    }
 }
 
 #[cfg(test)]
@@ -270,6 +322,82 @@ mod tests {
             let body = fn_body(src, command);
             assert!(body.contains(concat!("run_", "guarded(app, id,")), "{command} goes through run_guarded");
             assert_eq!(body.matches(".await").count(), 1, "{command}: one awaited call, the guarded one");
+        }
+    }
+
+    // --- The poller's commands (unit 5.3 B2 Part B) ---------------------------------------------
+
+    /// `watch_job_log` maps onto the live log: opens count, a re-open of a job with a stream emits
+    /// one reset, closes saturate at 0. No ssh can happen: the body has no runner.
+    #[test]
+    fn watch_job_log_opens_and_closes_the_live_log() {
+        let (live, sink) = crate::poller::RecordingSink::with_live();
+        watch(&live, &sink, "j1", true);
+        watch(&live, &sink, "j1", true);
+        assert_eq!(live.open_count("j1"), 2);
+        live.begin("j1");
+        watch(&live, &sink, "j1", true);
+        assert_eq!(sink.take(), [crate::poller::Event::Reset("j1".into())]);
+        for _ in 0..4 {
+            watch(&live, &sink, "j1", false);
+        }
+        assert_eq!(live.open_count("j1"), 0);
+        assert!(!live.has_state("j1"));
+    }
+
+    /// The guard-lending variant: the job is claimed before the work and for all of it, the work gets
+    /// the guard of its own job, a busy job is refused before any work. NEGATIVE CONTROL: release the
+    /// guard (`drop(guard)`) before calling `work` → red ("busy during the work").
+    #[test]
+    fn guarded_blocking_held_lends_the_jobs_guard_for_the_whole_work() {
+        let in_flight = InFlight::default();
+        let probe = in_flight.clone();
+        let seen = tauri::async_runtime::block_on(guarded_blocking_held(&in_flight, "j1", "test", move |guard| {
+            Ok((guard.job_id().to_string(), probe.try_acquire("j1").is_none()))
+        }))
+        .unwrap();
+        assert_eq!(seen, ("j1".to_string(), true), "busy during the work, with its own job's guard");
+        assert!(!in_flight.is_busy("j1"), "freed after the work");
+        let _held = in_flight.acquire("j1").unwrap();
+        let refused = tauri::async_runtime::block_on(guarded_blocking_held(&in_flight, "j1", "test", |_| -> Result<(), AppError> {
+            panic!("the work of a busy job must not run")
+        }));
+        assert!(matches!(refused, Err(AppError::Conflict(_))));
+    }
+
+    /// `retry_remote_fetch` reaches the poller only through `guarded_blocking_held`, which claims the
+    /// guard before it spawns the task (an `AppHandle`-bound body, pinned like the others).
+    /// NEGATIVE CONTROLS: `retry_remote_fetch` calling `with_poller` without the guarded path → red
+    /// ("goes through guarded_blocking_held"); the claim moved into the task → red.
+    #[test]
+    fn retry_remote_fetch_goes_through_the_guard_claimed_before_the_task() {
+        let src = include_str!("remote_jobs.rs");
+        let core = fn_body(src, concat!("pub(crate) async fn ", "guarded_blocking_held<"));
+        let claim = core.find(".acquire(id)?").expect("guarded_blocking_held claims the guard");
+        let spawn = core.find("spawn_blocking(").expect("guarded_blocking_held spawns the task");
+        assert!(claim < spawn, "the guard must be claimed before the task is spawned");
+        let body = fn_body(src, concat!("pub async fn ", "retry_remote_fetch("));
+        let guarded = body.find(concat!("guarded_blocking_", "held(&in_flight, &id,")).expect("goes through guarded_blocking_held");
+        let poller = body.find(concat!(".retry_", "fetch(guard)")).expect("retries with the lent guard");
+        assert!(guarded < poller, "the poller is reached inside the guarded work");
+        assert_eq!(body.matches(".await").count(), 1, "one awaited call, the guarded one");
+    }
+
+    /// The wire shape of `retry_remote_fetch`'s answer.
+    #[test]
+    fn the_status_step_wire_shape() {
+        use crate::remote::classify::Outcome;
+        use crate::remote::submit::Label;
+        for (step, want) in [
+            (StatusStep::Busy, serde_json::json!({ "step": "busy" })),
+            (StatusStep::Labelled(Label::NotOnServer), serde_json::json!({ "step": "labelled", "detail": "not_on_server" })),
+            (StatusStep::FetchFailed { strikes: 2, reason: "x".into() }, serde_json::json!({ "step": "fetch_failed", "detail": { "strikes": 2, "reason": "x" } })),
+            (
+                StatusStep::Finalised { outcome: Outcome::Completed { late_cancel: false }, status: JobStatus::Parsed, drain_error: None },
+                serde_json::json!({ "step": "finalised", "detail": { "outcome": { "outcome": "completed", "late_cancel": false }, "status": "parsed", "drain_error": null } }),
+            ),
+        ] {
+            assert_eq!(serde_json::to_value(&step).unwrap(), want, "{step:?}");
         }
     }
 

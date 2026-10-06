@@ -868,17 +868,44 @@ pub fn cancel_job(app: tauri::AppHandle, id: String) -> Result<(), AppError> {
 /// then, and only if a `job_dir` was recorded, is the directory removed — and that
 /// removal is itself guarded to `data_dir/jobs/` (see
 /// [`crate::local_backend::remove_job_dir`]).
+///
+/// It claims the job's in-flight guard first and refuses a busy job (ADR-024 o15.2): the poller's
+/// status step writes to a remote job up to and after its terminal transition, so a delete must not
+/// interleave with it.
 #[tauri::command]
 pub fn delete_job(app: tauri::AppHandle, id: String) -> Result<(), AppError> {
-    let db = app.state::<DbState>();
-    let job_dir = {
-        let conn = db.lock()?;
-        delete_job_conn(&conn, &id)?
-    };
+    let job_dir = delete_job_guarded(
+        &app.state::<InFlight>(),
+        &app.state::<DbState>(),
+        &app.state::<crate::poller::live_log::LiveLog>(),
+        &app.state::<crate::poller::plan::PollerMemory>(),
+        &id,
+    )?;
     if let Some(dir) = job_dir {
         crate::local_backend::remove_job_dir(&app, &dir);
     }
     Ok(())
+}
+
+/// The `AppHandle`-free body of [`delete_job`]: claim the in-flight guard (a busy job is refused),
+/// delete the row under one lock ([`delete_job_conn`]), then drop the job's live-log state and the
+/// poller's memory of it (the next tick's sweep would too; dropping here also discards a log poll
+/// still in flight). Returns the recorded job dir.
+pub(crate) fn delete_job_guarded(
+    in_flight: &InFlight,
+    db: &DbState,
+    live: &crate::poller::live_log::LiveLog,
+    memory: &crate::poller::plan::PollerMemory,
+    id: &str,
+) -> Result<Option<String>, AppError> {
+    let _in_flight = in_flight.acquire(id)?;
+    let job_dir = {
+        let conn = db.lock()?;
+        delete_job_conn(&conn, id)?
+    };
+    live.drop_state(id);
+    memory.forget(id);
+    Ok(job_dir)
 }
 
 /// Pause the sequential queue: the running job finishes, but no queued job
@@ -1880,6 +1907,35 @@ mod tests {
             .unwrap();
         assert_eq!(results_count, 0, "results cascade should have fired");
 
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// ADR-024 o15.2: `delete_job` claims the in-flight guard — a busy job (a poller step, a remote
+    /// command) is refused and keeps its row; a free one is deleted and its live state and poller
+    /// memory are dropped. NEGATIVE CONTROL: drop the `acquire` from `delete_job_guarded` → red.
+    #[test]
+    fn delete_job_refuses_a_busy_job_and_drops_its_poller_state() {
+        use crate::poller::live_log::LiveLog;
+        use crate::poller::plan::PollerMemory;
+        let (conn, dir) = test_db();
+        let job = create_job_conn(&conn, "j", "! HF", None, None).unwrap();
+        let db = DbState(std::sync::Mutex::new(conn));
+        let (in_flight, live, memory) = (InFlight::default(), LiveLog::new(), PollerMemory::new());
+        let sink = crate::poller::RecordingSink::default();
+        live.open(&job.id, &sink);
+        live.begin(&job.id);
+        memory.set_fetching(&job.id);
+
+        let held = in_flight.acquire(&job.id).unwrap();
+        let refused = delete_job_guarded(&in_flight, &db, &live, &memory, &job.id);
+        assert!(matches!(&refused, Err(AppError::Conflict(m)) if m.contains("already in progress")), "{refused:?}");
+        assert!(get_job_conn(&db.lock().unwrap(), &job.id).is_ok(), "the busy job's row is kept");
+        drop(held);
+
+        delete_job_guarded(&in_flight, &db, &live, &memory, &job.id).unwrap();
+        assert!(matches!(get_job_conn(&db.lock().unwrap(), &job.id), Err(AppError::NotFound(_))));
+        assert!(!live.has_state(&job.id) && !memory.get(&job.id).fetching, "its poller state is dropped");
+        assert!(!in_flight.is_busy(&job.id), "the guard is released");
         std::fs::remove_dir_all(&dir).ok();
     }
 

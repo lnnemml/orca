@@ -291,10 +291,15 @@ revisit when the UI needs error codes.
 
 open + migrate SQLite → `local_backend::reconcile_on_startup(&conn)` (advance any job left
 `running` by a crash — see `execution-backends.md`) → manage `DbState(Mutex<Connection>)` (the
-`Connection` is `Send`, not `Sync`) + `Arc<SidecarManager>` + `JobRunner` + `XtbRunner` → spawn the
-sidecar + a background health-poll thread → a thread that runs `try_start_next` to resume `queued`
-jobs → `prune_diagnostic_dirs` off-thread (xtb). `RunEvent::ExitRequested` stops the sidecar and
-runs `terminate_on_exit` synchronously; `Drop` on `SidecarManager` is the backstop.
+`Connection` is `Send`, not `Sync`) + `JobRunner` + `InFlight` (the per-job in-flight guard) +
+`LiveLog` + `PollerMemory` (the remote poller's state, empty on launch) + `XtbRunner` + `CrestRunner`
+→ `prune_diagnostic_dirs` off-thread (xtb) → a thread that runs `try_start_next` to resume `queued`
+jobs → spawn the sidecar + `Arc<SidecarManager>` + a background health-poll thread → last, the
+`remote-poller` thread (`poller::app::start`), which resumes monitoring every non-terminal remote job
+([execution-backends.md](execution-backends.md), "The loop"). `RunEvent::ExitRequested` stops the
+sidecar and runs `terminate_on_exit` synchronously; `Drop` on `SidecarManager` is the backstop. The
+poller is **not joined** on exit: its threads end with the process, and the ssh/rsync children of
+in-flight steps (own process groups) are left to the OS (ADR-024 o18, decided by Anton).
 
 ## Commands (thin wrappers over `*_conn(&Connection)` helpers)
 
@@ -315,7 +320,10 @@ runs `terminate_on_exit` synchronously; `Drop` on `SidecarManager` is the backst
   its `SubmitResponse`); `cancel_job(id)` (by the job's coordinates; a remote job is refused);
   `retry_remote_submit(id)` / `withdraw_remote_job(id)` / `label_remote_job(id)` (async, remote jobs
   only — [execution-backends.md](execution-backends.md#sshbackend-ssh_backendrs) "Commands and the
-  in-flight guard"); `delete_job(app, id)` (see below). No command sets an arbitrary status: the
+  in-flight guard"); `retry_remote_fetch(id) -> StatusStep` (async; the manual fetch retry after
+  3 failed fetches, guarded); `watch_job_log(id, open: bool)` (a job view's live log opened/closed;
+  never calls ssh — the remote poller, `execution-backends.md` "The remote poller"); `delete_job(app,
+  id)` (see below; claims the in-flight guard and refuses a busy job). No command sets an arbitrary status: the
   generic setter is internal only (`update_job_status_conn`), since it could mark a live remote job
   anything;
   `pause_queue()` / `resume_queue()` /

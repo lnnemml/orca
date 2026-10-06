@@ -1381,8 +1381,8 @@ and the dev laptop is a development machine, not a compute node. See
       **Unit 5.0 (2026-08-27):** trait + `JobHandle`/`LogChunk`/`FetchPolicy` in `execution_backend.rs`,
       `LocalBackend` delegates to the existing helpers, Tauri commands dispatch through it byte-identically.
       Dispatch stays a single concrete backend (`enum` deferred to `SshBackend`, ADR-023); `poll_log`'s
-      offset-pull is additive (live UI still uses the push `job:log` event — the push→pull flip rides with
-      `SshBackend`). ADR-023 records the server-agnostic model (one `SshBackend` per `ServerProfile`).
+      offset-pull is additive at the backend layer; the UI stays push (ADR-024 o16: a remote job's log
+      reaches the view as the same `job:log`/`job:convergence` events, emitted by the poller). ADR-023 records the server-agnostic model (one `SshBackend` per `ServerProfile`).
 **Unit numbering (fixed 2026-10-03 by Anton — use these numbers, do not re-derive):**
 5.0 trait ✅ · **5.1** ✅ server profiles · **5.2** ✅ wrapper + cancel script +
 reconciliation classifier, pure and tested on synthetic job dirs · **5.3** `SshBackend` wiring ·
@@ -1425,7 +1425,7 @@ preflight. The remaining items (remote `orca_plot`, pause) are not numbered yet.
       `cancel.sh` / `collect.sh`, the length-prefixed snapshot wire format and its strict parser,
       run for real on the laptop (stub `tsp`/ORCA, fixtures (a)–(e), d′ orders) —
       [modules/remote-jobs.md](wiki/modules/remote-jobs.md).
-- [ ] **Unit 5.3 — `SshBackend` wiring** (**A1 ✅ 2026-10-05** `d47623d`: v20, artifact list, LogChunk, pure parsers; **A2 ✅ 2026-10-05** `ff0b5e1`: server scripts submit/label/poll_log/list, ADR-024 o13; **B1 ✅ 2026-10-06** `e6211f0`; **B2 Part A** done (poller core, ADR-024 o17); **next: B2 Part B**) via system `ssh`/`rsync`: rsync job dir up → the 5.2
+- [ ] **Unit 5.3 — `SshBackend` wiring** (**A1 ✅ 2026-10-05** `d47623d`: v20, artifact list, LogChunk, pure parsers; **A2 ✅ 2026-10-05** `ff0b5e1`: server scripts submit/label/poll_log/list, ADR-024 o13; **B1 ✅ 2026-10-06** `e6211f0`; **B2 ✅ 2026-10-06** (poller core + wiring, ADR-024 o17/o18); **next: B3**) via system `ssh`/`rsync`: rsync job dir up → the 5.2
       wrapper via task-spooler (per-slot `TS_SOCKET`) → byte-offset `poll_log` of output → selective
       rsync down (the shared artifact-pattern list + markers + `.tsp-out/`; gbw opt-in, ADR-024 o6); `enum Backend` (ADR-023). Also per
       ADR-024 (m)/(n)/(o):
@@ -1457,7 +1457,7 @@ preflight. The remaining items (remote `orca_plot`, pause) are not numbered yet.
               upload; submit call → `SubmitReply` handling (`RefusedKup` alone clears `verified_at`);
               label call + withdraw; refusals of cancel/delete and profile edit/delete while
               non-terminal (o2).
-        - [ ] **B2 — the poller** (**Part A ✅ 2026-10-06**: `poller/` core over the fake runner, ADR-024 o17; **next: Part B** — loop in `lib.rs`, `watch_job_log`, `AppHandle` sink, fetch-retry command, `delete_job` guard, o16.9 propagation) (implementer `opus`): one loop started in `lib.rs` setup, resumed at
+        - [x] **B2 — the poller** (**Part A ✅ 2026-10-06** `1bd4dfe`: `poller/` core over the fake runner, ADR-024 o17; **Part B ✅ 2026-10-06**: `remote-poller` loop thread, `watch_job_log`, `retry_remote_fetch`, `job:log-reset`, `delete_job` guard, ADR-024 o18) (implementer `opus`): one loop started in `lib.rs` setup, resumed at
               launch; in-flight guard per job (`InFlight::try_acquire`, skip; `delete_job` joins the guard,
               ADR-024 o15.2, with a negative control); label → collect (recorded + `.enqueued` socket) →
               `classify`; fetching outcomes → download + `LIST` post-condition + `detect_completion`
@@ -1471,8 +1471,18 @@ preflight. The remaining items (remote `orca_plot`, pause) are not numbered yet.
               last choice per project); "not on the server" / "submit interrupted" / "handled in 5.4"
               states with retry/withdraw; refusal messages; the live view per o16.7 (`watch_job_log`
               only after the three listeners resolve, close only if opened, handle `job:log-reset`, no
-              backfill for a remote non-terminal job). Anton's live WebKitGTK gate.
-        - [ ] **B4 — live run on uni** + Anton's gate: submit → close laptop → reopen → result.
+              backfill for a remote non-terminal job); a row with partial remote coordinates (skipped
+              by the poller, logged once — B2 F-3) is shown as "corrupt coordinates" (Anton). Anton's
+              live WebKitGTK gate.
+        - [ ] **B4 — live run on uni** + Anton's gate: submit → close laptop → reopen → result. Also
+              measure (rule #10, from B2): the rsync-down / LIST timeouts (300 s; 1800 s with `.gbw`),
+              rsync exit codes on a dropped link, the `poll_log` 10 s bound and catch-up, that an emit
+              under the live-log mutex returns promptly; quit mid-fetch → do orphaned ssh/rsync survive,
+              how long they hang, and the local dir byte-identical to the listing after both rsyncs
+              (o18; then decide `ServerAliveInterval` / `rsync --timeout`); ~15 queued jobs on one host
+              → spurious check failures from synchronized status steps (F-2, sshd `MaxStartups`;
+              Anton: measure first, stagger only if it bites); kill ORCA's main process mid-run →
+              does `output.out` keep growing after `.exit_code` (o18 finality residual).
 - [ ] **Unit 5.4 — cancel, pending cancel, reconnect loop, new states.** The 5.2 cancel script over
       ssh; a cancel made outside the window is stored as pending and runs first on reconnect
       (ADR-024 i); the reconnect loop runs the 5.2 classifier for every non-terminal remote job;

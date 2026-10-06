@@ -43,17 +43,19 @@ fn cancel(&self, h: &JobHandle) -> Result<()>;
   only complete lines (a trailing `\r` dropped, as `BufRead::lines`), so a split character is decoded
   whole and no byte is lost or repeated across polls; a `reset` chunk drops the carry; `take_partial`
   returns an unterminated last line. The carry is bounded (`MAX_LINE_CARRY`, 1 MiB): past it the valid
-  UTF-8 prefix is emitted. Its caller is the remote log poller (5.3 Part B); the local live log is
-  still the push `job:log` event.
+  UTF-8 prefix is emitted. Its caller is the remote poller's live log (`poller/live_log.rs`); a local
+  job's tailing thread reads lines with `BufRead`.
 - **`FetchPolicy { include_gbw: bool }`** — over SSH every fetch brings down the shared artifact list
   (below) plus `stderr.log`, the markers and `.tsp-out/`; the large `.gbw` is the opt-in.
   **Degenerate for local** (everything is already on disk).
 
 **`poll_log` is the offset-pull name.** The ROADMAP's `stream_log` wording folds into `poll_log`:
 there is one log method and it is pull-based (offset-in, chunk-out), per ADR-003's "pull, not push"
-so the same interface serves a local file and a remote `tail -c +<offset>`. Note the live UI today
-still uses the **push** `job:log` event (the tailing thread) — Part B does **not** flip push→pull;
-`poll_log` is the additive pull path, wired to callers in a later unit.
+so the same interface serves a local file and a remote `tail -c +<offset>`. **The UI stays push**
+(ADR-024 o16): a local job's view gets its tailing thread's `job:log` / `job:convergence` events, and
+a remote job's view the same events, emitted by the poller from its `poll_log` chunks. The pull
+happens at the backend layer only; the poller calls the Tauri-free cores directly, so the trait's
+`poll_log` has no live caller.
 
 **Command dispatch.** `commands::jobs::submit_job` and `cancel_job` build a `Backend` from the
 `AppHandle` they receive (construct-at-call-site: the backends are zero-cost `AppHandle` wrappers)
@@ -67,9 +69,10 @@ the five-method `ExecutionBackend` surface.
 
 **No crate-level `dead_code` allow.** `submit` / `cancel` / `JobHandle` / `LocalBackend` /
 `Backend` / `SshBackend` are reached by live callers. The still-unrouted trait surface —
-`poll_log`, `status`, `fetch_results`, and `FetchPolicy` — carries a **targeted** `#[allow(dead_code)]`
-per item, each with a comment naming where it gets routed (the push→pull flip for `poll_log`, the
-`SshBackend` unit for `status` / `fetch_results` / `FetchPolicy`). Targeted over blanket so a
+`poll_log`, `status`, `fetch_results` and `FetchPolicy::WITH_GBW` (no per-job `.gbw` opt-in yet) —
+carries a **targeted** `#[allow(dead_code)]` per item, each with a comment saying why it has no live
+caller (the poller calls `ssh_backend::poll_log_remote` / `fetch_remote` itself; the UI stays push).
+Targeted over blanket so a
 *genuinely* unrouted item stays visible while any *accidentally* dead code elsewhere still warns.
 
 **`LocalBackend { app: AppHandle }` — delegation map** (trait method → existing free function):
@@ -366,6 +369,8 @@ are fetched by the poller's status step, under the job's in-flight guard (below)
 | `withdraw_remote_job({ id })` | `WithdrawReport { label, outcome, status }` | `SshBackend::withdraw` |
 | `label_remote_job({ id })` | `LabelReport { facts, label }` | `SshBackend::label` (read-only) |
 | `cancel_job({ id })` | `null` | `Backend::for_job` → local cancel, or `cancel_remote` (refused) |
+| `retry_remote_fetch({ id })` | `StatusStep` (`{ step, detail? }`) | `guarded_blocking_held` → `Poller::retry_fetch(&guard)`: the strikes reset, one status step |
+| `watch_job_log({ id, open })` | `null` | `LiveLog::open` / `close` (any job id; never ssh) |
 
 `SubmitResponse { outcome, pal, notice, failure }` is the attempt with `pal.notice()` and
 `outcome.failure()` in words. Retry, withdraw and label dispatch on the job's coordinates
@@ -389,9 +394,11 @@ touched by one insert or remove). `cancel_job` also claims the guard, **before**
 remote submit holds it from before its persist step, so a cancel cannot read the draft and then act on
 the `queued` row the submit persisted meanwhile. The local submit claims nothing (the persist step's
 `WHERE status = 'draft' AND remote_host IS NULL` already decides between a local and a remote submit
-of the same draft). `delete_job` claims nothing yet: `delete_job_conn` decides under one lock and
-refuses a non-terminal remote job (o2, o15.2); it joins the guard in B2, whose poller may write to a
-job around its terminal transition.
+of the same draft). `delete_job` claims the guard too (o15.2), through its `AppHandle`-free body
+`delete_job_guarded`: a busy job (a poller status step, a remote command) is refused; then
+`delete_job_conn` decides under one lock (refusing a non-terminal remote job, o2), and the job's
+live-log state and poller memory are dropped. The poller's log poll is the one operation that takes
+no guard (o16.5).
 
 **Tests.** Over a fake runner (`ssh_backend/tests.rs`): the call order (prepare → upload → submit;
 prepare → install → prepare → … on a fresh server), the row at every call (persisted before the
@@ -416,9 +423,9 @@ Negative controls: [log.md](../log.md) (5.3 B1 Part A, 2026-10-05; Part B, 2026-
 
 ### The remote poller's core (`poller.rs`, `poller/`; ADR-024 o item 4, o15, o16)
 
-One loop over every non-terminal remote job, started at launch (the loop thread, the `AppHandle`
-sink and the `watch_job_log` command are unit 5.3 B2 Part B; the core below is `AppHandle`-free and
-registered under a scoped `#[allow(dead_code)]` until then). Every step takes the database, a
+One loop over every non-terminal remote job, started at launch. The core below is `AppHandle`-free;
+`poller/run.rs` is the loop's body and `poller/app.rs` its thin `AppHandle` shell (see "The loop"
+below). Every step takes the database, a
 `CommandRunner` and a **`PollerSink`** — `log(job, lines)`, `convergence(job, events)`,
 `log_reset(job)`, `status(job, status)`; the `AppHandle` sink maps them to the local `job:log`,
 `job:convergence`, `job:status` payloads (`local_backend::emit_log` / `emit_convergence` /
@@ -490,8 +497,33 @@ emits — all under the mutex, never across an ssh call. A chunk of exactly the 
 `read_log_chunk` until no bytes remain, then `finish` emits the assembler's unterminated last line and
 drops the state; each step is generation-checked, and an unwatched job's copy is not read.
 
+**The loop** (`poller/run.rs`, `poller/app.rs`). `lib.rs` setup manages `LiveLog` and `PollerMemory`
+next to `InFlight`, then — last — starts one named thread (`remote-poller`), so the loop never runs
+before its state exists. Every `TICK` (500 ms: a log poll starts at most that late, and catch-up's
+next chunk follows within it) it runs `run::tick` — one database query (the candidates) when there is
+nothing to poll — which sweeps, plans, and marks each due step **in progress before handing it out**
+(`PollerMemory::begin_step`, called only once the step's coordinates are found, so a mark is never
+set for a step that is not handed out), so no later tick starts a second step for that job. Each step runs on
+its own short-lived thread (`spawn_step`), never on the loop thread, through `run::run_step`, whose
+drop guard (`StepEnd`) clears the mark on return, early return and panic; a step whose thread cannot
+start has its mark cleared at once. One thread per step and no pool: the mark already bounds it to one
+step per job, and there are as many steps as non-terminal remote jobs. A Status step is
+`Poller::status_step` with `SystemRunner` and `FetchPolicy::SMALL_ONLY` (`app::with_poller`); a Log
+step is `log_step` with the candidate's recorded coordinates. The **`AppSink`** emits `job:log`,
+`job:convergence` and `job:status` through the local emitters (the exact local payloads) and
+`job:log-reset { job_id }` (the name is `app::LOG_RESET_EVENT`, pinned with the payload's wire shape —
+B3 binds to both). A routine failed check or poll is not logged (the host may simply be
+away); a database error or a refused chunk is (`eprintln!`).
+**On exit** (ADR-024 o18, decided by Anton: leave to the OS) nothing is joined: the process ends and takes the loop and step threads with it, so exit
+never waits for a step (a download may take up to 300 s). An ssh or rsync child a step started runs
+in its own process group (`SystemRunner`) and is left to the OS, as for the B1 remote commands; the
+next launch redoes the step from the server's facts (a download is verified against the server's
+listing before it is used).
+
 **The planner** (`poller/plan.rs`): `candidates(conn)` = every `queued`/`running` row with
-coordinates (partial coordinates are an error); `sweep` drops the live state and memory of every
+coordinates — a row that does not read as one (partial coordinates, a row `Job::from_row` refuses)
+is set aside in `unreadable`, never polled and never taken for local, and `tick` reports it once per
+launch (`PollerMemory::first_report`), so one bad row cannot stop the others; `sweep` drops the live state and memory of every
 other job; `plan_inputs` + `plan(jobs, periods, now)` give each job at most one due step —
 `Status` every `periods.status` (`Periods::INITIAL`: 15 s) for every job, `Log` every `periods.log`
 (2 s) only while watched and not fetching, or at once on catch-up; status first when both are due;
@@ -515,7 +547,14 @@ a failed and a broken poll; a shrunken log; the tail and unterminated last line 
 before the terminal status; an unwatched fetch emitting no line. The planner over the database: a
 watched draft polled once it has coordinates, a local queued job never a candidate, unwatched jobs
 getting only status steps, open/open/close, no log poll after a fetching outcome, a terminal job
-swept with its count kept; `is_fetching` is exactly item 4's set. `live_log.rs` and `plan.rs` carry
+swept with its count kept; `is_fetching` is exactly item 4's set. The loop's body: a tick hands out
+a due status step once and marks it in progress, no later tick hands out another while it runs,
+`run_step` ends it, and a step that panics still ends (guard freed too); a watched job gets log steps,
+an unwatched one none. The shell (`app.rs`) is source-pinned: steps run only through `run_step`, a
+step whose thread cannot start is ended, the loop thread never runs a step. The commands:
+`watch_job_log`'s body maps onto `LiveLog`; `guarded_blocking_held` lends the job's own guard for the
+whole work and refuses a busy job; `retry_remote_fetch` is pinned to go through it; the `StatusStep`
+wire shape; `delete_job_guarded` refuses a busy job and drops the job's poller state. `live_log.rs` and `plan.rs` carry
 their unit tests. End to end against the real scripts: [remote-jobs.md](remote-jobs.md). Negative
 controls: [log.md](../log.md) (5.3 B2 Part A, 2026-10-06).
 

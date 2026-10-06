@@ -62,21 +62,39 @@ pub struct Candidate {
     pub coords: RemoteCoordinates,
 }
 
-/// Every non-terminal remote job (`queued`/`running` with coordinates, o item 1). A row with
-/// partial coordinates is an error, never skipped as local.
-pub fn candidates(conn: &Connection) -> Result<Vec<Candidate>, AppError> {
+/// The non-terminal remote jobs, and the rows that could not be read as one.
+#[derive(Debug, Default)]
+pub struct Candidates {
+    pub jobs: Vec<Candidate>,
+    /// `(job id, why)` for every selected row that does not read as a remote job (a row with partial
+    /// coordinates, which the v20 CHECK forbids; a row `Job::from_row` refuses). It is not polled —
+    /// never treated as local, never guessed — and the others still are.
+    pub unreadable: Vec<(String, String)>,
+}
+
+/// Every non-terminal remote job (`queued`/`running` with coordinates, o item 1). One unreadable row
+/// is set aside in `unreadable`, so it cannot stop the polling of every other job; only a failed
+/// query is an error.
+pub fn candidates(conn: &Connection) -> Result<Candidates, AppError> {
     let mut stmt = conn.prepare(&format!(
         "SELECT {} FROM jobs WHERE status IN ('queued', 'running') AND remote_host IS NOT NULL ORDER BY created_at, id",
         Job::COLUMNS
     ))?;
-    let jobs = stmt.query_map([], Job::from_row)?.collect::<Result<Vec<Job>, _>>()?;
-    jobs.into_iter()
-        .map(|job| {
+    let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, Job::from_row(row))))?;
+    let mut out = Candidates::default();
+    for row in rows {
+        let (id, job) = row?;
+        let read = job.map_err(AppError::from).and_then(|job| {
             let coords = coordinates(&job)?
                 .ok_or_else(|| AppError::Internal(format!("job {}: selected as remote without coordinates", job.id)))?;
             Ok(Candidate { id: job.id, status: job.status, coords })
-        })
-        .collect()
+        });
+        match read {
+            Ok(candidate) => out.jobs.push(candidate),
+            Err(e) => out.unreadable.push((id, e.to_string())),
+        }
+    }
+    Ok(out)
 }
 
 /// What the planner knows about one candidate.
@@ -156,6 +174,8 @@ pub struct JobMemory {
 #[derive(Debug, Default)]
 pub struct PollerMemory {
     jobs: Mutex<HashMap<String, JobMemory>>,
+    /// Unreadable rows already reported this launch (each is reported once, not every tick).
+    reported: Mutex<std::collections::HashSet<String>>,
 }
 
 impl PollerMemory {
@@ -211,6 +231,11 @@ impl PollerMemory {
         if let Some(m) = self.lock().get_mut(job_id) {
             m.in_progress = false;
         }
+    }
+
+    /// `true` the first time an unreadable row `job_id` is reported this launch, `false` after.
+    pub fn first_report(&self, job_id: &str) -> bool {
+        self.reported.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).insert(job_id.to_string())
     }
 
     /// Forget `job_id` (it turned terminal).

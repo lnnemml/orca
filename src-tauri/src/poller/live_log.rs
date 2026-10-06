@@ -160,7 +160,8 @@ impl LiveLog {
     }
 
     /// Whether the job has stream state now.
-    pub fn has_state(&self, job_id: &str) -> bool {
+    #[cfg(test)]
+    pub(crate) fn has_state(&self, job_id: &str) -> bool {
         self.lock().states.contains_key(job_id)
     }
 
