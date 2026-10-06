@@ -33,6 +33,11 @@
 //! **Withdraw** ([`withdraw_remote`], o 2, 14.1) readies the server like steps 3–4, makes the job
 //! dir (re-asserting its shape), runs `cancel.sh` and `collect.sh` through the trampoline, and lets
 //! `classify` decide the status — never a hard-coded `Cancelled` (Decision c).
+//!
+//! **The poller's calls** (unit 5.3 B2): [`poll_log_remote`] reads one chunk of the remote
+//! `output.out` (o item 7), and [`fetch_remote`] downloads a finished job's files and checks them
+//! against the server's own listing (o item 6). Both are read-only on the server and write nothing to
+//! the database; what they mean for the row is the poller's (`crate::poller`).
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -52,7 +57,9 @@ use crate::remote::prepare::{
     check_prepare, parse_install_reply, parse_prepare_reply, InstallArgs, PrepareArgs, Prepared,
 };
 use crate::remote::run::{parse_mkjob_reply, parse_run_reply, JobScript, MkjobArgs, RunArgs, RunReply};
-use crate::remote::scripts::{stdin_with_values, INSTALL, LABEL, MKJOB, PREPARE, RUN, SUBMIT};
+use crate::execution_backend::{FetchPolicy, LogChunk};
+use crate::remote::poll::{parse_poll_reply, PollLogArgs};
+use crate::remote::scripts::{stdin_with_values, INSTALL, LABEL, LIST, MKJOB, POLL_LOG, PREPARE, RUN, SUBMIT};
 use crate::remote::slot_socket_path;
 use crate::remote::snapshot::{Attempt, JobIdentity};
 use crate::remote::ssh::{ssh_bash_argv, CommandRunner, ProcessOutput, SSH_PROGRAM};
@@ -60,7 +67,10 @@ use crate::remote::submit::{
     label, parse_label_reply, parse_submit_reply, remote_job_dir, KupEvidence, Label, LabelArgs,
     LabelFacts, SubmitArgs, SubmitReply,
 };
-use crate::remote::sync::{upload_argv, upload_expected, RSYNC_PROGRAM};
+use crate::remote::sync::{
+    compare_download, download_argv, download_selects, list_dir, parse_list_reply, upload_argv, upload_expected, ListArgs,
+    RSYNC_PROGRAM,
+};
 use crate::remote::wire::parse_snapshot;
 
 /// The bound on each small call (prepare, install, label, mkjob), connect included. Derived from the
@@ -691,7 +701,7 @@ pub fn withdraw_remote(db: &DbState, runner: &dyn CommandRunner, job_id: &str) -
 /// for. The snapshot is the trampoline's `stdout` payload, verbatim; a complete snapshot from a
 /// collector that exited non-zero is not trusted. The slot socket is the recorded one; the collector
 /// adds the `.enqueued` socket itself (o item 4).
-fn collect_and_classify(runner: &dyn CommandRunner, coords: &RemoteCoordinates, root: &str) -> Result<Outcome, String> {
+pub(crate) fn collect_and_classify(runner: &dyn CommandRunner, coords: &RemoteCoordinates, root: &str) -> Result<Outcome, String> {
     let identity = JobIdentity { job_dir: coords.job_dir.clone(), root: root.to_string() };
     let slots = [coords.socket.clone()];
     let mut argv = vec![coords.job_dir.clone()];
@@ -716,12 +726,7 @@ fn collect_and_classify(runner: &dyn CommandRunner, coords: &RemoteCoordinates, 
 fn record_withdraw(db: &DbState, job_id: &str, coords: &RemoteCoordinates, outcome: &Outcome) -> Result<JobStatus, AppError> {
     let conn = db.lock()?;
     if *outcome == Outcome::Cancelled {
-        conn.execute(
-            "UPDATE jobs SET status = 'cancelled', completed_at = datetime('now'), \
-             error_message = 'Withdrawn: the server confirms .cancelled and nothing ran.' \
-             WHERE id = ?1 AND status = 'queued' AND remote_job_dir = ?2",
-            params![job_id, coords.job_dir],
-        )?;
+        mark_cancelled_conn(&conn, job_id, coords, "Withdrawn: the server confirms .cancelled and nothing ran.", &[JobStatus::Queued])?;
     } else {
         conn.execute(
             "UPDATE jobs SET error_message = ?1 WHERE id = ?2 AND status = 'queued' AND remote_job_dir = ?3",
@@ -735,5 +740,78 @@ fn record_withdraw(db: &DbState, job_id: &str, coords: &RemoteCoordinates, outco
     Ok(get_job_conn(&conn, job_id)?.status)
 }
 
+/// The terminal write for a classifier `Cancelled` (row 4), shared by the withdraw and the poller
+/// (ADR-024 o17): `cancelled`, `completed_at` stamped, `message` in `error_message` — only while the
+/// row is still this remote job (its recorded job dir) in one of `from` (the withdraw: `queued`; the
+/// poller: `queued` or `running`). Returns the rows written (0 or 1).
+pub(crate) fn mark_cancelled_conn(
+    conn: &rusqlite::Connection,
+    job_id: &str,
+    coords: &RemoteCoordinates,
+    message: &str,
+    from: &[JobStatus],
+) -> Result<usize, AppError> {
+    let mut written = 0;
+    for status in from {
+        written += conn.execute(
+            "UPDATE jobs SET status = 'cancelled', completed_at = datetime('now'), error_message = ?1 \
+             WHERE id = ?2 AND status = ?3 AND remote_job_dir = ?4",
+            params![message, job_id, status.as_str(), coords.job_dir],
+        )?;
+    }
+    Ok(written)
+}
+
+// --- The poller's calls: the live log and the fetch (unit 5.3 B2) ---------------------------------
+
+/// The bound on one log poll, connect included (ADR-024 o16.5: short, ≤ 10 s). A poll that does
+/// not answer in time is a failed poll: nothing changes, the next one tries again.
+pub const POLL_LOG_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// One chunk of remote job `coords`' `output.out` from byte `offset` (o item 7): at most
+/// `POLL_LOG_MAX_BYTES`, raw, with `parse_poll_reply`'s length post-condition. Read-only; it takes no
+/// in-flight guard (o16.5). A transport failure, a refused reply or a broken post-condition is an
+/// `Err` — the caller then changes nothing.
+pub fn poll_log_remote(runner: &dyn CommandRunner, coords: &RemoteCoordinates, offset: u64) -> Result<LogChunk, String> {
+    let sent = PollLogArgs::new(&coords.job_dir, offset).map_err(|e| format!("poll_log: {e}"))?;
+    call(runner, &coords.host, "poll_log", POLL_LOG, &sent.values(), POLL_LOG_TIMEOUT, |out| parse_poll_reply(out, &sent))
+}
+
+/// The download's bound without the `.gbw`: the shared artifact list of one job. **Not measured** —
+/// a floor chosen so a slow link is not killed mid-transfer; a killed download is a failed fetch,
+/// retried on the next status check (o item 4's bound).
+pub const FETCH_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// The download's bound with the opt-in `.gbw` (o item 6: "the timeout scales with the expected
+/// bytes"; a wavefunction can be hundreds of MB). **Not measured**, like [`FETCH_TIMEOUT`]; the
+/// server's listing hashes the `.gbw` too, so it gets the same bound.
+pub const FETCH_GBW_TIMEOUT: Duration = Duration::from_secs(1800);
+
+/// Download remote job `coords`' files into `local_dir` and prove the copy (ADR-024 o item 6):
+/// 1. `rsync -a --checksum <the shared filter> …` (never `--partial`, never `--delete`); rc 0;
+/// 2. one read-only server call lists name + sha256 of every top-level entry the same filter selects
+///    (`LIST`; Rust re-derives each selection, `parse_list_reply`);
+/// 3. **the post-condition (rule #9):** the filter-selected local subset equals that listing, every
+///    hash matching (`compare_download`; `.tsp-out/` left out on both sides).
+///
+/// An `Err` is a failed fetch — the row stays as it is and the caller counts a strike. Nothing here
+/// decides the job's status; that is `detect_completion` over the files this proves (rule #6).
+pub fn fetch_remote(runner: &dyn CommandRunner, coords: &RemoteCoordinates, local_dir: &Path, policy: FetchPolicy) -> Result<(), String> {
+    let local = local_dir.to_str().ok_or_else(|| format!("local job dir {local_dir:?} is not UTF-8"))?;
+    std::fs::create_dir_all(local_dir).map_err(|e| format!("local job dir {local_dir:?}: {e}"))?;
+    let timeout = if policy.include_gbw { FETCH_GBW_TIMEOUT } else { FETCH_TIMEOUT };
+
+    let argv = download_argv(&coords.host, &coords.job_dir, local, policy).map_err(|e| format!("download: {e}"))?;
+    let out = runner.run(RSYNC_PROGRAM, &argv, b"", timeout).map_err(|e| format!("download: {e}"))?;
+    if out.code != Some(0) {
+        return Err(format!("download: rsync exited with {}: {}", exit_text(&out), tail(&out.stderr)));
+    }
+
+    let sent = ListArgs::new(&coords.job_dir, policy).map_err(|e| format!("list: {e}"))?;
+    let server = call(runner, &coords.host, "list", LIST, &sent.values(), timeout, |out| parse_list_reply(out, &sent))?;
+    let here = list_dir(local_dir, &|path| download_selects(path, policy)).map_err(|e| format!("local listing: {e}"))?;
+    compare_download(&here, &server).map_err(|mismatch| mismatch.to_string())
+}
+
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

@@ -63,6 +63,16 @@ impl InFlight {
     }
 }
 
+impl InFlightGuard {
+    /// The job this guard holds. The poller's held-guard entry point (`Poller::retry_fetch`) takes
+    /// its job from the guard instead of a separate id, so it always works on the job it holds.
+    // Not routed yet: the poller core (unit 5.3 B2 Part A) has no live caller until Part B.
+    #[allow(dead_code)]
+    pub fn job_id(&self) -> &str {
+        &self.job_id
+    }
+}
+
 impl Drop for InFlightGuard {
     fn drop(&mut self) {
         lock(&self.set).remove(&self.job_id);

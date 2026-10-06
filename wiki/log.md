@@ -10694,3 +10694,129 @@ profile was never verified. Next: **5.3** `SshBackend` wiring.
   3 LOW), round 3 (2 LOW: generation outlives the state; check+emit atomic), round 4 PASS; the
   unmeasured "an emit does not block" relabelled an inference (rule #10).
 - Next: B2 Part A (pure + fake runner) per o16 and item 4.
+
+## [2026-10-06] feat | Unit 5.3 B2 Part A — the remote poller's core (status step, fetch, live log, planner)
+- **What landed** (Part A: `AppHandle`-free, fake runner + recording sink; not committed, not wired):
+  - `src-tauri/src/poller.rs` — `PollerSink` (`log` / `convergence` / `log_reset` / `status`),
+    `Poller::status_step` (`try_acquire`, a busy job → `Busy`), `Poller::retry_fetch(&guard)` (the
+    manual retry after 3 strikes), `log_step` (no guard, no DB), `is_fetching` (exactly item 4's set),
+    `shown_message`; the status step labels a `queued` row, `collect_and_classify`s, shows a
+    non-fetching outcome (`Running` moves `queued` → `running`), and for a fetching outcome sets the
+    fetching flag, fetches, decides with `detect_completion` over the **downloaded** files, writes the
+    terminal status + energy/wall time + parsed results in **one** locked transaction (re-checking the
+    row first), drains the live view from the copy, and emits `job:status` last. A failed fetch is a
+    strike, shown in `error_message`; 3 in a row stop the automatic fetch.
+  - `poller/live_log.rs` — `LiveLog` (o16.2–16.6): per-id open counts (saturating close), per-job
+    offset + `LineAssembler` + `ConvergenceParser` + catch-up, a launch-long generation counter,
+    `open` (reset + `log_reset` in one locked step), `begin` / `apply` / `finish` / `drain`, state
+    created by the first step of a watched job.
+  - `poller/plan.rs` — `candidates(conn)`, `sweep`, `plan_inputs`, `plan` / `due` (periods are
+    parameters, `Periods::INITIAL` 15 s / 2 s; status first; nothing for a job with a step in
+    progress; no log poll once fetching), `PollerMemory` (fetching flag, strikes, last runs, in-progress).
+  - `ssh_backend.rs` — `poll_log_remote` (10 s), `fetch_remote` (rsync down with the shared filter →
+    `LIST` → `compare_download`; 300 s / 1800 s with the `.gbw`, **not measured**);
+    `collect_and_classify` is `pub(crate)`. `SshBackend::poll_log` now routes to `poll_log_remote`;
+    `fetch_results` still refuses (the fetch is the guarded poller's).
+  - `local_backend.rs` — `emit_log`, `emit_convergence`, their payloads, `detect_completion`,
+    `parse_results_after_completion`, `RESULT_TAIL_BYTES` made `pub(crate)`. `in_flight.rs` —
+    `InFlightGuard::job_id()`. `ssh_backend/tests.rs` helpers made `pub(crate)` for reuse.
+- **Lock order for o15.2:** the local finish path (`drive_job`) writes the terminal status, the
+  energy/wall time and the parsed results under **three separate** DB lock acquisitions (a reader can
+  see `completed` without the energy for an instant). The remote finalisation does the same writes in
+  the same order under **one** lock and one transaction, after re-reading the row.
+- **Tests:** `cargo test` 749 passed / 27 ignored (was 700 / 27): 16 unit (`live_log`, `plan`), 31
+  over the fake server (`poller/tests.rs`), 2 end to end against the real `poll_log`, `label`,
+  collector, rsync and `list` (`backend_e2e_tests.rs`). `cargo build` 0 warnings; `npx tsc --noEmit`
+  clean. The parity fixture is real ORCA output (`opt_output_excerpt.txt` + the dexketoprofen tail
+  twice + the OptTS tail, 436 KB > `CAP`).
+- **Negative controls** (each mutated, red, restored, `cmp` identical):
+  - C1 `ConvergenceParser` recreated per chunk → `the_remote_stream_matches_the_local_replay` red:
+    "CAP-sized: convergence — left: [Scf(ScfPoint { cycle: 1, iter: 1 …";
+  - C1b `LineAssembler` recreated per chunk → the same test red: "CAP-sized: lines";
+  - C2 generation check dropped from `apply` → `an_open_during_a_blocked_poll_discards_its_chunk` red
+    "left: Applied(Lines { lines: 2 … }), right: Applied(Discarded)", and
+    `a_chunk_read_before_an_open_is_discarded`;
+  - C3 counter reset on the last close (ABA) → `close_and_reopen_during_a_blocked_poll_discards_its_chunk`
+    red "left: Applied(Lines { lines: 2 … }), right: Applied(Discarded)", and
+    `drop_and_reopen_during_a_poll_discards_its_chunk`;
+  - C4 every close drops the state → `open_open_close_keeps_the_stream…` red "still streaming from where
+    it was — left: Some(0), right: Some(2)";
+  - C5 a close at 0 wraps → the same test red "a close with no open is a no-op — left: 4294967295";
+  - C6 an open keeps the state → `a_second_open_resets_once…` red "left: Some(2), right: Some(0)", and
+    the blocked-poll test;
+  - C7 `candidates` without `remote_host IS NOT NULL` → `a_watched_draft_is_polled_once…` red
+    "Internal(\"job j1: selected as remote without coordinates\")";
+  - C8 `sweep` without `live.retain` → `a_terminal_job_is_swept_with_its_count_kept` red;
+  - C9 each chunk decoded on its own → `a_split_character_is_emitted_whole` red "left: [Log(\"j\",
+    [\"E(SCF) �\"]), …]", and `a_character_split_between_two_polls_is_emitted_whole`;
+  - C10 reset chunk without `log_reset` → `a_shrunken_log_resets_the_view_once` red "left: [], right:
+    [Reset(\"j1\")]", and `a_reset_chunk_recreates_the_state_and_emits_one_reset`;
+  - C11 a failed poll applying a reset → `a_failed_poll_changes_nothing` red "left: Some(0), right: Some(3)";
+  - C12 log before status in `due` → `status_comes_first_when_both_are_due` red "left: Some(Log)";
+  - C13 no in-progress check → `a_job_with_a_running_step_gets_no_other` red "left: Some(Status)";
+  - C14 `!job.fetching` dropped → `a_fetching_job_gets_no_log_poll` red "left: Some(Log), right: None",
+    and `a_fetching_outcome_stops_the_log_polls` "no log poll at 4 s";
+  - C15 `job:status` before the drain → `the_tail_is_drained_from_the_copy_before_the_terminal_status`
+    red "the status comes last — left: Some(Log(\"j1\", [\"TOTAL RUN TIME …\"]))", and the e2e
+    `the_poller_streams_fetches_and_finalises_against_the_real_scripts`;
+  - C16 `begin` ignoring the open count → `the_drain_reads_to_the_end_and_only_for_a_watched_job` red
+    "left: Done, right: NotWatched", and `an_unwatched_fetch_emits_no_log`;
+  - C17 `compare_download` dropped from `fetch_remote` → `a_download_that_fails_its_listing…` red
+    "Finalised { … status: Completed }", and the e2e `a_copy_that_differs_from_the_real_listing…`;
+  - C18 the 3-strike check dropped → `three_failed_fetches_stop…` red "left: FetchFailed { strikes: 4 …
+    }, right: FetchStopped";
+  - C19 `Completed` from the classifier instead of `detect_completion` →
+    `a_downloaded_output_without_normal_termination_fails_the_job` red "Finalised { … status: Completed }";
+  - C20 the guard taken from another set → `a_busy_job_is_skipped` red "right: Busy";
+  - C21 the DB lock held across the label call → `a_job_not_on_the_server_ends_at_the_label_call` red
+    "the database lock is held across a LabelCall call";
+  - C22 a shown outcome always emitting → `a_non_fetching_outcome_is_shown…` red "nothing changed,
+    nothing emitted";
+  - C23 `finalise` without the live-row check → `a_row_changed_during_the_fetch_is_not_overwritten` red
+    "right: RowChanged";
+  - C24 (the fake's check bites) a log poll with the guard held → `a_failed_poll_changes_nothing` red
+    "a log poll holds the job's in-flight guard";
+  - C25 `NoNormalTermination` dropped from `is_fetching` → `fetching_outcomes_are_exactly_item_4s` red;
+  - C26 `set_fetching` dropped → `a_fetching_outcome_stops_the_log_polls` red "no log poll at 4 s", and
+    `a_download_that_fails_its_listing…` "the log is final: no more polls (o16.6)";
+  - C27 no `queued` → `running` write → `running_and_queued_outcomes_update_the_row` red;
+  - C28 (o17) `Cancelled` sent back to the "shown" arm →
+    `a_cancelled_outcome_writes_the_row_terminal_without_a_download` red "queued — left:
+    Shown(Cancelled), right: Cancelled".
+- **Verifier CODE (PASS WITH FINDINGS, tree 5599563d) — fixes:**
+  - MED-1: the o16.3 "emit under the mutex" rule had no guard (moving the emit after `drop(inner)`
+    kept the suite green). The recording sink now holds the `LiveLog` (`RecordingSink::with_live`)
+    and asserts, in `log`, `convergence` and `log_reset`, that its mutex is held
+    (`LiveLog::is_locked`, test-only). Controls — each emit moved after `drop(inner)`:
+    C29a in `apply` → 14 tests red "job:log emitted outside the live-log mutex (o16.3)"; C29b in
+    `open`'s reset → 3 red "job:log-reset emitted outside the live-log mutex (o16.3)"; C29c in
+    `finish` → 3 red "job:log emitted outside …"; C29d in `apply`'s reset branch → 2 red
+    "job:log-reset emitted outside …". The two blocked-poll tests now release their gate even when
+    the main thread's assertion fails (`while_blocked`), so a red control fails instead of hanging.
+  - MED-2 (o17.2): new `a_watched_job_without_state_gets_the_whole_copy_before_the_terminal_status` —
+    watched, no state ever made, a successful fetch: no `log-reset`, every line from offset 0 and the
+    unterminated last one, then the status. C30 (the drain returns `NotWatched` for a job without
+    state) → red "the whole copy from 0, the unterminated last line included — left: []".
+  - LOW-4: `InFlightGuard::job_id`'s doc no longer claims a check; `retry_fetch` takes its job from
+    the guard.
+  - LOW-5: a failed fetch on a row that changed meanwhile is `RowChanged` and counts no strike
+    (`a_failed_fetch_on_a_changed_row_counts_no_strike`); C31 (strike counted before the write) → red
+    "left: 1, right: 0".
+  - LOW-6: `started_at` = the time of the check that first sees `Running`, not the server's start —
+    recorded as a known limitation in `modules/remote-jobs.md` (the snapshot carries `.started`).
+  - Correction to my o17 report: "a `Cancelled` job never wrote `.exit_code`" was false — classifier
+    row 4 precedes row 6, so a job that ran, wrote `.exit_code` and was then cancelled is `Cancelled`;
+    its output stays on the server (raised to the orchestrator as a possible fork).
+  The fake's "live-log mutex free on every call" check has no code mutation (the mutex is private to
+  `live_log`); its twin, the DB-lock check, is C21.
+- **Interpretations to confirm** (reported to the orchestrator): the classifier's `Running` writes
+  `queued` → `running`; non-fetching outcomes and strikes are shown through `error_message` (the
+  withdraw's precedent); a watched job's state is created by its first poll *or* the drain (so a view
+  opened after launch on an already-fetching job still gets the drained log — the o16.6 clarification
+  in o17).
+- **Fork decided by Anton (ADR-024 o17):** a classifier `Cancelled` from the poller writes the row
+  terminal `cancelled`, as a withdraw does — the shared `ssh_backend::mark_cancelled_conn` (`record_withdraw`
+  now calls it too, still `queued`-only), under one lock with the live-row re-check, no download, the
+  live state dropped, one `job:status`. Tested on a `queued` and a `running` row.
+- Next: verifier CODE on Part A; then Part B (loop thread, `AppHandle` sink, `watch_job_log`,
+  `delete_job` claims the guard, propagation of o16.9).

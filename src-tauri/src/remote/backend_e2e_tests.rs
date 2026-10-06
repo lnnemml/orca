@@ -22,7 +22,7 @@ use super::classify::Outcome;
 use super::prepare::{check_prepare, parse_install_reply, parse_prepare_reply, InstallArgs, Installed, PrepareArgs, Prepared};
 use super::run::{parse_mkjob_reply, parse_run_reply, JobScript, MkjobArgs, RunArgs, RunReply};
 use super::script_tests::Lab;
-use super::scripts::{sha256_hex, CANCEL, INSTALL, LABEL, MKJOB, PREPARE, RUN, SUBMIT, WRAPPER};
+use super::scripts::{sha256_hex, CANCEL, INSTALL, LABEL, LIST, MKJOB, POLL_LOG, PREPARE, RUN, SUBMIT, WRAPPER};
 use super::ssh::{ssh_options, CommandRunner, ProcessOutput, SystemRunner, TransportError, SSH_PROGRAM};
 use super::submit::Label;
 use super::sync::RSYNC_PROGRAM;
@@ -45,11 +45,13 @@ struct Loop<'a> {
     /// Extra environment for the scripts (the stub busctl's `STUB_KUP`, say).
     env: Vec<(String, String)>,
     calls: RefCell<Vec<String>>,
+    /// Runs right after each rsync (a test's fault injection into the copy).
+    after_rsync: Option<Box<dyn Fn() + 'a>>,
 }
 
 impl<'a> Loop<'a> {
     fn new(lab: &'a Lab) -> Self {
-        Loop { lab, env: Vec::new(), calls: RefCell::default() }
+        Loop { lab, env: Vec::new(), calls: RefCell::default(), after_rsync: None }
     }
 
     fn with_env(lab: &'a Lab, key: &str, value: &str) -> Self {
@@ -65,7 +67,16 @@ impl CommandRunner for Loop<'_> {
                 let mut want = ssh_options();
                 want.extend(["--".into(), HOST.into(), "bash".into(), "-s".into()]);
                 assert_eq!(args, want);
-                let name = [(PREPARE, "prepare"), (INSTALL, "install"), (SUBMIT, "submit"), (LABEL, "label"), (MKJOB, "mkjob"), (RUN, "run")]
+                let name = [
+                    (PREPARE, "prepare"),
+                    (INSTALL, "install"),
+                    (SUBMIT, "submit"),
+                    (LABEL, "label"),
+                    (MKJOB, "mkjob"),
+                    (RUN, "run"),
+                    (LIST, "list"),
+                    (POLL_LOG, "poll_log"),
+                ]
                     .iter()
                     .find(|(s, _)| stdin.starts_with(s.as_bytes()))
                     .map_or("?", |(_, name)| name);
@@ -90,7 +101,11 @@ impl CommandRunner for Loop<'_> {
                         local.push(a.strip_prefix(&format!("{HOST}:")).unwrap_or(a).to_string());
                     }
                 }
-                SystemRunner.run("rsync", &local, stdin, timeout)
+                let out = SystemRunner.run("rsync", &local, stdin, timeout);
+                if let Some(after) = &self.after_rsync {
+                    after();
+                }
+                out
             }
             other => panic!("the core never runs {other}"),
         }
@@ -564,4 +579,111 @@ fn cancel_and_collect_run_through_the_trampoline() {
     let RunReply::Ran { rc, stdout, .. } = run_reply(&lab, RUN, &collect) else { panic!("collect did not run") };
     assert_eq!(rc, 0);
     assert!(stdout.starts_with(b"orcastudio-snapshot 1\n"), "the stdout record is the snapshot, verbatim");
+}
+
+// ---- the poller against the real scripts (unit 5.3 B2) ---------------------------------------
+
+/// What "the wrapper" leaves in the remote job dir of a clean run: `output.out` (its last line
+/// unterminated), an empty `stderr.log`, `.exit_code` 0.
+const FINISHED_OUTPUT: &str = "SCF ITERATIONS\nFINAL SINGLE POINT ENERGY      -76.026760\n\
+                             ****ORCA TERMINATED NORMALLY****\nTOTAL RUN TIME: 0 days 0 hours 0 minutes 2 seconds 5 msec";
+
+fn finish_on_server(lab: &Lab, id: &str) {
+    let job = remote_job(lab, id);
+    fs::write(job.join("output.out"), FINISHED_OUTPUT).unwrap();
+    fs::write(job.join("stderr.log"), "").unwrap();
+    fs::write(job.join(".exit_code"), "0\n").unwrap();
+}
+
+/// The poller's world: its memory, the live log, a recording sink, the guard set.
+struct PollerWorld {
+    in_flight: crate::in_flight::InFlight,
+    memory: crate::poller::plan::PollerMemory,
+    live: crate::poller::live_log::LiveLog,
+    sink: crate::poller::RecordingSink,
+}
+
+impl PollerWorld {
+    fn new() -> Self {
+        PollerWorld { in_flight: Default::default(), memory: Default::default(), live: Default::default(), sink: Default::default() }
+    }
+
+    fn poller<'a>(&'a self, laptop: &'a Laptop, runner: &'a dyn CommandRunner) -> crate::poller::Poller<'a> {
+        crate::poller::Poller {
+            db: &laptop.db,
+            runner,
+            in_flight: &self.in_flight,
+            memory: &self.memory,
+            live: &self.live,
+            sink: &self.sink,
+            policy: crate::execution_backend::FetchPolicy::SMALL_ONLY,
+        }
+    }
+}
+
+/// The whole remote finish against the real scripts: the real `poll_log` streams the start of the
+/// log into a watching view; the status step's real label call hands the job to the classifier, the
+/// real collector (through the trampoline) says `Completed`, the real rsync brings the files down and
+/// the real `list` script's hashes match the copy; `detect_completion` over the copy finalises the
+/// row, and the view gets the rest of the log — its unterminated last line included — before the
+/// terminal `job:status`.
+#[test]
+fn the_poller_streams_fetches_and_finalises_against_the_real_scripts() {
+    use crate::poller::{log_step, Event, LogStep, StatusStep};
+    let _serial = serial();
+    let lab = Lab::new();
+    let laptop = Laptop::new(&lab);
+    laptop.draft("e2e8");
+    assert_eq!(laptop.submit(&Loop::new(&lab), "e2e8"), SubmitOutcome::Enqueued { tsp_id: 0 });
+    finish_on_server(&lab, "e2e8");
+    let coords = coordinates(&laptop.job("e2e8")).unwrap().unwrap();
+
+    let world = PollerWorld::new();
+    let runner = Loop::new(&lab);
+    world.live.open("e2e8", &world.sink);
+    let step = log_step(&world.live, &runner, &world.sink, "e2e8", &coords);
+    assert!(matches!(step, LogStep::Applied(crate::poller::live_log::Applied::Lines { lines: 3, .. })), "{step:?}");
+
+    let step = world.poller(&laptop, &runner).status_step("e2e8").unwrap();
+    assert!(
+        matches!(step, StatusStep::Finalised { outcome: Outcome::Completed { late_cancel: false }, status: JobStatus::Completed, drain_error: None }),
+        "{step:?}"
+    );
+    assert_eq!(*runner.calls.borrow(), ["poll_log", "label", "run", "rsync", "list"]);
+
+    let job = laptop.job("e2e8");
+    assert_eq!((job.status, job.error_message.as_deref(), job.energy, job.wall_time), (JobStatus::Completed, None, Some(-76.026760), Some(2.005)));
+    let local = laptop.data_dir.join("jobs").join("e2e8");
+    assert_eq!(fs::read(local.join("output.out")).unwrap(), fs::read(remote_job(&lab, "e2e8").join("output.out")).unwrap());
+    assert!(local.join(".submitting").is_symlink(), "the claim came down as a symlink");
+    let events = world.sink.take();
+    let lines: Vec<String> = events.iter().flat_map(|e| match e { Event::Log(_, l) => l.clone(), _ => vec![] }).collect();
+    assert_eq!(lines, FINISHED_OUTPUT.lines().map(String::from).collect::<Vec<_>>());
+    assert_eq!(events.last(), Some(&Event::Status("e2e8".into(), JobStatus::Completed)));
+}
+
+/// The download post-condition against the real `list` script: a copy that differs from the
+/// server's file after a successful rsync is a failed fetch — the row stays `queued`, nothing is
+/// finalised, a strike is shown.
+#[test]
+fn a_copy_that_differs_from_the_real_listing_is_not_finalised() {
+    use crate::poller::StatusStep;
+    let _serial = serial();
+    let lab = Lab::new();
+    let laptop = Laptop::new(&lab);
+    laptop.draft("e2e9");
+    assert_eq!(laptop.submit(&Loop::new(&lab), "e2e9"), SubmitOutcome::Enqueued { tsp_id: 0 });
+    finish_on_server(&lab, "e2e9");
+    let local = laptop.data_dir.join("jobs").join("e2e9");
+    let corrupt = || fs::write(local.join("output.out"), FINISHED_OUTPUT.replace("SCF", "SCX")).unwrap();
+    let runner = Loop { after_rsync: Some(Box::new(corrupt)), ..Loop::new(&lab) };
+
+    let world = PollerWorld::new();
+    let step = world.poller(&laptop, &runner).status_step("e2e9").unwrap();
+    let StatusStep::FetchFailed { strikes: 1, reason } = &step else { panic!("{step:?}") };
+    assert!(reason.contains("differing [\"output.out\"]"), "{reason}");
+    assert_eq!(*runner.calls.borrow(), ["label", "run", "rsync", "list"]);
+    let job = laptop.job("e2e9");
+    assert_eq!(job.status, JobStatus::Queued);
+    assert!(job.error_message.unwrap().contains("attempt 1 of 3"));
 }

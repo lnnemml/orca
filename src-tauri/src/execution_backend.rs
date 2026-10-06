@@ -446,8 +446,17 @@ impl ExecutionBackend for SshBackend {
         }
     }
 
-    fn poll_log(&self, _h: &JobHandle, _offset: u64) -> Result<LogChunk, AppError> {
-        Err(AppError::Backend("the remote log arrives with the poller (unit 5.3 B2)".into()))
+    /// One chunk of the remote `output.out` by the job's recorded coordinates
+    /// (`ssh_backend::poll_log_remote`). Read-only; no in-flight guard (ADR-024 o16.5).
+    fn poll_log(&self, h: &JobHandle, offset: u64) -> Result<LogChunk, AppError> {
+        let job = {
+            let db = self.app.state::<DbState>();
+            let conn = db.lock()?;
+            get_job_conn(&conn, &h.0)?
+        };
+        let coords = crate::ssh_backend::coordinates(&job)?
+            .ok_or_else(|| AppError::Backend(format!("job {} is not a remote job", job.id)))?;
+        crate::ssh_backend::poll_log_remote(&crate::remote::ssh::SystemRunner, &coords, offset).map_err(AppError::Backend)
     }
 
     fn status(&self, h: &JobHandle) -> Result<JobStatus, AppError> {
@@ -456,8 +465,11 @@ impl ExecutionBackend for SshBackend {
         Ok(get_job_conn(&conn, &h.0)?.status)
     }
 
+    /// Refused: a remote job's results are fetched by the poller's status step, under the job's
+    /// in-flight guard, and only for a fetching outcome (ADR-024 o item 4; `crate::poller`). An
+    /// unguarded download here could race it into the same local dir.
     fn fetch_results(&self, _h: &JobHandle, _policy: FetchPolicy) -> Result<(), AppError> {
-        Err(AppError::Backend("fetching remote results arrives with the poller (unit 5.3 B2)".into()))
+        Err(AppError::Backend("a remote job's results are fetched by the poller's status check".into()))
     }
 
     /// Refused for a live remote job (o item 2) — never a local `Cancelled`.

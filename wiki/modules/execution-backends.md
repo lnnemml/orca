@@ -106,10 +106,11 @@ See `wiki/log.md` (unit 5.0 Part A / Part B, 5.3 B1 Part A / Part B).
 
 ## Where the code lives
 
-Implemented across three modules, **not** a `backends/` trait dir: the trait, `LocalBackend`,
+Implemented across four modules, **not** a `backends/` trait dir: the trait, `LocalBackend`,
 `SshBackend`, `enum Backend` and `backend_kind` in `src-tauri/src/execution_backend.rs`; the local
 running machinery in `src-tauri/src/local_backend.rs`; the remote backend's Tauri-free core in
-`src-tauri/src/ssh_backend.rs` (over the scripts and parsers of `src-tauri/src/remote/`).
+`src-tauri/src/ssh_backend.rs` (over the scripts and parsers of `src-tauri/src/remote/`); the remote
+poller's core in `src-tauri/src/poller.rs` and `poller/` (the status step, the live log, the planner).
 
 ## How a local job runs (`local_backend.rs`)
 
@@ -351,7 +352,9 @@ methods run the core with the real runner and block (call them off the main thre
 failure (the row is `queued` either way) — the trait has no room for the `%pal` notice, so
 `submit_job` calls `submit_attempt`. `status` reads the row; `cancel` is `ssh_backend::cancel_remote`:
 a live job gets `refuse_if_remote_live`'s reason (checked first), a terminal one "nothing to cancel";
-`poll_log` and `fetch_results` refuse until the poller (B2).
+`poll_log` reads one chunk of the remote `output.out` by the job's coordinates
+(`ssh_backend::poll_log_remote`, read-only, no guard); `fetch_results` refuses — a remote job's files
+are fetched by the poller's status step, under the job's in-flight guard (below).
 
 **Commands and the in-flight guard** (`commands/remote_jobs.rs`, `in_flight.rs`; ADR-024 o items 4,
 5 and 15):
@@ -410,6 +413,111 @@ the source — `for_submit(None)` is local and `submit_job`'s local arm reaches 
 `cancel_job` claims the guard before it reads the job, and no command sets an arbitrary status.
 End to end against the real scripts: [remote-jobs.md](remote-jobs.md) (`backend_e2e_tests.rs`).
 Negative controls: [log.md](../log.md) (5.3 B1 Part A, 2026-10-05; Part B, 2026-10-06).
+
+### The remote poller's core (`poller.rs`, `poller/`; ADR-024 o item 4, o15, o16)
+
+One loop over every non-terminal remote job, started at launch (the loop thread, the `AppHandle`
+sink and the `watch_job_log` command are unit 5.3 B2 Part B; the core below is `AppHandle`-free and
+registered under a scoped `#[allow(dead_code)]` until then). Every step takes the database, a
+`CommandRunner` and a **`PollerSink`** — `log(job, lines)`, `convergence(job, events)`,
+`log_reset(job)`, `status(job, status)`; the `AppHandle` sink maps them to the local `job:log`,
+`job:convergence`, `job:status` payloads (`local_backend::emit_log` / `emit_convergence` /
+`emit_status`, all `pub(crate)`) plus `job:log-reset { job_id }`. The tests use a recording sink.
+
+**The ssh calls** (`ssh_backend.rs`): `poll_log_remote(runner, coords, offset)` — one `POLL_LOG`
+call, `POLL_LOG_TIMEOUT` = 10 s, reply through `parse_poll_reply`'s length post-condition;
+`fetch_remote(runner, coords, local_dir, policy)` — `rsync -a --checksum <shared filter>` down
+(`FETCH_TIMEOUT` 300 s, `FETCH_GBW_TIMEOUT` 1800 s with the `.gbw`; neither is measured), then the
+server's `LIST` (Rust re-derives every selection), then **`compare_download`** of the filter-selected
+local subset against it. Any failure is an `Err` = a failed fetch. `collect_and_classify` (the
+withdraw's collect + `classify`, with its one retake) is shared.
+
+**The status step** (`Poller::status_step(job_id)`): claims the in-flight guard with `try_acquire`
+and returns `Busy` for a busy job (o15.3). Then, with nothing locked across a call:
+1. a row that is no longer a non-terminal remote job (finished, vanished, local) → `NotLive`, its live
+   state and memory dropped, no call;
+2. a fetching outcome already struck out `MAX_FETCH_STRIKES` = 3 times in a row → `FetchStopped`, no
+   call (the manual retry below starts over);
+3. a `queued` row: the read-only label call; "not on the server" / "submit interrupted" → `Labelled`,
+   nothing collected or written. A `running` row skips it;
+4. `collect_and_classify` with the recorded socket; a transport or reply failure → `CheckFailed`,
+   nothing written;
+5. a classifier **`Cancelled`** (row 4) → `Cancelled`: the row is written terminal `cancelled` with
+   `completed_at`, as a withdraw records it (`ssh_backend::mark_cancelled_conn`, shared with
+   `record_withdraw`; ADR-024 o17), under one lock after the live-row re-check; nothing is downloaded,
+   the live state is dropped and `job:status` is emitted;
+6. any other **non-fetching outcome** (`is_fetching` false) → `Shown`: the classifier's `Running` moves a
+   `queued` row to `running` (stamping `started_at`, clearing `error_message`); `Queued` clears
+   `error_message`; every other outcome writes `shown_message` ("… handled in unit 5.4" where it
+   needs an action) and the status stays `queued`/`running`. `job:status` only when the row changed
+   (`status_to_emit`);
+7. a **fetching outcome** (`Completed`, `Failed{NonZeroExit | BadExitCode | NoNormalTermination}`)
+   sets the in-memory fetching flag (no more log polls), then `fetch_remote` into the job's local dir.
+   A failure counts a strike and writes it to `error_message` ("attempt n of 3", then "automatic
+   fetches stopped until a manual retry") → `FetchFailed`, the status unchanged. On success the
+   status comes from **`detect_completion` over the downloaded `output.out` / `stderr.log` /
+   `.exit_code`** (rule #6; `.exit_code` read with the strict `parse_exit_code`) — never from the
+   classifier's verdict. The energy and wall time come from the downloaded tail
+   (`RESULT_TAIL_BYTES`). Then **one transaction under one lock** re-checks the row (still this live
+   remote job, else `RowChanged` and nothing written) and writes, in the local finish path's order,
+   the terminal status (`finalize_job_conn`), on `Completed` the energy/wall time
+   (`set_job_results_conn`), and the parsed results (`parse_results_after_completion`, which may
+   advance to `parsed`). Then the live view is drained from the copy and `job:status` is emitted
+   last → `Finalised`.
+
+`Poller::retry_fetch(&guard)` is the manual retry: the caller (a command) holds the job's guard, which
+names the job; the strikes reset and one status step runs. The local finish path, by contrast, writes
+the terminal status, the energy/wall time and the parsed results under **three separate** lock
+acquisitions (`drive_job`); the remote one is a single locked step, so no reader sees a remote job
+terminal without its results.
+
+**The log step** (`log_step(live, runner, sink, job_id, coords)`) takes no in-flight guard and no
+database lock (o16.5): `LiveLog::begin` (only a watched job; creates the state at offset 0 on its
+first step), `poll_log_remote` with nothing locked, then `LiveLog::apply` under the live-log mutex. A
+failed poll changes nothing (`LogStep::Failed`).
+
+**`LiveLog`** (`poller/live_log.rs`, o16.2–16.6): one mutex over the open counts per job id
+(whatever the backend; a close saturates at 0) and each watched job's state — offset,
+`LineAssembler`, `ConvergenceParser`, catch-up flag, generation. An **open** of a job with state
+recreates it at 0 and emits `log_reset` in the same locked step; the **last close** drops the state;
+`retain`/`drop_state` drop it for a terminal or vanished job, keeping the count. Every state takes a
+fresh **generation** from one launch-long counter; `apply` discards a chunk whose ticket's generation
+is no longer the state's (an open, a reset or a drop happened during the poll, also across
+drop-and-reopen), refuses a chunk that does not continue the ticket's offset, recreates the state on a
+`reset` chunk (emitting `log_reset`), and otherwise assembles, parses, advances the offset and
+emits — all under the mutex, never across an ssh call. A chunk of exactly the cap sets catch-up.
+`drain(job, read, cap, sink)` reads the verified local copy from the stored offset with
+`read_log_chunk` until no bytes remain, then `finish` emits the assembler's unterminated last line and
+drops the state; each step is generation-checked, and an unwatched job's copy is not read.
+
+**The planner** (`poller/plan.rs`): `candidates(conn)` = every `queued`/`running` row with
+coordinates (partial coordinates are an error); `sweep` drops the live state and memory of every
+other job; `plan_inputs` + `plan(jobs, periods, now)` give each job at most one due step —
+`Status` every `periods.status` (`Periods::INITIAL`: 15 s) for every job, `Log` every `periods.log`
+(2 s) only while watched and not fetching, or at once on catch-up; status first when both are due;
+nothing for a job whose step is still running. `PollerMemory` holds, per launch, the fetching flag,
+the strikes, the last run of each step and the in-progress mark.
+
+**Tests** (`poller/tests.rs`, over a fake server that checks on every call that neither the database
+lock nor the live-log mutex is held, and that a log poll runs without the job's guard): the happy
+fetch (label → collect → rsync → list, energy and wall time, status last); a downloaded output without
+the normal-termination line → `failed` although the classifier said `Completed`; a non-zero exit
+fetched and failed; a copy that fails the listing, a failed rsync (strikes, row unchanged); three
+strikes stopping the automatic fetch and a manual retry finishing it; a busy job skipped; the label
+call ending a job not on the server; a `running` row skipping it; shown outcomes and their emits; the
+`Running` write; a classifier `Cancelled` on a `queued` and a `running` row written terminal with no
+download; a row changed during the fetch; a job no longer live; a failed check. The live log:
+**parity** — a fixture built from real ORCA outputs (`opt_output_excerpt.txt`, the dexketoprofen tail
+twice, the OptTS tail; > `CAP`) streamed in `CAP`-sized and in 7919- and 4093-byte chunks equals
+`BufRead::lines` and `read_convergence` on the same file; a character split across polls; an open,
+and a close + reopen, while a poll is blocked in its call (stale chunk discarded, next poll from 0);
+a failed and a broken poll; a shrunken log; the tail and unterminated last line drained from the copy
+before the terminal status; an unwatched fetch emitting no line. The planner over the database: a
+watched draft polled once it has coordinates, a local queued job never a candidate, unwatched jobs
+getting only status steps, open/open/close, no log poll after a fetching outcome, a terminal job
+swept with its count kept; `is_fetching` is exactly item 4's set. `live_log.rs` and `plan.rs` carry
+their unit tests. End to end against the real scripts: [remote-jobs.md](remote-jobs.md). Negative
+controls: [log.md](../log.md) (5.3 B2 Part A, 2026-10-06).
 
 **How the job runs there:** a static wrapper (`include_str!`, uploaded content-addressed as
 `<root>/bin/wrapper-<sha>.sh` by the install call, with `cancel.sh` and `collect.sh` beside it) runs through a per-slot `tsp` queue. It

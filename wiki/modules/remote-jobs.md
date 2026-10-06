@@ -566,7 +566,7 @@ action this pass, like `Indeterminate`.
 
 ## Tests
 
-214 tests in the module.
+216 tests in the module.
 - **Pure (classifier, parsers, wire):** strict-parser garbage cases, the recorded probe fixtures (P2
   cmdline, P4 `tsp -l`, 5.2b `/proc/net/unix` line, 5.2c stat lines including `w q) x.sh` and the
   zombie), at least one snapshot per table row, the d′ race model over all 6 interleavings, and the
@@ -640,7 +640,13 @@ action this pass, like `Indeterminate`.
   profile unverified → `cancelled`; `%pal nprocs 48` uploaded as the 4-CPU mask's 4 (the server's hash
   check accepts it) and a retry after the mask narrows to 1 CPU uploading `nprocs 1`, the database
   keeping the original; a symlinked `<root>/bin` → refused at the prepare step, nothing uploaded. The
-  scripts on their own: install readies a fresh root (all three), `kept` on a second install, wrong
+  poller (`crate::poller`, unit 5.3 B2) against the same lab: the real `poll_log` streams the first
+  lines of a finished job's `output.out` into a watching view; the status step's real label call hands
+  it to the classifier, the real collector says `Completed`, the real rsync brings the files down (the
+  `.submitting` claim as a symlink) and the real `list` hashes match the copy; the row is finalised
+  from the copy (`completed`, energy and wall time) and the view gets the rest of the log, the
+  unterminated last line included, before the terminal `job:status`; a copy corrupted right after the
+  rsync fails the real listing → a strike, the row stays `queued`. The scripts on their own: install readies a fresh root (all three), `kept` on a second install, wrong
   bytes under the cancel script's name replaced by rename (new inode, the others kept), bytes that do
   not hash to the name never published (no temp left), a symlinked `bin/` or `tsp/` refused with
   nothing written through it; mkjob makes the dir and refuses, after the mkdir, a job dir linked outside `jobs/` and a sibling link `jobs/w3 -> jobs/w1` (only the job dir's own realpath catches that one; a permanent mutant that reports the job dir unresolved must miss it); the
@@ -652,13 +658,23 @@ action this pass, like `Indeterminate`.
 
 Negative controls (each guard broken, the named tests red, restored): listed per unit in
 [log.md](../log.md) (Part A 2026-10-03, Part B 2026-10-03, 5.3 A2 2026-10-05, 5.3 B1 Part A
-2026-10-05). The five of 5.3 A2 are
+2026-10-05, 5.3 B2 Part A 2026-10-06). The five of 5.3 A2 are
 also permanent tests: each runs its guard's check on a mutated copy of the script (exactly one
 occurrence replaced) and requires it to fail.
 
 ## Not built yet
 
-- The UI over the remote job commands (B3), the poller (B2).
+- The UI over the remote job commands (B3); the poller's loop thread, its `AppHandle` sink, the
+  `watch_job_log` command and `delete_job`'s guard claim (B2 Part B). The poller's core — the status
+  step, the fetch with its listing post-condition, the live log and the planner — exists
+  ([execution-backends.md](execution-backends.md#the-remote-pollers-core-pollerrs-poller-adr-024-o-item-4-o15-o16)).
+- **Known limitation — `started_at` of a remote job** is stamped with the time of the status check
+  that first sees the classifier's `Running` (`queued` → `running`, `crate::poller`), not the time the
+  job started on the server. It can be late by up to a status period (15 s), or by hours when the
+  laptop was closed while the job started. The collector's snapshot carries the server's `.started`
+  (its own fields), so a later unit can stamp the real start from it.
+- **Not measured** (B4's live run): the download and listing timeouts (300 s, 1800 s with the
+  `.gbw`), rsync down over a real link and its exit codes under a drop.
 - **Measured on uni** (probe 5.3 B0, 2026-10-05, [remote-sync-probe.md](../orca/remote-sync-probe.md#probe-53-b0-2026-10-05)):
   real `tsp <command>` prints `<id>\n` (accepted by the submit's regex); with `9>&-` neither a fresh
   nor an existing daemon nor its jobs hold the lock; `tsp -l` on a stale socket starts a daemon;

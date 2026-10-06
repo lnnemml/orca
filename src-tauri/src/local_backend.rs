@@ -52,7 +52,7 @@ pub(crate) fn has_normal_termination(tail: &str) -> bool {
 /// Larger tail for result extraction: a Freq/Opt run prints the final energy
 /// well before the end (normal modes + thermochemistry follow), so 5 KB isn't
 /// enough — 64 KB comfortably reaches back to the last `FINAL SINGLE POINT ENERGY`.
-const RESULT_TAIL_BYTES: u64 = 64 * 1024;
+pub(crate) const RESULT_TAIL_BYTES: u64 = 64 * 1024;
 
 /// App-wide LocalBackend state: the job-directory root, the single execution
 /// slot (`Some` while a job is running — concurrency = 1, domain rule #4), and a
@@ -102,11 +102,12 @@ impl JobRunner {
     }
 }
 
-/// Payload of the `job:log` event: a batch of freshly produced output lines.
+/// Payload of the `job:log` event: a batch of freshly produced output lines. `pub(crate)` with its
+/// emitter: the remote poller pushes a remote job's log through the same event (ADR-024 o16.1).
 #[derive(Clone, Serialize)]
-struct LogPayload {
-    job_id: String,
-    lines: Vec<String>,
+pub(crate) struct LogPayload {
+    pub(crate) job_id: String,
+    pub(crate) lines: Vec<String>,
 }
 
 /// Payload of the `job:status` event: a job's new lifecycle state.
@@ -118,11 +119,12 @@ struct StatusPayload {
 
 /// Payload of the `job:convergence` event: a batch of freshly parsed SCF /
 /// optimization datapoints for the live dashboard. Batched on the same cadence
-/// as logs so a fast SCF (dozens of iterations/sec) doesn't flood the UI.
+/// as logs so a fast SCF (dozens of iterations/sec) doesn't flood the UI. `pub(crate)` with its
+/// emitter, for the remote poller (ADR-024 o16.1).
 #[derive(Clone, Serialize)]
-struct ConvergencePayload {
-    job_id: String,
-    events: Vec<ConvergenceEvent>,
+pub(crate) struct ConvergencePayload {
+    pub(crate) job_id: String,
+    pub(crate) events: Vec<ConvergenceEvent>,
 }
 
 /// Create `<data_dir>/jobs/<job_id>/` and write `input.inp` into it, plus any
@@ -667,8 +669,9 @@ pub fn is_paused(app: &AppHandle) -> bool {
 /// Parse + store a completed job's structured `.property.txt` results and return
 /// the resulting status: `parsed` on success, `completed` on a parse failure (with
 /// the reason recorded — the calculation ran fine, only our parse did not) or when
-/// there is nothing to parse. Shared by the live finish path and reconciliation.
-fn parse_results_after_completion(conn: &Connection, job_id: &str) -> JobStatus {
+/// there is nothing to parse. Shared by the live finish path, reconciliation and the remote
+/// poller's finalisation.
+pub(crate) fn parse_results_after_completion(conn: &Connection, job_id: &str) -> JobStatus {
     let job = match get_job_conn(conn, job_id) {
         Ok(j) => j,
         Err(_) => return JobStatus::Completed,
@@ -1029,8 +1032,9 @@ pub fn terminate_on_exit(app: &AppHandle) {
     terminate_job(pgid, &job_dir);
 }
 
-/// Emit a batch of log lines (no-op if empty); drains `batch`.
-fn emit_log(app: &AppHandle, job_id: &str, batch: &mut Vec<String>) {
+/// Emit a batch of log lines (no-op if empty); drains `batch`. The one emitter of `job:log` for a
+/// job's output, for both backends (the remote poller's sink calls it, ADR-024 o16.1).
+pub(crate) fn emit_log(app: &AppHandle, job_id: &str, batch: &mut Vec<String>) {
     if batch.is_empty() {
         return;
     }
@@ -1043,8 +1047,9 @@ fn emit_log(app: &AppHandle, job_id: &str, batch: &mut Vec<String>) {
     );
 }
 
-/// Emit a batch of convergence datapoints (no-op if empty); drains `batch`.
-fn emit_convergence(app: &AppHandle, job_id: &str, batch: &mut Vec<ConvergenceEvent>) {
+/// Emit a batch of convergence datapoints (no-op if empty); drains `batch`. Shared with the remote
+/// poller's sink, like [`emit_log`].
+pub(crate) fn emit_convergence(app: &AppHandle, job_id: &str, batch: &mut Vec<ConvergenceEvent>) {
     if batch.is_empty() {
         return;
     }
@@ -1083,8 +1088,9 @@ pub(crate) fn emit_status(app: &AppHandle, job_id: &str, status: JobStatus) {
 /// Decide a job's terminal state from its output tail + exit code (domain rule
 /// #6): `completed` iff the output ends with `ORCA TERMINATED NORMALLY` AND the
 /// exit code is 0; otherwise `failed` with a message pulled from stderr (or the
-/// output tail if stderr is empty). Reads only file tails — never the whole file.
-fn detect_completion(
+/// output tail if stderr is empty). Reads only file tails — never the whole file. The remote
+/// poller decides a fetched job with it too, over the **downloaded** files (ADR-024 o item 4).
+pub(crate) fn detect_completion(
     out_path: &Path,
     stderr_path: &Path,
     exit_code: Option<i32>,

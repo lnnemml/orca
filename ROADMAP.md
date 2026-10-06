@@ -1425,7 +1425,7 @@ preflight. The remaining items (remote `orca_plot`, pause) are not numbered yet.
       `cancel.sh` / `collect.sh`, the length-prefixed snapshot wire format and its strict parser,
       run for real on the laptop (stub `tsp`/ORCA, fixtures (a)–(e), d′ orders) —
       [modules/remote-jobs.md](wiki/modules/remote-jobs.md).
-- [ ] **Unit 5.3 — `SshBackend` wiring** (**A1 ✅ 2026-10-05** `d47623d`: v20, artifact list, LogChunk, pure parsers; **A2 ✅ 2026-10-05** `ff0b5e1`: server scripts submit/label/poll_log/list, ADR-024 o13; **B1 ✅ 2026-10-06** `e6211f0`; **next: B2**) via system `ssh`/`rsync`: rsync job dir up → the 5.2
+- [ ] **Unit 5.3 — `SshBackend` wiring** (**A1 ✅ 2026-10-05** `d47623d`: v20, artifact list, LogChunk, pure parsers; **A2 ✅ 2026-10-05** `ff0b5e1`: server scripts submit/label/poll_log/list, ADR-024 o13; **B1 ✅ 2026-10-06** `e6211f0`; **B2 Part A** done (poller core, ADR-024 o17); **next: B2 Part B**) via system `ssh`/`rsync`: rsync job dir up → the 5.2
       wrapper via task-spooler (per-slot `TS_SOCKET`) → byte-offset `poll_log` of output → selective
       rsync down (the shared artifact-pattern list + markers + `.tsp-out/`; gbw opt-in, ADR-024 o6); `enum Backend` (ADR-023). Also per
       ADR-024 (m)/(n)/(o):
@@ -1457,7 +1457,7 @@ preflight. The remaining items (remote `orca_plot`, pause) are not numbered yet.
               upload; submit call → `SubmitReply` handling (`RefusedKup` alone clears `verified_at`);
               label call + withdraw; refusals of cancel/delete and profile edit/delete while
               non-terminal (o2).
-        - [ ] **B2 — the poller** (implementer `opus`): one loop started in `lib.rs` setup, resumed at
+        - [ ] **B2 — the poller** (**Part A ✅ 2026-10-06**: `poller/` core over the fake runner, ADR-024 o17; **next: Part B** — loop in `lib.rs`, `watch_job_log`, `AppHandle` sink, fetch-retry command, `delete_job` guard, o16.9 propagation) (implementer `opus`): one loop started in `lib.rs` setup, resumed at
               launch; in-flight guard per job (`InFlight::try_acquire`, skip; `delete_job` joins the guard,
               ADR-024 o15.2, with a negative control); label → collect (recorded + `.enqueued` socket) →
               `classify`; fetching outcomes → download + `LIST` post-condition + `detect_completion`

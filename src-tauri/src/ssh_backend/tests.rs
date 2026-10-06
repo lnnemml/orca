@@ -14,21 +14,21 @@ use crate::remote::ssh::TransportError;
 use crate::remote::submit::{LABEL_HEADER, OUTPUT_HEADER};
 use crate::remote::wire::HEADER as SNAPSHOT_HEADER;
 
-type Reply = Result<ProcessOutput, TransportError>;
+pub(crate) type Reply = Result<ProcessOutput, TransportError>;
 
-const ROOT: &str = "/home/anton/.orcastudio";
-const JOB: &str = "j1";
+pub(crate) const ROOT: &str = "/home/anton/.orcastudio";
+pub(crate) const JOB: &str = "j1";
 const PROFILE: &str = "p1";
 
 // ---- the world: a database with a stamped profile and a draft ------------------------------
 
-struct World {
-    db: DbState,
-    dir: PathBuf,
+pub(crate) struct World {
+    pub(crate) db: DbState,
+    pub(crate) dir: PathBuf,
 }
 
 impl World {
-    fn new() -> World {
+    pub(crate) fn new() -> World {
         use std::sync::atomic::{AtomicU64, Ordering};
         static N: AtomicU64 = AtomicU64::new(0);
         let dir = std::env::temp_dir().join(format!(
@@ -53,11 +53,11 @@ impl World {
         World { db: DbState(Mutex::new(conn)), dir }
     }
 
-    fn data_dir(&self) -> PathBuf {
+    pub(crate) fn data_dir(&self) -> PathBuf {
         self.dir.join("data")
     }
 
-    fn job(&self) -> Job {
+    pub(crate) fn job(&self) -> Job {
         get_job_conn(&self.db.lock().unwrap(), JOB).unwrap()
     }
 
@@ -65,7 +65,7 @@ impl World {
         get_profile_conn(&self.db.lock().unwrap(), PROFILE).unwrap().verified_at.is_some()
     }
 
-    fn sql(&self, sql: &str) {
+    pub(crate) fn sql(&self, sql: &str) {
         self.db.lock().unwrap().execute_batch(sql).unwrap();
     }
 
@@ -88,7 +88,7 @@ impl Drop for World {
     }
 }
 
-fn expected_coords() -> RemoteCoordinates {
+pub(crate) fn expected_coords() -> RemoteCoordinates {
     RemoteCoordinates {
         host: "uni".into(),
         job_dir: format!("{ROOT}/jobs/{JOB}"),
@@ -178,20 +178,20 @@ impl CommandRunner for Fake<'_> {
     }
 }
 
-fn exited(code: i32, stdout: Vec<u8>) -> Reply {
+pub(crate) fn exited(code: i32, stdout: Vec<u8>) -> Reply {
     Ok(ProcessOutput { code: Some(code), stdout, stderr: b"stderr text".to_vec() })
 }
 
-fn ok(stdout: Vec<u8>) -> Reply {
+pub(crate) fn ok(stdout: Vec<u8>) -> Reply {
     exited(0, stdout)
 }
 
-fn rec(name: &str, text: &str) -> String {
+pub(crate) fn rec(name: &str, text: &str) -> String {
     format!("{name} {}\n{text}\n", text.len())
 }
 
 /// The header and the echo of `values`, as every script prints them.
-fn echo(header: &str, values: &[String]) -> String {
+pub(crate) fn echo(header: &str, values: &[String]) -> String {
     let mut out = format!("{header}\nargc {}\n", values.len());
     for v in values {
         out.push_str(&rec("arg", v));
@@ -251,7 +251,7 @@ fn kup_record(rc: u8, stdout: &str) -> String {
 const NET_UNIX_HEADER: &str = "Num       RefCount Protocol Flags    Type St Inode Path\n";
 
 /// A label reply: `dir no`, or the dir with these markers and no daemon on the socket.
-fn label_reply(values: &[String], markers: Option<[bool; 5]>) -> Reply {
+pub(crate) fn label_reply(values: &[String], markers: Option<[bool; 5]>) -> Reply {
     let body = match markers {
         None => "dir no\n".to_string(),
         Some(m) => {
@@ -263,9 +263,9 @@ fn label_reply(values: &[String], markers: Option<[bool; 5]>) -> Reply {
     ok(format!("{}{body}end\n", echo(LABEL_HEADER, values)).into_bytes())
 }
 
-const NOT_ON_SERVER: Option<[bool; 5]> = None;
-const INTERRUPTED: Option<[bool; 5]> = Some([false, false, false, false, true]);
-const ENQUEUED: Option<[bool; 5]> = Some([false, false, false, true, true]);
+pub(crate) const NOT_ON_SERVER: Option<[bool; 5]> = None;
+pub(crate) const INTERRUPTED: Option<[bool; 5]> = Some([false, false, false, false, true]);
+pub(crate) const ENQUEUED: Option<[bool; 5]> = Some([false, false, false, true, true]);
 
 /// The happy server: ready, upload ok, the submit call enqueues with id 3.
 fn happy(kind: Kind, values: &[String]) -> Reply {
@@ -290,7 +290,7 @@ fn mkjob_ok(values: &[String]) -> Reply {
 }
 
 /// A trampoline reply: the script ran with `rc` and these streams.
-fn ran(values: &[String], rc: u8, stdout: &[u8], stderr: &[u8]) -> Reply {
+pub(crate) fn ran(values: &[String], rc: u8, stdout: &[u8], stderr: &[u8]) -> Reply {
     let mut out = format!("{}ran\nrc {rc}\nstdout {}\n", echo(RUN_HEADER, values), stdout.len()).into_bytes();
     out.extend_from_slice(stdout);
     out.extend_from_slice(format!("\nstderr {}\n", stderr.len()).as_bytes());
@@ -533,7 +533,7 @@ fn retry_refuses_an_unverified_profile_or_a_moved_target() {
 
 /// A collector output with no `.started`: `cancelled`, an optional `.exit_code` and output tail,
 /// no daemon on the socket. `started` = the two bracketing `.started` reads.
-fn snapshot(cancelled: bool, exit_code: Option<&str>, tail: Option<&str>, started: (Option<&str>, Option<&str>)) -> Vec<u8> {
+pub(crate) fn snapshot(cancelled: bool, exit_code: Option<&str>, tail: Option<&str>, started: (Option<&str>, Option<&str>)) -> Vec<u8> {
     let opt = |name: &str, v: Option<&str>| v.map_or(format!("{name} -\n"), |t| rec(name, t));
     let socket = expected_coords().socket;
     format!(
@@ -579,7 +579,7 @@ fn withdraw_server(markers: Option<[bool; 5]>, cancel_rc: u8, collects: Vec<Vec<
     }
 }
 
-const CLEAN_TAIL: &str = "                             ****ORCA TERMINATED NORMALLY****\n";
+pub(crate) const CLEAN_TAIL: &str = "                             ****ORCA TERMINATED NORMALLY****\n";
 
 #[test]
 fn a_withdraw_is_decided_by_the_classifier() {

@@ -1,6 +1,6 @@
 # ADR-024: Remote execution under intermittent connectivity
 
-**Status:** Accepted · 2026-10-02 (Proposed → Accepted after the review + acceptance amendments below) · amended 2026-10-03 (probe; probe review; d′ resolution — ready for implementation; l — unit 5.2 script and classifier shape; m — 5.3 submit rules; n — 5.1 Part B profile and connection test) · amended 2026-10-05 (o — 5.3 transport, sync and monitoring; accepted after DESIGN round 4; o13 — Part A2 amendments, accepted after DESIGN review 2026-10-05; o14 — B1 amendments, accepted after DESIGN review 2026-10-05) · amended 2026-10-06 (o15 — B1 Part B: the in-flight guard's scope, accepted after DESIGN review 2026-10-06; o16 — B2: the remote live log is pushed, accepted after DESIGN review 2026-10-06)
+**Status:** Accepted · 2026-10-02 (Proposed → Accepted after the review + acceptance amendments below) · amended 2026-10-03 (probe; probe review; d′ resolution — ready for implementation; l — unit 5.2 script and classifier shape; m — 5.3 submit rules; n — 5.1 Part B profile and connection test) · amended 2026-10-05 (o — 5.3 transport, sync and monitoring; accepted after DESIGN round 4; o13 — Part A2 amendments, accepted after DESIGN review 2026-10-05; o14 — B1 amendments, accepted after DESIGN review 2026-10-05) · amended 2026-10-06 (o15 — B1 Part B: the in-flight guard's scope, accepted after DESIGN review 2026-10-06; o16 — B2: the remote live log is pushed, accepted after DESIGN review 2026-10-06; o17 — B2 Part A: classifier `Cancelled` terminal, drain while watched, accepted after DESIGN review 2026-10-06)
 
 Refines [ADR-003](adr-003-execution-backend.md) (the `ExecutionBackend` trait + job state
 machine) and extends [ADR-023](adr-023-server-agnostic-remote-execution.md) (one `SshBackend`
@@ -917,7 +917,7 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
      final status comes from `detect_completion` on the **downloaded** files (rule #6). A failed
      job's output is downloaded too — it is the debugging evidence.
    - Every other outcome (`Queued`, `Running`, `Indeterminate`, `ReEnqueue`, `Lost`, `Cancelling`,
-     `Cancelled`, `Failed{CorruptStarted}`) is **shown, with "handled in unit 5.4" where it needs an
+     `Cancelled` *(now terminal, o17)*, `Failed{CorruptStarted}`) is **shown, with "handled in unit 5.4" where it needs an
      action**; the row stays `Queued`/`Running` (so it still blocks profile edits and deletion).
      5.3 passes `reenqueue_count = 0` (the column is v21's), so `Failed{WrapperNeverStarted}` cannot
      occur in 5.3.
@@ -1289,7 +1289,7 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
        the whole log and every convergence point, as for a local job. Then the state is dropped. A
        fetch that fails leaves the state as it was (the row stays non-terminal, item 4's 3 strikes),
        and a watching view stays empty until a fetch succeeds. The drain runs only when state exists
-       (no watcher, nothing to emit). The "fetching outcome classified" flag lives in memory like
+       *(read: while the job is watched, o17.2)* (no watcher, nothing to emit). The "fetching outcome classified" flag lives in memory like
        item 4's state; status-first sequencing sets it again on the first tick after a launch.
     7. **Testability and B3's side.** The poller's log step is an `AppHandle`-free core that takes an
        event sink (as `status_to_emit` does), tested with a recording sink over the fake runner.
@@ -1321,6 +1321,34 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
        code comments that still predict the flip (`execution_backend.rs` module and trait docs,
        `local_backend.rs`'s `poll_log` doc); `in_flight.rs`'s header (the log poll is not guarded).
        ADR-003's "pull, not push" still holds at the backend layer; the UI stays push.
+17. **B2 Part A amendments** (2026-10-06; found by the B2 Part A implementer, decided by Anton). They
+    refine item 4's outcome list and o16.6's drain condition; nothing else changes. Accepted after
+    DESIGN review (PASS WITH FINDINGS, findings applied) on 2026-10-06.
+    1. **A classifier `Cancelled` from the poller is terminal** (Anton). Item 4 listed `Cancelled`
+       among the outcomes that are only shown, the row staying `Queued`. Read literally, a withdraw
+       whose reply is lost becomes a dead end — the label call then hands the job to the
+       classifier, so a second withdraw is refused and cancel is refused until 5.4 — contradicting
+       o3.4 ("a lost withdraw reply is not a dead end"). So the status step writes terminal
+       `cancelled` (with `completed_at`) for a classifier `Cancelled` (row 4: `.cancelled`, nothing
+       of the job runs), the same write `record_withdraw` makes, under one lock after re-checking
+       that the row is still this live remote job; it drops the job's live-log state and emits the
+       terminal `job:status`. **Nothing is downloaded** (o6 fetches only `Completed` and the `Failed`
+       variants). Row 4 precedes row 6, so it **includes a job that ran and wrote `.exit_code`**
+       (non-zero, unreadable, or 0 without normal termination) before the cancel: its output and
+       exit code are **not** downloaded and `detect_completion` does not run; they stay on the server
+       (item 5: nothing is deleted there in 5.3). In 5.3 this is rarely reachable (a withdraw follows
+       only "not on the server" / "submit interrupted"); in 5.4 every running job killed by a cancel
+       takes this arm, so **5.4 decides** whether a started-then-cancelled job's evidence is fetched
+       while it still ends `cancelled` (open question, Anton). The withdraw's "nothing ran" message
+       has the same imprecision. `Cancelling` (row 3) stays shown. Negative control: the arm
+       reverted to "shown" turns its test red.
+    2. **o16.6's "only when state exists" means "while the job is watched".** A view opened during
+       the fetch window has a count > 0 but no state yet (no log poll runs once a fetching outcome is
+       classified); the drain then creates the state at offset 0 and streams the whole verified
+       local copy, so that view is not left empty. With no watcher nothing is read (o16.8's control
+       holds).
+    3. **Propagation:** item 4's outcome list and o16.6 (marked); `modules/remote-jobs.md` and
+       `modules/execution-backends.md` move with B2's code.
 
 ## Alternatives rejected
 
@@ -1374,6 +1402,11 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
 
 ## Open questions
 
+- **(o17) Fetch a started-then-cancelled job's evidence?** Classifier row 4 (`Cancelled`) includes a
+  job that ran and wrote `.exit_code` before the cancel; o17.1 makes it terminal `cancelled` with no
+  download, so its output stays on the server. Rarely reachable in 5.3; in 5.4 every cancelled
+  running job lands here. Options: keep (no download) or treat `Cancelled` with `.started` /
+  `.exit_code` as a fetching outcome that still ends `cancelled`. **Anton decides at 5.4.**
 - **(e) `lost`-restart seed selection.** How restart-from-last-geometry picks and validates its
   seed (last `_trj.xyz` frame? last `.xyz`? a post-condition that the geometry is sane?), given
   it bypasses `resolveCarryForwardGeometry`. Unresolved.
