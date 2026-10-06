@@ -14,7 +14,9 @@ use uuid::Uuid;
 
 use crate::commands::settings::DbState;
 use crate::error::AppError;
-use crate::execution_backend::{ExecutionBackend, JobHandle, LocalBackend};
+use crate::commands::remote_jobs::SubmitResponse;
+use crate::execution_backend::{Backend, ExecutionBackend, JobHandle};
+use crate::in_flight::InFlight;
 use crate::models::job::{Job, JobStatus};
 
 // --- Connection-level helpers (testable) ------------------------------------
@@ -810,45 +812,54 @@ pub fn read_neb_geometries(
     crate::results::read_neb_geometries(&conn, &id, job_dir.as_deref())
 }
 
+/// Submit a draft job to the run target chosen next to Submit (ADR-024 o item 5), dispatched
+/// through [`Backend::for_submit`]:
+/// - `target` absent/`null` → this machine: the [`LocalBackend`] queues the job and starts it if
+///   the slot is free; the run proceeds on a background thread. Answers `null`, as before the
+///   target existed; the `job:log`/`job:status` events are the local run's own.
+/// - `target` = a server profile id → `commands::remote_jobs::submit_to_server`: the whole remote
+///   submit sequence off the IPC thread, under the job's in-flight guard, answering the attempt
+///   (outcome, `%pal` alignment and its notice).
+///
+/// Async so the remote arm can await its blocking task; the local arm awaits nothing.
 #[tauri::command]
-pub fn update_job_status(db: State<'_, DbState>, id: String, status: String) -> Result<(), AppError> {
-    let conn = db.lock()?;
-    update_job_status_conn(&conn, &id, &status)
+pub async fn submit_job(
+    app: tauri::AppHandle,
+    id: String,
+    target: Option<String>,
+) -> Result<Option<SubmitResponse>, AppError> {
+    match Backend::for_submit(app.clone(), target) {
+        Backend::Local(local) => {
+            let job = {
+                let db = app.state::<DbState>();
+                let conn = db.lock()?;
+                get_job_conn(&conn, &id)?
+            };
+            local.submit(&job)?;
+            Ok(None)
+        }
+        Backend::Ssh(ssh) => crate::commands::remote_jobs::submit_to_server(app, id, ssh).await.map(Some),
+    }
 }
 
-/// Submit a draft job to the `LocalBackend`: prepare its dir, spawn ORCA, and
-/// stream the log. Returns immediately — the run proceeds on a background
-/// thread.
+/// Cancel a running or queued job, dispatched through [`Backend::for_job`] (by the job's
+/// coordinates). Locally the trait method delegates to `local_backend::cancel` (killpg + cwd
+/// sweep, the terminal `job:status` event). A remote job is refused: a live one by
+/// `ssh_backend::refuse_if_remote_live` (remote cancel is unit 5.4), a terminal one has nothing to
+/// cancel.
 ///
-/// Dispatches through the [`ExecutionBackend`] trait on a concrete
-/// [`LocalBackend`] (unit 5.0 Part B) rather than calling
-/// `local_backend::submit` directly: the trait is the real execution seam now,
-/// so `SshBackend` slots in behind the same `submit(&job)` call. The backend is
-/// a zero-cost wrapper over the `AppHandle` this command already receives — no
-/// new managed state, no signature change (the `String` id is loaded into the
-/// `Job` the trait method takes). The `job:log`/`job:status` events and the IPC
-/// contract are byte-identical: the trait method delegates to the same free
-/// function this used to call.
+/// The job's in-flight guard is claimed **before** the job is read: a remote submit holds it from
+/// before its persist step, so a cancel can never see the draft, then act on the `queued` row the
+/// submit just persisted.
 #[tauri::command]
-pub fn submit_job(app: tauri::AppHandle, id: String) -> Result<(), AppError> {
+pub fn cancel_job(app: tauri::AppHandle, id: String) -> Result<(), AppError> {
+    let _in_flight = app.state::<InFlight>().acquire(&id)?;
     let job = {
         let db = app.state::<DbState>();
         let conn = db.lock()?;
         get_job_conn(&conn, &id)?
     };
-    let backend = LocalBackend::new(app);
-    backend.submit(&job)?;
-    Ok(())
-}
-
-/// Cancel a running or queued job. Dispatches through the [`ExecutionBackend`]
-/// trait on a concrete [`LocalBackend`] (unit 5.0 Part B); the trait method
-/// delegates to `local_backend::cancel`, so the killpg + cwd-sweep behaviour and
-/// the terminal `job:status` event are byte-identical.
-#[tauri::command]
-pub fn cancel_job(app: tauri::AppHandle, id: String) -> Result<(), AppError> {
-    let backend = LocalBackend::new(app);
-    backend.cancel(&JobHandle(id))
+    Backend::for_job(app, &job)?.cancel(&JobHandle(id))
 }
 
 /// Delete a job (Phase 4.7.1): its DB row (with FK cleanup; `results` cascade) and,
@@ -2196,5 +2207,66 @@ mod tests {
             r.final_energy_eh
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- Dispatch of the job commands (unit 5.3 B1 Part B) ---------------------------------
+    // `submit_job` and `cancel_job` need an `AppHandle` (no Tauri test harness here), so — as
+    // `local_backend`'s cancel-guard test — these pin the shape of their bodies in the source.
+
+    /// The body of `fn <name>` in `src`, up to its closing brace at column 0.
+    fn fn_body<'a>(src: &'a str, signature: &str) -> &'a str {
+        let start = src.find(signature).unwrap_or_else(|| panic!("{signature} exists"));
+        &src[start..start + src[start..].find("\n}\n").expect("the fn ends")]
+    }
+
+    /// A submit with no target is this machine's: `Backend::for_submit(None)` is the local backend,
+    /// and `submit_job`'s local arm calls the local submit and nothing of the remote path (no ssh,
+    /// no in-flight guard, no blocking task). NEGATIVE CONTROL: make `for_submit`'s `None` arm
+    /// build `Backend::Ssh` → red ("None is the local backend").
+    #[test]
+    fn a_submit_with_no_target_never_reaches_the_ssh_path() {
+        let backend = include_str!("../execution_backend.rs");
+        let for_submit = fn_body(backend, concat!("pub fn ", "for_submit("));
+        let none_arm = &for_submit[for_submit.find("None =>").expect("a None arm")..];
+        let none_arm = &none_arm[..none_arm.find('\n').unwrap()];
+        assert!(none_arm.contains("Backend::Local(LocalBackend::new(app))"), "None is the local backend: {none_arm}");
+
+        let src = include_str!("jobs.rs");
+        let submit = fn_body(src, concat!("pub async fn ", "submit_job("));
+        let local = &submit[submit.find("Backend::Local(local) =>").expect("a local arm")..submit.find("Backend::Ssh(").expect("an ssh arm")];
+        assert!(local.contains("local.submit(&job)"), "the local arm submits locally");
+        assert!(local.contains("Ok(None)"), "and answers null, as before the target existed");
+        for remote in ["ssh", "remote", "InFlight", "spawn_blocking", ".await"] {
+            assert!(!local.contains(remote), "the local arm reaches `{remote}`");
+        }
+    }
+
+    /// `cancel_job` claims the job's in-flight guard before it reads the job, and dispatches on
+    /// what it read: a remote submit holds the guard from before its persist step, so a cancel can
+    /// never read the draft and then act on the `queued` row the submit persisted meanwhile.
+    /// (Each arm's own refusal of a live remote job is tested at its source:
+    /// `local_backend::tests::cancel_refuses_a_live_remote_job_before_any_branch` and
+    /// `ssh_backend::tests::a_remote_cancel_is_refused_and_a_live_one_with_the_remote_reason`.)
+    /// NEGATIVE CONTROL: move the `acquire` below the job read → red.
+    #[test]
+    fn cancel_claims_the_job_before_it_reads_it_then_dispatches_on_its_coordinates() {
+        let src = include_str!("jobs.rs");
+        let cancel = fn_body(src, concat!("pub fn ", "cancel_job("));
+        let at = |needle: &str| cancel.find(needle).unwrap_or_else(|| panic!("cancel_job has `{needle}`"));
+        let (claim, read, dispatch) = (at("InFlight>().acquire(&id)?"), at("get_job_conn("), at("Backend::for_job(app, &job)?"));
+        assert!(claim < read, "the in-flight guard must be claimed before the job is read");
+        assert!(read < dispatch, "the backend comes from the job read");
+        assert!(cancel.contains("let _in_flight ="), "the guard is held to the end of the command, not dropped at once");
+    }
+
+    /// Verifier LOW-3 (Anton: unregister): no command sets an arbitrary status — the generic setter
+    /// could mark a live remote job anything. `update_job_status_conn` stays for internal
+    /// transitions. NEGATIVE CONTROL: register `update_job_status` again → red.
+    #[test]
+    fn no_command_sets_an_arbitrary_job_status() {
+        let lib = include_str!("../lib.rs");
+        let handlers = &lib[lib.find("generate_handler![").expect("the handler list")..];
+        assert!(!handlers.contains(concat!("update_job_", "status")), "update_job_status is registered");
+        assert!(!include_str!("jobs.rs").contains(concat!("pub fn update_job_", "status(")), "the command fn is gone");
     }
 }

@@ -13,6 +13,7 @@ mod crest;
 mod db;
 mod error;
 mod execution_backend;
+mod in_flight;
 mod local_backend;
 mod manual;
 mod models;
@@ -29,9 +30,6 @@ mod result_extraction;
 mod results;
 mod secrets;
 mod sidecar;
-// Unit 5.3 B1 Part A: the remote backend's core (submit, retry, label, withdraw). Its refusal is
-// already live (delete_job, local cancel); the rest is wired into the commands in B1 Part B.
-#[allow(dead_code)]
 mod ssh_backend;
 mod xtb;
 
@@ -61,6 +59,8 @@ pub fn run() {
 
             // --- LocalBackend: job-directory root + single execution slot. ---
             app.manage(local_backend::JobRunner::new(data_dir.clone()));
+            // --- Remote jobs: one operation in flight per job (ADR-024 o item 4); empty on launch. ---
+            app.manage(in_flight::InFlight::default());
 
             // --- xtb pre-optimizer: its own single-slot runner (2.5.5). ---
             app.manage(xtb::XtbRunner::default());
@@ -104,9 +104,11 @@ pub fn run() {
             commands::jobs::list_jobs,
             commands::jobs::get_job,
             commands::jobs::rename_job,
-            commands::jobs::update_job_status,
             commands::jobs::submit_job,
             commands::jobs::cancel_job,
+            commands::remote_jobs::retry_remote_submit,
+            commands::remote_jobs::withdraw_remote_job,
+            commands::remote_jobs::label_remote_job,
             commands::jobs::delete_job,
             commands::jobs::pause_queue,
             commands::jobs::resume_queue,

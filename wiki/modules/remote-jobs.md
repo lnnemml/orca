@@ -11,8 +11,8 @@ the pure parts here build each call's values and parse its reply. The one except
 which lists and hashes the **local** job dir for the transfer post-conditions. The calls are run by
 the remote backend's core, `src-tauri/src/ssh_backend.rs` (submit, retry, label, withdraw over an
 injected `CommandRunner`; [execution-backends.md](execution-backends.md#sshbackend-ssh_backendrs)),
-which no Tauri command calls yet (unit 5.3 B1 Part B). The module is registered in `lib.rs` under a
-scoped `#[allow(dead_code)]` until units 5.3/5.4 call all of it.
+which `submit_job` and the remote job commands call. The module is registered in `lib.rs` under a
+scoped `#[allow(dead_code)]` until units 5.3/5.4 call all of it (the poller, reconcile).
 
 ## What exists
 
@@ -658,7 +658,7 @@ occurrence replaced) and requires it to fail.
 
 ## Not built yet
 
-- The Tauri commands and the UI over `ssh_backend` (5.3 B1 Part B, B3), the poller (B2).
+- The UI over the remote job commands (B3), the poller (B2).
 - **Measured on uni** (probe 5.3 B0, 2026-10-05, [remote-sync-probe.md](../orca/remote-sync-probe.md#probe-53-b0-2026-10-05)):
   real `tsp <command>` prints `<id>\n` (accepted by the submit's regex); with `9>&-` neither a fresh
   nor an existing daemon nor its jobs hold the lock; `tsp -l` on a stale socket starts a daemon;

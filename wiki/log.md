@@ -10591,3 +10591,70 @@ profile was never verified. Next: **5.3** `SshBackend` wiring.
   set any status on a live remote job — guard or unregister; **LOW-7** the post-label coordinate
   re-check in `resubmit_remote` has no test that bites — add a fake-runner test or drop it with a
   "coordinates are write-once" comment. **LOW-6** (`! PALn` without `%pal`) stays an ADR open question.
+
+## [2026-10-06] feat | Unit 5.3 B1 Part B — remote job commands, enum Backend dispatch, per-job in-flight guard
+- **Landed (wiring only; no TS/UI change, the core's checks untouched):**
+  - `in_flight.rs`: `InFlight` (managed state, an `Arc<Mutex<HashSet<job id>>>`, empty on launch, o
+    item 4) with `acquire(id) -> Result<InFlightGuard, AppError>` (commands refuse: `Conflict` "an
+    operation on job … is already in progress") and `try_acquire(id) -> Option<InFlightGuard>` (the
+    B2 poller skips); the guard is `Send + 'static` and frees its id on drop, early return and panic.
+  - `commands/remote_jobs.rs`: `run_guarded` claims the guard on the IPC thread, runs the operation in
+    `spawn_blocking`, and emits `job:status` (the one emitter, `local_backend::emit_status`, now
+    `pub(crate)`) when the row's status or `error_message` changed. New commands
+    `retry_remote_submit(id)`, `withdraw_remote_job(id)`, `label_remote_job(id)` (async, dispatched by
+    `Backend::for_job`, a local job refused); `SubmitResponse { outcome, pal, notice, failure }`.
+  - `submit_job(app, id, target: Option<String>)` is async and dispatches through
+    `Backend::for_submit`: no target → the local submit as before, answering `null`; a profile id →
+    `SshBackend::submit_attempt` under the guard. `cancel_job` claims the guard **before** reading the
+    job, then dispatches through `Backend::for_job`; the remote arm is `ssh_backend::cancel_remote`
+    (`refuse_if_remote_live` first). `SshBackend` gained `submit_attempt`/`retry`/`withdraw`/`label`;
+    the `#[allow(dead_code)]` on `Backend`, `SshBackend`, `mod ssh_backend` and `JobRunner::data_dir`
+    are removed (the build stays warning-free).
+  - `Serialize` added to `LabelReport`, `LabelFacts`, `Markers`, `WithdrawReport`, `Outcome`
+    (`tag = "outcome"`) and `FailReason` (`tag = "reason"`) for the command replies.
+  - **LOW-3 (Anton: unregister):** the `update_job_status` command is removed; `update_job_status_conn`
+    stays internal. Nothing in `src/` invoked it.
+  - **LOW-7 (Anton: add a test):** `a_retry_whose_coordinates_change_during_the_label_call_writes_nothing`.
+- **Tests:** `cargo test` 700 passed, 27 ignored (baseline 682/27): `in_flight` 5, `remote_jobs` 8,
+  `ssh_backend::tests` 2 (LOW-7, `cancel_remote`), `jobs` 3 (source-pinned dispatch). `npx tsc
+  --noEmit` clean; `npx vitest run --dir src` 75 files: 975 passed + 2 skipped (977) in a checkout
+  without `resources/manual/` (the verifier's worktree — the two corpus tests skip); 977 passed in the
+  main checkout, which has the corpus. A bare `npm test` also collects the `.claude/worktrees/` copies.
+- **Verifier CODE (PASS WITH FINDINGS) fixes:** M1 — the guarded body is factored into
+  `guarded_blocking(&InFlight, id, what, work)` (claim, then `spawn_blocking` with the guard moved in),
+  which `run_guarded` calls; tested behaviourally (`the_job_is_claimed_for_the_whole_blocking_work_and_freed_after`:
+  from inside the work `is_busy` is true and `try_acquire` is `None`, the id is free after success and
+  after an error; `a_busy_job_is_refused_and_its_work_never_runs`) and pinned in the source
+  (`every_remote_command_goes_through_the_guard_claimed_before_the_task`: the four remote entry points
+  call `run_guarded`, it calls `guarded_blocking`, which claims before `spawn_blocking`). L1 — the wire
+  shapes B3 binds to are pinned as they are (`the_withdraw_report_wire_shape`, incl. `Failed {
+  NonZeroExit { code: 1 } }` → `{"outcome":"failed","reason":{"reason":"non_zero_exit","code":1}}`;
+  `the_label_report_wire_shape`).
+- **Negative controls** (each mutated, red, restored with `cmp`):
+  - `InFlightGuard::drop` made a no-op → all four guard tests red (e.g. `a_second_claim…`:
+    "assertion failed: !in_flight.is_busy(\"j1\")"; `a_panic_while_held_frees_the_job`,
+    `dropping_the_guard_frees_the_job`, `exactly_one_of_racing_claims_wins` red);
+  - `status_to_emit` comparing only the status → `a_changed_status_or_error_message_is_announced…`
+    red: "a failure after the persist: only the error message — left: None, right: Some(Queued)";
+  - (LOW-7) `if now != coords` → `if false && …` in `resubmit_remote` →
+    `a_retry_whose_coordinates_change…` red: "refused as a conflict: Ok(Enqueued { tsp_id: 3 })";
+  - `refuse_if_remote_live` dropped from `cancel_remote` → `a_remote_cancel_is_refused…` red:
+    "Queued: backend error: job j1 is 'queued': there is nothing to cancel";
+  - `for_submit`'s `None` arm building `Backend::Ssh` → `a_submit_with_no_target_never_reaches_the_ssh_path`
+    red: "None is the local backend"; an `ssh_backend::` call added to `submit_job`'s local arm → the
+    same test red: "the local arm reaches `ssh`";
+  - `cancel_job`'s `acquire` moved below the job read → `cancel_claims_the_job_before_it_reads_it…`
+    red: "the in-flight guard must be claimed before the job is read";
+  - `update_job_status` restored as a command and registered → `no_command_sets_an_arbitrary_job_status`
+    red: "update_job_status is registered";
+  - (M1 a) `drop(guard);` as the first statement of `guarded_blocking`'s task →
+    `the_job_is_claimed_for_the_whole_blocking_work_and_freed_after` red: "busy during the work … left:
+    (false, false, true, false), right: (true, true, true, false)";
+  - (M1 b) the claim moved inside the task → `every_remote_command_goes_through_the_guard_claimed_before_the_task`
+    red: "the guard must be claimed before the task is spawned";
+  - (M1 c) `retry_remote_submit` calling `SshBackend::retry` in its own `spawn_blocking`, without
+    `run_guarded` → the same test red: "pub async fn retry_remote_submit( goes through run_guarded".
+- **Behaviour notes:** `submit_job` is now an async command, so the local submit runs on a Tauri async
+  worker instead of the main thread (same calls, same events). `cancel_job` claiming the guard closes a
+  race between a local cancel's re-read and a concurrent remote persist of the same draft.
+- Next: verifier CODE; then B2 (the poller, using `InFlight::try_acquire`) and B3 (the UI).

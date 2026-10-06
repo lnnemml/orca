@@ -251,7 +251,7 @@ pub fn parse_submit_reply(output: &[u8], sent: &SubmitArgs) -> Result<SubmitRepl
 }
 
 /// Which job markers the label call found (ADR-024 o item 3.4).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
 pub struct Markers {
     pub started: bool,
     pub exit_code: bool,
@@ -261,7 +261,7 @@ pub struct Markers {
 }
 
 /// The raw facts of one read-only label call, for a remote `Queued` job.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
 pub struct LabelFacts {
     pub dir_exists: bool,
     pub markers: Markers,

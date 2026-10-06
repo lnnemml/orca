@@ -17,8 +17,9 @@ use super::FactError;
 use crate::local_backend::{has_normal_termination, TAIL_BYTES};
 
 /// The classifier's verdict on a job (ADR-024 l). `Lost` and `Cancelling` are not
-/// `JobStatus` values yet; they join it in unit 5.4.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// `JobStatus` values yet; they join it in unit 5.4. Serialized for the withdraw command's report.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum Outcome {
     /// Waiting in a `tsp` queue (row 9).
     Queued,
@@ -44,7 +45,8 @@ pub enum Outcome {
 }
 
 /// Why a job is `Failed`, in words the UI can show.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error, serde::Serialize)]
+#[serde(tag = "reason", rename_all = "snake_case")]
 pub enum FailReason {
     /// Row 1.
     #[error("corrupt .started marker ({detail}); without its sid the job's processes cannot be swept")]

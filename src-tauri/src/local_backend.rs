@@ -91,8 +91,6 @@ impl JobRunner {
 
     /// The app's data dir: local job dirs live under `<data_dir>/jobs/` (rule #3), for remote
     /// jobs too (their upload source and download target).
-    // Its caller, `SshBackend::submit`, is routed in unit 5.3 B1 Part B.
-    #[allow(dead_code)]
     pub(crate) fn data_dir(&self) -> &Path {
         &self.data_dir
     }
@@ -1070,7 +1068,9 @@ fn emit_log_line(app: &AppHandle, job_id: &str, line: &str) {
     );
 }
 
-fn emit_status(app: &AppHandle, job_id: &str, status: JobStatus) {
+/// Emit `job:status` for `job_id`. The one emitter of that event: the remote job commands
+/// (`commands::remote_jobs`) use it too, so both backends send the same payload.
+pub(crate) fn emit_status(app: &AppHandle, job_id: &str, status: JobStatus) {
     let _ = app.emit(
         "job:status",
         StatusPayload {

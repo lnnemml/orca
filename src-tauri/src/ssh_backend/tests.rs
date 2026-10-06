@@ -811,3 +811,58 @@ fn a_retry_refused_by_the_label_leaves_the_local_dir_unchanged() {
     assert_eq!(fake.kinds(), [Label]);
     assert_eq!(std::fs::read_to_string(&local).unwrap(), "! HF\n%pal nprocs 24 end\n", "untouched");
 }
+
+/// Verifier LOW-7: the retry reads the coordinates, makes the label call, then reads them again
+/// before any write — a row whose coordinates changed in between (with a profile that now matches
+/// them, so every other check passes) is refused with nothing written and nothing more sent. The
+/// fake's label handler makes the change, as a concurrent writer would. NEGATIVE CONTROL: disable
+/// the `now != coords` check in `resubmit_remote` and the retry carries on with the stale
+/// coordinates — red (`Ok(… Enqueued …)`, the local input rewritten to `nprocs 6`).
+#[test]
+fn a_retry_whose_coordinates_change_during_the_label_call_writes_nothing() {
+    let w = World::new();
+    w.sql("UPDATE jobs SET input_content = '! HF\n%pal nprocs 48 end\n'");
+    submitted_but_refused(&w);
+    let local = w.data_dir().join("jobs").join(JOB).join("input.inp");
+    assert_eq!(std::fs::read_to_string(&local).unwrap(), "! HF\n%pal nprocs 24 end\n");
+    let fake = Fake::new(&w, |k, v| {
+        if k == Label {
+            w.sql(
+                "UPDATE jobs SET remote_host = 'uni2'; \
+                 UPDATE server_profiles SET host = 'uni2', core_mask = '0-5';",
+            );
+        }
+        happy(k, v)
+    });
+    let err = resubmit_remote(&w.db, &fake, &w.data_dir(), JOB).map(|a| a.outcome);
+    assert!(
+        matches!(&err, Err(AppError::Conflict(m)) if m.contains("changed during the retry")),
+        "refused as a conflict: {err:?}"
+    );
+    assert_eq!(fake.kinds(), [Label], "nothing is sent after the label call");
+    assert_eq!(std::fs::read_to_string(&local).unwrap(), "! HF\n%pal nprocs 24 end\n", "the local dir is untouched");
+    let after = w.job();
+    assert_eq!((after.status, after.remote_host.as_deref()), (JobStatus::Queued, Some("uni2")));
+    assert!(
+        after.error_message.as_deref().is_some_and(|m| m.contains("slot busy")),
+        "the row keeps the last attempt's reason: {:?}",
+        after.error_message
+    );
+}
+
+/// The `SshBackend` arm of `cancel_job` refuses every remote job, and a live one with the remote
+/// reason — it is never told "nothing to cancel", and never reaches a local `Cancelled`. NEGATIVE
+/// CONTROL: drop the `refuse_if_remote_live` line from `cancel_remote` and the live rows go red
+/// (they get "nothing to cancel").
+#[test]
+fn a_remote_cancel_is_refused_and_a_live_one_with_the_remote_reason() {
+    let remote = Some(("uni", "/home/anton/.orcastudio/jobs/j1", "/home/anton/.orcastudio/tsp/slot0.sock"));
+    for status in [JobStatus::Queued, JobStatus::Running] {
+        let err = cancel_remote(&job_with(status, remote)).unwrap_err().to_string();
+        assert!(err.contains("remote cancel arrives in unit 5.4"), "{status:?}: {err}");
+    }
+    for status in [JobStatus::Draft, JobStatus::Completed, JobStatus::Parsed, JobStatus::Failed, JobStatus::Cancelled] {
+        let err = cancel_remote(&job_with(status, remote)).unwrap_err().to_string();
+        assert!(err.contains("nothing to cancel"), "{status:?}: {err}");
+    }
+}

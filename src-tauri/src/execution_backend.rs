@@ -11,10 +11,10 @@
 //! it; the Tauri command layer now **dispatches through it** — `submit_job` and
 //! `cancel_job` (`commands::jobs`) construct a `LocalBackend` from their
 //! `AppHandle` and call `submit` / `cancel` on the trait, so the trait is the real
-//! execution seam. The `enum Backend { Local, Ssh }` static-dispatch selector
-//! ([`Backend`], keyed on a job's coordinates by [`backend_kind`]) and `SshBackend`
-//! exist (unit 5.3 B1 Part A) but the commands still construct a `LocalBackend`
-//! directly; they route through the enum in B1 Part B. `poll_log` / `status` / `fetch_results`
+//! execution seam. The commands dispatch through the `enum Backend { Local, Ssh }`
+//! static-dispatch selector ([`Backend`]): `submit_job` by the run target chosen next to
+//! Submit ([`Backend::for_submit`]), `cancel_job` and the remote job commands by the job's
+//! coordinates ([`Backend::for_job`], [`backend_kind`]). `poll_log` / `status` / `fetch_results`
 //! are wired-but-quiet: the live UI still uses the **push** `job:log` event, so the
 //! pull path is exercised by tests until the push→pull flip (a later unit).
 //!
@@ -323,14 +323,11 @@ pub fn backend_kind(job: &Job) -> Result<BackendKind, AppError> {
 /// Static dispatch over the backends (ADR-023: an `enum`, not `dyn`). An existing job's backend
 /// comes from [`backend_kind`]; a draft's from the run target chosen next to Submit
 /// ([`Backend::for_submit`], o item 5).
-// Not routed yet: `commands::jobs` dispatches through it in unit 5.3 B1 Part B.
-#[allow(dead_code)]
 pub enum Backend {
     Local(LocalBackend),
     Ssh(SshBackend),
 }
 
-#[allow(dead_code)] // routed in unit 5.3 B1 Part B, with the enum
 impl Backend {
     /// The backend of an existing job, by its coordinates.
     pub fn for_job(app: AppHandle, job: &Job) -> Result<Backend, AppError> {
@@ -391,17 +388,47 @@ impl ExecutionBackend for Backend {
 /// [`crate::ssh_backend`], like [`LocalBackend`] over `local_backend`. It runs the real ssh/rsync
 /// ([`SystemRunner`](crate::remote::ssh::SystemRunner)). `target` is the profile a draft is
 /// submitted to; an existing job's calls use its recorded coordinates instead (n 6b).
-// Not routed yet: unit 5.3 B1 Part B.
-#[allow(dead_code)]
+///
+/// Every method but `status` and `cancel` **blocks on ssh** (each call up to 60 s): the commands
+/// run them in `spawn_blocking`, holding the job's [`InFlightGuard`](crate::in_flight::InFlightGuard).
 pub struct SshBackend {
     app: AppHandle,
     target: Option<String>,
 }
 
-#[allow(dead_code)] // routed in unit 5.3 B1 Part B
 impl SshBackend {
     pub fn new(app: AppHandle, target: Option<String>) -> Self {
         SshBackend { app, target }
+    }
+
+    /// Submit draft `job_id` to the target profile and return the whole attempt — the outcome and
+    /// the `%pal` alignment the trait's `submit` has no room for (`ssh_backend::submit_remote`).
+    pub fn submit_attempt(&self, job_id: &str) -> Result<crate::ssh_backend::SubmitAttempt, AppError> {
+        let profile_id = self
+            .target
+            .as_deref()
+            .ok_or_else(|| AppError::Backend("no server profile was chosen to run on".into()))?;
+        let db = self.app.state::<DbState>();
+        let runner = self.app.state::<crate::local_backend::JobRunner>();
+        crate::ssh_backend::submit_remote(&db, &crate::remote::ssh::SystemRunner, runner.data_dir(), job_id, profile_id)
+    }
+
+    /// Retry a job the label call finds "not on the server" (`ssh_backend::resubmit_remote`).
+    pub fn retry(&self, job_id: &str) -> Result<crate::ssh_backend::SubmitAttempt, AppError> {
+        let db = self.app.state::<DbState>();
+        let runner = self.app.state::<crate::local_backend::JobRunner>();
+        crate::ssh_backend::resubmit_remote(&db, &crate::remote::ssh::SystemRunner, runner.data_dir(), job_id)
+    }
+
+    /// Withdraw a job that is not (or not yet) in the server's hands (`ssh_backend::withdraw_remote`).
+    pub fn withdraw(&self, job_id: &str) -> Result<crate::ssh_backend::WithdrawReport, AppError> {
+        let db = self.app.state::<DbState>();
+        crate::ssh_backend::withdraw_remote(&db, &crate::remote::ssh::SystemRunner, job_id)
+    }
+
+    /// The read-only label call (`ssh_backend::label_remote`): nothing changes on either side.
+    pub fn label(&self, job: &Job) -> Result<crate::ssh_backend::LabelReport, AppError> {
+        crate::ssh_backend::label_remote(&crate::remote::ssh::SystemRunner, job)
     }
 }
 
@@ -410,21 +437,9 @@ impl ExecutionBackend for SshBackend {
     /// the main thread. Only `Enqueued` is an `Ok`; every other outcome is an `Err` carrying it,
     /// while the row stays `queued` with its coordinates for the label call to resolve.
     fn submit(&self, job: &Job) -> Result<JobHandle, AppError> {
-        let profile_id = self
-            .target
-            .as_deref()
-            .ok_or_else(|| AppError::Backend("no server profile was chosen to run on".into()))?;
-        let db = self.app.state::<DbState>();
-        let runner = self.app.state::<crate::local_backend::JobRunner>();
-        let attempt = crate::ssh_backend::submit_remote(
-            &db,
-            &crate::remote::ssh::SystemRunner,
-            runner.data_dir(),
-            &job.id,
-            profile_id,
-        )?;
-        // The trait has no room for the %pal notice (`attempt.pal`); a command that must show it
-        // calls `ssh_backend::submit_remote` directly (B1 Part B).
+        let attempt = self.submit_attempt(&job.id)?;
+        // The trait has no room for the %pal notice (`attempt.pal`); `submit_job` calls
+        // `submit_attempt` to show it.
         match attempt.outcome.failure() {
             None => Ok(JobHandle(job.id.clone())),
             Some(failure) => Err(AppError::Backend(failure)),
@@ -448,10 +463,8 @@ impl ExecutionBackend for SshBackend {
     /// Refused for a live remote job (o item 2) — never a local `Cancelled`.
     fn cancel(&self, h: &JobHandle) -> Result<(), AppError> {
         let db = self.app.state::<DbState>();
-        let conn = db.lock()?;
-        let job = get_job_conn(&conn, &h.0)?;
-        crate::ssh_backend::refuse_if_remote_live(&job)?;
-        Err(AppError::Backend(format!("job {} is '{}': there is nothing to cancel", job.id, job.status.as_str())))
+        let job = get_job_conn(&*db.lock()?, &h.0)?;
+        crate::ssh_backend::cancel_remote(&job)
     }
 }
 

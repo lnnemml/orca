@@ -138,6 +138,14 @@ pub fn refuse_if_remote_live(job: &Job) -> Result<(), AppError> {
     Ok(())
 }
 
+/// A cancel of remote job `job` (the `SshBackend` arm of `cancel_job`): always refused until remote
+/// cancel lands (unit 5.4). A live job gets [`refuse_if_remote_live`]'s reason, checked **first**,
+/// so it is never told there is "nothing to cancel"; a terminal one has nothing to cancel.
+pub fn cancel_remote(job: &Job) -> Result<(), AppError> {
+    refuse_if_remote_live(job)?;
+    Err(AppError::Backend(format!("job {} is '{}': there is nothing to cancel", job.id, job.status.as_str())))
+}
+
 // --- Calls ------------------------------------------------------------------------------------
 
 /// The last 500 characters of a stream, trimmed, for a message.
@@ -306,7 +314,7 @@ pub fn align_remote_pal(input: &str, mask: &str) -> Result<(String, PalAlignment
 }
 
 /// One submit or retry attempt: what the server did, and what became of the input's `%pal`.
-/// Part B shows `pal.notice()` with the outcome.
+/// `submit_job` and `retry_remote_submit` return `pal.notice()` with the outcome.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SubmitAttempt {
     pub outcome: SubmitOutcome,
@@ -520,7 +528,7 @@ fn record_attempt(db: &DbState, plan: &SubmitPlan, outcome: &SubmitOutcome) -> R
 // --- Label and retry ------------------------------------------------------------------------
 
 /// What the read-only label call found for a remote `queued` job, and its label (o item 3.4).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct LabelReport {
     pub facts: LabelFacts,
     pub label: Label,
@@ -630,7 +638,7 @@ fn mkjob_call(runner: &dyn CommandRunner, host: &str, root: &str, job_dir: &str)
 }
 
 /// What a withdraw found and left.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct WithdrawReport {
     /// The label before the withdraw: "not on the server" or "submit interrupted".
     pub label: Label,

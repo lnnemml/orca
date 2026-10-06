@@ -3,12 +3,13 @@
 **Status:** `LocalBackend` runs ORCA end-to-end — isolated job dir, CPU core pinning, a sequential
 in-SQLite queue, cancellation with an MPI-rank sweep, and startup reconciliation. The
 `ExecutionBackend` trait (ADR-003) exists (`src-tauri/src/execution_backend.rs`); `LocalBackend`
-implements it, and **the Tauri command layer dispatches through the trait** — `submit_job` /
-`cancel_job` construct a `LocalBackend` and call `submit` / `cancel` on it. The running machinery
+implements it, and **the Tauri command layer dispatches through `enum Backend`** — `submit_job` by
+the run target chosen next to Submit, `cancel_job` by the job's coordinates. The running machinery
 still lives in `src-tauri/src/local_backend.rs` (queue, process tree, cancellation) — each trait
 method **delegates** there. The remote backend's core — submit, retry, label and withdraw of a
-remote job — is `src-tauri/src/ssh_backend.rs` (unit 5.3 B1 Part A, below); the commands do not
-dispatch to it yet (B1 Part B). See ADR-024 (accepted): the remote queue lives on the server
+remote job — is `src-tauri/src/ssh_backend.rs` (below), reached through `SshBackend` by `submit_job`
+and the remote job commands (`commands/remote_jobs.rs`), each under the job's in-flight guard
+(`in_flight.rs`). See ADR-024 (accepted): the remote queue lives on the server
 (`tsp`), the server FS is the source of truth, and concurrency becomes a per-backend/profile setting
 rather than the global rule-#4 constant.
 
@@ -54,19 +55,18 @@ so the same interface serves a local file and a remote `tail -c +<offset>`. Note
 still uses the **push** `job:log` event (the tailing thread) — Part B does **not** flip push→pull;
 `poll_log` is the additive pull path, wired to callers in a later unit.
 
-**Command dispatch (Part B).** `commands::jobs::submit_job` and `cancel_job` route through the trait:
-each constructs a `LocalBackend::new(app)` from the `AppHandle` it already receives and calls
-`backend.submit(&job)` / `backend.cancel(&JobHandle(id))`. No new managed state and no command-
-signature change — the backend is a zero-cost `AppHandle` wrapper, so construct-at-call-site is the
-least-churn seat. The Tauri command names, signatures, return types, and the `job:log` / `job:status`
-/ `job:convergence` events are **byte-identical** to the pre-Part-B direct `local_backend::` calls:
-the trait method delegates to the same free function. The queue-control and log-read free functions
+**Command dispatch.** `commands::jobs::submit_job` and `cancel_job` build a `Backend` from the
+`AppHandle` they receive (construct-at-call-site: the backends are zero-cost `AppHandle` wrappers)
+and call the trait — see "Commands" below for the remote arms. A local submit or cancel delegates to
+the same free functions as before the trait existed, so the `job:log` / `job:status` /
+`job:convergence` events of a local run are unchanged, and a local `submit_job` still answers
+`null`. The queue-control and log-read free functions
 that have **no** trait method (`set_paused` / `is_paused` / `remove_job_dir` / `read_tail_lines` /
 `read_convergence` / `read_scan_surface`) stay direct `local_backend::` calls — they are not part of
 the five-method `ExecutionBackend` surface.
 
-**No crate-level `dead_code` allow.** Part A's `#![allow(dead_code)]` is removed. `submit` / `cancel`
-/ `JobHandle` / `LocalBackend` are now reached by live callers. The still-unrouted trait surface —
+**No crate-level `dead_code` allow.** `submit` / `cancel` / `JobHandle` / `LocalBackend` /
+`Backend` / `SshBackend` are reached by live callers. The still-unrouted trait surface —
 `poll_log`, `status`, `fetch_results`, and `FetchPolicy` — carries a **targeted** `#[allow(dead_code)]`
 per item, each with a comment naming where it gets routed (the push→pull flip for `poll_log`, the
 `SshBackend` unit for `status` / `fetch_results` / `FetchPolicy`). Targeted over blanket so a
@@ -98,12 +98,11 @@ reassembly gate go red.
   job whose profile was deleted keeps its coordinates and stays remote. `Backend::for_job` builds the
   enum from it.
 - A draft's backend is the run target chosen next to Submit (o item 5): `Backend::for_submit(app,
-  None | Some(profile id))`.
+  None | Some(profile id))` — `None` is the local backend.
 - `dispatch_keys_on_the_coordinates_never_on_backend_id` pins the rule (negative control: key on
   `backend_id` and it goes red).
 
-The commands still construct a `LocalBackend` directly; routing them through `Backend` is unit 5.3
-B1 Part B. See `wiki/log.md` (unit 5.0 Part A / Part B, 5.3 B1 Part A).
+See `wiki/log.md` (unit 5.0 Part A / Part B, 5.3 B1 Part A / Part B).
 
 ## Where the code lives
 
@@ -255,7 +254,8 @@ parsers are in `src-tauri/src/remote/` ([remote-jobs.md](remote-jobs.md)). The b
 around their own reads and writes — never across an ssh call, which a test checks with `try_lock`)
 and a `CommandRunner` (the real `SystemRunner`, ADR-005: system `ssh`/`rsync`). `SshBackend` in
 `execution_backend.rs` is the thin `AppHandle` wrapper over it, like `LocalBackend` over
-`local_backend`; no command calls either yet (unit 5.3 B1 Part B). Unit order is ROADMAP Phase 5.
+`local_backend`; the commands that call it are below ("Commands and the in-flight guard"). Unit order
+is ROADMAP Phase 5.
 
 **Coordinates.** A job is remote iff `remote_host`, `remote_job_dir`, `remote_socket` are set
 (`coordinates(&job)`; schema v20). They are written once at submit and every later call uses them,
@@ -304,8 +304,8 @@ stating that `nprocs`. The aligned input is written into the local job dir befor
 so the local dir = the uploaded bytes = the hashed list. `PalAlignment { input_nprocs, nprocs,
 mask_cpus, rewritten }` comes back with every attempt; `notice()` is the visible line `[OrcaStudio]
 %pal nprocs aligned to N (the server profile's core mask has K CPUs; the input had …)`, `None` when
-nothing changed — **Part B shows it with the submit/retry result** (it is not an error, so never
-`error_message`). Open (not measured; the local path shares it): which of a `%pal` block and a
+nothing changed — `submit_job` and `retry_remote_submit` return it as `notice` with the outcome (it
+is not an error, so never `error_message`). Open (not measured; the local path shares it): which of a `%pal` block and a
 `PALn` keyword ORCA honours when both are present.
 
 **Label** — `label_remote(runner, &job)`: the read-only label call by the recorded coordinates →
@@ -343,11 +343,50 @@ remote job that is `queued`/`running` ("remote cancel arrives in unit 5.4") — 
 no caller reaches a local kill or a local `Cancelled` for a remote job; a profile with such jobs keeps its host and root and cannot be
 deleted ([server-profiles.md](server-profiles.md)).
 
-**The `SshBackend` trait methods**: `submit` runs `submit_remote` with the real runner and blocks
-for the whole sequence (call it off the main thread); only `Enqueued` is `Ok`, any other outcome an
-`Err` carrying its failure (the row is `queued` either way). The trait has no room for the `%pal`
-notice, so a command that must show it calls `submit_remote` directly. `status` reads the row; `cancel` refuses
-(above); `poll_log` and `fetch_results` refuse until the poller (B2).
+**`SshBackend`** holds the `AppHandle` and, for a draft, the target profile id. Its inherent
+methods run the core with the real runner and block (call them off the main thread):
+`submit_attempt(id)` → `submit_remote` (the whole `SubmitAttempt`, `%pal` included), `retry(id)` →
+`resubmit_remote`, `withdraw(id)` → `withdraw_remote`, `label(&job)` → `label_remote`. The trait's
+`submit` is `submit_attempt` narrowed to `Ok` for `Enqueued` and an `Err` carrying any other outcome's
+failure (the row is `queued` either way) — the trait has no room for the `%pal` notice, so
+`submit_job` calls `submit_attempt`. `status` reads the row; `cancel` is `ssh_backend::cancel_remote`:
+a live job gets `refuse_if_remote_live`'s reason (checked first), a terminal one "nothing to cancel";
+`poll_log` and `fetch_results` refuse until the poller (B2).
+
+**Commands and the in-flight guard** (`commands/remote_jobs.rs`, `in_flight.rs`; ADR-024 o items 4
+and 5):
+
+| command (TS `invoke`) | returns | does |
+|---|---|---|
+| `submit_job({ id, target? })` | `null` (local) / `SubmitResponse` | `target` absent/`null`: the local submit, unchanged. `target` = a profile id: `SshBackend::submit_attempt` |
+| `retry_remote_submit({ id })` | `SubmitResponse` | `SshBackend::retry` |
+| `withdraw_remote_job({ id })` | `WithdrawReport { label, outcome, status }` | `SshBackend::withdraw` |
+| `label_remote_job({ id })` | `LabelReport { facts, label }` | `SshBackend::label` (read-only) |
+| `cancel_job({ id })` | `null` | `Backend::for_job` → local cancel, or `cancel_remote` (refused) |
+
+`SubmitResponse { outcome, pal, notice, failure }` is the attempt with `pal.notice()` and
+`outcome.failure()` in words. Retry, withdraw and label dispatch on the job's coordinates
+(`Backend::for_job`) and refuse a local job. Every remote operation (`run_guarded`, over the `AppHandle`-free `guarded_blocking`; every remote
+entry point is pinned to go through it):
+- claims the job's **in-flight guard** first, on the IPC thread, and **refuses** a job that already
+  has an operation in flight (`AppError::Conflict` "an operation on job … is already in progress");
+- runs in `tauri::async_runtime::spawn_blocking` (the commands are `async`), never holding the
+  database lock across an ssh call (the core's rule), the guard moved into the task so the job stays
+  claimed until the operation ends;
+- emits `job:status` with the local run's payload (`local_backend::emit_status`, the one emitter)
+  when the row's status or `error_message` changed (`status_to_emit`): a failure after the persist
+  step changes only `error_message`, and the UI must still reload to show it.
+
+`InFlight` is managed state: a `HashSet` of job ids behind a mutex, in memory only, empty on every
+launch (o item 4). `acquire(id) -> Result<InFlightGuard, AppError>` is the command's shape (refuse);
+`try_acquire(id) -> Option<InFlightGuard>` is the poller's (skip the job this tick, B2); `is_busy(id)`
+reads it. The guard owns an `Arc` of the set (`Send + 'static`) and frees its id on drop — on return,
+on an early `?`, and while a panic unwinds (a poisoned mutex is recovered: the set is only ever
+touched by one insert or remove). `cancel_job` also claims the guard, **before** it reads the job: a
+remote submit holds it from before its persist step, so a cancel cannot read the draft and then act on
+the `queued` row the submit persisted meanwhile. The local submit claims nothing (the persist step's
+`WHERE status = 'draft' AND remote_host IS NULL` already decides between a local and a remote submit
+of the same draft).
 
 **Tests.** Over a fake runner (`ssh_backend/tests.rs`): the call order (prepare → upload → submit;
 prepare → install → prepare → … on a fresh server), the row at every call (persisted before the
@@ -357,9 +396,18 @@ ssh writing nothing, retry and withdraw gating, the withdraw's sequence (prepare
 mkjob → cancel → collect, no stamp gate), each withdraw failure leaving the row as it was, the
 withdraw's classifier mapping (with a retake), and `%pal` (48 on 4 CPUs → 4, 2 on 12 → 2, `0-3,2-5` →
 6, the block form, an unreadable or doubled `%pal` refused before anything is written, a retry
-aligning to the current mask).
+aligning to the current mask), a retry whose coordinates change during its label call refused with
+nothing written or sent, and `cancel_remote`. The guard (`in_flight.rs`): a second claim refused, ids
+independent, freed on drop and on a panic (in place and in another thread), one winner among racing
+claims. The commands (`remote_jobs.rs`, `jobs.rs`): the job claimed for the whole blocking work of
+`guarded_blocking` (a concurrent `try_acquire` is `None` from inside it, the id free afterwards) and a
+busy job refused before its work runs; `status_to_emit`; the `SubmitResponse` wording and wire shape,
+the `WithdrawReport` / `Outcome` / `FailReason` / `LabelReport` wire shapes, a local submit answering
+`null` as before; and, as `AppHandle`-bound bodies, pinned in
+the source — `for_submit(None)` is local and `submit_job`'s local arm reaches nothing remote,
+`cancel_job` claims the guard before it reads the job, and no command sets an arbitrary status.
 End to end against the real scripts: [remote-jobs.md](remote-jobs.md) (`backend_e2e_tests.rs`).
-Negative controls: [log.md](../log.md) (5.3 B1 Part A, 2026-10-05).
+Negative controls: [log.md](../log.md) (5.3 B1 Part A, 2026-10-05; Part B, 2026-10-06).
 
 **How the job runs there:** a static wrapper (`include_str!`, uploaded content-addressed as
 `<root>/bin/wrapper-<sha>.sh` by the install call, with `cancel.sh` and `collect.sh` beside it) runs through a per-slot `tsp` queue. It

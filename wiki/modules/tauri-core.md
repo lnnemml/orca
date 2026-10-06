@@ -310,9 +310,14 @@ runs `terminate_on_exit` synchronously; `Drop` on `SidecarManager` is the backst
   would break the row render and make export's `slugify` fall back to `"job"`). **State-agnostic**
   (unlike `delete_job` — a running job renames fine; no `job_dir`/queue/process touch, title ≠ the ORCA
   input) and **non-retroactive** (a derived child's baked-in `— <old title>` is a create-time snapshot,
-  left as-is); `update_job_status(id, status)` (stamps `started_at` on `running`, `completed_at`
-  on `completed`/`failed`/`cancelled`); `submit_job(app, id)` (enqueues, returns at once — needs
-  `app: tauri::AppHandle` for `emit`); `cancel_job(id)`; `delete_job(app, id)` (see below);
+  left as-is); `submit_job(app, id, target: Option<String>)` (async; no target → enqueues locally
+  and returns `null` at once; a server profile id → the remote submit off the IPC thread, returning
+  its `SubmitResponse`); `cancel_job(id)` (by the job's coordinates; a remote job is refused);
+  `retry_remote_submit(id)` / `withdraw_remote_job(id)` / `label_remote_job(id)` (async, remote jobs
+  only — [execution-backends.md](execution-backends.md#sshbackend-ssh_backendrs) "Commands and the
+  in-flight guard"); `delete_job(app, id)` (see below). No command sets an arbitrary status: the
+  generic setter is internal only (`update_job_status_conn`), since it could mark a live remote job
+  anything;
   `pause_queue()` / `resume_queue()` /
   `is_queue_paused() -> bool`; `read_job_output(id, tail_lines: Option<usize>) -> Vec<String>`;
   `read_job_output_for_viewer(id) -> OutputContent`; `read_job_convergence(id)`;
