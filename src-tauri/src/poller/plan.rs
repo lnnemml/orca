@@ -74,12 +74,13 @@ pub struct Candidates {
     pub unreadable: Vec<(String, String)>,
 }
 
-/// Every non-terminal remote job (`queued`/`running` with coordinates, o item 1). One unreadable row
-/// is set aside in `unreadable`, so it cannot stop the polling of every other job; only a failed
-/// query is an error.
+/// Every non-terminal remote job (`queued`/`running`/`cancelling` with coordinates, o item 1, o22.5).
+/// One unreadable row is set aside in `unreadable`, so it cannot stop the polling of every other
+/// job; only a failed query is an error.
 pub fn candidates(conn: &Connection) -> Result<Candidates, AppError> {
     let mut stmt = conn.prepare(&format!(
-        "SELECT {} FROM jobs WHERE status IN ('queued', 'running') AND remote_host IS NOT NULL ORDER BY created_at, id",
+        "SELECT {} FROM jobs WHERE status IN ('queued', 'running', 'cancelling') AND remote_host IS NOT NULL \
+         ORDER BY created_at, id",
         Job::COLUMNS
     ))?;
     let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, Job::from_row(row))))?;

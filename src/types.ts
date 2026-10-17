@@ -4,6 +4,9 @@ export type JobStatus =
   | "draft"
   | "queued"
   | "running"
+  /** Remote only (ADR-024 o22.5): a cancel reached the server and some of the job's processes
+   *  still run there. Transient, not terminal; only the server's next verdict ends it. */
+  | "cancelling"
   | "completed"
   /** Completed AND its .property.txt results were parsed/verified/stored (Phase 3).
    * A `completed` job with an `error_message` ran fine but its results would not
@@ -403,7 +406,7 @@ export type Label = "not_on_server" | "submit_interrupted" | "classifier";
 
 /** Mirrors `remote::classify::FailReason` (serde `tag = "reason"`). */
 export type FailReason =
-  | { reason: "corrupt_started"; detail: string }
+  | { reason: "corrupt_started"; detail: string; cancelled: boolean }
   | { reason: "non_zero_exit"; code: number }
   | { reason: "bad_exit_code"; detail: string }
   | { reason: "no_normal_termination" }
@@ -416,8 +419,8 @@ export type Outcome =
   | { outcome: "completed"; late_cancel: boolean }
   | { outcome: "failed"; reason: FailReason }
   | { outcome: "lost"; orphans: number[] }
-  | { outcome: "cancelling" }
-  | { outcome: "cancelled" }
+  | { outcome: "cancelling"; session: number }
+  | { outcome: "cancelled"; started: boolean }
   | { outcome: "indeterminate" }
   | { outcome: "re_enqueue" };
 

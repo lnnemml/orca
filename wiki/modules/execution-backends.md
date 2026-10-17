@@ -228,7 +228,7 @@ directory. *(Changed in `[2026-07-28] fix: MPI ranks escape process group on can
   do, stranding them.
 - `cancel(app, job_id)`: **queued** → finalize as `cancelled` (nothing to kill); **running** → set
   the `cancelled` flag, then spawn `terminate_job`; other status → `Backend(...)`. A **remote** job
-  that is queued or running is refused first (`ssh_backend::refuse_if_remote_live`, "remote cancel
+  that is queued, running or cancelling is refused first (`ssh_backend::refuse_if_remote_live`, "remote cancel
   arrives in unit 5.4"): it is queued on its server, and a local `cancelled` would be a state the
   server contradicts (ADR-024 i, o item 2). `drive_job`
   checks the flag after `child.wait()` and records `cancelled` with a clean message.
@@ -342,7 +342,8 @@ runs only a name of its closed allow-list (`cancel`, `collect`), by its sha, as 
 own realpath, under a per-script time budget, with stdin at EOF.
 
 **Refusals** (o item 2, n 6b): `refuse_if_remote_live(&job)` refuses a local cancel or delete of a
-remote job that is `queued`/`running` ("remote cancel arrives in unit 5.4") — `delete_job_conn` and
+remote job that is remote-live — `queued`, `running` or `cancelling` (o22.5; the one set, listed in
+[remote-jobs.md](remote-jobs.md#a-remote-job-in-the-database-schemas-v20-v21)) — ("remote cancel arrives in unit 5.4") — `delete_job_conn` and
 `local_backend::cancel` call it — the latter **at function entry, before any branch** (o 14.5), so
 no caller reaches a local kill or a local `Cancelled` for a remote job; a profile with such jobs keeps its host and root and cannot be
 deleted ([server-profiles.md](server-profiles.md)).
@@ -459,12 +460,13 @@ and returns `Busy` for a busy job (o15.3). Then, with nothing locked across a ca
 2. a fetching outcome already struck out `MAX_FETCH_STRIKES` = 3 times in a row → `FetchStopped`, no
    call (the manual retry below starts over);
 3. a `queued` row: the read-only label call; "not on the server" / "submit interrupted" → `Labelled`,
-   nothing collected or written. A `running` row skips it;
+   nothing collected or written. A `running` or `cancelling` row skips it;
 4. `collect_and_classify` with the recorded socket; a transport or reply failure → `CheckFailed`,
    nothing written;
 5. a classifier **`Cancelled`** (row 4) → `Cancelled`: the row is written terminal `cancelled` with
    `completed_at`, as a withdraw records it (`ssh_backend::mark_cancelled_conn`, shared with
-   `record_withdraw`; ADR-024 o17), under one lock after the live-row re-check; nothing is downloaded,
+   `record_withdraw`; ADR-024 o17; the same write clears the pending-cancel columns, o22.2), under one
+   lock after the live-row re-check; nothing is downloaded,
    the live state is dropped and `job:status` is emitted;
 6. any other **non-fetching outcome** (`is_fetching` false) → `Shown`: the classifier's `Running` moves a
    `queued` row to `running` (stamping `started_at`, clearing `error_message`); `Queued` clears
@@ -472,7 +474,7 @@ and returns `Busy` for a busy job (o15.3). Then, with nothing locked across a ca
    not be decided on this check" goes only to the remote record's `check_error`, ADR-024 o19.3, though
    the live row is still re-checked, so a changed row is `RowChanged`); every other outcome writes
    `shown_message` ("… handled in unit 5.4" where it needs an action) and the status stays
-   `queued`/`running`. `job:status` only when the row changed (`status_to_emit`);
+   `queued`/`running`/`cancelling`. `job:status` only when the row changed (`status_to_emit`);
 7. a **fetching outcome** (`Completed`, `Failed{NonZeroExit | BadExitCode | NoNormalTermination}`)
    sets the in-memory fetching flag (no more log polls), then `fetch_remote` into the job's local dir.
    A failure counts a strike and writes it to `error_message` ("attempt n of 3", then "automatic
@@ -558,8 +560,8 @@ in its own process group (`SystemRunner`) and is left to the OS, as for the B1 r
 next launch redoes the step from the server's facts (a download is verified against the server's
 listing before it is used).
 
-**The planner** (`poller/plan.rs`): `candidates(conn)` = every `queued`/`running` row with
-coordinates — a row that does not read as one (partial coordinates, a row `Job::from_row` refuses)
+**The planner** (`poller/plan.rs`): `candidates(conn)` = every `queued`/`running`/`cancelling` row
+with coordinates — a row that does not read as one (partial coordinates, a row `Job::from_row` refuses)
 is set aside in `unreadable`, never polled and never taken for local, and `tick` reports it once per
 launch (`PollerMemory::first_report`), so one bad row cannot stop the others, and it gets no remote
 record; `sweep` drops the live state and memory of every other job, then — after snapshotting the
@@ -578,7 +580,10 @@ fetched and failed; a copy that fails the listing, a failed rsync (strikes, row 
 strikes stopping the automatic fetch and a manual retry finishing it; a busy job skipped; the label
 call ending a job not on the server; a `running` row skipping it; shown outcomes and their emits; the
 `Running` write; a classifier `Cancelled` on a `queued` and a `running` row written terminal with no
-download; a row changed during the fetch; a job no longer live; a failed check. The live log:
+download; a `cancelling` row (o22.5) that is a candidate, is stepped without a label call, is written
+`cancelled` by the server's `Cancelled` and `completed` by a late cancel, each terminal write clearing
+the pending-cancel columns (o22.2), and whose shown text is written while the status and the pending
+cancel stay; a row changed during the fetch; a job no longer live; a failed check. The live log:
 **parity** — a fixture built from real ORCA outputs (`opt_output_excerpt.txt`, the dexketoprofen tail
 twice, the OptTS tail; > `CAP`) streamed in `CAP`-sized and in 7919- and 4093-byte chunks equals
 `BufRead::lines` and `read_convergence` on the same file; a character split across polls; an open,

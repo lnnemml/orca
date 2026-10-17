@@ -107,9 +107,18 @@ use crate::error::AppError;
 ///   local-only query filters `remote_host IS NULL`. A CHECK on the last column keeps the three
 ///   all-NULL or all-set, so `remote_host IS NULL` and "no coordinates" can never disagree.
 ///   Existing rows stay local (all NULL). Guarded ALTERs (column_exists).
+/// - v21: a remote job's pending cancel (Phase 5 unit 5.4a, ADR-024 o22.2), so a cancel survives a
+///   quit and a closed laptop. `jobs.cancel_requested_at` (the user asked) and
+///   `jobs.cancel_sent_at` (a delivery is about to run `cancel.sh`), nullable TEXT in laptop time,
+///   only ever displayed. Three CHECKs, in the v20 form (an ADD COLUMN CHECK naming earlier
+///   columns): `cancel_requested_at` only on a remote `queued`/`running`/`cancelling` job;
+///   `cancel_sent_at` only where `cancel_requested_at` is set; `cancelling` only on a remote job.
+///   Every terminal write of a remote row NULLs both in the same statement
+///   (`finalize_job_conn`, `ssh_backend::mark_cancelled_conn`), so a forgotten NULL is a failed
+///   write, never a silent breach. Existing rows: both NULL. Guarded ALTERs (column_exists).
 ///
 /// [`Job::is_remote`]: crate::models::job::Job::is_remote
-const SCHEMA_VERSION: i64 = 20;
+const SCHEMA_VERSION: i64 = 21;
 
 /// Open (creating if needed) `orcastudio.db` under `data_dir` and migrate it to
 /// the current schema.
@@ -509,6 +518,33 @@ fn migrate(conn: &Connection) -> Result<(), AppError> {
             }
         }
         version = 20;
+    }
+
+    // --- v20 -> v21: the pending cancel (ADR-024 o22.2). Each CHECK rides on its own new column
+    // and may name earlier ones (the v20 form); SQLite tests an added CHECK against every existing
+    // row, which here has both columns NULL and no `cancelling` status. The status CHECK names no
+    // new column; it rides on the last one. Guarded like v19/v20, on `status` rather than `id`:
+    // the CHECKs name it, and SQLite refuses an added CHECK over a missing column ("no such
+    // column: status", measured on the stub fixtures' bare `jobs (id)`). A real `jobs` table has
+    // had `status` since v2. ---
+    if version < 21 {
+        if column_exists(conn, "jobs", "status")? {
+            if !column_exists(conn, "jobs", "cancel_requested_at")? {
+                conn.execute_batch(
+                    "ALTER TABLE jobs ADD COLUMN cancel_requested_at TEXT CHECK ( \
+                         cancel_requested_at IS NULL \
+                         OR (remote_host IS NOT NULL AND status IN ('queued', 'running', 'cancelling')));",
+                )?;
+            }
+            if !column_exists(conn, "jobs", "cancel_sent_at")? {
+                conn.execute_batch(
+                    "ALTER TABLE jobs ADD COLUMN cancel_sent_at TEXT \
+                         CHECK (cancel_sent_at IS NULL OR cancel_requested_at IS NOT NULL) \
+                         CHECK (status <> 'cancelling' OR remote_host IS NOT NULL);",
+                )?;
+            }
+        }
+        version = 21;
     }
 
     // Persist the resulting version so subsequent runs skip completed steps.
@@ -1469,7 +1505,9 @@ mod tests {
             "UPDATE settings SET value = '19' WHERE key = 'schema_version';",
         )
         .unwrap();
-        for col in ["remote_socket", "remote_job_dir", "remote_host"] {
+        // The v21 columns first: their CHECKs name `remote_host`, and SQLite refuses to drop a
+        // column another column's CHECK names.
+        for col in ["cancel_sent_at", "cancel_requested_at", "remote_socket", "remote_job_dir", "remote_host"] {
             conn.execute_batch(&format!("ALTER TABLE jobs DROP COLUMN {col};")).unwrap();
         }
         conn.execute_batch(
@@ -1534,6 +1572,138 @@ mod tests {
         );
     }
 
+    /// A v20 database holding local and remote jobs in every state a v20 row can be in — the jobs
+    /// columns as a real v20 database has them (every arm up to v20 applied by `migrate` itself).
+    fn v20_db_with_jobs() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO settings (key, value) VALUES ('schema_version', '1');",
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        conn.execute_batch(
+            "UPDATE settings SET value = '20' WHERE key = 'schema_version';
+             ALTER TABLE jobs DROP COLUMN cancel_sent_at;
+             ALTER TABLE jobs DROP COLUMN cancel_requested_at;",
+        )
+        .unwrap();
+        for (id, status, remote) in [
+            ("l-draft", "draft", false),
+            ("l-queued", "queued", false),
+            ("l-running", "running", false),
+            ("l-parsed", "parsed", false),
+            ("l-cancelled", "cancelled", false),
+            ("r-queued", "queued", true),
+            ("r-running", "running", true),
+            ("r-completed", "completed", true),
+            ("r-failed", "failed", true),
+            ("r-cancelled", "cancelled", true),
+        ] {
+            insert_job_row(&conn, id, status, remote).unwrap();
+        }
+        assert!(!column_exists(&conn, "jobs", "cancel_requested_at").unwrap());
+        conn
+    }
+
+    /// One job row; a remote one with all three coordinates.
+    fn insert_job_row(conn: &Connection, id: &str, status: &str, remote: bool) -> rusqlite::Result<usize> {
+        let (host, dir, sock) = if remote {
+            (Some("uni"), Some(format!("/r/jobs/{id}")), Some("/r/tsp/slot0.sock"))
+        } else {
+            (None, None, None)
+        };
+        conn.execute(
+            "INSERT INTO jobs (id, title, input_content, status, remote_host, remote_job_dir, remote_socket)
+             VALUES (?1, 't', '! SP', ?2, ?3, ?4, ?5)",
+            rusqlite::params![id, status, host, dir, sock],
+        )
+    }
+
+    fn all_jobs(conn: &Connection) -> Vec<(String, String, Option<String>)> {
+        let mut stmt = conn.prepare("SELECT id, status, remote_host FROM jobs ORDER BY id").unwrap();
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap().map(Result::unwrap).collect()
+    }
+
+    /// Rule #9 on the migration: SQLite tests each added CHECK against every existing row, so the
+    /// v21 arm applying at all over local and remote rows in every v20 state is the measurement that
+    /// the CHECK forms are accepted through ADD COLUMN. Every row survives unchanged, both columns NULL.
+    #[test]
+    fn migrate_v20_to_v21_adds_null_cancel_columns_and_keeps_every_job() {
+        let conn = v20_db_with_jobs();
+        let before = all_jobs(&conn);
+        migrate(&conn).expect("v20 -> v21");
+        assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
+        assert_eq!(SCHEMA_VERSION, 21);
+        assert_eq!(all_jobs(&conn), before, "no job row changed");
+        let set: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM jobs WHERE cancel_requested_at IS NOT NULL OR cancel_sent_at IS NOT NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(set, 0, "no existing job has a pending cancel");
+        migrate(&conn).expect("v21 -> v21 no-op");
+        assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
+    }
+
+    /// NEGATIVE CONTROLS (bite): each v21 CHECK rejects its forbidden state, and allows the states
+    /// o22.2 names. Without a CHECK its inserts/updates go through and this is red.
+    #[test]
+    fn migrate_v21_checks_reject_every_forbidden_pending_cancel_state() {
+        let conn = v20_db_with_jobs();
+        migrate(&conn).expect("v20 -> v21");
+        let set = |id: &str, sql: &str| conn.execute(&format!("UPDATE jobs SET {sql} WHERE id = ?1"), [id]);
+        const REQ: &str = "cancel_requested_at = '2026-10-17 10:00:00'";
+        const BOTH: &str = "cancel_requested_at = '2026-10-17 10:00:00', cancel_sent_at = '2026-10-17 10:00:01'";
+
+        // 1. `cancel_requested_at` only on a remote queued/running/cancelling job.
+        for id in ["l-draft", "l-queued", "l-running", "l-parsed", "l-cancelled", "r-completed", "r-failed", "r-cancelled"] {
+            assert!(set(id, REQ).is_err(), "{id}: a pending cancel here must be rejected");
+        }
+        for id in ["r-queued", "r-running"] {
+            set(id, BOTH).unwrap_or_else(|e| panic!("{id}: {e}"));
+        }
+        set("r-running", "status = 'cancelling'").expect("a remote cancelling job keeps its pending cancel");
+
+        // 2. `cancel_sent_at` only where `cancel_requested_at` is.
+        assert!(set("r-queued", "cancel_requested_at = NULL").is_err(), "an Undo after the mark must not leave sent alone");
+        insert_job_row(&conn, "r-new", "queued", true).unwrap();
+        assert!(set("r-new", "cancel_sent_at = '2026-10-17 10:00:01'").is_err(), "sent without requested");
+
+        // 3. `cancelling` only on a remote job.
+        assert!(set("l-running", "status = 'cancelling'").is_err(), "a local job is never cancelling");
+        assert!(insert_job_row(&conn, "l-new", "cancelling", false).is_err());
+        insert_job_row(&conn, "r-new2", "cancelling", true).expect("a remote cancelling job");
+
+        // A terminal write that keeps either column fails (the CHECK side of o22.2's rule).
+        for keep in ["cancel_sent_at = NULL", ""] {
+            let sql = format!("status = 'cancelled'{}{keep}", if keep.is_empty() { "" } else { ", " });
+            assert!(set("r-queued", &sql).is_err(), "terminal with the request kept ({sql})");
+        }
+        set("r-queued", "status = 'cancelled', cancel_requested_at = NULL, cancel_sent_at = NULL")
+            .expect("terminal with both cleared");
+    }
+
+    /// The migration on a copy of a real v20 database (rule #9). Run by hand on a scratch copy:
+    /// `ORCASTUDIO_V20_DB_COPY=/scratch/orcastudio.db cargo test real_v20_db_copy -- --ignored`.
+    #[test]
+    #[ignore = "needs ORCASTUDIO_V20_DB_COPY = a scratch copy of a real v20 orcastudio.db"]
+    fn real_v20_db_copy_migrates_to_v21_without_touching_jobs() {
+        let Ok(path) = std::env::var("ORCASTUDIO_V20_DB_COPY") else {
+            panic!("set ORCASTUDIO_V20_DB_COPY to a scratch copy of a v20 database");
+        };
+        let conn = Connection::open(&path).unwrap();
+        assert_eq!(current_version(&conn).unwrap(), 20, "the copy must be a v20 database");
+        let before = all_jobs(&conn);
+        migrate(&conn).expect("v20 -> v21 on the real copy");
+        assert_eq!(current_version(&conn).unwrap(), 21);
+        assert_eq!(all_jobs(&conn), before, "no job row changed");
+        let remote = before.iter().filter(|(_, _, host)| host.is_some()).count();
+        eprintln!("migrated {} jobs ({remote} remote)", before.len());
+    }
+
     /// The migration on a copy of a real v19 database (rule #9 on the one place a migration can
     /// lose data). Run by hand: copy the user's DB into a scratch dir first — this test migrates
     /// the file it is given — and pass its path:
@@ -1557,7 +1727,8 @@ mod tests {
         };
         let before = snapshot(&conn);
         migrate(&conn).expect("v19 -> v20 on the real copy");
-        assert_eq!(current_version(&conn).unwrap(), 20);
+        // `migrate` runs every arm forward, so the copy lands on the current version.
+        assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
         assert_eq!(snapshot(&conn), before, "no job row changed");
         let remote: i64 = conn
             .query_row("SELECT COUNT(*) FROM jobs WHERE remote_host IS NOT NULL", [], |r| r.get(0))

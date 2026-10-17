@@ -41,7 +41,7 @@ Rule #6 is shared with the local backend: `local_backend::has_normal_termination
 `ORCA TERMINATED NORMALLY` test, also used by `detect_completion`) over the last
 `local_backend::TAIL_BYTES` (5 KiB) of the snapshot's output tail.
 
-## A remote job in the database (schema v20)
+## A remote job in the database (schemas v20, v21)
 
 `jobs` carries the job's **coordinates**: `remote_host`, `remote_job_dir` (absolute,
 `<root>/jobs/<job_id>`) and `remote_socket`, nullable TEXT, written once at submit before any ssh and
@@ -49,9 +49,32 @@ never rewritten from the profile (ADR-024 o item 1, n 6b). A CHECK on the last c
 all-NULL or all-set. **A job is remote iff its coordinates are non-NULL**: `Job::is_remote()` is
 `remote_host.is_some()`, the same column every local-only query filters on (`remote_host IS NULL`) —
 today `local_backend::next_local_queued_job` (behind `try_start_next`) and `reconcile_on_startup`.
-`backend_id` never decides it. A remote job keeps `queued`/`running` in `jobs.status`.
+`backend_id` never decides it. A remote job keeps `queued`/`running` in `jobs.status`, and
+`cancelling` once a cancel has reached the server while processes of the job still run there
+(`JobStatus::Cancelling`, ADR-024 o22.5): transient, not terminal, remote only.
 `submit::remote_job_dir(root, job_id)` builds the dir and checks it with `is_valid_path`; the job id
 must be one component.
+
+**Remote-live** = a remote job in `queued`, `running` or `cancelling`. Every predicate that keeps a
+live remote job uses this one set: `poller::plan::candidates` (SQL), `poller::is_live` (behind
+`live_row`), `poller::set_message` (SQL), the poller's `mark_cancelled_conn` `from` list,
+`ssh_backend::refuse_if_remote_live` (behind `delete_job_conn`, `local_backend::cancel` and
+`cancel_remote`) and `server_profiles::live_remote_jobs` (behind `refuse_while_live`). The local paths
+(`next_local_queued_job`, `reconcile_on_startup`) select explicit statuses with `remote_host IS NULL`
+and never see `cancelling`. `JobStatus::from_db` has a wildcard arm, so its explicit `"cancelling"`
+arm is pinned by a test, not by the compiler.
+
+**The pending cancel (schema v21, ADR-024 o22.2).** `jobs.cancel_requested_at` (the user asked) and
+`jobs.cancel_sent_at` (a delivery is about to run `cancel.sh`), nullable TEXT in laptop time, only
+ever displayed, so a cancel survives a quit and a closed laptop. Three CHECKs, in the v20 ADD-COLUMN
+form (a CHECK naming earlier columns, tested by SQLite against every existing row):
+`cancel_requested_at` only on a remote `queued`/`running`/`cancelling` job; `cancel_sent_at` only
+where `cancel_requested_at` is set; `cancelling` only on a remote job. **Every terminal write of a
+remote row clears both columns in the same statement** — `finalize_job_conn` (always; a no-op on a
+local row) and `ssh_backend::mark_cancelled_conn` — so a forgotten clear is a failed write, never a
+silent breach. `record_shown`'s `queued` → `running` is not terminal and keeps them. The arm is
+guarded on `jobs.status` existing: SQLite refuses an added CHECK over a missing column. Nothing writes
+the columns yet: recording, Undo and delivery are 5.4a Part A2/B; the `Job` struct does not carry them.
 
 ## Transfers (`sync.rs`, ADR-024 o items 3.2, 3.3.4, 6)
 
@@ -561,12 +584,22 @@ action this pass, like `Indeterminate`.
    when `reenqueue_count` = 0, `Failed` ("wrapper never started") otherwise. `NoDaemon` counts as no
    rows.
 
-`Outcome` is the classifier's own enum; `JobStatus` is unchanged (`Lost`/`Cancelling` join it in
-5.4).
+`Outcome` is the classifier's own enum. Three payloads are computed from the snapshot so later
+steps decide from the outcome alone (ADR-024 o22.4.5, o22.5, o22.6):
+- `Cancelling { session }` — the job-session size (the cwd-filtered `ps -s` members after the
+  SID-reuse guard; 0 when only the wrapper's own liveness holds row 3), for row 3's progress rule;
+- `Cancelled { started }` — the snapshot holds a `.started`: the job ran, and its files are evidence;
+- `FailReason::CorruptStarted { detail, cancelled }` — the snapshot also holds `.cancelled`; the text
+  then adds that processes of the job may survive on the server.
+
+Serialized (serde `tag = "outcome"` / `"reason"`) as `{ "outcome": "cancelling", "session": n }`,
+`{ "outcome": "cancelled", "started": b }` and `{ "reason": "corrupt_started", "detail": …,
+"cancelled": b }`; `src/types.ts` mirrors them. `Cancelling` is also a `JobStatus` (above); `Lost`
+joins it with unit 5.4b.
 
 ## Tests
 
-216 tests in the module.
+232 tests in the module.
 - **Pure (classifier, parsers, wire):** strict-parser garbage cases, the recorded probe fixtures (P2
   cmdline, P4 `tsp -l`, 5.2b `/proc/net/unix` line, 5.2c stat lines including `w q) x.sh` and the
   zombie), at least one snapshot per table row, the d′ race model over all 6 interleavings, and the
@@ -595,7 +628,18 @@ action this pass, like `Indeterminate`.
   call, `.tmp` removed for a never-started job and removed after the sweep when a dying ORCA writes
   into it late); both d′ orders; the collector round trip through
   `classify` (Running, Completed, Cancelled, Queued, ReEnqueue, Indeterminate, `Lost` for a
-  `.started` from another boot with `proc skipped`) and its read errors. Each test signals only processes it started, by recorded PID and start
+  `.started` from another boot with `proc skipped`) and its read errors; a cancelling job whose
+  `Cancelling { session }` equals the shell's own job-session count. **Cancel idempotence** (ADR-024
+  o22.4.6, the premise of re-sending a cancel): a second `cancel.sh cancel` on a dir that already
+  holds `.cancelled` — queued and removed, started and killed, never started, and a late cancel
+  (row 2) — gives rc 0, keeps `.cancelled`, leaves no `.tmp`, changes nothing else in the dir (every
+  file's bytes, recursively), runs no `tsp -r`, signals neither a same-session member with a foreign
+  cwd nor a bystander session, and the classifier's verdict on a fresh collect is unchanged; two
+  concurrent runs (a running job ×3, a queued job) both end rc 0 with one verdict and no temp marker
+  left; a missing or non-directory job dir is rc 3 and nothing is created. Five negative controls run
+  the same check on a copy of `cancel.sh` broken in one place (a toggling publish, a no-clobber
+  publish, an unverified `tsp -r`, a sweep without the cwd filter, a cancel that keeps `.tmp`) and
+  require the named clause to fail. Each test signals only processes it started, by recorded PID and start
   time (a wrapper that is not the test's own child is tracked from its `.started`), and cleans up in
   `Drop`: SIGSTOP to every live process it knows of, then SIGKILL, then a bounded retry of the dir
   removal, so a tracked wrapper is stopped before its ORCA is killed. Two cancel tests also
@@ -715,5 +759,6 @@ events and `job:log-reset { job_id }`; `watch_job_log(id, open)` counts a job's 
   - `ln -T` is one `linkat` there too;
   - the shipped scripts ran end to end, and their wire output classified correctly with the Rust
     parser.
-- Reconcile wiring, the DB re-enqueue counter (schema v21; v19 is the 5.1 Part B profile columns, v20 the 5.3 job coordinates), `Lost`/`Cancelling` in `JobStatus`,
-  sweep counting — unit 5.4.
+- Recording, Undo and delivering a cancel, the sweep counter (unit 5.4a Part A2/B); the DB re-enqueue
+  counter (a later schema version; v21 is 5.4a's pending cancel), `Lost` in `JobStatus`, the orphan
+  sweep (unit 5.4b).

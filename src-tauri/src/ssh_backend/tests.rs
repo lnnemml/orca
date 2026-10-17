@@ -585,8 +585,8 @@ pub(crate) const CLEAN_TAIL: &str = "                             ****ORCA TERMI
 fn a_withdraw_is_decided_by_the_classifier() {
     let cancelled = snapshot(true, None, None, (None, None));
     let cases: Vec<(&str, Option<[bool; 5]>, Vec<Vec<u8>>, Outcome, JobStatus)> = vec![
-        ("not on the server → Cancelled", NOT_ON_SERVER, vec![cancelled.clone()], Outcome::Cancelled, JobStatus::Cancelled),
-        ("submit interrupted → Cancelled", INTERRUPTED, vec![cancelled.clone()], Outcome::Cancelled, JobStatus::Cancelled),
+        ("not on the server → Cancelled", NOT_ON_SERVER, vec![cancelled.clone()], Outcome::Cancelled { started: false }, JobStatus::Cancelled),
+        ("submit interrupted → Cancelled", INTERRUPTED, vec![cancelled.clone()], Outcome::Cancelled { started: false }, JobStatus::Cancelled),
         (
             "a job that ran cleanly keeps its result (row 2) — stays queued for the fetch",
             INTERRUPTED,
@@ -598,14 +598,14 @@ fn a_withdraw_is_decided_by_the_classifier() {
             "a corrupt .started (row 1) stays queued",
             INTERRUPTED,
             vec![snapshot(true, None, None, (Some("garbage"), Some("garbage")))],
-            Outcome::Failed { reason: crate::remote::classify::FailReason::CorruptStarted { detail: String::new() } },
+            Outcome::Failed { reason: crate::remote::classify::FailReason::CorruptStarted { detail: String::new(), cancelled: true } },
             JobStatus::Queued,
         ),
         (
             "the two .started reads differ: one retake",
             INTERRUPTED,
             vec![snapshot(true, None, None, (None, Some("garbage"))), cancelled.clone()],
-            Outcome::Cancelled,
+            Outcome::Cancelled { started: false },
             JobStatus::Cancelled,
         ),
     ];
@@ -616,7 +616,8 @@ fn a_withdraw_is_decided_by_the_classifier() {
         let fake = Fake::new(&w, withdraw_server(markers, 0, collects));
         let report = withdraw_remote(&w.db, &fake, JOB).unwrap_or_else(|e| panic!("{case}: {e}"));
         match (&report.outcome, &want) {
-            (Outcome::Failed { reason: crate::remote::classify::FailReason::CorruptStarted { .. } }, Outcome::Failed { .. }) => {}
+            // The detail is the parser's words; the snapshot's `.cancelled` must reach the reason.
+            (Outcome::Failed { reason: crate::remote::classify::FailReason::CorruptStarted { cancelled: true, .. } }, Outcome::Failed { .. }) => {}
             (got, want) => assert_eq!(got, want, "{case}"),
         }
         assert_eq!(report.status, status, "{case}");
@@ -692,17 +693,19 @@ fn a_withdraw_stops_at_the_first_failure_and_changes_nothing() {
 
 fn job_with(status: JobStatus, coords: Option<(&str, &str, &str)>) -> Job {
     let w = World::new();
-    w.sql(&format!("UPDATE jobs SET status = '{}'", status.as_str()));
+    // Coordinates first: the v21 CHECK refuses a `cancelling` row that is not (yet) remote.
     if let Some((h, d, s)) = coords {
         w.db.lock().unwrap().execute("UPDATE jobs SET remote_host = ?1, remote_job_dir = ?2, remote_socket = ?3", params![h, d, s]).unwrap();
     }
+    w.sql(&format!("UPDATE jobs SET status = '{}'", status.as_str()));
     w.job()
 }
 
 #[test]
 fn a_live_remote_job_is_refused_locally_and_nothing_else_is() {
     let remote = Some(("uni", "/home/anton/.orcastudio/jobs/j1", "/home/anton/.orcastudio/tsp/slot0.sock"));
-    for status in [JobStatus::Queued, JobStatus::Running] {
+    // `cancelling` is remote-live (o22.5). NEGATIVE CONTROL: drop it from the predicate → red.
+    for status in [JobStatus::Queued, JobStatus::Running, JobStatus::Cancelling] {
         let err = refuse_if_remote_live(&job_with(status, remote)).unwrap_err();
         assert!(err.to_string().contains("remote cancel arrives in unit 5.4"), "{err}");
     }
@@ -857,7 +860,7 @@ fn a_retry_whose_coordinates_change_during_the_label_call_writes_nothing() {
 #[test]
 fn a_remote_cancel_is_refused_and_a_live_one_with_the_remote_reason() {
     let remote = Some(("uni", "/home/anton/.orcastudio/jobs/j1", "/home/anton/.orcastudio/tsp/slot0.sock"));
-    for status in [JobStatus::Queued, JobStatus::Running] {
+    for status in [JobStatus::Queued, JobStatus::Running, JobStatus::Cancelling] {
         let err = cancel_remote(&job_with(status, remote)).unwrap_err().to_string();
         assert!(err.contains("remote cancel arrives in unit 5.4"), "{status:?}: {err}");
     }

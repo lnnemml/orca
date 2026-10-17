@@ -477,6 +477,93 @@ fn a_cancelled_outcome_writes_the_row_terminal_without_a_download() {
     }
 }
 
+// ---- `cancelling` is live (ADR-024 o22.5) and a terminal write clears a pending cancel (o22.2) ----
+
+/// The pending-cancel columns of the job.
+fn pending_cancel(r: &Remote) -> (Option<String>, Option<String>) {
+    r.w.db
+        .lock()
+        .unwrap()
+        .query_row("SELECT cancel_requested_at, cancel_sent_at FROM jobs WHERE id = ?1", [JOB], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .unwrap()
+}
+
+/// The row as a delivery leaves it (o22.4.5): `cancelling`, the cancel requested and sent.
+fn cancelling_with_a_sent_cancel(r: &Remote) {
+    r.w.sql(
+        "UPDATE jobs SET status = 'cancelling', cancel_requested_at = '2026-10-17 10:00:00', \
+         cancel_sent_at = '2026-10-17 10:00:01'",
+    );
+    assert_eq!(pending_cancel(r).0.as_deref(), Some("2026-10-17 10:00:00"), "the fixture");
+}
+
+/// A `cancelling` job is a poller candidate and its status step runs (no label call: it started).
+/// The server's `Cancelled` writes it terminal through `mark_cancelled_conn` and clears both
+/// columns in that write. NEGATIVE CONTROLS: drop `'cancelling'` from `candidates`' SQL → the
+/// candidate assert; drop `Cancelling` from `is_live` → `NotLive`; drop it from `record_cancelled`'s
+/// `from` list → the row stays `cancelling`; drop the NULLs from `mark_cancelled_conn` → the v21
+/// CHECK fails the write (an `Err`).
+#[test]
+fn a_cancelling_job_is_polled_and_its_cancelled_verdict_clears_the_pending_cancel() {
+    let r = Remote::new();
+    cancelling_with_a_sent_cancel(&r);
+    let c = candidates(&r.w.db.lock().unwrap()).unwrap();
+    assert_eq!(c.jobs.iter().map(|j| (j.id.as_str(), j.status)).collect::<Vec<_>>(), [(JOB, JobStatus::Cancelling)]);
+    assert!(c.unreadable.is_empty(), "{:?}", c.unreadable);
+
+    let fake = Fake::new(&r, server(&r, snapshot(true, None, None, (None, None))));
+    assert_eq!(r.poller(&fake).status_step(JOB).unwrap(), StatusStep::Cancelled);
+    assert_eq!(fake.kinds(), [Collect], "a cancelling job started: no label call");
+    let job = r.w.job();
+    assert_eq!(job.status, JobStatus::Cancelled);
+    assert!(job.completed_at.is_some());
+    assert_eq!(pending_cancel(&r), (None, None), "the terminal write clears the pending cancel");
+}
+
+/// A shown outcome on a `cancelling` row writes its text (`set_message`'s SQL), keeps the status and
+/// keeps the pending cancel (not terminal). `record_shown`'s `queued` → `running` keeps them too
+/// (o22.2). NEGATIVE CONTROL: drop `'cancelling'` from `set_message`'s SQL → no text → red.
+#[test]
+fn a_shown_outcome_on_a_cancelling_job_is_written_and_keeps_the_pending_cancel() {
+    let r = Remote::new();
+    cancelling_with_a_sent_cancel(&r);
+    let fake = Fake::new(&r, |_, _| panic!("no call"));
+    let poller = r.poller(&fake);
+    let c = expected_coords();
+    let shown = Outcome::Cancelling { session: 2 };
+    // The text changed, so the row's status is emitted (`status_to_emit`): still `cancelling`.
+    assert!(matches!(poller.record_shown(JOB, &c, &shown).unwrap(), Written::Yes(Some(JobStatus::Cancelling))));
+    assert_eq!(r.row(), (JobStatus::Cancelling, shown_message(&shown)));
+    assert_eq!(pending_cancel(&r).1.as_deref(), Some("2026-10-17 10:00:01"), "kept: not terminal");
+
+    let r = Remote::new();
+    r.w.sql("UPDATE jobs SET cancel_requested_at = '2026-10-17 10:00:00'");
+    let fake = Fake::new(&r, |_, _| panic!("no call"));
+    assert!(matches!(r.poller(&fake).record_shown(JOB, &c, &Outcome::Running).unwrap(), Written::Yes(Some(JobStatus::Running))));
+    assert_eq!(r.row().0, JobStatus::Running);
+    assert_eq!(pending_cancel(&r), (Some("2026-10-17 10:00:00".into()), None), "queued → running keeps the request");
+}
+
+/// The late cancel (row 2) of a `cancelling` job is fetched and finalised (`finalize_job_conn`),
+/// and the same write clears the pending cancel. NEGATIVE CONTROL: drop the NULLs from
+/// `finalize_job_conn` → the v21 CHECK fails the finalise (an `Err`).
+#[test]
+fn a_late_cancel_of_a_cancelling_job_is_finalised_and_clears_the_pending_cancel() {
+    let r = Remote::new();
+    cancelling_with_a_sent_cancel(&r);
+    r.finished(OUTPUT, "0\n");
+    let fake = Fake::new(&r, server(&r, snapshot(true, Some("0\n"), Some(CLEAN_TAIL), (None, None))));
+    let step = r.poller(&fake).status_step(JOB).unwrap();
+    assert!(
+        matches!(step, StatusStep::Finalised { outcome: Outcome::Completed { late_cancel: true }, status: JobStatus::Completed, .. }),
+        "{step:?}"
+    );
+    assert_eq!(r.w.job().status, JobStatus::Completed, "a clean result is kept");
+    assert_eq!(pending_cancel(&r), (None, None));
+}
+
 /// A row that changed while a fetch was failing is `RowChanged`: no strike counted, nothing written.
 /// NEGATIVE CONTROL: count the strike before the write and `strikes` is 1 → red.
 #[test]
@@ -949,9 +1036,11 @@ fn fetching_outcomes_are_exactly_item_4s() {
         Outcome::Indeterminate,
         Outcome::ReEnqueue,
         Outcome::Lost { orphans: vec![] },
-        Outcome::Cancelling,
-        Outcome::Cancelled,
-        Outcome::Failed { reason: FailReason::CorruptStarted { detail: String::new() } },
+        Outcome::Cancelling { session: 2 },
+        Outcome::Cancelled { started: true },
+        Outcome::Cancelled { started: false },
+        Outcome::Failed { reason: FailReason::CorruptStarted { detail: String::new(), cancelled: false } },
+        Outcome::Failed { reason: FailReason::CorruptStarted { detail: String::new(), cancelled: true } },
         Outcome::Failed { reason: FailReason::WrapperNeverStarted },
     ];
     assert!(fetching.iter().all(is_fetching));
@@ -959,7 +1048,8 @@ fn fetching_outcomes_are_exactly_item_4s() {
     for o in &shown {
         assert_eq!(shown_message(o).is_none(), matches!(o, Outcome::Queued | Outcome::Running), "{o:?}");
     }
-    assert!(shown_message(&Outcome::Cancelling).unwrap().contains("handled in unit 5.4"));
+    let cancelling = shown_message(&Outcome::Cancelling { session: 2 }).unwrap();
+    assert!(cancelling.contains("handled in unit 5.4") && cancelling.contains("(2 in the job's directory)"), "{cancelling}");
 }
 
 // ---- the loop's body: tick and run_step (unit 5.3 B2 Part B) --------------------------------

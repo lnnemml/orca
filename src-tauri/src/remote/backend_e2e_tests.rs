@@ -263,7 +263,7 @@ fn a_failed_enqueue_is_submit_interrupted_and_withdrawn_to_cancelled_by_the_clas
 
     runner.calls.borrow_mut().clear();
     let report = withdraw_remote(&laptop.db, &runner, "e2e2").unwrap();
-    assert_eq!((report.label, &report.outcome, report.status), (Label::SubmitInterrupted, &Outcome::Cancelled, JobStatus::Cancelled));
+    assert_eq!((report.label, &report.outcome, report.status), (Label::SubmitInterrupted, &Outcome::Cancelled { started: false }, JobStatus::Cancelled));
     assert_eq!(*runner.calls.borrow(), ["label", "prepare", "mkjob", "run", "run"], "cancel and collect through the trampoline");
     assert_eq!(laptop.job("e2e2").status, JobStatus::Cancelled);
     assert!(remote_job(&lab, "e2e2").join(".cancelled").exists(), "the server holds the reason");

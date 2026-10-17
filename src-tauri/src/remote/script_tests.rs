@@ -8,7 +8,7 @@
 //! while that PID still has the start time recorded when it was first seen. Nothing is ever
 //! signalled by name. `Drop` cleans up even when an assertion fails.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ffi::CString;
 use std::fs;
 use std::os::unix::ffi::OsStrExt;
@@ -26,6 +26,7 @@ use super::scripts::{sha256_hex, CANCEL, COLLECT, WRAPPER};
 use super::snapshot::{Attempt, JobIdentity, Snapshot, SocketState};
 use super::tsp::fixtures::{queued_row_for, running_row_for, TSP_L_P4};
 use super::wire::{parse_snapshot, WireError};
+use super::call_script_tests::mutate;
 
 static NEXT_LAB: AtomicU32 = AtomicU32::new(0);
 const WAIT: Duration = Duration::from_secs(10);
@@ -322,14 +323,14 @@ impl Lab {
     }
 
     fn cancel(&self, mode: &str, job: &Path) -> Output {
-        Command::new("bash")
-            .arg(&self.cancel)
-            .arg(mode)
-            .arg(job)
-            .arg(&self.root)
-            .env("PATH", self.path_env())
-            .output()
-            .unwrap()
+        self.cancel_command(mode, job).output().unwrap()
+    }
+
+    /// `cancel.sh <mode> <job> <root>` as the trampoline runs it, not yet started.
+    fn cancel_command(&self, mode: &str, job: &Path) -> Command {
+        let mut cmd = Command::new("bash");
+        cmd.arg(&self.cancel).arg(mode).arg(job).arg(&self.root).env("PATH", self.path_env());
+        cmd
     }
 
     /// A listening Unix socket at `path`, as a live tsp daemon's would be (only the listening
@@ -982,7 +983,7 @@ fn cancel_terms_the_group_and_sweeps_an_escaped_member_but_not_a_foreign_cwd() {
     assert!(!job.join(".exit_code").exists());
     assert!(job.join(".cancelled").exists());
     assert!(!job.join(".tmp").exists(), "the cancel removes <job>/.tmp");
-    assert_eq!(lab.classify(&job, &[]), Outcome::Cancelled);
+    assert_eq!(lab.classify(&job, &[]), Outcome::Cancelled { started: true });
 }
 
 #[test]
@@ -1142,7 +1143,7 @@ fn dprime_cancel_before_the_wrapper_starts_orca_never_runs() {
     assert!(job.join(".started").exists(), "step 1 precedes the .cancelled check");
     assert_eq!(lab.orca_runs(), 0, "ORCA never runs under .cancelled");
     assert!(!job.join(".exit_code").exists());
-    assert_eq!(lab.classify(&job, &[]), Outcome::Cancelled);
+    assert_eq!(lab.classify(&job, &[]), Outcome::Cancelled { started: true });
 }
 
 #[test]
@@ -1157,7 +1158,20 @@ fn dprime_cancel_after_the_wrapper_starts_kills_orca_without_an_exit_code() {
     lab.wait_child(wrapper);
     wait_for("orca killed", || is_dead(orca));
     assert!(!job.join(".exit_code").exists());
-    assert_eq!(lab.classify(&job, &[]), Outcome::Cancelled);
+    assert_eq!(lab.classify(&job, &[]), Outcome::Cancelled { started: true });
+}
+
+#[test]
+fn a_cancelling_jobs_session_size_is_the_shells_job_session() {
+    // `.cancelled` published while the job still runs (the sweep not yet done): row 3, and the
+    // size the progress rule compares is the job session the cancel script itself would sweep.
+    let mut lab = Lab::new();
+    let job = lab.job("cancelling");
+    running_wrapper(&mut lab, &job, "rank foreign");
+    fs::write(job.join(".cancelled"), "").unwrap();
+    let shell = shell_verdict(&lab, &job);
+    assert!(shell.session.len() >= 3, "wrapper, ORCA, its sleep and the rank: {:?}", shell.session);
+    assert_eq!(lab.classify(&job, &[]), Outcome::Cancelling { session: shell.session.len() });
 }
 
 // ---- the collector -------------------------------------------------------------------------
@@ -1544,4 +1558,309 @@ fn composed_scripts_pass_bash_n() {
         let out = Command::new("bash").arg("-n").arg(script).output().unwrap();
         assert!(out.status.success(), "{}: {}", script.display(), String::from_utf8_lossy(&out.stderr));
     }
+}
+
+// ---- cancel idempotence (ADR-024 o22.4.6) ----------------------------------------------------
+//
+// A delivery whose reply is lost re-sends `cancel.sh cancel` (o22.4.5), and a `cancelling` job is
+// re-swept on every status step (o22.5). Both rest on this: on a dir that already holds
+// `.cancelled`, a second run gives rc 0, leaves `.cancelled`, removes `.tmp`, signals nothing
+// outside the job session, and changes nothing the classifier reads — its only new effect may be
+// `.cancelled`'s mtime, which no rule reads.
+
+/// One entry of a job dir, as far as any rule can tell: a file's bytes, a dir, a symlink's target.
+#[derive(Debug, PartialEq, Eq)]
+enum Entry {
+    File(Vec<u8>),
+    Dir,
+    Link(PathBuf),
+}
+
+/// Everything under `dir` except mtimes, recursively, by relative path.
+fn dir_state(dir: &Path) -> BTreeMap<PathBuf, Entry> {
+    fn walk(base: &Path, dir: &Path, out: &mut BTreeMap<PathBuf, Entry>) {
+        for entry in fs::read_dir(dir).unwrap().flatten() {
+            let path = entry.path();
+            let rel = path.strip_prefix(base).unwrap().to_path_buf();
+            let meta = fs::symlink_metadata(&path).unwrap();
+            if meta.file_type().is_symlink() {
+                out.insert(rel, Entry::Link(fs::read_link(&path).unwrap()));
+            } else if meta.is_dir() {
+                out.insert(rel, Entry::Dir);
+                walk(base, &path, out);
+            } else {
+                out.insert(rel, Entry::File(fs::read(&path).unwrap()));
+            }
+        }
+    }
+    let mut out = BTreeMap::new();
+    walk(dir, dir, &mut out);
+    out
+}
+
+/// A process outside every job session: its own session, its cwd outside every job dir.
+fn bystander(lab: &mut Lab) -> Tracked {
+    let elsewhere = lab.root.join("elsewhere");
+    fs::create_dir_all(&elsewhere).unwrap();
+    session_sleeper(lab, &elsewhere)
+}
+
+/// Run `cancel.sh cancel` once more on `job`, which already holds `.cancelled`, and check every
+/// clause of o22.4.6. `Err` names the first clause that broke, so a negative control can require
+/// exactly that clause to fail. `witnesses` are processes outside the job session that must
+/// survive. Every fixture here has no queued row of the job left at this point (a first cancel
+/// removed it, or there never was one), so any `tsp -r` is an unverified one.
+fn second_cancel(lab: &Lab, job: &Path, sockets: &[PathBuf], witnesses: &[Tracked]) -> Result<Outcome, String> {
+    assert!(job.join(".cancelled").exists(), "the fixture: a first cancel already ran");
+    let verdict = lab.classify(job, sockets);
+    let before = dir_state(job);
+    lab.clear_tsp_log();
+    let out = lab.cancel("cancel", job);
+    let text = stdout(&out);
+    if out.status.code() != Some(0) {
+        return Err(format!("rc {:?}: {text}{}", out.status.code(), String::from_utf8_lossy(&out.stderr)));
+    }
+    let after = dir_state(job);
+    let again = lab.classify(job, sockets);
+    if again != verdict {
+        return Err(format!("verdict changed: {verdict:?} -> {again:?}\n{text}"));
+    }
+    if !job.join(".cancelled").exists() {
+        return Err(format!(".cancelled is gone\n{text}"));
+    }
+    if job.join(".tmp").exists() {
+        return Err(format!(".tmp is present\n{text}"));
+    }
+    if after != before {
+        return Err(format!("the job dir changed:\nbefore {before:?}\nafter  {after:?}\n{text}"));
+    }
+    let log = lab.tsp_log();
+    if log.lines().any(|l| l.ends_with(" -r") || l.contains(" -r ")) {
+        return Err(format!("tsp -r without a queued row of the job: {log:?}\n{text}"));
+    }
+    // A signal is delivered before kill(1) returns; give the target a moment to die of it.
+    std::thread::sleep(Duration::from_millis(300));
+    for w in witnesses {
+        if is_dead(*w) {
+            return Err(format!("signalled pid {} outside the job session\n{text}", w.pid));
+        }
+    }
+    Ok(again)
+}
+
+/// Fixture: a queued job whose first cancel removed its verified row, as real tsp does on `-r`
+/// (the stub's `-r` does not edit the listing, so the test does). Returns the job and its socket.
+fn queued_and_removed(lab: &mut Lab) -> (PathBuf, PathBuf) {
+    let sock = lab.root.join("s0.sock");
+    lab.listen(&sock);
+    let rows = PathBuf::from(format!("{}.rows", Lab::str(&sock)));
+    let job = lab.job("queued-removed");
+    write_enqueued(&job, &sock, 4);
+    fs::write(&rows, tsp_listing(&[queued_row_for(Lab::str(&job))])).unwrap();
+    let out = lab.cancel("cancel", &job);
+    assert!(out.status.success(), "{}", stdout(&out));
+    assert!(lab.tsp_log().contains(&format!("{} -r 4\n", Lab::str(&sock))), "the first cancel removed it");
+    fs::write(&rows, tsp_listing(&[])).unwrap();
+    (job, sock)
+}
+
+/// Fixture: a running job whose first cancel killed it. Its session keeps a member whose cwd is
+/// elsewhere (not in the job session, so never signalled); returns the job and that member.
+fn started_and_killed(lab: &mut Lab, name: &str) -> (PathBuf, Tracked) {
+    let job = lab.job(name);
+    let wrapper = running_wrapper(lab, &job, "foreign");
+    let foreign = tracked(fs::read_to_string(job.join("foreign.pid")).unwrap().trim().parse().unwrap());
+    let orca = tracked(fs::read_to_string(job.join("orca.pid")).unwrap().trim().parse().unwrap());
+    assert!(job.join(".tmp").is_dir(), "the wrapper made its .tmp");
+    let out = lab.cancel("cancel", &job);
+    assert!(out.status.success(), "{}", stdout(&out));
+    assert_eq!(lab.wait_child(wrapper).signal(), Some(libc::SIGTERM));
+    wait_for("orca killed", || is_dead(orca));
+    assert!(!is_dead(foreign), "the first cancel spared it too");
+    (job, foreign)
+}
+
+#[test]
+fn cancel_twice_on_a_queued_and_removed_job_changes_nothing() {
+    let mut lab = Lab::new();
+    let w = bystander(&mut lab);
+    let (job, sock) = queued_and_removed(&mut lab);
+    let socks = [sock.clone()];
+    assert_eq!(lab.classify(&job, &socks), Outcome::Cancelled { started: false });
+    assert_eq!(second_cancel(&lab, &job, &socks, &[w]), Ok(Outcome::Cancelled { started: false }));
+    assert!(lab.tsp_log().contains(&format!("{} -l\n", Lab::str(&sock))), "it did look again");
+}
+
+#[test]
+fn cancel_twice_on_a_started_and_killed_job_changes_nothing() {
+    let mut lab = Lab::new();
+    let w = bystander(&mut lab);
+    let (job, foreign) = started_and_killed(&mut lab, "killed");
+    assert_eq!(lab.classify(&job, &[]), Outcome::Cancelled { started: true });
+    assert_eq!(second_cancel(&lab, &job, &[], &[w, foreign]), Ok(Outcome::Cancelled { started: true }));
+    let text = stdout(&lab.cancel("cancel", &job));
+    assert!(text.contains("group: skip alive=no") && text.contains("sweep: skip nothing of the job runs"), "{text}");
+}
+
+#[test]
+fn cancel_twice_on_a_job_that_never_started_changes_nothing() {
+    let mut lab = Lab::new();
+    let w = bystander(&mut lab);
+    let job = lab.job("never");
+    assert!(lab.cancel("cancel", &job).status.success());
+    assert_eq!(lab.classify(&job, &[]), Outcome::Cancelled { started: false });
+    assert_eq!(second_cancel(&lab, &job, &[], &[w]), Ok(Outcome::Cancelled { started: false }));
+}
+
+#[test]
+fn cancel_twice_keeps_a_late_cancel_completed() {
+    // Row 2 stays row 2: a clean result is never discarded by a re-sent cancel.
+    let mut lab = Lab::new();
+    let w = bystander(&mut lab);
+    let job = lab.job("late");
+    assert!(lab.run_wrapper(&job, &[]).success());
+    assert!(lab.cancel("cancel", &job).status.success());
+    assert_eq!(lab.classify(&job, &[]), Outcome::Completed { late_cancel: true });
+    assert_eq!(second_cancel(&lab, &job, &[], &[w]), Ok(Outcome::Completed { late_cancel: true }));
+}
+
+/// Two `cancel.sh cancel` runs started together on one dir, each to completion.
+fn concurrent_cancels(lab: &Lab, job: &Path) -> [Output; 2] {
+    let a = lab.cancel_command("cancel", job).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let b = lab.cancel_command("cancel", job).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    [a.wait_with_output().unwrap(), b.wait_with_output().unwrap()]
+}
+
+fn assert_both_done(outs: &[Output; 2], job: &Path) {
+    for out in outs {
+        assert_eq!(out.status.code(), Some(0), "{}{}", stdout(out), String::from_utf8_lossy(&out.stderr));
+        assert!(stdout(out).ends_with("done\n"), "{}", stdout(out));
+    }
+    assert!(job.join(".cancelled").exists());
+    assert!(!job.join(".tmp").exists());
+    let leftovers: Vec<_> = fs::read_dir(job)
+        .unwrap()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().starts_with(".cancelled.tmp"))
+        .collect();
+    assert!(leftovers.is_empty(), "temp markers left: {leftovers:?}");
+}
+
+#[test]
+fn two_concurrent_cancels_on_a_running_job_both_succeed_with_one_verdict() {
+    let mut lab = Lab::new();
+    let w = bystander(&mut lab);
+    for i in 0..3 {
+        let job = lab.job(&format!("together-{i}"));
+        let wrapper = running_wrapper(&mut lab, &job, "foreign");
+        let foreign = tracked(fs::read_to_string(job.join("foreign.pid")).unwrap().trim().parse().unwrap());
+        let orca = tracked(fs::read_to_string(job.join("orca.pid")).unwrap().trim().parse().unwrap());
+        let outs = concurrent_cancels(&lab, &job);
+        assert_both_done(&outs, &job);
+        assert_eq!(lab.wait_child(wrapper).signal(), Some(libc::SIGTERM));
+        wait_for("orca killed", || is_dead(orca));
+        assert_eq!(lab.classify(&job, &[]), Outcome::Cancelled { started: true }, "round {i}");
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(!is_dead(foreign) && !is_dead(w), "round {i}: nothing outside the job session");
+        // And a third, sequential run still changes nothing.
+        assert_eq!(second_cancel(&lab, &job, &[], &[w, foreign]), Ok(Outcome::Cancelled { started: true }), "round {i}");
+    }
+}
+
+#[test]
+fn two_concurrent_cancels_on_a_queued_job_both_succeed_with_one_verdict() {
+    let mut lab = Lab::new();
+    let sock = lab.root.join("s0.sock");
+    lab.listen(&sock);
+    let job = lab.job("together-queued");
+    write_enqueued(&job, &sock, 4);
+    fs::write(format!("{}.rows", Lab::str(&sock)), tsp_listing(&[queued_row_for(Lab::str(&job))])).unwrap();
+    let outs = concurrent_cancels(&lab, &job);
+    assert_both_done(&outs, &job);
+    // Either run may remove the verified row: a second `-r` of our own queued id is harmless.
+    assert!(lab.tsp_log().contains(&format!("{} -r 4\n", Lab::str(&sock))), "{}", lab.tsp_log());
+    assert_eq!(lab.classify(&job, std::slice::from_ref(&sock)), Outcome::Cancelled { started: false });
+}
+
+#[test]
+fn cancel_fails_closed_on_a_missing_or_non_directory_job_dir() {
+    let lab = Lab::new();
+    let missing = lab.root.join("jobs").join("nope");
+    let out = lab.cancel("cancel", &missing);
+    assert_eq!(out.status.code(), Some(3), "{}", stdout(&out));
+    assert!(!missing.exists(), "nothing is created");
+
+    let file = lab.root.join("jobs").join("a-file");
+    fs::write(&file, "x").unwrap();
+    let out = lab.cancel("cancel", &file);
+    assert_eq!(out.status.code(), Some(3), "{}", stdout(&out));
+    assert_eq!(fs::read(&file).unwrap(), b"x");
+}
+
+// Negative controls: each runs a fixture above against a copy of cancel.sh broken in exactly one
+// place (`call_script_tests::mutate`) and requires `second_cancel` to name the broken clause.
+
+fn with_cancel_script(lab: &Lab, script: &str) {
+    fs::write(&lab.cancel, script).unwrap();
+}
+
+#[test]
+fn negative_control_a_toggling_cancel_changes_the_verdict() {
+    let mut lab = Lab::new();
+    let w = bystander(&mut lab);
+    let job = lab.job("toggle");
+    assert!(lab.cancel("cancel", &job).status.success());
+    with_cancel_script(
+        &lab,
+        &mutate(
+            CANCEL,
+            "publish_cancelled || fail \"cannot publish $JOB/.cancelled\"",
+            "if [[ -e $JOB/.cancelled ]]; then rm -f -- \"$JOB/.cancelled\"; else publish_cancelled || fail x; fi",
+        ),
+    );
+    let err = second_cancel(&lab, &job, &[], &[w]).unwrap_err();
+    assert!(err.starts_with("verdict changed: Cancelled { started: false } -> ReEnqueue"), "{err}");
+}
+
+#[test]
+fn negative_control_a_no_clobber_publish_fails_the_second_run() {
+    let mut lab = Lab::new();
+    let w = bystander(&mut lab);
+    let job = lab.job("no-clobber");
+    assert!(lab.cancel("cancel", &job).status.success());
+    with_cancel_script(&lab, &mutate(CANCEL, "mv -fT -- \"$tmp\" \"$JOB/.cancelled\"", "ln -T -- \"$tmp\" \"$JOB/.cancelled\""));
+    let err = second_cancel(&lab, &job, &[], &[w]).unwrap_err();
+    assert!(err.starts_with("rc Some(3)"), "{err}");
+}
+
+#[test]
+fn negative_control_an_unverified_tsp_r_is_caught_on_the_second_run() {
+    let mut lab = Lab::new();
+    let w = bystander(&mut lab);
+    let (job, sock) = queued_and_removed(&mut lab);
+    with_cancel_script(&lab, &mutate(CANCEL, "if (( rows != 1 )); then", "if (( rows > 1 )); then"));
+    let err = second_cancel(&lab, &job, &[sock], &[w]).unwrap_err();
+    assert!(err.starts_with("tsp -r without a queued row"), "{err}");
+}
+
+#[test]
+fn negative_control_a_sweep_without_the_cwd_filter_is_caught_on_the_second_run() {
+    let mut lab = Lab::new();
+    let w = bystander(&mut lab);
+    let (job, foreign) = started_and_killed(&mut lab, "no-filter");
+    with_cancel_script(&lab, &mutate(CANCEL, "[[ $cwd == \"$JOB\" ]] && JOB_SESSION+=(\"$pid\")", "JOB_SESSION+=(\"$pid\")"));
+    let err = second_cancel(&lab, &job, &[], &[w, foreign]).unwrap_err();
+    assert!(err.starts_with(&format!("signalled pid {} outside the job session", foreign.pid)), "{err}");
+}
+
+#[test]
+fn negative_control_a_cancel_that_keeps_tmp_is_caught() {
+    let mut lab = Lab::new();
+    let w = bystander(&mut lab);
+    let job = lab.job("keeps-tmp");
+    assert!(lab.cancel("cancel", &job).status.success());
+    fs::create_dir_all(job.join(".tmp")).unwrap();
+    with_cancel_script(&lab, &mutate(CANCEL, "    rm -rf -- \"$JOB/.tmp\"\n", "\n"));
+    let err = second_cancel(&lab, &job, &[], &[w]).unwrap_err();
+    assert!(err.starts_with(".tmp is present"), "{err}");
 }

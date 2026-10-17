@@ -14,9 +14,9 @@ use crate::error::AppError;
 
 /// The lifecycle state of a job.
 ///
-/// Serialized to lowercase strings (`draft`, `queued`, `running`, `completed`,
-/// `failed`, `cancelled`) both on the wire (to the frontend) and in the
-/// `jobs.status` column.
+/// Serialized to lowercase strings (`draft`, `queued`, `running`, `cancelling`,
+/// `completed`, `parsed`, `failed`, `cancelled`) both on the wire (to the frontend)
+/// and in the `jobs.status` column.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum JobStatus {
@@ -24,6 +24,10 @@ pub enum JobStatus {
     /// Submitted, waiting for the single execution slot (sequential queue).
     Queued,
     Running,
+    /// Remote only (ADR-024 o22.5; the v21 CHECK): a cancel reached the server and some of the
+    /// job's processes still run there (classifier row 3). Transient and **not terminal**: it is
+    /// live for every remote-live predicate, and only the server's next verdict ends it.
+    Cancelling,
     Completed,
     /// Completed AND its `.property.txt` results were parsed, verified, and stored
     /// (Phase 3). A post-`completed` state: the calculation already succeeded; this
@@ -42,6 +46,7 @@ impl JobStatus {
             JobStatus::Draft => "draft",
             JobStatus::Queued => "queued",
             JobStatus::Running => "running",
+            JobStatus::Cancelling => "cancelling",
             JobStatus::Completed => "completed",
             JobStatus::Parsed => "parsed",
             JobStatus::Failed => "failed",
@@ -56,6 +61,9 @@ impl JobStatus {
             "draft" => Ok(JobStatus::Draft),
             "queued" => Ok(JobStatus::Queued),
             "running" => Ok(JobStatus::Running),
+            // Explicit, never left to the wildcard: without this arm every read of a cancelling
+            // row fails, and the poller and the guards lose the job (o22.5).
+            "cancelling" => Ok(JobStatus::Cancelling),
             "completed" => Ok(JobStatus::Completed),
             "parsed" => Ok(JobStatus::Parsed),
             "failed" => Ok(JobStatus::Failed),
@@ -199,6 +207,29 @@ mod tests {
             );",
         )
         .unwrap();
+    }
+
+    /// Every status survives the database spelling both ways, `cancelling` included (o22.5).
+    /// NEGATIVE CONTROL: `from_db` has a wildcard arm, so the compiler does not force a
+    /// `"cancelling"` arm; drop it and this goes red, as would every read of a cancelling row.
+    #[test]
+    fn every_status_round_trips_through_its_database_spelling() {
+        let all = [
+            JobStatus::Draft,
+            JobStatus::Queued,
+            JobStatus::Running,
+            JobStatus::Cancelling,
+            JobStatus::Completed,
+            JobStatus::Parsed,
+            JobStatus::Failed,
+            JobStatus::Cancelled,
+        ];
+        for status in all {
+            assert_eq!(JobStatus::from_db(status.as_str()).unwrap(), status, "{status:?}");
+            assert_eq!(serde_json::to_value(status).unwrap(), status.as_str(), "the wire spelling is the column's");
+        }
+        assert_eq!(JobStatus::Cancelling.as_str(), "cancelling");
+        assert!(JobStatus::from_db("lost").is_err(), "5.4b's status is not here yet");
     }
 
     fn get(conn: &Connection, id: &str) -> Job {

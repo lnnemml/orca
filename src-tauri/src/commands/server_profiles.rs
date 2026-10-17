@@ -197,13 +197,13 @@ pub(crate) fn clear_verified(conn: &Connection, id: &str) -> Result<usize, AppEr
     )?)
 }
 
-/// The profile's remote jobs that are not terminal (`queued`/`running` with coordinates), oldest
-/// first. While any exists, the profile's host and root cannot change and the profile cannot be
-/// deleted (ADR-024 n 6b, o item 2): those jobs live on that server.
+/// The profile's remote jobs that are not terminal (`queued`/`running`/`cancelling` with
+/// coordinates, o22.5), oldest first. While any exists, the profile's host and root cannot change
+/// and the profile cannot be deleted (ADR-024 n 6b, o item 2): those jobs live on that server.
 pub(crate) fn live_remote_jobs(conn: &Connection, profile_id: &str) -> Result<Vec<String>, AppError> {
     let mut stmt = conn.prepare(
         "SELECT id FROM jobs WHERE backend_id = ?1 AND remote_host IS NOT NULL \
-         AND status IN ('queued', 'running') ORDER BY created_at, id",
+         AND status IN ('queued', 'running', 'cancelling') ORDER BY created_at, id",
     )?;
     let ids = stmt
         .query_map(params![profile_id], |r| r.get::<_, String>(0))?
@@ -930,10 +930,11 @@ mod tests {
     /// NEGATIVE CONTROL target (e): a profile with a remote job that is not terminal cannot be
     /// deleted (ADR-024 o item 2) — nulling the job's `backend_id` would orphan a job that lives on
     /// that server. Drop the `refuse_while_live` call from `delete_server_profile_conn` and the
-    /// `queued`/`running` rows go red.
+    /// `queued`/`running`/`cancelling` rows go red; drop `'cancelling'` from `live_remote_jobs`' SQL
+    /// and the `cancelling` row goes red (o22.5).
     #[test]
     fn a_profile_with_live_remote_jobs_cannot_be_deleted() {
-        for status in ["queued", "running"] {
+        for status in ["queued", "running", "cancelling"] {
             let (conn, dir) = test_db();
             let p = create_server_profile_conn(&conn, uni()).unwrap();
             insert_remote_job(&conn, "r1", &p.id, status);

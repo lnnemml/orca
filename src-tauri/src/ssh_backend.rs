@@ -134,9 +134,10 @@ pub fn recorded_root(coords: &RemoteCoordinates, job_id: &str) -> Result<String,
 
 /// Refuse to act locally on a remote job that is not terminal (ADR-024 o item 2): a cancel or a
 /// delete here would set a local state the server contradicts — never a local `Cancelled` for a
-/// job that may be on the server (Decision i). Withdraw is the one exit until unit 5.4.
+/// job that may be on the server (Decision i). Remote-live = `queued`, `running` or `cancelling`
+/// (o22.5). Withdraw is the one exit until unit 5.4a's remote cancel is wired.
 pub fn refuse_if_remote_live(job: &Job) -> Result<(), AppError> {
-    if job.is_remote() && matches!(job.status, JobStatus::Queued | JobStatus::Running) {
+    if job.is_remote() && matches!(job.status, JobStatus::Queued | JobStatus::Running | JobStatus::Cancelling) {
         return Err(AppError::Backend(format!(
             "job {} is {} on server {}: remote cancel arrives in unit 5.4 \
              (a job that is not on the server can be withdrawn)",
@@ -670,7 +671,8 @@ pub struct WithdrawReport {
 ///    and **`classify` decides**: `Cancelled` (row 4) → the row becomes `cancelled`; anything else
 ///    (`Completed { late_cancel }`, `Cancelling`, `Failed`, …) → the row stays `queued` for the poller
 ///    (`crate::poller`) or unit 5.4, with the verdict in `error_message`. Never a hard-coded `Cancelled`
-///    (Decision c). `reenqueue_count` is 0 (the counter is v21's, o item 4).
+///    (Decision c). `reenqueue_count` is 0 (the counter lands with unit 5.4b in a later schema version;
+///    v21 is 5.4a's pending cancel, o22.1).
 pub fn withdraw_remote(db: &DbState, runner: &dyn CommandRunner, job_id: &str) -> Result<WithdrawReport, AppError> {
     let (coords, root) = {
         let conn = db.lock()?;
@@ -725,7 +727,7 @@ pub(crate) fn collect_and_classify(runner: &dyn CommandRunner, coords: &RemoteCo
 /// The withdraw's one write, guarded on the row still being this remote `queued` job.
 fn record_withdraw(db: &DbState, job_id: &str, coords: &RemoteCoordinates, outcome: &Outcome) -> Result<JobStatus, AppError> {
     let conn = db.lock()?;
-    if *outcome == Outcome::Cancelled {
+    if matches!(outcome, Outcome::Cancelled { .. }) {
         mark_cancelled_conn(&conn, job_id, coords, "Withdrawn: the server confirms .cancelled and nothing ran.", &[JobStatus::Queued])?;
     } else {
         conn.execute(
@@ -743,7 +745,9 @@ fn record_withdraw(db: &DbState, job_id: &str, coords: &RemoteCoordinates, outco
 /// The terminal write for a classifier `Cancelled` (row 4), shared by the withdraw and the poller
 /// (ADR-024 o17): `cancelled`, `completed_at` stamped, `message` in `error_message` — only while the
 /// row is still this remote job (its recorded job dir) in one of `from` (the withdraw: `queued`; the
-/// poller: `queued` or `running`). Returns the rows written (0 or 1).
+/// poller: `queued`, `running` or `cancelling`). It clears a pending cancel (`cancel_requested_at`,
+/// `cancel_sent_at`) in the same statement (o22.2: the v21 CHECK fails a terminal write that keeps
+/// them). Returns the rows written (0 or 1).
 pub(crate) fn mark_cancelled_conn(
     conn: &rusqlite::Connection,
     job_id: &str,
@@ -754,7 +758,8 @@ pub(crate) fn mark_cancelled_conn(
     let mut written = 0;
     for status in from {
         written += conn.execute(
-            "UPDATE jobs SET status = 'cancelled', completed_at = datetime('now'), error_message = ?1 \
+            "UPDATE jobs SET status = 'cancelled', completed_at = datetime('now'), error_message = ?1, \
+             cancel_requested_at = NULL, cancel_sent_at = NULL \
              WHERE id = ?2 AND status = ?3 AND remote_job_dir = ?4",
             params![message, job_id, status.as_str(), coords.job_dir],
         )?;

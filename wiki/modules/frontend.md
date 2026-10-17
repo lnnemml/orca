@@ -712,7 +712,10 @@ of Rust's outcome texts (a test reads the source to hold that). `runTargetOption
 "Run on" list: `Local` plus every profile, enabled iff `run_target.is_run_target`, a disabled one with
 Rust's reason. `backfillsLog(job)` says whether the job view reads the log already on disk: not
 for a draft, not for a remote live job (o16.7). The remote IPC shapes (`Outcome`, `Label`, `RemoteState`, `SubmitResponse`,
-`WithdrawReport`, `StatusStep`, …) live in `types.ts`.
+`WithdrawReport`, `StatusStep`, …) live in `types.ts`. `JobStatus` includes `cancelling` (a remote
+job whose cancel reached the server while processes still run, ADR-024 o22.5); no view treats it
+specially yet — `remoteView`, the Jobs list's live check and the detail screen's Cancel test
+(`queued`/`running`) learn it with 5.4a Part B.
 
 **The wiring** (`src/jobs/live-wiring.ts`) takes the Tauri bridge as an argument (`Bridge`;
 the screens pass `tauriBridge`) so its order is tested without a WebView (`live-wiring.test.ts`,

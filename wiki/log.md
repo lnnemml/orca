@@ -11099,3 +11099,35 @@ profile was never verified. Next: **5.3** `SshBackend` wiring.
 - `LiveLog::open`, `apply` and `finish` (the drain's steps) now run their body in a guard block; the line is printed after the guard is dropped, never under the mutex. Output: `[timing] live_log.apply job=… lines=… conv=… lock_wait_us=… hold_us=… emit_us=…`.
 - Tests: 786 → 791. Negative controls: inverted gate turns both gate tests red; a `timer.print(` moved inside the guard block turns the source-order test red. Existing `LiveLog` tests unchanged and green.
 - M4 row of `remote-live-run-b4.md` now says how to run it; the "decide before the run" is settled. Not a render change; no live gate needed.
+
+## [2026-10-17] feat | Unit 5.4a Part A1 — v21, Cancelling, classifier payloads, cancel.sh idempotence
+- **`cancel.sh` idempotence (o22.4.6) holds, proven first on the Lab harness** (`script_tests.rs`): a
+  second `cancel cancel` on a dir already holding `.cancelled` — queued and removed, started and
+  killed, never started, late cancel (row 2) — is rc 0, keeps `.cancelled`, leaves no `.tmp`, changes
+  no byte in the dir, runs no `tsp -r`, signals neither a same-session foreign-cwd member nor a
+  bystander session, and the fresh classify verdict is unchanged; two concurrent runs (running ×3,
+  queued) both rc 0 with one verdict; a missing / non-directory job dir is rc 3. Five permanent
+  mutated-script controls (toggle, no-clobber publish, unverified `tsp -r`, unfiltered sweep, kept
+  `.tmp`), each requiring its named clause to fail.
+- **Classifier payloads:** `Cancelling { session }` (the guarded job-session size), `Cancelled
+  { started }`, `FailReason::CorruptStarted { detail, cancelled }` (text adds "processes of it may
+  survive on the server"); serde shapes and `src/types.ts` updated; `shown_message` shows the count.
+  No run-order change: the poller still writes any `Cancelled` terminal without a download.
+- **`JobStatus::Cancelling`** (explicit `from_db` arm) joins every remote-live predicate: `candidates`,
+  `is_live`/`live_row`, `set_message`, `record_cancelled`'s `from` list, `refuse_if_remote_live`
+  (→ `delete_job_conn`, `cancel_remote`, `local_backend::cancel`), `live_remote_jobs`
+  (→ `refuse_while_live`). Local paths unchanged (explicit statuses, `remote_host IS NULL`). TS: the
+  union only; `tsc` forced nothing.
+- **Schema v21:** `cancel_requested_at`, `cancel_sent_at` with the three o22.2 CHECKs in the v20
+  ADD-COLUMN form; accepted by SQLite over existing rows (measured: fixture of every v20 state, and a
+  scratch copy of the real DB, 89 jobs / 2 remote, integrity ok). The arm is guarded on `jobs.status`
+  (SQLite refuses an added CHECK over a missing column — measured on the bare `jobs (id)` stubs).
+  `finalize_job_conn` (always) and `mark_cancelled_conn` clear both in the terminal statement.
+- Tests: cargo 791 → 814 (28 ignored: + the hand-run `real_v20_db_copy`); vitest 1016; tsc clean; no
+  warnings. 19 source-mutation controls all red (from_db arm; each live predicate; each terminal
+  write keeping one or both columns; each v21 CHECK; each payload computed wrongly; `cancel.sh`
+  toggling or refusing a re-publish).
+- Side effect to know: Anton's running `tauri dev` rebuilt from the working tree and migrated the
+  real DB to v21 at 10:46 (clean). Reverting this change needs the two columns dropped and
+  `schema_version` set back to 20, or the debug build's `debug_assert_eq!` panics at launch.
+- Next: verifier CODE on A1; then Part A2 (record/undo/delivery cores, sweep counter, evidence path).

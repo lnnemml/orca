@@ -16,8 +16,8 @@ use super::wire::WireError;
 use super::FactError;
 use crate::local_backend::{has_normal_termination, TAIL_BYTES};
 
-/// The classifier's verdict on a job (ADR-024 l). `Lost` and `Cancelling` are not
-/// `JobStatus` values yet; they join it in unit 5.4. Serialized for the withdraw command's report.
+/// The classifier's verdict on a job (ADR-024 l). Serialized for the withdraw command's report and
+/// the remote record. `Lost` is not a `JobStatus` value yet (unit 5.4b); `Cancelling` is (o22.5).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum Outcome {
@@ -33,10 +33,14 @@ pub enum Outcome {
     /// The job started and then vanished without an `.exit_code` (row 8). `orphans` are the
     /// job-session PIDs still holding the slot's cores; non-empty only with a current `boot_id`.
     Lost { orphans: Vec<u32> },
-    /// Cancelled, but some of the job's processes still run (row 3). Transient.
-    Cancelling,
-    /// Cancelled, nothing of it runs (row 4).
-    Cancelled,
+    /// Cancelled, but some of the job's processes still run (row 3). Transient. `session` is the
+    /// job-session size — the cwd-filtered `ps -s` members after the SID-reuse guard — which row 3's
+    /// progress rule compares between sweeps (o22.5: progress = the session shrinks). It is 0 when
+    /// only the wrapper's own liveness holds the job in row 3.
+    Cancelling { session: usize },
+    /// Cancelled, nothing of it runs (row 4). `started`: the snapshot holds a `.started`, so the
+    /// job ran and its files are fetched as evidence; without it nothing ran (o22.6).
+    Cancelled { started: bool },
     /// Not enough information to act safely; take no action this pass (row 10, or a retake
     /// whose `.started` reads still disagree).
     Indeterminate,
@@ -48,9 +52,14 @@ pub enum Outcome {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error, serde::Serialize)]
 #[serde(tag = "reason", rename_all = "snake_case")]
 pub enum FailReason {
-    /// Row 1.
-    #[error("corrupt .started marker ({detail}); without its sid the job's processes cannot be swept")]
-    CorruptStarted { detail: String },
+    /// Row 1. `cancelled`: the snapshot also holds `.cancelled`, so a cancel was delivered and the
+    /// job ends `failed` with its evidence fetched (o22.4.5), keyed on the snapshot, never on the
+    /// path that delivered.
+    #[error(
+        "corrupt .started marker ({detail}); without its sid the job's processes cannot be swept{}",
+        corrupt_started_note(*.cancelled)
+    )]
+    CorruptStarted { detail: String, cancelled: bool },
     /// Row 6: `.exit_code` is a number other than 0.
     #[error("the job exited with code {code}")]
     NonZeroExit { code: u8 },
@@ -63,6 +72,16 @@ pub enum FailReason {
     /// Row 11 after the one automatic re-enqueue.
     #[error("wrapper never started")]
     WrapperNeverStarted,
+}
+
+/// The tail of row 1's text when a cancel was delivered: the sweep could not run, so something may
+/// still run (o22.4.5).
+fn corrupt_started_note(cancelled: bool) -> &'static str {
+    if cancelled {
+        "; the job was cancelled, and processes of it may survive on the server"
+    } else {
+        ""
+    }
 }
 
 /// What [`classify`] asks the caller to do.
@@ -129,7 +148,7 @@ fn decide(snap: &Snapshot, current_boot: &BootId, reenqueue_count: u32) -> Resul
             Ok(started) => Some(started),
             Err(e) => {
                 return Ok(Outcome::Failed {
-                    reason: FailReason::CorruptStarted { detail: e.to_string() },
+                    reason: FailReason::CorruptStarted { detail: e.to_string(), cancelled: snap.cancelled },
                 })
             }
         },
@@ -149,14 +168,13 @@ fn decide(snap: &Snapshot, current_boot: &BootId, reenqueue_count: u32) -> Resul
         // Row 3: something of the job still runs. The session is checked first: if it is
         // non-empty the wrapper's state does not change the answer.
         if let Some(started) = started_this_boot {
-            if !guarded_job_session(snap, started)?.is_empty()
-                || wrapper_alive_and_ours(snap, started, current_boot)?
-            {
-                return Ok(Outcome::Cancelling);
+            let session = guarded_job_session(snap, started)?.len();
+            if session > 0 || wrapper_alive_and_ours(snap, started, current_boot)? {
+                return Ok(Outcome::Cancelling { session });
             }
         }
-        // Row 4.
-        return Ok(Outcome::Cancelled);
+        // Row 4. Row 1 has passed, so a `.started` here always parses.
+        return Ok(Outcome::Cancelled { started: started.is_some() });
     }
 
     // Row 5.
@@ -492,10 +510,26 @@ mod tests {
             snap.started_first = Some(raw.to_vec());
             snap.started_last = Some(raw.to_vec());
             assert!(
-                matches!(outcome(&snap), Outcome::Failed { reason: FailReason::CorruptStarted { .. } }),
+                matches!(outcome(&snap), Outcome::Failed { reason: FailReason::CorruptStarted { cancelled: false, .. } }),
                 "{raw:?}"
             );
         }
+    }
+
+    #[test]
+    fn row1_carries_whether_the_snapshot_holds_cancelled() {
+        // o22.4.5: the evidence path is keyed on the snapshot, so the flag is the snapshot's fact.
+        let mut snap = running();
+        snap.started_first = Some(Vec::new());
+        snap.started_last = Some(Vec::new());
+        let Outcome::Failed { reason } = outcome(&snap) else { panic!("row 1") };
+        assert!(matches!(reason, FailReason::CorruptStarted { cancelled: false, .. }), "{reason:?}");
+        assert!(!reason.to_string().contains("may survive"), "{reason}");
+
+        snap.cancelled = true;
+        let Outcome::Failed { reason } = outcome(&snap) else { panic!("row 1") };
+        assert!(matches!(reason, FailReason::CorruptStarted { cancelled: true, .. }), "{reason:?}");
+        assert!(reason.to_string().ends_with("; the job was cancelled, and processes of it may survive on the server"), "{reason}");
     }
 
     #[test]
@@ -506,7 +540,7 @@ mod tests {
         snap.cancelled = true;
         snap.started_first = Some(Vec::new());
         snap.started_last = Some(Vec::new());
-        assert!(matches!(outcome(&snap), Outcome::Failed { reason: FailReason::CorruptStarted { .. } }));
+        assert!(matches!(outcome(&snap), Outcome::Failed { reason: FailReason::CorruptStarted { cancelled: true, .. } }));
     }
 
     // --- Rows 2–4: cancelled ---------------------------------------------------------------
@@ -522,7 +556,7 @@ mod tests {
     fn row3_cancelled_with_a_live_wrapper_is_cancelling() {
         let mut snap = running();
         snap.cancelled = true;
-        assert_eq!(outcome(&snap), Outcome::Cancelling);
+        assert_eq!(outcome(&snap), Outcome::Cancelling { session: 2 });
     }
 
     #[test]
@@ -530,7 +564,37 @@ mod tests {
         let mut snap = dead(running());
         snap.cancelled = true;
         snap.session_members = vec![member(70001, Some(JOB))];
-        assert_eq!(outcome(&snap), Outcome::Cancelling);
+        assert_eq!(outcome(&snap), Outcome::Cancelling { session: 1 });
+    }
+
+    #[test]
+    fn row3_session_counts_only_the_job_session() {
+        // The size the progress rule compares (o22.5): members that exited (cwd ENOENT) and members
+        // elsewhere are not the job's, exactly as `job_session` says.
+        let mut snap = dead(running());
+        snap.cancelled = true;
+        snap.session_members = vec![
+            member(70001, Some(JOB)),
+            member(70002, None),
+            member(70003, Some("/home/anton")),
+            member(70004, Some(JOB)),
+            member(70005, Some(&format!("{JOB}0"))),
+        ];
+        assert_eq!(outcome(&snap), Outcome::Cancelling { session: 2 });
+        // One fewer member in the job dir: the progress the sweep counter looks for.
+        snap.session_members.pop();
+        snap.session_members.pop();
+        assert_eq!(outcome(&snap), Outcome::Cancelling { session: 1 });
+    }
+
+    #[test]
+    fn row3_with_only_the_wrapper_alive_and_an_empty_session_is_cancelling_with_zero() {
+        // The wrapper alone holds the job in row 3 (its session is empty, e.g. under a reused SID):
+        // the session size is honestly 0, not the wrapper counted twice.
+        let mut snap = running();
+        snap.cancelled = true;
+        snap.session_members = Vec::new();
+        assert_eq!(outcome(&snap), Outcome::Cancelling { session: 0 });
     }
 
     #[test]
@@ -539,7 +603,7 @@ mod tests {
         snap.cancelled = true;
         // A member that exited (cwd ENOENT) and one elsewhere do not count.
         snap.session_members = vec![member(70001, None), member(70002, Some("/home/anton"))];
-        assert_eq!(outcome(&snap), Outcome::Cancelled);
+        assert_eq!(outcome(&snap), Outcome::Cancelled { started: true });
     }
 
     #[test]
@@ -547,14 +611,19 @@ mod tests {
         let mut snap = running();
         snap.cancelled = true;
         snap.current_boot_id = OTHER_BOOT.into();
-        assert_eq!(outcome(&snap), Outcome::Cancelled);
+        assert_eq!(outcome(&snap), Outcome::Cancelled { started: true });
     }
 
     #[test]
     fn row4_cancelled_before_it_started_is_cancelled_never_reenqueued() {
         let mut snap = not_started(vec![socket(SOCKET_A, SocketState::NoDaemon)]);
         snap.cancelled = true;
-        assert_eq!(outcome(&snap), Outcome::Cancelled);
+        // Nothing ran: no evidence to fetch (o22.6).
+        assert_eq!(outcome(&snap), Outcome::Cancelled { started: false });
+        // Even with a live queue row (`tsp -r` may have missed it), no `.started` means `false`.
+        let mut snap = not_started(vec![socket(SOCKET_A, SocketState::Rows(vec![queued_row_for(JOB)]))]);
+        snap.cancelled = true;
+        assert_eq!(outcome(&snap), Outcome::Cancelled { started: false });
     }
 
     #[test]
@@ -562,7 +631,7 @@ mod tests {
         let mut snap = dead(running());
         snap.cancelled = true;
         snap.exit_code = Some(b"0\n".to_vec());
-        assert_eq!(outcome(&snap), Outcome::Cancelled);
+        assert_eq!(outcome(&snap), Outcome::Cancelled { started: true });
     }
 
     // --- Rows 5–6: `.exit_code` ------------------------------------------------------------
@@ -702,7 +771,7 @@ mod tests {
         snap.cancelled = true;
         snap.sid_stat = Some(reused_sid_stat());
         snap.session_members = vec![member(70001, Some(JOB))];
-        assert_eq!(outcome(&snap), Outcome::Cancelled);
+        assert_eq!(outcome(&snap), Outcome::Cancelled { started: true });
     }
 
     #[test]
@@ -724,7 +793,7 @@ mod tests {
         snap.session_members = vec![member(WRAPPER_PID, None), member(70001, Some(JOB))];
         assert_eq!(outcome(&snap), Outcome::Lost { orphans: vec![70001] });
         snap.cancelled = true;
-        assert_eq!(outcome(&snap), Outcome::Cancelling);
+        assert_eq!(outcome(&snap), Outcome::Cancelling { session: 1 });
     }
 
     #[test]

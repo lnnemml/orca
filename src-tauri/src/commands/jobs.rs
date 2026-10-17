@@ -513,9 +513,12 @@ pub(crate) fn set_job_energy_conn(conn: &Connection, id: &str, energy: f64) -> R
     Ok(())
 }
 
-/// Terminal transition (`completed`/`failed`): set status, stamp `completed_at`,
-/// and store an optional `error_message`. Used by the LocalBackend when a run
-/// finishes.
+/// Terminal transition (`completed`/`failed`/`cancelled`): set status, stamp `completed_at`,
+/// and store an optional `error_message`. Used by the LocalBackend when a run finishes and by the
+/// remote poller's finalise. It also clears a pending cancel (`cancel_requested_at`,
+/// `cancel_sent_at`) **in the same statement** (ADR-024 o22.2): the v21 CHECK allows them only on
+/// a remote live row, so a terminal write that kept them would fail. Always cleared — a local row
+/// never holds them, so this is a no-op there.
 pub(crate) fn finalize_job_conn(
     conn: &Connection,
     id: &str,
@@ -523,7 +526,8 @@ pub(crate) fn finalize_job_conn(
     error_message: Option<&str>,
 ) -> Result<(), AppError> {
     conn.execute(
-        "UPDATE jobs SET status = ?1, completed_at = datetime('now'), error_message = ?2 \
+        "UPDATE jobs SET status = ?1, completed_at = datetime('now'), error_message = ?2, \
+         cancel_requested_at = NULL, cancel_sent_at = NULL \
          WHERE id = ?3",
         params![status.as_str(), error_message, id],
     )?;
@@ -577,7 +581,9 @@ pub(crate) fn update_job_status_conn(conn: &Connection, id: &str, status: &str) 
             "UPDATE jobs SET status = ?1 WHERE id = ?2",
             params![status.as_str(), id],
         )?,
-        JobStatus::Draft | JobStatus::Queued => conn.execute(
+        // `cancelling` is not terminal and starts nothing, so it stamps nothing. No local
+        // writer sets it (it is remote-only, the v21 CHECK); the arm exists for exhaustiveness.
+        JobStatus::Draft | JobStatus::Queued | JobStatus::Cancelling => conn.execute(
             "UPDATE jobs SET status = ?1 WHERE id = ?2",
             params![status.as_str(), id],
         )?,
@@ -2093,6 +2099,25 @@ mod tests {
 
     /// A live remote job is refused with the remote reason (ADR-024 o item 2); a finished one is
     /// deleted like any other (its server dir stays: nothing is deleted on the server in 5.3).
+    /// `cancelling` too (o22.5): the local guard below `refuse_if_remote_live` names only the local
+    /// live states, so this is the one predicate keeping a cancelling job. NEGATIVE CONTROL: drop
+    /// `Cancelling` from `refuse_if_remote_live` and the delete goes through → red.
+    #[test]
+    fn delete_job_refuses_a_cancelling_remote_job() {
+        let (conn, dir) = test_db();
+        let job = create_job_conn(&conn, "j", "! HF", None, None).unwrap();
+        conn.execute(
+            "UPDATE jobs SET status = 'cancelling', remote_host = 'uni', remote_job_dir = '/r/jobs/' || id, \
+             remote_socket = '/r/tsp/slot0.sock' WHERE id = ?1",
+            params![job.id],
+        )
+        .unwrap();
+        let err = delete_job_conn(&conn, &job.id).unwrap_err();
+        assert!(err.to_string().contains("is cancelling on server uni"), "{err}");
+        assert!(get_job_conn(&conn, &job.id).is_ok(), "the row survives");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn delete_job_refuses_a_live_remote_job_with_the_remote_reason() {
         let (conn, dir) = test_db();

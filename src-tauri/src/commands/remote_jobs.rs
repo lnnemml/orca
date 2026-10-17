@@ -492,10 +492,11 @@ mod tests {
     fn the_withdraw_report_wire_shape() {
         use crate::remote::classify::{FailReason, Outcome};
         use crate::remote::submit::Label;
-        let report = WithdrawReport { label: Label::SubmitInterrupted, outcome: Outcome::Cancelled, status: JobStatus::Cancelled };
+        let report =
+            WithdrawReport { label: Label::SubmitInterrupted, outcome: Outcome::Cancelled { started: false }, status: JobStatus::Cancelled };
         assert_eq!(
             serde_json::to_value(&report).unwrap(),
-            serde_json::json!({ "label": "submit_interrupted", "outcome": { "outcome": "cancelled" }, "status": "cancelled" })
+            serde_json::json!({ "label": "submit_interrupted", "outcome": { "outcome": "cancelled", "started": false }, "status": "cancelled" })
         );
         for (outcome, want) in [
             (
@@ -508,7 +509,12 @@ mod tests {
             ),
             (Outcome::Completed { late_cancel: true }, serde_json::json!({ "outcome": "completed", "late_cancel": true })),
             (Outcome::Lost { orphans: vec![41, 42] }, serde_json::json!({ "outcome": "lost", "orphans": [41, 42] })),
-            (Outcome::Cancelling, serde_json::json!({ "outcome": "cancelling" })),
+            (Outcome::Cancelling { session: 3 }, serde_json::json!({ "outcome": "cancelling", "session": 3 })),
+            (Outcome::Cancelled { started: true }, serde_json::json!({ "outcome": "cancelled", "started": true })),
+            (
+                Outcome::Failed { reason: FailReason::CorruptStarted { detail: "empty".into(), cancelled: true } },
+                serde_json::json!({ "outcome": "failed", "reason": { "reason": "corrupt_started", "detail": "empty", "cancelled": true } }),
+            ),
             (Outcome::ReEnqueue, serde_json::json!({ "outcome": "re_enqueue" })),
         ] {
             assert_eq!(serde_json::to_value(&outcome).unwrap(), want, "{outcome:?}");

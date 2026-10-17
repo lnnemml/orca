@@ -124,9 +124,12 @@ pub fn shown_message(outcome: &Outcome) -> Option<String> {
              still hold its cores); {LATER}.",
             orphans.len()
         )),
-        Outcome::Cancelling => Some(format!("The job was cancelled on the server and some of its processes still run; {LATER}.")),
+        Outcome::Cancelling { session } => Some(format!(
+            "The job was cancelled on the server and some of its processes still run ({session} in the job's \
+             directory); {LATER}."
+        )),
         // Not shown: the status step writes it terminal (o17); the text stays for completeness.
-        Outcome::Cancelled => Some("The server reports the job cancelled (.cancelled, nothing of it runs).".into()),
+        Outcome::Cancelled { .. } => Some("The server reports the job cancelled (.cancelled, nothing of it runs).".into()),
         Outcome::ReEnqueue => Some(format!("Nothing of the job ever ran on the server; re-enqueueing it is {LATER}.")),
         Outcome::Failed { reason } => Some(format!("The server reports the job failed: {reason}; {LATER}.")),
         Outcome::Completed { .. } => None,
@@ -233,7 +236,7 @@ impl Poller<'_> {
             Ok(outcome) => outcome,
             Err(e) => return Ok(StatusStep::CheckFailed(e)),
         };
-        if outcome == Outcome::Cancelled {
+        if matches!(outcome, Outcome::Cancelled { .. }) {
             return self.record_cancelled(job_id, &coords);
         }
         if !is_fetching(&outcome) {
@@ -328,7 +331,7 @@ impl Poller<'_> {
                 job_id,
                 coords,
                 "Cancelled: the server confirms .cancelled and nothing of the job runs.",
-                &[JobStatus::Queued, JobStatus::Running],
+                &[JobStatus::Queued, JobStatus::Running, JobStatus::Cancelling],
             )?;
         }
         self.memory.forget(job_id);
@@ -403,8 +406,10 @@ enum Written {
     Yes(Option<JobStatus>),
 }
 
+/// The remote-live statuses (o22.5): the poller keeps stepping such a job, and only the server's
+/// verdict ends it. The same set as `plan::candidates`' SQL and `set_message`'s.
 fn is_live(status: JobStatus) -> bool {
-    matches!(status, JobStatus::Queued | JobStatus::Running)
+    matches!(status, JobStatus::Queued | JobStatus::Running | JobStatus::Cancelling)
 }
 
 /// The row, if it is still the non-terminal remote job at `coords`.
@@ -419,7 +424,8 @@ fn live_row(conn: &rusqlite::Connection, job_id: &str, coords: &RemoteCoordinate
 
 fn set_message(conn: &rusqlite::Connection, job_id: &str, coords: &RemoteCoordinates, message: Option<&str>) -> Result<(), AppError> {
     conn.execute(
-        "UPDATE jobs SET error_message = ?1 WHERE id = ?2 AND status IN ('queued', 'running') AND remote_job_dir = ?3",
+        "UPDATE jobs SET error_message = ?1 WHERE id = ?2 AND status IN ('queued', 'running', 'cancelling') \
+         AND remote_job_dir = ?3",
         params![message, job_id, coords.job_dir],
     )?;
     Ok(())
