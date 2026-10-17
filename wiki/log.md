@@ -11215,3 +11215,21 @@ profile was never verified. Next: **5.3** `SshBackend` wiring.
   red). cargo 854 → 856; the full set of 29 controls re-run red on this code.
 - Next: verifier CODE on A2a; then Part A2b (the poller's run order: delivery instead of the ordinary
   step while a cancel is pending, the `cancelling` re-sweep and its counter, the evidence fetch).
+
+## [2026-10-17] session | B3 Part B, o21, B4 plan, o22 (5.4a design), M4, 5.4a A1 + A2a
+- Committed today (HEAD `cd42339`, not pushed): B3 Part B `fbea751` (live gate passed); vite ENOSPC
+  fix `fdcfc8a`; ADR-024 o21 `c4acc83` + code `0257e5a` (Cancel no longer hits the guard conflict);
+  B4 plan `9b0f149`; ADR-024 o22 `8ae4a32` (unit 5.4a: remote cancel, pending cancel, `Cancelling`;
+  Anton's forks: one Cancel, ended job keeps its result, evidence fetched, Retry disabled while
+  unreachable, Undo until the send is marked); M4 timing `4ade791`; 5.4a A1 `e12b9fb` (v21,
+  `Cancelling`, payloads, cancel.sh idempotence); 5.4a A2a `cd42339` (cancel/undo/deliver cores,
+  `last_contact`; o22.11–12, Anton: a click on `cancelling` records no request, residual accepted).
+- uni has been down since ~2026-10-14 (likely a power outage): B4 waits; step 0 is the post-outage
+  snapshot before any submit.
+- Anton's `tauri dev` migrated the real DB to v21 from the uncommitted A1 tree (clean; backup
+  `orcastudio.db.bak-2026-10-17` made after). Rule from now: stop `tauri dev` before delegating
+  `src-tauri/` work.
+- Open: o22.12.2 nit ("`seen` is `None` only when the ready step failed" → "answered, o22.12.3").
+- Next session: 5.4a **A2b** (poller run order with the pending predicate in the read that acts,
+  `cancelling` re-sweep with l row 3's bound, evidence fetch, ended-first → fetch), then **Part B**
+  (commands, Withdraw removal, texts, UI) + Anton's live gate; B4 when uni returns.
