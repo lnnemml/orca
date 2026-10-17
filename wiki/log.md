@@ -11059,3 +11059,20 @@ profile was never verified. Next: **5.3** `SshBackend` wiring.
   read, `try_acquire` `None` inside; an unknown id → `NotFound`. The o15.4 pin retargeted to the guarded read.
 - Controls, each red then restored: pre-check after the claim → (a); pre-check dropped → (a); dispatch before the
   claim → (c); guard as `let _ =` → (d); guarded read above the claim → the pin. `cargo test` 781 → 786 (27 ignored).
+
+## [2026-10-17] session | B4 planned while uni is down
+- uni unreachable since ~2026-10-14 (Tailscale node offline, `tailscale ping` silent; Anton: most
+  likely no power at the site). B4 cannot run; planned instead:
+  `wiki/architecture/remote-live-run-b4.md` (explorer map of the code facts B4 rests on).
+- The outage is the "first natural occasion" of ADR-024 open question (b): step 0 is a read-only
+  snapshot (boot_id, shutdown type → the UPS question, tsp sockets vs `/proc/net/unix`, job dirs and
+  what the classifier would say) **before any Submit/Retry/Withdraw** — a submit starts a tsp daemon;
+  the app's label/collect do not.
+- Drift recorded for the B4 results: o18's "no ServerAliveInterval" holds for the argv only (the
+  user's `~/.ssh/config` for `uni` sets ControlMaster/ControlPersist 600/ServerAliveInterval 30);
+  the o18 `ssh.rs` anchor is stale; ROADMAP's "LIST timeout" is the shared 300 s bound and the
+  `.gbw` 1800 s branch has no production caller.
+- Lint: `wiki/index.md` had keyring-availability's summary glued onto the task-spooler line (fixed);
+  the index footer's page count (106) is stale — left for the next lint.
+- Next: when uni is back — step 0, step 1, then the prober session (M6 raw, M1, M7); meanwhile the
+  5.4 ADR amendment (pending cancel vs the guard).

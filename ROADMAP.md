@@ -1479,7 +1479,8 @@ preflight. The remaining items (remote `orca_plot`, pause) are not numbered yet.
               `Indeterminate` is a check error and no longer rewrites the row. Part A (implementer
               `opus`: Rust record + TS pure logic) → STOP → Part B (screens). Anton's
               live WebKitGTK gate.
-        - [ ] **B4 — live run on uni** + Anton's gate: submit → close laptop → reopen → result. Also
+        - [ ] **B4 — live run on uni** + Anton's gate: submit → close laptop → reopen → result. Plan and
+              results: `wiki/architecture/remote-live-run-b4.md` (step 0: post-outage snapshot first). Also
               measure (rule #10, from B2): the rsync-down / LIST timeouts (300 s; 1800 s with `.gbw`),
               rsync exit codes on a dropped link, the `poll_log` 10 s bound and catch-up, that an emit
               under the live-log mutex returns promptly; quit mid-fetch → do orphaned ssh/rsync survive,
