@@ -4,6 +4,14 @@ import react from "@vitejs/plugin-react";
 // @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
 
+// Absolute project root (this file's directory). chokidar matches `ignored` globs against ABSOLUTE
+// paths, so each pattern is anchored here: an unanchored `**/.claude/**` would ignore every file when
+// the dev server runs from a checkout living under `.claude/worktrees/`.
+// Accepted limit (measured): a root containing `{`, `(` or `|` fails open: the trees stay watched
+// (ENOSPC risk returns) but `src/` is never wrongly ignored; chokidar defeats `\` escapes, so none is tried.
+const root = decodeURIComponent(new URL(".", import.meta.url).pathname).replace(/\/$/, "");
+const ignoredTree = (name: string) => `${root}/${name}/**`;
+
 // https://vite.dev/config/
 export default defineConfig(async () => ({
   plugins: [react()],
@@ -25,8 +33,9 @@ export default defineConfig(async () => ({
         }
       : undefined,
     watch: {
-      // 3. tell Vite to ignore watching `src-tauri`
-      ignored: ["**/src-tauri/**"],
+      // 3. tell Vite to ignore watching non-frontend top-level trees (inotify ENOSPC: verifier
+      //    worktrees under `.claude/` and the large sidecar/Rust/manual/wiki trees)
+      ignored: ["src-tauri", ".claude", "sidecar", "target", "resources", "wiki"].map(ignoredTree),
     },
   },
 }));

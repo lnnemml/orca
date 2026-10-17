@@ -11018,3 +11018,18 @@ profile was never verified. Next: **5.3** `SshBackend` wiring.
 - Next: this log commit; `fix(dev)` vite `watch.ignored` (`**/.claude/**`, `**/sidecar/**`,
   `**/target/**`, `**/resources/**`, `**/wiki/**` — the ENOSPC inotify crash); the Cancel fix above;
   then B4 (live uni run).
+
+## [2026-10-17] fix | vite dev watcher ignores non-frontend trees (ENOSPC)
+- Symptom: `npm run tauri dev` died with ENOSPC (inotify watch limit, 122586 on this machine).
+- Root cause: `server.watch.ignored` in `vite.config.ts` held only `**/src-tauri/**`, so Vite watched the whole
+  repo — including the verifier worktrees under `.claude/worktrees/` (once 28 of them, 92 GB), the `sidecar/`
+  venv, `resources/`, `wiki/` and any `target/` dir.
+- Fix: `ignored` lists the six top-level trees `src-tauri`, `.claude`, `sidecar`, `target`, `resources`, `wiki`, each
+  **anchored to the config's own directory** (`<root>/<name>/**`). chokidar matches these globs against absolute
+  paths, so the first, unanchored form (`**/.claude/**`) would have ignored every file when the dev server runs from a
+  worktree under `.claude/worktrees/` (no HMR), and would have dropped any future `src/**/target/`. Nothing under
+  `src/` imports from those trees (the `?raw` fixtures live in `src/scene/__fixtures__/`); vitest reads wiki/resources
+  via fs, unaffected by `server.watch`. Checked with Vite's own watcher (`createServer` + `watcher._isIgnored`) from the
+  main checkout and from a root whose path contains `.claude/wiki/target`: trees ignored, `src/App.tsx`,
+  `src/x/target/y.ts` watched; the old unanchored list ignores everything from the second root (control bites).
+  Accepted limit (measured): a root containing `{`, `(` or `|` fails open (trees stay watched, `src/` never ignored).
