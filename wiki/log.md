@@ -10996,3 +10996,25 @@ profile was never verified. Next: **5.3** `SshBackend` wiring.
   removed (open left dangling at tick 1), L3 `get_job` moved back before the listeners. o20.4b (select change writes nothing; Create &
   Run writes the id / `""`) needs a rendered NewJobScreen — on the live-gate list, not unit-tested.
 - Next: verifier CODE; Anton's live WebKitGTK gate; then B4.
+
+## [2026-10-17] session | 5.3 B3 Part B live gate passed and committed; Cancel-while-unreachable finding
+- Anton's live WebKitGTK gate on B3 Part B: passed. Committed `fbea751`
+  (`feat(remote): unit 5.3 B3 Part B — screens; ADR-024 o20`); `HEAD^{tree}` = verified tree
+  `a638617a`.
+- Finding from the gate (open): Cancel on a live remote job while its server is unreachable shows
+  `conflict: an operation on job … is already in progress` instead of the honest refusal ("remote
+  cancel arrives in unit 5.4", `ssh_backend::cancel_remote`). Root cause: the poller's status step
+  holds the job's in-flight guard through the label call, and ssh waits up to `ConnectTimeout=10`
+  per 15 s tick, so the guard is busy ~⅔ of the time; `cancel_job` claims the guard first (o15.1).
+  Lean (follow-up `fix(remote)`): a read-only remote-live pre-check in `cancel_job` before the guard
+  (refuses only, never acts; the guarded path and its re-check stay as they are), with a negative
+  control (guard held + Cancel → the 5.4 reason, not the conflict).
+- Fork for 5.4 (Anton to decide): what Cancel means while the server is unreachable. Lean: a
+  deferred cancel — the intent is recorded and the poller carries it out when the host returns;
+  against a local "forget" that marks the row cancelled while the job may still run on the server
+  (rule #9).
+- Still open from B3: L6 (a stale `get_job` may overwrite a newer row if two reads resolve out of
+  order — LOW, not fixed).
+- Next: this log commit; `fix(dev)` vite `watch.ignored` (`**/.claude/**`, `**/sidecar/**`,
+  `**/target/**`, `**/resources/**`, `**/wiki/**` — the ENOSPC inotify crash); the Cancel fix above;
+  then B4 (live uni run).
