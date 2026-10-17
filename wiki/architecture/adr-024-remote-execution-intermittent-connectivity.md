@@ -1,6 +1,6 @@
 # ADR-024: Remote execution under intermittent connectivity
 
-**Status:** Accepted · 2026-10-02 (Proposed → Accepted after the review + acceptance amendments below) · amended 2026-10-03 (probe; probe review; d′ resolution — ready for implementation; l — unit 5.2 script and classifier shape; m — 5.3 submit rules; n — 5.1 Part B profile and connection test) · amended 2026-10-05 (o — 5.3 transport, sync and monitoring; accepted after DESIGN round 4; o13 — Part A2 amendments, accepted after DESIGN review 2026-10-05; o14 — B1 amendments, accepted after DESIGN review 2026-10-05) · amended 2026-10-06 (o15 — B1 Part B: the in-flight guard's scope, accepted after DESIGN review 2026-10-06; o16 — B2: the remote live log is pushed, accepted after DESIGN review 2026-10-06; o17 — B2 Part A: classifier `Cancelled` terminal, drain while watched, accepted after DESIGN review 2026-10-06; o18 — B2 Part B: exit leaves in-flight ssh/rsync to the OS, accepted after DESIGN review 2026-10-06; o19 — B3: the poller's remote state reaches the view, accepted after DESIGN review 2026-10-06) · amended 2026-10-07 (o20 — B3 Part B: run target remembered app-wide, run target only via Create & Run, Withdraw confirms; accepted after DESIGN review 2026-10-07) · amended 2026-10-17 (o21 — Cancel refuses a live remote job before the guard; accepted after DESIGN review 2026-10-17)
+**Status:** Accepted · 2026-10-02 (Proposed → Accepted after the review + acceptance amendments below) · amended 2026-10-03 (probe; probe review; d′ resolution — ready for implementation; l — unit 5.2 script and classifier shape; m — 5.3 submit rules; n — 5.1 Part B profile and connection test) · amended 2026-10-05 (o — 5.3 transport, sync and monitoring; accepted after DESIGN round 4; o13 — Part A2 amendments, accepted after DESIGN review 2026-10-05; o14 — B1 amendments, accepted after DESIGN review 2026-10-05) · amended 2026-10-06 (o15 — B1 Part B: the in-flight guard's scope, accepted after DESIGN review 2026-10-06; o16 — B2: the remote live log is pushed, accepted after DESIGN review 2026-10-06; o17 — B2 Part A: classifier `Cancelled` terminal, drain while watched, accepted after DESIGN review 2026-10-06; o18 — B2 Part B: exit leaves in-flight ssh/rsync to the OS, accepted after DESIGN review 2026-10-06; o19 — B3: the poller's remote state reaches the view, accepted after DESIGN review 2026-10-06) · amended 2026-10-07 (o20 — B3 Part B: run target remembered app-wide, run target only via Create & Run, Withdraw confirms; accepted after DESIGN review 2026-10-07) · amended 2026-10-17 (o21 — Cancel refuses a live remote job before the guard; accepted after DESIGN review 2026-10-17; o22 — unit 5.4a: remote cancel, the pending cancel and the guard; accepted after DESIGN review 2026-10-17, round 2 PASS WITH FINDINGS applied)
 
 Refines [ADR-003](adr-003-execution-backend.md) (the `ExecutionBackend` trait + job state
 machine) and extends [ADR-023](adr-023-server-agnostic-remote-execution.md) (one `SshBackend`
@@ -277,6 +277,7 @@ Either way, ORCA is never left running under a `.cancelled` marker. Both markers
 **Amended 2026-10-03 (d′ resolution) — cancel outside the connection window.** If the user cancels
 while the server is unreachable (e.g. outside the 08:00–22:00 window, Decision g), the request is
 **stored locally as a pending cancel** and **executed first on reconnect**, before reconciliation.
+*(Mechanics: o22 — two DB columns, delivery before the normal status step, Undo until the send is marked.)*
 Until then the job's status **does not change** — it shows its last known server state with a
 "cancel pending" indication. Rationale: Decision c — the server's state is the truth, and a job
 marked `cancelled` locally while it is in fact still running would be a lie that reconciliation then
@@ -514,16 +515,16 @@ decomposition; Anton decided every fork, before and after DESIGN review rounds 1
 
   | # | Condition | Outcome |
   |---|---|---|
-  | 1 | `.started` exists but does not parse (empty or missing fields — a disk-full write can publish an empty file, whether by `rename` or by `ln -T`) | `Failed` ("corrupt `.started`"). The cancel sweep is impossible without `sid`; the reason says so. |
+  | 1 | `.started` exists but does not parse (empty or missing fields — a disk-full write can publish an empty file, whether by `rename` or by `ln -T`) | `Failed` ("corrupt `.started`"). The cancel sweep is impossible without `sid`; the reason says so. *(After a delivered cancel: terminal `failed` with evidence, o22.4.5.)* |
   | 2 | `.cancelled` + `.exit_code` = 0 + `ORCA TERMINATED NORMALLY` | `Completed { late_cancel: true }` (Anton, M6). A clean result is never discarded, and the UI shows that the cancel came too late. |
-  | 3 | `.cancelled`, `boot_id` current, and the wrapper PID is alive and ours **or** the job session is non-empty | `Cancelling` (transient). The reconcile re-runs the cancel script, which sweeps on the same trigger. 5.4 counts the sweeps. **Progress** = the job session shrinks. After 3 sweeps without progress (e.g. a D-state process), the **automatic sweeps stop**, and the job stays `Cancelling` with a user-visible notice and a manual retry (round 2 MED-2, round 3 LOW-D). |
+  | 3 | `.cancelled`, `boot_id` current, and the wrapper PID is alive and ours **or** the job session is non-empty | `Cancelling` (transient). The reconcile re-runs the cancel script, which sweeps on the same trigger. 5.4 counts the sweeps. **Progress** = the job session shrinks. After 3 sweeps without progress (e.g. a D-state process), the **automatic sweeps stop**, and the job stays `Cancelling` with a user-visible notice and a manual retry (round 2 MED-2, round 3 LOW-D). *(Realised by o22.5: `Cancelling { session }`, the count in `PollerMemory`, Cancel = the manual retry.)* |
   | 4 | `.cancelled` (anything else) | `Cancelled` |
   | 5 | `.exit_code` parses to 0 + `TERMINATED NORMALLY` | `Completed` |
   | 6 | `.exit_code` present (non-zero, empty or not a number; or 0 without `TERMINATED NORMALLY`) | `Failed` (rule #6) |
   | 7 | `.started`, `boot_id` current, wrapper PID alive and ours | `Running` |
   | 8 | `.started` (any other case: a different `boot_id`; or current `boot_id` with the wrapper dead or not ours — OOM, an outside kill) | `Lost { orphans }` (Anton, H2: at once, with no re-check). `orphans` = the job-session PIDs, which are non-empty only with a current `boot_id`. 5.4 sweeps them, with the same cwd-filtered sweep (Anton, round 2 MED-1): an orphan with no wrapper never writes `.exit_code`, so its result can never pass rule #6, and it holds the slot's cores that tsp is already handing to the next job. |
   | 9 | no `.started`, a `tsp` row in state queued or running | `Queued` (the job may be starting right now; the next reconcile sees `.started`) |
-  | 10 | no `.started`, and any socket fact in the snapshot is `Error` | `Indeterminate` — no action this pass (round 2 MED-4). Re-enqueueing a job that may still be queued would put two wrappers in one job dir. 5.4 counts consecutive `Indeterminate` passes and tells the user after 3 (round 3 LOW-D). |
+  | 10 | no `.started`, and any socket fact in the snapshot is `Error` | `Indeterminate` — no action this pass (round 2 MED-4). Re-enqueueing a job that may still be queued would put two wrappers in one job dir. 5.4 counts consecutive `Indeterminate` passes and tells the user after 3 (round 3 LOW-D) *(unit 5.4b, o22.1)*. |
   | 11 | no `.started`, no socket fact is `Error` (`NoDaemon` = no rows), and either a finished `tsp` row (a wrapper that crashed before writing `.started`) or no row at all (a restart dropped the queue) | `NeverStarted`: `ReEnqueue` if `reenqueue_count` = 0, otherwise `Failed` ("wrapper never started") |
 - **The wrapper's start sequence** is now 0 `cd "$job_dir"` (round 3 LOW-C; if the `cd` fails, the
   wrapper exits at once, before writing `.started`, so ORCA never runs outside its job dir: rule #3,
@@ -536,7 +537,7 @@ decomposition; Anton decided every fork, before and after DESIGN review rounds 1
 - **The outcome type is the classifier's own enum:** `Queued`, `Running`, `Completed { late_cancel }`,
   `Failed { reason }`, `Lost { orphans }`, `Cancelling`, `Cancelled`, `Indeterminate`, `ReEnqueue`.
   `Lost` and `Cancelling` join `JobStatus` only in 5.4, so 5.2 does not change `JobStatus`.
-- **The re-enqueue count is an input.** The `jobs` column (schema v19 *(renumbered v20 by Decision n: v19 is the 5.1 Part B profile columns; then v21 by Decision o: v20 is the 5.3 job coordinates)*) lands in **unit 5.4**. The bound
+- **The re-enqueue count is an input.** The `jobs` column (schema v19 *(renumbered v20 by Decision n: v19 is the 5.1 Part B profile columns; then v21 by Decision o: v20 is the 5.3 job coordinates; then later than v21 by o22.1: v21 is 5.4a's pending cancel)*) lands in **unit 5.4** *(5.4b, o22.1)*. The bound
   holds only if 5.4 **persists the increment before** it issues the re-enqueue (review M5). Otherwise
   a crash between `tsp` submit and the DB write would re-enqueue again, without limit.
 
@@ -649,11 +650,11 @@ review pending, together with the 5.3 decomposition).**
    - The submit stays pending locally and is **re-checked on every reconcile**. The check only reads
      state; it signals nothing and changes nothing.
    - After 3 refusals the user is told, and the notice **names the blocking job(s)**.
-   - The user may withdraw the pending submit, cancel the blocking job, or keep waiting.
+   - The user may withdraw the pending submit, cancel the blocking job, or keep waiting. *(Withdrawing a pending submit is local; the remote Withdraw command is gone, o22.7.)*
    - **No automatic action** ever frees a slot: a blocked slot almost always means something really
      is still computing on those cores (rule #8).
    - **Persistence and sequencing** (round 1 MED-9): the pending submit and its refusal counter live
-     in the local DB. Unit **5.4** adds them with the v21 migration *(renumbered from v20 by Decision o: v20 is the 5.3 job coordinates)*, next to the re-enqueue counter,
+     in the local DB. Unit **5.4** adds them with the v21 migration *(renumbered from v20 by Decision o: v20 is the 5.3 job coordinates; moved past v21 with unit 5.4c by o22.1)*, next to the re-enqueue counter,
      and runs the re-check from its reconcile loop. Until 5.4, a refused submit simply fails with
      the blocking job named.
 3. **"On the slot's mask" means the cores intersect.** *(Scope widened by o item 9: the scan covers every process and live queue of the account, not only the profile's jobs, and runs once inside the submit call instead of through per-job collects; the accounting rule of l round-5 MED-1 stays.)*
@@ -788,7 +789,7 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
 
 1. **Schema v20 = the job coordinates of n 6b** (Anton). `jobs` gains `remote_host`, the absolute
    remote job dir and the socket, written once and never rewritten from the profile. 5.4's columns
-   (re-enqueue counter, pending cancel, pending submit) move to **v21**.
+   (re-enqueue counter, pending cancel, pending submit) move to **v21** *(split by o22.1: v21 = the pending cancel; the others move with 5.4b/5.4c)*.
    - **A job is remote iff its coordinates are non-NULL.** Dispatch (`enum Backend`) keys on the
      coordinates, never on `backend_id`. Remote jobs keep `Queued`/`Running` in `jobs.status`
      (Anton); **every local-only query filters `remote_host IS NULL`** — today exactly
@@ -803,7 +804,7 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
      in unit 5.4" — never a local `Cancelled` (Decision i). `delete_server_profile` refuses while the
      profile has non-terminal jobs (today it NULLs `backend_id`, `server_profiles.rs:205`, which would
      turn the job local).
-   - **Withdraw** (Anton, round 2 fork, closes round 2 HIGH-2): a job in the **"not on the server"**
+   - **Withdraw** *(superseded by o22.7: one Cancel; this sequence is delivery's not-on-the-server branch, o22.4.3)* (Anton, round 2 fork, closes round 2 HIGH-2): a job in the **"not on the server"**
      or **"submit interrupted"** state (item 3.5) can be withdrawn **while the host answers**:
      `mkdir -p <job dir>` then the 5.2 `cancel.sh cancel` *(sequence and transport: o14.1)* (it needs the dir; it publishes
      `.cancelled` first, so a late enqueue's wrapper refuses at its step 2, and it only `tsp -r`s a
@@ -831,7 +832,7 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
       (`<root>`, `<root>/jobs`, `<root>/jobs/<id>` if present), so the upload never writes through a
       symlinked component (round 4 LOW-6). **A stale extra file** (e.g. an rsync temp left by a
       killed upload — whether the remote receiver leaves one is **not measured**) makes every retry
-      refuse with that file named; the exit is **withdraw** and a new job (round 4 LOW-5).
+      refuse with that file named; the exit is **withdraw** *(Cancel since o22.7)* and a new job (round 4 LOW-5).
    3. **One submit call** (n-11 shape). Its NUL list carries the job dir, root, slot socket, slot
       mask, ORCA path and the **expected name + sha256 of every uploaded file** — **two NUL values per
       file**, within n-11's echoed count; Rust refuses a job dir of more than 1000 files before any
@@ -895,11 +896,11 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
       `.submitting`: an unreadable queue may hold the job, so "submit interrupted" (withdraw-only) is
       not claimed on missing evidence.
       "Not on the server" offers **retry** (3.2–3.3) and **withdraw** (item 2); "submit interrupted"
-      offers **withdraw** only, never retry in 5.3. A withdraw's `.cancelled` moves the job to rule 2,
+      offers **withdraw** only, never retry in 5.3 *(from 5.4a: Cancel instead of withdraw, o22.7; retry disabled while unreachable, o22.8)*. A withdraw's `.cancelled` moves the job to rule 2,
       so a lost withdraw reply is not a dead end. The collector is never run on a missing dir.
    5. **5.4's `ReEnqueue` is a different variant** (round 3 MED-3): a restart-dropped job already has
       `.submitting` and `.enqueued`, so this call would refuse it. The variant asserts no `.started`,
-      `.exit_code`, `.cancelled` and no row, claims a name keyed by the v21 counter
+      `.exit_code`, `.cancelled` and no row, claims a name keyed by the v21 counter *(5.4b's version, o22.1)*
       (`.reenqueue-<n>`, `ln -sT`), re-checks the slot and replaces `.enqueued` by rename. Its exact
       form is 5.4's; it is never a bare `tsp` re-enqueue.
 4. **Monitoring is polling while the host answers; it resumes on launch** (Anton). One loop over all
@@ -917,9 +918,9 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
      final status comes from `detect_completion` on the **downloaded** files (rule #6). A failed
      job's output is downloaded too — it is the debugging evidence.
    - Every other outcome (`Queued`, `Running`, `Indeterminate`, `ReEnqueue`, `Lost`, `Cancelling`,
-     `Cancelled` *(now terminal, o17)*, `Failed{CorruptStarted}`) is **shown, with "handled in unit 5.4" where it needs an
+     `Cancelled` *(now terminal, o17; with `.started` fetched as evidence first, o22.6)*, `Failed{CorruptStarted}` *(with `.cancelled`: terminal `failed`, o22.4.5)*) *(`Cancelling` becomes a status, o22.5)* is **shown, with "handled in unit 5.4" where it needs an
      action**; the row stays `Queued`/`Running` (so it still blocks profile edits and deletion).
-     5.3 passes `reenqueue_count = 0` (the column is v21's), so `Failed{WrapperNeverStarted}` cannot
+     5.3 passes `reenqueue_count = 0` (the column is v21's *(5.4b's version, o22.1)*), so `Failed{WrapperNeverStarted}` cannot
      occur in 5.3.
    - **One in-flight guard per job** covers submit, withdraw, collect and fetch *(also cancel, retry
      and label; a command refuses a busy job — o15)*: a tick skips a job with an operation still running.
@@ -1111,7 +1112,7 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
     They refine (l)'s transport and upload rules, items 2, 3.1–3.3 and o13.1, and n 11; nothing else
     changes. Accepted after DESIGN review (PASS WITH FINDINGS, findings applied; MED-3 decided by
     Anton) on 2026-10-05.
-    1. **Uploaded job scripts are run through one stdin trampoline** (Anton, F1). (l) uploads the
+    1. **Uploaded job scripts are run through one stdin trampoline** (Anton, F1). *(Delivery readies the server the same way, o22.4.2.)* (l) uploads the
        cancel script — and, new here, `collect.sh` — and gives them positional arguments, but
        `ssh host cmd args` re-parses the joined string in the remote login shell ((l)'s own re-parse
        point). Every call of an uploaded script (`cancel`, `collect`; the wrapper stays tsp's) is one
@@ -1178,7 +1179,7 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
        the classifier's. `Enqueued` clears `error_message`. A failure **before** the persist (run
        target, `MAX_UPLOAD_FILES`, a bad name) leaves the **row** untouched (the local job dir may
        already be written; it is rewritten on the next attempt).
-    5. **The local cancel path refuses a live remote job** (Anton): `local_backend::cancel` refuses a
+    5. **The local cancel path refuses a live remote job** (Anton) *(still true for the local path; the remote arm records and delivers from 5.4a, o22.3)*: `local_backend::cancel` refuses a
        non-terminal job with coordinates **at function entry**, before any branch, so no caller can
        reach a local kill or a local `Cancelled` for a remote job *(holds under concurrency through
        `cancel_job`'s guard, o15)*.
@@ -1191,7 +1192,7 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
     verifier, decided by Anton). It refines item 4's in-flight guard and completes o14.5 under
     concurrency; nothing else changes. Accepted after DESIGN review (PASS WITH FINDINGS, findings
     applied; MED-3 decided by Anton) on 2026-10-06.
-    1. **The guard covers every operation on one job that reaches the server** — submit to a server,
+    1. **The guard covers every operation on one job that reaches the server** *(remote cancel records without it and delivers under it; Undo takes none — o22.3)* — submit to a server,
        retry, withdraw, label, collect, fetch — **plus cancel**, local or remote *(the read-only log
        poll excepted, o16.5)*. Cancel needs it
        because of a race item 4's list leaves open: cancel reads a draft (dispatch picks the local
@@ -1327,7 +1328,7 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
 17. **B2 Part A amendments** (2026-10-06; found by the B2 Part A implementer, decided by Anton). They
     refine item 4's outcome list and o16.6's drain condition; nothing else changes. Accepted after
     DESIGN review (PASS WITH FINDINGS, findings applied) on 2026-10-06.
-    1. **A classifier `Cancelled` from the poller is terminal** (Anton). Item 4 listed `Cancelled`
+    1. **A classifier `Cancelled` from the poller is terminal** (Anton) *(evidence fetch first when `.started` exists: o22.6)*. Item 4 listed `Cancelled`
        among the outcomes that are only shown, the row staying `Queued`. Read literally, a withdraw
        whose reply is lost becomes a dead end — the label call then hands the job to the
        classifier, so a second withdraw is refused and cancel is refused until 5.4 — contradicting
@@ -1343,7 +1344,7 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
        only "not on the server" / "submit interrupted"); in 5.4 every running job killed by a cancel
        takes this arm, so **5.4 decides** whether a started-then-cancelled job's evidence is fetched
        while it still ends `cancelled` (open question, Anton). The withdraw's "nothing ran" message
-       has the same imprecision. `Cancelling` (row 3) stays shown. Negative control: the arm
+       has the same imprecision. `Cancelling` (row 3) stays shown *(from 5.4a a status, `cancelling`, o22.5)*. Negative control: the arm
        reverted to "shown" turns its test red.
     2. **o16.6's "only when state exists" means "while the job is watched".** A view opened during
        the fetch window has a count > 0 but no state yet (no log poll runs once a fetching outcome is
@@ -1427,7 +1428,7 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
          as `job:status`).
        `clear_strikes` (the manual `retry_remote_fetch`) refreshes `fetch`, so a retry whose own
        step is `CheckFailed` no longer reads stopped. **Any** `retry_remote_submit` or
-       `withdraw_remote_job` outcome — success, refusal or transport failure — removes the record
+       `withdraw_remote_job` *(removed by o22.7; its removal moves to `cancel_job`'s remote arm)* outcome — success, refusal or transport failure — removes the record
        (the next status step re-derives it): inside the guarded closure the removal runs **first**,
        whatever the inner `Result`, and only then is that result propagated (a `?` must not skip it).
        A refusal by the in-flight guard itself (`Conflict`, before the closure) leaves the record
@@ -1468,7 +1469,7 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
        applies any value — event or read — only if its `seq` is greater than the one it holds. So
        neither an older read nor an older event delivered late overwrites a newer state, whatever
        order Tauri delivers an event and a command response in (unmeasured — open question below).
-    7. **What the view offers** (B3): `Labelled(NotOnServer)` → retry submit + withdraw;
+    7. **What the view offers** (B3) *(from 5.4a: Cancel replaces withdraw and is offered for every live remote job; Retry is disabled while the last contact failed — o22.7, o22.8)*: `Labelled(NotOnServer)` → retry submit + withdraw;
        `Labelled(SubmitInterrupted)` → withdraw only; `Shown(o)` → the row's text (which already
        says "handled in unit 5.4" where an action is needed); `fetch.stopped` → a "retry fetch"
        button (`retry_remote_fetch`); `check_error` → "server unreachable / not decided: <why>"
@@ -1490,7 +1491,7 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
          it and later ticks do not set it again — moving the apply out of `status_step` leaves the
          record unset at return (red);
        - the guard scope, source pin (like `every_handed_out_step_is_ended`): `spawn_step` contains no
-         record apply; `retry_remote_submit` and `withdraw_remote_job` call the removal inside their
+         record apply; `retry_remote_submit` and `withdraw_remote_job` *(removed by o22.7; `cancel_job`'s remote arm instead)* call the removal inside their
          `run_guarded` closure, before propagating the inner result;
        - the lock order, deterministic source pin: the bodies of `clear_strikes` and
          `PollerMemory::retain` never reference the record map, and `sweep` does not filter R inside
@@ -1556,7 +1557,7 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
        their button or in their hint; connectivity in its pending line. These labels are
        checked in Anton's live gate, not by a unit test. Choosing a target there is
        recorded as open in `modules/remote-jobs.md` ("Not built yet") and ROADMAP; not built in 5.3.
-    3. **Withdraw asks for confirmation like Delete job** (Anton): the Tauri plugin-dialog `confirm`,
+    3. **Withdraw asks for confirmation like Delete job** (Anton) *(the confirm moves to the one remote Cancel, o22.7)*: the Tauri plugin-dialog `confirm`,
        the app's pattern for destructive actions (never `window.confirm`, unreliable in WebKitGTK).
        Declining sends nothing. `withdraw_remote_job` is called only if `withdraw` is still among the
        view's offered actions after the dialog closes (a record change during the dialog must not
@@ -1579,7 +1580,7 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
           of the current one, turns it red.
     5. **Propagation:** o5 (marked); ROADMAP B3 ("per project" marked); `modules/remote-jobs.md`
        ("The view", "Not built yet"); `modules/frontend.md`.
-21. **Cancel refuses a live remote job before the guard** (2026-10-17; found in Anton's live gate of
+21. **Cancel refuses a live remote job before the guard** *(the refusal is superseded by o22 in unit 5.4a; the pre-check read stays)* (2026-10-17; found in Anton's live gate of
     B3 Part B, decided by Anton). It refines o15.1, o15.3 and o15.4 for `cancel_job` only; nothing
     else changes. Accepted after DESIGN review (PASS WITH FINDINGS, findings applied) on 2026-10-17.
     1. **Symptom and cause.** While a remote job's server was unreachable, Cancel answered
@@ -1635,6 +1636,283 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
        section and its Tests paragraph); the header comment of `src-tauri/src/in_flight.rs`;
        `cancel_job`'s doc comment and the o15.4 pin test in `commands/jobs.rs`; ROADMAP unit 5.4
        (pending cancel while unreachable, and its meeting with the guard).
+22. **Unit 5.4a: remote cancel, the pending cancel and the guard** (2026-10-17; forks raised by the
+    orchestrator, decided by Anton). This amendment gives Decision i's pending cancel (2026-10-03
+    amendment) its mechanics, closes the o17 open question and **supersedes** o21's refusal and
+    o2's Withdraw for remote jobs. `Lost`, re-enqueue and the pending submit are not covered.
+    DESIGN round 1: FAIL (H1 + 9 MED); round 2: PASS WITH FINDINGS (2 MED + 6 LOW), applied.
+    1. **Unit 5.4 is split** (orchestrator; see ROADMAP).
+       - **5.4a** (this item): remote cancel, the pending cancel and `Cancelling`.
+       - **5.4b**: `Lost`, the orphan sweep of row 8, the re-enqueue counter and acting on
+         `ReEnqueue`, and the `Indeterminate` counter of l row 10 (Decisions d, e, l).
+       - **5.4c**: the pending submit and its refusal counter (Decision m2).
+
+       Each unit migrates only its own columns: **v21 = 5.4a's two columns** (item 2), and the
+       re-enqueue counter and the pending submit move to later versions with their units *(renumbers
+       the "v21" of l, m2, o1, o3.5 and o4, each marked)*.
+    2. **Two DB columns**, so a cancel survives a quit and a closed laptop.
+       - **Columns:** `jobs.cancel_requested_at TEXT NULL` (the user asked) and
+         `jobs.cancel_sent_at TEXT NULL` (a delivery is about to run `cancel.sh`; item 4.5). Both
+         hold laptop time, are only displayed, and are never compared with a server time
+         (Decision j).
+       - **Invariant:** `cancel_requested_at` is non-NULL only on a remote job in `queued`,
+         `running` or `cancelling`; `cancel_sent_at` is non-NULL only where `cancel_requested_at`
+         is. The schema states it, in the v20 form of an ADD-COLUMN CHECK that names earlier
+         columns (`db.rs`): `CHECK (cancel_requested_at IS NULL OR (remote_host IS NOT NULL AND
+         status IN ('queued','running','cancelling')))` and `CHECK (cancel_sent_at IS NULL OR
+         cancel_requested_at IS NOT NULL)`.
+       - **Every terminal write of a remote row NULLs both columns in the same statement:**
+         `finalize_job_conn` (the poller's finalise) and `mark_cancelled_conn` (`record_cancelled`,
+         and delivery). The CHECK turns a forgotten NULL into a failed write, not a silent breach.
+         Part A tests each of these sites with the columns set. `record_shown`'s
+         `queued`→`running` is not terminal and keeps them. The local writes
+         (`update_job_status_conn`, the local `finalize_job_conn` callers) never meet a remote row.
+       - Also: `CHECK (status <> 'cancelling' OR remote_host IS NOT NULL)`.
+    3. **Cancel records first, needs no guard to record, and is never refused for being busy.**
+       `cancel_job` reads the row once (o21's pre-check).
+       - **A remote job in `queued`, `running` or `cancelling`:**
+         1. One atomic `UPDATE … SET cancel_requested_at = now WHERE id = ? AND remote_host IS NOT
+            NULL AND status IN ('queued','running','cancelling') AND cancel_requested_at IS NULL`.
+            0 rows means the row moved on or a cancel is already pending; re-read and report.
+         2. `try_acquire` the guard. **Free:** run the delivery (item 4) now, in `spawn_blocking`
+            holding the guard, like the other remote commands.
+         3. **Busy** (a poller step, a fetch): return **"cancel pending"**; the poller delivers at
+            the job's next status step.
+         - The command returns once delivery has classified (item 4.5). An evidence fetch the
+           verdict needs (item 6) runs in the poller's next step, not in the click.
+       - **Any other job** (local, draft, terminal) takes o21's guarded path, unchanged.
+       - **o15.1's race stays closed.** A draft has no coordinates, so the `UPDATE` matches nothing
+         and the guarded local path decides, as in o21.3.
+         - If the remote persist lands **before** the pre-read, the `UPDATE` matches and the job is
+           cancelled on its server; that is the job the user cancelled.
+         - If it lands **between** the pre-read (a draft) and the guarded read, the guarded read
+           finds a remote-live row. The command then **goes once to the record path** (step 1)
+           instead of refusing with stale text.
+       - **Undo cancel** (Anton) is one atomic `UPDATE … SET cancel_requested_at = NULL WHERE id = ?
+         AND cancel_requested_at IS NOT NULL AND cancel_sent_at IS NULL`, **with no guard**, so it
+         is never refused for a busy poller.
+         - It is offered only while `cancel_sent_at` is NULL. Once a delivery has marked the send,
+           the button is gone, with the text "the cancel may already be on the server".
+         - While the server is unreachable delivery never reaches `cancel.sh` (item 4.5), so Undo
+           stays available exactly when a change of mind is likely.
+         - **Why this is sound:** delivery marks the send under the DB lock **before** spawning
+           `cancel.sh`, and re-reads `cancel_requested_at` in that same locked step. An Undo that
+           lands first wins and nothing is sent. An Undo that comes after the mark is refused.
+           A lost reply after a real `cancel.sh` can no longer be "undone" locally while
+           `.cancelled` sits on the server (round 1 H1).
+    4. **Delivery: one function, called by the command and by the poller, always holding the
+       guard.**
+       - **Order.** The poller reads `cancel_requested_at` in the step's own locked read, under the
+         guard. While it is set, the poller runs delivery **instead of** the normal status step.
+         Delivery comes **before** the `FetchStopped` short-circuit, so delivery runs first on
+         reconnect (Decision i).
+       - **Steps:**
+         1. Re-read the row under the lock. If it is no longer remote-live with
+            `cancel_requested_at` set, stop.
+         2. **Ready the server**: prepare → install if needed → prepare, as o14.1 does for submit
+            and withdraw. The uploaded `cancel.sh`/`collect.sh` are sha-named, so an app upgrade
+            needs them reinstalled. A not-installed or refused prepare is reported as itself,
+            never as "unreachable".
+         3. **`queued` → label call.**
+            - "Not on the server" or "submit interrupted" → o2's withdraw tail: `mkdir -p`, then
+              step 5.
+            - Otherwise go on.
+         4. **One collect + `classify` before any cancel** (Anton).
+            - **Already ended without `.cancelled`** (row 5 `Completed`, row 6 `Failed{…}`): clear
+              **both** columns (a marked but unsent cancel may precede this, item 4.5), keep the
+              result, take the normal fetch path. Tell the user
+              "the job finished before the cancel reached the server".
+            - **Every other outcome** — `Queued`, `Running`, `Lost`, `ReEnqueue`, `Cancelling`,
+              `Indeterminate` — goes on. `Indeterminate` implies no `.exit_code` (rows 5–6 precede
+              row 10), and `cancel.sh` publishes `.cancelled` first and skips tsp when it cannot
+              read the queue, so it is safe there (round 1 M1).
+            - **Row 1 `Failed{CorruptStarted}`** goes on too (step 5's verdict).
+         5. **Mark, then send.** In one locked step: re-check `cancel_requested_at IS NOT NULL`
+            (an Undo may have won), set `cancel_sent_at = now`, and release the lock. Then run
+            `cancel.sh cancel`.
+            - **rc 0:** the server holds `.cancelled`; the cancel is **delivered**. One collect +
+              `classify` decides, never a hard-coded `Cancelled` (Decision c):
+              - **row 4 `Cancelled`** → item 6;
+              - **row 3 `Cancelling`** → status `cancelling` (item 5);
+              - **row 2 `Completed{late_cancel}`** → the normal fetching path, so a clean result is
+                kept;
+              - **row 1 `Failed{CorruptStarted}`** → terminal `failed`, as l row 1 intends ("without
+                `sid` the job cannot be swept; the user must see it"). The rule is keyed on the
+                **snapshot**, not on the path that delivered: row 1 gains `cancelled: bool`
+                (`CorruptStarted { cancelled }`), and **any** status step that sees row 1 with
+                `.cancelled` runs item 6's evidence fetch and writes terminal `failed`. A click's
+                delivery (which returns after classifying, item 3) is therefore finished by the
+                poller's next ordinary step. The reason says processes of the job may survive on
+                the server. That is consistent with rule #8:
+                - a surviving wrapper keeps a `running` row on its slot's one-slot daemon, which
+                  queues any new job behind it;
+                - pinned orphans are seen by o9's account-wide scan, which refuses a submit whose
+                  mask overlaps them;
+                - once the row is terminal, the profile becomes editable while survivors may run,
+                  and o9's scan still blocks overlapping cores.
+              - `Indeterminate` → shown; later status steps decide, since `.cancelled` is now on
+                the server.
+              - **Columns:** a terminal write NULLs both (item 2). A non-terminal verdict NULLs
+                `cancel_requested_at` and `cancel_sent_at` in the same locked write that records it.
+            - **A transport failure, a timeout or rc 2/3** (a usage error; or fail-closed — an
+              unreadable or not-a-directory job dir): **not delivered**. Both columns stay set.
+              The record shows the script's stderr or the transport error. The next step tries
+              again (re-sending is safe, item 4.6).
+              - **Transport failures** retry on every step, like any check while the host is away.
+              - **rc 2/3** (the server answered, the script failed) is bounded: after **3**
+                consecutive non-zero exits, automatic re-sends stop with a notice, and Cancel is
+                the manual retry. The counter lives in `PollerMemory`, per launch like the strikes. Undo is no longer offered: the send is marked, and a
+              lost reply looks exactly like a transport failure.
+         6. **Re-sending must be safe.** `cancel.sh cancel` must be **idempotent** on a dir that
+            already holds `.cancelled`. Its only new effect may be `.cancelled`'s mtime, which no
+            rule reads. **Part A pins this with script tests (the Lab harness):**
+            - a second run gives rc 0, `.cancelled` present, `.tmp` absent, and no signal outside
+              the job session;
+            - the verdict is unchanged (row 4 stays row 4, row 2 stays row 2);
+            - two concurrent runs behave the same;
+            - a missing job dir gives rc 3.
+
+            The B4-style live run confirms it on uni.
+       - **`StatusStep` and the record.** Delivery returns the existing variants where they fit:
+         `CheckFailed` (transport, before or after the send), `Labelled`, `Shown`, `Cancelled`,
+         `Finalised`, `FetchFailed`. It adds two:
+         - `CancelNotSent(why)` (rc 2/3) → `check_error` in the record;
+         - `CancelStopped` (the rc bound reached) → a "cancel re-sends stopped" flag in the record,
+           like the fetch bound.
+
+         o19.3's exhaustive `match` maps both.
+       - **Accepted residual.** A job that fails between step 4's classify and step 5's
+         `cancel.sh` ends `cancelled` (row 4), not `failed`, with its evidence fetched. The window
+         is one ssh round-trip, and its files are kept either way.
+    5. **`Cancelling` joins `JobStatus`**: transient, non-terminal, only ever on a remote job
+       (Decision d; the CHECK of item 2).
+       - `JobStatus::from_db` gets the explicit arm. It has a wildcard, so the compiler does not
+         force this: a missing arm breaks every read of such a row.
+       - It joins every remote-live predicate, at each site:
+         - `poller/plan.rs` (`candidates`);
+         - `poller.rs` (`is_live`, `live_row`, `set_message`'s SQL, `mark_cancelled_conn`'s
+           `from` list);
+         - `ssh_backend.rs` (`refuse_if_remote_live`);
+         - `commands/server_profiles.rs` (`live_remote_jobs`, `refuse_while_live`);
+         - `commands/jobs.rs` (`delete_job_conn`);
+         - and in TypeScript, `types.ts`, `jobs/remote.ts`, `JobsScreen.tsx`,
+           `JobDetailScreen.tsx`, `App.tsx` and `ConnectivityPanel.tsx`: the status union, the
+           live/terminal splits, filters and badges.
+       - The local paths (`try_start_next`, `reconcile_on_startup`) select explicit statuses with
+         `remote_host IS NULL` and never see it.
+       - **The sweep bound is l row 3's, kept** (round 1 M3). Each status step of a `cancelling`
+         job re-runs `cancel.sh cancel`, then collects and classifies.
+         - **Progress** = the job session shrinks. `Outcome::Cancelling` gains the session size
+           (`Cancelling { session: usize }`) for this purpose.
+         - After **3 sweeps without progress**, automatic sweeps stop. The job stays `cancelling`
+           with a notice ("processes of the job still run after 3 sweeps") and a manual retry:
+           Cancel on a `cancelling` job runs one delivery and restarts the count.
+         - The counter and the last session size live in `PollerMemory` (per launch, like the
+           strikes).
+         - Once automatic sweeps have stopped, status steps still **collect and classify** (without
+           `cancel.sh`), so a process that finally exits is noticed and the job ends `cancelled`.
+    6. **o17 decided: a cancelled job that ran is fetched as evidence** (Anton).
+       - **When:** a classifier `Cancelled` (row 4) whose snapshot has `.started`, whether the
+         verdict came from a delivery or from an ordinary status step. Row 1 with `.cancelled`
+         (`CorruptStarted { cancelled: true }`, item 4.5) takes the same evidence path and ends
+         `failed`. `Outcome::Cancelled` gains `started: bool` so the decision is
+         made from the outcome.
+       - **What:**
+         - The step sets the fetching flag, which stops the log poll as for any fetch (o16.6).
+         - It downloads with the shared filter, then runs the LIST check (o6).
+         - The live view is drained from the local copy.
+         - `detect_completion` decides nothing, and no results are parsed or written; the files are
+           for the log and file views. o18's finality argument rests on `.exit_code`, which a
+           cancelled job may lack. Here the guarantee is weaker and stated as such: the copy
+           equals the server's listing at the moment of the LIST check. A process the sweep could
+           not kill (row 1) may still write afterwards.
+       - **Status:** terminal `cancelled` (or row 1's `failed`) is written only **after** the LIST
+         check passes. A failed evidence fetch counts a strike. **The step that takes the
+         `MAX_FETCH_STRIKES`-th strike writes the terminal status itself**, with "evidence not
+         downloaded: <why>; it stays on the server". It never reaches `FetchStopped`, so a job is
+         never left non-terminal waiting for a manual retry that item 8 may disable.
+       - **Without `.started`** (nothing ran), row 4 downloads nothing and is written `cancelled` at
+         once.
+    7. **One Cancel for a remote job; Withdraw goes** (Anton).
+       - A remote job in `queued`, `running` or `cancelling` shows one **Cancel**. It sits behind
+         o20.3's plugin-dialog `confirm` and its re-check of the current actions.
+       - The `withdraw_remote_job` command and its button are removed. Withdraw lives on as
+         delivery's not-on-the-server branch (item 4.3). o19's record removal and its source pin
+         move to `cancel_job`'s remote arm.
+       - A pending cancel shows a **"cancel pending"** badge with the request time, and **Undo
+         cancel** while the send is not marked (item 3). The row's status does not change until
+         the server decides (Decision i).
+       - User-facing texts change: `refuse_if_remote_live` (no "arrives in unit 5.4 … can be
+         withdrawn") and `refuse_while_live` ("cancel it first").
+       - Local cancel is unchanged and has no dialog.
+    8. **Retry while the server is unreachable is disabled, with the reason** (Anton).
+       - **Record field.** The remote record (o19) gains `last_contact: Ok | Failed(why)`. Every
+         ssh/rsync call the poller or a command makes for the job writes it from its **transport**
+         result: label, collect, prepare, install, mkjob, cancel, fetch, LIST, and the upload and
+         submit calls of `retry_remote_submit`. Every one of them holds the job's guard (o19.4).
+         `poll_log` is **not** a writer: it holds no guard (o16.5), and o19.4 stays whole. "The
+         server answered" is `Ok`, even when the answer is a refusal or an `Indeterminate`. A
+         connect failure, timeout or ssh exit 255 is `Failed`.
+         - `check_error` keeps its o19 meaning.
+         - A job with no record yet reads as unknown, and Retry is offered.
+         - `retry_remote_submit` **no longer removes the record at all** *(amends o19.3's "removal
+           runs first" for retry)*. Its outcome writes `last_contact`, and its other fields as
+           o19's mapping says. So a retry that failed to connect leaves Retry disabled.
+       - **Offer rule.** `retry_remote_submit` and `retry_remote_fetch` are offered only while
+         `last_contact` is not `Failed`. Otherwise the button is disabled with "server unreachable
+         — retry when it answers".
+       - **The Rust commands gain one predicate:** both refuse while `cancel_requested_at` is set
+         ("undo the cancel first"). The check is made in the command's locked read, since the
+         guard alone does not express it. Otherwise they still refuse a busy job (o15).
+       - Cancel stays enabled while unreachable: it is the action that is useful then.
+    9. **Seams and negative controls** (each control must turn its test red).
+       - **Seams, `AppHandle`-free:**
+         - the cancel core (`in_flight`, `db`, `runner`, `sink`, `id`, the local dispatch);
+         - `deliver_cancel(&Poller-like ctx, &InFlightGuard)`;
+         - the undo core (`db`, `id`).
+       - **Controls:**
+         - with the guard held, recording still records and returns "cancel pending", not
+           `Conflict`;
+         - an `UPDATE` without the remote predicate makes a draft's cancel record an intent;
+         - delivery that skips the pre-cancel classify turns a **row-6** job (failed, no
+           `.cancelled`) `cancelled` instead of keeping `failed`;
+         - delivery that marks the send **after** spawning `cancel.sh`, plus a lost reply, lets
+           Undo succeed while `.cancelled` is on the server; Undo after the mark must be refused;
+         - clearing `cancel_requested_at` before rc 0 loses the cancel after a transport failure;
+         - rc 3 treated as delivered;
+         - delivery without the ready step fails on a not-installed `cancel.sh`;
+         - `Indeterminate` that never sends;
+         - a terminal write that keeps either column fails the CHECK (each site of item 2);
+         - `from_db` without the `cancelling` arm;
+         - each live predicate of item 5 without `cancelling`;
+         - a 4th automatic sweep without progress;
+         - evidence written `cancelled` before the LIST check;
+         - the third evidence strike that does not write the terminal status;
+         - a row 4 without `.started` that downloads;
+         - Retry offered while `last_contact` is `Failed` (frontend pure logic), and Retry accepted
+           while a cancel is pending;
+         - `cancel.sh` run twice on one dir changes its verdict;
+         - a marked but unsent cancel on a job that then completes must reach `completed` (both
+           columns cleared, M1 of round 2);
+         - a click's delivery that leaves row 1 + `.cancelled` must end `failed` at the next
+           ordinary step (keying on the path instead of the snapshot turns it red);
+         - a 4th automatic re-send after three rc 3;
+         - a `poll_log` that writes `last_contact`.
+    10. **Propagation** (all marked where they stand):
+        - Decision i (the mechanics); l row 1 and row 3 (realised here) and row 10 (5.4b);
+        - the "v21" of l, m2, o1, o3.5 and o4;
+        - m2's and o3.2's "withdraw";
+        - o2 (Withdraw → Cancel), o3.4, o14.1, o14.5, o15.1 (the remote arm), o17 (closed);
+        - o19.3 (`withdraw_remote_job`; retry no longer removes the record), o19.7 and o19.9, o20.3
+          (the confirm moves to Cancel);
+        - o4's "shown … handled in unit 5.4" list and o17.1's "`Cancelling` stays shown";
+        - o21 (superseded);
+        - Consequences "Job state machine" (`Cancelling`); Open questions (o17 closed);
+        - ROADMAP 5.4 (split).
+
+        Moving with 5.4a's code: `modules/remote-jobs.md` (its v21 text),
+        `modules/execution-backends.md`, `modules/frontend.md`, and the doc comment at
+        `ssh_backend.rs` that names v21.
 
 ## Alternatives rejected
 
@@ -1662,7 +1940,8 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
   Cancelled }` — there is **no `Lost`**. **Amends ADR-003** (and the Phase 5 ROADMAP item that
   listed only `uploading → running → syncing`): `lost` is required to represent "interrupted, no
   `.exit_code`". (The `uploading`/`syncing` transient states from the ROADMAP are orthogonal and
-  still apply to the rsync phases.)
+  still apply to the rsync phases.) **o22.5** adds the transient **`Cancelling`** (remote only, unit 5.4a);
+  `Lost` comes with 5.4b.
 - **Domain rule #4.** Rule #4 today reads as a **global** "default concurrency = 1". This ADR
   makes concurrency a **per-backend/profile** setting (Local = 1; each server profile carries its
   own slot count, defaulting to 1 until measured). **Amends rule #4** — proposed re-wording is in
@@ -1696,7 +1975,7 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
   job that ran and wrote `.exit_code` before the cancel; o17.1 makes it terminal `cancelled` with no
   download, so its output stays on the server. Rarely reachable in 5.3; in 5.4 every cancelled
   running job lands here. Options: keep (no download) or treat `Cancelled` with `.started` /
-  `.exit_code` as a fetching outcome that still ends `cancelled`. **Anton decides at 5.4.**
+  `.exit_code` as a fetching outcome that still ends `cancelled`. **Anton decides at 5.4.** *(Decided 2026-10-17, o22.6: fetched as evidence when `.started` exists; ends `cancelled`.)*
 - **(e) `lost`-restart seed selection.** How restart-from-last-geometry picks and validates its
   seed (last `_trj.xyz` frame? last `.xyz`? a post-condition that the geometry is sane?), given
   it bypasses `resolveCarryForwardGeometry`. Unresolved.

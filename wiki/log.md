@@ -11076,3 +11076,20 @@ profile was never verified. Next: **5.3** `SshBackend` wiring.
   the index footer's page count (106) is stale — left for the next lint.
 - Next: when uni is back — step 0, step 1, then the prober session (M6 raw, M1, M7); meanwhile the
   5.4 ADR amendment (pending cancel vs the guard).
+
+## [2026-10-17] decision | ADR-024 o22 — unit 5.4a: remote cancel, the pending cancel and the guard
+- Anton's forks: one Cancel for a remote job (Withdraw goes, o20.3's confirm moves to it); a job
+  that ended before the cancel reached it keeps its result; a cancelled job that ran is fetched as
+  evidence (o17 closed); Retry disabled with the reason while the last contact failed; Undo cancel
+  only until the send is marked (round-1 H1).
+- Mechanics: unit 5.4 split into 5.4a/b/c (ROADMAP); v21 = `cancel_requested_at` +
+  `cancel_sent_at` with CHECKs; recording needs no guard (atomic UPDATE on a remote-live row),
+  delivery runs under it — by the click when the guard is free, else first in the next status step;
+  delivery readies the server, labels, classifies before cancelling, marks the send under the lock,
+  then `cancel.sh`; rc 2/3 bounded at 3; `Cancelling` joins `JobStatus` with l row 3's sweep bound;
+  row 1 + `.cancelled` ends `failed` keyed on the snapshot; `last_contact` in the remote record.
+- DESIGN: round 1 FAIL (H1: a revoked cancel could still land on the server after a lost reply;
+  9 MED), round 2 PASS WITH FINDINGS (M1: half-cleared columns vs the CHECK; M2: row 1 on the click
+  path; 6 LOW) — all applied; marks placed across the ADR, ROADMAP split.
+- Next: M4 instrumentation unit (`ORCASTUDIO_TIMING=1`), then 5.4a Part A (opus) — it starts with
+  `cancel.sh` idempotence tests on the Lab harness.

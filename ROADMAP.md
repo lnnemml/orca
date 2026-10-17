@@ -1489,16 +1489,23 @@ preflight. The remaining items (remote `orca_plot`, pause) are not numbered yet.
               → spurious check failures from synchronized status steps (F-2, sshd `MaxStartups`;
               Anton: measure first, stagger only if it bites); kill ORCA's main process mid-run →
               does `output.out` keep growing after `.exit_code` (o18 finality residual).
-- [ ] **Unit 5.4 — cancel, pending cancel, reconnect loop, new states.** The 5.2 cancel script over
-      ssh; a cancel made while the server is unreachable (outside the window or not) is stored as
-      pending and runs first on reconnect, the status unchanged meanwhile (ADR-024 i; re-confirmed in
-      o21.4); 5.4's amendment decides how a pending cancel meets the in-flight guard (lean: recording
-      the intent needs no server call and is not refused while the poller holds the guard; Retry and
-      Withdraw while unreachable likewise); the reconnect loop runs the 5.2 classifier for every non-terminal remote job;
-      `Lost` (terminal) and `Cancelling` (transient) join `JobStatus` (ADR-024 d); schema v21 (renumbered: v19 = the 5.1 Part B profile columns, ADR-024 n; v20 = the 5.3 job coordinates, ADR-024 o) adds
-      the re-enqueue counter (incremented **before** the re-enqueue, ADR-024 l), the pending-cancel
-      record, and the pending submit with its refusal counter (ADR-024 m). The
-      `uploading`/`syncing` transient states are not yet assigned to a unit.
+- [ ] **Unit 5.4 — cancel, pending cancel, reconnect loop, new states.** Split by ADR-024 o22.1:
+      - [ ] **5.4a — remote cancel, the pending cancel, `Cancelling`** (ADR-024 o22). One Cancel for a
+            remote job (Withdraw goes; o20.3's confirm moves to it); the cancel is recorded in the DB
+            without the guard and delivered under it (by the click when the guard is free, else first
+            in the job's next status step); Undo until the send is marked; delivery readies the server,
+            classifies before cancelling (a job that already ended keeps its result), then `cancel.sh`;
+            `Cancelling` joins `JobStatus` with l row 3's sweep bound; a cancelled job that ran is
+            fetched as evidence (o17 closed); Retry disabled while the last contact failed. **Schema
+            v21** = `cancel_requested_at`, `cancel_sent_at` (+ CHECKs). Part A proves `cancel.sh`
+            idempotent (Lab harness).
+      - [ ] **5.4b — `Lost`, re-enqueue, `Indeterminate` count** (Decisions d, e, l): `Lost` (terminal)
+            joins `JobStatus`; row 8's orphan sweep; the re-enqueue counter (incremented **before**
+            the re-enqueue, ADR-024 l) and acting on `ReEnqueue`; l row 10's counter. Its own schema
+            version.
+      - [ ] **5.4c — the pending submit** with its refusal counter (ADR-024 m2), re-checked from the
+            poller loop. Its own schema version.
+      The `uploading`/`syncing` transient states are not yet assigned to a unit.
 - [ ] **Unit 5.5 — preflight:** `nprocs`/`%maxcore` vs the profile (cores + RAM budget) and free disk
       space in the profile working dir; no-`%maxcore` → warn-and-propose, never silent-insert
       (ADR-024 h)
