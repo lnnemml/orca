@@ -1,6 +1,6 @@
 # ADR-024: Remote execution under intermittent connectivity
 
-**Status:** Accepted · 2026-10-02 (Proposed → Accepted after the review + acceptance amendments below) · amended 2026-10-03 (probe; probe review; d′ resolution — ready for implementation; l — unit 5.2 script and classifier shape; m — 5.3 submit rules; n — 5.1 Part B profile and connection test) · amended 2026-10-05 (o — 5.3 transport, sync and monitoring; accepted after DESIGN round 4; o13 — Part A2 amendments, accepted after DESIGN review 2026-10-05; o14 — B1 amendments, accepted after DESIGN review 2026-10-05) · amended 2026-10-06 (o15 — B1 Part B: the in-flight guard's scope, accepted after DESIGN review 2026-10-06; o16 — B2: the remote live log is pushed, accepted after DESIGN review 2026-10-06; o17 — B2 Part A: classifier `Cancelled` terminal, drain while watched, accepted after DESIGN review 2026-10-06; o18 — B2 Part B: exit leaves in-flight ssh/rsync to the OS, accepted after DESIGN review 2026-10-06)
+**Status:** Accepted · 2026-10-02 (Proposed → Accepted after the review + acceptance amendments below) · amended 2026-10-03 (probe; probe review; d′ resolution — ready for implementation; l — unit 5.2 script and classifier shape; m — 5.3 submit rules; n — 5.1 Part B profile and connection test) · amended 2026-10-05 (o — 5.3 transport, sync and monitoring; accepted after DESIGN round 4; o13 — Part A2 amendments, accepted after DESIGN review 2026-10-05; o14 — B1 amendments, accepted after DESIGN review 2026-10-05) · amended 2026-10-06 (o15 — B1 Part B: the in-flight guard's scope, accepted after DESIGN review 2026-10-06; o16 — B2: the remote live log is pushed, accepted after DESIGN review 2026-10-06; o17 — B2 Part A: classifier `Cancelled` terminal, drain while watched, accepted after DESIGN review 2026-10-06; o18 — B2 Part B: exit leaves in-flight ssh/rsync to the OS, accepted after DESIGN review 2026-10-06; o19 — B3: the poller's remote state reaches the view, accepted after DESIGN review 2026-10-06) · amended 2026-10-07 (o20 — B3 Part B: run target remembered app-wide, run target only via Create & Run, Withdraw confirms; accepted after DESIGN review 2026-10-07) · amended 2026-10-17 (o21 — Cancel refuses a live remote job before the guard; accepted after DESIGN review 2026-10-17)
 
 Refines [ADR-003](adr-003-execution-backend.md) (the `ExecutionBackend` trait + job state
 machine) and extends [ADR-023](adr-023-server-agnostic-remote-execution.md) (one `SshBackend`
@@ -1199,7 +1199,7 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
        remote submit persists it as `Queued` with coordinates (o3.1), and the local cancel's later,
        separately locked status read sees `Queued` and records a local `Cancelled` on a live remote
        job. o14.5's entry check alone does not close this; the guard, claimed before the job is read,
-       does. A local `queued`/`running` job's id is otherwise claimed only for the instant a remote
+       does *(the read that acts; o21's pre-check before it only refuses)*. A local `queued`/`running` job's id is otherwise claimed only for the instant a remote
        command takes to refuse it (the remote commands claim before they read; the B2 poller polls
        remote jobs only), so a local cancel is at worst refused with a conflict error, never
        misdirected. A cancel of a draft that a remote submit holds is refused, by design.
@@ -1213,13 +1213,15 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
        negative control.
     3. **Shape:** the guard lives in memory and resets on launch (item 4). A command claims it before
        any work on the job — the remote commands in `guarded_blocking` before `spawn_blocking`,
-       moving it into the task; `cancel_job` as its first statement — and holds it until that work
+       moving it into the task; `cancel_job` as its first statement *(amended by o21: a live remote
+       job is refused by a read-only pre-check before the claim)* — and holds it until that work
        ends; a busy job is **refused** with a conflict error. The poller (B2) uses a non-blocking
        claim and **skips** a busy job. The DB lock is never held across an ssh or rsync call.
     4. Negative controls (B1 Part B, `wiki/log.md` 2026-10-06): the guard dropped at the start of the
        blocking work; the claim moved inside the task; a command bypassing the guarded path; cancel's
        claim moved below its job read — each turns a test red. Cancel's is a source-order pin (no
-       `AppHandle` test harness), a weaker kind of evidence than a behavioural race test.
+       `AppHandle` test harness), a weaker kind of evidence than a behavioural race test *(superseded by o21.5:
+       behavioural tests through `cancel_job_guarded`, the pin retargeted to the guarded read)*.
     5. **Propagation:** item 4's guard bullet and o14.5 (marked); `modules/execution-backends.md`'s
        guard section; the header comment of `src-tauri/src/in_flight.rs`; ROADMAP B2 (delete joins the
        guard).
@@ -1577,6 +1579,62 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
           of the current one, turns it red.
     5. **Propagation:** o5 (marked); ROADMAP B3 ("per project" marked); `modules/remote-jobs.md`
        ("The view", "Not built yet"); `modules/frontend.md`.
+21. **Cancel refuses a live remote job before the guard** (2026-10-17; found in Anton's live gate of
+    B3 Part B, decided by Anton). It refines o15.1, o15.3 and o15.4 for `cancel_job` only; nothing
+    else changes. Accepted after DESIGN review (PASS WITH FINDINGS, findings applied) on 2026-10-17.
+    1. **Symptom and cause.** While a remote job's server was unreachable, Cancel answered
+       `conflict: an operation on job … is already in progress` on most clicks (Anton's live gate,
+       `wiki/log.md` 2026-10-17), never the real reason. The poller's status step holds the job's
+       guard through its ssh calls: the label call for a `queued` job, the collect for both. A connect
+       that hangs (packets silently dropped) costs up to `ConnectTimeout` (10 s, `remote/ssh.rs`), a
+       collect up to its run timeout. The step's period is 15 s, stamped at its start, so a 10 s hang
+       keeps the guard busy about ⅔ of the time. A refused connection or an unresolvable host fails
+       fast. `cancel_job` claimed the guard as its first statement (o15.3), so the conflict hid
+       o14.5's refusal ("remote cancel arrives in unit 5.4").
+    2. **Rule.** Before it claims the guard, `cancel_job` reads the row once under the DB lock (one
+       `get_job_conn`). If that read fails (not found, a lock error), its error is returned as is.
+       If `refuse_if_remote_live` refuses the job — remote and `queued`/`running`, the very predicate
+       of o14.5 — `cancel_job` returns that refusal **without claiming the guard**. In every other
+       case it claims the guard, reads the row again and dispatches, exactly as o15.3 says. That
+       guarded path, and o14.5's entry check in `local_backend::cancel`, are unchanged.
+    3. **Why o15.1's race stays closed.** The pre-check **only refuses; it never acts**. Its premise:
+       **a remote-live row is monotone** — it can only turn terminal (withdraw, the poller's
+       finalise) or be deleted, never back to a draft or a local job. No production code clears the
+       coordinates; the v20 CHECK keeps them all set or all NULL. The only way to gain coordinates is
+       the draft→`queued` persist, which is o15.1's race itself. There the pre-check reads a draft,
+       passes, and the guarded path decides as before. A pre-check that sees a live remote job
+       refuses; if the job turns terminal right after that read, the refusal is stale but harmless:
+       a later Cancel takes the guarded path, which never acts on a terminal remote job.
+    4. **Lifetime.** Unit 5.4 replaces the refusal with remote cancel. While the server is
+       unreachable — inside or outside the window — that is Decision i's pending cancel (its
+       2026-10-03 amendment; "inside the window" clarifies, it does not change). The cancel is
+       stored and runs first on reconnect; the job's status does not change meanwhile; the view shows
+       "cancel pending". Anton re-confirmed this on 2026-10-17 against the alternative of a local
+       "forget" (mark the row cancelled while the job may still run on the server), which stays
+       rejected: Decision c, and rule #9. **Left to 5.4's amendment:** how a pending cancel meets
+       the guard. *Lean, not decided:* recording the intent needs no server call and is not refused
+       while the poller holds the guard. Retry and Withdraw meet the same conflict while the server
+       is unreachable; their true answer is a transport failure anyway, so 5.4 decides them too.
+    5. **Seam and negative controls** (behavioural; o15.4's cancel pin was only source order).
+       - **Seam:** `pub(crate) fn cancel_job_guarded(in_flight: &InFlight, db: &DbState, id: &str,
+         dispatch: impl FnOnce(Job) -> Result<(), AppError>) -> Result<(), AppError>`, the twin of
+         `delete_job_guarded`: the pre-check (a named helper), then `in_flight.acquire(id)?`, the
+         guarded locked read, then `dispatch(job)` with the guard held. `cancel_job` passes the
+         backend dispatch (`Backend::for_job(app, &job)?.cancel(…)`).
+       - **Tests**, each with the job's guard held unless stated: (a) a remote `queued` row, then a
+         `running` one → the o14.5 refusal, not `Conflict`, and `dispatch` is not called; (b) a local
+         draft → `Conflict`, no dispatch; (c) a local `queued` row → `Conflict`, no dispatch (the
+         pre-check never acts); (d) guard free, a terminal remote row → `dispatch` gets the job, and
+         inside it `in_flight.try_acquire(id)` is `None` (the guard is held while the action runs).
+       - **Pin, retargeted:** the claim precedes the *guarded* read (the core body has exactly one
+         `get_job_conn(`, after `acquire`; the pre-check's read lives in its helper).
+       - **Controls that must turn red:** the pre-check moved after the claim → (a); the pre-check
+         dropped → (a); the local dispatch moved before the claim → (c); the guard bound as `let _ =`
+         → (d); the guarded read moved above the claim → the pin.
+    6. **Propagation:** o15.1, o15.3 and o15.4 (marked); `modules/execution-backends.md` (the guard
+       section and its Tests paragraph); the header comment of `src-tauri/src/in_flight.rs`;
+       `cancel_job`'s doc comment and the o15.4 pin test in `commands/jobs.rs`; ROADMAP unit 5.4
+       (pending cancel while unreachable, and its meeting with the guard).
 
 ## Alternatives rejected
 

@@ -11033,3 +11033,18 @@ profile was never verified. Next: **5.3** `SshBackend` wiring.
   main checkout and from a root whose path contains `.claude/wiki/target`: trees ignored, `src/App.tsx`,
   `src/x/target/y.ts` watched; the old unanchored list ignores everything from the second root (control bites).
   Accepted limit (measured): a root containing `{`, `(` or `|` fails open (trees stay watched, `src/` never ignored).
+
+## [2026-10-17] decision | ADR-024 o21 — Cancel refuses a live remote job before the guard
+- Closes this day's session-entry fork "what Cancel means while the server is unreachable": Anton
+  chose the deferred cancel, which turned out to be Decision i's 2026-10-03 amendment already (a
+  pending cancel, run first on reconnect, status unchanged meanwhile). Re-confirmed, not new; the
+  local "forget" stays rejected (Decision c, rule #9). How a pending cancel meets the in-flight guard
+  is left to 5.4's amendment (ROADMAP 5.4 updated).
+- o21 (for 5.3): `cancel_job` reads the row once before claiming the guard and returns
+  `refuse_if_remote_live`'s refusal without the claim; every other case takes the o15.3 guarded path
+  unchanged. Safe because the pre-check only refuses and a remote-live row is monotone (only
+  terminal or deleted). Seam `cancel_job_guarded` with behavioural tests (a)–(d) and the o15.4 pin
+  retargeted to the guarded read (o21.5).
+- DESIGN review: PASS WITH FINDINGS (MED-1 seam/tests and the pin that would go red; MED-2
+  propagation; LOW-3..7 wording, premise, read error, status line now lists o19–o21) — all applied.
+- Next: implementer (opus) for o21 → verifier CODE → commit.

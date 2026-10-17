@@ -1489,8 +1489,11 @@ preflight. The remaining items (remote `orca_plot`, pause) are not numbered yet.
               Anton: measure first, stagger only if it bites); kill ORCA's main process mid-run →
               does `output.out` keep growing after `.exit_code` (o18 finality residual).
 - [ ] **Unit 5.4 — cancel, pending cancel, reconnect loop, new states.** The 5.2 cancel script over
-      ssh; a cancel made outside the window is stored as pending and runs first on reconnect
-      (ADR-024 i); the reconnect loop runs the 5.2 classifier for every non-terminal remote job;
+      ssh; a cancel made while the server is unreachable (outside the window or not) is stored as
+      pending and runs first on reconnect, the status unchanged meanwhile (ADR-024 i; re-confirmed in
+      o21.4); 5.4's amendment decides how a pending cancel meets the in-flight guard (lean: recording
+      the intent needs no server call and is not refused while the poller holds the guard; Retry and
+      Withdraw while unreachable likewise); the reconnect loop runs the 5.2 classifier for every non-terminal remote job;
       `Lost` (terminal) and `Cancelling` (transient) join `JobStatus` (ADR-024 d); schema v21 (renumbered: v19 = the 5.1 Part B profile columns, ADR-024 n; v20 = the 5.3 job coordinates, ADR-024 o) adds
       the re-enqueue counter (incremented **before** the re-enqueue, ADR-024 l), the pending-cancel
       record, and the pending submit with its refusal counter (ADR-024 m). The
