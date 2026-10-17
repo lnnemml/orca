@@ -365,3 +365,24 @@ lines in `/proc/net/unix`. Scratch `~/.orcastudio-probe-b0/` with its own `TS_SO
 An **other-uid socket with the slot layout** `<dir>/tsp/slot<N>.sock` (needs a second account; the
 admin account is not used by agents). **Repeat note:** `submit.sh` uses `$HOME/.orcastudio-submit.lock`;
 a probe running it must set `HOME=<scratch>` (this run created and then removed the real lock file).
+
+## rsync when ssh cannot connect (2026-10-17)
+
+Measured on the laptop for unit 5.4a's last contact (ADR-024 o22.8: is an rsync that never reached
+the server told apart from one the server answered?). rsync 3.2.7 (protocol 31), OpenSSH 9.6p1, the
+production transport options (`-e 'ssh -o BatchMode=yes -o ConnectTimeout=…'`), into/out of an empty
+scratch dir:
+
+| case | command (abridged) | stderr | rc |
+|---|---|---|---|
+| unresolvable host | `rsync -a -e 'ssh …' nonexistent.invalid:/tmp/x/ dl/` | `ssh: Could not resolve hostname …` / `rsync: connection unexpectedly closed (0 bytes received so far) [Receiver]` / `rsync error: unexplained error (code 255) at io.c(232)` | **255** |
+| refused port | `… -e 'ssh … -p 1' 127.0.0.1:/tmp/x/ dl/` | `ssh: connect to host 127.0.0.1 port 1: Connection refused` + the same two rsync lines | **255** |
+| connect timeout | `… -e 'ssh … ConnectTimeout=2' 10.255.255.1:/tmp/x/ dl/` | `ssh: connect to host 10.255.255.1 port 22: Connection timed out` + the same | **255** |
+| upload, refused port | `rsync -a dl/ -e 'ssh … -p 1' 127.0.0.1:/tmp/x/` | as above, `[sender]` | **255** |
+
+**Fact:** when ssh cannot connect, rsync exits **255**, download and upload alike — the same code as
+ssh's own failure, so one rule (`remote::contact::contact_of`: exit 255 = no answer) covers both. With
+item 9 above (a connection dropped mid-transfer → rsync rc **12**), rc 12 is one measured way of
+losing the server, but it is rsync's generic "protocol data stream" code and its other causes are not
+measured here, so the contact rule leaves it undetermined rather than read it either way. **Not measured:** rc on a link that dies silently mid-transfer without our timeout firing
+(no `--timeout` is passed; the runner's timeout bounds it).

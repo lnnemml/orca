@@ -15,7 +15,8 @@
 //! draft is polled once it has coordinates (o16.2).
 //!
 //! **The memory** ([`PollerMemory`]) lives for one launch and starts empty (o item 4): the
-//! fetching-outcome flag, the consecutive failed fetches (the strikes), and when each step last ran.
+//! fetching-outcome flag, the consecutive failed fetches (the strikes), the consecutive failed
+//! cancel sends (o22.4.5), and when each step last ran.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
@@ -33,6 +34,12 @@ use crate::ssh_backend::{coordinates, RemoteCoordinates};
 /// After this many consecutive failed fetches of a fetching outcome, automatic fetches stop until a
 /// manual retry (o item 4).
 pub const MAX_FETCH_STRIKES: u32 = 3;
+
+/// After this many consecutive answered failures of a delivery (ADR-024 o22.11.3: a ready or `mkjob`
+/// refusal, `cancel.sh` rc ≠ 0, a not-installed trampoline, a broken reply), automatic re-sends of a
+/// pending cancel stop; Cancel is the manual retry (o22.4.5). Transport failures do not count: they
+/// retry on every step, like any check while the host is away.
+pub const MAX_CANCEL_FAILURES: u32 = 3;
 
 /// The poller's periods (o item 4: initial values, tunable, not a contract).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -174,6 +181,13 @@ pub struct JobMemory {
     pub fetching: bool,
     /// Consecutive failed fetches; [`MAX_FETCH_STRIKES`] stops automatic fetches.
     pub strikes: u32,
+    /// Consecutive answered failures of a delivery (o22.11.3); [`MAX_CANCEL_FAILURES`] stops
+    /// automatic re-sends (o22.4.5).
+    pub cancel_failures: u32,
+    /// Consecutive sweeps of a `cancelling` job without progress (o22.5). Only reset here: a Cancel
+    /// click on a `cancelling` job restarts it ([`PollerMemory::restart_sweeps`], o22.12.1); the
+    /// sweeps that count it are 5.4a Part A2b's.
+    pub sweeps_without_progress: u32,
     pub last_status: Option<Instant>,
     pub last_log: Option<Instant>,
     pub in_progress: bool,
@@ -218,6 +232,37 @@ impl PollerMemory {
         if let Some(m) = self.lock().get_mut(job_id) {
             m.strikes = 0;
         }
+    }
+
+    /// Count an answered failure of a delivery (o22.11.3); returns the count now.
+    pub fn cancel_failed(&self, job_id: &str) -> u32 {
+        let mut jobs = self.lock();
+        let m = jobs.entry(job_id.to_string()).or_default();
+        m.cancel_failures += 1;
+        m.cancel_failures
+    }
+
+    /// The cancel was delivered or overtaken, or Cancel was clicked again (the manual retry): the
+    /// re-send bound starts over.
+    pub fn clear_cancel_failures(&self, job_id: &str) {
+        if let Some(m) = self.lock().get_mut(job_id) {
+            m.cancel_failures = 0;
+        }
+    }
+
+    /// Cancel was clicked on a `cancelling` job — the manual sweep retry (o22.12.1): the sweep
+    /// bound starts over.
+    pub fn restart_sweeps(&self, job_id: &str) {
+        if let Some(m) = self.lock().get_mut(job_id) {
+            m.sweeps_without_progress = 0;
+        }
+    }
+
+    /// Seed the sweep count, for the tests: until Part A2b's sweeps count it, it is otherwise only
+    /// ever 0, and a reset of 0 proves nothing.
+    #[cfg(test)]
+    pub(crate) fn set_sweeps_without_progress(&self, job_id: &str, sweeps: u32) {
+        self.lock().entry(job_id.to_string()).or_default().sweeps_without_progress = sweeps;
     }
 
     /// Mark a step of `job_id` started at `now`: `false` (and nothing changed) if one is running.

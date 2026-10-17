@@ -22,8 +22,11 @@ use crate::execution_backend::{Backend, SshBackend};
 use crate::in_flight::{InFlight, InFlightGuard};
 use crate::poller::app::AppSink;
 use crate::poller::live_log::LiveLog;
+use crate::poller::plan::PollerMemory;
 use crate::poller::remote_state::{RemoteStateRead, RemoteStates};
 use crate::poller::{PollerSink, StatusStep};
+use crate::remote::contact::{Contact, ContactRunner};
+use crate::remote::ssh::SystemRunner;
 use crate::models::job::{Job, JobStatus};
 use crate::ssh_backend::{LabelReport, PalAlignment, SubmitAttempt, SubmitOutcome, WithdrawReport};
 
@@ -135,8 +138,9 @@ pub(crate) async fn submit_to_server(app: AppHandle, id: String, ssh: SshBackend
     run_guarded(app, id, "submit", move |_, job| ssh.submit_attempt(&job.id).map(SubmitResponse::from)).await
 }
 
-/// Drop job `job_id`'s remote record, then hand back `result` (ADR-024 o19.3). A retry or a
-/// withdraw changes what the server holds whatever it returns — success, refusal or transport
+/// Drop job `job_id`'s remote record, then hand back `result` (ADR-024 o19.3; the withdraw's —
+/// the retry writes its contact instead, [`note_retry_after`], o22.8). A withdraw changes what the
+/// server holds whatever it returns — success, refusal or transport
 /// failure — so the record (e.g. a `NotOnServer` that offers a retry the server would now refuse)
 /// goes, and the next status step re-derives it. Called inside the guarded work with the work's
 /// result **as a value**, so the removal runs first and no `?` can skip it; a refusal by the guard
@@ -151,13 +155,40 @@ fn forget_in_app<T>(app: &AppHandle, job_id: &str, result: Result<T, AppError>) 
     forget_after(&app.state::<RemoteStates>(), &AppSink(app.clone()), job_id, result)
 }
 
+/// Write a `retry_remote_submit` outcome's contact to job `job_id`'s remote record, then hand back
+/// `result` (ADR-024 o22.8, amending o19.3: the retry **no longer removes** the record — a retry
+/// that failed to connect must leave Retry disabled, which a removed record could not say). What
+/// the contact does is `remote_state::after_retry`: no call → nothing; no answer → a failed check,
+/// `known` kept; an answer → `known` and `check_error` cleared for the next status step to
+/// re-derive. Called inside the guarded work with the work's result **as a value**, so the write
+/// runs first and no `?` can skip it; a refusal by the guard itself never reaches here (o19.4).
+pub(crate) fn note_retry_after<T>(
+    remote: &RemoteStates,
+    memory: &PollerMemory,
+    sink: &dyn PollerSink,
+    job_id: &str,
+    contact: Option<Contact>,
+    result: Result<T, AppError>,
+) -> Result<T, AppError> {
+    remote.note_retry(job_id, contact, memory, sink);
+    result
+}
+
+/// [`note_retry_after`] with the app's record map, memory and sink.
+fn note_retry_in_app<T>(app: &AppHandle, job_id: &str, contact: Option<Contact>, result: Result<T, AppError>) -> Result<T, AppError> {
+    note_retry_after(&app.state::<RemoteStates>(), &app.state::<PollerMemory>(), &AppSink(app.clone()), job_id, contact, result)
+}
+
 /// Retry a remote job the label call finds "not on the server" (o item 3.4), with the profile's
-/// current core mask. Whatever it returns, the job's remote record is dropped (o19.3).
+/// current core mask, through a runner that remembers the last call's contact; whatever it returns,
+/// that contact is written to the job's remote record (o22.8). A job whose cancel is pending is
+/// refused in the retry's locked read ("undo the cancel first").
 #[tauri::command]
 pub async fn retry_remote_submit(app: AppHandle, id: String) -> Result<SubmitResponse, AppError> {
     run_guarded(app, id, "retry", |app, job| {
-        let retried = remote_backend(app, job).and_then(|ssh| ssh.retry(&job.id)).map(SubmitResponse::from);
-        forget_in_app(app, &job.id, retried)
+        let runner = ContactRunner::new(&SystemRunner);
+        let retried = remote_backend(app, job).and_then(|ssh| ssh.retry(&job.id, &runner)).map(SubmitResponse::from);
+        note_retry_in_app(app, &job.id, runner.last(), retried)
     })
     .await
 }
@@ -439,33 +470,66 @@ mod tests {
         }
     }
 
-    /// o19.4/o19.9, the guard scope pinned in the source (the commands are `AppHandle`-bound): retry
-    /// and withdraw drop the record inside their `run_guarded` work, after the backend call and
-    /// before the closure hands its result back, and `forget_after` removes before it returns
-    /// `result`. NEGATIVE CONTROLS: move the `forget_in_app` call after `.await` (outside the
-    /// guarded closure) → red; return `result` before removing in `forget_after` → red.
+    /// o19.4/o19.9, the guard scope pinned in the source (the commands are `AppHandle`-bound): the
+    /// withdraw drops the record and the retry writes its contact (o22.8, no longer a removal), each
+    /// inside its `run_guarded` work, after the backend call and before the closure hands its result
+    /// back; `forget_after` and `note_retry_after` write before they return `result`. NEGATIVE
+    /// CONTROLS: move the record call after `.await` (outside the guarded closure) → red; return
+    /// `result` before the write in either helper → red; call `forget_in_app` from the retry again
+    /// → red.
     #[test]
-    fn retry_and_withdraw_forget_the_record_inside_the_guarded_work() {
+    fn retry_and_withdraw_write_the_record_inside_the_guarded_work() {
         let src = include_str!("remote_jobs.rs");
-        for (command, backend) in [
-            (concat!("pub async fn ", "retry_remote_submit("), concat!("ssh.", "retry(&job.id)")),
-            (concat!("pub async fn ", "withdraw_remote_job("), concat!("ssh.", "withdraw(&job.id)")),
+        for (command, backend, write) in [
+            (
+                concat!("pub async fn ", "retry_remote_submit("),
+                concat!("ssh.", "retry(&job.id, &runner)"),
+                concat!("note_retry_", "in_app(app, &job.id, runner.last(),"),
+            ),
+            (concat!("pub async fn ", "withdraw_remote_job("), concat!("ssh.", "withdraw(&job.id)"), concat!("forget_", "in_app(app, &job.id,")),
         ] {
             let body = fn_body(src, command);
             let guarded = body.find(concat!("run_", "guarded(app, id,")).expect("goes through run_guarded");
             let work = body.find(backend).expect("the backend call");
-            let forget = body.find(concat!("forget_", "in_app(app, &job.id,")).unwrap_or_else(|| panic!("{command} forgets the record"));
+            let record = body.find(write).unwrap_or_else(|| panic!("{command} writes the record"));
             let awaited = body.find(".await").expect("awaits the guarded work");
-            assert!(guarded < work && work < forget && forget < awaited, "{command}: the removal is inside the guarded work, after the call");
-            let closure_end = body[forget..].find("\n    })").map(|i| forget + i).expect("the closure ends");
-            assert!(closure_end < awaited, "{command}: the removal is inside the closure");
-            assert_eq!(body.matches('?').count(), 0, "{command}: no `?` in the work can skip the removal");
+            assert!(guarded < work && work < record && record < awaited, "{command}: the write is inside the guarded work, after the call");
+            let closure_end = body[record..].find("\n    })").map(|i| record + i).expect("the closure ends");
+            assert!(closure_end < awaited, "{command}: the write is inside the closure");
+            assert_eq!(body.matches('?').count(), 0, "{command}: no `?` in the work can skip the write");
         }
-        let forget = fn_body(src, concat!("pub(crate) fn ", "forget_after<"));
-        let removes = forget.find(concat!("remote.", "remove(job_id, sink);")).expect("forget_after removes");
-        assert!(forget.ends_with("\n    result"), "forget_after ends by returning the result");
-        let returns = forget.rfind("\n    result").expect("then returns the result");
-        assert!(removes < returns, "the removal comes first");
+        let retry = fn_body(src, concat!("pub async fn ", "retry_remote_submit("));
+        assert!(!retry.contains(concat!("forget_", "in_app")), "o22.8: the retry no longer removes the record");
+        for (helper, write) in [
+            (concat!("pub(crate) fn ", "forget_after<"), concat!("remote.", "remove(job_id, sink);")),
+            (concat!("pub(crate) fn ", "note_retry_after<"), concat!("remote.", "note_retry(job_id, contact, memory, sink);")),
+        ] {
+            let body = fn_body(src, helper);
+            let writes = body.find(write).unwrap_or_else(|| panic!("{helper} writes the record"));
+            assert!(body.ends_with("\n    result"), "{helper} ends by returning the result");
+            let returns = body.rfind("\n    result").expect("then returns the result");
+            assert!(writes < returns, "{helper}: the write comes first");
+        }
+    }
+
+    /// o22.8: the retry's contact reaches the record whatever the work returned, and the result
+    /// comes back as it was; the record is kept (a failed contact keeps the label). NEGATIVE CONTROL:
+    /// `let r = result?;` before the write (a `?` skipping it) → red.
+    #[test]
+    fn note_retry_after_writes_the_contact_on_every_outcome() {
+        use crate::remote::submit::Label;
+        let (remote, memory, in_flight) = (RemoteStates::new(), PollerMemory::new(), InFlight::default());
+        let sink = crate::poller::RecordingSink::default();
+        remote.apply(&in_flight.acquire("j1").unwrap(), &StatusStep::Labelled(Label::NotOnServer), &memory, &sink);
+        let failed = Contact::Failed("ssh exited with 255".into());
+        let back: Result<u8, AppError> =
+            note_retry_after(&remote, &memory, &sink, "j1", Some(failed.clone()), Err(AppError::Backend("prepare: ssh failed".into())));
+        assert!(matches!(back, Err(AppError::Backend(_))), "the work's result is handed back unchanged");
+        let state = remote.read("j1").state.expect("the record is kept");
+        assert_eq!((state.known, state.last_contact), (Some(crate::poller::remote_state::Known::Labelled(Label::NotOnServer)), Some(failed)));
+        assert_eq!(note_retry_after(&remote, &memory, &sink, "j1", Some(Contact::Ok), Ok(7u8)).unwrap(), 7);
+        let state = remote.read("j1").state.expect("the record is kept");
+        assert_eq!((state.known, state.last_contact), (None, Some(Contact::Ok)), "answered: the next status step re-derives");
     }
 
     /// The wire shape of `retry_remote_fetch`'s answer.

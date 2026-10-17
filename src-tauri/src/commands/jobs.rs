@@ -391,6 +391,40 @@ pub(crate) fn get_job_conn(conn: &Connection, id: &str) -> Result<Job, AppError>
         .ok_or_else(|| AppError::NotFound(format!("job {id}")))
 }
 
+/// A job's pending cancel (schema v21, ADR-024 o22.2): when the user asked, and when a delivery
+/// marked the send — laptop time, only ever displayed. Both `None`: nothing pending. Read on its
+/// own, not through [`Job`], so the job list's shape does not change in this unit.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct PendingCancel {
+    pub requested_at: Option<String>,
+    pub sent_at: Option<String>,
+}
+
+/// Job `id`'s [`PendingCancel`], or [`AppError::NotFound`].
+pub(crate) fn pending_cancel_conn(conn: &Connection, id: &str) -> Result<PendingCancel, AppError> {
+    conn.query_row(
+        "SELECT cancel_requested_at, cancel_sent_at FROM jobs WHERE id = ?1",
+        params![id],
+        |row| Ok(PendingCancel { requested_at: row.get(0)?, sent_at: row.get(1)? }),
+    )
+    .optional()?
+    .ok_or_else(|| AppError::NotFound(format!("job {id}")))
+}
+
+/// Refuse a manual retry (`retry_remote_submit`, `retry_remote_fetch`) of a job whose cancel is
+/// pending (ADR-024 o22.8): the user asked for the job to end, so retrying it first needs the
+/// cancel undone. Made in the retry's own locked read — the in-flight guard alone does not express
+/// it. A job that is gone has nothing pending; the retry's own read reports it.
+pub(crate) fn refuse_while_cancel_pending(conn: &Connection, id: &str) -> Result<(), AppError> {
+    match pending_cancel_conn(conn, id) {
+        Ok(PendingCancel { requested_at: Some(at), .. }) => Err(AppError::Backend(format!(
+            "job {id} has a cancel pending since {at}: undo the cancel first"
+        ))),
+        Ok(_) | Err(AppError::NotFound(_)) => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
 /// Rename a job's display **title** (unit 3). Mirrors [`rename_group_conn`] but ADDS an
 /// empty-title guard the group rename lacks: **"a job always has a non-empty display title"** is
 /// a data-model invariant, so the refusal lives HERE, at the boundary that owns it (rule #9) —
@@ -903,6 +937,189 @@ fn refuse_cancel_if_remote_live(db: &DbState, id: &str) -> Result<(), AppError> 
         get_job_conn(&conn, id)?
     };
     crate::ssh_backend::refuse_if_remote_live(&job)
+}
+
+// --- Remote cancel: record, deliver, undo (ADR-024 o22.3, unit 5.4a) ---------------------------
+//
+// The `AppHandle`-free cores the cancel and undo commands will run (`spawn_blocking` for cancel,
+// whose delivery makes ssh calls). Until they are wired, `cancel_job` keeps o21's
+// `cancel_job_guarded`.
+
+/// What a Cancel did (ADR-024 o22.3).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+// Not routed yet: `cancel_job` returns it once its shell runs `cancel_job_core` (5.4a Part B).
+#[allow(dead_code)]
+pub(crate) enum CancelResult {
+    /// The cancel is recorded (`already_pending`: it already was, and this click is the manual
+    /// retry) and a delivery ran now, holding the job's guard; `step` is what it did
+    /// ([`Poller::deliver_cancel`](crate::poller::Poller::deliver_cancel)).
+    Delivered { already_pending: bool, step: crate::poller::StatusStep },
+    /// The cancel is recorded, and another operation holds the job (a poller step, a fetch): the
+    /// poller delivers it at the job's next status step. Never refused for being busy.
+    Pending { already_pending: bool },
+    /// The job is `cancelling`: the cancel is already on the server, and this click is the manual
+    /// sweep retry (o22.12.1) — no request is recorded (so no Undo), the sweep bound restarts, and
+    /// the next status step sweeps again.
+    AlreadyOnServer,
+    /// The job stopped being a remote job in `queued`/`running` before the cancel could be recorded
+    /// (the server's verdict landed first): nothing was recorded.
+    MovedOn { status: JobStatus },
+    /// Not a live remote job: o21's guarded local path dispatched it to its backend's cancel.
+    Dispatched,
+}
+
+/// What Undo did (ADR-024 o22.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+// Not routed yet: the undo command lands with 5.4a Part B.
+#[allow(dead_code)]
+pub(crate) enum UndoResult {
+    /// The pending cancel is gone; nothing was sent.
+    Undone,
+    /// Refused: the cancel may already be on the server — a delivery has marked the send, or the
+    /// job is `cancelling` (o22.12.1's belt: such a row never holds a request, and if it ever did,
+    /// Undo would not clear it).
+    SendMarked,
+    /// No cancel is pending (never asked, delivered, or the job ended).
+    NothingPending,
+}
+
+/// The one write that records a remote cancel (o22.3 step 1): atomic, and only on a remote job in
+/// `queued`/`running` with nothing pending yet (o22.12.1: a `cancelling` job's cancel is already on
+/// the server, so it never holds a request). A draft (no coordinates) or a local job never matches,
+/// whatever routed it here; the v21 CHECK would refuse it anyway.
+const RECORD_CANCEL_SQL: &str = "UPDATE jobs SET cancel_requested_at = datetime('now') \
+     WHERE id = ?1 AND remote_host IS NOT NULL AND status IN ('queued', 'running') \
+     AND cancel_requested_at IS NULL";
+
+/// What the record write found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Intent {
+    Recorded,
+    AlreadyPending,
+    /// A remote `cancelling` job: nothing recorded (o22.12.1).
+    OnServer,
+    MovedOn(JobStatus),
+}
+
+/// Cancel job `id` (ADR-024 o22.3), the body the cancel command will run:
+/// 1. **one locked pre-read** of the row (o21's pre-check, which now routes instead of refusing);
+/// 2. a remote job in `queued`/`running`/`cancelling` → [`record_then_deliver`]: the cancel is
+///    recorded **without the guard**, then delivered now if the guard is free, else left pending; a
+///    `cancelling` job records nothing and is `AlreadyOnServer` (o22.12.1);
+/// 3. any other job (local, draft, terminal) → [`cancel_guarded_or_record`], o21's guarded path.
+///
+/// `dispatch` is the backend's cancel for the guarded path (`Backend::for_job(..).cancel`).
+// Not routed yet: `cancel_job`'s shell calls it in 5.4a Part B.
+#[allow(dead_code)]
+pub(crate) fn cancel_job_core(
+    poller: &crate::poller::Poller<'_>,
+    id: &str,
+    dispatch: impl FnOnce(Job) -> Result<(), AppError>,
+) -> Result<CancelResult, AppError> {
+    let job = {
+        let conn = poller.db.lock()?;
+        get_job_conn(&conn, id)?
+    };
+    if crate::ssh_backend::is_remote_live(&job) {
+        return record_then_deliver(poller, id, None);
+    }
+    cancel_guarded_or_record(poller, id, dispatch)
+}
+
+/// o21's guarded path for a job the pre-read did not find remote-live: claim the guard (a busy job
+/// is refused — o15.1's race), read the row again, and dispatch it with the guard held. If that
+/// read finds a remote-live row — a remote submit persisted the draft between the two reads — the
+/// cancel goes **once** to the record path, with the guard it already holds (o22.3, L3), instead
+/// of dispatching a stale local cancel. The record path never comes back here.
+pub(crate) fn cancel_guarded_or_record(
+    poller: &crate::poller::Poller<'_>,
+    id: &str,
+    dispatch: impl FnOnce(Job) -> Result<(), AppError>,
+) -> Result<CancelResult, AppError> {
+    let guard = poller.in_flight.acquire(id)?;
+    let job = {
+        let conn = poller.db.lock()?;
+        get_job_conn(&conn, id)?
+    };
+    if crate::ssh_backend::is_remote_live(&job) {
+        return record_then_deliver(poller, id, Some(guard));
+    }
+    dispatch(job)?;
+    Ok(CancelResult::Dispatched)
+}
+
+/// o22.3 steps 1–3: record the cancel (one atomic write, no guard) — on a `cancelling` job record
+/// nothing and restart the sweep bound instead (o22.12.1) — restart the re-send bound (a click is the
+/// manual retry, o22.4.5), then deliver with `held` or a guard claimed **without
+/// waiting** — a busy job leaves the cancel pending for the poller, never a conflict. The database
+/// lock is released before the claim and before any ssh call.
+fn record_then_deliver(
+    poller: &crate::poller::Poller<'_>,
+    id: &str,
+    held: Option<crate::in_flight::InFlightGuard>,
+) -> Result<CancelResult, AppError> {
+    let already_pending = match record_intent(poller.db, id)? {
+        Intent::Recorded => false,
+        Intent::AlreadyPending => true,
+        Intent::OnServer => {
+            poller.memory.restart_sweeps(id);
+            return Ok(CancelResult::AlreadyOnServer);
+        }
+        Intent::MovedOn(status) => return Ok(CancelResult::MovedOn { status }),
+    };
+    poller.memory.clear_cancel_failures(id);
+    let Some(guard) = held.or_else(|| poller.in_flight.try_acquire(id)) else {
+        return Ok(CancelResult::Pending { already_pending });
+    };
+    let step = poller.deliver_and_record(&guard)?;
+    Ok(CancelResult::Delivered { already_pending, step })
+}
+
+/// [`RECORD_CANCEL_SQL`] under one lock; on 0 rows, the same lock's re-read says why.
+pub(crate) fn record_intent(db: &DbState, id: &str) -> Result<Intent, AppError> {
+    let conn = db.lock()?;
+    if conn.execute(RECORD_CANCEL_SQL, params![id])? == 1 {
+        return Ok(Intent::Recorded);
+    }
+    let job = get_job_conn(&conn, id)?;
+    let pending = pending_cancel_conn(&conn, id)?;
+    Ok(if job.is_remote() && job.status == JobStatus::Cancelling {
+        Intent::OnServer
+    } else if crate::ssh_backend::is_remote_live(&job) && pending.requested_at.is_some() {
+        Intent::AlreadyPending
+    } else {
+        Intent::MovedOn(job.status)
+    })
+}
+
+/// Undo a pending cancel (ADR-024 o22.3): one atomic write that clears `cancel_requested_at` only
+/// while the send is **not marked** and the job is `queued`/`running` (o22.12.1's belt: a
+/// `cancelling` job's cancel is on the server), and **no guard**, so it is never refused for a busy
+/// poller.
+/// Sound against a delivery because the delivery marks the send under the lock, re-checking the
+/// request, before it spawns `cancel.sh` (o22.4.5): an Undo that lands first wins and nothing is
+/// sent; one that comes after the mark is refused. On 0 rows, the same lock's re-read says why.
+// Not routed yet: the undo command lands with 5.4a Part B.
+#[allow(dead_code)]
+pub(crate) fn revoke_cancel_core(db: &DbState, id: &str) -> Result<UndoResult, AppError> {
+    let conn = db.lock()?;
+    let undone = conn.execute(
+        "UPDATE jobs SET cancel_requested_at = NULL \
+         WHERE id = ?1 AND cancel_requested_at IS NOT NULL AND cancel_sent_at IS NULL \
+         AND status IN ('queued', 'running')",
+        params![id],
+    )?;
+    if undone == 1 {
+        return Ok(UndoResult::Undone);
+    }
+    let status = get_job_conn(&conn, id)?.status;
+    Ok(match pending_cancel_conn(&conn, id)? {
+        PendingCancel { sent_at: Some(_), .. } => UndoResult::SendMarked,
+        PendingCancel { requested_at: Some(_), .. } if status == JobStatus::Cancelling => UndoResult::SendMarked,
+        _ => UndoResult::NothingPending,
+    })
 }
 
 /// Delete a job (Phase 4.7.1): its DB row (with FK cleanup; `results` cascade) and,

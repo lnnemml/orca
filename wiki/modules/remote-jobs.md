@@ -58,8 +58,11 @@ must be one component.
 **Remote-live** = a remote job in `queued`, `running` or `cancelling`. Every predicate that keeps a
 live remote job uses this one set: `poller::plan::candidates` (SQL), `poller::is_live` (behind
 `live_row`), `poller::set_message` (SQL), the poller's `mark_cancelled_conn` `from` list,
-`ssh_backend::refuse_if_remote_live` (behind `delete_job_conn`, `local_backend::cancel` and
-`cancel_remote`) and `server_profiles::live_remote_jobs` (behind `refuse_while_live`). The local paths
+`ssh_backend::is_remote_live` (behind `refuse_if_remote_live` — itself behind `delete_job_conn`,
+`local_backend::cancel` and `cancel_remote` — and the cancel core's routing), the delivery's mark and
+clears in `poller/cancel.rs`, and `server_profiles::live_remote_jobs` (behind `refuse_while_live`).
+The one deliberate exception is the cancel **record** write (`commands::jobs::RECORD_CANCEL_SQL`):
+`queued`/`running` only (ADR-024 o22.12.1). The local paths
 (`next_local_queued_job`, `reconcile_on_startup`) select explicit statuses with `remote_host IS NULL`
 and never see `cancelling`. `JobStatus::from_db` has a wildcard arm, so its explicit `"cancelling"`
 arm is pinned by a test, not by the compiler.
@@ -73,8 +76,16 @@ where `cancel_requested_at` is set; `cancelling` only on a remote job. **Every t
 remote row clears both columns in the same statement** — `finalize_job_conn` (always; a no-op on a
 local row) and `ssh_backend::mark_cancelled_conn` — so a forgotten clear is a failed write, never a
 silent breach. `record_shown`'s `queued` → `running` is not terminal and keeps them. The arm is
-guarded on `jobs.status` existing: SQLite refuses an added CHECK over a missing column. Nothing writes
-the columns yet: recording, Undo and delivery are 5.4a Part A2/B; the `Job` struct does not carry them.
+guarded on `jobs.status` existing: SQLite refuses an added CHECK over a missing column. Their writers
+are the remote-cancel cores ([execution-backends.md](execution-backends.md#remote-cancel-record-deliver-undo-adr-024-o223o224)):
+the cancel core records `cancel_requested_at` on a `queued`/`running` job only (a `cancelling` job's
+cancel is already on the server, so it never holds a request — ADR-024 o22.12.1); a delivery marks `cancel_sent_at` before it spawns
+`cancel.sh`, and clears both when the cancel is delivered (rc 0, or `.cancelled` already on the
+server when it classifies first) or the job ended first — its write of `cancelling` clears both in
+the same statement, as every write of `cancelling` must; Undo clears `cancel_requested_at` while the
+send is not marked and the job is `queued`/`running`; the terminal writes above clear both. The cores are
+not wired to a command yet (5.4a Part B). The `Job` struct does not carry the columns: they are read
+with `commands::jobs::pending_cancel_conn`.
 
 ## Transfers (`sync.rs`, ADR-024 o items 3.2, 3.3.4, 6)
 
@@ -633,8 +644,14 @@ joins it with unit 5.4b.
   o22.4.6, the premise of re-sending a cancel): a second `cancel.sh cancel` on a dir that already
   holds `.cancelled` — queued and removed, started and killed, never started, and a late cancel
   (row 2) — gives rc 0, keeps `.cancelled`, leaves no `.tmp`, changes nothing else in the dir (every
-  file's bytes, recursively), runs no `tsp -r`, signals neither a same-session member with a foreign
-  cwd nor a bystander session, and the classifier's verdict on a fresh collect is unchanged; two
+  file's bytes, recursively), runs no `tsp -r`, does not signal a same-session member whose cwd is
+  elsewhere (the started fixtures; the witness a cwd-unfiltered sweep would reach), and the
+  classifier's verdict on a fresh collect is unchanged. Two clauses are weaker than they read: the
+  **bystander** process each test also checks sits in its own session with its cwd outside every job
+  dir, so no path of `cancel.sh` could signal it — it witnesses nothing; and in the positive fixtures
+  `.tmp` is already absent before the second run (the first cancel removed it, or the job never
+  started), so "no `.tmp`" cannot fail there — only the kept-`.tmp` control below, which plants a
+  `.tmp` first, shows that clause can fail. Two
   concurrent runs (a running job ×3, a queued job) both end rc 0 with one verdict and no temp marker
   left; a missing or non-directory job dir is rc 3 and nothing is created. Five negative controls run
   the same check on a copy of `cancel.sh` broken in one place (a toggling publish, a no-clobber
@@ -759,6 +776,9 @@ events and `job:log-reset { job_id }`; `watch_job_log(id, open)` counts a job's 
   - `ln -T` is one `linkat` there too;
   - the shipped scripts ran end to end, and their wire output classified correctly with the Rust
     parser.
-- Recording, Undo and delivering a cancel, the sweep counter (unit 5.4a Part A2/B); the DB re-enqueue
-  counter (a later schema version; v21 is 5.4a's pending cancel), `Lost` in `JobStatus`, the orphan
-  sweep (unit 5.4b).
+- The cancel, Undo and delivery cores exist (unit 5.4a Part A2a, [execution-backends.md](execution-backends.md#remote-cancel-record-deliver-undo-adr-024-o223o224));
+  not built yet: the poller's run order around them — delivery instead of the ordinary step while a
+  cancel is pending, the `cancelling` re-sweep and its counter, the evidence fetch of a cancelled job
+  that ran (5.4a Part A2b) — and the commands, the removal of `withdraw_remote_job` and the view
+  (Part B). The DB re-enqueue counter (a later schema version; v21 is 5.4a's pending cancel), `Lost`
+  in `JobStatus`, the orphan sweep (unit 5.4b).

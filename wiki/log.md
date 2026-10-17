@@ -11131,3 +11131,87 @@ profile was never verified. Next: **5.3** `SshBackend` wiring.
   real DB to v21 at 10:46 (clean). Reverting this change needs the two columns dropped and
   `schema_version` set back to 20, or the debug build's `debug_assert_eq!` panics at launch.
 - Next: verifier CODE on A1; then Part A2 (record/undo/delivery cores, sweep counter, evidence path).
+
+## [2026-10-17] feat | Unit 5.4a Part A2a — cancel, undo and delivery cores
+- **Three `AppHandle`-free cores (ADR-024 o22.3–o22.4), built and tested, not wired:** `cancel_job`'s
+  shell still runs o21's `cancel_job_guarded`; Part B moves it onto `cancel_job_core`, and Part A2b puts
+  the delivery into the poller's run order.
+  - `commands::jobs::cancel_job_core(&Poller, id, dispatch) -> CancelResult` — one locked pre-read; a
+    remote-live job is **recorded without the guard** (one atomic `UPDATE` with the remote predicate;
+    0 rows → already pending or `MovedOn`), the cancel-failure count restarts, then `try_acquire`:
+    free → delivered now holding the guard (`Delivered { already_pending, step }`), busy →
+    `Pending` (never `Conflict`). Other jobs take o21's guarded path (`cancel_guarded_or_record`); a
+    guarded read that finds a remote-live row (L3) goes once to the record path with the guard it holds.
+  - `revoke_cancel_core(db, id) -> UndoResult` — one atomic `UPDATE … WHERE cancel_requested_at IS NOT
+    NULL AND cancel_sent_at IS NULL`, no guard; `Undone` / `SendMarked` / `NothingPending`.
+  - `Poller::deliver_cancel(&guard) -> StatusStep` (`poller/cancel.rs`) — o22.4's steps 1–6 exactly:
+    re-read; ready (`ready_server`); label (`NotOnServer`/`SubmitInterrupted` → `mkjob_call`, straight to
+    the send); pre-classify (rows 5/6 → both columns cleared, `EndedBeforeCancel`); the
+    `MAX_CANCEL_FAILURES` bound (`CancelStopped`); **mark (locked, re-checking the request) before
+    `cancel.sh` is spawned**; rc 0 → classify, one write clears both columns (row 3 also →
+    `cancelling`) → `CancelDelivered(outcome)`; transport → `CheckFailed`, columns kept; answered
+    non-rc-0 → `CancelNotSent(why)`, columns kept, one failure counted. No download, no terminal write.
+  - New `StatusStep` variants `CancelNotSent`, `CancelStopped`, `EndedBeforeCancel`, `CancelDelivered`,
+    each mapped in `remote_state::next` (no wildcard). `withdraw_remote` and delivery share
+    `ssh_backend::cancel_call`; `is_remote_live` is the one Rust remote-live predicate.
+- **`last_contact` (o22.8):** `RemoteState` gains `last_contact` (`Ok` / `Failed(why)` / none yet) and
+  `cancel_sends { failures, stopped }`. Every status step and delivery runs through
+  `Poller::record_step`, whose `ContactRunner` remembers the transport result of the last call
+  (`remote/contact.rs`: a transport error or exit 255 is `Failed`, an answer of any kind `Ok`, rsync's
+  12 undetermined); the log step is not a writer. `retry_remote_submit` **no longer removes the
+  record**: its contact goes through `after_retry` (no call → nothing; no answer → `known` kept and the
+  check error set; an answer → `known`/`check_error` cleared). Both retries refuse while a cancel is
+  pending (`refuse_while_cancel_pending`, in `retry_checks` and `Poller::retry_fetch`'s first read).
+  TS mirrors: `RemoteState`, `Contact`, `CancelSends`, the four `StatusStep` variants (types only).
+- **Probe (rule #10):** rsync 3.2.7 exits **255** when ssh cannot connect (unresolvable host, refused
+  port, connect timeout; download and upload) — `orca/remote-sync-probe.md`. That is what lets one
+  "exit 255 = no answer" rule cover ssh and rsync.
+- **A1 verifier LOWs closed:** `record_cancelled` acts on `mark_cancelled_conn`'s count (0 rows →
+  `RowChanged`, through `write_cancelled`). **Correction to the A1 entry above:** its "signals neither
+  a same-session foreign-cwd member nor a bystander session" overstates the witness — the bystander sits
+  in its own session, outside every job dir, so no path of `cancel.sh` could signal it; the real witness
+  is the same-session foreign-cwd member of the started fixtures. And "leaves no `.tmp`" is vacuous in
+  the positive fixtures (`.tmp` is already gone before the second run); only the kept-`.tmp` control
+  shows that clause can fail. `modules/remote-jobs.md` now says both.
+- Tests: cargo 814 → 846 (28 ignored); `cargo build --all-targets` 0 warnings; tsc clean; vitest 1016.
+  Updated expectations (intended shape changes): the B3 record test now expects the label call's `Ok`
+  contact; the retry/withdraw source pin retargets the retry to `note_retry_in_app`; the two TS
+  `record()` helpers gain the new fields.
+- Negative controls (scratch copy, own target dir; each red, then restored): C1 `acquire` for
+  `try_acquire` → `Conflict`; C2 the record `UPDATE` without the remote predicate → the v21 CHECK fails
+  the write on a draft; C3 no pre-classify → a row 6 job becomes `CancelDelivered`; C4 mark after
+  `cancel.sh` + a lost reply → the Undo during the send is `Undone`; C5 clearing the request before rc 0
+  → the cancel is lost after a transport failure; C6 rc 3 as delivered; C7 no ready step → not
+  installed; C8 `Indeterminate` that stops → nothing sent; C9 ended-first clearing only the request →
+  CHECK failure; C10 no bound → a 4th send; C11 the log arm applying its contact → the record's contact
+  flips to `Failed`; C12a/b the retry predicates dropped → a call is made / the fetch retry runs; C13 the
+  L3 re-check dropped → a remote job dispatched locally; C14 `record_cancelled` ignoring its count →
+  `Cancelled` for a row still `running`; C15 a retry that removes the record; C16 a `?` before
+  `note_retry`; C17 every non-zero exit `Failed`; C18 a refused prepare reported as a failed check.
+- **ADR-024 o22.11 applied (same unit, after the report):** the bound counts every answered failure of
+  a delivery (ready refusal, `mkjob` refusal, rc ≠ 0, not-installed trampoline, broken reply; never a
+  transport failure); a stopped delivery still runs steps 1–4 and sends nothing (`mkjob` included); a
+  pre-classify showing `.cancelled` (rows 2/3/4, row 1 with `cancelled`) is delivered at any time —
+  both columns cleared, `CancelDelivered`, no re-send; contact docs state ssh/rsync 255 → `Failed`,
+  rsync 12 → none. cargo 846 → 849; controls (a) classify skipped while stopped, (b) re-send of a row 4
+  already on the server, (c) `mkjob` refusal uncounted — each red; C3–C10 and C18 re-run red on the
+  new code.
+- **ADR-024 o22.12 applied (after CODE + DESIGN):** the record write admits `queued`/`running` only;
+  a click on a `cancelling` job records nothing, restarts the sweep bound
+  (`PollerMemory::restart_sweeps` → `JobMemory.sweeps_without_progress`, counted by A2b) and answers
+  `CancelResult::AlreadyOnServer` (so no Undo there); `CancelStopped { seen: Option<Seen>, unready }`
+  carries the pre-classify outcome or the label (record maps it like `Shown`/`Labelled`), `None` with
+  the prepare's reason when the prepare-only ready (`ssh_backend::check_ready`, no install while
+  stopped) fails; TS `Seen` + the step's `detail`; `plan.rs` counter docs say "answered failures of a
+  delivery". cargo 849 → 854; tsc clean, vitest 1016. Controls K1 (old SQL admitting `cancelling` →
+  `Delivered` instead of `AlreadyOnServer`), K2 (payload dropped → `seen: None`, `Lost` lost), K3
+  (`ready_server` while stopped → an install, `CancelNotSent`) red; the full earlier set re-run red.
+- **Round 3 (CODE FAIL fixed, DESIGN LOWs):** the sweep-restart tests seed the count non-zero first
+  (`#[cfg(test)] PollerMemory::set_sweeps_without_progress`) — before, the count was only ever 0 and
+  dropping the `restart_sweeps` call (K4) or emptying it (K4b) stayed green; both are now red. Undo
+  also requires `status IN ('queued','running')` (o22.12.1's belt; a `cancelling` row built with a
+  request → `SendMarked`, control L2 red without it). While stopped, a prepare with no answer is
+  `CheckFailed`, only an answered one `CancelStopped { seen: None, unready }` (o22.12.3, control L3
+  red). cargo 854 → 856; the full set of 29 controls re-run red on this code.
+- Next: verifier CODE on A2a; then Part A2b (the poller's run order: delivery instead of the ordinary
+  step while a cancel is pending, the `cancelling` re-sweep and its counter, the evidence fetch).

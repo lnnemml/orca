@@ -132,12 +132,19 @@ pub fn recorded_root(coords: &RemoteCoordinates, job_id: &str) -> Result<String,
     }
 }
 
+/// Remote-live (o22.5): a remote job in `queued`, `running` or `cancelling` — the server's to end.
+/// The one Rust predicate behind [`refuse_if_remote_live`] and the cancel core's routing
+/// (`commands::jobs::cancel_job_core`).
+pub(crate) fn is_remote_live(job: &Job) -> bool {
+    job.is_remote() && matches!(job.status, JobStatus::Queued | JobStatus::Running | JobStatus::Cancelling)
+}
+
 /// Refuse to act locally on a remote job that is not terminal (ADR-024 o item 2): a cancel or a
 /// delete here would set a local state the server contradicts — never a local `Cancelled` for a
 /// job that may be on the server (Decision i). Remote-live = `queued`, `running` or `cancelling`
 /// (o22.5). Withdraw is the one exit until unit 5.4a's remote cancel is wired.
 pub fn refuse_if_remote_live(job: &Job) -> Result<(), AppError> {
-    if job.is_remote() && matches!(job.status, JobStatus::Queued | JobStatus::Running | JobStatus::Cancelling) {
+    if is_remote_live(job) {
         return Err(AppError::Backend(format!(
             "job {} is {} on server {}: remote cancel arrives in unit 5.4 \
              (a job that is not on the server can be withdrawn)",
@@ -160,7 +167,7 @@ pub fn cancel_remote(job: &Job) -> Result<(), AppError> {
 // --- Calls ------------------------------------------------------------------------------------
 
 /// The last 500 characters of a stream, trimmed, for a message.
-fn tail(bytes: &[u8]) -> String {
+pub(crate) fn tail(bytes: &[u8]) -> String {
     let text = String::from_utf8_lossy(bytes);
     let text = text.trim();
     let skip = text.chars().count().saturating_sub(500);
@@ -214,7 +221,7 @@ fn install_call(runner: &dyn CommandRunner, host: &str, root: &str) -> Result<()
 }
 
 /// The read-only label call for a remote job, by its recorded coordinates (o item 3.4).
-fn label_call(runner: &dyn CommandRunner, coords: &RemoteCoordinates) -> Result<LabelReport, String> {
+pub(crate) fn label_call(runner: &dyn CommandRunner, coords: &RemoteCoordinates) -> Result<LabelReport, String> {
     let sent = LabelArgs::new(&coords.job_dir, &coords.socket).map_err(|e| format!("label: {e}"))?;
     let facts = call(runner, &coords.host, "label", LABEL, &sent.values(), CALL_TIMEOUT, |out| {
         parse_label_reply(out, &sent)
@@ -452,10 +459,27 @@ fn upload_and_submit(db: &DbState, runner: &dyn CommandRunner, plan: &SubmitPlan
     Ok(SubmitAttempt { outcome, pal: plan.pal })
 }
 
-/// Steps 3–4, shared by submit, retry and withdraw: the read-only prepare call; when `bin/`,
+/// The read-only half of [`ready_server`]: one prepare call, and `Err` when anything is missing —
+/// no install, nothing written on the server. A stopped delivery readies this way (ADR-024 o22.12.3),
+/// so a stopped job causes no server write on any period.
+pub(crate) fn check_ready(runner: &dyn CommandRunner, host: &str, root: &str, job_dir: &str) -> Result<(), String> {
+    let sent = PrepareArgs::new(root, job_dir).map_err(|e| e.to_string())?;
+    let prepared = prepare_call(runner, host, &sent)?;
+    if prepared.ready() {
+        return Ok(());
+    }
+    Err(format!(
+        "prepare: the server is not ready (not hashing right {:?}, bin/ {}, tsp/ {}); a stopped delivery installs nothing",
+        prepared.missing(),
+        prepared.bin_exists,
+        prepared.tsp_exists
+    ))
+}
+
+/// Steps 3–4, shared by submit, retry, withdraw and a cancel's delivery (o22.4.2): the read-only prepare call; when `bin/`,
 /// `tsp/` or any uploaded script is missing, the install call and then the prepare call again —
 /// every script must now hash right (the post-condition, rule #9). Which step failed, and why.
-fn ready_server(runner: &dyn CommandRunner, host: &str, root: &str, job_dir: &str) -> Result<(), (SubmitStep, String)> {
+pub(crate) fn ready_server(runner: &dyn CommandRunner, host: &str, root: &str, job_dir: &str) -> Result<(), (SubmitStep, String)> {
     let sent = PrepareArgs::new(root, job_dir).map_err(|e| (SubmitStep::Prepare, e.to_string()))?;
     if prepare_call(runner, host, &sent).map_err(|r| (SubmitStep::Prepare, r))?.ready() {
         return Ok(());
@@ -604,13 +628,14 @@ pub fn resubmit_remote(db: &DbState, runner: &dyn CommandRunner, data_dir: &Path
     upload_and_submit(db, runner, &plan)
 }
 
-/// A retry's read-only preconditions: a remote `queued` job, its profile a run target with the
-/// recorded host and root. Returns the job, its coordinates and root, the profile id and profile.
+/// A retry's read-only preconditions: a remote `queued` job with no cancel pending (o22.8: "undo
+/// the cancel first"), its profile a run target with the recorded host and root. Returns the job, its coordinates and root, the profile id and profile.
 fn retry_checks(
     conn: &rusqlite::Connection,
     job_id: &str,
 ) -> Result<(Job, RemoteCoordinates, String, String, ServerProfile), AppError> {
     let job = get_job_conn(conn, job_id)?;
+    crate::commands::jobs::refuse_while_cancel_pending(conn, job_id)?;
     let (coords, root) = queued_remote(&job)?;
     let profile_id = job.backend_id.clone().ok_or_else(|| AppError::Backend(format!("job {job_id} names no server profile")))?;
     let profile = get_profile_conn(conn, &profile_id)?;
@@ -643,7 +668,7 @@ fn run_call(runner: &dyn CommandRunner, host: &str, sent: &RunArgs) -> Result<(u
 }
 
 /// `mkdir -p <job dir>` and o item 1's shapes re-asserted after it, in one call (o 14.1).
-fn mkjob_call(runner: &dyn CommandRunner, host: &str, root: &str, job_dir: &str) -> Result<(), String> {
+pub(crate) fn mkjob_call(runner: &dyn CommandRunner, host: &str, root: &str, job_dir: &str) -> Result<(), String> {
     let sent = MkjobArgs::new(root, job_dir).map_err(|e| format!("mkjob: {e}"))?;
     call(runner, host, "mkjob", MKJOB, &sent.values(), CALL_TIMEOUT, |out| parse_mkjob_reply(out, &sent))
 }
@@ -687,9 +712,7 @@ pub fn withdraw_remote(db: &DbState, runner: &dyn CommandRunner, job_id: &str) -
     }
     ready_server(runner, &coords.host, &root, &coords.job_dir).map_err(|(_, e)| fail(e))?;
     mkjob_call(runner, &coords.host, &root, &coords.job_dir).map_err(fail)?;
-    let cancel = RunArgs::new(&root, JobScript::Cancel, vec!["cancel".into(), coords.job_dir.clone(), root.clone()])
-        .map_err(|e| fail(e.to_string()))?;
-    let (rc, _, stderr) = run_call(runner, &coords.host, &cancel).map_err(fail)?;
+    let (rc, stderr) = cancel_call(runner, &coords, &root).map_err(fail)?;
     if rc != 0 {
         return Err(fail(format!("cancel.sh exited {rc}: {}", tail(&stderr))));
     }
@@ -697,6 +720,16 @@ pub fn withdraw_remote(db: &DbState, runner: &dyn CommandRunner, job_id: &str) -
         .map_err(|e| fail(format!(".cancelled is published, but {e}")))?;
     let status = record_withdraw(db, job_id, &coords, &outcome)?;
     Ok(WithdrawReport { label: report.label, outcome, status })
+}
+
+/// `cancel.sh cancel <job dir> <root>` through the trampoline, by the recorded coordinates: its rc
+/// and stderr. Shared by the withdraw and a cancel's delivery (o22.4.5). An `Err` is a call that
+/// did not run the script (transport, a broken reply, `not-installed`, refused).
+pub(crate) fn cancel_call(runner: &dyn CommandRunner, coords: &RemoteCoordinates, root: &str) -> Result<(u8, Vec<u8>), String> {
+    let sent = RunArgs::new(root, JobScript::Cancel, vec!["cancel".into(), coords.job_dir.clone(), root.to_string()])
+        .map_err(|e| e.to_string())?;
+    let (rc, _, stderr) = run_call(runner, &coords.host, &sent)?;
+    Ok((rc, stderr))
 }
 
 /// One collect (through the trampoline) + `classify`, with the one retake the classifier may ask

@@ -435,12 +435,26 @@ export interface FetchState {
   stopped: boolean;
 }
 
+/** Mirrors `remote::contact::Contact` (serde `tag = "kind", content = "detail"`): whether the job's
+ *  last guarded ssh/rsync call got an answer (ADR-024 o22.8). `ok` even for a refusal. */
+export type Contact = { kind: "ok" } | { kind: "failed"; detail: string };
+
+/** Mirrors `poller::remote_state::CancelSends`: `stopped` = automatic re-sends of a pending cancel
+ *  stopped until Cancel is clicked again (o22.4.5; computed in Rust from the failure counter). */
+export interface CancelSends {
+  failures: number;
+  stopped: boolean;
+}
+
 /** Mirrors `poller::remote_state::RemoteState` — the structure of a non-terminal remote job's last
- *  check (ADR-024 o19.1). The words stay in the row's `error_message` (o19.2). */
+ *  check (ADR-024 o19.1). The words stay in the row's `error_message` (o19.2). `last_contact`:
+ *  null before the job's first call this launch (o22.8). */
 export interface RemoteState {
   known: Known | null;
   check_error: string | null;
   fetch: FetchState;
+  last_contact: Contact | null;
+  cancel_sends: CancelSends;
 }
 
 /** Payload of the `job:remote-state` event (o19.6): change `seq` of one launch-wide sequence; a
@@ -499,8 +513,13 @@ export interface WithdrawReport {
   status: JobStatus;
 }
 
+/** Mirrors `poller::Seen` (serde `tag = "kind", content = "detail"`): what a stopped cancel
+ *  delivery saw before it declined to send (ADR-024 o22.12.2). */
+export type Seen = { kind: "outcome"; detail: Outcome } | { kind: "label"; detail: Label };
+
 /** Mirrors `poller::StatusStep` (serde `tag = "step", content = "detail"`) — what
- *  `retry_remote_fetch` returns. */
+ *  `retry_remote_fetch` returns; the `cancel_*` / `ended_before_cancel` steps are a cancel's
+ *  delivery (ADR-024 o22.4). */
 export type StatusStep =
   | { step: "busy" }
   | { step: "not_live" }
@@ -511,4 +530,8 @@ export type StatusStep =
   | { step: "cancelled" }
   | { step: "fetch_failed"; detail: { strikes: number; reason: string } }
   | { step: "finalised"; detail: { outcome: Outcome; status: JobStatus; drain_error: string | null } }
-  | { step: "row_changed" };
+  | { step: "row_changed" }
+  | { step: "cancel_not_sent"; detail: string }
+  | { step: "cancel_stopped"; detail: { seen: Seen | null; unready: string | null } }
+  | { step: "ended_before_cancel"; detail: Outcome }
+  | { step: "cancel_delivered"; detail: Outcome };

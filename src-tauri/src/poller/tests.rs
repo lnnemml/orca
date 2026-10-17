@@ -30,17 +30,17 @@ const POLICY: FetchPolicy = FetchPolicy::SMALL_ONLY;
 
 /// A [`World`] whose job is a remote `queued` job at the expected coordinates, with its local job
 /// dir (the upload source: `input.inp`) and a directory standing in for the server's job dir.
-struct Remote {
-    w: World,
-    in_flight: InFlight,
-    memory: PollerMemory,
-    live: std::sync::Arc<LiveLog>,
-    remote: std::sync::Arc<RemoteStates>,
-    sink: RecordingSink,
+pub(super) struct Remote {
+    pub(super) w: World,
+    pub(super) in_flight: InFlight,
+    pub(super) memory: PollerMemory,
+    pub(super) live: std::sync::Arc<LiveLog>,
+    pub(super) remote: std::sync::Arc<RemoteStates>,
+    pub(super) sink: RecordingSink,
 }
 
 impl Remote {
-    fn new() -> Remote {
+    pub(super) fn new() -> Remote {
         let w = World::new();
         let local = w.data_dir().join("jobs").join(JOB);
         std::fs::create_dir_all(&local).unwrap();
@@ -63,16 +63,16 @@ impl Remote {
         Remote { w, in_flight: InFlight::default(), memory: PollerMemory::new(), live, remote, sink }
     }
 
-    fn local(&self) -> PathBuf {
+    pub(super) fn local(&self) -> PathBuf {
         self.w.data_dir().join("jobs").join(JOB)
     }
 
-    fn server(&self) -> PathBuf {
+    pub(super) fn server(&self) -> PathBuf {
         self.w.dir.join("server")
     }
 
     /// The server's job dir after the job ran: these files, written by "the wrapper".
-    fn finished(&self, output: &str, exit_code: &str) {
+    pub(super) fn finished(&self, output: &str, exit_code: &str) {
         let s = self.server();
         std::fs::write(s.join("output.out"), output).unwrap();
         std::fs::write(s.join("stderr.log"), "").unwrap();
@@ -81,7 +81,7 @@ impl Remote {
         std::os::unix::fs::symlink("x", s.join(".submitting")).unwrap();
     }
 
-    fn poller<'a>(&'a self, runner: &'a dyn CommandRunner) -> Poller<'a> {
+    pub(super) fn poller<'a>(&'a self, runner: &'a dyn CommandRunner) -> Poller<'a> {
         Poller {
             db: &self.w.db,
             runner,
@@ -94,7 +94,7 @@ impl Remote {
         }
     }
 
-    fn row(&self) -> (JobStatus, Option<String>) {
+    pub(super) fn row(&self) -> (JobStatus, Option<String>) {
         let job = self.w.job();
         (job.status, job.error_message)
     }
@@ -176,7 +176,7 @@ fn collected(values: &[String], snap: Vec<u8>) -> Reply {
 
 /// `rsync` down: every top-level file and symlink of `server` the filter selects, copied into
 /// `local` (what the real rsync does, gate-tested in `remote::sync`).
-fn download(server: &Path, local: &Path) -> Reply {
+pub(super) fn download(server: &Path, local: &Path) -> Reply {
     for entry in std::fs::read_dir(server).unwrap() {
         let entry = entry.unwrap();
         let name = entry.file_name().to_string_lossy().into_owned();
@@ -195,7 +195,7 @@ fn download(server: &Path, local: &Path) -> Reply {
 }
 
 /// The server's listing of `server`, in the `list` script's format.
-fn listing(values: &[String], server: &Path) -> Reply {
+pub(super) fn listing(values: &[String], server: &Path) -> Reply {
     let entries: Vec<_> = list_dir(server, &|p| !p.contains('/') && download_selects(p, POLICY)).unwrap();
     let mut out = format!("{}entries {}\n", echo(LIST_HEADER, values), entries.len());
     for f in entries {
@@ -210,7 +210,7 @@ fn listing(values: &[String], server: &Path) -> Reply {
 }
 
 /// A `poll_log` reply over `log`, of which only the first `visible` bytes exist yet.
-fn log_reply(values: &[String], log: &[u8], visible: usize) -> Reply {
+pub(super) fn log_reply(values: &[String], log: &[u8], visible: usize) -> Reply {
     let (offset, cap): (usize, usize) = (values[1].parse().unwrap(), values[2].parse().unwrap());
     let size = visible.min(log.len());
     let bytes = if size > offset { &log[offset..size.min(offset + cap)] } else { &[][..] };
@@ -232,11 +232,11 @@ fn server<'a>(r: &'a Remote, snap: Vec<u8>) -> impl Fn(Kind, &[String]) -> Reply
     }
 }
 
-fn completed() -> Vec<u8> {
+pub(super) fn completed() -> Vec<u8> {
     snapshot(false, Some("0\n"), Some(CLEAN_TAIL), (None, None))
 }
 
-const OUTPUT: &str = "line 1\nFINAL SINGLE POINT ENERGY      -76.026760\n                             ****ORCA TERMINATED NORMALLY****\nTOTAL RUN TIME: 0 days 0 hours 0 minutes 1 seconds 234 msec";
+pub(super) const OUTPUT: &str = "line 1\nFINAL SINGLE POINT ENERGY      -76.026760\n                             ****ORCA TERMINATED NORMALLY****\nTOTAL RUN TIME: 0 days 0 hours 0 minutes 1 seconds 234 msec";
 
 fn log_lines(events: &[Event]) -> Vec<String> {
     events.iter().flat_map(|e| match e { Event::Log(_, lines) => lines.clone(), _ => vec![] }).collect()
@@ -480,7 +480,7 @@ fn a_cancelled_outcome_writes_the_row_terminal_without_a_download() {
 // ---- `cancelling` is live (ADR-024 o22.5) and a terminal write clears a pending cancel (o22.2) ----
 
 /// The pending-cancel columns of the job.
-fn pending_cancel(r: &Remote) -> (Option<String>, Option<String>) {
+pub(super) fn pending_cancel(r: &Remote) -> (Option<String>, Option<String>) {
     r.w.db
         .lock()
         .unwrap()
@@ -1125,20 +1125,20 @@ fn a_tick_gives_a_watched_job_log_steps_and_an_unwatched_one_none() {
 // ---- the remote record (ADR-024 o19, unit 5.3 B3 Part A) ---------------------------------------
 
 /// The record of `JOB` now.
-fn record(r: &Remote) -> Option<RemoteState> {
+pub(super) fn record(r: &Remote) -> Option<RemoteState> {
     r.remote.read(JOB).state
 }
 
 /// A `.started` written in an earlier boot (the collector skips `/proc` for it).
-const STARTED_EARLIER_BOOT: &str = "pid=4242\npgid=4242\nsid=4242\nboot_id=9b1d0e2f-3a4c-4d5e-8f60-718293a4b5c6\nstarttime=777\nstarted_at=1\n";
+pub(super) const STARTED_EARLIER_BOOT: &str = "pid=4242\npgid=4242\nsid=4242\nboot_id=9b1d0e2f-3a4c-4d5e-8f60-718293a4b5c6\nstarttime=777\nstarted_at=1\n";
 
 /// The job started in an earlier boot and left no `.exit_code`: `Lost` (row 8).
-fn lost() -> Vec<u8> {
+pub(super) fn lost() -> Vec<u8> {
     snapshot(false, None, None, (Some(STARTED_EARLIER_BOOT), Some(STARTED_EARLIER_BOOT)))
 }
 
 /// The two `.started` reads disagree, on the first snapshot and on its retake: `Indeterminate`.
-fn indeterminate() -> Vec<u8> {
+pub(super) fn indeterminate() -> Vec<u8> {
     snapshot(false, None, None, (None, Some(STARTED_EARLIER_BOOT)))
 }
 
@@ -1160,7 +1160,12 @@ fn a_status_steps_record_is_set_before_it_returns_and_a_withdraw_removes_it_for_
     });
     let poller = r.poller(&fake);
     assert_eq!(poller.status_step(JOB).unwrap(), StatusStep::Labelled(Label::NotOnServer));
-    let labelled = RemoteState { known: Some(Known::Labelled(Label::NotOnServer)), ..RemoteState::default() };
+    // The label call was answered: the record carries that contact too (o22.8).
+    let labelled = RemoteState {
+        known: Some(Known::Labelled(Label::NotOnServer)),
+        last_contact: Some(crate::remote::contact::Contact::Ok),
+        ..RemoteState::default()
+    };
     assert_eq!(record(&r), Some(labelled.clone()), "set at return");
     assert_eq!(r.sink.take_remote_states(), [(JOB.to_string(), 1, Some(labelled))], "emitted at return");
 

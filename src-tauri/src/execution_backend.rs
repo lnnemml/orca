@@ -410,11 +410,13 @@ impl SshBackend {
         crate::ssh_backend::submit_remote(&db, &crate::remote::ssh::SystemRunner, runner.data_dir(), job_id, profile_id)
     }
 
-    /// Retry a job the label call finds "not on the server" (`ssh_backend::resubmit_remote`).
-    pub fn retry(&self, job_id: &str) -> Result<crate::ssh_backend::SubmitAttempt, AppError> {
+    /// Retry a job the label call finds "not on the server" (`ssh_backend::resubmit_remote`), its
+    /// calls through `ssh` — the real runner, wrapped by the command to learn the last contact
+    /// (ADR-024 o22.8).
+    pub fn retry(&self, job_id: &str, ssh: &dyn crate::remote::ssh::CommandRunner) -> Result<crate::ssh_backend::SubmitAttempt, AppError> {
         let db = self.app.state::<DbState>();
         let runner = self.app.state::<crate::local_backend::JobRunner>();
-        crate::ssh_backend::resubmit_remote(&db, &crate::remote::ssh::SystemRunner, runner.data_dir(), job_id)
+        crate::ssh_backend::resubmit_remote(&db, ssh, runner.data_dir(), job_id)
     }
 
     /// Withdraw a job that is not (or not yet) in the server's hands (`ssh_backend::withdraw_remote`).

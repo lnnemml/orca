@@ -207,12 +207,12 @@ fn prepare_args(values: &[String]) -> PrepareArgs {
     }
 }
 
-fn prepare_ready(values: &[String]) -> Reply {
+pub(crate) fn prepare_ready(values: &[String]) -> Reply {
     let sent = prepare_args(values);
     ok(prepare_wire(&sent, &ready_body(&sent)))
 }
 
-fn prepare_fresh(values: &[String]) -> Reply {
+pub(crate) fn prepare_fresh(values: &[String]) -> Reply {
     let body = ["root", "jobs", "job", "bin", "tsp", "wrapper", "cancel", "collect"].map(|n| entry(n, None)).concat();
     ok(prepare_wire(&prepare_args(values), &body))
 }
@@ -225,7 +225,7 @@ fn prepare_wrong_wrapper(values: &[String]) -> Reply {
 }
 
 /// `<root>/bin` reached through a symlink: refused by Rust's check, whatever the wrapper.
-fn prepare_symlinked_bin(values: &[String]) -> Reply {
+pub(crate) fn prepare_symlinked_bin(values: &[String]) -> Reply {
     let sent = prepare_args(values);
     let bin = format!("{}/bin", sent.root);
     let body = ready_body(&sent).replace(
@@ -235,7 +235,7 @@ fn prepare_symlinked_bin(values: &[String]) -> Reply {
     ok(prepare_wire(&sent, &body))
 }
 
-fn install_ok(values: &[String]) -> Reply {
+pub(crate) fn install_ok(values: &[String]) -> Reply {
     ok(format!("{}wrapper installed\ncancel installed\ncollect kept\nend\n", echo(INSTALL_HEADER, values)).into_bytes())
 }
 
@@ -284,7 +284,7 @@ fn happy(kind: Kind, values: &[String]) -> Reply {
 }
 
 /// A mkjob reply whose realpaths are the paths themselves.
-fn mkjob_ok(values: &[String]) -> Reply {
+pub(crate) fn mkjob_ok(values: &[String]) -> Reply {
     let body = format!("{}{}", rec("job", &values[1]), rec("parent", &format!("{}/jobs", values[0])));
     ok(format!("{}{body}end\n", echo(MKJOB_HEADER, values)).into_bytes())
 }

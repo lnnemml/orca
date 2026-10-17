@@ -9,10 +9,15 @@
 //! (o19.1, o19.8): the next status step re-derives it from the server's facts.
 //!
 //! - **One mapping** ([`next`]): what each [`StatusStep`] does to the record, a `match` with no
-//!   wildcard (o19.3).
+//!   wildcard (o19.3). [`next_with`] adds what every step's calls and bounds say: the **last
+//!   contact** (o22.8, the transport result of the step's last ssh/rsync call — `poll_log` is never
+//!   a writer, it holds no guard) and the cancel re-send bound (o22.4.5), both re-read on every
+//!   apply. A retry's outcome has its own mapping ([`after_retry`], o22.8: it no longer removes the
+//!   record).
 //! - **Every write holds the job's in-flight guard** (o19.4): the status step applies its change
-//!   ([`RemoteStates::apply`], which takes the guard) before the guard is released; the retry and
-//!   withdraw commands remove the record inside their guarded work. The one unguarded writer is the
+//!   ([`RemoteStates::apply_with_contact`], which takes the guard) before the guard is released;
+//!   the retry command writes its contact ([`RemoteStates::note_retry`]) and the withdraw command
+//!   removes the record, each inside its guarded work. The one unguarded writer is the
 //!   tick's sweep ([`RemoteStates::retain`]), which touches only jobs that left the candidates and
 //!   have no step in progress.
 //! - **Every change is numbered and emitted under the lock** (o19.5, o19.6): a set or a removal
@@ -28,10 +33,11 @@ use std::sync::{Mutex, MutexGuard};
 
 use serde::Serialize;
 
-use super::plan::{PollerMemory, MAX_FETCH_STRIKES};
-use super::{shown_message, PollerSink, StatusStep};
+use super::plan::{PollerMemory, MAX_CANCEL_FAILURES, MAX_FETCH_STRIKES};
+use super::{is_fetching, shown_message, PollerSink, Seen, StatusStep};
 use crate::in_flight::InFlightGuard;
 use crate::remote::classify::Outcome;
+use crate::remote::contact::Contact;
 use crate::remote::submit::Label;
 
 /// What the last status step learned about the job (o19.1, o19.11): `{ "kind": "labelled",
@@ -65,6 +71,36 @@ impl FetchState {
     }
 }
 
+/// The cancel re-send bound as the view sees it (o22.4.5), re-read from `PollerMemory`'s counter
+/// on every apply, like [`FetchState`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct CancelSends {
+    /// Consecutive deliveries whose `cancel.sh` the server answered with a failure, this launch.
+    pub failures: u32,
+    /// `failures >= MAX_CANCEL_FAILURES`: automatic re-sends stopped until Cancel is clicked again.
+    pub stopped: bool,
+}
+
+impl CancelSends {
+    pub fn from_failures(failures: u32) -> Self {
+        CancelSends { failures, stopped: failures >= MAX_CANCEL_FAILURES }
+    }
+}
+
+/// The bounds a record shows, read from `PollerMemory` at the apply.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Bounds {
+    pub fetch: FetchState,
+    pub cancel: CancelSends,
+}
+
+impl Bounds {
+    fn read(memory: &PollerMemory, job_id: &str) -> Bounds {
+        let m = memory.get(job_id);
+        Bounds { fetch: FetchState::from_strikes(m.strikes), cancel: CancelSends::from_failures(m.cancel_failures) }
+    }
+}
+
 /// One job's record (o19.1).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct RemoteState {
@@ -74,6 +110,11 @@ pub struct RemoteState {
     /// decided); `known` stays what was last seen.
     pub check_error: Option<String>,
     pub fetch: FetchState,
+    /// Whether the job's last guarded ssh/rsync call got an answer (o22.8); `None`: no call yet
+    /// this launch. Retry is offered only while it is not `Failed`.
+    pub last_contact: Option<Contact>,
+    /// The cancel re-send bound (o22.4.5).
+    pub cancel_sends: CancelSends,
 }
 
 /// What `remote_job_state` returns: the job's record (`None`: no record) and the sequence's
@@ -118,10 +159,82 @@ pub fn next(old: Option<&RemoteState>, step: &StatusStep, fetch: FetchState) -> 
         }
         // A host away does not erase what was last seen.
         StatusStep::CheckFailed(why) => state.check_error = Some(why.clone()),
+        // Delivery (o22.4.5): the server answered and the cancel is not delivered — like a failed
+        // check, what was last seen stays.
+        StatusStep::CancelNotSent(why) => state.check_error = Some(why.clone()),
+        // Nothing was sent (the bound, re-read in `next_with`, says why); what the stopped
+        // delivery saw is shown like an ordinary step's (o22.12.2).
+        StatusStep::CancelStopped { seen: Some(Seen::Label(label)), .. } => {
+            state.known = Some(Known::Labelled(*label));
+            state.check_error = None;
+        }
+        StatusStep::CancelStopped { seen: Some(Seen::Outcome(Outcome::Indeterminate)), .. } => {
+            state.check_error = shown_message(&Outcome::Indeterminate)
+        }
+        StatusStep::CancelStopped { seen: Some(Seen::Outcome(outcome)), .. } => {
+            state.known = Some(if is_fetching(outcome) { Known::Fetching } else { Known::Shown(outcome.clone()) });
+            state.check_error = None;
+        }
+        // Nothing could be classified: the prepare's reason, what was last seen kept (o22.12.3).
+        StatusStep::CancelStopped { seen: None, unready } => state.check_error = unready.clone(),
+        // The job ended first: a fetching outcome, the normal fetch path follows (o22.4.4).
+        StatusStep::EndedBeforeCancel(_) => {
+            state.known = Some(Known::Fetching);
+            state.check_error = None;
+        }
+        // Delivered: the post-send verdict, read as an ordinary step reads it.
+        StatusStep::CancelDelivered(Outcome::Indeterminate) => state.check_error = shown_message(&Outcome::Indeterminate),
+        StatusStep::CancelDelivered(outcome) => {
+            state.known = Some(if is_fetching(outcome) { Known::Fetching } else { Known::Shown(outcome.clone()) });
+            state.check_error = None;
+        }
         StatusStep::Busy | StatusStep::RowChanged => return Change::Nothing,
         StatusStep::NotLive | StatusStep::Cancelled | StatusStep::Finalised { .. } => return Change::Remove,
     }
     state.fetch = fetch;
+    Change::Set(state)
+}
+
+/// [`next`], plus what the step's calls and the cancel bound say (o22.4.5, o22.8): a step that
+/// sets the record also takes `bounds.cancel` and, when it made a call, `contact` (no call keeps
+/// the last one); a step that changes nothing else (`RowChanged` after a call) still updates an
+/// existing record's `last_contact` — every guarded call writes it — but creates none.
+pub fn next_with(old: Option<&RemoteState>, step: &StatusStep, bounds: Bounds, contact: Option<Contact>) -> Change {
+    match next(old, step, bounds.fetch) {
+        Change::Remove => Change::Remove,
+        Change::Set(mut state) => {
+            state.cancel_sends = bounds.cancel;
+            if let Some(contact) = contact {
+                state.last_contact = Some(contact);
+            }
+            Change::Set(state)
+        }
+        Change::Nothing => match (old, contact) {
+            (Some(old), Some(contact)) => Change::Set(RemoteState { last_contact: Some(contact), ..old.clone() }),
+            _ => Change::Nothing,
+        },
+    }
+}
+
+/// What a `retry_remote_submit` outcome does to the record (o22.8, amending o19.3's removal): no
+/// call (a refusal before any ssh) changes nothing; a call that got no answer is a failed check —
+/// `known` stays (so a `NotOnServer` keeps its Retry, disabled while `last_contact` is `Failed`),
+/// `check_error` says why; a call the server answered — whatever it answered — leaves the job in a
+/// state only the next status step can name, so `known` and `check_error` are cleared, as the
+/// removal did, and the record keeps its contact and bounds. A job with no record gets one.
+pub fn after_retry(old: Option<&RemoteState>, bounds: Bounds, contact: Option<Contact>) -> Change {
+    let Some(contact) = contact else { return Change::Nothing };
+    let mut state = old.cloned().unwrap_or_default();
+    match &contact {
+        Contact::Failed(why) => state.check_error = Some(why.clone()),
+        Contact::Ok => {
+            state.known = None;
+            state.check_error = None;
+        }
+    }
+    state.last_contact = Some(contact);
+    state.fetch = bounds.fetch;
+    state.cancel_sends = bounds.cancel;
     Change::Set(state)
 }
 
@@ -152,6 +265,14 @@ impl Records {
         };
         sink.remote_state(job_id, self.seq, new.as_ref());
     }
+
+    fn apply(&mut self, job_id: &str, change: Change, sink: &dyn PollerSink) {
+        match change {
+            Change::Nothing => {}
+            Change::Remove => self.change(job_id, None, sink),
+            Change::Set(state) => self.change(job_id, Some(state), sink),
+        }
+    }
 }
 
 impl RemoteStates {
@@ -163,19 +284,39 @@ impl RemoteStates {
         self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// Apply the status step `step` of the job `guard` holds (o19.3). Taking the guard is the
-    /// point: the change is made, and emitted, while the job is still claimed (o19.4), so no later
-    /// command on the job can be overtaken by it. The fetch bound is read from `memory` under R —
-    /// R before M (o19.5).
+    /// [`Self::apply_with_contact`] without a contact: the tests' shorthand. Every production step
+    /// applies with the contact of its last call.
+    #[cfg(test)]
     pub fn apply(&self, guard: &InFlightGuard, step: &StatusStep, memory: &PollerMemory, sink: &dyn PollerSink) {
+        self.apply_with_contact(guard, step, None, memory, sink);
+    }
+
+    /// Apply the status step `step` of the job `guard` holds, with the contact of the step's last
+    /// call ([`next_with`], o19.3, o22.8). Taking the guard is the point: the change is made, and
+    /// emitted, while the job is still claimed (o19.4), so no later command on the job can be
+    /// overtaken by it. The bounds are read from `memory` under R — R before M (o19.5).
+    pub fn apply_with_contact(
+        &self,
+        guard: &InFlightGuard,
+        step: &StatusStep,
+        contact: Option<Contact>,
+        memory: &PollerMemory,
+        sink: &dyn PollerSink,
+    ) {
         let job_id = guard.job_id();
         let mut records = self.lock();
-        let fetch = FetchState::from_strikes(memory.get(job_id).strikes);
-        match next(records.jobs.get(job_id), step, fetch) {
-            Change::Nothing => {}
-            Change::Remove => records.change(job_id, None, sink),
-            Change::Set(state) => records.change(job_id, Some(state), sink),
-        }
+        let bounds = Bounds::read(memory, job_id);
+        let change = next_with(records.jobs.get(job_id), step, bounds, contact);
+        records.apply(job_id, change, sink);
+    }
+
+    /// A `retry_remote_submit` outcome's contact ([`after_retry`], o22.8). The caller holds the
+    /// job's in-flight guard (the retry command's guarded work, o19.4). R before M.
+    pub fn note_retry(&self, job_id: &str, contact: Option<Contact>, memory: &PollerMemory, sink: &dyn PollerSink) {
+        let mut records = self.lock();
+        let bounds = Bounds::read(memory, job_id);
+        let change = after_retry(records.jobs.get(job_id), bounds, contact);
+        records.apply(job_id, change, sink);
     }
 
     /// Drop `job_id`'s record, emitting `null` if there was one. The caller holds the job's
@@ -218,7 +359,7 @@ mod tests {
     const NO_STRIKES: FetchState = FetchState { strikes: 0, stopped: false };
 
     fn with(known: Option<Known>, check_error: Option<&str>) -> RemoteState {
-        RemoteState { known, check_error: check_error.map(String::from), fetch: NO_STRIKES }
+        RemoteState { known, check_error: check_error.map(String::from), fetch: NO_STRIKES, ..RemoteState::default() }
     }
 
     fn set(state: RemoteState) -> Change {
@@ -391,6 +532,8 @@ mod tests {
             known: Some(Known::Labelled(Label::NotOnServer)),
             check_error: Some("x".into()),
             fetch: FetchState::from_strikes(3),
+            last_contact: Some(Contact::Failed("ssh: timeout".into())),
+            cancel_sends: CancelSends::from_failures(1),
         };
         assert_eq!(
             serde_json::to_value(RemoteStateRead { seq: 7, state: Some(state) }).unwrap(),
@@ -399,15 +542,134 @@ mod tests {
                 "state": {
                     "known": { "kind": "labelled", "detail": "not_on_server" },
                     "check_error": "x",
-                    "fetch": { "strikes": 3, "stopped": true }
+                    "fetch": { "strikes": 3, "stopped": true },
+                    "last_contact": { "kind": "failed", "detail": "ssh: timeout" },
+                    "cancel_sends": { "failures": 1, "stopped": false }
                 }
             })
         );
+        assert_eq!(serde_json::to_value(RemoteState::default()).unwrap()["last_contact"], serde_json::Value::Null, "no call yet");
         assert_eq!(
             serde_json::to_value(Known::Shown(Outcome::Lost { orphans: vec![4] })).unwrap(),
             serde_json::json!({ "kind": "shown", "detail": { "outcome": "lost", "orphans": [4] } })
         );
         assert_eq!(serde_json::to_value(Known::Fetching).unwrap(), serde_json::json!({ "kind": "fetching" }));
         assert_eq!(serde_json::to_value(RemoteStateRead { seq: 0, state: None }).unwrap(), serde_json::json!({ "seq": 0, "state": null }));
+    }
+
+    // ---- o22: the delivery's steps, the last contact, the cancel bound, a retry's outcome ----------
+
+    fn bounds(strikes: u32, failures: u32) -> Bounds {
+        Bounds { fetch: FetchState::from_strikes(strikes), cancel: CancelSends::from_failures(failures) }
+    }
+
+    /// o22.4: what each delivery step does to the record — from a record that holds a label and a
+    /// check error, and from none. `CancelNotSent` is a check error (known kept); `CancelStopped`
+    /// shows what it saw like `Shown` / `Labelled` (o22.12.2), or the prepare's reason as a check
+    /// error with `known` kept when it saw nothing; `EndedBeforeCancel` reads `Fetching`; `CancelDelivered` reads
+    /// as an ordinary step reads its verdict (a fetching one as `Fetching`, `Indeterminate` as a
+    /// check error).
+    #[test]
+    fn each_delivery_step_maps_to_its_change() {
+        let old = with(Some(Known::Labelled(Label::NotOnServer)), Some("ssh timed out"));
+        let completed = Outcome::Completed { late_cancel: true };
+        let cancelling = Outcome::Cancelling { session: 2 };
+        let cases: Vec<(StatusStep, Change, Change)> = vec![
+            (
+                StatusStep::CancelNotSent("cancel.sh exited 3".into()),
+                set(with(Some(Known::Labelled(Label::NotOnServer)), Some("cancel.sh exited 3"))),
+                set(with(None, Some("cancel.sh exited 3"))),
+            ),
+            (StatusStep::CancelStopped { seen: None, unready: None }, set(RemoteState { check_error: None, ..old.clone() }), set(with(None, None))),
+            (
+                StatusStep::CancelStopped { seen: None, unready: Some("prepare: refused".into()) },
+                set(with(Some(Known::Labelled(Label::NotOnServer)), Some("prepare: refused"))),
+                set(with(None, Some("prepare: refused"))),
+            ),
+            (
+                StatusStep::CancelStopped { seen: Some(Seen::Label(Label::SubmitInterrupted)), unready: None },
+                set(with(Some(Known::Labelled(Label::SubmitInterrupted)), None)),
+                set(with(Some(Known::Labelled(Label::SubmitInterrupted)), None)),
+            ),
+            (
+                StatusStep::CancelStopped { seen: Some(Seen::Outcome(Outcome::Lost { orphans: vec![] })), unready: None },
+                set(with(Some(Known::Shown(Outcome::Lost { orphans: vec![] })), None)),
+                set(with(Some(Known::Shown(Outcome::Lost { orphans: vec![] })), None)),
+            ),
+            (
+                StatusStep::CancelStopped { seen: Some(Seen::Outcome(Outcome::Indeterminate)), unready: None },
+                set(RemoteState { check_error: shown_message(&Outcome::Indeterminate), ..old.clone() }),
+                set(with(None, shown_message(&Outcome::Indeterminate).as_deref())),
+            ),
+            (
+                StatusStep::EndedBeforeCancel(Outcome::Completed { late_cancel: false }),
+                set(with(Some(Known::Fetching), None)),
+                set(with(Some(Known::Fetching), None)),
+            ),
+            (StatusStep::CancelDelivered(completed), set(with(Some(Known::Fetching), None)), set(with(Some(Known::Fetching), None))),
+            (
+                StatusStep::CancelDelivered(cancelling.clone()),
+                set(with(Some(Known::Shown(cancelling.clone())), None)),
+                set(with(Some(Known::Shown(cancelling)), None)),
+            ),
+            (
+                StatusStep::CancelDelivered(Outcome::Cancelled { started: true }),
+                set(with(Some(Known::Shown(Outcome::Cancelled { started: true })), None)),
+                set(with(Some(Known::Shown(Outcome::Cancelled { started: true })), None)),
+            ),
+            (
+                StatusStep::CancelDelivered(Outcome::Indeterminate),
+                set(RemoteState { check_error: shown_message(&Outcome::Indeterminate), ..old.clone() }),
+                set(with(None, shown_message(&Outcome::Indeterminate).as_deref())),
+            ),
+        ];
+        for (step, from_old, from_none) in cases {
+            assert_eq!(next(Some(&old), &step, NO_STRIKES), from_old, "{step:?} over a record");
+            assert_eq!(next(None, &step, NO_STRIKES), from_none, "{step:?} over none");
+        }
+    }
+
+    /// o22.8: a step that made a call writes its contact; one that made none (`FetchStopped`, a
+    /// `CancelStopped` before the send) keeps the last; `RowChanged` after a call updates an existing
+    /// record but creates none; the removing steps remove. The cancel bound is the counter's now.
+    #[test]
+    fn a_steps_contact_and_the_cancel_bound_reach_the_record() {
+        let failed = Some(Contact::Failed("ssh: timeout".into()));
+        let old = RemoteState { last_contact: Some(Contact::Ok), ..with(Some(Known::Shown(Outcome::Running)), None) };
+        let Change::Set(away) = next_with(Some(&old), &StatusStep::CheckFailed("ssh: timeout".into()), bounds(0, 0), failed.clone()) else {
+            panic!("a failed check sets")
+        };
+        assert_eq!((away.known.clone(), away.last_contact.clone()), (Some(Known::Shown(Outcome::Running)), failed.clone()));
+        let Change::Set(kept) = next_with(Some(&away), &StatusStep::FetchStopped, bounds(3, 0), None) else { panic!("sets") };
+        assert_eq!(kept.last_contact, failed, "no call keeps the last contact");
+        let Change::Set(after) = next_with(Some(&away), &StatusStep::RowChanged, bounds(0, 0), Some(Contact::Ok)) else {
+            panic!("a call on an existing record writes its contact")
+        };
+        assert_eq!(after, RemoteState { last_contact: Some(Contact::Ok), ..away.clone() });
+        assert_eq!(next_with(None, &StatusStep::RowChanged, bounds(0, 0), Some(Contact::Ok)), Change::Nothing, "creates none");
+        assert_eq!(next_with(Some(&away), &StatusStep::Busy, bounds(0, 0), None), Change::Nothing);
+        assert_eq!(next_with(Some(&away), &StatusStep::Cancelled, bounds(0, 0), Some(Contact::Ok)), Change::Remove);
+        let Change::Set(third) = next_with(Some(&old), &StatusStep::CancelNotSent("rc 3".into()), bounds(0, 3), Some(Contact::Ok)) else {
+            panic!("sets")
+        };
+        assert_eq!(third.cancel_sends, CancelSends { failures: 3, stopped: true }, "the third failure already reads stopped");
+    }
+
+    /// o22.8 (amends o19.3): a retry no longer removes the record. No call → nothing; no answer →
+    /// a failed check with `known` kept (Retry stays, disabled); an answer → `known` and the check
+    /// error cleared, contact kept; no record yet → one is made. NEGATIVE CONTROL: make `after_retry`
+    /// return `Change::Remove` → red.
+    #[test]
+    fn a_retrys_outcome_writes_its_contact_and_keeps_the_record() {
+        let labelled = with(Some(Known::Labelled(Label::NotOnServer)), None);
+        assert_eq!(after_retry(Some(&labelled), bounds(0, 0), None), Change::Nothing);
+        let failed = Contact::Failed("ssh exited with 255".into());
+        let Change::Set(away) = after_retry(Some(&labelled), bounds(0, 0), Some(failed.clone())) else { panic!("sets") };
+        assert_eq!(away.known, Some(Known::Labelled(Label::NotOnServer)), "Retry stays, disabled");
+        assert_eq!((away.check_error.as_deref(), away.last_contact), (Some("ssh exited with 255"), Some(failed.clone())));
+        let Change::Set(answered) = after_retry(Some(&labelled), bounds(0, 0), Some(Contact::Ok)) else { panic!("sets") };
+        assert_eq!(answered, RemoteState { last_contact: Some(Contact::Ok), ..RemoteState::default() });
+        let Change::Set(fresh) = after_retry(None, bounds(0, 0), Some(failed.clone())) else { panic!("a record is made") };
+        assert_eq!(fresh.last_contact, Some(failed));
     }
 }

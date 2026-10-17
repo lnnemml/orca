@@ -69,7 +69,14 @@ function fakeBridge(autoReply: Record<string, unknown> = {}) {
 const settle = () => new Promise((r) => setTimeout(r, 0));
 
 function record(over: Partial<RemoteState> = {}): RemoteState {
-  return { known: null, check_error: null, fetch: { strikes: 0, stopped: false }, ...over };
+  return {
+    known: null,
+    check_error: null,
+    fetch: { strikes: 0, stopped: false },
+    last_contact: null,
+    cancel_sends: { failures: 0, stopped: false },
+    ...over,
+  };
 }
 
 const RUNNING = record({ known: { kind: "shown", detail: { outcome: "running" } } });

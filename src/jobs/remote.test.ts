@@ -39,7 +39,14 @@ function job(over: Partial<Job> = {}): Job {
 }
 
 function record(over: Partial<RemoteState> = {}): RemoteState {
-  return { known: null, check_error: null, fetch: { strikes: 0, stopped: false }, ...over };
+  return {
+    known: null,
+    check_error: null,
+    fetch: { strikes: 0, stopped: false },
+    last_contact: null,
+    cancel_sends: { failures: 0, stopped: false },
+    ...over,
+  };
 }
 
 describe("coordinateState (o19.8)", () => {

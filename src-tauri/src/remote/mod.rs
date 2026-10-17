@@ -32,6 +32,8 @@
 //! - [`prepare`] — the read-only pre-upload call (the shapes of the root's components, whether the
 //!   wrapper already hashes right) and the install call (`bin/`, `tsp/`, the wrapper by unique temp
 //!   name + rename) that ready the server before an upload (ADR-024 o items 3.2, 13.1).
+//! - [`contact`] — whether the server answered a call (the transport result a job's remote record
+//!   keeps as `last_contact`, ADR-024 o22.8), and the runner wrapper that records it.
 //! - [`run`] — the trampoline that runs an uploaded `cancel.sh`/`collect.sh` with its values read
 //!   from stdin, and a withdraw's mkjob call (ADR-024 o items 2, 14.1).
 //! - [`sync`] — the rsync argv of upload and download, the download filter (from the shared
@@ -39,6 +41,7 @@
 //!   the parser of the server's listing.
 
 pub mod classify;
+pub mod contact;
 pub mod markers;
 pub mod poll;
 pub mod prepare;

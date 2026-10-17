@@ -33,8 +33,16 @@
 //!    [`MAX_FETCH_STRIKES`] in a row, automatic fetches stop until [`Poller::retry_fetch`].
 //!
 //! Every step's [`StatusStep`] then updates the job's **remote record** ([`remote_state`], o19) —
-//! the labels, the last outcome, a failed check, the fetch bound — while the guard is still held,
-//! and the change reaches the view as `job:remote-state`.
+//! the labels, the last outcome, a failed check, the fetch bound, the cancel re-send bound, and the
+//! **last contact** (o22.8: whether the step's last ssh/rsync call got an answer, recorded by a
+//! `ContactRunner` around the step's runner) — while the guard is still held, and the change
+//! reaches the view as `job:remote-state`.
+//!
+//! **Delivering a pending cancel** ([`cancel`], o22.4): [`Poller::deliver_cancel`] — ready the
+//! server, label, classify, mark, then send `cancel.sh`, and let the server's verdict decide. The
+//! cancel core calls it (`commands::jobs::cancel_job_core`, through [`Poller::deliver_and_record`]);
+//! the cancel command runs that core from 5.4a Part B, and the status step's run order calls the
+//! delivery from Part A2b.
 //!
 //! **The log step** ([`log_step`]), every 2 s while the job is watched (o16): no in-flight guard
 //! (o16.5), no database; see [`live_log`].
@@ -44,6 +52,7 @@
 //! dir), so a concurrent change wins and the step reports it.
 
 pub mod app;
+pub mod cancel;
 pub mod live_log;
 pub mod plan;
 pub mod remote_state;
@@ -54,7 +63,7 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::params;
 
-use crate::commands::jobs::{finalize_job_conn, get_job_conn, set_job_results_conn};
+use crate::commands::jobs::{finalize_job_conn, get_job_conn, refuse_while_cancel_pending, set_job_results_conn};
 use crate::commands::remote_jobs::status_to_emit;
 use crate::commands::settings::DbState;
 use crate::convergence::ConvergenceEvent;
@@ -66,6 +75,7 @@ use crate::local_backend::{
 };
 use crate::models::job::{Job, JobStatus};
 use crate::remote::classify::{FailReason, Outcome};
+use crate::remote::contact::ContactRunner;
 use crate::remote::markers::parse_exit_code;
 use crate::remote::ssh::CommandRunner;
 use crate::remote::submit::Label;
@@ -164,6 +174,42 @@ pub enum StatusStep {
     Finalised { outcome: Outcome, status: JobStatus, drain_error: Option<String> },
     /// The row changed under the step (another writer won): nothing was written.
     RowChanged,
+    /// A delivery ([`Poller::deliver_cancel`], o22.4) that the server answered without delivering:
+    /// `cancel.sh` exited non-zero, or the server could not be readied or the script run (refused,
+    /// not installed, a broken reply). Both pending-cancel columns stay set and the next step tries
+    /// again; a failed send counts toward [`plan::MAX_CANCEL_FAILURES`]. Why → `check_error`.
+    CancelNotSent(String),
+    /// A delivery found the re-send bound reached ([`plan::MAX_CANCEL_FAILURES`] answered failures
+    /// in a row): nothing was sent or written on the server; Cancel clicked again restarts it. It
+    /// still classified (o22.11.4, o22.12.2): `seen` is the server's current verdict (the
+    /// pre-classify's outcome, or the label on the not-on-server path), which the record shows like
+    /// an ordinary step's. `seen` is `None` only when the prepare-only ready was answered with a
+    /// failure (o22.12.3; a prepare without an answer is `CheckFailed`); `unready` is then its
+    /// reason, and `None` otherwise.
+    CancelStopped { seen: Option<Seen>, unready: Option<String> },
+    /// A delivery's pre-cancel classify (o22.4.4) found the job ended without `.cancelled` — row 5
+    /// `Completed`, row 6 `Failed{NonZeroExit | BadExitCode | NoNormalTermination}` — before the
+    /// cancel reached the server. Nothing was sent; both pending-cancel columns were cleared; the
+    /// caller takes the normal fetch path with this (fetching) outcome.
+    EndedBeforeCancel(Outcome),
+    /// `cancel.sh` exited 0: the server holds `.cancelled`, the cancel is **delivered**, and the
+    /// post-send classify says this. Both pending-cancel columns were cleared in the write that
+    /// recorded it; a row 3 `Cancelling` was written `cancelling`. Every other verdict is left as the
+    /// server's to the caller, which acts on it as on an ordinary step's: row 4 `Cancelled` and
+    /// row 1 with `.cancelled` take o22.6's evidence path, row 2 `Completed{late_cancel}` the normal
+    /// fetch, the rest are shown.
+    CancelDelivered(Outcome),
+}
+
+/// What a stopped delivery saw before it declined to send (o22.12.2): `{ "kind": "outcome",
+/// "detail": <Outcome> }` or `{ "kind": "label", "detail": "not_on_server" }`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "kind", content = "detail", rename_all = "snake_case")]
+pub enum Seen {
+    /// The pre-cancel classify's verdict.
+    Outcome(Outcome),
+    /// The label call's "not on the server" / "submit interrupted": nothing to classify.
+    Label(Label),
 }
 
 /// Everything a status step works with.
@@ -196,7 +242,11 @@ impl Poller<'_> {
     /// guard, as every command does; the guard names the job. `clear_strikes` releases
     /// `PollerMemory`'s lock before the record is applied (R before M, o19.5), and the record re-reads
     /// the cleared counter, so a retry whose own step is `CheckFailed` no longer reads stopped.
+    ///
+    /// A job with a pending cancel is refused ("undo the cancel first", o22.8): its locked read is
+    /// the first thing the retry does.
     pub fn retry_fetch(&self, guard: &InFlightGuard) -> Result<StatusStep, AppError> {
+        refuse_while_cancel_pending(&*self.db.lock()?, guard.job_id())?;
         self.memory.clear_strikes(guard.job_id());
         self.run_and_record(guard)
     }
@@ -206,8 +256,27 @@ impl Poller<'_> {
     /// withdraw, a retry) can never be overtaken by this step's record. A step that fails with an
     /// error changes no record.
     fn run_and_record(&self, guard: &InFlightGuard) -> Result<StatusStep, AppError> {
-        let step = self.run_status(guard)?;
-        self.remote.apply(guard, &step, self.memory, self.sink);
+        self.record_step(guard, |poller, guard| poller.run_status(guard))
+    }
+
+    /// A delivery of the job's pending cancel ([`Poller::deliver_cancel`]) and its change to the
+    /// record, made while `guard` is held — the cancel command's path (o22.3).
+    pub(crate) fn deliver_and_record(&self, guard: &InFlightGuard) -> Result<StatusStep, AppError> {
+        self.record_step(guard, |poller, guard| poller.deliver_cancel(guard))
+    }
+
+    /// Run `step` with a runner that remembers the contact of its last call, then apply the step and
+    /// that contact to the record ([`remote_state::next_with`], o22.8). Every ssh/rsync call of a
+    /// status step or a delivery goes through here; the log step does not (o16.5).
+    fn record_step(
+        &self,
+        guard: &InFlightGuard,
+        step: impl FnOnce(&Poller<'_>, &InFlightGuard) -> Result<StatusStep, AppError>,
+    ) -> Result<StatusStep, AppError> {
+        let tracker = ContactRunner::new(self.runner);
+        let traced = Poller { runner: &tracker, ..*self };
+        let step = step(&traced, guard)?;
+        self.remote.apply_with_contact(guard, &step, tracker.last(), self.memory, self.sink);
         Ok(step)
     }
 
@@ -321,18 +390,28 @@ impl Poller<'_> {
     /// (o6 fetches only `Completed` and the `Failed` variants); then the live state is dropped and
     /// `job:status` emitted.
     fn record_cancelled(&self, job_id: &str, coords: &RemoteCoordinates) -> Result<StatusStep, AppError> {
+        self.write_cancelled(job_id, coords, &[JobStatus::Queued, JobStatus::Running, JobStatus::Cancelling])
+    }
+
+    /// [`Self::record_cancelled`]'s write from the statuses `from`. A write that changed no row —
+    /// the live-row check passed, but `mark_cancelled_conn`'s own predicate did not match — is
+    /// `RowChanged`: nothing is announced as cancelled that the database does not hold as such.
+    fn write_cancelled(&self, job_id: &str, coords: &RemoteCoordinates, from: &[JobStatus]) -> Result<StatusStep, AppError> {
         {
             let conn = self.db.lock()?;
             if live_row(&conn, job_id, coords)?.is_none() {
                 return Ok(StatusStep::RowChanged);
             }
-            mark_cancelled_conn(
+            let written = mark_cancelled_conn(
                 &conn,
                 job_id,
                 coords,
                 "Cancelled: the server confirms .cancelled and nothing of the job runs.",
-                &[JobStatus::Queued, JobStatus::Running, JobStatus::Cancelling],
+                from,
             )?;
+            if written == 0 {
+                return Ok(StatusStep::RowChanged);
+            }
         }
         self.memory.forget(job_id);
         self.live.drop_state(job_id);
