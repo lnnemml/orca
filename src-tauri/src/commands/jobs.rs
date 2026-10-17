@@ -848,18 +848,55 @@ pub async fn submit_job(
 /// `ssh_backend::refuse_if_remote_live` (remote cancel is unit 5.4), a terminal one has nothing to
 /// cancel.
 ///
-/// The job's in-flight guard is claimed **before** the job is read: a remote submit holds it from
-/// before its persist step, so a cancel can never see the draft, then act on the `queued` row the
-/// submit just persisted.
+/// The body is [`cancel_job_guarded`]; this shell only supplies the backend dispatch. A live
+/// remote job is refused by a read-only pre-check **before** the in-flight guard is claimed
+/// (ADR-024 o21), so the refusal shows even while the poller holds the guard through a hanging ssh
+/// call. Every other job is read again and dispatched to its backend's cancel with the guard held
+/// (o15.1) — which may still refuse it: a terminal remote job gets `cancel_remote`'s "nothing to
+/// cancel".
 #[tauri::command]
 pub fn cancel_job(app: tauri::AppHandle, id: String) -> Result<(), AppError> {
-    let _in_flight = app.state::<InFlight>().acquire(&id)?;
+    cancel_job_guarded(&app.state::<InFlight>(), &app.state::<DbState>(), &id, |job| {
+        Backend::for_job(app.clone(), &job)?.cancel(&JobHandle(id.clone()))
+    })
+}
+
+/// The `AppHandle`-free body of [`cancel_job`] (ADR-024 o21.5), the twin of
+/// [`delete_job_guarded`], in this order:
+/// 1. [`refuse_cancel_if_remote_live`] — a read-only pre-check that may only **refuse**;
+/// 2. claim the job's in-flight guard (a busy job is refused with a conflict);
+/// 3. read the job again under the DB lock — the read that acts;
+/// 4. `dispatch` it while the guard is still held.
+///
+/// The claim precedes the read that acts, so o15.1's race stays closed: a cancel that pre-checks a
+/// draft passes, and if a remote submit persists that draft as `queued` meanwhile, the submit holds
+/// the guard and this cancel is refused at step 2 — it never acts on the draft it first saw.
+pub(crate) fn cancel_job_guarded(
+    in_flight: &InFlight,
+    db: &DbState,
+    id: &str,
+    dispatch: impl FnOnce(Job) -> Result<(), AppError>,
+) -> Result<(), AppError> {
+    refuse_cancel_if_remote_live(db, id)?;
+    let _in_flight = in_flight.acquire(id)?;
     let job = {
-        let db = app.state::<DbState>();
         let conn = db.lock()?;
-        get_job_conn(&conn, &id)?
+        get_job_conn(&conn, id)?
     };
-    Backend::for_job(app, &job)?.cancel(&JobHandle(id))
+    dispatch(job)
+}
+
+/// [`cancel_job_guarded`]'s pre-check (ADR-024 o21.2): one locked read of the job, then o14.5's
+/// predicate ([`crate::ssh_backend::refuse_if_remote_live`]) — a remote `queued`/`running` job is
+/// refused with the remote reason without the guard being claimed. A read error (not found, a lock
+/// error) is returned as is. It never acts: a remote-live row can only turn terminal or be deleted
+/// (o21.3), so a refusal is at worst stale, and everything that is not refused takes the guarded path.
+fn refuse_cancel_if_remote_live(db: &DbState, id: &str) -> Result<(), AppError> {
+    let job = {
+        let conn = db.lock()?;
+        get_job_conn(&conn, id)?
+    };
+    crate::ssh_backend::refuse_if_remote_live(&job)
 }
 
 /// Delete a job (Phase 4.7.1): its DB row (with FK cleanup; `results` cascade) and,
@@ -2297,22 +2334,142 @@ mod tests {
         }
     }
 
-    /// `cancel_job` claims the job's in-flight guard before it reads the job, and dispatches on
-    /// what it read: a remote submit holds the guard from before its persist step, so a cancel can
-    /// never read the draft and then act on the `queued` row the submit persisted meanwhile.
-    /// (Each arm's own refusal of a live remote job is tested at its source:
+    /// ADR-024 o21.5 pin (o15.4's, retargeted): in `cancel_job_guarded`'s core body the claim
+    /// precedes the **guarded** read — the read that acts. The body holds exactly one
+    /// `get_job_conn(`, after `acquire`; the pre-check's read lives in its own helper, which only
+    /// refuses. `cancel_job` is a shell over the core that dispatches through the backend of the
+    /// job the core read. (The behaviour is pinned by the `cancel_job_guarded_*` tests below; each
+    /// arm's own refusal of a live remote job is tested at its source:
     /// `local_backend::tests::cancel_refuses_a_live_remote_job_before_any_branch` and
     /// `ssh_backend::tests::a_remote_cancel_is_refused_and_a_live_one_with_the_remote_reason`.)
-    /// NEGATIVE CONTROL: move the `acquire` below the job read → red.
+    /// NEGATIVE CONTROL: move the guarded read above the `acquire` → red.
     #[test]
-    fn cancel_claims_the_job_before_it_reads_it_then_dispatches_on_its_coordinates() {
+    fn cancel_claims_the_job_before_the_guarded_read_then_dispatches_on_it() {
         let src = include_str!("jobs.rs");
-        let cancel = fn_body(src, concat!("pub fn ", "cancel_job("));
-        let at = |needle: &str| cancel.find(needle).unwrap_or_else(|| panic!("cancel_job has `{needle}`"));
-        let (claim, read, dispatch) = (at("InFlight>().acquire(&id)?"), at("get_job_conn("), at("Backend::for_job(app, &job)?"));
-        assert!(claim < read, "the in-flight guard must be claimed before the job is read");
-        assert!(read < dispatch, "the backend comes from the job read");
-        assert!(cancel.contains("let _in_flight ="), "the guard is held to the end of the command, not dropped at once");
+        let core = fn_body(src, concat!("pub(crate) fn ", "cancel_job_guarded("));
+        let at = |needle: &str| core.find(needle).unwrap_or_else(|| panic!("cancel_job_guarded has `{needle}`"));
+        assert_eq!(core.matches("get_job_conn(").count(), 1, "the core body has exactly one read, the guarded one");
+        let (check, claim, read, dispatch) =
+            (at("refuse_cancel_if_remote_live(db, id)?"), at("in_flight.acquire(id)?"), at("get_job_conn("), at("dispatch(job)"));
+        assert!(check < claim, "the read-only pre-check runs before the claim");
+        assert!(claim < read, "the in-flight guard must be claimed before the guarded read");
+        assert!(read < dispatch, "the dispatch acts on the guarded read");
+        assert!(core.contains("let _in_flight ="), "the guard is held to the end of the body, not dropped at once");
+
+        let shell = fn_body(src, concat!("pub fn ", "cancel_job("));
+        assert!(shell.contains("cancel_job_guarded("), "cancel_job routes through the core");
+        assert!(shell.contains("Backend::for_job(app.clone(), &job)?"), "the backend comes from the job the core read");
+        assert!(!shell.contains("get_job_conn("), "the shell reads nothing itself");
+    }
+
+    /// A `DbState` holding one job whose status and (optionally) remote coordinates are set by
+    /// SQL, for the `cancel_job_guarded_*` tests. Returns the db, the job id and the temp dir.
+    fn cancel_fixture(status: &str, remote: bool) -> (DbState, String, std::path::PathBuf) {
+        let (conn, dir) = test_db();
+        let job = create_job_conn(&conn, "j", "! HF", None, None).unwrap();
+        if remote {
+            conn.execute(
+                "UPDATE jobs SET remote_host = 'uni', remote_job_dir = '/r/jobs/' || id, \
+                 remote_socket = '/r/tsp/slot0.sock' WHERE id = ?1",
+                params![job.id],
+            )
+            .unwrap();
+        }
+        if status != "draft" {
+            update_job_status_conn(&conn, &job.id, status).unwrap();
+        }
+        (DbState(std::sync::Mutex::new(conn)), job.id, dir)
+    }
+
+    /// o21.5 (a): with the job's guard held (the poller mid-ssh), a live remote job — `queued`,
+    /// then `running` — gets o14.5's refusal, not a conflict, and nothing is dispatched.
+    /// NEGATIVE CONTROLS: move the pre-check after the claim → red (conflict); drop it → red.
+    #[test]
+    fn cancel_job_guarded_refuses_a_live_remote_job_while_the_guard_is_held() {
+        let in_flight = InFlight::default();
+        for status in ["queued", "running"] {
+            let (db, id, dir) = cancel_fixture(status, true);
+            let _held = in_flight.acquire(&id).unwrap();
+            let dispatched = std::cell::Cell::new(false);
+            let res = cancel_job_guarded(&in_flight, &db, &id, |_| {
+                dispatched.set(true);
+                Ok(())
+            });
+            assert!(!matches!(res, Err(AppError::Conflict(_))), "{status}: refused with a conflict: {res:?}");
+            assert!(
+                matches!(&res, Err(AppError::Backend(m)) if m.contains("remote cancel arrives in unit 5.4")),
+                "{status}: the o14.5 refusal: {res:?}"
+            );
+            assert!(!dispatched.get(), "{status}: nothing is dispatched");
+            std::fs::remove_dir_all(&dir).ok();
+        }
+    }
+
+    /// o21.5 (b): with the guard held, a local draft passes the pre-check and is refused by the
+    /// claim (a remote submit may hold it — o15.1's race); nothing is dispatched.
+    #[test]
+    fn cancel_job_guarded_refuses_a_busy_local_draft_with_a_conflict() {
+        let in_flight = InFlight::default();
+        let (db, id, dir) = cancel_fixture("draft", false);
+        let _held = in_flight.acquire(&id).unwrap();
+        let dispatched = std::cell::Cell::new(false);
+        let res = cancel_job_guarded(&in_flight, &db, &id, |_| {
+            dispatched.set(true);
+            Ok(())
+        });
+        assert!(matches!(&res, Err(AppError::Conflict(m)) if m.contains("already in progress")), "{res:?}");
+        assert!(!dispatched.get(), "nothing is dispatched");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// o21.5 (c): with the guard held, a local `queued` job is refused with a conflict and nothing
+    /// is dispatched — the pre-check never acts. NEGATIVE CONTROL: dispatch the local job before
+    /// the claim → red.
+    #[test]
+    fn cancel_job_guarded_never_acts_on_a_busy_local_queued_job() {
+        let in_flight = InFlight::default();
+        let (db, id, dir) = cancel_fixture("queued", false);
+        let _held = in_flight.acquire(&id).unwrap();
+        let dispatched = std::cell::Cell::new(false);
+        let res = cancel_job_guarded(&in_flight, &db, &id, |_| {
+            dispatched.set(true);
+            Ok(())
+        });
+        assert!(!dispatched.get(), "nothing is dispatched");
+        assert!(matches!(&res, Err(AppError::Conflict(m)) if m.contains("already in progress")), "{res:?}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// o21.5 (d): with the guard free, a terminal remote job passes the pre-check and is dispatched
+    /// as read, with its guard held while the dispatch runs; the guard is released after.
+    /// NEGATIVE CONTROL: bind the guard as `let _ =` → red (the job is free inside the dispatch).
+    #[test]
+    fn cancel_job_guarded_dispatches_a_terminal_remote_job_with_the_guard_held() {
+        let in_flight = InFlight::default();
+        let (db, id, dir) = cancel_fixture("completed", true);
+        let seen = std::cell::RefCell::new(None);
+        cancel_job_guarded(&in_flight, &db, &id, |job| {
+            assert!(in_flight.try_acquire(&id).is_none(), "the guard is held while the dispatch runs");
+            *seen.borrow_mut() = Some(job);
+            Ok(())
+        })
+        .unwrap();
+        let job = seen.into_inner().expect("the job is dispatched");
+        assert_eq!((job.id.as_str(), job.status, job.is_remote()), (id.as_str(), JobStatus::Completed, true));
+        assert!(!in_flight.is_busy(&id), "the guard is released after the dispatch");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// o21.2: the pre-check's read error is returned as is — an unknown id is `NotFound`, even
+    /// while its guard is held, and nothing is dispatched.
+    #[test]
+    fn cancel_job_guarded_returns_the_pre_check_read_error_as_is() {
+        let in_flight = InFlight::default();
+        let (db, _id, dir) = cancel_fixture("draft", false);
+        let _held = in_flight.acquire("no-such-id").unwrap();
+        let res = cancel_job_guarded(&in_flight, &db, "no-such-id", |_| panic!("nothing is dispatched"));
+        assert!(matches!(res, Err(AppError::NotFound(_))), "{res:?}");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Verifier LOW-3 (Anton: unregister): no command sets an arbitrary status — the generic setter

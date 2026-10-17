@@ -391,9 +391,14 @@ launch (o item 4). `acquire(id) -> Result<InFlightGuard, AppError>` is the comma
 `try_acquire(id) -> Option<InFlightGuard>` is the poller's (skip the job this tick, B2); `is_busy(id)`
 reads it. The guard owns an `Arc` of the set (`Send + 'static`) and frees its id on drop — on return,
 on an early `?`, and while a panic unwinds (a poisoned mutex is recovered: the set is only ever
-touched by one insert or remove). `cancel_job` also claims the guard, **before** it reads the job: a
-remote submit holds it from before its persist step, so a cancel cannot read the draft and then act on
-the `queued` row the submit persisted meanwhile. The local submit claims nothing (the persist step's
+touched by one insert or remove). `cancel_job` is guarded too, through its `AppHandle`-free body
+`cancel_job_guarded(in_flight, db, id, dispatch)`: a read-only pre-check reads the row once and returns
+`refuse_if_remote_live`'s refusal for a remote `queued`/`running` job **without claiming the guard**
+(o21), so that refusal shows even while the poller holds the guard through a hanging ssh call; every
+other job is claimed, read again and dispatched with the guard held. The claim precedes the read that
+acts: a remote submit holds the guard from before its persist step, so a cancel cannot read the draft
+and then act on the `queued` row the submit persisted meanwhile (the pre-check only refuses, and a
+remote-live row can only turn terminal or be deleted, o21.3). The local submit claims nothing (the persist step's
 `WHERE status = 'draft' AND remote_host IS NULL` already decides between a local and a remote submit
 of the same draft). `delete_job` claims the guard too (o15.2), through its `AppHandle`-free body
 `delete_job_guarded`: a busy job (a poller status step, a remote command) is refused; then
@@ -416,11 +421,15 @@ claims. The commands (`remote_jobs.rs`, `jobs.rs`): the job claimed for the whol
 `guarded_blocking` (a concurrent `try_acquire` is `None` from inside it, the id free afterwards) and a
 busy job refused before its work runs; `status_to_emit`; the `SubmitResponse` wording and wire shape,
 the `WithdrawReport` / `Outcome` / `FailReason` / `LabelReport` wire shapes, a local submit answering
-`null` as before; and, as `AppHandle`-bound bodies, pinned in
-the source — `for_submit(None)` is local and `submit_job`'s local arm reaches nothing remote,
-`cancel_job` claims the guard before it reads the job, and no command sets an arbitrary status.
+`null` as before; and, pinned in the source — as `AppHandle`-bound bodies, `for_submit(None)` is
+local and `submit_job`'s local arm reaches nothing remote, and no command sets an arbitrary status;
+and `cancel_job` (a shell over the `AppHandle`-free `cancel_job_guarded`) — in the core the claim
+precedes the guarded read (its one `get_job_conn`). `cancel_job_guarded` itself is tested over real rows (o21.5): with the guard held,
+a remote `queued` and `running` job get the o14.5 refusal (not a conflict) and a local draft or `queued`
+job a conflict, none dispatched; with the guard free, a terminal remote job is dispatched as read, the
+guard held while the dispatch runs; an unknown id is `NotFound`.
 End to end against the real scripts: [remote-jobs.md](remote-jobs.md) (`backend_e2e_tests.rs`).
-Negative controls: [log.md](../log.md) (5.3 B1 Part A, 2026-10-05; Part B, 2026-10-06).
+Negative controls: [log.md](../log.md) (5.3 B1 Part A, 2026-10-05; Part B, 2026-10-06; o21, 2026-10-17).
 
 ### The remote poller's core (`poller.rs`, `poller/`; ADR-024 o item 4, o15, o16)
 

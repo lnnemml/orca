@@ -11048,3 +11048,14 @@ profile was never verified. Next: **5.3** `SshBackend` wiring.
 - DESIGN review: PASS WITH FINDINGS (MED-1 seam/tests and the pin that would go red; MED-2
   propagation; LOW-3..7 wording, premise, read error, status line now lists o19–o21) — all applied.
 - Next: implementer (opus) for o21 → verifier CODE → commit.
+
+## [2026-10-17] fix | ADR-024 o21 — Cancel refuses a live remote job before the guard
+- `cancel_job` is a thin shell over `cancel_job_guarded(in_flight, db, id, dispatch)` (`commands/jobs.rs`): the
+  read-only pre-check `refuse_cancel_if_remote_live` (one locked read, `refuse_if_remote_live`), then the claim, the
+  guarded read, and `dispatch` with the guard held. A live remote job now gets "remote cancel arrives in unit 5.4"
+  while the poller holds its guard, instead of `conflict`; the o15.3 guarded path is unchanged.
+- Tests (o21.5, over real rows): (a) remote `queued`/`running` with the guard held → the o14.5 refusal, no dispatch;
+  (b) local draft and (c) local `queued` → `Conflict`, no dispatch; (d) terminal remote, guard free → dispatched as
+  read, `try_acquire` `None` inside; an unknown id → `NotFound`. The o15.4 pin retargeted to the guarded read.
+- Controls, each red then restored: pre-check after the claim → (a); pre-check dropped → (a); dispatch before the
+  claim → (c); guard as `let _ =` → (d); guarded read above the claim → the pin. `cargo test` 781 → 786 (27 ignored).

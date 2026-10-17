@@ -2,7 +2,11 @@
 //! time** — submit, retry, withdraw, label, cancel (local or remote, o15), delete (o15.2), the
 //! manual fetch retry, and the poller's status step (label, collect, fetch). **The poller's log poll
 //! is not guarded** (o16.5): it is read-only, and the loop sequences it with the job's status step
-//! instead, so Retry, Withdraw and Cancel are never refused because of it.
+//! instead, so Retry, Withdraw and Cancel are never refused because of it. **Cancel refuses a live
+//! remote job before it claims** (o21): `cancel_job_guarded` reads the row once and returns the
+//! remote refusal (`queued`/`running` with coordinates) without the claim, so a poller step hung on
+//! ssh cannot hide it behind a conflict; that pre-check only refuses, and every other cancel claims
+//! the guard before the read that acts.
 //! Two operations on the same job must not interleave: a double-clicked Submit, a Retry while a
 //! Withdraw is still talking to the server, a poller tick collecting a job a withdraw is
 //! cancelling — each would race the server/database state machine of o item 3.
