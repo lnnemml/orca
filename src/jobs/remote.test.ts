@@ -4,9 +4,12 @@ import { makeProfile } from "../servers/test-fixtures";
 import {
   NOTHING_HELD,
   applyRemoteStateEvent,
+  backfillsLog,
   coordinateState,
   mergeRemoteState,
   remoteView,
+  resolveRunTarget,
+  LAST_RUN_TARGET_SETTING,
   runTargetOptions,
 } from "./remote";
 
@@ -163,6 +166,17 @@ describe("remoteView (o19.2, o19.7)", () => {
     expect(stopped.kind === "live" && stopped.actions).toEqual(["retry_fetch"]);
   });
 
+  // CONTROL (N6): print the count at 0 strikes ("(0 failed attempts)") → red.
+  it("names no failed attempts while the strikes are 0, one in the singular, more in the plural", () => {
+    const label = (strikes: number) => {
+      const v = remoteView(job({ status: "running" }), record({ known: { kind: "fetching" }, fetch: { strikes, stopped: false } }));
+      return v.kind === "live" ? v.badges.map((b) => b.label) : [];
+    };
+    expect(label(0)).toEqual(["Fetching results"]);
+    expect(label(1)).toEqual(["Fetching results (1 failed attempt)"]);
+    expect(label(2)).toEqual(["Fetching results (2 failed attempts)"]);
+  });
+
   it("offers a fetch retry exactly when automatic fetches stopped", () => {
     const stopped = remoteView(job({ status: "running" }), record({ fetch: { strikes: 3, stopped: true } }));
     expect(stopped.kind === "live" && stopped.actions).toEqual(["retry_fetch"]);
@@ -181,6 +195,23 @@ describe("remoteView (o19.2, o19.7)", () => {
   });
 });
 
+describe("backfillsLog (o16.7)", () => {
+  // CONTROL (N4, pure half): drop the remote-live arm → the remote `queued`/`running` rows go red.
+  it("never backfills a remote live job or a draft, and backfills every other job", () => {
+    const none = { remote_host: null, remote_job_dir: null, remote_socket: null };
+    expect(backfillsLog(job({ status: "queued" }))).toBe(false);
+    expect(backfillsLog(job({ status: "running" }))).toBe(false);
+    expect(backfillsLog(job({ status: "draft" }))).toBe(false);
+    expect(backfillsLog(job({ status: "draft", ...none }))).toBe(false);
+    expect(backfillsLog(job({ status: "completed" }))).toBe(true);
+    expect(backfillsLog(job({ status: "failed" }))).toBe(true);
+    expect(backfillsLog(job({ status: "running", ...none }))).toBe(true);
+    expect(backfillsLog(job({ status: "queued", ...none }))).toBe(true);
+    // Corrupt coordinates are not polled, so nothing would re-stream: backfill as a local job.
+    expect(backfillsLog(job({ status: "running", remote_socket: null }))).toBe(true);
+  });
+});
+
 describe("runTargetOptions (ADR-024 o5, n2)", () => {
   it("offers Local and every profile, enabled iff Rust says it is a run target, with Rust's reason", () => {
     const options = runTargetOptions([
@@ -194,5 +225,28 @@ describe("runTargetOptions (ADR-024 o5, n2)", () => {
       { target: "p2", label: "lab", enabled: false, reason: "the profile has no core mask" },
       { target: "p3", label: "odd", enabled: false, reason: "no reason reported" },
     ]);
+  });
+});
+
+describe("resolveRunTarget (o20.1)", () => {
+  const options = runTargetOptions([
+    makeProfile({ id: "p1", name: "uni", run_target: { is_run_target: true, reason: null } }),
+    makeProfile({ id: "p2", name: "lab", run_target: { is_run_target: false, reason: "the profile has no core mask" } }),
+  ]);
+  const stored = (value: string) => ({ viewer_theme: "dark", [LAST_RUN_TARGET_SETTING]: value });
+
+  // CONTROL: return the stored value without the `options.some(...)` check → the stale and the
+  // disabled cases go red.
+  it("preselects a stored profile only while it is an enabled option, else Local", () => {
+    expect(resolveRunTarget(options, stored("p1"))).toBe("p1");
+    expect(resolveRunTarget(options, stored("gone"))).toBeNull();
+    expect(resolveRunTarget(options, stored("p2"))).toBeNull();
+  });
+
+  // CONTROL: read `settings[LAST_RUN_TARGET_SETTING]` without the `?.` → a failed read (null) throws, red.
+  it("falls back to Local for Local stored, nothing stored, or a failed settings read", () => {
+    expect(resolveRunTarget(options, stored(""))).toBeNull();
+    expect(resolveRunTarget(options, { viewer_theme: "dark" })).toBeNull();
+    expect(resolveRunTarget(options, null)).toBeNull();
   });
 });

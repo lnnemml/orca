@@ -24,7 +24,9 @@ screens, the store wiring, and the UI-level quirks.
 `App.tsx` is a shell: a topbar with tabs + a bottom status bar, rendering one screen at a time by a
 local `Screen` union (**no router**). The union is `{kind:"new-job", initialMolecule?, initialJob?,
 keepScene?}` | `{kind:"jobs"}` | `{kind:"molecules"}` | `{kind:"settings"}` |
-`{kind:"job-detail", jobId, autoRun}` (Jobs stays highlighted while drilled into a detail). Only the
+`{kind:"job-detail", jobId, autoRun, runTarget}` (Jobs stays highlighted while drilled into a detail;
+`<JobDetailScreen key={jobId}>`, so opening another job from inside a job view remounts it and
+nothing of the previous job carries over). Only the
 active screen is mounted — switching to Jobs remounts it (→ a fresh `list_jobs`); a side effect is
 that an in-progress New Job draft is discarded on a tab switch (accepted).
 
@@ -41,12 +43,23 @@ that an in-progress New Job draft is discarded on a tab switch (accepted).
   (`openSection: "builder" | "templates" | "add" | null`, default `null` → editor + viewer visible).
   Two create buttons: **Create Job** (draft → Jobs) and **Create & Run** (create → open detail with
   `autoRun`). It does **not** submit itself — the detail screen submits after attaching listeners.
+  A **Run on** select beside them (ADR-024 o5) lists `runTargetOptions(list_server_profiles)`:
+  `Local` (the default) and every server profile, a profile disabled with Rust's reason in its text
+  unless it is a run target. Only **Create & Run** uses the choice — it travels to the detail screen
+  as `runTarget` and becomes `submit_job`'s `target`; a draft created with **Create Job** and run
+  later from the Jobs table runs locally (ADR-024 o20.2). The target of the last Create & Run is
+  remembered app-wide in the setting `last_run_target` (a profile id, `""` = Local; o20.1): on mount
+  `loadRunTarget` reads `list_server_profiles` and `get_settings` and preselects the stored id only
+  while that profile is still an enabled option (`resolveRunTarget`; gone, disabled, `""`, or a
+  failed read → Local; a failed profile list also shows its error). The load **never writes** the
+  setting, and a choice the user made while it was pending wins. Create & Run writes it through
+  `set_setting` whatever the submit's outcome; changing the select or "Create Job" writes nothing.
   Accepts `initialMolecule?` (inject its xyz + charge/mult, seed the title), `initialJob?` (iterate
   — see below), and `keepScene?` (skip the mount reset, used when applying a conformer). Picking a
   template or hitting **Generate Input** collapses the accordion (`setOpenSection(null)`).
 - **`JobsScreen`** — `list_jobs` on mount into a `.jobs-table`: Title / Status badge / Energy (Eh) /
   Time / Created, a Refresh button, empty + loading states. Rows are clickable (→ detail); an
-  actions column shows **Cancel** for a running/queued job, else the primary action (**Run** for
+  actions column shows **Cancel** for a running/queued job, else the primary action (**Run locally** for
   draft, **Open** otherwise) **plus a `Delete`** button (`.btn-danger`). **Delete is on terminal
   states only** (draft/completed/parsed/failed/cancelled) — a running/queued row shows Cancel alone,
   matching the backend's terminal-states-only refusal ("cancel it first"). Delete → `confirm`
@@ -67,12 +80,40 @@ that an in-progress New Job draft is discarded on a tab switch (accepted).
   status **chips** + Clear, **local** to `JobsScreen`. Composed AFTER the group filter — the rendered
   rows are `filterJobsBySearch(filterJobsByGroup(...))`, so search narrows within the selected group's
   subtree. Three-way empty-state: "No jobs yet" / "No jobs in this group" / "No jobs match this
-  filter". Frontend-only (no backend/FTS5).
-- **`JobDetailScreen`** — loads the job, then **attaches `job:log` / `job:status` /
-  `job:convergence` listeners FIRST, then (if `autoRun`) calls `submit_job`** so no early lines are
+  filter". Frontend-only (no backend/FTS5). **Remote jobs:** the Status cell adds the job's
+  `@host` and, for a live remote job or a row with corrupt coordinates, the badges `remoteView`
+  derives from its remote record (`RemoteJobBadges`). The screen keeps one `job:remote-state`
+  listener for its life (`trackRemoteStates`) and, after each reload of the list, reads
+  `remote_job_state` for the live remote jobs — only once that listener has resolved, every value
+  merged by `seq`. A Cancel of a live remote job shows the backend's refusal text in the banner.
+- **`JobDetailScreen`** — opens through `openJobView` (`src/jobs/live-wiring.ts`, ADR-024 o16.7):
+  **attaches `job:log` / `job:convergence` / `job:log-reset` / `job:status` FIRST, then calls
+  `watch_job_log(id, open: true)`** (every backend; a local job's open costs no ssh; not if the view
+  closed meanwhile), then reads the row (`get_job` — after `job:status` is attached, so no status
+  change falls between the read and the listener), then backfills `read_job_output` / `read_job_convergence` when `backfillsLog(job)` admits it —
+  never for a remote `queued`/`running` job, whose whole log the poller re-streams from offset 0 —
+  and only then (if `autoRun`) calls `submit_job({ id, target: runTarget })`, so no early lines are
   missed (a `didSubmit` ref neutralises React StrictMode's dev double-submit; the backend slot mutex
-  is the real guard). `job:log` appends (capped 5000 lines, auto-scroll); `job:status` updates the
-  badge and reloads the full record on a terminal state (to surface `error_message`/`completed_at`).
+  is the real guard). Unmount drops every listener, including one whose `listen` resolves after it,
+  and closes the watch only if this view opened it. `job:log` appends (capped 5000 lines,
+  auto-scroll); `job:log-reset` drops the held lines and convergence points; `job:status` updates the
+  badge and reloads the full record (a terminal state brings `error_message`/`completed_at`; a
+  remote check changes only `error_message`). A remote submit's `SubmitResponse` shows its
+  `failure` in the error banner and its `%pal` `notice` in an ok banner. **Remote part:** the view
+  holds the job's remote record via `trackRemoteStates` (the `job:remote-state` listener first, then
+  `remote_job_state`, merged by `seq`) and renders `RemotePanel` from `remoteView(job, record)`:
+  the badges, the row's `error_message` as the text (prefixed "From the last check:" while the record
+  holds no decided state; for a live remote job it replaces the red error banner), and the offered
+  buttons **Retry submit** (`retry_remote_submit`; its `SubmitResponse` shown like a submit's),
+  **Withdraw** (`withdraw_remote_job`, after the plugin-dialog `confirm` like Delete job; declining
+  or a failing dialog sends nothing, and the call goes out only if the view — read from a ref after
+  the dialog — still offers `withdraw`, o20.3: `confirmThenWithdraw`), **Retry fetch**
+  (`retry_remote_fetch`). A refusal (the in-flight guard, cancel of a live remote job) shows Rust's
+  text in the error banner. The re-opt fan-out submits its children locally (`target: null`) and its
+  queued message says they run locally on this machine (o20.2). So does every other fan-out that
+  submits without a target (`target: null`, ADR-024 o20.2): the OptTS refines of the 1D scan
+  profile and the NEB band ("runs locally on this machine" beside the button), the 2D surface's
+  click-to-refine (its hint), and the connectivity check (its pending line).
   Also hosts the convergence dashboard, the output console/search, the ensemble panel, **New
   iteration**, and Open Folder — all below.
 - **`MoleculesScreen`** — a `.jobs-table` (Name / Formula / Charge / Tags / Created / Use+Delete);
@@ -657,20 +698,33 @@ hover — it is gone, not kept alongside).** Three reasons, in order of weight:
 
 ## Remote job view logic (`src/jobs/remote.ts`) — ADR-024 o19
 
-Pure functions over Rust's values; no screen calls them yet (unit 5.3 B3 Part B wires them).
+Pure functions over Rust's values, called by the Jobs and job-detail screens (above).
 `coordinateState(job)` reads `Job.remote_host` / `remote_job_dir` / `remote_socket` (mirrored in
 `types.ts` with `backend_id`): none set → local, all three → remote, some → corrupt (shown, never
 acted on). `mergeRemoteState` / `applyRemoteStateEvent` keep, per job, whichever of the
 `remote_job_state` read and the `job:remote-state` events has the greatest `seq`, so arrival order
 does not matter. `remoteView(job, record)` gives a remote `queued`/`running` job its badges and
 offered actions: "not on the server" → retry submit + withdraw, "submit interrupted" → withdraw,
-`known: fetching` → "fetching results" with the failed attempts so far, `fetch.stopped` → retry fetch, `check_error` → "server unreachable / not decided" beside the last
+`known: fetching` → "fetching results" with the failed attempts so far (no count at 0 strikes), `fetch.stopped` → retry fetch, `check_error` → "server unreachable / not decided" beside the last
 seen state, no record → "checking"; the row's `error_message` is the text, labelled "from the last
 check" while the record holds no decided state, and no action comes from it. The module copies none
 of Rust's outcome texts (a test reads the source to hold that). `runTargetOptions(profiles)` is the
 "Run on" list: `Local` plus every profile, enabled iff `run_target.is_run_target`, a disabled one with
-Rust's reason. The remote IPC shapes (`Outcome`, `Label`, `RemoteState`, `SubmitResponse`,
+Rust's reason. `backfillsLog(job)` says whether the job view reads the log already on disk: not
+for a draft, not for a remote live job (o16.7). The remote IPC shapes (`Outcome`, `Label`, `RemoteState`, `SubmitResponse`,
 `WithdrawReport`, `StatusStep`, …) live in `types.ts`.
+
+**The wiring** (`src/jobs/live-wiring.ts`) takes the Tauri bridge as an argument (`Bridge`;
+the screens pass `tauriBridge`) so its order is tested without a WebView (`live-wiring.test.ts`,
+a fake bridge that holds every `listen` and `invoke` until released). `createListenerScope`: a set
+of listeners disposed together, a late-resolving one unlistened on arrival. `trackRemoteStates`:
+one `job:remote-state` listener, `read(ids)` only after it resolved, every read and event through
+`mergeRemoteState`. `openJobView`: the job view's sequence above. `src/jobs/RemotePanel.tsx`
+renders `remoteView`'s values (`RemotePanel`, `RemoteJobBadges`, `RemoteBadgeChip` with the
+`.badge.tone-*` colours). `resolveRunTarget` / `LAST_RUN_TARGET_SETTING` (in `remote.ts`) decide
+the remembered "Run on" choice; `loadRunTarget` (in `live-wiring.ts`, bridge-injected) is New Job's
+read-only load with the load-race guard; `confirmThenWithdraw` is the withdraw's confirm and
+re-check.
 
 ## Queue control (status bar)
 
@@ -708,7 +762,7 @@ Rust's reason. The remote IPC shapes (`Outcome`, `Label`, `RemoteState`, `Submit
   [results-ui.md](results-ui.md) (`src/screens/ResultsCard.tsx`, `src/spectrum/`, `src/trajectory/`,
   `src/orbitals/`, `src/export/`).
 - **Manual** (FTS search panel) — **done** (Phase 4.4, below).
-- **"Run on:" backend selector + server profiles** in Settings — Phase 5.
+- **Server profiles** in Settings and the **"Run on"** select in New Job — Phase 5 (above).
 
 ## State (current & planned)
 

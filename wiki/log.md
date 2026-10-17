@@ -10950,3 +10950,49 @@ profile was never verified. Next: **5.3** `SshBackend` wiring.
   `remote_state.rs` module doc omits `Fetching`; hide "(0 failed attempts)").
 - **Next session: B3 Part B** — screens (run-target dropdown, remote states and actions, o16.7 +
   o19.6 listener order), Anton's WebKitGTK gate; then **B4** — the live uni run.
+
+## [2026-10-07] feat | Unit 5.3 B3 Part B — the remote-job screens (ADR-024 o5, o16.7, o19.6, o20)
+- `src/jobs/live-wiring.ts` (new, bridge-injected so the order is tested without a WebView):
+  `createListenerScope` (a late-resolving `listen` after dispose is unlistened on arrival),
+  `trackRemoteStates` (one `job:remote-state` listener; `remote_job_state` read only after it
+  resolved; every read and event through `mergeRemoteState`), `openJobView` (`job:log`,
+  `job:convergence`, `job:log-reset`, `job:status` → `watch_job_log(true)`, unless closed meanwhile
+  → `get_job` → backfill iff `backfillsLog` → auto-run submit; close unlistens all and closes the
+  watch only if opened).
+- `src/jobs/remote.ts`: `backfillsLog` (no backfill for a draft or a remote live job); no
+  "(0 failed attempts)" at 0 strikes (Part A verifier LOW). `src/jobs/RemotePanel.tsx`:
+  `RemotePanel`, `RemoteJobBadges`, `RemoteBadgeChip` (`.badge.tone-*`).
+- Screens: New Job's "Run on" select (`runTargetOptions` over `list_server_profiles`, default
+  Local) → `runTarget` through `App` → `submit_job({ id, target })`; job detail wired through
+  `openJobView` + `trackRemoteStates`, `job:log-reset` drops lines and points, `job:status` reloads
+  the row every time, `SubmitResponse.failure`/`notice` shown, buttons retry submit / withdraw /
+  retry fetch; Jobs table shows `@host` and the record's badges. The re-opt fan-out submits with
+  `target: null`.
+- LOWs from the Part A verifier: ADR-024 o19.1 / o19.3 "amended by o19.11" pointers;
+  `poller/remote_state.rs` module doc names `Fetching`.
+- ADR-024 o20 (Anton, forks raised by this unit; DESIGN-reviewed): o20.1 the last Create & Run's
+  target is remembered app-wide in `last_run_target` — `resolveRunTarget` + `LAST_RUN_TARGET_SETTING`
+  in `remote.ts`, `loadRunTarget` in `live-wiring.ts` (read-only: the fallback never writes; a choice
+  made during the load wins), written via `set_setting` on Create & Run whatever the submit's outcome
+  (no Rust change: `set_setting` takes any key); o20.2 a run target only via Create & Run — the
+  table's button reads "Run locally", the fan-out's message says its jobs run locally; o20.3
+  Withdraw asks through the plugin-dialog `confirm` (like Delete job) and `confirmThenWithdraw`
+  sends only if the view, read from a ref after the dialog, still offers `withdraw` (a failing
+  dialog = decline).
+- CODE verifier (PASS WITH FINDINGS, all fixed in B3, Anton): M1 `App.tsx` keys `JobDetailScreen` by
+  `jobId` (opening a child from inside a job view no longer keeps the previous job's log, row and
+  record; source pin); L2 no watch open once the view closed after its last listener; L3 the row is
+  read after the listeners (one read, no window for a lost `job:status`; the verifier suggested a
+  re-read — a single later read closes the same window); L5 every fan-out without a target (re-opt,
+  1D/2D/NEB OptTS refines, connectivity) says its jobs run locally (`target: null` explicit).
+- vitest (`--dir src`) 994 → 1016 passed, 0 skipped (77 files); `tsc` clean; `cargo test` 781 (doc comment only). Negative controls, each red
+  then restored: N1 (read before the listener), N2 (plain assignment instead of `mergeRemoteState`),
+  N3a ×3 (any one of the three log listens not awaited), N3b (close without open), N3c (no close),
+  N4 (backfill by `status !== "draft"`; and `backfillsLog` without its remote arm), N5 (no unlisten
+  on a late resolve), N6 (count printed at 0 strikes); o20 (o20.4): the
+  `enabled` check dropped (disabled → preselected), a fallback that writes `set_setting`, the
+  load-race guard dropped, the confirm bypassed, a rejecting dialog read as agreement, the re-check
+  dropped, the actions captured before the dialog; verifier: M1 key removed, L2 the `scope.disposed` guard
+  removed (open left dangling at tick 1), L3 `get_job` moved back before the listeners. o20.4b (select change writes nothing; Create &
+  Run writes the id / `""`) needs a rendered NewJobScreen — on the live-gate list, not unit-tested.
+- Next: verifier CODE; Anton's live WebKitGTK gate; then B4.

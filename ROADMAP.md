@@ -1466,9 +1466,9 @@ preflight. The remaining items (remote `orca_plot`, pause) are not numbered yet.
               `job:log`/`job:convergence` for watched remote jobs (`watch_job_log`, refcounted, every open
               re-streams from 0, `job:log-reset`), the log poll unguarded and sequenced with the status
               step per job, the tail drained from the verified local copy before the terminal status.
-        - [ ] **B3 — UI** (**Part A ✅ 2026-10-06**: `RemoteState` record + `job:remote-state` + `remote_job_state`, TS types and pure view logic, ADR-024 o19/o19.11; **next: Part B** screens) (implementer `sonnet`): TS `Job` gains `backend_id`, `remote_host`,
+        - [ ] **B3 — UI** (**Part A ✅ 2026-10-06**: `RemoteState` record + `job:remote-state` + `remote_job_state`, TS types and pure view logic, ADR-024 o19/o19.11; **Part B landed 2026-10-07, pending Anton's live WebKitGTK gate**: "Run on" select, `openJobView` / `trackRemoteStates` listener order, `RemotePanel` + Jobs-table badges; ADR-024 o20: the last Create & Run's target remembered app-wide (`last_run_target`, the load never writes), a run target only via Create & Run — the table's "Run locally" and every fan-out (re-opt, scan/2D/NEB refines, connectivity) stay local and say so (choosing there not built in 5.3), a plugin-dialog confirm + re-check before Withdraw) (implementer `sonnet`): TS `Job` gains `backend_id`, `remote_host`,
               `remote_job_dir`, `remote_socket`; run-target dropdown (n2 predicate, disabled reasons,
-              last choice per project); "not on the server" / "submit interrupted" / "handled in 5.4"
+              last choice per project *(amended by o20: app-wide)*); "not on the server" / "submit interrupted" / "handled in 5.4"
               states with retry/withdraw; refusal messages; the live view per o16.7 (`watch_job_log`
               only after the three listeners resolve, close only if opened, handle `job:log-reset`, no
               backfill for a remote non-terminal job); a row with partial remote coordinates (skipped

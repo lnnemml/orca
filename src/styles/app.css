@@ -1732,6 +1732,41 @@ select:disabled,
   color: #d0873a;
 }
 
+/* Remote job badges (ADR-024 o19): the tone `remoteView` gives each one. Sentence case — they
+   carry a check's words, not a status keyword. */
+.badge.tone-ok {
+  background: #10331d;
+  color: var(--ok);
+}
+.badge.tone-warn {
+  background: #33290a;
+  color: var(--warn);
+}
+.badge.tone-err {
+  background: #3a1414;
+  color: var(--err);
+}
+.badge.tone-muted {
+  background: #2a2f36;
+  color: #9aa4b2;
+}
+.badge[class*="tone-"] {
+  text-transform: none;
+}
+
+/* The remote part of the job detail view: badges, the row's text, the offered actions. */
+.remote-panel {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  margin-bottom: 10px;
+}
+.remote-text {
+  margin-top: 6px;
+  font-size: 13px;
+  white-space: pre-wrap;
+}
+
 /* --- Misc ------------------------------------------------------------- */
 
 .empty {

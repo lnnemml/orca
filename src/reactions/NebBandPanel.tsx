@@ -608,7 +608,8 @@ export function NebBandPanel({
               // Move the child into the picked group (default = this NEB job's group) before
               // submitting/navigating (unit 2b). No-op when untouched + ungrouped source.
               await picker.assignPicked(child.id);
-              await invoke("submit_job", { id: child.id });
+              // ADR-024 o20.2: this fan-out has no "Run on" choice — submit locally and say so.
+              await invoke("submit_job", { id: child.id, target: null });
               onOpenJob?.(child.id);
             } catch (e) {
               // A charge/post-condition failure (buildOptTSInput) lands here — no job created.
@@ -621,6 +622,7 @@ export function NebBandPanel({
         >
           {refining ? "Refining…" : "Refine TS with OptTS"}
         </button>
+        <span className="muted">runs locally on this machine</span>
         <label
           className="scan-control"
           style={{ marginLeft: 8 }}

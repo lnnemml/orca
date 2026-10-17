@@ -253,7 +253,8 @@ export function ScanProfilePanel({
               // Move the child into the picked group (default = this scan's group) before
               // submitting/navigating (unit 2b). No-op when untouched + ungrouped source.
               await picker.assignPicked(child.id);
-              await invoke("submit_job", { id: child.id });
+              // ADR-024 o20.2: this fan-out has no "Run on" choice — submit locally and say so.
+              await invoke("submit_job", { id: child.id, target: null });
               onOpenJob?.(child.id);
             } catch (e) {
               // A charge/Scan post-condition failure (buildOptTSInput) lands here — no job created.
@@ -266,6 +267,7 @@ export function ScanProfilePanel({
         >
           {refining ? "Refining…" : "Refine with OptTS (Stage E)"}
         </button>
+        <span className="muted">runs locally on this machine</span>
         <label className="scan-control" title="Destination group for the refined child job">
           group
           <GroupSelect

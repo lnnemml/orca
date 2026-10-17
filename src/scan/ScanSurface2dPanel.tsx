@@ -137,7 +137,8 @@ export function ScanSurface2dPanel({
         inputContent: input,
       });
       await picker.assignPicked(child.id); // the 2b group picker rides along
-      await invoke("submit_job", { id: child.id });
+      // ADR-024 o20.2: this fan-out has no "Run on" choice — submit locally and say so.
+      await invoke("submit_job", { id: child.id, target: null });
       onOpenJob?.(child.id);
     } catch (e) {
       // A charge/post-condition failure (buildOptTSInput) lands here — no job created.
@@ -165,7 +166,8 @@ export function ScanSurface2dPanel({
       ) : (
         <div className="muted scan-surface-hint">
           Click a grid node to refine THAT geometry with OptTS. The global maximum is a stepwise
-          corner, not the transition state — pick the col yourself (no auto-selection).
+          corner, not the transition state — pick the col yourself (no auto-selection). The
+          refined job runs locally on this machine.
         </div>
       )}
 

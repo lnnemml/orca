@@ -102,7 +102,9 @@ import {
   ORCA_TEMPLATES,
   type OrcaTemplate,
 } from "../templates/orca-templates";
-import type { Group, Job, Molecule, ParsedResults, SidecarStatus } from "../types";
+import type { Group, Job, Molecule, ParsedResults, ServerProfile, SidecarStatus } from "../types";
+import { LAST_RUN_TARGET_SETTING, runTargetOptions } from "../jobs/remote";
+import { loadRunTarget, tauriBridge } from "../jobs/live-wiring";
 import { GroupSelect, resolveGroupAssignment } from "../groups/GroupSelect";
 
 /** Charge with an explicit sign: `0`, `-1`, `+1`. */
@@ -135,8 +137,8 @@ function constraintTypeLabel(
 interface NewJobScreenProps {
   /** A draft job was created; parent navigates to the Jobs list. */
   onCreatedDraft: () => void;
-  /** Open a job's detail screen, optionally auto-running it. */
-  onOpenDetail: (jobId: string, autoRun: boolean) => void;
+  /** Open a job's detail screen, optionally auto-running it on `runTarget` (null = this machine). */
+  onOpenDetail: (jobId: string, autoRun: boolean, runTarget?: string | null) => void;
   /** A library molecule to preload into the editor on mount ("Use" action). */
   initialMolecule?: Molecule;
   /** An existing job to seed a new iteration from ("New iteration" action):
@@ -349,6 +351,31 @@ export function NewJobScreen({
     setThemeId(id);
     invoke("set_setting", { key: "viewer_theme", value: id }).catch(() => {});
   };
+
+  // "Run on" (ADR-024 o5, o20): Local plus every server profile, a profile enabled iff Rust says
+  // it is a run target (`runTargetOptions`; a disabled one shows Rust's reason). Preselected from
+  // the app setting `last_run_target` by `loadRunTarget` (a gone or disabled profile → Local; the
+  // load never writes), and written back only by Create & Run. Only "Create & Run" uses it — the
+  // detail screen submits there after attaching its listeners.
+  const [profiles, setProfiles] = useState<ServerProfile[]>([]);
+  const [runTarget, setRunTarget] = useState<string | null>(null);
+  const runTargetTouched = useRef(false);
+  useEffect(
+    () =>
+      loadRunTarget(
+        tauriBridge,
+        {
+          profiles: (list, err) => {
+            setProfiles(list);
+            if (err) setError(`Could not list the server profiles: ${err}`);
+          },
+          preselect: setRunTarget,
+        },
+        () => runTargetTouched.current,
+      ),
+    [],
+  );
+  const runTargets = useMemo(() => runTargetOptions(profiles), [profiles]);
 
   // Fullscreen viewer (2.5.2e-2) — a VIEW mode, deliberately NOT persisted. Only
   // a CSS class on the viewer container changes (position: fixed); MoleculeViewer
@@ -1382,8 +1409,12 @@ export function NewJobScreen({
       await assignPickedGroup(job.id);
       // The detail screen performs the actual submit (after attaching its log
       // listeners) so no early output lines are missed.
-      if (run) onOpenDetail(job.id, true);
-      else onCreatedDraft();
+      if (run) {
+        // Remember the choice of this Create & Run (ADR-024 o20.1; "" = Local) — here, whatever
+        // the submit's outcome: a retry after an unreachable server keeps the choice.
+        invoke("set_setting", { key: LAST_RUN_TARGET_SETTING, value: runTarget ?? "" }).catch(() => {});
+        onOpenDetail(job.id, true, runTarget);
+      } else onCreatedDraft();
     } catch (e) {
       setError(String(e));
     } finally {
@@ -2052,6 +2083,26 @@ export function NewJobScreen({
               setPickedGroupId(g);
             }}
           />
+        </div>
+        <div className="field">
+          <label className="label" htmlFor="job-run-on">
+            Run on
+          </label>
+          <select
+            id="job-run-on"
+            className="select"
+            value={runTarget ?? ""}
+            onChange={(e) => {
+              runTargetTouched.current = true;
+              setRunTarget(e.currentTarget.value || null);
+            }}
+          >
+            {runTargets.map((o) => (
+              <option key={o.target ?? ""} value={o.target ?? ""} disabled={!o.enabled} title={o.reason ?? undefined}>
+                {o.reason ? `${o.label} — ${o.reason}` : o.label}
+              </option>
+            ))}
+          </select>
         </div>
         <div className="row" style={{ alignSelf: "flex-end" }}>
           <button

@@ -26,7 +26,7 @@ type Screen =
   | { kind: "reactions" }
   | { kind: "manual" }
   | { kind: "settings" }
-  | { kind: "job-detail"; jobId: string; autoRun: boolean };
+  | { kind: "job-detail"; jobId: string; autoRun: boolean; runTarget: string | null };
 
 const DOT_COLOR: Record<SidecarState, string> = {
   healthy: "var(--ok)",
@@ -66,8 +66,9 @@ function App() {
   const [groupSelection, setGroupSelection] = useState<GroupSelection>({ kind: "all" });
   const activeGroupId = groupSelection.kind === "group" ? groupSelection.id : null;
 
-  const openDetail = useCallback((jobId: string, autoRun: boolean) => {
-    setScreen({ kind: "job-detail", jobId, autoRun });
+  // `runTarget` is where an `autoRun` submits (New Job's "Run on" choice); null = this machine.
+  const openDetail = useCallback((jobId: string, autoRun: boolean, runTarget: string | null = null) => {
+    setScreen({ kind: "job-detail", jobId, autoRun, runTarget });
   }, []);
 
   const refreshSidecar = useCallback(async () => {
@@ -194,9 +195,14 @@ function App() {
       ) : screen.kind === "settings" ? (
         <SettingsScreen />
       ) : (
+        // `key`: opening another job from inside a job view (a refine child, a fan-out) remounts
+        // the view — no log, convergence points, row, notice or remote record carries over, and
+        // the new job's listeners, watch and backfill start clean (verifier M1).
         <JobDetailScreen
+          key={screen.jobId}
           jobId={screen.jobId}
           autoRun={screen.autoRun}
+          runTarget={screen.runTarget}
           onBack={() => setScreen({ kind: "jobs" })}
           onIterate={(job) => setScreen({ kind: "new-job", initialJob: job })}
           onUseConformer={() => setScreen({ kind: "new-job", keepScene: true })}

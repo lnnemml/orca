@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { confirm, message } from "@tauri-apps/plugin-dialog";
@@ -10,6 +10,9 @@ import { filterJobsByGroup, type GroupSelection } from "../groups/tree";
 import { filterJobsBySearch } from "../groups/search";
 import { ROOT_OPTION } from "../groups/GroupSelect";
 import { InlineRename } from "../jobs/InlineRename";
+import { tauriBridge, trackRemoteStates, type RemoteStateTracker } from "../jobs/live-wiring";
+import { remoteView, type HeldRemoteState } from "../jobs/remote";
+import { RemoteJobBadges } from "../jobs/RemotePanel";
 import { exportSelection, type CopyMode } from "../export/save";
 
 /** The status chips, in state-machine order. */
@@ -86,6 +89,20 @@ export function JobsScreen({
     setStatuses(new Set());
   }, []);
 
+  // The remote records of the listed live remote jobs (ADR-024 o19.6): one `job:remote-state`
+  // listener for the screen's life, attached before any `remote_job_state` read (the tracker waits
+  // for it), every value merged by `seq`. Each reload of the list re-reads the live remote jobs.
+  const [remoteHeld, setRemoteHeld] = useState<ReadonlyMap<string, HeldRemoteState>>(new Map());
+  const remoteTracker = useRef<RemoteStateTracker | null>(null);
+  useEffect(() => {
+    const tracker = trackRemoteStates(tauriBridge, setRemoteHeld, setError);
+    remoteTracker.current = tracker;
+    return () => {
+      tracker.dispose();
+      remoteTracker.current = null;
+    };
+  }, []);
+
   const load = useCallback(async () => {
     try {
       const [jobList, groupList] = await Promise.all([
@@ -94,6 +111,8 @@ export function JobsScreen({
       ]);
       setJobs(jobList);
       setGroups(groupList);
+      const liveRemote = jobList.filter((j) => remoteView(j, null).kind === "live").map((j) => j.id);
+      void remoteTracker.current?.read(liveRemote);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -368,6 +387,7 @@ export function JobsScreen({
                       ) : (
                         <span className={`badge ${job.status}`}>{job.status}</span>
                       )}
+                      <RemoteJobBadges job={job} record={remoteHeld.get(job.id)?.state} />
                     </td>
                     <td className="mono" style={{ textAlign: "right" }}>
                       {formatEnergy(job.energy)}
@@ -407,7 +427,9 @@ export function JobsScreen({
                                 onOpenDetail(job.id, job.status === "draft");
                               }}
                             >
-                              {job.status === "draft" ? "Run" : "Open"}
+                              {/* A draft runs on this machine from here: the run target is
+                                  chosen only through New Job's Create & Run (ADR-024 o20.2). */}
+                              {job.status === "draft" ? "Run locally" : "Open"}
                             </button>
                             <button
                               className="btn btn-sm btn-danger"

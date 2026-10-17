@@ -1,13 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { message } from "@tauri-apps/plugin-dialog";
+import { confirm, message } from "@tauri-apps/plugin-dialog";
 
-import type { Job, JobStatus, ParsedResults } from "../types";
+import type { Job, ParsedResults, StatusStep, SubmitResponse, WithdrawReport } from "../types";
 import type { FragmentGeometryVia } from "../scene/oplog";
 import { formatEnergy, formatWallTime } from "../format";
 import { ConvergenceDashboard } from "../convergence/ConvergenceDashboard";
-import type { ConvergenceEvent, ConvergencePayload } from "../convergence/types";
+import type { ConvergenceEvent } from "../convergence/types";
 import { OutputSearchPanel } from "./OutputSearchPanel";
 import { ResultsCard } from "./ResultsCard";
 import { OutputViewer, type OutputViewerHandle } from "./OutputViewer";
@@ -19,6 +18,9 @@ import { buildReoptInput, DEFAULT_REOPT_METHOD } from "../scene/reopt";
 import { GroupSelect } from "../groups/GroupSelect";
 import { useGroupPicker } from "../groups/useGroupPicker";
 import { InlineRename } from "../jobs/InlineRename";
+import { confirmThenWithdraw, openJobView, tauriBridge, trackRemoteStates } from "../jobs/live-wiring";
+import { NOTHING_HELD, remoteView, type HeldRemoteState, type RemoteAction } from "../jobs/remote";
+import { RemotePanel } from "../jobs/RemotePanel";
 import { parseScanCoordinates } from "../scene/scan";
 import { ScanSurface2dPanel } from "../scan/ScanSurface2dPanel";
 import {
@@ -48,16 +50,6 @@ interface OutputContent {
   truncated: boolean;
 }
 
-interface LogPayload {
-  job_id: string;
-  lines: string[];
-}
-
-interface StatusPayload {
-  job_id: string;
-  status: JobStatus;
-}
-
 /** Cap retained console lines so a long run doesn't grow the DOM unbounded. */
 const MAX_LINES = 5000;
 
@@ -65,6 +57,8 @@ interface JobDetailScreenProps {
   jobId: string;
   /** Submit the job once listeners are attached (from a Run action). */
   autoRun: boolean;
+  /** Where `autoRun` submits: null = this machine, else a server profile id (ADR-024 o5). */
+  runTarget: string | null;
   onBack: () => void;
   /** Start a new iteration seeded from this job (input + fragment snapshot). */
   onIterate: (job: Job) => void;
@@ -77,6 +71,7 @@ interface JobDetailScreenProps {
 export function JobDetailScreen({
   jobId,
   autoRun,
+  runTarget,
   onBack,
   onIterate,
   onUseConformer,
@@ -86,6 +81,8 @@ export function JobDetailScreen({
   const [lines, setLines] = useState<string[]>([]);
   const [events, setEvents] = useState<ConvergenceEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
+  // A remote submit's `%pal` notice (Rust's words), shown once beside the run.
+  const [notice, setNotice] = useState<string | null>(null);
   // Dashboard accordion: user override (null = follow the default, which is
   // expanded while the job is active, collapsed once it's finished).
   const [dashOpen, setDashOpen] = useState<boolean | null>(null);
@@ -346,11 +343,14 @@ export function JobDetailScreen({
         // Move each fan-out child into the picked group (default = this job's group) before
         // submitting (unit 2b). No-op when untouched + ungrouped source.
         await reoptGroupPicker.assignPicked(child.id);
-        await invoke("submit_job", { id: child.id });
+        // The fan-out runs on this machine: it has no "Run on" choice of its own.
+        await invoke("submit_job", { id: child.id, target: null });
       }
       setReoptMsg(
         `Queued ${built.length} DFT re-opt job${built.length === 1 ? "" : "s"} ` +
-          `(${reoptFreq ? "Opt+Freq" : "Opt-only"}${reoptSolvation !== "none" ? `, ${reoptSolvation.toUpperCase()} ${reoptSolvent.trim()}` : ""}).`,
+          `(${reoptFreq ? "Opt+Freq" : "Opt-only"}${reoptSolvation !== "none" ? `, ${reoptSolvation.toUpperCase()} ${reoptSolvent.trim()}` : ""}) ` +
+          // ADR-024 o20.2: the fan-out has no "Run on" choice — say where its jobs run.
+          `to run locally on this machine.`,
       );
       // Show the (provisional) aggregate immediately — the new children appear as
       // queued/running and are surfaced as such, not weighted.
@@ -410,99 +410,75 @@ export function JobDetailScreen({
     }
   }, [jobId]);
 
+  // Open the view (ADR-024 o16.7, `openJobView`): read the row, attach `job:log` /
+  // `job:convergence` / `job:log-reset` / `job:status` FIRST, then open the live log
+  // (`watch_job_log`), backfill what is on disk — never for a remote live job, whose log the
+  // poller re-streams from offset 0 — and only then (if `autoRun`) submit, so no early line is
+  // lost. The close drops every listener, a late-resolving one included, and closes the watch
+  // only if this view opened it.
   useEffect(() => {
-    let unlistenLog: UnlistenFn | undefined;
-    let unlistenStatus: UnlistenFn | undefined;
-    let unlistenConv: UnlistenFn | undefined;
-    let cancelled = false;
-
-    (async () => {
-      let current: Job | null = null;
+    const submit = async () => {
+      // The ref guards against React StrictMode's double-mount.
+      if (!autoRun || didSubmit.current) return;
+      didSubmit.current = true;
       try {
-        current = await invoke<Job>("get_job", { id: jobId });
-        if (cancelled) return;
-        setJob(current);
+        const response = await invoke<SubmitResponse | null>("submit_job", {
+          id: jobId,
+          target: runTarget,
+        });
+        // A remote submit answers its attempt: Rust's words for a failure, and the `%pal` notice.
+        if (response?.failure) setError(response.failure);
+        if (response?.notice) setNotice(response.notice);
       } catch (e) {
         setError(String(e));
       }
-
-      unlistenLog = await listen<LogPayload>("job:log", (e) => {
-        if (e.payload.job_id !== jobId) return;
-        setLines((prev) => {
-          const next = prev.concat(e.payload.lines);
-          return next.length > MAX_LINES ? next.slice(next.length - MAX_LINES) : next;
-        });
-      });
-
-      // Live convergence datapoints (SCF iterations + optimization steps),
-      // attached before submit so no early points are missed (listeners-first).
-      unlistenConv = await listen<ConvergencePayload>("job:convergence", (e) => {
-        if (e.payload.job_id !== jobId) return;
-        setEvents((prev) => prev.concat(e.payload.events));
-      });
-
-      unlistenStatus = await listen<StatusPayload>("job:status", (e) => {
-        if (e.payload.job_id !== jobId) return;
-        setJob((prev) => (prev ? { ...prev, status: e.payload.status } : prev));
-        // Reload the full record so error_message / completed_at / results appear.
-        // `parsed` is the terminal success state (results stored); a `completed`
-        // with a parse error also lands here so its message shows.
-        if (
-          e.payload.status === "completed" ||
-          e.payload.status === "parsed" ||
-          e.payload.status === "failed" ||
-          e.payload.status === "cancelled"
-        ) {
-          loadJob();
-        }
-      });
-
-      // Backfill existing output from output.out (after listeners are attached).
-      // For a completed/failed job this loads the whole log; for a running job it
-      // loads what exists so far and live events append from here (a small
-      // duplicate window is possible for a running job — acceptable for Phase 1).
-      if (current && current.status !== "draft") {
-        try {
-          const existing = await invoke<string[]>("read_job_output", { id: jobId });
-          if (!cancelled && existing.length) {
-            setLines((prev) => (prev.length ? prev : existing));
-          }
-        } catch (e) {
-          setError(String(e));
-        }
-        // Backfill convergence datapoints the same way (and in the same order)
-        // as the log: seed only if live events haven't already populated.
-        try {
-          const past = await invoke<ConvergenceEvent[]>("read_job_convergence", {
-            id: jobId,
-          });
-          if (!cancelled && past.length) {
-            setEvents((prev) => (prev.length ? prev : past));
-          }
-        } catch (e) {
-          setError(String(e));
-        }
-      }
-
-      // Kick off the run only AFTER listeners are attached, so no early output
-      // lines are lost. The ref guards against React StrictMode's double-mount.
-      if (autoRun && !didSubmit.current && !cancelled) {
-        didSubmit.current = true;
-        try {
-          await invoke("submit_job", { id: jobId });
-        } catch (e) {
-          setError(String(e));
-        }
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-      unlistenLog?.();
-      unlistenStatus?.();
-      unlistenConv?.();
     };
-  }, [jobId, autoRun, loadJob]);
+    return openJobView(
+      tauriBridge,
+      jobId,
+      {
+        job: setJob,
+        lines: (more) =>
+          setLines((prev) => {
+            const next = prev.concat(more);
+            return next.length > MAX_LINES ? next.slice(next.length - MAX_LINES) : next;
+          }),
+        convergence: (more) => setEvents((prev) => prev.concat(more)),
+        reset: () => {
+          setLines([]);
+          setEvents([]);
+        },
+        status: (status) => {
+          setJob((prev) => (prev ? { ...prev, status } : prev));
+          // Reload the full record on every status: a terminal one brings error_message /
+          // completed_at / results, and a remote job's check changes only its error_message.
+          loadJob();
+        },
+        // Seed only if live events haven't already populated (for a running local job a
+        // small duplicate window is possible — acceptable since Phase 1).
+        backfill: (existing, past) => {
+          if (existing.length) setLines((prev) => (prev.length ? prev : existing));
+          if (past.length) setEvents((prev) => (prev.length ? prev : past));
+        },
+        error: setError,
+      },
+      submit,
+    );
+  }, [jobId, autoRun, runTarget, loadJob]);
+
+  // The job's remote record (ADR-024 o19.6): the listener first, then `remote_job_state`, both
+  // merged by `seq` (`trackRemoteStates`). A local job simply never has one.
+  const [remoteHeld, setRemoteHeld] = useState<HeldRemoteState>(NOTHING_HELD);
+  useEffect(() => {
+    setRemoteHeld(NOTHING_HELD);
+    const tracker = trackRemoteStates(
+      tauriBridge,
+      (held) => setRemoteHeld(held.get(jobId) ?? NOTHING_HELD),
+      setError,
+    );
+    void tracker.read([jobId]);
+    return tracker.dispose;
+  }, [jobId]);
 
   // Auto-scroll the live console to the bottom as new lines arrive (and when
   // switching back to Live).
@@ -597,6 +573,48 @@ export function JobDetailScreen({
       setCancelling(false); // let the user retry
     }
   };
+
+  // The remote actions `remoteView` offers (ADR-024 o19.7). Each answer is shown in Rust's words
+  // (a submit failure, the `%pal` notice; a refusal is the error text); the row and the record
+  // follow through `job:status` and `job:remote-state`.
+  const [remoteBusy, setRemoteBusy] = useState<RemoteAction | null>(null);
+  const runRemoteAction = async (action: RemoteAction) => {
+    setRemoteBusy(action);
+    setError(null);
+    setNotice(null);
+    try {
+      if (action === "retry_submit") {
+        const response = await invoke<SubmitResponse>("retry_remote_submit", { id: jobId });
+        if (response.failure) setError(response.failure);
+        if (response.notice) setNotice(response.notice);
+      } else if (action === "withdraw") {
+        // Confirmed like Delete job (ADR-024 o20.3), and sent only if the view still offers it
+        // once the dialog closed — the record may have changed meanwhile.
+        await confirmThenWithdraw({
+          confirm: () =>
+            confirm(
+              `Withdraw "${job?.title ?? "this job"}"? It is cancelled and will not run on the server.`,
+              { title: "Withdraw job", kind: "warning" },
+            ),
+          currentActions: () => (remoteRef.current?.kind === "live" ? remoteRef.current.actions : []),
+          withdraw: async () => {
+            await invoke<WithdrawReport>("withdraw_remote_job", { id: jobId });
+          },
+        });
+      } else {
+        await invoke<StatusStep>("retry_remote_fetch", { id: jobId });
+      }
+      await loadJob();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setRemoteBusy(null);
+    }
+  };
+  const remote = job ? remoteView(job, remoteHeld.state) : null;
+  // The latest view, for a decision taken after an await (the withdraw re-check, o20.3).
+  const remoteRef = useRef(remote);
+  remoteRef.current = remote;
 
   const cancellable = job?.status === "running" || job?.status === "queued";
   const isActive = job?.status === "running" || job?.status === "queued";
@@ -703,7 +721,15 @@ export function JobDetailScreen({
           {error}
         </div>
       ) : null}
-      {job?.error_message ? (
+      {notice ? (
+        <div className="banner ok" style={{ marginBottom: 10 }}>
+          {notice}
+        </div>
+      ) : null}
+      {remote ? <RemotePanel view={remote} busy={remoteBusy} onAction={runRemoteAction} /> : null}
+      {/* A live remote job's error_message is the remote panel's text (the server's facts), not
+          an error banner. */}
+      {job?.error_message && remote?.kind !== "live" ? (
         <div className="banner err" style={{ marginBottom: 10, whiteSpace: "pre-wrap" }}>
           {job.error_message}
           {/* Re-parse is offered ONLY for a completed job carrying a parse-failure

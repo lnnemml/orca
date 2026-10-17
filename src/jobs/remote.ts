@@ -9,7 +9,9 @@
  * - `remoteView`: the badges and offered actions of a job from its row and its record (o19.2,
  *   o19.7). The words of a check stay in the row's `error_message`; this module never copies
  *   Rust's outcome texts (`shown_message`) or its list of outcomes that need a later unit's action;
- * - `runTargetOptions`: the "Run on" choices next to Submit (ADR-024 o5, n2).
+ * - `backfillsLog`: whether the view reads the log already on disk (o16.7);
+ * - `runTargetOptions`: the "Run on" choices next to Submit (ADR-024 o5, n2);
+ * - `resolveRunTarget`: the remembered "Run on" choice, checked against those choices (o20.1).
  */
 import type { Job, Outcome, RemoteState, RemoteStateEvent, RemoteStateRead, ServerProfile } from "../types";
 
@@ -165,12 +167,14 @@ export function remoteView(job: Job, record: RemoteState | null | undefined): Re
   } else if (known?.kind === "fetching") {
     const strikes = record?.fetch.strikes ?? 0;
     const stale = record?.check_error != null;
-    const failed = strikes === 1 ? "1 failed attempt" : `${strikes} failed attempts`;
+    // No count at 0 strikes (e.g. right after a manual retry cleared them): "(0 failed
+    // attempts)" says nothing.
+    const failed = strikes === 0 ? "" : strikes === 1 ? " (1 failed attempt)" : ` (${strikes} failed attempts)`;
     badges.push({
       kind: "fetching",
       strikes,
       stale,
-      label: `${stale ? "Last seen: fetching results" : "Fetching results"} (${failed})`,
+      label: `${stale ? "Last seen: fetching results" : "Fetching results"}${failed}`,
       tone: stale ? "muted" : "warn",
     });
   }
@@ -184,6 +188,22 @@ export function remoteView(job: Job, record: RemoteState | null | undefined): Re
 
   const text = job.error_message != null ? { body: job.error_message, fromLastCheck: known === null } : null;
   return { kind: "live", text, badges, actions };
+}
+
+// --- The live log's backfill (o16.7) ------------------------------------------------------------
+
+/**
+ * Whether the job view reads the log and the convergence points already on disk
+ * (`read_job_output` / `read_job_convergence`) after its listeners are attached. A draft has none.
+ * A remote `queued`/`running` job never does: the poller re-streams its whole log from offset 0 on
+ * every `watch_job_log` open, and during a failing fetch a local `output.out` exists while the row
+ * is still live — backfill plus re-stream would show every line and point twice. Every other job
+ * (local, a finished remote one, corrupt coordinates) backfills as a local job always has.
+ */
+export function backfillsLog(job: Pick<Job, "status" | "remote_host" | "remote_job_dir" | "remote_socket">): boolean {
+  if (job.status === "draft") return false;
+  const live = job.status === "queued" || job.status === "running";
+  return !(live && coordinateState(job) === "remote");
 }
 
 // --- Run on (ADR-024 o5, n2) ---------------------------------------------------------------------
@@ -211,4 +231,20 @@ export function runTargetOptions(profiles: ServerProfile[]): RunTargetOption[] {
       reason: p.run_target.is_run_target ? null : (p.run_target.reason ?? "no reason reported"),
     })),
   ];
+}
+
+/** The app setting holding the target of the last Create & Run (o20.1): a profile id, `""` for
+ *  Local. Named apart from `ServerProfile.run_target`. */
+export const LAST_RUN_TARGET_SETTING = "last_run_target";
+
+/**
+ * The "Run on" choice to preselect from the stored settings (`get_settings`; null when the read
+ * failed). The stored profile is used only while it is still among `options` **and** enabled; a
+ * profile that is gone or no longer a run target, an absent value, or a failed read gives Local
+ * (null) — never a stale or disabled target preselected.
+ */
+export function resolveRunTarget(options: RunTargetOption[], settings: Record<string, string> | null): string | null {
+  const stored = settings?.[LAST_RUN_TARGET_SETTING];
+  if (!stored) return null;
+  return options.some((o) => o.target === stored && o.enabled) ? stored : null;
 }

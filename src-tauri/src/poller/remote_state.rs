@@ -2,8 +2,9 @@
 //!
 //! The row's `error_message` carries the **words** of the last check; this record carries the
 //! **structure** the view needs to decide badges and actions (o19.2): the label of a `queued` job
-//! that is not in the server's hands (retry vs withdraw), the last non-fetching outcome, a check
-//! that could not be done (the host is away), and the fetch strikes. It is in memory only, one
+//! that is not in the server's hands (retry vs withdraw), the last non-fetching outcome, `Fetching`
+//! once the server reports a fetching outcome whose download is failing (o19.11), a check that
+//! could not be done (the host is away), and the fetch strikes. It is in memory only, one
 //! record per non-terminal remote job, and starts empty on every launch like [`PollerMemory`]
 //! (o19.1, o19.8): the next status step re-derives it from the server's facts.
 //!

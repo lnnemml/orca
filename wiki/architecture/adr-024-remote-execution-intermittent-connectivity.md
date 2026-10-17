@@ -930,7 +930,8 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
    - Initial periods: log 2 s while the view is open, status 15 s. Tunable; not a contract.
 5. **The run target is chosen next to Submit** (Anton): `Local` plus every profile that passes the
    same run-target predicate submit uses (n item 2); the others are listed disabled with their
-   reason. Default `Local`; the last choice is remembered per project. **Nothing is deleted on the
+   reason. Default `Local`; the last choice is remembered per project *(amended by o20: app-wide,
+   since there is no project entity)*. **Nothing is deleted on the
    server in 5.3** (Anton): the remote job dir stays after download; cleanup is a later unit, once
    disk use is measured.
 6. **rsync rules (measured, probe 5.3a):**
@@ -1387,7 +1388,8 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
     `CheckFailed` (the host is away), and a structured "fetch stopped" flag for the retry button —
     the loop (`poller/app.rs` `spawn_step`) drops the `StatusStep`.
     1. **One in-memory record per job.** Beside `PollerMemory`, a `RemoteState` per non-terminal
-       remote job: `known: Option<Known>` (`Labelled(Label)` or `Shown(Outcome)`), `check_error:
+       remote job: `known: Option<Known>` (`Labelled(Label)` or `Shown(Outcome)`; *amended by
+       o19.11: or `Fetching`*), `check_error:
        Option<String>`, and `fetch: { strikes, stopped }` **re-read from `PollerMemory`'s strike
        counter on every apply** (Anton, MED-1; equality suppresses the emit) — the counter the bound acts on stays the
        one source; `stopped = strikes >= MAX_FETCH_STRIKES`, so the third `FetchFailed` already
@@ -1412,7 +1414,8 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
          (e.g. `Lost`'s "handled in unit 5.4"), and the explanation lives only in `check_error`, so
          the view never shows one sentence twice;
        - `Shown(o)` otherwise → `known = Shown(o)`, clear `check_error`;
-       - `FetchFailed` / `FetchStopped` → clear `check_error`; `known` kept (`fetch` is re-read on
+       - `FetchFailed` / `FetchStopped` *(amended by o19.11: they set `known = Fetching`)* → clear
+         `check_error`; `known` kept (`fetch` is re-read on
          every apply, o19.1);
        - `CheckFailed(why)` → set `check_error`, **keep** `known` (a host away does not erase what
          was last seen; the view shows it as "last seen"). With no `known` yet (host away at
@@ -1519,6 +1522,61 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
            the job before the work closure, so a missing row skips the closure's removal. Accepted:
            the row is gone, so the job is not a candidate and the next `sweep` removes the record
            with a `null` emit (o19.5).
+
+20. **B3 Part B amendments** (2026-10-07; found by the B3 Part B implementer, decided by Anton;
+    DESIGN review: two rounds, PASS WITH FINDINGS each, applied).
+    1. **The run-target choice is remembered app-wide, not per project.** o5's "per project" has no
+       referent: the app has no project entity (no projects table, no per-project preferences).
+       Remembered is **the target of the last Create & Run**, one app setting `last_run_target`
+       (named apart from `ServerProfile.run_target`), read and written through the existing
+       `get_settings` / `set_setting` (a plain upsert, no key validation). Rules:
+       - **Encoding:** a profile **id** (a rename keeps the choice; delete-and-recreate loses it);
+         `""` is Local. No stored value is Local.
+       - **Resolve on load** (pure, `resolveRunTarget`): the stored id is preselected only while it
+         is among the current `runTargetOptions` **and** enabled; otherwise Local. A failed
+         `get_settings` reads as nothing stored → Local; a failed `list_server_profiles` gives an
+         empty list → Local, and its error is shown.
+       - **The fallback never writes.** A stored profile that is disabled today is preselected again
+         once it becomes a run target again. Nothing "self-heals" the stored value.
+       - **When it is written:** on Create & Run, when the job is created and handed to the view,
+         regardless of the submit's outcome (Anton: a retry after an unreachable server keeps the
+         choice). Changing the select writes nothing; "Create Job" writes nothing. Accepted side
+         effect: if a load failed and the user runs on Local, the stored server choice becomes `""`.
+       - **Load race:** a choice the user makes while the load is pending wins over the stored value.
+       Submit re-checks the run-target predicate in Rust (n2), so a preselect that went stale between
+       load and submit is refused there. Rejected: keying the choice per destination group.
+    2. **A run target is chosen only through Create & Run** (Anton). The Jobs table's Run on a draft
+       and the re-opt fan-out submit locally (`target: null`) and **say so**: the table button reads
+       "Run locally", and **every** fan-out that submits without a target (re-opt, 2D surface
+       scan, scan profile, NEB band, connectivity — CODE verifier L5, Anton) says its jobs run
+       locally where the user sees it before or as it runs: re-opt in its queued message; the
+       refines that navigate straight to the child (scan profile, NEB band, 2D surface) next to
+       their button or in their hint; connectivity in its pending line. These labels are
+       checked in Anton's live gate, not by a unit test. Choosing a target there is
+       recorded as open in `modules/remote-jobs.md` ("Not built yet") and ROADMAP; not built in 5.3.
+    3. **Withdraw asks for confirmation like Delete job** (Anton): the Tauri plugin-dialog `confirm`,
+       the app's pattern for destructive actions (never `window.confirm`, unreliable in WebKitGTK).
+       Declining sends nothing. `withdraw_remote_job` is called only if `withdraw` is still among the
+       view's offered actions after the dialog closes (a record change during the dialog must not
+       fire a withdraw from a stale offer): the check reads the view's **current** actions (a ref or
+       the latest state) after `await confirm(...)` resolves, never the offer captured by the click
+       handler. A `confirm` that rejects (a plugin error) counts as declining.
+    4. **Negative controls** (each must turn its test red):
+       a. `resolveRunTarget`: a stored disabled profile → Local, a deleted one → Local, an enabled one
+          → preselected, a failed settings read → Local; dropping the enabled check turns the
+          disabled case red. At the load path (not the pure resolver, which cannot write): a load
+          with a stored disabled profile makes no `set_setting` call — a fallback write turns it red;
+          a choice made before the load resolves survives it — removing the "touched" guard turns
+          it red.
+       b. Changing the select writes nothing and Create & Run writes the id (`""` for Local). Not
+          unit-testable without rendering New Job (Monaco, 3Dmol; no screen harness): **checked in
+          Anton's live gate**, not by a negative control.
+       c. Withdraw: declining sends nothing, confirming sends exactly one call, a rejecting
+          `confirm` sends nothing, and an offer withdrawn **while the mocked `confirm` is still
+          pending** sends nothing; bypassing the confirm, or re-checking the click-time offer instead
+          of the current one, turns it red.
+    5. **Propagation:** o5 (marked); ROADMAP B3 ("per project" marked); `modules/remote-jobs.md`
+       ("The view", "Not built yet"); `modules/frontend.md`.
 
 ## Alternatives rejected
 

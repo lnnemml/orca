@@ -662,24 +662,36 @@ Negative controls (each guard broken, the named tests red, restored): listed per
 also permanent tests: each runs its guard's check on a mutated copy of the script (exactly one
 occurrence replaced) and requires it to fail.
 
+## The view
+
+The screens over the remote jobs (B3 Part B; details in
+[frontend.md](frontend.md#remote-job-view-logic-srcjobsremotets--adr-024-o19)): New Job's "Run on"
+select (o5) sends `submit_job`'s `target` and is remembered app-wide in the `last_run_target` setting
+(o20.1: written on Create & Run, a gone or disabled profile falls back to Local on load, the load
+never writes); the job view calls `watch_job_log` only after its
+`job:log`, `job:convergence` and `job:log-reset` listeners resolve, closes it only if it opened it,
+and skips the backfill for a live remote job (o16.7); the job view and the Jobs table attach their
+`job:remote-state` listener, then read `remote_job_state`, keeping the greatest `seq` (o19.6), and
+show `remoteView`'s badges and actions (retry submit, withdraw — after a plugin-dialog confirm and a
+re-check that the view still offers it, o20.3 —
+retry fetch). What they bind to:
+each non-terminal remote job's **remote record** (`RemoteStates`: the label, the last outcome or
+"fetching", a failed check, the fetch bound) set by every status step under the job's guard and
+pushed as `job:remote-state { job_id, seq, state }`, and the `remote_job_state(id)` read
+([execution-backends.md](execution-backends.md), "The remote record"). The poller runs: one loop
+thread started at launch monitors every non-terminal remote job (status every 15 s; the log every
+2 s while a view watches it), emitting the local `job:log` / `job:convergence` / `job:status`
+events and `job:log-reset { job_id }`; `watch_job_log(id, open)` counts a job's open views and
+`retry_remote_fetch(id)` is the manual retry after 3 failed fetches
+([execution-backends.md](execution-backends.md#the-remote-pollers-core-pollerrs-poller-adr-024-o-item-4-o15-o16)).
+
 ## Not built yet
 
-- The UI over the remote job commands and the live log (B3 Part B: the view calls `watch_job_log`
-  after its `job:log`, `job:convergence` and `job:log-reset` listeners resolve, and skips the backfill
-  for a live remote job, o16.7; it attaches its `job:remote-state` listener, then reads
-  `remote_job_state`, keeping the greatest `seq`, o19.6; the "Run on" choice sits next to Submit, o5).
-  What the view will bind to exists now (B3 Part A): each non-terminal remote job's **remote record**
-  (`RemoteStates`: the label, the last outcome or "fetching", a failed check, the fetch bound) set by every status
-  step under the job's guard and pushed as `job:remote-state { job_id, seq, state }`; the
-  `remote_job_state(id)` read; and the pure TypeScript in `src/jobs/remote.ts` — `coordinateState`
-  (local / remote / corrupt), the seq rule (`mergeRemoteState`, `applyRemoteStateEvent`),
-  `remoteView` (badges and offered actions, o19.7; the words stay the row's) and `runTargetOptions`
-  ([execution-backends.md](execution-backends.md), "The remote record"). The poller runs: one loop thread started at launch monitors every
-  non-terminal remote job (status every 15 s; the log every 2 s while a view watches it), emitting
-  the local `job:log` / `job:convergence` / `job:status` events and `job:log-reset { job_id }`;
-  `watch_job_log(id, open)` counts a job's open views and `retry_remote_fetch(id)` is the manual
-  retry after 3 failed fetches
-  ([execution-backends.md](execution-backends.md#the-remote-pollers-core-pollerrs-poller-adr-024-o-item-4-o15-o16)).
+- **A run target is chosen only through Create & Run** (ADR-024 o20.2): a draft made with "Create
+  Job" and later run from the Jobs table's "Run locally" button runs locally, and every fan-out
+  submits locally (`target: null`) and says so — the DFT re-opt, the OptTS refines of the 1D scan,
+  the 2D surface and the NEB band, and the connectivity check. Choosing a target there is not built
+  in 5.3.
 - **Known limitation — `started_at` of a remote job** is stamped with the time of the status check
   that first sees the classifier's `Running` (`queued` → `running`, `crate::poller`), not the time the
   job started on the server. It can be late by up to a status period (15 s), or by hours when the

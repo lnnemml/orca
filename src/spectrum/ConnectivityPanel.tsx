@@ -150,8 +150,9 @@ export function ConnectivityPanel({
       // before submitting (unit 2b). No-op each when untouched + ungrouped source.
       await picker.assignPicked(forward.id);
       await picker.assignPicked(backward.id);
-      await invoke("submit_job", { id: forward.id });
-      await invoke("submit_job", { id: backward.id });
+      // ADR-024 o20.2: this fan-out has no "Run on" choice — submit locally and say so.
+      await invoke("submit_job", { id: forward.id, target: null });
+      await invoke("submit_job", { id: backward.id, target: null });
       const next = { forwardId: forward.id, backwardId: backward.id };
       try {
         localStorage.setItem(storageKey, JSON.stringify(next));
@@ -432,7 +433,8 @@ function ConnectivityVerdict({
     body = (
       <div className="mono" style={{ fontSize: 12, color: "var(--muted)" }}>
         pending — forward: <strong>{fwd?.status ?? "…"}</strong>, backward:{" "}
-        <strong>{bwd?.status ?? "…"}</strong> (verdict appears when both parse)
+        <strong>{bwd?.status ?? "…"}</strong> (verdict appears when both parse; both run locally on
+        this machine)
       </div>
     );
   } else {
