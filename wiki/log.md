@@ -11093,3 +11093,9 @@ profile was never verified. Next: **5.3** `SshBackend` wiring.
   path; 6 LOW) — all applied; marks placed across the ADR, ROADMAP split.
 - Next: M4 instrumentation unit (`ORCASTUDIO_TIMING=1`), then 5.4a Part A (opus) — it starts with
   `cancel.sh` idempotence tests on the Lab harness.
+
+## [2026-10-17] feat | ORCASTUDIO_TIMING — live-log mutex timing for B4 M4
+- `src-tauri/src/timing.rs`: gate `ORCASTUDIO_TIMING=1` (a `OnceLock<bool>`, only `1` is on) and a `SectionTimer` (`lock_wait` / `hold` / `emit`, counts); off, no clock is read and nothing is printed.
+- `LiveLog::open`, `apply` and `finish` (the drain's steps) now run their body in a guard block; the line is printed after the guard is dropped, never under the mutex. Output: `[timing] live_log.apply job=… lines=… conv=… lock_wait_us=… hold_us=… emit_us=…`.
+- Tests: 786 → 791. Negative controls: inverted gate turns both gate tests red; a `timer.print(` moved inside the guard block turns the source-order test red. Existing `LiveLog` tests unchanged and green.
+- M4 row of `remote-live-run-b4.md` now says how to run it; the "decide before the run" is settled. Not a render change; no live gate needed.

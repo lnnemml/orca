@@ -36,6 +36,7 @@ use std::sync::{Mutex, MutexGuard};
 use super::PollerSink;
 use crate::convergence::{ConvergenceEvent, ConvergenceParser};
 use crate::execution_backend::{LineAssembler, LogChunk};
+use crate::timing::SectionTimer;
 
 /// Every watched job's live-log state, and the open counts. Managed app state in Part B; one per
 /// launch, so everything here starts empty on launch (o16.2, like o item 4's state).
@@ -124,13 +125,19 @@ impl LiveLog {
     /// at offset 0 and emit `job:log-reset` — in one locked step, so no chunk of the old stream can
     /// follow the reset.
     pub fn open(&self, job_id: &str, sink: &dyn PollerSink) {
-        let mut inner = self.lock();
-        *inner.open.entry(job_id.to_string()).or_insert(0) += 1;
-        if inner.states.contains_key(job_id) {
-            let fresh = inner.fresh();
-            inner.states.insert(job_id.to_string(), fresh);
-            sink.log_reset(job_id);
+        let mut timer = SectionTimer::start();
+        {
+            let mut inner = self.lock();
+            timer.locked();
+            *inner.open.entry(job_id.to_string()).or_insert(0) += 1;
+            if inner.states.contains_key(job_id) {
+                let fresh = inner.fresh();
+                inner.states.insert(job_id.to_string(), fresh);
+                timer.time_emit(|| sink.log_reset(job_id));
+            }
         }
+        timer.released();
+        timer.print("live_log.open", job_id);
     }
 
     /// A view closed: decrement, saturating at 0 (a close with no matching open is a no-op). The
@@ -195,7 +202,28 @@ impl LiveLog {
     /// chunk is discarded — then reset, or assemble, parse, advance the offset and emit, all in one
     /// locked step. `cap` is the read's cap: a chunk of exactly `cap` bytes asks for catch-up.
     pub fn apply(&self, job_id: &str, ticket: Ticket, chunk: &LogChunk, cap: u64, sink: &dyn PollerSink) -> Applied {
-        let mut inner = self.lock();
+        let mut timer = SectionTimer::start();
+        let applied = {
+            let mut inner = self.lock();
+            timer.locked();
+            Self::apply_locked(&mut inner, job_id, ticket, chunk, cap, sink, &mut timer)
+        };
+        timer.released();
+        timer.print("live_log.apply", job_id);
+        applied
+    }
+
+    /// The body of [`LiveLog::apply`], run with the guard held (its caller owns the guard's scope and
+    /// the timing; nothing here does I/O beyond the sink's emits).
+    fn apply_locked(
+        inner: &mut Inner,
+        job_id: &str,
+        ticket: Ticket,
+        chunk: &LogChunk,
+        cap: u64,
+        sink: &dyn PollerSink,
+        timer: &mut SectionTimer,
+    ) -> Applied {
         match inner.states.get(job_id) {
             Some(state) if state.generation == ticket.generation => {}
             _ => return Applied::Discarded,
@@ -203,7 +231,7 @@ impl LiveLog {
         if chunk.reset {
             let fresh = inner.fresh();
             inner.states.insert(job_id.to_string(), fresh);
-            sink.log_reset(job_id);
+            timer.time_emit(|| sink.log_reset(job_id));
             return Applied::Reset;
         }
         let read = chunk.bytes.len() as u64;
@@ -223,7 +251,8 @@ impl LiveLog {
         state.offset = chunk.offset;
         state.catch_up = read == cap;
         let applied = Applied::Lines { lines: lines.len(), events: events.len(), catch_up: state.catch_up };
-        emit(sink, job_id, lines, events);
+        timer.counts(lines.len(), events.len());
+        timer.time_emit(|| emit(sink, job_id, lines, events));
         applied
     }
 
@@ -231,13 +260,26 @@ impl LiveLog {
     /// completes) and drop the state — if the generation is unchanged. `false`: the state moved on
     /// and nothing was done.
     pub fn finish(&self, job_id: &str, ticket: Ticket, sink: &dyn PollerSink) -> bool {
-        let mut inner = self.lock();
+        let mut timer = SectionTimer::start();
+        let finished = {
+            let mut inner = self.lock();
+            timer.locked();
+            Self::finish_locked(&mut inner, job_id, ticket, sink, &mut timer)
+        };
+        timer.released();
+        timer.print("live_log.finish", job_id);
+        finished
+    }
+
+    /// The body of [`LiveLog::finish`], run with the guard held.
+    fn finish_locked(inner: &mut Inner, job_id: &str, ticket: Ticket, sink: &dyn PollerSink, timer: &mut SectionTimer) -> bool {
         let Some(state) = inner.states.get_mut(job_id).filter(|s| s.generation == ticket.generation) else {
             return false;
         };
         let lines: Vec<String> = state.assembler.take_partial().into_iter().collect();
         let events: Vec<ConvergenceEvent> = lines.iter().filter_map(|line| state.parser.feed(line)).collect();
-        emit(sink, job_id, lines, events);
+        timer.counts(lines.len(), events.len());
+        timer.time_emit(|| emit(sink, job_id, lines, events));
         inner.states.remove(job_id);
         true
     }
@@ -441,6 +483,37 @@ mod tests {
         assert!(matches!(live.apply("j", t, &skipped, 1 << 20, &sink), Applied::Refused(_)));
         assert_eq!(live.begin("j").map(|t| t.offset), Some(0));
         assert!(sink.take().is_empty());
+    }
+
+    /// M4 instrumentation (`timing.rs`), source-order checks on the production part of this file:
+    /// (1) it contains no direct `eprintln!`/`println!`; (2) `timer.print(` occurs exactly three
+    /// times, so a print added anywhere else — e.g. inside `apply_locked`/`finish_locked`, which run
+    /// under the mutex — is caught; (3) in each of `open`, `apply` and `finish` (the text up to the
+    /// next doc comment) the order is `self.lock()` → `timer.released()` → its own `timer.print(`,
+    /// with the guard's `{ … }` block closed before `released()`. NEGATIVE CONTROLS: a
+    /// `timer.print(` moved inside a step's guard block fails (3); an extra one inside a `*_locked`
+    /// body fails (2) with a count of 4.
+        #[test]
+    fn the_timing_line_is_printed_after_the_guard_is_dropped() {
+        let full = include_str!("live_log.rs");
+        let src = full.split("#[cfg(test)]\nmod tests").next().expect("production part");
+        assert!(!src.contains(concat!("eprint", "ln!")) && !src.contains(concat!("print", "ln!")), "no direct printing");
+        assert_eq!(src.matches("timer.print(").count(), 3, "exactly one print each in open, apply and finish");
+        for (name, label) in [("open", "live_log.open"), ("apply", "live_log.apply"), ("finish", "live_log.finish")] {
+            let start = src.find(&format!("pub fn {name}(")).unwrap_or_else(|| panic!("fn {name}"));
+            let rest = &src[start..];
+            let end = rest.find("\n    /// ").unwrap_or(rest.len());
+            let body = &rest[..end];
+            let lock = body.find("self.lock()").unwrap_or_else(|| panic!("{name}: lock"));
+            let released = body.find("timer.released();").unwrap_or_else(|| panic!("{name}: released"));
+            let print = body.find(&format!("timer.print(\"{label}\"")).unwrap_or_else(|| panic!("{name}: print"));
+            assert!(lock < released && released < print, "{name}: lock → released → print, in that order");
+            // The guard lives in a `{ … }` block that is closed before `released()`.
+            let between = &body[lock..released];
+            let opens = between.matches('{').count();
+            let closes = between.matches('}').count();
+            assert!(closes > opens, "{name}: the guard's block must be closed before `released()`");
+        }
     }
 
     /// The drain reads to the end, emits the unterminated last line, drops the state; for an

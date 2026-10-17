@@ -32,6 +32,7 @@ mod results;
 mod secrets;
 mod sidecar;
 mod ssh_backend;
+mod timing;
 mod xtb;
 
 use std::path::Path;

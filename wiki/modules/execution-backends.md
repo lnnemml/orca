@@ -532,7 +532,7 @@ drop-and-reopen), refuses a chunk that does not continue the ticket's offset, re
 emits — all under the mutex, never across an ssh call. A chunk of exactly the cap sets catch-up.
 `drain(job, read, cap, sink)` reads the verified local copy from the stored offset with
 `read_log_chunk` until no bytes remain, then `finish` emits the assembler's unterminated last line and
-drops the state; each step is generation-checked, and an unwatched job's copy is not read.
+drops the state; each step is generation-checked, and an unwatched job's copy is not read. With `ORCASTUDIO_TIMING=1` (read once, `timing.rs`; any other value is off and costs one cached bool check) `open`, `apply` and `finish` each print one `[timing] live_log.<step> job=… lines=… conv=… lock_wait_us=… hold_us=… emit_us=…` line to stderr, formatted and printed only after the guard is dropped (a source-order test pins this) — B4 measurement M4.
 
 **The loop** (`poller/run.rs`, `poller/app.rs`). `lib.rs` setup manages `LiveLog`, `PollerMemory` and
 `RemoteStates` next to `InFlight`, then — last — starts one named thread (`remote-poller`), so the loop never runs
