@@ -1,5 +1,5 @@
 //! The core over a **fake** runner: the order of the calls, what the database holds at each call
-//! and after each failure point, the refusals, retry and withdraw. The real scripts run end to end
+//! and after each failure point, the refusals and retry. The real scripts run end to end
 //! in `remote::backend_e2e_tests`.
 
 use std::cell::RefCell;
@@ -529,7 +529,7 @@ fn retry_refuses_an_unverified_profile_or_a_moved_target() {
     }
 }
 
-// ---- withdraw ----------------------------------------------------------------------------------
+// ---- snapshots ---------------------------------------------------------------------------------
 
 /// A collector output with no `.started`: `cancelled`, an optional `.exit_code` and output tail,
 /// no daemon on the socket. `started` = the two bracketing `.started` reads.
@@ -550,144 +550,8 @@ pub(crate) fn snapshot(cancelled: bool, exit_code: Option<&str>, tail: Option<&s
     .into_bytes()
 }
 
-/// A fake server for a withdraw: the label call answers `markers`, prepare is ready, mkjob ok; the
-/// trampoline answers `cancel` with `cancel_rc` and `collect` with the next of `collects`. Also
-/// checks every trampoline call's values: the recorded root, an allowed name, its embedded sha,
-/// and the recorded job dir and socket.
-fn withdraw_server(markers: Option<[bool; 5]>, cancel_rc: u8, collects: Vec<Vec<u8>>) -> impl Fn(Kind, &[String]) -> Reply {
-    let collects = RefCell::new(collects);
-    move |kind, values| match kind {
-        Label => label_reply(values, markers),
-        Run => {
-            let coords = expected_coords();
-            assert_eq!(values[0], ROOT, "the recorded root");
-            match values[1].as_str() {
-                "cancel" => {
-                    assert_eq!(values[2], crate::remote::scripts::sha256_hex(crate::remote::scripts::CANCEL));
-                    assert_eq!(&values[3..], ["cancel", coords.job_dir.as_str(), ROOT]);
-                    ran(values, cancel_rc, b"", b"cancel: stderr")
-                }
-                "collect" => {
-                    assert_eq!(values[2], crate::remote::scripts::sha256_hex(crate::remote::scripts::COLLECT));
-                    assert_eq!(&values[3..], [coords.job_dir.as_str(), coords.socket.as_str()], "the recorded socket, never the profile's");
-                    ran(values, 0, &collects.borrow_mut().remove(0), b"")
-                }
-                other => panic!("the core never runs {other:?} through the trampoline"),
-            }
-        }
-        _ => happy(kind, values),
-    }
-}
-
+/// A clean ORCA output tail, for a collector snapshot.
 pub(crate) const CLEAN_TAIL: &str = "                             ****ORCA TERMINATED NORMALLY****\n";
-
-#[test]
-fn a_withdraw_is_decided_by_the_classifier() {
-    let cancelled = snapshot(true, None, None, (None, None));
-    let cases: Vec<(&str, Option<[bool; 5]>, Vec<Vec<u8>>, Outcome, JobStatus)> = vec![
-        ("not on the server → Cancelled", NOT_ON_SERVER, vec![cancelled.clone()], Outcome::Cancelled { started: false }, JobStatus::Cancelled),
-        ("submit interrupted → Cancelled", INTERRUPTED, vec![cancelled.clone()], Outcome::Cancelled { started: false }, JobStatus::Cancelled),
-        (
-            "a job that ran cleanly keeps its result (row 2) — stays queued for the fetch",
-            INTERRUPTED,
-            vec![snapshot(true, Some("0\n"), Some(CLEAN_TAIL), (None, None))],
-            Outcome::Completed { late_cancel: true },
-            JobStatus::Queued,
-        ),
-        (
-            "a corrupt .started (row 1) stays queued",
-            INTERRUPTED,
-            vec![snapshot(true, None, None, (Some("garbage"), Some("garbage")))],
-            Outcome::Failed { reason: crate::remote::classify::FailReason::CorruptStarted { detail: String::new(), cancelled: true } },
-            JobStatus::Queued,
-        ),
-        (
-            "the two .started reads differ: one retake",
-            INTERRUPTED,
-            vec![snapshot(true, None, None, (None, Some("garbage"))), cancelled.clone()],
-            Outcome::Cancelled { started: false },
-            JobStatus::Cancelled,
-        ),
-    ];
-    for (case, markers, collects, want, status) in cases {
-        let w = World::new();
-        submitted_but_refused(&w);
-        let n = collects.len();
-        let fake = Fake::new(&w, withdraw_server(markers, 0, collects));
-        let report = withdraw_remote(&w.db, &fake, JOB).unwrap_or_else(|e| panic!("{case}: {e}"));
-        match (&report.outcome, &want) {
-            // The detail is the parser's words; the snapshot's `.cancelled` must reach the reason.
-            (Outcome::Failed { reason: crate::remote::classify::FailReason::CorruptStarted { cancelled: true, .. } }, Outcome::Failed { .. }) => {}
-            (got, want) => assert_eq!(got, want, "{case}"),
-        }
-        assert_eq!(report.status, status, "{case}");
-        assert_eq!(w.job().status, status, "{case}");
-        assert!(coordinates(&w.job()).unwrap().is_some(), "{case}: the coordinates stay");
-        let mut want_kinds = vec![Label, Prepare, Mkjob, Run];
-        want_kinds.extend(std::iter::repeat(Run).take(n));
-        assert_eq!(fake.kinds(), want_kinds, "{case}: label, prepare, mkjob, cancel, then {n} collect(s)");
-    }
-}
-
-/// o 14.1's withdraw sequence: prepare → install if a script is missing → prepare again → mkjob,
-/// before the trampoline runs anything; and no `verified_at` gate (n 6a).
-#[test]
-fn a_withdraw_readies_the_server_first_and_ignores_the_stamp() {
-    let w = World::new();
-    submitted_but_refused(&w);
-    w.sql("UPDATE server_profiles SET verified_at = NULL");
-    let prepares = RefCell::new(0);
-    let server = withdraw_server(NOT_ON_SERVER, 0, vec![snapshot(true, None, None, (None, None))]);
-    let fake = Fake::new(&w, |kind, values| match kind {
-        Prepare => {
-            *prepares.borrow_mut() += 1;
-            if *prepares.borrow() == 1 { prepare_fresh(values) } else { prepare_ready(values) }
-        }
-        _ => server(kind, values),
-    });
-    let report = withdraw_remote(&w.db, &fake, JOB).unwrap();
-    assert_eq!(report.status, JobStatus::Cancelled);
-    assert_eq!(fake.kinds(), [Label, Prepare, Install, Prepare, Mkjob, Run, Run]);
-}
-
-#[test]
-fn a_withdraw_stops_at_the_first_failure_and_changes_nothing() {
-    type Respond = Box<dyn Fn(Kind, &[String]) -> Reply>;
-    let cases: Vec<(&str, Respond, Vec<Kind>)> = vec![
-        ("the server holds the job", Box::new(withdraw_server(ENQUEUED, 0, vec![])), vec![Label]),
-        ("a symlinked bin", Box::new(|k, v| if k == Prepare { prepare_symlinked_bin(v) } else { withdraw_server(NOT_ON_SERVER, 0, vec![])(k, v) }), vec![Label, Prepare]),
-        (
-            "mkjob finds a symlinked job dir",
-            Box::new(|k, v: &[String]| if k == Mkjob {
-                ok(format!("{}{}{}end\n", echo(MKJOB_HEADER, v), rec("job", "/data/j1"), rec("parent", &format!("{}/jobs", v[0]))).into_bytes())
-            } else { withdraw_server(NOT_ON_SERVER, 0, vec![])(k, v) }),
-            vec![Label, Prepare, Mkjob],
-        ),
-        ("cancel.sh exits 3", Box::new(withdraw_server(NOT_ON_SERVER, 3, vec![])), vec![Label, Prepare, Mkjob, Run]),
-        (
-            "the cancel script is not installed",
-            Box::new(|k, v: &[String]| if k == Run { ok(format!("{}not-installed\nend\n", echo(RUN_HEADER, v)).into_bytes()) } else { withdraw_server(NOT_ON_SERVER, 0, vec![])(k, v) }),
-            vec![Label, Prepare, Mkjob, Run],
-        ),
-    ];
-    for (case, respond, kinds) in cases {
-        let w = World::new();
-        submitted_but_refused(&w);
-        let before = row(&w.job());
-        let fake = Fake::new(&w, respond);
-        assert!(withdraw_remote(&w.db, &fake, JOB).is_err(), "{case}");
-        assert_eq!(fake.kinds(), kinds, "{case}: nothing after the failing step");
-        assert_eq!(row(&w.job()), before, "{case}: the row is unchanged");
-    }
-
-    // A local or a finished job is never withdrawn, and nothing is called.
-    let w = World::new();
-    submitted_but_refused(&w);
-    w.sql("UPDATE jobs SET status = 'completed'");
-    let fake = Fake::new(&w, withdraw_server(NOT_ON_SERVER, 0, vec![]));
-    assert!(withdraw_remote(&w.db, &fake, JOB).is_err());
-    assert_eq!(fake.kinds(), []);
-}
 
 // ---- coordinates and refusals ------------------------------------------------------------
 
@@ -707,7 +571,7 @@ fn a_live_remote_job_is_refused_locally_and_nothing_else_is() {
     // `cancelling` is remote-live (o22.5). NEGATIVE CONTROL: drop it from the predicate → red.
     for status in [JobStatus::Queued, JobStatus::Running, JobStatus::Cancelling] {
         let err = refuse_if_remote_live(&job_with(status, remote)).unwrap_err();
-        assert!(err.to_string().contains("remote cancel arrives in unit 5.4"), "{err}");
+        assert!(err.to_string().contains("cancel it first (the cancel goes through the server)"), "{err}");
     }
     for status in [JobStatus::Draft, JobStatus::Completed, JobStatus::Parsed, JobStatus::Failed, JobStatus::Cancelled] {
         assert!(refuse_if_remote_live(&job_with(status, remote)).is_ok(), "{status:?}");
@@ -853,8 +717,9 @@ fn a_retry_whose_coordinates_change_during_the_label_call_writes_nothing() {
     );
 }
 
-/// The `SshBackend` arm of `cancel_job` refuses every remote job, and a live one with the remote
-/// reason — it is never told "nothing to cancel", and never reaches a local `Cancelled`. NEGATIVE
+/// The `SshBackend` arm of the cancel core's guarded path refuses every remote job — a live one never
+/// reaches it (the core records and delivers, o22.3), and if one did (the belt), it gets the remote
+/// reason: it is never told "nothing to cancel", and never reaches a local `Cancelled`. NEGATIVE
 /// CONTROL: drop the `refuse_if_remote_live` line from `cancel_remote` and the live rows go red
 /// (they get "nothing to cancel").
 #[test]
@@ -862,7 +727,7 @@ fn a_remote_cancel_is_refused_and_a_live_one_with_the_remote_reason() {
     let remote = Some(("uni", "/home/anton/.orcastudio/jobs/j1", "/home/anton/.orcastudio/tsp/slot0.sock"));
     for status in [JobStatus::Queued, JobStatus::Running, JobStatus::Cancelling] {
         let err = cancel_remote(&job_with(status, remote)).unwrap_err().to_string();
-        assert!(err.contains("remote cancel arrives in unit 5.4"), "{status:?}: {err}");
+        assert!(err.contains("cancel it first (the cancel goes through the server)"), "{status:?}: {err}");
     }
     for status in [JobStatus::Draft, JobStatus::Completed, JobStatus::Parsed, JobStatus::Failed, JobStatus::Cancelled] {
         let err = cancel_remote(&job_with(status, remote)).unwrap_err().to_string();

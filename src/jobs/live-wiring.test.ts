@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { Job, RemoteState, RemoteStateEvent, RemoteStateRead } from "../types";
 import { makeProfile } from "../servers/test-fixtures";
-import { LAST_RUN_TARGET_SETTING, type HeldRemoteState, type RemoteAction } from "./remote";
+import { LAST_RUN_TARGET_SETTING, type CancelSend, type HeldRemoteState } from "./remote";
 import {
-  confirmThenWithdraw,
+  confirmThenCancel,
   loadRunTarget,
+  sendCancel,
   openJobView,
   REMOTE_STATE_EVENT,
   trackRemoteStates,
@@ -166,6 +167,8 @@ function job(over: Partial<Job> = {}): Job {
     remote_host: null,
     remote_job_dir: null,
     remote_socket: null,
+    cancel_requested_at: null,
+    cancel_sent_at: null,
     ...over,
   };
 }
@@ -273,6 +276,22 @@ describe("openJobView (o16.7)", () => {
     local.fake.pendingInvoke("read_job_convergence")?.resolve([]);
     await settle();
     expect(local.seen).toContain("backfill:a,b");
+  });
+
+  // o22.14.8 — CONTROL: drop `cancelling` from `isLiveStatus` (backfillsLog's live test) → the view
+  // also reads the log on disk, and each re-streamed line shows twice, red.
+  it("does not backfill a cancelling remote job, so a re-streamed line shows once", async () => {
+    const v = await opened(job({ ...REMOTE, status: "cancelling" }));
+    await attachAll(v.fake);
+    v.fake.pendingInvoke("watch_job_log")?.resolve(undefined);
+    await settle();
+    v.fake.emit("job:log", { job_id: "j1", lines: ["a", "b"] });
+    v.fake.pendingInvoke("read_job_output")?.resolve(["a", "b"]);
+    await settle();
+    v.fake.pendingInvoke("read_job_convergence")?.resolve([]);
+    await settle();
+    expect(v.fake.invokes.some((i) => i.cmd === "read_job_output")).toBe(false);
+    expect(v.seen.filter((e) => e.endsWith("a,b"))).toEqual(["lines:a,b"]);
   });
 
   // N5 — CONTROL: in `createListenerScope.listen`, drop the `if (disposed) unlisten()` branch →
@@ -387,56 +406,182 @@ describe("loadRunTarget (o20.1)", () => {
   });
 });
 
-// --- Withdraw (o20.3, o20.4c) ------------------------------------------------------------------------
+// --- Cancel (o20.3, o22.14.2, o22.14.8, o22.14.10) -------------------------------------------------
 
-describe("confirmThenWithdraw (o20.3)", () => {
+describe("confirmThenCancel (o20.3, o22.14.2)", () => {
   /** A dialog held open until the test answers it, and a view whose actions the test can change. */
-  function setup() {
+  function setup(offer: CancelSend) {
     // Optional: a version that never opens the dialog must fail on its assertions, not here.
     let answer: ((ok: boolean) => void) | undefined;
     let fail: (() => void) | undefined;
-    const view: { actions: RemoteAction[] } = { actions: ["retry_submit", "withdraw"] };
+    let asked = 0;
+    const view: { actions: { action: string }[] } = { actions: [{ action: offer.action }] };
     let sent = 0;
-    const done = confirmThenWithdraw({
+    const done = confirmThenCancel({
+      offer,
       confirm: () =>
         new Promise<boolean>((resolve, reject) => {
+          asked += 1;
           answer = resolve;
           fail = () => reject(new Error("dialog failed"));
         }),
       currentActions: () => view.actions,
-      withdraw: async () => {
+      send: async () => {
         sent += 1;
+        return "sent";
       },
     });
-    return { done, view, answer: (ok: boolean) => answer?.(ok), fail: () => fail?.(), sent: () => sent };
+    return { done, view, answer: (ok: boolean) => answer?.(ok), fail: () => fail?.(), sent: () => sent, asked: () => asked };
   }
 
+  const FIRST: CancelSend = { action: "cancel", confirm: true };
+
   // CONTROL: skip the confirm (`const agreed = true`) → the declined and failed cases send, red.
-  it("sends nothing when declined or when the dialog fails, and exactly one withdraw when confirmed", async () => {
-    const declined = setup();
+  it("sends nothing when declined or when the dialog fails, and exactly one cancel when confirmed", async () => {
+    const declined = setup(FIRST);
     declined.answer(false);
-    expect(await declined.done).toBe(false);
+    expect(await declined.done).toBeNull();
     expect(declined.sent()).toBe(0);
 
-    const failed = setup();
+    const failed = setup(FIRST);
     failed.fail();
-    expect(await failed.done).toBe(false);
+    expect(await failed.done).toBeNull();
     expect(failed.sent()).toBe(0);
 
-    const agreed = setup();
+    const agreed = setup(FIRST);
     agreed.answer(true);
-    expect(await agreed.done).toBe(true);
+    expect(await agreed.done).toBe("sent");
     expect(agreed.sent()).toBe(1);
   });
 
   // CONTROL: read the actions before the dialog (capture them up front) or drop the re-check → the
   // stale offer sends, red.
-  it("sends nothing when the offer is withdrawn while the dialog is open", async () => {
-    const stale = setup();
-    stale.view.actions = []; // e.g. the record was removed while the dialog was up
+  it("sends nothing when the offer vanished while the dialog was open", async () => {
+    const stale = setup(FIRST);
+    stale.view.actions = [{ action: "undo_cancel" }]; // e.g. another view's cancel recorded meanwhile
     stale.answer(true);
-    expect(await stale.done).toBe(false);
+    expect(await stale.done).toBeNull();
     expect(stale.sent()).toBe(0);
+  });
+
+  // CONTROL: ask whatever the offer says (drop the `if (deps.offer.confirm)`) → Retry cancel opens
+  // the dialog, red.
+  it("sends an offer without confirm at once, with no dialog (Retry cancel, a local Cancel)", async () => {
+    const retry = setup({ action: "retry_cancel", confirm: false });
+    expect(await retry.done).toBe("sent");
+    expect(retry.sent()).toBe(1);
+    expect(retry.asked()).toBe(0);
+  });
+});
+
+describe("sendCancel (o22.14.8, o22.14.10)", () => {
+  const REMOTE = { id: "j1", title: "TS search", remote_host: "uni", remote_job_dir: "/r/jobs/j1", remote_socket: "/r/tsp/slot0.sock" };
+  const LOCAL = { ...REMOTE, remote_host: null, remote_job_dir: null, remote_socket: null };
+
+  function bridge(answer: () => Promise<unknown>) {
+    const calls: { cmd: string; args?: Record<string, unknown> }[] = [];
+    return {
+      calls,
+      bridge: {
+        invoke: <T,>(cmd: string, args?: Record<string, unknown>) => {
+          calls.push({ cmd, args });
+          return answer() as Promise<T>;
+        },
+      },
+    };
+  }
+
+  // CONTROL: drop the `finally` reset (or reset only for a local job) → the remote state stays
+  // "Sending cancel…" after `cancel_job` returned, red.
+  it("ends a remote job's in-flight state when cancel_job returns, and keeps a local one's", async () => {
+    for (const [job, offer, after] of [
+      [REMOTE, { action: "cancel", confirm: true }, false],
+      [LOCAL, { action: "cancel", confirm: false }, true],
+    ] as const) {
+      const { calls, bridge: b } = bridge(async () => ({ result: "pending", already_pending: false }));
+      const sending: boolean[] = [];
+      const result = await sendCancel({
+        bridge: b,
+        job,
+        offer,
+        confirm: async () => true,
+        currentActions: () => [{ action: "cancel" }],
+        sending: (on) => sending.push(on),
+      });
+      expect(result).toEqual({ result: "pending", already_pending: false });
+      expect(calls).toEqual([{ cmd: "cancel_job", args: { id: "j1" } }]);
+      expect(sending[0]).toBe(true);
+      expect(sending[sending.length - 1]).toBe(after);
+    }
+  });
+
+  it("ends the in-flight state when cancel_job fails, for both, and rethrows", async () => {
+    for (const job of [REMOTE, LOCAL]) {
+      const { bridge: b } = bridge(async () => {
+        throw new Error("conflict: an operation on job j1 is already in progress");
+      });
+      const sending: boolean[] = [];
+      await expect(
+        sendCancel({ bridge: b, job, offer: { action: "cancel", confirm: false }, confirm: async () => true, currentActions: () => [], sending: (on) => sending.push(on) }),
+      ).rejects.toThrow("already in progress");
+      expect(sending).toEqual([true, false]);
+    }
+  });
+
+  it("asks with o22.14.2's title and text for a remote job's first Cancel, and sends nothing when declined", async () => {
+    const { calls, bridge: b } = bridge(async () => ({ result: "dispatched" }));
+    const asked: { message: string; title: string }[] = [];
+    const sending: boolean[] = [];
+    const result = await sendCancel({
+      bridge: b,
+      job: REMOTE,
+      offer: { action: "cancel", confirm: true },
+      confirm: async (message, options) => {
+        asked.push({ message, title: options.title });
+        return false;
+      },
+      currentActions: () => [{ action: "cancel" }],
+      sending: (on) => sending.push(on),
+    });
+    expect(result).toBeNull();
+    expect(calls).toEqual([]);
+    // Nothing is in flight before the user agreed.
+    expect(sending).toEqual([]);
+    expect(asked).toEqual([
+      {
+        title: "Cancel job",
+        message:
+          'Cancel "TS search" on uni? The server stops it; files already written stay on the server and are downloaded ' +
+          "for viewing. You can undo until the cancel is sent.",
+      },
+    ]);
+  });
+});
+
+describe("every Cancel goes through sendCancel (o22.14.10, source pin)", () => {
+  // The dialog itself is a live-gate item; what is pinned here is that no screen can reach
+  // `cancel_job` other than through the one helper behind `confirmThenCancel`. CONTROL: call
+  // `invoke("cancel_job", …)` directly from either screen, or send from `sendCancel` without
+  // `confirmThenCancel` → red.
+  it("leaves cancel_job to the one shared helper", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { resolve } = await import("node:path");
+    // The code only: block comments, then line comments (not a `://` inside a URL).
+    const read = (f: string) =>
+      readFileSync(resolve(process.cwd(), f), "utf8")
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .replace(/(^|[^:])\/\/.*$/gm, "$1");
+    for (const screen of ["src/screens/JobDetailScreen.tsx", "src/screens/JobsScreen.tsx"]) {
+      const src = read(screen);
+      expect(src, screen).not.toMatch(/["'`]cancel_job["'`]/);
+      expect(src, screen).toMatch(/\bsendCancel\(\{/);
+    }
+    const wiring = read("src/jobs/live-wiring.ts");
+    expect(wiring.match(/["'`]cancel_job["'`]/g)).toHaveLength(1);
+    const helper = wiring.slice(wiring.indexOf("export async function sendCancel("));
+    const body = helper.slice(0, helper.indexOf("\n}\n"));
+    expect(body).toMatch(/return confirmThenCancel\(\{/);
+    expect(body.indexOf("confirmThenCancel(")).toBeLessThan(body.indexOf('"cancel_job"'));
   });
 });
 

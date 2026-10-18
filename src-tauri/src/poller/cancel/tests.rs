@@ -8,7 +8,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use super::super::plan::{Step, MAX_CANCEL_FAILURES};
-use super::super::remote_state::{CancelSends, Known};
+use super::super::remote_state::{CancelSends, Known, RemoteState};
 use super::super::run::{run_step, Planned, StepRan};
 use super::super::tests::{completed, download, indeterminate, listing, log_reply, lost, pending_cancel, record, Remote, OUTPUT};
 use super::super::{Event, LogStep};
@@ -208,6 +208,11 @@ fn stop(r: &Remote) {
     }
 }
 
+/// Undo, as `undo_cancel` runs it, with the test's memory, record map and sink.
+pub(in crate::poller) fn undo(r: &Remote, id: &str) -> Result<UndoResult, AppError> {
+    revoke_cancel_core(&r.w.db, &r.memory, &r.remote, &r.sink, id)
+}
+
 fn never(_: Job) -> Result<(), AppError> {
     panic!("a remote cancel is never dispatched to a backend")
 }
@@ -245,7 +250,7 @@ fn an_undo_before_the_mark_wins_and_nothing_is_sent() {
     let base = server(&r, vec![waiting()]);
     let fake = Fake::new(&r, |call, values| {
         if call == Collect {
-            undone.set(Some(revoke_cancel_core(&r.w.db, JOB).unwrap()));
+            undone.set(Some(undo(&r, JOB).unwrap()));
         }
         base(call, values)
     });
@@ -269,7 +274,7 @@ fn a_lost_reply_after_the_mark_cannot_be_undone() {
     let fake = Fake::new(&r, |call, values| {
         if call == Cancel {
             // The script "ran" on the server; then the reply is lost.
-            undo_during_send.set(Some(revoke_cancel_core(&r.w.db, JOB).unwrap()));
+            undo_during_send.set(Some(undo(&r, JOB).unwrap()));
             return timeout();
         }
         base(call, values)
@@ -279,7 +284,7 @@ fn a_lost_reply_after_the_mark_cannot_be_undone() {
     assert_eq!(undo_during_send.get(), Some(UndoResult::SendMarked), "an Undo while cancel.sh runs is refused");
     let (requested, sent) = pending_cancel(&r);
     assert!(requested.is_some() && sent.is_some(), "not delivered: both columns stay");
-    assert_eq!(revoke_cancel_core(&r.w.db, JOB).unwrap(), UndoResult::SendMarked, "and after it");
+    assert_eq!(undo(&r, JOB).unwrap(), UndoResult::SendMarked, "and after it");
     assert_eq!(r.memory.get(JOB).cancel_failures, 0, "a transport failure is not a counted failure");
     assert!(matches!(record(&r).unwrap().last_contact, Some(Contact::Failed(_))));
 }
@@ -318,7 +323,8 @@ fn rc_3_is_not_delivered() {
     assert!(requested.is_some() && sent.is_some());
     assert_eq!(r.memory.get(JOB).cancel_failures, 1);
     let state = record(&r).unwrap();
-    assert!(state.check_error.unwrap().contains("exited 3"));
+    let error = state.check_error.unwrap();
+    assert!(error.text.contains("exited 3") && error.answered, "{error:?}");
     assert_eq!((state.last_contact, state.cancel_sends), (Some(Contact::Ok), CancelSends { failures: 1, stopped: false }));
 }
 
@@ -556,7 +562,8 @@ fn an_mkjob_refusal_counts_toward_the_bound() {
 }
 
 /// rc 0 with row 3: the row becomes `cancelling` (with its text) in the write that clears both
-/// columns, and `job:status` says so.
+/// columns, and `job:status` says so — after the mark's own `job:status` (o22.14.5: every write of
+/// the two columns emits).
 #[test]
 fn a_delivered_cancelling_verdict_writes_cancelling_and_clears_the_columns() {
     let r = Remote::new();
@@ -568,7 +575,7 @@ fn a_delivered_cancelling_verdict_writes_cancelling_and_clears_the_columns() {
     assert_eq!(fake.calls(), [Prepare, Collect, Cancel, Collect], "a running row: no label call");
     assert_eq!(r.row(), (JobStatus::Cancelling, shown_message(&Outcome::Cancelling { session: 1 })));
     assert_eq!(pending_cancel(&r), (None, None));
-    assert_eq!(r.sink.events(), [Event::Status(JOB.into(), JobStatus::Cancelling)]);
+    assert_eq!(r.sink.events(), [Event::Status(JOB.into(), JobStatus::Running), Event::Status(JOB.into(), JobStatus::Cancelling)]);
     assert_eq!(r.memory.get(JOB).min_session, Some(1), "delivery's write of cancelling sets the baseline (o22.13.4)");
 }
 
@@ -690,14 +697,14 @@ fn a_local_job_takes_the_guarded_path() {
 fn undo_clears_only_an_unmarked_request() {
     let r = Remote::new();
     let _held = r.in_flight.acquire(JOB).unwrap();
-    assert_eq!(revoke_cancel_core(&r.w.db, JOB).unwrap(), UndoResult::NothingPending);
+    assert_eq!(undo(&r, JOB).unwrap(), UndoResult::NothingPending);
     request(&r);
-    assert_eq!(revoke_cancel_core(&r.w.db, JOB).unwrap(), UndoResult::Undone, "with the guard held by another");
+    assert_eq!(undo(&r, JOB).unwrap(), UndoResult::Undone, "with the guard held by another");
     assert_eq!(pending_cancel(&r), (None, None));
     request_and_mark(&r);
-    assert_eq!(revoke_cancel_core(&r.w.db, JOB).unwrap(), UndoResult::SendMarked);
+    assert_eq!(undo(&r, JOB).unwrap(), UndoResult::SendMarked);
     assert!(pending_cancel(&r).0.is_some(), "kept");
-    assert!(matches!(revoke_cancel_core(&r.w.db, "nope"), Err(AppError::NotFound(_))));
+    assert!(matches!(undo(&r, "nope"), Err(AppError::NotFound(_))));
 }
 
 // ---- retry while a cancel is pending (o22.8) ---------------------------------------------------
@@ -795,7 +802,7 @@ fn a_click_on_a_cancelling_job_records_nothing_and_restarts_the_sweeps() {
     assert_eq!(pending_cancel(&r), (None, None), "no request on a cancelling row");
     assert_eq!(fake.calls(), [], "the next status step sweeps, not the click");
     assert_eq!(r.memory.get(JOB).sweeps_without_progress, 0);
-    assert_eq!(revoke_cancel_core(&r.w.db, JOB).unwrap(), UndoResult::NothingPending, "no Undo");
+    assert_eq!(undo(&r, JOB).unwrap(), UndoResult::NothingPending, "no Undo");
     assert_eq!(record_intent(&r.w.db, JOB).unwrap(), Intent::OnServer);
 }
 
@@ -818,7 +825,7 @@ fn restart_sweeps_resets_the_sweep_count() {
 fn undo_refuses_a_cancelling_row_that_holds_a_request() {
     let r = Remote::new();
     r.w.sql("UPDATE jobs SET status = 'cancelling', cancel_requested_at = '2026-10-17 10:00:00'");
-    assert_eq!(revoke_cancel_core(&r.w.db, JOB).unwrap(), UndoResult::SendMarked);
+    assert_eq!(undo(&r, JOB).unwrap(), UndoResult::SendMarked);
     assert!(pending_cancel(&r).0.is_some(), "the request stays");
 }
 
@@ -876,7 +883,8 @@ fn a_stopped_delivery_installs_nothing() {
     );
     assert_eq!(fake.calls(), [Prepare], "prepare only, no install");
     let state = record(&r).unwrap();
-    assert!(state.check_error.unwrap().contains("not ready"));
+    let error = state.check_error.unwrap();
+    assert!(error.text.contains("not ready") && error.answered, "{error:?}");
     assert_eq!(r.memory.get(JOB).cancel_failures, MAX_CANCEL_FAILURES, "a stopped delivery counts nothing more");
 }
 
@@ -1058,4 +1066,246 @@ fn row_3_on_a_row_that_changed_is_row_changed() {
     assert_eq!(r.poller(&fake).status_step(JOB).unwrap(), StatusStep::RowChanged);
     assert_eq!(r.row(), (JobStatus::Failed, Some("someone else".into())));
     assert_eq!(r.memory.get(JOB).min_session, None);
+}
+
+// ---- o22.14: the commands' seam — emits, the bounds refresh, the record kept -------------------
+
+/// A record for the job, as a step leaves it: an answered `CancelNotSent` (known kept, a check error).
+fn seed_record(r: &Remote) {
+    let guard = r.in_flight.acquire(JOB).unwrap();
+    r.remote.apply_with_contact(&guard, &StatusStep::CancelNotSent("cancel.sh exited 3".into()), Some(Contact::Ok), &r.memory, &r.sink);
+}
+
+/// o22.14.5, the record write: a cancel recorded while the guard is held (`Pending`) emits
+/// `job:status` for the job — the row now carries `cancel_requested_at` — and the already-pending
+/// click writes nothing and emits nothing. NEGATIVE CONTROL: drop the `sink.status` of
+/// `Intent::Recorded` in `record_then_deliver` → red.
+#[test]
+fn recording_a_cancel_emits_job_status() {
+    let r = Remote::new();
+    let fake = Fake::new(&r, |call, _| panic!("{call:?}"));
+    let _held = r.in_flight.acquire(JOB).unwrap();
+    assert_eq!(cancel_job_core(&r.poller(&fake), JOB, never).unwrap(), CancelResult::Pending { already_pending: false });
+    assert_eq!(r.sink.take(), [Event::Status(JOB.into(), JobStatus::Queued)]);
+    assert_eq!(cancel_job_core(&r.poller(&fake), JOB, never).unwrap(), CancelResult::Pending { already_pending: true });
+    assert!(r.sink.take().is_empty(), "no write, no emit");
+}
+
+/// o22.14.5, Undo: `Undone` emits `job:status` (the request is gone); a refused Undo writes and
+/// emits nothing. NEGATIVE CONTROL: drop the `sink.status` from `revoke_cancel_core` → red.
+#[test]
+fn an_undo_emits_job_status_and_a_refused_one_does_not() {
+    let r = Remote::new();
+    request(&r);
+    assert_eq!(undo(&r, JOB).unwrap(), UndoResult::Undone);
+    assert_eq!(r.sink.take(), [Event::Status(JOB.into(), JobStatus::Queued)]);
+    request_and_mark(&r);
+    assert_eq!(undo(&r, JOB).unwrap(), UndoResult::SendMarked);
+    assert!(r.sink.take().is_empty());
+}
+
+/// o22.14.5, the mark: a delivery whose `cancel.sh` gets no answer leaves both columns set; its one
+/// column write is the mark, and that emits `job:status` before the send (so the view drops Undo).
+/// NEGATIVE CONTROL: drop the `sink.status` from `mark_sent` → red.
+#[test]
+fn marking_the_send_emits_job_status() {
+    let r = Remote::new();
+    request(&r);
+    let base = server(&r, vec![waiting()]);
+    let emitted_before_send = Cell::new(None);
+    let fake = Fake::new(&r, |call, values| {
+        if call == Cancel {
+            emitted_before_send.set(Some(r.sink.events().len()));
+            return timeout();
+        }
+        base(call, values)
+    });
+    assert!(matches!(deliver(&r, &fake), StatusStep::CheckFailed(_)));
+    assert_eq!(emitted_before_send.get(), Some(1), "the mark's job:status precedes cancel.sh");
+    assert_eq!(r.sink.take(), [Event::Status(JOB.into(), JobStatus::Queued)]);
+}
+
+/// o22.14.5, ended first: the write that clears both columns emits `job:status`. NEGATIVE CONTROL:
+/// drop the `sink.status` from `record_ended_first` → red.
+#[test]
+fn the_ended_first_write_emits_job_status() {
+    let r = Remote::new();
+    request(&r);
+    let fake = Fake::new(&r, server(&r, vec![completed()]));
+    assert_eq!(deliver(&r, &fake), StatusStep::EndedBeforeCancel(Outcome::Completed { late_cancel: false }));
+    assert_eq!(pending_cancel(&r), (None, None));
+    assert_eq!(r.sink.take(), [Event::Status(JOB.into(), JobStatus::Queued)]);
+}
+
+/// o22.14.5, delivered without a status change: `.cancelled` already on the server (the
+/// pre-classify) clears both columns with no mark, and that write emits `job:status` — the row's
+/// status is unchanged, which `status_to_emit` would not have announced. NEGATIVE CONTROL: emit only
+/// when the status changed (`status_to_emit`) in `record_delivered` → red.
+#[test]
+fn a_delivered_write_that_changes_no_status_still_emits_job_status() {
+    let r = Remote::new();
+    request(&r);
+    let fake = Fake::new(&r, server(&r, vec![cancelled()]));
+    assert_eq!(deliver(&r, &fake), StatusStep::CancelDelivered(Outcome::Cancelled { started: false }));
+    assert_eq!(fake.sends(), 0, "nothing re-sent");
+    assert_eq!(pending_cancel(&r), (None, None));
+    assert_eq!(r.sink.take(), [Event::Status(JOB.into(), JobStatus::Queued)]);
+}
+
+/// o22.14.3, round 2 MED-3: after Retry cancel answers `Pending` (the guard busy), the record no
+/// longer reads `cancel_sends.stopped` — the command refreshed the bounds — while `known`,
+/// `check_error` and `last_contact` stay. NEGATIVE CONTROL: drop the `refresh_bounds` after
+/// `clear_cancel_failures` in `record_then_deliver` → red.
+#[test]
+fn a_retry_cancel_answering_pending_refreshes_the_records_bounds() {
+    let r = Remote::new();
+    request(&r);
+    stop(&r);
+    seed_record(&r);
+    let before = record(&r).unwrap();
+    assert!(before.cancel_sends.stopped, "seeded stopped");
+    let fake = Fake::new(&r, |call, _| panic!("{call:?}"));
+    let _held = r.in_flight.acquire(JOB).unwrap();
+    assert_eq!(cancel_job_core(&r.poller(&fake), JOB, never).unwrap(), CancelResult::Pending { already_pending: true });
+    let after = record(&r).unwrap();
+    assert_eq!(after, RemoteState { cancel_sends: CancelSends::default(), ..before }, "only the bounds changed");
+}
+
+/// o22.14.3: `Undone` restarts the re-send count (round 1 L3) and refreshes the record's bounds.
+/// NEGATIVE CONTROL: drop the `refresh_bounds` from `revoke_cancel_core` → red.
+#[test]
+fn an_undo_restarts_the_resend_bound_and_refreshes_the_record() {
+    let r = Remote::new();
+    request(&r);
+    stop(&r);
+    seed_record(&r);
+    assert!(record(&r).unwrap().cancel_sends.stopped);
+    assert_eq!(undo(&r, JOB).unwrap(), UndoResult::Undone);
+    assert_eq!(r.memory.get(JOB).cancel_failures, 0, "the count restarts");
+    assert_eq!(record(&r).unwrap().cancel_sends, CancelSends::default(), "the record says so");
+}
+
+/// o22.14.3: a click on a `cancelling` job restarts the sweeps, and the record's `sweeps.stopped`
+/// goes with it. NEGATIVE CONTROL: drop the `refresh_bounds` of the `OnServer` arm → red.
+#[test]
+fn a_retry_cancel_on_a_cancelling_job_refreshes_the_sweep_bound() {
+    let r = Remote::new();
+    r.w.sql("UPDATE jobs SET status = 'cancelling'");
+    r.memory.set_sweeps_without_progress(JOB, crate::poller::plan::MAX_SWEEPS_WITHOUT_PROGRESS);
+    seed_record(&r);
+    assert!(record(&r).unwrap().sweeps.stopped);
+    let fake = Fake::new(&r, |call, _| panic!("{call:?}"));
+    assert_eq!(cancel_job_core(&r.poller(&fake), JOB, never).unwrap(), CancelResult::AlreadyOnServer);
+    assert!(!record(&r).unwrap().sweeps.stopped);
+}
+
+/// o22.11.1 / o22.14.7, the behavioural record pin (o19's source pin retired): with a record seeded,
+/// a cancel answering `Pending`, `AlreadyOnServer` and `Delivered` leaves it present — and never
+/// emits a removal. (A step's own `NotLive` / terminal removal is the mapping's, exempt.) NEGATIVE
+/// CONTROL: remove the record in `record_then_deliver` (`poller.remote.remove(id, poller.sink)`
+/// after the record write) → red.
+#[test]
+fn no_cancel_path_removes_the_remote_record() {
+    let removed = |r: &Remote| r.sink.remote_states().iter().any(|(_, _, s)| s.is_none());
+
+    let r = Remote::new();
+    seed_record(&r);
+    let fake = Fake::new(&r, |call, _| panic!("{call:?}"));
+    let held = r.in_flight.acquire(JOB).unwrap();
+    assert_eq!(cancel_job_core(&r.poller(&fake), JOB, never).unwrap(), CancelResult::Pending { already_pending: false });
+    assert!(record(&r).is_some() && !removed(&r), "Pending keeps the record");
+    drop(held);
+
+    let r = Remote::new();
+    r.w.sql("UPDATE jobs SET status = 'cancelling'");
+    seed_record(&r);
+    let fake = Fake::new(&r, |call, _| panic!("{call:?}"));
+    assert_eq!(cancel_job_core(&r.poller(&fake), JOB, never).unwrap(), CancelResult::AlreadyOnServer);
+    assert!(record(&r).is_some() && !removed(&r), "AlreadyOnServer keeps the record");
+
+    let r = Remote::new();
+    seed_record(&r);
+    let fake = Fake::new(&r, server(&r, vec![waiting(), cancelled()]));
+    let result = cancel_job_core(&r.poller(&fake), JOB, never).unwrap();
+    assert!(matches!(result, CancelResult::Delivered { .. }), "{result:?}");
+    assert!(record(&r).is_some() && !removed(&r), "Delivered keeps the record");
+}
+
+/// o21.5's guarded-path cases, ported onto the core (o22.14.7 retires `cancel_job_guarded`): with
+/// the guard held a local draft is refused with a conflict and nothing is dispatched (o15.1's race);
+/// with the guard free a terminal remote job is dispatched as read, the guard held while the
+/// dispatch runs and released after; an unknown id's read error is returned as is. NEGATIVE
+/// CONTROL: release the guard before the dispatch (`drop(guard)`) in `cancel_guarded_or_record` →
+/// red (the job is free inside the dispatch).
+#[test]
+fn the_guarded_path_refuses_a_busy_draft_dispatches_a_terminal_remote_job_and_returns_read_errors() {
+    let r = Remote::new();
+    r.w.sql("UPDATE jobs SET status = 'draft', remote_host = NULL, remote_job_dir = NULL, remote_socket = NULL");
+    let fake = Fake::new(&r, |call, _| panic!("{call:?}"));
+    let held = r.in_flight.acquire(JOB).unwrap();
+    let busy = cancel_job_core(&r.poller(&fake), JOB, |_| panic!("a busy draft is never dispatched"));
+    assert!(matches!(&busy, Err(AppError::Conflict(m)) if m.contains("already in progress")), "{busy:?}");
+    drop(held);
+
+    let r = Remote::new();
+    r.w.sql("UPDATE jobs SET status = 'completed'");
+    let fake = Fake::new(&r, |call, _| panic!("{call:?}"));
+    let seen = std::cell::RefCell::new(None);
+    let result = cancel_job_core(&r.poller(&fake), JOB, |job| {
+        assert!(r.in_flight.try_acquire(JOB).is_none(), "the guard is held while the dispatch runs");
+        *seen.borrow_mut() = Some(job);
+        Ok(())
+    });
+    assert_eq!(result.unwrap(), CancelResult::Dispatched);
+    let job = seen.into_inner().expect("dispatched");
+    assert_eq!((job.status, job.is_remote()), (JobStatus::Completed, true));
+    assert!(!r.in_flight.is_busy(JOB), "released after");
+
+    let _held = r.in_flight.acquire("no-such-id").unwrap();
+    let missing = cancel_job_core(&r.poller(&fake), "no-such-id", |_| panic!("nothing is dispatched"));
+    assert!(matches!(missing, Err(AppError::NotFound(_))), "{missing:?}");
+}
+
+/// o22.14.3 behavioural, round 2 MED-1: after a transport failure (`last_contact: Failed`), a step
+/// whose collect is answered with a broken reply is a `CheckFailed` the server **answered** — the
+/// flag is the step's own contact, not the record's earlier one. NEGATIVE CONTROL: flag
+/// `CheckFailed` from the old record's `last_contact` in `remote_state::next` → red.
+#[test]
+fn a_broken_reply_after_a_timeout_is_a_check_error_the_server_answered() {
+    let r = Remote::new();
+    r.w.sql("UPDATE jobs SET status = 'running'");
+    let away = Cell::new(true);
+    let base = server(&r, vec![waiting()]);
+    let fake = Fake::new(&r, |call, values| match call {
+        _ if away.get() => timeout(),
+        Collect => ok(b"garbage\n".to_vec()),
+        _ => base(call, values),
+    });
+    assert!(matches!(r.poller(&fake).status_step(JOB).unwrap(), StatusStep::CheckFailed(_)));
+    assert!(!record(&r).unwrap().check_error.unwrap().answered, "a timeout: unanswered");
+    away.set(false);
+    assert!(matches!(r.poller(&fake).status_step(JOB).unwrap(), StatusStep::CheckFailed(_)));
+    let state = record(&r).unwrap();
+    assert!(state.check_error.as_ref().unwrap().answered, "a broken reply: answered: {state:?}");
+    assert_eq!(state.last_contact, Some(Contact::Ok));
+}
+
+/// The wire shapes `src/types.ts` mirrors: `CancelResult` (`tag = "result"`) and `UndoResult`.
+#[test]
+fn the_cancel_and_undo_wire_shapes() {
+    for (result, want) in [
+        (
+            CancelResult::Delivered { already_pending: true, step: StatusStep::CheckFailed("x".into()) },
+            serde_json::json!({ "result": "delivered", "already_pending": true, "step": { "step": "check_failed", "detail": "x" } }),
+        ),
+        (CancelResult::Pending { already_pending: false }, serde_json::json!({ "result": "pending", "already_pending": false })),
+        (CancelResult::AlreadyOnServer, serde_json::json!({ "result": "already_on_server" })),
+        (CancelResult::MovedOn { status: JobStatus::Completed }, serde_json::json!({ "result": "moved_on", "status": "completed" })),
+        (CancelResult::Dispatched, serde_json::json!({ "result": "dispatched" })),
+    ] {
+        assert_eq!(serde_json::to_value(&result).unwrap(), want, "{result:?}");
+    }
+    for (undo, want) in [(UndoResult::Undone, "undone"), (UndoResult::SendMarked, "send_marked"), (UndoResult::NothingPending, "nothing_pending")] {
+        assert_eq!(serde_json::to_value(undo).unwrap(), want);
+    }
 }

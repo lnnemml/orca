@@ -31,7 +31,7 @@
 //! 4. a **row 3** `Cancelling` on a `queued`/`running` row writes status `cancelling` with its text
 //!    and clears both pending-cancel columns in that one write (o22.12.1, o22.13.5);
 //! 5. any other **non-fetching outcome** is shown — `error_message` says what the server reports, and
-//!    "handled in unit 5.4" where it needs an action of 5.4b — and the row stays `queued`/`running`;
+//!    "handled in unit 5.4b" where it needs an action of 5.4b — and the row stays `queued`/`running`;
 //!    the classifier's `Running` moves a `queued` row to `running` (o item 1: a remote job keeps
 //!    `queued`/`running` in `jobs.status`). `Indeterminate` writes nothing: the row keeps the text
 //!    of the last known state, and "could not be decided on this check" goes only to the job's
@@ -56,9 +56,12 @@
 //!
 //! **Delivering a pending cancel** ([`cancel`], o22.4): ready the server, label, classify, mark,
 //! then send `cancel.sh`, and let the server's verdict decide. The cancel core calls it
-//! (`commands::jobs::cancel_job_core`, through [`Poller::deliver_and_record`]; the cancel command runs
-//! that core from 5.4a Part B), and the status step runs it instead of the ordinary step while a
-//! cancel is pending, with the step's own read (o22.13.1).
+//! (`commands::jobs::cancel_job_core`, through [`Poller::deliver_and_record`]; the `cancel_job`
+//! command runs that core in `spawn_blocking`), and the status step runs it instead of the ordinary
+//! step while a cancel is pending, with the step's own read (o22.13.1). **Every write of the two
+//! pending-cancel columns emits `job:status`** once its lock is released (o22.14.5) — the mark, the
+//! ended-first and the delivered writes here, the record and Undo writes in the cancel core — so
+//! the view's row follows a pending cancel without a status change.
 //!
 //! **The log step** ([`log_step`]), every 2 s while the job is watched (o16): no in-flight guard
 //! (o16.5), no database; see [`live_log`].
@@ -138,12 +141,12 @@ pub fn is_fetching(outcome: &Outcome) -> bool {
     )
 }
 
-/// What a non-fetching outcome says (o item 4: "shown, with 'handled in unit 5.4' where it needs an
-/// action"): the row's `error_message` for every outcome but `Indeterminate`, whose text is the
+/// What a non-fetching outcome says (o item 4: "shown, with 'handled in unit 5.4b' where it needs an
+/// action", o22.14.7): the row's `error_message` for every outcome but `Indeterminate`, whose text is the
 /// job's remote record's `check_error` instead and never reaches the row (o19.3); `None` clears the
 /// message — the job is plainly queued or running.
 pub fn shown_message(outcome: &Outcome) -> Option<String> {
-    const LATER: &str = "handled in unit 5.4";
+    const LATER: &str = "handled in unit 5.4b";
     match outcome {
         Outcome::Queued | Outcome::Running => None,
         Outcome::Indeterminate => Some(
@@ -172,7 +175,7 @@ pub fn cancelling_message(session: usize, stopped: bool) -> String {
     if stopped {
         format!(
             "The job was cancelled on the server, but processes of the job still run after 3 sweeps ({session} in the \
-             job's directory); automatic sweeps stopped — Cancel sweeps again."
+             job's directory); automatic sweeps stopped — Retry cancel sweeps again."
         )
     } else {
         format!(
@@ -224,7 +227,7 @@ pub enum StatusStep {
     /// again; a failed send counts toward [`plan::MAX_CANCEL_FAILURES`]. Why → `check_error`.
     CancelNotSent(String),
     /// A delivery found the re-send bound reached ([`plan::MAX_CANCEL_FAILURES`] answered failures
-    /// in a row): nothing was sent or written on the server; Cancel clicked again restarts it. It
+    /// in a row): nothing was sent or written on the server; Retry cancel restarts it (o22.14.1). It
     /// still classified (o22.11.4, o22.12.2): `seen` is the server's current verdict (the
     /// pre-classify's outcome, or the label on the not-on-server path), which the record shows like
     /// an ordinary step's. `seen` is `None` only when the prepare-only ready was answered with a
@@ -247,9 +250,10 @@ pub enum StatusStep {
     /// A sweep of a `cancelling` job (o22.5, o22.13.3): the server was readied, `cancel.sh` re-run,
     /// and the job collected and classified. `outcome` is the classify's `Cancelling`, `None` when
     /// nothing could be classified; `error` is a failure the server answered with (a refused ready, a
-    /// `cancel.sh` that failed, a broken collect). A sweep whose classify shows anything else returns
-    /// that outcome's ordinary result instead.
-    Swept { outcome: Option<Outcome>, error: Option<String> },
+    /// `cancel.sh` that failed, a broken collect), with the flag of the **last failing call** — a
+    /// joined "earlier; then why" takes the later call's (o22.14.3). A sweep whose classify shows
+    /// anything else returns that outcome's ordinary result instead.
+    Swept { outcome: Option<Outcome>, error: Option<remote_state::CheckError> },
 }
 
 /// What a stopped delivery saw before it declined to send (o22.12.2): `{ "kind": "outcome",
@@ -304,7 +308,7 @@ impl Poller<'_> {
 
     /// One status step of the job `guard` holds, then its change to the job's remote record — made
     /// and emitted **while the guard is still held** (o19.4), so a later command on the job (a
-    /// withdraw, a retry) can never be overtaken by this step's record. A step that fails with an
+    /// cancel's delivery, a retry) can never be overtaken by this step's record. A step that fails with an
     /// error changes no record.
     fn run_and_record(&self, guard: &InFlightGuard) -> Result<StatusStep, AppError> {
         self.record_step(guard, |poller, guard| poller.run_status(guard))
@@ -490,8 +494,8 @@ impl Poller<'_> {
         self.live.drain(job_id, &mut read, POLL_LOG_MAX_BYTES, self.sink)
     }
 
-    /// A classifier `Cancelled { started: false }` (o17: nothing ran): the terminal write of
-    /// `record_withdraw` (`ssh_backend::mark_cancelled_conn`) under one lock with the live-row
+    /// A classifier `Cancelled { started: false }` (o17: nothing ran): the terminal write
+    /// (`ssh_backend::mark_cancelled_conn`) under one lock with the live-row
     /// re-check, no download (a job that ran is the evidence fetch's, o22.6); then the live state is
     /// dropped and `job:status` emitted.
     fn record_cancelled(&self, job_id: &str, coords: &RemoteCoordinates) -> Result<StatusStep, AppError> {

@@ -1,6 +1,6 @@
 # ADR-024: Remote execution under intermittent connectivity
 
-**Status:** Accepted · 2026-10-02 (Proposed → Accepted after the review + acceptance amendments below) · amended 2026-10-03 (probe; probe review; d′ resolution — ready for implementation; l — unit 5.2 script and classifier shape; m — 5.3 submit rules; n — 5.1 Part B profile and connection test) · amended 2026-10-05 (o — 5.3 transport, sync and monitoring; accepted after DESIGN round 4; o13 — Part A2 amendments, accepted after DESIGN review 2026-10-05; o14 — B1 amendments, accepted after DESIGN review 2026-10-05) · amended 2026-10-06 (o15 — B1 Part B: the in-flight guard's scope, accepted after DESIGN review 2026-10-06; o16 — B2: the remote live log is pushed, accepted after DESIGN review 2026-10-06; o17 — B2 Part A: classifier `Cancelled` terminal, drain while watched, accepted after DESIGN review 2026-10-06; o18 — B2 Part B: exit leaves in-flight ssh/rsync to the OS, accepted after DESIGN review 2026-10-06; o19 — B3: the poller's remote state reaches the view, accepted after DESIGN review 2026-10-06) · amended 2026-10-07 (o20 — B3 Part B: run target remembered app-wide, run target only via Create & Run, Withdraw confirms; accepted after DESIGN review 2026-10-07) · amended 2026-10-17 (o21 — Cancel refuses a live remote job before the guard; accepted after DESIGN review 2026-10-17; o22 — unit 5.4a: remote cancel, the pending cancel and the guard; accepted after DESIGN review 2026-10-17, round 2 PASS WITH FINDINGS applied; o22.11–12 — A2a clarifications, reviewed with A2a's CODE verification 2026-10-17) · amended 2026-10-18 (o22.13 — A2b clarifications; accepted after DESIGN review 2026-10-18, round 2 PASS WITH FINDINGS applied)
+**Status:** Accepted · 2026-10-02 (Proposed → Accepted after the review + acceptance amendments below) · amended 2026-10-03 (probe; probe review; d′ resolution — ready for implementation; l — unit 5.2 script and classifier shape; m — 5.3 submit rules; n — 5.1 Part B profile and connection test) · amended 2026-10-05 (o — 5.3 transport, sync and monitoring; accepted after DESIGN round 4; o13 — Part A2 amendments, accepted after DESIGN review 2026-10-05; o14 — B1 amendments, accepted after DESIGN review 2026-10-05) · amended 2026-10-06 (o15 — B1 Part B: the in-flight guard's scope, accepted after DESIGN review 2026-10-06; o16 — B2: the remote live log is pushed, accepted after DESIGN review 2026-10-06; o17 — B2 Part A: classifier `Cancelled` terminal, drain while watched, accepted after DESIGN review 2026-10-06; o18 — B2 Part B: exit leaves in-flight ssh/rsync to the OS, accepted after DESIGN review 2026-10-06; o19 — B3: the poller's remote state reaches the view, accepted after DESIGN review 2026-10-06) · amended 2026-10-07 (o20 — B3 Part B: run target remembered app-wide, run target only via Create & Run, Withdraw confirms; accepted after DESIGN review 2026-10-07) · amended 2026-10-17 (o21 — Cancel refuses a live remote job before the guard; accepted after DESIGN review 2026-10-17; o22 — unit 5.4a: remote cancel, the pending cancel and the guard; accepted after DESIGN review 2026-10-17, round 2 PASS WITH FINDINGS applied; o22.11–12 — A2a clarifications, reviewed with A2a's CODE verification 2026-10-17) · amended 2026-10-18 (o22.13 — A2b clarifications; accepted after DESIGN review 2026-10-18, round 2 PASS WITH FINDINGS applied; o22.14 — Part B: commands and view; accepted after DESIGN review 2026-10-18, round 2 PASS WITH FINDINGS applied)
 
 Refines [ADR-003](adr-003-execution-backend.md) (the `ExecutionBackend` trait + job state
 machine) and extends [ADR-023](adr-023-server-agnostic-remote-execution.md) (one `SshBackend`
@@ -1557,7 +1557,7 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
        their button or in their hint; connectivity in its pending line. These labels are
        checked in Anton's live gate, not by a unit test. Choosing a target there is
        recorded as open in `modules/remote-jobs.md` ("Not built yet") and ROADMAP; not built in 5.3.
-    3. **Withdraw asks for confirmation like Delete job** (Anton) *(the confirm moves to the one remote Cancel, o22.7)*: the Tauri plugin-dialog `confirm`,
+    3. **Withdraw asks for confirmation like Delete job** (Anton) *(the confirm moves to the one remote Cancel, o22.7; only its first Cancel — Retry cancel and Undo have none, o22.14.2)*: the Tauri plugin-dialog `confirm`,
        the app's pattern for destructive actions (never `window.confirm`, unreliable in WebKitGTK).
        Declining sends nothing. `withdraw_remote_job` is called only if `withdraw` is still among the
        view's offered actions after the dialog closes (a record change during the dialog must not
@@ -1765,7 +1765,7 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
               - **Transport failures** retry on every step, like any check while the host is away.
               - **rc 2/3** (the server answered, the script failed) is bounded: after **3**
                 consecutive non-zero exits *(widened by o22.11.3: every answered failure of a
-                delivery)*, automatic re-sends stop with a notice, and Cancel is
+                delivery)*, automatic re-sends stop with a notice, and Cancel *(Retry cancel, o22.14.1)* is
                 the manual retry. The counter lives in `PollerMemory`, per launch like the strikes. Undo is no longer offered: the send is marked, and a
               lost reply looks exactly like a transport failure.
          6. **Re-sending must be safe.** `cancel.sh cancel` must be **idempotent** on a dir that
@@ -1841,7 +1841,7 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
        - **Without `.started`** (nothing ran), row 4 downloads nothing and is written `cancelled` at
          once.
     7. **One Cancel for a remote job; Withdraw goes** (Anton).
-       - A remote job in `queued`, `running` or `cancelling` shows one **Cancel**. It sits behind
+       - A remote job in `queued`, `running` or `cancelling` shows one **Cancel** *(for a pending or `cancelling` row: Undo / Retry cancel, o22.14.1–2)*. It sits behind
          o20.3's plugin-dialog `confirm` and its re-check of the current actions.
        - The `withdraw_remote_job` command and its button are removed. Withdraw lives on as
          delivery's not-on-the-server branch (item 4.3). o19's record removal and its source pin
@@ -1872,7 +1872,7 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
        - **The Rust commands gain one predicate:** both refuse while `cancel_requested_at` is set
          ("undo the cancel first"). The check is made in the command's locked read, since the
          guard alone does not express it. Otherwise they still refuse a busy job (o15).
-       - Cancel stays enabled while unreachable: it is the action that is useful then.
+       - Cancel stays enabled while unreachable: it is the action that is useful then *(for a pending row the actions are o22.14.1's table: Undo, or Retry cancel once stopped)*.
     9. **Seams and negative controls** (each control must turn its test red).
        - **Seams, `AppHandle`-free:**
          - the cancel core (`in_flight`, `db`, `runner`, `sink`, `id`, the local dispatch);
@@ -1993,7 +1993,7 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
            A prepare that gets **no answer** is `CheckFailed`, as everywhere else.
         4. **A recovered server still needs a click** (D5): a successful ready does not reset the
            bound. A transient answered failure (e.g. an install on a full quota) stops automatic
-           delivery after 3 steps (~45 s); after recovery the user's Cancel restarts it.
+           delivery after 3 steps (~45 s); after recovery the user's Cancel *(Retry cancel, o22.14.1)* restarts it.
            Accepted: bounded, and visible.
         5. **`StatusStep` variants, as built** (supersedes item 4's list): `EndedBeforeCancel(Outcome)`
            (A2b takes the normal fetch path *(at the next ordinary step, o22.13.2)*), `CancelDelivered(Outcome)` (the record reads it like an
@@ -2157,6 +2157,235 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
            5. **A drain error after an evidence `Cancelled`** is logged, not carried: `StatusStep::
               Cancelled` has no field, and the copy on disk is complete (the LIST check passed). A
               field would change the TS wire shape for no user-visible gain. Accepted.
+    14. **Part B: the commands and the view** (2026-10-18; forks raised by the orchestrator from the
+        Part B archaeology; 14.1–14.4's choices decided by Anton, the rest settled by the
+        orchestrator). DESIGN round 1: FAIL (H1 + 5 MED + 6 LOW), applied; round 2: PASS WITH FINDINGS (3 MED + 8 LOW),
+        applied.
+        1. **"cancel pending" in the list and the detail** (Anton). A remote job with
+           `cancel_requested_at` set shows a **"cancel pending since <time>"** badge in the Jobs table
+           and in the detail's remote panel; once `cancel_sent_at` is set it reads "cancel pending —
+           the cancel may already be on the server" (item 3). **The action set of a pending row**
+           (round 1 H1; 11.3: a click on a pending cancel is the manual delivery retry):
+
+           | `cancel_sent_at` | `cancel_sends.stopped` | offered |
+           |---|---|---|
+           | NULL | no | **Undo cancel** |
+           | NULL | yes | **Undo cancel** + **Retry cancel** |
+           | set | no | nothing (delivery re-sends by itself on every step) |
+           | set | yes | **Retry cancel** |
+
+           Undo and Retry cancel replace the Cancel button in the row and in the panel. Retry cancel
+           calls `cancel_job` (the already-pending click: the failure count restarts, delivery runs if
+           the guard is free) with no confirm, like 14.2. *(Amends o22.7's "shows one Cancel" for a
+           pending row.)*
+        2. **On a `cancelling` job the button is "Retry cancel", with no confirm** (Anton). It calls
+           the same `cancel_job` (12.1: no request, the sweep count restarts); the answer
+           `AlreadyOnServer` shows the notice "the cancel is already on the server; sweeping again".
+           No Undo (12.1). The confirm of item 7 / o20.3 stays on the first Cancel of a `queued` or
+           `running` remote job, with o20.3's re-check of the current actions after the dialog:
+           title "Cancel job", text "Cancel "<name>" on <host>? The server stops it; files already
+           written stay on the server and are downloaded for viewing. You can undo until the cancel is
+           sent." Local Cancel is unchanged and has no dialog. *(Amends o22.7's confirm for
+           `cancelling` and o22.12.4's "the user's Cancel restarts it": Retry cancel.)*
+        3. **Cancel problems are separate badges; an error says whether the server answered**
+           (Anton; round 1 M3).
+           - The record's `check_error` becomes `{ text, answered: bool }`, set **at each site that
+             writes it** (`next` / `after_retry` in `remote_state.rs`):
+             - `Shown(Indeterminate)`, `CancelNotSent`, `CancelStopped` (its `Indeterminate` and its
+               `seen: None` with `unready`), `CancelDelivered(Indeterminate)` → `answered: true`;
+             - `after_retry`'s `Failed` → `answered: false`;
+             - **`CheckFailed` → from the step's own contact** (the tracker's `last()` that
+               `record_step` already passes to `apply_with_contact`; the failing call is the step's
+               last call), not from the record's `last_contact` — `CheckFailed` also carries answered
+               failures (a broken reply, "collect exited N after a complete snapshot", a second
+               retake, a label parse error) (round 2 MED-1);
+             - **`Swept`**: its `error` carries the flag of the **last failing call** (a joined
+               "earlier; then why" text takes the later call's flag).
+
+             The view prefixes "Server unreachable: …" when `answered` is false and "Server answered:
+             …" when true. The old "Server unreachable / not decided" goes. **Wire shape** (round 2
+             LOW-2): TS `check_error: string | null` becomes `{ text: string; answered: boolean } |
+             null`; the serde pin in `remote_state.rs` and the TS readers in `remote.ts` change with
+             it.
+           - `cancel_sends.stopped` **while a cancel is pending** → a warn badge "cancel re-sends
+             stopped — Retry cancel to send again". `undo_cancel`'s `Undone` also clears the
+             failure count (round 1 L3).
+           - **The record's bounds are refreshed by the commands that change them** (round 2 MED-3):
+             after `cancel_job` clears `cancel_failures` (Retry cancel, a new Cancel) or restarts the
+             sweeps, and after `undo_cancel`'s `Undone`, the command applies a **bounds-only refresh**
+             to the record — `cancel_sends` and `sweeps` re-read from `PollerMemory`, `known`,
+             `check_error` and `last_contact` untouched — and emits it like any record change. It
+             needs no guard: it reads memory at the moment it writes, so it can never write a bound
+             older than memory holds, and any later step re-reads memory too. So "stopped" is not
+             shown next to the "cancel pending" notice after a Retry cancel that answered `Pending`.
+           - `sweeps.stopped` → a warn badge "sweeps stopped — processes still run; Retry cancel to
+             sweep again". The row's own text (13.8.2) is not shown a second time as a red banner.
+           - No counters are shown before a bound is reached.
+        4. **Retry is hidden while a cancel is pending** (Anton). Retry submit / Retry fetch are not
+           offered while `cancel_requested_at` is set; the badge and 14.1's actions explain why.
+           "Disabled with a reason" stays only for the unreachable case of item 8 ("server
+           unreachable — retry when it answers"). The Rust refusals stay as the belt.
+        5. **The seam: `Job` carries both columns; every column write emits** (orchestrator; round 1
+           M2).
+           - `Job::COLUMNS`, the struct, `from_row` and the TS `Job` gain `cancel_requested_at` /
+             `cancel_sent_at` (no migration: v21 has them). Rejected: a `pending_cancel(id)` command
+             (N+1 on the list); the in-memory record (invisible after a restart until the first step).
+           - **Every write of either column emits `job:status`** for that job, **after the write's
+             lock is released, from the same step** (the existing pattern of `record_delivered` and
+             `run_guarded`): `record_intent`, `revoke_cancel_core` (`Undone`), `mark_sent`,
+             `record_ended_first`, `record_delivered` (both branches), and the writes that already
+             emit (terminal, `record_cancelling`). These are every write of the two columns (grep,
+             round 2). `status_to_emit` stops being the only trigger for these paths. So that each
+             emit is testable without an `AppHandle`, the cancel core's record path and the undo
+             core take a `sink` (and the undo core `memory` and the record store, for 14.3's
+             refresh) *(amends o22.9's undo-core seam `(db, id)`)*. The list and the detail already reload on `job:status`; the clicking screen also
+             reloads when `cancel_job` / `undo_cancel` returns.
+        6. **Times** (round 1 M1; rule #10). SQLite's `datetime('now')` is **UTC** — measured
+           2026-10-18: `datetime('now')` = `06:18:01` while the laptop read `09:18:01 EEST` (SQLite
+           3.45.1); B1 pins it for the app's own SQLite with a test against the system clock. The
+           view therefore converts: a pure `formatLaptopUtc(ts)` parses `"YYYY-MM-DD HH:MM:SS"`
+           explicitly as UTC (`ts.replace(" ", "T") + "Z"`, never `new Date(ts)` on the bare form,
+           whose parse is implementation-defined) and shows local time; an unparsable value is shown
+           raw, never "Invalid Date". It replaces `formatTimestamp` **everywhere** (`created_at` in
+           the Jobs, Molecules and Reactions tables, which today show raw UTC — 3 h off here) and
+           the detail's unformatted `created_at`, `started_at` and `completed_at` (all
+           `datetime('now')`; grep found no displayed time that is not SQLite UTC, and no server
+           time); `formatTimestamp` is retired. A vitest under a non-UTC `TZ` pins it; the Rust
+           test of the app's own SQLite (rusqlite `bundled`, not the system 3.45.1 measured above)
+           runs with a non-UTC `TZ` too, so "≠ system UTC" can bite. The measurement is logged as a
+           `probe` entry (2026-10-18). `db.rs`'s
+           "laptop time" doc says "UTC, laptop clock" (Decision j unaffected).
+        7. **Commands.**
+           - `cancel_job` becomes async and runs `cancel_job_core` inside `spawn_blocking` +
+             `with_poller` — **not** `guarded_blocking`: the core claims the guard itself
+             (`try_acquire` remote, `acquire` local), and a pre-claimed guard would turn every remote
+             cancel into `Pending` and every local one into `Conflict`. It returns `CancelResult`
+             (a local job: `{"result":"dispatched"}`). The shell is a thin, source-pinned wrapper;
+             the behaviour is tested on the core. `cancel_job_guarded` and
+             `refuse_cancel_if_remote_live` go (superseded by the core).
+           - New `undo_cancel(id) -> UndoResult` over `revoke_cancel_core` (no guard).
+           - **Every answer has a defined notice** (round 1 M4), from pure `cancelNotice` /
+             `undoNotice`: `Delivered{step}` maps by its step — `CancelDelivered`/`Cancelled`/
+             `Finalised` → "cancel sent"; `EndedBeforeCancel` → "the job finished before the cancel
+             reached the server"; `CancelDelivered(Completed{late_cancel})` → "the job completed
+             before the cancel took effect; its result is kept"; **`CheckFailed` by the reloaded row
+             and the error's flag** (round 2 MED-2): `cancel_sent_at` set → "no answer after the
+             cancel was sent; it may already be on the server; checked again at the next step";
+             not set and unanswered → "server unreachable — the cancel stays pending and is sent
+             when it answers"; not set and answered → "the server's answer could not be read: <why>;
+             the cancel stays pending"; `CancelNotSent` → "the cancel failed on the server: <why>; it
+             stays pending" (it may follow a real `cancel.sh` whose reply was broken);
+             `CancelStopped` → "cancel re-sends stopped"; `RowChanged`/`NotLive` → "the job changed
+             meanwhile"; every other `StatusStep` (`Busy`, `Labelled`, `Shown`, `FetchFailed`,
+             `FetchStopped`, `Swept`; delivery returns none of them) → no notice, never "sent"
+             (the TS switch stays exhaustive); `Pending` → "cancel pending — sent at the next check";
+             `AlreadyOnServer` → 14.2's text; `MovedOn{status}` → "the job is already <status>";
+             `Dispatched` → none. `Undone` → "cancel undone"; `SendMarked` → "too late to undo: the
+             cancel may already be on the server"; `NothingPending` → "no cancel to undo". "sent" is
+             never shown for a step that did not deliver.
+           - `withdraw_remote_job` is removed with its registration, its button, its dialog,
+             `confirmThenWithdraw`, `SshBackend::withdraw`, `withdraw_remote`, `record_withdraw`,
+             `WithdrawReport` (Rust and TS), the `"withdraw"` `RemoteAction`, the fake-runner
+             `withdraw_remote` tests and their `withdraw_server` helper (`ssh_backend/tests.rs`), the
+             `ssh_backend.rs` module doc's Withdraw section, and `forget_after` / `forget_in_app` if
+             nothing else needs them (`poller/tests.rs` uses `forget_after`: retarget or drop).
+             `refuse_if_remote_live`'s third caller, `cancel_remote`, stays as the local backend's
+             belt (unreachable for a live job once the core routes). The three
+             `backend_e2e_tests.rs` withdraw tests are **ported** (round 1 L1: they are the only
+             real-script coverage of label → mkjob → `cancel.sh` → collect for a job not on the
+             server), driving `cancel_job_core` and then **one ordinary status step** (delivery
+             alone ends at `CancelDelivered`, the status unchanged, 13.2) before asserting
+             `cancelled`; e2e1's "unit 5.4" assertion inverts (a queued job is now cancellable). o19's removal pin becomes a **behavioural** test: with a record seeded,
+             `cancel_job_core` answering `Pending`, `AlreadyOnServer` and `Delivered` leaves it
+             present (the step mapping's own `NotLive`/terminal removal is exempt).
+           - Texts: `refuse_if_remote_live` (its callers: delete and the local path's belt) says
+             "job … is <status> on server <host>: cancel it first (the cancel goes through the
+             server)"; `refuse_while_live` says "cancel them first, or wait until they finish";
+             `cancelling_message`'s "Cancel sweeps again" says "Retry cancel sweeps again" (and the
+             doc comments at `poller.rs` ~227 and `plan.rs` ~42 follow);
+             `queued_remote` says "only a queued remote job can be retried"; the poller's "handled in
+             unit 5.4" (`Lost`, `ReEnqueue`, the shown `Failed`) says "handled in unit 5.4b".
+        8. **`cancelling` is live in the view** (item 5's TS sites). `remoteView`, `backfillsLog`,
+           `RemotePanel`, `RemoteJobBadges`, the detail's live/terminal split, the Jobs table's live
+           branch (Retry cancel, no Delete) and its status chips, and the status bar's active count
+           all treat `cancelling` like `running`. `backfillsLog` keeps its no-duplicate-line rule for
+           a `cancelling` job (the poller's candidates already include it); a test pins it. **The
+           Cancel click's in-flight state** is labelled "Sending cancel…" (not "Cancelling…", now a
+           status) and, for a remote job, **ends when `cancel_job` returns** (round 1 M5), not on a
+           terminal `job:status`; a local job keeps today's behaviour.
+        9. **Accepted:** an answered sweep error followed by a non-`Cancelling` verdict is not shown
+           (13.3's last bullet; the job has moved on).
+        10. **Split** (round 1 M5). **B1**: the Rust commands and texts, the emits (14.5), the `Job`
+            columns, the record pin, the removals and the e2e port, plus the pure TS logic —
+            `remoteView`'s actions with a per-action `confirm: bool` (`cancel`, `retry_cancel`,
+            `undo_cancel`, the hidden and disabled retries), the badges and prefixes,
+            `cancelNotice` / `undoNotice`, `formatLaptopUtc`, `backfillsLog`, and a
+            `confirmThenCancel` with o20.3's re-check, and the Jobs table's row actions as a pure
+            function (`rowActions(job, record)`: Retry cancel and no Delete for `cancelling`) —
+            **and the minimal screen edits that keep B1
+            safe and building**: the withdraw branch and button go, and every remote Cancel already
+            goes through `confirmThenCancel` (a B1 tree never cancels a running remote job without
+            the dialog), with the in-flight reset of 14.8. A B1 commit has no badge, Undo or notice yet
+            (accepted: B2 follows before the live gate). Then STOP. **B2**: the rest of the
+            screens (badges, Undo/Retry cancel in the row and panel, notices, chips, counts, time
+            formatting), then Anton's live gate (WebKitGTK) and the uni run.
+        11. **Negative controls** (each must turn its test red; "user-facing string" = a non-comment
+            string literal in `src-tauri/src` or `src`, tests excluded):
+            - `remoteView` with Undo but no Retry cancel for a stopped re-send with `sent_at` NULL,
+              or nothing for a stopped one with `sent_at` set (H1); Undo offered once `sent_at` is set;
+            - Retry offered while a cancel is pending; Retry offered (not disabled) while
+              `last_contact` is `Failed`;
+            - the prefix keyed on `last_contact` (a transport `check_error` followed by an answered
+              call → "Server answered"); a `Swept` that loses its error's flag;
+            - `cancelNotice(Delivered{CheckFailed})` containing "sent"; `SendMarked` → "undone";
+            - a column write without its emit (one per site of 14.5);
+            - `formatLaptopUtc` via `new Date(ts)` on the bare form, or without the `Z` (red under
+              `TZ=Europe/Kyiv`); the app's SQLite `datetime('now')` ≠ system UTC;
+            - `Job::from_row` with the two new columns swapped;
+            - after Retry cancel → `Pending`, the record still reading `cancel_sends.stopped: true`
+              (no bounds-only refresh); after `Undone`, the record still reading it (round 2 MED-3);
+            - `CheckFailed` flagged from the record's `last_contact` instead of the step's contact (a
+              broken reply → "Server unreachable"); a joined `Swept` error taking the earlier
+              call's flag;
+            - `cancelNotice(Delivered{CheckFailed})` saying "is sent when it answers" when
+              `cancel_sent_at` is set (rc 0 then a failed collect); `CancelDelivered(Completed{
+              late_cancel})` → "cancel sent";
+            - a ported e2e: a not-on-server delivery without `mkjob` → `cancel.sh` rc 3 (Lab);
+            - each screen's Cancel invoking `cancel_job` other than through the one shared helper
+              behind `confirmThenCancel` (a source pin; the dialog itself is a live-gate item);
+              `rowActions` offering Delete for `cancelling`;
+            - a cancel path that removes the record (the behavioural pin); the shell not calling
+              `cancel_job_core` inside `spawn_blocking` without `guarded_blocking` (a source pin —
+              no `AppHandle`-free seam exists for the shell);
+            - `remoteView` treating `cancelling` as terminal; `backfillsLog` re-streaming a
+              `cancelling` job's log twice;
+            - `confirmThenCancel` sending when the offer vanished during the dialog; `retry_cancel`
+              or `undo_cancel` with `confirm: true`; a remote `cancel` with `confirm: false`;
+            - the remote in-flight state not ending when `cancel_job` returns (a pure reducer or the
+              wiring helper);
+            - a stray "withdraw", "unit 5.4" (matched as `unit 5\.4(?![a-c])`) or "Cancel sweeps
+              again" in a user-facing string (the text guard);
+        12. **Propagation** (round 1 L5, round 2 LOW-7; marked where they stand): o22.4.5 ("Cancel is
+            the manual retry"), o22.7 ("one Cancel", its confirm), o22.8 ("Cancel stays enabled
+            while unreachable"), o22.9 (the undo-core seam), o22.12.4 ("the user's Cancel restarts
+            it"), o20.3 (the confirm moves to the
+            first remote Cancel; Retry cancel and Undo have none). Moving with B's code:
+            `modules/frontend.md`, `modules/tauri-core.md`, `modules/execution-backends.md`,
+            `modules/remote-jobs.md`, `db.rs`'s time doc, ROADMAP 5.4a.
+        13. **Clarifications from the B1 implementation** (2026-10-18; found by the B1 implementer,
+            settled by the orchestrator; reviewed with B1's CODE verification).
+            1. `cancelNotice(Delivered{CheckFailed})` reads the flag from the **reloaded** record's
+               `check_error.answered`; when the record cannot be read, the notice is the neutral
+               "The cancel stays pending: <why>" (it claims neither "unreachable" nor "answered").
+            2. A `CheckFailed` with **no call made** (an argument-build failure, practically
+               unreachable) is flagged `answered: false` and so reads "Server unreachable". Accepted:
+               the step made no contact, which is what that prefix reports to the user.
+            3. **What a B1 tree shows** (14.10's "no badge, Undo or notice yet", corrected): the new
+               badges and the prefixed check error already render, because `RemotePanel` /
+               `RemoteJobBadges` draw every `view.badges` entry; the retries render disabled with
+               their reason. A pending, unsent, not-stopped row has **no button** until B2 wires
+               Undo (accepted for the B1 commit; B2 follows before the live gate). Retry-cancel offers
+               keep the label "Cancel" until B2 relabels them.
 
 ## Alternatives rejected
 

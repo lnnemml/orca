@@ -58,11 +58,14 @@ that an in-progress New Job draft is discarded on a tab switch (accepted).
   — see below), and `keepScene?` (skip the mount reset, used when applying a conformer). Picking a
   template or hitting **Generate Input** collapses the accordion (`setOpenSection(null)`).
 - **`JobsScreen`** — `list_jobs` on mount into a `.jobs-table`: Title / Status badge / Energy (Eh) /
-  Time / Created, a Refresh button, empty + loading states. Rows are clickable (→ detail); an
-  actions column shows **Cancel** for a running/queued job, else the primary action (**Run locally** for
-  draft, **Open** otherwise) **plus a `Delete`** button (`.btn-danger`). **Delete is on terminal
-  states only** (draft/completed/parsed/failed/cancelled) — a running/queued row shows Cancel alone,
-  matching the backend's terminal-states-only refusal ("cancel it first"). Delete → `confirm`
+  Time / Created, a Refresh button, empty + loading states. Rows are clickable (→ detail); the
+  actions column renders `rowActions(job, record)` (`src/jobs/remote.ts`, ADR-024 o22.14.8): a live
+  job — local `queued`/`running`, remote `queued`/`running`/`cancelling` — offers its cancel family
+  only, as one **Cancel** button that sends the row's cancel offer (a first Cancel, or Retry cancel
+  on a `cancelling` row or a pending one whose re-sends stopped), never Delete; every other row the
+  primary action (**Run locally** for draft, **Open** otherwise) **plus a `Delete`** button
+  (`.btn-danger`), matching the backend's terminal-states-only refusal ("cancel it first"). The
+  Cancel click goes through `sendCancel` (below, "The wiring"); then the list reloads. Delete → `confirm`
   (`@tauri-apps/plugin-dialog`, `{ title: "Delete job", kind: "warning" }`, message states it
   permanently removes the job **and its files**) → `invoke("delete_job", { id })` → reload; errors
   route to the existing `setError` banner. Both action buttons `stopPropagation` so the row-click
@@ -85,7 +88,7 @@ that an in-progress New Job draft is discarded on a tab switch (accepted).
   derives from its remote record (`RemoteJobBadges`). The screen keeps one `job:remote-state`
   listener for its life (`trackRemoteStates`) and, after each reload of the list, reads
   `remote_job_state` for the live remote jobs — only once that listener has resolved, every value
-  merged by `seq`. A Cancel of a live remote job shows the backend's refusal text in the banner.
+  merged by `seq`. A refused Cancel (a busy local job) shows the backend's text in the banner.
 - **`JobDetailScreen`** — opens through `openJobView` (`src/jobs/live-wiring.ts`, ADR-024 o16.7):
   **attaches `job:log` / `job:convergence` / `job:log-reset` / `job:status` FIRST, then calls
   `watch_job_log(id, open: true)`** (every backend; a local job's open costs no ssh; not if the view
@@ -104,12 +107,14 @@ that an in-progress New Job draft is discarded on a tab switch (accepted).
   `remote_job_state`, merged by `seq`) and renders `RemotePanel` from `remoteView(job, record)`:
   the badges, the row's `error_message` as the text (prefixed "From the last check:" while the record
   holds no decided state; for a live remote job it replaces the red error banner), and the offered
-  buttons **Retry submit** (`retry_remote_submit`; its `SubmitResponse` shown like a submit's),
-  **Withdraw** (`withdraw_remote_job`, after the plugin-dialog `confirm` like Delete job; declining
-  or a failing dialog sends nothing, and the call goes out only if the view — read from a ref after
-  the dialog — still offers `withdraw`, o20.3: `confirmThenWithdraw`), **Retry fetch**
-  (`retry_remote_fetch`). A refusal (the in-flight guard, cancel of a live remote job) shows Rust's
-  text in the error banner. The re-opt fan-out submits its children locally (`target: null`) and its
+  retry buttons **Retry submit** (`retry_remote_submit`; its `SubmitResponse` shown like a submit's)
+  and **Retry fetch** (`retry_remote_fetch`), each disabled with its reason while the last contact
+  failed. The header's **Cancel** button sends the job's cancel offer (`rowActions`: a first Cancel,
+  or Retry cancel) through `sendCancel`: a remote job's first Cancel asks first (plugin-dialog
+  `confirm`, title "Cancel job"), and is sent only if the view — read from a ref after the dialog —
+  still offers it (o20.3); the in-flight label is **"Sending cancel…"**, which for a remote job ends
+  when `cancel_job` returns (the row is reloaded then) and for a local job lasts until the terminal
+  `job:status` (o22.14.8). A refusal (the in-flight guard) shows Rust's text in the error banner. The re-opt fan-out submits its children locally (`target: null`) and its
   queued message says they run locally on this machine (o20.2). So does every other fan-out that
   submits without a target (`target: null`, ADR-024 o20.2): the OptTS refines of the 1D scan
   profile and the NEB band ("runs locally on this machine" beside the button), the 2D surface's
@@ -703,19 +708,54 @@ Pure functions over Rust's values, called by the Jobs and job-detail screens (ab
 `types.ts` with `backend_id`): none set → local, all three → remote, some → corrupt (shown, never
 acted on). `mergeRemoteState` / `applyRemoteStateEvent` keep, per job, whichever of the
 `remote_job_state` read and the `job:remote-state` events has the greatest `seq`, so arrival order
-does not matter. `remoteView(job, record)` gives a remote `queued`/`running` job its badges and
-offered actions: "not on the server" → retry submit + withdraw, "submit interrupted" → withdraw,
-`known: fetching` → "fetching results" with the failed attempts so far (no count at 0 strikes), `fetch.stopped` → retry fetch, `check_error` → "server unreachable / not decided" beside the last
-seen state, no record → "checking"; the row's `error_message` is the text, labelled "from the last
-check" while the record holds no decided state, and no action comes from it. The module copies none
+does not matter. `remoteView(job, record)` gives a remote **live** job — `queued`, `running` or
+`cancelling` (`isLiveStatus`; `cancelling` is never terminal, o22.14.8) — its badges and its offers,
+each `{ action, confirm, disabled }` (ADR-024 o22.14):
+- **the cancel family**: a `queued`/`running` job without a pending cancel → **Cancel** (`confirm:
+  true` — the one confirmed action, o20.3/o22.14.2); a `cancelling` job → **Retry cancel** (no
+  confirm: the cancel is on the server, the click restarts the sweeps); a pending cancel by
+  `cancel_sent_at` and the record's `cancel_sends.stopped` (o22.14.1): not sent → **Undo cancel**,
+  plus **Retry cancel** once stopped; sent → nothing (delivery re-sends by itself), or **Retry
+  cancel** once stopped. Retry cancel and Undo never confirm;
+- **the retries**: "not on the server" → retry submit, `fetch.stopped` → retry fetch — **hidden while
+  a cancel is pending** (o22.14.4), **disabled** with "server unreachable — retry when it answers"
+  while `last_contact` is `failed` (o22.8). Cancel stays enabled while unreachable;
+- **the badges**: "not on the server" / "submit interrupted", the last outcome (stale while a check
+  error stands), `known: fetching` → "fetching results" with the failed attempts so far (no count at 0
+  strikes), "Cancel pending since <laptop time>" (`formatLaptopUtc(cancel_requested_at)`) or, once
+  the send is marked, "Cancel pending — the cancel may already be on the server", the check error
+  prefixed **"Server answered: …" / "Server unreachable: …" by its own `answered` flag**, never by
+  `last_contact` (`checkErrorLabel`, o22.14.3), "Automatic fetches stopped", "Cancel re-sends stopped
+  — Retry cancel to send again" while pending, "Sweeps stopped — processes still run; Retry cancel to
+  sweep again" on a `cancelling` job; no counters before a bound is reached; no record → "checking".
+
+The row's `error_message` is the text, labelled "from the last check" while the record holds no
+decided state, and no action comes from it. `rowActions(job, record)` is the Jobs table's row
+(above); `cancelSendOf` picks the action a Cancel button sends; `cancelConfirmText(job)` is the first
+Cancel's dialog text ('Cancel "<name>" on <host>? The server stops it; files already written stay on
+the server and are downloaded for viewing. You can undo until the cancel is sent.').
+`cancelNotice(result, row, checkError)` / `undoNotice(result)` word what `cancel_job` / `undo_cancel`
+answered (o22.14.7, an exhaustive switch over `CancelResult` and `StatusStep`): "Cancel sent" only for
+a step that delivered (`cancel_delivered` — but a late cancel's "the job completed before the cancel
+took effect; its result is kept" — `cancelled`, `finalised`); a `check_failed` by the reloaded row's
+`cancel_sent_at` and the reloaded record's check-error flag ("no answer after the cancel was sent; it
+may already be on the server …" / "server unreachable — … sent when it answers" / "the server's answer
+could not be read: <why> …"; with no record, "the cancel stays pending: <why>"); no notice for a step
+delivery never returns. `formatLaptopUtc(ts)` (`src/format.ts`) shows SQLite's `datetime('now')` —
+UTC on the laptop's clock (measured, o22.14.6) — in local time, parsed as `ts.replace(" ", "T") + "Z"`,
+an unparsable value raw (its test runs under `TZ=Europe/Kyiv`); `formatTimestamp` still renders the
+tables' `created_at` raw until 5.4a Part B2 replaces it everywhere. The module copies none
 of Rust's outcome texts (a test reads the source to hold that). `runTargetOptions(profiles)` is the
 "Run on" list: `Local` plus every profile, enabled iff `run_target.is_run_target`, a disabled one with
 Rust's reason. `backfillsLog(job)` says whether the job view reads the log already on disk: not
-for a draft, not for a remote live job (o16.7). The remote IPC shapes (`Outcome`, `Label`, `RemoteState`, `SubmitResponse`,
-`WithdrawReport`, `StatusStep`, …) live in `types.ts`. `JobStatus` includes `cancelling` (a remote
-job whose cancel reached the server while processes still run, ADR-024 o22.5); no view treats it
-specially yet — `remoteView`, the Jobs list's live check and the detail screen's Cancel test
-(`queued`/`running`) learn it with 5.4a Part B.
+for a draft, not for a remote live job — `cancelling` included, whose log the poller re-streams too
+(o16.7, o22.14.8). The remote IPC shapes (`Outcome`, `Label`, `RemoteState` with its `CheckError {
+text, answered }`, `SubmitResponse`, `StatusStep`, `CancelResult`, `UndoResult`, …) live in
+`types.ts`; `Job` carries `cancel_requested_at` / `cancel_sent_at` (o22.14.5). `JobStatus` includes
+`cancelling` (a remote job whose cancel reached the server while processes still run, ADR-024 o22.5);
+the pure logic treats it as live everywhere; the status chips, the status bar's active count and the
+detail's dashboard default learn it with 5.4a Part B2. A source-scanning test (`text-guard.test.ts`)
+keeps "withdraw", an unlettered "unit 5.4" and "Cancel sweeps again" out of the app's code.
 
 **The wiring** (`src/jobs/live-wiring.ts`) takes the Tauri bridge as an argument (`Bridge`;
 the screens pass `tauriBridge`) so its order is tested without a WebView (`live-wiring.test.ts`,
@@ -726,8 +766,14 @@ one `job:remote-state` listener, `read(ids)` only after it resolved, every read 
 renders `remoteView`'s values (`RemotePanel`, `RemoteJobBadges`, `RemoteBadgeChip` with the
 `.badge.tone-*` colours). `resolveRunTarget` / `LAST_RUN_TARGET_SETTING` (in `remote.ts`) decide
 the remembered "Run on" choice; `loadRunTarget` (in `live-wiring.ts`, bridge-injected) is New Job's
-read-only load with the load-race guard; `confirmThenWithdraw` is the withdraw's confirm and
-re-check.
+read-only load with the load-race guard. **Cancel** (o22.14.10): `confirmThenCancel({ offer,
+confirm, currentActions, send })` asks only when the offer says `confirm`, counts a failing dialog as
+a decline, and re-checks after the dialog that the view still offers the same action;
+`sendCancel({ bridge, job, offer, confirm, currentActions, sending })` is **the one place that
+invokes `cancel_job`** — both screens' Cancel goes through it (a source pin: no screen names
+`cancel_job`) — and ends a remote job's in-flight state when the call returns (a local one's only on
+failure). The Undo and Retry cancel buttons in the panel and the row, and the notices, are 5.4a Part
+B2; `RemotePanel` renders only the retries.
 
 ## Queue control (status bar)
 

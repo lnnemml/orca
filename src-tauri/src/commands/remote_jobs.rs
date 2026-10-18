@@ -1,5 +1,4 @@
-//! Remote job commands (ADR-024 o, units 5.3 B1–B3): retry, withdraw and label a job on a server
-//! profile, the remote arm of `submit_job` (`commands::jobs`), the manual fetch retry
+//! Remote job commands (ADR-024 o, units 5.3 B1–B3): retry and label a job on a server profile, the remote arm of `submit_job` (`commands::jobs`), the manual fetch retry
 //! (`retry_remote_fetch`), the live-log watch (`watch_job_log`, which only counts views and never
 //! calls ssh) and the read of a job's remote record (`remote_job_state`, memory only). Thin shells
 //! over [`SshBackend`] (the Tauri-free core in `ssh_backend`) and the poller.
@@ -28,7 +27,7 @@ use crate::poller::{PollerSink, StatusStep};
 use crate::remote::contact::{Contact, ContactRunner};
 use crate::remote::ssh::SystemRunner;
 use crate::models::job::{Job, JobStatus};
-use crate::ssh_backend::{LabelReport, PalAlignment, SubmitAttempt, SubmitOutcome, WithdrawReport};
+use crate::ssh_backend::{LabelReport, PalAlignment, SubmitAttempt, SubmitOutcome};
 
 /// What `submit_job` (to a server) and `retry_remote_submit` return: the attempt's outcome, the
 /// `%pal` alignment, and both in words for the UI.
@@ -138,23 +137,6 @@ pub(crate) async fn submit_to_server(app: AppHandle, id: String, ssh: SshBackend
     run_guarded(app, id, "submit", move |_, job| ssh.submit_attempt(&job.id).map(SubmitResponse::from)).await
 }
 
-/// Drop job `job_id`'s remote record, then hand back `result` (ADR-024 o19.3; the withdraw's —
-/// the retry writes its contact instead, [`note_retry_after`], o22.8). A withdraw changes what the
-/// server holds whatever it returns — success, refusal or transport
-/// failure — so the record (e.g. a `NotOnServer` that offers a retry the server would now refuse)
-/// goes, and the next status step re-derives it. Called inside the guarded work with the work's
-/// result **as a value**, so the removal runs first and no `?` can skip it; a refusal by the guard
-/// itself never reaches here and leaves the record alone (o19.4).
-pub(crate) fn forget_after<T>(remote: &RemoteStates, sink: &dyn PollerSink, job_id: &str, result: Result<T, AppError>) -> Result<T, AppError> {
-    remote.remove(job_id, sink);
-    result
-}
-
-/// [`forget_after`] with the app's record map and sink.
-fn forget_in_app<T>(app: &AppHandle, job_id: &str, result: Result<T, AppError>) -> Result<T, AppError> {
-    forget_after(&app.state::<RemoteStates>(), &AppSink(app.clone()), job_id, result)
-}
-
 /// Write a `retry_remote_submit` outcome's contact to job `job_id`'s remote record, then hand back
 /// `result` (ADR-024 o22.8, amending o19.3: the retry **no longer removes** the record — a retry
 /// that failed to connect must leave Retry disabled, which a removed record could not say). What
@@ -189,18 +171,6 @@ pub async fn retry_remote_submit(app: AppHandle, id: String) -> Result<SubmitRes
         let runner = ContactRunner::new(&SystemRunner);
         let retried = remote_backend(app, job).and_then(|ssh| ssh.retry(&job.id, &runner)).map(SubmitResponse::from);
         note_retry_in_app(app, &job.id, runner.last(), retried)
-    })
-    .await
-}
-
-/// Withdraw a remote job that is "not on the server" or "submit interrupted" (o items 2, 14.1).
-/// The classifier decides the row's status; only `Cancelled` makes it `cancelled`. Whatever it
-/// returns, the job's remote record is dropped (o19.3).
-#[tauri::command]
-pub async fn withdraw_remote_job(app: AppHandle, id: String) -> Result<WithdrawReport, AppError> {
-    run_guarded(app, id, "withdraw", |app, job| {
-        let withdrawn = remote_backend(app, job).and_then(|ssh| ssh.withdraw(&job.id));
-        forget_in_app(app, &job.id, withdrawn)
     })
     .await
 }
@@ -383,7 +353,6 @@ mod tests {
         for command in [
             concat!("pub(crate) async fn ", "submit_to_server("),
             concat!("pub async fn ", "retry_remote_submit("),
-            concat!("pub async fn ", "withdraw_remote_job("),
             concat!("pub async fn ", "label_remote_job("),
         ] {
             let body = fn_body(src, command);
@@ -450,65 +419,33 @@ mod tests {
         assert_eq!(body.matches(".await").count(), 1, "one awaited call, the guarded one");
     }
 
-    /// o19.3/o19.9: the removal runs whatever the work returned, and the result comes back as it
-    /// was. NEGATIVE CONTROL: `let r = result?;` before the removal (a `?` skipping it) → red.
-    #[test]
-    fn forget_after_removes_on_every_outcome() {
-        use crate::poller::plan::PollerMemory;
-        use crate::remote::submit::Label;
-        let (remote, memory, in_flight) = (RemoteStates::new(), PollerMemory::new(), InFlight::default());
-        let sink = crate::poller::RecordingSink::default();
-        let outcomes: [Result<u8, AppError>; 2] = [Ok(1), Err(AppError::Backend("ssh exited with 255".into()))];
-        for result in outcomes {
-            let want = format!("{result:?}");
-            remote.apply(&in_flight.acquire("j1").unwrap(), &StatusStep::Labelled(Label::NotOnServer), &memory, &sink);
-            assert!(remote.read("j1").state.is_some());
-            let back = forget_after(&remote, &sink, "j1", result);
-            assert_eq!(format!("{back:?}"), want, "the work's result is handed back unchanged");
-            assert_eq!(remote.read("j1").state, None, "removed after {want}");
-            assert_eq!(sink.take_remote_states().last().map(|(_, _, s)| s.is_none()), Some(true), "a null event");
-        }
-    }
-
     /// o19.4/o19.9, the guard scope pinned in the source (the commands are `AppHandle`-bound): the
-    /// withdraw drops the record and the retry writes its contact (o22.8, no longer a removal), each
-    /// inside its `run_guarded` work, after the backend call and before the closure hands its result
-    /// back; `forget_after` and `note_retry_after` write before they return `result`. NEGATIVE
-    /// CONTROLS: move the record call after `.await` (outside the guarded closure) → red; return
-    /// `result` before the write in either helper → red; call `forget_in_app` from the retry again
-    /// → red.
+    /// retry writes its contact (o22.8, no longer a removal) inside its `run_guarded` work, after the
+    /// backend call and before the closure hands its result back; `note_retry_after` writes before it
+    /// returns `result`. o22.14.7: the withdraw command is gone, and no command here removes a
+    /// record. NEGATIVE CONTROLS: move the record call after `.await` (outside the guarded closure) →
+    /// red; return `result` before the write in the helper → red; a removal (`remote.remove(`) in this
+    /// file's production code → red.
     #[test]
-    fn retry_and_withdraw_write_the_record_inside_the_guarded_work() {
+    fn the_retry_writes_the_record_inside_the_guarded_work_and_nothing_removes_it() {
         let src = include_str!("remote_jobs.rs");
-        for (command, backend, write) in [
-            (
-                concat!("pub async fn ", "retry_remote_submit("),
-                concat!("ssh.", "retry(&job.id, &runner)"),
-                concat!("note_retry_", "in_app(app, &job.id, runner.last(),"),
-            ),
-            (concat!("pub async fn ", "withdraw_remote_job("), concat!("ssh.", "withdraw(&job.id)"), concat!("forget_", "in_app(app, &job.id,")),
-        ] {
-            let body = fn_body(src, command);
-            let guarded = body.find(concat!("run_", "guarded(app, id,")).expect("goes through run_guarded");
-            let work = body.find(backend).expect("the backend call");
-            let record = body.find(write).unwrap_or_else(|| panic!("{command} writes the record"));
-            let awaited = body.find(".await").expect("awaits the guarded work");
-            assert!(guarded < work && work < record && record < awaited, "{command}: the write is inside the guarded work, after the call");
-            let closure_end = body[record..].find("\n    })").map(|i| record + i).expect("the closure ends");
-            assert!(closure_end < awaited, "{command}: the write is inside the closure");
-            assert_eq!(body.matches('?').count(), 0, "{command}: no `?` in the work can skip the write");
-        }
-        let retry = fn_body(src, concat!("pub async fn ", "retry_remote_submit("));
-        assert!(!retry.contains(concat!("forget_", "in_app")), "o22.8: the retry no longer removes the record");
-        for (helper, write) in [
-            (concat!("pub(crate) fn ", "forget_after<"), concat!("remote.", "remove(job_id, sink);")),
-            (concat!("pub(crate) fn ", "note_retry_after<"), concat!("remote.", "note_retry(job_id, contact, memory, sink);")),
-        ] {
-            let body = fn_body(src, helper);
-            let writes = body.find(write).unwrap_or_else(|| panic!("{helper} writes the record"));
-            assert!(body.ends_with("\n    result"), "{helper} ends by returning the result");
-            let returns = body.rfind("\n    result").expect("then returns the result");
-            assert!(writes < returns, "{helper}: the write comes first");
+        let command = concat!("pub async fn ", "retry_remote_submit(");
+        let body = fn_body(src, command);
+        let guarded = body.find(concat!("run_", "guarded(app, id,")).expect("goes through run_guarded");
+        let work = body.find(concat!("ssh.", "retry(&job.id, &runner)")).expect("the backend call");
+        let record = body.find(concat!("note_retry_", "in_app(app, &job.id, runner.last(),")).expect("the retry writes the record");
+        let awaited = body.find(".await").expect("awaits the guarded work");
+        assert!(guarded < work && work < record && record < awaited, "the write is inside the guarded work, after the call");
+        let closure_end = body[record..].find("\n    })").map(|i| record + i).expect("the closure ends");
+        assert!(closure_end < awaited, "the write is inside the closure");
+        assert_eq!(body.matches('?').count(), 0, "no `?` in the work can skip the write");
+        let helper = fn_body(src, concat!("pub(crate) fn ", "note_retry_after<"));
+        let writes = helper.find(concat!("remote.", "note_retry(job_id, contact, memory, sink);")).expect("the helper writes the record");
+        assert!(helper.ends_with("\n    result"), "the helper ends by returning the result");
+        assert!(writes < helper.rfind("\n    result").expect("then returns the result"), "the write comes first");
+        let production = &src[..src.find(concat!("#[cfg(test)]\nmod ", "tests")).expect("the test module")];
+        for gone in [concat!("remote.", "remove("), concat!("withdraw_", "remote_job"), concat!("forget_", "after")] {
+            assert!(!production.contains(gone), "`{gone}` is back in the remote commands");
         }
     }
 
@@ -545,6 +482,14 @@ mod tests {
                 StatusStep::Finalised { outcome: Outcome::Completed { late_cancel: false }, status: JobStatus::Parsed, drain_error: None },
                 serde_json::json!({ "step": "finalised", "detail": { "outcome": { "outcome": "completed", "late_cancel": false }, "status": "parsed", "drain_error": null } }),
             ),
+            // o22.14.3: a sweep's error carries whether the server answered.
+            (
+                StatusStep::Swept {
+                    outcome: None,
+                    error: Some(crate::poller::remote_state::CheckError::unanswered("collect: ssh exited with 255")),
+                },
+                serde_json::json!({ "step": "swept", "detail": { "outcome": null, "error": { "text": "collect: ssh exited with 255", "answered": false } } }),
+            ),
         ] {
             assert_eq!(serde_json::to_value(&step).unwrap(), want, "{step:?}");
         }
@@ -552,16 +497,10 @@ mod tests {
 
     // --- The wire shapes B3 binds to (pinned, not designed here) -------------------------------
 
+    /// The classifier's `Outcome` on the wire (the record's `known`, a status step's detail).
     #[test]
-    fn the_withdraw_report_wire_shape() {
+    fn the_outcome_wire_shape() {
         use crate::remote::classify::{FailReason, Outcome};
-        use crate::remote::submit::Label;
-        let report =
-            WithdrawReport { label: Label::SubmitInterrupted, outcome: Outcome::Cancelled { started: false }, status: JobStatus::Cancelled };
-        assert_eq!(
-            serde_json::to_value(&report).unwrap(),
-            serde_json::json!({ "label": "submit_interrupted", "outcome": { "outcome": "cancelled", "started": false }, "status": "cancelled" })
-        );
         for (outcome, want) in [
             (
                 Outcome::Failed { reason: FailReason::NonZeroExit { code: 1 } },

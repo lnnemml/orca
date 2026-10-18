@@ -47,7 +47,9 @@ survives a restart.
 - **v2** — `jobs` table: `id` (UUID v4 TEXT PK), `title`, `input_content` (full `.inp`), `status`
   (default `draft`), `job_dir`, `energy` (REAL), `wall_time` (REAL), `error_message`, `created_at`
   (`datetime('now')`), `started_at`, `completed_at`. `Option` columns stay `NULL` until their
-  lifecycle step fills them.
+  lifecycle step fills them. Every `datetime('now')` is **UTC on the laptop's clock** (measured for
+  the bundled SQLite 3.46.0 under `TZ=Europe/Kyiv`: `db::tests::sqlite_datetime_now_is_utc_under_a_non_utc_tz`,
+  ADR-024 o22.14.6), so the view converts it (`formatLaptopUtc`).
 - **v3** — `molecules` table: `id` (UUID v4 TEXT PK), `name`, `formula` (default `''`), `xyz` (full
   standard xyz), `charge`/`multiplicity` (INTEGER, defaults 0/1), `tags` (comma-separated TEXT,
   default `''`), `created_at`. **Not** linked to `jobs` — no `molecule_id` FK yet (Phase 4.5).
@@ -318,8 +320,13 @@ in-flight steps (own process groups) are left to the OS (ADR-024 o18, decided by
   input) and **non-retroactive** (a derived child's baked-in `— <old title>` is a create-time snapshot,
   left as-is); `submit_job(app, id, target: Option<String>)` (async; no target → enqueues locally
   and returns `null` at once; a server profile id → the remote submit off the IPC thread, returning
-  its `SubmitResponse`); `cancel_job(id)` (by the job's coordinates; a remote job is refused);
-  `retry_remote_submit(id)` / `withdraw_remote_job(id)` / `label_remote_job(id)` (async, remote jobs
+  its `SubmitResponse`); `cancel_job(id) -> CancelResult` (async: `spawn_blocking` + the app's
+  poller → `commands::jobs::cancel_job_core`, which claims the guard itself — a remote live job's
+  cancel is recorded and delivered now or left pending, never refused for being busy; a local job is
+  dispatched to its backend, `{"result":"dispatched"}`); `undo_cancel(id) -> UndoResult` (sync, no
+  guard: one locked write, ADR-024 o22.3 — both in
+  [execution-backends.md](execution-backends.md#remote-cancel-record-deliver-undo-adr-024-o223o224));
+  `retry_remote_submit(id)` / `label_remote_job(id)` (async, remote jobs
   only — [execution-backends.md](execution-backends.md#sshbackend-ssh_backendrs) "Commands and the
   in-flight guard"); `retry_remote_fetch(id) -> StatusStep` (async; the manual fetch retry after
   3 failed fetches, guarded); `watch_job_log(id, open: bool)` (a job view's live log opened/closed;

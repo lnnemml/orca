@@ -33,7 +33,7 @@
 //!   [`super::prepare::parse_install_reply`].
 //! - [`RUN`] — the trampoline: the one way an uploaded `cancel.sh`/`collect.sh` runs (o item 14.1);
 //!   values [`super::run::RunArgs::values`], reply [`super::run::parse_run_reply`].
-//! - [`MKJOB`] — a withdraw's `mkdir -p <job dir>` and the o-1 shapes after it; values
+//! - [`MKJOB`] — a not-on-server cancel's `mkdir -p <job dir>` (o22.4.3) and the o-1 shapes after it; values
 //!   [`super::run::MkjobArgs::values`], reply [`super::run::parse_mkjob_reply`].
 //!
 //! Every per-job value is a positional argument or a NUL-list value; nothing is substituted into

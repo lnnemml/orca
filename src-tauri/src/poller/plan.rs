@@ -39,13 +39,13 @@ pub const MAX_FETCH_STRIKES: u32 = 3;
 
 /// After this many consecutive answered failures of a delivery (ADR-024 o22.11.3: a ready or `mkjob`
 /// refusal, `cancel.sh` rc ≠ 0, a not-installed trampoline, a broken reply), automatic re-sends of a
-/// pending cancel stop; Cancel is the manual retry (o22.4.5). Transport failures do not count: they
+/// pending cancel stop; Retry cancel is the manual retry (o22.4.5, o22.14.1). Transport failures do not count: they
 /// retry on every step, like any check while the host is away.
 pub const MAX_CANCEL_FAILURES: u32 = 3;
 
 /// After this many sweeps of a `cancelling` job without progress (ADR-024 l row 3, o22.5,
-/// o22.13.3–4), automatic sweeps stop: status steps then only collect and classify, and Cancel is
-/// the manual retry (o22.12.1).
+/// o22.13.3–4), automatic sweeps stop: status steps then only collect and classify, and Retry cancel
+/// is the manual retry (o22.12.1, o22.14.2).
 pub const MAX_SWEEPS_WITHOUT_PROGRESS: u32 = 3;
 
 /// The poller's periods (o item 4: initial values, tunable, not a contract).
@@ -194,7 +194,7 @@ pub struct JobMemory {
     /// Sweeps of a `cancelling` job without progress (o22.5, o22.13.3): every sweep step the server
     /// answered counts one, unless it shows the session below [`Self::min_session`]
     /// ([`PollerMemory::count_sweep`]). [`MAX_SWEEPS_WITHOUT_PROGRESS`] stops automatic sweeps; a
-    /// Cancel click restarts it ([`PollerMemory::restart_sweeps`], o22.12.1).
+    /// Retry cancel click restarts it ([`PollerMemory::restart_sweeps`], o22.12.1, o22.14.2).
     pub sweeps_without_progress: u32,
     /// The smallest job-session size seen for the `cancelling` job (o22.13.4): the baseline progress
     /// is measured against. It only falls, so a session that grows and shrinks back is not progress.

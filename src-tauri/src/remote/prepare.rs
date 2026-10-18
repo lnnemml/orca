@@ -1,4 +1,4 @@
-//! The two calls that ready the server before an upload or a withdraw (ADR-024 o items 3.2, 13.1,
+//! The two calls that ready the server before an upload or a cancel's delivery (ADR-024 o items 3.2, 13.1,
 //! 14.1, 14.3): the read-only **prepare** call, and the **install** call that creates `<root>/bin`
 //! and `<root>/tsp` and uploads the three job scripts. Pure parts only: the values sent, the strict
 //! reply parsers, and the decision over the prepare call's facts. The scripts are

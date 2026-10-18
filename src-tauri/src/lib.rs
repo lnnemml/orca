@@ -32,6 +32,8 @@ mod results;
 mod secrets;
 mod sidecar;
 mod ssh_backend;
+#[cfg(test)]
+mod text_guard_tests;
 mod timing;
 mod xtb;
 
@@ -119,8 +121,8 @@ pub fn run() {
             commands::jobs::rename_job,
             commands::jobs::submit_job,
             commands::jobs::cancel_job,
+            commands::jobs::undo_cancel,
             commands::remote_jobs::retry_remote_submit,
-            commands::remote_jobs::withdraw_remote_job,
             commands::remote_jobs::label_remote_job,
             commands::remote_jobs::retry_remote_fetch,
             commands::remote_jobs::watch_job_log,

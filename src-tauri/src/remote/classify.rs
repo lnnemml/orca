@@ -16,8 +16,8 @@ use super::wire::WireError;
 use super::FactError;
 use crate::local_backend::{has_normal_termination, TAIL_BYTES};
 
-/// The classifier's verdict on a job (ADR-024 l). Serialized for the withdraw command's report and
-/// the remote record. `Lost` is not a `JobStatus` value yet (unit 5.4b); `Cancelling` is (o22.5).
+/// The classifier's verdict on a job (ADR-024 l). Serialized for the remote record and a status
+/// step's detail. `Lost` is not a `JobStatus` value yet (unit 5.4b); `Cancelling` is (o22.5).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum Outcome {

@@ -8,7 +8,7 @@ use std::sync::Mutex;
 use crate::models::job::JobStatus;
 use crate::poller::cancel::tests::{cancelled, cancelling_session, not_installed, server, timeout, Call::*, Fake};
 use crate::poller::plan::MAX_SWEEPS_WITHOUT_PROGRESS;
-use crate::poller::remote_state::Sweeps;
+use crate::poller::remote_state::{CheckError, Sweeps};
 use crate::poller::tests::{indeterminate, pending_cancel, record, Remote};
 use crate::poller::{cancelling_message, StatusStep};
 use crate::remote::classify::Outcome;
@@ -22,8 +22,8 @@ fn cancelling_row(baseline: usize) -> Remote {
     r
 }
 
-fn swept(session: usize, error: Option<&str>) -> StatusStep {
-    StatusStep::Swept { outcome: Some(Outcome::Cancelling { session }), error: error.map(String::from) }
+fn swept(session: usize, error: Option<CheckError>) -> StatusStep {
+    StatusStep::Swept { outcome: Some(Outcome::Cancelling { session }), error }
 }
 
 fn installs(fake: &Fake<'_>) -> usize {
@@ -138,11 +138,12 @@ fn answered_sweep_failures_count_toward_the_bound() {
     for _ in 0..3 {
         let step = poller.status_step(JOB).unwrap();
         assert!(
-            matches!(&step, StatusStep::Swept { outcome: Some(Outcome::Cancelling { session: 1 }), error: Some(why) } if why.contains("exited 3")),
+            matches!(&step, StatusStep::Swept { outcome: Some(Outcome::Cancelling { session: 1 }), error: Some(why) } if why.text.contains("exited 3") && why.answered),
             "{step:?}"
         );
     }
-    assert!(record(&r).unwrap().check_error.unwrap().contains("exited 3"), "the answered failure is the check error");
+    let error = record(&r).unwrap().check_error.unwrap();
+    assert!(error.text.contains("exited 3") && error.answered, "the answered failure is the check error: {error:?}");
     poller.status_step(JOB).unwrap();
     assert_eq!(fake.sends(), 3, "no 4th sweep after three answered cancel.sh failures");
     assert_eq!(r.memory.get(JOB).cancel_failures, 0, "never the delivery's counter");
@@ -159,6 +160,36 @@ fn answered_sweep_failures_count_toward_the_bound() {
     assert_eq!(fake.sends(), 3, "no 4th sweep after three broken collects");
 }
 
+/// o22.14.3: a sweep's error carries the flag of its **last failing call**, and a joined "earlier;
+/// then why" takes the later call's: an answered `cancel.sh` failure then a collect without an answer
+/// reads unanswered; a `cancel.sh` without an answer then a broken (answered) collect reads answered.
+/// NEGATIVE CONTROL: keep the earlier call's flag in the joined error → red (both cases).
+#[test]
+fn a_joined_sweep_error_takes_the_later_calls_flag() {
+    let r = cancelling_row(1);
+    let base = server(&r, vec![cancelling_session(1)]);
+    let fake = Fake::new(&r, |call, values| match call {
+        Cancel => ran(values, 3, b"", b"cancel: not a directory"),
+        Collect => timeout(),
+        _ => base(call, values),
+    });
+    let StatusStep::Swept { outcome: None, error: Some(error) } = r.poller(&fake).status_step(JOB).unwrap() else { panic!("a sweep") };
+    assert!(error.text.contains("exited 3") && error.text.contains("; then "), "{error:?}");
+    assert!(!error.answered, "the later call, the collect, got no answer: {error:?}");
+    assert_eq!(record(&r).unwrap().check_error, Some(error), "the record shows the sweep's own flag");
+
+    let r = cancelling_row(1);
+    let base = server(&r, vec![cancelling_session(1)]);
+    let fake = Fake::new(&r, |call, values| match call {
+        Cancel => timeout(),
+        Collect => ok(b"garbage\n".to_vec()),
+        _ => base(call, values),
+    });
+    let StatusStep::Swept { outcome: None, error: Some(error) } = r.poller(&fake).status_step(JOB).unwrap() else { panic!("a sweep") };
+    assert!(error.text.contains("; then "), "{error:?}");
+    assert!(error.answered, "the later call, the collect, was answered (a broken reply): {error:?}");
+}
+
 /// o22.13.7 control: a permanently failing install is an answered ready failure — it sends
 /// nothing, still collects, and counts — so after three steps the 4th makes no install call.
 /// NEGATIVE CONTROL: do not count a step whose ready failed → red (a 4th install).
@@ -170,7 +201,7 @@ fn a_permanently_failing_install_stops_after_three_sweeps() {
     let poller = r.poller(&fake);
     for _ in 0..3 {
         let step = poller.status_step(JOB).unwrap();
-        assert!(matches!(&step, StatusStep::Swept { outcome: Some(_), error: Some(why) } if why.contains("not ready")), "{step:?}");
+        assert!(matches!(&step, StatusStep::Swept { outcome: Some(_), error: Some(why) } if why.text.contains("not ready") && why.answered), "{step:?}");
     }
     assert_eq!(&fake.calls()[..4], [Prepare, Install, Prepare, Collect], "an answered ready failure sends nothing, then collects");
     assert_eq!(fake.sends(), 0);
@@ -301,11 +332,14 @@ fn a_sweep_on_a_row_that_changed_is_row_changed() {
 #[test]
 fn the_swept_wire_shape() {
     assert_eq!(
-        serde_json::to_value(swept(2, Some("cancel.sh exited 3"))).unwrap(),
-        serde_json::json!({ "step": "swept", "detail": { "outcome": { "outcome": "cancelling", "session": 2 }, "error": "cancel.sh exited 3" } })
+        serde_json::to_value(swept(2, Some(CheckError::answered("cancel.sh exited 3")))).unwrap(),
+        serde_json::json!({
+            "step": "swept",
+            "detail": { "outcome": { "outcome": "cancelling", "session": 2 }, "error": { "text": "cancel.sh exited 3", "answered": true } }
+        })
     );
     assert_eq!(
-        serde_json::to_value(StatusStep::Swept { outcome: None, error: Some("x".into()) }).unwrap()["detail"],
-        serde_json::json!({ "outcome": null, "error": "x" })
+        serde_json::to_value(StatusStep::Swept { outcome: None, error: Some(CheckError::unanswered("x")) }).unwrap()["detail"],
+        serde_json::json!({ "outcome": null, "error": { "text": "x", "answered": false } })
     );
 }

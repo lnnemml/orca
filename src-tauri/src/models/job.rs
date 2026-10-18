@@ -130,6 +130,13 @@ pub struct Job {
     pub remote_host: Option<String>,
     pub remote_job_dir: Option<String>,
     pub remote_socket: Option<String>,
+    /// A remote job's pending cancel (schema v21, ADR-024 o22.2, o22.14.5): when the user asked —
+    /// `None`: no cancel pending — and when a delivery marked the send (`None` while Undo is still
+    /// possible). `datetime('now')` values: **UTC, laptop clock**, only ever displayed (the view
+    /// converts them, `formatLaptopUtc`). Set only on a remote `queued`/`running`/`cancelling` job,
+    /// the sent mark only with the request (the v21 CHECKs). Every write of either emits `job:status`.
+    pub cancel_requested_at: Option<String>,
+    pub cancel_sent_at: Option<String>,
 }
 
 impl Job {
@@ -138,7 +145,7 @@ impl Job {
     pub const COLUMNS: &'static str = "id, title, input_content, status, job_dir, \
          energy, wall_time, error_message, created_at, started_at, completed_at, \
          scene_json, scene_log_json, pathway_id, group_id, backend_id, \
-         remote_host, remote_job_dir, remote_socket";
+         remote_host, remote_job_dir, remote_socket, cancel_requested_at, cancel_sent_at";
 
     /// Whether this job runs on a server. **A job is remote iff its coordinates are non-NULL**
     /// (ADR-024 o item 1) — never decided by `backend_id`, which only names the profile and is
@@ -181,6 +188,8 @@ impl Job {
             remote_host: row.get(16)?,
             remote_job_dir: row.get(17)?,
             remote_socket: row.get(18)?,
+            cancel_requested_at: row.get(19)?,
+            cancel_sent_at: row.get(20)?,
         })
     }
 }
@@ -203,7 +212,8 @@ mod tests {
                 created_at TEXT NOT NULL DEFAULT (datetime('now')), started_at TEXT,
                 completed_at TEXT, scene_json TEXT, scene_log_json TEXT,
                 pathway_id TEXT, group_id TEXT, backend_id TEXT,
-                remote_host TEXT, remote_job_dir TEXT, remote_socket TEXT
+                remote_host TEXT, remote_job_dir TEXT, remote_socket TEXT,
+                cancel_requested_at TEXT, cancel_sent_at TEXT
             );",
         )
         .unwrap();
@@ -261,6 +271,34 @@ mod tests {
         );
         // Sanity that COLUMNS order is still coherent: an adjacent field survives too.
         assert_eq!(get(&conn, "local").title, "runs local");
+    }
+
+    /// ADR-024 o22.14.5: the two pending-cancel columns reach the view through `Job`, each in its own
+    /// field — two distinct values, so a swap cannot pass — and a row without a cancel reads both
+    /// `None`. NEGATIVE CONTROL: swap `row.get(19)` and `row.get(20)` in `from_row` → red.
+    #[test]
+    fn from_row_reads_the_pending_cancel_columns_in_order() {
+        let conn = Connection::open_in_memory().unwrap();
+        setup(&conn);
+        conn.execute_batch(
+            "INSERT INTO jobs (id, title, input_content, status, remote_host, remote_job_dir, remote_socket, \
+                cancel_requested_at, cancel_sent_at) \
+                VALUES ('pending', 't', '! SP', 'running', 'uni', '/r/jobs/pending', '/r/tsp/slot0.sock', \
+                '2026-10-18 06:18:01', '2026-10-18 06:18:05');
+             INSERT INTO jobs (id, title, input_content, status) VALUES ('plain', 't', '! SP', 'queued');",
+        )
+        .unwrap();
+        let pending = get(&conn, "pending");
+        assert_eq!(pending.cancel_requested_at.as_deref(), Some("2026-10-18 06:18:01"), "when the user asked");
+        assert_eq!(pending.cancel_sent_at.as_deref(), Some("2026-10-18 06:18:05"), "when the send was marked");
+        let plain = get(&conn, "plain");
+        assert_eq!((plain.cancel_requested_at, plain.cancel_sent_at), (None, None));
+        let wire = serde_json::to_value(&pending).unwrap();
+        assert_eq!(
+            (wire["cancel_requested_at"].clone(), wire["cancel_sent_at"].clone()),
+            (serde_json::json!("2026-10-18 06:18:01"), serde_json::json!("2026-10-18 06:18:05")),
+            "the TS `Job` reads these names"
+        );
     }
 
     /// `is_remote` follows the coordinates, never `backend_id`: a job whose profile was deleted

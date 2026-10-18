@@ -1499,6 +1499,10 @@ preflight. The remaining items (remote `orca_plot`, pause) are not numbered yet.
             fetched as evidence (o17 closed); Retry disabled while the last contact failed. **Schema
             v21** = `cancel_requested_at`, `cancel_sent_at` (+ CHECKs). Part A proves `cancel.sh`
             idempotent (Lab harness).
+            *Status:* Parts A1, A2a, A2b and **B1** (the `cancel_job` / `undo_cancel` commands, the
+            column emits, Withdraw removed, the view's pure logic — ADR-024 o22.14.10) built; **B2**
+            (the screens: badges, Undo / Retry cancel buttons, notices, chips, counts, laptop time)
+            next, then Anton's live gate and the uni run.
       - [ ] **5.4b — `Lost`, re-enqueue, `Indeterminate` count** (Decisions d, e, l): `Lost` (terminal)
             joins `JobStatus`; row 8's orphan sweep; the re-enqueue counter (incremented **before**
             the re-enqueue, ADR-024 l) and acting on `ReEnqueue`; l row 10's counter. Its own schema

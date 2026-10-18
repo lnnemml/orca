@@ -7,13 +7,29 @@
  * - `mergeRemoteState` / `applyRemoteStateEvent`: the seq rule that orders the `remote_job_state`
  *   read and the `job:remote-state` events whatever order they arrive in (o19.6);
  * - `remoteView`: the badges and offered actions of a job from its row and its record (o19.2,
- *   o19.7). The words of a check stay in the row's `error_message`; this module never copies
- *   Rust's outcome texts (`shown_message`) or its list of outcomes that need a later unit's action;
+ *   o19.7, o22.14): the cancel family with a per-action confirm, the hidden and disabled retries,
+ *   the pending-cancel and bound badges, the check error prefixed by whether the server answered.
+ *   The words of a check stay in the row's `error_message`; this module never copies Rust's
+ *   outcome texts (`shown_message`) or its list of outcomes that need a later unit's action;
+ * - `rowActions`: the Jobs table's row actions (o22.14.8);
+ * - `cancelNotice` / `undoNotice`: what `cancel_job` / `undo_cancel` answered, in words (o22.14.7);
  * - `backfillsLog`: whether the view reads the log already on disk (o16.7);
  * - `runTargetOptions`: the "Run on" choices next to Submit (ADR-024 o5, n2);
  * - `resolveRunTarget`: the remembered "Run on" choice, checked against those choices (o20.1).
  */
-import type { Job, Outcome, RemoteState, RemoteStateEvent, RemoteStateRead, ServerProfile } from "../types";
+import { formatLaptopUtc } from "../format";
+import type {
+  CancelResult,
+  CheckError,
+  Job,
+  Outcome,
+  RemoteState,
+  RemoteStateEvent,
+  RemoteStateRead,
+  ServerProfile,
+  StatusStep,
+  UndoResult,
+} from "../types";
 
 // --- Coordinates (o19.8) ------------------------------------------------------------------------
 
@@ -57,7 +73,7 @@ export function applyRemoteStateEvent(held: HeldRemoteState, jobId: string, even
   return event.job_id === jobId ? mergeRemoteState(held, event) : held;
 }
 
-// --- Badges and actions (o19.2, o19.7) ----------------------------------------------------------
+// --- Badges and actions (o19.2, o19.7, o22.14) --------------------------------------------------
 
 export type Tone = "ok" | "warn" | "err" | "muted";
 
@@ -70,31 +86,57 @@ export type RemoteBadge =
   | { kind: "fetching"; strikes: number; stale: boolean; label: string; tone: Tone }
   /** The last decided outcome; `stale` while the latest check decided nothing. */
   | { kind: "outcome"; outcome: Outcome["outcome"]; stale: boolean; label: string; tone: Tone }
-  /** The latest check could not be done or decided nothing (the host is away, a queue unreadable). */
-  | { kind: "check_error"; label: string; tone: Tone }
+  /** The latest check could not be done or decided nothing, prefixed by whether the server
+   *  answered (o22.14.3). */
+  | { kind: "check_error"; answered: boolean; label: string; tone: Tone }
   /** Automatic fetches stopped after the strikes. */
   | { kind: "fetch_stopped"; label: string; tone: Tone }
+  /** A cancel is pending (o22.14.1): since when, or — once the send is marked — that it may already
+   *  be on the server. */
+  | { kind: "cancel_pending"; sent: boolean; label: string; tone: Tone }
+  /** A pending cancel's automatic re-sends stopped at the bound (o22.4.5, o22.14.3). */
+  | { kind: "cancel_sends_stopped"; label: string; tone: Tone }
+  /** A `cancelling` job's automatic sweeps stopped at the bound (o22.13.4, o22.14.3). */
+  | { kind: "sweeps_stopped"; label: string; tone: Tone }
   /** Some but not all coordinates are set (o19.8). */
   | { kind: "corrupt"; label: string; tone: Tone };
 
-/** What the view may offer: `retry_remote_submit`, `withdraw_remote_job`, `retry_remote_fetch`. */
-export type RemoteAction = "retry_submit" | "withdraw" | "retry_fetch";
+/** What the view may offer — `cancel_job` (a first Cancel, or Retry cancel), `undo_cancel`,
+ *  `retry_remote_submit`, `retry_remote_fetch`. */
+export type RemoteAction = "cancel" | "retry_cancel" | "undo_cancel" | "retry_submit" | "retry_fetch";
+
+/** The two retries: hidden while a cancel is pending, disabled while the server is unreachable. */
+export type RetryAction = Extract<RemoteAction, "retry_submit" | "retry_fetch">;
+
+/**
+ * One offered action. `confirm`: it asks first — only a remote job's **first** Cancel does (o20.3,
+ * o22.14.2); Retry cancel and Undo never do. `disabled`: why it cannot run now (a retry while the
+ * last contact failed, o22.8), or null.
+ */
+export interface RemoteOffer {
+  action: RemoteAction;
+  confirm: boolean;
+  disabled: string | null;
+}
+
+/** Why a retry is disabled while the server does not answer (o22.8). */
+export const RETRY_UNREACHABLE = "server unreachable — retry when it answers";
 
 export type RemoteView =
   /** No coordinates: nothing remote to show. */
   | { kind: "local" }
   /** Some but not all coordinates: shown, never acted on (o19.8). */
-  | { kind: "corrupt"; badges: RemoteBadge[]; actions: RemoteAction[] }
+  | { kind: "corrupt"; badges: RemoteBadge[]; actions: RemoteOffer[] }
   /** A remote job that has finished: the ordinary job view. */
   | { kind: "terminal" }
-  /** A remote `queued`/`running` job. `text` is the row's `error_message`; `fromLastCheck` labels
-   *  it "from the last check" whenever the record holds no decided state (o19.2) — then it may be
-   *  stale across a restart and no action comes from it. */
+  /** A remote `queued`/`running`/`cancelling` job. `text` is the row's `error_message`;
+   *  `fromLastCheck` labels it "from the last check" whenever the record holds no decided state
+   *  (o19.2) — then it may be stale across a restart and no action comes from it. */
   | {
       kind: "live";
       text: { body: string; fromLastCheck: boolean } | null;
       badges: RemoteBadge[];
-      actions: RemoteAction[];
+      actions: RemoteOffer[];
     };
 
 /** Short names of the classifier's outcomes for a badge. The explanation is the row's text. */
@@ -122,9 +164,36 @@ const OUTCOME_TONE: Record<Outcome["outcome"], Tone> = {
   re_enqueue: "warn",
 };
 
+/** A job the server still has (o22.5): `queued`, `running` or `cancelling` — `cancelling` is live
+ *  everywhere, never terminal. */
+export function isLiveStatus(status: Job["status"]): boolean {
+  return status === "queued" || status === "running" || status === "cancelling";
+}
+
+/** "Server answered: …" / "Server unreachable: …" — keyed on the error's own flag (o22.14.3), never on
+ *  the record's `last_contact`, which a later call may have changed. */
+export function checkErrorLabel(error: CheckError): string {
+  return `${error.answered ? "Server answered" : "Server unreachable"}: ${error.text}`;
+}
+
 /**
  * The remote part of a job's view, from its row and its record (`null`/`undefined`: no record).
- * The record decides the badges and the actions; the row gives the words.
+ * The record decides the badges and the actions; the row gives the words and the pending cancel.
+ *
+ * **The cancel offers** (o22.7, o22.14.1–2): a `cancelling` job offers Retry cancel (no confirm: the
+ * cancel is on the server, the click restarts the sweeps); a `queued`/`running` job without a
+ * pending cancel offers Cancel (confirmed); a pending one offers, by `cancel_sent_at` and the record's
+ * `cancel_sends.stopped`:
+ *
+ * | sent | stopped | offered |
+ * |---|---|---|
+ * | no | no | Undo cancel |
+ * | no | yes | Undo cancel + Retry cancel |
+ * | yes | no | nothing (delivery re-sends by itself) |
+ * | yes | yes | Retry cancel |
+ *
+ * **The retries** (o22.8, o22.14.4): hidden while a cancel is pending; disabled with
+ * [`RETRY_UNREACHABLE`] while the last contact failed.
  */
 export function remoteView(job: Job, record: RemoteState | null | undefined): RemoteView {
   const coords = coordinateState(job);
@@ -136,11 +205,14 @@ export function remoteView(job: Job, record: RemoteState | null | undefined): Re
       actions: [],
     };
   }
-  if (job.status !== "queued" && job.status !== "running") return { kind: "terminal" };
+  if (!isLiveStatus(job.status)) return { kind: "terminal" };
 
   const known = record?.known ?? null;
   const badges: RemoteBadge[] = [];
-  const actions: RemoteAction[] = [];
+  const retries: RetryAction[] = [];
+  // `!= null`: a fixture or an older payload may lack the fields entirely.
+  const pending = job.cancel_requested_at != null;
+  const sent = job.cancel_sent_at != null;
 
   if (!record) {
     badges.push({ kind: "checking", label: "Checking the server…", tone: "muted" });
@@ -148,10 +220,9 @@ export function remoteView(job: Job, record: RemoteState | null | undefined): Re
   if (known?.kind === "labelled") {
     if (known.detail === "not_on_server") {
       badges.push({ kind: "labelled", label: "Not on the server", tone: "warn" });
-      actions.push("retry_submit", "withdraw");
+      retries.push("retry_submit");
     } else if (known.detail === "submit_interrupted") {
       badges.push({ kind: "labelled", label: "Submit interrupted", tone: "warn" });
-      actions.push("withdraw");
     }
     // `classifier` never reaches the record: the step goes on to collect and classify.
   } else if (known?.kind === "shown") {
@@ -178,16 +249,195 @@ export function remoteView(job: Job, record: RemoteState | null | undefined): Re
       tone: stale ? "muted" : "warn",
     });
   }
+  if (pending) {
+    badges.push({
+      kind: "cancel_pending",
+      sent,
+      label: sent
+        ? "Cancel pending — the cancel may already be on the server"
+        : `Cancel pending since ${formatLaptopUtc(job.cancel_requested_at ?? "")}`,
+      tone: "warn",
+    });
+  }
   if (record?.check_error != null) {
-    badges.push({ kind: "check_error", label: `Server unreachable / not decided: ${record.check_error}`, tone: "warn" });
+    badges.push({ kind: "check_error", answered: record.check_error.answered, label: checkErrorLabel(record.check_error), tone: "warn" });
   }
   if (record?.fetch.stopped) {
     badges.push({ kind: "fetch_stopped", label: "Automatic fetches stopped", tone: "err" });
-    actions.push("retry_fetch");
+    retries.push("retry_fetch");
+  }
+  // No counters before a bound is reached (o22.14.3).
+  const sendsStopped = record?.cancel_sends.stopped ?? false;
+  if (pending && sendsStopped) {
+    badges.push({ kind: "cancel_sends_stopped", label: "Cancel re-sends stopped — Retry cancel to send again", tone: "warn" });
+  }
+  if (job.status === "cancelling" && record?.sweeps.stopped) {
+    badges.push({ kind: "sweeps_stopped", label: "Sweeps stopped — processes still run; Retry cancel to sweep again", tone: "warn" });
+  }
+
+  const actions: RemoteOffer[] = [];
+  if (!pending) {
+    const unreachable = record?.last_contact?.kind === "failed";
+    for (const action of retries) actions.push({ action, confirm: false, disabled: unreachable ? RETRY_UNREACHABLE : null });
+  }
+  const offer = (action: RemoteAction, confirm: boolean) => actions.push({ action, confirm, disabled: null });
+  if (job.status === "cancelling") {
+    offer("retry_cancel", false);
+  } else if (!pending) {
+    offer("cancel", true);
+  } else {
+    if (!sent) offer("undo_cancel", false);
+    if (sendsStopped) offer("retry_cancel", false);
   }
 
   const text = job.error_message != null ? { body: job.error_message, fromLastCheck: known === null } : null;
   return { kind: "live", text, badges, actions };
+}
+
+// --- The Jobs table's row actions (o22.14.8) -----------------------------------------------------
+
+/** A Jobs-table row action: one of the cancel family (with its confirm), or the terminal row's. */
+export type RowAction =
+  | { action: "cancel" | "retry_cancel" | "undo_cancel"; confirm: boolean }
+  | { action: "run_locally" }
+  | { action: "open" }
+  | { action: "delete" };
+
+/** The cancel-family actions that send `cancel_job`: a first Cancel and Retry cancel. */
+export type CancelSend = { action: "cancel" | "retry_cancel"; confirm: boolean };
+
+/**
+ * A Jobs-table row's actions. A draft runs locally or is deleted; a **live** job — local
+ * `queued`/`running`, remote `queued`/`running`/`cancelling` — offers only its cancel family, never
+ * Delete (Rust refuses it; a `cancelling` job offers Retry cancel); a remote live job's cancel
+ * family is exactly `remoteView`'s. A live job with corrupt coordinates offers nothing (o19.8).
+ * Every other (terminal) row opens or is deleted.
+ */
+export function rowActions(job: Job, record: RemoteState | null | undefined): RowAction[] {
+  if (job.status === "draft") return [{ action: "run_locally" }, { action: "delete" }];
+  const coords = coordinateState(job);
+  if (coords === "local") {
+    if (job.status === "queued" || job.status === "running") return [{ action: "cancel", confirm: false }];
+    return [{ action: "open" }, { action: "delete" }];
+  }
+  if (!isLiveStatus(job.status)) return [{ action: "open" }, { action: "delete" }];
+  const view = remoteView(job, record);
+  if (view.kind !== "live") return [];
+  const family: RowAction[] = [];
+  for (const o of view.actions) {
+    if (o.action === "cancel" || o.action === "retry_cancel" || o.action === "undo_cancel") {
+      family.push({ action: o.action, confirm: o.confirm });
+    }
+  }
+  return family;
+}
+
+/** The row's action that sends `cancel_job` (a first Cancel or Retry cancel), if it offers one. */
+export function cancelSendOf(actions: readonly RowAction[]): CancelSend | null {
+  for (const a of actions) if (a.action === "cancel" || a.action === "retry_cancel") return { action: a.action, confirm: a.confirm };
+  return null;
+}
+
+/** The confirm of a remote job's first Cancel (o20.3, o22.14.2). */
+export function cancelConfirmText(job: Pick<Job, "title" | "remote_host">): string {
+  return (
+    `Cancel "${job.title}" on ${job.remote_host ?? "the server"}? The server stops it; files already written stay ` +
+    "on the server and are downloaded for viewing. You can undo until the cancel is sent."
+  );
+}
+
+// --- The cancel and undo notices (o22.14.7) ------------------------------------------------------
+
+/** Capitalise the first letter of a notice. */
+function sentence(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+/**
+ * What a delivery's step means for the user (o22.14.7). "sent" is said only for a step that
+ * delivered. A `check_failed` is read with the **reloaded row** (`cancel_sent_at`: the send may have
+ * happened) and the record's **check error** (whether the server answered); with no check error
+ * (the record could not be read) the notice does not guess which.
+ */
+function deliveredNotice(step: StatusStep, row: Pick<Job, "cancel_sent_at">, checkError: CheckError | null): string | null {
+  switch (step.step) {
+    case "cancel_delivered":
+      return step.detail.outcome === "completed" && step.detail.late_cancel
+        ? "The job completed before the cancel took effect; its result is kept"
+        : "Cancel sent";
+    case "cancelled":
+    case "finalised":
+      return "Cancel sent";
+    case "ended_before_cancel":
+      return "The job finished before the cancel reached the server";
+    case "check_failed":
+      if (row.cancel_sent_at != null) {
+        return "No answer after the cancel was sent; it may already be on the server; checked again at the next step";
+      }
+      if (checkError == null) return `The cancel stays pending: ${step.detail}`;
+      return checkError.answered
+        ? `The server's answer could not be read: ${step.detail}; the cancel stays pending`
+        : "Server unreachable — the cancel stays pending and is sent when it answers";
+    case "cancel_not_sent":
+      return `The cancel failed on the server: ${step.detail}; it stays pending`;
+    case "cancel_stopped":
+      return "Cancel re-sends stopped";
+    case "row_changed":
+    case "not_live":
+      return "The job changed meanwhile";
+    // Delivery returns none of these; never "sent".
+    case "busy":
+    case "labelled":
+    case "shown":
+    case "fetch_failed":
+    case "fetch_stopped":
+    case "swept":
+      return null;
+    default: {
+      const unhandled: never = step;
+      return unhandled;
+    }
+  }
+}
+
+/**
+ * The notice for `cancel_job`'s answer (o22.14.7), from the answer, the reloaded row and the
+ * reloaded record's check error. `null`: nothing to say (a local cancel; a step delivery never
+ * returns).
+ */
+export function cancelNotice(result: CancelResult, row: Pick<Job, "cancel_sent_at">, checkError: CheckError | null): string | null {
+  switch (result.result) {
+    case "delivered":
+      return deliveredNotice(result.step, row, checkError);
+    case "pending":
+      return "Cancel pending — sent at the next check";
+    case "already_on_server":
+      return "The cancel is already on the server; sweeping again";
+    case "moved_on":
+      return sentence(`the job is already ${result.status}`);
+    case "dispatched":
+      return null;
+    default: {
+      const unhandled: never = result;
+      return unhandled;
+    }
+  }
+}
+
+/** The notice for `undo_cancel`'s answer (o22.14.7). */
+export function undoNotice(result: UndoResult): string {
+  switch (result) {
+    case "undone":
+      return "Cancel undone";
+    case "send_marked":
+      return "Too late to undo: the cancel may already be on the server";
+    case "nothing_pending":
+      return "No cancel to undo";
+    default: {
+      const unhandled: never = result;
+      return unhandled;
+    }
+  }
 }
 
 // --- The live log's backfill (o16.7) ------------------------------------------------------------
@@ -195,15 +445,15 @@ export function remoteView(job: Job, record: RemoteState | null | undefined): Re
 /**
  * Whether the job view reads the log and the convergence points already on disk
  * (`read_job_output` / `read_job_convergence`) after its listeners are attached. A draft has none.
- * A remote `queued`/`running` job never does: the poller re-streams its whole log from offset 0 on
- * every `watch_job_log` open, and during a failing fetch a local `output.out` exists while the row
- * is still live — backfill plus re-stream would show every line and point twice. Every other job
- * (local, a finished remote one, corrupt coordinates) backfills as a local job always has.
+ * A remote `queued`/`running`/`cancelling` job never does: the poller re-streams its whole log from
+ * offset 0 on every `watch_job_log` open (its candidates include `cancelling`, o22.5), and during a
+ * failing fetch a local `output.out` exists while the row is still live — backfill plus re-stream
+ * would show every line and point twice. Every other job (local, a finished remote one, corrupt
+ * coordinates) backfills as a local job always has.
  */
 export function backfillsLog(job: Pick<Job, "status" | "remote_host" | "remote_job_dir" | "remote_socket">): boolean {
   if (job.status === "draft") return false;
-  const live = job.status === "queued" || job.status === "running";
-  return !(live && coordinateState(job) === "remote");
+  return !(isLiveStatus(job.status) && coordinateState(job) === "remote");
 }
 
 // --- Run on (ADR-024 o5, n2) ---------------------------------------------------------------------

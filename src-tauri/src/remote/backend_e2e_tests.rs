@@ -26,13 +26,14 @@ use super::scripts::{sha256_hex, CANCEL, INSTALL, LABEL, LIST, MKJOB, POLL_LOG, 
 use super::ssh::{ssh_options, CommandRunner, ProcessOutput, SystemRunner, TransportError, SSH_PROGRAM};
 use super::submit::Label;
 use super::sync::RSYNC_PROGRAM;
-use crate::commands::jobs::get_job_conn;
+use crate::commands::jobs::{cancel_job_core, get_job_conn, CancelResult};
+use crate::poller::StatusStep;
 use crate::commands::server_profiles::get_profile_conn;
 use crate::commands::settings::DbState;
 use crate::db::init_db;
 use crate::models::job::JobStatus;
 use crate::ssh_backend::{
-    coordinates, label_remote, resubmit_remote, submit_remote, withdraw_remote, RemoteCoordinates,
+    coordinates, label_remote, resubmit_remote, submit_remote, RemoteCoordinates,
     SubmitAttempt, SubmitOutcome, SubmitStep,
 };
 
@@ -239,14 +240,39 @@ fn a_submit_installs_uploads_and_enqueues_against_the_real_scripts() {
     // The label call hands it to the classifier; the 5.2 collector sees it queued.
     assert_eq!(label_remote(&runner, &job).unwrap().label, Label::Classifier);
     assert_eq!(lab.classify(&remote, &[sock]), Outcome::Queued);
-    // And it cannot be withdrawn: it is in the server's queue (remote cancel is unit 5.4).
-    let err = withdraw_remote(&laptop.db, &runner, "e2e1").unwrap_err();
-    assert!(err.to_string().contains("unit 5.4"), "{err}");
     assert!(!remote.join(".cancelled").exists());
+
+    // And it is cancellable in the server's queue (o22.3; before 5.4a it was refused): the click's
+    // delivery readies, labels, classifies `Queued`, marks and sends; the next ordinary step reads
+    // `.cancelled` with nothing started and writes the row `cancelled`.
+    runner.calls.borrow_mut().clear();
+    let (cancelled, step) = cancel_then_step(&laptop, &runner, "e2e1");
+    assert_eq!(
+        cancelled,
+        CancelResult::Delivered { already_pending: false, step: StatusStep::CancelDelivered(Outcome::Cancelled { started: false }) }
+    );
+    assert_eq!(step, StatusStep::Cancelled);
+    assert_eq!(*runner.calls.borrow(), ["prepare", "label", "run", "run", "run", "label", "run"], "delivery, then one status step");
+    assert_eq!(laptop.job("e2e1").status, JobStatus::Cancelled);
+    assert!(remote.join(".cancelled").exists(), "the server holds the reason");
+}
+
+/// A Cancel as `cancel_job` runs it — [`cancel_job_core`] with the guard free, so it delivers at
+/// once — and then **one ordinary status step**: a delivery ends at `CancelDelivered` with the
+/// status unchanged (ADR-024 o22.13.2), and the next step finishes it from the server's facts. The
+/// real label, mkjob, `cancel.sh` and `collect.sh` run against the lab (o22.14.7: the only
+/// real-script coverage of label → mkjob → `cancel.sh` → collect for a job not on the server).
+fn cancel_then_step(laptop: &Laptop, runner: &Loop<'_>, id: &str) -> (CancelResult, StatusStep) {
+    let world = PollerWorld::new();
+    let poller = world.poller(laptop, runner);
+    let cancelled = cancel_job_core(&poller, id, |job| panic!("a remote job is never dispatched: {}", job.id)).unwrap();
+    assert_eq!(laptop.job(id).status, JobStatus::Queued, "delivery changes no status");
+    let step = poller.status_step(id).unwrap();
+    (cancelled, step)
 }
 
 #[test]
-fn a_failed_enqueue_is_submit_interrupted_and_withdrawn_to_cancelled_by_the_classifier() {
+fn a_failed_enqueue_is_submit_interrupted_and_cancelled_to_cancelled_by_the_classifier() {
     let _serial = serial();
     let lab = Lab::new();
     let laptop = Laptop::new(&lab);
@@ -262,15 +288,23 @@ fn a_failed_enqueue_is_submit_interrupted_and_withdrawn_to_cancelled_by_the_clas
     assert!(laptop.resubmit(&runner, "e2e2").is_err(), "submit interrupted is never retried");
 
     runner.calls.borrow_mut().clear();
-    let report = withdraw_remote(&laptop.db, &runner, "e2e2").unwrap();
-    assert_eq!((report.label, &report.outcome, report.status), (Label::SubmitInterrupted, &Outcome::Cancelled { started: false }, JobStatus::Cancelled));
-    assert_eq!(*runner.calls.borrow(), ["label", "prepare", "mkjob", "run", "run"], "cancel and collect through the trampoline");
+    let (cancelled, step) = cancel_then_step(&laptop, &runner, "e2e2");
+    assert_eq!(
+        cancelled,
+        CancelResult::Delivered { already_pending: false, step: StatusStep::CancelDelivered(Outcome::Cancelled { started: false }) }
+    );
+    assert_eq!(step, StatusStep::Cancelled, "the classifier decides at the next ordinary step");
+    assert_eq!(
+        *runner.calls.borrow(),
+        ["prepare", "label", "mkjob", "run", "run", "label", "run"],
+        "delivery (cancel and collect through the trampoline), then one status step"
+    );
     assert_eq!(laptop.job("e2e2").status, JobStatus::Cancelled);
     assert!(remote_job(&lab, "e2e2").join(".cancelled").exists(), "the server holds the reason");
 }
 
 #[test]
-fn a_kill_user_processes_refusal_clears_the_stamp_then_retry_and_withdraw_work() {
+fn a_kill_user_processes_refusal_clears_the_stamp_then_retry_and_cancel_work() {
     let _serial = serial();
     let lab = Lab::new();
     let laptop = Laptop::new(&lab);
@@ -298,12 +332,21 @@ fn a_kill_user_processes_refusal_clears_the_stamp_then_retry_and_withdraw_work()
     assert_eq!(*runner.calls.borrow(), ["label", "prepare", "rsync", "submit"], "the scripts were already there");
     assert_eq!(laptop.job("e2e3").error_message, None);
 
-    // A job refused the same way and withdrawn instead, with the profile unverified again — a
-    // withdraw has no `verified_at` gate (n 6a): the classifier says Cancelled.
+    // A job refused the same way and cancelled instead, with the profile unverified again — a
+    // cancel has no `verified_at` gate (n 6a): not on the server, so its delivery makes the dir
+    // (mkjob) before `cancel.sh`, and the classifier says Cancelled at the next step.
     assert!(matches!(laptop.submit(&kup, "e2e4"), SubmitOutcome::KillUserProcesses { .. }));
     assert!(!laptop.stamped());
-    let report = withdraw_remote(&laptop.db, &runner, "e2e4").unwrap();
-    assert_eq!((report.label, report.status), (Label::NotOnServer, JobStatus::Cancelled));
+    assert_eq!(label_remote(&runner, &laptop.job("e2e4")).unwrap().label, Label::NotOnServer);
+    runner.calls.borrow_mut().clear();
+    let (cancelled, step) = cancel_then_step(&laptop, &runner, "e2e4");
+    assert_eq!(
+        cancelled,
+        CancelResult::Delivered { already_pending: false, step: StatusStep::CancelDelivered(Outcome::Cancelled { started: false }) }
+    );
+    assert_eq!(step, StatusStep::Cancelled);
+    assert_eq!(*runner.calls.borrow(), ["prepare", "label", "mkjob", "run", "run", "label", "run"]);
+    assert_eq!(laptop.job("e2e4").status, JobStatus::Cancelled);
 }
 
 /// o 14.2 end to end: `%pal nprocs 48` on the 4-CPU slot mask uploads `nprocs 4` and the server's

@@ -1,5 +1,5 @@
 //! The remote backend's core (ADR-024 o, unit 5.3 B1): submit a job to a server profile, retry
-//! it, label it, withdraw it. **Tauri-free**: every function takes the database as `&DbState`,
+//! it, label it. **Tauri-free**: every function takes the database as `&DbState`,
 //! locked only around its own reads and writes — **never across an ssh call** (a submit can take a
 //! minute) — and a [`CommandRunner`]: the real `SystemRunner` in the app, a fake or a local loop in
 //! the tests. `execution_backend::SshBackend` is the thin `AppHandle` wrapper over it.
@@ -30,10 +30,6 @@
 //! **Retry** ([`resubmit_remote`]) re-derives the local input with the profile's *current* mask
 //! (step 1 without the persist), then steps 3–6 from the recorded coordinates — only for a job the
 //! label call finds "not on the server" (o 3.4: "submit interrupted" is never retried).
-//! **Withdraw** ([`withdraw_remote`], o 2, 14.1) readies the server like steps 3–4, makes the job
-//! dir (re-asserting its shape), runs `cancel.sh` and `collect.sh` through the trampoline, and lets
-//! `classify` decide the status — never a hard-coded `Cancelled` (Decision c).
-//!
 //! **The poller's calls** (unit 5.3 B2): [`poll_log_remote`] reads one chunk of the remote
 //! `output.out` (o item 7), and [`fetch_remote`] downloads a finished job's files and checks them
 //! against the server's own listing (o item 6). Both are read-only on the server and write nothing to
@@ -139,15 +135,16 @@ pub(crate) fn is_remote_live(job: &Job) -> bool {
     job.is_remote() && matches!(job.status, JobStatus::Queued | JobStatus::Running | JobStatus::Cancelling)
 }
 
-/// Refuse to act locally on a remote job that is not terminal (ADR-024 o item 2): a cancel or a
-/// delete here would set a local state the server contradicts — never a local `Cancelled` for a
-/// job that may be on the server (Decision i). Remote-live = `queued`, `running` or `cancelling`
-/// (o22.5). Withdraw is the one exit until unit 5.4a's remote cancel is wired.
+/// Refuse to act locally on a remote job that is not terminal (ADR-024 o item 2): a delete or a
+/// local cancel here would set a local state the server contradicts — never a local `Cancelled`
+/// for a job that may be on the server (Decision i). Remote-live = `queued`, `running` or
+/// `cancelling` (o22.5). The exit is the remote cancel (`commands::jobs::cancel_job_core`, o22.3),
+/// which routes such a job before any backend is reached; here this is the delete's refusal and
+/// the local path's belt (`cancel_remote`, `local_backend::cancel`).
 pub fn refuse_if_remote_live(job: &Job) -> Result<(), AppError> {
     if is_remote_live(job) {
         return Err(AppError::Backend(format!(
-            "job {} is {} on server {}: remote cancel arrives in unit 5.4 \
-             (a job that is not on the server can be withdrawn)",
+            "job {} is {} on server {}: cancel it first (the cancel goes through the server)",
             job.id,
             job.status.as_str(),
             job.remote_host.as_deref().unwrap_or_default()
@@ -156,9 +153,11 @@ pub fn refuse_if_remote_live(job: &Job) -> Result<(), AppError> {
     Ok(())
 }
 
-/// A cancel of remote job `job` (the `SshBackend` arm of `cancel_job`): always refused until remote
-/// cancel lands (unit 5.4). A live job gets [`refuse_if_remote_live`]'s reason, checked **first**,
-/// so it is never told there is "nothing to cancel"; a terminal one has nothing to cancel.
+/// A cancel of remote job `job` through the backend (the `SshBackend` arm of the cancel core's
+/// guarded path): always refused. A live remote job never reaches it — the cancel core records and
+/// delivers it (o22.3) — so this is the belt: a live job gets [`refuse_if_remote_live`]'s reason,
+/// checked **first**, so it is never told there is "nothing to cancel"; a terminal one has nothing
+/// to cancel.
 pub fn cancel_remote(job: &Job) -> Result<(), AppError> {
     refuse_if_remote_live(job)?;
     Err(AppError::Backend(format!("job {} is '{}': there is nothing to cancel", job.id, job.status.as_str())))
@@ -253,12 +252,12 @@ pub enum SubmitStep {
 pub enum SubmitOutcome {
     /// In the slot's `tsp` queue with this id; `.enqueued` is published.
     Enqueued { tsp_id: u64 },
-    /// Nothing was claimed on the server: the job is "not on the server" (retry or withdraw).
+    /// Nothing was claimed on the server: the job is "not on the server" (retry or cancel).
     NotClaimed { step: SubmitStep, reason: String },
     /// `KillUserProcesses` is not `b false` (o 13.3): nothing claimed, and the profile's stamp was
     /// cleared — a run target no longer, until a connection test passes.
     KillUserProcesses { evidence: KupEvidence },
-    /// Claimed (`.submitting`) but not enqueued: "submit interrupted", withdraw only (o 3.3.9).
+    /// Claimed (`.submitting`) but not enqueued: "submit interrupted", cancel only (o 3.3.9, o22.7).
     FailedAfterClaim { reason: String },
     /// The submit call's reply was lost or unreadable (a timeout, ssh exit 255, a broken reply):
     /// the server may have done anything up to the enqueue, so only the label call can tell.
@@ -476,7 +475,7 @@ pub(crate) fn check_ready(runner: &dyn CommandRunner, host: &str, root: &str, jo
     ))
 }
 
-/// Steps 3–4, shared by submit, retry, withdraw and a cancel's delivery (o22.4.2): the read-only prepare call; when `bin/`,
+/// Steps 3–4, shared by submit, retry, a cancel's delivery and a sweep (o22.4.2, o22.13.3): the read-only prepare call; when `bin/`,
 /// `tsp/` or any uploaded script is missing, the install call and then the prepare call again —
 /// every script must now hash right (the post-condition, rule #9). Which step failed, and why.
 pub(crate) fn ready_server(runner: &dyn CommandRunner, host: &str, root: &str, job_dir: &str) -> Result<(), (SubmitStep, String)> {
@@ -581,7 +580,7 @@ fn queued_remote(job: &Job) -> Result<(RemoteCoordinates, String), AppError> {
     let coords = coordinates(job)?.ok_or_else(|| AppError::Backend(format!("job {} is not a remote job", job.id)))?;
     if job.status != JobStatus::Queued {
         return Err(AppError::Backend(format!(
-            "job {} is '{}': only a queued remote job can be retried or withdrawn",
+            "job {} is '{}': only a queued remote job can be retried",
             job.id,
             job.status.as_str()
         )));
@@ -649,7 +648,7 @@ fn retry_checks(
     Ok((job, coords, root, profile_id, profile))
 }
 
-// --- Withdraw ---------------------------------------------------------------------------------
+// --- The trampoline and mkjob (a cancel's delivery, a sweep) ----------------------------------
 
 /// The bound on one trampoline call. Derived with margin: ssh's 10 s connect + the `realpath` and
 /// `sha256sum` checks at `timeout -k 1 5` (6 s each) + the script's budget (`run.sh` `BUDGET`: cancel
@@ -673,57 +672,8 @@ pub(crate) fn mkjob_call(runner: &dyn CommandRunner, host: &str, root: &str, job
     call(runner, host, "mkjob", MKJOB, &sent.values(), CALL_TIMEOUT, |out| parse_mkjob_reply(out, &sent))
 }
 
-/// What a withdraw found and left.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct WithdrawReport {
-    /// The label before the withdraw: "not on the server" or "submit interrupted".
-    pub label: Label,
-    /// The classifier's verdict after `.cancelled` was published.
-    pub outcome: Outcome,
-    /// The row's status afterwards: `cancelled` only when the classifier says `Cancelled`.
-    pub status: JobStatus,
-}
-
-/// Withdraw a remote `queued` job that the label call finds "not on the server" or "submit
-/// interrupted" (ADR-024 o items 2, 14.1). No `verified_at` gate (n 6a). The sequence:
-/// 1. the label call (anything else is in the server's hands: remote cancel, unit 5.4);
-/// 2. prepare → install if any script is missing → prepare again (the post-condition);
-/// 3. one call: `mkdir -p <job dir>`, then `realpath <job> == <job>` and `realpath <job>/.. ==
-///    <root>/jobs` re-asserted after the mkdir;
-/// 4. `cancel.sh cancel <job> <root>` through the trampoline — it publishes `.cancelled` first, so a
-///    late enqueue's wrapper refuses at its step 2; rc 0 required;
-/// 5. `collect.sh <job> <recorded socket>` through the trampoline (one retake if `classify` asks),
-///    and **`classify` decides**: `Cancelled` (row 4) → the row becomes `cancelled`; anything else
-///    (`Completed { late_cancel }`, `Cancelling`, `Failed`, …) → the row stays `queued` for the poller
-///    (`crate::poller`) or unit 5.4, with the verdict in `error_message`. Never a hard-coded `Cancelled`
-///    (Decision c). `reenqueue_count` is 0 (the counter lands with unit 5.4b in a later schema version;
-///    v21 is 5.4a's pending cancel, o22.1).
-pub fn withdraw_remote(db: &DbState, runner: &dyn CommandRunner, job_id: &str) -> Result<WithdrawReport, AppError> {
-    let (coords, root) = {
-        let conn = db.lock()?;
-        queued_remote(&get_job_conn(&conn, job_id)?)?
-    };
-    let fail = |e: String| AppError::Backend(format!("withdraw of job {job_id}: {e}"));
-    let report = label_call(runner, &coords).map_err(AppError::Backend)?;
-    if !matches!(report.label, Label::NotOnServer | Label::SubmitInterrupted) {
-        return Err(AppError::Backend(format!(
-            "job {job_id} is already in the server's hands: remote cancel arrives in unit 5.4"
-        )));
-    }
-    ready_server(runner, &coords.host, &root, &coords.job_dir).map_err(|(_, e)| fail(e))?;
-    mkjob_call(runner, &coords.host, &root, &coords.job_dir).map_err(fail)?;
-    let (rc, stderr) = cancel_call(runner, &coords, &root).map_err(fail)?;
-    if rc != 0 {
-        return Err(fail(format!("cancel.sh exited {rc}: {}", tail(&stderr))));
-    }
-    let outcome = collect_and_classify(runner, &coords, &root)
-        .map_err(|e| fail(format!(".cancelled is published, but {e}")))?;
-    let status = record_withdraw(db, job_id, &coords, &outcome)?;
-    Ok(WithdrawReport { label: report.label, outcome, status })
-}
-
 /// `cancel.sh cancel <job dir> <root>` through the trampoline, by the recorded coordinates: its rc
-/// and stderr. Shared by the withdraw and a cancel's delivery (o22.4.5). An `Err` is a call that
+/// and stderr. A cancel's delivery and a sweep run it (o22.4.5, o22.13.3). An `Err` is a call that
 /// did not run the script (transport, a broken reply, `not-installed`, refused).
 pub(crate) fn cancel_call(runner: &dyn CommandRunner, coords: &RemoteCoordinates, root: &str) -> Result<(u8, Vec<u8>), String> {
     let sent = RunArgs::new(root, JobScript::Cancel, vec!["cancel".into(), coords.job_dir.clone(), root.to_string()])
@@ -757,28 +707,9 @@ pub(crate) fn collect_and_classify(runner: &dyn CommandRunner, coords: &RemoteCo
     Err("classify asked for a second retake".to_string())
 }
 
-/// The withdraw's one write, guarded on the row still being this remote `queued` job.
-fn record_withdraw(db: &DbState, job_id: &str, coords: &RemoteCoordinates, outcome: &Outcome) -> Result<JobStatus, AppError> {
-    let conn = db.lock()?;
-    if matches!(outcome, Outcome::Cancelled { .. }) {
-        mark_cancelled_conn(&conn, job_id, coords, "Withdrawn: the server confirms .cancelled and nothing ran.", &[JobStatus::Queued])?;
-    } else {
-        conn.execute(
-            "UPDATE jobs SET error_message = ?1 WHERE id = ?2 AND status = 'queued' AND remote_job_dir = ?3",
-            params![
-                format!("Withdraw published .cancelled; the server reports {outcome:?} (decided by the next status check)"),
-                job_id,
-                coords.job_dir
-            ],
-        )?;
-    }
-    Ok(get_job_conn(&conn, job_id)?.status)
-}
-
-/// The terminal write for a classifier `Cancelled` (row 4), shared by the withdraw and the poller
-/// (ADR-024 o17): `cancelled`, `completed_at` stamped, `message` in `error_message` — only while the
-/// row is still this remote job (its recorded job dir) in one of `from` (the withdraw: `queued`; the
-/// poller: `queued`, `running` or `cancelling`). It clears a pending cancel (`cancel_requested_at`,
+/// The terminal write for a classifier `Cancelled` (row 4) — the poller's (ADR-024 o17, o22.6):
+/// `cancelled`, `completed_at` stamped, `message` in `error_message` — only while the row is still
+/// this remote job (its recorded job dir) in one of `from` (`queued`, `running` or `cancelling`). It clears a pending cancel (`cancel_requested_at`,
 /// `cancel_sent_at`) in the same statement (o22.2: the v21 CHECK fails a terminal write that keeps
 /// them). Returns the rows written (0 or 1).
 pub(crate) fn mark_cancelled_conn(

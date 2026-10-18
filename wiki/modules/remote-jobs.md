@@ -9,8 +9,8 @@ from the server (rule #9).
 The module itself does no remote I/O: no ssh, no processes. The scripts are embedded bytes, and
 the pure parts here build each call's values and parse its reply. The one exception is `sync.rs`,
 which lists and hashes the **local** job dir for the transfer post-conditions. The calls are run by
-the remote backend's core, `src-tauri/src/ssh_backend.rs` (submit, retry, label, withdraw over an
-injected `CommandRunner`; [execution-backends.md](execution-backends.md#sshbackend-ssh_backendrs)),
+the remote backend's core, `src-tauri/src/ssh_backend.rs` (submit, retry, label over an injected
+`CommandRunner`), and by the poller and a cancel's delivery (`crate::poller`; [execution-backends.md](execution-backends.md#sshbackend-ssh_backendrs)),
 which `submit_job` and the remote job commands call. The module is registered in `lib.rs` under a
 scoped `#[allow(dead_code)]` until units 5.3/5.4 call all of it (the poller, reconcile).
 
@@ -30,12 +30,12 @@ scoped `#[allow(dead_code)]` until units 5.3/5.4 call all of it (the poller, rec
 | `sync.rs` | rsync argv (`upload_argv`, `download_argv`), the download filter `download_filter_args`, its leaf patterns `download_patterns` and its Rust mirror `download_selects`, `list_dir`/`upload_expected`/`expected_values` (local file lists with sha256), `ListArgs` + `parse_list_reply` (the server's listing), `compare_download` (the download post-condition) |
 | `poll.rs` | `PollLogArgs`, `parse_poll_reply` → `LogChunk` with the length post-condition; `check_echo` (the n-6d echo check every 5.3 reply shares) |
 | `submit.rs` | `remote_job_dir`, `SubmitArgs`, `parse_submit_reply` → `SubmitReply`; `LabelArgs`, `parse_label_reply` → `LabelFacts`, `label` → `Label` (the label rules) |
-| `prepare.rs` | the calls that ready the server before an upload or a withdraw: `UPLOADED` (wrapper, cancel, collect), `PrepareArgs`, `parse_prepare_reply` → `PrepareFacts`, `check_prepare` → `Prepared` or `ShapeRefusal`; `InstallArgs`, `parse_install_reply` → `[Installed; 3]` |
-| `run.rs` | the trampoline's `RunArgs` (`JobScript::{Cancel, Collect}`) and `parse_run_reply` → `RunReply`; the withdraw's `MkjobArgs` and `parse_mkjob_reply` (o 14.1) |
+| `prepare.rs` | the calls that ready the server before an upload, a cancel's delivery or a sweep: `UPLOADED` (wrapper, cancel, collect), `PrepareArgs`, `parse_prepare_reply` → `PrepareFacts`, `check_prepare` → `Prepared` or `ShapeRefusal`; `InstallArgs`, `parse_install_reply` → `[Installed; 3]` |
+| `run.rs` | the trampoline's `RunArgs` (`JobScript::{Cancel, Collect}`) and `parse_run_reply` → `RunReply`; a not-on-server cancel's `MkjobArgs` and `parse_mkjob_reply` (o 14.1, o22.4.3) |
 | `race_model.rs` | test-only model of the d′ race (`.started`/`.cancelled`) |
 | `script_tests.rs` | test-only: the real job scripts run on this machine; the shared `Lab` harness (see Tests) |
 | `call_script_tests.rs` | test-only: the real 5.3 calls through `bash -s`, read by their Rust parsers (see Tests) |
-| `backend_e2e_tests.rs` | test-only: `ssh_backend`'s submit, retry, label and withdraw end to end against the `Lab` (see Tests) |
+| `backend_e2e_tests.rs` | test-only: `ssh_backend`'s submit, retry and label, the cancel core's delivery and the poller end to end against the `Lab` (see Tests) |
 
 Rule #6 is shared with the local backend: `local_backend::has_normal_termination` (the one
 `ORCA TERMINATED NORMALLY` test, also used by `detect_completion`) over the last
@@ -69,8 +69,10 @@ and never see `cancelling`. `JobStatus::from_db` has a wildcard arm, so its expl
 arm is pinned by a test, not by the compiler.
 
 **The pending cancel (schema v21, ADR-024 o22.2).** `jobs.cancel_requested_at` (the user asked) and
-`jobs.cancel_sent_at` (a delivery is about to run `cancel.sh`), nullable TEXT in laptop time, only
-ever displayed, so a cancel survives a quit and a closed laptop. Three CHECKs, in the v20 ADD-COLUMN
+`jobs.cancel_sent_at` (a delivery is about to run `cancel.sh`), nullable TEXT in **UTC, laptop
+clock** (SQLite's `datetime('now')`, measured for the app's bundled SQLite 3.46.0 under a non-UTC `TZ`
+by `db::tests::sqlite_datetime_now_is_utc_under_a_non_utc_tz`, ADR-024 o22.14.6), only ever displayed
+(the view converts it, `formatLaptopUtc`), so a cancel survives a quit and a closed laptop. Three CHECKs, in the v20 ADD-COLUMN
 form (a CHECK naming earlier columns, tested by SQLite against every existing row):
 `cancel_requested_at` only on a remote `queued`/`running`/`cancelling` job; `cancel_sent_at` only
 where `cancel_requested_at` is set; `cancelling` only on a remote job. **Every terminal write of a
@@ -90,9 +92,11 @@ server when it classifies first) or the job ended first — its write of `cancel
 the same statement, as every write of `cancelling` must; Undo clears `cancel_requested_at` while the
 send is not marked and the job is `queued`/`running`; the terminal writes above clear both. The
 poller's status step reads the request with the row in its one locked read and, while it is set,
-runs the delivery instead of the ordinary step (ADR-024 o22.13.1). The cancel and Undo cores are not
-wired to a command yet (5.4a Part B). The `Job` struct does not carry the columns: they are read with
-`commands::jobs::pending_cancel_conn`.
+runs the delivery instead of the ordinary step (ADR-024 o22.13.1). `cancel_job` runs the cancel core
+and `undo_cancel` the Undo core. The `Job` struct carries both columns (`Job::COLUMNS` 19–20, the TS
+`Job` too, o22.14.5), so the list and the detail show a pending cancel; the cores read them under the
+lock of the read that acts (`commands::jobs::pending_cancel_conn`). **Every write of either column
+emits `job:status`** for the job once its lock is released (o22.14.5).
 
 ## Transfers (`sync.rs`, ADR-024 o items 3.2, 3.3.4, 6)
 
@@ -296,8 +300,8 @@ row → `Classifier`; a socket `Error` → `Classifier`; `.submitting` → `Subm
 ## Readying the server, and running the uploaded scripts (`prepare.rs`, `run.rs`, ADR-024 o items 3.2, 13.1, 14)
 
 Three scripts are uploaded to `<root>/bin/<name>-<sha256>.sh` (`prepare::UPLOADED`): the **wrapper**
-(tsp runs it), **`cancel`** and **`collect`** (the trampoline runs them). Before an upload or a
-withdraw, two calls make sure nothing is written through a symlink and that all three exist with the
+(tsp runs it), **`cancel`** and **`collect`** (the trampoline runs them). Before an upload, a cancel's
+delivery or a sweep, two calls make sure nothing is written through a symlink and that all three exist with the
 right bytes. This section is the wire formats' spec of record (like the label call's, o item 13.5).
 
 **The `PREPARE` call** — read-only; values: the root, the job dir (`<root>/jobs/<id>` exactly), and
@@ -409,8 +413,8 @@ parent <len>                   realpath -e <job>/..
 end
 ```
 
-`parse_mkjob_reply` requires exactly `<job>` and `<root>/jobs` (o item 1), so a withdraw never
-publishes `.cancelled` through a symlinked component.
+`parse_mkjob_reply` requires exactly `<job>` and `<root>/jobs` (o item 1), so a cancel of a job not
+on the server never publishes `.cancelled` through a symlinked component.
 
 ## The `.started` format
 
@@ -700,12 +704,17 @@ joins it with unit 5.4b.
   `<host>:` stripped; `cancel.sh` and `collect.sh` run through the real trampoline. Covered: a submit
   to a root with no wrapper and no `tsp/` (prepare → install → prepare → rsync → submit;
   `Enqueued(0)`, the coordinates, `%pal` inserted at the mask's CPU count and announced, the upload
-  byte for byte, no install temp left, label `Classifier`, the 5.2 collector `Queued`, withdraw
-  refused); a failed enqueue → `FailedAfterClaim` → label `SubmitInterrupted` → retry refused →
-  withdraw (label, prepare, mkjob, run cancel, run collect) → classifier `Cancelled` → row
-  `cancelled`; `b true` from busctl → `KillUserProcesses`, stamp cleared, label `NotOnServer`, no ssh
-  for an unverified profile, retry after re-stamping → `Enqueued`, a second such job withdrawn with the
-  profile unverified → `cancelled`; `%pal nprocs 48` uploaded as the 4-CPU mask's 4 (the server's hash
+  byte for byte, no install temp left, label `Classifier`, the 5.2 collector `Queued`, and the queued
+  job **cancelled** through `cancel_job_core` — delivery (prepare, label, collect `Queued`, mark,
+  `cancel.sh`, collect) → `CancelDelivered(Cancelled)` with the status unchanged, then **one ordinary
+  status step** (label, collect) → `cancelled`); a failed enqueue → `FailedAfterClaim` → label
+  `SubmitInterrupted` → retry refused → cancelled (delivery: prepare, label, **mkjob**, `cancel.sh`,
+  collect; then one status step) → `cancelled`; `b true` from busctl → `KillUserProcesses`, stamp
+  cleared, label `NotOnServer`, no ssh for an unverified profile, retry after re-stamping →
+  `Enqueued`, a second such job, not on the server, cancelled with the profile unverified (mkjob first;
+  no `verified_at` gate) → `cancelled`. These ports of the former withdraw tests are the only
+  real-script coverage of label → mkjob → `cancel.sh` → collect for a job not on the server (ADR-024
+  o22.14.7); without the mkjob, the real `cancel.sh` exits 3 on the missing dir and they go red; `%pal nprocs 48` uploaded as the 4-CPU mask's 4 (the server's hash
   check accepts it) and a retry after the mask narrows to 1 CPU uploading `nprocs 1`, the database
   keeping the original; a symlinked `<root>/bin` → refused at the prepare step, nothing uploaded. The
   poller (`crate::poller`, unit 5.3 B2) against the same lab: the real `poll_log` streams the first
@@ -726,7 +735,7 @@ joins it with unit 5.4b.
 
 Negative controls (each guard broken, the named tests red, restored): listed per unit in
 [log.md](../log.md) (Part A 2026-10-03, Part B 2026-10-03, 5.3 A2 2026-10-05, 5.3 B1 Part A
-2026-10-05, 5.3 B2 Part A 2026-10-06). The five of 5.3 A2 are
+2026-10-05, 5.3 B2 Part A 2026-10-06, 5.4a Part B1 2026-10-18). The five of 5.3 A2 are
 also permanent tests: each runs its guard's check on a mutated copy of the script (exactly one
 occurrence replaced) and requires it to fail.
 
@@ -740,9 +749,13 @@ never writes); the job view calls `watch_job_log` only after its
 `job:log`, `job:convergence` and `job:log-reset` listeners resolve, closes it only if it opened it,
 and skips the backfill for a live remote job (o16.7); the job view and the Jobs table attach their
 `job:remote-state` listener, then read `remote_job_state`, keeping the greatest `seq` (o19.6), and
-show `remoteView`'s badges and actions (retry submit, withdraw — after a plugin-dialog confirm and a
-re-check that the view still offers it, o20.3 —
-retry fetch). What they bind to:
+show `remoteView`'s badges and actions: retry submit / retry fetch (hidden while a cancel is pending,
+disabled while the last contact failed), and the cancel family — Cancel for a `queued`/`running`
+job, after a plugin-dialog confirm and a re-check that the view still offers it (o20.3, o22.14.2);
+Undo cancel / Retry cancel for a pending one by o22.14.1's table; Retry cancel, no confirm, for a
+`cancelling` job. Every Cancel of both screens goes through one helper (`sendCancel` →
+`confirmThenCancel`, the one `invoke("cancel_job")`). The Undo and Retry cancel buttons, the notices
+and the time formatting in the screens are 5.4a Part B2. What they bind to:
 each non-terminal remote job's **remote record** (`RemoteStates`: the label, the last outcome or
 "fetching", a failed check, the fetch bound) set by every status step under the job's guard and
 pushed as `job:remote-state { job_id, seq, state }`, and the `remote_job_state(id)` read
@@ -783,12 +796,14 @@ events and `job:log-reset { job_id }`; `watch_job_log(id, open)` counts a job's 
   - `ln -T` is one `linkat` there too;
   - the shipped scripts ran end to end, and their wire output classified correctly with the Rust
     parser.
-- The cancel, Undo and delivery cores and the poller's run order around them — delivery instead of
-  the ordinary step while a cancel is pending, the `cancelling` sweep with its bound, the evidence
-  fetch of a cancelled job that ran — exist ([execution-backends.md](execution-backends.md#remote-cancel-record-deliver-undo-adr-024-o223o224));
-  not built yet: the commands, the removal of `withdraw_remote_job`, and the view of a pending cancel,
-  a `cancelling` job and its sweep bound (5.4a Part B). The sweep and the evidence fetch have run only
-  against the fake server; the B4-style live run on uni is still to come. The DB re-enqueue counter (a
+- The cancel and undo commands, the cores and the poller's run order around them — delivery instead
+  of the ordinary step while a cancel is pending, the `cancelling` sweep with its bound, the evidence
+  fetch of a cancelled job that ran — and the view's pure logic exist
+  ([execution-backends.md](execution-backends.md#remote-cancel-record-deliver-undo-adr-024-o223o224),
+  [frontend.md](frontend.md)); not built yet: the screens' Undo and Retry cancel buttons, the
+  pending-cancel and bound badges' final look, the notices, the status chip and counts of
+  `cancelling`, and the laptop-time display (5.4a Part B2), then Anton's live gate. The sweep and the
+  evidence fetch have run only against the fake server; the B4-style live run on uni is still to come. The DB re-enqueue counter (a
   later schema version; v21 is 5.4a's pending cancel), `Lost` in `JobStatus`, the orphan sweep (unit
   5.4b).
 - **Known limitation — the ended-first note** ("The job finished before the cancel reached the

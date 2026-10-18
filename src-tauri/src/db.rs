@@ -109,7 +109,8 @@ use crate::error::AppError;
 ///   Existing rows stay local (all NULL). Guarded ALTERs (column_exists).
 /// - v21: a remote job's pending cancel (Phase 5 unit 5.4a, ADR-024 o22.2), so a cancel survives a
 ///   quit and a closed laptop. `jobs.cancel_requested_at` (the user asked) and
-///   `jobs.cancel_sent_at` (a delivery is about to run `cancel.sh`), nullable TEXT in laptop time,
+///   `jobs.cancel_sent_at` (a delivery is about to run `cancel.sh`), nullable TEXT in **UTC, laptop
+///   clock** (`datetime('now')` is UTC — measured, `tests::sqlite_datetime_now_is_utc_under_a_non_utc_tz`),
 ///   only ever displayed. Three CHECKs, in the v20 form (an ADD COLUMN CHECK naming earlier
 ///   columns): `cancel_requested_at` only on a remote `queued`/`running`/`cancelling` job;
 ///   `cancel_sent_at` only where `cancel_requested_at` is set; `cancelling` only on a remote job.
@@ -665,6 +666,70 @@ fn current_version(conn: &Connection) -> Result<i64, AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Set only in the re-run of [`sqlite_datetime_now_is_utc_under_a_non_utc_tz`] under a non-UTC
+    /// `TZ`: a `TZ` set inside a multi-threaded test process would race every other test.
+    const UTC_PROBE_CHILD: &str = "ORCASTUDIO_UTC_PROBE_CHILD";
+
+    /// **Rule #10 record for the app's own SQLite** (ADR-024 o22.14.6; rusqlite `bundled`, not the
+    /// system 3.45.1 the `probe` log entry of 2026-10-18 measured): `datetime('now')` — every stored
+    /// `created_at` / `started_at` / `completed_at` / `cancel_requested_at` / `cancel_sent_at` — is
+    /// **UTC on the laptop's clock**, so the view converts it (`formatLaptopUtc`). The test re-runs
+    /// itself with `TZ=Europe/Kyiv` (UTC+2/+3 all year), where the local clock really is off UTC
+    /// (asserted first, so "≠ system UTC" can bite), and checks a fresh row's `created_at` default
+    /// lies between two reads of the system clock in UTC. NEGATIVE CONTROL: read `datetime('now',
+    /// 'localtime')` instead of `created_at` → red (3 h off here).
+    #[test]
+    fn sqlite_datetime_now_is_utc_under_a_non_utc_tz() {
+        if std::env::var_os(UTC_PROBE_CHILD).is_some() {
+            return utc_probe_under_kyiv();
+        }
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "db::tests::sqlite_datetime_now_is_utc_under_a_non_utc_tz", "--test-threads=1", "--nocapture"])
+            .env(UTC_PROBE_CHILD, "1")
+            .env("TZ", "Europe/Kyiv")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success(), "the probe under TZ=Europe/Kyiv failed:\n{stdout}\n{}", String::from_utf8_lossy(&out.stderr));
+        assert!(stdout.contains("1 passed"), "the re-run ran the probe: {stdout}");
+    }
+
+    fn utc_probe_under_kyiv() {
+        assert_eq!(std::env::var("TZ").as_deref(), Ok("Europe/Kyiv"));
+        let dir = std::env::temp_dir().join(format!("orcastudio-utc-probe-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        let conn = init_db(&dir).unwrap();
+        let (local, utc, version): (String, String, String) = conn
+            .query_row("SELECT datetime('now', 'localtime'), datetime('now'), sqlite_version()", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap();
+        assert_ne!(local, utc, "TZ=Europe/Kyiv is in effect for SQLite (tzdata present), so a local time would differ");
+        let before = system_utc();
+        conn.execute("INSERT INTO jobs (id, title, input_content) VALUES ('probe', 't', '! HF')", []).unwrap();
+        let created: String = conn.query_row("SELECT created_at FROM jobs WHERE id = 'probe'", [], |r| r.get(0)).unwrap();
+        let after = system_utc();
+        println!("[utc probe] SQLite {version}: system UTC {before} .. {after}; created_at {created}; SQLite local {local}");
+        assert!(before <= created && created <= after, "created_at {created} is not system UTC ({before} .. {after})");
+        drop(conn);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The system clock now in UTC as `YYYY-MM-DD HH:MM:SS`, computed here (days → civil date,
+    /// H. Hinnant's algorithm), not by SQLite.
+    fn system_utc() -> String {
+        let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+        let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+        let z = days + 719_468;
+        let era = z.div_euclid(146_097);
+        let doe = z - era * 146_097;
+        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let day = doy - (153 * mp + 2) / 5 + 1;
+        let month = if mp < 10 { mp + 3 } else { mp - 9 };
+        let year = yoe + era * 400 + i64::from(month <= 2);
+        format!("{year:04}-{month:02}-{day:02} {:02}:{:02}:{:02}", rem / 3600, rem % 3600 / 60, rem % 60)
+    }
 
     #[test]
     fn init_db_seeds_defaults() {

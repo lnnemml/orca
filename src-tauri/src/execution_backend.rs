@@ -419,12 +419,6 @@ impl SshBackend {
         crate::ssh_backend::resubmit_remote(&db, ssh, runner.data_dir(), job_id)
     }
 
-    /// Withdraw a job that is not (or not yet) in the server's hands (`ssh_backend::withdraw_remote`).
-    pub fn withdraw(&self, job_id: &str) -> Result<crate::ssh_backend::WithdrawReport, AppError> {
-        let db = self.app.state::<DbState>();
-        crate::ssh_backend::withdraw_remote(&db, &crate::remote::ssh::SystemRunner, job_id)
-    }
-
     /// The read-only label call (`ssh_backend::label_remote`): nothing changes on either side.
     pub fn label(&self, job: &Job) -> Result<crate::ssh_backend::LabelReport, AppError> {
         crate::ssh_backend::label_remote(&crate::remote::ssh::SystemRunner, job)
@@ -496,7 +490,7 @@ mod tests {
             "CREATE TABLE jobs (id TEXT, title TEXT, input_content TEXT, status TEXT, job_dir TEXT, energy REAL,
                  wall_time REAL, error_message TEXT, created_at TEXT, started_at TEXT, completed_at TEXT,
                  scene_json TEXT, scene_log_json TEXT, pathway_id TEXT, group_id TEXT, backend_id TEXT,
-                 remote_host TEXT, remote_job_dir TEXT, remote_socket TEXT);",
+                 remote_host TEXT, remote_job_dir TEXT, remote_socket TEXT, cancel_requested_at TEXT, cancel_sent_at TEXT);",
         )
         .unwrap();
         let (h, d, s) = coords.map_or((None, None, None), |(h, d, s)| (Some(h), Some(d), Some(s)));

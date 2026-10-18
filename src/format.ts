@@ -23,3 +23,24 @@ export function formatWallTime(seconds: number | null): string {
 export function formatTimestamp(ts: string): string {
   return ts.replace("T", " ").replace(/\.\d+Z?$/, "");
 }
+
+/** SQLite's `datetime('now')` form, exactly: `YYYY-MM-DD HH:MM:SS`. */
+const SQLITE_DATETIME = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
+
+/**
+ * A stored SQLite `datetime('now')` timestamp — **UTC on the laptop's clock** (measured, ADR-024
+ * o22.14.6; `db::tests::sqlite_datetime_now_is_utc_under_a_non_utc_tz`) — shown in the laptop's local
+ * time as `YYYY-MM-DD HH:MM:SS`. Parsed explicitly as UTC (`T` + `Z`), never `new Date(ts)` on the
+ * bare form, whose parse is implementation-defined (V8 reads it as local time). A value of any other
+ * shape, or one that does not parse, is shown raw — never "Invalid Date".
+ */
+export function formatLaptopUtc(ts: string): string {
+  if (!SQLITE_DATETIME.test(ts)) return ts;
+  const d = new Date(`${ts.replace(" ", "T")}Z`);
+  if (Number.isNaN(d.getTime())) return ts;
+  const two = (n: number) => String(n).padStart(2, "0");
+  return (
+    `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())} ` +
+    `${two(d.getHours())}:${two(d.getMinutes())}:${two(d.getSeconds())}`
+  );
+}

@@ -219,7 +219,7 @@ fn refuse_while_live(conn: &Connection, profile_id: &str, action: &str) -> Resul
     }
     Err(AppError::Conflict(format!(
         "cannot {action} server profile {profile_id}: it has {} job(s) on the server that are not finished ({}); \
-         withdraw them, or wait until they finish (remote cancel arrives in unit 5.4)",
+         cancel them first, or wait until they finish",
         live.len(),
         live.join(", ")
     )))

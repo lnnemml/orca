@@ -1171,14 +1171,15 @@ pub(super) fn indeterminate() -> Vec<u8> {
     snapshot(false, None, None, (None, Some(STARTED_EARLIER_BOOT)))
 }
 
-/// o19.9, the guard scope, behavioural: while the step runs it holds the job's guard (a withdraw
-/// or retry would be refused); when `status_step` returns, the record and the sink already show its
-/// change; a following withdraw — its removal inside the guard, the row made `cancelled` — removes
-/// it with a `null` event, and later ticks never set it again. NEGATIVE CONTROL: apply the step's
+/// o19.9, the guard scope, behavioural: while the step runs it holds the job's guard (a cancel's
+/// delivery or a retry would wait or be refused); when `status_step` returns, the record and the
+/// sink already show its change; once the row is terminal, the next step's own mapping (`NotLive`)
+/// removes it with a `null` event — the removal there is since no command removes a record
+/// (o22.11.1, o22.14.7) — and later ticks never set it again. NEGATIVE CONTROL: apply the step's
 /// record after `status_step` returns (in the loop shell) instead of inside it → red ("set at
 /// return").
 #[test]
-fn a_status_steps_record_is_set_before_it_returns_and_a_withdraw_removes_it_for_good() {
+fn a_status_steps_record_is_set_before_it_returns_and_a_terminal_row_removes_it_for_good() {
     let r = Remote::new();
     let fake = Fake::new(&r, |kind, values| {
         assert!(r.in_flight.acquire(JOB).is_err(), "a command on the job is refused while the step runs");
@@ -1198,12 +1199,10 @@ fn a_status_steps_record_is_set_before_it_returns_and_a_withdraw_removes_it_for_
     assert_eq!(record(&r), Some(labelled.clone()), "set at return");
     assert_eq!(r.sink.take_remote_states(), [(JOB.to_string(), 1, Some(labelled))], "emitted at return");
 
-    // The withdraw: under the job's guard, the work, then the removal (`forget_after`).
-    {
-        let _guard = r.in_flight.acquire(JOB).unwrap();
-        r.w.sql("UPDATE jobs SET status = 'cancelled'");
-        crate::commands::remote_jobs::forget_after(&r.remote, &r.sink, JOB, Ok(())).unwrap();
-    }
+    // The row turns terminal (another writer); the next step finds it not live and its mapping
+    // removes the record.
+    r.w.sql("UPDATE jobs SET status = 'cancelled'");
+    assert_eq!(poller.status_step(JOB).unwrap(), StatusStep::NotLive);
     assert_eq!(record(&r), None);
     assert_eq!(r.sink.take_remote_states(), [(JOB.to_string(), 2, None)]);
 
@@ -1240,7 +1239,7 @@ fn indeterminate_after_lost_leaves_the_rows_text_and_sets_the_check_error() {
     assert!(r.sink.take().is_empty(), "no job:status");
     let after = record(&r).unwrap();
     assert_eq!(after.known, Some(Known::Shown(lost)), "the record keeps Lost");
-    assert_eq!(after.check_error, shown_message(&Outcome::Indeterminate));
+    assert_eq!(after.check_error, shown_message(&Outcome::Indeterminate).map(crate::poller::remote_state::CheckError::answered));
 }
 
 /// `record_shown` for `Indeterminate` still re-checks the live row: a row gone terminal under the

@@ -10,8 +10,8 @@ import { filterJobsByGroup, type GroupSelection } from "../groups/tree";
 import { filterJobsBySearch } from "../groups/search";
 import { ROOT_OPTION } from "../groups/GroupSelect";
 import { InlineRename } from "../jobs/InlineRename";
-import { tauriBridge, trackRemoteStates, type RemoteStateTracker } from "../jobs/live-wiring";
-import { remoteView, type HeldRemoteState } from "../jobs/remote";
+import { sendCancel, tauriBridge, trackRemoteStates, type RemoteStateTracker } from "../jobs/live-wiring";
+import { cancelSendOf, remoteView, rowActions, type CancelSend, type HeldRemoteState } from "../jobs/remote";
 import { RemoteJobBadges } from "../jobs/RemotePanel";
 import { exportSelection, type CopyMode } from "../export/save";
 
@@ -120,12 +120,28 @@ export function JobsScreen({
     }
   }, []);
 
+  // The latest rows and records, for the re-check after the Cancel dialog (o20.3).
+  const latest = useRef({ jobs, remoteHeld });
+  latest.current = { jobs, remoteHeld };
+
+  // Cancel goes through the one shared helper (o22.14.10): a remote job's first Cancel asks first
+  // and is re-checked against the row's offers after the dialog; then the list reloads.
   const cancel = useCallback(
-    async (jobId: string) => {
+    async (job: Job, offer: CancelSend) => {
       try {
-        await invoke("cancel_job", { id: jobId });
-        // The terminal status arrives via job:status; reload to be safe.
-        load();
+        const result = await sendCancel({
+          bridge: tauriBridge,
+          job,
+          offer,
+          confirm,
+          currentActions: () => {
+            const now = latest.current.jobs.find((j) => j.id === job.id);
+            return now ? rowActions(now, latest.current.remoteHeld.get(job.id)?.state) : [];
+          },
+          sending: () => {},
+        });
+        // The terminal status of a local job arrives via job:status; reload to be safe.
+        if (result) await load();
       } catch (e) {
         setError(String(e));
       }
@@ -401,47 +417,59 @@ export function JobsScreen({
                         className="row"
                         style={{ gap: 8, justifyContent: "flex-end" }}
                       >
-                        {job.status === "running" || job.status === "queued" ? (
-                          // Live job: cancel only. Deleting a running/queued job is
-                          // refused by the backend — cancel it first.
-                          <button
-                            className="btn btn-sm"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              cancel(job.id);
-                            }}
-                          >
-                            Cancel
-                          </button>
-                        ) : (
-                          // Terminal states: the primary action + Delete.
-                          <>
-                            <button
-                              className={
-                                job.status === "draft"
-                                  ? "btn btn-primary btn-sm"
-                                  : "btn btn-sm"
-                              }
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                onOpenDetail(job.id, job.status === "draft");
-                              }}
-                            >
-                              {/* A draft runs on this machine from here: the run target is
-                                  chosen only through New Job's Create & Run (ADR-024 o20.2). */}
-                              {job.status === "draft" ? "Run locally" : "Open"}
-                            </button>
-                            <button
-                              className="btn btn-sm btn-danger"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                remove(job);
-                              }}
-                            >
-                              Delete
-                            </button>
-                          </>
-                        )}
+                        {(() => {
+                          // The row's actions (o22.14.8): a live job offers its cancel family only
+                          // (never Delete — Rust refuses it; a `cancelling` job offers Retry cancel,
+                          // sent by this Cancel button); a terminal row opens or is deleted. Undo
+                          // cancel and the Retry cancel label come with 5.4a Part B2.
+                          const actions = rowActions(job, remoteHeld.get(job.id)?.state);
+                          const send = cancelSendOf(actions);
+                          const terminal = actions.some((a) => a.action === "delete");
+                          return (
+                            <>
+                              {send ? (
+                                <button
+                                  className="btn btn-sm"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    cancel(job, send);
+                                  }}
+                                >
+                                  Cancel
+                                </button>
+                              ) : null}
+                              {terminal ? (
+                                // Terminal states: the primary action + Delete.
+                                <>
+                                  <button
+                                    className={
+                                      job.status === "draft"
+                                        ? "btn btn-primary btn-sm"
+                                        : "btn btn-sm"
+                                    }
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      onOpenDetail(job.id, job.status === "draft");
+                                    }}
+                                  >
+                                    {/* A draft runs on this machine from here: the run target is
+                                        chosen only through New Job's Create & Run (ADR-024 o20.2). */}
+                                    {job.status === "draft" ? "Run locally" : "Open"}
+                                  </button>
+                                  <button
+                                    className="btn btn-sm btn-danger"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      remove(job);
+                                    }}
+                                  >
+                                    Delete
+                                  </button>
+                                </>
+                              ) : null}
+                            </>
+                          );
+                        })()}
 
                         {/* Move to… — a job can be (re)grouped in any run state; it
                             is pure metadata (no cycle concern for a job). */}

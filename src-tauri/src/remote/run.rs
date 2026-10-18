@@ -1,5 +1,5 @@
-//! Running an uploaded job script on the server (ADR-024 o item 14.1), and making a withdrawn job's
-//! dir (o items 2, 14.1). Pure parts only: the values sent and the strict reply parsers. The scripts
+//! Running an uploaded job script on the server (ADR-024 o item 14.1), and making the dir of a job
+//! cancelled before it reached the server (o items 2, 14.1, o22.4.3). Pure parts only: the values sent and the strict reply parsers. The scripts
 //! are [`super::scripts::RUN`] (the trampoline) and [`super::scripts::MKJOB`]; `crate::ssh_backend`
 //! runs them.
 //!

@@ -128,7 +128,7 @@ fn a_failed_evidence_listing_counts_a_strike_and_writes_nothing_terminal() {
 /// status itself — "evidence not downloaded: <why>; it stays on the server" — and forgets the job,
 /// so `FetchStopped` is never reached; row 4 → `cancelled`, row 1 → `failed`. NEGATIVE CONTROL: take
 /// the last strike like any other (no terminal write) → red (the row stays `running`, then
-/// `FetchStopped`).
+/// `FetchStopped`); drop that write's `job:status` → red (o22.14.5).
 #[test]
 fn the_last_evidence_strike_writes_the_terminal_status_itself() {
     for (snap, want) in [(cancelled_after_start(None, None), JobStatus::Cancelled), (corrupt_and_cancelled(), JobStatus::Failed)] {
@@ -139,7 +139,10 @@ fn the_last_evidence_strike_writes_the_terminal_status_itself() {
         for n in 1..MAX_FETCH_STRIKES {
             assert!(matches!(poller.status_step(JOB).unwrap(), StatusStep::FetchFailed { strikes, .. } if strikes == n));
         }
+        r.sink.take();
         let last = poller.status_step(JOB).unwrap();
+        // The terminal write clears the pending-cancel columns, so it emits (o22.14.5).
+        assert_eq!(r.sink.take(), [Event::Status(JOB.into(), want)], "the terminal write's job:status");
         match want {
             JobStatus::Cancelled => assert_eq!(last, StatusStep::Cancelled),
             _ => assert!(

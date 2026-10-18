@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { confirm, message } from "@tauri-apps/plugin-dialog";
 
-import type { Job, ParsedResults, StatusStep, SubmitResponse, WithdrawReport } from "../types";
+import type { Job, ParsedResults, StatusStep, SubmitResponse } from "../types";
 import type { FragmentGeometryVia } from "../scene/oplog";
 import { formatEnergy, formatWallTime } from "../format";
 import { ConvergenceDashboard } from "../convergence/ConvergenceDashboard";
@@ -18,8 +18,16 @@ import { buildReoptInput, DEFAULT_REOPT_METHOD } from "../scene/reopt";
 import { GroupSelect } from "../groups/GroupSelect";
 import { useGroupPicker } from "../groups/useGroupPicker";
 import { InlineRename } from "../jobs/InlineRename";
-import { confirmThenWithdraw, openJobView, tauriBridge, trackRemoteStates } from "../jobs/live-wiring";
-import { NOTHING_HELD, remoteView, type HeldRemoteState, type RemoteAction } from "../jobs/remote";
+import { openJobView, sendCancel, tauriBridge, trackRemoteStates } from "../jobs/live-wiring";
+import {
+  cancelSendOf,
+  NOTHING_HELD,
+  remoteView,
+  rowActions,
+  type CancelSend,
+  type HeldRemoteState,
+  type RetryAction,
+} from "../jobs/remote";
 import { RemotePanel } from "../jobs/RemotePanel";
 import { parseScanCoordinates } from "../scene/scan";
 import { ScanSurface2dPanel } from "../scan/ScanSurface2dPanel";
@@ -87,7 +95,8 @@ export function JobDetailScreen({
   // expanded while the job is active, collapsed once it's finished).
   const [dashOpen, setDashOpen] = useState<boolean | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
-  const [cancelling, setCancelling] = useState(false);
+  // The Cancel click's in-flight state, shown "Sending cancel…" (o22.14.8; "cancelling" is a status).
+  const [sendingCancel, setSendingCancel] = useState(false);
   // Output area: "live" streams the <pre> console; "browse" shows the Monaco
   // file viewer (loaded lazily on first entry).
   const [mode, setMode] = useState<"live" | "browse">("live");
@@ -560,25 +569,32 @@ export function JobDetailScreen({
     }
   };
 
-  const cancel = async () => {
-    // The backend kills the ORCA tree off-thread, so this invoke returns fast;
-    // keep the button in a disabled "Cancelling…" state until the terminal
-    // `job:status` event arrives (which flips `cancellable` false and unmounts
-    // the button).
-    setCancelling(true);
+  // Cancel goes through the one shared helper (o22.14.10): a remote job's first Cancel asks first
+  // and is re-checked after the dialog; a local one is sent at once and keeps "Sending cancel…" until
+  // the terminal `job:status` unmounts the button; a remote one's ends when `cancel_job` returns, and
+  // the row is reloaded then.
+  const cancel = async (offer: CancelSend) => {
+    if (!job) return;
     try {
-      await invoke("cancel_job", { id: jobId });
+      const result = await sendCancel({
+        bridge: tauriBridge,
+        job,
+        offer,
+        confirm,
+        currentActions: () => rowOffersRef.current,
+        sending: setSendingCancel,
+      });
+      if (result) await loadJob();
     } catch (e) {
       setError(String(e));
-      setCancelling(false); // let the user retry
     }
   };
 
-  // The remote actions `remoteView` offers (ADR-024 o19.7). Each answer is shown in Rust's words
+  // The retries `remoteView` offers (ADR-024 o19.7, o22.8). Each answer is shown in Rust's words
   // (a submit failure, the `%pal` notice; a refusal is the error text); the row and the record
   // follow through `job:status` and `job:remote-state`.
-  const [remoteBusy, setRemoteBusy] = useState<RemoteAction | null>(null);
-  const runRemoteAction = async (action: RemoteAction) => {
+  const [remoteBusy, setRemoteBusy] = useState<RetryAction | null>(null);
+  const runRemoteAction = async (action: RetryAction) => {
     setRemoteBusy(action);
     setError(null);
     setNotice(null);
@@ -587,20 +603,6 @@ export function JobDetailScreen({
         const response = await invoke<SubmitResponse>("retry_remote_submit", { id: jobId });
         if (response.failure) setError(response.failure);
         if (response.notice) setNotice(response.notice);
-      } else if (action === "withdraw") {
-        // Confirmed like Delete job (ADR-024 o20.3), and sent only if the view still offers it
-        // once the dialog closed — the record may have changed meanwhile.
-        await confirmThenWithdraw({
-          confirm: () =>
-            confirm(
-              `Withdraw "${job?.title ?? "this job"}"? It is cancelled and will not run on the server.`,
-              { title: "Withdraw job", kind: "warning" },
-            ),
-          currentActions: () => (remoteRef.current?.kind === "live" ? remoteRef.current.actions : []),
-          withdraw: async () => {
-            await invoke<WithdrawReport>("withdraw_remote_job", { id: jobId });
-          },
-        });
       } else {
         await invoke<StatusStep>("retry_remote_fetch", { id: jobId });
       }
@@ -612,11 +614,14 @@ export function JobDetailScreen({
     }
   };
   const remote = job ? remoteView(job, remoteHeld.state) : null;
-  // The latest view, for a decision taken after an await (the withdraw re-check, o20.3).
-  const remoteRef = useRef(remote);
-  remoteRef.current = remote;
+  // The row's offers now, for the re-check after the Cancel dialog (o20.3).
+  const rowOffers = job ? rowActions(job, remoteHeld.state) : [];
+  const rowOffersRef = useRef(rowOffers);
+  rowOffersRef.current = rowOffers;
+  // The Cancel button sends the row's cancel offer — a first Cancel or Retry cancel (labels and
+  // the Undo button: 5.4a Part B2).
+  const cancelOffer = cancelSendOf(rowOffers);
 
-  const cancellable = job?.status === "running" || job?.status === "queued";
   const isActive = job?.status === "running" || job?.status === "queued";
   // Expanded by default while the job is active (or auto-running), collapsed for
   // a finished job — the live dashboard is the main thing to watch mid-run.
@@ -679,9 +684,9 @@ export function JobDetailScreen({
               New iteration
             </button>
           ) : null}
-          {cancellable ? (
-            <button className="btn btn-sm" onClick={cancel} disabled={cancelling}>
-              {cancelling ? "Cancelling…" : "Cancel"}
+          {cancelOffer ? (
+            <button className="btn btn-sm" onClick={() => cancel(cancelOffer)} disabled={sendingCancel}>
+              {sendingCancel ? "Sending cancel…" : "Cancel"}
             </button>
           ) : null}
         </div>

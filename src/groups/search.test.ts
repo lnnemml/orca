@@ -31,6 +31,8 @@ function j(
     remote_host: null,
     remote_job_dir: null,
     remote_socket: null,
+    cancel_requested_at: null,
+    cancel_sent_at: null,
   };
 }
 

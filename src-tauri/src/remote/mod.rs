@@ -35,7 +35,7 @@
 //! - [`contact`] — whether the server answered a call (the transport result a job's remote record
 //!   keeps as `last_contact`, ADR-024 o22.8), and the runner wrapper that records it.
 //! - [`run`] — the trampoline that runs an uploaded `cancel.sh`/`collect.sh` with its values read
-//!   from stdin, and a withdraw's mkjob call (ADR-024 o items 2, 14.1).
+//!   from stdin, and a not-on-server cancel's mkjob call (ADR-024 o items 2, 14.1, o22.4.3).
 //! - [`sync`] — the rsync argv of upload and download, the download filter (from the shared
 //!   artifact list, `crate::artifacts`), the file lists the transfer post-conditions compare and
 //!   the parser of the server's listing.

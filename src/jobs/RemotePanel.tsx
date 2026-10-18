@@ -1,11 +1,16 @@
 import type { Job, RemoteState } from "../types";
-import { remoteView, type RemoteAction, type RemoteBadge, type RemoteView } from "./remote";
+import { remoteView, type RemoteBadge, type RemoteOffer, type RemoteView, type RetryAction } from "./remote";
 
-const ACTION_LABEL: Record<RemoteAction, string> = {
+const ACTION_LABEL: Record<RetryAction, string> = {
   retry_submit: "Retry submit",
-  withdraw: "Withdraw",
   retry_fetch: "Retry fetch",
 };
+
+/** The panel's buttons: the retries. The cancel family (Cancel, Retry cancel, Undo cancel) is the
+ *  screen's own Cancel button (`sendCancel`); its buttons in the panel come with 5.4a Part B2. */
+function retryOffers(actions: readonly RemoteOffer[]): (RemoteOffer & { action: RetryAction })[] {
+  return actions.filter((o): o is RemoteOffer & { action: RetryAction } => o.action === "retry_submit" || o.action === "retry_fetch");
+}
 
 /** One remote badge, coloured by its tone (`.badge.tone-*`). */
 export function RemoteBadgeChip({ badge }: { badge: RemoteBadge }) {
@@ -38,8 +43,8 @@ interface RemotePanelProps {
   /** `remoteView`'s answer; the panel renders nothing for a local or finished job. */
   view: RemoteView;
   /** The action in flight, if any: every button is disabled meanwhile. */
-  busy: RemoteAction | null;
-  onAction: (action: RemoteAction) => void;
+  busy: RetryAction | null;
+  onAction: (action: RetryAction) => void;
 }
 
 /**
@@ -63,11 +68,17 @@ export function RemotePanel({ view, busy, onAction }: RemotePanelProps) {
           {text.body}
         </div>
       ) : null}
-      {view.actions.length ? (
+      {retryOffers(view.actions).length ? (
         <div className="row" style={{ gap: 8, marginTop: 8 }}>
-          {view.actions.map((a) => (
-            <button key={a} className="btn btn-sm" disabled={busy !== null} onClick={() => onAction(a)}>
-              {busy === a ? `${ACTION_LABEL[a]}…` : ACTION_LABEL[a]}
+          {retryOffers(view.actions).map((o) => (
+            <button
+              key={o.action}
+              className="btn btn-sm"
+              disabled={busy !== null || o.disabled !== null}
+              title={o.disabled ?? undefined}
+              onClick={() => onAction(o.action)}
+            >
+              {busy === o.action ? `${ACTION_LABEL[o.action]}…` : ACTION_LABEL[o.action]}
             </button>
           ))}
         </div>

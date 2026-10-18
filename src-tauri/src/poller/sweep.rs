@@ -20,17 +20,19 @@
 //! delivery's `cancel_failures` is never touched here (o22.11.3).
 //!
 //! **The result** is `Swept { outcome, error }` (`outcome`: the classify's `Cancelling`, `None` when
-//! nothing could be classified; `error`: the answered failure). A sweep whose classify shows anything
+//! nothing could be classified; `error`: the failure, with whether its call — the **last failing
+//! call** of the sweep — was answered, o22.14.3). A sweep whose classify shows anything
 //! else — row 4, row 1 with `.cancelled`, row 2 … — is acted on like an ordinary step's outcome in the
 //! same step (`Poller::act_on`), and that is the step's result.
 //!
 //! **Stopped** (the bound reached): no ready, no install, no `cancel.sh` — a plain collect + classify
 //! whose result is `Shown(outcome)` (a collect failure is `CheckFailed`), changing neither the count
 //! nor the baseline, so a shrink seen while stopped does not resume the sweeps; a terminal outcome
-//! still ends the job. Cancel clicked on the job restarts the count (o22.12.1), and the next step
+//! still ends the job. Retry cancel on the job restarts the count (o22.12.1, o22.14.2), and the next step
 //! sweeps and readies again.
 
 use super::plan::MAX_SWEEPS_WITHOUT_PROGRESS;
+use super::remote_state::CheckError;
 use super::{cancelling_message, Poller, StatusStep, Written};
 use crate::error::AppError;
 use crate::models::job::Job;
@@ -47,25 +49,31 @@ impl Poller<'_> {
         let tracker = ContactRunner::new(self.runner);
         let traced = Poller { runner: &tracker, ..*self };
 
+        // A failure of the call just made: answered iff that call — the last one — got an answer
+        // (o22.14.3). Each step stops at its failing call, so the tracker's last is that call.
+        let failure = |why: String| CheckError::from_contact(why, tracker.last().as_ref());
+
         // 1–2. Ready, then send. An answered ready failure sends nothing; one without any answer is
         // a failed check, counting nothing.
         let mut error = match ready_server(traced.runner, &coords.host, root, &coords.job_dir) {
             Err((_, why)) if !tracker.answered() => return Ok(StatusStep::CheckFailed(why)),
-            Err((_, why)) => Some(why),
+            Err((_, why)) => Some(failure(why)),
             Ok(()) => match cancel_call(traced.runner, coords, root) {
                 Ok((0, _)) => None,
-                Ok((rc, stderr)) => Some(format!("cancel.sh exited {rc}: {}", tail(&stderr))),
-                Err(why) => Some(why),
+                Ok((rc, stderr)) => Some(CheckError::answered(format!("cancel.sh exited {rc}: {}", tail(&stderr)))),
+                Err(why) => Some(failure(why)),
             },
         };
 
-        // 3. Collect + classify, whatever step 2 did: the cancel may have run either way.
+        // 3. Collect + classify, whatever step 2 did: the cancel may have run either way. A joined
+        // error takes the later call's flag.
         let outcome = match collect_and_classify(traced.runner, coords, root) {
             Ok(outcome) => Some(outcome),
             Err(why) => {
+                let later = failure(why);
                 error = Some(match error {
-                    Some(earlier) => format!("{earlier}; then {why}"),
-                    None => why,
+                    Some(earlier) => CheckError { text: format!("{}; then {}", earlier.text, later.text), ..later },
+                    None => later,
                 });
                 None
             }

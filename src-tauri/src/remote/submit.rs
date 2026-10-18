@@ -275,9 +275,9 @@ pub struct LabelFacts {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Label {
-    /// Nothing of the job is on the server: offer retry and withdraw.
+    /// Nothing of the job is on the server: offer retry and cancel.
     NotOnServer,
-    /// Claimed, never enqueued (or the call is still running there): offer withdraw only.
+    /// Claimed, never enqueued (or the call is still running there): offer cancel only.
     SubmitInterrupted,
     /// The server has started deciding: collect and `classify`.
     Classifier,

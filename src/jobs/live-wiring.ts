@@ -13,15 +13,17 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import type { ConvergenceEvent, ConvergencePayload } from "../convergence/types";
-import type { Job, JobStatus, RemoteStateEvent, RemoteStateRead, ServerProfile } from "../types";
+import type { CancelResult, Job, JobStatus, RemoteStateEvent, RemoteStateRead, ServerProfile } from "../types";
 import {
   backfillsLog,
+  cancelConfirmText,
+  coordinateState,
   mergeRemoteState,
   NOTHING_HELD,
   resolveRunTarget,
   runTargetOptions,
+  type CancelSend,
   type HeldRemoteState,
-  type RemoteAction,
 } from "./remote";
 
 /** The two Tauri calls the views make, injectable for tests. */
@@ -263,23 +265,66 @@ export function loadRunTarget(
   };
 }
 
-// --- Withdraw (ADR-024 o20.3) ---------------------------------------------------------------------
+// --- Cancel (ADR-024 o20.3, o22.14.2, o22.14.8) -------------------------------------------------
 
 /**
- * Ask before a withdraw, then send it only if the user agreed **and** the view still offers
- * `withdraw` once the dialog has closed — a record change during the dialog (the offer gone) must
- * not fire a withdraw from a stale offer. Returns whether the withdraw was sent.
+ * Send the cancel the view offered. An offer with `confirm` (a remote job's first Cancel) asks
+ * first, and is sent only if the user agreed **and** the view still offers the same action once the
+ * dialog has closed — o20.3's re-check: a row or record change during the dialog (the offer gone)
+ * must not fire a cancel from a stale offer. An offer without `confirm` (Retry cancel, a local
+ * Cancel) is sent at once. Returns what `send` answered, or null when nothing was sent.
  */
-export async function confirmThenWithdraw(deps: {
+export async function confirmThenCancel<T>(deps: {
+  offer: CancelSend;
   confirm: () => Promise<boolean>;
   /** The view's offered actions **now** (read after the dialog, e.g. from a ref). */
-  currentActions: () => readonly RemoteAction[];
-  withdraw: () => Promise<void>;
-}): Promise<boolean> {
-  // A dialog that fails to open counts as a decline.
-  const agreed = await deps.confirm().catch(() => false);
-  if (!agreed) return false;
-  if (!deps.currentActions().includes("withdraw")) return false;
-  await deps.withdraw();
-  return true;
+  currentActions: () => readonly { action: string }[];
+  send: () => Promise<T>;
+}): Promise<T | null> {
+  if (deps.offer.confirm) {
+    // A dialog that fails to open counts as a decline.
+    const agreed = await deps.confirm().catch(() => false);
+    if (!agreed) return null;
+    if (!deps.currentActions().some((a) => a.action === deps.offer.action)) return null;
+  }
+  return deps.send();
+}
+
+/** The plugin-dialog `confirm`, as the screens pass it. */
+export type ConfirmDialog = (message: string, options: { title: string; kind: "warning" }) => Promise<boolean>;
+
+/**
+ * **Every Cancel click of both screens** (o22.14.10): the one place that invokes `cancel_job`, behind
+ * `confirmThenCancel` — so no screen cancels a remote job without the confirm its offer asks for.
+ * `offer` is what `rowActions` offered at the click. The in-flight state (`sending`, shown "Sending
+ * cancel…") starts once the cancel is really sent, and **for a remote job ends when `cancel_job`
+ * returns** (o22.14.8: its answer is the outcome; there is no terminal `job:status` to wait for); a
+ * local job keeps today's behaviour — it stays until the terminal `job:status` unmounts the button,
+ * and ends only if the call fails. Returns the answer (null: not sent); a failed call rethrows.
+ */
+export async function sendCancel(deps: {
+  bridge: Pick<Bridge, "invoke">;
+  job: Pick<Job, "id" | "title" | "remote_host" | "remote_job_dir" | "remote_socket">;
+  offer: CancelSend;
+  confirm: ConfirmDialog;
+  currentActions: () => readonly { action: string }[];
+  sending: (on: boolean) => void;
+}): Promise<CancelResult | null> {
+  const remote = coordinateState(deps.job) !== "local";
+  return confirmThenCancel({
+    offer: deps.offer,
+    confirm: () => deps.confirm(cancelConfirmText(deps.job), { title: "Cancel job", kind: "warning" }),
+    currentActions: deps.currentActions,
+    send: async () => {
+      deps.sending(true);
+      let answered = false;
+      try {
+        const result = await deps.bridge.invoke<CancelResult>("cancel_job", { id: deps.job.id });
+        answered = true;
+        return result;
+      } finally {
+        if (remote || !answered) deps.sending(false);
+      }
+    },
+  });
 }

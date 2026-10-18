@@ -234,6 +234,11 @@ export interface Job {
   remote_host: string | null;
   remote_job_dir: string | null;
   remote_socket: string | null;
+  /** A remote job's pending cancel (schema v21, ADR-024 o22.2, o22.14.5): when the user asked (null:
+   *  none pending) and when a delivery marked the send (null while Undo is possible). SQLite
+   *  `datetime('now')` — **UTC, laptop clock**: shown through `formatLaptopUtc`, never raw. */
+  cancel_requested_at: string | null;
+  cancel_sent_at: string | null;
 }
 
 /** Mirrors `src-tauri/src/models/group.rs::Group` (schema v16, Phase 4.7.2, ADR-019).
@@ -454,12 +459,20 @@ export interface Sweeps {
   stopped: boolean;
 }
 
+/** Mirrors `poller::remote_state::CheckError` (ADR-024 o22.14.3): why the last check decided
+ *  nothing, and whether the server answered — the view prefixes "Server answered: …" or "Server
+ *  unreachable: …" from `answered`, never from `last_contact`. */
+export interface CheckError {
+  text: string;
+  answered: boolean;
+}
+
 /** Mirrors `poller::remote_state::RemoteState` — the structure of a non-terminal remote job's last
  *  check (ADR-024 o19.1). The words stay in the row's `error_message` (o19.2). `last_contact`:
  *  null before the job's first call this launch (o22.8). */
 export interface RemoteState {
   known: Known | null;
-  check_error: string | null;
+  check_error: CheckError | null;
   fetch: FetchState;
   last_contact: Contact | null;
   cancel_sends: CancelSends;
@@ -515,13 +528,6 @@ export interface SubmitResponse {
   failure: string | null;
 }
 
-/** Mirrors `ssh_backend::WithdrawReport`. */
-export interface WithdrawReport {
-  label: Label;
-  outcome: Outcome;
-  status: JobStatus;
-}
-
 /** Mirrors `poller::Seen` (serde `tag = "kind", content = "detail"`): what a stopped cancel
  *  delivery saw before it declined to send (ADR-024 o22.12.2). */
 export type Seen = { kind: "outcome"; detail: Outcome } | { kind: "label"; detail: Label };
@@ -529,8 +535,8 @@ export type Seen = { kind: "outcome"; detail: Outcome } | { kind: "label"; detai
 /** Mirrors `poller::StatusStep` (serde `tag = "step", content = "detail"`) — what
  *  `retry_remote_fetch` returns; the `cancel_*` / `ended_before_cancel` steps are a cancel's
  *  delivery (ADR-024 o22.4); `swept` is a `cancelling` job's sweep (o22.13.3): `outcome` its
- *  classify's `cancelling` (null when nothing could be classified), `error` a failure the server
- *  answered with. */
+ *  classify's `cancelling` (null when nothing could be classified), `error` its failure, with
+ *  whether the last failing call was answered (o22.14.3). */
 export type StatusStep =
   | { step: "busy" }
   | { step: "not_live" }
@@ -546,4 +552,18 @@ export type StatusStep =
   | { step: "cancel_stopped"; detail: { seen: Seen | null; unready: string | null } }
   | { step: "ended_before_cancel"; detail: Outcome }
   | { step: "cancel_delivered"; detail: Outcome }
-  | { step: "swept"; detail: { outcome: Outcome | null; error: string | null } };
+  | { step: "swept"; detail: { outcome: Outcome | null; error: CheckError | null } };
+
+/** Mirrors `commands::jobs::CancelResult` (serde `tag = "result"`) — what `cancel_job` returns
+ *  (ADR-024 o22.3, o22.14.7): `delivered` ran a delivery now (`step` is what it did); `pending`
+ *  recorded it for the poller's next step; `already_on_server` is a `cancelling` job's sweep retry;
+ *  `moved_on` recorded nothing (the job had moved on); `dispatched` is a local cancel. */
+export type CancelResult =
+  | { result: "delivered"; already_pending: boolean; step: StatusStep }
+  | { result: "pending"; already_pending: boolean }
+  | { result: "already_on_server" }
+  | { result: "moved_on"; status: JobStatus }
+  | { result: "dispatched" };
+
+/** Mirrors `commands::jobs::UndoResult` — what `undo_cancel` returns (ADR-024 o22.3). */
+export type UndoResult = "undone" | "send_marked" | "nothing_pending";

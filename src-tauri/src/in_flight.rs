@@ -1,14 +1,14 @@
 //! The per-job in-flight guard (ADR-024 o item 4): **at most one guarded operation per job at a
-//! time** — submit, retry, withdraw, label, cancel (local or remote, o15), delete (o15.2), the
-//! manual fetch retry, and the poller's status step (label, collect, fetch). **The poller's log poll
-//! is not guarded** (o16.5): it is read-only, and the loop sequences it with the job's status step
-//! instead, so Retry, Withdraw and Cancel are never refused because of it. **Cancel refuses a live
-//! remote job before it claims** (o21): `cancel_job_guarded` reads the row once and returns the
-//! remote refusal (`queued`/`running` with coordinates) without the claim, so a poller step hung on
-//! ssh cannot hide it behind a conflict; that pre-check only refuses, and every other cancel claims
-//! the guard before the read that acts.
+//! time** — submit, retry, label, a local cancel (o15), a remote cancel's delivery (o22.3), delete
+//! (o15.2), the manual fetch retry, and the poller's status step (label, collect, fetch, sweep).
+//! **The poller's log poll is not guarded** (o16.5): it is read-only, and the loop sequences it with
+//! the job's status step instead, so Retry and Cancel are never refused because of it. **A remote
+//! cancel is never refused for being busy** (o22.3): `commands::jobs::cancel_job_core` records the
+//! cancel without the guard, then delivers it with `try_acquire` — a busy job leaves it pending for
+//! the poller's next step; **Undo** takes no guard at all. A local cancel claims the guard before the
+//! read that acts (o21's guarded path).
 //! Two operations on the same job must not interleave: a double-clicked Submit, a Retry while a
-//! Withdraw is still talking to the server, a poller tick collecting a job a withdraw is
+//! cancel's delivery is still talking to the server, a poller tick collecting a job a delivery is
 //! cancelling — each would race the server/database state machine of o item 3.
 //!
 //! The guard is **in memory only** and starts empty on every launch (o item 4): an operation that
