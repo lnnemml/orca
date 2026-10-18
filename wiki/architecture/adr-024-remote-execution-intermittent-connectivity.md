@@ -1,6 +1,6 @@
 # ADR-024: Remote execution under intermittent connectivity
 
-**Status:** Accepted · 2026-10-02 (Proposed → Accepted after the review + acceptance amendments below) · amended 2026-10-03 (probe; probe review; d′ resolution — ready for implementation; l — unit 5.2 script and classifier shape; m — 5.3 submit rules; n — 5.1 Part B profile and connection test) · amended 2026-10-05 (o — 5.3 transport, sync and monitoring; accepted after DESIGN round 4; o13 — Part A2 amendments, accepted after DESIGN review 2026-10-05; o14 — B1 amendments, accepted after DESIGN review 2026-10-05) · amended 2026-10-06 (o15 — B1 Part B: the in-flight guard's scope, accepted after DESIGN review 2026-10-06; o16 — B2: the remote live log is pushed, accepted after DESIGN review 2026-10-06; o17 — B2 Part A: classifier `Cancelled` terminal, drain while watched, accepted after DESIGN review 2026-10-06; o18 — B2 Part B: exit leaves in-flight ssh/rsync to the OS, accepted after DESIGN review 2026-10-06; o19 — B3: the poller's remote state reaches the view, accepted after DESIGN review 2026-10-06) · amended 2026-10-07 (o20 — B3 Part B: run target remembered app-wide, run target only via Create & Run, Withdraw confirms; accepted after DESIGN review 2026-10-07) · amended 2026-10-17 (o21 — Cancel refuses a live remote job before the guard; accepted after DESIGN review 2026-10-17; o22 — unit 5.4a: remote cancel, the pending cancel and the guard; accepted after DESIGN review 2026-10-17, round 2 PASS WITH FINDINGS applied; o22.11–12 — A2a clarifications, reviewed with A2a's CODE verification 2026-10-17)
+**Status:** Accepted · 2026-10-02 (Proposed → Accepted after the review + acceptance amendments below) · amended 2026-10-03 (probe; probe review; d′ resolution — ready for implementation; l — unit 5.2 script and classifier shape; m — 5.3 submit rules; n — 5.1 Part B profile and connection test) · amended 2026-10-05 (o — 5.3 transport, sync and monitoring; accepted after DESIGN round 4; o13 — Part A2 amendments, accepted after DESIGN review 2026-10-05; o14 — B1 amendments, accepted after DESIGN review 2026-10-05) · amended 2026-10-06 (o15 — B1 Part B: the in-flight guard's scope, accepted after DESIGN review 2026-10-06; o16 — B2: the remote live log is pushed, accepted after DESIGN review 2026-10-06; o17 — B2 Part A: classifier `Cancelled` terminal, drain while watched, accepted after DESIGN review 2026-10-06; o18 — B2 Part B: exit leaves in-flight ssh/rsync to the OS, accepted after DESIGN review 2026-10-06; o19 — B3: the poller's remote state reaches the view, accepted after DESIGN review 2026-10-06) · amended 2026-10-07 (o20 — B3 Part B: run target remembered app-wide, run target only via Create & Run, Withdraw confirms; accepted after DESIGN review 2026-10-07) · amended 2026-10-17 (o21 — Cancel refuses a live remote job before the guard; accepted after DESIGN review 2026-10-17; o22 — unit 5.4a: remote cancel, the pending cancel and the guard; accepted after DESIGN review 2026-10-17, round 2 PASS WITH FINDINGS applied; o22.11–12 — A2a clarifications, reviewed with A2a's CODE verification 2026-10-17) · amended 2026-10-18 (o22.13 — A2b clarifications; accepted after DESIGN review 2026-10-18, round 2 PASS WITH FINDINGS applied)
 
 Refines [ADR-003](adr-003-execution-backend.md) (the `ExecutionBackend` trait + job state
 machine) and extends [ADR-023](adr-023-server-agnostic-remote-execution.md) (one `SshBackend`
@@ -1806,7 +1806,7 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
        - The local paths (`try_start_next`, `reconcile_on_startup`) select explicit statuses with
          `remote_host IS NULL` and never see it.
        - **The sweep bound is l row 3's, kept** (round 1 M3). Each status step of a `cancelling`
-         job re-runs `cancel.sh cancel`, then collects and classifies.
+         job re-runs `cancel.sh cancel` *(readies the server first, o22.13.3)*, then collects and classifies.
          - **Progress** = the job session shrinks. `Outcome::Cancelling` gains the session size
            (`Cancelling { session: usize }`) for this purpose.
          - After **3 sweeps without progress**, automatic sweeps stop. The job stays `cancelling`
@@ -1814,7 +1814,7 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
            Cancel on a `cancelling` job runs one delivery and restarts the count *(replaced by
            o22.12.1: the click records no request, restarts the sweep count, and the next step
            sweeps)*.
-         - The counter and the last session size live in `PollerMemory` (per launch, like the
+         - The counter and the last session size *(the smallest, o22.13.4)* live in `PollerMemory` (per launch, like the
            strikes).
          - Once automatic sweeps have stopped, status steps still **collect and classify** (without
            `cancel.sh`), so a process that finally exits is noticed and the job ends `cancelled`.
@@ -1983,8 +1983,10 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
            - The record maps it like `Shown` / `Labelled`, plus the "re-sends stopped" flag.
            - So a stopped job's view keeps showing the server's current verdict (`Lost`,
              `ReEnqueue`, `Indeterminate`), and 5.4b's `Indeterminate` counter is fed.
-           - `seen` is `None` only when the ready step failed and nothing could be classified;
-             then `unready` holds the reason and the record keeps `known`, with `check_error` set.
+           - `seen` is `None` only when a stopped delivery's prepare-only ready was **answered** with
+             a failure (12.3; a ready with no answer is `CheckFailed`) and nothing could be
+             classified; then `unready` holds the reason and the record keeps `known`, with
+             `check_error` set *(wording corrected by o22.13.6)*.
         3. **While stopped, ready is prepare-only** (D4): no `install` (a server write), so nothing
            is written on every period. A stopped delivery whose prepare is **answered** with a failure
            cannot classify; the record says so (`CancelStopped { seen: None, unready: Some(reason) }`).
@@ -1994,7 +1996,7 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
            delivery after 3 steps (~45 s); after recovery the user's Cancel restarts it.
            Accepted: bounded, and visible.
         5. **`StatusStep` variants, as built** (supersedes item 4's list): `EndedBeforeCancel(Outcome)`
-           (A2b takes the normal fetch path), `CancelDelivered(Outcome)` (the record reads it like an
+           (A2b takes the normal fetch path *(at the next ordinary step, o22.13.2)*), `CancelDelivered(Outcome)` (the record reads it like an
            ordinary step), `CancelNotSent(String)`, and `CancelStopped { seen, unready }`. `CancelResult` (the cancel
            core's answer) gains `AlreadyOnServer` for 12.1. Plus the
            existing `CheckFailed` (transport) and `RowChanged`.
@@ -2007,6 +2009,154 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
            and item 4's variant list (widened by 11.3; replaced by 12.5); item 5's "Cancel on a
            `cancelling` job runs one delivery" (replaced by 12.1); all marked. `poller/plan.rs`'s
            counter docs move with A2a's code.
+    13. **Clarifications for Part A2b** (2026-10-18; found by the A2b archaeology, settled by the
+        orchestrator from l row 3's bound, o22.11.2 and o22.4; 13.2's notice and 13.3's ready decided
+        by Anton). DESIGN round 1: PASS WITH FINDINGS (4 MED + 5 LOW), applied; round 2: PASS WITH
+        FINDINGS (6 LOW), applied.
+        1. **One read decides.** `run_status`'s first locked read (`live_remote`) also returns
+           `cancel_requested_at`. While it is set, the step runs the delivery body **instead of**
+           everything after that read, before the `FetchStopped` short-circuit, inside the same
+           `record_step` — one record apply per step. `retry_fetch` keeps its pre-check (the "undo
+           the cancel first" refusal, before `clear_strikes`); a cancel recorded after it is caught
+           by the step's own read and delivered, so no fetch runs (12.6).
+        2. **Delivery never downloads; the next ordinary step finishes.** `EndedBeforeCancel` and
+           `CancelDelivered(_)` are the step's result. Both columns are already NULL, so the next
+           step is an ordinary one: it re-collects, re-classifies and takes rows 5/6's fetch, row 4's
+           or row 1's evidence path (item 6), row 2's fetch, or row 3's sweep (11.2, keyed on the
+           snapshot). The cost is at most one status period.
+           - **The ended-first notice survives the hand-over** (Anton, option a; item 4.4's "tell the
+             user"). Delivery's ended-first write also sets `JobMemory.ended_before_cancel` (both
+             paths: the click's and the poller's). The job's next `finalise` adds "the job finished
+             before the cancel reached the server" to the message it writes (the whole message for
+             `completed`, appended after `detect_completion`'s for `failed`), and keeps it when a
+             results-parse failure then rewrites the message (`set_job_parse_error_conn`).
+             **Accepted residual:** the flag is per launch and lives until the job's `finalise` —
+             possibly many periods (failed fetches, `FetchStopped` waiting for a retry, a server that
+             does not answer) — so a restart before that `finalise` loses the note (the result is
+             kept either way).
+        3. **The sweep of a `cancelling` job** (item 5). While the bound is not reached, the step
+           **readies the server as delivery does** (prepare → install if needed → prepare; Anton,
+           option a — so after an app upgrade, whose sha-named scripts read "not installed", a
+           sweep reinstalls them, `collect.sh` included), runs `cancel.sh cancel`, then collects and
+           classifies. Once the bound is reached, the step collects and classifies only; the click
+           of 12.1 restarts the count, so the next step sweeps and readies again.
+           - **Counting is one rule** (round 1 MED-1): a sweep step in which the server **answered
+             any call** (ready, `cancel.sh`, collect) adds 1 to `sweeps_without_progress`, unless its
+             classify shows progress (13.4). A step whose calls got **no answer at all** is
+             `CheckFailed` and counts nothing. So a sweep that may have written to the server is
+             always counted, whether the failure was the script's, the collect's or the classify's.
+           - An answered failure is recorded as the step's `check_error`; the step still collects and
+             classifies when it can. An answered **ready** failure sends nothing (no `cancel.sh`) and
+             goes straight to collect + classify; the step counts +1.
+           - **A stopped step** (bound reached) makes no ready, install or `cancel.sh` call: it is an
+             ordinary collect + classify whose result is `Shown(outcome)` (a collect failure is
+             `CheckFailed`, as everywhere), the record's `sweeps.stopped` staying set from `Bounds`.
+             Its classify changes neither `min_session` nor the count, so a shrink seen while stopped
+             does not resume sweeps; a terminal outcome (row 4 …) still ends the job (13.5).
+           - `cancel_failures` stays the delivery's counter (11.3); a sweep never touches it.
+           - **The step's result** (round 1 MED-3) is a new `StatusStep::Swept { outcome:
+             Option<Outcome>, error: Option<String> }`: `outcome` is the classify's `Cancelling` (or
+             `None` when nothing could be classified), `error` the answered failure. `next` maps it
+             explicitly (known ← outcome when present, `check_error` ← error). The record's `Bounds`
+             gain the sweep counter (`sweeps { count, stopped }`), read from `PollerMemory` like the
+             fetch and cancel bounds; TS mirrors both (types only). A sweep whose classify shows a
+             **non-`Cancelling`** outcome (row 4, row 1 + `.cancelled`, row 2 …) is dispatched like
+             an ordinary step's outcome in the same step (13.5), and that path's result is the step's.
+        4. **Progress has a baseline.** `JobMemory` gains `min_session: Option<usize>`, the
+           **smallest** session size seen for the job (named for what it holds; a "last size" would
+           let an oscillating session sweep forever). Every write of `cancelling` (delivery's and the
+           ordinary step's) sets it from that outcome. A sweep whose classify gives
+           `Cancelling { session }`:
+           - `min_session` is `None` (e.g. after a restart) → set it, count nothing;
+           - `session < min_session` → progress: set it, count restarts at 0;
+           - otherwise → counted (13.3), `min_session` unchanged.
+
+           Because the baseline only falls, a session that grows and shrinks back is not progress.
+           The sweeps are bounded: from a first baseline `b` the baseline can fall at most `b` times,
+           and each fall allows at most 3 further sweeps, so at most `3·(b + 1)` sweeps (plus the one
+           that sets the baseline after a restart); with no real shrinking, 3. The click's
+           `restart_sweeps` (12.1) zeroes the count and keeps the baseline. At the 3rd sweep without
+           progress the record's `sweeps.stopped` is set, with the text "processes of the job still
+           run after 3 sweeps".
+           - **Atomic updates** (round 1 LOW-5): the count's increment, its reset and the baseline's
+             minimum are each **one** `PollerMemory` operation under its lock (as `cancel_failed`
+             is), never "value read before the ssh calls + 1", so a `restart_sweeps` click during a
+             sweep is not overwritten.
+        5. **The ordinary-step outcomes, as A2b builds them:**
+           - **row 3** `Cancelling { session }` on a `queued`/`running` row → one write: status
+             `cancelling`, the message, **both columns NULL** (12.1), guarded on the row still being
+             live; plus the baseline (13.4). The CHECK does not catch a forgotten NULL here (it admits
+             a request on `cancelling`), so a test pins it (13.7);
+           - **row 4** `Cancelled { started: false }` → `cancelled` at once, no download (unchanged);
+           - **row 4** `Cancelled { started: true }` and **row 1** `CorruptStarted { cancelled: true }`
+             → item 6's evidence fetch: the fetching flag, `fetch_remote` (download + LIST), then the
+             terminal write, then the live view drained from the local copy (the same order as
+             `fetch_and_finalise`). The write is `cancelled` through `write_cancelled`, or for row 1
+             `failed` with "processes of the job may survive on the server" through `finalise` (its
+             live-row re-check). No `detect_completion`, no parse — a copy holding `.exit_code` 0
+             still ends `cancelled` (rule #6: the evidence path never claims completion). The step's
+             result is `Cancelled` or `Finalised`.
+           - **A failed evidence fetch** counts a strike with its own text; the step's result is
+             `FetchFailed`. The step that takes the `MAX_FETCH_STRIKES`-th strike writes the terminal
+             status itself, with "evidence not downloaded: <why>; it stays on the server", and
+             forgets the job — also when that write finds the row changed — so `FetchStopped` is never
+             reached for an evidence job.
+        6. **Propagation** (marked where they stand): 12.2's "`seen` is `None`" wording (corrected);
+           item 5's "the last session size" (now the smallest, 13.4); 12.5's "(A2b takes the normal
+           fetch path)" (the next step, 13.2). With A2b's code: `poller.rs`'s stale `shown_message`
+           comment on `Cancelled` and its `Cancelling` text ("handled in unit 5.4"), its module doc's
+           "row 4 … with no download", the "caller takes the normal fetch path" doc on the
+           ended-first variant; `poller/cancel.rs`'s "the caller fetches" docs;
+           `modules/remote-jobs.md`.
+        7. **Negative controls for 13.x** (each must turn its test red):
+           - delivery placed after the `FetchStopped` check → a pending cancel on a job with the
+             fetching flag and strikes at the maximum sends no `cancel.sh`;
+           - the pending predicate dropped from the read that acts → a cancel recorded after
+             `retry_fetch`'s pre-check lets an rsync run; a second, separate read of it in
+             `run_status` is caught by a source pin, since no seam lands a click between two reads
+             inside one step *(wording corrected by 13.8.1)*;
+           - a delivery step that downloads → an rsync call is counted;
+           - a poller-delivered row 5 that loses `ended_before_cancel` → `completed` without the note;
+           - a sweep with no ready step → a not-installed `cancel.sh` is never reinstalled;
+           - transport-only failures counted → the 4th sweep does not run after three; answered
+             failures (of `cancel.sh`, or of the collect after an rc-0 sweep) not counted → a 4th
+             sweep runs;
+           - a baseline tracking the last size → an oscillating session (5, 6, 5, 6 …) never stops;
+             after `restart_sweeps`, a session equal to the baseline counted as progress;
+           - a non-atomic increment → a `restart_sweeps` between the sweep's read and its increment
+             leaves the count above 1;
+           - the row-3 write without the NULLs → a request recorded between the step's read and that
+             write survives on the `cancelling` row;
+           - the evidence path through `detect_completion` → a row 4 with `.exit_code` 0 and no
+             `ORCA TERMINATED NORMALLY` ends `failed`, not `cancelled`;
+           - the terminal write before the LIST check; a row 4 without `.started` that downloads;
+           - the `MAX_FETCH_STRIKES`-th evidence strike that does not write the terminal status, or
+             that leaves memory at the maximum with the fetching flag after a changed row;
+           - a permanently failing install → the 4th sweep step makes an install call;
+           - the ready step moved before the "stopped" check → a stopped, collect-only step makes a
+             prepare or install call;
+           - a results-parse failure after an ended-first `finalise` → the note is lost.
+
+        8. **Clarifications from the A2b implementation** (2026-10-18; found by the A2b implementer,
+           settled by the orchestrator; no new fork). Reviewed with A2b's CODE verification.
+           1. **The 13.7 control for 13.1** is two: a behavioural test (the predicate dropped from the
+              read that acts → an rsync runs) and a source pin (no second lock or pending read in
+              `run_status`). A separate read *before* the deciding one stays green behaviourally,
+              because no seam lands a click between two reads of one step; only the pin guards it.
+           2. **The stopped text lives in the row's `error_message`**, written by the sweep that
+              reaches the bound when it classifies `Cancelling`, and by every stopped step that
+              classifies `Cancelling`. If the 3rd count comes from a sweep that classified nothing,
+              the text appears one step later; the record's `sweeps.stopped` shows the stop at once.
+           3. **A non-`Cancelling` verdict after an answered sweep still counts +1** (13.3's one rule).
+              So a `cancelling` row whose verdict is row 2 with a failing fetch re-runs the idempotent
+              `cancel.sh` (item 4.6) at most until the bound stops it. Accepted: bounded, and harmless.
+           4. **`FetchStopped` precedes the sweep** in the run order (it follows only the pending
+              delivery, 13.1). It can reach a `cancelling` row only through a row-2 fetch that failed
+              `MAX_FETCH_STRIKES` times; that row is then shown as fetch-stopped and is not swept,
+              which is acceptable: `.cancelled` is on the server and the job has ended.
+           5. **A drain error after an evidence `Cancelled`** is logged, not carried: `StatusStep::
+              Cancelled` has no field, and the copy on disk is complete (the LIST check passed). A
+              field would change the TS wire shape for no user-visible gain. Accepted.
 
 ## Alternatives rejected
 

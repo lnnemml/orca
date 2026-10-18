@@ -45,6 +45,7 @@ function record(over: Partial<RemoteState> = {}): RemoteState {
     fetch: { strikes: 0, stopped: false },
     last_contact: null,
     cancel_sends: { failures: 0, stopped: false },
+    sweeps: { count: 0, stopped: false },
     ...over,
   };
 }

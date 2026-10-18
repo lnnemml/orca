@@ -446,6 +446,14 @@ export interface CancelSends {
   stopped: boolean;
 }
 
+/** Mirrors `poller::remote_state::Sweeps`: a `cancelling` job's sweeps without progress this
+ *  launch; `stopped` = "processes of the job still run after 3 sweeps", automatic sweeps stopped
+ *  until Cancel is clicked again (ADR-024 o22.5, o22.13.3; computed in Rust from the counter). */
+export interface Sweeps {
+  count: number;
+  stopped: boolean;
+}
+
 /** Mirrors `poller::remote_state::RemoteState` — the structure of a non-terminal remote job's last
  *  check (ADR-024 o19.1). The words stay in the row's `error_message` (o19.2). `last_contact`:
  *  null before the job's first call this launch (o22.8). */
@@ -455,6 +463,7 @@ export interface RemoteState {
   fetch: FetchState;
   last_contact: Contact | null;
   cancel_sends: CancelSends;
+  sweeps: Sweeps;
 }
 
 /** Payload of the `job:remote-state` event (o19.6): change `seq` of one launch-wide sequence; a
@@ -519,7 +528,9 @@ export type Seen = { kind: "outcome"; detail: Outcome } | { kind: "label"; detai
 
 /** Mirrors `poller::StatusStep` (serde `tag = "step", content = "detail"`) — what
  *  `retry_remote_fetch` returns; the `cancel_*` / `ended_before_cancel` steps are a cancel's
- *  delivery (ADR-024 o22.4). */
+ *  delivery (ADR-024 o22.4); `swept` is a `cancelling` job's sweep (o22.13.3): `outcome` its
+ *  classify's `cancelling` (null when nothing could be classified), `error` a failure the server
+ *  answered with. */
 export type StatusStep =
   | { step: "busy" }
   | { step: "not_live" }
@@ -534,4 +545,5 @@ export type StatusStep =
   | { step: "cancel_not_sent"; detail: string }
   | { step: "cancel_stopped"; detail: { seen: Seen | null; unready: string | null } }
   | { step: "ended_before_cancel"; detail: Outcome }
-  | { step: "cancel_delivered"; detail: Outcome };
+  | { step: "cancel_delivered"; detail: Outcome }
+  | { step: "swept"; detail: { outcome: Outcome | null; error: string | null } };

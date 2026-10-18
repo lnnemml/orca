@@ -22,9 +22,11 @@
 //!
 //! [`ContactRunner`] wraps the [`CommandRunner`] a step or a command uses and remembers the contact
 //! of its **last** call whose contact is determined, so the record shows the most recent answer or
-//! silence, whatever the step did with it. It records nothing for a call it never ran (an argv or a
-//! value refused before the process started): no call, no contact.
+//! silence, whatever the step did with it — and whether **any** of its calls was answered, which a
+//! sweep of a `cancelling` job counts by (ADR-024 o22.13.3). It records nothing for a call it never
+//! ran (an argv or a value refused before the process started): no call, no contact.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -72,16 +74,22 @@ fn stderr_tail(bytes: &[u8]) -> String {
 pub struct ContactRunner<'a> {
     inner: &'a dyn CommandRunner,
     last: Mutex<Option<Contact>>,
+    answered: AtomicBool,
 }
 
 impl<'a> ContactRunner<'a> {
     pub fn new(inner: &'a dyn CommandRunner) -> Self {
-        ContactRunner { inner, last: Mutex::new(None) }
+        ContactRunner { inner, last: Mutex::new(None), answered: AtomicBool::new(false) }
     }
 
     /// The contact of the last call run through this runner; `None` if it ran none.
     pub fn last(&self) -> Option<Contact> {
         self.last.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone()
+    }
+
+    /// Whether any call run through this runner was answered ([`Contact::Ok`]), whatever came after.
+    pub fn answered(&self) -> bool {
+        self.answered.load(Ordering::SeqCst)
     }
 }
 
@@ -89,6 +97,9 @@ impl CommandRunner for ContactRunner<'_> {
     fn run(&self, program: &str, args: &[String], stdin: &[u8], timeout: Duration) -> Result<ProcessOutput, TransportError> {
         let result = self.inner.run(program, args, stdin, timeout);
         if let Some(contact) = contact_of(program, &result) {
+            if contact == Contact::Ok {
+                self.answered.store(true, Ordering::SeqCst);
+            }
             *self.last.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(contact);
         }
         result
@@ -142,14 +153,28 @@ mod tests {
         let inner = Answers(vec![exited(Some(0)), exited(Some(255)), exited(Some(3)), exited(Some(12))], Mutex::new(0));
         let runner = ContactRunner::new(&inner);
         assert_eq!(runner.last(), None, "no call, no contact");
+        assert!(!runner.answered());
         assert_eq!(runner.run("ssh", &[], b"", Duration::from_secs(1)), exited(Some(0)));
         assert_eq!(runner.last(), Some(Contact::Ok));
         runner.run("ssh", &[], b"", Duration::from_secs(1)).unwrap();
         assert!(matches!(runner.last(), Some(Contact::Failed(_))));
+        assert!(runner.answered(), "an earlier answer is kept after a failed call");
         runner.run("ssh", &[], b"", Duration::from_secs(1)).unwrap();
         assert_eq!(runner.last(), Some(Contact::Ok), "the last call decides");
         runner.run("rsync", &[], b"", Duration::from_secs(1)).unwrap();
         assert_eq!(runner.last(), Some(Contact::Ok), "rsync's 12 leaves it as it was");
+    }
+
+    /// `answered` is any call's answer: failures alone and rsync's undetermined 12 leave it unset.
+    /// NEGATIVE CONTROL: set it for every determined contact → red.
+    #[test]
+    fn the_runner_knows_whether_any_call_was_answered() {
+        let inner = Answers(vec![exited(Some(255)), Err(TransportError::Timeout { program: "ssh".into(), secs: 1 }), exited(Some(12))], Mutex::new(0));
+        let runner = ContactRunner::new(&inner);
+        let _ = runner.run("ssh", &[], b"", Duration::from_secs(1));
+        let _ = runner.run("ssh", &[], b"", Duration::from_secs(1));
+        let _ = runner.run("rsync", &[], b"", Duration::from_secs(1));
+        assert!(!runner.answered(), "no call was answered");
     }
 
     #[test]

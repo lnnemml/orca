@@ -459,26 +459,41 @@ withdraw's collect + `classify`, with its one retake) is shared.
 
 **The status step** (`Poller::status_step(job_id)`): claims the in-flight guard with `try_acquire`
 and returns `Busy` for a busy job (o15.3). Then, with nothing locked across a call:
-1. a row that is no longer a non-terminal remote job (finished, vanished, local) → `NotLive`, its live
-   state and memory dropped, no call;
-2. a fetching outcome already struck out `MAX_FETCH_STRIKES` = 3 times in a row → `FetchStopped`, no
+1. **one read decides** (ADR-024 o22.13.1): `live_remote` reads the row and its pending cancel
+   (`pending_cancel_conn`) under **one** lock. A row that is no longer a non-terminal remote job
+   (finished, vanished, local) → `NotLive`, its live state and memory dropped, no call;
+2. **a pending cancel** (`cancel_requested_at` set) → the step is the cancel's **delivery**
+   (`Poller::deliver_pending`, the body of "Remote cancel" below, with this read as its step 1)
+   instead of everything after it — before step 3, so delivery runs first on reconnect (Decision i)
+   and no fetch runs while a cancel is pending. `retry_fetch` keeps its own pre-check ("undo the cancel
+   first"); a cancel recorded after it is caught by this read. Delivery never downloads: its result is
+   the step's (o22.13.2);
+3. a fetching outcome already struck out `MAX_FETCH_STRIKES` = 3 times in a row → `FetchStopped`, no
    call (the manual retry below starts over);
-3. a `queued` row: the read-only label call; "not on the server" / "submit interrupted" → `Labelled`,
-   nothing collected or written. A `running` or `cancelling` row skips it;
-4. `collect_and_classify` with the recorded socket; a transport or reply failure → `CheckFailed`,
-   nothing written;
-5. a classifier **`Cancelled`** (row 4) → `Cancelled`: the row is written terminal `cancelled` with
-   `completed_at`, as a withdraw records it (`ssh_backend::mark_cancelled_conn`, shared with
-   `record_withdraw`; ADR-024 o17; the same write clears the pending-cancel columns, o22.2), under one
-   lock after the live-row re-check; nothing is downloaded,
-   the live state is dropped and `job:status` is emitted;
-6. any other **non-fetching outcome** (`is_fetching` false) → `Shown`: the classifier's `Running` moves a
-   `queued` row to `running` (stamping `started_at`, clearing `error_message`); `Queued` clears
-   `error_message`; `Indeterminate` writes nothing (the row keeps the last known state's text; "could
-   not be decided on this check" goes only to the remote record's `check_error`, ADR-024 o19.3, though
-   the live row is still re-checked, so a changed row is `RowChanged`); every other outcome writes
-   `shown_message` ("… handled in unit 5.4" where it needs an action) and the status stays
-   `queued`/`running`/`cancelling`. `job:status` only when the row changed (`status_to_emit`);
+4. a **`cancelling`** row is **swept** (below, "The sweep of a `cancelling` job");
+5. a `queued` row: the read-only label call; "not on the server" / "submit interrupted" → `Labelled`,
+   nothing collected or written. A `running` row skips it;
+6. `collect_and_classify` with the recorded socket; a transport or reply failure → `CheckFailed`,
+   nothing written. Then `act_on` — the dispatch a sweep shares:
+   - a classifier **`Cancelled { started: false }`** (row 4, nothing ran) → `Cancelled`: the row is
+     written terminal `cancelled` with `completed_at`, as a withdraw records it
+     (`ssh_backend::mark_cancelled_conn`, shared with `record_withdraw`; ADR-024 o17; the same write
+     clears the pending-cancel columns, o22.2), under one lock after the live-row re-check, acting on
+     the write's row count (0 → `RowChanged`); nothing is downloaded, the live state is dropped and
+     `job:status` is emitted;
+   - **`Cancelled { started: true }`** and **row 1 `CorruptStarted { cancelled: true }`** → the
+     **evidence fetch** (below);
+   - **row 3 `Cancelling { session }`** on a `queued`/`running` row → `Shown(Cancelling)`: **one**
+     guarded write sets status `cancelling` and its text and NULLs both pending-cancel columns
+     (o22.12.1/o22.13.5 — the v21 CHECK admits a request on `cancelling`, so a test pins the NULLs, not
+     the CHECK), 0 rows → `RowChanged`; then the sweep baseline (`PollerMemory::note_cancelling`);
+   - any other **non-fetching outcome** (`is_fetching` false) → `Shown`: the classifier's `Running`
+     moves a `queued` row to `running` (stamping `started_at`, clearing `error_message`); `Queued`
+     clears `error_message`; `Indeterminate` writes nothing (the row keeps the last known state's
+     text; "could not be decided on this check" goes only to the remote record's `check_error`,
+     ADR-024 o19.3, though the live row is still re-checked, so a changed row is `RowChanged`); every
+     other outcome writes `shown_message` ("… handled in unit 5.4" where it needs an action of unit
+     5.4b) and the status stays as it was. `job:status` only when the row changed (`status_to_emit`);
 7. a **fetching outcome** (`Completed`, `Failed{NonZeroExit | BadExitCode | NoNormalTermination}`)
    sets the in-memory fetching flag (no more log polls), then `fetch_remote` into the job's local dir.
    A failure counts a strike and writes it to `error_message` ("attempt n of 3", then "automatic
@@ -491,7 +506,55 @@ and returns `Busy` for a busy job (o15.3). Then, with nothing locked across a ca
    the terminal status (`finalize_job_conn`), on `Completed` the energy/wall time
    (`set_job_results_conn`), and the parsed results (`parse_results_after_completion`, which may
    advance to `parsed`). Then the live view is drained from the copy and `job:status` is emitted
-   last → `Finalised`.
+   last → `Finalised`. When a delivery found the job **ended before the cancel** reached the server
+   (`JobMemory.ended_before_cancel`, set by the click's and the poller's delivery alike), `finalise`
+   adds `ENDED_FIRST_NOTE` ("The job finished before the cancel reached the server.") **last** in the
+   same transaction, after the parse: the whole message of a `completed` row, a new line after
+   `detect_completion`'s for `failed`, and after a results-parse failure's, which
+   `set_job_parse_error_conn` writes over the message — so the note survives it (o22.13.2). The flag is
+   per launch: a restart before that `finalise` loses the note, never the result.
+
+**The sweep of a `cancelling` job** (`poller/sweep.rs`, ADR-024 l row 3, o22.5, o22.13.3–4). While the
+bound is not reached, a step **readies the server as a delivery does** (`ready_server`: prepare →
+install if needed → prepare — after an app upgrade the sha-named scripts read "not installed", and a
+sweep reinstalls them, `collect.sh` included), runs **`cancel.sh cancel`** (idempotent), then
+**collects and classifies**. A ready with **no answer** → `CheckFailed`, nothing more tried; an
+**answered** ready failure sends nothing and goes straight to the collect. **One counting rule**: a
+step in which the server answered any call (`ContactRunner::answered`) adds one to
+`sweeps_without_progress`, unless its classify shows `Cancelling { session }` with `session` below
+`min_session` — the **smallest** session size seen (a last size would let an oscillating session sweep
+for ever): that is progress, the baseline falls and the count restarts at 0. No baseline yet (after a
+restart) → it is set and nothing counted. Each update is **one** `PollerMemory` operation under its
+lock (`count_sweep`), so a `restart_sweeps` click during the sweep's ssh calls is not overwritten.
+Every write of `cancelling` (delivery's and the ordinary step's) sets the baseline
+(`note_cancelling`, which only lowers it). From a baseline `b` the sweeps are bounded by `3·(b + 1)`;
+with no real shrinking, 3. The step's result is `Swept { outcome, error }` — `outcome` the classify's
+`Cancelling` (`None` when nothing could be classified), `error` the answered failure (a refused ready,
+`cancel.sh` rc ≠ 0, a broken collect) — and the row's text is `cancelling_message(session, stopped)`
+(guarded, `RowChanged` if the row changed). A sweep whose classify shows anything else (row 4, row 1
+with `.cancelled`, row 2 …) goes through `act_on` in the same step, and that is the step's result.
+**`MAX_SWEEPS_WITHOUT_PROGRESS` = 3**: the third sweep without progress reads `sweeps.stopped` with the
+text "processes of the job still run after 3 sweeps"; from then a step makes **no ready, install or
+`cancel.sh` call** — collect + classify only, `Shown(outcome)` (a collect failure `CheckFailed`), its
+classify changing neither the count nor the baseline (a shrink seen while stopped does not resume the
+sweeps; a terminal outcome still ends the job). Cancel on a `cancelling` job (`restart_sweeps`,
+o22.12.1) zeroes the count and keeps the baseline; the next step sweeps and readies again. A sweep
+never touches the delivery's `cancel_failures`.
+
+**The evidence fetch** (`poller/evidence.rs`, ADR-024 o22.6, o22.13.5) of a cancelled job that ran —
+row 4 `Cancelled { started: true }` and row 1 `CorruptStarted { cancelled: true }`, whichever step saw
+them (keyed on the snapshot, never on the path that delivered): the fetching flag; `fetch_remote`
+(download + LIST); **only then** the terminal write — row 4 `cancelled` (`mark_cancelled_conn` through
+`cancel_row`, its count acted on), row 1 `failed` with "processes of the job may survive on the
+server" through `finalise` (its live-row re-check); then the drain and `job:status` (the order of the
+fetch above) → `Cancelled` or `Finalised`. **`detect_completion` decides nothing and nothing is
+parsed**: a copy holding `.exit_code` 0 still ends `cancelled` (rule #6: the evidence path never
+claims completion). The guarantee is the LIST check's moment, no more (a process the sweep could not
+kill may write afterwards). A failed evidence fetch counts a strike with its own text →
+`FetchFailed`; the step that takes the `MAX_FETCH_STRIKES`-th writes the terminal status itself with
+"evidence not downloaded: <why>; it stays on the server" and **forgets the job, also when that write
+finds the row changed** — so `FetchStopped` is never reached for an evidence job. A drain error of a
+`Cancelled` evidence step (the variant has no field for it) is logged (`eprintln!`).
 
 `Poller::retry_fetch(&guard)` is the manual retry: the caller (a command) holds the job's guard, which
 names the job; a job whose cancel is pending is refused ("undo the cancel first", o22.8); the strikes
@@ -510,12 +573,13 @@ it: `poll_log` holds no guard (o16.5), so it is not a writer.
 **The remote record** (`poller/remote_state.rs`, ADR-024 o19). The row's `error_message` carries the
 words of a check; the record carries the structure the view needs. `RemoteStates` (managed state, one
 mutex R, empty on launch) holds one `RemoteState { known, check_error, fetch, last_contact,
-cancel_sends }` per non-terminal remote job: `known` = `Labelled(Label)`, `Shown(Outcome)` or
+cancel_sends, sweeps }` per non-terminal remote job: `known` = `Labelled(Label)`, `Shown(Outcome)` or
 `Fetching` (`{ kind, detail? }` on the wire), `check_error` = why the last check decided nothing,
 `fetch = { strikes, stopped }` re-read from `PollerMemory`'s strike counter on every apply
 (`stopped = strikes >= 3`), `last_contact` = `{ kind: "ok" }` / `{ kind: "failed", detail }` / `null`
 before the job's first call this launch (o22.8), and `cancel_sends = { failures, stopped }` re-read from
-`PollerMemory`'s cancel-failure counter like the fetch bound (o22.4.5). Every `StatusStep` maps through one function,
+`PollerMemory`'s cancel-failure counter like the fetch bound (o22.4.5), and `sweeps = { count, stopped }`
+re-read from the sweep counter (`stopped = count >= 3`, o22.13.3). Every `StatusStep` maps through one function,
 `remote_state::next`, a `match` with no wildcard: `Labelled` sets the label and clears the error;
 `Shown(Indeterminate)` keeps `known` and sets `check_error` to its `shown_message`; any other `Shown`
 sets the outcome and clears the error; `FetchFailed`/`FetchStopped` set `known = Fetching` (the server
@@ -526,7 +590,8 @@ remove the record. A delivery's steps: `CancelNotSent(why)` keeps `known` and se
 or, having seen nothing, keeps `known` and sets the prepare's reason as the check error — the stopped
 flag comes from the bound; `EndedBeforeCancel` sets `Fetching`; `CancelDelivered(o)` reads
 as an ordinary step reads `o` (a fetching verdict as `Fetching`, `Indeterminate` as a check error,
-any other as `Shown(o)`). `next_with(old, step, bounds, contact)` adds the bounds and the step's
+any other as `Shown(o)`). A sweep's `Swept { outcome, error }` sets `known = Shown(outcome)` when it
+classified one (keeping `known` otherwise) and `check_error = error`. `next_with(old, step, bounds, contact)` adds the bounds and the step's
 contact: a step that sets the record takes both (no call keeps the old contact); a `RowChanged` after a
 call updates an existing record's contact and creates none. A retry's outcome maps through
 `after_retry` (o22.8, amending o19.3's removal): no call → nothing; no answer → `known` kept,
@@ -598,8 +663,10 @@ in-progress ids and releasing M — every remote record whose job is neither a c
 `Status` every `periods.status` (`Periods::INITIAL`: 15 s) for every job, `Log` every `periods.log`
 (2 s) only while watched and not fetching, or at once on catch-up; status first when both are due;
 nothing for a job whose step is still running. `PollerMemory` holds, per launch, the fetching flag,
-the strikes, the consecutive failed cancel sends (`cancel_failures`, bound `MAX_CANCEL_FAILURES` = 3),
-the last run of each step and the in-progress mark.
+the strikes, the consecutive answered failures of a delivery (`cancel_failures`, bound
+`MAX_CANCEL_FAILURES` = 3), a `cancelling` job's sweeps without progress (`sweeps_without_progress`,
+bound `MAX_SWEEPS_WITHOUT_PROGRESS` = 3) and its smallest session size (`min_session`), the ended-first
+flag (`ended_before_cancel`), the last run of each step and the in-progress mark.
 
 **Tests** (`poller/tests.rs`, over a fake server that checks on every call that neither the database
 lock nor the live-log mutex is held, and that a log poll runs without the job's guard): the happy
@@ -610,9 +677,10 @@ strikes stopping the automatic fetch and a manual retry finishing it; a busy job
 call ending a job not on the server; a `running` row skipping it; shown outcomes and their emits; the
 `Running` write; a classifier `Cancelled` on a `queued` and a `running` row written terminal with no
 download; a `cancelling` row (o22.5) that is a candidate, is stepped without a label call, is written
-`cancelled` by the server's `Cancelled` and `completed` by a late cancel, each terminal write clearing
-the pending-cancel columns (o22.2), and whose shown text is written while the status and the pending
-cancel stay; a row changed during the fetch; a job no longer live; a failed check. The live log:
+`cancelled` by the server's `Cancelled` and `completed` by a late cancel (its sweeps stopped, so the
+step only collects), each terminal write clearing a pending cancel recorded while the step ran
+(o22.2), and whose shown text is written while the status and the pending cancel stay; a row changed
+during the fetch; a job no longer live; a failed check. The live log:
 **parity** — a fixture built from real ORCA outputs (`opt_output_excerpt.txt`, the dexketoprofen tail
 twice, the OptTS tail; > `CAP`) streamed in `CAP`-sized and in 7919- and 4093-byte chunks equals
 `BufRead::lines` and `read_convergence` on the same file; a character split across polls; an open,
@@ -646,8 +714,8 @@ controls: [log.md](../log.md) (5.3 B2 Part A and B3 Part A, 2026-10-06).
 ### Remote cancel: record, deliver, undo (ADR-024 o22.3–o22.4)
 
 Three `AppHandle`-free cores. They are built and tested; `cancel_job`'s shell still runs o21's
-`cancel_job_guarded` (above) until 5.4a Part B wires them, and the poller's run order calls the
-delivery from Part A2b. The pending cancel lives in two columns, `cancel_requested_at` and
+`cancel_job_guarded` (above) until 5.4a Part B wires the cancel and undo cores to the commands; the
+poller's status step runs the delivery while a cancel is pending (above). The pending cancel lives in two columns, `cancel_requested_at` and
 `cancel_sent_at` (schema v21, [remote-jobs.md](remote-jobs.md#a-remote-job-in-the-database-schemas-v20-v21)),
 read through `commands::jobs::pending_cancel_conn` (not through `Job`).
 
@@ -658,7 +726,7 @@ read through `commands::jobs::pending_cancel_conn` (not through `Job`).
    NULL AND status IN ('queued','running') AND cancel_requested_at IS NULL` (no guard;
    `record_intent`). 0 rows → the same lock re-reads: a remote `cancelling` job → nothing recorded,
    the sweep bound restarts (`PollerMemory::restart_sweeps`, which zeroes
-   `JobMemory.sweeps_without_progress`; the sweeps that count it are Part A2b's) →
+   `JobMemory.sweeps_without_progress`, counted by the sweeps above, and keeps the baseline) →
    `AlreadyOnServer` — the cancel is already on the server, the click is the manual sweep retry,
    the next status step sweeps, and a `cancelling` row never holds a request, so it never offers
    Undo (ADR-024 o22.12.1); still remote-live with a request → already pending (this click is the
@@ -678,21 +746,24 @@ already be on the server": the send is marked, or — the status belt of o22.12.
 `cancelling`, which never holds a request because every write of `cancelling` clears both columns)
 or `NothingPending`.
 
-**Delivery** — `Poller::deliver_cancel(&guard) -> StatusStep` (`poller/cancel.rs`), always holding the
-guard, the database lock never across a call:
-1. re-read under the lock: not remote-live → `NotLive` (live state and memory dropped); nothing pending
-   (an Undo won) → `RowChanged`;
+**Delivery** — `Poller::deliver_cancel(&guard) -> StatusStep` (`poller/cancel.rs`; the status step
+enters at step 2 through `deliver_pending` with its own read), always holding the guard, the database
+lock never across a call:
+1. re-read under the lock (`live_remote`, the status step's read): not remote-live → `NotLive` (live
+   state and memory dropped); nothing pending (an Undo won) → `RowChanged`;
 2. ready the server (`ready_server`: prepare → install if needed → prepare); a refused or not-installed
    answer is `CancelNotSent(why)`, a transport failure `CheckFailed(why)` — told apart by the call's
    contact, never one reported as the other;
 3. a `queued` row: the label call; "not on the server" / "submit interrupted" → `mkjob_call` (its
    refusal is `CancelNotSent` too), then step 5 directly;
 4. one `collect_and_classify` before any cancel: rows 5/6 (a fetching outcome without `.cancelled`,
-   `ended_before_cancel`) clear **both** columns → `EndedBeforeCancel(outcome)`, nothing sent. A
+   `ended_before_cancel`) clear **both** columns and set `JobMemory.ended_before_cancel` (the note of the
+   job's next `finalise`) → `EndedBeforeCancel(outcome)`, nothing sent. A
    snapshot that already holds `.cancelled` — row 2, row 3, row 4, row 1 with `cancelled`
    (`cancelled_on_server`; an earlier send whose reply was lost) — means the cancel **is delivered**:
-   both columns cleared as after rc 0 (row 3 also → `cancelling`) → `CancelDelivered(outcome)`, nothing
-   re-sent (ADR-024 o22.11.4; row 3's re-sweep is the poller's). Every other verdict goes on
+   both columns cleared as after rc 0 (row 3 also → `cancelling` and the sweep baseline) →
+   `CancelDelivered(outcome)`, nothing re-sent (ADR-024 o22.11.4; row 3's re-sweep is the poller's
+   sweep). Every other verdict goes on
    (`Indeterminate`, row 1 without `.cancelled`);
 
    **The bound** (o22.11.3): every **answered** failure of a delivery counts — a ready refusal or
@@ -708,16 +779,18 @@ guard, the database lock never across a call:
 5. **mark, then send**: one locked write sets `cancel_sent_at` only while `cancel_requested_at` is set
    (0 rows → `RowChanged`, nothing sent) and completes **before** `cancel_call` is spawned. rc 0 →
    delivered: one more collect + `classify`, and one locked write clears both columns (a row 3
-   `Cancelling` also becomes status `cancelling` with its text, `job:status` emitted) →
+   `Cancelling` also becomes status `cancelling` with its text and sets the sweep baseline,
+   `job:status` emitted; 0 rows → `RowChanged`) →
    `CancelDelivered(outcome)`; a transport failure → `CheckFailed`, both columns kept; anything the
    server answered that is not rc 0 (rc 2/3, a refused or not-installed script, a broken reply) →
    `CancelNotSent(why)`, both columns kept, one failure counted. A post-send collect that fails is
    `CheckFailed` with the columns kept (re-sent next step, idempotently).
 
-Delivery downloads nothing and writes no terminal status: the caller acts on `EndedBeforeCancel` (the
-normal fetch path) and on a delivered row 4 / row 1 with `.cancelled` (o22.6's evidence fetch) or row 2
-(the normal fetch) — the cancel command's click leaves that to the poller's next ordinary step, since
-the columns are already clear.
+**Delivery never downloads and writes no terminal status** (o22.13.2): `EndedBeforeCancel` and
+`CancelDelivered(_)` are the step's result — for the click and for the poller alike — and, both columns
+being NULL, the **next ordinary status step** re-collects, re-classifies and finishes: rows 5/6's
+fetch (with the ended-first note), row 4's or row 1's evidence fetch, row 2's fetch, or row 3's sweep,
+keyed on the snapshot (o22.11.2). The cost is at most one status period.
 
 **Tests** (`poller/cancel/tests.rs`, over a fake server that checks the database lock is free on every
 call and records the pending cancel each `cancel.sh` call found): the happy delivery (ready → label →
@@ -741,8 +814,29 @@ test-only); Undo refuses a `cancelling` row built with a request; the record wri
 draft or a local job; a persist between the
 two reads goes once to the record path; a local job keeps o21's guarded path; Undo's three answers with
 the guard held by another. Also: both retries refused while a cancel is pending; a status step's
-contact; a log poll that writes no contact; `write_cancelled` acting on its row count. Negative
-controls: [log.md](../log.md) (5.4a Part A2a, 2026-10-17).
+contact; a log poll that writes no contact; `write_cancelled` acting on its row count. The run order
+(o22.13): a pending cancel delivered before the fetch bound (fetching flag and strikes at the maximum);
+a cancel recorded after `retry_fetch`'s pre-check delivered with no rsync; the pending predicate pinned
+in the one read that acts (source pin); a poller-delivered row 5 that downloads nothing and finalises
+`completed` with the note at the next step, a row 6 with the note after its message, a results-parse
+failure that keeps the note; row 3 on a `running` row written `cancelling` with a request recorded
+mid-step cleared, and on a changed row `RowChanged`. `poller/sweep/tests.rs`: a sweep readying a
+not-installed server, re-sending and classifying; three sweeps without progress stopping, a 4th that
+only collects, a restart that sweeps again; a stopped step making no ready call and changing no count
+(a shrink seen while stopped); no-answer steps counting nothing; answered `cancel.sh` and collect
+failures counting; a permanently failing install stopping after three; an oscillating session stopping;
+a shrinking session as progress; a `restart_sweeps` during a sweep not overwritten; a non-`Cancelling`
+verdict that does not end the job (`Indeterminate`) still counted, no 4th sweep; a `cancelling` row at
+the fetch bound `FetchStopped` with no call at all; a sweep that sees
+row 4 ending the job in the same step (with and without `.started`); a changed row; the `Swept` wire
+shape. `poller/evidence/tests.rs`: row 4 with `.started` downloaded, listed, then written, then drained
+(the row still live at the LIST call); `.exit_code` 0 without normal termination still `cancelled`; row
+1 with `.cancelled` after a click's delivery ending `failed` at the next ordinary step; a failed listing
+a strike with nothing terminal; the last strike writing the terminal status (rows 4 and 1) and never
+`FetchStopped`; the last strike on a changed row forgetting the job; every evidence terminal write
+clearing a request recorded during the download. `plan.rs` carries the counting rule's unit tests
+(baseline, progress, oscillation, restart). Negative controls: [log.md](../log.md) (5.4a Part A2a,
+2026-10-17; Part A2b, 2026-10-18).
 
 **How the job runs there:** a static wrapper (`include_str!`, uploaded content-addressed as
 `<root>/bin/wrapper-<sha>.sh` by the install call, with `cancel.sh` and `collect.sh` beside it) runs through a per-slot `tsp` queue. It

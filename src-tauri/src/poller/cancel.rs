@@ -1,11 +1,12 @@
-//! Delivering a pending cancel (ADR-024 o22.4, unit 5.4a): one function, [`Poller::deliver_cancel`],
-//! called by the cancel command (o22.3) and — from 5.4a Part A2b — by the poller instead of a job's
-//! ordinary status step while the job's cancel is pending. It always runs **holding the job's
-//! in-flight guard**, and the database lock is never held across an ssh call.
+//! Delivering a pending cancel (ADR-024 o22.4, unit 5.4a): one body, called by the cancel command
+//! (o22.3, [`Poller::deliver_cancel`]) and by the poller's status step **instead of** the job's
+//! ordinary step while the job's cancel is pending (o22.13.1, [`Poller::deliver_pending`], with the
+//! step's own read). It always runs **holding the job's in-flight guard**, and the database lock is
+//! never held across an ssh call.
 //!
 //! The steps, exactly as o22.4 orders them:
-//! 1. **re-read** the row under the lock: no longer remote-live → `NotLive`; nothing pending (an
-//!    Undo won) → `RowChanged`;
+//! 1. **re-read** the row under the lock (the command's path; the status step's own read is this
+//!    read): no longer remote-live → `NotLive`; nothing pending (an Undo won) → `RowChanged`;
 //! 2. **ready the server** (prepare → install if needed → prepare, `ssh_backend::ready_server`):
 //!    the uploaded scripts are sha-named, so an app upgrade needs them reinstalled. A refusal or a
 //!    not-installed script is reported as itself (`CancelNotSent`, counted toward the bound), a
@@ -15,10 +16,12 @@
 //!    and straight to step 5 (there is nothing to classify in a dir that did not exist);
 //! 4. **one collect + `classify` before any cancel**: a job that already ended without
 //!    `.cancelled` (row 5 `Completed`, row 6 `Failed`) clears **both** columns — a marked but unsent
-//!    cancel may precede this — and is `EndedBeforeCancel`: nothing is sent, the caller fetches. A
-//!    snapshot that already holds `.cancelled` (rows 2, 3, 4, row 1 with `cancelled`; an earlier send
-//!    whose reply was lost) means the cancel **is delivered**: both columns cleared as after rc 0,
-//!    `CancelDelivered(outcome)`, nothing re-sent (o22.11.4; row 3's re-sweep is the poller's).
+//!    cancel may precede this — and is `EndedBeforeCancel`: nothing is sent or downloaded, and the
+//!    note "the job finished before the cancel reached the server" is remembered for the job's next
+//!    `finalise` (o22.13.2). A snapshot that already holds `.cancelled` (rows 2, 3, 4, row 1 with
+//!    `cancelled`; an earlier send whose reply was lost) means the cancel **is delivered**: both
+//!    columns cleared as after rc 0, `CancelDelivered(outcome)`, nothing re-sent (o22.11.4; row 3's
+//!    re-sweep is the poller's sweep, o22.13.3).
 //!    Every other verdict goes on, `Indeterminate` and row 1 without `.cancelled` included
 //!    (`cancel.sh` publishes `.cancelled` first and skips tsp when it cannot read the queue);
 //! 5. **mark, then send**: one locked write sets `cancel_sent_at` only while `cancel_requested_at`
@@ -27,7 +30,7 @@
 //!    while `.cancelled` sits on the server). Then `cancel.sh cancel`:
 //!    - **rc 0** — delivered: one collect + `classify` decides (never a hard-coded `Cancelled`,
 //!      Decision c), and one locked write clears both columns and, for row 3, writes `cancelling`
-//!      → `CancelDelivered(outcome)`;
+//!      (and sets the sweep baseline, o22.13.4) → `CancelDelivered(outcome)`;
 //!    - **a transport failure** — not delivered, both columns stay, `CheckFailed`; the next step
 //!      re-sends (step 6);
 //!    - **anything the server answered that is not rc 0** (rc 2/3, a refused or not-installed
@@ -45,14 +48,17 @@
 //! 6. re-sending is safe: `cancel.sh cancel` is idempotent on a dir that holds `.cancelled` (A1's
 //!    script tests).
 //!
-//! Downloads are not delivery's: an `EndedBeforeCancel` or a delivered fetching / evidence verdict
-//! is acted on by the caller (the poller's run order, 5.4a Part A2b).
+//! **Delivery never downloads** (o22.13.2): its `EndedBeforeCancel` or `CancelDelivered` is the
+//! step's result, both columns are already NULL, and the **next ordinary status step** re-collects,
+//! re-classifies and finishes — rows 5/6's fetch, row 4's or row 1's evidence path, row 2's fetch,
+//! or row 3's sweep — keyed on the snapshot, never on the path that delivered (o22.11.2). The cost
+//! is at most one status period.
 
 use rusqlite::params;
 
 use super::plan::MAX_CANCEL_FAILURES;
-use super::{is_fetching, is_live, live_row, shown_message, Poller, Seen, StatusStep};
-use crate::commands::jobs::{get_job_conn, pending_cancel_conn, PendingCancel};
+use super::{is_fetching, live_row, shown_message, Poller, Seen, StatusStep};
+use crate::commands::jobs::get_job_conn;
 use crate::commands::remote_jobs::status_to_emit;
 use crate::error::AppError;
 use crate::in_flight::InFlightGuard;
@@ -61,7 +67,7 @@ use crate::remote::classify::{FailReason, Outcome};
 use crate::remote::contact::{Contact, ContactRunner};
 use crate::remote::submit::Label;
 use crate::ssh_backend::{
-    cancel_call, check_ready, collect_and_classify, coordinates, label_call, mkjob_call, ready_server, recorded_root, tail,
+    cancel_call, check_ready, collect_and_classify, label_call, mkjob_call, ready_server, recorded_root, tail,
     RemoteCoordinates,
 };
 
@@ -90,13 +96,30 @@ impl Poller<'_> {
     /// Deliver the pending cancel of the job `guard` holds (o22.4; the module doc). The caller
     /// holds the guard; `deliver_and_record` applies the result to the job's remote record.
     pub fn deliver_cancel(&self, guard: &InFlightGuard) -> Result<StatusStep, AppError> {
-        let tracker = ContactRunner::new(self.runner);
-        Poller { runner: &tracker, ..*self }.deliver(guard.job_id(), &tracker)
+        let job_id = guard.job_id();
+        // 1. Re-read under the lock.
+        let Some((job, coords, pending)) = self.live_remote(job_id)? else {
+            self.live.drop_state(job_id);
+            self.memory.forget(job_id);
+            return Ok(StatusStep::NotLive);
+        };
+        if pending.requested_at.is_none() {
+            return Ok(StatusStep::RowChanged);
+        }
+        self.deliver_pending(&job, &coords)
     }
 
-    /// The steps. `tracker` is `self.runner`: it tells a call that failed in transport from one the
+    /// Steps 2–6 for `job`, read remote-live at `coords` with its cancel requested — by
+    /// [`Self::deliver_cancel`]'s step 1, or by the status step's own read (o22.13.1).
+    pub(super) fn deliver_pending(&self, job: &Job, coords: &RemoteCoordinates) -> Result<StatusStep, AppError> {
+        let tracker = ContactRunner::new(self.runner);
+        Poller { runner: &tracker, ..*self }.deliver(job, coords, &tracker)
+    }
+
+    /// Steps 2–6. `tracker` is `self.runner`: it tells a call that failed in transport from one the
     /// server answered with a failure.
-    fn deliver(&self, job_id: &str, tracker: &ContactRunner<'_>) -> Result<StatusStep, AppError> {
+    fn deliver(&self, job: &Job, coords: &RemoteCoordinates, tracker: &ContactRunner<'_>) -> Result<StatusStep, AppError> {
+        let job_id = job.id.as_str();
         // A failed call: a transport failure is a failed check, never counted; a failure the server
         // answered is a cancel not sent (o22.4.2: reported as itself, never as "unreachable") and
         // counts toward the re-send bound (o22.11.3).
@@ -111,16 +134,7 @@ impl Poller<'_> {
         // and classifies, but sends nothing — `mkjob` included — until Cancel is clicked again.
         let stopped = || self.memory.get(job_id).cancel_failures >= MAX_CANCEL_FAILURES;
 
-        // 1. Re-read under the lock.
-        let Some((job, coords, pending)) = self.pending_row(job_id)? else {
-            self.live.drop_state(job_id);
-            self.memory.forget(job_id);
-            return Ok(StatusStep::NotLive);
-        };
-        if pending.requested_at.is_none() {
-            return Ok(StatusStep::RowChanged);
-        }
-        let root = recorded_root(&coords, job_id)?;
+        let root = recorded_root(coords, job_id)?;
 
         // 2. Ready the server — prepare-only while stopped (o22.12.3): nothing is installed. A
         // prepare answered with a failure is the stopped delivery that could classify nothing; one
@@ -139,7 +153,7 @@ impl Poller<'_> {
         // 3. A queued job not in the server's hands: make its dir, then straight to the send.
         let mut classify_first = true;
         if job.status == JobStatus::Queued {
-            match label_call(self.runner, &coords) {
+            match label_call(self.runner, coords) {
                 Err(why) => return Ok(StatusStep::CheckFailed(why)),
                 Ok(report) if matches!(report.label, Label::NotOnServer | Label::SubmitInterrupted) => {
                     if stopped() {
@@ -156,17 +170,17 @@ impl Poller<'_> {
 
         // 4. One collect + classify before any cancel.
         if classify_first {
-            let outcome = match collect_and_classify(self.runner, &coords, &root) {
+            let outcome = match collect_and_classify(self.runner, coords, &root) {
                 Ok(outcome) => outcome,
                 Err(why) => return Ok(StatusStep::CheckFailed(why)),
             };
             if ended_before_cancel(&outcome) {
-                return self.record_ended_first(job_id, &coords, outcome);
+                return self.record_ended_first(job_id, coords, outcome);
             }
             // `.cancelled` is already on the server (an earlier send whose reply was lost): the
             // cancel is delivered, stopped or not, and nothing is re-sent (o22.11.4).
             if cancelled_on_server(&outcome) {
-                return self.record_delivered(job_id, &coords, outcome);
+                return self.record_delivered(job_id, coords, outcome);
             }
             if stopped() {
                 return Ok(StatusStep::CancelStopped { seen: Some(Seen::Outcome(outcome)), unready: None });
@@ -174,10 +188,10 @@ impl Poller<'_> {
         }
 
         // 5. Mark, then send. The mark's lock is released before `cancel.sh` is spawned.
-        if !self.mark_sent(job_id, &coords)? {
+        if !self.mark_sent(job_id, coords)? {
             return Ok(StatusStep::RowChanged);
         }
-        match cancel_call(self.runner, &coords, &root) {
+        match cancel_call(self.runner, coords, &root) {
             Err(why) => return Ok(failed(why)),
             Ok((0, _)) => {}
             Ok((rc, stderr)) => {
@@ -187,27 +201,11 @@ impl Poller<'_> {
         }
 
         // Delivered: the server decides what it is now.
-        let outcome = match collect_and_classify(self.runner, &coords, &root) {
+        let outcome = match collect_and_classify(self.runner, coords, &root) {
             Ok(outcome) => outcome,
             Err(why) => return Ok(StatusStep::CheckFailed(format!(".cancelled is on the server, but {why}"))),
         };
-        self.record_delivered(job_id, &coords, outcome)
-    }
-
-    /// The job, its coordinates and its pending cancel, if it is still a remote-live job.
-    fn pending_row(&self, job_id: &str) -> Result<Option<(Job, RemoteCoordinates, PendingCancel)>, AppError> {
-        let conn = self.db.lock()?;
-        let job = match get_job_conn(&conn, job_id) {
-            Ok(job) => job,
-            Err(AppError::NotFound(_)) => return Ok(None),
-            Err(e) => return Err(e),
-        };
-        let Some(coords) = coordinates(&job)? else { return Ok(None) };
-        if !is_live(job.status) {
-            return Ok(None);
-        }
-        let pending = pending_cancel_conn(&conn, job_id)?;
-        Ok(Some((job, coords, pending)))
+        self.record_delivered(job_id, coords, outcome)
     }
 
     /// Step 5's mark: `cancel_sent_at` set in one locked write that re-checks the request — `false`
@@ -224,7 +222,8 @@ impl Poller<'_> {
     }
 
     /// Step 4's "ended first": both columns cleared (the v21 CHECK refuses `cancel_sent_at` without
-    /// `cancel_requested_at`), the re-send bound restarted.
+    /// `cancel_requested_at`), the re-send bound restarted, and the note remembered for the job's
+    /// next `finalise` (o22.13.2) — on the click's path and the poller's alike.
     fn record_ended_first(&self, job_id: &str, coords: &RemoteCoordinates, outcome: Outcome) -> Result<StatusStep, AppError> {
         let cleared = {
             let conn = self.db.lock()?;
@@ -238,36 +237,44 @@ impl Poller<'_> {
             return Ok(StatusStep::RowChanged);
         }
         self.memory.clear_cancel_failures(job_id);
+        self.memory.set_ended_before_cancel(job_id);
         Ok(StatusStep::EndedBeforeCancel(outcome))
     }
 
     /// rc 0's write (o22.4.5): the delivered verdict recorded and both columns cleared in **one**
     /// locked write, if the row is still this live remote job. Row 3 `Cancelling` becomes status
-    /// `cancelling` with its text; every other verdict changes no status here (a terminal verdict's
-    /// write is the caller's, and NULLs the columns again). `job:status` when the row changed.
+    /// `cancelling` with its text and sets the sweep baseline (o22.13.4); every other verdict changes
+    /// no status here (a terminal verdict's write is the next ordinary step's, and NULLs the columns
+    /// again). A write that matched no row is `RowChanged`. `job:status` when the row changed.
     fn record_delivered(&self, job_id: &str, coords: &RemoteCoordinates, outcome: Outcome) -> Result<StatusStep, AppError> {
         let emit = {
             let conn = self.db.lock()?;
             let Some(before) = live_row(&conn, job_id, coords)? else {
                 return Ok(StatusStep::RowChanged);
             };
-            if matches!(outcome, Outcome::Cancelling { .. }) {
+            let written = if matches!(outcome, Outcome::Cancelling { .. }) {
                 conn.execute(
                     "UPDATE jobs SET status = 'cancelling', error_message = ?1, cancel_requested_at = NULL, \
                      cancel_sent_at = NULL \
                      WHERE id = ?2 AND remote_job_dir = ?3 AND status IN ('queued', 'running', 'cancelling')",
                     params![shown_message(&outcome), job_id, coords.job_dir],
-                )?;
+                )?
             } else {
                 conn.execute(
                     "UPDATE jobs SET cancel_requested_at = NULL, cancel_sent_at = NULL \
                      WHERE id = ?1 AND remote_job_dir = ?2 AND status IN ('queued', 'running', 'cancelling')",
                     params![job_id, coords.job_dir],
-                )?;
+                )?
+            };
+            if written == 0 {
+                return Ok(StatusStep::RowChanged);
             }
             status_to_emit(&before, &get_job_conn(&conn, job_id)?)
         };
         self.memory.clear_cancel_failures(job_id);
+        if let Outcome::Cancelling { session } = outcome {
+            self.memory.note_cancelling(job_id, session);
+        }
         if let Some(status) = emit {
             self.sink.status(job_id, status);
         }
@@ -276,4 +283,4 @@ impl Poller<'_> {
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;

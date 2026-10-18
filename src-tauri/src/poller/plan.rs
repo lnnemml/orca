@@ -15,8 +15,10 @@
 //! draft is polled once it has coordinates (o16.2).
 //!
 //! **The memory** ([`PollerMemory`]) lives for one launch and starts empty (o item 4): the
-//! fetching-outcome flag, the consecutive failed fetches (the strikes), the consecutive failed
-//! cancel sends (o22.4.5), and when each step last ran.
+//! fetching-outcome flag, the consecutive failed fetches (the strikes), the consecutive answered
+//! failures of a cancel's delivery (o22.4.5, o22.11.3), a `cancelling` job's sweeps without progress
+//! and the smallest session size seen for it (o22.5, o22.13.3–4), whether a delivery found the job
+//! ended first (o22.13.2), and when each step last ran.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
@@ -40,6 +42,11 @@ pub const MAX_FETCH_STRIKES: u32 = 3;
 /// pending cancel stop; Cancel is the manual retry (o22.4.5). Transport failures do not count: they
 /// retry on every step, like any check while the host is away.
 pub const MAX_CANCEL_FAILURES: u32 = 3;
+
+/// After this many sweeps of a `cancelling` job without progress (ADR-024 l row 3, o22.5,
+/// o22.13.3–4), automatic sweeps stop: status steps then only collect and classify, and Cancel is
+/// the manual retry (o22.12.1).
+pub const MAX_SWEEPS_WITHOUT_PROGRESS: u32 = 3;
 
 /// The poller's periods (o item 4: initial values, tunable, not a contract).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -184,10 +191,18 @@ pub struct JobMemory {
     /// Consecutive answered failures of a delivery (o22.11.3); [`MAX_CANCEL_FAILURES`] stops
     /// automatic re-sends (o22.4.5).
     pub cancel_failures: u32,
-    /// Consecutive sweeps of a `cancelling` job without progress (o22.5). Only reset here: a Cancel
-    /// click on a `cancelling` job restarts it ([`PollerMemory::restart_sweeps`], o22.12.1); the
-    /// sweeps that count it are 5.4a Part A2b's.
+    /// Sweeps of a `cancelling` job without progress (o22.5, o22.13.3): every sweep step the server
+    /// answered counts one, unless it shows the session below [`Self::min_session`]
+    /// ([`PollerMemory::count_sweep`]). [`MAX_SWEEPS_WITHOUT_PROGRESS`] stops automatic sweeps; a
+    /// Cancel click restarts it ([`PollerMemory::restart_sweeps`], o22.12.1).
     pub sweeps_without_progress: u32,
+    /// The smallest job-session size seen for the `cancelling` job (o22.13.4): the baseline progress
+    /// is measured against. It only falls, so a session that grows and shrinks back is not progress.
+    /// `None` until the first write of `cancelling` or the first sweep of this launch.
+    pub min_session: Option<usize>,
+    /// A delivery found the job ended before the cancel reached the server (o22.13.2): the job's next
+    /// `finalise` adds that note to the message it writes.
+    pub ended_before_cancel: bool,
     pub last_status: Option<Instant>,
     pub last_log: Option<Instant>,
     pub in_progress: bool,
@@ -251,15 +266,50 @@ impl PollerMemory {
     }
 
     /// Cancel was clicked on a `cancelling` job — the manual sweep retry (o22.12.1): the sweep
-    /// bound starts over.
+    /// bound starts over; the baseline is kept (o22.13.4).
     pub fn restart_sweeps(&self, job_id: &str) {
         if let Some(m) = self.lock().get_mut(job_id) {
             m.sweeps_without_progress = 0;
         }
     }
 
-    /// Seed the sweep count, for the tests: until Part A2b's sweeps count it, it is otherwise only
-    /// ever 0, and a reset of 0 proves nothing.
+    /// One sweep step the server answered (o22.13.3–4), in **one** operation under the lock — never
+    /// "the count read before the ssh calls + 1", so a `restart_sweeps` click during the sweep is not
+    /// overwritten. `session` is the classify's `Cancelling { session }`, `None` when it showed
+    /// anything else or nothing could be classified:
+    /// - no baseline yet → it is set, nothing counted;
+    /// - below the baseline → progress: the baseline falls to it, the count restarts at 0;
+    /// - otherwise (equal, larger, or no session) → counted.
+    ///
+    /// Returns the count now.
+    pub fn count_sweep(&self, job_id: &str, session: Option<usize>) -> u32 {
+        let mut jobs = self.lock();
+        let m = jobs.entry(job_id.to_string()).or_default();
+        match (session, m.min_session) {
+            (Some(session), None) => m.min_session = Some(session),
+            (Some(session), Some(baseline)) if session < baseline => {
+                m.min_session = Some(session);
+                m.sweeps_without_progress = 0;
+            }
+            _ => m.sweeps_without_progress += 1,
+        }
+        m.sweeps_without_progress
+    }
+
+    /// A write of `cancelling` (delivery's or the ordinary step's, o22.13.4): the baseline takes this
+    /// session size unless a smaller one was already seen — it only falls.
+    pub fn note_cancelling(&self, job_id: &str, session: usize) {
+        let mut jobs = self.lock();
+        let m = jobs.entry(job_id.to_string()).or_default();
+        m.min_session = Some(m.min_session.map_or(session, |baseline| baseline.min(session)));
+    }
+
+    /// A delivery found the job ended before the cancel reached the server (o22.13.2).
+    pub fn set_ended_before_cancel(&self, job_id: &str) {
+        self.lock().entry(job_id.to_string()).or_default().ended_before_cancel = true;
+    }
+
+    /// Seed the sweep count, for the tests: a reset of 0 proves nothing.
     #[cfg(test)]
     pub(crate) fn set_sweeps_without_progress(&self, job_id: &str, sweeps: u32) {
         self.lock().entry(job_id.to_string()).or_default().sweeps_without_progress = sweeps;
@@ -423,6 +473,49 @@ mod tests {
         let snapshot = sweep.find(concat!("memory.", "in_progress()")).expect("sweep snapshots the in-progress ids");
         let records = sweep.find(concat!("remote.", "retain(")).expect("sweep filters the records");
         assert!(memory_retain < snapshot && snapshot < records, "the records last, after M is released");
+    }
+
+    /// o22.13.4, the counting rule as one operation: no baseline → set, nothing counted; below it →
+    /// progress (baseline falls, count 0); equal, larger or no session → counted.
+    #[test]
+    fn a_sweep_counts_unless_the_session_falls_below_the_baseline() {
+        let m = PollerMemory::new();
+        assert_eq!(m.count_sweep("j", Some(4)), 0, "the first sweep of a launch sets the baseline");
+        assert_eq!(m.get("j").min_session, Some(4));
+        assert_eq!(m.count_sweep("j", Some(4)), 1, "equal: no progress");
+        assert_eq!(m.count_sweep("j", Some(5)), 2, "larger: no progress");
+        assert_eq!(m.count_sweep("j", None), 3, "nothing classified: counted");
+        assert_eq!(m.count_sweep("j", Some(3)), 0, "smaller: progress");
+        assert_eq!(m.get("j").min_session, Some(3));
+        m.note_cancelling("j", 7);
+        assert_eq!(m.get("j").min_session, Some(3), "a write of cancelling never raises the baseline");
+        m.note_cancelling("k", 7);
+        assert_eq!(m.get("k").min_session, Some(7), "and sets it when there is none");
+    }
+
+    /// o22.13.4: a session that oscillates (5, 6, 5, 6 …) is bounded — the baseline is the smallest
+    /// size, not the last. NEGATIVE CONTROL: track the last size (`min_session = Some(session)` on
+    /// every sweep, progress when it is below the last) → red (the count never reaches the bound).
+    #[test]
+    fn an_oscillating_session_reaches_the_bound() {
+        let m = PollerMemory::new();
+        m.note_cancelling("j", 5);
+        let counts: Vec<u32> = [6, 5, 6, 5, 6, 5].iter().map(|s| m.count_sweep("j", Some(*s))).collect();
+        assert_eq!(&counts[..3], [1, 2, 3], "{counts:?}");
+        assert!(counts[2] >= MAX_SWEEPS_WITHOUT_PROGRESS);
+    }
+
+    /// o22.12.1 / o22.13.4: `restart_sweeps` zeroes the count and keeps the baseline, so a session
+    /// equal to it is counted, not progress. NEGATIVE CONTROL: progress on `session <= baseline` →
+    /// red (the count stays 0).
+    #[test]
+    fn after_a_restart_a_session_equal_to_the_baseline_is_counted() {
+        let m = PollerMemory::new();
+        m.note_cancelling("j", 5);
+        m.set_sweeps_without_progress("j", MAX_SWEEPS_WITHOUT_PROGRESS);
+        m.restart_sweeps("j");
+        assert_eq!((m.get("j").sweeps_without_progress, m.get("j").min_session), (0, Some(5)), "the baseline is kept");
+        assert_eq!(m.count_sweep("j", Some(5)), 1);
     }
 
     #[test]

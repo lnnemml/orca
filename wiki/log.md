@@ -11233,3 +11233,86 @@ profile was never verified. Next: **5.3** `SshBackend` wiring.
 - Next session: 5.4a **A2b** (poller run order with the pending predicate in the read that acts,
   `cancelling` re-sweep with l row 3's bound, evidence fetch, ended-first → fetch), then **Part B**
   (commands, Withdraw removal, texts, UI) + Anton's live gate; B4 when uni returns.
+
+## [2026-10-18] feat | Unit 5.4a Part A2b — poller run order, sweep, evidence fetch
+- **The status step's run order (ADR-024 o22.13.1):** `Poller::live_remote` now reads the row and its
+  pending cancel (`pending_cancel_conn`) under **one** lock; while `cancel_requested_at` is set the
+  step runs the delivery body (`Poller::deliver_pending`, steps 2–6) instead of everything after that
+  read — before the `FetchStopped` short-circuit, inside the same `record_step` (one record apply).
+  `retry_fetch` keeps its pre-check. Refactor of A2a's delivery, only as far as this needs:
+  `deliver_cancel` does step 1 through `live_remote` (A2a's `pending_row` is gone — it was the same
+  read) and hands over to `deliver_pending(job, coords)`; `deliver` takes the read job.
+- **Delivery never downloads (o22.13.2):** `EndedBeforeCancel` / `CancelDelivered` are the step's
+  result; the next ordinary step finishes. The ended-first write sets `JobMemory.ended_before_cancel`
+  (click and poller alike); the job's next `finalise` adds `ENDED_FIRST_NOTE` **last** in its
+  transaction (after the parse), so a results-parse failure's rewrite keeps it. `record_delivered` now
+  acts on its row count (0 → `RowChanged`) and sets the sweep baseline on a `cancelling` write.
+- **The sweep of a `cancelling` row (o22.13.3–4, `poller/sweep.rs`):** ready (prepare → install if
+  needed → prepare) → `cancel.sh cancel` → collect + classify. A ready with no answer → `CheckFailed`,
+  nothing counted; an answered ready failure sends nothing and goes to the collect. One counting rule
+  (`PollerMemory::count_sweep`, one operation under M): any answered step counts +1 unless its classify
+  shows `session < min_session` (progress: baseline falls, count 0); no baseline → set, nothing
+  counted. `min_session` is the smallest size seen; every write of `cancelling` lowers it
+  (`note_cancelling`). `MAX_SWEEPS_WITHOUT_PROGRESS` = 3; then a step collects and classifies only
+  (`Shown`), changing neither the count nor the baseline. New `StatusStep::Swept { outcome, error }`
+  with its arm in `remote_state::next`; `Bounds`/`RemoteState` gain `sweeps { count, stopped }`. A
+  sweep's non-`Cancelling` verdict goes through `act_on` (the ordinary dispatch) in the same step.
+  `ContactRunner::answered()` (any call answered) is new in `remote/contact.rs`.
+- **The ordinary-step outcomes (o22.13.5):** row 3 on `queued`/`running` → one guarded write
+  (`record_cancelling`: `cancelling`, its text, both columns NULL; 0 rows → `RowChanged`) + baseline;
+  row 4 without `.started` unchanged; row 4 with `.started` and row 1 with `.cancelled` → the evidence
+  fetch (`poller/evidence.rs`): fetching flag, `fetch_remote`, then the terminal write
+  (`mark_cancelled_conn` via `cancel_row`, or `finalise(Failed, …"processes of the job may survive on
+  the server"…)`), then drain; never `detect_completion`, never a parse. A failed evidence fetch is a
+  strike with its own text; the `MAX_FETCH_STRIKES`-th writes the terminal status with "evidence not
+  downloaded: <why>; it stays on the server" and forgets the job even when the row changed.
+- **13.6 propagation in code:** `poller.rs` module doc, `shown_message`'s `Cancelling` text (now
+  `cancelling_message(session, stopped)`; no "handled in unit 5.4") and its `Cancelled` comment, the
+  `EndedBeforeCancel`/`CancelDelivered` docs; `poller/cancel.rs` docs (lines 2, 18, 21, 48–49);
+  `plan.rs` counter docs. TS mirrors (types only): `Sweeps`, `RemoteState.sweeps`, the `swept` step.
+- **Tests:** cargo 856 → **890** passed (28 ignored; 888 at the first report, + the two tests of the
+  follow-up below); `cargo build --all-targets` 0 warnings; tsc clean; vitest **1016 total**, unchanged —
+  1016 passed in the main checkout, where `resources/manual/` holds the corpus; **1014 passed + 2
+  skipped** without it (the two corpus tests, `render.corpus.test.ts` and
+  `selection-lookup.corpus.test.ts`, `it.skip` when no corpus is found — the verifier's worktree). Intended expectation changes in existing tests: the two `cancelling`
+  terminal-write tests now stop the sweeps first (a `cancelling` row sweeps) and record the request
+  mid-step (a `cancelling` row never holds one, o22.12.1); the `Cancelling` text check; the ended-first
+  test now expects the note; two TS `record()` helpers gain `sweeps`.
+- **Negative controls** (scratch copy, own target dir; each red, then restored; harness re-checked the
+  copy equals the tree after): N1 delivery after `FetchStopped`; N2a the pending predicate dropped from
+  the read that acts (only the retry's own pre-check left) → an rsync runs; N2b a separate locked read
+  in `run_status` → the source pin; N3 a delivery step that downloads; N4 `ended_before_cancel` not set
+  → no note (poller and click paths); N5 a sweep with no ready; N6a transport-only failures counted;
+  N6b answered `cancel.sh` failures not counted; N6c an answered collect failure after an rc-0 sweep not
+  counted; N14 an answered ready failure (permanently failing install) not counted → a 4th install;
+  N7a a baseline tracking the last size (plan + sweep tests); N7b `<=` as progress after a restart; N8 a
+  non-atomic increment (read before + 1); N9 the row-3 write without the NULLs; N10 the evidence path
+  through `detect_completion` → `failed`; N11 the terminal write before the LIST check; N12 a row 4
+  without `.started` that downloads (existing test); N13a the last evidence strike without the terminal
+  write; N13b the last strike counted and forgotten only after a successful write; N15 ready before the
+  stopped check; N16 the note in `finalize_job_conn`'s message (lost to the parse failure); N20 the sweep
+  bound dropped; N21 row 1 + `.cancelled` sent to the shown arm; N22/N23 the baseline not set by
+  delivery's / the row-3 write; C2/C3 (item-2 CHECK at the new terminal sites) `mark_cancelled_conn` /
+  `finalize_job_conn` without the NULLs → the v21 CHECK fails the evidence writes; N17 `answered` set
+  for any contact; N18 `Swept` mapped like `CheckFailed`. All 29 red. **Note:** N2b's variant stays
+  green against the behavioural test (N2c) — there is no seam to land a click between two reads inside
+  `run_status` — so the source pin is what guards it.
+- **Follow-up after the verifier's CODE review (PASS WITH FINDINGS, all LOW):**
+  - two controls that stayed green are now covered: `a_non_cancelling_verdict_after_an_answered_sweep_is_counted`
+    (13.8.3: an `Indeterminate` after an answered sweep counts, no 4th `cancel.sh`) — **X1** (count only
+    `Cancelling` / nothing-classified sweeps) red, restored green; and
+    `a_cancelling_row_at_the_fetch_bound_is_fetch_stopped_without_a_sweep` (13.8.4: fetching flag and
+    strikes at the maximum → `FetchStopped`, no call) — **X2** (the sweep branch before `FetchStopped`)
+    red, restored green. Same scratch harness, copy re-checked equal to the tree after.
+  - `record_delivered`'s 0-row branch is kept as a belt but is **untested by construction**: `live_row`
+    holds the same lock with the same predicate, so the `UPDATE` cannot match 0 rows (the verifier's X5
+    stays green).
+  - **Part B view question:** a sweep's answered error (e.g. `cancel.sh` rc 3) is dropped when its
+    classify gives a non-`Cancelling` verdict — that path's result is the step's (o22.13.3, last
+    bullet), so the record shows that verdict, not the failure. No code change; whether the view needs
+    it is for Part B.
+  - `modules/remote-jobs.md`: `mark_cancelled_conn` is the path of every poller terminal `cancelled`
+    write, `finalize_job_conn` of `completed`/`failed` (the earlier wording overstated it).
+- Next: verifier CODE on A2b; then Part B (commands, Withdraw removal, texts, the view of a pending
+  cancel / `cancelling` / sweep bound) and Anton's live gate; the B4-style live run on uni when it
+  returns.

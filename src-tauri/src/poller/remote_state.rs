@@ -11,8 +11,8 @@
 //! - **One mapping** ([`next`]): what each [`StatusStep`] does to the record, a `match` with no
 //!   wildcard (o19.3). [`next_with`] adds what every step's calls and bounds say: the **last
 //!   contact** (o22.8, the transport result of the step's last ssh/rsync call — `poll_log` is never
-//!   a writer, it holds no guard) and the cancel re-send bound (o22.4.5), both re-read on every
-//!   apply. A retry's outcome has its own mapping ([`after_retry`], o22.8: it no longer removes the
+//!   a writer, it holds no guard), the cancel re-send bound (o22.4.5) and the sweep bound of a
+//!   `cancelling` job (o22.13.3), each re-read on every apply. A retry's outcome has its own mapping ([`after_retry`], o22.8: it no longer removes the
 //!   record).
 //! - **Every write holds the job's in-flight guard** (o19.4): the status step applies its change
 //!   ([`RemoteStates::apply_with_contact`], which takes the guard) before the guard is released;
@@ -33,7 +33,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use serde::Serialize;
 
-use super::plan::{PollerMemory, MAX_CANCEL_FAILURES, MAX_FETCH_STRIKES};
+use super::plan::{PollerMemory, MAX_CANCEL_FAILURES, MAX_FETCH_STRIKES, MAX_SWEEPS_WITHOUT_PROGRESS};
 use super::{is_fetching, shown_message, PollerSink, Seen, StatusStep};
 use crate::in_flight::InFlightGuard;
 use crate::remote::classify::Outcome;
@@ -87,17 +87,39 @@ impl CancelSends {
     }
 }
 
+/// The sweep bound of a `cancelling` job as the view sees it (o22.5, o22.13.3), re-read from
+/// `PollerMemory`'s counter on every apply, like [`FetchState`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct Sweeps {
+    /// Sweeps without progress this launch.
+    pub count: u32,
+    /// `count >= MAX_SWEEPS_WITHOUT_PROGRESS`: "processes of the job still run after 3 sweeps";
+    /// automatic sweeps stopped until Cancel is clicked again (o22.12.1).
+    pub stopped: bool,
+}
+
+impl Sweeps {
+    pub fn from_count(count: u32) -> Self {
+        Sweeps { count, stopped: count >= MAX_SWEEPS_WITHOUT_PROGRESS }
+    }
+}
+
 /// The bounds a record shows, read from `PollerMemory` at the apply.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Bounds {
     pub fetch: FetchState,
     pub cancel: CancelSends,
+    pub sweeps: Sweeps,
 }
 
 impl Bounds {
     fn read(memory: &PollerMemory, job_id: &str) -> Bounds {
         let m = memory.get(job_id);
-        Bounds { fetch: FetchState::from_strikes(m.strikes), cancel: CancelSends::from_failures(m.cancel_failures) }
+        Bounds {
+            fetch: FetchState::from_strikes(m.strikes),
+            cancel: CancelSends::from_failures(m.cancel_failures),
+            sweeps: Sweeps::from_count(m.sweeps_without_progress),
+        }
     }
 }
 
@@ -115,6 +137,8 @@ pub struct RemoteState {
     pub last_contact: Option<Contact>,
     /// The cancel re-send bound (o22.4.5).
     pub cancel_sends: CancelSends,
+    /// The sweep bound of a `cancelling` job (o22.13.3).
+    pub sweeps: Sweeps,
 }
 
 /// What `remote_job_state` returns: the job's record (`None`: no record) and the sequence's
@@ -188,6 +212,14 @@ pub fn next(old: Option<&RemoteState>, step: &StatusStep, fetch: FetchState) -> 
             state.known = Some(if is_fetching(outcome) { Known::Fetching } else { Known::Shown(outcome.clone()) });
             state.check_error = None;
         }
+        // A sweep of a `cancelling` job (o22.13.3): what it classified, when it could, and the
+        // failure the server answered with, if any (the sweep bound is re-read in `next_with`).
+        StatusStep::Swept { outcome, error } => {
+            if let Some(outcome) = outcome {
+                state.known = Some(Known::Shown(outcome.clone()));
+            }
+            state.check_error = error.clone();
+        }
         StatusStep::Busy | StatusStep::RowChanged => return Change::Nothing,
         StatusStep::NotLive | StatusStep::Cancelled | StatusStep::Finalised { .. } => return Change::Remove,
     }
@@ -195,8 +227,9 @@ pub fn next(old: Option<&RemoteState>, step: &StatusStep, fetch: FetchState) -> 
     Change::Set(state)
 }
 
-/// [`next`], plus what the step's calls and the cancel bound say (o22.4.5, o22.8): a step that
-/// sets the record also takes `bounds.cancel` and, when it made a call, `contact` (no call keeps
+/// [`next`], plus what the step's calls and the cancel and sweep bounds say (o22.4.5, o22.8,
+/// o22.13.3): a step that sets the record also takes `bounds.cancel`, `bounds.sweeps` and, when it
+/// made a call, `contact` (no call keeps
 /// the last one); a step that changes nothing else (`RowChanged` after a call) still updates an
 /// existing record's `last_contact` — every guarded call writes it — but creates none.
 pub fn next_with(old: Option<&RemoteState>, step: &StatusStep, bounds: Bounds, contact: Option<Contact>) -> Change {
@@ -204,6 +237,7 @@ pub fn next_with(old: Option<&RemoteState>, step: &StatusStep, bounds: Bounds, c
         Change::Remove => Change::Remove,
         Change::Set(mut state) => {
             state.cancel_sends = bounds.cancel;
+            state.sweeps = bounds.sweeps;
             if let Some(contact) = contact {
                 state.last_contact = Some(contact);
             }
@@ -235,6 +269,7 @@ pub fn after_retry(old: Option<&RemoteState>, bounds: Bounds, contact: Option<Co
     state.last_contact = Some(contact);
     state.fetch = bounds.fetch;
     state.cancel_sends = bounds.cancel;
+    state.sweeps = bounds.sweeps;
     Change::Set(state)
 }
 
@@ -534,6 +569,7 @@ mod tests {
             fetch: FetchState::from_strikes(3),
             last_contact: Some(Contact::Failed("ssh: timeout".into())),
             cancel_sends: CancelSends::from_failures(1),
+            sweeps: Sweeps::from_count(3),
         };
         assert_eq!(
             serde_json::to_value(RemoteStateRead { seq: 7, state: Some(state) }).unwrap(),
@@ -544,7 +580,8 @@ mod tests {
                     "check_error": "x",
                     "fetch": { "strikes": 3, "stopped": true },
                     "last_contact": { "kind": "failed", "detail": "ssh: timeout" },
-                    "cancel_sends": { "failures": 1, "stopped": false }
+                    "cancel_sends": { "failures": 1, "stopped": false },
+                    "sweeps": { "count": 3, "stopped": true }
                 }
             })
         );
@@ -560,7 +597,7 @@ mod tests {
     // ---- o22: the delivery's steps, the last contact, the cancel bound, a retry's outcome ----------
 
     fn bounds(strikes: u32, failures: u32) -> Bounds {
-        Bounds { fetch: FetchState::from_strikes(strikes), cancel: CancelSends::from_failures(failures) }
+        Bounds { fetch: FetchState::from_strikes(strikes), cancel: CancelSends::from_failures(failures), sweeps: Sweeps::default() }
     }
 
     /// o22.4: what each delivery step does to the record — from a record that holds a label and a
@@ -653,6 +690,26 @@ mod tests {
             panic!("sets")
         };
         assert_eq!(third.cancel_sends, CancelSends { failures: 3, stopped: true }, "the third failure already reads stopped");
+    }
+
+    /// o22.13.3: a sweep shows what it classified (`known`) and the failure the server answered with
+    /// (`check_error`); one that classified nothing keeps what was seen. The sweep bound is the
+    /// counter's now, the third reading stopped. NEGATIVE CONTROL: map `Swept` like `CheckFailed`
+    /// (keep `known`) → red.
+    #[test]
+    fn a_sweep_maps_to_its_change_and_carries_the_sweep_bound() {
+        let cancelling = Outcome::Cancelling { session: 2 };
+        let old = with(Some(Known::Shown(Outcome::Cancelling { session: 3 })), Some("ssh timed out"));
+        let swept = StatusStep::Swept { outcome: Some(cancelling.clone()), error: None };
+        assert_eq!(next(Some(&old), &swept, NO_STRIKES), set(with(Some(Known::Shown(cancelling.clone())), None)));
+        let failed = StatusStep::Swept { outcome: Some(cancelling.clone()), error: Some("cancel.sh exited 3".into()) };
+        assert_eq!(next(None, &failed, NO_STRIKES), set(with(Some(Known::Shown(cancelling)), Some("cancel.sh exited 3"))));
+        let blind = StatusStep::Swept { outcome: None, error: Some("collect: broken".into()) };
+        assert_eq!(next(Some(&old), &blind, NO_STRIKES), set(with(old.known.clone(), Some("collect: broken"))));
+        let third = Bounds { sweeps: Sweeps::from_count(MAX_SWEEPS_WITHOUT_PROGRESS), ..bounds(0, 0) };
+        let Change::Set(after) = next_with(Some(&old), &swept, third, Some(Contact::Ok)) else { panic!("sets") };
+        assert_eq!(after.sweeps, Sweeps { count: 3, stopped: true }, "the third sweep without progress reads stopped");
+        assert_eq!(Sweeps::from_count(2), Sweeps { count: 2, stopped: false });
     }
 
     /// o22.8 (amends o19.3): a retry no longer removes the record. No call → nothing; no answer →

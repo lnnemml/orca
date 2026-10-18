@@ -31,7 +31,7 @@ use crate::ssh_backend::tests::{
 // ---- the fake server -------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Call {
+pub(in crate::poller) enum Call {
     Prepare,
     Install,
     Label,
@@ -44,7 +44,7 @@ enum Call {
     List,
     PollLog,
 }
-use Call::*;
+pub(in crate::poller) use Call::*;
 
 fn call_of(program: &str, stdin: &[u8]) -> (Call, Vec<String>) {
     if program == RSYNC_PROGRAM {
@@ -74,7 +74,7 @@ fn call_of(program: &str, stdin: &[u8]) -> (Call, Vec<String>) {
 
 /// Answers each call with `respond`, records its kind, checks the database lock is free on every
 /// call, and keeps the pending cancel each `cancel.sh` call found.
-struct Fake<'a> {
+pub(in crate::poller) struct Fake<'a> {
     r: &'a Remote,
     respond: Box<dyn Fn(Call, &[String]) -> Reply + 'a>,
     calls: Mutex<Vec<Call>>,
@@ -82,15 +82,15 @@ struct Fake<'a> {
 }
 
 impl<'a> Fake<'a> {
-    fn new(r: &'a Remote, respond: impl Fn(Call, &[String]) -> Reply + 'a) -> Self {
+    pub(in crate::poller) fn new(r: &'a Remote, respond: impl Fn(Call, &[String]) -> Reply + 'a) -> Self {
         Fake { r, respond: Box::new(respond), calls: Mutex::default(), at_cancel: Mutex::default() }
     }
 
-    fn calls(&self) -> Vec<Call> {
+    pub(in crate::poller) fn calls(&self) -> Vec<Call> {
         self.calls.lock().unwrap().clone()
     }
 
-    fn sends(&self) -> usize {
+    pub(in crate::poller) fn sends(&self) -> usize {
         self.calls().iter().filter(|c| **c == Cancel).count()
     }
 }
@@ -109,17 +109,17 @@ impl CommandRunner for Fake<'_> {
 
 /// Nothing of the job ever ran and no daemon holds it: row 11 `ReEnqueue` — an outcome a delivery
 /// goes on from.
-fn waiting() -> Vec<u8> {
+pub(in crate::poller) fn waiting() -> Vec<u8> {
     snapshot(false, None, None, (None, None))
 }
 
 /// `.cancelled`, nothing ran: row 4.
-fn cancelled() -> Vec<u8> {
+pub(in crate::poller) fn cancelled() -> Vec<u8> {
     snapshot(true, None, None, (None, None))
 }
 
 /// `.exit_code` 1, no `.cancelled`: row 6.
-fn failed_exit() -> Vec<u8> {
+pub(in crate::poller) fn failed_exit() -> Vec<u8> {
     snapshot(false, Some("1\n"), Some("x"), (None, None))
 }
 
@@ -127,15 +127,22 @@ const BOOT: &str = "0f6e3c1a-5b7d-4c2e-9a8b-1d2e3f4a5b6c";
 
 /// `.cancelled`, `.started` in this boot, the wrapper gone, one member still in the job dir: row 3
 /// `Cancelling { session: 1 }`.
-fn cancelling() -> Vec<u8> {
+pub(in crate::poller) fn cancelling() -> Vec<u8> {
+    cancelling_session(1)
+}
+
+/// `.cancelled`, `.started` in this boot, the wrapper gone, `members` processes still in the job
+/// dir: row 3 `Cancelling { session: members }`; with 0 nothing runs: row 4 `Cancelled { started:
+/// true }`.
+pub(in crate::poller) fn cancelling_session(members: usize) -> Vec<u8> {
     let started = format!("pid=4242\npgid=4242\nsid=4242\nboot_id={BOOT}\nstarttime=777\nstarted_at=1\n");
     let coords = expected_coords();
+    let session: String = (0..members).map(|i| format!("member {}\n{}", 70001 + i, rec("cwd", &coords.job_dir))).collect();
     format!(
-        "{SNAPSHOT_HEADER}\n{}{}proc collected\nwrapper_stat -\nwrapper_cmdline -\nsid_stat -\nmembers 1\nmember 70001\n{}\
+        "{SNAPSHOT_HEADER}\n{}{}proc collected\nwrapper_stat -\nwrapper_cmdline -\nsid_stat -\nmembers {members}\n{session}\
          sockets 1\n{}{}nodaemon\nexit_code -\ncancelled yes\ntail -\n{}end\n",
         rec("boot_id", &format!("{BOOT}\n")),
         rec("started", &started),
-        rec("cwd", &coords.job_dir),
         rec("socket", &coords.socket),
         rec("net_unix", "Num       RefCount Protocol Flags    Type St Inode Path\n"),
         rec("started", &started),
@@ -146,7 +153,7 @@ fn cancelling() -> Vec<u8> {
 /// The default server: ready, the job enqueued (label → the classifier), mkjob ok, `cancel.sh`
 /// rc 0; the collects answer `collects` in turn (the last repeats); download and listing over the
 /// server dir.
-fn server<'a>(r: &'a Remote, collects: Vec<Vec<u8>>) -> impl Fn(Call, &[String]) -> Reply + 'a {
+pub(in crate::poller) fn server<'a>(r: &'a Remote, collects: Vec<Vec<u8>>) -> impl Fn(Call, &[String]) -> Reply + 'a {
     let collects = Mutex::new(collects);
     move |call, values| match call {
         Prepare => prepare_ready(values),
@@ -165,26 +172,26 @@ fn server<'a>(r: &'a Remote, collects: Vec<Vec<u8>>) -> impl Fn(Call, &[String])
     }
 }
 
-fn timeout() -> Reply {
+pub(in crate::poller) fn timeout() -> Reply {
     Err(TransportError::Timeout { program: "ssh".into(), secs: 60 })
 }
 
 /// The trampoline's `not-installed` reply.
-fn not_installed(values: &[String]) -> Reply {
+pub(in crate::poller) fn not_installed(values: &[String]) -> Reply {
     ok(format!("{}not-installed\nend\n", echo(RUN_HEADER, values)).into_bytes())
 }
 
-fn request(r: &Remote) {
+pub(in crate::poller) fn request(r: &Remote) {
     r.w.sql("UPDATE jobs SET cancel_requested_at = '2026-10-17 10:00:00'");
 }
 
 /// Requested and marked, as a delivery whose reply was lost leaves it.
-fn request_and_mark(r: &Remote) {
+pub(in crate::poller) fn request_and_mark(r: &Remote) {
     r.w.sql("UPDATE jobs SET cancel_requested_at = '2026-10-17 10:00:00', cancel_sent_at = '2026-10-17 10:00:01'");
 }
 
 /// One delivery as the cancel command runs it: the guard claimed, delivery and its record applied.
-fn deliver(r: &Remote, fake: &Fake<'_>) -> StatusStep {
+pub(in crate::poller) fn deliver(r: &Remote, fake: &Fake<'_>) -> StatusStep {
     let guard = r.in_flight.acquire(JOB).unwrap();
     r.poller(fake).deliver_and_record(&guard).unwrap()
 }
@@ -421,8 +428,9 @@ fn indeterminate_before_the_cancel_still_sends() {
 
 /// Round 2 M1: a cancel marked but never sent (the send's connection failed) on a job that then
 /// completes ends first with **both** columns cleared, and the next ordinary step fetches and
-/// finalises it `completed`. NEGATIVE CONTROL: clear only `cancel_requested_at` in the ended-first
-/// write → red (the v21 CHECK fails it: `cancel_sent_at` without a request).
+/// finalises it `completed` — with the ended-first note (o22.13.2). NEGATIVE CONTROL: clear only
+/// `cancel_requested_at` in the ended-first write → red (the v21 CHECK fails it: `cancel_sent_at`
+/// without a request).
 #[test]
 fn a_marked_but_unsent_cancel_on_a_job_that_completed_ends_first_and_completes() {
     let r = Remote::new();
@@ -434,7 +442,7 @@ fn a_marked_but_unsent_cancel_on_a_job_that_completed_ends_first_and_completes()
     assert_eq!(fake.sends(), 0);
     let step = r.poller(&fake).status_step(JOB).unwrap();
     assert!(matches!(step, StatusStep::Finalised { status: JobStatus::Completed, .. }), "{step:?}");
-    assert_eq!(r.row(), (JobStatus::Completed, None));
+    assert_eq!(r.row(), (JobStatus::Completed, Some(crate::poller::ENDED_FIRST_NOTE.into())));
 }
 
 /// A late cancel (row 2: `.cancelled`, a clean result) seen before the send is not "ended first":
@@ -561,6 +569,7 @@ fn a_delivered_cancelling_verdict_writes_cancelling_and_clears_the_columns() {
     assert_eq!(r.row(), (JobStatus::Cancelling, shown_message(&Outcome::Cancelling { session: 1 })));
     assert_eq!(pending_cancel(&r), (None, None));
     assert_eq!(r.sink.events(), [Event::Status(JOB.into(), JobStatus::Cancelling)]);
+    assert_eq!(r.memory.get(JOB).min_session, Some(1), "delivery's write of cancelling sets the baseline (o22.13.4)");
 }
 
 /// o22.4.3: a `queued` job not on the server — the withdraw's tail: mkjob, then straight to the
@@ -884,4 +893,169 @@ fn the_cancel_stopped_wire_shape() {
     assert_eq!(serde_json::to_value(&label).unwrap()["detail"]["seen"], serde_json::json!({ "kind": "label", "detail": "not_on_server" }));
     let unready = StatusStep::CancelStopped { seen: None, unready: Some("prepare: x".into()) };
     assert_eq!(serde_json::to_value(&unready).unwrap()["detail"], serde_json::json!({ "seen": null, "unready": "prepare: x" }));
+}
+
+// ---- o22.13: the status step's run order (A2b) ------------------------------------------------
+
+/// o22.13.1 / control: delivery runs **before** the fetch bound's short-circuit — a pending cancel on
+/// a job whose fetching flag is set and whose strikes are at the maximum is still sent (Decision i:
+/// delivery first on reconnect). NEGATIVE CONTROL: move the pending branch after the `FetchStopped`
+/// check in `run_status` → red (`FetchStopped`, no `cancel.sh`).
+#[test]
+fn a_pending_cancel_is_delivered_before_the_fetch_bound() {
+    let r = Remote::new();
+    request(&r);
+    r.memory.set_fetching(JOB);
+    for _ in 0..crate::poller::plan::MAX_FETCH_STRIKES {
+        r.memory.strike(JOB);
+    }
+    let fake = Fake::new(&r, server(&r, vec![waiting(), cancelled()]));
+    assert_eq!(r.poller(&fake).status_step(JOB).unwrap(), StatusStep::CancelDelivered(Outcome::Cancelled { started: false }));
+    assert_eq!(fake.sends(), 1, "the pending cancel is sent");
+    assert_eq!(pending_cancel(&r), (None, None));
+}
+
+/// o22.13.1 / o22.12.6 / control: a cancel recorded **after** `retry_fetch`'s pre-check is caught by
+/// the step's own read — the step is the delivery, and no rsync runs for a job whose cancel is
+/// pending, although the server reports a finished job. NEGATIVE CONTROL: take the pending
+/// predicate out of the read that acts (leave only the retry's own pre-check, a separate read) →
+/// red (the ordinary step downloads).
+#[test]
+fn a_cancel_recorded_after_the_retrys_pre_check_is_delivered_and_nothing_is_downloaded() {
+    let r = Remote::new();
+    r.w.sql("UPDATE jobs SET status = 'running'");
+    r.finished(OUTPUT, "0\n");
+    let fake = Fake::new(&r, server(&r, vec![completed()]));
+    let guard = r.in_flight.acquire(JOB).unwrap();
+    crate::commands::jobs::refuse_while_cancel_pending(&r.w.db.lock().unwrap(), JOB).unwrap();
+    request(&r); // the click lands between the pre-check and the step's read
+    let step = r.poller(&fake).run_and_record(&guard).unwrap();
+    assert_eq!(step, StatusStep::EndedBeforeCancel(Outcome::Completed { late_cancel: false }));
+    assert!(!fake.calls().contains(&Download), "no rsync while a cancel is pending: {:?}", fake.calls());
+}
+
+/// o22.13.1, the pin (deterministic): the pending predicate lives in the step's **one** locked read
+/// — `live_remote` reads the row and `pending_cancel_conn` under a single `lock()` — and
+/// `run_status` takes no other lock and reads no other pending predicate before it branches.
+/// NEGATIVE CONTROL: read the pending cancel in a separate locked read in `run_status` → red.
+#[test]
+fn the_pending_predicate_is_read_in_the_read_that_acts() {
+    let src = include_str!("../../poller.rs");
+    let body = |signature: &str| {
+        let start = src.find(signature).unwrap_or_else(|| panic!("{signature} exists"));
+        &src[start..start + src[start..].find("\n    }\n").expect("it ends")]
+    };
+    let read = body(concat!("fn ", "live_remote("));
+    assert_eq!(read.matches(".lock()").count(), 1, "one lock: {read}");
+    assert!(read.contains(concat!("pending_cancel_", "conn(")) && read.contains(concat!("get_job_", "conn(")), "{read}");
+    let step = body(concat!("fn ", "run_status("));
+    let branch = step.find(concat!("self.deliver_", "pending(")).expect("the step delivers");
+    let stopped = step.find(concat!("StatusStep::", "FetchStopped")).expect("the fetch bound");
+    assert!(branch < stopped, "delivery comes before the fetch bound");
+    assert!(!step.contains(".lock()") && !step.contains(concat!("pending_cancel_", "conn(")), "a second read in run_status: {step}");
+}
+
+/// o22.13.2 / controls: a poller-delivered ended-first job (row 5) — the step is the delivery, which
+/// **downloads nothing**; the next ordinary step fetches and finalises `completed` with the note "the
+/// job finished before the cancel reached the server" as its whole message. NEGATIVE CONTROLS: a
+/// delivery that downloads (fetch in `record_ended_first`'s caller) → red (an rsync in step 1);
+/// drop `set_ended_before_cancel` → red (`completed` without the note).
+#[test]
+fn a_poller_delivered_ended_first_job_downloads_nothing_and_finishes_with_the_note() {
+    let r = Remote::new();
+    r.w.sql("UPDATE jobs SET status = 'running'");
+    request(&r);
+    r.finished(OUTPUT, "0\n");
+    let fake = Fake::new(&r, server(&r, vec![completed()]));
+    let poller = r.poller(&fake);
+    assert_eq!(poller.status_step(JOB).unwrap(), StatusStep::EndedBeforeCancel(Outcome::Completed { late_cancel: false }));
+    assert_eq!(fake.calls(), [Prepare, Collect], "delivery never downloads");
+    assert!(r.memory.get(JOB).ended_before_cancel);
+    let step = poller.status_step(JOB).unwrap();
+    assert!(matches!(step, StatusStep::Finalised { status: JobStatus::Completed, .. }), "{step:?}");
+    assert_eq!(r.row(), (JobStatus::Completed, Some(crate::poller::ENDED_FIRST_NOTE.into())));
+    assert_eq!(r.memory.get(JOB), Default::default(), "the note is forgotten with the job");
+}
+
+/// o22.13.2: a job that failed before the cancel (row 6) keeps `detect_completion`'s message, with
+/// the note appended after it.
+#[test]
+fn a_job_that_failed_first_gets_the_note_after_its_message() {
+    let r = Remote::new();
+    r.w.sql("UPDATE jobs SET status = 'running'");
+    request(&r);
+    r.finished("ORCA finished by error termination in SCF\n", "1\n");
+    let fake = Fake::new(&r, server(&r, vec![failed_exit()]));
+    let poller = r.poller(&fake);
+    assert!(matches!(poller.status_step(JOB).unwrap(), StatusStep::EndedBeforeCancel(_)));
+    let step = poller.status_step(JOB).unwrap();
+    assert!(matches!(step, StatusStep::Finalised { status: JobStatus::Failed, .. }), "{step:?}");
+    let message = r.row().1.unwrap();
+    let (first, note) = message.rsplit_once('\n').expect("two parts");
+    assert!(first.contains("exit code 1"), "detect_completion's message first: {message}");
+    assert_eq!(note, crate::poller::ENDED_FIRST_NOTE);
+}
+
+/// o22.13.2 / control: a results-parse failure after an ended-first `finalise` rewrites the message
+/// (`set_job_parse_error_conn`), and the note survives it. NEGATIVE CONTROL: put the note in the
+/// message `finalize_job_conn` writes instead of adding it after the parse → red (the parse error
+/// replaces it).
+#[test]
+fn a_results_parse_failure_keeps_the_ended_first_note() {
+    let r = Remote::new();
+    r.w.sql("UPDATE jobs SET status = 'running'");
+    request(&r);
+    r.finished(OUTPUT, "0\n");
+    // A relaxed scan whose curve does not parse: `parse_and_store` fails (results::tests).
+    std::fs::write(r.server().join("input.property.txt"), "x\n").unwrap();
+    std::fs::write(r.server().join("input.relaxscanact.dat"), "foo bar\nbaz qux\n").unwrap();
+    let fake = Fake::new(&r, server(&r, vec![completed()]));
+    let poller = r.poller(&fake);
+    assert!(matches!(poller.status_step(JOB).unwrap(), StatusStep::EndedBeforeCancel(_)));
+    let step = poller.status_step(JOB).unwrap();
+    assert!(matches!(step, StatusStep::Finalised { status: JobStatus::Completed, .. }), "{step:?}");
+    let message = r.row().1.unwrap();
+    assert!(message.starts_with("results parse failed"), "the parse failure is recorded: {message}");
+    assert!(message.ends_with(crate::poller::ENDED_FIRST_NOTE), "the note survives it: {message}");
+}
+
+/// o22.13.5 / control: row 3 seen by an **ordinary** step on a `running` row is one write — status
+/// `cancelling`, its text, both pending-cancel columns NULL — so a request recorded between the
+/// step's read and that write does not survive on the `cancelling` row (the v21 CHECK admits it
+/// there, so only this pins it). The write sets the sweep baseline (o22.13.4). NEGATIVE CONTROL: drop
+/// the NULLs from `record_cancelling`'s `UPDATE` → red.
+#[test]
+fn row_3_on_a_running_row_writes_cancelling_and_clears_a_request_recorded_mid_step() {
+    let r = Remote::new();
+    r.w.sql("UPDATE jobs SET status = 'running'");
+    let base = server(&r, vec![cancelling()]);
+    let fake = Fake::new(&r, |call, values| {
+        if call == Collect {
+            request_and_mark(&r);
+        }
+        base(call, values)
+    });
+    assert_eq!(r.poller(&fake).status_step(JOB).unwrap(), StatusStep::Shown(Outcome::Cancelling { session: 1 }));
+    assert_eq!(fake.calls(), [Collect], "an ordinary step: no ready, no cancel.sh");
+    assert_eq!(r.row(), (JobStatus::Cancelling, Some(crate::poller::cancelling_message(1, false))));
+    assert_eq!(pending_cancel(&r), (None, None), "a cancelling row never holds a request");
+    assert_eq!(r.memory.get(JOB).min_session, Some(1), "the baseline");
+    assert_eq!(r.sink.events(), [Event::Status(JOB.into(), JobStatus::Cancelling)]);
+    assert_eq!(record(&r).unwrap().known, Some(Known::Shown(Outcome::Cancelling { session: 1 })));
+}
+
+/// The row-3 write is guarded on the row: a row that turned terminal under the step is
+/// `RowChanged`, nothing written, no baseline.
+#[test]
+fn row_3_on_a_row_that_changed_is_row_changed() {
+    let r = Remote::new();
+    r.w.sql("UPDATE jobs SET status = 'running'");
+    let base = server(&r, vec![cancelling()]);
+    let fake = Fake::new(&r, |call, values| {
+        r.w.sql("UPDATE jobs SET status = 'failed', error_message = 'someone else'");
+        base(call, values)
+    });
+    assert_eq!(r.poller(&fake).status_step(JOB).unwrap(), StatusStep::RowChanged);
+    assert_eq!(r.row(), (JobStatus::Failed, Some("someone else".into())));
+    assert_eq!(r.memory.get(JOB).min_session, None);
 }

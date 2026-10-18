@@ -490,7 +490,9 @@ pub(super) fn pending_cancel(r: &Remote) -> (Option<String>, Option<String>) {
         .unwrap()
 }
 
-/// The row as a delivery leaves it (o22.4.5): `cancelling`, the cancel requested and sent.
+/// The row as a delivery leaves it (o22.4.5), with the cancel requested and sent. Since o22.12.1
+/// every write of `cancelling` clears both columns, so this is a `queued`/`running` row whose
+/// request was recorded after the step's read; the v21 CHECK still admits it on `cancelling`.
 fn cancelling_with_a_sent_cancel(r: &Remote) {
     r.w.sql(
         "UPDATE jobs SET status = 'cancelling', cancel_requested_at = '2026-10-17 10:00:00', \
@@ -499,26 +501,42 @@ fn cancelling_with_a_sent_cancel(r: &Remote) {
     assert_eq!(pending_cancel(r).0.as_deref(), Some("2026-10-17 10:00:00"), "the fixture");
 }
 
+/// A request and a mark recorded while a step runs (a click between the step's read and its write).
+fn request_mid_step(r: &Remote) {
+    r.w.sql("UPDATE jobs SET cancel_requested_at = '2026-10-17 10:00:00', cancel_sent_at = '2026-10-17 10:00:01'");
+}
+
 /// A `cancelling` job is a poller candidate and its status step runs (no label call: it started).
-/// The server's `Cancelled` writes it terminal through `mark_cancelled_conn` and clears both
-/// columns in that write. NEGATIVE CONTROLS: drop `'cancelling'` from `candidates`' SQL → the
-/// candidate assert; drop `Cancelling` from `is_live` → `NotLive`; drop it from `record_cancelled`'s
-/// `from` list → the row stays `cancelling`; drop the NULLs from `mark_cancelled_conn` → the v21
-/// CHECK fails the write (an `Err`).
+/// With its sweeps stopped (o22.13.3) the step only collects; the server's `Cancelled` writes it
+/// terminal through `mark_cancelled_conn` from `cancelling`. A request recorded while a `running`
+/// row's step runs is cleared by that same terminal write (o22.2). NEGATIVE CONTROLS: drop
+/// `'cancelling'` from `candidates`' SQL → the candidate assert; drop `Cancelling` from `is_live` →
+/// `NotLive`; drop it from `record_cancelled`'s `from` list → the row stays `cancelling`; drop the
+/// NULLs from `mark_cancelled_conn` → the v21 CHECK fails the write (an `Err`).
 #[test]
 fn a_cancelling_job_is_polled_and_its_cancelled_verdict_clears_the_pending_cancel() {
     let r = Remote::new();
-    cancelling_with_a_sent_cancel(&r);
+    r.w.sql("UPDATE jobs SET status = 'cancelling'");
     let c = candidates(&r.w.db.lock().unwrap()).unwrap();
     assert_eq!(c.jobs.iter().map(|j| (j.id.as_str(), j.status)).collect::<Vec<_>>(), [(JOB, JobStatus::Cancelling)]);
     assert!(c.unreadable.is_empty(), "{:?}", c.unreadable);
 
+    r.memory.set_sweeps_without_progress(JOB, plan::MAX_SWEEPS_WITHOUT_PROGRESS);
     let fake = Fake::new(&r, server(&r, snapshot(true, None, None, (None, None))));
     assert_eq!(r.poller(&fake).status_step(JOB).unwrap(), StatusStep::Cancelled);
-    assert_eq!(fake.kinds(), [Collect], "a cancelling job started: no label call");
+    assert_eq!(fake.kinds(), [Collect], "a cancelling job started: no label call; stopped: no sweep");
     let job = r.w.job();
     assert_eq!(job.status, JobStatus::Cancelled);
     assert!(job.completed_at.is_some());
+
+    let r = Remote::new();
+    r.w.sql("UPDATE jobs SET status = 'running'");
+    let base = server(&r, snapshot(true, None, None, (None, None)));
+    let fake = Fake::new(&r, |kind, values| {
+        request_mid_step(&r);
+        base(kind, values)
+    });
+    assert_eq!(r.poller(&fake).status_step(JOB).unwrap(), StatusStep::Cancelled);
     assert_eq!(pending_cancel(&r), (None, None), "the terminal write clears the pending cancel");
 }
 
@@ -546,15 +564,23 @@ fn a_shown_outcome_on_a_cancelling_job_is_written_and_keeps_the_pending_cancel()
     assert_eq!(pending_cancel(&r), (Some("2026-10-17 10:00:00".into()), None), "queued → running keeps the request");
 }
 
-/// The late cancel (row 2) of a `cancelling` job is fetched and finalised (`finalize_job_conn`),
-/// and the same write clears the pending cancel. NEGATIVE CONTROL: drop the NULLs from
+/// The late cancel (row 2) of a `cancelling` job (sweeps stopped: collect only) is fetched and
+/// finalised (`finalize_job_conn`), and the same write clears a pending cancel the CHECK admits on
+/// the row (recorded while the download ran). NEGATIVE CONTROL: drop the NULLs from
 /// `finalize_job_conn` → the v21 CHECK fails the finalise (an `Err`).
 #[test]
 fn a_late_cancel_of_a_cancelling_job_is_finalised_and_clears_the_pending_cancel() {
     let r = Remote::new();
-    cancelling_with_a_sent_cancel(&r);
+    r.w.sql("UPDATE jobs SET status = 'cancelling'");
+    r.memory.set_sweeps_without_progress(JOB, plan::MAX_SWEEPS_WITHOUT_PROGRESS);
     r.finished(OUTPUT, "0\n");
-    let fake = Fake::new(&r, server(&r, snapshot(true, Some("0\n"), Some(CLEAN_TAIL), (None, None))));
+    let base = server(&r, snapshot(true, Some("0\n"), Some(CLEAN_TAIL), (None, None)));
+    let fake = Fake::new(&r, |kind, values| {
+        if kind == Download {
+            cancelling_with_a_sent_cancel(&r);
+        }
+        base(kind, values)
+    });
     let step = r.poller(&fake).status_step(JOB).unwrap();
     assert!(
         matches!(step, StatusStep::Finalised { outcome: Outcome::Completed { late_cancel: true }, status: JobStatus::Completed, .. }),
@@ -1049,7 +1075,10 @@ fn fetching_outcomes_are_exactly_item_4s() {
         assert_eq!(shown_message(o).is_none(), matches!(o, Outcome::Queued | Outcome::Running), "{o:?}");
     }
     let cancelling = shown_message(&Outcome::Cancelling { session: 2 }).unwrap();
-    assert!(cancelling.contains("handled in unit 5.4") && cancelling.contains("(2 in the job's directory)"), "{cancelling}");
+    assert!(cancelling.contains("sweeps them again") && cancelling.contains("(2 in the job's directory)"), "{cancelling}");
+    assert!(!cancelling.contains("unit 5.4"), "row 3 is handled now (o22.13.6): {cancelling}");
+    let stopped = cancelling_message(2, true);
+    assert!(stopped.contains("processes of the job still run after 3 sweeps"), "{stopped}");
 }
 
 // ---- the loop's body: tick and run_step (unit 5.3 B2 Part B) --------------------------------
