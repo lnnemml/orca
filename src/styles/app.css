@@ -1726,6 +1726,14 @@ select:disabled,
   background: #3a1414;
   color: var(--err);
 }
+/* Cancelling (ADR-024 o22.5, o22.14.14.4): a cancel reached the server, some processes still run.
+   The cancelled amber as an outline on no fill, so "still being cancelled" does not read as
+   "cancelled". */
+.badge.cancelling {
+  background: transparent;
+  color: #d0873a;
+  box-shadow: inset 0 0 0 1px #d0873a;
+}
 /* Cancelled is a user action, not an error — amber, not red. */
 .badge.cancelled {
   background: #33270f;

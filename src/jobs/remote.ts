@@ -12,6 +12,8 @@
  *   The words of a check stay in the row's `error_message`; this module never copies Rust's
  *   outcome texts (`shown_message`) or its list of outcomes that need a later unit's action;
  * - `rowActions`: the Jobs table's row actions (o22.14.8);
+ * - `cancelButtons`: the cancel family's buttons and their labels, from any offered actions
+ *   (o22.14.1–2; B2);
  * - `cancelNotice` / `undoNotice`: what `cancel_job` / `undo_cancel` answered, in words (o22.14.7);
  * - `backfillsLog`: whether the view reads the log already on disk (o16.7);
  * - `runTargetOptions`: the "Run on" choices next to Submit (ADR-024 o5, n2);
@@ -338,6 +340,46 @@ export function cancelSendOf(actions: readonly RowAction[]): CancelSend | null {
   return null;
 }
 
+/** The cancel family: the three buttons a Jobs row or a detail panel shows for a live job. */
+export type CancelFamilyAction = "cancel" | "retry_cancel" | "undo_cancel";
+
+/** Which click of the family is in flight, or null: a Cancel / Retry cancel (`"cancel"`, shown
+ *  "Sending cancel…" — "cancelling" is a status, o22.14.8) or an Undo (`"undo"`). */
+export type CancelBusy = "cancel" | "undo" | null;
+
+/** One button of the cancel family. */
+export interface CancelButton {
+  action: CancelFamilyAction;
+  label: string;
+  /** Every button of the family is disabled while one click is in flight. */
+  disabled: boolean;
+}
+
+const CANCEL_LABEL: Record<CancelFamilyAction, string> = {
+  cancel: "Cancel",
+  retry_cancel: "Retry cancel",
+  undo_cancel: "Undo cancel",
+};
+
+/**
+ * The family's buttons for the given offered actions (a `remoteView`'s offers or a `rowActions`
+ * list — anything with an `action`), in the order offered, each labelled by **its own offer** (o22.14.1–2):
+ * Cancel / Retry cancel / Undo cancel. While a click is in flight the button that was clicked reads
+ * "Sending cancel…" / "Undoing…" and all of them are disabled. `locked`: another action of the
+ * view (a Retry) is in flight — the family is disabled too (o22.14.14.5), as a cancel in flight
+ * already disables the retries.
+ */
+export function cancelButtons(actions: readonly { action: string }[], busy: CancelBusy, locked = false): CancelButton[] {
+  const out: CancelButton[] = [];
+  for (const { action } of actions) {
+    if (action !== "cancel" && action !== "retry_cancel" && action !== "undo_cancel") continue;
+    const inFlight = action === "undo_cancel" ? busy === "undo" : busy === "cancel";
+    const label = inFlight ? (action === "undo_cancel" ? "Undoing…" : "Sending cancel…") : CANCEL_LABEL[action];
+    out.push({ action, label, disabled: busy !== null || locked });
+  }
+  return out;
+}
+
 /** The confirm of a remote job's first Cancel (o20.3, o22.14.2). */
 export function cancelConfirmText(job: Pick<Job, "title" | "remote_host">): string {
   return (
@@ -357,9 +399,10 @@ function sentence(text: string): string {
  * What a delivery's step means for the user (o22.14.7). "sent" is said only for a step that
  * delivered. A `check_failed` is read with the **reloaded row** (`cancel_sent_at`: the send may have
  * happened) and the record's **check error** (whether the server answered); with no check error
- * (the record could not be read) the notice does not guess which.
+ * (the record could not be read) the notice does not guess which; with no reloaded row it does not
+ * guess whether the send was marked either.
  */
-function deliveredNotice(step: StatusStep, row: Pick<Job, "cancel_sent_at">, checkError: CheckError | null): string | null {
+function deliveredNotice(step: StatusStep, row: Pick<Job, "cancel_sent_at"> | null, checkError: CheckError | null): string | null {
   switch (step.step) {
     case "cancel_delivered":
       return step.detail.outcome === "completed" && step.detail.late_cancel
@@ -371,6 +414,8 @@ function deliveredNotice(step: StatusStep, row: Pick<Job, "cancel_sent_at">, che
     case "ended_before_cancel":
       return "The job finished before the cancel reached the server";
     case "check_failed":
+      // No reloaded row: whether the send was marked is unknown, so the notice claims neither.
+      if (row == null) return `The cancel stays pending: ${step.detail}`;
       if (row.cancel_sent_at != null) {
         return "No answer after the cancel was sent; it may already be on the server; checked again at the next step";
       }
@@ -405,7 +450,7 @@ function deliveredNotice(step: StatusStep, row: Pick<Job, "cancel_sent_at">, che
  * reloaded record's check error. `null`: nothing to say (a local cancel; a step delivery never
  * returns).
  */
-export function cancelNotice(result: CancelResult, row: Pick<Job, "cancel_sent_at">, checkError: CheckError | null): string | null {
+export function cancelNotice(result: CancelResult, row: Pick<Job, "cancel_sent_at"> | null, checkError: CheckError | null): string | null {
   switch (result.result) {
     case "delivered":
       return deliveredNotice(result.step, row, checkError);
@@ -422,6 +467,19 @@ export function cancelNotice(result: CancelResult, row: Pick<Job, "cancel_sent_a
       return unhandled;
     }
   }
+}
+
+/**
+ * The Jobs banner after a cancel-family click (o22.14.14.3): **the next answer replaces it** — a
+ * click that came to an answer (`CancelFamilyOutcome`-like: its `notice`, `null` for a local cancel
+ * that has none) or to an error (`"error"`: the call or a read failed, and the error banner says
+ * so — an older notice must not stand beside it) — but a click that produced no answer (`null`: a
+ * declined dialog, nothing offered) leaves it as it is.
+ */
+export function bannerAfterClick(current: string | null, answer: { notice: string | null } | null | "error"): string | null {
+  if (answer === null) return current;
+  if (answer === "error") return null;
+  return answer.notice;
 }
 
 /** The notice for `undo_cancel`'s answer (o22.14.7). */

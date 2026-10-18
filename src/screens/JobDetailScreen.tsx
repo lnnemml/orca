@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { confirm, message } from "@tauri-apps/plugin-dialog";
+import { message } from "@tauri-apps/plugin-dialog";
 
 import type { Job, ParsedResults, StatusStep, SubmitResponse } from "../types";
 import type { FragmentGeometryVia } from "../scene/oplog";
-import { formatEnergy, formatWallTime } from "../format";
+import { formatEnergy, formatLaptopUtc, formatWallTime } from "../format";
 import { ConvergenceDashboard } from "../convergence/ConvergenceDashboard";
 import type { ConvergenceEvent } from "../convergence/types";
 import { OutputSearchPanel } from "./OutputSearchPanel";
@@ -18,13 +18,15 @@ import { buildReoptInput, DEFAULT_REOPT_METHOD } from "../scene/reopt";
 import { GroupSelect } from "../groups/GroupSelect";
 import { useGroupPicker } from "../groups/useGroupPicker";
 import { InlineRename } from "../jobs/InlineRename";
-import { openJobView, sendCancel, tauriBridge, trackRemoteStates } from "../jobs/live-wiring";
+import { CancelButtons } from "../jobs/CancelButtons";
+import { clickCancelFamily, openJobView, tauriBridge, trackRemoteStates, type RemoteStateTracker } from "../jobs/live-wiring";
 import {
-  cancelSendOf,
+  isLiveStatus,
   NOTHING_HELD,
   remoteView,
   rowActions,
-  type CancelSend,
+  type CancelBusy,
+  type CancelFamilyAction,
   type HeldRemoteState,
   type RetryAction,
 } from "../jobs/remote";
@@ -89,14 +91,17 @@ export function JobDetailScreen({
   const [lines, setLines] = useState<string[]>([]);
   const [events, setEvents] = useState<ConvergenceEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
-  // A remote submit's `%pal` notice (Rust's words), shown once beside the run.
-  const [notice, setNotice] = useState<string | null>(null);
+  // What the last action answered, shown beside the run: a remote submit's `%pal` notice (Rust's
+  // words, "ok") or a cancel / undo answer (`cancelNotice` / `undoNotice`, "warn": most of them say
+  // something is still pending).
+  const [notice, setNotice] = useState<{ text: string; tone: "ok" | "warn" } | null>(null);
   // Dashboard accordion: user override (null = follow the default, which is
   // expanded while the job is active, collapsed once it's finished).
   const [dashOpen, setDashOpen] = useState<boolean | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
-  // The Cancel click's in-flight state, shown "Sending cancel…" (o22.14.8; "cancelling" is a status).
-  const [sendingCancel, setSendingCancel] = useState(false);
+  // Which cancel-family click is in flight; Cancel / Retry cancel read "Sending cancel…" (o22.14.8;
+  // "cancelling" is a status).
+  const [cancelBusy, setCancelBusy] = useState<CancelBusy>(null);
   // Output area: "live" streams the <pre> console; "browse" shows the Monaco
   // file viewer (loaded lazily on first entry).
   const [mode, setMode] = useState<"live" | "browse">("live");
@@ -437,7 +442,7 @@ export function JobDetailScreen({
         });
         // A remote submit answers its attempt: Rust's words for a failure, and the `%pal` notice.
         if (response?.failure) setError(response.failure);
-        if (response?.notice) setNotice(response.notice);
+        if (response?.notice) setNotice({ text: response.notice, tone: "ok" });
       } catch (e) {
         setError(String(e));
       }
@@ -478,6 +483,7 @@ export function JobDetailScreen({
   // The job's remote record (ADR-024 o19.6): the listener first, then `remote_job_state`, both
   // merged by `seq` (`trackRemoteStates`). A local job simply never has one.
   const [remoteHeld, setRemoteHeld] = useState<HeldRemoteState>(NOTHING_HELD);
+  const remoteTracker = useRef<RemoteStateTracker | null>(null);
   useEffect(() => {
     setRemoteHeld(NOTHING_HELD);
     const tracker = trackRemoteStates(
@@ -485,8 +491,12 @@ export function JobDetailScreen({
       (held) => setRemoteHeld(held.get(jobId) ?? NOTHING_HELD),
       setError,
     );
+    remoteTracker.current = tracker;
     void tracker.read([jobId]);
-    return tracker.dispose;
+    return () => {
+      tracker.dispose();
+      remoteTracker.current = null;
+    };
   }, [jobId]);
 
   // Auto-scroll the live console to the bottom as new lines arrive (and when
@@ -569,22 +579,23 @@ export function JobDetailScreen({
     }
   };
 
-  // Cancel goes through the one shared helper (o22.14.10): a remote job's first Cancel asks first
-  // and is re-checked after the dialog; a local one is sent at once and keeps "Sending cancel…" until
-  // the terminal `job:status` unmounts the button; a remote one's ends when `cancel_job` returns, and
-  // the row is reloaded then.
-  const cancel = async (offer: CancelSend) => {
-    if (!job) return;
+  // Every cancel-family click (Cancel, Retry cancel, Undo cancel) goes through the one shared helper
+  // (o22.14.10, o22.14.14.1): it is given the job id and the in-flight callback and nothing else. It
+  // reads the row and the record from the backend itself, derives the offer, asks with the plugin's
+  // own dialog when that offer is a remote job's first Cancel (re-checked after the dialog), and
+  // words the answer. A local cancel keeps "Sending cancel…" until the terminal `job:status`
+  // unmounts the button; a remote one's ends when `cancel_job` returns and the row and record are
+  // reloaded.
+  const cancelFamily = async (action: CancelFamilyAction) => {
+    setError(null);
+    setNotice(null);
     try {
-      const result = await sendCancel({
-        bridge: tauriBridge,
-        job,
-        offer,
-        confirm,
-        currentActions: () => rowOffersRef.current,
-        sending: setSendingCancel,
-      });
-      if (result) await loadJob();
+      const outcome = await clickCancelFamily(action, { id: jobId, sending: setCancelBusy });
+      if (!outcome) return;
+      if (outcome.job) setJob(outcome.job);
+      else await loadJob();
+      void remoteTracker.current?.read([jobId]);
+      if (outcome.notice) setNotice({ text: outcome.notice, tone: "warn" });
     } catch (e) {
       setError(String(e));
     }
@@ -602,7 +613,7 @@ export function JobDetailScreen({
       if (action === "retry_submit") {
         const response = await invoke<SubmitResponse>("retry_remote_submit", { id: jobId });
         if (response.failure) setError(response.failure);
-        if (response.notice) setNotice(response.notice);
+        if (response.notice) setNotice({ text: response.notice, tone: "ok" });
       } else {
         await invoke<StatusStep>("retry_remote_fetch", { id: jobId });
       }
@@ -614,15 +625,12 @@ export function JobDetailScreen({
     }
   };
   const remote = job ? remoteView(job, remoteHeld.state) : null;
-  // The row's offers now, for the re-check after the Cancel dialog (o20.3).
-  const rowOffers = job ? rowActions(job, remoteHeld.state) : [];
-  const rowOffersRef = useRef(rowOffers);
-  rowOffersRef.current = rowOffers;
-  // The Cancel button sends the row's cancel offer — a first Cancel or Retry cancel (labels and
-  // the Undo button: 5.4a Part B2).
-  const cancelOffer = cancelSendOf(rowOffers);
+  // A local job has no remote panel: its Cancel sits in the toolbar. A remote job's cancel family
+  // (Cancel, Retry cancel, Undo cancel) is in the panel.
+  const toolbarOffers = job && remote?.kind === "local" ? rowActions(job, remoteHeld.state) : [];
 
-  const isActive = job?.status === "running" || job?.status === "queued";
+  // Live = queued, running or cancelling (o22.14.8): a cancelling job still runs on the server.
+  const isActive = job != null && isLiveStatus(job.status);
   // Expanded by default while the job is active (or auto-running), collapsed for
   // a finished job — the live dashboard is the main thing to watch mid-run.
   const dashboardOpen = dashOpen ?? (isActive || autoRun);
@@ -684,11 +692,7 @@ export function JobDetailScreen({
               New iteration
             </button>
           ) : null}
-          {cancelOffer ? (
-            <button className="btn btn-sm" onClick={() => cancel(cancelOffer)} disabled={sendingCancel}>
-              {sendingCancel ? "Sending cancel…" : "Cancel"}
-            </button>
-          ) : null}
+          <CancelButtons actions={toolbarOffers} busy={cancelBusy} onAction={cancelFamily} />
         </div>
         {job ? <span className={`badge ${job.status}`}>{job.status}</span> : null}
       </div>
@@ -709,9 +713,9 @@ export function JobDetailScreen({
             />
           </h2>
           <div className="mono" style={{ color: "var(--muted)", fontSize: 12 }}>
-            created {job.created_at}
-            {job.started_at ? ` · started ${job.started_at}` : ""}
-            {job.completed_at ? ` · finished ${job.completed_at}` : ""}
+            created {formatLaptopUtc(job.created_at)}
+            {job.started_at ? ` · started ${formatLaptopUtc(job.started_at)}` : ""}
+            {job.completed_at ? ` · finished ${formatLaptopUtc(job.completed_at)}` : ""}
           </div>
           {job.energy != null || job.wall_time != null ? (
             <div className="mono" style={{ color: "var(--text)", fontSize: 12, marginTop: 4 }}>
@@ -727,11 +731,11 @@ export function JobDetailScreen({
         </div>
       ) : null}
       {notice ? (
-        <div className="banner ok" style={{ marginBottom: 10 }}>
-          {notice}
+        <div className={`banner ${notice.tone}`} style={{ marginBottom: 10 }}>
+          {notice.text}
         </div>
       ) : null}
-      {remote ? <RemotePanel view={remote} busy={remoteBusy} onAction={runRemoteAction} /> : null}
+      {remote ? <RemotePanel view={remote} busy={remoteBusy} onAction={runRemoteAction} cancelBusy={cancelBusy} onCancelAction={cancelFamily} /> : null}
       {/* A live remote job's error_message is the remote panel's text (the server's facts), not
           an error banner. */}
       {job?.error_message && remote?.kind !== "live" ? (

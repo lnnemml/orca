@@ -6,6 +6,8 @@ import {
   RETRY_UNREACHABLE,
   applyRemoteStateEvent,
   backfillsLog,
+  bannerAfterClick,
+  cancelButtons,
   cancelNotice,
   cancelSendOf,
   coordinateState,
@@ -356,6 +358,67 @@ describe("rowActions (o22.14.8)", () => {
   });
 });
 
+describe("cancelButtons (o22.14.1–2, B2)", () => {
+  const REQUESTED = "2026-10-18 06:18:01";
+  const SENT = "2026-10-18 06:18:05";
+  const buttons = (j: Job, r: RemoteState | null, busy: Parameters<typeof cancelButtons>[1] = null) => cancelButtons(rowActions(j, r), busy);
+  const labels = (b: ReturnType<typeof cancelButtons>) => b.map((x) => x.label);
+
+  // CONTROLS: label every offer "Cancel" (the B1 state: Retry cancel kept "Cancel"); drop the Undo
+  // arm → red. A pending, unsent, not-stopped row shows Undo cancel (closes 14.13.3's B1 gap).
+  it("labels each button by its own offer", () => {
+    expect(labels(buttons(job({ status: "running" }), record()))).toEqual(["Cancel"]);
+    expect(labels(buttons(job({ status: "cancelling" }), record()))).toEqual(["Retry cancel"]);
+    const pending = job({ status: "queued", cancel_requested_at: REQUESTED });
+    expect(labels(buttons(pending, record()))).toEqual(["Undo cancel"]);
+    expect(labels(buttons(pending, null))).toEqual(["Undo cancel"]);
+    expect(buttons(pending, record()).map((b) => b.action)).toEqual(["undo_cancel"]);
+    expect(labels(buttons(pending, record({ cancel_sends: { failures: 3, stopped: true } })))).toEqual(["Undo cancel", "Retry cancel"]);
+    expect(labels(buttons({ ...pending, cancel_sent_at: SENT }, record({ cancel_sends: { failures: 3, stopped: true } })))).toEqual(["Retry cancel"]);
+  });
+
+  it("shows no button for a sent cancel whose re-sends run, and none for a finished job", () => {
+    expect(buttons(job({ status: "running", cancel_requested_at: REQUESTED, cancel_sent_at: SENT }), record())).toEqual([]);
+    expect(buttons(job({ status: "completed" }), null)).toEqual([]);
+  });
+
+  it("never draws a retry as part of the family, from a view's offers either", () => {
+    const failedAway = record({ known: { kind: "labelled", detail: "not_on_server" } });
+    const v = remoteView(job({ status: "queued" }), failedAway);
+    expect(v.kind === "live" && names(v)).toEqual(["retry_submit", "cancel"]);
+    expect(v.kind === "live" && labels(cancelButtons(v.actions, null))).toEqual(["Cancel"]);
+  });
+
+  // CONTROL: leave the buttons enabled while a click is in flight (a double click) → red.
+  // CONTROL: ignore `locked` (a Retry in flight leaves the cancel buttons enabled) → red (o22.14.14.5).
+  it("disables the family while another action of the view (a Retry) is in flight", () => {
+    const both = job({ status: "queued", cancel_requested_at: REQUESTED });
+    const stopped = record({ cancel_sends: { failures: 3, stopped: true } });
+    expect(cancelButtons(rowActions(both, stopped), null, true).map((b) => [b.label, b.disabled])).toEqual([
+      ["Undo cancel", true],
+      ["Retry cancel", true],
+    ]);
+    expect(cancelButtons(rowActions(both, stopped), null, false).every((b) => !b.disabled)).toBe(true);
+  });
+
+  it("shows the click in flight and disables the whole family meanwhile", () => {
+    const both = job({ status: "queued", cancel_requested_at: REQUESTED });
+    const stopped = record({ cancel_sends: { failures: 3, stopped: true } });
+    const sending = buttons(both, stopped, "cancel");
+    expect(sending.map((b) => [b.label, b.disabled])).toEqual([
+      ["Undo cancel", true],
+      ["Sending cancel…", true],
+    ]);
+    expect(buttons(both, stopped, "undo").map((b) => [b.label, b.disabled])).toEqual([
+      ["Undoing…", true],
+      ["Retry cancel", true],
+    ]);
+    expect(buttons(both, stopped, null).every((b) => !b.disabled)).toBe(true);
+    // "Cancelling…" is a status; the click's label is never it.
+    expect(JSON.stringify(sending)).not.toMatch(/Cancelling/);
+  });
+});
+
 describe("cancelNotice / undoNotice (o22.14.7)", () => {
   const delivered = (step: StatusStep): CancelResult => ({ result: "delivered", already_pending: false, step });
   const notSent = { cancel_sent_at: null };
@@ -384,6 +447,8 @@ describe("cancelNotice / undoNotice (o22.14.7)", () => {
       "The server's answer could not be read: collect (rc 0): broken reply; the cancel stays pending",
     );
     expect(cancelNotice(failedCheck, notSent, null)).toBe("The cancel stays pending: collect (rc 0): broken reply");
+    // No reloaded row: whether the send was marked is unknown, so it claims neither (B2).
+    expect(cancelNotice(failedCheck, null, unanswered)).toBe("The cancel stays pending: collect (rc 0): broken reply");
     for (const row of [sent, notSent]) {
       for (const error of [answered, unanswered, null]) {
         expect(cancelNotice(failedCheck, row, error)).not.toMatch(/^Cancel sent/);
@@ -421,6 +486,23 @@ describe("cancelNotice / undoNotice (o22.14.7)", () => {
     expect(undoNotice("send_marked")).toBe("Too late to undo: the cancel may already be on the server");
     expect(undoNotice("send_marked")).not.toMatch(/undone/);
     expect(undoNotice("nothing_pending")).toBe("No cancel to undo");
+  });
+});
+
+describe("bannerAfterClick (o22.14.14.3)", () => {
+  // CONTROLS: return `null` for a click with no answer (the old clear-at-click) → the declined
+  // dialog wipes the notice, red; return `current` for an answer → the next answer does not replace.
+  it("is replaced by the next answer, and kept by a click that produced none", () => {
+    expect(bannerAfterClick("Cancel sent", null)).toBe("Cancel sent");
+    expect(bannerAfterClick(null, null)).toBeNull();
+    expect(bannerAfterClick("Cancel sent", { notice: "Cancel undone" })).toBe("Cancel undone");
+    // An answer without words (a local cancel) replaces too: the old notice was about an earlier click.
+    expect(bannerAfterClick("Cancel sent", { notice: null })).toBeNull();
+  });
+
+  // CONTROL: keep `current` on an error → the stale notice stands beside the new error, red.
+  it("is cleared by an error: an error is an answer", () => {
+    expect(bannerAfterClick("Cancel sent", "error")).toBeNull();
   });
 });
 

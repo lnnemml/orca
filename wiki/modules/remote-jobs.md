@@ -751,11 +751,14 @@ and skips the backfill for a live remote job (o16.7); the job view and the Jobs 
 `job:remote-state` listener, then read `remote_job_state`, keeping the greatest `seq` (o19.6), and
 show `remoteView`'s badges and actions: retry submit / retry fetch (hidden while a cancel is pending,
 disabled while the last contact failed), and the cancel family — Cancel for a `queued`/`running`
-job, after a plugin-dialog confirm and a re-check that the view still offers it (o20.3, o22.14.2);
+job, after a plugin-dialog confirm and a re-check — the row and record read again from the backend —
+that it is still offered (o20.3, o22.14.2, o22.14.14.1);
 Undo cancel / Retry cancel for a pending one by o22.14.1's table; Retry cancel, no confirm, for a
-`cancelling` job. Every Cancel of both screens goes through one helper (`sendCancel` →
-`confirmThenCancel`, the one `invoke("cancel_job")`). The Undo and Retry cancel buttons, the notices
-and the time formatting in the screens are 5.4a Part B2. What they bind to:
+`cancelling` job. Every click of the family goes through one entry (`clickCancelFamily`: `sendCancel` →
+`confirmThenCancel`, the one `invoke("cancel_job")`, which derives its offer from the row itself; or
+`sendUndo`, the one `invoke("undo_cancel")`), then the row and the record are reloaded and the answer
+is worded (`cancelNotice` / `undoNotice`). The Jobs table, the detail's panel and the stored times
+(`formatLaptopUtc`) show all of it. What they bind to:
 each non-terminal remote job's **remote record** (`RemoteStates`: the label, the last outcome or
 "fetching", a failed check, the fetch bound) set by every status step under the job's guard and
 pushed as `job:remote-state { job_id, seq, state }`, and the `remote_job_state(id)` read
@@ -800,9 +803,10 @@ events and `job:log-reset { job_id }`; `watch_job_log(id, open)` counts a job's 
   of the ordinary step while a cancel is pending, the `cancelling` sweep with its bound, the evidence
   fetch of a cancelled job that ran — and the view's pure logic exist
   ([execution-backends.md](execution-backends.md#remote-cancel-record-deliver-undo-adr-024-o223o224),
-  [frontend.md](frontend.md)); not built yet: the screens' Undo and Retry cancel buttons, the
-  pending-cancel and bound badges' final look, the notices, the status chip and counts of
-  `cancelling`, and the laptop-time display (5.4a Part B2), then Anton's live gate. The sweep and the
+  [frontend.md](frontend.md)); the screens draw them (5.4a Part B2: Undo and Retry cancel buttons in
+  the row and the panel, the notices, the `cancelling` chip and count, the laptop-time display).
+  Awaiting Anton's live gate: how the badges, buttons and notices look and behave in the real window.
+  The sweep and the
   evidence fetch have run only against the fake server; the B4-style live run on uni is still to come. The DB re-enqueue counter (a
   later schema version; v21 is 5.4a's pending cancel), `Lost` in `JobStatus`, the orphan sweep (unit
   5.4b).

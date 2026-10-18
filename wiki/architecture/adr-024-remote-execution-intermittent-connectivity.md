@@ -1563,7 +1563,7 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
        view's offered actions after the dialog closes (a record change during the dialog must not
        fire a withdraw from a stale offer): the check reads the view's **current** actions (a ref or
        the latest state) after `await confirm(...)` resolves, never the offer captured by the click
-       handler. A `confirm` that rejects (a plugin error) counts as declining.
+       handler *(for Cancel: re-read from the backend, o22.14.14.1)*. A `confirm` that rejects (a plugin error) counts as declining.
     4. **Negative controls** (each must turn its test red):
        a. `resolveRunTarget`: a stored disabled profile → Local, a deleted one → Local, an enabled one
           → preselected, a failed settings read → Local; dropping the enabled check turns the
@@ -2386,6 +2386,33 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
                their reason. A pending, unsent, not-stopped row has **no button** until B2 wires
                Undo (accepted for the B1 commit; B2 follows before the live gate). Retry-cancel offers
                keep the label "Cancel" until B2 relabels them.
+        14. **Decisions from the B2 review** (2026-10-18; B2 CODE verifier F1 + the implementer's
+            questions; decided by Anton).
+            1. **The cancel helpers trust nothing the screen hands them** (Anton, F1, option b).
+               `sendCancel` and `sendUndo` take **only the job id** (plus the in-flight callbacks).
+               Each reads the row (`get_job`) and the record (`remote_job_state`) itself and derives
+               its offer from that read; after the dialog it reads both **again** and re-derives
+               (o20.3's re-check, now from the backend, not from the view). The dialog `confirm` is
+               the Tauri plugin's, **imported inside `live-wiring.ts`**, never injected by a screen
+               (tests mock the module). So a screen cannot forge a job, a record, an offer or a
+               dialog — a structural guard, not a text pin. The Rust refusals stay the belt.
+               Rejected: (a) a wider source pin (text, not structure); accepting the gap.
+            2. **In the job view, a remote job's cancel buttons live only in its panel** (Anton); a
+               local job keeps them in the header. The Jobs table row keeps its own (14.1).
+            3. **The Jobs notice banner is dismissed by hand** (✕), never by a timer (Anton); the
+               **next answer replaces it** (Anton, B2 round 2 G6). A click that produces no answer
+               (a declined dialog, nothing offered) leaves the banner as it is; an **error** clears it,
+               so an older notice never stands beside the error banner (orchestrator, B2 round 3).
+            4. **`cancelling` gets its own badge tone** (Anton), distinct from `cancelled` (e.g. an
+               amber outline instead of a fill): "still being cancelled" must not read as
+               "cancelled".
+            5. **A Retry in flight disables the cancel buttons too** (verifier F2, orchestrator), as
+               a cancel in flight already disables the retries.
+            6. **Clarifications from B2 round 2** (orchestrator): the in-flight state starts **before**
+               the helper's first backend read, so a double click cannot send twice (G3); a failed
+               read after the dialog rejects and sends nothing, and a test pins it (G1); the
+               one-helper source pin scans every non-test `src/**/*.{ts,tsx}` except
+               `live-wiring.ts` for the `cancel_job` / `undo_cancel` literals (G2).
 
 ## Alternatives rejected
 

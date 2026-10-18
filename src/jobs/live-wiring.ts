@@ -11,17 +11,34 @@
  */
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { confirm } from "@tauri-apps/plugin-dialog";
 
 import type { ConvergenceEvent, ConvergencePayload } from "../convergence/types";
-import type { CancelResult, Job, JobStatus, RemoteStateEvent, RemoteStateRead, ServerProfile } from "../types";
+import type {
+  CancelResult,
+  CheckError,
+  Job,
+  JobStatus,
+  RemoteState,
+  RemoteStateEvent,
+  RemoteStateRead,
+  ServerProfile,
+  UndoResult,
+} from "../types";
 import {
   backfillsLog,
   cancelConfirmText,
+  cancelNotice,
+  cancelSendOf,
   coordinateState,
   mergeRemoteState,
   NOTHING_HELD,
   resolveRunTarget,
+  rowActions,
   runTargetOptions,
+  undoNotice,
+  type CancelBusy,
+  type CancelFamilyAction,
   type CancelSend,
   type HeldRemoteState,
 } from "./remote";
@@ -268,63 +285,169 @@ export function loadRunTarget(
 // --- Cancel (ADR-024 o20.3, o22.14.2, o22.14.8) -------------------------------------------------
 
 /**
- * Send the cancel the view offered. An offer with `confirm` (a remote job's first Cancel) asks
- * first, and is sent only if the user agreed **and** the view still offers the same action once the
- * dialog has closed — o20.3's re-check: a row or record change during the dialog (the offer gone)
- * must not fire a cancel from a stale offer. An offer without `confirm` (Retry cancel, a local
+ * Send the cancel that was offered. An offer with `confirm` (a remote job's first Cancel) asks
+ * first, and is sent only if the user agreed **and** the action is still offered once the dialog
+ * has closed (`currentActions`, which `sendCancel` re-reads from the backend) — o20.3's re-check: a
+ * row or record change during the dialog (the offer gone) must not fire a cancel from a stale offer. An offer without `confirm` (Retry cancel, a local
  * Cancel) is sent at once. Returns what `send` answered, or null when nothing was sent.
  */
 export async function confirmThenCancel<T>(deps: {
   offer: CancelSend;
   confirm: () => Promise<boolean>;
-  /** The view's offered actions **now** (read after the dialog, e.g. from a ref). */
-  currentActions: () => readonly { action: string }[];
+  /** The offered actions **now**, read after the dialog (async: `sendCancel` re-reads the backend). */
+  currentActions: () => readonly { action: string }[] | Promise<readonly { action: string }[]>;
   send: () => Promise<T>;
 }): Promise<T | null> {
   if (deps.offer.confirm) {
     // A dialog that fails to open counts as a decline.
     const agreed = await deps.confirm().catch(() => false);
     if (!agreed) return null;
-    if (!deps.currentActions().some((a) => a.action === deps.offer.action)) return null;
+    if (!(await deps.currentActions()).some((a) => a.action === deps.offer.action)) return null;
   }
   return deps.send();
 }
 
-/** The plugin-dialog `confirm`, as the screens pass it. */
-export type ConfirmDialog = (message: string, options: { title: string; kind: "warning" }) => Promise<boolean>;
+/** The row and the record, read from the backend — what `rowActions` derives its offers from. */
+interface JobAndRecord {
+  job: Job;
+  record: RemoteState | null;
+}
 
 /**
- * **Every Cancel click of both screens** (o22.14.10): the one place that invokes `cancel_job`, behind
- * `confirmThenCancel` — so no screen cancels a remote job without the confirm its offer asks for.
- * `offer` is what `rowActions` offered at the click. The in-flight state (`sending`, shown "Sending
- * cancel…") starts once the cancel is really sent, and **for a remote job ends when `cancel_job`
- * returns** (o22.14.8: its answer is the outcome; there is no terminal `job:status` to wait for); a
- * local job keeps today's behaviour — it stays until the terminal `job:status` unmounts the button,
- * and ends only if the call fails. Returns the answer (null: not sent); a failed call rethrows.
+ * Read the row (`get_job`) and the record (`remote_job_state`). A read that fails **throws**: with
+ * no row or record read there is no offer to derive, and nothing is sent.
  */
-export async function sendCancel(deps: {
-  bridge: Pick<Bridge, "invoke">;
-  job: Pick<Job, "id" | "title" | "remote_host" | "remote_job_dir" | "remote_socket">;
-  offer: CancelSend;
-  confirm: ConfirmDialog;
-  currentActions: () => readonly { action: string }[];
-  sending: (on: boolean) => void;
-}): Promise<CancelResult | null> {
-  const remote = coordinateState(deps.job) !== "local";
-  return confirmThenCancel({
-    offer: deps.offer,
-    confirm: () => deps.confirm(cancelConfirmText(deps.job), { title: "Cancel job", kind: "warning" }),
-    currentActions: deps.currentActions,
-    send: async () => {
-      deps.sending(true);
-      let answered = false;
-      try {
-        const result = await deps.bridge.invoke<CancelResult>("cancel_job", { id: deps.job.id });
+async function readJobAndRecord(id: string): Promise<JobAndRecord> {
+  const [job, read] = await Promise.all([
+    tauriBridge.invoke<Job>("get_job", { id }),
+    tauriBridge.invoke<RemoteStateRead>("remote_job_state", { id }),
+  ]);
+  return { job, record: read.state };
+}
+
+/**
+ * Reload after `cancel_job` / `undo_cancel` returned (o22.14.5, o22.14.7): the row and the
+ * `remote_job_state` record, read for the notice (`cancel_sent_at` and the check error's `answered`
+ * flag are the Rust-side facts the notice words are keyed on). A read that fails gives `null` and
+ * never throws: the answer already happened, and the notice then claims nothing it cannot know.
+ */
+async function reloadAfterAnswer(id: string): Promise<{ job: Job | null; checkError: CheckError | null }> {
+  const [job, read] = await Promise.all([
+    tauriBridge.invoke<Job>("get_job", { id }).catch(() => null),
+    tauriBridge.invoke<RemoteStateRead>("remote_job_state", { id }).catch(() => null),
+  ]);
+  return { job, checkError: read?.state?.check_error ?? null };
+}
+
+/** What a Cancel click came to: the reloaded row (null: not reloaded or unreadable) and the notice. */
+export interface CancelReport {
+  result: CancelResult;
+  job: Job | null;
+  notice: string | null;
+}
+
+/**
+ * **Every Cancel / Retry cancel click of both screens** (o22.14.10): the one place that invokes
+ * `cancel_job`, behind `confirmThenCancel`.
+ *
+ * **It trusts nothing the screen hands it** (ADR-024 o22.14.14.1; B1 verifier VX1, B2 verifier F1).
+ * It takes the job **id** and the in-flight callback, nothing else: it reads the row (`get_job`) and
+ * the record (`remote_job_state`) itself and derives the offer from them with
+ * `cancelSendOf(rowActions(row, record))`, and the dialog is the Tauri plugin's `confirm`, imported
+ * here. A screen cannot supply an offer, a `confirm` flag, a job that looks local or `cancelling`, a
+ * record, or a dialog that always agrees — those arguments do not exist. If the row offers no cancel
+ * send (a pending cancel, a terminal job), it sends nothing. After the dialog it reads both **again**
+ * and re-derives (o20.3's re-check, now from the backend, not from the view): the cancel is sent only
+ * if the same action is still offered.
+ *
+ * The in-flight state (`sending`, shown "Sending cancel…") starts **before the first backend read**
+ * (o22.14.14.6: a second click while the reads or the dialog are pending must find the buttons
+ * disabled) and ends on every path: nothing offered, a declined or failed dialog, a failed read, a
+ * failed call — and, for a remote job, **when `cancel_job` has returned and the row and record are
+ * reloaded** (o22.14.8: its answer is the outcome; there is no terminal `job:status` to wait for).
+ * Only a local job's answered cancel keeps it, until the terminal `job:status` unmounts the button. After a remote answer `cancelNotice` words the answer from the reloaded row and
+ * record (a local `Dispatched` has no notice and no reload). A failed call rethrows.
+ */
+export async function sendCancel(deps: { id: string; sending: (on: boolean) => void }): Promise<CancelReport | null> {
+  const { id } = deps;
+  deps.sending(true);
+  let answered = false;
+  let remote = true;
+  try {
+    const first = await readJobAndRecord(id);
+    const offer = cancelSendOf(rowActions(first.job, first.record));
+    if (!offer) return null;
+    remote = coordinateState(first.job) !== "local";
+    return await confirmThenCancel({
+      offer,
+      confirm: () => confirm(cancelConfirmText(first.job), { title: "Cancel job", kind: "warning" }),
+      // A read that fails here rejects: nothing is sent from the first read's stale offer.
+      currentActions: async () => {
+        const now = await readJobAndRecord(id);
+        return rowActions(now.job, now.record);
+      },
+      send: async () => {
+        const result = await tauriBridge.invoke<CancelResult>("cancel_job", { id });
         answered = true;
-        return result;
-      } finally {
-        if (remote || !answered) deps.sending(false);
-      }
-    },
-  });
+        if (result.result === "dispatched") return { result, job: null, notice: null };
+        const { job, checkError } = await reloadAfterAnswer(id);
+        return { result, job, notice: cancelNotice(result, job, checkError) };
+      },
+    });
+  } finally {
+    if (!(answered && !remote)) deps.sending(false);
+  }
+}
+
+/** What an Undo click came to. */
+export interface UndoReport {
+  result: UndoResult;
+  job: Job | null;
+  notice: string;
+}
+
+/**
+ * Every Undo click (o22.14.1): the one place that invokes `undo_cancel`. Like `sendCancel` it takes
+ * only the job id: it reads the row and record itself and sends only if they still offer Undo, never
+ * asks (no dialog: Undo takes the cancel back, it is not destructive), then reloads the row and words
+ * the answer.
+ */
+export async function sendUndo(deps: { id: string; sending: (on: boolean) => void }): Promise<UndoReport | null> {
+  const { id } = deps;
+  deps.sending(true);
+  try {
+    const now = await readJobAndRecord(id);
+    if (!rowActions(now.job, now.record).some((a) => a.action === "undo_cancel")) return null;
+    const result = await tauriBridge.invoke<UndoResult>("undo_cancel", { id });
+    const { job } = await reloadAfterAnswer(id);
+    return { result, job, notice: undoNotice(result) };
+  } finally {
+    deps.sending(false);
+  }
+}
+
+/** What either click of the family came to, for the screen to apply. */
+export interface CancelFamilyOutcome {
+  /** The reloaded row, or null (not reloaded — a local cancel — or unreadable). */
+  job: Job | null;
+  /** The words for the user; null: nothing to say. */
+  notice: string | null;
+}
+
+/**
+ * **The single entry point of the screens' cancel-family buttons** (Cancel, Retry cancel, Undo
+ * cancel): the screen passes the clicked button's action, the job id and the in-flight callback —
+ * nothing it could forge (o22.14.14.1). Undo goes to `sendUndo`, the other two to `sendCancel`.
+ * `null`: nothing was sent (declined, or the backend's row no longer offers it).
+ */
+export async function clickCancelFamily(
+  action: CancelFamilyAction,
+  deps: { id: string; sending: (busy: CancelBusy) => void },
+): Promise<CancelFamilyOutcome | null> {
+  if (action === "undo_cancel") {
+    const undone = await sendUndo({ id: deps.id, sending: (on) => deps.sending(on ? "undo" : null) });
+    return undone && { job: undone.job, notice: undone.notice };
+  }
+  const sent = await sendCancel({ id: deps.id, sending: (on) => deps.sending(on ? "cancel" : null) });
+  return sent && { job: sent.job, notice: sent.notice };
 }

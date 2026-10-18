@@ -11415,3 +11415,115 @@ profile was never verified. Next: **5.3** `SshBackend` wiring.
 - Next: verifier CODE on B1; then **B2** (the screens: badges' look, Undo / Retry cancel buttons in
   row and panel, notices, `cancelling` chip and counts, `formatLaptopUtc` everywhere), Anton's live
   gate (WebKitGTK), the uni run.
+
+## [2026-10-18] session | 5.4a A2b + B1: o22.13, o22.14, poller wiring, cancel/undo commands
+- Committed today (not pushed): 5.4a A2b `a16dafd` (poller run order with the pending cancel,
+  `cancelling` sweep with the min-session baseline, evidence fetch; ADR-024 o22.13, two DESIGN rounds);
+  5.4a B1 `1e201de` (`cancel_job` on `cancel_job_core`, `undo_cancel`, Withdraw removed and its Lab
+  e2e tests ported, column emits, `check_error { text, answered }`, `Job` cancel columns, SQLite UTC
+  pinned, pure view logic, every remote Cancel behind the one confirm helper; ADR-024 o22.14, DESIGN
+  round 1 FAIL → round 2 PASS WITH FINDINGS).
+- Anton's decisions: o22.13 — ended-first note via `JobMemory`, the sweep readies the server; o22.14 —
+  "cancel pending" badge + Undo in list and detail, "Retry cancel" with no confirm on `cancelling`,
+  separate problem badges with the answered/unreachable prefix, Retry hidden while a cancel is pending.
+- Probe: SQLite `datetime('now')` is UTC; displayed times were raw UTC (3 h off) — fixed in B2.
+- uni still offline (Tailscale last seen ~4 days); B4 and the live runs wait.
+- Open: should the ordinary status step ready the server after an app upgrade (scripts "not
+  installed" until the next submit)? Asked Anton, not yet answered.
+- Next: **5.4a B2** — Undo / Retry cancel buttons in row and panel, relabelled offers, notices after
+  `cancel_job` / `undo_cancel`, `cancelling` chip and active count, `formatLaptopUtc` everywhere
+  (retire `formatTimestamp`), and B1's verifier findings: `sendCancel` derives its offer itself
+  (VX1), `frontend.md` line on the button-less pending row, `TZ` in `format.test.ts`. Then Anton's
+  live gate (WebKitGTK) and the uni run.
+
+## [2026-10-18] feat | Unit 5.4a Part B2 — cancel controls, notices, times in the screens
+- **VX1 / F1 closed (B1 and B2 verifiers; ADR-024 o22.14.14.1).** First pass: `sendCancel` derived the
+  offer from a `job` + `record` the screen handed it — the B2 verifier then showed three bypasses that
+  stayed green (a local-looking `job` copy, a local `confirm = async () => true`, a `status:
+  "cancelling"` copy). **Structural fix:** `sendCancel`, `sendUndo` and `clickCancelFamily` take **only
+  the job id and the in-flight callback**. Each reads `get_job` and `remote_job_state` itself, derives
+  the offer with `cancelSendOf(rowActions(row, record))`, and asks with the plugin's `confirm`,
+  imported inside `live-wiring.ts`; after the dialog it reads both again and re-derives (replacing
+  the `current()` re-check). A failed read throws, nothing is sent. The screens pass nothing else
+  (the detail screen no longer imports `confirm`). The source pin: no command names / `confirm:` /
+  offer in the screens, `RemotePanel`, `CancelButtons`; each screen's call has exactly the keys `id`
+  and `sending`; the helpers' parameter lists are pinned. Tests mock `@tauri-apps/api/core` and
+  `@tauri-apps/plugin-dialog`.
+- **One entry for the family.** `clickCancelFamily(action, deps)` → `sendUndo` (the one
+  `invoke("undo_cancel")`, only while the row offers Undo, no dialog) or `sendCancel`; each reloads
+  `get_job` + `remote_job_state` after the answer and returns `{ job, notice }`. A remote job's
+  in-flight state ends after that reload; a local `dispatched` has no notice and no reload. A failed
+  reload gives a neutral notice (`cancelNotice` takes a null row now: "The cancel stays pending: <why>"),
+  never "sent". New `CancelButtons` draws Cancel / Retry cancel / Undo cancel from the offers
+  (`cancelButtons`, labelled by offer, "Sending cancel…" / "Undoing…", all disabled in flight) in the
+  Jobs row (which now also has an in-flight state per row), the detail's `RemotePanel` (remote) and the
+  header (local). A pending, unsent, not-stopped row shows Undo cancel (14.13.3's gap closed).
+- **Review decisions (o22.14.14).** Remote jobs' cancel buttons live only in the panel, local jobs'
+  in the header; the Jobs banner is dismissed by hand only; `.badge.cancelling` is an amber outline on
+  no fill (a pin asserts its rule differs from `.badge.cancelled`); a Retry in flight disables the
+  panel's cancel buttons too (`cancelButtons(…, locked)`; the Jobs row has no retries). The `TZ` restore
+  has a permanent guard: `afterAll` asserts `process.env.TZ` is back to its start value.
+- **Notices.** Detail: the existing notice banner, now `{ text, tone }` (a submit's `%pal` notice stays
+  ok, cancel/undo answers are warn). Jobs: a new dismissible `.banner.warn`.
+- **`cancelling` in the screens.** `src/jobs/status.ts`: `STATUS_CHIPS` (a compile-time exhaustiveness
+  check over `JobStatus`) and `queueCounts` (cancelling counts as running); `.badge.cancelling`; the
+  detail's `isActive` is `isLiveStatus`. The row text (13.8.2) is not a red banner twice: the detail's
+  banner is `remote?.kind !== "live"`, a `cancelling` remote job is live, and the Jobs table shows no
+  `error_message` at all.
+- **Times.** `formatLaptopUtc` in the Jobs / Molecules / Reactions tables and the detail's `created`,
+  `started`, `finished`; `formatTimestamp` deleted (it had no tests); two source pins in
+  `format.test.ts` (no `formatTimestamp` anywhere in `src`; no raw stored time in the four screens).
+- **B1 verifier LOWs.** `format.test.ts` sets `TZ` in `beforeAll` and restores it in `afterAll`
+  (measured: under `--no-isolate` a module-level assignment stayed "UTC" for the next file; with the
+  restore a following probe file sees `TZ` undefined; without it, "Europe/Kyiv"). `frontend.md` says a
+  pending, unsent row offers Undo.
+- **Tests:** vitest 1041 → **1074** passed (80 files; +1 file `status.test.ts` (5 tests), plus new
+  `cancelButtons`, `sendCancel` / `sendUndo` / `clickCancelFamily` and the time pins; B1's `sendCancel` tests and
+  source pin rewritten); `tsc` clean; cargo **901** passed, 28 ignored (no Rust change).
+- **Negative controls** (scratch copy; each red, restored, copy re-checked equal to the tree).
+  **F1 — each forged argument now fails at `tsc`** ("Object literal may only specify known
+  properties") **and in the source pin**: VX-new1 a local-looking `job` in the Jobs screen's call,
+  VX-new2 a local `confirm: async () => true` in the detail's call, VX-new3 a `status: "cancelling"`
+  job, VX-new4 a `record`; the helper-level test hands each forged field to `sendCancel` (6 calls
+  with a `@ts-expect-error` each) and shows the real mocked dialog is still asked and nothing is
+  sent. VX1a `sendCancel` accepting an `offer` (2 vitest + `tsc` unused-directive); VX1b `confirm:` in
+  a screen call; VX1c / VX1d a screen invoking `cancel_job` / `undo_cancel`; VX1e sending without
+  `confirmThenCancel` (8); F1a no re-read after the dialog (5); F1b the dialog replaced by `async () =>
+  true` (5); F1c the detail re-importing `confirm`; F1d a `record` parameter (unused directive + pin);
+  U1 Undo wired to `cancel_job` (3); R1 Retry cancel behind a confirm (5); N1 a `check_failed` notice
+  saying "Cancel sent" (3); L3 Undo not offered (8); T1 `formatTimestamp` back; T3 `formatLaptopUtc`
+  without the `Z`; C1 `cancelling` out of the chips (red + `tsc`); C2 `queueCounts`; C6 `.badge.cancelling`
+  with the cancelled declarations; F2a `cancelButtons` ignoring `locked`; F2b the panel dropping
+  `locked`; F3a the `TZ` restore removed and F3b a restore that sets the string "undefined" (the file
+  fails in `afterAll`). The B2 first-pass table (VX1a–e, U1/E1, R1/R2, N1, D1, S1/S2, L1–L3, T1–T4,
+  C1–C6, TZ) was all red on the earlier code; C3 (App.tsx's own filter) was green until its pin was
+  added. **All red.**
+- **Round 3 (B2 verifier round 2, LOW findings; ADR-024 o22.14.14.3 and .6).** G1: a test where
+  `get_job` rejects on the read after the dialog — the helper rejects, no `cancel_job`, in-flight ended;
+  control N1 (catch it, fall back to the first read) red. G2: the one-helper pin scans every non-test
+  `src/**/*.{ts,tsx}` except `live-wiring.ts` for `"cancel_job"` and for any call with `"undo_cancel"` as
+  its first argument; N3 (App.tsx invoking `cancel_job`) red, and an aliased `invoke` of `undo_cancel`
+  in a new file red too (the first, `invoke`-named regex let that one through; widened). G3:
+  `sendCancel` / `sendUndo` call `sending(true)` before the first read and end it on every path
+  (nothing offered, declined, dialog failure, read failure, failed call, answer; only a local answered
+  cancel keeps it); a model-button test (disabled while in flight) shows a second click during the held
+  reads sends nothing; controls: `sending(true)` moved after the reads (3 red; Undo's variant 1 red),
+  the end of the in-flight state dropped for unanswered paths (5 red). G4: stale comments corrected
+  (`CancelButtons`, `remote-jobs.md`, `confirmThenCancel`'s doc). G6: the Jobs click no longer clears
+  the notice; `bannerAfterClick(current, answer)` (pure) replaces it by the next answer, keeps it for a
+  click with no answer, and **clears it on an error** (decided here: an error is an answer, and the
+  error banner then speaks — an older notice must not stand beside it); controls: clear at the click
+  start (source pin), a no-answer click clearing, an error keeping — all red. The detail screen's
+  notice still clears at the start of a click (the decision named the Jobs banner).
+- **Live gate (Anton, WebKitGTK):** the buttons, banners and the `cancelling` chip/badge colours are
+  not unit-testable; checklist in the B2 report.
+- **Live gate passed (Anton, 2026-10-18), offline-server part:** the "Cancel job" dialog and
+  Decline, a double click opening one dialog, "Sending cancel…" under the open dialog (kept by Anton),
+  the pending badge in local time, Undo cancel and "Cancel undone", the "Server unreachable" notice and
+  prefix, the remote buttons in the panel only, Retry hidden while pending, local times in the four
+  screens, the `cancelling` chip. The detail screen's notice stays as is (Anton). Not testable while
+  uni is offline: a `cancelling` row, a delivered cancel, stopped re-sends — they join the uni run.
+- Left pending on purpose: job `85a2d627` (Opt · r²SCAN-3c, created during the gate, never reached
+  the server) holds a cancel requested 13:39 UTC; on uni's return its delivery takes the
+  not-on-server branch (mkjob → `cancel.sh`) — a live check of that path.
+- Next: the uni run (uni offline).

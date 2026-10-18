@@ -1,11 +1,20 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { Job, RemoteState, RemoteStateEvent, RemoteStateRead } from "../types";
+
+// The cancel helpers (`sendCancel`, `sendUndo`) use the real bridge and the plugin's own dialog, which a
+// screen cannot replace (ADR-024 o22.14.14.1); the tests replace them at the module. Every other test
+// in this file injects a fake bridge and is not affected.
+const mocks = vi.hoisted(() => ({ invoke: vi.fn(), confirm: vi.fn() }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
+vi.mock("@tauri-apps/plugin-dialog", () => ({ confirm: mocks.confirm }));
 import { makeProfile } from "../servers/test-fixtures";
 import { LAST_RUN_TARGET_SETTING, type CancelSend, type HeldRemoteState } from "./remote";
 import {
+  clickCancelFamily,
   confirmThenCancel,
   loadRunTarget,
   sendCancel,
+  sendUndo,
   openJobView,
   REMOTE_STATE_EVENT,
   trackRemoteStates,
@@ -474,79 +483,124 @@ describe("confirmThenCancel (o20.3, o22.14.2)", () => {
   });
 });
 
-describe("sendCancel (o22.14.8, o22.14.10)", () => {
-  const REMOTE = { id: "j1", title: "TS search", remote_host: "uni", remote_job_dir: "/r/jobs/j1", remote_socket: "/r/tsp/slot0.sock" };
-  const LOCAL = { ...REMOTE, remote_host: null, remote_job_dir: null, remote_socket: null };
+/**
+ * The backend, scripted: `invoke` (mocked at the module, since the helpers use `tauriBridge`) answers
+ * each command from `answers` — a value, or a function giving the value or a rejected promise, called
+ * per call so a test can answer the same command differently before and after the dialog. Every call
+ * is logged, in order, in `log`.
+ */
+function backend(answers: Record<string, unknown>, log: string[] = []) {
+  const calls: { cmd: string; args?: Record<string, unknown> }[] = [];
+  mocks.invoke.mockReset();
+  mocks.invoke.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
+    calls.push({ cmd, args });
+    log.push(`invoke:${cmd}`);
+    const answer = answers[cmd];
+    if (answer === undefined) return Promise.reject(new Error(`unscripted ${cmd}`));
+    return Promise.resolve(typeof answer === "function" ? (answer as () => unknown)() : answer);
+  });
+  return { calls, log };
+}
 
-  function bridge(answer: () => Promise<unknown>) {
-    const calls: { cmd: string; args?: Record<string, unknown> }[] = [];
-    return {
-      calls,
-      bridge: {
-        invoke: <T,>(cmd: string, args?: Record<string, unknown>) => {
-          calls.push({ cmd, args });
-          return answer() as Promise<T>;
-        },
-      },
-    };
-  }
+/** The plugin's `confirm`, mocked at the module: answers `answer` (or throws) and records what it was asked. */
+function dialog(answer: boolean | "fails", log: string[] = []) {
+  const asked: { message: string; title: string }[] = [];
+  mocks.confirm.mockReset();
+  mocks.confirm.mockImplementation(async (message: string, options: { title: string }) => {
+    asked.push({ message, title: options.title });
+    log.push("dialog");
+    if (answer === "fails") throw new Error("dialog failed");
+    return answer;
+  });
+  return asked;
+}
 
-  // CONTROL: drop the `finally` reset (or reset only for a local job) → the remote state stays
-  // "Sending cancel…" after `cancel_job` returned, red.
-  it("ends a remote job's in-flight state when cancel_job returns, and keeps a local one's", async () => {
-    for (const [job, offer, after] of [
-      [REMOTE, { action: "cancel", confirm: true }, false],
-      [LOCAL, { action: "cancel", confirm: false }, true],
-    ] as const) {
-      const { calls, bridge: b } = bridge(async () => ({ result: "pending", already_pending: false }));
-      const sending: boolean[] = [];
-      const result = await sendCancel({
-        bridge: b,
-        job,
-        offer,
-        confirm: async () => true,
-        currentActions: () => [{ action: "cancel" }],
-        sending: (on) => sending.push(on),
-      });
-      expect(result).toEqual({ result: "pending", already_pending: false });
-      expect(calls).toEqual([{ cmd: "cancel_job", args: { id: "j1" } }]);
-      expect(sending[0]).toBe(true);
-      expect(sending[sending.length - 1]).toBe(after);
+describe("sendCancel (o22.14.8, o22.14.10, o22.14.14.1; B1 verifier VX1, B2 verifier F1)", () => {
+  const T0 = "2026-10-18 06:18:01";
+  const T1 = "2026-10-18 06:18:05";
+  const REMOTE_ROW = { ...REMOTE, id: "j1", title: "TS search" };
+  const running = (over: Partial<Job> = {}) => job({ ...REMOTE_ROW, status: "running", ...over });
+  const local = (over: Partial<Job> = {}) => job({ id: "j1", status: "running", ...over });
+  const state = (r: RemoteState | null = RUNNING) => ({ seq: 1, state: r }) satisfies RemoteStateRead;
+  const PENDING_ANSWER = { result: "pending", already_pending: false };
+  const quiet = () => {};
+
+  // F1 (B2 verifier) and VX1 — CONTROLS: take a forged field again (`deps.job`, `deps.record`,
+  // `deps.confirm`, `deps.offer`) → the dialog is skipped or replaced, red here, and the
+  // `@ts-expect-error` of that line is unused → `tsc` red. Each forged field is its own call, since
+  // `tsc` reports only the first excess property of a literal. The screens cannot even express them.
+  it("cannot be handed a job, a record, an offer, a dialog or a bridge: the backend's row decides, with the plugin's dialog", async () => {
+    const forgedLocal = { ...REMOTE_ROW, remote_host: null, remote_job_dir: null, remote_socket: null }; // VX-new1
+    const forgedCancelling = { ...REMOTE_ROW, status: "cancelling" as const }; // VX-new3: Retry cancel, no dialog
+    const alwaysYes = async () => true; // VX-new2
+    const fakeBridge = { invoke: async () => ({ result: "pending", already_pending: false }) };
+    const attempts: (() => Promise<unknown>)[] = [
+      () =>
+        sendCancel({
+          id: "j1",
+          sending: quiet,
+          // @ts-expect-error — no `job`: the helper reads the row itself (VX-new1)
+          job: forgedLocal,
+        }),
+      () =>
+        sendCancel({
+          id: "j1",
+          sending: quiet,
+          // @ts-expect-error — no `job` (VX-new3)
+          job: forgedCancelling,
+        }),
+      () =>
+        sendCancel({
+          id: "j1",
+          sending: quiet,
+          // @ts-expect-error — no `confirm`: the dialog is the plugin's, imported in live-wiring (VX-new2)
+          confirm: alwaysYes,
+        }),
+      () =>
+        sendCancel({
+          id: "j1",
+          sending: quiet,
+          // @ts-expect-error — no `record`
+          record: record({ cancel_sends: { failures: 3, stopped: true } }),
+        }),
+      () =>
+        sendCancel({
+          id: "j1",
+          sending: quiet,
+          // @ts-expect-error — no `offer` (VX1)
+          offer: { action: "cancel", confirm: false },
+        }),
+      () =>
+        sendCancel({
+          id: "j1",
+          sending: quiet,
+          // @ts-expect-error — no `bridge`
+          bridge: fakeBridge,
+        }),
+    ];
+    for (const attempt of attempts) {
+      const { calls } = backend({ get_job: running(), remote_job_state: state(), cancel_job: PENDING_ANSWER });
+      const asked = dialog(false);
+      expect(await attempt()).toBeNull();
+      // The real dialog was asked once (the forged ones were ignored), and nothing was cancelled.
+      expect(asked).toHaveLength(1);
+      expect(calls.map((c) => c.cmd)).not.toContain("cancel_job");
     }
   });
 
-  it("ends the in-flight state when cancel_job fails, for both, and rethrows", async () => {
-    for (const job of [REMOTE, LOCAL]) {
-      const { bridge: b } = bridge(async () => {
-        throw new Error("conflict: an operation on job j1 is already in progress");
-      });
-      const sending: boolean[] = [];
-      await expect(
-        sendCancel({ bridge: b, job, offer: { action: "cancel", confirm: false }, confirm: async () => true, currentActions: () => [], sending: (on) => sending.push(on) }),
-      ).rejects.toThrow("already in progress");
-      expect(sending).toEqual([true, false]);
-    }
-  });
-
-  it("asks with o22.14.2's title and text for a remote job's first Cancel, and sends nothing when declined", async () => {
-    const { calls, bridge: b } = bridge(async () => ({ result: "dispatched" }));
-    const asked: { message: string; title: string }[] = [];
+  // CONTROL: send without `confirmThenCancel`, or take the offer as `{confirm: false}` → the first
+  // remote Cancel sends with no dialog, red.
+  it("asks with o22.14.2's title and text for a remote job's first Cancel, reading the row first, and sends nothing when declined", async () => {
+    const log: string[] = [];
+    const { calls } = backend({ cancel_job: PENDING_ANSWER, get_job: running(), remote_job_state: state() }, log);
+    const asked = dialog(false, log);
     const sending: boolean[] = [];
-    const result = await sendCancel({
-      bridge: b,
-      job: REMOTE,
-      offer: { action: "cancel", confirm: true },
-      confirm: async (message, options) => {
-        asked.push({ message, title: options.title });
-        return false;
-      },
-      currentActions: () => [{ action: "cancel" }],
-      sending: (on) => sending.push(on),
-    });
+    const result = await sendCancel({ id: "j1", sending: (on) => sending.push(on) });
     expect(result).toBeNull();
-    expect(calls).toEqual([]);
-    // Nothing is in flight before the user agreed.
-    expect(sending).toEqual([]);
+    expect(calls.map((c) => c.cmd).sort()).toEqual(["get_job", "remote_job_state"]);
+    expect(log.indexOf("dialog")).toBe(2);
+    // In flight from the click (before the first read, o22.14.14.6), and ended when declined.
+    expect(sending).toEqual([true, false]);
     expect(asked).toEqual([
       {
         title: "Cancel job",
@@ -556,14 +610,334 @@ describe("sendCancel (o22.14.8, o22.14.10)", () => {
       },
     ]);
   });
+
+  it("sends exactly one cancel_job after the user agreed, having read the row and the record again after the dialog", async () => {
+    const log: string[] = [];
+    backend(
+      { cancel_job: PENDING_ANSWER, get_job: running({ cancel_requested_at: T0 }), remote_job_state: state() },
+      log,
+    );
+    // Before the dialog the backend's row offers Cancel; after it, still does (no cancel pending yet).
+    let reads = 0;
+    mocks.invoke.mockImplementation((cmd: string) => {
+      log.push(`invoke:${cmd}`);
+      if (cmd === "get_job") return Promise.resolve(running(++reads <= 2 ? {} : { cancel_requested_at: T0 }));
+      if (cmd === "remote_job_state") return Promise.resolve(state());
+      return Promise.resolve(PENDING_ANSWER);
+    });
+    dialog(true, log);
+    const report = await sendCancel({ id: "j1", sending: quiet });
+    expect(log.filter((l) => l === "invoke:cancel_job")).toHaveLength(1);
+    // reads (get_job ‖ remote_job_state, any order), dialog, reads again, cancel_job, reload.
+    const cmds = log.map((l) => l.replace("invoke:", ""));
+    expect(cmds[2]).toBe("dialog");
+    expect(cmds.slice(0, 2).sort()).toEqual(["get_job", "remote_job_state"]);
+    expect(cmds.slice(3, 5).sort()).toEqual(["get_job", "remote_job_state"]);
+    expect(cmds[5]).toBe("cancel_job");
+    expect(cmds.slice(6).sort()).toEqual(["get_job", "remote_job_state"]);
+    expect(report?.notice).toBe("Cancel pending — sent at the next check");
+    expect(report?.job?.cancel_requested_at).toBe(T0);
+  });
+
+  // CONTROL: skip the re-read after the dialog (derive the offer once) → a cancel from a stale offer
+  // is sent, red.
+  it("sends nothing when the backend's row stopped offering the Cancel while the dialog was open", async () => {
+    let reads = 0;
+    const { calls } = backend({
+      cancel_job: PENDING_ANSWER,
+      // Another cancel was recorded meanwhile: only Undo is offered after the dialog.
+      get_job: () => running(++reads <= 1 ? {} : { cancel_requested_at: T0 }),
+      remote_job_state: state(),
+    });
+    dialog(true);
+    expect(await sendCancel({ id: "j1", sending: quiet })).toBeNull();
+    expect(calls.map((c) => c.cmd)).not.toContain("cancel_job");
+  });
+
+  // CONTROL: ask whatever the offer says (always `confirm`) → Retry cancel opens the dialog, red.
+  it("sends Retry cancel at once, with no dialog (a cancelling job)", async () => {
+    const { calls } = backend({
+      cancel_job: { result: "already_on_server" },
+      get_job: running({ status: "cancelling" }),
+      remote_job_state: state(),
+    });
+    const asked = dialog(false);
+    const report = await sendCancel({ id: "j1", sending: quiet });
+    expect(asked).toHaveLength(0);
+    expect(calls.find((c) => c.cmd === "cancel_job")).toEqual({ cmd: "cancel_job", args: { id: "j1" } });
+    expect(report?.notice).toBe("The cancel is already on the server; sweeping again");
+  });
+
+  it("sends Retry cancel at once for a pending cancel whose re-sends stopped", async () => {
+    const stopped = record({ cancel_sends: { failures: 3, stopped: true } });
+    const { calls } = backend({
+      cancel_job: PENDING_ANSWER,
+      get_job: running({ cancel_requested_at: T0, cancel_sent_at: T1 }),
+      remote_job_state: state(stopped),
+    });
+    const asked = dialog(false);
+    await sendCancel({ id: "j1", sending: quiet });
+    expect(asked).toHaveLength(0);
+    expect(calls.some((c) => c.cmd === "cancel_job")).toBe(true);
+  });
+
+  it("sends nothing when the row offers no cancel send, and when it cannot be read", async () => {
+    for (const j of [
+      running({ cancel_requested_at: T0, cancel_sent_at: T1 }), // sent, re-sends not stopped: nothing
+      running({ cancel_requested_at: T0 }), // pending, unsent: only Undo
+      running({ status: "completed" }),
+      running({ remote_socket: null }), // corrupt coordinates
+    ]) {
+      const { calls } = backend({ cancel_job: PENDING_ANSWER, get_job: j, remote_job_state: state() });
+      const asked = dialog(true);
+      expect(await sendCancel({ id: "j1", sending: quiet })).toBeNull();
+      expect(calls.map((c) => c.cmd)).not.toContain("cancel_job");
+      expect(asked).toHaveLength(0);
+    }
+    // No row, no offer, no cancel: the read's error is the screen's.
+    const { calls } = backend({ cancel_job: PENDING_ANSWER, get_job: () => Promise.reject(new Error("no such job")), remote_job_state: state() });
+    dialog(true);
+    await expect(sendCancel({ id: "j1", sending: quiet })).rejects.toThrow("no such job");
+    expect(calls.map((c) => c.cmd)).not.toContain("cancel_job");
+  });
+
+  it("counts a dialog that fails to open as a decline", async () => {
+    const { calls } = backend({ cancel_job: PENDING_ANSWER, get_job: running(), remote_job_state: state() });
+    dialog("fails");
+    expect(await sendCancel({ id: "j1", sending: quiet })).toBeNull();
+    expect(calls.map((c) => c.cmd)).not.toContain("cancel_job");
+  });
+
+  // CONTROL: drop the `finally` reset (or reset only for a local job) → the remote state stays
+  // "Sending cancel…" after `cancel_job` returned, red. Reset before the reload → red too (the
+  // order is asserted).
+  it("ends a remote job's in-flight state after cancel_job returned and the reload, and keeps a local one's", async () => {
+    const log: string[] = [];
+    backend({ cancel_job: PENDING_ANSWER, get_job: running(), remote_job_state: state() }, log);
+    dialog(true);
+    const r = await sendCancel({ id: "j1", sending: (on) => log.push(`sending:${on}`) });
+    expect(r?.result).toEqual(PENDING_ANSWER);
+    // In flight from before the first read; ended only after cancel_job and the reload (2 reads).
+    expect(log[0]).toBe("sending:true");
+    expect(log.filter((l) => l.startsWith("sending"))).toEqual(["sending:true", "sending:false"]);
+    const at = log.indexOf("invoke:cancel_job");
+    expect(log.slice(at + 1, at + 3).sort()).toEqual(["invoke:get_job", "invoke:remote_job_state"]);
+    expect(log[log.length - 1]).toBe("sending:false");
+    expect(log.length).toBe(at + 4);
+
+    const localLog: string[] = [];
+    backend({ cancel_job: { result: "dispatched" }, get_job: local(), remote_job_state: state(null) }, localLog);
+    dialog(false);
+    const l = await sendCancel({ id: "j1", sending: (on) => localLog.push(`sending:${on}`) });
+    // A local cancel: no dialog, no reload, no notice; the in-flight state stays until the terminal status.
+    expect(l).toEqual({ result: { result: "dispatched" }, job: null, notice: null });
+    expect(localLog.filter((x) => x.startsWith("sending"))).toEqual(["sending:true"]);
+    expect(localLog[0]).toBe("sending:true");
+    expect(localLog[localLog.length - 1]).toBe("invoke:cancel_job");
+  });
+
+  it("ends the in-flight state when cancel_job fails, for both, and rethrows", async () => {
+    for (const j of [running(), local()]) {
+      backend({
+        get_job: j,
+        remote_job_state: state(),
+        cancel_job: () => Promise.reject(new Error("conflict: an operation on job j1 is already in progress")),
+      });
+      dialog(true);
+      const sending: boolean[] = [];
+      await expect(sendCancel({ id: "j1", sending: (on) => sending.push(on) })).rejects.toThrow("already in progress");
+      expect(sending).toEqual([true, false]);
+    }
+  });
+
+  // G1 — CONTROL: catch the re-read's failure in `currentActions` and fall back to the first read's
+  // offers → the cancel is sent from a stale offer, red.
+  it("rejects and sends nothing when the read after the dialog fails", async () => {
+    const log: string[] = [];
+    let afterDialog = false;
+    const { calls } = backend(
+      {
+        cancel_job: PENDING_ANSWER,
+        get_job: () => (afterDialog ? Promise.reject(new Error("db busy after the dialog")) : running()),
+        remote_job_state: state(),
+      },
+      log,
+    );
+    mocks.confirm.mockReset();
+    mocks.confirm.mockImplementation(async () => {
+      afterDialog = true;
+      return true;
+    });
+    const sending: boolean[] = [];
+    await expect(sendCancel({ id: "j1", sending: (on) => sending.push(on) })).rejects.toThrow("db busy after the dialog");
+    expect(calls.map((c) => c.cmd)).not.toContain("cancel_job");
+    expect(sending).toEqual([true, false]);
+  });
+
+  // G3 — CONTROLS: move `sending(true)` back after the reads (into `send`) → the first click is not
+  // in flight while its reads and its dialog are pending, a second click goes through, red.
+  it("is in flight from the click: a second click during the reads or the dialog sends nothing", async () => {
+    // The button as the screen draws it: disabled while a click is in flight (`cancelButtons`).
+    let inFlight = false;
+    const click = () => (inFlight ? Promise.resolve("disabled") : sendCancel({ id: "j1", sending: (on) => (inFlight = on) }));
+    const holds: (() => void)[] = []; // each `get_job` is held until released
+    const { calls } = backend({
+      cancel_job: PENDING_ANSWER,
+      get_job: () => new Promise((resolve) => holds.push(() => resolve(running()))),
+      remote_job_state: state(),
+    });
+    dialog(true);
+    const first = click();
+    // The first click's reads are pending: it is already in flight.
+    expect(inFlight).toBe(true);
+    expect(await click()).toBe("disabled");
+    // Release each read as it arrives: the first, the re-read after the dialog, the reload.
+    for (let i = 0; i < 3; i++) {
+      while (holds.length <= i) await new Promise((r) => setTimeout(r, 0));
+      holds[i]();
+    }
+    await first;
+    expect(calls.filter((c) => c.cmd === "cancel_job")).toHaveLength(1);
+    expect(inFlight).toBe(false);
+  });
+
+  it("ends the in-flight state when nothing is offered, the dialog is declined or fails, and a read fails", async () => {
+    const cases: [string, Record<string, unknown>, boolean | "fails"][] = [
+      ["nothing offered", { get_job: running({ cancel_requested_at: T0, cancel_sent_at: T1 }), remote_job_state: state() }, true],
+      ["declined", { get_job: running(), remote_job_state: state() }, false],
+      ["dialog fails", { get_job: running(), remote_job_state: state() }, "fails"],
+      ["first read fails", { get_job: () => Promise.reject(new Error("x")), remote_job_state: state() }, true],
+    ];
+    for (const [name, answers, answer] of cases) {
+      backend({ cancel_job: PENDING_ANSWER, ...answers });
+      dialog(answer);
+      const sending: boolean[] = [];
+      await sendCancel({ id: "j1", sending: (on) => sending.push(on) }).catch(() => null);
+      expect(sending, name).toEqual([true, false]);
+    }
+  });
+
+  // CONTROL: `cancelNotice` returning "Cancel sent" for `check_failed` → red here and in remote.test.
+  it("never says the cancel was sent when the delivery's check failed", async () => {
+    const failed = { result: "delivered", already_pending: false, step: { step: "check_failed", detail: "collect: ssh exited with 255" } };
+    const unreachable = record({ check_error: { text: "collect: ssh exited with 255", answered: false } });
+    const run = async (after: Job) => {
+      let reads = 0;
+      backend({
+        cancel_job: failed,
+        // The first two reads (before/after the dialog) see the running row; the reload sees `after`.
+        get_job: () => (++reads <= 2 ? running() : after),
+        remote_job_state: () => state(reads <= 2 ? RUNNING : unreachable),
+      });
+      dialog(true);
+      return sendCancel({ id: "j1", sending: quiet });
+    };
+    const unsent = await run(running({ cancel_requested_at: T0 }));
+    expect(unsent?.notice).toBe("Server unreachable — the cancel stays pending and is sent when it answers");
+    const marked = await run(running({ cancel_requested_at: T0, cancel_sent_at: T1 }));
+    expect(marked?.notice).toMatch(/^No answer after the cancel was sent; it may already be on the server/);
+    for (const r of [unsent, marked]) expect(r?.notice).not.toMatch(/^Cancel sent/);
+  });
+
+  it("words the answer neutrally when the reload cannot be read, and does not throw", async () => {
+    const failed = { result: "delivered", already_pending: false, step: { step: "check_failed", detail: "collect: broken" } };
+    let reads = 0;
+    backend({
+      cancel_job: failed,
+      get_job: () => (++reads <= 2 ? running() : Promise.reject(new Error("db busy"))),
+      remote_job_state: () => (reads <= 2 ? state() : Promise.reject(new Error("no"))),
+    });
+    dialog(true);
+    const r = await sendCancel({ id: "j1", sending: quiet });
+    expect(r).toEqual({ result: failed, job: null, notice: "The cancel stays pending: collect: broken" });
+  });
 });
 
-describe("every Cancel goes through sendCancel (o22.14.10, source pin)", () => {
+describe("sendUndo and clickCancelFamily (o22.14.1, o22.14.14.1)", () => {
+  const T0 = "2026-10-18 06:18:01";
+  const T1 = "2026-10-18 06:18:05";
+  const pendingRow = (over: Partial<Job> = {}) => job({ ...REMOTE, status: "running", cancel_requested_at: T0, ...over });
+  const state = (r: RemoteState | null = RUNNING) => ({ seq: 2, state: r }) satisfies RemoteStateRead;
+
+  // CONTROL: wire Undo to `cancel_job` (the shared helper invoking the wrong command) → red.
+  it("undo_cancel calls undo_cancel — never cancel_job — with no dialog, reloads and words the answer", async () => {
+    const log: string[] = [];
+    let undone = false;
+    const { calls } = backend(
+      {
+        undo_cancel: () => ((undone = true), "undone"),
+        get_job: () => pendingRow(undone ? { cancel_requested_at: null } : {}),
+        remote_job_state: state(),
+      },
+      log,
+    );
+    const asked = dialog(true);
+    const out = await clickCancelFamily("undo_cancel", { id: "j1", sending: (busy) => log.push(`sending:${busy}`) });
+    expect(asked).toEqual([]);
+    expect(calls.find((c) => c.cmd === "undo_cancel")).toEqual({ cmd: "undo_cancel", args: { id: "j1" } });
+    expect(calls.map((c) => c.cmd)).not.toContain("cancel_job");
+    expect(out?.notice).toBe("Cancel undone");
+    expect(out?.job?.cancel_requested_at).toBeNull();
+    expect(log[0]).toBe("sending:undo");
+    expect(log.indexOf("invoke:undo_cancel")).toBeGreaterThan(2);
+    expect(log[log.length - 1]).toBe("sending:null");
+  });
+
+  it("says too late when the send was marked in between, and nothing when none is pending", async () => {
+    for (const [answer, notice] of [
+      ["send_marked", "Too late to undo: the cancel may already be on the server"],
+      ["nothing_pending", "No cancel to undo"],
+    ] as const) {
+      backend({ undo_cancel: answer, get_job: pendingRow(), remote_job_state: state() });
+      const r = await sendUndo({ id: "j1", sending: () => {} });
+      expect(r?.notice).toBe(notice);
+    }
+  });
+
+  it("sends no undo when the backend's row does not offer it (the send is marked, or no cancel is pending)", async () => {
+    for (const j of [pendingRow({ cancel_sent_at: T1 }), pendingRow({ cancel_requested_at: null })]) {
+      const { calls } = backend({ undo_cancel: "undone", get_job: j, remote_job_state: state() });
+      expect(await sendUndo({ id: "j1", sending: () => {} })).toBeNull();
+      expect(calls.map((c) => c.cmd)).not.toContain("undo_cancel");
+    }
+  });
+
+  it("routes Cancel and Retry cancel to cancel_job and shows them as the cancel in flight", async () => {
+    const log: string[] = [];
+    const stopped = record({ cancel_sends: { failures: 3, stopped: true } });
+    const { calls } = backend(
+      { cancel_job: { result: "pending", already_pending: true }, get_job: pendingRow({ cancel_sent_at: T1 }), remote_job_state: state(stopped) },
+      log,
+    );
+    const asked = dialog(false);
+    const out = await clickCancelFamily("retry_cancel", { id: "j1", sending: (busy) => log.push(`sending:${busy}`) });
+    expect(asked).toEqual([]);
+    expect(calls.some((c) => c.cmd === "cancel_job")).toBe(true);
+    expect(out?.notice).toBe("Cancel pending — sent at the next check");
+    expect(log.find((l) => l.startsWith("sending"))).toBe("sending:cancel");
+    expect(log[log.length - 1]).toBe("sending:null");
+  });
+
+  // A Retry cancel click whose row has since become a plain running one is not a first Cancel the
+  // user agreed to: nothing is sent (the backend offers "Cancel" with a dialog, not "Retry cancel").
+  it("sends Retry cancel's click as the backend's offer says: a first Cancel asks, it is not sent blind", async () => {
+    const { calls } = backend({ cancel_job: PENDING_ANSWER_FOR_RETRY, get_job: job({ ...REMOTE, status: "running" }), remote_job_state: state() });
+    const asked = dialog(false);
+    expect(await clickCancelFamily("retry_cancel", { id: "j1", sending: () => {} })).toBeNull();
+    expect(asked).toHaveLength(1);
+    expect(calls.map((c) => c.cmd)).not.toContain("cancel_job");
+  });
+});
+const PENDING_ANSWER_FOR_RETRY = { result: "pending", already_pending: false };
+
+describe("every Cancel goes through the shared helpers (o22.14.10, o22.14.14.1; source pin)", () => {
   // The dialog itself is a live-gate item; what is pinned here is that no screen can reach
-  // `cancel_job` other than through the one helper behind `confirmThenCancel`. CONTROL: call
-  // `invoke("cancel_job", …)` directly from either screen, or send from `sendCancel` without
-  // `confirmThenCancel` → red.
-  it("leaves cancel_job to the one shared helper", async () => {
+  // `cancel_job` / `undo_cancel`, hand the helpers anything but the job id and the in-flight
+  // callback, or import the dialog for the cancel path. CONTROLS: call `invoke("cancel_job", …)` or
+  // `invoke("undo_cancel", …)` from a screen; add `confirm` / `job` / `record` to the call; import
+  // `confirm` in the detail screen; a second `cancel_job` or `confirm` import in `live-wiring.ts`;
+  // widen a helper's parameters → red. (The structural half is the `@ts-expect-error` lines above.)
+  it("leaves cancel_job and undo_cancel to the helpers, and lets no screen hand them anything but the id and the callback", async () => {
     const { readFileSync } = await import("node:fs");
     const { resolve } = await import("node:path");
     // The code only: block comments, then line comments (not a `://` inside a URL).
@@ -571,16 +945,87 @@ describe("every Cancel goes through sendCancel (o22.14.10, source pin)", () => {
       readFileSync(resolve(process.cwd(), f), "utf8")
         .replace(/\/\*[\s\S]*?\*\//g, "")
         .replace(/(^|[^:])\/\/.*$/gm, "$1");
+    for (const screen of [
+      "src/screens/JobDetailScreen.tsx",
+      "src/screens/JobsScreen.tsx",
+      "src/jobs/RemotePanel.tsx",
+      "src/jobs/CancelButtons.tsx",
+    ]) {
+      const src = read(screen);
+      expect(src, screen).not.toMatch(/["'`](cancel_job|undo_cancel|retry_cancel)["'`]/);
+      expect(src, screen).not.toMatch(/\bconfirm\s*:|\boffer\s*[:=]|\bCancelSend\b|\bcancelSendOf\b|\bsendCancel\b|\bsendUndo\b/);
+    }
     for (const screen of ["src/screens/JobDetailScreen.tsx", "src/screens/JobsScreen.tsx"]) {
       const src = read(screen);
-      expect(src, screen).not.toMatch(/["'`]cancel_job["'`]/);
-      expect(src, screen).toMatch(/\bsendCancel\(\{/);
+      const start = src.indexOf("clickCancelFamily(action, {");
+      expect(start, screen).toBeGreaterThan(-1);
+      // The call's argument object, by brace matching; its top-level keys are the arguments.
+      let depth = 0;
+      let end = start;
+      const keys: string[] = [];
+      let segment = "";
+      for (let i = src.indexOf("{", start); i < src.length; i++) {
+        const c = src[i];
+        if (c === "{" || c === "(" || c === "[") depth++;
+        else if (c === "}" || c === ")" || c === "]") depth--;
+        if (depth === 0) {
+          end = i;
+          keys.push(segment.split(":")[0].trim());
+          break;
+        }
+        if (depth === 1 && c === ",") {
+          keys.push(segment.split(":")[0].trim());
+          segment = "";
+        } else if (!(depth === 1 && c === "{")) segment += c;
+      }
+      const call = src.slice(start, end + 1);
+      // Only the id and the in-flight callback.
+      expect(keys.filter(Boolean), screen).toEqual(["id", "sending"]);
+      expect(call, screen).not.toMatch(/\b(confirm|bridge|record|current|offer)\b/);
     }
+    // The detail screen has no dialog import for the cancel path (it uses `message` for export only);
+    // the Jobs screen's `confirm` is the delete's — every use is a call, none is passed along.
+    const detail = read("src/screens/JobDetailScreen.tsx");
+    expect(detail.match(/import \{[^}]*\} from "@tauri-apps\/plugin-dialog"/)?.[0]).not.toMatch(/\bconfirm\b/);
+    expect(detail).not.toMatch(/\bconfirm\b/);
+    const jobs = read("src/screens/JobsScreen.tsx").replace(/import \{[^}]*\} from "@tauri-apps\/plugin-dialog";/, "");
+    expect([...jobs.matchAll(/\bconfirm\b(?!\()/g)]).toEqual([]);
+    expect(jobs.match(/\bconfirm\(/g)).toHaveLength(1);
+
+    // G2: the one-helper pin covers every non-test file of `src`, not a list: no other file names the
+    // `cancel_job` command, or calls anything with `undo_cancel` as its first argument (an aliased
+    // `invoke` included; the bare "undo_cancel" is also the action's name in `remote.ts`, whose
+    // `offer("undo_cancel", …)` is the one allowed call).
+    const { readdirSync } = await import("node:fs");
+    const walk = (dir: string, out: string[] = []): string[] => {
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        const path = `${dir}/${e.name}`;
+        if (e.isDirectory()) walk(path, out);
+        else if (/\.tsx?$/.test(e.name) && !/\.test\.tsx?$/.test(e.name)) out.push(path);
+      }
+      return out;
+    };
+    const others = walk("src").filter((f) => f !== "src/jobs/live-wiring.ts");
+    expect(others.length).toBeGreaterThan(50);
+    const offenders = others.filter((f) => {
+      const code = read(f);
+      return /["'`]cancel_job["'`]/.test(code) || /\b(?!offer\b)\w+\s*(<[^>]*>)?\(\s*["'`]undo_cancel["'`]/.test(code);
+    });
+    expect(offenders).toEqual([]);
+
     const wiring = read("src/jobs/live-wiring.ts");
+    expect(wiring).toMatch(/import \{ confirm \} from "@tauri-apps\/plugin-dialog";/);
     expect(wiring.match(/["'`]cancel_job["'`]/g)).toHaveLength(1);
+    expect(wiring.match(/invoke<[^>]*>\("undo_cancel"/g)).toHaveLength(1);
+    // The helpers take the id and the callback, nothing else; the offer is derived from what they read.
+    expect(wiring).toMatch(/export async function sendCancel\(deps: \{ id: string; sending: \(on: boolean\) => void \}\)/);
+    expect(wiring).toMatch(/export async function sendUndo\(deps: \{ id: string; sending: \(on: boolean\) => void \}\)/);
+    expect(wiring).toMatch(/deps: \{ id: string; sending: \(busy: CancelBusy\) => void \},\n\)/);
     const helper = wiring.slice(wiring.indexOf("export async function sendCancel("));
     const body = helper.slice(0, helper.indexOf("\n}\n"));
-    expect(body).toMatch(/return confirmThenCancel\(\{/);
+    expect(body).toMatch(/cancelSendOf\(rowActions\(first\.job, first\.record\)\)/);
+    expect(body).toMatch(/const now = await readJobAndRecord\(id\);/);
+    expect(body).toMatch(/return await confirmThenCancel\(\{/);
     expect(body.indexOf("confirmThenCancel(")).toBeLessThan(body.indexOf('"cancel_job"'));
   });
 });

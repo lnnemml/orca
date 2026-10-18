@@ -4,27 +4,18 @@ import { listen } from "@tauri-apps/api/event";
 import { confirm, message } from "@tauri-apps/plugin-dialog";
 
 import type { Group, Job, JobStatus } from "../types";
-import { formatEnergy, formatTimestamp, formatWallTime } from "../format";
+import { formatEnergy, formatLaptopUtc, formatWallTime } from "../format";
 import { GroupSidebar } from "../groups/GroupSidebar";
 import { filterJobsByGroup, type GroupSelection } from "../groups/tree";
 import { filterJobsBySearch } from "../groups/search";
 import { ROOT_OPTION } from "../groups/GroupSelect";
 import { InlineRename } from "../jobs/InlineRename";
-import { sendCancel, tauriBridge, trackRemoteStates, type RemoteStateTracker } from "../jobs/live-wiring";
-import { cancelSendOf, remoteView, rowActions, type CancelSend, type HeldRemoteState } from "../jobs/remote";
+import { CancelButtons } from "../jobs/CancelButtons";
+import { clickCancelFamily, tauriBridge, trackRemoteStates, type RemoteStateTracker } from "../jobs/live-wiring";
+import { bannerAfterClick, remoteView, rowActions, type CancelBusy, type CancelFamilyAction, type HeldRemoteState } from "../jobs/remote";
 import { RemoteJobBadges } from "../jobs/RemotePanel";
+import { STATUS_CHIPS } from "../jobs/status";
 import { exportSelection, type CopyMode } from "../export/save";
-
-/** The status chips, in state-machine order. */
-const STATUS_CHIPS: JobStatus[] = [
-  "draft",
-  "queued",
-  "running",
-  "completed",
-  "parsed",
-  "failed",
-  "cancelled",
-];
 
 interface JobsScreenProps {
   onOpenDetail: (jobId: string, autoRun: boolean) => void;
@@ -47,6 +38,10 @@ export function JobsScreen({
   const [groups, setGroups] = useState<Group[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // What the last Cancel / Retry cancel / Undo cancel answered, in words (ADR-024 o22.14.7).
+  const [notice, setNotice] = useState<string | null>(null);
+  // The rows whose cancel-family click is in flight (their buttons are disabled meanwhile).
+  const [cancelling, setCancelling] = useState<ReadonlyMap<string, "cancel" | "undo">>(new Map());
   const [movingJobId, setMovingJobId] = useState<string | null>(null);
   // Search/status filter — LOCAL to this screen (not lifted, not persisted). Composed
   // AFTER the group filter: the rendered rows are always filterJobsBySearch(filter
@@ -120,29 +115,32 @@ export function JobsScreen({
     }
   }, []);
 
-  // The latest rows and records, for the re-check after the Cancel dialog (o20.3).
-  const latest = useRef({ jobs, remoteHeld });
-  latest.current = { jobs, remoteHeld };
-
-  // Cancel goes through the one shared helper (o22.14.10): a remote job's first Cancel asks first
-  // and is re-checked against the row's offers after the dialog; then the list reloads.
-  const cancel = useCallback(
-    async (job: Job, offer: CancelSend) => {
+  // Every cancel-family click goes through the one shared helper (o22.14.10, o22.14.14.1): it is
+  // given the job id and the in-flight callback and nothing else. It reads the row and the record
+  // from the backend itself, derives the offer, asks with the plugin's own dialog when that offer is
+  // a remote job's first Cancel (re-checked after the dialog), and words the answer. Then the list
+  // reloads (it re-reads the live remote records).
+  const cancelFamily = useCallback(
+    async (job: Job, action: CancelFamilyAction) => {
+      // The banner is not cleared here: the next *answer* replaces it (`bannerAfterClick`); a declined
+      // dialog or a click that offered nothing leaves it (o22.14.14.3).
       try {
-        const result = await sendCancel({
-          bridge: tauriBridge,
-          job,
-          offer,
-          confirm,
-          currentActions: () => {
-            const now = latest.current.jobs.find((j) => j.id === job.id);
-            return now ? rowActions(now, latest.current.remoteHeld.get(job.id)?.state) : [];
-          },
-          sending: () => {},
+        const outcome = await clickCancelFamily(action, {
+          id: job.id,
+          sending: (busy: CancelBusy) =>
+            setCancelling((prev) => {
+              const next = new Map(prev);
+              if (busy) next.set(job.id, busy);
+              else next.delete(job.id);
+              return next;
+            }),
         });
+        setNotice((prev) => bannerAfterClick(prev, outcome));
         // The terminal status of a local job arrives via job:status; reload to be safe.
-        if (result) await load();
+        if (outcome) await load();
       } catch (e) {
+        // An error is an answer too: the older notice does not stand beside it.
+        setNotice((prev) => bannerAfterClick(prev, "error"));
         setError(String(e));
       }
     },
@@ -335,6 +333,14 @@ export function JobsScreen({
           </div>
 
           {error ? <div className="banner err">{error}</div> : null}
+          {notice ? (
+            <div className="banner warn row" style={{ justifyContent: "space-between" }}>
+              <span>{notice}</span>
+              <button className="icon-btn" title="Dismiss" onClick={() => setNotice(null)}>
+                ✕
+              </button>
+            </div>
+          ) : null}
 
           {loading ? (
             <div className="empty">Loading…</div>
@@ -411,7 +417,7 @@ export function JobsScreen({
                     <td className="mono" style={{ textAlign: "right" }}>
                       {formatWallTime(job.wall_time)}
                     </td>
-                    <td className="mono">{formatTimestamp(job.created_at)}</td>
+                    <td className="mono">{formatLaptopUtc(job.created_at)}</td>
                     <td style={{ textAlign: "right" }}>
                       <div
                         className="row"
@@ -419,25 +425,18 @@ export function JobsScreen({
                       >
                         {(() => {
                           // The row's actions (o22.14.8): a live job offers its cancel family only
-                          // (never Delete — Rust refuses it; a `cancelling` job offers Retry cancel,
-                          // sent by this Cancel button); a terminal row opens or is deleted. Undo
-                          // cancel and the Retry cancel label come with 5.4a Part B2.
+                          // (never Delete — Rust refuses it): Cancel, Retry cancel or Undo cancel,
+                          // each labelled by its offer; a terminal row opens or is deleted.
                           const actions = rowActions(job, remoteHeld.get(job.id)?.state);
-                          const send = cancelSendOf(actions);
                           const terminal = actions.some((a) => a.action === "delete");
                           return (
                             <>
-                              {send ? (
-                                <button
-                                  className="btn btn-sm"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    cancel(job, send);
-                                  }}
-                                >
-                                  Cancel
-                                </button>
-                              ) : null}
+                              <CancelButtons
+                                actions={actions}
+                                busy={cancelling.get(job.id) ?? null}
+                                onAction={(action) => cancelFamily(job, action)}
+                                stopPropagation
+                              />
                               {terminal ? (
                                 // Terminal states: the primary action + Delete.
                                 <>

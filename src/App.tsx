@@ -11,6 +11,7 @@ import { ManualScreen } from "./screens/ManualScreen";
 import { SettingsScreen } from "./screens/SettingsScreen";
 import type { Job, Molecule, SidecarState, SidecarStatus } from "./types";
 import type { GroupSelection } from "./groups/tree";
+import { queueCounts } from "./jobs/status";
 import "./styles/app.css";
 
 interface QueueInfo {
@@ -85,11 +86,8 @@ function App() {
         invoke<Job[]>("list_jobs"),
         invoke<boolean>("is_queue_paused"),
       ]);
-      setQueue({
-        running: jobs.filter((j) => j.status === "running").length,
-        queued: jobs.filter((j) => j.status === "queued").length,
-        paused,
-      });
+      // `cancelling` counts as running: the server is still busy with it (ADR-024 o22.14.8).
+      setQueue({ ...queueCounts(jobs), paused });
     } catch {
       /* backend not ready / plain browser — leave the last known counts */
     }

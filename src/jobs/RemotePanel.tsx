@@ -1,13 +1,22 @@
 import type { Job, RemoteState } from "../types";
-import { remoteView, type RemoteBadge, type RemoteOffer, type RemoteView, type RetryAction } from "./remote";
+import { CancelButtons } from "./CancelButtons";
+import {
+  remoteView,
+  type CancelBusy,
+  type CancelFamilyAction,
+  type RemoteBadge,
+  type RemoteOffer,
+  type RemoteView,
+  type RetryAction,
+} from "./remote";
 
 const ACTION_LABEL: Record<RetryAction, string> = {
   retry_submit: "Retry submit",
   retry_fetch: "Retry fetch",
 };
 
-/** The panel's buttons: the retries. The cancel family (Cancel, Retry cancel, Undo cancel) is the
- *  screen's own Cancel button (`sendCancel`); its buttons in the panel come with 5.4a Part B2. */
+/** The panel's retry buttons. The cancel family (Cancel, Retry cancel, Undo cancel) is drawn by
+ *  `CancelButtons` from the same offers. */
 function retryOffers(actions: readonly RemoteOffer[]): (RemoteOffer & { action: RetryAction })[] {
   return actions.filter((o): o is RemoteOffer & { action: RetryAction } => o.action === "retry_submit" || o.action === "retry_fetch");
 }
@@ -45,6 +54,10 @@ interface RemotePanelProps {
   /** The action in flight, if any: every button is disabled meanwhile. */
   busy: RetryAction | null;
   onAction: (action: RetryAction) => void;
+  /** Which click of the cancel family is in flight, if any. */
+  cancelBusy: CancelBusy;
+  /** A cancel-family button was clicked (Cancel, Retry cancel, Undo cancel). */
+  onCancelAction: (action: CancelFamilyAction) => void;
 }
 
 /**
@@ -52,7 +65,7 @@ interface RemotePanelProps {
  * actions decided by `remoteView`, and the row's `error_message` as the text — labelled "from the
  * last check" while the record holds no decided state. Arranges `remoteView`'s values only.
  */
-export function RemotePanel({ view, busy, onAction }: RemotePanelProps) {
+export function RemotePanel({ view, busy, onAction, cancelBusy, onCancelAction }: RemotePanelProps) {
   if (view.kind === "local" || view.kind === "terminal") return null;
   const text = view.kind === "live" ? view.text : null;
   return (
@@ -68,19 +81,20 @@ export function RemotePanel({ view, busy, onAction }: RemotePanelProps) {
           {text.body}
         </div>
       ) : null}
-      {retryOffers(view.actions).length ? (
-        <div className="row" style={{ gap: 8, marginTop: 8 }}>
+      {view.actions.length ? (
+        <div className="row" style={{ gap: 8, marginTop: 8, flexWrap: "wrap" }}>
           {retryOffers(view.actions).map((o) => (
             <button
               key={o.action}
               className="btn btn-sm"
-              disabled={busy !== null || o.disabled !== null}
+              disabled={busy !== null || cancelBusy !== null || o.disabled !== null}
               title={o.disabled ?? undefined}
               onClick={() => onAction(o.action)}
             >
               {busy === o.action ? `${ACTION_LABEL[o.action]}…` : ACTION_LABEL[o.action]}
             </button>
           ))}
+          <CancelButtons actions={view.actions} busy={cancelBusy} onAction={onCancelAction} locked={busy !== null} />
         </div>
       ) : null}
     </div>

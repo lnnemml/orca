@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { confirm } from "@tauri-apps/plugin-dialog";
 
 import type { Job, ParsedResults, Pathway, Reaction, ReferenceEnergy } from "../types";
-import { formatTimestamp } from "../format";
+import { formatLaptopUtc } from "../format";
 import { isScanJob, isNebJob, isValidPathwayLabel, normalizePathwayLabel } from "../reactions/pathway";
 import {
   isLocatedTsInput,
@@ -129,7 +129,7 @@ export function ReactionsScreen({ onOpenJob }: ReactionsScreenProps) {
               >
                 <td>{r.name}</td>
                 <td className="muted">{r.description || "—"}</td>
-                <td className="mono">{formatTimestamp(r.created_at)}</td>
+                <td className="mono">{formatLaptopUtc(r.created_at)}</td>
               </tr>
             ))}
           </tbody>

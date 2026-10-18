@@ -37,9 +37,13 @@ Everything runs as **`anton` over the `uni` alias**; never `uni-admin` (ADR-024 
 
 ## Step 0 — post-outage snapshot (first, before anything writes)
 
-**Rule:** until step 0 is recorded, **no Submit, Retry or Withdraw** to uni. The app may stay open
-(its label/collect calls are read-only and start no daemon), but the snapshot is taken by the prober
-directly.
+**Rule:** until step 0 is recorded, **no Submit, Retry or Cancel** to uni *(Withdraw is gone since
+5.4a B1; a Cancel is its successor)*. **The app stays closed until step 0 is recorded** *(amended
+2026-10-18)*: since 5.4a a pending cancel is delivered automatically at the first status step that
+reaches the server, and that delivery writes (ready/install, `mkjob`, `cancel.sh`). One is pending:
+job `85a2d627` (Opt · r²SCAN-3c, never submitted; cancel requested 2026-10-18 13:39 UTC, left on
+purpose by Anton). After step 0, opening the app delivers it through the not-on-server branch — a
+live check of that path; record its outcome. The snapshot is taken by the prober directly.
 
 Record (read-only, as `anton`):
 1. `uptime`, `/proc/sys/kernel/random/boot_id` (compare with the last recorded boot_id in

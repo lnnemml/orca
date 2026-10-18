@@ -5,7 +5,7 @@ import { MoleculeViewer } from "../viewer/MoleculeViewer";
 import { atomLinesToXyz } from "../viewer/xyz-format";
 import { importStructureFile, IMPORT_ACCEPT } from "../viewer/import-file";
 import { postSidecar } from "../sidecar-client";
-import { formatTimestamp } from "../format";
+import { formatLaptopUtc } from "../format";
 import type { Molecule } from "../types";
 
 interface MoleculesScreenProps {
@@ -128,7 +128,7 @@ export function MoleculesScreen({ onUseMolecule }: MoleculesScreenProps) {
                   {mol.charge}
                 </td>
                 <td className="mono">{mol.tags || "—"}</td>
-                <td className="mono">{formatTimestamp(mol.created_at)}</td>
+                <td className="mono">{formatLaptopUtc(mol.created_at)}</td>
                 <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
                   <button
                     className="btn btn-primary btn-sm"

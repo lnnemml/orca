@@ -19,11 +19,6 @@ export function formatWallTime(seconds: number | null): string {
   return `${h}h ${m}m`;
 }
 
-/** SQLite `datetime('now')` timestamp rendered compactly. */
-export function formatTimestamp(ts: string): string {
-  return ts.replace("T", " ").replace(/\.\d+Z?$/, "");
-}
-
 /** SQLite's `datetime('now')` form, exactly: `YYYY-MM-DD HH:MM:SS`. */
 const SQLITE_DATETIME = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
 
