@@ -86,6 +86,7 @@ function record(over: Partial<RemoteState> = {}): RemoteState {
     last_contact: null,
     cancel_sends: { failures: 0, stopped: false },
     sweeps: { count: 0, stopped: false },
+    pending_submit: null,
     ...over,
   };
 }
@@ -178,6 +179,7 @@ function job(over: Partial<Job> = {}): Job {
     remote_socket: null,
     cancel_requested_at: null,
     cancel_sent_at: null,
+    submit_pending_since: null,
     ...over,
   };
 }

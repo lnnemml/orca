@@ -1,6 +1,6 @@
 # ADR-024: Remote execution under intermittent connectivity
 
-**Status:** Accepted · 2026-10-02 (Proposed → Accepted after the review + acceptance amendments below) · amended 2026-10-03 (probe; probe review; d′ resolution — ready for implementation; l — unit 5.2 script and classifier shape; m — 5.3 submit rules; n — 5.1 Part B profile and connection test) · amended 2026-10-05 (o — 5.3 transport, sync and monitoring; accepted after DESIGN round 4; o13 — Part A2 amendments, accepted after DESIGN review 2026-10-05; o14 — B1 amendments, accepted after DESIGN review 2026-10-05) · amended 2026-10-06 (o15 — B1 Part B: the in-flight guard's scope, accepted after DESIGN review 2026-10-06; o16 — B2: the remote live log is pushed, accepted after DESIGN review 2026-10-06; o17 — B2 Part A: classifier `Cancelled` terminal, drain while watched, accepted after DESIGN review 2026-10-06; o18 — B2 Part B: exit leaves in-flight ssh/rsync to the OS, accepted after DESIGN review 2026-10-06; o19 — B3: the poller's remote state reaches the view, accepted after DESIGN review 2026-10-06) · amended 2026-10-07 (o20 — B3 Part B: run target remembered app-wide, run target only via Create & Run, Withdraw confirms; accepted after DESIGN review 2026-10-07) · amended 2026-10-17 (o21 — Cancel refuses a live remote job before the guard; accepted after DESIGN review 2026-10-17; o22 — unit 5.4a: remote cancel, the pending cancel and the guard; accepted after DESIGN review 2026-10-17, round 2 PASS WITH FINDINGS applied; o22.11–12 — A2a clarifications, reviewed with A2a's CODE verification 2026-10-17) · amended 2026-10-18 (o22.13 — A2b clarifications; accepted after DESIGN review 2026-10-18, round 2 PASS WITH FINDINGS applied; o22.14 — Part B: commands and view; accepted after DESIGN review 2026-10-18, round 2 PASS WITH FINDINGS applied)
+**Status:** Accepted · 2026-10-02 (Proposed → Accepted after the review + acceptance amendments below) · amended 2026-10-03 (probe; probe review; d′ resolution — ready for implementation; l — unit 5.2 script and classifier shape; m — 5.3 submit rules; n — 5.1 Part B profile and connection test) · amended 2026-10-05 (o — 5.3 transport, sync and monitoring; accepted after DESIGN round 4; o13 — Part A2 amendments, accepted after DESIGN review 2026-10-05; o14 — B1 amendments, accepted after DESIGN review 2026-10-05) · amended 2026-10-06 (o15 — B1 Part B: the in-flight guard's scope, accepted after DESIGN review 2026-10-06; o16 — B2: the remote live log is pushed, accepted after DESIGN review 2026-10-06; o17 — B2 Part A: classifier `Cancelled` terminal, drain while watched, accepted after DESIGN review 2026-10-06; o18 — B2 Part B: exit leaves in-flight ssh/rsync to the OS, accepted after DESIGN review 2026-10-06; o19 — B3: the poller's remote state reaches the view, accepted after DESIGN review 2026-10-06) · amended 2026-10-07 (o20 — B3 Part B: run target remembered app-wide, run target only via Create & Run, Withdraw confirms; accepted after DESIGN review 2026-10-07) · amended 2026-10-17 (o21 — Cancel refuses a live remote job before the guard; accepted after DESIGN review 2026-10-17; o22 — unit 5.4a: remote cancel, the pending cancel and the guard; accepted after DESIGN review 2026-10-17, round 2 PASS WITH FINDINGS applied; o22.11–12 — A2a clarifications, reviewed with A2a's CODE verification 2026-10-17) · amended 2026-10-18 (o22.13 — A2b clarifications; accepted after DESIGN review 2026-10-18, round 2 PASS WITH FINDINGS applied; o22.14 — Part B: commands and view; accepted after DESIGN review 2026-10-18, round 2 PASS WITH FINDINGS applied) · amended 2026-10-19 (o23 — unit 5.4c: the pending submit; accepted after DESIGN review 2026-10-19, round 2 PASS WITH FINDINGS applied as o23.13)
 
 Refines [ADR-003](adr-003-execution-backend.md) (the `ExecutionBackend` trait + job state
 machine) and extends [ADR-023](adr-023-server-agnostic-remote-execution.md) (one `SshBackend`
@@ -608,7 +608,7 @@ within (l); items 5–6 are Anton's decisions.
       - Socket fact `NoDaemon`: **any** live session on the mask blocks it.
       - Socket fact `Error`: the submit is blocked.
     - **A blocked submit** stays pending locally and is retried on the next reconcile. 5.4 tells the
-      user after 3 refusals.
+      user after 3 refusals *(realised by o23: unit 5.4c; the counter per launch, o23.4)*.
     - **Accepted residual:** the daemon could die between this check and the `tsp` submit, leaving a
       survivor unaccounted for. This window is not closed.
   - **Also for 5.3:** tsp writes a `/tmp/ts-out.*` file per task (P4); not yet prevented. Probe 5.3
@@ -648,13 +648,14 @@ review pending, together with the 5.3 decomposition).**
      cleanup.
 2. **A blocked submit** (the slot check of l refuses):
    - The submit stays pending locally and is **re-checked on every reconcile**. The check only reads
-     state; it signals nothing and changes nothing.
+     state; it signals nothing and changes nothing *(o23.3: the re-check is the submit attempt itself,
+     which writes nothing in the job dir while blocked and submits when the slot is free)*.
    - After 3 refusals the user is told, and the notice **names the blocking job(s)**.
-   - The user may withdraw the pending submit, cancel the blocking job, or keep waiting. *(Withdrawing a pending submit is local; the remote Withdraw command is gone, o22.7.)*
+   - The user may withdraw the pending submit, cancel the blocking job, or keep waiting. *(Withdrawing a pending submit is local; the remote Withdraw command is gone, o22.7. Superseded by o23.8: there is no local withdraw; Cancel is the exit.)*
    - **No automatic action** ever frees a slot: a blocked slot almost always means something really
      is still computing on those cores (rule #8).
    - **Persistence and sequencing** (round 1 MED-9): the pending submit and its refusal counter live
-     in the local DB. Unit **5.4** adds them with the v21 migration *(renumbered from v20 by Decision o: v20 is the 5.3 job coordinates; moved past v21 with unit 5.4c by o22.1)*, next to the re-enqueue counter,
+     in the local DB *(o23.4–5: the flag in the DB, v22; the counter per launch in `PollerMemory`)*. Unit **5.4** adds them with the v21 migration *(renumbered from v20 by Decision o: v20 is the 5.3 job coordinates; moved past v21 with unit 5.4c by o22.1)*, next to the re-enqueue counter,
      and runs the re-check from its reconcile loop. Until 5.4, a refused submit simply fails with
      the blocking job named.
 3. **"On the slot's mask" means the cores intersect.** *(Scope widened by o item 9: the scan covers every process and live queue of the account, not only the profile's jobs, and runs once inside the submit call instead of through per-job collects; the accounting rule of l round-5 MED-1 stays.)*
@@ -1649,7 +1650,7 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
 
        Each unit migrates only its own columns: **v21 = 5.4a's two columns** (item 2), and the
        re-enqueue counter and the pending submit move to later versions with their units *(renumbers
-       the "v21" of l, m2, o1, o3.5 and o4, each marked)*.
+       the "v21" of l, m2, o1, o3.5 and o4, each marked; o23.5: 5.4c = v22, 5.4b = v23)*.
     2. **Two DB columns**, so a cancel survives a quit and a closed laptop.
        - **Columns:** `jobs.cancel_requested_at TEXT NULL` (the user asked) and
          `jobs.cancel_sent_at TEXT NULL` (a delivery is about to run `cancel.sh`; item 4.5). Both
@@ -1857,7 +1858,8 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
        - **Record field.** The remote record (o19) gains `last_contact: Ok | Failed(why)`. Every
          ssh/rsync call the poller or a command makes for the job writes it from its **transport**
          result: label, collect, prepare, install, mkjob, cancel, fetch, LIST, and the upload and
-         submit calls of `retry_remote_submit`. Every one of them holds the job's guard (o19.4).
+         submit calls of `retry_remote_submit` *(and of the first Create & Run attempt and the pending
+         re-check, o23.9)*. Every one of them holds the job's guard (o19.4).
          `poll_log` is **not** a writer: it holds no guard (o16.5), and o19.4 stays whole. "The
          server answered" is `Ok`, even when the answer is a refusal or an `Indeterminate`. A
          connect failure, timeout or ssh exit 255 is `Failed`.
@@ -2413,6 +2415,239 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
                read after the dialog rejects and sends nothing, and a test pins it (G1); the
                one-helper source pin scans every non-test `src/**/*.{ts,tsx}` except
                `live-wiring.ts` for the `cancel_job` / `undo_cancel` literals (G2).
+23. **Unit 5.4c: the pending submit** (2026-10-19; forks raised by the orchestrator from the 5.4c
+    archaeology and the DESIGN review; 23.1–23.4 and 23.6's `Unknown` and socket-error rules decided
+    by Anton, the rest settled by the orchestrator). Realises Decision m item 2. DESIGN round 1:
+    PASS WITH FINDINGS (6 MED + 7 LOW), applied; round 2: PASS WITH FINDINGS (4 MED + 6 LOW),
+    applied as 23.13 (which wins over the items above where they differ).
+    1. **Scope: only a slot the server cannot clear** (Anton). A submit becomes **pending** only when
+       `submit.sh` answers that the slot check of Decision l / o9 blocks it:
+       - **slot busy** (step 5: live blockers on the mask);
+       - **slot check error** — the scan itself failed (step 5: timeout, a bad `tsp -l` of another
+         socket, unexpected output) **or** the slot's own socket gave l's `Error` (step 3: `tsp -l`
+         on the slot socket failed, `/proc/net/unix` unreadable) (Anton, round 1 MED-5).
+
+       Every other outcome stays what it is today: a transport failure of the first attempt, a
+       refused prepare, install, upload, lock or values, `KillUserProcesses` leave the row "not on
+       the server" with the manual Retry submit (o22.8's offer rule). A pending submit exists only
+       after the server **answered** a submit the user started (Create & Run or Retry), so the app
+       never writes to a server it has not heard from for this job, and B4's "step 0 before any
+       write" holds (no submit is allowed before step 0).
+    2. **A free slot submits by itself** (Anton). The pending state exists to submit when the slot
+       frees; nothing is ever freed by force (m2, rule #8): the app waits for the blocking work to
+       end on its own. Two pending jobs on one slot: the first to enqueue holds the slot; the second's
+       next attempt is accounted by the slot daemon's running row (l round-5 MED-1) and queues behind
+       it. The order between pending jobs is the poller's candidate order (`created_at`).
+    3. **The re-check is the submit itself** (Anton). Each status step of a pending job:
+       1. **derives the plan exactly as `resubmit_remote` does** (round 1 MED-1) — `retry_checks`
+          (the profile's run target with its verified stamp, host/root/socket unchanged) and
+          `write_local_dir` + `submit_args` with the profile's **current** mask (o14.2: nprocs ≤ the
+          mask's CPUs) — **minus** the label call (step 3's marker and row checks under the account
+          lock replace it) **and minus the upload**;
+       2. runs the ready step (prepare → install if needed → prepare);
+       3. runs `submit.sh`. Its upload post-condition (step 4: the exact file set and every sha256)
+          proves the server copy matches the plan; only if it answers **upload mismatch** (23.7) does
+          the step upload once and run `submit.sh` once more, in the same step *(a mask edit does not
+          reach this path: it clears the profile's stamp and ends the pending state, 23.13.3)*.
+
+       While blocked, an attempt refuses at step 3 or 5, **before** the `.tsp-out` dir (step 6) and
+       the claim (step 7), so it writes **nothing in the job dir** (pinned by a Lab script test). It
+       does touch, outside the job dir (round 1 LOW-1): the account lock file
+       (`$HOME/.orcastudio-submit.lock`, created on the first submit, opened for write each time); a
+       `mktemp -d` dir removed by the EXIT trap (whether the trap runs on SIGHUP or a kill is **not
+       measured**); and `tsp -l` on sockets `/proc/net/unix` lists (the stale-socket daemon start of
+       probe 5.2b is guarded by that check; a daemon dying between the read and `tsp -l` is l's
+       harmless residual, now met once per period). A free slot is the submit, under the same
+       account lock as its check, so there is no window between "checked" and "submitted" beyond l's
+       accepted residual (the daemon dying between the scan and `tsp`).
+       - **Cost, accepted without backoff** (round 1 LOW-3): one prepare + one `submit.sh` per period
+         (~15 s), about 1 s measured (scan 0.6–0.8 s, `orca/remote-sync-probe.md` items 8 and 10),
+         plus a `sha256sum` of the uploaded inputs (small) under the account lock. m2 asks for a
+         re-check on every reconcile; the notice (23.7) tells the user it is waiting.
+       - No new script and no new probe: the scan and its refusal are the ones measured in
+         `orca/remote-sync-probe.md` item 10.
+    4. **The refusal counter is per launch** (Anton), in `PollerMemory` like the fetch strikes,
+       the re-send failures and the sweeps (a deviation from m2's "in the local DB", recorded at m2).
+       The **pending flag** is in the DB (it must survive a restart). The counter counts slot-busy and
+       slot-check-error answers; it is **not** reset by a transport failure, only when the pending
+       state ends (and by a restart). After a restart the notice comes back after 3 more refusals.
+    5. **Schema v22: `jobs.submit_pending_since TEXT NULL`** (UTC, laptop clock, o22.14.6), with
+       `CHECK (submit_pending_since IS NULL OR (remote_host IS NOT NULL AND status = 'queued'))` in
+       v21's ADD-COLUMN form. 5.4b takes v23. `Job` carries the column (o22.14.5's seam).
+       - **Set** by the write that records a slot-busy / slot-check-error attempt (`record_attempt`,
+         same statement), as `COALESCE(submit_pending_since, now)`: a later refusal keeps the first
+         time (round 1 LOW-4).
+       - **NULLed** by every write that leaves the pending state: the enqueue, a refusal that ends it
+         (23.6), `record_delivered` (both branches — the not-on-server delivery leaves `queued` and
+         the terminal write is the next step's, round 1 MED-4), `record_ended_first`, and every
+         terminal or `cancelling` write (`finalize_job_conn`, `mark_cancelled_conn`,
+         `record_cancelling`). The CHECK catches a forgotten NULL on a terminal or `cancelling`
+         write; on the two `queued`-keeping writes (`record_delivered`, `record_ended_first`) it
+         cannot, so tests pin them (23.11).
+       - `record_shown`'s queued→running write (`poller.rs` ~568) and `update_job_status_conn`
+         (local) never meet a flagged row: the pending branch runs before the label/collect path,
+         and a local row has no coordinates. The CHECK would fail loudly if they did (round 1
+         LOW-5).
+       - Every write of the flag emits `job:status` after its lock (o22.14.5's rule).
+    6. **While pending, per status step** (keyed on the step's contact, not on the step name —
+       round 1 MED-3):
+       - a **pending cancel comes first** (o22.13.1): delivery's not-on-server branch (`mkjob` →
+         `cancel.sh`); `record_delivered` NULLs the flag; the next ordinary step writes `cancelled`.
+         Undo resumes the pending submit (the flag is untouched by an Undo);
+       - **no answer** — the step's `ContactRunner` saw a transport failure (ssh/rsync 255, a
+         timeout) or rsync 12 (no contact, o22.11.5) on its last call, before `submit.sh` answered
+         → stays pending, `CheckFailed`, nothing counted;
+       - **the submit reply lost** (`Unknown`: the call was sent, no reply) → **stays pending**
+         (Anton): the next attempt's step 3, under the account lock, sees the claim or the slot row
+         if the first one enqueued and refuses ("marker" / "row") — that refusal ends the pending
+         state (below) and the label decides from then on (o14.4); if it did not enqueue, the next
+         attempt simply submits;
+       - **slot busy / slot check error** → stays pending; one refusal counted; the record carries
+         the blockers or the reason (23.7);
+       - **lock busy** (another submit holds the account lock) → stays pending *(counted, with its
+         own notice: 23.13.1)*;
+       - **enqueued** → the flag is NULLed, the row is an ordinary queued job;
+       - **a local refusal of the plan** (23.3.1: the run target unverified — e.g. another job's
+         `KillUserProcesses` cleared the stamp —, host/root/socket changed) and **any other answered
+         refusal** (prepare, install, upload after its one retry, values, markers, a slot row,
+         `KillUserProcesses`, failed after the claim) → the pending state **ends**: the flag is
+         NULLed, the row shows the refusal with the manual Retry submit, as after a first attempt.
+         These need a person.
+       - After a restart (memory lost, flag set) the step simply re-checks; the counter starts at 0.
+    7. **Structured outcomes from `submit.sh`** (round 1 MED-2; no caller decides on reason text,
+       `remote/submit.rs`). The refusals 23.6 distinguishes get their own reply kinds, in the
+       length-prefixed records of the existing `Reader` format (not `%q`-quoted text):
+       - **blocked** — one record per blocker: a process (pid, kind wrapper|pinned, cores, job dir or
+         "cwd not readable") or a queued row (tsp id, socket, job dir);
+       - **slot-check-error** — the reason (step 3's socket `Error` or step 5's scan failure);
+       - **lock-busy**;
+       - **upload-mismatch** — missing / extra / differing names (step 4's comparison only; its other
+         failures, e.g. listing the dir, stay ordinary refusals).
+
+       Rust parses them into `SubmitOutcome::NotClaimed` reasons with a typed `Refusal`
+       (`Blocked { blockers }`, `SlotCheckFailed(why)`, `LockBusy`, `UploadMismatch`, `Other(why)`).
+       A blocker whose job dir is `<root>/jobs/<id>` of a local job is shown by that job's title; any
+       other (including a job dir outside `<root>/jobs/`) by pid and cores. At the **3rd** refusal the
+       record's notice reads "Waiting for the slot: held by <blockers>" (or "the slot could not be
+       checked: <why>"); before it, the view shows "Waiting for the slot" only. The pending job keeps
+       waiting until the slot frees or the user cancels. `submit.sh` is stdin-fed (`STDIN_SCRIPTS`),
+       so the change needs no reinstall (round 1 LOW-2).
+    8. **The user's actions on a pending row:** **Cancel** (the one remote Cancel, o22.7, with its
+       confirm): delivery takes the not-on-server branch. Retry submit is **not offered** while
+       pending (the poller re-checks every period), and the Rust `retry_remote_submit` **refuses** on
+       a pending row ("a submit is pending; the slot is re-checked every period") as the belt (round 1
+       LOW-7). There is no local withdraw (m2's sentence superseded, marked). While the server is
+       unreachable, Cancel stays pending and is delivered on reconnect, before any re-check.
+    9. **Every attempt writes `last_contact`** (drift with o22.8 found by the archaeology): the first
+       Create & Run attempt (`SshBackend::submit_attempt`, today a hard-coded `SystemRunner`) gains a
+       runner seam and runs through the `ContactRunner` like the retry; the pending re-check runs
+       inside the poller's `record_step`.
+    10. **Split.** **Part A** (Rust, tested; then STOP): v22; the `submit.sh` reply kinds with their
+        Lab tests; the typed `Refusal`; the poller's re-check in `run_status` (after the pending-
+        cancel branch, before `FetchStopped` and the label); the counter; the record fields and a
+        `StatusStep` for the re-check with its TS mirror (types only); the NULLs and emits; the
+        `retry_remote_submit` refusal; 23.9's contact. **Interim (Part A alone):** the view shows a
+        pending row's record as today's queued row — no "Waiting for the slot" badge yet, and Retry
+        hidden only because the Rust command refuses; accepted while uni is offline. **Part B**: the
+        view (badge, notice, blockers by title, Retry hidden by the offer rule), then Anton's live
+        gate and the uni run.
+    11. **Negative controls** (each must turn its test red):
+        - a blocked attempt that writes `.tsp-out` or the claim (Lab); a slot-busy answer that does not
+          make the row pending; a step-3 socket `Error` that ends it instead (MED-5);
+        - a transport failure that ends the pending state or counts; an `Unknown` that ends it; a
+          lock-busy that counts; a non-slot answered refusal or a local plan refusal that keeps it;
+        - a terminal write that keeps the flag (the CHECK); `record_delivered` (unchanged-status
+          branch) or `record_ended_first` keeping it; a later refusal overwriting
+          `submit_pending_since`; a flag write that emits no `job:status`;
+        - the re-check placed before the pending-cancel branch; a re-check that uploads when the
+          post-condition passes, or never re-uploads on an upload mismatch; a re-check that reuses
+          the old args after a mask change (o14.2's nprocs post-condition);
+        - the notice before the 3rd refusal; after a restart, the notice before the 3rd new refusal;
+          a blocker mapped to the wrong local job (a job dir outside `<root>/jobs/`);
+        - `retry_remote_submit` accepted on a pending row; a first Create & Run that writes no
+          `last_contact` (through the new runner seam); a free slot that does not enqueue at the
+          next step.
+    12. **Propagation** (marked where they stand): l ("5.4 tells the user after 3 refusals"); m2 (the
+        re-check "only reads state", "withdraw the pending submit", the counter's home); o22.1's
+        v-order; o22.8's `last_contact` writers. Moving with the code: `modules/remote-jobs.md`,
+        `modules/execution-backends.md`, `modules/frontend.md`, ROADMAP 5.4c.
+    13. **Clarifications from DESIGN round 2** (2026-10-19; 13.1–13.3 decided by Anton, the rest
+        settled by the orchestrator). Where these differ from items 1–12, these win.
+        1. **No pending loop is silent** (Anton, round 2 MED-A). Besides slot busy and slot check
+           error, two more answers **stay pending and are counted**, each toward the 3rd-refusal
+           notice with its own text: **lock busy** ("Waiting: the account lock is held by <the
+           lock's openers>") and **an unreadable answer** — the server answered (the call's contact
+           `Ok`) but the reply did not parse ("Waiting: the server's reply could not be read:
+           <why>"). The notice shows the most recent kind. The job keeps waiting; Cancel is the exit.
+        2. **Transient refusals stay pending** (Anton, round 2 MED-B). A **timeout of a bounded child
+           before the claim** (rc 124 of `realpath`, the wrapper's sha, `find`, `sha256sum`, the
+           scan) is a **slot check error**: pending, counted. A **local** failure of the re-check —
+           a DB or IO error in `write_local_dir` (e.g. disk full) — is `CheckFailed`: pending, not
+           counted. The `busctl` timeout stays **fail-closed** as today (`refuse_kup`: it clears the
+           profile's verified stamp and so ends every pending job of that profile via 13.3) —
+           accepted: safe, if annoying.
+        3. **An unverified profile ends the pending state** (Anton, round 2 MED-C). Editing the
+           mask (or any target field) clears the stamp (`server_profiles.rs`), so the next re-check's
+           `run_target` refuses locally and the pending state ends with "profile not verified"; after
+           re-verifying, the user's Retry submit starts again (and goes pending again if the slot is
+           still busy). The 23.11 mask-change control becomes: a re-check after a mask edit that
+           submits instead of ending.
+        4. **"No answer" is the failing call's own contact** (round 2 MED-D, LOW-3). The step
+           classifies by **outcome first**: the `submit.sh` outcomes of 23.7 / `Unknown` /
+           enqueued; "no answer" applies only to the calls **before** `submit.sh` (prepare,
+           install) and to the one re-upload, and is decided from that call's own contact
+           (`Failed`, or none for rsync 12), not from `ContactRunner::last()`. A submit call that
+           times out or exits 255 is `Unknown` (stays pending, 23.6), never both.
+        5. **The local dir is rewritten only when the derived bytes differ** (round 2 LOW-1):
+           `write_local_dir` compares before writing, so a per-period re-check writes nothing
+           locally while the plan is unchanged.
+        6. **No upload in the step right after an `Unknown`** (round 2 LOW-2): that step runs
+           `submit.sh` only; an upload mismatch there ends nothing and is retried at the next step.
+           So a lagging first call cannot have its dir overwritten by the re-upload.
+        7. **Delivery's branch is the label's** (round 2 LOW-4): a pending cancel goes to delivery,
+           which labels first; for a job never enqueued that is the not-on-server branch. A cancel
+           recorded **during** a re-check does not stop that re-check's `submit.sh`; the next step
+           delivers it (the job may start briefly). Accepted: the one remote Cancel then sweeps it
+           like any running job.
+        8. **The reply kinds, precisely** (round 2 LOW-5): `slot_scan` hands its blockers to `main`
+           through a byte-exact channel (length-prefixed records, not `%q` lines), since a cwd can
+           hold a newline; the queued-row record carries the mask too, and its fallback text is "tsp
+           row <id> on <socket>"; slot-check-error from step 3 covers all three branches (the socket
+           absent or unreadable in `/proc/net/unix`, `tsp -l` failed, the header mismatch); the
+           tests that move off reason text move with it (`call_script_tests.rs`,
+           `ssh_backend/tests.rs`, `remote/submit.rs`). An upload mismatch made only of **extra**
+           files cannot be fixed by an rsync without `--delete`: its one retry fails and the pending
+           state ends — correct, and stated.
+        9. **Writers and controls** (round 2 LOW-6): the local-plan-refusal NULL is its own guarded
+           write (before `record_attempt`); `record_attempt` gains a sink for its emit. Added
+           controls: a v22 CHECK test (a flag on a local, `running` or `draft` row is rejected;
+           `SCHEMA_VERSION` = 22); an Undo that clears the flag; a lock-busy loop that reaches its
+           notice; an unreadable answer that ends the pending state or never notifies; a DB/IO error
+           that ends it; a re-upload ended by rsync 12 treated as an answered refusal; a rewrite of
+           an unchanged local dir; an upload in the step after an `Unknown`.
+    14. **Clarifications from the Part A implementation** (2026-10-19; found by the Part A
+        implementer, settled by the orchestrator; reviewed with Part A's CODE verification).
+        1. **An unreadable reply is not a `Refusal`.** It does not prove nothing was claimed, so it
+           is a wait kind (`Wait::Unreadable`): `SubmitOutcome::Unknown` with the submit call's own
+           contact `Ok`. A lost reply (contact `Failed`) is `Lost`. Both stay pending (23.6, 13.1).
+        2. **The attempt that makes a job pending is refusal 1.** The notice comes at the 3rd
+           refusal overall (l, m2: "after 3 refusals"); after a restart, at the 3rd new one.
+        3. **The re-check's plan leaves out the retry's pending-cancel refusal.** The pending-cancel
+           branch already runs first (o22.13.1); a cancel recorded after the step's read must not
+           *end* the wait (then an Undo could not resume it, 23.6, 13.7) — the next step delivers it.
+        4. **Any plan error other than a local IO/DB error ends the wait** (broader than 23.6's list),
+           so nothing deterministic loops silently; an `Unknown` with no call made ends it too.
+        5. **The lost-reply mark is cleared by the next *answered* `submit.sh`**, not strictly by the
+           next step — so 13.6's "no upload right after an `Unknown`" holds across transport failures.
+        6. **rc 137** (`timeout`'s kill-after) stays an ordinary refusal **for the children whose
+           other failures are ordinary refusals** (realpath, the wrapper's realpath and sha256sum,
+           `find`, the upload's sha256sum): only rc 124 is measured (probe B0 item 5; rule #10). For
+           the slot's `tsp -l` and the scan, any non-zero rc — 137 included — is a slot check error,
+           as 23.1 requires.
+        7. On the command path `job:status` may be emitted twice (`run_guarded` and
+           `record_attempt`'s sink): harmless, a reload is idempotent.
+        8. The slot-check-error notice reads "Waiting: the slot could not be checked: <why>"; Part B
+           may reword the view texts.
 
 ## Alternatives rejected
 

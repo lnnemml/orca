@@ -15,6 +15,10 @@
 //!   short-circuit, so delivery runs first on reconnect (Decision i). Delivery never downloads: its
 //!   `EndedBeforeCancel` / `CancelDelivered` is the step's result, both columns are cleared, and the
 //!   **next ordinary step** finishes from the server's facts (o22.13.2);
+//! - a row with a **pending submit** (`submit_pending_since` set, o23) is **re-checked**
+//!   ([`pending`]): the plan derived as a retry's, the server readied, `submit.sh` run — it submits
+//!   by itself once the slot frees — after the pending-cancel branch and before the fetch bound and
+//!   the label call (o23.10);
 //! - a **`cancelling`** row is **swept** ([`sweep`], o22.5, o22.13.3–4): ready the server, re-run
 //!   `cancel.sh`, collect + classify, bounded by [`plan::MAX_SWEEPS_WITHOUT_PROGRESS`]; a stopped job
 //!   is only collected and classified;
@@ -74,6 +78,7 @@ pub mod app;
 pub mod cancel;
 mod evidence;
 pub mod live_log;
+pub mod pending;
 pub mod plan;
 pub mod remote_state;
 pub mod run;
@@ -254,6 +259,11 @@ pub enum StatusStep {
     /// joined "earlier; then why" takes the later call's (o22.14.3). A sweep whose classify shows
     /// anything else returns that outcome's ordinary result instead.
     Swept { outcome: Option<Outcome>, error: Option<remote_state::CheckError> },
+    /// A re-check of a pending submit ([`pending`], ADR-024 o23.3, o23.6): the plan derived again,
+    /// the server readied, `submit.sh` run — and on an upload mismatch one upload and one more
+    /// `submit.sh`. `since` is the pending flag the step read. A re-check that got no answer before
+    /// `submit.sh` (or from its re-upload), or failed on this machine, is `CheckFailed` instead.
+    SubmitRechecked { since: String, recheck: pending::Recheck },
 }
 
 /// What a stopped delivery saw before it declined to send (o22.12.2): `{ "kind": "outcome",
@@ -280,6 +290,9 @@ pub struct Poller<'a> {
     /// What the fetch downloads. There is no per-job `.gbw` opt-in yet, so the app passes
     /// `FetchPolicy::SMALL_ONLY` (`app::with_poller`).
     pub policy: FetchPolicy,
+    /// Where the local job dirs live (`<data_dir>/jobs/<id>`): a pending submit's re-check derives
+    /// its local input there, as a retry does (o23.3.1).
+    pub data_dir: &'a Path,
 }
 
 impl Poller<'_> {
@@ -338,7 +351,9 @@ impl Poller<'_> {
     /// One status step of the job `guard` holds. **One read decides** (o22.13.1): `live_remote`'s
     /// locked read carries the pending cancel, and while one is pending the delivery runs instead
     /// of everything after it — before the fetch bound, so no fetch runs for a job whose cancel is
-    /// pending, and delivery comes first on reconnect (Decision i).
+    /// pending, and delivery comes first on reconnect (Decision i). The same read carries the
+    /// pending submit: a row with one is re-checked instead of labelled (o23.10) — after the
+    /// pending cancel, so a re-check never overtakes a cancel.
     fn run_status(&self, guard: &InFlightGuard) -> Result<StatusStep, AppError> {
         let job_id = guard.job_id();
         let Some((job, coords, pending)) = self.live_remote(job_id)? else {
@@ -348,6 +363,9 @@ impl Poller<'_> {
         };
         if pending.requested_at.is_some() {
             return self.deliver_pending(&job, &coords);
+        }
+        if let Some(since) = &job.submit_pending_since {
+            return self.recheck_submit(&job, &coords, since);
         }
         let m = self.memory.get(job_id);
         if m.fetching && m.strikes >= MAX_FETCH_STRIKES {
@@ -412,7 +430,8 @@ impl Poller<'_> {
 
     /// Row 3 on a `queued`/`running` row (o22.13.5): **one** write sets status `cancelling` and its
     /// text and NULLs both pending-cancel columns (o22.12.1: a `cancelling` row never holds a
-    /// request — the v21 CHECK admits one there, so this write is what keeps it so), guarded on the
+    /// request — the v21 CHECK admits one there, so this write is what keeps it so) and the pending
+    /// submit (o23.5: the v22 CHECK fails a `cancelling` write that keeps it), guarded on the
     /// row still being this live remote job; then the sweep baseline (o22.13.4). 0 rows →
     /// `RowChanged`.
     fn record_cancelling(&self, job_id: &str, coords: &RemoteCoordinates, session: usize) -> Result<StatusStep, AppError> {
@@ -423,7 +442,7 @@ impl Poller<'_> {
             };
             let written = conn.execute(
                 "UPDATE jobs SET status = 'cancelling', error_message = ?1, cancel_requested_at = NULL, \
-                 cancel_sent_at = NULL \
+                 cancel_sent_at = NULL, submit_pending_since = NULL \
                  WHERE id = ?2 AND remote_job_dir = ?3 AND status IN ('queued', 'running')",
                 params![cancelling_message(session, false), job_id, coords.job_dir],
             )?;

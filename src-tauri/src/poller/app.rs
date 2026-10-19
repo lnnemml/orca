@@ -87,13 +87,15 @@ impl PollerSink for AppSink {
 }
 
 /// Run `f` with the app's poller: the real ssh/rsync runner, the shared filter without `.gbw` (no
-/// per-job opt-in exists yet), the app's managed state and an [`AppSink`].
+/// per-job opt-in exists yet), the app's managed state (the local job dirs' root from `JobRunner`)
+/// and an [`AppSink`].
 pub fn with_poller<T>(app: &AppHandle, f: impl FnOnce(&Poller<'_>) -> T) -> T {
     let db = app.state::<DbState>();
     let in_flight = app.state::<InFlight>();
     let memory = app.state::<PollerMemory>();
     let live = app.state::<LiveLog>();
     let remote = app.state::<RemoteStates>();
+    let jobs = app.state::<crate::local_backend::JobRunner>();
     let sink = AppSink(app.clone());
     let poller = Poller {
         db: &db,
@@ -104,6 +106,7 @@ pub fn with_poller<T>(app: &AppHandle, f: impl FnOnce(&Poller<'_>) -> T) -> T {
         remote: &remote,
         sink: &sink,
         policy: FetchPolicy::SMALL_ONLY,
+        data_dir: jobs.data_dir(),
     };
     f(&poller)
 }

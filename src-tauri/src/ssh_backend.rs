@@ -18,18 +18,27 @@
 //! | 3 | **prepare** (o 3.2, 13.1): read-only; every existing component of the root a directory at its own realpath, `<root>/bin` included | `queued` + coordinates; label: "not on the server" |
 //! | 4 | **install** when `bin/`, `tsp/` or any uploaded script (wrapper, cancel, collect) is missing, then **prepare again**: every script must now hash right (post-condition, rule #9) | same |
 //! | 5 | **upload**: `rsync -a --checksum --mkpath`, never `--delete` | same |
-//! | 6 | **the submit call** (o 3.3): `Enqueued`, `Refused`, `RefusedKup`, `FailedAfterClaim`, or no readable reply | `queued` + coordinates; the label call decides from the server |
+//! | 6 | **the submit call** (o 3.3): `Enqueued`, a typed refusal (`Refusal`, o23.7), `RefusedKup`, `FailedAfterClaim`, or no readable reply | `queued` + coordinates; the label call decides from the server — or, after a slot refusal, the poller's re-check (o23) |
 //!
 //! Steps 3–6 **never change the status**: the row stays `queued` with its coordinates whatever
 //! happens, because only the server knows what happened (Decision c), and the label call (o 3.4)
-//! resolves every such row. They write two things only:
+//! resolves every such row. They write three things only, in one statement ([`record_attempt`]):
 //! - `error_message` = the attempt's failure, for people (cleared on `Enqueued`);
+//! - `submit_pending_since` (v22, ADR-024 o23.5): a submit the user started that the slot check
+//!   refused (slot busy, slot check error) becomes **pending** — `COALESCE(…, now)`, so a later
+//!   refusal keeps the first time — and the poller re-checks it every status period
+//!   (`poller::pending`), submitting it once the slot frees; `Enqueued` clears it;
 //! - the profile's stamp is cleared **only** for [`SubmitOutcome::KillUserProcesses`], i.e. only for
 //!   `SubmitReply::RefusedKup` — never by reading a refusal's text (n item 7, o 13.3).
 //!
+//! Every write of the pending flag emits `job:status` once its lock is released (o22.14.5's rule;
+//! `record_attempt` takes the sink for it).
+//!
 //! **Retry** ([`resubmit_remote`]) re-derives the local input with the profile's *current* mask
 //! (step 1 without the persist), then steps 3–6 from the recorded coordinates — only for a job the
-//! label call finds "not on the server" (o 3.4: "submit interrupted" is never retried).
+//! label call finds "not on the server" (o 3.4: "submit interrupted" is never retried), and never
+//! for a pending one (o23.8: the poller re-checks it). The pending re-check derives its plan the
+//! same way ([`pending_plan`]), minus the label call and the upload.
 //! **The poller's calls** (unit 5.3 B2): [`poll_log_remote`] reads one chunk of the remote
 //! `output.out` (o item 7), and [`fetch_remote`] downloads a finished job's files and checks them
 //! against the server's own listing (o item 6). Both are read-only on the server and write nothing to
@@ -45,7 +54,7 @@ use crate::commands::jobs::get_job_conn;
 use crate::commands::server_profiles::{clear_verified, get_profile_conn};
 use crate::commands::settings::DbState;
 use crate::error::AppError;
-use crate::local_backend::{align_pal_nprocs, prepare_job_dir, read_aux_files, read_pal_nprocs};
+use crate::local_backend::{align_pal_nprocs, prepare_job_dir_with, read_aux_files, read_pal_nprocs};
 use crate::models::job::{Job, JobStatus};
 use crate::models::server_profile::{distinct_cpus, is_run_target, parse_core_mask, validate_host, ServerProfile};
 use crate::remote::classify::{classify, Classification, Outcome};
@@ -54,6 +63,7 @@ use crate::remote::prepare::{
 };
 use crate::remote::run::{parse_mkjob_reply, parse_run_reply, JobScript, MkjobArgs, RunArgs, RunReply};
 use crate::execution_backend::{FetchPolicy, LogChunk};
+use crate::poller::PollerSink;
 use crate::remote::poll::{parse_poll_reply, PollLogArgs};
 use crate::remote::scripts::{stdin_with_values, INSTALL, LABEL, LIST, MKJOB, POLL_LOG, PREPARE, RUN, SUBMIT};
 use crate::remote::slot_socket_path;
@@ -61,7 +71,7 @@ use crate::remote::snapshot::{Attempt, JobIdentity};
 use crate::remote::ssh::{ssh_bash_argv, CommandRunner, ProcessOutput, SSH_PROGRAM};
 use crate::remote::submit::{
     label, parse_label_reply, parse_submit_reply, remote_job_dir, KupEvidence, Label, LabelArgs,
-    LabelFacts, SubmitArgs, SubmitReply,
+    LabelFacts, Refusal, SubmitArgs, SubmitReply,
 };
 use crate::remote::sync::{
     compare_download, download_argv, download_selects, list_dir, parse_list_reply, upload_argv, upload_expected, ListArgs,
@@ -241,7 +251,7 @@ pub enum SubmitStep {
     Install,
     /// The rsync upload (o 3.2).
     Upload,
-    /// The submit call's own `refused` (o 3.3).
+    /// The submit call's own refusal (o 3.3, o23.7).
     Submit,
 }
 
@@ -252,8 +262,10 @@ pub enum SubmitStep {
 pub enum SubmitOutcome {
     /// In the slot's `tsp` queue with this id; `.enqueued` is published.
     Enqueued { tsp_id: u64 },
-    /// Nothing was claimed on the server: the job is "not on the server" (retry or cancel).
-    NotClaimed { step: SubmitStep, reason: String },
+    /// Nothing was claimed on the server: the job is "not on the server" (retry or cancel). A
+    /// failed prepare, install or upload is `Refusal::Other` with its reason; the submit call's own
+    /// refusal is typed (o23.7) — callers decide on the variant, never on text.
+    NotClaimed { step: SubmitStep, refusal: Refusal },
     /// `KillUserProcesses` is not `b false` (o 13.3): nothing claimed, and the profile's stamp was
     /// cleared — a run target no longer, until a connection test passes.
     KillUserProcesses { evidence: KupEvidence },
@@ -269,8 +281,8 @@ impl SubmitOutcome {
     pub fn failure(&self) -> Option<String> {
         match self {
             SubmitOutcome::Enqueued { .. } => None,
-            SubmitOutcome::NotClaimed { step, reason } => {
-                Some(format!("not submitted ({step:?} step; nothing is on the server): {reason}"))
+            SubmitOutcome::NotClaimed { step, refusal } => {
+                Some(format!("not submitted ({step:?} step; nothing is on the server): {refusal}"))
             }
             SubmitOutcome::KillUserProcesses { evidence } => Some(format!(
                 "not submitted: KillUserProcesses on the server is not `b false` (busctl rc {}, stdout {:?}, stderr {:?}); \
@@ -336,33 +348,39 @@ pub fn align_remote_pal(input: &str, mask: &str) -> Result<(String, PalAlignment
 pub struct SubmitAttempt {
     pub outcome: SubmitOutcome,
     pub pal: PalAlignment,
+    /// The attempt's own write made the row pending (a slot refusal **and** `record_attempt` matched
+    /// the row, ADR-024 o23.5): only then is it the pending submit's first counted refusal (o23.4). Not
+    /// on the wire (`SubmitResponse` carries `outcome` and `pal`).
+    #[serde(skip)]
+    pub made_pending: bool,
 }
 
-/// Everything steps 3–6 need, fixed by the persist step (or read back for a retry).
-struct SubmitPlan {
-    job_id: String,
-    profile_id: String,
-    coords: RemoteCoordinates,
-    root: String,
-    local_dir: PathBuf,
-    upload_bytes: u64,
-    args: SubmitArgs,
-    pal: PalAlignment,
+/// Everything steps 3–6 need, fixed by the persist step (or read back for a retry or a re-check).
+pub(crate) struct SubmitPlan {
+    pub(crate) job_id: String,
+    pub(crate) profile_id: String,
+    pub(crate) coords: RemoteCoordinates,
+    pub(crate) root: String,
+    pub(crate) local_dir: PathBuf,
+    pub(crate) upload_bytes: u64,
+    pub(crate) args: SubmitArgs,
+    pub(crate) pal: PalAlignment,
 }
 
 /// Submit draft `job_id` to profile `profile_id` (ADR-024 o item 3; the table in the module doc).
-/// `data_dir` holds the local job dirs (`<data_dir>/jobs/<id>`, rule #3). An `Err` is a refusal
-/// before anything was written, or a database failure; every outcome after the persist step is
-/// an `Ok`.
+/// `data_dir` holds the local job dirs (`<data_dir>/jobs/<id>`, rule #3); `sink` gets the
+/// `job:status` a write of the pending flag owes. An `Err` is a refusal before anything was
+/// written, or a database failure; every outcome after the persist step is an `Ok`.
 pub fn submit_remote(
     db: &DbState,
     runner: &dyn CommandRunner,
+    sink: &dyn PollerSink,
     data_dir: &Path,
     job_id: &str,
     profile_id: &str,
 ) -> Result<SubmitAttempt, AppError> {
     let plan = persist_submit(db, data_dir, job_id, profile_id)?;
-    upload_and_submit(db, runner, &plan)
+    upload_and_submit(db, runner, sink, &plan)
 }
 
 /// The run-target gate (n item 2): `verified_at` gates new submits and retries only (n 6a).
@@ -419,12 +437,23 @@ fn persist_submit(db: &DbState, data_dir: &Path, job_id: &str, profile_id: &str)
 
 /// The local job dir of one attempt: the input from `jobs.input_content` (the user's original, never
 /// the last upload) with `%pal` aligned to **this attempt's** mask, and the aux files — written
-/// before anything is listed, so the local dir = the uploaded bytes = the hashed list (o 14.2).
+/// before anything is listed, so the local dir = the uploaded bytes = the hashed list (o 14.2). A
+/// file is rewritten only when its bytes differ (o23.13.5), so a re-check every period writes nothing
+/// locally while the plan is unchanged.
 fn write_local_dir(conn: &rusqlite::Connection, data_dir: &Path, job: &Job, mask: &str) -> Result<(PathBuf, PalAlignment), AppError> {
     let (input, pal) = align_remote_pal(&job.input_content, mask)
         .map_err(|e| AppError::Backend(format!("cannot submit job {}: {e}", job.id)))?;
     let aux = read_aux_files(conn, &job.id)?;
-    Ok((prepare_job_dir(data_dir, &job.id, &input, &aux)?, pal))
+    Ok((prepare_job_dir_with(data_dir, &job.id, &input, &aux, write_if_changed)?, pal))
+}
+
+/// Write `bytes` to `path` unless it already holds exactly them (o23.13.5). A file that cannot be
+/// read is written (and that write's error is the answer).
+fn write_if_changed(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    match std::fs::read(path) {
+        Ok(existing) if existing == bytes => Ok(()),
+        _ => std::fs::write(path, bytes),
+    }
 }
 
 /// The submit call's values for the local dir's files, and the bytes the upload will carry. More
@@ -451,11 +480,58 @@ fn submit_args(
     Ok((args, bytes))
 }
 
-/// Steps 3–6, then the one write they allow (`error_message`; the stamp only for `RefusedKup`).
-fn upload_and_submit(db: &DbState, runner: &dyn CommandRunner, plan: &SubmitPlan) -> Result<SubmitAttempt, AppError> {
+/// Steps 3–6 of a submit the user started, then the one write they allow (`error_message`, the
+/// pending flag of [`PendingWrite::after_user_attempt`]; the stamp only for `RefusedKup`). The
+/// outcome is returned whatever the write found: it says what the server did; `made_pending` says
+/// whether the write took the flag (rule #9: a 0-row write made nothing pending).
+fn upload_and_submit(db: &DbState, runner: &dyn CommandRunner, sink: &dyn PollerSink, plan: &SubmitPlan) -> Result<SubmitAttempt, AppError> {
     let outcome = run_submit_steps(runner, plan);
-    record_attempt(db, plan, &outcome)?;
-    Ok(SubmitAttempt { outcome, pal: plan.pal })
+    let pending = PendingWrite::after_user_attempt(&outcome);
+    let written = record_attempt(db, sink, plan, &outcome, pending)?;
+    Ok(SubmitAttempt { outcome, pal: plan.pal, made_pending: written && pending == PendingWrite::Set })
+}
+
+/// Whether a submit the user started becomes **pending** (ADR-024 o23.1): only when the slot check
+/// answered that it blocks it — slot busy or slot check error. Every other outcome is what it was.
+pub(crate) fn makes_pending(outcome: &SubmitOutcome) -> bool {
+    matches!(
+        outcome,
+        SubmitOutcome::NotClaimed { step: SubmitStep::Submit, refusal: Refusal::Blocked { .. } | Refusal::SlotCheckFailed(_) }
+    )
+}
+
+/// What an attempt's write does to `jobs.submit_pending_since` (ADR-024 o23.5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PendingWrite {
+    /// `COALESCE(submit_pending_since, now)`: the pending state starts, or keeps its first time.
+    Set,
+    /// Unchanged.
+    Keep,
+    /// NULL: the pending state ends.
+    Clear,
+}
+
+impl PendingWrite {
+    /// A submit the user started (Create & Run, Retry submit): a slot refusal makes it pending; an
+    /// enqueue clears it; anything else leaves it as it is (NULL — a retry is refused on a pending
+    /// row, o23.8).
+    pub(crate) fn after_user_attempt(outcome: &SubmitOutcome) -> PendingWrite {
+        if makes_pending(outcome) {
+            PendingWrite::Set
+        } else if matches!(outcome, SubmitOutcome::Enqueued { .. }) {
+            PendingWrite::Clear
+        } else {
+            PendingWrite::Keep
+        }
+    }
+
+    fn sql(self) -> &'static str {
+        match self {
+            PendingWrite::Set => "set",
+            PendingWrite::Keep => "keep",
+            PendingWrite::Clear => "clear",
+        }
+    }
 }
 
 /// The read-only half of [`ready_server`]: one prepare call, and `Err` when anything is missing —
@@ -499,9 +575,13 @@ pub(crate) fn ready_server(runner: &dyn CommandRunner, host: &str, root: &str, j
     }
 }
 
+/// A failed step before the submit call, for people: nothing was claimed.
+pub(crate) fn not_claimed(step: SubmitStep, reason: String) -> SubmitOutcome {
+    SubmitOutcome::NotClaimed { step, refusal: Refusal::Other(reason) }
+}
+
 /// Steps 3–6 over ssh; no database access. The first failing step ends the attempt.
 fn run_submit_steps(runner: &dyn CommandRunner, plan: &SubmitPlan) -> SubmitOutcome {
-    let not_claimed = |step, reason| SubmitOutcome::NotClaimed { step, reason };
     let host = plan.coords.host.as_str();
 
     // 3–4. Prepare; install what is missing; prepare again (o 3.2, 13.1, 14.1).
@@ -515,14 +595,21 @@ fn run_submit_steps(runner: &dyn CommandRunner, plan: &SubmitPlan) -> SubmitOutc
     }
 
     // 6. The one atomic submit call (o 3.3).
+    submit_call(runner, plan)
+}
+
+/// Step 6, the one atomic submit call (o 3.3), and what it said: the typed refusals of o23.7 as
+/// `NotClaimed { step: Submit, .. }`; a reply that was lost or could not be read is `Unknown` — the
+/// caller tells the two apart by the call's own contact (the pending re-check, o23.13.4).
+pub(crate) fn submit_call(runner: &dyn CommandRunner, plan: &SubmitPlan) -> SubmitOutcome {
     let sent = &plan.args;
     let values = match sent.values() {
         Ok(values) => values,
         Err(e) => return not_claimed(SubmitStep::Submit, e.to_string()),
     };
-    match call(runner, host, "submit", SUBMIT, &values, SUBMIT_TIMEOUT, |out| parse_submit_reply(out, sent)) {
+    match call(runner, &plan.coords.host, "submit", SUBMIT, &values, SUBMIT_TIMEOUT, |out| parse_submit_reply(out, sent)) {
         Ok(SubmitReply::Enqueued(tsp_id)) => SubmitOutcome::Enqueued { tsp_id },
-        Ok(SubmitReply::Refused(reason)) => not_claimed(SubmitStep::Submit, reason),
+        Ok(SubmitReply::Refused(refusal)) => SubmitOutcome::NotClaimed { step: SubmitStep::Submit, refusal },
         Ok(SubmitReply::RefusedKup(evidence)) => SubmitOutcome::KillUserProcesses { evidence },
         Ok(SubmitReply::FailedAfterClaim(reason)) => SubmitOutcome::FailedAfterClaim { reason },
         Err(reason) => SubmitOutcome::Unknown { reason },
@@ -530,7 +617,7 @@ fn run_submit_steps(runner: &dyn CommandRunner, plan: &SubmitPlan) -> SubmitOutc
 }
 
 /// `rsync -a --checksum --mkpath` of the local job dir into the recorded remote job dir.
-fn upload(runner: &dyn CommandRunner, plan: &SubmitPlan) -> Result<(), String> {
+pub(crate) fn upload(runner: &dyn CommandRunner, plan: &SubmitPlan) -> Result<(), String> {
     let local = plan.local_dir.to_str().ok_or_else(|| format!("local job dir {:?} is not UTF-8", plan.local_dir))?;
     let argv = upload_argv(local, &plan.coords.host, &plan.coords.job_dir).map_err(|e| format!("upload: {e}"))?;
     let out = runner
@@ -542,21 +629,50 @@ fn upload(runner: &dyn CommandRunner, plan: &SubmitPlan) -> Result<(), String> {
     Ok(())
 }
 
-/// The one write after the ssh steps: the attempt's failure in `error_message` (NULL after
-/// `Enqueued`), guarded on the row still being this remote `queued` job; and the profile's stamp
-/// cleared **only** for `KillUserProcesses` (o 13.3).
-fn record_attempt(db: &DbState, plan: &SubmitPlan, outcome: &SubmitOutcome) -> Result<(), AppError> {
-    let conn = db.lock()?;
-    let tx = conn.unchecked_transaction()?;
-    if matches!(outcome, SubmitOutcome::KillUserProcesses { .. }) {
-        clear_verified(&tx, &plan.profile_id)?;
+/// The one write after the ssh steps, guarded on the row still being this remote `queued` job: the
+/// attempt's failure in `error_message` (NULL after `Enqueued`) and the pending flag as `pending`
+/// says (o23.5: `Set` is `COALESCE(submit_pending_since, now)`, so a later refusal keeps the first
+/// time), in **one** statement; and the profile's stamp cleared **only** for `KillUserProcesses`
+/// (o 13.3), whatever the row. Returns whether the row took the write (rule #9: `false` — 0 rows —
+/// is a row that changed under the attempt). When the message or the flag changed, `job:status`
+/// is emitted through `sink` once the lock is released (o22.14.5's rule).
+pub(crate) fn record_attempt(
+    db: &DbState,
+    sink: &dyn PollerSink,
+    plan: &SubmitPlan,
+    outcome: &SubmitOutcome,
+    pending: PendingWrite,
+) -> Result<bool, AppError> {
+    let (written, emit) = {
+        let conn = db.lock()?;
+        let tx = conn.unchecked_transaction()?;
+        if matches!(outcome, SubmitOutcome::KillUserProcesses { .. }) {
+            clear_verified(&tx, &plan.profile_id)?;
+        }
+        let before = get_job_conn(&tx, &plan.job_id).ok();
+        let written = tx.execute(
+            "UPDATE jobs SET error_message = ?1, submit_pending_since = CASE ?4 \
+               WHEN 'set' THEN COALESCE(submit_pending_since, datetime('now')) \
+               WHEN 'clear' THEN NULL \
+               ELSE submit_pending_since END \
+             WHERE id = ?2 AND status = 'queued' AND remote_job_dir = ?3",
+            params![outcome.failure(), plan.job_id, plan.coords.job_dir, pending.sql()],
+        )?;
+        let emit = match (written, before) {
+            (1, Some(before)) => {
+                let after = get_job_conn(&tx, &plan.job_id)?;
+                let changed = before.error_message != after.error_message || before.submit_pending_since != after.submit_pending_since;
+                changed.then_some(after.status)
+            }
+            _ => None,
+        };
+        tx.commit()?;
+        (written == 1, emit)
+    };
+    if let Some(status) = emit {
+        sink.status(&plan.job_id, status);
     }
-    tx.execute(
-        "UPDATE jobs SET error_message = ?1 WHERE id = ?2 AND status = 'queued' AND remote_job_dir = ?3",
-        params![outcome.failure(), plan.job_id, plan.coords.job_dir],
-    )?;
-    tx.commit()?;
-    Ok(())
+    Ok(written)
 }
 
 // --- Label and retry ------------------------------------------------------------------------
@@ -576,7 +692,7 @@ pub fn label_remote(runner: &dyn CommandRunner, job: &Job) -> Result<LabelReport
 }
 
 /// A remote `queued` job, its coordinates and its recorded root.
-fn queued_remote(job: &Job) -> Result<(RemoteCoordinates, String), AppError> {
+pub(crate) fn queued_remote(job: &Job) -> Result<(RemoteCoordinates, String), AppError> {
     let coords = coordinates(job)?.ok_or_else(|| AppError::Backend(format!("job {} is not a remote job", job.id)))?;
     if job.status != JobStatus::Queued {
         return Err(AppError::Backend(format!(
@@ -590,18 +706,25 @@ fn queued_remote(job: &Job) -> Result<(RemoteCoordinates, String), AppError> {
 }
 
 /// Retry a remote job the label call finds **"not on the server"** (o 3.4) — never "submit
-/// interrupted": that call may still be running on the server (o item 8). The local input is
+/// interrupted": that call may still be running on the server (o item 8) — and never a pending one
+/// (o23.8: the poller re-checks it every period). The local input is
 /// derived again from `jobs.input_content` with the profile's **current** mask (o 14.2: a retry after
 /// a mask change uploads the new `nprocs`), then steps 3–6 run against the recorded coordinates. The
 /// profile (by `backend_id`) must still be a run target with the recorded host and root (they cannot
 /// change while the job is live, n 6b; checked again here). The label call comes first: until it
 /// says "not on the server", nothing is written — not the row, not the local dir.
-pub fn resubmit_remote(db: &DbState, runner: &dyn CommandRunner, data_dir: &Path, job_id: &str) -> Result<SubmitAttempt, AppError> {
+pub fn resubmit_remote(
+    db: &DbState,
+    runner: &dyn CommandRunner,
+    sink: &dyn PollerSink,
+    data_dir: &Path,
+    job_id: &str,
+) -> Result<SubmitAttempt, AppError> {
     // Read-only checks, then the label call; nothing is written until the server says "not on the
     // server" (verifier LOW-2: a refused retry leaves the local dir as it was).
     let coords = {
         let conn = db.lock()?;
-        retry_checks(&conn, job_id)?.1
+        retry_checks(&conn, job_id)?.coords
     };
     let report = label_call(runner, &coords).map_err(AppError::Backend)?;
     if report.label != Label::NotOnServer {
@@ -612,29 +735,75 @@ pub fn resubmit_remote(db: &DbState, runner: &dyn CommandRunner, data_dir: &Path
     }
     let plan = {
         let conn = db.lock()?;
-        let (job, now, root, profile_id, profile) = retry_checks(&conn, job_id)?;
-        if now != coords {
-            return Err(AppError::Conflict(format!("job {job_id} changed during the retry")));
-        }
-        let mask = run_target(&profile)?.to_string();
-        let (local_dir, pal) = write_local_dir(&conn, data_dir, &job, &mask)?;
-        if job.job_dir.as_deref() != local_dir.to_str() {
-            return Err(AppError::Internal(format!("job {job_id}: recorded local dir {:?} is not {local_dir:?}", job.job_dir)));
-        }
-        let (args, upload_bytes) = submit_args(&root, job_id, &coords, &mask, &profile.remote_orca_path, &local_dir)?;
-        SubmitPlan { job_id: job_id.to_string(), profile_id, coords, root, local_dir, upload_bytes, args, pal }
+        let checked = retry_checks(&conn, job_id)?;
+        plan_from(&conn, data_dir, &coords, checked)?
     };
-    upload_and_submit(db, runner, &plan)
+    upload_and_submit(db, runner, sink, &plan)
 }
 
-/// A retry's read-only preconditions: a remote `queued` job with no cancel pending (o22.8: "undo
-/// the cancel first"), its profile a run target with the recorded host and root. Returns the job, its coordinates and root, the profile id and profile.
-fn retry_checks(
+/// The plan of a pending submit's re-check (ADR-024 o23.3.1): derived **exactly as a retry's**
+/// ([`plan_checks`] + [`plan_from`]: the profile a run target with its stamp, host/root/socket
+/// unchanged; the local dir from `input_content` with the profile's **current** mask, rewritten
+/// only where the bytes differ) — minus the label call (`submit.sh`'s step 3 under the account lock
+/// replaces it), and minus the retry's two predicates: the pending flag is why this runs, and a
+/// cancel recorded after the step's own read is the next step's to deliver (o23.13.7). `coords` are
+/// the step's own read. An `Err` is a refusal of the plan (it needs a person) or a local failure
+/// (`AppError::Io` / `Database`, o23.13.2) — the caller tells them apart.
+pub(crate) fn pending_plan(
     conn: &rusqlite::Connection,
+    data_dir: &Path,
     job_id: &str,
-) -> Result<(Job, RemoteCoordinates, String, String, ServerProfile), AppError> {
+    coords: &RemoteCoordinates,
+) -> Result<SubmitPlan, AppError> {
+    let job = get_job_conn(conn, job_id)?;
+    let checked = plan_checks(conn, job)?;
+    plan_from(conn, data_dir, coords, checked)
+}
+
+/// One more attempt's plan for a checked job, by the profile's **current** mask (o 14.2): the local
+/// dir derived again and its files listed and hashed. `coords` were read before the caller's ssh
+/// calls: a row whose coordinates changed since is a conflict, and nothing is written.
+fn plan_from(conn: &rusqlite::Connection, data_dir: &Path, coords: &RemoteCoordinates, checked: Checked) -> Result<SubmitPlan, AppError> {
+    let Checked { job, coords: now, root, profile_id, profile } = checked;
+    let job_id = job.id.as_str();
+    if now != *coords {
+        return Err(AppError::Conflict(format!("job {job_id} changed during the retry")));
+    }
+    let mask = run_target(&profile)?.to_string();
+    let (local_dir, pal) = write_local_dir(conn, data_dir, &job, &mask)?;
+    if job.job_dir.as_deref() != local_dir.to_str() {
+        return Err(AppError::Internal(format!("job {job_id}: recorded local dir {:?} is not {local_dir:?}", job.job_dir)));
+    }
+    let (args, upload_bytes) = submit_args(&root, job_id, &now, &mask, &profile.remote_orca_path, &local_dir)?;
+    Ok(SubmitPlan { job_id: job_id.to_string(), profile_id, coords: now, root, local_dir, upload_bytes, args, pal })
+}
+
+/// What [`plan_checks`] found: the job, its coordinates and root, its profile id and profile.
+struct Checked {
+    job: Job,
+    coords: RemoteCoordinates,
+    root: String,
+    profile_id: String,
+    profile: ServerProfile,
+}
+
+/// A retry's read-only preconditions: no cancel pending (o22.8: "undo the cancel first"), no submit
+/// pending (o23.8: the poller re-checks it), then [`plan_checks`].
+fn retry_checks(conn: &rusqlite::Connection, job_id: &str) -> Result<Checked, AppError> {
     let job = get_job_conn(conn, job_id)?;
     crate::commands::jobs::refuse_while_cancel_pending(conn, job_id)?;
+    if job.submit_pending_since.is_some() {
+        return Err(AppError::Backend(format!(
+            "job {job_id}: a submit is pending; the slot is re-checked every period"
+        )));
+    }
+    plan_checks(conn, job)
+}
+
+/// The plan's read-only preconditions, shared by a retry and a pending re-check: a remote `queued`
+/// job, its profile a run target with the recorded host and root.
+fn plan_checks(conn: &rusqlite::Connection, job: Job) -> Result<Checked, AppError> {
+    let job_id = job.id.clone();
     let (coords, root) = queued_remote(&job)?;
     let profile_id = job.backend_id.clone().ok_or_else(|| AppError::Backend(format!("job {job_id} names no server profile")))?;
     let profile = get_profile_conn(conn, &profile_id)?;
@@ -645,7 +814,7 @@ fn retry_checks(
             coords.host, profile.name, profile.host, profile.remote_scratch_dir
         )));
     }
-    Ok((job, coords, root, profile_id, profile))
+    Ok(Checked { job, coords, root, profile_id, profile })
 }
 
 // --- The trampoline and mkjob (a cancel's delivery, a sweep) ----------------------------------
@@ -710,8 +879,8 @@ pub(crate) fn collect_and_classify(runner: &dyn CommandRunner, coords: &RemoteCo
 /// The terminal write for a classifier `Cancelled` (row 4) — the poller's (ADR-024 o17, o22.6):
 /// `cancelled`, `completed_at` stamped, `message` in `error_message` — only while the row is still
 /// this remote job (its recorded job dir) in one of `from` (`queued`, `running` or `cancelling`). It clears a pending cancel (`cancel_requested_at`,
-/// `cancel_sent_at`) in the same statement (o22.2: the v21 CHECK fails a terminal write that keeps
-/// them). Returns the rows written (0 or 1).
+/// `cancel_sent_at`) and a pending submit (`submit_pending_since`) in the same statement (o22.2,
+/// o23.5: the v21/v22 CHECKs fail a terminal write that keeps them). Returns the rows written (0 or 1).
 pub(crate) fn mark_cancelled_conn(
     conn: &rusqlite::Connection,
     job_id: &str,
@@ -723,7 +892,7 @@ pub(crate) fn mark_cancelled_conn(
     for status in from {
         written += conn.execute(
             "UPDATE jobs SET status = 'cancelled', completed_at = datetime('now'), error_message = ?1, \
-             cancel_requested_at = NULL, cancel_sent_at = NULL \
+             cancel_requested_at = NULL, cancel_sent_at = NULL, submit_pending_since = NULL \
              WHERE id = ?2 AND status = ?3 AND remote_job_dir = ?4",
             params![message, job_id, status.as_str(), coords.job_dir],
         )?;

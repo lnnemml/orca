@@ -148,7 +148,7 @@ impl Laptop {
     }
 
     fn attempt(&self, runner: &dyn CommandRunner, id: &str) -> SubmitAttempt {
-        submit_remote(&self.db, runner, &self.data_dir, id, PROFILE).unwrap()
+        submit_remote(&self.db, runner, &crate::poller::RecordingSink::default(), &self.data_dir, id, PROFILE).unwrap()
     }
 
     fn submit(&self, runner: &dyn CommandRunner, id: &str) -> SubmitOutcome {
@@ -156,7 +156,7 @@ impl Laptop {
     }
 
     fn resubmit(&self, runner: &dyn CommandRunner, id: &str) -> Result<SubmitAttempt, crate::error::AppError> {
-        resubmit_remote(&self.db, runner, &self.data_dir, id)
+        resubmit_remote(&self.db, runner, &crate::poller::RecordingSink::default(), &self.data_dir, id)
     }
 
     fn job(&self, id: &str) -> crate::models::job::Job {
@@ -322,7 +322,7 @@ fn a_kill_user_processes_refusal_clears_the_stamp_then_retry_and_cancel_work() {
 
     // An unverified profile is no run target: neither a new submit nor a retry runs.
     let runner = Loop::new(&lab);
-    assert!(submit_remote(&laptop.db, &runner, &laptop.data_dir, "e2e4", PROFILE).is_err());
+    assert!(submit_remote(&laptop.db, &runner, &crate::poller::RecordingSink::default(), &laptop.data_dir, "e2e4", PROFILE).is_err());
     assert!(laptop.resubmit(&runner, "e2e3").is_err());
     assert!(runner.calls.borrow().is_empty(), "no ssh for an unverified profile");
 
@@ -397,7 +397,7 @@ fn a_symlinked_bin_refuses_the_upload_at_the_prepare_step() {
 
     let outcome = laptop.submit(&runner, "e2e5");
     assert!(
-        matches!(&outcome, SubmitOutcome::NotClaimed { step: SubmitStep::Prepare, reason } if reason.contains("bin")),
+        matches!(&outcome, SubmitOutcome::NotClaimed { step: SubmitStep::Prepare, refusal: super::submit::Refusal::Other(reason) } if reason.contains("bin")),
         "{outcome:?}"
     );
     assert_eq!(*runner.calls.borrow(), ["prepare"]);
@@ -668,8 +668,64 @@ impl PollerWorld {
             remote: &self.remote,
             sink: &self.sink,
             policy: crate::execution_backend::FetchPolicy::SMALL_ONLY,
+            data_dir: &laptop.data_dir,
         }
     }
+}
+
+/// ADR-024 o23 end to end against the real scripts: a Create & Run whose slot is held by a pinned
+/// process on the mask goes **pending** (the real `blocked` reply, its blocker by pid); the poller's
+/// re-check while it is still held runs only prepare + `submit.sh` and writes nothing in the job dir
+/// (no `.tsp-out`, no claim); once the process has exited, the next re-check **submits by itself** —
+/// enqueued, the flag cleared, `.enqueued` published. Control "a free slot that does not enqueue at
+/// the next step", with the production scripts.
+#[test]
+fn a_pending_submit_waits_for_the_slot_and_submits_once_it_frees() {
+    use crate::poller::pending::{Recheck, Wait};
+    let _serial = serial();
+    let mut lab = Lab::new();
+    let laptop = Laptop::new(&lab);
+    laptop.draft("e2e9");
+    let cpu = mask().split('-').next().unwrap().to_string();
+    let mut hold = std::process::Command::new("taskset");
+    hold.arg("-c").arg(&cpu).arg("sleep").arg("8").current_dir(&lab.root).stdin(std::process::Stdio::null());
+    let holder = lab.spawn(hold);
+    super::script_tests::wait_for("pinned", || fs::read_to_string(format!("/proc/{holder}/cmdline")).is_ok_and(|c| c.starts_with("sleep")));
+
+    let outcome = laptop.submit(&Loop::new(&lab), "e2e9");
+    let SubmitOutcome::NotClaimed { step: SubmitStep::Submit, refusal: super::submit::Refusal::Blocked { blockers } } = &outcome else {
+        panic!("{outcome:?}")
+    };
+    assert!(blockers.iter().any(|b| matches!(b, super::submit::Blocker::Process { pid, .. } if *pid == holder)), "{blockers:?}");
+    let since = laptop.job("e2e9").submit_pending_since.expect("pending");
+    let remote = remote_job(&lab, "e2e9");
+    let names = |dir: &Path| {
+        let mut n: Vec<String> = fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        n.sort();
+        n
+    };
+    let uploaded = names(&remote);
+
+    let world = PollerWorld::new();
+    let runner = Loop::new(&lab);
+    let step = world.poller(&laptop, &runner).status_step("e2e9").unwrap();
+    assert!(
+        matches!(&step, StatusStep::SubmitRechecked { since: s, recheck: Recheck::Waiting(Wait::SlotBusy { .. }) } if *s == since),
+        "{step:?}"
+    );
+    assert_eq!(*runner.calls.borrow(), ["prepare", "submit"], "no label, no upload");
+    assert_eq!(names(&remote), uploaded, "a blocked re-check writes nothing in the job dir");
+    drop(runner);
+
+    // Reaped: a pinned zombie would still hold the mask (probe B0 item 9).
+    lab.wait_child(holder);
+    let runner = Loop::new(&lab);
+    let step = world.poller(&laptop, &runner).status_step("e2e9").unwrap();
+    assert_eq!(step, StatusStep::SubmitRechecked { since, recheck: Recheck::Enqueued { tsp_id: 0 } });
+    assert_eq!(*runner.calls.borrow(), ["prepare", "submit"]);
+    let job = laptop.job("e2e9");
+    assert_eq!((job.status, job.submit_pending_since, job.error_message), (JobStatus::Queued, None, None));
+    assert!(remote.join(".enqueued").exists() && remote.join(".submitting").is_symlink());
 }
 
 /// The whole remote finish against the real scripts: the real `poll_log` streams the start of the

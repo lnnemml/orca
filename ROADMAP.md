@@ -1511,8 +1511,14 @@ preflight. The remaining items (remote `orca_plot`, pause) are not numbered yet.
             joins `JobStatus`; row 8's orphan sweep; the re-enqueue counter (incremented **before**
             the re-enqueue, ADR-024 l) and acting on `ReEnqueue`; l row 10's counter. Its own schema
             version.
-      - [ ] **5.4c — the pending submit** with its refusal counter (ADR-024 m2), re-checked from the
-            poller loop. Its own schema version.
+      - [ ] **5.4c — the pending submit** with its refusal counter (ADR-024 m2, o23), re-checked from
+            the poller loop; schema v22. **Part A built 2026-10-19** (Rust, tested):
+            v22 `submit_pending_since` with its CHECK; `submit.sh`'s typed reply kinds (`blocked`,
+            `slot-check-error`, `lock-busy`, `upload-mismatch`) and the typed `Refusal`; the poller's
+            re-check (the submit itself, after the pending cancel, before the label) with its
+            per-launch counter and the 3rd-refusal notice in the record; Retry refused on a pending
+            row; the first Create & Run through the `ContactRunner`. **Part B** (the view: badge,
+            notice, blockers by title, Retry hidden) is next, then Anton's live gate and the uni run.
       The `uploading`/`syncing` transient states are not yet assigned to a unit.
 - [ ] **Unit 5.5 — preflight:** `nprocs`/`%maxcore` vs the profile (cores + RAM budget) and free disk
       space in the profile working dir; no-`%maxcore` → warn-and-propose, never silent-insert

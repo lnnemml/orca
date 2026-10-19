@@ -11527,3 +11527,117 @@ profile was never verified. Next: **5.3** `SshBackend` wiring.
   the server) holds a cancel requested 13:39 UTC; on uni's return its delivery takes the
   not-on-server branch (mkjob → `cancel.sh`) — a live check of that path.
 - Next: the uni run (uni offline).
+
+## [2026-10-19] feat | Unit 5.4c Part A — the pending submit
+
+ADR-024 o23 (with 23.13 winning where it differs), Rust tested, then STOP; not committed. **Main
+risk:** the app now submits to a server on its own — no double enqueue, no submit the user did not
+start, no server write while blocked beyond the lock file / temp dir / `tsp -l`, no pending cancel
+overtaken, no silent loop, no transient answer ending the wait, no terminal write keeping the flag.
+
+- **Schema v22** — `jobs.submit_pending_since TEXT` with `CHECK (… IS NULL OR (remote_host IS NOT NULL
+  AND status = 'queued'))` in v21's ADD-COLUMN form; `SCHEMA_VERSION` = 22; `Job::COLUMNS` 21 and the TS
+  `Job`. Set by `record_attempt` (`COALESCE`) on a slot refusal of a submit the user started; NULLed
+  by the enqueue, an ending refusal, the plan refusal's own guarded write, `record_delivered` (both
+  branches), `record_ended_first`, `finalize_job_conn`, `mark_cancelled_conn`, `record_cancelling`.
+  Every write emits `job:status` after its lock (`record_attempt` takes a sink).
+- **`submit.sh` reply kinds** — `blocked <n>` (blocker records written by the scan to a file in the
+  temp dir — the byte-exact channel — and passed through verbatim), `slot-check-error` (step 3's three
+  branches, step 5's failures, and rc 124 of every bounded child before the claim), `lock-busy`,
+  `upload-mismatch` (name records). `submit.rs`: `SubmitReply::Refused(Refusal)` with `Blocked {
+  blockers: Vec<Blocker> }`, `SlotCheckFailed`, `LockBusy { openers }`, `UploadMismatch { missing,
+  extra, differing }`, `Other`; `SubmitOutcome::NotClaimed { step, refusal }`. Tests moved off reason
+  text. Stdin-fed: no reinstall.
+- **The re-check** (`poller/pending.rs`) in `run_status` after the pending-cancel branch, before
+  `FetchStopped` and the label: `pending_plan` (= the retry's `plan_checks` + `plan_from`, minus the
+  label, the upload and the retry's two refusals), ready, `submit.sh`, at most one upload + one more
+  `submit.sh` on a mismatch (none right after a lost reply). The pure `decide` maps every outcome (the
+  table in `execution-backends.md`). `StatusStep::SubmitRechecked { since, recheck }`; the record's
+  `pending_submit { since, refusals, last, notified, notice }`; blockers titled only from exactly
+  `<root>/jobs/<id>` with that job's recorded dir. `Poller` gains `data_dir`.
+- **The counter** — `PollerMemory::{count_refusal, end_pending, note_submit_reply}`, one op each;
+  notice from `PENDING_NOTICE_AT` = 3 in the most recent kind's words.
+- **Retry** refused on a pending row (`retry_checks`). **23.9**: `SshBackend::submit_attempt(id,
+  runner)`; `submit_to_server` and `retry_remote_submit` share `attempt_with_contact` (ContactRunner,
+  count a slot refusal, `note_retry_after`). `write_local_dir` writes only differing bytes
+  (`prepare_job_dir_with` + `write_if_changed`).
+
+Deviations (reported for Anton/the orchestrator): `Unreadable` is not a `Refusal` (nothing proves
+nothing was claimed) — it is `Wait::Unreadable`, decided from `Unknown` + the submit call's own `Ok`
+contact; the attempt that **makes** a job pending counts as its first refusal (notice at the 3rd
+overall; after a restart, 3 new); the re-check omits the retry's cancel-pending predicate (a cancel
+recorded after the step's read is the next step's, 23.13.7); any plan error other than IO/DB ends the
+wait; `Unknown` with no call made ends it; the lost-reply mark clears at the next *answered*
+`submit.sh`; rc 137 (kill-after) stays an ordinary refusal (not measured).
+
+**Counts:** `cargo test` 901 → **945 passed** (947 after the verifier follow-up below), 28 ignored, 0 failed; `cargo build --all-targets` 0
+warnings; clippy clean on the touched files; `npx tsc --noEmit` clean; `npm test` **1074** (unchanged:
+types and fixtures only).
+
+**Negative controls** — each broken in a scratch copy with its own target dir, the named test red,
+restored (`diff -r` identical), the full suite green (945) in the copy:
+
+| # | break | red |
+|---|---|---|
+| 1 | Lab: `.tsp-out` / the claim made before the scan | `a_blocked_attempt_writes_nothing_in_the_job_dir` |
+| 2 | first slot refusal recorded `Keep` | `only_a_slot_refusal_makes_a_first_submit_pending` |
+| 3 | slot check error → `End`; Lab: step 3's `tsp -l` refused as text | `a_slot_check_error_stays_pending_and_counts`; `a_step_3_socket_error_is_a_slot_check_error_in_every_branch` |
+| 4 | no answer → `End`; no answer counted | `a_transport_failure_neither_ends_nor_counts` (both) |
+| 5 | `Unknown`/`Failed` → `End` | `a_lost_reply_stays_pending_and_the_next_step_uploads_nothing` |
+| 6 | lock busy not counted | `lock_busy_stays_pending_counts_and_reaches_its_notice` |
+| 7 | `Other` → a wait | `an_answered_refusal_ends_the_pending_state` |
+| 8 | plan refusal → `CheckFailed` | `a_local_plan_refusal_ends_the_pending_state_before_any_ssh` |
+| 9 | no NULL in `finalize_job_conn` / `mark_cancelled_conn` / `record_cancelling` / `record_delivered`'s `cancelling` branch (4 breaks) | `every_terminal_or_cancelling_write_clears_the_flag` (CHECK) |
+| 10 | no NULL in `record_delivered` (unchanged) / `record_ended_first` | `a_pending_cancel_is_delivered_before_any_recheck`; `a_cancel_that_finds_the_job_ended_clears_the_flag` |
+| 11 | `Set` without `COALESCE` | `a_later_refusal_keeps_the_first_pending_time`, `a_blocked_recheck_stays_pending_keeps_its_first_time_and_counts` |
+| 12 | emit ignores the flag; plan-refusal NULL without its emit | `setting_the_flag_alone_emits_job_status`; `a_local_plan_refusal_…` |
+| 13 | re-check before the pending-cancel branch | `a_pending_cancel_is_delivered_before_any_recheck` |
+| 14 | upload before every `submit.sh` | `a_free_slot_enqueues_at_the_next_step_and_ends_the_pending_state` |
+| 15 | mismatch → `End` (no re-upload) | `an_upload_mismatch_reuploads_once_then_submits` |
+| 16 | the plan without `run_target` (a mask edit submits) | `a_local_plan_refusal_…` |
+| 17 | `PENDING_NOTICE_AT` = 2 | `lock_busy_…`, `a_recheck_maps_to_its_pending_submit`, `after_a_restart_…` — **first run stayed green** (the tests used the constant); fixed to the literal 3, then red |
+| 18 | notice one refusal early | `after_a_restart_the_notice_comes_back_after_three_more_refusals` |
+| 19 | blocker id = the dir's last component | `a_blocker_is_shown_by_a_local_jobs_title_only_from_its_own_job_dir` |
+| 20 | no pending refusal in `retry_checks` | `retry_is_refused_on_a_pending_row` |
+| 21 | the bare runner in `attempt_with_contact` | `a_first_create_and_run_writes_its_contact_and_counts_a_slot_refusal` |
+| 22 | no re-check branch | `a_free_slot_enqueues_…`, e2e `a_pending_submit_waits_for_the_slot_and_submits_once_it_frees` |
+| 23 | Undo NULLs the flag | `an_undo_leaves_the_pending_submit_to_resume` |
+| 24 | unreadable → `Lost` | `an_unreadable_answer_stays_pending_counts_and_notifies` |
+| 25 | IO error → plan refusal | `a_local_io_error_keeps_the_pending_state` |
+| 26 | re-upload's `None` contact read as answered | `a_reupload_without_an_answer_stays_pending` |
+| 27 | `write_if_changed` always writes | `a_recheck_never_rewrites_an_unchanged_local_dir`, `an_unchanged_local_input_is_not_rewritten_by_a_retry` |
+| 28 | lost-reply mark ignored | `a_lost_reply_…` |
+| 29 | v22 without its CHECK | `migrate_v22_check_rejects_a_pending_submit_off_a_remote_queued_row` |
+| 30 | `SCHEMA_VERSION` 21 | `migrate_v21_to_v22_adds_a_null_pending_submit_and_keeps_every_job` |
+| 31 | Lab: realpath's timeout branch removed | `a_bounded_child_that_times_out_before_the_claim_is_a_slot_check_error` |
+| 32 | `from_row` reads column 20 | `from_row_reads_the_pending_submit_after_the_cancel_columns` |
+| 33 | `CheckFailed` drops the record's pending submit | `a_recheck_maps_to_its_pending_submit`, `the_record_keeps_the_pending_submit_across_a_failed_check` |
+
+Three Lab controls are also permanent mutation tests (`a_tsp_out_made_before_the_scan_…`,
+`a_step_3_socket_error_refused_as_text_…`, `a_timed_out_realpath_refused_as_text_…`).
+
+**Verifier CODE follow-up** (one FAIL: its control V2 stayed green; ADR 23.14.6 rewording by the
+orchestrator):
+- **F1** — no test pinned o23.14.5 (the lost-reply mark survives a transport failure). Added
+  `the_lost_reply_mark_survives_a_transport_failure`: `submit.sh` times out → `Lost`; prepare times out
+  → `CheckFailed`, mark still set; next `submit.sh` answers a mismatch → `Deferred`, no `Upload`.
+- **F4** — the command path counted a slot refusal even when `record_attempt` matched 0 rows. Now
+  `SubmitAttempt::made_pending` (`#[serde(skip)]`: the write returned 1 row and was `Set`) gates
+  `count_refusal`; test `a_slot_refusal_whose_write_matched_no_row_counts_nothing` (the row moved to
+  `cancelled` during the submit call).
+- F2: `remote-jobs.md` scopes "rc 137 stays an ordinary refusal" to realpath / wrapper realpath and
+  sha256sum / `find` / upload `sha256sum`; for the slot's `tsp -l` and the scan any non-zero rc is a
+  slot check error. F3: ROADMAP drops "not committed yet".
+
+| # | break | red |
+|---|---|---|
+| 34 (V2) | the ready step's `CheckFailed` clears `submit_reply_lost` | `the_lost_reply_mark_survives_a_transport_failure` |
+| 35 (F4) | count on `makes_pending(&outcome)` instead of `made_pending` | `a_slot_refusal_whose_write_matched_no_row_counts_nothing` |
+
+Both broken in the scratch copy, red, restored (`diff -r` identical). `cargo test` **947 passed**, 28
+ignored.
+
+- **Interim (Part A alone, o23.10):** a pending row looks like any queued row with its last refusal
+  in `error_message`; Retry is refused by the command. Not run against uni; `tauri dev` not started.
+- **Next:** verifier CODE; Anton's greenlight; Part B (the view: badge, notice, blockers by title,
+  Retry hidden by the offer rule), then the live gate and the uni run.

@@ -28,8 +28,8 @@ use super::script_tests::{
 };
 use super::scripts::{stdin_with_values, LABEL, LIST, POLL_LOG, STDIN_SCRIPTS, SUBMIT, WRAPPER};
 use super::submit::{
-    label, parse_label_reply, parse_submit_reply, Label, LabelArgs, LabelFacts, Markers, SubmitArgs,
-    SubmitReply,
+    label, parse_label_reply, parse_submit_reply, Blocker, Label, LabelArgs, LabelFacts, Markers, ProcessRole, Refusal,
+    SubmitArgs, SubmitReply,
 };
 use super::sync::{compare_download, download_selects, list_dir, parse_list_reply, upload_expected, ListArgs};
 use super::wire::WireError;
@@ -159,11 +159,25 @@ fn lock_is_free(lab: &Lab) -> bool {
     Command::new("flock").arg("-n").arg(lock_path(lab)).arg("true").status().unwrap().success()
 }
 
+/// The text of a plain refusal (`Refusal::Other`): the reason for people.
 fn refused(reply: &SubmitReply) -> &str {
     match reply {
-        SubmitReply::Refused(why) => why,
-        other => panic!("expected a refusal, got {other:?}"),
+        SubmitReply::Refused(Refusal::Other(why)) => why,
+        other => panic!("expected a plain refusal, got {other:?}"),
     }
+}
+
+/// The blockers of a `blocked` reply (o23.7).
+fn blockers(reply: &SubmitReply) -> &[Blocker] {
+    match reply {
+        SubmitReply::Refused(Refusal::Blocked { blockers }) => blockers,
+        other => panic!("expected a blocked reply, got {other:?}"),
+    }
+}
+
+/// Whether `blockers` hold a process `pid` of `role` on `cores`.
+fn holds_process(blockers: &[Blocker], pid: u32, role: ProcessRole, cores: &str) -> bool {
+    blockers.iter().any(|b| matches!(b, Blocker::Process { pid: p, role: r, cores: c, .. } if *p == pid && *r == role && c == cores))
 }
 
 #[test]
@@ -251,7 +265,7 @@ fn claim_race(script: &str) -> Result<(), String> {
     let reply = submit_with(&lab, script, &args, &[("PATH", &path), ("FAULT_CLAIM", Lab::str(&claim))]);
     let target = fs::read_link(&claim).map_err(|e| e.to_string())?;
     match reply {
-        SubmitReply::Refused(why) if why.starts_with("claim: ") && enqueues(&lab).is_empty() && target == Path::new("y") => {
+        SubmitReply::Refused(Refusal::Other(why)) if why.starts_with("claim: ") && enqueues(&lab).is_empty() && target == Path::new("y") => {
             Ok(())
         }
         other => Err(format!("{other:?}; enqueues {:?}; .submitting -> {target:?}", enqueues(&lab))),
@@ -334,11 +348,9 @@ fn a_busy_lock_is_refused_naming_its_holder_and_nothing_is_enqueued() {
 
     let started = std::time::Instant::now();
     let reply = submit(&lab, &args);
-    let why = refused(&reply);
     assert!(started.elapsed() >= std::time::Duration::from_secs(19), "flock -w 20 waited");
-    assert!(why.starts_with("lock busy: "), "{why}");
-    assert!(why.starts_with("lock busy: lock file open in: "), "{why}");
-    assert!(why.contains(&format!("{pid} perl -MFcntl=:flock")), "the opener is listed: {why}");
+    let SubmitReply::Refused(Refusal::LockBusy { openers }) = &reply else { panic!("expected lock-busy, got {reply:?}") };
+    assert!(openers.contains(&format!("{pid} perl -MFcntl=:flock")), "the opener is listed: {openers}");
     assert!(enqueues(&lab).is_empty());
     assert!(!job.join(".submitting").exists() && !job.join(".tsp-out").exists());
 }
@@ -349,17 +361,21 @@ fn upload_check(script: &str) -> Result<(), String> {
     let _serial = serial();
     let lab = Lab::new();
     let sock = slot_socket(&lab, 0);
-    let cases: [(&str, &dyn Fn(&Path), &str); 4] = [
-        ("one-byte", &|j: &Path| fs::write(j.join("input.xyz"), "1\n\nH 0 0 1\n").unwrap(), "differing [input.xyz]"),
-        ("deep-byte", &|j: &Path| fs::write(j.join("aux/product.xyz"), "x").unwrap(), "differing [aux/product.xyz]"),
-        ("missing", &|j: &Path| fs::remove_file(j.join("input.xyz")).unwrap(), "missing [input.xyz]"),
-        ("extra", &|j: &Path| fs::write(j.join(".input.inp.Ab12Cd"), "").unwrap(), "extra [.input.inp.Ab12Cd]"),
+    type Names = (&'static [&'static str], &'static [&'static str], &'static [&'static str]);
+    let cases: [(&str, &dyn Fn(&Path), Names); 5] = [
+        ("one-byte", &|j: &Path| fs::write(j.join("input.xyz"), "1\n\nH 0 0 1\n").unwrap(), (&[], &[], &["input.xyz"])),
+        ("deep-byte", &|j: &Path| fs::write(j.join("aux/product.xyz"), "x").unwrap(), (&[], &[], &["aux/product.xyz"])),
+        ("missing", &|j: &Path| fs::remove_file(j.join("input.xyz")).unwrap(), (&["input.xyz"], &[], &[])),
+        ("extra", &|j: &Path| fs::write(j.join(".input.inp.Ab12Cd"), "").unwrap(), (&[], &[".input.inp.Ab12Cd"], &[])),
+        // A name with a newline and a space reaches Rust byte for byte (o23.13.8: no %q text).
+        ("odd extra", &|j: &Path| fs::write(j.join("a b\nc"), "").unwrap(), (&[], &["a b\nc"], &[])),
     ];
-    for (name, damage, want) in cases {
-        let (job, args) = prepared(&lab, name, &sock);
+    for (name, damage, (missing, extra, differing)) in cases {
+        let (job, args) = prepared(&lab, &name.replace(' ', "-"), &sock);
         damage(&job);
         let reply = submit_with(&lab, script, &args, &[]);
-        let ok = matches!(&reply, SubmitReply::Refused(why) if why.starts_with("upload: ") && why.contains(want));
+        let ok = matches!(&reply, SubmitReply::Refused(Refusal::UploadMismatch { missing: m, extra: e, differing: d })
+            if m == missing && e == extra && d == differing);
         if !ok || job.join(".submitting").exists() || !enqueues(&lab).is_empty() {
             return Err(format!("{name}: {reply:?}"));
         }
@@ -483,7 +499,7 @@ fn kill_user_processes_failures_are_refused_kup_with_their_evidence() {
 fn a_plain_kup_refusal_turns_the_kup_check_red() {
     let broken = mutate(SUBMIT, "refuse_kup \"$rc\" \"$T/kup\" \"$T/kup.err\"", "refuse \"KillUserProcesses: rc $rc\"");
     let red = kup_check(&broken).unwrap_err();
-    assert!(red.starts_with("b true: Refused(\"KillUserProcesses: rc 0\")"), "{red}");
+    assert!(red.starts_with("b true: Refused(Other(\"KillUserProcesses: rc 0\"))"), "{red}");
     eprintln!("control (13.3) red: {red}");
 }
 
@@ -535,7 +551,7 @@ fn wrapper_check(script: &str) -> Result<(), String> {
         damage();
         let reply = submit_with(&lab, script, &args, &[]);
         restore();
-        let ok = matches!(&reply, SubmitReply::Refused(why) if why.starts_with(want));
+        let ok = matches!(&reply, SubmitReply::Refused(Refusal::Other(why)) if why.starts_with(want));
         if !ok || fs::symlink_metadata(job.join(".submitting")).is_ok() || !enqueues(&lab).is_empty() {
             return Err(format!("{name}: {reply:?}"));
         }
@@ -626,10 +642,12 @@ fn the_slot_check_accounts_for_this_slots_running_job_and_blocks_an_unaccounted_
     fs::write(format!("{}.rows", Lab::str(&sock)), tsp_listing(&[])).unwrap();
     let (job, args) = prepared(&lab, "blocked", &sock);
     let reply = submit(&lab, &args);
-    let why = refused(&reply);
-    assert!(why.starts_with("slot busy: "), "{why}");
-    assert!(why.contains(&format!("pid {wrapper} (wrapper, cores {}", mask())), "{why}");
-    assert!(why.contains("(pinned, cores"), "the pinned ORCA blocks too: {why}");
+    let held = blockers(&reply);
+    assert!(holds_process(held, wrapper, ProcessRole::Wrapper, &mask()), "{held:?}");
+    assert!(
+        held.iter().any(|b| matches!(b, Blocker::Process { role: ProcessRole::Pinned, job_dir: Some(d), .. } if d == Lab::str(&running))),
+        "the pinned ORCA blocks too, by its cwd: {held:?}"
+    );
     assert!(fs::symlink_metadata(job.join(".submitting")).is_err(), "a slot refusal writes no claim");
     assert_eq!(enqueues(&lab).len(), 1);
 }
@@ -644,7 +662,7 @@ fn with_no_daemon_on_the_slot_every_live_session_on_the_mask_blocks() {
     // A row file exists, but nothing listens: NoDaemon, so nothing is accounted for.
     fs::write(format!("{}.rows", Lab::str(&sock)), tsp_listing(&[running_row(&lab, &running)])).unwrap();
     let (_job, args) = prepared(&lab, "after-restart", &sock);
-    assert!(refused(&submit(&lab, &args)).starts_with("slot busy: "));
+    assert!(!blockers(&submit(&lab, &args)).is_empty());
 }
 
 #[test]
@@ -658,12 +676,16 @@ fn the_slot_check_sees_queued_rows_of_other_own_sockets_and_pinned_strays() {
     lab_listen_with_rows(&mut lab, &other, &[queued]);
     let (_job, args) = prepared(&lab, "queued-elsewhere", &sock);
     let why = submit(&lab, &args);
-    assert!(refused(&why).contains(&format!("queued row 7 on {}", Lab::str(&other))), "{why:?}");
+    assert!(
+        blockers(&why).iter().any(|b| matches!(b, Blocker::QueuedRow { id: 7, socket, job_dir, mask: m }
+            if socket == Lab::str(&other) && *job_dir == queued_job && *m == mask())),
+        "{why:?}"
+    );
 
     // A failed `tsp -l` on a qualifying socket refuses (Error), never reads as "no rows".
     fs::write(format!("{}.fail", Lab::str(&other)), "").unwrap();
     let why = submit(&lab, &args);
-    assert!(refused(&why).starts_with("slot check: error tsp -l on"), "{why:?}");
+    assert!(matches!(&why, SubmitReply::Refused(Refusal::SlotCheckFailed(m)) if m.starts_with("error tsp -l on")), "{why:?}");
     fs::remove_file(format!("{}.fail", Lab::str(&other))).unwrap();
     fs::write(format!("{}.rows", Lab::str(&other)), tsp_listing(&[])).unwrap();
 
@@ -684,8 +706,201 @@ fn the_slot_check_sees_queued_rows_of_other_own_sockets_and_pinned_strays() {
     let (_job, args) = prepared(&lab, "stray", &sock);
     let on = pinned(&mut lab, slot_cpus().0);
     let why = submit(&lab, &args);
-    assert!(refused(&why).contains(&format!("pid {} (pinned, cores {}", on.pid, slot_cpus().0)), "{why:?}");
+    assert!(holds_process(blockers(&why), on.pid, ProcessRole::Pinned, &slot_cpus().0.to_string()), "{why:?}");
     assert!(!is_dead(off) && !is_dead(on), "the scan only reads");
+}
+
+// ---- the pending submit's reply kinds (ADR-024 o23.7, o23.13) ------------------------------------
+
+/// Every entry under `dir` (recursively, symlinks not followed) with its kind and bytes: what a
+/// submit wrote into a job dir is any difference between two of these.
+fn tree(dir: &Path) -> Vec<(String, String)> {
+    fn walk(base: &Path, dir: &Path, out: &mut Vec<(String, String)>) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            let rel = path.strip_prefix(base).unwrap().to_string_lossy().into_owned();
+            let meta = fs::symlink_metadata(&path).unwrap();
+            if meta.file_type().is_symlink() {
+                out.push((rel, format!("link {:?}", fs::read_link(&path).unwrap())));
+            } else if meta.is_dir() {
+                out.push((rel, "dir".into()));
+                walk(base, &path, out);
+            } else {
+                out.push((rel, format!("file {:?}", fs::read(&path).unwrap())));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(dir, dir, &mut out);
+    out.sort();
+    out
+}
+
+/// o23.3, o23.11: while blocked, an attempt writes **nothing in the job dir** — no `.tsp-out`, no
+/// claim — whether the slot is busy (step 5: a pinned process on the mask) or cannot be checked
+/// (step 3: the slot daemon's `tsp -l` fails). `Ok` iff both are refused with their kind, the job
+/// dir is byte-identical before and after, and nothing was enqueued.
+fn blocked_writes_nothing(script: &str) -> Result<(), String> {
+    let _serial = serial();
+    let mut lab = Lab::new();
+    let sock = slot_socket(&lab, 0);
+    let (job, args) = prepared(&lab, "blocked-writes-nothing", &sock);
+    let elsewhere = lab.root.join("elsewhere");
+    fs::create_dir_all(&elsewhere).unwrap();
+    let mut cmd = Command::new("taskset");
+    cmd.arg("-c").arg(slot_cpus().0.to_string()).arg("sleep").arg("20").current_dir(&elsewhere).stdin(Stdio::null());
+    let pid = lab.spawn(cmd);
+    wait_for("pinned", || fs::read_to_string(format!("/proc/{pid}/cmdline")).is_ok_and(|c| c.starts_with("sleep")));
+    tracked(pid);
+
+    let before = tree(&job);
+    let reply = submit_with(&lab, script, &args, &[]);
+    if !matches!(&reply, SubmitReply::Refused(Refusal::Blocked { .. })) {
+        return Err(format!("slot busy: {reply:?}"));
+    }
+    if tree(&job) != before {
+        return Err(format!("slot busy wrote into the job dir: {:?}", tree(&job)));
+    }
+    // The pinned process stays: step 3 refuses before the scan would see it.
+    lab_listen_with_rows(&mut lab, &sock, &[]);
+    fs::write(format!("{}.fail", Lab::str(&sock)), "").unwrap();
+    let reply = submit_with(&lab, script, &args, &[]);
+    if !matches!(&reply, SubmitReply::Refused(Refusal::SlotCheckFailed(_))) {
+        return Err(format!("slot check error: {reply:?}"));
+    }
+    if tree(&job) != before {
+        return Err(format!("slot check error wrote into the job dir: {:?}", tree(&job)));
+    }
+    if !enqueues(&lab).is_empty() {
+        return Err(format!("enqueued: {:?}", enqueues(&lab)));
+    }
+    Ok(())
+}
+
+#[test]
+fn a_blocked_attempt_writes_nothing_in_the_job_dir() {
+    blocked_writes_nothing(SUBMIT).unwrap();
+}
+
+/// NEGATIVE CONTROL (o23.11, "a blocked attempt that writes `.tsp-out` or the claim"): step 6's
+/// `mkdir .tsp-out` moved before the scan → red.
+#[test]
+fn a_tsp_out_made_before_the_scan_turns_the_blocked_check_red() {
+    let broken = mutate(SUBMIT, "    : >\"$T/blockers\"\n", "    mkdir -p -- \"$job/.tsp-out\"\n    : >\"$T/blockers\"\n");
+    let red = blocked_writes_nothing(&broken).unwrap_err();
+    assert!(red.starts_with("slot busy wrote into the job dir"), "{red}");
+    eprintln!("control (blocked writes nothing) red: {red}");
+}
+
+/// The step-3 net_unix read, pointed at `$FAKE_NET_UNIX` so a test can make it absent or wrong.
+fn with_fake_net_unix(script: &str) -> String {
+    mutate(script, "read_raw /proc/net/unix \"$T/net_unix\" || slot_check_error", "read_raw \"$FAKE_NET_UNIX\" \"$T/net_unix\" || slot_check_error")
+}
+
+/// MED-5, o23.13.8: step 3's slot socket `Error` is a slot check error in all three branches — the
+/// socket's `tsp -l` failed, `/proc/net/unix` absent or unreadable, its header not the expected one
+/// (the last two through a test copy whose step-3 read takes `$FAKE_NET_UNIX`). `Ok` iff each is
+/// `SlotCheckFailed` with nothing claimed.
+fn step_3_socket_errors(script: &str) -> Result<(), String> {
+    let _serial = serial();
+    let mut lab = Lab::new();
+    let sock = slot_socket(&lab, 0);
+    let (job, args) = prepared(&lab, "step3", &sock);
+    let bad_header = lab.root.join("net_unix.bad");
+    fs::write(&bad_header, "Num RefCount Protocol\n").unwrap();
+    let faked = with_fake_net_unix(script);
+    let cases: [(&str, &str, &str, &str); 3] = [
+        ("tsp -l failed", script, "/proc/net/unix", "slot socket: tsp -l on"),
+        ("absent", &faked, "/nonexistent/net_unix", "/proc/net/unix: absent"),
+        ("bad header", &faked, Lab::str(&bad_header), "/proc/net/unix: unexpected header"),
+    ];
+    lab_listen_with_rows(&mut lab, &sock, &[]);
+    fs::write(format!("{}.fail", Lab::str(&sock)), "").unwrap();
+    for (case, script, net, want) in cases {
+        let reply = submit_with(&lab, script, &args, &[("FAKE_NET_UNIX", net)]);
+        let ok = matches!(&reply, SubmitReply::Refused(Refusal::SlotCheckFailed(why)) if why.starts_with(want));
+        if !ok || fs::symlink_metadata(job.join(".submitting")).is_ok() || job.join(".tsp-out").exists() {
+            return Err(format!("{case}: {reply:?}"));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn a_step_3_socket_error_is_a_slot_check_error_in_every_branch() {
+    step_3_socket_errors(SUBMIT).unwrap();
+}
+
+/// NEGATIVE CONTROL (MED-5, "a step-3 socket Error that ends it instead"): the slot socket's failed
+/// `tsp -l` refused as plain text, as before 5.4c → red.
+#[test]
+fn a_step_3_socket_error_refused_as_text_turns_red() {
+    let broken = mutate(
+        SUBMIT,
+        "(( rc == 0 )) || slot_check_error \"slot socket: tsp -l on",
+        "(( rc == 0 )) || refuse \"slot socket: tsp -l on",
+    );
+    let red = step_3_socket_errors(&broken).unwrap_err();
+    assert!(red.starts_with("tsp -l failed: Refused(Other("), "{red}");
+    eprintln!("control (MED-5) red: {red}");
+}
+
+/// A fault dir whose `program` stub sleeps 20 s when `matches` (a bash test on its arguments) holds
+/// and otherwise runs the real one: a bounded child that hangs.
+fn hanging(lab: &Lab, program: &str, matches: &str) -> String {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static N: AtomicU32 = AtomicU32::new(0);
+    let fault = lab.root.join(format!("hang-{program}-{}", N.fetch_add(1, Ordering::Relaxed)));
+    fs::create_dir_all(&fault).unwrap();
+    let real = String::from_utf8(Command::new("bash").arg("-c").arg(format!("command -v {program}")).output().unwrap().stdout).unwrap();
+    fs::write(
+        fault.join(program),
+        format!("#!/bin/bash\nif {matches}; then exec sleep 20; fi\nexec {} \"$@\"\n", real.trim()),
+    )
+    .unwrap();
+    fs::set_permissions(fault.join(program), fs::Permissions::from_mode(0o755)).unwrap();
+    format!("{}:{}", Lab::str(&fault), lab.path_env())
+}
+
+/// o23.13.2: a bounded child before the claim that times out (rc 124) is a slot check error —
+/// realpath, the wrapper's sha256sum, find, the upload's sha256sum, the scan (its budget shrunk to
+/// 10 ms in a test copy). `Ok` iff each is `SlotCheckFailed` naming the child, nothing claimed.
+fn bounded_timeouts(script: &str) -> Result<(), String> {
+    let _serial = serial();
+    let lab = Lab::new();
+    let sock = slot_socket(&lab, 0);
+    let (job, args) = prepared(&lab, "timeouts", &sock);
+    let short_scan = mutate(script, "T_SCAN=8 ", "T_SCAN=0.01 ");
+    let cases: [(&str, String, String, &str); 5] = [
+        ("realpath", script.to_string(), hanging(&lab, "realpath", "true"), "realpath: timed out"),
+        ("the wrapper's sha", script.to_string(), hanging(&lab, "sha256sum", "[[ $2 == */bin/wrapper-* ]]"), "sha256sum of the wrapper: timed out"),
+        ("find", script.to_string(), hanging(&lab, "find", "[[ $1 != /proc/* ]]"), "find (listing"),
+        ("the upload's sha", script.to_string(), hanging(&lab, "sha256sum", "[[ $2 != */bin/wrapper-* ]]"), "sha256sum of the upload: timed out"),
+        ("the scan", short_scan, lab.path_env(), "the scan timed out after 0.01 s"),
+    ];
+    for (case, script, path, want) in cases {
+        let reply = submit_with(&lab, &script, &args, &[("PATH", &path)]);
+        let ok = matches!(&reply, SubmitReply::Refused(Refusal::SlotCheckFailed(why)) if why.starts_with(want));
+        if !ok || fs::symlink_metadata(job.join(".submitting")).is_ok() || job.join(".tsp-out").exists() {
+            return Err(format!("{case}: {reply:?}"));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn a_bounded_child_that_times_out_before_the_claim_is_a_slot_check_error() {
+    bounded_timeouts(SUBMIT).unwrap();
+}
+
+/// NEGATIVE CONTROL (o23.13.2): without the realpath's timeout branch the hang is an ordinary
+/// refusal, which would end a pending submit → red.
+#[test]
+fn a_timed_out_realpath_refused_as_text_turns_red() {
+    let broken = mutate(SUBMIT, "    timed_out \"$rc\" \"realpath\"\n", "");
+    let red = bounded_timeouts(&broken).unwrap_err();
+    assert!(red.starts_with("realpath: Refused(Other(\"realpath: "), "{red}");
+    eprintln!("control (13.2) red: {red}");
 }
 
 // ---- label -----------------------------------------------------------------------------------

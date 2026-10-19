@@ -15,18 +15,42 @@
 //! orcastudio-submit 1
 //! argc <n>
 //! arg <len>                      n times: every value, verbatim (o item 3.3, n item 6d)
-//! refused <len>                  exactly one of: nothing claimed, then the reason's bytes
+//! refused <len>                  exactly one of — nothing claimed: any other refusal, its bytes
 //! refused-kup <len>              nothing claimed: KillUserProcesses is not `b false`, then the
 //!                                evidence (below)
+//! blocked <n>                    nothing claimed: the slot check's n ≥ 1 blockers (below)
+//! slot-check-error <len>         nothing claimed: the slot could not be checked, why
+//! lock-busy <len>                nothing claimed: another submit holds the account lock; the
+//!                                lock file's openers
+//! upload-mismatch                nothing claimed: the uploaded set differs (below)
 //! enqueued <id>                  the tsp id (decimal); `.enqueued` is published
 //! failed-after-claim <len>       `.submitting` stays; the reason's bytes
 //! end
 //! ```
 //!
 //! A refusal wrote no claim, so the job stays "not on the server" and may be retried; after a
-//! claim only the label call decides (o item 3.3.9). A `refused` reason starts with the step that
-//! refused (`values:`, `lock busy:`, `realpath:`, `wrapper:`, `marker:`, `row:`, `upload:`,
-//! `slot busy:`, `slot check:`, `claim:` …) — for people; no caller decides on a reason's text.
+//! claim only the label call decides (o item 3.3.9). The refusals a caller acts on have their own
+//! reply kinds (ADR-024 o23.7), parsed into a typed [`Refusal`]; a `refused` reason (`values:`,
+//! `realpath:`, `wrapper:`, `marker:`, `row:`, `upload:` for a failed listing, `claim:` …) is for
+//! people — **no caller decides on a reason's text**.
+//!
+//! **`blocked` records** (one per blocker; every path and list a byte record — a cwd can hold a
+//! newline, o23.13.8):
+//!
+//! ```text
+//! process <pid>                  a live own process on the mask:
+//! kind wrapper|pinned              our wrapper (its argv mask) or a pinned process
+//! cores <len>                      its cores (the wrapper's mask or its Cpus_allowed_list)
+//! job <len> | job -                its job dir (the wrapper's argument or its cwd); - : the cwd
+//!                                  was not readable
+//! row <id>                       a queued row of another own slot daemon:
+//! socket <len>                     that daemon's socket
+//! job <len>                        the row's job dir
+//! mask <len>                       the row's mask
+//! ```
+//!
+//! **`upload-mismatch`**: `missing <n>`, `extra <n>`, `differing <n>`, each followed by n `name
+//! <len>` records (step 4's comparison only).
 //!
 //! **`refused-kup` evidence** (o item 13.3; its bytes, themselves records):
 //!
@@ -178,7 +202,7 @@ impl SubmitArgs {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SubmitReply {
     /// Nothing was claimed; the job is still "not on the server" and may be retried.
-    Refused(String),
+    Refused(Refusal),
     /// Nothing was claimed: `KillUserProcesses` is not `b false` (o item 13.3). The only outcome
     /// that clears the profile's `verified_at`.
     RefusedKup(KupEvidence),
@@ -187,6 +211,166 @@ pub enum SubmitReply {
     /// Claimed (`.submitting` exists) but not enqueued; only the label call decides now.
     FailedAfterClaim(String),
 }
+
+/// Why the submit call claimed nothing (ADR-024 o23.7): the kinds a caller acts on, each its own
+/// reply kind, and every other refusal as text for people. `{ "kind": "<snake_case>", "detail": … }`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "kind", content = "detail", rename_all = "snake_case")]
+pub enum Refusal {
+    /// Step 5: live work on the slot's mask that this slot's daemon does not account for.
+    Blocked { blockers: Vec<Blocker> },
+    /// The slot could not be checked: step 3's slot socket state, step 5's scan, or a bounded child
+    /// before the claim that timed out (o23.13.2).
+    SlotCheckFailed(String),
+    /// Another submit holds the account lock; `openers` are the processes with the lock file open.
+    LockBusy { openers: String },
+    /// Step 4's comparison: the uploaded files are not the expected set (names lossily decoded).
+    UploadMismatch { missing: Vec<String>, extra: Vec<String>, differing: Vec<String> },
+    /// Any other refusal (values, realpath, wrapper, marker, row, a failed listing, claim, …), for people.
+    Other(String),
+}
+
+impl std::fmt::Display for Refusal {
+    /// The refusal for people, worded as the script's old reasons were.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Refusal::Blocked { blockers } => {
+                let held: Vec<String> = blockers.iter().map(Blocker::to_string).collect();
+                write!(f, "slot busy: the core mask is held by {}", held.join("; "))
+            }
+            Refusal::SlotCheckFailed(why) => write!(f, "slot check: {why}"),
+            Refusal::LockBusy { openers } => write!(f, "lock busy: lock file open in: {openers}"),
+            Refusal::UploadMismatch { missing, extra, differing } => write!(
+                f,
+                "upload: missing [{}], extra [{}], differing [{}]",
+                missing.join(" "),
+                extra.iter().map(|n| format!("{n:?}")).collect::<Vec<_>>().join(" "),
+                differing.join(" ")
+            ),
+            Refusal::Other(why) => f.write_str(why),
+        }
+    }
+}
+
+/// One blocker of the slot check (o item 9, o23.7). Paths and lists are lossily decoded.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Blocker {
+    /// A live own process on the mask: our wrapper or a pinned process. `job_dir` is the wrapper's
+    /// job dir argument or the process's cwd; `None`: the cwd was not readable.
+    Process { pid: u32, role: ProcessRole, cores: String, job_dir: Option<String> },
+    /// A queued row of another own slot daemon whose mask meets this one.
+    QueuedRow { id: u64, socket: String, job_dir: String, mask: String },
+}
+
+/// What a blocking process is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessRole {
+    Wrapper,
+    Pinned,
+}
+
+impl Blocker {
+    /// The blocker's job dir, if it names one.
+    pub fn job_dir(&self) -> Option<&str> {
+        match self {
+            Blocker::Process { job_dir, .. } => job_dir.as_deref(),
+            Blocker::QueuedRow { job_dir, .. } => Some(job_dir),
+        }
+    }
+
+    /// How a blocker that is no local job is shown (o23.7, o23.13.8): "pid <pid> (cores <cores>)"
+    /// or "tsp row <id> on <socket>".
+    pub fn fallback(&self) -> String {
+        match self {
+            Blocker::Process { pid, cores, .. } => format!("pid {pid} (cores {cores})"),
+            Blocker::QueuedRow { id, socket, .. } => format!("tsp row {id} on {socket}"),
+        }
+    }
+}
+
+impl std::fmt::Display for Blocker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Blocker::Process { pid, role, cores, job_dir } => {
+                let role = match role {
+                    ProcessRole::Wrapper => "wrapper",
+                    ProcessRole::Pinned => "pinned",
+                };
+                match job_dir {
+                    Some(dir) => write!(f, "pid {pid} ({role}, cores {cores}, job dir {dir:?})"),
+                    None => write!(f, "pid {pid} ({role}, cores {cores}, cwd not readable)"),
+                }
+            }
+            Blocker::QueuedRow { id, socket, job_dir, mask } => {
+                write!(f, "queued row {id} on {socket} (job dir {job_dir:?}, mask {mask})")
+            }
+        }
+    }
+}
+
+/// A required byte record `<name> <len>`, lossily decoded.
+fn text_record(r: &mut Reader<'_>, name: &str) -> Result<String, SubmitError> {
+    let bytes = r.bytes(name)?.ok_or_else(|| r.malformed(format!("{name} is required")))?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// `blocked <n>`'s n records (n ≥ 1).
+fn parse_blockers(r: &mut Reader<'_>, n: Option<&str>) -> Result<Vec<Blocker>, SubmitError> {
+    let n = n
+        .and_then(parse_decimal)
+        .and_then(|n| usize::try_from(n).ok())
+        .filter(|n| (1..=MAX_BLOCKERS).contains(n))
+        .ok_or_else(|| r.malformed(format!("blocked {n:?}")))?;
+    let mut blockers = Vec::with_capacity(n);
+    for _ in 0..n {
+        let blocker = match r.line()? {
+            ("process", Some(pid)) => {
+                let pid = parse_decimal(pid)
+                    .and_then(|p| u32::try_from(p).ok())
+                    .ok_or_else(|| r.malformed(format!("process {pid:?}")))?;
+                let role = match r.word("kind")? {
+                    "wrapper" => ProcessRole::Wrapper,
+                    "pinned" => ProcessRole::Pinned,
+                    other => return Err(r.malformed(format!("kind {other:?}")).into()),
+                };
+                let cores = text_record(r, "cores")?;
+                let job_dir = r.bytes("job")?.map(|b| String::from_utf8_lossy(&b).into_owned());
+                Blocker::Process { pid, role, cores, job_dir }
+            }
+            ("row", Some(id)) => {
+                let id = parse_decimal(id).ok_or_else(|| r.malformed(format!("row {id:?}")))?;
+                let socket = text_record(r, "socket")?;
+                let job_dir = text_record(r, "job")?;
+                let mask = text_record(r, "mask")?;
+                Blocker::QueuedRow { id, socket, job_dir, mask }
+            }
+            (other, _) => return Err(r.malformed(format!("expected a blocker, got {other:?}")).into()),
+        };
+        blockers.push(blocker);
+    }
+    Ok(blockers)
+}
+
+/// `upload-mismatch`'s three name lists.
+fn parse_mismatch(r: &mut Reader<'_>) -> Result<Refusal, SubmitError> {
+    let mut lists: [Vec<String>; 3] = Default::default();
+    for (list, name) in lists.iter_mut().zip(["missing", "extra", "differing"]) {
+        for _ in 0..r.count(name)? {
+            list.push(text_record(r, "name")?);
+        }
+    }
+    let [missing, extra, differing] = lists;
+    if missing.is_empty() && extra.is_empty() && differing.is_empty() {
+        return Err(r.malformed("an upload mismatch with no name".into()).into());
+    }
+    Ok(Refusal::UploadMismatch { missing, extra, differing })
+}
+
+/// No `blocked` reply carries more blockers than this (a bound, not a measurement: the reply is
+/// capped at 1 MiB anyway).
+const MAX_BLOCKERS: usize = 10_000;
 
 /// What the step-2 `busctl` did, as the script saw it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -233,7 +417,13 @@ pub fn parse_submit_reply(output: &[u8], sent: &SubmitArgs) -> Result<SubmitRepl
     }
     check_echo(&mut r, &sent.values()?)?;
     let reply = match r.line()? {
-        ("refused", arg) => SubmitReply::Refused(r.text_after(arg)?),
+        ("refused", arg) => SubmitReply::Refused(Refusal::Other(r.text_after(arg)?)),
+        ("blocked", n) => SubmitReply::Refused(Refusal::Blocked { blockers: parse_blockers(&mut r, n)? }),
+        ("slot-check-error", arg) => SubmitReply::Refused(Refusal::SlotCheckFailed(r.text_after(arg)?)),
+        ("lock-busy", arg) => SubmitReply::Refused(Refusal::LockBusy {
+            openers: String::from_utf8_lossy(&r.bytes_after(arg)?).into_owned(),
+        }),
+        ("upload-mismatch", None) => SubmitReply::Refused(parse_mismatch(&mut r)?),
         ("refused-kup", arg) => SubmitReply::RefusedKup(parse_kup_evidence(&r.bytes_after(arg)?)?),
         ("failed-after-claim", arg) => SubmitReply::FailedAfterClaim(r.text_after(arg)?),
         ("enqueued", Some(id)) => SubmitReply::Enqueued(
@@ -481,8 +671,8 @@ mod tests {
         assert_eq!(parse_submit_reply(&reply(&s, "enqueued 0\n"), &s).unwrap(), SubmitReply::Enqueued(0));
         assert_eq!(parse_submit_reply(&reply(&s, "enqueued 17\n"), &s).unwrap(), SubmitReply::Enqueued(17));
         assert_eq!(
-            parse_submit_reply(&reply(&s, "refused 9\nlock busy\n"), &s).unwrap(),
-            SubmitReply::Refused("lock busy".into())
+            parse_submit_reply(&reply(&s, "refused 9\nmarker: x\n"), &s).unwrap(),
+            SubmitReply::Refused(Refusal::Other("marker: x".into()))
         );
         assert_eq!(
             parse_submit_reply(&reply(&s, "failed-after-claim 11\ntsp failed\n\n"), &s).unwrap(),
@@ -510,8 +700,86 @@ mod tests {
         let old = "KillUserProcesses: b true";
         assert_eq!(
             parse_submit_reply(&reply(&s, &format!("refused {}\n{old}\n", old.len())), &s).unwrap(),
-            SubmitReply::Refused(old.into())
+            SubmitReply::Refused(Refusal::Other(old.into()))
         );
+    }
+
+    /// o23.7: each refusal a caller acts on is its own reply kind and parses into its typed
+    /// `Refusal`, byte records carried verbatim — a cwd holding a newline and a space included.
+    #[test]
+    fn the_typed_refusals_parse_into_their_variants() {
+        let s = sent();
+        let odd = "/r/jobs/a b\nc";
+        let blocked = format!(
+            "blocked 3\nprocess 41\nkind wrapper\n{}{}process 42\nkind pinned\n{}job -\nrow 7\n{}{}{}",
+            rec("cores", "8-11"),
+            rec("job", odd),
+            rec("cores", "9"),
+            rec("socket", "/r/tsp/slot1.sock"),
+            rec("job", "/r/jobs/q"),
+            rec("mask", "8-15"),
+        );
+        assert_eq!(
+            parse_submit_reply(&reply(&s, &blocked), &s).unwrap(),
+            SubmitReply::Refused(Refusal::Blocked {
+                blockers: vec![
+                    Blocker::Process { pid: 41, role: ProcessRole::Wrapper, cores: "8-11".into(), job_dir: Some(odd.into()) },
+                    Blocker::Process { pid: 42, role: ProcessRole::Pinned, cores: "9".into(), job_dir: None },
+                    Blocker::QueuedRow { id: 7, socket: "/r/tsp/slot1.sock".into(), job_dir: "/r/jobs/q".into(), mask: "8-15".into() },
+                ]
+            })
+        );
+        assert_eq!(
+            parse_submit_reply(&reply(&s, &rec("slot-check-error", "the scan timed out after 8 s")), &s).unwrap(),
+            SubmitReply::Refused(Refusal::SlotCheckFailed("the scan timed out after 8 s".into()))
+        );
+        assert_eq!(
+            parse_submit_reply(&reply(&s, &rec("lock-busy", "77 bash -s")), &s).unwrap(),
+            SubmitReply::Refused(Refusal::LockBusy { openers: "77 bash -s".into() })
+        );
+        let mismatch = format!("upload-mismatch\nmissing 1\n{}extra 1\n{}differing 0\n", rec("name", "input.xyz"), rec("name", ".x\ny"));
+        assert_eq!(
+            parse_submit_reply(&reply(&s, &mismatch), &s).unwrap(),
+            SubmitReply::Refused(Refusal::UploadMismatch { missing: vec!["input.xyz".into()], extra: vec![".x\ny".into()], differing: vec![] })
+        );
+    }
+
+    /// NEGATIVE CONTROLS of the typed kinds: a blocked reply with no blocker, a count that is not
+    /// the records', an unknown blocker kind or role, a missing required record, and an upload
+    /// mismatch that names nothing — an error (an unreadable answer), never a refusal.
+    #[test]
+    fn a_broken_typed_refusal_is_an_error_never_a_refusal() {
+        let s = sent();
+        let process = format!("process 41\nkind wrapper\n{}job -\n", rec("cores", "8"));
+        for outcome in [
+            "blocked 0\n".to_string(),
+            format!("blocked 2\n{process}"),
+            format!("blocked 1\nprocess 41\nkind other\n{}job -\n", rec("cores", "8")),
+            "blocked 1\nprocess 41\nkind wrapper\ncores -\njob -\n".to_string(),
+            format!("blocked 1\nthread 41\n{}", rec("cores", "8")),
+            "upload-mismatch\nmissing 0\nextra 0\ndiffering 0\n".to_string(),
+            "upload-mismatch 3\n".to_string(),
+            "lock-busy\n".to_string(),
+        ] {
+            assert!(parse_submit_reply(&reply(&s, &outcome), &s).is_err(), "{outcome:?}");
+        }
+    }
+
+    /// The fallback a blocker is shown by when it is no local job (o23.7, o23.13.8).
+    #[test]
+    fn a_blocker_falls_back_to_its_pid_and_cores_or_its_row_and_socket() {
+        let p = Blocker::Process { pid: 41, role: ProcessRole::Pinned, cores: "8-11".into(), job_dir: None };
+        assert_eq!(p.fallback(), "pid 41 (cores 8-11)");
+        let q = Blocker::QueuedRow { id: 7, socket: "/r/tsp/slot1.sock".into(), job_dir: "/r/jobs/q".into(), mask: "8".into() };
+        assert_eq!(q.fallback(), "tsp row 7 on /r/tsp/slot1.sock");
+        assert_eq!(q.job_dir(), Some("/r/jobs/q"));
+        assert_eq!(
+            serde_json::to_value(Refusal::Blocked { blockers: vec![p] }).unwrap(),
+            serde_json::json!({ "kind": "blocked", "detail": { "blockers": [
+                { "kind": "process", "pid": 41, "role": "pinned", "cores": "8-11", "job_dir": null }
+            ] } })
+        );
+        assert_eq!(serde_json::to_value(Refusal::Other("x".into())).unwrap(), serde_json::json!({ "kind": "other", "detail": "x" }));
     }
 
     /// NEGATIVE CONTROL (rule #9): `refused-kup` with the passing evidence is a protocol error, and

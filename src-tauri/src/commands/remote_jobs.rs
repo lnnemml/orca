@@ -132,9 +132,46 @@ where
 }
 
 /// The remote arm of `submit_job`: submit draft `id` through `ssh` (whose target is the chosen
-/// profile).
+/// profile), its calls through a runner that remembers the last call's contact, which is written to
+/// the job's remote record whatever the attempt returns (ADR-024 o23.9: the first Create & Run
+/// writes `last_contact` like the retry).
 pub(crate) async fn submit_to_server(app: AppHandle, id: String, ssh: SshBackend) -> Result<SubmitResponse, AppError> {
-    run_guarded(app, id, "submit", move |_, job| ssh.submit_attempt(&job.id).map(SubmitResponse::from)).await
+    run_guarded(app, id, "submit", move |app, job| {
+        attempt_in_app(app, &job.id, |runner| ssh.submit_attempt(&job.id, runner)).map(SubmitResponse::from)
+    })
+    .await
+}
+
+/// One submit the user started — the first Create & Run or a Retry submit — through a
+/// [`ContactRunner`] over `runner`; then, whatever it returned, a slot refusal counted toward the
+/// pending submit's notice (o23.4: the attempt that made it pending is its first refusal — only when
+/// its write really set the flag, `SubmitAttempt::made_pending`) and the
+/// last call's contact written to the record ([`note_retry_after`], o22.8, o23.9). The
+/// `AppHandle`-free core of both commands, tested on its own; memory and the record are taken after
+/// the attempt's database writes, never under them.
+pub(crate) fn attempt_with_contact(
+    remote: &RemoteStates,
+    memory: &PollerMemory,
+    sink: &dyn PollerSink,
+    job_id: &str,
+    runner: &dyn crate::remote::ssh::CommandRunner,
+    attempt: impl FnOnce(&dyn crate::remote::ssh::CommandRunner) -> Result<SubmitAttempt, AppError>,
+) -> Result<SubmitAttempt, AppError> {
+    let tracker = ContactRunner::new(runner);
+    let result = attempt(&tracker);
+    if result.as_ref().is_ok_and(|a| a.made_pending) {
+        memory.count_refusal(job_id);
+    }
+    note_retry_after(remote, memory, sink, job_id, tracker.last(), result)
+}
+
+/// [`attempt_with_contact`] with the app's record map, memory and sink, over the real runner.
+fn attempt_in_app(
+    app: &AppHandle,
+    job_id: &str,
+    attempt: impl FnOnce(&dyn crate::remote::ssh::CommandRunner) -> Result<SubmitAttempt, AppError>,
+) -> Result<SubmitAttempt, AppError> {
+    attempt_with_contact(&app.state::<RemoteStates>(), &app.state::<PollerMemory>(), &AppSink(app.clone()), job_id, &SystemRunner, attempt)
 }
 
 /// Write a `retry_remote_submit` outcome's contact to job `job_id`'s remote record, then hand back
@@ -156,21 +193,16 @@ pub(crate) fn note_retry_after<T>(
     result
 }
 
-/// [`note_retry_after`] with the app's record map, memory and sink.
-fn note_retry_in_app<T>(app: &AppHandle, job_id: &str, contact: Option<Contact>, result: Result<T, AppError>) -> Result<T, AppError> {
-    note_retry_after(&app.state::<RemoteStates>(), &app.state::<PollerMemory>(), &AppSink(app.clone()), job_id, contact, result)
-}
-
 /// Retry a remote job the label call finds "not on the server" (o item 3.4), with the profile's
 /// current core mask, through a runner that remembers the last call's contact; whatever it returns,
 /// that contact is written to the job's remote record (o22.8). A job whose cancel is pending is
-/// refused in the retry's locked read ("undo the cancel first").
+/// refused in the retry's locked read ("undo the cancel first"), and so is a job whose submit is
+/// pending (o23.8: "a submit is pending; the slot is re-checked every period").
 #[tauri::command]
 pub async fn retry_remote_submit(app: AppHandle, id: String) -> Result<SubmitResponse, AppError> {
     run_guarded(app, id, "retry", |app, job| {
-        let runner = ContactRunner::new(&SystemRunner);
-        let retried = remote_backend(app, job).and_then(|ssh| ssh.retry(&job.id, &runner)).map(SubmitResponse::from);
-        note_retry_in_app(app, &job.id, runner.last(), retried)
+        let ssh = remote_backend(app, job);
+        attempt_in_app(app, &job.id, |runner| ssh.and_then(|ssh| ssh.retry(&job.id, runner))).map(SubmitResponse::from)
     })
     .await
 }
@@ -265,13 +297,13 @@ mod tests {
     #[test]
     fn the_submit_response_words_the_pal_change_and_the_failure() {
         let pal = PalAlignment { input_nprocs: Some(48), nprocs: 24, mask_cpus: 24, rewritten: true };
-        let enqueued = SubmitResponse::from(SubmitAttempt { outcome: SubmitOutcome::Enqueued { tsp_id: 3 }, pal });
+        let enqueued = SubmitResponse::from(SubmitAttempt { outcome: SubmitOutcome::Enqueued { tsp_id: 3 }, pal, made_pending: false });
         assert_eq!(enqueued.failure, None);
         assert_eq!(enqueued.notice, pal.notice());
         assert!(enqueued.notice.as_deref().is_some_and(|n| n.contains("aligned to 24")), "{:?}", enqueued.notice);
 
         let kup = SubmitOutcome::KillUserProcesses { evidence: KupEvidence { rc: 0, stdout: "b true".into(), stderr: String::new() } };
-        let refused = SubmitResponse::from(SubmitAttempt { outcome: kup.clone(), pal: PalAlignment { rewritten: false, ..pal } });
+        let refused = SubmitResponse::from(SubmitAttempt { outcome: kup.clone(), pal: PalAlignment { rewritten: false, ..pal }, made_pending: false });
         assert_eq!(refused.failure, kup.failure());
         assert_eq!(refused.notice, None, "an input uploaded as it is has no notice");
 
@@ -279,6 +311,71 @@ mod tests {
         assert_eq!(wire["outcome"]["outcome"], "enqueued");
         assert_eq!(wire["outcome"]["tsp_id"], 3);
         assert_eq!(wire["pal"]["nprocs"], 24);
+    }
+
+    /// o23.9: the first Create & Run goes through the runner seam and a `ContactRunner`, so its last
+    /// call's contact reaches the job's record (a refused one included); and o23.4: the attempt that
+    /// made the job pending is its first counted refusal, while one that did not counts nothing.
+    /// NEGATIVE CONTROLS: "a first Create & Run that writes no `last_contact`" — hand `attempt` the
+    /// bare `runner` instead of `&tracker` in `attempt_with_contact` → red; count every refusal → red
+    /// (the lock-busy case).
+    #[test]
+    fn a_first_create_and_run_writes_its_contact_and_counts_a_slot_refusal() {
+        use crate::poller::remote_state::RemoteStates;
+        use crate::remote::contact::Contact;
+        use crate::ssh_backend::tests::{blocked_record, rec, World};
+        for (case, outcome, counted) in [
+            ("slot busy", blocked_record(), 1),
+            ("lock busy", rec("lock-busy", "77 bash -s"), 0),
+        ] {
+            let w = World::new();
+            let (remote, memory, sink) = (RemoteStates::new(), PollerMemory::new(), crate::poller::RecordingSink::default());
+            let server = crate::ssh_backend::tests::FirstAttempt::new(&outcome);
+            let attempt = attempt_with_contact(&remote, &memory, &sink, "j1", &server, |runner| {
+                crate::ssh_backend::submit_remote(&w.db, runner, &w.sink, &w.data_dir(), "j1", "p1")
+            })
+            .unwrap();
+            assert!(matches!(attempt.outcome, SubmitOutcome::NotClaimed { .. }), "{case}");
+            let record = remote.read("j1").state.unwrap_or_else(|| panic!("{case}: the first attempt makes a record"));
+            assert_eq!(record.last_contact, Some(Contact::Ok), "{case}: the submit call was answered");
+            assert_eq!(memory.get("j1").pending_refusals, counted, "{case}");
+        }
+    }
+
+    /// Rule #9 on the count (verifier F4): a slot refusal whose `record_attempt` matched no row — the
+    /// row moved on while the submit call ran — made nothing pending and counts nothing. NEGATIVE
+    /// CONTROL: count on `makes_pending(&a.outcome)` instead of `a.made_pending` → red.
+    #[test]
+    fn a_slot_refusal_whose_write_matched_no_row_counts_nothing() {
+        use crate::poller::remote_state::RemoteStates;
+        use crate::ssh_backend::tests::{blocked_record, FirstAttempt, World};
+        /// The first attempt's server, which moves the row on while its submit call runs.
+        struct MovesOn<'a>(FirstAttempt, &'a World);
+        impl crate::remote::ssh::CommandRunner for MovesOn<'_> {
+            fn run(
+                &self,
+                program: &str,
+                args: &[String],
+                stdin: &[u8],
+                timeout: std::time::Duration,
+            ) -> Result<crate::remote::ssh::ProcessOutput, crate::remote::ssh::TransportError> {
+                if stdin.starts_with(crate::remote::scripts::SUBMIT.as_bytes()) {
+                    self.1.sql("UPDATE jobs SET status = 'cancelled'");
+                }
+                self.0.run(program, args, stdin, timeout)
+            }
+        }
+        let w = World::new();
+        let (remote, memory, sink) = (RemoteStates::new(), PollerMemory::new(), crate::poller::RecordingSink::default());
+        let server = MovesOn(FirstAttempt::new(&blocked_record()), &w);
+        let attempt = attempt_with_contact(&remote, &memory, &sink, "j1", &server, |runner| {
+            crate::ssh_backend::submit_remote(&w.db, runner, &w.sink, &w.data_dir(), "j1", "p1")
+        })
+        .unwrap();
+        assert!(crate::ssh_backend::makes_pending(&attempt.outcome), "the server answered slot busy");
+        assert!(!attempt.made_pending, "but the write matched no row");
+        assert_eq!(w.job().submit_pending_since, None);
+        assert_eq!(memory.get("j1").pending_refusals, 0, "nothing counted");
     }
 
     /// `submit_job` to this machine still answers what it answered when it returned `()`: `null`.
@@ -420,25 +517,34 @@ mod tests {
     }
 
     /// o19.4/o19.9, the guard scope pinned in the source (the commands are `AppHandle`-bound): the
-    /// retry writes its contact (o22.8, no longer a removal) inside its `run_guarded` work, after the
-    /// backend call and before the closure hands its result back; `note_retry_after` writes before it
-    /// returns `result`. o22.14.7: the withdraw command is gone, and no command here removes a
-    /// record. NEGATIVE CONTROLS: move the record call after `.await` (outside the guarded closure) →
-    /// red; return `result` before the write in the helper → red; a removal (`remote.remove(`) in this
-    /// file's production code → red.
+    /// retry — and, since o23.9, the first Create & Run — writes its contact (o22.8, no longer a
+    /// removal) inside its `run_guarded` work, through `attempt_with_contact`, whose last act is the
+    /// write after the backend call; `note_retry_after` writes before it returns `result`. o22.14.7:
+    /// the withdraw command is gone, and no command here removes a record. NEGATIVE CONTROLS: move
+    /// the record call after `.await` (outside the guarded closure) → red; return `result` before the
+    /// write in the helper → red; a removal (`remote.remove(`) in this file's production code → red.
     #[test]
     fn the_retry_writes_the_record_inside_the_guarded_work_and_nothing_removes_it() {
         let src = include_str!("remote_jobs.rs");
-        let command = concat!("pub async fn ", "retry_remote_submit(");
-        let body = fn_body(src, command);
-        let guarded = body.find(concat!("run_", "guarded(app, id,")).expect("goes through run_guarded");
-        let work = body.find(concat!("ssh.", "retry(&job.id, &runner)")).expect("the backend call");
-        let record = body.find(concat!("note_retry_", "in_app(app, &job.id, runner.last(),")).expect("the retry writes the record");
-        let awaited = body.find(".await").expect("awaits the guarded work");
-        assert!(guarded < work && work < record && record < awaited, "the write is inside the guarded work, after the call");
-        let closure_end = body[record..].find("\n    })").map(|i| record + i).expect("the closure ends");
-        assert!(closure_end < awaited, "the write is inside the closure");
-        assert_eq!(body.matches('?').count(), 0, "no `?` in the work can skip the write");
+        for (command, call) in [
+            (concat!("pub async fn ", "retry_remote_submit("), concat!("ssh.", "retry(&job.id, runner)")),
+            (concat!("pub(crate) async fn ", "submit_to_server("), concat!("ssh.", "submit_attempt(&job.id, runner)")),
+        ] {
+            let body = fn_body(src, command);
+            let guarded = body.find(concat!("run_", "guarded(app, id,")).expect("goes through run_guarded");
+            let record = body.find(concat!("attempt_", "in_app(app, &job.id,")).expect("the attempt writes the record");
+            let work = body.find(call).expect("the backend call, through the core's runner");
+            let awaited = body.find(".await").expect("awaits the guarded work");
+            assert!(guarded < record && record < work && work < awaited, "{command}: the write is inside the guarded work");
+            let closure_end = body[work..].find("\n    })").map(|i| work + i).expect("the closure ends");
+            assert!(closure_end < awaited, "{command}: the write is inside the closure");
+            assert_eq!(body.matches('?').count(), 0, "{command}: no `?` in the work can skip the write");
+        }
+        let core = fn_body(src, concat!("pub(crate) fn ", "attempt_with_contact("));
+        let attempt = core.find("let result = attempt(&tracker);").expect("the attempt runs through the tracker");
+        let write = core.find(concat!("note_retry_", "after(remote, memory, sink, job_id, tracker.last(), result)")).expect("the core writes the record");
+        assert!(attempt < write && core.trim_end().ends_with("tracker.last(), result)"), "the write is the core's last act, after the attempt");
+        assert_eq!(core.matches('?').count(), 0, "no `?` in the core can skip the write");
         let helper = fn_body(src, concat!("pub(crate) fn ", "note_retry_after<"));
         let writes = helper.find(concat!("remote.", "note_retry(job_id, contact, memory, sink);")).expect("the helper writes the record");
         assert!(helper.ends_with("\n    result"), "the helper ends by returning the result");

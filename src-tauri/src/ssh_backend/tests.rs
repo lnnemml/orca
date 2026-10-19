@@ -25,6 +25,8 @@ const PROFILE: &str = "p1";
 pub(crate) struct World {
     pub(crate) db: DbState,
     pub(crate) dir: PathBuf,
+    /// Where an attempt's `job:status` goes (a write of the pending flag, o23.5).
+    pub(crate) sink: crate::poller::RecordingSink,
 }
 
 impl World {
@@ -50,7 +52,7 @@ impl World {
             params![JOB],
         )
         .unwrap();
-        World { db: DbState(Mutex::new(conn)), dir }
+        World { db: DbState(Mutex::new(conn)), dir, sink: crate::poller::RecordingSink::default() }
     }
 
     pub(crate) fn data_dir(&self) -> PathBuf {
@@ -74,11 +76,11 @@ impl World {
     }
 
     fn attempt(&self, runner: &dyn CommandRunner) -> Result<SubmitAttempt, AppError> {
-        submit_remote(&self.db, runner, &self.data_dir(), JOB, PROFILE)
+        submit_remote(&self.db, runner, &self.sink, &self.data_dir(), JOB, PROFILE)
     }
 
     fn resubmit(&self, runner: &dyn CommandRunner) -> Result<SubmitOutcome, AppError> {
-        resubmit_remote(&self.db, runner, &self.data_dir(), JOB).map(|a| a.outcome)
+        resubmit_remote(&self.db, runner, &self.sink, &self.data_dir(), JOB).map(|a| a.outcome)
     }
 }
 
@@ -239,8 +241,19 @@ pub(crate) fn install_ok(values: &[String]) -> Reply {
     ok(format!("{}wrapper installed\ncancel installed\ncollect kept\nend\n", echo(INSTALL_HEADER, values)).into_bytes())
 }
 
-fn submit_reply(values: &[String], outcome: &str) -> Reply {
+pub(crate) fn submit_reply(values: &[String], outcome: &str) -> Reply {
     ok(format!("{}{outcome}end\n", echo(OUTPUT_HEADER, values)).into_bytes())
+}
+
+/// A `blocked` outcome record: one pinned process on the mask whose cwd is `/elsewhere`.
+pub(crate) fn blocked_record() -> String {
+    blocked_by(&[(4242, "/elsewhere")])
+}
+
+/// A `blocked` outcome record naming pinned processes `(pid, cwd)`.
+pub(crate) fn blocked_by(blockers: &[(u32, &str)]) -> String {
+    let records: String = blockers.iter().map(|(pid, cwd)| format!("process {pid}\nkind pinned\n{}{}", rec("cores", "0-23"), rec("job", cwd))).collect();
+    format!("blocked {}\n{records}", blockers.len())
 }
 
 fn kup_record(rc: u8, stdout: &str) -> String {
@@ -350,7 +363,7 @@ fn an_install_that_leaves_the_wrapper_wrong_uploads_nothing() {
         _ => happy(kind, values),
     });
     let outcome = w.submit(&fake).unwrap();
-    assert!(matches!(&outcome, SubmitOutcome::NotClaimed { step: SubmitStep::Install, reason } if reason.contains("not hashing right [\"wrapper\"]")), "{outcome:?}");
+    assert!(matches!(&outcome, SubmitOutcome::NotClaimed { step: SubmitStep::Install, refusal: Refusal::Other(reason) } if reason.contains("not hashing right [\"wrapper\"]")), "{outcome:?}");
     assert_eq!(fake.kinds(), [Prepare, Install, Prepare], "no upload, no submit call");
     assert!(queued_with_coords(&row(&w.job())));
 }
@@ -380,21 +393,23 @@ fn every_failure_point_leaves_a_queued_row_with_coordinates() {
     type Respond = fn(Kind, &[String]) -> Reply;
     let cases: &[(&str, Respond, &[Kind], fn(&SubmitOutcome) -> bool)] = &[
         ("prepare: ssh exit 255", |k, v| if k == Prepare { exited(255, vec![]) } else { happy(k, v) }, &[Prepare],
-            |o| matches!(o, SubmitOutcome::NotClaimed { step: SubmitStep::Prepare, reason } if reason.contains("exit 255"))),
+            |o| matches!(o, SubmitOutcome::NotClaimed { step: SubmitStep::Prepare, refusal: Refusal::Other(reason) } if reason.contains("exit 255"))),
         ("prepare: an error record", |k, v| if k == Prepare { exited(3, format!("{PREPARE_HEADER}\n{}", rec("error", "stat: Permission denied")).into_bytes()) } else { happy(k, v) }, &[Prepare],
-            |o| matches!(o, SubmitOutcome::NotClaimed { step: SubmitStep::Prepare, reason } if reason.contains("Permission denied"))),
+            |o| matches!(o, SubmitOutcome::NotClaimed { step: SubmitStep::Prepare, refusal: Refusal::Other(reason) } if reason.contains("Permission denied"))),
         ("prepare: a complete reply with exit 1", |k, v| if k == Prepare { prepare_ready(v).map(|o| ProcessOutput { code: Some(1), ..o }) } else { happy(k, v) }, &[Prepare],
-            |o| matches!(o, SubmitOutcome::NotClaimed { step: SubmitStep::Prepare, reason } if reason.contains("not trusted"))),
+            |o| matches!(o, SubmitOutcome::NotClaimed { step: SubmitStep::Prepare, refusal: Refusal::Other(reason) } if reason.contains("not trusted"))),
         ("prepare: symlinked bin", |k, v| if k == Prepare { prepare_symlinked_bin(v) } else { happy(k, v) }, &[Prepare],
-            |o| matches!(o, SubmitOutcome::NotClaimed { step: SubmitStep::Prepare, reason } if reason.contains("bin"))),
+            |o| matches!(o, SubmitOutcome::NotClaimed { step: SubmitStep::Prepare, refusal: Refusal::Other(reason) } if reason.contains("bin"))),
         ("install: an error record", |k, v| match k { Prepare => prepare_fresh(v), Install => exited(3, format!("{}{}", echo(INSTALL_HEADER, v), rec("error", "mkdir failed")).into_bytes()), _ => happy(k, v) }, &[Prepare, Install],
-            |o| matches!(o, SubmitOutcome::NotClaimed { step: SubmitStep::Install, reason } if reason.contains("mkdir failed"))),
+            |o| matches!(o, SubmitOutcome::NotClaimed { step: SubmitStep::Install, refusal: Refusal::Other(reason) } if reason.contains("mkdir failed"))),
         ("upload: rsync exit 23", |k, v| if k == Upload { exited(23, vec![]) } else { happy(k, v) }, &[Prepare, Upload],
-            |o| matches!(o, SubmitOutcome::NotClaimed { step: SubmitStep::Upload, reason } if reason.contains("23"))),
+            |o| matches!(o, SubmitOutcome::NotClaimed { step: SubmitStep::Upload, refusal: Refusal::Other(reason) } if reason.contains("23"))),
         ("upload: timeout", |k, v| if k == Upload { Err(TransportError::Timeout { program: "rsync".into(), secs: 60 }) } else { happy(k, v) }, &[Prepare, Upload],
             |o| matches!(o, SubmitOutcome::NotClaimed { step: SubmitStep::Upload, .. })),
-        ("submit: refused", |k, v| if k == Submit { submit_reply(v, &rec("refused", "slot busy: mask 0-23 is held by pid 7")) } else { happy(k, v) }, &[Prepare, Upload, Submit],
-            |o| matches!(o, SubmitOutcome::NotClaimed { step: SubmitStep::Submit, reason } if reason.starts_with("slot busy"))),
+        ("submit: refused", |k, v| if k == Submit { submit_reply(v, &rec("refused", "marker: /r/jobs/j1/.started exists")) } else { happy(k, v) }, &[Prepare, Upload, Submit],
+            |o| matches!(o, SubmitOutcome::NotClaimed { step: SubmitStep::Submit, refusal: Refusal::Other(reason) } if reason.starts_with("marker: "))),
+        ("submit: slot busy", |k, v| if k == Submit { submit_reply(v, &blocked_record()) } else { happy(k, v) }, &[Prepare, Upload, Submit],
+            |o| matches!(o, SubmitOutcome::NotClaimed { step: SubmitStep::Submit, refusal: Refusal::Blocked { blockers } } if blockers.len() == 1)),
         ("submit: failed after the claim", |k, v| if k == Submit { submit_reply(v, &rec("failed-after-claim", "enqueue: tsp exited 1")) } else { happy(k, v) }, &[Prepare, Upload, Submit],
             |o| matches!(o, SubmitOutcome::FailedAfterClaim { .. })),
         ("submit: timeout", |k, v| if k == Submit { Err(TransportError::Timeout { program: "ssh".into(), secs: 60 }) } else { happy(k, v) }, &[Prepare, Upload, Submit],
@@ -429,7 +444,7 @@ fn only_refused_kup_clears_the_profile_stamp() {
     let w = World::new();
     let fake = Fake::new(&w, |k, v| if k == Submit { submit_reply(v, &rec("refused", "KillUserProcesses: b true")) } else { happy(k, v) });
     let outcome = w.submit(&fake).unwrap();
-    assert!(matches!(&outcome, SubmitOutcome::NotClaimed { step: SubmitStep::Submit, reason } if reason == "KillUserProcesses: b true"), "{outcome:?}");
+    assert!(matches!(&outcome, SubmitOutcome::NotClaimed { step: SubmitStep::Submit, refusal: Refusal::Other(reason) } if reason == "KillUserProcesses: b true"), "{outcome:?}");
     assert!(w.stamped(), "a plain refusal never clears the stamp, whatever its text");
 
     let w = World::new();
@@ -474,7 +489,7 @@ fn refusals_before_any_ssh_write_nothing() {
     }
     let w = World::new();
     let fake = Fake::new(&w, happy);
-    assert!(matches!(submit_remote(&w.db, &fake, &w.data_dir(), JOB, "nope").map(|a| a.outcome), Err(AppError::NotFound(_))));
+    assert!(matches!(submit_remote(&w.db, &fake, &w.sink, &w.data_dir(), JOB, "nope").map(|a| a.outcome), Err(AppError::NotFound(_))));
     assert_eq!(w.job().status, JobStatus::Draft);
 }
 
@@ -493,7 +508,7 @@ fn a_submitted_job_is_never_submitted_again() {
 // ---- retry -----------------------------------------------------------------------------------
 
 fn submitted_but_refused(w: &World) {
-    let fake = Fake::new(w, |k, v| if k == Submit { submit_reply(v, &rec("refused", "slot busy: …")) } else { happy(k, v) });
+    let fake = Fake::new(w, |k, v| if k == Submit { submit_reply(v, &rec("refused", "marker: …")) } else { happy(k, v) });
     assert!(matches!(w.submit(&fake).unwrap(), SubmitOutcome::NotClaimed { .. }));
 }
 
@@ -651,11 +666,11 @@ fn an_unreadable_pal_refuses_the_submit_before_anything_is_written() {
 fn a_retry_aligns_to_the_current_mask() {
     let w = World::new();
     w.sql("UPDATE jobs SET input_content = '! HF\n%pal nprocs 48 end\n'");
-    let fake = Fake::new(&w, |k, v| if k == Submit { submit_reply(v, &rec("refused", "slot busy: …")) } else { happy(k, v) });
+    let fake = Fake::new(&w, |k, v| if k == Submit { submit_reply(v, &rec("refused", "marker: …")) } else { happy(k, v) });
     assert_eq!(w.attempt(&fake).unwrap().pal.nprocs, 24, "the 0-23 mask");
     w.sql("UPDATE server_profiles SET core_mask = '0-5'");
     let fake = Fake::new(&w, happy);
-    let retry = resubmit_remote(&w.db, &fake, &w.data_dir(), JOB).unwrap();
+    let retry = resubmit_remote(&w.db, &fake, &w.sink, &w.data_dir(), JOB).unwrap();
     assert_eq!((retry.outcome, retry.pal.nprocs), (SubmitOutcome::Enqueued { tsp_id: 3 }, 6));
     let local = w.data_dir().join("jobs").join(JOB).join("input.inp");
     assert_eq!(std::fs::read_to_string(local).unwrap(), "! HF\n%pal nprocs 6 end\n");
@@ -701,7 +716,7 @@ fn a_retry_whose_coordinates_change_during_the_label_call_writes_nothing() {
         }
         happy(k, v)
     });
-    let err = resubmit_remote(&w.db, &fake, &w.data_dir(), JOB).map(|a| a.outcome);
+    let err = resubmit_remote(&w.db, &fake, &w.sink, &w.data_dir(), JOB).map(|a| a.outcome);
     assert!(
         matches!(&err, Err(AppError::Conflict(m)) if m.contains("changed during the retry")),
         "refused as a conflict: {err:?}"
@@ -711,7 +726,7 @@ fn a_retry_whose_coordinates_change_during_the_label_call_writes_nothing() {
     let after = w.job();
     assert_eq!((after.status, after.remote_host.as_deref()), (JobStatus::Queued, Some("uni2")));
     assert!(
-        after.error_message.as_deref().is_some_and(|m| m.contains("slot busy")),
+        after.error_message.as_deref().is_some_and(|m| m.contains("marker: …")),
         "the row keeps the last attempt's reason: {:?}",
         after.error_message
     );
@@ -732,5 +747,145 @@ fn a_remote_cancel_is_refused_and_a_live_one_with_the_remote_reason() {
     for status in [JobStatus::Draft, JobStatus::Completed, JobStatus::Parsed, JobStatus::Failed, JobStatus::Cancelled] {
         let err = cancel_remote(&job_with(status, remote)).unwrap_err().to_string();
         assert!(err.contains("nothing to cancel"), "{status:?}: {err}");
+    }
+}
+
+// ---- the pending submit (ADR-024 o23) ------------------------------------------------------------
+
+/// o23.1, o23.5: a submit the user started becomes pending only when the slot check refuses it —
+/// slot busy or slot check error — set in `record_attempt`'s one statement, with `job:status`
+/// emitted; every other outcome leaves the flag NULL ("not on the server", the manual Retry).
+/// NEGATIVE CONTROLS: "a slot-busy answer that does not make the row pending" (`after_user_attempt`
+/// → `Keep` for it) → red; "a flag write that emits no job:status" (drop the flag from the emit's
+/// comparison and give the row the same message beforehand) → red.
+#[test]
+fn only_a_slot_refusal_makes_a_first_submit_pending() {
+    let kup = kup_record(0, "b true\n");
+    let cases: Vec<(&str, String, bool)> = vec![
+        ("slot busy", blocked_record(), true),
+        ("slot check error", rec("slot-check-error", "the scan timed out after 8 s"), true),
+        ("lock busy", rec("lock-busy", "77 bash -s"), false),
+        ("a marker", rec("refused", "marker: x"), false),
+        ("upload mismatch", "upload-mismatch\nmissing 1\nname 9\ninput.inp\nextra 0\ndiffering 0\n".to_string(), false),
+        ("KillUserProcesses", kup, false),
+        ("failed after the claim", rec("failed-after-claim", "enqueue: tsp exited 1"), false),
+        ("enqueued", "enqueued 3\n".to_string(), false),
+    ];
+    for (case, outcome, pending) in cases {
+        let w = World::new();
+        let fake = Fake::new(&w, move |k, v| if k == Submit { submit_reply(v, &outcome) } else { happy(k, v) });
+        w.submit(&fake).unwrap();
+        assert_eq!(w.job().submit_pending_since.is_some(), pending, "{case}");
+        let emitted = w.sink.events().iter().any(|e| matches!(e, crate::poller::Event::Status(id, JobStatus::Queued) if id == JOB));
+        assert_eq!(emitted, pending || case != "enqueued", "{case}: a changed row emits job:status");
+    }
+    // A submit call that got no reply is not pending either: the label decides.
+    let w = World::new();
+    let fake = Fake::new(&w, |k, v| if k == Submit { exited(255, vec![]) } else { happy(k, v) });
+    assert!(matches!(w.submit(&fake).unwrap(), SubmitOutcome::Unknown { .. }));
+    assert_eq!(w.job().submit_pending_since, None);
+}
+
+/// o23.5: the flag's own write emits even when the message did not change. The row already carries
+/// the attempt's message, so only the flag changes. NEGATIVE CONTROL: compare only `error_message`
+/// in `record_attempt`'s emit → red.
+#[test]
+fn setting_the_flag_alone_emits_job_status() {
+    let w = World::new();
+    let fake = Fake::new(&w, |k, v| if k == Submit { submit_reply(v, &blocked_record()) } else { happy(k, v) });
+    let first = w.submit(&fake).unwrap();
+    w.sql("UPDATE jobs SET submit_pending_since = NULL");
+    w.sink.take();
+    let plan = {
+        let conn = w.db.lock().unwrap();
+        pending_plan(&conn, &w.data_dir(), JOB, &expected_coords()).unwrap()
+    };
+    assert!(record_attempt(&w.db, &w.sink, &plan, &first, PendingWrite::Set).unwrap());
+    assert!(w.job().submit_pending_since.is_some());
+    assert_eq!(w.sink.take(), [crate::poller::Event::Status(JOB.into(), JobStatus::Queued)], "the flag alone changed, and it emits");
+}
+
+/// o23.5, round 1 LOW-4: `Set` is `COALESCE(submit_pending_since, now)` — a later refusal keeps the
+/// first time. NEGATIVE CONTROL: "a later refusal overwriting `submit_pending_since`" (`Set` writes
+/// `datetime('now')`) → red.
+#[test]
+fn a_later_refusal_keeps_the_first_pending_time() {
+    let w = World::new();
+    let fake = Fake::new(&w, |k, v| if k == Submit { submit_reply(v, &blocked_record()) } else { happy(k, v) });
+    let outcome = w.submit(&fake).unwrap();
+    w.sql("UPDATE jobs SET submit_pending_since = '2026-10-01 00:00:00'");
+    let plan = {
+        let conn = w.db.lock().unwrap();
+        pending_plan(&conn, &w.data_dir(), JOB, &expected_coords()).unwrap()
+    };
+    assert!(record_attempt(&w.db, &w.sink, &plan, &outcome, PendingWrite::Set).unwrap());
+    assert_eq!(w.job().submit_pending_since.as_deref(), Some("2026-10-01 00:00:00"));
+    assert!(record_attempt(&w.db, &w.sink, &plan, &outcome, PendingWrite::Clear).unwrap());
+    assert_eq!(w.job().submit_pending_since, None);
+}
+
+/// Rule #9 on the attempt's write: a row that is no longer this remote `queued` job takes nothing,
+/// and the write says so (`false`), emitting nothing.
+#[test]
+fn an_attempt_write_on_a_row_that_moved_on_takes_nothing() {
+    let w = World::new();
+    let fake = Fake::new(&w, |k, v| if k == Submit { submit_reply(v, &blocked_record()) } else { happy(k, v) });
+    let outcome = w.submit(&fake).unwrap();
+    let plan = {
+        let conn = w.db.lock().unwrap();
+        pending_plan(&conn, &w.data_dir(), JOB, &expected_coords()).unwrap()
+    };
+    w.sql("UPDATE jobs SET status = 'cancelled', submit_pending_since = NULL");
+    w.sink.take();
+    assert!(!record_attempt(&w.db, &w.sink, &plan, &outcome, PendingWrite::Set).unwrap());
+    assert_eq!(w.job().submit_pending_since, None);
+    assert!(w.sink.take().is_empty());
+}
+
+/// o23.8: Retry submit is refused on a pending row ("a submit is pending; the slot is re-checked
+/// every period"), before any call. NEGATIVE CONTROL: "`retry_remote_submit` accepted on a pending
+/// row" (drop the refusal from `retry_checks`) → red.
+#[test]
+fn retry_is_refused_on_a_pending_row() {
+    let w = World::new();
+    let fake = Fake::new(&w, |k, v| if k == Submit { submit_reply(v, &blocked_record()) } else { happy(k, v) });
+    w.submit(&fake).unwrap();
+    assert!(w.job().submit_pending_since.is_some());
+    let fake = Fake::new(&w, happy);
+    let err = w.resubmit(&fake).unwrap_err().to_string();
+    assert!(err.contains("a submit is pending; the slot is re-checked every period"), "{err}");
+    assert_eq!(fake.kinds(), [], "no call");
+}
+
+/// o23.13.5: an attempt whose derived bytes are unchanged does not rewrite the local dir — on a
+/// retry too, since the writer is shared.
+#[test]
+fn an_unchanged_local_input_is_not_rewritten_by_a_retry() {
+    let w = World::new();
+    submitted_but_refused(&w);
+    let input = w.data_dir().join("jobs").join(JOB).join("input.inp");
+    let old = std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+    std::fs::File::options().write(true).open(&input).unwrap().set_modified(old).unwrap();
+    let fake = Fake::new(&w, happy);
+    assert_eq!(w.resubmit(&fake).unwrap(), SubmitOutcome::Enqueued { tsp_id: 3 });
+    assert_eq!(std::fs::metadata(&input).unwrap().modified().unwrap(), old);
+}
+
+/// A server for a first attempt from outside this module: ready, the upload taken, `submit.sh`
+/// answering `outcome` — through the same fake as every test here.
+pub(crate) struct FirstAttempt {
+    outcome: String,
+}
+
+impl FirstAttempt {
+    pub(crate) fn new(outcome: &str) -> Self {
+        FirstAttempt { outcome: outcome.to_string() }
+    }
+}
+
+impl CommandRunner for FirstAttempt {
+    fn run(&self, program: &str, _args: &[String], stdin: &[u8], _timeout: Duration) -> Reply {
+        let (kind, values) = kind_of(program, stdin);
+        if kind == Submit { submit_reply(&values, &self.outcome) } else { happy(kind, &values) }
     }
 }

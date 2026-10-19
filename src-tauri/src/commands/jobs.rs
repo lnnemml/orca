@@ -551,9 +551,10 @@ pub(crate) fn set_job_energy_conn(conn: &Connection, id: &str, energy: f64) -> R
 /// Terminal transition (`completed`/`failed`/`cancelled`): set status, stamp `completed_at`,
 /// and store an optional `error_message`. Used by the LocalBackend when a run finishes and by the
 /// remote poller's finalise. It also clears a pending cancel (`cancel_requested_at`,
-/// `cancel_sent_at`) **in the same statement** (ADR-024 o22.2): the v21 CHECK allows them only on
-/// a remote live row, so a terminal write that kept them would fail. Always cleared — a local row
-/// never holds them, so this is a no-op there.
+/// `cancel_sent_at`) and a pending submit (`submit_pending_since`) **in the same statement**
+/// (ADR-024 o22.2, o23.5): the v21/v22 CHECKs allow them only on a remote live (or queued) row, so
+/// a terminal write that kept them would fail. Always cleared — a local row never holds them, so
+/// this is a no-op there.
 pub(crate) fn finalize_job_conn(
     conn: &Connection,
     id: &str,
@@ -562,7 +563,7 @@ pub(crate) fn finalize_job_conn(
 ) -> Result<(), AppError> {
     conn.execute(
         "UPDATE jobs SET status = ?1, completed_at = datetime('now'), error_message = ?2, \
-         cancel_requested_at = NULL, cancel_sent_at = NULL \
+         cancel_requested_at = NULL, cancel_sent_at = NULL, submit_pending_since = NULL \
          WHERE id = ?3",
         params![status.as_str(), error_message, id],
     )?;

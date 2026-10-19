@@ -239,6 +239,11 @@ export interface Job {
    *  `datetime('now')` — **UTC, laptop clock**: shown through `formatLaptopUtc`, never raw. */
   cancel_requested_at: string | null;
   cancel_sent_at: string | null;
+  /** A remote job's pending submit (schema v22, ADR-024 o23.5): when a submit the user started was
+   *  first refused for the slot (null: none pending). The poller re-checks such a row every status
+   *  period and submits it once the slot frees. SQLite `datetime('now')` — **UTC, laptop clock**:
+   *  shown through `formatLaptopUtc`, never raw. */
+  submit_pending_since: string | null;
 }
 
 /** Mirrors `src-tauri/src/models/group.rs::Group` (schema v16, Phase 4.7.2, ADR-019).
@@ -477,7 +482,50 @@ export interface RemoteState {
   last_contact: Contact | null;
   cancel_sends: CancelSends;
   sweeps: Sweeps;
+  /** A pending submit as the last re-check saw it (ADR-024 o23.10); null: no re-check has shown one
+   *  this launch (the row's `submit_pending_since` is the truth). */
+  pending_submit: PendingSubmit | null;
 }
+
+/** Mirrors `remote::submit::Blocker` (serde `tag = "kind"`): one blocker of the slot check (ADR-024
+ *  o23.7). `job_dir` null on a process: its cwd was not readable. */
+export type Blocker =
+  | { kind: "process"; pid: number; role: "wrapper" | "pinned"; cores: string; job_dir: string | null }
+  | { kind: "queued_row"; id: number; socket: string; job_dir: string; mask: string };
+
+/** Mirrors `poller::pending::ShownBlocker`: a blocker with the title of the local job whose recorded
+ *  job dir it names (null: no local job — shown by pid and cores, or tsp row and socket). */
+export interface ShownBlocker {
+  blocker: Blocker;
+  title: string | null;
+}
+
+/** Mirrors `poller::pending::Wait` (serde `tag = "kind", content = "detail"`): why a pending submit
+ *  still waits, counted toward its notice (ADR-024 o23.4, o23.13.1). */
+export type Wait =
+  | { kind: "slot_busy"; detail: { blockers: ShownBlocker[] } }
+  | { kind: "slot_check_failed"; detail: string }
+  | { kind: "lock_busy"; detail: { openers: string } }
+  | { kind: "unreadable"; detail: string };
+
+/** Mirrors `poller::pending::PendingSubmit`: the record's view of a pending submit (ADR-024 o23.10).
+ *  `refusals` this launch; `notice` (and `notified`) from the 3rd refusal, in the words of `last`. */
+export interface PendingSubmit {
+  since: string;
+  refusals: number;
+  last: Wait | null;
+  notified: boolean;
+  notice: string | null;
+}
+
+/** Mirrors `poller::pending::Recheck` (serde `tag = "kind", content = "detail"`): what one re-check of
+ *  a pending submit did (ADR-024 o23.6). */
+export type Recheck =
+  | { kind: "enqueued"; detail: { tsp_id: number } }
+  | { kind: "waiting"; detail: Wait }
+  | { kind: "lost"; detail: string }
+  | { kind: "deferred"; detail: string }
+  | { kind: "ended"; detail: string };
 
 /** Payload of the `job:remote-state` event (o19.6): change `seq` of one launch-wide sequence; a
  *  null `state` means the record was removed. */
@@ -503,10 +551,19 @@ export interface KupEvidence {
   stderr: string;
 }
 
+/** Mirrors `remote::submit::Refusal` (serde `tag = "kind", content = "detail"`): why a submit claimed
+ *  nothing (ADR-024 o23.7) — the kinds a caller acts on, and every other refusal as text. */
+export type Refusal =
+  | { kind: "blocked"; detail: { blockers: Blocker[] } }
+  | { kind: "slot_check_failed"; detail: string }
+  | { kind: "lock_busy"; detail: { openers: string } }
+  | { kind: "upload_mismatch"; detail: { missing: string[]; extra: string[]; differing: string[] } }
+  | { kind: "other"; detail: string };
+
 /** Mirrors `ssh_backend::SubmitOutcome` (serde `tag = "outcome"`). */
 export type SubmitOutcome =
   | { outcome: "enqueued"; tsp_id: number }
-  | { outcome: "not_claimed"; step: SubmitStep; reason: string }
+  | { outcome: "not_claimed"; step: SubmitStep; refusal: Refusal }
   | { outcome: "kill_user_processes"; evidence: KupEvidence }
   | { outcome: "failed_after_claim"; reason: string }
   | { outcome: "unknown"; reason: string };
@@ -536,7 +593,8 @@ export type Seen = { kind: "outcome"; detail: Outcome } | { kind: "label"; detai
  *  `retry_remote_fetch` returns; the `cancel_*` / `ended_before_cancel` steps are a cancel's
  *  delivery (ADR-024 o22.4); `swept` is a `cancelling` job's sweep (o22.13.3): `outcome` its
  *  classify's `cancelling` (null when nothing could be classified), `error` its failure, with
- *  whether the last failing call was answered (o22.14.3). */
+ *  whether the last failing call was answered (o22.14.3); `submit_rechecked` is a pending submit's
+ *  re-check (o23.6), `since` the flag it read. */
 export type StatusStep =
   | { step: "busy" }
   | { step: "not_live" }
@@ -552,7 +610,8 @@ export type StatusStep =
   | { step: "cancel_stopped"; detail: { seen: Seen | null; unready: string | null } }
   | { step: "ended_before_cancel"; detail: Outcome }
   | { step: "cancel_delivered"; detail: Outcome }
-  | { step: "swept"; detail: { outcome: Outcome | null; error: CheckError | null } };
+  | { step: "swept"; detail: { outcome: Outcome | null; error: CheckError | null } }
+  | { step: "submit_rechecked"; detail: { since: string; recheck: Recheck } };
 
 /** Mirrors `commands::jobs::CancelResult` (serde `tag = "result"`) — what `cancel_job` returns
  *  (ADR-024 o22.3, o22.14.7): `delivered` ran a delivery now (`step` is what it did); `pending`

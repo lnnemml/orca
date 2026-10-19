@@ -37,6 +37,8 @@ pub(super) struct Remote {
     pub(super) live: std::sync::Arc<LiveLog>,
     pub(super) remote: std::sync::Arc<RemoteStates>,
     pub(super) sink: RecordingSink,
+    /// The local job dirs' root (`World::data_dir`), which a pending re-check writes into.
+    pub(super) data_dir: PathBuf,
 }
 
 impl Remote {
@@ -60,7 +62,8 @@ impl Remote {
         let (live, sink) = RecordingSink::with_live();
         let remote = std::sync::Arc::new(RemoteStates::new());
         let sink = sink.under_remote(remote.clone());
-        Remote { w, in_flight: InFlight::default(), memory: PollerMemory::new(), live, remote, sink }
+        let data_dir = w.data_dir();
+        Remote { w, in_flight: InFlight::default(), memory: PollerMemory::new(), live, remote, sink, data_dir }
     }
 
     pub(super) fn local(&self) -> PathBuf {
@@ -91,6 +94,7 @@ impl Remote {
             remote: &self.remote,
             sink: &self.sink,
             policy: POLICY,
+            data_dir: self.data_dir.as_path(),
         }
     }
 

@@ -437,6 +437,7 @@ function deliveredNotice(step: StatusStep, row: Pick<Job, "cancel_sent_at"> | nu
     case "fetch_failed":
     case "fetch_stopped":
     case "swept":
+    case "submit_rechecked":
       return null;
     default: {
       const unhandled: never = step;

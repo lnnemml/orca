@@ -36,6 +36,7 @@ function j(id: string, group_id: string | null): Job {
     remote_socket: null,
     cancel_requested_at: null,
     cancel_sent_at: null,
+    submit_pending_since: null,
   };
 }
 

@@ -29,7 +29,7 @@ scoped `#[allow(dead_code)]` until units 5.3/5.4 call all of it (the poller, rec
 | `ssh.rs` | `ssh_bash_argv` (`ssh -o BatchMode=yes -o ConnectTimeout=10 -- <host> bash -s`, host re-validated), `ssh_options` (the two `-o` options, shared with rsync's `-e`) and `CommandRunner`/`SystemRunner` (stdin and both streams on threads, 1 MiB cap, process group killed on timeout). Used by the 5.1 connection test (`modules/server-profiles.md`); meant for 5.3's submit too |
 | `sync.rs` | rsync argv (`upload_argv`, `download_argv`), the download filter `download_filter_args`, its leaf patterns `download_patterns` and its Rust mirror `download_selects`, `list_dir`/`upload_expected`/`expected_values` (local file lists with sha256), `ListArgs` + `parse_list_reply` (the server's listing), `compare_download` (the download post-condition) |
 | `poll.rs` | `PollLogArgs`, `parse_poll_reply` → `LogChunk` with the length post-condition; `check_echo` (the n-6d echo check every 5.3 reply shares) |
-| `submit.rs` | `remote_job_dir`, `SubmitArgs`, `parse_submit_reply` → `SubmitReply`; `LabelArgs`, `parse_label_reply` → `LabelFacts`, `label` → `Label` (the label rules) |
+| `submit.rs` | `remote_job_dir`, `SubmitArgs`, `parse_submit_reply` → `SubmitReply` with the typed `Refusal` (`Blocked { blockers: Vec<Blocker> }`, `SlotCheckFailed`, `LockBusy`, `UploadMismatch`, `Other`, ADR-024 o23.7); `LabelArgs`, `parse_label_reply` → `LabelFacts`, `label` → `Label` (the label rules) |
 | `prepare.rs` | the calls that ready the server before an upload, a cancel's delivery or a sweep: `UPLOADED` (wrapper, cancel, collect), `PrepareArgs`, `parse_prepare_reply` → `PrepareFacts`, `check_prepare` → `Prepared` or `ShapeRefusal`; `InstallArgs`, `parse_install_reply` → `[Installed; 3]` |
 | `run.rs` | the trampoline's `RunArgs` (`JobScript::{Cancel, Collect}`) and `parse_run_reply` → `RunReply`; a not-on-server cancel's `MkjobArgs` and `parse_mkjob_reply` (o 14.1, o22.4.3) |
 | `race_model.rs` | test-only model of the d′ race (`.started`/`.cancelled`) |
@@ -41,7 +41,7 @@ Rule #6 is shared with the local backend: `local_backend::has_normal_termination
 `ORCA TERMINATED NORMALLY` test, also used by `detect_completion`) over the last
 `local_backend::TAIL_BYTES` (5 KiB) of the snapshot's output tail.
 
-## A remote job in the database (schemas v20, v21)
+## A remote job in the database (schemas v20–v22)
 
 `jobs` carries the job's **coordinates**: `remote_host`, `remote_job_dir` (absolute,
 `<root>/jobs/<job_id>`) and `remote_socket`, nullable TEXT, written once at submit before any ssh and
@@ -97,6 +97,23 @@ and `undo_cancel` the Undo core. The `Job` struct carries both columns (`Job::CO
 `Job` too, o22.14.5), so the list and the detail show a pending cancel; the cores read them under the
 lock of the read that acts (`commands::jobs::pending_cancel_conn`). **Every write of either column
 emits `job:status`** for the job once its lock is released (o22.14.5).
+
+**The pending submit (schema v22, ADR-024 o23.5).** `jobs.submit_pending_since`, nullable TEXT in
+UTC, laptop clock: when a submit the user started (Create & Run, Retry submit) was first refused **for
+the slot** — `submit.sh` answered `blocked` (slot busy) or `slot-check-error`. One CHECK in the v21
+ADD-COLUMN form: only on a remote `queued` job. It is set by the attempt's own write
+(`ssh_backend::record_attempt`, `COALESCE(submit_pending_since, now)`: a later refusal keeps the first
+time) and NULLed by every write that ends the wait: the enqueue, a refusal that ends it (the
+re-check's `record_attempt`, or its own guarded write for a local refusal of the plan),
+`record_delivered` (both branches) and `record_ended_first` (the two `queued`-keeping writes, pinned by
+tests — the CHECK cannot catch them), and every terminal or `cancelling` write (`finalize_job_conn`,
+`mark_cancelled_conn`, `record_cancelling`, `record_delivered`'s `cancelling` branch — the CHECK fails
+one that keeps it). An Undo leaves it: the pending submit resumes. `Job` carries it
+(`Job::COLUMNS` 21, the TS `Job` too); every write of it emits `job:status` after its lock. While it
+is set the poller **re-checks** the row on every status step instead of labelling it, and submits it
+once the slot frees ([execution-backends.md](execution-backends.md#the-pending-submit-pollerpendingrs-adr-024-o23)).
+`retry_remote_submit` refuses a pending row ("a submit is pending; the slot is re-checked every
+period", o23.8).
 
 ## Transfers (`sync.rs`, ADR-024 o items 3.2, 3.3.4, 6)
 
@@ -176,15 +193,28 @@ carry the full 64-hex sha (`scripts::upload_path`, o item 13.2). The reply:
 orcastudio-submit 1
 argc <n>
 arg <len>                  × n, each value verbatim
-refused <len>              exactly one outcome: reason bytes (nothing claimed)
-refused-kup <len>          KillUserProcesses is not `b false` (nothing claimed): the evidence
+refused <len>              exactly one outcome — nothing claimed: any other refusal, reason bytes
+refused-kup <len>          nothing claimed: KillUserProcesses is not `b false`; the evidence
+blocked <n>                nothing claimed: the slot check's n ≥ 1 blocker records (below)
+slot-check-error <len>     nothing claimed: the slot could not be checked, why
+lock-busy <len>            nothing claimed: the account lock's openers
+upload-mismatch            nothing claimed: missing <n>, extra <n>, differing <n>, each + n `name <len>`
 enqueued <id>              decimal tsp id (.enqueued published)
 failed-after-claim <len>   reason bytes (.submitting stays)
 end
 ```
 
-`parse_submit_reply` → `SubmitReply::{Refused, RefusedKup, Enqueued, FailedAfterClaim}`; a broken
-reply or an `error` record is an error, never an outcome.
+`parse_submit_reply` → `SubmitReply::{Refused(Refusal), RefusedKup, Enqueued, FailedAfterClaim}`.
+**The refusals a caller acts on are their own reply kinds** (ADR-024 o23.7), parsed into the typed
+`Refusal`: `Blocked { blockers }`, `SlotCheckFailed(why)`, `LockBusy { openers }`, `UploadMismatch {
+missing, extra, differing }`, and `Other(why)` for every other refusal — for people; no caller decides
+on reason text. Each blocker record is `process <pid>` + `kind wrapper|pinned` + `cores <len>` + `job
+<len>` (or `job -`: the cwd was not readable), or `row <id>` + `socket <len>` + `job <len>` + `mask
+<len>` (a queued row of another own slot daemon) — every path, list and name a length-prefixed byte
+record, never `%q` text, since a cwd or a file name can hold a newline. `Blocker::fallback()` is how
+the pending notice shows a blocker that is no local job: "pid <pid> (cores <cores>)" or "tsp row <id>
+on <socket>". A broken reply, a count that is not the records', `blocked 0`, an unknown blocker kind or
+an `error` record is an error (an unreadable answer), never an outcome.
 
 **`refused-kup` evidence** (o item 13.3) — the record's bytes are themselves records:
 
@@ -207,11 +237,10 @@ claim):
   path or anything else refuses here), each file name by the path rule with a 64-hex sha256, no name
   twice;
 - **1** `exec 9>"$HOME/.orcastudio-submit.lock"; flock -w 20 9` — one lock per account. A timeout
-  refuses `lock busy: lock file open in: <pid> <cmdline>; …` — every process (other than itself)
-  that has the lock file open, from one `find /proc/[0-9]*/fd` (only own processes' fds are
-  readable): the holder, any other waiting submit, a daemon that leaked fd 9. It does not say which
-  one holds the lock (o item 13.4). With none found: `lock busy: lock file open in: no process found
-  (the holder may have exited)`;
+  is `lock-busy` with `<pid> <cmdline>; …` — every process (other than itself) that has the lock file
+  open, from one `find /proc/[0-9]*/fd` (only own processes' fds are readable): the holder, any other
+  waiting submit, a daemon that leaked fd 9. It does not say which one holds the lock (o item 13.4).
+  With none found: `no process found (the holder may have exited)`;
 - **2** `busctl … KillUserProcesses` exits 0 printing exactly the 8 bytes `b false\n` (content and
   size both checked: `read -d ''` alone stops at a NUL) — anything else (`b true`, other output, a
   NUL, rc ≠ 0, a `timeout` 124) is `refused-kup` with the evidence (n item 7, o item 13.3);
@@ -221,12 +250,18 @@ claim):
   or mismatched wrapper is `refused`, never `failed-after-claim`;
 - **3** no `.started`, `.enqueued`, `.exit_code`, `.cancelled`, `.submitting` in any form
   (`path_exists`, a dangling symlink counts), and — only if `/proc/net/unix` lists the slot socket —
-  no `tsp -l` row of the slot holding the job dir as a whole token (a failed `tsp -l` refuses);
+  no `tsp -l` row of the slot holding the job dir as a whole token. The slot socket's own state
+  unreadable — `/proc/net/unix` absent or unreadable, its header not the expected one, or the slot's
+  `tsp -l` failed — is `slot-check-error` (l's socket `Error`, o23.1);
 - **4** the upload post-condition: `find <job> -path <job>/.tsp-out -prune` lists every entry; the
   regular files must be exactly the expected names, and one `sha256sum` over them must give every
-  expected hash. A refusal names `missing […]`, `extra […]` (an rsync temp, a non-file) and
-  `differing […]` (a changed byte, or an expected name that is not a regular file);
-- **5** the slot check (o item 9), below;
+  expected hash. A difference is `upload-mismatch` naming `missing`, `extra` (an rsync temp, a
+  non-file) and `differing` (a changed byte, or an expected name that is not a regular file); a
+  failed listing or an unexpected `sha256sum` line stays a plain `refused`;
+- **5** the slot check (o item 9), below: blockers → `blocked`; a scan that fails, times out or prints
+  anything but its status line → `slot-check-error`. **A refusal at steps 3–5 writes nothing in the
+  job dir** (no `.tsp-out`, no claim; o23.3) — it touches only the account lock file, the `mktemp -d`
+  dir (removed by the EXIT trap) and `tsp -l` on listed sockets;
 - **6** `mkdir -p <job>/.tsp-out`, which must then be a directory and not a symlink;
 - **7** the claim `ln -sT x <job>/.submitting` — no-clobber; it fails if anything took the name
   since step 3;
@@ -235,9 +270,8 @@ claim):
   file + `mv -fT`), then the post-condition: the socket is listed verbatim in `/proc/net/unix`. A
   failure from here on is `failed-after-claim` (the claim stays).
 
-Every `refused` reason starts with its step (`values:`, `lock busy:`, `lock:`, `realpath:`,
-`wrapper:`, `marker:`, `slot socket:`, `row:`, `upload:`, `slot check:`, `slot busy:`, `tsp-out:`,
-`claim:`), for people reading it.
+Every plain `refused` reason starts with its step (`values:`, `lock:`, `realpath:`, `wrapper:`,
+`marker:`, `row:`, `upload:`, `tsp-out:`, `claim:`), for people reading it.
 
 **The lock fd and the bounds.** Every `tsp` call (`-l` too), every child under `timeout` and the
 claim/publish commands run with `</dev/null` and `9>&-`, so no daemon tsp starts can inherit the
@@ -246,8 +280,13 @@ Every child that can block while the lock is held runs under `timeout -k 1 N` (T
 1 s later): busctl 2 s, realpath 2, the wrapper's realpath 1, the wrapper's sha256 2, the slot's
 `tsp -l` 2, the upload `find` 2, the upload `sha256sum` 6, the slot scan 8 (its own `tsp -l` calls
 each under `timeout -k 1 2` inside it), the enqueue 3 — 28 s, and 37 s worst case with the nine
-kill-afters, under the 40 s of o item 3.3.1; a timeout is a refusal (`refused-kup` for busctl,
-`failed-after-claim` after the claim). The short file operations — `stat`, `cat`, `mkdir`, `ln`,
+kill-afters, under the 40 s of o item 3.3.1. A timeout (rc 124) of a bounded child **before the
+claim** — realpath, the wrapper's realpath and sha256sum, `find`, the upload's `sha256sum`, the scan,
+the slot's `tsp -l` — is `slot-check-error` (transient, o23.13.2); busctl's timeout stays
+`refused-kup` (fail closed); after the claim a timeout is `failed-after-claim`. A child killed by the
+kill-after exits 137 (not measured here): for realpath, the wrapper's realpath and sha256sum, `find`
+and the upload's `sha256sum` that is an ordinary refusal; for the slot's `tsp -l` and the scan **any**
+non-zero rc, 137 included, is `slot-check-error` (ADR-024 o23.14.6). The short file operations — `stat`, `cat`, `mkdir`, `ln`,
 `mv` on the job dir and its markers — are deliberately **not** wrapped: they touch only the root,
 which is local ext4, measured on uni (`findmnt` in the connection test, ADR-024 n item 8 allow-list
 `{ext4}`; [uni-server.md](../infrastructure/uni-server.md), 2026-10-03), not a network mount that
@@ -269,8 +308,9 @@ process and `tsp -l` for a qualifying socket:
   job dir of a `running` row of the slot's own daemon; the slot's own queued rows never block. With no
   daemon on the slot nothing is accounted for;
 - **blocks**: any other candidate or queued row whose CPUs meet the mask (an unreadable CPU list meets
-  every mask: fail closed). The refusal is `slot busy: mask <m> is held by pid <n> (wrapper|pinned,
-  cores <list>, job dir <dir>|cwd not readable); queued row <id> on <socket> (…)`.
+  every mask: fail closed). The scan appends one blocker record per blocker to a file in the temp dir
+  (the byte-exact channel to `main`, o23.13.8) and prints only `done <n>`; `main` then answers
+  `blocked <n>` followed by that file verbatim.
 
 **The `LABEL` call** (read-only; values: the recorded job dir and socket) reports the facts in the
 order of o item 3.4:
@@ -673,6 +713,17 @@ joins it with unit 5.4b.
   removal, so a tracked wrapper is stopped before its ORCA is killed. Two cancel tests also
   assert, after the drop, that no process has a cwd in or an argument under the lab root.
 
+- **The pending submit's reply kinds (`call_script_tests.rs`, ADR-024 o23)**: a blocked attempt —
+  a pinned process on the mask (step 5), and the slot daemon's `tsp -l` failing (step 3) — is refused
+  with its kind and leaves the job dir **byte-identical** (every entry, recursively; no `.tsp-out`, no
+  claim) with nothing enqueued; step 3's three branches (the slot's `tsp -l` failed; `/proc/net/unix`
+  absent; a wrong header — the last two through a test copy whose step-3 read takes `$FAKE_NET_UNIX`)
+  are each `SlotCheckFailed`; a hung `realpath`, wrapper `sha256sum`, `find`, upload `sha256sum` (PATH
+  stubs that sleep) and the scan (its budget shrunk to 10 ms in a test copy) are each `SlotCheckFailed`
+  naming the child; the upload mismatch names arrive as lists, an extra name holding a space and a
+  newline byte for byte. Controls run on mutated copies: `.tsp-out` made before the scan, step 3's
+  failed `tsp -l` refused as text, the realpath timeout branch removed.
+
 - **Real 5.3 calls (`call_script_tests.rs`)**: each script runs as `bash -s` with its NUL list (the
   ssh call's exact stdin, `stdin_with_values`) and its stdout goes to its **Rust parser** — never
   compared with a hand-written string. The `Lab` adds a stub `busctl` and a stub `tsp` that enqueues
@@ -723,7 +774,11 @@ joins it with unit 5.4b.
   `.submitting` claim as a symlink) and the real `list` hashes match the copy; the row is finalised
   from the copy (`completed`, energy and wall time) and the view gets the rest of the log, the
   unterminated last line included, before the terminal `job:status`; a copy corrupted right after the
-  rsync fails the real listing → a strike, the row stays `queued`. The scripts on their own: install readies a fresh root (all three), `kept` on a second install, wrong
+  rsync fails the real listing → a strike, the row stays `queued`. **The pending submit** (o23) against
+  the same lab: a Create & Run whose slot is held by a pinned `sleep` on the mask goes pending (the
+  real `blocked` reply naming the sleep's pid); the poller's re-check while it is held runs only
+  prepare + `submit.sh` and leaves the job dir's names unchanged; once the sleep is reaped, the next
+  re-check enqueues it (`Enqueued(0)`, the flag cleared, `.enqueued` published). The scripts on their own: install readies a fresh root (all three), `kept` on a second install, wrong
   bytes under the cancel script's name replaced by rename (new inode, the others kept), bytes that do
   not hash to the name never published (no temp left), a symlinked `bin/` or `tsp/` refused with
   nothing written through it; mkjob makes the dir and refuses, after the mkdir, a job dir linked outside `jobs/` and a sibling link `jobs/w3 -> jobs/w1` (only the job dir's own realpath catches that one; a permanent mutant that reports the job dir unresolved must miss it); the
@@ -735,7 +790,7 @@ joins it with unit 5.4b.
 
 Negative controls (each guard broken, the named tests red, restored): listed per unit in
 [log.md](../log.md) (Part A 2026-10-03, Part B 2026-10-03, 5.3 A2 2026-10-05, 5.3 B1 Part A
-2026-10-05, 5.3 B2 Part A 2026-10-06, 5.4a Part B1 2026-10-18). The five of 5.3 A2 are
+2026-10-05, 5.3 B2 Part A 2026-10-06, 5.4a Part B1 2026-10-18, 5.4c Part A 2026-10-19). The five of 5.3 A2 are
 also permanent tests: each runs its guard's check on a mutated copy of the script (exactly one
 occurrence replaced) and requires it to fail.
 
@@ -770,6 +825,12 @@ events and `job:log-reset { job_id }`; `watch_job_log(id, open)` counts a job's 
 ([execution-backends.md](execution-backends.md#the-remote-pollers-core-pollerrs-poller-adr-024-o-item-4-o15-o16)).
 
 ## Not built yet
+
+- **The pending submit's view** (ADR-024 o23.10, unit 5.4c Part B): the "Waiting for the slot"
+  badge, the record's notice from the 3rd refusal (`pending_submit.notice`), the blockers by title and
+  Retry submit hidden on a pending row by the offer rule. Until then a pending row looks like any
+  queued row with its last refusal in `error_message`, and a Retry click is refused by the command.
+  Then Anton's live gate and the uni run.
 
 - **A run target is chosen only through Create & Run** (ADR-024 o20.2): a draft made with "Create
   Job" and later run from the Jobs table's "Run locally" button runs locally, and every fan-out

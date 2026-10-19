@@ -117,9 +117,18 @@ use crate::error::AppError;
 ///   Every terminal write of a remote row NULLs both in the same statement
 ///   (`finalize_job_conn`, `ssh_backend::mark_cancelled_conn`), so a forgotten NULL is a failed
 ///   write, never a silent breach. Existing rows: both NULL. Guarded ALTERs (column_exists).
+/// - v22: a remote job's pending submit (Phase 5 unit 5.4c, ADR-024 o23.5): `jobs.submit_pending_since`,
+///   nullable TEXT in **UTC, laptop clock** — when a submit the user started was first refused for
+///   the slot (slot busy / slot check error); the poller re-checks such a row every status period
+///   and submits it once the slot frees. One CHECK in the v21 form: only on a remote `queued` job.
+///   Every terminal or `cancelling` write NULLs it in the same statement (`finalize_job_conn`,
+///   `ssh_backend::mark_cancelled_conn`, the poller's `record_cancelling` and `record_delivered`),
+///   so a forgotten NULL there is a failed write; the two `queued`-keeping writes that end the
+///   pending state (`record_delivered`'s unchanged-status branch, `record_ended_first`) are pinned
+///   by tests. Existing rows: NULL. Guarded ALTER (column_exists). 5.4b takes v23.
 ///
 /// [`Job::is_remote`]: crate::models::job::Job::is_remote
-const SCHEMA_VERSION: i64 = 21;
+const SCHEMA_VERSION: i64 = 22;
 
 /// Open (creating if needed) `orcastudio.db` under `data_dir` and migrate it to
 /// the current schema.
@@ -546,6 +555,19 @@ fn migrate(conn: &Connection) -> Result<(), AppError> {
             }
         }
         version = 21;
+    }
+
+    // --- v21 -> v22: the pending submit (ADR-024 o23.5). The CHECK rides on the new column and
+    // names earlier ones (the v20/v21 form); SQLite tests it against every existing row, which has
+    // the column NULL. Guarded on `status` like v21 (the CHECK names it). ---
+    if version < 22 {
+        if column_exists(conn, "jobs", "status")? && !column_exists(conn, "jobs", "submit_pending_since")? {
+            conn.execute_batch(
+                "ALTER TABLE jobs ADD COLUMN submit_pending_since TEXT CHECK ( \
+                     submit_pending_since IS NULL OR (remote_host IS NOT NULL AND status = 'queued'));",
+            )?;
+        }
+        version = 22;
     }
 
     // Persist the resulting version so subsequent runs skip completed steps.
@@ -1570,9 +1592,9 @@ mod tests {
             "UPDATE settings SET value = '19' WHERE key = 'schema_version';",
         )
         .unwrap();
-        // The v21 columns first: their CHECKs name `remote_host`, and SQLite refuses to drop a
-        // column another column's CHECK names.
-        for col in ["cancel_sent_at", "cancel_requested_at", "remote_socket", "remote_job_dir", "remote_host"] {
+        // The v22 and v21 columns first: their CHECKs name `remote_host`, and SQLite refuses to drop
+        // a column another column's CHECK names.
+        for col in ["submit_pending_since", "cancel_sent_at", "cancel_requested_at", "remote_socket", "remote_job_dir", "remote_host"] {
             conn.execute_batch(&format!("ALTER TABLE jobs DROP COLUMN {col};")).unwrap();
         }
         conn.execute_batch(
@@ -1649,6 +1671,7 @@ mod tests {
         migrate(&conn).unwrap();
         conn.execute_batch(
             "UPDATE settings SET value = '20' WHERE key = 'schema_version';
+             ALTER TABLE jobs DROP COLUMN submit_pending_since;
              ALTER TABLE jobs DROP COLUMN cancel_sent_at;
              ALTER TABLE jobs DROP COLUMN cancel_requested_at;",
         )
@@ -1699,7 +1722,6 @@ mod tests {
         let before = all_jobs(&conn);
         migrate(&conn).expect("v20 -> v21");
         assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
-        assert_eq!(SCHEMA_VERSION, 21);
         assert_eq!(all_jobs(&conn), before, "no job row changed");
         let set: i64 = conn
             .query_row(
@@ -1751,6 +1773,66 @@ mod tests {
             .expect("terminal with both cleared");
     }
 
+    /// A v21 database holding local and remote jobs in every state a v21 row can be in (a pending
+    /// cancel and a `cancelling` row included) — every arm up to v21 applied by `migrate` itself.
+    fn v21_db_with_jobs() -> Connection {
+        let conn = v20_db_with_jobs();
+        migrate(&conn).unwrap();
+        conn.execute_batch(
+            "UPDATE settings SET value = '21' WHERE key = 'schema_version';
+             ALTER TABLE jobs DROP COLUMN submit_pending_since;",
+        )
+        .unwrap();
+        insert_job_row(&conn, "r-cancelling", "cancelling", true).unwrap();
+        conn.execute("UPDATE jobs SET cancel_requested_at = '2026-10-17 10:00:00' WHERE id = 'r-running'", []).unwrap();
+        assert!(!column_exists(&conn, "jobs", "submit_pending_since").unwrap());
+        conn
+    }
+
+    /// Rule #9 on the migration: the v22 arm applying at all over local and remote rows in every v21
+    /// state is the measurement that its CHECK form is accepted through ADD COLUMN. Every row survives
+    /// unchanged, the new column NULL; `SCHEMA_VERSION` is 22 (o23.5).
+    #[test]
+    fn migrate_v21_to_v22_adds_a_null_pending_submit_and_keeps_every_job() {
+        let conn = v21_db_with_jobs();
+        let before = all_jobs(&conn);
+        migrate(&conn).expect("v21 -> v22");
+        assert_eq!(SCHEMA_VERSION, 22);
+        assert_eq!(current_version(&conn).unwrap(), 22);
+        assert_eq!(all_jobs(&conn), before, "no job row changed");
+        let set: i64 = conn
+            .query_row("SELECT COUNT(*) FROM jobs WHERE submit_pending_since IS NOT NULL", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(set, 0, "no existing job has a pending submit");
+        let cancel: Option<String> =
+            conn.query_row("SELECT cancel_requested_at FROM jobs WHERE id = 'r-running'", [], |r| r.get(0)).unwrap();
+        assert_eq!(cancel.as_deref(), Some("2026-10-17 10:00:00"), "the v21 columns are kept");
+        migrate(&conn).expect("v22 -> v22 no-op");
+        assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
+    }
+
+    /// NEGATIVE CONTROL (bite, o23.13.9): the v22 CHECK rejects a pending submit on a local row and on a
+    /// remote row that is not `queued` (draft, running, cancelling, terminal), allows it on a remote
+    /// `queued` row, and fails a status write off `queued` that keeps it. Without the CHECK every
+    /// update goes through and this is red.
+    #[test]
+    fn migrate_v22_check_rejects_a_pending_submit_off_a_remote_queued_row() {
+        let conn = v21_db_with_jobs();
+        migrate(&conn).expect("v21 -> v22");
+        let set = |id: &str, sql: &str| conn.execute(&format!("UPDATE jobs SET {sql} WHERE id = ?1"), [id]);
+        const PENDING: &str = "submit_pending_since = '2026-10-19 10:00:00'";
+        for id in ["l-draft", "l-queued", "l-running", "l-parsed", "l-cancelled", "r-running", "r-cancelling", "r-completed", "r-failed", "r-cancelled"] {
+            assert!(set(id, PENDING).is_err(), "{id}: a pending submit here must be rejected");
+        }
+        insert_job_row(&conn, "r-draft", "draft", true).unwrap();
+        assert!(set("r-draft", PENDING).is_err(), "a remote draft never holds a pending submit");
+        set("r-queued", PENDING).expect("a remote queued job holds a pending submit");
+        for status in ["running", "cancelling", "completed", "failed", "cancelled"] {
+            assert!(set("r-queued", &format!("status = '{status}'")).is_err(), "{status} with the flag kept");
+        }
+        set("r-queued", "status = 'cancelled', submit_pending_since = NULL").expect("terminal with the flag cleared");
+    }
+
     /// The migration on a copy of a real v20 database (rule #9). Run by hand on a scratch copy:
     /// `ORCASTUDIO_V20_DB_COPY=/scratch/orcastudio.db cargo test real_v20_db_copy -- --ignored`.
     #[test]
@@ -1763,7 +1845,8 @@ mod tests {
         assert_eq!(current_version(&conn).unwrap(), 20, "the copy must be a v20 database");
         let before = all_jobs(&conn);
         migrate(&conn).expect("v20 -> v21 on the real copy");
-        assert_eq!(current_version(&conn).unwrap(), 21);
+        // `migrate` runs every arm forward, so the copy lands on the current version.
+        assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
         assert_eq!(all_jobs(&conn), before, "no job row changed");
         let remote = before.iter().filter(|(_, _, host)| host.is_some()).count();
         eprintln!("migrated {} jobs ({remote} remote)", before.len());

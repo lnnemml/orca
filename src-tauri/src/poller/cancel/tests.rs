@@ -716,7 +716,7 @@ fn retry_is_refused_while_a_cancel_is_pending() {
     let r = Remote::new();
     request(&r);
     let fake = Fake::new(&r, |call, _| panic!("{call:?}: no call while a cancel is pending"));
-    let retried = resubmit_remote(&r.w.db, &fake, &r.w.data_dir(), JOB);
+    let retried = resubmit_remote(&r.w.db, &fake, &r.sink, &r.w.data_dir(), JOB);
     assert!(matches!(&retried, Err(AppError::Backend(m)) if m.contains("undo the cancel first")), "{retried:?}");
     let guard = r.in_flight.acquire(JOB).unwrap();
     let fetched = r.poller(&fake).retry_fetch(&guard);

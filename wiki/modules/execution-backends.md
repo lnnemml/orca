@@ -269,28 +269,34 @@ is ROADMAP Phase 5.
 never the profile's current values (n 6b); `recorded_root` reads the root back from the job dir
 `<root>/jobs/<id>`.
 
-**Submit** — `submit_remote(db, runner, data_dir, job_id, profile_id) -> Result<SubmitAttempt>`
-(`SubmitAttempt { outcome: SubmitOutcome, pal: PalAlignment }`):
+**Submit** — `submit_remote(db, runner, sink, data_dir, job_id, profile_id) -> Result<SubmitAttempt>`
+(`SubmitAttempt { outcome: SubmitOutcome, pal: PalAlignment }`; `sink` gets the `job:status` a write of
+the pending flag owes):
 
 | step | what | the row after a failure here |
 |---|---|---|
-| 1 | no ssh: a draft without coordinates; the profile a run target (`is_run_target`, one slot, a valid host); the local job dir `<data_dir>/jobs/<id>` prepared by `local_backend::prepare_job_dir` with the input from `jobs.input_content`, its `%pal` **aligned downward** to the mask (`align_remote_pal`, below), and the aux files (`read_aux_files`, shared with the local run), then listed by `upload_expected` (an unreadable `%pal`, over 1000 files or a name outside the path rule refuses) | the row unchanged (a draft, no coordinates) — `Err`; the local dir may be written and is rewritten on the next attempt (o 14.4) |
+| 1 | no ssh: a draft without coordinates; the profile a run target (`is_run_target`, one slot, a valid host); the local job dir `<data_dir>/jobs/<id>` prepared by `local_backend::prepare_job_dir_with` (each file written only when its bytes differ, ADR-024 o23.13.5) with the input from `jobs.input_content`, its `%pal` **aligned downward** to the mask (`align_remote_pal`, below), and the aux files (`read_aux_files`, shared with the local run), then listed by `upload_expected` (an unreadable `%pal`, over 1000 files or a name outside the path rule refuses) | the row unchanged (a draft, no coordinates) — `Err`; the local dir may be written and is rewritten on the next attempt (o 14.4) |
 | 2 | **persist** (o 3.1), in the same lock as step 1: one transaction sets `queued`, `backend_id`, the coordinates (`<root>/jobs/<id>`, `<root>/tsp/slot0.sock`) and the local `job_dir`, guarded on `status = 'draft' AND remote_host IS NULL` | rolled back: a draft |
 | 3 | **prepare** call (read-only, o 3.2/13.1/14.1): every existing component of the root a directory at its own realpath, `<root>/bin` and `<root>/tsp` included; does each uploaded script (wrapper, cancel, collect) hash right | `queued` + coordinates; label "not on the server" |
 | 4 | when `bin/`, `tsp/` or any script is missing: **install** call, then **prepare again** — every script must now hash right (post-condition) | same |
 | 5 | **upload**: `rsync -a --checksum --mkpath`, never `--delete`, timeout 60 s + 1 s per 256 KiB (a floor, not measured) | same |
-| 6 | **the submit call** (o 3.3, 60 s): `Enqueued`, `Refused`, `RefusedKup`, `FailedAfterClaim`, or no readable reply | `queued` + coordinates; the label call decides |
+| 6 | **the submit call** (o 3.3, 60 s; `submit_call`): `Enqueued`, a typed refusal (`Refusal`, o23.7), `RefusedKup`, `FailedAfterClaim`, or no readable reply | `queued` + coordinates; the label call decides — or, after a slot refusal, the pending re-check |
 
 Steps 3–6 never change the status: whatever happens, the row stays `queued` with its coordinates
 and the label call (o 3.4) resolves it from the server (Decision c). Their one write
-(`record_attempt`): `error_message` = the attempt's failure for people (`NULL` after `Enqueued`),
-and — **only** for `SubmitReply::RefusedKup` — the profile's stamp and the facts it certified are
-cleared (`clear_verified`; n item 7, o 13.3). A refusal is never matched by its text. The outcome:
+(`record_attempt(db, sink, plan, outcome, pending)`, one statement, guarded on the row still being this
+remote `queued` job and acting on its row count): `error_message` = the attempt's failure for people
+(`NULL` after `Enqueued`); the pending flag `submit_pending_since` by `PendingWrite` — for a submit the
+user started (`after_user_attempt`), `Set` (`COALESCE(…, now)`) when the slot check refused it
+(`makes_pending`: `Blocked` or `SlotCheckFailed`, ADR-024 o23.1), `Clear` on `Enqueued`, `Keep`
+otherwise; and — **only** for `SubmitReply::RefusedKup` — the profile's stamp and the facts it
+certified are cleared (`clear_verified`; n item 7, o 13.3). When the message or the flag changed it
+emits `job:status` through `sink` after the lock. A refusal is never matched by its text. The outcome:
 
 | `SubmitOutcome` | from | offered next |
 |---|---|---|
 | `Enqueued { tsp_id }` | `enqueued <id>` | (the poller, B2) |
-| `NotClaimed { step, reason }` | a failure in steps 3–5, or `refused` | retry or cancel ("not on the server") |
+| `NotClaimed { step, refusal }` | a failure in steps 3–5 (`Refusal::Other(why)`), or the submit call's refusal (`Blocked`, `SlotCheckFailed`, `LockBusy`, `UploadMismatch`, `Other`) | retry or cancel ("not on the server"); a slot refusal makes the job **pending** (below) |
 | `KillUserProcesses { evidence }` | `refused-kup` | the profile is no run target until a connection test passes; cancel |
 | `FailedAfterClaim { reason }` | `failed-after-claim` | cancel only ("submit interrupted") |
 | `Unknown { reason }` | a timeout, ssh exit 255, an unreadable reply or an echo that differs | the label call decides |
@@ -318,7 +324,7 @@ is not an error, so never `error_message`). Open (not measured; the local path s
 **Label** — `label_remote(runner, &job)`: the read-only label call by the recorded coordinates →
 `LabelReport { facts, label }`. Writes nothing.
 
-**Retry** — `resubmit_remote(db, runner, data_dir, job_id) -> SubmitAttempt`: for a remote `queued`
+**Retry** — `resubmit_remote(db, runner, sink, data_dir, job_id) -> SubmitAttempt`: for a remote `queued`
 job, only when the label call says **"not on the server"** ("submit interrupted" is never retried:
 the interrupted call may still be running on the server, o item 8). The profile (by `backend_id`)
 supplies the mask and the ORCA path and must still be a run target with the recorded host and root;
@@ -326,7 +332,10 @@ only then (the label call comes first, so a refused retry writes nothing) is the
 recorded `job_dir`) written again from `input_content` with the **current** mask — a retry after a
 mask change uploads the new `nprocs` — and steps 3–6 run. A job whose cancel is pending is refused in
 the retry's locked read (`retry_checks` → `commands::jobs::refuse_while_cancel_pending`, "undo the
-cancel first", ADR-024 o22.8), before any call.
+cancel first", ADR-024 o22.8), before any call, and so is a job whose submit is pending ("a submit is
+pending; the slot is re-checked every period", o23.8). `retry_checks` is the two refusals plus
+`plan_checks` (queued remote, a run target, host/root/socket unchanged), and `plan_from` derives the
+plan; the pending re-check uses the same two through `pending_plan` (below).
 
 **No Withdraw** (ADR-024 o22.7, o22.14.7). A remote job that is not in the server's hands ("not on
 the server", "submit interrupted") is cancelled like any remote job: the cancel's delivery makes its
@@ -344,7 +353,7 @@ own realpath, under a per-script time budget, with stdin at EOF.
 
 **Refusals** (o item 2, n 6b): `refuse_if_remote_live(&job)` refuses a local cancel or delete of a
 remote job that is remote-live — `queued`, `running` or `cancelling` (o22.5; the one set, listed in
-[remote-jobs.md](remote-jobs.md#a-remote-job-in-the-database-schemas-v20-v21)) — with "job … is
+[remote-jobs.md](remote-jobs.md#a-remote-job-in-the-database-schemas-v20v22)) — with "job … is
 <status> on server <host>: cancel it first (the cancel goes through the server)" (o22.14.7).
 `delete_job_conn` and `local_backend::cancel` call it, and `cancel_remote` as the local path's belt —
 `local_backend::cancel` **at function entry, before any branch** (o 14.5), so no caller reaches a local
@@ -353,8 +362,10 @@ deleted ([server-profiles.md](server-profiles.md)).
 
 **`SshBackend`** holds the `AppHandle` and, for a draft, the target profile id. Its inherent
 methods run the core with the real runner and block (call them off the main thread):
-`submit_attempt(id)` → `submit_remote` (the whole `SubmitAttempt`, `%pal` included), `retry(id,
-runner)` → `resubmit_remote` (the command passes the real runner wrapped in a `ContactRunner`, o22.8), `label(&job)` → `label_remote`. The trait's
+`submit_attempt(id, runner)` → `submit_remote` (the whole `SubmitAttempt`, `%pal` included), `retry(id,
+runner)` → `resubmit_remote` — both take the runner as a seam, and the commands pass the real runner
+wrapped in a `ContactRunner` (o22.8, o23.9) — and `label(&job)` → `label_remote`. A write of the pending
+flag emits through `AppSink`. The trait's
 `submit` is `submit_attempt` narrowed to `Ok` for `Enqueued` and an `Err` carrying any other outcome's
 failure (the row is `queued` either way) — the trait has no room for the `%pal` notice, so
 `submit_job` calls `submit_attempt`. `status` reads the row; `cancel` is `ssh_backend::cancel_remote`,
@@ -369,8 +380,8 @@ are fetched by the poller's status step, under the job's in-flight guard (below)
 
 | command (TS `invoke`) | returns | does |
 |---|---|---|
-| `submit_job({ id, target? })` | `null` (local) / `SubmitResponse` | `target` absent/`null`: the local submit, unchanged. `target` = a profile id: `SshBackend::submit_attempt` |
-| `retry_remote_submit({ id })` | `SubmitResponse` | `SshBackend::retry` through a `ContactRunner`, then writes its last contact to the job's remote record whatever it returned (`note_retry_after`, inside the guarded work; ADR-024 o22.8 — no longer a removal). Refused while a cancel is pending |
+| `submit_job({ id, target? })` | `null` (local) / `SubmitResponse` | `target` absent/`null`: the local submit, unchanged. `target` = a profile id: `SshBackend::submit_attempt` through `attempt_with_contact` — a `ContactRunner`, a slot refusal counted toward the pending notice, the last contact written to the record (ADR-024 o23.9) |
+| `retry_remote_submit({ id })` | `SubmitResponse` | `SshBackend::retry` through the same `attempt_with_contact`: writes its last contact to the job's remote record whatever it returned (`note_retry_after`, inside the guarded work; ADR-024 o22.8 — no longer a removal). Refused while a cancel is pending and on a pending submit (o23.8) |
 | `label_remote_job({ id })` | `LabelReport { facts, label }` | `SshBackend::label` (read-only) |
 | `cancel_job({ id })` | `CancelResult` (`{ result, … }`) | async: `spawn_blocking` + `poller::app::with_poller` → `cancel_job_core` — **not** `guarded_blocking` (the core claims the guard itself). A remote live job: recorded, then delivered if the guard is free (below, "Remote cancel"); any other job: `Backend::for_job` → local cancel (`{"result":"dispatched"}`) |
 | `undo_cancel({ id })` | `UndoResult` (`"undone"` / `"send_marked"` / `"nothing_pending"`) | `revoke_cancel_core`: one locked write, no guard, no ssh |
@@ -465,6 +476,10 @@ and returns `Busy` for a busy job (o15.3). Then, with nothing locked across a ca
    and no fetch runs while a cancel is pending. `retry_fetch` keeps its own pre-check ("undo the cancel
    first"); a cancel recorded after it is caught by this read. Delivery never downloads: its result is
    the step's (o22.13.2);
+   - **a pending submit** (`submit_pending_since` set, read by the same read) → the step is its
+     **re-check** (`Poller::recheck_submit`, below, "The pending submit") instead of everything after
+     it — after the pending cancel, so a re-check never overtakes a cancel, and before step 3 and the
+     label call (ADR-024 o23.10);
 3. a fetching outcome already struck out `MAX_FETCH_STRIKES` = 3 times in a row → `FetchStopped`, no
    call (the manual retry below starts over);
 4. a **`cancelling`** row is **swept** (below, "The sweep of a `cancelling` job");
@@ -510,6 +525,94 @@ and returns `Busy` for a busy job (o15.3). Then, with nothing locked across a ca
    `detect_completion`'s for `failed`, and after a results-parse failure's, which
    `set_job_parse_error_conn` writes over the message — so the note survives it (o22.13.2). The flag is
    per launch: a restart before that `finalise` loses the note, never the result.
+
+### The pending submit (`poller/pending.rs`, ADR-024 o23)
+
+A submit the user started that the slot check refused — `blocked` (slot busy) or `slot-check-error` —
+is **pending** (`jobs.submit_pending_since`, v22; [remote-jobs.md](remote-jobs.md#a-remote-job-in-the-database-schemas-v20v22)).
+Every status step of such a row **re-checks it, and the re-check is the submit itself**: nothing is
+freed by force (m2, rule #8), the app waits for the blocking work to end and submits by itself. Two
+pending jobs on one slot: the first to enqueue holds it; the other queues behind it through l's
+accounting (the slot daemon's running row), in the candidates' `created_at` order.
+
+`Poller::recheck_submit(job, coords, since)`, inside `record_step` (so every call writes
+`last_contact`):
+1. **the plan, as a retry's** — `ssh_backend::pending_plan`: `plan_checks` (a run target with its
+   stamp, host/root/socket unchanged) + `plan_from` (the local dir from `input_content` with the
+   profile's **current** mask, written only where the bytes differ; `submit_args`) — minus the label
+   call and the upload, and minus the retry's cancel and pending refusals (a cancel recorded after the
+   step's own read is the next step's to deliver, o23.13.7). `Poller` carries `data_dir` for it. An
+   `AppError::Io` / `Database` is this machine's: `CheckFailed`, pending, not counted (o23.13.2); any
+   other error is a **local refusal of the plan** (the profile unverified — a mask or other target
+   edit cleared its stamp, or another job's `KillUserProcesses` did —, host/root/socket moved): its own
+   guarded write NULLs the flag with "The pending submit ended: … Retry submit once this is fixed.",
+   then `job:status` (o23.13.3, o23.13.9);
+2. **ready** (`ready_server` through its own `ContactRunner`): a failure the server answered ends the
+   pending state; one without an answer is `CheckFailed`;
+3. **`submit.sh`** (`ssh_backend::submit_call` through its own tracker, so the decision reads the
+   call's own contact). On `upload-mismatch` — unless the previous re-check's reply was lost — one
+   `upload` (its own tracker: rsync's 12 writes no contact, so `None` there is no answer, never an
+   earlier call's) and one more `submit.sh` in the same step.
+
+**The decision** is a pure function, `decide(outcome, contact, reply_lost_before, reuploaded)`,
+outcome first (o23.13.4), never by reason text:
+
+| `submit.sh` answered | `Recheck` | the flag (`record_attempt`) | counted |
+|---|---|---|---|
+| `enqueued` | `Enqueued { tsp_id }` | `Clear` | — (memory reset) |
+| `blocked`, `slot-check-error` | `Waiting(Wait::SlotBusy / SlotCheckFailed)` | `Set` (keeps the first time) | yes |
+| `lock-busy`; an unreadable reply with an `Ok` contact | `Waiting(Wait::LockBusy / Unreadable)` | `Keep` | yes (o23.13.1) |
+| no reply (timeout, ssh 255: `Unknown` + `Failed` contact) | `Lost` — the next re-check uploads nothing (o23.13.6) | `Keep` | no |
+| `upload-mismatch` right after a lost reply | `Deferred` | `Keep` | no |
+| `upload-mismatch` after its one re-upload; `refused` (values, marker, row, …); `refused-kup`; `failed-after-claim`; `Unknown` with no call made | `Ended(why)` — the row shows it with the manual Retry submit | `Clear` (`refused-kup` also clears the profile's stamp, ending every pending job of the profile at its next re-check) | — (memory reset) |
+
+The step is `StatusStep::SubmitRechecked { since, recheck }` (`CheckFailed` for no answer before
+`submit.sh` or from the re-upload, and for a local failure). A slot-busy wait's blockers are mapped to
+**titles** in one read (`ShownBlocker { blocker, title }`): a blocker whose job dir is exactly
+`<root>/jobs/<id>` and that job's recorded `remote_job_dir` gets the job's title; any other (outside
+`<root>/jobs/`, deeper, unknown) is shown by `Blocker::fallback()`. A `record_attempt` that matched no
+row is `RowChanged` and counts nothing.
+
+**The counter** is `PollerMemory`'s, per launch (o23.4): `count_refusal` (one atomic operation) on
+every counted answer — the first Create & Run or Retry that made the job pending counts too
+(`attempt_with_contact`, only when its write really set the flag: `SubmitAttempt::made_pending`, false
+for a 0-row write), so the notice is due at the 3rd refusal overall — never reset by a transport
+failure, reset by `end_pending` when the wait ends (an enqueue, an end, `record_delivered`,
+`record_ended_first`) and by a restart; `submit_reply_lost` (`note_submit_reply`) marks a lost reply
+until the next answered `submit.sh` — a step without an answer keeps it (o23.14.5). From `PENDING_NOTICE_AT` = 3 refusals the record's
+`pending_submit.notice` names why it waits in the most recent kind's words (`Wait::notice`): "Waiting
+for the slot: held by <blockers>", "Waiting: the slot could not be checked: <why>", "Waiting: the
+account lock is held by <openers>", "Waiting: the server's reply could not be read: <why>". The job
+keeps waiting; Cancel is the exit (a pending cancel is delivered first and its not-on-server branch
+ends the wait; an Undo leaves the flag, so the wait resumes).
+
+**Writes and emits**: `record_attempt` (the flag with the message, one statement) and the plan
+refusal's guarded NULL, each acting on its row count and emitting `job:status` after its lock;
+memory last, with no lock held (R before M; never the database under M). While blocked, `submit.sh`
+writes nothing in the job dir (Lab-tested); a re-check costs one prepare + one `submit.sh` per period
+(about 1 s on uni, `orca/remote-sync-probe.md` items 8 and 10).
+
+**Tests** (`poller/pending/tests.rs`, over a fake server that checks the database lock is free on every
+call): the `decide` table; a free slot enqueued at the next step (prepare + submit only, the flag and
+message cleared, `job:status`, counter reset); the plan a retry would send (current mask, `%pal`
+aligned); slot busy kept with its first time and counted; a slot check error kept and counted; a
+transport failure neither ending nor counting; a lost reply kept, the next step uploading nothing and
+deferring a mismatch, the one after re-uploading once; the lost-reply mark surviving a no-answer step; a mismatch re-uploaded once then enqueued, or
+ended after its retry; a re-upload ending in rsync 12 or 255 kept (no answer), in 23 ended; lock busy
+and an unreadable answer counted to their notices; the most recent kind's notice; after a restart the
+notice only after 3 new refusals; every answered refusal (marker, row, failed after claim,
+`KillUserProcesses`, a refused prepare) ending it with its message and emit; a local plan refusal (a
+mask edit with its stamp cleared, another host, another root) ending it before any ssh; an IO error
+kept; an unchanged local dir not rewritten (mtime); a pending cancel delivered before any re-check
+(`record_delivered` ending the wait); an Undo leaving the flag; titles only from `<root>/jobs/<id>`;
+the record keeping the pending submit across a failed check; every terminal or `cancelling` write
+(`finalize_job_conn`, `mark_cancelled_conn`, `record_cancelling`, `record_delivered`'s `cancelling`
+branch) clearing the flag, and `record_ended_first` clearing it. In `ssh_backend/tests.rs`: only a slot
+refusal makes a first submit pending (with its emit), the flag alone emitting, `COALESCE` keeping the
+first time, a row that moved on taking nothing, Retry refused on a pending row, a retry not rewriting
+an unchanged input. In `remote_jobs.rs`: the first Create & Run writing its contact and counting a slot
+refusal through `attempt_with_contact`, and a slot refusal whose write matched no row counting nothing. End to end against the real scripts:
+[remote-jobs.md](remote-jobs.md). Negative controls: [log.md](../log.md) (5.4c Part A, 2026-10-19).
 
 **The sweep of a `cancelling` job** (`poller/sweep.rs`, ADR-024 l row 3, o22.5, o22.13.3–4). While the
 bound is not reached, a step **readies the server as a delivery does** (`ready_server`: prepare →
@@ -570,7 +673,7 @@ it: `poll_log` holds no guard (o16.5), so it is not a writer.
 **The remote record** (`poller/remote_state.rs`, ADR-024 o19). The row's `error_message` carries the
 words of a check; the record carries the structure the view needs. `RemoteStates` (managed state, one
 mutex R, empty on launch) holds one `RemoteState { known, check_error, fetch, last_contact,
-cancel_sends, sweeps }` per non-terminal remote job: `known` = `Labelled(Label)`, `Shown(Outcome)` or
+cancel_sends, sweeps, pending_submit }` per non-terminal remote job: `known` = `Labelled(Label)`, `Shown(Outcome)` or
 `Fetching` (`{ kind, detail? }` on the wire), `check_error` = why the last check decided nothing and
 **whether the server answered** — `CheckError { text, answered }`, `{ "text", "answered" }` on the
 wire (ADR-024 o22.14.3) — so the view prefixes "Server answered: …" / "Server unreachable: …" from the
@@ -579,7 +682,12 @@ error's own flag, never from `last_contact`,
 (`stopped = strikes >= 3`), `last_contact` = `{ kind: "ok" }` / `{ kind: "failed", detail }` / `null`
 before the job's first call this launch (o22.8), and `cancel_sends = { failures, stopped }` re-read from
 `PollerMemory`'s cancel-failure counter like the fetch bound (o22.4.5), and `sweeps = { count, stopped }`
-re-read from the sweep counter (`stopped = count >= 3`, o22.13.3). Every `StatusStep` maps through one function,
+re-read from the sweep counter (`stopped = count >= 3`, o22.13.3), and `pending_submit = { since,
+refusals, last, notified, notice }` (o23.10) — set by a re-check's `Waiting` (`last` = the counted
+kind), kept with its last kind and a check error by `Lost` / `Deferred`, kept by `CheckFailed`,
+`CancelNotSent` and `CancelStopped`, removed by every other step (an enqueue or an end also clears
+`known`, as after a retry); `refusals` is re-read from `PollerMemory` on every apply and `notice` is
+due from the 3rd. Every `StatusStep` maps through one function,
 `remote_state::next`, a `match` with no wildcard: `Labelled` sets the label and clears the error;
 `Shown(Indeterminate)` keeps `known` and sets `check_error` to its `shown_message` (answered); any other `Shown`
 sets the outcome and clears the error; `FetchFailed`/`FetchStopped` set `known = Fetching` (the server
@@ -675,7 +783,8 @@ nothing for a job whose step is still running. `PollerMemory` holds, per launch,
 the strikes, the consecutive answered failures of a delivery (`cancel_failures`, bound
 `MAX_CANCEL_FAILURES` = 3), a `cancelling` job's sweeps without progress (`sweeps_without_progress`,
 bound `MAX_SWEEPS_WITHOUT_PROGRESS` = 3) and its smallest session size (`min_session`), the ended-first
-flag (`ended_before_cancel`), the last run of each step and the in-progress mark.
+flag (`ended_before_cancel`), a pending submit's refusals (`pending_refusals`, `PENDING_NOTICE_AT` = 3)
+and lost-reply mark (`submit_reply_lost`), the last run of each step and the in-progress mark.
 
 **Tests** (`poller/tests.rs`, over a fake server that checks on every call that neither the database
 lock nor the live-log mutex is held, and that a log poll runs without the job's guard): the happy
@@ -727,7 +836,7 @@ controls: [log.md](../log.md) (5.3 B2 Part A and B3 Part A, 2026-10-06).
 Three `AppHandle`-free cores: `cancel_job` runs the cancel core (in `spawn_blocking`, with the app's
 poller), `undo_cancel` the undo core, and the poller's status step runs the delivery while a cancel is
 pending (above). The pending cancel lives in two columns, `cancel_requested_at` and `cancel_sent_at`
-(schema v21, [remote-jobs.md](remote-jobs.md#a-remote-job-in-the-database-schemas-v20-v21)): `Job`
+(schema v21, [remote-jobs.md](remote-jobs.md#a-remote-job-in-the-database-schemas-v20v22)): `Job`
 carries both for the view (o22.14.5), and the cores read them under the lock of the read that acts
 (`commands::jobs::pending_cancel_conn`). **Every write of either column emits `job:status`** for the
 job once that write's lock is released (o22.14.5): the record write and Undo here, the mark, the

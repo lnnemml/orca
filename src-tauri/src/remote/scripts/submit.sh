@@ -10,23 +10,45 @@
 #
 # The steps, in this order; each refusal stops before any later step runs:
 #   0  the values' form                                  — before the lock
-#   1  the account lock: flock -w 20 on fd 9             — timeout: "lock busy", listing the
+#   1  the account lock: flock -w 20 on fd 9             — timeout: `lock-busy`, listing the
 #                                                          processes that have the lock file open
 #   2  KillUserProcesses is exactly "b false" (anything else: `refused-kup`, o item 13.3);
 #      realpath <job> == <job> and realpath <job>/.. == <root>/jobs; <root>/bin/wrapper-<sha>.sh is
 #      a regular file equal to its realpath (neither it nor <root>/bin a symlink) whose sha256 is <sha>
 #   3  no marker (.started .enqueued .exit_code .cancelled .submitting, in any form) and no tsp
-#      row holding the job dir on the slot socket (tsp only on a socket /proc/net/unix lists)
-#   4  the uploaded files (outside .tsp-out/) are exactly the expected names with their sha256
-#   5  the slot check: every own process or queued row on cores of the mask is accounted for
+#      row holding the job dir on the slot socket (tsp only on a socket /proc/net/unix lists); the
+#      slot socket's own state unreadable (/proc/net/unix absent or unreadable, its header not
+#      the one expected, `tsp -l` failed) is `slot-check-error`
+#   4  the uploaded files (outside .tsp-out/) are exactly the expected names with their sha256 —
+#      a different set or hash is `upload-mismatch`
+#   5  the slot check: every own process or queued row on cores of the mask is accounted for —
+#      otherwise `blocked`; a scan that fails or times out is `slot-check-error`
 #   6  mkdir -p <job>/.tsp-out (a real directory, not a symlink)
-#   7  the claim: ln -sT x <job>/.submitting — no-clobber. Every refusal before it wrote no claim.
+#   7  the claim: ln -sT x <job>/.submitting — no-clobber. Every refusal before it wrote no claim,
+#      and a refusal at step 3, 4 or 5 wrote nothing in the job dir at all (ADR-024 o23.3).
 #   8  enqueue with TMPDIR=<job>/.tsp-out, publish .enqueued (temp file + rename), then the
 #      post-condition: the socket is listed verbatim in /proc/net/unix
+# A bounded child before the claim (realpath, the wrapper's sha256sum, find, sha256sum, the scan)
+# that times out (rc 124) is `slot-check-error` — transient, never an ordinary refusal (o23.13.2).
+# busctl's timeout stays `refused-kup` (fail closed).
+#
 # The reply (remote::submit::parse_submit_reply): the header, the echoed values, then exactly
-# one of `refused <len>` or `refused-kup <len>` (nothing claimed), `enqueued <id>`,
-# `failed-after-claim <len>`, then end. `refused-kup`'s bytes are the busctl evidence:
-#   rc <n>\nstdout <len>\n<stdout bytes>\nstderr <len>\n<first stderr line>\n
+# one outcome, then end. Nothing is claimed by any but the last two:
+#   refused <len>             any other refusal, the reason's bytes (for people)
+#   refused-kup <len>         the busctl evidence:
+#                               rc <n>\nstdout <len>\n<stdout bytes>\nstderr <len>\n<first stderr line>\n
+#   blocked <n>               n >= 1 blocker records (written by the scan, passed through verbatim):
+#                               process <pid>\nkind wrapper|pinned\ncores <len>\n<bytes>\n
+#                                 job <len>\n<bytes>\n | job -          (- : the cwd was not readable)
+#                               row <id>\nsocket <len>\n<bytes>\njob <len>\n<bytes>\nmask <len>\n<bytes>\n
+#   slot-check-error <len>    why the slot could not be checked
+#   lock-busy <len>           the lock file's openers
+#   upload-mismatch           missing <n>, extra <n>, differing <n>, each followed by n `name <len>`
+#                             records
+#   enqueued <id>             `.enqueued` is published
+#   failed-after-claim <len>  `.submitting` stays
+# Every name, path and cwd travels as a length-prefixed byte record, never as %q-quoted text (a
+# cwd can hold a newline).
 #
 # The lock fd: every tsp call (`-l` too) and every child that may outlive the script runs with
 # 9>&-; a daemon started with the fd open would hold the account lock for its whole life (probe
@@ -67,6 +89,34 @@ emit_text() {
 # refuse REASON — nothing was claimed: the job may be submitted again.
 refuse() {
     emit_text refused "$1"
+    printf 'end\n'
+    exit 0
+}
+
+# slot_check_error REASON — the slot could not be checked (step 3's socket state, step 5's scan,
+# a bounded child that timed out before the claim); nothing was claimed.
+slot_check_error() {
+    emit_text slot-check-error "$1"
+    printf 'end\n'
+    exit 0
+}
+
+# timed_out RC WHAT — a bounded child before the claim that timed out is a slot check error.
+timed_out() {
+    (( $1 == 124 )) && slot_check_error "$2: timed out"
+    return 0
+}
+
+# upload_mismatch — step 4's comparison failed: MISSING, EXTRA and DIFFERING, each name a record.
+upload_mismatch() {
+    local name
+    printf 'upload-mismatch\n'
+    printf 'missing %s\n' "${#missing[@]}"
+    for name in "${missing[@]}"; do emit_text name "$name"; done
+    printf 'extra %s\n' "${#extra[@]}"
+    for name in "${extra[@]}"; do emit_text name "$name"; done
+    printf 'differing %s\n' "${#differing[@]}"
+    for name in "${differing[@]}"; do emit_text name "$name"; done
     printf 'end\n'
     exit 0
 }
@@ -134,8 +184,9 @@ lock_openers() {
 
 # ---- the slot check (o item 9) --------------------------------------------------------------
 # Runs as its own `bash -c` child under `timeout` (its /proc reads must not hold the lock
-# unbounded), so these functions are passed to it by `declare -f`. Prints one `block <text>`
-# line per blocker and `done`, or `error <text>` and exits 3.
+# unbounded), so these functions are passed to it by `declare -f`. Appends one blocker record per
+# blocker to the file BLOCKERS (the byte-exact channel to `main`, ADR-024 o23.13.8) and prints
+# `done <n>`, or prints `error <text>` and exits 3.
 
 # cpu_set LIST — the CPUs of a list ("0-3,8") into the sparse array CPUS. Returns 1 for a list
 # it cannot read; the caller then fails closed.
@@ -183,19 +234,21 @@ row_fields() {
 }
 
 # candidate PID KIND JOB_TOKEN CORES — a blocker unless its cores miss the mask or its job token
-# is the job dir of a running row of this slot's daemon.
+# is the job dir of a running row of this slot's daemon. An empty JOB_TOKEN is `job -`.
 candidate() {
     intersects "$4" || return 0
     [[ -n $3 && -n ${ACCOUNTED[$3]+set} ]] && return 0
-    if [[ -n $3 ]]; then
-        printf 'block pid %s (%s, cores %s, job dir %q)\n' "$1" "$2" "$4" "$3"
-    else
-        printf 'block pid %s (%s, cores %s, cwd not readable)\n' "$1" "$2" "$4"
-    fi
+    {
+        printf 'process %s\nkind %s\n' "$1" "$2"
+        emit_text cores "$4"
+        if [[ -n $3 ]]; then emit_text job "$3"; else printf 'job -\n'; fi
+    } >>"$BLOCKERS"
+    NBLOCK=$((NBLOCK + 1))
 }
 
-# slot_scan JOB SOCKET MASK SLOT_ROWS — SLOT_ROWS is the file of the slot daemon's `tsp -l`, or
-# "-" when no daemon listens on the slot socket (then nothing is accounted for).
+# slot_scan JOB SOCKET MASK SLOT_ROWS BLOCKERS — SLOT_ROWS is the file of the slot daemon's
+# `tsp -l`, or "-" when no daemon listens on the slot socket (then nothing is accounted for);
+# BLOCKERS is the (empty) file the blocker records go to.
 slot_scan() {
     set -u
     export LC_ALL=C
@@ -204,6 +257,7 @@ slot_scan() {
     local -A seen=()
     declare -a CPUS=() MASK=()
     declare -A ACCOUNTED=()
+    BLOCKERS=$5 NBLOCK=0
 
     cpu_set "$mask" || { printf 'error the slot mask %s is not a CPU list\n' "$mask"; exit 3; }
     for k in "${!CPUS[@]}"; do MASK[k]=1; done
@@ -276,15 +330,21 @@ slot_scan() {
         while IFS= read -r line; do
             row_fields "$line" && [[ $RW_STATE == queued ]] || continue
             intersects "$RW_MASK" || continue
-            printf 'block queued row %s on %s (job dir %q, mask %s)\n' "$RW_ID" "$p" "$RW_JOB" "$RW_MASK"
+            {
+                printf 'row %s\n' "$RW_ID"
+                emit_text socket "$p"
+                emit_text job "$RW_JOB"
+                emit_text mask "$RW_MASK"
+            } >>"$BLOCKERS"
+            NBLOCK=$((NBLOCK + 1))
         done <<<"$rows"
     done
-    printf 'done\n'
+    printf 'done %s\n' "$NBLOCK"
 }
 
 main() {
-    local a job root sock mask orca wrapper wsha id name sha rc i line content lock slot_rows
-    local -a lines files_found recs blockers
+    local a job root sock mask orca wrapper wsha id name sha rc i n line content lock slot_rows
+    local -a lines files_found recs
     local -A expected=() found=() nonregular=() hashed=()
     local -a missing=() extra=() differing=() paths=()
 
@@ -330,7 +390,11 @@ main() {
     fi
     flock -w "$LOCK_WAIT" 9 </dev/null
     rc=$?
-    (( rc == 1 )) && refuse "lock busy: lock file open in: $(lock_openers "$lock")"
+    if (( rc == 1 )); then
+        emit_text lock-busy "$(lock_openers "$lock")"
+        printf 'end\n'
+        exit 0
+    fi
     (( rc == 0 )) || refuse "lock: flock exited $rc"
 
     # Step 2: KillUserProcesses (n item 7), the realpath shapes (o item 1), the wrapper's bytes.
@@ -344,6 +408,7 @@ main() {
     fi
     timeout -k "$T_KILL" "$T_REALPATH" realpath -e -- "$job" "$job/.." </dev/null >"$T/realpath" 2>"$T/realpath.err" 9>&-
     rc=$?
+    timed_out "$rc" "realpath"
     mapfile -t lines <"$T/realpath"
     if (( rc != 0 || ${#lines[@]} != 2 )) || [[ ${lines[0]} != "$job" || ${lines[1]} != "$root/jobs" ]]; then
         refuse "realpath: the job dir is not $job under $root/jobs (rc $rc: ${lines[*]} $(first_line "$T/realpath.err"))"
@@ -351,11 +416,13 @@ main() {
     [[ -f $wrapper && ! -L $wrapper ]] || refuse "wrapper: $wrapper is not a regular file"
     timeout -k "$T_KILL" "$T_WRAPPER_REALPATH" realpath -e -- "$wrapper" </dev/null >"$T/wrealpath" 2>"$T/wrealpath.err" 9>&-
     rc=$?
+    timed_out "$rc" "realpath of the wrapper"
     line=''
     { IFS= read -r line || true; } <"$T/wrealpath"
     (( rc == 0 )) && [[ $line == "$wrapper" ]] || refuse "wrapper: $wrapper is reached through a symlink (realpath: $line)"
     timeout -k "$T_KILL" "$T_WRAPPER_SHA" sha256sum -- "$wrapper" </dev/null >"$T/wsha" 2>"$T/wsha.err" 9>&-
     rc=$?
+    timed_out "$rc" "sha256sum of the wrapper"
     line=''
     { IFS=' ' read -r line _ || true; } <"$T/wsha"
     (( rc == 0 )) && [[ $line == "$wsha" ]] || refuse "wrapper: the sha256 of $wrapper is not the one its name carries"
@@ -369,24 +436,25 @@ main() {
             *) refuse "marker: $R_ERR" ;;
         esac
     done
-    read_raw /proc/net/unix "$T/net_unix" || refuse "/proc/net/unix: ${R_ERR:-absent}"
+    read_raw /proc/net/unix "$T/net_unix" || slot_check_error "/proc/net/unix: ${R_ERR:-absent}"
     net_unix_listed "$T/net_unix" "$T/net_unix.slot" "$sock"
     case $? in
         0) slot_rows=$T/slot_rows
            TS_SOCKET=$sock timeout -k "$T_KILL" "$T_TSP_LIST" tsp -l </dev/null >"$slot_rows" 2>"$T/slot_rows.err" 9>&-
            rc=$?
-           (( rc == 0 )) || refuse "slot socket: tsp -l on $sock exited $rc $(first_line "$T/slot_rows.err")"
+           (( rc == 0 )) || slot_check_error "slot socket: tsp -l on $sock exited $rc $(first_line "$T/slot_rows.err")"
            while IFS= read -r line; do
                [[ " $line " == *" $job "* ]] && refuse "row: a tsp row on $sock already holds $job: $line"
            done <"$slot_rows" ;;
         1) slot_rows=- ;;
-        *) refuse "$R_ERR" ;;
+        *) slot_check_error "$R_ERR" ;;
     esac
 
     # Step 4: the upload post-condition (rule #9) — the set of files and every sha256.
     timeout -k "$T_KILL" "$T_FIND" find "$job" -mindepth 1 -path "$job/.tsp-out" -prune -o -printf '%y %P\0' \
         </dev/null >"$T/files" 2>"$T/files.err" 9>&-
     rc=$?
+    timed_out "$rc" "find (listing $job)"
     (( rc == 0 )) || refuse "upload: listing $job failed (rc $rc) $(first_line "$T/files.err")"
     mapfile -d '' -t recs <"$T/files"
     for line in "${recs[@]}"; do
@@ -406,11 +474,12 @@ main() {
         fi
     done
     for name in "${!found[@]}" "${!nonregular[@]}"; do
-        [[ -n ${expected[$name]+set} ]] || extra+=("$(printf '%q' "$name")")
+        [[ -n ${expected[$name]+set} ]] || extra+=("$name")
     done
     if (( ${#paths[@]} > 0 )); then
         timeout -k "$T_KILL" "$T_SHA" sha256sum -- "${paths[@]}" </dev/null >"$T/sha" 2>"$T/sha.err" 9>&-
         rc=$?
+        timed_out "$rc" "sha256sum of the upload"
         (( rc == 0 )) || refuse "upload: sha256sum exited $rc $(first_line "$T/sha.err")"
         while IFS= read -r line; do
             # Every name passed the path rule, so sha256sum prints it unescaped.
@@ -422,25 +491,24 @@ main() {
             [[ ${hashed[$name]-} == "${expected[$name]}" ]] || differing+=("$name")
         done
     fi
-    if (( ${#missing[@]} + ${#extra[@]} + ${#differing[@]} > 0 )); then
-        refuse "upload: missing [${missing[*]}], extra [${extra[*]}], differing [${differing[*]}]"
-    fi
+    (( ${#missing[@]} + ${#extra[@]} + ${#differing[@]} == 0 )) || upload_mismatch
 
-    # Step 5: the slot check, bounded like every other child.
-    timeout -k "$T_KILL" "$T_SCAN" bash -c "$(declare -f valid_path cpu_set intersects row_fields candidate slot_scan)"'
-slot_scan "$@"' slot-scan "$job" "$sock" "$mask" "$slot_rows" </dev/null >"$T/scan" 2>"$T/scan.err" 9>&-
+    # Step 5: the slot check, bounded like every other child. Its blockers reach this shell through
+    # the file $T/blockers (byte records, passed through verbatim); its stdout is one status line.
+    : >"$T/blockers"
+    timeout -k "$T_KILL" "$T_SCAN" bash -c "$(declare -f emit_text valid_path cpu_set intersects row_fields candidate slot_scan)"'
+slot_scan "$@"' slot-scan "$job" "$sock" "$mask" "$slot_rows" "$T/blockers" </dev/null >"$T/scan" 2>"$T/scan.err" 9>&-
     rc=$?
     mapfile -t lines <"$T/scan"
-    (( rc == 124 )) && refuse "slot check: timed out after $T_SCAN s"
-    (( rc == 0 )) || refuse "slot check: ${lines[*]:-exited $rc} $(first_line "$T/scan.err")"
-    (( ${#lines[@]} > 0 )) && [[ ${lines[-1]} == done ]] || refuse "slot check: unexpected output"
-    blockers=()
-    for line in "${lines[@]:0:${#lines[@]}-1}"; do
-        [[ $line == "block "* ]] || refuse "slot check: unexpected line: $line"
-        blockers+=("${line#block }")
-    done
-    if (( ${#blockers[@]} > 0 )); then
-        refuse "slot busy: mask $mask is held by $(IFS=';'; printf '%s' "${blockers[*]}")"
+    (( rc == 124 )) && slot_check_error "the scan timed out after $T_SCAN s"
+    (( rc == 0 )) || slot_check_error "${lines[*]:-the scan exited $rc} $(first_line "$T/scan.err")"
+    (( ${#lines[@]} == 1 )) && [[ ${lines[0]} =~ ^done\ (0|[1-9][0-9]{0,5})$ ]] || slot_check_error "the scan's output is unexpected"
+    n=${BASH_REMATCH[1]}
+    if (( n > 0 )); then
+        printf 'blocked %s\n' "$n"
+        cat -- "$T/blockers" </dev/null
+        printf 'end\n'
+        exit 0
     fi
 
     # Step 6: tsp's output dir (m item 1); not a marker, harmless if anything below fails.

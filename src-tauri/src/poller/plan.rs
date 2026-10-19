@@ -18,7 +18,8 @@
 //! fetching-outcome flag, the consecutive failed fetches (the strikes), the consecutive answered
 //! failures of a cancel's delivery (o22.4.5, o22.11.3), a `cancelling` job's sweeps without progress
 //! and the smallest session size seen for it (o22.5, o22.13.3–4), whether a delivery found the job
-//! ended first (o22.13.2), and when each step last ran.
+//! ended first (o22.13.2), a pending submit's refusals and whether its last submit call's reply was
+//! lost (o23.4, o23.13.6), and when each step last ran.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
@@ -47,6 +48,11 @@ pub const MAX_CANCEL_FAILURES: u32 = 3;
 /// o22.13.3–4), automatic sweeps stop: status steps then only collect and classify, and Retry cancel
 /// is the manual retry (o22.12.1, o22.14.2).
 pub const MAX_SWEEPS_WITHOUT_PROGRESS: u32 = 3;
+
+/// At this many refusals of a pending submit this launch (slot busy, slot check error, lock busy, an
+/// unreadable answer — ADR-024 l, m2, o23.4, o23.13.1), the record's notice names why it waits. The
+/// job keeps waiting; Cancel is the exit.
+pub const PENDING_NOTICE_AT: u32 = 3;
 
 /// The poller's periods (o item 4: initial values, tunable, not a contract).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -203,6 +209,15 @@ pub struct JobMemory {
     /// A delivery found the job ended before the cancel reached the server (o22.13.2): the job's next
     /// `finalise` adds that note to the message it writes.
     pub ended_before_cancel: bool,
+    /// A pending submit's refusals this launch (o23.4, o23.13.1): counted by the attempt that got
+    /// one ([`PollerMemory::count_refusal`]), never reset by a transport failure — only when the
+    /// pending state ends ([`PollerMemory::end_pending`]) and by a restart. [`PENDING_NOTICE_AT`]
+    /// shows the notice.
+    pub pending_refusals: u32,
+    /// The pending re-check's last submit call got no reply (`Unknown`, o23.6): the next re-check
+    /// uploads nothing (o23.13.6), so a lagging call cannot have its dir overwritten. Cleared by the
+    /// next submit call that is answered.
+    pub submit_reply_lost: bool,
     pub last_status: Option<Instant>,
     pub last_log: Option<Instant>,
     pub in_progress: bool,
@@ -307,6 +322,29 @@ impl PollerMemory {
     /// A delivery found the job ended before the cancel reached the server (o22.13.2).
     pub fn set_ended_before_cancel(&self, job_id: &str) {
         self.lock().entry(job_id.to_string()).or_default().ended_before_cancel = true;
+    }
+
+    /// One refusal of the pending submit (o23.4), in **one** operation under the lock; returns the
+    /// count now.
+    pub fn count_refusal(&self, job_id: &str) -> u32 {
+        let mut jobs = self.lock();
+        let m = jobs.entry(job_id.to_string()).or_default();
+        m.pending_refusals += 1;
+        m.pending_refusals
+    }
+
+    /// Whether the pending re-check's last submit call got no reply (o23.13.6).
+    pub fn note_submit_reply(&self, job_id: &str, lost: bool) {
+        self.lock().entry(job_id.to_string()).or_default().submit_reply_lost = lost;
+    }
+
+    /// The pending state ended (an enqueue, a refusal that needs a person, a delivered cancel, the
+    /// job ended): the refusal count and the lost-reply mark start over (o23.4).
+    pub fn end_pending(&self, job_id: &str) {
+        if let Some(m) = self.lock().get_mut(job_id) {
+            m.pending_refusals = 0;
+            m.submit_reply_lost = false;
+        }
     }
 
     /// Seed the sweep count, for the tests: a reset of 0 proves nothing.

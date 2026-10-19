@@ -235,14 +235,16 @@ impl Poller<'_> {
     }
 
     /// Step 4's "ended first": both columns cleared (the v21 CHECK refuses `cancel_sent_at` without
-    /// `cancel_requested_at`), the re-send bound restarted, and the note remembered for the job's
+    /// `cancel_requested_at`) and a pending submit with them (o23.5: the job is not waiting for a
+    /// slot any more; this `queued`-keeping write is pinned by a test, the CHECK cannot catch it),
+    /// the re-send bound and the refusal counter restarted, and the note remembered for the job's
     /// next `finalise` (o22.13.2) — on the click's path and the poller's alike. The columns changed,
     /// so `job:status` follows once the lock is released (o22.14.5).
     fn record_ended_first(&self, job_id: &str, coords: &RemoteCoordinates, outcome: Outcome) -> Result<StatusStep, AppError> {
         let status = {
             let conn = self.db.lock()?;
             let cleared = conn.execute(
-                "UPDATE jobs SET cancel_requested_at = NULL, cancel_sent_at = NULL \
+                "UPDATE jobs SET cancel_requested_at = NULL, cancel_sent_at = NULL, submit_pending_since = NULL \
                  WHERE id = ?1 AND remote_job_dir = ?2 AND status IN ('queued', 'running', 'cancelling')",
                 params![job_id, coords.job_dir],
             )?;
@@ -252,13 +254,16 @@ impl Poller<'_> {
             get_job_conn(&conn, job_id)?.status
         };
         self.memory.clear_cancel_failures(job_id);
+        self.memory.end_pending(job_id);
         self.memory.set_ended_before_cancel(job_id);
         self.sink.status(job_id, status);
         Ok(StatusStep::EndedBeforeCancel(outcome))
     }
 
     /// rc 0's write (o22.4.5): the delivered verdict recorded and both columns cleared in **one**
-    /// locked write, if the row is still this live remote job. Row 3 `Cancelling` becomes status
+    /// locked write, if the row is still this live remote job — with a pending submit (o23.5, both
+    /// branches: a delivered cancel ends the wait; the unchanged-status branch keeps `queued`, so a
+    /// test pins it, the CHECK cannot) and its refusal counter. Row 3 `Cancelling` becomes status
     /// `cancelling` with its text and sets the sweep baseline (o22.13.4); every other verdict changes
     /// no status here (a terminal verdict's write is the next ordinary step's, and NULLs the columns
     /// again). A write that matched no row is `RowChanged`. Both branches change the columns, so
@@ -273,13 +278,13 @@ impl Poller<'_> {
             let written = if matches!(outcome, Outcome::Cancelling { .. }) {
                 conn.execute(
                     "UPDATE jobs SET status = 'cancelling', error_message = ?1, cancel_requested_at = NULL, \
-                     cancel_sent_at = NULL \
+                     cancel_sent_at = NULL, submit_pending_since = NULL \
                      WHERE id = ?2 AND remote_job_dir = ?3 AND status IN ('queued', 'running', 'cancelling')",
                     params![shown_message(&outcome), job_id, coords.job_dir],
                 )?
             } else {
                 conn.execute(
-                    "UPDATE jobs SET cancel_requested_at = NULL, cancel_sent_at = NULL \
+                    "UPDATE jobs SET cancel_requested_at = NULL, cancel_sent_at = NULL, submit_pending_since = NULL \
                      WHERE id = ?1 AND remote_job_dir = ?2 AND status IN ('queued', 'running', 'cancelling')",
                     params![job_id, coords.job_dir],
                 )?
@@ -290,6 +295,7 @@ impl Poller<'_> {
             get_job_conn(&conn, job_id)?.status
         };
         self.memory.clear_cancel_failures(job_id);
+        self.memory.end_pending(job_id);
         if let Outcome::Cancelling { session } = outcome {
             self.memory.note_cancelling(job_id, session);
         }

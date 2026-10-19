@@ -399,15 +399,18 @@ impl SshBackend {
     }
 
     /// Submit draft `job_id` to the target profile and return the whole attempt — the outcome and
-    /// the `%pal` alignment the trait's `submit` has no room for (`ssh_backend::submit_remote`).
-    pub fn submit_attempt(&self, job_id: &str) -> Result<crate::ssh_backend::SubmitAttempt, AppError> {
+    /// the `%pal` alignment the trait's `submit` has no room for (`ssh_backend::submit_remote`) —
+    /// its calls through `ssh`: the command wraps the real runner to learn the last contact
+    /// (ADR-024 o22.8, o23.9). A write of the pending flag emits through the app's sink.
+    pub fn submit_attempt(&self, job_id: &str, ssh: &dyn crate::remote::ssh::CommandRunner) -> Result<crate::ssh_backend::SubmitAttempt, AppError> {
         let profile_id = self
             .target
             .as_deref()
             .ok_or_else(|| AppError::Backend("no server profile was chosen to run on".into()))?;
         let db = self.app.state::<DbState>();
         let runner = self.app.state::<crate::local_backend::JobRunner>();
-        crate::ssh_backend::submit_remote(&db, &crate::remote::ssh::SystemRunner, runner.data_dir(), job_id, profile_id)
+        let sink = crate::poller::app::AppSink(self.app.clone());
+        crate::ssh_backend::submit_remote(&db, ssh, &sink, runner.data_dir(), job_id, profile_id)
     }
 
     /// Retry a job the label call finds "not on the server" (`ssh_backend::resubmit_remote`), its
@@ -416,7 +419,8 @@ impl SshBackend {
     pub fn retry(&self, job_id: &str, ssh: &dyn crate::remote::ssh::CommandRunner) -> Result<crate::ssh_backend::SubmitAttempt, AppError> {
         let db = self.app.state::<DbState>();
         let runner = self.app.state::<crate::local_backend::JobRunner>();
-        crate::ssh_backend::resubmit_remote(&db, ssh, runner.data_dir(), job_id)
+        let sink = crate::poller::app::AppSink(self.app.clone());
+        crate::ssh_backend::resubmit_remote(&db, ssh, &sink, runner.data_dir(), job_id)
     }
 
     /// The read-only label call (`ssh_backend::label_remote`): nothing changes on either side.
@@ -430,7 +434,7 @@ impl ExecutionBackend for SshBackend {
     /// the main thread. Only `Enqueued` is an `Ok`; every other outcome is an `Err` carrying it,
     /// while the row stays `queued` with its coordinates for the label call to resolve.
     fn submit(&self, job: &Job) -> Result<JobHandle, AppError> {
-        let attempt = self.submit_attempt(&job.id)?;
+        let attempt = self.submit_attempt(&job.id, &crate::remote::ssh::SystemRunner)?;
         // The trait has no room for the %pal notice (`attempt.pal`); `submit_job` calls
         // `submit_attempt` to show it.
         match attempt.outcome.failure() {
@@ -490,7 +494,8 @@ mod tests {
             "CREATE TABLE jobs (id TEXT, title TEXT, input_content TEXT, status TEXT, job_dir TEXT, energy REAL,
                  wall_time REAL, error_message TEXT, created_at TEXT, started_at TEXT, completed_at TEXT,
                  scene_json TEXT, scene_log_json TEXT, pathway_id TEXT, group_id TEXT, backend_id TEXT,
-                 remote_host TEXT, remote_job_dir TEXT, remote_socket TEXT, cancel_requested_at TEXT, cancel_sent_at TEXT);",
+                 remote_host TEXT, remote_job_dir TEXT, remote_socket TEXT, cancel_requested_at TEXT, cancel_sent_at TEXT,
+                 submit_pending_since TEXT);",
         )
         .unwrap();
         let (h, d, s) = coords.map_or((None, None, None), |(h, d, s)| (Some(h), Some(d), Some(s)));

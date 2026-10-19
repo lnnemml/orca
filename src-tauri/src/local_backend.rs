@@ -137,9 +137,22 @@ pub fn prepare_job_dir(
     input_content: &str,
     aux_files: &[(String, String)],
 ) -> Result<PathBuf, AppError> {
+    prepare_job_dir_with(data_dir, job_id, input_content, aux_files, |path, bytes| std::fs::write(path, bytes))
+}
+
+/// [`prepare_job_dir`] with the file write as a parameter: the remote backend's local dir writes
+/// only the bytes that differ (`ssh_backend::write_local_dir`, ADR-024 o23.13.5). The aux-name
+/// guard is the same one.
+pub(crate) fn prepare_job_dir_with(
+    data_dir: &Path,
+    job_id: &str,
+    input_content: &str,
+    aux_files: &[(String, String)],
+    write: impl Fn(&Path, &[u8]) -> std::io::Result<()>,
+) -> Result<PathBuf, AppError> {
     let dir = data_dir.join("jobs").join(job_id);
     std::fs::create_dir_all(&dir)?;
-    std::fs::write(dir.join("input.inp"), input_content)?;
+    write(&dir.join("input.inp"), input_content.as_bytes())?;
     for (name, content) in aux_files {
         // Guard: an aux name is a plain basename inside THIS job dir — never a path that
         // could escape it (rule #3 isolation). Refuse anything with a parent component.
@@ -151,7 +164,7 @@ pub fn prepare_job_dir(
                 "aux filename must be a plain basename, got {name:?}"
             )));
         }
-        std::fs::write(dir.join(file_name), content)?;
+        write(&dir.join(file_name), content.as_bytes())?;
     }
     Ok(dir)
 }

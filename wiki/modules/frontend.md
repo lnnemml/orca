@@ -772,8 +772,11 @@ of Rust's outcome texts (a test reads the source to hold that). `runTargetOption
 Rust's reason. `backfillsLog(job)` says whether the job view reads the log already on disk: not
 for a draft, not for a remote live job — `cancelling` included, whose log the poller re-streams too
 (o16.7, o22.14.8). The remote IPC shapes (`Outcome`, `Label`, `RemoteState` with its `CheckError {
-text, answered }`, `SubmitResponse`, `StatusStep`, `CancelResult`, `UndoResult`, …) live in
-`types.ts`; `Job` carries `cancel_requested_at` / `cancel_sent_at` (o22.14.5). `JobStatus` includes
+text, answered }` and its `pending_submit`, `SubmitResponse` with the typed `Refusal`, `StatusStep`
+with `submit_rechecked`, `CancelResult`, `UndoResult`, …) live in `types.ts`; `Job` carries
+`cancel_requested_at` / `cancel_sent_at` (o22.14.5) and `submit_pending_since` (o23.5). The pending
+submit has types only so far (unit 5.4c Part A): no view reads them yet — a pending row shows as any
+queued row, and `deliveredNotice` maps `submit_rechecked` (never a delivery's step) to no notice. `JobStatus` includes
 `cancelling` (a remote job whose cancel reached the server while processes still run, ADR-024 o22.5);
 it is live everywhere: the pure logic (`isLiveStatus`), the status chips (`STATUS_CHIPS`), the status
 bar's active count (`queueCounts`) and the detail's dashboard default. `cancelButtons(actions, busy)`

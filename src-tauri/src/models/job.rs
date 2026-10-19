@@ -137,6 +137,12 @@ pub struct Job {
     /// the sent mark only with the request (the v21 CHECKs). Every write of either emits `job:status`.
     pub cancel_requested_at: Option<String>,
     pub cancel_sent_at: Option<String>,
+    /// A remote job's pending submit (schema v22, ADR-024 o23.5): when a submit the user started was
+    /// first refused for the slot (slot busy / slot check error) — `None`: no submit pending. The
+    /// poller re-checks such a row every status period and submits it once the slot frees (o23.3).
+    /// `datetime('now')`: **UTC, laptop clock**, only ever displayed. Set only on a remote `queued`
+    /// job (the v22 CHECK); every write of it emits `job:status`.
+    pub submit_pending_since: Option<String>,
 }
 
 impl Job {
@@ -145,7 +151,8 @@ impl Job {
     pub const COLUMNS: &'static str = "id, title, input_content, status, job_dir, \
          energy, wall_time, error_message, created_at, started_at, completed_at, \
          scene_json, scene_log_json, pathway_id, group_id, backend_id, \
-         remote_host, remote_job_dir, remote_socket, cancel_requested_at, cancel_sent_at";
+         remote_host, remote_job_dir, remote_socket, cancel_requested_at, cancel_sent_at, \
+         submit_pending_since";
 
     /// Whether this job runs on a server. **A job is remote iff its coordinates are non-NULL**
     /// (ADR-024 o item 1) — never decided by `backend_id`, which only names the profile and is
@@ -190,6 +197,7 @@ impl Job {
             remote_socket: row.get(18)?,
             cancel_requested_at: row.get(19)?,
             cancel_sent_at: row.get(20)?,
+            submit_pending_since: row.get(21)?,
         })
     }
 }
@@ -213,7 +221,7 @@ mod tests {
                 completed_at TEXT, scene_json TEXT, scene_log_json TEXT,
                 pathway_id TEXT, group_id TEXT, backend_id TEXT,
                 remote_host TEXT, remote_job_dir TEXT, remote_socket TEXT,
-                cancel_requested_at TEXT, cancel_sent_at TEXT
+                cancel_requested_at TEXT, cancel_sent_at TEXT, submit_pending_since TEXT
             );",
         )
         .unwrap();
@@ -299,6 +307,28 @@ mod tests {
             (serde_json::json!("2026-10-18 06:18:01"), serde_json::json!("2026-10-18 06:18:05")),
             "the TS `Job` reads these names"
         );
+    }
+
+    /// ADR-024 o23.5: the pending submit reaches the view through `Job` in its own field, after the
+    /// cancel columns; a row without one reads `None`. NEGATIVE CONTROL: read `row.get(20)` for it in
+    /// `from_row` → red (it would read the sent mark).
+    #[test]
+    fn from_row_reads_the_pending_submit_after_the_cancel_columns() {
+        let conn = Connection::open_in_memory().unwrap();
+        setup(&conn);
+        conn.execute_batch(
+            "INSERT INTO jobs (id, title, input_content, status, remote_host, remote_job_dir, remote_socket, \
+                cancel_requested_at, cancel_sent_at, submit_pending_since) \
+                VALUES ('pending', 't', '! SP', 'queued', 'uni', '/r/jobs/pending', '/r/tsp/slot0.sock', \
+                '2026-10-19 06:00:01', '2026-10-19 06:00:05', '2026-10-19 05:59:00');
+             INSERT INTO jobs (id, title, input_content, status) VALUES ('plain', 't', '! SP', 'queued');",
+        )
+        .unwrap();
+        let pending = get(&conn, "pending");
+        assert_eq!(pending.submit_pending_since.as_deref(), Some("2026-10-19 05:59:00"));
+        assert_eq!(pending.cancel_sent_at.as_deref(), Some("2026-10-19 06:00:05"), "the neighbour survives");
+        assert_eq!(get(&conn, "plain").submit_pending_since, None);
+        assert_eq!(serde_json::to_value(&pending).unwrap()["submit_pending_since"], serde_json::json!("2026-10-19 05:59:00"));
     }
 
     /// `is_remote` follows the coordinates, never `backend_id`: a job whose profile was deleted

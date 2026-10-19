@@ -11,8 +11,9 @@
 //! - **One mapping** ([`next`]): what each [`StatusStep`] does to the record, a `match` with no
 //!   wildcard (o19.3). [`next_with`] adds what every step's calls and bounds say: the **last
 //!   contact** (o22.8, the transport result of the step's last ssh/rsync call — `poll_log` is never
-//!   a writer, it holds no guard), the cancel re-send bound (o22.4.5) and the sweep bound of a
-//!   `cancelling` job (o22.13.3), each re-read on every apply. A retry's outcome has its own mapping ([`after_retry`], o22.8: it no longer removes the
+//!   a writer, it holds no guard), the cancel re-send bound (o22.4.5), the sweep bound of a
+//!   `cancelling` job (o22.13.3) and a pending submit's refusal count with its notice (o23.4), each
+//!   re-read on every apply. A retry's outcome has its own mapping ([`after_retry`], o22.8: it no longer removes the
 //!   record).
 //! - **Every write holds the job's in-flight guard** (o19.4): the status step and a cancel's
 //!   delivery apply their change ([`RemoteStates::apply_with_contact`], which takes the guard)
@@ -35,6 +36,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use serde::Serialize;
 
+use super::pending::{PendingSubmit, Recheck};
 use super::plan::{PollerMemory, MAX_CANCEL_FAILURES, MAX_FETCH_STRIKES, MAX_SWEEPS_WITHOUT_PROGRESS};
 use super::{is_fetching, shown_message, PollerSink, Seen, StatusStep};
 use crate::in_flight::InFlightGuard;
@@ -142,6 +144,8 @@ pub struct Bounds {
     pub fetch: FetchState,
     pub cancel: CancelSends,
     pub sweeps: Sweeps,
+    /// A pending submit's refusals this launch (o23.4).
+    pub pending_refusals: u32,
 }
 
 impl Bounds {
@@ -151,6 +155,7 @@ impl Bounds {
             fetch: FetchState::from_strikes(m.strikes),
             cancel: CancelSends::from_failures(m.cancel_failures),
             sweeps: Sweeps::from_count(m.sweeps_without_progress),
+            pending_refusals: m.pending_refusals,
         }
     }
 }
@@ -171,6 +176,9 @@ pub struct RemoteState {
     pub cancel_sends: CancelSends,
     /// The sweep bound of a `cancelling` job (o22.13.3).
     pub sweeps: Sweeps,
+    /// A pending submit as the last re-check saw it (o23.10); `None`: no re-check has shown one this
+    /// launch (the row's `submit_pending_since` is the truth — this carries the why).
+    pub pending_submit: Option<PendingSubmit>,
 }
 
 /// What `remote_job_state` returns: the job's record (`None`: no record) and the sequence's
@@ -201,9 +209,19 @@ pub enum Change {
 /// classify were answered; a `CheckFailed` is answered iff the step's own last call — the failing one
 /// — got an answer (a broken reply, a collect that exited non-zero, a second retake), never by the
 /// record's earlier `last_contact`; a sweep's error carries its own flag (`Swept`).
+///
+/// **A pending submit** (o23.10) is shown by its re-check's step only: `Waiting` sets it with the
+/// counted kind; a lost reply or a deferred mismatch keeps it (what was last counted stays) with a
+/// check error; an enqueue or an end removes it. The steps that leave the flag as it is — a failed
+/// check, a cancel not sent or a stopped delivery — keep it; every other step removes it (a
+/// delivered cancel and an ended-first write NULL the flag; an ordinary step runs only without one).
 pub fn next(old: Option<&RemoteState>, step: &StatusStep, fetch: FetchState, contact: Option<&Contact>) -> Change {
     let mut state = old.cloned().unwrap_or_default();
     let undecided = || shown_message(&Outcome::Indeterminate).map(CheckError::answered);
+    let last_wait = || old.and_then(|o| o.pending_submit.as_ref()).and_then(|p| p.last.clone());
+    if !matches!(step, StatusStep::CheckFailed(_) | StatusStep::CancelNotSent(_) | StatusStep::CancelStopped { .. }) {
+        state.pending_submit = None;
+    }
     match step {
         StatusStep::Labelled(label) => {
             state.known = Some(Known::Labelled(*label));
@@ -260,6 +278,26 @@ pub fn next(old: Option<&RemoteState>, step: &StatusStep, fetch: FetchState, con
             }
             state.check_error = error.clone();
         }
+        // A pending submit's re-check (o23.6). Enqueued or ended: what the server holds now is the
+        // next ordinary step's to name, so `known` is cleared as after a retry.
+        StatusStep::SubmitRechecked { since, recheck } => match recheck {
+            Recheck::Enqueued { .. } | Recheck::Ended(_) => {
+                state.known = None;
+                state.check_error = None;
+            }
+            Recheck::Waiting(wait) => {
+                state.check_error = None;
+                state.pending_submit = Some(PendingSubmit::new(since, Some(wait.clone())));
+            }
+            Recheck::Lost(why) => {
+                state.check_error = Some(CheckError::unanswered(why.clone()));
+                state.pending_submit = Some(PendingSubmit::new(since, last_wait()));
+            }
+            Recheck::Deferred(why) => {
+                state.check_error = Some(CheckError::answered(why.clone()));
+                state.pending_submit = Some(PendingSubmit::new(since, last_wait()));
+            }
+        },
         StatusStep::Busy | StatusStep::RowChanged => return Change::Nothing,
         StatusStep::NotLive | StatusStep::Cancelled | StatusStep::Finalised { .. } => return Change::Remove,
     }
@@ -278,6 +316,7 @@ pub fn next_with(old: Option<&RemoteState>, step: &StatusStep, bounds: Bounds, c
         Change::Set(mut state) => {
             state.cancel_sends = bounds.cancel;
             state.sweeps = bounds.sweeps;
+            state.pending_submit = state.pending_submit.map(|p| p.with_refusals(bounds.pending_refusals));
             if let Some(contact) = contact {
                 state.last_contact = Some(contact);
             }
@@ -644,6 +683,7 @@ mod tests {
             last_contact: Some(Contact::Failed("ssh: timeout".into())),
             cancel_sends: CancelSends::from_failures(1),
             sweeps: Sweeps::from_count(3),
+            pending_submit: None,
         };
         assert_eq!(
             serde_json::to_value(RemoteStateRead { seq: 7, state: Some(state) }).unwrap(),
@@ -655,7 +695,8 @@ mod tests {
                     "fetch": { "strikes": 3, "stopped": true },
                     "last_contact": { "kind": "failed", "detail": "ssh: timeout" },
                     "cancel_sends": { "failures": 1, "stopped": false },
-                    "sweeps": { "count": 3, "stopped": true }
+                    "sweeps": { "count": 3, "stopped": true },
+                    "pending_submit": null
                 }
             })
         );
@@ -671,7 +712,7 @@ mod tests {
     // ---- o22: the delivery's steps, the last contact, the cancel bound, a retry's outcome ----------
 
     fn bounds(strikes: u32, failures: u32) -> Bounds {
-        Bounds { fetch: FetchState::from_strikes(strikes), cancel: CancelSends::from_failures(failures), sweeps: Sweeps::default() }
+        Bounds { fetch: FetchState::from_strikes(strikes), cancel: CancelSends::from_failures(failures), sweeps: Sweeps::default(), pending_refusals: 0 }
     }
 
     /// o22.4: what each delivery step does to the record — from a record that holds a label and a
@@ -887,5 +928,60 @@ mod tests {
         assert_eq!(answered, RemoteState { last_contact: Some(Contact::Ok), ..RemoteState::default() });
         let Change::Set(fresh) = after_retry(None, bounds(0, 0), Some(failed.clone())) else { panic!("a record is made") };
         assert_eq!(fresh.last_contact, Some(failed));
+    }
+
+    // ---- o23: the pending submit -----------------------------------------------------------------
+
+    fn pending_bounds(refusals: u32) -> Bounds {
+        Bounds { pending_refusals: refusals, ..bounds(0, 0) }
+    }
+
+    /// o23.10: a re-check shows its pending submit — `Waiting` sets it with the counted kind, a failed
+    /// check keeps it (and the counter re-read on the apply makes the notice due at the third
+    /// refusal), a lost reply keeps the last kind with an unanswered error, an enqueue or an end
+    /// removes it and clears `known`, and a delivered cancel removes it. NEGATIVE CONTROL: take
+    /// `CheckFailed` out of the steps that keep it → red.
+    #[test]
+    fn a_recheck_maps_to_its_pending_submit() {
+        use crate::poller::pending::{PendingSubmit, Recheck, Wait};
+        let wait = Wait::LockBusy { openers: "9 bash".into() };
+        let rechecked = |recheck| StatusStep::SubmitRechecked { since: "2026-10-19 08:00:00".into(), recheck };
+        let Change::Set(first) = next_with(None, &rechecked(Recheck::Waiting(wait.clone())), pending_bounds(1), Some(Contact::Ok)) else {
+            panic!("sets")
+        };
+        assert_eq!(
+            first.pending_submit,
+            Some(PendingSubmit { since: "2026-10-19 08:00:00".into(), refusals: 1, last: Some(wait.clone()), notified: false, notice: None })
+        );
+        let Change::Set(second) = next_with(Some(&first), &StatusStep::CheckFailed("away".into()), pending_bounds(2), None) else { panic!("sets") };
+        assert_eq!(second.pending_submit.as_ref().map(|p| (p.notified, p.notice.clone())), Some((false, None)), "no notice at the 2nd refusal");
+        let Change::Set(kept) = next_with(Some(&first), &StatusStep::CheckFailed("away".into()), pending_bounds(3), None) else { panic!("sets") };
+        let p = kept.pending_submit.clone().expect("a failed check keeps it");
+        assert_eq!((p.refusals, p.notified, p.notice), (3, true, Some(wait.notice())));
+        let Change::Set(lost) = next_with(Some(&kept), &rechecked(Recheck::Lost("timeout".into())), pending_bounds(3), None) else { panic!("sets") };
+        assert_eq!(lost.pending_submit.as_ref().and_then(|p| p.last.clone()), Some(wait.clone()), "the last kind stays");
+        assert_eq!(lost.check_error, un("timeout"));
+        let labelled = RemoteState { known: Some(Known::Labelled(Label::NotOnServer)), ..lost.clone() };
+        for (case, step) in [
+            ("enqueued", rechecked(Recheck::Enqueued { tsp_id: 1 })),
+            ("ended", rechecked(Recheck::Ended("profile not verified".into()))),
+        ] {
+            let Change::Set(after) = next_with(Some(&labelled), &step, pending_bounds(0), Some(Contact::Ok)) else { panic!("{case}: sets") };
+            assert_eq!((after.pending_submit, after.known, after.check_error), (None, None, None), "{case}");
+        }
+        let Change::Set(delivered) = next_with(Some(&kept), &StatusStep::CancelDelivered(Outcome::Cancelled { started: false }), pending_bounds(0), None)
+        else {
+            panic!("sets")
+        };
+        assert_eq!(delivered.pending_submit, None, "a delivered cancel ended the wait");
+        let wire = serde_json::to_value(&kept).unwrap();
+        assert_eq!(
+            wire["pending_submit"],
+            serde_json::json!({
+                "since": "2026-10-19 08:00:00", "refusals": 3,
+                "last": { "kind": "lock_busy", "detail": { "openers": "9 bash" } },
+                "notified": true, "notice": "Waiting: the account lock is held by 9 bash"
+            })
+        );
     }
 }
