@@ -68,6 +68,7 @@ interface RemotePanelProps {
 export function RemotePanel({ view, busy, onAction, cancelBusy, onCancelAction }: RemotePanelProps) {
   if (view.kind === "local" || view.kind === "terminal") return null;
   const text = view.kind === "live" ? view.text : null;
+  const waiting = view.kind === "live" ? view.waiting : null;
   return (
     <div className="remote-panel" data-testid="remote-panel">
       <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
@@ -75,6 +76,19 @@ export function RemotePanel({ view, busy, onAction, cancelBusy, onCancelAction }
           <RemoteBadgeChip key={b.kind} badge={b} />
         ))}
       </div>
+      {waiting ? (
+        <div className="remote-notice" data-testid="pending-submit-notice">
+          <div>{waiting.text}</div>
+          {waiting.blockers.length ? (
+            <ul>
+              {waiting.blockers.map((line, i) => (
+                // A title is the user's text: rendered as text, never as markup.
+                <li key={i}>{line}</li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      ) : null}
       {text ? (
         <div className="remote-text">
           {text.fromLastCheck ? <span className="muted">From the last check: </span> : null}

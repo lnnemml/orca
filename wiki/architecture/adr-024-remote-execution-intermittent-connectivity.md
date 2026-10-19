@@ -2648,6 +2648,35 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
            `record_attempt`'s sink): harmless, a reload is idempotent.
         8. The slot-check-error notice reads "Waiting: the slot could not be checked: <why>"; Part B
            may reword the view texts.
+    15. **Part B: the view of a pending submit** (2026-10-19; settled by the orchestrator from
+        o22.14's view decisions; reviewed with Part B's CODE verification).
+        1. **Where.** A job with `submit_pending_since` set shows a **"Waiting for the slot since
+           <local time>"** badge (`formatLaptopUtc`) in the Jobs table row and in the detail's remote
+           panel — the same two places as o22.14.1's "cancel pending". The DB flag decides (it
+           survives a restart); the record only adds detail.
+        2. **The notice.** Once the record's `pending_submit.notified` is true (the 3rd refusal,
+           23.7, 14.2), the panel shows `pending_submit.notice` as a warn line, with the blockers
+           of a `slot_busy` wait listed: a blocker with a local job's title shows that title (as
+           text — `ShownBlocker` carries no job id, and Part B stays frontend-only); any other shows
+           its fallback text (pid and cores, or "tsp row <id> on
+           <socket>"). Before the 3rd refusal only the badge shows. The Jobs row shows the badge
+           only (the notice is the detail's).
+        3. **Actions** (o23.8, the offer rule): Cancel — the first remote Cancel, behind o22.14.2's
+           confirm. Retry submit is **not offered** while the flag is set (the Rust refusal stays the
+           belt). If a cancel is also pending, o22.14.1's table decides the actions (Undo / Retry
+           cancel) and both badges show.
+        4. **The interim text.** While the flag is set, the row's `error_message` ("not submitted
+           (Submit step …): slot busy …", written by the first refused attempt) is **not** shown as an
+           error: the badge and the notice replace it. Once the flag is NULLed (23.6: the pending
+           state ended), the row shows what it shows today ("Not on the server" + the refusal +
+           Retry submit) — or the queued job, once enqueued.
+        5. **Controls** (each must turn its test red): the badge keyed on the record instead of the
+           flag (gone after a restart); the notice before `notified`; a blocker titled when its job
+           dir is not a local job's; Retry submit offered while pending; the interim
+           `error_message` shown as an error while pending; the ended state not offering Retry
+           submit again; a pending cancel's actions overridden by the waiting badge.
+        6. **Live gate.** A pending row exists only after uni answers "slot busy", so the view is
+           live-gated in the uni run (with 5.4a's server-side states and B4), not before.
 
 ## Alternatives rejected
 

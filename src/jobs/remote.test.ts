@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { CancelResult, CheckError, Job, RemoteState, RemoteStateEvent, StatusStep } from "../types";
+import type { Blocker, CancelResult, CheckError, Job, PendingSubmit, RemoteState, RemoteStateEvent, ShownBlocker, StatusStep, Wait } from "../types";
 import { makeProfile } from "../servers/test-fixtures";
 import {
   NOTHING_HELD,
@@ -7,6 +7,7 @@ import {
   applyRemoteStateEvent,
   backfillsLog,
   bannerAfterClick,
+  blockerLine,
   cancelButtons,
   cancelNotice,
   cancelSendOf,
@@ -131,6 +132,7 @@ describe("remoteView (o19.2, o19.7)", () => {
     expect(v).toEqual({
       kind: "live",
       text: { body: "Fetching the results failed 3 times in a row; automatic fetches stopped", fromLastCheck: true },
+      waiting: null,
       badges: [{ kind: "checking", label: "Checking the server…", tone: "muted" }],
       actions: [CANCEL],
     });
@@ -177,6 +179,7 @@ describe("remoteView (o19.2, o19.7)", () => {
     expect(v).toEqual({
       kind: "live",
       text: { body: "old words", fromLastCheck: true },
+      waiting: null,
       badges: [{ kind: "check_error", answered: false, label: "Server unreachable: ssh: no route to host", tone: "warn" }],
       actions: [CANCEL],
     });
@@ -192,6 +195,7 @@ describe("remoteView (o19.2, o19.7)", () => {
     expect(v).toEqual({
       kind: "live",
       text: { body: "Fetching the results failed (attempt 2 of 3)", fromLastCheck: false },
+      waiting: null,
       badges: [{ kind: "fetching", strikes: 2, stale: false, label: "Fetching results (2 failed attempts)", tone: "warn" }],
       actions: [CANCEL],
     });
@@ -217,7 +221,8 @@ describe("remoteView (o19.2, o19.7)", () => {
     expect(names(striking)).toEqual(["cancel"]);
   });
 
-  // CONTROL: paste `shown_message`'s Indeterminate sentence or a "handled in unit 5.4" into remote.ts → red.
+  // CONTROL: paste `shown_message`'s Indeterminate sentence, a "handled in unit 5.4", or the pending
+  // notice's "held by" into remote.ts → red.
   it("carries no copy of Rust's outcome texts or its later-unit list", async () => {
     const { readFileSync } = await import("node:fs");
     const { resolve } = await import("node:path");
@@ -225,6 +230,9 @@ describe("remoteView (o19.2, o19.7)", () => {
     const src = readFileSync(resolve(process.cwd(), "src/jobs/remote.ts"), "utf8");
     expect(src).not.toMatch(/5\.4/);
     expect(src).not.toMatch(/could not be decided on this check/);
+    // The pending submit's notice is Rust's words (`Wait::notice`, o23.15 item 2): shown as it
+    // comes, never re-worded here.
+    expect(src).not.toMatch(/held by|could not be checked|account lock is held/);
   });
 });
 
@@ -329,6 +337,171 @@ describe("remoteView's cancel badges and prefixes (o22.14.3)", () => {
     expect(labels(remoteView(cancelling, record({ sweeps: { count: 3, stopped: true } })))).toEqual([
       "Sweeps stopped — processes still run; Retry cancel to sweep again",
     ]);
+  });
+});
+
+describe("remoteView's pending submit (ADR-024 o23.15)", () => {
+  const SINCE = "2026-10-19 08:30:00";
+  const INTERIM = "not submitted (Submit step): slot busy — processes hold cores 0-3";
+  const waitingJob = (over: Partial<Job> = {}) => job({ submit_pending_since: SINCE, error_message: INTERIM, ...over });
+  const labels = (v: ReturnType<typeof remoteView>) => (v.kind === "live" ? v.badges.map((b) => b.label) : []);
+  const kinds = (v: ReturnType<typeof remoteView>) => (v.kind === "live" ? v.badges.map((b) => b.kind) : []);
+  const offers = (v: ReturnType<typeof remoteView>) => (v.kind === "live" ? v.actions : []);
+  /** The notice of a live view; a view that is not live has none. */
+  const noticeOf = (v: ReturnType<typeof remoteView>) => (v.kind === "live" ? v.waiting : null);
+
+  const proc = (over: Partial<Extract<Blocker, { kind: "process" }>> = {}): Blocker => ({
+    kind: "process",
+    pid: 4242,
+    role: "wrapper",
+    cores: "0-3",
+    job_dir: "/home/anton/.orcastudio/jobs/abc",
+    ...over,
+  });
+  const queued: Blocker = { kind: "queued_row", id: 7, socket: "/tmp/ts-slot-0", job_dir: "/home/anton/other", mask: "0-3" };
+  const busy = (blockers: ShownBlocker[]): Wait => ({ kind: "slot_busy", detail: { blockers } });
+  const pendingSubmit = (over: Partial<PendingSubmit> = {}): PendingSubmit => ({
+    since: SINCE,
+    refusals: 3,
+    last: busy([{ blocker: proc(), title: "relaxed scan" }]),
+    notified: true,
+    notice: 'Waiting for the slot: held by "relaxed scan"',
+    ...over,
+  });
+
+  // CONTROLS: key the badge on `record.pending_submit` instead of the row's flag → the
+  // restart case (no record) goes red; key it on the record as well as the flag → the second red.
+  it("shows the badge from the row's flag alone, so a restart (no record) still shows it", () => {
+    for (const rec of [undefined, null, record()]) {
+      const v = remoteView(waitingJob(), rec);
+      expect(kinds(v), String(rec)).toContain("submit_pending");
+      expect(labels(v).find((l) => l.startsWith("Waiting"))).toMatch(/^Waiting for the slot since 2026-10-19 \d\d:30:00$/);
+    }
+    // A record still carrying a pending submit does not make a row without the flag wait.
+    const ended = remoteView(job({ error_message: "refused" }), record({ pending_submit: pendingSubmit() }));
+    expect(kinds(ended)).not.toContain("submit_pending");
+    expect(noticeOf(ended)).toBeNull();
+  });
+
+  // CONTROL (F1): show the stored UTC string raw (drop `formatLaptopUtc` from the badge) → red. The
+  // zone is forced and restored in a `finally`, so it cannot leak into the next test of a reused worker.
+  it("shows the waiting badge in the laptop's local time, not the stored UTC string", () => {
+    const outerTz = process.env.TZ;
+    process.env.TZ = "Europe/Kyiv"; // EEST (UTC+3) on 2026-10-19
+    try {
+      const v = remoteView(waitingJob(), undefined);
+      expect(labels(v)).toContain("Waiting for the slot since 2026-10-19 11:30:00");
+      expect(labels(v).join(" ")).not.toContain(SINCE);
+    } finally {
+      if (outerTz === undefined) delete process.env.TZ;
+      else process.env.TZ = outerTz;
+    }
+    expect(process.env.TZ).toBe(outerTz);
+  });
+
+  // CONTROL: give the badge the "err" or a cancel tone ("warn") → red.
+  it("gives the waiting badge its own tone, neither error nor the cancel tones", () => {
+    const v = remoteView(waitingJob({ cancel_requested_at: "2026-10-19 08:31:00" }), record());
+    const tones = (kind: string) => (v.kind === "live" ? v.badges.filter((b) => b.kind === kind).map((b) => b.tone) : []);
+    expect(tones("submit_pending")).toEqual(["info"]);
+    expect(tones("cancel_pending")).toEqual(["warn"]);
+    expect(["err", "warn", "ok", "muted"]).not.toContain(tones("submit_pending")[0]);
+  });
+
+  // CONTROLS: show the notice before `notified` (from `last`, or from a notice that is there
+  // without `notified`); show it once the row's flag is NULL → red.
+  it("shows the notice only once notified, and only while the row's flag is set", () => {
+    const before = record({ pending_submit: pendingSubmit({ refusals: 2, notified: false, notice: null }) });
+    expect(noticeOf(remoteView(waitingJob(), before))).toBeNull();
+    // The view gates on `notified` itself, not only on the notice being there.
+    const early = record({ pending_submit: pendingSubmit({ notified: false }) });
+    expect(noticeOf(remoteView(waitingJob(), early))).toBeNull();
+    const due = remoteView(waitingJob(), record({ pending_submit: pendingSubmit() }));
+    expect(noticeOf(due)).toEqual({ text: 'Waiting for the slot: held by "relaxed scan"', blockers: ["relaxed scan"] });
+    // The pending state ended (flag NULL) while the record still carries it.
+    const ended = remoteView(job(), record({ pending_submit: pendingSubmit() }));
+    expect(noticeOf(ended)).toBeNull();
+    // After a restart (no record): the badge only.
+    expect(noticeOf(remoteView(waitingJob(), undefined))).toBeNull();
+  });
+
+  // CONTROLS: always show the fallback (ignore the title); take a "title" from the blocker's
+  // job dir (`.../jobs/abc` → "abc"); list blockers for a kind other than slot_busy → red.
+  it("lists a slot_busy wait's blockers by title, else by pid and cores or tsp row", () => {
+    const shown: ShownBlocker[] = [
+      { blocker: proc(), title: "relaxed scan" },
+      // No title although its dir looks like a local job's: the line never derives one from the dir.
+      { blocker: proc({ pid: 99, cores: "4-7", job_dir: "/home/anton/.orcastudio/jobs/abc" }), title: null },
+      { blocker: proc({ pid: 5, job_dir: null }), title: null },
+      { blocker: queued, title: null },
+      { blocker: queued, title: "  " },
+    ];
+    expect(shown.map(blockerLine)).toEqual([
+      "relaxed scan",
+      "pid 99 (cores 4-7)",
+      "pid 5 (cores 0-3)",
+      "tsp row 7 on /tmp/ts-slot-0",
+      "tsp row 7 on /tmp/ts-slot-0",
+    ]);
+    const v = remoteView(waitingJob(), record({ pending_submit: pendingSubmit({ last: busy(shown) }) }));
+    expect(noticeOf(v)?.blockers).toEqual(shown.map(blockerLine));
+    // The other kinds have no blockers: their reason is in the notice.
+    for (const [last, notice] of [
+      [{ kind: "slot_check_failed", detail: "tsp -l failed" }, "Waiting: the slot could not be checked: tsp -l failed"],
+      [{ kind: "lock_busy", detail: { openers: "pid 7" } }, "Waiting: the account lock is held by pid 7"],
+      [{ kind: "unreadable", detail: "bad reply" }, "Waiting: the server's reply could not be read: bad reply"],
+    ] as [Wait, string][]) {
+      const w = remoteView(waitingJob(), record({ pending_submit: pendingSubmit({ last, notice }) }));
+      expect(noticeOf(w), last.kind).toEqual({ text: notice, blockers: [] });
+    }
+  });
+
+  // CONTROLS: offer Retry submit while the flag is set (with or without the stale "not on the
+  // server" label) → red; not offer it again once the flag is NULL → red.
+  it("withholds Retry submit and offers the first Cancel, with its confirm, while waiting", () => {
+    const stale = record({ known: { kind: "labelled", detail: "not_on_server" } });
+    for (const rec of [undefined, record(), stale]) {
+      expect(offers(remoteView(waitingJob(), rec))).toEqual([CANCEL]);
+    }
+    // The stale "Not on the server" label is not shown beside the waiting badge.
+    expect(kinds(remoteView(waitingJob(), stale))).toEqual(["submit_pending"]);
+  });
+
+  it("offers Retry submit again, with the refusal, once the flag is NULL (the pending state ended)", () => {
+    const ended = remoteView(job({ error_message: "not submitted (Upload step): rsync exited with 23" }), record({ known: { kind: "labelled", detail: "not_on_server" } }));
+    expect(names(ended)).toEqual(["retry_submit", "cancel"]);
+    expect(labels(ended)).toEqual(["Not on the server"]);
+    expect(ended.kind === "live" && ended.text).toEqual({ body: "not submitted (Upload step): rsync exited with 23", fromLastCheck: false });
+  });
+
+  // CONTROL: show the row's `error_message` as the panel text while the flag is set → red.
+  it("does not show the interim refusal as error text while waiting, and shows it once the flag is NULL", () => {
+    for (const rec of [undefined, record(), record({ pending_submit: pendingSubmit() })]) {
+      const v = remoteView(waitingJob(), rec);
+      expect(v.kind === "live" && v.text, String(rec)).toBeNull();
+    }
+    const after = remoteView(job({ error_message: INTERIM }), record({ known: { kind: "labelled", detail: "not_on_server" } }));
+    expect(after.kind === "live" && after.text).toEqual({ body: INTERIM, fromLastCheck: false });
+  });
+
+  // CONTROL: let the waiting badge (or the flag) override the pending-cancel table → red.
+  it("lets a pending cancel decide the actions by o22.14.1's table, with both badges", () => {
+    const cancelling = (sent: boolean) =>
+      waitingJob({ cancel_requested_at: "2026-10-19 08:31:00", cancel_sent_at: sent ? "2026-10-19 08:31:05" : null });
+    const stopped = (yes: boolean) => record({ cancel_sends: { failures: yes ? 3 : 1, stopped: yes } });
+    expect(names(remoteView(cancelling(false), stopped(false)))).toEqual(["undo_cancel"]);
+    expect(names(remoteView(cancelling(false), stopped(true)))).toEqual(["undo_cancel", "retry_cancel"]);
+    expect(names(remoteView(cancelling(true), stopped(false)))).toEqual([]);
+    expect(names(remoteView(cancelling(true), stopped(true)))).toEqual(["retry_cancel"]);
+    const both = remoteView(cancelling(false), stopped(false));
+    expect(kinds(both)).toEqual(["submit_pending", "cancel_pending"]);
+    // A pending cancel has no first Cancel to offer, and never Retry submit.
+    expect(names(remoteView(cancelling(false), record({ known: { kind: "labelled", detail: "not_on_server" } })))).toEqual(["undo_cancel"]);
+  });
+
+  it("gives the Jobs row the same cancel family: the first Cancel with its confirm, or the pending cancel's", () => {
+    expect(rowActions(waitingJob(), undefined)).toEqual([{ action: "cancel", confirm: true }]);
+    expect(rowActions(waitingJob({ cancel_requested_at: "2026-10-19 08:31:00" }), undefined)).toEqual([{ action: "undo_cancel", confirm: false }]);
   });
 });
 

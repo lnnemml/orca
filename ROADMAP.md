@@ -1517,8 +1517,12 @@ preflight. The remaining items (remote `orca_plot`, pause) are not numbered yet.
             `slot-check-error`, `lock-busy`, `upload-mismatch`) and the typed `Refusal`; the poller's
             re-check (the submit itself, after the pending cancel, before the label) with its
             per-launch counter and the 3rd-refusal notice in the record; Retry refused on a pending
-            row; the first Create & Run through the `ContactRunner`. **Part B** (the view: badge,
-            notice, blockers by title, Retry hidden) is next, then Anton's live gate and the uni run.
+            row; the first Create & Run through the `ContactRunner`. **Part B built 2026-10-19**
+            (frontend only, ADR-024 o23.15): the "Waiting for the slot since <time>" badge keyed on
+            the row's flag (Jobs row and detail panel), the notice with its blockers once notified,
+            no Retry submit while pending, the interim refusal not shown as an error, a pending
+            cancel still deciding the actions. **Open: Anton's live gate and the uni run** (a pending
+            row exists only after uni answers "slot busy").
       The `uploading`/`syncing` transient states are not yet assigned to a unit.
 - [ ] **Unit 5.5 — preflight:** `nprocs`/`%maxcore` vs the profile (cores + RAM budget) and free disk
       space in the profile working dir; no-`%maxcore` → warn-and-propose, never silent-insert

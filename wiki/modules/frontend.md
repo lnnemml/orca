@@ -738,7 +738,8 @@ each `{ action, confirm, disabled }` (ADR-024 o22.14):
   cancel** once stopped. Retry cancel and Undo never confirm;
 - **the retries**: "not on the server" → retry submit, `fetch.stopped` → retry fetch — **hidden while
   a cancel is pending** (o22.14.4), **disabled** with "server unreachable — retry when it answers"
-  while `last_contact` is `failed` (o22.8). Cancel stays enabled while unreachable;
+  while `last_contact` is `failed` (o22.8). Cancel stays enabled while unreachable. **Retry submit
+  is also withheld while a submit is pending** (below);
 - **the badges**: "not on the server" / "submit interrupted", the last outcome (stale while a check
   error stands), `known: fetching` → "fetching results" with the failed attempts so far (no count at 0
   strikes), "Cancel pending since <laptop time>" (`formatLaptopUtc(cancel_requested_at)`) or, once
@@ -746,7 +747,23 @@ each `{ action, confirm, disabled }` (ADR-024 o22.14):
   prefixed **"Server answered: …" / "Server unreachable: …" by its own `answered` flag**, never by
   `last_contact` (`checkErrorLabel`, o22.14.3), "Automatic fetches stopped", "Cancel re-sends stopped
   — Retry cancel to send again" while pending, "Sweeps stopped — processes still run; Retry cancel to
-  sweep again" on a `cancelling` job; no counters before a bound is reached; no record → "checking".
+  sweep again" on a `cancelling` job; no counters before a bound is reached; no record → "checking";
+- **a pending submit** (ADR-024 o23.15): a job whose **row** has `submit_pending_since` set shows the
+  badge **"Waiting for the slot since <laptop time>"** (`formatLaptopUtc`), tone `info` (blue-grey,
+  `.badge.tone-info` — neither error red nor the cancel ambers), in the Jobs row and the detail's
+  panel. The flag decides, not the record, so the badge is there after a restart while the record is
+  still empty. While it is set: **Retry submit is not offered** (and the stale "Not on the server"
+  label is not drawn), the first **Cancel** is, with its confirm; the row's `error_message` — the
+  first refused attempt's "not submitted (Submit step …): slot busy …" — is **not** the panel's text
+  (the badge and the notice replace it); a pending cancel still decides the actions by
+  o22.14.1's table and both badges show. Once the record says `pending_submit.notified` (the 3rd
+  refusal) **and** the flag is still set, `remoteView.waiting` carries `pending_submit.notice` (Rust's
+  words, never re-worded here — a test reads the source) and, for a `slot_busy` wait, the blockers:
+  `blockerLine` gives a blocker's local-job title, else "pid <pid> (cores <cores>)" or "tsp row <id>
+  on <socket>" from the `Blocker` fields (a blank title is none). The panel draws the notice as a warn
+  line (`.remote-notice`) with the blockers as a list of **text** (a title is the user's, never
+  markup); the Jobs row draws the badge only. When the flag is NULL (the pending state ended) the view
+  is what it was before: "Not on the server", the refusal, Retry submit.
 
 The row's `error_message` is the text, labelled "from the last check" while the record holds no
 decided state, and no action comes from it. `rowActions(job, record)` is the Jobs table's row
@@ -774,9 +791,8 @@ for a draft, not for a remote live job — `cancelling` included, whose log the 
 (o16.7, o22.14.8). The remote IPC shapes (`Outcome`, `Label`, `RemoteState` with its `CheckError {
 text, answered }` and its `pending_submit`, `SubmitResponse` with the typed `Refusal`, `StatusStep`
 with `submit_rechecked`, `CancelResult`, `UndoResult`, …) live in `types.ts`; `Job` carries
-`cancel_requested_at` / `cancel_sent_at` (o22.14.5) and `submit_pending_since` (o23.5). The pending
-submit has types only so far (unit 5.4c Part A): no view reads them yet — a pending row shows as any
-queued row, and `deliveredNotice` maps `submit_rechecked` (never a delivery's step) to no notice. `JobStatus` includes
+`cancel_requested_at` / `cancel_sent_at` (o22.14.5) and `submit_pending_since` (o23.5);
+`deliveredNotice` maps `submit_rechecked` (never a delivery's step) to no notice. `JobStatus` includes
 `cancelling` (a remote job whose cancel reached the server while processes still run, ADR-024 o22.5);
 it is live everywhere: the pure logic (`isLiveStatus`), the status chips (`STATUS_CHIPS`), the status
 bar's active count (`queueCounts`) and the detail's dashboard default. `cancelButtons(actions, busy)`
@@ -792,7 +808,8 @@ of listeners disposed together, a late-resolving one unlistened on arrival. `tra
 one `job:remote-state` listener, `read(ids)` only after it resolved, every read and event through
 `mergeRemoteState`. `openJobView`: the job view's sequence above. `src/jobs/RemotePanel.tsx`
 renders `remoteView`'s values (`RemotePanel`, `RemoteJobBadges`, `RemoteBadgeChip` with the
-`.badge.tone-*` colours). `resolveRunTarget` / `LAST_RUN_TARGET_SETTING` (in `remote.ts`) decide
+`.badge.tone-*` colours; `RemotePanel.test.tsx` renders the panel and the row for a pending submit).
+`resolveRunTarget` / `LAST_RUN_TARGET_SETTING` (in `remote.ts`) decide
 the remembered "Run on" choice; `loadRunTarget` (in `live-wiring.ts`, bridge-injected) is New Job's
 read-only load with the load-race guard. **Cancel** (o22.14.10): `confirmThenCancel({ offer,
 confirm, currentActions, send })` asks only when the offer says `confirm`, counts a failing dialog as

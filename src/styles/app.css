@@ -1758,6 +1758,12 @@ select:disabled,
   background: #2a2f36;
   color: #9aa4b2;
 }
+/* Waiting for the slot (ADR-024 o23.15): neither fine nor wrong, and neither the cancel ambers nor
+   an error red — a blue-grey. */
+.badge.tone-info {
+  background: #14283a;
+  color: #6cb2e8;
+}
 .badge[class*="tone-"] {
   text-transform: none;
 }
@@ -1773,6 +1779,16 @@ select:disabled,
   margin-top: 6px;
   font-size: 13px;
   white-space: pre-wrap;
+}
+/* The pending submit's notice (ADR-024 o23.15.2): a warn line, with the blockers as a list. */
+.remote-notice {
+  margin-top: 6px;
+  font-size: 13px;
+  color: var(--warn);
+}
+.remote-notice ul {
+  margin: 4px 0 0;
+  padding-left: 20px;
 }
 
 /* --- Misc ------------------------------------------------------------- */

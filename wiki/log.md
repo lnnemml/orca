@@ -11641,3 +11641,58 @@ ignored.
   in `error_message`; Retry is refused by the command. Not run against uni; `tauri dev` not started.
 - **Next:** verifier CODE; Anton's greenlight; Part B (the view: badge, notice, blockers by title,
   Retry hidden by the offer rule), then the live gate and the uni run.
+
+## [2026-10-19] feat | Unit 5.4c Part B — the view of a pending submit
+
+ADR-024 o23.15 (with 23.7, 23.8, 23.14.2), frontend only, then STOP; not committed. **Main risk:**
+the user must see that a remote job waits for its slot and must not be offered an action wrong for that
+state — no Retry submit while pending, the old "slot busy" refusal not shown as a failure, the waiting
+state not lost after a restart (the badge keyed on the DB flag, not the in-memory record), and a pending
+cancel still deciding the actions by o22.14.1's table.
+
+- **`src/jobs/remote.ts`** (pure): `remoteView` adds the `submit_pending` badge — "Waiting for the slot
+  since <laptop time>", new tone `info` — from `job.submit_pending_since` alone; withholds `retry_submit`
+  (and the stale "Not on the server" label) while it is set; leaves the first Cancel (`confirm: true`) and
+  o22.14.1's table untouched, so a pending cancel adds its badge and decides Undo / Retry cancel; sets the
+  row's `error_message` aside (`text: null`) while the flag is set, and shows it as before once it is NULL.
+  The live view gains `waiting: { text, blockers } | null`: `pending_submit.notice` as it comes from Rust,
+  due only when the record says `notified` **and** the flag is still set; the blockers of a `slot_busy`
+  wait through `blockerLine` (the local job's title, else "pid N (cores C)" / "tsp row N on S", from the
+  `Blocker` fields; a blank title is none).
+- **`RemotePanel.tsx`** draws the notice as a warn line (`.remote-notice`) with the blockers as a list of
+  text; `RemoteJobBadges` (the Jobs row) draws the badge only. **`app.css`**: `.badge.tone-info`
+  (blue-grey), `.remote-notice`. `JobsScreen`/`JobDetailScreen` unchanged: the row text is not shown
+  there, and the detail's error banner is already off for a live remote job.
+- Wiki: `modules/frontend.md` (the pending-submit rules), `modules/remote-jobs.md` (the live gate),
+  ROADMAP 5.4c.
+
+Deviations: the three existing `toEqual` assertions on a live view gained `waiting: null` (the new
+field); "o23.15.4" is written "o23.15 item 4" in `remote.ts` because the existing source pin forbids the
+substring `5.4`.
+
+**Counts:** `npm test` 1074 → **1091** (+10 in `remote.test.ts`, +7 in the new `RemotePanel.test.tsx`; 80
+→ 81 files); `npx tsc --noEmit` clean; `cargo test` **947 passed**, 28 ignored (no Rust change; a first
+run beside a second concurrent `cargo test` failed 4 `backend_e2e_tests` — two runs sharing the real
+scripts' state — and the single run is green).
+
+**Negative controls** — each applied to a scratch copy of `src/`, the named tests red, the copy restored
+(`diff -r` identical):
+
+| # | break | red |
+|---|---|---|
+| 1 | badge keyed on `record.pending_submit` / on record and flag | the restart-case tests (view and panel and row), the cancel-table test |
+| 2 | badge tone `err` / `warn` | the tone test, the row test |
+| 2b | the badge shows the stored UTC string raw (`formatLaptopUtc` dropped; verifier V5 / F1) | `shows the waiting badge in the laptop's local time…` (forced `TZ=Europe/Kyiv`, restored in a `finally`; the older `\d\d:30:00` regex alone stayed green — it also accepts the raw string) |
+| 3 | notice without the `notified` gate / without the flag / built from `last` before `notified` | `shows the notice only once notified…` (the first via a deliberately inconsistent fixture, since Rust sets `notified` with the notice) |
+| 4 | blocker line ignoring the title / taking one from the job dir / showing a blank title / no blockers | the blockers test, the panel notice test |
+| 5 | Retry submit offered while waiting; never offered again after the end | `withholds Retry submit…`; `offers Retry submit again…` and five older retry tests |
+| 6 | the interim `error_message` shown while waiting; hidden after the end | the interim-text tests (view and panel); the older "row's text" tests |
+| 7 | waiting overrides the pending-cancel table / hides the cancel badge | the cancel-table test, the row-actions test, the panel test |
+| 8 | panel drops the notice / renders a title as markup / the row carries the notice | the panel and row render tests |
+| 9 | the notice's words ("held by") copied into `remote.ts` | the source pin `carries no copy of Rust's outcome texts…` (extended) |
+| 10 | no confirm on the first Cancel while waiting | the Cancel-offer tests |
+
+**Needs Anton's live gate (WebKitGTK, with the uni run):** a pending row exists only after uni answers
+"slot busy" — the badge tone and its legibility against the dark theme, the notice line and its blocker
+list, the Jobs row, a restart with a pending row (badge back before the first status step, "Checking the
+server…" beside it), Cancel on a pending row, a pending cancel beside the waiting badge.

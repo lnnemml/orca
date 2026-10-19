@@ -113,7 +113,10 @@ one that keeps it). An Undo leaves it: the pending submit resumes. `Job` carries
 is set the poller **re-checks** the row on every status step instead of labelling it, and submits it
 once the slot frees ([execution-backends.md](execution-backends.md#the-pending-submit-pollerpendingrs-adr-024-o23)).
 `retry_remote_submit` refuses a pending row ("a submit is pending; the slot is re-checked every
-period", o23.8).
+period", o23.8). The view keys on the **row's flag**, not the record (the record is empty after a
+restart): the "Waiting for the slot since <time>" badge, the notice with its blockers once
+`notified`, no Retry submit, the first Cancel offered, the interim `error_message` not shown as an
+error ([frontend.md](frontend.md), o23.15).
 
 ## Transfers (`sync.rs`, ADR-024 o items 3.2, 3.3.4, 6)
 
@@ -826,11 +829,10 @@ events and `job:log-reset { job_id }`; `watch_job_log(id, open)` counts a job's 
 
 ## Not built yet
 
-- **The pending submit's view** (ADR-024 o23.10, unit 5.4c Part B): the "Waiting for the slot"
-  badge, the record's notice from the 3rd refusal (`pending_submit.notice`), the blockers by title and
-  Retry submit hidden on a pending row by the offer rule. Until then a pending row looks like any
-  queued row with its last refusal in `error_message`, and a Retry click is refused by the command.
-  Then Anton's live gate and the uni run.
+- **The pending submit's live gate** (ADR-024 o23.15 item 6): a pending row exists only after uni
+  answers "slot busy", so its view (badge, notice, blockers, no Retry submit) is checked in the uni
+  run, with 5.4a's server-side states and B4. The view itself is built
+  ([frontend.md](frontend.md)).
 
 - **A run target is chosen only through Create & Run** (ADR-024 o20.2): a draft made with "Create
   Job" and later run from the Jobs table's "Run locally" button runs locally, and every fan-out

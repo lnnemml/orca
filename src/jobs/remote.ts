@@ -8,7 +8,9 @@
  *   read and the `job:remote-state` events whatever order they arrive in (o19.6);
  * - `remoteView`: the badges and offered actions of a job from its row and its record (o19.2,
  *   o19.7, o22.14): the cancel family with a per-action confirm, the hidden and disabled retries,
- *   the pending-cancel and bound badges, the check error prefixed by whether the server answered.
+ *   the pending-cancel and bound badges, the check error prefixed by whether the server answered;
+ *   and, for a pending submit (o23.15), the "Waiting for the slot" badge keyed on the row's flag,
+ *   its notice with the blockers, no Retry submit and no interim error text.
  *   The words of a check stay in the row's `error_message`; this module never copies Rust's
  *   outcome texts (`shown_message`) or its list of outcomes that need a later unit's action;
  * - `rowActions`: the Jobs table's row actions (o22.14.8);
@@ -23,6 +25,7 @@ import { formatLaptopUtc } from "../format";
 import type {
   CancelResult,
   CheckError,
+  ShownBlocker,
   Job,
   Outcome,
   RemoteState,
@@ -77,7 +80,8 @@ export function applyRemoteStateEvent(held: HeldRemoteState, jobId: string, even
 
 // --- Badges and actions (o19.2, o19.7, o22.14) --------------------------------------------------
 
-export type Tone = "ok" | "warn" | "err" | "muted";
+/** `info`: a state that is neither fine nor wrong — a job waiting for its slot (o23.15.1). */
+export type Tone = "ok" | "warn" | "err" | "muted" | "info";
 
 export type RemoteBadge =
   /** No record yet this launch: the first status step has not run. */
@@ -93,6 +97,10 @@ export type RemoteBadge =
   | { kind: "check_error"; answered: boolean; label: string; tone: Tone }
   /** Automatic fetches stopped after the strikes. */
   | { kind: "fetch_stopped"; label: string; tone: Tone }
+  /** A submit is pending (o23.15.1): the slot was busy or its check failed, and the poller
+   *  re-checks it every period. Keyed on the row's `submit_pending_since` — which survives a
+   *  restart — never on the record. */
+  | { kind: "submit_pending"; label: string; tone: Tone }
   /** A cancel is pending (o22.14.1): since when, or — once the send is marked — that it may already
    *  be on the server. */
   | { kind: "cancel_pending"; sent: boolean; label: string; tone: Tone }
@@ -124,6 +132,27 @@ export interface RemoteOffer {
 /** Why a retry is disabled while the server does not answer (o22.8). */
 export const RETRY_UNREACHABLE = "server unreachable — retry when it answers";
 
+/**
+ * The notice of a pending submit (o23.15.2): Rust's `pending_submit.notice` as it stands, and — for
+ * a `slot_busy` wait — one line per blocker. Present only once the record says `notified` (the 3rd
+ * refusal) **and** the row's flag is still set.
+ */
+export interface WaitNotice {
+  text: string;
+  blockers: string[];
+}
+
+/**
+ * One blocker as a line of text (o23.15.2): the title of the local job it belongs to, else its
+ * fallback — "pid <pid> (cores <cores>)" or "tsp row <id> on <socket>" — built from the `Blocker`
+ * fields, never re-parsed from a string. A blank title is no title.
+ */
+export function blockerLine(shown: ShownBlocker): string {
+  if (shown.title != null && shown.title.trim() !== "") return shown.title;
+  const b = shown.blocker;
+  return b.kind === "process" ? `pid ${b.pid} (cores ${b.cores})` : `tsp row ${b.id} on ${b.socket}`;
+}
+
 export type RemoteView =
   /** No coordinates: nothing remote to show. */
   | { kind: "local" }
@@ -133,10 +162,13 @@ export type RemoteView =
   | { kind: "terminal" }
   /** A remote `queued`/`running`/`cancelling` job. `text` is the row's `error_message`;
    *  `fromLastCheck` labels it "from the last check" whenever the record holds no decided state
-   *  (o19.2) — then it may be stale across a restart and no action comes from it. */
+   *  (o19.2) — then it may be stale across a restart and no action comes from it. It is null while
+   *  a submit is pending: the badge and `waiting` replace the interim refusal (o23.15, item 4). */
   | {
       kind: "live";
       text: { body: string; fromLastCheck: boolean } | null;
+      /** The pending submit's notice, once it is due (o23.15.2); null otherwise. */
+      waiting: WaitNotice | null;
       badges: RemoteBadge[];
       actions: RemoteOffer[];
     };
@@ -196,6 +228,11 @@ export function checkErrorLabel(error: CheckError): string {
  *
  * **The retries** (o22.8, o22.14.4): hidden while a cancel is pending; disabled with
  * [`RETRY_UNREACHABLE`] while the last contact failed.
+ *
+ * **A pending submit** (o23.15): the row's `submit_pending_since` adds the "Waiting for the slot"
+ * badge (beside a pending cancel's, which still decides the actions by the table above), withholds
+ * Retry submit — the first Cancel, with its confirm, is the exit — and drops the row's interim
+ * `error_message`. Its `notice` (with the blockers) comes from the record once `notified`.
  */
 export function remoteView(job: Job, record: RemoteState | null | undefined): RemoteView {
   const coords = coordinateState(job);
@@ -215,14 +252,22 @@ export function remoteView(job: Job, record: RemoteState | null | undefined): Re
   // `!= null`: a fixture or an older payload may lack the fields entirely.
   const pending = job.cancel_requested_at != null;
   const sent = job.cancel_sent_at != null;
+  // A pending submit (o23.15.1): the row's flag decides — it is in the DB and survives a restart —
+  // never the record, which a restart loses until the first re-check.
+  const waitingSince = job.submit_pending_since ?? null;
+  const waiting = waitingSince != null;
 
   if (!record) {
     badges.push({ kind: "checking", label: "Checking the server…", tone: "muted" });
   }
   if (known?.kind === "labelled") {
     if (known.detail === "not_on_server") {
-      badges.push({ kind: "labelled", label: "Not on the server", tone: "warn" });
-      retries.push("retry_submit");
+      // While a submit is pending the job is waiting, not stranded: no "Not on the server" and no
+      // Retry submit (the poller re-checks every period, o23.8, o23.15.3).
+      if (!waiting) {
+        badges.push({ kind: "labelled", label: "Not on the server", tone: "warn" });
+        retries.push("retry_submit");
+      }
     } else if (known.detail === "submit_interrupted") {
       badges.push({ kind: "labelled", label: "Submit interrupted", tone: "warn" });
     }
@@ -249,6 +294,13 @@ export function remoteView(job: Job, record: RemoteState | null | undefined): Re
       stale,
       label: `${stale ? "Last seen: fetching results" : "Fetching results"}${failed}`,
       tone: stale ? "muted" : "warn",
+    });
+  }
+  if (waitingSince != null) {
+    badges.push({
+      kind: "submit_pending",
+      label: `Waiting for the slot since ${formatLaptopUtc(waitingSince)}`,
+      tone: "info",
     });
   }
   if (pending) {
@@ -292,8 +344,24 @@ export function remoteView(job: Job, record: RemoteState | null | undefined): Re
     if (sendsStopped) offer("retry_cancel", false);
   }
 
-  const text = job.error_message != null ? { body: job.error_message, fromLastCheck: known === null } : null;
-  return { kind: "live", text, badges, actions };
+  // While a submit is pending the row's `error_message` is the first refused attempt's "not
+  // submitted (Submit step …): slot busy …": the badge and the notice say it better, and it is not
+  // a failure (o23.15, item 4). Once the flag is NULLed the text is what it always was.
+  const text = job.error_message != null && !waiting ? { body: job.error_message, fromLastCheck: known === null } : null;
+  return { kind: "live", text, waiting: waitNotice(waiting, record), badges, actions };
+}
+
+/**
+ * The pending submit's notice (o23.15.2). Due only while the row's flag is set — a record that
+ * lingers after the pending state ended must not show it — and once the record says `notified`.
+ * The blockers are listed for a `slot_busy` wait only; the other kinds carry their reason in the
+ * notice itself.
+ */
+function waitNotice(waiting: boolean, record: RemoteState | null | undefined): WaitNotice | null {
+  const pending = record?.pending_submit;
+  if (!waiting || !pending || !pending.notified || pending.notice == null) return null;
+  const blockers = pending.last?.kind === "slot_busy" ? pending.last.detail.blockers.map(blockerLine) : [];
+  return { text: pending.notice, blockers };
 }
 
 // --- The Jobs table's row actions (o22.14.8) -----------------------------------------------------
