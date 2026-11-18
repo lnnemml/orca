@@ -11784,3 +11784,16 @@ row only; the shared `.builder-row` rule and the other rows are unchanged. Needs
   "next" now points at B4, whose line records steps 0–1 done (2026-11-17).
 - `src/styles/app.css`: the `.builder-charge-note` comment named only the Charge caption; since
   ADR-025 the nprocs caption uses the class too. Comment reworded; no rule changed.
+
+## [2026-11-18] probe | B4 G1a — cold restart: the job finished with the laptop off, picked up on boot
+- Anton: Create & Run "Ibuprofene" (r²SCAN-3c Opt Freq, nprocs auto) on uni → saw "Server: running" →
+  quit the app and powered the laptop off → powered on after 14 min → `npm run tauri dev`; the row
+  reached parsed ~40 s after boot with no click.
+- Prober (read-only as `anton`): the job ended on the server 8 min 13 s after the laptop shut down
+  and 6 min 10 s before it came back; the fetch is byte-identical (11/11 files, sha256+size+mtime);
+  server-only scratch (`.gbw` opt-in, densities, engrad, opt, bibtex) excluded as designed; nothing
+  left running, tsp queue empty.
+- ADR-025 live: 24 MPI ranks; 8 min 42 s vs ~24 min for the same input on 4 ranks (2026-11-17).
+- Server clock offset now +144.07 s (was +142.1 s on 2026-11-17): it drifts ~2 s/day, unsynced.
+- G1 split: G1a (cold restart) done; G1b (suspend, long sleep) still open, with M1–M8.
+  Record: `wiki/architecture/remote-live-run-b4.md` § G1a.

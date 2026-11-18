@@ -1425,7 +1425,7 @@ preflight. The remaining items (remote `orca_plot`, pause) are not numbered yet.
       `cancel.sh` / `collect.sh`, the length-prefixed snapshot wire format and its strict parser,
       run for real on the laptop (stub `tsp`/ORCA, fixtures (a)–(e), d′ orders) —
       [modules/remote-jobs.md](wiki/modules/remote-jobs.md).
-- [ ] **Unit 5.3 — `SshBackend` wiring** (**A1 ✅ 2026-10-05** `d47623d`: v20, artifact list, LogChunk, pure parsers; **A2 ✅ 2026-10-05** `ff0b5e1`: server scripts submit/label/poll_log/list, ADR-024 o13; **B1 ✅ 2026-10-06** `e6211f0`; **B2 ✅ 2026-10-06** (poller core + wiring, ADR-024 o17/o18); **B3 ✅ 2026-10-17** `fbea751` (remote record + screens, ADR-024 o19/o20; live gate passed); **next: B4** — steps 0–1 done 2026-11-17) via system `ssh`/`rsync`: rsync job dir up → the 5.2
+- [ ] **Unit 5.3 — `SshBackend` wiring** (**A1 ✅ 2026-10-05** `d47623d`: v20, artifact list, LogChunk, pure parsers; **A2 ✅ 2026-10-05** `ff0b5e1`: server scripts submit/label/poll_log/list, ADR-024 o13; **B1 ✅ 2026-10-06** `e6211f0`; **B2 ✅ 2026-10-06** (poller core + wiring, ADR-024 o17/o18); **B3 ✅ 2026-10-17** `fbea751` (remote record + screens, ADR-024 o19/o20; live gate passed); **next: B4** — steps 0–1 done 2026-11-17, G1a 2026-11-18) via system `ssh`/`rsync`: rsync job dir up → the 5.2
       wrapper via task-spooler (per-slot `TS_SOCKET`) → byte-offset `poll_log` of output → selective
       rsync down (the shared artifact-pattern list + markers + `.tsp-out/`; gbw opt-in, ADR-024 o6); `enum Backend` (ADR-023). Also per
       ADR-024 (m)/(n)/(o):
@@ -1480,7 +1480,8 @@ preflight. The remaining items (remote `orca_plot`, pause) are not numbered yet.
               `opus`: Rust record + TS pure logic) → STOP → Part B (screens). Anton's
               live WebKitGTK gate.
         - [ ] **B4 — live run on uni** + Anton's gate (**steps 0–1 ✅ 2026-11-17**: post-outage snapshot, first
-              install, Retry of both rows; next G1 + M1–M8): submit → close laptop → reopen → result. Plan and
+              install, Retry of both rows; **G1a ✅ 2026-11-18**: quit + power off mid-run, picked up and
+              fetched byte-identical on boot; next G1b (suspend) + M1–M8): submit → close laptop → reopen → result. Plan and
               results: `wiki/architecture/remote-live-run-b4.md` (step 0: post-outage snapshot first). Also
               measure (rule #10, from B2): the rsync-down / LIST timeouts (300 s; 1800 s with `.gbw`),
               rsync exit codes on a dropped link, the `poll_log` 10 s bound and catch-up, that an emit

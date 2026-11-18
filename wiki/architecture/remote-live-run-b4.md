@@ -146,6 +146,51 @@ in the evening (suspend overnight) → M3, M5, M2 with Anton → M6 in the app. 
 
 **Not in B4:** the 1800 s `.gbw` timeout (no production path); acting on `Lost`/`ReEnqueue` (5.4).
 
+## G1a — submit, quit, power off, power on (2026-11-18)
+
+G1 split in two: **G1a** is the cold restart (app quit + laptop powered off while the job runs), the
+path "Done when" names; **G1b** is the suspend variant (the app process survives with stale ssh
+connections), still open and wanted with a long sleep (an hour or overnight), since a short one may
+not let the idle TCP connection die.
+
+### Facts (Anton ran it in the app; prober compared both dirs read-only as `anton`; M = measured)
+
+- **Job** `4b4972bc` "Ibuprofene", `! r2SCAN-3c Opt Freq TightSCF`, builder nprocs blank (ADR-025
+  auto) → the uploaded input carries `%pal nprocs 24 end`; `output.out` "Program running with 24
+  parallel MPI-processes" (M). Run time 8 min 41.9 s (`TOTAL RUN TIME`, = `.started` → `.exit_code`
+  mtime, = `tsp -l` 521.98 s) (M). The same input on 4 ranks (row `f57c93ca`, 2026-11-17) took ~24 min.
+- **Timeline** (laptop EET; server times corrected by the offset re-measured now, **+144.07 s**,
+  three mid-point readings ±0.03 s, RTT ~0.1 s — it was +142.1 s on 2026-11-17, so the unsynced
+  clock drifts ~2 s/day) (M); times to ±1 s (`last` resolution):
+
+  | Event | Time |
+  |---|---|
+  | `.started` (server) / DB `started_at` | 09:19:25 / 09:19:32 |
+  | laptop shutdown (`last -x`) | 09:19:54 |
+  | `.exit_code` = 0 (server) | 09:28:08 |
+  | laptop power-on (`last -x` reboot) | 09:34:17 |
+  | DB `completed_at` (row parsed, no click) | 09:34:57 |
+
+  The job ended 8 min 13 s after shutdown and 6 min 10 s before power-on: it finished with no app
+  and no laptop. The row reached **parsed ~40 s after boot** (incl. Anton's `npm run tauri dev`) by
+  the poller's resume-at-launch path, with no user action.
+- **Fetch** byte-identical: all 11 local files (`.enqueued`, `.started`, `.exit_code`, `input.inp`,
+  `input.xyz`, `input_trj.xyz`, `input.hess`, `input.property.txt`, `output.out`, `stderr.log`,
+  `.tsp-out/ts-out.*`) match the server's in sha256, size and mtime (M). The dangling `.submitting
+  -> x` claim symlink (o3.3) is on both sides with the same mtime, as on row `f57c93ca` — fetched by
+  design, not a stale leftover (M; the prober's file listing skipped symlinks, the orchestrator
+  listed it with `ls -la`). Nothing local-only (M).
+  Server-only, excluded by the curated filter as designed: `input.gbw` (opt-in, o6),
+  `input.densities`, `input.densitiesinfo`, `input.engrad`, `input.opt`, `input.bibtex` (M).
+- **After:** nothing of the job running on uni; slot0 `tsp -l` shows it finished, E-level 0, queue
+  empty; server boot_id unchanged since 11-12 (no server reboot in the run) (M).
+
+### Not measured
+
+- G1b (suspend), M1–M8. `output.out` carries the server's host name in ORCA's header; it is the
+  user's own file and the app does not copy it anywhere, but it is a reason never to paste an
+  `output.out` header into the wiki.
+
 ## Drift found while planning (fix with the results)
 
 - ADR-024 o18 residual "no `ServerAliveInterval`": true of the argv, not of the effective behaviour
