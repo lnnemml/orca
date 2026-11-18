@@ -140,8 +140,8 @@ export function InputBuilderForm({
         />
       </div>
 
-      {/* Row 4: numeric settings */}
-      <div className="builder-row">
+      {/* Row 4: numeric settings — top-aligned so captioned fields don't lift their inputs */}
+      <div className="builder-row builder-row-top">
         <div className="field builder-num">
           <label className="label">Charge</label>
           {scene ? (

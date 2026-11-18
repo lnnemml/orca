@@ -11770,3 +11770,10 @@ numeric column and wraps), the `role="alert"` row (colour/spacing, vs the parity
 Generate buttons (plain and NEB-TS), and the NEB flow end to end. After a New Job on the uni profile, the
 ORCA banner in `output.out` should read 24 MPI-processes. Stored `nprocs 4` rows keep it until recreated
 (item 6).
+
+## [2026-11-18] fix | Builder numeric row aligned to the top
+Symptom: in the Input Builder's numeric row (Charge, Multiplicity, nprocs, maxcore) the labels and inputs did
+not line up. Cause: `.builder-row` uses `align-items: flex-end`, and Charge and nprocs carry a caption under
+the input (nprocs's wraps to two lines in the 110 px column), so the taller fields lifted their label and input
+above Multiplicity and maxcore. Fix: a `.builder-row-top` modifier (`align-items: flex-start`) on the numeric
+row only; the shared `.builder-row` rule and the other rows are unchanged. Needs Anton's live WebKitGTK gate.

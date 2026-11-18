@@ -317,6 +317,13 @@ body {
   flex-wrap: wrap;
 }
 
+/* Top-aligned variant (numeric row): some fields carry a caption under the input, and with
+   flex-end the taller ones push their label + input above the rest. flex-start keeps every
+   label and input on one line; captions hang below their own input. */
+.builder-row-top {
+  align-items: flex-start;
+}
+
 .builder-row .field {
   flex: 1;
   min-width: 150px;
