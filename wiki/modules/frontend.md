@@ -195,7 +195,8 @@ that an in-progress New Job draft is discarded on a tab switch (accepted).
   prefixed path double-maps and Rollup can't resolve it (`debugging/001`).
 - **`templates/orca-templates.ts`** — 8 hardcoded `OrcaTemplate`s across 4 categories
   (SP / Opt / Freq / Opt+Freq × r²SCAN-3c and B3LYP-D4/def2-SVP), each a complete runnable `.inp`
-  with `%pal nprocs 4 end`, `%maxcore 2000`, an H₂ placeholder. **ORCA-correctness:** `%maxcore` is a
+  with `%maxcore 2000` and an H₂ placeholder — **no `%pal`**: the backend that runs the job supplies
+  the rank count (ADR-025; pinned by `orca-templates.test.ts`). **ORCA-correctness:** `%maxcore` is a
   simple directive and takes **no `end`** (unlike the `%pal` block) — the task spec said `%maxcore
   2000 end`; we emit the correct `%maxcore 2000`.
 - **Bundle note:** the full `monaco-editor` import pulls all built-in languages (~4 MB / ~1 MB gz),
@@ -216,14 +217,19 @@ Dropdowns → a valid `.inp`, still hand-editable in Monaco (`form → text` one
   name (no basis/dispersion/RI — disabled in the UI); RI auto-adds the aux basis (`def2/J` for
   RIJCOSX/RI-J, `def2/JK` for RI-JK) on a def2 basis; canonical order
   `method basis auxbasis RI dispersion solvation jobtype scfconv`; `%maxcore` no `end`, `%pal` with
-  `end`; solvation `MODEL(solvent)`. **`functionalHasBuiltInDispersion`** looks a functional up in
+  `end` — and `%pal` is emitted **only for an explicit `nprocs`** (`!== null`, never truthiness; auto
+  emits none, ADR-025); solvation `MODEL(solvent)`. **`functionalHasBuiltInDispersion`** looks a functional up in
   `FUNCTIONAL_GROUPS` and skips the standalone dispersion token for functionals that bake it in
   (`wB97X-D4` — `-D4`; `wB97M-V` — VV10 `-V`), so `! wB97X-D4 … D4` can't double-count; the form
   disables the Dispersion dropdown with "Included in the functional" for those.
   - `geometry` is a **`Scene | null`**: a Scene supplies canonical merged coordinates and
     **overrides** the header charge (`totalCharge`) and multiplicity (`scene.multiplicity`); null →
     placeholder. `DEFAULT_BUILDER_STATE`: r²SCAN-3c composite, Opt+Freq, TightSCF, gas phase, 0/1,
-    nprocs 4, maxcore 2000.
+    **nprocs `null` (auto — no `%pal`)**, maxcore 2000. `BuilderState.nprocs` is `number | null`
+    (a required key). `parseNprocsText(raw)` turns the form's raw text into `{kind:"auto"}` (trimmed
+    blank), `{kind:"explicit", nprocs}` (ASCII digits, a safe integer > 0) or `{kind:"invalid"}`
+    (0, a sign, a decimal point, an exponent, other text). The derived producers (OptTS, GOAT/IRC
+    re-opt, CREST re-opt) spread the defaults, so they are auto and never inherit a source's `%pal`.
 - **`InputBuilderForm.tsx`** — collapsible, **Scene-driven**: it derives a (single-fragment) Scene
   from the current buffer via `sceneFromOrcaInput`. With a Scene present, **Charge is read-only**
   (`totalCharge(scene)`, a "Σ of N fragments" caption), **Multiplicity stays editable** (written into
@@ -231,7 +237,13 @@ Dropdowns → a valid `.inp`, still hand-editable in Monaco (`form → text` one
   appears under the numeric row — informational, Generate still works. The composite-vs-functional
   radio disables the basis/dispersion/RI selects; the solvent select is disabled in gas phase. A
   **live `!`-line preview** (`buildKeywordLine`) is the learning element. Generate → `onGenerate(
-  buildOrcaInput(state, scene))`. The method-family selector + per-family controls are the reusable
+  buildOrcaInput(state, scene))`. The **nprocs field** keeps its raw text (`nprocsText`;
+  `type="text" inputMode="numeric"`, placeholder "auto", a one-line hint); `state.nprocs` is set only
+  from a valid `parseNprocsText` (blank → `null`, a positive integer → that number). Invalid text shows a
+  `role="alert"` line (the parity warning stays `role="status"` and never blocks) and **disables both
+  Generate controls** — "Generate Input" and, for `NEB-TS`, `NebBuilderSection`'s "Generate NEB input"
+  (its `canGenerate` takes the form's `nprocsValid` prop); `generate` also refuses while invalid. An
+  invalid value is never emitted and never becomes auto. The method-family selector + per-family controls are the reusable
   **`<MethodPicker>`** (the form consumes it via a `leading` slot for Job type — a no-behaviour-change
   extraction pinned byte-for-byte by `InputBuilderForm.test.tsx`); the same control gains an "Inherit
   from source" default at the OptTS-refine sites. See [method-picker.md](method-picker.md).

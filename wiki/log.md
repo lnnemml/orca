@@ -11696,3 +11696,77 @@ scripts' state — and the single run is green).
 "slot busy" — the badge tone and its legibility against the dark theme, the notice line and its blocker
 list, the Jobs row, a restart with a pending row (badge back before the first status step, "Checking the
 server…" beside it), Cancel on a pending row, a pending cancel beside the waiting badge.
+
+## [2026-11-17] probe | B4 step 0 — uni after the outage: clean shutdown, no app install ever
+
+Read-only snapshot as `anton` (prober), recorded in
+[remote-live-run-b4.md](architecture/remote-live-run-b4.md) §Step 0 (Facts / Not measured). The app
+stayed closed throughout. Findings that change the plan's assumptions:
+
+- **No app layout on uni.** The root holds only the old probe dirs and a socket-less `tsp/`; no
+  `jobs/`, no `bin/`. The three remote rows (`e900980b`, `f57c93ca`, `85a2d627`) never reached the
+  server (DB agrees — all `queued`, the only remote rows). Opening the app is therefore the app's
+  **first-ever install** on uni, together with 85a2d627's not-on-server cancel delivery.
+- **Not a power loss.** Clean shutdown 2026-10-14, back 2026-10-29, five more clean reboots since;
+  why the laptop saw it as offline after 10-29 is not measured. Crash/power-loss boots exist in
+  07-15…08-27, so the UPS question stays open.
+- tailscaled + sshd come up unattended (~56 s after boot); server clock +142.1 s vs the laptop
+  (unsynchronised); journal not readable by `anton`, `wtmp` is.
+- Row 8 (`Lost`) and the post-reboot stale-socket state stay simulation-only: nothing was running.
+
+Also fixed the B2 leftover: step 1 now says Cancel (confirm moved from Withdraw, o22.7).
+Next: Anton opens the app (DB migrates v21→v22; backup `orcastudio.db.bak-2026-10-19` is
+byte-identical to the current DB) — step 1.
+
+## [2026-11-17] decision | ADR-025 — `%pal` is the run target's by default
+
+From B4 step 1 (4 MPI ranks on uni's 24-CPU mask; the builder's placeholder `%pal nprocs 4 end` honoured
+as a deliberate value by ADR-024 o14.2's downward-only rule). Anton chose **A — auto by default**: the
+builder emits no `%pal` unless the user types a number, and the backends (unchanged) supply the preset's
+ranks locally and the mask's CPU count remotely. Forks decided by Anton: derived jobs (OptTS, GOAT/IRC
+re-opt, CREST re-opt) are auto; an invalid `nprocs` is a field error that disables both Generate
+controls. DESIGN round 1 PASS WITH FINDINGS (4 MED + 7 LOW), round 2 PASS WITH FINDINGS (3 MED + 6 LOW,
+all on the form: raw-text field `type="text"`, both Generate buttons, concrete invalid-input gates) —
+applied; accepted. Uni RAM recorded in the B4 page (62 GiB / 59 GiB available). Next: implementer
+Part A (frontend only).
+
+## [2026-11-17] feat | ADR-025 — %pal auto by default (builder, form, templates)
+
+Implements [ADR-025](architecture/adr-025-pal-auto-by-default.md) (frontend only; backends and `src-tauri/`
+untouched). **Part A** (verifier CODE: PASS WITH FINDINGS, tree 997f61a): `BuilderState.nprocs` is
+`number | null`, default `null`; `buildOrcaInput` emits `%pal nprocs N end` only for `!== null`;
+`parseNprocsText` (auto / explicit / invalid; an unsafe-integer digit string is invalid); the templates
+lost their `%pal nprocs 4 end`; the OptTS / GOAT-IRC re-opt / CREST re-opt producers became auto with no
+code change. **Part B:** `InputBuilderForm` keeps the nprocs raw text (`type="text" inputMode="numeric"`,
+placeholder "auto", a hint), sets `state.nprocs` only from a valid parse, shows a `role="alert"` line for
+invalid text and disables both Generate controls (`NebBuilderSection` takes an `nprocsValid` prop into its
+`canGenerate`); `.builder-error` in `app.css`. Both inline snapshots (`InputBuilderForm.test.tsx` golden,
+`optts.test.ts` baseline) were edited by hand — only the `%pal` line left each.
+Wiki: `modules/frontend.md` (templates, `build-input`, form), ADR-024 o14.2 pointer, ADR-025 (line numbers
+"at a4dcfde"; `crest/reopt` takes a cluster).
+
+Tests: vitest 1091 → 1128 (Part A) → **1144** (Part B); `tsc --noEmit` clean.
+
+| Negative control (apply → red → restore, `cmp` against a backup) | Red |
+|---|---|
+| default back to `4` | 7 (default, golden, OptTS baseline, 2 OptTS derived, scene/crest re-opt derived) |
+| emit via `nprocs ?? 4` | 7 (builder default + null, NEB auto, golden, OptTS baseline + 2 derived) |
+| truthiness test instead of `!== null` | `a_stray_zero_is_not_auto` |
+| parser maps invalid to auto | 11 (every invalid row) |
+| derived producers set `nprocs: 4` | 5 (OptTS ×3, scene/crest re-opt) |
+| template `%pal` line restored | 8 of 8 template rows |
+| form: drop the `disabled` predicate | 6 (4 invalid rows + re-enable + clear-invalid) |
+| form: invalid treated as auto | 11 (form ×6, NEB ×5) |
+| form: `Number(value)` (blank → 0) | 2 (`clearing_the_field_yields_no_pal`, clear-an-invalid-field) |
+| NEB: `nprocsValid` dropped from `canGenerate` | 5 (4 invalid rows + re-enable/emit) |
+
+Noted: mapping invalid → null **in the state alone** (with the `disabled` predicate and the `generate`
+guard intact) is unobservable by design — the control that bites is the one that also lets invalid text
+through as auto (row 8).
+
+**Needs Anton's live WebKitGTK gate (not unit-testable):** the nprocs field (`type="text"`, typing, no
+spinner), the `auto` placeholder and the hint's legibility on the dark theme (the hint sits in the 110 px
+numeric column and wraps), the `role="alert"` row (colour/spacing, vs the parity warning), both disabled
+Generate buttons (plain and NEB-TS), and the NEB flow end to end. After a New Job on the uni profile, the
+ORCA banner in `output.out` should read 24 MPI-processes. Stored `nprocs 4` rows keep it until recreated
+(item 6).

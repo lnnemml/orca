@@ -165,3 +165,15 @@ describe("buildReoptInput — conformer geometry (count + order preserved)", () 
     );
   });
 });
+
+// ADR-025 item 8 — a derived re-opt (GOAT conformer / IRC endpoint) is auto: it does not inherit
+// the source's `%pal`.
+describe("buildReoptInput — no `%pal` in the child, whatever the source held (ADR-025)", () => {
+  it("a source holding `%pal nprocs 4 end` yields a child with no `%pal`", () => {
+    const source = "! XTB GOAT\n%pal nprocs 4 end\n%maxcore 2000\n* xyz 0 1\nH 0 0 0\nH 0.9 0 0\n*\n";
+    expect(source).toContain("%pal nprocs 4 end"); // the source really holds one
+    const child = buildReoptInput(source, diatomic("H", "H"));
+    expect(child.split(/\r?\n/).filter((l) => l.trimStart().startsWith("%pal"))).toEqual([]);
+    expect(child).toContain("%maxcore 2000");
+  });
+});

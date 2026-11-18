@@ -1168,7 +1168,7 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
        4-CPU mask uploads `nprocs 4`; `%pal nprocs 2 end` on a 12-CPU mask uploads `nprocs 2`; a retry
        after a mask change uploads the new N. Open (not measured; the local path shares it): which of a
        `%pal` block and a `PALn` simple keyword ORCA honours when both are present — `align_pal_nprocs`
-       rewrites only the first `%pal`.
+       rewrites only the first `%pal`. (ADR-025: the builder emits no `%pal` by default.)
     3. **`<root>/tsp/` is created by the install call** (Anton, G2): `mkdir -p <root>/bin <root>/tsp`,
        then both asserted equal to their `realpath`; the prepare call asserts `tsp/`'s realpath too.
        What real tsp does when the socket's directory is missing is **not measured** (rule #10; probe

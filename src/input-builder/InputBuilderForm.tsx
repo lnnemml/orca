@@ -12,6 +12,7 @@ import {
   buildKeywordLine,
   buildOrcaInput,
   DEFAULT_BUILDER_STATE,
+  parseNprocsText,
   type BuilderState,
 } from "./build-input";
 import { OptionSelect } from "./OptionSelect";
@@ -45,6 +46,18 @@ export function InputBuilderForm({
     };
   });
 
+  // The nprocs field's RAW text (ADR-025 item 2). `state.nprocs` is set only from a valid
+  // parse of it (blank → null = auto, a positive integer → that number); invalid text never
+  // reaches the state, and while it stands both Generate controls are disabled (item 9).
+  const [nprocsText, setNprocsText] = useState("");
+  const nprocsInvalid = parseNprocsText(nprocsText).kind === "invalid";
+  const onNprocsText = (raw: string) => {
+    setNprocsText(raw);
+    const parsed = parseNprocsText(raw);
+    if (parsed.kind === "auto") set("nprocs", null);
+    else if (parsed.kind === "explicit") set("nprocs", parsed.nprocs);
+  };
+
   const set = <K extends keyof BuilderState>(key: K, value: BuilderState[K]) =>
     setState((s) => ({ ...s, [key]: value }));
 
@@ -61,6 +74,7 @@ export function InputBuilderForm({
   const parity = scene ? checkElectronParity(scene) : null;
 
   const generate = () => {
+    if (nprocsInvalid) return; // the button is disabled too; never emit an invalid nprocs
     // Scene present → charge/mult/coords come from the Scene; absent → the
     // form's own fields drive a placeholder geometry (unchanged behaviour).
     onGenerate(buildOrcaInput(state, scene));
@@ -165,14 +179,22 @@ export function InputBuilderForm({
           />
         </div>
         <div className="field builder-num">
-          <label className="label">nprocs</label>
+          <label className="label" htmlFor="builder-nprocs">
+            nprocs
+          </label>
+          {/* type="text", not "number": a number input reports half-typed text ("-", "1e") as
+              "" — the auto case — and its WebKitGTK behaviour is unmeasured (ADR-025 item 2). */}
           <input
+            id="builder-nprocs"
             className="input mono"
-            type="number"
-            min={1}
-            value={state.nprocs}
-            onChange={(e) => set("nprocs", Number(e.currentTarget.value))}
+            type="text"
+            inputMode="numeric"
+            placeholder="auto"
+            value={nprocsText}
+            onChange={(e) => onNprocsText(e.currentTarget.value)}
+            aria-invalid={nprocsInvalid}
           />
+          <span className="builder-charge-note muted">blank = auto: the run target sets it</span>
         </div>
         <div className="field builder-num">
           <label className="label">maxcore (MB)</label>
@@ -186,6 +208,15 @@ export function InputBuilderForm({
           />
         </div>
       </div>
+
+      {/* Invalid nprocs — a blocking error (role="alert"), unlike the parity warning below. */}
+      {nprocsInvalid && (
+        <div className="builder-row">
+          <div className="builder-error" role="alert">
+            nprocs must be a positive whole number, or blank for auto.
+          </div>
+        </div>
+      )}
 
       {/* Electron-parity warning — informational, never blocks Generate. */}
       {parity && (
@@ -202,11 +233,12 @@ export function InputBuilderForm({
       {state.jobType === "NEB-TS" ? (
         <NebBuilderSection
           state={state}
+          nprocsValid={!nprocsInvalid}
           onGenerateNeb={(inp, payload) => onGenerate(inp, payload)}
         />
       ) : (
         <div className="builder-row builder-actions">
-          <button className="btn btn-primary" onClick={generate}>
+          <button className="btn btn-primary" onClick={generate} disabled={nprocsInvalid}>
             Generate Input
           </button>
           <code className="builder-preview mono">! {buildKeywordLine(state)}</code>

@@ -163,3 +163,31 @@ describe("hasNebKeyword", () => {
     expect(hasNebKeyword("! r2SCAN-3c Opt\n* xyz 0 1\n*")).toBe(false);
   });
 });
+
+// ADR-025 — NEB spreads the form's own state, so it follows the form's nprocs: auto → no `%pal`,
+// explicit N → exactly that `%pal`.
+describe("buildNebInput — %pal follows the passed state's nprocs (ADR-025)", () => {
+  const palLines = (s: string) => s.split(/\r?\n/).filter((l) => l.startsWith("%pal"));
+
+  it("neb_auto_nprocs_emits_no_pal", () => {
+    const { inp } = buildNebInput(
+      state({ ...COMPOSITE_DMF, nprocs: null }),
+      REACTANT_INPUT,
+      REACTANT_GEOM,
+      PRODUCT_GEOM,
+    );
+    expect(palLines(inp)).toEqual([]);
+    expect(inp).toContain("%neb"); // the %neb splice is unaffected by the missing %pal
+  });
+
+  it("neb_explicit_nprocs_emits_that_pal", () => {
+    const { inp } = buildNebInput(
+      state({ ...COMPOSITE_DMF, nprocs: 6 }),
+      REACTANT_INPUT,
+      REACTANT_GEOM,
+      PRODUCT_GEOM,
+    );
+    expect(palLines(inp)).toEqual(["%pal nprocs 6 end"]);
+    expect(inp.indexOf("%pal")).toBeLessThan(inp.indexOf("%neb"));
+  });
+});

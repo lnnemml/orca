@@ -10,6 +10,9 @@
 //! NOTE: `%maxcore` is a simple directive, not a block — it takes NO `end`
 //! (unlike `%pal ... end`). Emitting `%maxcore 2000 end` would be wrong ORCA
 //! syntax, so these templates use the correct `%maxcore 2000` form.
+//!
+//! The templates carry no `%pal`: the backend that runs the job supplies the rank
+//! count (ADR-025).
 
 export type OrcaCategory =
   | "single-point"
@@ -35,7 +38,6 @@ const PLACEHOLDER_COORDS = `* xyz 0 1
 function buildInput(keywords: string): string {
   return `! ${keywords}
 
-%pal nprocs 4 end
 %maxcore 2000
 
 ${PLACEHOLDER_COORDS}

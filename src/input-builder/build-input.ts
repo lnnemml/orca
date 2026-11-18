@@ -41,8 +41,34 @@ export interface BuilderState {
   scfConv: string;
   charge: number;
   multiplicity: number;
-  nprocs: number;
+  /** MPI ranks for `%pal`; `null` = auto — no `%pal` line, the run target supplies the count (ADR-025). */
+  nprocs: number | null;
   maxcore: number; // MB per core
+}
+
+/**
+ * What the form's raw `nprocs` text means (ADR-025 item 2). Three outcomes, never a bare
+ * number: an empty field is **auto** (no `%pal`), a positive integer is **explicit**, and
+ * everything else is **invalid** — which is never emitted and never silently becomes auto.
+ */
+export type NprocsParse =
+  | { kind: "auto" }
+  | { kind: "explicit"; nprocs: number }
+  | { kind: "invalid" };
+
+/**
+ * Parse the `nprocs` field's raw text. Surrounding whitespace is trimmed (`" 8 "` → 8);
+ * trimmed `""` → auto; ASCII digits only (`/^\d+$/`) and > 0 → explicit; anything else
+ * (0, a sign, a decimal point, an exponent, other text) → invalid. A digit string beyond
+ * the safe-integer range is invalid too, so no imprecise number ever reaches `%pal`.
+ */
+export function parseNprocsText(raw: string): NprocsParse {
+  const text = raw.trim();
+  if (text === "") return { kind: "auto" };
+  if (!/^\d+$/.test(text)) return { kind: "invalid" };
+  const n = Number(text);
+  if (!Number.isSafeInteger(n) || n <= 0) return { kind: "invalid" };
+  return { kind: "explicit", nprocs: n };
 }
 
 /**
@@ -101,7 +127,7 @@ export const DEFAULT_BUILDER_STATE: BuilderState = {
   scfConv: "TightSCF",
   charge: 0,
   multiplicity: 1,
-  nprocs: 4,
+  nprocs: null, // auto (ADR-025)
   maxcore: 2000,
 };
 
@@ -249,7 +275,9 @@ const PLACEHOLDER_COORDS = "# paste coordinates here, or import a molecule above
  * empty scene) to emit a commented placeholder using the form's own
  * charge/multiplicity.
  *
- * `%maxcore` is a simple directive (NO `end`); `%pal` is a block (WITH `end`).
+ * `%maxcore` is a simple directive (NO `end`); `%pal` is a block (WITH `end`). `%pal` is
+ * emitted only for an explicit `nprocs` (`!== null`, never a truthiness test); auto emits
+ * none and the backend that runs the job inserts its own count (ADR-025).
  */
 export function buildOrcaInput(
   state: BuilderState,
@@ -270,7 +298,7 @@ export function buildOrcaInput(
 
   return [
     `! ${buildKeywordLine(state)}`,
-    `%pal nprocs ${state.nprocs} end`,
+    ...(state.nprocs !== null ? [`%pal nprocs ${state.nprocs} end`] : []),
     `%maxcore ${state.maxcore}`,
     "",
     `* xyz ${charge} ${multiplicity}`,

@@ -340,6 +340,18 @@ body {
   font-size: 11px;
 }
 
+/* Invalid-input row (nprocs) — a blocking error, unlike the parity warning below. */
+.builder-error {
+  flex: 1;
+  padding: 8px 10px;
+  border: 1px solid var(--err);
+  border-radius: 6px;
+  background-color: rgba(239, 68, 68, 0.08);
+  color: var(--err);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
 /* Electron-parity warning row — informational, not an error/block. */
 .builder-parity {
   flex: 1;

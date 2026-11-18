@@ -32,9 +32,13 @@ export interface NebPayload {
  */
 export function NebBuilderSection({
   state,
+  nprocsValid,
   onGenerateNeb,
 }: {
   state: BuilderState;
+  /** False while the form's nprocs text is invalid (ADR-025 item 9): Generate stays disabled,
+   *  so an invalid value is never emitted and never silently becomes auto. */
+  nprocsValid: boolean;
   onGenerateNeb: (inp: string, payload: NebPayload) => void;
 }) {
   const [jobs, setJobs] = useState<Job[]>([]);
@@ -58,7 +62,7 @@ export function NebBuilderSection({
   }, [load]);
 
   const canGenerate =
-    reactantId !== "" && productId !== "" && reactantId !== productId && !busy;
+    reactantId !== "" && productId !== "" && reactantId !== productId && !busy && nprocsValid;
 
   const generate = useCallback(async () => {
     if (!canGenerate) return;

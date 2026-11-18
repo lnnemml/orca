@@ -156,7 +156,6 @@ describe("buildOptTSInput — methodState override (family model, not a flattene
     // And the baseline itself is pinned — the composite slot carries method + solvation verbatim.
     expect(baseline).toMatchInlineSnapshot(`
       "! r2SCAN-3c SMD(DMF) OptTS Freq TightSCF
-      %pal nprocs 4 end
       %maxcore 2000
       %geom Calc_Hess true end
 
@@ -222,5 +221,23 @@ describe("buildOptTSInput — methodState override (family model, not a flattene
     expect(() =>
       buildOptTSInput(source, bad, { methodState: { ...BASE_SLICE, methodFamily: "dft" } }),
     ).toThrow();
+  });
+});
+
+// ── ADR-025 item 8 — a derived OptTS job is auto; it does not inherit the source's `%pal` ──
+describe("buildOptTSInput — no `%pal` in the child, whatever the source held (ADR-025)", () => {
+  const palLines = (s: string) => s.split(/\r?\n/).filter((l) => l.trimStart().startsWith("%pal"));
+  const SOURCE = "! r2SCAN-3c LooseOpt\n%pal nprocs 4 end\n%maxcore 2000\n\n* xyz 0 1\nN 0 0 0\nC 0 0 1.8\n*\n";
+
+  it("inherit branch (no methodState): source `%pal nprocs 4 end` is not carried", () => {
+    expect(SOURCE).toContain("%pal nprocs 4 end"); // the source really holds one
+    expect(palLines(buildOptTSInput(SOURCE, SEED))).toEqual([]);
+  });
+
+  it("override branch (methodState): source `%pal nprocs 4 end` is not carried", () => {
+    const child = buildOptTSInput(SOURCE, SEED, {
+      methodState: { ...BASE_SLICE, methodFamily: "composite", composite: "r2SCAN-3c" },
+    });
+    expect(palLines(child)).toEqual([]);
   });
 });

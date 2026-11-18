@@ -61,12 +61,71 @@ Record (read-only, as `anton`):
 5. Did `tailscaled` come back by itself (it evidently did not until power returned; record when the
    node reappeared).
 
+### Facts (2026-11-17, prober, read-only as `anton`; M = measured, I = inferred)
+
+- **No app layout on uni at all (M).** The profile's root (`remote_scratch_dir` = `~/.orcastudio`)
+  holds only the old probe dirs (`probe-5.2/`, `probe-5.2b/`, `verify/`, dated 10-03…10-05) and
+  `tsp/` with one stale `ts-out.*` and **no `slot*.sock`**. No `jobs/`, no `bin/` — the app's
+  install and `mkjob` have never reached this host. `85a2d627`, `e900980b`, `f57c93ca` exist nowhere
+  (`find`/`grep` over `~`, `/tmp`, `/var/tmp`). The DB agrees: these three are the only remote rows,
+  all `queued`, none ever uploaded. So the step-1 open is the app's **first-ever install** on uni.
+- **Not a power loss (M, `last -x -F`).** The outage began with a clean shutdown 2026-10-14 02:58;
+  next boot 2026-10-29 10:41 (15 d 7 h gap); then boots 10-30 (×3), 11-01, 11-07, 11-12 15:43, every
+  one preceded by a shutdown record. The box was up for most of 10-29…11-17; why the laptop saw it as
+  offline is **not measured**. Something external powered it on after the clean shutdown (person,
+  BIOS timer or WoL — not measured); "needed a physical visit" is neither confirmed nor refuted.
+  Earlier history (07-15…08-27) has five boots with no shutdown record (crash/power loss) — the
+  UPS question stays live.
+- **Unattended boot (M):** `tailscaled` and `sshd` are `enabled` and active ~56 s after kernel boot,
+  no login needed; `yats` gets a console session on `tty7` ~63 s after each boot (I: autologin).
+- **Boot (M):** up since 2026-11-12 15:43 (server clock), `boot_id` `8e9bf2d8-d99c-42de-949a-a3c9946ae436`.
+  No earlier real boot_id is recorded in the wiki, so there is nothing to compare it with.
+- **Clock (M):** server − laptop = **+142.1 s ± 0.07** (5 back-to-back pairs, `LC_ALL=C`);
+  `timedatectl`: not synchronized; RTC 6 s behind system clock. Never compare `started_at` across hosts.
+- **tsp (M):** no tsp/orca/mpirun/wrapper process of any user; `/proc/net/unix` lists nothing
+  under the root. `tsp` was not run.
+- **Journal (M):** not readable by `anton` (groups `anton`, `users` only); `wtmp` is readable and
+  was sufficient.
+- **No writes (negative control, M):** `find ~/.orcastudio -newermt 2026-10-06` → 0 entries; `ps`
+  identical before/after; the only new files under `~` are wireplumber state from the ssh login itself.
+
+### Not measured
+
+- When the node first reappeared from the laptop's side, and why it looked offline after 10-29.
+- Whether the box powers itself on after an AC loss (BIOS setting / WoL).
+- **The post-reboot state of a live job and a tsp socket** — no job or socket existed, so row 8
+  (`Lost`) and the stale-socket case remain simulation-only. They can only be observed by a deliberate
+  reboot with a job queued (Anton's call, not in B4 as planned).
+
 ## Step 1 — the two rows left by the outage
 
 Both are `queued` with coordinates and failed at the read-only **prepare** step (ssh timeout), so
 nothing was uploaded: "Ibuprofen opt+freq" (`e900980b…`) and "SP · r²SCAN-3c" (`f57c93ca…`). Expected
-(inference, unverified): the label call says **"not on the server"** → Anton chooses Withdraw (the
-o20.3 confirm) or Retry. This is also the live check of the not-on-server path after a real outage.
+(inference, unverified): the label call says **"not on the server"** → Anton chooses Cancel (the
+confirm moved there from Withdraw, o22.7) or Retry. This is also the live check of the not-on-server
+path after a real outage. *(Step 0 showed none of the three rows reached the server and no app
+install exists there; the first status step after opening the app is the app's first install on uni.)*
+
+### Facts (2026-11-17, app opened by Anton; server read by the orchestrator, read-only)
+
+- **First install (M):** at the first status step the app created `<root>/bin/` with `cancel-<sha>.sh`,
+  `collect-<sha>.sh`, `wrapper-<sha>.sh` and `<root>/jobs/`; no tsp daemon was started by it.
+- **Pending cancel 85a2d627 → not-on-server branch (M):** the server got `jobs/85a2d627…/` holding only an
+  empty `.cancelled`; the row became `cancelled` ("the server confirms .cancelled and nothing of the job
+  runs."), `cancel_requested_at`/`cancel_sent_at` cleared. The DB migrated v21→v22 on open.
+- **The two outage rows (M):** both showed "Not on the server" with Cancel; Anton chose Retry submit for
+  both. The first started the slot's tsp daemon (`tsp/slot0.sock`), wrote `.enqueued`/`.started` (the new
+  `boot_id`) and runs; the second was **enqueued in tsp behind it** ("Server: queued") — a same-slot
+  queue, not a 5.4c pending submit (pending needs a live blocker on the mask outside the slot's queue).
+- **`%pal` stays 4 on a 24-CPU mask (M):** both inputs carry the input builder's default
+  `%pal nprocs 4 end`; the remote path aligns downward only (ADR-024 o14.2), so 4 ranks run and 20 of the
+  mask's 24 CPUs idle. Locally the same input is raised to the preset's rank count. Raised to Anton as a
+  design fork.
+- **Server memory (M, 2026-11-17T07:05Z, `free -h` + `/proc/meminfo`, two jobs' 4 ranks running):**
+  `MemTotal` 65 795 232 kB (62 GiB), `MemAvailable` 62 327 852 kB (59 GiB), swap 119 GiB unused.
+  Feeds ADR-025 item 7.
+- **Title vs input (M):** the row titled "SP · r²SCAN-3c" holds `! r2SCAN-3c Opt Freq TightSCF` (33
+  atoms) — the input was edited after the title was generated.
 
 ## Measurements
 

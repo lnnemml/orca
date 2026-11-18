@@ -78,3 +78,12 @@ describe("buildClusterReoptInput — seed → ORCA re-opt at the SOLUTE charge +
     ).toThrow();
   });
 });
+
+// ADR-025 item 8 — the CREST re-opt is built from DEFAULT_BUILDER_STATE, so it is auto.
+describe("buildClusterReoptInput — no `%pal` (ADR-025)", () => {
+  it("the child has no `%pal` line", () => {
+    const inp = buildClusterReoptInput(CLUSTER, -1, 1, { solvent: "methanol" });
+    expect(inp.split(/\r?\n/).filter((l) => l.trimStart().startsWith("%pal"))).toEqual([]);
+    expect(inp).toContain("%maxcore 2000");
+  });
+});

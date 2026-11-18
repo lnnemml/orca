@@ -3,6 +3,7 @@ import { describe, it, expect } from "vitest";
 import {
   buildOrcaInput,
   buildKeywordLine,
+  parseNprocsText,
   DEFAULT_BUILDER_STATE,
   type BuilderState,
 } from "./build-input";
@@ -333,5 +334,71 @@ describe("buildOrcaInput", () => {
     // Form says 0 / 1, scene says -1 / 2 — the scene wins.
     const out = buildOrcaInput(state({ charge: 0, multiplicity: 1 }), scene(-1, 2));
     expect(out).toContain("* xyz -1 2");
+  });
+});
+
+// ADR-025 — `nprocs: null` is auto: no `%pal`, the run target supplies the count.
+describe("buildOrcaInput — %pal is emitted only for an explicit nprocs (ADR-025)", () => {
+  const palLines = (out: string) => out.split(/\r?\n/).filter((l) => l.startsWith("%pal"));
+
+  it("default_state_is_auto_and_emits_no_pal", () => {
+    // BITE: a default of 4 (or any number) puts a `%pal` line here.
+    expect(DEFAULT_BUILDER_STATE.nprocs).toBeNull();
+    expect(palLines(buildOrcaInput(DEFAULT_BUILDER_STATE, null))).toEqual([]);
+    expect(palLines(buildOrcaInput(DEFAULT_BUILDER_STATE, scene()))).toEqual([]);
+  });
+
+  it("null_nprocs_emits_no_pal_line", () => {
+    // BITE: emitting `%pal` for null (`nprocs ?? 4`, a flipped test) turns this red.
+    const out = buildOrcaInput(state({ nprocs: null }), null);
+    expect(palLines(out)).toEqual([]);
+    expect(out).not.toContain("%pal");
+    expect(out).toContain("%maxcore 2000"); // the neighbouring directive is untouched
+  });
+
+  it("explicit_nprocs_emits_exactly_one_pal_line", () => {
+    for (const n of [1, 8, 24]) {
+      expect(palLines(buildOrcaInput(state({ nprocs: n }), scene()))).toEqual([
+        `%pal nprocs ${n} end`,
+      ]);
+    }
+  });
+
+  it("a_stray_zero_is_not_auto — the test is `!== null`, never truthiness", () => {
+    // A truthy check would swallow 0 as auto; the parser never produces 0, so a 0 here is a bug
+    // that must show up in the input, not vanish into auto.
+    expect(palLines(buildOrcaInput(state({ nprocs: 0 }), null))).toEqual(["%pal nprocs 0 end"]);
+  });
+});
+
+describe("parseNprocsText — the form's raw text → auto | explicit | invalid (ADR-025 item 2)", () => {
+  it.each(["", "  ", "\t"])("blank %j is auto", (raw) => {
+    expect(parseNprocsText(raw)).toEqual({ kind: "auto" });
+  });
+
+  it.each([
+    ["1", 1],
+    ["24", 24],
+    [" 8 ", 8], // surrounding whitespace is trimmed
+    ["007", 7],
+  ])("%j is explicit %i", (raw, n) => {
+    expect(parseNprocsText(raw)).toEqual({ kind: "explicit", nprocs: n });
+  });
+
+  it.each([
+    "0",
+    "00",
+    "-1",
+    "+4",
+    "2.5",
+    "abc",
+    "1e3",
+    "-",
+    "8 4",
+    "\u0663", // an Arabic-Indic digit: \d must stay ASCII
+    "99999999999999999999", // beyond the safe-integer range: never an imprecise number
+  ])("%j is invalid — never silently auto", (raw) => {
+    // BITE: mapping an invalid string to auto turns every row of this table red.
+    expect(parseNprocsText(raw)).toEqual({ kind: "invalid" });
   });
 });
