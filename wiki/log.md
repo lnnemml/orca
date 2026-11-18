@@ -11777,3 +11777,10 @@ not line up. Cause: `.builder-row` uses `align-items: flex-end`, and Charge and 
 the input (nprocs's wraps to two lines in the 110 px column), so the taller fields lifted their label and input
 above Multiplicity and maxcore. Fix: a `.builder-row-top` modifier (`align-items: flex-start`) on the numeric
 row only; the shared `.builder-row` rule and the other rows are unchanged. Needs Anton's live WebKitGTK gate.
+
+## [2026-11-18] lint | ROADMAP B3 tick + stale caption comment
+- `ROADMAP.md` drift: 5.3 B3 was still `[ ]` "pending Anton's live gate", though the gate passed and
+  Part B was committed on 2026-10-17 (`fbea751`, log entry of that date). Ticked; the 5.3 header's
+  "next" now points at B4, whose line records steps 0–1 done (2026-11-17).
+- `src/styles/app.css`: the `.builder-charge-note` comment named only the Charge caption; since
+  ADR-025 the nprocs caption uses the class too. Comment reworded; no rule changed.

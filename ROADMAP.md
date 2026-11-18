@@ -1425,7 +1425,7 @@ preflight. The remaining items (remote `orca_plot`, pause) are not numbered yet.
       `cancel.sh` / `collect.sh`, the length-prefixed snapshot wire format and its strict parser,
       run for real on the laptop (stub `tsp`/ORCA, fixtures (a)–(e), d′ orders) —
       [modules/remote-jobs.md](wiki/modules/remote-jobs.md).
-- [ ] **Unit 5.3 — `SshBackend` wiring** (**A1 ✅ 2026-10-05** `d47623d`: v20, artifact list, LogChunk, pure parsers; **A2 ✅ 2026-10-05** `ff0b5e1`: server scripts submit/label/poll_log/list, ADR-024 o13; **B1 ✅ 2026-10-06** `e6211f0`; **B2 ✅ 2026-10-06** (poller core + wiring, ADR-024 o17/o18); **B3 Part A ✅ 2026-10-06** (remote record, ADR-024 o19); **next: B3 Part B**) via system `ssh`/`rsync`: rsync job dir up → the 5.2
+- [ ] **Unit 5.3 — `SshBackend` wiring** (**A1 ✅ 2026-10-05** `d47623d`: v20, artifact list, LogChunk, pure parsers; **A2 ✅ 2026-10-05** `ff0b5e1`: server scripts submit/label/poll_log/list, ADR-024 o13; **B1 ✅ 2026-10-06** `e6211f0`; **B2 ✅ 2026-10-06** (poller core + wiring, ADR-024 o17/o18); **B3 ✅ 2026-10-17** `fbea751` (remote record + screens, ADR-024 o19/o20; live gate passed); **next: B4** — steps 0–1 done 2026-11-17) via system `ssh`/`rsync`: rsync job dir up → the 5.2
       wrapper via task-spooler (per-slot `TS_SOCKET`) → byte-offset `poll_log` of output → selective
       rsync down (the shared artifact-pattern list + markers + `.tsp-out/`; gbw opt-in, ADR-024 o6); `enum Backend` (ADR-023). Also per
       ADR-024 (m)/(n)/(o):
@@ -1466,7 +1466,7 @@ preflight. The remaining items (remote `orca_plot`, pause) are not numbered yet.
               `job:log`/`job:convergence` for watched remote jobs (`watch_job_log`, refcounted, every open
               re-streams from 0, `job:log-reset`), the log poll unguarded and sequenced with the status
               step per job, the tail drained from the verified local copy before the terminal status.
-        - [ ] **B3 — UI** (**Part A ✅ 2026-10-06**: `RemoteState` record + `job:remote-state` + `remote_job_state`, TS types and pure view logic, ADR-024 o19/o19.11; **Part B landed 2026-10-07, pending Anton's live WebKitGTK gate**: "Run on" select, `openJobView` / `trackRemoteStates` listener order, `RemotePanel` + Jobs-table badges; ADR-024 o20: the last Create & Run's target remembered app-wide (`last_run_target`, the load never writes), a run target only via Create & Run — the table's "Run locally" and every fan-out (re-opt, scan/2D/NEB refines, connectivity) stay local and say so (choosing there not built in 5.3), a plugin-dialog confirm + re-check before Withdraw) (implementer `sonnet`): TS `Job` gains `backend_id`, `remote_host`,
+        - [x] **B3 — UI** (**Part A ✅ 2026-10-06**: `RemoteState` record + `job:remote-state` + `remote_job_state`, TS types and pure view logic, ADR-024 o19/o19.11; **Part B ✅ 2026-10-17** `fbea751` (Anton's live WebKitGTK gate passed): "Run on" select, `openJobView` / `trackRemoteStates` listener order, `RemotePanel` + Jobs-table badges; ADR-024 o20: the last Create & Run's target remembered app-wide (`last_run_target`, the load never writes), a run target only via Create & Run — the table's "Run locally" and every fan-out (re-opt, scan/2D/NEB refines, connectivity) stay local and say so (choosing there not built in 5.3), a plugin-dialog confirm + re-check before Withdraw) (implementer `sonnet`): TS `Job` gains `backend_id`, `remote_host`,
               `remote_job_dir`, `remote_socket`; run-target dropdown (n2 predicate, disabled reasons,
               last choice per project *(amended by o20: app-wide)*); "not on the server" / "submit interrupted" / "handled in 5.4"
               states with retry/withdraw; refusal messages; the live view per o16.7 (`watch_job_log`
@@ -1479,7 +1479,8 @@ preflight. The remaining items (remote `orca_plot`, pause) are not numbered yet.
               `Indeterminate` is a check error and no longer rewrites the row. Part A (implementer
               `opus`: Rust record + TS pure logic) → STOP → Part B (screens). Anton's
               live WebKitGTK gate.
-        - [ ] **B4 — live run on uni** + Anton's gate: submit → close laptop → reopen → result. Plan and
+        - [ ] **B4 — live run on uni** + Anton's gate (**steps 0–1 ✅ 2026-11-17**: post-outage snapshot, first
+              install, Retry of both rows; next G1 + M1–M8): submit → close laptop → reopen → result. Plan and
               results: `wiki/architecture/remote-live-run-b4.md` (step 0: post-outage snapshot first). Also
               measure (rule #10, from B2): the rsync-down / LIST timeouts (300 s; 1800 s with `.gbw`),
               rsync exit codes on a dropped link, the `poll_log` 10 s bound and catch-up, that an emit

@@ -340,7 +340,7 @@ body {
   font-style: italic;
 }
 
-/* Small caption under the read-only Charge field (Scene-derived sum). */
+/* Small caption under a numeric builder field: Charge (read-only, Scene-derived sum) or nprocs (blank = auto). */
 .builder-charge-note {
   display: block;
   margin-top: 4px;
