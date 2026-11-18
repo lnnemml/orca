@@ -1481,15 +1481,17 @@ preflight. The remaining items (remote `orca_plot`, pause) moved to Phase 6 on 2
               live WebKitGTK gate.
         - [ ] **B4 — live run on uni** + Anton's gate (**steps 0–1 ✅ 2026-11-17**: post-outage snapshot, first
               install, Retry of both rows; **G1a ✅ 2026-11-18**: quit + power off mid-run, picked up and
-              fetched byte-identical on boot; **M1, M6 raw, M7 ✅ 2026-11-18**; next G1b (suspend), M2–M5, M6
-              in the app): submit → close laptop → reopen → result. Plan and
+              fetched byte-identical on boot; **M1, M6 raw, M7 ✅ 2026-11-18**; M2–M5 and M8 waived by Anton
+              (ADR-024 o24.9); next G1b (suspend) and M6 in the app as the B4-fixes live check): submit → close laptop → reopen → result. Plan and
               results: `wiki/architecture/remote-live-run-b4.md` (step 0: post-outage snapshot first). Also
               measure (rule #10, from B2): the rsync-down / LIST timeouts (300 s; 1800 s with `.gbw`),
               rsync exit codes on a dropped link, the `poll_log` 10 s bound and catch-up, that an emit
               under the live-log mutex returns promptly; quit mid-fetch → do orphaned ssh/rsync survive,
               how long they hang, and the local dir byte-identical to the listing after both rsyncs
-              (o18; then decide `ServerAliveInterval` / `rsync --timeout`); ~15 queued jobs on one host
-              → spurious check failures from synchronized status steps (F-2, sshd `MaxStartups`;
+              (o18; then decide `ServerAliveInterval` / `rsync --timeout`) *(2026-11-18: these dropped-link,
+              poll_log, live-log and quit-mid-fetch items are waived and the keepalive decided —
+              ADR-024 o24.5, o24.9)*; ~15 queued jobs on one host
+              → spurious check failures from synchronized status steps (F-2, sshd `MaxStartups`; *stagger rejected, cap per host — ADR-024 o24.2, o24.11*;
               Anton: measure first, stagger only if it bites); kill ORCA's main process mid-run →
               does `output.out` keep growing after `.exit_code` (o18 finality residual).
 - [ ] **Unit 5.4 — cancel, pending cancel, reconnect loop, new states.** Split by ADR-024 o22.1:
@@ -1511,7 +1513,8 @@ preflight. The remaining items (remote `orca_plot`, pause) moved to Phase 6 on 2
             local times, chip). **Live on uni ✅ 2026-11-17** (Anton): a running job (`e900980b`)
             cancelled mid-Freq — delivered, `.cancelled` on the server, evidence fetched, row
             `cancelled` (`wiki/architecture/remote-live-run-b4.md` § 5.4a live). Ticked 2026-11-18 by
-            Anton; Retry cancel / stopped re-sends (a cancel that cannot reach the server) ride on B4's M2.
+            Anton; Retry cancel / stopped re-sends (a cancel that cannot reach the server) stay a hand check
+            (Cancel on a throwaway job with the network off, then on; o24.9).
       - [ ] **5.4b — `Lost`, re-enqueue, `Indeterminate` count** (Decisions d, e, l): `Lost` (terminal)
             joins `JobStatus`; row 8's orphan sweep; the re-enqueue counter (incremented **before**
             the re-enqueue, ADR-024 l) and acting on `ReEnqueue`; l row 10's counter. Its own schema
@@ -1529,10 +1532,15 @@ preflight. The remaining items (remote `orca_plot`, pause) moved to Phase 6 on 2
             cancel still deciding the actions. **Open: Anton's live gate and the uni run** (a pending
             row exists only after uni answers "slot busy").
 - [ ] **B4 fixes** (decided by Anton 2026-11-18 from the B4 measurements; one ADR-024 amendment +
-      one unit, after M2/M5, which may add ssh/rsync timeouts): **M6** — cap concurrent ssh calls per
-      host (~8; a cold burst of 15 lost 13–27 % to sshd `MaxStartups`, 10 lost none); **M7** — the wrapper waits
+      one unit, ADR-024 o24): **M6** — cap concurrent ssh/rsync per host at 8, one FIFO queue shared
+      with user commands (~8; a cold burst of 15 lost 13–27 % to sshd `MaxStartups`, 10 lost none); **M7** — the wrapper waits
       for its session to empty before publishing `.exit_code` (a driver killed alone leaves MPI ranks
-      writing `output.out` on cores tsp already counts free). `FETCH_TIMEOUT` stays 300 s (M1).
+      writing `output.out` on cores tsp already counts free); an app-owned ssh keepalive
+      (`ServerAliveInterval=30`, `CountMax=4`). `FETCH_TIMEOUT` stays 300 s (M1). **Built 2026-11-18**
+      (`remote/gate.rs` + `SystemRunner::run`, `ssh_options`, `wrapper.sh` session wait + TERM trap;
+      `wiki/modules/remote-jobs.md`); **open: the uni live check** — a healthy real job's `.tsp-out`
+      shows "session empty at ORCA's return", and M6 in the app (≥ 11 jobs queued, cold restart, no
+      "Server unreachable" from the burst).
 - [ ] **Unit 5.5 — preflight:** `nprocs`/`%maxcore` vs the profile (cores + RAM budget) and free disk
       space in the profile working dir; no-`%maxcore` → warn-and-propose, never silent-insert
       (ADR-024 h)

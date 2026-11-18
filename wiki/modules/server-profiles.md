@@ -116,8 +116,8 @@ Stamp and facts are always all set or all `NULL`; a stamp never outlives the fac
 ### Transport (n item 11)
 
 The test is one static script, `remote::scripts::CONNTEST` (the shared `head.sh` + `conntest.sh`,
-embedded with `include_str!`). It is fed to `ssh -o BatchMode=yes -o ConnectTimeout=10 -- <host>
-bash -s` on stdin, followed on the same stdin by the values as a NUL list: ORCA path, root, core
+embedded with `include_str!`). It is fed to `ssh -o BatchMode=yes -o ConnectTimeout=10 -o
+ServerAliveInterval=30 -o ServerAliveCountMax=4 -- <host> bash -s` (the shared `ssh_options`) on stdin, followed on the same stdin by the values as a NUL list: ORCA path, root, core
 mask (empty when unset).
 `conntest_stdin(args)` builds these bytes and refuses a value that contains a NUL. The shape rules
 were measured in probe 5.1c:
@@ -205,7 +205,9 @@ logic is `test_server_profile_with(db, id, runner, timeout)`, which takes the ru
 2. Re-validate the stored profile (`validate_profile`). A row that does not validate is never sent
    to ssh.
 3. Build the argv with **`remote::ssh::ssh_bash_argv(host)`**:
-   `ssh -o BatchMode=yes -o ConnectTimeout=10 -- <host> bash -s`.
+   `ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=30 -o ServerAliveCountMax=4 --
+   <host> bash -s` (the keepalive: ADR-024 o24.5). The call runs through `SystemRunner`, so it
+   shares the per-host cap of 8 ssh/rsync processes with the poller and the job commands (o24.3).
    - The host is one argv element right after `--`. Measured (OpenSSH 9.6p1, `ssh -G`): without
      `--`, a host `-oProxyCommand=echo PWNED` becomes the option `proxycommand echo PWNED`; with
      `--`, ssh refuses it (`hostname contains invalid characters`).

@@ -1,7 +1,8 @@
 //! The ssh transport (ADR-005, ADR-024 n item 11 and l): the one argv shape that runs a static
 //! script on a profile's host, and a process runner with a hard timeout.
 //!
-//! **The argv** is `ssh -o BatchMode=yes -o ConnectTimeout=10 -- <host> bash -s` ([`ssh_bash_argv`]).
+//! **The argv** is `ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=30 -o
+//! ServerAliveCountMax=4 -- <host> bash -s` ([`ssh_bash_argv`]; the keepalive is ADR-024 o24.5).
 //! - The host is one argv element **after `--`**, so ssh cannot read it as an option. Measured on
 //!   OpenSSH 9.6p1: `ssh -G '-oProxyCommand=echo PWNED' somehost` resolves `proxycommand echo PWNED`;
 //!   with `--` before it, ssh refuses the same value with `hostname contains invalid characters`.
@@ -19,13 +20,16 @@
 //! [`MAX_OUTPUT_BYTES`]: a stream past the cap kills the child's process group at once and is
 //! [`TransportError::OutputTooLarge`]. On timeout it kills the whole process group too, so nothing
 //! the child started survives. The timeout also covers a grandchild that keeps a pipe open after
-//! the child exits.
+//! the child exits. Every [`SystemRunner`] call first takes a permit of the process-global
+//! per-host cap (`gate::REMOTE_CALLS`, at most 8 ssh/rsync per host, ADR-024 o24.2–o24.4); the
+//! wait for it is outside the timeout.
 
 use std::io::{Read, Write};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+use super::gate::{host_key, Gate, REMOTE_CALLS};
 use crate::models::server_profile::{validate_host, InvalidProfile};
 
 /// The ssh client, found on `PATH` like the user's own shell finds it (ADR-005: system `ssh`).
@@ -48,15 +52,27 @@ pub fn ssh_bash_argv(host: &str) -> Result<Vec<String>, InvalidProfile> {
     Ok(argv)
 }
 
-/// The ssh options every OrcaStudio ssh carries: never prompt (`BatchMode=yes`), and a bounded
-/// connect. One list, so the script calls ([`ssh_bash_argv`]) and rsync's `-e` transport
-/// (`remote::sync`) cannot drift apart (ADR-024 o item 6).
+/// The app's own keepalive (ADR-024 o24.5): a probe every 30 s, and the connection is given up
+/// after 4 unanswered ones, so a silently dropped link ends an ssh — and the rsync over it — in
+/// ~2 min whatever `~/.ssh/config` says (a command-line `-o` overrides the config file, measured).
+/// The values are the author's config's. A call multiplexed over an existing control master uses
+/// the master's keepalive instead (residual, o24.5).
+pub const SERVER_ALIVE_INTERVAL_SECS: u32 = 30;
+pub const SERVER_ALIVE_COUNT_MAX: u32 = 4;
+
+/// The ssh options every OrcaStudio ssh carries: never prompt (`BatchMode=yes`), a bounded
+/// connect, and the keepalive. One list, so the script calls ([`ssh_bash_argv`]) and rsync's `-e`
+/// transport (`remote::sync`) cannot drift apart (ADR-024 o item 6).
 pub fn ssh_options() -> Vec<String> {
     vec![
         "-o".into(),
         "BatchMode=yes".into(),
         "-o".into(),
         format!("ConnectTimeout={CONNECT_TIMEOUT_SECS}"),
+        "-o".into(),
+        format!("ServerAliveInterval={SERVER_ALIVE_INTERVAL_SECS}"),
+        "-o".into(),
+        format!("ServerAliveCountMax={SERVER_ALIVE_COUNT_MAX}"),
     ]
 }
 
@@ -93,7 +109,8 @@ pub trait CommandRunner {
     ) -> Result<ProcessOutput, TransportError>;
 }
 
-/// The real runner: spawns the process.
+/// The real runner: spawns the process, under the process-global per-host cap
+/// ([`REMOTE_CALLS`], ADR-024 o24.3). The wait for a permit is outside the timeout ([`run_gated`]).
 pub struct SystemRunner;
 
 impl CommandRunner for SystemRunner {
@@ -104,8 +121,25 @@ impl CommandRunner for SystemRunner {
         stdin: &[u8],
         timeout: Duration,
     ) -> Result<ProcessOutput, TransportError> {
-        run_with_timeout(program, args, stdin, timeout)
+        run_gated(&REMOTE_CALLS, program, args, stdin, timeout)
     }
+}
+
+/// Run one ssh/rsync process under `gate` (ADR-024 o24.4): take the permit of the host the argv
+/// connects to ([`host_key`]) **first**, then run with the full `timeout` — the deadline is
+/// computed only once the permit is held, so a call that waited in the queue still gets all of its
+/// time and never reports a timeout the server did not cause. The permit is a guard on this stack
+/// frame: it is given back after the child is reaped on every path (exit, timeout or too-large
+/// kill, spawn error, a panic unwinding).
+pub fn run_gated(
+    gate: &Gate,
+    program: &str,
+    args: &[String],
+    stdin: &[u8],
+    timeout: Duration,
+) -> Result<ProcessOutput, TransportError> {
+    let _permit = gate.acquire(host_key(program, args));
+    run_with_timeout(program, args, stdin, timeout)
 }
 
 /// One stream's bytes, or the stream exceeded [`MAX_OUTPUT_BYTES`], or reading it failed.
@@ -237,6 +271,7 @@ fn run_with_timeout(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::remote::gate::{HostKey, MAX_CONCURRENT_REMOTE_CALLS};
 
     // NEGATIVE CONTROL: drop the `"--"` element (or move it after the host) and this goes red. The
     // `--` is what stops ssh reading a host such as `-oProxyCommand=…` as an option.
@@ -245,7 +280,10 @@ mod tests {
         let argv = ssh_bash_argv("uni").unwrap();
         assert_eq!(
             argv,
-            ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "--", "uni", "bash", "-s"]
+            [
+                "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=30", "-o",
+                "ServerAliveCountMax=4", "--", "uni", "bash", "-s",
+            ]
         );
         let host_at = argv.iter().position(|a| a == "uni").unwrap();
         assert_eq!(argv[host_at - 1], "--", "the host must follow `--` directly");
@@ -263,10 +301,113 @@ mod tests {
         vec!["-c".into(), script.into()]
     }
 
+    /// The runner without the global gate, for the timing tests here (`elapsed < 5 s` from before
+    /// `run`): under cargo's parallelism the many `SystemRunner` calls of other tests share the
+    /// global gate's fallback key and could hold them in its queue (o24.10).
+    struct Ungated;
+
+    impl CommandRunner for Ungated {
+        fn run(&self, program: &str, args: &[String], stdin: &[u8], timeout: Duration) -> Result<ProcessOutput, TransportError> {
+            run_with_timeout(program, args, stdin, timeout)
+        }
+    }
+
+    // o24.5: the keepalive is in the shared options, so both the script calls' argv and rsync's
+    // `-e` transport carry it. NEGATIVE CONTROL: drop either option from `ssh_options` → red.
+    #[test]
+    fn every_ssh_and_every_rsync_transport_carries_the_keepalive() {
+        use crate::execution_backend::FetchPolicy;
+        use crate::remote::sync::{download_argv, upload_argv};
+        let pairs = [["-o", "ServerAliveInterval=30"], ["-o", "ServerAliveCountMax=4"]];
+        let argv = ssh_bash_argv("uni").unwrap();
+        for pair in pairs {
+            assert!(argv.windows(2).any(|w| w == pair), "ssh argv lacks {pair:?}: {argv:?}");
+        }
+        for rsync in [
+            upload_argv("/l/job", "uni", "/r/jobs/j").unwrap(),
+            download_argv("uni", "/r/jobs/j", "/l/job", FetchPolicy::SMALL_ONLY).unwrap(),
+        ] {
+            let transport = &rsync[rsync.iter().position(|a| a == "-e").unwrap() + 1];
+            for pair in pairs {
+                assert!(transport.contains(&pair.join(" ")), "rsync -e lacks {pair:?}: {transport}");
+            }
+        }
+    }
+
+    // o24.10 wiring: `SystemRunner::run` takes the GLOBAL gate's permit of the argv's host, with
+    // the literal cap 8. Nine real rsync calls to one unique host (each runs a fake `-e` transport
+    // that sleeps 1.5 s) are observed in the global gate as 8 holders and 1 waiter. NEGATIVE
+    // CONTROLS: `SystemRunner::run` calling `run_with_timeout` directly (bypass) → no holders, red;
+    // a wrong host key (the local rsync end) → no holders under this host, red.
+    #[test]
+    fn system_runner_goes_through_the_global_gate_of_eight_per_host() {
+        assert_eq!(MAX_CONCURRENT_REMOTE_CALLS, 8);
+        let dir = scratch("wiring");
+        let stub = dir.join("fake-ssh");
+        std::fs::write(&stub, "#!/bin/sh\nsleep 1.5\nexit 1\n").unwrap();
+        std::fs::set_permissions(&stub, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let host = format!("wiring-test-{}", std::process::id());
+        let key = HostKey::Host(host.clone());
+        let argv: Vec<String> = vec![
+            "-a".into(),
+            "-e".into(),
+            stub.to_str().unwrap().into(),
+            format!("{host}:/nonexistent/"),
+            format!("{}/", dir.join("dst").display()),
+        ];
+        let (tx, done) = mpsc::channel();
+        for _ in 0..9 {
+            let (argv, tx) = (argv.clone(), tx.clone());
+            std::thread::spawn(move || {
+                let _ = tx.send(SystemRunner.run("rsync", &argv, b"", Duration::from_secs(30)));
+            });
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while (REMOTE_CALLS.holders(&key), REMOTE_CALLS.waiting(&key)) != (8, 1) {
+            assert!(
+                Instant::now() < deadline,
+                "the global gate never held 8 with 1 waiting for {host}: {} holders, {} waiting",
+                REMOTE_CALLS.holders(&key),
+                REMOTE_CALLS.waiting(&key)
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        for i in 0..9 {
+            let result = done.recv_timeout(Duration::from_secs(20)).unwrap_or_else(|_| panic!("call {i} never ended"));
+            let out = result.expect("rsync ran");
+            assert_ne!(out.code, Some(0), "the fake transport fails the transfer");
+        }
+        assert_eq!(REMOTE_CALLS.holders(&key), 0, "every permit released");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // o24.4 (MED-1 of the Part A review): `run_gated` holds its permit for the child's whole life.
+    // On a one-permit gate the second call's child starts only after the first call's child has
+    // ended. NEGATIVE CONTROL: `let _ = gate.acquire(…)` (the permit dropped at once) → the two
+    // children overlap → red.
+    #[test]
+    fn run_gated_holds_the_permit_for_the_childs_whole_life() {
+        let dir = scratch("hold");
+        let log = dir.join("log");
+        let gate = std::sync::Arc::new(Gate::new(1));
+        let script = |n: &str| format!("echo start-{n} >> '{p}'; sleep 0.5; echo end-{n} >> '{p}'", p = log.display());
+        let first = gated_on_thread(&gate, &script("1"), Duration::from_secs(10));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !std::fs::read_to_string(&log).unwrap_or_default().contains("start-1") {
+            assert!(Instant::now() < deadline, "the first child never started");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let second = gated_on_thread(&gate, &script("2"), Duration::from_secs(10));
+        first.recv_timeout(Duration::from_secs(10)).expect("first ended").expect("first ran");
+        second.recv_timeout(Duration::from_secs(10)).expect("second ended").expect("second ran");
+        assert_eq!(std::fs::read_to_string(&log).unwrap(), "start-1\nend-1\nstart-2\nend-2\n");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn stdin_reaches_the_process_and_both_streams_and_the_code_come_back() {
         let input: Vec<u8> = (0..=255u8).cycle().take(200_000).collect(); // beyond a pipe buffer
-        let out = SystemRunner
+        let out = Ungated
             .run("sh", &sh("cat; echo oops >&2; exit 7"), &input, Duration::from_secs(10))
             .unwrap();
         assert_eq!(out.stdout, input);
@@ -277,7 +418,7 @@ mod tests {
     #[test]
     fn a_process_that_outlives_the_timeout_is_killed() {
         let start = Instant::now();
-        let err = SystemRunner
+        let err = Ungated
             .run("sh", &sh("exec sleep 30"), b"", Duration::from_millis(300))
             .unwrap_err();
         assert!(matches!(err, TransportError::Timeout { .. }), "{err:?}");
@@ -352,7 +493,7 @@ mod tests {
             let pidfile = dir.join("pid");
             let script = format!("sleep 30 & echo $! > '{}'{tail}", pidfile.display());
             let start = Instant::now();
-            let err = SystemRunner.run("sh", &sh(&script), b"", Duration::from_millis(500)).unwrap_err();
+            let err = Ungated.run("sh", &sh(&script), b"", Duration::from_millis(500)).unwrap_err();
             let grandchild = OwnSleep::from_pidfile(&pidfile);
             assert!(matches!(err, TransportError::Timeout { .. }), "{case}: {err:?}");
             assert!(start.elapsed() < Duration::from_secs(5), "{case}: {:?}", start.elapsed());
@@ -367,7 +508,7 @@ mod tests {
     #[test]
     fn an_unbounded_stream_is_refused_promptly() {
         let start = Instant::now();
-        let err = SystemRunner
+        let err = Ungated
             .run(
                 "sh",
                 &sh("trap '' PIPE; while :; do head -c 65536 /dev/zero 2>/dev/null; done"),
@@ -382,13 +523,71 @@ mod tests {
     #[test]
     fn output_beyond_the_cap_is_refused() {
         let script = format!("head -c {} /dev/zero", MAX_OUTPUT_BYTES + 1);
-        let err = SystemRunner.run("sh", &sh(&script), b"", Duration::from_secs(10)).unwrap_err();
+        let err = Ungated.run("sh", &sh(&script), b"", Duration::from_secs(10)).unwrap_err();
         assert!(matches!(err, TransportError::OutputTooLarge { stream: "stdout", .. }), "{err:?}");
+    }
+
+    // ---- run_gated (ADR-024 o24.4, o24.10), each on its own local gate ----------------------
+
+    /// Run `run_gated` on a thread and hand its result back, so a test can bound the wait.
+    fn gated_on_thread(
+        gate: &std::sync::Arc<Gate>,
+        script: &str,
+        timeout: Duration,
+    ) -> mpsc::Receiver<Result<ProcessOutput, TransportError>> {
+        let (tx, rx) = mpsc::channel();
+        let (gate, args) = (gate.clone(), sh(script));
+        std::thread::spawn(move || {
+            let _ = tx.send(run_gated(&gate, "sh", &args, b"", timeout));
+        });
+        rx
+    }
+
+    fn wait_until_queued(gate: &Gate, key: &HostKey) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while gate.waiting(key) != 1 {
+            assert!(Instant::now() < deadline, "the call never queued");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    // o24.4: the wait for a permit is outside the call's timeout. A 300 ms call queued for ~1 s
+    // still runs to completion. NEGATIVE CONTROL: compute the deadline before taking the permit
+    // (`run_with_timeout(…, timeout.saturating_sub(waited))`) → it times out → red.
+    #[test]
+    fn a_call_queued_longer_than_its_timeout_still_gets_its_full_timeout() {
+        let gate = std::sync::Arc::new(Gate::new(1));
+        let held = gate.acquire(HostKey::Fallback); // `sh` has no host: the fallback key
+        let result = gated_on_thread(&gate, "echo ok", Duration::from_millis(300));
+        wait_until_queued(&gate, &HostKey::Fallback);
+        std::thread::sleep(Duration::from_millis(1000));
+        drop(held);
+        let out = result.recv_timeout(Duration::from_secs(5)).expect("the call ended").expect("ran to completion");
+        assert_eq!((out.code, out.stdout.as_slice()), (Some(0), &b"ok\n"[..]));
+    }
+
+    // o24.4: a spawn error and a timeout kill both give the permit back. NEGATIVE CONTROL: keep the
+    // permit on an error (`std::mem::forget` it when the result is `Err`) → the next call on the
+    // one-permit gate never starts → red within the bound.
+    #[test]
+    fn a_spawn_error_and_a_timeout_kill_release_the_permit() {
+        let gate = std::sync::Arc::new(Gate::new(1));
+        let err = run_gated(&gate, "/nonexistent/orcastudio-ssh", &[], b"", Duration::from_secs(1)).unwrap_err();
+        assert!(matches!(err, TransportError::Spawn { .. }), "{err:?}");
+        let next = gated_on_thread(&gate, "true", Duration::from_secs(5));
+        let out = next.recv_timeout(Duration::from_secs(5)).expect("admitted after a spawn error").unwrap();
+        assert_eq!(out.code, Some(0));
+
+        let err = run_gated(&gate, "sh", &sh("exec sleep 30"), b"", Duration::from_millis(300)).unwrap_err();
+        assert!(matches!(err, TransportError::Timeout { .. }), "{err:?}");
+        let next = gated_on_thread(&gate, "true", Duration::from_secs(5));
+        let out = next.recv_timeout(Duration::from_secs(5)).expect("admitted after a timeout kill").unwrap();
+        assert_eq!(out.code, Some(0));
     }
 
     #[test]
     fn a_missing_program_is_a_spawn_error() {
-        let err = SystemRunner
+        let err = Ungated
             .run("/nonexistent/orcastudio-ssh", &[], b"", Duration::from_secs(1))
             .unwrap_err();
         assert!(matches!(err, TransportError::Spawn { .. }), "{err:?}");

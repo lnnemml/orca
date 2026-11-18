@@ -26,7 +26,8 @@ scoped `#[allow(dead_code)]` until units 5.3/5.4 call all of it (the poller, rec
 | `classify.rs` | `classify`, `Outcome`, `FailReason`, `Classification`, `SnapshotError`; predicates `is_alive`, `is_our_wrapper`, `job_session`, `sid_reused` |
 | `scripts.rs` + `scripts/` | the uploaded job scripts `WRAPPER`, `CANCEL`, `COLLECT`; the stdin-fed calls `CONNTEST`, `SUBMIT`, `LABEL`, `POLL_LOG`, `LIST`, `PREPARE`, `INSTALL`, `RUN` (the trampoline), `MKJOB` (`STDIN_SCRIPTS`, each ending in `READ_LOOP`); `stdin_with_values` (script + NUL list), `upload_path` (`<root>/bin/<name>-<sha256>.sh`), `sha256_hex` |
 | `wire.rs` | `parse_snapshot` — the collector's output → `Snapshot`; `WireError` |
-| `ssh.rs` | `ssh_bash_argv` (`ssh -o BatchMode=yes -o ConnectTimeout=10 -- <host> bash -s`, host re-validated), `ssh_options` (the two `-o` options, shared with rsync's `-e`) and `CommandRunner`/`SystemRunner` (stdin and both streams on threads, 1 MiB cap, process group killed on timeout). Used by the 5.1 connection test (`modules/server-profiles.md`); meant for 5.3's submit too |
+| `ssh.rs` | `ssh_bash_argv` (`ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=30 -o ServerAliveCountMax=4 -- <host> bash -s`, host re-validated), `ssh_options` (the four `-o` options, shared with rsync's `-e`; the keepalive — a probe every 30 s, given up after 4 — is ADR-024 o24.5: a silently dropped link ends an ssh or rsync in ~2 min whatever `~/.ssh/config` says, except a call multiplexed over a control master, which uses the master's keepalive) and `CommandRunner`/`SystemRunner` (stdin and both streams on threads, 1 MiB cap, process group killed on timeout). `SystemRunner::run` — the one production spawn site of every ssh and rsync: poller steps, commands, the connection test — is `run_gated(&REMOTE_CALLS, …)`: it takes a permit of the argv's host from the process-global gate **before** the timeout's deadline is computed, then runs with the full timeout; the permit is released after the child is reaped, on every path |
+| `gate.rs` | the per-host cap on concurrent ssh/rsync processes (ADR-024 o24.2–o24.4): `Gate::new(n)` — per host key a FIFO ticket queue, a caller with ticket `t` is admitted iff `t < released + n`, `released` moves only on a release and every release wakes all waiters; `acquire` → RAII `Permit`; a key's entry is dropped once `next_ticket == released`; mutex poisoning recovered (`into_inner`). `MAX_CONCURRENT_REMOTE_CALLS = 8` and the process-global `REMOTE_CALLS: LazyLock<Gate>` that `SystemRunner::run` uses: at most 8 ssh/rsync per host, one queue shared by the poller, the commands and the connection test, no reserved permit; in-process (empty on every launch, blind to ssh/rsync orphaned by a previous run). Two profiles naming one server differently (`uni` and `anton@uni`) get 8 each. `host_key(program, argv)` → `HostKey::Host` (ssh: the argument after `--`; rsync: the `host:` prefix of the one remote end among the last two) or the shared `HostKey::Fallback` (gated, never ungated) |
 | `sync.rs` | rsync argv (`upload_argv`, `download_argv`), the download filter `download_filter_args`, its leaf patterns `download_patterns` and its Rust mirror `download_selects`, `list_dir`/`upload_expected`/`expected_values` (local file lists with sha256), `ListArgs` + `parse_list_reply` (the server's listing), `compare_download` (the download post-condition) |
 | `poll.rs` | `PollLogArgs`, `parse_poll_reply` → `LogChunk` with the length post-condition; `check_echo` (the n-6d echo check every 5.3 reply shares) |
 | `submit.rs` | `remote_job_dir`, `SubmitArgs`, `parse_submit_reply` → `SubmitReply` with the typed `Refusal` (`Blocked { blockers: Vec<Blocker> }`, `SlotCheckFailed`, `LockBusy`, `UploadMismatch`, `Other`, ADR-024 o23.7); `LabelArgs`, `parse_label_reply` → `LabelFacts`, `label` → `Label` (the label rules) |
@@ -120,7 +121,7 @@ error ([frontend.md](frontend.md), o23.15).
 
 ## Transfers (`sync.rs`, ADR-024 o items 3.2, 3.3.4, 6)
 
-- **Upload:** `rsync -a --checksum --mkpath -e 'ssh -o BatchMode=yes -o ConnectTimeout=10' <local>/
+- **Upload:** `rsync -a --checksum --mkpath -e 'ssh <the four ssh_options>' <local>/
   <host>:<remote>/`. **Download:** `rsync -a --checksum <filter> -e '…' <host>:<remote>/ <local>/` —
   `--checksum` both ways, so a retry never trusts size+mtime over a wrong file (on the download, a
   local file corrupted with its size and mtime intact would otherwise fail the hash post-condition on
@@ -532,10 +533,60 @@ taskset option), or a relative ORCA path (rule #1). Then the ADR's start sequenc
   the job dir would let OpenMPI litter escape it, rule #3); then `TMPDIR=<job>/.tmp
   HWLOC_COMPONENTS=-gl OMPI_MCA_hwloc_base_binding_policy=none taskset -c <mask> <orca> input.inp
   >output.out 2>stderr.log` (file names as `local_backend`);
-- **4** publish `.exit_code` = ORCA's status, exit with it.
+- **4** the **session wait** (ADR-024 o24.7, below);
+- **5** publish `.exit_code` = ORCA's status (TERM ignored for the publish itself, default after
+  it), exit with it.
 
-A TERM to the wrapper's group kills the wrapper (default disposition, measured) before it can write
-`.exit_code`, so a cancelled running job has none.
+While ORCA runs there is no trap: a TERM to the wrapper's group kills the wrapper (default
+disposition, measured) before it can write `.exit_code`, so a job cancelled while ORCA runs has none.
+
+**The session wait.** A killed ORCA driver leaves its MPI ranks, `mpirun` and a shell running in the
+session, pinned to the slot's cores and still writing `output.out` (B4 M7), and tsp starts the next
+job as soon as the wrapper exits. So `.exit_code` is published only once the wrapper's session is
+empty:
+- **Guard first.** Only if the wrapper leads its session and group (`$$` = the SID = the PGID that
+  `.started` recorded) does it list or signal anything; otherwise it publishes at once.
+- **Members** = one snapshot `ps -o pid=,ppid=,stat=,comm= -s <SID>`, minus the wrapper, its own
+  descendants within that snapshot (its `ps`, `sleep`s, subshells) and zombies. Every other member
+  counts, whatever its cwd. The listing must contain the wrapper itself; any `ps` failure or an
+  unparsable line publishes at once with a note.
+- **Sequence.** None left → publish. Otherwise wait up to **10 s** for them to end on their own
+  (re-listing every 0.2 s), then re-list and TERM+CONT each member **by PID**, wait up to 5 s,
+  re-list and KILL each, wait up to 1 s, and publish — a member still listed then (D state) is named
+  and does not block the publish. Bound ≈ 16 s after ORCA's return (10 + 5 + 1: the 1 s after KILL
+  keeps a member that is still exiting from being named a false survivor; ADR-024 o24.14).
+  `ORCASTUDIO_TEST_SESSION_GRACE` shortens the 10 s for the tests: an integer 0–9 is used, anything
+  else (absent, 10 or more, not an integer) means 10; production never sets it. The normal publish runs under `trap '' TERM`, so it cannot be doubled by the trap.
+- **TERM during the wait** (a trap installed right after `rc=$?`, cleared at the normal publish):
+  single-shot (`trap '' TERM` first — a cancel sends TERM twice), prints its one line, publishes
+  ORCA's rc — so a late cancel keeps a clean result, row 2 `Completed { late_cancel }` — and then
+  holds the tsp slot by the **same bounded sequence** on what remains (grace, TERM+CONT, 5 s, KILL,
+  1 s), silently, and exits with ORCA's rc: at most ≈ 16 s after the TERM. A cancel ends it sooner
+  (`cancel.sh` KILLs what remains after its own 5 s, the wrapper included). Any TERM in the wait now
+  publishes ORCA's rc (rows 5/6, not row 8).
+- **Lines** on stdout (tsp's `.tsp-out/`, fetched with the job), every one **before** `.exit_code`:
+
+  ```
+  wrapper: session empty at ORCA's return                       (the healthy path: the only line)
+  wrapper: ORCA returned <rc>; session members left: <pid> <stat> <comm>, …
+  wrapper: waiting up to <s> s for them to end
+  wrapper: session empty after <s> s
+  wrapper: TERM+CONT <pid> <stat> <comm>, …
+  wrapper: session empty <s> s after TERM+CONT
+  wrapper: KILL <pid> <stat> <comm>, …
+  wrapper: session empty <s> s after KILL
+  wrapper: session empty before TERM+CONT|KILL
+  wrapper: survivors after KILL, publishing anyway: <pid> <stat> <comm>, …
+  wrapper: session wait skipped: the wrapper (pid <p>) does not lead its session (sid <s>, pgid <g>); publishing now
+  wrapper: session wait skipped: ps -s <sid> failed: rc=<n> <message>; publishing now
+  wrapper: ps -s <sid> …; publishing now                         (a ps error later in the sequence)
+  wrapper: TERM during the session wait: publishing ORCA's rc <rc>, holding the slot until the session is empty (at most <s> s more)
+  ```
+
+  The `<s>` of "empty after" counts the 0.2 s sleeps, not wall time.
+- **Old wrappers.** A changed wrapper has a new sha and a new `bin/wrapper-<sha>.sh`, installed by the
+  next prepare; a job already queued keeps the old path and runs the old behaviour. No code deletes
+  an old wrapper file.
 
 **`cancel.sh cancel|check <job_dir> <root>`** — starts with `cd /` and never enters the job dir.
 `cancel`: publish `.cancelled` (failure → exit 3, nothing signalled) → **queued path**: read
@@ -664,7 +715,7 @@ joins it with unit 5.4b.
 
 ## Tests
 
-232 tests in the module.
+275 tests in the module.
 - **Pure (classifier, parsers, wire):** strict-parser garbage cases, the recorded probe fixtures (P2
   cmdline, P4 `tsp -l`, 5.2b `/proc/net/unix` line, 5.2c stat lines including `w q) x.sh` and the
   zombie), at least one snapshot per table row, the d′ race model over all 6 interleavings, and the
@@ -715,6 +766,50 @@ joins it with unit 5.4b.
   `Drop`: SIGSTOP to every live process it knows of, then SIGKILL, then a bounded retry of the dir
   removal, so a tracked wrapper is stopped before its ORCA is killed. Two cancel tests also
   assert, after the drop, that no process has a cwd in or an argument under the lab root.
+
+- **The session wait (`script_tests.rs`, ADR-024 o24.10)**, with the wrapper's stdout captured in
+  `<job>/wrapper.out` and three more stub extras: `writer` (own group, keeps writing to
+  `output.out` for ~2 s after the stub exits, ending with `writer done`), `forever` (own group,
+  ignores TERM, never stops) and `grouped` (in the wrapper's own group, never stops). Covered: the
+  healthy path publishes at once with exactly the "session empty" line; a writer left after a 143
+  exit — `.exit_code` = 143 only after its last write, writer gone; `forever` TERMed then KILLed
+  within 1 + 5 + 1 s; every line before `.exit_code` (inotify order in the job dir); a member of
+  the wrapper's own group is signalled by its PID and the wrapper, never signalled, publishes
+  normally; a per-PID TERM in the wait runs the trap within 1 s; a stray per-PID TERM with a
+  `forever` member ends within the bound (the handler KILLs it, no line after the publish); two
+  TERMs give one trap line and one `.exit_code`; a group TERM in the wait (with `.cancelled`)
+  publishes rc 0 → row 2; a group TERM while ORCA runs publishes nothing; the real `cancel.sh
+  cancel` against a wrapper in its wait (rc 0, `.cancelled`, one trap line, row 2); the guard —
+  a wrapper run without setsid in a test-made session, and one that leads its own group but not
+  its session, each publish at once and a sentinel `sleep` there survives; the grace override 60,
+  `2.5` and `-1` all mean 10; and, through a `ps` stub on `PATH`, a `ps` error (publish at once,
+  note), a listing without the wrapper's own line (publish at once, note — rule #9), a zombie-only
+  session (no wait) and a member still listed after KILL (named, publish within the bound). Each
+  has a negative control that mutates `wrapper.sh` in one place (no wait, no kill, a print after
+  the publish, no descendant exclusion, one long sleep, no `trap ''`, no trap, a trap while ORCA
+  runs, no guard, a PGID-only guard, `ps` rc 1 as empty, no self-listed check, zombies counted, a
+  group kill by the member's pid, a kill of the member's group, an unclamped grace, an unbounded
+  handler hold, an unbounded KILL round) and turns it red; the controls are run by hand, not kept
+  as tests.
+- **The gate (`gate.rs`, `ssh.rs`, ADR-024 o24.10)**, each on a local `Gate::new(n)` unless named:
+  with n = 8, 12 callers parked on a latch — exactly 8 hold, 4 wait, max overlap 8, all 12 finish,
+  the key's entry dropped; FIFO under a forced interleaving (a releaser that asks again queues
+  behind the waiter, 500 fresh gates); two releases admit two waiters with no third (500 fresh
+  gates); a release wakes its own key's waiter when another key's waiter sleeps first on the shared
+  condvar; two hosts do not block each other; the host key from all three production argv shapes,
+  anything else the fallback key; a call queued longer than its 300 ms timeout still runs to
+  completion; a spawn error and a timeout kill release the permit; `run_gated` holds the permit for
+  the child's whole life (on one permit the second child starts after the first ends). **Wiring:**
+  nine real `SystemRunner` rsync calls to one unique host (a fake `-e` transport that sleeps 1.5 s)
+  are seen in the global `REMOTE_CALLS` as 8 holders and 1 waiter, then all released; every ssh argv
+  and both rsync `-e` transports carry the two keepalive options. The `ssh.rs` timing tests
+  (`elapsed < 5 s`) run ungated (`run_with_timeout`), so the other tests' `SystemRunner` calls,
+  which share the global gate's fallback key, cannot skew them. Controls (run by hand): n = 9 and
+  n = 1, a plain counting condvar, a head-of-line `serving` counter with no notify on admission,
+  `notify_one`, one shared key, the argument before `--` / the local rsync end as the key, the
+  deadline taken before the permit, a permit kept on an error, a permit dropped at once, a
+  `SystemRunner` that bypasses the gate, the wrong rsync key under the wiring test, each keepalive
+  option dropped.
 
 - **The pending submit's reply kinds (`call_script_tests.rs`, ADR-024 o23)**: a blocked attempt —
   a pinned process on the mask (step 5), and the slot daemon's `tsp -l` failing (step 3) — is refused
@@ -828,6 +923,12 @@ events and `job:log-reset { job_id }`; `watch_job_log(id, open)` counts a job's 
 ([execution-backends.md](execution-backends.md#the-remote-pollers-core-pollerrs-poller-adr-024-o-item-4-o15-o16)).
 
 ## Not built yet
+
+- **B4 fixes, live checks on uni still to run** (ADR-024 o24.10): the session wait's healthy path
+  waiting zero is inferred, not yet read on a real job's `.tsp-out` ("session empty at ORCA's
+  return"); M6 in the app (≥ 11 jobs queued, app restarted cold: no "Server unreachable" from the
+  burst). That the keepalive ends a call on a dead link in ~2 min is inferred from the options, not
+  measured (M2 waived, o24.9).
 
 - **The pending submit's live gate** (ADR-024 o23.15 item 6): a pending row exists only after uni
   answers "slot busy", so its view (badge, notice, blockers, no Retry submit) is checked in the uni

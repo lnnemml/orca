@@ -25,6 +25,8 @@
 //!   `mkjob`.
 //! - [`wire`] — the strict parser of the collector's output into a snapshot.
 //! - [`ssh`] — the one `ssh … -- <host> bash -s` argv and a process runner with a hard timeout.
+//! - [`gate`] — the per-host cap on concurrent ssh/rsync processes: a fair FIFO queue per host
+//!   key with RAII permits (ADR-024 o24.2–o24.4), composed with the runner by `ssh::run_gated`.
 //! - [`poll`] — `poll_log` over ssh: the values sent and the strict reply parser with its
 //!   length post-condition (ADR-024 o item 7).
 //! - [`submit`] — the remote job dir, the one atomic submit call's values and reply, and the
@@ -42,6 +44,7 @@
 
 pub mod classify;
 pub mod contact;
+pub mod gate;
 pub mod markers;
 pub mod poll;
 pub mod prepare;

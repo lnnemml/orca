@@ -59,6 +59,23 @@ for extra in ${STUB_ORCA_EXTRAS-}; do
                          open my $f, ">", "zombie.pid.tmp" or die; print $f "$p\n"; close $f;
                          rename "zombie.pid.tmp", "zombie.pid" or die; sleep 20' &
                 echo "$!" >zparent.pid ;;
+        # A leftover like B4 M7's ranks: own group, same session, keeps writing to ORCA's stdout
+        # (output.out) for ~2 s after the stub exits, ending with "writer done".
+        writer) perl -e 'setpgrp(0, 0) or die; $| = 1; open my $f, ">", "writer.pid.tmp" or die; print $f "$$\n";
+                         close $f; rename "writer.pid.tmp", "writer.pid" or die;
+                         for my $i (1 .. 20) { print "writer line $i\n"; select(undef, undef, undef, 0.1) }
+                         print "writer done\n"' & ;;
+        # A leftover that never stops and ignores TERM: only KILL ends it.
+        forever) perl -e 'setpgrp(0, 0) or die; $SIG{TERM} = "IGNORE"; $| = 1;
+                          open my $f, ">", "forever.pid.tmp" or die; print $f "$$\n";
+                          close $f; rename "forever.pid.tmp", "forever.pid" or die;
+                          while (1) { print "forever\n"; select(undef, undef, undef, 0.1) }' & ;;
+        # A leftover in the WRAPPER's own process group (no setpgrp), like MPI ranks that never
+        # left it: never stops, default TERM. Records its group before its pid.
+        grouped) perl -e '$| = 1; open my $g, ">", "grouped.pgrp" or die; print $g getpgrp(), "\n"; close $g;
+                          open my $f, ">", "grouped.pid.tmp" or die; print $f "$$\n";
+                          close $f; rename "grouped.pid.tmp", "grouped.pid" or die;
+                          while (1) { print "grouped\n"; select(undef, undef, undef, 0.1) }' & ;;
         # A member whose /proc/<pid>/cwd is EACCES even to its owner: PR_SET_DUMPABLE 0.
         nodump) python3 -c 'import ctypes, time
 assert ctypes.CDLL(None).prctl(4, 0, 0, 0, 0) == 0
@@ -244,6 +261,15 @@ impl Lab {
         self.spawn(cmd)
     }
 
+    /// [`Lab::spawn_wrapper`] with the wrapper's stdout — what tsp captures in `.tsp-out/` — in
+    /// `<job>/wrapper.out`, for the session-wait tests (ADR-024 o24.7) that read its lines.
+    fn spawn_wrapper_captured(&mut self, job: &Path, env: &[(&str, &str)]) -> u32 {
+        let mut cmd = self.wrapper_command(job, env);
+        cmd.stdout(fs::File::create(job.join(WRAPPER_OUT)).unwrap());
+        new_session(&mut cmd);
+        self.spawn(cmd)
+    }
+
     /// Run the wrapper to completion (in its own session) and return its status.
     fn run_wrapper(&mut self, job: &Path, env: &[(&str, &str)]) -> ExitStatus {
         let pid = self.spawn_wrapper(job, env);
@@ -372,7 +398,10 @@ impl Drop for Lab {
         }
         // PID files written after the last `tracked_pid` call are picked up here, so a test that
         // failed early still leaves nothing behind.
-        for name in ["orca.pid", "sleep.pid", "rank.pid", "foreign.pid", "zparent.pid", "nodump.pid", "member.pid"] {
+        for name in [
+            "orca.pid", "sleep.pid", "rank.pid", "foreign.pid", "zparent.pid", "nodump.pid", "member.pid", "writer.pid",
+            "forever.pid", "sentinel.pid", "grouped.pid",
+        ] {
             for job in fs::read_dir(self.root.join("jobs")).into_iter().flatten().flatten() {
                 if let Some(pid) = fs::read_to_string(job.path().join(name)).ok().and_then(|s| s.trim().parse().ok()) {
                     if let Some(stat) = stat_of(pid) {
@@ -851,6 +880,456 @@ fn wrapper_records_orcas_non_zero_exit_code() {
     assert_eq!(status.code(), Some(3));
     assert_eq!(fs::read_to_string(job.join(".exit_code")).unwrap(), "3\n");
     assert_eq!(lab.classify(&job, &[]), Outcome::Failed { reason: super::classify::FailReason::NonZeroExit { code: 3 } });
+}
+
+// ---- the session wait (ADR-024 o24.7, gates o24.10) ----------------------------------------
+// The negative controls of these tests mutate `scripts/wrapper.sh` itself (the bytes the Lab
+// installs), one place each; each control's comment names the mutation.
+
+/// Where [`Lab::spawn_wrapper_captured`] puts the wrapper's stdout.
+const WRAPPER_OUT: &str = "wrapper.out";
+
+/// The handler's line: exactly one per TERM-in-the-wait, however many TERMs arrive.
+const TRAP_LINE: &str = "wrapper: TERM during the session wait: publishing ORCA's rc";
+
+fn printed(job: &Path) -> String {
+    fs::read_to_string(job.join(WRAPPER_OUT)).unwrap_or_default()
+}
+
+/// Wait until the wrapper has printed `needle` (it is in the session wait from then on).
+fn wait_printed(job: &Path, needle: &str) {
+    wait_for(needle, || printed(job).contains(needle));
+}
+
+/// o24.7 "honest, not silent": every printed line precedes `.exit_code` — in the job dir's
+/// inotify order no write to the stdout file comes after the one rename that publishes it.
+fn assert_printed_before_exit_code(events: &[(String, u32)]) {
+    assert_published_atomically(events, ".exit_code", libc::IN_MOVED_TO);
+    let published = events.iter().position(|(n, m)| n == ".exit_code" && *m == libc::IN_MOVED_TO).unwrap();
+    let late: Vec<_> = events[published..].iter().filter(|(n, m)| n == WRAPPER_OUT && *m == libc::IN_MODIFY).collect();
+    assert!(late.is_empty(), "a line was printed after .exit_code was published: {late:?}");
+}
+
+fn signal(pid: u32, group: bool, sig: i32) {
+    let target = if group { -(pid as i32) } else { pid as i32 };
+    // SAFETY: kill(2) on our own unreaped child (or the group it leads): the PID cannot be reused.
+    assert_eq!(unsafe { libc::kill(target, sig) }, 0);
+}
+
+/// Gone or a zombie: the PID was read moments ago from a file the process wrote itself.
+fn gone(pid: u32) -> bool {
+    stat_of(pid).is_none_or(|s| s.is_zombie())
+}
+
+// The healthy path: nothing left in the session, so no added delay and one line. NEGATIVE
+// CONTROLS: (1) print after the publish (`echo "wrapper: published"` after step 5's publish) →
+// a line after .exit_code, red; (2) drop the exclusion of the wrapper's own descendants (the
+// `mine[…]=1` in the walk) → its own `ps` counts as a member, the wrapper waits out the grace, red.
+#[test]
+fn session_wait_healthy_path_publishes_at_once_with_one_line() {
+    let mut lab = Lab::new();
+    let job = lab.job("healthy-wait");
+    let watch = DirWatch::new(&job);
+    let start = Instant::now();
+    let pid = lab.spawn_wrapper_captured(&job, &[]);
+    let status = lab.wait_child(pid);
+    assert!(start.elapsed() < Duration::from_secs(3), "no added delay: {:?}", start.elapsed());
+    assert!(status.success());
+    assert_printed_before_exit_code(&watch.events());
+    assert_eq!(printed(&job), "wrapper: session empty at ORCA's return\n");
+    assert_eq!(fs::read_to_string(job.join(".exit_code")).unwrap(), "0\n");
+}
+
+// B4 M7's shape: the driver exits 143 while a member keeps writing output.out for ~2 s.
+// .exit_code (= ORCA's 143) appears only after the writer's last write, with the writer gone.
+// NEGATIVE CONTROL: the wait removed (step 4's `session_wait` call deleted) → .exit_code at once,
+// before "writer done", red.
+#[test]
+fn session_wait_publishes_only_after_a_leftover_writer_ends() {
+    let mut lab = Lab::new();
+    let job = lab.job("writer");
+    let watch = DirWatch::new(&job);
+    let pid = lab.spawn_wrapper_captured(&job, &[("STUB_ORCA_EXIT", "143"), ("STUB_ORCA_EXTRAS", "writer")]);
+    wait_for(".exit_code", || job.join(".exit_code").exists());
+    let output = fs::read_to_string(job.join("output.out")).unwrap();
+    let writer: u32 = fs::read_to_string(job.join("writer.pid")).unwrap().trim().parse().unwrap();
+    assert!(output.ends_with("writer done\n"), "published before the writer's last write: {output}");
+    assert!(gone(writer), "the writer {writer} is still running at the publish");
+    assert_eq!(lab.wait_child(pid).code(), Some(143));
+    assert_eq!(fs::read_to_string(job.join(".exit_code")).unwrap(), "143\n", ".exit_code keeps ORCA's rc");
+
+    let text = printed(&job);
+    assert!(text.contains(&format!("session members left: {writer} ")), "{text}");
+    assert!(text.contains("waiting up to 10 s for them to end"), "{text}");
+    assert!(text.contains("wrapper: session empty after "), "{text}");
+    assert!(!text.contains("TERM"), "no signal was needed: {text}");
+    assert_printed_before_exit_code(&watch.events());
+    assert_eq!(lab.classify(&job, &[]), Outcome::Failed { reason: super::classify::FailReason::NonZeroExit { code: 143 } });
+}
+
+// A member that never stops and ignores TERM is TERMed, then KILLed, and .exit_code appears within
+// the bound (grace shortened to 1 s: 1 + 5 + 1 s). NEGATIVE CONTROL: no kill (the KILL round's
+// `session_round KILL …` line deleted) → the member is still alive at the publish, red.
+#[test]
+fn session_wait_terms_then_kills_a_member_that_never_stops() {
+    let mut lab = Lab::new();
+    let job = lab.job("forever");
+    let watch = DirWatch::new(&job);
+    let start = Instant::now();
+    let pid = lab.spawn_wrapper_captured(
+        &job,
+        &[("STUB_ORCA_EXIT", "143"), ("STUB_ORCA_EXTRAS", "forever"), ("ORCASTUDIO_TEST_SESSION_GRACE", "1")],
+    );
+    let forever = tracked(lab.tracked_pid(&job.join("forever.pid")));
+    assert_eq!(lab.wait_child(pid).code(), Some(143));
+    assert!(start.elapsed() < Duration::from_secs(9), "bounded: {:?}", start.elapsed());
+    assert!(is_dead(forever), "the member that ignores TERM was KILLed before the publish");
+    assert_eq!(fs::read_to_string(job.join(".exit_code")).unwrap(), "143\n");
+
+    let text = printed(&job);
+    assert!(text.contains("waiting up to 1 s for them to end"), "{text}");
+    assert!(text.contains(&format!("wrapper: TERM+CONT {} ", forever.pid)), "{text}");
+    assert!(text.contains(&format!("wrapper: KILL {} ", forever.pid)), "{text}");
+    assert!(text.contains("s after KILL"), "{text}");
+    assert_printed_before_exit_code(&watch.events());
+}
+
+// A per-PID TERM to the wrapper in the wait runs the trap within a bound (bash defers a trap until
+// the foreground command returns; the wait sleeps 0.2 s at a time). NEGATIVE CONTROL: one long
+// sleep in the wait (`SESSION_STEP=10`) → the trap runs ~10 s late, red.
+#[test]
+fn a_per_pid_term_in_the_wait_runs_the_trap_promptly() {
+    let mut lab = Lab::new();
+    let job = lab.job("per-pid-term");
+    let pid = lab.spawn_wrapper_captured(&job, &[("STUB_ORCA_EXTRAS", "writer")]);
+    wait_printed(&job, "waiting up to");
+    let sent = Instant::now();
+    signal(pid, false, libc::SIGTERM);
+    wait_for(".exit_code", || job.join(".exit_code").exists());
+    assert!(sent.elapsed() < Duration::from_secs(1), "the trap ran {:?} after the TERM", sent.elapsed());
+    assert_eq!(fs::read_to_string(job.join(".exit_code")).unwrap(), "0\n");
+    assert_eq!(lab.wait_child(pid).code(), Some(0), "the handler exits with ORCA's rc once the session is empty");
+    assert_eq!(printed(&job).matches(TRAP_LINE).count(), 1);
+}
+
+// A stray per-PID TERM (not a cancel) in the wait while a member never ends: the handler publishes,
+// then holds the slot only by the bounded sequence (grace 1 s here: 1 + 5 + 1 s), KILLs the
+// member and exits with ORCA's rc, printing nothing after the publish (ADR-024 o24.14).
+// NEGATIVE CONTROL: an unbounded hold (wait until the session is empty, no escalation) → the
+// wrapper never exits within the Lab's wait, red.
+#[test]
+fn a_stray_term_in_the_wait_holds_the_slot_only_within_the_bound() {
+    let mut lab = Lab::new();
+    let job = lab.job("stray-term");
+    let watch = DirWatch::new(&job);
+    let pid = lab.spawn_wrapper_captured(&job, &[("STUB_ORCA_EXTRAS", "forever"), ("ORCASTUDIO_TEST_SESSION_GRACE", "1")]);
+    let forever = tracked(lab.tracked_pid(&job.join("forever.pid")));
+    wait_printed(&job, "waiting up to");
+    let sent = Instant::now();
+    signal(pid, false, libc::SIGTERM);
+    assert_eq!(lab.wait_child(pid).code(), Some(0), "the handler exits with ORCA's rc");
+    assert!(sent.elapsed() < Duration::from_secs(9), "bounded hold: {:?}", sent.elapsed());
+    assert!(is_dead(forever), "the member that never ends was KILLed by the handler's sequence");
+    assert_eq!(fs::read_to_string(job.join(".exit_code")).unwrap(), "0\n");
+    let text = printed(&job);
+    assert_eq!(text.matches(TRAP_LINE).count(), 1, "{text}");
+    assert!(text.contains("(at most 7 s more)"), "{text}");
+    assert_printed_before_exit_code(&watch.events());
+}
+
+// Two TERMs in the wait (a cancel sends the group TERM, then the sweep's per-PID TERM): one trap
+// line, one .exit_code. NEGATIVE CONTROL: no `trap '' TERM` at the top of the handler → bash
+// re-enters it → two lines and a second publish, red.
+#[test]
+fn two_terms_in_the_wait_give_one_trap_line_and_one_exit_code() {
+    let mut lab = Lab::new();
+    let job = lab.job("two-terms");
+    let watch = DirWatch::new(&job);
+    let pid = lab.spawn_wrapper_captured(&job, &[("STUB_ORCA_EXTRAS", "writer")]);
+    wait_printed(&job, "waiting up to");
+    signal(pid, false, libc::SIGTERM);
+    wait_for(".exit_code", || job.join(".exit_code").exists());
+    // The handler now holds the slot until the writer ends (~2 s): the second TERM lands in it.
+    signal(pid, false, libc::SIGTERM);
+    assert_eq!(lab.wait_child(pid).code(), Some(0));
+    assert_eq!(printed(&job).matches(TRAP_LINE).count(), 1, "{}", printed(&job));
+    assert_published_atomically(&watch.events(), ".exit_code", libc::IN_MOVED_TO);
+}
+
+// A cancel's group TERM during the wait keeps a clean result: ORCA's rc 0 is published, the job
+// classifies row 2 `Completed { late_cancel }`, and the wrapper exits once its session is empty.
+// NEGATIVE CONTROL: no trap (step 4's `trap session_term TERM` deleted) → the wrapper dies, no
+// .exit_code, row 4 `Cancelled`, red.
+#[test]
+fn a_group_term_in_the_wait_publishes_orcas_rc_and_keeps_a_clean_result() {
+    let mut lab = Lab::new();
+    let job = lab.job("group-term-wait");
+    let pid = lab.spawn_wrapper_captured(&job, &[("STUB_ORCA_EXTRAS", "writer")]);
+    wait_printed(&job, "waiting up to");
+    fs::write(job.join(".cancelled"), "").unwrap(); // cancel.sh publishes it before its TERM
+    signal(pid, true, libc::SIGTERM);
+    let status = lab.wait_child(pid);
+    assert_eq!(status.code(), Some(0), "the handler exits with ORCA's rc: {status:?}");
+    assert_eq!(fs::read_to_string(job.join(".exit_code")).unwrap_or_default(), "0\n");
+    assert_eq!(printed(&job).matches(TRAP_LINE).count(), 1);
+    assert_eq!(lab.classify(&job, &[]), Outcome::Completed { late_cancel: true });
+}
+
+// No trap while ORCA runs: a group TERM then kills the wrapper and nothing is published (as
+// before o24). NEGATIVE CONTROL: the trap installed before ORCA starts (`SESSION_RC=143; trap
+// session_term TERM` before step 3) → an .exit_code appears, red.
+#[test]
+fn a_group_term_while_orca_runs_publishes_nothing() {
+    let mut lab = Lab::new();
+    let job = lab.job("term-running");
+    let pid = lab.spawn_wrapper_captured(&job, &[("STUB_ORCA_SLEEP", "20")]);
+    lab.tracked_pid(&job.join("orca.pid"));
+    lab.tracked_pid(&job.join("sleep.pid"));
+    signal(pid, true, libc::SIGTERM);
+    let status = lab.wait_child(pid);
+    assert!(!job.join(".exit_code").exists(), "a TERM while ORCA runs published .exit_code");
+    assert_eq!(status.signal(), Some(libc::SIGTERM));
+    assert_eq!(printed(&job), "");
+}
+
+// The real `cancel.sh cancel` against a wrapper in its wait: .exit_code = ORCA's rc, .cancelled
+// present, one trap line, row 2. (Integration of the two scripts; the controls above cover the
+// trap's parts.)
+#[test]
+fn cancel_sh_in_the_wait_keeps_the_clean_result_with_one_trap_line() {
+    let mut lab = Lab::new();
+    let job = lab.job("cancel-in-wait");
+    let pid = lab.spawn_wrapper_captured(&job, &[("STUB_ORCA_EXTRAS", "writer")]);
+    wait_printed(&job, "waiting up to");
+    let out = lab.cancel("cancel", &job);
+    let text = stdout(&out);
+    assert!(out.status.success(), "{text}\n{}", String::from_utf8_lossy(&out.stderr));
+    assert!(text.contains(&format!("group: TERM -{pid}")), "{text}");
+    lab.wait_child(pid);
+    assert_eq!(fs::read_to_string(job.join(".exit_code")).unwrap(), "0\n");
+    assert!(job.join(".cancelled").exists());
+    assert_eq!(printed(&job).matches(TRAP_LINE).count(), 1, "{}", printed(&job));
+    assert_eq!(lab.classify(&job, &[]), Outcome::Completed { late_cancel: true });
+}
+
+/// Run the wrapper inside a session the test made (its leader is a `bash -c` that also starts a
+/// sentinel `sleep`), launched by `launch` (`bash` itself, or a perl that first makes the wrapper
+/// its own group's leader). Returns (the leader's pid, its status, the sentinel, the elapsed time).
+/// The wrapper must not be the script's last command: bash would exec it in place of the leader,
+/// making it the session leader after all.
+fn wrapper_in_a_foreign_session(lab: &mut Lab, job: &Path, launch: &str) -> (u32, ExitStatus, Tracked, Duration) {
+    let mut cmd = Command::new("bash");
+    cmd.arg("-c")
+        .arg(format!(
+            r#"sleep 30 & echo "$!" >"$1/sentinel.pid.tmp"; mv "$1/sentinel.pid.tmp" "$1/sentinel.pid"; {launch} "$2" "$1" 0 "$3"; exit "$?""#
+        ))
+        .arg("leader")
+        .arg(job)
+        .arg(&lab.wrapper)
+        .arg(lab.stub_dir.join("orca"))
+        .current_dir(&lab.root)
+        .env("STUB_RAN_LOG", lab.ran_log())
+        .env("ORCASTUDIO_TEST_SESSION_GRACE", "0")
+        .stdin(Stdio::null())
+        .stdout(fs::File::create(job.join(WRAPPER_OUT)).unwrap());
+    new_session(&mut cmd);
+    let start = Instant::now();
+    let leader = lab.spawn(cmd);
+    let sentinel = tracked(lab.tracked_pid(&job.join("sentinel.pid")));
+    let status = lab.wait_child(leader);
+    // The wrapper publishes only after any sweep it ran is over, so the sentinel's fate is settled.
+    wait_for(".exit_code", || job.join(".exit_code").exists());
+    (leader, status, sentinel, start.elapsed())
+}
+
+// The guard: a wrapper that does not lead its session (run without setsid inside a session the
+// test made, which also holds a sentinel `sleep`) publishes at once and signals nothing.
+// NEGATIVE CONTROL: guard removed (`session_leader` always true) → the wrapper TERMs the
+// session's other processes → the sentinel dies, red.
+#[test]
+fn a_wrapper_that_does_not_lead_its_session_publishes_at_once_and_signals_nothing() {
+    let mut lab = Lab::new();
+    let job = lab.job("not-leader");
+    let (leader, status, sentinel, elapsed) = wrapper_in_a_foreign_session(&mut lab, &job, "bash");
+    assert!(!is_dead(sentinel), "the wrapper signalled a session it does not lead: {}", printed(&job));
+    assert!(status.success(), "{status:?}");
+    assert!(elapsed < Duration::from_secs(3), "at once: {elapsed:?}");
+    let text = printed(&job);
+    assert!(text.starts_with("wrapper: session wait skipped: the wrapper (pid "), "{text}");
+    assert!(text.contains(&format!("does not lead its session (sid {leader}, pgid {leader}); publishing now")), "{text}");
+    assert_eq!(fs::read_to_string(job.join(".exit_code")).unwrap(), "0\n");
+}
+
+// The guard needs the SID AND the PGID (MED-2 of the Part A review): a wrapper that leads its own
+// process group (setpgid by a perl that then execs it) but not its session still publishes at once
+// and signals nothing. NEGATIVE CONTROL: the guard weakened to the PGID alone → the wrapper lists
+// the test's session and TERMs it → the sentinel dies, red.
+#[test]
+fn a_wrapper_that_leads_its_group_but_not_its_session_publishes_at_once_and_signals_nothing() {
+    let mut lab = Lab::new();
+    let job = lab.job("group-leader");
+    let launch = r#"perl -e 'setpgrp(0, 0) or die; exec @ARGV or die' bash"#;
+    let (leader, status, sentinel, elapsed) = wrapper_in_a_foreign_session(&mut lab, &job, launch);
+    // The fixture is what it claims: the wrapper led its group, not its session.
+    let started = parse_started(&fs::read(job.join(".started")).unwrap()).unwrap();
+    assert_eq!(started.pgid, started.pid, "the wrapper leads its own group");
+    assert_eq!(started.sid, leader, "the session is the test's");
+    assert!(!is_dead(sentinel), "the wrapper signalled a session it does not lead: {}", printed(&job));
+    assert!(status.success(), "{status:?}");
+    assert!(elapsed < Duration::from_secs(3), "at once: {elapsed:?}");
+    let text = printed(&job);
+    let want = format!("does not lead its session (sid {leader}, pgid {}); publishing now", started.pid);
+    assert!(text.contains(&want), "{text}");
+    assert_eq!(fs::read_to_string(job.join(".exit_code")).unwrap(), "0\n");
+}
+
+/// A `ps` stub first on the wrapper's PATH: `fail` exits 1 with a message; `zombie` / `survivor`
+/// print the real listing plus a member at PID 4194304 — above Linux's PID_MAX_LIMIT (2^22), so
+/// no process can have it and a signal to it can reach nobody; `noself` prints the real listing
+/// without the wrapper's own line (its pid is the SID after `-s`).
+fn ps_stub_path(lab: &Lab, mode: &str) -> Vec<(String, String)> {
+    let real = std::env::var("PATH")
+        .unwrap_or_default()
+        .split(':')
+        .map(|d| Path::new(d).join("ps"))
+        .find(|p| p.is_file())
+        .expect("a real ps on PATH");
+    let dir = lab.root.join("psstub");
+    fs::create_dir_all(&dir).unwrap();
+    let stub = dir.join("ps");
+    fs::write(
+        &stub,
+        r#"#!/bin/bash
+case $STUB_PS_MODE in
+    fail) echo "ps: stub failure" >&2; exit 1 ;;
+    zombie) "$STUB_PS_REAL" "$@"; rc=$?; echo "4194304       1 Z    defunct"; exit "$rc" ;;
+    survivor) "$STUB_PS_REAL" "$@"; rc=$?; echo "4194304       1 D    stuck"; exit "$rc" ;;
+    noself) "$STUB_PS_REAL" "$@" | awk -v s="$4" '$1 != s'; exit "${PIPESTATUS[0]}" ;;
+esac
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).unwrap();
+    vec![
+        ("PATH".into(), format!("{}:{}", Lab::str(&dir), std::env::var("PATH").unwrap_or_default())),
+        ("STUB_PS_REAL".into(), real.to_str().unwrap().into()),
+        ("STUB_PS_MODE".into(), mode.into()),
+        ("ORCASTUDIO_TEST_SESSION_GRACE".into(), "0".into()),
+    ]
+}
+
+fn run_with_ps_stub(lab: &mut Lab, job: &Path, mode: &str) -> (ExitStatus, Duration) {
+    let env = ps_stub_path(lab, mode);
+    let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let start = Instant::now();
+    let pid = lab.spawn_wrapper_captured(job, &env);
+    let status = lab.wait_child(pid);
+    (status, start.elapsed())
+}
+
+// A `ps` error publishes at once with a note. NEGATIVE CONTROL: read rc 1 as "no members" like
+// `session_pids` (`(( rc > 1 ))` for `(( rc != 0 ))`) → the note no longer names the failure, red.
+#[test]
+fn session_wait_a_ps_error_publishes_at_once_with_a_note() {
+    let mut lab = Lab::new();
+    let job = lab.job("ps-error");
+    let (status, elapsed) = run_with_ps_stub(&mut lab, &job, "fail");
+    assert!(status.success());
+    assert!(elapsed < Duration::from_secs(3), "at once: {elapsed:?}");
+    let text = printed(&job);
+    assert!(text.starts_with("wrapper: session wait skipped: ps -s "), "{text}");
+    assert!(text.ends_with(" failed: rc=1 ps: stub failure; publishing now\n"), "{text}");
+    assert_eq!(fs::read_to_string(job.join(".exit_code")).unwrap(), "0\n");
+}
+
+// A session holding only a zombie is empty: no wait. NEGATIVE CONTROL: zombies not excluded (the
+// `|| ${stat[i]} == Z*` deleted) → the wrapper waits and signals, red.
+#[test]
+fn session_wait_a_zombie_only_session_is_empty() {
+    let mut lab = Lab::new();
+    let job = lab.job("zombie-only");
+    let (status, elapsed) = run_with_ps_stub(&mut lab, &job, "zombie");
+    assert!(status.success());
+    assert!(elapsed < Duration::from_secs(3), "no wait: {elapsed:?}");
+    assert_eq!(printed(&job), "wrapper: session empty at ORCA's return\n");
+}
+
+// A member still listed after KILL (D state) is named and does not block the publish (grace 0:
+// 0 + 5 + 1 s). NEGATIVE CONTROL: an unbounded KILL round (`while session_round KILL …; do :;
+// done`) → no publish within the Lab's wait, red.
+#[test]
+fn session_wait_a_survivor_of_kill_is_named_and_does_not_block_the_publish() {
+    let mut lab = Lab::new();
+    let job = lab.job("survivor");
+    let (status, elapsed) = run_with_ps_stub(&mut lab, &job, "survivor");
+    assert!(status.success());
+    assert!(elapsed < Duration::from_secs(9), "bounded: {elapsed:?}");
+    let text = printed(&job);
+    for line in [
+        "wrapper: TERM+CONT 4194304 D stuck\n",
+        "wrapper: KILL 4194304 D stuck\n",
+        "wrapper: survivors after KILL, publishing anyway: 4194304 D stuck\n",
+    ] {
+        assert!(text.contains(line), "missing {line:?} in {text}");
+    }
+    assert_eq!(fs::read_to_string(job.join(".exit_code")).unwrap(), "0\n");
+}
+
+// Rule #9 on the listing itself (LOW-3 of the Part A review): a `ps` whose listing lacks the
+// wrapper is not believed — publish at once with a note. NEGATIVE CONTROL: drop the self-listed
+// check → the listing reads as an empty session ("session empty at ORCA's return"), red.
+#[test]
+fn session_wait_a_listing_without_the_wrapper_publishes_at_once_with_a_note() {
+    let mut lab = Lab::new();
+    let job = lab.job("noself");
+    let (status, elapsed) = run_with_ps_stub(&mut lab, &job, "noself");
+    assert!(status.success());
+    assert!(elapsed < Duration::from_secs(3), "at once: {elapsed:?}");
+    let text = printed(&job);
+    assert!(text.starts_with("wrapper: session wait skipped: ps -s "), "{text}");
+    assert!(text.ends_with(": the wrapper itself is not listed; publishing now\n"), "{text}");
+    assert_eq!(fs::read_to_string(job.join(".exit_code")).unwrap(), "0\n");
+}
+
+// A member in the wrapper's OWN process group (LOW-4 of the Part A review; like ranks that never
+// left it) is signalled by its PID, so it ends and the wrapper — never signalled — publishes
+// normally (no trap line, exit with ORCA's rc). NEGATIVE CONTROLS: (a) `kill -- -$pid` (a group
+// kill by the member's pid) → no such group, the member survives TERM and KILL, red; (b) a kill
+// of the member's process group → the wrapper TERMs its own group → its trap runs, red.
+#[test]
+fn session_wait_signals_a_member_of_the_wrappers_own_group_by_pid_and_survives() {
+    let mut lab = Lab::new();
+    let job = lab.job("grouped");
+    let pid = lab.spawn_wrapper_captured(&job, &[("STUB_ORCA_EXTRAS", "grouped"), ("ORCASTUDIO_TEST_SESSION_GRACE", "0")]);
+    let member: u32 = {
+        wait_for("grouped.pid", || fs::read_to_string(job.join("grouped.pid")).is_ok_and(|s| s.ends_with('\n')));
+        fs::read_to_string(job.join("grouped.pid")).unwrap().trim().parse().unwrap()
+    };
+    let status = lab.wait_child(pid);
+    let pgrp: u32 = fs::read_to_string(job.join("grouped.pgrp")).unwrap().trim().parse().unwrap();
+    assert_eq!(pgrp, pid, "the fixture's member is in the wrapper's own group");
+    wait_for("the member ended", || gone(member));
+    let text = printed(&job);
+    assert_eq!(text.matches(TRAP_LINE).count(), 0, "the wrapper signalled its own group: {text}");
+    assert_eq!(status.code(), Some(0), "{status:?}: {text}");
+    assert!(text.contains(&format!("wrapper: TERM+CONT {member} ")), "{text}");
+    assert!(text.contains("s after TERM+CONT\n"), "{text}");
+    assert_eq!(fs::read_to_string(job.join(".exit_code")).unwrap(), "0\n");
+}
+
+// The grace override can only shorten the wait (LOW-5 of the Part A review): 60 and a
+// non-integer both mean the full 10 s. NEGATIVE CONTROL: no clamp (any decimal accepted) → the
+// wrapper prints "waiting up to 60 s", red.
+#[test]
+fn session_wait_grace_override_is_clamped_to_the_full_ten_seconds() {
+    for value in ["60", "2.5", "-1"] {
+        let mut lab = Lab::new();
+        let job = lab.job("clamp");
+        let pid = lab.spawn_wrapper_captured(&job, &[("STUB_ORCA_EXTRAS", "writer"), ("ORCASTUDIO_TEST_SESSION_GRACE", value)]);
+        assert_eq!(lab.wait_child(pid).code(), Some(0));
+        let text = printed(&job);
+        assert!(text.contains("wrapper: waiting up to 10 s for them to end\n"), "{value}: {text}");
+    }
 }
 
 // ---- shell/Rust parity on materialised fixtures (a)–(e) ------------------------------------

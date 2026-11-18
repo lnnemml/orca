@@ -143,6 +143,8 @@ install exists there; the first status step after opening the app is the app's f
 
 **Order:** step 0 → step 1 → M6 raw burst, M1, M7 (prober, one session, no app writes) → G1 started
 in the evening (suspend overnight) → M3, M5, M2 with Anton → M6 in the app. M4 runs with M3 (`ORCASTUDIO_TIMING=1`); M8 runs only if instrumented.
+*Revised 2026-11-18 (Anton, ADR-024 o24.9):* M2, M3, M4, M5 and M8 are **waived** with their reasons
+there; M6 in the app becomes the live check of the B4 fixes (o24.10); G1b stays (overnight suspend).
 
 **Not in B4:** the 1800 s `.gbw` timeout (no production path); acting on `Lost`/`ReEnqueue` (5.4).
 
@@ -205,7 +207,8 @@ not let the idle TCP connection die.
 - On 2026-11-18 slot0's queue held no running task and no process of the job was found (G1a probe) (I:
   that the sweep left nothing; not checked right after the cancel).
 - Not exercised: "Retry cancel" and stopped re-sends — they need a cancel that cannot reach the server;
-  checked with M2 (cancel while the link is down).
+  M2 is waived (o24.9), so this stays a hand check: Cancel on a throwaway job with the network off,
+  then on.
 
 ## M6 raw burst, M1, M7 (2026-11-18)
 
@@ -255,12 +258,25 @@ own tsp socket, r²SCAN-3c Opt, `%pal 4`, mask subset `0-3`:**
 
 ### Not measured
 
-- M6 in the app (15 real queued jobs); M7 in a long module (Freq); M2, M3, M4, M5, G1b.
+- M6 in the app (15 real queued jobs; now the B4 fixes' live check); M7 in a long module (Freq);
+  G1b. M2, M3, M4, M5, M8 waived (ADR-024 o24.9).
+
+## B4 fixes — ssh option precedence (2026-11-18)
+
+### Facts (orchestrator, then reproduced by the DESIGN verifier; `ssh -G` resolves config, no connection; M)
+
+- Laptop client: `ssh -V` → OpenSSH_9.6p1 (Ubuntu build).
+- `ssh -G uni` → `serveraliveinterval 30`, `serveralivecountmax 4`, `controlmaster auto`,
+  `controlpersist 600` (the `Host uni` block of `~/.ssh/config`).
+- `ssh -G -o ServerAliveInterval=15 -o ServerAliveCountMax=3 uni` → `serveraliveinterval 15`,
+  `serveralivecountmax 3`: command-line `-o` overrides the config file (feeds ADR-024 o24.5).
+- Not measured: the keepalive's effect on a live, multiplexed call (the master's settings apply — I).
 
 ## Drift found while planning (fix with the results)
 
 - ADR-024 o18 residual "no `ServerAliveInterval`": true of the argv, not of the effective behaviour
   (user config). Whether the app should stop depending on the user config is M2/M5's decision.
+  *Decided 2026-11-18 by ADR-024 o24.5: the app's argv carries its own keepalive.*
 - ADR-024 o18 anchor `ssh.rs:225-228` is stale (the deadline return is now ~l.226–233).
 - ROADMAP B4 names "LIST timeouts" and "1800 s with `.gbw`": LIST shares the 300 s download bound,
   and the `.gbw` branch has no production caller.

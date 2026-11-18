@@ -11820,3 +11820,45 @@ row only; the shared `.builder-row` rule and the other rows are unchanged. Needs
 - 5.4b and 5.5 stay in Phase 5; remote `orca_plot`, local job pause and `uploading`/`syncing` move to
   Phase 6.
 - Next: M2/M3/M4/M5 and M6 in the app with Anton, G1b overnight; then the B4-fixes unit, 5.4b, 5.5.
+
+## [2026-11-18] decision | ADR-024 o24 — B4 fixes accepted
+- From the B4 measurements (M6 raw burst, M1, M7); direction and the forks decided by Anton. Accepted
+  after DESIGN rounds 1–3 (1 HIGH + 7 MED + 8 LOW; 4 MED + 11 LOW; 2 MED + 6 LOW — all applied).
+- **Per-host cap:** at most `MAX_CONCURRENT_REMOTE_CALLS = 8` ssh/rsync processes per host (per
+  profile host string; Anton: per host), one fair FIFO queue (admit ticket `t` iff
+  `t < released + n`, `notify_all` on every release) shared by the poller, the commands and the
+  connection test, no reserved permit; the wait is outside each call's timeout; an RAII permit
+  released on every path. Staggering the status steps rejected (o24.11).
+- **Keepalive:** `ssh_options()` carries `ServerAliveInterval=30` and `ServerAliveCountMax=4`, so a
+  dead link ends an ssh/rsync in ~2 min whatever `~/.ssh/config` says; no `rsync --timeout` (settles
+  o18's open item). A call multiplexed over a control master uses the master's keepalive (residual).
+- **Wrapper session wait:** `.exit_code` (still ORCA's rc) is published only once the wrapper's
+  session is empty — guard first (`$$` = SID = PGID from `.started`), every member but the wrapper's
+  own descendants and zombies, 10 s grace, TERM+CONT by PID, 5 s, KILL, every action printed before
+  the publish. A TERM trap from ORCA's return to the publish: single-shot, publishes ORCA's rc (a
+  late cancel keeps row 2), holds the tsp slot. Old queued jobs keep the old wrapper; no prune.
+- **Waived (o24.9):** M2, M3/M4, M5, M8; the Retry-cancel check becomes a hand check; G1b stays.
+- **o24.14 Part A clarifications** (orchestrator): the bound is ≈ 16 s (1 s re-list after KILL, so a
+  member still exiting is not named a false survivor); the normal publish under `trap '' TERM`; the
+  handler's hold bounded by the same sequence, silent after its one line; `comm` in the listing.
+
+## [2026-11-18] feat | B4 fixes — ssh/rsync cap, keepalive, wrapper session wait
+- **Landed:** `remote/gate.rs` (`Gate`, `HostKey`, `host_key`, `MAX_CONCURRENT_REMOTE_CALLS`, the
+  global `REMOTE_CALLS` in a `LazyLock`); `ssh::run_gated` and `SystemRunner::run` through the global
+  gate; the keepalive in `ssh_options` (so in every ssh argv and rsync's `-e`); `wrapper.sh` step 4
+  (the session wait and its TERM trap) and step 5 (the publish under `trap '' TERM`).
+- **Tests:** crate 976 passed, 28 ignored (947 before; +29: gate 7, ssh 5, wrapper Lab 17). The `ssh.rs`
+  timing tests now run ungated, so the global gate's fallback key cannot skew them. Argv pins in
+  `ssh.rs` and `sync.rs` updated to the four options.
+- **Negative controls, all run by hand and red** (scratchpad scripts; each restores the file
+  byte-identical): gate/ssh 15 — caps 9 and 1, a plain condvar, a no-notify `serving` counter,
+  `notify_one`, one shared key, wrong ssh/rsync keys, the deadline before the permit, a permit kept
+  on error or dropped at once, a bypassing `SystemRunner`, the wrong key under the wiring test, each
+  keepalive option dropped; wrapper 18 — no wait, no kill, a print after the publish, no descendant
+  exclusion, a long sleep, no `trap ''`, no trap, a trap while ORCA runs, no guard, a PGID-only
+  guard, `ps` rc 1 as empty, no self-listed check, zombies counted, a group kill by pid, a kill of the
+  member's group, an unclamped grace, an unbounded handler hold, an unbounded KILL round.
+- **Live checks pending (uni):** a healthy real job's `.tsp-out` shows "session empty at ORCA's
+  return"; M6 in the app (≥ 11 jobs queued, cold restart, no "Server unreachable" from the burst).
+- Wiki: `modules/remote-jobs.md`, `modules/execution-backends.md`, `modules/server-profiles.md`
+  (argv), ADR-024 o24.10 grace wording and o24.14; ROADMAP "B4 fixes" built, live check open.

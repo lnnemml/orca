@@ -481,7 +481,7 @@ mod tests {
                 "--checksum",
                 "--mkpath",
                 "-e",
-                "ssh -o BatchMode=yes -o ConnectTimeout=10",
+                "ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=30 -o ServerAliveCountMax=4",
                 "/data/jobs/j1/",
                 &format!("uni:{JOB}/"),
             ]
@@ -495,7 +495,7 @@ mod tests {
         want.extend(download_filter_args(FetchPolicy::SMALL_ONLY));
         want.extend([
             "-e".to_string(),
-            "ssh -o BatchMode=yes -o ConnectTimeout=10".to_string(),
+            "ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=30 -o ServerAliveCountMax=4".to_string(),
             format!("anton@uni:{JOB}/"),
             "/data/jobs/j1/".to_string(),
         ]);

@@ -1,6 +1,6 @@
 # ADR-024: Remote execution under intermittent connectivity
 
-**Status:** Accepted · 2026-10-02 (Proposed → Accepted after the review + acceptance amendments below) · amended 2026-10-03 (probe; probe review; d′ resolution — ready for implementation; l — unit 5.2 script and classifier shape; m — 5.3 submit rules; n — 5.1 Part B profile and connection test) · amended 2026-10-05 (o — 5.3 transport, sync and monitoring; accepted after DESIGN round 4; o13 — Part A2 amendments, accepted after DESIGN review 2026-10-05; o14 — B1 amendments, accepted after DESIGN review 2026-10-05) · amended 2026-10-06 (o15 — B1 Part B: the in-flight guard's scope, accepted after DESIGN review 2026-10-06; o16 — B2: the remote live log is pushed, accepted after DESIGN review 2026-10-06; o17 — B2 Part A: classifier `Cancelled` terminal, drain while watched, accepted after DESIGN review 2026-10-06; o18 — B2 Part B: exit leaves in-flight ssh/rsync to the OS, accepted after DESIGN review 2026-10-06; o19 — B3: the poller's remote state reaches the view, accepted after DESIGN review 2026-10-06) · amended 2026-10-07 (o20 — B3 Part B: run target remembered app-wide, run target only via Create & Run, Withdraw confirms; accepted after DESIGN review 2026-10-07) · amended 2026-10-17 (o21 — Cancel refuses a live remote job before the guard; accepted after DESIGN review 2026-10-17; o22 — unit 5.4a: remote cancel, the pending cancel and the guard; accepted after DESIGN review 2026-10-17, round 2 PASS WITH FINDINGS applied; o22.11–12 — A2a clarifications, reviewed with A2a's CODE verification 2026-10-17) · amended 2026-10-18 (o22.13 — A2b clarifications; accepted after DESIGN review 2026-10-18, round 2 PASS WITH FINDINGS applied; o22.14 — Part B: commands and view; accepted after DESIGN review 2026-10-18, round 2 PASS WITH FINDINGS applied) · amended 2026-10-19 (o23 — unit 5.4c: the pending submit; accepted after DESIGN review 2026-10-19, round 2 PASS WITH FINDINGS applied as o23.13)
+**Status:** Accepted · 2026-10-02 (Proposed → Accepted after the review + acceptance amendments below) · amended 2026-10-03 (probe; probe review; d′ resolution — ready for implementation; l — unit 5.2 script and classifier shape; m — 5.3 submit rules; n — 5.1 Part B profile and connection test) · amended 2026-10-05 (o — 5.3 transport, sync and monitoring; accepted after DESIGN round 4; o13 — Part A2 amendments, accepted after DESIGN review 2026-10-05; o14 — B1 amendments, accepted after DESIGN review 2026-10-05) · amended 2026-10-06 (o15 — B1 Part B: the in-flight guard's scope, accepted after DESIGN review 2026-10-06; o16 — B2: the remote live log is pushed, accepted after DESIGN review 2026-10-06; o17 — B2 Part A: classifier `Cancelled` terminal, drain while watched, accepted after DESIGN review 2026-10-06; o18 — B2 Part B: exit leaves in-flight ssh/rsync to the OS, accepted after DESIGN review 2026-10-06; o19 — B3: the poller's remote state reaches the view, accepted after DESIGN review 2026-10-06) · amended 2026-10-07 (o20 — B3 Part B: run target remembered app-wide, run target only via Create & Run, Withdraw confirms; accepted after DESIGN review 2026-10-07) · amended 2026-10-17 (o21 — Cancel refuses a live remote job before the guard; accepted after DESIGN review 2026-10-17; o22 — unit 5.4a: remote cancel, the pending cancel and the guard; accepted after DESIGN review 2026-10-17, round 2 PASS WITH FINDINGS applied; o22.11–12 — A2a clarifications, reviewed with A2a's CODE verification 2026-10-17) · amended 2026-10-18 (o22.13 — A2b clarifications; accepted after DESIGN review 2026-10-18, round 2 PASS WITH FINDINGS applied; o22.14 — Part B: commands and view; accepted after DESIGN review 2026-10-18, round 2 PASS WITH FINDINGS applied) · amended 2026-10-19 (o23 — unit 5.4c: the pending submit; accepted after DESIGN review 2026-10-19, round 2 PASS WITH FINDINGS applied as o23.13) · amended 2026-11-18 (o24 — B4 fixes: a per-host cap on concurrent ssh/rsync, an app-owned keepalive, the wrapper waits for its session; accepted after DESIGN review 2026-11-18, rounds 1–3 PASS WITH FINDINGS applied)
 
 Refines [ADR-003](adr-003-execution-backend.md) (the `ExecutionBackend` trait + job state
 machine) and extends [ADR-023](adr-023-server-agnostic-remote-execution.md) (one `SshBackend`
@@ -1046,7 +1046,7 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
     allowed-lists and masks like `0,2,4-5`; scan cost with hundreds of own-uid processes; a master
     dying mid-session; whether `orca_2json`/`orca_plot` on the laptop read a `.gbw` from the server's
     ORCA when the recorded versions differ; `--timeout`, `ServerAlive` on a dead link and rsync rc
-    23/24/30 under a real drop.
+    23/24/30 under a real drop *(the options decided by o24.5; the drop measurement waived, o24.9)*.
 13. **Part A2 amendments** (2026-10-05). They refine items 3.2, 3.3, 3.4, 6 and 7 of (o), n7, and
     (l)'s upload name; nothing else changes. Accepted after DESIGN review (PASS WITH FINDINGS, findings
     applied) on 2026-10-05.
@@ -1366,7 +1366,8 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
     sha256 post-condition (o6), which is a point-in-time snapshot. That is content-neutral only
     because of **finality**: a fetching outcome is classified only after `.exit_code` is published,
     which `wrapper.sh` step 4 does only after ORCA has returned, right before the wrapper exits, so
-    the selected artifacts on the server no longer change and both transfers bring the same bytes,
+    the selected artifacts on the server no longer change *(false when the driver is killed alone —
+    B4 M7; restored for new jobs by o24.7)* and both transfers bring the same bytes,
     each written to a temp file and renamed whole (`.tsp-out/` may still change but is outside the
     comparison and decides nothing; rsync temp names are not selected). A future change that lets a
     server artifact change after a fetching outcome breaks this argument. Rejected: tracking live
@@ -1374,12 +1375,14 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
     correctness gain. Residuals (not measured, B4): an orphaned ssh/rsync loses its 60 s / 300 s
     timeout (it was enforced by the dead process's thread; no `ServerAliveInterval`, no `rsync
     --timeout`), so on a silently dropped link it may hang for an unknown time — B4 decides whether
-    to add those options; an orphaned rsync can recreate files under a job dir the new launch has
+    to add those options *(decided by o24.5: the app's argv carries `ServerAliveInterval=30` /
+    `CountMax=4`; no `rsync --timeout`)*; an orphaned rsync can recreate files under a job dir the new launch has
     just deleted (orphan files, not corruption); that the children survive the parent's exit is
     asserted, not yet observed; classifier row 6 does not inspect the job session, so ORCA children
     (MPI ranks, `orca_*` helpers) orphaned by a main process that died with a non-zero exit could, if
     they survive, still append to `output.out`/`stderr.log` after `.exit_code` exists — plausible,
-    not seen in a run (rule #10). **Propagation:** `modules/execution-backends.md` ("On exit"),
+    not seen in a run (rule #10) *(seen in B4 M7, 2026-11-18; closed for jobs run by the new wrapper,
+    except the paths named in o24.8, by o24.7–8)*. **Propagation:** `modules/execution-backends.md` ("On exit"),
     `modules/tauri-core.md` (startup and exit), ROADMAP B4 (the measurements).
 19. **B3: the poller's per-job remote state reaches the view** (2026-10-06; fork raised at B3 start,
     decided by Anton). Accepted after DESIGN review (three rounds, each PASS WITH FINDINGS, findings
@@ -2677,6 +2680,229 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
            submit again; a pending cancel's actions overridden by the waiting badge.
         6. **Live gate.** A pending row exists only after uni answers "slot busy", so the view is
            live-gated in the uni run (with 5.4a's server-side states and B4), not before.
+24. **B4 fixes: a per-host cap on concurrent ssh/rsync, an app-owned keepalive, and the wrapper waits
+    for its session** (2026-11-18; from the B4 measurements, [remote-live-run-b4.md](remote-live-run-b4.md)
+    § M6 raw burst, M1, M7; direction and the forks of 24.2/24.3/24.5 decided by Anton, the rest the
+    orchestrator's; 24.7's cancel-in-the-wait rule decided by Anton). DESIGN round 1: PASS WITH
+    FINDINGS (1 HIGH + 7 MED + 8 LOW); round 2: PASS WITH FINDINGS (4 MED + 11 LOW); round 3: PASS
+    WITH FINDINGS (2 MED + 6 LOW); all applied in this text. `FETCH_TIMEOUT` stays 300 s (M1: the largest real fetch takes 3–10 s).
+    1. **The fact (M6).** With no ssh control master, 15 simultaneous new connections to uni lose
+       2–4 (rc 255, "kex_exchange_identification … reset by peer"); 8 and 10 lose none; with a warm
+       master 15 calls all succeed, 5 of them falling back from the master to a fresh connection
+       (M). The drops fit sshd's `MaxStartups` and the fallbacks its `MaxSessions`, both unset on uni
+       so at their defaults (10:30:100, 10) — the attribution and the defaults are **inferred**: the
+       server's sshd version was not read. The app has **no** cap today: the poller runs each planned
+       step on its own thread (`poller/app.rs` `spawn_step`; the doc at `app.rs:8-12` bounds steps
+       per job only), and the launch tick makes every non-terminal remote job due at once (`plan.rs`,
+       `last_status: None`). A rc 255 in a status step is a `CheckFailed` ("Server unreachable",
+       Retry disabled); in a fetch's rsync or LIST it **counts one of the 3 fetch strikes**, so a
+       burst can push a finished job toward `FetchFailed` for no server-side reason.
+    2. **The rule: at most `MAX_CONCURRENT_REMOTE_CALLS = 8` ssh/rsync processes per host at a time**
+       (Anton: per host). The host key is the profile's host string the process connects to (an
+       alias, or `user@alias` — two profiles naming one server differently get 8 permits each, a
+       residual), read in one place from the production argv shapes (`ssh_bash_argv`: the argument after `--`;
+       `upload_argv`/`download_argv`: the `host:` prefix of the remote argument); an argv with no
+       recognisable host is gated under one shared fallback key, never ungated. 8 leaves room under
+       both inferred defaults (10) for the user's own sessions; it reduces drops but cannot rule them
+       out — `MaxStartups` counts every unauthenticated connection to the server, other users'
+       included — so a rc 255 can still, rarely, cost a fetch strike (residual).
+    3. **One fair queue** (Anton). The gate is a struct (`new(n)`) with a **FIFO ticket** discipline
+       per key, in the `InFlight` RAII style: a `Mutex` + `Condvar`, per key a `next_ticket` and a
+       `released` counter; a caller takes ticket `t` and is admitted **iff `t < released + n`**;
+       `released` moves only on a release, never on admission, and every release `notify_all`s. The
+       predicate is monotone and admits a FIFO prefix, so no wakeup is lost and a later arrival never
+       overtakes an earlier waiter. A key's entry may be dropped only when `next_ticket == released`.
+       The runner composes with an injectable gate (`run_gated(&Gate, …)`; `SystemRunner::run` calls it
+       with the process-global instance, which lives in a `LazyLock`). The global gate is used by
+       `SystemRunner::run` (`remote/ssh.rs`), the single production
+       spawn site of every ssh and rsync — poller steps, commands (submit, Retry, cancel, label) and
+       the connection test alike. User commands share the queue with the poller (no reserved
+       permit). Latency for a user command: typically a call takes 0.3–10 s (M6/M1), so a wait is seconds;
+       the worst case is ⌈(N_ahead + 1) / 8⌉ rounds of the holders' timeouts (60 s for script calls,
+       300 s for a fetch), where N_ahead ≤ the non-terminal remote jobs on that host + watched log
+       polls + concurrent commands — each sequential call of a step (rsync, then LIST) re-queues at
+       the back. The long rounds happen only when calls hang on a silently dropped link, which 24.5's
+       keepalive bounds sooner. A status step waiting for a permit keeps that job's in-flight guard,
+       so a user command on **that** job is refused as busy meanwhile (o15's existing refusal text; a
+       visible but bounded change) — except Cancel, which is recorded as pending and never refused
+       (o22.3). The gate is
+       in-process: it resets on restart and does not count ssh/rsync orphaned by a previous run (o18).
+       Mutex poisoning is recovered (`into_inner`), never `.unwrap()`.
+    4. **The wait is outside the call's timeout; release on every path.** The permit is taken in
+       `SystemRunner::run` **before** `run_with_timeout` computes its deadline, and is an RAII guard on
+       the caller's stack, so it is released after the child is reaped on every path (exit, the
+       timeout/too-large kill, a spawn error, a reader-thread panic). A call that waited for a permit
+       still gets its full timeout (10/30/60/300 s; uploads their size-scaled `60 s + bytes/256 KiB`),
+       never times out because of the queue, and never reports a contact failure it did not have.
+       No new `TransportError`, no change to `ContactRunner`, the step code or the view. **No
+       deadlock:** every holder is one child process; no path holds a permit while taking another
+       (calls in a step, rsync then LIST, the submit sequence are sequential separate calls; reader
+       threads never call the runner); rsync's internal ssh is its one process and one permit. Every
+       command that reaches `SystemRunner` runs in `spawn_blocking` (`remote_jobs.rs`,
+       `server_profiles.rs`, `jobs.rs`), so a wait never blocks the UI thread.
+    5. **An app-owned keepalive** (Anton). `ssh_options()` adds `-o ServerAliveInterval=30 -o
+       ServerAliveCountMax=4` (the values of the author's config), so a silently dropped link ends an
+       ssh — and the rsync running over it — in ~2 min whatever the user's `~/.ssh/config` says.
+       Command-line `-o` overrides the config file (M, recorded in remote-live-run-b4.md § B4 fixes
+       facts: `ssh -G -o ServerAliveInterval=15 … uni` resolves 15/3 over the config's 30/4). For a
+       call multiplexed over an existing control master (uni: `ControlMaster auto`, `ControlPersist
+       600`), the **master's** keepalive applies, and a master opened by the user's own terminal
+       carries the config's values (I, OpenSSH mux design, not measured): with no keepalive in the
+       config, a dead link would then be bounded only by the per-call timeout, and an orphan after
+       exit (o18) not at all — a residual; on uni the config and the app carry the same values. This
+       settles o18's open "`ServerAliveInterval` /
+       `rsync --timeout`" in favour of the ssh options; no `rsync --timeout`. Residual: that a dead
+       link actually ends the call in ~2 min is inferred from the options, not measured (M2 waived,
+       24.9); o18's "children survive the parent's exit" stays asserted, not observed.
+    6. **The fact (M7).** Killing ORCA's main process alone (TERM to the driver) makes the wrapper
+       publish `.exit_code` (143) within the same second, while the MPI ranks, `mpirun` and the
+       intermediate shell survive in the job's session and append to `output.out` for 5–7 s
+       (+27.5 KB) (M). tsp counts the slot free at once (M), so a queued job would start on cores the
+       orphans still hold (I: no second job was queued). This is o18's "plausible, not seen"
+       residual: **seen**, and o18's finality sentence is false for this case. Cancel is not affected
+       (it TERMs the wrapper's whole group; the wrapper, which has no trap today, dies and publishes
+       nothing; 24.7 adds a trap for the post-ORCA wait only).
+    7. **The rule: the wrapper publishes `.exit_code` only once its session is empty.**
+       - **Guard first (round 1 HIGH).** The sweep runs only if the wrapper leads its own session and
+         group: `$$` = the SID = the PGID recorded in `.started` (tsp's setsid, probe P2). Otherwise
+         the wrapper publishes at once, as before, with a note (below) — it never lists or signals a
+         session it does not lead.
+       - **The member set.** One snapshot `ps -o pid=,ppid=,stat= -s <SID>`; exclude `$$` and its
+         descendants **within that snapshot** (its own `ps`/subshells, whatever bash's exec
+         optimisation makes of them; orphans are re-parented away from `$$`, in M7 to pid 1); exclude
+         zombies (`Z`). **Every** remaining member counts — not the cwd-filtered set of
+         `collect.sh`/`cancel.sh`, because a pinned process holds cores whatever its cwd. Signals go
+         to individual PIDs, never to the wrapper's own group; the set is re-listed right before each
+         signal round (as `cancel.sh` does), which narrows the PID-reuse window to the same as
+         `cancel.sh`'s.
+       - **Cancel during the wait keeps a clean result** (Anton: row 2's "a clean result is never
+         discarded" holds without exception). The wrapper installs a TERM trap **immediately after
+         `rc=$?`**, before the snapshot `ps`, so the healthy path's publish is covered too, and keeps
+         it until its own publish (then it clears it: a TERM after the normal publish prints
+         nothing). The handler is **single-shot**: its first action is `trap '' TERM` (a cancel sends
+         TERM twice — the group TERM, then `cancel.sh`'s per-PID sweep, and bash re-enters a running
+         handler, measured on the laptop's bash 5.2 by the DESIGN verifier); then it prints its line,
+         publishes `.exit_code` = ORCA's rc, and **keeps the tsp slot**: it waits in short steps until
+         its members are gone (`cancel.sh` KILLs what remains, the wrapper included, after its 5 s
+         sweep wait), so the cores are free when the next job starts (Anton's M7 rule, not a new
+         choice). A cancel that lands in the wait therefore classifies as before — rc 0 + `ORCA
+         TERMINATED NORMALLY` → `Completed { late_cancel }` (row 2), anything else → `Cancelled`
+         (rows 3 → 4 while members remain). Any TERM in the wait, not only a cancel (e.g. a server
+         shutdown), now publishes ORCA's rc — rows 5/6 instead of row 8: more honest, and a change.
+         The wait sleeps in short steps (≤ 0.2 s, or `sleep … & wait`), because bash defers a trap
+         until a foreground command returns (measured by the DESIGN verifier: a per-PID TERM during
+         `sleep 3` ran the trap ~2.7 s late; a group TERM, which also kills the `sleep`, ran it within
+         2 ms); the Lab gate covers the per-PID case (24.10). No trap while ORCA runs: a cancel then
+         kills the wrapper as before and nothing is published.
+       - **The sequence.** None: publish at once. Otherwise wait up to **10 s** for them to end on
+         their own (their work is useless to the result — the driver is gone and row 6 classifies
+         `Failed` — but letting them end gives a complete `output.out` as evidence, and M7's module
+         ended within ~7 s), then TERM + CONT, wait up to 5 s, KILL, re-list, and publish. A `ps`
+         error at any point: publish at once with a note. `.exit_code` keeps ORCA's own rc. The tsp
+         slot stays occupied until the wrapper exits, so the cores are free when the next job
+         starts. Bound: ≤ ~15 s after ORCA's return; a member that survives KILL (D state) does not
+         block the publish and is named in the note — left to row 6, not hidden.
+       - **Honest, not silent (rule #9).** Every action prints one line to the wrapper's stdout —
+         each **before** `.exit_code` is published, since a fetch may follow it at once — which tsp
+         captures in `.tsp-out/` (fetched with the job): the members found (pid, stat,
+         comm), the wait, each signal round, survivors, a skipped guard, a `ps` error. The healthy
+         path prints one line ("session empty at ORCA's return").
+       - **The healthy path waiting zero is inferred**, not measured: `mpirun` reaps its ranks before
+         ORCA returns in a normal run, but M7 sampled only the killed-driver case. The uni live check
+         of this unit reads that line on a real healthy job (24.10).
+    8. **Finality restored for new jobs, not for queued ones.** A changed wrapper has a new sha
+       (`WRAPPER` = `head.sh` + `wrapper.sh`, so an edit of `head.sh` also changes the cancel and
+       collect shas) and a new content-addressed `bin/wrapper-<sha>.sh`, installed by the next prepare
+       (o13.1). A job already queued keeps its baked path (`submit.sh`'s enqueue) to the **old**
+       wrapper and runs with the old behaviour — accepted. **Old wrapper files are never pruned** (no
+       code deletes them today); a future prune must first prove no tsp task of any slot references
+       the file. o18's finality holds again for jobs run by the new wrapper, except four named paths that
+       publish without an empty session: a member that survives KILL, the guard-skipped path (the
+       wrapper does not lead its session), a `ps` error — each printed in `.tsp-out` — and a cancel
+       in the wait, where the handler publishes first and finality rests on `cancel.sh`'s sweep
+       (which ends before the delivery classifies, under the job's in-flight guard; a lost cancel
+       reply that lets a later step fetch row 2 while members still die is a residual, limited by
+       o6's LIST + sha256); classifier row 6 is unchanged.
+    9. **B4 measurements waived** (Anton, 2026-11-18; named so they are not re-opened as gaps):
+       M3/M4 (the live log — informally seen to keep up; not a priority); M5 (quit mid-fetch — a 3–10 s
+       window that cannot be hit by hand; a partial copy is caught by o6's LIST + sha256
+       post-condition and re-fetched by the next launch); M2 (a silently dropped link — settled by
+       24.5's keepalive, residual named there; the overnight suspend G1b kills idle connections the
+       same way); M8 (no decision depends on it). **Not waived:** 5.4a's "Retry cancel / stopped
+       re-sends" live check, which rode on M2 — it becomes a hand check (Cancel on a throwaway job
+       with the network off, then on). M6 in the app (15 queued jobs) becomes this unit's live check.
+       G1b stays.
+    10. **Gates and negative controls** (each must turn its test red):
+        - **Gate behaviour, on a local instance** (`Gate::new(n)`, not the global, so parallel tests
+          cannot interfere): with n = 8 and 12 calls on one key, the observed overlap **reaches**
+          exactly 8 and never exceeds it, and all 12 succeed — holders parked on barriers, not
+          sleeps (controls: n raised → overlap 9+ red; the assertion is on the literal 8 reached, so a
+          cap of 1 is red too); FIFO under a **forced** interleaving — the gate exposes its waiting
+          count, the test waits until waiter A is queued, then a releaser re-acquires at once and must
+          queue behind A (control: plain condvar wake → red); two releases before either of two
+          waiters runs admit both with no third release (control: a head-of-line `serving` counter
+          advanced on admission with no notify on admission → red); both scheduler-dependent controls
+          run in a bounded loop (e.g. 500 fresh gates, each with a timeout) so they are reliably red; two keys do not block each other (control: one shared key → red);
+          the wait is outside the deadline — a short-timeout call queued longer than its timeout
+          still runs to completion (control: permit taken after the deadline → red); a spawn error
+          and a timeout kill release the permit (control: release only on success → red under a
+          bounded test timeout).
+        - **Wiring:** `SystemRunner::run` goes through the global gate with 8, and the host key is
+          extracted from all three argv shapes (controls: bypass → red; a wrong key → red). The
+          `ssh.rs` timing tests (`elapsed < 5 s` from before `run`) call `run_gated` with their own
+          local gate or the ungated `run_with_timeout`, so the many `SystemRunner` tests that share the
+          global gate's fallback key under cargo's parallelism (`backend_e2e_tests.rs`) cannot skew them.
+        - **Keepalive:** `ssh_options()` contains both options, and `download_argv`/`upload_argv`'s
+          `-e` transport carries them (control: drop one → red).
+        - **Wrapper (Lab harness, real `bash`, stub ORCA):** a new stub extra leaves a background
+          member in the session that keeps writing to `output.out` for ~2 s after the stub exits with
+          143 — `.exit_code` = 143 appears only after the writer's last write and the writer is gone
+          (control: the wait removed → red); a writer that never stops is TERMed/KILLed and `.exit_code`
+          appears within the bound (control: no kill → red under a bounded test timeout); the healthy
+          stub publishes with no added delay and prints the "session empty" line (the Lab's
+          `wrapper_command` captures stdout for these tests instead of `/dev/null`); every printed
+          line precedes `.exit_code` (control: print after publish → red); a TERM to the wrapper's
+          group during the wait publishes ORCA's rc (0 → row 2 `Completed { late_cancel }` with
+          `.cancelled`) and exits (control: no trap → no `.exit_code`, row 4, red), and a TERM while
+          the stub still runs publishes nothing (as today); a **per-PID** TERM to the wrapper in the
+          wait runs the trap within a bound (control: one long `sleep` in the wait → late, red); two
+          TERMs in the wait give exactly one trap line and one `.exit_code` (control: no `trap ''` →
+          two lines, red); an integration case runs the real `cancel.sh cancel` against the Lab
+          wrapper in the wait and asserts `.exit_code` = rc, `.cancelled` present, one trap line; the guard — the
+          wrapper run **without** setsid inside a test-made session that also holds a sentinel
+          `sleep` publishes at once and the sentinel survives (control: guard removed → sentinel dies,
+          red); a `ps` stub on the Lab `PATH` covers a `ps` error (publish at once, note), a
+          zombie-only session (no wait), and a pid still listed after KILL (publish bounded, survivor
+          named).
+        - The grace may be shortened in tests by `ORCASTUDIO_TEST_SESSION_GRACE`: an integer 0–9
+          shortens it; anything else (absent, 10 or more, not an integer) means 10, so it can only
+          shorten the wait (the wrapper inherits tsp's environment, so a generic name could
+          collide); production never sets it.
+        - The wrapper/cancel/collect sha tests and the `wrapper-<sha>` install tests are updated, not
+          bypassed.
+        - **Live (uni):** M6 in the app (≥ 11 jobs queued, app restarted cold: no "Server
+          unreachable" from the burst); a healthy real job's `.tsp-out` shows "session empty at ORCA's
+          return".
+    11. **Rejected: staggering the status steps** (the B4 M6 row's first idea). A stagger spreads the
+        launch burst but bounds nothing — user commands, fetches and log polls still add up past
+        sshd's limits, and a fixed spread delays every check after a restart. The cap bounds the
+        count directly at the one spawn site.
+    12. **Annotations elsewhere:** o18's residual ("no `ServerAliveInterval`, no `rsync --timeout` …
+        B4 decides") and o12's open list ("`--timeout`, `ServerAlive` on a dead link and rsync rc
+        23/24/30 under a real drop") point here: decided by 24.5, the drop measurement waived by 24.9.
+    13. **Wiki in the same change:** `modules/remote-jobs.md` (the gate, the keepalive, the wrapper's
+        session wait and its lines, no prune), `modules/execution-backends.md` if it states the
+        poller's concurrency, `remote-live-run-b4.md` (waivers, order line, the Retry-cancel hand
+        check), `wiki/log.md`, ROADMAP "B4 fixes" and B4.
+    14. **Part A clarifications** (2026-11-18, orchestrator, following 24.7's bounded-wait rule). (1) The
+        bound is **≈ 16 s**, not ~15: after KILL the wrapper re-lists for up to 1 s, because a member
+        just KILLed is often still listed for a moment and would otherwise be named a false survivor.
+        (2) The normal publish runs under `trap '' TERM` (then `trap - TERM`), so a TERM between the
+        publish and clearing the trap cannot publish twice or print after `.exit_code`. (3) The TERM
+        handler's hold is **bounded**: after its publish it runs the normal path's sequence on what
+        remains (grace, TERM+CONT, 5 s, KILL, 1 s) silently — its one line, before the publish,
+        announces the hold and its bound — then exits with ORCA's rc; a cancel still ends it sooner.
+        (4) The listing is `ps -o pid=,ppid=,stat=,comm=`: `comm` only names members in the lines.
 
 ## Alternatives rejected
 

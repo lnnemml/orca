@@ -301,8 +301,9 @@ emits `job:status` through `sink` after the lock. A refusal is never matched by 
 | `FailedAfterClaim { reason }` | `failed-after-claim` | cancel only ("submit interrupted") |
 | `Unknown { reason }` | a timeout, ssh exit 255, an unreadable reply or an echo that differs | the label call decides |
 
-Every stdin-fed call goes through one helper: `ssh -o BatchMode=yes -o ConnectTimeout=10 -- <host>
-bash -s` with the script and its NUL list (n item 11); the reply is parsed first, ssh exit 255 is
+Every stdin-fed call goes through one helper: `ssh -o BatchMode=yes -o ConnectTimeout=10 -o
+ServerAliveInterval=30 -o ServerAliveCountMax=4 -- <host> bash -s` (the keepalive: ADR-024 o24.5)
+with the script and its NUL list (n item 11); the reply is parsed first, ssh exit 255 is
 ssh's own failure, and a complete reply with any exit status but 0 is not trusted.
 
 **`%pal`, aligned downward only** (o item 14.2, domain rule #8) — `align_remote_pal(input, mask)`, on
@@ -756,7 +757,12 @@ set for a step that is not handed out), so no later tick starts a second step fo
 its own short-lived thread (`spawn_step`), never on the loop thread, through `run::run_step`, whose
 drop guard (`StepEnd`) clears the mark on return, early return and panic; a step whose thread cannot
 start has its mark cleared at once. One thread per step and no pool: the mark already bounds it to one
-step per job, and there are as many steps as non-terminal remote jobs. A Status step is
+step per job, and there are as many steps as non-terminal remote jobs. What bounds the **processes**
+is the per-host gate inside `SystemRunner::run` (`remote::gate::REMOTE_CALLS`, ADR-024 o24.2–o24.4):
+at most 8 ssh/rsync to one host at a time, in one FIFO queue shared with the commands and the
+connection test, the wait outside each call's timeout. A status step waiting for a permit keeps its
+job's in-flight guard, so a command on that job is refused as busy meanwhile (Cancel is recorded as
+pending instead, o22.3). A Status step is
 `Poller::status_step` with `SystemRunner` and `FetchPolicy::SMALL_ONLY` (`app::with_poller`); a Log
 step is `log_step` with the candidate's recorded coordinates. The **`AppSink`** emits `job:log`,
 `job:convergence` and `job:status` through the local emitters (the exact local payloads) and
