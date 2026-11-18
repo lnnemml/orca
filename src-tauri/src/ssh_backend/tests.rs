@@ -547,20 +547,49 @@ fn retry_refuses_an_unverified_profile_or_a_moved_target() {
 // ---- snapshots ---------------------------------------------------------------------------------
 
 /// A collector output with no `.started`: `cancelled`, an optional `.exit_code` and output tail,
-/// no daemon on the socket. `started` = the two bracketing `.started` reads.
+/// no daemon on the socket, no re-enqueue claim. `started` = the two bracketing `.started` reads.
 pub(crate) fn snapshot(cancelled: bool, exit_code: Option<&str>, tail: Option<&str>, started: (Option<&str>, Option<&str>)) -> Vec<u8> {
+    snapshot_claimed(false, cancelled, exit_code, tail, started)
+}
+
+/// [`snapshot`], with `.reenqueue-1` reported as `claimed` (ADR-024 o25.3).
+pub(crate) fn snapshot_claimed(
+    claimed: bool,
+    cancelled: bool,
+    exit_code: Option<&str>,
+    tail: Option<&str>,
+    started: (Option<&str>, Option<&str>),
+) -> Vec<u8> {
     let opt = |name: &str, v: Option<&str>| v.map_or(format!("{name} -\n"), |t| rec(name, t));
     let socket = expected_coords().socket;
     format!(
-        "{SNAPSHOT_HEADER}\n{}{}proc skipped\nsockets 1\n{}{}nodaemon\n{}cancelled {}\n{}{}end\n",
+        "{SNAPSHOT_HEADER}\n{}{}proc skipped\nreenqueue_claim {}\nsockets 1\n{}{}nodaemon\n{}cancelled {}\n{}{}end\n",
         rec("boot_id", "0f6e3c1a-5b7d-4c2e-9a8b-1d2e3f4a5b6c\n"),
         opt("started", started.0),
+        if claimed { "yes" } else { "no" },
         rec("socket", &socket),
         rec("net_unix", NET_UNIX_HEADER),
         opt("exit_code", exit_code),
         if cancelled { "yes" } else { "no" },
         opt("tail", tail),
         opt("started", started.1),
+    )
+    .into_bytes()
+}
+
+/// A collector output with no `.started`, no claim, and a daemon on the recorded socket whose
+/// `tsp -l` lists the job in `state` (`queued`, `running` or `finished`): row 9 `Queued` for the
+/// first two, row 11 for `finished`.
+pub(crate) fn snapshot_with_row(state: &str) -> Vec<u8> {
+    let coords = expected_coords();
+    let net_unix = format!("{NET_UNIX_HEADER}0000000000000000: 00000002 00000000 00010000 0001 01 2960949 {}\n", coords.socket);
+    let row = format!("4    {state:<10} (file)    bash {ROOT}/bin/wrapper-ab.sh {} 0-23 /opt/orca/orca", coords.job_dir);
+    format!(
+        "{SNAPSHOT_HEADER}\n{}started -\nproc skipped\nreenqueue_claim no\nsockets 1\n{}{}rows 1\n{}exit_code -\ncancelled no\ntail -\nstarted -\nend\n",
+        rec("boot_id", "0f6e3c1a-5b7d-4c2e-9a8b-1d2e3f4a5b6c\n"),
+        rec("socket", &coords.socket),
+        rec("net_unix", &net_unix),
+        rec("row", &row),
     )
     .into_bytes()
 }

@@ -15,7 +15,7 @@ use crate::error::AppError;
 /// The lifecycle state of a job.
 ///
 /// Serialized to lowercase strings (`draft`, `queued`, `running`, `cancelling`,
-/// `completed`, `parsed`, `failed`, `cancelled`) both on the wire (to the frontend)
+/// `completed`, `parsed`, `failed`, `cancelled`, `lost`) both on the wire (to the frontend)
 /// and in the `jobs.status` column.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -37,6 +37,12 @@ pub enum JobStatus {
     Failed,
     /// Stopped by the user (queued job dropped, or running process killed).
     Cancelled,
+    /// Remote only, **terminal** (ADR-024 Decision d, o25.1): the job started on the server and its
+    /// wrapper is gone without an `.exit_code` — the server restarted under it, or the wrapper died
+    /// in the same boot (classifier row 8). Its files are fetched as evidence first; nothing is
+    /// restarted automatically (the user starts a new job). Written only by the poller's finalise
+    /// of a remote row; it is live for no predicate.
+    Lost,
 }
 
 impl JobStatus {
@@ -51,6 +57,7 @@ impl JobStatus {
             JobStatus::Parsed => "parsed",
             JobStatus::Failed => "failed",
             JobStatus::Cancelled => "cancelled",
+            JobStatus::Lost => "lost",
         }
     }
 
@@ -68,6 +75,9 @@ impl JobStatus {
             "parsed" => Ok(JobStatus::Parsed),
             "failed" => Ok(JobStatus::Failed),
             "cancelled" => Ok(JobStatus::Cancelled),
+            // Explicit for the same reason as `cancelling` (o25.1): a missing arm breaks every read
+            // of a lost row.
+            "lost" => Ok(JobStatus::Lost),
             other => Err(AppError::Internal(format!("unknown job status: {other}"))),
         }
     }
@@ -227,9 +237,10 @@ mod tests {
         .unwrap();
     }
 
-    /// Every status survives the database spelling both ways, `cancelling` included (o22.5).
-    /// NEGATIVE CONTROL: `from_db` has a wildcard arm, so the compiler does not force a
-    /// `"cancelling"` arm; drop it and this goes red, as would every read of a cancelling row.
+    /// Every status survives the database spelling both ways, `cancelling` (o22.5) and `lost`
+    /// (o25.1) included. NEGATIVE CONTROL: `from_db` has a wildcard arm, so the compiler does not
+    /// force a `"cancelling"` or `"lost"` arm; drop either and this goes red, as would every read of
+    /// such a row.
     #[test]
     fn every_status_round_trips_through_its_database_spelling() {
         let all = [
@@ -241,13 +252,15 @@ mod tests {
             JobStatus::Parsed,
             JobStatus::Failed,
             JobStatus::Cancelled,
+            JobStatus::Lost,
         ];
         for status in all {
             assert_eq!(JobStatus::from_db(status.as_str()).unwrap(), status, "{status:?}");
             assert_eq!(serde_json::to_value(status).unwrap(), status.as_str(), "the wire spelling is the column's");
         }
         assert_eq!(JobStatus::Cancelling.as_str(), "cancelling");
-        assert!(JobStatus::from_db("lost").is_err(), "5.4b's status is not here yet");
+        assert_eq!(JobStatus::Lost.as_str(), "lost");
+        assert!(JobStatus::from_db("lose").is_err(), "an unknown spelling is refused");
     }
 
     fn get(conn: &Connection, id: &str) -> Job {

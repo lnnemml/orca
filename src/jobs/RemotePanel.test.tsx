@@ -51,6 +51,8 @@ function recordWith(pending: Partial<PendingSubmit> | null): RemoteState {
     last_contact: { kind: "ok" },
     cancel_sends: { failures: 0, stopped: false },
     sweeps: { count: 0, stopped: false },
+    undecided: null,
+    re_enqueue_waiting: null,
     pending_submit: pending && {
       since: "2026-10-19 08:30:00",
       refusals: 3,

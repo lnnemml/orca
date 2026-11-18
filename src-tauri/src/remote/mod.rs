@@ -66,6 +66,8 @@ mod script_tests;
 mod call_script_tests;
 #[cfg(test)]
 mod backend_e2e_tests;
+#[cfg(test)]
+mod reenqueue_script_tests;
 
 /// Upper bound on a `tsp` socket path, in bytes. The kernel's `sun_path` is 108 bytes including
 /// the NUL (`man 7 unix`, `UNIX_PATH_MAX`); submit and profile save keep a margin below it

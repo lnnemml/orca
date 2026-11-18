@@ -237,7 +237,7 @@ fn a_non_cancelling_verdict_after_an_answered_sweep_is_counted() {
     let fake = Fake::new(&r, server(&r, vec![indeterminate()]));
     let poller = r.poller(&fake);
     for n in 1..=MAX_SWEEPS_WITHOUT_PROGRESS {
-        assert_eq!(poller.status_step(JOB).unwrap(), StatusStep::Shown(Outcome::Indeterminate), "sweep {n}");
+        assert_eq!(poller.status_step(JOB).unwrap(), StatusStep::Shown(Outcome::Indeterminate { why: crate::remote::classify::STARTED_DISAGREED.into() }), "sweep {n}");
         assert_eq!(r.memory.get(JOB).sweeps_without_progress, n, "sweep {n} counted");
         assert_eq!(r.row().0, JobStatus::Cancelling, "the job is not ended");
     }

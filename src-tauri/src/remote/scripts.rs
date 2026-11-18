@@ -6,8 +6,9 @@
 //! byte for byte and the tests run exactly the bytes that are uploaded.
 //!
 //! - [`WRAPPER`] — `wrapper.sh <job_dir> <mask> <orca_path>`: the job's start sequence.
-//! - [`CANCEL`] — `cancel.sh cancel|check <job_dir> <root>`: the cancel script; `check` prints
-//!   its predicates without writing or signalling.
+//! - [`CANCEL`] — `cancel.sh cancel|check|sweep <job_dir> <root>`: the cancel script; `check`
+//!   prints its predicates without writing or signalling; `sweep` kills a `Lost` job's orphans
+//!   after re-checking row 8, never publishing `.cancelled` (ADR-024 o25.2).
 //! - [`COLLECT`] — `collect.sh <job_dir> [<socket>...]`: one raw-fact snapshot on stdout, parsed
 //!   by [`super::wire::parse_snapshot`].
 //! - [`CONNTEST`] — the profile connection test (ADR-024 n). Unlike the three job scripts it is not

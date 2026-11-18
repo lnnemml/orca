@@ -74,8 +74,10 @@ that an in-progress New Job draft is discarded on a tab switch (accepted).
   (`bannerAfterClick`): a click that produced no answer (a declined dialog, nothing offered) leaves
   it, and an error (a failed call or read) clears it, since the error banner then speaks. The row's
   buttons are disabled from the click on ("Sending cancel…" / "Undoing…"). The status chips come from `STATUS_CHIPS` (`src/jobs/status.ts`) and include
-  `cancelling`; its badge has its own style (`.badge.cancelling`, an amber outline on no fill — apart
-  from the filled `cancelled`). Delete → `confirm`
+  `cancelling` and `lost`; `cancelling`'s badge has its own style (`.badge.cancelling`, an amber
+  outline on no fill — apart from the filled `cancelled`), and `lost`'s (`.badge.lost`, ADR-024 o25.1)
+  is the error tone, the same red on dark fill as `.badge.failed`. A `lost` row is terminal: it
+  offers **Open** and **Delete** like any finished row. Delete → `confirm`
   (`@tauri-apps/plugin-dialog`, `{ title: "Delete job", kind: "warning" }`, message states it
   permanently removes the job **and its files**) → `invoke("delete_job", { id })` → reload; errors
   route to the existing `setError` banner. Both action buttons `stopPropagation` so the row-click
@@ -90,7 +92,7 @@ that an in-progress New Job draft is discarded on a tab switch (accepted).
   (explicit Move-to picker only). Full contract: `modules/groups-ui.md`. `Job` now carries
   **`group_id`** (v16 FK, null = ungrouped). **Phase 4.7.4 — search/status filter:** a search box
   (case-insensitive substring over **title OR the `!`-line method**, parsed client-side) + seven
-  status **chips** (eight, `cancelling` among them) + Clear, **local** to `JobsScreen`. Composed AFTER the group filter — the rendered
+  status **chips** (nine, `cancelling` and `lost` among them) + Clear, **local** to `JobsScreen`. Composed AFTER the group filter — the rendered
   rows are `filterJobsBySearch(filterJobsByGroup(...))`, so search narrows within the selected group's
   subtree. Three-way empty-state: "No jobs yet" / "No jobs in this group" / "No jobs match this
   filter". Frontend-only (no backend/FTS5). **Remote jobs:** the Status cell adds the job's
@@ -775,7 +777,23 @@ each `{ action, confirm, disabled }` (ADR-024 o22.14):
   on <socket>" from the `Blocker` fields (a blank title is none). The panel draws the notice as a warn
   line (`.remote-notice`) with the blockers as a list of **text** (a title is the user's, never
   markup); the Jobs row draws the badge only. When the flag is NULL (the pending state ended) the view
-  is what it was before: "Not on the server", the refusal, Retry submit.
+  is what it was before: "Not on the server", the refusal, Retry submit;
+- **a waiting re-enqueue** (ADR-024 o25.4, o25.14.3, o25.14.6): while the shown verdict is
+  `re_enqueue` **and** the record's `re_enqueue_waiting.notified` is true — from the 3rd transient
+  refusal (slot busy, slot check error, lock busy), or at once for a profile that is not a run target
+  ("… re-test the server profile to continue") — `remoteView.reEnqueueWaiting` carries Rust's notice
+  and, for a busy slot, its blockers by `blockerLine` (o23's display). Keyed on the record field and
+  the shown verdict, never on `pending_submit` (a first submit's). The panel draws it as a
+  `.remote-notice` (`data-testid="re-enqueue-notice"`); the badge reads "Server: never started";
+- **the never-start awaiting its confirmation** (o25.15): a record whose `known` is
+  `failed`/`wrapper_never_started` while the row is still `queued` is **not** a failure yet — the
+  poller confirms it 45 s later — so its badge reads "Server: never started — confirming"
+  (`UNCONFIRMED_NEVER_START`, `isUnconfirmedNeverStart`), tone `warn`, never "failed"/`err`, and the
+  job keeps its Cancel;
+- **undecided** (o25.6): from the 3rd consecutive check the server's state could not be decided, the
+  record's `undecided.notice` ("… could not be decided 3 times in a row: <why>") is
+  `remoteView.undecided`, drawn as a `.remote-notice` (`data-testid="undecided-notice"`) beside the
+  check-error badge.
 
 The row's `error_message` is the text, labelled "from the last check" while the record holds no
 decided state, and no action comes from it. `rowActions(job, record)` is the Jobs table's row
@@ -804,14 +822,23 @@ for a draft, not for a remote live job — `cancelling` included, whose log the 
 text, answered }` and its `pending_submit`, `SubmitResponse` with the typed `Refusal`, `StatusStep`
 with `submit_rechecked`, `CancelResult`, `UndoResult`, …) live in `types.ts`; `Job` carries
 `cancel_requested_at` / `cancel_sent_at` (o22.14.5) and `submit_pending_since` (o23.5);
-`deliveredNotice` maps `submit_rechecked` (never a delivery's step) to no notice. `JobStatus` includes
-`cancelling` (a remote job whose cancel reached the server while processes still run, ADR-024 o22.5);
-it is live everywhere: the pure logic (`isLiveStatus`), the status chips (`STATUS_CHIPS`), the status
-bar's active count (`queueCounts`) and the detail's dashboard default. `cancelButtons(actions, busy)`
+`deliveredNotice` maps `submit_rechecked` and the 5.4b steps `lost_swept`, `re_enqueued`,
+`re_enqueue_waiting`, `re_enqueue_refused` (never a delivery's) to no notice — case by case, no
+default. `JobStatus` includes `cancelling` (a remote job whose cancel reached the server while
+processes still run, ADR-024 o22.5); it is live everywhere: the pure logic (`isLiveStatus`), the
+status chips (`STATUS_CHIPS`), the status bar's active count (`queueCounts`) and the detail's
+dashboard default. It also includes **`lost`** (ADR-024 o25.1: a remote job that started and stopped
+without an exit code; terminal, no automatic restart): live nowhere (`isLiveStatus` false, not counted
+by `queueCounts`), a chip of its own, a failed child for the re-opt comparison (`reopt-aggregate`:
+"job failed (lost on the server)"), no success for the ensemble (`isTerminalSuccessStatus`), and not
+among `ConnectivityPanel`'s terminal states (its children are local, so never `lost`; a comment
+says so). The `Outcome` mirror carries `lost.stale_boot` and `indeterminate.why`; `RemoteState`
+carries `undecided` and `re_enqueue_waiting` (with its `last` wait). `cancelButtons(actions, busy)`
 turns any list of offered actions into the family's buttons — `{ action, label, disabled }` in the
 order offered, each labelled by its own offer ("Cancel" / "Retry cancel" / "Undo cancel"; "Sending
 cancel…" / "Undoing…" for the click in flight, all disabled meanwhile). A source-scanning test (`text-guard.test.ts`)
-keeps "withdraw", an unlettered "unit 5.4" and "Cancel sweeps again" out of the app's code.
+keeps "withdraw", an unlettered "unit 5.4", "unit 5.4b" (o25.9) and "Cancel sweeps again" out of the
+app's code.
 
 **The wiring** (`src/jobs/live-wiring.ts`) takes the Tauri bridge as an argument (`Bridge`;
 the screens pass `tauriBridge`) so its order is tested without a WebView (`live-wiring.test.ts`,
@@ -860,7 +887,8 @@ row, the panel, and the header of a local job).
   optimistically right after the successful `invoke` (label updates immediately; `refreshQueue` still
   runs in `finally` to reconcile counts). The backend
   (`pause_queue`/`resume_queue`/`is_queue_paused`) is untouched. The counts come from `queueCounts`
-  (`src/jobs/status.ts`): a `cancelling` job counts as running, since the server is still busy with it.
+  (`src/jobs/status.ts`): a `cancelling` job counts as running, since the server is still busy with it;
+  a `lost` job is terminal and counts as neither.
 
 ## Quirks
 

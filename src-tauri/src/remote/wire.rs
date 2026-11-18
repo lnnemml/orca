@@ -7,7 +7,7 @@
 //! newlines, which is why every value is length-prefixed instead of line-delimited.
 //!
 //! ```text
-//! orcastudio-snapshot 1
+//! orcastudio-snapshot 2
 //! boot_id <len>              /proc/sys/kernel/random/boot_id (required)
 //! started <len>|-            .started, first read
 //! proc collected|skipped     collected iff .started parses and is from this boot
@@ -17,6 +17,7 @@
 //!   members <n>              ps -s <sid>, then n times:    │
 //!     member <pid>                                         │
 //!     cwd <len>|-            /proc/<pid>/cwd (raw target)  ┘
+//! reenqueue_claim yes|no     <job>/.reenqueue-1 exists, in any form (o25.3)
 //! sockets <n>                then n times:
 //!   socket <len>             the socket path
 //!   socket_error <len>       the socket could not be determined (an unparsable .enqueued), or
@@ -48,8 +49,11 @@ use super::procfs::unix_socket_listed;
 use super::snapshot::{Attempt, JobIdentity, SessionMember, Snapshot, SocketFact, SocketState};
 use crate::local_backend::TAIL_BYTES;
 
-/// The first line of every snapshot; the number is the format version.
-pub const HEADER: &str = "orcastudio-snapshot 1";
+/// The first line of every snapshot; the number is the format version. Version 2 (ADR-024 o25.3)
+/// adds the `reenqueue_claim` record, so a version-1 collector's output fails here loudly instead
+/// of reading as "no claim" (rule #9 belt; the trampoline runs only the app's own
+/// `collect-<sha>.sh`, so an old collector cannot meet this parser in production).
+pub const HEADER: &str = "orcastudio-snapshot 2";
 
 /// No single record is larger than this (a stat line, a cwd, a 5 KiB tail, a tsp row…).
 const MAX_RECORD: usize = 1 << 20;
@@ -110,6 +114,12 @@ pub fn parse_snapshot(
         }
     }
 
+    let reenqueue_claims = match r.word("reenqueue_claim")? {
+        "yes" => 1,
+        "no" => 0,
+        other => return Err(r.malformed(format!("reenqueue_claim {other:?}"))),
+    };
+
     let mut sockets = Vec::new();
     for _ in 0..r.count("sockets")? {
         sockets.push(socket_fact(&mut r, &identity.job_dir)?);
@@ -147,6 +157,7 @@ pub fn parse_snapshot(
         wrapper_cmdline,
         sid_stat,
         session_members,
+        reenqueue_claims,
         sockets,
         exit_code,
         cancelled,
@@ -421,7 +432,7 @@ pub(crate) mod tests {
             .rec("cwd", JOB.as_bytes())
             .line("member 4243")
             .line("cwd -")
-            .line("sockets 1")
+            .line("reenqueue_claim no").line("sockets 1")
             .rec("socket", SLOT.as_bytes())
             .rec("net_unix", net_unix(true).as_bytes())
             .line("rows 1")
@@ -471,6 +482,16 @@ pub(crate) mod tests {
         assert_eq!(snap.output_tail, b"line\n");
     }
 
+    /// o25.3: the claim record reaches the snapshot — `yes` is one claim, `no` none. NEGATIVE
+    /// CONTROL (`run_54b_controls.sh wire-claim-ignored`): parse the word but keep 0 → red.
+    #[test]
+    fn the_reenqueue_claim_is_reported_under_the_v2_header() {
+        assert_eq!(HEADER, "orcastudio-snapshot 2");
+        assert_eq!(parse(&finish(running())).unwrap().reenqueue_claims, 0);
+        let text = String::from_utf8(finish(running())).unwrap().replacen("reenqueue_claim no", "reenqueue_claim yes", 1);
+        assert_eq!(parse(text.as_bytes()).unwrap().reenqueue_claims, 1);
+    }
+
     #[test]
     fn an_error_record_anywhere_fails_the_snapshot() {
         let mut wire = running().0;
@@ -499,7 +520,11 @@ pub(crate) mod tests {
             ("missing record", text.replacen("exit_code -\n", "", 1).into_bytes()),
             ("duplicate record", text.replacen("exit_code -\n", "exit_code -\nexit_code -\n", 1).into_bytes()),
             ("out of order", text.replacen("exit_code -\ncancelled no\n", "cancelled no\nexit_code -\n", 1).into_bytes()),
-            ("wrong header", text.replacen(HEADER, "orcastudio-snapshot 2", 1).into_bytes()),
+            // o25.3: a version-1 collector (no claim record) fails loudly, never "no claim".
+            ("v1 header", text.replacen(HEADER, "orcastudio-snapshot 1", 1).into_bytes()),
+            ("wrong header", text.replacen(HEADER, "orcastudio-snapshot 3", 1).into_bytes()),
+            ("missing claim record", text.replacen("reenqueue_claim no\n", "", 1).into_bytes()),
+            ("bad claim word", text.replacen("reenqueue_claim no", "reenqueue_claim 1", 1).into_bytes()),
             ("member count too high", text.replacen("members 2", "members 3", 1).into_bytes()),
             ("member pid 0", text.replacen("member 4243", "member 0", 1).into_bytes()),
             ("no end", text.replacen("end\n", "", 1).into_bytes()),
@@ -523,7 +548,7 @@ pub(crate) mod tests {
             .rec("boot_id", format!("{BOOT}\n").as_bytes())
             .rec("started", started(BOOT).as_bytes())
             .line("proc skipped")
-            .line("sockets 1")
+            .line("reenqueue_claim no").line("sockets 1")
             .rec("socket", SLOT.as_bytes())
             .rec("net_unix", net_unix(false).as_bytes())
             .line("nodaemon");
@@ -536,7 +561,7 @@ pub(crate) mod tests {
             .rec("boot_id", format!("{BOOT}\n").as_bytes())
             .rec("started", started(other).as_bytes())
             .line("proc skipped")
-            .line("sockets 1")
+            .line("reenqueue_claim no").line("sockets 1")
             .rec("socket", SLOT.as_bytes())
             .rec("net_unix", net_unix(false).as_bytes())
             .line("nodaemon");
@@ -554,7 +579,7 @@ pub(crate) mod tests {
             .line("wrapper_cmdline -")
             .rec("sid_stat", stat.as_bytes())
             .line("members 0")
-            .line("sockets 1")
+            .line("reenqueue_claim no").line("sockets 1")
             .rec("socket", SLOT.as_bytes())
             .rec("net_unix", net_unix(false).as_bytes())
             .line("nodaemon");
@@ -569,7 +594,7 @@ pub(crate) mod tests {
             .rec("boot_id", format!("{BOOT}\n").as_bytes())
             .line("started -")
             .line("proc skipped")
-            .line("sockets 1")
+            .line("reenqueue_claim no").line("sockets 1")
             .rec("socket", SLOT.as_bytes())
             .rec("net_unix", net_unix(true).as_bytes())
             .line("nodaemon");
@@ -580,7 +605,7 @@ pub(crate) mod tests {
             .rec("boot_id", format!("{BOOT}\n").as_bytes())
             .line("started -")
             .line("proc skipped")
-            .line("sockets 1")
+            .line("reenqueue_claim no").line("sockets 1")
             .rec("socket", SLOT.as_bytes())
             .rec("net_unix", net_unix(false).as_bytes())
             .line("rows 0");
@@ -602,17 +627,17 @@ pub(crate) mod tests {
                 .line("proc skipped")
         };
         // Missing slot socket.
-        let w = fact(base().line("sockets 1"), "/home/anton/.orcastudio/tsp/other.sock");
+        let w = fact(base().line("reenqueue_claim no").line("sockets 1"), "/home/anton/.orcastudio/tsp/other.sock");
         assert!(matches!(parse(&finish(w)), Err(WireError::Inconsistent(_))));
         // Slot + one extra (the .enqueued socket): fine.
-        let w = fact(fact(base().line("sockets 2"), SLOT), "/home/anton/.orcastudio/tsp/old.sock");
+        let w = fact(fact(base().line("reenqueue_claim no").line("sockets 2"), SLOT), "/home/anton/.orcastudio/tsp/old.sock");
         assert!(parse(&finish(w)).is_ok());
         // Slot twice.
-        let w = fact(fact(base().line("sockets 2"), SLOT), SLOT);
+        let w = fact(fact(base().line("reenqueue_claim no").line("sockets 2"), SLOT), SLOT);
         assert!(matches!(parse(&finish(w)), Err(WireError::Inconsistent(_))));
         // An unparsable .enqueued is an Error fact.
         let w = base()
-            .line("sockets 2")
+            .line("reenqueue_claim no").line("sockets 2")
             .rec("socket", SLOT.as_bytes())
             .rec("net_unix", net_unix(false).as_bytes())
             .line("nodaemon")
@@ -629,7 +654,7 @@ pub(crate) mod tests {
             .rec("boot_id", format!("{BOOT}\n").as_bytes())
             .line("started -")
             .line("proc skipped")
-            .line("sockets 1")
+            .line("reenqueue_claim no").line("sockets 1")
             .rec("socket", SLOT.as_bytes())
             .rec("net_unix", net_unix(true).as_bytes())
             .line("rows 1")
@@ -642,7 +667,7 @@ pub(crate) mod tests {
             .rec("boot_id", format!("{BOOT}\n").as_bytes())
             .line("started -")
             .line("proc skipped")
-            .line("sockets 1")
+            .line("reenqueue_claim no").line("sockets 1")
             .rec("socket", SLOT.as_bytes())
             .rec("net_unix", net_unix(false).as_bytes())
             .line("nodaemon")

@@ -125,7 +125,11 @@ use crate::error::AppError;
 ///   `ssh_backend::mark_cancelled_conn`, the poller's `record_cancelling` and `record_delivered`),
 ///   so a forgotten NULL there is a failed write; the two `queued`-keeping writes that end the
 ///   pending state (`record_delivered`'s unchanged-status branch, `record_ended_first`) are pinned
-///   by tests. Existing rows: NULL. Guarded ALTER (column_exists). 5.4b takes v23.
+///   by tests. Existing rows: NULL. Guarded ALTER (column_exists).
+///
+/// Unit 5.4b takes **no** schema version (ADR-024 o25.3): the re-enqueue counter is the server's
+/// `.reenqueue-1` claim, and the terminal `lost` status needs no CHECK (the status column has none)
+/// — `finalize_job_conn` writes it and NULLs the pending columns as for any terminal state.
 ///
 /// [`Job::is_remote`]: crate::models::job::Job::is_remote
 const SCHEMA_VERSION: i64 = 22;

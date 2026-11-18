@@ -9,6 +9,14 @@
 //! values per uploaded file** — name, sha256 — so the server checks the upload itself (o item
 //! 3.3.4): 6 + 2n values. The script is [`super::scripts::SUBMIT`].
 //!
+//! **The re-enqueue** (ADR-024 o25.4, [`SubmitMode::ReEnqueue`]) is the same call with the literal
+//! value `reenqueue` **first** (a job dir always starts with `/`, so the two forms cannot be
+//! confused): 7 + 2n values, the same reply kinds. The script then refuses on `.started`,
+//! `.exit_code`, `.cancelled` or the claim `.reenqueue-1` — before the file check (o25.14.1) — and
+//! on a **queued or running** row only (a finished row is a wrapper that crashed before
+//! `.started`); its file check leaves out `.submitting`, `.enqueued` and `.reenqueue-*`; it claims
+//! `.reenqueue-1` after the slot check and before the enqueue, and replaces `.enqueued`.
+//!
 //! **Submit reply** (records, the 5.2 format read by [`Reader`]):
 //!
 //! ```text
@@ -133,9 +141,20 @@ pub fn remote_job_dir(root: &str, job_id: &str) -> Result<String, SubmitError> {
     Ok(dir)
 }
 
+/// Which form of the submit call (ADR-024 o25.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubmitMode {
+    /// The first submit (and a retry, a pending re-check): claims `.submitting`.
+    Submit,
+    /// The one automatic re-enqueue of a job that never started: claims `.reenqueue-1`.
+    ReEnqueue,
+}
+
 /// The values of one submit call.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubmitArgs {
+    /// The call's form; [`SubmitArgs::new`] makes a [`SubmitMode::Submit`].
+    pub mode: SubmitMode,
     pub job_dir: String,
     pub root: String,
     pub socket: String,
@@ -173,6 +192,7 @@ impl SubmitArgs {
         }
         expected_values(&files)?;
         Ok(SubmitArgs {
+            mode: SubmitMode::Submit,
             job_dir,
             root: root.to_string(),
             socket: socket.to_string(),
@@ -183,16 +203,26 @@ impl SubmitArgs {
         })
     }
 
-    /// The NUL-list values, in the order the script reads them.
+    /// These values as the re-enqueue call (o25.4).
+    pub fn reenqueue(self) -> Self {
+        SubmitArgs { mode: SubmitMode::ReEnqueue, ..self }
+    }
+
+    /// The NUL-list values, in the order the script reads them: `reenqueue` first for the
+    /// re-enqueue, then the six values and two per file.
     pub fn values(&self) -> Result<Vec<String>, SubmitError> {
-        let mut values = vec![
+        let mut values = match self.mode {
+            SubmitMode::Submit => Vec::new(),
+            SubmitMode::ReEnqueue => vec!["reenqueue".to_string()],
+        };
+        values.extend([
             self.job_dir.clone(),
             self.root.clone(),
             self.socket.clone(),
             self.core_mask.clone(),
             self.orca_path.clone(),
             self.wrapper_sha.clone(),
-        ];
+        ]);
         values.extend(expected_values(&self.files)?);
         Ok(values)
     }

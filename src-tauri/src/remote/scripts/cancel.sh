@@ -1,8 +1,18 @@
 
-# ---- cancel.sh cancel|check <job_dir> <root> ------------------------------------------------
+# ---- cancel.sh cancel|check|sweep <job_dir> <root> ------------------------------------------
 # Cancels one job (ADR-024 l, "Cancel script, revised"), queued or running, the same script for
 # both. `check` evaluates the same predicates and prints them without writing or signalling
 # anything: the tests compare it with the Rust predicates (shell/Rust liveness parity).
+#
+# `sweep` (ADR-024 o25.2) kills the orphans of a job the classifier read as row 8 `Lost` in this
+# boot — its wrapper dead or not ours, no .exit_code, no .cancelled — with the running cancel's
+# sweep (step 3's SID-reuse guard, own-session exclusion, cwd filter, TERM+CONT → wait → KILL) and
+# removes <job>/.tmp (step 4). It NEVER publishes .cancelled and never touches tsp. Rule #9 at the
+# actor: it re-checks row 8 here first and signals nothing when it does not hold —
+#   exit 4  the wrapper reads alive and ours in this boot (row 7): "wrapper alive"
+#   exit 5  no parsable .started, or .exit_code or .cancelled exists: not row 8
+# and the caller classifies again. With a .started from another boot there is nothing of ours left
+# to kill (start times count from boot): it only removes .tmp.
 #
 #   1  publish .cancelled (temp file + rename); from now on the wrapper will not start ORCA
 #   2  queued:  `tsp -r <id>` only if a daemon listens on the .enqueued socket (/proc/net/unix,
@@ -190,7 +200,6 @@ signal_each() {
 
 # running_cancel — step 3.
 running_cancel() {
-    local step
     if [[ $STARTED != ok ]]; then
         echo "running: skip .started $STARTED"
         return
@@ -210,6 +219,15 @@ running_cancel() {
     else
         echo "group: skip alive=$ALIVE ours=$OURS leader=$LEADER"
     fi
+    sweep_session
+}
+
+# sweep_session — step 3's sweep, shared by `cancel` and `sweep`: nothing under a reused SID, and
+# only when the wrapper is alive and ours or the job session is non-empty; TERM+CONT to the job
+# session, a bounded wait, then KILL to whatever of it is left. assess has run; the caller has
+# checked the boot and its own session.
+sweep_session() {
+    local step
     if [[ $SID_REUSED == yes ]]; then
         echo "sweep: skip sid $S_SID reused"
         return
@@ -232,9 +250,46 @@ running_cancel() {
     fi
 }
 
+# not_row8 WHY — `sweep`'s re-check failed: signal nothing, keep .tmp, exit 5.
+not_row8() {
+    echo "sweep: skip not row 8: $1"
+    exit 5
+}
+
+# sweep_main — the `sweep` mode (the header). assess has not run yet.
+sweep_main() {
+    local name
+    assess
+    [[ $STARTED == ok ]] || not_row8 ".started is $STARTED"
+    for name in .exit_code .cancelled; do
+        path_exists "$JOB/$name"
+        case $? in
+            0) not_row8 "$name exists" ;;
+            1) ;;
+            *) fail "$R_ERR" ;;
+        esac
+    done
+    if [[ $BOOT == current && $ALIVE == yes && $OURS == yes ]]; then
+        # Row 7, not row 8: the classifier's next pass decides.
+        echo "sweep: skip wrapper alive"
+        exit 4
+    fi
+    if [[ $BOOT != current ]]; then
+        echo "sweep: skip .started is from another boot"
+    elif [[ $OWN == yes ]]; then
+        echo "sweep: skip own session"
+    else
+        sweep_session
+    fi
+    rm -rf -- "$JOB/.tmp"
+    echo "tmp: removed $JOB/.tmp"
+    echo "done"
+    exit 0
+}
+
 cancel_main() {
-    if (( $# != 3 )) || [[ $1 != cancel && $1 != check ]]; then
-        echo "cancel: usage: cancel.sh cancel|check <job_dir> <root>" >&2
+    if (( $# != 3 )) || [[ $1 != cancel && $1 != check && $1 != sweep ]]; then
+        echo "cancel: usage: cancel.sh cancel|check|sweep <job_dir> <root>" >&2
         exit 2
     fi
     local mode=$1
@@ -253,6 +308,7 @@ cancel_main() {
             "$STARTED" "$BOOT" "$ALIVE" "$OURS" "$LEADER" "$SID_REUSED" "$OWN" "${JOB_SESSION[*]}"
         exit 0
     fi
+    [[ $mode == sweep ]] && sweep_main
 
     publish_cancelled || fail "cannot publish $JOB/.cancelled"
     echo "cancelled: marker published"

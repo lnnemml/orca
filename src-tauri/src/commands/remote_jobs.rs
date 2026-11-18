@@ -596,6 +596,35 @@ mod tests {
                 },
                 serde_json::json!({ "step": "swept", "detail": { "outcome": null, "error": { "text": "collect: ssh exited with 255", "answered": false } } }),
             ),
+            // ADR-024 o25: the 5.4b steps, the shapes Part B's `types.ts` mirrors.
+            (
+                StatusStep::LostSwept {
+                    outcome: Some(Outcome::Lost { orphans: vec![70001], stale_boot: false }),
+                    error: Some(crate::poller::remote_state::CheckError::answered("cancel.sh sweep exited 3: x")),
+                },
+                serde_json::json!({ "step": "lost_swept", "detail": {
+                    "outcome": { "outcome": "lost", "orphans": [70001], "stale_boot": false },
+                    "error": { "text": "cancel.sh sweep exited 3: x", "answered": true } } }),
+            ),
+            (StatusStep::ReEnqueued { tsp_id: 4 }, serde_json::json!({ "step": "re_enqueued", "detail": { "tsp_id": 4 } })),
+            (
+                StatusStep::ReEnqueueWaiting(crate::poller::reenqueue::ReEnqueueWait::Slot(
+                    crate::poller::pending::Wait::LockBusy { openers: "12 bash".into() },
+                )),
+                serde_json::json!({ "step": "re_enqueue_waiting", "detail": { "kind": "slot", "detail": { "kind": "lock_busy", "detail": { "openers": "12 bash" } } } }),
+            ),
+            (
+                StatusStep::ReEnqueueWaiting(crate::poller::reenqueue::ReEnqueueWait::Unverified("not verified".into())),
+                serde_json::json!({ "step": "re_enqueue_waiting", "detail": { "kind": "unverified", "detail": "not verified" } }),
+            ),
+            (
+                StatusStep::ReEnqueueRefused { refusals: 2, why: "marker: x".into() },
+                serde_json::json!({ "step": "re_enqueue_refused", "detail": { "refusals": 2, "why": "marker: x" } }),
+            ),
+            (
+                StatusStep::Finalised { outcome: Outcome::Lost { orphans: vec![], stale_boot: true }, status: JobStatus::Lost, drain_error: None },
+                serde_json::json!({ "step": "finalised", "detail": { "outcome": { "outcome": "lost", "orphans": [], "stale_boot": true }, "status": "lost", "drain_error": null } }),
+            ),
         ] {
             assert_eq!(serde_json::to_value(&step).unwrap(), want, "{step:?}");
         }
@@ -617,7 +646,19 @@ mod tests {
                 serde_json::json!({ "outcome": "failed", "reason": { "reason": "no_normal_termination" } }),
             ),
             (Outcome::Completed { late_cancel: true }, serde_json::json!({ "outcome": "completed", "late_cancel": true })),
-            (Outcome::Lost { orphans: vec![41, 42] }, serde_json::json!({ "outcome": "lost", "orphans": [41, 42] })),
+            // o25.1/o25.6: the 5.4b payloads, the shapes Part B's `types.ts` mirrors.
+            (
+                Outcome::Lost { orphans: vec![41, 42], stale_boot: false },
+                serde_json::json!({ "outcome": "lost", "orphans": [41, 42], "stale_boot": false }),
+            ),
+            (
+                Outcome::Lost { orphans: vec![], stale_boot: true },
+                serde_json::json!({ "outcome": "lost", "orphans": [], "stale_boot": true }),
+            ),
+            (
+                Outcome::Indeterminate { why: "the .started read disagreed twice".into() },
+                serde_json::json!({ "outcome": "indeterminate", "why": "the .started read disagreed twice" }),
+            ),
             (Outcome::Cancelling { session: 3 }, serde_json::json!({ "outcome": "cancelling", "session": 3 })),
             (Outcome::Cancelled { started: true }, serde_json::json!({ "outcome": "cancelled", "started": true })),
             (

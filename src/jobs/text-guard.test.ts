@@ -5,8 +5,9 @@ import { describe, expect, it } from "vitest";
 /**
  * The user-facing text guard, TypeScript half (ADR-024 o22.14.11, last control): no code in `src`
  * outside the tests — string literals and JSX text alike, comments stripped — says "withdraw" (the
- * command is gone, o22.7/o22.14.7), names a later unit as "unit 5.4" without its letter (o22.1), or
- * tells the user "Cancel sweeps again" (the button is Retry cancel, o22.14.2). Stricter than "string
+ * command is gone, o22.7/o22.14.7), names a later unit as "unit 5.4" without its letter (o22.1), says
+ * "unit 5.4b" (every 5.4b verdict has its action since ADR-024 o25.9), or tells the user "Cancel
+ * sweeps again" (the button is Retry cancel, o22.14.2). Stricter than "string
  * literals only": JSX text is user-facing too. The Rust half is `src-tauri/src/text_guard_tests.rs`.
  */
 
@@ -29,13 +30,15 @@ function withoutComments(src: string): string {
 function forbidden(code: string): string | null {
   if (/withdraw/i.test(code)) return "withdraw";
   if (/unit 5\.4(?![a-c])/.test(code)) return "unit 5.4 without its letter";
+  if (/unit 5\.4b/.test(code)) return "unit 5.4b";
   if (/Cancel sweeps again/.test(code)) return "Cancel sweeps again";
   return null;
 }
 
 describe("the user-facing text guard (o22.14.11)", () => {
   // CONTROLS: put a "Withdraw" button label back into a screen, or "handled in unit 5.4" into a
-  // string in `src/jobs` → red.
+  // string in `src/jobs` → red; "handled in unit 5.4b" into one → red (o25.9,
+  // `run_54b_ts_controls.sh ts-guard-5-4b`).
   it("finds no withdraw, unlettered unit 5.4 or 'Cancel sweeps again' in the app's code", () => {
     // vitest roots `process.cwd()` at the repo (as `render.corpus.test.ts` relies on).
     const files = sources(resolve(process.cwd(), "src"));
@@ -58,7 +61,8 @@ describe("the user-facing text guard (o22.14.11)", () => {
     expect(code).toContain('"http://x"');
     expect(code).not.toContain("unit 5.4");
     expect(forbidden(code)).toBe("withdraw");
-    expect(forbidden("handled in unit 5.4b")).toBeNull();
+    expect(forbidden("handled in unit 5.4b")).toBe("unit 5.4b");
+    expect(forbidden("handled in unit 5.4c")).toBeNull();
     expect(forbidden("handled in unit 5.4.")).toBe("unit 5.4 without its letter");
     expect(forbidden("automatic sweeps stopped — Retry cancel sweeps again.")).toBeNull();
     expect(forbidden("automatic sweeps stopped — Cancel sweeps again.")).toBe("Cancel sweeps again");

@@ -169,6 +169,12 @@ export type RemoteView =
       text: { body: string; fromLastCheck: boolean } | null;
       /** The pending submit's notice, once it is due (o23.15.2); null otherwise. */
       waiting: WaitNotice | null;
+      /** A waiting re-enqueue's notice (ADR-024 o25 item 4, o25.14.3), once due — the 3rd transient
+       *  refusal, or at once for an unverified profile — and only while the shown verdict is
+       *  `re_enqueue`; null otherwise. */
+      reEnqueueWaiting: WaitNotice | null;
+      /** "Could not be decided 3 times in a row" (o25.6), from the 3rd consecutive pass; null before. */
+      undecided: string | null;
       badges: RemoteBadge[];
       actions: RemoteOffer[];
     };
@@ -197,6 +203,18 @@ const OUTCOME_TONE: Record<Outcome["outcome"], Tone> = {
   indeterminate: "warn",
   re_enqueue: "warn",
 };
+
+/**
+ * Whether `outcome` is the never-start **after** the one re-enqueue (`failed` / `wrapper_never_started`)
+ * on a job that is still live: the poller confirms it by a second pass 45 s later before the job is
+ * ended (ADR-024 o25.15), so until then it is waiting, not a failure (the row stays `queued`).
+ */
+export function isUnconfirmedNeverStart(outcome: Outcome): boolean {
+  return outcome.outcome === "failed" && outcome.reason.reason === "wrapper_never_started";
+}
+
+/** The badge name of an unconfirmed never-start: neutral, never "failed". */
+export const UNCONFIRMED_NEVER_START = "never started — confirming";
 
 /** A job the server still has (o22.5): `queued`, `running` or `cancelling` — `cancelling` is live
  *  everywhere, never terminal. */
@@ -275,12 +293,15 @@ export function remoteView(job: Job, record: RemoteState | null | undefined): Re
   } else if (known?.kind === "shown") {
     const outcome = known.detail.outcome;
     const stale = record?.check_error != null;
+    // A never-start awaiting its confirmation is not a failure yet (o25.15): neutral words, warn tone.
+    const unconfirmed = isUnconfirmedNeverStart(known.detail);
+    const name = unconfirmed ? UNCONFIRMED_NEVER_START : OUTCOME_NAME[outcome];
     badges.push({
       kind: "outcome",
       outcome,
       stale,
-      label: stale ? `Last seen: ${OUTCOME_NAME[outcome]}` : `Server: ${OUTCOME_NAME[outcome]}`,
-      tone: stale ? "muted" : OUTCOME_TONE[outcome],
+      label: stale ? `Last seen: ${name}` : `Server: ${name}`,
+      tone: stale ? "muted" : unconfirmed ? "warn" : OUTCOME_TONE[outcome],
     });
   } else if (known?.kind === "fetching") {
     const strikes = record?.fetch.strikes ?? 0;
@@ -348,7 +369,30 @@ export function remoteView(job: Job, record: RemoteState | null | undefined): Re
   // submitted (Submit step …): slot busy …": the badge and the notice say it better, and it is not
   // a failure (o23.15, item 4). Once the flag is NULLed the text is what it always was.
   const text = job.error_message != null && !waiting ? { body: job.error_message, fromLastCheck: known === null } : null;
-  return { kind: "live", text, waiting: waitNotice(waiting, record), badges, actions };
+  return {
+    kind: "live",
+    text,
+    waiting: waitNotice(waiting, record),
+    reEnqueueWaiting: reEnqueueNotice(record),
+    undecided: record?.undecided?.notice ?? null,
+    badges,
+    actions,
+  };
+}
+
+/**
+ * A waiting re-enqueue's notice (ADR-024 o25 item 4, o25.14.6): Rust's `re_enqueue_waiting.notice` once
+ * `notified`, keyed on the record field **and** the shown verdict `re_enqueue` (never on
+ * `pending_submit`, which is a first submit's). A busy slot's blockers are listed as o23's are.
+ */
+function reEnqueueNotice(record: RemoteState | null | undefined): WaitNotice | null {
+  const waiting = record?.re_enqueue_waiting;
+  const known = record?.known;
+  if (!waiting || !waiting.notified || waiting.notice == null) return null;
+  if (known?.kind !== "shown" || known.detail.outcome !== "re_enqueue") return null;
+  const last = waiting.last;
+  const blockers = last.kind === "slot" && last.detail.kind === "slot_busy" ? last.detail.detail.blockers.map(blockerLine) : [];
+  return { text: waiting.notice, blockers };
 }
 
 /**
@@ -506,6 +550,11 @@ function deliveredNotice(step: StatusStep, row: Pick<Job, "cancel_sent_at"> | nu
     case "fetch_stopped":
     case "swept":
     case "submit_rechecked":
+    // Nor these (ADR-024 o25.9): an ordinary status step's.
+    case "lost_swept":
+    case "re_enqueued":
+    case "re_enqueue_waiting":
+    case "re_enqueue_refused":
       return null;
     default: {
       const unhandled: never = step;

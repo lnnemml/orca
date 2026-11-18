@@ -107,6 +107,7 @@ pub fn with_poller<T>(app: &AppHandle, f: impl FnOnce(&Poller<'_>) -> T) -> T {
         sink: &sink,
         policy: FetchPolicy::SMALL_ONLY,
         data_dir: jobs.data_dir(),
+        clock: &super::SystemClock,
     };
     f(&poller)
 }

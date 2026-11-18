@@ -30,13 +30,14 @@ scoped `#[allow(dead_code)]` until units 5.3/5.4 call all of it (the poller, rec
 | `gate.rs` | the per-host cap on concurrent ssh/rsync processes (ADR-024 o24.2–o24.4): `Gate::new(n)` — per host key a FIFO ticket queue, a caller with ticket `t` is admitted iff `t < released + n`, `released` moves only on a release and every release wakes all waiters; `acquire` → RAII `Permit`; a key's entry is dropped once `next_ticket == released`; mutex poisoning recovered (`into_inner`). `MAX_CONCURRENT_REMOTE_CALLS = 8` and the process-global `REMOTE_CALLS: LazyLock<Gate>` that `SystemRunner::run` uses: at most 8 ssh/rsync per host, one queue shared by the poller, the commands and the connection test, no reserved permit; in-process (empty on every launch, blind to ssh/rsync orphaned by a previous run). Two profiles naming one server differently (`uni` and `anton@uni`) get 8 each. `host_key(program, argv)` → `HostKey::Host` (ssh: the argument after `--`; rsync: the `host:` prefix of the one remote end among the last two) or the shared `HostKey::Fallback` (gated, never ungated) |
 | `sync.rs` | rsync argv (`upload_argv`, `download_argv`), the download filter `download_filter_args`, its leaf patterns `download_patterns` and its Rust mirror `download_selects`, `list_dir`/`upload_expected`/`expected_values` (local file lists with sha256), `ListArgs` + `parse_list_reply` (the server's listing), `compare_download` (the download post-condition) |
 | `poll.rs` | `PollLogArgs`, `parse_poll_reply` → `LogChunk` with the length post-condition; `check_echo` (the n-6d echo check every 5.3 reply shares) |
-| `submit.rs` | `remote_job_dir`, `SubmitArgs`, `parse_submit_reply` → `SubmitReply` with the typed `Refusal` (`Blocked { blockers: Vec<Blocker> }`, `SlotCheckFailed`, `LockBusy`, `UploadMismatch`, `Other`, ADR-024 o23.7); `LabelArgs`, `parse_label_reply` → `LabelFacts`, `label` → `Label` (the label rules) |
+| `submit.rs` | `remote_job_dir`, `SubmitArgs` (its `SubmitMode`: a submit, or the re-enqueue form, ADR-024 o25.4), `parse_submit_reply` → `SubmitReply` with the typed `Refusal` (`Blocked { blockers: Vec<Blocker> }`, `SlotCheckFailed`, `LockBusy`, `UploadMismatch`, `Other`, ADR-024 o23.7); `LabelArgs`, `parse_label_reply` → `LabelFacts`, `label` → `Label` (the label rules) |
 | `prepare.rs` | the calls that ready the server before an upload, a cancel's delivery or a sweep: `UPLOADED` (wrapper, cancel, collect), `PrepareArgs`, `parse_prepare_reply` → `PrepareFacts`, `check_prepare` → `Prepared` or `ShapeRefusal`; `InstallArgs`, `parse_install_reply` → `[Installed; 3]` |
 | `run.rs` | the trampoline's `RunArgs` (`JobScript::{Cancel, Collect}`) and `parse_run_reply` → `RunReply`; a not-on-server cancel's `MkjobArgs` and `parse_mkjob_reply` (o 14.1, o22.4.3) |
 | `race_model.rs` | test-only model of the d′ race (`.started`/`.cancelled`) |
 | `script_tests.rs` | test-only: the real job scripts run on this machine; the shared `Lab` harness (see Tests) |
 | `call_script_tests.rs` | test-only: the real 5.3 calls through `bash -s`, read by their Rust parsers (see Tests) |
 | `backend_e2e_tests.rs` | test-only: `ssh_backend`'s submit, retry and label, the cancel core's delivery and the poller end to end against the `Lab` (see Tests) |
+| `reenqueue_script_tests.rs` | test-only: `submit.sh reenqueue` against the real script after a dropped queue (see Tests) |
 
 Rule #6 is shared with the local backend: `local_backend::has_normal_termination` (the one
 `ORCA TERMINATED NORMALLY` test, also used by `detect_completion`) over the last
@@ -52,7 +53,13 @@ all-NULL or all-set. **A job is remote iff its coordinates are non-NULL**: `Job:
 today `local_backend::next_local_queued_job` (behind `try_start_next`) and `reconcile_on_startup`.
 `backend_id` never decides it. A remote job keeps `queued`/`running` in `jobs.status`, and
 `cancelling` once a cancel has reached the server while processes of the job still run there
-(`JobStatus::Cancelling`, ADR-024 o22.5): transient, not terminal, remote only.
+(`JobStatus::Cancelling`, ADR-024 o22.5): transient, not terminal, remote only. A remote job that
+started on the server and whose wrapper is gone without an `.exit_code` ends **`lost`**
+(`JobStatus::Lost`, ADR-024 o25.1): **terminal**, remote only, written only by the poller's evidence
+path (`finalize_job_conn`, which stamps `completed_at` and NULLs the pending columns; so does
+`update_job_status_conn`'s terminal arm). It has no CHECK and no schema version: the status column is
+unconstrained, and the v21/v22 CHECKs already refuse the pending columns on it. Nothing restarts a
+`lost` job automatically; the user starts a new one (restart-from-last-geometry stays Decision e's).
 `submit::remote_job_dir(root, job_id)` builds the dir and checks it with `is_valid_path`; the job id
 must be one component.
 
@@ -66,8 +73,11 @@ clears in `poller/cancel.rs`, the evidence fetch's terminal `cancelled` (`poller
 The one deliberate exception is the cancel **record** write (`commands::jobs::RECORD_CANCEL_SQL`):
 `queued`/`running` only (ADR-024 o22.12.1). The local paths
 (`next_local_queued_job`, `reconcile_on_startup`) select explicit statuses with `remote_host IS NULL`
-and never see `cancelling`. `JobStatus::from_db` has a wildcard arm, so its explicit `"cancelling"`
-arm is pinned by a test, not by the compiler.
+and never see `cancelling`. Every one of these is a positive list, so **`lost` is live for none of
+them** (pinned by `poller::lost::tests::a_lost_row_is_live_for_no_predicate`): a `lost` row is
+deletable and refuses a cancel like any terminal row. `JobStatus::from_db` has a wildcard arm, so its
+explicit `"cancelling"` and `"lost"` arms are pinned by a test, not by the compiler; every other
+`match` on `JobStatus` lists its variants (no wildcard).
 
 **The pending cancel (schema v21, ADR-024 o22.2).** `jobs.cancel_requested_at` (the user asked) and
 `jobs.cancel_sent_at` (a delivery is about to run `cancel.sh`), nullable TEXT in **UTC, laptop
@@ -277,6 +287,28 @@ claim):
 Every plain `refused` reason starts with its step (`values:`, `lock:`, `realpath:`, `wrapper:`,
 `marker:`, `row:`, `upload:`, `tsp-out:`, `claim:`), for people reading it.
 
+**The re-enqueue form** (`submit.sh reenqueue`, ADR-024 o25.3–4 as o25.14 settles them): the same
+call with the literal value `reenqueue` **first** (`SubmitArgs::reenqueue()`, `SubmitMode::ReEnqueue`;
+a job dir starts with `/`, so the forms cannot be confused) — 7 + 2n values, the same reply kinds, the
+same steps under the same lock, except:
+- **3** the markers are `.started`, `.exit_code`, `.cancelled` and the claim `.reenqueue-1`
+  (`.enqueued` and `.submitting` are a submitted job's own); a row holding the job dir as a whole
+  token refuses unless it is our wrapper's row for this job in state **`finished`** (a wrapper that
+  crashed before `.started`, row 11) — any other state, or a row it cannot read as ours, refuses. The
+  rows are read on the slot socket and, **only when it differs**, on `.enqueued`'s socket (an
+  unparsable `.enqueued` refuses as a marker). Step 3 runs before step 4, so a `.started` is the
+  marker refusal, never an upload mismatch (o25.14.1);
+- **4** the file check leaves out `.submitting`, `.enqueued` and top-level `.reenqueue-*` (and
+  `.tsp-out/`, as always);
+- **7** the claim is `ln -sT x <job>/.reenqueue-1`, **after** the slot check and before the enqueue:
+  a refused re-enqueue claims nothing, and a second one finds the claim and refuses. The claim is
+  the server's re-enqueue counter (o25.3) — no DB column;
+- **8** the enqueue is step 8's (the current mask, the current wrapper sha); `.enqueued` is replaced by
+  `mv -fT`; `.submitting` and a stale `.tsp-out/` stay.
+
+The two-wrapper guarantee rests on the wrapper's no-clobber `.started` (`ln -T`), not on the row
+check alone: a second wrapper in one job dir cannot publish `.started` and exits.
+
 **The lock fd and the bounds.** Every `tsp` call (`-l` too), every child under `timeout` and the
 claim/publish commands run with `</dev/null` and `9>&-`, so no daemon tsp starts can inherit the
 account lock (probe 5.3c); the head's short readers (`stat`, `cat`) still inherit it and exit at once.
@@ -284,7 +316,10 @@ Every child that can block while the lock is held runs under `timeout -k 1 N` (T
 1 s later): busctl 2 s, realpath 2, the wrapper's realpath 1, the wrapper's sha256 2, the slot's
 `tsp -l` 2, the upload `find` 2, the upload `sha256sum` 6, the slot scan 8 (its own `tsp -l` calls
 each under `timeout -k 1 2` inside it), the enqueue 3 — 28 s, and 37 s worst case with the nine
-kill-afters, under the 40 s of o item 3.3.1. A timeout (rc 124) of a bounded child **before the
+kill-afters, under the 40 s of o item 3.3.1. A re-enqueue whose `.enqueued` socket differs from the
+slot's runs one more `tsp -l` (2 s) and gives the upload's `sha256sum` 5 s instead of 6
+(`T_SHA_REENQUEUE`): 29 s + 10 kill-afters = **39 s**, still under 40 (o25.14.5); with the sockets
+equal (every job today: one slot, the socket never changes) it is the submit's 37 s. A timeout (rc 124) of a bounded child **before the
 claim** — realpath, the wrapper's realpath and sha256sum, `find`, the upload's `sha256sum`, the scan,
 the slot's `tsp -l` — is `slot-check-error` (transient, o23.13.2); busctl's timeout stays
 `refused-kup` (fail closed); after the claim a timeout is `failed-after-claim`. A child killed by the
@@ -588,7 +623,8 @@ empty:
   next prepare; a job already queued keeps the old path and runs the old behaviour. No code deletes
   an old wrapper file.
 
-**`cancel.sh cancel|check <job_dir> <root>`** — starts with `cd /` and never enters the job dir.
+**`cancel.sh cancel|check|sweep <job_dir> <root>`** — starts with `cd /` and never enters the job
+dir; any other mode is a usage error (exit 2).
 `cancel`: publish `.cancelled` (failure → exit 3, nothing signalled) → **queued path**: read
 `.enqueued`; only if `/proc/net/unix` lists its socket exactly, run `tsp -l`; `tsp -r <id>` only if
 exactly one row has that id, state `queued` and the job dir as a whole token → **running path**,
@@ -608,11 +644,24 @@ by tsp id or by name. `check` prints `started=`, `boot=`, `alive=`, `ours=`, `le
 shell side of the parity tests. The race window between `tsp -l` and `tsp -r` (a row starting) is
 accepted: `.cancelled` already stops the wrapper.
 
+`sweep` (ADR-024 o25.2) kills the orphans of a job the classifier read as row 8 `Lost` in this boot.
+It **re-checks row 8 first** (rule #9 at the actor), from the same `assess`: no parsable `.started`,
+or `.exit_code` or `.cancelled` there → `sweep: skip not row 8: …`, **exit 5**; the wrapper alive and
+ours in this boot (row 7) → `sweep: skip wrapper alive`, **exit 4** — both signal nothing and keep
+`.tmp`. Otherwise it runs the running cancel's sweep (`sweep_session`, shared with `cancel`: the
+SID-reuse guard, own-session exclusion, the cwd filter, TERM+CONT → up to 5 s → KILL) — with no group
+TERM (the wrapper is not alive and ours) — and removes `.tmp`. With a `.started` from another boot
+there is nothing of ours left to signal (start times count from boot): it only removes `.tmp`. It
+**never publishes `.cancelled`** and never runs `tsp`. Its budget is the `cancel` script's (`run.sh`
+`BUDGET[cancel]` = 20 s).
+
 **`collect.sh <job_dir> [<socket>...]`** — starts with `cd /`. A missing job dir is an error (it
 would otherwise read as NeverStarted). It reads `/proc` only for a `.started` that parses and is from
-this boot, runs `tsp -l` only on a socket `/proc/net/unix` lists, adds the `.enqueued` socket after
-the slot sockets (an unparsable `.enqueued` becomes an `Error` fact with the marker's path), and on
-any read error other than ENOENT/ESRCH prints an `error` record and exits 3.
+this boot, reports whether the re-enqueue claim `.reenqueue-1` exists (`path_exists`, so the
+dangling symlink counts; read **before** the sockets, ADR-024 o25.3), runs `tsp -l` only on a socket
+`/proc/net/unix` lists, adds the `.enqueued` socket after the slot sockets (an unparsable `.enqueued`
+becomes an `Error` fact with the marker's path), and on any read error other than ENOENT/ESRCH prints
+an `error` record and exits 3.
 
 ## The snapshot wire format
 
@@ -622,7 +671,7 @@ is followed by exactly that many raw bytes and `\n` (a cmdline holds NULs, so no
 line-delimited).
 
 ```text
-orcastudio-snapshot 1
+orcastudio-snapshot 2
 boot_id <len>               required
 started <len>|-             first read
 proc collected|skipped      collected iff .started parses and is from this boot
@@ -630,6 +679,7 @@ proc collected|skipped      collected iff .started parses and is from this boot
   wrapper_cmdline <len>|-   │ only when collected
   sid_stat <len>|-          │
   members <n>               │ then n × (member <pid>, cwd <len>|-)
+reenqueue_claim yes|no      <job>/.reenqueue-1 exists, in any form (ADR-024 o25.3)
 sockets <n>                 then n × (socket <len>, then socket_error <len>
                               | net_unix <len> + (nodaemon | rows <n> + n × row <len> | tsp_error <len>))
 exit_code <len>|-
@@ -649,6 +699,17 @@ over the emitted `/proc/net/unix` evidence (header + the lines naming the socket
 come first, in order, with at most one extra; every row mentions the job dir; the tail is ≤
 `TAIL_BYTES`. `WireError` converts into `SnapshotError::Collection`, so a broken collection means no
 action this pass, like `Indeterminate`.
+
+**Version 2** (ADR-024 o25.3) added the `reenqueue_claim` record; a version-1 output (no claim
+record) fails the header check (`Malformed`), never "no claim" — a belt, since the trampoline only
+ever runs the app's own `collect-<sha>.sh`. `Snapshot::reenqueue_claims` is 1 for `yes`, 0 for `no`:
+the only claim the app makes is `.reenqueue-1` (the re-enqueue refuses on it), so this is the count.
+The claim precedes the enqueue under the account lock, and the collector does not take that lock: a
+collect whose claim read lands between a still-running re-enqueue's claim and its enqueue (possible
+only when the previous step's reply was lost and the server's call still runs) reads no row and the
+claim. So the poller **confirms** a never-start with the claim before it is terminal (ADR-024
+o25.15, below): two consecutive passes at least 45 s apart, longer than any `submit.sh` call can hold
+the lock.
 
 ## Parsers
 
@@ -689,19 +750,27 @@ action this pass, like `Indeterminate`.
    a computing job `Lost`.
 2. **Bracketing `.started` reads.** If the first and last reads differ (in presence or bytes), a
    first snapshot returns `Classification::Retake`: the caller collects again with
-   `Attempt::Retake`. A retake whose reads still differ is `Indeterminate`. So at most one retake,
-   and the retake decision stays inside the pure function.
+   `Attempt::Retake`. A retake whose reads still differ is `Indeterminate { why: "the .started read
+   disagreed twice" }` (`STARTED_DISAGREED`). So at most one retake, and the retake decision stays
+   inside the pure function.
 3. **The precedence table**, ADR-024 l, rows 1–11 in order, first match wins:
    corrupt `.started` → `Failed`; cancelled + clean finish → `Completed { late_cancel: true }`;
    cancelled + (alive and ours, or non-empty job session), this boot → `Cancelling`; cancelled →
    `Cancelled`; clean finish → `Completed`; any `.exit_code` → `Failed`; alive and ours, this boot →
-   `Running`; started → `Lost { orphans }` (job session, this boot only); a queued/running row →
-   `Queued`; any socket `Error` (or an unreadable row of ours) → `Indeterminate`; else `ReEnqueue`
-   when `reenqueue_count` = 0, `Failed` ("wrapper never started") otherwise. `NoDaemon` counts as no
-   rows.
+   `Running`; started → `Lost { orphans, stale_boot }` (job session, this boot only); a
+   queued/running row → `Queued`; any socket `Error` (or an unreadable row of ours) →
+   `Indeterminate { why }`; else `ReEnqueue` when `reenqueue_count` = 0, `Failed` ("wrapper never
+   started") otherwise. `NoDaemon` counts as no rows. **`reenqueue_count` is the snapshot's own
+   `reenqueue_claims`** (`ssh_backend::collect_and_classify`, the Lab's `classify` likewise; ADR-024
+   o25.3), never a constant.
 
-`Outcome` is the classifier's own enum. Three payloads are computed from the snapshot so later
-steps decide from the outcome alone (ADR-024 o22.4.5, o22.5, o22.6):
+`Outcome` is the classifier's own enum. These payloads are computed from the snapshot so later
+steps decide from the outcome alone (ADR-024 o22.4.5, o22.5, o22.6, o25.1, o25.6):
+- `Lost { orphans, stale_boot }` — the job-session PIDs still in the job dir (this boot only), and
+  whether `.started` was written in another boot (the server restarted under the job) or not (the
+  wrapper died in this boot);
+- `Indeterminate { why }` — row 10's socket errors (`"<socket>: <error>"`, joined by `; `) or the
+  retake's `STARTED_DISAGREED`;
 - `Cancelling { session }` — the job-session size (the cwd-filtered `ps -s` members after the
   SID-reuse guard; 0 when only the wrapper's own liveness holds row 3), for row 3's progress rule;
 - `Cancelled { started }` — the snapshot holds a `.started`: the job ran, and its files are evidence;
@@ -709,13 +778,112 @@ steps decide from the outcome alone (ADR-024 o22.4.5, o22.5, o22.6):
   then adds that processes of the job may survive on the server.
 
 Serialized (serde `tag = "outcome"` / `"reason"`) as `{ "outcome": "cancelling", "session": n }`,
-`{ "outcome": "cancelled", "started": b }` and `{ "reason": "corrupt_started", "detail": …,
-"cancelled": b }`; `src/types.ts` mirrors them. `Cancelling` is also a `JobStatus` (above); `Lost`
-joins it with unit 5.4b.
+`{ "outcome": "cancelled", "started": b }`, `{ "reason": "corrupt_started", "detail": …,
+"cancelled": b }`, `{ "outcome": "lost", "orphans": [pid, …], "stale_boot": b }` and `{ "outcome":
+"indeterminate", "why": "…" }`; `src/types.ts` mirrors the first three (the last two are unit 5.4b
+Part B's). `Cancelling` and `Lost` are also `JobStatus` values (above).
+
+## `Lost`, the re-enqueue and the `Indeterminate` count in the poller (ADR-024 o25, unit 5.4b)
+
+Every classifier verdict now has its action in the poller's ordinary status step
+(`crate::poller`; the cancel paths are unchanged: a delivery still "goes on" from `Lost` and
+`ReEnqueue`, and a delivered `.cancelled` makes the job `cancelled`, never `lost` — d′).
+
+- **`Lost`** (`poller/lost.rs`, o25.2). Orphans first: while the job session is non-empty the step
+  readies the server, runs `cancel.sh sweep` (`ssh_backend::sweep_call`), then collects and
+  classifies again. An empty session → the evidence path in the same step. Orphans left → counted by
+  o22.13.4's rule over the `Lost` job's own counter and baseline (`PollerMemory::count_lost_sweep`,
+  seeded from the first observed orphan count; a `cancelling` job's count is separate, so a Cancel
+  starts fresh); the result is `StatusStep::LostSwept` and the row says which sweep this was. After
+  `MAX_SWEEPS_WITHOUT_PROGRESS` (3) the job is written `lost` anyway, naming the survivors and saying
+  they may have written after the files were listed. A sweep exit 4/5 ("wrapper alive" / "not row
+  8") signals nothing and is **not counted**: the next step classifies again. A ready with no answer
+  is `CheckFailed`, counting nothing. **Evidence** (`poller/evidence.rs`, `Evidence::Lost`): the
+  fetching flag, rsync down + the LIST check (never `.exit_code`), then the terminal write through
+  `finalize_job_conn` — "Lost: the server restarted while the job ran; …" (stale boot) or "Lost: the
+  job's wrapper died without an exit code; …" — then the drain. A failed fetch counts the strikes; the
+  3rd writes `lost` with "evidence not downloaded: <why>; it stays on the server". A cancel recorded
+  during the fetch (after the step's read) is dropped by the terminal write, which NULLs its columns
+  and appends "A pending cancel was dropped: the job had already stopped." (`DROPPED_CANCEL_NOTE`).
+- **Row 1 without `.cancelled`** (o25.8) takes the same evidence path and ends `failed`, saying ORCA
+  is unlikely to have run and nothing can be swept.
+- **The second never-start** `Failed { WrapperNeverStarted }` (the claim present, o25.5) is
+  **confirmed first** (o25.15, `Poller::never_started_again`): the first pass of a run, and any
+  consecutive pass sooner than `NEVER_STARTED_CONFIRM` (45 s, by the poller's injected `Clock`) after
+  it, is `Shown` with a neutral row text (`NEVER_STARTED_UNCONFIRMED`) and the row stays `queued`; a
+  consecutive pass at least 45 s after the first takes the evidence path and ends `failed`. The 45 s
+  separate the two **server reads**: the first pass is remembered when its collect **ended**, and a
+  confirming pass counts only if its collect **started** (the step's clock before
+  `collect_readying`) at least 45 s after that — "the job
+  never started on the server after one re-enqueue (or the re-enqueue did not reach the queue); see
+  .tsp-out" (`.tsp-out/` and the markers, `.reenqueue-1` included, come down with it; `sync::MARKERS`
+  lists the claim). The run (`JobMemory::never_started_at`) is per launch; any other verdict ends it,
+  a step that decided nothing keeps it.
+- **`ReEnqueue`** (`poller/reenqueue.rs`, o25.4, o25.14): **the plan is decided locally, without
+  writing** (`ssh_backend::reenqueue_plan`): the profile must be a run target — if not, the job
+  **waits** with no call and is not counted ("re-test the server profile to continue", o25.14.3); the
+  input is derived in memory with the profile's **current** mask (`local_backend::job_dir_files`, the
+  pure half of `prepare_job_dir`) and compared, digest for digest, with the local job dir — a
+  difference fails the job at once with "Never started on the server, and the core count of the
+  profile changed since it was submitted (the input's %pal no longer matches); start it again as a new
+  job." (any other difference is named as it is), **no call**, the local dir untouched; a mask edit
+  that keeps the CPU count re-enqueues on the new cores (o25.14.2). Then `ready_server`, then one
+  `submit.sh reenqueue` carrying the local list. Its outcome (`reenqueue::decide`): enqueued →
+  `StatusStep::ReEnqueued { tsp_id }`, the row stays `queued`; slot busy, slot check error, lock busy
+  → `StatusStep::ReEnqueueWaiting` (nothing claimed; counted toward the notice only, at
+  `REENQUEUE_NOTICE_AT` = 3); a reply that never came (the call's own contact `Failed`) →
+  `CheckFailed`, not counted; any other answered refusal — an upload mismatch (the server's copy, not
+  "profile changed"), `refused-kup` (which clears the profile's stamp, so the next step waits), a
+  marker or a live row, an install refusal, failed after the claim, an unreadable reply →
+  `StatusStep::ReEnqueueRefused { refusals, why }`, and the `MAX_REENQUEUE_REFUSALS`-th (3rd) fails
+  the job with that refusal's text. The 5.4c pending flag is never set.
+- **The runs a later step ends** (`poller::step_effect`, one exhaustive `match`; applied to
+  `PollerMemory::note_step` before the record reads it). The `Indeterminate` run counts a step whose
+  verdict is `Indeterminate` (an ordinary step's, a delivered or stopped cancel's), is reset by a
+  decided verdict and kept by a step that decided nothing (no answer, a label, a pending submit's
+  re-check). The re-enqueue's waiting state and counted refusals end on its success and on a decided
+  verdict other than `ReEnqueue` — which is how "a refusal the next classify re-decides is not
+  counted" is kept (o25.14.4) — and are kept across a failed check, a cancel not sent and a stopped
+  delivery. The never-start confirmation (o25.15) is kept by the never-start again or a step that
+  decided nothing, and ended by any other verdict.
+- **Ready on a not-installed collect** (o25.7): the ordinary step's collect
+  (`ssh_backend::collect_readying`) readies the server once and collects again when the collector
+  answers `not-installed` (an app upgrade changed its sha, as 5.4b's own change does); a second
+  `not-installed`, or a ready that fails, is the step's `CheckFailed`. `run_call`'s `RunError` tells
+  the two apart.
+- **Texts.** No row text defers to a later unit any more; the Rust text guard
+  (`text_guard_tests.rs`) forbids "unit 5.4b" in user-facing strings.
+
+**The record's new fields and steps (wire shapes for the view, unit 5.4b Part B mirrors them):**
+
+```text
+StatusStep  { "step": "lost_swept", "detail": { "outcome": <Outcome>|null, "error": { "text", "answered" }|null } }
+            { "step": "re_enqueued", "detail": { "tsp_id": n } }
+            { "step": "re_enqueue_waiting", "detail": { "kind": "slot", "detail": <Wait> }
+                                                    | { "kind": "unverified", "detail": "<why>" } }
+            { "step": "re_enqueue_refused", "detail": { "refusals": n, "why": "…" } }
+RemoteState + "undecided": { "passes": n, "notice": "…" } | null          (from the 3rd pass)
+            + "re_enqueue_waiting": { "refusals": n, "notified": b, "notice": "…"|null,
+                                      "last": <ReEnqueueWait> } | null
+```
+
+**Named residuals** (ADR-024 o25.15.7):
+- a stray `.started.tmp.<pid>` — a wrapper killed between writing its temp `.started` and linking it
+  — is an extra file to the re-enqueue's file check: `upload-mismatch`, a counted refusal, so the job
+  ends `failed` after 3 (its text names the file);
+- a sweep's exit 4/5 is never counted, so a job whose shell predicates (`cancel.sh`) and Rust's
+  (`classify`) disagreed on "alive and ours" would be swept, and re-classified `Lost`, forever. Their
+  agreement is what the parity tests pin, through `cancel.sh check` against the Rust predicates on
+  real processes (fixtures (a)–(e)).
+
+`known` is `Shown(re_enqueue)` while a re-enqueue waits or is refused (the waiting view's gate,
+o25.14.6), `None` after `re_enqueued`, `Shown(lost)` after a `lost_swept` that classified. The
+terminal steps are the existing `finalised` (`status` `lost` or `failed`, `outcome` the verdict) and
+`fetch_failed`.
 
 ## Tests
 
-275 tests in the module.
+298 tests in the module (`cargo test --lib -- --list remote::`, 2026-11-18).
 - **Pure (classifier, parsers, wire):** strict-parser garbage cases, the recorded probe fixtures (P2
   cmdline, P4 `tsp -l`, 5.2b `/proc/net/unix` line, 5.2c stat lines including `w q) x.sh` and the
   zombie), at least one snapshot per table row, the d′ race model over all 6 interleavings, and the
@@ -791,6 +959,39 @@ joins it with unit 5.4b.
   group kill by the member's pid, a kill of the member's group, an unclamped grace, an unbounded
   handler hold, an unbounded KILL round) and turns it red; the controls are run by hand, not kept
   as tests.
+- **Unit 5.4b (ADR-024 o25.11, o25.14.7).** Lab, real `bash`: `cancel.sh sweep` on a wrapper killed
+  in this boot ends ORCA, its child and an escaped rank, spares a foreign-cwd member, publishes no
+  `.cancelled`, removes `.tmp`, and the classifier then reads `Lost` with no orphans; with the wrapper
+  alive and ours it exits 4 and signals nothing; `.exit_code`, `.cancelled`, no or a corrupt
+  `.started` exit 5; an unknown mode exits 2 (`script_tests.rs`). `submit.sh reenqueue` after a
+  dropped queue (the stub daemon's rows emptied): enqueued with the claim, the new `.enqueued` and a
+  new row, `.submitting`/`.enqueued` left out of the file check, then row 9, then — the queue dropped
+  again — row 11 `Failed { WrapperNeverStarted }`, and a second re-enqueue refused on the claim; a
+  refusal with no claim on each of `.started`, `.exit_code`, `.cancelled` (the marker kind, not an
+  upload mismatch), the claim, a queued and a running row and a sha mismatch; a finished row
+  accepted; `.enqueued`'s own socket read when it differs; no claim when the scan blocks or the slot
+  cannot be checked (`reenqueue_script_tests.rs`); the collector's claim under the v2 header
+  (`script_tests.rs`) and `.reenqueue-1` in the server's listing. End to end against the real
+  scripts (`backend_e2e_tests.rs`): a dropped queue, with and without a finished row → re-enqueued →
+  `Queued` → dropped again → confirmed by a pass 45 s later → `failed` with the evidence; a changed core count → `failed` with no call;
+  a stale `boot_id` → `lost`; a live non-wrapper session leader in the job dir → `cancel.sh sweep` →
+  `lost`. Fake server (`poller/lost/tests.rs`, `poller/reenqueue/tests.rs`,
+  `poller/undecided_tests.rs`, over `poller/fake_tests.rs`): every gate of o25.11 and o25.14.7 —
+  `lost` written with its texts and NULLed columns and live for no predicate, sweep before finalise,
+  the bound and the survivors, progress, a "wrapper alive" sweep not counted, the evidence strikes,
+  the dropped-cancel note, row 1 without `.cancelled`; one re-enqueue per pass with the current mask
+  and the local list, the claim count reaching `classify`, the never-start confirmation (one pass not
+  terminal, passes under 45 s apart not terminal, another verdict between them restarting it, the 45 s
+  measured between the two server reads with a slow collect), a label ending the waiting state, an
+  `Unknown` with no call made counted, a claim read error ending the snapshot (Lab), a changed core count failing with no call
+  and the local dir byte-identical, the waiting notice at the 3rd transient refusal and its reset, 3
+  counted refusals → `failed`, the reset of a refusal the next classify re-decides, the unverified
+  wait with no call, a lost reply not counted, `refused-kup` clearing the stamp, a server upload
+  mismatch counted; the `Indeterminate` notice at the 3rd pass, kept by a check without an answer and
+  reset by a decided verdict; ready + one more collect on a not-installed collector. Every gate has a
+  negative control (a source mutation that turns it red), kept as a re-runnable script with the unit
+  (54 controls; the sweep's four and the re-enqueue's claim-order, finished-row and exclusion controls
+  are also permanent tests over mutated script copies).
 - **The gate (`gate.rs`, `ssh.rs`, ADR-024 o24.10)**, each on a local `Gate::new(n)` unless named:
   with n = 8, 12 callers parked on a latch — exactly 8 hold, 4 wait, max overlap 8, all 12 finish,
   the key's entry dropped; FIFO under a forced interleaving (a releaser that asks again queues
@@ -971,9 +1172,13 @@ events and `job:log-reset { job_id }`; `watch_job_log(id, open)` counts a job's 
   the row and the panel, the notices, the `cancelling` chip and count, the laptop-time display).
   Awaiting Anton's live gate: how the badges, buttons and notices look and behave in the real window.
   The sweep and the
-  evidence fetch have run only against the fake server; the B4-style live run on uni is still to come. The DB re-enqueue counter (a
-  later schema version; v21 is 5.4a's pending cancel), `Lost` in `JobStatus`, the orphan sweep (unit
-  5.4b).
+  evidence fetch have run only against the fake server; the B4-style live run on uni is still to come.
+- **Unit 5.4b's view and live checks** (ADR-024 o25.9–10): the `lost` chip and badge, the TS mirrors
+  of the new shapes above, the waiting and `undecided` notices (Part B); then o25.10's two live
+  checks on uni with throwaway jobs (a `kill -9` of a running wrapper → sweep → `lost`; `tsp -K` with a
+  running and a queued job → the queued one re-enqueued, waiting `blocked` until the P4 survivor
+  ends). A real reboot is simulation-only (a substituted `boot_id`), recorded at the first natural
+  occasion.
 - **Known limitation — the ended-first note** ("The job finished before the cancel reached the
   server.") is held in the poller's per-launch memory until the job's `finalise`, which may be several
   status periods later (failed fetches, a server that does not answer); a restart in between loses the

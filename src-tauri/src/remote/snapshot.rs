@@ -1,9 +1,9 @@
 //! The raw-fact snapshot of one remote job (ADR-024 l, "Snapshot fields").
 //!
 //! Everything here is a **raw fact** read on the server — file bytes, `/proc` lines, `tsp -l`
-//! rows — never a verdict computed there (rule #9). The collector (unit 5.2 Part B) reads them
-//! in a fixed order: `boot_id` → `.started` → `/proc` and `ps -s` → `tsp -l` → `.exit_code`,
-//! `.cancelled`, tail → `.started` again.
+//! rows, whether a marker exists — never a verdict computed there (rule #9). The collector (unit
+//! 5.2 Part B) reads them in a fixed order: `boot_id` → `.started` → `/proc` and `ps -s` → the
+//! re-enqueue claim (o25.3) → `tsp -l` → `.exit_code`, `.cancelled`, tail → `.started` again.
 
 /// Who the job is: the inputs the "ours" and job-session rules compare against.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,6 +76,14 @@ pub struct Snapshot {
     /// The members of `ps -s <.started sid>`. Collected only with a current `boot_id`;
     /// the classifier ignores them otherwise.
     pub session_members: Vec<SessionMember>,
+    /// How many re-enqueue claims the job dir holds (ADR-024 o25.3): 1 when `.reenqueue-1`
+    /// exists (in any form — the claim is a dangling symlink), else 0. The re-enqueue mode refuses
+    /// on an existing `.reenqueue-1`, so no other claim is ever made; this count is the classifier's
+    /// `reenqueue_count`. Read **before** the sockets: the claim precedes the enqueue under the
+    /// account lock, so a claim read here whose enqueue lands after the `tsp -l` below is the only
+    /// window in which a re-enqueued job could read as a second never-start (stated in the module
+    /// page as a residual).
+    pub reenqueue_claims: u32,
     /// One fact per socket; never empty for a real collection.
     pub sockets: Vec<SocketFact>,
     /// Raw `.exit_code`; `None` if absent.

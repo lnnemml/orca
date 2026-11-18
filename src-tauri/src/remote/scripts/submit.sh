@@ -50,11 +50,26 @@
 # Every name, path and cwd travels as a length-prefixed byte record, never as %q-quoted text (a
 # cwd can hold a newline).
 #
+# The re-enqueue (ADR-024 o25.4, o25.14): the same call with the literal value `reenqueue` FIRST
+# (a job dir starts with `/`, so the forms cannot be confused) — for a job whose queue entry was
+# lost before it started (classifier row 11). The same steps under the same lock, except:
+#   3  the markers are .started .exit_code .cancelled and the claim .reenqueue-1 (.enqueued and
+#      .submitting are a submitted job's own); a tsp row holding the job dir refuses only unless it
+#      is our wrapper's row in state `finished` (a wrapper that crashed before .started) — on the
+#      slot socket and, when it differs, on .enqueued's socket. These run before step 4, so a
+#      .started is a marker refusal, never an upload mismatch (o25.14.1)
+#   4  the file check leaves out .submitting, .enqueued and .reenqueue-* (and .tsp-out/, as always)
+#   7  the claim is `ln -sT x <job>/.reenqueue-1`, after the slot check: a refused re-enqueue
+#      claims nothing, and a second one finds the claim and refuses (it is the counter, o25.3)
+#   8  the enqueue is step 8's; .enqueued is replaced by rename
+#
 # The lock fd: every tsp call (`-l` too) and every child that may outlive the script runs with
 # 9>&-; a daemon started with the fd open would hold the account lock for its whole life (probe
 # 5.3c). Every child that can block while the lock is held runs under `timeout -k 1`; the budgets
 # below add up to 37 s with the kill-after, under the 40 s of o item 3.3.1, so the holder is
-# bounded on the server. The short file operations (stat, cat, mkdir, ln, mv) are not wrapped:
+# bounded on the server. A re-enqueue whose .enqueued socket differs from the slot socket runs one
+# more `tsp -l` (2 + 1 s) and gives the upload's sha256sum 5 s instead of 6 (o25.14.5):
+# 29 s + 10 × 1 s = 39 s, still under 40. The short file operations (stat, cat, mkdir, ln, mv) are not wrapped:
 # they touch only the root, which is local ext4 (measured on uni, 2026-10-03), not a network mount
 # that could hang.
 
@@ -72,12 +87,14 @@ T_WRAPPER_SHA=2
 T_TSP_LIST=2
 T_FIND=2
 T_SHA=6
+T_SHA_REENQUEUE=5  # a re-enqueue that also lists .enqueued's own socket (the 10th bounded child)
 T_SCAN=8           # the scan's own `tsp -l` calls run inside it, each under timeout -k 1 2
 T_ENQUEUE=3
 T_HOLDERS=2        # the "lock busy" path only, where the lock is not held
 MAX_FILES=1000     # remote::sync::MAX_UPLOAD_FILES
 MAX_SOCKET=100     # remote::MAX_SOCKET_PATH_BYTES
 MARKERS=(.started .enqueued .exit_code .cancelled .submitting)
+REENQUEUE_MARKERS=(.started .exit_code .cancelled .reenqueue-1)
 KILL_USER_PROCESSES=(busctl get-property org.freedesktop.login1 /org/freedesktop/login1
                      org.freedesktop.login1.Manager KillUserProcesses)
 
@@ -342,9 +359,24 @@ slot_scan() {
     printf 'done %s\n' "$NBLOCK"
 }
 
+# rows_holding FILE SOCKET — step 3's row check over FILE, a `tsp -l` listing of SOCKET: a row that
+# holds the job dir as a whole token refuses. A re-enqueue (o25.4) lets one through only when it is
+# our wrapper's row for this job in state `finished`; any other state, or a row it cannot read as
+# ours, refuses. Uses main's `job` and `mode`.
+rows_holding() {
+    local line
+    while IFS= read -r line; do
+        [[ " $line " == *" $job "* ]] || continue
+        if [[ $mode == reenqueue ]] && row_fields "$line" && [[ $RW_JOB == "$job" && $RW_STATE == finished ]]; then
+            continue
+        fi
+        refuse "row: a tsp row on $2 already holds $job: $line"
+    done <"$1"
+}
+
 main() {
-    local a job root sock mask orca wrapper wsha id name sha rc i n line content lock slot_rows
-    local -a lines files_found recs
+    local a job root sock mask orca wrapper wsha id name sha rc i n line content lock slot_rows mode=submit t_sha
+    local -a lines files_found recs markers
     local -A expected=() found=() nonregular=() hashed=()
     local -a missing=() extra=() differing=() paths=()
 
@@ -354,7 +386,13 @@ main() {
         emit_text arg "$a"
     done
 
-    # Step 0: the values' form, before the lock (nothing here touches the server).
+    # Step 0: the values' form, before the lock (nothing here touches the server). A first value
+    # `reenqueue` selects the re-enqueue (o25.4); the rest are the submit's values.
+    if (( $# > 0 )) && [[ $1 == reenqueue ]]; then
+        mode=reenqueue
+        shift
+    fi
+    t_sha=$T_SHA
     (( $# >= 6 && ($# - 6) % 2 == 0 )) || refuse "values: expected 6 plus 2 per file, got $#"
     job=$1 root=$2 sock=$3 mask=$4 orca=$5 wsha=$6
     shift 6
@@ -427,8 +465,10 @@ main() {
     { IFS=' ' read -r line _ || true; } <"$T/wsha"
     (( rc == 0 )) && [[ $line == "$wsha" ]] || refuse "wrapper: the sha256 of $wrapper is not the one its name carries"
 
-    # Step 3: no marker, and no row of the slot daemon holding this job dir.
-    for name in "${MARKERS[@]}"; do
+    # Step 3: no marker, and no row of the slot daemon holding this job dir (a re-enqueue: no
+    # queued or running row, on the slot socket and on .enqueued's).
+    if [[ $mode == reenqueue ]]; then markers=("${REENQUEUE_MARKERS[@]}"); else markers=("${MARKERS[@]}"); fi
+    for name in "${markers[@]}"; do
         path_exists "$job/$name"
         case $? in
             0) refuse "marker: $job/$name exists" ;;
@@ -443,14 +483,35 @@ main() {
            TS_SOCKET=$sock timeout -k "$T_KILL" "$T_TSP_LIST" tsp -l </dev/null >"$slot_rows" 2>"$T/slot_rows.err" 9>&-
            rc=$?
            (( rc == 0 )) || slot_check_error "slot socket: tsp -l on $sock exited $rc $(first_line "$T/slot_rows.err")"
-           while IFS= read -r line; do
-               [[ " $line " == *" $job "* ]] && refuse "row: a tsp row on $sock already holds $job: $line"
-           done <"$slot_rows" ;;
+           rows_holding "$slot_rows" "$sock" ;;
         1) slot_rows=- ;;
         *) slot_check_error "$R_ERR" ;;
     esac
+    if [[ $mode == reenqueue ]]; then
+        # .enqueued's socket, only when it is not the slot socket (o25.14.5: then the upload's
+        # sha256sum bound shrinks, so the holder stays under 40 s).
+        read_raw "$job/.enqueued" "$T/enqueued"
+        case $? in
+            0) enqueued_parse_file "$T/enqueued" || refuse "marker: $job/.enqueued does not parse ($E_WHY)" ;;
+            1) E_SOCKET=$sock ;;
+            *) refuse "marker: $R_ERR" ;;
+        esac
+        if [[ $E_SOCKET != "$sock" ]]; then
+            t_sha=$T_SHA_REENQUEUE
+            net_unix_listed "$T/net_unix" "$T/net_unix.enqueued" "$E_SOCKET"
+            case $? in
+                0) TS_SOCKET=$E_SOCKET timeout -k "$T_KILL" "$T_TSP_LIST" tsp -l </dev/null >"$T/enqueued_rows" 2>"$T/enqueued_rows.err" 9>&-
+                   rc=$?
+                   (( rc == 0 )) || slot_check_error ".enqueued socket: tsp -l on $E_SOCKET exited $rc $(first_line "$T/enqueued_rows.err")"
+                   rows_holding "$T/enqueued_rows" "$E_SOCKET" ;;
+                1) ;;
+                *) slot_check_error "$R_ERR" ;;
+            esac
+        fi
+    fi
 
-    # Step 4: the upload post-condition (rule #9) — the set of files and every sha256.
+    # Step 4: the upload post-condition (rule #9) — the set of files and every sha256. A
+    # re-enqueue leaves out the submitted job's own markers and its claim (o25.14.1).
     timeout -k "$T_KILL" "$T_FIND" find "$job" -mindepth 1 -path "$job/.tsp-out" -prune -o -printf '%y %P\0' \
         </dev/null >"$T/files" 2>"$T/files.err" 9>&-
     rc=$?
@@ -458,6 +519,13 @@ main() {
     (( rc == 0 )) || refuse "upload: listing $job failed (rc $rc) $(first_line "$T/files.err")"
     mapfile -d '' -t recs <"$T/files"
     for line in "${recs[@]}"; do
+        if [[ $mode == reenqueue ]]; then
+            case ${line#* } in
+                .submitting | .enqueued) continue ;;
+                .reenqueue-*/*) ;;
+                .reenqueue-*) continue ;;
+            esac
+        fi
         case ${line%% *} in
             d) ;;
             f) found[${line#* }]=1 ;;
@@ -477,7 +545,7 @@ main() {
         [[ -n ${expected[$name]+set} ]] || extra+=("$name")
     done
     if (( ${#paths[@]} > 0 )); then
-        timeout -k "$T_KILL" "$T_SHA" sha256sum -- "${paths[@]}" </dev/null >"$T/sha" 2>"$T/sha.err" 9>&-
+        timeout -k "$T_KILL" "$t_sha" sha256sum -- "${paths[@]}" </dev/null >"$T/sha" 2>"$T/sha.err" 9>&-
         rc=$?
         timed_out "$rc" "sha256sum of the upload"
         (( rc == 0 )) || refuse "upload: sha256sum exited $rc $(first_line "$T/sha.err")"
@@ -515,8 +583,10 @@ slot_scan "$@"' slot-scan "$job" "$sock" "$mask" "$slot_rows" "$T/blockers" </de
     mkdir -p -- "$job/.tsp-out" </dev/null 2>"$T/mkdir.err" 9>&-
     [[ -d $job/.tsp-out && ! -L $job/.tsp-out ]] || refuse "tsp-out: cannot create $job/.tsp-out $(first_line "$T/mkdir.err")"
 
-    # Step 7: the claim — no-clobber, so of two claimers exactly one wins (probe 5.3c).
-    ln -sT x "$job/.submitting" </dev/null 2>"$T/claim.err" 9>&- \
+    # Step 7: the claim — no-clobber, so of two claimers exactly one wins (probe 5.3c). A
+    # re-enqueue claims .reenqueue-1: the server's re-enqueue counter (o25.3).
+    if [[ $mode == reenqueue ]]; then name=.reenqueue-1; else name=.submitting; fi
+    ln -sT x "$job/$name" </dev/null 2>"$T/claim.err" 9>&- \
         || refuse "claim: $(first_line "$T/claim.err")"
 
     # Step 8: enqueue. From here on the claim stays, whatever happens.

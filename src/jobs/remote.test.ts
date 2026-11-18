@@ -66,6 +66,8 @@ function record(over: Partial<RemoteState> = {}): RemoteState {
     cancel_sends: { failures: 0, stopped: false },
     sweeps: { count: 0, stopped: false },
     pending_submit: null,
+    undecided: null,
+    re_enqueue_waiting: null,
     ...over,
   };
 }
@@ -133,6 +135,8 @@ describe("remoteView (o19.2, o19.7)", () => {
       kind: "live",
       text: { body: "Fetching the results failed 3 times in a row; automatic fetches stopped", fromLastCheck: true },
       waiting: null,
+      reEnqueueWaiting: null,
+      undecided: null,
       badges: [{ kind: "checking", label: "Checking the server…", tone: "muted" }],
       actions: [CANCEL],
     });
@@ -151,7 +155,7 @@ describe("remoteView (o19.2, o19.7)", () => {
   it("shows a decided outcome with the row's text, not from the last check, and only Cancel", () => {
     const v = remoteView(
       job({ status: "running", error_message: "row text" }),
-      record({ known: { kind: "shown", detail: { outcome: "lost", orphans: [] } } }),
+      record({ known: { kind: "shown", detail: { outcome: "lost", orphans: [], stale_boot: false } } }),
     );
     expect(v).toMatchObject({ kind: "live", text: { body: "row text", fromLastCheck: false }, actions: [CANCEL] });
     if (v.kind === "live") expect(v.badges).toEqual([{ kind: "outcome", outcome: "lost", stale: false, label: "Server: lost", tone: "err" }]);
@@ -180,6 +184,8 @@ describe("remoteView (o19.2, o19.7)", () => {
       kind: "live",
       text: { body: "old words", fromLastCheck: true },
       waiting: null,
+      reEnqueueWaiting: null,
+      undecided: null,
       badges: [{ kind: "check_error", answered: false, label: "Server unreachable: ssh: no route to host", tone: "warn" }],
       actions: [CANCEL],
     });
@@ -196,6 +202,8 @@ describe("remoteView (o19.2, o19.7)", () => {
       kind: "live",
       text: { body: "Fetching the results failed (attempt 2 of 3)", fromLastCheck: false },
       waiting: null,
+      reEnqueueWaiting: null,
+      undecided: null,
       badges: [{ kind: "fetching", strikes: 2, stale: false, label: "Fetching results (2 failed attempts)", tone: "warn" }],
       actions: [CANCEL],
     });

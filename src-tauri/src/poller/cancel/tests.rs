@@ -25,7 +25,7 @@ use crate::remote::wire::HEADER as SNAPSHOT_HEADER;
 use crate::ssh_backend::resubmit_remote;
 use crate::ssh_backend::tests::{
     echo, exited, expected_coords, install_ok, label_reply, mkjob_ok, ok, prepare_fresh, prepare_ready, prepare_symlinked_bin,
-    ran, rec, snapshot, Reply, CLEAN_TAIL, ENQUEUED, JOB, NOT_ON_SERVER,
+    ran, rec, snapshot, snapshot_with_row, Reply, CLEAN_TAIL, ENQUEUED, JOB, NOT_ON_SERVER,
 };
 
 // ---- the fake server -------------------------------------------------------------------------
@@ -140,7 +140,7 @@ pub(in crate::poller) fn cancelling_session(members: usize) -> Vec<u8> {
     let session: String = (0..members).map(|i| format!("member {}\n{}", 70001 + i, rec("cwd", &coords.job_dir))).collect();
     format!(
         "{SNAPSHOT_HEADER}\n{}{}proc collected\nwrapper_stat -\nwrapper_cmdline -\nsid_stat -\nmembers {members}\n{session}\
-         sockets 1\n{}{}nodaemon\nexit_code -\ncancelled yes\ntail -\n{}end\n",
+         reenqueue_claim no\nsockets 1\n{}{}nodaemon\nexit_code -\ncancelled yes\ntail -\n{}end\n",
         rec("boot_id", &format!("{BOOT}\n")),
         rec("started", &started),
         rec("socket", &coords.socket),
@@ -490,7 +490,7 @@ fn a_cancel_already_on_the_server_is_delivered_without_a_re_send() {
     }
     for outcome in [
         Outcome::Failed { reason: FailReason::CorruptStarted { detail: String::new(), cancelled: false } },
-        Outcome::Indeterminate,
+        Outcome::Indeterminate { why: String::new() },
         Outcome::Running,
         Outcome::Completed { late_cancel: false },
     ] {
@@ -730,12 +730,13 @@ fn retry_is_refused_while_a_cancel_is_pending() {
 fn a_status_steps_last_call_writes_the_contact() {
     let r = Remote::new();
     let away = Cell::new(true);
-    let base = server(&r, vec![waiting()]);
+    // A verdict that stays live (row 9): `ReEnqueue` acts since o25.4.
+    let base = server(&r, vec![snapshot_with_row("queued")]);
     let fake = Fake::new(&r, |call, values| if away.get() { timeout() } else { base(call, values) });
     assert!(matches!(r.poller(&fake).status_step(JOB).unwrap(), StatusStep::CheckFailed(_)));
     assert!(matches!(record(&r).unwrap().last_contact, Some(Contact::Failed(why)) if why.contains("did not finish")));
     away.set(false);
-    assert_eq!(r.poller(&fake).status_step(JOB).unwrap(), StatusStep::Shown(Outcome::ReEnqueue));
+    assert_eq!(r.poller(&fake).status_step(JOB).unwrap(), StatusStep::Shown(Outcome::Queued));
     assert_eq!(record(&r).unwrap().last_contact, Some(Contact::Ok));
 }
 
@@ -746,7 +747,7 @@ fn a_status_steps_last_call_writes_the_contact() {
 fn a_log_poll_never_writes_the_last_contact() {
     let r = Remote::new();
     let polls_fail = Cell::new(false);
-    let base = server(&r, vec![waiting()]);
+    let base = server(&r, vec![snapshot_with_row("queued")]);
     let fake = Fake::new(&r, |call, values| match call {
         PollLog if polls_fail.get() => timeout(),
         PollLog => log_reply(values, b"line\n", 5),
@@ -853,10 +854,10 @@ fn a_stopped_delivery_that_sees_lost_shows_lost() {
     request_and_mark(&r);
     stop(&r);
     let fake = Fake::new(&r, server(&r, vec![lost()]));
-    assert_eq!(deliver(&r, &fake), stopped_seeing(Outcome::Lost { orphans: vec![] }));
+    assert_eq!(deliver(&r, &fake), stopped_seeing(Outcome::Lost { orphans: vec![], stale_boot: true }));
     assert_eq!(fake.calls(), [Prepare, Collect]);
     let state = record(&r).unwrap();
-    assert_eq!(state.known, Some(Known::Shown(Outcome::Lost { orphans: vec![] })));
+    assert_eq!(state.known, Some(Known::Shown(Outcome::Lost { orphans: vec![], stale_boot: true })));
     assert!(state.cancel_sends.stopped);
     let (requested, sent) = pending_cancel(&r);
     assert!(requested.is_some() && sent.is_some(), "not delivered: kept");
@@ -892,10 +893,10 @@ fn a_stopped_delivery_installs_nothing() {
 /// The wire shape `src/types.ts` mirrors for the stopped step (o22.12.2).
 #[test]
 fn the_cancel_stopped_wire_shape() {
-    let lost = StatusStep::CancelStopped { seen: Some(Seen::Outcome(Outcome::Lost { orphans: vec![] })), unready: None };
+    let lost = StatusStep::CancelStopped { seen: Some(Seen::Outcome(Outcome::Lost { orphans: vec![], stale_boot: true })), unready: None };
     assert_eq!(
         serde_json::to_value(&lost).unwrap(),
-        serde_json::json!({ "step": "cancel_stopped", "detail": { "seen": { "kind": "outcome", "detail": { "outcome": "lost", "orphans": [] } }, "unready": null } })
+        serde_json::json!({ "step": "cancel_stopped", "detail": { "seen": { "kind": "outcome", "detail": { "outcome": "lost", "orphans": [], "stale_boot": true } }, "unready": null } })
     );
     let label = StatusStep::CancelStopped { seen: Some(Seen::Label(crate::remote::submit::Label::NotOnServer)), unready: None };
     assert_eq!(serde_json::to_value(&label).unwrap()["detail"]["seen"], serde_json::json!({ "kind": "label", "detail": "not_on_server" }));

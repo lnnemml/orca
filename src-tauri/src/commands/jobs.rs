@@ -599,7 +599,8 @@ pub(crate) fn clear_job_parse_error_conn(conn: &Connection, id: &str) -> Result<
 }
 
 /// Transition a job to `status`, stamping the matching timestamp:
-/// `started_at` on entering `running`, `completed_at` on `completed`/`failed`.
+/// `started_at` on entering `running`, `completed_at` on a terminal state (`completed`, `failed`,
+/// `cancelled`, `lost`).
 pub(crate) fn update_job_status_conn(conn: &Connection, id: &str, status: &str) -> Result<(), AppError> {
     let status = JobStatus::from_db(status)?;
     let affected = match status {
@@ -607,7 +608,9 @@ pub(crate) fn update_job_status_conn(conn: &Connection, id: &str, status: &str) 
             "UPDATE jobs SET status = ?1, started_at = datetime('now') WHERE id = ?2",
             params![status.as_str(), id],
         )?,
-        JobStatus::Completed | JobStatus::Failed | JobStatus::Cancelled => conn.execute(
+        // `lost` is terminal like the others (o25.1): the poller writes it through
+        // `finalize_job_conn`, and this arm stamps `completed_at` the same way.
+        JobStatus::Completed | JobStatus::Failed | JobStatus::Cancelled | JobStatus::Lost => conn.execute(
             "UPDATE jobs SET status = ?1, completed_at = datetime('now') WHERE id = ?2",
             params![status.as_str(), id],
         )?,
@@ -2110,6 +2113,22 @@ mod tests {
         assert_eq!(reloaded.error_message.as_deref(), Some("boom"));
         assert!(reloaded.completed_at.is_some());
 
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// ADR-024 o25.1, o25.11 (Status): `lost` is terminal — `update_job_status_conn` stamps
+    /// `completed_at` for it like the other terminal states, and a lost row can be deleted like any
+    /// terminal one. NEGATIVE CONTROL (`run_54b_controls.sh status-lost-no-stamp`): the `Lost` arm
+    /// moved to the non-stamping arm → red.
+    #[test]
+    fn a_lost_status_stamps_completed_at_and_the_row_can_be_deleted() {
+        let (conn, dir) = test_db();
+        let job = create_job_conn(&conn, "j", "! HF", None, None).unwrap();
+        update_job_status_conn(&conn, &job.id, "lost").unwrap();
+        let reloaded = get_job_conn(&conn, &job.id).unwrap();
+        assert_eq!(reloaded.status, JobStatus::Lost);
+        assert!(reloaded.completed_at.is_some(), "a terminal state stamps completed_at");
+        assert!(delete_job_conn(&conn, &job.id).is_ok(), "a lost row is deletable like any terminal one");
         std::fs::remove_dir_all(&dir).ok();
     }
 

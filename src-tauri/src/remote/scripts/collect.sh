@@ -2,6 +2,8 @@
 # ---- collect.sh <job_dir> [<socket>...] -----------------------------------------------------
 # Emits one raw-fact snapshot of a job (ADR-024 l) on stdout, in the fixed order
 #   boot_id → .started → wrapper stat + cmdline, SID stat, session members and their cwds →
+#   whether the re-enqueue claim .reenqueue-1 exists (o25.3; read before tsp -l, because the claim
+#   precedes the enqueue) →
 #   per socket (the given slot sockets, then the .enqueued socket): /proc/net/unix evidence and
 #   NoDaemon, or the `tsp -l` rows that mention the job dir, or a tsp error →
 #   .exit_code, .cancelled, last 5 KiB of output.out → .started again → end
@@ -95,7 +97,7 @@ collect_main() {
     local job_kind sock boot_rc started_rc current proc=skipped
     local -a sockets=()
     export LC_ALL=C
-    printf 'orcastudio-snapshot 1\n'
+    printf 'orcastudio-snapshot 2\n'
     (( $# >= 1 )) || die "usage: collect.sh <job_dir> [<socket>...]"
     JOB=$1
     shift
@@ -132,6 +134,16 @@ collect_main() {
     fi
     printf 'proc %s\n' "$proc"
     [[ $proc == collected ]] && collect_proc
+
+    # The re-enqueue claim (o25.3): the only claim the app ever makes is .reenqueue-1 (a dangling
+    # symlink, so path_exists, which does not follow it). Absent = no claim; a read error ends the
+    # snapshot, never "no claim".
+    path_exists "$JOB/.reenqueue-1"
+    case $? in
+        0) printf 'reenqueue_claim yes\n' ;;
+        1) printf 'reenqueue_claim no\n' ;;
+        *) die "$R_ERR" ;;
+    esac
 
     # Sockets: the slot sockets, then the .enqueued one if it is not among them.
     read_raw "$JOB/.enqueued" "$T/enqueued"

@@ -36,8 +36,10 @@ use crate::models::server_profile::{validate_host, InvalidProfile};
 /// The rsync client, found on `PATH` (ADR-005: system tools).
 pub const RSYNC_PROGRAM: &str = "rsync";
 
-/// The job markers (ADR-024 l, o item 3.3.3). All of them come down with the results.
-pub const MARKERS: &[&str] = &[".exit_code", ".started", ".enqueued", ".cancelled", ".submitting"];
+/// The job markers (ADR-024 l, o item 3.3.3) and the re-enqueue claim `.reenqueue-1` (o25.2–3: it
+/// tells a second never-start from a re-enqueue that never reached the queue). All of them come
+/// down with the results, and the server's listing lists them.
+pub const MARKERS: &[&str] = &[".exit_code", ".started", ".enqueued", ".cancelled", ".submitting", ".reenqueue-1"];
 
 /// The wrapper's stderr, written next to `output.out`.
 pub const STDERR_LOG: &str = "stderr.log";
@@ -553,10 +555,10 @@ mod tests {
         ("*.finalensemble.xyz", &["input.finalensemble.xyz"]),
     ];
 
-    /// Selected for the download only, never by the curated export. `.submitting` is a dangling
-    /// symlink, as the submit's claim makes it.
+    /// Selected for the download only, never by the curated export. `.submitting` and
+    /// `.reenqueue-1` are dangling symlinks, as the submit's and the re-enqueue's claims make them.
     const DOWNLOAD_ONLY: &[&str] =
-        &["stderr.log", ".started", ".enqueued", ".cancelled", ".submitting", ".tsp-out/ts-out.AbC"];
+        &["stderr.log", ".started", ".enqueued", ".cancelled", ".submitting", ".reenqueue-1", ".tsp-out/ts-out.AbC"];
 
     const GBW: &str = "input.gbw";
 
@@ -606,7 +608,7 @@ mod tests {
         for path in all_fixture_paths() {
             let full = dir.join(path);
             std::fs::create_dir_all(full.parent().unwrap()).unwrap();
-            if path == ".submitting" {
+            if path == ".submitting" || path == ".reenqueue-1" {
                 std::os::unix::fs::symlink("x", &full).unwrap();
             } else {
                 std::fs::write(&full, path).unwrap();

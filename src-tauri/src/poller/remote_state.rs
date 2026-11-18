@@ -37,7 +37,8 @@ use std::sync::{Mutex, MutexGuard};
 use serde::Serialize;
 
 use super::pending::{PendingSubmit, Recheck};
-use super::plan::{PollerMemory, MAX_CANCEL_FAILURES, MAX_FETCH_STRIKES, MAX_SWEEPS_WITHOUT_PROGRESS};
+use super::plan::{PollerMemory, MAX_CANCEL_FAILURES, MAX_FETCH_STRIKES, MAX_SWEEPS_WITHOUT_PROGRESS, UNDECIDED_NOTICE_AT};
+use super::reenqueue::ReEnqueueWaiting;
 use super::{is_fetching, shown_message, PollerSink, Seen, StatusStep};
 use crate::in_flight::InFlightGuard;
 use crate::remote::classify::Outcome;
@@ -138,14 +139,40 @@ impl Sweeps {
     }
 }
 
+/// The `Indeterminate` run as the view sees it (ADR-024 o25.6): present from the
+/// [`UNDECIDED_NOTICE_AT`]-th consecutive pass — `{ "passes": 3, "notice": "…" }` — re-read from
+/// `PollerMemory` on every apply. Not `check_error`, which stays the per-step error.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Undecided {
+    pub passes: u32,
+    pub notice: String,
+}
+
+impl Undecided {
+    /// From the memory's run; `None` below the notice's pass.
+    pub fn from_run(passes: u32, why: Option<&str>) -> Option<Undecided> {
+        (passes >= UNDECIDED_NOTICE_AT).then(|| Undecided {
+            passes,
+            notice: format!(
+                "The server's state of this job could not be decided {passes} times in a row: {}",
+                why.unwrap_or("no reason was given")
+            ),
+        })
+    }
+}
+
 /// The bounds a record shows, read from `PollerMemory` at the apply.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Bounds {
     pub fetch: FetchState,
     pub cancel: CancelSends,
     pub sweeps: Sweeps,
     /// A pending submit's refusals this launch (o23.4).
     pub pending_refusals: u32,
+    /// The `Indeterminate` run (o25.6).
+    pub undecided: Option<Undecided>,
+    /// A waiting re-enqueue (o25.4).
+    pub re_enqueue_waiting: Option<ReEnqueueWaiting>,
 }
 
 impl Bounds {
@@ -156,6 +183,8 @@ impl Bounds {
             cancel: CancelSends::from_failures(m.cancel_failures),
             sweeps: Sweeps::from_count(m.sweeps_without_progress),
             pending_refusals: m.pending_refusals,
+            undecided: Undecided::from_run(m.undecided_passes, m.undecided_why.as_deref()),
+            re_enqueue_waiting: ReEnqueueWaiting::from_memory(m.reenqueue_waits, m.reenqueue_wait.as_ref()),
         }
     }
 }
@@ -179,6 +208,11 @@ pub struct RemoteState {
     /// A pending submit as the last re-check saw it (o23.10); `None`: no re-check has shown one this
     /// launch (the row's `submit_pending_since` is the truth — this carries the why).
     pub pending_submit: Option<PendingSubmit>,
+    /// The `Indeterminate` run from its 3rd consecutive pass (o25.6); `None` before it.
+    pub undecided: Option<Undecided>,
+    /// A re-enqueue that waits (o25.4, o25.14.3); `None` when none waits. Its view gate is the shown
+    /// `re_enqueue` outcome (`known`), never `pending_submit`.
+    pub re_enqueue_waiting: Option<ReEnqueueWaiting>,
 }
 
 /// What `remote_job_state` returns: the job's record (`None`: no record) and the sequence's
@@ -217,7 +251,7 @@ pub enum Change {
 /// delivered cancel and an ended-first write NULL the flag; an ordinary step runs only without one).
 pub fn next(old: Option<&RemoteState>, step: &StatusStep, fetch: FetchState, contact: Option<&Contact>) -> Change {
     let mut state = old.cloned().unwrap_or_default();
-    let undecided = || shown_message(&Outcome::Indeterminate).map(CheckError::answered);
+    let undecided = |outcome: &Outcome| shown_message(outcome).map(CheckError::answered);
     let last_wait = || old.and_then(|o| o.pending_submit.as_ref()).and_then(|p| p.last.clone());
     if !matches!(step, StatusStep::CheckFailed(_) | StatusStep::CancelNotSent(_) | StatusStep::CancelStopped { .. }) {
         state.pending_submit = None;
@@ -229,7 +263,7 @@ pub fn next(old: Option<&RemoteState>, step: &StatusStep, fetch: FetchState, con
         }
         // "Could not be decided on this check" is a check error, not a new state (Anton, LOW-2):
         // what was last seen stays. The server answered: it is the answer that is undecidable.
-        StatusStep::Shown(Outcome::Indeterminate) => state.check_error = undecided(),
+        StatusStep::Shown(outcome @ Outcome::Indeterminate { .. }) => state.check_error = undecided(outcome),
         StatusStep::Shown(outcome) => {
             state.known = Some(Known::Shown(outcome.clone()));
             state.check_error = None;
@@ -251,7 +285,9 @@ pub fn next(old: Option<&RemoteState>, step: &StatusStep, fetch: FetchState, con
             state.known = Some(Known::Labelled(*label));
             state.check_error = None;
         }
-        StatusStep::CancelStopped { seen: Some(Seen::Outcome(Outcome::Indeterminate)), .. } => state.check_error = undecided(),
+        StatusStep::CancelStopped { seen: Some(Seen::Outcome(outcome @ Outcome::Indeterminate { .. })), .. } => {
+            state.check_error = undecided(outcome)
+        }
         StatusStep::CancelStopped { seen: Some(Seen::Outcome(outcome)), .. } => {
             state.known = Some(if is_fetching(outcome) { Known::Fetching } else { Known::Shown(outcome.clone()) });
             state.check_error = None;
@@ -265,7 +301,7 @@ pub fn next(old: Option<&RemoteState>, step: &StatusStep, fetch: FetchState, con
             state.check_error = None;
         }
         // Delivered: the post-send verdict, read as an ordinary step reads it.
-        StatusStep::CancelDelivered(Outcome::Indeterminate) => state.check_error = undecided(),
+        StatusStep::CancelDelivered(outcome @ Outcome::Indeterminate { .. }) => state.check_error = undecided(outcome),
         StatusStep::CancelDelivered(outcome) => {
             state.known = Some(if is_fetching(outcome) { Known::Fetching } else { Known::Shown(outcome.clone()) });
             state.check_error = None;
@@ -298,6 +334,29 @@ pub fn next(old: Option<&RemoteState>, step: &StatusStep, fetch: FetchState, con
                 state.pending_submit = Some(PendingSubmit::new(since, last_wait()));
             }
         },
+        // A `Lost` job's orphan sweep (o25.2): what it classified, when it could, and its error.
+        StatusStep::LostSwept { outcome, error } => {
+            if let Some(outcome) = outcome {
+                state.known = Some(Known::Shown(outcome.clone()));
+            }
+            state.check_error = error.clone();
+        }
+        // The re-enqueue (o25.4). Enqueued: the server holds a new queue entry, which the next
+        // ordinary step names — `known` cleared as after an enqueued re-check. Waiting or refused:
+        // the verdict stays `ReEnqueue` (the waiting view's gate, o25.14.6); a refusal is the step's
+        // error, answered.
+        StatusStep::ReEnqueued { .. } => {
+            state.known = None;
+            state.check_error = None;
+        }
+        StatusStep::ReEnqueueWaiting(_) => {
+            state.known = Some(Known::Shown(Outcome::ReEnqueue));
+            state.check_error = None;
+        }
+        StatusStep::ReEnqueueRefused { why, .. } => {
+            state.known = Some(Known::Shown(Outcome::ReEnqueue));
+            state.check_error = Some(CheckError::answered(why.clone()));
+        }
         StatusStep::Busy | StatusStep::RowChanged => return Change::Nothing,
         StatusStep::NotLive | StatusStep::Cancelled | StatusStep::Finalised { .. } => return Change::Remove,
     }
@@ -310,6 +369,10 @@ pub fn next(old: Option<&RemoteState>, step: &StatusStep, fetch: FetchState, con
 /// made a call, `contact` (no call keeps
 /// the last one); a step that changes nothing else (`RowChanged` after a call) still updates an
 /// existing record's `last_contact` — every guarded call writes it — but creates none.
+///
+/// The `Indeterminate` run and a waiting re-enqueue (o25.4, o25.6) are re-read from memory like the
+/// bounds: the step's effect on them is applied to memory before the record is ([`super::step_effect`]),
+/// so the record never keeps a run that memory has ended.
 pub fn next_with(old: Option<&RemoteState>, step: &StatusStep, bounds: Bounds, contact: Option<Contact>) -> Change {
     match next(old, step, bounds.fetch, contact.as_ref()) {
         Change::Remove => Change::Remove,
@@ -317,6 +380,8 @@ pub fn next_with(old: Option<&RemoteState>, step: &StatusStep, bounds: Bounds, c
             state.cancel_sends = bounds.cancel;
             state.sweeps = bounds.sweeps;
             state.pending_submit = state.pending_submit.map(|p| p.with_refusals(bounds.pending_refusals));
+            state.undecided = bounds.undecided;
+            state.re_enqueue_waiting = bounds.re_enqueue_waiting;
             if let Some(contact) = contact {
                 state.last_contact = Some(contact);
             }
@@ -505,9 +570,14 @@ mod tests {
         Some(CheckError::unanswered(text))
     }
 
+    /// An `Indeterminate` verdict, with a why (o25.6).
+    fn ind() -> Outcome {
+        Outcome::Indeterminate { why: "tsp -l exited 255".into() }
+    }
+
     /// `Indeterminate`'s text, answered (the server answered; its state is what is undecidable).
     fn undecided() -> Option<CheckError> {
-        shown_message(&Outcome::Indeterminate).map(CheckError::answered)
+        shown_message(&ind()).map(CheckError::answered)
     }
 
     fn set(state: RemoteState) -> Change {
@@ -528,12 +598,12 @@ mod tests {
             ),
             (StatusStep::Shown(Outcome::Running), set(with(running.clone(), None)), set(with(running, None))),
             (
-                StatusStep::Shown(Outcome::Lost { orphans: vec![7] }),
-                set(with(Some(Known::Shown(Outcome::Lost { orphans: vec![7] })), None)),
-                set(with(Some(Known::Shown(Outcome::Lost { orphans: vec![7] })), None)),
+                StatusStep::Shown(Outcome::Lost { orphans: vec![7], stale_boot: false }),
+                set(with(Some(Known::Shown(Outcome::Lost { orphans: vec![7], stale_boot: false })), None)),
+                set(with(Some(Known::Shown(Outcome::Lost { orphans: vec![7], stale_boot: false })), None)),
             ),
             (
-                StatusStep::Shown(Outcome::Indeterminate),
+                StatusStep::Shown(ind()),
                 set(RemoteState { check_error: indeterminate.clone(), ..old.clone() }),
                 set(RemoteState { check_error: indeterminate, ..RemoteState::default() }),
             ),
@@ -585,7 +655,7 @@ mod tests {
     #[test]
     fn indeterminate_keeps_what_was_seen_and_sets_the_check_error() {
         let running = with(Some(Known::Shown(Outcome::Running)), None);
-        let Change::Set(after) = next(Some(&running), &StatusStep::Shown(Outcome::Indeterminate), NO_STRIKES, None) else {
+        let Change::Set(after) = next(Some(&running), &StatusStep::Shown(ind()), NO_STRIKES, None) else {
             panic!("Indeterminate sets the check error")
         };
         assert_eq!(after.known, Some(Known::Shown(Outcome::Running)));
@@ -684,6 +754,13 @@ mod tests {
             cancel_sends: CancelSends::from_failures(1),
             sweeps: Sweeps::from_count(3),
             pending_submit: None,
+            undecided: Some(Undecided { passes: 3, notice: "n".into() }),
+            re_enqueue_waiting: Some(ReEnqueueWaiting {
+                refusals: 3,
+                notified: true,
+                notice: Some("w".into()),
+                last: crate::poller::reenqueue::ReEnqueueWait::Unverified("u".into()),
+            }),
         };
         assert_eq!(
             serde_json::to_value(RemoteStateRead { seq: 7, state: Some(state) }).unwrap(),
@@ -696,14 +773,16 @@ mod tests {
                     "last_contact": { "kind": "failed", "detail": "ssh: timeout" },
                     "cancel_sends": { "failures": 1, "stopped": false },
                     "sweeps": { "count": 3, "stopped": true },
-                    "pending_submit": null
+                    "pending_submit": null,
+                    "undecided": { "passes": 3, "notice": "n" },
+                    "re_enqueue_waiting": { "refusals": 3, "notified": true, "notice": "w", "last": { "kind": "unverified", "detail": "u" } }
                 }
             })
         );
         assert_eq!(serde_json::to_value(RemoteState::default()).unwrap()["last_contact"], serde_json::Value::Null, "no call yet");
         assert_eq!(
-            serde_json::to_value(Known::Shown(Outcome::Lost { orphans: vec![4] })).unwrap(),
-            serde_json::json!({ "kind": "shown", "detail": { "outcome": "lost", "orphans": [4] } })
+            serde_json::to_value(Known::Shown(Outcome::Lost { orphans: vec![4], stale_boot: false })).unwrap(),
+            serde_json::json!({ "kind": "shown", "detail": { "outcome": "lost", "orphans": [4], "stale_boot": false } })
         );
         assert_eq!(serde_json::to_value(Known::Fetching).unwrap(), serde_json::json!({ "kind": "fetching" }));
         assert_eq!(serde_json::to_value(RemoteStateRead { seq: 0, state: None }).unwrap(), serde_json::json!({ "seq": 0, "state": null }));
@@ -712,7 +791,14 @@ mod tests {
     // ---- o22: the delivery's steps, the last contact, the cancel bound, a retry's outcome ----------
 
     fn bounds(strikes: u32, failures: u32) -> Bounds {
-        Bounds { fetch: FetchState::from_strikes(strikes), cancel: CancelSends::from_failures(failures), sweeps: Sweeps::default(), pending_refusals: 0 }
+        Bounds {
+            fetch: FetchState::from_strikes(strikes),
+            cancel: CancelSends::from_failures(failures),
+            sweeps: Sweeps::default(),
+            pending_refusals: 0,
+            undecided: None,
+            re_enqueue_waiting: None,
+        }
     }
 
     /// o22.4: what each delivery step does to the record — from a record that holds a label and a
@@ -744,12 +830,12 @@ mod tests {
                 set(with(Some(Known::Labelled(Label::SubmitInterrupted)), None)),
             ),
             (
-                StatusStep::CancelStopped { seen: Some(Seen::Outcome(Outcome::Lost { orphans: vec![] })), unready: None },
-                set(with(Some(Known::Shown(Outcome::Lost { orphans: vec![] })), None)),
-                set(with(Some(Known::Shown(Outcome::Lost { orphans: vec![] })), None)),
+                StatusStep::CancelStopped { seen: Some(Seen::Outcome(Outcome::Lost { orphans: vec![], stale_boot: true })), unready: None },
+                set(with(Some(Known::Shown(Outcome::Lost { orphans: vec![], stale_boot: true })), None)),
+                set(with(Some(Known::Shown(Outcome::Lost { orphans: vec![], stale_boot: true })), None)),
             ),
             (
-                StatusStep::CancelStopped { seen: Some(Seen::Outcome(Outcome::Indeterminate)), unready: None },
+                StatusStep::CancelStopped { seen: Some(Seen::Outcome(ind())), unready: None },
                 set(RemoteState { check_error: undecided(), ..old.clone() }),
                 set(with(None, undecided())),
             ),
@@ -770,7 +856,7 @@ mod tests {
                 set(with(Some(Known::Shown(Outcome::Cancelled { started: true })), None)),
             ),
             (
-                StatusStep::CancelDelivered(Outcome::Indeterminate),
+                StatusStep::CancelDelivered(ind()),
                 set(RemoteState { check_error: undecided(), ..old.clone() }),
                 set(with(None, undecided())),
             ),
@@ -859,11 +945,11 @@ mod tests {
     #[test]
     fn every_check_error_site_sets_its_answered_flag() {
         let answered = [
-            StatusStep::Shown(Outcome::Indeterminate),
+            StatusStep::Shown(ind()),
             StatusStep::CancelNotSent("cancel.sh exited 3".into()),
-            StatusStep::CancelStopped { seen: Some(Seen::Outcome(Outcome::Indeterminate)), unready: None },
+            StatusStep::CancelStopped { seen: Some(Seen::Outcome(ind())), unready: None },
             StatusStep::CancelStopped { seen: None, unready: Some("prepare: refused".into()) },
-            StatusStep::CancelDelivered(Outcome::Indeterminate),
+            StatusStep::CancelDelivered(ind()),
         ];
         for step in answered {
             // The contact is the transport's: a site the server answered stays answered whatever it says.

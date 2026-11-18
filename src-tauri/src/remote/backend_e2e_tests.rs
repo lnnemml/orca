@@ -621,7 +621,7 @@ fn cancel_and_collect_run_through_the_trampoline() {
     let collect = RunArgs::new(root, JobScript::Collect, vec![Lab::str(&job).into(), Lab::str(&sock).into()]).unwrap();
     let RunReply::Ran { rc, stdout, .. } = run_reply(&lab, RUN, &collect) else { panic!("collect did not run") };
     assert_eq!(rc, 0);
-    assert!(stdout.starts_with(b"orcastudio-snapshot 1\n"), "the stdout record is the snapshot, verbatim");
+    assert!(stdout.starts_with(b"orcastudio-snapshot 2\n"), "the stdout record is the snapshot, verbatim");
 }
 
 // ---- the poller against the real scripts (unit 5.3 B2) ---------------------------------------
@@ -645,6 +645,8 @@ struct PollerWorld {
     live: crate::poller::live_log::LiveLog,
     remote: crate::poller::remote_state::RemoteStates,
     sink: crate::poller::RecordingSink,
+    /// The poller's clock (o25.15), moved by hand.
+    clock: crate::poller::TestClock,
 }
 
 impl PollerWorld {
@@ -655,6 +657,7 @@ impl PollerWorld {
             live: Default::default(),
             remote: Default::default(),
             sink: Default::default(),
+            clock: crate::poller::TestClock::new(),
         }
     }
 
@@ -669,6 +672,7 @@ impl PollerWorld {
             sink: &self.sink,
             policy: crate::execution_backend::FetchPolicy::SMALL_ONLY,
             data_dir: &laptop.data_dir,
+            clock: &self.clock,
         }
     }
 }
@@ -793,4 +797,167 @@ fn a_copy_that_differs_from_the_real_listing_is_not_finalised() {
     let job = laptop.job("e2e9");
     assert_eq!(job.status, JobStatus::Queued);
     assert!(job.error_message.unwrap().contains("attempt 1 of 3"));
+}
+
+// ---- unit 5.4b: the restart simulations against the real scripts (ADR-024 o25.10) ------------
+
+/// The stub daemon's `tsp -l` for the slot: the P4 header plus `rows`. Emptying it stands in for a
+/// dropped queue (`tsp -K`, a reboot): the daemon still listens, its queue is gone.
+fn set_slot_rows(lab: &Lab, rows: &[String]) {
+    let sock = slot_socket(lab, 0);
+    fs::write(format!("{}.rows", Lab::str(&sock)), super::script_tests::tsp_listing(rows)).unwrap();
+}
+
+/// The job's own row as the stub would list it once finished (a wrapper that crashed before
+/// `.started`): its command is the one the submit enqueued.
+fn finished_row(lab: &Lab, id: &str) -> String {
+    let rows = fs::read_to_string(format!("{}.rows", Lab::str(&slot_socket(lab, 0)))).unwrap();
+    let queued = rows.lines().find(|l| l.contains(Lab::str(&remote_job(lab, id)))).expect("the submit's row").to_string();
+    let command = &queued[queued.find("bash ").expect("the command")..];
+    format!("0    finished   /tmp/ts-out.QG5j6G   1        0.00/0.00/0.00 {command}")
+}
+
+/// o25.10 (simulation): an emptied rows file — with and without a finished row of the job — is a
+/// first never-start: the poller re-enqueues it through the real `submit.sh reenqueue` (the claim
+/// `.reenqueue-1`, a new row, the new `.enqueued`), and the next step reads row 9 `Queued`; a second
+/// empty queue is the second never-start: the evidence (with `.reenqueue-1`) comes down and the row
+/// is written `failed`.
+#[test]
+fn a_dropped_queue_is_re_enqueued_once_and_a_second_drop_fails_the_job_against_the_real_scripts() {
+    use crate::remote::classify::FailReason;
+    for (id, with_finished_row) in [("e2eR1", false), ("e2eR2", true)] {
+        let _serial = serial();
+        let lab = Lab::new();
+        let laptop = Laptop::new(&lab);
+        laptop.draft(id);
+        assert_eq!(laptop.submit(&Loop::new(&lab), id), SubmitOutcome::Enqueued { tsp_id: 0 });
+        let rows = if with_finished_row { vec![finished_row(&lab, id)] } else { Vec::new() };
+        set_slot_rows(&lab, &rows);
+        let remote = remote_job(&lab, id);
+        let sock = slot_socket(&lab, 0);
+
+        let world = PollerWorld::new();
+        let runner = Loop::new(&lab);
+        let step = world.poller(&laptop, &runner).status_step(id).unwrap();
+        assert_eq!(step, StatusStep::ReEnqueued { tsp_id: 1 }, "{id}");
+        assert_eq!(*runner.calls.borrow(), ["label", "run", "prepare", "submit"], "{id}");
+        assert_eq!(fs::read_link(remote.join(".reenqueue-1")).unwrap(), Path::new("x"), "{id}: the claim");
+        assert_eq!(fs::read_to_string(remote.join(".enqueued")).unwrap(), format!("socket={}\nid=1\n", Lab::str(&sock)));
+        assert_eq!(laptop.job(id).status, JobStatus::Queued);
+
+        let runner = Loop::new(&lab);
+        assert_eq!(world.poller(&laptop, &runner).status_step(id).unwrap(), StatusStep::Shown(Outcome::Queued), "{id}: row 9");
+
+        set_slot_rows(&lab, &[]);
+        // The first pass with the claim is not terminal; one 45 s later confirms it (o25.15).
+        let runner = Loop::new(&lab);
+        let never_started = Outcome::Failed { reason: FailReason::WrapperNeverStarted };
+        assert_eq!(world.poller(&laptop, &runner).status_step(id).unwrap(), StatusStep::Shown(never_started), "{id}");
+        assert_eq!(laptop.job(id).status, JobStatus::Queued);
+        world.clock.advance(crate::poller::plan::NEVER_STARTED_CONFIRM);
+        let runner = Loop::new(&lab);
+        let step = world.poller(&laptop, &runner).status_step(id).unwrap();
+        assert_eq!(
+            step,
+            StatusStep::Finalised {
+                outcome: Outcome::Failed { reason: FailReason::WrapperNeverStarted },
+                status: JobStatus::Failed,
+                drain_error: None
+            },
+            "{id}"
+        );
+        assert_eq!(*runner.calls.borrow(), ["label", "run", "rsync", "list"], "{id}: no third attempt");
+        let local = laptop.data_dir.join("jobs").join(id);
+        assert!(local.join(".reenqueue-1").is_symlink(), "{id}: the claim came down as evidence");
+        assert!(laptop.job(id).error_message.unwrap().contains("never started on the server after one re-enqueue"));
+    }
+}
+
+/// o25.10 (simulation) / o25.14.1: a changed core count fails a dropped job at once against the
+/// real scripts — nothing after the collect, no claim on the server, the local dir untouched.
+#[test]
+fn a_changed_core_count_fails_a_dropped_job_at_once_against_the_real_scripts() {
+    let _serial = serial();
+    let lab = Lab::new();
+    let laptop = Laptop::new(&lab);
+    laptop.draft("e2eR3");
+    assert_eq!(laptop.submit(&Loop::new(&lab), "e2eR3"), SubmitOutcome::Enqueued { tsp_id: 0 });
+    set_slot_rows(&lab, &[]);
+    let other = if mask_cpus() > 1 { mask().split('-').next().unwrap().to_string() } else { "0-1".to_string() };
+    laptop.sql(&format!("UPDATE server_profiles SET core_mask = '{other}'"));
+    let local = laptop.data_dir.join("jobs").join("e2eR3");
+    let before = fs::read(local.join("input.inp")).unwrap();
+
+    let world = PollerWorld::new();
+    let runner = Loop::new(&lab);
+    let step = world.poller(&laptop, &runner).status_step("e2eR3").unwrap();
+    assert_eq!(step, StatusStep::Finalised { outcome: Outcome::ReEnqueue, status: JobStatus::Failed, drain_error: None });
+    assert_eq!(*runner.calls.borrow(), ["label", "run"], "no call after the collect");
+    assert_eq!(fs::read(local.join("input.inp")).unwrap(), before, "the local dir is untouched");
+    assert!(fs::symlink_metadata(remote_job(&lab, "e2eR3").join(".reenqueue-1")).is_err(), "no claim");
+    assert!(laptop.job("e2eR3").error_message.unwrap().contains("the core count of the profile changed"));
+}
+
+/// o25.10 (simulation): a `.started` from another boot (the restart) — the real collector skips
+/// `/proc`, the classifier says `Lost { stale_boot }`, the evidence comes down and the row is `lost`.
+#[test]
+fn a_stale_boot_job_is_lost_against_the_real_scripts() {
+    let _serial = serial();
+    let lab = Lab::new();
+    let laptop = Laptop::new(&lab);
+    laptop.draft("e2eL1");
+    assert_eq!(laptop.submit(&Loop::new(&lab), "e2eL1"), SubmitOutcome::Enqueued { tsp_id: 0 });
+    let remote = remote_job(&lab, "e2eL1");
+    fs::write(remote.join(".started"), "pid=4242\npgid=4242\nsid=4242\nboot_id=9b1d0e2f-3a4c-4d5e-8f60-718293a4b5c6\nstarttime=777\nstarted_at=1\n").unwrap();
+    fs::write(remote.join("output.out"), "SCF ITERATIONS\npartial\n").unwrap();
+
+    let world = PollerWorld::new();
+    let runner = Loop::new(&lab);
+    let step = world.poller(&laptop, &runner).status_step("e2eL1").unwrap();
+    assert_eq!(
+        step,
+        StatusStep::Finalised { outcome: Outcome::Lost { orphans: vec![], stale_boot: true }, status: JobStatus::Lost, drain_error: None }
+    );
+    assert_eq!(*runner.calls.borrow(), ["label", "run", "rsync", "list"]);
+    let job = laptop.job("e2eL1");
+    assert_eq!(job.status, JobStatus::Lost);
+    assert!(job.error_message.unwrap().starts_with("Lost: the server restarted while the job ran"));
+    assert_eq!(fs::read_to_string(laptop.data_dir.join("jobs").join("e2eL1").join("output.out")).unwrap(), "SCF ITERATIONS\npartial\n");
+}
+
+/// o25.10 (simulation): a same-boot job whose wrapper is not ours any more (its `.started` names a
+/// live `sleep` session leader sitting in the job dir) is row 8 with that orphan: the poller readies
+/// the server, the real `cancel.sh sweep` ends it, the real collector then sees the session empty,
+/// and the job is written `lost`.
+#[test]
+fn a_same_boot_orphan_is_swept_then_the_job_is_lost_against_the_real_scripts() {
+    let _serial = serial();
+    let mut lab = Lab::new();
+    let laptop = Laptop::new(&lab);
+    laptop.draft("e2eL2");
+    assert_eq!(laptop.submit(&Loop::new(&lab), "e2eL2"), SubmitOutcome::Enqueued { tsp_id: 0 });
+    let remote = remote_job(&lab, "e2eL2");
+    let mut cmd = std::process::Command::new("sleep");
+    cmd.arg("20").current_dir(&remote).stdin(std::process::Stdio::null());
+    super::script_tests::new_session(&mut cmd);
+    let leader = lab.spawn(cmd);
+    let orphan = super::script_tests::tracked(leader);
+    let boot = fs::read_to_string("/proc/sys/kernel/random/boot_id").unwrap();
+    fs::write(
+        remote.join(".started"),
+        format!("pid={leader}\npgid={leader}\nsid={leader}\nboot_id={}\nstarttime={}\nstarted_at=1\n", boot.trim_end(), orphan.starttime),
+    )
+    .unwrap();
+
+    let world = PollerWorld::new();
+    let runner = Loop::new(&lab);
+    let step = world.poller(&laptop, &runner).status_step("e2eL2").unwrap();
+    assert_eq!(
+        step,
+        StatusStep::Finalised { outcome: Outcome::Lost { orphans: vec![], stale_boot: false }, status: JobStatus::Lost, drain_error: None }
+    );
+    assert_eq!(*runner.calls.borrow(), ["label", "run", "prepare", "run", "run", "rsync", "list"], "collect, ready, sweep, collect, evidence");
+    assert!(super::script_tests::is_dead(orphan), "the orphan was swept");
+    assert!(!remote.join(".cancelled").exists(), "a sweep never cancels");
+    assert!(laptop.job("e2eL2").error_message.unwrap().starts_with("Lost: the job's wrapper died without an exit code"));
 }

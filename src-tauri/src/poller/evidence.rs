@@ -1,13 +1,21 @@
-//! **The evidence fetch** of a cancelled job that ran (ADR-024 o22.6, o22.13.5): row 4
-//! `Cancelled { started: true }` and row 1 `CorruptStarted { cancelled: true }`, whichever step saw
-//! them — keyed on the snapshot, never on the path that delivered the cancel.
+//! **The evidence fetch** before a terminal write the server's files must back (ADR-024 o22.6,
+//! o22.13.5, o25.2, o25.5, o25.8), keyed on the snapshot — never on the path that delivered a
+//! cancel:
+//! - row 4 `Cancelled { started: true }` → `cancelled`;
+//! - row 1 `CorruptStarted` → `failed`, with `.cancelled` or without it (o25.8: the wrapper's own
+//!   check makes it unlikely ORCA ran, and without `sid` nothing can be swept);
+//! - row 8 `Lost` once its orphans are swept (or the boot is stale) → `lost` (o25.2);
+//! - row 11's second never-start `Failed { WrapperNeverStarted }` → `failed`, its `.tsp-out/` and
+//!   markers fetched (o25.5).
 //!
 //! 1. the **fetching flag** is set (the live log stops, o16.6);
 //! 2. **`fetch_remote`**: rsync down with the shared filter, then the server's listing must equal
 //!    the local copy, hash for hash;
-//! 3. only then the **terminal write**: row 4 `cancelled` (`mark_cancelled_conn`), row 1 `failed`
-//!    with "processes of the job may survive on the server" through `finalise` (its live-row
-//!    re-check). Both NULL the pending-cancel columns (o22.2);
+//! 3. only then the **terminal write**: row 4 `cancelled` (`mark_cancelled_conn`), row 1 with
+//!    `.cancelled` `failed` with "processes of the job may survive on the server" through `finalise`
+//!    (its live-row re-check); the 5.4b kinds through [`finalise_evidence`], which also says so when a
+//!    cancel recorded during the fetch is dropped by the write (o25.2). All NULL the pending-cancel
+//!    columns (o22.2);
 //! 4. the live view is **drained** from the local copy, then `job:status`.
 //!
 //! **`detect_completion` decides nothing and nothing is parsed**: the files are for the log and file
@@ -24,8 +32,12 @@
 
 use std::path::PathBuf;
 
+use rusqlite::params;
+
 use super::plan::MAX_FETCH_STRIKES;
-use super::{finalise, Poller, StatusStep, Written, LIVE};
+use super::{finalise, live_row, Poller, StatusStep, Written, LIVE};
+use crate::commands::jobs::finalize_job_conn;
+use crate::commands::settings::DbState;
 use crate::error::AppError;
 use crate::models::job::{Job, JobStatus};
 use crate::remote::classify::{FailReason, Outcome};
@@ -36,20 +48,43 @@ use crate::ssh_backend::{fetch_remote, RemoteCoordinates};
 pub(super) enum Evidence {
     /// Row 4 with `.started`: it ran, and nothing of it runs now → `cancelled`.
     Cancelled,
-    /// Row 1 with `.cancelled`: without `sid` the job cannot be swept → `failed`.
-    CorruptStarted { detail: String },
+    /// Row 1: without `sid` the job cannot be swept → `failed`. `cancelled`: a cancel was delivered
+    /// (o22.4.5); without it, the wrapper's own check of `.started` makes it unlikely ORCA ran (o25.8).
+    CorruptStarted { detail: String, cancelled: bool },
+    /// Row 8, its orphans swept or none (o25.2) → `lost`. `survivors`: what 3 sweeps without progress
+    /// left (the evidence is weaker then).
+    Lost { stale_boot: bool, survivors: Vec<u32> },
+    /// Row 11 after the one re-enqueue (o25.5) → `failed`.
+    NeverStarted,
 }
 
+/// The note a terminal write adds when a cancel was recorded while the job was being finalised: the
+/// job had already stopped, so the cancel is moot and the write NULLs its columns (o25.2).
+pub const DROPPED_CANCEL_NOTE: &str = "A pending cancel was dropped: the job had already stopped.";
+
 impl Evidence {
-    /// The evidence verdict `outcome` is, if any. Row 4 without `.started` is not one: nothing ran,
-    /// so nothing is downloaded.
+    /// The evidence verdict `outcome` is, if any — every outcome listed, no wildcard (o25.1). Row 4
+    /// without `.started` is not one: nothing ran, so nothing is downloaded. A `Lost` with orphans is
+    /// not one yet: they are swept first (`lost.rs`).
     pub(super) fn of(outcome: &Outcome) -> Option<Evidence> {
         match outcome {
             Outcome::Cancelled { started: true } => Some(Evidence::Cancelled),
-            Outcome::Failed { reason: FailReason::CorruptStarted { detail, cancelled: true } } => {
-                Some(Evidence::CorruptStarted { detail: detail.clone() })
+            Outcome::Cancelled { started: false } => None,
+            Outcome::Failed { reason: FailReason::CorruptStarted { detail, cancelled } } => {
+                Some(Evidence::CorruptStarted { detail: detail.clone(), cancelled: *cancelled })
             }
-            _ => None,
+            Outcome::Failed { reason: FailReason::WrapperNeverStarted } => Some(Evidence::NeverStarted),
+            Outcome::Failed { reason: FailReason::NonZeroExit { .. } | FailReason::BadExitCode { .. } | FailReason::NoNormalTermination } => None,
+            Outcome::Lost { orphans, stale_boot } if orphans.is_empty() => {
+                Some(Evidence::Lost { stale_boot: *stale_boot, survivors: Vec::new() })
+            }
+            Outcome::Lost { .. } => None,
+            Outcome::Queued
+            | Outcome::Running
+            | Outcome::Completed { .. }
+            | Outcome::Cancelling { .. }
+            | Outcome::Indeterminate { .. }
+            | Outcome::ReEnqueue => None,
         }
     }
 
@@ -61,12 +96,71 @@ impl Evidence {
         };
         match self {
             Evidence::Cancelled => format!("Cancelled: the server confirms .cancelled and nothing of the job runs; {files}."),
-            Evidence::CorruptStarted { detail } => format!(
+            Evidence::CorruptStarted { detail, cancelled: true } => format!(
                 "Failed after the cancel: corrupt .started marker ({detail}); without its sid the job cannot be swept, so \
                  processes of the job may survive on the server; {files}."
             ),
+            Evidence::CorruptStarted { detail, cancelled: false } => format!(
+                "Failed: corrupt .started marker ({detail}); the wrapper checks its own .started before it starts ORCA, so \
+                 ORCA is unlikely to have run, and without its sid nothing of the job can be swept; {files}."
+            ),
+            Evidence::Lost { stale_boot, survivors } => {
+                let cause = if *stale_boot {
+                    "the server restarted while the job ran"
+                } else {
+                    "the job's wrapper died without an exit code"
+                };
+                let survived = if survivors.is_empty() {
+                    String::new()
+                } else {
+                    let pids: Vec<String> = survivors.iter().map(u32::to_string).collect();
+                    format!(
+                        " Processes of the job still ran after 3 sweeps (pid {}); they hold its cores and may have written \
+                         after its files were listed.",
+                        pids.join(", ")
+                    )
+                };
+                format!("Lost: {cause}; {files}.{survived}")
+            }
+            Evidence::NeverStarted => format!(
+                "Failed: the job never started on the server after one re-enqueue (or the re-enqueue did not reach the \
+                 queue); see .tsp-out; {files}."
+            ),
         }
     }
+
+    /// The text of a failed evidence download (a strike below the bound).
+    fn strike_message(&self, strikes: u32, reason: &str) -> String {
+        let whose = match self {
+            Evidence::Cancelled | Evidence::CorruptStarted { cancelled: true, .. } => "the cancelled job's files",
+            Evidence::CorruptStarted { cancelled: false, .. } | Evidence::Lost { .. } | Evidence::NeverStarted => "the job's files",
+        };
+        format!(
+            "Downloading {whose} as evidence failed (attempt {strikes} of {MAX_FETCH_STRIKES}); the next check retries, and \
+             the last attempt ends the job without them: {reason}"
+        )
+    }
+}
+
+/// The terminal write of a 5.4b evidence kind (o25.2, o25.5, o25.8) in **one** locked transaction:
+/// written only if the row is still this live remote job; a cancel recorded since the step's read
+/// (the job had already stopped) is noted in the message — [`DROPPED_CANCEL_NOTE`] — and its columns
+/// are NULLed by `finalize_job_conn` with the pending submit's. `None` when the row changed.
+fn finalise_evidence(db: &DbState, job_id: &str, coords: &RemoteCoordinates, status: JobStatus, message: &str) -> Result<Option<JobStatus>, AppError> {
+    let conn = db.lock()?;
+    let tx = conn.unchecked_transaction()?;
+    if live_row(&tx, job_id, coords)?.is_none() {
+        return Ok(None);
+    }
+    let requested: Option<String> =
+        tx.query_row("SELECT cancel_requested_at FROM jobs WHERE id = ?1", params![job_id], |row| row.get(0))?;
+    let message = match requested {
+        Some(_) => format!("{message} {DROPPED_CANCEL_NOTE}"),
+        None => message.to_string(),
+    };
+    finalize_job_conn(&tx, job_id, status, Some(&message))?;
+    tx.commit()?;
+    Ok(Some(status))
 }
 
 impl Poller<'_> {
@@ -103,7 +197,16 @@ impl Poller<'_> {
                 }
                 StatusStep::Cancelled
             }
-            status => StatusStep::Finalised { outcome, status, drain_error },
+            // Every other status listed (o25.1): `failed` and `lost` are what the evidence kinds write;
+            // the rest are never written here, and would be reported as written.
+            status @ (JobStatus::Failed
+            | JobStatus::Lost
+            | JobStatus::Draft
+            | JobStatus::Queued
+            | JobStatus::Running
+            | JobStatus::Cancelling
+            | JobStatus::Completed
+            | JobStatus::Parsed) => StatusStep::Finalised { outcome, status, drain_error },
         })
     }
 
@@ -121,10 +224,14 @@ impl Poller<'_> {
             Evidence::Cancelled => {
                 Ok(self.cancel_row(&job.id, coords, &LIVE, &message)?.then_some(JobStatus::Cancelled))
             }
-            Evidence::CorruptStarted { .. } => {
+            Evidence::CorruptStarted { cancelled: true, .. } => {
                 let note = self.ended_first_note(&job.id);
                 finalise(self.db, &job.id, coords, JobStatus::Failed, Some(&message), None, None, note)
             }
+            Evidence::CorruptStarted { cancelled: false, .. } | Evidence::NeverStarted => {
+                finalise_evidence(self.db, &job.id, coords, JobStatus::Failed, &message)
+            }
+            Evidence::Lost { .. } => finalise_evidence(self.db, &job.id, coords, JobStatus::Lost, &message),
         }
     }
 
@@ -150,13 +257,17 @@ impl Poller<'_> {
             self.sink.status(&job.id, status);
             return Ok(match status {
                 JobStatus::Cancelled => StatusStep::Cancelled,
-                status => StatusStep::Finalised { outcome, status, drain_error: None },
+                status @ (JobStatus::Failed
+                | JobStatus::Lost
+                | JobStatus::Draft
+                | JobStatus::Queued
+                | JobStatus::Running
+                | JobStatus::Cancelling
+                | JobStatus::Completed
+                | JobStatus::Parsed) => StatusStep::Finalised { outcome, status, drain_error: None },
             });
         }
-        let message = format!(
-            "Downloading the cancelled job's files as evidence failed (attempt {strikes} of {MAX_FETCH_STRIKES}); the \
-             next check retries, and the last attempt ends the job without them: {reason}"
-        );
+        let message = evidence.strike_message(strikes, &reason);
         match self.write_message(&job.id, coords, Some(&message))? {
             Written::No => return Ok(StatusStep::RowChanged),
             Written::Yes(emit) => {

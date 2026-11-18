@@ -34,13 +34,23 @@
 //!    never decided by `detect_completion`, never parsed;
 //! 4. a **row 3** `Cancelling` on a `queued`/`running` row writes status `cancelling` with its text
 //!    and clears both pending-cancel columns in that one write (o22.12.1, o22.13.5);
-//! 5. any other **non-fetching outcome** is shown — `error_message` says what the server reports, and
-//!    "handled in unit 5.4b" where it needs an action of 5.4b — and the row stays `queued`/`running`;
-//!    the classifier's `Running` moves a `queued` row to `running` (o item 1: a remote job keeps
-//!    `queued`/`running` in `jobs.status`). `Indeterminate` writes nothing: the row keeps the text
-//!    of the last known state, and "could not be decided on this check" goes only to the job's
-//!    remote record (o19.3);
-//! 6. a **fetching outcome** (`Completed`, `Failed{NonZeroExit | BadExitCode |
+//! 5. a **`Lost`** verdict (row 8) is terminal after a sweep and an evidence fetch ([`lost`],
+//!    o25.2): orphans in this boot are swept by `cancel.sh sweep` first (bounded like row 3's
+//!    sweeps), then the files are fetched as evidence and the row is written `lost`. A row-1
+//!    `CorruptStarted` without `.cancelled` (o25.8) and a **second never-start** `Failed {
+//!    WrapperNeverStarted }` (o25.5) take the evidence path too and end `failed`;
+//! 6. a **`ReEnqueue`** verdict (row 11, the first never-start) is re-enqueued **once** ([`reenqueue`],
+//!    o25.4): the plan bound to the current mask's derivation and decided locally (a changed core
+//!    count → `failed` with no call), the server readied, `submit.sh reenqueue` run — its claim
+//!    `.reenqueue-1` is the server's counter (o25.3). Transient refusals wait; other answered
+//!    refusals are counted, the 3rd ends the job `failed`;
+//! 7. any other **non-fetching outcome** is shown — `error_message` says what the server reports —
+//!    and the row stays `queued`/`running`; the classifier's `Running` moves a `queued` row to
+//!    `running` (o item 1: a remote job keeps `queued`/`running` in `jobs.status`). `Indeterminate`
+//!    writes nothing: the row keeps the text of the last known state, and "could not be decided on
+//!    this check" goes only to the job's remote record (o19.3), whose `undecided` notice appears at
+//!    the 3rd consecutive pass (o25.6);
+//! 8. a **fetching outcome** (`Completed`, `Failed{NonZeroExit | BadExitCode |
 //!    NoNormalTermination}`) sets the in-memory fetching flag (the live log stops, o16.6), then
 //!    **fetches**: rsync down with the shared filter, then the server's listing must equal the local
 //!    copy, hash for hash (`ssh_backend::fetch_remote`). Only then does **`detect_completion` on the
@@ -49,8 +59,12 @@
 //!    wall time, and the parsed results, in the local finish path's order. Then the live log is
 //!    drained from the local copy (o16.6), and `job:status` is emitted last. When a delivery found
 //!    the job ended before the cancel reached the server, that `finalise` adds the note (o22.13.2).
-//! 7. A failed fetch changes no status: a strike is counted and shown; after
+//! 9. A failed fetch changes no status: a strike is counted and shown; after
 //!    [`MAX_FETCH_STRIKES`] in a row, automatic fetches stop until [`Poller::retry_fetch`].
+//!
+//! The ordinary step's collect **readies the server when the collector is not installed** (o25.7:
+//! an app upgrade changes the `collect` sha, and nothing else may have readied the server since) and
+//! collects once more; a second not-installed is a failed check.
 //!
 //! Every step's [`StatusStep`] then updates the job's **remote record** ([`remote_state`], o19) —
 //! the labels, the last outcome, a failed check, the fetch bound, the cancel re-send bound, and the
@@ -78,8 +92,10 @@ pub mod app;
 pub mod cancel;
 mod evidence;
 pub mod live_log;
+pub mod lost;
 pub mod pending;
 pub mod plan;
+pub mod reenqueue;
 pub mod remote_state;
 pub mod run;
 mod sweep;
@@ -108,13 +124,14 @@ use crate::remote::markers::parse_exit_code;
 use crate::remote::ssh::CommandRunner;
 use crate::remote::submit::Label;
 use crate::ssh_backend::{
-    collect_and_classify, coordinates, fetch_remote, label_remote, mark_cancelled_conn, poll_log_remote, recorded_root,
+    collect_readying, coordinates, fetch_remote, label_remote, mark_cancelled_conn, poll_log_remote, recorded_root,
     RemoteCoordinates,
 };
 use evidence::Evidence;
 use live_log::{Applied, Drained, LiveLog};
-use plan::{PollerMemory, MAX_FETCH_STRIKES};
-use remote_state::{RemoteState, RemoteStates};
+use plan::{NeverStartedRun, PollerMemory, ReEnqueueRun, StepEffect, Undecided, MAX_FETCH_STRIKES};
+use reenqueue::ReEnqueueWait;
+use remote_state::{CheckError, RemoteState, RemoteStates};
 
 /// Where the poller's events go. The app's sink (`app::AppSink`) maps each to exactly the local event and
 /// payload — `job:log` (`local_backend::emit_log`), `job:convergence` (`emit_convergence`),
@@ -134,8 +151,9 @@ pub trait PollerSink: Send + Sync {
 
 /// The outcomes that need `.exit_code` and so download the job's files (o item 4): `Completed`
 /// (rows 2, 5) and `Failed{NonZeroExit | BadExitCode | NoNormalTermination}` (row 6). A failed job's
-/// files are its debugging evidence. Every other outcome is shown and the row stays live — but row 4,
-/// row 1 with `.cancelled` (terminal, o17/o22.6) and row 3 (`cancelling`, o22.13.5).
+/// files are its debugging evidence. Every other outcome is shown and the row stays live — but row 4
+/// and row 1 (terminal, o17/o22.6/o25.8), row 3 (`cancelling`, o22.13.5), row 8 (`lost`, o25.2) and
+/// row 11 (re-enqueued once, then `failed`, o25.4–5).
 pub fn is_fetching(outcome: &Outcome) -> bool {
     matches!(
         outcome,
@@ -146,30 +164,41 @@ pub fn is_fetching(outcome: &Outcome) -> bool {
     )
 }
 
-/// What a non-fetching outcome says (o item 4: "shown, with 'handled in unit 5.4b' where it needs an
-/// action", o22.14.7): the row's `error_message` for every outcome but `Indeterminate`, whose text is the
-/// job's remote record's `check_error` instead and never reaches the row (o19.3); `None` clears the
-/// message — the job is plainly queued or running.
+/// Row 11 after the re-enqueue's claim: `Failed { WrapperNeverStarted }` (o25.5, o25.15).
+fn is_never_started(outcome: &Outcome) -> bool {
+    matches!(outcome, Outcome::Failed { reason: FailReason::WrapperNeverStarted })
+}
+
+/// What a non-fetching outcome says (o item 4, o22.14.7, o25.9): the row's `error_message` for every
+/// outcome but `Indeterminate`, whose text is the job's remote record's `check_error` instead and
+/// never reaches the row (o19.3); `None` clears the message — the job is plainly queued or running.
+/// Each outcome's own words: since 5.4b every verdict has its action.
 pub fn shown_message(outcome: &Outcome) -> Option<String> {
-    const LATER: &str = "handled in unit 5.4b";
     match outcome {
         Outcome::Queued | Outcome::Running => None,
-        Outcome::Indeterminate => Some(
-            "The server's state could not be decided on this check (a queue could not be read, or the job started \
-             while it was read); the next check tries again."
-                .into(),
-        ),
-        Outcome::Lost { orphans } => Some(format!(
-            "The job started on the server, and its wrapper is gone without an exit code ({} orphan process(es) \
-             still hold its cores); {LATER}.",
+        Outcome::Indeterminate { why } => Some(format!(
+            "The server's state could not be decided on this check ({why}); the next check tries again."
+        )),
+        // Not shown as such: the status step sweeps and finalises it (o25.2); the text stays for
+        // completeness, in the words of each case.
+        Outcome::Lost { orphans, stale_boot: true } => Some(format!(
+            "The server restarted while the job ran; its files are downloaded as evidence and the job is written lost \
+             ({} process(es) of it hold cores).",
+            orphans.len()
+        )),
+        Outcome::Lost { orphans, stale_boot: false } => Some(format!(
+            "The job's wrapper died without an exit code ({} process(es) of the job still hold its cores); they are \
+             swept, its files are downloaded as evidence and the job is written lost.",
             orphans.len()
         )),
         Outcome::Cancelling { session } => Some(cancelling_message(*session, false)),
         // Not shown: the status step writes it terminal (o17) — at once without `.started`, after
         // the evidence fetch with it (o22.6); the text stays for completeness.
         Outcome::Cancelled { .. } => Some("The server reports the job cancelled (.cancelled, nothing of it runs).".into()),
-        Outcome::ReEnqueue => Some(format!("Nothing of the job ever ran on the server; re-enqueueing it is {LATER}.")),
-        Outcome::Failed { reason } => Some(format!("The server reports the job failed: {reason}; {LATER}.")),
+        Outcome::ReEnqueue => {
+            Some("Nothing of the job ever ran on the server (its queue entry was lost); it is re-enqueued once.".into())
+        }
+        Outcome::Failed { reason } => Some(format!("The server reports the job failed: {reason}.")),
         Outcome::Completed { .. } => None,
     }
 }
@@ -264,6 +293,85 @@ pub enum StatusStep {
     /// `submit.sh`. `since` is the pending flag the step read. A re-check that got no answer before
     /// `submit.sh` (or from its re-upload), or failed on this machine, is `CheckFailed` instead.
     SubmitRechecked { since: String, recheck: pending::Recheck },
+    /// A sweep of a `Lost` job's orphans ([`lost`], ADR-024 o25.2): the server readied,
+    /// `cancel.sh sweep` run, the job collected and classified, and orphans are left (the row stays
+    /// live; its text counts the sweeps). `outcome` is the re-classify's `Lost`, or the step's own
+    /// verdict when `cancel.sh sweep` found row 8 no longer holding (it signalled nothing; not
+    /// counted); `None` when nothing could be classified. `error`: a failure the server answered with
+    /// (or not), as [`StatusStep::Swept`]'s. An empty session, or the bound, is the evidence path's
+    /// `Finalised { status: lost }` instead.
+    LostSwept { outcome: Option<Outcome>, error: Option<CheckError> },
+    /// The one re-enqueue reached the queue ([`reenqueue`], o25.4): `.reenqueue-1` claimed, a new tsp
+    /// row with this id, `.enqueued` replaced. The row stays `queued`; the next step classifies it.
+    ReEnqueued { tsp_id: u64 },
+    /// The re-enqueue waits (o25.4, o25.14.3): a transient refusal (nothing claimed; counted toward
+    /// the notice) or a profile that is not a run target (no call; not counted). The row stays
+    /// `queued`; the record's `re_enqueue_waiting` carries the count and, when due, the notice.
+    ReEnqueueWaiting(ReEnqueueWait),
+    /// An answered refusal of the re-enqueue outside the transient set (o25.14.4), counted: this is
+    /// the `refusals`-th, below the bound — the [`plan::MAX_REENQUEUE_REFUSALS`]-th is `Finalised {
+    /// status: failed }` instead. `why` is the refusal's text.
+    ReEnqueueRefused { refusals: u32, why: String },
+}
+
+/// What a finished step does to the per-job runs only a later step can end ([`PollerMemory::
+/// note_step`], ADR-024 o25.6, o25.14.4, o25.14.6) — one `match` with no wildcard, so a new
+/// [`StatusStep`] variant fails to compile here until it is decided:
+/// - the `Indeterminate` run **counts** a step whose verdict is `Indeterminate` (an ordinary step's,
+///   a delivered cancel's, a stopped delivery's), is **reset** by a decided verdict, and is **kept** by
+///   a step that decided nothing — no answer (`CheckFailed`), a label, a pending submit's re-check,
+///   a skipped or changed step;
+/// - the re-enqueue's waiting state and counted refusals **end** on its success and on a decided
+///   verdict other than `ReEnqueue`, and are **kept** across a check without an answer, a cancel not
+///   sent or a stopped delivery, and by the re-enqueue's own waits and refusals;
+/// - the never-start confirmation (o25.15) is **kept** only by a step whose verdict is the
+///   never-start again or that decided nothing, and **ended** by any other verdict.
+pub(crate) fn step_effect(step: &StatusStep) -> StepEffect {
+    use ReEnqueueRun::{End, Keep as Kept};
+    use Undecided::{Count, Keep, Reset};
+    let (undecided, reenqueue) = match step {
+        StatusStep::Busy | StatusStep::RowChanged | StatusStep::FetchStopped => (Keep, Kept),
+        StatusStep::CheckFailed(_) | StatusStep::CancelNotSent(_) => (Keep, Kept),
+        StatusStep::SubmitRechecked { .. } => (Keep, Kept),
+        StatusStep::Labelled(_) => (Keep, End),
+        StatusStep::NotLive | StatusStep::Cancelled | StatusStep::Finalised { .. } => (Reset, End),
+        StatusStep::FetchFailed { .. } | StatusStep::EndedBeforeCancel(_) => (Reset, End),
+        StatusStep::Shown(Outcome::Indeterminate { why }) => (Count(why.clone()), Kept),
+        StatusStep::Shown(Outcome::ReEnqueue) => (Reset, Kept),
+        StatusStep::Shown(_) => (Reset, End),
+        StatusStep::CancelDelivered(Outcome::Indeterminate { why }) => (Count(why.clone()), Kept),
+        StatusStep::CancelDelivered(Outcome::ReEnqueue) => (Reset, Kept),
+        StatusStep::CancelDelivered(_) => (Reset, End),
+        StatusStep::CancelStopped { seen: Some(Seen::Outcome(Outcome::Indeterminate { why })), .. } => (Count(why.clone()), Kept),
+        StatusStep::CancelStopped { seen: Some(Seen::Outcome(_)), .. } => (Reset, Kept),
+        StatusStep::CancelStopped { seen: Some(Seen::Label(_)) | None, .. } => (Keep, Kept),
+        StatusStep::Swept { outcome: Some(_), .. } => (Reset, End),
+        StatusStep::Swept { outcome: None, .. } => (Keep, Kept),
+        // Every `LostSwept` follows a decided `Lost`.
+        StatusStep::LostSwept { .. } => (Reset, End),
+        StatusStep::ReEnqueued { .. } => (Reset, End),
+        StatusStep::ReEnqueueWaiting(_) | StatusStep::ReEnqueueRefused { .. } => (Reset, Kept),
+    };
+    StepEffect { undecided, reenqueue, never_started: never_started_run(step) }
+}
+
+/// The never-start confirmation's part of [`step_effect`] (o25.15), its own `match` with no wildcard.
+fn never_started_run(step: &StatusStep) -> NeverStartedRun {
+    use NeverStartedRun::{End, Keep};
+    let never_started = |o: &Outcome| matches!(o, Outcome::Failed { reason: FailReason::WrapperNeverStarted });
+    match step {
+        // Nothing decided: the passes stay consecutive.
+        StatusStep::Busy | StatusStep::RowChanged | StatusStep::FetchStopped | StatusStep::CheckFailed(_) => Keep,
+        StatusStep::CancelNotSent(_) | StatusStep::SubmitRechecked { .. } => Keep,
+        StatusStep::CancelStopped { seen: Some(Seen::Label(_)) | None, .. } | StatusStep::Swept { outcome: None, .. } => Keep,
+        // The confirmed never-start's evidence download failed: the next pass retries it at once.
+        StatusStep::FetchFailed { .. } => Keep,
+        StatusStep::Shown(o) | StatusStep::CancelDelivered(o) => if never_started(o) { Keep } else { End },
+        StatusStep::CancelStopped { seen: Some(Seen::Outcome(o)), .. } => if never_started(o) { Keep } else { End },
+        StatusStep::Labelled(_) | StatusStep::NotLive | StatusStep::Cancelled | StatusStep::Finalised { .. } => End,
+        StatusStep::EndedBeforeCancel(_) | StatusStep::Swept { outcome: Some(_), .. } | StatusStep::LostSwept { .. } => End,
+        StatusStep::ReEnqueued { .. } | StatusStep::ReEnqueueWaiting(_) | StatusStep::ReEnqueueRefused { .. } => End,
+    }
 }
 
 /// What a stopped delivery saw before it declined to send (o22.12.2): `{ "kind": "outcome",
@@ -293,6 +401,45 @@ pub struct Poller<'a> {
     /// Where the local job dirs live (`<data_dir>/jobs/<id>`): a pending submit's re-check derives
     /// its local input there, as a retry does (o23.3.1).
     pub data_dir: &'a Path,
+    /// The clock a status step reads ([`SystemClock`] in the app; the tests inject their own): the
+    /// spacing of two never-start passes is measured with it (ADR-024 o25.15).
+    pub clock: &'a dyn Clock,
+}
+
+/// Where a status step reads the time (ADR-024 o25.15).
+pub trait Clock: Send + Sync {
+    fn now(&self) -> std::time::Instant;
+}
+
+/// The app's clock: `Instant::now`.
+pub struct SystemClock;
+
+impl Clock for SystemClock {
+    fn now(&self) -> std::time::Instant {
+        std::time::Instant::now()
+    }
+}
+
+/// A clock a test moves by hand: `now()` is the instant it holds.
+#[cfg(test)]
+pub(crate) struct TestClock(std::sync::Mutex<std::time::Instant>);
+
+#[cfg(test)]
+impl TestClock {
+    pub(crate) fn new() -> Self {
+        TestClock(std::sync::Mutex::new(std::time::Instant::now()))
+    }
+
+    pub(crate) fn advance(&self, by: std::time::Duration) {
+        *self.0.lock().unwrap() += by;
+    }
+}
+
+#[cfg(test)]
+impl Clock for TestClock {
+    fn now(&self) -> std::time::Instant {
+        *self.0.lock().unwrap()
+    }
 }
 
 impl Poller<'_> {
@@ -344,6 +491,9 @@ impl Poller<'_> {
         let tracker = ContactRunner::new(self.runner);
         let traced = Poller { runner: &tracker, ..*self };
         let step = step(&traced, guard)?;
+        // The runs the step feeds or ends (o25.6, o25.14.4), in memory before the record reads it —
+        // M is released before R is taken (o19.5).
+        self.memory.note_step(guard.job_id(), &step_effect(&step));
         self.remote.apply_with_contact(guard, &step, tracker.last(), self.memory, self.sink);
         Ok(step)
     }
@@ -383,22 +533,40 @@ impl Poller<'_> {
                 Ok(_) => {}
             }
         }
-        let outcome = match collect_and_classify(self.runner, &coords, &root) {
+        // A not-installed collector (an app upgrade) readies the server once and collects again
+        // (o25.7). The collect's start and end bound the server's read for the never-start
+        // confirmation (o25.15.1).
+        let read_from = self.clock.now();
+        let outcome = match collect_readying(self.runner, &coords, &root) {
             Ok(outcome) => outcome,
             Err(e) => return Ok(StatusStep::CheckFailed(e)),
         };
+        let read_until = self.clock.now();
+        if is_never_started(&outcome) {
+            return self.never_started_again(&job, &coords, outcome, read_from, read_until);
+        }
         self.act_on(&job, &coords, outcome)
     }
 
     /// What an ordinary step does with the server's verdict (module doc, steps 3–6). A sweep hands
     /// its non-`Cancelling` verdicts here too (o22.13.3).
     fn act_on(&self, job: &Job, coords: &RemoteCoordinates, outcome: Outcome) -> Result<StatusStep, AppError> {
+        // A never-start after the re-enqueue's claim ends the job only once confirmed (o25.15). The
+        // ordinary step hands it over with its collect's times; any other path never sees it, and
+        // were it to, it would count as a first, unconfirmed pass (both times now).
+        if is_never_started(&outcome) {
+            let now = self.clock.now();
+            return self.never_started_again(job, coords, outcome, now, now);
+        }
         if let Some(evidence) = Evidence::of(&outcome) {
             return self.fetch_evidence(job, coords, evidence, outcome);
         }
         match outcome {
             Outcome::Cancelled { started: false } => self.record_cancelled(&job.id, coords),
             Outcome::Cancelling { session } => self.record_cancelling(&job.id, coords, session),
+            // Orphans left (an empty list was evidence above): swept first (o25.2).
+            Outcome::Lost { orphans, stale_boot } => self.sweep_lost(job, coords, orphans, stale_boot),
+            Outcome::ReEnqueue => self.re_enqueue(job, coords),
             outcome if is_fetching(&outcome) => {
                 self.memory.set_fetching(&job.id);
                 self.fetch_and_finalise(job, coords, outcome)
@@ -579,7 +747,7 @@ impl Poller<'_> {
         let Some(before) = live_row(&conn, job_id, coords)? else {
             return Ok(Written::No);
         };
-        if *outcome == Outcome::Indeterminate {
+        if matches!(outcome, Outcome::Indeterminate { .. }) {
             return Ok(Written::Yes(None));
         }
         if *outcome == Outcome::Running && before.status == JobStatus::Queued {
@@ -806,6 +974,12 @@ impl PollerSink for RecordingSink {
         self.remote_states.lock().unwrap().push((job_id.into(), seq, state.cloned()));
     }
 }
+
+#[cfg(test)]
+mod fake_tests;
+
+#[cfg(test)]
+mod undecided_tests;
 
 #[cfg(test)]
 mod tests;

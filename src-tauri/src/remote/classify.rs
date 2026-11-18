@@ -17,7 +17,9 @@ use super::FactError;
 use crate::local_backend::{has_normal_termination, TAIL_BYTES};
 
 /// The classifier's verdict on a job (ADR-024 l). Serialized for the remote record and a status
-/// step's detail. `Lost` is not a `JobStatus` value yet (unit 5.4b); `Cancelling` is (o22.5).
+/// step's detail, internally tagged: `{ "outcome": "<snake_case>", …fields }` — e.g. `{ "outcome":
+/// "lost", "orphans": [70001], "stale_boot": false }`, `{ "outcome": "indeterminate", "why": "…" }`.
+/// `Cancelling` (o22.5) and `Lost` (o25.1) are `JobStatus` values too; the poller writes them.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum Outcome {
@@ -32,7 +34,9 @@ pub enum Outcome {
     Failed { reason: FailReason },
     /// The job started and then vanished without an `.exit_code` (row 8). `orphans` are the
     /// job-session PIDs still holding the slot's cores; non-empty only with a current `boot_id`.
-    Lost { orphans: Vec<u32> },
+    /// `stale_boot`: `.started` was written in another boot — the server restarted under the job;
+    /// `false`: the wrapper died (or is not ours) in this boot — an OOM, an outside kill (o25.1).
+    Lost { orphans: Vec<u32>, stale_boot: bool },
     /// Cancelled, but some of the job's processes still run (row 3). Transient. `session` is the
     /// job-session size — the cwd-filtered `ps -s` members after the SID-reuse guard — which row 3's
     /// progress rule compares between sweeps (o22.5: progress = the session shrinks). It is 0 when
@@ -42,8 +46,9 @@ pub enum Outcome {
     /// job ran and its files are fetched as evidence; without it nothing ran (o22.6).
     Cancelled { started: bool },
     /// Not enough information to act safely; take no action this pass (row 10, or a retake
-    /// whose `.started` reads still disagree).
-    Indeterminate,
+    /// whose `.started` reads still disagree). `why` says which (o25.6): the socket error(s) of
+    /// row 10, or [`STARTED_DISAGREED`] for the retake.
+    Indeterminate { why: String },
     /// Nothing ever ran; re-enqueue the original input (row 11, first time).
     ReEnqueue,
 }
@@ -119,8 +124,14 @@ pub enum SnapshotError {
     Collection(#[from] WireError),
 }
 
+/// Why a retake is `Indeterminate` (o25.6): the bracketing `.started` reads disagreed on both
+/// snapshots.
+pub const STARTED_DISAGREED: &str = "the .started read disagreed twice";
+
 /// Classify one job from its snapshot. `reenqueue_count` is how many times the job was already
-/// re-enqueued as never-started (persisted by 5.4 before each re-enqueue).
+/// re-enqueued as never-started: the server's `.reenqueue-<n>` claims, as the collector reports
+/// them ([`Snapshot::reenqueue_claims`], ADR-024 o25.3) — the claim is made under the account lock
+/// before the enqueue, so it is the counter itself.
 pub fn classify(snap: &Snapshot, reenqueue_count: u32) -> Result<Classification, SnapshotError> {
     validate_identity(&snap.identity)?;
     if snap.sockets.is_empty() {
@@ -133,7 +144,7 @@ pub fn classify(snap: &Snapshot, reenqueue_count: u32) -> Result<Classification,
     if snap.started_first != snap.started_last {
         return Ok(match snap.attempt {
             Attempt::First => Classification::Retake,
-            Attempt::Retake => Classification::Decided(Outcome::Indeterminate),
+            Attempt::Retake => Classification::Decided(Outcome::Indeterminate { why: STARTED_DISAGREED.into() }),
         });
     }
     decide(snap, &current_boot, reenqueue_count).map(Classification::Decided)
@@ -205,17 +216,18 @@ fn decide(snap: &Snapshot, current_boot: &BootId, reenqueue_count: u32) -> Resul
             Some(started) => guarded_job_session(snap, started)?,
             None => Vec::new(),
         };
-        return Ok(Outcome::Lost { orphans });
+        return Ok(Outcome::Lost { orphans, stale_boot: started_this_boot.is_none() });
     }
 
     // Rows 9–11: no `.started`. Read what the sockets say about this job.
     let mut queued_or_running = false;
-    let mut any_error = false;
+    // Every socket fact that gave no usable answer, with why (row 10's `why`, o25.6).
+    let mut errors: Vec<String> = Vec::new();
     for fact in &snap.sockets {
         match &fact.state {
             // The queue lived in the dead daemon's memory: no rows.
             SocketState::NoDaemon => {}
-            SocketState::Error(_) => any_error = true,
+            SocketState::Error(e) => errors.push(format!("{}: {e}", fact.socket_path)),
             SocketState::Rows(rows) => {
                 for row in rows {
                     match match_job_row(row, &snap.identity.job_dir) {
@@ -226,7 +238,7 @@ fn decide(snap: &Snapshot, current_boot: &BootId, reenqueue_count: u32) -> Resul
                             }
                         }
                         // Our row, unreadable: the query did not give a usable answer.
-                        Err(_) => any_error = true,
+                        Err(e) => errors.push(format!("{}: {e}", fact.socket_path)),
                     }
                 }
             }
@@ -238,8 +250,8 @@ fn decide(snap: &Snapshot, current_boot: &BootId, reenqueue_count: u32) -> Resul
         return Ok(Outcome::Queued);
     }
     // Row 10.
-    if any_error {
-        return Ok(Outcome::Indeterminate);
+    if !errors.is_empty() {
+        return Ok(Outcome::Indeterminate { why: errors.join("; ") });
     }
     // Row 11: a finished row (the wrapper crashed before `.started`) or no row at all (a
     // restart dropped the queue) — never started.
@@ -449,6 +461,7 @@ mod tests {
             // PID = SID: the wrapper's own line.
             sid_stat: Some(stat_bash_live().into_bytes()),
             session_members: vec![member(WRAPPER_PID, Some(JOB)), member(WRAPPER_PID + 1, Some(JOB))],
+            reenqueue_claims: 0,
             sockets: vec![
                 socket(SOCKET_A, SocketState::Rows(vec![running_row_for(JOB)])),
                 socket(SOCKET_B, SocketState::NoDaemon),
@@ -713,7 +726,7 @@ mod tests {
         // boot, so the old session's facts mean nothing; even members passed in are ignored.
         let mut snap = running();
         snap.current_boot_id = OTHER_BOOT.into();
-        assert_eq!(outcome(&snap), Outcome::Lost { orphans: Vec::new() });
+        assert_eq!(outcome(&snap), Outcome::Lost { orphans: Vec::new(), stale_boot: true });
     }
 
     #[test]
@@ -721,7 +734,7 @@ mod tests {
         let mut snap = dead(running());
         snap.session_members =
             vec![member(70001, Some(JOB)), member(70002, None), member(70003, Some("/home/anton"))];
-        assert_eq!(outcome(&snap), Outcome::Lost { orphans: vec![70001] });
+        assert_eq!(outcome(&snap), Outcome::Lost { orphans: vec![70001], stale_boot: false });
     }
 
     #[test]
@@ -730,11 +743,11 @@ mod tests {
         snap.wrapper_stat = Some(stat_bash_zombie().into_bytes());
         snap.wrapper_cmdline = Vec::new(); // a zombie's cmdline is empty (probe 5.2c)
         snap.session_members = Vec::new();
-        assert_eq!(outcome(&snap), Outcome::Lost { orphans: Vec::new() });
+        assert_eq!(outcome(&snap), Outcome::Lost { orphans: Vec::new(), stale_boot: false });
 
         // Even with the cmdline still ours, state Z alone makes it dead.
         snap.wrapper_cmdline = our_cmdline();
-        assert_eq!(outcome(&snap), Outcome::Lost { orphans: Vec::new() });
+        assert_eq!(outcome(&snap), Outcome::Lost { orphans: Vec::new(), stale_boot: false });
     }
 
     #[test]
@@ -746,7 +759,7 @@ mod tests {
         snap.started_first = Some(forged.clone());
         snap.started_last = Some(forged);
         snap.session_members = Vec::new();
-        assert_eq!(outcome(&snap), Outcome::Lost { orphans: Vec::new() });
+        assert_eq!(outcome(&snap), Outcome::Lost { orphans: Vec::new(), stale_boot: false });
     }
 
     #[test]
@@ -754,7 +767,7 @@ mod tests {
         let mut snap = running();
         snap.wrapper_cmdline = replace_bytes(&our_cmdline(), b"/jobs/j1\0", b"/jobs/j10\0");
         snap.session_members = Vec::new();
-        assert_eq!(outcome(&snap), Outcome::Lost { orphans: Vec::new() });
+        assert_eq!(outcome(&snap), Outcome::Lost { orphans: Vec::new(), stale_boot: false });
     }
 
     // --- The SID-reuse guard on the job session ---------------------------------------------
@@ -779,7 +792,7 @@ mod tests {
         let mut snap = dead(running());
         snap.sid_stat = Some(reused_sid_stat());
         snap.session_members = vec![member(70001, Some(JOB))];
-        assert_eq!(outcome(&snap), Outcome::Lost { orphans: Vec::new() });
+        assert_eq!(outcome(&snap), Outcome::Lost { orphans: Vec::new(), stale_boot: false });
     }
 
     #[test]
@@ -791,7 +804,7 @@ mod tests {
         snap.wrapper_cmdline = Vec::new();
         snap.sid_stat = Some(stat_bash_zombie().into_bytes());
         snap.session_members = vec![member(WRAPPER_PID, None), member(70001, Some(JOB))];
-        assert_eq!(outcome(&snap), Outcome::Lost { orphans: vec![70001] });
+        assert_eq!(outcome(&snap), Outcome::Lost { orphans: vec![70001], stale_boot: false });
         snap.cancelled = true;
         assert_eq!(outcome(&snap), Outcome::Cancelling { session: 1 });
     }
@@ -813,7 +826,7 @@ mod tests {
         let mut snap = dead(running());
         snap.current_boot_id = OTHER_BOOT.into();
         snap.sid_stat = Some(b"garbage".to_vec());
-        assert_eq!(outcome(&snap), Outcome::Lost { orphans: Vec::new() });
+        assert_eq!(outcome(&snap), Outcome::Lost { orphans: Vec::new(), stale_boot: true });
 
         // A clean finish never needs it.
         let mut snap = finished_cleanly(running());
@@ -846,16 +859,19 @@ mod tests {
             socket(SOCKET_A, SocketState::NoDaemon),
             socket(SOCKET_B, SocketState::Error("tsp -l exited 255".into())),
         ]);
-        assert_eq!(outcome(&snap), Outcome::Indeterminate);
+        // o25.6: the why names the socket and its error.
+        let why = format!("{SOCKET_B}: tsp -l exited 255");
+        assert_eq!(outcome(&snap), Outcome::Indeterminate { why: why.clone() });
         // Not even after the one re-enqueue: no action at all.
-        assert_eq!(outcome_with(&snap, 1), Outcome::Indeterminate);
+        assert_eq!(outcome_with(&snap, 1), Outcome::Indeterminate { why: why.clone() });
     }
 
     #[test]
     fn row10_unreadable_row_of_ours_is_indeterminate() {
         let row = queued_row_for(JOB).replace("queued ", "weird  ");
         let snap = not_started(vec![socket(SOCKET_A, SocketState::Rows(vec![row]))]);
-        assert_eq!(outcome(&snap), Outcome::Indeterminate);
+        let Outcome::Indeterminate { why } = outcome(&snap) else { panic!("row 10") };
+        assert!(why.starts_with(&format!("{SOCKET_A}: ")) && why.contains("unknown state \"weird\""), "{why}");
     }
 
     #[test]
@@ -900,7 +916,7 @@ mod tests {
         assert_eq!(classify(&snap, 0), Ok(Classification::Retake));
 
         snap.attempt = Attempt::Retake;
-        assert_eq!(classify(&snap, 0), Ok(Classification::Decided(Outcome::Indeterminate)));
+        assert_eq!(classify(&snap, 0), Ok(Classification::Decided(Outcome::Indeterminate { why: STARTED_DISAGREED.into() })));
     }
 
     #[test]
@@ -909,7 +925,7 @@ mod tests {
         snap.started_last = None;
         assert_eq!(classify(&snap, 0), Ok(Classification::Retake));
         snap.attempt = Attempt::Retake;
-        assert_eq!(classify(&snap, 0), Ok(Classification::Decided(Outcome::Indeterminate)));
+        assert_eq!(classify(&snap, 0), Ok(Classification::Decided(Outcome::Indeterminate { why: STARTED_DISAGREED.into() })));
     }
 
     #[test]
@@ -965,7 +981,7 @@ mod tests {
         let mut snap = running();
         snap.current_boot_id = OTHER_BOOT.into();
         snap.wrapper_stat = Some(b"garbage".to_vec());
-        assert_eq!(outcome(&snap), Outcome::Lost { orphans: Vec::new() });
+        assert_eq!(outcome(&snap), Outcome::Lost { orphans: Vec::new(), stale_boot: true });
     }
 
     // --- Predicates ------------------------------------------------------------------------

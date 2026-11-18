@@ -150,13 +150,28 @@ pub(crate) fn prepare_job_dir_with(
     aux_files: &[(String, String)],
     write: impl Fn(&Path, &[u8]) -> std::io::Result<()>,
 ) -> Result<PathBuf, AppError> {
+    let files = job_dir_files(input_content, aux_files)?;
     let dir = data_dir.join("jobs").join(job_id);
     std::fs::create_dir_all(&dir)?;
-    write(&dir.join("input.inp"), input_content.as_bytes())?;
+    for (name, bytes) in files {
+        write(&dir.join(name), bytes)?;
+    }
+    Ok(dir)
+}
+
+/// The files of a job dir as [`prepare_job_dir`] writes them, in memory: `input.inp`, then each
+/// aux file by its name — every name checked before anything is returned. The pure half of the
+/// write, shared with the remote re-enqueue's plan binding, which compares this derivation with the
+/// local dir without writing (`ssh_backend::reenqueue_plan`, ADR-024 o25.14.1).
+pub(crate) fn job_dir_files<'a>(
+    input_content: &'a str,
+    aux_files: &'a [(String, String)],
+) -> Result<Vec<(&'a str, &'a [u8])>, AppError> {
+    let mut files = vec![("input.inp", input_content.as_bytes())];
     for (name, content) in aux_files {
         // Guard: an aux name is a plain basename inside THIS job dir — never a path that
         // could escape it (rule #3 isolation). Refuse anything with a parent component.
-        let file_name = std::path::Path::new(name).file_name().ok_or_else(|| {
+        let file_name = std::path::Path::new(name).file_name().and_then(|n| n.to_str()).ok_or_else(|| {
             AppError::Internal(format!("invalid aux filename: {name:?}"))
         })?;
         if std::path::Path::new(name) != std::path::Path::new(file_name) {
@@ -164,9 +179,9 @@ pub(crate) fn prepare_job_dir_with(
                 "aux filename must be a plain basename, got {name:?}"
             )));
         }
-        write(&dir.join(file_name), content.as_bytes())?;
+        files.push((file_name, content.as_bytes()));
     }
-    Ok(dir)
+    Ok(files)
 }
 
 /// Read a single settings value, or `None` if absent / unreadable.
@@ -608,7 +623,17 @@ pub fn cancel(app: &AppHandle, job_id: &str) -> Result<(), AppError> {
             emit_status(app, job_id, JobStatus::Cancelled);
             Ok(())
         }
-        other => Err(AppError::Backend(format!(
+        // Every other status, listed (o25.1: no wildcard, so a new status is decided here): a draft
+        // has nothing to cancel; a running row with no recorded process, a remote-only status
+        // (`cancelling`, `lost`) or a terminal one is refused.
+        other @ (JobStatus::Draft
+        | JobStatus::Running
+        | JobStatus::Cancelling
+        | JobStatus::Completed
+        | JobStatus::Parsed
+        | JobStatus::Failed
+        | JobStatus::Cancelled
+        | JobStatus::Lost) => Err(AppError::Backend(format!(
             "job is not running or queued (status: {})",
             other.as_str()
         ))),

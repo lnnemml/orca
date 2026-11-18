@@ -20,8 +20,8 @@ use crate::remote::scripts::{LABEL, LIST, POLL_LOG, RUN};
 use crate::remote::ssh::{TransportError, SSH_PROGRAM};
 use crate::remote::sync::{download_selects, list_dir, Digest, LIST_HEADER, RSYNC_PROGRAM};
 use crate::ssh_backend::tests::{
-    echo, exited, expected_coords, label_reply, ok, ran, rec, snapshot, Reply, World, CLEAN_TAIL, ENQUEUED, JOB,
-    NOT_ON_SERVER,
+    echo, exited, expected_coords, label_reply, ok, ran, rec, snapshot, snapshot_with_row, Reply, World, CLEAN_TAIL,
+    ENQUEUED, JOB, NOT_ON_SERVER,
 };
 
 const POLICY: FetchPolicy = FetchPolicy::SMALL_ONLY;
@@ -39,6 +39,8 @@ pub(super) struct Remote {
     pub(super) sink: RecordingSink,
     /// The local job dirs' root (`World::data_dir`), which a pending re-check writes into.
     pub(super) data_dir: PathBuf,
+    /// The poller's clock (o25.15): a fixed instant the test moves by hand.
+    pub(super) clock: TestClock,
 }
 
 impl Remote {
@@ -63,7 +65,7 @@ impl Remote {
         let remote = std::sync::Arc::new(RemoteStates::new());
         let sink = sink.under_remote(remote.clone());
         let data_dir = w.data_dir();
-        Remote { w, in_flight: InFlight::default(), memory: PollerMemory::new(), live, remote, sink, data_dir }
+        Remote { w, in_flight: InFlight::default(), memory: PollerMemory::new(), live, remote, sink, data_dir, clock: TestClock::new() }
     }
 
     pub(super) fn local(&self) -> PathBuf {
@@ -95,6 +97,7 @@ impl Remote {
             sink: &self.sink,
             policy: POLICY,
             data_dir: self.data_dir.as_path(),
+            clock: &self.clock,
         }
     }
 
@@ -423,12 +426,12 @@ fn a_running_job_skips_the_label_call() {
 #[test]
 fn a_non_fetching_outcome_is_shown_and_the_row_stays_queued() {
     let r = Remote::new();
-    let fake = Fake::new(&r, server(&r, snapshot(false, None, None, (None, None))));
+    // A stale message the verdict replaces (row 9 shows no text).
+    r.w.sql("UPDATE jobs SET error_message = 'submit outcome unknown'");
+    let fake = Fake::new(&r, server(&r, snapshot_with_row("queued")));
     let poller = r.poller(&fake);
-    assert_eq!(poller.status_step(JOB).unwrap(), StatusStep::Shown(Outcome::ReEnqueue));
-    let (status, message) = r.row();
-    assert_eq!(status, JobStatus::Queued);
-    assert!(message.unwrap().contains("handled in unit 5.4"));
+    assert_eq!(poller.status_step(JOB).unwrap(), StatusStep::Shown(Outcome::Queued));
+    assert_eq!(r.row(), (JobStatus::Queued, None));
     assert_eq!(fake.kinds(), [LabelCall, Collect], "no download for a non-fetching outcome");
     assert_eq!(statuses(&r.sink.take()), [JobStatus::Queued]);
     poller.status_step(JOB).unwrap();
@@ -455,7 +458,7 @@ fn running_and_queued_outcomes_update_the_row() {
     assert_eq!(r.row().0, JobStatus::Running);
     // A finished row is no longer written.
     r.w.sql("UPDATE jobs SET status = 'cancelled'");
-    assert!(matches!(poller.record_shown(JOB, &c, &Outcome::Lost { orphans: vec![] }).unwrap(), Written::No));
+    assert!(matches!(poller.record_shown(JOB, &c, &Outcome::Queued).unwrap(), Written::No));
 }
 
 /// o17 (Anton): a classifier `Cancelled` (row 4) on a live remote row writes it terminal `cancelled`
@@ -1063,9 +1066,10 @@ fn fetching_outcomes_are_exactly_item_4s() {
     let shown = [
         Outcome::Queued,
         Outcome::Running,
-        Outcome::Indeterminate,
+        Outcome::Indeterminate { why: "x".into() },
         Outcome::ReEnqueue,
-        Outcome::Lost { orphans: vec![] },
+        Outcome::Lost { orphans: vec![], stale_boot: true },
+        Outcome::Lost { orphans: vec![7], stale_boot: false },
         Outcome::Cancelling { session: 2 },
         Outcome::Cancelled { started: true },
         Outcome::Cancelled { started: false },
@@ -1077,6 +1081,8 @@ fn fetching_outcomes_are_exactly_item_4s() {
     assert!(!shown.iter().any(is_fetching));
     for o in &shown {
         assert_eq!(shown_message(o).is_none(), matches!(o, Outcome::Queued | Outcome::Running), "{o:?}");
+        // o25.9: every verdict has its action now; no text defers to a later unit.
+        assert!(!shown_message(o).unwrap_or_default().contains("unit 5.4"), "{o:?}");
     }
     let cancelling = shown_message(&Outcome::Cancelling { session: 2 }).unwrap();
     assert!(cancelling.contains("sweeps them again") && cancelling.contains("(2 in the job's directory)"), "{cancelling}");
@@ -1217,33 +1223,35 @@ fn a_status_steps_record_is_set_before_it_returns_and_a_terminal_row_removes_it_
     assert!(r.sink.take_remote_states().is_empty(), "removing an absent record emits nothing");
 }
 
-/// o19.3/o19.9, round-2 LOW-d: an `Indeterminate` check after `Lost` writes nothing to the row —
-/// it keeps `Lost`'s text, and no `job:status` is owed — while the record keeps `Lost` and carries
-/// the "could not be decided" text in `check_error`. NEGATIVE CONTROL: restore the `Indeterminate`
-/// write in `record_shown` (drop its early return) → red (the row says "could not be decided").
+/// o19.3/o19.9, round-2 LOW-d: an `Indeterminate` check after a decided verdict writes nothing to
+/// the row — it keeps that verdict's text, and no `job:status` is owed — while the record keeps the
+/// verdict and carries the "could not be decided" text (with its why, o25.6) in `check_error`.
+/// (Before 5.4b the decided verdict was `Lost`; `Lost` is terminal now, so the fixture is row 9.)
+/// NEGATIVE CONTROL: restore the `Indeterminate` write in `record_shown` (drop its early return) →
+/// red (the row says "could not be decided").
 #[test]
-fn indeterminate_after_lost_leaves_the_rows_text_and_sets_the_check_error() {
+fn indeterminate_after_a_decided_verdict_leaves_the_rows_text_and_sets_the_check_error() {
     let r = Remote::new();
     r.w.sql("UPDATE jobs SET status = 'running'");
-    let snap = Mutex::new(lost());
+    let snap = Mutex::new(snapshot_with_row("running"));
     let fake = Fake::new(&r, |kind, values| match kind {
         Collect => collected(values, snap.lock().unwrap().clone()),
         _ => panic!("a running row: only the collector"),
     });
     let poller = r.poller(&fake);
-    let first = poller.status_step(JOB).unwrap();
-    let StatusStep::Shown(lost @ Outcome::Lost { .. }) = first else { panic!("the fixture is Lost: {first:?}") };
-    let lost_text = shown_message(&lost);
-    assert_eq!(r.row().1, lost_text);
+    assert_eq!(poller.status_step(JOB).unwrap(), StatusStep::Shown(Outcome::Queued));
+    r.w.sql("UPDATE jobs SET error_message = 'the last known text'");
     r.sink.take();
 
     *snap.lock().unwrap() = indeterminate();
-    assert_eq!(poller.status_step(JOB).unwrap(), StatusStep::Shown(Outcome::Indeterminate));
-    assert_eq!(r.row(), (JobStatus::Running, lost_text), "the row keeps the last known state's text");
+    let undecided = Outcome::Indeterminate { why: crate::remote::classify::STARTED_DISAGREED.into() };
+    assert_eq!(poller.status_step(JOB).unwrap(), StatusStep::Shown(undecided.clone()));
+    assert_eq!(r.row(), (JobStatus::Running, Some("the last known text".into())), "the row keeps the last known state's text");
     assert!(r.sink.take().is_empty(), "no job:status");
     let after = record(&r).unwrap();
-    assert_eq!(after.known, Some(Known::Shown(lost)), "the record keeps Lost");
-    assert_eq!(after.check_error, shown_message(&Outcome::Indeterminate).map(crate::poller::remote_state::CheckError::answered));
+    assert_eq!(after.known, Some(Known::Shown(Outcome::Queued)), "the record keeps the verdict");
+    assert_eq!(after.check_error, shown_message(&undecided).map(crate::poller::remote_state::CheckError::answered));
+    assert!(after.check_error.unwrap().text.contains(crate::remote::classify::STARTED_DISAGREED), "the why is shown");
 }
 
 /// `record_shown` for `Indeterminate` still re-checks the live row: a row gone terminal under the
@@ -1254,9 +1262,10 @@ fn indeterminate_on_a_changed_row_is_still_row_changed() {
     let fake = Fake::new(&r, |_, _| panic!("no call"));
     let poller = r.poller(&fake);
     let c = expected_coords();
-    assert!(matches!(poller.record_shown(JOB, &c, &Outcome::Indeterminate).unwrap(), Written::Yes(None)));
+    let undecided = Outcome::Indeterminate { why: "x".into() };
+    assert!(matches!(poller.record_shown(JOB, &c, &undecided).unwrap(), Written::Yes(None)));
     r.w.sql("UPDATE jobs SET status = 'cancelled'");
-    assert!(matches!(poller.record_shown(JOB, &c, &Outcome::Indeterminate).unwrap(), Written::No));
+    assert!(matches!(poller.record_shown(JOB, &c, &undecided).unwrap(), Written::No));
 }
 
 /// o19.9: a busy step leaves the record; `Finalised`, `Cancelled` and `NotLive` each remove it with
@@ -1380,13 +1389,13 @@ fn a_fetch_retry_whose_check_fails_no_longer_reads_stopped() {
 fn a_repeated_outcome_emits_one_record_event() {
     let r = Remote::new();
     r.w.sql("UPDATE jobs SET status = 'running'");
-    let fake = Fake::new(&r, server(&r, lost()));
+    let fake = Fake::new(&r, server(&r, snapshot_with_row("running")));
     let poller = r.poller(&fake);
     for _ in 0..3 {
         let step = poller.status_step(JOB).unwrap();
-        assert_eq!(step, StatusStep::Shown(Outcome::Lost { orphans: vec![] }), "the fixture is Lost");
+        assert_eq!(step, StatusStep::Shown(Outcome::Queued), "the fixture is row 9");
     }
     let events = r.sink.take_remote_states();
     assert_eq!(events.len(), 1, "{events:?}");
-    assert_eq!(events[0].2.as_ref().and_then(|s| s.known.clone()), Some(Known::Shown(Outcome::Lost { orphans: vec![] })));
+    assert_eq!(events[0].2.as_ref().and_then(|s| s.known.clone()), Some(Known::Shown(Outcome::Queued)));
 }

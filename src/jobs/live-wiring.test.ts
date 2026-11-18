@@ -87,6 +87,8 @@ function record(over: Partial<RemoteState> = {}): RemoteState {
     cancel_sends: { failures: 0, stopped: false },
     sweeps: { count: 0, stopped: false },
     pending_submit: null,
+    undecided: null,
+    re_enqueue_waiting: null,
     ...over,
   };
 }

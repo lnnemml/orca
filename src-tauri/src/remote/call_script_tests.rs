@@ -44,7 +44,7 @@ pub(super) fn serial() -> MutexGuard<'static, ()> {
 }
 
 /// The slot's CPUs: 8-11, clear of every mask the 5.2 tests pin.
-fn slot_cpus() -> (usize, usize) {
+pub(super) fn slot_cpus() -> (usize, usize) {
     let n = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
     if n >= 12 {
         (8, 11)
@@ -86,7 +86,7 @@ pub(super) fn mutate(script: &str, from: &str, to: &str) -> String {
     script.replacen(from, to, 1)
 }
 
-fn text(out: &Output) -> String {
+pub(super) fn text(out: &Output) -> String {
     format!("stdout {:?}\nstderr {}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr))
 }
 
@@ -114,7 +114,7 @@ fn lock_path(lab: &Lab) -> PathBuf {
 
 /// A job dir as the upload leaves it (an input, a geometry, a file in a subdirectory) and the
 /// submit values for it on `socket`.
-fn prepared(lab: &Lab, name: &str, socket: &Path) -> (PathBuf, SubmitArgs) {
+pub(super) fn prepared(lab: &Lab, name: &str, socket: &Path) -> (PathBuf, SubmitArgs) {
     let job = lab.job(name);
     fs::write(job.join("input.xyz"), "1\n\nH 0 0 0\n").unwrap();
     fs::create_dir_all(job.join("aux")).unwrap();
@@ -136,7 +136,7 @@ fn prepared(lab: &Lab, name: &str, socket: &Path) -> (PathBuf, SubmitArgs) {
     (job, args)
 }
 
-fn submit_with(lab: &Lab, script: &str, args: &SubmitArgs, env: &[(&str, &str)]) -> SubmitReply {
+pub(super) fn submit_with(lab: &Lab, script: &str, args: &SubmitArgs, env: &[(&str, &str)]) -> SubmitReply {
     let out = run(lab, script, &args.values().unwrap(), env);
     parse_submit_reply(&out.stdout, args).unwrap_or_else(|e| panic!("{e}\n{}", text(&out)))
 }
@@ -146,7 +146,7 @@ fn submit(lab: &Lab, args: &SubmitArgs) -> SubmitReply {
 }
 
 /// The enqueue lines of the stub tsp's log (every call that is not `-l`/`-r`).
-fn enqueues(lab: &Lab) -> Vec<String> {
+pub(super) fn enqueues(lab: &Lab) -> Vec<String> {
     lab.tsp_log().lines().filter(|l| l.contains(" bash ")).map(String::from).collect()
 }
 
@@ -160,7 +160,7 @@ fn lock_is_free(lab: &Lab) -> bool {
 }
 
 /// The text of a plain refusal (`Refusal::Other`): the reason for people.
-fn refused(reply: &SubmitReply) -> &str {
+pub(super) fn refused(reply: &SubmitReply) -> &str {
     match reply {
         SubmitReply::Refused(Refusal::Other(why)) => why,
         other => panic!("expected a plain refusal, got {other:?}"),
@@ -280,7 +280,8 @@ fn the_claim_is_no_clobber() {
 /// NEGATIVE CONTROL (b): a claim that overwrites (`ln -sfT`) lets the second claimer enqueue.
 #[test]
 fn an_overwriting_claim_turns_the_claim_race_red() {
-    let broken = mutate(SUBMIT, "ln -sT x \"$job/.submitting\"", "ln -sfT x \"$job/.submitting\"");
+    // The claim line names `$name` since o25.4 (`.submitting`, or a re-enqueue's `.reenqueue-1`).
+    let broken = mutate(SUBMIT, "ln -sT x \"$job/$name\"", "ln -sfT x \"$job/$name\"");
     let red = claim_race(&broken).unwrap_err();
     eprintln!("control (b) red: {red}");
 }
@@ -436,14 +437,14 @@ fn submit_refuses_before_the_claim_for_each_failed_precondition() {
 }
 
 /// A live "daemon" on `socket` (a lab listener) whose `tsp -l` prints `rows`.
-fn lab_listen_with_rows(lab: &mut Lab, socket: &Path, rows: &[String]) {
+pub(super) fn lab_listen_with_rows(lab: &mut Lab, socket: &Path, rows: &[String]) {
     fs::write(format!("{}.rows", Lab::str(socket)), tsp_listing(rows)).unwrap();
     if !listed(socket) {
         lab.listen(socket);
     }
 }
 
-fn listed(socket: &Path) -> bool {
+pub(super) fn listed(socket: &Path) -> bool {
     fs::read_to_string("/proc/net/unix").unwrap().lines().any(|l| l.split_whitespace().nth(7) == Some(Lab::str(socket)))
 }
 
@@ -714,7 +715,7 @@ fn the_slot_check_sees_queued_rows_of_other_own_sockets_and_pinned_strays() {
 
 /// Every entry under `dir` (recursively, symlinks not followed) with its kind and bytes: what a
 /// submit wrote into a job dir is any difference between two of these.
-fn tree(dir: &Path) -> Vec<(String, String)> {
+pub(super) fn tree(dir: &Path) -> Vec<(String, String)> {
     fn walk(base: &Path, dir: &Path, out: &mut Vec<(String, String)>) {
         for entry in fs::read_dir(dir).unwrap() {
             let path = entry.unwrap().path();

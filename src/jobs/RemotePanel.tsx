@@ -69,6 +69,8 @@ export function RemotePanel({ view, busy, onAction, cancelBusy, onCancelAction }
   if (view.kind === "local" || view.kind === "terminal") return null;
   const text = view.kind === "live" ? view.text : null;
   const waiting = view.kind === "live" ? view.waiting : null;
+  const reEnqueue = view.kind === "live" ? view.reEnqueueWaiting : null;
+  const undecided = view.kind === "live" ? view.undecided : null;
   return (
     <div className="remote-panel" data-testid="remote-panel">
       <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
@@ -87,6 +89,24 @@ export function RemotePanel({ view, busy, onAction, cancelBusy, onCancelAction }
               ))}
             </ul>
           ) : null}
+        </div>
+      ) : null}
+      {reEnqueue ? (
+        <div className="remote-notice" data-testid="re-enqueue-notice">
+          <div>{reEnqueue.text}</div>
+          {reEnqueue.blockers.length ? (
+            <ul>
+              {reEnqueue.blockers.map((line, i) => (
+                // A title is the user's text: rendered as text, never as markup.
+                <li key={i}>{line}</li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      ) : null}
+      {undecided ? (
+        <div className="remote-notice" data-testid="undecided-notice">
+          {undecided}
         </div>
       ) : null}
       {text ? (

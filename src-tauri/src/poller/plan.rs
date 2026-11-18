@@ -19,7 +19,11 @@
 //! failures of a cancel's delivery (o22.4.5, o22.11.3), a `cancelling` job's sweeps without progress
 //! and the smallest session size seen for it (o22.5, o22.13.3–4), whether a delivery found the job
 //! ended first (o22.13.2), a pending submit's refusals and whether its last submit call's reply was
-//! lost (o23.4, o23.13.6), and when each step last ran.
+//! lost (o23.4, o23.13.6), a `Lost` job's sweeps without progress and its smallest orphan count
+//! (o25.2), the consecutive `Indeterminate` passes and the last why (o25.6), a re-enqueue's transient
+//! waits, its last wait and its counted refusals (o25.4, o25.14.4), and when each step last ran. The
+//! runs that only a later step can end are updated from each finished step's effect
+//! ([`PollerMemory::note_step`], decided by `poller::step_effect`).
 
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
@@ -53,6 +57,27 @@ pub const MAX_SWEEPS_WITHOUT_PROGRESS: u32 = 3;
 /// unreadable answer — ADR-024 l, m2, o23.4, o23.13.1), the record's notice names why it waits. The
 /// job keeps waiting; Cancel is the exit.
 pub const PENDING_NOTICE_AT: u32 = 3;
+
+/// At this many transient refusals of a re-enqueue this launch (slot busy, slot check error, lock
+/// busy — ADR-024 o25.4), the record's `re_enqueue_waiting` notice names why it waits. The job keeps
+/// waiting; nothing was claimed.
+pub const REENQUEUE_NOTICE_AT: u32 = 3;
+
+/// At this many counted refusals of a re-enqueue this launch, the job is finalised `failed` with that
+/// refusal's text (Anton; ADR-024 o25.4, o25.14.4). Counted: an answered refusal that is not one of
+/// the transient ones (slot busy, slot check error, lock busy). **Never counted:** the transient
+/// refusals, a reply that never came, and the unverified-profile wait (no call is made, o25.14.3).
+pub const MAX_REENQUEUE_REFUSALS: u32 = 3;
+
+/// At this many consecutive `Indeterminate` passes (ADR-024 l row 10, o25.6), the record carries the
+/// `undecided` notice. No row write, no action.
+pub const UNDECIDED_NOTICE_AT: u32 = 3;
+
+/// A never-start seen **with** the re-enqueue's claim is finalised `failed` only on a second
+/// consecutive such pass at least this long after the first (ADR-024 o25.15): longer than the 40 s
+/// cap on any `submit.sh` call under the account lock, so a re-enqueue call still running on the
+/// server when the claim was read — its reply lost — has ended, and enqueued or not, by then.
+pub const NEVER_STARTED_CONFIRM: Duration = Duration::from_secs(45);
 
 /// The poller's periods (o item 4: initial values, tunable, not a contract).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -187,6 +212,60 @@ pub fn sweep(candidates: &[Candidate], live: &LiveLog, memory: &PollerMemory, re
     remote.retain(|id| live_ids(id) || in_progress.contains(id), sink);
 }
 
+/// o22.13.4's progress rule, shared by the `cancelling` sweep and the `Lost` sweep (o25.2): no
+/// baseline yet → it is set, nothing counted; below it → progress (the baseline falls, the count
+/// restarts at 0); otherwise (equal, larger, or nothing classified) → counted. Returns the count.
+fn count_progress(count: &mut u32, baseline: &mut Option<usize>, session: Option<usize>) -> u32 {
+    match (session, *baseline) {
+        (Some(session), None) => *baseline = Some(session),
+        (Some(session), Some(min)) if session < min => {
+            *baseline = Some(session);
+            *count = 0;
+        }
+        _ => *count += 1,
+    }
+    *count
+}
+
+/// What one finished step does to the `Indeterminate` run (ADR-024 o25.6).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Undecided {
+    /// Another `Indeterminate` pass, with its why.
+    Count(String),
+    /// A decided outcome: the run starts over.
+    Reset,
+    /// No decision either way (no answer, a label, a pending submit's re-check, nothing ran).
+    Keep,
+}
+
+/// What one finished step does to a re-enqueue's waiting state and counted refusals (o25.4,
+/// o25.14.4, o25.14.6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReEnqueueRun {
+    /// Kept: the step was a re-enqueue's own, or decided nothing.
+    Keep,
+    /// Ended: the re-enqueue succeeded, or a decided outcome other than `ReEnqueue` came.
+    End,
+}
+
+/// What one finished step does to the never-start confirmation (o25.15).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NeverStartedRun {
+    /// Kept: the step saw the never-start again, or decided nothing.
+    Keep,
+    /// Ended: any other verdict — the passes are no longer consecutive.
+    End,
+}
+
+/// [`PollerMemory::note_step`]'s input: one step's effect on the runs, decided by
+/// `poller::step_effect` (exhaustive `match`es).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StepEffect {
+    pub undecided: Undecided,
+    pub reenqueue: ReEnqueueRun,
+    pub never_started: NeverStartedRun,
+}
+
 /// What the poller remembers about one job during a launch.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct JobMemory {
@@ -218,6 +297,34 @@ pub struct JobMemory {
     /// uploads nothing (o23.13.6), so a lagging call cannot have its dir overwritten. Cleared by the
     /// next submit call that is answered.
     pub submit_reply_lost: bool,
+    /// Sweeps of a `Lost` job's orphans without progress (ADR-024 o25.2): o22.13.4's rule
+    /// ([`PollerMemory::count_lost_sweep`]) over its own counter, so a `cancelling` job's count
+    /// ([`Self::sweeps_without_progress`]) starts fresh if a Cancel turns the row `cancelling`.
+    /// [`MAX_SWEEPS_WITHOUT_PROGRESS`] writes the job `lost` anyway, naming the survivors.
+    pub lost_sweeps: u32,
+    /// The smallest orphan count seen for the `Lost` job: seeded from the first observed `orphans`.
+    pub lost_min_orphans: Option<usize>,
+    /// Consecutive `Indeterminate` passes this launch (ADR-024 o25.6): fed by a status step's
+    /// `Indeterminate` and a delivery's; reset by a decided outcome; unchanged by a check that got no
+    /// answer, a label or a pending submit's re-check ([`PollerMemory::note_step`]).
+    pub undecided_passes: u32,
+    /// The last `Indeterminate`'s why.
+    pub undecided_why: Option<String>,
+    /// A re-enqueue's transient refusals this launch (ADR-024 o25.4): slot busy, slot check error,
+    /// lock busy. Nothing was claimed; [`REENQUEUE_NOTICE_AT`] shows the notice.
+    pub reenqueue_waits: u32,
+    /// The re-enqueue's most recent wait — a transient refusal or an unverified profile (o25.14.3,
+    /// not counted). `Some` while the re-enqueue waits; cleared on success and by any decided outcome
+    /// other than `ReEnqueue`.
+    pub reenqueue_wait: Option<super::reenqueue::ReEnqueueWait>,
+    /// A re-enqueue's counted refusals this launch (o25.14.4); [`MAX_REENQUEUE_REFUSALS`] ends the job
+    /// `failed`. Kept only while the next classify is `ReEnqueue` again.
+    pub reenqueue_refusals: u32,
+    /// When the first of the consecutive never-start passes **with the claim** ended its collect
+    /// (o25.15.1): the job is finalised `failed` only by such a pass whose collect **started**
+    /// [`NEVER_STARTED_CONFIRM`] or more later, so the 45 s separate the two server reads. Ended by
+    /// any other verdict.
+    pub never_started_at: Option<Instant>,
     pub last_status: Option<Instant>,
     pub last_log: Option<Instant>,
     pub in_progress: bool,
@@ -300,15 +407,89 @@ impl PollerMemory {
     pub fn count_sweep(&self, job_id: &str, session: Option<usize>) -> u32 {
         let mut jobs = self.lock();
         let m = jobs.entry(job_id.to_string()).or_default();
-        match (session, m.min_session) {
-            (Some(session), None) => m.min_session = Some(session),
-            (Some(session), Some(baseline)) if session < baseline => {
-                m.min_session = Some(session);
-                m.sweeps_without_progress = 0;
-            }
-            _ => m.sweeps_without_progress += 1,
+        count_progress(&mut m.sweeps_without_progress, &mut m.min_session, session)
+    }
+
+    /// One sweep step of a `Lost` job's orphans (ADR-024 o25.2): [`Self::count_sweep`]'s rule over
+    /// the lost counter and baseline, in **one** operation under the lock. `orphans` is the
+    /// re-classify's orphan count, `None` when it classified nothing. Returns the count now.
+    pub fn count_lost_sweep(&self, job_id: &str, orphans: Option<usize>) -> u32 {
+        let mut jobs = self.lock();
+        let m = jobs.entry(job_id.to_string()).or_default();
+        count_progress(&mut m.lost_sweeps, &mut m.lost_min_orphans, orphans)
+    }
+
+    /// The first observed orphan count seeds the `Lost` baseline (o25.2); a later one never moves it.
+    pub fn seed_lost(&self, job_id: &str, orphans: usize) {
+        let mut jobs = self.lock();
+        let m = jobs.entry(job_id.to_string()).or_default();
+        m.lost_min_orphans.get_or_insert(orphans);
+    }
+
+    /// The `Lost` sweep is over (the job is no longer `Lost`): its count and baseline start over.
+    pub fn end_lost(&self, job_id: &str) {
+        if let Some(m) = self.lock().get_mut(job_id) {
+            m.lost_sweeps = 0;
+            m.lost_min_orphans = None;
         }
-        m.sweeps_without_progress
+    }
+
+    /// A re-enqueue waits (o25.4, o25.14.3): the wait remembered; a transient refusal counted toward
+    /// the notice, an unverified profile not. One operation under the lock; returns the count now.
+    pub fn note_reenqueue_wait(&self, job_id: &str, wait: super::reenqueue::ReEnqueueWait) -> u32 {
+        let mut jobs = self.lock();
+        let m = jobs.entry(job_id.to_string()).or_default();
+        if wait.is_counted() {
+            m.reenqueue_waits += 1;
+        }
+        m.reenqueue_wait = Some(wait);
+        m.reenqueue_waits
+    }
+
+    /// One counted refusal of a re-enqueue (o25.14.4), in one operation under the lock; returns the
+    /// count now.
+    pub fn count_reenqueue_refusal(&self, job_id: &str) -> u32 {
+        let mut jobs = self.lock();
+        let m = jobs.entry(job_id.to_string()).or_default();
+        m.reenqueue_refusals += 1;
+        m.reenqueue_refusals
+    }
+
+    /// What a finished step means for the per-job runs that only a later step can end (ADR-024
+    /// o25.6, o25.14.4, o25.14.6), in one operation under the lock: the `Indeterminate` run counts,
+    /// is reset or is kept; the re-enqueue's waiting state and counted refusals are kept or reset. A
+    /// reset never creates a job's memory (a terminal step has forgotten it).
+    pub fn note_step(&self, job_id: &str, effect: &StepEffect) {
+        let mut jobs = self.lock();
+        if let Undecided::Count(why) = &effect.undecided {
+            let m = jobs.entry(job_id.to_string()).or_default();
+            m.undecided_passes += 1;
+            m.undecided_why = Some(why.clone());
+        }
+        let Some(m) = jobs.get_mut(job_id) else { return };
+        if effect.undecided == Undecided::Reset {
+            m.undecided_passes = 0;
+            m.undecided_why = None;
+        }
+        if effect.reenqueue == ReEnqueueRun::End {
+            m.reenqueue_waits = 0;
+            m.reenqueue_wait = None;
+            m.reenqueue_refusals = 0;
+        }
+        if effect.never_started == NeverStartedRun::End {
+            m.never_started_at = None;
+        }
+    }
+
+    /// A never-start pass with the claim whose collect ended at `now` (o25.15), in one operation
+    /// under the lock: the first of a run is remembered; returns the run's first pass's time before
+    /// this one (`None`: this is the first).
+    pub fn note_never_started(&self, job_id: &str, now: Instant) -> Option<Instant> {
+        let mut jobs = self.lock();
+        let m = jobs.entry(job_id.to_string()).or_default();
+        let first = m.never_started_at;
+        m.never_started_at.get_or_insert(now);
+        first
     }
 
     /// A write of `cancelling` (delivery's or the ordinary step's, o22.13.4): the baseline takes this

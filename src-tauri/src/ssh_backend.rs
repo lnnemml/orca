@@ -39,6 +39,13 @@
 //! label call finds "not on the server" (o 3.4: "submit interrupted" is never retried), and never
 //! for a pending one (o23.8: the poller re-checks it). The pending re-check derives its plan the
 //! same way ([`pending_plan`]), minus the label call and the upload.
+//! **The re-enqueue** (unit 5.4b, ADR-024 o25.4, o25.14): [`reenqueue_plan`] derives the input in
+//! memory with the profile's current mask and binds the call to the local dir's digests — a
+//! difference is "the profile changed", decided locally, no call, nothing written; an unverified
+//! profile is a wait. The call itself is [`submit_call`] over the re-enqueue form of the values.
+//! [`sweep_call`] runs `cancel.sh sweep` for a `Lost` job's orphans (o25.2), and
+//! [`collect_readying`] is the ordinary step's collect, which readies the server once when the
+//! collector is not installed (o25.7).
 //! **The poller's calls** (unit 5.3 B2): [`poll_log_remote`] reads one chunk of the remote
 //! `output.out` (o item 7), and [`fetch_remote`] downloads a finished job's files and checks them
 //! against the server's own listing (o item 6). Both are read-only on the server and write nothing to
@@ -54,7 +61,7 @@ use crate::commands::jobs::get_job_conn;
 use crate::commands::server_profiles::{clear_verified, get_profile_conn};
 use crate::commands::settings::DbState;
 use crate::error::AppError;
-use crate::local_backend::{align_pal_nprocs, prepare_job_dir_with, read_aux_files, read_pal_nprocs};
+use crate::local_backend::{align_pal_nprocs, job_dir_files, prepare_job_dir_with, read_aux_files, read_pal_nprocs};
 use crate::models::job::{Job, JobStatus};
 use crate::models::server_profile::{distinct_cpus, is_run_target, parse_core_mask, validate_host, ServerProfile};
 use crate::remote::classify::{classify, Classification, Outcome};
@@ -74,8 +81,8 @@ use crate::remote::submit::{
     LabelFacts, Refusal, SubmitArgs, SubmitReply,
 };
 use crate::remote::sync::{
-    compare_download, download_argv, download_selects, list_dir, parse_list_reply, upload_argv, upload_expected, ListArgs,
-    RSYNC_PROGRAM,
+    compare_download, download_argv, download_selects, list_dir, parse_list_reply, upload_argv, upload_expected, Digest,
+    ListArgs, RSYNC_PROGRAM,
 };
 use crate::remote::wire::parse_snapshot;
 
@@ -760,6 +767,138 @@ pub(crate) fn pending_plan(
     plan_from(conn, data_dir, coords, checked)
 }
 
+/// What the re-enqueue's plan binding found (ADR-024 o25.4, o25.14.1–2).
+pub(crate) enum ReEnqueuePlan {
+    /// The local job dir is exactly the current mask's derivation — the bytes the enqueuing attempt
+    /// uploaded: send this list (the plan's args are the re-enqueue form).
+    Send(SubmitPlan),
+    /// It is not: the profile changed since the submit (or the local files did). Never sent; the job
+    /// is finalised `failed` with [`ProfileChanged::message`].
+    Changed(ProfileChanged),
+}
+
+/// How the current derivation differs from the local job dir (names, sorted).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProfileChanged {
+    /// Derived now, not in the local dir.
+    pub(crate) missing: Vec<String>,
+    /// In the local dir, not derived now.
+    pub(crate) extra: Vec<String>,
+    /// In both, with other bytes.
+    pub(crate) differing: Vec<String>,
+}
+
+impl ProfileChanged {
+    /// The row's terminal text (o25.14.2). The digest binds only the uploaded bytes — the aligned
+    /// `%pal` count — so when only `input.inp` differs it is the core count; any other difference is
+    /// named as it is, never guessed.
+    pub(crate) fn message(&self) -> String {
+        if self.missing.is_empty() && self.extra.is_empty() && self.differing == ["input.inp"] {
+            "Never started on the server, and the core count of the profile changed since it was submitted (the \
+             input's %pal no longer matches); start it again as a new job."
+                .to_string()
+        } else {
+            format!(
+                "Never started on the server, and its local files no longer match the ones submitted (missing [{}], \
+                 extra [{}], differing [{}]); start it again as a new job.",
+                self.missing.join(" "),
+                self.extra.join(" "),
+                self.differing.join(" ")
+            )
+        }
+    }
+}
+
+/// Why no re-enqueue plan was made (o25.14.1–3).
+#[derive(Debug)]
+pub(crate) enum ReEnqueueRefusal {
+    /// The profile is not a run target (its stamp cleared by an edit, a failed connection test or a
+    /// `refused-kup`): a wait, not an end — no ssh call; the next step after a passing test goes on.
+    Unverified(String),
+    /// This machine's database or file system failed: the step's `CheckFailed`, nothing counted.
+    Local(AppError),
+    /// Any other refusal of the plan (the job no longer a queued remote job of this profile, the host
+    /// or root moved, the input unreadable): it needs a person — `failed`.
+    Refused(AppError),
+}
+
+impl From<AppError> for ReEnqueueRefusal {
+    fn from(e: AppError) -> Self {
+        match e {
+            e @ (AppError::Io(_) | AppError::Database(_)) => ReEnqueueRefusal::Local(e),
+            e => ReEnqueueRefusal::Refused(e),
+        }
+    }
+}
+
+/// The re-enqueue's plan (ADR-024 o25.4 as o25.14.1 decides it): the run target's checks
+/// ([`plan_checks`]: host/root/socket unchanged), the input derived **in memory** with the profile's
+/// **current** mask — as [`plan_from`] would derive it, but [`write_local_dir`] is not called — and
+/// compared, digest for digest, with the local job dir as it stands (which holds exactly the bytes
+/// the enqueuing attempt uploaded). Equal → that list, in the re-enqueue form; different →
+/// [`ReEnqueuePlan::Changed`]. **Nothing is written**, locally or on the server.
+pub(crate) fn reenqueue_plan(
+    conn: &rusqlite::Connection,
+    data_dir: &Path,
+    job_id: &str,
+    coords: &RemoteCoordinates,
+) -> Result<ReEnqueuePlan, ReEnqueueRefusal> {
+    let job = get_job_conn(conn, job_id)?;
+    // The profile a run target first (o25.14.3): an unverified one is a wait.
+    let profile_id = job.backend_id.clone().ok_or_else(|| AppError::Backend(format!("job {job_id} names no server profile")))?;
+    let profile = get_profile_conn(conn, &profile_id)?;
+    if let Err(why) = is_run_target(&profile) {
+        return Err(ReEnqueueRefusal::Unverified(format!("server profile {} is not a run target: {why}", profile.name)));
+    }
+    let Checked { job, coords: now, root, profile_id, profile } = plan_checks(conn, job)?;
+    if now != *coords {
+        return Err(AppError::Conflict(format!("job {job_id} changed during the re-enqueue")).into());
+    }
+    let mask = run_target(&profile)?.to_string();
+    let local_dir = data_dir.join("jobs").join(job_id);
+    if job.job_dir.as_deref() != local_dir.to_str() {
+        return Err(AppError::Internal(format!("job {job_id}: recorded local dir {:?} is not {local_dir:?}", job.job_dir)).into());
+    }
+
+    // The current derivation, in memory.
+    let (input, pal) = align_remote_pal(&job.input_content, &mask)
+        .map_err(|e| AppError::Backend(format!("cannot re-enqueue job {job_id}: {e}")))?;
+    let aux = read_aux_files(conn, job_id)?;
+    let derived: std::collections::BTreeMap<&str, String> =
+        job_dir_files(&input, &aux)?.into_iter().map(|(name, bytes)| (name, sha256_of(bytes))).collect();
+
+    // The local dir as it stands. A listing that fails is this machine's (o23.13.2).
+    let local = upload_expected(&local_dir).map_err(|e| ReEnqueueRefusal::Local(AppError::Backend(format!("local job dir {local_dir:?}: {e}"))))?;
+    let here: std::collections::BTreeMap<&str, &Digest> = local.iter().map(|f| (f.name.as_str(), &f.digest)).collect();
+    let mut changed = ProfileChanged { missing: Vec::new(), extra: Vec::new(), differing: Vec::new() };
+    for (name, sha) in &derived {
+        match here.get(name) {
+            None => changed.missing.push(name.to_string()),
+            Some(Digest::Sha256(hex)) if hex == sha => {}
+            Some(_) => changed.differing.push(name.to_string()),
+        }
+    }
+    changed.extra = here.keys().filter(|name| !derived.contains_key(*name)).map(|n| n.to_string()).collect();
+    if !(changed.missing.is_empty() && changed.extra.is_empty() && changed.differing.is_empty()) {
+        return Ok(ReEnqueuePlan::Changed(changed));
+    }
+
+    let upload_bytes = aux.iter().map(|(_, c)| c.len() as u64).sum::<u64>() + input.len() as u64;
+    let args = SubmitArgs::new(&root, job_id, &now.socket, &mask, &profile.remote_orca_path, local)
+        .map_err(|e| AppError::Backend(format!("cannot re-enqueue job {job_id}: {e}")))?
+        .reenqueue();
+    if args.job_dir != now.job_dir {
+        return Err(AppError::Internal(format!("job {job_id}: re-enqueue values name {:?}, the coordinates {:?}", args.job_dir, now.job_dir)).into());
+    }
+    Ok(ReEnqueuePlan::Send(SubmitPlan { job_id: job_id.to_string(), profile_id, coords: now, root, local_dir, upload_bytes, args, pal }))
+}
+
+/// Lowercase hex sha256 of `bytes` — the digest `upload_expected` lists for a file.
+fn sha256_of(bytes: &[u8]) -> String {
+    use sha2::Digest as _;
+    sha2::Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
+}
+
 /// One more attempt's plan for a checked job, by the profile's **current** mask (o 14.2): the local
 /// dir derived again and its files listed and hashed. `coords` were read before the caller's ssh
 /// calls: a row whose coordinates changed since is a conflict, and nothing is written.
@@ -824,14 +963,38 @@ fn plan_checks(conn: &rusqlite::Connection, job: Job) -> Result<Checked, AppErro
 /// 20 s, collect 15 s) + its 1 s kill-after = 43 s at worst.
 pub const RUN_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Why a trampoline call did not run its script: the script is not installed (an app upgrade
+/// changed its sha, ADR-024 o25.7), or anything else — a transport failure, a broken reply, a
+/// refusal. Both read as text where the caller only reports them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RunError {
+    NotInstalled(String),
+    Other(String),
+}
+
+impl std::fmt::Display for RunError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RunError::NotInstalled(why) | RunError::Other(why) => f.write_str(why),
+        }
+    }
+}
+
+impl From<RunError> for String {
+    fn from(e: RunError) -> String {
+        e.to_string()
+    }
+}
+
 /// Run an uploaded job script through the trampoline (o 14.1) and return its rc and streams.
-/// `Refused` and `NotInstalled` are errors here: the caller readied the server just before.
-fn run_call(runner: &dyn CommandRunner, host: &str, sent: &RunArgs) -> Result<(u8, Vec<u8>, Vec<u8>), String> {
+/// `Refused` and `NotInstalled` are errors here; `NotInstalled` is its own kind, so the ordinary
+/// status step can ready the server and collect once more (o25.7).
+fn run_call(runner: &dyn CommandRunner, host: &str, sent: &RunArgs) -> Result<(u8, Vec<u8>, Vec<u8>), RunError> {
     let what = format!("run {}", sent.name);
-    match call(runner, host, &what, RUN, &sent.values(), RUN_TIMEOUT, |out| parse_run_reply(out, sent))? {
+    match call(runner, host, &what, RUN, &sent.values(), RUN_TIMEOUT, |out| parse_run_reply(out, sent)).map_err(RunError::Other)? {
         RunReply::Ran { rc, stdout, stderr } => Ok((rc, stdout, stderr)),
-        RunReply::NotInstalled => Err(format!("{what}: the script is not installed")),
-        RunReply::Refused(reason) => Err(format!("{what}: refused: {reason}")),
+        RunReply::NotInstalled => Err(RunError::NotInstalled(format!("{what}: the script is not installed"))),
+        RunReply::Refused(reason) => Err(RunError::Other(format!("{what}: refused: {reason}"))),
     }
 }
 
@@ -851,29 +1014,68 @@ pub(crate) fn cancel_call(runner: &dyn CommandRunner, coords: &RemoteCoordinates
     Ok((rc, stderr))
 }
 
+/// `cancel.sh sweep <job dir> <root>` through the trampoline (ADR-024 o25.2): the orphan sweep of a
+/// `Lost` job, which re-checks row 8 in shell first and never publishes `.cancelled`. Its rc (0
+/// swept or nothing to sweep; [`SWEEP_WRAPPER_ALIVE`]; [`SWEEP_NOT_ROW_8`]; 2/3 a usage error or a
+/// fact it could not read), stdout and stderr. An `Err` is a call that did not run the script.
+pub(crate) fn sweep_call(runner: &dyn CommandRunner, coords: &RemoteCoordinates, root: &str) -> Result<(u8, Vec<u8>, Vec<u8>), String> {
+    let sent = RunArgs::new(root, JobScript::Cancel, vec!["sweep".into(), coords.job_dir.clone(), root.to_string()])
+        .map_err(|e| e.to_string())?;
+    Ok(run_call(runner, &coords.host, &sent)?)
+}
+
+/// `cancel.sh sweep`'s exit when the wrapper reads alive and ours in this boot (row 7, not row 8):
+/// it signalled nothing; the next classify decides (o25.2, o25.14.6: not counted).
+pub(crate) const SWEEP_WRAPPER_ALIVE: u8 = 4;
+
+/// `cancel.sh sweep`'s exit when row 8 no longer holds for another reason (no parsable `.started`,
+/// or `.exit_code` / `.cancelled` exists): it signalled nothing; the next classify decides.
+pub(crate) const SWEEP_NOT_ROW_8: u8 = 5;
+
 /// One collect (through the trampoline) + `classify`, with the one retake the classifier may ask
 /// for. The snapshot is the trampoline's `stdout` payload, verbatim; a complete snapshot from a
 /// collector that exited non-zero is not trusted. The slot socket is the recorded one; the collector
-/// adds the `.enqueued` socket itself (o item 4).
+/// adds the `.enqueued` socket itself (o item 4). The re-enqueue count is the snapshot's own
+/// (`.reenqueue-1`, ADR-024 o25.3), never a constant.
 pub(crate) fn collect_and_classify(runner: &dyn CommandRunner, coords: &RemoteCoordinates, root: &str) -> Result<Outcome, String> {
+    collect_once(runner, coords, root).map_err(String::from)
+}
+
+/// [`collect_and_classify`], telling a not-installed collector apart (o25.7).
+fn collect_once(runner: &dyn CommandRunner, coords: &RemoteCoordinates, root: &str) -> Result<Outcome, RunError> {
     let identity = JobIdentity { job_dir: coords.job_dir.clone(), root: root.to_string() };
     let slots = [coords.socket.clone()];
     let mut argv = vec![coords.job_dir.clone()];
     argv.extend(slots.iter().cloned());
-    let sent = RunArgs::new(root, JobScript::Collect, argv).map_err(|e| e.to_string())?;
+    let sent = RunArgs::new(root, JobScript::Collect, argv).map_err(|e| RunError::Other(e.to_string()))?;
     for attempt in [Attempt::First, Attempt::Retake] {
         let (rc, wire, stderr) = run_call(runner, &coords.host, &sent)?;
         let snapshot = parse_snapshot(&wire, identity.clone(), attempt, &slots)
-            .map_err(|e| format!("collect (rc {rc}): {e}; stderr {:?}", tail(&stderr)))?;
+            .map_err(|e| RunError::Other(format!("collect (rc {rc}): {e}; stderr {:?}", tail(&stderr))))?;
         if rc != 0 {
-            return Err(format!("collect exited {rc} after a complete snapshot; not trusted"));
+            return Err(RunError::Other(format!("collect exited {rc} after a complete snapshot; not trusted")));
         }
-        match classify(&snapshot, 0).map_err(|e| format!("classify: {e}"))? {
+        match classify(&snapshot, snapshot.reenqueue_claims).map_err(|e| RunError::Other(format!("classify: {e}")))? {
             Classification::Decided(outcome) => return Ok(outcome),
             Classification::Retake => continue,
         }
     }
-    Err("classify asked for a second retake".to_string())
+    Err(RunError::Other("classify asked for a second retake".to_string()))
+}
+
+/// The ordinary status step's collect (ADR-024 o25.7): one collect + `classify`; when the collector
+/// answers **not installed** (an app upgrade changed its sha, and nothing has readied the server
+/// since), [`ready_server`] once and one more collect, in the same step. A second not-installed, or
+/// a ready that fails, is the step's error, as any failed collect is.
+pub(crate) fn collect_readying(runner: &dyn CommandRunner, coords: &RemoteCoordinates, root: &str) -> Result<Outcome, String> {
+    match collect_once(runner, coords, root) {
+        Err(RunError::NotInstalled(why)) => {
+            ready_server(runner, &coords.host, root, &coords.job_dir)
+                .map_err(|(step, reason)| format!("{why}; readying the server failed ({step:?} step): {reason}"))?;
+            collect_and_classify(runner, coords, root)
+        }
+        other => other.map_err(String::from),
+    }
 }
 
 /// The terminal write for a classifier `Cancelled` (row 4) — the poller's (ADR-024 o17, o22.6):

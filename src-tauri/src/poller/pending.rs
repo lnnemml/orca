@@ -271,7 +271,7 @@ impl Poller<'_> {
 
     /// The blockers of a slot-busy wait, each with the title of the local job whose recorded job dir
     /// it names (o23.7). One locked read; every other wait is returned as it is.
-    fn with_titles(&self, wait: Wait, root: &str) -> Result<Wait, AppError> {
+    pub(super) fn with_titles(&self, wait: Wait, root: &str) -> Result<Wait, AppError> {
         let Wait::SlotBusy { blockers } = wait else { return Ok(wait) };
         let conn = self.db.lock()?;
         let blockers = blockers

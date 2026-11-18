@@ -401,6 +401,8 @@ interface ChildState {
   results: ParsedResults | null;
 }
 
+// Local children only: the connectivity check submits both relaxations locally (ADR-024 o20.2), so a
+// child is never remote and never `lost` (o25.1, a remote-only status) — left out on purpose.
 function isTerminal(s: JobStatus | undefined): boolean {
   return s === "parsed" || s === "failed" || s === "cancelled";
 }

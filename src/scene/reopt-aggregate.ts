@@ -171,12 +171,15 @@ export function aggregateReopt(
       continue;
     }
     if (!isTerminalSuccessStatus(c.status)) {
+      // `lost` (ADR-024 o25.1: a remote run interrupted without an exit code) is a failed child.
       const reason =
         c.status === "failed"
           ? "job failed"
-          : c.status === "cancelled"
-            ? "cancelled"
-            : "still running";
+          : c.status === "lost"
+            ? "job failed (lost on the server)"
+            : c.status === "cancelled"
+              ? "cancelled"
+              : "still running";
       excluded.push({ ...base, reason });
       continue;
     }

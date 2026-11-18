@@ -13,7 +13,11 @@ export type JobStatus =
    * parse — distinct from `failed` (the calculation itself failed). */
   | "parsed"
   | "failed"
-  | "cancelled";
+  | "cancelled"
+  /** Remote only, **terminal** (ADR-024 o25.1): the job started on the server and its wrapper is
+   *  gone without an exit code (the server restarted under it, or the wrapper died). Its files were
+   *  fetched as evidence; nothing restarts it automatically. A failed run for every aggregate. */
+  | "lost";
 
 /** Mirrors `src-tauri/src/results.rs::ParsedResults` (the stored JSON). Per-atom
  * arrays carry their own element order — never trust position alone. */
@@ -428,10 +432,13 @@ export type Outcome =
   | { outcome: "running" }
   | { outcome: "completed"; late_cancel: boolean }
   | { outcome: "failed"; reason: FailReason }
-  | { outcome: "lost"; orphans: number[] }
+  /** Row 8 (ADR-024 o25.1): `orphans` still in the job dir (this boot only); `stale_boot` — the
+   *  server restarted under the job — or not (its wrapper died in this boot). */
+  | { outcome: "lost"; orphans: number[]; stale_boot: boolean }
   | { outcome: "cancelling"; session: number }
   | { outcome: "cancelled"; started: boolean }
-  | { outcome: "indeterminate" }
+  /** Row 10, or a retake whose `.started` reads disagreed (ADR-024 o25.6): `why`. */
+  | { outcome: "indeterminate"; why: string }
   | { outcome: "re_enqueue" };
 
 /** Mirrors `poller::remote_state::Known` (serde `tag = "kind", content = "detail"`). `fetching`:
@@ -485,7 +492,34 @@ export interface RemoteState {
   /** A pending submit as the last re-check saw it (ADR-024 o23.10); null: no re-check has shown one
    *  this launch (the row's `submit_pending_since` is the truth). */
   pending_submit: PendingSubmit | null;
+  /** The `Indeterminate` run from its 3rd consecutive pass (ADR-024 o25.6); null before it. */
+  undecided: Undecided | null;
+  /** A re-enqueue that waits (ADR-024 o25.4, o25.14.3); null when none waits. Gated on the shown
+   *  `re_enqueue` verdict (`known`), never on `pending_submit`. */
+  re_enqueue_waiting: ReEnqueueWaiting | null;
 }
+
+/** Mirrors `poller::remote_state::Undecided` (ADR-024 o25.6): `passes` consecutive undecidable
+ *  checks (≥ 3) and the notice naming the last one's why. */
+export interface Undecided {
+  passes: number;
+  notice: string;
+}
+
+/** Mirrors `poller::reenqueue::ReEnqueueWaiting` (ADR-024 o25.4): the transient refusals this launch,
+ *  and — from the 3rd, or at once for an unverified profile — the notice. */
+export interface ReEnqueueWaiting {
+  refusals: number;
+  notified: boolean;
+  notice: string | null;
+  /** The most recent wait: a busy slot's blockers are listed from it. */
+  last: ReEnqueueWait;
+}
+
+/** Mirrors `poller::reenqueue::ReEnqueueWait` (serde `tag = "kind", content = "detail"`): a transient
+ *  refusal of the slot or the account lock (o23's `Wait` kinds), or a profile that is not a run
+ *  target (no call made, o25.14.3). */
+export type ReEnqueueWait = { kind: "slot"; detail: Wait } | { kind: "unverified"; detail: string };
 
 /** Mirrors `remote::submit::Blocker` (serde `tag = "kind"`): one blocker of the slot check (ADR-024
  *  o23.7). `job_dir` null on a process: its cwd was not readable. */
@@ -611,7 +645,15 @@ export type StatusStep =
   | { step: "ended_before_cancel"; detail: Outcome }
   | { step: "cancel_delivered"; detail: Outcome }
   | { step: "swept"; detail: { outcome: Outcome | null; error: CheckError | null } }
-  | { step: "submit_rechecked"; detail: { since: string; recheck: Recheck } };
+  | { step: "submit_rechecked"; detail: { since: string; recheck: Recheck } }
+  /** A `Lost` job's orphan sweep (ADR-024 o25.2): orphans left; the job is not ended yet. */
+  | { step: "lost_swept"; detail: { outcome: Outcome | null; error: CheckError | null } }
+  /** The one automatic re-enqueue reached the queue (o25.4). */
+  | { step: "re_enqueued"; detail: { tsp_id: number } }
+  /** The re-enqueue waits: a transient refusal or an unverified profile (o25.4, o25.14.3). */
+  | { step: "re_enqueue_waiting"; detail: ReEnqueueWait }
+  /** A counted refusal of the re-enqueue, below the bound of 3 (o25.14.4). */
+  | { step: "re_enqueue_refused"; detail: { refusals: number; why: string } };
 
 /** Mirrors `commands::jobs::CancelResult` (serde `tag = "result"`) — what `cancel_job` returns
  *  (ADR-024 o22.3, o22.14.7): `delivered` ran a delivery now (`step` is what it did); `pending`

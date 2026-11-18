@@ -1,8 +1,9 @@
 //! The user-facing text guard, Rust half (ADR-024 o22.14.11, last control): no **user-facing
 //! string** — a non-comment string literal in `src-tauri/src`, tests excluded — says "withdraw"
 //! (the command is gone, o22.7/o22.14.7), names a later unit as "unit 5.4" without its letter (the
-//! split of o22.1: matched as `unit 5\.4(?![a-c])`), or tells the user "Cancel sweeps again" (the
-//! button is Retry cancel, o22.14.2). The TypeScript half is `src/jobs/text-guard.test.ts`.
+//! split of o22.1: matched as `unit 5\.4(?![a-c])`), says "unit 5.4b" (every 5.4b verdict has its
+//! action since ADR-024 o25.9: no text may still defer to it), or tells the user "Cancel sweeps
+//! again" (the button is Retry cancel, o22.14.2). The TypeScript half is `src/jobs/text-guard.test.ts`.
 //!
 //! The scan lexes each file just far enough to tell code from comments and string literals: `//`
 //! and nested `/* */` comments are skipped; `"…"`, `b"…"`, raw `r#"…"#` strings are collected; a
@@ -105,6 +106,9 @@ fn forbidden(text: &str) -> Option<&'static str> {
         if !matches!(after, Some('a'..='c')) {
             return Some("unit 5.4 without its letter");
         }
+        if after == Some('b') {
+            return Some("unit 5.4b");
+        }
         rest = &rest[at + 1..];
     }
     text.contains("Cancel sweeps again").then_some("Cancel sweeps again")
@@ -133,9 +137,11 @@ fn production(src: &str) -> &str {
         .map_or(src, |at| &src[..at])
 }
 
-/// The guard (o22.14.11). NEGATIVE CONTROLS: put "withdraw" back into a user-facing string (e.g.
-/// `refuse_while_live`'s text) → red; set `shown_message`'s `LATER` back to "handled in unit 5.4" →
-/// red; `cancelling_message`'s "Retry cancel sweeps again" back to "Cancel sweeps again" → red.
+/// The guard (o22.14.11, o25.9). NEGATIVE CONTROLS: put "withdraw" back into a user-facing string
+/// (e.g. `refuse_while_live`'s text) → red; a `shown_message` text that says "handled in unit 5.4" →
+/// red; one that says "handled in unit 5.4b" → red (o25.9's own control,
+/// `run_54b_controls.sh guard-5-4b`); `cancelling_message`'s "Retry cancel sweeps again" back to
+/// "Cancel sweeps again" → red.
 #[test]
 fn no_user_facing_string_says_withdraw_an_unlettered_unit_5_4_or_cancel_sweeps_again() {
     let mut files = Vec::new();
@@ -161,13 +167,14 @@ fn the_scan_finds_strings_and_skips_comments() {
         // "withdraw in a line comment"
         /* "withdraw in a /* nested */ block" */
         fn f<'a>(x: &'a str) -> char { let _ = "Withdraw the job"; let _ = r#"handled in unit 5.4"#; 'x' }
-        const OK: &str = "handled in unit 5.4b";
+        const NO: &str = "handled in unit 5.4b";
+        const OK: &str = "handled in unit 5.4c";
         const Q: char = '"';
     "##;
     let literals = string_literals(src);
-    assert_eq!(literals, ["Withdraw the job", "handled in unit 5.4", "handled in unit 5.4b"]);
+    assert_eq!(literals, ["Withdraw the job", "handled in unit 5.4", "handled in unit 5.4b", "handled in unit 5.4c"]);
     let hits: Vec<_> = literals.iter().filter_map(|l| forbidden(l)).collect();
-    assert_eq!(hits, ["withdraw", "unit 5.4 without its letter"]);
+    assert_eq!(hits, ["withdraw", "unit 5.4 without its letter", "unit 5.4b"]);
     assert_eq!(forbidden("automatic sweeps stopped — Cancel sweeps again."), Some("Cancel sweeps again"));
     assert_eq!(forbidden("automatic sweeps stopped — Retry cancel sweeps again."), None);
 }

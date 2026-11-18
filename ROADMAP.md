@@ -1518,7 +1518,17 @@ preflight. The remaining items (remote `orca_plot`, pause) moved to Phase 6 on 2
       - [ ] **5.4b — `Lost`, re-enqueue, `Indeterminate` count** (Decisions d, e, l): `Lost` (terminal)
             joins `JobStatus`; row 8's orphan sweep; the re-enqueue counter (incremented **before**
             the re-enqueue, ADR-024 l) and acting on `ReEnqueue`; l row 10's counter. Its own schema
-            version.
+            version. *(ADR-024 o25, 2026-11-18: the counter is the server's `.reenqueue-1` claim, made
+            under the flock before the enqueue — no schema version; `Lost` terminal with sweep +
+            evidence, no automatic restart (Anton); re-enqueue bound to the current mask's
+            derivation; ready on a not-installed collect.)* **Built 2026-11-18** (Parts A + B, ADR-024
+            o25 with o25.14–15): `lost` (terminal, swept then fetched as evidence), `cancel.sh sweep`,
+            `submit.sh reenqueue` with the `.reenqueue-1` claim, the second never-start confirmed 45 s
+            later before `failed`, the `Indeterminate` notice, ready on a not-installed collect, and the
+            view (the `lost` chip and badge, the waiting re-enqueue and undecided notices). **Open:**
+            Anton's live WebKitGTK gate, then o25.10's two uni live checks (a `kill -9` of a throwaway
+            running wrapper → `lost`; `tsp -K` with a running and a queued throwaway job → the queued one
+            re-enqueued, waiting `blocked` until the survivor ends). A real reboot stays simulation-only.
       - [ ] **5.4c — the pending submit** with its refusal counter (ADR-024 m2, o23), re-checked from
             the poller loop; schema v22. **Part A built 2026-10-19** (Rust, tested):
             v22 `submit_pending_since` with its CHECK; `submit.sh`'s typed reply kinds (`blocked`,

@@ -11862,3 +11862,52 @@ row only; the shared `.builder-row` rule and the other rows are unchanged. Needs
   return"; M6 in the app (≥ 11 jobs queued, cold restart, no "Server unreachable" from the burst).
 - Wiki: `modules/remote-jobs.md`, `modules/execution-backends.md`, `modules/server-profiles.md`
   (argv), ADR-024 o24.10 grace wording and o24.14; ROADMAP "B4 fixes" built, live check open.
+
+## [2026-11-18] decision | ADR-024 o25 — unit 5.4b accepted
+- **Decided (Anton):** `Lost` is a **terminal** status and nothing restarts it automatically (the
+  user starts a new job; restart-from-last-geometry stays Decision e's open path); the re-enqueue is
+  bound to the plan (the input re-derived with the profile's current mask must equal the uploaded
+  bytes — a changed core count fails the job, no call); an unverified profile is a **wait**, not an
+  end; 3 counted refusals → `failed`; ready on a not-installed collect; the two uni live checks.
+- **Settled by the orchestrator within d, l and o22.1:** the re-enqueue counter is the **server's**
+  `.reenqueue-1` claim (no-clobber `ln -sT`, under the account flock, after the slot check, before
+  the enqueue) — **no schema version** (v23 stays free; supersedes l's DB column and o22.1's "5.4b =
+  v23"); the snapshot goes to v2 with the claim; `cancel.sh sweep` for a same-boot `Lost`'s orphans
+  (row 8 re-checked in shell, never `.cancelled`), then o22.6's evidence path; the `Indeterminate`
+  notice at the 3rd consecutive pass.
+- **Review:** DESIGN round 1 FAIL (2 HIGH + 8 MED + 13 LOW), applied; round 2 PASS WITH FINDINGS,
+  applied as o25.14 (local "profile changed" decision without writing, the core-count text, the
+  unverified wait, only answered refusals counted, the lock budget). Part A's findings are o25.15: a
+  never-start with the claim is **confirmed** by a second pass at least 45 s after the first (the 45 s
+  between the two server reads), so a lost-reply re-enqueue still running cannot be finalised `failed`
+  under a wrapper about to be queued; `.reenqueue-1` only; `Finalised` reused; sweep exit 5; the
+  smaller readings; the `job_dir_files` error path; o25.14.4 reworded so the unverified wait reads as
+  never counted.
+
+## [2026-11-18] feat | Unit 5.4b — Lost, the bounded re-enqueue, the Indeterminate count
+- **Landed (Rust):** `JobStatus::Lost` (every `match` explicit, `from_db` arm pinned); classifier
+  payloads `Lost { orphans, stale_boot }` and `Indeterminate { why }`; snapshot v2 with
+  `reenqueue_claim`, the count passed to `classify`; `cancel.sh sweep` (exit 4 "wrapper alive", 5
+  "not row 8"); `submit.sh reenqueue` (markers before the file check, only queued/running rows refuse,
+  `.enqueued`'s own socket when it differs, the claim after the slot check; the lock budget 39 s < 40
+  s); `.reenqueue-1` in `sync::MARKERS`; the poller's `Lost` sweep → evidence → `lost`, the one
+  re-enqueue (`poller/reenqueue.rs`) with its waiting state and counted refusals, the second
+  never-start confirmed 45 s later → evidence → `failed`, row 1 without `.cancelled` → evidence →
+  `failed`, the `Indeterminate` count (`undecided`), `collect_readying`; the 4 new `StatusStep`
+  variants; the injected `Clock`; the Rust text guard forbids "unit 5.4b".
+- **Landed (view):** the TS mirrors; the `lost` chip and `.badge.lost`; `lost` live nowhere and not
+  counted; a failed child for the re-opt comparison; the waiting re-enqueue notice (3rd refusal, or at
+  once for an unverified profile, keyed on the shown `re_enqueue`); the unconfirmed never-start shown as
+  "never started — confirming", never as a failure; the undecided notice; the TS text guard.
+- **Tests:** crate **1032 passed, 28 ignored** (976 at HEAD 91d73d4: +56 — fake-server poller tests,
+  Lab script tests against the real `submit.sh`/`cancel.sh`/`collect.sh`, four end-to-end restart
+  simulations); `tsc` clean; vitest **1154 passed, 2 skipped** of 1156 (1142 before: +12).
+- **Negative controls, all red, each restore byte-identical** (scratchpad scripts
+  `run_54b_controls.sh`, 54 Rust; `run_54b_ts_controls.sh`, 12 frontend): the status, `Lost`,
+  re-enqueue, never-start confirmation, `Indeterminate`, ready-on-not-installed, text-guard, wire and
+  script gates of o25.11 / o25.14.7 / o25.15 — e.g. a claim made before the slot check, a sweep that
+  publishes `.cancelled` or drops the cwd filter, the confirmation timed before the first collect ended.
+- **Open:** Anton's live WebKitGTK gate (the `lost` chip/badge, the notices); o25.10's two uni live
+  checks with throwaway jobs. A real reboot stays simulation-only (a substituted `boot_id`).
+- Wiki: ADR-024 o25.15 and Consequences; `modules/remote-jobs.md`, `modules/execution-backends.md`,
+  `modules/frontend.md`; ROADMAP 5.4b built, live gate open.

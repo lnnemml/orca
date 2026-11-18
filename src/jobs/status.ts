@@ -14,6 +14,7 @@ export const STATUS_CHIPS = [
   "parsed",
   "failed",
   "cancelled",
+  "lost",
 ] as const satisfies readonly JobStatus[];
 
 // Compile-time: a status added to `JobStatus` without a chip is a type error here, not a filter
@@ -24,7 +25,8 @@ void EVERY_STATUS_HAS_A_CHIP;
 
 /**
  * The status bar's counts. A `cancelling` job still runs on the server (some of its processes are
- * alive, o22.5), so it counts as running — the bar never says "idle" while the server is busy.
+ * alive, o22.5), so it counts as running — the bar never says "idle" while the server is busy. A
+ * `lost` job is terminal (ADR-024 o25.1) and counts as neither.
  */
 export function queueCounts(jobs: readonly Pick<Job, "status">[]): { running: number; queued: number } {
   return {

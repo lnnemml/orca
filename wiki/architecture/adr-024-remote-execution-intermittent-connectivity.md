@@ -1,6 +1,6 @@
 # ADR-024: Remote execution under intermittent connectivity
 
-**Status:** Accepted · 2026-10-02 (Proposed → Accepted after the review + acceptance amendments below) · amended 2026-10-03 (probe; probe review; d′ resolution — ready for implementation; l — unit 5.2 script and classifier shape; m — 5.3 submit rules; n — 5.1 Part B profile and connection test) · amended 2026-10-05 (o — 5.3 transport, sync and monitoring; accepted after DESIGN round 4; o13 — Part A2 amendments, accepted after DESIGN review 2026-10-05; o14 — B1 amendments, accepted after DESIGN review 2026-10-05) · amended 2026-10-06 (o15 — B1 Part B: the in-flight guard's scope, accepted after DESIGN review 2026-10-06; o16 — B2: the remote live log is pushed, accepted after DESIGN review 2026-10-06; o17 — B2 Part A: classifier `Cancelled` terminal, drain while watched, accepted after DESIGN review 2026-10-06; o18 — B2 Part B: exit leaves in-flight ssh/rsync to the OS, accepted after DESIGN review 2026-10-06; o19 — B3: the poller's remote state reaches the view, accepted after DESIGN review 2026-10-06) · amended 2026-10-07 (o20 — B3 Part B: run target remembered app-wide, run target only via Create & Run, Withdraw confirms; accepted after DESIGN review 2026-10-07) · amended 2026-10-17 (o21 — Cancel refuses a live remote job before the guard; accepted after DESIGN review 2026-10-17; o22 — unit 5.4a: remote cancel, the pending cancel and the guard; accepted after DESIGN review 2026-10-17, round 2 PASS WITH FINDINGS applied; o22.11–12 — A2a clarifications, reviewed with A2a's CODE verification 2026-10-17) · amended 2026-10-18 (o22.13 — A2b clarifications; accepted after DESIGN review 2026-10-18, round 2 PASS WITH FINDINGS applied; o22.14 — Part B: commands and view; accepted after DESIGN review 2026-10-18, round 2 PASS WITH FINDINGS applied) · amended 2026-10-19 (o23 — unit 5.4c: the pending submit; accepted after DESIGN review 2026-10-19, round 2 PASS WITH FINDINGS applied as o23.13) · amended 2026-11-18 (o24 — B4 fixes: a per-host cap on concurrent ssh/rsync, an app-owned keepalive, the wrapper waits for its session; accepted after DESIGN review 2026-11-18, rounds 1–3 PASS WITH FINDINGS applied)
+**Status:** Accepted · 2026-10-02 (Proposed → Accepted after the review + acceptance amendments below) · amended 2026-10-03 (probe; probe review; d′ resolution — ready for implementation; l — unit 5.2 script and classifier shape; m — 5.3 submit rules; n — 5.1 Part B profile and connection test) · amended 2026-10-05 (o — 5.3 transport, sync and monitoring; accepted after DESIGN round 4; o13 — Part A2 amendments, accepted after DESIGN review 2026-10-05; o14 — B1 amendments, accepted after DESIGN review 2026-10-05) · amended 2026-10-06 (o15 — B1 Part B: the in-flight guard's scope, accepted after DESIGN review 2026-10-06; o16 — B2: the remote live log is pushed, accepted after DESIGN review 2026-10-06; o17 — B2 Part A: classifier `Cancelled` terminal, drain while watched, accepted after DESIGN review 2026-10-06; o18 — B2 Part B: exit leaves in-flight ssh/rsync to the OS, accepted after DESIGN review 2026-10-06; o19 — B3: the poller's remote state reaches the view, accepted after DESIGN review 2026-10-06) · amended 2026-10-07 (o20 — B3 Part B: run target remembered app-wide, run target only via Create & Run, Withdraw confirms; accepted after DESIGN review 2026-10-07) · amended 2026-10-17 (o21 — Cancel refuses a live remote job before the guard; accepted after DESIGN review 2026-10-17; o22 — unit 5.4a: remote cancel, the pending cancel and the guard; accepted after DESIGN review 2026-10-17, round 2 PASS WITH FINDINGS applied; o22.11–12 — A2a clarifications, reviewed with A2a's CODE verification 2026-10-17) · amended 2026-10-18 (o22.13 — A2b clarifications; accepted after DESIGN review 2026-10-18, round 2 PASS WITH FINDINGS applied; o22.14 — Part B: commands and view; accepted after DESIGN review 2026-10-18, round 2 PASS WITH FINDINGS applied) · amended 2026-10-19 (o23 — unit 5.4c: the pending submit; accepted after DESIGN review 2026-10-19, round 2 PASS WITH FINDINGS applied as o23.13) · amended 2026-11-18 (o24 — B4 fixes: a per-host cap on concurrent ssh/rsync, an app-owned keepalive, the wrapper waits for its session; accepted after DESIGN review 2026-11-18, rounds 1–3 PASS WITH FINDINGS applied) · amended 2026-11-18 (o25 — unit 5.4b: `Lost` terminal, the bounded re-enqueue with a server-side counter, the `Indeterminate` count; accepted after DESIGN review 2026-11-18: round 1 FAIL applied, round 2 PASS WITH FINDINGS applied as o25.14)
 
 Refines [ADR-003](adr-003-execution-backend.md) (the `ExecutionBackend` trait + job state
 machine) and extends [ADR-023](adr-023-server-agnostic-remote-execution.md) (one `SshBackend`
@@ -145,7 +145,7 @@ transitions the job back to `queued`; only a genuinely-interrupted run becomes `
 - The wrapper writes **`.started` as its very first action**, before any other logic, so the
   window in which a started job looks like `never-started` is as small as possible.
 - Automatic re-enqueue of a `never-started` job is capped at **once per job** (a counter in the
-  local DB); a **second** `never-started` on the same job becomes **`failed`** with reason
+  local DB *(o25.3: the count is the server's `.reenqueue-<n>` claims; no DB column)*); a **second** `never-started` on the same job becomes **`failed`** with reason
   *"wrapper never started"* and requires a user decision. Rationale: `never-started` also covers
   a **wrapper that crashed before writing `.started`** (not only a restart-dropped queue entry) —
   without a bound, such a job would re-enqueue, crash, and re-enqueue forever. One retry absorbs
@@ -539,7 +539,7 @@ decomposition; Anton decided every fork, before and after DESIGN review rounds 1
   `Lost` and `Cancelling` join `JobStatus` only in 5.4, so 5.2 does not change `JobStatus`.
 - **The re-enqueue count is an input.** The `jobs` column (schema v19 *(renumbered v20 by Decision n: v19 is the 5.1 Part B profile columns; then v21 by Decision o: v20 is the 5.3 job coordinates; then later than v21 by o22.1: v21 is 5.4a's pending cancel)*) lands in **unit 5.4** *(5.4b, o22.1)*. The bound
   holds only if 5.4 **persists the increment before** it issues the re-enqueue (review M5). Otherwise
-  a crash between `tsp` submit and the DB write would re-enqueue again, without limit.
+  a crash between `tsp` submit and the DB write would re-enqueue again, without limit. *(o25.3: the count is the server's `.reenqueue-<n>` claims; no DB column)*
 
 *Details fixed while building 5.2 Part B (2026-10-03).* Items 1–4 are the orchestrator's calls
 within (l); items 5–6 are Anton's decisions.
@@ -655,7 +655,7 @@ review pending, together with the 5.3 decomposition).**
    - **No automatic action** ever frees a slot: a blocked slot almost always means something really
      is still computing on those cores (rule #8).
    - **Persistence and sequencing** (round 1 MED-9): the pending submit and its refusal counter live
-     in the local DB *(o23.4–5: the flag in the DB, v22; the counter per launch in `PollerMemory`)*. Unit **5.4** adds them with the v21 migration *(renumbered from v20 by Decision o: v20 is the 5.3 job coordinates; moved past v21 with unit 5.4c by o22.1)*, next to the re-enqueue counter,
+     in the local DB *(o23.4–5: the flag in the DB, v22; the counter per launch in `PollerMemory`)*. Unit **5.4** adds them with the v21 migration *(renumbered from v20 by Decision o: v20 is the 5.3 job coordinates; moved past v21 with unit 5.4c by o22.1)*, next to the re-enqueue counter *(o25.3: the count is the server's `.reenqueue-<n>` claims; no DB column)*,
      and runs the re-check from its reconcile loop. Until 5.4, a refused submit simply fails with
      the blocking job named.
 3. **"On the slot's mask" means the cores intersect.** *(Scope widened by o item 9: the scan covers every process and live queue of the account, not only the profile's jobs, and runs once inside the submit call instead of through per-job collects; the accounting rule of l round-5 MED-1 stays.)*
@@ -790,7 +790,7 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
 
 1. **Schema v20 = the job coordinates of n 6b** (Anton). `jobs` gains `remote_host`, the absolute
    remote job dir and the socket, written once and never rewritten from the profile. 5.4's columns
-   (re-enqueue counter, pending cancel, pending submit) move to **v21** *(split by o22.1: v21 = the pending cancel; the others move with 5.4b/5.4c)*.
+   (re-enqueue counter, pending cancel, pending submit) move to **v21** *(split by o22.1: v21 = the pending cancel; the others move with 5.4b/5.4c; o25.3: 5.4b needs no version)*.
    - **A job is remote iff its coordinates are non-NULL.** Dispatch (`enum Backend`) keys on the
      coordinates, never on `backend_id`. Remote jobs keep `Queued`/`Running` in `jobs.status`
      (Anton); **every local-only query filters `remote_host IS NULL`** — today exactly
@@ -901,7 +901,7 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
       so a lost withdraw reply is not a dead end. The collector is never run on a missing dir.
    5. **5.4's `ReEnqueue` is a different variant** (round 3 MED-3): a restart-dropped job already has
       `.submitting` and `.enqueued`, so this call would refuse it. The variant asserts no `.started`,
-      `.exit_code`, `.cancelled` and no row, claims a name keyed by the v21 counter *(5.4b's version, o22.1)*
+      `.exit_code`, `.cancelled` and no row *(no queued/running row, o25.4)*, claims a name keyed by the v21 counter *(5.4b's version, o22.1; o25.3–4: the claim `.reenqueue-1` comes after the slot check, under the flock, and is the counter itself)*
       (`.reenqueue-<n>`, `ln -sT`), re-checks the slot and replaces `.enqueued` by rename. Its exact
       form is 5.4's; it is never a bare `tsp` re-enqueue.
 4. **Monitoring is polling while the host answers; it resumes on launch** (Anton). One loop over all
@@ -919,9 +919,9 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
      final status comes from `detect_completion` on the **downloaded** files (rule #6). A failed
      job's output is downloaded too — it is the debugging evidence.
    - Every other outcome (`Queued`, `Running`, `Indeterminate`, `ReEnqueue`, `Lost`, `Cancelling`,
-     `Cancelled` *(now terminal, o17; with `.started` fetched as evidence first, o22.6)*, `Failed{CorruptStarted}` *(with `.cancelled`: terminal `failed`, o22.4.5)*) *(`Cancelling` becomes a status, o22.5)* is **shown, with "handled in unit 5.4" where it needs an
+     `Cancelled` *(now terminal, o17; with `.started` fetched as evidence first, o22.6)*, `Failed{CorruptStarted}` *(with `.cancelled`: terminal `failed`, o22.4.5)*) *(`Cancelling` becomes a status, o22.5)* *(o25: `Lost`, `ReEnqueue`, `WrapperNeverStarted` and row 1 are acted on and made terminal or re-enqueued from 5.4b)* is **shown, with "handled in unit 5.4" where it needs an
      action**; the row stays `Queued`/`Running` (so it still blocks profile edits and deletion).
-     5.3 passes `reenqueue_count = 0` (the column is v21's *(5.4b's version, o22.1)*), so `Failed{WrapperNeverStarted}` cannot
+     5.3 passes `reenqueue_count = 0` (the column is v21's *(5.4b's version, o22.1; o25.3: no column — the server's claims)*), so `Failed{WrapperNeverStarted}` cannot
      occur in 5.3.
    - **One in-flight guard per job** covers submit, withdraw, collect and fetch *(also cancel, retry
      and label; a command refuses a busy job — o15)*: a tick skips a job with an operation still running.
@@ -1389,7 +1389,7 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
     applied; MED-1 / MED-3 / LOW-2 and round-2 LOW-d decided by Anton) on 2026-10-06. It refines item 4's "shown, with 'handled in unit 5.4'", item 4's
     bounded retries ("the reason is shown, and a manual retry is offered") and item 3.4's "not on the
     server" / "submit interrupted" offers. **The gap it closes:** the row's `error_message` already
-    carries the words of every `Shown` outcome except `Indeterminate` (o19.3) (`shown_message`, with "handled in unit 5.4") and of
+    carries the words of every `Shown` outcome except `Indeterminate` (o19.3) (`shown_message`, with "handled in unit 5.4") *(o25: `Lost`, `ReEnqueue`, `WrapperNeverStarted` and row 1 are acted on from 5.4b; the text goes, o25.9)* and of
     every strike / stop (`Poller::strike`), and they reach the view through `job:status`. What the
     view cannot see is the **structure**: the labels of `Labelled` (which decide retry vs withdraw),
     `CheckFailed` (the host is away), and a structured "fetch stopped" flag for the retry button —
@@ -1653,7 +1653,7 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
 
        Each unit migrates only its own columns: **v21 = 5.4a's two columns** (item 2), and the
        re-enqueue counter and the pending submit move to later versions with their units *(renumbers
-       the "v21" of l, m2, o1, o3.5 and o4, each marked; o23.5: 5.4c = v22, 5.4b = v23)*.
+       the "v21" of l, m2, o1, o3.5 and o4, each marked; o23.5: 5.4c = v22, 5.4b = v23; o25.3: 5.4b takes no version)*.
     2. **Two DB columns**, so a cancel survives a quit and a closed laptop.
        - **Columns:** `jobs.cancel_requested_at TEXT NULL` (the user asked) and
          `jobs.cancel_sent_at TEXT NULL` (a delivery is about to run `cancel.sh`; item 4.5). Both
@@ -2476,7 +2476,7 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
        state ends (and by a restart). After a restart the notice comes back after 3 more refusals.
     5. **Schema v22: `jobs.submit_pending_since TEXT NULL`** (UTC, laptop clock, o22.14.6), with
        `CHECK (submit_pending_since IS NULL OR (remote_host IS NOT NULL AND status = 'queued'))` in
-       v21's ADD-COLUMN form. 5.4b takes v23. `Job` carries the column (o22.14.5's seam).
+       v21's ADD-COLUMN form. 5.4b takes v23 *(o25.3: it takes none)*. `Job` carries the column (o22.14.5's seam).
        - **Set** by the write that records a slot-busy / slot-check-error attempt (`record_attempt`,
          same statement), as `COALESCE(submit_pending_since, now)`: a later refusal keeps the first
          time (round 1 LOW-4).
@@ -2904,6 +2904,334 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
         announces the hold and its bound — then exits with ORCA's rc; a cancel still ends it sooner.
         (4) The listing is `ps -o pid=,ppid=,stat=,comm=`: `comm` only names members in the lines.
 
+25. **Unit 5.4b: `Lost`, the bounded re-enqueue, the `Indeterminate` count** (2026-11-18; the
+    archaeology is the explorer map of that date). Decided by Anton: 25.1 (`Lost` is terminal, no
+    automatic restart), 25.4's plan binding (check the re-derived input, stop on a mismatch), 25.4's
+    bound on repeated refusals (`failed` after 3), 25.7 (ready on a not-installed collect), 25.10's
+    two live checks; the rest are the orchestrator's within Decisions d, l and o22.1. DESIGN round 1:
+    FAIL (2 HIGH + 8 MED + 13 LOW), all applied in this text. Today the classifier already emits
+    `Lost`, `ReEnqueue`, `Failed { WrapperNeverStarted }` and `Indeterminate` (rows 8–11), but nothing
+    acts on them: the poller shows a "handled in unit 5.4b" text and leaves the row
+    `queued`/`running`, so it is polled every 15 s forever and blocks profile edits;
+    `collect_and_classify` passes a literal `reenqueue_count = 0` (`ssh_backend.rs` ~l.871), so the
+    bound cannot trip.
+    1. **`Lost` is terminal; the user decides what follows** (Anton).
+       - `Outcome::Lost` gains `stale_boot: bool` (`Lost { orphans, stale_boot }`), so the text can
+         say which case it is (serde and the `types.ts` `Outcome` mirror updated).
+       - A new `JobStatus::Lost`: `as_str`/`from_db` "lost" (an explicit `from_db` arm), an
+         `update_job_status_conn` arm that stamps `completed_at` like the other terminal states, and
+         every match audited — the wildcard arms in `local_backend.rs` ~l.597 and
+         `poller/evidence.rs` ~l.98 included, not left to `_`. TS: the `JobStatus` union, a chip,
+         `.badge.lost` (error tone), not counted by `queueCounts`; not live anywhere (`isLiveStatus`,
+         `is_remote_live`, the poller candidates SQL, `live_remote_jobs`, `RECORD_CANCEL_SQL` — all
+         positive lists, so `lost` is excluded by construction; a test pins it); a failed terminal
+         child for the TS aggregates that list terminal states (`reopt-aggregate`; not a success in
+         `ensemble`). `ConnectivityPanel.isTerminal` serves local children only (a `lost` row is
+         always remote) and is left as is, with a comment. Actions on a `lost` row are those of any
+         terminal row (open, delete).
+       - `lost` gets **no status CHECK and no migration**: the column is unconstrained (the base
+         table has no status CHECK; adding one is a table rebuild), the value is written only by the
+         poller's finalise for a remote row, and the v21/v22 CHECKs already reject the pending
+         columns on it — which `finalize_job_conn` NULLs.
+       - **No automatic restart** in Phase 5: restart-from-last-geometry stays Decision e's open
+         path; the user starts a new job.
+    2. **Before the terminal write: sweep, then evidence.**
+       - Row 8's `orphans` are non-empty only with a current `boot_id` (a wrapper that died in the
+         same boot: OOM, an outside kill). They are swept automatically (Decision l row 8, round 2
+         MED-1) by a new **`cancel.sh sweep`** mode, after `ready_server` (the mode exists only in the
+         new `cancel` sha; o22.13.3's "ready before every sweep"). The mode shares the running
+         cancel's SID-reuse guard, cwd-filtered `job_session`, own-session exclusion and
+         TERM+CONT → 5 s → KILL body, and removes `.tmp` as every cancel does (l Part B item 7); it
+         **never** publishes `.cancelled`. **Rule #9 at the actor:** it re-checks row 8 in shell
+         first — if the wrapper reads alive, ours and same-boot, it signals nothing and exits with
+         its own non-zero code ("wrapper alive"), and the poller just classifies again next step.
+         `run.sh`'s allow-list is by script name and is unchanged; `cancel.sh`'s mode check grows
+         `sweep` (an unknown mode still exits 2).
+       - **The count** is o22.13.4's: `count_sweep` with `min_session` seeded from the first
+         observed `orphans.len()`, progress = the session shrinks, `MAX_SWEEPS_WITHOUT_PROGRESS` = 3.
+         After 3 without progress the job is written `lost` anyway with a notice naming the
+         survivors (as row 3's notice), and the evidence is then **weaker** — survivors may still
+         write after the LIST check (stated in the text, as o22.6 does). If a user Cancel turns the
+         row `cancelling` meanwhile, the cancel path keeps its own count (o22.13.4), started fresh;
+         d′ holds: a delivered `.cancelled` makes the job `cancelled`, not `lost`.
+       - **Evidence:** the artifacts are fetched through o22.6's evidence path (rsync down + LIST; it
+         never reads `.exit_code`; with a stale boot, or after a sweep that emptied the session, the
+         job dir no longer changes). `.reenqueue-1` joins `sync.rs::MARKERS` (downloaded and listed).
+         A failed evidence fetch counts the existing fetch strikes; after 3 the row is finalised
+         `lost` without evidence and says so.
+       - **The write:** `finalize_job_conn` (it NULLs the three pending columns), `error_message`
+         "the server restarted while the job ran" (`stale_boot`) or "the job's wrapper died without
+         an exit code" (current boot). A cancel recorded while the row is being finalised `lost` is
+         moot (the job already stopped) and its columns are NULLed by that write — stated in the
+         row's text ("a pending cancel was dropped: the job had already stopped").
+    3. **The re-enqueue counter lives on the server, not in the DB.** This supersedes Decision l's
+       "a `jobs` column" and o22.1's "5.4b = v23": 5.4b adds **no schema version** (v23 stays free).
+       - The count is the number of `.reenqueue-<n>` claims in the job dir. `collect.sh` reports
+         them (a new recorded marker); the snapshot header becomes `orcastudio-snapshot 2`, so a
+         v1 snapshot fails `parse_snapshot` loudly (rule #9 belt; the trampoline already runs only
+         the app's own `collect-<sha>.sh`, so an old collector cannot feed a new parser).
+         `collect_and_classify` passes the reported count to `classify` instead of the literal 0.
+       - The claim is made **no-clobber (`ln -sT`) inside the same server call and under the same
+         per-account `flock` as the enqueue, after the slot check and before the enqueue** — the
+         review-M5 rule ("persist the increment before the re-enqueue") held at the source of truth
+         (Decision c): a laptop crash, a lost reply, two launches or two racing steps cannot repeat
+         the enqueue, because a second attempt finds the claim and refuses.
+       - **The two-wrapper guarantee** does not rest on the row check alone (a runner orphaned by a
+         daemon SIGKILL is invisible to `tsp -l`, Decision l's N-4 residual): what holds is the
+         wrapper's no-clobber `.started` (`ln -T`, l Part B item 5) on the local-ext4 job dir — a
+         second wrapper in the same dir cannot publish `.started` and exits.
+    4. **The re-enqueue call** (o item 5's "5.4 variant"), sent automatically by the poller on a
+       `ReEnqueue` outcome (Decision d), in the status step, under the job's in-flight guard, after
+       `ready_server`.
+       - **The plan** is derived exactly as `pending_plan` derives a pending submit's (Anton): the run
+         target's checks (`plan_checks`), host/root/socket unchanged, `write_local_dir` with the
+         profile's **current** mask, and **no upload**; the expected NUL list (paths + sha256) is
+         sent, and the server's sha check proves "this mask's derivation = the uploaded bytes".
+         Never re-uploaded: if the mask (and so the aligned `%pal`, o14.2/ADR-025) or the ORCA path
+         changed since the first submit, the shas differ and the job is **not** re-enqueued — it is
+         finalised `failed` at once: "never started on the server, and the profile changed since it
+         was submitted (core mask or ORCA path); start it again as a new job" (Anton: check and
+         stop). A plan refusal (the profile is no longer a run target) ends the same way.
+       - **The new `submit.sh reenqueue` mode**, stdin-fed, sharing `submit`'s steps under one
+         `flock`: the job dir exists; the uploaded files match the expected list; **no** `.started`,
+         `.exit_code`, `.cancelled`, no `.reenqueue-1`; **no tsp row in state queued or running
+         holding the job dir as a whole token** on the recorded socket or `.enqueued`'s — finished
+         rows are allowed (row 11 includes a wrapper that crashed before `.started`; row 9's
+         predicate); then the same slot check (step 5); then the claim `.reenqueue-1` (`ln -sT`);
+         then the enqueue exactly as step 8 (`TMPDIR=<job>/.tsp-out`, the current mask, the current
+         wrapper sha path — `ready_server` installed it; nothing old is baked once the tsp entry is
+         gone); then `.enqueued` replaced by rename, with the same `/proc/net/unix` post-condition.
+         The old `.submitting` symlink stays (it is a claim, not a state); a stale `.tsp-out/` is
+         harmless (tsp writes a new file in it). It answers with `submit`'s typed reply kinds. **Lock
+         budget:** the extra `tsp -l` of `.enqueued`'s socket is folded into the existing socket
+         probe when the sockets coincide, and the implementer re-derives and states the budget so
+         the sum stays **below** the 40 s cap.
+       - **Refusals.** Slot busy, a slot-check error and `lock-busy` are transient: no claim is made,
+         the count stays 0, and the next status step tries again; the row stays `queued` and the
+         record carries a distinct **`ReEnqueueWaiting { refusals, notified, notice }`** (a new
+         `StatusStep` and record field with its TS mirror and a view gate keyed on the shown
+         `re_enqueue` outcome — **not** o23's `pending_submit`, which belongs to a first submit and
+         whose view requires `submit_pending_since`); the blockers' notice shows at the 3rd refusal;
+         the waiting state resets on success or on any decided outcome other than `ReEnqueue`. The
+         5.4c `submit_pending_since` flag is **not** set (it would route the job into
+         `recheck_submit`, whose plain `submit` refuses on `.submitting`). Any **other** refusal
+         (`upload-mismatch` aside, which 25.4's plan binding already finalises; `refused-kup`, which
+         also clears the profile's `verified_at` as o13.3 says; an install failure; an unknown reply)
+         is shown and counted per launch; at the **3rd** the row is finalised `failed` with that
+         refusal's text (Anton). Refusals the next classify re-decides (`.started`, `.reenqueue-1`
+         or a live row appeared) are not counted.
+    5. **A second never-start is terminal `failed`** (Decision d), after a fetch of `.tsp-out/` and
+       the markers as evidence, via `finalize_job_conn`, with the text "the job never started on the
+       server after one re-enqueue (or the re-enqueue did not reach the queue); see `.tsp-out`" — one
+       honest text for both cases, which the markers then tell apart. No third attempt; Retry submit
+       stays refused for it (its label is `Classifier`).
+    6. **`Indeterminate` count** (row 10). `Outcome::Indeterminate` gains `why` (the socket error,
+       or "the `.started` read disagreed twice" for the retake case). The count is per launch, in
+       `JobMemory` (like the sweep and refusal counts: a restart is a fresh look), consecutive per
+       job. It is fed by the status step's `Indeterminate` and by o22.12.2's `CancelStopped` /
+       `CancelDelivered(Indeterminate)`; a decided outcome resets it; a `CheckFailed` (no answer)
+       neither counts nor resets. At the **3rd** consecutive pass the record carries a new field
+       `undecided { passes, notice }` ("the server's state of this job could not be decided 3 times
+       in a row: <why>") — not `check_error`, which stays the per-step error. No row write, no action
+       (row 10's rule).
+    7. **Ready on a not-installed collect** (Anton). The ordinary status step does not ready the
+       server (label → collect), so after an app upgrade that changes the `collect` sha (5.4b does)
+       every live remote job's collect answers `NotInstalled` until some submit, cancel or sweep
+       reinstalls. From 5.4b: a status step whose collect answers `NotInstalled` runs `ready_server`
+       once and collects again in the same step; a second `NotInstalled` is a `CheckFailed` as
+       today. This closes the gap for o24's and every later script change.
+    8. **Row 1 without `.cancelled`** (`Failed { CorruptStarted { cancelled: false } }`, assigned to
+       no unit so far) becomes terminal `failed` with evidence, like o22.6's cancelled case: the
+       wrapper's step-1a self-check makes it unlikely ORCA ran, and a corrupt `.started` cannot be
+       swept (no `sid`); the text says so.
+    9. **Texts.** Every "handled in unit 5.4b" string goes; the shown texts become the outcomes' own;
+       the text guards forbid `unit 5.4b` in user-facing strings from now on (`text-guard.test.ts`,
+       `text_guard_tests.rs`) — that is 25.9's own negative control. The view's
+       `OUTCOME_NAME`/`OUTCOME_TONE` already cover `lost` and `re_enqueue`. Every new `StatusStep`
+       variant (the re-enqueue sent, waiting, refused; the lost sweep and finalise; the never-started
+       finalise) is mapped in `remote_state::next` with no wildcard, mirrored in TS, and handled in
+       the `cancelNotice` switch.
+    10. **Restart fidelity and the live checks** (Anton).
+        - **Simulation (tests):** the classifier tables and the Lab — a stale `boot_id` in a real
+          `.started` (→ `Lost { stale_boot }` → evidence → `lost`), a same-boot dead wrapper with a
+          live session member (→ `sweep` → `lost`), an emptied rows file standing in for the dropped
+          queue, with and without a finished row (→ `reenqueue` → a new row → row 9 `Queued`,
+          `.reenqueue-1`, the new `.enqueued`), a second empty queue (→ `failed`), a changed mask
+          (→ `failed` at once). The stub `tsp` may gain a `-K` that models P4 (a running job
+          survives, the queued runner dies).
+        - **Live on uni, with throwaway jobs, only when the slot's queue holds no real work** (a
+          daemon kill touches the whole slot): (1) the prober `kill -9`s the wrapper of a throwaway
+          running app job → same-boot `Lost` with real MPI orphans → sweep → evidence → `lost`;
+          (2) a throwaway running job and a throwaway queued job on the slot, then the prober runs
+          `tsp -K` on the app's slot socket → the running job survives (P4), the queued one is
+          dropped → `ReEnqueue` → re-enqueued → it runs. Plus the regression check: normal jobs
+          still classify, finish and fetch with the grown collect format and the new shas.
+        - **Stale boot** needs a real reboot (the admin's machine): simulation-only; the first
+          natural reboot of uni with a live app job is recorded when it happens (Open question b).
+    11. **Gates and negative controls** (each must turn its test red):
+        - Status: `Lost` round-trips `as_str`/`from_db` (control: no `from_db` arm → red); the
+          `update_job_status_conn` arm stamps `completed_at` (control: missing → red); `lost` is not
+          live in any listed predicate (control: one counting it → red); the TS chip (exhaustiveness
+          guard).
+        - Lost (fake server): stale boot → evidence → `lost` with the restart text, pending columns
+          NULL (control: no terminal write → polled again, red; wrong text for `stale_boot` → red);
+          same boot with orphans → ready, then sweep, finalise only after the session is empty or
+          3 sweeps without progress (control: finalise before the sweep → red); evidence strikes.
+        - Re-enqueue: the reported claim count reaches `classify` (control: literal 0 → no `failed`
+          on the second never-start, red); `ReEnqueue` sends one `reenqueue` per pass (control: two →
+          red); slot busy → no claim, `ReEnqueueWaiting` notice at the 3rd (control: claim before the
+          slot check → red; the waiting state not reset → red); a changed mask → `failed` at once, no
+          call sent with a mismatching list (control: re-enqueued anyway → red); 3 non-slot refusals
+          → `failed` (control: unbounded → red); the second never-start → `failed` (control: third
+          attempt → red).
+        - Scripts (Lab, real `bash`): `submit.sh reenqueue` refuses on each of `.started`,
+          `.exit_code`, `.cancelled`, `.reenqueue-1`, a queued/running row, a sha mismatch (one
+          control per assertion), **accepts with a finished row** (control: any row refuses → red),
+          and on success leaves the claim, the new `.enqueued` and the row; `cancel.sh sweep` kills
+          a cwd-matching member, spares a foreign one, never writes `.cancelled`, removes `.tmp`,
+          and signals nothing when the wrapper is alive and ours (controls: publish `.cancelled` →
+          red; drop the cwd filter → red; drop the row-8 re-check → red); an unknown mode exits 2;
+          `collect.sh` reports the claim under the v2 header (controls: claim not reported → red; a
+          v1 header accepted → red); `.reenqueue-1` is in the download set and the LIST.
+        - `Indeterminate`: the notice at the 3rd consecutive pass, reset on a decided one, unchanged
+          by a `CheckFailed` (controls: no reset → red; notice at the 1st → red; `CheckFailed` resets
+          → red).
+        - Ready on `NotInstalled`: one ready + one re-collect, then `CheckFailed` (control: no
+          ready → stays `NotInstalled`, red).
+        - Row 1 without `.cancelled` → `failed` with evidence (control: left live → red).
+        - Text guard: `unit 5.4b` forbidden (control: one string left → red).
+        - The `cancel`/`collect` sha and install tests are updated, not bypassed.
+    12. **Propagation** (marked where they stand, in this change): Decision d's "a counter in the
+        local DB", l's "the `jobs` column … lands in unit 5.4", m2's "next to the re-enqueue
+        counter", o1, o3.5's "keyed by the v21 counter" and its order (now: claim after the slot
+        check), o4's "handled in unit 5.4" / "the column is v21's", o22.1's "5.4b = v23", o23.5's
+        "5.4b takes v23", ROADMAP 5.4b ("incremented before … Its own schema version"),
+        `wiki/modules/remote-jobs.md` ("The DB re-enqueue counter (a later schema version…)"); the
+        `db.rs` version-history comment ("5.4b takes v23") changes with the code.
+    13. **Wiki in the same change as the code:** `modules/remote-jobs.md` (Lost, the sweep mode, the
+        server-side counter and the `reenqueue` mode, the waiting state, the Indeterminate count, the
+        ready-on-not-installed step), `modules/frontend.md` (the `lost` status and the new notices),
+        `modules/execution-backends.md` if it lists statuses, ADR-024 Consequences' `JobStatus` list,
+        `wiki/log.md`, ROADMAP 5.4b.
+
+    14. **DESIGN round 2 clarifications** (PASS WITH FINDINGS, 4 MED + 6 LOW; 14.2 and 14.3 decided by
+        Anton). **They win over the items above where they differ.**
+        1. **"Profile changed" is decided locally, without writing** (MED-A). The poller derives the
+           input **in memory** with the current mask (as `plan_from` would, but `write_local_dir` is
+           not called) and compares its digests with the local job dir as it stands — which holds
+           exactly the bytes the enqueuing attempt uploaded. Differ → terminal `failed`, the local
+           dir untouched, **no call sent**. Equal → that list is sent. In `submit.sh reenqueue` the
+           step-3 marker and row checks run **before** the step-4 file check, and step 4 excludes
+           `.submitting`, `.enqueued`, `.reenqueue-*` and `.tsp-out/`. A server `upload-mismatch` is
+           then an "other refusal" (14.4), never the "profile changed" text. `submit.sh`'s existing
+           "any row holds the job dir" refusal is filtered by state (`row_fields`) in this mode.
+        2. **What the binding covers** (MED-B; Anton: take the current values). The digest binds only
+           what is in the uploaded files — the aligned `%pal` **count**. A re-enqueue uses the
+           profile's **current** ORCA path and core mask, as a retry does (o14.2); a mask edit that
+           keeps the CPU count re-enqueues on the new cores. The `failed` text says exactly that: "never
+           started on the server, and the core count of the profile changed since it was submitted
+           (the input's `%pal` no longer matches); start it again as a new job". 25.4's "or the ORCA
+           path" is withdrawn.
+        3. **An unverified profile is a wait, not an end** (MED-C; Anton: wait). If `plan_checks`
+           refuses because the profile is not a run target (its `verified_at` cleared by an edit, a
+           failed or timed-out connection test, or a `refused-kup`), the re-enqueue makes **no ssh
+           call** and the row stays `queued` in `ReEnqueueWaiting` with the notice "re-test the server
+           profile to continue"; the next step after a passing test re-enqueues. It is not counted.
+           So `refused-kup` is a count of one followed by this wait; 25.4's "3rd `refused-kup`" is
+           withdrawn.
+        4. **Only answered refusals count** (MED-D, o23.13.4's contact rule). An `Unknown` reply whose
+           call's contact `Failed` is a lost reply: not counted, the next step re-decides. A ready or
+           install that got no answer is a `CheckFailed`: not counted. Counted (3rd → `failed`): an
+           answered refusal outside the transient set (slot busy, slot-check error, lock-busy) — e.g.
+           `upload-mismatch`, `refused-kup`, an install refusal, an unreadable answered reply. **Never
+           counted:** the transient set, a reply that never came, and the 14.3 unverified wait (no
+           call is made) *(reworded by o25.15.7: the earlier "and the 14.3 wait" read as counted)*. "Refusals the next classify re-decides are not counted" is mechanised as:
+           the count is kept only while the next classify is `ReEnqueue` again; any other outcome
+           resets it.
+        5. **Lock budget** (LOW-1): `submit.sh`'s budget sums to 37 s; one more `tsp -l` (2 + 1 s)
+           would make 40 s, not below the cap. The reenqueue mode probes `.enqueued`'s socket **only
+           when it differs** from the recorded socket and, when it does, a bound elsewhere in the mode
+           shrinks so the sum stays < 40 s; the implementer states the arithmetic.
+        6. **Mechanics** (LOW-4): a sweep's "wrapper alive" exit does not count toward its 3 (the job
+           is re-classified, not swept); `Labelled` and `SubmitRechecked` neither count nor reset the
+           `Indeterminate` run (only decided classify outcomes reset it); `ReEnqueueWaiting` is kept
+           across `CheckFailed`, `CancelNotSent` and `CancelStopped`, cleared by any decided outcome
+           other than `ReEnqueue` and by success, and sets `known = Shown(ReEnqueue)` so the view gate
+           works (as o23.10 states for `pending_submit`).
+        7. **Gates added** (LOW-3, LOW-5): the claim-after-slot-check order is a **Lab** gate (the
+           fake server cannot see it); the local dir is byte-identical after a "profile changed"
+           (control: rewritten → red); a success with `.submitting` and `.enqueued` present (control:
+           no exclusion → red); a `.started` yields the marker refusal kind, not `upload-mismatch`
+           (control: file check first → red); an unverified profile waits with no call (control:
+           terminal → red); a lost reply is not counted (control: counted → red); `refused-kup`
+           clears `verified_at`; `Indeterminate { why }` on the retake path; the "pending cancel was
+           dropped" text; `Lost` reached from a `queued` row (label → Classifier → `lost`); the sweep
+           removes `.tmp` (control: kept → red).
+        8. **Live check (2) expectation** (LOW-6): the P4 survivor has no tsp row, so the slot scan
+           counts it as a blocker: the re-enqueue waits `blocked` (notice after ~45 s) until the
+           survivor ends, then runs. That is the expected sequence, not a failure.
+        9. **Propagation** (LOW-2): o3.5's "no row" reads "no queued/running row (o25.4)"; o4's
+           "shown, with 'handled in unit 5.4' … the row stays `Queued`/`Running`" gets an o25 mark.
+
+    15. **Part A clarifications** (2026-11-18; found by the Part A implementer, settled by the
+        orchestrator within o25). **They win over the items above where they differ.**
+        1. **A never-start with the claim is confirmed before it is terminal** (closes a race o25 left
+           open). The collector does not take the account lock, and the claim precedes the enqueue
+           under it, so a re-enqueue call still running on the server — its reply lost — can have
+           claimed and not yet enqueued when a collect reads the claim and no row: o25.5's `failed`
+           would then leave an ORCA run nobody watches or fetches. Rule: with the claim present, a
+           never-start is finalised `failed` only on **two consecutive never-start passes whose
+           collects are ≥ 45 s apart** (45 s > the 40 s cap on any `submit.sh` call under the flock,
+           so any re-enqueue call that could still enqueue has ended). The 45 s bound the gap between
+           the two **server reads** (CODE review F2): the first pass is remembered when its collect
+           **ended**, and a confirming pass counts only if its collect **started** (the step's time
+           before `collect_readying`) at least 45 s after that. Per launch, in `JobMemory`; any
+           other verdict resets it (a step that decided nothing keeps it); the first such pass, and any
+           consecutive one sooner than 45 s, is shown, not terminal, with a neutral text. The time is
+           the poller's injected clock. Gates: one pass → not terminal (control: terminal at the
+           first → red); two passes < 45 s apart → not terminal (control: no spacing check → red);
+           two passes ≥ 45 s apart → `failed`; another verdict between them restarts it (control: not
+           reset → red); with a slow collect, a confirming pass whose collect starts 44 s after the
+           first collect ended is not terminal (controls: the first timed at its collect's start → red;
+           the confirming one timed after its collect → red).
+        2. **The count is `.reenqueue-1` only**: the collector reports `reenqueue_claim yes|no` from
+           `path_exists` (error-aware), not a glob over `.reenqueue-<n>` (whose readdir failure would
+           read as "no claim"); the re-enqueue refuses on `.reenqueue-1`, so no other claim exists.
+        3. **`StatusStep::Finalised` is reused** for the `lost` and never-started terminal writes
+           (`status` `lost`/`failed`, `outcome` the verdict); o25.9's list of new variants is satisfied
+           by it — the new variants are `lost_swept`, `re_enqueued`, `re_enqueue_waiting`,
+           `re_enqueue_refused`.
+        4. **`cancel.sh sweep` exit 5** ("not row 8": no parsable `.started`, or `.exit_code` /
+           `.cancelled` present) beside exit 4 ("wrapper alive"); both signal nothing and neither is
+           counted.
+        5. **Smaller readings:** the unverified wait shows its notice at once; `Labelled` ends the
+           re-enqueue's waiting state; any other plan refusal (host or root moved, the input refused)
+           ends the job `failed` with its text, and a local DB/IO error is `CheckFailed`; the "core
+           count changed" text is used when exactly `input.inp` differs, any other difference named as
+           it is; an `Unknown` reply with no call made is counted; an unparsable `.enqueued` in the
+           re-enqueue form is a counted refusal; the dropped-cancel note applies to the 5.4b evidence
+           kinds only; a `refused-kup` clears the stamp even when the row changed (as
+           `record_attempt` does); the record's `undecided` field is null below the 3rd pass. "Any
+           other plan refusal → `failed`" is reachable only through a deleted or edited profile, which
+           o item 2 refuses while the job is non-terminal (`refuse_while_live`): a belt, not a path.
+           Gates (CODE review F3, each with a control): an `Unknown` with no call made is counted; a
+           `collect.sh` claim read error ends the snapshot (an `error` record), never "no claim"; a
+           `Labelled` step ends the re-enqueue's waiting state.
+        6. **`job_dir_files`**, the pure half extracted from `prepare_job_dir_with`, validates every aux
+           name before anything is written (before, `input.inp` was written ahead of an invalid aux
+           name's error); the existing tests are unchanged and green.
+        7. **Wording** (CODE review F7): o25.14.4 is reworded in place so the unverified wait reads as
+           never counted (it never was, in the code). Named residuals, in `modules/remote-jobs.md`: a
+           stray `.started.tmp.<pid>` left by a wrapper killed between its temp write and its link is
+           an extra file to the re-enqueue's file check — an `upload-mismatch`, counted, so `failed`
+           after 3; and a sweep exit 4/5 is not counted, so a job whose shell and Rust predicates
+           disagreed would be swept forever — their agreement is the parity tests' through
+           `cancel.sh check`.
+        8. **The view (Part B)**: the record's `re_enqueue_waiting` also carries `last` (the wait it
+           names), so a busy slot's blockers are listed as a pending submit's are; a never-start
+           awaiting its confirmation is shown as waiting ("never started — confirming"), never as a
+           failure.
+
 ## Alternatives rejected
 
 - **Queue on the laptop.** The laptop is offline 22:00–08:00, so a laptop-side queue would idle
@@ -2925,13 +3253,15 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
   reconnect protocol in d). `poll_log`'s offset-pull (already in ADR-003) is what makes
   tail-after-reconnect work. **Amends ADR-003**'s reconciliation sketch by naming the server FS
   as authoritative and defining the five-way classification.
-- **Job state machine.** Adds a new terminal state **`lost`**. Today `JobStatus`
-  (`src-tauri/src/models/job.rs`) is `{ Draft, Queued, Running, Completed, Parsed, Failed,
-  Cancelled }` — there is **no `Lost`**. **Amends ADR-003** (and the Phase 5 ROADMAP item that
+- **Job state machine.** Adds a new terminal state **`lost`**. When this ADR was written `JobStatus`
+  (`src-tauri/src/models/job.rs`) was `{ Draft, Queued, Running, Completed, Parsed, Failed,
+  Cancelled }`, with no `Lost`; it now holds `Lost` (o25.1, unit 5.4b) and `Cancelling` (o22.5).
+  **Amends ADR-003** (and the Phase 5 ROADMAP item that
   listed only `uploading → running → syncing`): `lost` is required to represent "interrupted, no
   `.exit_code`". (The `uploading`/`syncing` transient states from the ROADMAP are orthogonal and
   still apply to the rsync phases.) **o22.5** adds the transient **`Cancelling`** (remote only, unit 5.4a);
-  `Lost` comes with 5.4b.
+  **o25.1** adds the terminal **`Lost`** (remote only, unit 5.4b): no automatic restart, no schema
+  version, live for no predicate.
 - **Domain rule #4.** Rule #4 today reads as a **global** "default concurrency = 1". This ADR
   makes concurrency a **per-backend/profile** setting (Local = 1; each server profile carries its
   own slot count, defaulting to 1 until measured). **Amends rule #4** — proposed re-wording is in

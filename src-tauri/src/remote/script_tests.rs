@@ -165,7 +165,7 @@ exit "${STUB_KUP_RC-0}"
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Tracked {
     pub(super) pid: u32,
-    starttime: u64,
+    pub(super) starttime: u64,
 }
 
 pub(super) struct Lab {
@@ -342,7 +342,8 @@ impl Lab {
         let slot = [self.root.join("slot.sock")];
         let sockets = if sockets.is_empty() { &slot[..] } else { sockets };
         let snap = self.snapshot(job, sockets).expect("snapshot");
-        match classify(&snap, 0).expect("classify") {
+        // The count the collector reported (o25.3), as `collect_and_classify` passes it.
+        match classify(&snap, snap.reenqueue_claims).expect("classify") {
             Classification::Decided(outcome) => outcome,
             Classification::Retake => panic!("unexpected retake"),
         }
@@ -1707,7 +1708,8 @@ fn collector_adds_the_enqueued_socket_and_reports_a_tsp_failure_as_an_error_fact
     assert_eq!(snap.sockets.len(), 2);
     assert_eq!(snap.sockets[1].socket_path, Lab::str(&old));
     assert!(matches!(snap.sockets[1].state, SocketState::Error(_)));
-    assert_eq!(lab.classify(&job, &[slot]), Outcome::Indeterminate);
+    let outcome = lab.classify(&job, &[slot]);
+    assert!(matches!(&outcome, Outcome::Indeterminate { why } if why.contains("tsp -l failed")), "{outcome:?}");
 }
 
 #[test]
@@ -1721,7 +1723,8 @@ fn collector_reports_an_unparsable_enqueued_as_an_error_fact_not_as_no_rows() {
     assert_eq!(snap.sockets[1].socket_path, format!("{}/.enqueued", Lab::str(&job)));
     assert!(matches!(snap.sockets[1].state, SocketState::Error(_)));
     // Never started, but the queue entry cannot be checked: no re-enqueue (row 10).
-    assert_eq!(lab.classify(&job, &[slot]), Outcome::Indeterminate);
+    let outcome = lab.classify(&job, &[slot]);
+    assert!(matches!(&outcome, Outcome::Indeterminate { why } if why.contains("unparsable .enqueued")), "{outcome:?}");
 }
 
 #[test]
@@ -1873,7 +1876,7 @@ fn collector_skips_proc_for_a_started_from_another_boot_and_the_job_is_lost() {
     let wire = String::from_utf8_lossy(&out.stdout);
     assert!(wire.contains("\nproc skipped\n"), "{wire}");
     assert!(!wire.contains("wrapper_stat"), "{wire}");
-    assert_eq!(lab.classify(&job, &[slot]), Outcome::Lost { orphans: vec![] });
+    assert_eq!(lab.classify(&job, &[slot]), Outcome::Lost { orphans: vec![], stale_boot: true });
 }
 
 #[test]
@@ -2339,7 +2342,239 @@ fn negative_control_a_cancel_that_keeps_tmp_is_caught() {
     let job = lab.job("keeps-tmp");
     assert!(lab.cancel("cancel", &job).status.success());
     fs::create_dir_all(job.join(".tmp")).unwrap();
-    with_cancel_script(&lab, &mutate(CANCEL, "    rm -rf -- \"$JOB/.tmp\"\n", "\n"));
+    // The cancel mode's removal (the sweep mode has its own since o25.2, with its own control).
+    with_cancel_script(&lab, &mutate(CANCEL, "before it creates .tmp at step 3.\n    rm -rf -- \"$JOB/.tmp\"\n", "before it creates .tmp at step 3.\n"));
     let err = second_cancel(&lab, &job, &[], &[w]).unwrap_err();
     assert!(err.starts_with(".tmp is present"), "{err}");
+}
+
+// ---- cancel.sh sweep and the re-enqueue claim (ADR-024 o25.2–3, unit 5.4b) -------------------
+
+/// Wait up to [`WAIT`] for `cond`; `false` if it never held (a check function's `Err`, not a panic).
+fn eventually(mut cond: impl FnMut() -> bool) -> bool {
+    let deadline = Instant::now() + WAIT;
+    while !cond() {
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    true
+}
+
+/// A running wrapper whose own process was killed (an OOM, an outside kill): row 8 in this boot.
+/// Its ORCA stub (with its `sleep`) and an escaped rank are left in the job dir; a member with a
+/// foreign cwd sits beside them in the session. Returns the job, the three job-dir members and the
+/// foreign one.
+fn wrapper_killed(lab: &mut Lab, name: &str) -> (PathBuf, [Tracked; 3], Tracked) {
+    let job = lab.job(name);
+    let wrapper = running_wrapper(lab, &job, "rank foreign");
+    let pid_of = |f: &str| -> u32 { fs::read_to_string(job.join(f)).unwrap().trim().parse().unwrap() };
+    let members = [tracked(pid_of("orca.pid")), tracked(pid_of("sleep.pid")), tracked(pid_of("rank.pid"))];
+    let foreign = tracked(pid_of("foreign.pid"));
+    // SAFETY: kill(2) on our own unreaped child: its PID cannot have been reused.
+    unsafe { libc::kill(wrapper as i32, libc::SIGKILL) };
+    lab.wait_child(wrapper);
+    (job, members, foreign)
+}
+
+/// o25.2: `cancel.sh sweep` on row 8 in this boot. `Ok` iff it exits 0, ends every member whose cwd
+/// is the job dir (ORCA, its child, an escaped rank), spares the member with a foreign cwd, publishes
+/// no `.cancelled`, removes `.tmp` — and the classifier then reads `Lost` with no orphans.
+fn sweep_check(script: &str) -> Result<(), String> {
+    let mut lab = Lab::new();
+    let (job, members, foreign) = wrapper_killed(&mut lab, "sweep");
+    match lab.classify(&job, &[]) {
+        Outcome::Lost { orphans, stale_boot: false } if orphans.len() >= 3 => {}
+        other => return Err(format!("the fixture is row 8 with orphans: {other:?}")),
+    }
+    assert!(job.join(".tmp").is_dir(), "the fixture: the wrapper made .tmp");
+    with_cancel_script(&lab, script);
+    let out = lab.cancel("sweep", &job);
+    let text = stdout(&out);
+    if out.status.code() != Some(0) {
+        return Err(format!("rc {:?}: {text}{}", out.status.code(), String::from_utf8_lossy(&out.stderr)));
+    }
+    if !eventually(|| members.iter().all(|t| is_dead(*t))) {
+        return Err(format!("a job-dir member survived the sweep: {text}"));
+    }
+    if is_dead(foreign) {
+        return Err(format!("signalled pid {} outside the job session: {text}", foreign.pid));
+    }
+    if job.join(".cancelled").exists() {
+        return Err(format!(".cancelled was published: {text}"));
+    }
+    if job.join(".tmp").exists() {
+        return Err(format!(".tmp is present after the sweep: {text}"));
+    }
+    match lab.classify(&job, &[]) {
+        Outcome::Lost { orphans, stale_boot: false } if orphans.is_empty() => Ok(()),
+        other => Err(format!("after the sweep: {other:?}")),
+    }
+}
+
+#[test]
+fn the_lost_sweep_kills_the_job_dirs_orphans_only_and_never_cancels() {
+    sweep_check(CANCEL).unwrap();
+}
+
+/// NEGATIVE CONTROL (o25.11 "drop the cwd filter → red"): the shared job-session filter dropped.
+#[test]
+fn a_lost_sweep_without_the_cwd_filter_turns_red() {
+    let red = sweep_check(&mutate(CANCEL, "[[ $cwd == \"$JOB\" ]] && JOB_SESSION+=(\"$pid\")", "JOB_SESSION+=(\"$pid\")")).unwrap_err();
+    assert!(red.starts_with("signalled pid"), "{red}");
+}
+
+/// NEGATIVE CONTROL (o25.11 "publish `.cancelled` → red"): the sweep publishes the cancel marker.
+#[test]
+fn a_lost_sweep_that_publishes_cancelled_turns_red() {
+    // After the row-8 re-check (before it, the re-check itself would refuse on the marker).
+    let red = sweep_check(&mutate(
+        CANCEL,
+        "    if [[ $BOOT != current ]]; then\n        echo \"sweep: skip .started is from another boot\"",
+        "    publish_cancelled\n    if [[ $BOOT != current ]]; then\n        echo \"sweep: skip .started is from another boot\"",
+    ))
+    .unwrap_err();
+    assert!(red.starts_with(".cancelled was published"), "{red}");
+}
+
+/// NEGATIVE CONTROL (o25.14.7 "the sweep removes `.tmp` (control: kept → red)").
+#[test]
+fn a_lost_sweep_that_keeps_tmp_turns_red() {
+    let red = sweep_check(&mutate(
+        CANCEL,
+        "    fi\n    rm -rf -- \"$JOB/.tmp\"\n    echo \"tmp: removed $JOB/.tmp\"\n    echo \"done\"\n    exit 0\n",
+        "    fi\n    echo \"done\"\n    exit 0\n",
+    ))
+    .unwrap_err();
+    assert!(red.starts_with(".tmp is present"), "{red}");
+}
+
+/// o25.2, rule #9 at the actor: with the wrapper alive and ours in this boot (row 7, not row 8) the
+/// sweep signals nothing, keeps `.tmp`, publishes nothing and exits 4 ("wrapper alive"). `Ok` iff so.
+fn sweep_alive_check(script: &str) -> Result<(), String> {
+    let mut lab = Lab::new();
+    let job = lab.job("sweep-alive");
+    let wrapper = running_wrapper(&mut lab, &job, "rank");
+    let pid_of = |f: &str| -> u32 { fs::read_to_string(job.join(f)).unwrap().trim().parse().unwrap() };
+    let alive = [tracked(wrapper), tracked(pid_of("orca.pid")), tracked(pid_of("rank.pid"))];
+    with_cancel_script(&lab, script);
+    let out = lab.cancel("sweep", &job);
+    let text = stdout(&out);
+    std::thread::sleep(Duration::from_millis(300));
+    if let Some(t) = alive.iter().find(|t| is_dead(**t)) {
+        return Err(format!("signalled pid {} of a live wrapper's job: {text}", t.pid));
+    }
+    if out.status.code() != Some(4) || !text.contains("sweep: skip wrapper alive") {
+        return Err(format!("rc {:?}: {text}", out.status.code()));
+    }
+    if !job.join(".tmp").is_dir() || job.join(".cancelled").exists() {
+        return Err(format!("the job dir changed: {text}"));
+    }
+    Ok(())
+}
+
+#[test]
+fn the_lost_sweep_signals_nothing_while_the_wrapper_is_alive_and_ours() {
+    sweep_alive_check(CANCEL).unwrap();
+}
+
+/// NEGATIVE CONTROL (o25.11 "drop the row-8 re-check → red"): without the "wrapper alive" exit the
+/// sweep kills a running job's session.
+#[test]
+fn a_lost_sweep_without_the_row_8_recheck_turns_red() {
+    let red = sweep_alive_check(&mutate(
+        CANCEL,
+        "    if [[ $BOOT == current && $ALIVE == yes && $OURS == yes ]]; then\n        # Row 7, not row 8: the classifier's next pass decides.\n        echo \"sweep: skip wrapper alive\"\n        exit 4\n    fi\n",
+        "",
+    ))
+    .unwrap_err();
+    assert!(red.starts_with("signalled pid"), "{red}");
+}
+
+/// o25.2: row 8 no longer holding for another reason — `.exit_code` or `.cancelled` there, or no
+/// parsable `.started` — exits 5 and signals nothing; an unknown mode is a usage error (exit 2).
+#[test]
+fn the_lost_sweep_refuses_when_row_8_does_not_hold_and_an_unknown_mode_exits_2() {
+    let mut lab = Lab::new();
+    let w = bystander(&mut lab);
+    for (name, setup) in [("exit-code", ".exit_code"), ("cancelled", ".cancelled"), ("no-started", ""), ("corrupt-started", "corrupt")] {
+        let job = lab.job(name);
+        fs::create_dir_all(job.join(".tmp")).unwrap();
+        let t = session_sleeper(&mut lab, &job);
+        match setup {
+            "" => {}
+            "corrupt" => write_started_text(&job, "pid=1\n"),
+            marker => {
+                write_started(&job, t.pid, t.starttime + 1);
+                fs::write(job.join(marker), "1\n").unwrap();
+            }
+        }
+        let out = lab.cancel("sweep", &job);
+        let text = stdout(&out);
+        assert_eq!(out.status.code(), Some(5), "{name}: {text}");
+        assert!(text.contains("sweep: skip not row 8"), "{name}: {text}");
+        assert!(job.join(".tmp").is_dir(), "{name}: .tmp kept");
+        assert!(!is_dead(t) && !is_dead(w), "{name}: nothing signalled");
+    }
+    let job = lab.job("bogus-mode");
+    assert_eq!(lab.cancel("sweepall", &job).status.code(), Some(2), "an unknown mode exits 2");
+    assert!(!job.join(".cancelled").exists());
+}
+
+/// o25.3: the collector reports the re-enqueue claim (`.reenqueue-1`, a dangling symlink, as the
+/// re-enqueue makes it) under the v2 header, and the classifier counts it: the first never-start is
+/// `ReEnqueue`, the one after the claim `Failed { WrapperNeverStarted }`. NEGATIVE CONTROL
+/// (`run_54b_controls.sh collect-claim-unreported`): the collector prints `no` for a claim → red.
+#[test]
+fn the_collector_reports_the_reenqueue_claim_and_the_classifier_counts_it() {
+    let lab = Lab::new();
+    let job = lab.job("claim");
+    let slot = [lab.root.join("slot.sock")];
+    assert_eq!(lab.snapshot(&job, &slot).unwrap().reenqueue_claims, 0);
+    assert_eq!(lab.classify(&job, &[]), Outcome::ReEnqueue);
+    std::os::unix::fs::symlink("x", job.join(".reenqueue-1")).unwrap();
+    let out = lab.collect(&job, &slot);
+    assert!(out.stdout.starts_with(b"orcastudio-snapshot 2\n"), "the v2 header");
+    assert_eq!(lab.snapshot(&job, &slot).unwrap().reenqueue_claims, 1);
+    assert_eq!(
+        lab.classify(&job, &[]),
+        Outcome::Failed { reason: super::classify::FailReason::WrapperNeverStarted },
+        "the second never-start"
+    );
+}
+
+/// o25.15.2 gate (F3): a claim that cannot be read — any `stat` error but ENOENT — ends the snapshot
+/// with an `error` record and exit 3, never "no claim" (which would let a second re-enqueue be sent).
+/// A `stat` stub on `PATH` fails only for `.reenqueue-1`, with EACCES's message. NEGATIVE CONTROL
+/// (`collect-claim-error-as-no`): the error branch printing `reenqueue_claim no` → red.
+#[test]
+fn a_claim_read_error_ends_the_snapshot_never_no_claim() {
+    let lab = Lab::new();
+    let job = lab.job("claim-error");
+    let real_stat = ["/usr/bin/stat", "/bin/stat"].into_iter().find(|p| Path::new(p).exists()).expect("coreutils stat");
+    let fault = lab.root.join("fault");
+    fs::create_dir_all(&fault).unwrap();
+    let stub = fault.join("stat");
+    fs::write(
+        &stub,
+        format!(
+            "#!/bin/bash\nfor a; do last=$a; done\nif [[ $last == */.reenqueue-1 ]]; then echo \"stat: cannot statx '$last': Permission denied\" >&2; exit 1; fi\nexec {real_stat} \"$@\"\n"
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).unwrap();
+    let slot = lab.root.join("slot.sock");
+    let out = Command::new("bash")
+        .arg(&lab.collect)
+        .arg(&job)
+        .arg(&slot)
+        .env("PATH", format!("{}:{}", Lab::str(&fault), lab.path_env()))
+        .output()
+        .unwrap();
+    let wire = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert_eq!(out.status.code(), Some(3), "{wire}");
+    assert!(!wire.contains("reenqueue_claim"), "no claim record: {wire}");
+    let parsed = parse_snapshot(&out.stdout, lab.identity(&job), Attempt::First, &[Lab::str(&slot).to_string()]);
+    assert!(matches!(&parsed, Err(WireError::Collector(why)) if why.contains(".reenqueue-1") && why.contains("Permission denied")), "{parsed:?}");
 }
