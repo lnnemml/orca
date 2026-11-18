@@ -191,6 +191,72 @@ not let the idle TCP connection die.
   user's own file and the app does not copy it anywhere, but it is a reason never to paste an
   `output.out` header into the wiki.
 
+## 5.4a live — cancel of a running job (2026-11-17)
+
+### Facts (Anton cancelled in the app; the orchestrator read the DB and the fetched dir, read-only)
+
+- Row `e900980b` "Ibuprofen opt+freq" (4 ranks, pre-ADR-025) started on uni 09:11:18 (server
+  label) and was cancelled ~19 min in, during the frequency step: `output.out` stops mid-"XC
+  derivative integrals"; the server dir has `.cancelled` (09:30:55) and **no** `.exit_code` (M).
+- The row is `cancelled` with "Cancelled: the server confirms .cancelled and nothing of the job runs;
+  its files were downloaded as evidence."; the evidence (`output.out`, `input.property.txt`,
+  `input_trj.xyz`, `input.xyz`, markers) is in the local job dir (M). `cancel_requested_at` /
+  `cancel_sent_at` are NULL on the terminal row (M).
+- On 2026-11-18 slot0's queue held no running task and no process of the job was found (G1a probe) (I:
+  that the sweep left nothing; not checked right after the cancel).
+- Not exercised: "Retry cancel" and stopped re-sends — they need a cancel that cannot reach the server;
+  checked with M2 (cancel while the link is down).
+
+## M6 raw burst, M1, M7 (2026-11-18)
+
+### Facts (prober as `anton`; writes only under a probe dir on uni, removed after; M / I)
+
+**M6 — 15 concurrent `ssh uni bash -s` (label-like, read-only), 3 reps each:**
+- Client config (`~/.ssh/config`, `Host uni`): `ControlMaster auto`, `ControlPersist 10m`,
+  `ServerAliveInterval 30`, `ServerAliveCountMax 4`; the app adds only `BatchMode=yes`,
+  `ConnectTimeout=10` (`ssh.rs:44-61`; rsync `-e` reuses them, `sync.rs:135-137`) (M).
+- Server `sshd_config` (+ `.d/`) is world-readable and sets neither `MaxStartups` nor `MaxSessions`;
+  the defaults `10:30:100` / `10` then apply (M for unset; I for the defaults — the server's sshd
+  version was not read; the observed drops fit them).
+- **Cold** (no master): 2, 4, 2 of 15 calls fail with rc 255 (`kex_exchange_identification … reset by
+  peer` / `Connection closed`) — the MaxStartups random-drop signature; 8 and 10 concurrent: 0
+  failures. The rest race the master ("disabling multiplexing") and take ~1.5 s (M).
+- **Warm** (master up): 0 failures in 45 calls; 5 of 15 per burst get "Session open refused by peer"
+  (MaxSessions 10) and fall back to a fresh connection, ~1–2 s, rc 0, output intact (M).
+- **The app does fan out:** each planned step runs on its own thread (`poller/app.rs` `spawn_step`),
+  so ≥ 11 remote jobs due in one tick with no master (app start, or > 10 min idle) reproduce the cold
+  burst → a spurious check failure for ~2–4 of them (I, from the code + the raw burst; the in-app
+  15-job run is still to do).
+
+**M1 — fetch vs `FETCH_TIMEOUT` 300 s (`ssh_backend.rs:921`), the app's own filter and argv
+(`sync.rs:100-108,157-169`; no `--timeout`, no `-z`), into scratch dirs, 3 reps:**
+- Largest real set on uni (`4b4972bc`, 11 files, 2.70 MB): rsync 4.2–10.2 s cold, 2.8–7.3 s warm;
+  LIST 1.2 s cold / 0.3 s warm; re-fetch of an up-to-date dir 0.4–0.6 s (M). `f57c93ca` 2.70 MB and
+  `903ea016` 1.37 MB: 1.4–4.5 s (M).
+- The filter selects ~1.65 MB of `e900980b`'s 182 MB (scratch `.gbw`, densities, `*.tmp`, grids
+  excluded) (M by the prober's dry run, no raw file kept; consistent with the 1.64 MB local dir).
+- Synthetic 50 MB `output.out`: ~31.5–49.5 s, 1.06–1.66 MB/s (rsync stats), size-exact (M). The link is slow and
+  noisy (~1–1.7 MB/s; cause not determined).
+- Worst real fetch ≈ 30× under the bound; 300 s moves ~320 MB at the measured rate (I).
+
+**M7 — `kill -TERM` of the ORCA driver only, under the installed wrapper (sha matches the source),
+own tsp socket, r²SCAN-3c Opt, `%pal 4`, mask subset `0-3`:**
+- The wrapper has no trap: `.exit_code` = `143` appears within the same second as the TERM, before
+  the next 0.9 s sample (M).
+- The 4 MPI ranks, `mpirun` and the intermediate `sh` **survive**, re-parented to pid 1 but still in
+  the job's session (`ps -s <SID>`, what `collect.sh`/`cancel.sh` query) (M). They finished their
+  module 5–7 s later; in a longer module they would live as long as the module (I).
+- `output.out` **kept growing after `.exit_code`**: +27.5 KB over ~7 s, then constant; no
+  `ORCA TERMINATED NORMALLY`, so rule #6 still classifies `Failed`, but a fetch at `.exit_code` would
+  copy a truncated log (M). This is ADR-024 o18's "plausible, not seen" residual — now seen.
+- tsp shows the task `finished` at once with E-Level `-113` (143 as a signed byte; `tsp -l`, M); the slot is free while the orphans still hold the pinned cores, so a queued job would start on
+  them (M for tsp; I for the overlap — no second job was queued). The app does not parse tsp's
+  E-Level (`remote/tsp.rs` reads rows only) (M, from source).
+
+### Not measured
+
+- M6 in the app (15 real queued jobs); M7 in a long module (Freq); M2, M3, M4, M5, G1b.
+
 ## Drift found while planning (fix with the results)
 
 - ADR-024 o18 residual "no `ServerAliveInterval`": true of the argv, not of the effective behaviour

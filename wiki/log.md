@@ -11797,3 +11797,26 @@ row only; the shared `.builder-row` rule and the other rows are unchanged. Needs
 - Server clock offset now +144.07 s (was +142.1 s on 2026-11-17): it drifts ~2 s/day, unsynced.
 - G1 split: G1a (cold restart) done; G1b (suspend, long sleep) still open, with M1–M8.
   Record: `wiki/architecture/remote-live-run-b4.md` § G1a.
+
+## [2026-11-18] probe | B4 M6 raw burst, M1, M7 on uni; 5.4a live cancel recorded
+- **M6:** 15 concurrent `ssh uni bash -s` with no master → 2–4 of 15 rc 255 (sshd `MaxStartups`
+  10:30:100 default, unset on uni); 8 or 10 → none; with a warm master 0/45 failures (5 of 15 fall back
+  past `MaxSessions` 10, +1–2 s). The poller runs each step on its own thread, so ≥ 11 jobs due with no
+  master reproduce it.
+- **M1:** the largest real fetch (2.7 MB) takes 3–10 s (LIST ≤ 2 s) against the 300 s bound; 50 MB
+  synthetic ~31–50 s; the link runs ~1–1.7 MB/s.
+- **M7:** TERM to the ORCA driver alone → `.exit_code` 143 within the same second, but the 4 MPI ranks keep
+  running in the job's session and `output.out` grows +27.5 KB after it; tsp frees the slot at once.
+  ADR-024 o18's finality residual is now observed.
+- **5.4a live** (Anton, 2026-11-17): `e900980b` cancelled mid-Freq on uni — `.cancelled`, no
+  `.exit_code`, evidence fetched, row `cancelled`.
+- Record: `wiki/architecture/remote-live-run-b4.md` § 5.4a live and § M6 raw burst, M1, M7.
+
+## [2026-11-18] decision | B4 fixes, 5.4a ticked, Phase 5 scope
+- Anton, on the B4 results: keep `FETCH_TIMEOUT` 300 s (M1); cap concurrent ssh per host (~8) (M6);
+  the wrapper waits for its session to empty before `.exit_code` (M7) — both as one ADR-024 amendment
+  and one unit after M2/M5, so any ssh/rsync timeout lands with them.
+- 5.4a ticked (live cancel on uni); its Retry-cancel path is checked with M2.
+- 5.4b and 5.5 stay in Phase 5; remote `orca_plot`, local job pause and `uploading`/`syncing` move to
+  Phase 6.
+- Next: M2/M3/M4/M5 and M6 in the app with Anton, G1b overnight; then the B4-fixes unit, 5.4b, 5.5.

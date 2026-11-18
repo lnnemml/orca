@@ -1387,7 +1387,7 @@ and the dev laptop is a development machine, not a compute node. See
 5.0 trait ✅ · **5.1** ✅ server profiles · **5.2** ✅ wrapper + cancel script +
 reconciliation classifier, pure and tested on synthetic job dirs · **5.3** `SshBackend` wiring ·
 **5.4** cancel / pending cancel + reconnect loop + `Lost`/`Cancelling` in `JobStatus` · **5.5**
-preflight. The remaining items (remote `orca_plot`, pause) are not numbered yet.
+preflight. The remaining items (remote `orca_plot`, pause) moved to Phase 6 on 2026-11-18.
 
 - [x] **Unit 5.1 — server profiles** in settings: host alias (reuses `~/.ssh/config`), remote ORCA path,
       remote scratch dir; connection test button. **Part A ✅ 2026-08-27** (schema v18
@@ -1481,7 +1481,8 @@ preflight. The remaining items (remote `orca_plot`, pause) are not numbered yet.
               live WebKitGTK gate.
         - [ ] **B4 — live run on uni** + Anton's gate (**steps 0–1 ✅ 2026-11-17**: post-outage snapshot, first
               install, Retry of both rows; **G1a ✅ 2026-11-18**: quit + power off mid-run, picked up and
-              fetched byte-identical on boot; next G1b (suspend) + M1–M8): submit → close laptop → reopen → result. Plan and
+              fetched byte-identical on boot; **M1, M6 raw, M7 ✅ 2026-11-18**; next G1b (suspend), M2–M5, M6
+              in the app): submit → close laptop → reopen → result. Plan and
               results: `wiki/architecture/remote-live-run-b4.md` (step 0: post-outage snapshot first). Also
               measure (rule #10, from B2): the rsync-down / LIST timeouts (300 s; 1800 s with `.gbw`),
               rsync exit codes on a dropped link, the `poll_log` 10 s bound and catch-up, that an emit
@@ -1492,7 +1493,7 @@ preflight. The remaining items (remote `orca_plot`, pause) are not numbered yet.
               Anton: measure first, stagger only if it bites); kill ORCA's main process mid-run →
               does `output.out` keep growing after `.exit_code` (o18 finality residual).
 - [ ] **Unit 5.4 — cancel, pending cancel, reconnect loop, new states.** Split by ADR-024 o22.1:
-      - [ ] **5.4a — remote cancel, the pending cancel, `Cancelling`** (ADR-024 o22). One Cancel for a
+      - [x] **5.4a — remote cancel, the pending cancel, `Cancelling`** (ADR-024 o22). One Cancel for a
             remote job (Withdraw goes; o20.3's confirm moves to it); the cancel is recorded in the DB
             without the guard and delivered under it (by the click when the guard is free, else first
             in the job's next status step); Undo until the send is marked; delivery readies the server,
@@ -1507,8 +1508,10 @@ preflight. The remaining items (remote `orca_plot`, pause) are not numbered yet.
             chip and count, laptop time everywhere; `sendCancel` derives its own offer) built. Anton's
             live gate (WebKitGTK) **passed 2026-10-18 for the offline-server part** (dialog, decline,
             double click, pending badge + Undo, unreachable notice, panel placement, hidden retries,
-            local times, chip). **Open until the uni run:** a `cancelling` row (badge, Retry cancel,
-            sweep), a delivered cancel ("Cancel sent"), stopped re-sends, the evidence fetch.
+            local times, chip). **Live on uni ✅ 2026-11-17** (Anton): a running job (`e900980b`)
+            cancelled mid-Freq — delivered, `.cancelled` on the server, evidence fetched, row
+            `cancelled` (`wiki/architecture/remote-live-run-b4.md` § 5.4a live). Ticked 2026-11-18 by
+            Anton; Retry cancel / stopped re-sends (a cancel that cannot reach the server) ride on B4's M2.
       - [ ] **5.4b — `Lost`, re-enqueue, `Indeterminate` count** (Decisions d, e, l): `Lost` (terminal)
             joins `JobStatus`; row 8's orphan sweep; the re-enqueue counter (incremented **before**
             the re-enqueue, ADR-024 l) and acting on `ReEnqueue`; l row 10's counter. Its own schema
@@ -1525,12 +1528,17 @@ preflight. The remaining items (remote `orca_plot`, pause) are not numbered yet.
             no Retry submit while pending, the interim refusal not shown as an error, a pending
             cancel still deciding the actions. **Open: Anton's live gate and the uni run** (a pending
             row exists only after uni answers "slot busy").
-      The `uploading`/`syncing` transient states are not yet assigned to a unit.
+- [ ] **B4 fixes** (decided by Anton 2026-11-18 from the B4 measurements; one ADR-024 amendment +
+      one unit, after M2/M5, which may add ssh/rsync timeouts): **M6** — cap concurrent ssh calls per
+      host (~8; a cold burst of 15 lost 13–27 % to sshd `MaxStartups`, 10 lost none); **M7** — the wrapper waits
+      for its session to empty before publishing `.exit_code` (a driver killed alone leaves MPI ranks
+      writing `output.out` on cores tsp already counts free). `FETCH_TIMEOUT` stays 300 s (M1).
 - [ ] **Unit 5.5 — preflight:** `nprocs`/`%maxcore` vs the profile (cores + RAM budget) and free disk
       space in the profile working dir; no-`%maxcore` → warn-and-propose, never silent-insert
       (ADR-024 h)
-- [ ] Remote `orca_plot` option: generate cubes server-side, download only `.cube`
-- [ ] Job pause (local only; remote cancel is unit 5.4; the sequential queue itself lands in Phase 2)
+
+5.4b and 5.5 stay in Phase 5 (Anton, 2026-11-18). Moved to Phase 6 the same day: remote `orca_plot`,
+local job pause, the `uploading`/`syncing` transient states.
 
 **Done when:** author submits a job to the server, closes the laptop, reopens it hours later,
 and OrcaStudio picks the job up, syncs results, and parses them — no terminal, no lost state.
@@ -1538,6 +1546,11 @@ and OrcaStudio picks the job up, syncs results, and parses them — no terminal,
 ---
 
 ## Phase 6 — Power features (ongoing, pick by research needs)
+
+- [ ] Remote `orca_plot` option: generate cubes server-side, download only `.cube` *(from Phase 5,
+      2026-11-18)*
+- [ ] Job pause (local only; remote cancel is unit 5.4) *(from Phase 5, 2026-11-18)*
+- [ ] `uploading`/`syncing` transient states for remote jobs *(from Phase 5, 2026-11-18)*
 
 - [ ] **UV-Vis (TD-DFT)** — *early Phase 6.* The broadening machinery already exists (shared with the
       IR spectrum), but UV-Vis is **not** a copy: broaden with a **Gaussian** (not Lorentzian); the
