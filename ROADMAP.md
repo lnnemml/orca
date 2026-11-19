@@ -1655,8 +1655,9 @@ and OrcaStudio picks the job up, syncs results, and parses them — no terminal,
       [ADR-014](wiki/architecture/adr-014-ai-integration-boundary.md)) — **Stage 1 designed in
       [ADR-027](wiki/architecture/adr-027-mcp-orchestration-server.md)** (Phase 4.5 core-complete; Stage 1
       orchestrates job chains, reaction-level orchestration is Stage 2). Units:
-      - [ ] **M0** probe — relay + socket against real Claude Code, a 15-min tool call, the 50k-char
-            threshold, the `deny` rule, reconnect, `rmcp` over a Unix stream, socket host facts
+      - [x] **M0** probe (2026-11-19) — [mcp-transport-probe.md](wiki/architecture/mcp-transport-probe.md):
+            7 items measured, no contradiction (open: a foreign uid, the retry schedule, the auto
+            classifier on spend tools, the manual `/mcp` reconnect, loading `.mcp.json` interactively); ADR-027's M0 amendment, items 1–10
       - [ ] **M1a** classifier (R1–R9 / P1–P5), method signature, block key allowlist, Rust
             charge/mult locator, input assembly (Part A, pure Rust)
       - [ ] **M1b** source resolver, memory verdict before step A, schema v24, grant create/revoke,

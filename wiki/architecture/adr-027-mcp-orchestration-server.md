@@ -126,8 +126,8 @@ instances don't clash" (`sidecar.rs:5`).
 ### Facts about MCP clients
 
 Each fact below is **sourced** from the vendor's documentation. Every quote was checked against the
-live page on 2026-11-19. Nothing here has been run yet; unit M0 measures every fact that a decision
-depends on (rule #10).
+live page on 2026-11-19. When written, nothing here had been run; M0 has since measured them
+([mcp-transport-probe.md](mcp-transport-probe.md), and the M0 amendment at the end).
 
 - **SSE is deprecated** — [code.claude.com/docs/en/mcp](https://code.claude.com/docs/en/mcp): *"The
   SSE (Server-Sent Events) transport is deprecated. Use HTTP servers instead, where available."*
@@ -173,8 +173,9 @@ off, no socket exists.
 
 The handlers run on the server's threads, never on the GTK main thread, which keeps the
 `tauri-core.md` threading rule. A handler holds the DB lock for one query or transaction at most.
-It never holds it across ssh or a wait. At most **4 connections** are served at once, and each
-connection handles its requests one at a time.
+It never holds it across ssh or a wait. At most **4 connections** are served at once. Each
+connection has at most 4 requests in flight (M0 amendment, item 5, which replaces the earlier
+"one at a time").
 
 ### (2) Transport: a stdio relay into a Unix socket that only Anton's user can open
 
@@ -184,19 +185,22 @@ localhost HTTP server as a connector (sourced, above).
 
 **The socket.**
 - **Location.** The app holds an exclusive `flock` on `orcastudio/mcp.lock` in `$XDG_RUNTIME_DIR`.
-  It is released **only at process exit**, never when MCP is switched off. That way no other instance
+  It is released **only at process exit** (qualified by the M0 amendment, item 4: the exit of the
+  last process holding the fd), never when MCP is switched off. That way no other instance
   can take the lock and reconcile while a step B here is still running. Only the instance holding the lock may unlink a stale `mcp.sock` and bind.
   An instance that cannot take the lock does not serve, and its Settings → MCP says so. This rule
   replaces a check-then-act on the socket file, which two instances starting together could race.
 - **Permissions.** The directory is created `0700` and the socket `0600`.
 - **Peer check.** On every accept, the app reads `SO_PEERCRED` and drops a peer whose uid differs
   from its own. That check is defence in depth.
-- **What still needs measuring.** Whether Linux enforces the socket file's mode on `connect`, and
-  the `XDG_RUNTIME_DIR` facts, are not yet measured. M0 measures both, with a negative control:
+- **What still needed measuring** (now measured: M0 amendment, item 2). Whether Linux enforces the
+  socket file's mode on `connect`, and the `XDG_RUNTIME_DIR` facts. M0 measures both, with a negative control:
   `chmod 000` must give `EACCES` (Open question c).
 - **Fallback.** If `XDG_RUNTIME_DIR` is unset, the app uses the app data dir with the same modes. If
   that path would exceed the `sun_path` limit, MCP refuses to start and says why.
-- **Exit.** On a clean exit the app unlinks the socket and releases the lock.
+- **Exit.** A clean exit first closes the task tracker and waits for every `create_job` task (M0
+  amendment, item 6; each is bounded by its transactions and its own ssh timeouts). Only then does it
+  unlink the socket and release the lock. So no other instance can reconcile a job this process is still submitting.
 
 **The relay.** The MCP client launches **`orca-studio --mcp`**, the same binary, which in this mode
 never opens a window. It is a **dumb byte relay**: stdin → socket, socket → stdout. It holds no
@@ -207,9 +211,9 @@ not running, or its MCP server is off") and exits non-zero.
 
 | event | effect |
 |---|---|
-| the client session ends | the relay sees stdin EOF and closes the socket. The handler sees the hang-up on its next read, or on a `wait_for_jobs` tick, and ends |
-| the app exits, or MCP is turned off | the listener and every connection close. Switching off keeps the `flock`. A `create_job` already past its charge step finishes its order of operations (decision 5). The relay sees socket EOF, exits, and the client shows the server as disconnected |
-| the app restarts | whether Claude Code reconnects on its own is measured in M0 (Open question d). Jobs, grants and the audit log live in SQLite and survive. Only the per-connection read counters are lost |
+| the client session ends | the relay sees stdin EOF and closes the socket. The server sets that connection's `closed` flag. A waiting or reading handler sees the flag on its next tick and ends; handlers are not cancelled (M0 amendment, items 6 and 10) |
+| the app exits, or MCP is turned off | the listener and every connection close: the server sets each connection's `closed` flag and cancels its service (M0 amendment, item 10). Switching off keeps the `flock`. A `create_job` already past its charge step finishes its order of operations (decision 5): its task runs on, the tracker refuses new ones, and a clean exit waits for them before releasing the lock ("Exit" above). The relay sees socket EOF, exits, and the client shows the server as disconnected |
+| the app restarts | the dependable recovery is a new client session (measured, M0 amendment, item 3). Jobs, grants and the audit log live in SQLite and survive. Only the per-connection read counters are lost |
 
 ### (3) Three dispositions, chosen by a pure Rust classifier
 
@@ -495,8 +499,8 @@ No decision relies on server-to-client notifications, because the client's per-c
   passed. So a change between the model's last read and the wait is never lost.
 - **Otherwise it waits.** It re-reads the DB every 2 s, holding no lock while it sleeps, until a
   status differs or `timeout_s` passes. `timeout_s` is capped at 600.
-- **It checks the connection.** Each tick, it checks whether the connection has hung up, and ends if
-  it has.
+- **It checks the connection.** Each tick, it reads the connection's `closed` flag and ends if it is
+  set (how the flag is set: M0 amendment, items 6 and 10).
 
 The repeat is bounded by the cap, and because each call is one client action.
 
@@ -543,7 +547,8 @@ These items are not designed here. Each needs its own ADR, written from Stage-1 
 
 ### Honest limits
 
-- **The OS boundary is the uid**, and only if M0 confirms that the socket mode is enforced. Every
+- **The OS boundary is the uid**, provided the socket mode is enforced. M0 measured the owner bits;
+  denial of a foreign uid stays Open (M0 amendment, items 2 and 8). Every
   process running as Anton's user can open the socket, including the development Claude Code
   sessions on this repository. Inside the uid, the separation is:
   - the server is off by default;
@@ -579,6 +584,9 @@ These items are not designed here. Each needs its own ADR, written from Stage-1 
   apart from the `mcp_state` display.
 
 ## Open questions
+
+M0 closed (a) and (c), apart from a foreign uid, and part of (d). The remainder is listed under
+"Open questions after M0" in the M0 amendment.
 
 - **(a) The server library.** Does `rmcp` serve over an arbitrary `AsyncRead + AsyncWrite` stream?
   If not, Stage 1 implements the JSON-RPC 2.0 methods it needs (`initialize`, `tools/list`,
@@ -661,7 +669,8 @@ Part B. Every listed control must turn the suite red.
     - a second instance binding without the lock;
     - `get_job` returning coordinates;
     - `get_geometry` above 600 atoms;
-    - `read_output` reading the whole file.
+    - `read_output` reading the whole file;
+    - the M0-amendment obligations listed in its item 9.
 - **M3 — the write tools.**
   - **What it contains:** `create_job` through the step A/B/C order, `cancel_job`, `create_group`,
     `wait_for_jobs`, the audit log, R8, and the `job:status` emit.
@@ -674,7 +683,8 @@ Part B. Every listed control must turn the suite red.
     - `wait_for_jobs` ignoring `known`;
     - a refusal with no audit row;
     - the 51st proposal accepted;
-    - a grant check outside `BEGIN IMMEDIATE`.
+    - a grant check outside `BEGIN IMMEDIATE`;
+    - the M0-amendment obligations listed in its item 9.
 - **M4 — the UI (Part B, live WebKitGTK gate).**
   - Settings → MCP: the switch with the data line, "this instance serves", the grant editor with
     "this job's level", Revoke, "Cancel Claude's jobs", and the audit view.
@@ -685,3 +695,139 @@ Part B. Every listed control must turn the suite red.
   - Claude then chains Opt+Freq of the lowest conformers and an SP, Local and uni, under a grant.
   - At least one PROPOSED scan is run by Anton's click.
   - The run is recorded with the audit log.
+
+## Amendment (2026-11-19) — M0 results
+
+**Status:** Accepted by Anton on 2026-11-19. DESIGN review: PASS WITH FINDINGS (4 MED + 7 LOW), all
+applied; the semaphore-full fork was decided by Anton.
+
+The decision text above stands, **except where an item below says it replaces or qualifies a
+sentence**; those sentences carry an inline pointer here. This amendment records what the M0 probe measured
+([mcp-transport-probe.md](mcp-transport-probe.md); Claude Code 2.1.318, `rmcp` 3.11.0, kernel
+6.14). It closes Open questions (a) and (c), apart from a foreign uid, and part of (d). Where a
+measurement qualifies a decision, the rule below governs.
+
+1. **Unknown methods (decision 2).** The client sends `server/discover` **before** `initialize`. The
+   server answers any method it does not implement with a JSON-RPC error and keeps the connection.
+   `rmcp` already does this (−32602).
+2. **The socket's mode (decision 2).** Under umask 022 a bound socket comes out 0755
+   (measured). So the app creates the directory and the socket with explicit modes, `0700` and
+   `0600`. After bind it `stat`s both, and refuses to serve if either mode differs (rule #9).
+   **Measured:** `connect` on a 0000 or 0400 socket fails with `EACCES`, and on 0600 it succeeds.
+   **Open:** denial of a foreign uid on 0600 (no second account to test with). `SO_PEERCRED` stays
+   as the check.
+3. **Restarts (decision 2, lifecycle table, "the app restarts").**
+   - **How the client recovers.** It re-launches a dead stdio server lazily, on the next tool call.
+     If that attempt finds the app down, it did not retry for at least 44 s.
+   - **Its status cannot be trusted.** The client keeps reporting the server as "connected" while it
+     is dead.
+   - **The rule.** After an app restart, the dependable recovery is **a new client session**. The
+     research workflow and the tool descriptions say so. Jobs, grants and the audit log are
+     unaffected.
+   - **Open:** a manual `/mcp` reconnect, and the client's retry schedule beyond 44 s.
+4. **The lock (decision 2).** `flock` is exclusive, and it is released when the holder is killed —
+   **unless a child process inherited the fd**. Measured: a forked child kept the lock after its
+   parent was `kill -9`ed. So the lock file is opened `O_CLOEXEC`, and nothing in the app forks
+   without exec while holding it. Whether Rust's `File::open` sets it by default is **not
+   measured**; M2's check settles it. "Released only at process exit" means the
+   exit of the last process holding the fd. M2 checks that the fd carries `FD_CLOEXEC`.
+5. **Concurrency on one connection (decision 1).** `rmcp` serves a connection's requests
+   **concurrently** (measured). That replaces the sentence "each connection handles its requests
+   one at a time":
+   - each connection holds a semaphore of **4** in-flight requests;
+   - **when it is full**, a fifth request gets an immediate tool error, "busy, retry" (decided by
+     Anton). It never queues: an abandoned `wait_for_jobs` keeps its permit for up to 600 s, because
+     a client timeout sends no `notifications/cancelled` (measured);
+   - **a permit returns when its work ends**: when its handler returns, or, for `create_job`, when
+     its task ends after step C (item 6). A connection's slot among the 4 frees only when its
+     last permit has returned. So **16 handlers** is a real bound, even though handlers
+     outlive their transport (measured);
+   - correctness never rests on serial handling. Inside one process, the `DbState` mutex orders two
+     step As; across instances, `BEGIN IMMEDIATE` does (decision 5). That holds on one connection
+     exactly as on two.
+6. **Hang-up (decision 8).** `rmcp` does **not** cancel a handler when the transport closes
+   (measured: the handler ran to completion after the relay was killed). So each connection's serve
+   task sets an `AtomicBool closed` when its transport ends. Each `wait_for_jobs` tick reads that
+   flag and returns. Any future **waiting or reading** handler must check the same flag.
+   **`create_job` never abandons on hang-up** once step A has committed. It finishes steps B and C,
+   so no job is left at `mcp_state = 'submitting'` except after a crash.
+   - **Why this holds by construction (decided by Anton).** The **whole** `create_job` (the
+     memory verdict, step A, step B and step C) runs as **one task on the app's own runtime**, which
+     the `rmcp` service does not own.
+     - **The order.** The handler first checks the **task tracker**. If the tracker is closed, the
+       handler refuses with "MCP is shutting down". Otherwise it registers the task in the tracker,
+       moves its semaphore permit into the task, spawns the task, and then only awaits the result,
+       in order to return it.
+     - **What this guarantees.** Nothing the task does depends on the handler surviving. The spawn
+       happens **before** any DB write, so no cancellation point lies between step A's commit and
+       steps B and C.
+   - **Why that matters.** Neither a transport close (measured: it does not cancel handlers) nor a
+     service cancel on switch-off or exit can abort the task, or come between its steps. What a
+     service cancel does to a handler is **not measured**, and the construction makes it irrelevant:
+     a handler cut off before the spawn has written nothing.
+   - **Switch-off and exit.**
+     - They first **close the tracker**, so no new `create_job` task can start.
+     - Then they set every connection's `closed` flag and cancel the services.
+     - Then they wait for every tracked task. Each is bounded by its DB transactions and its own ssh
+       timeouts.
+     - A clean exit only then unlinks the socket and releases the lock (decision 2, "Exit"), so every
+       job finishes.
+   - **What a crash leaves.** A crash anywhere between step A's commit and step C's commit leaves a
+     `submitting` row. The next lock holder's reconciliation covers every such row, and it can take
+     the lock only after the crashed process, and any child holding the fd, is gone (item 4).
+   - **The permit goes with the work.** The permit (item 5) lives in the task, so it returns when
+     step C ends, not when the handler returns. A connection's slot frees only when its last permit
+     has returned. So the 16 bound covers `create_job` work too.
+7. **Large results (decision 7).** Over 50,000 characters, the client writes the result to
+   `~/.claude/projects/…/tool-results/` and hands the model an error-style pointer. The rule counts
+   characters, not tokens (measured). ADR-027's caps keep every result below this, and M2's controls
+   pin the caps.
+8. **Where the server is registered (Honest limits).** A `deny` rule on `mcp__<server>__*` hides
+   the tools from the model in every mode tested (default, `auto`, `bypassPermissions`). **But the
+   client still connects** and runs `initialize` and `tools/list`, so it would take one of the 4
+   connection slots and show as "connected".
+   - **The rule.** OrcaStudio's server is registered **only in the research folder's project
+     `.mcp.json`**, never in user scope. Sessions in this repository then never launch the relay at
+     all.
+   - The repository's `deny` rule (M4) stays as the second layer.
+   - In `auto` mode an MCP call without an allow rule went through (measured on `echo`). That
+     confirms the client's gates are not the authority boundary. The auto-mode classifier on a
+     spend-type tool stays Open.
+
+9. **Who owns the new obligations, and their controls.** Each control must turn its unit's suite
+   red.
+   - **M2:**
+     - an unknown method such as `server/discover` closing the connection instead of returning an
+       error;
+     - serving after a socket or directory mode differs from `0600`/`0700` post-bind;
+     - the lock fd without `FD_CLOEXEC`;
+     - a fifth concurrent request queued instead of refused "busy";
+     - a connection slot freed while a permit is still held;
+     - the tool descriptions not stating that a new client session is the recovery after an app
+       restart.
+   - **M3:**
+     - `wait_for_jobs` ignoring `closed`;
+     - `create_job` abandoning step B or C when `closed` is set after step A;
+     - any step of `create_job` running inside the handler instead of the tracked task;
+     - a service cancel right after step A's commit leaving the job at `mcp_state = 'submitting'`;
+     - a `create_job` task starting after the tracker has closed;
+     - switching MCP off between step A and step C leaving the job at `mcp_state = 'submitting'`;
+     - switch-off or exit not setting every connection's `closed` flag;
+     - a clean exit releasing the lock while a `create_job` task is still running;
+     - the permit returned when the `create_job` handler returns instead of when step C ends.
+10. **Ending connections (decision 2, lifecycle).** Closing a transport does not stop its handlers
+    (measured). So when a client hangs up, the server sets that connection's `closed` flag. When MCP
+    is switched off or the app exits, it also cancels each connection's service. Handlers then end:
+    - a waiting or reading handler, at its next `closed` check;
+    - a `create_job` handler returns once its task has run through step C (item 6). If the handler
+      itself is cut off by the service cancel, the task still completes. Switch-off and exit close
+      the tracker first and wait for the tasks.
+
+**Open questions after M0:**
+- (c′) denial of a foreign uid;
+- (d′) the auto-mode classifier on a spend-type tool, the `/mcp` manual reconnect, and the
+  client's retry schedule beyond 44 s.
+- (e′) whether an **interactive** Claude Code session asks before loading the research folder's
+  project `.mcp.json`. M0 measured `-p` mode only; M5 observes this.
+
+Neither blocks M1a.

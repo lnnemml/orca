@@ -12274,3 +12274,49 @@ row only; the shared `.builder-row` rule and the other rows are unchanged. Needs
   - `modules/tauri-core.md` (the `crest_grow` debt);
   - `index.md`;
   - ROADMAP Phase 6 (units M0–M5).
+
+## [2026-11-19] probe | ADR-027 M0 — the MCP transport, measured
+- **Measured:** the [mcp-transport-probe.md](architecture/mcp-transport-probe.md) page, from a
+  prober run with throwaway code outside the repository (Claude Code 2.1.318, `rmcp` 3.11.0,
+  kernel 6.14).
+  - The stdio relay into a Unix socket works end to end with the real `claude`.
+  - A 900 s call completes, and the control `MCP_TOOL_TIMEOUT=5000` cuts it off.
+  - Results over 50,000 characters are saved to `~/.claude`.
+  - A `deny` rule hides tools in default, `auto` and `bypassPermissions` modes, yet the client still
+    connects.
+  - The client re-launches a dead server lazily, and after one failed try it did not retry for at
+    least 44 s.
+  - `rmcp` serves over `UnixStream`, handles one connection's requests concurrently, and does not
+    cancel a handler on hang-up.
+  - The socket and host facts: `XDG_RUNTIME_DIR` is a 0700 tmpfs; a bound socket is 0755 under
+    umask 022; 0000 and 0400 → `EACCES`; a stale socket → `ECONNREFUSED`; `flock` is released on
+    `kill -9` unless a forked child holds the fd; `sun_path` 107/108.
+- **No contradiction with ADR-027.** The qualifications are written as ADR-027's
+  "Amendment (2026-11-19) — M0 results", items 1–10. The first eight:
+  - answer unknown methods;
+  - set and `stat` the socket's mode;
+  - recover from an app restart with a new client session;
+  - open the lock fd CLOEXEC;
+  - a per-connection semaphore of 4, with correctness resting on `BEGIN IMMEDIATE`;
+  - an explicit `closed` flag for `wait_for_jobs`;
+  - the 50k rule counts characters;
+  - register the server only in the research folder's `.mcp.json`.
+- **Then items 9–10:** the owners and controls in M2/M3, and ending connections.
+- **Review.**
+  - A DESIGN review returned PASS WITH FINDINGS (4 MED + 7 LOW), all applied. Anton decided that a
+    full per-connection semaphore answers "busy" at once and never queues.
+  - The binding check returned PASS WITH FINDINGS (1 MED + 3 LOW), all applied. The MED was settled
+    by the orchestrator: steps B and C run in a task detached from the `rmcp` service, so neither a
+    transport close nor a service cancel can strand a job.
+  - The final binding check returned PASS WITH FINDINGS (1 MED + 2 LOW), all applied: a clean exit
+    waits for the detached tasks before it releases the lock; the semaphore permit moves into the
+    detached task; the Open lists were completed.
+  - The next binding check returned PASS WITH FINDINGS (1 MED + 2 LOW). The MED: a cancel between
+    step A's commit and the spawn. Anton decided that the **whole** `create_job` (A→C) runs in one
+    tracked task on the app runtime, spawned before any DB write. Switch-off and exit close the
+    tracker first, then wait for the tasks.
+  - The amendment was accepted by Anton.
+- **Open:** denial of a foreign uid (no second account); the auto-mode classifier on a spend-type
+  tool; a manual `/mcp` reconnect and the retry schedule beyond 44 s; loading a project `.mcp.json` in
+  an interactive session.
+- **Wiki:** the new probe page, the ADR-027 amendment, `index.md`, and ROADMAP M0 ticked.
