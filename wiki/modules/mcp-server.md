@@ -1,13 +1,17 @@
-# MCP server — the job classifier and input assembly (`src-tauri/src/mcp/`)
+# MCP server — the job classifier, input assembly and grant core (`src-tauri/src/mcp/`)
 
-[ADR-027](../architecture/adr-027-mcp-orchestration-server.md), unit M1a. This module is the
+[ADR-027](../architecture/adr-027-mcp-orchestration-server.md), units M1a and M1b. This module is the
 guard that decides whether an AI model may spend compute. A `create_job` call ends in exactly one
 of three dispositions: **REFUSED** (nothing is created), **PROPOSED** (a draft Anton runs by hand)
 or **SUBMITTED** (charged to the active grant). The module also assembles the job's input, so the
 model never writes a coordinate, a charge or a multiplicity (ADR-014 (1)).
 
-The module is the **pure core only**: no DB, no Tauri command, no socket, no sidecar call. It is
-registered in `lib.rs` under a scoped `#[allow(dead_code)]` until M1b and M3 call it.
+The module has two layers. The **pure core** (M1a) is the classifier, the header grammar, the method
+signature, the allowlist, the charge/multiplicity locator and the input assembly. The **DB-level
+cores** (M1b Part A) are schema v24, the grant core, steps A and C, the crash reconciliation, the
+`submit_job` guard, the source resolver and the memory preflight; each is a `*_conn` function or
+takes `&DbState`. There is no Tauri command, no socket and no HTTP call yet. The module is registered
+in `lib.rs` under a scoped `#[allow(dead_code)]` until M1b Part B, M2 and M3 call it.
 
 **It fails closed.** A line outside the grammar is REFUSED (R1); a block, key or value outside the
 allowlist is PROPOSED (P2); a source whose terminal state is unknown is REFUSED (R4); a memory
@@ -24,8 +28,12 @@ PROPOSED (P5). Nothing reaches SUBMITTED by default.
 | `allowlist.rs` | `allowlist_findings` → `Vec<P2Finding { block, key, detail }>`; `constraint_entries` → `Vec<ConstraintEntry { text, index_tokens }>`; `parse_index` (ASCII digits within `u32`) |
 | `charge_mult.rs` | `locate_charge_mult` → `Result<ChargeMult, ChargeMultError>` |
 | `classify.rs` | `classify_mcp_job(&ClassifyInput) -> Disposition`; the input types and the typed reasons (below); `MAX_OPEN_PROPOSALS = 50`, `OPT_FAMILY`, `FREQ_TYPE`, `NEB_FAMILY` |
-| `assemble.rs` | `assemble(header, maxcore_mib, atoms, charge_mult, source_label) -> Result<Assembled, AssemblyError>`; `comment_safe_label`; `AppSet`; `SERVER_DEFAULT_MAXCORE_MIB = 2000`; `COORD_TOLERANCE_ANG = 1e-6` |
-| `*_tests.rs` | one test file per submodule |
+| `assemble.rs` | `assemble(header, maxcore_mib, atoms, charge_mult, source_label) -> Result<Assembled, AssemblyError>`; `comment_safe_label`; `AppSet`; `SERVER_DEFAULT_MAXCORE_MIB = 2000`; `COORD_TOLERANCE_ANG = 1e-6`; `read_coordinate_block`, the strict `* xyz` block reader shared with the resolver |
+| `grant.rs` | `create_grant_conn`, `revoke_grant_conn`, `get_grant_conn`, `active_grant_conn`, `grant_snapshot_conn -> Option<CurrentGrant { id, snapshot }>`, `in_flight_conn`; `Grant`, `NewGrant`; `begin_immediate`, `now_utc_conn`, `check_utc_text` |
+| `steps.rs` | `charge_and_insert_conn -> StepA` (step A), `insert_proposed_conn`, `finish_submit_conn -> StepC` (step C), `reconcile_submitting_conn -> Reconciled`, `submit_refusal_for_mcp_state`; `McpReason { row, message }`; `SUBMITTING` |
+| `resolve.rs` | `SourceRef::parse`, `resolve_source(&DbState, reference, &dyn SmilesTo3d)`, `resolve_db_conn`; the `SmilesTo3d` seam and `SmilesStructure` |
+| `preflight.rs` | `mcp_maxcore -> McpMaxcore { mib, source }`, `memory_verdict_for -> MemoryVerdict`, the pure `verdict_of` |
+| `*_tests.rs`, `test_db.rs` | one test file per submodule; `test_db.rs` builds a migrated scratch database per test |
 
 ## The classifier's input and output
 
@@ -56,7 +64,7 @@ every matching one is listed; only if none matches are the PROPOSED rows checked
 | R2 | `Violation::Coordinates`, and a `%coords` block anywhere | any `*` line, inside a block or not |
 | R3 | `classify.rs` `header_rows` | a `%pal` or `%maxcore` opener anywhere, or a `!` token matching `^PAL\d*$` in any case |
 | R4 | `source_rows` | unresolved; `terminal_success == Some(false)`; a job-derived source with `terminal_success == None`; `converged == Some(false)`; no atoms; charge/multiplicity unreadable |
-| R5 | `source_rows` | an element unknown after case normalisation; or, with electrons = Σ Z − charge, multiplicity < 1, electrons < 0, odd (electrons + multiplicity − 1), or multiplicity − 1 > electrons |
+| R5 | `source_rows` | an element unknown after case normalisation; or, with electrons = Σ Z − charge, multiplicity < 1, electrons < 0, odd (electrons + multiplicity − 1), or multiplicity − 1 > electrons. The arithmetic is checked: a charge or multiplicity that overflows the count is R5 (`ChargeMultOutOfRange`), never a wrapped number |
 | R6 | `source_rows` + `allowlist::constraint_entries` | an index token of **any** constraint entry (B/A/D/C) that `parse_index` cannot read as a `u32`, or that lies outside `[0, atom count)`. No index token is ever dropped: `{C 99999999999999999999 C}` is R6 |
 | R7 | `has_scan` | a `%geom Scan` without an `OPT_FAMILY` token |
 | R8 | `classify_mcp_job` | `open_proposals >= 50` |
@@ -64,7 +72,7 @@ every matching one is listed; only if none matches are the PROPOSED rows checked
 | P1 | `classify_mcp_job` | a `Molecule` or `Smiles` source; the reason carries the charge, the multiplicity and where they came from (a SMILES always gives multiplicity 1) |
 | P2 | `allowlist.rs` | see the allowlist below |
 | P3 | `classify_mcp_job` | a `FREQ_TYPE` token with no `OPT_FAMILY` token, unless the source is a `Job` with `converged == Some(true)` and `opt_signature` equal to this job's signature |
-| P4 | `classify_mcp_job` | `memory != Fits` |
+| P4 | `classify_mcp_job` | `memory != Fits`. The `Unknown` message reads for either target: a server's facts come from its connection test, this machine's from `/proc/meminfo` and the data directory |
 | P5 | `grant_rows` | an empty method signature ("no method level stated", e.g. `! Opt Freq`, whatever the grant holds); no grant; expired; revoked; target not granted; signature not a granted level; `charged_jobs >= max_jobs`; `in_flight >= max_in_flight` |
 
 ## The header grammar and the scanner
@@ -100,6 +108,12 @@ The signature is the ASCII case-folded (upper-cased), sorted, de-duplicated unio
 minus `NON_METHOD` and minus `^PAL\d*$`. Each `%cpcm` block's normalised text is added: `%cpcm`, then
 its tokens ASCII-lowercased and joined by one space (quotes kept), then `end`. So SMD(DMF) and SMD(THF)
 differ. An inline `CPCM(DMF)` is a `!` token and is kept as written, case-folded.
+
+**A grant level is read strictly.** `MethodSignature::of_level_text` refuses a level whose text has
+any grammar violation (`LevelError::OutsideGrammar` or `Coordinates`, naming the first line), so a
+refused line is never silently left out of the signature. It also refuses a level with no method token
+(`NoMethodTokens`: `! Opt Freq`, a lone `%cpcm` block). The lenient `of_input` exists only in test
+builds.
 
 `NON_METHOD` is a copy of the set in `src/reactions/compare.ts`. `signature_tests::non_method_matches_compare_ts`
 extracts the TS literal by regex and requires the two to be equal. This is **not** the ΔΔ table's
@@ -173,6 +187,146 @@ The emitter is a seam (`assemble_with`). The tests hand it faulty emitters: a re
 dropped row, a changed element, a NaN row, an extra column, Bohr-scaled coordinates, a changed
 `* xyz` line, a doubled block and a line with two `#`. The post-condition refuses each one.
 
+## Schema v24
+
+`db.rs` migrates to v24 additively (full text in `modules/tauri-core.md`):
+
+- `jobs.origin` (`'user'` or `'mcp'`, default `'user'`), `jobs.mcp_reasons` (a JSON array of
+  `McpReason { row, message }`), `jobs.grant_id` (FK to `mcp_grants`, only on an MCP job) and
+  `jobs.mcp_state` (only `'submitting'`, only on a charged job). `Job` carries all four;
+  `JobOrigin` is `User` or `Mcp`.
+- `mcp_grants`: `id`, `created_at`, `expires_at`, `revoked_at`, `targets` (JSON strings: `"local"` or a
+  profile id), `levels` (JSON `MethodSignature`s), `max_jobs`, `max_in_flight` (both ≥ 1) and the
+  stored `charged_jobs` (`0..=max_jobs`, a CHECK). The **expression** index
+  `mcp_grants_one_unrevoked ON mcp_grants((revoked_at IS NULL)) WHERE revoked_at IS NULL` keeps at most
+  one grant unrevoked.
+- `mcp_audit`: `id`, `at`, `tool`, `args` (≤ 8192 characters, a CHECK), `disposition` (`refused`,
+  `proposed`, `submitted` or NULL), `reasons`, `job_id`, `grant_id`. M3 writes it.
+
+Times are `datetime('now')` text, UTC on the laptop's clock. `expires_at` is compared as text, so every
+writer checks the exact `YYYY-MM-DD HH:MM:SS` form first (`check_utc_text`).
+
+## The grant core (`grant.rs`)
+
+Every write is a `BEGIN IMMEDIATE` transaction (`begin_immediate`), so two app instances on one file
+are ordered by SQLite's write lock.
+
+- **`create_grant_conn(conn, &NewGrant, now)`** checks everything before writing: each level through
+  `of_level_text`, at least one level and one target, `max_jobs` and `max_in_flight` ≥ 1, `expires_at`
+  in the exact form and after `now`, each server target an existing profile (and none spelled
+  `local`). Then, in one transaction, it revokes whatever grant is unrevoked and inserts the new one.
+  A refused create writes nothing, and the previous grant stays active.
+- **`revoke_grant_conn(conn, id, now)`** is idempotent: the first `revoked_at` is kept.
+- **`active_grant_conn(conn, now)`** is the unrevoked grant with `expires_at > now`.
+- **`grant_snapshot_conn(conn, now)`** returns the newest grant (the unrevoked one, else the most recent
+  revoked one) as `CurrentGrant { id, snapshot }`. The status is `Revoked`, `Expired`
+  (`expires_at <= now`) or `Active`.
+- **The counters.** `charged_jobs` is stored: step A increments it and only a refund decrements it, so
+  deleting a job never re-opens the budget. `in_flight` (`in_flight_conn`) is derived: every job with a
+  non-null `grant_id` whose status is not terminal, under **any** grant, a draft in step B included.
+  The terminal list comes from `JobStatus::is_terminal` (completed, parsed, failed, cancelled, lost).
+
+## Steps A and C (`steps.rs`)
+
+Only `charge_and_insert_conn` and `insert_proposed_conn` write `origin = 'mcp'`. Both insert through
+the app's own `commands::jobs::create_job_conn`, so an MCP job mints its index map like any job, and
+stamp the MCP columns in the same transaction.
+
+- **Step A, `charge_and_insert_conn(conn, McpJobDraft { title, input_content, target, signature })`.**
+  In one `BEGIN IMMEDIATE` transaction it reads the time (`datetime('now')`, after the write lock is
+  granted, never from the caller, so a grant that expired while step A waited on the lock is
+  PROPOSED), re-reads the grant snapshot and re-runs the P5 rows
+  (`classify::grant_problems`, the classifier's own code). If the grant still covers the job, the job is
+  inserted as a `draft` with `origin = 'mcp'`, `grant_id` and `mcp_state = 'submitting'`, and
+  `charged_jobs` is incremented (`StepA::Charged`). Otherwise it is inserted as PROPOSED with the
+  reasons and no grant (`StepA::Proposed`). Its post-condition: exactly one grant row was charged and
+  `in_flight` is still within `max_in_flight`; a breach rolls the whole step back.
+- **`insert_proposed_conn(conn, title, input, reasons)`** inserts a PROPOSED draft. It refuses an empty
+  reason list.
+- **Step C, `finish_submit_conn(conn, job_id, grant_id, outcome_message)`.** In one transaction it
+  re-reads the row and always clears `mcp_state`. A row still in `draft` and charged to `grant_id` is
+  refunded: `grant_id` set to NULL, `charged_jobs` decremented, and the reason `submit refused: …`
+  appended (`StepC::Refunded`). Any other row keeps its charge (`StepC::Kept { status }`); a missing row
+  is `StepC::Gone`. Step C is idempotent: a refund clears the row's `grant_id`, so a second call on the
+  same job finds it no longer charged to the grant and refunds nothing.
+
+## The reconciliation (not yet called)
+
+`reconcile_submitting_conn(conn)` turns every `draft` with `mcp_state` set into PROPOSED: refunded,
+with the reason `interrupted before submit`. Every other row with the flag only has it cleared. It
+returns the counts (`Reconciled { refunded, cleared }`). Nothing calls it yet: only the instance
+holding the `mcp.lock` `flock` may run it, right after taking the lock and before serving (M2).
+
+## The `submit_job` guard
+
+`submit_refusal_for_mcp_state(&Job)` returns `AppError::Conflict` for a job whose `mcp_state` is set
+(any value; the CHECK admits only `submitting`), and `None` otherwise. The `submit_job` command calls it
+from Part B on; the backends do not change.
+
+## The source resolver (`resolve.rs`)
+
+`resolve_source(db, reference, sidecar)` parses the reference (`SourceRef::parse`) and resolves it. It
+locks the database only for a DB-backed reference, never for a SMILES. `Err` carries why the
+reference did not resolve, and the classifier turns it into R4.
+
+| reference | geometry | charge / multiplicity |
+|---|---|---|
+| `job:<id>` | `results.final_geometry` | the job's `* xyz` line, strict (`locate_charge_mult`) |
+| `job:<id>/scan:<k>` | scan point k (`read_scan_geometries`) | the same |
+| `job:<id>/neb:<k>` | MEP image k (`read_neb_geometries`) | the same |
+| `job:<id>/neb:ts` | the converged TS (`results.neb.ts_geometry`) | the same |
+| `job:<id>/goat:<k>` | ensemble member k (`commands::jobs::read_ensemble_text`, shared with `read_job_ensemble`) | the same |
+| `molecule:<id>` | the molecule's xyz | its `charge` and `multiplicity` columns |
+| `smiles:<s>` | the `SmilesTo3d` seam (the sidecar's `/smiles-to-3d`) | the sidecar's |
+
+**Every `k` is 0-based**, like the atom indices: `scan:0` is ORCA's `input.001.xyz`, `neb:0` the
+reactant end of the MEP, and `goat:0` the ensemble's first member (the `source_conformer_index`
+convention). An id is printable ASCII with no `/`. A SMILES is 1 to 1000 printable ASCII characters
+with no space; it may contain `/`.
+
+**Per-source decisions:**
+
+- **`terminal_success`** is the parent job's status for every job-derived source: `Some(true)` for
+  `completed` or `parsed`, `Some(false)` for `failed`, `cancelled` or `lost`, and `None` while the job is
+  not terminal. Both of the last two are R4. No geometry is read from a job that did not end in success.
+- **`converged`**: `job:<id>` takes `ParsedResults.converged`, so a non-converged optimization is R4. A
+  scan frame, a NEB image or TS, and a GOAT member are `None`: none is a converged optimization for P3,
+  so a Freq from one is PROPOSED.
+- **`opt_signature`**: for `job:<id>` whose header has an Opt-family token, the signature of the header
+  (the input outside its coordinate block), read strictly by `of_level_text`. The app's own
+  `%maxcore <n>` directive, which has no `end`, is set aside first by the memory preflight's locator,
+  and only when it reads cleanly. A header the grammar refuses gives `None`, so P3 fails closed. Every
+  frame source is `None`.
+- **A constrained optimization is not a stationary point** (Anton, 2026-11-19). A `job:<id>` whose
+  `%geom` holds a `Constraints` or `Scan` sub-block, or any key beyond `Calc_Hess`, `Recalc_Hess` and
+  `MaxIter` (with `true`/`false`/integer values), has `opt_signature = None`, so a Freq from it is P3
+  PROPOSED (`geom_leaves_a_stationary_point`). Any doubt about the `%geom` block makes the source
+  ineligible.
+- A molecule and a SMILES have `terminal_success`, `converged` and `opt_signature` all `None`; P1 sends
+  them to Anton.
+
+**Post-conditions (rule #9).** A job-derived geometry's element sequence must equal the source job's own
+`* xyz` block, element for element; otherwise the source does not resolve. Every reader keeps the
+input's atom order (measured for GOAT in `orca/goat.md`; asserted for NEB in `parse/neb.rs`; the scan
+points and the final geometry are verified at parse time). The check is skipped only when the charge line
+itself is unreadable, which R4 refuses anyway. A SMILES reply's atom count must equal its `num_atoms`.
+
+The SMILES seam is a trait, so the tests use a stub and need no sidecar. The HTTP implementation comes
+in Part B or M3.
+
+## The memory preflight (`preflight.rs`)
+
+Both functions are computed before step A and take **no lock of their own**: `memory_estimate_with`
+and `local_fitted_maxcore_with` lock `DbState` themselves.
+
+- **`mcp_maxcore(db, meminfo, data_dir, header, target)`.** For Local it is `local_fitted_maxcore_with`'s
+  default (`LocalFitted`). For a server it is the 5.5 proposal P from the stored facts and the core mask
+  (`ServerProposal`), else `SERVER_DEFAULT_MAXCORE_MIB` (`ServerDefault`: unknown memory, no mask, or
+  P below 300).
+- **`memory_verdict_for(db, meminfo, data_dir, input, target)`**, on the assembled input. A RAM or disk
+  warning gives `Warns`; a missing RAM fact, disk fact or estimate gives `Unknown`; only all known and
+  quiet gives `Fits`.
+
 ## Clarifications (orchestrator, within ADR-027)
 
 - **C1** — the charge/multiplicity locator is strict, as above. Its parity with TS covers
@@ -199,29 +353,40 @@ Two choices go beyond the clarifications, and each can only move a job toward An
 - **A `GoatMember` source never satisfies P3**: only a `Job` source that is a converged optimization
   does.
 
+## Decided by Anton
+
+- **P3's same-level rule** is confirmed (2026-11-19). A deliberate exception, such as a cheaper
+  Hessian for an OptTS, goes through PROPOSED.
+- **A constrained optimization is not a stationary point** (2026-11-19). A source optimization with
+  `%geom` constraints or a scan never satisfies P3 (see the resolver).
+- **The `MaxIter` cap** is deferred to M5 and the core-hour budget (2026-11-19). Until then a large
+  value is admitted and SUBMITTED under a grant; the grant bounds job count and concurrency, not
+  iterations.
+
 ## Open (for Anton)
 
-- **`MaxIter` has no upper cap.** A large value is admitted and SUBMITTED under a grant. The grant
-  bounds job count and concurrency, not iterations.
 - **Unbraced constraint entries** (`C 0 C` inside `Constraints`) are P2 and are **not**
   range-checked by R6. A proposed draft could carry an out-of-range index to Anton's Run.
 - **`Scan` atom indices** are P2 and are **not** range-checked by R6, with the same consequence.
 - **How ORCA 6.1.1 reads a second `#`** on a line is unmeasured (a prober run). Until then, such a
   line is R1.
 
+- **Source headers with other one-line directives** (`%moinp "x.gbw"`, `%base`) give no
+  `opt_signature`, so a Freq from such a job is PROPOSED. Only `%maxcore` is set aside.
+
 ## Not yet wired
 
-- **M1b:**
-  - the source resolver over the DB and the readers, plus the SMILES sidecar call;
-  - `%maxcore` and the `MemoryVerdict` before step A;
-  - schema v24, the grant create and revoke commands;
-  - the `submit_job` `mcp_state` guard and the reconciliation.
-- **M2:** the socket server, the relay and the read tools.
-- **M3:** `create_job` (steps A–C around `classify_mcp_job` and `assemble`), the audit log, and R8's
-  live count.
+- **M1b Part B:** the grant create and revoke Tauri commands; the `submit_job` command calling
+  `submit_refusal_for_mcp_state`; the HTTP implementation of `SmilesTo3d`.
+- **M2:** the socket server, the relay, the read tools, and the lock holder calling
+  `reconcile_submitting_conn`.
+- **M3:** `create_job` as one tracked task (the preflight, step A, step B, step C around
+  `classify_mcp_job` and `assemble`), the audit log, and R8's live count.
 
 ## Tests
 
 `cargo test -p orcastudio --lib mcp::` runs the module's tests, and `npx vitest run
-src/scene/charge-mult-parity.test.ts` runs the TS half of the C1 parity. The negative controls, one
-per row plus the ADR's M1a list, are recorded in `log.md` (2026-11-19, the M1a entry).
+src/scene/charge-mult-parity.test.ts` runs the TS half of the C1 parity. The schema tests are
+`cargo test -p orcastudio --lib db::tests::` (v24 names in `modules/tauri-core.md`). The negative
+controls are recorded in `log.md`: one per row plus the ADR's M1a list in the M1a entry, and the M1b
+list in the M1b Part A entry (both 2026-11-19).

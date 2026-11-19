@@ -28,7 +28,7 @@ use crate::memory::{
 };
 
 /// This machine's memory file. A constant here, a parameter of every core below (the tests' seam).
-const PROC_MEMINFO: &str = "/proc/meminfo";
+pub(crate) const PROC_MEMINFO: &str = "/proc/meminfo";
 
 /// What a server's NULL fact says (o26.7).
 const SERVER_UNKNOWN: &str = "server memory unknown — re-run the connection test";

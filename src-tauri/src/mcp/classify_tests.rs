@@ -344,7 +344,25 @@ fn p4_memory_warns_or_is_unknown() {
     c.memory = MemoryVerdict::Unknown;
     let p = proposed(&c.run());
     assert_eq!(p, vec![ProposedReason::Memory(MemoryVerdict::Unknown)]);
-    assert_eq!(p[0].message(), "server memory unknown — re-run the connection test");
+    // The target here is Local: the message must read for this machine too (M1a Open item; the
+    // old text said "server memory unknown" for a Local job).
+    let m = p[0].message();
+    assert!(m.contains("this machine") && m.contains("a server"), "{m}");
+}
+
+/// R5 with checked arithmetic (the M1a verifier's LOW finding): a charge or multiplicity that makes
+/// the electron count overflow is R5, never a wrapped count. NEGATIVE CONTROL: restore `z_sum -
+/// cm.charge` (or `electrons + m - 1`) and this panics on overflow in the test build → red.
+#[test]
+fn r5_an_extreme_charge_or_multiplicity_is_refused_not_wrapped() {
+    // Each pair overflows a different step: Σ Z − charge (the first two and the last) or
+    // electrons + (multiplicity − 1) (the third).
+    for (charge, multiplicity) in [(i64::MIN, 1), (i64::MIN + 1, 1), (0, i64::MAX), (-(i64::MAX - 10), 2)] {
+        let src = ResolvedSource { charge_mult: Ok(ChargeMult { charge, multiplicity }), ..converged_job() };
+        let r = refused(&Case::submitted().source(src).run());
+        assert_eq!(r, vec![RefusedReason::ChargeMultOutOfRange { charge, multiplicity }], "({charge}, {multiplicity})");
+        assert_eq!(r[0].row(), "R5");
+    }
 }
 
 #[test]

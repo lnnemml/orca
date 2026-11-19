@@ -8,9 +8,10 @@
 //! guard. The non-method list itself is shared: [`NON_METHOD`] is a copy of the TS set, pinned
 //! equal by `signature_tests::non_method_matches_compare_ts`.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
-use super::header::{parse_header, BlockItem, ParsedHeader};
+use super::header::{parse_header, BlockItem, ParsedHeader, Violation};
 
 /// The `!` tokens that do not identify the electronic-structure method: run types and the `*Opt`
 /// presets, SCF thresholds, and print control. A copy of `NON_METHOD` in
@@ -34,7 +35,7 @@ pub fn is_pal_token(token: &str) -> bool {
 }
 
 /// A method signature. Equality is the comparison; [`MethodSignature::display`] is for reasons.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MethodSignature {
     /// The method `!` tokens, ASCII upper-cased, sorted and de-duplicated.
     pub keywords: Vec<String>,
@@ -55,11 +56,49 @@ impl MethodSignature {
         }
     }
 
-    /// The signature of a whole input text (a grant level pasted by Anton, or a source job's
-    /// input): only its `!` lines and `%cpcm` blocks count, so a `* xyz` block in it is harmless.
+    /// The signature of a text, **lenient**: a line the parser refuses is left out of it. Kept for
+    /// the tests only; production code reads a level with [`MethodSignature::of_level_text`], which
+    /// refuses such a line instead of dropping it.
+    #[cfg(test)]
     pub fn of_input(text: &str) -> MethodSignature {
         method_signature(&parse_header(text))
     }
+
+    /// The signature of a level's text, **strict** (ADR-027 decision 5; the M1a verifier's LOW
+    /// finding): a grant level pasted by Anton, or a source job's header. The text must parse with
+    /// no violation at all — a refused line would otherwise be dropped from the signature without a
+    /// word, and the level would silently differ from what Anton wrote — and must name at least one
+    /// method token (a level of `! Opt Freq` alone, or a lone `%cpcm` block, matches nothing).
+    pub fn of_level_text(text: &str) -> Result<MethodSignature, LevelError> {
+        let header = parse_header(text);
+        if let Some(v) = header.violations.first() {
+            let more = header.violations.len() - 1;
+            return Err(match v {
+                Violation::OutsideGrammar { line, excerpt, why } => {
+                    LevelError::OutsideGrammar { line: *line, excerpt: excerpt.clone(), why: why.clone(), more }
+                }
+                Violation::Coordinates { line, excerpt } => {
+                    LevelError::Coordinates { line: *line, excerpt: excerpt.clone(), more }
+                }
+            });
+        }
+        let sig = method_signature(&header);
+        if sig.keywords.is_empty() {
+            return Err(LevelError::NoMethodTokens);
+        }
+        Ok(sig)
+    }
+}
+
+/// Why a level's text gives no signature. Every variant refuses the level; none drops a line.
+#[derive(Debug, Clone, PartialEq, Eq, Error, Serialize)]
+pub enum LevelError {
+    #[error("line {line} of the level is outside the header grammar: {why}: `{excerpt}` (and {more} more)")]
+    OutsideGrammar { line: usize, excerpt: String, why: String, more: usize },
+    #[error("line {line} of the level carries coordinates (`{excerpt}`); a level is a `!` line and a solvation block (and {more} more)")]
+    Coordinates { line: usize, excerpt: String, more: usize },
+    #[error("the level names no method keyword")]
+    NoMethodTokens,
 }
 
 /// The normalised text of one `%cpcm` block (C3): every token lowercased, joined by one space,

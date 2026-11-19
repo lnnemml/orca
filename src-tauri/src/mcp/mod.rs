@@ -1,6 +1,7 @@
-//! The pure core of the MCP orchestration server (ADR-027, unit M1a): the guard that decides
-//! whether an AI model may spend compute. No DB, no Tauri command, no socket, no sidecar call;
-//! those are M1b (the resolver, schema and grant core), M2 (the server) and M3 (the write tools).
+//! The MCP orchestration server's core (ADR-027): the guard that decides whether an AI model may
+//! spend compute (unit M1a, pure), and the DB-level grant core, steps and resolver around it (unit
+//! M1b Part A). No Tauri command, no socket and no HTTP yet: those are M1b Part B, M2 (the server)
+//! and M3 (the write tools).
 //!
 //! - [`header`] parses the model's header under the closed grammar of ADR-027 decision 3: `!`
 //!   lines, `%…end` blocks (depth-tracked, `#` comments and quoted strings masked), `#` comments
@@ -13,6 +14,12 @@
 //!   SUBMITTED. It **fails closed**: what it does not recognise is never SUBMITTED.
 //! - [`assemble`] builds the input (header, the app's `%maxcore`, the coordinate block) and
 //!   re-parses it as its post-condition (rule #9).
+//! - [`grant`] creates, revokes and reads the grant (schema v24), and builds the classifier's
+//!   `GrantSnapshot`; every write is a `BEGIN IMMEDIATE` transaction.
+//! - [`steps`] is step A (charge and insert), step C (finish or refund), the crash reconciliation
+//!   and the `submit_job` guard.
+//! - [`resolve`] maps a geometry reference (`job:`, `molecule:`, `smiles:`) to a `ResolvedSource`.
+//! - [`preflight`] computes the app's `%maxcore` and the memory verdict before step A.
 //!
 //! The module page is `wiki/modules/mcp-server.md`.
 
@@ -20,8 +27,12 @@ pub mod allowlist;
 pub mod assemble;
 pub mod charge_mult;
 pub mod classify;
+pub mod grant;
 pub mod header;
+pub mod preflight;
+pub mod resolve;
 pub mod signature;
+pub mod steps;
 
 #[cfg(test)]
 mod allowlist_tests;
@@ -32,6 +43,16 @@ mod charge_mult_tests;
 #[cfg(test)]
 mod classify_tests;
 #[cfg(test)]
+mod grant_tests;
+#[cfg(test)]
 mod header_tests;
 #[cfg(test)]
+mod preflight_tests;
+#[cfg(test)]
+mod resolve_tests;
+#[cfg(test)]
 mod signature_tests;
+#[cfg(test)]
+mod steps_tests;
+#[cfg(test)]
+mod test_db;

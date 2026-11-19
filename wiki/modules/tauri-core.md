@@ -16,13 +16,17 @@ never runs a binary). The runtime mechanics of running ORCA live in
 ## Files
 
 - `lib.rs` — Tauri builder, setup hook, exit handling, invoke-handler registration.
-- `db.rs` — SQLite open + versioned migrations (v1–v17).
+- `db.rs` — SQLite open + versioned migrations (v1–v24).
 - `results.rs` — store/read parsed results (all four artifact readers) into the `results` table
   (ADR-012); the completion hook lives in `local_backend`. See `modules/artifact-readers.md`.
 - `orca_json.rs` — spawn `orca_2json` (ADR-009), lazy-cached gbw→JSON in the job dir (unit 3.7).
 - `error.rs` — `AppError` (thiserror).
 - `sidecar.rs` — `SidecarManager`: spawn/health-poll/kill uvicorn; the version handshake.
-- `commands/{settings,jobs,molecules,reactions}.rs` — Tauri command surface (thin wrappers over `*_conn`).
+- `commands/{settings,jobs,molecules,reactions,groups,server_profiles,remote_jobs,memory,manual,export,export_group}.rs`
+  — Tauri command surface (thin wrappers over `*_conn`).
+- `mcp/` — the MCP orchestration server's core (ADR-027): the classifier, input assembly, grant core,
+  steps A/C, reconciliation, source resolver and memory preflight. No command or socket yet. See
+  `modules/mcp-server.md`.
 - `models/{job,molecule}.rs` — row structs (`COLUMNS` + `from_row`).
 - `local_backend.rs` — ORCA execution, queue, cancel (see `execution-backends.md`).
 - `cpu_presets.rs` — measured core-pinning presets (see `execution-backends.md`).
@@ -220,6 +224,31 @@ survives a restart.
   invariant, rule #3, is unchanged — no pre-created draft dirs), with a basename guard refusing any name
   that could escape the dir. Generic (any job type could carry aux files); NULL for every normal job.
   Guarded ALTER.
+- **v18–v23** — server profiles and the remote job columns (Phase 5, ADR-023/ADR-024): `server_profiles`
+  and `jobs.backend_id` (v18), `slot_count`/`availability_window` (v19), the remote job coordinates
+  (v20), the pending cancel (v21), the pending submit (v22), the server host facts (v23). Each is
+  documented on `SCHEMA_VERSION` in `db.rs` and in `modules/server-profiles.md`, `modules/remote-jobs.md`
+  and `modules/execution-backends.md`.
+- **v24** — **the MCP orchestration server** (ADR-027 decision 5, unit M1b). Additive only:
+  - `jobs.origin TEXT NOT NULL DEFAULT 'user' CHECK (origin IN ('user','mcp'))`, `jobs.mcp_reasons`
+    (JSON), `jobs.grant_id` (FK to `mcp_grants`, `CHECK (grant_id IS NULL OR origin = 'mcp')`) and
+    `jobs.mcp_state` (`CHECK (mcp_state IS NULL OR (mcp_state = 'submitting' AND grant_id IS NOT
+    NULL))`). Every existing job reads `origin = 'user'`, the rest NULL. `Job` carries all four
+    (`JobOrigin`), after `submit_pending_since`;
+  - `mcp_grants` (targets and levels as JSON; `max_jobs`, `max_in_flight` ≥ 1; a stored
+    `charged_jobs` with `CHECK (charged_jobs >= 0 AND charged_jobs <= max_jobs)`) with the
+    **expression** partial unique index `mcp_grants_one_unrevoked ON mcp_grants((revoked_at IS NULL))
+    WHERE revoked_at IS NULL` — the column form would enforce nothing (NULLs are distinct in a UNIQUE
+    index; re-measured by `the_column_form_index_would_enforce_nothing`);
+  - `mcp_audit` (bounded `args`, the three dispositions or NULL; no FK, so the audit outlives a job).
+
+  Tests: `fresh_db_migrates_to_v24_with_the_mcp_tables`,
+  `migrate_v23_to_v24_keeps_every_row_and_defaults_origin_to_user` (every v23 table compared value by
+  value, plus a job and a profile with every column seeded non-NULL and read back literally; the
+  fixture is built by `migrate_to(conn, 23)`, so the v24 arm has never run on it), `the_v24_arm_reruns_over_its_own_columns`, `the_v24_checks_reject_every_forbidden_state`,
+  `the_expression_index_refuses_a_second_unrevoked_grant`, and the ignored real-copy test
+  `real_v23_db_copy_migrates_to_v24_without_touching_any_row` (`ORCASTUDIO_V23_DB_COPY`). The
+  grant, step and reconciliation cores over these tables live in `mcp/`.
 - The queue statuses (`queued`, `cancelled`) and `parsed` needed **no migration** — `status` is TEXT.
 - Migration tests assert preservation across each step (…`migrate_v6_to_v7_adds_homo_lumo_gap`,
   `migrate_v7_to_v8_backfills_energy_from_results`, `migrate_v8_to_v9_adds_manual_tables_and_preserves_data`,

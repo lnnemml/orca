@@ -56,7 +56,7 @@ fn strip_comment(line: &str) -> &str {
 /// The locator shared by [`read_maxcore`] and [`apply_maxcore`] (o26.13.5): the indices of the
 /// lines whose first token, comments stripped, begins with `%maxcore` (any case). A commented-out
 /// `# %maxcore 3000` is not one.
-fn maxcore_lines(lines: &[&str]) -> Vec<usize> {
+pub(crate) fn maxcore_lines(lines: &[&str]) -> Vec<usize> {
     lines
         .iter()
         .enumerate()

@@ -152,6 +152,9 @@ pub enum RefusedReason {
     UnknownElement { symbol: String },
     /// R5: charge and multiplicity that no electron count allows.
     ParityImpossible { electrons: i64, multiplicity: i64 },
+    /// R5: a charge or multiplicity so large that the electron count overflows (checked
+    /// arithmetic; a wrapped count could pass the parity test by accident).
+    ChargeMultOutOfRange { charge: i64, multiplicity: i64 },
     /// R6: a constraint atom index that is not an integer in `[0, atom_count)`; `bad` holds the
     /// tokens as written (an unreadable one included, never dropped).
     ConstraintIndex { entry: String, bad: Vec<String>, atom_count: usize },
@@ -173,7 +176,9 @@ impl RefusedReason {
             RefusedReason::Coordinates { .. } => "R2",
             RefusedReason::ComputeShape { .. } => "R3",
             RefusedReason::Source(_) => "R4",
-            RefusedReason::UnknownElement { .. } | RefusedReason::ParityImpossible { .. } => "R5",
+            RefusedReason::UnknownElement { .. }
+            | RefusedReason::ParityImpossible { .. }
+            | RefusedReason::ChargeMultOutOfRange { .. } => "R5",
             RefusedReason::ConstraintIndex { .. } => "R6",
             RefusedReason::ScanWithoutOpt => "R7",
             RefusedReason::TooManyProposals { .. } => "R8",
@@ -206,6 +211,9 @@ impl RefusedReason {
             RefusedReason::UnknownElement { symbol } => format!("unknown element `{symbol}` in the source"),
             RefusedReason::ParityImpossible { electrons, multiplicity } => format!(
                 "multiplicity {multiplicity} is impossible for {electrons} electrons"
+            ),
+            RefusedReason::ChargeMultOutOfRange { charge, multiplicity } => format!(
+                "charge {charge} and multiplicity {multiplicity} are outside any electron count"
             ),
             RefusedReason::ConstraintIndex { entry, bad, atom_count } => format!(
                 "constraint `{entry}` names atom index {}, not an integer in 0..{atom_count} (0-based)",
@@ -280,8 +288,13 @@ impl ProposedReason {
             ProposedReason::FreqWithoutConvergedOpt => {
                 "a frequency job needs a converged optimization at the same method signature as its source".into()
             }
-            ProposedReason::Memory(MemoryVerdict::Unknown) => "server memory unknown — re-run the connection test".into(),
-            ProposedReason::Memory(_) => "the memory preflight warns for this target".into(),
+            // Read for either target (M1a Open item): a server's facts come from its connection
+            // test, this machine's from /proc/meminfo and the data directory, read now.
+            ProposedReason::Memory(MemoryVerdict::Unknown) => "the target's memory or free disk is unknown \
+                (a server: re-run the connection test; this machine: /proc/meminfo or the data directory \
+                could not be read)"
+                .into(),
+            ProposedReason::Memory(_) => "the memory preflight warns for this target (RAM or free disk)".into(),
             ProposedReason::Grant(g) => match g {
                 GrantProblem::NoGrant => "there is no grant".into(),
                 GrantProblem::NoMethodLevel => "no method level stated".into(),
@@ -376,11 +389,13 @@ fn source_rows(header: &ParsedHeader, source: &Result<ResolvedSource, String>, o
 
     // R5 (C6): electrons = Σ Z − charge; impossible if the parity is wrong, the multiplicity is
     // below 1, or there are more unpaired electrons than electrons.
-    let mut z_sum: i64 = 0;
+    // Checked arithmetic throughout: a wrapped count could pass the parity test by accident, and an
+    // overflow is itself R5 (the M1a verifier's LOW finding).
+    let mut z_sum: Option<i64> = Some(0);
     let mut elements_known = true;
     for a in &src.atoms {
         match z_of(&normalise_element(&a.element)) {
-            Some(z) => z_sum += i64::from(z),
+            Some(z) => z_sum = z_sum.and_then(|s| s.checked_add(i64::from(z))),
             None => {
                 elements_known = false;
                 out.push(RefusedReason::UnknownElement { symbol: a.element.clone() });
@@ -390,10 +405,20 @@ fn source_rows(header: &ParsedHeader, source: &Result<ResolvedSource, String>, o
     match &src.charge_mult {
         Err(e) => out.push(RefusedReason::Source(SourceProblem::ChargeMultUnreadable(e.clone()))),
         Ok(cm) if elements_known && !src.atoms.is_empty() => {
-            let electrons = z_sum - cm.charge;
             let m = cm.multiplicity;
-            if m < 1 || electrons < 0 || (electrons + m - 1) % 2 != 0 || m - 1 > electrons {
-                out.push(RefusedReason::ParityImpossible { electrons, multiplicity: m });
+            let electrons = z_sum.and_then(|s| s.checked_sub(cm.charge));
+            // m ≥ 1 is checked first, so `m - 1` cannot overflow.
+            let unpaired = if m < 1 { None } else { Some(m - 1) };
+            match (electrons, unpaired) {
+                (None, _) => out.push(RefusedReason::ChargeMultOutOfRange { charge: cm.charge, multiplicity: m }),
+                (Some(electrons), None) => out.push(RefusedReason::ParityImpossible { electrons, multiplicity: m }),
+                (Some(electrons), Some(unpaired)) => match electrons.checked_add(unpaired) {
+                    None => out.push(RefusedReason::ChargeMultOutOfRange { charge: cm.charge, multiplicity: m }),
+                    Some(sum) if electrons < 0 || sum % 2 != 0 || unpaired > electrons => {
+                        out.push(RefusedReason::ParityImpossible { electrons, multiplicity: m });
+                    }
+                    Some(_) => {}
+                },
             }
         }
         Ok(_) => {}
@@ -447,6 +472,15 @@ fn grant_rows(grant: Option<&GrantSnapshot>, target: &Target, sig: &MethodSignat
     if g.in_flight >= g.max_in_flight {
         out.push(ProposedReason::Grant(GrantProblem::MaxInFlightReached { in_flight: g.in_flight, max: g.max_in_flight }));
     }
+}
+
+/// P5 alone: every way `grant` fails to cover a job for `target` at `sig`. Step A
+/// (`steps::charge_and_insert_conn`) re-runs exactly these rows on the grant it re-reads inside its
+/// `BEGIN IMMEDIATE` transaction, so the classifier and step A can never disagree on what covers.
+pub(crate) fn grant_problems(grant: Option<&GrantSnapshot>, target: &Target, sig: &MethodSignature) -> Vec<ProposedReason> {
+    let mut out = Vec::new();
+    grant_rows(grant, target, sig, &mut out);
+    out
 }
 
 /// Classify one `create_job` call (ADR-027 decision 3).

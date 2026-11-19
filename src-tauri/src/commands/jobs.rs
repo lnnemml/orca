@@ -32,7 +32,7 @@ use crate::models::job::{Job, JobStatus};
 /// instead — the job is NOT blocked, and parse falls back to the derived identity map.
 /// This is the single mint site, so a clone / "new iteration" (which also calls
 /// `create_job`) mints its OWN map from its OWN text — never inherited.
-fn create_job_conn(
+pub(crate) fn create_job_conn(
     conn: &Connection,
     title: &str,
     input_content: &str,
@@ -1229,10 +1229,16 @@ pub fn read_job_ensemble(db: State<'_, DbState>, id: String) -> Result<String, A
         let conn = db.lock()?;
         get_job_conn(&conn, &id)?.job_dir
     };
+    read_ensemble_text(&id, job_dir.as_deref())
+}
+
+/// The core of [`read_job_ensemble`], shared with the MCP source resolver (`job:<id>/goat:<k>`):
+/// the ensemble text of job `id` in `job_dir`, or empty when there is no dir or no file.
+pub(crate) fn read_ensemble_text(id: &str, job_dir: Option<&str>) -> Result<String, AppError> {
     let Some(job_dir) = job_dir else {
         return Ok(String::new());
     };
-    let path = std::path::Path::new(&job_dir).join("input.finalensemble.xyz");
+    let path = std::path::Path::new(job_dir).join("input.finalensemble.xyz");
     if !path.exists() {
         return Ok(String::new());
     }

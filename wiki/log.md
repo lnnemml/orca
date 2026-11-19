@@ -12428,3 +12428,134 @@ row only; the shared `.builder-row` rule and the other rows are unchanged. Needs
     P2 without an R6 range check;
   - a prober run to record how ORCA 6.1.1 reads a second `#` (the manual says it closes the
     comment). Until then, a line with two `#` is refused.
+
+## [2026-11-19] feat | ADR-027 M1b Part A — schema v24, the grant core, the resolver
+
+**What landed** (uncommitted, branch `feat/mcp-m1b`; verifier CODE round 1: PASS WITH FINDINGS, no
+HIGH, all fixed below, pending re-verification). The DB-level cores
+around M1a's classifier; no Tauri command, no socket, no HTTP. Module page:
+[mcp-server.md](modules/mcp-server.md); schema: [tauri-core.md](modules/tauri-core.md).
+
+- **Schema v24** (`db.rs`), additive only, guarded ALTERs:
+  - `jobs.origin` (`'user'`/`'mcp'`, default `'user'`), `jobs.mcp_reasons` (JSON), `jobs.grant_id` (FK to
+    `mcp_grants`, only on an MCP job) and `jobs.mcp_state` (only `'submitting'`, only with a grant).
+    `Job` carries all four (`JobOrigin`); the two hand-made `jobs` test stubs gained the columns;
+  - `mcp_grants` with the stored `charged_jobs` (`CHECK (charged_jobs >= 0 AND charged_jobs <=
+    max_jobs)`) and the **expression** index `ON mcp_grants((revoked_at IS NULL)) WHERE revoked_at IS
+    NULL`; `the_column_form_index_would_enforce_nothing` re-measures on the bundled SQLite that the
+    column form admits two unrevoked rows;
+  - `mcp_audit` (bounded `args`, the three dispositions or NULL, no FK).
+- **The grant core** (`mcp/grant.rs`): `create_grant_conn` checks every field before any write and
+  then, in one `BEGIN IMMEDIATE` transaction, revokes the unrevoked grant and inserts the new one;
+  `revoke_grant_conn` (idempotent), `active_grant_conn`, `grant_snapshot_conn` (`CurrentGrant { id,
+  snapshot }`), `in_flight_conn` (every non-terminal job with a grant, any grant, a step-B draft
+  included; the terminal list is built from the new `JobStatus::is_terminal`).
+- **The strict level reader** (`MethodSignature::of_level_text`, the M1a verifier's LOW): a level with
+  any grammar violation or no method token is refused; the lenient `of_input` is test-only.
+- **Steps** (`mcp/steps.rs`): step A `charge_and_insert_conn` (reads the time, re-reads the grant and
+  re-runs the P5 rows inside `BEGIN IMMEDIATE`; charged or PROPOSED; post-condition: one grant row charged and `in_flight`
+  within the cap), `insert_proposed_conn`, step C `finish_submit_conn` (re-reads the row; refund only a
+  `draft` still charged to the grant), `reconcile_submitting_conn` (not called anywhere yet; M2's lock
+  holder will), and `submit_refusal_for_mcp_state` as a pure check (wired into `submit_job` in Part B).
+  `commands::jobs::create_job_conn` became `pub(crate)` and is reused for the insert.
+- **The resolver** (`mcp/resolve.rs`) over `final_geometry`, `read_scan_geometries`,
+  `read_neb_geometries`, `results.neb.ts_geometry`, the GOAT ensemble (`read_ensemble_text`, extracted
+  from `read_job_ensemble`, which now calls it) and the molecules table; SMILES through a
+  `SmilesTo3d` trait seam (a stub in the tests). Locks the DB only for a DB-backed reference.
+- **The memory preflight** (`mcp/preflight.rs`): `mcp_maxcore` and `memory_verdict_for` take no lock of
+  their own.
+- **M1a follow-ups:** R5's arithmetic is checked (an overflow is `ChargeMultOutOfRange`, R5); the P4
+  `Unknown` message reads for a Local target too. `assemble.rs`'s strict `* xyz` reader is extracted as
+  `read_coordinate_block` and shared with the resolver; the M1a tests are unchanged except
+  `p4_memory_warns_or_is_unknown`, which pinned the old Local-wrong message.
+
+**Decisions made in the unit (item 6 and around it):**
+- every `k` is 0-based (`scan:0` = `input.001.xyz`; `neb:0` = the reactant end; `goat:0` = the first
+  member, the `source_conformer_index` convention);
+- `terminal_success` for every job-derived source is the parent's status: `Some(true)` for
+  completed/parsed, `Some(false)` for failed/cancelled/lost, `None` while not terminal; no geometry is
+  read from a job that did not succeed;
+- `converged`: `job:<id>` takes `ParsedResults.converged`; every frame source is `None`;
+- `opt_signature`: `job:<id>` with an Opt-family token gets its header's signature, read strictly. The
+  app's own `%maxcore <n>` (no `end`) is set aside by the preflight's locator first, since the header
+  grammar reads it as a never-closing block; any other refused line gives `None` (P3 fails closed);
+- rule #9 on the resolver: a job-derived geometry's element sequence must equal the source job's own
+  `* xyz` block (atom order is measured preserved for GOAT, `orca/goat.md`); a SMILES reply's atom
+  count must equal its `num_atoms`;
+- a grant target is `"local"` or a profile id that exists; times are `datetime('now')` text and
+  `expires_at` is format-checked because it is compared as text;
+- the memory verdict is `Fits` only when RAM, disk and the estimate are all known and quiet;
+- a server without a 5.5 proposal (unknown memory, no mask, P below 300) gets
+  `SERVER_DEFAULT_MAXCORE_MIB` and a non-`Fits` verdict.
+
+**Anton's decisions (2026-11-19):**
+- P3's same-level rule is **confirmed**. A deliberate exception, such as a cheaper Hessian for an
+  OptTS, goes through PROPOSED.
+- The `MaxIter` cap is **deferred** to M5 and the core-hour budget.
+- **A constrained optimization is not a stationary point.** A `job:<id>` source whose `%geom` holds
+  `Constraints` or a `Scan` never counts as a converged optimization for P3, so a Freq from it is P3
+  PROPOSED. Implemented fail-closed in the resolver (`geom_leaves_a_stationary_point`): the source keeps
+  an `opt_signature` only when every `%geom` item is `Calc_Hess`, `Recalc_Hess` or `MaxIter` with a
+  `true`/`false`/integer value; a sub-block or any other key (`OptimizeHydrogens`, …) makes it
+  ineligible.
+
+**Verifier round 1 findings, fixed:**
+- **MED-1** — the v23 fixture was built by migrating to v24 and dropping the v24 objects, so a
+  destructive write in the v24 arm had already damaged it before the "before" snapshot (the verifier's
+  `UPDATE jobs SET backend_id = NULL` stayed green). `migrate` now delegates to `migrate_to(conn,
+  target)` (`target` in `23..=24`, the v24 arm only when `target >= 24`); the fixture is a fresh
+  database migrated by `migrate_to(.., 23)` and seeded with a job and a profile whose every column is
+  non-NULL (asserted to cover the v23 tables exactly), read back literally after the migration.
+- **LOW-1** — `step_c_twice_refunds_once` pins step C's idempotency.
+- **LOW-3** — the control count below is corrected (round 1 had 29, not 30).
+- **LOW-4** — step A no longer takes `now`: it reads the clock inside `BEGIN IMMEDIATE`, after the lock
+  (`now_utc_conn`; a `clock` seam in `charge_and_insert_with`).
+  `a_grant_that_expires_during_the_lock_wait_is_not_charged` advances a fake clock in the seam before
+  `BEGIN`.
+- **LOW-5** — the `debug_assert!` in `reconcile_submitting_conn` is gone; a comment states why the
+  flag holds by construction (selected inside the same write-locked transaction).
+- **LOW-2** (the P4 message in ADR-027) is the orchestrator's.
+
+**Tests:**
+- `cargo test --workspace`: `orcastudio_lib` **1148 → 1197 → 1200** passed (round 1 added 3), ignored
+  **29 → 30** (the new real-copy test). No build warnings. `orcastudio-core` unchanged (24 + 6 + 1 + 2 doc; 1 ignored).
+- `npx vitest run`: **1373** passed, 2 skipped (no TS change). `npx tsc --noEmit` clean.
+- **The real-copy migration**, run on a fresh copy of the scratch v23 file in Part A and again after
+  round 1, with the same output each time (the original's sha256 `0f8e76b1…0eea20` unchanged):
+  `ORCASTUDIO_V23_DB_COPY=… cargo test -p orcastudio --lib real_v23_db_copy -- --ignored --nocapture` →
+  every v23 table compared value by value, all unchanged: groups 5 rows, jobs 89, manual_provenance 1,
+  manual_sections 1586, molecules 7, pathways 3, reaction_reference_jobs 4, reactions 3, results 55,
+  server_profiles 1, settings 8 (without `schema_version`); 89 jobs `origin = 'user'`; integrity `ok`;
+  0 FK violations.
+
+**Negative controls** (34, all RED, each restored byte-identically, sha256-checked;
+`scratchpad/m1b_controls.py`; 29 from Part A, 5 from round 1):
+- schema: the column-form index; `charged_jobs` allowed negative; an unguarded ALTER; `origin`
+  defaulting to `'mcp'`; the v24 arm NULLing `jobs.backend_id`, and overwriting `jobs.error_message`
+  (round 1); `from_row` reading `grant_id`/`mcp_state` swapped; `cancelling` counted terminal;
+- grant core: creating grant 2 without revoking grant 1; `in_flight` counting only the current grant's
+  jobs; `in_flight` ignoring a step-B draft; `charged_jobs` derived from job rows; an empty level
+  accepted; a violating level line dropped;
+- steps: the grant read moved before `BEGIN IMMEDIATE` (the rival step A, run through the
+  `charge_and_insert_with` seam, goes unseen); the clock read before the lock (round 1); step C
+  without the `grant_id` clause, refunding twice (round 1); step C refunding a job that left `draft`; a step-B
+  refusal not refunded; the reconciliation leaving a `submitting` draft charged; the guard accepting a
+  `submitting` job;
+- resolver: a failed job as terminal-success; a scan frame as a converged optimization; a malformed
+  `* xyz` resolved as (0, 1); the element-order check skipped; the `%maxcore` line not set aside; a
+  SMILES resolved under the DB lock; the `%geom` stationarity check ignored (round 1);
+- preflight: `Unknown` mapped to `Fits` (the pure mapping, and an unknown server);
+- M1a follow-ups: the P4 message naming only the server; R5 with `wrapping_sub`, with `wrapping_add`,
+  and with plain `-` restored.
+
+A real-thread test (`two_concurrent_step_as_charge_exactly_one`, two connections on one file) shows the
+same race serialized by SQLite; the deterministic interleave above is the control that bites.
+
+**Open:**
+- Part B: the grant create/revoke Tauri commands, `submit_job` calling the guard, the `ureq`
+  implementation of `SmilesTo3d`.
+- A source input with another one-line directive (`%moinp`, `%base`) gives no `opt_signature`, so a
+  Freq from it is PROPOSED.
+- `memory_verdict_for` and `mcp_maxcore` take `meminfo` and `data_dir` (the `_with` seams); Part B or
+  M3 passes `PROC_MEMINFO` and the runner's data dir.
+- The TS `Job` type does not yet declare the four new fields (M4).

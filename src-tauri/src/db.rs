@@ -135,12 +135,37 @@ use crate::error::AppError;
 ///   values are never kept; `host_facts_at` set when at least one was read), NULLed with the stamp
 ///   by `clear_verified`. Recorded, never gating. Existing rows: NULL. Guarded ALTERs (column_exists).
 ///
+/// - v24: the MCP orchestration server's state (ADR-027 decision 5, unit M1b). Additive only:
+///   - four `jobs` columns. `origin TEXT NOT NULL DEFAULT 'user' CHECK (origin IN ('user','mcp'))`,
+///     so every existing row reads `'user'`. `mcp_reasons` (JSON, nullable): why an MCP job was
+///     proposed or refunded. `grant_id` (nullable FK to `mcp_grants(id)`, no `ON DELETE`: a grant
+///     is never deleted, only revoked) with `CHECK (grant_id IS NULL OR origin = 'mcp')`.
+///     `mcp_state` with `CHECK (mcp_state IS NULL OR (mcp_state = 'submitting' AND grant_id IS NOT
+///     NULL))`: only a charged MCP job can be in the step-B window;
+///   - `mcp_grants`: one row per grant. `charged_jobs` is a **stored** counter (`CHECK (charged_jobs
+///     >= 0 AND charged_jobs <= max_jobs)`); only step A increments it and only a refund decrements
+///     it, so deleting a job never re-opens the budget. At most one grant is unrevoked, enforced by
+///     the **expression** partial unique index `mcp_grants_one_unrevoked ON
+///     mcp_grants((revoked_at IS NULL)) WHERE revoked_at IS NULL`. The column form `(revoked_at)`
+///     would enforce nothing, because NULLs are distinct in a UNIQUE index
+///     (`tests::the_column_form_index_would_enforce_nothing`);
+///   - `mcp_audit`: one row per MCP tool call (M3 writes it). `args` is bounded by a CHECK
+///     ([`MCP_AUDIT_ARGS_MAX_CHARS`]); `job_id` and `grant_id` carry no FK, so the audit outlives
+///     a deleted job.
+///
+///   Guarded ALTERs (column_exists) and `IF NOT EXISTS`. Each CHECK names only its own column and
+///   earlier new ones (the v20 form). Existing rows: `origin = 'user'`, the rest NULL.
+///
 /// Unit 5.4b takes **no** schema version (ADR-024 o25.3): the re-enqueue counter is the server's
 /// `.reenqueue-1` claim, and the terminal `lost` status needs no CHECK (the status column has none)
 /// — `finalize_job_conn` writes it and NULLs the pending columns as for any terminal state.
 ///
 /// [`Job::is_remote`]: crate::models::job::Job::is_remote
-const SCHEMA_VERSION: i64 = 23;
+const SCHEMA_VERSION: i64 = 24;
+
+/// The longest `mcp_audit.args` the database accepts, in characters (the v24 CHECK). The writer
+/// (M3) truncates to this and says so in the row.
+pub(crate) const MCP_AUDIT_ARGS_MAX_CHARS: usize = 8192;
 
 /// Open (creating if needed) `orcastudio.db` under `data_dir` and migrate it to
 /// the current schema.
@@ -157,6 +182,18 @@ pub fn init_db(data_dir: &Path) -> Result<Connection, AppError> {
 /// so re-running on an up-to-date database is a no-op and an older database is
 /// upgraded in place without touching existing data.
 fn migrate(conn: &Connection) -> Result<(), AppError> {
+    migrate_to(conn, SCHEMA_VERSION)
+}
+
+/// [`migrate`] stopping at `target`, which must lie in `23..=SCHEMA_VERSION`: every arm up to v23
+/// runs, and the v24 arm only when `target >= 24`. The app always migrates to [`SCHEMA_VERSION`];
+/// a lower target exists so a test can build a real v23 database that the v24 arm has **never**
+/// touched — a fixture built by migrating to the current version and then dropping the v24 objects
+/// would already carry any damage the v24 arm did to existing rows (the M1b verifier's MED-1).
+fn migrate_to(conn: &Connection, target: i64) -> Result<(), AppError> {
+    if !(23..=SCHEMA_VERSION).contains(&target) {
+        return Err(AppError::Internal(format!("migrate_to({target}): only 23..={SCHEMA_VERSION}")));
+    }
     // --- v1: base settings table + seeds. Always ensured (idempotent). ---
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS settings (
@@ -596,12 +633,37 @@ fn migrate(conn: &Connection) -> Result<(), AppError> {
         version = 23;
     }
 
+    // --- v23 -> v24: the MCP orchestration server (ADR-027 decision 5). The grant table first, so
+    // `jobs.grant_id` can reference it. Then the four `jobs` columns, guarded on `jobs.id` and per
+    // column; each CHECK names only its own column and earlier new ones, so it is tested against
+    // every existing row with `origin = 'user'` and the rest NULL. ---
+    if version < 24 && target >= 24 {
+        create_mcp_tables(conn)?;
+        if column_exists(conn, "jobs", "id")? {
+            let columns = [
+                ("origin", "TEXT NOT NULL DEFAULT 'user' CHECK (origin IN ('user', 'mcp'))"),
+                ("mcp_reasons", "TEXT"),
+                ("grant_id", "TEXT REFERENCES mcp_grants(id) CHECK (grant_id IS NULL OR origin = 'mcp')"),
+                (
+                    "mcp_state",
+                    "TEXT CHECK (mcp_state IS NULL OR (mcp_state = 'submitting' AND grant_id IS NOT NULL))",
+                ),
+            ];
+            for (col, def) in columns {
+                if !column_exists(conn, "jobs", col)? {
+                    conn.execute_batch(&format!("ALTER TABLE jobs ADD COLUMN {col} {def};"))?;
+                }
+            }
+        }
+        version = 24;
+    }
+
     // Persist the resulting version so subsequent runs skip completed steps.
     conn.execute(
         "UPDATE settings SET value = ?1 WHERE key = 'schema_version'",
         rusqlite::params![version.to_string()],
     )?;
-    debug_assert_eq!(version, SCHEMA_VERSION);
+    debug_assert!(version >= target);
     Ok(())
 }
 
@@ -628,6 +690,40 @@ pub(crate) fn create_results_table(conn: &Connection) -> Result<(), AppError> {
             parsed_at           TEXT NOT NULL DEFAULT (datetime('now'))
         );",
     )?;
+    Ok(())
+}
+
+/// Create the MCP tables (schema v24, ADR-027 decision 5): `mcp_grants` with its one-unrevoked
+/// expression index, and `mcp_audit`. Times are `datetime('now')` text, **UTC on the laptop's
+/// clock**; `expires_at` is compared as text, so every writer stores exactly that form
+/// (`mcp::grant::check_utc_text`).
+pub(crate) fn create_mcp_tables(conn: &Connection) -> Result<(), AppError> {
+    conn.execute_batch(&format!(
+        "CREATE TABLE IF NOT EXISTS mcp_grants (
+            id            TEXT PRIMARY KEY,
+            created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+            expires_at    TEXT NOT NULL,
+            revoked_at    TEXT,
+            targets       TEXT NOT NULL,   -- JSON array: \"local\" and/or server profile ids
+            levels        TEXT NOT NULL,   -- JSON array of mcp::signature::MethodSignature
+            max_jobs      INTEGER NOT NULL CHECK (max_jobs >= 1),
+            max_in_flight INTEGER NOT NULL CHECK (max_in_flight >= 1),
+            charged_jobs  INTEGER NOT NULL DEFAULT 0 CHECK (charged_jobs >= 0 AND charged_jobs <= max_jobs)
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS mcp_grants_one_unrevoked
+            ON mcp_grants((revoked_at IS NULL)) WHERE revoked_at IS NULL;
+
+        CREATE TABLE IF NOT EXISTS mcp_audit (
+            id          INTEGER PRIMARY KEY,
+            at          TEXT NOT NULL DEFAULT (datetime('now')),
+            tool        TEXT NOT NULL,
+            args        TEXT NOT NULL CHECK (length(args) <= {MCP_AUDIT_ARGS_MAX_CHARS}),
+            disposition TEXT CHECK (disposition IS NULL OR disposition IN ('refused', 'proposed', 'submitted')),
+            reasons     TEXT,              -- JSON array of mcp::steps::McpReason
+            job_id      TEXT,              -- no FK: the audit outlives a deleted job
+            grant_id    TEXT
+        );"
+    ))?;
     Ok(())
 }
 
@@ -1911,8 +2007,7 @@ mod tests {
         let jobs = all_jobs(&conn);
         assert_eq!(profiles.len(), 3);
         migrate(&conn).expect("v22 -> v23");
-        assert_eq!(SCHEMA_VERSION, 23);
-        assert_eq!(current_version(&conn).unwrap(), 23);
+        assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
         assert_eq!(all_profiles(&conn), profiles, "no profile row changed");
         assert_eq!(all_jobs(&conn), jobs, "no job row changed");
         let facts: Vec<(Option<i64>, Option<i64>, Option<String>)> = {
@@ -1945,6 +2040,383 @@ mod tests {
         assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
         assert_eq!((all_profiles(&conn), all_jobs(&conn)), (profiles.clone(), jobs.clone()), "nothing changed");
         eprintln!("migrated {} profiles, {} jobs", profiles.len(), jobs.len());
+    }
+
+    // --- v24: the MCP tables and the four `jobs` columns (ADR-027 decision 5) -------------------
+
+    /// The column names of `table`, in order.
+    fn column_names(conn: &Connection, table: &str) -> Vec<String> {
+        let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})")).unwrap();
+        stmt.query_map([], |r| r.get::<_, String>(1)).unwrap().map(Result::unwrap).collect()
+    }
+
+    /// Every row of `table`, every one of `cols`, as raw SQLite values, in rowid order: the
+    /// strongest "nothing changed" a migration test can state. `settings.schema_version` is left
+    /// out: it is the migration's one intended write.
+    fn full_rows(conn: &Connection, table: &str, cols: &[String]) -> Vec<Vec<rusqlite::types::Value>> {
+        let skip = if table == "settings" { "WHERE key <> 'schema_version'" } else { "" };
+        let sql = format!("SELECT {} FROM {table} {skip} ORDER BY rowid", cols.join(", "));
+        let mut stmt = conn.prepare(&sql).unwrap();
+        stmt.query_map([], |r| (0..cols.len()).map(|i| r.get::<_, rusqlite::types::Value>(i)).collect())
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    }
+
+    /// Every user table except the v24 ones, with its v23 columns and every row's values.
+    fn snapshot_v23_tables(conn: &Connection) -> Vec<(String, Vec<String>, Vec<Vec<rusqlite::types::Value>>)> {
+        let tables: Vec<String> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' \
+                     AND name NOT LIKE 'manual_fts%' AND name NOT LIKE 'mcp_%' ORDER BY name",
+                )
+                .unwrap();
+            stmt.query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect()
+        };
+        tables
+            .into_iter()
+            .map(|t| {
+                let cols = column_names(conn, &t);
+                let rows = full_rows(conn, &t, &cols);
+                (t, cols, rows)
+            })
+            .collect()
+    }
+
+    /// The literal value seeded in every column of the v23 job row `full` — every column non-NULL
+    /// (a remote `queued` job holding a pending cancel and a pending submit satisfies every v20–v22
+    /// CHECK at once), so a v24 arm that NULLs or overwrites any existing column changes a value
+    /// this list names. The fixture asserts the list covers the v23 `jobs` table exactly.
+    fn full_v23_job() -> Vec<(&'static str, rusqlite::types::Value)> {
+        use rusqlite::types::Value::{Integer, Real, Text};
+        let t = |s: &str| Text(s.to_string());
+        vec![
+            ("id", t("full")),
+            ("title", t("full row")),
+            ("input_content", t("! r2SCAN-3c Opt\n* xyz 0 1\nH 0 0 0\nH 0 0 0.74\n*\n")),
+            ("status", t("queued")),
+            ("job_dir", t("/data/jobs/full")),
+            ("energy", Real(-1.1754)),
+            ("wall_time", Real(12.5)),
+            ("error_message", t("an old note")),
+            ("created_at", t("2026-11-01 08:00:00")),
+            ("started_at", t("2026-11-01 08:01:00")),
+            ("completed_at", t("2026-11-01 08:02:00")),
+            ("scene_json", t("{\"version\":2}")),
+            ("index_map_json", t("{\"skipped\":\"x\"}")),
+            ("scene_log_json", t("[]")),
+            ("pathway_id", t("pw-1")),
+            ("source_ensemble_job_id", t("src")),
+            ("source_conformer_index", Integer(3)),
+            ("group_id", t("g-child")),
+            ("aux_files_json", t("{\"product.xyz\":\"2\"}")),
+            ("backend_id", t("p-uni")),
+            ("remote_host", t("uni")),
+            ("remote_job_dir", t("/r/jobs/full")),
+            ("remote_socket", t("/r/tsp/slot0.sock")),
+            ("cancel_requested_at", t("2026-11-01 09:00:00")),
+            ("cancel_sent_at", t("2026-11-01 09:00:05")),
+            ("submit_pending_since", t("2026-11-01 08:59:00")),
+        ]
+    }
+
+    /// The same for the v23 server profile `p-uni`.
+    fn full_v23_profile() -> Vec<(&'static str, rusqlite::types::Value)> {
+        use rusqlite::types::Value::{Integer, Text};
+        let t = |s: &str| Text(s.to_string());
+        vec![
+            ("id", t("p-uni")),
+            ("name", t("uni")),
+            ("host", t("uni")),
+            ("remote_orca_path", t("/opt/orca/orca")),
+            ("remote_scratch_dir", t("/home/anton/.orcastudio")),
+            ("core_mask", t("0-23")),
+            ("orca_version", t("6.1.1")),
+            ("openmpi_version", t("4.1.6")),
+            ("core_count", Integer(48)),
+            ("verified_at", t("2026-11-01 10:00:00")),
+            ("created_at", t("2026-10-01 10:00:00")),
+            ("slot_count", Integer(1)),
+            ("availability_window", t("22:00-08:00")),
+            ("mem_total_kib", Integer(65795232)),
+            ("disk_avail_bytes", Integer(78360924160)),
+            ("host_facts_at", t("2026-11-01 10:00:00")),
+        ]
+    }
+
+    /// Insert `row` into `table` by its column names.
+    fn insert_full(conn: &Connection, table: &str, row: &[(&str, rusqlite::types::Value)]) {
+        let cols: Vec<&str> = row.iter().map(|(c, _)| *c).collect();
+        let marks: Vec<String> = (1..=row.len()).map(|i| format!("?{i}")).collect();
+        let sql = format!("INSERT INTO {table} ({}) VALUES ({})", cols.join(", "), marks.join(", "));
+        conn.execute(&sql, rusqlite::params_from_iter(row.iter().map(|(_, v)| v))).unwrap();
+    }
+
+    /// Every seeded value still reads back literally.
+    fn assert_full(conn: &Connection, table: &str, id: &str, row: &[(&str, rusqlite::types::Value)]) {
+        for (col, want) in row {
+            let got: rusqlite::types::Value =
+                conn.query_row(&format!("SELECT {col} FROM {table} WHERE id = ?1"), [id], |r| r.get(0)).unwrap();
+            assert_eq!(&got, want, "{table}.{col} of {id}");
+        }
+    }
+
+    /// A real v23 database the v24 arm has **never** run on (MED-1): a fresh database migrated by
+    /// `migrate_to(.., 23)`, then seeded — the job `full` and the profile `p-uni` with every column
+    /// non-NULL, plus local and remote jobs in the other states a v23 row can be in, a group tree,
+    /// a reaction and pathway, a molecule and a results row.
+    fn v23_db_with_jobs() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO settings (key, value) VALUES ('schema_version', '1');",
+        )
+        .unwrap();
+        migrate_to(&conn, 23).unwrap();
+        assert_eq!(current_version(&conn).unwrap(), 23);
+        assert!(!column_exists(&conn, "jobs", "origin").unwrap());
+        assert!(!column_exists(&conn, "mcp_grants", "id").unwrap());
+        let job_cols: Vec<String> = full_v23_job().iter().map(|(c, _)| c.to_string()).collect();
+        assert_eq!(column_names(&conn, "jobs"), job_cols, "the seeded job names every v23 column");
+        let profile_cols: Vec<String> = full_v23_profile().iter().map(|(c, _)| c.to_string()).collect();
+        assert_eq!(column_names(&conn, "server_profiles"), profile_cols, "the seeded profile names every v23 column");
+
+        insert_full(&conn, "server_profiles", &full_v23_profile());
+        conn.execute_batch(
+            "INSERT INTO server_profiles (id, name, host, remote_orca_path, remote_scratch_dir)
+                 VALUES ('p-new', 'new', 'lab', '/opt/orca/orca', '/home/x/.orcastudio');
+             INSERT INTO groups (id, name, parent_id, created_at) VALUES ('g-root', 'root', NULL, '2026-10-01 00:00:00');
+             INSERT INTO groups (id, name, parent_id, created_at) VALUES ('g-child', 'child', 'g-root', '2026-10-01 00:00:01');
+             INSERT INTO reactions (id, name, description, created_at) VALUES ('r-1', 'cyclization', 'sultone', '2026-10-01 00:00:02');
+             INSERT INTO pathways (id, reaction_id, label, created_at) VALUES ('pw-1', 'r-1', 'endo', '2026-10-01 00:00:03');
+             INSERT INTO molecules (id, name, formula, xyz, charge, multiplicity) VALUES ('m-1', 'water', 'H2O', '3\n\nO 0 0 0\nH 0 0.76 0.59\nH 0 -0.76 0.59\n', -1, 2);",
+        )
+        .unwrap();
+        insert_job_row(&conn, "src", "completed", false).unwrap();
+        insert_full(&conn, "jobs", &full_v23_job());
+        for (id, status, remote) in [
+            ("l-draft", "draft", false),
+            ("l-queued", "queued", false),
+            ("l-running", "running", false),
+            ("l-parsed", "parsed", false),
+            ("l-cancelled", "cancelled", false),
+            ("r-running", "running", true),
+            ("r-cancelling", "cancelling", true),
+            ("r-completed", "completed", true),
+            ("r-failed", "failed", true),
+            ("r-lost", "lost", true),
+        ] {
+            insert_job_row(&conn, id, status, remote).unwrap();
+        }
+        conn.execute(
+            "INSERT INTO results (job_id, final_energy_eh, data_json, parser_version) VALUES ('l-parsed', -76.4, '{}', 1)",
+            [],
+        )
+        .unwrap();
+        conn
+    }
+
+    /// v24 on a fresh database: the three objects exist, `jobs` has the four columns, and a new
+    /// row defaults to `origin = 'user'` with the rest NULL.
+    #[test]
+    fn fresh_db_migrates_to_v24_with_the_mcp_tables() {
+        let dir = std::env::temp_dir().join(format!("orcastudio-v24-fresh-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        let conn = init_db(&dir).unwrap();
+        assert_eq!(SCHEMA_VERSION, 24);
+        assert_eq!(current_version(&conn).unwrap(), 24);
+        for col in ["origin", "mcp_reasons", "grant_id", "mcp_state"] {
+            assert!(column_exists(&conn, "jobs", col).unwrap(), "jobs.{col}");
+        }
+        for col in ["id", "created_at", "expires_at", "revoked_at", "targets", "levels", "max_jobs", "max_in_flight", "charged_jobs"] {
+            assert!(column_exists(&conn, "mcp_grants", col).unwrap(), "mcp_grants.{col}");
+        }
+        for col in ["id", "at", "tool", "args", "disposition", "reasons", "job_id", "grant_id"] {
+            assert!(column_exists(&conn, "mcp_audit", col).unwrap(), "mcp_audit.{col}");
+        }
+        conn.execute("INSERT INTO jobs (id, title, input_content) VALUES ('n', 't', '! SP')", []).unwrap();
+        let row: (String, Option<String>, Option<String>, Option<String>) = conn
+            .query_row("SELECT origin, mcp_reasons, grant_id, mcp_state FROM jobs WHERE id = 'n'", [], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })
+            .unwrap();
+        assert_eq!(row, ("user".into(), None, None, None));
+        migrate(&conn).expect("v24 -> v24 no-op");
+        assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Rule #9 on the migration (ADR-027 M1b): every table a v23 database had keeps every row and
+    /// every value, column for column, and the fully seeded job and profile keep their literal
+    /// values; every existing job reads `origin = 'user'` with the three other columns NULL; no
+    /// grant exists. The fixture never ran the v24 arm, so a destructive write in it is seen here.
+    /// NEGATIVE CONTROLS: the `origin` default `'mcp'`; `UPDATE jobs SET backend_id = NULL` in the
+    /// v24 arm; `UPDATE jobs SET error_message = 'x'` in the v24 arm → each red.
+    #[test]
+    fn migrate_v23_to_v24_keeps_every_row_and_defaults_origin_to_user() {
+        let conn = v23_db_with_jobs();
+        let before = snapshot_v23_tables(&conn);
+        assert!(before.iter().any(|(t, _, rows)| t == "jobs" && rows.len() == 12), "the fixture has its 12 jobs");
+        migrate(&conn).expect("v23 -> v24");
+        assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
+        for (table, cols, rows) in &before {
+            assert_eq!(&full_rows(&conn, table, cols), rows, "{table}: no row changed");
+        }
+        // The literal seeded values, against a fixture the v24 arm never ran on (MED-1).
+        assert_full(&conn, "jobs", "full", &full_v23_job());
+        assert_full(&conn, "server_profiles", "p-uni", &full_v23_profile());
+        let mcp: Vec<(String, Option<String>, Option<String>, Option<String>)> = {
+            let mut stmt = conn.prepare("SELECT origin, mcp_reasons, grant_id, mcp_state FROM jobs ORDER BY id").unwrap();
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap().map(Result::unwrap).collect()
+        };
+        assert_eq!(mcp, vec![("user".to_string(), None, None, None); 12], "every existing job is the user's, uncharged");
+        let grants: i64 = conn.query_row("SELECT COUNT(*) FROM mcp_grants", [], |r| r.get(0)).unwrap();
+        assert_eq!(grants, 0);
+        migrate(&conn).expect("v24 -> v24 no-op");
+        assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
+    }
+
+    /// NEGATIVE CONTROL for the guarded ALTERs: re-running the v24 arm over a database that already
+    /// has its columns (the version set back to 23, nothing dropped) is a no-op, not a "duplicate
+    /// column" error. Make an ALTER unguarded and this is red.
+    #[test]
+    fn the_v24_arm_reruns_over_its_own_columns() {
+        let conn = v23_db_with_jobs();
+        migrate(&conn).expect("v23 -> v24");
+        conn.execute("UPDATE settings SET value = '23' WHERE key = 'schema_version'", []).unwrap();
+        migrate(&conn).expect("the v24 arm again, over its own columns and tables");
+        assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
+    }
+
+    /// A migrated v24 database with one grant `g1` (unrevoked, 3 jobs, 1 charged).
+    fn v24_db_with_a_grant() -> Connection {
+        let conn = v23_db_with_jobs();
+        migrate(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO mcp_grants (id, expires_at, targets, levels, max_jobs, max_in_flight, charged_jobs) \
+             VALUES ('g1', '2099-01-01 00:00:00', '[\"local\"]', '[]', 3, 1, 1)",
+            [],
+        )
+        .unwrap();
+        conn
+    }
+
+    /// NEGATIVE CONTROLS (bite): each v24 CHECK rejects its forbidden state and allows the states
+    /// decision 5 names. Without a CHECK its write goes through and this is red.
+    #[test]
+    fn the_v24_checks_reject_every_forbidden_state() {
+        let conn = v24_db_with_a_grant();
+        let set = |id: &str, sql: &str| conn.execute(&format!("UPDATE jobs SET {sql} WHERE id = ?1"), [id]);
+        // origin
+        assert!(set("l-draft", "origin = 'claude'").is_err(), "origin is 'user' or 'mcp'");
+        assert!(set("l-draft", "origin = NULL").is_err(), "origin is NOT NULL");
+        // grant_id: only on an MCP job, and only a grant that exists (the FK, enforced: rule #10
+        // record of SQLITE_DEFAULT_FOREIGN_KEYS=1 in the v13/v14 notes).
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+        assert!(set("l-draft", "grant_id = 'g1'").is_err(), "a user job is never charged");
+        assert!(set("l-draft", "origin = 'mcp', grant_id = 'nope'").is_err(), "the FK refuses a missing grant");
+        set("l-draft", "origin = 'mcp', grant_id = 'g1'").expect("an MCP job charged to g1");
+        // mcp_state: only 'submitting', and only on a charged job.
+        assert!(set("l-draft", "mcp_state = 'busy'").is_err(), "only 'submitting'");
+        set("l-draft", "mcp_state = 'submitting'").expect("a charged MCP draft in step B");
+        assert!(set("l-draft", "grant_id = NULL").is_err(), "a refund that keeps the flag");
+        set("l-draft", "grant_id = NULL, mcp_state = NULL").expect("a refund clears both");
+        assert!(set("l-queued", "origin = 'mcp', mcp_state = 'submitting'").is_err(), "submitting without a grant");
+        // charged_jobs: never negative, never above max_jobs.
+        let charge = |n: &str| conn.execute(&format!("UPDATE mcp_grants SET charged_jobs = {n} WHERE id = 'g1'"), []);
+        assert!(charge("-1").is_err(), "charged_jobs below 0");
+        assert!(charge("4").is_err(), "charged_jobs above max_jobs");
+        charge("3").expect("charged_jobs == max_jobs");
+        charge("0").expect("charged_jobs == 0");
+        // max_jobs and max_in_flight at least 1.
+        for (col, v) in [("max_jobs", 0), ("max_in_flight", 0)] {
+            assert!(conn.execute(&format!("UPDATE mcp_grants SET {col} = {v} WHERE id = 'g1'"), []).is_err(), "{col} = {v}");
+        }
+        // mcp_audit: bounded args, the three dispositions or NULL.
+        let audit = |args: &str, disp: &str| {
+            conn.execute(
+                &format!("INSERT INTO mcp_audit (tool, args, disposition) VALUES ('create_job', ?1, {disp})"),
+                [args],
+            )
+        };
+        audit(&"x".repeat(MCP_AUDIT_ARGS_MAX_CHARS), "'refused'").expect("args at the bound");
+        assert!(audit(&"x".repeat(MCP_AUDIT_ARGS_MAX_CHARS + 1), "'refused'").is_err(), "args above the bound");
+        assert!(audit("{}", "'maybe'").is_err(), "an unknown disposition");
+        audit("{}", "NULL").expect("a read tool's row has no disposition");
+    }
+
+    /// The one-unrevoked invariant is the database's (ADR-027 decision 5): a raw second unrevoked
+    /// INSERT is refused by the expression index; a revoked one, and a new one after a revoke, are
+    /// accepted. NEGATIVE CONTROL: the column-form index `ON mcp_grants(revoked_at) WHERE …` in
+    /// `create_mcp_tables` → the second INSERT goes through and this is red.
+    #[test]
+    fn the_expression_index_refuses_a_second_unrevoked_grant() {
+        let conn = v24_db_with_a_grant();
+        let insert = |id: &str, revoked: Option<&str>| {
+            conn.execute(
+                "INSERT INTO mcp_grants (id, expires_at, revoked_at, targets, levels, max_jobs, max_in_flight) \
+                 VALUES (?1, '2099-01-01 00:00:00', ?2, '[]', '[]', 1, 1)",
+                rusqlite::params![id, revoked],
+            )
+        };
+        assert!(insert("g2", None).is_err(), "a second unrevoked grant");
+        insert("g0", Some("2026-11-01 00:00:00")).expect("a revoked grant beside the unrevoked one");
+        conn.execute("UPDATE mcp_grants SET revoked_at = '2026-11-19 00:00:00' WHERE id = 'g1'", []).unwrap();
+        insert("g2", None).expect("a new grant once g1 is revoked");
+        assert!(conn.execute("UPDATE mcp_grants SET revoked_at = NULL WHERE id = 'g1'", []).is_err(), "un-revoking g1 beside g2");
+    }
+
+    /// The measurement behind the expression form (rule #10, re-run on the bundled SQLite): the
+    /// column-form partial unique index accepts two unrevoked rows, because NULLs are distinct in a
+    /// UNIQUE index. If SQLite ever changed that, this goes red and the note in the v24 doc is stale.
+    #[test]
+    fn the_column_form_index_would_enforce_nothing() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE g (id TEXT PRIMARY KEY, revoked_at TEXT);
+             CREATE UNIQUE INDEX g_col ON g(revoked_at) WHERE revoked_at IS NULL;
+             INSERT INTO g (id) VALUES ('a');
+             INSERT INTO g (id) VALUES ('b');",
+        )
+        .expect("the column form admits a second NULL");
+    }
+
+    /// The v24 migration on a copy of a real v23 database (rule #9 on the one place a migration can
+    /// lose data). Every v23 table keeps every row and every value, column for column; every job is
+    /// the user's and uncharged; the integrity and FK checks pass. Run by hand on a scratch copy —
+    /// this test migrates the file it is given:
+    /// `ORCASTUDIO_V23_DB_COPY=/scratch/orcastudio.db cargo test real_v23_db_copy -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "needs ORCASTUDIO_V23_DB_COPY = a scratch copy of a real v23 orcastudio.db"]
+    fn real_v23_db_copy_migrates_to_v24_without_touching_any_row() {
+        let Ok(path) = std::env::var("ORCASTUDIO_V23_DB_COPY") else {
+            panic!("set ORCASTUDIO_V23_DB_COPY to a scratch copy of a v23 database");
+        };
+        let conn = Connection::open(&path).unwrap();
+        assert_eq!(current_version(&conn).unwrap(), 23, "the copy must be a v23 database");
+        let before = snapshot_v23_tables(&conn);
+        migrate(&conn).expect("v23 -> v24 on the real copy");
+        assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
+        for (table, cols, rows) in &before {
+            assert_eq!(&full_rows(&conn, table, cols), rows, "{table}: no row changed");
+            eprintln!("{table}: {} rows, {} columns unchanged", rows.len(), cols.len());
+        }
+        let (user, other): (i64, i64) = conn
+            .query_row(
+                "SELECT SUM(origin = 'user' AND mcp_reasons IS NULL AND grant_id IS NULL AND mcp_state IS NULL), \
+                        SUM(NOT (origin = 'user' AND mcp_reasons IS NULL AND grant_id IS NULL AND mcp_state IS NULL)) FROM jobs",
+                [],
+                |r| Ok((r.get::<_, Option<i64>>(0)?.unwrap_or(0), r.get::<_, Option<i64>>(1)?.unwrap_or(0))),
+            )
+            .unwrap();
+        assert_eq!(other, 0, "every existing job is the user's, uncharged");
+        let integrity: String = conn.query_row("PRAGMA integrity_check", [], |r| r.get(0)).unwrap();
+        assert_eq!(integrity, "ok");
+        let fk_violations: i64 = conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| r.get(0)).unwrap();
+        assert_eq!(fk_violations, 0);
+        eprintln!("v23 -> v24: {} tables unchanged; {user} jobs origin='user'; integrity {integrity}; 0 FK violations", before.len());
     }
 
     /// The migration on a copy of a real v20 database (rule #9). Run by hand on a scratch copy:

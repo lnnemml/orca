@@ -84,7 +84,7 @@ fn create_reagent_conn(
 }
 
 /// A single molecule by id, or [`AppError::NotFound`].
-fn get_molecule_conn(conn: &Connection, id: &str) -> Result<Molecule, AppError> {
+pub(crate) fn get_molecule_conn(conn: &Connection, id: &str) -> Result<Molecule, AppError> {
     let sql = format!("SELECT {} FROM molecules WHERE id = ?1", Molecule::COLUMNS);
     conn.query_row(&sql, params![id], Molecule::from_row)
         .optional()?

@@ -100,24 +100,27 @@ pub fn comment_safe_label(label: &str) -> String {
         .collect()
 }
 
-/// Read back the assembled input's coordinate block (the strict reader of C9).
-fn reparse(input: &str) -> Result<(ChargeMult, Vec<CheckedAtom>), String> {
-    if let Some((i, _)) = input.lines().enumerate().find(|(_, l)| has_unmeasured_comment(l)) {
-        return Err(format!("line {} has two or more `#`", i + 1));
-    }
-    let star_lines = input
-        .lines()
-        .filter(|l| l.find('#').map_or(*l, |i| &l[..i]).trim_start().starts_with('*'))
-        .count();
-    if star_lines != 2 {
-        return Err(format!("{star_lines} `*` lines, expected one block (opener and closer)"));
-    }
+/// An input's first `* xyz` block, read strictly: where it starts and ends (0-based line numbers)
+/// and its charge, multiplicity and rows. The rows' elements are as written.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct CoordinateBlock {
+    pub header_line: usize,
+    pub closer_line: usize,
+    pub charge_mult: ChargeMult,
+    pub rows: Vec<(String, [f64; 3])>,
+}
+
+/// The strict reader of C9, shared by the assembly post-condition and the resolver's source
+/// post-condition (`resolve.rs`): the `* xyz <c> <m>` line by [`locate_xyz_header`], then every
+/// row as exactly an element and three finite numbers, up to a closing `*`. A row it cannot read
+/// is an error, never skipped.
+pub(crate) fn read_coordinate_block(input: &str) -> Result<CoordinateBlock, String> {
     let (at, cm) = locate_xyz_header(input).map_err(|e| e.to_string())?;
     let mut rows = Vec::new();
-    for line in input.lines().skip(at + 1) {
+    for (i, line) in input.lines().enumerate().skip(at + 1) {
         let t = line.trim();
         if t == "*" {
-            return Ok((cm, rows));
+            return Ok(CoordinateBlock { header_line: at, closer_line: i, charge_mult: cm, rows });
         }
         let toks: Vec<&str> = t.split_whitespace().collect();
         let [el, x, y, z] = toks.as_slice() else {
@@ -130,9 +133,27 @@ fn reparse(input: &str) -> Result<(ChargeMult, Vec<CheckedAtom>), String> {
                 _ => return Err(format!("row `{t}` has an unreadable coordinate `{s}`")),
             }
         }
-        rows.push(CheckedAtom { element: el.to_string(), xyz_ang });
+        rows.push((el.to_string(), xyz_ang));
     }
     Err("the coordinate block has no closing `*`".into())
+}
+
+/// Read back the assembled input's coordinate block (the strict reader of C9), after the two
+/// whole-text checks: no line with two or more `#`, and exactly one block (two `*` lines).
+fn reparse(input: &str) -> Result<(ChargeMult, Vec<CheckedAtom>), String> {
+    if let Some((i, _)) = input.lines().enumerate().find(|(_, l)| has_unmeasured_comment(l)) {
+        return Err(format!("line {} has two or more `#`", i + 1));
+    }
+    let star_lines = input
+        .lines()
+        .filter(|l| l.find('#').map_or(*l, |i| &l[..i]).trim_start().starts_with('*'))
+        .count();
+    if star_lines != 2 {
+        return Err(format!("{star_lines} `*` lines, expected one block (opener and closer)"));
+    }
+    let block = read_coordinate_block(input)?;
+    let rows = block.rows.into_iter().map(|(element, xyz_ang)| CheckedAtom { element, xyz_ang }).collect();
+    Ok((block.charge_mult, rows))
 }
 
 /// The post-condition: `input` re-parses to exactly `atoms`, `cm` and `maxcore_mib`.

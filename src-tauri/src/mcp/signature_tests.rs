@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use regex::Regex;
 
 use super::header::{KeywordLine, ParsedHeader};
-use super::signature::{is_pal_token, method_signature, MethodSignature, NON_METHOD};
+use super::signature::{is_pal_token, method_signature, LevelError, MethodSignature, NON_METHOD};
 
 /// `src/reactions/compare.ts`, read as text (C2: no TS change, the set is extracted by regex).
 const COMPARE_TS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../src/reactions/compare.ts"));
@@ -94,4 +94,46 @@ fn the_case_fold_is_ascii_only() {
     assert_eq!(method_signature(&header).keywords, ["B3LYP", "ſP"]);
     // Through the parser the line is not read at all.
     assert!(sig("! B3LYP ſp\n").keywords.is_empty());
+}
+
+// --- The strict level reader (M1b; the M1a verifier's LOW finding) -------------------------------
+
+/// A clean level reads to the same signature the lenient reader gives, `%cpcm` block included.
+#[test]
+fn a_clean_level_reads_like_the_lenient_signature() {
+    for text in ["! wB97X-3c CPCM(DMF)\n", "! r2SCAN-3c\n%cpcm smd true SMDsolvent \"DMF\" end\n", "! B3LYP D3BJ def2-SVP Opt PAL8\n"] {
+        assert_eq!(MethodSignature::of_level_text(text), Ok(sig(text)), "{text}");
+    }
+}
+
+/// A line the grammar refuses is an error naming it, never dropped from the level. The lenient
+/// reader would give `B3LYP DEF2-SVP` here and silently lose `D3BJ`. NEGATIVE CONTROL: skip the
+/// violations check in `of_level_text` → it returns `Ok(B3LYP DEF2-SVP)` and this is red.
+#[test]
+fn a_violating_level_line_is_refused_not_dropped() {
+    let text = "! B3LYP def2-SVP\n! D3BJ #x# TightSCF\n";
+    assert_eq!(sig(text).keywords, ["B3LYP", "DEF2-SVP"], "the lenient reader drops line 2 (the hazard)");
+    match MethodSignature::of_level_text(text) {
+        Err(LevelError::OutsideGrammar { line: 2, .. }) => {}
+        other => panic!("expected line 2 refused, got {other:?}"),
+    }
+    let coords = "! B3LYP def2-SVP\n* xyz 0 1\nH 0 0 0\nH 0 0 0.74\n*\n";
+    assert!(matches!(MethodSignature::of_level_text(coords), Err(LevelError::Coordinates { .. } | LevelError::OutsideGrammar { .. })));
+}
+
+/// A level with no method token matches nothing and is refused. NEGATIVE CONTROL: drop the
+/// empty-keywords check in `of_level_text` → `! Opt Freq` is accepted and this is red.
+#[test]
+fn an_empty_level_is_refused() {
+    for text in ["! Opt Freq\n", "%cpcm smd true SMDsolvent \"DMF\" end\n", "", "# only a comment\n", "! PAL8 TightSCF\n"] {
+        assert_eq!(MethodSignature::of_level_text(text), Err(LevelError::NoMethodTokens), "{text:?}");
+    }
+}
+
+/// The stored form round-trips: a level written to `mcp_grants.levels` reads back equal.
+#[test]
+fn a_signature_round_trips_through_its_stored_json() {
+    let s = sig("! wB97X-3c\n%cpcm smd true SMDsolvent \"DMF\" end\n");
+    let back: MethodSignature = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+    assert_eq!(back, s);
 }

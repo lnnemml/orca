@@ -61,6 +61,35 @@ impl JobStatus {
         }
     }
 
+    /// Every status, in declaration order (for the tests that pin SQL status sets to this enum).
+    pub const ALL: [JobStatus; 9] = [
+        JobStatus::Draft,
+        JobStatus::Queued,
+        JobStatus::Running,
+        JobStatus::Cancelling,
+        JobStatus::Completed,
+        JobStatus::Parsed,
+        JobStatus::Failed,
+        JobStatus::Cancelled,
+        JobStatus::Lost,
+    ];
+
+    /// True for a state no job leaves on its own: `completed`, `parsed`, `failed`, `cancelled`,
+    /// `lost`. `cancelling` is not terminal (o22.5). ADR-027's `max_in_flight` counts every
+    /// non-terminal job with a non-null `grant_id`, a `draft` in step B included.
+    pub fn is_terminal(&self) -> bool {
+        matches!(
+            self,
+            JobStatus::Completed | JobStatus::Parsed | JobStatus::Failed | JobStatus::Cancelled | JobStatus::Lost
+        )
+    }
+
+    /// True for a terminal state that is a success: `completed` (ORCA terminated normally and the
+    /// marker was written, rule #6) or `parsed` (that, and our own parse of it succeeded).
+    pub fn is_terminal_success(&self) -> bool {
+        matches!(self, JobStatus::Completed | JobStatus::Parsed)
+    }
+
     /// Parse a status string coming from the database or an IPC caller.
     /// Rejects anything outside the known state set.
     pub fn from_db(s: &str) -> Result<JobStatus, AppError> {
@@ -79,6 +108,34 @@ impl JobStatus {
             // of a lost row.
             "lost" => Ok(JobStatus::Lost),
             other => Err(AppError::Internal(format!("unknown job status: {other}"))),
+        }
+    }
+}
+
+/// Who created a job (schema v24, ADR-027): Anton through the app, or the MCP server.
+/// Serialized lowercase on the wire and in `jobs.origin`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum JobOrigin {
+    User,
+    Mcp,
+}
+
+impl JobOrigin {
+    /// The spelling stored in `jobs.origin` (its CHECK admits exactly these two).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            JobOrigin::User => "user",
+            JobOrigin::Mcp => "mcp",
+        }
+    }
+
+    /// Parse `jobs.origin`; anything else is refused, never defaulted.
+    pub fn from_db(s: &str) -> Result<JobOrigin, AppError> {
+        match s {
+            "user" => Ok(JobOrigin::User),
+            "mcp" => Ok(JobOrigin::Mcp),
+            other => Err(AppError::Internal(format!("unknown job origin: {other}"))),
         }
     }
 }
@@ -153,6 +210,20 @@ pub struct Job {
     /// `datetime('now')`: **UTC, laptop clock**, only ever displayed. Set only on a remote `queued`
     /// job (the v22 CHECK); every write of it emits `job:status`.
     pub submit_pending_since: Option<String>,
+    /// Who created the job (schema v24, ADR-027). Every job before v24 is the user's. Only
+    /// `mcp::steps::charge_and_insert_conn` and `insert_proposed_conn` write `mcp`.
+    pub origin: JobOrigin,
+    /// An MCP job's reasons, a JSON array of `mcp::steps::McpReason` (`{row, message}`): why it was
+    /// proposed, or why its charge was refunded. `None` for a user job and a charged one.
+    pub mcp_reasons: Option<String>,
+    /// The grant an MCP job is charged to (schema v24). `None` for a user job, a proposed one, and
+    /// a refunded one. A non-terminal job with a grant counts against every grant's
+    /// `max_in_flight` (ADR-027 decision 5).
+    pub grant_id: Option<String>,
+    /// `Some("submitting")` while the MCP server is between step A and step C: the `submit_job`
+    /// command refuses the job (`mcp::steps::submit_refusal_for_mcp_state`). The v24 CHECK admits
+    /// nothing else, and only on a charged job.
+    pub mcp_state: Option<String>,
 }
 
 impl Job {
@@ -162,7 +233,7 @@ impl Job {
          energy, wall_time, error_message, created_at, started_at, completed_at, \
          scene_json, scene_log_json, pathway_id, group_id, backend_id, \
          remote_host, remote_job_dir, remote_socket, cancel_requested_at, cancel_sent_at, \
-         submit_pending_since";
+         submit_pending_since, origin, mcp_reasons, grant_id, mcp_state";
 
     /// Whether this job runs on a server. **A job is remote iff its coordinates are non-NULL**
     /// (ADR-024 o item 1) — never decided by `backend_id`, which only names the profile and is
@@ -180,6 +251,15 @@ impl Job {
         let status = JobStatus::from_db(&status_str).map_err(|e| {
             rusqlite::Error::FromSqlConversionFailure(
                 3,
+                rusqlite::types::Type::Text,
+                Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())),
+            )
+        })?;
+
+        let origin_str: String = row.get(22)?;
+        let origin = JobOrigin::from_db(&origin_str).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(
+                22,
                 rusqlite::types::Type::Text,
                 Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())),
             )
@@ -208,6 +288,10 @@ impl Job {
             cancel_requested_at: row.get(19)?,
             cancel_sent_at: row.get(20)?,
             submit_pending_since: row.get(21)?,
+            origin,
+            mcp_reasons: row.get(23)?,
+            grant_id: row.get(24)?,
+            mcp_state: row.get(25)?,
         })
     }
 }
@@ -231,7 +315,8 @@ mod tests {
                 completed_at TEXT, scene_json TEXT, scene_log_json TEXT,
                 pathway_id TEXT, group_id TEXT, backend_id TEXT,
                 remote_host TEXT, remote_job_dir TEXT, remote_socket TEXT,
-                cancel_requested_at TEXT, cancel_sent_at TEXT, submit_pending_since TEXT
+                cancel_requested_at TEXT, cancel_sent_at TEXT, submit_pending_since TEXT,
+                origin TEXT NOT NULL DEFAULT 'user', mcp_reasons TEXT, grant_id TEXT, mcp_state TEXT
             );",
         )
         .unwrap();
@@ -366,5 +451,43 @@ mod tests {
         assert_eq!(orphaned.remote_socket.as_deref(), Some("/r/tsp/slot0.sock"));
         assert!(!get(&conn, "draft").is_remote(), "a profile without coordinates is not remote yet");
         assert!(!get(&conn, "local").is_remote());
+    }
+    /// ADR-027 (schema v24): the four MCP columns reach `Job` each in its own field — four distinct
+    /// values, so a shifted index cannot pass — and a row without them reads the user's defaults.
+    /// An unknown `origin` fails the read instead of defaulting. NEGATIVE CONTROL: swap
+    /// `row.get(24)` and `row.get(25)` in `from_row` → red.
+    #[test]
+    fn from_row_reads_the_mcp_columns_in_order() {
+        let conn = Connection::open_in_memory().unwrap();
+        setup(&conn);
+        conn.execute_batch(
+            "INSERT INTO jobs (id, title, input_content, status, origin, mcp_reasons, grant_id, mcp_state) \
+                VALUES ('mcp', 't', '! SP', 'draft', 'mcp', '[{\"row\":\"P5\",\"message\":\"m\"}]', 'g1', 'submitting');
+             INSERT INTO jobs (id, title, input_content, status) VALUES ('user', 't', '! SP', 'queued');
+             INSERT INTO jobs (id, title, input_content, status, origin) VALUES ('odd', 't', '! SP', 'queued', 'claude');",
+        )
+        .unwrap();
+        let mcp = get(&conn, "mcp");
+        assert_eq!(mcp.origin, JobOrigin::Mcp);
+        assert_eq!(mcp.mcp_reasons.as_deref(), Some("[{\"row\":\"P5\",\"message\":\"m\"}]"));
+        assert_eq!(mcp.grant_id.as_deref(), Some("g1"));
+        assert_eq!(mcp.mcp_state.as_deref(), Some("submitting"));
+        assert_eq!(mcp.submit_pending_since, None, "the neighbour stays put");
+        let user = get(&conn, "user");
+        assert_eq!((user.origin, user.mcp_reasons, user.grant_id, user.mcp_state), (JobOrigin::User, None, None, None));
+        assert_eq!(serde_json::to_value(&mcp).unwrap()["origin"], serde_json::json!("mcp"), "the wire spelling");
+        let sql = format!("SELECT {} FROM jobs WHERE id = 'odd'", Job::COLUMNS);
+        assert!(conn.query_row(&sql, [], Job::from_row).is_err(), "an unknown origin is refused, never defaulted");
+    }
+
+    /// The terminal set is exactly completed, parsed, failed, cancelled and lost; the success subset
+    /// is completed and parsed. NEGATIVE CONTROL: add `Cancelling` to `is_terminal` → red.
+    #[test]
+    fn the_terminal_states_are_the_five_end_states() {
+        let terminal: Vec<&str> = JobStatus::ALL.iter().filter(|s| s.is_terminal()).map(|s| s.as_str()).collect();
+        assert_eq!(terminal, ["completed", "parsed", "failed", "cancelled", "lost"]);
+        let success: Vec<&str> = JobStatus::ALL.iter().filter(|s| s.is_terminal_success()).map(|s| s.as_str()).collect();
+        assert_eq!(success, ["completed", "parsed"]);
+        assert!(JobStatus::ALL.iter().all(|s| !s.is_terminal_success() || s.is_terminal()));
     }
 }
