@@ -6,12 +6,15 @@ of three dispositions: **REFUSED** (nothing is created), **PROPOSED** (a draft A
 or **SUBMITTED** (charged to the active grant). The module also assembles the job's input, so the
 model never writes a coordinate, a charge or a multiplicity (ADR-014 (1)).
 
-The module has two layers. The **pure core** (M1a) is the classifier, the header grammar, the method
+The module has three layers. The **pure core** (M1a) is the classifier, the header grammar, the method
 signature, the allowlist, the charge/multiplicity locator and the input assembly. The **DB-level
-cores** (M1b Part A) are schema v24, the grant core, steps A and C, the crash reconciliation, the
+cores** (M1b) are schema v24, the grant core, steps A and C, the crash reconciliation, the
 `submit_job` guard, the source resolver and the memory preflight; each is a `*_conn` function or
-takes `&DbState`. There is no Tauri command, no socket and no HTTP call yet. The module is registered
-in `lib.rs` under a scoped `#[allow(dead_code)]` until M1b Part B, M2 and M3 call it.
+takes `&DbState`. The **app wiring** (M1b Part B) is the grant's Tauri commands (`commands/mcp.rs`),
+the guard in the two commands that submit a job by hand, and `SidecarSmiles`, the resolver's SMILES
+call over HTTP. There is no socket and no MCP tool yet. The module stays registered in `lib.rs` under a
+scoped `#[allow(dead_code)]`, because steps A/C, the resolver, the reconciliation and `SidecarSmiles`
+are called only from M2 and M3.
 
 **It fails closed.** A line outside the grammar is REFUSED (R1); a block, key or value outside the
 allowlist is PROPOSED (P2); a source whose terminal state is unknown is REFUSED (R4); a memory
@@ -29,11 +32,13 @@ PROPOSED (P5). Nothing reaches SUBMITTED by default.
 | `charge_mult.rs` | `locate_charge_mult` → `Result<ChargeMult, ChargeMultError>` |
 | `classify.rs` | `classify_mcp_job(&ClassifyInput) -> Disposition`; the input types and the typed reasons (below); `MAX_OPEN_PROPOSALS = 50`, `OPT_FAMILY`, `FREQ_TYPE`, `NEB_FAMILY` |
 | `assemble.rs` | `assemble(header, maxcore_mib, atoms, charge_mult, source_label) -> Result<Assembled, AssemblyError>`; `comment_safe_label`; `AppSet`; `SERVER_DEFAULT_MAXCORE_MIB = 2000`; `COORD_TOLERANCE_ANG = 1e-6`; `read_coordinate_block`, the strict `* xyz` block reader shared with the resolver |
-| `grant.rs` | `create_grant_conn`, `revoke_grant_conn`, `get_grant_conn`, `active_grant_conn`, `grant_snapshot_conn -> Option<CurrentGrant { id, snapshot }>`, `in_flight_conn`; `Grant`, `NewGrant`; `begin_immediate`, `now_utc_conn`, `check_utc_text` |
-| `steps.rs` | `charge_and_insert_conn -> StepA` (step A), `insert_proposed_conn`, `finish_submit_conn -> StepC` (step C), `reconcile_submitting_conn -> Reconciled`, `submit_refusal_for_mcp_state`; `McpReason { row, message }`; `SUBMITTING` |
-| `resolve.rs` | `SourceRef::parse`, `resolve_source(&DbState, reference, &dyn SmilesTo3d)`, `resolve_db_conn`; the `SmilesTo3d` seam and `SmilesStructure` |
+| `grant.rs` | `create_grant_conn`, `revoke_grant_conn`, `get_grant_conn`, `active_grant_conn`, `grant_snapshot_conn -> Option<CurrentGrant { id, snapshot }>`, `in_flight_conn`; `Grant` (with `status_at(now)`), `NewGrant`; `target_text`/`target_of` (`"local"` or a profile id); `begin_immediate`, `now_utc_conn`, `check_utc_text` |
+| `steps.rs` | `charge_and_insert_conn -> StepA` (step A), `insert_proposed_conn`, `finish_submit_conn -> StepC` (step C), `reconcile_submitting_conn -> Reconciled`, `submit_refusal_for_mcp_state`, `refuse_while_mcp_submitting`; `McpReason { row, message }`; `SUBMITTING` |
+| `resolve.rs` | `SourceRef::parse`, `resolve_source(&DbState, reference, &dyn SmilesTo3d)`, `resolve_db_conn`, `header_of_input`; the `SmilesTo3d` seam and `SmilesStructure` |
+| `sidecar_smiles.rs` | `SidecarSmiles: SmilesTo3d` (`from_status(&SidecarStatus)`), `check_reply`; `SMILES_CONNECT_TIMEOUT` (5 s), `SMILES_TIMEOUT` (30 s) |
 | `preflight.rs` | `mcp_maxcore -> McpMaxcore { mib, source }`, `memory_verdict_for -> MemoryVerdict`, the pure `verdict_of` |
-| `*_tests.rs`, `test_db.rs` | one test file per submodule; `test_db.rs` builds a migrated scratch database per test |
+| `*_tests.rs`, `test_db.rs` | one test file per submodule, plus `submit_guard_tests.rs` for the guard's wiring; `test_db.rs` builds a migrated scratch database per test |
+| `../commands/mcp.rs` | the grant commands `mcp_create_grant`, `mcp_revoke_grant`, `mcp_get_grant`, `mcp_level_from_job` and their `*_core`/`*_conn` bodies; `GrantView`, `GrantState`. Tests in `commands/mcp_tests.rs` |
 
 ## The classifier's input and output
 
@@ -209,7 +214,8 @@ writer checks the exact `YYYY-MM-DD HH:MM:SS` form first (`check_utc_text`).
 ## The grant core (`grant.rs`)
 
 Every write is a `BEGIN IMMEDIATE` transaction (`begin_immediate`), so two app instances on one file
-are ordered by SQLite's write lock.
+are ordered by SQLite's write lock. A grant is created only by Anton, through the grant commands below;
+no MCP tool can create one.
 
 - **`create_grant_conn(conn, &NewGrant, now)`** checks everything before writing: each level through
   `of_level_text`, at least one level and one target, `max_jobs` and `max_in_flight` ≥ 1, `expires_at`
@@ -219,8 +225,8 @@ are ordered by SQLite's write lock.
 - **`revoke_grant_conn(conn, id, now)`** is idempotent: the first `revoked_at` is kept.
 - **`active_grant_conn(conn, now)`** is the unrevoked grant with `expires_at > now`.
 - **`grant_snapshot_conn(conn, now)`** returns the newest grant (the unrevoked one, else the most recent
-  revoked one) as `CurrentGrant { id, snapshot }`. The status is `Revoked`, `Expired`
-  (`expires_at <= now`) or `Active`.
+  revoked one) as `CurrentGrant { id, snapshot }`. The status is `Grant::status_at(now)`: `Revoked`,
+  `Expired` (`expires_at <= now`) or `Active`. The Settings view reads the same function.
 - **The counters.** `charged_jobs` is stored: step A increments it and only a refund decrements it, so
   deleting a job never re-opens the budget. `in_flight` (`in_flight_conn`) is derived: every job with a
   non-null `grant_id` whose status is not terminal, under **any** grant, a draft in step B included.
@@ -257,11 +263,71 @@ with the reason `interrupted before submit`. Every other row with the flag only 
 returns the counts (`Reconciled { refunded, cleared }`). Nothing calls it yet: only the instance
 holding the `mcp.lock` `flock` may run it, right after taking the lock and before serving (M2).
 
+## The grant commands (`commands/mcp.rs`)
+
+Settings → MCP (M4) calls these, and they are the **only** way a grant is created. Each is a
+synchronous command over a short `BEGIN IMMEDIATE` transaction, like the other short database
+commands. Each body is a `*_core`/`*_conn` function that reads `now` from SQLite (`now_utc_conn`) and
+wraps the grant core.
+
+| command | returns | what it does |
+|---|---|---|
+| `mcp_create_grant(targets: Vec<String>, levels: Vec<String>, max_jobs: u32, max_in_flight: u32, expires_at: String)` | `GrantView` | `create_grant_conn`; a target is `"local"` or a profile id (`target_of`); each level is pasted text |
+| `mcp_revoke_grant(id)` | `GrantView` | `revoke_grant_conn`; idempotent, `NotFound` for an unknown id |
+| `mcp_get_grant()` | `Option<GrantView>` | the grant `grant_snapshot_conn` reads (the unrevoked one, else the newest revoked one); `null` before any grant |
+| `mcp_level_from_job(job_id)` | `String` | "this job's level": the job header's signature (`header_of_input` + `of_level_text`), written back with `MethodSignature::level_text` |
+
+`GrantView` holds `id`, `state` (`"active"`, `"expired"`, `"revoked"`, from `Grant::status_at`),
+`created_at`, `expires_at`, `revoked_at`, `targets` (`"local"` or a profile id), `levels` (each
+`MethodSignature::display`), `max_jobs`, `max_in_flight`, `charged_jobs` and `in_flight`. Times are UTC
+on the laptop's clock in the `YYYY-MM-DD HH:MM:SS` form; `expires_at` must be in that form (M4
+converts).
+
+**Errors.** Every refusal is the grant core's `AppError`, and nothing is written:
+- a level outside the grammar or with no method token is `Invalid("level <n>: …")`;
+- a count below 1 or an `expires_at` not after now, or not in the exact form, is `Invalid`;
+- a server target with no profile is `NotFound`.
+
+**"This job's level".** The header is the input outside its coordinate block, with the app's
+`%maxcore` line set aside. It is read strictly, so a header with an unrecorded directive (`%moinp`) or
+no method token is `Invalid`, and so is a job whose input has no `* xyz` block. The text is one `!` line
+of the method tokens (upper-cased, sorted), then each normalised `%cpcm` block on its own line. **Its
+post-condition (rule #9):** the text read back through `of_level_text` must give the same signature,
+else `Internal`. Run-type, SCF and print tokens are not part of a level (`NON_METHOD`).
+
 ## The `submit_job` guard
 
 `submit_refusal_for_mcp_state(&Job)` returns `AppError::Conflict` for a job whose `mcp_state` is set
-(any value; the CHECK admits only `submitting`), and `None` otherwise. The `submit_job` command calls it
-from Part B on; the backends do not change.
+(any value; the CHECK admits only `submitting`), and `None` otherwise. `refuse_while_mcp_submitting`
+is the same check as a `Result`.
+
+**Where it sits: in the two commands that submit a job by hand, not in the backends.** Step B calls
+the backends on the very job the guard refuses, so a guard there would refuse Claude's own submit
+(ADR-027 decision 5).
+
+| entry point | how it reaches a submit | guard |
+|---|---|---|
+| `submit_job` (Run, Create & Run, every "run all" in the views: `ConnectivityPanel`, `ScanProfilePanel`, `ScanSurface2dPanel`, `NebBandPanel`, `JobDetailScreen`) | local arm: `LocalBackend::submit` → `local_backend::submit` (`draft` → `queued`); remote arm: `submit_to_server` → `SshBackend::submit_attempt` → `ssh_backend::submit_remote` → `persist_submit` | the job is read through `commands::jobs::submittable_job_conn` **before** `Backend::for_submit`, so both arms are covered |
+| `retry_remote_submit` (Retry) | `SshBackend::retry` → `ssh_backend::resubmit_remote` | `refuse_while_mcp_submitting(job)` on the row `run_guarded` read under the job's in-flight guard, before the backend is built; no ssh call runs and the record is left as it was |
+| the poller's pending-submit re-check (ADR-024 o23, `poller/pending.rs` → `pending_plan`) | not an entry point: it continues the one submit step B started (step B's slot refusal made the job pending) | none needed: it never moves a `draft`, and step C judges the row, which stays out of `draft` |
+| the re-enqueue (ADR-024 o25, `poller/reenqueue.rs` → `reenqueue_plan`) | not an entry point: it re-sends a job already enqueued on the server | none needed, as above |
+| `try_start_next` (the local queue) | not an entry point: it starts a job already `queued` | none needed |
+
+Every frontend path that submits calls one of the two commands; no Rust code outside them moves a
+`draft` to `queued` except `local_backend::submit` and `persist_submit`, which only these commands and
+step B reach.
+
+**Why one read outside the job's lock is enough.** `mcp_state` is set only by step A, in the
+transaction that inserts the row, and only ever cleared after that. A job read with `mcp_state` NULL can
+never become `submitting` later, so the check stays true for the rest of the command. The remote arm's
+row is read again under the in-flight guard by `submit_to_server`, unchanged.
+
+Tests (`mcp/submit_guard_tests.rs`): the guarded read refuses a `submitting` job and passes a user
+draft; the job submits by hand once step C has cleared the flag; the retry's guard; the place of each
+guard in `submit_job` and `retry_remote_submit`, pinned in the source (these commands need an
+`AppHandle`, as `cancel_job`'s test does); and `the_backends_carry_no_mcp_guard`. The existing submit
+tests (`a_submit_with_no_target_never_reaches_the_ssh_path` and the remote-command pins in
+`commands::remote_jobs`) are unchanged.
 
 ## The source resolver (`resolve.rs`)
 
@@ -311,8 +377,36 @@ input's atom order (measured for GOAT in `orca/goat.md`; asserted for NEB in `pa
 points and the final geometry are verified at parse time). The check is skipped only when the charge line
 itself is unreadable, which R4 refuses anyway. A SMILES reply's atom count must equal its `num_atoms`.
 
-The SMILES seam is a trait, so the tests use a stub and need no sidecar. The HTTP implementation comes
-in Part B or M3.
+The SMILES seam is a trait, so the resolver's tests use a stub and need no sidecar. The app's
+implementation is `SidecarSmiles` (below).
+
+## The SMILES call (`sidecar_smiles.rs`)
+
+`SidecarSmiles` is the first Rust → sidecar call. It posts `{"smiles": "<s>"}` to
+`http://127.0.0.1:<port>/smiles-to-3d` (`sidecar/app/smiles.py`, `SmilesToXyzRequest`) with `ureq`, 5 s
+to connect and 30 s for the whole request. It is built from the sidecar's status
+(`SidecarSmiles::from_status(&SidecarManager::get_status()?)`). A sidecar never started (no port) or
+`down` is an `Err` with no request made; any other health is called.
+
+An HTTP error status, a 2xx other than 200, a transport failure or a timeout is an `Err` naming the
+cause. The call blocks, so its caller (M3) runs it off the main thread; the resolver never holds the
+database lock across it. No command calls it yet.
+
+**The post-condition (rule #9), `check_reply`.** A reply that is "200 OK" with nonsense is an `Err`,
+never a geometry:
+- the body is JSON with `xyz` text and `charge`, `multiplicity`, `num_atoms` as JSON integers (a `1.0`,
+  a string or a `null` is refused); unknown fields are ignored;
+- `num_atoms > 0`;
+- `multiplicity == 1`. The sidecar's contract says so, and so does P1's message ("the SMILES sidecar,
+  which always gives multiplicity 1"); any other value would make that message false;
+- `xyz` is exactly one frame: a count line equal to `num_atoms`, a comment line, `num_atoms` rows of
+  exactly `element x y z`, then only blank lines (a fragment suffix like `O(1)` is refused);
+- every element is known to `z_of` after case normalisation (C6);
+- every coordinate is finite (Rust's `f64` parser accepts `NaN` and `inf`).
+
+The coordinates are Å (the xyz format's unit) and pass on as text; `resolve_smiles` reads them with
+the app's xyz reader and checks the count again. The tests serve canned HTTP responses from a
+throwaway `TcpListener` on `127.0.0.1:0`, so no sidecar runs.
 
 ## The memory preflight (`preflight.rs`)
 
@@ -376,17 +470,18 @@ Two choices go beyond the clarifications, and each can only move a job toward An
 
 ## Not yet wired
 
-- **M1b Part B:** the grant create and revoke Tauri commands; the `submit_job` command calling
-  `submit_refusal_for_mcp_state`; the HTTP implementation of `SmilesTo3d`.
 - **M2:** the socket server, the relay, the read tools, and the lock holder calling
   `reconcile_submitting_conn`.
 - **M3:** `create_job` as one tracked task (the preflight, step A, step B, step C around
-  `classify_mcp_job` and `assemble`), the audit log, and R8's live count.
+  `classify_mcp_job` and `assemble`), `SidecarSmiles` handed to the resolver, the audit log, and R8's
+  live count.
+- **M4:** the Settings → MCP UI over the grant commands, and "Claude is submitting" in place of Run.
 
 ## Tests
 
-`cargo test -p orcastudio --lib mcp::` runs the module's tests, and `npx vitest run
-src/scene/charge-mult-parity.test.ts` runs the TS half of the C1 parity. The schema tests are
+`cargo test -p orcastudio --lib mcp::` runs the module's tests, `cargo test -p orcastudio --lib
+commands::mcp` the grant commands' tests, and `npx vitest run src/scene/charge-mult-parity.test.ts`
+the TS half of the C1 parity. The schema tests are
 `cargo test -p orcastudio --lib db::tests::` (v24 names in `modules/tauri-core.md`). The negative
 controls are recorded in `log.md`: one per row plus the ADR's M1a list in the M1a entry, and the M1b
-list in the M1b Part A entry (both 2026-11-19).
+list in the M1b Part A entry and the Part B list in the M1b Part B entry (all 2026-11-19).

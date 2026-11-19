@@ -19,6 +19,7 @@ use crate::commands::settings::DbState;
 use crate::error::AppError;
 use crate::execution_backend::{Backend, SshBackend};
 use crate::in_flight::{InFlight, InFlightGuard};
+use crate::mcp::steps::refuse_while_mcp_submitting;
 use crate::poller::app::AppSink;
 use crate::poller::live_log::LiveLog;
 use crate::poller::plan::PollerMemory;
@@ -203,11 +204,13 @@ pub(crate) fn note_retry_after<T>(
 /// current core mask, through a runner that remembers the last call's contact; whatever it returns,
 /// that contact is written to the job's remote record (o22.8). A job whose cancel is pending is
 /// refused in the retry's locked read ("undo the cancel first"), and so is a job whose submit is
-/// pending (o23.8: "a submit is pending; the slot is re-checked every period").
+/// pending (o23.8: "a submit is pending; the slot is re-checked every period"). A job Claude is
+/// submitting (ADR-027 decision 5, `mcp_state` set) is refused before the backend is built, so no
+/// ssh call runs and the record is left as it was.
 #[tauri::command]
 pub async fn retry_remote_submit(app: AppHandle, id: String) -> Result<SubmitResponse, AppError> {
     run_guarded(app, id, "retry", |app, job| {
-        let ssh = remote_backend(app, job);
+        let ssh = refuse_while_mcp_submitting(job).and_then(|()| remote_backend(app, job));
         attempt_in_app(app, &job.id, |runner| ssh.and_then(|ssh| ssh.retry(&job.id, runner))).map(SubmitResponse::from)
     })
     .await

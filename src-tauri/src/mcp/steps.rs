@@ -8,8 +8,9 @@
 //! job, then stamp the MCP columns in the same transaction.
 //!
 //! **The step-B window.** From step A's commit to step C's, the row holds `mcp_state =
-//! 'submitting'` and a `grant_id`; [`submit_refusal_for_mcp_state`] is the `submit_job` command's
-//! guard against Anton submitting it by hand meanwhile (wired in Part B).
+//! 'submitting'` and a `grant_id`; [`refuse_while_mcp_submitting`] is the guard of every command
+//! that submits a job by hand (`submit_job`, `retry_remote_submit`), so Anton cannot submit it
+//! meanwhile. The backends carry no such guard: step B calls them on this very job.
 //!
 //! **Step C acts on the row, not on step B's outcome type.** It re-reads the row: still a `draft`
 //! charged to the same grant means step B never handed the job over, so the charge is refunded;
@@ -297,7 +298,7 @@ pub fn reconcile_submitting_conn(conn: &Connection) -> Result<Reconciled, AppErr
 /// The `submit_job` command's guard (ADR-027 decision 5, "the window"): a job whose `mcp_state` is
 /// set is between step A and step C, and the MCP server is submitting it; Anton cannot submit it by
 /// hand meanwhile. Any non-NULL value refuses (the CHECK admits only `submitting`; fail closed).
-/// Wired into the command in Part B; the backends do not change.
+/// The commands call it through [`refuse_while_mcp_submitting`]; the backends do not.
 pub fn submit_refusal_for_mcp_state(job: &Job) -> Option<AppError> {
     job.mcp_state.as_ref().map(|state| {
         AppError::Conflict(format!(
@@ -305,4 +306,16 @@ pub fn submit_refusal_for_mcp_state(job: &Job) -> Option<AppError> {
             job.id
         ))
     })
+}
+
+/// [`submit_refusal_for_mcp_state`] as a `Result`, for the commands that submit a job by hand:
+/// `submit_job` (through `commands::jobs::submittable_job_conn`, both arms) and
+/// `retry_remote_submit`.
+///
+/// **A read outside the job's lock is enough.** `mcp_state` is set only by step A, in the
+/// transaction that inserts the row, and only ever cleared after that. A job read with `mcp_state`
+/// NULL can never become `submitting` later, so a check that passes stays true for the rest of the
+/// command.
+pub fn refuse_while_mcp_submitting(job: &Job) -> Result<(), AppError> {
+    submit_refusal_for_mcp_state(job).map_or(Ok(()), Err)
 }

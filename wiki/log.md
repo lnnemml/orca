@@ -12559,3 +12559,79 @@ same race serialized by SQLite; the deterministic interleave above is the contro
 - `memory_verdict_for` and `mcp_maxcore` take `meminfo` and `data_dir` (the `_with` seams); Part B or
   M3 passes `PROC_MEMINFO` and the runner's data dir.
 - The TS `Job` type does not yet declare the four new fields (M4).
+
+## [2026-11-19] feat | ADR-027 M1b Part B — the grant commands, the submit guard, the SMILES call
+
+**What landed** (uncommitted, branch `feat/mcp-m1b` on Part A `09fe80b`; pending verifier CODE). The
+app wiring of the M1b cores. No socket, no MCP tool, no UI. Module page:
+[mcp-server.md](modules/mcp-server.md); commands: [tauri-core.md](modules/tauri-core.md).
+
+- **The grant commands** (`commands/mcp.rs`, registered in `generate_handler!`): `mcp_create_grant(targets,
+  levels, max_jobs, max_in_flight, expires_at) -> GrantView`, `mcp_revoke_grant(id) -> GrantView`,
+  `mcp_get_grant() -> Option<GrantView>` and `mcp_level_from_job(job_id) -> String`. Synchronous, each
+  a short `BEGIN IMMEDIATE` transaction in the grant core, `now` from SQLite. They are the only way a
+  grant is created. A refused level is the grant core's `Invalid("level <n>: …")`. "This job's level"
+  reads the header strictly and checks that its text reads back as the same signature (rule #9).
+  `Grant::status_at` is now the one place that decides Active/Expired/Revoked, for step A's snapshot
+  and the view alike (extracted from `grant_snapshot_conn`; Part A's tests unchanged).
+- **The submit guard**, in the two commands that submit a job by hand, never in the backends (step B
+  calls the backends on this very job):
+  - `submit_job` reads the job through `commands::jobs::submittable_job_conn` **before**
+    `Backend::for_submit`, so the local arm and the remote arm are both refused;
+  - `retry_remote_submit` calls `refuse_while_mcp_submitting(job)` on the row read under the
+    in-flight guard, before the backend is built.
+
+  Every UI path that submits (Run, Create & Run, the "run all" in five views, Retry) goes through one
+  of these two commands. The only Rust writes that move a `draft` to `queued` are `local_backend::submit`
+  and `persist_submit`, reached only through them and step B. The poller's pending re-check, the
+  re-enqueue and the local queue act on jobs already out of `draft` and continue the one submit, so they
+  need no guard. A read outside the job's lock is enough, because `mcp_state` is set only by step A, in
+  the transaction that inserts the row, and only ever cleared after that.
+- **`SidecarSmiles: SmilesTo3d`** (`mcp/sidecar_smiles.rs`), the first Rust → sidecar call: a `ureq`
+  POST to `/smiles-to-3d`, 5 s connect and 30 s total. No port or a `down` sidecar is an `Err` with no
+  request made. Its post-condition (`check_reply`, rule #9): JSON integers, `num_atoms > 0`,
+  multiplicity exactly 1, one strict xyz frame, every element known to `z_of`, every coordinate finite.
+  A non-200 status, a malformed body, a transport failure or a timeout is an `Err` naming the cause.
+  No command calls it yet (M3). Tests serve canned HTTP from a throwaway `TcpListener`.
+
+**Tests:**
+- `cargo test --workspace`: `orcastudio_lib` **1200 → 1231** passed, **30** ignored; no build
+  warnings. `orcastudio-core` unchanged (24 + 6 + 1 + 2 doc; 1 ignored). The existing submit tests
+  (`a_submit_with_no_target_never_reaches_the_ssh_path`, the remote-command pins) pass unchanged.
+- `npx vitest run`: **1373** passed, 2 skipped (no TS change). `npx tsc --noEmit` clean.
+
+**Negative controls** (17, all RED, each restored byte-identically, sha256-checked; the whole
+`src-tauri/src` tree sha256-identical after the run; `scratchpad/m1b_partb_controls.py`):
+- the guard: `submit_job` reading the job with `get_job_conn`; the guarded read moved into the local
+  arm only (the remote arm unguarded); `submittable_job_conn` without the check; `retry_remote_submit`
+  without the guard; `refuse_while_mcp_submitting` passing everything; the guard moved into
+  `local_backend::submit` (red on `the_backends_carry_no_mcp_guard`);
+- `SidecarSmiles`: the finiteness check removed; the element check removed; zero atoms accepted; the
+  multiplicity unchecked; text after the frame accepted; any 2xx accepted; the request timeout
+  unbounded (the hung-sidecar test); a `down` sidecar called;
+- the grant commands: "this job's level" dropping the `%cpcm` line (red **by the read-back
+  post-condition's own message**, which the script requires); the view's `in_flight` fixed at 0; the
+  view's state ignoring expiry.
+
+Part A's `m1b_controls.py` re-run on this tree: **34/34 RED**, all restored (its anchors in
+`grant.rs`, `resolve.rs` and `steps.rs` survive the Part B extractions).
+
+**Also recorded:** the orchestrator corrected ADR-027's P3/P4 wording (the Part A verifier's LOW
+finding). P4 is now one message that names the remedy for either target. P3 now also covers a `%geom`
+holding any key other than `Calc_Hess`, `Recalc_Hess` or `MaxIter`.
+
+**Decided here (within the brief), for the verifier and Anton:**
+- `SidecarSmiles` refuses a multiplicity other than 1, rather than passing it on: P1's message says
+  "the SMILES sidecar, which always gives multiplicity 1", and any other value would make it false.
+- The sidecar's `starting` and `stale` states are still called; only `down` and an unknown port are
+  refused before the request.
+- `mcp_get_grant` returns the newest grant, revoked or expired included, with its state, so the UI can
+  show why nothing is active.
+
+**Open:**
+- M3: `SidecarSmiles` handed to the resolver in `create_job`, run off the main thread; the preflight's
+  `PROC_MEMINFO` and data dir.
+- M4: the Settings → MCP UI over these commands; `expires_at` is converted to UTC `YYYY-MM-DD
+  HH:MM:SS` there; "Claude is submitting" in place of Run; the TS `Job` type's four new fields.
+- The guard's pins in `submit_job` and `retry_remote_submit` are source pins, as for `cancel_job`: the
+  commands need an `AppHandle`, which the test harness does not have.

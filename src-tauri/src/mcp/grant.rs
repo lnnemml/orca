@@ -43,6 +43,20 @@ pub struct Grant {
     pub charged_jobs: u32,
 }
 
+impl Grant {
+    /// The grant's state at `now`: `Revoked` once revoked, else `Expired` once `expires_at <= now`,
+    /// else `Active`. Step A's snapshot and the Settings view both read it here.
+    pub fn status_at(&self, now: &str) -> GrantStatus {
+        if self.revoked_at.is_some() {
+            GrantStatus::Revoked
+        } else if self.expires_at.as_str() <= now {
+            GrantStatus::Expired
+        } else {
+            GrantStatus::Active
+        }
+    }
+}
+
 /// What Anton asks for in Settings → MCP (M4 builds it).
 #[derive(Debug, Clone, PartialEq)]
 pub struct NewGrant {
@@ -97,14 +111,16 @@ pub fn check_utc_text(s: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn target_text(t: &Target) -> &str {
+/// A target as stored and as the UI spells it: `"local"`, or the server profile id.
+pub(crate) fn target_text(t: &Target) -> &str {
     match t {
         Target::Local => LOCAL_TARGET,
         Target::Server { profile_id } => profile_id,
     }
 }
 
-fn target_of(text: String) -> Target {
+/// The inverse of [`target_text`]: `"local"` is this machine, anything else a server profile id.
+pub(crate) fn target_of(text: String) -> Target {
     if text == LOCAL_TARGET {
         Target::Local
     } else {
@@ -196,13 +212,7 @@ pub fn grant_snapshot_conn(conn: &Connection, now: &str) -> Result<Option<Curren
         None => query_grant(conn, "ORDER BY created_at DESC, rowid DESC", &[])?,
     };
     let Some(g) = grant else { return Ok(None) };
-    let status = if g.revoked_at.is_some() {
-        GrantStatus::Revoked
-    } else if g.expires_at.as_str() <= now {
-        GrantStatus::Expired
-    } else {
-        GrantStatus::Active
-    };
+    let status = g.status_at(now);
     Ok(Some(CurrentGrant {
         snapshot: GrantSnapshot {
             status,

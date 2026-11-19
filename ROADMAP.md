@@ -1663,9 +1663,11 @@ and OrcaStudio picks the job up, syncs results, and parses them — no terminal,
             `src-tauri/src/mcp/`, [mcp-server.md](wiki/modules/mcp-server.md)
       - [ ] **M1b** source resolver, memory verdict before step A, schema v24, grant create/revoke,
             `submit_job` `mcp_state` guard, reconciliation in the lock holder
-            — **Part A built, pending verification** (2026-11-19): schema v24, the grant core,
-            steps A/C, the reconciliation (not yet called), the guard as a pure check, the resolver,
-            the memory preflight; Part B wires the commands, the guard and the SMILES HTTP call
+            — **Part A `09fe80b` + Part B built, pending verification** (2026-11-19). Part A: schema
+            v24, the grant core, steps A/C, the reconciliation (not yet called), the guard as a pure
+            check, the resolver, the memory preflight. Part B: the grant commands
+            (`commands/mcp.rs`), the guard in `submit_job` and `retry_remote_submit`, and
+            `SidecarSmiles` (the SMILES HTTP call, not yet called)
       - [ ] **M2** socket server + `--mcp` relay + read tools (incl. `measure`)
       - [ ] **M3** write tools — `create_job` with grant charging, `cancel_job` (mcp only),
             `create_group`, `wait_for_jobs`, audit log

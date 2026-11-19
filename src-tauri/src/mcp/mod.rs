@@ -1,7 +1,8 @@
 //! The MCP orchestration server's core (ADR-027): the guard that decides whether an AI model may
-//! spend compute (unit M1a, pure), and the DB-level grant core, steps and resolver around it (unit
-//! M1b Part A). No Tauri command, no socket and no HTTP yet: those are M1b Part B, M2 (the server)
-//! and M3 (the write tools).
+//! spend compute (unit M1a, pure), the DB-level grant core, steps and resolver around it (unit M1b
+//! Part A), and the sidecar's SMILES call (M1b Part B). The grant's Tauri commands are
+//! `commands::mcp`; the `submit_job` guard is wired into the commands that submit by hand. No socket
+//! and no MCP tool yet: those are M2 (the server) and M3 (the write tools).
 //!
 //! - [`header`] parses the model's header under the closed grammar of ADR-027 decision 3: `!`
 //!   lines, `%…end` blocks (depth-tracked, `#` comments and quoted strings masked), `#` comments
@@ -19,6 +20,7 @@
 //! - [`steps`] is step A (charge and insert), step C (finish or refund), the crash reconciliation
 //!   and the `submit_job` guard.
 //! - [`resolve`] maps a geometry reference (`job:`, `molecule:`, `smiles:`) to a `ResolvedSource`.
+//! - [`sidecar_smiles`] is the resolver's SMILES seam over HTTP, with its post-condition.
 //! - [`preflight`] computes the app's `%maxcore` and the memory verdict before step A.
 //!
 //! The module page is `wiki/modules/mcp-server.md`.
@@ -31,6 +33,7 @@ pub mod grant;
 pub mod header;
 pub mod preflight;
 pub mod resolve;
+pub mod sidecar_smiles;
 pub mod signature;
 pub mod steps;
 
@@ -51,8 +54,12 @@ mod preflight_tests;
 #[cfg(test)]
 mod resolve_tests;
 #[cfg(test)]
+mod sidecar_smiles_tests;
+#[cfg(test)]
 mod signature_tests;
 #[cfg(test)]
 mod steps_tests;
 #[cfg(test)]
-mod test_db;
+mod submit_guard_tests;
+#[cfg(test)]
+pub(crate) mod test_db;

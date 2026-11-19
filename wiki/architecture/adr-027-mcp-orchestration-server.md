@@ -271,11 +271,14 @@ path refuses where the human path warns):
   converged optimization **at the same method signature**. That covers scan frames, NEB images,
   SMILES and molecules (decided by Anton: same level, no TightOpt requirement in Stage 1). It also
   covers an optimization run with `%geom` constraints or a scan, because a constrained optimization
-  is not a stationary point (decided by Anton 2026-11-19, M1b).
+  is not a stationary point (decided by Anton 2026-11-19, M1b). It also covers a `%geom` holding any
+  key other than `Calc_Hess`, `Recalc_Hess` or `MaxIter`: the resolver cannot tell such a source is
+  a stationary point, so it fails closed.
 - **P4** — the memory preflight (`commands/memory.rs:76` `memory_estimate_with`) warns for the
-  target after the app's own `%maxcore`, **or** the server's memory is unknown. In that case the
-  reason reads "server memory unknown — re-run the connection test" for a server target. For a Local
-  target the wording names this machine instead (M1b; see `modules/mcp-server.md`).
+  target after the app's own `%maxcore`, **or** the target's memory facts are unknown. In that case
+  a single reason names the remedy for either target: re-run the connection test for a server, or
+  check that this machine's `/proc/meminfo` and data directory can be read (M1b; exact text in
+  `modules/mcp-server.md`).
 - **P5** — the grant does not cover the job:
   - there is no active grant, or it has expired or been revoked;
   - the target is not in the grant;

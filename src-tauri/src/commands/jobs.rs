@@ -391,6 +391,18 @@ pub(crate) fn get_job_conn(conn: &Connection, id: &str) -> Result<Job, AppError>
         .ok_or_else(|| AppError::NotFound(format!("job {id}")))
 }
 
+/// The job `submit_job` acts on: job `id`, refused with [`AppError::Conflict`] while Claude is
+/// submitting it (ADR-027 decision 5, [`refuse_while_mcp_submitting`]). The guard sits in the
+/// command and not in the backends, because the MCP server's step B calls the backends on this
+/// very job.
+///
+/// [`refuse_while_mcp_submitting`]: crate::mcp::steps::refuse_while_mcp_submitting
+pub(crate) fn submittable_job_conn(conn: &Connection, id: &str) -> Result<Job, AppError> {
+    let job = get_job_conn(conn, id)?;
+    crate::mcp::steps::refuse_while_mcp_submitting(&job)?;
+    Ok(job)
+}
+
 /// A job's pending cancel (schema v21, ADR-024 o22.2): when the user asked, and when a delivery
 /// marked the send — UTC, laptop clock, only ever displayed. Both `None`: nothing pending. [`Job`]
 /// carries the same two columns for the view (o22.14.5); this read takes only them, under the lock
@@ -866,6 +878,9 @@ pub fn read_neb_geometries(
 ///   submit sequence off the IPC thread, under the job's in-flight guard, answering the attempt
 ///   (outcome, `%pal` alignment and its notice).
 ///
+/// Before either arm, the job is read through [`submittable_job_conn`]: a job Claude is submitting
+/// (ADR-027 decision 5, `mcp_state` set) is refused on both arms.
+///
 /// Async so the remote arm can await its blocking task; the local arm awaits nothing.
 #[tauri::command]
 pub async fn submit_job(
@@ -873,13 +888,13 @@ pub async fn submit_job(
     id: String,
     target: Option<String>,
 ) -> Result<Option<SubmitResponse>, AppError> {
+    let job = {
+        let db = app.state::<DbState>();
+        let conn = db.lock()?;
+        submittable_job_conn(&conn, &id)?
+    };
     match Backend::for_submit(app.clone(), target) {
         Backend::Local(local) => {
-            let job = {
-                let db = app.state::<DbState>();
-                let conn = db.lock()?;
-                get_job_conn(&conn, &id)?
-            };
             local.submit(&job)?;
             Ok(None)
         }

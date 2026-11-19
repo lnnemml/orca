@@ -22,10 +22,11 @@ never runs a binary). The runtime mechanics of running ORCA live in
 - `orca_json.rs` — spawn `orca_2json` (ADR-009), lazy-cached gbw→JSON in the job dir (unit 3.7).
 - `error.rs` — `AppError` (thiserror).
 - `sidecar.rs` — `SidecarManager`: spawn/health-poll/kill uvicorn; the version handshake.
-- `commands/{settings,jobs,molecules,reactions,groups,server_profiles,remote_jobs,memory,manual,export,export_group}.rs`
+- `commands/{settings,jobs,molecules,reactions,groups,server_profiles,remote_jobs,memory,manual,export,export_group,mcp}.rs`
   — Tauri command surface (thin wrappers over `*_conn`).
 - `mcp/` — the MCP orchestration server's core (ADR-027): the classifier, input assembly, grant core,
-  steps A/C, reconciliation, source resolver and memory preflight. No command or socket yet. See
+  steps A/C, reconciliation, source resolver, memory preflight and `SidecarSmiles` (the sidecar's
+  SMILES call). Its commands are the grant commands in `commands/mcp.rs`; no socket yet. See
   `modules/mcp-server.md`.
 - `models/{job,molecule}.rs` — row structs (`COLUMNS` + `from_row`).
 - `local_backend.rs` — ORCA execution, queue, cancel (see `execution-backends.md`).
@@ -349,14 +350,15 @@ in-flight steps (own process groups) are left to the OS (ADR-024 o18, decided by
   input) and **non-retroactive** (a derived child's baked-in `— <old title>` is a create-time snapshot,
   left as-is); `submit_job(app, id, target: Option<String>)` (async; no target → enqueues locally
   and returns `null` at once; a server profile id → the remote submit off the IPC thread, returning
-  its `SubmitResponse`); `cancel_job(id) -> CancelResult` (async: `spawn_blocking` + the app's
+  its `SubmitResponse`; a job Claude is submitting, `mcp_state` set, is refused with `Conflict` on both
+  arms — ADR-027 decision 5, `modules/mcp-server.md` "The `submit_job` guard"); `cancel_job(id) -> CancelResult` (async: `spawn_blocking` + the app's
   poller → `commands::jobs::cancel_job_core`, which claims the guard itself — a remote live job's
   cancel is recorded and delivered now or left pending, never refused for being busy; a local job is
   dispatched to its backend, `{"result":"dispatched"}`); `undo_cancel(id) -> UndoResult` (sync, no
   guard: one locked write, ADR-024 o22.3 — both in
   [execution-backends.md](execution-backends.md#remote-cancel-record-deliver-undo-adr-024-o223o224));
-  `retry_remote_submit(id)` / `label_remote_job(id)` (async, remote jobs
-  only — [execution-backends.md](execution-backends.md#sshbackend-ssh_backendrs) "Commands and the
+  `retry_remote_submit(id)` (refuses a job Claude is submitting, like `submit_job`) /
+  `label_remote_job(id)` (async, remote jobs only — [execution-backends.md](execution-backends.md#sshbackend-ssh_backendrs) "Commands and the
   in-flight guard"); `retry_remote_fetch(id) -> StatusStep` (async; the manual fetch retry after
   3 failed fetches, guarded); `watch_job_log(id, open: bool)` (a job view's live log opened/closed;
   never calls ssh — the remote poller, `execution-backends.md` "The remote poller");
@@ -435,6 +437,13 @@ in-flight steps (own process groups) are left to the OS (ADR-024 o18, decided by
   - **Error causes are distinct (`status_error`, unit-tested):** `401` = key rejected, `404` = model not
     available to this key, other = generic API error, transport = offline (a normal mode, not a failure).
     A single "failed" would hide the cause. No logging of key or request/response body, even in debug.
+- **MCP grant (ADR-027 decision 5, `commands/mcp.rs`; sync, short `BEGIN IMMEDIATE` transactions):**
+  `mcp_create_grant(targets: Vec<String>, levels: Vec<String>, max_jobs: u32, max_in_flight: u32,
+  expires_at: String) -> GrantView` (revokes the previous grant in the same transaction);
+  `mcp_revoke_grant(id) -> GrantView` (idempotent); `mcp_get_grant() -> Option<GrantView>`;
+  `mcp_level_from_job(job_id) -> String` ("this job's level", read back as its signature). The only
+  way a grant is created; no MCP tool calls them. `GrantView` and the errors:
+  `modules/mcp-server.md` "The grant commands".
 - **DB helpers** (`pub(crate)`, reused by the backend): `set_job_dir_conn`, `finalize_job_conn`
   (terminal status + `completed_at` + `error_message`), `set_job_results_conn`, `get_job_conn`,
   `update_job_status_conn`, `delete_job_conn` (see below).
@@ -560,6 +569,14 @@ uvicorn with `--reload`; `start` sets the child's **own process group** (`Comman
 and `stop`/`Drop` `kill_process_tree` → `killpg(SIGTERM)` → grace → `killpg(SIGKILL)`, so the
 `--reload` worker child isn't orphaned. The rule and its rationale are in `wiki/modules/sidecar.md`
 + `wiki/debugging/005`.
+
+**Rust → sidecar calls.** Besides `/health`, Rust calls one endpoint itself: `POST /smiles-to-3d`, from
+`mcp::sidecar_smiles::SidecarSmiles` (ADR-027 decision 4; the frontend calls the sidecar directly for
+everything else). It takes the port from `SidecarStatus`, refuses when no port is known or the
+sidecar is `down`, bounds the call (5 s connect, 30 s total), and checks the reply in our terms before
+it becomes a geometry: integers, at least one atom, multiplicity 1, one strict xyz frame, known
+elements, finite coordinates (`modules/mcp-server.md` "The SMILES call"). It blocks, so its caller
+runs it off the main thread; no command calls it yet (M3).
 
 ## xTB pre-optimization (`xtb.rs`)
 

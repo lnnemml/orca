@@ -56,6 +56,16 @@ impl MethodSignature {
         }
     }
 
+    /// The signature written back as a level's text, as Anton would paste it: one `!` line with the
+    /// method tokens, then each normalised `%cpcm` block on its own line. The grant editor's "this
+    /// job's level" reads it back with [`MethodSignature::of_level_text`] and requires the same
+    /// signature (`commands::mcp::level_from_job_conn`).
+    pub fn level_text(&self) -> String {
+        let mut lines = vec![format!("! {}", self.keywords.join(" "))];
+        lines.extend(self.solvation.iter().cloned());
+        lines.join("\n")
+    }
+
     /// The signature of a text, **lenient**: a line the parser refuses is left out of it. Kept for
     /// the tests only; production code reads a level with [`MethodSignature::of_level_text`], which
     /// refuses such a line instead of dropping it.

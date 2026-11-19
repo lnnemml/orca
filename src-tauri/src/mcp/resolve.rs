@@ -159,15 +159,13 @@ fn first_frame_of(text: &str, what: &str) -> Result<Vec<SourceAtom>, String> {
     Ok(atoms_of(elements, coords))
 }
 
-/// The optimization signature of a source job's input: the signature of its header — the text
-/// outside its coordinate block — read strictly, when that header has an Opt-family token (C4).
-/// The app's own `%maxcore <n>` directive (no `end`, o26) is set aside first, by the memory
-/// preflight's own locator and only when it reads cleanly; the header grammar would otherwise read
-/// it as a block that never closes. `None` when there is no Opt token, or when the block, the
-/// `%maxcore` line or the header does not read cleanly (P3 then fails closed).
-fn opt_signature_of(input: &str) -> Option<MethodSignature> {
-    let block = read_coordinate_block(input).ok()?;
-    read_maxcore(input).ok()?;
+/// The header of a job's input: the text outside its coordinate block. The app's own `%maxcore <n>`
+/// directive (no `end`, o26) is set aside first, by the memory preflight's own locator and only when
+/// it reads cleanly; the header grammar would otherwise read it as a block that never closes. `Err`
+/// when the coordinate block or the `%maxcore` line does not read cleanly.
+pub(crate) fn header_of_input(input: &str) -> Result<String, String> {
+    let block = read_coordinate_block(input).map_err(|e| format!("the coordinate block: {e}"))?;
+    read_maxcore(input).map_err(|e| format!("the %maxcore line: {e}"))?;
     let lines: Vec<&str> = input.lines().collect();
     let maxcore = maxcore_lines(&lines);
     let outside: Vec<&str> = lines
@@ -176,7 +174,15 @@ fn opt_signature_of(input: &str) -> Option<MethodSignature> {
         .filter(|(i, _)| (*i < block.header_line || *i > block.closer_line) && !maxcore.contains(i))
         .map(|(_, l)| *l)
         .collect();
-    let outside = outside.join("\n");
+    Ok(outside.join("\n"))
+}
+
+/// The optimization signature of a source job's input: the signature of its header
+/// ([`header_of_input`]) read strictly, when that header has an Opt-family token (C4). `None` when
+/// there is no Opt token, or when the block, the `%maxcore` line or the header does not read cleanly
+/// (P3 then fails closed).
+fn opt_signature_of(input: &str) -> Option<MethodSignature> {
+    let outside = header_of_input(input).ok()?;
     let header = parse_header(&outside);
     if !has_keyword(&header, &OPT_FAMILY) || !geom_leaves_a_stationary_point(&header) {
         return None;

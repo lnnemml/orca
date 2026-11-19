@@ -16,9 +16,11 @@ mod execution_backend;
 mod in_flight;
 mod local_backend;
 mod manual;
-// The MCP orchestration server's core (ADR-027): the M1a classifier and input assembly, and the M1b
-// Part A grant core, steps, resolver and preflight. Wired in M1b Part B / M2 / M3; scoped allow
-// until then, so the build stays warning-clean without a faked caller.
+// The MCP orchestration server's core (ADR-027): the M1a classifier and input assembly, the M1b
+// grant core, steps, resolver, preflight and the sidecar's SMILES call. M1b Part B wires the grant
+// commands (`commands::mcp`) and the `submit_job` guard; steps A/C, the resolver, the reconciliation
+// and `SidecarSmiles` are called by M2 / M3. Scoped allow until then, so the build stays
+// warning-clean without a faked caller.
 #[allow(dead_code)]
 mod mcp;
 // The memory and disk preflight (ADR-024 o26, unit 5.5): the pure estimator and host-fact parsers.
@@ -134,6 +136,10 @@ pub fn run() {
             commands::remote_jobs::retry_remote_fetch,
             commands::remote_jobs::watch_job_log,
             commands::remote_jobs::remote_job_state,
+            commands::mcp::mcp_create_grant,
+            commands::mcp::mcp_revoke_grant,
+            commands::mcp::mcp_get_grant,
+            commands::mcp::mcp_level_from_job,
             commands::jobs::delete_job,
             commands::jobs::pause_queue,
             commands::jobs::resume_queue,

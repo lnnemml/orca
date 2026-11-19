@@ -44,6 +44,9 @@ multiplicity, num_atoms}`.
   `AllChem.MMFFOptimizeMolecule(maxIters=500)` (non-convergence / missing MMFF params is **not**
   fatal — wrapped in try/except). Output via `Chem.MolToXYZBlock`,
   `rdMolDescriptors.CalcMolFormula`, `Chem.GetFormalCharge`; `multiplicity` hardcoded `1` for now.
+- **Callers:** the frontend, and Rust's `mcp::sidecar_smiles::SidecarSmiles` (ADR-027, the MCP
+  `smiles:` source). The Rust caller refuses a reply whose `multiplicity` is not `1`, so a change to
+  the hardcoded value must change it too (`modules/mcp-server.md` "The SMILES call").
 - **API quirk:** `useRandomCoords` is a **property of the params object**, not a kwarg accepted
   alongside a params object — so the fallback sets `params.useRandomCoords = True` and re-embeds.
 - **Install:** `pip install rdkit` pulls the modern wheel `rdkit==2026.3.4` directly (the deprecated
