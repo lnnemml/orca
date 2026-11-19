@@ -1,0 +1,130 @@
+{
+  "_comment": "Shared by charge_mult_tests.rs (Rust) and src/scene/charge-mult-parity.test.ts (TS). ADR-027 C1: on wellFormed both locators agree; on malformed Rust refuses (Err) and TS defaults or returns null, a documented deliberate divergence. `ts` records what sceneFromOrcaInput gives.",
+  "wellFormed": [
+    {
+      "name": "plain neutral singlet",
+      "input": "! B3LYP def2-SVP\n\n* xyz 0 1\nO 0.0 0.0 0.0\nH 0.0 0.0 0.96\nH 0.93 0.0 -0.24\n*\n",
+      "charge": 0,
+      "multiplicity": 1
+    },
+    {
+      "name": "anion doublet",
+      "input": "* xyz -1 2\nC 0 0 0\n*\n",
+      "charge": -1,
+      "multiplicity": 2
+    },
+    {
+      "name": "upper-case XYZ",
+      "input": "* XYZ 1 1\nN 0 0 0\n*\n",
+      "charge": 1,
+      "multiplicity": 1
+    },
+    {
+      "name": "trailing comment on the xyz line",
+      "input": "* xyz 0 3 # triplet\nO 0 0 0\nO 0 0 1.2\n*\n",
+      "charge": 0,
+      "multiplicity": 3
+    },
+    {
+      "name": "an earlier commented-out xyz line",
+      "input": "# * xyz 2 2\n* xyz 0 1\nH 0 0 0\nH 0 0 0.74\n*\n",
+      "charge": 0,
+      "multiplicity": 1
+    },
+    {
+      "name": "no space after the star",
+      "input": "*xyz 0 1\nHe 0 0 0\n*\n",
+      "charge": 0,
+      "multiplicity": 1
+    },
+    {
+      "name": "CRLF line endings",
+      "input": "! SP\r\n* xyz 0 1\r\nHe 0 0 0\r\n*\r\n",
+      "charge": 0,
+      "multiplicity": 1
+    },
+    {
+      "name": "explicit plus sign",
+      "input": "* xyz +1 2\nNa 0 0 0\n*\n",
+      "charge": 1,
+      "multiplicity": 2
+    },
+    {
+      "name": "tabs and indentation",
+      "input": "\t*  xyz\t0\t1\nHe 0 0 0\n*\n",
+      "charge": 0,
+      "multiplicity": 1
+    },
+    {
+      "name": "the app's own emitted block",
+      "input": "! r2SCAN-3c Opt\n%maxcore 2000\n\n* xyz 2 1\nC     0.00000000    0.00000000    0.00000000\nO     0.00000000    0.00000000    1.20000000\n*\n",
+      "charge": 2,
+      "multiplicity": 1
+    }
+  ],
+  "malformed": [
+    {
+      "name": "xyzfile",
+      "input": "* xyzfile 0 1 geom.xyz\n",
+      "ts": null
+    },
+    {
+      "name": "no xyz line",
+      "input": "! SP\n",
+      "ts": null
+    },
+    {
+      "name": "non-integer multiplicity",
+      "input": "* xyz 0 1.5\nHe 0 0 0\n*\n",
+      "ts": {
+        "charge": 0,
+        "multiplicity": 1
+      }
+    },
+    {
+      "name": "multiplicity hidden by a comment",
+      "input": "* xyz 0 #2\nHe 0 0 0\n*\n",
+      "ts": {
+        "charge": 0,
+        "multiplicity": 1
+      }
+    },
+    {
+      "name": "missing multiplicity",
+      "input": "* xyz -1\nCl 0 0 0\n*\n",
+      "ts": {
+        "charge": -1,
+        "multiplicity": 1
+      }
+    },
+    {
+      "name": "decimal charge",
+      "input": "* xyz 1.0 2\nNa 0 0 0\n*\n",
+      "ts": {
+        "charge": 1,
+        "multiplicity": 2
+      }
+    },
+    {
+      "name": "internal coordinates",
+      "input": "* int 0 1\nC 0 0 0 0.0 0.0 0.0\n*\n",
+      "ts": null
+    },
+    {
+      "name": "an extra token",
+      "input": "* xyz 0 1 extra\nHe 0 0 0\n*\n",
+      "ts": {
+        "charge": 0,
+        "multiplicity": 1
+      }
+    },
+    {
+      "name": "a second # before the header",
+      "input": "# old # * xyz 1 2\n* xyz 0 1\nHe 0 0 0\n*\n",
+      "ts": {
+        "charge": 0,
+        "multiplicity": 1
+      }
+    }
+  ]
+}

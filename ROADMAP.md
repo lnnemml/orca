@@ -1660,6 +1660,8 @@ and OrcaStudio picks the job up, syncs results, and parses them — no terminal,
             classifier on spend tools, the manual `/mcp` reconnect, loading `.mcp.json` interactively); ADR-027's M0 amendment, items 1–10
       - [ ] **M1a** classifier (R1–R9 / P1–P5), method signature, block key allowlist, Rust
             charge/mult locator, input assembly (Part A, pure Rust)
+            — **Part A built, pending verification** (2026-11-19): `src-tauri/src/mcp/`,
+            [mcp-server.md](wiki/modules/mcp-server.md)
       - [ ] **M1b** source resolver, memory verdict before step A, schema v24, grant create/revoke,
             `submit_job` `mcp_state` guard, reconciliation in the lock holder
       - [ ] **M2** socket server + `--mcp` relay + read tools (incl. `measure`)

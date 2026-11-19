@@ -12223,6 +12223,7 @@ row only; the shared `.builder-row` rule and the other rows are unchanged. Needs
   `4f0062a`); the only conflicts were appends in `log.md` / `ROADMAP.md`, both sides kept.
 - Open (ADR-026 §Open): create inside the 500 ms content→scene debounce; an xtb run in flight when
   leaving New Job; persisting the draft across restarts.
+
 ## [2026-11-19] decision | ADR-027 — the MCP orchestration server (T3 Stage 1) accepted
 - **Why now:** after Phase 5, Anton starts real research with Claude driving the app over MCP. His
   worked example is the sultone cyclization re-computation plan. It showed that most of a study is
@@ -12320,3 +12321,110 @@ row only; the shared `.builder-row` rule and the other rows are unchanged. Needs
   tool; a manual `/mcp` reconnect and the retry schedule beyond 44 s; loading a project `.mcp.json` in
   an interactive session.
 - **Wiki:** the new probe page, the ADR-027 amendment, `index.md`, and ROADMAP M0 ticked.
+
+## [2026-11-19] feat | ADR-027 M1a — the MCP job classifier (pure)
+- **Landed (Part A, uncommitted; verifier CODE round 1 FAIL, fixed below, pending round 2):** `src-tauri/src/mcp/`, the pure core of
+  the guard that decides whether an AI model may spend compute. No DB, command, socket or sidecar
+  call. It is registered in `lib.rs` under a scoped `#[allow(dead_code)]` until M1b/M3.
+  - `header.rs` — the closed grammar. A depth-tracked scanner masks `#` comments and keeps `"…"`
+    and `{…}` as single tokens. It returns the parse plus every violation.
+  - `signature.rs` — the method signature and the Rust `NON_METHOD`.
+  - `allowlist.rs` — decision 6's four rows; anything else is a P2 finding naming the block and key.
+  - `charge_mult.rs` — the strict `* xyz <c> <m>` locator.
+  - `classify.rs` — `classify_mcp_job`: R1–R9 first (all listed), then P1–P5 (all listed), else
+    SUBMITTED. It fails closed.
+  - `assemble.rs` — the header, the app's `%maxcore` (`apply_maxcore`), a
+    `# charge/mult from <source>` comment, and `emit_coordinate_block`. A strict re-parse
+    post-condition follows (count, element order, coordinates within 1e-6 Å, charge, multiplicity,
+    `%maxcore`).
+  - Module page [mcp-server.md](modules/mcp-server.md).
+- **Orchestrator clarifications C1–C12** (within ADR-027; recorded on the module page):
+  - **C1** — a strict charge/multiplicity locator. Its parity with `sceneFromOrcaInput` covers
+    well-formed cases only, through the shared `src-tauri/tests/fixtures/mcp/charge_mult_cases.json`.
+    On malformed cases Rust refuses and TS defaults, a documented divergence.
+  - **C2** — `NON_METHOD` parity by regex over `compare.ts`.
+  - **C3** — the signature adds the normalised `%cpcm` text, so SMD(DMF) ≠ SMD(THF).
+  - **C4** — the Opt family is `RELAXED_SCAN_OPT_KEYWORDS`.
+  - **C5** — R3 includes bare `PAL` and `PAL0`.
+  - **C6** — element case is normalised before `z_of`.
+  - **C7** — the scanner.
+  - **C8** — the three-state `MemoryVerdict` and `SERVER_DEFAULT_MAXCORE_MIB = 2000`.
+  - **C9** — the post-condition.
+  - **C10** — R6 checks every constraint entry.
+  - **C11** — R9 is the NEB set.
+  - **C12** — R1 includes text after `end`.
+- **Beyond the brief**, each only moving a job toward Anton:
+  - P3 also counts `AnFreq`;
+  - a `GoatMember` source never satisfies P3;
+  - every `%cpcm` block, not only an admitted one, enters the signature;
+  - a key or block given twice is P2.
+- **Verifier CODE round 1: FAIL.** Two reproducible false-SUBMITTED paths, plus one MED and three
+  LOW findings. All are fixed fail-closed:
+  - **HIGH-1, an unreadable index bypassed R6.** `constraint_entries` dropped an index that failed
+    `i64` parsing, and `{C n C}` admitted any digit run, so `{C 99999999999999999999 C}` was
+    SUBMITTED. Now every index token is kept (`index_tokens`). `parse_index` (ASCII digits within
+    `u32`) reads it, and anything it cannot read, or that is out of range, is R6.
+  - **HIGH-2, a second `#`.** The lexer read only up to the first `#`. The ORCA manual says a second
+    `#` closes the comment (`essentialelements/input.md.txt`; a source, **unmeasured**), so
+    `! … Opt Freq #x# PAL16` hid PAL16. Now any line with two or more `#` is R1. The same rule
+    applies in the charge/multiplicity locator (R4) and the assembly post-condition.
+  - **MED, the label.** `smiles:C#N` put a second `#` on the `# charge/mult from` line. The label now
+    goes through `comment_safe_label`, which replaces anything outside `[A-Za-z0-9 :_-./()=[]@+]`
+    with `?`. The post-condition refuses any line with two or more `#`.
+  - **LOW-1, the case fold.** Unicode `to_uppercase` folded `ſp` to `SP`, and `SP` is dropped as a
+    run type. Now every fold in `mcp` is ASCII, and a non-ASCII character on a `!` line is R1. The
+    ω spelling is refused; ORCA's keyword is `wB97X-3c`.
+  - **LOW-2, the empty signature.** `! Opt Freq` could match an empty grant level. Now an empty
+    signature is P5, "no method level stated".
+  - **LOW-3, the anchors.** The two context-section anchors of ADR-027 (under "anchors at `4f0062a`")
+    are reverted to `:1372–1376` and `:1380`.
+- **Two more unrecorded layouts closed** at the orchestrator's request, both fail-closed (P2):
+  - an index with a leading zero (`{C 007 C}`) is "index form not recorded". R6 still checks its
+    value;
+  - a key whose value is on another line is "key and value on separate lines (not recorded)". The
+    verifier had found `Calc_Hess` with `true` on the next line SUBMITTED.
+- **Tests (after round 1 and the two layouts):**
+  - `cargo test --workspace`: `orcastudio_lib` 1075 → 1134 → 1145 → **1148** passed (29 ignored).
+    `orcastudio-core` is unchanged (24 + 6 + 1 + 2 doc; 1 ignored).
+  - `npx vitest run`: 1353 → 1372 → **1373** passed (2 skipped), with
+    `src/scene/charge-mult-parity.test.ts` adding 20. The new malformed case is a second `#` before
+    the header.
+  - `npx tsc --noEmit` is clean. `cargo clippy` is not installed on this toolchain and was not run.
+- **Negative controls** (45, all RED, each restored byte-identically, sha256-checked). The 34 below
+  are from Part A, then 9 from round 1 and 2 for the layouts. The 2: leading zeros allowed; a key and
+  value on separate lines allowed. The 9 from round 1:
+  - the silent index drop restored;
+  - a `{C n C}` entry that admits any digit run;
+  - one-`#` stripping in each of the lexer, the locator and the post-condition (three controls);
+  - a label that keeps `#`;
+  - the non-ASCII `!` check removed;
+  - a Unicode case fold;
+  - the empty-signature P5 removed.
+
+  The 34 from Part A:
+  - **one or more per row:**
+    - R1 (and C12's text after `end`); R2 (`*` line, `%coords`); R3 (`! PAL16`, `%pal`);
+    - R4 (non-converged, and an unknown terminal state failing closed); R5;
+    - R6 (an off-by-one `>`); R7 (removed, and C4 widened to `NormalOpt`); R8 (boundary `>`);
+      R9 (`NEB-TS`);
+    - P1 (`smiles:`); P2 (the row, `%irc`, a valueless `{B 3 17 C}`, `Scan`);
+    - P3 (a scan frame, and the same-signature condition); P4 (`Unknown` failing closed);
+    - P5 (the wB97X-3c + def2-QZVP level, expired, the `max_jobs` boundary);
+  - **the post-condition dropped** → the reordered block passes → red;
+  - **C2:** one `NON_METHOD` token dropped;
+  - **C1:** Rust lenient on an extra token; Rust case-sensitive `XYZ`; TS charge ignored (the vitest
+    goes red);
+  - **C3:** the `%cpcm` text dropped;
+  - **C7:** a quoted `"end"` unquoted; a `# end` read as code; a first-`end` scanner.
+- **ADR-027 anchors** re-pointed in the decision section: `NewJobScreen.tsx:1394–1400`, `:1397`,
+  `:1402–1406`, and `commands/memory.rs:85`. The context section keeps its `4f0062a` anchors. A blank line was restored before the ADR-027 decision entry.
+- **Open:**
+  - **M1b** — the resolver, the memory verdict, schema v24 and the grants;
+  - M1b decides what `terminal_success`/`converged` a scan frame, NEB image and GOAT member carry;
+  - P4's message names the server even for a `Local` target with unknown memory;
+  - R6 does not range-check `Scan` atom indices (a Scan is P2 anyway);
+  - the header's length is not bounded here (M3 bounds tool arguments);
+  - for Anton: `MaxIter` has no upper cap; unbraced constraint entries and `Scan` atom indices are
+    P2 without an R6 range check;
+  - a prober run to record how ORCA 6.1.1 reads a second `#` (the manual says it closes the
+    comment). Until then, a line with two `#` is refused.

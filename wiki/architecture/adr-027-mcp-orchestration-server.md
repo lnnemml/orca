@@ -248,9 +248,9 @@ path refuses where the human path warns):
   `converged == Some(false)` (`results.rs:252`).
 - **R5** — the source's charge and multiplicity are parity-impossible.
 - **R6** — a constraint atom index is out of range for the source. This mirrors
-  `NewJobScreen.tsx:1372–1376`, where a draft "would be an un-runnable landmine".
+  `NewJobScreen.tsx:1394–1400`, where a draft "would be an un-runnable landmine".
 - **R7** — a `%geom Scan` without an Opt-family token. This mirrors `scan.ts:367` and
-  `NewJobScreen.tsx:1380`.
+  `NewJobScreen.tsx:1402–1406`.
 - **R8** — 50 open MCP proposals already exist, so Jobs cannot fill with unrun drafts.
 - **R9** — a NEB-family token (`NEB`, `NEB-TS`, `NEB-CI`). A NEB needs two endpoints, and
   `create_job` takes one geometry source. Anton runs a NEB from the app's builder (N2). This is a
@@ -262,7 +262,7 @@ path refuses where the human path warns):
   click** (decided by Anton). The draft shows the charge and multiplicity with their source. For a
   SMILES source it adds that the sidecar always gives multiplicity 1. Anton reads them and either
   runs the draft or leaves it. No draft-edit path exists: a job's input is fixed at creation
-  (`NewJobScreen.tsx:1375`). A different charge or spin means Anton builds that job himself in New
+  (`NewJobScreen.tsx:1397`). A different charge or spin means Anton builds that job himself in New
   Job. Every later job chained from a job Anton ran inherits its charge and multiplicity.
 - **P2** — a block outside the allowlist, or a key outside its block's allowlist (decision 6). That
   covers every model-chosen geometric number, such as a `Scan` or a constraint value, and every file
@@ -322,7 +322,7 @@ The response reports it as "set by the app", and the stored input shows it.
 
 `%maxcore` and the memory verdict for P4 are computed **before step A**, outside any lock. The reason
 is that `memory_estimate_with` and `local_fitted_maxcore_with` lock `DbState` themselves
-(`commands/memory.rs:84`, `:121`). The classifier receives the verdict. M1b owns this.
+(`commands/memory.rs:85`, `:121`). The classifier receives the verdict. M1b owns this.
 
 **How the input is assembled:**
 1. The model's header.

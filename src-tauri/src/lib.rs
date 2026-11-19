@@ -16,6 +16,10 @@ mod execution_backend;
 mod in_flight;
 mod local_backend;
 mod manual;
+// The pure core of ADR-027 M1a (the MCP job classifier and input assembly); wired in M1b/M3.
+// Scoped allow until then, so the build stays warning-clean without a faked caller.
+#[allow(dead_code)]
+mod mcp;
 // The memory and disk preflight (ADR-024 o26, unit 5.5): the pure estimator and host-fact parsers.
 mod memory;
 mod models;
