@@ -83,7 +83,19 @@ that an in-progress New Job draft is discarded on a tab switch (accepted).
   offers **Open** and **Delete** like any finished row. Delete → `confirm`
   (`@tauri-apps/plugin-dialog`, `{ title: "Delete job", kind: "warning" }`, message states it
   permanently removes the job **and its files**) → `invoke("delete_job", { id })` → reload; errors
-  route to the existing `setError` banner. Both action buttons `stopPropagation` so the row-click
+  route to the existing `setError` banner. **Delete selected (N)…** (`.btn-danger`) sits next to **Export selected**
+  in the selection toolbar and acts on the **whole** selection `Set` — including selected jobs the
+  search/status/group filter hides. A click closes the export chooser, plans with `planBulkDelete`
+  over the same `remoteHeld` records the rows use (so the skip decision equals the visible Delete
+  buttons) and hands the plan to `bulkDeleteFlow` (`src/jobs/bulk-delete.ts`, below): **one**
+  `confirm` (title "Delete selected jobs"), then the existing `delete_job` once per job,
+  sequentially, then the list reload, then **one summary** in the plugin's `message` dialog ("Delete
+  selected"; `warning` if any job failed, else `info`); the summary never goes to `setError`, but the
+  reload is the screen's `load`, which catches its own error into `setError` and never throws — so a
+  failed reload shows in the error banner, and the summary still appears. With nothing deletable
+  there is no confirm, only a message. A ref guard makes a second click during a run a no-op and the
+  button reads "Deleting…" (disabled). Deleted ids leave the selection; skipped and failed ones stay
+  (`selectionAfterBulkDelete`). Both action buttons `stopPropagation` so the row-click
   (→ detail) doesn't also fire (the ReactionsScreen confirm pattern). Energy/Time via the shared
   formatters (`formatEnergy`, `formatWallTime`). Takes `queuePaused` from `App`: a `queued` job's badge reads **`queued (paused)`** with
   a "Queue is paused" tooltip while paused, so a stalled job shows why. **Phase 4.7.3 — group
@@ -930,6 +942,58 @@ literal and for any call with `"undo_cancel"` as its first argument (an aliased 
 checks that each screen's `clickCancelFamily` call has exactly the keys `id` and
 `sending`; and that the detail screen imports no `confirm` at all (the Jobs screen's is the delete's). `src/jobs/CancelButtons.tsx` draws the family (used by the Jobs
 row, the panel, and the header of a local job).
+
+### Bulk delete (`src/jobs/bulk-delete.ts`)
+
+The pure logic behind **Delete selected (N)…** on the Jobs screen; a wrapper over the existing
+`delete_job`, no new command and no new semantics (so no ADR).
+- `planBulkDelete(selected, jobs, visibleIds, recordOf)` → `{ deletable, skipped, skippedNoCancel,
+  skippedCancelUnderway, missing, hiddenDeletable }`, in `jobs` order. It calls `rowActions(job, record)` once per selected
+  job; a job is **deletable iff those actions offer `delete`** — the predicate that draws the row's
+  Delete button, reused rather than a second status list (a spy test pins the call and that its
+  answer is obeyed): drafts and terminal rows (completed/parsed/failed/cancelled/lost, also with
+  corrupt coordinates) qualify; local `queued`/`running`, remote `queued`/`running`/`cancelling` and a
+  live row with corrupt coordinates (`[]`) are `skipped` and never sent. `skipped` is the superset; it is split,
+  again from the `rowActions` answer and never a status list, into three kinds of live row: the row
+  offers a first **`cancel`** (the rest of `skipped`: local `queued`/`running`, a remote live row with
+  no cancel pending) — "cancel them first"; it offers only **Retry / Undo cancel**
+  (`skippedCancelUnderway`: `cancelling`, or a pending cancel) — a cancel is already under way, so
+  "wait for it to finish"; it offers **nothing** (`skippedNoCancel`: corrupt coordinates, or a sent
+  cancel whose re-sends run) — "see the job". "Cancel them first" is wrong advice for the last two,
+  so each is worded apart. `missing` = selected ids no longer among the jobs; `hiddenDeletable` = deletable jobs
+  outside `visibleIds`.
+- `runBulkDelete(jobs, del)` awaits `del(id)` **one job at a time**, catches per job
+  (`String(e)`) and goes on; it never throws and never stops early. A job that turned live between
+  the plan and the call is refused by Rust's `delete_job` (its in-flight / live guards stay the
+  final authority) and appears in `failed` with Rust's message.
+- `bulkDeleteConfirmText(plan)` is `null` when nothing is deletable (then `bulkDeleteNothingText`
+  says "None of the selected jobs can be deleted." plus the skip lines, or that the jobs no longer
+  exist). Otherwise: the count "and their local files … cannot be undone", then — each only when
+  non-zero — "N of them are hidden by the current filter", "N jobs are still live and will be skipped —
+  cancel them first", "N jobs have a cancel already under way and will be skipped — wait for it to
+  finish", "N jobs are live with no cancel available and will be skipped — see the jobs" (full
+  sentences; verb and object agree with the count: "1 job is … cancel it first", "1 job has …").
+- `bulkDeleteSummary(plan, result)` is `Deleted N; skipped M (still live — cancel them first);
+  skipped U (cancel already under way — wait for it to finish); skipped K (live, no cancel available
+  — see the job); failed F` (zero clauses omitted; "N already
+  gone" for `missing`) followed by one `title: error` line per failure.
+- `selectionAfterBulkDelete(selected, plan, result)` returns a new `Set` without the deleted and
+  `missing` ids; skipped and failed ids stay selected.
+- `bulkDeleteFlow(plan, deps)` is the click's sequence with the screen's effects injected
+  (`ask`, `notify`, `del`, `reload`, `setSelection`; `ask` not `confirm`, because a source pin keeps
+  the literal `confirm:` out of the screens): nothing deletable → `notify`, no `ask`; declined →
+  nothing; confirmed → loop, selection update (functional), **reload, then the summary** (a failed
+  reload is appended to the summary, never hides it — but on the screen `reload` is `load`, which
+  never throws, so that line appears only if `reload` throws; a failed reload shows in the error
+  banner). The Jobs screen's source pin (`live-wiring.test.ts`) counts exactly two `confirm(` calls
+  there and checks their titles, one each: "Delete job" (the row's) and "Delete selected jobs".
+- Files on disk are whatever `delete_job` does: a local job's directory is removed, a server-side job
+  directory is left (as with the single Delete).
+
+Tests (`bulk-delete.test.ts`) pin each status's side of the predicate (corrupt coordinates
+included), the `rowActions` call and obedience, the three-way skipped split (cancellable / cancel under way / nothing offered) and its wording, the
+order, hidden/missing, the mid-list failure, the sequential start order, the selection rule and the
+flow's order (declined → nothing; summary after the reload). The screen's own JSX is not unit-tested.
 
 ## Queue control (status bar)
 

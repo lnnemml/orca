@@ -12,6 +12,7 @@ import { ROOT_OPTION } from "../groups/GroupSelect";
 import { InlineRename } from "../jobs/InlineRename";
 import { CancelButtons } from "../jobs/CancelButtons";
 import { clickCancelFamily, tauriBridge, trackRemoteStates, type RemoteStateTracker } from "../jobs/live-wiring";
+import { bulkDeleteFlow, planBulkDelete } from "../jobs/bulk-delete";
 import { bannerAfterClick, remoteView, rowActions, type CancelBusy, type CancelFamilyAction, type HeldRemoteState } from "../jobs/remote";
 import { RemoteJobBadges } from "../jobs/RemotePanel";
 import { STATUS_CHIPS } from "../jobs/status";
@@ -55,6 +56,10 @@ export function JobsScreen({
   const [selected, setSelected] = useState<Set<string>>(new Set());
   // Whether the Curated/Full chooser (mirroring GroupSidebar.runExport) is open.
   const [exportChoosing, setExportChoosing] = useState(false);
+  // A "Delete selected" run in flight. The ref is the synchronous guard (a second click in the same
+  // tick must do nothing); the state only draws the disabled "Deleting…" button.
+  const bulkDeleting = useRef(false);
+  const [bulkDeletingUi, setBulkDeletingUi] = useState(false);
 
   const toggleSelected = useCallback((id: string) => {
     setSelected((prev) => {
@@ -241,6 +246,36 @@ export function JobsScreen({
     }
   };
 
+  // "Delete selected": the WHOLE selection (hidden jobs included), planned with the same rowActions
+  // and the same remote records the rows' own buttons use; one confirm, then `delete_job` once per
+  // deletable job in sequence, then one summary (`bulkDeleteFlow`). Rust still refuses a row that
+  // turned live meanwhile — that comes back as a per-job failure in the summary.
+  const deleteSelected = async () => {
+    if (bulkDeleting.current) return;
+    bulkDeleting.current = true;
+    setBulkDeletingUi(true);
+    setExportChoosing(false);
+    try {
+      const plan = planBulkDelete(selected, jobs, new Set(visibleJobs.map((j) => j.id)), (id) => remoteHeld.get(id)?.state);
+      await bulkDeleteFlow(plan, {
+        ask: (text) => confirm(text, { title: "Delete selected jobs", kind: "warning" }),
+        notify: async (text, kind) => {
+          await message(text, { title: "Delete selected", kind });
+        },
+        del: async (id) => {
+          await invoke("delete_job", { id });
+        },
+        reload: load,
+        setSelection: (update) => setSelected((prev) => update(prev)),
+      });
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      bulkDeleting.current = false;
+      setBulkDeletingUi(false);
+    }
+  };
+
   const selectionLabel =
     selection.kind === "all"
       ? "All jobs"
@@ -291,6 +326,13 @@ export function JobsScreen({
                   <>
                     <button className="btn btn-sm" onClick={() => setExportChoosing(true)}>
                       Export selected ({selected.size})…
+                    </button>
+                    <button
+                      className="btn btn-sm btn-danger"
+                      disabled={bulkDeletingUi}
+                      onClick={deleteSelected}
+                    >
+                      {bulkDeletingUi ? "Deleting…" : `Delete selected (${selected.size})…`}
                     </button>
                     <button className="btn btn-sm" onClick={clearSelection}>
                       Clear selection

@@ -988,13 +988,26 @@ describe("every Cancel goes through the shared helpers (o22.14.10, o22.14.14.1; 
       expect(call, screen).not.toMatch(/\b(confirm|bridge|record|current|offer)\b/);
     }
     // The detail screen has no dialog import for the cancel path (it uses `message` for export only);
-    // the Jobs screen's `confirm` is the delete's — every use is a call, none is passed along.
+    // the Jobs screen's `confirm` is the delete's (the row's Delete and "Delete selected") — every use
+    // is a call, none is passed along; a third call would be a new dialog to account for.
     const detail = read("src/screens/JobDetailScreen.tsx");
     expect(detail.match(/import \{[^}]*\} from "@tauri-apps\/plugin-dialog"/)?.[0]).not.toMatch(/\bconfirm\b/);
     expect(detail).not.toMatch(/\bconfirm\b/);
     const jobs = read("src/screens/JobsScreen.tsx").replace(/import \{[^}]*\} from "@tauri-apps\/plugin-dialog";/, "");
     expect([...jobs.matchAll(/\bconfirm\b(?!\()/g)]).toEqual([]);
-    expect(jobs.match(/\bconfirm\(/g)).toHaveLength(1);
+    expect(jobs.match(/\bconfirm\(/g)).toHaveLength(2);
+    // …and WHICH two: each call's own text up to its closing paren carries its dialog title, one each —
+    // a changed title, or a second call moved in and another out, is a different dialog (L4).
+    const titles = [...jobs.matchAll(/\bconfirm\(/g)].map((m) => {
+      let depth = 0;
+      let end = m.index! + m[0].length - 1;
+      for (; end < jobs.length; end++) {
+        if (jobs[end] === "(") depth++;
+        else if (jobs[end] === ")" && --depth === 0) break;
+      }
+      return jobs.slice(m.index!, end + 1).match(/\btitle:\s*"([^"]*)"/)?.[1] ?? null;
+    });
+    expect(titles.sort()).toEqual(["Delete job", "Delete selected jobs"]);
 
     // G2: the one-helper pin covers every non-test file of `src`, not a list: no other file names the
     // `cancel_job` command, or calls anything with `undo_cancel` as its first argument (an aliased

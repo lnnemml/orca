@@ -12024,3 +12024,50 @@ row only; the shared `.builder-row` rule and the other rows are unchanged. Needs
 - Wiki: `modules/frontend.md` (the preflight section, the builder default, the notices),
   `modules/execution-backends.md` and `modules/server-profiles.md` point to it; ADR-024 o26.14.10;
   ROADMAP 5.5 built, pending the live gate.
+
+## [2026-11-19] feat | Jobs: delete selected (bulk delete) — Part A
+- **Built (pure core, no UI yet):** `src/jobs/bulk-delete.ts` — `planBulkDelete` (deletable iff
+  `rowActions(job, record)` offers `delete`: reuses the row-button predicate, no second status list;
+  also `skipped`, `missing`, `hiddenDeletable`), `runBulkDelete` (sequential, per-job catch with
+  `String(e)`, never stops early), `bulkDeleteConfirmText` (null when nothing is deletable),
+  `bulkDeleteSummary`, `selectionAfterBulkDelete`. `JobsScreen.tsx` is untouched (Part B).
+- **Anton's decisions:** (1) scope = the whole selection `Set`, as "Export selected", hidden
+  (filtered-out) jobs included, the confirm says how many are hidden; (2) the frontend loops the
+  existing `delete_job` once per id, sequentially — no new Rust command, no new semantics, files on
+  disk are whatever `delete_job` does (a server-side job dir stays, as with the single Delete);
+  (3) one summary "Deleted N; skipped M (still live — cancel them first); failed K" with each
+  failure's title + error; deleted ids leave the selection, skipped and failed stay; (4) no ADR —
+  a UI wrapper over an existing command; Rust's `delete_job` (in-flight guard, `refuse_if_remote_live`,
+  local running/queued refusal) stays the final authority for a row that turns live after the plan.
+- **Tests:** `src/jobs/bulk-delete.test.ts`, 37 cases (vitest 1174 → 1211 passed, 2 skipped; tsc clean).
+  Negative controls, each shown red then restored byte-identical: predicate always true (8 red — the
+  live/corrupt skips, mixed split, hidden count), runner rethrows (2 red — mid-list failure,
+  sync throw), selection cleared (1 red), `Promise.all` (1 red — sequential start order).
+- **Next:** Part B — wire the button, one `confirm`, the loop and the summary into `JobsScreen`.
+
+## [2026-11-19] feat | Jobs: delete selected (bulk delete) — Part B
+- **Wired:** `JobsScreen.tsx` gets a `btn-danger` "Delete selected (N)…" next to "Export selected"
+  (disabled, "Deleting…", while a run is in flight; a ref guard makes a second click a no-op; the
+  export chooser closes). It plans over the whole selection with the rows' own `remoteHeld`
+  records, then `bulkDeleteFlow` (new, in `bulk-delete.ts`, effects injected so the sequence is
+  unit-tested without a DOM): one `confirm`, `delete_job` per job in sequence, selection update,
+  reload, then the summary in a `message` dialog (never `setError`). `remove` (single Delete) is unchanged.
+- **Verifier Part A findings folded in:** F1 — a `vi.mock` spy test pins that the plan asks
+  `rowActions` per selected job with that job's record and obeys its answer (a status-list predicate
+  now goes red); F2 — corrupt-coordinates tests (live statuses skipped, terminal deletable); F3 — a
+  live row that offers no cancel (corrupt coordinates, or a sent cancel whose re-sends run) is
+  `skippedNoCancel` and worded "live, no cancel available — see the job" instead of the false advice
+  "cancel them first".
+- **Source pin:** `live-wiring.test.ts` counted exactly one `confirm(` in the Jobs screen (the
+  delete's); it now counts two (the row's Delete and the bulk one). The flow's dep is named `ask`
+  because the same pin forbids the literal `confirm:` in the screens.
+- **Tests:** vitest 1211 → 1238 passed (2 skipped), tsc clean; `bulk-delete.test.ts` has 64 cases.
+  The screen's JSX and the real dialogs are not unit-testable: Anton's live check (button, confirm,
+  summary, hidden-by-filter count, a live job skipped).
+- **Part B verify fixes (L1, L2, L4):** a remote row whose cancel is already under way (`cancelling`,
+  a pending cancel) is no longer told "cancel them first": skipped rows now split three ways from
+  `rowActions` (offers `cancel` / only Retry-or-Undo cancel → "wait for it to finish" / nothing →
+  "see the job"; `skippedCancelUnderway` added); `frontend.md` states that on the screen a failed
+  reload goes to the `setError` banner via `load`; the `confirm(` source pin now also checks the two
+  titles, "Delete job" and "Delete selected jobs".
+- **Wording:** the three confirm skip lines are full sentences with is/are, has/have and it/them agreement ("1 job is still live and will be skipped — cancel it first."); the summary clauses are unchanged.
