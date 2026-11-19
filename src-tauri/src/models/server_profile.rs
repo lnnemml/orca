@@ -14,6 +14,10 @@
 //! whenever the target they certified changes or a re-test is not a full pass (ADR-024 n items
 //! 5–6). A run target additionally needs a core mask within the measured cores
 //! ([`is_run_target`]).
+//!
+//! The host facts (`mem_total_kib`, `disk_avail_bytes`, `host_facts_at`; schema v23, ADR-024 o26.6)
+//! are written by the same full-pass stamp and cleared with it, but they are **recorded, never
+//! gating**: each is `None` when its read failed, and none of them decides a run target.
 
 use std::sync::LazyLock;
 
@@ -59,6 +63,14 @@ pub struct ServerProfile {
     /// `HH:MM-HH:MM` in the laptop's local time, or `None` for no window (ADR-024 n item 3). An
     /// informational label only.
     pub availability_window: Option<String>,
+    /// `MemTotal` of the server's `/proc/meminfo` at the last full-pass connection test, in **KiB**
+    /// (the file's `kB`; schema v23, ADR-024 o26.6). Recorded, never gating; `None` when unread.
+    pub mem_total_kib: Option<u64>,
+    /// Free bytes on the root's filesystem at the last full-pass connection test
+    /// (`df --output=avail -B1 <root>`). Recorded, never gating; `None` when unread.
+    pub disk_avail_bytes: Option<u64>,
+    /// When the host facts were read (UTC, laptop clock); set when at least one of them was.
+    pub host_facts_at: Option<String>,
 }
 
 impl ServerProfile {
@@ -66,7 +78,7 @@ impl ServerProfile {
     /// here is the contract [`ServerProfile::from_row`] relies on.
     pub const COLUMNS: &'static str = "id, name, host, remote_orca_path, remote_scratch_dir, \
          core_mask, orca_version, openmpi_version, core_count, verified_at, created_at, \
-         slot_count, availability_window";
+         slot_count, availability_window, mem_total_kib, disk_avail_bytes, host_facts_at";
 
     /// Build a [`ServerProfile`] from a row selected in [`ServerProfile::COLUMNS`] order.
     pub fn from_row(row: &Row) -> rusqlite::Result<ServerProfile> {
@@ -84,6 +96,9 @@ impl ServerProfile {
             created_at: row.get(10)?,
             slot_count: row.get(11)?,
             availability_window: row.get(12)?,
+            mem_total_kib: row.get(13)?,
+            disk_avail_bytes: row.get(14)?,
+            host_facts_at: row.get(15)?,
         })
     }
 
@@ -364,6 +379,9 @@ mod tests {
             created_at: "2026-10-03 09:00:00".into(),
             slot_count: 1,
             availability_window: None,
+            mem_total_kib: None,
+            disk_avail_bytes: None,
+            host_facts_at: None,
         }
     }
 

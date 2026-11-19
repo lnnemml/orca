@@ -17,6 +17,12 @@
 //!   the one its name carries. Anything else is not a refusal: the install call replaces it by
 //!   rename.
 //!
+//! **The host facts** (ADR-024 o26.6): after the scripts the prepare reply carries `meminfo` (`head -5
+//! /proc/meminfo`) and `df` (`df --output=avail,target -B1 <root>`) — each a byte record or `-` when
+//! its read failed. They are **recorded, never gating**: a `-`, a payload in any other format, or
+//! the records' absence parse as `None` ([`PrepareFacts::host`]); only a broken frame is an error.
+//! [`check_prepare`] does not look at them, so `ready()` never depends on a df.
+//!
 //! **Install** answers `installed` or `kept` per script. Its result is not trusted on its word: the
 //! caller runs the prepare call again and requires [`Prepared::ready`] (the post-condition).
 
@@ -25,6 +31,7 @@ use super::poll::{check_echo, PollError};
 use super::scripts::{sha256_hex, CANCEL, COLLECT, WRAPPER};
 use super::submit::remote_job_dir;
 use super::wire::{Reader, WireError};
+use crate::memory::{meminfo_kib, parse_df_avail, SubmitHostFacts};
 
 /// The first line of every prepare reply; the number is the format version.
 pub const PREPARE_HEADER: &str = "orcastudio-prepare 1";
@@ -118,6 +125,8 @@ pub struct PrepareFacts {
     pub tsp: Option<PathFact>,
     /// In [`UPLOADED`] order: wrapper, cancel, collect.
     pub scripts: [Option<ScriptFact>; 3],
+    /// The host facts (o26.6): `None` each when unread, unparsable or not sent.
+    pub host: SubmitHostFacts,
 }
 
 const DIRECTORY: &str = "directory";
@@ -142,6 +151,7 @@ pub fn parse_prepare_reply(output: &[u8], sent: &PrepareArgs) -> Result<PrepareF
         bin: path_fact(&mut r, "bin")?,
         tsp: path_fact(&mut r, "tsp")?,
         scripts: [None, None, None],
+        host: SubmitHostFacts::default(),
     };
     for (i, (name, _)) in UPLOADED.iter().enumerate() {
         let Some(path) = path_fact(&mut r, name)? else { continue };
@@ -161,7 +171,20 @@ pub fn parse_prepare_reply(output: &[u8], sent: &PrepareArgs) -> Result<PrepareF
         }
         facts.scripts[i] = Some(ScriptFact { path, sha256 });
     }
-    if r.line()? != ("end", None) {
+    // The host facts: `meminfo`, then `df`, each optional; then `end`.
+    let mut line = r.line()?;
+    if line.0 == "meminfo" {
+        let text = host_fact(&mut r, line.1)?;
+        facts.host.mem_total_kib = text.as_deref().and_then(|t| meminfo_kib(t, "MemTotal").ok());
+        facts.host.mem_available_kib = text.as_deref().and_then(|t| meminfo_kib(t, "MemAvailable").ok());
+        line = r.line()?;
+    }
+    if line.0 == "df" {
+        let text = host_fact(&mut r, line.1)?;
+        facts.host.root_avail_bytes = text.as_deref().and_then(|t| parse_df_avail(t).ok()).map(|row| row.avail_bytes);
+        line = r.line()?;
+    }
+    if line != ("end", None) {
         return Err(r.malformed("expected end".into()).into());
     }
     if !r.at_end() {
@@ -178,6 +201,15 @@ pub fn parse_prepare_reply(output: &[u8], sent: &PrepareArgs) -> Result<PrepareF
         }
     }
     Ok(facts)
+}
+
+/// A host-fact record's payload as text: `None` for `-` or bytes that are not UTF-8 (unreadable is
+/// absent, never an error); a broken frame is an error.
+fn host_fact(r: &mut Reader<'_>, arg: Option<&str>) -> Result<Option<String>, PrepareError> {
+    if arg == Some("-") {
+        return Ok(None);
+    }
+    Ok(String::from_utf8(r.bytes_after(arg)?).ok())
 }
 
 /// `<name> absent`, or `<name> present` + `kind <len>` + `realpath <len>|-`.
@@ -509,6 +541,52 @@ pub(crate) mod tests {
             rec("error", "stat /x: Permission denied"),
         ] {
             assert!(parse_prepare_reply(&prepare_wire(&a, &body), &a).is_err(), "{body:?}");
+        }
+    }
+
+    /// `head -5 /proc/meminfo` on the laptop (2026-11-18; MemTotal recorded in memory.md) and uni's
+    /// root `df --output=avail,target -B1` (memory.md).
+    pub(crate) const MEMINFO: &str = "MemTotal:       15988408 kB\nMemFree:         2683044 kB\nMemAvailable:   10368556 kB\nBuffers:          492096 kB\nCached:          6968408 kB\n";
+    pub(crate) const DF: &str = "      Avail Mounted on\n78360924160 /home\n";
+
+    /// The host-fact records of a prepare reply: each a byte record, or `-`.
+    pub(crate) fn host_records(meminfo: Option<&str>, df: Option<&str>) -> String {
+        let record = |name: &str, text: Option<&str>| text.map_or(format!("{name} -\n"), |t| rec(name, t));
+        format!("{}{}", record("meminfo", meminfo), record("df", df))
+    }
+
+    /// o26.6: the host facts parse into KiB and bytes; a `-`, a payload in any other format, or the
+    /// records' absence are `None` — and none of it changes `ready()`. Only a broken frame (a wrong
+    /// length, the records out of order) is an error. NEGATIVE CONTROL: make `check_prepare` require
+    /// `root_avail_bytes` → the `-` rows go red.
+    #[test]
+    fn the_host_facts_parse_and_their_absence_is_never_an_error() {
+        let a = args();
+        let parsed = |records: &str| parse_prepare_reply(&prepare_wire(&a, &format!("{}{records}", ready_body(&a))), &a);
+        let full = parsed(&host_records(Some(MEMINFO), Some(DF))).unwrap();
+        assert_eq!(
+            full.host,
+            SubmitHostFacts { mem_total_kib: Some(15_988_408), mem_available_kib: Some(10_368_556), root_avail_bytes: Some(78_360_924_160) }
+        );
+        for (case, records, want) in [
+            ("none sent", String::new(), SubmitHostFacts::default()),
+            ("both -", host_records(None, None), SubmitHostFacts::default()),
+            ("df -", host_records(Some(MEMINFO), None), SubmitHostFacts { root_avail_bytes: None, ..full.host }),
+            ("meminfo -", host_records(None, Some(DF)), SubmitHostFacts { root_avail_bytes: Some(78_360_924_160), ..Default::default() }),
+            ("only meminfo", format!("{}", rec("meminfo", MEMINFO)), SubmitHostFacts { root_avail_bytes: None, ..full.host }),
+            ("garbage", host_records(Some("oops\n"), Some("df: cannot read table of mounted file systems\n")), SubmitHostFacts::default()),
+        ] {
+            let facts = parsed(&records).unwrap_or_else(|e| panic!("{case}: {e}"));
+            assert_eq!(facts.host, want, "{case}");
+            assert!(check_prepare(&facts, &a).unwrap().ready(), "{case}: the facts never touch ready()");
+        }
+        for (case, records) in [
+            ("a wrong length", format!("meminfo 3\n{MEMINFO}\n")),
+            ("df before meminfo", format!("{}{}", rec("df", DF), rec("meminfo", MEMINFO))),
+            ("a fact twice", format!("{}{}", rec("df", DF), rec("df", DF))),
+            ("an unknown fact", rec("swap", "0\n")),
+        ] {
+            assert!(parsed(&records).is_err(), "{case}");
         }
     }
 

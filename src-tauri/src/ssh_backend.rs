@@ -58,10 +58,11 @@ use rusqlite::params;
 use serde::Serialize;
 
 use crate::commands::jobs::get_job_conn;
-use crate::commands::server_profiles::{clear_verified, get_profile_conn};
+use crate::commands::server_profiles::{clear_verified, get_profile_conn, live_remote_jobs};
 use crate::commands::settings::DbState;
 use crate::error::AppError;
 use crate::local_backend::{align_pal_nprocs, job_dir_files, prepare_job_dir_with, read_aux_files, read_pal_nprocs};
+use crate::memory::{estimate, submit_memory_notice, RankRule, SubmitHostFacts};
 use crate::models::job::{Job, JobStatus};
 use crate::models::server_profile::{distinct_cpus, is_run_target, parse_core_mask, validate_host, ServerProfile};
 use crate::remote::classify::{classify, Classification, Outcome};
@@ -88,7 +89,8 @@ use crate::remote::wire::parse_snapshot;
 
 /// The bound on each small call (prepare, install, label, mkjob), connect included. Derived from the
 /// scripts' own bounds with margin: ssh's 10 s connect plus, at worst, the install's six
-/// `sha256sum`s at `timeout -k 1 5` (36 s) = 46 s; prepare's three = 28 s; label's `tsp -l` 4 s.
+/// `sha256sum`s at `timeout -k 1 5` (36 s) = 46 s; prepare's three `sha256sum`s (18 s) and its two
+/// host-fact reads at `timeout -k 1 3` (8 s, o26.6) = 36 s; label's `tsp -l` 4 s.
 pub const CALL_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// The bound on the submit call (o item 3.3.1): above the server's 20 s lock wait plus the 37 s
@@ -221,12 +223,14 @@ fn call<T, E: std::fmt::Display>(
     Ok(parsed)
 }
 
-/// The read-only prepare call and Rust's decision over its facts.
-fn prepare_call(runner: &dyn CommandRunner, host: &str, sent: &PrepareArgs) -> Result<Prepared, String> {
+/// The read-only prepare call and Rust's decision over its facts, with the host facts it read
+/// (o26.6) — which the decision never looks at.
+fn prepare_call(runner: &dyn CommandRunner, host: &str, sent: &PrepareArgs) -> Result<(Prepared, SubmitHostFacts), String> {
     let facts = call(runner, host, "prepare", PREPARE, &sent.values(), CALL_TIMEOUT, |out| {
         parse_prepare_reply(out, sent)
     })?;
-    check_prepare(&facts, sent).map_err(|refusal| format!("prepare: refused: {refusal}"))
+    let prepared = check_prepare(&facts, sent).map_err(|refusal| format!("prepare: refused: {refusal}"))?;
+    Ok((prepared, facts.host))
 }
 
 /// The install call: `bin/`, `tsp/` and the wrapper. Its answer is not the post-condition.
@@ -360,6 +364,9 @@ pub struct SubmitAttempt {
     /// on the wire (`SubmitResponse` carries `outcome` and `pal`).
     #[serde(skip)]
     pub made_pending: bool,
+    /// The submit-time memory and disk check (ADR-024 o26.6, o26.13.2): `None` when everything
+    /// fits or the attempt never reached the server's facts. Separate from `pal.notice()`.
+    pub memory_notice: Option<String>,
 }
 
 /// Everything steps 3–6 need, fixed by the persist step (or read back for a retry or a re-check).
@@ -491,11 +498,35 @@ fn submit_args(
 /// pending flag of [`PendingWrite::after_user_attempt`]; the stamp only for `RefusedKup`). The
 /// outcome is returned whatever the write found: it says what the server did; `made_pending` says
 /// whether the write took the flag (rule #9: a 0-row write made nothing pending).
+///
+/// **The memory and disk check** (ADR-024 o26.6, o26.13.2) rides here, on the submits the user
+/// started only (the poller's pending re-check and re-enqueue have their own paths): the estimate of
+/// the job's input on the plan's mask ([`memory_inputs`], read before any ssh) against the facts of
+/// the ready step's last prepare, as a `memory_notice` beside the `%pal` notice. **Never a refusal**:
+/// it is computed after the attempt and changes nothing the attempt did.
 fn upload_and_submit(db: &DbState, runner: &dyn CommandRunner, sink: &dyn PollerSink, plan: &SubmitPlan) -> Result<SubmitAttempt, AppError> {
-    let outcome = run_submit_steps(runner, plan);
+    let memory = memory_inputs(db, plan);
+    let (outcome, facts) = run_submit_steps(runner, plan);
     let pending = PendingWrite::after_user_attempt(&outcome);
     let written = record_attempt(db, sink, plan, &outcome, pending)?;
-    Ok(SubmitAttempt { outcome, pal: plan.pal, made_pending: written && pending == PendingWrite::Set })
+    let memory_notice = facts.and_then(|facts| match &memory {
+        Ok((estimate, other_live)) => submit_memory_notice(estimate, &facts, *other_live),
+        Err(why) => Some(format!("[OrcaStudio] memory not checked: {why}.")),
+    });
+    Ok(SubmitAttempt { outcome, pal: plan.pal, made_pending: written && pending == PendingWrite::Set, memory_notice })
+}
+
+/// What the submit-time memory check needs from the database, read in one short lock before any
+/// ssh: the estimate of the job's input (`jobs.input_content`, the user's original) on the plan's
+/// core mask — the same [`estimate`] the New Job screen calls — and how many **other** live remote
+/// jobs of ours the profile has (o26.13.2). An `Err` is a database failure, reported in the notice,
+/// never a refusal.
+fn memory_inputs(db: &DbState, plan: &SubmitPlan) -> Result<(Result<crate::memory::Estimate, String>, usize), String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    let job = get_job_conn(&conn, &plan.job_id).map_err(|e| e.to_string())?;
+    let others = live_remote_jobs(&conn, &plan.profile_id).map_err(|e| e.to_string())?;
+    let others = others.iter().filter(|id| **id != plan.job_id).count();
+    Ok((estimate(&job.input_content, RankRule::Remote { core_mask: &plan.args.core_mask }), others))
 }
 
 /// Whether a submit the user started becomes **pending** (ADR-024 o23.1): only when the slot check
@@ -546,7 +577,7 @@ impl PendingWrite {
 /// so a stopped job causes no server write on any period.
 pub(crate) fn check_ready(runner: &dyn CommandRunner, host: &str, root: &str, job_dir: &str) -> Result<(), String> {
     let sent = PrepareArgs::new(root, job_dir).map_err(|e| e.to_string())?;
-    let prepared = prepare_call(runner, host, &sent)?;
+    let (prepared, _) = prepare_call(runner, host, &sent)?;
     if prepared.ready() {
         return Ok(());
     }
@@ -560,16 +591,19 @@ pub(crate) fn check_ready(runner: &dyn CommandRunner, host: &str, root: &str, jo
 
 /// Steps 3–4, shared by submit, retry, a cancel's delivery and a sweep (o22.4.2, o22.13.3): the read-only prepare call; when `bin/`,
 /// `tsp/` or any uploaded script is missing, the install call and then the prepare call again —
-/// every script must now hash right (the post-condition, rule #9). Which step failed, and why.
-pub(crate) fn ready_server(runner: &dyn CommandRunner, host: &str, root: &str, job_dir: &str) -> Result<(), (SubmitStep, String)> {
+/// every script must now hash right (the post-condition, rule #9). Which step failed, and why. On
+/// success, the host facts of its **last** prepare call (o26.6) — each `None` when unread; only the
+/// submit the user started reads them, every other caller ignores them.
+pub(crate) fn ready_server(runner: &dyn CommandRunner, host: &str, root: &str, job_dir: &str) -> Result<SubmitHostFacts, (SubmitStep, String)> {
     let sent = PrepareArgs::new(root, job_dir).map_err(|e| (SubmitStep::Prepare, e.to_string()))?;
-    if prepare_call(runner, host, &sent).map_err(|r| (SubmitStep::Prepare, r))?.ready() {
-        return Ok(());
+    let (first, facts) = prepare_call(runner, host, &sent).map_err(|r| (SubmitStep::Prepare, r))?;
+    if first.ready() {
+        return Ok(facts);
     }
     install_call(runner, host, root).map_err(|r| (SubmitStep::Install, r))?;
     match prepare_call(runner, host, &sent) {
-        Ok(after) if after.ready() => Ok(()),
-        Ok(after) => Err((
+        Ok((after, facts)) if after.ready() => Ok(facts),
+        Ok((after, _)) => Err((
             SubmitStep::Install,
             format!(
                 "after the install the server is not ready: not hashing right {:?}, bin/ {}, tsp/ {}",
@@ -587,22 +621,24 @@ pub(crate) fn not_claimed(step: SubmitStep, reason: String) -> SubmitOutcome {
     SubmitOutcome::NotClaimed { step, refusal: Refusal::Other(reason) }
 }
 
-/// Steps 3–6 over ssh; no database access. The first failing step ends the attempt.
-fn run_submit_steps(runner: &dyn CommandRunner, plan: &SubmitPlan) -> SubmitOutcome {
+/// Steps 3–6 over ssh; no database access. The first failing step ends the attempt. With the
+/// outcome, the host facts of the ready step (o26.6) — `None` when it did not get that far.
+fn run_submit_steps(runner: &dyn CommandRunner, plan: &SubmitPlan) -> (SubmitOutcome, Option<SubmitHostFacts>) {
     let host = plan.coords.host.as_str();
 
     // 3–4. Prepare; install what is missing; prepare again (o 3.2, 13.1, 14.1).
-    if let Err((step, reason)) = ready_server(runner, host, &plan.root, &plan.coords.job_dir) {
-        return not_claimed(step, reason);
-    }
+    let facts = match ready_server(runner, host, &plan.root, &plan.coords.job_dir) {
+        Ok(facts) => facts,
+        Err((step, reason)) => return (not_claimed(step, reason), None),
+    };
 
     // 5. The upload.
     if let Err(reason) = upload(runner, plan) {
-        return not_claimed(SubmitStep::Upload, reason);
+        return (not_claimed(SubmitStep::Upload, reason), Some(facts));
     }
 
     // 6. The one atomic submit call (o 3.3).
-    submit_call(runner, plan)
+    (submit_call(runner, plan), Some(facts))
 }
 
 /// Step 6, the one atomic submit call (o 3.3), and what it said: the typed refusals of o23.7 as

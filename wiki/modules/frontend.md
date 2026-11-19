@@ -57,6 +57,9 @@ that an in-progress New Job draft is discarded on a tab switch (accepted).
   Accepts `initialMolecule?` (inject its xyz + charge/mult, seed the title), `initialJob?` (iterate
   — see below), and `keepScene?` (skip the mount reset, used when applying a conformer). Picking a
   template or hitting **Generate Input** collapses the accordion (`setOpenSection(null)`).
+  The **memory and disk warning row** sits under the create bar (see "Memory and disk preflight"
+  below); it never disables Create or Create & Run (`createAllowed` lists the reply and never reads
+  it).
 - **`JobsScreen`** — `list_jobs` on mount into a `.jobs-table`: Title / Status badge / Energy (Eh) /
   Time / Created (in the laptop's time, `formatLaptopUtc`), a Refresh button, empty + loading states.
   Rows are clickable (→ detail); the
@@ -114,7 +117,9 @@ that an in-progress New Job draft is discarded on a tab switch (accepted).
   auto-scroll); `job:log-reset` drops the held lines and convergence points; `job:status` updates the
   badge and reloads the full record (a terminal state brings `error_message`/`completed_at`; a
   remote check changes only `error_message`). A remote submit's `SubmitResponse` shows its
-  `failure` in the error banner and its `%pal` `notice` in an ok banner. **Remote part:** the view
+  `failure` in the error banner, its `%pal` `notice` in an ok banner and, **beside it**, its
+  `memory_notice` (ADR-024 o26.6) in a warn banner — `submitNotices` splits the answer and
+  `SubmitNoticeBanners` draws the two, so neither overwrites the other; the same on **Retry submit**. **Remote part:** the view
   holds the job's remote record via `trackRemoteStates` (the `job:remote-state` listener first, then
   `remote_job_state`, merged by `seq`) and renders `RemotePanel` from `remoteView(job, record)`:
   the badges, the row's `error_message` as the text (prefixed "From the last check:" while the record
@@ -231,7 +236,9 @@ Dropdowns → a valid `.inp`, still hand-editable in Monaco (`form → text` one
     (a required key). `parseNprocsText(raw)` turns the form's raw text into `{kind:"auto"}` (trimmed
     blank), `{kind:"explicit", nprocs}` (ASCII digits, a safe integer > 0) or `{kind:"invalid"}`
     (0, a sign, a decimal point, an exponent, other text). The derived producers (OptTS, GOAT/IRC
-    re-opt, CREST re-opt) spread the defaults, so they are auto and never inherit a source's `%pal`.
+    re-opt, CREST re-opt) spread the defaults, so they are auto and never inherit a source's `%pal`;
+    their `%maxcore` is **not** the default's 2000 but the fan-out accessor's local value
+    (`localMaxcore()`, ADR-024 o26.13.4 — see "Memory and disk preflight").
 - **`InputBuilderForm.tsx`** — collapsible, **Scene-driven**: it derives a (single-fragment) Scene
   from the current buffer via `sceneFromOrcaInput`. With a Scene present, **Charge is read-only**
   (`totalCharge(scene)`, a "Σ of N fragments" caption), **Multiplicity stays editable** (written into
@@ -245,7 +252,12 @@ Dropdowns → a valid `.inp`, still hand-editable in Monaco (`form → text` one
   `role="alert"` line (the parity warning stays `role="status"` and never blocks) and **disables both
   Generate controls** — "Generate Input" and, for `NEB-TS`, `NebBuilderSection`'s "Generate NEB input"
   (its `canGenerate` takes the form's `nprocsValid` prop); `generate` also refuses while invalid. An
-  invalid value is never emitted and never becomes auto. The method-family selector + per-family controls are the reusable
+  invalid value is never emitted and never becomes auto. The **`%maxcore` field's default** follows
+  the New Job screen's Run On target (prop `runTarget`, ADR-024 o26.5, o26.13.1):
+  `builderMaxcoreDefault` — this machine → the fan-out accessor's local fitted value
+  (`useLocalMaxcore()`, 2000 until it loads), a server → 2000 — and only **while the user has not
+  touched the field** (`maxcoreTouched`); a typed value is never overridden, by a target change or a
+  late cache load. NEB-TS builds from the same form state, so it takes the field's value. The method-family selector + per-family controls are the reusable
   **`<MethodPicker>`** (the form consumes it via a `leading` slot for Job type — a no-behaviour-change
   extraction pinned byte-for-byte by `InputBuilderForm.test.tsx`); the same control gains an "Inherit
   from source" default at the OptTS-refine sites. See [method-picker.md](method-picker.md).
@@ -733,6 +745,47 @@ hover — it is gone, not kept alongside).** Three reasons, in order of weight:
 - **Kept from the hover unit:** the pure lookup (`hoverContext`, `resolveHover`, `enclosingBlock`,
   `isArgumentToken`) — only the trigger and input normalization changed, not the logic — and the
   `manual-open.ts` channel (Monaco-decoupled, survived the trigger change unedited; was `orca-hover.ts`).
+
+## Memory and disk preflight (`src/memory/`) — ADR-024 o26
+
+The view of Rust's one estimator (`commands/memory.rs`; the shapes in
+[execution-backends.md](execution-backends.md#the-memory-and-disk-preflight-adr-024-o26)). Every
+number is Rust's; the view only words it. **Warn, never block.**
+
+- **`useMemoryEstimate(input, target)`** (`MemoryPreflightRow.tsx`) calls `memory_estimate({ seq,
+  input, target })` 400 ms after each buffer edit or Run On change; every request takes the next
+  sequence number and a reply is applied only when `isLatestReply` (its `seq` is the latest,
+  o26.13.6), so a slow older answer never overwrites a newer one. An empty buffer asks nothing; a
+  failed call is shown as "Memory check unavailable: …".
+- **`MemoryPreflightRow`** — a `role="status"` row (`.memory-preflight`) under New Job's create bar,
+  non-blocking like the parity warning. `verdictLines(reply, serverName)` (`preflight.ts`, pure)
+  gives **one line** for this machine ("This machine (Create and Create & Run)") or, with a server
+  selected, **two** (o26.13.1): "Create (runs locally)" — a Create Job draft only ever runs here — and
+  "Create & Run on <server>". Each line: U with how it was made ("estimate ≈ 98.5 GiB (24 ranks ×
+  (%maxcore 4096 + 100) + 140 MiB, ORCA's default %maxcore; from the cap, not an upper bound)"), the
+  target's RAM and its 0.9 × line, for a server "measured at the last connection test, <date>", the
+  free disk (and "below 10.0 GiB" when it warns), and, when the RAM warns and P exists, the button
+  **"Set %maxcore to P"** → `apply_maxcore({ input, maxcoreMib })` → the returned text **replaces**
+  the editor buffer (Rust's locator; never an append). Unknown RAM → Rust's "server memory unknown —
+  re-run the connection test" and **no U** (o26.14.3); no estimate → its reason ("cannot read the
+  input's memory setting: …"); `too_small_for_ranks` → "this target is too small for n ranks at any
+  useful %maxcore", no button. The row **hides** when nothing warns and every fact is known.
+- **The fan-out accessor** (`local-maxcore.ts`, o26.13.4) — a module cache of
+  `local_fitted_maxcore().default_maxcore_mib`, loaded at app start (`App.tsx`) and re-read when
+  Settings saves the CPU preset; **2000 before it loads** or after a failed load (no regression).
+  Read synchronously by `localMaxcore()` in every derived local fan-out — `scene/reopt.ts` (GOAT/IRC
+  re-opt and, through it, the connectivity children), `scene/optts.ts` (both paths; the scan and NEB
+  refines call it), `crest/reopt.ts` — so the builders stay synchronous; `useLocalMaxcore()`
+  (`useSyncExternalStore`) gives it to the New Job form. The fan-outs get the fitted value but no
+  warning of their own (o26.8).
+- **Settings → Servers** shows a verified profile's stored facts after its versions
+  (`hostFactsSuffix`: " · RAM 62.7 GiB · 73.0 GiB free (measured <date>)"; a NULL fact is "unknown —
+  re-run the connection test").
+- **Tests** (`src/memory/*.test.ts(x)`, `InputBuilderForm.maxcore.test.tsx`), each gate with a
+  control (scratchpad `run_55_ts_controls.sh`): NULL facts → "unknown", no U (pure and DOM); Create
+  never disabled; two lines with a server, one without; an older reply not applied; the button
+  replaces the buffer; the builder default (Local's value, 2000 for a server, a touched field kept);
+  every fan-out emits the accessor's value; both submit notices shown.
 
 ## Remote job view logic (`src/jobs/remote.ts`) — ADR-024 o19
 

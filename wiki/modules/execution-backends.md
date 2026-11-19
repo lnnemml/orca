@@ -177,6 +177,87 @@ end-to-end `real_orca_water_single_point_completes` that runs a real water singl
 - Verified against real ORCA (headless): benzene B3LYP/def2-SVP `%pal nprocs 4` via the exact
   rule-8 command line — all 5 ORCA processes pinned to cores 8–15, sharing one PGID.
 
+## The memory and disk preflight (ADR-024 o26)
+
+A **warning, never a block** (Anton): before Create on the New Job screen, and again when a remote
+submit the user started reaches the server. The facts behind it are in
+[orca/memory.md](../orca/memory.md) (ORCA 6.1.1, measured). The pure core is `src-tauri/src/memory.rs`;
+the commands are `commands/memory.rs`. The view (the warning row, the button, the local default in
+the builder and the fan-outs) is [frontend.md](frontend.md#memory-and-disk-preflight-srcmemory--adr-024-o26).
+
+**One estimator** (`memory::estimate(input, RankRule)`, o26.1–26.2), used by the New Job command and
+by the submit-time check alike: **U = n × (m + 100) + 140 MiB** — an estimate **from the cap**, not an
+upper bound (real use is usually far lower; a cap that binds is exceeded, memory.md).
+- **m** = `read_maxcore(input)`: a case-insensitive `%maxcore N` simple directive (no `end`), found
+  after stripping `#…` comments by the app's existing rule (`src/editor/enclosing-block.ts`); absent →
+  ORCA's default **4096** (6.1.x; other versions unmeasured — an over-estimate at worst). Two
+  `%maxcore` lines, or one that is not exactly `%maxcore <positive integer>`, is "cannot read the
+  input's memory setting": no estimate, never a guess.
+- **n** (`memory::ranks`): **local** = `resolve_cpu_config`'s count (the preset's ranks or Custom's
+  `cpu_nprocs`) — the input's own `%pal` is ignored, because `align_pal_nprocs` rewrites it both ways;
+  **remote** = the submit's own `ssh_backend::align_remote_pal` (`min(%pal nprocs, the mask's distinct
+  CPUs)`, the mask without `%pal`; an unreadable `%pal` is no estimate, as the submit refuses it). A
+  `! … PALn` keyword — any `PAL<digits>` token on a comment-stripped `!` line, the largest if several
+  (o26.14.7) — makes n the larger of the two (which one ORCA honours is ADR-025's open question).
+- The warning (o26.3, policy): **U > 0.9 × RAM** (`ram_threshold_mib`, whole MiB rounded down; exact
+  integer arithmetic) or **free disk < 10 GiB** on the job root. **P** (o26.4) =
+  ⌊((0.9 × MemTotal − 140) / n − 100) / 100⌋ × 100 MiB; P < 300 proposes nothing
+  (`too_small_for_ranks`). uni at 24 ranks → 2300; the laptop at 8 → 1600, at 12 → 1000.
+- **Units** (rule #11): `/proc/meminfo`'s `kB` is KiB (a determiner, memory.md) and stays KiB
+  (`*_kib`); df and statvfs are bytes (`*_bytes`); `%maxcore` and U are MiB (`*_mib`).
+
+**The button's edit** — `apply_maxcore(input, P)` (o26.4, o26.13.5): `read_maxcore`'s own locator,
+so a commented-out `# %maxcore 3000` is never "replaced"; the single existing line replaced, else
+`%maxcore P` inserted right after the **first** `!` line, else at the top; two lines refused; a
+single malformed `%maxcore` line is replaced like a readable one (o26.14.6). Post-condition: the result
+reads back as exactly P.
+
+**Where the facts come from** (o26.6):
+- **This machine** — `memory::host_resources_at(meminfo, data_dir)` (a path seam): `MemTotal` of
+  `/proc/meminfo` (read capped at 64 KiB) and `statvfs(data_dir)` `f_bavail × f_frsize` (df's
+  `Avail`). Read on every request, nothing stored; a fact that cannot be read is
+  `Fact::Unknown { reason }`, never 0.
+- **A server, at the connection test** — the profile's v23 columns `mem_total_kib`,
+  `disk_avail_bytes`, `host_facts_at` ([server-profiles.md](server-profiles.md)); NULL is "server
+  memory unknown — re-run the connection test". Rust still returns U then (with `ram.state ==
+  "unknown"` and no P); showing no estimate is the view's rule — the view hides U whenever
+  `ram.state == "unknown"` (o26.14.3).
+- **A server, fresh at submit** — the prepare call's `meminfo`/`df` records
+  ([remote-jobs.md](remote-jobs.md)), returned by `ready_server` from its last prepare. MemTotal and
+  MemAvailable both come from that one `head -5 /proc/meminfo`; the stored `mem_total_kib` is not used
+  at submit (o26.14.1).
+
+**Commands** (`commands/memory.rs`; all `Result<_, AppError>`, nothing written):
+
+| command (TS `invoke`) | returns | does |
+|---|---|---|
+| `memory_estimate({ seq, input, target })` | `MemoryEstimateReply { seq, local: MemoryCheck, server: { profile_id, …MemoryCheck } \| null }` | `target` = a profile id or `null` (this machine). Always the **Local** verdict ("Create Job" makes a draft that only ever runs here, o20.2) and, with a server selected, that server's ("Create & Run", o26.13.1). `seq` comes back unchanged, so the view keeps only the latest reply (o26.13.6). An unknown profile is `NotFound` |
+| `apply_maxcore({ input, maxcoreMib })` | the new text | the button's edit; two `%maxcore` lines are `Invalid` |
+| `host_resources()` | `HostResources { mem_total_kib: Fact, disk_avail_bytes: Fact }` | this machine, read now |
+| `local_fitted_maxcore()` | `LocalFittedMaxcore { ranks, mem_total_kib: Fact, proposal_mib, default_maxcore_mib }` | the local P for the current preset; `default_maxcore_mib` is P, 300 when P < 300, 2000 when the RAM is unreadable (o26.13.4) |
+
+`MemoryCheck { estimate, ram, disk, proposal_mib, too_small_for_ranks, facts_measured_at, warns }`:
+`estimate` is `{ state: "estimated", ranks, maxcore_mib, maxcore_from_input, estimate_mib }` or
+`{ state: "not_estimated", reason }`; `ram` is `{ state: "known", mem_total_kib, threshold_mib, warns
+}` (`warns` `null` without an estimate) or `{ state: "unknown", reason }`; `disk` is `{ state:
+"known", avail_bytes, min_free_bytes, warns }` or `{ state: "unknown", reason }`; `facts_measured_at`
+is the server's `host_facts_at`, `null` for this machine (read now).
+
+**The submit-time check** (o26.6, o26.13.2) rides on `ssh_backend::upload_and_submit`, i.e. only on a
+submit the user started (Create & Run, Retry submit); the poller's pending re-check and re-enqueue
+send through `submit_call` and never reach it. Before any ssh, `memory_inputs` reads the job's
+`input_content` and the profile's **other** live remote jobs (`live_remote_jobs` minus this one); after
+the attempt, `memory::submit_memory_notice` compares U (the same `estimate`, the plan's mask) with
+**0.9 × MemAvailable** when no other live job of ours is on the profile (other users' load counts now),
+or with **0.9 × MemTotal** when one is (MemAvailable already has our own job subtracted — the common
+"queue two jobs" case would be a false positive) and shows MemAvailable as context; and the root's free
+bytes with 10 GiB. The result is `SubmitAttempt::memory_notice` → `SubmitResponse.memory_notice`, a
+field **beside** the `%pal` `notice`. It is `None` when everything fits or the attempt never reached the
+server's facts; an unread fact, an unreadable input or a database read failure is said ("memory not
+checked: …", "free disk not checked: …", o26.14.2). **Never a refusal**: it is computed after the attempt and changes nothing it did. There is
+no local submit-time check (o26.13.3): the local `submit_job` returns nothing; a preset change between
+Create and Run is uncovered (named in o26.8).
+
 ## Sequential queue — in SQLite, not in memory
 
 - **No worker thread / channel.** The local queue *is* the set of **local** jobs with
@@ -390,8 +471,9 @@ are fetched by the poller's status step, under the job's in-flight guard (below)
 | `watch_job_log({ id, open })` | `null` | `LiveLog::open` / `close` (any job id; never ssh) |
 | `remote_job_state({ id })` | `RemoteStateRead { seq, state }` | `RemoteStates::read`: the job's record (`null`: none) and the launch-wide change number, read together (memory only; no guard, no ssh) |
 
-`SubmitResponse { outcome, pal, notice, failure }` is the attempt with `pal.notice()` and
-`outcome.failure()` in words. Retry and label dispatch on the job's coordinates
+`SubmitResponse { outcome, pal, notice, memory_notice, failure }` is the attempt with `pal.notice()`,
+the submit-time memory and disk check (`memory_notice`, a separate field — the view shows both; see
+"The memory and disk preflight") and `outcome.failure()` in words. Retry and label dispatch on the job's coordinates
 (`Backend::for_job`) and refuse a local job. Every remote operation (`run_guarded`, over the `AppHandle`-free `guarded_blocking`; every remote
 entry point is pinned to go through it):
 - claims the job's **in-flight guard** first, before `spawn_blocking`, and **refuses** a job that already

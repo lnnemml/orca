@@ -19,7 +19,7 @@
 //! argc <n>                  the number of values received
 //! arg <len>   (n times)     each value, verbatim
 //! <check> <rc>|skipped      for each check, in this fixed order:
-//!   out <len>                 mkdir realpath findmnt busctl id nproc orca_x orca ompi
+//!   out <len>                 mkdir realpath findmnt df busctl id nproc meminfo orca_x orca ompi
 //!   err <len>               (out/err follow only a check that ran; orca's err is empty: merged)
 //! end
 //! ```
@@ -34,6 +34,11 @@
 //! undetermined is "not passed", with a reason per check. OpenMPI's version is recorded when
 //! reported (item 9), and membership in `sudo` is a warning. The formats are the ones recorded in
 //! `wiki/orca/remote-server-probe-commands.md` (rule #10).
+//!
+//! **Host facts** ([`host_facts`], ADR-024 o26.6): `df` (`df --output=avail,target -B1 <root>`) and
+//! `meminfo` (`head -5 /proc/meminfo`), each bounded by `timeout -k 1 3`, are **recorded, never
+//! gating** — they are not checks of the verdict, a failed or unparsable read is `None` (the formats
+//! in `wiki/orca/memory.md`), and the stamp is written whatever they say.
 //!
 //! The version and `nproc` parsers below predate the script; the verdict reuses them.
 //! Honest-or-absent: a version parser returns `None` when the expected line is absent or
@@ -133,8 +138,8 @@ pub const OUTPUT_HEADER: &str = "orcastudio-conntest 1";
 pub const ROOT_FS_ALLOW_LIST: &[&str] = &["ext4"];
 
 /// The checks, in the order the script runs and prints them.
-const CHECK_ORDER: [&str; 9] =
-    ["mkdir", "realpath", "findmnt", "busctl", "id", "nproc", "orca_x", "orca", "ompi"];
+const CHECK_ORDER: [&str; 11] =
+    ["mkdir", "realpath", "findmnt", "df", "busctl", "id", "nproc", "meminfo", "orca_x", "orca", "ompi"];
 
 /// The values the connection test is fed, in NUL-list order.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -202,9 +207,13 @@ pub struct RawFacts {
     pub mkdir: CheckRun,
     pub realpath: CheckRun,
     pub findmnt: CheckRun,
+    /// A host fact, not a check (o26.6): the root's free space.
+    pub df: CheckRun,
     pub busctl: CheckRun,
     pub id: CheckRun,
     pub nproc: CheckRun,
+    /// A host fact, not a check (o26.6): `head -5 /proc/meminfo`.
+    pub meminfo: CheckRun,
     pub orca_x: CheckRun,
     pub orca: CheckRun,
     pub ompi: CheckRun,
@@ -256,10 +265,32 @@ pub fn parse_output(output: &[u8], sent: &ConnTestArgs) -> Result<RawFacts, Conn
         return Err(r.malformed("bytes after end".into()).into());
     }
 
-    let [mkdir, realpath, findmnt, busctl, id, nproc, orca_x, orca, ompi]: [CheckRun; 9] = runs
+    let [mkdir, realpath, findmnt, df, busctl, id, nproc, meminfo, orca_x, orca, ompi]: [CheckRun; 11] = runs
         .try_into()
         .map_err(|_| r.malformed("check count".into()))?;
-    Ok(RawFacts { mkdir, realpath, findmnt, busctl, id, nproc, orca_x, orca, ompi })
+    Ok(RawFacts { mkdir, realpath, findmnt, df, busctl, id, nproc, meminfo, orca_x, orca, ompi })
+}
+
+/// The host facts the connection test records (ADR-024 o26.6), each `None` when its read failed, did
+/// not run, or printed anything but the measured format — never a stand-in.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct HostFacts {
+    /// `MemTotal`, KiB.
+    pub mem_total_kib: Option<u64>,
+    /// The root's free space, bytes (df's `Avail`).
+    pub disk_avail_bytes: Option<u64>,
+}
+
+/// Read the host facts out of the raw output. Independent of the verdict: never gating.
+pub fn host_facts(facts: &RawFacts) -> HostFacts {
+    let stdout = |run: &CheckRun| match run {
+        CheckRun::Ran { rc: 0, out, .. } => String::from_utf8(out.clone()).ok(),
+        _ => None,
+    };
+    HostFacts {
+        mem_total_kib: stdout(&facts.meminfo).and_then(|t| crate::memory::meminfo_kib(&t, "MemTotal").ok()),
+        disk_avail_bytes: stdout(&facts.df).and_then(|t| crate::memory::parse_df_avail(&t).ok()).map(|row| row.avail_bytes),
+    }
 }
 
 /// An exit status: decimal 0–255, no sign, no leading zero.
@@ -632,6 +663,11 @@ pub(crate) mod conntest_tests {
     const OMPI_INFO_416: &[u8] = b"Open MPI v4.1.6\n\nhttp://www.open-mpi.org/community/help/\n";
     /// `nproc` on uni.
     const NPROC_UNI: &[u8] = b"48\n";
+    /// `df --output=avail,target -B1 /home/anton/.orcastudio` on uni (wiki/orca/memory.md).
+    pub(crate) const DF_UNI: &[u8] = b"      Avail Mounted on\n78360924160 /home\n";
+    /// `head -5 /proc/meminfo`: uni's recorded `MemTotal` line (memory.md). The other four lines are
+    /// not recorded for uni, so they are left out rather than invented; only `MemTotal` is read.
+    pub(crate) const MEMINFO_UNI: &[u8] = b"MemTotal:       65795232 kB\n";
 
     const ROOT: &str = "/home/anton/.orcastudio";
 
@@ -664,9 +700,11 @@ pub(crate) mod conntest_tests {
             mkdir: ran(0, b""),
             realpath: ran(0, format!("{ROOT}\n").as_bytes()),
             findmnt: ran(0, FINDMNT_UNI),
+            df: ran(0, DF_UNI),
             busctl: ran(0, BUSCTL_FALSE),
             id: ran(0, ID_ANTON),
             nproc: ran(0, NPROC_UNI),
+            meminfo: ran(0, MEMINFO_UNI),
             orca_x: ran(0, b""),
             orca: ran(2, &orca_banner()),
             ompi: ran(0, OMPI_INFO_416),
@@ -685,8 +723,8 @@ pub(crate) mod conntest_tests {
             bytes(&mut w, "arg", v.as_bytes());
         }
         let runs = [
-            &facts.mkdir, &facts.realpath, &facts.findmnt, &facts.busctl, &facts.id,
-            &facts.nproc, &facts.orca_x, &facts.orca, &facts.ompi,
+            &facts.mkdir, &facts.realpath, &facts.findmnt, &facts.df, &facts.busctl, &facts.id,
+            &facts.nproc, &facts.meminfo, &facts.orca_x, &facts.orca, &facts.ompi,
         ];
         for (name, run) in CHECK_ORDER.iter().zip(runs) {
             match run {
@@ -733,6 +771,67 @@ pub(crate) mod conntest_tests {
                 warnings: Vec::new(),
             }
         );
+    }
+
+    // ---- The host facts (ADR-024 o26.6) ---------------------------------------------------
+
+    /// The recorded formats (memory.md) parse strictly into KiB and bytes; a failed, skipped or
+    /// unparsable read is `None` — and the verdict is the same full pass either way (never gating).
+    /// NEGATIVE CONTROL: a df failure that fails a check (e.g. `fail(Check::Root, …)` when `df` is
+    /// not rc 0) → the second half goes red.
+    #[test]
+    fn the_host_facts_are_read_strictly_and_never_gate_the_verdict() {
+        let sent = args(Some("0-23"));
+        assert_eq!(
+            host_facts(&uni_facts()),
+            HostFacts { mem_total_kib: Some(65_795_232), disk_avail_bytes: Some(78_360_924_160) }
+        );
+        let full_pass = evaluate(&uni_facts(), &sent);
+        assert!(matches!(full_pass, Verdict::FullPass { .. }));
+        for (case, facts) in [
+            ("df failed", with(|f| f.df = CheckRun::Ran { rc: 1, out: Vec::new(), err: b"df: x".to_vec() })),
+            ("df skipped", with(|f| f.df = CheckRun::Skipped)),
+            ("df -P's shape", with(|f| f.df = ran(0, b"Filesystem 1-blocks Used Available Capacity Mounted on\n/dev/sdb4 1 2 3 1% /home\n"))),
+            ("meminfo timed out", with(|f| f.meminfo = CheckRun::Ran { rc: 124, out: Vec::new(), err: Vec::new() })),
+            ("meminfo in MB", with(|f| f.meminfo = ran(0, b"MemTotal:       64253 MB\n"))),
+            ("both failed", with(|f| {
+                f.df = ran(1, b"");
+                f.meminfo = ran(1, b"");
+            })),
+        ] {
+            let host = host_facts(&facts);
+            let df_bad = case.starts_with("df") || case == "both failed";
+            let mem_bad = case.starts_with("meminfo") || case == "both failed";
+            assert_eq!(host.disk_avail_bytes.is_none(), df_bad, "{case}");
+            assert_eq!(host.mem_total_kib.is_none(), mem_bad, "{case}");
+            assert_eq!(evaluate(&facts, &sent), full_pass, "{case}: a host fact never changes the verdict");
+        }
+        // The wire round-trips the two new records in their place.
+        let wire = encode(&["/opt/orca/orca", ROOT, "0-23"], &uni_facts());
+        assert!(String::from_utf8_lossy(&wire).contains("\nfindmnt 0\n"));
+        assert_eq!(parse_output(&wire, &sent).unwrap().df, ran(0, DF_UNI));
+    }
+
+    /// Never `df -P` with `--output` (they conflict on coreutils 9.4, measured — memory.md): every
+    /// `df` the scripts run is `df --output=avail,target -B1`. NEGATIVE CONTROL: add `-P` to either
+    /// script's df → red.
+    #[test]
+    fn no_script_runs_df_with_p_and_output() {
+        for (name, body) in [
+            ("conntest.sh", include_str!("remote/scripts/conntest.sh")),
+            ("prepare.sh", include_str!("remote/scripts/prepare.sh")),
+        ] {
+            let runs: Vec<&str> = body
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.starts_with('#') && (l.contains(" df ") || l.starts_with("df ")))
+                .collect();
+            assert_eq!(runs.len(), 1, "{name}: one df: {runs:?}");
+            for line in runs {
+                assert!(line.contains("df --output=avail,target -B1 \"$root\""), "{name}: {line}");
+                assert!(!line.split_whitespace().any(|t| t == "-P" || t == "--portability"), "{name}: {line}");
+            }
+        }
     }
 
     // The transport post-condition (rule #9): the echoed values must be exactly those sent.
@@ -984,6 +1083,15 @@ printf '%s\n' "${STUB_FSTYPE-ext4}""#);
 printf 'anton users\n'"#);
             lab.stub("bin/nproc", r#"[[ $# == 0 ]] || exit 1
 printf '48\n'"#);
+            // The host facts (o26.6): uni's recorded formats; STUB_DF_RC / STUB_HEAD_RC make a read fail.
+            lab.stub("bin/df", r#"[[ $# == 3 && "$1 $2" == "--output=avail,target -B1" && -d $3 ]] || exit 1
+[[ -n ${STUB_DF_SLEEP-} ]] && exec sleep "$STUB_DF_SLEEP"
+[[ ${STUB_DF_RC-0} == 0 ]] || { echo "df: stub failure" >&2; exit "$STUB_DF_RC"; }
+printf '      Avail Mounted on\n78360924160 /home\n'"#);
+            lab.stub("bin/head", r#"[[ "$*" == "-5 /proc/meminfo" ]] || exit 1
+[[ -n ${STUB_HEAD_SLEEP-} ]] && exec sleep "$STUB_HEAD_SLEEP"
+[[ ${STUB_HEAD_RC-0} == 0 ]] || exit "$STUB_HEAD_RC"
+printf 'MemTotal:       65795232 kB\n'"#);
             lab.stub("bin/ompi_info", r#"[[ "$*" == "--version" ]] || exit 1
 printf 'Open MPI v4.1.6\n\nhttp://www.open-mpi.org/community/help/\n'"#);
             let banner_lines = "printf '\\n%.0s' {1..53}\n".to_string()
@@ -1020,6 +1128,15 @@ printf 'Open MPI v4.1.6\n\nhttp://www.open-mpi.org/community/help/\n'"#);
             child.wait_with_output().unwrap().stdout
         }
 
+        /// `bash -s` under a bound of its own (the production runner): `Err` past `timeout`.
+        fn bash_s_bounded(&self, stdin: &[u8], env: &[(&str, &str)], timeout: std::time::Duration) -> Result<Vec<u8>, String> {
+            use crate::remote::ssh::{CommandRunner, SystemRunner};
+            let mut argv = vec![format!("PATH={}:/usr/bin:/bin", self.path("bin"))];
+            argv.extend(env.iter().map(|(k, v)| format!("{k}={v}")));
+            argv.extend(["bash".to_string(), "-s".to_string()]);
+            SystemRunner.run("env", &argv, stdin, timeout).map(|out| out.stdout).map_err(|e| e.to_string())
+        }
+
         fn conntest(&self, sent: &ConnTestArgs, env: &[(&str, &str)]) -> Result<Verdict, ConnTestError> {
             run(&self.bash_s(&conntest_stdin(sent).unwrap(), env), sent)
         }
@@ -1054,6 +1171,65 @@ printf 'Open MPI v4.1.6\n\nhttp://www.open-mpi.org/community/help/\n'"#);
         assert!(Path::new(&sent.root).is_dir(), "mkdir -p created the root");
         // An unset mask travels as an empty value and still counts as one of three.
         assert!(matches!(lab.conntest(&lab.args("home/anton/.orcastudio", None), &[]), Ok(Verdict::FullPass { .. })));
+    }
+
+    /// The real script records the host facts with the measured commands (the stubs accept only
+    /// `df --output=avail,target -B1 <root>` and `head -5 /proc/meminfo`), and a failed read — df or
+    /// meminfo, alone or both — is `None` while the verdict stays a full pass. NEGATIVE CONTROL
+    /// (in-suite): the script with `check df …` swapped for one that dies on a df failure → no
+    /// verdict.
+    #[test]
+    fn real_script_records_the_host_facts_and_a_failed_read_is_absent() {
+        let lab = Lab::new();
+        let sent = lab.args("home/anton/.orcastudio", Some("0-23"));
+        let facts = |env: &[(&str, &str)]| {
+            let out = lab.bash_s(&conntest_stdin(&sent).unwrap(), env);
+            let raw = parse_output(&out, &sent).unwrap();
+            (evaluate(&raw, &sent), host_facts(&raw))
+        };
+        let (verdict, host) = facts(&[]);
+        assert!(matches!(verdict, Verdict::FullPass { .. }));
+        assert_eq!(host, HostFacts { mem_total_kib: Some(65_795_232), disk_avail_bytes: Some(78_360_924_160) });
+        for (env, want) in [
+            (&[("STUB_DF_RC", "1")][..], HostFacts { mem_total_kib: Some(65_795_232), disk_avail_bytes: None }),
+            (&[("STUB_HEAD_RC", "1")][..], HostFacts { mem_total_kib: None, disk_avail_bytes: Some(78_360_924_160) }),
+            (&[("STUB_DF_RC", "2"), ("STUB_HEAD_RC", "1")][..], HostFacts::default()),
+        ] {
+            let (verdict, host) = facts(env);
+            assert!(matches!(verdict, Verdict::FullPass { .. }), "{env:?}: {verdict:?}");
+            assert_eq!(host, want, "{env:?}");
+        }
+        // The control: a script that turns a df failure into its own failure has no verdict at all.
+        let dying = CONNTEST.replacen(
+            "check df timeout -k 1 \"$T_FACT\" df --output=avail,target -B1 \"$root\"",
+            "check df timeout -k 1 \"$T_FACT\" df --output=avail,target -B1 \"$root\"; (( LAST_RC == 0 )) || fail \"df failed\"",
+            1,
+        );
+        assert_ne!(dying, CONNTEST);
+        let mut stdin = dying.into_bytes();
+        stdin.extend_from_slice(&conntest_stdin(&sent).unwrap()[CONNTEST.len()..]);
+        let out = lab.bash_s(&stdin, &[("STUB_DF_RC", "1")]);
+        assert_eq!(parse_output(&out, &sent), Err(ConnTestError::Script("df failed".into())));
+    }
+
+    /// F1 (verifier, Part A): the connection test's host-fact reads are **bounded**. A `df` and a
+    /// `head -5 /proc/meminfo` that hang (stubs that `exec sleep 30`) are recorded as rc 124 — failed
+    /// facts — and the verdict is still a full pass, within a few seconds; the run has a 20 s bound of
+    /// its own. NEGATIVE CONTROLS: drop the `timeout` from the `df` or the `meminfo` check → red.
+    #[test]
+    fn real_script_bounds_a_hung_df_and_meminfo() {
+        let lab = Lab::new();
+        let sent = lab.args("home/anton/.orcastudio", Some("0-23"));
+        let start = std::time::Instant::now();
+        let out = lab
+            .bash_s_bounded(&conntest_stdin(&sent).unwrap(), &[("STUB_DF_SLEEP", "30"), ("STUB_HEAD_SLEEP", "30")], std::time::Duration::from_secs(20))
+            .expect("the connection test answered within its 20 s bound");
+        assert!(start.elapsed() < std::time::Duration::from_secs(15), "took {:?}", start.elapsed());
+        let raw = parse_output(&out, &sent).unwrap();
+        assert!(matches!(raw.df, CheckRun::Ran { rc: 124, .. }), "{:?}", raw.df);
+        assert!(matches!(raw.meminfo, CheckRun::Ran { rc: 124, .. }), "{:?}", raw.meminfo);
+        assert!(matches!(evaluate(&raw, &sent), Verdict::FullPass { .. }));
+        assert_eq!(host_facts(&raw), HostFacts::default());
     }
 
     // The values reach `main` verbatim: an embedded newline, a quote, `$HOME`, `;` (probe 5.1c).

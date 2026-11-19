@@ -73,6 +73,7 @@ Catalog of every page. Updated on every page creation/rename (see CLAUDE.md).
 
 - [orca-basics.md](orca/orca-basics.md) — installation, invocation, MPI, environment
 - [orca-plot.md](orca/orca-plot.md) — **measured** unit-3.15 gate: `orca_plot` non-interactive invocation (its `plot-inputfile` batch mode was unusable → drive the menu over stdin), cube size/time by grid (40³–100³ = 0.9–13.5 MB, sub-second), the `.cube` format, and the WebKitGTK isosurface render PASS (MiniBrowser)
+- [memory.md](orca/memory.md) — measured ORCA memory behaviour (6.1.1): default `%maxcore` 4096, MiB unit, per-rank RSS ≈ need + ~100 MiB, overshoot when the cap binds; host RAM/disk commands and formats (`df -P --output` gotcha); scratch footprints. Feeds unit 5.5's preflight
 - [performance.md](orca/performance.md) — measured parallel scaling on the dev machine (i5-12500H), core-pinning presets, benchmark methodology
 - [input-format.md](orca/input-format.md) — anatomy of an .inp file
 - [input-syntax.md](orca/input-syntax.md) — **measured** block syntax for the hover qualifier (unit 4.4): `%name` openers are three forms — multi-line block / single-line block / **no-`end` directive** (46 = 6.1 %, the `%maxcore` trap); nesting is real (`%geom … constraints … end end`, bare sub-blocks); Monaco's default `wordPattern` splits `def2-SVP`/`%maxcore`/`def2/J` (needs a fix); `%maxcore` absent from `keywords.json`; 110 sections (7.1 %) have pipe-tables that render as misaligned prose in `PageView`

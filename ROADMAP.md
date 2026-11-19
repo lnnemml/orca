@@ -1551,9 +1551,17 @@ preflight. The remaining items (remote `orca_plot`, pause) moved to Phase 6 on 2
       `wiki/modules/remote-jobs.md`); **open: the uni live check** — a healthy real job's `.tsp-out`
       shows "session empty at ORCA's return", and M6 in the app (≥ 11 jobs queued, cold restart, no
       "Server unreachable" from the burst).
-- [ ] **Unit 5.5 — preflight:** `nprocs`/`%maxcore` vs the profile (cores + RAM budget) and free disk
+- [ ] **Unit 5.5 — preflight** *(ADR-024 o26, 2026-11-18: a warning, never a block, before Create — local jobs
+      too — with a one-click `%maxcore` fix; the cores bullet dropped; the local default lowered)*: `nprocs`/`%maxcore` vs the profile (cores + RAM budget) and free disk
       space in the profile working dir; no-`%maxcore` → warn-and-propose, never silent-insert
-      (ADR-024 h)
+      (ADR-024 h). **Part A built 2026-11-18 (Rust):** the one estimator (`memory.rs`), the four
+      commands (`memory_estimate`, `apply_maxcore`, `host_resources`, `local_fitted_maxcore`), the
+      connection test's recorded RAM/disk (schema **v23**), prepare's fresh facts and the
+      `memory_notice` beside the `%pal` notice (`wiki/modules/execution-backends.md`). **Part B built
+      2026-11-19 (view):** the New Job warning row (two verdicts, the "Set `%maxcore` to P" button), the
+      builder's local default, the fan-out accessor, both submit notices (`wiki/modules/frontend.md`).
+      **Built, pending Anton's live gate after the commit** (stop `tauri dev` and back up the DB first:
+      v22 → v23).
 
 5.4b and 5.5 stay in Phase 5 (Anton, 2026-11-18). Moved to Phase 6 the same day: remote `orca_plot`,
 local job pause, the `uploading`/`syncing` transient states.

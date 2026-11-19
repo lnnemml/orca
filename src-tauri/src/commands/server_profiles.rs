@@ -21,6 +21,13 @@
 //!   edit or a save that rewrites a field with its unchanged value keeps the stamp;
 //! - a re-test is not a full pass ([`clear_profile_verified_conn`]).
 //!
+//! **The host facts** (`mem_total_kib`, `disk_avail_bytes`, `host_facts_at`; schema v23, ADR-024
+//! o26.6) follow the stamp: written **only** inside [`set_profile_verified_conn`]'s target-bound
+//! `UPDATE` (so an edit during the test never stores the old host's RAM), each NULL when its read
+//! failed (old values are never kept), and NULLed by [`clear_verified`] with the stamp — on a target
+//! edit (n5), a re-test that is not a full pass (n6) and a `refused-kup` (n7). They are **recorded,
+//! never gating** (n9): a failed read neither fails the test nor clears `verified_at`.
+//!
 //! A stamp never outlives the facts it certified, and never certifies a target it did not test:
 //! [`set_profile_verified_conn`] takes the target the test ran against and refuses
 //! ([`AppError::Conflict`]) if the profile no longer has it. Every write of user fields is
@@ -47,7 +54,7 @@ use uuid::Uuid;
 
 use crate::commands::settings::DbState;
 use crate::connection_test::{
-    self, conntest_stdin, Check, CheckFailure, ConnTestArgs, Verdict, VerifiedFacts, Warning,
+    self, conntest_stdin, host_facts, Check, CheckFailure, ConnTestArgs, HostFacts, Verdict, VerifiedFacts, Warning,
 };
 use crate::error::AppError;
 use crate::models::server_profile::{
@@ -186,12 +193,14 @@ fn update_server_profile_conn(
     get_profile_conn(conn, id)
 }
 
-/// Set `verified_at` and the facts it certified back to NULL, together. Also the remote submit's
-/// one writer of a clear: only a `SubmitReply::RefusedKup` reaches it (ADR-024 n item 7, o 13.3).
+/// Set `verified_at`, the facts it certified and the host facts recorded with it (v23, o26.6) back
+/// to NULL, together. Also the remote submit's one writer of a clear: only a
+/// `SubmitReply::RefusedKup` reaches it (ADR-024 n item 7, o 13.3), and the re-enqueue's.
 pub(crate) fn clear_verified(conn: &Connection, id: &str) -> Result<usize, AppError> {
     Ok(conn.execute(
         "UPDATE server_profiles
-         SET verified_at = NULL, orca_version = NULL, openmpi_version = NULL, core_count = NULL
+         SET verified_at = NULL, orca_version = NULL, openmpi_version = NULL, core_count = NULL,
+             mem_total_kib = NULL, disk_avail_bytes = NULL, host_facts_at = NULL
          WHERE id = ?1",
         params![id],
     )?)
@@ -249,7 +258,9 @@ fn delete_server_profile_conn(conn: &Connection, id: &str) -> Result<(), AppErro
 
 /// Stamp a **full pass** of the connection test: `orca_version`, `openmpi_version` (recorded, NULL
 /// when the host reported none — ADR-024 n item 9), `core_count`, and `verified_at =
-/// datetime('now')`. `tested` is the target the test ran against; the stamp is written only if the
+/// datetime('now')`; and in the **same** statement the host facts (o26.6): each NULL when unread —
+/// an old value is never kept — and `host_facts_at` now when at least one was read, else NULL.
+/// `tested` is the target the test ran against; the stamp is written only if the
 /// profile still has exactly that target, so an edit made while the test ran can never be
 /// certified by it ([`AppError::Conflict`]). [`AppError::NotFound`] if the profile is absent.
 fn set_profile_verified_conn(
@@ -259,11 +270,14 @@ fn set_profile_verified_conn(
     orca_version: &str,
     openmpi_version: Option<&str>,
     core_count: u32,
+    host: &HostFacts,
 ) -> Result<ServerProfile, AppError> {
     let affected = conn.execute(
         "UPDATE server_profiles
          SET orca_version = ?1, openmpi_version = ?2, core_count = ?3,
-             verified_at = datetime('now')
+             verified_at = datetime('now'),
+             mem_total_kib = ?10, disk_avail_bytes = ?11,
+             host_facts_at = CASE WHEN ?10 IS NULL AND ?11 IS NULL THEN NULL ELSE datetime('now') END
          WHERE id = ?4 AND host = ?5 AND remote_orca_path = ?6 AND remote_scratch_dir = ?7
            AND core_mask IS ?8 AND slot_count = ?9",
         params![
@@ -275,7 +289,9 @@ fn set_profile_verified_conn(
             tested.remote_orca_path,
             tested.remote_scratch_dir,
             tested.core_mask,
-            tested.slot_count
+            tested.slot_count,
+            host.mem_total_kib,
+            host.disk_avail_bytes
         ],
     )?;
     if affected == 0 {
@@ -411,14 +427,14 @@ fn tail(bytes: &[u8]) -> String {
     text.chars().skip(skip).collect()
 }
 
-/// Run the script on the target's host and return Rust's verdict, or why there is none. Does not
-/// touch the database.
+/// Run the script on the target's host and return Rust's verdict with the host facts it recorded
+/// (o26.6, never part of the verdict), or why there is none. Does not touch the database.
 fn probe_target(
     target: &ProfileTarget,
     availability_window: Option<&str>,
     runner: &dyn CommandRunner,
     timeout: Duration,
-) -> Result<Verdict, String> {
+) -> Result<(Verdict, HostFacts), String> {
     validate_profile(target, availability_window)
         .map_err(|e| format!("the saved profile is invalid, so it was not tested: {e}"))?;
     let argv = ssh_bash_argv(&target.host).map_err(|e| e.to_string())?;
@@ -430,14 +446,14 @@ fn probe_target(
         // ssh's own failure status: connect, auth or host-key failure (BatchMode never prompts).
         return Err(format!("ssh could not run the test (exit 255): {}", tail(&out.stderr)));
     }
-    let verdict = connection_test::run(&out.stdout, &sent)
+    let raw = connection_test::parse_output(&out.stdout, &sent)
         .map_err(|e| format!("{e} (ssh exit {code}; stderr: {:?})", tail(&out.stderr)))?;
     // The script ends with `printf 'end\n'` and exits 0. A complete output with any other exit
     // status is not trusted (fail closed).
     if out.code != Some(0) {
         return Err(format!("ssh exited with {code} after a complete output; not trusting it"));
     }
-    Ok(verdict)
+    Ok((connection_test::evaluate(&raw, &sent), host_facts(&raw)))
 }
 
 /// The connection test of profile `id` (ADR-024 n items 6–8). The database lock is **not** held
@@ -464,7 +480,7 @@ pub(crate) fn test_server_profile_with(
 
     let conn = db.lock()?;
     let outcome = match verdict {
-        Ok(Verdict::FullPass { facts, warnings }) => {
+        Ok((Verdict::FullPass { facts, warnings }, host)) => {
             let checks = check_results(&[], &sent);
             match set_profile_verified_conn(
                 &conn,
@@ -473,6 +489,7 @@ pub(crate) fn test_server_profile_with(
                 &facts.orca_version,
                 facts.openmpi_version.as_deref(),
                 facts.core_count,
+                &host,
             ) {
                 Ok(_) => ConnTestOutcome::Verified { checks, facts, warnings },
                 Err(AppError::Conflict(reason)) => {
@@ -481,7 +498,7 @@ pub(crate) fn test_server_profile_with(
                 Err(e) => return Err(e),
             }
         }
-        Ok(Verdict::NotPassed { failures, warnings }) => {
+        Ok((Verdict::NotPassed { failures, warnings }, _)) => {
             clear_profile_verified_conn(&conn, id)?;
             ConnTestOutcome::NotPassed { checks: check_results(&failures, &sent), warnings }
         }
@@ -619,8 +636,11 @@ mod tests {
         fields("uni", "uni", "/opt/orca/orca", "/home/anton/.orcastudio", Some("0-23"))
     }
 
+    /// uni's host facts as memory.md records them (MemTotal KiB, the root's df Avail bytes).
+    const UNI_HOST: HostFacts = HostFacts { mem_total_kib: Some(65_795_232), disk_avail_bytes: Some(78_360_924_160) };
+
     fn stamp(conn: &Connection, p: &ServerProfile) -> ServerProfile {
-        set_profile_verified_conn(conn, &p.id, &p.target(), "6.1.1", Some("4.1.6"), 48).unwrap()
+        set_profile_verified_conn(conn, &p.id, &p.target(), "6.1.1", Some("4.1.6"), 48, &UNI_HOST).unwrap()
     }
 
     /// Insert a standalone job directly (title + input_content are the only NOT NULL
@@ -666,6 +686,17 @@ mod tests {
         assert_eq!(p.orca_version, None, "{why}: orca_version must be NULL");
         assert_eq!(p.openmpi_version, None, "{why}: openmpi_version must be NULL");
         assert_eq!(p.core_count, None, "{why}: core_count must be NULL");
+        assert_host_facts_cleared(p, why);
+    }
+
+    /// The host facts (v23, o26.6) leave with the stamp: never a RAM figure for a target no test
+    /// measured.
+    fn assert_host_facts_cleared(p: &ServerProfile, why: &str) {
+        assert_eq!(
+            (p.mem_total_kib, p.disk_avail_bytes, p.host_facts_at.as_deref()),
+            (None, None, None),
+            "{why}: the host facts must be NULL"
+        );
     }
 
     fn assert_stamped(p: &ServerProfile, why: &str) {
@@ -835,7 +866,7 @@ mod tests {
 
         // set_profile_verified of a missing id → NotFound.
         assert!(matches!(
-            set_profile_verified_conn(&conn, "no-such", &p.target(), "6.1.0", Some("4.1.6"), 8).unwrap_err(),
+            set_profile_verified_conn(&conn, "no-such", &p.target(), "6.1.0", Some("4.1.6"), 8, &UNI_HOST).unwrap_err(),
             AppError::NotFound(_)
         ));
 
@@ -882,7 +913,7 @@ mod tests {
         // The user edits the host while the test runs: the stamp must not certify the new host.
         update_server_profile_conn(&conn, &p.id, ProfileFields { host: "other", ..uni() }).unwrap();
         assert!(matches!(
-            set_profile_verified_conn(&conn, &p.id, &tested, "6.1.1", Some("4.1.6"), 48),
+            set_profile_verified_conn(&conn, &p.id, &tested, "6.1.1", Some("4.1.6"), 48, &UNI_HOST),
             Err(AppError::Conflict(_))
         ));
         assert_cleared(&get_profile_conn(&conn, &p.id).unwrap(), "no stamp for a changed target");
@@ -890,13 +921,13 @@ mod tests {
         let mut two_slots = get_profile_conn(&conn, &p.id).unwrap().target();
         two_slots.slot_count = 2;
         assert!(matches!(
-            set_profile_verified_conn(&conn, &p.id, &two_slots, "6.1.1", None, 48),
+            set_profile_verified_conn(&conn, &p.id, &two_slots, "6.1.1", None, 48, &UNI_HOST),
             Err(AppError::Conflict(_))
         ));
 
         // The current target stamps, with an absent OpenMPI version recorded as NULL.
         let current = get_profile_conn(&conn, &p.id).unwrap().target();
-        let ok = set_profile_verified_conn(&conn, &p.id, &current, "6.1.1", None, 48).unwrap();
+        let ok = set_profile_verified_conn(&conn, &p.id, &current, "6.1.1", None, 48, &UNI_HOST).unwrap();
         assert!(ok.verified_at.is_some());
         assert_eq!(ok.openmpi_version, None, "an absent OpenMPI version is NULL, never guessed");
 
@@ -1124,6 +1155,98 @@ mod tests {
         assert_eq!(stdin, &conntest_stdin(&sent).unwrap());
         assert!(stdin.ends_with(b"/opt/orca/orca\0/home/anton/.orcastudio\x000-23\0"));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ---- The host facts (schema v23, ADR-024 o26.6) --------------------------------------------
+
+    fn host_of(p: &ServerProfile) -> (Option<u64>, Option<u64>, bool) {
+        (p.mem_total_kib, p.disk_avail_bytes, p.host_facts_at.is_some())
+    }
+
+    /// A full pass stores the recorded facts with the stamp; a later full pass whose reads fail stores
+    /// NULL (old values are never kept) and still stamps — recorded, never gating. NEGATIVE CONTROLS:
+    /// a failed read that fails the test (`Failed`/clear when a fact is `None`) → red; a write that
+    /// keeps the old value on a failed read (`COALESCE(?10, mem_total_kib)`) → red.
+    #[test]
+    fn the_connection_test_records_the_host_facts_and_a_failed_read_never_gates() {
+        let (conn, dir) = test_db();
+        let p = create_server_profile_conn(&conn, uni()).unwrap();
+        let db = DbState(Mutex::new(conn));
+
+        let runner = FakeRunner::replying(|| exited(0, full_pass(), b""));
+        let report = test_server_profile_with(&db, &p.id, &runner, CONNTEST_TIMEOUT).unwrap();
+        assert!(matches!(report.outcome, ConnTestOutcome::Verified { .. }));
+        let stored = reload(&db, &p.id);
+        assert_eq!(host_of(&stored), (Some(65_795_232), Some(78_360_924_160), true));
+        assert_eq!(report.profile.profile.mem_total_kib, Some(65_795_232), "the view carries them");
+
+        for (case, facts, want) in [
+            ("df failed", with(|f| f.df = CheckRun::Ran { rc: 1, out: Vec::new(), err: b"df: x".to_vec() }), (Some(65_795_232), None, true)),
+            ("meminfo failed", with(|f| f.meminfo = CheckRun::Ran { rc: 124, out: Vec::new(), err: Vec::new() }), (None, Some(78_360_924_160), true)),
+            ("both failed", with(|f| {
+                f.df = CheckRun::Ran { rc: 1, out: Vec::new(), err: Vec::new() };
+                f.meminfo = CheckRun::Ran { rc: 1, out: Vec::new(), err: Vec::new() };
+            }), (None, None, false)),
+        ] {
+            // Start from stored values, so "NULL" proves the old ones were not kept.
+            set_profile_verified_conn(&db.lock().unwrap(), &p.id, &p.target(), "6.1.1", Some("4.1.6"), 48, &UNI_HOST).unwrap();
+            let runner = FakeRunner::replying(move || exited(0, encode(&UNI_VALUES, &facts), b""));
+            let report = test_server_profile_with(&db, &p.id, &runner, CONNTEST_TIMEOUT).unwrap();
+            assert!(matches!(report.outcome, ConnTestOutcome::Verified { .. }), "{case}: {:?}", report.outcome);
+            let stored = reload(&db, &p.id);
+            assert_stamped(&stored, case);
+            assert_eq!(host_of(&stored), want, "{case}");
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// n 6c for the facts: they ride in the stamp's own target-bound `UPDATE`, so a host edit while
+    /// the test runs stores no RAM of the old host. NEGATIVE CONTROL: write the facts in a separate
+    /// `UPDATE … WHERE id = ?` before the stamp → the edited profile holds the old host's RAM → red.
+    #[test]
+    fn an_edit_during_the_test_stores_no_host_facts() {
+        let (conn, dir) = test_db();
+        let p = create_server_profile_conn(&conn, uni()).unwrap();
+        let db = DbState(Mutex::new(conn));
+        let id = p.id.clone();
+        let runner = FakeRunner {
+            reply: Box::new(|| exited(0, full_pass(), b"")),
+            during: Box::new(|| {
+                let conn = db.0.try_lock().expect("the lock must not be held while ssh runs");
+                update_server_profile_conn(&conn, &id, ProfileFields { host: "uni2", ..uni() }).unwrap();
+            }),
+            calls: RefCell::default(),
+        };
+        let report = test_server_profile_with(&db, &p.id, &runner, CONNTEST_TIMEOUT).unwrap();
+        assert!(matches!(report.outcome, ConnTestOutcome::Conflict { .. }), "{:?}", report.outcome);
+        let stored = reload(&db, &p.id);
+        assert_eq!(stored.host, "uni2");
+        assert_eq!(host_of(&stored), (None, None, false), "no RAM of the old host on the new one");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `clear_verified` takes the host facts with the stamp on every path that clears: a target
+    /// edit (n5), a re-test that does not pass (n6) and the `refused-kup` clear (n7, the submit's).
+    /// NEGATIVE CONTROL: drop the three columns from `clear_verified` → red.
+    #[test]
+    fn every_clear_takes_the_host_facts_with_the_stamp() {
+        let (db, p, dir) = stamped_uni();
+        assert_eq!(host_of(&reload(&db, &p.id)), (Some(65_795_232), Some(78_360_924_160), true));
+        update_server_profile_conn(&db.lock().unwrap(), &p.id, ProfileFields { core_mask: Some("0-11"), ..uni() }).unwrap();
+        assert_host_facts_cleared(&reload(&db, &p.id), "a target edit");
+
+        let (db, p, dir2) = stamped_uni();
+        let facts = with(|f| f.busctl = CheckRun::Ran { rc: 0, out: b"b true\n".to_vec(), err: Vec::new() });
+        let runner = FakeRunner::replying(|| exited(0, encode(&UNI_VALUES, &facts), b""));
+        test_server_profile_with(&db, &p.id, &runner, CONNTEST_TIMEOUT).unwrap();
+        assert_host_facts_cleared(&reload(&db, &p.id), "a re-test that did not pass");
+
+        let (db, p, dir3) = stamped_uni();
+        clear_verified(&db.lock().unwrap(), &p.id).unwrap();
+        assert_host_facts_cleared(&reload(&db, &p.id), "the refused-kup clear");
+        for d in [dir, dir2, dir3] {
+            std::fs::remove_dir_all(&d).ok();
+        }
     }
 
     // NEGATIVE CONTROL: stamp on `NotPassed` (call set_profile_verified_conn there) and this goes red.

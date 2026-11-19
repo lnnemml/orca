@@ -11911,3 +11911,116 @@ row only; the shared `.builder-row` rule and the other rows are unchanged. Needs
   checks with throwaway jobs. A real reboot stays simulation-only (a substituted `boot_id`).
 - Wiki: ADR-024 o25.15 and Consequences; `modules/remote-jobs.md`, `modules/execution-backends.md`,
   `modules/frontend.md`; ROADMAP 5.4b built, live gate open.
+
+## [2026-11-18] probe | ORCA memory behaviour and host RAM/disk facts for unit 5.5
+- Prober (laptop ORCA 6.1.1, pinned; uni read-only): the default `%maxcore` is **4096** (not the
+  wiki's 4000); ORCA's "MB" is MiB (a fit-check line, 2.27 = 2.2676 MiB); ibuprofen Freq at 4 ranks
+  peaks at ~459 MiB per rank whether the cap is 2000 or 500 (the cap is a cap, not a use), and at
+  `%maxcore 100` overshoots it ~1.9× with no warning; per-rank RSS ≈ ORCA's internal use + ~100 MiB,
+  master + mpirun ~140 MiB. Host formats recorded (`/proc/meminfo`, `df --output=avail,target -B1`;
+  `df -P --output` fails on coreutils 9.4). Scratch: 6.3 MB final / 180 MB mid-run for that Freq; the
+  largest uni job dir 182.6 MB.
+- Record: `wiki/orca/memory.md` (new); stale "4000 MB" corrected in `orca/gotchas.md`,
+  `infrastructure/uni-server.md`; `orca/performance.md`'s ceiling table points to it.
+
+## [2026-11-18] probe | Live checks: healthy wrapper line, and a killed wrapper ends `lost`
+- `a6b05a87`'s `.tsp-out` shows `wrapper: session empty at ORCA's return` (o24.10).
+- `d50caf4a` (throwaway): wrapper SIGKILLed while running → terminal `lost` in ~2 min with the
+  "wrapper died" text and badge; uni left with no job process, no `.cancelled`, `.tmp` removed;
+  fetched evidence sha256-identical to the server (o25.10 check 1).
+- Record: `wiki/architecture/remote-live-run-b4.md` § Live checks of the B4 fixes and 5.4b.
+
+## [2026-11-18] decision | ADR-024 o26 — unit 5.5 accepted
+- **Decided (Anton):** the memory and disk preflight **warns, never blocks**; the warning shows
+  **before Create** with a one-click "Set `%maxcore` to P", plus a **fresh check at submit**; **local
+  jobs too**; the **local default `%maxcore` is lowered** to a value that fits (P for the preset);
+  derived local fan-outs get the fitted default but **no warning of their own** (out of scope);
+  **one estimator, in Rust**; the live gate runs **after the commit**.
+- **Settled by the orchestrator:** U = n × (m + 100) + 140 MiB from the cap (m = `%maxcore` or ORCA's
+  measured 4096; n = the preset's count locally, `min(%pal, mask)` remotely, `PALn` → the larger);
+  warn at U > 0.9 × RAM or < 10 GiB free; P = ⌊((0.9 × MemTotal − 140)/n − 100)/100⌋ × 100, none below
+  300; the server's MemTotal and free disk recorded at the connection test (schema v23, inside the
+  stamp's target-bound `UPDATE`, NULL on a failed read, cleared with the stamp, never gating);
+  prepare's MemAvailable and free bytes fresh at submit, bounded and never failing; Decision h's
+  "nprocs ≤ physical cores" bullet dropped.
+- **Review:** DESIGN round 1 FAIL (1 HIGH + 5 MED + 7 LOW), applied; round 2 PASS WITH FINDINGS
+  (1 HIGH + 3 MED + 9 LOW), applied as o26.13 — two verdicts on the New Job screen (Local for Create,
+  the selected server for Create & Run), the submit threshold behind our own live job (MemTotal, not
+  MemAvailable), no local submit-time check, the fan-out accessor, one parser for the button
+  (`apply_maxcore`), the request sequence number, the wording.
+- Facts: `wiki/orca/memory.md` (the probe of the same day).
+
+## [2026-11-18] feat | Unit 5.5 Part A — the memory and disk preflight (Rust, v23)
+- **Landed (Rust):** `memory.rs` — `read_maxcore` (the `#…` rule of `enclosing-block.ts`; two lines
+  or a malformed one → "cannot read"), `apply_maxcore` (the same locator: replace, else after the
+  first `!` line, else the top; post-condition reads P back), `estimate` (local n from
+  `resolve_cpu_config`, remote n through `align_remote_pal`, `PALn` → max), the 0.9 / 10 GiB
+  thresholds and P in exact integer arithmetic, the strict `meminfo_kib` / `parse_df_avail`,
+  `host_resources_at` (`/proc/meminfo` behind a path seam, `statvfs` `f_bavail × f_frsize`),
+  `submit_memory_notice` (MemAvailable alone on the profile, MemTotal behind our own live job).
+  `commands/memory.rs` — `memory_estimate` (seq echoed; Local always, the selected server too),
+  `apply_maxcore`, `host_resources`, `local_fitted_maxcore` (P; 300 floor; 2000 unreadable).
+  Connection test: `df` and `meminfo` records (each `timeout -k 1 3`), `host_facts`, stored by
+  `set_profile_verified_conn`'s own `UPDATE`, NULLed by `clear_verified`. **Schema v23**:
+  `server_profiles.mem_total_kib`, `disk_avail_bytes`, `host_facts_at`, nullable, guarded ALTERs.
+  `prepare.sh` reports `meminfo`/`df` (`-` on a failed read, never `die`), parsed into
+  `PrepareFacts::host` and absent-tolerant; `ready_server` returns its last prepare's facts;
+  `CALL_TIMEOUT`'s budget re-derived (prepare 36 s < 60 s); `SubmitResponse.memory_notice` beside
+  `notice`, on Create & Run and Retry only, never a refusal.
+- **Tests:** crate **1068 passed, 29 ignored** (1032 / 28 at HEAD cb2349d: +36, +1 ignored — the
+  real-v22-copy migration test, by hand). **31 negative controls, all red, each restore
+  byte-identical** (scratchpad `run_55_controls.sh`): the estimator (local `%pal`, remote min, `PALn`,
+  both overheads, two `%maxcore` lines), thresholds (0.75, `>=`, `<=`), P's rounding, unknown read as
+  0, `f_bfree`, the button (a duplicate line, an insert inside `%pal`), the local default fixed at
+  2000, Create checked against the selected server, the seq, the stored facts (a failed read failing
+  the test, `COALESCE` keeping old values, a separate `UPDATE`, `clear_verified` keeping them), a df
+  failure failing `Root`, `-P` in either script, `ready()` requiring the df, the notices (merged,
+  refusing, the job counting itself, the pending path reaching the check), v23 `NOT NULL`. Two script
+  controls run in-suite: a prepare that `die`s on a failing df breaks a cancel delivery; a conntest
+  that fails on it has no verdict.
+- **Clarifications** recorded as ADR-024 **o26.14** (accepted by the orchestrator): submit-time
+  MemTotal read fresh by prepare; `memory_notice` also says what was not checked; NULL server facts →
+  Rust returns U with `ram` unknown and Part B hides it; the conntest reads bounded too; the wire
+  headers stay v1; a single malformed `%maxcore` line is replaced; `PALn` = any `PAL<digits>`, the
+  largest; the `f_bfree` control is filesystem-dependent; the test-edit and Part B scope notes.
+- **Open:** Part B (the New Job row, the button, the local default and the fan-out accessor, the
+  view's `memory_notice`, hiding U when `ram.state == "unknown"`); Anton's live gate after the commit,
+  with `tauri dev` stopped and the DB backed up before the v22 → v23 migration.
+- Wiki: ADR-024 o26.14; `modules/server-profiles.md` (v23 columns, the stamp's facts, the clears, the two records),
+  `modules/remote-jobs.md` (prepare's facts and budget), `modules/execution-backends.md` (the
+  preflight section, the commands, `memory_notice`); ROADMAP 5.5 Part A built.
+
+## [2026-11-19] feat | Unit 5.5 Part B — the preflight in the view
+- **Landed (view, `src/memory/`):** `useMemoryEstimate` (debounced `memory_estimate` on every edit
+  and Run On change, each request with the next `seq`, only the latest reply applied) and the
+  `role="status"` `MemoryPreflightRow` under New Job's create bar — one line for this machine, two
+  with a server selected ("Create (runs locally)", "Create & Run on <server>"), each with U, the RAM
+  and its 0.9 × line, a server's "measured at the last connection test, <date>", the free disk, and
+  the **"Set %maxcore to P"** button whose `apply_maxcore` text replaces the buffer; unknown RAM →
+  "server memory unknown — re-run the connection test" with no U (o26.14.3); hidden when nothing warns
+  and every fact is known; Create and Create & Run never disabled (`createAllowed`). The builder's
+  `%maxcore` default follows Run On (Local → the fitted value, a server → 2000) while untouched. The
+  fan-out accessor (`local-maxcore.ts`: loaded at start, re-read on a CPU-preset save, 2000 until
+  loaded) feeds `scene/reopt.ts` (and the connectivity children), `scene/optts.ts` (both paths: the
+  scan and NEB refines) and `crest/reopt.ts`. The job detail shows `memory_notice` beside the `%pal`
+  notice on Create & Run and Retry; Settings → Servers shows a profile's stored RAM / free disk / date.
+- **Part A gaps (verifier, PASS WITH FINDINGS on Part A):** F1 — the host-fact reads are proven
+  bounded: a `df` and a `head -5 /proc/meminfo` that sleep 30 s → the real prepare answers `-` with rc
+  0 and the connection test records rc 124 with its full pass, each within seconds under a 20 s bound
+  of its own; F2 — several `PALn` tokens take the largest; F3 — a pending-only job counts as live,
+  recorded as o26.14.10.
+- **Tests:** crate **1071 passed, 29 ignored** (1068 at Part A: +3); `tsc` clean; vitest **1174
+  passed, 2 skipped** of 1176 (1154 before: +20). **Controls, all red, each restore byte-identical:**
+  35 Rust (`run_55_controls.sh`: Part A's 31 + F1 ×3 — the `timeout` dropped from prepare's `fact`,
+  the conntest `df`, the conntest `meminfo` — + F2 `.min()`), 15 TS (`run_55_ts_controls.sh`: U shown
+  for unknown RAM, pure and DOM; Create disabled by a warning; one verdict with a server; an older
+  reply applied; the button appending; the default 2000 for Local, pure and in the form; a touched
+  field overridden; each of the four fan-out sites keeping 2000; the memory notice folded into
+  `notice`; one banner only).
+- **Open:** Anton's live WebKitGTK gate **after the commit** — before it reaches his checkout, stop
+  `tauri dev` and back up the DB (the v22 → v23 migration); then re-run uni's connection test and check
+  the New Job row for Local and for uni with an input without `%maxcore`, the button, the builder's
+  local default, and the submit notices.
+- Wiki: `modules/frontend.md` (the preflight section, the builder default, the notices),
+  `modules/execution-backends.md` and `modules/server-profiles.md` point to it; ADR-024 o26.14.10;
+  ROADMAP 5.5 built, pending the live gate.

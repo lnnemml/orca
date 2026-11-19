@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { reloadLocalMaxcore } from "../memory/local-maxcore";
 
 import { ServersSection } from "../servers/ServersSection";
 import type { CpuPresetInfo, KeySource, ModelInfo } from "../types";
@@ -127,6 +128,8 @@ export function SettingsScreen() {
         await invoke("set_setting", { key: "cpu_mask", value: cpuMask });
         await invoke("set_setting", { key: "cpu_nprocs", value: cpuNprocs });
       }
+      // The local default %maxcore depends on the preset's ranks (ADR-024 o26.13.4): re-read it.
+      void reloadLocalMaxcore();
       setCpuSaved(true);
     } catch (e) {
       setError(String(e));

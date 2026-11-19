@@ -31,7 +31,7 @@ scoped `#[allow(dead_code)]` until units 5.3/5.4 call all of it (the poller, rec
 | `sync.rs` | rsync argv (`upload_argv`, `download_argv`), the download filter `download_filter_args`, its leaf patterns `download_patterns` and its Rust mirror `download_selects`, `list_dir`/`upload_expected`/`expected_values` (local file lists with sha256), `ListArgs` + `parse_list_reply` (the server's listing), `compare_download` (the download post-condition) |
 | `poll.rs` | `PollLogArgs`, `parse_poll_reply` → `LogChunk` with the length post-condition; `check_echo` (the n-6d echo check every 5.3 reply shares) |
 | `submit.rs` | `remote_job_dir`, `SubmitArgs` (its `SubmitMode`: a submit, or the re-enqueue form, ADR-024 o25.4), `parse_submit_reply` → `SubmitReply` with the typed `Refusal` (`Blocked { blockers: Vec<Blocker> }`, `SlotCheckFailed`, `LockBusy`, `UploadMismatch`, `Other`, ADR-024 o23.7); `LabelArgs`, `parse_label_reply` → `LabelFacts`, `label` → `Label` (the label rules) |
-| `prepare.rs` | the calls that ready the server before an upload, a cancel's delivery or a sweep: `UPLOADED` (wrapper, cancel, collect), `PrepareArgs`, `parse_prepare_reply` → `PrepareFacts`, `check_prepare` → `Prepared` or `ShapeRefusal`; `InstallArgs`, `parse_install_reply` → `[Installed; 3]` |
+| `prepare.rs` | the calls that ready the server before an upload, a cancel's delivery or a sweep: `UPLOADED` (wrapper, cancel, collect), `PrepareArgs`, `parse_prepare_reply` → `PrepareFacts` (with the host facts, `PrepareFacts::host`), `check_prepare` → `Prepared` or `ShapeRefusal`; `InstallArgs`, `parse_install_reply` → `[Installed; 3]` |
 | `run.rs` | the trampoline's `RunArgs` (`JobScript::{Cancel, Collect}`) and `parse_run_reply` → `RunReply`; a not-on-server cancel's `MkjobArgs` and `parse_mkjob_reply` (o 14.1, o22.4.3) |
 | `race_model.rs` | test-only model of the d′ race (`.started`/`.cancelled`) |
 | `script_tests.rs` | test-only: the real job scripts run on this machine; the shared `Lab` harness (see Tests) |
@@ -44,6 +44,8 @@ Rule #6 is shared with the local backend: `local_backend::has_normal_termination
 `local_backend::TAIL_BYTES` (5 KiB) of the snapshot's output tail.
 
 ## A remote job in the database (schemas v20–v22)
+
+(Schema v23 is the server profile's host facts, not a job column — [server-profiles.md](server-profiles.md).)
 
 `jobs` carries the job's **coordinates**: `remote_host`, `remote_job_dir` (absolute,
 `<root>/jobs/<job_id>`) and `remote_socket`, nullable TEXT, written once at submit before any ssh and
@@ -389,7 +391,10 @@ dir, `<root>/bin`, `<root>/tsp` and the three scripts, in that order, it reports
 exists (only ENOENT is `absent`; any other `stat` failure is an `error` record and exit 3), its kind
 (`stat -c %F`, which does not follow a symlink) and its `realpath -e` (`-` when it does not resolve).
 For each script it adds the sha256, computed only for a regular file (a fifo would block
-`sha256sum`), under `timeout -k 1 5`.
+`sha256sum`), under `timeout -k 1 5`. Last come the two **host facts** (ADR-024 o26.6): `head -5
+/proc/meminfo` and `df --output=avail,target -B1 <root>` (never `-P` with `--output` — they conflict
+on coreutils 9.4, [orca/memory.md](../orca/memory.md)), each under `timeout -k 1 3`, each its stdout
+byte-exact or `-` when the read failed or timed out.
 
 ```text
 orcastudio-prepare 1
@@ -398,8 +403,23 @@ argc 5, arg <len> × 5          the values, verbatim
   kind <len>                   ┐ only for present
   realpath <len>|-             │
   sha256 <hex>|-               ┘ scripts only: a regular file's sha256, else -
+meminfo <len>|-                head -5 /proc/meminfo, or - (a failed read)
+df <len>|-                     df --output=avail,target -B1 <root>, or - (a failed read)
 end
 ```
+
+**The host facts are recorded, never gating.** The prepare call also readies the server for a
+cancel's delivery, a sweep, `Lost`, the re-enqueue, the pending re-check and `collect_readying`, none
+of which may break on a df failure. So a failed read is a `-` fact — the shell's `fact` helper never
+reaches `die`, never changes the exit status — and `parse_prepare_reply` accepts `-`, a payload in any
+other format (`None`) and the records' **absence** alike; only a broken frame (a wrong length, the two
+out of order, a duplicate, an unknown record) is an error. The facts land in `PrepareFacts::host`
+(`memory::SubmitHostFacts { mem_total_kib, mem_available_kib, root_avail_bytes }`, KiB / KiB / bytes)
+through the strict parsers of `crate::memory`; `check_prepare` never looks at them, so `ready()` never
+depends on a df. The header stays `orcastudio-prepare 1` (stdin-fed, the records additive; o26.14.5).
+`ssh_backend::ready_server` returns the facts of its **last** successful prepare; only
+the submit the user started reads them (its `memory_notice`,
+[execution-backends.md](execution-backends.md#the-memory-and-disk-preflight-adr-024-o26)).
 
 `parse_prepare_reply` → `PrepareFacts` re-checks what it can (rule #9): a sha256 appears exactly for a
 regular file (`regular file` or `regular empty file`), and no path exists below a component reported
@@ -477,7 +497,8 @@ framing change (ADR-024 o 14.1).
 
 **Laptop-side bounds** (`ssh_backend`), derived from the scripts' own bounds with margin, never
 below them: `CALL_TIMEOUT` 60 s for prepare, install, label and mkjob (ssh's 10 s connect + at worst
-the install's six `sha256sum`s at `timeout -k 1 5`, 36 s = 46 s); `RUN_TIMEOUT` 60 s for the
+the install's six `sha256sum`s at `timeout -k 1 5`, 36 s = 46 s; prepare's three `sha256sum`s, 18 s,
+and its two host-fact reads at `timeout -k 1 3`, 8 s, = 36 s); `RUN_TIMEOUT` 60 s for the
 trampoline (10 s connect + `realpath` 6 s + `sha256sum` 6 s + cancel's 20 s budget + 1 s kill-after =
 43 s); `SUBMIT_TIMEOUT` 60 s (o 3.3.1).
 
@@ -1077,7 +1098,21 @@ terminal steps are the existing `finalised` (`status` `lost` or `failed`, `outco
   the same lab: a Create & Run whose slot is held by a pinned `sleep` on the mask goes pending (the
   real `blocked` reply naming the sleep's pid); the poller's re-check while it is held runs only
   prepare + `submit.sh` and leaves the job dir's names unchanged; once the sleep is reaped, the next
-  re-check enqueues it (`Enqueued(0)`, the flag cleared, `.enqueued` published). The scripts on their own: install readies a fresh root (all three), `kept` on a second install, wrong
+  re-check enqueues it (`Enqueued(0)`, the flag cleared, `.enqueued` published). **The host facts**
+  (o26.6): with a `df` that fails on the server (`a_failing_df_never_breaks_ready_or_a_cancel_delivery`)
+  the real prepare still answers ready — the submit enqueues, its `memory_notice` says the free disk
+  was not checked — and a cancel's delivery through the same prepare is `CancelDelivered`, then
+  `cancelled`; the in-suite negative control swaps in a prepare that `die`s on the df failure and the
+  delivery is not made, the job stays `queued`, no `.cancelled`. `the_real_prepare_reads_this_machines_meminfo_and_df`:
+  the real prepare's `MemTotal` equals the one Rust reads from `/proc/meminfo`, and its `df` free bytes
+  are within 256 MiB of `statvfs`. `the_prepare_host_fact_reads_are_bounded`: a `df` and a `head -5
+  /proc/meminfo` that sleep 30 s → the real prepare answers rc 0 with both facts `-` within seconds,
+  under a 20 s bound of its own (negative control: the `timeout` dropped from `fact` → red). The
+  prepare parser on its own
+  (`the_host_facts_parse_and_their_absence_is_never_an_error`): KiB/bytes from the recorded formats;
+  `-`, garbage and absence → `None` with `ready()` unchanged; a wrong length, the two out of order, a
+  duplicate or an unknown record → an error (negative control: `ready()` requiring the df fact → red).
+  The scripts on their own: install readies a fresh root (all three), `kept` on a second install, wrong
   bytes under the cancel script's name replaced by rename (new inode, the others kept), bytes that do
   not hash to the name never published (no temp left), a symlinked `bin/` or `tsp/` refused with
   nothing written through it; mkjob makes the dir and refuses, after the mkdir, a job dir linked outside `jobs/` and a sibling link `jobs/w3 -> jobs/w1` (only the job dir's own realpath catches that one; a permanent mutant that reports the job dir unresolved must miss it); the

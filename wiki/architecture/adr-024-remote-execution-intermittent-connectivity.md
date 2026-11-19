@@ -1,6 +1,6 @@
 # ADR-024: Remote execution under intermittent connectivity
 
-**Status:** Accepted · 2026-10-02 (Proposed → Accepted after the review + acceptance amendments below) · amended 2026-10-03 (probe; probe review; d′ resolution — ready for implementation; l — unit 5.2 script and classifier shape; m — 5.3 submit rules; n — 5.1 Part B profile and connection test) · amended 2026-10-05 (o — 5.3 transport, sync and monitoring; accepted after DESIGN round 4; o13 — Part A2 amendments, accepted after DESIGN review 2026-10-05; o14 — B1 amendments, accepted after DESIGN review 2026-10-05) · amended 2026-10-06 (o15 — B1 Part B: the in-flight guard's scope, accepted after DESIGN review 2026-10-06; o16 — B2: the remote live log is pushed, accepted after DESIGN review 2026-10-06; o17 — B2 Part A: classifier `Cancelled` terminal, drain while watched, accepted after DESIGN review 2026-10-06; o18 — B2 Part B: exit leaves in-flight ssh/rsync to the OS, accepted after DESIGN review 2026-10-06; o19 — B3: the poller's remote state reaches the view, accepted after DESIGN review 2026-10-06) · amended 2026-10-07 (o20 — B3 Part B: run target remembered app-wide, run target only via Create & Run, Withdraw confirms; accepted after DESIGN review 2026-10-07) · amended 2026-10-17 (o21 — Cancel refuses a live remote job before the guard; accepted after DESIGN review 2026-10-17; o22 — unit 5.4a: remote cancel, the pending cancel and the guard; accepted after DESIGN review 2026-10-17, round 2 PASS WITH FINDINGS applied; o22.11–12 — A2a clarifications, reviewed with A2a's CODE verification 2026-10-17) · amended 2026-10-18 (o22.13 — A2b clarifications; accepted after DESIGN review 2026-10-18, round 2 PASS WITH FINDINGS applied; o22.14 — Part B: commands and view; accepted after DESIGN review 2026-10-18, round 2 PASS WITH FINDINGS applied) · amended 2026-10-19 (o23 — unit 5.4c: the pending submit; accepted after DESIGN review 2026-10-19, round 2 PASS WITH FINDINGS applied as o23.13) · amended 2026-11-18 (o24 — B4 fixes: a per-host cap on concurrent ssh/rsync, an app-owned keepalive, the wrapper waits for its session; accepted after DESIGN review 2026-11-18, rounds 1–3 PASS WITH FINDINGS applied) · amended 2026-11-18 (o25 — unit 5.4b: `Lost` terminal, the bounded re-enqueue with a server-side counter, the `Indeterminate` count; accepted after DESIGN review 2026-11-18: round 1 FAIL applied, round 2 PASS WITH FINDINGS applied as o25.14)
+**Status:** Accepted · 2026-10-02 (Proposed → Accepted after the review + acceptance amendments below) · amended 2026-10-03 (probe; probe review; d′ resolution — ready for implementation; l — unit 5.2 script and classifier shape; m — 5.3 submit rules; n — 5.1 Part B profile and connection test) · amended 2026-10-05 (o — 5.3 transport, sync and monitoring; accepted after DESIGN round 4; o13 — Part A2 amendments, accepted after DESIGN review 2026-10-05; o14 — B1 amendments, accepted after DESIGN review 2026-10-05) · amended 2026-10-06 (o15 — B1 Part B: the in-flight guard's scope, accepted after DESIGN review 2026-10-06; o16 — B2: the remote live log is pushed, accepted after DESIGN review 2026-10-06; o17 — B2 Part A: classifier `Cancelled` terminal, drain while watched, accepted after DESIGN review 2026-10-06; o18 — B2 Part B: exit leaves in-flight ssh/rsync to the OS, accepted after DESIGN review 2026-10-06; o19 — B3: the poller's remote state reaches the view, accepted after DESIGN review 2026-10-06) · amended 2026-10-07 (o20 — B3 Part B: run target remembered app-wide, run target only via Create & Run, Withdraw confirms; accepted after DESIGN review 2026-10-07) · amended 2026-10-17 (o21 — Cancel refuses a live remote job before the guard; accepted after DESIGN review 2026-10-17; o22 — unit 5.4a: remote cancel, the pending cancel and the guard; accepted after DESIGN review 2026-10-17, round 2 PASS WITH FINDINGS applied; o22.11–12 — A2a clarifications, reviewed with A2a's CODE verification 2026-10-17) · amended 2026-10-18 (o22.13 — A2b clarifications; accepted after DESIGN review 2026-10-18, round 2 PASS WITH FINDINGS applied; o22.14 — Part B: commands and view; accepted after DESIGN review 2026-10-18, round 2 PASS WITH FINDINGS applied) · amended 2026-10-19 (o23 — unit 5.4c: the pending submit; accepted after DESIGN review 2026-10-19, round 2 PASS WITH FINDINGS applied as o23.13) · amended 2026-11-18 (o24 — B4 fixes: a per-host cap on concurrent ssh/rsync, an app-owned keepalive, the wrapper waits for its session; accepted after DESIGN review 2026-11-18, rounds 1–3 PASS WITH FINDINGS applied) · amended 2026-11-18 (o25 — unit 5.4b: `Lost` terminal, the bounded re-enqueue with a server-side counter, the `Indeterminate` count; accepted after DESIGN review 2026-11-18: round 1 FAIL applied, round 2 PASS WITH FINDINGS applied as o25.14) · amended 2026-11-18 (o26 — unit 5.5: the memory and disk preflight; accepted after DESIGN review 2026-11-18: round 1 FAIL applied, round 2 PASS WITH FINDINGS applied as o26.13)
 
 Refines [ADR-003](adr-003-execution-backend.md) (the `ExecutionBackend` trait + job state
 machine) and extends [ADR-023](adr-023-server-agnostic-remote-execution.md) (one `SshBackend`
@@ -193,13 +193,13 @@ expected window"**, an informational state — **not** an error. A failed connec
 window is still a real error.
 
 **h) Resource invariants + preflight (Amended 2026-10-02, review).** Before a job is enqueued to
-a profile, a **preflight** checks, in the profile's measured terms (rule #10):
-- **`nprocs ≤ physical cores of the slot`** — oversubscribing a slot's mask runs *slower*, not
+a profile *(o26: and before a local job is created — local jobs are covered too)*, a **preflight** checks, in the profile's measured terms (rule #10):
+- **`nprocs ≤ physical cores of the slot`** *(o26.3: dropped — `%pal` is aligned down to the mask's **logical** CPUs (o14.2) and locally to the preset, so no input oversubscribes)* — oversubscribing a slot's mask runs *slower*, not
   faster (gotchas / `align_pal_nprocs`).
 - **`nprocs × %maxcore ≤ the profile's RAM budget`** — `%maxcore` is per-process, so the whole
-  job's peak is `nprocs × %maxcore`; swapping is a failure mode (uni-server.md: swap-is-failure).
+  job's peak is `nprocs × %maxcore` *(o26.1: a cap, not a use (M); per-rank overhead ~100 MiB + ~140 MiB once (I); overshot when it binds (M); [orca/memory.md](../orca/memory.md))*; swapping is a failure mode (uni-server.md: swap-is-failure).
 - An input **without `%maxcore`** (a hand-written Monaco input — the builders always emit it)
-  inherits ORCA's **default 4000 MB/proc since 6.1.0** (`../orca/gotchas.md`); on a 24-proc,
+  inherits ORCA's **default 4000 MB/proc since 6.1.0** *(4096 on 6.1.1, M; its unit MiB, I — o26.1)* (`../orca/gotchas.md`); on a 24-proc,
   62 GiB host that is ~96 GB → over RAM. Preflight raises a **warning that proposes a concrete
   value for the user to confirm**; **silent insertion is forbidden** (honest-or-absent — we do
   not mutate the user's input behind their back).
@@ -3231,6 +3231,198 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
            names), so a busy slot's blockers are listed as a pending submit's are; a never-start
            awaiting its confirmation is shown as waiting ("never started — confirming"), never as a
            failure.
+
+26. **Unit 5.5: the memory and disk preflight** (2026-11-18; realises Decision h). Decided by Anton:
+    **warn, never block**; the warning shows **before Create** with a one-click fix, plus a fresh check
+    at submit; **local jobs too**; the **local default `%maxcore` is lowered** to a value that fits;
+    derived local fan-outs are **out of scope**; **one estimator, in Rust**; the live gate runs
+    **after the commit**. The rest are the orchestrator's. DESIGN round 1: FAIL (1 HIGH + 5 MED +
+    7 LOW), applied in this text. Facts: [orca/memory.md](../orca/memory.md) (ORCA 6.1.1, measured
+    the same day).
+    1. **The cap-based estimate.** From the job's input and its run target:
+       **U = n × (m + 100) + 140 MiB**, where
+       - m = the input's `%maxcore` value (MiB, I — memory.md), or ORCA's default **4096** if absent
+         (the value M, its unit I);
+       - n = what the backend will actually run:
+         - **local:** always `resolve_cpu_config`'s count (the preset's ranks, or Custom's
+           `cpu_nprocs`, with its fallbacks) — `align_pal_nprocs` rewrites an explicit `%pal` in
+           **both** directions (ADR-025 item 4), so the input's own `%pal` is ignored;
+         - **remote:** `min(explicit %pal nprocs, the mask's distinct logical CPUs)` or, without
+           `%pal`, the mask count (o14.2's downward alignment);
+         - a `! … PALn` keyword, with or without `%pal`, makes n = max(that n, the backend's count) —
+           which of the two ORCA honours is ADR-025's open question, so the larger is assumed.
+       - +100 MiB per rank and +140 MiB once are the runtime overheads read off memory.md's table (I).
+       U is an **estimate from the cap, not an upper bound**: real use is usually far lower (the
+       measured Freq used ~459 MiB per rank under a 2000 cap), and a cap that binds is exceeded
+       (1.93× at 100) — heavier modules' overshoot is unmeasured. The warning says so.
+    2. **One estimator, in Rust** (Anton). A pure `memory_estimate(input, target)` (and its Tauri
+       command, called debounced from the New Job editor and on target change) reuses
+       `read_pal_nprocs`, the mask parser (`parse_core_mask`/`distinct_cpus`) and
+       `resolve_cpu_config`; it gains a `read_maxcore` (case-insensitive `%maxcore N`, a simple
+       directive with no `end`, after stripping `#` comments as `read_pal_nprocs` does; two
+       `%maxcore` lines or a malformed value after stripping → "cannot read the input's memory
+       setting", no estimate — rule #9, never guess). The submit-time check calls the same function.
+    3. **When it warns (policy, not a measured threshold):** U > **0.9 × MemTotal** of the target
+       (10 % for the OS), or free space on the target's job root < **10 GiB** (the largest measured
+       job dir is 183 MB, a mid-run Freq scratch 180 MB; heavier methods unmeasured — a conservative
+       floor). Decision h's "nprocs ≤ physical cores" bullet is dropped (no input can oversubscribe:
+       remote `%pal` is aligned down to the mask's **logical** CPUs, local to the preset). Worked: uni,
+       builder default 24 × 2000 → U ≈ 49.4 GiB < 0.9 × 62.75 = 56.5 GiB → no warning; a hand input
+       without `%maxcore` (24 × 4096) → ≈ 98.5 GiB → warns.
+    4. **The proposal P** = ⌊((0.9 × MemTotal − 140) / n − 100) / 100⌋ × 100 MiB (the builder's
+       step); P < 300 → the warning says the target is too small for n ranks at any useful `%maxcore`
+       and proposes nothing. Worked: uni at 24 ranks → 2300; laptop (15.25 GiB) at 8 ranks → 1600.
+       (`orca/performance.md`'s older "~1400 MB at 8 ranks" table has no recorded derivation; P, from
+       memory.md's measurements, governs.) The button "Set `%maxcore` to P" edits the **editor buffer**,
+       one deterministic rule (as `align_pal_nprocs` places `%pal`): replace the single existing
+       `%maxcore` line, else insert `%maxcore P` right after the **first** `!` line, else at the top —
+       never silently, only before Create (the input is immutable afterwards, ADR-025 item 6).
+    5. **The local default is lowered** (Anton). When the target is local, the builder's `%maxcore`
+       field defaults to the local P (from `memory_estimate`'s proposal for the current preset; 2000
+       if the host facts are unreadable) — visible in the field and in the generated input, so not a
+       silent insertion; the remote default stays 2000. The local fan-outs that build from
+       `DEFAULT_BUILDER_STATE` (re-opt, OptTS, scan/NEB refines, connectivity) use the same local P
+       through one frontend accessor, so they fit too. They get **no warning of their own**: derived
+       local fan-outs are out of scope (Anton) — named here and in Open.
+    6. **Where the numbers come from.**
+       - **Server, stored at the connection test:** `head -5 /proc/meminfo` (MemTotal in kB = KiB —
+         M by a determiner: on the laptop `MemTotal × 1024` = `getconf _PHYS_PAGES × PAGESIZE` =
+         `free -b` total = 16 372 129 792) and `df --output=avail,target -B1 <root>` (**not** `-P`,
+         which conflicts with `--output` on coreutils 9.4 — M); df's row parses as first token = bytes,
+         rest = target. Stored in **schema v23** nullable columns on `server_profiles`:
+         `mem_total_kib`, `disk_avail_bytes`, `host_facts_at`. **Written only inside
+         `set_profile_verified_conn`'s `UPDATE`** (the same target-bound `WHERE`, 6c), with **NULL on
+         a failed or unparsable read** (old values are never kept); **`clear_verified` NULLs them**
+         too (n5 target edit, n6 non-full-pass re-test, and the `refused-kup` clears). **Recorded,
+         never gating** (n9): a failed read does not fail the test and does not clear `verified_at`.
+         The existing `findmnt -no FSTYPE --target` check (n8's ext4 allow-list) is left unchanged;
+         the df read names its own mount.
+       - **Server, fresh at submit:** `prepare.sh` (stdin-fed — `STDIN_SCRIPTS`, no sha/install
+         change) also reports MemAvailable and the root's free bytes. **Recorded, never gating:** each
+         read is bounded (`timeout -k 1 N </dev/null`), a failed read is a `-` fact — never `die`,
+         never `error`/exit 3 — and `parse_prepare_reply` accepts its absence, because `ready_server`
+         is shared with cancel delivery, sweep, Lost, re-enqueue, the pending re-check and
+         `collect_readying`, none of which may break on a df failure. The `CALL_TIMEOUT` budget comment
+         (`ssh_backend.rs` "prepare's three = 28 s") is re-derived. `ready_server` returns the facts of
+         its last successful prepare. Rust compares U (same estimator) with **MemAvailable** (other
+         users' load counts now) and free space with 10 GiB, and returns a **separate**
+         `memory_notice` in `SubmitResponse` (beside o14.2's `%pal` `notice`; the view shows both) — on
+         a user-initiated Create & Run and Retry; the poller's pending re-check and re-enqueue show
+         nothing (o23/o25 already gate those).
+       - **Local:** `host_resources` reads `/proc/meminfo` MemTotal and `statvfs` of the app's data
+         dir (`f_bavail × f_frsize`, matching df's Avail; `libc` is already a dependency), behind a
+         path seam for tests; nothing stored.
+    7. **Where it shows.** On the New Job screen, for the selected Run On target and the current
+       buffer: one `role="status"` row (non-blocking, like the parity warning), recomputed on edit and
+       target change, with U, the target's RAM and its date ("measured at the last connection test,
+       <date>" for a server), free disk, P and the button. Server facts NULL → "server memory unknown —
+       re-run the connection test", no estimate. Create and Create & Run are never disabled by it.
+    8. **Not in scope / Open:** derived local fan-outs' warnings (Anton; they use the fitted local
+       default instead); per-module memory needs; peak scratch; choosing n automatically; the
+       overshoot of a binding cap beyond memory.md's note.
+    9. **Gates and negative controls** (each must turn its test red):
+       - Estimate: m explicit / absent (4096); n local = the preset's count even with `%pal nprocs 4`
+         in the input (control: the input's 4 used → red); n remote = min(explicit, mask) and the mask
+         when absent (control: no min → red); `PALn` → max (control: ignored → red); overheads
+         (control: dropped → red); `read_maxcore` with a comment line, `%MaxCore`, two lines,
+         malformed (control: first value taken on two lines → red).
+       - Thresholds and P: the uni-default case does not warn at 0.9 (control: 0.75 → red); the
+         boundary (`>`), the disk boundary, P's rounding, P < 300 → no proposal.
+       - Button edit: replace / after the first `!` / at the top (controls: a duplicate line → red;
+         an insert inside a `%pal` block → red); unavailable after Create.
+       - Stored facts: strict parse of the memory.md fixtures; a failed read → NULL and the test still
+         passes with `verified_at` set (control: failure fails the test → red); written only under
+         `set_profile_verified_conn`'s `WHERE` (control: a separate write → a host edit during the
+         test stores the old host's RAM → red); `clear_verified` NULLs them (control: kept → red);
+         `df -P --output` never used.
+       - prepare: a failing `df` stub leaves `ready()` true and a cancel delivery succeeds (control:
+         `die` on df failure → red); the facts' absence parses.
+       - Notices: `memory_notice` separate from `notice`, both shown on submit and Retry (control: one
+         overwrites the other → red); never a refusal (control); not on poller-sent submits.
+       - View: NULL facts → "unknown", no estimate (control: NULL read as 0 → red); Create never
+         disabled (control: disabled → red); the local default field shows P (control: 2000 → red).
+       - Migration v23: additive, nullable, a v22 fixture keeps every profile (control: NOT NULL →
+         red); `SCHEMA_VERSION` 23.
+    10. **Live gate (Anton, WebKitGTK), after the commit** (Anton): before the code reaches his
+        checkout he stops `tauri dev` and backs up the DB (the established rule — a running watcher
+        migrates the real DB); after the commit he restarts it (v22 → v23), re-runs uni's connection
+        test, and checks the warning row and the button for the local target and for uni with a
+        hand-written input lacking `%maxcore`, and the local default field. Anything wrong → a
+        separate fix commit.
+    11. **Propagation (in this change):** Decision h's bullets marked; ADR-025 item 7 and Open get a
+        pointer to o26 and memory.md (local now covered; MB = MiB); `orca/gotchas.md`'s "future-unit
+        candidate" and "only hand-written inputs run remotely" point to o26.
+    12. **Wiki in the same change as the code:** `modules/server-profiles.md` (stored facts, the
+        clears), `modules/remote-jobs.md` (prepare's facts, the notice), `modules/execution-backends.md`
+        (local resources), `modules/frontend.md` (the warning row, the local default), the schema
+        history (v23), `wiki/log.md` (decision + feat), ROADMAP 5.5.
+
+    13. **DESIGN round 2 clarifications** (PASS WITH FINDINGS, 1 HIGH + 3 MED + 9 LOW; the
+        orchestrator's, within Anton's decisions). **They win over 26.1–26.12 where they differ.**
+        1. **Two targets on the New Job screen** (H-1). "Create Job" makes a draft that can only ever
+           run **locally** (o20.2), while "Create & Run" runs on the selected target. The row therefore
+           evaluates **Local for Create** and **the selected target for Create & Run**, and shows both
+           verdicts when they differ (one line each, each with its own button if it warns). Gate:
+           select = a server, a no-`%maxcore` input → the local verdict warns (control: Create
+           evaluated against the select → red). The builder's default follows the **selected** target
+           (26.5) and only while the user has not touched the `%maxcore` field.
+        2. **The submit-time memory threshold** (M-1): `slot_count` is 1, so a job submitted behind our
+           own running job waits for it. With **no** live remote job of ours on that profile, warn when
+           U > 0.9 × MemAvailable; **with** one, compare with 0.9 × MemTotal (MemAvailable then
+           already has our running job subtracted, a false positive in the common "queue two jobs"
+           case) and show MemAvailable as context only.
+        3. **No local submit-time check** (M-2): the local `submit_job` returns nothing today and stays
+           so; a preset change between Create and Run (e.g. Interactive 8 → Max-throughput 12) is
+           uncovered — named in Open (26.8).
+        4. **The fan-out accessor** (M-3) is a frontend cache of the local P: loaded at app start,
+           re-read when the Settings CPU preset changes; before it loads or if the host facts are
+           unreadable it yields 2000 (today's value — no regression); a P < 300 yields 300. Every
+           fan-out builder (`scene/optts.ts`, `scene/reopt.ts` incl. connectivity, `crest/reopt.ts`,
+           the scan/NEB refines) takes its `%maxcore` from it. Gate: each emits the accessor's value
+           (control: one keeps `DEFAULT_BUILDER_STATE.maxcore` → red).
+        5. **One parser for the button too** (L-7): the edit is a Rust command (`apply_maxcore(input,
+           P)`) that uses `read_maxcore`'s own locator and returns the new text; a commented-out
+           `# %maxcore 3000` is never "replaced". Comments are stripped by the `#…` rule of
+           `src/editor/enclosing-block.ts` (the app's existing rule; ORCA's comment syntax has no
+           rule-#10 record) — **not** "as `read_pal_nprocs` does" (it strips nothing; L-1).
+        6. **Out-of-order estimates** (L-6): each `memory_estimate` request carries a sequence number
+           and the view keeps only the latest; gate (control: an older reply applied → red).
+        7. **Wording** (L-3, L-4, L-9): "no input can oversubscribe" holds for `%pal` only — a `PALn`
+           that ORCA honours, or a Custom preset whose `cpu_nprocs` exceeds its mask, can (o26.1 already
+           assumes the larger); m = 4096 is measured on 6.1.x only (other versions unmeasured — an
+           over-estimate at worst); `host_facts_at` is set when at least one fact was read, and each
+           fact is NULL independently.
+        8. **Gates added** (L-6, M-3, H-1, and `host_resources`): the ones above, plus a
+           `host_resources` fixture gate (a seam path to a fixture `/proc/meminfo`; a tmpdir `statvfs`).
+
+    14. **Part A clarifications** (2026-11-18, the implementer's report on Part A; accepted by the
+        orchestrator within Anton's decisions). **They win over 26.1–26.13 where they differ.**
+        1. **Submit-time MemTotal** is read fresh by the same prepare call as MemAvailable (`head -5
+           /proc/meminfo` gives both), not taken from the stored `mem_total_kib`.
+        2. **`memory_notice` also says what was not checked** ("memory not checked: …", "free disk not
+           checked: …" — an unread fact, an unreadable input, a database read failure); `None` only when
+           everything fits or the attempt never reached the server's facts.
+        3. **NULL server facts → "no estimate" (26.7) is the view's rule:** Rust still returns U with
+           `ram.state == "unknown"` and no P; Part B hides U whenever `ram.state == "unknown"`.
+        4. **The connection test's `df`/`meminfo` reads are bounded too** (`timeout -k 1 3`), so a hung
+           df cannot run the test into `CONNTEST_TIMEOUT` and clear the stamp (which would gate).
+        5. **The wire headers stay version 1** (`orcastudio-conntest 1`, `orcastudio-prepare 1`): both
+           scripts are stdin-fed, so no deployed copy can lag, and the new records are additive.
+        6. **`apply_maxcore` replaces a single malformed `%maxcore` line** (same locator) and refuses two.
+        7. **`PALn`** is any `PAL<digits>` token on a comment-stripped `!` line; several → the largest.
+        8. **The `f_bfree` control is filesystem-dependent:** it bites where the statvfs'd fs has a root
+           reserve (the dev laptop's ext4 `/`), not on a reserve-free fs (tmpfs).
+        9. **Test and scope notes** (26.9 items 8, 9, 11 of the report): existing tests were edited only
+           where the new fields or version require it (`migrate_v21_to_v22` asserts `SCHEMA_VERSION`
+           rather than 22, `assert_cleared` covers the host facts, fixtures carry `df`/`meminfo`, the
+           stamp helper passes host facts, `SubmitAttempt` literals add `memory_notice`); the
+           "duplicate line" control goes red through `apply_maxcore`'s own post-condition; the view gates
+           of 26.9/26.13 (NULL shown "unknown", Create never disabled, the local default field, an older
+           reply applied, the fan-out accessor) are Part B's.
+        10. **A pending-only job counts as live** (verifier F3, accepted as worded in 26.13.2): "a live
+            remote job of ours" is any other `queued`/`running`/`cancelling` remote job on the profile
+            (`live_remote_jobs`), so a job still pending its submit also switches the comparison to
+            0.9 × MemTotal.
 
 ## Alternatives rejected
 

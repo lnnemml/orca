@@ -70,12 +70,12 @@ consumer of an input requires a `%pal` line, and no path reaches ORCA without on
 7. **Memory stays 5.5's.** Auto raises the rank count on a server, so `%maxcore × N` grows with it.
    Measured for uni (2026-11-17, [remote-live-run-b4.md](remote-live-run-b4.md) §Step 1, `/proc/meminfo`):
    62 GiB total, 59 GiB available. *Inferred* (from ADR-024 h's model "peak ≤ nprocs × `%maxcore`",
-   not measured by any project run): the builder's `%maxcore 2000` × 24 ≈ 45–47 GiB fits (ORCA's "MB" read as 10⁶ B or MiB — unmeasured; it fits either way). A RAM check
+   not measured by any project run): the builder's `%maxcore 2000` × 24 ≈ 45–47 GiB fits (ORCA's "MB" read as 10⁶ B or MiB — unmeasured; it fits either way) *(2026-11-18: MiB — inferred from ORCA's own MiB memory lines, [orca/memory.md](../orca/memory.md))*. A RAM check
    against `%maxcore × N` belongs to the 5.5 preflight and is **not** added here; until then a large
    `%maxcore` with auto on a big mask is the user's to size. **Pre-existing exposure, unchanged by this
    ADR:** locally the Interactive preset (8 ranks) × `%maxcore 2000` ≈ 16 GB already exceeds the
    laptop's recorded ceiling (~1400 MB at 8 ranks, `orca/performance.md`), and 5.5's preflight is
-   scoped to server profiles — no unit covers local memory today.
+   scoped to server profiles — no unit covers local memory today. *(Superseded 2026-11-18 by ADR-024 o26: the 5.5 preflight covers local jobs too and lowers the local default `%maxcore`.)*
 8. **Derived jobs** (OptTS, GOAT/IRC re-opt, CREST re-opt) build from `DEFAULT_BUILDER_STATE`, so they
    become auto even when the source job had an explicit `%pal` (before, they got 4 only by accident).
    **Intended** (Anton): derived jobs are auto; they do not inherit a source's `%pal`.
@@ -130,7 +130,7 @@ consumer of an input requires a `%pal` line, and no path reaches ORCA without on
 
 ## Open
 
-- The memory exposure of item 7 until 5.5 (and locally, with no owning unit).
+- The memory exposure of item 7 until 5.5 (and locally, with no owning unit). *(Owned by ADR-024 o26, local included.)*
 - **`PALn` precedence** (carried from ADR-024 o14.2's Open, unmeasured): an editor input that sets its
   count with `! … PAL8` reads as "no `%pal`" to `read_pal_nprocs`, so a backend inserts the full count
   beside it; which of the two ORCA honours is not measured.

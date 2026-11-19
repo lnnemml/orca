@@ -58,7 +58,7 @@ impl Poller<'_> {
         let mut error = match ready_server(traced.runner, &coords.host, root, &coords.job_dir) {
             Err((_, why)) if !tracker.answered() => return Ok(StatusStep::CheckFailed(why)),
             Err((_, why)) => Some(failure(why)),
-            Ok(()) => match cancel_call(traced.runner, coords, root) {
+            Ok(_) => match cancel_call(traced.runner, coords, root) {
                 Ok((0, _)) => None,
                 Ok((rc, stderr)) => Some(CheckError::answered(format!("cancel.sh exited {rc}: {}", tail(&stderr)))),
                 Err(why) => Some(failure(why)),

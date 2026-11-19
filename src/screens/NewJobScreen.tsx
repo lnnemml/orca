@@ -106,6 +106,8 @@ import type { Group, Job, Molecule, ParsedResults, ServerProfile, SidecarStatus 
 import { LAST_RUN_TARGET_SETTING, runTargetOptions } from "../jobs/remote";
 import { loadRunTarget, tauriBridge } from "../jobs/live-wiring";
 import { GroupSelect, resolveGroupAssignment } from "../groups/GroupSelect";
+import { MemoryPreflightRow, useMemoryEstimate } from "../memory/MemoryPreflightRow";
+import { createAllowed } from "../memory/preflight";
 
 /** Charge with an explicit sign: `0`, `-1`, `+1`. */
 function signed(n: number): string {
@@ -376,6 +378,10 @@ export function NewJobScreen({
     [],
   );
   const runTargets = useMemo(() => runTargetOptions(profiles), [profiles]);
+  // The memory and disk preflight (ADR-024 o26.7): recomputed (debounced) on every edit and Run On
+  // change, the latest reply only (o26.13.6). A warning, never a block — see `createAllowed`.
+  const memory = useMemoryEstimate(content, runTarget);
+  const runTargetName = runTarget ? (profiles.find((p) => p.id === runTarget)?.name ?? null) : null;
 
   // Fullscreen viewer (2.5.2e-2) — a VIEW mode, deliberately NOT persisted. Only
   // a CSS class on the viewer container changes (position: fixed); MoleculeViewer
@@ -1495,11 +1501,16 @@ export function NewJobScreen({
   // out-of-range constraint does. `scanOptIssue` is the same guard the panel shows.
   const scanBlockMessage = scanOptIssue(content);
 
-  const canCreate =
-    content.trim().length > 0 &&
-    !creating &&
-    !constraintBlockMessage &&
-    !scanBlockMessage;
+  // The memory preflight is passed in and never consulted: it warns, it does not block (o26.7).
+  const canCreate = createAllowed(
+    {
+      hasContent: content.trim().length > 0,
+      creating,
+      constraintBlock: constraintBlockMessage || null,
+      scanBlock: scanBlockMessage,
+    },
+    memory.reply,
+  );
 
   // The Add-Fragment sources (reagents / import / SMILES / library) — the palette
   // half of the Fragments dock section. Reachable inside fullscreen (unit 2b-ux).
@@ -2132,6 +2143,14 @@ export function NewJobScreen({
         </div>
       ) : null}
 
+      <MemoryPreflightRow
+        reply={memory.reply}
+        error={memory.error}
+        input={content}
+        targetName={runTargetName}
+        onInputChange={setContent}
+      />
+
       <input
         ref={fileInputRef}
         type="file"
@@ -2364,6 +2383,7 @@ export function NewJobScreen({
           <InputBuilderForm
             currentContent={content}
             onGenerate={handleGenerate}
+            runTarget={runTarget}
           />
         ) : null}
       </div>

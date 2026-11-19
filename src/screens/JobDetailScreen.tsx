@@ -3,6 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { message } from "@tauri-apps/plugin-dialog";
 
 import type { Job, ParsedResults, StatusStep, SubmitResponse } from "../types";
+import { submitNotices } from "../memory/preflight";
+import { SubmitNoticeBanners } from "../memory/SubmitNoticeBanners";
 import type { FragmentGeometryVia } from "../scene/oplog";
 import { formatEnergy, formatLaptopUtc, formatWallTime } from "../format";
 import { ConvergenceDashboard } from "../convergence/ConvergenceDashboard";
@@ -95,6 +97,9 @@ export function JobDetailScreen({
   // words, "ok") or a cancel / undo answer (`cancelNotice` / `undoNotice`, "warn": most of them say
   // something is still pending).
   const [notice, setNotice] = useState<{ text: string; tone: "ok" | "warn" } | null>(null);
+  // The submit-time memory and disk notice (ADR-024 o26.6): its own state, shown beside `notice` —
+  // a Create & Run or Retry answer can carry both (`submitNotices`).
+  const [memoryNotice, setMemoryNotice] = useState<string | null>(null);
   // Dashboard accordion: user override (null = follow the default, which is
   // expanded while the job is active, collapsed once it's finished).
   const [dashOpen, setDashOpen] = useState<boolean | null>(null);
@@ -440,9 +445,12 @@ export function JobDetailScreen({
           id: jobId,
           target: runTarget,
         });
-        // A remote submit answers its attempt: Rust's words for a failure, and the `%pal` notice.
-        if (response?.failure) setError(response.failure);
-        if (response?.notice) setNotice({ text: response.notice, tone: "ok" });
+        // A remote submit answers its attempt: Rust's words for a failure, the `%pal` notice and
+        // the memory notice, side by side (o26.6).
+        const shown = submitNotices(response);
+        if (shown.failure) setError(shown.failure);
+        if (shown.notice) setNotice({ text: shown.notice, tone: "ok" });
+        setMemoryNotice(shown.memoryNotice);
       } catch (e) {
         setError(String(e));
       }
@@ -609,11 +617,14 @@ export function JobDetailScreen({
     setRemoteBusy(action);
     setError(null);
     setNotice(null);
+    setMemoryNotice(null);
     try {
       if (action === "retry_submit") {
         const response = await invoke<SubmitResponse>("retry_remote_submit", { id: jobId });
-        if (response.failure) setError(response.failure);
-        if (response.notice) setNotice({ text: response.notice, tone: "ok" });
+        const shown = submitNotices(response);
+        if (shown.failure) setError(shown.failure);
+        if (shown.notice) setNotice({ text: shown.notice, tone: "ok" });
+        setMemoryNotice(shown.memoryNotice);
       } else {
         await invoke<StatusStep>("retry_remote_fetch", { id: jobId });
       }
@@ -730,11 +741,7 @@ export function JobDetailScreen({
           {error}
         </div>
       ) : null}
-      {notice ? (
-        <div className={`banner ${notice.tone}`} style={{ marginBottom: 10 }}>
-          {notice.text}
-        </div>
-      ) : null}
+      <SubmitNoticeBanners notice={notice} memoryNotice={memoryNotice} />
       {remote ? <RemotePanel view={remote} busy={remoteBusy} onAction={runRemoteAction} cancelBusy={cancelBusy} onCancelAction={cancelFamily} /> : null}
       {/* A live remote job's error_message is the remote panel's text (the server's facts), not
           an error banner. */}

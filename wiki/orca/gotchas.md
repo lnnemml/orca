@@ -28,11 +28,12 @@ summary: [orca-basics.md](orca-basics.md#orca-611-install-scheme--laptopserver-p
   the default cycle cap in 6.1.0 now obeys the user's cap.** OrcaStudio never emits `%geom
   MaxIter` (only the `%scf MaxIter` / `%geom maxiter` a user hand-types is preserved by the
   constraint/scan splicers), so **only hand-written editor inputs are affected**.
-- **Default `%MaxCore` = 4000 MB/proc (since 6.1.0) → a manual input with no `%maxcore` can
-  exceed RAM on a many-core host.** On the `uni` server (24 procs, 62 GiB) an input lacking
-  `%maxcore` defaults to 24 × 4000 ≈ 96 GB → swap/failure. Every OrcaStudio builder emits
+- **Default `%MaxCore` = 4096/proc (the value measured on 6.1.1; its unit MiB inferred — [memory.md](memory.md)) → a manual input
+  with no `%maxcore` can exceed RAM on a many-core host.** On the `uni` server (24 procs, 62 GiB) an
+  input lacking `%maxcore` caps at 24 × 4096 MiB ≈ 96 GiB → swap/failure. Every OrcaStudio builder emits
   `%maxcore` (default 2000), so this bites **only hand-written editor inputs** run remotely.
-  (Future-unit candidate: a preflight `%maxcore × nprocs vs profile RAM` guard.)
+  (Future-unit candidate: a preflight `%maxcore × nprocs vs profile RAM` guard.) *(Owned by ADR-024
+  o26 (unit 5.5): a pre-create warning with a proposed value, local jobs included.)*
 - **`orca_plot` interactive menu is unchanged 6.1.0 → 6.1.1 → the pinned stdin script
   (`2`/`4`/`11`/`12`) is safe.** Re-probed on water HOMO/LUMO: the menu text at every step is
   identical and the emitted `.cube` files are **byte-identical** between versions

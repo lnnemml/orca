@@ -17,6 +17,10 @@ export LC_ALL=C
 KILL_USER_PROCESSES=(busctl get-property org.freedesktop.login1 /org/freedesktop/login1
                      org.freedesktop.login1.Manager KillUserProcesses)
 
+# The host facts (ADR-024 o26.6) are recorded, never gating: each read is bounded, so a hung df
+# (a stale network mount) cannot run the test into CONNTEST_TIMEOUT and clear the stamp.
+T_FACT=3           # s: timeout -k 1 on each host-fact read (df, meminfo)
+
 # emit_text NAME TEXT — a byte record from a string: "NAME <len>\n<bytes>\n" (LC_ALL=C: bytes).
 emit_text() {
     printf '%s %s\n%s\n' "$1" "${#2}" "$2"
@@ -88,14 +92,18 @@ main() {
         check mkdir mkdir -p -- "$root"
         check realpath realpath -e -- "$root"
         check findmnt findmnt -no FSTYPE --target "$root"
+        # The root's free space: --output with -B1, never -P (they conflict on coreutils 9.4 — M).
+        check df timeout -k 1 "$T_FACT" df --output=avail,target -B1 "$root"
     else
         skip mkdir
         skip realpath
         skip findmnt
+        skip df
     fi
     check busctl "${KILL_USER_PROCESSES[@]}"
     check id id -nG
     check nproc nproc
+    check meminfo timeout -k 1 "$T_FACT" head -5 /proc/meminfo
     if [[ $orca == /* ]]; then
         check orca_x test -x "$orca"
         if (( LAST_RC == 0 )); then

@@ -1,8 +1,10 @@
 # server-profiles — remote execution targets (data layer + connection test)
 
-**Status:** schema v19, save-time validation, the verification lifecycle, the run-target rule,
-the connection-test script with its parser and verdict, the `test_server_profile` command that runs
-it over ssh, and the Settings → Servers UI. The command has run live against uni (see "Live run").
+**Status:** schema v19 (+ the v23 host facts), save-time validation, the verification lifecycle,
+the run-target rule, the connection-test script with its parser and verdict, the
+`test_server_profile` command that runs it over ssh, and the Settings → Servers UI. The host facts
+(RAM, free disk; ADR-024 o26.6) are shown after a verified profile's versions in Settings → Servers
+and feed the New Job memory preflight ([frontend.md](frontend.md)). The command has run live against uni (see "Live run").
 The UI awaits Anton's live WebKitGTK check. Phase 5 unit 5.1, ADR-023,
 [ADR-024](../architecture/adr-024-remote-execution-intermittent-connectivity.md) Decision n.
 
@@ -10,11 +12,11 @@ A **server profile** is the runtime configuration of one remote execution target
 data, never as code: adding a server is a settings action, not a build (ADR-023). One `SshBackend`
 (unit 5.3) serves any number of these rows.
 
-## Table: `server_profiles` (schema v19)
+## Table: `server_profiles` (schema v19, host facts v23)
 
-v18 creates the table and v19 adds `slot_count` and `availability_window` (both in `db.rs`, each
-ALTER guarded by `column_exists`). Every column is a discrete typed column; nothing is stored as a
-JSON blob.
+v18 creates the table, v19 adds `slot_count` and `availability_window`, and v23 adds the three
+host-fact columns (all in `db.rs`, each ALTER guarded by `column_exists`). Every column is a discrete
+typed column; nothing is stored as a JSON blob.
 
 | Column | Type | Meaning |
 |---|---|---|
@@ -31,6 +33,9 @@ JSON blob.
 | `created_at` | TEXT | Insert timestamp. |
 | `slot_count` | INTEGER | `NOT NULL DEFAULT 1 CHECK (slot_count = 1)`. A profile has one `core_mask`, and parallel slots need one disjoint mask each (Decision b). So until slots are measured, the database rejects any value other than 1. Rows from before v19 backfill to 1. |
 | `availability_window` | TEXT? | `HH:MM-HH:MM` in the **laptop's** local time zone, or `NULL` for no window (n item 3). It is only an informational label. |
+| `mem_total_kib` | INTEGER? | v23. `MemTotal` of the server's `/proc/meminfo` at the last full pass, in **KiB** (the file's `kB`, measured to be KiB — [orca/memory.md](../orca/memory.md)). `NULL` when the read failed or the profile was never tested since v23. |
+| `disk_avail_bytes` | INTEGER? | v23. Free bytes on the root's filesystem at the last full pass (`df --output=avail,target -B1 <root>`, df's `Avail`). `NULL` when the read failed. |
+| `host_facts_at` | TEXT? | v23. When the facts were read (UTC, laptop clock); set when at least one of the two was read, else `NULL`. |
 
 `ServerProfile::COLUMNS` and `from_row` (`models/server_profile.rs`) mirror the table one-to-one and
 drive every `SELECT`.
@@ -96,20 +101,30 @@ logic is testable without Tauri. Every command returns `Result<T, AppError>`.
   deletes the row, so the jobs survive. This is the load-bearing invariant, the same as
   `delete_reaction`. A finished remote job keeps its coordinates, so it stays remote without a
   profile (`Job::is_remote`).
-- `set_profile_verified_conn(id, tested, orca_version, openmpi_version?, core_count)` stamps a
+- `set_profile_verified_conn(id, tested, orca_version, openmpi_version?, core_count, host)` stamps a
   **full pass**. `tested` is the `ProfileTarget` the test ran against. The `UPDATE` matches on it,
   so if the profile was edited while the test ran, the write is refused with `AppError::Conflict`
-  and nothing is stamped. A stamp therefore never certifies a target it did not test. It is **not
+  and nothing is stamped. A stamp therefore never certifies a target it did not test. The same
+  statement writes the **host facts** (`host: HostFacts`, o26.6): each one `NULL` when its read
+  failed — an old value is never kept — and `host_facts_at` now when at least one was read. They are
+  written nowhere else, so an edit during the test never stores the old host's RAM. It is **not
   an IPC command** (verifier F3): its only caller is `test_server_profile`, so every stamp comes from
   Rust's own verdict (rule #9). `the_stamp_is_not_an_ipc_command` pins this.
 - `clear_profile_verified(id)` handles a re-test that was not a full pass (n item 6): it sets
   `verified_at` and the facts to `NULL`. It stays an IPC command, since clearing is the fail-closed
   direction.
+- `clear_verified(conn, id)`, the one clear behind every path (a target edit, a re-test that is not a
+  full pass, the submit's `refused-kup`, the re-enqueue's), NULLs the stamp, the three verified facts
+  **and the three host facts** together.
 - The commands that return a profile (`create`, `list`, `update`, `clear`) return a
   **`ServerProfileView`**: the row plus `run_target: { is_run_target, reason }`, computed by
   `is_run_target` in Rust. The UI shows that reason and never re-derives the rule.
 
 Stamp and facts are always all set or all `NULL`; a stamp never outlives the facts it certified.
+The host facts are **recorded, never gating** (n item 9): each may be `NULL` under a valid stamp (a
+failed read), no run-target rule reads them, and only the memory preflight shows them
+([execution-backends.md](execution-backends.md#the-memory-and-disk-preflight-adr-024-o26)); `NULL` is
+"server memory unknown — re-run the connection test", never 0.
 
 ## The connection test (`connection_test.rs`, `remote/scripts/conntest.sh`)
 
@@ -138,7 +153,7 @@ orcastudio-conntest 1
 argc <n>                  the number of values received
 arg <len>   (n times)     each value, verbatim
 <check> <rc>|skipped      for each check, in this fixed order:
-  out <len>                 mkdir realpath findmnt busctl id nproc orca_x orca ompi
+  out <len>                 mkdir realpath findmnt df busctl id nproc meminfo orca_x orca ompi
   err <len>               (out/err follow only a check that ran)
 end
 ```
@@ -156,9 +171,11 @@ The checks the script runs:
 | `mkdir` | `mkdir -p -- <root>` | Run only if `valid_path <root>`; otherwise `mkdir`, `realpath` and `findmnt` are `skipped` and the root is never touched. |
 | `realpath` | `realpath -e -- <root>` | Measured on the laptop and on uni (live run): prints `<root>\n`, rc 0. |
 | `findmnt` | `findmnt -no FSTYPE --target <root>` | Measured on the laptop and on uni (live run): one column, `ext4\n`, rc 0. |
+| `df` | `timeout -k 1 3 df --output=avail,target -B1 <root>` | A host fact, not a check (o26.6). `skipped` with `mkdir`. Never `-P` with `--output` (they conflict on coreutils 9.4 — [memory.md](../orca/memory.md)). |
 | `busctl` | `busctl get-property org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager KillUserProcesses` | |
 | `id` | `id -nG` | |
 | `nproc` | `nproc` | |
+| `meminfo` | `timeout -k 1 3 head -5 /proc/meminfo` | A host fact, not a check (o26.6). |
 | `orca_x` | `test -x <orca>` | `skipped` if the path is not absolute. |
 | `orca` | `<orca> --version`, stderr merged into stdout, captured whole | Run only if `orca_x` is 0; its `err` record is empty. |
 | `ompi` | `ompi_info --version` | |
@@ -185,6 +202,13 @@ reason }], warnings }`. "Undetermined" always counts as not passed. The mandator
 | `Root` | The path is valid, `mkdir` rc 0, the `realpath` output equals `<root>\n`, and `findmnt` prints exactly one line whose first token is on `ROOT_FS_ALLOW_LIST` = `{ext4}`. |
 
 Recorded but not gating (n item 9):
+- the **host facts**, `host_facts(raw) -> HostFacts { mem_total_kib, disk_avail_bytes }` (o26.6),
+  read apart from the verdict with the strict parsers of `crate::memory` (`meminfo_kib`: exactly one
+  `MemTotal:<spaces><digits> kB` line; `parse_df_avail`: the `Avail Mounted on` header and one
+  `<bytes> <mount>` row). A failed, skipped or unparsable read is `None`; the verdict is the same
+  either way. Both reads are bounded by `timeout -k 1 3` (o26.14.4), so a hung df cannot run the test
+  into its 30 s timeout and clear the stamp. The output header stays `orcastudio-conntest 1`: the
+  script is stdin-fed, so no deployed copy can lag (o26.14.5);
 - the OpenMPI version, via `parse_openmpi_version`. If none is reported it becomes `None`, with a
   `Warning::OpenMpiNotReported`;
 - the `sudo` token in `id -nG` gives `Warning::SudoGroup`, and a failed `id` gives
@@ -228,14 +252,14 @@ logic is `test_server_profile_with(db, id, runner, timeout)`, which takes the ru
 6. Judge the result, in Rust only:
    - ssh exit **255** is ssh's own failure (connect, auth, host key). The reason carries ssh's
      stderr tail.
-   - Otherwise `connection_test::run(stdout, sent)` parses and evaluates. A parse error is reported
-     with the ssh exit and the stderr tail.
+   - Otherwise `connection_test::parse_output` parses, `evaluate` judges and `host_facts` reads the
+     host facts. A parse error is reported with the ssh exit and the stderr tail.
    - A complete output with any exit other than 0 is not trusted (the script ends `printf 'end\n'`
      and exits 0).
 7. Write, under the lock again:
-   - **`FullPass`** → `set_profile_verified_conn` with the tested target. `Conflict` (the profile was
-     edited meanwhile) is reported as the `conflict` outcome; nothing is stamped, and the edit has
-     already cleared the old stamp.
+   - **`FullPass`** → `set_profile_verified_conn` with the tested target and the host facts.
+     `Conflict` (the profile was edited meanwhile) is reported as the `conflict` outcome; nothing is
+     stamped and no host fact is stored, and the edit has already cleared the old stamp.
    - **`NotPassed`** → `clear_profile_verified_conn`.
    - **No verdict** (invalid profile, spawn failure, timeout, ssh 255, unreadable output, non-zero
      exit) → `clear_profile_verified_conn`. A clear is unconditional, so an old failing test also
@@ -295,6 +319,14 @@ check in a fixed order (`orca`, `cores`, `core_mask` only when a mask is set, `k
   - `an_invalid_stored_host_never_reaches_ssh`; `testing_a_missing_profile_is_not_found_and_runs_nothing`;
   - `the_stamp_is_not_an_ipc_command` (F3). Negative control: re-add the `set_profile_verified`
     command and its handler entry → red;
+  - **host facts (o26.6):** `the_connection_test_records_the_host_facts_and_a_failed_read_never_gates`
+    (a df, a meminfo or both failing → `NULL`, old values not kept, `verified_at` set). Negative
+    controls: a failed read that fails the test → red; `COALESCE` keeping the old value → red;
+    `an_edit_during_the_test_stores_no_host_facts`. Negative control: the facts written by a separate
+    `UPDATE … WHERE id` → the edited profile holds the old host's RAM → red;
+    `every_clear_takes_the_host_facts_with_the_stamp` (target edit, failed re-test, `refused-kup`
+    clear; `assert_cleared` checks them everywhere). Negative control: the three columns dropped from
+    `clear_verified` → red;
   - `the_run_target_status_carries_the_reason`, `the_report_serializes_flat_for_the_ui`,
     `warnings_and_outcomes_serialize_as_the_frontend_types_expect`;
   - `live_uni_connection_test` (`#[ignore]`, by hand: `cargo test live_uni -- --ignored
@@ -310,6 +342,11 @@ check in a fixed order (`orca`, `cores`, `core_mask` only when a mask is set, `k
   `slot_count` 1 and keeps its stamp); `migrate_v19_slot_count_check_rejects_anything_but_one` (2,
   0 and −1 are rejected on UPDATE and INSERT); `fresh_db_has_the_v19_columns_with_their_defaults`.
   - Negative control: drop the `CHECK`, and the last two go red.
+  - `migrate_v22_to_v23_adds_null_host_facts_and_keeps_every_profile` (a v22 fixture with a stamped,
+    a never-tested and a windowed profile and their jobs: every row unchanged, the three columns
+    `NULL`, `SCHEMA_VERSION` 23, the arm idempotent). Negative control: the columns `NOT NULL DEFAULT
+    0` → red. `real_v22_db_copy_migrates_to_v23_without_touching_profiles_or_jobs` (`#[ignore]`, by
+    hand on a scratch copy: `ORCASTUDIO_V22_DB_COPY=…`).
 - **`models/server_profile.rs`:** path, root, socket-bound (85 bytes pass, 86 fail), mask, window
   and run-target tests.
   - Negative control: `run_target_mask_range_is_zero_to_nproc_minus_one` goes red with an
@@ -348,6 +385,16 @@ check in a fixed order (`orca`, `cores`, `core_mask` only when a mask is set, `k
     `a_stdin_reading_child_before_the_loop_breaks_the_post_condition` (empty output → `Malformed`).
   - **Shape:** `the_read_loop_is_the_last_line_and_nothing_follows_it` and
     `every_child_command_in_the_script_reads_dev_null`.
+  - **Host facts (o26.6):** `the_host_facts_are_read_strictly_and_never_gate_the_verdict` (uni's
+    recorded `MemTotal` and root `df` → 65 795 232 KiB and 78 360 924 160 B; a failed, skipped,
+    `-P`-shaped or MB-unit read → `None`, the verdict unchanged). Negative control: a df failure that
+    fails `Root` → red. `real_script_records_the_host_facts_and_a_failed_read_is_absent` (stub `df`
+    and `head` accepting only the measured argv; `STUB_DF_RC`/`STUB_HEAD_RC`), with an in-suite
+    control: the script dying on a df failure has no verdict. `real_script_bounds_a_hung_df_and_meminfo`
+    (stubs that sleep 30 s → both recorded rc 124, still a full pass, within seconds under a 20 s
+    bound). Negative controls: the `timeout` dropped from the `df` or the `meminfo` check → red.
+    `no_script_runs_df_with_p_and_output`
+    (conntest.sh and prepare.sh). Negative control: `-P` added to either df → red.
   - Negative controls: a line appended after the loop turns the shape test and the real-script
     tests red; dropping `</dev/null` from ORCA's call turns the lint test red, and the real-script
     full pass too (the stub ORCA exits 99).

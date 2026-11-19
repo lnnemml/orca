@@ -272,6 +272,27 @@ own tsp socket, r²SCAN-3c Opt, `%pal 4`, mask subset `0-3`:**
   `serveralivecountmax 3`: command-line `-o` overrides the config file (feeds ADR-024 o24.5).
 - Not measured: the keepalive's effect on a live, multiplexed call (the master's settings apply — I).
 
+## Live checks of the B4 fixes and 5.4b (2026-11-18)
+
+### Facts (Anton drove the app; the orchestrator read the DB, the fetched dirs and uni read-only; M)
+
+- **o24.10 healthy wrapper line.** Job `a6b05a87` "test-healthy" (r²SCAN-3c Opt Freq, auto `%pal` →
+  24 ranks) ran with the new wrapper; its fetched `.tsp-out/ts-out.*` holds exactly
+  `wrapper: session empty at ORCA's return` — the healthy path published with no added wait (M; this
+  settles o24.7's "healthy-zero is inferred" for one real job). The row reached `parsed`.
+- **o25.10 check (1): wrapper killed → `lost`.** Job `d50caf4a` "Dexketoprofen" (a throwaway Anton
+  made for it; Opt Freq, `%pal nprocs 15`), started 16:09:51 (laptop), its wrapper SIGKILLed while
+  running; the row became terminal **`lost`** at 16:11:47 with "Lost: the job's wrapper died without an
+  exit code; its files were downloaded as evidence." and the red LOST badge (Anton's screenshot) (M).
+  On uni afterwards: no `orca`/`mpirun` process of the account (only the tsp daemon), no `.cancelled`,
+  no `.exit_code`, `.tmp` removed (the `sweep` mode, not a cancel), tsp row `finished` with E-Level
+  `-1`, `.tsp-out` empty (the wrapper died before printing) (M). The 9 fetched files (`.enqueued`,
+  `.started`, `input.inp`, `input.property.txt`, `input_trj.xyz`, `input.xyz`, `output.out` cut in
+  the DFT grid step, `stderr.log`, `.tsp-out/ts-out.*`) match the server's by sha256 (M); ORCA's
+  `*.tmp` scratch stays on the server, as for every job.
+- Not observed directly: the moment-by-moment sweep (the prober watching it was cut off by a power
+  outage at the laptop); the outcome above is its end state.
+
 ## Drift found while planning (fix with the results)
 
 - ADR-024 o18 residual "no `ServerAliveInterval`": true of the argv, not of the effective behaviour

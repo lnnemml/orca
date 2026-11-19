@@ -68,7 +68,7 @@ impl Poller<'_> {
         let mut error = match ready_server(&tracker, &coords.host, &root, &coords.job_dir) {
             Err((_, why)) if !tracker.answered() => return Ok(StatusStep::CheckFailed(why)),
             Err((_, why)) => Some(failure(why)),
-            Ok(()) => match sweep_call(&tracker, coords, &root) {
+            Ok(_) => match sweep_call(&tracker, coords, &root) {
                 Ok((0, _, _)) => None,
                 // Row 8 does not hold at the actor: nothing was signalled, nothing is counted, the next
                 // step classifies again (o25.14.6).

@@ -17,6 +17,9 @@ export function makeProfile(over: Partial<ServerProfile> = {}): ServerProfile {
     created_at: "2026-10-03 14:20:01",
     slot_count: 1,
     availability_window: null,
+    mem_total_kib: null,
+    disk_avail_bytes: null,
+    host_facts_at: null,
     run_target: {
       is_run_target: false,
       reason: "the profile has not passed the connection test",

@@ -99,6 +99,11 @@ OMPI_MCA_hwloc_base_binding_policy=none taskset -c 8-15 /opt/orca/orca job.inp >
 
 ## Memory ceiling on nprocs
 
+*Measured ORCA memory behaviour (the 4096 MiB default, the MiB unit, per-rank RSS ≈ need + ~100 MiB,
+the cap overshoot when it binds) lives in [memory.md](memory.md) (2026-11-18). The table below predates
+it and its derivation is not recorded. The 5.5 preflight's proposal (ADR-024 o26.4, e.g. 1600 MiB at
+8 ranks on this laptop) is derived from memory.md and governs over this table.*
+
 `%maxcore` is **per MPI process**, not total. With 15 GB RAM and 1 GB swap:
 
 | nprocs | Max safe `%maxcore` |

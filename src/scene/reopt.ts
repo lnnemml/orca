@@ -26,6 +26,7 @@ import {
   buildOrcaInput,
   type BuilderState,
 } from "../input-builder/build-input";
+import { localMaxcore } from "../memory/local-maxcore";
 import {
   normalizeElement,
   sceneFromAtomLines,
@@ -107,6 +108,8 @@ export function buildReoptInput(
   const freq = opts.freq ?? true;
   const state: BuilderState = {
     ...DEFAULT_BUILDER_STATE,
+    // The local fitted %maxcore (ADR-024 o26.13.4), not DEFAULT_BUILDER_STATE's 2000.
+    maxcore: localMaxcore(),
     methodFamily: "composite",
     composite: opts.method ?? DEFAULT_REOPT_METHOD,
     jobType: freq ? "Opt Freq" : "Opt",

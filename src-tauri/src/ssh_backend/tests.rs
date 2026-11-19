@@ -918,3 +918,106 @@ impl CommandRunner for FirstAttempt {
         if kind == Submit { submit_reply(&values, &self.outcome) } else { happy(kind, &values) }
     }
 }
+
+// ---- the submit-time memory and disk check (unit 5.5, ADR-024 o26.6, o26.13.2) ----------------
+
+/// uni's `MemTotal` (memory.md) with a **synthetic** `MemAvailable` of 40 GiB (no uni value is
+/// recorded; 40 GiB is what a running 24 × 2000 job leaves), and uni's root `df` (memory.md).
+fn uni_host_records(mem_available_kib: u64, df_bytes: u64) -> String {
+    let meminfo = format!("MemTotal:       65795232 kB\nMemFree:         1000000 kB\nMemAvailable:   {mem_available_kib} kB\n");
+    let df = format!("      Avail Mounted on\n{df_bytes} /home\n");
+    crate::remote::prepare::tests::host_records(Some(&meminfo), Some(&df))
+}
+
+/// A ready server whose prepare reports these host facts.
+fn prepare_ready_with(values: &[String], records: &str) -> Reply {
+    let sent = prepare_args(values);
+    ok(prepare_wire(&sent, &format!("{}{records}", ready_body(&sent))))
+}
+
+const FORTY_GIB_KIB: u64 = 40 << 20;
+const UNI_ROOT_FREE: u64 = 78_360_924_160;
+
+/// The draft (`! HF def2-SVP`, no `%maxcore`) on the 0-23 mask: 24 × 4196 + 140 MiB = 98.5 GiB —
+/// over 0.9 × anything uni has. The notice is computed with the server's facts and **never refuses**:
+/// the attempt is enqueued, the row queued with no error. NEGATIVE CONTROL: turn a warning into a
+/// refusal (`upload_and_submit` returning `Err` when `memory_notice` is `Some`) → red.
+#[test]
+fn a_memory_warning_rides_beside_an_enqueued_submit_and_never_refuses() {
+    let w = World::new();
+    let fake = Fake::new(&w, |k, v| if k == Prepare { prepare_ready_with(v, &uni_host_records(FORTY_GIB_KIB, UNI_ROOT_FREE)) } else { happy(k, v) });
+    let attempt = w.attempt(&fake).unwrap();
+    assert_eq!(attempt.outcome, SubmitOutcome::Enqueued { tsp_id: 3 });
+    assert_eq!(fake.kinds(), [Prepare, Upload, Submit], "the check adds no call");
+    let notice = attempt.memory_notice.expect("98.5 GiB over 0.9 × 40 GiB available");
+    assert!(notice.contains("98.5 GiB") && notice.contains("40.0 GiB available") && notice.contains("%maxcore 2300 fits 24 ranks"), "{notice}");
+    assert!(attempt.pal.notice().is_some(), "the %pal notice is still there, separately");
+    assert_eq!(row(&w.job()), RowState { status: JobStatus::Queued, coords: Some(expected_coords()), error: None });
+}
+
+/// o26.13.2: alone on the profile, U is compared with MemAvailable; behind a live remote job of ours,
+/// with MemTotal. A `%maxcore 2000` input (49.4 GiB) warns against 40 GiB available when it would run
+/// at once, and does not when it queues behind our own running job. NEGATIVE CONTROL: count the job
+/// itself as "another live job" (no `!= plan.job_id` filter in `memory_inputs`) → the first half
+/// goes red; always compare with MemAvailable → the second half goes red.
+#[test]
+fn the_submit_check_compares_with_total_behind_our_own_live_job() {
+    let w = World::new();
+    w.sql("UPDATE jobs SET input_content = '! r2SCAN-3c Opt\n%maxcore 2000\n'");
+    let respond = |k: Kind, v: &[String]| if k == Prepare { prepare_ready_with(v, &uni_host_records(FORTY_GIB_KIB, UNI_ROOT_FREE)) } else { happy(k, v) };
+    let alone = w.attempt(&Fake::new(&w, respond)).unwrap();
+    assert!(alone.memory_notice.as_deref().is_some_and(|n| n.contains("40.0 GiB available")), "{:?}", alone.memory_notice);
+
+    // A second draft behind the first (now queued on the profile).
+    w.sql(
+        "INSERT INTO jobs (id, title, input_content, status) VALUES ('j2', 'second', '! r2SCAN-3c Opt\n%maxcore 2000\n', 'draft')",
+    );
+    let behind = submit_remote(&w.db, &Fake::new(&w, respond), &w.sink, &w.data_dir(), "j2", PROFILE).unwrap();
+    assert_eq!(behind.outcome, SubmitOutcome::Enqueued { tsp_id: 3 });
+    assert_eq!(behind.memory_notice, None, "49.4 GiB fits 0.9 × 62.7 GiB in total; MemAvailable already has our job in it");
+}
+
+/// The Retry carries the notice too (o26.6: "on a user-initiated Create & Run and Retry").
+#[test]
+fn a_retry_carries_the_memory_notice() {
+    let w = World::new();
+    submitted_but_refused(&w);
+    let fake = Fake::new(&w, |k, v| if k == Prepare { prepare_ready_with(v, &uni_host_records(FORTY_GIB_KIB, 5 << 30)) } else { happy(k, v) });
+    let retry = resubmit_remote(&w.db, &fake, &w.sink, &w.data_dir(), JOB).unwrap();
+    assert_eq!(retry.outcome, SubmitOutcome::Enqueued { tsp_id: 3 });
+    let notice = retry.memory_notice.unwrap();
+    assert!(notice.contains("memory:") && notice.contains("disk: 5.0 GiB free"), "{notice}");
+}
+
+/// What could not be checked is said; an attempt that never reached the server's facts has no notice
+/// (its failure says why); facts that fit say nothing.
+#[test]
+fn the_memory_notice_is_honest_about_what_it_could_not_check() {
+    let w = World::new();
+    let without = w.attempt(&Fake::new(&w, happy)).unwrap();
+    let notice = without.memory_notice.unwrap();
+    assert!(notice.contains("memory not checked") && notice.contains("free disk not checked"), "{notice}");
+
+    let w = World::new();
+    let failed = w.attempt(&Fake::new(&w, |k, v| if k == Prepare { exited(255, Vec::new()) } else { happy(k, v) })).unwrap();
+    assert!(matches!(failed.outcome, SubmitOutcome::NotClaimed { step: SubmitStep::Prepare, .. }));
+    assert_eq!(failed.memory_notice, None);
+
+    let w = World::new();
+    w.sql("UPDATE jobs SET input_content = '! HF\n%maxcore 1000\n'");
+    let fits = w.attempt(&Fake::new(&w, |k, v| if k == Prepare { prepare_ready_with(v, &uni_host_records(60 << 20, UNI_ROOT_FREE)) } else { happy(k, v) })).unwrap();
+    assert_eq!(fits.memory_notice, None, "24 × 1100 + 140 MiB fits");
+}
+
+/// Not on poller-sent submits (o26.6): the pending re-check and the re-enqueue send through
+/// `submit_call` and never reach the check — pinned on their sources, like the stamp's absence from
+/// IPC. NEGATIVE CONTROL: route either through `upload_and_submit` or `submit_memory_notice` → red.
+#[test]
+fn the_poller_sent_submits_carry_no_memory_check() {
+    for (name, source) in [("poller/pending.rs", include_str!("../poller/pending.rs")), ("poller/reenqueue.rs", include_str!("../poller/reenqueue.rs"))] {
+        for forbidden in ["upload_and_submit", "submit_memory_notice", "memory_notice", "memory_inputs"] {
+            assert!(!source.contains(forbidden), "{name} reaches the memory check through {forbidden}");
+        }
+        assert!(source.contains("submit_call"), "{name} sends through submit_call");
+    }
+}

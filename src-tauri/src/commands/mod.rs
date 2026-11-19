@@ -5,6 +5,7 @@ pub mod export_group;
 pub mod groups;
 pub mod jobs;
 pub mod manual;
+pub mod memory;
 pub mod molecules;
 pub mod reactions;
 pub mod remote_jobs;

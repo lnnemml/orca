@@ -127,12 +127,20 @@ use crate::error::AppError;
 ///   pending state (`record_delivered`'s unchanged-status branch, `record_ended_first`) are pinned
 ///   by tests. Existing rows: NULL. Guarded ALTER (column_exists).
 ///
+/// - v23: the host facts of a server profile (Phase 5 unit 5.5, ADR-024 o26.6):
+///   `server_profiles.mem_total_kib` (`MemTotal` of `/proc/meminfo`, **KiB** — the file's `kB`,
+///   memory.md), `server_profiles.disk_avail_bytes` (`df --output=avail -B1` of the root, bytes) and
+///   `server_profiles.host_facts_at` (UTC, laptop clock), nullable, no CHECK. Written **only** inside
+///   `set_profile_verified_conn`'s target-bound `UPDATE` (each fact NULL when its read failed — old
+///   values are never kept; `host_facts_at` set when at least one was read), NULLed with the stamp
+///   by `clear_verified`. Recorded, never gating. Existing rows: NULL. Guarded ALTERs (column_exists).
+///
 /// Unit 5.4b takes **no** schema version (ADR-024 o25.3): the re-enqueue counter is the server's
 /// `.reenqueue-1` claim, and the terminal `lost` status needs no CHECK (the status column has none)
 /// — `finalize_job_conn` writes it and NULLs the pending columns as for any terminal state.
 ///
 /// [`Job::is_remote`]: crate::models::job::Job::is_remote
-const SCHEMA_VERSION: i64 = 22;
+const SCHEMA_VERSION: i64 = 23;
 
 /// Open (creating if needed) `orcastudio.db` under `data_dir` and migrate it to
 /// the current schema.
@@ -572,6 +580,20 @@ fn migrate(conn: &Connection) -> Result<(), AppError> {
             )?;
         }
         version = 22;
+    }
+
+    // --- v22 -> v23: the host facts of a server profile (ADR-024 o26.6). Three nullable columns
+    // with no CHECK, so every existing row takes them as NULL. Guarded on the table (`id`) like the
+    // v19 arm, then per column. ---
+    if version < 23 {
+        if column_exists(conn, "server_profiles", "id")? {
+            for (col, ty) in [("mem_total_kib", "INTEGER"), ("disk_avail_bytes", "INTEGER"), ("host_facts_at", "TEXT")] {
+                if !column_exists(conn, "server_profiles", col)? {
+                    conn.execute_batch(&format!("ALTER TABLE server_profiles ADD COLUMN {col} {ty};"))?;
+                }
+            }
+        }
+        version = 23;
     }
 
     // Persist the resulting version so subsequent runs skip completed steps.
@@ -1801,8 +1823,7 @@ mod tests {
         let conn = v21_db_with_jobs();
         let before = all_jobs(&conn);
         migrate(&conn).expect("v21 -> v22");
-        assert_eq!(SCHEMA_VERSION, 22);
-        assert_eq!(current_version(&conn).unwrap(), 22);
+        assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
         assert_eq!(all_jobs(&conn), before, "no job row changed");
         let set: i64 = conn
             .query_row("SELECT COUNT(*) FROM jobs WHERE submit_pending_since IS NOT NULL", [], |r| r.get(0))
@@ -1835,6 +1856,95 @@ mod tests {
             assert!(set("r-queued", &format!("status = '{status}'")).is_err(), "{status} with the flag kept");
         }
         set("r-queued", "status = 'cancelled', submit_pending_since = NULL").expect("terminal with the flag cleared");
+    }
+
+    /// A v22 database holding server profiles in every state a v22 row can be in (stamped with
+    /// facts, never tested, without a mask, a window) and a remote job on one of them — every arm up
+    /// to v22 applied by `migrate` itself, then the v23 columns dropped.
+    fn v22_db_with_profiles() -> Connection {
+        let conn = v21_db_with_jobs();
+        migrate(&conn).unwrap();
+        conn.execute_batch(
+            "UPDATE settings SET value = '22' WHERE key = 'schema_version';
+             ALTER TABLE server_profiles DROP COLUMN host_facts_at;
+             ALTER TABLE server_profiles DROP COLUMN disk_avail_bytes;
+             ALTER TABLE server_profiles DROP COLUMN mem_total_kib;
+             INSERT INTO server_profiles (id, name, host, remote_orca_path, remote_scratch_dir, core_mask,
+                 orca_version, openmpi_version, core_count, verified_at)
+                 VALUES ('p-uni', 'uni', 'uni', '/opt/orca/orca', '/home/anton/.orcastudio', '0-23',
+                         '6.1.1', '4.1.6', 48, '2026-11-01 10:00:00');
+             INSERT INTO server_profiles (id, name, host, remote_orca_path, remote_scratch_dir)
+                 VALUES ('p-new', 'new', 'lab', '/opt/orca/orca', '/home/x/.orcastudio');
+             INSERT INTO server_profiles (id, name, host, remote_orca_path, remote_scratch_dir, availability_window)
+                 VALUES ('p-window', 'w', 'lab2', '/opt/orca/orca', '/home/y/.orcastudio', '22:00-08:00');
+             UPDATE jobs SET backend_id = 'p-uni' WHERE id = 'r-queued';",
+        )
+        .unwrap();
+        assert!(!column_exists(&conn, "server_profiles", "mem_total_kib").unwrap());
+        conn
+    }
+
+    type ProfileRow = (String, String, String, Option<String>, Option<String>, Option<i64>, Option<String>, i64, Option<String>);
+
+    fn all_profiles(conn: &Connection) -> Vec<ProfileRow> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, name, host, core_mask, orca_version, core_count, verified_at, slot_count, availability_window \
+                 FROM server_profiles ORDER BY id",
+            )
+            .unwrap();
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    }
+
+    /// v23 (ADR-024 o26.6): additive and nullable — every profile and job of a v22 database survives
+    /// unchanged, the three host-fact columns NULL on every row (a profile verified before v23 has no
+    /// measured facts: "unknown — re-run the connection test", never a stand-in); `SCHEMA_VERSION`
+    /// is 23. NEGATIVE CONTROL: the columns `NOT NULL DEFAULT 0` → every existing profile reads 0 KiB
+    /// of RAM and this is red.
+    #[test]
+    fn migrate_v22_to_v23_adds_null_host_facts_and_keeps_every_profile() {
+        let conn = v22_db_with_profiles();
+        let profiles = all_profiles(&conn);
+        let jobs = all_jobs(&conn);
+        assert_eq!(profiles.len(), 3);
+        migrate(&conn).expect("v22 -> v23");
+        assert_eq!(SCHEMA_VERSION, 23);
+        assert_eq!(current_version(&conn).unwrap(), 23);
+        assert_eq!(all_profiles(&conn), profiles, "no profile row changed");
+        assert_eq!(all_jobs(&conn), jobs, "no job row changed");
+        let facts: Vec<(Option<i64>, Option<i64>, Option<String>)> = {
+            let mut stmt = conn.prepare("SELECT mem_total_kib, disk_avail_bytes, host_facts_at FROM server_profiles ORDER BY id").unwrap();
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap().map(Result::unwrap).collect()
+        };
+        assert_eq!(facts, vec![(None, None, None); 3], "every existing profile has unknown host facts");
+        // Nullable both ways: a write of NULL over a value is accepted (a failed read, o26.6).
+        conn.execute_batch(
+            "UPDATE server_profiles SET mem_total_kib = 65795232, disk_avail_bytes = 78360924160, host_facts_at = datetime('now') WHERE id = 'p-uni';
+             UPDATE server_profiles SET mem_total_kib = NULL WHERE id = 'p-uni';",
+        )
+        .expect("the facts are nullable");
+        migrate(&conn).expect("v23 -> v23 no-op");
+        assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
+    }
+
+    /// The migration on a copy of a real v22 database (rule #9). Run by hand on a scratch copy:
+    /// `ORCASTUDIO_V22_DB_COPY=/scratch/orcastudio.db cargo test real_v22_db_copy -- --ignored`.
+    #[test]
+    #[ignore = "needs ORCASTUDIO_V22_DB_COPY = a scratch copy of a real v22 orcastudio.db"]
+    fn real_v22_db_copy_migrates_to_v23_without_touching_profiles_or_jobs() {
+        let Ok(path) = std::env::var("ORCASTUDIO_V22_DB_COPY") else {
+            panic!("set ORCASTUDIO_V22_DB_COPY to a scratch copy of a v22 database");
+        };
+        let conn = Connection::open(&path).unwrap();
+        assert_eq!(current_version(&conn).unwrap(), 22, "the copy must be a v22 database");
+        let (profiles, jobs) = (all_profiles(&conn), all_jobs(&conn));
+        migrate(&conn).expect("v22 -> v23 on the real copy");
+        assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
+        assert_eq!((all_profiles(&conn), all_jobs(&conn)), (profiles.clone(), jobs.clone()), "nothing changed");
+        eprintln!("migrated {} profiles, {} jobs", profiles.len(), jobs.len());
     }
 
     /// The migration on a copy of a real v20 database (rule #9). Run by hand on a scratch copy:

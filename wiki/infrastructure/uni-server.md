@@ -165,8 +165,8 @@ Every check was run as `anton` over the `uni` alias (Part A of the account switc
   ORCA `PATH` entries — never rely on `PATH`.
 - Install packages with `apt-get install <pkg>` **directly**.
 - Keep `%maxcore` conservative given the swap-is-failure rule; measure before trusting a value.
-  A manual input with **no** `%maxcore` inherits ORCA's default **4000 MB/proc** (since 6.1.0),
-  so 24 procs ≈ 96 GB > RAM — see [orca/gotchas.md](../orca/gotchas.md) (and ADR-024 Decision h's
+  A manual input with **no** `%maxcore` inherits ORCA's default **4096/proc** (the value measured on 6.1.1, the MiB unit inferred — [orca/memory.md](../orca/memory.md)),
+  so 24 procs ≈ 96 GiB > RAM — see [orca/gotchas.md](../orca/gotchas.md) (and ADR-024 Decision h's
   preflight).
 - Locate ORCA installs via a real binary, e.g. `orca_scfgrad` (ORCA 6 has **no** `orca_scf`
   binary, and Ubuntu's `orca` screen-reader shares the binary name).

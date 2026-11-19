@@ -961,3 +961,109 @@ fn a_same_boot_orphan_is_swept_then_the_job_is_lost_against_the_real_scripts() {
     assert!(!remote.join(".cancelled").exists(), "a sweep never cancels");
     assert!(laptop.job("e2eL2").error_message.unwrap().starts_with("Lost: the job's wrapper died without an exit code"));
 }
+
+// ---- the memory and disk preflight against the real prepare (unit 5.5, ADR-024 o26.6) --------
+
+/// A runner that feeds `to` in place of the script `from` (a mutated copy, for an in-suite negative
+/// control), and everything else to the lab as it is.
+struct Swapping<'a> {
+    inner: &'a Loop<'a>,
+    from: &'static str,
+    to: String,
+}
+
+impl CommandRunner for Swapping<'_> {
+    fn run(&self, program: &str, args: &[String], stdin: &[u8], timeout: Duration) -> Result<ProcessOutput, TransportError> {
+        match stdin.strip_prefix(self.from.as_bytes()) {
+            Some(values) => self.inner.run(program, args, &[self.to.as_bytes(), values].concat(), timeout),
+            None => self.inner.run(program, args, stdin, timeout),
+        }
+    }
+}
+
+/// o26.6: prepare's host facts are recorded, never gating. With a `df` that fails on the server the
+/// real prepare still answers ready — the submit enqueues, its memory notice says the free disk was
+/// not checked — and a cancel's delivery, which readies the server through the same prepare, still
+/// delivers. NEGATIVE CONTROL (in-suite): the same delivery with a prepare that `die`s on a df failure
+/// is not delivered and the job stays queued.
+#[test]
+fn a_failing_df_never_breaks_ready_or_a_cancel_delivery() {
+    use std::os::unix::fs::PermissionsExt;
+    let _serial = serial();
+    let lab = Lab::new();
+    let df = lab.stub_dir.join("df");
+    fs::write(&df, "#!/bin/bash\necho 'df: /home: Stale file handle' >&2\nexit 1\n").unwrap();
+    fs::set_permissions(&df, fs::Permissions::from_mode(0o755)).unwrap();
+    let laptop = Laptop::new(&lab);
+    let runner = Loop::new(&lab);
+
+    laptop.draft("e2eM1");
+    let attempt = laptop.attempt(&runner, "e2eM1");
+    assert_eq!(attempt.outcome, SubmitOutcome::Enqueued { tsp_id: 0 }, "ready despite the df");
+    let notice = attempt.memory_notice.expect("the unread disk is said, not passed over");
+    assert!(notice.contains("free disk not checked"), "{notice}");
+    let (cancelled, step) = cancel_then_step(&laptop, &runner, "e2eM1");
+    assert!(matches!(cancelled, CancelResult::Delivered { step: StatusStep::CancelDelivered(_), .. }), "{cancelled:?}");
+    assert_eq!(step, StatusStep::Cancelled);
+
+    // The control: a prepare that dies on the df.
+    laptop.draft("e2eM2");
+    assert_eq!(laptop.submit(&runner, "e2eM2"), SubmitOutcome::Enqueued { tsp_id: 1 });
+    let dying = Swapping {
+        inner: &runner,
+        from: PREPARE,
+        to: mutate(PREPARE, "    fact df df --output=avail,target -B1 \"$root\"\n", "    df --output=avail,target -B1 \"$root\" </dev/null >/dev/null 2>&1 || die \"df failed\"\n"),
+    };
+    let world = PollerWorld::new();
+    let cancelled = cancel_job_core(&world.poller(&laptop, &dying), "e2eM2", |job| panic!("never dispatched: {}", job.id)).unwrap();
+    assert!(!matches!(cancelled, CancelResult::Delivered { step: StatusStep::CancelDelivered(_), .. }), "{cancelled:?}");
+    assert_eq!(laptop.job("e2eM2").status, JobStatus::Queued);
+    assert!(!remote_job(&lab, "e2eM2").join(".cancelled").exists(), "nothing was delivered");
+}
+
+/// The real prepare reads the host facts with the measured commands: this machine's `head -5
+/// /proc/meminfo` and `df --output=avail,target -B1 <root>` parse into the same values Rust reads
+/// directly (`memory::meminfo_kib`; statvfs within 256 MiB — free space moves).
+#[test]
+fn the_real_prepare_reads_this_machines_meminfo_and_df() {
+    let lab = Lab::new();
+    let sent = PrepareArgs::new(Lab::str(&lab.root), Lab::str(&lab.root.join("jobs").join("m1"))).unwrap();
+    let out = run(&lab, PREPARE, &sent.values(), &[]);
+    assert_eq!(out.status.code(), Some(0), "{}", super::call_script_tests::text(&out));
+    let facts = parse_prepare_reply(&out.stdout, &sent).unwrap();
+    let meminfo = fs::read_to_string("/proc/meminfo").unwrap();
+    assert_eq!(facts.host.mem_total_kib, crate::memory::meminfo_kib(&meminfo, "MemTotal").ok());
+    assert!(facts.host.mem_available_kib.is_some());
+    let local = crate::memory::host_resources_at(Path::new("/proc/meminfo"), &lab.root).disk_avail_bytes.value().unwrap();
+    let remote = facts.host.root_avail_bytes.expect("df of the lab root");
+    assert!(local.abs_diff(remote) < 256 << 20, "statvfs {local} vs df {remote}");
+}
+
+/// F1 (verifier, Part A): prepare's host-fact reads are **bounded**. A `df` and a `head -5
+/// /proc/meminfo` that hang (stubs that `exec sleep 30`) cost one `timeout -k 1 3` each: the real
+/// prepare answers within a few seconds, rc 0, both facts `-`, the shapes still decided. The call
+/// runs under a 20 s bound of its own. NEGATIVE CONTROL: drop the `timeout` from `fact` in
+/// `prepare.sh` → the hung read holds the call past the bound → red.
+#[test]
+fn the_prepare_host_fact_reads_are_bounded() {
+    use std::os::unix::fs::PermissionsExt;
+    let lab = Lab::new();
+    for (name, body) in [
+        ("df", "#!/bin/bash\nexec sleep 30\n"),
+        ("head", "#!/bin/bash\nif [[ \"$*\" == \"-5 /proc/meminfo\" ]]; then exec sleep 30; fi\nexec /usr/bin/head \"$@\"\n"),
+    ] {
+        let path = lab.stub_dir.join(name);
+        fs::write(&path, body).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let sent = PrepareArgs::new(Lab::str(&lab.root), Lab::str(&lab.root.join("jobs").join("b1"))).unwrap();
+    let stdin = super::scripts::stdin_with_values(PREPARE, &sent.values()).unwrap();
+    let argv = vec![format!("PATH={}", lab.path_env()), format!("HOME={}", Lab::str(&lab.root)), "bash".into(), "-s".into()];
+    let start = std::time::Instant::now();
+    let out = SystemRunner.run("env", &argv, &stdin, Duration::from_secs(20)).expect("prepare answered within its 20 s bound");
+    assert!(start.elapsed() < Duration::from_secs(15), "took {:?}", start.elapsed());
+    assert_eq!(out.code, Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    let facts = parse_prepare_reply(&out.stdout, &sent).unwrap();
+    assert_eq!(facts.host, crate::memory::SubmitHostFacts::default(), "both hung reads are `-`");
+    assert!(check_prepare(&facts, &sent).is_ok());
+}

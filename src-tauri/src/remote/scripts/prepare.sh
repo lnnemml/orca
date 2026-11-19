@@ -15,12 +15,19 @@
 #     kind <len>                   ┐ only for `present`: the kind's bytes
 #     realpath <len>|-             │ realpath -e's bytes, or - when it does not resolve
 #     sha256 <hex>|-               ┘ scripts only: a regular file's sha256, else -
+#   meminfo <len>|-                `head -5 /proc/meminfo`'s bytes, or - when the read failed
+#   df <len>|-                     `df --output=avail,target -B1 <root>`'s bytes, or - when it failed
 #   end
 # A read error other than ENOENT is an `error <len>` record and exit 3 — never "absent".
+# The two host facts (ADR-024 o26.6) are recorded, never gating: this call also readies the server
+# for a cancel's delivery, a sweep, Lost, the re-enqueue, the pending re-check and the collector's
+# re-install, none of which may break on a df failure. So each read is bounded by `timeout -k 1`, a
+# failed one is a `-` fact, and neither ever reaches `die` or changes the exit status.
 
 export LC_ALL=C
 
 T_SHA=5            # s: timeout -k 1 on each script's sha256sum
+T_FACT=3           # s: timeout -k 1 on each host-fact read (meminfo, df)
 
 emit_text() {
     printf '%s %s\n%s\n' "$1" "${#2}" "$2"
@@ -29,6 +36,19 @@ emit_text() {
 die() {
     emit_text error "$1"
     exit 3
+}
+
+# fact NAME CMD... — a host fact: CMD's stdout, byte-exact, as a record, or `NAME -` when CMD fails
+# or times out. Never dies: a fact that cannot be read is absent, not an error.
+fact() {
+    local name=$1 out
+    shift
+    # `printf x` keeps trailing newlines through `$(…)`; it runs only when CMD succeeded.
+    if out=$(timeout -k 1 "$T_FACT" "$@" </dev/null 2>/dev/null && printf x); then
+        emit_text "$name" "${out%x}"
+    else
+        printf '%s -\n' "$name"
+    fi
 }
 
 # describe NAME PATH — `NAME absent`, or `NAME present` + kind + realpath. Only ENOENT is absent.
@@ -100,6 +120,9 @@ main() {
             printf 'sha256 -\n'
         fi
     done
+    fact meminfo head -5 /proc/meminfo
+    # The root's free space: --output with -B1, never -P (they conflict on coreutils 9.4 — M).
+    fact df df --output=avail,target -B1 "$root"
     printf 'end\n'
     exit 0
 }

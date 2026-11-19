@@ -16,6 +16,8 @@ mod execution_backend;
 mod in_flight;
 mod local_backend;
 mod manual;
+// The memory and disk preflight (ADR-024 o26, unit 5.5): the pure estimator and host-fact parsers.
+mod memory;
 mod models;
 mod orca_json;
 mod orca_plot;
@@ -176,6 +178,10 @@ pub fn run() {
             commands::server_profiles::delete_server_profile,
             commands::server_profiles::clear_profile_verified,
             commands::server_profiles::test_server_profile,
+            commands::memory::memory_estimate,
+            commands::memory::apply_maxcore,
+            commands::memory::host_resources,
+            commands::memory::local_fitted_maxcore,
             commands::groups::create_group,
             commands::groups::list_groups,
             commands::groups::rename_group,

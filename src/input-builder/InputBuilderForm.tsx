@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { sceneFromOrcaInput, setMultiplicity, totalCharge } from "../scene/scene";
 import { checkElectronParity } from "../scene/parity";
@@ -18,6 +18,8 @@ import {
 import { OptionSelect } from "./OptionSelect";
 import { MethodPicker } from "./MethodPicker";
 import { NebBuilderSection, type NebPayload } from "../reactions/NebBuilderSection";
+import { useLocalMaxcore } from "../memory/local-maxcore";
+import { builderMaxcoreDefault } from "../memory/preflight";
 
 interface InputBuilderFormProps {
   /** Current editor content — the coordinate block is preserved. */
@@ -28,12 +30,22 @@ interface InputBuilderFormProps {
    * builds from picked endpoints, not the scene); undefined for every other job type.
    */
   onGenerate: (content: string, neb?: NebPayload) => void;
+  /** The selected Run On target (a profile id; null/absent = this machine): the `%maxcore` field's
+   *  default follows it (ADR-024 o26.5, o26.13.1). */
+  runTarget?: string | null;
 }
 
 export function InputBuilderForm({
   currentContent,
   onGenerate,
+  runTarget = null,
 }: InputBuilderFormProps) {
+  // The `%maxcore` default (o26.5, o26.13.1): the local fitted value (the fan-out accessor's cache)
+  // for this machine, 2000 for a server — applied only while the user has not touched the field.
+  const localDefault = useLocalMaxcore();
+  const maxcoreDefault = builderMaxcoreDefault(runTarget, localDefault);
+  const [maxcoreTouched, setMaxcoreTouched] = useState(false);
+
   // Seed charge/multiplicity from the current geometry header so an imported
   // ion keeps its charge; the rest are plain defaults. (This reads only the
   // `* xyz c m` line — the `!` keyword line is never parsed back into the form.)
@@ -41,10 +53,15 @@ export function InputBuilderForm({
     const seed = sceneFromOrcaInput(currentContent);
     return {
       ...DEFAULT_BUILDER_STATE,
+      maxcore: maxcoreDefault,
       charge: seed ? totalCharge(seed) : DEFAULT_BUILDER_STATE.charge,
       multiplicity: seed ? seed.multiplicity : DEFAULT_BUILDER_STATE.multiplicity,
     };
   });
+  useEffect(() => {
+    if (maxcoreTouched) return;
+    setState((s) => (s.maxcore === maxcoreDefault ? s : { ...s, maxcore: maxcoreDefault }));
+  }, [maxcoreDefault, maxcoreTouched]);
 
   // The nprocs field's RAW text (ADR-025 item 2). `state.nprocs` is set only from a valid
   // parse of it (blank → null = auto, a positive integer → that number); invalid text never
@@ -197,14 +214,20 @@ export function InputBuilderForm({
           <span className="builder-charge-note muted">blank = auto: the run target sets it</span>
         </div>
         <div className="field builder-num">
-          <label className="label">maxcore (MB)</label>
+          <label className="label" htmlFor="builder-maxcore">
+            maxcore (MB)
+          </label>
           <input
+            id="builder-maxcore"
             className="input mono"
             type="number"
             min={100}
             step={100}
             value={state.maxcore}
-            onChange={(e) => set("maxcore", Number(e.currentTarget.value))}
+            onChange={(e) => {
+              setMaxcoreTouched(true);
+              set("maxcore", Number(e.currentTarget.value));
+            }}
           />
         </div>
       </div>

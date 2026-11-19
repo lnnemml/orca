@@ -12,6 +12,7 @@ import { SettingsScreen } from "./screens/SettingsScreen";
 import type { Job, Molecule, SidecarState, SidecarStatus } from "./types";
 import type { GroupSelection } from "./groups/tree";
 import { queueCounts } from "./jobs/status";
+import { reloadLocalMaxcore } from "./memory/local-maxcore";
 import "./styles/app.css";
 
 interface QueueInfo {
@@ -57,6 +58,11 @@ const TABS: {
 
 function App() {
   const [screen, setScreen] = useState<Screen>({ kind: "new-job" });
+  // The fan-out accessor's cache of the local default %maxcore (ADR-024 o26.13.4): loaded once at
+  // start; Settings re-reads it when the CPU preset is saved. 2000 until it loads.
+  useEffect(() => {
+    void reloadLocalMaxcore();
+  }, []);
   const [sidecar, setSidecar] = useState<SidecarStatus | null>(null);
   const [orcaPath, setOrcaPath] = useState("");
   const [queue, setQueue] = useState<QueueInfo>({ running: 0, queued: 0, paused: false });

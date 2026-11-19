@@ -29,6 +29,7 @@ import {
   type BuilderState,
   type MethodSlice,
 } from "../input-builder/build-input";
+import { localMaxcore } from "../memory/local-maxcore";
 import {
   normalizeElement,
   sceneFromAtomLines,
@@ -166,6 +167,8 @@ export function buildOptTSInput(
     ? {
         ...DEFAULT_BUILDER_STATE,
         ...options.methodState,
+        // The local fitted %maxcore (ADR-024 o26.13.4), not DEFAULT_BUILDER_STATE's 2000.
+        maxcore: localMaxcore(),
         jobType: "OptTS Freq",
         scfConv: "TightSCF",
         ...splitSolvation(solvation),
@@ -174,6 +177,7 @@ export function buildOptTSInput(
       }
     : {
         ...DEFAULT_BUILDER_STATE,
+        maxcore: localMaxcore(),
         methodFamily: "composite",
         composite: [method, solvation].filter((t) => t.length > 0).join(" "),
         jobType: "OptTS Freq",

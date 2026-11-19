@@ -8,6 +8,7 @@ import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 import type { ConnTestReport, ServerProfile } from "../types";
+import { hostFactsSuffix } from "../memory/preflight";
 import { checkLabel, outcomeSummary, profileStatus, warningText, type Tone } from "./status";
 
 interface FormState {
@@ -259,7 +260,8 @@ export function ServersSection() {
               >
                 {status.verification.label}
                 {p.verified_at
-                  ? ` · ORCA ${p.orca_version ?? "?"} · OpenMPI ${p.openmpi_version ?? "not reported"} · ${p.core_count ?? "?"} CPUs`
+                  ? ` · ORCA ${p.orca_version ?? "?"} · OpenMPI ${p.openmpi_version ?? "not reported"} · ${p.core_count ?? "?"} CPUs` +
+                    hostFactsSuffix(p)
                   : ""}
               </div>
               {testError ? (

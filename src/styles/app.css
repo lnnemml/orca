@@ -3084,3 +3084,23 @@ button.ir-imaginary-mode.selected {
     transform: rotate(360deg);
   }
 }
+
+/* The memory and disk preflight row (ADR-024 o26.7) — informational like the parity warning,
+   never a blocker. One line per target (o26.13.1). */
+.memory-preflight {
+  margin: 6px 0 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.memory-preflight .memory-line + .memory-line {
+  margin-top: 4px;
+}
+.memory-preflight .memory-warns {
+  color: var(--warn);
+}
+.memory-preflight .memory-apply {
+  margin-left: 8px;
+}

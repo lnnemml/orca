@@ -366,6 +366,12 @@ export interface ServerProfile {
   created_at: string;
   slot_count: number;
   availability_window: string | null;
+  /** v23 (ADR-024 o26.6): `MemTotal` at the last full-pass connection test, KiB; null = unread. */
+  mem_total_kib: number | null;
+  /** v23: free bytes on the root's filesystem at the last full pass; null = unread. */
+  disk_avail_bytes: number | null;
+  /** v23: when the host facts were read (UTC, laptop clock); null when none was. */
+  host_facts_at: string | null;
   run_target: RunTargetStatus;
 }
 
@@ -616,6 +622,9 @@ export interface SubmitResponse {
   outcome: SubmitOutcome;
   pal: PalAlignment;
   notice: string | null;
+  /** The submit-time memory and disk check (ADR-024 o26.6, o26.13.2), beside the `%pal` notice —
+   *  a separate field, never a refusal; null when everything fits. */
+  memory_notice: string | null;
   failure: string | null;
 }
 
@@ -668,3 +677,69 @@ export type CancelResult =
 
 /** Mirrors `commands::jobs::UndoResult` — what `undo_cancel` returns (ADR-024 o22.3). */
 export type UndoResult = "undone" | "send_marked" | "nothing_pending";
+
+// ── The memory and disk preflight (ADR-024 o26; `src-tauri/src/memory.rs`, `commands/memory.rs`) ──
+
+/** Mirrors `memory::Fact<T>`: a host fact, or why it is unknown — never a stand-in 0. */
+export type Fact<T> = { state: "known"; value: T } | { state: "unknown"; reason: string };
+
+/** Mirrors `memory::Estimate` inside `EstimateState::Estimated`: U = n × (m + 100) + 140 MiB. */
+export interface MemoryEstimate {
+  ranks: number;
+  maxcore_mib: number;
+  maxcore_from_input: boolean;
+  estimate_mib: number;
+}
+
+/** Mirrors `memory::EstimateState` (serde `tag = "state"`). */
+export type EstimateState =
+  | ({ state: "estimated" } & MemoryEstimate)
+  | { state: "not_estimated"; reason: string };
+
+/** Mirrors `memory::RamCheck`. `warns` is null without an estimate. */
+export type RamCheck =
+  | { state: "known"; mem_total_kib: number; threshold_mib: number; warns: boolean | null }
+  | { state: "unknown"; reason: string };
+
+/** Mirrors `memory::DiskCheck`. */
+export type DiskCheck =
+  | { state: "known"; avail_bytes: number; min_free_bytes: number; warns: boolean }
+  | { state: "unknown"; reason: string };
+
+/** Mirrors `memory::MemoryCheck`: one target's verdict for the current buffer (o26.7). */
+export interface MemoryCheck {
+  estimate: EstimateState;
+  ram: RamCheck;
+  disk: DiskCheck;
+  proposal_mib: number | null;
+  too_small_for_ranks: boolean;
+  /** The server's last connection test (`host_facts_at`); null for this machine (read now). */
+  facts_measured_at: string | null;
+  warns: boolean;
+}
+
+/** Mirrors `commands/memory.rs::ServerMemoryCheck` (the check flattened beside the profile id). */
+export type ServerMemoryCheck = MemoryCheck & { profile_id: string };
+
+/** Mirrors `commands/memory.rs::MemoryEstimateReply` — `memory_estimate({ seq, input, target })`. */
+export interface MemoryEstimateReply {
+  seq: number;
+  /** "Create Job": the draft only ever runs on this machine (o26.13.1). */
+  local: MemoryCheck;
+  /** "Create & Run" on the selected server; null when the selected target is this machine. */
+  server: ServerMemoryCheck | null;
+}
+
+/** Mirrors `commands/memory.rs::LocalFittedMaxcore` — `local_fitted_maxcore()`. */
+export interface LocalFittedMaxcore {
+  ranks: number;
+  mem_total_kib: Fact<number>;
+  proposal_mib: number | null;
+  default_maxcore_mib: number;
+}
+
+/** Mirrors `memory::HostResources` — `host_resources()`. */
+export interface HostResources {
+  mem_total_kib: Fact<number>;
+  disk_avail_bytes: Fact<number>;
+}

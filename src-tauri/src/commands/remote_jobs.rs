@@ -30,7 +30,8 @@ use crate::models::job::{Job, JobStatus};
 use crate::ssh_backend::{LabelReport, PalAlignment, SubmitAttempt, SubmitOutcome};
 
 /// What `submit_job` (to a server) and `retry_remote_submit` return: the attempt's outcome, the
-/// `%pal` alignment, and both in words for the UI.
+/// `%pal` alignment, both in words for the UI, and the memory and disk check (o26.6) — a separate
+/// field, so neither notice overwrites the other; the view shows both.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SubmitResponse {
     pub outcome: SubmitOutcome,
@@ -38,6 +39,10 @@ pub struct SubmitResponse {
     /// The `%pal` change, worded like the local run's log line; `None` when the input was uploaded
     /// as it is (`PalAlignment::notice`).
     pub notice: Option<String>,
+    /// The submit-time memory and disk warning (ADR-024 o26.6, o26.13.2), or what could not be
+    /// checked; `None` when everything fits or the attempt never reached the server's facts. Never
+    /// a refusal.
+    pub memory_notice: Option<String>,
     /// The attempt's failure for people; `None` for `Enqueued` (`SubmitOutcome::failure`).
     pub failure: Option<String>,
 }
@@ -46,6 +51,7 @@ impl From<SubmitAttempt> for SubmitResponse {
     fn from(attempt: SubmitAttempt) -> Self {
         SubmitResponse {
             notice: attempt.pal.notice(),
+            memory_notice: attempt.memory_notice,
             failure: attempt.outcome.failure(),
             outcome: attempt.outcome,
             pal: attempt.pal,
@@ -297,13 +303,13 @@ mod tests {
     #[test]
     fn the_submit_response_words_the_pal_change_and_the_failure() {
         let pal = PalAlignment { input_nprocs: Some(48), nprocs: 24, mask_cpus: 24, rewritten: true };
-        let enqueued = SubmitResponse::from(SubmitAttempt { outcome: SubmitOutcome::Enqueued { tsp_id: 3 }, pal, made_pending: false });
+        let enqueued = SubmitResponse::from(SubmitAttempt { outcome: SubmitOutcome::Enqueued { tsp_id: 3 }, pal, made_pending: false, memory_notice: None });
         assert_eq!(enqueued.failure, None);
         assert_eq!(enqueued.notice, pal.notice());
         assert!(enqueued.notice.as_deref().is_some_and(|n| n.contains("aligned to 24")), "{:?}", enqueued.notice);
 
         let kup = SubmitOutcome::KillUserProcesses { evidence: KupEvidence { rc: 0, stdout: "b true".into(), stderr: String::new() } };
-        let refused = SubmitResponse::from(SubmitAttempt { outcome: kup.clone(), pal: PalAlignment { rewritten: false, ..pal }, made_pending: false });
+        let refused = SubmitResponse::from(SubmitAttempt { outcome: kup.clone(), pal: PalAlignment { rewritten: false, ..pal }, made_pending: false, memory_notice: None });
         assert_eq!(refused.failure, kup.failure());
         assert_eq!(refused.notice, None, "an input uploaded as it is has no notice");
 
@@ -311,6 +317,28 @@ mod tests {
         assert_eq!(wire["outcome"]["outcome"], "enqueued");
         assert_eq!(wire["outcome"]["tsp_id"], 3);
         assert_eq!(wire["pal"]["nprocs"], 24);
+    }
+
+    /// o26.6: the memory notice is its own field beside the `%pal` notice — both present, neither
+    /// overwrites the other — and it is never a refusal: an enqueued attempt carries it with no
+    /// failure. NEGATIVE CONTROL: `From` putting the memory notice into `notice` (or dropping it) → red.
+    #[test]
+    fn the_memory_notice_rides_beside_the_pal_notice() {
+        let pal = PalAlignment { input_nprocs: None, nprocs: 24, mask_cpus: 24, rewritten: true };
+        let warning = "[OrcaStudio] memory: the job's estimate is 98.5 GiB".to_string();
+        let both = SubmitResponse::from(SubmitAttempt {
+            outcome: SubmitOutcome::Enqueued { tsp_id: 4 },
+            pal,
+            made_pending: false,
+            memory_notice: Some(warning.clone()),
+        });
+        assert_eq!(both.notice, pal.notice());
+        assert!(both.notice.is_some());
+        assert_eq!(both.memory_notice.as_deref(), Some(warning.as_str()));
+        assert_eq!(both.failure, None, "a warning is never a refusal");
+        let wire = serde_json::to_value(&both).unwrap();
+        assert_eq!(wire["memory_notice"], warning.as_str());
+        assert!(wire["notice"].as_str().is_some_and(|n| n.contains("aligned to 24")));
     }
 
     /// o23.9: the first Create & Run goes through the runner seam and a `ContactRunner`, so its last
