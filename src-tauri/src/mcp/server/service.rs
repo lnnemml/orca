@@ -1,0 +1,170 @@
+//! The MCP service one connection runs (`rmcp`), and that connection's state.
+//!
+//! - **The request cap** (M0 amendment, item 5). Each connection holds a semaphore of
+//!   [`REQUESTS_PER_CONNECTION`] permits. A tool call takes one with `try_acquire`: when none is
+//!   free it gets the tool error [`BUSY`] at once and never queues. The permit returns when the
+//!   call's work ends. (M3's `create_job` moves its permit into its tracked task.)
+//! - **`closed`** is set the moment the connection's transport reaches read EOF (the listener's
+//!   `Transport` wrapper; `rmcp`'s own end comes up to 5 s later, after its response drain), and by
+//!   switch-off. Waiting and reading handlers (M3's `wait_for_jobs`) check it; `rmcp` does not
+//!   cancel a handler when the transport closes (M0 amendment, items 6 and 10).
+//! - **Unknown methods** such as `server/discover` get a JSON-RPC error and the connection stays
+//!   open: `rmcp` does this itself (re-measured here: `server_tests::an_unknown_method_*`).
+//! - **The recovery sentence** ([`RECOVERY_SENTENCE`]) is in the server's instructions and in every
+//!   tool description, from one constant.
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
+use rmcp::handler::server::router::tool::ToolRouter;
+use rmcp::handler::server::tool::ToolCallContext;
+use rmcp::model::{
+    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation, ServerCapabilities,
+    ServerConfig,
+};
+use rmcp::service::RequestContext;
+use rmcp::{tool, tool_handler, tool_router, ErrorData, RoleServer, ServerHandler};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+
+use super::{DbSource, REQUESTS_PER_CONNECTION};
+use crate::commands::mcp::current_grant_core;
+
+/// The recovery after an app restart (M0 amendment, item 3), measured: the client does not
+/// dependably reconnect on its own. A macro so `concat!` can put the same literal into the
+/// instructions and every tool description; [`RECOVERY_SENTENCE`] is its one value.
+macro_rules! recovery_sentence {
+    () => {
+        "After an app restart, start a new client session."
+    };
+}
+
+/// The recovery sentence; every tool description and the server instructions carry it.
+pub const RECOVERY_SENTENCE: &str = recovery_sentence!();
+
+/// The server's instructions (the `initialize` result).
+pub const INSTRUCTIONS: &str = concat!(
+    "OrcaStudio's MCP server: read-only access to the app's state. Jobs, grants and the audit log ",
+    "live in OrcaStudio's database and survive a restart of the app or of this session. ",
+    recovery_sentence!()
+);
+
+/// The tool error for a call over the connection's request cap.
+pub const BUSY: &str = "busy, retry: every request slot of this connection is in use";
+
+const GET_GRANT_DESCRIPTION: &str = concat!(
+    "The current compute grant, as Settings → MCP shows it: its state (active, expired or revoked), ",
+    "targets, granted method levels, the job and in-flight limits, and the jobs charged so far. ",
+    "Returns {\"grant\": null} before any grant has been made. ",
+    recovery_sentence!()
+);
+
+/// One connection's state, shared by its service, its serve task and the lifecycle.
+#[derive(Debug)]
+pub struct ConnState {
+    /// The transport has ended, or MCP was switched off.
+    pub closed: AtomicBool,
+    permits: Arc<Semaphore>,
+}
+
+impl ConnState {
+    pub fn new() -> Self {
+        ConnState { closed: AtomicBool::new(false), permits: Arc::new(Semaphore::new(REQUESTS_PER_CONNECTION)) }
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::SeqCst)
+    }
+
+    /// A request permit, or `None` when all are in use (the call is refused [`BUSY`]) or the
+    /// connection has drained.
+    pub fn try_permit(&self) -> Option<OwnedSemaphorePermit> {
+        self.permits.clone().try_acquire_owned().ok()
+    }
+
+    /// Wait until every permit has returned, then refuse any later request. The connection's slot
+    /// is released only after this (M0 amendment, item 5: "a connection's slot frees only when its
+    /// last permit has returned").
+    pub async fn drain(&self) {
+        // `acquire_many` fails only on a closed semaphore, which is already drained.
+        let all = self.permits.acquire_many(REQUESTS_PER_CONNECTION as u32).await;
+        // Closed while every permit is held here, so no later request can slip in; the permits
+        // then return, and `in_flight` reads 0.
+        self.permits.close();
+        drop(all);
+    }
+
+    /// Permits not available: held by running calls, or, once the connection drains, gathered by the
+    /// drain while it waits for the rest. Reads 0 after the drain.
+    pub fn in_flight(&self) -> usize {
+        REQUESTS_PER_CONNECTION - self.permits.available_permits()
+    }
+}
+
+impl Default for ConnState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// The service one connection runs.
+#[derive(Clone)]
+pub struct McpService {
+    tool_router: ToolRouter<Self>,
+    conn: Arc<ConnState>,
+    db: Arc<dyn DbSource>,
+}
+
+#[tool_router]
+impl McpService {
+    pub fn new(conn: Arc<ConnState>, db: Arc<dyn DbSource>) -> Self {
+        McpService { tool_router: Self::tool_router(), conn, db }
+    }
+
+    /// Every tool this server lists, for the description check.
+    pub fn tools(&self) -> Vec<rmcp::model::Tool> {
+        self.tool_router.list_all()
+    }
+
+    #[tool(description = GET_GRANT_DESCRIPTION)]
+    async fn get_grant(&self) -> Result<CallToolResult, ErrorData> {
+        let db = self.db.clone();
+        // DB work off the async workers; `DbState` is locked for this one read and never across an
+        // `.await` (decision 1; M2 amendment, item 5).
+        let read = tauri::async_runtime::spawn_blocking(move || {
+            let conn = db.db().lock()?;
+            current_grant_core(&conn)
+        })
+        .await;
+        Ok(match read {
+            Ok(Ok(grant)) => {
+                let json = serde_json::json!({ "grant": grant });
+                CallToolResult::success(vec![ContentBlock::text(json.to_string())])
+            }
+            Ok(Err(e)) => CallToolResult::error(vec![ContentBlock::text(format!("get_grant failed: {e}"))]),
+            Err(e) => CallToolResult::error(vec![ContentBlock::text(format!("get_grant task failed: {e}"))]),
+        })
+    }
+}
+
+#[tool_handler]
+impl ServerHandler for McpService {
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+            .with_server_info(Implementation::new("orcastudio", env!("CARGO_PKG_VERSION")))
+            .with_instructions(INSTRUCTIONS)
+    }
+
+    /// Every tool call takes one of the connection's permits first, and holds it until the call's
+    /// work ends. None free: the immediate tool error [`BUSY`], never a queue.
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, ErrorData> {
+        let Some(_permit) = self.conn.try_permit() else {
+            return Ok(CallToolResult::error(vec![ContentBlock::text(BUSY)]).into());
+        };
+        let call = ToolCallContext::new(self, request, context);
+        self.tool_router.call(call).await
+    }
+}

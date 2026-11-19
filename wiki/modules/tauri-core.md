@@ -336,8 +336,10 @@ in-flight steps (own process groups) are left to the OS (ADR-024 o18, decided by
 
 ## Commands (thin wrappers over `*_conn(&Connection)` helpers)
 
-- **Settings:** `get_settings() -> HashMap<String,String>`, `set_setting(key, value)`,
-  `get_sidecar_status() -> SidecarStatus { status, port, version, expected_version }`.
+- **Settings:** `get_settings() -> HashMap<String,String>`, `set_setting(key, value)` (body
+  `set_setting_conn`; it refuses the MCP switch's key `mcp_enabled` with `Invalid`, because the MCP
+  lifecycle's `set_enabled` is that row's only writer — ADR-027 M2 amendment, item 2,
+  [mcp-server.md](mcp-server.md)), `get_sidecar_status() -> SidecarStatus { status, port, version, expected_version }`.
 - **Jobs:** `create_job(title, input_content, scene_json: Option<String>, scene_log_json: Option<String>) -> Job` (UUID, inserts
   `draft`, snapshot written once); `list_jobs() -> Vec<Job>` (`created_at DESC`); `get_job(id)`
   (`NotFound`); `rename_job(id, title) -> Job` — rename a job's **display title** only (unit 3):

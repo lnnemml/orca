@@ -183,6 +183,126 @@ an app restart, the dependable recovery is a new client session.**
 second account, and no sudo. An `unshare -U` attempt was invalid, because the kernel uid stays the
 same. The owner-bit enforcement above *is* measured.
 
+## M2a facts (2026-11-19)
+
+Recorded by the M2a Part A implementer. Each fact says how it was settled: **sourced** (read in the
+crate source in `~/.cargo/registry/src/`, not run) or **run** (a test in `src-tauri/src/mcp/server/`,
+on the dev laptop). Versions: Tauri 2.11.5, `tauri-runtime-wry` 2.11.4, `rmcp` 3.11.0, tokio 1.53.1
+(the workspace pin, not M0's 1.54.1), `tokio-util` 0.7.19, `rusqlite` 0.32.1, rustc 1.97.1.
+
+### 1. A programmatic `app.exit()` re-enters `ExitRequested` (sourced, not run)
+
+The M2 amendment (item 6) left this to M2a (rule #10). The source settles all three questions.
+
+- **It re-enters.** `AppHandle::exit` asks the runtime to exit, and falls back to a hard exit only if
+  that request cannot be posted (`tauri-2.11.5/src/app.rs:573-580`):
+  ```rust
+  /// Exits the app by triggering [`RunEvent::ExitRequested`] and [`RunEvent::Exit`].
+  pub fn exit(&self, exit_code: i32) {
+    if let Err(e) = self.runtime_handle.request_exit(exit_code) {
+      log::error!("failed to exit: {}", e);
+      self.cleanup_before_exit();
+      std::process::exit(exit_code);
+    }
+  }
+  ```
+  `request_exit` posts `Message::RequestExit(code)` through the event-loop proxy
+  (`tauri-runtime-wry-2.11.4/src/lib.rs:2748-2754`), so the event runs later, **on the main thread**,
+  whichever thread called `exit`.
+- **It carries `Some(code)`, and `prevent_exit` is honoured.** The event loop handles the message so
+  (`tauri-runtime-wry-2.11.4/src/lib.rs:4354-4366`):
+  ```rust
+      Message::RequestExit(code) => {
+        let (tx, rx) = channel();
+        callback(RunEvent::ExitRequested {
+          code: Some(code),
+          tx,
+        });
+
+        let recv = rx.try_recv();
+        let should_prevent = matches!(recv, Ok(ExitRequestedEventAction::Prevent));
+
+        if !should_prevent {
+          *control_flow = ControlFlow::Exit;
+        }
+      }
+  ```
+  Tauri wraps it as `RunEvent::ExitRequested { code, api: ExitRequestApi { tx, code } }`
+  (`tauri-2.11.5/src/app.rs:2552-2555`), and `prevent_exit` sends `Prevent` unless the code is the
+  restart code (`tauri-2.11.5/src/app.rs:90-94`, with `RESTART_EXIT_CODE = i32::MAX` at `:77`):
+  ```rust
+  pub fn prevent_exit(&self) {
+    if self.code != Some(RESTART_EXIT_CODE) {
+      self.tx.send(ExitRequestedEventAction::Prevent).unwrap();
+    }
+  }
+  ```
+- **The consequence.** The exit flow's own `app.exit(0)` comes back as an `ExitRequested` that a
+  `prevent_exit` **would** stop. That is why the handler passes through on the app-owned
+  `exit_ready` alone (the pure `lifecycle::pass_through`), and not on "the first time" or on the
+  `code`: any programmatic exit carries `Some`, so the code does not say whose exit it is.
+- **Two edges, sourced.** If the proxy is gone, `exit` hard-exits with no `ExitRequested` at all
+  (the `Err` arm above). And on the close-the-last-window path, `ExitRequested { code: None }` is sent
+  only after the last window has been **destroyed** (`tauri-runtime-wry-2.11.4/src/lib.rs:4310-4324`:
+  the `TaoWindowEvent::Destroyed` arm, when the window map is empty). So preventing it there keeps a
+  process with no window alive until the flow's `app.exit`: during the MCP wait the user would see
+  no window. That is what the source says; what the user actually sees stays for Part B's live gate.
+
+### 2. std's `File::open` already sets `O_CLOEXEC` (run)
+
+The M0 amendment (item 4) left this open. The std source is not installed for rustc 1.97.1
+(`rust-src` component absent), so it is settled by a run, not by reading:
+`lock_tests::std_file_open_already_sets_cloexec` opens a plain `File` and reads `FD_CLOEXEC` back
+with `fcntl(F_GETFD)` — set. `lock_tests::a_child_process_does_not_inherit_the_lock_fd` runs
+`ls -l /proc/self/fd/` in a child while the lock is held: the lock file is not among its fds. The
+lock still opens with an explicit `O_CLOEXEC`, and its `FD_CLOEXEC` assertion is what guards (control
+C5 in the M2a Part A log entry).
+
+### 3. `rmcp` 3.11.0 implements `server/discover` (sourced and run)
+
+- **Before `initialize`** (`rmcp-3.11.0/src/service/server.rs:565-627`): a request that lacks the
+  2026-07-28 `_meta` keys (`io.modelcontextprotocol/protocolVersion` and
+  `io.modelcontextprotocol/clientCapabilities`) gets `invalid_params` (−32602), and the handshake
+  loop goes on. That is the −32602 M0 observed for Claude Code's `server/discover`. With those keys,
+  `server/discover` is answered with a `DiscoverResult` (`handler/server.rs:456-463`).
+- **After `initialize`**: an unknown method reaches `on_custom_request`, whose default is
+  −32601 (`handler/server.rs:636-648`).
+- **Run:** `server_tests::an_unknown_method_gets_an_error_and_the_connection_stays_open` sends all
+  three, and the connection answers `tools/list` afterwards.
+- **Sourced, not run:** a *notification* before `initialize` ends the handshake with
+  `ExpectedInitializeRequest` (`service/server.rs:673-676`), which closes the connection.
+
+### 4. `rmcp` reports a transport's end only after a response drain (sourced and run)
+
+`waiting()` returns only after `rmcp` drains in-flight handler responses: up to 5 s for `Closed` and
+2 s for `Cancelled` (`rmcp-3.11.0/src/service.rs:1834-1836`). Run: with four handlers in flight, a
+hang-up was not visible through `waiting()` within 3 s. So the server sets a connection's `closed`
+flag at the **read EOF** of its own stream wrapper (`listener::Transport`), not when `waiting()`
+returns (control C16).
+
+### 5. The serve path runs on Tauri's runtime (run)
+
+`rmcp` spawns its serve loop and each handler with `tokio::spawn` (`service.rs:1387-1393`), so they
+run on whichever runtime runs `serve`. The server is spawned with `tauri::async_runtime::spawn`, and
+the tests create no runtime of their own, so the first bind-and-serve test
+(`server_tests::the_first_bind_and_serve_runs_on_tauris_runtime_and_get_grant_answers`) ran on
+Tauri's runtime with the workspace's tokio 1.53.1. It passed: the M2 amendment's runtime requirement
+holds, with no finding.
+
+### 6. `rusqlite`'s default busy timeout is 5 s (sourced and run)
+
+`rusqlite-0.32.1/src/inner_connection.rs:119` calls `sqlite3_busy_timeout(db, 5000)` on every open.
+Run: the reconcile-BUSY test took 5 s per failed attempt until it set 50 ms on its own connection.
+So a reconciliation that meets another instance's write transaction holds the lifecycle mutex and
+`DbState` for up to 5 s before it reports `SQLITE_BUSY`. That is off the main thread by construction
+(the tick thread, or `set_enabled` through `spawn_blocking` in Part B).
+
+### 7. `tokio-util` 0.7.19 is the locked version (sourced)
+
+The M2 amendment cites `tokio-util-0.7.20`; the workspace lock holds 0.7.19, and adding the direct
+dependency did not move it. Its `TaskTracker::close` says the same, "It does not prevent you from
+spawning new tasks" (`tokio-util-0.7.19/src/task/task_tracker.rs:331`), with `reopen` at `:349`.
+
 ## Consequences for ADR-027
 
 There is no hard contradiction. The qualifications are applied as the ADR's

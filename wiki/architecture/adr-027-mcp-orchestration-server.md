@@ -1083,13 +1083,15 @@ The decision text above stands, except where an item below says it replaces or q
        transition that takes the mutex after the flag is set is a no-op (item 2). A transition
        already in flight when the flag is set is undone by the flow's switch-off, which takes the
        mutex after it.
-     - Off the main thread, the flow then takes the lifecycle mutex and runs the switch-off order, waits for **stop complete** (every
-       tracker generation ended and the unlink done, including a stop that began before exit), and
-       then runs the existing `terminate_on_exit` and the sidecar stop, in that order. Running the
-       MCP wait first means a `create_job` task's local step B cannot start ORCA after the kill.
+     - Off the main thread, the flow then takes the lifecycle mutex, runs the switch-off order and
+       releases the mutex. It then waits for **stop complete** (every tracker generation ended and
+       the unlink done, including a stop that began before exit), and then runs the existing
+       `terminate_on_exit` and the sidecar stop, in that order. Running the MCP wait first means a
+       `create_job` task's local step B cannot start ORCA after the kill.
      - It then releases the lock, sets `exit_ready`, and calls `app.exit()`. How a programmatic
        `app.exit()` re-enters `ExitRequested` (Tauri 2.11.5) is not measured: M2a settles it from
-       the crate source or a run before relying on it (rule #10). A second signal is sourced
+       the crate source or a run before relying on it (rule #10). (Settled from the crate source,
+       not run: [mcp-transport-probe.md](mcp-transport-probe.md), "M2a facts".) A second signal is sourced
        (`tauri-2.11.5/src/app.rs:226-228`, on `ExitRequested`'s `code`): "[`Option::None`] when the
        exit is requested by user interaction, [`Option::Some`] when requested programmatically via
        [`AppHandle#method.exit`] and [`AppHandle#method.restart`]."

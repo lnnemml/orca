@@ -12667,3 +12667,127 @@ holding any key other than `Calc_Hess`, `Recalc_Hess` or `MaxIter`.
   - what the user sees during the exit wait;
   - the packaged binary's name (f′).
 - **Next:** M2a Part A (implementer `opus`). Pages touched: the ADR, [mcp-server.md](modules/mcp-server.md), `index.md`, `ROADMAP.md` (M2 → M2a/M2b).
+
+## [2026-11-19] feat | ADR-027 M2a Part A — the MCP transport cores
+
+**What landed** (uncommitted, on `main` at `725daa2`; pending verifier CODE). The transport's pure and
+DB-level cores, each tested; nothing is wired into the app (no `lib.rs` setup or exit change, no
+`main.rs` branch, no command, no UI). Module page: [mcp-server.md](modules/mcp-server.md), "The
+transport". Facts: [mcp-transport-probe.md](architecture/mcp-transport-probe.md), "M2a facts".
+
+- **Dependencies:** `rmcp = "=3.11.0"` (`default-features = false`, `server` + `macros`), `tokio`
+  declared directly (`net`, `rt`, `sync`, `macros`, `time`, `io-util`), `tokio-util` (`rt`). The lock
+  gains 19 packages (`rmcp`, `rmcp-macros`, `schemars_derive` 1.2.2, `darling` 0.24.1, `sha2` 0.11.1 and
+  its digest family, `futures` 0.3.33, `tokio-macros` 2.7.2, …); **no existing package moves**: tokio
+  stays 1.53.1 and `tokio-util` 0.7.19. Resolved online (offline resolution wanted to bump
+  `futures-*`, `wasm-bindgen` and others, so it was discarded).
+- **`mcp/switch.rs`** — the `mcp_enabled` row (`"true"`/`"false"`, missing = off; any other value is a
+  read error) and `is_reserved_setting`. **`set_setting`** now has a body, `set_setting_conn`, which
+  refuses `mcp_enabled` with `Invalid` and writes nothing.
+- **`mcp/server/`** — `paths` (the runtime dir or `<data dir>/mcp`, the 107-byte `sun_path` refusal),
+  `lock` (`flock`, `O_CLOEXEC`, `FD_CLOEXEC` asserted before the lock is taken), `socket` (`0700`/`0600`
+  by explicit `chmod`, the `stat` post-condition, stale-socket replacement, the inode-checked unlink),
+  `listener` (the `SO_PEERCRED` check over an injected uid source, 4 lifecycle-wide slots, the per-start
+  registry, a `Transport` wrapper that sets `closed` at read EOF), `service` (the `rmcp` handler: the
+  4-permit `try_acquire` cap with the `BUSY` tool error, `get_grant` over `current_grant_core` in
+  `spawn_blocking`, the recovery sentence from one `concat!`ed literal), `gate` (the admission gate over
+  `TaskTracker` generations, with the test hook between check and spawn), `lifecycle` (the one lifecycle
+  mutex, the pure `decide` and `pass_through`, switch-on/off, `set_enabled`, the advisory `McpStatus`,
+  the exit flow over an injected executor and steps), `tick` (`run_ticks` over an injected `Interval`),
+  and `relay` (generic over its three streams).
+- **`reconcile_submitting_conn` has its first caller**: the lifecycle, once per acquisition, before the
+  first bind.
+- **The runtime requirement holds:** the first bind-and-serve test runs on `tauri::async_runtime` (no
+  test runtime exists in these tests), with the workspace's tokio 1.53.1.
+
+**Tests:**
+- `cargo test --workspace`: `orcastudio_lib` **1231 → 1285** passed (52 in `mcp::server`, 2 in
+  `commands::settings`), **30** ignored; `orcastudio-core` unchanged (24 + 6 + 1 + 2 doc; 1 ignored).
+  `cargo build`: no warnings.
+- `npx vitest run`: **1373** passed, 2 skipped (no TS change). `npx tsc --noEmit` clean.
+
+**Negative controls** (39, **39/39 RED**, each restored byte-identically, sha256-checked; the whole
+`src-tauri/src` tree sha256-identical after the run; `scratchpad/m2a_parta_controls.py`; a compile
+error does not count as RED, and 19 controls also require their test's own message):
+- the lock and the reconciliation: a non-holder proceeding without the lock (C1); a non-holder
+  reconciling (C2); the bind moved before the reconciliation (C3); a reconcile error ignored (C4); the
+  `FD_CLOEXEC` check removed (C5); the Stop arm dropping the `flock` (C6) or resetting the acquisition
+  (C7);
+- the socket and the peer: the mode/owner/type check removed (C8); the `sun_path` limit off by one
+  (C9); the peer check passing every uid (C10); the unlink ignoring the inode (C11); the stop skipping
+  the unlink (C12);
+- the caps: the permit awaited instead of `try_acquire` (C13); the slot dropped before the drain
+  (C14); five slots (C15); `closed` waiting for `rmcp`'s drain instead of the read EOF (C16);
+- the gate: the open check removed (C17); the check and the spawn under two holds (C18); a closed
+  generation dropped on reopen (C19);
+- the tick and the switch: the decision and the action under two holds (C20); "on" during a running
+  stop starting (C21); a failed row read read as "off" (C22); the holder not starting on "on" (C23) or
+  not stopping on "off" (C24); the driver giving up on "off" (C25);
+- exit: the `exiting` arm of `decide` removed (C26); `set_enabled` writing the row during exit (C27);
+  the pass-through keyed on `exiting` (C28); the stop marked complete before its unlink (C29); the flow
+  not waiting for the stop (C30); `terminate` before the wait (C31); the flow run on the caller's
+  thread (C32);
+- the relay: a banner on stdout (C33); exit 0 with no stderr line on a failed connect (C34); waiting for
+  stdin EOF only (C35);
+- the protocol: an unknown-method handler that takes the connection down, after `initialize` (C36) and
+  for `server/discover` with `_meta` (C37); the recovery sentence dropped from `get_grant` (C38);
+- the guard: `set_setting` accepting `mcp_enabled` (C39).
+
+Two controls first stayed green, and both were the **tests'** fault, fixed before the final run: C27's
+test read its probes when `exit_ready` flipped, which is just before the `exit` step stores them; C14's
+fifth client connected while `rmcp`'s ≤5 s response drain still held every slot, whatever the slot
+code did. The test now waits for the serve loops to end first.
+
+**Settled under rule #10** (recorded in `mcp-transport-probe.md`, "M2a facts"):
+- a programmatic `app.exit()` re-enters `ExitRequested` with `code: Some(code)`, and `prevent_exit`
+  on it is honoured (except the restart code). This is **sourced, not run**, from
+  `tauri-2.11.5/src/app.rs:573-580`, `:90-94`, `:2552-2555` and
+  `tauri-runtime-wry-2.11.4/src/lib.rs:2748-2754`, `:4354-4366`. On the close-the-last-window path the
+  event comes after the window is destroyed (`:4310-4324`);
+- std's `File::open` sets `O_CLOEXEC` (**run**; the std source is not installed);
+- `rmcp` 3.11.0 implements `server/discover`. Without the 2026-07-28 `_meta` it answers −32602, which
+  is M0's observation; with it, a result; an unknown method after `initialize` gets −32601;
+- `rmcp`'s `waiting()` lags a hang-up by up to 5 s (its response drain);
+- `rusqlite`'s busy timeout is 5 s, so a BUSY reconciliation holds the lifecycle mutex and `DbState`
+  that long, off the main thread.
+
+**Decided here (within the brief), for the verifier and Anton:**
+- **The fallback directory is `<app data dir>/mcp/`**, a subdirectory, so the `0700` `chmod` never
+  touches the data dir that holds the database.
+- **`closed` is set at the stream's read EOF** (the `Transport` wrapper), not when `rmcp`'s `waiting()`
+  returns up to 5 s later; it is also set when the service ends and on switch-off.
+- **The request cap counts `tools/call` only.** `initialize`, `tools/list` and `ping` take no permit:
+  they hold nothing, and the cap's error is a tool error. The 16-handler bound is about tool work.
+- **The 4 connection slots belong to the lifecycle**, not to one start, so a draining connection of an
+  earlier start still holds its slot (the 16-handler bound across a switch-off and on).
+- **`relay` returns `RelayEnd`**, which converts into `ExitCode`: 0 on stdin EOF, 1 on socket EOF or
+  a stream error, 2 when the socket cannot be reached.
+- **`McpStatus.enabled` is `Option<bool>`** (`None` when the row cannot be read, rather than a
+  fabricated "off"); `stopping_tasks` is `None` when no stop runs; a stop's unlink problem is appended
+  to `reason`.
+- **The production executor is Tauri's blocking pool**, which queues rather than failing as
+  `thread::spawn` can.
+- **The lock check lives in one place** (`acquire`): `start` is reached only through `decide`'s
+  holder-only `Start` or a successful `acquire`, so C1 shows that one guard bites. There is no second,
+  redundant check that would leave the control green.
+- **Exit with nothing serving and no stop running still runs a stop** (only the gate's wait), so
+  every exit waits through the same `StopHandle`.
+- The test seams are plain `Option` hooks (`Hooks`, the gate's constructor), `None` in production.
+
+**Open for Part B:**
+- **Wiring:**
+  - `lib.rs` setup builds the `McpLifecycle` over `LifecycleEnv::production`, with a `DbSource` over
+    the managed `DbState`, and starts the tick thread;
+  - `ExitRequested` calls `on_exit_requested`, with `prevent_exit` unless `PassThrough`;
+  - the `main.rs` relay branch;
+  - `mcp_status` and `mcp_set_enabled` as `async` commands over `spawn_blocking`;
+  - the switch row.
+- **Controls only the wiring can carry:**
+  - the wired lifecycle keeps "a non-holder reconciling" red;
+  - `ExitRequested` calls `prevent_exit` exactly when the decision is not `PassThrough`;
+  - the commands never run on the main thread;
+  - the built `orcastudio --mcp` with no app exits non-zero, with one stderr line and empty stdout.
+- **For Anton:**
+  - `terminate_on_exit` now runs off the main thread, which needs a check;
+  - what the user sees during the exit wait is the live gate;
+  - the switch row is a render gate.

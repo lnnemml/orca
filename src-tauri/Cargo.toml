@@ -50,6 +50,14 @@ keyring = "4.1.6"
 # content-addressed upload (`<name>-<sha>.sh`). Already transitive in Cargo.lock (0.10.9, via
 # keyring/tauri-codegen) — this adds only the declaration, no new crate enters the build.
 sha2 = "0.10"
+# The MCP server (ADR-027 M2a, M2 amendment item 5). `rmcp` is pinned to the version M0 measured over
+# a Unix stream (`wiki/architecture/mcp-transport-probe.md`); `server` pulls in `transport-async-rw`.
+rmcp = { version = "=3.11.0", default-features = false, features = ["server", "macros"] }
+# Declared directly for `net` (the Unix listener); the rest is what `rmcp` and the lifecycle use. The
+# runtime itself is Tauri's (`tauri::async_runtime`), never one of our own.
+tokio = { version = "1", features = ["net", "rt", "sync", "macros", "time", "io-util"] }
+# `TaskTracker` (the admission gate's `wait()`, M2 amendment item 4) and `CancellationToken`.
+tokio-util = { version = "0.7", features = ["rt"] }
 
 # Job cancellation (Phase 2): killpg the ORCA MPI process group. Unix-only.
 [target.'cfg(unix)'.dependencies]

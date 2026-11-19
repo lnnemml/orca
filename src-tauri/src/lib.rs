@@ -17,10 +17,11 @@ mod in_flight;
 mod local_backend;
 mod manual;
 // The MCP orchestration server's core (ADR-027): the M1a classifier and input assembly, the M1b
-// grant core, steps, resolver, preflight and the sidecar's SMILES call. M1b Part B wires the grant
-// commands (`commands::mcp`) and the `submit_job` guard; steps A/C, the resolver, the reconciliation
-// and `SidecarSmiles` are called by M2 / M3. Scoped allow until then, so the build stays
-// warning-clean without a faked caller.
+// grant core, steps, resolver, preflight and the sidecar's SMILES call, and the M2a Part A transport
+// cores (`mcp::server`: lock, socket, server, gate, lifecycle, relay). M1b Part B wires the grant
+// commands (`commands::mcp`) and the `submit_job` guard, and `set_setting` uses `mcp::switch`; the
+// transport is wired by M2a Part B, and steps A/C, the resolver and `SidecarSmiles` by M3. Scoped
+// allow until then, so the build stays warning-clean without a faked caller.
 #[allow(dead_code)]
 mod mcp;
 // The memory and disk preflight (ADR-024 o26, unit 5.5): the pure estimator and host-fact parsers.

@@ -1,20 +1,22 @@
-# MCP server — the job classifier, input assembly and grant core (`src-tauri/src/mcp/`)
+# MCP server — the job classifier, input assembly, grant core and transport (`src-tauri/src/mcp/`)
 
-[ADR-027](../architecture/adr-027-mcp-orchestration-server.md), units M1a and M1b. This module is the
+[ADR-027](../architecture/adr-027-mcp-orchestration-server.md), units M1a, M1b and M2a. This module is the
 guard that decides whether an AI model may spend compute. A `create_job` call ends in exactly one
 of three dispositions: **REFUSED** (nothing is created), **PROPOSED** (a draft Anton runs by hand)
 or **SUBMITTED** (charged to the active grant). The module also assembles the job's input, so the
 model never writes a coordinate, a charge or a multiplicity (ADR-014 (1)).
 
-The module has three layers. The **pure core** (M1a) is the classifier, the header grammar, the method
+The module has four layers. The **pure core** (M1a) is the classifier, the header grammar, the method
 signature, the allowlist, the charge/multiplicity locator and the input assembly. The **DB-level
 cores** (M1b) are schema v24, the grant core, steps A and C, the crash reconciliation, the
 `submit_job` guard, the source resolver and the memory preflight; each is a `*_conn` function or
 takes `&DbState`. The **app wiring** (M1b Part B) is the grant's Tauri commands (`commands/mcp.rs`),
 the guard in the two commands that submit a job by hand, and `SidecarSmiles`, the resolver's SMILES
-call over HTTP. There is no socket and no MCP tool yet. The module stays registered in `lib.rs` under a
-scoped `#[allow(dead_code)]`, because steps A/C, the resolver, the reconciliation and `SidecarSmiles`
-are called only from M2a/M2b and M3.
+call over HTTP. The **transport** (M2a, `server/`) is the lock, the socket, the `rmcp` server with one
+tool (`get_grant`), the admission gate, the lifecycle that switches it on and off, and the
+`orcastudio --mcp` relay; its cores are built and tested, and M2a Part B wires them into the app. The
+module stays registered in `lib.rs` under a scoped `#[allow(dead_code)]`, because the transport,
+steps A/C, the resolver and `SidecarSmiles` have no non-test caller until M2a Part B and M3.
 
 **It fails closed.** A line outside the grammar is REFUSED (R1); a block, key or value outside the
 allowlist is PROPOSED (P2); a source whose terminal state is unknown is REFUSED (R4); a memory
@@ -39,6 +41,18 @@ PROPOSED (P5). Nothing reaches SUBMITTED by default.
 | `preflight.rs` | `mcp_maxcore -> McpMaxcore { mib, source }`, `memory_verdict_for -> MemoryVerdict`, the pure `verdict_of` |
 | `*_tests.rs`, `test_db.rs` | one test file per submodule, plus `submit_guard_tests.rs` for the guard's wiring; `test_db.rs` builds a migrated scratch database per test |
 | `../commands/mcp.rs` | the grant commands `mcp_create_grant`, `mcp_revoke_grant`, `mcp_get_grant`, `mcp_level_from_job` and their `*_core`/`*_conn` bodies; `GrantView`, `GrantState`. Tests in `commands/mcp_tests.rs` |
+| `switch.rs` | the switch's row: `MCP_ENABLED_KEY` (`mcp_enabled`), `read_enabled_conn`, `write_enabled_conn`, `is_reserved_setting` |
+| `server/mod.rs` | the transport's submodule list; `CONNECTIONS = 4`, `REQUESTS_PER_CONNECTION = 4`; the `DbSource` seam (`impl DbSource for DbState`) |
+| `server/paths.rs` | `resolve(runtime_dir, app_data_dir) -> Result<McpPaths, PathRefusal>`, `resolve_for_this_user`, `sun_path_max` (107); `McpPaths { dir, lock, socket, base }` |
+| `server/lock.rs` | `try_acquire(path) -> Result<Acquire, LockError>` (`Acquired(McpLock)` / `HeldElsewhere`), `has_cloexec` |
+| `server/socket.rs` | `prepare_dir`, `bind(paths, own_uid, after_bind) -> BoundSocket { listener, identity }`, `check_modes`, `unlink_if_same(identity) -> Unlinked`; `DIR_MODE = 0o700`, `SOCKET_MODE = 0o600` |
+| `server/listener.rs` | `accept_loop`, the peer check (`PeerUid`, `kernel_peer_uid`, `own_uid`, `peer_allowed`), the per-start `Registry`, the `Transport` stream wrapper |
+| `server/service.rs` | `McpService` (the `rmcp` `ServerHandler`: `get_grant`, the permit in `call_tool`), `ConnState { closed, permits }`; `RECOVERY_SENTENCE`, `INSTRUCTIONS`, `BUSY` |
+| `server/gate.rs` | `AdmissionGate` (`open`, `close`, `spawn`, `task_count`, `wait_all`), `GateClosed` ("MCP is shutting down") |
+| `server/lifecycle.rs` | `McpLifecycle` (`tick_step`, `set_enabled`, `status`, `on_exit_requested`, `gate`), the pure `decide` and `pass_through`; `LifecycleEnv`, `Hooks`, `Observed`, `Action`, `Why`, `McpStatus`, `ExitDecision`, `Executor` (`BlockingPool`), `ExitSteps`, `StopHandle` |
+| `server/tick.rs` | `run_ticks(lifecycle, interval)`, `Interval`, `Every`, `TICK = 30 s` |
+| `server/relay.rs` | `relay(stdin, stdout, stderr, socket_path) -> RelayEnd` (`From<RelayEnd> for ExitCode`), `NOT_RUNNING` |
+| `server/*_tests.rs`, `server/test_support.rs` | one test file per submodule plus `server_tests.rs` (the server end to end over a real socket); `test_support` has the scratch dir and DB, a counting environment and a raw NDJSON MCP client |
 
 ## The classifier's input and output
 
@@ -256,12 +270,13 @@ stamp the MCP columns in the same transaction.
   is `StepC::Gone`. Step C is idempotent: a refund clears the row's `grant_id`, so a second call on the
   same job finds it no longer charged to the grant and refunds nothing.
 
-## The reconciliation (not yet called)
+## The reconciliation
 
 `reconcile_submitting_conn(conn)` turns every `draft` with `mcp_state` set into PROPOSED: refunded,
 with the reason `interrupted before submit`. Every other row with the flag only has it cleared. It
-returns the counts (`Reconciled { refunded, cleared }`). Nothing calls it yet: only the instance
-holding the `mcp.lock` `flock` may run it, right after taking the lock and before serving (M2a).
+returns the counts (`Reconciled { refunded, cleared }`). Its one caller is the transport's lifecycle
+(`server/lifecycle.rs`, injected as `LifecycleEnv::reconcile`): only the instance holding the
+`mcp.lock` `flock` runs it, once per acquisition, before the first bind (below).
 
 ## The grant commands (`commands/mcp.rs`)
 
@@ -421,6 +436,129 @@ and `local_fitted_maxcore_with` lock `DbState` themselves.
   warning gives `Warns`; a missing RAM fact, disk fact or estimate gives `Unknown`; only all known and
   quiet gives `Fits`.
 
+## The transport (`server/`, M2a)
+
+The cores of the MCP server (ADR-027 decision 2 and the M2 amendment, items 1, 2, 4–6). Nothing in the
+app calls them yet: M2a Part B wires them (below, "Not yet wired"). Every async piece runs on Tauri's
+runtime (`tauri::async_runtime`), never on a runtime of its own.
+
+**Paths.** The directory is `$XDG_RUNTIME_DIR/orcastudio/`, holding `mcp.lock` and `mcp.sock`. When
+`XDG_RUNTIME_DIR` is unset or not absolute it is `<app data dir>/mcp/`, with the same modes (a
+subdirectory, so the data dir's own mode is never changed). A socket path over `sun_path_max()` (107
+bytes, re-measured by the tests) is refused with `PathRefusal::SocketPathTooLong` before anything is
+created; the status shows the reason.
+
+**The lock** (`lock.rs`). An exclusive non-blocking `flock` on `mcp.lock`, opened `0600` and
+`O_CLOEXEC`. Before the `flock` is taken, `FD_CLOEXEC` is read back with `fcntl(F_GETFD)`, and a fd
+without it is refused (`LockError::NoCloexec`): a child that inherited the fd would keep the lock after
+the app died (M0). std's `File::open` already sets `O_CLOEXEC` (measured by a run,
+`mcp-transport-probe.md`, "M2a facts" 2), so the assertion is what guards. The lock is held while the
+`McpLock` lives: from the first acquisition until the exit flow releases it, never on switch-off.
+
+**The socket** (`socket.rs`). `prepare_dir` creates the directory `0700` or adopts an existing one,
+which must be a real directory (not a symlink) owned by this uid, and `chmod`s it `0700`. `bind`
+removes a stale socket (never a file of another type), binds, `chmod`s the socket `0600`, and then
+`stat`s both as its post-condition (rule #9): a mode, owner or file type that differs refuses, and the
+socket just bound is removed. Modes are set explicitly, never through the umask. A bound socket's
+identity is its `(dev, ino)`; `unlink_if_same` removes the path only while it is still that inode, so
+an old stop can never remove a newer socket.
+
+**Accepting** (`listener.rs`). On every accept:
+1. **the peer check** — the peer's uid (`SO_PEERCRED` through `UnixStream::peer_cred`, injected as
+   `PeerUid` so a test can play a foreign uid) must be known and equal to ours, else the stream is
+   dropped;
+2. **a slot** — one of `CONNECTIONS` (4), held by the lifecycle and shared by every start; a fifth
+   connection is closed at once;
+3. **registration** in the start's `Registry`, which switch-off shuts.
+
+Each connection then runs one `McpService` over a `Transport` wrapper of its stream. The wrapper sets
+the connection's `closed` flag at the stream's read EOF: `rmcp`'s own end comes up to 5 s later, after
+its response drain ("M2a facts" 4). When the service ends, the connection waits for its last request
+permit (`ConnState::drain`), and only then returns its slot.
+
+**The service** (`service.rs`). The `rmcp` `ServerHandler` of one connection.
+- **The request cap.** Every `tools/call` takes one of the connection's `REQUESTS_PER_CONNECTION` (4)
+  permits with `try_acquire`. With none free it gets the tool error `BUSY` ("busy, retry: …") at once
+  and never queues. The permit returns when the call's work ends. M3's `create_job` will move its
+  permit into its tracked task.
+- **Unknown methods.** `rmcp` answers them itself and keeps the connection: `server/discover` before
+  `initialize` without the 2026-07-28 `_meta` gets −32602, with it a `DiscoverResult`; an unknown
+  method after `initialize` gets −32601 ("M2a facts" 3).
+- **The recovery sentence.** `RECOVERY_SENTENCE` ("After an app restart, start a new client
+  session.") is one `macro_rules!` literal, `concat!`ed into `INSTRUCTIONS` (the `initialize` result)
+  and into every tool description.
+- **`get_grant`** returns `{"grant": <GrantView or null>}`, read by `commands::mcp::current_grant_core`
+  in `spawn_blocking` with `DbState` locked for that one read. A failure is a tool error with its
+  message.
+
+**The admission gate** (`gate.rs`). `TaskTracker::close` does not stop spawns ("M2a facts" 7), so the
+refusal is the gate's: one mutex holds `open` across both the check and the tracked spawn, and `close`
+takes the same mutex. Once `close` has returned, `spawn` refuses with `GateClosed` ("MCP is shutting
+down"). Opening after a close starts a fresh tracker generation, and every closed generation is kept
+until its tasks end; `wait_all` waits on all of them. A test hook sits between the check and the
+spawn. No task is spawned through it until M3.
+
+**The lifecycle** (`lifecycle.rs`). One owner, `McpLifecycle`, and **one lifecycle mutex** around
+every transition: a tick step, `set_enabled` (its row write included), and the exit flow's
+switch-off. A transition reads the row, asks the pure `decide`, and acts, all under one hold:
+
+| observed | action |
+|---|---|
+| `exiting` | nothing |
+| the row read failed | nothing, not even the status (retried on the next tick) |
+| "on", serving | nothing |
+| "on", a stop still running | nothing; the status says `stopping …` |
+| "on", holder | `Start`: reconcile if this acquisition has not, then bind and serve |
+| "on", not holder | `Acquire`: try the lock; taken → `Start`; held elsewhere → "another OrcaStudio instance holds the MCP lock" |
+| "off", serving | `Stop` (the `flock` is kept) |
+| "off", not serving | nothing |
+
+- **Acquisition.** Taking the lock begins one, and `reconcile_submitting_conn` runs once per
+  acquisition, before the first bind. The acquisition counts as done only when it commits: a failure
+  (`SQLITE_BUSY` from another instance) binds nothing, shows the reason, and the next tick retries.
+  A reconciliation that meets another instance's write transaction waits up to `rusqlite`'s 5 s busy
+  timeout first ("M2a facts" 6).
+- **Switch-on**: bind, `stat`, open the gate, start the accept loop.
+- **Switch-off**, under the mutex: close the gate, shut the registry (every `closed` flag set), cancel
+  the start's token (the accept loop and every service). Then a task on Tauri's runtime, outside the
+  mutex: wait for the accept loop and every tracked task of every generation, unlink the socket this
+  start bound (by inode), and mark the `StopHandle` complete. While a stop runs, "on" is a no-op.
+- **Lock order.** lifecycle → gate, lifecycle → `DbState`, lifecycle → the status facts. Nothing takes
+  the lifecycle mutex while holding one of those; handlers never take it.
+- **`set_enabled(on)`** writes the row (its only writer: the generic `set_setting` refuses
+  `mcp_enabled`) and runs one step at once. Once exit has begun it writes nothing and the status says
+  `exiting`.
+- **`McpStatus`** (`enabled`, `holds_lock`, `serving`, `stopping_tasks`, `connections`,
+  `socket_path`, `reason`) is advisory: `status()` reads a leaf snapshot and the row, never the
+  lifecycle mutex. `enabled` is `None` when the row cannot be read; `stopping_tasks` is `None` when no
+  stop runs.
+
+**The exit flow.** `on_exit_requested(executor, steps)` is what Part B's `ExitRequested` calls on the
+main thread, and it takes no mutex:
+1. `exit_ready` set → `PassThrough` (the pure `pass_through`; a programmatic `app.exit()` re-enters
+   `ExitRequested` with `prevent_exit` honoured, "M2a facts" 1);
+2. else one `compare_exchange` on the terminal `exiting` flag: the winner hands the flow to the
+   executor (`Started`), and any later request is `Absorbed`. The caller calls `prevent_exit` unless
+   `PassThrough`.
+
+The flow, off the caller's thread (`BlockingPool`: Tauri's blocking pool):
+1. take the lifecycle mutex, switch off (or adopt a stop that began before exit), release it;
+2. wait for **stop complete** (every generation ended, the unlink done);
+3. run `terminate`, then `sidecar_stop`;
+4. release the lock, set `exit_ready`, call `exit`.
+
+Every step is injected (`ExitSteps`), so the tests drive it without a `RunEvent`.
+
+**The tick** (`tick.rs`). `run_ticks` runs one step at once and then one per `Interval` (`Every(TICK)`,
+30 s) until exit begins. A step that changes nothing is retried on the next tick: the driver never
+gives up while the app runs. Part B starts it on a background thread.
+
+**The relay** (`relay.rs`). `relay(stdin, stdout, stderr, socket_path)` copies stdin → socket and
+socket → stdout, flushing every chunk, until either side ends: stdin EOF closes the socket
+(`ClientClosed`, exit 0), socket EOF ends it (`ServerClosed`, exit 1). A failed connect writes exactly
+`NOT_RUNNING` ("OrcaStudio is not running, or its MCP server is off") and a newline to stderr
+(`NotRunning`, exit 2). stdout carries only the socket's bytes; every diagnostic goes to stderr.
+
 ## Clarifications (orchestrator, within ADR-027)
 
 - **C1** — the charge/multiplicity locator is strict, as above. Its parity with TS covers
@@ -470,9 +608,15 @@ Two choices go beyond the clarifications, and each can only move a job toward An
 
 ## Not yet wired
 
-- **M2a:** the socket server, the `orcastudio --mcp` relay, the `mcp_enabled` switch with its 30 s
-  tick, the admission gate, `get_grant`, and the lock holder calling `reconcile_submitting_conn`
-  (ADR-027 M2 amendment).
+- **M2a Part B** wires the transport cores into the app:
+  - `lib.rs` setup: an `McpLifecycle` over `LifecycleEnv::production` (a `DbSource` over the managed
+    `DbState`), and the tick thread (`run_ticks` with `Every(TICK)`);
+  - `RunEvent::ExitRequested`: `on_exit_requested(&BlockingPool, ExitSteps { terminate_on_exit,
+    sidecar.stop(), app.exit(0) })`, with `prevent_exit` unless `PassThrough`;
+  - the `main.rs` branch for `orcastudio --mcp` before `run()`: `relay` over the process's stdio and
+    `resolve_for_this_user()`'s socket;
+  - the commands `mcp_status` and `mcp_set_enabled`, `async` with the work in `spawn_blocking`;
+  - the Settings → MCP switch row (the switch, decision 9's data line, "this instance serves").
 - **M2b:** the other read tools.
 - **M3:** `create_job` as one tracked task (the preflight, step A, step B, step C around
   `classify_mcp_job` and `assemble`), `SidecarSmiles` handed to the resolver, the audit log, and R8's
@@ -481,9 +625,10 @@ Two choices go beyond the clarifications, and each can only move a job toward An
 
 ## Tests
 
-`cargo test -p orcastudio --lib mcp::` runs the module's tests, `cargo test -p orcastudio --lib
-commands::mcp` the grant commands' tests, and `npx vitest run src/scene/charge-mult-parity.test.ts`
+`cargo test -p orcastudio --lib mcp::` runs the module's tests (the transport's are
+`mcp::server::`), `cargo test -p orcastudio --lib commands::mcp` the grant commands' tests, and `npx vitest run src/scene/charge-mult-parity.test.ts`
 the TS half of the C1 parity. The schema tests are
 `cargo test -p orcastudio --lib db::tests::` (v24 names in `modules/tauri-core.md`). The negative
 controls are recorded in `log.md`: one per row plus the ADR's M1a list in the M1a entry, and the M1b
-list in the M1b Part A entry and the Part B list in the M1b Part B entry (all 2026-11-19).
+list in the M1b Part A entry, the Part B list in the M1b Part B entry, and the M2a Part A list in its
+entry (all 2026-11-19).
