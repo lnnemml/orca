@@ -198,11 +198,11 @@ localhost HTTP server as a connector (sourced, above).
   `chmod 000` must give `EACCES` (Open question c).
 - **Fallback.** If `XDG_RUNTIME_DIR` is unset, the app uses the app data dir with the same modes. If
   that path would exceed the `sun_path` limit, MCP refuses to start and says why.
-- **Exit.** A clean exit first closes the task tracker and waits for every `create_job` task (M0
+- **Exit.** A clean exit first closes the task tracker (the gate: M2 amendment, item 4) and waits for every `create_job` task (M0
   amendment, item 6; each is bounded by its transactions and its own ssh timeouts). Only then does it
   unlink the socket and release the lock. So no other instance can reconcile a job this process is still submitting.
 
-**The relay.** The MCP client launches **`orca-studio --mcp`**, the same binary, which in this mode
+**The relay.** The MCP client launches **`orcastudio --mcp`** (the binary's real name; M2 amendment, item 3), the same binary, which in this mode
 never opens a window. It is a **dumb byte relay**: stdin → socket, socket → stdout. It holds no
 logic, so no guard lives in it. If it cannot connect, it writes one line to stderr ("OrcaStudio is
 not running, or its MCP server is off") and exits non-zero.
@@ -212,7 +212,7 @@ not running, or its MCP server is off") and exits non-zero.
 | event | effect |
 |---|---|
 | the client session ends | the relay sees stdin EOF and closes the socket. The server sets that connection's `closed` flag. A waiting or reading handler sees the flag on its next tick and ends; handlers are not cancelled (M0 amendment, items 6 and 10) |
-| the app exits, or MCP is turned off | the listener and every connection close: the server sets each connection's `closed` flag and cancels its service (M0 amendment, item 10). Switching off keeps the `flock`. A `create_job` already past its charge step finishes its order of operations (decision 5): its task runs on, the tracker refuses new ones, and a clean exit waits for them before releasing the lock ("Exit" above). The relay sees socket EOF, exits, and the client shows the server as disconnected |
+| the app exits, or MCP is turned off | the listener and every connection close: the server sets each connection's `closed` flag and cancels its service (M0 amendment, item 10). Switching off keeps the `flock`. A `create_job` already past its charge step finishes its order of operations (decision 5): its task runs on, the tracker refuses new ones (the gate: M2 amendment, item 4), and a clean exit waits for them before releasing the lock ("Exit" above). The relay sees socket EOF, exits, and the client shows the server as disconnected |
 | the app restarts | the dependable recovery is a new client session (measured, M0 amendment, item 3). Jobs, grants and the audit log live in SQLite and survive. Only the per-connection read counters are lost |
 
 ### (3) Three dispositions, chosen by a pure Rust classifier
@@ -399,8 +399,11 @@ in the future. The grant create and revoke commands are Rust, owned by M1b.
     right after it takes the lock and before it serves. An instance without the lock never touches
     `mcp_state`, so it cannot refund a job that the serving instance is still submitting.
   - **Retaking the lock.** An instance with MCP enabled that does not hold the lock retries it every
-    30 s. Taking it starts the reconciliation and then serving.
-  - **Bounds.** The reconciliation runs once per acquisition and never retries a submit.
+    30 s. Taking it starts the reconciliation and then serving. (Replaced by the M2 amendment, item 2: one
+    30 s tick per instance, which also starts a switched-off holder.)
+  - **Bounds.** The reconciliation runs once per acquisition and never retries a submit. (An
+    acquisition counts as done only when its reconciliation commits; a failed one is retried on the
+    next tick: M2 amendment, items 2 and 6.)
 
 **Revoke.** A revoke is a `BEGIN IMMEDIATE` transaction. Whichever of a step A and a revoke commits
 first wins: a job charged before the revoke proceeds, and none is charged after it. Revoking does
@@ -580,7 +583,7 @@ These items are not designed here. Each needs its own ADR, written from Stage-1 
 
   `tauri dev` must be stopped and the DB backed up before the migration (memory).
 - **`submit_job`** gains the `mcp_state` refusal of decision 5. That is a command guard; the backends
-  do not change. The reconciliation of decision 5 is added; it runs on each acquisition of the lock.
+  do not change. The reconciliation of decision 5 is added; it runs on each acquisition of the lock (M2 amendment, item 6).
 - **`wiki/modules/tauri-core.md`** gets a new MCP section. Its pollable-path debt now names
   `crest_grow`.
 - **A new module page, `wiki/modules/mcp-server.md`**, written in M1a.
@@ -666,7 +669,8 @@ Part B. Every listed control must turn the suite red.
     - `submit_job` accepting a `submitting` job;
     - the reconciliation leaving a `submitting` Draft charged;
     - an instance without the lock reconciling.
-- **M2 — the server, read-only.**
+- **M2 — the server, read-only.** Split into **M2a** (transport) and **M2b** (the read tools) by the
+  M2 amendment, item 1, which governs where it differs from this bullet.
   - **What it contains:** the `flock`, the socket and its modes, `SO_PEERCRED`, the `--mcp` relay,
     the 4-connection cap, the lifecycle table, and the read tools including `measure` with its ASE
     cross-check.
@@ -691,7 +695,8 @@ Part B. Every listed control must turn the suite red.
     - the 51st proposal accepted;
     - a grant check outside `BEGIN IMMEDIATE`;
     - the M0-amendment obligations listed in its item 9.
-- **M4 — the UI (Part B, live WebKitGTK gate).**
+- **M4 — the UI (Part B, live WebKitGTK gate).** The switch, the data line and "this instance serves"
+  move to M2a Part B (M2 amendment, item 2).
   - Settings → MCP: the switch with the data line, "this instance serves", the grant editor with
     "this job's level", Revoke, "Cancel Claude's jobs", and the audit view.
   - In Jobs: the badge, the reasons and "Claude is submitting".
@@ -760,7 +765,7 @@ measurement qualifies a decision, the rule below governs.
    - **Why this holds by construction (decided by Anton).** The **whole** `create_job` (the
      memory verdict, step A, step B and step C) runs as **one task on the app's own runtime**, which
      the `rmcp` service does not own.
-     - **The order.** The handler first checks the **task tracker**. If the tracker is closed, the
+     - **The order.** The handler first checks the **task tracker** (the gate: M2 amendment, item 4). If the tracker is closed, the
        handler refuses with "MCP is shutting down". Otherwise it registers the task in the tracker,
        moves its semaphore permit into the task, spawns the task, and then only awaits the result,
        in order to return it.
@@ -772,7 +777,7 @@ measurement qualifies a decision, the rule below governs.
      service cancel does to a handler is **not measured**, and the construction makes it irrelevant:
      a handler cut off before the spawn has written nothing.
    - **Switch-off and exit.**
-     - They first **close the tracker**, so no new `create_job` task can start.
+     - They first **close the tracker** (the gate: M2 amendment, item 4), so no new `create_job` task can start.
      - Then they set every connection's `closed` flag and cancel the services.
      - Then they wait for every tracked task. Each is bounded by its DB transactions and its own ssh
        timeouts.
@@ -802,7 +807,7 @@ measurement qualifies a decision, the rule below governs.
 
 9. **Who owns the new obligations, and their controls.** Each control must turn its unit's suite
    red.
-   - **M2:**
+   - **M2:** (carried into M2a by the M2 amendment, item 1)
      - an unknown method such as `server/discover` closing the connection instead of returning an
        error;
      - serving after a socket or directory mode differs from `0600`/`0700` post-bind;
@@ -816,7 +821,7 @@ measurement qualifies a decision, the rule below governs.
      - `create_job` abandoning step B or C when `closed` is set after step A;
      - any step of `create_job` running inside the handler instead of the tracked task;
      - a service cancel right after step A's commit leaving the job at `mcp_state = 'submitting'`;
-     - a `create_job` task starting after the tracker has closed;
+     - a `create_job` task starting after the tracker has closed (the gate: M2 amendment, item 4);
      - switching MCP off between step A and step C leaving the job at `mcp_state = 'submitting'`;
      - switch-off or exit not setting every connection's `closed` flag;
      - a clean exit releasing the lock while a `create_job` task is still running;
@@ -827,7 +832,7 @@ measurement qualifies a decision, the rule below governs.
     - a waiting or reading handler, at its next `closed` check;
     - a `create_job` handler returns once its task has run through step C (item 6). If the handler
       itself is cut off by the service cancel, the task still completes. Switch-off and exit close
-      the tracker first and wait for the tasks.
+      the tracker (the gate: M2 amendment, item 4) first and wait for the tasks.
 
 **Open questions after M0:**
 - (c′) denial of a foreign uid;
@@ -835,5 +840,312 @@ measurement qualifies a decision, the rule below governs.
   client's retry schedule beyond 44 s.
 - (e′) whether an **interactive** Claude Code session asks before loading the research folder's
   project `.mcp.json`. M0 measured `-p` mode only; M5 observes this.
+- (f′) the packaged binary's name (M2 amendment, item 3): unmeasured until a release build exists.
 
 Neither blocks M1a.
+
+## Amendment (2026-11-19) — M2: the split, the switch, the binary name
+
+**Status:** Accepted by Anton on 2026-11-19.
+- The four forks below were decided by Anton on 2026-11-19, each on the orchestrator's lean: items
+  1–3, and the two-instance rule in item 2.
+- The rest follows from the code at `642d1af`, as mapped by the explorer.
+- DESIGN round 1: FAIL (3 HIGH + 8 MED + 5 LOW), all applied; one fork from it was decided by Anton
+  (item 2).
+- DESIGN round 2: FAIL (1 HIGH + 3 MED + 4 LOW), all applied. The second FAIL was escalated to Anton,
+  who decided to fix and run round 3, and decided the exit fork (item 6).
+- DESIGN round 3: FAIL (1 HIGH + 1 MED + 5 LOW), all applied. The third FAIL was escalated to Anton,
+  who decided to fix and run a narrow round 4 over the delta.
+- DESIGN round 4 (the delta only): PASS WITH FINDINGS (1 MED + 4 LOW), all applied.
+
+The decision text above stands, except where an item below says it replaces or qualifies a sentence.
+
+1. **M2 is two units (decided by Anton).** Each follows the CLAUDE.md loop (Part A, STOP, verifier
+   CODE, Anton, Part B), and every listed control must turn its suite red.
+   - **M2a — the transport** (implementer `opus`, because of the concurrency).
+     - **What it contains:**
+       - **The lock.** The `flock` on the lock file, opened `O_CLOEXEC`, with the `FD_CLOEXEC`
+         assertion.
+       - **The socket.**
+         - The path is resolved through `XDG_RUNTIME_DIR`. If that is unset or not absolute, the
+           app data dir is used with the same modes (decision 2, "Fallback").
+         - If the path is longer than `sun_path` allows, MCP refuses to start and says why.
+         - The directory (`0700`) and the socket (`0600`) get explicit modes. Both are `stat`ed
+           after bind (M0 amendment, item 2).
+       - **`SO_PEERCRED`**, with the uid comparison as an injectable function.
+       - **The `orcastudio --mcp` relay** (item 3).
+       - **The caps.** At most 4 connections are served; a fifth connection is closed at once.
+         Each connection holds a semaphore of 4 permits, and a fifth request gets "busy, retry"
+         (M0 amendment, item 5).
+       - **The per-connection `closed` flag.**
+       - **The admission gate and the tracker (item 4).** Created here, empty. M3 adds tasks.
+       - **The lifecycle owner and the order of operations (item 6).** Switch-on, switch-off, exit and
+         the one 30 s tick, every transition serialised by one lifecycle mutex.
+       - **The reconciliation.** The lock holder calls `reconcile_submitting_conn`, then binds
+         (decision 5, "Only the lock holder runs it").
+       - **The switch** of item 2.
+       - **One tool, `get_grant`**, over `current_grant_core`. It proves the stack end to end
+         without M2b's projections.
+       - **The runtime requirement (not a control).** The first bind-and-serve test runs on
+         `tauri::async_runtime`, not on a test runtime (item 5).
+       - **A test hook** between the gate's check and the spawn, so the interleave control can place
+         a close there.
+       - **The recovery sentence.** The "after an app restart, start a new client session" text is
+         one shared constant, used in the server instructions and in every tool description
+         (M0 amendment, item 3).
+     - **Controls:**
+       - **The lock and the reconciliation:**
+         - a second instance binding without the lock;
+         - an instance without the lock reconciling. This is already an M1b control; the wiring
+           must keep it red.
+         - binding or accepting before `reconcile_submitting_conn` returns;
+         - exit running `terminate_on_exit` before the MCP wait has ended (a local step B could start
+           ORCA after the kill), or the wait running on the main thread (item 6). Seam: the exit flow
+           is a function over an injected handle and executor, so a test can drive it without a
+           `RunEvent` and assert the thread and the order;
+         - a reconcile error (for example `SQLITE_BUSY`) followed by serving. The required
+           outcome: no serve, the reason shown, a new attempt on the next tick.
+         - the lock fd without `FD_CLOEXEC`;
+         - `mcp_set_enabled(false)`, or the tick reading "off", releasing the `flock`.
+       - **The socket and the peer:**
+         - serving after a mode differs from `0600`/`0700` post-bind;
+         - an over-long `sun_path` bound instead of refused;
+         - a foreign-uid peer accepted. The uid source is injected, since no second account
+           exists (Open question c′).
+       - **The caps:**
+         - a fifth concurrent request queued instead of refused "busy";
+         - a connection slot freed while a permit is still held;
+         - a fifth connection served.
+       - **The gate:**
+         - work admitted after the gate is closed;
+         - the gate's check and the spawn not done under one lock (item 4). The control
+           interleaves a close between them.
+       - **The tick and the switch:**
+         - a non-holder that stops retrying after the row has been off and then on again;
+         - the holder not starting to serve within one tick after another instance writes
+           `mcp_enabled = "true"`;
+         - the holder still serving one tick after the row reads "off";
+         - a socket on disk once a stop has completed;
+         - two concurrent tick steps (the background tick and `mcp_set_enabled`) with the row "on"
+           giving more than one reconcile or more than one bind;
+         - a row reading "on" while a stop is still running (`stopping_tasks > 0` or the unlink
+           pending) reconciling or binding;
+         - an old stop's unlink removing a newer socket;
+         - exit releasing the lock while a task of an older tracker generation still runs;
+         - a tick whose row read fails (for example `SQLITE_BUSY`) changing any state;
+         - a tick or `mcp_set_enabled(true)` after exit began binding or opening the gate (bites by
+           removing the `exiting` check). The control places the tick where no other guard makes it
+           a no-op: after stop complete and before the lock release, and, for a second instance's
+           view, after the release with the row "on";
+         - `mcp_set_enabled` writing the row during exit;
+         - a second user-initiated `ExitRequested` during the exit flow passing through (bites by
+           keying the pass-through on "the first time" instead of `exit_ready`);
+         - exit releasing the lock while a stop's unlink is still pending;
+         - a second switch-on after a completed stop, on the same acquisition, reconciling again;
+         - `mcp_enabled` writable through the generic `set_setting` (`commands/settings.rs:43`).
+       - **The relay:**
+         - writing anything but MCP bytes to stdout;
+         - exiting 0, or writing no stderr line, when connect fails (decision 2);
+         - not exiting on socket EOF (the lifecycle table).
+       - **The protocol:**
+         - an unknown method such as `server/discover` closing the connection instead of returning
+           an error;
+         - a tool description without the recovery sentence.
+   - **M2b — the read tools** (implementer `opus`, because of the units and the geometry).
+     - **What it contains:** `list_jobs`, `get_job`, `get_results`, `get_geometry`, `measure`,
+       `read_output`, `search_manual`, `list_run_targets`, `memory_estimate` and `list_groups`,
+       with the character caps of item 7.
+     - **What stays in M3:** `wait_for_jobs`, as the decomposition already says.
+     - **What M2b re-asserts:** each new tool's description carries M2a's recovery sentence.
+     - **Controls:** M2's original ones (`get_job` returning coordinates, `get_geometry` above 600
+       atoms, `read_output` reading the whole file), plus those of items 7 and 8.
+2. **The switch before M4 (decided by Anton, including the two-instance rule).**
+   - **Storage.** One `settings` row, `mcp_enabled`, holding `"true"` or `"false"`. A missing row
+     means off. The row is in the **shared** DB, so it is one switch for every instance using that
+     DB. `mcp_set_enabled` is its **only writer**: the generic `set_setting` refuses the key.
+   - **The lock** is taken the first time this instance finds the row "on", whether at start, on a
+     toggle or on a tick. It is then held until process exit, and never released on switch-off
+     (decision 2).
+   - **The tick.** Each instance runs one 30 s tick on a background thread. Each tick re-reads the
+     row, and then:
+     - a **holder** that reads "on" and is not serving starts to serve (the item 6 order);
+     - a **holder** that reads "off" and is serving stops (the item 6 order);
+     - a **non-holder** that reads "on" tries the lock. Taking it starts the item 6 order;
+     - a tick whose row read fails (for example `SQLITE_BUSY` from another instance) changes nothing
+       and is retried on the next tick;
+     - while a stop is still running (`stopping_tasks > 0` or the unlink pending), a row reading
+       "on" is a no-op; the next tick after the stop completes starts serving;
+     - once exit has begun (the terminal `exiting` flag, item 6), every tick step and every
+       `mcp_set_enabled` is a no-op: no row write, nothing started. The call returns a status with
+       `reason = "exiting"`. Writing the shared row while exiting would silently change other
+       instances.
+
+     Every tick step, `mcp_set_enabled` (its row write included) and exit take **one lifecycle
+     mutex** for the whole transition decision, so two starts or a start and a stop never run at
+     once (item 6).
+
+     This replaces decision 5's "an instance with MCP enabled that does not hold the lock retries it
+     every 30 s". The tick covers that retry, and it also covers the holder that is switched off
+     while another instance switches MCP on: that holder starts serving within one tick.
+   - **Commands.**
+     - `mcp_status() -> McpStatus`.
+     - `mcp_set_enabled(on) -> McpStatus` writes the row, then runs the tick's step once, at once,
+       instead of waiting up to 30 s.
+     - Neither command runs on the GTK main thread (`tauri-core.md`, the threading rule): both are
+       `async` commands whose work runs through `spawn_blocking`, as `test_server_profile` does
+       (`commands/server_profiles.rs:594`), so the main thread never takes the lifecycle mutex
+       (item 6). Switch-off returns once it has closed the gate, set the `closed` flags and cancelled
+       the services. Waiting for the tracked tasks and unlinking the socket then run on the server's
+       runtime, and the status reads "stopping (N tasks)" until they end.
+     - Their I/O is the row write, the lock file, the reconciliation transaction, the bind and the
+       `stat`s.
+   - **`McpStatus`** has these fields:
+     - `enabled` — the DB-wide row;
+     - `holds_lock`;
+     - `serving` — this instance only;
+     - `stopping_tasks`;
+     - `connections` — the number of connected clients;
+     - `socket_path`;
+     - `reason` — why this instance does not serve, for example "another OrcaStudio instance holds
+       the MCP lock", the `sun_path` refusal, or "exiting".
+
+     The status is **advisory**. Its fields may be momentarily inconsistent with one another (for
+     example right after a toggle), and no decision reads it. If it is kept behind its own lock, that
+     lock is a leaf (lifecycle → snapshot).
+   - **M2a Part B** adds one row to Settings → MCP:
+     - the switch;
+     - decision 9's one-line statement of what leaves the machine, beside the toggle;
+     - a line saying whether this instance serves, with the socket path, the number of connected
+       clients, or the reason it does not serve.
+
+     That is a small render gate. The rest of decision 9's Settings → MCP (the grant, the audit log,
+     Revoke, "Cancel Claude's jobs") stays in M4. This item governs where M4's bullet still lists
+     the switch, the data line or "this instance serves".
+   - No environment variable or other second mechanism is added.
+3. **The binary is `orcastudio` (decided by Anton).**
+   - That is the cargo artifact's name (`src-tauri/Cargo.toml` `[package] name`). Decision 2's relay
+     text is corrected in place.
+   - In development the research folder's `.mcp.json` names `<repo>/target/debug/orcastudio`
+     (workspace `target/`, measured to exist). The packaged binary's name is not measured and stays
+     Open until a release build exists.
+   - The relay branches in `main.rs` before `run()`. It therefore opens no window, initialises no
+     GTK, and writes diagnostics only to stderr.
+4. **The admission gate (replaces the M0 amendment's reliance on the tracker refusing work).**
+   `tokio-util`'s `TaskTracker::close` "does not prevent you from spawning new tasks" (sourced:
+   `tokio-util-0.7.20/src/task/task_tracker.rs:331`; a `reopen()` exists at `:340`). So the refusal
+   is app-owned:
+   - A `Mutex<bool>` "open" is held across both the check and `tracker.spawn`. `close` takes the
+     same mutex.
+   - `TaskTracker` is used only for `wait()`.
+   - Switch-on after a completed switch-off makes a fresh tracker under that mutex. Every tracker
+     generation is kept until its tasks have ended, and exit waits on all of them (item 6).
+   - Wherever the M0 amendment says "the tracker refuses" or "close the tracker", read "the gate".
+5. **Dependencies and the runtime.**
+   - **New direct dependencies:**
+     - `rmcp` 3.11.0 with features `server` and `macros`, as M0 measured (`mcp-transport-probe.md`);
+     - `tokio`, adding `net`. Today it is transitive only, with `rt`, `rt-multi-thread`, `sync`,
+       `fs` and `io-util`;
+     - `tokio-util`, for `TaskTracker`.
+   - **The runtime.** The server runs on Tauri's tokio runtime (`tauri::async_runtime`). M0 ran
+     `rmcp` on its own runtime with tokio 1.54.1, while the workspace pins 1.53.1. So M2a's first
+     serve test runs on Tauri's runtime (item 1), and a failure there is a finding, not a workaround.
+   - **DB work.** A handler's DB work goes through `spawn_blocking`. It locks `DbState` for one query
+     or transaction, and never holds the lock across an `.await` (decision 1).
+6. **The order of operations (qualifies the lifecycle table).**
+   - **One owner.** Every transition (a tick step, `mcp_set_enabled`, exit) runs under **one
+     lifecycle mutex**, which serialises transitions. A start never overlaps a stop, and two starts
+     never overlap. The mutex is held only for the decision and the short synchronous steps (row
+     read, lock, reconcile, bind, `stat`s, gate open or close), never across the wait for tasks.
+   - **Lock order.** lifecycle → gate, and lifecycle → `DbState`. The lifecycle mutex is never taken
+     while `DbState` or the gate is held. Handlers take the gate and `DbState`, never the lifecycle
+     mutex. `mcp_status` reads a snapshot without the lifecycle mutex. **No step under the lifecycle
+     mutex waits on the main thread**, and the main thread never takes the lifecycle mutex.
+   - **Acquisition.** Taking the `flock` begins an acquisition. Its reconciliation
+     (`reconcile_submitting_conn`) runs **once per acquisition**, as decision 5 says, before the first
+     bind. An acquisition counts as done only when that reconciliation commits. If it fails (for
+     example `SQLITE_BUSY`), nothing is bound, the reason is shown, and the next tick retries it. A
+     later switch-on on the same acquisition does not reconcile again. That is safe, because a
+     completed stop leaves no `submitting` row of this instance: every tracked task ran through
+     step C before the stop completed.
+   - **Switch-on (holder, acquisition done, no stop running):** bind, `stat` both modes, open the
+     gate, accept. While a stop is still running, a switch-on is a no-op, and the next tick retries.
+   - **Switch-off:** close the gate, set every `closed` flag, cancel the services (synchronous, under
+     the mutex). Then, off the main thread and outside the mutex: wait for the tracked tasks, unlink
+     the socket **this start bound** (checked by its inode, so an older stop can never remove a newer
+     socket), and only then mark the stop complete. The `flock` is **kept**.
+   - **Exit (decided by Anton: `prevent_exit` and an asynchronous wait).**
+     - `RunEvent::ExitRequested` (`lib.rs:226`) passes through only when the app-owned `exit_ready`
+       flag is set. Otherwise it calls `prevent_exit` and sets the terminal **`exiting`** flag, an
+       `AtomicBool`, with one `compare_exchange` and no mutex. That one operation is both the
+       "already running" test and the terminal flag: only the request that wins it starts the exit
+       flow, and a second request during the flow is absorbed.
+     - Tick steps and `mcp_set_enabled` check `exiting` **after** taking the lifecycle mutex, so any
+       transition that takes the mutex after the flag is set is a no-op (item 2). A transition
+       already in flight when the flag is set is undone by the flow's switch-off, which takes the
+       mutex after it.
+     - Off the main thread, the flow then takes the lifecycle mutex and runs the switch-off order, waits for **stop complete** (every
+       tracker generation ended and the unlink done, including a stop that began before exit), and
+       then runs the existing `terminate_on_exit` and the sidecar stop, in that order. Running the
+       MCP wait first means a `create_job` task's local step B cannot start ORCA after the kill.
+     - It then releases the lock, sets `exit_ready`, and calls `app.exit()`. How a programmatic
+       `app.exit()` re-enters `ExitRequested` (Tauri 2.11.5) is not measured: M2a settles it from
+       the crate source or a run before relying on it (rule #10). A second signal is sourced
+       (`tauri-2.11.5/src/app.rs:226-228`, on `ExitRequested`'s `code`): "[`Option::None`] when the
+       exit is requested by user interaction, [`Option::Some`] when requested programmatically via
+       [`AppHandle#method.exit`] and [`AppHandle#method.restart`]."
+     - What the user sees during the wait is **not measured**. On the close-the-last-window path
+       there might be no window left. M2a records what actually happens.
+     - In M2a the trackers are empty, so the wait is immediate. The mechanism and the order are
+       built here all the same.
+
+7. **Result caps (M0 amendment, item 7: "M2's controls pin the caps").** Each M2b tool has a
+   character cap below 50,000 on its serialised result, and paging or truncation that says so in
+   the result. The reused readers are not bounded in characters:
+   - `read_job_output` caps at 10,000 **lines** (`commands/jobs.rs:1205`);
+   - `search_manual`'s `limit` is unbounded (`commands/manual.rs:89–96`).
+
+   **Control, one per tool:** its largest page or result exceeding 50,000 characters.
+8. **What decision 7's "reuses" column needs in code** (explorer and DESIGN r1, `642d1af`). This does
+   not change the decision. It records what M2b builds:
+   - **`list_jobs`.** `list_jobs_conn` is private and has no filters or paging. M2b adds a
+     filtered, paged query over `Job::COLUMNS`/`Job::from_row`.
+   - **`get_job`.** `get_job_conn` returns the full `Job`, with `input_content` and `scene_json`.
+     M2b serialises a **projection**, never `Job`. Control: any field of the projection carrying a
+     coordinate line.
+   - **`get_results`.** `read_job_results` returns per-atom arrays. M2b builds the bounded summary,
+     with units in the field names (rule #11).
+   - **`measure`.** Results are `distance_ang`, `angle_deg` and `dihedral_deg` (rule #11).
+     - **Refusals.** `xtb::distance`, `xtb::angle` and `xtb::dihedral` index without a range check
+       (`xtb.rs:179/183/190`). For degenerate input they return plausible numbers: a distance of
+       0.0, an angle of NaN, a dihedral of 0.0 for a zero axis or a collinear inner triple
+       (`xtb.rs:190–202`). M2b refuses, never panics and never returns a number, for each of these
+       cases, as `measure.ts` returns null (`src/scene/measure.ts:106–141`):
+       - an index out of range;
+       - a repeated index;
+       - coincident atoms in a distance;
+       - a zero-length vector in an angle;
+       - a zero axis or a collinear inner triple in a dihedral.
+
+       **Control:** one per case.
+     - **The ASE cross-check.** It uses the existing rule-#10 record: the butane fixtures in
+       `sidecar/tests/test_geometry.py` (ASE 3.29.0; anti 179.998°, gauche 67.523°, still passing
+       on 2026-11-19).
+       - That record pins only the dihedral. M2b extends the same pytest to pin ASE
+         `get_distance(0,1)` and `get_angle(0,1,2)` on that fixture, which is a recorded run, and
+         copies all three values into the Rust tests.
+       - **Controls:** the Rust value differing from the ASE value, and the dihedral not folded to
+         [0, 360).
+   - **`list_run_targets`.** No per-profile reachability exists, and nothing computes "outside
+     expected window".
+     - **The window.** M2b computes "outside the window" with a pure function of the profile's
+       `availability_window` (ADR-024 g: `HH:MM-HH:MM` in the laptop's local time, possibly
+       wrapping midnight) and `now` as local minutes, passed in as a parameter. The local time comes
+       from SQLite's `datetime('now','localtime')`, the one measured route (`db.rs:827–850`).
+       Controls: a wrapping window (`22:00-08:00`) at 23:00 and at 07:59, and the end minute
+       excluded.
+     - **Reachability.** The poller's `last_contact` is per **job**, held in memory with no
+       timestamp (`poller/remote_state.rs:203`, `remote/contact.rs:42`). So `list_run_targets`
+       reports the window and the profile's validity, and reachability as `"unknown"`. Per-profile
+       reachability is not built in Stage 1.
+   - **Private helpers.** `list_groups_conn`, `list_server_profiles_conn` and `RunTargetStatus::of`
+     become `pub(crate)`. That is visibility only.

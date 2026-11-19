@@ -1668,7 +1668,11 @@ and OrcaStudio picks the job up, syncs results, and parses them — no terminal,
             check, the resolver, the memory preflight. Part B: the grant commands
             (`commands/mcp.rs`), the guard in `submit_job` and `retry_remote_submit`, and
             `SidecarSmiles` (the SMILES HTTP call, not yet called)
-      - [ ] **M2** socket server + `--mcp` relay + read tools (incl. `measure`)
+      - [ ] **M2a** transport: `flock`, `0600` socket, `SO_PEERCRED`, `orcastudio --mcp` relay, 4×4 caps,
+            the admission gate, the `mcp_enabled` switch + 30 s tick, `get_grant`; a Settings → MCP switch row
+            (ADR-027 M2 amendment)
+      - [ ] **M2b** the read tools (projections, character caps, `measure` with ASE cross-check,
+            `list_run_targets` window)
       - [ ] **M3** write tools — `create_job` with grant charging, `cancel_job` (mcp only),
             `create_group`, `wait_for_jobs`, audit log
       - [ ] **M4** UI — Settings → MCP (grant editor, revoke, audit), Jobs badge + proposal reasons

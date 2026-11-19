@@ -14,7 +14,7 @@ takes `&DbState`. The **app wiring** (M1b Part B) is the grant's Tauri commands 
 the guard in the two commands that submit a job by hand, and `SidecarSmiles`, the resolver's SMILES
 call over HTTP. There is no socket and no MCP tool yet. The module stays registered in `lib.rs` under a
 scoped `#[allow(dead_code)]`, because steps A/C, the resolver, the reconciliation and `SidecarSmiles`
-are called only from M2 and M3.
+are called only from M2a/M2b and M3.
 
 **It fails closed.** A line outside the grammar is REFUSED (R1); a block, key or value outside the
 allowlist is PROPOSED (P2); a source whose terminal state is unknown is REFUSED (R4); a memory
@@ -261,7 +261,7 @@ stamp the MCP columns in the same transaction.
 `reconcile_submitting_conn(conn)` turns every `draft` with `mcp_state` set into PROPOSED: refunded,
 with the reason `interrupted before submit`. Every other row with the flag only has it cleared. It
 returns the counts (`Reconciled { refunded, cleared }`). Nothing calls it yet: only the instance
-holding the `mcp.lock` `flock` may run it, right after taking the lock and before serving (M2).
+holding the `mcp.lock` `flock` may run it, right after taking the lock and before serving (M2a).
 
 ## The grant commands (`commands/mcp.rs`)
 
@@ -470,8 +470,10 @@ Two choices go beyond the clarifications, and each can only move a job toward An
 
 ## Not yet wired
 
-- **M2:** the socket server, the relay, the read tools, and the lock holder calling
-  `reconcile_submitting_conn`.
+- **M2a:** the socket server, the `orcastudio --mcp` relay, the `mcp_enabled` switch with its 30 s
+  tick, the admission gate, `get_grant`, and the lock holder calling `reconcile_submitting_conn`
+  (ADR-027 M2 amendment).
+- **M2b:** the other read tools.
 - **M3:** `create_job` as one tracked task (the preflight, step A, step B, step C around
   `classify_mcp_job` and `assemble`), `SidecarSmiles` handed to the resolver, the audit log, and R8's
   live count.

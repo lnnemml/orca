@@ -12635,3 +12635,35 @@ holding any key other than `Calc_Hess`, `Recalc_Hess` or `MaxIter`.
   HH:MM:SS` there; "Claude is submitting" in place of Run; the TS `Job` type's four new fields.
 - The guard's pins in `submit_job` and `retry_remote_submit` are source pins, as for `cancel_job`: the
   commands need an `AppHandle`, which the test harness does not have.
+
+## [2026-11-19] decision | ADR-027 M2 amendment — the split, the switch, the binary name, accepted
+- **Why:** M1a and M1b are on `main` (`642d1af`), so M2 is next. The explorer's map of the code shows that the original M2 bullet holds two units with different risks: concurrency and lifecycle in one, units and geometry in the other. It also shows that decision 7's "reuses" column assumes helpers that do not exist yet.
+- **Decided by Anton** (each on the orchestrator's lean):
+  - **M2 splits** into M2a and M2b:
+    - M2a is the transport: the `flock` with `O_CLOEXEC`, a `0600` socket with its `stat` after bind, `SO_PEERCRED`, the `orcastudio --mcp` relay, the 4×4 caps, the `closed` flag and the lifecycle, plus `get_grant` and a minimal Settings → MCP row (the switch, the data line, "this instance serves");
+    - M2b is the other read tools.
+  - **The switch** is a shared `mcp_enabled` settings row. `mcp_set_enabled` is its only writer, and there is no env var.
+  - **The binary** is `orcastudio`. The ADR is corrected; the build is not renamed.
+  - **Two instances, rule (b).** Each instance runs one 30 s tick. A switched-off lock holder starts serving once the row reads "on". This replaces decision 5's retry sentence.
+  - **Exit** uses `prevent_exit` and an asynchronous wait, in this order:
+    1. the switch-off;
+    2. stop complete;
+    3. `terminate_on_exit`;
+    4. the sidecar stop;
+    5. the lock release, then `exit_ready` and `app.exit()`.
+- **From the DESIGN rounds:**
+  - **The admission gate.** `TaskTracker::close` does not refuse spawns (sourced: `tokio-util-0.7.20/src/task/task_tracker.rs:331`). So refusal is an app-owned gate: a mutex held across the check and the spawn. Every tracker generation is kept, and exit waits on all of them.
+  - **One lifecycle mutex** serialises every transition, in the lock order lifecycle → gate/`DbState`. The main thread never takes it.
+  - **Reconciliation** runs once per acquisition. A switch-on while a stop is still running is a no-op. The unlink is inode-checked.
+  - **The `exiting` flag** is a terminal `AtomicBool`, set by `compare_exchange` in `ExitRequested`.
+  - **Switch-off keeps the `flock`.**
+  - **Per-tool character caps.** `measure` refuses every degenerate case and is cross-checked against ASE for distance, angle and dihedral, by extending the existing butane pytest. `list_run_targets` computes the window from SQLite local time and reports reachability as `"unknown"`.
+- **Review history:**
+  - DESIGN r1 FAIL (3 HIGH), r2 FAIL (1 HIGH: start/stop not serialised), r3 FAIL (1 HIGH: the tick re-serving during exit).
+  - Each FAIL from the second on was escalated to Anton, who chose to fix and run another round.
+  - r4, covering the delta only: PASS WITH FINDINGS (1 MED + 4 LOW). All applied.
+- **Open, for M2a to settle (rule #10):**
+  - how a programmatic `app.exit()` re-enters `ExitRequested`;
+  - what the user sees during the exit wait;
+  - the packaged binary's name (f′).
+- **Next:** M2a Part A (implementer `opus`). Pages touched: the ADR, [mcp-server.md](modules/mcp-server.md), `index.md`, `ROADMAP.md` (M2 → M2a/M2b).
