@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { Job, ParsedResults } from "../types";
 import { buildNebInput } from "../scene/neb";
 import type { BuilderState } from "../input-builder/build-input";
+import { useDraftField } from "../screens/new-job-draft";
 
 /**
  * The payload a NEB "Generate" hands back alongside the `.inp` text: the product image
@@ -42,8 +43,10 @@ export function NebBuilderSection({
   onGenerateNeb: (inp: string, payload: NebPayload) => void;
 }) {
   const [jobs, setJobs] = useState<Job[]>([]);
-  const [reactantId, setReactantId] = useState("");
-  const [productId, setProductId] = useState("");
+  // The endpoint picks live in the New Job draft (ADR-026 item 3), so they survive the builder
+  // closing and a tab switch.
+  const [reactantId, setReactantId] = useDraftField("nebReactantId");
+  const [productId, setProductId] = useDraftField("nebProductId");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 

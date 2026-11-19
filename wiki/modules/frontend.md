@@ -22,13 +22,17 @@ screens, the store wiring, and the UI-level quirks.
 ## App shell & navigation (`App.tsx`)
 
 `App.tsx` is a shell: a topbar with tabs + a bottom status bar, rendering one screen at a time by a
-local `Screen` union (**no router**). The union is `{kind:"new-job", initialMolecule?, initialJob?,
-keepScene?}` | `{kind:"jobs"}` | `{kind:"molecules"}` | `{kind:"settings"}` |
+local `Screen` union (**no router**). The union is `{kind:"new-job", seed?, seedId?}` | `{kind:"jobs"}` |
+`{kind:"molecules"}` | `{kind:"settings"}` |
 `{kind:"job-detail", jobId, autoRun, runTarget}` (Jobs stays highlighted while drilled into a detail;
 `<JobDetailScreen key={jobId}>`, so opening another job from inside a job view remounts it and
 nothing of the previous job carries over). Only the
-active screen is mounted — switching to Jobs remounts it (→ a fresh `list_jobs`); a side effect is
-that an in-progress New Job draft is discarded on a tab switch (accepted).
+active screen is mounted — switching to Jobs remounts it (→ a fresh `list_jobs`). New Job unmounts on a
+tab switch too, but its **draft survives**: the work and the preferences live in the draft store and
+the geometry in the scene store (ADR-026; "New Job draft store" below). A seeding navigation carries a
+`DraftSeed` (Molecules "Use" → `molecule`, "New iteration" → `iteration`, "Use this conformer" `new`
+branch → `conformer-scene`) and a fresh `mintSeedId()`; the New Job tab button carries no seed and
+shows the draft as it was left.
 
 - **Bottom status bar:** the sidecar dot (`get_sidecar_status`, polled every 5 s) + the configured
   ORCA path, always visible. It also hosts the **queue control** (below).
@@ -54,9 +58,12 @@ that an in-progress New Job draft is discarded on a tab switch (accepted).
   failed read → Local; a failed profile list also shows its error). The load **never writes** the
   setting, and a choice the user made while it was pending wins. Create & Run writes it through
   `set_setting` whatever the submit's outcome; changing the select or "Create Job" writes nothing.
-  Accepts `initialMolecule?` (inject its xyz + charge/mult, seed the title), `initialJob?` (iterate
-  — see below), and `keepScene?` (skip the mount reset, used when applying a conformer). Picking a
-  template or hitting **Generate Input** collapses the accordion (`setOpenSection(null)`).
+  Accepts `seed?` + `seedId?` (ADR-026): on mount `applySeed` writes the seed into an empty draft,
+  asks with an inline *Replace* / *Keep draft* prompt when the draft has work, and ignores an id already
+  consumed. A **New draft** button beside the create buttons clears the work slice and the scene (it
+  asks first when the draft has work); the builder, Run on and group are kept. Picking a template or
+  hitting **Generate Input** collapses the accordion (`setOpenSection(null)`); the builder keeps its
+  settings (they are draft preferences).
   The **memory and disk warning row** sits under the create bar (see "Memory and disk preflight"
   below); it never disables Create or Create & Run (`createAllowed` lists the reply and never reads
   it).
@@ -286,9 +293,12 @@ Geometry flows through `useSceneStore` (Zustand, `src/scene/store.ts` — the ap
   Import → an `import` fragment; SMILES → a `smiles` fragment (`sceneFromXyz`, charge from RDKit); Use
   a library molecule → a `library` fragment (on mount); each goes through `placeFragment` +
   `addFragment` (one road — `placeFragment` on an empty scene is the identity, so the first molecule
-  and later reagents share code). **Store init is a `useLayoutEffect`** (the screen remounts on every
-  nav; a plain effect flashes the previous visit's molecule). `formula` stays a separate `useState`
-  (RDKit metadata for the library record, orthogonal to Scene geometry). **Save to Library** stores
+  and later reagents share code). **The mount never resets the scene store**: it only consumes a seed
+  (`applySeed`, in a `useLayoutEffect` so an applied seed is in place before paint), so a tab return
+  shows the scene and its history as they were. SMILES and structure-file import capture the draft
+  generation before their `await` and drop a result that arrives after a reset or seed, with a notice.
+  `formula` is a draft field apart from the scene (RDKit metadata for the library record, orthogonal
+  to Scene geometry). **Save to Library** stores
   the canonical `mergeToXyz(scene)` + charge/mult read from the live `* xyz` header.
 - **Reset notice** — a `.banner.warn` with Undo (`undoReset`) / Dismiss (`dismissResetNotice`), shown
   **only** when a manual coordinate edit merged **>1** fragment (a single-fragment collapse is a
@@ -434,15 +444,20 @@ text's constraints, then replaces all coordinates.
   toggle+solvent. Each child inherits the source's charge/multiplicity (the anion footgun, rule #9);
   a mismatch aborts the whole fan-out before any job is created. Owner page:
   `modules/conformer-reoptimization.md`.
-- **"Use this conformer"** — `planConformerApply` decides: **replace** the fragment in place (it
-  survives the New Job → detail nav — the store is a singleton) → New Job with `keepScene`; else a
-  **new** single-fragment scene; else **refuse** (a banner, no throw) on a composition mismatch.
+- **"Use this conformer"** (and the D3 DFT carry) — `planConformerApply` decides and `handOffConformer`
+  acts: **replace** the draft's own fragment in place (a logged, undoable op; the scene store survives
+  the New Job → detail nav) → New Job with no seed; **new** → nothing is written in Job detail, the
+  single-fragment scene goes to New Job as a `conformer-scene` seed (a draft with work gets the
+  prompt); **refuse** → a banner, no throw, on a composition mismatch.
 
 ### Job iteration
 **New iteration** (a `JobDetailScreen` button, shown whenever a job is loaded — cloning a running job
-is fine, only its input is taken) → `onIterate(job)` → `App` sets `{kind:"new-job", initialJob:job}`.
-`NewJobScreen` seeds the title `${job.title} (iteration)` and `content = job.input_content` (before
-paint), and restores the scene in the `useLayoutEffect` via **`restoreScene`** (`modules/scene.md`).
+is fine, only its input is taken) → `onIterate(job)` → `App` navigates with an `iteration` seed. Applying
+it sets the title `${job.title} (iteration)` and `content = job.input_content`, installs the scene log
+via **`restoreSceneLog`** (`modules/scene.md`), and leaves the frame seed `pending`. The frame-seed
+effect runs on every mount while it is `pending` (debugging/022) and lets the draft module land the
+last frame, refuse, or keep a genuine single point; a frame that cannot be built is refused with a
+banner naming it.
 A `snapshotRejected` state drives a `.banner.warn` **only** when a snapshot was present but discarded
 (didn't match the input); a plain `scene_json = NULL` job shows **no** note. `create_job` is the one
 write path: `NewJobScreen.create()` passes `sceneJson: scene ? serializeScene(scene) : null`.
@@ -462,6 +477,115 @@ pure `src/scene/carryForward.ts`, **resolves** the carry-forward:
 `geometryMatchesFinal` is the **defense-in-depth guard**: the carried geometry must bit-match the parsed
 final frame; the seed (2.364) is rejected. Only New iteration leaked — Export geometry / "Use best
 (DFT)" / every derived spawn already read `results.final_geometry`.
+
+## New Job draft store (`src/screens/new-job-draft.ts`) — ADR-026
+
+The draft store holds what New Job keeps across a tab switch. Its Zustand store is `useNewJobDraft`,
+session-only and never persisted. It sits beside `NewJobScreen` because it is that screen's state
+lifted out of the component. `NewJobScreen` reads and writes every draft field through
+`useDraftField(key)` (a `useState`-shaped pair over `setField`); `InputBuilderForm` keeps `builder`,
+`maxcoreTouched` and `nprocsText` there, and `NebBuilderSection` its endpoint picks. Transient view
+state (selection, previews, dock and accordion, busy flags, notices) stays local. When the generation
+changes (a cleared draft, an applied seed), one layout effect clears the previous job's selection, edit
+preview, rotate preview and axis, guided placement, the coordinate and drag-fallback notices, the
+Replace-input confirm, the "Saved" flag, the xtb note and error, and the error banner. The dock and
+accordion, busy flags and the draft notice are not touched.
+
+- **The draft is a pair.** The draft is this store plus `useSceneStore`. The store holds **no scene
+  and no log** (ADR-017: one source of truth). The module's functions are the only places that
+  change both stores together.
+- **Two slices, cleared differently.**
+  - The **work slice** (`DraftWork`, `initialWork()`) holds:
+    - `title`, `content`, `selectedTemplateId`, `pendingNeb`, `smiles`, `formula`;
+    - the NEB endpoint picks `nebReactantId`/`nebProductId`;
+    - the iteration context: `iterSource` (the job), `iterFrames`, `selectedFrame`,
+      `iterFrameSeed`, `carryBanner`, `carryRefusal`, `snapshotRejected`, `logRejected`;
+    - `replaceMode` + `replaceSnapshot`;
+    - `constraintCompWarn` + `lastConstraintSig` (ЗАХИСТ 2);
+    - `formalCharges`, `hiddenBonds`, `showCationBonds`.
+  - The **preferences slice** (`DraftPreferences`) holds `builder` (`BuilderState`),
+    `maxcoreTouched`, `nprocsText`, `runTarget` + `runTargetTouched`, and `pickedGroupId` +
+    `groupTouched`.
+  - `setField(key, valueOrUpdater)` sets one field of either slice. A no-op update keeps the state
+    reference.
+- **`resetDraft()` is the only clearing path.** It sets the work slice to `initialWork()` (fresh
+  `Map`/`Set`), clears the scene store with `seedScene(null, …)` and bumps `generation`. It keeps the
+  preferences with their touched flags, and it keeps `consumedSeedId`. An untouched preference keeps
+  following its live default through the screen's effects, so nothing derived is reset to a
+  constant.
+- **`isDraftEmpty(draft, sceneState)`** counts as work a non-blank (trimmed) title or text, a
+  non-null scene, or a non-empty log (a scene undone to nothing still has history). Preferences never
+  count.
+- **Seeds.**
+  - `DraftSeed` is one of `molecule` / `iteration` / `conformer-scene`. `mintSeedId()` is a
+    module-level monotonic counter.
+  - `applySeed(seed, seedId)` returns one of three outcomes:
+    - `"ignored"`: the id is at or below `consumedSeedId` (StrictMode's second mount, a tab return).
+    - `"applied"`: the draft was empty. The draft is reset, then the seed is written.
+    - `"ask"`: the draft has work. **Nothing is touched.**
+  - `resolveSeedPrompt(seed, seedId, "replace" | "keep")` answers the prompt. Both choices consume the
+    id.
+  - Writing a seed is the former mount effect:
+    - molecule → a `library` fragment plus its title and formula;
+    - iteration → `restoreSceneLog` installed, the title `… (iteration)`, the job's input,
+      `iterFrameSeed = "pending"`;
+    - conformer-scene → `seedScene(scene, "new-iteration")`.
+  - `seedLabel(seed)` names the seed in the prompt.
+- **The iteration frame seed is a state** (`none | pending | landed | refused`), not a once-per-mount
+  event. This guards against debugging/022 coming back.
+  - `iterFrameSeedTask()` returns `{gen, job}` only while the state is `pending`. It is read-only, so
+    an unmount before the result leaves the state `pending`, and the next mount runs the task again.
+  - `resolveIterFrameSeed(task, results)` moves the state on:
+    - a trajectory → the last frame is seeded with its banner and provenance comment → `landed`;
+    - a genuine single point → `landed` silently;
+    - an optimization with no trajectory, or a scan / NEB / no result → `refused` with
+      `carryRefusal`;
+    - an older generation, or a state no longer `pending` → `stale`, and nothing changes.
+    - a last frame that cannot be built into a geometry (`finalGeometryXyz` throws, or `sceneFromXyz`
+      returns null) → `refused`, with a `carryRefusal` naming the frame and saying the geometry shown
+      is the INPUT SEED. `iterFrames`/`selectedFrame` are written only after the frame was built.
+  - `selectIterationFrame(i)` is the picker's re-pick. The state stays `landed`; a frame that cannot
+    be built leaves `selectedFrame` unchanged and returns its refusal for a notice.
+- **Generation guard.** An async path calls `captureGeneration()` before its `await` and
+  `isCurrent(gen)` before writing. A mismatch means a reset or seed happened in between, and the
+  result is dropped.
+- **Create.**
+  - `captureCreateStart()` reads everything `create()` uses: the generation, title, content,
+    `pendingNeb`, scene/log, Run On and the group pick.
+  - `clearAfterCreate(start)` resets only if the generation and the `title`/`content`/`scene`
+    **references** are unchanged. Otherwise it keeps the draft and returns the reason for a notice.
+  - `create()` captures at its start, clears right after the create call returns (a failed create
+    keeps the draft), then assigns the group and opens the detail with the captured Run on. A failed
+    `move_job` still leaves the draft cleared; its error names the job and, for Create & Run, says it
+    was not run.
+- **Re-validation on mount.** Both helpers act only on a **successful** list (`ListResult`; a failed
+  read is never an empty list) and only on a **touched** pick. They return a patch plus a notice, or
+  `{changed:false}`.
+  - `revalidateRunTarget(prefs, profiles, settings)`: a gone or disabled target is replaced by
+    `resolveRunTarget`, and touched is reset. It never writes `last_run_target`. An untouched target
+    stays `loadRunTarget`'s job and follows its preselect silently. New Job calls it from
+    `loadRunTarget`'s `profiles(list, error, settings)` callback, which runs before the touched check,
+    so an un-touched choice is preselected in the same load.
+  - `revalidateGroup(prefs, groups, activeGroupId)`: a deleted group makes the pick untouched again,
+    following the active group.
+  - **A kept pick is shown as itself while its list is not loaded** (`unlistedPick`, Anton). While
+    `list_server_profiles` is loading or after it failed, a non-null `runTarget` missing from the
+    options gets its own option "‹id› — profile list not loaded", so the select never shows Local for a
+    job that will go to a server. The group picker does the same through `GroupSelect`'s `unlisted`
+    prop ("‹id› — group list not loaded"). Nothing is blocked; once a list loads, re-validation owns
+    the case.
+- **`builderStateOnOpen(remembered, content)`** keeps every remembered builder field except charge
+  and multiplicity. Those are re-read from the `* xyz c m` header, falling back to the defaults when
+  there is no header. Rule #9: a remembered multiplicity is never applied to a changed geometry. The
+  form computes its opened state once (an untouched `%maxcore` takes the Run on default in it, so the
+  remembered value never shows) and writes it to the draft before paint.
+- **`handOffConformer(plan, provenance, multiplicity, label)`** is the Job detail side of "Use this
+  conformer" (above).
+- Tests: `new-job-draft.test.ts` covers the pure gates of ADR-026 item 12 and
+  `NewJobScreen.draft.test.tsx` the component gates (Monaco, 3Dmol, the Tauri bridge and the sidecar
+  mocked; unmount → remount field by field, create, New draft, the seed prompt, `<StrictMode>`). Each
+  gate has a negative control shown to go red (`wiki/log.md`, 2026-11-19). The live WebKitGTK gate is
+  Anton's.
 
 ## Convergence dashboard (`src/convergence/`)
 
@@ -1036,8 +1160,10 @@ flow's order (declined → nothing; summary after the reload). The screen's own 
   mutex is the real guard.
 - **Listeners-first** — attach event listeners before the action that produces events (submit,
   backfill), so no early output/status/convergence is lost.
-- **`useLayoutEffect` for store init** — `NewJobScreen` remounts on every nav; a plain effect flashed
-  the previous visit's molecule.
+- **`NewJobScreen` remounts on every nav, and its mount resets nothing** (ADR-026). State that must
+  survive a tab switch goes in the draft store, never in `useState`; a mount effect that writes the
+  draft must be idempotent under StrictMode's double run (the `seedId` check) or run "while a state
+  holds" rather than "once per mount" (the frame seed).
 - **Round swatches** — `.fragment-swatch` is `border-radius: 50%` (one rule, `FragmentList` +
   `AtomInspector`); a hollow square swatch beside the "Numbers" checkbox read as an unchecked checkbox.
 
@@ -1052,8 +1178,9 @@ flow's order (declined → nothing; summary after the reload). The screen's own 
 
 ## State (current & planned)
 
-Current: the scene store (`useSceneStore`, Zustand) for New Job geometry; everything else is local
-`useState` + `invoke` wrappers over SQLite reads. Planned, as pain appears: a `jobsStore` (job list +
+Current: two Zustand stores for New Job — the scene store (`useSceneStore`) for its geometry and the
+draft store (`useNewJobDraft`, ADR-026) for the rest of the draft and the builder/Run on/group
+preferences; everything else is local `useState` + `invoke` wrappers over SQLite reads. Planned, as pain appears: a `jobsStore` (job list +
 live statuses), `settingsStore`. Don't reach for react-query until it hurts.
 
 ## Conventions

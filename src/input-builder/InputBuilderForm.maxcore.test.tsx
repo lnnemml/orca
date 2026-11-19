@@ -1,11 +1,18 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
 import { InputBuilderForm } from "./InputBuilderForm";
 import { setLocalMaxcore } from "../memory/local-maxcore";
+import { initialPreferences, initialWork, useNewJobDraft } from "../screens/new-job-draft";
+
+// The builder's state lives in the New Job draft store (ADR-026): reset it between tests, as
+// `store.test.ts` resets the scene store.
+beforeEach(() => {
+  useNewJobDraft.setState({ ...initialWork(), ...initialPreferences(), generation: 0, consumedSeedId: 0 });
+});
 
 afterEach(() => {
   cleanup();

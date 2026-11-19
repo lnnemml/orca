@@ -53,6 +53,10 @@ interface GroupSelectProps {
   id?: string;
   disabled?: boolean;
   "aria-label"?: string;
+  /** A selected group id that is not in `groups` because the list is not loaded (loading or
+   *  failed). Shown as its own option so the select never displays it as another choice
+   *  (ADR-026 item 9). Null/absent: nothing extra. */
+  unlisted?: string | null;
 }
 
 /**
@@ -70,6 +74,7 @@ export function GroupSelect({
   id,
   disabled,
   "aria-label": ariaLabel,
+  unlisted,
 }: GroupSelectProps) {
   return (
     <select
@@ -81,6 +86,7 @@ export function GroupSelect({
       onChange={(e) => onChange(groupIdFromOptionValue(e.currentTarget.value))}
     >
       <option value={ROOT_OPTION}>(ungrouped)</option>
+      {unlisted ? <option value={unlisted}>{unlisted} — group list not loaded</option> : null}
       {groups.map((g) => (
         <option key={g.id} value={g.id}>
           {g.name}

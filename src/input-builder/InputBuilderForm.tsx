@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useState } from "react";
 
 import { sceneFromOrcaInput, setMultiplicity, totalCharge } from "../scene/scene";
 import { checkElectronParity } from "../scene/parity";
@@ -11,7 +11,6 @@ import {
 import {
   buildKeywordLine,
   buildOrcaInput,
-  DEFAULT_BUILDER_STATE,
   parseNprocsText,
   type BuilderState,
 } from "./build-input";
@@ -20,6 +19,7 @@ import { MethodPicker } from "./MethodPicker";
 import { NebBuilderSection, type NebPayload } from "../reactions/NebBuilderSection";
 import { useLocalMaxcore } from "../memory/local-maxcore";
 import { builderMaxcoreDefault } from "../memory/preflight";
+import { builderStateOnOpen, useDraftField, useNewJobDraft } from "../screens/new-job-draft";
 
 interface InputBuilderFormProps {
   /** Current editor content — the coordinate block is preserved. */
@@ -44,29 +44,36 @@ export function InputBuilderForm({
   // for this machine, 2000 for a server — applied only while the user has not touched the field.
   const localDefault = useLocalMaxcore();
   const maxcoreDefault = builderMaxcoreDefault(runTarget, localDefault);
-  const [maxcoreTouched, setMaxcoreTouched] = useState(false);
 
-  // Seed charge/multiplicity from the current geometry header so an imported
-  // ion keeps its charge; the rest are plain defaults. (This reads only the
-  // `* xyz c m` line — the `!` keyword line is never parsed back into the form.)
-  const [state, setState] = useState<BuilderState>(() => {
-    const seed = sceneFromOrcaInput(currentContent);
-    return {
-      ...DEFAULT_BUILDER_STATE,
-      maxcore: maxcoreDefault,
-      charge: seed ? totalCharge(seed) : DEFAULT_BUILDER_STATE.charge,
-      multiplicity: seed ? seed.multiplicity : DEFAULT_BUILDER_STATE.multiplicity,
-    };
+  // The builder's state lives in the New Job draft (ADR-026 item 4), so closing the accordion or
+  // leaving the tab keeps the method. On every open, charge and multiplicity are re-read from the
+  // current `* xyz c m` header (rule #9: a remembered multiplicity must never override a geometry
+  // that changed since — `builderStateOnOpen`), and an untouched `%maxcore` takes the default at
+  // once, so the remembered value never shows. The opened state is computed once, rendered until
+  // it is written to the draft before paint, and the draft is the state from then on.
+  const [remembered, setState] = useDraftField("builder");
+  const [maxcoreTouched, setMaxcoreTouched] = useDraftField("maxcoreTouched");
+  const [opened] = useState<BuilderState>(() => {
+    const d = useNewJobDraft.getState();
+    const s = builderStateOnOpen(d.builder, currentContent);
+    return d.maxcoreTouched ? s : { ...s, maxcore: maxcoreDefault };
   });
+  const [seeded, setSeeded] = useState(false);
+  useLayoutEffect(() => {
+    setState(opened);
+    setSeeded(true);
+  }, [opened, setState]);
+  const state = seeded ? remembered : opened;
   useEffect(() => {
     if (maxcoreTouched) return;
     setState((s) => (s.maxcore === maxcoreDefault ? s : { ...s, maxcore: maxcoreDefault }));
-  }, [maxcoreDefault, maxcoreTouched]);
+  }, [maxcoreDefault, maxcoreTouched, setState]);
 
-  // The nprocs field's RAW text (ADR-025 item 2). `state.nprocs` is set only from a valid
-  // parse of it (blank → null = auto, a positive integer → that number); invalid text never
-  // reaches the state, and while it stands both Generate controls are disabled (item 9).
-  const [nprocsText, setNprocsText] = useState("");
+  // The nprocs field's RAW text (ADR-025 item 2), kept in the draft with the builder. `state.nprocs`
+  // is set only from a valid parse of it (blank → null = auto, a positive integer → that number);
+  // invalid text never reaches the state, and while it stands both Generate controls are disabled
+  // (item 9).
+  const [nprocsText, setNprocsText] = useDraftField("nprocsText");
   const nprocsInvalid = parseNprocsText(nprocsText).kind === "invalid";
   const onNprocsText = (raw: string) => {
     setNprocsText(raw);

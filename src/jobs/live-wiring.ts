@@ -256,11 +256,17 @@ export function openJobView(
  *   preselected again once it is a run target again.
  * - **Load race:** `touched()` is asked when the load resolves; a choice the user already made wins
  *   over the stored one (no `preselect`).
+ * - `profiles` also gets the settings read (null when it failed), so a caller can re-validate a
+ *   touched choice against the same list and setting (New Job's draft, ADR-026 item 9). It runs
+ *   before `touched()` is asked, so a choice it un-touches is preselected in the same load.
  * Returns the cancel (unmount): nothing is applied after it.
  */
 export function loadRunTarget(
   bridge: Pick<Bridge, "invoke">,
-  on: { profiles(list: ServerProfile[], error: string | null): void; preselect(target: string | null): void },
+  on: {
+    profiles(list: ServerProfile[], error: string | null, settings: Record<string, string> | null): void;
+    preselect(target: string | null): void;
+  },
   touched: () => boolean,
 ): () => void {
   let live = true;
@@ -274,7 +280,7 @@ export function loadRunTarget(
     }
     const settings = await bridge.invoke<Record<string, string>>("get_settings").catch(() => null);
     if (!live) return;
-    on.profiles(list, error);
+    on.profiles(list, error, settings);
     if (!touched()) on.preselect(resolveRunTarget(runTargetOptions(list), settings));
   })();
   return () => {

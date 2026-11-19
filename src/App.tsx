@@ -9,7 +9,8 @@ import { MoleculesScreen } from "./screens/MoleculesScreen";
 import { ReactionsScreen } from "./screens/ReactionsScreen";
 import { ManualScreen } from "./screens/ManualScreen";
 import { SettingsScreen } from "./screens/SettingsScreen";
-import type { Job, Molecule, SidecarState, SidecarStatus } from "./types";
+import type { Job, SidecarState, SidecarStatus } from "./types";
+import { mintSeedId, type DraftSeed } from "./screens/new-job-draft";
 import type { GroupSelection } from "./groups/tree";
 import { queueCounts } from "./jobs/status";
 import { reloadLocalMaxcore } from "./memory/local-maxcore";
@@ -21,8 +22,11 @@ interface QueueInfo {
   paused: boolean;
 }
 
+/** New Job's `seed` is what a navigation brings into the draft (a molecule, a job to iterate, a
+ *  conformer scene), with the id that makes its consumption idempotent (ADR-026 items 6, 7). The
+ *  tab button carries no seed: New Job shows the draft as it was left. */
 type Screen =
-  | { kind: "new-job"; initialMolecule?: Molecule; initialJob?: Job; keepScene?: boolean }
+  | { kind: "new-job"; seed?: DraftSeed; seedId?: number }
   | { kind: "jobs" }
   | { kind: "molecules" }
   | { kind: "reactions" }
@@ -72,6 +76,12 @@ function App() {
   // restarts. `activeGroupId` (a real group, else null) is the value new jobs inherit.
   const [groupSelection, setGroupSelection] = useState<GroupSelection>({ kind: "all" });
   const activeGroupId = groupSelection.kind === "group" ? groupSelection.id : null;
+
+  // A seeding navigation to New Job: a fresh id from the draft module's counter (not App's, so a dev
+  // HMR reset of App cannot mint an id already consumed).
+  const seedNewJob = useCallback((seed: DraftSeed) => {
+    setScreen({ kind: "new-job", seed, seedId: mintSeedId() });
+  }, []);
 
   // `runTarget` is where an `autoRun` submits (New Job's "Run on" choice); null = this machine.
   const openDetail = useCallback((jobId: string, autoRun: boolean, runTarget: string | null = null) => {
@@ -174,9 +184,8 @@ function App() {
         <NewJobScreen
           onCreatedDraft={() => setScreen({ kind: "jobs" })}
           onOpenDetail={openDetail}
-          initialMolecule={screen.initialMolecule}
-          initialJob={screen.initialJob}
-          keepScene={screen.keepScene}
+          seed={screen.seed}
+          seedId={screen.seedId}
           activeGroupId={activeGroupId}
         />
       ) : screen.kind === "jobs" ? (
@@ -188,9 +197,7 @@ function App() {
         />
       ) : screen.kind === "molecules" ? (
         <MoleculesScreen
-          onUseMolecule={(mol) =>
-            setScreen({ kind: "new-job", initialMolecule: mol })
-          }
+          onUseMolecule={(molecule) => seedNewJob({ kind: "molecule", molecule })}
         />
       ) : screen.kind === "reactions" ? (
         <ReactionsScreen onOpenJob={(jobId) => openDetail(jobId, false)} />
@@ -208,8 +215,8 @@ function App() {
           autoRun={screen.autoRun}
           runTarget={screen.runTarget}
           onBack={() => setScreen({ kind: "jobs" })}
-          onIterate={(job) => setScreen({ kind: "new-job", initialJob: job })}
-          onUseConformer={() => setScreen({ kind: "new-job", keepScene: true })}
+          onIterate={(job) => seedNewJob({ kind: "iteration", job })}
+          onUseConformer={(seed) => (seed ? seedNewJob(seed) : setScreen({ kind: "new-job" }))}
           onOpenJob={(id) => openDetail(id, false)}
         />
       )}

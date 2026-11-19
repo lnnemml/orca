@@ -412,6 +412,32 @@ describe("loadRunTarget (o20.1)", () => {
     expect((await load(undefined, stored("p1"))).seen.error).toBe("Error: list_server_profiles failed");
   });
 
+  // CONTROL: hand `profiles` a constant null instead of the read → red. And asking `touched()` before
+  // `profiles` runs → a choice it un-touches is not preselected, red.
+  it("hands the settings read to `profiles`, before the touched check", async () => {
+    const seen: { settings?: Record<string, string> | null; order: string[] } = { order: [] };
+    let touched = true;
+    const bridge: Pick<Bridge, "invoke"> = {
+      invoke: async <T,>(cmd: string): Promise<T> =>
+        (cmd === "list_server_profiles" ? [ENABLED] : stored("p1")) as T,
+    };
+    loadRunTarget(
+      bridge,
+      {
+        profiles: (_l, _e, settings) => {
+          seen.settings = settings;
+          seen.order.push("profiles");
+          touched = false; // a re-validation that un-touches the choice
+        },
+        preselect: (t) => seen.order.push(`preselect:${t}`),
+      },
+      () => touched,
+    );
+    await settle();
+    expect(seen.settings).toEqual(stored("p1"));
+    expect(seen.order).toEqual(["profiles", "preselect:p1"]);
+  });
+
   // CONTROL: drop the `if (!touched())` guard → the stored choice overwrites the user's, red.
   it("leaves a choice the user made while the load was pending", async () => {
     const { seen } = await load([ENABLED], stored("p1"), () => true);

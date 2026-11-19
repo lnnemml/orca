@@ -9,6 +9,13 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 import { InputBuilderForm } from "./InputBuilderForm";
+import { initialPreferences, initialWork, useNewJobDraft } from "../screens/new-job-draft";
+
+// The builder's state lives in the New Job draft store (ADR-026): reset it between tests, as
+// `store.test.ts` resets the scene store.
+beforeEach(() => {
+  useNewJobDraft.setState({ ...initialWork(), ...initialPreferences(), generation: 0, consumedSeedId: 0 });
+});
 
 afterEach(cleanup);
 

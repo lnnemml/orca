@@ -789,10 +789,12 @@ loading a second, implicit meaning into one column. One column, one meaning
 the store is a singleton that survives the New Job → Job detail navigation, so when
 the search finishes the original scene is usually still there → **`replace`** the
 fragment (same id) in place, leaving the rest of the scene untouched, then navigate
-to New Job with `keepScene` (skips the usual store reset). If the scene was cleared
-(other session) → **`new`** single-fragment scene from the snapshot + the chosen
-conformer's coordinates. Composition is checked first; a mismatch **refuses**
-cleanly.
+to New Job with no seed (the mount never resets the store, ADR-026). If the fragment
+is no longer in the scene (a new draft, an app restart) → **`new`** single-fragment
+scene from the snapshot + the chosen conformer's coordinates, handed to New Job as a
+`conformer-scene` seed — a draft with work gets the Replace / Keep prompt instead of
+being replaced (`handOffConformer`, `modules/frontend.md`). Composition is checked
+first; a mismatch **refuses** cleanly.
 
 ## Atom selection (`selection.ts`, 2.5.2a)
 

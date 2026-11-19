@@ -19,7 +19,7 @@ import { EditPanel } from "../scene/EditPanel";
 import { RotatePanel } from "../scene/RotatePanel";
 import { GuidedPlacementPanel } from "../scene/GuidedPlacementPanel";
 import { DEFAULT_ROTATE_OVERLAY, type RotateOverlay } from "../viewer/rotate-overlay";
-import { bondKey, type BondKey } from "../viewer/bond-display";
+import { bondKey } from "../viewer/bond-display";
 import { ConstraintPanel } from "../scene/ConstraintPanel";
 import { ScanPanel } from "../scene/ScanPanel";
 import {
@@ -83,16 +83,6 @@ import {
 } from "../scene/scene";
 import { formatXtbProgress } from "../scene/xtb-progress";
 import { formalChargeConsistency } from "../scene/formal-charge";
-import { restoreSceneLog, type LogRejection } from "../scene/restore";
-import {
-  withProvenanceComment,
-  iterationFrames,
-  frameProvenanceComment,
-  type FrameChoice,
-  type IterationFrames,
-} from "../scene/carryForward";
-import { isSinglePoint } from "../reactions/compare";
-import { finalGeometryXyz } from "../export/exporters";
 import { serializeLog, type Op } from "../scene/oplog";
 import { goatInputForFragment } from "../scene/ensemble";
 import type { RawFragment, Scene, SceneFragment } from "../scene/types";
@@ -108,6 +98,26 @@ import { loadRunTarget, tauriBridge } from "../jobs/live-wiring";
 import { GroupSelect, resolveGroupAssignment } from "../groups/GroupSelect";
 import { MemoryPreflightRow, useMemoryEstimate } from "../memory/MemoryPreflightRow";
 import { createAllowed } from "../memory/preflight";
+import {
+  applySeed,
+  captureCreateStart,
+  captureGeneration,
+  clearAfterCreate,
+  isCurrent,
+  isDraftEmpty,
+  iterFrameSeedTask,
+  resetDraft,
+  resolveIterFrameSeed,
+  resolveSeedPrompt,
+  revalidateGroup,
+  revalidateRunTarget,
+  seedLabel,
+  selectIterationFrame,
+  unlistedPick,
+  useDraftField,
+  useNewJobDraft,
+  type DraftSeed,
+} from "./new-job-draft";
 
 /** Charge with an explicit sign: `0`, `-1`, `+1`. */
 function signed(n: number): string {
@@ -141,14 +151,12 @@ interface NewJobScreenProps {
   onCreatedDraft: () => void;
   /** Open a job's detail screen, optionally auto-running it on `runTarget` (null = this machine). */
   onOpenDetail: (jobId: string, autoRun: boolean, runTarget?: string | null) => void;
-  /** A library molecule to preload into the editor on mount ("Use" action). */
-  initialMolecule?: Molecule;
-  /** An existing job to seed a new iteration from ("New iteration" action):
-   * its input + fragment snapshot, nothing from its results/status/dir. */
-  initialJob?: Job;
-  /** Keep the scene store as-is on mount (a conformer was just applied to it —
-   * "Use this conformer"); skip the usual reset. */
-  keepScene?: boolean;
+  /** What the navigation brings into the draft — a library molecule ("Use"), a job to iterate
+   * ("New iteration"), a conformer scene ("Use this conformer", the `new` branch) — with the id
+   * that makes its consumption idempotent (ADR-026 items 6, 7). Absent on a tab return: the
+   * draft is shown as it was left. */
+  seed?: DraftSeed;
+  seedId?: number;
   /** Assign-on-create (Phase 4.7.3): the active group in the Jobs sidebar, or null
    * when "All jobs"/"Ungrouped" is active. A newly created job inherits it via
    * `move_job` (pure composition — no Rust change). */
@@ -158,18 +166,21 @@ interface NewJobScreenProps {
 export function NewJobScreen({
   onCreatedDraft,
   onOpenDetail,
-  initialMolecule,
-  initialJob,
-  keepScene,
+  seed,
+  seedId,
   activeGroupId,
 }: NewJobScreenProps) {
-  // Seed title/content from an iterated job (marked so kinship shows in the job
-  // list) or a library molecule; both before first paint via useState.
-  const [title, setTitle] = useState(
-    initialJob ? `${initialJob.title} (iteration)` : initialMolecule?.name ?? "",
-  );
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [content, setContent] = useState(initialJob?.input_content ?? "");
+  // ── The draft (ADR-026) ──────────────────────────────────────────────────────
+  // What this job is (title, input, iteration context, …) and how the user runs it (builder, Run
+  // On, group) live in the draft store, not in component state: `App` mounts only the active
+  // screen, and a tab switch must not lose them. The geometry stays in the scene store. The
+  // mount READS the draft; only a seed (below), "New draft" or a create clears it.
+  const [title, setTitle] = useDraftField("title");
+  const [selectedId, setSelectedId] = useDraftField("selectedTemplateId");
+  const [content, setContent] = useDraftField("content");
+  // A notice about the draft itself: a late result dropped, a create that kept the draft, a Run On
+  // or group pick that no longer exists. Transient (not in the draft).
+  const [draftNotice, setDraftNotice] = useState<string | null>(null);
   // ── The coordinate block is a read-only projection of the Scene (unit 2d) ─────
   // Variant C (ADR-010 authority split: input text owns chemistry `!`/`%`, the
   // Scene owns geometry). A hand-edit of the `* xyz … *` rows never flows into the
@@ -187,37 +198,56 @@ export function NewJobScreen({
   const [importXyzOpen, setImportXyzOpen] = useState(false);
   const [importXyz, setImportXyz] = useState("");
   const [replaceConfirm, setReplaceConfirm] = useState(false); // "Replace input?" prompt shown
-  const [replaceMode, setReplaceMode] = useState(false); // buffer unlocked for a re-adopt
-  const replaceSnapshotRef = useRef(""); // content before unlock, restored on Cancel
+  // Replace input: the unlocked buffer and its pre-unlock content are draft state, so a pasted,
+  // not-yet-adopted calculation survives a tab switch (and is not reverted on return).
+  const [replaceMode, setReplaceMode] = useDraftField("replaceMode"); // buffer unlocked for a re-adopt
+  const [replaceSnapshot, setReplaceSnapshot] = useDraftField("replaceSnapshot"); // restored on Cancel
   // Set when an iterated job's fragment snapshot was discarded because it no
   // longer matched its input (distinct from a plain no-snapshot job — no note).
-  const [snapshotRejected, setSnapshotRejected] = useState(false);
-  const [logRejected, setLogRejected] = useState<LogRejection | null>(null);
+  const [snapshotRejected, setSnapshotRejected] = useDraftField("snapshotRejected");
+  const [logRejected, setLogRejected] = useDraftField("logRejected");
   // Geometry carry-forward (the input-vs-output fix): when New iteration seeds from a completed
   // job, the geometry must be the parent's CONVERGED output (results.final_geometry), never the
   // seed (input_content/scene_json). `carryBanner` = the converged-output note (green); `carryRefusal`
   // = an honest refusal (scan/NEB/non-converged) shown as a warning, never a silent seed.
-  const [carryBanner, setCarryBanner] = useState<string | null>(null);
-  const [carryRefusal, setCarryRefusal] = useState<string | null>(null);
+  const [carryBanner, setCarryBanner] = useDraftField("carryBanner");
+  const [carryRefusal, setCarryRefusal] = useDraftField("carryRefusal");
   // The explicit geometry-frame picker at New iteration (debugging/022): the parent's optimization
   // trajectory frames (default = the last = optimized output) + the app-state selected index (mirrors
   // ScanProfilePanel's selected-point-as-app-state). `null` until the parent's results resolve / for a
   // non-optimization source. Replaces the fragile verdict classification that silently seeded frame 0.
-  const [iterFrames, setIterFrames] = useState<Extract<IterationFrames, { ok: true }> | null>(null);
-  const [selectedFrame, setSelectedFrame] = useState<number | null>(null);
+  // Written only by the draft module (`resolveIterFrameSeed`, `selectIterationFrame`).
+  const iterFrames = useNewJobDraft((s) => s.iterFrames);
+  const selectedFrame = useNewJobDraft((s) => s.selectedFrame);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // ── Destination group (explicit picker, Phase 4.7 unit 2a) ──────────────────
   // The group the created job lands in. DEFAULT = the active sidebar group, and it FOLLOWS
   // the active group until the user touches the picker — a `groupTouched` flag, NOT a naive
   // `useState(activeGroupId)` init that would freeze on the first render and ignore a later
-  // sidebar switch. After an explicit pick the picker WINS (see `assignPickedGroup`).
+  // sidebar switch. After an explicit pick the picker WINS (see `assignPickedGroup`). Both live in
+  // the draft's preferences: the pick survives a tab switch and a cleared draft.
   const [groups, setGroups] = useState<Group[]>([]);
-  const [pickedGroupId, setPickedGroupId] = useState<string | null>(activeGroupId ?? null);
-  const [groupTouched, setGroupTouched] = useState(false);
+  // Whether `list_groups` answered: until it has (loading, or failed) a kept pick missing from
+  // `groups` is shown as its own option, never as "(ungrouped)" (ADR-026 item 9).
+  const [groupsLoaded, setGroupsLoaded] = useState(false);
+  const [pickedGroupId, setPickedGroupId] = useDraftField("pickedGroupId");
+  const [groupTouched, setGroupTouched] = useDraftField("groupTouched");
+  // On a successful list, a touched pick whose group was deleted while away goes back to following
+  // the active group, with a notice (ADR-026 item 9). A failed list changes nothing.
+  const activeGroupRef = useRef(activeGroupId ?? null);
+  activeGroupRef.current = activeGroupId ?? null;
   useEffect(() => {
     invoke<Group[]>("list_groups")
-      .then(setGroups)
+      .then((list) => {
+        setGroups(list);
+        setGroupsLoaded(true);
+        const r = revalidateGroup(useNewJobDraft.getState(), { ok: true, items: list }, activeGroupRef.current);
+        if (r.changed) {
+          useNewJobDraft.setState(r.patch);
+          setDraftNotice(r.notice);
+        }
+      })
       .catch(() => setGroups([]));
   }, []);
   useEffect(() => {
@@ -228,14 +258,14 @@ export function NewJobScreen({
   // CLEARED whenever the buffer is replaced by anything else (adoptWholeInput) so a stale
   // payload can never turn a non-NEB input into a NEB job (the hasNebKeyword gate is the
   // second belt). Re-set AFTER adoptWholeInput inside handleGenerate for the NEB case.
-  const [pendingNeb, setPendingNeb] = useState<NebPayload | null>(null);
-  const [smiles, setSmiles] = useState("");
+  const setPendingNeb = useDraftField("pendingNeb")[1]; // read by `create()` via `captureCreateStart`
+  const [smiles, setSmiles] = useDraftField("smiles");
   const [generating, setGenerating] = useState(false);
   // Formula carried from the last SMILES generation, used when saving to the
   // library. It is library-molecule metadata (RDKit's molecular formula),
   // orthogonal to the Scene geometry — SceneFragment has no formula concept — so
   // it stays a separate state rather than moving into the fragment.
-  const [formula, setFormula] = useState(initialMolecule?.formula ?? "");
+  const [formula, setFormula] = useDraftField("formula");
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   // Input Builder and Templates behave as a two-section accordion: at most one
@@ -284,10 +314,8 @@ export function NewJobScreen({
   // Selectors return the stored objects directly, so an unchanged scene keeps
   // its identity and MoleculeViewer does not redraw on every keystroke.
   const scene = useSceneStore((s) => s.scene);
-  const log = useSceneStore((s) => s.log);
   const addFragment = useSceneStore((s) => s.addFragment);
   const commit = useSceneStore((s) => s.commit);
-  const installLog = useSceneStore((s) => s.installLog);
   const seedScene = useSceneStore((s) => s.seedScene);
   const translateAtoms = useSceneStore((s) => s.translateAtoms);
   const rotateFragment = useSceneStore((s) => s.rotateFragment);
@@ -358,26 +386,43 @@ export function NewJobScreen({
   // it is a run target (`runTargetOptions`; a disabled one shows Rust's reason). Preselected from
   // the app setting `last_run_target` by `loadRunTarget` (a gone or disabled profile → Local; the
   // load never writes), and written back only by Create & Run. Only "Create & Run" uses it — the
-  // detail screen submits there after attaching its listeners.
+  // detail screen submits there after attaching its listeners. The choice and its touched flag are
+  // draft preferences (ADR-026): an untouched one follows the preselect on every mount; a touched
+  // one whose profile was deleted or disabled while away falls back, with a notice (item 9).
   const [profiles, setProfiles] = useState<ServerProfile[]>([]);
-  const [runTarget, setRunTarget] = useState<string | null>(null);
-  const runTargetTouched = useRef(false);
+  // Whether `list_server_profiles` answered: until it has (loading, or failed) a kept target missing
+  // from the options is shown as its own option — never as Local for a job that goes to a server
+  // (ADR-026 item 9). Nothing is blocked.
+  const [profilesLoaded, setProfilesLoaded] = useState(false);
+  const [runTarget, setRunTarget] = useDraftField("runTarget");
+  const setRunTargetTouched = useDraftField("runTargetTouched")[1];
   useEffect(
     () =>
       loadRunTarget(
         tauriBridge,
         {
-          profiles: (list, err) => {
+          profiles: (list, err, settings) => {
             setProfiles(list);
+            setProfilesLoaded(err === null);
             if (err) setError(`Could not list the server profiles: ${err}`);
+            const r = revalidateRunTarget(
+              useNewJobDraft.getState(),
+              err === null ? { ok: true, items: list } : { ok: false, error: err },
+              settings,
+            );
+            if (r.changed) {
+              useNewJobDraft.setState(r.patch);
+              setDraftNotice(r.notice);
+            }
           },
           preselect: setRunTarget,
         },
-        () => runTargetTouched.current,
+        () => useNewJobDraft.getState().runTargetTouched,
       ),
-    [],
+    [setRunTarget],
   );
   const runTargets = useMemo(() => runTargetOptions(profiles), [profiles]);
+  const unlistedTarget = unlistedPick(runTarget, profilesLoaded, runTargets.map((o) => o.target));
   // The memory and disk preflight (ADR-024 o26.7): recomputed (debounced) on every edit and Run On
   // change, the latest reply only (o26.13.6). A warning, never a block — see `createAllowed`.
   const memory = useMemoryEstimate(content, runTarget);
@@ -427,13 +472,14 @@ export function NewJobScreen({
   // PAIR (`bondKey`), so a hide survives re-perception / drag / rotate / index shifts.
   // `showCationBonds` overrides the default s-block-cation exclusion. Neither touches
   // geometry — Generate/Run are byte-identical whatever is hidden.
-  const [hiddenBonds, setHiddenBonds] = useState<ReadonlySet<BondKey>>(new Set());
-  const [showCationBonds, setShowCationBonds] = useState(false);
+  // AtomId-keyed, so they stay valid across a remount (the scene and its ids are kept): draft state.
+  const [hiddenBonds, setHiddenBonds] = useDraftField("hiddenBonds");
+  const [showCationBonds, setShowCationBonds] = useDraftField("showCationBonds");
   // Per-atom FORMAL CHARGES (geometric-editor completion) — DISPLAY-ONLY bookkeeping
   // keyed by AtomId (like `hiddenBonds`, not in the Scene). ORCA is given only the
   // TOTAL charge (`totalCharge(scene) = Σ fragment.charge`); these annotations let the
   // chemist reason about where charge sits and their Σ is checked against that total.
-  const [formalCharges, setFormalCharges] = useState<ReadonlyMap<AtomId, number>>(new Map());
+  const [formalCharges, setFormalCharges] = useDraftField("formalCharges");
   const setFormalCharge = (id: AtomId, value: number) =>
     setFormalCharges((prev) => {
       const next = new Map(prev);
@@ -647,25 +693,26 @@ export function NewJobScreen({
   // for selection). Instead: when the composition signature moves while
   // constraints exist, warn and let the user verify by eye. SAME
   // `compositionSignature`, no second notion of "composition changed".
-  const [constraintCompWarn, setConstraintCompWarn] = useState(false);
+  // The warning and the last signature are draft state (ADR-026): a remount neither drops a raised
+  // warning nor reads the restored composition as a change; a cleared draft starts from null.
+  const [constraintCompWarn, setConstraintCompWarn] = useDraftField("constraintCompWarn");
   const contentRef = useRef(content);
   contentRef.current = content;
-  const lastConstraintSigRef = useRef<string | null>(null);
   useEffect(() => {
     const sig = scene ? compositionSignature(scene) : null;
-    const prev = lastConstraintSigRef.current;
+    const prev = useNewJobDraft.getState().lastConstraintSig;
     if (sig === prev) return;
-    lastConstraintSigRef.current = sig;
+    useNewJobDraft.getState().setField("lastConstraintSig", sig);
     // Skip the initial signature (mount / job restore is not a "change").
     if (prev !== null && (parseConstraintsBlock(contentRef.current)?.length ?? 0) > 0) {
       setConstraintCompWarn(true);
     }
-  }, [scene]);
+  }, [scene, setConstraintCompWarn]);
   // The warning is meaningless with no constraints — clear it the moment the
   // block is emptied (via delete, or a manual edit in Monaco).
   useEffect(() => {
     if ((parseConstraintsBlock(content)?.length ?? 0) === 0) setConstraintCompWarn(false);
-  }, [content]);
+  }, [content, setConstraintCompWarn]);
 
   // "Constrain selection" (2.5.4b): freeze the 2/3/4-atom coordinate. One data
   // path — parse the current text, append (no duplicate), write back through
@@ -870,117 +917,76 @@ export function NewJobScreen({
     setSaved(false);
   };
 
-  // Initialise the (module-singleton) scene store for this screen. useLayoutEffect
-  // (not useEffect) so the reset runs before paint — the screen remounts on every
-  // navigation, and a plain effect would flash the previous visit's molecule.
-  //  - keepScene → leave the store untouched (a conformer was just applied to it);
-  //  - iterated job → restore its OPERATION LOG, cross-checked against the snapshot
-  //    (the log is rejected loudly if it diverges — unit 2b main risk);
-  //  - library molecule → a single "library" fragment (a seeded log);
-  //  - otherwise → empty, clearing any scene left over from a prior visit.
+  // ── Seeds (ADR-026 items 6, 7) ──────────────────────────────────────────────
+  // The mount no longer resets anything: it consumes the navigation's seed, if any, through
+  // `applySeed` — applied at once into an empty draft, an inline prompt for a draft with work, and
+  // ignored when its id was already consumed (StrictMode's second mount, a re-render). Layout
+  // effect, so an applied seed is in place before paint. The prompt's seed is local state: leaving
+  // New Job while it is open is "Keep draft" (the seed goes with the screen object).
+  const [seedPrompt, setSeedPrompt] = useState<{ seed: DraftSeed; seedId: number } | null>(null);
   useLayoutEffect(() => {
-    if (keepScene) {
-      // "Use this conformer" already dispatched onto the store log; don't reset it.
-    } else if (initialJob) {
-      const { log: restoredLog, snapshotRejected: rejected, logRejected: logRej } =
-        restoreSceneLog(
-          initialJob.input_content,
-          initialJob.scene_json,
-          initialJob.scene_log_json ?? null,
-        );
-      installLog(restoredLog);
-      setSnapshotRejected(rejected);
-      setLogRejected(logRej);
-    } else if (initialMolecule) {
-      seedScene(
-        sceneFromXyz(initialMolecule.xyz, {
-          source: "library",
-          sourceLabel: initialMolecule.id,
-          name: initialMolecule.name,
-          charge: initialMolecule.charge,
-          multiplicity: initialMolecule.multiplicity,
-        }),
-        "library",
-      );
-    } else {
-      seedScene(null, "text-adopt"); // empty log, clears any prior visit's scene
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // Seed the iteration scene from ONE explicit trajectory frame (the default = last, or a user re-pick
-  // from the frame picker). A FRESH scene from that real trajectory frame — never `input_content` — with
-  // a frame-exact provenance comment + banner so an input-vs-frame swap can't ship silently. The parent's
-  // edit LOG is not carried (it produced the seed, not this frame). Called from the async default seed
-  // AND the picker's onChange; the provenance line is stripped-and-replaced so re-picking never stacks.
-  const seedIterationFrame = (choice: FrameChoice) => {
-    if (!initialJob) return;
-    const parent = sceneFromOrcaInput(initialJob.input_content); // charge/mult from the header (.xyz has none)
-    const xyz = finalGeometryXyz(choice.geometry, initialJob.title, choice.energyEh);
-    const fresh = sceneFromXyz(xyz, {
-      name: `${initialJob.title} — ${choice.label}`,
-      charge: parent ? totalCharge(parent) : 0,
-      multiplicity: parent ? parent.multiplicity : 1,
-      source: "editor",
-    });
-    if (!fresh) return;
-    seedScene(fresh, "text-adopt"); // fresh log — the parent's seed edit history is not carried
-    setContent((c) => {
-      const stripped = c
-        .split(/\r?\n/)
-        .filter((l) => !l.trim().startsWith("# geometry:"))
-        .join("\n");
-      return withProvenanceComment(stripped, frameProvenanceComment(initialJob.id, choice));
-    });
-    setCarryBanner(
-      `Seeded from ${choice.label} (frame ${choice.index}) of “${initialJob.title}”. Pick another frame below to reseed.`,
-    );
-    // A real trajectory frame supersedes any snapshot/log-reject warning from the sync restore.
-    setSnapshotRejected(false);
-    setLogRejected(null);
+    if (!seed || seedId === undefined) return;
+    if (applySeed(seed, seedId) === "ask") setSeedPrompt({ seed, seedId });
+  }, [seed, seedId]);
+  const answerSeedPrompt = (choice: "replace" | "keep") => {
+    if (seedPrompt) resolveSeedPrompt(seedPrompt.seed, seedPrompt.seedId, choice);
+    setSeedPrompt(null);
   };
 
-  // Geometry carry-forward at New iteration (debugging/022). The sync effect above seeded the parent's
-  // SEED scene as a fast placeholder; here we fetch the parent's PARSED results and resolve the explicit
-  // frame picker. For an optimization, the DEFAULT (last = optimized output) is seeded UNCONDITIONALLY —
-  // not the fragile "converged? maybe override" of the old path that silently kept frame 0 on a null
-  // verdict (the post-GOAT bug). Scan/NEB keep their per-point/per-image refusal; a GENUINE single point
-  // keeps its seed silently (final == input), but an optimization whose trajectory failed to PARSE is
-  // warned (never a silent seed — watch-item 2).
+  // ── The iteration frame seed (ADR-026 item 8; debugging/022) ─────────────────
+  // An iteration seed restores the parent's SEED scene as a fast placeholder and leaves the frame
+  // seed `pending`; this effect fetches the parent's PARSED results and lets the draft module land
+  // the default frame (the last = the optimized output), refuse honestly, or keep a genuine single
+  // point. It runs on EVERY mount while the state is `pending` — not once per seed — so leaving the
+  // tab mid-read (or StrictMode's mount–cleanup–mount) cannot strand the input seed with no banner.
+  // A cancelled read writes nothing; `resolveIterFrameSeed` also drops a result for an older
+  // generation.
+  const iterFrameSeed = useNewJobDraft((s) => s.iterFrameSeed);
+  const generation = useNewJobDraft((s) => s.generation);
   useEffect(() => {
-    if (!initialJob) return;
+    const task = iterFrameSeedTask();
+    if (!task) return;
     let live = true;
-    (async () => {
-      const results = await invoke<ParsedResults | null>("read_job_results", { id: initialJob.id }).catch(
-        () => null,
-      );
-      if (!live) return;
-      const fr = iterationFrames(initialJob, results);
-      if (!fr.ok) {
-        if (fr.kind === "no-trajectory") {
-          // A genuine single point (no Opt/OptTS/Scan/NEB/GOAT/IRC keyword) → seed IS its geometry, keep
-          // silently. But an input that DOES request an optimization with no parsed trajectory is a
-          // parse glitch — DON'T silently keep the seed; warn that the shown geometry is the input seed.
-          if (!isSinglePoint(initialJob.input_content)) {
-            setCarryRefusal(
-              `“${initialJob.title}” is an optimization but its trajectory could not be read — there is no frame to pick, and the geometry shown is the INPUT SEED, not the optimized output. Re-run or re-parse before iterating.`,
-            );
-          }
-          return;
-        }
-        setCarryRefusal(fr.reason); // scan/NEB/no-result — the existing per-point/per-image handoff
-        return;
-      }
-      // Unconditional default = the LAST (optimized) frame — the whole fix. Never frame 0, never the seed.
-      setIterFrames(fr);
-      setSelectedFrame(fr.defaultIndex);
-      seedIterationFrame(fr.frames[fr.defaultIndex]);
-    })();
+    invoke<ParsedResults | null>("read_job_results", { id: task.job.id })
+      .catch(() => null)
+      .then((results) => {
+        if (live) resolveIterFrameSeed(task, results);
+      });
     return () => {
       live = false;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialJob]);
+  }, [iterFrameSeed, generation]);
+
+  // A new generation (a cleared draft, an applied seed) is a different job: the transient view
+  // state of the previous one — a pick list, an edit preview, a rotate axis, a guided placement,
+  // its notices — must not hang over it. Skips the mount (nothing to clear).
+  const shownGenerationRef = useRef(generation);
+  useLayoutEffect(() => {
+    if (shownGenerationRef.current === generation) return;
+    shownGenerationRef.current = generation;
+    setSelection([]);
+    setPreviewScene(null);
+    setRotateEphemeral(null);
+    setRotateAxis(null);
+    setGuidedReagent(null);
+    setCoordNotice(false);
+    setDragFallbackNotice(null);
+    setReplaceConfirm(false);
+    setSaved(false);
+    setXtbNote(null);
+    setXtbError(null);
+    setXtbErrorDir(null);
+    setError(null);
+  }, [generation]);
+
+  // "New draft" (ADR-026 item 5): an empty draft clears at once; one with work asks first (an
+  // inline prompt — `window.confirm`'s WebKitGTK behaviour is unmeasured). Only the work slice and
+  // the scene go: the builder, Run On and group are kept.
+  const [newDraftConfirm, setNewDraftConfirm] = useState(false);
+  const newDraft = () => {
+    if (isDraftEmpty(useNewJobDraft.getState(), useSceneStore.getState())) resetDraft();
+    else setNewDraftConfirm(true);
+  };
 
   // Scene → content (ADR-008 #6): inject the merged coordinate block, leaving
   // the `!` line / `%` blocks / comments untouched. The guard skips the write
@@ -1143,7 +1149,7 @@ export function NewJobScreen({
   // lineage (the history starts over — a fresh `text-adopt` log).
   const beginReplace = () => setReplaceConfirm(true);
   const unlockReplace = () => {
-    replaceSnapshotRef.current = content;
+    setReplaceSnapshot(content);
     setReplaceConfirm(false);
     setReplaceMode(true);
     setError(null);
@@ -1156,7 +1162,7 @@ export function NewJobScreen({
     setCoordNotice(false);
   };
   const cancelReplace = () => {
-    setContent(replaceSnapshotRef.current); // restore the buffer; the block re-locks
+    setContent(replaceSnapshot); // restore the buffer; the block re-locks
     setReplaceMode(false);
     setReplaceConfirm(false);
   };
@@ -1247,8 +1253,14 @@ export function NewJobScreen({
   // converted to xyz by the sidecar (see import-file.ts). Added as an "import"
   // fragment (neutral charge 0).
   const importFile = async (file: File) => {
+    const gen = captureGeneration();
     try {
       const { atomLines } = await importStructureFile(file);
+      // The draft was replaced while the file was read: never add it to the new draft (ADR-026 item 10).
+      if (!isCurrent(gen)) {
+        setDraftNotice(`“${file.name}” finished loading after the draft was replaced; it was not added.`);
+        return;
+      }
       setError(null);
       const base = file.name.replace(/\.[^.]+$/, "");
       const s = sceneFromAtomLines(atomLines, {
@@ -1263,7 +1275,8 @@ export function NewJobScreen({
       // this import *is* the whole molecule (empty scene), leave it otherwise.
       if (!useSceneStore.getState().scene) setFormula("");
       addFragmentToScene(s.fragments[0]);
-      if (!title.trim()) setTitle(base);
+      // Read the title now, not from this render's closure: it may have changed during the await.
+      if (!useNewJobDraft.getState().title.trim()) setTitle(base);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -1274,6 +1287,7 @@ export function NewJobScreen({
   const generateFromSmiles = async () => {
     const s = smiles.trim();
     if (!s) return;
+    const gen = captureGeneration();
     setGenerating(true);
     setError(null);
     try {
@@ -1310,10 +1324,15 @@ export function NewJobScreen({
         multiplicity: 1,
       });
       if (!built) throw new Error("Sidecar returned a malformed structure");
+      // The draft was replaced while RDKit worked: never append to the new draft (ADR-026 item 10).
+      if (!isCurrent(gen)) {
+        setDraftNotice(`The structure for “${s}” arrived after the draft was replaced; it was not added.`);
+        return;
+      }
       // Only the first molecule's formula is meaningful for Save to Library.
       if (!useSceneStore.getState().scene) setFormula(data.formula);
       addFragmentToScene(built.fragments[0]);
-      if (!title.trim()) setTitle(data.formula);
+      if (!useNewJobDraft.getState().title.trim()) setTitle(data.formula);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -1362,8 +1381,11 @@ export function NewJobScreen({
   //     Rust, Unit 1);
   //   • untouched + an active group → assign it (as the 4.7.3 assign-on-create did);
   //   • an explicit pick → the picker WINS, including "(ungrouped)" (null), overriding any default.
-  const assignPickedGroup = async (jobId: string) => {
-    const decision = resolveGroupAssignment(groupTouched, pickedGroupId);
+  //
+  // The pick is passed in: `create()` hands the values it captured at its start, never the draft
+  // after the clear (ADR-026 item 5).
+  const assignPickedGroup = async (jobId: string, touched: boolean, picked: string | null) => {
+    const decision = resolveGroupAssignment(touched, picked);
     if (!decision.assign) return;
     await invoke("move_job", { jobId, groupId: decision.groupId });
   };
@@ -1383,49 +1405,71 @@ export function NewJobScreen({
       setError(scanBlockMessage);
       return;
     }
+    // Everything the job is made of, and where it goes, is read ONCE here (ADR-026 item 5). The
+    // steps after the create call use these values, never the draft — which may be cleared by then.
+    const start = captureCreateStart();
+    const jobTitle = start.title.trim() || "Untitled job";
     setCreating(true);
     setError(null);
+    let job: Job;
     try {
       // A NEB-TS input generated by the builder routes to the two-file `create_neb_job`
       // (it materializes product.xyz into the isolated dir and attaches the reactant's
       // pathway). BOTH gates required: a pending payload AND a `!` line that still carries
       // NEB — so a stale payload after the user replaced the buffer with a non-NEB input
       // falls through to the ordinary create_job.
-      const isNeb = pendingNeb != null && hasNebKeyword(content);
-      const job = isNeb
+      const neb = start.pendingNeb != null && hasNebKeyword(start.content) ? start.pendingNeb : null;
+      job = neb
         ? await invoke<Job>("create_neb_job", {
-            title: title.trim() || "Untitled job",
-            inpContent: content,
-            productXyzContent: pendingNeb.productXyz,
-            reactantJobId: pendingNeb.reactantJobId,
-            productJobId: pendingNeb.productJobId,
+            title: jobTitle,
+            inpContent: start.content,
+            productXyzContent: neb.productXyz,
+            reactantJobId: neb.reactantJobId,
+            productJobId: neb.productJobId,
           })
         : await invoke<Job>("create_job", {
-            title: title.trim() || "Untitled job",
-            inputContent: content,
+            title: jobTitle,
+            inputContent: start.content,
             // Persist the fragment layout so a later iteration restores it (ADR-008
             // #5). Written once, here; the job's input is immutable, so is this.
-            sceneJson: scene ? serializeScene(scene) : null,
+            sceneJson: start.scene ? serializeScene(start.scene) : null,
             // The operation log alongside it — history carries across iterations
             // (unit 2b). Both co-written; restore cross-checks them. Null when there
             // is no scene (empty log), keeping the two columns consistent.
-            sceneLogJson: scene ? serializeLog(log) : null,
+            sceneLogJson: start.scene ? serializeLog(start.log) : null,
           });
-      // Assign the picked destination group before navigating (unit 2a).
-      await assignPickedGroup(job.id);
-      // The detail screen performs the actual submit (after attaching its log
-      // listeners) so no early output lines are missed.
-      if (run) {
-        // Remember the choice of this Create & Run (ADR-024 o20.1; "" = Local) — here, whatever
-        // the submit's outcome: a retry after an unreachable server keeps the choice.
-        invoke("set_setting", { key: LAST_RUN_TARGET_SETTING, value: runTarget ?? "" }).catch(() => {});
-        onOpenDetail(job.id, true, runTarget);
-      } else onCreatedDraft();
     } catch (e) {
+      // No job was created: the draft is kept as it is.
       setError(String(e));
-    } finally {
       setCreating(false);
+      return;
     }
+    // The job exists. Its draft is cleared — but only if it is still the draft the job was made
+    // from: an edit, a reset or a seed during the await is kept, and said so.
+    const clear = clearAfterCreate(start);
+    if (!clear.cleared) setDraftNotice(clear.reason);
+    try {
+      // Assign the picked destination group before navigating (unit 2a).
+      await assignPickedGroup(job.id, start.groupTouched, start.pickedGroupId);
+    } catch (e) {
+      // The job exists and its draft is cleared (keeping it would invite a duplicate), so the error
+      // names the job; a Create & Run stops here and does not run it.
+      setError(
+        `The job “${job.title}” was created, but moving it to the chosen group failed: ${String(e)}.` +
+          (run ? " It was NOT run — run it from the Jobs list." : ""),
+      );
+      setCreating(false);
+      return;
+    }
+    setCreating(false);
+    // The detail screen performs the actual submit (after attaching its log
+    // listeners) so no early output lines are missed.
+    if (run) {
+      // Remember the choice of this Create & Run (ADR-024 o20.1; "" = Local) — here, whatever
+      // the submit's outcome: a retry after an unreachable server keeps the choice.
+      invoke("set_setting", { key: LAST_RUN_TARGET_SETTING, value: start.runTarget ?? "" }).catch(() => {});
+      onOpenDetail(job.id, true, start.runTarget);
+    } else onCreatedDraft();
   };
 
   // "Find conformers" on one fragment: create + run a GOAT job. Its input is the
@@ -1450,7 +1494,7 @@ export function NewJobScreen({
         sceneLogJson: null,
       });
       // A conformer search started under an active group belongs in it too.
-      await assignPickedGroup(job.id);
+      await assignPickedGroup(job.id, groupTouched, pickedGroupId);
       onOpenDetail(job.id, true); // queue + run, then open its detail
     } catch (e) {
       setError(String(e));
@@ -2089,6 +2133,7 @@ export function NewJobScreen({
             id="job-group"
             groups={groups}
             value={pickedGroupId}
+            unlisted={unlistedPick(pickedGroupId, groupsLoaded, groups.map((g) => g.id))}
             onChange={(g) => {
               setGroupTouched(true);
               setPickedGroupId(g);
@@ -2104,10 +2149,13 @@ export function NewJobScreen({
             className="select"
             value={runTarget ?? ""}
             onChange={(e) => {
-              runTargetTouched.current = true;
+              setRunTargetTouched(true);
               setRunTarget(e.currentTarget.value || null);
             }}
           >
+            {unlistedTarget ? (
+              <option value={unlistedTarget}>{unlistedTarget} — profile list not loaded</option>
+            ) : null}
             {runTargets.map((o) => (
               <option key={o.target ?? ""} value={o.target ?? ""} disabled={!o.enabled} title={o.reason ?? undefined}>
                 {o.reason ? `${o.label} — ${o.reason}` : o.label}
@@ -2130,8 +2178,59 @@ export function NewJobScreen({
           >
             Create &amp; Run
           </button>
+          <button
+            className="btn"
+            onClick={newDraft}
+            disabled={creating}
+            title="Start an empty job. The builder, Run on and group are kept."
+          >
+            New draft
+          </button>
         </div>
       </div>
+
+      {/* An incoming seed met a draft with work (ADR-026 item 6): nothing is touched until Replace. */}
+      {seedPrompt ? (
+        <div className="banner warn seed-prompt">
+          Replace the current draft with {seedLabel(seedPrompt.seed)}? The title, input and geometry
+          of the current draft will be discarded.
+          <button className="btn btn-sm" style={{ marginLeft: 10 }} onClick={() => answerSeedPrompt("replace")}>
+            Replace
+          </button>
+          <button className="btn btn-sm" style={{ marginLeft: 6 }} onClick={() => answerSeedPrompt("keep")}>
+            Keep draft
+          </button>
+        </div>
+      ) : null}
+
+      {newDraftConfirm ? (
+        <div className="banner warn new-draft-confirm">
+          Start a new draft? The title, input and geometry of this one will be discarded (the
+          builder, Run on and group are kept).
+          <button
+            className="btn btn-sm"
+            style={{ marginLeft: 10 }}
+            onClick={() => {
+              setNewDraftConfirm(false);
+              resetDraft();
+            }}
+          >
+            Clear the draft
+          </button>
+          <button className="btn btn-sm" style={{ marginLeft: 6 }} onClick={() => setNewDraftConfirm(false)}>
+            Cancel
+          </button>
+        </div>
+      ) : null}
+
+      {draftNotice ? (
+        <div className="banner warn draft-notice">
+          {draftNotice}
+          <button className="btn btn-sm" style={{ marginLeft: 10 }} onClick={() => setDraftNotice(null)}>
+            Dismiss
+          </button>
+        </div>
+      ) : null}
 
       {constraintBlockMessage ? (
         <div className="banner err constraint-block">{constraintBlockMessage}</div>
@@ -2208,9 +2307,9 @@ export function NewJobScreen({
             className="select select-sm"
             value={selectedFrame ?? iterFrames.defaultIndex}
             onChange={(e) => {
-              const idx = Number(e.currentTarget.value);
-              setSelectedFrame(idx);
-              seedIterationFrame(iterFrames.frames[idx]);
+              // A frame that cannot be built keeps the frame shown and says so (ADR-026 item 8).
+              const refusal = selectIterationFrame(Number(e.currentTarget.value));
+              if (refusal) setDraftNotice(refusal);
             }}
           >
             {iterFrames.frames.map((f) => (

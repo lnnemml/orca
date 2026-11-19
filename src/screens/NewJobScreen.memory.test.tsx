@@ -23,6 +23,9 @@ vi.mock("../editor/InputEditor", () => ({
 vi.mock("../viewer/MoleculeViewer", () => ({ MoleculeViewer: () => null }));
 
 import { NewJobScreen } from "./NewJobScreen";
+import { initialPreferences, initialWork, useNewJobDraft } from "./new-job-draft";
+import { useSceneStore } from "../scene/store";
+import { emptyLog } from "../scene/oplog";
 
 const UNI = makeProfile({ run_target: { is_run_target: true, reason: null } });
 
@@ -52,6 +55,10 @@ function answer(estimate: (seq: number) => unknown) {
 
 beforeEach(() => {
   invokeMock.mockReset();
+  // New Job's draft lives in the draft and scene stores (ADR-026): reset both between tests, as the
+  // `InputBuilderForm` tests do.
+  useNewJobDraft.setState({ ...initialWork(), ...initialPreferences(), generation: 0, consumedSeedId: 0 });
+  useSceneStore.setState({ log: emptyLog(), scene: null });
 });
 afterEach(cleanup);
 

@@ -174,6 +174,10 @@ chooses** where the job lands. It supersedes the 4.7.3 implicit active-group ass
   the default.
 - **`groups` is loaded locally** (`list_groups` on mount), mirroring how `JobsScreen` loads its own —
   `App` holds only the `GroupSelection`, not the list.
+- **The pick and `groupTouched` live in the New Job draft** (ADR-026): they survive a tab switch and a
+  cleared draft, are re-validated against a successful `list_groups` (a deleted group → untouched again,
+  with a notice), and a kept pick missing from a list that is loading or failed is shown through
+  `GroupSelect`'s `unlisted` prop. See `modules/frontend.md` §New Job draft store.
 - **The assign is `resolveGroupAssignment(groupTouched, pickedGroupId)`**, then `move_job` when it says
   assign — the **same `null`-for-ungrouped semantics** as `JobsScreen.moveJob`, applied to **all three**
   create paths (`create_job` normal + GOAT "Find conformers" + the builder `create_neb_job`). The rule:

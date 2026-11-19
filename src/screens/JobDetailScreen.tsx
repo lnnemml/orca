@@ -16,6 +16,7 @@ import { MoleculeViewer } from "../viewer/MoleculeViewer";
 import { useSceneStore } from "../scene/store";
 import { stampFreshIds } from "../scene/ids";
 import { deserializeScene } from "../scene/scene";
+import { handOffConformer, type DraftSeed } from "./new-job-draft";
 import { buildReoptInput, DEFAULT_REOPT_METHOD } from "../scene/reopt";
 import { GroupSelect } from "../groups/GroupSelect";
 import { useGroupPicker } from "../groups/useGroupPicker";
@@ -74,8 +75,9 @@ interface JobDetailScreenProps {
   onBack: () => void;
   /** Start a new iteration seeded from this job (input + fragment snapshot). */
   onIterate: (job: Job) => void;
-  /** A conformer was applied to the scene store — go to New Job, keeping it. */
-  onUseConformer: () => void;
+  /** Go to New Job after "Use this conformer": with the `conformer-scene` seed of a `new` scene, or
+   *  with none after a `replace` edited the draft's own fragment in place (ADR-026 item 6). */
+  onUseConformer: (seed: DraftSeed | null) => void;
   /** Open another job's detail screen (e.g. the scan panel's OptTS-refine child). */
   onOpenJob: (jobId: string) => void;
 }
@@ -216,46 +218,39 @@ export function JobDetailScreen({
     };
   }, [ensemble, selectedConf, snapshotFragment]);
 
-  // Apply a chosen conformer geometry to the scene store (2.5.1b path): replace the
-  // live fragment in place if it's still there, else seed a fresh single-fragment
-  // scene — decided purely by `planConformerApply`, which refuses (no throw, a
-  // banner) on a composition mismatch. That refusal IS the atom count/element-order
-  // post-condition (rule #9) — carrying a geometry with a different composition is
-  // rejected, never assumed away. Returns true on success. `provenance` labels the op.
+  // Apply a chosen conformer geometry to the draft (2.5.1b path): replace the live fragment in
+  // place if it's still there, else hand a fresh single-fragment scene to New Job as a seed —
+  // decided purely by `planConformerApply`, which refuses (no throw, a banner) on a composition
+  // mismatch. That refusal IS the atom count/element-order post-condition (rule #9) — carrying a
+  // geometry with a different composition is rejected, never assumed away. On success it hands off
+  // to New Job (`onUseConformer`). `provenance` labels the op.
   const applyConformer = (
     conf: Conformer,
     provenance: FragmentGeometryVia & { via: "conformer" },
-  ): boolean => {
+  ): void => {
     if (!snapshotFragment || !job?.scene_json) {
       setError("This job has no fragment snapshot to apply a conformer to.");
-      return false;
+      return;
     }
     const plan = planConformerApply(
       useSceneStore.getState().scene,
       snapshotFragment,
       conf,
     );
-    if (plan.action === "refuse") {
-      setError(plan.reason);
-      return false;
+    // `replace` edits the draft's own fragment here (a logged op) and New Job opens with no seed;
+    // `new` writes nothing here — the fresh scene goes to New Job as a seed, so a draft with work
+    // gets the prompt instead of being replaced (ADR-026 item 6).
+    const handoff = handOffConformer(
+      plan,
+      provenance,
+      deserializeScene(job.scene_json)?.multiplicity ?? 1,
+      `conformer ${conf.index} of “${job.title}”`,
+    );
+    if (!handoff.ok) {
+      setError(handoff.reason);
+      return;
     }
-    if (plan.action === "replace") {
-      useSceneStore
-        .getState()
-        .replaceFragmentAtoms(plan.fragmentId, plan.atoms, provenance);
-    } else {
-      const mult = deserializeScene(job.scene_json)?.multiplicity ?? 1;
-      // The store scene was cleared → seed a fresh lineage from the conformer.
-      useSceneStore.getState().seedScene(
-        {
-          fragments: [plan.fragment],
-          multiplicity: mult,
-          nextAtomId: plan.nextAtomId,
-        },
-        "new-iteration",
-      );
-    }
-    return true;
+    onUseConformer(handoff.seed);
   };
 
   // "Use this conformer" — the RAW xTB frame from the GOAT ensemble (2.5.1b).
@@ -265,15 +260,12 @@ export function JobDetailScreen({
       setError("This job has no fragment snapshot to apply a conformer to.");
       return;
     }
-    if (
-      applyConformer(conf, {
-        via: "conformer",
-        conformerIndex: conf.index,
-        deltaEKcal: null,
-      })
-    ) {
-      onUseConformer();
-    }
+    // On success `applyConformer` has already navigated to New Job.
+    applyConformer(conf, {
+      via: "conformer",
+      conformerIndex: conf.index,
+      deltaEKcal: null,
+    });
   };
 
   // Carry the DFT-RE-OPTIMISED geometry of a re-opt child downstream (D3). Unlike
@@ -306,17 +298,14 @@ export function JobDetailScreen({
         energy: NaN, // geometry only — the scene carries no energy
         index: conformerIndex,
       };
-      if (
-        applyConformer(dftConf, {
-          via: "conformer",
-          conformerIndex,
-          deltaEKcal: null,
-          level: "DFT",
-          method,
-        })
-      ) {
-        onUseConformer();
-      }
+      // The same hand-off as the raw conformer: `replace` in place, or a seed (ADR-026 item 6).
+      applyConformer(dftConf, {
+        via: "conformer",
+        conformerIndex,
+        deltaEKcal: null,
+        level: "DFT",
+        method,
+      });
     } catch (e) {
       setError(String(e));
     }

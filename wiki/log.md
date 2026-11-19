@@ -12083,3 +12083,134 @@ row only; the shared `.builder-row` rule and the other rows are unchanged. Needs
 - Anton's request after the 5.5 gate: the memory row is a collapsed disclosure (one summary line per warning target with U and threshold, a button with `aria-expanded`); render change, awaiting his live gate.
 - Wiki nits: `remote-jobs.md` present tense for the 5.4b TS mirrors, the `lost` chip and the notices; `frontend.md` no scratchpad path; ADR-024 status names o26.14.
 - Verifier findings folded in (rebased onto `98e9984`): a failed apply's error stays visible after the row is collapsed (test + two controls); the summary of an unread RAM still appends a low or unread disk (`uni: memory unknown; disk unknown`); ADR-024 o26.14.11 (the disclosure) and o26.14.12 (CRLF kept by `apply_maxcore`); the live-check wording in `remote-live-run-b4.md` kept to what was measured (M6: max 8 observed in 454 samples; "no Server unreachable" by eye); the passed live checks moved out of `remote-jobs.md`'s "Not built yet"; ROADMAP dates (wrapper kill 2026-11-18); `index.md` summary of `remote-live-run-b4.md`.
+
+## [2026-11-19] decision | ADR-026 — the New Job draft survives a tab switch
+- Anton: returning to New Job by the tab button loses the title, editor text and Input Builder
+  settings while the coordinates come back. Cause: only the active screen is mounted and the mount
+  clears the scene store; the coordinates return only through a stale-closure resurrection (the
+  scene→content effect injects the old scene into the empty editor, the content→scene debounce
+  re-seeds it as a bare block). The builder also loses its settings whenever Generate closes its
+  accordion.
+- Forks decided by Anton: a Zustand draft store (not keep-mounted); session only, not persisted;
+  cleared after a successful create and by an explicit "New draft", and then **only the work slice**
+  (builder, Run On and group are kept); a seed meeting a non-empty draft asks first.
+- DESIGN round 1: FAIL (1 HIGH — the iteration frame seed must be tracked state, not once per mount,
+  else debugging/022 returns — + 6 MED + 8 LOW), all applied. Round 2: PASS WITH FINDINGS (1 MED —
+  re-validate a deleted group like Run On — + 4 LOW), applied; **accepted**. The stale-closure
+  resurrection is reproduced in a minimal React 19.2.8 + Zustand harness.
+- Next: implementer Part A (pure store + helpers) in the worktree
+  `feat/new-job-draft`.
+
+## [2026-11-19] feat | ADR-026 Part A — the New Job draft store (pure)
+- Built `src/screens/new-job-draft.ts`: the session-only Zustand store `useNewJobDraft`, with a work
+  slice and a preferences slice (ADR-026 item 3), `generation` and `consumedSeedId` (both monotonic,
+  both kept by a reset), and `setField`. The pure helpers:
+  - `isDraftEmpty` and `resetDraft`;
+  - `mintSeedId`, `applySeed` (`ignored`/`applied`/`ask`), `resolveSeedPrompt` and `seedLabel`;
+  - the `DraftSeed` writes (molecule / iteration / conformer-scene, mirroring the mount effect);
+  - the `iterFrameSeed` machine: `iterFrameSeedTask`, `resolveIterFrameSeed`,
+    `selectIterationFrame`;
+  - `captureGeneration`/`isCurrent`, `captureCreateStart`/`clearAfterCreate`;
+  - `revalidateRunTarget`, `revalidateGroup` and `builderStateOnOpen`.
+- **No wiring:** `NewJobScreen`, `App`, `InputBuilderForm` and `JobDetailScreen` are unchanged, so the
+  tab-switch loss remains until Part B.
+- Gates: `new-job-draft.test.ts` has 41 tests. 17 negative controls were applied to the module one at a
+  time, and each turned its gate red. The module was then restored byte-identical (`cmp` against a
+  pristine copy):
+  - `resetDraft`: it leaves the scene; it resets the preferences to constants.
+  - `isDraftEmpty`: preferences count as work; the log is ignored.
+  - `applySeed`: no id check; apply before asking; skip the reset.
+  - *Keep draft* does not consume the id.
+  - `iterFrameSeed`: set to `landed` on start; a single point left `pending`.
+  - The generation check is dropped.
+  - Run On re-validation: keeps the gone profile; treats a failed list as empty.
+  - Group re-validation: keeps the gone id; treats a failed list as empty.
+  - The create clear is unconditional.
+  - The builder keeps the remembered multiplicity.
+- Suite: vitest 1215 passed + 2 skipped (base 1174 + 41 new); `tsc --noEmit` clean.
+- Signature notes for Part B and the verifier:
+  - `resolveSeedPrompt` takes the seed, because *Replace* must write it and `applySeed` mutates
+    nothing on `ask`.
+  - `revalidateGroup` takes `activeGroupId`, so its patch is complete.
+  - `revalidateRunTarget` needs the `get_settings` result, which `loadRunTarget` does not hand to its
+    callback today.
+- Next: ADR-026 Part B, wiring `NewJobScreen`, `App`'s `Screen` union, `InputBuilderForm` and
+  `JobDetailScreen`'s conformer `new` branch, with the component harness and the live gate.
+
+## [2026-11-19] feat | ADR-026 Part B — the draft in New Job
+- **Part A fixes** (verifier: PASS WITH FINDINGS; ADR items 5, 8 and 9 amended, the item-8 refusal
+  decided by Anton):
+  - MED-1: a test for the frame seed's generation check across a *Replace*.
+  - MED-2: `seedFrame` builds inside a `try`. A last frame that cannot be built (`finalGeometryXyz`
+    throws, or `sceneFromXyz` is null) is `refused` with a banner naming it and the INPUT SEED.
+    `iterFrames`/`selectedFrame` are written only after the build; a re-pick that cannot be built
+    keeps `selectedFrame` and returns its refusal.
+  - LOW-3 to LOW-6: `setField` tests; the reject notes cleared on a landed frame; an older seed id
+    ignored; the title in the create-clear identity check.
+- **Wiring:**
+  - `NewJobScreen` reads every ADR item-3 field through `useDraftField`. The mount `useLayoutEffect`
+    reset and the old frame-seed code are gone. On mount the screen consumes the seed with
+    `applySeed`, shows the inline Replace / Keep draft prompt, and runs the frame-seed effect while
+    the state is `pending`.
+  - SMILES and file import are generation-guarded.
+  - `create()` uses `captureCreateStart` locals and `clearAfterCreate`; a failed `move_job` names the
+    job and says it was NOT run.
+  - "New draft" button. Transient view state is cleared on a new generation.
+  - Run on and the group are re-validated on mount. `loadRunTarget`'s `profiles` callback now also
+    receives the settings read.
+  - `InputBuilderForm` keeps the builder, `maxcoreTouched` and `nprocsText` in the draft: the opened
+    state comes from `builderStateOnOpen`, with the `%maxcore` default applied when untouched, and is
+    written before paint. `NebBuilderSection` keeps its picks in the draft.
+  - `App`'s `Screen` is `{kind:"new-job", seed?, seedId?}`, and `keepScene` is gone.
+  - `JobDetailScreen` hands off through `handOffConformer`: `replace` in place, `new` → a
+    `conformer-scene` seed. The D3 carry takes the same path.
+- **Gates:** `NewJobScreen.draft.test.tsx` (27 tests) is the new harness, with Monaco, 3Dmol, the
+  bridge and the sidecar mocked. It covers:
+  - one unmount→remount assertion per field;
+  - the builder after Generate;
+  - Create & Run, a failed create, a failed move;
+  - New draft;
+  - the seed prompt;
+  - three `<StrictMode>` gates;
+  - the late SMILES;
+  - the Run on and group re-validation.
+
+  The conformer split is gated on the extracted pure `handOffConformer` (3 tests), not a
+  `JobDetailScreen` render. 48 negative controls were run, one at a time, over the four source files.
+  Each went red, and each file was restored byte-identical (`cmp` against pristine copies):
+  - the 17 Part A controls, re-run on the final module;
+  - 11 for the fixes and the conformer split;
+  - 1 for `loadRunTarget`;
+  - 19 component controls, each moving one field back to `useState`, plus the old mount reset, store
+    reads after the clear, a clear before the create resolves, the frame effect gated on "applied this
+    mount", the SMILES guard and the two re-validations.
+- **Suite:** vitest 1255 passed + 2 skipped (Part A: 1215); `tsc --noEmit` clean. The two
+  `InputBuilderForm` test files gained a `beforeEach` draft-store reset; no assertion changed.
+- **Open:** Anton's live WebKitGTK gate (ADR-026 item 12 "Live").
+- Wiki: `modules/frontend.md` (App shell, props, store wiring, conformer, Job iteration, gotcha,
+  State, the draft-store section), `modules/scene.md` (conformer branches), and a `ROADMAP.md` item
+  under Phase 5.
+- **Review round 2** (verifier: PASS WITH FINDINGS; rebased onto `98e9984` in a new worktree; ADR item 9
+  amended, Anton choosing the honest display):
+  - A kept Run On or group pick whose list is loading or failed is shown as its own option ("‹id› —
+    profile/group list not loaded", `unlistedPick` and `GroupSelect`'s `unlisted` prop). Nothing is
+    blocked.
+  - New gates, 18 negative controls, all red, each restored byte-identical:
+    - the builder re-reading a doublet header over a remembered singlet (rule #9);
+    - the INPUT SEED refusal, the snapshot-rejected banner and the re-pick refusal notice, each visible
+      across a tab switch;
+    - the two failed-list displays;
+    - `pendingNeb` and the NEB picks routing a later Create to `create_neb_job`;
+    - `maxcoreTouched` and `nprocsText` restored;
+    - `last_run_target` written from the captured target;
+    - the file-import generation guard, and its title read after the await;
+    - the selection cleared by a new generation;
+    - a source guard that `JobDetailScreen` never seeds the scene itself.
+  - The 48 earlier controls re-run on the final files: all still red.
+  - Suite: vitest 1334 passed + 2 skipped (base on `98e9984`: 1319); `tsc --noEmit` clean.
+  - Wiki: `modules/frontend.md` (what the generation reset clears, the honest option) and
+    `modules/groups-ui.md` (the pick lives in the draft).
+  - Final LOWs (replayed onto `4f0062a`): the Run On restore test now also asserts that no "profile
+    list not loaded" option appears after a successful list (NC: render the option whenever
+    `runTarget` is set, bypassing `unlistedPick` → red). `NewJobScreen.memory.test.tsx` resets the
+    draft and scene stores in `beforeEach`. ADR item 10 wording.
