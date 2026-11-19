@@ -770,7 +770,16 @@ number is Rust's; the view only words it. **Warn, never block.**
   o26.13.6), so a slow older answer never overwrites a newer one. An empty buffer asks nothing; a
   failed call is shown as "Memory check unavailable: …".
 - **`MemoryPreflightRow`** — a `role="status"` row (`.memory-preflight`) under New Job's create bar,
-  non-blocking like the parity warning. `verdictLines(reply, serverName)` (`preflight.ts`, pure)
+  non-blocking like the parity warning, **collapsed by default** (Anton, after the 5.5 live gate:
+  the long lines only got in the way). Closed, it is one compact line — a `<button type="button"
+  aria-expanded aria-controls>` (`memory-summary`, ellipsis when too long, a ▸/▾ caret) — worded by
+  `memorySummary(reply, serverName)` (pure): `⚠ Memory: Create (local) ≈32.9 GiB > 13.7 GiB · Create &
+  Run (uni) ≈98.5 GiB > 56.5 GiB`, i.e. per warning target its name, U and the 0.9 × threshold; an
+  unread RAM is `uni: memory unknown` (no U); a low disk, an unread disk or a missing estimate
+  follow in words; the ⚠ and the warn tone only when a verdict warns. A click on the summary — a
+  native button, so Enter and Space too — opens the lines below; the open state is per New Job visit,
+  not persisted. The row still hides when nothing warns and every fact is known; the request failure
+  and a failed apply stay visible beside the summary. `verdictLines(reply, serverName)` (`preflight.ts`, pure)
   gives **one line** for this machine ("This machine (Create and Create & Run)") or, with a server
   selected, **two** (o26.13.1): "Create (runs locally)" — a Create Job draft only ever runs here — and
   "Create & Run on <server>". Each line: U with how it was made ("estimate ≈ 98.5 GiB (24 ranks ×
@@ -793,11 +802,17 @@ number is Rust's; the view only words it. **Warn, never block.**
 - **Settings → Servers** shows a verified profile's stored facts after its versions
   (`hostFactsSuffix`: " · RAM 62.7 GiB · 73.0 GiB free (measured <date>)"; a NULL fact is "unknown —
   re-run the connection test").
-- **Tests** (`src/memory/*.test.ts(x)`, `InputBuilderForm.maxcore.test.tsx`), each gate with a
-  control (scratchpad `run_55_ts_controls.sh`): NULL facts → "unknown", no U (pure and DOM); Create
-  never disabled; two lines with a server, one without; an older reply not applied; the button
-  replaces the buffer; the builder default (Local's value, 2000 for a server, a touched field kept);
-  every fan-out emits the accessor's value; both submit notices shown.
+- **Tests** (`src/memory/*.test.ts(x)`, `InputBuilderForm.maxcore.test.tsx`, and the screen-level
+  `src/screens/{NewJob,JobDetail,Settings}Screen.memory.test.tsx`, which render each screen whole
+  over a mocked `invoke` with the Monaco editor, the 3Dmol viewer and the charts stubbed), each gate
+  with a negative control — the mutation named in the test's comment, run red and restored
+  byte-identical: NULL facts → "unknown", no U (pure and DOM); Create never disabled, on the
+  screen too; two lines with a server, one without; an older reply — and an older request's failure —
+  not applied; the button replaces the buffer and exists only when the RAM warns; the row closed by
+  default, its summary naming each warning target with U and threshold, the toggle; the builder
+  default (Local's value, 2000 for a server, a touched field kept); every fan-out emits the
+  accessor's value; both submit notices shown after Create & Run and Retry; Settings re-reads the
+  local default after a preset save; the stored facts in Settings → Servers.
 
 ## Remote job view logic (`src/jobs/remote.ts`) — ADR-024 o19
 

@@ -1482,7 +1482,7 @@ preflight. The remaining items (remote `orca_plot`, pause) moved to Phase 6 on 2
         - [ ] **B4 — live run on uni** + Anton's gate (**steps 0–1 ✅ 2026-11-17**: post-outage snapshot, first
               install, Retry of both rows; **G1a ✅ 2026-11-18**: quit + power off mid-run, picked up and
               fetched byte-identical on boot; **M1, M6 raw, M7 ✅ 2026-11-18**; M2–M5 and M8 waived by Anton
-              (ADR-024 o24.9); next G1b (suspend) and M6 in the app as the B4-fixes live check): submit → close laptop → reopen → result. Plan and
+              (ADR-024 o24.9); **M6 in the app and the B4-fixes checks: live checks passed 2026-11-19**; G1b (the overnight suspend) is still open): submit → close laptop → reopen → result. Plan and
               results: `wiki/architecture/remote-live-run-b4.md` (step 0: post-outage snapshot first). Also
               measure (rule #10, from B2): the rsync-down / LIST timeouts (300 s; 1800 s with `.gbw`),
               rsync exit codes on a dropped link, the `poll_log` 10 s bound and catch-up, that an emit
@@ -1514,8 +1514,9 @@ preflight. The remaining items (remote `orca_plot`, pause) moved to Phase 6 on 2
             cancelled mid-Freq — delivered, `.cancelled` on the server, evidence fetched, row
             `cancelled` (`wiki/architecture/remote-live-run-b4.md` § 5.4a live). Ticked 2026-11-18 by
             Anton; Retry cancel / stopped re-sends (a cancel that cannot reach the server) stay a hand check
-            (Cancel on a throwaway job with the network off, then on; o24.9).
-      - [ ] **5.4b — `Lost`, re-enqueue, `Indeterminate` count** (Decisions d, e, l): `Lost` (terminal)
+            (Cancel on a throwaway job with the network off, then on; o24.9). **Retry cancel with the link
+            down: live check passed 2026-11-19** (`wiki/architecture/remote-live-run-b4.md` § Live checks of 5.4b, 5.4c, 5.4a, M6 and 5.5); not ticked before G1b.
+      - [ ] **5.4b — `Lost`, re-enqueue, `Indeterminate` count** *(live checks passed: wrapper killed → `lost` 2026-11-18, `tsp -K` → re-enqueued once 2026-11-19; not ticked before G1b)* (Decisions d, e, l): `Lost` (terminal)
             joins `JobStatus`; row 8's orphan sweep; the re-enqueue counter (incremented **before**
             the re-enqueue, ADR-024 l) and acting on `ReEnqueue`; l row 10's counter. Its own schema
             version. *(ADR-024 o25, 2026-11-18: the counter is the server's `.reenqueue-1` claim, made
@@ -1529,7 +1530,7 @@ preflight. The remaining items (remote `orca_plot`, pause) moved to Phase 6 on 2
             Anton's live WebKitGTK gate, then o25.10's two uni live checks (a `kill -9` of a throwaway
             running wrapper → `lost`; `tsp -K` with a running and a queued throwaway job → the queued one
             re-enqueued, waiting `blocked` until the survivor ends). A real reboot stays simulation-only.
-      - [ ] **5.4c — the pending submit** with its refusal counter (ADR-024 m2, o23), re-checked from
+      - [ ] **5.4c — the pending submit** *(live check passed 2026-11-19; not ticked before G1b)* with its refusal counter (ADR-024 m2, o23), re-checked from
             the poller loop; schema v22. **Part A built 2026-10-19** (Rust, tested):
             v22 `submit_pending_since` with its CHECK; `submit.sh`'s typed reply kinds (`blocked`,
             `slot-check-error`, `lock-busy`, `upload-mismatch`) and the typed `Refusal`; the poller's
@@ -1550,7 +1551,8 @@ preflight. The remaining items (remote `orca_plot`, pause) moved to Phase 6 on 2
       (`remote/gate.rs` + `SystemRunner::run`, `ssh_options`, `wrapper.sh` session wait + TERM trap;
       `wiki/modules/remote-jobs.md`); **open: the uni live check** — a healthy real job's `.tsp-out`
       shows "session empty at ORCA's return", and M6 in the app (≥ 11 jobs queued, cold restart, no
-      "Server unreachable" from the burst).
+      "Server unreachable" from the burst). **Live checks passed 2026-11-19** (M6: at most 8 concurrent ssh, no
+      "Server unreachable"; not ticked before G1b).
 - [ ] **Unit 5.5 — preflight** *(ADR-024 o26, 2026-11-18: a warning, never a block, before Create — local jobs
       too — with a one-click `%maxcore` fix; the cores bullet dropped; the local default lowered)*: `nprocs`/`%maxcore` vs the profile (cores + RAM budget) and free disk
       space in the profile working dir; no-`%maxcore` → warn-and-propose, never silent-insert
@@ -1561,7 +1563,7 @@ preflight. The remaining items (remote `orca_plot`, pause) moved to Phase 6 on 2
       2026-11-19 (view):** the New Job warning row (two verdicts, the "Set `%maxcore` to P" button), the
       builder's local default, the fan-out accessor, both submit notices (`wiki/modules/frontend.md`).
       **Built, pending Anton's live gate after the commit** (stop `tauri dev` and back up the DB first:
-      v22 → v23).
+      v22 → v23). **Live gate passed 2026-11-19** (v22 → v23 clean; Anton: everything works); not ticked before G1b.
 
 5.4b and 5.5 stay in Phase 5 (Anton, 2026-11-18). Moved to Phase 6 the same day: remote `orca_plot`,
 local job pause, the `uploading`/`syncing` transient states.

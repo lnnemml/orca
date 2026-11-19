@@ -12071,3 +12071,15 @@ row only; the shared `.builder-row` rule and the other rows are unchanged. Needs
   reload goes to the `setError` banner via `load`; the `confirm(` source pin now also checks the two
   titles, "Delete job" and "Delete selected jobs".
 - **Wording:** the three confirm skip lines are full sentences with is/are, has/have and it/them agreement ("1 job is still live and will be skipped — cancel it first."); the summary clauses are unchanged.
+
+## [2026-11-19] probe | Live checks: 5.4b re-enqueue, M6, 5.4c pending, 5.4a cancel offline, 5.5 gate
+- 5.5: v22 -> v23 migrated cleanly on the real DB; uni's connection test recorded RAM and free disk; Anton: all works.
+- 5.4b: `tsp -K` with a running and a queued throwaway job -> the queued one re-enqueued once, waited ~9.6 min, started 3 s after the survivor ended, both parsed; tsp's id counter restarts at 0 and leaves a harmless `slot0.sock.error`.
+- M6 in the app: at most 8 concurrent ssh in 454 samples, no "Server unreachable". 5.4c: a pinned foreign blocker -> "slot busy", the pending row, enqueued 5-10 s after it exited. 5.4a: Cancel with the link down -> pending cancel, delivered after `tailscale up`.
+- Record: `wiki/architecture/remote-live-run-b4.md` § Live checks of 5.4b, 5.4c, 5.4a, M6 and 5.5 (2026-11-19). ROADMAP notes "live checks passed"; nothing ticked before G1b (the overnight suspend).
+
+## [2026-11-19] feat | Phase 5 follow-up: test gaps of 5.4b and 5.5, wiki nits, the collapsed memory row
+- Tests (each with its negative control run red and restored byte-identical, 21 in all): 5.4b F-B (the live-row re-check of `finalise_evidence`), F-A (`FetchFailed` keeps a confirmed never-start), F-C (the stale "never started - confirming" label); 5.5 F1 (screen-level tests of New Job, the job detail and Settings over a mocked `invoke`), F2 (a fresh root takes the facts of the prepare after the install), F3 (the button only when the RAM warns, an older request's failure not shown, the stored facts in Settings -> Servers), F4 (`apply_maxcore` now keeps CRLF line endings; it had written LF).
+- Anton's request after the 5.5 gate: the memory row is a collapsed disclosure (one summary line per warning target with U and threshold, a button with `aria-expanded`); render change, awaiting his live gate.
+- Wiki nits: `remote-jobs.md` present tense for the 5.4b TS mirrors, the `lost` chip and the notices; `frontend.md` no scratchpad path; ADR-024 status names o26.14.
+- Verifier findings folded in (rebased onto `98e9984`): a failed apply's error stays visible after the row is collapsed (test + two controls); the summary of an unread RAM still appends a low or unread disk (`uni: memory unknown; disk unknown`); ADR-024 o26.14.11 (the disclosure) and o26.14.12 (CRLF kept by `apply_maxcore`); the live-check wording in `remote-live-run-b4.md` kept to what was measured (M6: max 8 observed in 454 samples; "no Server unreachable" by eye); the passed live checks moved out of `remote-jobs.md`'s "Not built yet"; ROADMAP dates (wrapper kill 2026-11-18); `index.md` summary of `remote-live-run-b4.md`.

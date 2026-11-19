@@ -76,6 +76,23 @@ fn apply_maxcore_replaces_or_inserts_after_the_first_bang_line_or_at_the_top() {
     assert!(apply_maxcore("! HF\n", 0).is_err());
 }
 
+/// The input's line ending is kept: a CRLF input stays CRLF in a replace, an insert and the trailing
+/// newline; a mixed input is written LF. NEGATIVE CONTROL (`run_p5fu_controls.sh`,
+/// `apply-maxcore-lf-join`): the lines joined with `\n` whatever the input → red.
+#[test]
+fn apply_maxcore_keeps_crlf_line_endings_when_the_input_uses_them() {
+    assert_eq!(
+        apply_maxcore("! HF\r\n%maxcore 4000\r\n* xyz 0 1\r\n*\r\n", 2300).unwrap(),
+        "! HF\r\n%maxcore 2300\r\n* xyz 0 1\r\n*\r\n"
+    );
+    assert_eq!(apply_maxcore("! HF\r\n* xyz 0 1\r\n*", 900).unwrap(), "! HF\r\n%maxcore 900\r\n* xyz 0 1\r\n*");
+    // Mixed endings: no single ending to keep, written LF.
+    assert_eq!(apply_maxcore("! HF\r\n* xyz 0 1\n*\n", 900).unwrap(), "! HF\n%maxcore 900\n* xyz 0 1\n*\n");
+    let out = apply_maxcore("! HF\r\n%maxcore 1\r\n", 5).unwrap();
+    assert_eq!(read_maxcore(&out), Ok(Some(5)));
+    assert!(!out.replace("\r\n", "").contains('\n'), "no bare LF left in {out:?}");
+}
+
 // ---- The estimate ------------------------------------------------------------------------------
 
 /// m explicit or ORCA's 4096; the overheads. CONTROL: drop `+ RANK_OVERHEAD_MIB` or

@@ -209,8 +209,9 @@ upper bound (real use is usually far lower; a cap that binds is exceeded, memory
 **The button's edit** — `apply_maxcore(input, P)` (o26.4, o26.13.5): `read_maxcore`'s own locator,
 so a commented-out `# %maxcore 3000` is never "replaced"; the single existing line replaced, else
 `%maxcore P` inserted right after the **first** `!` line, else at the top; two lines refused; a
-single malformed `%maxcore` line is replaced like a readable one (o26.14.6). Post-condition: the result
-reads back as exactly P.
+single malformed `%maxcore` line is replaced like a readable one (o26.14.6). The input's line ending is
+kept: CRLF throughout stays CRLF (lines and the trailing newline), anything else — LF, or a mix — is
+written LF. Post-condition: the result reads back as exactly P.
 
 **Where the facts come from** (o26.6):
 - **This machine** — `memory::host_resources_at(meminfo, data_dir)` (a path seam): `MemTotal` of

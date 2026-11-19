@@ -3098,6 +3098,33 @@ button.ir-imaginary-mode.selected {
 .memory-preflight .memory-line + .memory-line {
   margin-top: 4px;
 }
+/* The closed disclosure: one line, ellipsis when too long; the lines open below it. */
+.memory-preflight .memory-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.memory-preflight .memory-summary-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.memory-preflight .memory-summary-caret {
+  flex: 0 0 auto;
+}
+.memory-preflight .memory-details {
+  margin-top: 6px;
+}
 .memory-preflight .memory-warns {
   color: var(--warn);
 }

@@ -129,6 +129,25 @@ describe("the never-start awaiting its confirmation (o25.15)", () => {
     expect(isUnconfirmedNeverStart(NEVER_STARTED)).toBe(true);
     expect(isUnconfirmedNeverStart({ outcome: "failed", reason: { reason: "non_zero_exit", code: 1 } })).toBe(false);
   });
+
+  // CONTROL (`run_p5fu_controls.sh`, `ts-stale-unconfirmed-as-failed`): the stale label reads the
+  // verdict's own name → "Last seen: failed", red.
+  it("keeps the neutral name when a check error makes it a last-seen state", () => {
+    const v = remoteView(
+      job({ error_message: "Nothing of the job has run on the server since its one re-enqueue…" }),
+      record({ known: shown(NEVER_STARTED), check_error: { text: "ssh: timed out", answered: false } }),
+    );
+    expect(v.kind).toBe("live");
+    if (v.kind !== "live") return;
+    expect(v.badges[0]).toEqual({
+      kind: "outcome",
+      outcome: "failed",
+      stale: true,
+      label: `Last seen: ${UNCONFIRMED_NEVER_START}`,
+      tone: "muted",
+    });
+    expect(JSON.stringify(v.badges)).not.toMatch(/Last seen: failed/);
+  });
 });
 
 describe("a waiting re-enqueue's notice (o25.4, o25.14.3, o25.14.6)", () => {

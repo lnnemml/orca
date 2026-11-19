@@ -1009,6 +1009,36 @@ fn the_memory_notice_is_honest_about_what_it_could_not_check() {
     assert_eq!(fits.memory_notice, None, "24 × 1100 + 140 MiB fits");
 }
 
+/// o26.6 (5.5 F2): on a fresh root the facts come from the prepare **after** the install — the
+/// first prepare's (taken before anything was installed, here with a tiny MemAvailable and disk) are
+/// dropped. NEGATIVE CONTROL (`run_p5fu_controls.sh`, `ready-server-first-facts`): `ready_server`
+/// returning the first prepare's facts after the install → the notice names 1.0 GiB, red.
+#[test]
+fn on_a_fresh_root_the_submit_check_uses_the_facts_of_the_prepare_after_the_install() {
+    let w = World::new();
+    w.sql("UPDATE jobs SET input_content = '! r2SCAN-3c Opt\n%maxcore 2000\n'");
+    let prepares = RefCell::new(0);
+    let fake = Fake::new(&w, |kind, values| match kind {
+        Prepare => {
+            *prepares.borrow_mut() += 1;
+            if *prepares.borrow() == 1 {
+                // Not ready (nothing installed) and reporting 1 GiB available, 1 GiB free.
+                let sent = prepare_args(values);
+                let body = ["root", "jobs", "job", "bin", "tsp", "wrapper", "cancel", "collect"].map(|n| entry(n, None)).concat();
+                ok(prepare_wire(&sent, &format!("{body}{}", uni_host_records(1 << 20, 1 << 30))))
+            } else {
+                prepare_ready_with(values, &uni_host_records(FORTY_GIB_KIB, UNI_ROOT_FREE))
+            }
+        }
+        _ => happy(kind, values),
+    });
+    let attempt = w.attempt(&fake).unwrap();
+    assert_eq!(fake.kinds(), [Prepare, Install, Prepare, Upload, Submit]);
+    let notice = attempt.memory_notice.expect("49.4 GiB over 0.9 × 40 GiB available");
+    assert!(notice.contains("40.0 GiB available"), "{notice}");
+    assert!(!notice.contains("1.0 GiB available") && !notice.contains("disk: 1.0 GiB"), "the pre-install facts leaked: {notice}");
+}
+
 /// Not on poller-sent submits (o26.6): the pending re-check and the re-enqueue send through
 /// `submit_call` and never reach the check — pinned on their sources, like the stamp's absence from
 /// IPC. NEGATIVE CONTROL: route either through `upload_and_submit` or `submit_memory_notice` → red.

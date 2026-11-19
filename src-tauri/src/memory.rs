@@ -96,7 +96,8 @@ pub fn read_maxcore(input: &str) -> Result<Option<u64>, String> {
 /// The button's edit (o26.4, o26.13.5): the input with `%maxcore` set to `maxcore_mib` — the single
 /// existing `%maxcore` line (found by [`read_maxcore`]'s own locator) replaced, else `%maxcore P`
 /// inserted right after the **first** `!` line, else at the top. Two `%maxcore` lines are refused
-/// (no deterministic choice). Post-condition (rule #9): the result reads back as exactly that value.
+/// (no deterministic choice). The input's line ending (LF, or CRLF throughout) is kept. Post-condition
+/// (rule #9): the result reads back as exactly that value.
 pub fn apply_maxcore(input: &str, maxcore_mib: u64) -> Result<String, String> {
     if maxcore_mib == 0 {
         return Err("%maxcore must be a positive number of MiB".into());
@@ -111,9 +112,15 @@ pub fn apply_maxcore(input: &str, maxcore_mib: u64) -> Result<String, String> {
         [i] => lines[*i] = line.as_str(),
         more => return Err(format!("the input has {} %maxcore lines; edit it by hand", more.len())),
     }
-    let mut out = lines.join("\n");
+    // The input's own line ending is kept (a CRLF input stays CRLF): CRLF only when every newline is.
+    let newline = if input.contains("\r\n") && input.matches('\n').count() == input.matches("\r\n").count() {
+        "\r\n"
+    } else {
+        "\n"
+    };
+    let mut out = lines.join(newline);
     if input.ends_with('\n') || input.is_empty() {
-        out.push('\n');
+        out.push_str(newline);
     }
     match read_maxcore(&out) {
         Ok(Some(v)) if v == maxcore_mib => Ok(out),

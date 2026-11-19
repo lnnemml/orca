@@ -65,6 +65,34 @@ fn a_stale_boot_lost_is_fetched_as_evidence_and_written_lost() {
     assert_eq!(fake.calls().len(), 4, "no call for a terminal row");
 }
 
+/// o25.2, o25.5, o25.8 (5.4b F-B): the terminal write of an evidence kind finds the row changed while
+/// the evidence downloaded — moved to a new remote dir (still live), or turned terminal by another
+/// writer — and writes **nothing**: `RowChanged`, the row's status and text as the other writer left
+/// them, nothing emitted. NEGATIVE CONTROL (`run_p5fu_controls.sh`, `finalise-evidence-no-live-row`):
+/// the live-row re-check removed from `finalise_evidence` → the `Lost` overwrites the row, red.
+#[test]
+fn an_evidence_write_on_a_row_that_changed_during_the_download_writes_nothing() {
+    for (change, status, message) in [
+        ("UPDATE jobs SET remote_job_dir = remote_job_dir || '-moved'", JobStatus::Queued, None),
+        ("UPDATE jobs SET status = 'cancelled', error_message = 'someone else'", JobStatus::Cancelled, Some("someone else")),
+    ] {
+        let r = Remote::new();
+        started_on_server(&r);
+        let base = server(&r, vec![lost()]);
+        let fake = Fake::new(&r, |call, values| {
+            if call == Download {
+                r.w.sql(change);
+            }
+            base(call, values)
+        });
+        assert_eq!(r.poller(&fake).status_step(ID).unwrap(), StatusStep::RowChanged, "{change}");
+        let j = job(&r);
+        assert_eq!(j.status, status, "{change}");
+        assert_eq!(j.error_message.as_deref(), message, "{change}");
+        assert_eq!(r.sink.events(), [], "{change}: no status event");
+    }
+}
+
 /// o25.1, o25.11 (Status: "`lost` is not live in any listed predicate"): a remote `lost` row is no
 /// poller candidate, not `is_live` for the poller's writes, not remote-live (the delete and the
 /// cancel core's routing), not a live job of its profile (edits and deletes of the profile), and a

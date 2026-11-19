@@ -128,6 +128,45 @@ export function verdictLines(reply: MemoryEstimateReply | null, serverName: stri
   return checks.some(needsAttention) ? lines : [];
 }
 
+/** One target's part of the collapsed summary: `<name> ≈U > threshold` for a RAM warning (the disk
+ *  and unread facts after a `;`), `<target>: memory unknown` when the RAM is unknown (no U, o26.14.3),
+ *  the disk or the missing estimate otherwise; null when this target needs no attention. */
+function summaryPart(warnName: string, bareName: string, c: MemoryCheck): string | null {
+  if (!needsAttention(c)) return null;
+  const facts: string[] = [];
+  // An unread RAM says so and shows no U (o26.14.3); the disk and the estimate still follow.
+  if (c.ram.state === "unknown") facts.push("memory unknown");
+  if (c.disk.state === "known" && c.disk.warns) {
+    facts.push(`free disk ${gibFromBytes(c.disk.avail_bytes)} < ${gibFromBytes(c.disk.min_free_bytes)}`);
+  } else if (c.disk.state === "unknown") {
+    facts.push("disk unknown");
+  }
+  if (c.estimate.state === "not_estimated") facts.push("not estimated");
+  if (c.ram.state === "known" && c.ram.warns === true && c.estimate.state === "estimated") {
+    const head = `${warnName} ≈${gib(c.estimate.estimate_mib)} > ${gib(c.ram.threshold_mib)}`;
+    return facts.length ? `${head}; ${facts.join("; ")}` : head;
+  }
+  return facts.length ? `${bareName}: ${facts.join("; ")}` : null;
+}
+
+/** The closed disclosure's one line (Anton's request after the 5.5 gate): `⚠ Memory: Create (local)
+ *  ≈32.9 GiB > 13.7 GiB · Create & Run (uni) ≈98.5 GiB > 56.5 GiB`, a target with an unread RAM as
+ *  `uni: memory unknown` (a low or unread disk after it, `uni: memory unknown; disk unknown`). The `⚠` only when a verdict warns. Null when the row hides (nothing warns,
+ *  every fact known) — the same gate as {@link verdictLines}. */
+export function memorySummary(reply: MemoryEstimateReply | null, serverName: string | null): string | null {
+  if (!reply) return null;
+  const parts = reply.server
+    ? [
+        summaryPart("Create (local)", "this machine", reply.local),
+        summaryPart(`Create & Run (${serverName ?? reply.server.profile_id})`, serverName ?? reply.server.profile_id, reply.server),
+      ]
+    : [summaryPart("this machine", "this machine", reply.local)];
+  const present = parts.filter((p): p is string => p != null);
+  if (present.length === 0) return null;
+  const warns = reply.local.warns || (reply.server?.warns ?? false);
+  return `${warns ? "⚠ " : ""}Memory: ${present.join(" · ")}`;
+}
+
 /** What a submit answer shows (o26.6): the failure, the `%pal` notice and the memory notice — the
  *  last two side by side, neither overwriting the other. */
 export function submitNotices(response: SubmitResponse | null): {

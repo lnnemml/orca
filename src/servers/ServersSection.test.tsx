@@ -77,6 +77,30 @@ describe("ServersSection", () => {
     );
   });
 
+  // 5.5 F3. CONTROL (`run_p5fu_controls.sh`, `servers-no-host-facts-suffix`): the verification line
+  // without `hostFactsSuffix(p)` → no RAM, no disk, red.
+  it("shows a verified profile's recorded RAM and free disk, and says so when they were never measured", async () => {
+    commands({
+      list_server_profiles: () => [
+        makeProfile({
+          ...VERIFIED_PROFILE,
+          mem_total_kib: 65795232,
+          disk_avail_bytes: 78360924160,
+          host_facts_at: "2026-11-19 08:21:00",
+        }),
+        makeProfile({ ...VERIFIED_PROFILE, id: "p2", name: "older" }),
+      ],
+    });
+    render(<ServersSection />);
+    await screen.findByTestId("server-p1");
+    expect(row("p1").getByTestId("verification").textContent).toContain(
+      " · RAM 62.7 GiB · 73.0 GiB free (measured 2026-11-19 08:21:00)",
+    );
+    expect(row("p2").getByTestId("verification").textContent).toContain(
+      " · RAM unknown · free disk unknown — re-run the connection test",
+    );
+  });
+
   it("Test connection shows a spinner, then the checks, facts and warnings", async () => {
     let finish: (r: ConnTestReport) => void = () => {};
     const report: ConnTestReport = {

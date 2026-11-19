@@ -801,8 +801,8 @@ steps decide from the outcome alone (ADR-024 o22.4.5, o22.5, o22.6, o25.1, o25.6
 Serialized (serde `tag = "outcome"` / `"reason"`) as `{ "outcome": "cancelling", "session": n }`,
 `{ "outcome": "cancelled", "started": b }`, `{ "reason": "corrupt_started", "detail": …,
 "cancelled": b }`, `{ "outcome": "lost", "orphans": [pid, …], "stale_boot": b }` and `{ "outcome":
-"indeterminate", "why": "…" }`; `src/types.ts` mirrors the first three (the last two are unit 5.4b
-Part B's). `Cancelling` and `Lost` are also `JobStatus` values (above).
+"indeterminate", "why": "…" }`; `src/types.ts` mirrors all five (`lost` with `orphans` and
+`stale_boot`, `indeterminate` with `why`). `Cancelling` and `Lost` are also `JobStatus` values (above).
 
 ## `Lost`, the re-enqueue and the `Indeterminate` count in the poller (ADR-024 o25, unit 5.4b)
 
@@ -875,7 +875,7 @@ Every classifier verdict now has its action in the poller's ordinary status step
 - **Texts.** No row text defers to a later unit any more; the Rust text guard
   (`text_guard_tests.rs`) forbids "unit 5.4b" in user-facing strings.
 
-**The record's new fields and steps (wire shapes for the view, unit 5.4b Part B mirrors them):**
+**The record's new fields and steps (wire shapes for the view; `src/types.ts` mirrors them):**
 
 ```text
 StatusStep  { "step": "lost_swept", "detail": { "outcome": <Outcome>|null, "error": { "text", "answered" }|null } }
@@ -1158,18 +1158,21 @@ events and `job:log-reset { job_id }`; `watch_job_log(id, open)` counts a job's 
 `retry_remote_fetch(id)` is the manual retry after 3 failed fetches
 ([execution-backends.md](execution-backends.md#the-remote-pollers-core-pollerrs-poller-adr-024-o-item-4-o15-o16)).
 
+## Live-checked on uni
+
+Recorded in [remote-live-run-b4.md](../architecture/remote-live-run-b4.md):
+- **B4 fixes** (ADR-024 o24.10, 2026-11-18 and 2026-11-19): the session wait's healthy path
+  (`.tsp-out` reads "session empty at ORCA's return"); M6 in the app (at most 8 concurrent ssh
+  observed in 454 samples; no "Server unreachable" seen by eye on a cold burst).
+- **The pending submit** (o23.15 item 6, 2026-11-19): the "slot busy" answer, the badge, the blockers'
+  notice, no Retry submit, and the enqueue 5–10 s after the blocker exited.
+- **Retry cancel** with the link down (o24.9's hand check, 2026-11-19): the cancel recorded pending,
+  delivered after the link came back.
+
 ## Not built yet
 
-- **B4 fixes, live checks on uni still to run** (ADR-024 o24.10): the session wait's healthy path
-  waiting zero is inferred, not yet read on a real job's `.tsp-out` ("session empty at ORCA's
-  return"); M6 in the app (≥ 11 jobs queued, app restarted cold: no "Server unreachable" from the
-  burst). That the keepalive ends a call on a dead link in ~2 min is inferred from the options, not
-  measured (M2 waived, o24.9).
-
-- **The pending submit's live gate** (ADR-024 o23.15 item 6): a pending row exists only after uni
-  answers "slot busy", so its view (badge, notice, blockers, no Retry submit) is checked in the uni
-  run, with 5.4a's server-side states and B4. The view itself is built
-  ([frontend.md](frontend.md)).
+- **Not measured:** that the keepalive ends a call on a dead link in ~2 min is inferred from the
+  options (M2 waived, o24.9). G1b (the overnight suspend) is still open.
 
 - **A run target is chosen only through Create & Run** (ADR-024 o20.2): a draft made with "Create
   Job" and later run from the Jobs table's "Run locally" button runs locally, and every fan-out
@@ -1208,12 +1211,13 @@ events and `job:log-reset { job_id }`; `watch_job_log(id, open)` counts a job's 
   Awaiting Anton's live gate: how the badges, buttons and notices look and behave in the real window.
   The sweep and the
   evidence fetch have run only against the fake server; the B4-style live run on uni is still to come.
-- **Unit 5.4b's view and live checks** (ADR-024 o25.9–10): the `lost` chip and badge, the TS mirrors
-  of the new shapes above, the waiting and `undecided` notices (Part B); then o25.10's two live
-  checks on uni with throwaway jobs (a `kill -9` of a running wrapper → sweep → `lost`; `tsp -K` with a
-  running and a queued job → the queued one re-enqueued, waiting `blocked` until the P4 survivor
-  ends). A real reboot is simulation-only (a substituted `boot_id`), recorded at the first natural
-  occasion.
+- **Unit 5.4b's view and live checks** (ADR-024 o25.9–10): the view is built — the `lost` chip and
+  badge, the TS mirrors of the new shapes above, the waiting and `undecided` notices
+  ([frontend.md](frontend.md)). Both o25.10 checks ran on uni with throwaway jobs (2026-11-18 and
+  2026-11-19: a `kill -9` of a running wrapper → sweep → `lost`; `tsp -K` with a running and a queued
+  job → the queued one re-enqueued once, waiting until the P4 survivor ended;
+  [remote-live-run-b4.md](../architecture/remote-live-run-b4.md)). A real reboot is simulation-only (a
+  substituted `boot_id`), recorded at the first natural occasion.
 - **Known limitation — the ended-first note** ("The job finished before the cancel reached the
   server.") is held in the poller's per-launch memory until the job's `finalise`, which may be several
   status periods later (failed fetches, a server that does not answer); a restart in between loses the

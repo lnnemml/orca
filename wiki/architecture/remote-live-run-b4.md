@@ -293,6 +293,44 @@ own tsp socket, r²SCAN-3c Opt, `%pal 4`, mask subset `0-3`:**
 - Not observed directly: the moment-by-moment sweep (the prober watching it was cut off by a power
   outage at the laptop); the outcome above is its end state.
 
+## Live checks of 5.4b, 5.4c, 5.4a, M6 and 5.5 (2026-11-19)
+
+### Facts (laptop times; the server clock runs ≈ +2 min 25 s ahead; Anton drove the app, the prober acted on uni as authorised by Anton; M = measured, I = inferred, by eye = Anton's screen)
+
+- **5.5 live gate (Anton).** After the commit the real DB migrated v22 → v23 cleanly (93 jobs, 1 profile,
+  `integrity_check` ok; backup `orcastudio.db.bak-2026-11-19`). The uni connection test recorded
+  `mem_total_kib` 65 795 232 and `disk_avail_bytes` 78 360 924 160 at 08:21 (M). Anton: "everything
+  works" — the New Job row, the builder default, the Settings line (by eye).
+- **5.4b re-enqueue after `tsp -K` (o25.10 check 2).** Two throwaway jobs: "long" `0beee382…` running
+  (A) and "short" `98b1f47d…` queued (B).
+  - `tsp -K` at 08:25:32: the old daemon and B's runner were gone; A's runner and all 28 of A's
+    processes stayed alive (P4 confirmed, M).
+  - B's row got "Nothing of the job ever ran on the server (its queue entry was lost); it is re-enqueued
+    once." 11–22 s later (M). B then waited ~9.6 min while A ran, and nothing started on A's cores (M).
+    Anton saw the "Waiting for the slot…" notice in the UI (by eye).
+  - 3 s after A's `.exit_code` the app claimed `.reenqueue-1`, wrote a new `.enqueued` (tsp id 0 — the
+    new daemon renumbers from 0), and B started (M). B parsed (E −78.557 Eh, 41 s), A parsed
+    (E −843.67 Eh, 12 min 36 s). One `.started`, one claim, no second wrapper, no leftover process (M).
+  - Two findings. (1) tsp leaves `~/.orcastudio/tsp/slot0.sock.error` (A's surviving runner reporting
+    ENDJOB to the dead daemon, "Broken pipe") beside the new socket — harmless to the app, which scans
+    `/proc/net/unix`, not a glob (M). (2) The tsp id counter restarts at 0 with the new daemon (M).
+- **M6 in the app (o24.10).** 12 live remote jobs (1 running, 11 queued), the ssh control master closed,
+  the app restarted cold: a 0.2 s sampler of `ssh … -- uni bash -s` processes saw a **maximum of exactly
+  8** concurrent (454 samples over 3 min; 8 at the launch burst): the cap bites (M, max 8 observed in
+  454 samples). No row showed "Server unreachable" (Anton, by eye — not a measured count of lost calls).
+- **5.4c pending submit (o23).** A foreign blocker `taskset -c 0 sleep 360` (own uid, pinned, meets the
+  mask; `submit.sh`'s slot scan counts it). Anton's submit answered "slot busy: the core mask is held by
+  pid … (pinned, cores 0 …)"; the row stayed `queued` with `submit_pending_since` frozen ~6 min and the
+  job dir held only the upload (M). Anton saw the "Waiting for the slot since …" badge, no Retry, and
+  the blockers' notice (by eye). 5–10 s after the blocker exited the re-check enqueued, the flag was
+  cleared in the same step, and the job ran and parsed (E −155.934 Eh) (M).
+- **5.4a Retry cancel with the link down (o24.9's hand check).** A running throwaway job (`c6303c88…`),
+  `sudo tailscale down`, Cancel → the pending cancel recorded (`cancel_requested_at` set,
+  `cancel_sent_at` NULL (M) and the unreachable state in the UI (Anton, by eye). After `tailscale up`
+  the cancel was delivered: `.cancelled` on the server, the row `cancelled` with "…its files were
+  downloaded as evidence." (M); no process left on uni (M).
+- **Still open:** G1b (the overnight suspend); the ROADMAP ticks follow it.
+
 ## Drift found while planning (fix with the results)
 
 - ADR-024 o18 residual "no `ServerAliveInterval`": true of the argv, not of the effective behaviour

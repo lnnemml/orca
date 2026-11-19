@@ -19,7 +19,7 @@ use crate::remote::contact::Contact;
 use crate::remote::scripts::{sha256_hex, WRAPPER};
 use crate::remote::submit::Refusal;
 use crate::ssh_backend::tests::{
-    blocked_record, expected_coords, snapshot, snapshot_claimed, snapshot_with_row, submit_reply, ROOT,
+    blocked_record, exited, expected_coords, snapshot, snapshot_claimed, snapshot_with_row, submit_reply, ROOT,
 };
 use crate::ssh_backend::{align_remote_pal, SubmitOutcome, SubmitStep};
 
@@ -172,6 +172,38 @@ fn the_45_s_separate_the_two_server_reads() {
     assert_eq!(poller.status_step(ID).unwrap(), StatusStep::Shown(never_start()), "the second read starts at 54 s: 44 s after");
     let step = poller.status_step(ID).unwrap();
     assert!(matches!(&step, StatusStep::Finalised { status: JobStatus::Failed, .. }), "the third read starts at 64 s: {step:?}");
+}
+
+/// o25.15 (5.4b F-A): a **confirmed** never-start whose evidence download fails keeps the
+/// confirmation — the next pass retries the download at once, with no new 45 s wait (the run is not
+/// ended, `FetchFailed` is a `Keep`). NEGATIVE CONTROL (`run_p5fu_controls.sh`, `never-started-
+/// fetchfailed-ends`): `FetchFailed` ends the run → the retry is a new run's first pass, `Shown`, red.
+#[test]
+fn a_failed_evidence_download_of_a_confirmed_never_start_keeps_the_confirmation() {
+    let r = submitted();
+    let failing = Cell::new(true);
+    let base = server(&r, vec![never_started_again()]);
+    let fake = Fake::new(&r, |call, values| {
+        if call == Download && failing.get() {
+            return exited(23, vec![]);
+        }
+        base(call, values)
+    });
+    let poller = r.poller(&fake);
+    assert_eq!(poller.status_step(ID).unwrap(), StatusStep::Shown(never_start()), "the first pass");
+    r.clock.advance(NEVER_STARTED_CONFIRM);
+    let step = poller.status_step(ID).unwrap();
+    assert!(matches!(&step, StatusStep::FetchFailed { strikes: 1, .. }), "the confirmed pass, its download fails: {step:?}");
+    assert_eq!(r.w.job().status, JobStatus::Queued, "nothing terminal written by a failed download");
+    assert!(r.memory.get(ID).never_started_at.is_some(), "the run is kept");
+
+    failing.set(false);
+    let step = poller.status_step(ID).unwrap();
+    assert_eq!(
+        step,
+        StatusStep::Finalised { outcome: never_start(), status: JobStatus::Failed, drain_error: None },
+        "the retry is terminal at once: no clock advance, no new confirmation"
+    );
 }
 
 /// o25.15.5 gate (F3): a label that says the job is not in the server's hands ends the re-enqueue's
