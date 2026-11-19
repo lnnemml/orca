@@ -26,8 +26,12 @@ never runs a binary). The runtime mechanics of running ORCA live in
   — Tauri command surface (thin wrappers over `*_conn`).
 - `mcp/` — the MCP orchestration server's core (ADR-027): the classifier, input assembly, grant core,
   steps A/C, reconciliation, source resolver, memory preflight and `SidecarSmiles` (the sidecar's
-  SMILES call). Its commands are the grant commands in `commands/mcp.rs`; no socket yet. See
+  SMILES call), and the transport (`mcp/server/`: the lock, the socket, the server, the lifecycle, the
+  relay; `wiring.rs` connects it to setup, `ExitRequested` and `main.rs`). Its commands are the grant
+  commands and the switch's `mcp_status`/`mcp_set_enabled` in `commands/mcp.rs`. See
   `modules/mcp-server.md`.
+- `main.rs` — `orcastudio --mcp` runs the MCP stdio relay and exits, before `run()` (no window, no
+  GTK); anything else runs the app.
 - `models/{job,molecule}.rs` — row structs (`COLUMNS` + `from_row`).
 - `local_backend.rs` — ORCA execution, queue, cancel (see `execution-backends.md`).
 - `cpu_presets.rs` — measured core-pinning presets (see `execution-backends.md`).
@@ -323,14 +327,30 @@ revisit when the UI needs error codes.
 
 open + migrate SQLite → `local_backend::reconcile_on_startup(&conn)` (advance any job left
 `running` by a crash — see `execution-backends.md`) → manage `DbState(Mutex<Connection>)` (the
-`Connection` is `Send`, not `Sync`) + `JobRunner` + `InFlight` (the per-job in-flight guard) +
+`Connection` is `Send`, not `Sync`) → the MCP lifecycle (`mcp::server::wiring::app_lifecycle`, over the
+managed `DbState`; managed as `Arc<McpLifecycle>`) and its `mcp-tick` thread, whose first step runs at
+once (a path refusal is a status reason, never a setup error; ADR-027, `modules/mcp-server.md`) →
+`JobRunner` + `InFlight` (the per-job in-flight guard) +
 `LiveLog` + `PollerMemory` + `RemoteStates` (the remote poller's state and the per-job remote records
 the view reads, all empty on launch) + `XtbRunner` + `CrestRunner`
 → `prune_diagnostic_dirs` off-thread (xtb) → a thread that runs `try_start_next` to resume `queued`
 jobs → spawn the sidecar + `Arc<SidecarManager>` + a background health-poll thread → last, the
 `remote-poller` thread (`poller::app::start`), which resumes monitoring every non-terminal remote job
-([execution-backends.md](execution-backends.md), "The loop"). `RunEvent::ExitRequested` stops the
-sidecar and runs `terminate_on_exit` synchronously; `Drop` on `SidecarManager` is the backstop. The
+([execution-backends.md](execution-backends.md), "The loop").
+
+**Exit.** `RunEvent::ExitRequested` only hands off: `mcp::server::wiring::exit_requested` asks the MCP
+lifecycle, and `api.prevent_exit()` is called exactly when the decision is not `PassThrough`. The
+exit flow then runs **off the main thread** on Tauri's blocking pool, in this order: **the local queue
+paused for good** (so the slot the killed job frees starts no queued ORCA job) → the MCP stop and its
+wait → `terminate_on_exit` (an ORCA tree's MPI ranks escape its process group) → the sidecar stop →
+the MCP lock release → `exit_ready` → `app.exit(0)`, whose own `ExitRequested` passes through
+(`exit_ready` is set first; a test pins it). It runs the same way when MCP was never switched on
+(nothing to wait for). Each step is guarded against a panic, and a backstop thread ends the process
+with `libc::_exit(1)` if the flow has not reached `app.exit` within 60 s, or if the process is still
+alive 10 s after it (`modules/mcp-server.md`, "The wiring"). `Drop` on `SidecarManager` is a last
+resort only on a normal exit: it runs on neither `_exit` nor `process::exit`, so on a backstop end the
+backstop runs `stop_sidecar` itself (after the queue pause and the kill). `terminate_on_exit` waits up
+to 2 s for a job still starting (pgid 0) and kills it too; its worst case is ≈14 s. The
 poller is **not joined** on exit: its threads end with the process, and the ssh/rsync children of
 in-flight steps (own process groups) are left to the OS (ADR-024 o18, decided by Anton).
 
@@ -446,6 +466,12 @@ in-flight steps (own process groups) are left to the OS (ADR-024 o18, decided by
   `mcp_level_from_job(job_id) -> String` ("this job's level", read back as its signature). The only
   way a grant is created; no MCP tool calls them. `GrantView` and the errors:
   `modules/mcp-server.md` "The grant commands".
+- **MCP switch (ADR-027 M2 amendment item 2, `commands/mcp.rs`; `async`, the work in
+  `spawn_blocking`):** `mcp_status() -> McpStatus` (advisory: `enabled: Option<bool>`, `holds_lock`,
+  `serving`, `stopping_tasks: Option<usize>`, `connections`, `socket_path: Option<String>`,
+  `reason: Option<String>`) and `mcp_set_enabled(on: bool) -> McpStatus` (writes `mcp_enabled`, its
+  only writer, and runs one tick step at once). Off the main thread because a transition can take the
+  lifecycle mutex, reconcile (≤250 ms busy wait), bind and `stat`.
 - **DB helpers** (`pub(crate)`, reused by the backend): `set_job_dir_conn`, `finalize_job_conn`
   (terminal status + `completed_at` + `error_message`), `set_job_results_conn`, `get_job_conn`,
   `update_job_status_conn`, `delete_job_conn` (see below).
@@ -515,6 +541,11 @@ is: a starter command that validates + reserves state + RETURNS immediately, the
   undeliverable — the defect is invisible to `cargo test` and shows on the first click, so the
   acceptance step is a manual run in the real window; changed in `[2026-07-29] 2.5.5-fix`).
 
+A bounded operation whose result the caller awaits uses the other form: an **`async` command** with its
+work in `tauri::async_runtime::spawn_blocking` — `test_server_profile`, and the MCP switch's
+`mcp_status`/`mcp_set_enabled` (whose cores are tested from a plain thread for "the work never runs
+on the caller's thread").
+
 ## Result extraction & convergence
 
 On completion, `drive_job` runs `result_extraction::{extract_final_energy, extract_wall_time}` over
@@ -562,7 +593,7 @@ The incremental `convergence.rs` parser feeds off the same stdout stream. Full d
 ## Sidecar lifecycle & the stale-sidecar handshake (`sidecar.rs`)
 
 `SidecarManager` picks a free port, spawns uvicorn, health-polls on a background thread, and kills
-it on `ExitRequested` + `Drop`. `Health` has `Healthy` / `Stale` / `Down`: `health_check` reads the
+it in the exit flow (after `terminate_on_exit`, off the main thread) + `Drop`. `Health` has `Healthy` / `Stale` / `Down`: `health_check` reads the
 `/health` body's `version` and sets `Healthy` vs `Stale` via `version_at_least(actual, expected)` —
 a pure, unit-tested **component-wise numeric** compare against `EXPECTED_MIN_SIDECAR_VERSION`
 (`"0.2.0"`); a string compare would lie (`"0.10.0" < "0.9.0"`). An unparseable version is treated

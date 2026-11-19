@@ -743,3 +743,24 @@ export interface HostResources {
   mem_total_kib: Fact<number>;
   disk_avail_bytes: Fact<number>;
 }
+
+// --- The MCP switch (ADR-027 M2a, M2 amendment item 2) -----------------------------------------
+
+/**
+ * Mirrors `mcp::server::lifecycle::McpStatus` — `mcp_status()` / `mcp_set_enabled(on)`. Advisory:
+ * a snapshot whose fields may momentarily disagree. `null` where Rust has `None`.
+ */
+export interface McpStatus {
+  /** The DB-wide `mcp_enabled` row; `null` when it could not be read. */
+  enabled: boolean | null;
+  holds_lock: boolean;
+  /** This instance serves. */
+  serving: boolean;
+  /** While a stop runs: its tracked tasks still running; `null` when no stop runs. */
+  stopping_tasks: number | null;
+  /** Clients connected to this instance. */
+  connections: number;
+  socket_path: string | null;
+  /** Why this instance does not serve. */
+  reason: string | null;
+}

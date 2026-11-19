@@ -264,9 +264,10 @@ pub struct Reconciled {
 /// transaction: every `draft` with `mcp_state = 'submitting'` becomes PROPOSED — refunded, with the
 /// reason "interrupted before submit" — and every other row with the flag only has it cleared.
 ///
-/// **Not called from anywhere yet.** Only the instance holding the `mcp.lock` `flock` may run it,
-/// right after taking the lock and before serving (M2): an instance without the lock could refund a
-/// job the serving instance is still submitting.
+/// Only the instance holding the `mcp.lock` `flock` may run it, right after taking the lock and
+/// before serving (M2): an instance without the lock could refund a job the serving instance is
+/// still submitting. Its one caller is the MCP lifecycle's start (`mcp::server::lifecycle`), once per
+/// acquisition, with a 250 ms busy timeout.
 pub fn reconcile_submitting_conn(conn: &Connection) -> Result<Reconciled, AppError> {
     let tx = begin_immediate(conn)?;
     let ids: Vec<String> = {

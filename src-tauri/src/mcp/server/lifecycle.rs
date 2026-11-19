@@ -34,6 +34,7 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::time::Duration;
 
 use rusqlite::Connection;
 use serde::Serialize;
@@ -93,8 +94,14 @@ pub struct LifecycleEnv {
 impl LifecycleEnv {
     /// The app's environment: this user's paths, the real reconciliation, `SO_PEERCRED`.
     pub fn production(db: Arc<dyn DbSource>) -> Self {
+        Self::production_at(db, resolve_for_this_user())
+    }
+
+    /// [`LifecycleEnv::production`] at given paths: what the app runs, minus the path resolution, so
+    /// a test can wire the production environment under a scratch directory.
+    pub fn production_at(db: Arc<dyn DbSource>, paths: Result<McpPaths, PathRefusal>) -> Self {
         LifecycleEnv {
-            paths: resolve_for_this_user(),
+            paths,
             db,
             reconcile: Box::new(reconcile_submitting_conn),
             peer_uid: kernel_peer_uid(),
@@ -187,8 +194,11 @@ impl Executor for BlockingPool {
     }
 }
 
-/// The app's exit steps, run by the flow in this order after the MCP stop has completed.
+/// The app's exit steps. `pause_queue` runs first, before the MCP wait; the rest run in this order
+/// after the MCP stop has completed.
 pub struct ExitSteps {
+    /// Pause the local queue for good, so no queued ORCA job starts once the running one is killed.
+    pub pause_queue: Box<dyn FnOnce() + Send>,
     /// `local_backend::terminate_on_exit`.
     pub terminate: Box<dyn FnOnce() + Send>,
     /// The sidecar's stop.
@@ -418,7 +428,7 @@ impl McpLifecycle {
         if !t.reconciled {
             let db = self.env.db.db();
             let conn = db.lock().map_err(|e| e.to_string())?;
-            (self.env.reconcile)(&conn).map_err(|e| {
+            with_busy_timeout(&conn, RECONCILE_BUSY_TIMEOUT, |c| (self.env.reconcile)(c)).map_err(|e| {
                 format!("the reconciliation failed ({e}); nothing is served, and the next tick retries it")
             })?;
             t.reconciled = true;
@@ -559,12 +569,15 @@ impl McpLifecycle {
     }
 
     /// The exit flow, off the caller's thread (M2 amendment, item 6):
+    /// 0. `pause_queue`: no queued local job starts from here on (the killed job's slot frees);
     /// 1. take the lifecycle mutex and switch off (or adopt a stop that began before exit), then
     ///    release the mutex;
     /// 2. wait for **stop complete**: every tracker generation ended and the unlink done;
     /// 3. `terminate`, then `sidecar_stop`;
-    /// 4. release the lock, set `exit_ready`, call `exit`.
+    /// 4. release the lock, set `exit_ready`, call `exit`. `exit_ready` is set **before** `exit`,
+    ///    so the `ExitRequested` that `exit` raises passes through (pinned by a test).
     fn exit_flow(&self, steps: ExitSteps) {
+        (steps.pause_queue)();
         let stop = {
             let mut t = self.lock_transitions();
             let running = t.stop.clone().filter(|s| !s.is_complete());
@@ -586,6 +599,43 @@ impl McpLifecycle {
         }
         self.exit_ready.store(true, Ordering::SeqCst);
         (steps.exit)();
+    }
+}
+
+/// How long the reconciliation waits on another instance's write transaction before it reports
+/// `SQLITE_BUSY` (decided by Anton, M2a Part B). It holds `DbState` meanwhile, so every synchronous
+/// UI command that locks it waits too: 250 ms, not `rusqlite`'s 5 s default. The tick retries.
+pub const RECONCILE_BUSY_TIMEOUT: Duration = Duration::from_millis(250);
+
+/// Run `work` with `conn`'s busy timeout set to `timeout`, and put the previous one back afterwards
+/// on every path: success, error and panic (the restore is a drop guard). The previous value is read
+/// with `PRAGMA busy_timeout`.
+pub fn with_busy_timeout<T>(
+    conn: &Connection,
+    timeout: Duration,
+    work: impl FnOnce(&Connection) -> Result<T, AppError>,
+) -> Result<T, AppError> {
+    let previous: u64 = conn.pragma_query_value(None, "busy_timeout", |r| r.get(0))?;
+    conn.busy_timeout(timeout)?;
+    let restore = RestoreBusyTimeout { conn, previous: Duration::from_millis(previous) };
+    let result = work(conn);
+    drop(restore);
+    result
+}
+
+/// Puts a connection's busy timeout back when dropped.
+struct RestoreBusyTimeout<'c> {
+    conn: &'c Connection,
+    previous: Duration,
+}
+
+impl Drop for RestoreBusyTimeout<'_> {
+    fn drop(&mut self) {
+        if let Err(e) = self.conn.busy_timeout(self.previous) {
+            // Not expected (it fails only on misuse). Said rather than left silent: every later write
+            // of the app would give up after the short timeout.
+            eprintln!("[OrcaStudio] mcp: cannot restore the database busy timeout ({e})");
+        }
     }
 }
 

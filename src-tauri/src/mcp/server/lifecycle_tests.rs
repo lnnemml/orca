@@ -351,6 +351,7 @@ fn a_non_holder_keeps_retrying_through_off_and_on() {
     let exited = Arc::new(AtomicBool::new(false));
     let flag = exited.clone();
     let steps = ExitSteps {
+        pause_queue: Box::new(|| {}),
         terminate: Box::new(|| {}),
         sidecar_stop: Box::new(|| {}),
         exit: Box::new(move || flag.store(true, Ordering::SeqCst)),
@@ -412,12 +413,20 @@ struct Seen {
     task_ended_at_terminate: AtomicBool,
     socket_gone_at_terminate: AtomicBool,
     lock_free_at_exit: AtomicBool,
+    /// The queue pause ran, and whether the tracked task had already ended then.
+    pause_ran: AtomicBool,
+    task_ended_at_pause: AtomicBool,
 }
 
 fn recording_steps(seen: &Arc<Seen>, task_ended: Arc<AtomicBool>, paths: &super::paths::McpPaths) -> ExitSteps {
-    let (s1, s2, s3) = (seen.clone(), seen.clone(), seen.clone());
+    let (s0, s1, s2, s3) = (seen.clone(), seen.clone(), seen.clone(), seen.clone());
     let (socket, lock) = (paths.socket.clone(), paths.lock.clone());
+    let ended_at_pause = task_ended.clone();
     ExitSteps {
+        pause_queue: Box::new(move || {
+            s0.task_ended_at_pause.store(ended_at_pause.load(Ordering::SeqCst), Ordering::SeqCst);
+            s0.pause_ran.store(true, Ordering::SeqCst);
+        }),
         terminate: Box::new(move || {
             s1.task_ended_at_terminate.store(task_ended.load(Ordering::SeqCst), Ordering::SeqCst);
             s1.socket_gone_at_terminate.store(!socket.exists(), Ordering::SeqCst);
@@ -469,6 +478,10 @@ fn exit_waits_for_the_stop_off_the_callers_thread_then_terminates_then_releases(
     assert!(seen.task_ended_at_terminate.load(Ordering::SeqCst), "terminate ran before the MCP wait ended");
     assert!(seen.socket_gone_at_terminate.load(Ordering::SeqCst));
     assert!(seen.lock_free_at_exit.load(Ordering::SeqCst), "the lock is released before exit");
+    // Control (Part B, second fix round): the queue pause runs before the MCP wait, while the tracked
+    // task is still held, not merely before `terminate`.
+    assert!(seen.pause_ran.load(Ordering::SeqCst), "the queue pause never ran");
+    assert!(!seen.task_ended_at_pause.load(Ordering::SeqCst), "the queue pause waited for the MCP stop");
     assert!(!lock_threads.lock().unwrap().contains(&caller), "the caller's thread took the lifecycle mutex");
     assert_ne!(executor.0.lock().unwrap().unwrap(), caller);
 
@@ -527,6 +540,7 @@ fn after_exit_began_nothing_binds_opens_or_writes() {
     let probe = Arc::new(Mutex::new(probe));
     let probe2 = probe.clone();
     let steps = ExitSteps {
+        pause_queue: Box::new(|| {}),
         terminate: Box::new(move || {
             // After stop complete, before the lock release; the row reads "on".
             p1.binds_before.store(c1.binds(), Ordering::SeqCst);
@@ -563,5 +577,97 @@ fn after_exit_began_nothing_binds_opens_or_writes() {
 }
 
 fn noop_steps() -> ExitSteps {
-    ExitSteps { terminate: Box::new(|| {}), sidecar_stop: Box::new(|| {}), exit: Box::new(|| {}) }
+    ExitSteps {
+        pause_queue: Box::new(|| {}),
+        terminate: Box::new(|| {}),
+        sidecar_stop: Box::new(|| {}),
+        exit: Box::new(|| {}),
+    }
+}
+
+/// Control (Part B fix round, the verifier's H5): `exit_ready` is set **before** the `exit` step,
+/// so the `ExitRequested` that the flow's own `app.exit(0)` raises passes through. Here the `exit`
+/// step is that re-entry: it asks the lifecycle, as `ExitRequested` would, and records the answer.
+/// With the two lines swapped it is `Absorbed`, and the app would never exit.
+#[test]
+fn the_flows_own_exit_passes_through() {
+    let scratch = Scratch::new("exit-reentry");
+    let (lc, _) = lifecycle(&scratch.paths(), scratch.db(), Hooks::default());
+    let answer = Arc::new(Mutex::new(None));
+    let (lc2, a) = (lc.clone(), answer.clone());
+    let steps = ExitSteps {
+        exit: Box::new(move || *a.lock().unwrap() = Some(lc2.on_exit_requested(&NewThread::default(), noop_steps()))),
+        ..noop_steps()
+    };
+    assert_eq!(lc.on_exit_requested(&NewThread::default(), steps), ExitDecision::Started);
+    assert!(eventually(SOON, || answer.lock().unwrap().is_some()), "the exit step never ran");
+    assert_eq!(
+        *answer.lock().unwrap(),
+        Some(ExitDecision::PassThrough),
+        "the flow's own app.exit was not passed through"
+    );
+}
+
+// ----- the reconciliation's busy timeout (M2a Part B, decided by Anton) -----
+
+fn busy_timeout_ms(conn: &rusqlite::Connection) -> u64 {
+    conn.pragma_query_value(None, "busy_timeout", |r| r.get(0)).unwrap()
+}
+
+/// Control (Part B, F2): a reconciliation that meets another instance's write transaction gives up
+/// within about `RECONCILE_BUSY_TIMEOUT` (250 ms), not `rusqlite`'s 5 s, while it holds `DbState`;
+/// and the connection's own timeout is back afterwards. The first assertion re-measures the 5 s
+/// default it is restored to (rule #10).
+#[test]
+fn a_busy_reconciliation_gives_up_within_the_short_timeout_and_restores_the_connections() {
+    let scratch = Scratch::new("reconcile-short-busy");
+    let db = scratch.db();
+    assert_eq!(busy_timeout_ms(&db.lock().unwrap()), 5000, "rusqlite's default busy timeout");
+    let (lc, counts) = lifecycle(&scratch.paths(), db.clone(), Hooks::default());
+    let other = scratch.another_connection();
+    set_row(&other, true);
+    other.execute_batch("BEGIN IMMEDIATE").unwrap(); // another instance's write transaction
+
+    let started = std::time::Instant::now();
+    assert_eq!(lc.tick_step(), Action::Acquire);
+    let waited = started.elapsed();
+    assert!(waited < Duration::from_millis(1500), "the reconciliation waited {waited:?} on the busy database");
+    let status = lc.status();
+    assert!(status.holds_lock && !status.serving, "{status:?}");
+    assert!(status.reason.unwrap_or_default().contains("reconciliation failed"));
+    assert_eq!((counts.reconciles(), counts.binds()), (1, 0));
+    assert_eq!(busy_timeout_ms(&db.lock().unwrap()), 5000, "the connection's busy timeout was not restored");
+
+    other.execute_batch("COMMIT").unwrap();
+    lc.tick_step();
+    assert!(lc.status().serving, "the next tick retries and serves");
+    assert_eq!(busy_timeout_ms(&db.lock().unwrap()), 5000);
+}
+
+/// Control (Part B, F2): `with_busy_timeout` sets the timeout for the work only, and restores the
+/// previous one on success, on error and on a panic.
+#[test]
+fn with_busy_timeout_restores_the_previous_timeout_on_every_path() {
+    let scratch = Scratch::new("busy-restore");
+    let db = scratch.db();
+    let conn = db.lock().unwrap();
+    conn.busy_timeout(Duration::from_millis(1234)).unwrap();
+
+    let inside = with_busy_timeout(&conn, RECONCILE_BUSY_TIMEOUT, |c| Ok(busy_timeout_ms(c))).unwrap();
+    assert_eq!(inside, 250, "the work did not run under the short timeout");
+    assert_eq!(busy_timeout_ms(&conn), 1234, "not restored after success");
+
+    let failed: Result<(), _> = with_busy_timeout(&conn, RECONCILE_BUSY_TIMEOUT, |_| {
+        Err(crate::error::AppError::Internal("control: the reconciliation failed".into()))
+    });
+    assert!(failed.is_err());
+    assert_eq!(busy_timeout_ms(&conn), 1234, "not restored on the error path");
+
+    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = with_busy_timeout(&conn, RECONCILE_BUSY_TIMEOUT, |_| -> Result<(), crate::error::AppError> {
+            panic!("control: the reconciliation panicked")
+        });
+    }));
+    assert!(panicked.is_err());
+    assert_eq!(busy_timeout_ms(&conn), 1234, "not restored after a panic");
 }

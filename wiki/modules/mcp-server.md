@@ -14,9 +14,11 @@ takes `&DbState`. The **app wiring** (M1b Part B) is the grant's Tauri commands 
 the guard in the two commands that submit a job by hand, and `SidecarSmiles`, the resolver's SMILES
 call over HTTP. The **transport** (M2a, `server/`) is the lock, the socket, the `rmcp` server with one
 tool (`get_grant`), the admission gate, the lifecycle that switches it on and off, and the
-`orcastudio --mcp` relay; its cores are built and tested, and M2a Part B wires them into the app. The
-module stays registered in `lib.rs` under a scoped `#[allow(dead_code)]`, because the transport,
-steps A/C, the resolver and `SidecarSmiles` have no non-test caller until M2a Part B and M3.
+`orcastudio --mcp` relay. `server/wiring.rs` connects it to the app: `lib.rs` setup and
+`ExitRequested`, the `main.rs` relay branch, and the switch's commands `mcp_status`/`mcp_set_enabled`,
+which Settings → MCP calls. The module stays registered in `lib.rs` under a scoped
+`#[allow(dead_code)]`, because steps A/C, the resolver and `SidecarSmiles` have no non-test caller
+until M3.
 
 **It fails closed.** A line outside the grammar is REFUSED (R1); a block, key or value outside the
 allowlist is PROPOSED (P2); a source whose terminal state is unknown is REFUSED (R4); a memory
@@ -40,7 +42,7 @@ PROPOSED (P5). Nothing reaches SUBMITTED by default.
 | `sidecar_smiles.rs` | `SidecarSmiles: SmilesTo3d` (`from_status(&SidecarStatus)`), `check_reply`; `SMILES_CONNECT_TIMEOUT` (5 s), `SMILES_TIMEOUT` (30 s) |
 | `preflight.rs` | `mcp_maxcore -> McpMaxcore { mib, source }`, `memory_verdict_for -> MemoryVerdict`, the pure `verdict_of` |
 | `*_tests.rs`, `test_db.rs` | one test file per submodule, plus `submit_guard_tests.rs` for the guard's wiring; `test_db.rs` builds a migrated scratch database per test |
-| `../commands/mcp.rs` | the grant commands `mcp_create_grant`, `mcp_revoke_grant`, `mcp_get_grant`, `mcp_level_from_job` and their `*_core`/`*_conn` bodies; `GrantView`, `GrantState`. Tests in `commands/mcp_tests.rs` |
+| `../commands/mcp.rs` | the grant commands `mcp_create_grant`, `mcp_revoke_grant`, `mcp_get_grant`, `mcp_level_from_job` and their `*_core`/`*_conn` bodies; `GrantView`, `GrantState`; the switch's `async` commands `mcp_status`, `mcp_set_enabled(on)` over `mcp_status_core`/`mcp_set_enabled_core`. Tests in `commands/mcp_tests.rs` |
 | `switch.rs` | the switch's row: `MCP_ENABLED_KEY` (`mcp_enabled`), `read_enabled_conn`, `write_enabled_conn`, `is_reserved_setting` |
 | `server/mod.rs` | the transport's submodule list; `CONNECTIONS = 4`, `REQUESTS_PER_CONNECTION = 4`; the `DbSource` seam (`impl DbSource for DbState`) |
 | `server/paths.rs` | `resolve(runtime_dir, app_data_dir) -> Result<McpPaths, PathRefusal>`, `resolve_for_this_user`, `sun_path_max` (107); `McpPaths { dir, lock, socket, base }` |
@@ -49,10 +51,12 @@ PROPOSED (P5). Nothing reaches SUBMITTED by default.
 | `server/listener.rs` | `accept_loop`, the peer check (`PeerUid`, `kernel_peer_uid`, `own_uid`, `peer_allowed`), the per-start `Registry`, the `Transport` stream wrapper |
 | `server/service.rs` | `McpService` (the `rmcp` `ServerHandler`: `get_grant`, the permit in `call_tool`), `ConnState { closed, permits }`; `RECOVERY_SENTENCE`, `INSTRUCTIONS`, `BUSY` |
 | `server/gate.rs` | `AdmissionGate` (`open`, `close`, `spawn`, `task_count`, `wait_all`), `GateClosed` ("MCP is shutting down") |
-| `server/lifecycle.rs` | `McpLifecycle` (`tick_step`, `set_enabled`, `status`, `on_exit_requested`, `gate`), the pure `decide` and `pass_through`; `LifecycleEnv`, `Hooks`, `Observed`, `Action`, `Why`, `McpStatus`, `ExitDecision`, `Executor` (`BlockingPool`), `ExitSteps`, `StopHandle` |
+| `server/lifecycle.rs` | `McpLifecycle` (`tick_step`, `set_enabled`, `status`, `on_exit_requested`, `gate`), the pure `decide` and `pass_through`; `LifecycleEnv` (`production`, `production_at`), `Hooks`, `Observed`, `Action`, `Why`, `McpStatus`, `ExitDecision`, `Executor` (`BlockingPool`), `ExitSteps`, `StopHandle`; `with_busy_timeout`, `RECONCILE_BUSY_TIMEOUT` (250 ms) |
+| `server/wiring.rs` | the app's side: `ManagedDb` (the `DbSource` over the managed `DbState`), `wired_lifecycle`, `app_lifecycle`, `start_ticks`; `exit_requested`, `handle_exit_request`, the pure `prevents_exit`, `guarded_steps`, `backstop`/`run_backstop`/`backstop_steps` → `Backstop` (`Hung`/`Died`/`StillAlive`), `hard_end` (`libc::_exit(1)`), `BackstopTimings`, `EXIT_FLOW_DEADLINE` (60 s), `EXIT_GRACE` (10 s), `BACKSTOP_STEPS_DEADLINE` (15 s); `is_relay_invocation`, `relay_main` |
 | `server/tick.rs` | `run_ticks(lifecycle, interval)`, `Interval`, `Every`, `TICK = 30 s` |
 | `server/relay.rs` | `relay(stdin, stdout, stderr, socket_path) -> RelayEnd` (`From<RelayEnd> for ExitCode`), `NOT_RUNNING` |
 | `server/*_tests.rs`, `server/test_support.rs` | one test file per submodule plus `server_tests.rs` (the server end to end over a real socket); `test_support` has the scratch dir and DB, a counting environment and a raw NDJSON MCP client |
+| `../../tests/mcp_relay_bin.rs` | the built `orcastudio --mcp` run as a real process (an integration test) |
 
 ## The classifier's input and output
 
@@ -438,9 +442,9 @@ and `local_fitted_maxcore_with` lock `DbState` themselves.
 
 ## The transport (`server/`, M2a)
 
-The cores of the MCP server (ADR-027 decision 2 and the M2 amendment, items 1, 2, 4–6). Nothing in the
-app calls them yet: M2a Part B wires them (below, "Not yet wired"). Every async piece runs on Tauri's
-runtime (`tauri::async_runtime`), never on a runtime of its own.
+The MCP server (ADR-027 decision 2 and the M2 amendment, items 1–6). The app reaches it through
+`wiring.rs` (below, "The wiring"). Every async piece runs on Tauri's runtime
+(`tauri::async_runtime`), never on a runtime of its own.
 
 **Paths.** The directory is `$XDG_RUNTIME_DIR/orcastudio/`, holding `mcp.lock` and `mcp.sock`. When
 `XDG_RUNTIME_DIR` is unset or not absolute it is `<app data dir>/mcp/`, with the same modes (a
@@ -516,8 +520,11 @@ switch-off. A transition reads the row, asks the pure `decide`, and acts, all un
 - **Acquisition.** Taking the lock begins one, and `reconcile_submitting_conn` runs once per
   acquisition, before the first bind. The acquisition counts as done only when it commits: a failure
   (`SQLITE_BUSY` from another instance) binds nothing, shows the reason, and the next tick retries.
-  A reconciliation that meets another instance's write transaction waits up to `rusqlite`'s 5 s busy
-  timeout first ("M2a facts" 6).
+  The reconciliation runs under `with_busy_timeout(RECONCILE_BUSY_TIMEOUT)`: it waits at most
+  **250 ms** on another instance's write transaction (not `rusqlite`'s 5 s, "M2a facts" 6), because it
+  holds `DbState` meanwhile and every synchronous UI command waits with it (decided by Anton). The
+  connection's own timeout, read with `PRAGMA busy_timeout`, is restored by a drop guard on every
+  path: success, error and panic.
 - **Switch-on**: bind, `stat`, open the gate, start the accept loop.
 - **Switch-off**, under the mutex: close the gate, shut the registry (every `closed` flag set), cancel
   the start's token (the accept loop and every service). Then a task on Tauri's runtime, outside the
@@ -533,8 +540,8 @@ switch-off. A transition reads the row, asks the pure `decide`, and acts, all un
   lifecycle mutex. `enabled` is `None` when the row cannot be read; `stopping_tasks` is `None` when no
   stop runs.
 
-**The exit flow.** `on_exit_requested(executor, steps)` is what Part B's `ExitRequested` calls on the
-main thread, and it takes no mutex:
+**The exit flow.** `on_exit_requested(executor, steps)` is what `ExitRequested` calls on the main
+thread (through `wiring::exit_requested`), and it takes no mutex:
 1. `exit_ready` set → `PassThrough` (the pure `pass_through`; a programmatic `app.exit()` re-enters
    `ExitRequested` with `prevent_exit` honoured, "M2a facts" 1);
 2. else one `compare_exchange` on the terminal `exiting` flag: the winner hands the flow to the
@@ -542,22 +549,80 @@ main thread, and it takes no mutex:
    `PassThrough`.
 
 The flow, off the caller's thread (`BlockingPool`: Tauri's blocking pool):
+0. run `pause_queue` (the local queue starts nothing from here on);
 1. take the lifecycle mutex, switch off (or adopt a stop that began before exit), release it;
 2. wait for **stop complete** (every generation ended, the unlink done);
 3. run `terminate`, then `sidecar_stop`;
-4. release the lock, set `exit_ready`, call `exit`.
+4. release the lock, set `exit_ready`, call `exit` — `exit_ready` **before** `exit`, so the
+   `ExitRequested` that `exit` raises passes through (`lifecycle_tests::the_flows_own_exit_passes_through`).
 
 Every step is injected (`ExitSteps`), so the tests drive it without a `RunEvent`.
 
 **The tick** (`tick.rs`). `run_ticks` runs one step at once and then one per `Interval` (`Every(TICK)`,
 30 s) until exit begins. A step that changes nothing is retried on the next tick: the driver never
-gives up while the app runs. Part B starts it on a background thread.
+gives up while the app runs. Setup starts it on the `mcp-tick` thread.
 
 **The relay** (`relay.rs`). `relay(stdin, stdout, stderr, socket_path)` copies stdin → socket and
 socket → stdout, flushing every chunk, until either side ends: stdin EOF closes the socket
 (`ClientClosed`, exit 0), socket EOF ends it (`ServerClosed`, exit 1). A failed connect writes exactly
 `NOT_RUNNING` ("OrcaStudio is not running, or its MCP server is off") and a newline to stderr
 (`NotRunning`, exit 2). stdout carries only the socket's bytes; every diagnostic goes to stderr.
+
+### The wiring (`wiring.rs`)
+
+**Setup** (`lib.rs`, right after `DbState` is managed): `app_lifecycle` builds the one `McpLifecycle`
+over `LifecycleEnv::production` — this user's paths, the real reconciliation, `SO_PEERCRED` — with
+`ManagedDb`, a `DbSource` that reaches the managed `DbState` through the app handle. It is managed as
+`Arc<McpLifecycle>`, and `start_ticks` starts the `mcp-tick` thread, whose first step runs at once, so
+a switch left on serves from app start. A path refusal (`sun_path`) or no base dir never fails setup:
+it stays in the environment and becomes the status reason once the switch is on.
+
+**The commands.** `mcp_status()` and `mcp_set_enabled(on)` are `async` and run their work through
+`spawn_blocking` (as `test_server_profile`), so the GTK main thread never takes the lifecycle mutex or
+waits on a reconciliation, a bind or the row write. Both return `McpStatus`; an unmanaged lifecycle is
+`AppError::Internal`.
+
+**`ExitRequested`** is the hand-off and nothing else: `wiring::exit_requested(app)` builds the four
+steps (the queue pause, `terminate_on_exit`, the sidecar stop, `app.exit(0)`), asks
+`on_exit_requested(&BlockingPool, steps)`, and returns `prevents_exit(decision)` — true exactly when
+the decision is not `PassThrough` — and `lib.rs` calls `api.prevent_exit()` on it. So the order is the
+flow's: queue paused → MCP wait → `terminate_on_exit` → sidecar stop → lock release → `exit_ready` →
+`app.exit(0)`, all off the main thread, each step once; the flow's own `app.exit(0)` comes back as an
+`ExitRequested` that passes through. With MCP never switched on (no lock, no start) the same flow
+runs: its stop has nothing to wait for, so the kill, the sidecar stop and `exit` follow at once.
+
+**The queue pause** (`JobRunner::pause_for_exit`, decided by Anton) comes first because the job
+`terminate_on_exit` kills frees its slot, and its drive thread's `try_start_next` would otherwise start
+the next queued ORCA job during the kill's 2 s grace; that mpirun would outlive the app, since the
+SIGKILL sweep matches only the old job dir. The claim (`JobRunner::claim_next`) checks the flag under
+the `running` lock. `terminate_on_exit` is safe off the
+main thread: it touches managed state, the `JobRunner`'s `running` mutex, signals, `/proc` and sleeps,
+and no window, GTK or event.
+
+**Nothing can leave the app un-exitable.** Each step runs under `catch_unwind` (`guarded_steps`), so a
+panicking step is reported on stderr and the steps after it still run. When the flow starts, a
+backstop thread (`backstop` over `run_backstop`, `BackstopTimings::PRODUCTION`) waits for the `exit`
+step and ends the process in every case where it is still running:
+- `exit` not reached within `EXIT_FLOW_DEADLINE` (60 s; the M2a flow takes the kill's ≤14 s) →
+  `Hung`, or the flow ended without reaching it (its steps dropped) → `Died`: the backstop first runs
+  its own steps (`backstop_steps`: the queue pause — idempotent, and in `Died` the flow's may never
+  have run — then the kill, then the sidecar stop) for at most `BACKSTOP_STEPS_DEADLINE` (15 s);
+- `exit` reached but the process still alive `EXIT_GRACE` (10 s) later → `StillAlive` (the flow has
+  run the kill and the sidecar stop already).
+
+The end is `hard_end`: one stderr line, then `libc::_exit(1)`, which skips atexit handlers that could
+deadlock against the GTK/WebKit loop. It is injected, so the tests record it instead. A hard end is a
+crash in the reconciliation's terms: a job left in step B is refunded by the next holder's
+`reconcile_submitting_conn`. M3 revisits the 60 s.
+
+**`orcastudio --mcp`.** `main.rs` asks `is_mcp_relay(args_os().nth(1))` before `run()` — so the relay
+opens no window, initialises no GTK, and prints nothing — and exits with `relay_main()`'s code: the
+`RelayEnd` code over the process's stdin/stdout/stderr and `resolve_for_this_user()`'s socket, or 2
+with one stderr line (`orcastudio --mcp: <the refusal>`) when the path is refused. The argument is
+compared as an `OsStr`, so a non-UTF-8 argument cannot panic `args()`.
+
+**Settings → MCP** (`src/mcp/McpSection.tsx`, `modules/frontend.md`): the switch, decision 9's data
+line, and the status line from `McpStatus`, re-read on mount, after a toggle and every 5 s.
 
 ## Clarifications (orchestrator, within ADR-027)
 
@@ -608,15 +673,6 @@ Two choices go beyond the clarifications, and each can only move a job toward An
 
 ## Not yet wired
 
-- **M2a Part B** wires the transport cores into the app:
-  - `lib.rs` setup: an `McpLifecycle` over `LifecycleEnv::production` (a `DbSource` over the managed
-    `DbState`), and the tick thread (`run_ticks` with `Every(TICK)`);
-  - `RunEvent::ExitRequested`: `on_exit_requested(&BlockingPool, ExitSteps { terminate_on_exit,
-    sidecar.stop(), app.exit(0) })`, with `prevent_exit` unless `PassThrough`;
-  - the `main.rs` branch for `orcastudio --mcp` before `run()`: `relay` over the process's stdio and
-    `resolve_for_this_user()`'s socket;
-  - the commands `mcp_status` and `mcp_set_enabled`, `async` with the work in `spawn_blocking`;
-  - the Settings → MCP switch row (the switch, decision 9's data line, "this instance serves").
 - **M2b:** the other read tools.
 - **M3:** `create_job` as one tracked task (the preflight, step A, step B, step C around
   `classify_mcp_job` and `assemble`), `SidecarSmiles` handed to the resolver, the audit log, and R8's
@@ -626,9 +682,11 @@ Two choices go beyond the clarifications, and each can only move a job toward An
 ## Tests
 
 `cargo test -p orcastudio --lib mcp::` runs the module's tests (the transport's are
-`mcp::server::`), `cargo test -p orcastudio --lib commands::mcp` the grant commands' tests, and `npx vitest run src/scene/charge-mult-parity.test.ts`
-the TS half of the C1 parity. The schema tests are
+`mcp::server::`, the wiring's `mcp::server::wiring_tests`), `cargo test -p orcastudio --lib commands::mcp`
+the grant and switch commands' tests, `cargo test -p orcastudio --test mcp_relay_bin` the built
+binary's relay, `npx vitest run src/screens/SettingsScreen.mcp.test.tsx` the switch row, and
+`npx vitest run src/scene/charge-mult-parity.test.ts` the TS half of the C1 parity. The schema tests are
 `cargo test -p orcastudio --lib db::tests::` (v24 names in `modules/tauri-core.md`). The negative
 controls are recorded in `log.md`: one per row plus the ADR's M1a list in the M1a entry, and the M1b
-list in the M1b Part A entry, the Part B list in the M1b Part B entry, and the M2a Part A list in its
-entry (all 2026-11-19).
+list in the M1b Part A entry, the Part B list in the M1b Part B entry, and the M2a Part A and Part B
+lists in their entries (all 2026-11-19).

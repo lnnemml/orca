@@ -145,3 +145,66 @@ fn a_job_with_no_readable_level_is_refused() {
     assert!(matches!(&e, AppError::Invalid(m) if m.contains("coordinate block")), "{e:?}");
     assert!(matches!(level_from_job_conn(&db.conn, "nope"), Err(AppError::NotFound(_))));
 }
+
+// ----- the switch's commands (ADR-027 M2a Part B) -----
+
+mod switch {
+    use std::sync::{Arc, Mutex};
+    use std::thread::{self, ThreadId};
+
+    use super::super::{mcp_set_enabled_core, mcp_status_core};
+    use crate::commands::settings::DbState;
+    use crate::mcp::server::test_support::Scratch;
+    use crate::mcp::server::wiring::wired_lifecycle;
+    use crate::mcp::server::DbSource;
+
+    /// The managed database, recording which threads reach it.
+    struct RecordingDb {
+        db: Arc<DbState>,
+        threads: Mutex<Vec<ThreadId>>,
+    }
+
+    impl DbSource for RecordingDb {
+        fn db(&self) -> &DbState {
+            self.threads.lock().unwrap().push(thread::current().id());
+            &self.db
+        }
+    }
+
+    /// Control (Part B): the commands' work running on the caller's thread instead of
+    /// `spawn_blocking`. The cores are driven with `block_on` from this thread, as an `async`
+    /// command's future would be; every database touch (`status` reads the row, `set_enabled`
+    /// writes it, reconciles and serves) must happen elsewhere. The commands themselves are thin
+    /// `async` shells over these cores (pinned below).
+    #[test]
+    fn the_switch_commands_do_their_work_off_the_callers_thread() {
+        let scratch = Scratch::new("cmd-switch");
+        let recording = Arc::new(RecordingDb { db: scratch.db(), threads: Mutex::new(Vec::new()) });
+        let lifecycle = wired_lifecycle(recording.clone(), Ok(scratch.paths()));
+        let caller = thread::current().id();
+
+        let status = tauri::async_runtime::block_on(mcp_status_core(lifecycle.clone())).unwrap();
+        assert_eq!((status.enabled, status.serving), (Some(false), false));
+        let on = tauri::async_runtime::block_on(mcp_set_enabled_core(lifecycle.clone(), true)).unwrap();
+        assert!(on.serving && on.enabled == Some(true), "{on:?}");
+        let off = tauri::async_runtime::block_on(mcp_set_enabled_core(lifecycle, false)).unwrap();
+        assert!(!off.serving && off.enabled == Some(false), "{off:?}");
+
+        let threads = recording.threads.lock().unwrap();
+        assert!(!threads.is_empty());
+        assert!(!threads.contains(&caller), "a switch command did its work on the caller's thread");
+    }
+
+    /// The two commands are `async` and call the cores above (no `AppHandle` harness exists, so
+    /// this is a source pin, as the M1b guard pins).
+    #[test]
+    fn the_switch_commands_are_async_shells_over_the_cores() {
+        let src = include_str!("mcp.rs");
+        assert!(src.contains(
+            "pub async fn mcp_status(app: AppHandle) -> Result<McpStatus, AppError> {\n    mcp_status_core(managed_lifecycle(&app)?).await\n}"
+        ));
+        assert!(src.contains(
+            "pub async fn mcp_set_enabled(app: AppHandle, on: bool) -> Result<McpStatus, AppError> {\n    mcp_set_enabled_core(managed_lifecycle(&app)?, on).await\n}"
+        ));
+    }
+}

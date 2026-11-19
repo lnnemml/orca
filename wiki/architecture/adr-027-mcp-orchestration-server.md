@@ -876,7 +876,8 @@ The decision text above stands, except where an item below says it replaces or q
        - **The `orcastudio --mcp` relay** (item 3).
        - **The caps.** At most 4 connections are served; a fifth connection is closed at once.
          Each connection holds a semaphore of 4 permits, and a fifth request gets "busy, retry"
-         (M0 amendment, item 5).
+         (M0 amendment, item 5). The 4-permit cap counts `tools/call` only; `initialize`,
+         `tools/list` and `ping` take no permit (acknowledged by Anton, M2a Part A verification).
        - **The per-connection `closed` flag.**
        - **The admission gate and the tracker (item 4).** Created here, empty. M3 adds tasks.
        - **The lifecycle owner and the order of operations (item 6).** Switch-on, switch-off, exit and
@@ -1099,6 +1100,23 @@ The decision text above stands, except where an item below says it replaces or q
        there might be no window left. M2a records what actually happens.
      - In M2a the trackers are empty, so the wait is immediate. The mechanism and the order are
        built here all the same.
+     - **The backstop (added in M2a Part B, decided by Anton 2026-11-19; the grace and `_exit` in
+       its fix round).** A thread starts with the exit flow and ends the process in two cases:
+       - the flow has not reached `exit` within **60 s**, or dies first: the backstop runs its own
+         queue pause, kill and sidecar stop (bounded at 15 s), then ends the process;
+       - the flow reached `exit`, but the process is still alive **10 s** later: it ends the process
+         (the flow has already run the kill and the sidecar stop).
+
+       The end is `libc::_exit(1)`, not `std::process::exit`, so no atexit handler runs that could
+       deadlock against the GTK/WebKit loop. Without the backstop, a stuck flow would absorb every
+       later close request, so the app could never close. A forced end counts as a **crash** for the
+       reconciliation: a job left in step B stays `submitting`, and the next lock holder's
+       reconciliation refunds it (decision 5). M3 revisits the 60 s against the ssh timeouts of a
+       remote step B.
+     - **The local queue (decided by Anton, M2a Part B fix round).** The flow's first step, before
+       the MCP wait, pauses the local queue for good. Otherwise the job `terminate_on_exit` kills frees
+       its slot, and its drive thread could start the next queued ORCA job during the kill's grace;
+       that job's ranks would outlive the app. It holds whether or not MCP was ever switched on.
 
 7. **Result caps (M0 amendment, item 7: "M2's controls pin the caps").** Each M2b tool has a
    character cap below 50,000 on its serialised result, and paging or truncation that says so in

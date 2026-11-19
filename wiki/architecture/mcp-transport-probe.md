@@ -293,9 +293,16 @@ holds, with no finding.
 
 `rusqlite-0.32.1/src/inner_connection.rs:119` calls `sqlite3_busy_timeout(db, 5000)` on every open.
 Run: the reconcile-BUSY test took 5 s per failed attempt until it set 50 ms on its own connection.
-So a reconciliation that meets another instance's write transaction holds the lifecycle mutex and
-`DbState` for up to 5 s before it reports `SQLITE_BUSY`. That is off the main thread by construction
-(the tick thread, or `set_enabled` through `spawn_blocking` in Part B).
+So a reconciliation that meets another instance's write transaction would hold the lifecycle mutex
+and `DbState` for up to 5 s before it reports `SQLITE_BUSY`. That is off the main thread by
+construction (the tick thread, or `set_enabled` through `spawn_blocking`), but every synchronous UI
+command that locks `DbState` would wait as long. So the reconciliation runs with a 250 ms busy
+timeout and restores the connection's own afterwards (decided by Anton, M2a Part B).
+
+**Run (M2a Part B):** `PRAGMA busy_timeout` on a fresh `init_db` connection reads **5000**, so the
+pragma reads back what `rusqlite` set, and is what the restore uses
+(`lifecycle_tests::a_busy_reconciliation_gives_up_within_the_short_timeout_and_restores_the_connections`,
+which also measures a busy reconciliation giving up well inside 1.5 s).
 
 ### 7. `tokio-util` 0.7.19 is the locked version (sourced)
 

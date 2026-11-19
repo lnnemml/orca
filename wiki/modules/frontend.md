@@ -192,6 +192,20 @@ shows the draft as it was left.
   **immediately** (compared against the live list), not as a surprise on the first Explain. **No price is
   shown** — `/v1/models` doesn't return it and hardcoding one is the recalled-constant anti-pattern
   (ADR-014 (1a)).
+- **Settings → MCP** (`src/mcp/McpSection.tsx`, the last card; ADR-027 M2 amendment item 2) — one row:
+  the switch (a checkbox, checked only when `McpStatus.enabled === true`), decision 9's data line beside
+  it (`MCP_DATA_LINE`: research data — geometries, input headers, energies, output excerpts — goes to the
+  AI model's provider when MCP is on), and a status line from the pure `mcpStatusLine`
+  (`src/mcp/status.ts`): "This instance serves on `<socket>` — N clients connected." **only** when
+  `serving`, otherwise "This instance does not serve: `<reason>`." (the other instance's lock, `MCP is
+  off`, `exiting`, a path refusal, …) with "Stopping (N tasks)." while a stop runs. An unreadable row
+  (`enabled: null`) is said, not shown as "off". The toggle calls `mcp_set_enabled({ on })`; the status
+  (advisory; the 30 s tick can change it) is re-read on mount, after every toggle (failed or not) and
+  every 5 s (`MCP_STATUS_POLL_MS`) while Settings is open. A failed read shows the error and drops the
+  status rather than showing a stale one; a failed toggle shows "The switch failed: …". Local state, as
+  the other Settings cards (no store). The grant, the audit log and Revoke are M4. Test:
+  `src/screens/SettingsScreen.mcp.test.tsx` (the screen whole, `invoke` mocked). The look is Anton's
+  live WebKitGTK gate.
 
 ## Editor & templates (`src/editor/`, `src/templates/`)
 

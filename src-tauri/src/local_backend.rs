@@ -54,6 +54,11 @@ pub(crate) fn has_normal_termination(tail: &str) -> bool {
 /// enough — 64 KB comfortably reaches back to the last `FINAL SINGLE POINT ENERGY`.
 pub(crate) const RESULT_TAIL_BYTES: u64 = 64 * 1024;
 
+/// How long [`terminate_on_exit`] waits for a job still starting (pgid 0) to get its pgid.
+pub(crate) const STARTING_JOB_WAIT: Duration = Duration::from_secs(2);
+/// How often it looks meanwhile.
+pub(crate) const STARTING_JOB_POLL: Duration = Duration::from_millis(20);
+
 /// App-wide LocalBackend state: the job-directory root, the single execution
 /// slot (`Some` while a job is running — concurrency = 1, domain rule #4), and a
 /// pause flag for the queue.
@@ -66,6 +71,7 @@ pub struct JobRunner {
     running: Mutex<Option<RunningJob>>,
     /// When true, finished jobs don't pull the next `queued` one. The currently
     /// running job (if any) always runs to completion — pause is queue-only.
+    /// App exit sets it for good, first ([`JobRunner::pause_for_exit`]).
     paused: AtomicBool,
 }
 
@@ -87,6 +93,58 @@ impl JobRunner {
             running: Mutex::new(None),
             paused: AtomicBool::new(false),
         }
+    }
+
+    /// Claim the slot for the oldest local `queued` job, atomically: under the running lock, bail
+    /// if paused or busy, otherwise pick the job and reserve the slot (pgid 0 = still starting).
+    /// Lock order is always running -> db (see cancel/try_start_next). `None` = nothing to start.
+    pub(crate) fn claim_next(&self, db: &DbState) -> Option<(String, Arc<AtomicBool>)> {
+        let mut running = self.running.lock().ok()?;
+        if self.paused.load(Ordering::SeqCst) || running.is_some() {
+            return None;
+        }
+        let job_id = {
+            let conn = db.lock().ok()?;
+            next_local_queued_job(&conn).ok().flatten()?
+        };
+        let cancelled = Arc::new(AtomicBool::new(false));
+        *running = Some(RunningJob {
+            job_id: job_id.clone(),
+            pgid: 0,
+            cancelled: cancelled.clone(),
+        });
+        Some((job_id, cancelled))
+    }
+
+    /// The running job and its pgid, for [`terminate_on_exit`]. A job still starting (pgid 0) is
+    /// polled every `step` for at most `wait` until its pgid is set (→ it) or its slot is empty
+    /// (→ `None`: the start failed, nothing to kill). If it is still starting after `wait`, `None`,
+    /// said on stderr.
+    pub(crate) fn job_to_terminate(&self, wait: Duration, step: Duration) -> Option<(String, i32)> {
+        let deadline = Instant::now() + wait;
+        loop {
+            {
+                let running = self.running.lock().ok()?;
+                match running.as_ref() {
+                    None => return None,
+                    Some(r) if r.pgid > 0 => return Some((r.job_id.clone(), r.pgid)),
+                    Some(_) => {} // pgid 0: still starting
+                }
+            }
+            if Instant::now() >= deadline {
+                eprintln!("[OrcaStudio] exit: a local job was still starting after {wait:?}; not killed");
+                return None;
+            }
+            std::thread::sleep(step);
+        }
+    }
+
+    /// Pause the queue for good: the exit flow's first step (ADR-027 M2 amendment item 6, M2a Part B
+    /// fix round). Once `terminate_on_exit` kills the running job, its drive thread frees the slot
+    /// and calls [`try_start_next`]; without the pause that would start the next queued ORCA job
+    /// during the kill's grace, and its ranks would outlive the app.
+    pub(crate) fn pause_for_exit(&self) {
+        self.paused.store(true, Ordering::SeqCst);
     }
 
     /// The app's data dir: local job dirs live under `<data_dir>/jobs/` (rule #3), for remote
@@ -399,34 +457,8 @@ pub fn try_start_next(app: &AppHandle) {
     let runner = app.state::<JobRunner>();
     let db = app.state::<DbState>();
 
-    // Claim the slot atomically: under the running lock, bail if paused or busy,
-    // otherwise pick the oldest queued job and reserve the slot (pgid 0 = still
-    // starting). Lock order is always running -> db (see cancel/try_start_next).
-    let (job_id, cancelled) = {
-        let mut running = match runner.running.lock() {
-            Ok(g) => g,
-            Err(_) => return,
-        };
-        if runner.paused.load(Ordering::SeqCst) || running.is_some() {
-            return;
-        }
-        let next: Option<String> = {
-            let conn = match db.lock() {
-                Ok(c) => c,
-                Err(_) => return,
-            };
-            next_local_queued_job(&conn).ok().flatten()
-        };
-        let Some(job_id) = next else {
-            return;
-        };
-        let cancelled = Arc::new(AtomicBool::new(false));
-        *running = Some(RunningJob {
-            job_id: job_id.clone(),
-            pgid: 0,
-            cancelled: cancelled.clone(),
-        });
-        (job_id, cancelled)
+    let Some((job_id, cancelled)) = runner.claim_next(&db) else {
+        return;
     };
 
     // Spawn is slow and needs the db lock, so it runs with no lock held. On
@@ -1048,22 +1080,26 @@ pub(crate) fn terminate_job(pgid: i32, job_dir: &Path) {
 #[cfg(not(unix))]
 pub(crate) fn terminate_job(_pgid: i32, _job_dir: &Path) {}
 
-/// Kill the currently running ORCA tree (if any) **synchronously** — used on app
-/// exit. A spawned thread would die with the process before the ranks do, so the
-/// blocking wait here is deliberate: it's the only place we must not return until
-/// the tree is dead, otherwise the MPI ranks outlive the app burning CPU.
+/// Kill the currently running ORCA tree (if any) and return only once it is dead —
+/// used on app exit, otherwise the MPI ranks outlive the app burning CPU.
+///
+/// It runs inside the MCP exit flow (ADR-027 M2 amendment, item 6), **off the main
+/// thread**: the flow calls `app.exit` only after this returns, and `prevent_exit`
+/// keeps the process alive meanwhile. That is safe because it touches no window,
+/// no GTK and no event: only managed state (`try_state`, thread-safe), the
+/// `JobRunner`'s `running` mutex, `killpg`/`kill`, `/proc` and sleeps.
+///
+/// A job still **starting** (its slot claimed, pgid 0 while `prepare_job_dir` and the
+/// spawn run) is waited out for at most [`STARTING_JOB_WAIT`], then killed like any
+/// other ([`JobRunner::job_to_terminate`]); without that it would start after this
+/// returned and outlive the app. Worst case: 2 s for a starting job + `terminate_job`'s
+/// 10 s drain + 2 s grace ≈ **14 s**, inside the exit backstop's 15 s and 60 s bounds.
 pub fn terminate_on_exit(app: &AppHandle) {
     let Some(runner) = app.try_state::<JobRunner>() else {
         return;
     };
-    let (job_id, pgid) = {
-        let Ok(running) = runner.running.lock() else {
-            return;
-        };
-        match running.as_ref() {
-            Some(r) if r.pgid > 0 => (r.job_id.clone(), r.pgid),
-            _ => return,
-        }
+    let Some((job_id, pgid)) = runner.job_to_terminate(STARTING_JOB_WAIT, STARTING_JOB_POLL) else {
+        return;
     };
     // The job dir is deterministic (prepare_job_dir), so no DB read is needed.
     let job_dir = runner.data_dir.join("jobs").join(&job_id);
@@ -1251,6 +1287,72 @@ pub(crate) fn read_convergence(path: &Path) -> std::io::Result<Vec<ConvergenceEv
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A runner whose slot is reserved for `job` with pgid 0, as `claim_next` leaves it while the
+    /// job starts.
+    fn starting(job: &str) -> Arc<JobRunner> {
+        let runner = Arc::new(JobRunner::new(std::env::temp_dir()));
+        *runner.running.lock().unwrap() =
+            Some(RunningJob { job_id: job.into(), pgid: 0, cancelled: Arc::new(AtomicBool::new(false)) });
+        runner
+    }
+
+    /// Control (ADR-027 M2a Part B, second fix round): a job still starting at exit (pgid 0) is not
+    /// skipped. Its pgid is set ~100 ms later, as `start_run` does after the spawn: the exit's kill
+    /// must get it. Removing the poll → `None` at once → red.
+    #[test]
+    fn exit_waits_out_a_starting_job_and_kills_it_once_its_pgid_is_set() {
+        let runner = starting("j");
+        let r = runner.clone();
+        let setter = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            if let Some(job) = r.running.lock().unwrap().as_mut() {
+                job.pgid = 4242;
+            }
+        });
+        let started = Instant::now();
+        let found = runner.job_to_terminate(STARTING_JOB_WAIT, STARTING_JOB_POLL);
+        setter.join().unwrap();
+        assert_eq!(found, Some(("j".to_string(), 4242)), "a starting job escaped the exit's kill");
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    /// A start that fails frees the slot: nothing to kill, and no wait for the full bound. One that
+    /// never gets a pgid is given up after the bound. An idle slot and a running job answer at once.
+    #[test]
+    fn exit_gives_up_on_a_freed_or_stuck_start_within_the_bound() {
+        let runner = starting("j");
+        let r = runner.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            *r.running.lock().unwrap() = None;
+        });
+        let started = Instant::now();
+        assert_eq!(runner.job_to_terminate(STARTING_JOB_WAIT, STARTING_JOB_POLL), None);
+        assert!(started.elapsed() < Duration::from_secs(1), "a freed slot waited for the bound");
+
+        let stuck = starting("k");
+        let started = Instant::now();
+        assert_eq!(stuck.job_to_terminate(Duration::from_millis(200), STARTING_JOB_POLL), None);
+        assert!(started.elapsed() >= Duration::from_millis(200));
+
+        let idle = JobRunner::new(std::env::temp_dir());
+        assert_eq!(idle.job_to_terminate(STARTING_JOB_WAIT, STARTING_JOB_POLL), None);
+        let running = starting("r");
+        running.running.lock().unwrap().as_mut().unwrap().pgid = 7;
+        assert_eq!(running.job_to_terminate(STARTING_JOB_WAIT, STARTING_JOB_POLL), Some(("r".into(), 7)));
+        assert_eq!((STARTING_JOB_WAIT, STARTING_JOB_POLL), (Duration::from_secs(2), Duration::from_millis(20)));
+    }
+
+    /// `terminate_on_exit` (it needs an `AppHandle`, so a source pin) takes its job through the
+    /// bounded poll above, with the decided bounds.
+    #[test]
+    fn terminate_on_exit_waits_out_a_starting_job_through_the_poll() {
+        let src = include_str!("local_backend.rs");
+        let start = src.find("pub fn terminate_on_exit(app: &AppHandle) {").expect("terminate_on_exit");
+        let body = &src[start..start + src[start..].find("\n}\n").unwrap()];
+        assert!(body.contains("runner.job_to_terminate(STARTING_JOB_WAIT, STARTING_JOB_POLL)"), "{body}");
+    }
 
     fn scratch(tag: &str) -> PathBuf {
         use std::sync::atomic::{AtomicU64, Ordering};

@@ -7,10 +7,16 @@
 //! spells the targets, and returns a [`GrantView`] the UI can show. Every write is the grant core's
 //! own `BEGIN IMMEDIATE` transaction, short and local, so the commands are synchronous like the
 //! other short database commands (the threading rule in `wiki/modules/tauri-core.md`).
+//!
+//! The switch's two commands (ADR-027 M2a), `mcp_status` and `mcp_set_enabled`, are the exception:
+//! they reach the MCP lifecycle, whose transition can reconcile, bind and `stat`, so they are `async`
+//! with their work in `spawn_blocking`, and the main thread never takes the lifecycle mutex.
+
+use std::sync::Arc;
 
 use rusqlite::Connection;
 use serde::Serialize;
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
 
 use crate::commands::jobs::get_job_conn;
 use crate::commands::settings::DbState;
@@ -21,6 +27,7 @@ use crate::mcp::grant::{
     target_text, Grant, NewGrant,
 };
 use crate::mcp::resolve::header_of_input;
+use crate::mcp::server::lifecycle::{McpLifecycle, McpStatus};
 use crate::mcp::signature::MethodSignature;
 
 /// The state of a grant as the UI shows it.
@@ -174,6 +181,49 @@ pub fn mcp_get_grant(db: State<'_, DbState>) -> Result<Option<GrantView>, AppErr
 pub fn mcp_level_from_job(db: State<'_, DbState>, job_id: String) -> Result<String, AppError> {
     let conn = db.lock()?;
     level_from_job_conn(&conn, &job_id)
+}
+
+// ----- the switch (ADR-027 M2 amendment, item 2) -----
+
+/// Settings → MCP's status: the switch, whether this instance serves, and why not. Advisory.
+/// `async`, with the work in `spawn_blocking`, so the GTK main thread never runs it.
+#[tauri::command]
+pub async fn mcp_status(app: AppHandle) -> Result<McpStatus, AppError> {
+    mcp_status_core(managed_lifecycle(&app)?).await
+}
+
+/// Settings → MCP's switch: write `mcp_enabled` (its only writer) and run one tick step at once.
+/// Returns the status after it. `async`, with the work in `spawn_blocking`: the step can take the
+/// lifecycle mutex, reconcile, bind and `stat`, and the main thread never takes that mutex.
+#[tauri::command]
+pub async fn mcp_set_enabled(app: AppHandle, on: bool) -> Result<McpStatus, AppError> {
+    mcp_set_enabled_core(managed_lifecycle(&app)?, on).await
+}
+
+fn managed_lifecycle(app: &AppHandle) -> Result<Arc<McpLifecycle>, AppError> {
+    app.try_state::<Arc<McpLifecycle>>()
+        .map(|state| state.inner().clone())
+        .ok_or_else(|| AppError::Internal("the MCP lifecycle is not set up".into()))
+}
+
+/// [`mcp_status`]'s body, off the caller's thread.
+pub(crate) async fn mcp_status_core(lifecycle: Arc<McpLifecycle>) -> Result<McpStatus, AppError> {
+    off_the_callers_thread("mcp_status", move || Ok(lifecycle.status())).await
+}
+
+/// [`mcp_set_enabled`]'s body, off the caller's thread.
+pub(crate) async fn mcp_set_enabled_core(lifecycle: Arc<McpLifecycle>, on: bool) -> Result<McpStatus, AppError> {
+    off_the_callers_thread("mcp_set_enabled", move || lifecycle.set_enabled(on)).await
+}
+
+/// Run `work` on Tauri's blocking pool and wait for it (as `test_server_profile` does).
+async fn off_the_callers_thread<T: Send + 'static>(
+    what: &'static str,
+    work: impl FnOnce() -> Result<T, AppError> + Send + 'static,
+) -> Result<T, AppError> {
+    tauri::async_runtime::spawn_blocking(work)
+        .await
+        .map_err(|e| AppError::Backend(format!("{what} task failed: {e}")))?
 }
 
 #[cfg(test)]

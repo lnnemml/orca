@@ -19,8 +19,9 @@ mod manual;
 // The MCP orchestration server's core (ADR-027): the M1a classifier and input assembly, the M1b
 // grant core, steps, resolver, preflight and the sidecar's SMILES call, and the M2a Part A transport
 // cores (`mcp::server`: lock, socket, server, gate, lifecycle, relay). M1b Part B wires the grant
-// commands (`commands::mcp`) and the `submit_job` guard, and `set_setting` uses `mcp::switch`; the
-// transport is wired by M2a Part B, and steps A/C, the resolver and `SidecarSmiles` by M3. Scoped
+// commands (`commands::mcp`) and the `submit_job` guard, and `set_setting` uses `mcp::switch`; M2a
+// Part B wires the transport (`mcp::server::wiring`: setup, the tick, `ExitRequested`, the relay) and
+// `mcp_status`/`mcp_set_enabled`. Steps A/C, the resolver and `SidecarSmiles` are wired by M3. Scoped
 // allow until then, so the build stays warning-clean without a faked caller.
 #[allow(dead_code)]
 mod mcp;
@@ -70,6 +71,13 @@ pub fn run() {
             // connection is handed to managed state.
             local_backend::reconcile_on_startup(&conn);
             app.manage(DbState(Mutex::new(conn)));
+
+            // --- MCP (ADR-027 M2a): the lifecycle over the managed DbState, and its tick thread,
+            // whose first step runs at once (a switch left on serves from app start). A path
+            // refusal never fails setup: it becomes the status reason. ---
+            let mcp_lifecycle = mcp::server::wiring::app_lifecycle(app.handle());
+            app.manage(mcp_lifecycle.clone());
+            mcp::server::wiring::start_ticks(mcp_lifecycle)?;
 
             // --- LocalBackend: job-directory root + single execution slot. ---
             app.manage(local_backend::JobRunner::new(data_dir.clone()));
@@ -141,6 +149,8 @@ pub fn run() {
             commands::mcp::mcp_revoke_grant,
             commands::mcp::mcp_get_grant,
             commands::mcp::mcp_level_from_job,
+            commands::mcp::mcp_status,
+            commands::mcp::mcp_set_enabled,
             commands::jobs::delete_job,
             commands::jobs::pause_queue,
             commands::jobs::resume_queue,
@@ -224,17 +234,27 @@ pub fn run() {
         .expect("error while building tauri application");
 
     app.run(|app_handle, event| {
-        if let tauri::RunEvent::ExitRequested { .. } = event {
-            // Kill any running ORCA tree first — its MPI ranks escape the
-            // parent's process group, so if we just exit they outlive the app
-            // burning CPU (mpirun can't forward our signal once we're gone, and
-            // no reconciliation runs until the next launch). Synchronous by
-            // design (see `terminate_on_exit`).
-            local_backend::terminate_on_exit(app_handle);
-            // Kill the sidecar on a clean exit so uvicorn doesn't outlive the app.
-            if let Some(sidecar) = app_handle.try_state::<Arc<SidecarManager>>() {
-                let _ = sidecar.stop();
+        if let tauri::RunEvent::ExitRequested { api, .. } = event {
+            // The exit flow (ADR-027 M2 amendment, item 6), off the main thread: the MCP wait, then
+            // `terminate_on_exit` (an ORCA tree's MPI ranks escape its process group and would
+            // outlive the app), then the sidecar stop, then the lock release and `app.exit(0)`,
+            // whose own `ExitRequested` passes through. Nothing runs here but the hand-off.
+            if mcp::server::wiring::exit_requested(app_handle) {
+                api.prevent_exit();
             }
         }
     });
+}
+
+/// Whether the process was started as `orcastudio --mcp` (ADR-027 M2 amendment, item 3). `main.rs`
+/// asks before [`run`], so the relay opens no window and initialises no GTK.
+pub fn is_mcp_relay(first_arg: Option<&std::ffi::OsStr>) -> bool {
+    mcp::server::wiring::is_relay_invocation(first_arg)
+}
+
+/// `orcastudio --mcp`: the stdio relay to this user's MCP socket. Returns the process exit code
+/// (0 the client closed, 1 the server closed or a stream failed, 2 not reachable or the path refused).
+/// Nothing but relayed bytes reaches stdout.
+pub fn mcp_relay() -> i32 {
+    mcp::server::wiring::relay_main()
 }

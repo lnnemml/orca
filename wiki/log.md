@@ -12791,3 +12791,230 @@ code did. The test now waits for the serve loops to end first.
   - `terminate_on_exit` now runs off the main thread, which needs a check;
   - what the user sees during the exit wait is the live gate;
   - the switch row is a render gate.
+
+## [2026-11-19] feat | ADR-027 M2a Part B — the MCP transport wired, the switch row
+
+**What landed** (uncommitted, on `main` at `f0c3962`; pending verifier CODE and Anton's live gate).
+Part A's cores are wired into the app, and Settings has the switch row. Module pages:
+[mcp-server.md](modules/mcp-server.md) ("The wiring"), [tauri-core.md](modules/tauri-core.md) (setup,
+exit, the commands), [frontend.md](modules/frontend.md) (Settings → MCP).
+
+- **`mcp/server/wiring.rs`** (new) — the app's side, each piece a plain function where it can be:
+  `ManagedDb` (a `DbSource` over the managed `DbState`, through the app handle), `wired_lifecycle` /
+  `app_lifecycle`, `start_ticks` (the `mcp-tick` thread: one step at once, then every 30 s);
+  `exit_requested` → `handle_exit_request` → the pure `prevents_exit`; `guarded_steps` (each exit step
+  under `catch_unwind`); `run_backstop`; `is_relay_invocation` and `relay_main`.
+- **`lib.rs`** — setup builds the lifecycle right after `DbState` is managed, manages it as
+  `Arc<McpLifecycle>` and starts the tick. `ExitRequested` is now the hand-off only: `if
+  wiring::exit_requested(app) { api.prevent_exit() }`. The old synchronous `terminate_on_exit` and
+  `sidecar.stop()` calls are gone from it; they run once each, as steps of the flow, off the main
+  thread, in the order queue pause → MCP wait → `terminate_on_exit` → sidecar stop → lock release →
+  `exit_ready` → `app.exit(0)` (the queue pause came in the first fix round, below). `mcp_status` and `mcp_set_enabled` are registered. `is_mcp_relay` and `mcp_relay` are
+  the two `pub` entry points `main.rs` uses.
+- **`main.rs`** — `if is_mcp_relay(args_os().nth(1)) { process::exit(mcp_relay()) }` before `run()`.
+- **`commands/mcp.rs`** — `mcp_status()` and `mcp_set_enabled(on)`, both `async`, both thin shells
+  over `*_core` functions that run the work through `spawn_blocking`.
+- **`lifecycle.rs`** — `LifecycleEnv::production_at(db, paths)` (`production` now calls it), and the
+  reconciliation under `with_busy_timeout(RECONCILE_BUSY_TIMEOUT = 250 ms)` with a drop-guard restore
+  (F2).
+- **Frontend** — `McpStatus` in `types.ts`; `src/mcp/status.ts` (the pure status line and the data
+  line); `src/mcp/McpSection.tsx`, mounted as the last card of `SettingsScreen`.
+- Doc fixes riding along: `terminate_on_exit`'s doc (off the main thread, and why that is safe);
+  `reconcile_submitting_conn`'s stale "not called from anywhere yet".
+- **F1** (ADR, the only ADR edit): the caps bullet of the M2 amendment, item 1, now says the 4-permit
+  cap counts `tools/call` only; `initialize`, `tools/list` and `ping` take no permit.
+
+**Tests:**
+- `cargo build`: no warnings. `cargo test --workspace`: `orcastudio_lib` **1285 → 1302** passed (+13
+  `mcp::server::wiring_tests`, +2 `lifecycle_tests`, +2 `commands::mcp::tests::switch`), **30**
+  ignored; the new integration target `tests/mcp_relay_bin.rs` **3** passed; `orcastudio-core`
+  unchanged (24 + 6 + 1 + 2 doc; 1 ignored). The MCP suite (`mcp::`, `commands::mcp`,
+  `commands::settings`: 219, plus the 3 binary tests) ran green **3 times in a row**.
+- `npx tsc --noEmit` clean. `npx vitest run`: **1373 → 1381** passed (+8,
+  `src/screens/SettingsScreen.mcp.test.tsx`), 2 skipped.
+
+**Negative controls** (25, **25/25 RED** in the final run; each restored byte-identically,
+sha256-checked; the `src-tauri/src`, `src-tauri/tests` and `src` trees sha256-identical after the run;
+`scratchpad/m2b_controls.py`; a compile or transform error does not count, and 18 controls also require
+their test's own message):
+- P1 the wired lifecycle (production env, scratch paths) letting a non-holder reconcile — Part A's C2
+  mutation, caught by its effect (A's charged `submitting` draft refunded), not by a counter;
+- P2/P3 `prevents_exit` true only on `Started` (an absorbed request would exit), or always (the flow's
+  own `app.exit` would be prevented);
+- P4/P5 the old synchronous `terminate_on_exit` or `sidecar.stop()` left in `ExitRequested` (a source
+  pin: no `AppHandle` harness exists, as the M1b guard pins);
+- P6/P7 exit with MCP never enabled skipping the kill and the sidecar stop, or not calling `exit`;
+- P8 a panicking step stopping the exit (no `catch_unwind`); P9 the backstop taking a hung flow for a
+  finished one;
+- P10 the switch commands' work on the caller's thread instead of `spawn_blocking` (a real run: the
+  cores driven by `block_on` from a test thread, with a thread-recording `DbSource`); P11 `mcp_status`
+  made a synchronous command (a source pin);
+- F2a the short busy timeout not set; F2b not restored; F2c not restored on the error path; F2d the call
+  site bypassing it;
+- B1–B5 the built `orcastudio --mcp` (an integration test running the real binary, with
+  `XDG_RUNTIME_DIR`, `HOME` and `XDG_DATA_HOME` in a scratch dir and no display): exit 0 with nothing
+  listening; no stderr line; a banner on stdout from `main`; the `--mcp` branch after `run()` (the
+  binary then tries to start GTK and fails, so stderr is not the one line); a line on stdout from the
+  relay entry;
+- U1–U5 the Settings row (screen-level vitest over a mocked `invoke`): the data line missing; "serves"
+  shown while `serving` is false; the toggle not calling `mcp_set_enabled`; the reason not shown; no
+  polling while open.
+
+P1 first stayed **green**, and it was the **test's** fault: its seed was a `submitting` draft on a grant
+with `charged_jobs = 0`, so the mutated reconciliation's refund hit `CHECK (charged_jobs >= 0)`, rolled
+back, and the mutation's `let _ =` hid it. The seed now charges the grant as step A does, and the test
+ends by reconciling the seed itself (`refunded: 1`), so it shows the row is one a reconciliation changes.
+
+**F3:** the Part A control "exit releasing the lock while a task of an older tracker generation still
+runs" is satisfied by **composition**, C19 (a closed generation kept until its tasks end, and
+`wait_all` waits on all) with C30 (the flow waits for stop complete before the release). The state it
+names is unreachable through the lifecycle: every stop waits on every generation before it completes,
+and a start opens a new generation only after the previous stop completed.
+
+**Findings for Anton:**
+- **`terminate_on_exit` off the main thread is safe.** It touches managed state (`try_state`), the
+  `JobRunner`'s `running` mutex, `killpg`/`kill`, `/proc` and sleeps; no window, no GTK, no event. Its
+  blocking wait (up to about 12 s) no longer freezes the main thread; `prevent_exit` keeps the process
+  alive until it returns.
+- **Exit with MCP never switched on** runs the same flow: `exit_flow` switches off with nothing serving,
+  so its stop has only the empty gate to wait for; then the kill, the sidecar stop, the (absent) lock
+  release and `app.exit(0)`. Measured under 1 s in the test (the steps there are instant).
+- **A hang or a panic cannot leave the app un-exitable.** A panicking step is caught and the rest run.
+  A backstop thread starts with the flow: if `exit` is not reached within 60 s (`EXIT_FLOW_DEADLINE`), or
+  the flow dies first, it runs its own queue pause, kill and sidecar stop (at most 15 s) and ends the
+  process with `libc::_exit(1)`; if the process outlives `exit` by 10 s, it ends it too (the grace,
+  the pause in the backstop's steps and `_exit` are from the two fix rounds below). Without it, a
+  stuck flow would absorb every later close request (`Absorbed` → `prevent_exit`) for ever.
+
+**Decided here (within the brief), for the verifier and Anton:**
+- **The backstop and its 60 s / 15 s deadlines are mine**, added to meet "a hang or panic cannot leave
+  the app un-exitable". A hard end is a crash in the reconciliation's terms: the next holder refunds a
+  job left in step B. M3, whose tracked tasks can take longer, should revisit 60 s. Lean: keep it.
+- **`args_os()`, not `args()`**: `args()` panics on a non-UTF-8 argument; `--mcp` is compared as an
+  `OsStr`.
+- **A path refusal in the relay exits 2** (`RelayEnd::NotRunning`'s code), with the one line
+  `orcastudio --mcp: <the refusal>`.
+- **`ExitRequested` without a managed lifecycle** (unreachable: setup manages it, and a failed setup
+  never reaches the event loop) runs the kill and the sidecar stop inline and passes through, as before.
+- **The tick thread failing to spawn fails setup** (`?`), as `poller::app::start` does; a path refusal
+  never does.
+- **The row keeps Settings' local-state pattern** (no Zustand store): the other Settings cards use
+  local state, and nothing else reads MCP's status.
+- **The status line**: "This instance serves on `<socket>` — N clients connected." only when `serving`;
+  otherwise "This instance does not serve: `<reason>`." plus "Stopping (N tasks)." while a stop runs.
+  `enabled: null` is said in its own line, not shown as off. A failed read drops the status and shows
+  the error; a failed toggle shows "The switch failed: …". Polling every 5 s.
+- **After a toggle the status is re-read** even though `mcp_set_enabled` returns one, so a failed
+  toggle also shows the real state.
+
+**Open:**
+- what the user sees during the exit wait (the live gate below);
+- the packaged binary's name (unchanged, Open until a release build).
+
+**Fix round after verifier CODE** (PASS WITH FINDINGS on tree `cc44544`; the fixes decided by Anton):
+- **MED, the exit order unpinned.** Nothing pinned `exit_ready.store` before `(steps.exit)()`: the
+  verifier swapped them (its H5) and every `mcp::server` test stayed green, yet in the app the swap
+  makes the flow's own `app.exit(0)` `Absorbed`, so the app never exits. New test
+  `lifecycle_tests::the_flows_own_exit_passes_through`: the `exit` step itself asks
+  `on_exit_requested` and the test requires `PassThrough`.
+- **The backstop no longer stands down at `exit`.** After hearing `exit` it waits a further
+  `EXIT_GRACE` (10 s) and, if the process is still alive, ends it (`Backstop::StillAlive`); the 60 s
+  "flow did not reach exit" arm stays. `run_backstop` now takes `BackstopTimings`, and `backstop(…,
+  end)` takes the end as a parameter.
+- **The end is `libc::_exit(1)`** (`hard_end`, with a SAFETY comment), not `std::process::exit`: no
+  atexit handler runs that could deadlock against the GTK/WebKit loop. It is injected, so no test calls
+  it.
+- **The exit flow pauses the local queue first** (a pre-existing bug, not a regression). The job
+  `terminate_on_exit` kills frees its slot, and its drive thread's `try_start_next` could start the
+  next queued ORCA job during the kill's 2 s grace; that mpirun outlived the app, because the SIGKILL
+  sweep matches only the old job dir. `ExitSteps` gained `pause_queue`, run before the MCP wait;
+  the app's step calls `JobRunner::pause_for_exit`. `try_start_next` already honoured the flag under
+  the `running` lock; its claim is extracted, unchanged, as `JobRunner::claim_next`, so a test can
+  drive it without an `AppHandle`. It holds with MCP never enabled. Noted in `local_backend`'s docs,
+  `execution-backends.md`, `tauri-core.md`, `mcp-server.md` and the ADR.
+- **Not changed (Anton):** a failed tick-thread spawn still fails setup, as the poller does.
+- The ADR's backstop bullet (item 6) now states the grace, `_exit`, the crash semantics and that M3
+  revisits the 60 s, and a queue bullet follows it.
+
+New controls (8, plus P9 rewritten): **H5** `exit_ready` set after `exit`; **G1** the backstop standing down at `exit`
+(the grace arm removed); **G2** the grace not waited; **E1** `std::process::exit` instead of `_exit`
+(a source pin); **Q1** the flow not running the pause; **Q2** `pause_for_exit` a no-op; **Q3** the
+claim ignoring the flag; **Q4** the app's steps not pausing (a source pin); and **P9** rewritten for
+the new backstop (the hung arm never firing). Tests:
+`wiring_tests::a_process_that_outlives_exit_is_ended_after_the_grace` (a fake `exit` that returns),
+`wiring_tests::no_queued_job_starts_once_the_exit_flow_has_begun` (the real claim against a queued
+job, inside `terminate`; it ends by showing the seed is claimable when nothing paused it),
+`wiring_tests::the_production_backstop_bounds_are_the_decided_ones`, and the H5 test above.
+
+Counts after the fix round: `cargo build` no warnings; `orcastudio_lib` **1306** passed (+4 over the
+first Part B tree), 30 ignored; `mcp_relay_bin` 3; `orcastudio-core` unchanged. The MCP suite (223 + 3)
+green **3 times**. `tsc` clean; vitest **1381** passed, 2 skipped. Controls: **33/33 RED** (the 25 of
+the first round, P9 rewritten, plus the 8 new), trees sha256-identical.
+
+**Residual, for Anton:** a claim already in flight when the pause lands (a job that finished at that
+instant) reserves the slot with `pgid 0` while ORCA starts; if `terminate_on_exit` runs inside that
+window it finds no pgid and returns, and the new job starts. The window is the spawn's own (ms), and
+`terminate_on_exit`'s handling of a starting job is unchanged from before; not fixed here.
+
+**Second fix round** (verifier CODE on tree `4c0e623`: PASS WITH FINDINGS, 33/33 confirmed, the MED
+closed; Anton decided to fix the three LOW findings and the docs before his live gate):
+- **A job still starting escaped the exit's kill.** With its slot claimed and pgid still 0
+  (`prepare_job_dir` and the spawn running), `terminate_on_exit` returned at once; the new ORCA then
+  outlived the app, and the next start's `reconcile_on_startup` failed a job whose orphan was still
+  writing. This closes the residual named in the first fix round. `terminate_on_exit` now takes its job
+  through `JobRunner::job_to_terminate(STARTING_JOB_WAIT = 2 s, STARTING_JOB_POLL = 20 ms)`: it polls
+  until the pgid is set (then kills it) or the slot is empty (then returns); after 2 s at pgid 0 it
+  says so on stderr and returns. Worst case 2 + 10 + 2 ≈ 14 s, inside the backstop's 15 s and 60 s.
+  Tests: a slot reserved at pgid 0 whose pgid is set ~100 ms later is returned for the kill; a freed
+  slot returns at once; a stuck start gives up at the bound; and a source pin binds `terminate_on_exit`
+  to the poll.
+- **The backstop's own steps did not pause the queue.** In the `Died` arm the flow's pause may never
+  have run. `backstop_steps(pause, terminate, sidecar_stop)` now runs the pause first (idempotent), and
+  `start_backstop` builds its steps through it. Test: a dead flow's backstop runs pause → kill →
+  sidecar stop; a pin binds `start_backstop` to it.
+- **"Pause before the MCP wait" was documented but not pinned.** The verifier moved the pause after
+  `stop.wait()` and all 221 tests stayed green. `lifecycle_tests::recording_steps` now records the pause
+  in `Seen`, and the exit-order test requires it to run while the tracked task is still held.
+- **Docs:** this entry's exit order now includes the pause, and its backstop sentence says `_exit`;
+  `tauri-core.md` says `Drop` on `SidecarManager` runs on neither `_exit` nor `process::exit` (the
+  backstop runs `stop_sidecar` itself); `execution-backends.md` describes the pgid-0 wait, and its stale
+  "App exit … synchronously" bullet is rewritten for the exit flow. The ADR's backstop bullet names
+  the queue pause among the backstop's steps.
+
+New controls (5): **T1** the poll removed (pgid 0 → `None` at once); **T2** `terminate_on_exit` waiting
+0 s (a source pin); **B6** `backstop_steps` without the pause; **B7** `start_backstop`'s steps without
+the pause (a source pin); **V1** the verifier's move of the pause after `stop.wait()` (a two-edit
+mutation; the control script now takes a list of edits).
+
+Counts after the second fix round: `cargo build` no warnings; `orcastudio_lib` **1310** passed (+4: three
+`local_backend::tests`, one `wiring_tests`), 30 ignored; `mcp_relay_bin` 3; `orcastudio-core` unchanged.
+The MCP suite with `local_backend` (259 + 3) green **3 times**. `tsc` clean; vitest **1381** passed, 2
+skipped. Controls: **38/38 RED** (33 + 5), trees sha256-identical.
+
+**Live-gate checklist for Anton** (WebKitGTK; `npm run tauri dev`; back up the DB first):
+1. **The row renders** in light and dark: the switch, the data line beside it, the status line. Toggle
+   on → "This instance serves on `$XDG_RUNTIME_DIR/orcastudio/mcp.sock` — 0 clients connected."; toggle
+   off → "This instance does not serve: MCP is off." (with "Stopping (0 tasks)." for a moment at most).
+2. **Restart with the switch on** → serving right after start (the first tick runs at setup), without
+   waiting 30 s.
+3. **A second instance** on the same DB (a second `tauri dev` is not practical; the built
+   `target/debug/orcastudio` started while the first runs) → "This instance does not serve: another
+   OrcaStudio instance holds the MCP lock." Switching the first off makes the second serve within 30 s.
+4. **Quit with MCP on** (close the window): note what is seen during the wait (the source says the
+   window is already gone on close-the-last-window); the process really ends — `pgrep -a orcastudio`
+   empty — and no `$XDG_RUNTIME_DIR/orcastudio/mcp.sock` is left. If an ORCA job was running, its ranks
+   are gone too (`pgrep -a orca`).
+5. **`target/debug/orcastudio --mcp` from a terminal with the app closed** → exactly one stderr line,
+   "OrcaStudio is not running, or its MCP server is off", nothing on stdout, `echo $?` → 2. With the
+   app open and MCP off: the same.
+6. **End to end:** a throwaway folder with a project `.mcp.json` naming
+   `<repo>/target/debug/orcastudio` with `args: ["--mcp"]`; a Claude Code session there calls
+   `get_grant` and gets `{"grant": …}`; Settings shows "1 client connected" while it is connected.
+7. **Quit while a local job runs and another is queued** → no ORCA left (`pgrep -a orca` empty) a few
+   seconds after the window closes; the queued job was not launched during the exit (it is still
+   `queued` in the DB, and the resumed queue starts it at the next app start).
+8. **A normal quit is clean and fast** (this settles whether the 10 s grace is safe): run the app from a
+   terminal, close the window, and check that stderr has no "the process outlived app.exit by the
+   grace" line, that `echo $?` gives **0**, and that `pgrep -a orcastudio` comes back empty well under
+   10 s after the window closed (time it: `while pgrep orcastudio >/dev/null; do sleep 0.2; done`
+   started at the close). Once with MCP off and once with MCP on and a client connected.

@@ -273,6 +273,12 @@ Create and Run is uncovered (named in o26.8).
 - **Pause is queue-only.** `pause_queue` stops the *next* job from starting; the running job runs to
   completion. We deliberately do **not** SIGSTOP the running ORCA: it holds all its RAM
   (nprocs × maxcore) frozen, and MPI ranks stopped mid-communication may not resume cleanly.
+- **Exit pauses the queue for good.** The exit flow's first step (ADR-027 M2 amendment item 6;
+  `JobRunner::pause_for_exit`) sets the flag before `terminate_on_exit` runs, so the slot the killed
+  job frees starts nothing: otherwise its drive thread's `try_start_next` could launch the next queued
+  ORCA during the kill's 2 s grace, and that mpirun would outlive the app (the SIGKILL sweep matches
+  only the old job dir). The slot claim is `JobRunner::claim_next`, which checks the flag under the
+  `running` lock.
 - **Lock order** is always `running` → `db` (only `try_start_next` nests them); `cancel` and
   `start_run` take each lock alone. No inversion, no deadlock.
 
@@ -307,9 +313,18 @@ directory. *(Changed in `[2026-07-28] fix: MPI ranks escape process group on can
   `cancelled`, so the UI needn't wait. The frontend Cancel button shows a disabled "Sending
   cancel…" until the terminal `job:status` arrives (a remote job's ends when `cancel_job` returns,
   ADR-024 o22.14.8).
-- **App exit** (`terminate_on_exit`, from the `lib.rs` `ExitRequested` handler) runs the same
-  `terminate_job` **synchronously** — a spawned thread would die with the process before the ranks
-  do, stranding them.
+- **App exit** (`terminate_on_exit`, a step of the exit flow, off the main thread; ADR-027 M2 amendment
+  item 6, `modules/tauri-core.md`) runs the same `terminate_job` and returns only once the tree is dead;
+  `prevent_exit` keeps the process alive meanwhile, and the flow calls `app.exit` after it. The queue is
+  paused before it (see "Sequential queue").
+- **A job still starting at exit.** Between `claim_next` and the spawn the slot holds the job with
+  **pgid 0** (`prepare_job_dir` and the spawn are running). `terminate_on_exit` takes its job through
+  `JobRunner::job_to_terminate`, which polls every 20 ms for at most 2 s (`STARTING_JOB_WAIT` /
+  `STARTING_JOB_POLL`) until the pgid is set — then it kills that tree — or the slot is empty (the
+  start failed: nothing to kill). A job still at pgid 0 after 2 s is reported on stderr and not
+  killed. Without the wait, the new ORCA would start after the kill returned, outlive the app, and the
+  next start's `reconcile_on_startup` would mark `failed` a job whose orphan is still writing. Worst
+  case for `terminate_on_exit`: 2 s + 10 s + 2 s ≈ 14 s, inside the exit backstop's 15 s and 60 s.
 - `cancel(app, job_id)`: **queued** → finalize as `cancelled` (nothing to kill); **running** → set
   the `cancelled` flag, then spawn `terminate_job`; other status → `Backend(...)`. A **remote** job
   that is queued, running or cancelling is refused first (`ssh_backend::refuse_if_remote_live`, "job …

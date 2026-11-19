@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { reloadLocalMaxcore } from "../memory/local-maxcore";
 
+import { McpSection } from "../mcp/McpSection";
 import { ServersSection } from "../servers/ServersSection";
 import type { CpuPresetInfo, KeySource, ModelInfo } from "../types";
 
@@ -501,6 +502,8 @@ export function SettingsScreen() {
       </div>
 
       <ServersSection />
+
+      <McpSection />
 
       {error ? (
         <div className="banner err" style={{ marginTop: 12 }}>

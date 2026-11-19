@@ -1670,10 +1670,10 @@ and OrcaStudio picks the job up, syncs results, and parses them — no terminal,
             `SidecarSmiles` (the SMILES HTTP call, not yet called)
       - [~] **M2a** transport: `flock`, `0600` socket, `SO_PEERCRED`, `orcastudio --mcp` relay, 4×4 caps,
             the admission gate, the `mcp_enabled` switch + 30 s tick, `get_grant`; a Settings → MCP switch row
-            (ADR-027 M2 amendment) — **Part A built, pending verification** (2026-11-19): the cores in
-            `src-tauri/src/mcp/server/` and `mcp/switch.rs`, not yet wired. Part B: `lib.rs` setup, the
-            tick thread and `ExitRequested`, the `main.rs` relay branch, `mcp_status`/`mcp_set_enabled`,
-            the switch row
+            (ADR-027 M2 amendment) — **Part A `f0c3962`; Part B built, pending verification and
+            Anton's live gate** (2026-11-19): `lib.rs` setup and the tick thread, `ExitRequested` off
+            the main thread (with a backstop), the `main.rs` relay branch, `mcp_status`/`mcp_set_enabled`,
+            the reconcile's 250 ms busy timeout, and the Settings → MCP switch row
       - [ ] **M2b** the read tools (projections, character caps, `measure` with ASE cross-check,
             `list_run_targets` window)
       - [ ] **M3** write tools — `create_job` with grant charging, `cancel_job` (mcp only),
