@@ -12214,3 +12214,12 @@ row only; the shared `.builder-row` rule and the other rows are unchanged. Needs
     list not loaded" option appears after a successful list (NC: render the option whenever
     `runTarget` is set, bypassing `unlistedPick` → red). `NewJobScreen.memory.test.tsx` resets the
     draft and scene stores in `beforeEach`. ADR item 10 wording.
+
+## [2026-11-19] session | ADR-026 committed — the New Job draft survives a tab switch
+- Committed `1d36673` (tree `1bedcb0`, verifier CODE PASS) on `4f0062a`; Anton's live WebKitGTK gate
+  passed (tab switch restores title, input, builder, Run on, fragments and history; Create & Run clears
+  only the work; the seed prompt; New draft; the iteration frame and a radical's multiplicity).
+- Built in worktrees and replayed twice as `main` moved (bulk delete `98e9984`, Phase 5 follow-up
+  `4f0062a`); the only conflicts were appends in `log.md` / `ROADMAP.md`, both sides kept.
+- Open (ADR-026 §Open): create inside the 500 ms content→scene debounce; an xtb run in flight when
+  leaving New Job; persisting the draft across restarts.

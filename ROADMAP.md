@@ -1564,12 +1564,12 @@ preflight. The remaining items (remote `orca_plot`, pause) moved to Phase 6 on 2
       builder's local default, the fan-out accessor, both submit notices (`wiki/modules/frontend.md`).
       **Built, pending Anton's live gate after the commit** (stop `tauri dev` and back up the DB first:
       v22 → v23). **Live gate passed 2026-11-19** (v22 → v23 clean; Anton: everything works); not ticked before G1b.
-- [ ] **New Job draft survives a tab switch** *(ADR-026, 2026-11-19; New Job UX, not remote work — found
+- [x] **New Job draft survives a tab switch** *(ADR-026, 2026-11-19; New Job UX, not remote work — found
       while testing 5.5 and done in Phase 5's window)*: a session-only Zustand draft store
       (`src/screens/new-job-draft.ts`) holds the work (title, input, iteration context, …) and the
       preferences (builder, Run on, group); the mount no longer clears the scene; seeds ask before
       replacing a draft with work; "New draft"; a create clears only the work. **Part A (pure store)
-      and Part B (wiring) built 2026-11-19, pending Anton's live WebKitGTK gate.** Frontend only, no
+      and Part B (wiring) built 2026-11-19; committed `1d36673`; Anton's live WebKitGTK gate passed 2026-11-19.** Frontend only, no
       schema change.
 
 5.4b and 5.5 stay in Phase 5 (Anton, 2026-11-18). Moved to Phase 6 the same day: remote `orca_plot`,
