@@ -1652,8 +1652,21 @@ and OrcaStudio picks the job up, syncs results, and parses them — no terminal,
       [ADR-014](wiki/architecture/adr-014-ai-integration-boundary.md)** (T2 draft: text the author
       reads before Run; geometric constants retrieved, never recalled).
 - [ ] MCP server over the Tauri command layer (T3 of
-      [ADR-014](wiki/architecture/adr-014-ai-integration-boundary.md)) — **depends on Phase 4.5**
-      (nothing to orchestrate while the central object is the Job, not the Reaction)
+      [ADR-014](wiki/architecture/adr-014-ai-integration-boundary.md)) — **Stage 1 designed in
+      [ADR-027](wiki/architecture/adr-027-mcp-orchestration-server.md)** (Phase 4.5 core-complete; Stage 1
+      orchestrates job chains, reaction-level orchestration is Stage 2). Units:
+      - [ ] **M0** probe — relay + socket against real Claude Code, a 15-min tool call, the 50k-char
+            threshold, the `deny` rule, reconnect, `rmcp` over a Unix stream, socket host facts
+      - [ ] **M1a** classifier (R1–R9 / P1–P5), method signature, block key allowlist, Rust
+            charge/mult locator, input assembly (Part A, pure Rust)
+      - [ ] **M1b** source resolver, memory verdict before step A, schema v24, grant create/revoke,
+            `submit_job` `mcp_state` guard, reconciliation in the lock holder
+      - [ ] **M2** socket server + `--mcp` relay + read tools (incl. `measure`)
+      - [ ] **M3** write tools — `create_job` with grant charging, `cancel_job` (mcp only),
+            `create_group`, `wait_for_jobs`, audit log
+      - [ ] **M4** UI — Settings → MCP (grant editor, revoke, audit), Jobs badge + proposal reasons
+            (live gate)
+      - [ ] **M5** live research gate — a real GOAT → Opt+Freq → SP chain driven from a research folder
 - [ ] TS refinement automation: scan maximum → OptTS → Freq → ΔG‡ pipeline
       (if not completed in Phase 4.5)
 

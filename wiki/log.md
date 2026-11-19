@@ -12223,3 +12223,54 @@ row only; the shared `.builder-row` rule and the other rows are unchanged. Needs
   `4f0062a`); the only conflicts were appends in `log.md` / `ROADMAP.md`, both sides kept.
 - Open (ADR-026 §Open): create inside the 500 ms content→scene debounce; an xtb run in flight when
   leaving New Job; persisting the draft across restarts.
+## [2026-11-19] decision | ADR-027 — the MCP orchestration server (T3 Stage 1) accepted
+- **Why now:** after Phase 5, Anton starts real research with Claude driving the app over MCP. His
+  worked example is the sultone cyclization re-computation plan. It showed that most of a study is
+  **job chaining** (GOAT → Opt+Freq → SP; scan maximum → OptTS → IRC), so T3 opens for chains
+  before reaction-level orchestration.
+- **Decided (Anton):**
+  - **Compute authority** is a **grant** created only in the UI: targets, allowed method levels, a
+    job count kept as a stored counter, an in-flight cap that includes jobs still being submitted,
+    and an expiry. It does not limit the run type.
+  - **What goes to Anton.** A model-chosen geometric number becomes a PROPOSED draft for his Run.
+    So does a new species from SMILES or a stored molecule: he confirms its charge and spin once.
+  - **Transport:** a stdio relay `orca-studio --mcp` into a `0600` Unix socket; no HTTP.
+  - **Cancel and delete:** cancel any `origin = 'mcp'` job, including a proposal he ran; no delete.
+  - **Visibility:** a "Claude" badge and an audit log.
+  - **Methodology:** TightOpt is not required in Stage 1; Freq must be at the optimization's level.
+  - **Data:** research data going to the model provider is accepted.
+- **Settled by the orchestrator:**
+  - **The server** runs in-process and is off by default.
+  - **The classifier** `classify_mcp_job` has rows R1–R9 (REFUSED) and P1–P5 (PROPOSED). The header
+    grammar is closed, and `%pal`, `%maxcore` and `! PALn` are refused.
+  - **Block keys** are admitted only with a `wiki/orca` run record: `%geom` `Calc_Hess`, `MaxIter`
+    and Cartesian constraints, and `%cpcm` `smd`/`SMDsolvent`. Everything else is proposed.
+  - **Inputs.** Geometry, charge and multiplicity come only by reference, and the app assembles the
+    input with `emit_coordinate_block` and a re-parse post-condition.
+  - **Charging and submission.** The order is steps A/B/C: `BEGIN IMMEDIATE`, a `submit_job` guard
+    on `mcp_state`, and a refund keyed on the row's state. A reconciliation runs only in the
+    `flock` holder, and the lock is released only at process exit. An expression partial unique
+    index allows one unrevoked grant.
+  - **Following jobs:** `wait_for_jobs(known, ≤ 600 s)`.
+  - **Not exposed:** NEB (it needs two endpoints), and `xtb_optimize`/`crest_grow`, which have no
+    pollable path. `crest_grow` is now named in `tauri-core.md`.
+- **Review:**
+  - DESIGN round 1: FAIL (4 HIGH + 12 MED). The SMILES multiplicity hardcoded to 1; remote charging
+    not atomic; whole blocks admitted; `! PALn`.
+  - Round 2: PASS WITH FINDINGS (3 MED + 8 LOW). The cross-instance reconciliation; no draft edit;
+    the grant invariant had no owner.
+  - Round 3: PASS WITH FINDINGS (1 MED + 4 LOW). The step-B in-flight count; the column-form index
+    enforces nothing (measured on SQLite 3.45.1).
+  - All findings applied. The MCP-client doc quotes were checked verbatim against the live pages.
+- **Next:**
+  - **M0** — a prober run: the relay against real Claude Code, a 15-min call, the 50k-character
+    threshold, the `deny` rule, reconnect, `rmcp` over a Unix stream, and the socket, `flock` and
+    `SO_PEERCRED` facts.
+  - **Then** M1a → M1b → M2 → M3 → M4 (live gate) → M5 (live research gate).
+  - **Stage 2** is named in decision 10 and not designed.
+- **Wiki:**
+  - `architecture/adr-027-mcp-orchestration-server.md` (new);
+  - the ADR-014 amendment pointer;
+  - `modules/tauri-core.md` (the `crest_grow` debt);
+  - `index.md`;
+  - ROADMAP Phase 6 (units M0–M5).

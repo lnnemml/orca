@@ -455,7 +455,9 @@ events (allowed by the `core:default` capability) and filters by `job_id`.
 *pollable* path to its status/result, not only an event**. `submit_job` already satisfies this via
 `get_job`; `xtb_optimize` does **not** (it emits only `xtb:done` / `xtb:error`, no status query). That
 gap is a **named debt**, not fixed here — retrofitting `xtb_optimize` is out of scope for the ADR-014
-documentation unit and touches no code.
+documentation unit and touches no code. `crest_grow` has the same gap (emits only `crest:done` / `crest:error`; found in the
+[ADR-027](../architecture/adr-027-mcp-orchestration-server.md) survey), so neither is exposed over MCP
+until it has a pollable path.
 
 ## The threading rule — a long operation NEVER lives inside a synchronous command
 

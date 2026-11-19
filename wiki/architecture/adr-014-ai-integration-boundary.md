@@ -221,3 +221,19 @@ future lint reads this as a *stated* asymmetry, not a contradiction between two 
 This **refines**, does not cancel, decisions (1)/(1a)/(3): it names charge/multiplicity as a third
 category the same principle already governs (provenance, not recall; enforced by a guard, not a
 prompt), and points the enforcement at the parity check that exists.
+
+## Amendment (2026-11-19) — [ADR-027](adr-027-mcp-orchestration-server.md) opens T3, Stage 1
+
+The decision text above **stands unchanged**; this records the first T3 design. ADR-027 opens
+**orchestration of job chains** over MCP, before the reaction-level orchestration decision (2)
+anticipated (Phase 4.5 is core-complete, and a real research plan showed that chaining jobs carries
+most of a study). It keeps (1) and the charge/multiplicity amendment **as tool shape**: `create_job`
+has no parameter for coordinates, charge or multiplicity. They come from a referenced job, and a new
+species (from SMILES or a stored molecule) always goes to Anton as a PROPOSED draft, so he confirms
+its charge and spin once.
+It keeps (1a) by routing every model-chosen geometric number (a scan range, a constraint value) to
+Anton as a PROPOSED draft. It implements part of (3) as classifier rows: a converged source, parity,
+a scan needs Opt, and Freq at the optimization's level (TightOpt not required in Stage 1, Anton's
+decision). The three guards named in (3) stay debt for Stage 2. It keeps
+(4): `get_job` plus a bounded `wait_for_jobs`, and `xtb_optimize`/`crest_grow` are not exposed.
+Compute authority is a **grant** Anton creates in the UI; the model cannot create or widen one.
