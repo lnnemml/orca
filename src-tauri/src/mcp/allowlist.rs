@@ -55,7 +55,7 @@ pub fn parse_index(token: &str) -> Option<u32> {
 }
 
 /// The number of atom indices for a constraint type letter (any case), as `constraints.ts`.
-fn atom_count(letter: &str) -> Option<usize> {
+pub(crate) fn atom_count(letter: &str) -> Option<usize> {
     match letter.to_ascii_uppercase().as_str() {
         "B" => Some(2),
         "A" => Some(3),
@@ -66,7 +66,7 @@ fn atom_count(letter: &str) -> Option<usize> {
 }
 
 /// The tokens inside a `{…}` entry.
-fn brace_inner(tok: &Token) -> Vec<&str> {
+pub(crate) fn brace_inner(tok: &Token) -> Vec<&str> {
     tok.text.trim_start_matches('{').trim_end_matches('}').split_whitespace().collect()
 }
 
@@ -130,7 +130,7 @@ fn is_solvent_name(tok: &Token) -> bool {
 }
 
 /// The admitted value test for an admitted key of `block`, or `None` when the key is not admitted.
-fn value_rule(block: &str, key: &str) -> Option<(&'static str, fn(&Token) -> bool)> {
+pub(crate) fn value_rule(block: &str, key: &str) -> Option<(&'static str, fn(&Token) -> bool)> {
     let is_true: fn(&Token) -> bool = |t| t.is_word("true");
     let positive_int: fn(&Token) -> bool = |t| {
         t.kind == TokenKind::Word

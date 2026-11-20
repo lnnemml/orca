@@ -84,7 +84,7 @@ fn create_group_conn(
 
 /// All groups (the UI builds the tree from `parent_id`). Ordered by `created_at, id`
 /// for a stable listing.
-fn list_groups_conn(conn: &Connection) -> Result<Vec<Group>, AppError> {
+pub(crate) fn list_groups_conn(conn: &Connection) -> Result<Vec<Group>, AppError> {
     let sql = format!("SELECT {} FROM groups ORDER BY created_at, id", Group::COLUMNS);
     let mut stmt = conn.prepare(&sql)?;
     let groups = stmt

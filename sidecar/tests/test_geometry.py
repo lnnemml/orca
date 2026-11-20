@@ -100,6 +100,28 @@ def test_dihedral_convention_tripwire():
     assert round(gauche.get_dihedral(0, 1, 2, 3), 3) == 67.523
 
 
+# ASE's own values on the butane fixtures (ASE 3.29.0, recorded 2026-11-20): the
+# Rust MCP `measure` tool (src-tauri/src/mcp/tools/geometry_tests.rs) copies these
+# literals and must reproduce them. Distance Å, angle and dihedral degrees.
+ASE_BUTANE = {
+    "anti": (BUTANE_ANTI, 1.5236821924758759, 111.940389836418, 179.99823131562985),
+    "gauche": (BUTANE_GAUCHE, 1.5242421252226686, 113.17379073940005, 67.52301077175457),
+}
+
+
+def test_ase_distance_angle_dihedral_on_butane():
+    """The rule-#10 record for ADR-027 M2b's `measure`: ASE `get_distance(0,1)`,
+    `get_angle(0,1,2)` (vertex = the middle index) and `get_dihedral(0,1,2,3)`
+    on both conformers, printed (run with `-s`) and pinned to 1e-9."""
+    for name, (xyz, d, a, phi) in ASE_BUTANE.items():
+        atoms = _atoms_from_xyz(xyz)
+        got = (atoms.get_distance(0, 1), atoms.get_angle(0, 1, 2), atoms.get_dihedral(0, 1, 2, 3))
+        print(f"[ase {name}] distance(0,1) = {float(got[0])!r} Å, angle(0,1,2) = {float(got[1])!r}°, dihedral(0,1,2,3) = {float(got[2])!r}°")
+        assert abs(got[0] - d) < 1e-9
+        assert abs(got[1] - a) < 1e-9
+        assert abs(got[2] - phi) < 1e-9
+
+
 # ── (b) Each operation on its own ────────────────────────────────────────────
 
 

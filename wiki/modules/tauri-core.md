@@ -660,7 +660,9 @@ Tool details: `wiki/orca/xtb.md`.
   *evidence* when a run fails, which is exactly when `xtb.out` (the only record of where xtb spent
   its time) is needed. The kept dir's path rides the `xtb:error` payload (`dir`) and the UI shows it
   as copyable text; the error message also carries the **last ~20 lines of `xtb.out`** via the
-  shared `read_tail_lines` (bounded tail, rule #5 — one tailer). **Accumulation** is bounded: kept
+  shared `read_tail_lines` (bounded tail, rule #5 — one tailer: it and the MCP `read_output` tool both
+  go through `read_tail_window(path, max_lines, max_bytes)`, 8 MB for this one, 256 KiB for the
+  tool, and the read never passes `max_bytes` even while the file grows). **Accumulation** is bounded: kept
   dirs are pruned to the **`KEEP_DIAGNOSTIC_DIRS` (5) newest at startup** — `dirs_to_prune` (pure +
   tested) sorts by mtime and returns all but the newest N; `prune_diagnostic_dirs` runs off-thread
   in setup. Newest-kept means a **just-failed run's dir is never pruned** by the next launch. No

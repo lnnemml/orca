@@ -186,7 +186,10 @@ pub fn angle(p: &[V3], i: usize, v: usize, j: usize) -> f64 {
     let c = (dot(a, b) / (norm(a) * norm(b))).clamp(-1.0, 1.0);
     c.acos().to_degrees()
 }
-/// Dihedral i–j–k–l in degrees, folded to [0, 360) (matches ASE / `measure.ts`).
+/// Dihedral i–j–k–l in degrees, folded to [0, 360). **Not** ASE's / `measure.ts`'s convention: it
+/// returns 360° − ASE's value (measured on the butane fixtures, ADR-027 M2b; `wiki/architecture/
+/// mcp-transport-probe.md`, "M2b facts"). Whether xtb's own `$constrain` dihedral uses this sign is
+/// unmeasured: an open item in `wiki/orca/xtb.md`.
 pub fn dihedral(p: &[V3], i: usize, j: usize, k: usize, l: usize) -> f64 {
     let b0 = sub(p[j], p[i]);
     let b1 = sub(p[k], p[j]);

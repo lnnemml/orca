@@ -1241,19 +1241,40 @@ fn last_lines(text: &str, n: usize) -> String {
 
 /// Bytes to read from the end when returning the last N lines of a file. Bounds
 /// memory even for tens-of-MB outputs (domain rule #5).
-const TAIL_LINES_MAX_BYTES: u64 = 8 * 1024 * 1024;
+pub(crate) const TAIL_LINES_MAX_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Return the last `max_lines` lines of a file, reading at most
 /// [`TAIL_LINES_MAX_BYTES`] from the end. If the file is larger than that, the
 /// first (possibly partial) line of the window is dropped. Used by
 /// `read_job_output` to backfill the log console without loading whole files.
 pub(crate) fn read_tail_lines(path: &Path, max_lines: usize) -> std::io::Result<Vec<String>> {
+    read_tail_window(path, max_lines, TAIL_LINES_MAX_BYTES).map(|w| w.lines)
+}
+
+/// The last lines of a file, read from a bounded window at its end ([`read_tail_window`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TailWindow {
+    /// At most the requested number of lines, in file order.
+    pub lines: Vec<String>,
+    /// The file's size when it was read.
+    pub file_bytes: u64,
+    /// Where the window began: 0 when the whole file fit in the window.
+    pub window_start_byte: u64,
+    /// The bytes actually read: never more than the window (the rule-#5 gate checks this, not the
+    /// reported offset).
+    pub bytes_read: u64,
+}
+
+/// The core of [`read_tail_lines`], shared with the MCP `read_output` tool: the last `max_lines`
+/// lines of `path`, reading at most `max_bytes` from its end (domain rule #5). If the file is larger
+/// than that, the first (possibly partial) line of the window is dropped.
+pub(crate) fn read_tail_window(path: &Path, max_lines: usize, max_bytes: u64) -> std::io::Result<TailWindow> {
     let mut f = File::open(path)?;
     let len = f.metadata()?.len();
-    let start = len.saturating_sub(TAIL_LINES_MAX_BYTES);
+    let start = len.saturating_sub(max_bytes);
     f.seek(SeekFrom::Start(start))?;
     let mut buf = Vec::new();
-    f.read_to_end(&mut buf)?;
+    f.take(max_bytes).read_to_end(&mut buf)?;
     let text = String::from_utf8_lossy(&buf);
 
     let mut lines: Vec<&str> = text.lines().collect();
@@ -1262,7 +1283,12 @@ pub(crate) fn read_tail_lines(path: &Path, max_lines: usize) -> std::io::Result<
         lines.remove(0);
     }
     let begin = lines.len().saturating_sub(max_lines);
-    Ok(lines[begin..].iter().map(|s| s.to_string()).collect())
+    Ok(TailWindow {
+        lines: lines[begin..].iter().map(|s| s.to_string()).collect(),
+        file_bytes: len,
+        window_start_byte: start,
+        bytes_read: buf.len() as u64,
+    })
 }
 
 /// Replay a finished/running job's `output.out` through a fresh

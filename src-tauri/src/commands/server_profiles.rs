@@ -140,7 +140,7 @@ fn create_server_profile_conn(
 }
 
 /// All server profiles, newest first.
-fn list_server_profiles_conn(conn: &Connection) -> Result<Vec<ServerProfile>, AppError> {
+pub(crate) fn list_server_profiles_conn(conn: &Connection) -> Result<Vec<ServerProfile>, AppError> {
     let sql = format!(
         "SELECT {} FROM server_profiles ORDER BY created_at DESC, id",
         ServerProfile::COLUMNS
@@ -326,7 +326,7 @@ pub struct RunTargetStatus {
 }
 
 impl RunTargetStatus {
-    fn of(profile: &ServerProfile) -> Self {
+    pub(crate) fn of(profile: &ServerProfile) -> Self {
         match is_run_target(profile) {
             Ok(()) => RunTargetStatus { is_run_target: true, reason: None },
             Err(why) => RunTargetStatus { is_run_target: false, reason: Some(why.to_string()) },

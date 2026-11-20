@@ -310,6 +310,41 @@ The M2 amendment cites `tokio-util-0.7.20`; the workspace lock holds 0.7.19, and
 dependency did not move it. Its `TaskTracker::close` says the same, "It does not prevent you from
 spawning new tasks" (`tokio-util-0.7.19/src/task/task_tracker.rs:331`), with `reopen` at `:349`.
 
+## M2b facts (2026-11-20)
+
+Recorded by the M2b Part A implementer, for `measure` (ADR-027 decision 7; M2 amendment, item 8).
+Each fact is a **run** on the dev laptop.
+
+### 1. ASE's distance, angle and dihedral on the butane fixtures (run)
+
+`sidecar/tests/test_geometry.py::test_ase_distance_angle_dihedral_on_butane`, ASE **3.29.0** in the
+sidecar venv, on the `BUTANE_ANTI` and `BUTANE_GAUCHE` fixtures (the coordinates `measure.test.ts`
+uses; carbons are atoms 0–3). Printed with `pytest -s`:
+
+| conformer | `get_distance(0,1)` (Å) | `get_angle(0,1,2)` (°, vertex 1) | `get_dihedral(0,1,2,3)` (°) |
+|---|---|---|---|
+| anti | 1.5236821924758759 | 111.940389836418 | 179.99823131562985 |
+| gauche | 1.5242421252226686 | 113.17379073940005 | 67.52301077175457 |
+
+The pytest pins all six to 1e-9; the dihedrals agree with the existing tripwire (179.998°, 67.523°).
+`src-tauri/src/mcp/tools/geometry_tests.rs` copies the same literals and requires the Rust `measure`
+to reproduce each within 1e-9.
+
+### 2. `xtb::dihedral` gives 360° − ASE's dihedral (run)
+
+The first run of that Rust test against `xtb::dihedral` (`src-tauri/src/xtb.rs`) gave **180.00176868437015°**
+for anti (ASE 179.99823131562985°) and **292.477°** for gauche (ASE 67.523°): the two always sum to 360°.
+`xtb::distance` and `xtb::angle` matched ASE within 1e-9. Before M2b, `xtb::dihedral`'s doc said
+it matched ASE and `measure.ts`; the run shows the opposite handedness, and the doc now says it
+returns 360° − ASE. That is consistent with its formula: with
+`m = n1 × b̂1` and `y = m·n2`, `y = −(n1 × n2)·b̂1`, so this form needs `−atan2(y, x)`, and
+`xtb::dihedral` takes `+atan2(y, x)` (an explanation, not a second measurement). So `measure` ports
+ASE's `get_dihedrals` itself (`ase_dihedral`; decided by Anton, recorded in ADR-027's M2 amendment,
+item 8). M2b changes only `xtb::dihedral`'s doc comment, not its code. What the sign means for the
+xtb constraint path (its default "freeze as is" target and `check_held`) depends on xtb's own
+`$constrain` dihedral convention, which is not measured: an open item with a probe recipe in
+[orca/xtb.md](../orca/xtb.md).
+
 ## Consequences for ADR-027
 
 There is no hard contradiction. The qualifications are applied as the ADR's

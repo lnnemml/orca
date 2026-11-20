@@ -110,12 +110,27 @@ pub(crate) struct CoordinateBlock {
     pub rows: Vec<(String, [f64; 3])>,
 }
 
+/// Why the coordinate block does not read, as a kind and a 1-based line number. **Never the source
+/// text**: a row it cannot read is a coordinate row, and this message reaches the model (M2b
+/// `get_job`, the resolver's R4 reason).
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub(crate) enum CoordinateBlockError {
+    #[error("{}", .0.kind_and_line())]
+    Header(super::charge_mult::ChargeMultError),
+    #[error("line {line}: a coordinate row is not an element and three numbers")]
+    RowShape { line: usize },
+    #[error("line {line}: a coordinate row has a coordinate that is not a finite number")]
+    RowCoordinate { line: usize },
+    #[error("the coordinate block has no closing `*`")]
+    NoCloser,
+}
+
 /// The strict reader of C9, shared by the assembly post-condition and the resolver's source
 /// post-condition (`resolve.rs`): the `* xyz <c> <m>` line by [`locate_xyz_header`], then every
 /// row as exactly an element and three finite numbers, up to a closing `*`. A row it cannot read
-/// is an error, never skipped.
-pub(crate) fn read_coordinate_block(input: &str) -> Result<CoordinateBlock, String> {
-    let (at, cm) = locate_xyz_header(input).map_err(|e| e.to_string())?;
+/// is an error, never skipped, and the error names its line, not its text.
+pub(crate) fn read_coordinate_block(input: &str) -> Result<CoordinateBlock, CoordinateBlockError> {
+    let (at, cm) = locate_xyz_header(input).map_err(CoordinateBlockError::Header)?;
     let mut rows = Vec::new();
     for (i, line) in input.lines().enumerate().skip(at + 1) {
         let t = line.trim();
@@ -124,18 +139,18 @@ pub(crate) fn read_coordinate_block(input: &str) -> Result<CoordinateBlock, Stri
         }
         let toks: Vec<&str> = t.split_whitespace().collect();
         let [el, x, y, z] = toks.as_slice() else {
-            return Err(format!("row `{t}` is not an element and three numbers"));
+            return Err(CoordinateBlockError::RowShape { line: i + 1 });
         };
         let mut xyz_ang = [0.0; 3];
         for (k, s) in [x, y, z].iter().enumerate() {
             match s.parse::<f64>() {
                 Ok(v) if v.is_finite() => xyz_ang[k] = v,
-                _ => return Err(format!("row `{t}` has an unreadable coordinate `{s}`")),
+                _ => return Err(CoordinateBlockError::RowCoordinate { line: i + 1 }),
             }
         }
         rows.push((el.to_string(), xyz_ang));
     }
-    Err("the coordinate block has no closing `*`".into())
+    Err(CoordinateBlockError::NoCloser)
 }
 
 /// Read back the assembled input's coordinate block (the strict reader of C9), after the two
@@ -151,7 +166,7 @@ fn reparse(input: &str) -> Result<(ChargeMult, Vec<CheckedAtom>), String> {
     if star_lines != 2 {
         return Err(format!("{star_lines} `*` lines, expected one block (opener and closer)"));
     }
-    let block = read_coordinate_block(input)?;
+    let block = read_coordinate_block(input).map_err(|e| e.to_string())?;
     let rows = block.rows.into_iter().map(|(element, xyz_ang)| CheckedAtom { element, xyz_ang }).collect();
     Ok((block.charge_mult, rows))
 }

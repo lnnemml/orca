@@ -1,12 +1,12 @@
-# MCP server — the job classifier, input assembly, grant core and transport (`src-tauri/src/mcp/`)
+# MCP server — the job classifier, input assembly, grant core, transport and read tools (`src-tauri/src/mcp/`)
 
-[ADR-027](../architecture/adr-027-mcp-orchestration-server.md), units M1a, M1b and M2a. This module is the
+[ADR-027](../architecture/adr-027-mcp-orchestration-server.md), units M1a, M1b, M2a and M2b. This module is the
 guard that decides whether an AI model may spend compute. A `create_job` call ends in exactly one
 of three dispositions: **REFUSED** (nothing is created), **PROPOSED** (a draft Anton runs by hand)
 or **SUBMITTED** (charged to the active grant). The module also assembles the job's input, so the
 model never writes a coordinate, a charge or a multiplicity (ADR-014 (1)).
 
-The module has four layers. The **pure core** (M1a) is the classifier, the header grammar, the method
+The module has five layers. The **pure core** (M1a) is the classifier, the header grammar, the method
 signature, the allowlist, the charge/multiplicity locator and the input assembly. The **DB-level
 cores** (M1b) are schema v24, the grant core, steps A and C, the crash reconciliation, the
 `submit_job` guard, the source resolver and the memory preflight; each is a `*_conn` function or
@@ -14,7 +14,9 @@ takes `&DbState`. The **app wiring** (M1b Part B) is the grant's Tauri commands 
 the guard in the two commands that submit a job by hand, and `SidecarSmiles`, the resolver's SMILES
 call over HTTP. The **transport** (M2a, `server/`) is the lock, the socket, the `rmcp` server with one
 tool (`get_grant`), the admission gate, the lifecycle that switches it on and off, and the
-`orcastudio --mcp` relay. `server/wiring.rs` connects it to the app: `lib.rs` setup and
+`orcastudio --mcp` relay. The **read tools' cores** (M2b Part A, `tools/`) are the ten read tools of
+decision 7, each a function over a `&Connection` (or `&DbState`) with its character cap; they are
+not yet registered in the server. `server/wiring.rs` connects the transport to the app: `lib.rs` setup and
 `ExitRequested`, the `main.rs` relay branch, and the switch's commands `mcp_status`/`mcp_set_enabled`,
 which Settings → MCP calls. The module stays registered in `lib.rs` under a scoped
 `#[allow(dead_code)]`, because steps A/C, the resolver and `SidecarSmiles` have no non-test caller
@@ -41,6 +43,17 @@ PROPOSED (P5). Nothing reaches SUBMITTED by default.
 | `resolve.rs` | `SourceRef::parse`, `resolve_source(&DbState, reference, &dyn SmilesTo3d)`, `resolve_db_conn`, `header_of_input`; the `SmilesTo3d` seam and `SmilesStructure` |
 | `sidecar_smiles.rs` | `SidecarSmiles: SmilesTo3d` (`from_status(&SidecarStatus)`), `check_reply`; `SMILES_CONNECT_TIMEOUT` (5 s), `SMILES_TIMEOUT` (30 s) |
 | `preflight.rs` | `mcp_maxcore -> McpMaxcore { mib, source }`, `memory_verdict_for -> MemoryVerdict`, the pure `verdict_of` |
+| `tools/mod.rs` | the read tools' shared core: `ToolError` (`Refused`, `Measure`, `TooLarge`, `App`; `from_app` reads `NotFound` as a refusal), `ToolError::refused` (message ≤ 600 bytes), `echo` (echoed input ≤ 200 bytes), `CLIENT_SPILL_CHARS` (50,000), `RESULT_CAP_BYTES` (40,000), `size_of_text` (UTF-8 bytes), `result_text`, `within_cap` (the size post-condition), `clip` (serialised bytes, escapes counted), `page_limit` |
+| `tools/jobs.rs` | `list_jobs(conn, &JobFilter, offset, limit) -> JobsPage`, `get_job(conn, id) -> JobView`; `JobSummary`, `ChargeMultView`, `ReasonView`; the field-level guard (`WITHHELD`, `withheld_fields`) and `tripwire`, the backstop on the serialised view |
+| `tools/header_view.rs` | `reconstruct(input)`: `get_job`'s header built from `parse_header`, the allowlist and the display-only list, never raw text; `coordinate_row(line, Field)` (the tripwire's detector; `Field::Header`/`Text`); `GEOMETRY_BLOCKS`, `DISPLAY_INTEGER_KEYS`, `is_numeric_token`, `HIDDEN_TOKEN`, `is_identifier` |
+| `tools/results.rs` | `get_results(conn, id) -> ResultsSummary`; `FrequencySummary`, `ScanSummary`/`ScanPointView`, `NebSummary`/`MepPointView` |
+| `tools/geometry.rs` | `get_geometry(conn, reference) -> GeometryView`, `measure(conn, reference, indices) -> MeasureView`, the pure `measure_atoms -> Result<Measured, MeasureRefusal>`, `ase_dihedral`; `GEOMETRY_MAX_ATOMS` (600), `COINCIDENT_ANG`, `COLLINEAR_SIN` (both 1e-6) |
+| `tools/output.rs` | `output_path(conn, id)` (the DB read), `read_output_at(job_id, path, &OutputRequest) -> OutputView` (`Tail`/`Search`/`NoOutput`, no lock) |
+| `tools/manual.rs` | `search_manual(conn, query, limit) -> ManualResults` over `manual::index::search_manual` |
+| `tools/targets.rs` | `list_run_targets(conn)`, `list_run_targets_at(conn, local_time, now_min)`, the pure `window_state(window, now_min) -> WindowState`, `local_now` |
+| `tools/memory.rs` | `memory_estimate(db, meminfo, data_dir, header, target) -> MemoryEstimateView` (takes no lock of its own) |
+| `tools/groups.rs` | `list_groups(conn, offset, limit) -> GroupsPage` over `list_groups_conn` |
+| `tools/*_tests.rs`, `tools/test_support.rs` | one test file per tool file plus `budget_tests.rs`; `test_support` has the unit-name walk (`unitless_numeric_keys`), `assert_fits`, and row builders |
 | `*_tests.rs`, `test_db.rs` | one test file per submodule, plus `submit_guard_tests.rs` for the guard's wiring; `test_db.rs` builds a migrated scratch database per test |
 | `../commands/mcp.rs` | the grant commands `mcp_create_grant`, `mcp_revoke_grant`, `mcp_get_grant`, `mcp_level_from_job` and their `*_core`/`*_conn` bodies; `GrantView`, `GrantState`; the switch's `async` commands `mcp_status`, `mcp_set_enabled(on)` over `mcp_status_core`/`mcp_set_enabled_core`. Tests in `commands/mcp_tests.rs` |
 | `switch.rs` | the switch's row: `MCP_ENABLED_KEY` (`mcp_enabled`), `read_enabled_conn`, `write_enabled_conn`, `is_reserved_setting` |
@@ -628,6 +641,199 @@ compared as an `OsStr`, so a non-UTF-8 argument cannot panic `args()`.
 **Settings → MCP** (`src/mcp/McpSection.tsx`, `modules/frontend.md`): the switch, decision 9's data
 line, and the status line from `McpStatus`, re-read on mount, after a toggle and every 5 s.
 
+## The read tools (`tools/`, M2b)
+
+The ten read tools of decision 7 (M2 amendment, items 1, 7 and 8). Each core is a function over a
+`&Connection`, so Part B locks `DbState` for one call through `spawn_blocking`; `memory_estimate`
+takes `&DbState` because the cores it reuses lock it themselves, and `read_output` splits into a DB
+read (`output_path`) and a file read without the lock (`read_output_at`). A refusal is
+`ToolError::Refused` (or `Measure`) with the reason in words; an unknown id is a refusal, not an app
+error.
+
+**Units (rule #11).** Every number names its unit in its field: `_eh`, `_ang`, `_deg`, `_cm1`,
+`_km_mol`, `_k`, `_s`, `_mib`, `_kib`, `_bytes`; a count ends in `_count` and an index in `_index` or
+`_indices`. SQLite's `datetime('now')` times are UTC on the laptop's clock and end in `_utc`.
+`test_support::unitless_numeric_keys` walks a serialised result and lists every numeric key without
+a suffix; the `get_results`, job and `measure` tests require it empty.
+
+**Size (item 7).** The client spills a result over 50,000 characters to a file (M0, measured on
+ASCII text only). Each core's caps (the table below) are sized so that its largest tested result
+stays under **40,000 UTF-8 bytes**, and the result says when it pages or cuts. The guarantee is
+the post-condition, not the caps: every core checks its serialised result (`within_cap`), and a
+result over 40,000 bytes is `TooLarge`, never served. **The unit is the byte** because what the client counts for
+non-ASCII text is unmeasured; a UTF-8 byte count is at least every candidate (characters, UTF-16
+units), so it is the conservative bound. Every field budget below is in serialised bytes too:
+`clip` counts each character as it serialises (`\u00XX` is 6 bytes), so a field full of control
+characters is cut, not refused. A Cyrillic title therefore keeps about half as many characters as an
+ASCII one. **Field budgets stay in UTF-8 bytes** (decided by Anton, 2026-11-20).
+
+**Refusals** quote caller input cut to 200 bytes (`echo`), and every refusal message is cut to 600
+bytes (`ToolError::refused`), including a reused reader's error that quotes the input.
+
+| tool | caps (all stated in the result) |
+|---|---|
+| `list_jobs` | page 20 by default, at most 40; title cut to 120 bytes, error excerpt to 240; `total_count`, `next_offset` |
+| `get_job` | header cut to 6,000, error to 4,000; at most 20 MCP reasons of 400 (`mcp_reasons_note` counts the rest) |
+| `get_results` | at most 20 imaginary modes, 200 scan points, 100 MEP points, 10 warnings of 300; each list beside its full count |
+| `get_geometry` | refused above 600 atoms, with a pointer to `measure` |
+| `read_output` | tail: last 256 KiB of the file, 100 lines by default, at most 400, each cut to 400 bytes, stopped at 36,000 bytes of line text; search: 20 matches by default, at most 50, context at most 3 lines, stopped at 36,000 bytes, `next_offset`; query at most 200 characters |
+| `search_manual` | 10 hits by default, at most 20; snippet 400, title/file/anchor 160, at most 6 breadcrumb entries of 80; query at most 500 |
+| `list_run_targets` | at most 50 profiles (newest first), names cut to 120 |
+| `list_groups` | 50 by default, at most 100; names cut to 120 |
+| `memory_estimate` | fixed shape; header at most 20,000 characters |
+
+**`list_jobs`** is a filtered, paged query over `Job::COLUMNS` / `Job::from_row` (`status`, `origin`,
+`group_id`; all given must match), newest first (`created_at DESC, id DESC`). A filter value outside
+its set is refused with the set. Paging is by offset: a job created between two calls can repeat a
+row, and a deleted one can skip one. `energy_eh` is `jobs.energy` (Eh: the parsed
+`final_energy_eh`, or the tail regex's estimate while unparsed). Each row's `title` and
+`error_excerpt` pass the field-level tripwire below, checked on the whole text before the excerpt is
+cut, and `withheld_fields` names any replaced.
+
+**`get_job`** builds its projection field by field; no field carries `input_content` or the scene
+(ADR-014 invariant 1). **Its header is built, never filtered** (decided by Anton after two verifier
+FAILs on filtering raw text, M2b; ADR-027's M2 amendment, item 8). `header_view::reconstruct` takes
+the input with its main `* xyz` block and the app's `%maxcore` blanked (`header_of_input_in_place`,
+so line numbers are the input's), parses it with M1a's `parse_header`, and emits only parsed parts:
+
+| construct | shown as |
+|---|---|
+| a `!` line | `! ` and its parsed keyword tokens; each numeric-looking token (a digit, sign or `.` first, then only digits, signs, `.`, `e`/`E`/`d`/`D`, `,`, `;`) becomes `[value not shown]`. Method, basis and job type stay (`D3`, `def2-SVP`, `PAL8` are not numbers) |
+| the app's `%maxcore N` | from the strict reader (`memory::read_maxcore`), at its line |
+| an allowlisted key with an admitted value (`allowlist::value_rule`: `%geom Calc_Hess`, `MaxIter`; `%cpcm smd`, `SMDsolvent`) | the key and the value |
+| an allowlisted key with another value | the key, `# value not shown` |
+| a key on the **display-only list** (`DISPLAY_INTEGER_KEYS`: `%pal nprocs`, `%scf MaxIter`, `%neb NImages`, `%geom Recalc_Hess`) with exactly one value of 1–9 digits | the key and the value; any other value: `# value not shown` |
+| a `%geom Constraints` entry `{T i … [v] [C]}` (T = B/A/D/C with its index count, ASCII-digit indices, an optional plain number, an optional `C`) | re-emitted from its parsed parts, the value as written |
+| any other key, in any block | its name only (an identifier), `# values not shown` |
+| any other entry or sub-block (`Scan`, …) | `# … not shown` with its line |
+| `%coords`, `%pointcharges`, a block holding a nested `%` opener, a `*` line | a marker naming the kind and the line |
+| a `$…` line (a second job) | a marker; nothing after it is read |
+| a line the parser refuses | a marker with the parser's reason kind and the line (a run of lines with one reason is one marker), never the line |
+
+The display-only list is **separate from M1a's SUBMITTED allowlist**, which is unchanged: showing a
+value admits nothing (Anton, round 4). The constraint entries are shown although M1a's allowlist
+admits only `{C n C}`: they are indices, a type letter, an optional target and `C`, never a
+coordinate (Anton). An app-built constrained Opt (`! B3LYP D3BJ def2-SVP Opt`, `%maxcore 2000`,
+`%pal nprocs 8 end`, a `%geom Constraints` block) gives:
+
+```
+! B3LYP D3BJ def2-SVP Opt
+%maxcore 2000
+%pal
+  nprocs 8
+end
+%geom
+  Constraints
+    {B 0 1 1.234 C}
+    {A 0 1 2 C}
+    {D 0 1 2 3 90.0 C}
+  end
+end
+```
+
+**Known limitation.** The shared grammar knows only `Constraints` and `Scan` as `%geom` sub-blocks,
+so `TS_Mode {B 0 1} end` closes `%geom` at that `end`: `TS_Mode` is named without its value and the
+later `end` becomes a refused-line marker. Safe, but the rest of that `%geom` is shown as markers.
+M1a's grammar is not changed for display.
+
+The main block is never shown: `atom_count` is its rows, and charge and multiplicity come from the
+strict locator with their source ("the `* xyz` line of job <id>'s input"). **Every error in the
+view is a kind and a line, never source text**, fixed at the source: `read_coordinate_block` returns
+`CoordinateBlockError` (`line N: a coordinate row is not an element and three numbers`, …),
+`header_of_input` returns `HeaderOfInputError`, and `charge_mult.error` is
+`ChargeMultError::kind_and_line` (its `Display` quotes the line and is not used here); each is cut
+to 200 bytes.
+
+**The rule-#9 tripwire works per field** (Anton, round 4). Every text field (`title`, `header`,
+`header_withheld`, `charge_mult.source`/`error`, `notices`, each MCP reason's `row` and `message`,
+`mcp_reasons_note`, `error`, `remote_host`) is checked whole, before any cut. A field holding a
+coordinate-like row is replaced by `"withheld: coordinate-like content (rule #9)"`, named in
+`withheld_fields`, and the rest of the view is served. A failed job's `error` is ORCA's message plus
+the last 20 lines of `output.out` (`local_backend::detect_completion`). It is served unless it holds a
+coordinate-like row, for example an echoed `|  4> * xyz 0 1`; ORCA's `***` banners alone do not
+withhold it (Anton, round 5). A **coordinate-like row** (`header_view::coordinate_row`) is either:
+- a geometry line. In text fields (`Field::Text`) this is only a real geometry opener: `* xyz`,
+  `* int`, `* gzmt` or `* xyzfile`, in any case and with any spacing (`*xyz`), also after ORCA's
+  input-echo prefix (`|  4> * xyz 0 1`). In the built header (`Field::Header`) it is any line
+  starting with `*`;
+- or an element-or-label token (a token with a letter that is not a number: `O`, `O(1)`, `H:`, `geometry:`)
+followed by at least three finite numbers **at any position on the line**, a lone `:` token skipped.
+ORCA's input echo `|  6> C     4.10220628   -0.56008055    0.58413357` (measured in a real
+`output.out`) matches; SCF iteration rows (numbers only) do not. A line starting with `{` (a
+constraint entry) or holding `=` (a scan or parameter definition) is skipped **in the built header
+only** (`Field::Header`); titles, errors and reasons skip nothing (`Field::Text`). Behind the
+guards, `jobs::tripwire` walks the serialised view with the same detector and refuses it if a row
+escaped every guard. ID fields (`id`, `group_id`, `target_profile_id`, `grant_id`) and timestamps
+are not guarded individually; the backstop covers them.
+
+**Notices** are the job's pending states in words: a cancel requested or sent, a submit waiting for
+the server's slot, Claude submitting it.
+
+**`get_results`** summarises `read_job_results` with no per-atom array: `final_energy_eh`,
+`converged`, `atom_count`, the imaginary modes (`imaginary_freqs_cm1` most negative first, their
+`imaginary_ir_km_mol`, the parser's `imaginary_count`, a warning if the two disagree), the
+thermochemistry (`ThermoJson`, every field already suffixed), the scan profile and the NEB summary
+(`relative_energy_eh` along `distance_ang`). A scan coordinate is `coordinate_ang` or
+`coordinate_deg` by the stored `coordinate_unit` literal (`Å`/`°`); any other unit gives no
+coordinate and a warning. No results: `parsed: false` with the reason.
+
+**`get_geometry` and `measure`** read a DB source through `resolve_db_conn` (`job:`, its `scan:`,
+`neb:`, `goat:` frames, `molecule:`). A `smiles:` reference is refused (the read tools do not call
+the sidecar), and so is a job-derived source whose job has not ended in success. `get_geometry` gives
+xyz text (`xyz_ang`, 8 decimals) with charge, multiplicity and their source; its post-condition reads
+the text back with the app's xyz reader (same elements in order, within 1e-8 Å).
+
+`measure` takes 2, 3 or 4 0-based indices (distance, angle with the middle index as the vertex,
+dihedral) and answers `distance_ang`, `angle_deg` (`[0, 180]`) or `dihedral_deg` (`[0, 360)`), in
+ASE's convention. Distance and angle are `xtb::distance` and `xtb::angle`. **The dihedral is not
+`xtb::dihedral`**, which gives 360° − ASE's value; it is `ase_dihedral`, a line-for-line port of ASE's
+`get_dihedrals` (as `measure.ts` has). The ASE cross-check uses the butane fixtures of
+`sidecar/tests/test_geometry.py`, whose values are recorded in
+[mcp-transport-probe.md](../architecture/mcp-transport-probe.md), "M2b facts". It refuses, never
+panics and never returns a number, for:
+- a count other than 2–4, an index out of range, a repeated index, a non-finite coordinate;
+- coincident atoms in a distance (closer than `COINCIDENT_ANG` = 1e-6 Å, the app's coordinate
+  round-trip tolerance);
+- a zero-length arm in an angle (an end atom within 1e-6 Å of the vertex);
+- a zero axis in a dihedral (within 1e-6 Å), or a collinear inner triple: `|sin θ|` at either middle
+  atom below `COLLINEAR_SIN` = 1e-6 (θ within about 5.7e-5° of 0° or 180°), or an arm under 1e-6 Å.
+  Stricter than `measure.ts` (1e-9) and ASE (exact zero): at 1e-6 the projection that sets the
+  dihedral's direction is about the size of the app's coordinate tolerance. Both tolerances are
+  accepted by Anton (2026-11-20). So in a narrow band (`|sin θ|` between 1e-9 and 1e-6, or a pair
+  between 1e-12 and 1e-6 Å apart) the scene's panel shows a number where MCP refuses.
+
+A value outside its range after these checks is `OutOfRange`, an internal error, never served.
+
+**Lock span (for Part B).** For a `scan:`, `neb:` or `goat:` source, `resolve_db_conn` reads files in
+the job directory (`read_scan_geometries`, `read_neb_geometries`, `read_ensemble_text`;
+`resolve.rs:249/262/270`) on the caller's connection, so `get_geometry` and `measure` hold `DbState`
+across those bounded, size-capped reads, as the existing commands that read them do. That is allowed
+(only an `.await` under the lock is forbidden), and Part B keeps it inside its one `spawn_blocking`.
+
+**`read_output`** never reads the whole `output.out` (rule #5). The tail reads at most the last
+256 KiB through `local_backend::read_tail_window`, the core `read_tail_lines` (the log console's
+reader) also goes through, and reports `file_bytes`, `window_start_byte` and `read_bytes`. The
+rule-#5 gate checks `read_bytes` (what was actually read), not only the reported offset. The search streams the
+file through `output_search::search_output`, which keeps the first 500 matches and counts all.
+
+**`search_manual`** keeps each hit's section id (`section_id`, the `manual_sections` row) and turns
+the index's private-use match marks into `«` `»`. `bm25_score` is dimensionless; lower is better.
+
+**`list_run_targets`** lists this machine (`"local"`) and each profile with `is_run_target` and its
+reason (`RunTargetStatus::of`), the window and `window_state`: `no_window`, `inside`, `outside` or
+`unreadable`. The pure `window_state(window, now_min)` is inside from the start minute **included**
+to the end minute **excluded**, wrapping midnight when the end is before the start (`22:00-08:00`
+holds 23:00 and 07:59, not 08:00). Production reads `now` from SQLite's
+`datetime('now','localtime')`, the measured route to the laptop's local time. `reachability` is
+`"unknown"` for every profile (no per-profile contact exists in Stage 1) and `"this_machine"` for
+local.
+
+**`memory_estimate`** estimates the header **with the app's `%maxcore`** (`mcp_maxcore`, inserted by
+`apply_maxcore`, the assembly's route), checks it with `memory_estimate_with`, and gives the
+classifier's verdict (`verdict_of`). A header with its own `%maxcore` is refused: the app sets it.
+
+**`list_groups`** pages `list_groups_conn` (`created_at, id`).
+
 ## Clarifications (orchestrator, within ADR-027)
 
 - **C1** — the charge/multiplicity locator is strict, as above. Its parity with TS covers
@@ -663,6 +869,20 @@ Two choices go beyond the clarifications, and each can only move a job toward An
 - **The `MaxIter` cap** is deferred to M5 and the core-hour budget (2026-11-19). Until then a large
   value is admitted and SUBMITTED under a grant; the grant bounds job count and concurrency, not
   iterations.
+- **`measure` keeps the `ase_dihedral` port** (2026-11-20). It does not reuse `xtb::dihedral`, because
+  `xtb::dihedral` returns 360° − ASE (the M2 amendment, item 8, records it).
+- **The read tools refuse `smiles:` sources** (2026-11-20): they do not call the sidecar.
+- **`get_job`'s header is built from the parsed structure, never filtered from raw text** (2026-11-20,
+  after two verifier FAILs on filtering). See the read tools, `get_job`.
+- **Round 4** (2026-11-20, after the verifier's PASS WITH FINDINGS): numeric-looking `!` tokens are
+  hidden; the tripwire withholds a field, not the view, and also guards `list_jobs`' title and error
+  excerpt; the detector looks at every token position; the `{`/`=` skips hold for the header only; a
+  display-only list of integer keys and `%maxcore` are shown, separate from the SUBMITTED allowlist.
+- **Round 5** (2026-11-20): in text fields `*` means only a geometry opener (`* xyz`/`int`/`gzmt`/
+  `xyzfile`, also echoed), so a failed job's `***` banners no longer withhold its error.
+- **Field budgets stay in UTF-8 bytes** (2026-11-20).
+- **`COINCIDENT_ANG` and `COLLINEAR_SIN` stay at 1e-6** (2026-11-20), knowing `measure.ts` uses 1e-9,
+  so in a narrow band the panel shows a number where MCP refuses.
 
 ## Open (for Anton)
 
@@ -675,9 +895,22 @@ Two choices go beyond the clarifications, and each can only move a job toward An
 - **Source headers with other one-line directives** (`%moinp "x.gbw"`, `%base`) give no
   `opt_signature`, so a Freq from such a job is PROPOSED. Only `%maxcore` is set aside.
 
+- **`xtb::dihedral`'s sign outside MCP.** It returns 360° − ASE's value on the butane fixtures (its
+  doc comment now says so; until M2b it claimed ASE parity). It sets xtb's default dihedral target ("freeze as is") and
+  `check_held`'s dihedral check. Whether xtb's own `$constrain` dihedral uses the same sign is
+  unmeasured (rule #10: a prober run). If xtb's sign is ASE's, an explicit target other than 0° or
+  180° is reported as not held; if it is `xtb::dihedral`'s, an explicit target taken in ASE's
+  convention (the scene's `measure.ts`) is held at its mirror image. Not changed here.
+
 ## Not yet wired
 
-- **M2b:** the other read tools.
+- **M3 (from the M2b verifier, INFO):** the classifier's source charge reason quotes the source job's
+  `* xyz` line through `ChargeMultError::Display` (`classify.rs`, the R4 source reason). `create_job`
+  returns reasons to the model, so M3 maps it to `ChargeMultError::kind_and_line`, as `get_job` does.
+- **M2b Part B:** register the ten read tools in the `rmcp` service (`McpService`), each with its
+  description carrying `RECOVERY_SENTENCE`, its DB work through `spawn_blocking` (one lock per call;
+  `memory_estimate` and `read_output`'s file read outside the lock), `ToolError` mapped to a tool
+  error, and an end-to-end size check per tool over the socket.
 - **M3:** `create_job` as one tracked task (the preflight, step A, step B, step C around
   `classify_mcp_job` and `assemble`), `SidecarSmiles` handed to the resolver, the audit log, and R8's
   live count.
@@ -686,11 +919,12 @@ Two choices go beyond the clarifications, and each can only move a job toward An
 ## Tests
 
 `cargo test -p orcastudio --lib mcp::` runs the module's tests (the transport's are
-`mcp::server::`, the wiring's `mcp::server::wiring_tests`), `cargo test -p orcastudio --lib commands::mcp`
+`mcp::server::`, the wiring's `mcp::server::wiring_tests`, the read tools' `mcp::tools::`), `cargo test -p orcastudio --lib commands::mcp`
 the grant and switch commands' tests, `cargo test -p orcastudio --test mcp_relay_bin` the built
 binary's relay, `npx vitest run src/screens/SettingsScreen.mcp.test.tsx` the switch row, and
 `npx vitest run src/scene/charge-mult-parity.test.ts` the TS half of the C1 parity. The schema tests are
 `cargo test -p orcastudio --lib db::tests::` (v24 names in `modules/tauri-core.md`). The negative
 controls are recorded in `log.md`: one per row plus the ADR's M1a list in the M1a entry, and the M1b
 list in the M1b Part A entry, the Part B list in the M1b Part B entry, and the M2a Part A and Part B
-lists in their entries (all 2026-11-19).
+lists in their entries (all 2026-11-19), and the M2b Part A list in its entry (2026-11-20). The ASE
+pin is `pytest sidecar/tests/test_geometry.py` (in the sidecar venv).

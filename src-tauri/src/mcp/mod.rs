@@ -25,6 +25,9 @@
 //! - [`switch`] is the `mcp_enabled` row, which the generic `set_setting` refuses.
 //! - [`server`] is the transport (M2a): the lock, the socket, the `rmcp` server with `get_grant`,
 //!   the admission gate, the lifecycle and the `orcastudio --mcp` relay.
+//! - [`tools`] holds the read tools' cores (M2b Part A): `list_jobs`, `get_job`, `get_results`,
+//!   `get_geometry`, `measure`, `read_output`, `search_manual`, `list_run_targets`,
+//!   `memory_estimate` and `list_groups`, each with its character cap. Not yet registered.
 //!
 //! The module page is `wiki/modules/mcp-server.md`.
 
@@ -42,6 +45,7 @@ pub mod sidecar_smiles;
 pub mod signature;
 pub mod steps;
 pub mod switch;
+pub mod tools;
 
 #[cfg(test)]
 mod allowlist_tests;

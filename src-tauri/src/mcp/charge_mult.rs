@@ -40,6 +40,36 @@ pub enum ChargeMultError {
     Malformed { line: usize, text: String },
 }
 
+impl ChargeMultError {
+    /// The 1-based line the error is about, if any.
+    pub fn line(&self) -> Option<usize> {
+        match self {
+            ChargeMultError::NoXyzLine => None,
+            ChargeMultError::NotInlineXyz { line, .. }
+            | ChargeMultError::UnmeasuredComment { line }
+            | ChargeMultError::Malformed { line, .. } => Some(*line),
+        }
+    }
+
+    /// The error as a kind, without any text from the input (the `Display` form quotes the line).
+    pub fn kind(&self) -> &'static str {
+        match self {
+            ChargeMultError::NoXyzLine => "no `* xyz <charge> <multiplicity>` line",
+            ChargeMultError::NotInlineXyz { .. } => "the geometry is not an inline `* xyz` block",
+            ChargeMultError::UnmeasuredComment { .. } => "two or more `#` on one line, whose reading is unmeasured",
+            ChargeMultError::Malformed { .. } => "the `* xyz` line is not `* xyz <charge> <multiplicity>` with two integers",
+        }
+    }
+
+    /// `line N: <kind>`, or the kind alone: never text from the input.
+    pub fn kind_and_line(&self) -> String {
+        match self.line() {
+            Some(line) => format!("line {line}: {}", self.kind()),
+            None => self.kind().to_string(),
+        }
+    }
+}
+
 /// A strict integer: an optional sign, then ASCII digits only (`1.0` and `1e0` are refused).
 fn strict_int(s: &str) -> Option<i64> {
     let digits = s.strip_prefix(['-', '+']).unwrap_or(s);

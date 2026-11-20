@@ -13086,3 +13086,411 @@ Controls (each mutates, runs, requires the intended assertion, restores sha256-i
 - the deadline `wait / 4` → RED on "gave up before the bound" (the lower bound still bites);
 - `BACKSTOP_STEPS_DEADLINE` back to 15 s → RED on the bounds pin;
 - `BACKSTOP_STEPS_DEADLINE` 25 s → RED on the bounds pin.
+
+## [2026-11-20] feat | ADR-027 M2b Part A — the MCP read-tool cores
+
+The ten read tools of ADR-027 decision 7 as pure, tested cores in `src-tauri/src/mcp/tools/`, each a
+function over a `&Connection` (or `&DbState`) returning a serialisable result with its character cap.
+None is registered in the `rmcp` service yet (Part B). Implementer `opus`, worktree at `d52da58`.
+
+**What landed.**
+- `tools/mod.rs`: `ToolError` (`Refused`, `Measure`, `TooLarge`, `App`), the size post-condition
+  `within_cap` (UTF-16 units, the client's measure), `clip`, `page_limit`.
+- `list_jobs` (filters `status`/`origin`/`group_id`, offset paging over `Job::COLUMNS`), `get_job` (a
+  field-by-field projection: header via `header_of_input`, atom count, charge/mult with source, notices,
+  error, `origin`, reasons, `grant_id`, `mcp_state`; never `input_content` or the scene), `get_results`
+  (bounded summary, units in every field name), `get_geometry` (xyz via `resolve_db_conn`, refused above
+  600 atoms), `measure`, `read_output` (tail and search), `search_manual`, `list_run_targets` (with the
+  pure `window_state`), `memory_estimate`, `list_groups`.
+- `local_backend::read_tail_window(path, max_lines, max_bytes)`: the window core `read_tail_lines` now
+  goes through (8 MB, unchanged) and `read_output` shares (256 KiB). It also stops the read at
+  `max_bytes` while a file grows.
+- Visibility only: `list_groups_conn`, `list_server_profiles_conn`, `RunTargetStatus::of` are `pub(crate)`.
+- `sidecar/tests/test_geometry.py`: `test_ase_distance_angle_dihedral_on_butane` pins ASE's distance,
+  angle and dihedral on both butane fixtures.
+
+**Caps (all ≤ 40,000 characters, the client spills at 50,000; each stated in the result).** `list_jobs`
+20/40 per page, title 120, error excerpt 240. `get_job` header 6,000, error 4,000, 20 reasons of 400.
+`get_results` 20 imaginary modes, 200 scan points, 100 MEP points, 10 warnings of 300. `get_geometry`
+600 atoms. `read_output` tail 256 KiB window, 100/400 lines, 400 characters a line, 36,000 characters of
+text; search 20/50 matches, ≤ 3 context lines, 36,000 characters, query ≤ 200. `search_manual` 10/20 hits,
+snippet 400, title/file/anchor 160, 6 crumbs of 80, query ≤ 500. `list_run_targets` 50 profiles, names
+120. `list_groups` 50/100, names 120. `memory_estimate` header ≤ 20,000.
+
+**Tolerances (`measure`).** `COINCIDENT_ANG` = 1e-6 Å (the app's coordinate round-trip tolerance) for a
+coincident pair, a zero arm and a zero axis; `COLLINEAR_SIN` = 1e-6 for a collinear inner triple (θ
+within ~5.7e-5° of 0°/180°). Stricter than `measure.ts` (1e-9) and ASE (exact zero), stated in the code
+and the module page. A value outside its range after the checks is `OutOfRange`, never served.
+
+**The ASE run (rule #10; recorded in `mcp-transport-probe.md`, "M2b facts").** ASE 3.29.0,
+`pytest -s`: anti `get_distance(0,1)` = 1.5236821924758759 Å, `get_angle(0,1,2)` = 111.940389836418°,
+`get_dihedral(0,1,2,3)` = 179.99823131562985°; gauche 1.5242421252226686 Å, 113.17379073940005°,
+67.52301077175457°. The Rust tests copy all six and require 1e-9.
+
+**Finding: `xtb::dihedral` gives 360° − ASE's dihedral.** The first Rust run against it gave
+180.00176868437015° (anti) and 292.477° (gauche). Its doc claims ASE parity. `xtb::distance` and
+`xtb::angle` match. So `measure`'s dihedral is `ase_dihedral`, a line-for-line port of ASE's
+`get_dihedrals` (as `measure.ts`), not `xtb.rs:190`: a deviation from decision 7's "reuses" column,
+decided by Anton in the fix round below. `xtb.rs`'s code is unchanged; what the sign means for the xtb constraint path
+depends on xtb's own `$constrain` convention, unmeasured (an Open item, a prober run).
+
+**Interpretations within the brief.**
+- `get_job`'s **notices** are the row's pending states in words (cancel requested/sent, submit
+  pending, Claude submitting); results warnings belong to `get_results`.
+- `get_job`'s header has a **post-condition**: a header still holding a `*` line or a coordinate row
+  (a `$new_job` second block, a `%coords` block) is withheld with the reason.
+- `measure`'s kind is chosen by the index count (2/3/4), as `measure.ts`.
+- `memory_estimate` estimates the header **with the app's `%maxcore`** (`mcp_maxcore` +
+  `apply_maxcore`), so its verdict is the one `create_job`'s P4 would see; a header with its own
+  `%maxcore` is refused.
+- `list_run_targets`: this machine's reachability is `"this_machine"`; every profile's `"unknown"`.
+  The window is inside from the start minute included to the end minute excluded; a malformed stored
+  window is `unreadable`.
+- `get_results` reports `imaginary_ir_km_mol` beside the frequencies and `mode_count`; a parser count
+  that disagrees with the negative frequencies is a warning.
+- Times are suffixed `_utc` (SQLite `datetime('now')`, laptop clock); `list_run_targets.local_time`
+  is the laptop's local time.
+- The read tools refuse `smiles:` sources: they read stored geometry only and do not call the sidecar
+  (accepted by Anton, 2026-11-20).
+
+**Tests:** 48 new in `mcp::tools::`. `cargo build`: 0 warnings. `cargo test --workspace`: `orcastudio_lib`
+**1358** passed (1310 + 48), 30 ignored; `mcp_relay_bin` 3; `orcastudio-core` 24 + 6 + 1 + 2 (1
+ignored). `mcp::` **270** passed, green **3 times**; `local_backend::` 35 passed, 1 ignored. `tsc` clean;
+vitest **1381** passed, 2 skipped. Sidecar `pytest tests/test_geometry.py` **15** passed (14 + 1). `ruff`
+not run: it is in neither the sidecar venv nor `PATH`.
+Controls **44/44** bit, none stayed green at first (a scratchpad script, not committed; each mutates the source, runs the named test with `--exact`,
+requires RED carrying the control's tag and no compile error, restores sha256-identical; at the end the
+211 tracked/untracked files of `src-tauri/src` and `sidecar/` are sha-identical):
+- `get_job`: the view gains `input_content` (real input with a `* xyz` block) → RED on the coordinate
+  check; the header extractor returns the whole input → RED on the header (the post-condition withholds
+  it, so nothing leaks); the post-condition skipped → RED on the coordinate check (`$new_job` and
+  `%coords` inputs); the header cut dropped → RED, the largest `get_job` over the cap.
+- `list_jobs`: each filter ignored (status, origin, group: 3) → RED on that filter's list; the offset
+  ignored → RED; the limit ignored → RED; the page cap, the title cut, the error cut lifted (3) → RED,
+  the largest page over the cap (80 jobs, 5,000-character fields).
+- `get_results`: the scan, MEP, imaginary-mode and warning caps lifted (4) → RED, the largest summary
+  over the cap; `final_energy_eh` serialised as `final_energy` → RED on the unit-name walk.
+- `get_geometry`: 601 atoms accepted → RED.
+- `measure`: `xtb::distance` ×(1 + 1e-6), `xtb::angle` + 1e-6°, the dihedral's cross product swapped
+  (the xtb handedness) → RED against ASE (3); the fold dropped → RED on the mirrored gauche; each refusal
+  removed (range, repeat, coincident, zero arm, zero axis, collinear i–j–k, collinear j–k–l: 7) → RED on
+  that refusal (the range control is caught as a panic, not a crash: `measure` must refuse, never panic).
+- `read_output`: the window lifted to the whole file → RED on `window_start_byte`; the 36,000-character
+  text budget dropped → RED, the largest tail over the cap; the line cut dropped → RED; the search page's
+  budget dropped → RED, the largest page over the cap.
+- `search_manual`: the hit cap lifted, the field cut dropped (2) → RED, over the cap.
+- `list_run_targets`: the profile cap lifted → RED, over the cap; `22:00-08:00` without its after-start
+  half → RED at 23:00; without its before-end half → RED at 07:59; the end minute included in the wrapping
+  and in the plain branch (2) → RED at 08:00 and at 22:00.
+- `list_groups`: the page cap lifted → RED, over the cap.
+- `within_cap` never refusing → RED. `memory_estimate` holding `DbState` → RED (the 20 s deadline;
+  `mcp_maxcore` and `memory_estimate_with` lock it themselves).
+- The sidecar ASE pin: the recorded anti distance perturbed in the 7th significant digit → RED.
+
+The first full run had 6 real failures, all fixed before the controls: the `xtb::dihedral` finding (3
+tests), the test's own `* xyz` detector matching the words "`* xyz` line" in the charge source (2), and a
+test file one KiB too small for its own premise (1).
+
+**Open for Part B:** register the ten tools in `McpService` with descriptions carrying
+`RECOVERY_SENTENCE` (and the 0-based index statement for `measure`/`get_geometry`); DB work through
+`spawn_blocking` with one lock per call (`memory_estimate` with none, `read_output`'s file read outside
+it); `ToolError` → tool error text; the meminfo path and data dir for `memory_estimate`; an end-to-end
+size check per tool over the socket; the xtb `$constrain` dihedral sign (prober, recipe in
+`orca/xtb.md`).
+
+**Fix round after verifier CODE** (tree `039b7a4`: FAIL on F1; build, tests, the 44 controls, units
+and the dihedral finding held). Anton decided:
+- `measure` keeps `ase_dihedral`, recorded as one line in the ADR's M2 amendment, item 8 (the only ADR
+  edit);
+- the `smiles:` refusal stands;
+- the 1e-6 tolerances stay, knowing `measure.ts` uses 1e-9, so in a narrow band the panel shows a
+  number where MCP refuses.
+
+Fixes:
+- **F1 (coordinate leak in `get_job`).** The header post-condition is now two independent readings:
+  the classifier's (R2: `parse_header` finds a `*` line or a `%coords` block) and a widened
+  `coordinate_line` (a first token and ≥ 3 finite numbers, a lone `:` skipped, no `=` on the line).
+  Internal (`CTyp internal`), fragment-labelled (`O(1)`) and ghost (`H:`, `O :`) rows are withheld,
+  the manual's shapes. `D 0 1 2 3 = …` scan lines stay visible; the old element-symbol check is gone,
+  so it fails closed on any first token.
+- **F2 (the cap's unit).** M0 measured ASCII only, so the client's unit for non-ASCII text is
+  unmeasured. Every size is now **UTF-8 bytes** of the serialised text, the conservative bound:
+  `size_of_text`, `RESULT_CAP_BYTES`, and every output field budget renamed `_BYTES`. Input limits
+  (queries, the memory header) stay in characters.
+- **F3.** `TailWindow.bytes_read`, and `read_output`'s `read_bytes`. The rule-#5 tests check what
+  was read, for the 256 KiB tool window and the 8 MB console window (a 9 MiB file); the verifier's
+  whole-file read now goes RED.
+- **F4.** The unit walk treats arrays of arrays of numbers as numeric (`[[0,1,2]]` is flagged).
+- **F5.** `clip` budgets serialised bytes, escapes included (`\u00XX` is 6), so a header of control
+  characters is cut, not refused `TooLarge`.
+- **F6.** The module page states the lock span: for `scan:`/`neb:`/`goat:` sources, the resolver's
+  bounded file reads happen under `DbState`.
+- **F7 (docs).** The pytest names `geometry_tests.rs`; the geometry tests name `ase_dihedral`.
+  `xtb::dihedral`'s doc comment now says it returns 360° − ASE (a comment only, no code change).
+  `orca/xtb.md` gains the open item with the verifier's probe recipe.
+- **F8.** Refusals echo caller input cut to 200 bytes (`echo`) and cut the whole message to 600
+  (`ToolError::refused`), which also bounds a reused reader's error that quotes the input.
+
+Counts after the round:
+- 54 tests in `mcp::tools::` (6 new).
+- `cargo build`: 0 warnings.
+- `cargo test --workspace`: `orcastudio_lib` **1364** passed, 30 ignored; `mcp_relay_bin` 3;
+  `orcastudio-core` 24 + 6 + 1 + 2 (1 ignored).
+- `mcp::` **276**, green 3 times; `local_backend::` 35 passed, 1 ignored.
+- `tsc` clean; vitest **1381** passed, 2 skipped; the sidecar pytest **15**.
+
+Controls **53/53** RED (the 44 above with re-anchored names, plus 9 new), none green at first:
+- the classifier check dropped → RED on the comma-row `%coords` input;
+- `coordinate_line` reverted → RED on the four row shapes and a stray ghost row;
+- the post-condition control now drops both readings;
+- UTF-16 counting restored → RED on a 30,000-character Cyrillic result (60,002 bytes);
+- raw-byte clipping restored → RED on a field of control characters;
+- the echo cut dropped → RED; the message cut dropped → RED;
+- a whole-file read from byte 0 → RED on both the 256 KiB and the 8 MB window;
+- the flat-only unit walk restored → RED on `{"positions": [[0,1,2]]}`.
+
+The 211 files were sha-identical after the run.
+
+**Round 3 (after the second FAIL; Anton: build, don't filter).** The verifier's CODE run on tree
+`ccb8ddc` failed. Filtering raw header text failed in both directions:
+- **B1 (HIGH):** `header_withheld` passed on `read_coordinate_block`'s error, which quoted the failing
+  row (`# comment`, `M = …`, `H :`, `Q 0.5 …`, commas, `d0`), unbounded; `charge_mult.error` quoted the
+  `* xyz` line.
+- **B2 (MED):** a `%coords` opener hidden after `end` or on a lexer-refused line escaped the
+  classifier, and its rows escaped `coordinate_line`.
+- **FP:** ordinary headers were withheld (`{B 0 1 1.234 C}`, `%freq Temp …`, `%elprop Origin …`).
+
+The second FAIL went to Anton, who decided:
+- **`get_job`'s header is built from M1a's parsed structure, never served as raw text.** This is the
+  one ADR line in the M2 amendment, item 8's `get_job` bullet; the earlier `measure` line now cites
+  `xtb::dihedral` instead of a line number.
+- **Field budgets stay in UTF-8 bytes.**
+
+What changed:
+- **The builder.** `tools/header_view.rs::reconstruct` reads the input with its main block and the
+  app's `%maxcore` blanked (`resolve::header_of_input_in_place`, so line numbers are the input's),
+  parses it with `parse_header`, and emits only parsed parts:
+  - `!` keyword tokens;
+  - allowlisted keys with their admitted values (`allowlist::value_rule`, now `pub(crate)`);
+  - `%geom Constraints` entries re-emitted from parsed parts (type letter, digit indices, an optional
+    plain-number target as written, `C`);
+  - every other key by identifier name only, with `# values not shown`.
+
+  Markers name the kind and the line for `%coords`/`%pointcharges`, a block holding a nested opener,
+  a `*` line, a second job (nothing after `$…` is read), and every refused line. A run of refused
+  lines with one reason becomes one marker. The `coordinate_line` / `classifier_geometry` filter is
+  gone.
+- **B1 at the source.** `read_coordinate_block` returns `CoordinateBlockError` (`line N: a coordinate
+  row is not an element and three numbers`, …). `header_of_input` returns `HeaderOfInputError` (a
+  `%maxcore` error no longer quotes the line). `ChargeMultError` gains `kind`/`line`/`kind_and_line`,
+  which `ChargeMultView` uses instead of `Display`. The resolver's R4 text and the grant editor's
+  "this job's level" error are kind-and-line now too.
+- **The tripwire (rule #9).** `jobs::tripwire` walks every string of the serialised view and refuses
+  it when a line is a coordinate-like row (`header_view::coordinate_row`; a line starting with `{` is
+  a constraint, not a row). A title or ORCA error shaped like a row therefore refuses the call.
+- **F-flaky.** The groups test's root gets an explicit earlier `created_at`; `mcp::` runs 8×.
+- **LOW.**
+  - Clipped `list_run_targets`' host and `get_results`' `not_parsed_reason`.
+  - Docs: `jobs.rs` module doc and the module page's `get_job` paragraph rewritten; the size claim
+    now says the guarantee is the post-condition, not the caps.
+  - `xtb.md`: the probe's expected numbers as a table (target 60 → ≈60 ASE's sign / ≈300 xtb's;
+    control 292.477 → ≈292.5 / ≈67.5), and that with ASE's sign "freeze as is" drives gauche to its
+    mirror, which `check_held` catches.
+
+**The example.** An app-built constrained Opt (`%maxcore 2000`, `%pal nprocs 8 end`, three
+constraints) gives:
+
+```
+! B3LYP D3BJ def2-SVP Opt
+%pal
+  nprocs  # values not shown
+end
+%geom
+  Constraints
+    {B 0 1 1.234 C}
+    {A 0 1 2 C}
+    {D 0 1 2 3 90.0 C}
+  end
+end
+```
+
+**Interpretations in round 3:**
+- Constraint entries are shown even though M1a's allowlist admits only `{C n C}`. This follows
+  Anton's "indices plus `C`" and the FP list, which requires `{B 0 1 1.234 C}` to be shown.
+- "Shown" for `%freq Temp` and `%elprop Origin` means the block and key appear by name, without
+  values. They are outside the allowlist.
+- The tripwire skips lines that start with `{`. Without that it would refuse every constrained Opt
+  with a target value.
+- The verifier's `constraint_value` (`{B 0 1 0.755453 C}`) is shown: it is a constraint target, not a
+  coordinate.
+- MCP reasons are shown as stored (cut): the classifier wrote them. In round 3 the whole-view tripwire
+  refused a view whose reason held a coordinate-like row; round 4 checks each reason as its own field.
+- A `%`-token on a `!` line (`! SP %coords`) is shown as a keyword token. It is a name and carries
+  no values; its rows become refused-line markers.
+
+**Counts:**
+- 60 tests in `mcp::tools::`. A new `header_view_tests.rs` keeps every input of the verifier's attack
+  matrix (all 37) as regression tests, plus a malformed `* xyz` line and a `%maxcore` line of numbers.
+  The 26 leak inputs are in the no-leak test; the 11 false-positive and constraint inputs are in the
+  must-be-shown test.
+- `cargo build`: 0 warnings.
+- `cargo test --workspace`: `orcastudio_lib` **1370** passed, 30 ignored; `mcp_relay_bin` 3;
+  `orcastudio-core` 24 + 6 + 1 + 2 (1 ignored).
+- `mcp::` **282**, green **8 times**.
+- `tsc` clean; vitest **1381** passed, 2 skipped; the sidecar pytest **15**.
+
+**Controls: 62/62 RED** on the final tree (61 Rust controls plus the pytest pin); the 213 files were sha-identical afterwards.
+- **Retired with the filter:** `get_job_postcondition`, `get_job_classifier`, `coord_line_widened`.
+  The detector lives on as `tripwire_widened`.
+- **Re-anchored:**
+  - `get_job_header` now builds from the whole input;
+  - `get_job_cap` drops the built header's cut;
+  - `get_job_input` now goes RED through the tripwire (the injected `input_content` rows are
+    refused), so its test `expect`s the view to be served.
+- **New:**
+  - `get_job_input_no_tripwire`: the same with the tripwire off → RED on the leak check;
+  - `build_bypass`: raw `header_of_input` text served → RED on the attack matrix;
+  - `tripwire`: off → RED on an injected row and on a row-shaped title;
+  - `tripwire_widened`: the element-only detector → RED;
+  - `error_quotes_charge`, `error_quotes_maxcore`, `error_quotes_row` (the round-2 behaviours) → RED;
+  - `fp_constraint`, `fp_freq`, `fp_elprop`: withheld → RED;
+  - `allowlisted_values`: dropped → RED;
+  - `other_values`: shown → RED.
+- **First runs:** `get_job_input` first went red without its tag (the tripwire refused, and the test's
+  `unwrap` was untagged); `fp_constraint`'s first mutation did not compile. Both were fixed and
+  re-run.
+
+**Round 4 (after the verifier's PASS WITH FINDINGS on tree `5e39114`; Anton decided the forks).** All
+62 controls bit, the verifier found no main-block leak, and `mcp::` was green 8×. What changed:
+
+- **F1, the `!` line.** Each numeric-looking keyword token is replaced by `[value not shown]`.
+  Numeric-looking means a digit, sign or `.` first, then only digits, signs, `.`, `e`/`E`/`d`/`D`, `,`
+  or `;`. `D3`, `def2-SVP` and `PAL8` stay. So `! O 0.000000 0.000000 0.117790` shows
+  `! O [value not shown] [value not shown] [value not shown]`, and `M = 15.9949` shows
+  `M = [value not shown]`.
+- **F3 + F2, the tripwire works per field.** Each text field is checked whole, before any cut:
+  - `get_job`: title, header, `header_withheld`, `charge_mult` source and error, notices, each
+    reason's row and message, `mcp_reasons_note`, error, `remote_host`;
+  - `list_jobs`: each row's title and `error_excerpt`.
+
+  A hit replaces only that field with `withheld: coordinate-like content (rule #9)`, names it in a new
+  `withheld_fields`, and serves the rest. The whole-view walk stays as a backstop for fields not
+  guarded individually (ids, timestamps).
+
+  The detector is now an element-or-label token (a letter, not a number) followed by at least three
+  numbers **at any position**, or a `*` line. It catches ORCA's input echo
+  `|  6> C     4.10220628   -0.56008055    0.58413357` (the format measured in a real `output.out`
+  under `~/.local/share/orcastudio/jobs/`) and `geometry: O x y z`. SCF iteration rows (numbers
+  only) do not match. The `{` and `=` skips apply to the built header only (`Field::Header`), never
+  to titles, errors or reasons (`Field::Text`).
+- **F4, more of the header.** A display-only list, separate from M1a's unchanged SUBMITTED
+  allowlist, shows exactly one integer value (1–9 digits) for `%pal nprocs`, `%scf MaxIter`,
+  `%neb NImages` and `%geom Recalc_Hess`; any other value is `# value not shown`. `%maxcore N` comes
+  back from the strict reader at its line.
+- **F5/F6, the ADR and the probe page.** The one `get_job` line in the ADR is rewritten precisely
+  enough to test: hidden numeric `!` tokens, constraints with targets despite the `{C n C}`
+  allowlist, the display-only list and `%maxcore`, kind-and-line errors, and the field-level
+  tripwire with its definition and the header-only skips. The ADR's `xtb.rs:179/183/190` and
+  `:190–202` anchors now cite function names, and its Context notes that "matches ASE /
+  `measure.ts`" was measured false. `mcp-transport-probe.md` says `xtb::dihedral`'s doc made that
+  claim before M2b and now says 360° − ASE.
+- **F7, `TS_Mode {B 0 1} end`.** It closes `%geom` early in the shared grammar. This is stated as a
+  known limitation (module page, `header_view.rs`) and pinned by a test. The display stays safe
+  (the key is named, the stray `end` is a marker), and M1a's grammar is unchanged.
+- **F8, for M3.** The classifier's R4 source reason quotes the source job's `* xyz` line through
+  `ChargeMultError::Display`. This is recorded in the module page's "Not yet wired", for M3. Not
+  changed now.
+- **Doc accuracy.** The module page now says which fields the tripwire guards one by one, and that
+  the backstop covers the rest. This entry's round-3 line about the reasons is corrected. The sidecar
+  "15" in this entry is `tests/test_geometry.py` only; the whole sidecar suite is **43** (run this
+  round: 43 passed).
+
+**Examples.**
+
+An app-built constrained Opt now shows:
+
+```
+! B3LYP D3BJ def2-SVP Opt
+%maxcore 2000
+%pal
+  nprocs 8
+end
+%geom
+  Constraints
+    {B 0 1 1.234 C}
+    {A 0 1 2 C}
+    {D 0 1 2 3 90.0 C}
+  end
+end
+```
+
+A failed job whose stored error is ORCA's message plus an SCF tail with `***` banners, titled
+`O 0.0 0.0 0.117790`, is served with `"title"` and `"error"` both set to
+`"withheld: coordinate-like content (rule #9)"` and `"withheld_fields": ["title", "error"]`. The
+header (`! SP`) and every other field are intact. In `list_jobs` the same row has `error_excerpt`
+withheld and `withheld_fields: ["title", "error_excerpt"]`.
+
+**Interpretations in round 4.**
+- `list_jobs` guards the title as well as `error_excerpt`, to match `get_job`.
+- Each field is guarded **before** it is cut. A row past the excerpt's 240-byte cut still withholds
+  the excerpt (pinned). A cut can never create a row, because the last token gains `…`.
+- ID fields and timestamps are not guarded one by one: a field marker there would break identity.
+  The backstop refuses the view if one ever matched.
+- `*` lines count as coordinate-like in every field, so an ORCA error with its `***` banners is
+  withheld (the realistic case Anton named), not shown.
+- A display-list key with more than one value, or a non-integer one, shows `# value not shown`.
+- The ADR line is one long sentence in item 8's `get_job` bullet, as instructed.
+
+**Counts:**
+- 64 tests in `mcp::tools::`.
+- `cargo build`: 0 warnings.
+- `cargo test --workspace`: `orcastudio_lib` **1374** passed, 30 ignored; `mcp_relay_bin` 3;
+  `orcastudio-core` 24 + 6 + 1 + 2 (1 ignored).
+- `mcp::` **286**, green **8 times**.
+- `tsc` clean; vitest **1381** passed, 2 skipped.
+- Sidecar: `tests/test_geometry.py` 15 passed; the whole suite 43 passed.
+
+**Controls: 70/70 RED** on the final source tree, with the 213 files sha-identical afterwards.
+- **New, all red on their first run (14/14):**
+  - `bang_numbers`: verbatim `!` tokens → RED; the plain form withholds the whole header, the
+    `M = …` form leaks past the header's `=` skip;
+  - `field_not_view`: the guard passes the field through, so the backstop refuses the whole view →
+    RED on the SCF-tail fixture;
+  - `list_excerpt_guard`: an unguarded excerpt → RED;
+  - `tripwire_any_position`: the first-token-only check → RED on the echo and `geometry:` rows;
+  - `skip_brace_all` and `skip_eq_all`: each skip widened to every field → RED;
+  - `display_dropped` and `display_non_integer` → RED.
+- **Re-anchored:**
+  - `get_job_input` and `get_job_input_no_tripwire`, to the new struct and constructor;
+  - `tripwire`, the backstop test (renamed);
+  - `tripwire_widened`, the element-only check at any position.
+
+**Round 5 (Anton changed interpretation 4).** In round 4 every `*` line counted as coordinate-like in
+every field, so almost every failed job's error was withheld for ORCA's `***` banners. Anton
+decided: in text fields (`Field::Text`: error, title, reasons, `error_excerpt`), the `*` rule fires
+only on a real geometry opener, `* xyz`, `* int`, `* gzmt` or `* xyzfile`, in any case and with any
+spacing (`*xyz`), also after ORCA's input-echo prefix (`|  4> * xyz 0 1`). Bare banners
+(`***ERROR***`, `*****`, `***Turning on DIIS***`) no longer withhold a field. The label-and-three-
+numbers rule is unchanged, and `Field::Header` keeps any `*` line. Interpretation 4 of round 4 is
+superseded.
+
+- **Code:** `header_view::geometry_opener` and `strip_echo`; `coordinate_row` picks the `*` rule by
+  field.
+- **Tests:**
+  - The SCF-tail fixture now serves the error; only the row-shaped title is withheld
+    (`withheld_fields: ["title"]`, and the same in `list_jobs`).
+  - A new error ending in an echoed `|  4> * xyz 0 1` is withheld in `get_job` and in `list_jobs`'
+    `error_excerpt`.
+  - The detector test pins openers and banners in both modes.
+- **Docs:** the module page's detector definition and "Decided by Anton"; the ADR `get_job` line's
+  tripwire definition (wording only, the same sentence).
+
+**Counts (each run once, the laptop on battery):**
+- 64 tests in `mcp::tools::`.
+- `cargo build`: 0 warnings.
+- `mcp::` **286**.
+- `cargo test --workspace`: `orcastudio_lib` **1374** passed, 30 ignored; `mcp_relay_bin` 3;
+  `orcastudio-core` 24 + 6 + 1 + 2 (1 ignored).
+- `tsc` and vitest not run: no TS change.
+
+**Controls: 72/72 RED on the final source tree (71 Rust controls plus the pytest pin), with the 213 files sha-identical afterwards. The two new controls went red on their first run: `bare_star_text` (the bare `*` rule back for text, so the SCF-tail error is withheld) and `opener_text` (the opener rule removed for text, so the echoed `* xyz` leaks in `get_job` and `list_jobs`). `field_not_view` still goes red, now through the row-shaped title; `list_excerpt_guard` goes red through the echo and late-row cases.**

@@ -163,18 +163,37 @@ fn first_frame_of(text: &str, what: &str) -> Result<Vec<SourceAtom>, String> {
 /// directive (no `end`, o26) is set aside first, by the memory preflight's own locator and only when
 /// it reads cleanly; the header grammar would otherwise read it as a block that never closes. `Err`
 /// when the coordinate block or the `%maxcore` line does not read cleanly.
-pub(crate) fn header_of_input(input: &str) -> Result<String, String> {
-    let block = read_coordinate_block(input).map_err(|e| format!("the coordinate block: {e}"))?;
-    read_maxcore(input).map_err(|e| format!("the %maxcore line: {e}"))?;
+pub(crate) fn header_of_input(input: &str) -> Result<String, HeaderOfInputError> {
+    Ok(outside_lines(input)?.into_iter().flatten().collect::<Vec<_>>().join("\n"))
+}
+
+/// The same header with every set-aside line (the coordinate block, the app's `%maxcore`) blanked
+/// rather than removed, so a line number in it is the input's own line number.
+pub(crate) fn header_of_input_in_place(input: &str) -> Result<String, HeaderOfInputError> {
+    Ok(outside_lines(input)?.into_iter().map(|l| l.unwrap_or("")).collect::<Vec<_>>().join("\n"))
+}
+
+/// Why an input's header cannot be separated from its coordinate block, as a kind and a line:
+/// **never the source text** (it reaches the model through `get_job` and the grant editor).
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum HeaderOfInputError {
+    #[error("the coordinate block: {0}")]
+    CoordinateBlock(super::assemble::CoordinateBlockError),
+    #[error("the %maxcore line does not read as `%maxcore <positive integer>`, or there are two")]
+    Maxcore,
+}
+
+/// Each input line: `Some(text)` outside the coordinate block and the `%maxcore` line, `None` inside.
+fn outside_lines(input: &str) -> Result<Vec<Option<&str>>, HeaderOfInputError> {
+    let block = read_coordinate_block(input).map_err(HeaderOfInputError::CoordinateBlock)?;
+    read_maxcore(input).map_err(|_| HeaderOfInputError::Maxcore)?;
     let lines: Vec<&str> = input.lines().collect();
     let maxcore = maxcore_lines(&lines);
-    let outside: Vec<&str> = lines
+    Ok(lines
         .iter()
         .enumerate()
-        .filter(|(i, _)| (*i < block.header_line || *i > block.closer_line) && !maxcore.contains(i))
-        .map(|(_, l)| *l)
-        .collect();
-    Ok(outside.join("\n"))
+        .map(|(i, l)| ((i < block.header_line || i > block.closer_line) && !maxcore.contains(&i)).then_some(*l))
+        .collect())
 }
 
 /// The optimization signature of a source job's input: the signature of its header

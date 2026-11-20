@@ -120,8 +120,9 @@ scans, ΔΔE‡) is Stage 2 (decision 10).
 **Several app instances can run at once.** The sidecar port is chosen dynamically "so multiple app
 instances don't clash" (`sidecar.rs:5`).
 
-**Geometry math** already exists in Rust: distance, angle and dihedral (`xtb.rs:179`, `:183`,
-`:190`). The dihedral "matches ASE / `measure.ts`".
+**Geometry math** already exists in Rust: distance, angle and dihedral (`xtb::distance`,
+`xtb::angle`, `xtb::dihedral`). The dihedral "matches ASE / `measure.ts`" (measured false in M2b: it
+returns 360° − ASE; [mcp-transport-probe.md](mcp-transport-probe.md), "M2b facts").
 
 ### Facts about MCP clients
 
@@ -473,7 +474,7 @@ stands in for it.
 | `get_job` | read | `get_job_conn` | status, **header and atom count, never the coordinate block**, charge and multiplicity with their source, notices, error, `origin`, reasons, `grant_id`, `mcp_state` |
 | `get_results` | read | `results::read_job_results` | a bounded summary with units in the field names (rule #11): energy (Eh), `converged`, imaginary-mode count and values (cm⁻¹), thermochemistry, scan profile, NEB summary |
 | `get_geometry` | read | the source readers of (4) | xyz with charge and multiplicity and their source. Refused above 600 atoms, with a pointer to `measure` |
-| `measure` | read | `xtb.rs:179/183/190` | distance, angle or dihedral by 0-based indices on a source. A number for the model to **quote**, not compute. Cross-checked against ASE on fixtures |
+| `measure` | read | `xtb::distance`/`angle`/`dihedral` | distance, angle or dihedral by 0-based indices on a source. A number for the model to **quote**, not compute. Cross-checked against ASE on fixtures |
 | `read_output` | read | the `read_job_output` tail/search | bounded, never the whole `output.out` (rule #5) |
 | `search_manual` | read | the manual FTS search | hits with section ids: a source for ADR-014 (1a) retrieval |
 | `list_run_targets` | read | profiles, `is_run_target`, the poller's reachability | includes "outside expected window" |
@@ -1132,13 +1133,14 @@ The decision text above stands, except where an item below says it replaces or q
    - **`get_job`.** `get_job_conn` returns the full `Job`, with `input_content` and `scene_json`.
      M2b serialises a **projection**, never `Job`. Control: any field of the projection carrying a
      coordinate line.
+     `get_job`'s header is reconstructed from M1a's parsed structure, and raw header text is never served (decided by Anton after two verifier FAILs on filtering, M2b): `!` tokens are shown with every numeric-looking one hidden; allowlisted keys show their admitted values; `%geom Constraints` entries are shown with their targets, although the M1a SUBMITTED allowlist admits only `{C n C}`; a display-only list shows exactly one integer value for `%pal nprocs`, `%scf MaxIter`, `%neb NImages` and `%geom Recalc_Hess` (any other value hidden), and `%maxcore N` comes from the strict reader; every other key is named without values; geometry constructs are markers; every error is a kind and a line; and the rule-#9 tripwire replaces any field holding a coordinate-like row (a geometry line, which in text fields means a geometry opener `* xyz`/`* int`/`* gzmt`/`* xyzfile` in any case and spacing, also after ORCA's input-echo prefix, and in the header field any `*` line; or an element-or-label token followed by ≥3 numbers at any position on a line; a `{` or `=` line is skipped in the header field only) with a "withheld" marker and serves the rest.
    - **`get_results`.** `read_job_results` returns per-atom arrays. M2b builds the bounded summary,
      with units in the field names (rule #11).
    - **`measure`.** Results are `distance_ang`, `angle_deg` and `dihedral_deg` (rule #11).
      - **Refusals.** `xtb::distance`, `xtb::angle` and `xtb::dihedral` index without a range check
-       (`xtb.rs:179/183/190`). For degenerate input they return plausible numbers: a distance of
+       (the functions themselves). For degenerate input they return plausible numbers: a distance of
        0.0, an angle of NaN, a dihedral of 0.0 for a zero axis or a collinear inner triple
-       (`xtb.rs:190–202`). M2b refuses, never panics and never returns a number, for each of these
+       (`xtb::dihedral`). M2b refuses, never panics and never returns a number, for each of these
        cases, as `measure.ts` returns null (`src/scene/measure.ts:106–141`):
        - an index out of range;
        - a repeated index;
@@ -1155,6 +1157,7 @@ The decision text above stands, except where an item below says it replaces or q
          copies all three values into the Rust tests.
        - **Controls:** the Rust value differing from the ASE value, and the dihedral not folded to
          [0, 360).
+     - **The dihedral (decided by Anton, M2b).** `measure` does not reuse `xtb::dihedral`'s formula, because `xtb::dihedral` returns 360° − ASE (measured on the butane fixture, M2b; [mcp-transport-probe.md](mcp-transport-probe.md), "M2b facts"); it ports ASE's formula.
    - **`list_run_targets`.** No per-profile reachability exists, and nothing computes "outside
      expected window".
      - **The window.** M2b computes "outside the window" with a pure function of the profile's

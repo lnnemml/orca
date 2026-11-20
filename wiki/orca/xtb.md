@@ -210,6 +210,36 @@ progress) are what made this findable.
 > level. A foreign-binary bug we don't own; OrcaStudio simply never passes an empty
 > `--input`. Candidate for an upstream xtb issue (author's call; not filed from here).
 
+## Open — the dihedral sign convention of `$constrain` is unmeasured
+
+`xtb::dihedral` (`src-tauri/src/xtb.rs`) returns **360° − ASE's dihedral**: 180.0018° for ASE's
+179.9982° (butane anti) and 292.477° for ASE's 67.523° (gauche), measured in ADR-027 M2b
+([mcp-transport-probe.md](../architecture/mcp-transport-probe.md), "M2b facts"). It sets the default
+"freeze as is" dihedral target and `check_held`'s dihedral check. Which sign xtb's own
+`$constrain` `dihedral:` line uses is **not measured** (rule #10), so the consequence is open:
+- if xtb's sign is ASE's, an explicit target other than 0° or 180° is reported as not held, and
+  "freeze as is" (no target) writes the mirror value (gauche 67.523° → 292.477°) and drives the
+  dihedral to its mirror image, which `check_held` then catches (it measures 67.5° back against the
+  292.477° target);
+- if it is `xtb::dihedral`'s, an explicit target taken in ASE's convention (the scene's
+  `measure.ts`) is held at its mirror image, and `check_held` does not catch it.
+
+Distances and angles are not affected (`xtb::distance` and `xtb::angle` match ASE). The code is
+unchanged until a probe settles it.
+
+**Probe recipe (from the M2b verifier; for the prober):** xtb 6.6.1; the butane-gauche fixture of
+`sidecar/tests/test_geometry.py` (ASE `get_dihedral(0,1,2,3)` = 67.523°); an `xcontrol` with
+`$constrain`, `force constant=1.0`, `dihedral: 1,2,3,4,60.0` (1-based, this page); run
+`xtb gauche.xyz --opt --input xcontrol`; then ASE `get_dihedral(0,1,2,3)` on `xtbopt.xyz`.
+Expected readings (ASE `get_dihedral(0,1,2,3)` on `xtbopt.xyz`):
+
+| run | if xtb uses ASE's sign | if xtb uses `xtb::dihedral`'s sign |
+|---|---|---|
+| target `60.0` | ≈ 60° | ≈ 300° |
+| control: target `292.477` (the as-is value in `xtb::dihedral`'s terms) | ≈ 292.5° | ≈ 67.5° |
+
+The two runs must land in the same column; any other pair is a finding in itself.
+
 ## See also
 
 - `wiki/orca/constraints.md` — ORCA's constraint block (**0-based** — contrast!).
