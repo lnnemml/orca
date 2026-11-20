@@ -279,7 +279,7 @@ Create and Run is uncovered (named in o26.8).
   ORCA during the kill's 2 s grace, and that mpirun would outlive the app (the SIGKILL sweep matches
   only the old job dir). The slot claim is `JobRunner::claim_next`, which checks the flag under the
   `running` lock.
-- **Lock order** is always `running` → `db` (only `try_start_next` nests them); `cancel` and
+- **Lock order** is always `running` → `db` (only `claim_next`, called from `try_start_next`, nests them); `cancel` and
   `start_run` take each lock alone. No inversion, no deadlock.
 
 ## Cancellation — killpg the group **and** sweep the escaped MPI ranks by cwd
@@ -324,7 +324,7 @@ directory. *(Changed in `[2026-07-28] fix: MPI ranks escape process group on can
   start failed: nothing to kill). A job still at pgid 0 after 2 s is reported on stderr and not
   killed. Without the wait, the new ORCA would start after the kill returned, outlive the app, and the
   next start's `reconcile_on_startup` would mark `failed` a job whose orphan is still writing. Worst
-  case for `terminate_on_exit`: 2 s + 10 s + 2 s ≈ 14 s, inside the exit backstop's 15 s and 60 s.
+  case for `terminate_on_exit`: 2 s + 10 s + 2 s ≈ 14 s, inside the exit backstop's 20 s steps bound and 60 s flow bound.
 - `cancel(app, job_id)`: **queued** → finalize as `cancelled` (nothing to kill); **running** → set
   the `cancelled` flag, then spawn `terminate_job`; other status → `Backend(...)`. A **remote** job
   that is queued, running or cancelling is refused first (`ssh_backend::refuse_if_remote_live`, "job …

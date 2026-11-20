@@ -1093,7 +1093,7 @@ pub(crate) fn terminate_job(_pgid: i32, _job_dir: &Path) {}
 /// spawn run) is waited out for at most [`STARTING_JOB_WAIT`], then killed like any
 /// other ([`JobRunner::job_to_terminate`]); without that it would start after this
 /// returned and outlive the app. Worst case: 2 s for a starting job + `terminate_job`'s
-/// 10 s drain + 2 s grace ≈ **14 s**, inside the exit backstop's 15 s and 60 s bounds.
+/// 10 s drain + 2 s grace ≈ **14 s**, inside the exit backstop's 20 s steps bound and 60 s flow bound.
 pub fn terminate_on_exit(app: &AppHandle) {
     let Some(runner) = app.try_state::<JobRunner>() else {
         return;
@@ -1334,7 +1334,12 @@ mod tests {
         let stuck = starting("k");
         let started = Instant::now();
         assert_eq!(stuck.job_to_terminate(Duration::from_millis(200), STARTING_JOB_POLL), None);
-        assert!(started.elapsed() >= Duration::from_millis(200));
+        let waited = started.elapsed();
+        assert!(waited >= Duration::from_millis(200), "gave up before the bound: {waited:?}");
+        // Upper bound: the bound is 200 ms plus at most one 20 ms step. 700 ms catches a deadline
+        // multiplied by about 3.4 or more. From about x3.75 on, production's 2 s wait would push
+        // `terminate_on_exit` past the backstop's 20 s steps bound; a x30 is 6 s here, 60 s there.
+        assert!(waited < Duration::from_millis(700), "waited far past the bound: {waited:?}");
 
         let idle = JobRunner::new(std::env::temp_dir());
         assert_eq!(idle.job_to_terminate(STARTING_JOB_WAIT, STARTING_JOB_POLL), None);

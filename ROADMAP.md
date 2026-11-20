@@ -1661,19 +1661,19 @@ and OrcaStudio picks the job up, syncs results, and parses them — no terminal,
       - [x] **M1a** classifier (R1–R9 / P1–P5), method signature, block key allowlist, Rust
             charge/mult locator, input assembly (pure Rust) — committed `78aedd7` (2026-11-19):
             `src-tauri/src/mcp/`, [mcp-server.md](wiki/modules/mcp-server.md)
-      - [ ] **M1b** source resolver, memory verdict before step A, schema v24, grant create/revoke,
-            `submit_job` `mcp_state` guard, reconciliation in the lock holder
-            — **Part A `09fe80b` + Part B built, pending verification** (2026-11-19). Part A: schema
-            v24, the grant core, steps A/C, the reconciliation (not yet called), the guard as a pure
-            check, the resolver, the memory preflight. Part B: the grant commands
+      - [x] **M1b** source resolver, memory verdict before step A, schema v24, grant create/revoke,
+            `submit_job` `mcp_state` guard, reconciliation in the lock holder — committed `09fe80b` +
+            `642d1af` (2026-11-19). Part A: schema v24, the grant core, steps A/C, the reconciliation,
+            the guard as a pure check, the resolver, the memory preflight. Part B: the grant commands
             (`commands/mcp.rs`), the guard in `submit_job` and `retry_remote_submit`, and
-            `SidecarSmiles` (the SMILES HTTP call, not yet called)
-      - [~] **M2a** transport: `flock`, `0600` socket, `SO_PEERCRED`, `orcastudio --mcp` relay, 4×4 caps,
+            `SidecarSmiles` (the SMILES HTTP call, not yet called: M3)
+      - [x] **M2a** transport: `flock`, `0600` socket, `SO_PEERCRED`, `orcastudio --mcp` relay, 4×4 caps,
             the admission gate, the `mcp_enabled` switch + 30 s tick, `get_grant`; a Settings → MCP switch row
-            (ADR-027 M2 amendment) — **Part A `f0c3962`; Part B built, pending verification and
-            Anton's live gate** (2026-11-19): `lib.rs` setup and the tick thread, `ExitRequested` off
-            the main thread (with a backstop), the `main.rs` relay branch, `mcp_status`/`mcp_set_enabled`,
-            the reconcile's 250 ms busy timeout, and the Settings → MCP switch row
+            (ADR-027 M2 amendment) — committed `f0c3962` + `3098f6c` (2026-11-19); live gate passed
+            2026-11-19; quit with MCP off not run live (tests cover it). `lib.rs` setup and the tick
+            thread, `ExitRequested` off the main thread (with a backstop), the `main.rs` relay branch,
+            `mcp_status`/`mcp_set_enabled`, the reconcile's 250 ms busy timeout, and the Settings → MCP
+            switch row
       - [ ] **M2b** the read tools (projections, character caps, `measure` with ASE cross-check,
             `list_run_targets` window)
       - [ ] **M3** write tools — `create_job` with grant charging, `cancel_job` (mcp only),

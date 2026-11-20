@@ -295,11 +295,11 @@ fn a_dead_flows_backstop_pauses_the_queue_first() {
     assert_eq!(order.get(), vec!["pause_queue", "terminate", "sidecar_stop"], "the backstop did not pause the queue first");
 }
 
-/// The production bounds are the decided ones: 60 s to reach `exit`, 10 s of grace after it.
+/// The production bounds are the decided ones: 60 s to reach `exit`, 10 s of grace after it, 20 s for the backstop's own steps.
 #[test]
 fn the_production_backstop_bounds_are_the_decided_ones() {
     let t = BackstopTimings::PRODUCTION;
-    assert_eq!((t.flow, t.grace, t.steps), (Duration::from_secs(60), Duration::from_secs(10), Duration::from_secs(15)));
+    assert_eq!((t.flow, t.grace, t.steps), (Duration::from_secs(60), Duration::from_secs(10), Duration::from_secs(20)));
 }
 
 // ----- the local queue on exit -----

@@ -13018,3 +13018,71 @@ skipped. Controls: **38/38 RED** (33 + 5), trees sha256-identical.
    grace" line, that `echo $?` gives **0**, and that `pgrep -a orcastudio` comes back empty well under
    10 s after the window closed (time it: `while pgrep orcastudio >/dev/null; do sleep 0.2; done`
    started at the close). Once with MCP off and once with MCP on and a client connected.
+
+## [2026-11-20] fix | ADR-027 M2a follow-up — the stuck-start bound, the 20 s backstop, docs
+
+**What changed** (uncommitted, on `main` at `3098f6c`). A follow-up to M2a, all decided by Anton. Module
+pages: [mcp-server.md](modules/mcp-server.md), [tauri-core.md](modules/tauri-core.md),
+[execution-backends.md](modules/execution-backends.md).
+
+- **The stuck-start upper bound.** The stuck case of
+  `exit_gives_up_on_a_freed_or_stuck_start_within_the_bound` (`local_backend.rs`) checked only
+  `elapsed >= 200 ms`, so a 30× deadline in `JobRunner::job_to_terminate` (60 s in production) passed
+  every test. It now also asserts `elapsed < 700 ms`. The test's wait is 200 ms plus at most one 20 ms step, so
+  700 ms catches a deadline multiplied by about 3.4× or more, which covers every overrun that would push
+  the backstop's steps past 20 s (about 3.75× and up). Smaller multipliers still slip past, but stay
+  inside the 20 s bound. Decided by Anton after verifier F2b (an earlier 1 s bound let ×2 and ×4 stay
+  green). The ×4 control is the proof. The lower bound's message now prints the elapsed time.
+- **`BACKSTOP_STEPS_DEADLINE` 15 s → 20 s** (`mcp/server/wiring.rs`). The backstop's steps (queue pause,
+  kill, sidecar stop) have a worst case of about 14.5 s: 2 s pgid wait + 10 s drain + 2 s grace + the
+  sweeps + 0.3 s sidecar stop, a margin of about 0.5 s under 15 s. 20 s leaves about 5 s. The
+  `the_production_backstop_bounds_are_the_decided_ones` pin (exact equality on all three bounds) now
+  expects 20 s. Docs updated to 20 s: the ADR's M2 amendment item 6 backstop bullet (a number change
+  only), `mcp-server.md` (2 places), `tauri-core.md`, `execution-backends.md`, and the `terminate_on_exit` doc in `local_backend.rs`
+  (its "15 s and 60 s bounds" → "20 s steps bound and 60 s flow bound").
+- **Stale `wiring.rs` comments.** `EXIT_FLOW_DEADLINE`'s "about 12 s" → "about 14 s" (2 s pgid wait,
+  10 s drain, 2 s grace); the backstop's steps are named "queue pause, then kill, then sidecar stop" in
+  the module doc, the `BACKSTOP_STEPS_DEADLINE` and `BackstopTimings::steps` docs, `run_backstop`'s doc
+  and the `hard_end` comment.
+- **`execution-backends.md`**: "only `try_start_next` nests" `running` → `db` now says `claim_next`,
+  called from `try_start_next`.
+- **`ROADMAP.md`**: M1b `[x]` (`09fe80b` + `642d1af`), M2a `[x]` (`f0c3962` + `3098f6c`; live gate
+  passed 2026-11-19; quit with MCP off not run live, the tests cover it).
+
+**Live gate of M2a** (Anton, 2026-11-19, tree `98208b6`; measured by the orchestrator):
+
+| Check | Result |
+|---|---|
+| The Settings MCP row | renders (the app has only a dark theme, so the "light and dark" of the checklist does not apply) |
+| "1 client connected" | shown |
+| Quit with MCP on and a client connected | window gone → process gone in 0.26 s; exit code 0; `mcp.sock` removed; `mcp.lock` stays as an empty file; the client's relay exited 1 on socket EOF |
+| Quit with MCP on, no client | 0.32 s, exit 0, stderr empty |
+| Restart with MCP on | socket present at once |
+| Second instance | took the lock and socket 27 s after the first exited |
+| `orcastudio --mcp` with the app closed | exit 2, one stderr line, stdout empty |
+| End to end | raw JSON-RPC through the relay and a real `claude -p` session with a project `.mcp.json` both called `get_grant` → `{"grant":null}` |
+| Quit with one local job running and one queued | no ORCA/mpirun left 5 s later; the running job → `failed` ("ORCA did not terminate normally", the pre-existing kill-on-exit behaviour); the queued job stayed `queued` |
+| Not run live | quit with MCP off (the tests cover it) |
+
+**Correction to the Part B checklist (item 3).** The entry "ADR-027 M2a Part B" says "Switching the
+first off makes the second serve within 30 s". That is wrong by design, and the committed entry is
+append-only, so it is corrected here. `mcp_enabled` is one shared DB row: switching off in either
+instance turns MCP off for both. The lock passes to another instance only when the holder **exits**
+(the `flock` is kept on switch-off, ADR-027 decision 2); measured at the gate, the second instance took
+the socket 27 s after the first exited. The wrong claim appeared only in that log entry: the ADR and the
+module pages already say the lock is held until process exit. `mcp-server.md` now states the rule in one
+bullet ("The lock passes only on the holder's exit").
+
+**Out of scope, observed.** A SIGTERM to the app (no `ExitRequested`) orphans the sidecar. That behaviour
+pre-dates MCP; not touched.
+
+**Tests:** no new test; one assertion strengthened. `cargo build`: 0 warnings. `cargo test --workspace`:
+`orcastudio_lib` **1310** passed, 30 ignored; `mcp_relay_bin` 3; `orcastudio-core` 24 + 6 + 1 + 2 (1
+ignored). The `local_backend::` (35 passed, 1 ignored) and `mcp::` (222) suites green **3 times**. `tsc`
+clean; vitest **1381** passed, 2 skipped.
+Controls (each mutates, runs, requires the intended assertion, restores sha256-identical):
+- the deadline `wait * 30` in `job_to_terminate` → RED on "waited far past the bound";
+- the deadline `wait * 4` → RED on "waited far past the bound" (the 700 ms bound);
+- the deadline `wait / 4` → RED on "gave up before the bound" (the lower bound still bites);
+- `BACKSTOP_STEPS_DEADLINE` back to 15 s → RED on the bounds pin;
+- `BACKSTOP_STEPS_DEADLINE` 25 s → RED on the bounds pin.

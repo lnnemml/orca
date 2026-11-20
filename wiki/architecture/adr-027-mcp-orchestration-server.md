@@ -1103,7 +1103,7 @@ The decision text above stands, except where an item below says it replaces or q
      - **The backstop (added in M2a Part B, decided by Anton 2026-11-19; the grace and `_exit` in
        its fix round).** A thread starts with the exit flow and ends the process in two cases:
        - the flow has not reached `exit` within **60 s**, or dies first: the backstop runs its own
-         queue pause, kill and sidecar stop (bounded at 15 s), then ends the process;
+         queue pause, kill and sidecar stop (bounded at 20 s), then ends the process;
        - the flow reached `exit`, but the process is still alive **10 s** later: it ends the process
          (the flow has already run the kill and the sidecar stop).
 

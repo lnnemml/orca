@@ -349,7 +349,7 @@ the MCP lock release → `exit_ready` → `app.exit(0)`, whose own `ExitRequeste
 with `libc::_exit(1)` if the flow has not reached `app.exit` within 60 s, or if the process is still
 alive 10 s after it (`modules/mcp-server.md`, "The wiring"). `Drop` on `SidecarManager` is a last
 resort only on a normal exit: it runs on neither `_exit` nor `process::exit`, so on a backstop end the
-backstop runs `stop_sidecar` itself (after the queue pause and the kill). `terminate_on_exit` waits up
+backstop runs `stop_sidecar` itself (after the queue pause and the kill; its three steps are bounded at 20 s). `terminate_on_exit` waits up
 to 2 s for a job still starting (pgid 0) and kills it too; its worst case is ≈14 s. The
 poller is **not joined** on exit: its threads end with the process, and the ssh/rsync children of
 in-flight steps (own process groups) are left to the OS (ADR-024 o18, decided by Anton).

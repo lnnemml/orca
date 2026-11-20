@@ -52,7 +52,7 @@ PROPOSED (P5). Nothing reaches SUBMITTED by default.
 | `server/service.rs` | `McpService` (the `rmcp` `ServerHandler`: `get_grant`, the permit in `call_tool`), `ConnState { closed, permits }`; `RECOVERY_SENTENCE`, `INSTRUCTIONS`, `BUSY` |
 | `server/gate.rs` | `AdmissionGate` (`open`, `close`, `spawn`, `task_count`, `wait_all`), `GateClosed` ("MCP is shutting down") |
 | `server/lifecycle.rs` | `McpLifecycle` (`tick_step`, `set_enabled`, `status`, `on_exit_requested`, `gate`), the pure `decide` and `pass_through`; `LifecycleEnv` (`production`, `production_at`), `Hooks`, `Observed`, `Action`, `Why`, `McpStatus`, `ExitDecision`, `Executor` (`BlockingPool`), `ExitSteps`, `StopHandle`; `with_busy_timeout`, `RECONCILE_BUSY_TIMEOUT` (250 ms) |
-| `server/wiring.rs` | the app's side: `ManagedDb` (the `DbSource` over the managed `DbState`), `wired_lifecycle`, `app_lifecycle`, `start_ticks`; `exit_requested`, `handle_exit_request`, the pure `prevents_exit`, `guarded_steps`, `backstop`/`run_backstop`/`backstop_steps` → `Backstop` (`Hung`/`Died`/`StillAlive`), `hard_end` (`libc::_exit(1)`), `BackstopTimings`, `EXIT_FLOW_DEADLINE` (60 s), `EXIT_GRACE` (10 s), `BACKSTOP_STEPS_DEADLINE` (15 s); `is_relay_invocation`, `relay_main` |
+| `server/wiring.rs` | the app's side: `ManagedDb` (the `DbSource` over the managed `DbState`), `wired_lifecycle`, `app_lifecycle`, `start_ticks`; `exit_requested`, `handle_exit_request`, the pure `prevents_exit`, `guarded_steps`, `backstop`/`run_backstop`/`backstop_steps` → `Backstop` (`Hung`/`Died`/`StillAlive`), `hard_end` (`libc::_exit(1)`), `BackstopTimings`, `EXIT_FLOW_DEADLINE` (60 s), `EXIT_GRACE` (10 s), `BACKSTOP_STEPS_DEADLINE` (20 s); `is_relay_invocation`, `relay_main` |
 | `server/tick.rs` | `run_ticks(lifecycle, interval)`, `Interval`, `Every`, `TICK = 30 s` |
 | `server/relay.rs` | `relay(stdin, stdout, stderr, socket_path) -> RelayEnd` (`From<RelayEnd> for ExitCode`), `NOT_RUNNING` |
 | `server/*_tests.rs`, `server/test_support.rs` | one test file per submodule plus `server_tests.rs` (the server end to end over a real socket); `test_support` has the scratch dir and DB, a counting environment and a raw NDJSON MCP client |
@@ -517,6 +517,10 @@ switch-off. A transition reads the row, asks the pure `decide`, and acts, all un
 | "off", serving | `Stop` (the `flock` is kept) |
 | "off", not serving | nothing |
 
+- **The lock passes only on the holder's exit.** `mcp_enabled` is one shared row, so switching MCP off in
+  either instance turns it off for both: the holder stops serving but keeps the `flock`, and a second
+  instance stays a non-holder. A second instance takes the lock, and then the socket, only after the
+  holder exits (measured live: 27 s after the first exited, one tick).
 - **Acquisition.** Taking the lock begins one, and `reconcile_submitting_conn` runs once per
   acquisition, before the first bind. The acquisition counts as done only when it commits: a failure
   (`SQLITE_BUSY` from another instance) binds nothing, shows the reason, and the next tick retries.
@@ -606,7 +610,7 @@ step and ends the process in every case where it is still running:
 - `exit` not reached within `EXIT_FLOW_DEADLINE` (60 s; the M2a flow takes the kill's ≤14 s) →
   `Hung`, or the flow ended without reaching it (its steps dropped) → `Died`: the backstop first runs
   its own steps (`backstop_steps`: the queue pause — idempotent, and in `Died` the flow's may never
-  have run — then the kill, then the sidecar stop) for at most `BACKSTOP_STEPS_DEADLINE` (15 s);
+  have run — then the kill, then the sidecar stop) for at most `BACKSTOP_STEPS_DEADLINE` (20 s);
 - `exit` reached but the process still alive `EXIT_GRACE` (10 s) later → `StillAlive` (the flow has
   run the kill and the sidecar stop already).
 

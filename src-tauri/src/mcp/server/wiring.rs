@@ -15,7 +15,7 @@
 //! - each step runs under `catch_unwind`, so a panic in one does not stop the ones after it;
 //! - a backstop thread waits for the `exit` step. If the flow has not reached it within
 //!   [`EXIT_FLOW_DEADLINE`], or the flow ended without reaching it, the backstop runs the queue
-//!   pause, the kill and the sidecar stop itself (bounded by [`BACKSTOP_STEPS_DEADLINE`]) and ends the process. If
+//!   pause, then the kill, then the sidecar stop itself (bounded by [`BACKSTOP_STEPS_DEADLINE`]) and ends the process. If
 //!   `exit` was reached but the process is still alive [`EXIT_GRACE`] later, it ends it too. The end
 //!   is `libc::_exit(1)` ([`hard_end`]), injected so the tests never call it.
 
@@ -38,14 +38,16 @@ use crate::local_backend::{self, JobRunner};
 use crate::sidecar::SidecarManager;
 
 /// How long the exit flow may take before the backstop ends the process. In M2a the MCP wait is
-/// immediate (no tracked tasks), `terminate_on_exit` takes at most about 12 s and the sidecar stop
-/// about 0.3 s, so a flow that takes longer has hung.
+/// immediate (no tracked tasks), `terminate_on_exit` takes at most about 14 s (2 s pgid wait, 10 s drain, 2 s
+/// grace) and the sidecar stop about 0.3 s, so a flow that takes longer has hung.
 pub const EXIT_FLOW_DEADLINE: Duration = Duration::from_secs(60);
 /// How long the process may outlive the flow's `app.exit(0)` before the backstop ends it (decided by
 /// Anton). The event loop normally ends the process at once.
 pub const EXIT_GRACE: Duration = Duration::from_secs(10);
-/// How long the backstop waits for its own kill and sidecar stop before it ends the process anyway.
-pub const BACKSTOP_STEPS_DEADLINE: Duration = Duration::from_secs(15);
+/// How long the backstop waits for its own queue pause, kill and sidecar stop before it ends the
+/// process anyway. The steps' worst case is about 14.5 s (2 s pgid wait, 10 s drain, 2 s grace, the
+/// sweeps, 0.3 s sidecar stop), so 20 s leaves a margin of about 5 s.
+pub const BACKSTOP_STEPS_DEADLINE: Duration = Duration::from_secs(20);
 
 /// The backstop's three bounds; [`BackstopTimings::PRODUCTION`] in the app, short ones in tests.
 #[derive(Debug, Clone, Copy)]
@@ -54,7 +56,7 @@ pub struct BackstopTimings {
     pub flow: Duration,
     /// For the process to end after `exit`.
     pub grace: Duration,
-    /// For the backstop's own kill and sidecar stop.
+    /// For the backstop's own queue pause, kill and sidecar stop.
     pub steps: Duration,
 }
 
@@ -214,9 +216,9 @@ impl Backstop {
 }
 
 /// Wait up to `timings.flow` for the flow's `exit` step.
-/// - If it comes, the flow has already run its kill and sidecar stop: wait `timings.grace` for the
+/// - If it comes, the flow has already run its queue pause, kill and sidecar stop: wait `timings.grace` for the
 ///   event loop to end the process, and report that it did not.
-/// - If it does not come, run `steps` (the kill and the sidecar stop) on their own thread for at most
+/// - If it does not come, run `steps` (the queue pause, then the kill, then the sidecar stop) on their own thread for at most
 ///   `timings.steps`, and report why.
 ///
 /// It returns only when the process should be ended; the caller ends it.
@@ -272,7 +274,7 @@ pub fn hard_end(found: Backstop) {
     // SAFETY: `_exit` takes a plain status and never returns. It is chosen over the standard
     // library's exit on purpose: it runs no atexit handlers and no destructors, which could deadlock
     // against the GTK/WebKit loop or a lock held by the very thread that hung. The flow's or the
-    // backstop's own kill and sidecar stop have already run (bounded), and the OS reclaims the rest.
+    // backstop's own queue pause, kill and sidecar stop have already run (bounded), and the OS reclaims the rest.
     unsafe { libc::_exit(1) }
 }
 
