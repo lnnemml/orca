@@ -14,12 +14,17 @@ use std::time::{Duration, Instant};
 use rusqlite::Connection;
 use serde_json::{json, Value};
 
+use super::create_job_task::CreateJobSeams;
 use super::lifecycle::{Hooks, LifecycleEnv, McpLifecycle};
 use super::listener::{kernel_peer_uid, own_uid};
 use super::paths::{resolve, McpPaths};
 use super::service::HostPaths;
 use crate::commands::settings::DbState;
+use crate::mcp::classify::Target;
+use crate::mcp::create_job::{StatusEmit, StepB, StepBOutcome};
+use crate::mcp::create_job_test_support::NoSidecar;
 use crate::mcp::steps::reconcile_submitting_conn;
+use crate::models::job::JobStatus;
 
 /// A scratch directory, removed on drop. Short, so the socket path stays far below `sun_path`.
 pub struct Scratch {
@@ -115,8 +120,30 @@ pub fn counted_env(paths: &McpPaths, db: Arc<DbState>, hooks: Hooks) -> (Lifecyc
         peer_uid: kernel_peer_uid(),
         own_uid: own_uid(),
         hooks,
+        create_job: no_create_job(),
     };
     (env, counts)
+}
+
+/// A step B for a test whose `create_job` never reaches one: it refuses, so step C refunds.
+pub struct NoStepB;
+
+impl StepB for NoStepB {
+    fn submit(&self, _: &str, _: &Target) -> StepBOutcome {
+        StepBOutcome::Refused("no step B in this test".into())
+    }
+}
+
+/// A `job:status` emit that goes nowhere.
+pub struct NoEmit;
+
+impl StatusEmit for NoEmit {
+    fn job_status(&self, _: &str, _: JobStatus) {}
+}
+
+/// `create_job`'s seams for a test that does not exercise it: no sidecar, a refusing step B, no emit.
+pub fn no_create_job() -> CreateJobSeams {
+    CreateJobSeams { smiles: Arc::new(NoSidecar), step_b: Arc::new(NoStepB), emit: Arc::new(NoEmit) }
 }
 
 /// Write the switch row through another connection (another instance, or the test's hand).

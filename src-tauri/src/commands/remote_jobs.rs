@@ -67,12 +67,6 @@ pub(crate) fn status_to_emit(before: &Job, after: &Job) -> Option<JobStatus> {
     (before.status != after.status || before.error_message != after.error_message).then_some(after.status)
 }
 
-fn load_job(app: &AppHandle, id: &str) -> Result<Job, AppError> {
-    let db = app.state::<DbState>();
-    let conn = db.lock()?;
-    get_job_conn(&conn, id)
-}
-
 /// The backend of existing job `id`, which must be remote (by its coordinates, o item 1).
 fn remote_backend(app: &AppHandle, job: &Job) -> Result<SshBackend, AppError> {
     match Backend::for_job(app.clone(), job)? {
@@ -117,7 +111,7 @@ where
 }
 
 /// Run `op` on job `id` through [`guarded_blocking`], then emit `job:status` if the row changed
-/// ([`status_to_emit`]). Every remote command goes through here.
+/// ([`announcing_change`]). Every remote command goes through here.
 async fn run_guarded<T, F>(app: AppHandle, id: String, what: &'static str, op: F) -> Result<T, AppError>
 where
     T: Send + 'static,
@@ -126,16 +120,31 @@ where
     let in_flight = app.state::<InFlight>().inner().clone();
     let job_id = id.clone();
     guarded_blocking(&in_flight, &job_id, what, move || {
-        let before = load_job(&app, &id)?;
-        let result = op(&app, &before);
-        // The row after the operation, whatever its result: a failure after the persist step
-        // still changed it. A row that cannot be read now has nothing to announce.
-        if let Some(status) = load_job(&app, &id).ok().and_then(|after| status_to_emit(&before, &after)) {
-            crate::local_backend::emit_status(&app, &id, status);
-        }
-        result
+        let db = app.state::<DbState>();
+        announcing_change(&db, &AppSink(app.clone()), &id, |job| op(&app, job))
     })
     .await
+}
+
+/// The guarded work's body, `AppHandle`-free: read job `id`, run `op` on it, then emit `job:status`
+/// through `sink` (`AppSink::status` is `local_backend::emit_status`) if the row changed
+/// ([`status_to_emit`]). [`run_guarded`] runs it inside the task; the MCP server's remote step B
+/// (`mcp::step_b::remote_step_b`, already on the blocking pool) runs it under the same guard.
+pub(crate) fn announcing_change<T>(
+    db: &DbState,
+    sink: &dyn PollerSink,
+    id: &str,
+    op: impl FnOnce(&Job) -> Result<T, AppError>,
+) -> Result<T, AppError> {
+    let before = get_job_conn(&*db.lock()?, id)?;
+    let result = op(&before);
+    // The row after the operation, whatever its result: a failure after the persist step
+    // still changed it. A row that cannot be read now has nothing to announce.
+    let after = db.lock().and_then(|conn| get_job_conn(&conn, id));
+    if let Some(status) = after.ok().and_then(|after| status_to_emit(&before, &after)) {
+        sink.status(id, status);
+    }
+    result
 }
 
 /// The remote arm of `submit_job`: submit draft `id` through `ssh` (whose target is the chosen

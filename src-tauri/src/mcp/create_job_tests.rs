@@ -2,13 +2,17 @@
 //! Part A): the order of its steps, step C by the row's state, the argument bounds and the result
 //! cap. The task around it is tested in `server::create_job_task_tests`.
 
-use std::sync::Arc;
+use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use super::audit::{bounded_reasons, AUDIT_REASONS_MAX};
 use super::create_job::*;
 use super::create_job_test_support::{source_job, FakeStepB, Hand, World, HEADER};
-use super::steps::McpReason;
+use super::steps::{finish_submit_audited_conn, reconcile_submitting_conn, McpReason, StepC};
 use super::tools::{result_text, size_of_text, ToolError, RESULT_CAP_BYTES};
+use crate::error::AppError;
 use crate::mcp::preflight::MaxcoreSource;
 use crate::models::job::JobStatus;
 
@@ -287,4 +291,197 @@ fn the_audit_args_are_bounded_and_say_so() {
     assert!(text.len() < crate::db::MCP_AUDIT_ARGS_MAX_CHARS, "{} bytes", text.len());
     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
     assert_eq!((v["header_bytes"].as_u64(), v["header_cut"].as_bool()), (Some(HEADER_MAX_BYTES as u64), Some(true)));
+}
+
+// ----- M3a Part B: step B's lock, step C by the row, panic isolation, step C's retry -----
+
+/// Control (verifier LOW-1, M3a): step B holding `DbState`. The fake step B records whether the lock
+/// was free and, when it was not, returns at once without locking (no deadlock), so the breach goes
+/// red instead of hanging. NEGATIVE CONTROL: hold `DbState` across step B in `submit_charged_with` →
+/// red, not a hang.
+#[test]
+fn step_b_runs_with_no_lock_held() {
+    let w = World::new("cj-lock-free", 1);
+    let step_b = Arc::new(FakeStepB::new(w.state.clone(), Hand::Over));
+    let r = run(&w, &step_b, w.args()).expect("create_job");
+    let seen = step_b.seen.lock().unwrap().clone();
+    assert_eq!(seen, vec![(true, true)], "LOCK-FREE-B: step B ran with the database lock held: {r:?}");
+}
+
+/// Control (verifier LOW-2, M3a): step C trusting step B's outcome type. Step B took the job (the row
+/// is `queued`) and then answered `Refused`, as `ssh_backend::submit_remote` does with an `Err` from
+/// a database failure after `persist_submit`. Step C judges the row: the charge stays and the call is
+/// SUBMITTED, with step B's message. NEGATIVE CONTROL: refund on a `Refused` outcome (step C trusting
+/// the type) → red.
+#[test]
+fn a_refusal_after_the_row_left_draft_keeps_the_charge() {
+    let w = World::new("cj-refuse-after", 1);
+    let step_b = Arc::new(FakeStepB::new(w.state.clone(), Hand::RefuseAfterQueue));
+    let r = run(&w, &step_b, w.args()).expect("create_job");
+    let job_id = r.job_id.clone().unwrap();
+    assert_eq!(
+        (r.disposition, w.charged(), w.mcp_jobs()),
+        (Outcome::Submitted, 1, vec![(job_id, "queued".to_string(), Some(w.grant_id.clone()), None)]),
+        "MONEY-TYPE: step C refunded a job that had left draft because step B answered Refused: {r:?}"
+    );
+    let submit = r.submit.unwrap();
+    assert!(!submit.refunded && submit.step_b.contains("the upload failed"), "{submit:?}");
+}
+
+/// An emit that panics on its first call (step A's) and records the rest.
+#[derive(Default)]
+struct PanicFirstEmit {
+    calls: AtomicUsize,
+    after: Mutex<Vec<JobStatus>>,
+}
+
+impl StatusEmit for PanicFirstEmit {
+    fn job_status(&self, _job_id: &str, status: JobStatus) {
+        if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            panic!("step A's job:status emit panics");
+        }
+        self.after.lock().unwrap().push(status);
+    }
+}
+
+/// The world's environment with another emit.
+fn env_with_emit(w: &World, step_b: Arc<FakeStepB>, emit: Arc<dyn StatusEmit>) -> CreateJobEnv {
+    let base = w.env(step_b);
+    CreateJobEnv { db: base.db.clone(), smiles: base.smiles.clone(), host: base.host.clone(), step_b: base.step_b.clone(), emit }
+}
+
+/// Control (verifier LOW-5; risk 3 of M3a Part B): a panic in step A's `job:status` emit leaving the
+/// job `submitting`. The emit is the only foreign code between step A's commit and step B; isolated,
+/// steps B and C still run, the flag is cleared and the outcome row written. NEGATIVE CONTROL: call
+/// `env.emit.job_status` directly in `decide`'s charged arm → the panic skips steps B and C → red.
+#[test]
+fn a_panic_in_step_as_emit_still_runs_steps_b_and_c() {
+    let w = World::new("cj-emit-panic-a", 1);
+    let step_b = Arc::new(FakeStepB::new(w.state.clone(), Hand::Over));
+    let emit = Arc::new(PanicFirstEmit::default());
+    let env = env_with_emit(&w, step_b.clone(), emit.clone());
+    let r = catch_unwind(AssertUnwindSafe(|| run_create_job(&env, w.args())));
+    let jobs = w.mcp_jobs();
+    let finished = (step_b.calls(), jobs.first().map(|j| j.3.clone()), w.audit().len());
+    assert_eq!(finished, (1, Some(None), 2), "EMIT-PANIC-A: a panic in step A's emit left the job submitting: {jobs:?}");
+    assert_eq!(r.ok().and_then(Result::ok).map(|r| r.disposition), Some(Outcome::Submitted));
+    assert_eq!(*emit.after.lock().unwrap(), vec![JobStatus::Queued], "step C's emit still ran");
+}
+
+/// An emit that panics on every call.
+struct AlwaysPanicEmit;
+
+impl StatusEmit for AlwaysPanicEmit {
+    fn job_status(&self, _: &str, _: JobStatus) {
+        panic!("every job:status emit panics");
+    }
+}
+
+/// Panic isolation end to end: with every emit panicking (step A's, and step C's after its commit),
+/// a SUBMITTED call still runs steps B and C, writes both audit rows, and returns its result.
+#[test]
+fn a_panicking_emit_never_costs_the_result() {
+    let w = World::new("cj-emit-panic-all", 1);
+    let step_b = Arc::new(FakeStepB::new(w.state.clone(), Hand::Refuse));
+    let env = env_with_emit(&w, step_b, Arc::new(AlwaysPanicEmit));
+    let r = catch_unwind(AssertUnwindSafe(|| run_create_job(&env, w.args())));
+    let r = r.expect("no panic escapes create_job").expect("create_job");
+    assert_eq!((r.disposition, r.submit.as_ref().map(|s| s.refunded)), (Outcome::Proposed, Some(true)));
+    assert_eq!((w.charged(), w.audit().len(), w.mcp_jobs()[0].3.clone()), (0, 2, None));
+}
+
+/// A step C transaction that fails its first `fail` attempts before touching anything (as a
+/// `SQLITE_BUSY` at `BEGIN` does), then runs the real one. Counts every attempt.
+fn flaky_step_c(
+    fail: usize,
+    attempts: &AtomicUsize,
+) -> impl FnMut(&rusqlite::Connection, &str, &str, &str, &str) -> Result<StepC, AppError> + '_ {
+    move |conn, job_id, grant_id, message, args| {
+        let n = attempts.fetch_add(1, Ordering::SeqCst);
+        if n < fail {
+            return Err(AppError::Internal(format!("injected step C failure {}", n + 1)));
+        }
+        finish_submit_audited_conn(conn, job_id, grant_id, message, args)
+    }
+}
+
+const SHORT_WAITS: [Duration; 2] = [Duration::from_millis(5), Duration::from_millis(5)];
+
+/// The environment and the charged decision of one SUBMITTED call, for the retry tests.
+fn charged(w: &World, hand: Hand) -> (Arc<CreateJobEnv>, Charged) {
+    let env = w.env(Arc::new(FakeStepB::new(w.state.clone(), hand)));
+    match decide(&env, w.args()).expect("decide") {
+        Decision::Charged(c) => (env, c),
+        Decision::Done(r) => panic!("not charged: {r:?}"),
+    }
+}
+
+/// Control (Anton's decision, M3a Part B): step C not retried. Step C's transaction fails twice and
+/// then succeeds: the third attempt refunds (or keeps) exactly once — one outcome row, the counter
+/// moved once, one final emit — and there is no `step_c_error`. NEGATIVE CONTROL: one attempt only
+/// (the retry loop removed) → `step_c_error`, the job left `submitting` → red.
+#[test]
+fn step_c_is_retried_and_writes_exactly_once() {
+    for (hand, refunded, charged_after, last_emit) in
+        [(Hand::Refuse, true, 0, JobStatus::Draft), (Hand::Over, false, 1, JobStatus::Queued)]
+    {
+        let w = World::new("cj-retry", 1);
+        let (env, c) = charged(&w, hand);
+        let attempts = AtomicUsize::new(0);
+        let r = submit_charged_with(&env, c, &SHORT_WAITS, flaky_step_c(2, &attempts));
+        let submit = r.submit.clone().unwrap();
+        assert_eq!(
+            (submit.step_c_error.clone(), submit.refunded, w.mcp_jobs()[0].3.clone()),
+            (None, refunded, None),
+            "STEP-C-RETRY: step C was not retried ({hand:?}): {r:?}"
+        );
+        assert_eq!(attempts.load(Ordering::SeqCst), 3, "{hand:?}");
+        assert_eq!((w.charged(), w.audit().len()), (charged_after, 2), "{hand:?}: the outcome written once");
+        assert_eq!(w.emit.statuses(), vec![JobStatus::Draft, last_emit], "{hand:?}: one final emit");
+        if refunded {
+            let stored: String = w.db.conn.query_row("SELECT mcp_reasons FROM jobs WHERE origin = 'mcp'", [], |r| r.get(0)).unwrap();
+            assert_eq!(stored.matches("submit refused").count(), 1, "{stored}");
+        }
+    }
+}
+
+/// Every step C attempt failing is the crash case: `step_c_error` is reported, the job keeps
+/// `mcp_state = 'submitting'` and its charge, and the lock holder's reconciliation recovers it (a
+/// refused draft is refunded "interrupted before submit"). NEGATIVE CONTROL: drop the error from the
+/// report → red.
+#[test]
+fn every_step_c_attempt_failing_is_reported_and_reconciled() {
+    let w = World::new("cj-retry-exhausted", 1);
+    let (env, c) = charged(&w, Hand::Refuse);
+    let attempts = AtomicUsize::new(0);
+    let r = submit_charged_with(&env, c, &SHORT_WAITS, flaky_step_c(usize::MAX, &attempts));
+    let error = r.submit.as_ref().and_then(|s| s.step_c_error.clone());
+    assert!(
+        error.as_deref().is_some_and(|e| e.contains("injected step C failure 3")),
+        "STEP-C-EXHAUSTED: every attempt failed, yet no step_c_error: {r:?}"
+    );
+    assert_eq!(attempts.load(Ordering::SeqCst), 1 + SHORT_WAITS.len());
+    assert_eq!((w.charged(), w.audit().len(), w.mcp_jobs()[0].3.as_deref()), (1, 1, Some("submitting")));
+
+    let reconciled = reconcile_submitting_conn(&w.db.conn).unwrap();
+    assert_eq!(reconciled.refunded, 1);
+    let job = w.mcp_jobs()[0].clone();
+    assert_eq!((w.charged(), job.1.as_str(), job.2, job.3), (0, "draft", None, None));
+}
+
+/// The retry's numbers and their arithmetic against the exit wait: three attempts, each bounded by the
+/// app connection's busy timeout (read from `init_db`'s connection, not assumed), plus the waits; with
+/// `terminate_on_exit`'s ≈ 14.5 s worst case and the sidecar stop after them, inside the backstop's
+/// 60 s.
+#[test]
+fn step_c_retry_fits_inside_the_exit_wait() {
+    let db = crate::mcp::test_db::TestDb::new("cj-retry-budget");
+    let busy_ms: u64 = db.conn.pragma_query_value(None, "busy_timeout", |r| r.get(0)).unwrap();
+    assert_eq!(busy_ms, 5_000, "the app connection's busy timeout");
+    assert_eq!(STEP_C_RETRY_WAITS, [Duration::from_millis(250), Duration::from_secs(1)]);
+    let attempts = 1 + STEP_C_RETRY_WAITS.len() as u32;
+    let worst = Duration::from_millis(busy_ms) * attempts + STEP_C_RETRY_WAITS.iter().sum::<Duration>();
+    assert_eq!(worst, Duration::from_millis(16_250));
+    let after_the_wait = Duration::from_millis(14_500) + Duration::from_millis(300);
+    assert!(worst + after_the_wait < crate::mcp::server::wiring::EXIT_FLOW_DEADLINE, "{worst:?}");
 }

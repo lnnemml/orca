@@ -8,7 +8,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use super::lifecycle::{BlockingPool, ExitDecision, Executor};
-use super::test_support::{eventually, set_row, Scratch};
+use super::test_support::{eventually, no_create_job, set_row, Scratch};
 use super::wiring::*;
 use crate::mcp::grant::create_grant_conn;
 use crate::mcp::steps::{reconcile_submitting_conn, Reconciled, SUBMITTING};
@@ -56,8 +56,8 @@ fn timings(flow: Duration, grace: Duration, steps: Duration) -> BackstopTimings 
 fn the_wired_lifecycle_keeps_a_non_holder_from_reconciling() {
     let scratch = Scratch::new("wired-nonholder");
     let paths = scratch.paths();
-    let a = wired_lifecycle(scratch.db(), Ok(paths.clone()), scratch.host());
-    let b = wired_lifecycle(scratch.db(), Ok(paths.clone()), scratch.host());
+    let a = wired_lifecycle(scratch.db(), Ok(paths.clone()), scratch.host(), no_create_job());
+    let b = wired_lifecycle(scratch.db(), Ok(paths.clone()), scratch.host(), no_create_job());
     assert!(a.set_enabled(true).unwrap().serving);
 
     // A's job in step B, as step A leaves it: a charged `submitting` draft.
@@ -87,7 +87,7 @@ fn the_wired_lifecycle_keeps_a_non_holder_from_reconciling() {
 #[test]
 fn a_path_refusal_becomes_the_status_reason() {
     let scratch = Scratch::new("wired-refusal");
-    let lc = wired_lifecycle(scratch.db(), Err(super::paths::PathRefusal::NoBaseDir), scratch.host());
+    let lc = wired_lifecycle(scratch.db(), Err(super::paths::PathRefusal::NoBaseDir), scratch.host(), no_create_job());
     set_row(&scratch.another_connection(), true);
     lc.tick_step();
     let status = lc.status();
@@ -114,7 +114,7 @@ fn prevent_exit_exactly_when_the_decision_is_not_pass_through() {
 fn exit_with_mcp_never_enabled_kills_then_stops_the_sidecar_then_exits_promptly() {
     let scratch = Scratch::new("wired-exit-off");
     let paths = scratch.paths();
-    let lc = wired_lifecycle(scratch.db(), Ok(paths.clone()), scratch.host());
+    let lc = wired_lifecycle(scratch.db(), Ok(paths.clone()), scratch.host(), no_create_job());
     lc.tick_step(); // the first tick at app start: the row is missing, so "off"
 
     let order = Order::default();
@@ -147,7 +147,7 @@ fn exit_with_mcp_never_enabled_kills_then_stops_the_sidecar_then_exits_promptly(
 #[test]
 fn a_second_request_during_the_flow_is_prevented_and_starts_nothing() {
     let scratch = Scratch::new("wired-exit-twice");
-    let lc = wired_lifecycle(scratch.db(), Ok(scratch.paths()), scratch.host());
+    let lc = wired_lifecycle(scratch.db(), Ok(scratch.paths()), scratch.host(), no_create_job());
     let order = Order::default();
     let (release, hold) = mpsc::channel::<()>();
     let o = order.clone();
@@ -172,7 +172,7 @@ fn a_second_request_during_the_flow_is_prevented_and_starts_nothing() {
 #[test]
 fn a_panicking_step_does_not_stop_the_exit() {
     let scratch = Scratch::new("wired-exit-panic");
-    let lc = wired_lifecycle(scratch.db(), Ok(scratch.paths()), scratch.host());
+    let lc = wired_lifecycle(scratch.db(), Ok(scratch.paths()), scratch.host(), no_create_job());
     let order = Order::default();
     let (b, c) = (order.clone(), order.clone());
     let (steps, heard) = guarded_steps(
@@ -193,7 +193,7 @@ fn a_panicking_step_does_not_stop_the_exit() {
 #[test]
 fn a_hung_step_is_caught_by_the_backstop() {
     let scratch = Scratch::new("wired-exit-hang");
-    let lc = wired_lifecycle(scratch.db(), Ok(scratch.paths()), scratch.host());
+    let lc = wired_lifecycle(scratch.db(), Ok(scratch.paths()), scratch.host(), no_create_job());
     let (release, hold) = mpsc::channel::<()>();
     let (steps, heard) = guarded_steps(
         || {},
@@ -227,7 +227,7 @@ fn a_hung_step_is_caught_by_the_backstop() {
 #[test]
 fn a_process_that_outlives_exit_is_ended_after_the_grace() {
     let scratch = Scratch::new("wired-exit-grace");
-    let lc = wired_lifecycle(scratch.db(), Ok(scratch.paths()), scratch.host());
+    let lc = wired_lifecycle(scratch.db(), Ok(scratch.paths()), scratch.host(), no_create_job());
     let order = Order::default();
     let (steps, heard) = recording(&order); // its `exit` only records: the process lives on
     let ended = Arc::new(Mutex::new(None::<(Backstop, Duration)>));
@@ -319,7 +319,7 @@ fn no_queued_job_starts_once_the_exit_flow_has_begun() {
         .unwrap()
         .execute("INSERT INTO jobs (id, title, input_content, status) VALUES ('next', 't', '! SP', 'queued')", [])
         .unwrap();
-    let lc = wired_lifecycle(db.clone(), Ok(scratch.paths()), scratch.host());
+    let lc = wired_lifecycle(db.clone(), Ok(scratch.paths()), scratch.host(), no_create_job());
     let runner = Arc::new(JobRunner::new(scratch.dir.clone()));
 
     let claimed = Arc::new(Mutex::new(None));
@@ -441,4 +441,46 @@ fn main_branches_to_the_relay_before_run_and_prints_nothing() {
     for print in ["print!", "println!", "io::stdout", "write!", "writeln!"] {
         assert!(!MAIN.contains(print), "main.rs writes to stdout: {print}");
     }
+}
+
+/// The text of `WIRING` from `signature` up to the first `end` after it (the item's closing brace).
+fn wiring_fn(signature: &str, end: &str) -> &'static str {
+    let start = WIRING.find(signature).unwrap_or_else(|| panic!("{signature} exists"));
+    &WIRING[start..start + WIRING[start..].find(end).expect("the fn ends")]
+}
+
+/// `create_job`'s app seams (M3a Part B) need an `AppHandle`, so — like the exit steps — their bodies
+/// are pinned in the source: the app's lifecycle gets them; step B is the real one over the app's
+/// world, whose closing check reads the lifecycle's exit flag and its gate, whose remote parts are
+/// `submit_to_server`'s (the real runner, the app's sink, `JobRunner`'s data dir), and whose local
+/// tail is `local_backend::submit`'s; the emit is the app's one emitter; the SMILES call reads the
+/// sidecar's status at the moment of the call. NEGATIVE CONTROL: the closing check not reading the
+/// exit flag (`APP-SEAMS`) → red.
+#[test]
+fn the_app_seams_of_create_job_are_the_real_ones() {
+    let app = wiring_fn("pub fn app_lifecycle(", "\n}\n");
+    assert!(app.contains("app_create_job(app)"), "{app}");
+    let seams = wiring_fn("pub fn app_create_job(", "\n}\n");
+    for part in ["Arc::new(AppSmiles(app.clone()))", "Arc::new(RealStepB(AppSubmitWorld(app.clone())))", "Arc::new(AppEmit(app.clone()))"] {
+        assert!(seams.contains(part), "{part}: {seams}");
+    }
+    let closing = wiring_fn("    fn closing(&self)", "\n    }\n");
+    assert!(
+        closing.contains("closing_reason(lifecycle.is_exiting(), lifecycle.gate().is_open())"),
+        "APP-SEAMS: the app's step B does not read the exit flag and the gate: {closing}"
+    );
+    let remote = wiring_fn("    fn with_remote(", "\n    }\n");
+    for part in ["runner: &SystemRunner", "AppSink(app.clone())", "data_dir: runner.data_dir()", "app.try_state::<InFlight>()"] {
+        assert!(remote.contains(part), "{part}: {remote}");
+    }
+    let tail = wiring_fn("    fn after_local_queue(", "\n    }\n");
+    let emit = tail.find("local_backend::emit_status(&self.0, job_id, JobStatus::Queued)").expect("the emit");
+    let start = tail.find("local_backend::try_start_next(&self.0)").expect("the queue start");
+    assert!(emit < start, "{tail}");
+    let emitter = wiring_fn("impl StatusEmit for AppEmit", "\n}\n");
+    assert!(emitter.contains("local_backend::emit_status(&self.0, job_id, status)"), "{emitter}");
+    let smiles = wiring_fn("impl SmilesTo3d for AppSmiles", "\n}\n");
+    let status = smiles.find("sidecar.get_status()").expect("the status, read at the call");
+    let call = smiles.find("SidecarSmiles::from_status(&status).smiles_to_3d(smiles)").expect("the call");
+    assert!(status < call, "{smiles}");
 }

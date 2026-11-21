@@ -392,6 +392,11 @@ in the future. The grant create and revoke commands are Rust, owned by M1b.
   | left `Draft` (queued, pending, running, or any later state) | no refund. This covers every outcome after the claim: success, pending (a slot refusal, the o23 path), "not on the server", `FailedAfterClaim` ("submit interrupted", which can only be cancelled), `Unknown`, and the `KillUserProcesses` refusal. The job stays charged. Recovery for the stuck cases is Anton's Retry, or a cancel by Anton or Claude. The panel and the audit log show it |
   | the row is gone | nothing to do. The counter keeps the charge |
 
+  (Qualified in M3a, decided by Anton: step C's transaction is retried a bounded number of times; if
+  every attempt fails, the job stays `submitting` and the reconciliation recovers it, as after a crash —
+  at the next lock acquisition, which in practice is the next app start; until then the job counts
+  toward `max_in_flight` and the `submit_job` command refuses it.)
+
 - **The remote step B takes time.** It makes several ssh calls and an rsync, each bounded by its
   own timeout.
 - **A crash between A and C.** A reconciliation turns every `Draft` with `mcp_state = 'submitting'`
@@ -1117,8 +1122,9 @@ The decision text above stands, except where an item below says it replaces or q
        deadlock against the GTK/WebKit loop. Without the backstop, a stuck flow would absorb every
        later close request, so the app could never close. A forced end counts as a **crash** for the
        reconciliation: a job left in step B stays `submitting`, and the next lock holder's
-       reconciliation refunds it (decision 5). M3 revisits the 60 s against the ssh timeouts of a
-       remote step B (M3 amendment, item 1: a fork brought to Anton).
+       reconciliation refunds it only if it is still a `draft` (decision 5); a job `persist_submit`
+       has already moved to `queued` keeps its charge and only has its flag cleared. The 60 s is kept
+       against a remote step B (decided by Anton; M3 amendment, item 1).
      - **The local queue (decided by Anton, M2a Part B fix round).** The flow's first step, before
        the MCP wait, pauses the local queue for good (now the terminal exit flag, which `resume_queue`
        cannot clear: M3 amendment, item 4). Otherwise the job `terminate_on_exit` kills frees
@@ -1214,16 +1220,24 @@ The decision text above stands, except where an item below says it replaces or q
            records them in `wiki/modules/mcp-server.md`; the controls bite on those numbers.
        - **The 60 s exit backstop** (M2 amendment, item 6), revisited against a remote step B. A remote
          step B can outlast it: `SUBMIT_TIMEOUT` and `CALL_TIMEOUT` are 60 s each (`ssh_backend.rs`).
-         A forced end mid-step-B counts as a crash: the reconciliation refunds a Draft still at
-         `submitting` to PROPOSED, although its submit may already have reached the server.
-         - **Criterion:** the backstop's flow deadline is at least the worst case of a remote step B,
-           i.e. the sum of its bounded ssh calls (× `CALL_TIMEOUT`), `SUBMIT_TIMEOUT` and the rsync
-           bound, measured from the code.
-         - **This is a fork, not an implementer's change.** The backstop's timings were decided by
-           Anton. M3a computes the worst case, brings the result to Anton with a lean (keep 60 s,
-           raise it, or bound step B by the remaining exit budget), and only then changes anything.
-           A changed value gets a control. The outcome replaces the "M3 revisits the 60 s"
-           sentences in item 6 and in `wiki/modules/mcp-server.md`.
+         A forced end mid-step-B counts as a crash.
+         - **Criterion:** a forced end never refunds a job that any ssh call reached. This is
+           guaranteed: `persist_submit` commits `queued` before any ssh (`submit_remote`), and the
+           reconciliation refunds only a job that is still a `draft`.
+         - **The worst case** of a remote step B, computed from the code's constants (M3a Part A),
+           not measured: 300 s + ⌊bytes / 256 KiB⌋ s (the prepare call, the install call and the
+           prepare call again, and the submit call, at 60 s each; the upload's 60 s plus 1 s per
+           256 KiB). It is not bounded by step B's own constants: each process first takes one of the
+           host's 8 call permits (`remote/gate.rs`), outside its timeout, and waits only when all 8 are
+           held — then possibly behind a poller fetch of up to 300 s or 1800 s.
+         - **Kept at 60 s (decided by Anton, 2026-11-21).**
+         - **Step B refuses before `persist_submit`** once the exit flow has begun or the admission
+           gate has closed (decided by Anton): the job stays a charged `draft`, step C refunds it to
+           PROPOSED, and no ssh starts for it. After `persist_submit` has committed `queued`, the job
+           is never refunded. The residual window: the check is a read, not a lock shared with the exit
+           flow, so an exit that begins after it — during the wait for the `DbState` mutex or
+           `persist_submit`'s own transaction and file writes — is not seen, and that job's ssh calls
+           do start during the exit (it is then `queued` and kept).
        - **The exit flag of item 4.**
      - **Controls:**
        - **The decomposition's `create_job` controls:**

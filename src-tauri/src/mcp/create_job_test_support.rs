@@ -70,6 +70,9 @@ pub enum Hand {
     Refuse,
     /// A panic inside step B.
     Panic,
+    /// The path took the job (the row becomes `queued`) and then failed: an error after the persist
+    /// step, as `ssh_backend::submit_remote`'s `Err` from a database failure after `persist_submit`.
+    RefuseAfterQueue,
 }
 
 /// A fake step B over the world's `DbState`. It checks that it runs with the lock free (step B holds
@@ -109,6 +112,15 @@ impl StepB for FakeStepB {
     fn submit(&self, job_id: &str, _target: &Target) -> StepBOutcome {
         self.calls.fetch_add(1, Ordering::SeqCst);
         let lock_free = self.db.0.try_lock().is_ok();
+        if !lock_free {
+            // The caller holds `DbState`: locking it here would deadlock (verifier LOW-1, M3a), so the
+            // breach is recorded and step B returns at once, without the gate and without a write.
+            self.seen.lock().unwrap().push((false, false));
+            if let Some(tx) = self.entered.lock().unwrap().take() {
+                let _ = tx.send(());
+            }
+            return StepBOutcome::Refused("step B was called with the database lock held".into());
+        }
         let submitting = {
             let conn = self.db.lock().unwrap();
             conn.query_row("SELECT status = 'draft' AND mcp_state = 'submitting' FROM jobs WHERE id = ?1", [job_id], |r| r.get(0))
@@ -123,12 +135,23 @@ impl StepB for FakeStepB {
         }
         match self.hand {
             Hand::Over => {
-                self.db.lock().unwrap().execute("UPDATE jobs SET status = 'queued' WHERE id = ?1", [job_id]).unwrap();
+                self.queue(job_id);
                 StepBOutcome::Handed("queued".into())
             }
             Hand::Refuse => StepBOutcome::Refused("the slot is busy".into()),
             Hand::Panic => panic!("a step B that panics"),
+            Hand::RefuseAfterQueue => {
+                self.queue(job_id);
+                StepBOutcome::Refused("the persist step committed, then the upload failed".into())
+            }
         }
+    }
+}
+
+impl FakeStepB {
+    /// The row becomes `queued`, as `local_backend::queue_draft_conn` or `persist_submit` leave it.
+    fn queue(&self, job_id: &str) {
+        self.db.lock().unwrap().execute("UPDATE jobs SET status = 'queued' WHERE id = ?1", [job_id]).unwrap();
     }
 }
 

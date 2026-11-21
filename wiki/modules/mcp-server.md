@@ -1,6 +1,6 @@
 # MCP server — the job classifier, input assembly, grant core, transport, read tools and `create_job` (`src-tauri/src/mcp/`)
 
-[ADR-027](../architecture/adr-027-mcp-orchestration-server.md), units M1a, M1b, M2a, M2b and M3a Part A. This module is the
+[ADR-027](../architecture/adr-027-mcp-orchestration-server.md), units M1a, M1b, M2a, M2b and M3a. This module is the
 guard that decides whether an AI model may spend compute. A `create_job` call ends in exactly one
 of three dispositions: **REFUSED** (nothing is created), **PROPOSED** (a draft Anton runs by hand)
 or **SUBMITTED** (charged to the active grant). The module also assembles the job's input, so the
@@ -13,18 +13,19 @@ cores** (M1b) are schema v24, the grant core, steps A and C, the crash reconcili
 takes `&DbState`. The **app wiring** (M1b Part B) is the grant's Tauri commands (`commands/mcp.rs`),
 the guard in the two commands that submit a job by hand, and `SidecarSmiles`, the resolver's SMILES
 call over HTTP. The **transport** (M2a, `server/`) is the lock, the socket, the `rmcp` server with
-11 tools (`get_grant` and the ten read tools below), the admission gate, the lifecycle that switches it on and off, and the
+12 tools (`get_grant`, the ten read tools below and `create_job`), the admission gate, the lifecycle that switches it on and off, and the
 `orcastudio --mcp` relay. The **read tools** (M2b) are the ten read tools of decision 7: each core in
 `tools/` is a function over a `&Connection` (or `&DbState`) with its character cap, and
 `server/read_tools.rs` registers it in the server with typed arguments, its lock and the mapping to
 what the client receives. `server/wiring.rs` connects the transport to the app: `lib.rs` setup and
 `ExitRequested`, the `main.rs` relay branch, and the switch's commands `mcp_status`/`mcp_set_enabled`,
-which Settings → MCP calls. The **`create_job` core** (M3a Part A) is the whole call as one pipeline
-(`create_job.rs`) run as one task admitted through the gate (`server/create_job_task.rs`), with step A
-classifying inside its transaction (`steps::decide_conn`) and the audit log (`audit.rs`); it is built
-and tested, and Part B registers it as a tool. The module stays registered in `lib.rs` under a scoped
-`#[allow(dead_code)]`, because the `create_job` core, the resolver and `SidecarSmiles` have no non-test
-caller until M3a Part B.
+which Settings → MCP calls. **`create_job`** (M3a) is the whole call as one pipeline (`create_job.rs`)
+run as one task admitted through the gate (`server/create_job_task.rs`), with step A classifying
+inside its transaction (`steps::decide_conn`), the real step B over the app's own submit paths
+(`step_b.rs`) and the audit log (`audit.rs`); `server/create_job_tool.rs` registers it in the server,
+and `server/wiring.rs` builds its seams over the app. The module stays registered in `lib.rs` under a
+scoped `#[allow(dead_code)]`: a few items still have no non-test caller (the audit log's reader and
+`active_grant_conn`, for M4's panel; `insert_proposed_conn`; test accessors).
 
 **It fails closed.** A line outside the grammar is REFUSED (R1); a block, key or value outside the
 allowlist is PROPOSED (P2); a source whose terminal state is unknown is REFUSED (R4); a memory
@@ -43,10 +44,11 @@ PROPOSED (P5). Nothing reaches SUBMITTED by default.
 | `classify.rs` | `classify_mcp_job(&ClassifyInput) -> Disposition`; the input types and the typed reasons (below); `MAX_OPEN_PROPOSALS = 50`, `OPT_FAMILY`, `FREQ_TYPE`, `NEB_FAMILY` |
 | `assemble.rs` | `assemble(header, maxcore_mib, atoms, charge_mult, source_label) -> Result<Assembled, AssemblyError>`; `comment_safe_label`; `AppSet`; `SERVER_DEFAULT_MAXCORE_MIB = 2000`; `COORD_TOLERANCE_ANG = 1e-6`; `read_coordinate_block`, the strict `* xyz` block reader shared with the resolver |
 | `grant.rs` | `create_grant_conn`, `revoke_grant_conn`, `get_grant_conn`, `active_grant_conn`, `grant_snapshot_conn -> Option<CurrentGrant { id, snapshot }>`, `in_flight_conn`; `Grant` (with `status_at(now)`), `NewGrant`; `target_text`/`target_of` (`"local"` or a profile id); `begin_immediate`, `now_utc_conn`, `check_utc_text` |
-| `steps.rs` | `create_job`'s step A `decide_conn(conn, StepAInput) -> Decided` (`Refused`/`Proposed`/`Charged`), `open_proposals_conn` (R8's count), its step C `finish_submit_audited_conn -> StepC` and `step_c_audit`; M1b's P5-only step A `charge_and_insert_conn -> StepA` and unaudited `finish_submit_conn`, which share the charge and finish bodies (`charge_in_tx`, `finish_in_tx`); `insert_proposed_conn`, `reconcile_submitting_conn -> Reconciled` (with its outcome rows; `RECONCILIATION_ARGS`), `submit_refusal_for_mcp_state`, `refuse_while_mcp_submitting`; `McpReason { row, message }` and its constructors; `SUBMITTING` |
+| `steps.rs` | `create_job`'s step A `decide_conn(conn, StepAInput) -> Decided` (`Refused`/`Proposed`/`Charged`), `open_proposals_conn` (R8's count), its step C `finish_submit_audited_conn -> StepC` and `step_c_audit`; M1b's P5-only step A `charge_and_insert_conn -> StepA` (with `charge_and_insert_with`, `McpJobDraft`) and unaudited `finish_submit_conn`, **test-only** (`#[cfg(test)]`: no app code can charge or refund without an audit row), which share the charge and finish bodies (`charge_in_tx`, `finish_in_tx`); `insert_proposed_conn`, `reconcile_submitting_conn -> Reconciled` (with its outcome rows; `RECONCILIATION_ARGS`), `submit_refusal_for_mcp_state`, `refuse_while_mcp_submitting`; `McpReason { row, message }` and its constructors; `SUBMITTING` |
 | `audit.rs` | the audit log: `append_audit_conn(conn, &AuditEntry)`, `audit_rows_conn -> Vec<AuditRow>`, `bounded_reasons`, `AuditDisposition`; `CREATE_JOB`, `AUDIT_REASONS_MAX` (20), `REASON_MESSAGE_MAX_BYTES` (400) |
-| `create_job.rs` | the `create_job` pipeline: `run_create_job(&CreateJobEnv, CreateJobArgs) -> CreateJobResult`, its halves `decide -> Decision` (`Done`/`Charged`) and `submit_charged`; `audit_args`; the seams `CreateJobEnv { db, smiles, host, step_b, emit }`, `StepB` (→ `StepBOutcome`), `StatusEmit`; the result types `Outcome`, `SetByApp`, `SubmitReport`; the bounds `HEADER_MAX_BYTES`, `SOURCE_MAX_BYTES`, `TARGET_MAX_BYTES`, `GROUP_ID_MAX_BYTES`, `TITLE_MAX_BYTES`, `AUDIT_HEADER_MAX_BYTES`, `STEP_B_MESSAGE_MAX_BYTES` |
-| `create_job_tests.rs`, `step_a_tests.rs`, `create_job_test_support.rs` | the pipeline's tests, step A's and the audit's, and their shared world (a profile with known memory facts, a grant on it, a converged source job, `FakeStepB`, `RecordingEmit`) |
+| `create_job.rs` | the `create_job` pipeline: `run_create_job(&CreateJobEnv, CreateJobArgs) -> CreateJobResult`, its halves `decide -> Decision` (`Done`/`Charged`) and `submit_charged` (over `submit_charged_with`, whose step C transaction and waits are seams); `audit_args`; the seams `CreateJobEnv { db, smiles, host, step_b, emit }`, `StepB` (→ `StepBOutcome`), `StatusEmit`; the result types `Outcome`, `SetByApp`, `SubmitReport`; the bounds `HEADER_MAX_BYTES`, `SOURCE_MAX_BYTES`, `TARGET_MAX_BYTES`, `GROUP_ID_MAX_BYTES`, `TITLE_MAX_BYTES`, `AUDIT_HEADER_MAX_BYTES`, `STEP_B_MESSAGE_MAX_BYTES`; `STEP_C_RETRY_WAITS` (250 ms, 1 s) |
+| `step_b.rs` | the real step B: `RealStepB<W: SubmitWorld>` (`StepB`), `local_step_b`, `remote_step_b` over `RemoteParts { db, in_flight, remote, memory, sink, data_dir, runner }`, the pure `closing_reason(exiting, gate_open)`; `APP_CLOSING`, `MCP_SWITCHING_OFF` |
+| `create_job_tests.rs`, `step_a_tests.rs`, `step_b_tests.rs`, `create_job_test_support.rs` | the pipeline's tests, step A's and the audit's, the real step B's (over a scratch `SubmitWorld` and the `ssh_backend` fake runners), and their shared world (a profile with known memory facts, a grant on it, a converged source job, `FakeStepB`, `RecordingEmit`) |
 | `resolve.rs` | `SourceRef::parse`, `resolve_source(&DbState, reference, &dyn SmilesTo3d)`, `resolve_db_conn`, `header_of_input`; the `SmilesTo3d` seam and `SmilesStructure` |
 | `sidecar_smiles.rs` | `SidecarSmiles: SmilesTo3d` (`from_status(&SidecarStatus)`), `check_reply`; `SMILES_CONNECT_TIMEOUT` (5 s), `SMILES_TIMEOUT` (30 s) |
 | `preflight.rs` | `mcp_maxcore -> McpMaxcore { mib, source }`, `memory_verdict_for -> MemoryVerdict`, the pure `verdict_of` |
@@ -69,15 +71,16 @@ PROPOSED (P5). Nothing reaches SUBMITTED by default.
 | `server/lock.rs` | `try_acquire(path) -> Result<Acquire, LockError>` (`Acquired(McpLock)` / `HeldElsewhere`), `has_cloexec` |
 | `server/socket.rs` | `prepare_dir`, `bind(paths, own_uid, after_bind) -> BoundSocket { listener, identity }`, `check_modes`, `unlink_if_same(identity) -> Unlinked`; `DIR_MODE = 0o700`, `SOCKET_MODE = 0o600` |
 | `server/listener.rs` | `accept_loop`, the peer check (`PeerUid`, `kernel_peer_uid`, `own_uid`, `peer_allowed`), the per-start `Registry`, the `Transport` stream wrapper |
-| `server/service.rs` | `McpService` (the `rmcp` `ServerHandler`: `get_grant`, the permit in `call_tool`, one router of `get_grant` and the read tools), `ConnState { closed, permits }`, `HostPaths { meminfo, data_dir }` (`production(data_dir)`); `bound_errors`/`bounded_error_text`, `ARGUMENT_ERROR_PREFIX`; `RECOVERY_SENTENCE`, `INSTRUCTIONS`, `BUSY` |
+| `server/service.rs` | `McpService` (the `rmcp` `ServerHandler`: `get_grant`, the permit in `call_tool`, one router of `get_grant`, the read tools and `create_job`), `ConnState { closed, permits }`, `HostPaths { meminfo, data_dir }` (`production(data_dir)`); `OWN_PERMIT_TOOLS`, `takes_own_permit`; `bound_errors`/`bounded_error_text`, `ARGUMENT_ERROR_PREFIX`; `RECOVERY_SENTENCE`, `INSTRUCTIONS`, `BUSY` |
 | `server/read_tools.rs` | the ten read tools registered (`#[tool_router(router = read_tools_router)]`): their descriptions, argument structs (`ListJobsArgs`, `JobIdArgs`, `GeometryArgs`, `MeasureArgs`, `ReadOutputArgs`, `SearchManualArgs`, `MemoryEstimateArgs`, `ListGroupsArgs`, `NoArgs`; all `deny_unknown_fields`), `output_request`; the mapping `respond` → `served_text` (the cap at the boundary) / `error_text`; `on_blocking_pool`, `McpService::with_db` |
 | `server/gate.rs` | `AdmissionGate` (`open`, `close`, `spawn`, `task_count`, `wait_all`), `GateClosed` ("MCP is shutting down") |
-| `server/create_job_task.rs` | `create_job_call(&ConnState, &AdmissionGate, Arc<CreateJobEnv>, CreateJobArgs)`: the handler's side — the permit, the gated spawn of the one task, the await. Tests in `server/create_job_task_tests.rs` |
-| `server/lifecycle.rs` | `McpLifecycle` (`tick_step`, `set_enabled`, `status`, `on_exit_requested`, `gate`), the pure `decide` and `pass_through`; `LifecycleEnv` (`production(db, host)`, `production_at(db, paths, host)`; its `host` reaches every connection's service), `Hooks`, `Observed`, `Action`, `Why`, `McpStatus`, `ExitDecision`, `Executor` (`BlockingPool`), `ExitSteps`, `StopHandle`; `with_busy_timeout`, `RECONCILE_BUSY_TIMEOUT` (250 ms) |
-| `server/wiring.rs` | the app's side: `ManagedDb` (the `DbSource` over the managed `DbState`), `wired_lifecycle(db, paths, host)`, `app_lifecycle(app, data_dir)`, `start_ticks`; `exit_requested`, `handle_exit_request`, the pure `prevents_exit`, `guarded_steps`, `backstop`/`run_backstop`/`backstop_steps` → `Backstop` (`Hung`/`Died`/`StillAlive`), `hard_end` (`libc::_exit(1)`), `BackstopTimings`, `EXIT_FLOW_DEADLINE` (60 s), `EXIT_GRACE` (10 s), `BACKSTOP_STEPS_DEADLINE` (20 s); `is_relay_invocation`, `relay_main` |
+| `server/create_job_task.rs` | `create_job_call(&ConnState, &AdmissionGate, Arc<CreateJobEnv>, CreateJobArgs)`: the handler's side — the permit, the gated spawn of the one task, the await; `CreateJobSeams { smiles, step_b, emit }` (what the lifecycle environment carries) and `CreateJobWiring { gate, env }` (what each connection's service gets). Tests in `server/create_job_task_tests.rs` |
+| `server/create_job_tool.rs` | `create_job` registered (`#[tool_router(router = create_job_router)]`): `CREATE_JOB_DESCRIPTION`, `CreateJobToolArgs` (`deny_unknown_fields`). Tests in `server/create_job_tool_tests.rs` |
+| `server/lifecycle.rs` | `McpLifecycle` (`tick_step`, `set_enabled`, `status`, `on_exit_requested`, `gate`, `is_exiting`), the pure `decide` and `pass_through`; `LifecycleEnv` (`production(db, host, create_job)`, `production_at(db, paths, host, create_job)`; its `host` reaches every connection's service, and with `db` and `create_job` it makes the one `CreateJobEnv`), `Hooks`, `Observed`, `Action`, `Why`, `McpStatus`, `ExitDecision`, `Executor` (`BlockingPool`), `ExitSteps`, `StopHandle`; `with_busy_timeout`, `RECONCILE_BUSY_TIMEOUT` (250 ms) |
+| `server/wiring.rs` | the app's side: `ManagedDb` (the `DbSource` over the managed `DbState`), `wired_lifecycle(db, paths, host, create_job)`, `app_lifecycle(app, data_dir)`, `start_ticks`; `create_job`'s app seams `app_create_job(app)`: `AppSubmitWorld` (`SubmitWorld`), `AppEmit` (`StatusEmit`), `AppSmiles` (`SmilesTo3d`), `APP_NOT_READY`; `exit_requested`, `handle_exit_request`, the pure `prevents_exit`, `guarded_steps`, `backstop`/`run_backstop`/`backstop_steps` → `Backstop` (`Hung`/`Died`/`StillAlive`), `hard_end` (`libc::_exit(1)`), `BackstopTimings`, `EXIT_FLOW_DEADLINE` (60 s), `EXIT_GRACE` (10 s), `BACKSTOP_STEPS_DEADLINE` (20 s); `is_relay_invocation`, `relay_main` |
 | `server/tick.rs` | `run_ticks(lifecycle, interval)`, `Interval`, `Every`, `TICK = 30 s` |
 | `server/relay.rs` | `relay(stdin, stdout, stderr, socket_path) -> RelayEnd` (`From<RelayEnd> for ExitCode`), `NOT_RUNNING` |
-| `server/*_tests.rs`, `server/test_support.rs` | one test file per submodule plus `server_tests.rs` (the server end to end over a real socket) and `read_tools_tests.rs` (the read tools end to end, over a recording `DbSource`); `test_support` has the scratch dir and DB, a counting environment and a raw NDJSON MCP client (`call`, `call_and_wait`) |
+| `server/*_tests.rs`, `server/test_support.rs` | one test file per submodule plus `server_tests.rs` (the server end to end over a real socket), `read_tools_tests.rs` (the read tools end to end, over a recording `DbSource`) and `create_job_tool_tests.rs` (`create_job` end to end); `test_support` has the scratch dir and DB, a counting environment, `no_create_job()` (seams for a test that does not exercise `create_job`) and a raw NDJSON MCP client (`call`, `call_and_wait`) |
 | `../../tests/mcp_relay_bin.rs` | the built `orcastudio --mcp` run as a real process (an integration test) |
 
 ## The classifier's input and output
@@ -327,8 +330,8 @@ row it touches gets the outcome row step C would have written, in the same trans
 
 ## `create_job` (`create_job.rs`, `server/create_job_task.rs`; M3a)
 
-The whole call is **one task** (ADR-027 M0 amendment, item 6; M3 amendment, item 1). Part A builds it
-with every seam injected; Part B registers it in the `rmcp` service.
+The whole call is **one task** (ADR-027 M0 amendment, item 6; M3 amendment, item 1), with every seam
+injected (`CreateJobEnv`), registered in the `rmcp` service as the `create_job` tool.
 
 **The handler** (`create_job_call(conn, gate, env, args)`) does three things and nothing else:
 1. takes one of the connection's request permits (`try_permit`; none free → `BUSY` at once);
@@ -342,8 +345,9 @@ closure**, so it returns when step C has ended — not when the handler returns.
 reads `closed`. So a hang-up, a service cancel, a switch-off and exit each leave the task running to
 step C, and switch-off and exit wait for it (the gate's `wait_all`) before the unlink and the lock
 release. A crash between step A's and step C's commits leaves `mcp_state = 'submitting'`; the next lock
-holder's reconciliation finishes it. Part B must keep `call_tool`'s generic permit off `create_job`
-(the handler takes its own, to move it into the task).
+holder's reconciliation finishes it. `call_tool` takes no permit for `create_job`
+(`OWN_PERMIT_TOOLS`): the handler takes its own, to move it into the task, so each call holds exactly
+one.
 
 **The pipeline** (`run_create_job`, in two halves so the order is visible):
 1. **`decide`**:
@@ -360,17 +364,87 @@ holder's reconciliation finishes it. Part B must keep `call_tool`'s generic perm
 2. **`submit_charged`**, for a SUBMITTED job only:
    - **step B** (`env.step_b.submit(job_id, target)`) with **no lock held**; a panic in it is caught and
      is a refusal (`"step B panicked"`), so step C always runs;
-   - **step C** (`finish_submit_audited_conn`) under one `DbState` lock;
+   - **step C** (`finish_submit_audited_conn`) under one `DbState` lock per attempt, **retried** (below);
    - the `job:status` emit with the status step C read (`draft` after a refund).
 
 Nothing in the pipeline locks `DbState` across a step: `mcp_maxcore` and `memory_verdict_for` lock it
 themselves, and steps A and C each hold it for their one transaction.
 
+**Nothing after step A's commit can stop steps B and C.** Besides the task (above), every call into
+foreign code after `decide_conn` is isolated from a panic: each `job:status` emit runs under
+`catch_unwind` (`emit`: one stderr line, and the call goes on), a panicking step B is a refusal, and a
+panicking step C attempt is a failed attempt. Without it, a panic in step A's emit would skip steps B
+and C and leave a charged job `submitting` until the next reconciliation.
+
+**Step C's retry** (decided by Anton, M3a; `STEP_C_RETRY_WAITS`). A failed attempt — an error such as
+`SQLITE_BUSY` from another instance, or a panic — rolled its own transaction back, so step C runs
+again on the same row: at most **three attempts**, the second after 250 ms and the third after 1 s
+more. Only the first success writes, so a refund or a kept charge happens once, with one outcome row
+and one final emit (safe because a failed COMMIT rolls back and the commit is the last fallible
+operation in `finish_submit_audited_conn`). Each attempt's SQLite wait is bounded by the app connection's 5 s busy timeout (`init_db`'s,
+pinned by a test), so step C takes at most 3 × 5 s + 1.25 s = **16.25 s**. The exit flow waits for it
+inside the backstop's 60 s, which also holds `terminate_on_exit` (≈ 14.5 s worst) and the sidecar stop
+(≈ 0.3 s): 16.25 + 14.5 + 0.3 ≈ 31 s, leaving ≈ 29 s for step B. The bound does not include the wait
+for the in-process `DbState` mutex before each attempt, which no timeout bounds (another holder's one
+transaction or read, normally milliseconds). Every attempt failing is the crash case:
+`submit.step_c_error` says why, the job keeps `mcp_state = 'submitting'` and its charge, and the lock
+holder's reconciliation recovers it (a `draft` refunded, any other row only its flag cleared).
+
 **The seams** (`CreateJobEnv`): `db` (`DbSource`), `smiles` (`SmilesTo3d`), `host` (`HostPaths`:
 `/proc/meminfo` and the data dir), `step_b` (`StepB`: submit a charged draft through the app's existing
 path and answer `StepBOutcome::Handed(msg)` or `Refused(msg)`; step C reads the row, not this), and
-`emit` (`StatusEmit`). Part B's real ones: `StepB` over `local_backend::submit` / `submit_to_server`,
-`StatusEmit` over `local_backend::emit_status`, `smiles` over `SidecarSmiles::from_status`.
+`emit` (`StatusEmit`). The lifecycle builds the one `CreateJobEnv` from its own `db` and `host` and the
+environment's `CreateJobSeams`, and hands it, with its gate, to every connection's service
+(`CreateJobWiring`). The app's seams (`wiring::app_create_job`) are `RealStepB` over `AppSubmitWorld`
+(below, "Step B"), `AppEmit` (`local_backend::emit_status`, the app's one `job:status` emitter) and
+`AppSmiles` (`SidecarSmiles::from_status` over `SidecarManager::get_status()` read **at the moment of
+the call**, so a sidecar that started, restarted or went down since setup is seen as it is now). Each
+looks up the app's managed state with `try_state` when it runs: the tick thread can serve before setup
+has managed everything, and a state not managed yet is a refusal (`APP_NOT_READY`, "the app is still
+starting; not submitted"), never a panic. `host` is `HostPaths::production(data_dir)`, the same one
+`memory_estimate` reads.
+
+### Step B (`step_b.rs`)
+
+`RealStepB<W: SubmitWorld>` picks the path by the target and runs the app's **existing** submit steps
+with no database lock held. Neither path checks `mcp_state`: the guard is in the commands, and step B
+submits this very job (decision 5, "the window").
+
+- **This machine** (`local_step_b`): `local_backend::submit`'s steps — `queue_draft_conn` (the draft
+  becomes `queued`, the database step `submit` itself now runs through), then the world's
+  `after_local_queue`, which in the app is `submit`'s tail: the `job:status` emit and
+  `try_start_next`. The message is "queued on this machine".
+- **A server profile** (`remote_step_b`): `submit_to_server`'s guarded path — the job's in-flight
+  guard (`InFlight::acquire`: a job with another remote operation in flight is refused), then
+  `announcing_change` (the body `run_guarded` runs: read the job, act, emit `job:status` if the row
+  changed) around `attempt_with_contact` (the last contact written to the job's remote record) around
+  `submit_remote` (`persist_submit`, prepare, upload, submit, record). `submit_to_server` is async and
+  spawns its own blocking task; step B already runs on the blocking pool inside the tracked task, so it
+  runs the same pieces in the same order on its own thread. `AppSubmitWorld::with_remote` gives it what
+  `attempt_in_app` and `SshBackend::submit_attempt` give that path: the managed `DbState`, `InFlight`,
+  `RemoteStates` and `PollerMemory`, `AppSink`, `JobRunner::data_dir()` and the real `SystemRunner`.
+  The message is the attempt's outcome in words ("enqueued on server profile <id>", or
+  `SubmitOutcome::failure()`), then its memory notice and its `%pal` notice.
+- **What step B reports.** `Handed` once the path took the job (local `queued`; on a server every
+  outcome after the persist step: enqueued, pending, "not on the server", unknown), `Refused` for an
+  error. Step C does not read the type: an error after `persist_submit` leaves a `queued` row, which
+  keeps its charge.
+
+**Exit and switch-off (decided by Anton, M3a).** Once the exit flow has begun **or** the admission gate
+has closed, step B refuses — "the app is closing; not submitted" (`APP_CLOSING`) or "MCP is switching
+off; not submitted" (`MCP_SWITCHING_OFF`) — **before** the draft is queued, and on the remote path
+before `persist_submit`. The job stays a charged `draft`, step C refunds it to PROPOSED with the
+reason, and no ssh starts for it (but see the residual window below). The app's check (`AppSubmitWorld::closing`) is the pure
+`closing_reason(lifecycle.is_exiting(), lifecycle.gate().is_open())`; `is_exiting` is set by the first
+`ExitRequested`, before the flow's first step. After `persist_submit` has committed `queued` (before
+any ssh) the job is never refunded: a forced end mid-ssh is the crash case, and the reconciliation only
+clears the flag of a row that left `draft`. **The residual window:** the check is a read, not a lock
+shared with the exit flow, so an exit (or switch-off) that begins after it is not seen. On the remote
+path the window is the wait for the `DbState` mutex plus `persist_submit`'s own work (its transaction,
+the local job dir's file writes and the upload listing, `ssh_backend.rs` `persist_submit`); an exit
+that begins inside it **does** get its ssh calls started during the exit, and its job is `queued` and
+kept, as for an exit that begins during the ssh calls. On the local path the window is the lock wait
+plus the queueing transaction.
 
 **The result** (`CreateJobResult`): `disposition` (`refused`, `proposed` or `submitted`: the **final**
 one, so a SUBMITTED call step C refunded is `proposed`), `job_id`, `reasons` (at most 20, each cut to
@@ -557,8 +631,9 @@ to connect and 30 s for the whole request. It is built from the sidecar's status
 `down` is an `Err` with no request made; any other health is called.
 
 An HTTP error status, a 2xx other than 200, a transport failure or a timeout is an `Err` naming the
-cause. The call blocks, so its caller (M3) runs it off the main thread; the resolver never holds the
-database lock across it. No command calls it yet.
+cause. The call blocks, so its caller runs it off the main thread: `create_job` reaches it through
+`wiring::AppSmiles` inside its task on the blocking pool, and the resolver never holds the database lock
+across it. No Tauri command calls it.
 
 **The post-condition (rule #9), `check_reply`.** A reply that is "200 OK" with nonsense is an `Err`,
 never a geometry:
@@ -632,9 +707,10 @@ permit (`ConnState::drain`), and only then returns its slot.
 **The service** (`service.rs`). The `rmcp` `ServerHandler` of one connection.
 - **The request cap.** Every `tools/call` takes one of the connection's `REQUESTS_PER_CONNECTION` (4)
   permits with `try_acquire`. With none free it gets the tool error `BUSY` ("busy, retry: …") at once
-  and never queues. The permit returns when the call's work ends. `create_job` takes its own permit
-  in its handler and moves it into its task (above, "`create_job`"); once registered (M3a Part B),
-  `call_tool` must not take a second one for it.
+  and never queues. The permit returns when the call's work ends. `create_job` is the one exception
+  (`OWN_PERMIT_TOOLS`, `takes_own_permit`): its handler takes its own permit and moves it into its task
+  (above, "`create_job`"), so `call_tool` takes none for it and each call holds exactly one (pinned by
+  four concurrent calls on one connection, all reaching step B, with a fifth request refused busy).
 - **Unknown methods.** `rmcp` answers them itself and keeps the connection: `server/discover` before
   `initialize` without the 2026-07-28 `_meta` gets −32602, with it a `DiscoverResult`; an unknown
   method after `initialize` gets −32601 ("M2a facts" 3).
@@ -644,9 +720,11 @@ permit (`ConnState::drain`), and only then returns its slot.
 - **`get_grant`** returns `{"grant": <GrantView or null>}`, read by `commands::mcp::current_grant_core`
   in `spawn_blocking` with `DbState` locked for that one read. A failure is a tool error with its
   message.
-- **The read tools** are registered by `read_tools.rs` (below, "The read tools"). `get_grant`'s router
-  and theirs are one, which `#[tool_handler(router = self.tool_router)]` lists and calls (the macro's
-  default, `Self::tool_router()`, would list `get_grant` alone).
+- **The read tools** are registered by `read_tools.rs` (below, "The read tools") and `create_job` by
+  `create_job_tool.rs` (below, "Registration"). `get_grant`'s router, theirs and `create_job`'s are
+  one, which `#[tool_handler(router = self.tool_router)]` lists and calls (the macro's default,
+  `Self::tool_router()`, would list `get_grant` alone). `INSTRUCTIONS` says the server gives read
+  access and `create_job`, which spends compute only under a grant Anton made.
 - **Every tool error's text is bounded** on its way out (`bound_errors`, in `call_tool`): `rmcp`
   answers arguments that do not deserialise with `failed to deserialize parameters:` and
   `serde_json`'s message, which quotes the input (an unknown field's name, a string given for a
@@ -658,7 +736,7 @@ refusal is the gate's: one mutex holds `open` across both the check and the trac
 takes the same mutex. Once `close` has returned, `spawn` refuses with `GateClosed` ("MCP is shutting
 down"). Opening after a close starts a fresh tracker generation, and every closed generation is kept
 until its tasks end; `wait_all` waits on all of them. A test hook sits between the check and the
-spawn. Its one spawner is `create_job_call` (M3a; registered as a tool in Part B).
+spawn. Its one spawner is `create_job_call` (the `create_job` tool).
 
 **The lifecycle** (`lifecycle.rs`). One owner, `McpLifecycle`, and **one lifecycle mutex** around
 every transition: a tick step, `set_enabled` (its row write included), and the exit flow's
@@ -736,8 +814,9 @@ socket → stdout, flushing every chunk, until either side ends: stdin EOF close
 **Setup** (`lib.rs`, right after `DbState` is managed): `app_lifecycle(app, &data_dir)` builds the one
 `McpLifecycle` over `LifecycleEnv::production` — this user's paths, the real reconciliation,
 `SO_PEERCRED`, and `HostPaths::production(data_dir)` (the real `/proc/meminfo` and the data dir
-`JobRunner` is built over, for `memory_estimate`) — with `ManagedDb`, a `DbSource` that reaches the
-managed `DbState` through the app handle. It is managed as
+`JobRunner` is built over, for `memory_estimate` and `create_job`) and `create_job`'s app seams
+(`app_create_job`, above) — with `ManagedDb`, a `DbSource` that reaches the managed `DbState` through
+the app handle. It is managed as
 `Arc<McpLifecycle>`, and `start_ticks` starts the `mcp-tick` thread, whose first step runs at once, so
 a switch left on serves from app start. A path refusal (`sun_path`) or no base dir never fails setup:
 it stays in the environment and becomes the status reason once the switch is on.
@@ -763,8 +842,8 @@ SIGKILL sweep matches only the old job dir. It sets a **separate, terminal exit 
 (`JobRunner.exiting`, ADR-027 M3 amendment, item 4), not the user's `paused`: the claim
 (`JobRunner::claim_next`) refuses while either is set, under the `running` lock, and Resume
 (`set_paused(false)` → `set_user_paused`) clears only `paused`. So a Resume click during the exit wait
-(the window can stay open up to the backstop's 60 s) starts nothing, and a local step B that runs after
-the exit flow began queues its job but claims no slot. `terminate_on_exit` is safe off the
+(the window can stay open up to the backstop's 60 s) starts nothing. A `create_job` step B refuses
+once exit has begun (above, "Step B"), and a job a local step B queued just before claims no slot. `terminate_on_exit` is safe off the
 main thread: it touches managed state, the `JobRunner`'s `running` mutex, signals, `/proc` and sleeps,
 and no window, GTK or event.
 
@@ -782,9 +861,11 @@ step and ends the process in every case where it is still running:
 The end is `hard_end`: one stderr line, then `libc::_exit(1)`, which skips atexit handlers that could
 deadlock against the GTK/WebKit loop. It is injected, so the tests record it instead. A hard end is a
 crash in the reconciliation's terms: the next holder's `reconcile_submitting_conn` refunds a job still a
-`draft` at `submitting`, and only clears the flag of one that left `draft`. M3 revisits the 60 s: M3a
-Part A computed a remote step B's worst case against it and brought the fork to Anton (log,
-2026-11-21, M3a Part A); nothing is changed until he decides.
+`draft` at `submitting`, and only clears the flag of one that left `draft`. **The 60 s is kept against a
+remote step B** (decided by Anton, ADR-027 M3 amendment, item 1): a remote step B's worst case is 300 s
++ ⌊bytes / 256 KiB⌋ s and is not bounded at all once the per-host permit waits count, but a forced end
+never refunds a job any ssh call reached — `persist_submit` commits `queued` before any ssh, and step B
+refuses before `persist_submit` once exit has begun.
 
 **`orcastudio --mcp`.** `main.rs` asks `is_mcp_relay(args_os().nth(1))` before `run()` — so the relay
 opens no window, initialises no GTK, and prints nothing — and exits with `relay_main()`'s code: the
@@ -1017,6 +1098,7 @@ Each tool is a thin shell: typed arguments, the core's call with its lock, and t
 | `list_run_targets` | none |
 | `memory_estimate` | `header` (≤ 20,000), `target` (`"local"` or a profile id) |
 | `list_groups` | `offset`, `limit` (1–100) |
+| `create_job` (`create_job_tool.rs`) | `header` (1–20,000), `source` (1–1,024), `target` (1–64), `group_id` (1–64), `title` (1–200): the core's bounds |
 
 - **Arguments.** Every argument struct has `deny_unknown_fields`, so its schema has
   `additionalProperties: false` and an unknown argument is a tool error (`unknown field …`), never
@@ -1037,6 +1119,13 @@ Each tool is a thin shell: typed arguments, the core's call with its lock, and t
   lives across an `.await`. `memory_estimate` takes no lock in the service (its core locks itself).
   `read_output` locks only for `output_path` and drops the guard before `read_output_at` reads the
   file. Each call takes one of the connection's 4 permits in `call_tool`, like `get_grant`.
+- **`create_job`** is the same thin shell over `create_job_call`, with two differences: `call_tool`
+  takes no permit for it (the handler takes one and moves it into the task), and its work runs in the
+  tracked task, not `on_blocking_pool`. Its description (`CREATE_JOB_DESCRIPTION`, ≤ 700 bytes) says
+  the app assembles the input from the source, no coordinates are accepted, the result is SUBMITTED,
+  PROPOSED or REFUSED with its reasons, and a grant Anton made governs spending; it carries the
+  recovery sentence. An unknown argument (`coordinates`, `charge`) is a tool error, and nothing is
+  written. The result goes through `respond`.
 
 ## Clarifications (orchestrator, within ADR-027)
 
@@ -1090,6 +1179,11 @@ Two choices go beyond the clarifications, and each can only move a job toward An
   while `D3`, `def2-SVP` and `6-31G*` stay.
 - **`COINCIDENT_ANG` and `COLLINEAR_SIN` stay at 1e-6** (2026-11-20), knowing `measure.ts` uses 1e-9,
   so in a narrow band the panel shows a number where MCP refuses.
+- **The exit backstop stays at 60 s** against a remote step B (2026-11-21; ADR-027 M3 amendment,
+  item 1), and **step B refuses before `persist_submit`** once the exit flow has begun or the gate has
+  closed.
+- **Step C is retried a bounded number of times** (2026-11-21): three attempts, 250 ms and 1 s apart;
+  every attempt failing is the crash case.
 
 ## Open (for Anton)
 
@@ -1116,13 +1210,8 @@ Two choices go beyond the clarifications, and each can only move a job toward An
 
 ## Not yet wired
 
-- **M3a Part B:** the real `StepB` over `local_backend::submit` (Local) and `submit_to_server` (a
-  profile, under its in-flight guard); the real `StatusEmit` over `local_backend::emit_status`; the
-  `smiles` seam over `SidecarSmiles::from_status`; the `create_job` tool registered in the `rmcp`
-  service (its description with the recovery sentence, `call_tool` taking no second permit for it); and
-  the live check of the SUBMITTED path with Anton's console grant (ADR-027 M3 amendment, item 2).
-- **The 60 s backstop** against a remote step B: computed in M3a Part A, a fork for Anton (log,
-  2026-11-21); no timing is changed until he decides.
+- **M3a's live check** of the SUBMITTED and PROPOSED paths with Anton's console grant (ADR-027 M3
+  amendment, item 2; the script is in `log.md`, M3a Part B): built, not yet run.
 - **M3b:** `cancel_job`, `create_group`, `wait_for_jobs`, and their audit rows.
 - **M4:** the Settings → MCP UI over the grant commands and the audit log, and "Claude is submitting"
   in place of Run.
@@ -1130,8 +1219,9 @@ Two choices go beyond the clarifications, and each can only move a job toward An
 ## Tests
 
 `cargo test -p orcastudio --lib mcp::` runs the module's tests (`create_job`'s pipeline
-`mcp::create_job_tests`, its step A, step C and audit `mcp::step_a_tests`, its task
-`mcp::server::create_job_task_tests`; the exit flag's are `local_backend::tests`; the transport's are
+`mcp::create_job_tests`, its step A, step C and audit `mcp::step_a_tests`, its real step B
+`mcp::step_b_tests`, its task `mcp::server::create_job_task_tests`, the tool end to end
+`mcp::server::create_job_tool_tests`; the exit flag's are `local_backend::tests`; the transport's are
 `mcp::server::`, the wiring's `mcp::server::wiring_tests`, the read tools' cores `mcp::tools::` and
 their registration end to end `mcp::server::read_tools_tests`, where `every_tool_answers_through_respond`
 pins that each of the ten tools is served as compact JSON, the shape only `respond` writes), `cargo test -p orcastudio --lib commands::mcp`
@@ -1142,6 +1232,6 @@ binary's relay, `npx vitest run src/screens/SettingsScreen.mcp.test.tsx` the swi
 controls are recorded in `log.md`: one per row plus the ADR's M1a list in the M1a entry, and the M1b
 list in the M1b Part A entry, the Part B list in the M1b Part B entry, and the M2a Part A and Part B
 lists in their entries (all 2026-11-19), the M2b Part A list in its entry (2026-11-20), and the M2b
-Part B list and the follow-up's in their entries (2026-11-21), and the M3a Part A list in its entry
-(2026-11-21; the script that re-runs it is named there). The ASE
+Part B list and the follow-up's in their entries (2026-11-21), and the M3a Part A and Part B lists in
+their entries (2026-11-21; the scripts that re-run them are named there). The ASE
 pin is `pytest sidecar/tests/test_geometry.py` (in the sidecar venv).

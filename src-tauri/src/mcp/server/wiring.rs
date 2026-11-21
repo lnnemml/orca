@@ -2,6 +2,12 @@
 //! calls three things here: [`app_lifecycle`] and [`start_ticks`] in setup, and [`exit_requested`]
 //! on `RunEvent::ExitRequested`. `main.rs` calls [`relay_main`] for `orcastudio --mcp`.
 //!
+//! **`create_job`'s seams over the app (M3a Part B)** are built here too ([`app_create_job`]): the
+//! real step B over [`AppSubmitWorld`] (`mcp::step_b`), the `job:status` emit ([`AppEmit`],
+//! `local_backend::emit_status`) and the sidecar's SMILES call ([`AppSmiles`]). Each only looks up
+//! the app's managed state at the moment of the call, with `try_state`: the tick thread may serve
+//! before the rest of setup has run, and a state not managed yet is a refusal, never a panic.
+//!
 //! Every piece that does not need an `AppHandle` is a plain function over injected parts, so the
 //! tests drive the production environment ([`wired_lifecycle`]), the exit decision
 //! ([`prevents_exit`]), the exit steps ([`guarded_steps`]) and the backstop ([`run_backstop`])
@@ -29,6 +35,7 @@ use std::time::Duration;
 
 use tauri::{AppHandle, Manager};
 
+use super::create_job_task::CreateJobSeams;
 use super::lifecycle::{BlockingPool, ExitDecision, ExitSteps, Executor, LifecycleEnv, McpLifecycle};
 use super::paths::{resolve_for_this_user, McpPaths, PathRefusal};
 use super::relay::{relay, RelayEnd};
@@ -36,7 +43,17 @@ use super::service::HostPaths;
 use super::tick::{run_ticks, Every, TICK};
 use super::DbSource;
 use crate::commands::settings::DbState;
+use crate::in_flight::InFlight;
 use crate::local_backend::{self, JobRunner};
+use crate::mcp::create_job::{StatusEmit, StepBOutcome};
+use crate::mcp::resolve::{SmilesStructure, SmilesTo3d};
+use crate::mcp::sidecar_smiles::SidecarSmiles;
+use crate::mcp::step_b::{closing_reason, RealStepB, RemoteParts, SubmitWorld};
+use crate::models::job::JobStatus;
+use crate::poller::app::AppSink;
+use crate::poller::plan::PollerMemory;
+use crate::poller::remote_state::RemoteStates;
+use crate::remote::ssh::SystemRunner;
 use crate::sidecar::SidecarManager;
 
 /// How long the exit flow may take before the backstop ends the process. In M2a the MCP wait is
@@ -82,15 +99,114 @@ impl DbSource for ManagedDb {
 /// The production lifecycle at `paths` and `host`: [`LifecycleEnv::production_at`], nothing else.
 /// The app builds it through [`app_lifecycle`]; the wiring tests build it here under a scratch
 /// directory.
-pub fn wired_lifecycle(db: Arc<dyn DbSource>, paths: Result<McpPaths, PathRefusal>, host: HostPaths) -> Arc<McpLifecycle> {
-    McpLifecycle::new(LifecycleEnv::production_at(db, paths, host))
+pub fn wired_lifecycle(
+    db: Arc<dyn DbSource>,
+    paths: Result<McpPaths, PathRefusal>,
+    host: HostPaths,
+    create_job: CreateJobSeams,
+) -> Arc<McpLifecycle> {
+    McpLifecycle::new(LifecycleEnv::production_at(db, paths, host, create_job))
 }
 
 /// The app's lifecycle, over the managed `DbState`, this user's paths, the real `/proc/meminfo` and
-/// `data_dir` (the one `JobRunner` is built over). A path refusal or an unknown base dir does not
-/// fail setup: it is kept in the environment and becomes the status reason once the switch is on.
+/// `data_dir` (the one `JobRunner` is built over), and `create_job`'s seams over the app. A path
+/// refusal or an unknown base dir does not fail setup: it is kept in the environment and becomes the
+/// status reason once the switch is on.
 pub fn app_lifecycle(app: &AppHandle, data_dir: &Path) -> Arc<McpLifecycle> {
-    wired_lifecycle(Arc::new(ManagedDb(app.clone())), resolve_for_this_user(), HostPaths::production(data_dir))
+    wired_lifecycle(
+        Arc::new(ManagedDb(app.clone())),
+        resolve_for_this_user(),
+        HostPaths::production(data_dir),
+        app_create_job(app),
+    )
+}
+
+// ----- create_job's seams -----
+
+/// Step B's refusal while a piece of the app's state is not managed yet (the tick thread can serve
+/// before setup has managed everything).
+pub const APP_NOT_READY: &str = "the app is still starting; not submitted";
+
+/// `create_job`'s seams over the app: the real step B, the `job:status` emit, the SMILES call.
+pub fn app_create_job(app: &AppHandle) -> CreateJobSeams {
+    CreateJobSeams {
+        smiles: Arc::new(AppSmiles(app.clone())),
+        step_b: Arc::new(RealStepB(AppSubmitWorld(app.clone()))),
+        emit: Arc::new(AppEmit(app.clone())),
+    }
+}
+
+/// The sidecar's `/smiles-to-3d`, over the sidecar's status at the moment of the call
+/// ([`SidecarSmiles::from_status`]): a sidecar that is starting, restarted or down is seen as it is
+/// now. `create_job` calls it inside its task, on the blocking pool, with no lock held.
+pub struct AppSmiles(pub AppHandle);
+
+impl SmilesTo3d for AppSmiles {
+    fn smiles_to_3d(&self, smiles: &str) -> Result<SmilesStructure, String> {
+        let sidecar = self.0.try_state::<Arc<SidecarManager>>().ok_or("the SMILES sidecar is not started yet")?;
+        let status = sidecar.get_status().map_err(|e| format!("the SMILES sidecar's status could not be read: {e}"))?;
+        SidecarSmiles::from_status(&status).smiles_to_3d(smiles)
+    }
+}
+
+/// `job:status`, through the app's one emitter (`local_backend::emit_status`).
+pub struct AppEmit(pub AppHandle);
+
+impl StatusEmit for AppEmit {
+    fn job_status(&self, job_id: &str, status: JobStatus) {
+        local_backend::emit_status(&self.0, job_id, status);
+    }
+}
+
+/// What the real step B reaches in the app: the lifecycle's exit flag and gate, the managed
+/// `DbState`, the local queue, and the remote path's managed state with the real ssh/rsync runner.
+pub struct AppSubmitWorld(pub AppHandle);
+
+impl SubmitWorld for AppSubmitWorld {
+    fn closing(&self) -> Option<&'static str> {
+        match self.0.try_state::<Arc<McpLifecycle>>() {
+            Some(lifecycle) => closing_reason(lifecycle.is_exiting(), lifecycle.gate().is_open()),
+            None => Some(APP_NOT_READY),
+        }
+    }
+
+    fn db(&self) -> Result<&DbState, &'static str> {
+        self.0.try_state::<DbState>().map(|db| db.inner()).ok_or(APP_NOT_READY)
+    }
+
+    /// `local_backend::submit`'s tail: the emit, then `try_start_next` (once `JobRunner` is
+    /// managed; until then setup's own `try_start_next` picks the queued job up).
+    fn after_local_queue(&self, job_id: &str) {
+        local_backend::emit_status(&self.0, job_id, JobStatus::Queued);
+        if self.0.try_state::<JobRunner>().is_some() {
+            local_backend::try_start_next(&self.0);
+        }
+    }
+
+    /// The pieces `submit_to_server` reaches through `attempt_in_app` and `SshBackend::submit_attempt`.
+    fn with_remote(&self, work: &mut dyn FnMut(&RemoteParts<'_>) -> StepBOutcome) -> Result<StepBOutcome, &'static str> {
+        let app = &self.0;
+        let (Some(db), Some(in_flight), Some(remote), Some(memory), Some(runner)) = (
+            app.try_state::<DbState>(),
+            app.try_state::<InFlight>(),
+            app.try_state::<RemoteStates>(),
+            app.try_state::<PollerMemory>(),
+            app.try_state::<JobRunner>(),
+        ) else {
+            return Err(APP_NOT_READY);
+        };
+        let sink = AppSink(app.clone());
+        let parts = RemoteParts {
+            db: db.inner(),
+            in_flight: in_flight.inner(),
+            remote: remote.inner(),
+            memory: memory.inner(),
+            sink: &sink,
+            data_dir: runner.data_dir(),
+            runner: &SystemRunner,
+        };
+        Ok(work(&parts))
+    }
 }
 
 /// Start the tick thread: one step at once (so a switch left on serves from app start), then one

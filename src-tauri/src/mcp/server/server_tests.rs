@@ -10,7 +10,7 @@ use serde_json::json;
 use super::lifecycle::{Hooks, LifecycleEnv, McpLifecycle};
 use super::listener::{own_uid, PeerUid};
 use super::service::{ConnState, McpService, BUSY, RECOVERY_SENTENCE};
-use super::test_support::{eventually, lifecycle, tool_text, Client, Scratch};
+use super::test_support::{eventually, lifecycle, no_create_job, tool_text, Client, Scratch};
 use super::{CONNECTIONS, REQUESTS_PER_CONNECTION};
 use crate::commands::mcp::create_grant_core;
 use crate::commands::settings::DbState;
@@ -128,7 +128,7 @@ fn every_tool_description_and_the_instructions_carry_the_recovery_sentence() {
         assert!(tool["description"].as_str().unwrap_or_default().contains(RECOVERY_SENTENCE), "{tool}");
     }
 
-    let service = McpService::new(Arc::new(ConnState::new()), s.db.clone(), Arc::new(s.scratch.host()));
+    let service = McpService::new(Arc::new(ConnState::new()), s.db.clone(), Arc::new(s.scratch.host()), s.lc.create_job_wiring());
     assert_eq!(service.tools().len(), tools.len());
     for tool in service.tools() {
         assert!(tool.description.as_deref().unwrap_or_default().contains(RECOVERY_SENTENCE), "{}", tool.name);
@@ -231,6 +231,7 @@ fn serving_with_peer_uid(tag: &str, peer_uid: PeerUid) -> (Scratch, Arc<McpLifec
         peer_uid,
         own_uid: own_uid(),
         hooks: Hooks::default(),
+        create_job: no_create_job(),
     };
     let lc = McpLifecycle::new(env);
     assert!(lc.set_enabled(true).unwrap().serving);

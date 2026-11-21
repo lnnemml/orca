@@ -46,6 +46,8 @@ pub mod resolve;
 pub mod server;
 pub mod sidecar_smiles;
 pub mod signature;
+#[cfg(unix)]
+pub mod step_b;
 pub mod steps;
 pub mod switch;
 pub mod tools;
@@ -76,6 +78,8 @@ mod sidecar_smiles_tests;
 mod signature_tests;
 #[cfg(test)]
 mod step_a_tests;
+#[cfg(all(test, unix))]
+mod step_b_tests;
 #[cfg(test)]
 mod steps_tests;
 #[cfg(test)]

@@ -21,8 +21,10 @@ mod manual;
 // cores (`mcp::server`: lock, socket, server, gate, lifecycle, relay). M1b Part B wires the grant
 // commands (`commands::mcp`) and the `submit_job` guard, and `set_setting` uses `mcp::switch`; M2a
 // Part B wires the transport (`mcp::server::wiring`: setup, the tick, `ExitRequested`, the relay) and
-// `mcp_status`/`mcp_set_enabled`. Steps A/C, the resolver and `SidecarSmiles` are wired by M3. Scoped
-// allow until then, so the build stays warning-clean without a faked caller.
+// `mcp_status`/`mcp_set_enabled`; M3a wires `create_job` (steps A/B/C, the resolver, `SidecarSmiles`).
+// The scoped allow stays while a few items still have no non-test caller (the audit log's reader and
+// `active_grant_conn` for M4's panel, `insert_proposed_conn`, test accessors), so the build stays
+// warning-clean without a faked caller.
 #[allow(dead_code)]
 mod mcp;
 // The memory and disk preflight (ADR-024 o26, unit 5.5): the pure estimator and host-fact parsers.

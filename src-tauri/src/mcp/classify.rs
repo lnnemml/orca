@@ -479,9 +479,12 @@ fn grant_rows(grant: Option<&GrantSnapshot>, target: &Target, sig: &MethodSignat
     }
 }
 
-/// P5 alone: every way `grant` fails to cover a job for `target` at `sig`. Step A
+/// P5 alone: every way `grant` fails to cover a job for `target` at `sig`. M1b's test-only step A
 /// (`steps::charge_and_insert_conn`) re-runs exactly these rows on the grant it re-reads inside its
-/// `BEGIN IMMEDIATE` transaction, so the classifier and step A can never disagree on what covers.
+/// `BEGIN IMMEDIATE` transaction; `create_job`'s step A (`steps::decide_conn`) runs the whole
+/// classifier there, so the classifier and step A can never disagree on what covers. Test-only, with
+/// its one caller.
+#[cfg(test)]
 pub(crate) fn grant_problems(grant: Option<&GrantSnapshot>, target: &Target, sig: &MethodSignature) -> Vec<ProposedReason> {
     let mut out = Vec::new();
     grant_rows(grant, target, sig, &mut out);

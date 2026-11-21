@@ -1,7 +1,8 @@
 //! `create_job`'s core (ADR-027 decisions 3–5; M0 amendment, item 6; M3 amendment, items 1 and 3;
-//! unit M3a Part A): the whole call as one blocking pipeline, which the server runs as **one
-//! tracked task** (`server::create_job_task`). Every seam is injected ([`CreateJobEnv`]); the real
-//! step B and the real `job:status` emit are Part B's.
+//! unit M3a): the whole call as one blocking pipeline, which the server runs as **one tracked task**
+//! (`server::create_job_task`). Every seam is injected ([`CreateJobEnv`]): the app's are the real
+//! step B (`super::step_b`), the `job:status` emit and the sidecar's SMILES call
+//! (`server::wiring`).
 //!
 //! **The order** ([`run_create_job`], two halves so the order is visible in code):
 //! 1. [`decide`]: the argument bounds; the source resolved ([`resolve_source`]: the database locked
@@ -10,14 +11,17 @@
 //!    then **step A** ([`decide_conn`]: one `BEGIN IMMEDIATE` that classifies against the grant,
 //!    its counters and R8's count read inside it, and writes the disposition with its audit row);
 //!    then the `job:status` emit for a job it created.
-//! 2. [`submit_charged`], for a SUBMITTED job only: **step B** with no lock held (a panic in it is
-//!    caught and is a refusal, so step C always runs); **step C** ([`finish_submit_audited_conn`]:
-//!    the row re-read, refunded or not by its state, the outcome row, one transaction); the
+//! 2. [`submit_charged`], for a SUBMITTED job only: **step B** with no lock held; **step C**
+//!    ([`finish_submit_audited_conn`]: the row re-read, refunded or not by its state, the outcome
+//!    row, one transaction), retried a bounded number of times ([`STEP_C_RETRY_WAITS`]); the
 //!    `job:status` emit.
 //!
-//! Nothing here reads the connection's `closed` flag or can be cancelled: once step A has committed,
-//! steps B and C run (M0 amendment, item 6). A crash between them leaves `mcp_state = 'submitting'`,
-//! which the next lock holder's reconciliation finishes.
+//! **Nothing after step A's commit can stop steps B and C.** Nothing here reads the connection's
+//! `closed` flag or can be cancelled (M0 amendment, item 6), and every call into foreign code after
+//! [`decide_conn`] is isolated from a panic: a panicking emit is reported and skipped ([`emit`]), a
+//! panicking step B is a refusal, and a panicking step C attempt is a failed attempt. Only a crash
+//! (or every step C attempt failing) leaves `mcp_state = 'submitting'`, which the next lock holder's
+//! reconciliation finishes.
 //!
 //! **Argument bounds** (M3 amendment, item 1; refused before anything is read or written, with no
 //! audit row): `header` ≤ [`HEADER_MAX_BYTES`], `source` ≤ [`SOURCE_MAX_BYTES`] (room for
@@ -29,7 +33,9 @@
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
+use std::time::Duration;
 
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
 use super::assemble::{assemble, Assembled, AssemblyError};
@@ -43,6 +49,8 @@ use super::server::service::HostPaths;
 use super::server::DbSource;
 use super::steps::{decide_conn, finish_submit_audited_conn, Decided, McpReason, StepAInput, StepC};
 use super::tools::{clip, within_cap, ToolError, RESULT_CAP_BYTES};
+use crate::commands::settings::DbState;
+use crate::error::AppError;
 use crate::models::job::JobStatus;
 
 /// The longest header `create_job` takes, in bytes (the grammar's input; the same order as
@@ -63,6 +71,18 @@ pub const AUDIT_HEADER_MAX_BYTES: usize = 6_000;
 pub const STEP_B_MESSAGE_MAX_BYTES: usize = 600;
 /// A default title quotes at most this many bytes of the source.
 const DEFAULT_TITLE_SOURCE_BYTES: usize = 100;
+/// Step C's retries (decided by Anton, M3a): after a failed first attempt, one more after each wait
+/// here, so at most three attempts. Each attempt is one `BEGIN IMMEDIATE` transaction under the
+/// connection's busy timeout (`rusqlite`'s 5 s, pinned by a test), so step C's **SQLite** waits total
+/// at most 3 × 5 s + 0.25 s + 1 s = 16.25 s. That bound does **not** include the wait for the
+/// in-process `DbState` mutex before each attempt, which no timeout bounds: it lasts as long as
+/// another holder in this process keeps it (a UI command, the poller, the reconciliation — each one
+/// transaction or read, normally milliseconds). The exit flow waits for step C (its MCP wait) inside
+/// the backstop's 60 s (`server::wiring::EXIT_FLOW_DEADLINE`), which also holds `terminate_on_exit`
+/// (≈ 14.5 s worst) and the sidecar stop (≈ 0.3 s): 16.25 + 14.5 + 0.3 ≈ 31 s, leaving ≈ 29 s for
+/// step B and the mutex waits. Every attempt failing is the crash case: `step_c_error` is reported and
+/// the lock holder's reconciliation recovers the job.
+pub const STEP_C_RETRY_WAITS: [Duration; 2] = [Duration::from_millis(250), Duration::from_secs(1)];
 
 /// The tool's arguments (decision 4): no coordinates, charge or multiplicity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -318,32 +338,51 @@ pub fn decide(env: &CreateJobEnv, args: CreateJobArgs) -> Result<Decision, ToolE
         .map_err(ToolError::from_app)?
     };
 
+    // Step A has committed: from here on nothing may stop a charged job from reaching steps B and C.
     let set_by_app = set_by_app(&assembled);
     Ok(match decided {
         Decided::Refused { reasons } => Decision::Done(result(Outcome::Refused, None, &reasons, None)),
         Decided::Proposed { job, reasons } => {
-            env.emit.job_status(&job.id, job.status);
+            emit(env, &job.id, job.status);
             Decision::Done(result(Outcome::Proposed, Some(job.id), &reasons, set_by_app))
         }
         Decided::Charged { job, grant_id } => {
-            env.emit.job_status(&job.id, job.status);
+            emit(env, &job.id, job.status);
             Decision::Charged(Charged { job_id: job.id, grant_id, target, audit_args: audit, set_by_app })
         }
     })
 }
 
+/// The `job:status` emit, isolated from a panic: one stderr line, and the call goes on. After step A
+/// the emit is the only foreign code before step B, and a panic escaping it would leave a charged job
+/// `submitting` until the next reconciliation.
+fn emit(env: &CreateJobEnv, job_id: &str, status: JobStatus) {
+    if catch_unwind(AssertUnwindSafe(|| env.emit.job_status(job_id, status))).is_err() {
+        eprintln!("[OrcaStudio] mcp: the job:status emit for job {job_id} panicked; create_job goes on");
+    }
+}
+
 /// The second half, for a SUBMITTED job: step B with no lock (a panic is a refusal), step C with its
-/// outcome row, and the `job:status` emit. It returns a result on every path: once step A has
-/// committed, the call reports what became of the job.
+/// outcome row (retried, [`STEP_C_RETRY_WAITS`]), and the `job:status` emit. It returns a result on
+/// every path: once step A has committed, the call reports what became of the job.
 pub fn submit_charged(env: &CreateJobEnv, charged: Charged) -> CreateJobResult {
+    submit_charged_with(env, charged, &STEP_C_RETRY_WAITS, finish_submit_audited_conn)
+}
+
+/// [`submit_charged`] with step C's waits and its transaction as seams (`finish_submit_audited_conn`
+/// in the app); a test injects failing attempts and short waits.
+pub(crate) fn submit_charged_with(
+    env: &CreateJobEnv,
+    charged: Charged,
+    waits: &[Duration],
+    mut step_c_tx: impl FnMut(&Connection, &str, &str, &str, &str) -> Result<StepC, AppError>,
+) -> CreateJobResult {
     let step_b = catch_unwind(AssertUnwindSafe(|| env.step_b.submit(&charged.job_id, &charged.target)))
         .unwrap_or_else(|_| StepBOutcome::Refused("step B panicked".into()));
     let message = step_b.message();
-    let step_c = env
-        .db
-        .db()
-        .lock()
-        .and_then(|conn| finish_submit_audited_conn(&conn, &charged.job_id, &charged.grant_id, message, &charged.audit_args));
+    let step_c = step_c_retried(env.db.db(), waits, |conn| {
+        step_c_tx(conn, &charged.job_id, &charged.grant_id, message, &charged.audit_args)
+    });
 
     let mut report =
         SubmitReport { step_b: clip(message, STEP_B_MESSAGE_MAX_BYTES).0, refunded: false, job_status: None, step_c_error: None };
@@ -351,12 +390,12 @@ pub fn submit_charged(env: &CreateJobEnv, charged: Charged) -> CreateJobResult {
         Ok(StepC::Refunded) => {
             report.refunded = true;
             report.job_status = Some(JobStatus::Draft.as_str().into());
-            env.emit.job_status(&charged.job_id, JobStatus::Draft);
+            emit(env, &charged.job_id, JobStatus::Draft);
             (Outcome::Proposed, vec![McpReason::submit_refused(message)])
         }
         Ok(StepC::Kept { status }) => {
             report.job_status = Some(status.as_str().into());
-            env.emit.job_status(&charged.job_id, status);
+            emit(env, &charged.job_id, status);
             (Outcome::Submitted, Vec::new())
         }
         Ok(StepC::Gone) => (Outcome::Submitted, vec![McpReason::state("gone")]),
@@ -368,6 +407,30 @@ pub fn submit_charged(env: &CreateJobEnv, charged: Charged) -> CreateJobResult {
     let mut out = result(disposition, Some(charged.job_id), &reasons, charged.set_by_app);
     out.submit = Some(report);
     out
+}
+
+/// Step C, retried: one attempt at once, then one after each of `waits` while they fail. A failed
+/// attempt (an error, or a panic) rolled its own transaction back, so the next one re-reads the same
+/// row, and only the first success has written. Every attempt failing returns the last error: the job
+/// keeps `mcp_state = 'submitting'` for the lock holder's reconciliation, as after a crash.
+fn step_c_retried(
+    db: &DbState,
+    waits: &[Duration],
+    mut attempt: impl FnMut(&Connection) -> Result<StepC, AppError>,
+) -> Result<StepC, AppError> {
+    let mut once = || {
+        catch_unwind(AssertUnwindSafe(|| db.lock().and_then(|conn| attempt(&conn))))
+            .unwrap_or_else(|_| Err(AppError::Internal("step C panicked".into())))
+    };
+    let mut outcome = once();
+    for wait in waits {
+        if outcome.is_ok() {
+            break;
+        }
+        std::thread::sleep(*wait);
+        outcome = once();
+    }
+    outcome
 }
 
 /// The size post-condition (M2 amendment, item 7): the result fits [`RESULT_CAP_BYTES`]. It is

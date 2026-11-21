@@ -449,19 +449,24 @@ pub fn run_orca(orca_path: &str, job_dir: &Path, cpu_mask: Option<&str>) -> Resu
 /// slot just means the job waits its turn (oldest `created_at` first).
 pub fn submit(app: &AppHandle, job_id: &str) -> Result<(), AppError> {
     let db = app.state::<DbState>();
-    {
-        let conn = db.lock()?;
-        let job = get_job_conn(&conn, job_id)?;
-        if job.status != JobStatus::Draft {
-            return Err(AppError::Backend(format!(
-                "job {job_id} is '{}'; only draft jobs can be queued",
-                job.status.as_str()
-            )));
-        }
-        update_job_status_conn(&conn, job_id, "queued")?;
-    }
+    queue_draft_conn(&*db.lock()?, job_id)?;
     emit_status(app, job_id, JobStatus::Queued);
     try_start_next(app);
+    Ok(())
+}
+
+/// [`submit`]'s database step, `AppHandle`-free: draft `job_id` becomes `queued` (a local job: no
+/// coordinates are written), or the call is refused and nothing changes. The MCP server's step B
+/// (`mcp::step_b::local_step_b`) runs this same step, then the same emit and `try_start_next`.
+pub(crate) fn queue_draft_conn(conn: &Connection, job_id: &str) -> Result<(), AppError> {
+    let job = get_job_conn(conn, job_id)?;
+    if job.status != JobStatus::Draft {
+        return Err(AppError::Backend(format!(
+            "job {job_id} is '{}'; only draft jobs can be queued",
+            job.status.as_str()
+        )));
+    }
+    update_job_status_conn(conn, job_id, "queued")?;
     Ok(())
 }
 

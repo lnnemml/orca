@@ -14,6 +14,8 @@
 //!   flag, `get_grant`, the recovery sentence, and the bound on every tool error's text.
 //! - [`read_tools`] registers the ten read tools (M2b) in that service, over the cores in
 //!   [`crate::mcp::tools`].
+//! - [`create_job_tool`] registers `create_job` (M3a) in that service; [`create_job_task`] is its
+//!   handler's side: the permit, the gate, and the call as one tracked task.
 //! - [`gate`] is the admission gate over `TaskTracker` generations.
 //! - [`lifecycle`] owns every transition under one mutex, the status, and the exit flow.
 //! - [`tick`] is the 30 s tick driver.
@@ -24,6 +26,7 @@
 use crate::commands::settings::DbState;
 
 pub mod create_job_task;
+pub mod create_job_tool;
 pub mod gate;
 pub mod lifecycle;
 pub mod listener;
@@ -38,6 +41,8 @@ pub mod wiring;
 
 #[cfg(test)]
 mod create_job_task_tests;
+#[cfg(test)]
+mod create_job_tool_tests;
 #[cfg(test)]
 mod gate_tests;
 #[cfg(test)]

@@ -211,7 +211,8 @@ pub struct Job {
     /// job (the v22 CHECK); every write of it emits `job:status`.
     pub submit_pending_since: Option<String>,
     /// Who created the job (schema v24, ADR-027). Every job before v24 is the user's. Only
-    /// `mcp::steps::charge_and_insert_conn` and `insert_proposed_conn` write `mcp`.
+    /// `mcp::steps::decide_conn` (`create_job`'s step A), `insert_proposed_conn` and the test-only
+    /// `charge_and_insert_conn` write `mcp`.
     pub origin: JobOrigin,
     /// An MCP job's reasons, a JSON array of `mcp::steps::McpReason` (`{row, message}`): why it was
     /// proposed, or why its charge was refunded. `None` for a user job and a charged one.

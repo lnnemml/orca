@@ -3,7 +3,9 @@
 //! - **The request cap** (M0 amendment, item 5). Each connection holds a semaphore of
 //!   [`REQUESTS_PER_CONNECTION`] permits. A tool call takes one with `try_acquire`: when none is
 //!   free it gets the tool error [`BUSY`] at once and never queues. The permit returns when the
-//!   call's work ends. (M3's `create_job` moves its permit into its tracked task.)
+//!   call's work ends. `create_job` is the one exception in `call_tool` ([`OWN_PERMIT_TOOLS`]): its
+//!   handler takes its own permit and moves it into its tracked task (`super::create_job_task`), so
+//!   `call_tool` takes none for it and a call holds exactly one.
 //! - **`closed`** is set the moment the connection's transport reaches read EOF (the listener's
 //!   `Transport` wrapper; `rmcp`'s own end comes up to 5 s later, after its response drain), and by
 //!   switch-off. Waiting and reading handlers (M3's `wait_for_jobs`) check it; `rmcp` does not
@@ -12,7 +14,8 @@
 //!   open: `rmcp` does this itself (re-measured here: `server_tests::an_unknown_method_*`).
 //! - **The recovery sentence** ([`RECOVERY_SENTENCE`]) is in the server's instructions and in every
 //!   tool description, from one constant.
-//! - **The tools** are `get_grant` (here) and the ten read tools ([`super::read_tools`]), one router.
+//! - **The tools** are `get_grant` (here), the ten read tools ([`super::read_tools`]) and
+//!   `create_job` ([`super::create_job_tool`]), one router.
 //!   A tool error's text is bounded on its way out ([`bound_errors`]): `rmcp`'s own argument error
 //!   quotes the caller's input, so it is cut like an echo.
 
@@ -30,6 +33,7 @@ use rmcp::service::RequestContext;
 use rmcp::{tool, tool_handler, tool_router, ErrorData, RoleServer, ServerHandler};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
+use super::create_job_task::CreateJobWiring;
 use super::{DbSource, REQUESTS_PER_CONNECTION};
 use crate::commands::mcp::current_grant_core;
 use crate::mcp::tools::{clip, ECHO_MAX_BYTES, REFUSAL_MAX_BYTES};
@@ -50,10 +54,20 @@ pub const RECOVERY_SENTENCE: &str = recovery_sentence!();
 
 /// The server's instructions (the `initialize` result).
 pub const INSTRUCTIONS: &str = concat!(
-    "OrcaStudio's MCP server: read-only access to the app's state. Jobs, grants and the audit log ",
-    "live in OrcaStudio's database and survive a restart of the app or of this session. ",
+    "OrcaStudio's MCP server: read access to the app's state, and create_job, which spends compute ",
+    "only under a grant Anton made. Jobs, grants and the audit log live in OrcaStudio's database and ",
+    "survive a restart of the app or of this session. ",
     recovery_sentence!()
 );
+
+/// The tools whose handler takes its own request permit (to move it into a tracked task):
+/// `call_tool` takes none for them, so each call holds exactly one.
+pub const OWN_PERMIT_TOOLS: [&str; 1] = ["create_job"];
+
+/// Whether `call_tool` leaves the permit to the tool's own handler ([`OWN_PERMIT_TOOLS`]).
+pub fn takes_own_permit(tool: &str) -> bool {
+    OWN_PERMIT_TOOLS.contains(&tool)
+}
 
 /// The tool error for a call over the connection's request cap.
 pub const BUSY: &str = "busy, retry: every request slot of this connection is in use";
@@ -138,15 +152,22 @@ impl HostPaths {
 #[derive(Clone)]
 pub struct McpService {
     tool_router: ToolRouter<Self>,
-    conn: Arc<ConnState>,
+    pub(super) conn: Arc<ConnState>,
     pub(super) db: Arc<dyn DbSource>,
     pub(super) host: Arc<HostPaths>,
+    pub(super) create_job_wiring: CreateJobWiring,
 }
 
 #[tool_router]
 impl McpService {
-    pub fn new(conn: Arc<ConnState>, db: Arc<dyn DbSource>, host: Arc<HostPaths>) -> Self {
-        McpService { tool_router: Self::tool_router() + Self::read_tools_router(), conn, db, host }
+    pub fn new(conn: Arc<ConnState>, db: Arc<dyn DbSource>, host: Arc<HostPaths>, create_job_wiring: CreateJobWiring) -> Self {
+        McpService {
+            tool_router: Self::tool_router() + Self::read_tools_router() + Self::create_job_router(),
+            conn,
+            db,
+            host,
+            create_job_wiring,
+        }
     }
 
     /// Every tool this server lists, for the description check.
@@ -175,8 +196,8 @@ impl McpService {
     }
 }
 
-// The combined router (`get_grant` and the read tools), not the macro's default `Self::tool_router()`,
-// which lists `get_grant` alone.
+// The combined router (`get_grant`, the read tools and `create_job`), not the macro's default
+// `Self::tool_router()`, which lists `get_grant` alone.
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for McpService {
     fn get_info(&self) -> ServerConfig {
@@ -186,14 +207,20 @@ impl ServerHandler for McpService {
     }
 
     /// Every tool call takes one of the connection's permits first, and holds it until the call's
-    /// work ends. None free: the immediate tool error [`BUSY`], never a queue.
+    /// work ends. None free: the immediate tool error [`BUSY`], never a queue. A tool in
+    /// [`OWN_PERMIT_TOOLS`] (`create_job`) takes its own in its handler, so none is taken here.
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
-        let Some(_permit) = self.conn.try_permit() else {
-            return Ok(CallToolResult::error(vec![ContentBlock::text(BUSY)]).into());
+        let _permit = if takes_own_permit(&request.name) {
+            None
+        } else {
+            let Some(permit) = self.conn.try_permit() else {
+                return Ok(CallToolResult::error(vec![ContentBlock::text(BUSY)]).into());
+            };
+            Some(permit)
         };
         let call = ToolCallContext::new(self, request, context);
         Ok(bound_errors(self.tool_router.call(call).await?))

@@ -6,12 +6,15 @@
 //! **Step A** is [`decide_conn`]: one `BEGIN IMMEDIATE` transaction that classifies the job against
 //! the grant, its counters and R8's open-proposal count read inside it, and writes the disposition
 //! with its audit row. **Step C** is [`finish_submit_audited_conn`]: the row re-read, the refund or
-//! not, and the outcome row, in one transaction. M1b's [`charge_and_insert_conn`] (P5 only) and
-//! [`finish_submit_conn`] (no audit row) share those bodies ([`charge_in_tx`], [`finish_in_tx`]).
+//! not, and the outcome row, in one transaction. M1b's `charge_and_insert_conn` (P5 only) and
+//! `finish_submit_conn` (no audit row) share those bodies ([`charge_in_tx`], [`finish_in_tx`]). They
+//! are compiled for tests only (`#[cfg(test)]`, where M1b's step tests pin the shared bodies): no
+//! app code can charge or refund a job without its audit row.
 //!
-//! **Who writes `origin = 'mcp'`.** Only [`charge_and_insert_conn`] and [`insert_proposed_conn`].
-//! Both insert through the app's own `create_job_conn`, so an MCP job mints its index map like any
-//! job, then stamp the MCP columns in the same transaction.
+//! **Who writes `origin = 'mcp'`.** Only [`decide_conn`] (`create_job`'s step A: a PROPOSED or a
+//! charged job), [`insert_proposed_conn`], and the test-only `charge_and_insert_conn`. Each inserts
+//! through the app's own `create_job_conn`, so an MCP job mints its index map like any job, then
+//! stamps the MCP columns in the same transaction.
 //!
 //! **The step-B window.** From step A's commit to step C's, the row holds `mcp_state =
 //! 'submitting'` and a `grant_id`; [`refuse_while_mcp_submitting`] is the guard of every command
@@ -27,12 +30,15 @@ use serde::{Deserialize, Serialize};
 
 use super::assemble::{Assembled, AssemblyError};
 use super::audit::{append_audit_conn, AuditDisposition, AuditEntry, CREATE_JOB};
+#[cfg(test)]
+use super::classify::grant_problems;
 use super::classify::{
-    classify_mcp_job, grant_problems, ClassifyInput, Disposition, GrantSnapshot, MemoryVerdict, ProposedReason,
-    RefusedReason, ResolvedSource, Target,
+    classify_mcp_job, ClassifyInput, Disposition, GrantSnapshot, MemoryVerdict, ProposedReason, RefusedReason,
+    ResolvedSource, Target,
 };
 use super::grant::{begin_immediate, check_utc_text, grant_snapshot_conn, in_flight_conn, now_utc_conn, CurrentGrant};
 use super::header::ParsedHeader;
+#[cfg(test)]
 use super::signature::MethodSignature;
 use crate::commands::jobs::{create_job_conn, get_job_conn};
 use crate::error::AppError;
@@ -112,10 +118,12 @@ fn reasons_with(job_id: &str, stored: Option<&str>, extra: &[McpReason]) -> Resu
     serde_json::to_string(&all).map_err(|e| AppError::Internal(format!("job {job_id}: mcp_reasons: {e}")))
 }
 
-/// What the P5-only step A ([`charge_and_insert_conn`], M1b) is asked to create: a job already
-/// classified SUBMITTED, its `input_content` assembled and its `signature` computed. `create_job`
-/// itself goes through [`decide_conn`], which runs the whole classifier inside the transaction; both
-/// charge through the one [`charge_in_tx`], so M1b's step-A tests pin the charge `create_job` makes.
+/// What the P5-only step A ([`charge_and_insert_conn`], M1b; test-only) is asked to create: a job
+/// already classified SUBMITTED, its `input_content` assembled and its `signature` computed.
+/// `create_job` itself goes through [`decide_conn`], which runs the whole classifier inside the
+/// transaction; both charge through the one [`charge_in_tx`], so M1b's step-A tests pin the charge
+/// `create_job` makes.
+#[cfg(test)]
 #[derive(Debug, Clone, Copy)]
 pub struct McpJobDraft<'a> {
     pub title: &'a str,
@@ -124,7 +132,8 @@ pub struct McpJobDraft<'a> {
     pub signature: &'a MethodSignature,
 }
 
-/// What step A did.
+/// What the test-only M1b step A did.
+#[cfg(test)]
 #[derive(Debug, Clone)]
 pub enum StepA {
     /// Charged to `grant_id`: a `draft` with `mcp_state = 'submitting'`; step B submits it.
@@ -143,6 +152,10 @@ pub enum StepA {
 /// **The time is read inside the transaction**, after the write lock is granted (`datetime('now')`,
 /// [`now_utc_conn`]), never taken from the caller: a step A that waited on the lock judges expiry
 /// at the moment it charges, so a grant that expired during the wait is PROPOSED, not charged.
+///
+/// **Test-only** (verifier LOW-4, M3a): it writes no audit row, so no app code may charge with it;
+/// `create_job` charges through [`decide_conn`].
+#[cfg(test)]
 pub fn charge_and_insert_conn(conn: &Connection, draft: McpJobDraft<'_>) -> Result<StepA, AppError> {
     charge_and_insert_with(conn, draft, || Ok(()), now_utc_conn)
 }
@@ -153,6 +166,7 @@ pub fn charge_and_insert_conn(conn: &Connection, draft: McpJobDraft<'_>) -> Resu
 /// Because both the time and the grant are read **after** `BEGIN`, the rival's charge and the
 /// advanced clock are seen; read either before the seam and it goes unseen — the controls that pin
 /// both reads inside.
+#[cfg(test)]
 pub(crate) fn charge_and_insert_with(
     conn: &Connection,
     draft: McpJobDraft<'_>,
@@ -197,7 +211,7 @@ fn stamp_proposed(conn: &Connection, job_id: &str, reasons: &[McpReason]) -> Res
 
 /// The charge, inside the caller's `BEGIN IMMEDIATE` transaction: job `job_id` becomes an MCP
 /// `draft` charged to `grant_id` with `mcp_state = 'submitting'`, and the grant's `charged_jobs` is
-/// incremented. Shared by both step As ([`charge_and_insert_with`], [`decide_with`]).
+/// incremented. Shared by both step As (the test-only `charge_and_insert_with`, and [`decide_with`]).
 ///
 /// **Post-condition (rule #9), in our terms:** exactly one grant row was charged, and the in-flight
 /// cap the P5 rows promised still holds with this job counted. A breach is an error, so the caller's
@@ -298,7 +312,7 @@ pub fn decide_conn(conn: &Connection, input: StepAInput<'_>) -> Result<Decided, 
     decide_with(conn, input, || Ok(()), now_utc_conn)
 }
 
-/// [`decide_conn`] with the seams of [`charge_and_insert_with`]: `before_begin` runs just before
+/// [`decide_conn`] with the seams of the test-only `charge_and_insert_with`: `before_begin` runs just before
 /// `BEGIN IMMEDIATE` (a test runs a rival step A or a revoke there), and `clock` reads the time
 /// inside the transaction.
 pub(crate) fn decide_with(
@@ -442,6 +456,10 @@ fn mcp_row(conn: &Connection, job_id: &str) -> Result<Option<McpRow>, AppError> 
 /// clear `mcp_state`. Still a `draft` charged to `grant_id` → refund (the job becomes PROPOSED with
 /// "submit refused: <outcome_message>"). Left `draft`, or not charged to this grant → no refund.
 /// Gone → nothing.
+///
+/// **Test-only** (verifier LOW-4, M3a): it writes no outcome row, so no app code may refund with it;
+/// `create_job` finishes through [`finish_submit_audited_conn`].
+#[cfg(test)]
 pub fn finish_submit_conn(conn: &Connection, job_id: &str, grant_id: &str, outcome_message: &str) -> Result<StepC, AppError> {
     let tx = begin_immediate(conn)?;
     let outcome = finish_in_tx(&tx, job_id, grant_id, outcome_message)?;
@@ -449,7 +467,7 @@ pub fn finish_submit_conn(conn: &Connection, job_id: &str, grant_id: &str, outco
     Ok(outcome)
 }
 
-/// Step C's body inside the caller's transaction (shared by [`finish_submit_conn`] and
+/// Step C's body inside the caller's transaction (shared by the test-only `finish_submit_conn` and
 /// [`finish_submit_audited_conn`]): re-read the row, refund a `draft` still charged to `grant_id`,
 /// else only clear the flag.
 fn finish_in_tx(tx: &Connection, job_id: &str, grant_id: &str, outcome_message: &str) -> Result<StepC, AppError> {
@@ -476,7 +494,7 @@ pub fn step_c_audit(outcome: &StepC, step_b_message: &str) -> (Option<AuditDispo
     }
 }
 
-/// `create_job`'s step C (ADR-027 decision 5; M3 amendment, item 3): [`finish_submit_conn`]'s body
+/// `create_job`'s step C (ADR-027 decision 5; M3 amendment, item 3): `finish_submit_conn`'s body
 /// and step C's outcome row ([`step_c_audit`]) in **one** `BEGIN IMMEDIATE` transaction, so a refund
 /// never commits without its row and the log never ends at SUBMITTED for a job step C finished.
 pub fn finish_submit_audited_conn(
@@ -493,6 +511,10 @@ pub fn finish_submit_audited_conn(
         &tx,
         &AuditEntry { tool: CREATE_JOB, args: audit_args, disposition, reasons: &reasons, job_id: Some(job_id), grant_id: Some(grant_id) },
     )?;
+    // The commit is the last fallible operation here, and on a failed COMMIT the `Transaction` guard
+    // rolls back when dropped (`rusqlite`): an `Err` from this function always means nothing was
+    // written. `create_job`'s step C retry (`create_job::step_c_retried`) relies on that, so a retried
+    // attempt re-reads the same row and refunds or keeps exactly once.
     tx.commit()?;
     Ok(outcome)
 }

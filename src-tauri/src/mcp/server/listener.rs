@@ -24,6 +24,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 
+use super::create_job_task::CreateJobWiring;
 use super::service::{ConnState, HostPaths, McpService};
 use super::DbSource;
 
@@ -105,6 +106,7 @@ pub struct AcceptContext {
     pub own_uid: u32,
     pub db: Arc<dyn DbSource>,
     pub host: Arc<HostPaths>,
+    pub create_job: CreateJobWiring,
 }
 
 /// Accept until `ctx.cancel` fires. The listener (and so the socket's fd) closes when this returns.
@@ -137,7 +139,7 @@ fn admit(stream: UnixStream, ctx: &AcceptContext) {
     let Some(conn) = ctx.registry.register() else {
         return;
     };
-    let service = McpService::new(conn.clone(), ctx.db.clone(), ctx.host.clone());
+    let service = McpService::new(conn.clone(), ctx.db.clone(), ctx.host.clone(), ctx.create_job.clone());
     let task = serve_connection(stream, service, conn, slot, ctx.clone());
     tauri::async_runtime::spawn(task);
 }

@@ -154,7 +154,7 @@ mod switch {
 
     use super::super::{mcp_set_enabled_core, mcp_status_core};
     use crate::commands::settings::DbState;
-    use crate::mcp::server::test_support::Scratch;
+    use crate::mcp::server::test_support::{no_create_job, Scratch};
     use crate::mcp::server::wiring::wired_lifecycle;
     use crate::mcp::server::DbSource;
 
@@ -180,7 +180,7 @@ mod switch {
     fn the_switch_commands_do_their_work_off_the_callers_thread() {
         let scratch = Scratch::new("cmd-switch");
         let recording = Arc::new(RecordingDb { db: scratch.db(), threads: Mutex::new(Vec::new()) });
-        let lifecycle = wired_lifecycle(recording.clone(), Ok(scratch.paths()), scratch.host());
+        let lifecycle = wired_lifecycle(recording.clone(), Ok(scratch.paths()), scratch.host(), no_create_job());
         let caller = thread::current().id();
 
         let status = tauri::async_runtime::block_on(mcp_status_core(lifecycle.clone())).unwrap();

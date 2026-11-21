@@ -80,7 +80,7 @@ Targeted over blanket so a
 
 | Trait method | Delegates to |
 |---|---|
-| `submit` | `local_backend::submit(&app, &job.id)` → returns `JobHandle(job.id)` |
+| `submit` | `local_backend::submit(&app, &job.id)` → returns `JobHandle(job.id)`; its database step is the `AppHandle`-free `queue_draft_conn` (draft → `queued`), which `create_job`'s local step B runs too (`modules/mcp-server.md`, "Step B") |
 | `poll_log` | `local_backend::read_log_chunk(output.out, offset, cap)` (new bounded offset read) |
 | `status` | `get_job_conn(conn, id)?.status` |
 | `fetch_results` | no-op (`Ok(())`) — artifacts already on disk; policy only bites over SSH |
@@ -283,8 +283,9 @@ Create and Run is uncovered (named in o26.8).
   `running` lock. The exit flag is separate from the user's pause (ADR-027 M3 amendment, item 4):
   `resume_queue` (`set_paused(false)` → `JobRunner::set_user_paused`) clears only the user's flag, so a
   Resume click during the exit wait — up to the backstop's 60 s, with the window still open — starts no
-  queued job, and a local submit after the exit flow began queues its job but claims no slot. The user's
-  pause and resume are otherwise unchanged; `is_queue_paused` reports the user's flag.
+  queued job, and a local submit after the exit flow began queues its job but claims no slot (a
+  `create_job` step B refuses before queueing once exit has begun). The user's pause and resume are
+  otherwise unchanged; `is_queue_paused` reports the user's flag.
 - **Lock order** is always `running` → `db` (only `claim_next`, called from `try_start_next`, nests them); `cancel` and
   `start_run` take each lock alone. No inversion, no deadlock.
 
@@ -496,8 +497,10 @@ are fetched by the poller's status step, under the job's in-flight guard (below)
 `SubmitResponse { outcome, pal, notice, memory_notice, failure }` is the attempt with `pal.notice()`,
 the submit-time memory and disk check (`memory_notice`, a separate field — the view shows both; see
 "The memory and disk preflight") and `outcome.failure()` in words. Retry and label dispatch on the job's coordinates
-(`Backend::for_job`) and refuse a local job. Every remote operation (`run_guarded`, over the `AppHandle`-free `guarded_blocking`; every remote
-entry point is pinned to go through it):
+(`Backend::for_job`) and refuse a local job. Every remote operation (`run_guarded`, over the `AppHandle`-free `guarded_blocking`
+and `announcing_change`; every remote entry point is pinned to go through it — `create_job`'s remote step B runs the same
+guard, `announcing_change`, `attempt_with_contact` and `submit_remote` on its own blocking thread, `modules/mcp-server.md`,
+"Step B"):
 - claims the job's **in-flight guard** first, before `spawn_blocking`, and **refuses** a job that already
   has an operation in flight (`AppError::Conflict` "an operation on job … is already in progress");
 - runs in `tauri::async_runtime::spawn_blocking` (the commands are `async`), never holding the

@@ -15,8 +15,8 @@
 //!   future dropped), a switch-off and exit each leave the task running to step C: dropping a tokio
 //!   `JoinHandle` detaches the task, it does not abort it, and the pipeline never reads `closed`.
 //!
-//! Part B registers the tool in the `rmcp` service, where `call_tool`'s generic permit must not be
-//! taken a second time for `create_job` (this handler takes its own, to move it into the task).
+//! The tool is registered in the `rmcp` service (`super::create_job_tool`), whose `call_tool` takes
+//! no generic permit for `create_job`: this handler takes its own, to move it into the task.
 
 use std::sync::Arc;
 
@@ -25,8 +25,27 @@ use tokio::sync::OwnedSemaphorePermit;
 use super::gate::AdmissionGate;
 use super::service::{ConnState, BUSY};
 use crate::error::AppError;
-use crate::mcp::create_job::{run_create_job, CreateJobArgs, CreateJobEnv, CreateJobResult};
+use crate::mcp::create_job::{run_create_job, CreateJobArgs, CreateJobEnv, CreateJobResult, StatusEmit, StepB};
+use crate::mcp::resolve::SmilesTo3d;
 use crate::mcp::tools::ToolError;
+
+/// What `create_job` reaches besides the database and the host facts (which the lifecycle already
+/// holds): the sidecar's SMILES call, step B and the `job:status` emit. The app's are built over the
+/// `AppHandle` (`super::wiring::app_create_job`); a test passes its own.
+#[derive(Clone)]
+pub struct CreateJobSeams {
+    pub smiles: Arc<dyn SmilesTo3d + Send + Sync>,
+    pub step_b: Arc<dyn StepB>,
+    pub emit: Arc<dyn StatusEmit>,
+}
+
+/// What a connection's service needs for `create_job`: the lifecycle's admission gate and the one
+/// environment every call runs in.
+#[derive(Clone)]
+pub struct CreateJobWiring {
+    pub gate: Arc<AdmissionGate>,
+    pub env: Arc<CreateJobEnv>,
+}
 
 /// The `create_job` handler: take a permit, admit the task through the gate, and await its result.
 /// Every step of the call — the memory verdict, step A, step B, step C — runs in the task.

@@ -615,8 +615,9 @@ everything else). It takes the port from `SidecarStatus`, refuses when no port i
 sidecar is `down`, bounds the call (5 s connect, 30 s total), and checks the reply in our terms before
 it becomes a geometry: integers, at least one atom, multiplicity 1, one strict xyz frame, known
 elements, finite coordinates (`modules/mcp-server.md` "The SMILES call"). It blocks, so its caller
-runs it off the main thread: `create_job`'s pipeline runs on Tauri's blocking pool (M3a), and no
-command calls it until the tool is registered (M3a Part B).
+runs it off the main thread: the `create_job` tool reaches it through `mcp::server::wiring::AppSmiles`
+(the sidecar's status read at the moment of the call) inside its task on Tauri's blocking pool; no
+Tauri command calls it.
 
 ## xTB pre-optimization (`xtb.rs`)
 
