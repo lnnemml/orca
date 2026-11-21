@@ -469,19 +469,62 @@ fn every_step_c_attempt_failing_is_reported_and_reconciled() {
     assert_eq!((w.charged(), job.1.as_str(), job.2, job.3), (0, "draft", None, None));
 }
 
-/// The retry's numbers and their arithmetic against the exit wait: three attempts, each bounded by the
-/// app connection's busy timeout (read from `init_db`'s connection, not assumed), plus the waits; with
+/// The retry's numbers and their arithmetic against the exit wait: three attempts, each waiting at
+/// most one busy timeout at `BEGIN IMMEDIATE` and one at `COMMIT` (`LOCK_WAITS_PER_ATTEMPT`; each wait
+/// measured, `wiki/architecture/sqlite-commit-wait.md`), plus the waits: a **nominal** 31.25 s of SQLite
+/// lock waits (derived from the measured waits, ≈ 31.3 s strictly; not wall time, fsync comes on top;
+/// not the `DbState` mutex wait); with
 /// `terminate_on_exit`'s ≈ 14.5 s worst case and the sidecar stop after them, inside the backstop's
-/// 60 s.
+/// 60 s. The busy timeout **and the journal mode** are read from `init_db`'s connection, not assumed:
+/// the two-waits factor holds under the rollback journal only (WAL's COMMIT does not wait for a reader),
+/// so a switch to WAL turns this red and forces the bound to be re-measured. NEGATIVE CONTROLS:
+/// `journal_mode=WAL` on the connection, or the factor 1 → red.
 #[test]
 fn step_c_retry_fits_inside_the_exit_wait() {
+    /// `BEGIN IMMEDIATE` and `COMMIT`, each with its own busy budget (the probe's S3: 4840 + 5010 ms).
+    const LOCK_WAITS_PER_ATTEMPT: u32 = 2;
     let db = crate::mcp::test_db::TestDb::new("cj-retry-budget");
     let busy_ms: u64 = db.conn.pragma_query_value(None, "busy_timeout", |r| r.get(0)).unwrap();
     assert_eq!(busy_ms, 5_000, "the app connection's busy timeout");
+    let journal_mode: String = db.conn.pragma_query_value(None, "journal_mode", |r| r.get(0)).unwrap();
+    assert_eq!(journal_mode, "delete", "the two lock waits per attempt hold under the rollback journal only");
     assert_eq!(STEP_C_RETRY_WAITS, [Duration::from_millis(250), Duration::from_secs(1)]);
     let attempts = 1 + STEP_C_RETRY_WAITS.len() as u32;
-    let worst = Duration::from_millis(busy_ms) * attempts + STEP_C_RETRY_WAITS.iter().sum::<Duration>();
-    assert_eq!(worst, Duration::from_millis(16_250));
+    let worst = Duration::from_millis(busy_ms) * (attempts * LOCK_WAITS_PER_ATTEMPT) + STEP_C_RETRY_WAITS.iter().sum::<Duration>();
+    assert_eq!(worst, Duration::from_millis(31_250));
     let after_the_wait = Duration::from_millis(14_500) + Duration::from_millis(300);
     assert!(worst + after_the_wait < crate::mcp::server::wiring::EXIT_FLOW_DEADLINE, "{worst:?}");
+}
+
+/// The measured behaviour behind the two lock waits (`wiki/architecture/sqlite-commit-wait.md`, S6):
+/// on the bundled SQLite and the rollback journal, a `COMMIT` of a `BEGIN IMMEDIATE` transaction waits
+/// its own busy timeout while another connection holds a read transaction (SHARED), then fails
+/// `SQLITE_BUSY`, and the row is absent. Only a lower bound on the time (an upper bound would flake on
+/// a loaded machine). NEGATIVE CONTROL: the writer's database in WAL → the COMMIT succeeds → red.
+#[test]
+fn a_commit_waits_its_own_busy_timeout_under_the_rollback_journal() {
+    let db = crate::mcp::test_db::TestDb::new("cj-commit-wait");
+    let wait = Duration::from_millis(300);
+    db.conn.busy_timeout(wait).unwrap();
+    db.conn.execute_batch("CREATE TABLE commit_wait_probe (v TEXT)").unwrap();
+
+    let reader = db.open_another();
+    reader.execute_batch("BEGIN").unwrap();
+    // A completed read: in the rollback journal's mode SHARED is kept until the transaction ends.
+    let _: i64 = reader.query_row("SELECT count(*) FROM commit_wait_probe", [], |r| r.get(0)).unwrap();
+
+    let tx = crate::mcp::grant::begin_immediate(&db.conn).unwrap();
+    tx.execute("INSERT INTO commit_wait_probe (v) VALUES ('W')", []).unwrap();
+    let started = std::time::Instant::now();
+    let committed = tx.commit();
+    let elapsed = started.elapsed();
+    assert!(
+        matches!(&committed, Err(rusqlite::Error::SqliteFailure(f, _)) if f.code == rusqlite::ErrorCode::DatabaseBusy),
+        "COMMIT-WAIT: expected SQLITE_BUSY while a reader holds SHARED, got {committed:?} after {elapsed:?}"
+    );
+    assert!(elapsed >= Duration::from_millis(250), "COMMIT-WAIT: the busy handler did not wait: {elapsed:?}");
+
+    reader.execute_batch("ROLLBACK").unwrap();
+    let rows: i64 = db.conn.query_row("SELECT count(*) FROM commit_wait_probe", [], |r| r.get(0)).unwrap();
+    assert_eq!(rows, 0, "the failed COMMIT's row must be absent");
 }

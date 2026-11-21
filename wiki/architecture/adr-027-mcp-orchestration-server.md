@@ -1240,6 +1240,11 @@ The decision text above stands, except where an item below says it replaces or q
            flow, so an exit that begins after it — during the wait for the `DbState` mutex or
            `persist_submit`'s own transaction and file writes — is not seen, and that job's ssh calls
            do start during the exit (it is then `queued` and kept).
+         - **Step C's SQLite lock waits** are ≈ 31.25 s (nominal 3 × (5 s + 5 s) + 1.25 s: two busy
+           timeouts per attempt, at `BEGIN IMMEDIATE` and at `COMMIT`, under the rollback journal; three
+           attempts), derived from measured per-statement waits (each ≈ the busy timeout + ~10–15 ms).
+           This is not wall time and does not include the `DbState` mutex wait. Record:
+           [sqlite-commit-wait.md](sqlite-commit-wait.md).
        - **The exit flag of item 4.**
      - **Controls:**
        - **The decomposition's `create_job` controls:**

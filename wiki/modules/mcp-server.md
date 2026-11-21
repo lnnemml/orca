@@ -388,18 +388,29 @@ and C and leave a charged job `submitting` until the next reconciliation.
 again on the same row: at most **three attempts**, the second after 250 ms and the third after 1 s
 more. Only the first success writes, so a refund or a kept charge happens once, with one outcome row
 and one final emit (safe because a failed COMMIT rolls back and the commit is the last fallible
-operation in `finish_submit_audited_conn`). Each attempt's SQLite wait is bounded by the app connection's 5 s busy timeout (`init_db`'s,
-pinned by a test), so step C's **SQLite waits** (the busy timeout) total **at least 16.25 s**
-(3 × 5 s + 1.25 s). Under the rollback journal (no `journal_mode` pragma is set anywhere), each
-attempt's COMMIT may wait its own busy timeout, up to ≈ 31.25 s.
-- **This is Open (rule #10).** A Python sqlite3 3.45.1 run suggested it, but that is not a record; a
-  prober task settles it. Either way it stays under the 60 s backstop.
-- **These figures cover SQLite only**, **not the wait for the in-process `DbState` mutex** before each
-  attempt. No timeout bounds that wait (it is another holder's one transaction or read, normally
-  milliseconds).
+operation in `finish_submit_audited_conn`). Each attempt waits at most one busy timeout (the app connection's 5 s, `init_db`'s) at
+`BEGIN IMMEDIATE` and one more at `COMMIT`: under the rollback journal (no `journal_mode` pragma is set
+anywhere) a `COMMIT` waits its own full busy timeout while another connection holds a read transaction,
+then fails `SQLITE_BUSY` and rolls back. So step C's **SQLite lock waits** total ≈ **31.25 s**
+(nominal 3 × (5 s + 5 s) + 0.25 s + 1 s), derived from per-statement waits measured under rule #10
+(each ≈ the busy timeout + ~10–15 ms, so ≈ 31.3 s strictly): [sqlite-commit-wait.md](../architecture/sqlite-commit-wait.md).
+- **Two waits per attempt assumes no wait inside the transaction.** A mid-transaction cache spill would
+  need EXCLUSIVE and could wait on a reader. Step C's transaction is a few rows (`finish_in_tx` plus one
+  audit row), far below the cache, and the probe's INSERT took ≤ 0.3 ms.
+- **Lock waits, not wall time.** fsync and journal I/O on a loaded disk come on top.
+- **SQLite only, not the `DbState` mutex.** The figure does not cover the wait for the in-process
+  mutex before each attempt. No timeout bounds that wait (it is another holder's one transaction or
+  read, normally milliseconds).
 - **The exit budget.** The exit flow waits for step C inside the backstop's 60 s, which also holds
-  `terminate_on_exit` (≈ 14.5 s worst) and the sidecar stop (≈ 0.3 s): 16.25 + 14.5 + 0.3 ≈ 31 s
-  (≈ 46 s if each COMMIT waits its own timeout). The rest is for step B and the mutex waits. Every attempt failing is the crash case:
+  `terminate_on_exit` (≈ 14.5 s worst) and the sidecar stop (≈ 0.3 s): 31.25 + 14.5 + 0.3 ≈ 46 s,
+  leaving ≈ 14 s for step B and the mutex waits.
+- **Pins.** `create_job_tests::step_c_retry_fits_inside_the_exit_wait` reads `busy_timeout` (5000) and
+  `journal_mode` (`delete`) off the app's connection and pins the nominal `31_250` ms (a switch to WAL turns it red:
+  the bound must then be re-measured). `a_commit_waits_its_own_busy_timeout_under_the_rollback_journal`
+  reproduces the COMMIT wait on the bundled SQLite (300 ms timeout, a reader holding SHARED, COMMIT busy,
+  the row absent).
+
+Every attempt failing is the crash case:
 `submit.step_c_error` says why, the job keeps `mcp_state = 'submitting'` and its charge, and the lock
 holder's reconciliation recovers it (a `draft` refunded, any other row only its flag cleared).
 

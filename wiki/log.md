@@ -14035,3 +14035,18 @@ A real `claude -p` session listed the 11 tools and received `get_results` inline
     - `timeout_s` 5000 → `effective_timeout_s` 600, `timeout_clamped`.
   - **Hang-up.** With all four connection slots each holding four waits, a fifth client was refused (the relay got a connection reset). Killing one waiting client freed its slot: a new client was initialized at once.
   - **Not run live:** a remote cancel through `AppSink`, a running local job's cancel, and the startup refusal "the app is still starting". These are covered by the source pins and the existing cancel path's tests.
+
+## [2026-11-21] probe | SQLite COMMIT waits its own busy timeout — step C bound derived from measured waits
+
+Settled the Open item of ADR-027 M3a (rule #10): does a `COMMIT` of a `BEGIN IMMEDIATE` transaction wait its own busy timeout? Page: `wiki/architecture/sqlite-commit-wait.md`.
+
+- **Measured** (bundled SQLite 3.46.0, rusqlite 0.32.1, rollback journal, `busy_timeout` 5000, tmpfs for the clean rows):
+  - With a reader holding SHARED, `COMMIT` waits ≈ 5010 ms, then fails `SQLITE_BUSY` and the row is absent.
+  - The `BEGIN` and `COMMIT` waits are independent budgets: one attempt measured 4840 + 5010 ms = 9850 ms.
+  - WAL control: `COMMIT` 0 ms. A 300 ms busy timeout gives 302 ms.
+- **Verdict:** yes. Per attempt up to two busy timeouts. The bound moves from "at least 16.25 s, Open (maybe 31.25 s)" to **≈ 31.25 s** of SQLite lock waits (nominal 3 × (5 s + 5 s) + 0.25 s + 1 s), derived from the measured per-statement waits (each ≈ the busy timeout + ~10–15 ms, so ≈ 31.3 s strictly; the factor 2 assumes no wait inside the transaction, which is a few rows). Exit budget: 31.25 + 14.5 + 0.3 ≈ 46 s inside the 60 s backstop, ≈ 14 s left for step B and the `DbState` mutex waits. It supersedes the earlier "at least 16.25 s / Open" entries and statements; the figure is now stated in the `STEP_C_RETRY_WAITS` doc, the budget test, the module page ("Step C's retry") and a pointer in the ADR's M3 amendment.
+- **Two test pins**, each with a negative control:
+  - `step_c_retry_fits_inside_the_exit_wait` reads `journal_mode` (`delete`) and `busy_timeout` (5000) off the app's connection and pins the nominal `31_250` ms. Controls: WAL on the connection, or the factor 2 → 1, goes red.
+  - `a_commit_waits_its_own_busy_timeout_under_the_rollback_journal` (300 ms timeout, a reader holding SHARED). Control: the database in WAL → `COMMIT` succeeds → red.
+- **Caveats:** the figure bounds SQLite lock waits, not wall time (fsync on a loaded disk comes on top; a first run at 88 % iowait showed a reader-free `COMMIT` of 14 s). It does not include the in-process `DbState` mutex wait. Whether the transaction stays open on the connection between a failed `COMMIT` and the drop was not isolated; the app relies on the drop-rollback, which was observed.
+- **Next:** verifier CODE, then commit on Anton's OK.
