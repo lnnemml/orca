@@ -2,7 +2,7 @@
 //! calls three things here: [`app_lifecycle`] and [`start_ticks`] in setup, and [`exit_requested`]
 //! on `RunEvent::ExitRequested`. `main.rs` calls [`relay_main`] for `orcastudio --mcp`.
 //!
-//! **`create_job`'s seams over the app (M3a Part B)** are built here too ([`app_create_job`]): the
+//! **The write tools' seams over the app (M3a Part B)** are built here too ([`app_write_seams`]): the
 //! real step B over [`AppSubmitWorld`] (`mcp::step_b`), the `job:status` emit ([`AppEmit`],
 //! `local_backend::emit_status`) and the sidecar's SMILES call ([`AppSmiles`]). Each only looks up
 //! the app's managed state at the moment of the call, with `try_state`: the tick thread may serve
@@ -38,7 +38,7 @@ use std::time::Duration;
 
 use tauri::{AppHandle, Manager};
 
-use super::create_job_task::CreateJobSeams;
+use super::create_job_task::WriteSeams;
 use super::m3b_tools::{CancelCall, CancelWorld};
 use super::lifecycle::{BlockingPool, ExitDecision, ExitSteps, Executor, LifecycleEnv, McpLifecycle};
 use super::paths::{resolve_for_this_user, McpPaths, PathRefusal};
@@ -108,13 +108,13 @@ pub fn wired_lifecycle(
     db: Arc<dyn DbSource>,
     paths: Result<McpPaths, PathRefusal>,
     host: HostPaths,
-    create_job: CreateJobSeams,
+    write_seams: WriteSeams,
 ) -> Arc<McpLifecycle> {
-    McpLifecycle::new(LifecycleEnv::production_at(db, paths, host, create_job))
+    McpLifecycle::new(LifecycleEnv::production_at(db, paths, host, write_seams))
 }
 
 /// The app's lifecycle, over the managed `DbState`, this user's paths, the real `/proc/meminfo` and
-/// `data_dir` (the one `JobRunner` is built over), and `create_job`'s seams over the app. A path
+/// `data_dir` (the one `JobRunner` is built over), and the write tools' seams over the app. A path
 /// refusal or an unknown base dir does not fail setup: it is kept in the environment and becomes the
 /// status reason once the switch is on.
 pub fn app_lifecycle(app: &AppHandle, data_dir: &Path) -> Arc<McpLifecycle> {
@@ -122,19 +122,20 @@ pub fn app_lifecycle(app: &AppHandle, data_dir: &Path) -> Arc<McpLifecycle> {
         Arc::new(ManagedDb(app.clone())),
         resolve_for_this_user(),
         HostPaths::production(data_dir),
-        app_create_job(app),
+        app_write_seams(app),
     )
 }
 
-// ----- create_job's seams -----
+// ----- the write tools' seams -----
 
 /// Step B's refusal while a piece of the app's state is not managed yet (the tick thread can serve
 /// before setup has managed everything).
 pub const APP_NOT_READY: &str = "the app is still starting; not submitted";
 
-/// `create_job`'s seams over the app: the real step B, the `job:status` emit, the SMILES call.
-pub fn app_create_job(app: &AppHandle) -> CreateJobSeams {
-    CreateJobSeams {
+/// The write tools' seams over the app: the real step B, the `job:status` emit, the SMILES call (`create_job`),
+/// and [`AppCancelWorld`] (`cancel_job`).
+pub fn app_write_seams(app: &AppHandle) -> WriteSeams {
+    WriteSeams {
         smiles: Arc::new(AppSmiles(app.clone())),
         step_b: Arc::new(RealStepB(AppSubmitWorld(app.clone()))),
         emit: Arc::new(AppEmit(app.clone())),

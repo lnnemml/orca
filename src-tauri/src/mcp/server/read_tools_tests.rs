@@ -14,7 +14,7 @@ use super::lifecycle::{Hooks, LifecycleEnv, McpLifecycle};
 use super::listener::{kernel_peer_uid, own_uid};
 use super::read_tools::{error_text, output_request, respond, served_text, ReadOutputArgs};
 use super::service::{bounded_error_text, ConnState, HostPaths, ARGUMENT_ERROR_PREFIX, BUSY, RECOVERY_SENTENCE};
-use super::test_support::{eventually, no_create_job, tool_text, Client, Ran, RecordingDb, Scratch};
+use super::test_support::{eventually, no_write_seams, tool_text, Client, Ran, RecordingDb, Scratch};
 use super::REQUESTS_PER_CONNECTION;
 use crate::commands::settings::DbState;
 use crate::mcp::steps::reconcile_submitting_conn;
@@ -73,7 +73,7 @@ fn served(tag: &str, seed: impl FnOnce(&TestDb)) -> Served {
         peer_uid: kernel_peer_uid(),
         own_uid: own_uid(),
         hooks: Hooks::default(),
-        create_job: no_create_job(),
+        write_seams: no_write_seams(),
     };
     let lc = McpLifecycle::new(env);
     assert!(lc.set_enabled(true).unwrap().serving);

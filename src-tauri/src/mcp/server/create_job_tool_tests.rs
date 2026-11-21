@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
-use super::create_job_task::CreateJobSeams;
+use super::create_job_task::WriteSeams;
 use super::create_job_tool::CREATE_JOB_DESCRIPTION;
 use super::lifecycle::{Hooks, LifecycleEnv, McpLifecycle};
 use super::listener::{kernel_peer_uid, own_uid};
@@ -90,7 +90,7 @@ fn served<S: StepB + 'static>(tag: &str, max_in_flight: u32, step_b: impl FnOnce
         peer_uid: kernel_peer_uid(),
         own_uid: own_uid(),
         hooks: Hooks::default(),
-        create_job: CreateJobSeams { smiles: Arc::new(NoSidecar), step_b, emit: w.emit.clone(), cancel: Arc::new(super::test_support::NoCancel) },
+        write_seams: WriteSeams { smiles: Arc::new(NoSidecar), step_b, emit: w.emit.clone(), cancel: Arc::new(super::test_support::NoCancel) },
     };
     let lc = McpLifecycle::new(env);
     assert!(lc.set_enabled(true).unwrap().serving);

@@ -67,7 +67,7 @@ impl From<CreateJobToolArgs> for CreateJobArgs {
 impl McpService {
     #[tool(description = CREATE_JOB_DESCRIPTION)]
     async fn create_job(&self, Parameters(a): Parameters<CreateJobToolArgs>) -> Result<CallToolResult, ErrorData> {
-        let wiring = &self.create_job_wiring;
+        let wiring = &self.write_wiring;
         Ok(respond("create_job", create_job_call(&self.conn, &wiring.gate, wiring.env.clone(), a.into()).await))
     }
 }

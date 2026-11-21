@@ -41,7 +41,7 @@ use serde::Serialize;
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
-use super::create_job_task::{CreateJobSeams, CreateJobWiring};
+use super::create_job_task::{WriteSeams, WriteWiring};
 use super::gate::{self, AdmissionGate};
 use super::listener::{accept_loop, kernel_peer_uid, own_uid, AcceptContext, PeerUid, Registry};
 use super::lock::{self, Acquire, McpLock};
@@ -94,15 +94,16 @@ pub struct LifecycleEnv {
     pub peer_uid: PeerUid,
     pub own_uid: u32,
     pub hooks: Hooks,
-    /// `create_job`'s SMILES seam, step B and emit (the database and host facts are the fields above).
-    pub create_job: CreateJobSeams,
+    /// The write tools' seams: `create_job`'s SMILES call, step B and emit, and `cancel_job`'s cancel world (the
+    /// database and host facts are the fields above).
+    pub write_seams: WriteSeams,
 }
 
 impl LifecycleEnv {
     /// The app's environment: this user's paths, the real reconciliation, `SO_PEERCRED`, the real
-    /// `/proc/meminfo` and the app's data dir, and `create_job`'s seams.
-    pub fn production(db: Arc<dyn DbSource>, host: HostPaths, create_job: CreateJobSeams) -> Self {
-        Self::production_at(db, resolve_for_this_user(), host, create_job)
+    /// `/proc/meminfo` and the app's data dir, and the write tools' seams.
+    pub fn production(db: Arc<dyn DbSource>, host: HostPaths, write_seams: WriteSeams) -> Self {
+        Self::production_at(db, resolve_for_this_user(), host, write_seams)
     }
 
     /// [`LifecycleEnv::production`] at given paths and host facts: what the app runs, minus the path
@@ -111,7 +112,7 @@ impl LifecycleEnv {
         db: Arc<dyn DbSource>,
         paths: Result<McpPaths, PathRefusal>,
         host: HostPaths,
-        create_job: CreateJobSeams,
+        write_seams: WriteSeams,
     ) -> Self {
         LifecycleEnv {
             paths,
@@ -121,7 +122,7 @@ impl LifecycleEnv {
             peer_uid: kernel_peer_uid(),
             own_uid: own_uid(),
             hooks: Hooks::default(),
-            create_job,
+            write_seams,
         }
     }
 }
@@ -314,8 +315,9 @@ pub struct McpLifecycle {
     /// Set by the exit flow after the lock is released; the pass-through key.
     exit_ready: AtomicBool,
     gate: Arc<AdmissionGate>,
-    /// `create_job`'s gate and environment, handed to every connection's service.
-    create_job: CreateJobWiring,
+    /// The write tools' gate, `create_job` environment and `cancel_job` world,
+    /// handed to every connection's service.
+    write_wiring: WriteWiring,
     /// The connection slots, shared by every start (a draining connection still holds one).
     slots: Arc<Semaphore>,
     connected: Arc<AtomicUsize>,
@@ -325,8 +327,8 @@ pub struct McpLifecycle {
 impl McpLifecycle {
     pub fn new(env: LifecycleEnv) -> Arc<Self> {
         let gate = Arc::new(AdmissionGate::new(env.hooks.gate.clone()));
-        let seams = env.create_job.clone();
-        let create_job = CreateJobWiring {
+        let seams = env.write_seams.clone();
+        let write_wiring = WriteWiring {
             gate: gate.clone(),
             env: Arc::new(CreateJobEnv {
                 db: env.db.clone(),
@@ -343,7 +345,7 @@ impl McpLifecycle {
             exiting: AtomicBool::new(false),
             exit_ready: AtomicBool::new(false),
             gate,
-            create_job,
+            write_wiring,
             slots: Arc::new(Semaphore::new(CONNECTIONS)),
             connected: Arc::new(AtomicUsize::new(0)),
             facts: Mutex::new(Facts { holds_lock: false, serving: false, reason: Some(NOT_CHECKED.into()), stop: None }),
@@ -355,10 +357,10 @@ impl McpLifecycle {
         &self.gate
     }
 
-    /// `create_job`'s gate and environment, as every connection's service gets them. Test-only.
+    /// The write tools' gate, `create_job` environment and `cancel_job` world, as every connection's service gets them. Test-only.
     #[cfg(test)]
-    pub fn create_job_wiring(&self) -> CreateJobWiring {
-        self.create_job.clone()
+    pub fn write_wiring(&self) -> WriteWiring {
+        self.write_wiring.clone()
     }
 
     pub fn is_exiting(&self) -> bool {
@@ -491,7 +493,7 @@ impl McpLifecycle {
             own_uid: self.env.own_uid,
             db: self.env.db.clone(),
             host: self.env.host.clone(),
-            create_job: self.create_job.clone(),
+            write_wiring: self.write_wiring.clone(),
         };
         let accept = tauri::async_runtime::spawn(accept_loop(listener, ctx));
         t.serving = Some(Serving { socket: identity, cancel, registry, accept });

@@ -147,7 +147,7 @@ pub fn wait_answer(end: Result<WaitEnd, ToolError>) -> Result<WaitResult, ToolEr
 impl McpService {
     #[tool(description = CANCEL_JOB_DESCRIPTION)]
     async fn cancel_job(&self, Parameters(a): Parameters<CancelJobToolArgs>) -> Result<CallToolResult, ErrorData> {
-        let world = self.create_job_wiring.cancel.clone();
+        let world = self.write_wiring.cancel.clone();
         let args = CancelJobArgs { job_id: a.job_id };
         Ok(respond("cancel_job", on_blocking_pool(move || cancel_in(&*world, &args)).await))
     }

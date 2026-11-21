@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use rusqlite::Connection;
 use serde_json::{json, Value};
 
-use super::create_job_task::CreateJobSeams;
+use super::create_job_task::WriteSeams;
 use super::m3b_tools::{CancelCall, CancelWorld};
 use crate::mcp::cancel::CancelJobResult;
 use crate::mcp::tools::ToolError;
@@ -125,7 +125,7 @@ pub fn counted_env(paths: &McpPaths, db: Arc<DbState>, hooks: Hooks) -> (Lifecyc
         peer_uid: kernel_peer_uid(),
         own_uid: own_uid(),
         hooks,
-        create_job: no_create_job(),
+        write_seams: no_write_seams(),
     };
     (env, counts)
 }
@@ -157,8 +157,8 @@ impl CancelWorld for NoCancel {
 
 /// The write tools' seams for a test that does not exercise them: no sidecar, a refusing step B, no
 /// emit, no cancel.
-pub fn no_create_job() -> CreateJobSeams {
-    CreateJobSeams { smiles: Arc::new(NoSidecar), step_b: Arc::new(NoStepB), emit: Arc::new(NoEmit), cancel: Arc::new(NoCancel) }
+pub fn no_write_seams() -> WriteSeams {
+    WriteSeams { smiles: Arc::new(NoSidecar), step_b: Arc::new(NoStepB), emit: Arc::new(NoEmit), cancel: Arc::new(NoCancel) }
 }
 
 /// Write the switch row through another connection (another instance, or the test's hand).

@@ -33,9 +33,9 @@ use crate::mcp::tools::ToolError;
 /// What the write tools reach besides the database and the host facts (which the lifecycle already
 /// holds): for `create_job`, the sidecar's SMILES call, step B and the `job:status` emit; for
 /// `cancel_job` (M3b), its [`CancelWorld`] (the app's poller and the backend's cancel). The app's are
-/// built over the `AppHandle` (`super::wiring::app_create_job`); a test passes its own.
+/// built over the `AppHandle` (`super::wiring::app_write_seams`); a test passes its own.
 #[derive(Clone)]
-pub struct CreateJobSeams {
+pub struct WriteSeams {
     pub smiles: Arc<dyn SmilesTo3d + Send + Sync>,
     pub step_b: Arc<dyn StepB>,
     pub emit: Arc<dyn StatusEmit>,
@@ -45,7 +45,7 @@ pub struct CreateJobSeams {
 /// What a connection's service needs for the write tools: the lifecycle's admission gate and the one
 /// `create_job` environment every call runs in, and `cancel_job`'s world.
 #[derive(Clone)]
-pub struct CreateJobWiring {
+pub struct WriteWiring {
     pub gate: Arc<AdmissionGate>,
     pub env: Arc<CreateJobEnv>,
     pub cancel: Arc<dyn CancelWorld>,

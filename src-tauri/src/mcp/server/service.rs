@@ -34,7 +34,7 @@ use rmcp::service::RequestContext;
 use rmcp::{tool, tool_handler, tool_router, ErrorData, RoleServer, ServerHandler};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-use super::create_job_task::CreateJobWiring;
+use super::create_job_task::WriteWiring;
 use super::{DbSource, REQUESTS_PER_CONNECTION};
 use crate::commands::mcp::current_grant_core;
 use crate::mcp::tools::{clip, ECHO_MAX_BYTES, REFUSAL_MAX_BYTES};
@@ -157,18 +157,18 @@ pub struct McpService {
     pub(super) conn: Arc<ConnState>,
     pub(super) db: Arc<dyn DbSource>,
     pub(super) host: Arc<HostPaths>,
-    pub(super) create_job_wiring: CreateJobWiring,
+    pub(super) write_wiring: WriteWiring,
 }
 
 #[tool_router]
 impl McpService {
-    pub fn new(conn: Arc<ConnState>, db: Arc<dyn DbSource>, host: Arc<HostPaths>, create_job_wiring: CreateJobWiring) -> Self {
+    pub fn new(conn: Arc<ConnState>, db: Arc<dyn DbSource>, host: Arc<HostPaths>, write_wiring: WriteWiring) -> Self {
         McpService {
             tool_router: Self::tool_router() + Self::read_tools_router() + Self::create_job_router() + Self::m3b_tools_router(),
             conn,
             db,
             host,
-            create_job_wiring,
+            write_wiring,
         }
     }
 

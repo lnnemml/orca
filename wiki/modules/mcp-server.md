@@ -80,14 +80,14 @@ PROPOSED (P5). Nothing reaches SUBMITTED by default.
 | `server/service.rs` | `McpService` (the `rmcp` `ServerHandler`: `get_grant`, the permit in `call_tool`, one router of `get_grant`, the read tools, `create_job` and the M3b tools), `ConnState { closed, permits }`, `HostPaths { meminfo, data_dir }` (`production(data_dir)`); `OWN_PERMIT_TOOLS`, `takes_own_permit`; `bound_errors`/`bounded_error_text`, `ARGUMENT_ERROR_PREFIX`; `RECOVERY_SENTENCE`, `INSTRUCTIONS`, `BUSY` |
 | `server/read_tools.rs` | the ten read tools registered (`#[tool_router(router = read_tools_router)]`): their descriptions, argument structs (`ListJobsArgs`, `JobIdArgs`, `GeometryArgs`, `MeasureArgs`, `ReadOutputArgs`, `SearchManualArgs`, `MemoryEstimateArgs`, `ListGroupsArgs`, `NoArgs`; all `deny_unknown_fields`), `output_request`; the mapping `respond` → `served_text` (the cap at the boundary) / `error_text`; `on_blocking_pool`, `McpService::with_db` |
 | `server/gate.rs` | `AdmissionGate` (`open`, `close`, `spawn`, `task_count`, `wait_all`), `GateClosed` ("MCP is shutting down") |
-| `server/create_job_task.rs` | `create_job_call(&ConnState, &AdmissionGate, Arc<CreateJobEnv>, CreateJobArgs)`: the handler's side — the permit, the gated spawn of the one task, the await; `CreateJobSeams { smiles, step_b, emit, cancel }` (what the lifecycle environment carries) and `CreateJobWiring { gate, env, cancel }` (what each connection's service gets). Tests in `server/create_job_task_tests.rs` |
+| `server/create_job_task.rs` | `create_job_call(&ConnState, &AdmissionGate, Arc<CreateJobEnv>, CreateJobArgs)`: the handler's side — the permit, the gated spawn of the one task, the await; `WriteSeams { smiles, step_b, emit, cancel }` (the write tools' seams, what the lifecycle environment carries) and `WriteWiring { gate, env, cancel }` (what each connection's service gets). Tests in `server/create_job_task_tests.rs` |
 | `server/create_job_tool.rs` | `create_job` registered (`#[tool_router(router = create_job_router)]`): `CREATE_JOB_DESCRIPTION`, `CreateJobToolArgs` (`deny_unknown_fields`). Tests in `server/create_job_tool_tests.rs` |
 | `server/m3b_tools.rs` | `cancel_job`, `create_group` and `wait_for_jobs` registered (`#[tool_router(router = m3b_tools_router)]`): `CANCEL_JOB_DESCRIPTION`, `CREATE_GROUP_DESCRIPTION`, `WAIT_FOR_JOBS_DESCRIPTION`, the argument structs (`CancelJobToolArgs`, `CreateGroupToolArgs`, `WaitForJobsToolArgs`; `deny_unknown_fields`); the seam `CancelWorld` (`run(CancelCall)`), `Dispatch`, `cancel_in`, `wait_answer`, `CONNECTION_CLOSED`. Tests in `server/m3b_tools_tests.rs` |
-| `server/lifecycle.rs` | `McpLifecycle` (`tick_step`, `set_enabled`, `status`, `on_exit_requested`, `gate`, `is_exiting`), the pure `decide` and `pass_through`; `LifecycleEnv` (`production(db, host, create_job)`, `production_at(db, paths, host, create_job)`; its `host` reaches every connection's service, and with `db` and `create_job` it makes the one `CreateJobEnv`), `Hooks`, `Observed`, `Action`, `Why`, `McpStatus`, `ExitDecision`, `Executor` (`BlockingPool`), `ExitSteps`, `StopHandle`; `with_busy_timeout`, `RECONCILE_BUSY_TIMEOUT` (250 ms) |
-| `server/wiring.rs` | the app's side: `ManagedDb` (the `DbSource` over the managed `DbState`), `wired_lifecycle(db, paths, host, create_job)`, `app_lifecycle(app, data_dir)`, `start_ticks`; `create_job`'s app seams `app_create_job(app)`: `AppSubmitWorld` (`SubmitWorld`), `AppEmit` (`StatusEmit`), `AppSmiles` (`SmilesTo3d`), `APP_NOT_READY`; `cancel_job`'s world `AppCancelWorld` (`CancelWorld`: `poller_is_managed`, then `with_poller` + `commands::jobs::dispatch_cancel`), `CANCEL_NOT_READY`; `exit_requested`, `handle_exit_request`, the pure `prevents_exit`, `guarded_steps`, `backstop`/`run_backstop`/`backstop_steps` → `Backstop` (`Hung`/`Died`/`StillAlive`), `hard_end` (`libc::_exit(1)`), `BackstopTimings`, `EXIT_FLOW_DEADLINE` (60 s), `EXIT_GRACE` (10 s), `BACKSTOP_STEPS_DEADLINE` (20 s); `is_relay_invocation`, `relay_main` |
+| `server/lifecycle.rs` | `McpLifecycle` (`tick_step`, `set_enabled`, `status`, `on_exit_requested`, `gate`, `is_exiting`), the pure `decide` and `pass_through`; `LifecycleEnv` (`production(db, host, write_seams)`, `production_at(db, paths, host, write_seams)`; its `host` reaches every connection's service, and with `db` and `write_seams` it makes the one `CreateJobEnv`), `Hooks`, `Observed`, `Action`, `Why`, `McpStatus`, `ExitDecision`, `Executor` (`BlockingPool`), `ExitSteps`, `StopHandle`; `with_busy_timeout`, `RECONCILE_BUSY_TIMEOUT` (250 ms) |
+| `server/wiring.rs` | the app's side: `ManagedDb` (the `DbSource` over the managed `DbState`), `wired_lifecycle(db, paths, host, write_seams)`, `app_lifecycle(app, data_dir)`, `start_ticks`; the write tools' app seams `app_write_seams(app)`: `AppSubmitWorld` (`SubmitWorld`), `AppEmit` (`StatusEmit`), `AppSmiles` (`SmilesTo3d`), `APP_NOT_READY`; `cancel_job`'s world `AppCancelWorld` (`CancelWorld`: `poller_is_managed`, then `with_poller` + `commands::jobs::dispatch_cancel`), `CANCEL_NOT_READY`; `exit_requested`, `handle_exit_request`, the pure `prevents_exit`, `guarded_steps`, `backstop`/`run_backstop`/`backstop_steps` → `Backstop` (`Hung`/`Died`/`StillAlive`), `hard_end` (`libc::_exit(1)`), `BackstopTimings`, `EXIT_FLOW_DEADLINE` (60 s), `EXIT_GRACE` (10 s), `BACKSTOP_STEPS_DEADLINE` (20 s); `is_relay_invocation`, `relay_main` |
 | `server/tick.rs` | `run_ticks(lifecycle, interval)`, `Interval`, `Every`, `TICK = 30 s` |
 | `server/relay.rs` | `relay(stdin, stdout, stderr, socket_path) -> RelayEnd` (`From<RelayEnd> for ExitCode`), `NOT_RUNNING` |
-| `server/*_tests.rs`, `server/test_support.rs` | one test file per submodule plus `server_tests.rs` (the server end to end over a real socket), `read_tools_tests.rs` (the read tools end to end, over a recording `DbSource`) and `create_job_tool_tests.rs` (`create_job` end to end); `test_support` has the scratch dir and DB, a counting environment, `no_create_job()` (seams for a test that does not exercise `create_job`) and a raw NDJSON MCP client (`call`, `call_and_wait`) |
+| `server/*_tests.rs`, `server/test_support.rs` | one test file per submodule plus `server_tests.rs` (the server end to end over a real socket), `read_tools_tests.rs` (the read tools end to end, over a recording `DbSource`) and `create_job_tool_tests.rs` (`create_job` end to end); `test_support` has the scratch dir and DB, a counting environment, `no_write_seams()` (seams for a test that does not exercise a write tool) and a raw NDJSON MCP client (`call`, `call_and_wait`) |
 | `../../tests/mcp_relay_bin.rs` | the built `orcastudio --mcp` run as a real process (an integration test) |
 
 ## The classifier's input and output
@@ -418,8 +418,8 @@ holder's reconciliation recovers it (a `draft` refunded, any other row only its 
 `/proc/meminfo` and the data dir), `step_b` (`StepB`: submit a charged draft through the app's existing
 path and answer `StepBOutcome::Handed(msg)` or `Refused(msg)`; step C reads the row, not this), and
 `emit` (`StatusEmit`). The lifecycle builds the one `CreateJobEnv` from its own `db` and `host` and the
-environment's `CreateJobSeams`, and hands it, with its gate, to every connection's service
-(`CreateJobWiring`). The app's seams (`wiring::app_create_job`) are `RealStepB` over `AppSubmitWorld`
+environment's `WriteSeams`, and hands it, with its gate, to every connection's service
+(`WriteWiring`). The app's seams (`wiring::app_write_seams`) are `RealStepB` over `AppSubmitWorld`
 (below, "Step B"), `AppEmit` (`local_backend::emit_status`, the app's one `job:status` emitter) and
 `AppSmiles` (`SidecarSmiles::from_status` over `SidecarManager::get_status()` read **at the moment of
 the call**, so a sidecar that started, restarted or went down since setup is seen as it is now). Each
@@ -639,7 +639,7 @@ which `m3b_tools_tests::every_m3b_tools_work_runs_on_the_blocking_pool` checks t
 `test_support::where_am_i` and `RecordingDb`, as the read tools' test does.
 - **`cancel_job`** runs `cancel_in(world, args)` on the blocking pool.
   - **The world.** A `CancelWorld` (`run(call)`: the call gets a `Poller` and the dispatch), carried
-    with the `create_job` seams (`CreateJobSeams.cancel`, `CreateJobWiring.cancel`).
+    with the write tools' seams (`WriteSeams.cancel`, `WriteWiring.cancel`).
   - **The app's world**, `wiring::AppCancelWorld`, first checks `poller::app::poller_is_managed`: the
     MCP tick starts before setup manages the poller's state, and `with_poller` panics on a missing
     one. A source test (`wiring_tests::poller_is_managed_checks_every_state_with_poller_reads`) pins
@@ -967,8 +967,8 @@ socket → stdout, flushing every chunk, until either side ends: stdin EOF close
 **Setup** (`lib.rs`, right after `DbState` is managed): `app_lifecycle(app, &data_dir)` builds the one
 `McpLifecycle` over `LifecycleEnv::production` — this user's paths, the real reconciliation,
 `SO_PEERCRED`, and `HostPaths::production(data_dir)` (the real `/proc/meminfo` and the data dir
-`JobRunner` is built over, for `memory_estimate` and `create_job`) and `create_job`'s app seams
-(`app_create_job`, above) — with `ManagedDb`, a `DbSource` that reaches the managed `DbState` through
+`JobRunner` is built over, for `memory_estimate` and `create_job`) and the write tools' app seams
+(`app_write_seams`, above) — with `ManagedDb`, a `DbSource` that reaches the managed `DbState` through
 the app handle. It is managed as
 `Arc<McpLifecycle>`, and `start_ticks` starts the `mcp-tick` thread, whose first step runs at once, so
 a switch left on serves from app start. A path refusal (`sun_path`) or no base dir never fails setup:

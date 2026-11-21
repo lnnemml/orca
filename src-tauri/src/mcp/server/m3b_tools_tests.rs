@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-use super::create_job_task::CreateJobSeams;
+use super::create_job_task::WriteSeams;
 use super::lifecycle::{Hooks, LifecycleEnv, McpLifecycle};
 use super::listener::{kernel_peer_uid, own_uid};
 use super::m3b_tools::{CancelCall, CancelWorld, CANCEL_JOB_DESCRIPTION, CREATE_GROUP_DESCRIPTION, WAIT_FOR_JOBS_DESCRIPTION};
@@ -132,7 +132,7 @@ fn served(tag: &str, seed: impl FnOnce(&TestDb)) -> Served {
         peer_uid: kernel_peer_uid(),
         own_uid: own_uid(),
         hooks: Hooks::default(),
-        create_job: CreateJobSeams {
+        write_seams: WriteSeams {
             smiles: Arc::new(NoSidecar),
             step_b: Arc::new(NoStepB),
             emit: Arc::new(NoEmit),

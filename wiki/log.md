@@ -14083,3 +14083,14 @@ Settled the Open item of ADR-027 M3a (rule #10): does a `COMMIT` of a `BEGIN IMM
   The group was created at 12:23 UTC. Later `job:status` events (Anton's Run of `c21c1c0c`, and its
   cancel at 14:51) or a remount reload the groups. M4b's `groups:changed` gate tests the event itself.
 - **Next.** M4a Part A, with implementer `opus`.
+
+
+## [2026-11-21] session | ADR-027 — the write-tool seams renamed (WriteSeams / WriteWiring)
+- **What.** A pure rename in `src-tauri/src/mcp/server/` and `commands/mcp_tests.rs`, no behaviour change. M3b's `cancel` world rides on these bundles, so the `create_job` names no longer fit. Anton decided on 2026-11-21 to rename them in a separate commit after M3b.
+  - **Types.** `CreateJobSeams` → `WriteSeams`, `CreateJobWiring` → `WriteWiring` (still defined in `create_job_task.rs`).
+  - **Companions.** `LifecycleEnv.create_job` and the `create_job` parameters of `LifecycleEnv::production`, `production_at` and `wiring::wired_lifecycle` → `write_seams`. `McpLifecycle.create_job`, the listener context field and `McpService.create_job_wiring` (and its `new` parameter) → `write_wiring`. `McpLifecycle::create_job_wiring()` → `write_wiring()`. `wiring::app_create_job` → `app_write_seams`. `test_support::no_create_job` → `no_write_seams`.
+  - **Kept.** Everything that is `create_job`-specific: `CreateJobEnv`, `CreateJobArgs`, `create_job_call`, `create_job_task`, `create_job_router`, `run_create_job`, the two files and the tool name.
+  - **Source pins.** The string literals in `wiring_tests.rs` (`app_write_seams(app)`, `pub fn app_write_seams(`) moved in lockstep; with the old literal both `the_app_seams_of_create_job_are_the_real_ones` and `the_app_cancel_world_is_the_cancel_commands_own` go red, and green again once restored.
+  - **Docs.** The rustdoc and `wiki/modules/mcp-server.md` say "the write tools' seams".
+- **Runs** (on `521f5ae`). `cargo build` 0 warnings; `cargo test -p orcastudio --lib` once: 1485 passed, 1 failed, 30 ignored. The one failure is `db::tests::sqlite_datetime_now_is_utc_under_a_non_utc_tz`, which panicked spawning its own `TZ=Europe/Kyiv` child (`db.rs:842`, the `.output().unwrap()`) under the full run's load; it passes 3/3 alone, and this rename does not touch `db.rs`.
+- **Closes** the rename follow-up named in the M3b entry's **Next**. The SQLite probe there is done (`f61a80c`); next is M4a Part A.
