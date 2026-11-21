@@ -246,7 +246,9 @@ survives a restart.
     **expression** partial unique index `mcp_grants_one_unrevoked ON mcp_grants((revoked_at IS NULL))
     WHERE revoked_at IS NULL` — the column form would enforce nothing (NULLs are distinct in a UNIQUE
     index; re-measured by `the_column_form_index_would_enforce_nothing`);
-  - `mcp_audit` (bounded `args`, the three dispositions or NULL; no FK, so the audit outlives a job).
+  - `mcp_audit` (bounded `args`, the three dispositions or NULL; no FK, so the audit outlives a job):
+    one row per disposition or outcome, not per tool call (ADR-027 M3 amendment, item 3; the encoding
+    is in `modules/mcp-server.md`, "The audit log").
 
   Tests: `fresh_db_migrates_to_v24_with_the_mcp_tables`,
   `migrate_v23_to_v24_keeps_every_row_and_defaults_origin_to_user` (every v23 table compared value by
@@ -343,7 +345,9 @@ jobs → spawn the sidecar + `Arc<SidecarManager>` + a background health-poll th
 **Exit.** `RunEvent::ExitRequested` only hands off: `mcp::server::wiring::exit_requested` asks the MCP
 lifecycle, and `api.prevent_exit()` is called exactly when the decision is not `PassThrough`. The
 exit flow then runs **off the main thread** on Tauri's blocking pool, in this order: **the local queue
-paused for good** (so the slot the killed job frees starts no queued ORCA job) → the MCP stop and its
+stopped for good** (`JobRunner::pause_for_exit` sets a terminal exit flag, separate from the user's
+pause, so neither the slot the killed job frees nor a Resume click during the wait starts a queued ORCA
+job; ADR-027 M3 amendment, item 4) → the MCP stop and its
 wait → `terminate_on_exit` (an ORCA tree's MPI ranks escape its process group) → the sidecar stop →
 the MCP lock release → `exit_ready` → `app.exit(0)`, whose own `ExitRequested` passes through
 (`exit_ready` is set first; a test pins it). It runs the same way when MCP was never switched on
@@ -611,7 +615,8 @@ everything else). It takes the port from `SidecarStatus`, refuses when no port i
 sidecar is `down`, bounds the call (5 s connect, 30 s total), and checks the reply in our terms before
 it becomes a geometry: integers, at least one atom, multiplicity 1, one strict xyz frame, known
 elements, finite coordinates (`modules/mcp-server.md` "The SMILES call"). It blocks, so its caller
-runs it off the main thread; no command calls it yet (M3).
+runs it off the main thread: `create_job`'s pipeline runs on Tauri's blocking pool (M3a), and no
+command calls it until the tool is registered (M3a Part B).
 
 ## xTB pre-optimization (`xtb.rs`)
 

@@ -1,12 +1,12 @@
-# MCP server — the job classifier, input assembly, grant core, transport and read tools (`src-tauri/src/mcp/`)
+# MCP server — the job classifier, input assembly, grant core, transport, read tools and `create_job` (`src-tauri/src/mcp/`)
 
-[ADR-027](../architecture/adr-027-mcp-orchestration-server.md), units M1a, M1b, M2a and M2b. This module is the
+[ADR-027](../architecture/adr-027-mcp-orchestration-server.md), units M1a, M1b, M2a, M2b and M3a Part A. This module is the
 guard that decides whether an AI model may spend compute. A `create_job` call ends in exactly one
 of three dispositions: **REFUSED** (nothing is created), **PROPOSED** (a draft Anton runs by hand)
 or **SUBMITTED** (charged to the active grant). The module also assembles the job's input, so the
 model never writes a coordinate, a charge or a multiplicity (ADR-014 (1)).
 
-The module has five layers. The **pure core** (M1a) is the classifier, the header grammar, the method
+The module has six layers. The **pure core** (M1a) is the classifier, the header grammar, the method
 signature, the allowlist, the charge/multiplicity locator and the input assembly. The **DB-level
 cores** (M1b) are schema v24, the grant core, steps A and C, the crash reconciliation, the
 `submit_job` guard, the source resolver and the memory preflight; each is a `*_conn` function or
@@ -19,9 +19,12 @@ call over HTTP. The **transport** (M2a, `server/`) is the lock, the socket, the 
 `server/read_tools.rs` registers it in the server with typed arguments, its lock and the mapping to
 what the client receives. `server/wiring.rs` connects the transport to the app: `lib.rs` setup and
 `ExitRequested`, the `main.rs` relay branch, and the switch's commands `mcp_status`/`mcp_set_enabled`,
-which Settings → MCP calls. The module stays registered in `lib.rs` under a scoped
-`#[allow(dead_code)]`, because steps A/C, the resolver and `SidecarSmiles` have no non-test caller
-until M3.
+which Settings → MCP calls. The **`create_job` core** (M3a Part A) is the whole call as one pipeline
+(`create_job.rs`) run as one task admitted through the gate (`server/create_job_task.rs`), with step A
+classifying inside its transaction (`steps::decide_conn`) and the audit log (`audit.rs`); it is built
+and tested, and Part B registers it as a tool. The module stays registered in `lib.rs` under a scoped
+`#[allow(dead_code)]`, because the `create_job` core, the resolver and `SidecarSmiles` have no non-test
+caller until M3a Part B.
 
 **It fails closed.** A line outside the grammar is REFUSED (R1); a block, key or value outside the
 allowlist is PROPOSED (P2); a source whose terminal state is unknown is REFUSED (R4); a memory
@@ -40,7 +43,10 @@ PROPOSED (P5). Nothing reaches SUBMITTED by default.
 | `classify.rs` | `classify_mcp_job(&ClassifyInput) -> Disposition`; the input types and the typed reasons (below); `MAX_OPEN_PROPOSALS = 50`, `OPT_FAMILY`, `FREQ_TYPE`, `NEB_FAMILY` |
 | `assemble.rs` | `assemble(header, maxcore_mib, atoms, charge_mult, source_label) -> Result<Assembled, AssemblyError>`; `comment_safe_label`; `AppSet`; `SERVER_DEFAULT_MAXCORE_MIB = 2000`; `COORD_TOLERANCE_ANG = 1e-6`; `read_coordinate_block`, the strict `* xyz` block reader shared with the resolver |
 | `grant.rs` | `create_grant_conn`, `revoke_grant_conn`, `get_grant_conn`, `active_grant_conn`, `grant_snapshot_conn -> Option<CurrentGrant { id, snapshot }>`, `in_flight_conn`; `Grant` (with `status_at(now)`), `NewGrant`; `target_text`/`target_of` (`"local"` or a profile id); `begin_immediate`, `now_utc_conn`, `check_utc_text` |
-| `steps.rs` | `charge_and_insert_conn -> StepA` (step A), `insert_proposed_conn`, `finish_submit_conn -> StepC` (step C), `reconcile_submitting_conn -> Reconciled`, `submit_refusal_for_mcp_state`, `refuse_while_mcp_submitting`; `McpReason { row, message }`; `SUBMITTING` |
+| `steps.rs` | `create_job`'s step A `decide_conn(conn, StepAInput) -> Decided` (`Refused`/`Proposed`/`Charged`), `open_proposals_conn` (R8's count), its step C `finish_submit_audited_conn -> StepC` and `step_c_audit`; M1b's P5-only step A `charge_and_insert_conn -> StepA` and unaudited `finish_submit_conn`, which share the charge and finish bodies (`charge_in_tx`, `finish_in_tx`); `insert_proposed_conn`, `reconcile_submitting_conn -> Reconciled` (with its outcome rows; `RECONCILIATION_ARGS`), `submit_refusal_for_mcp_state`, `refuse_while_mcp_submitting`; `McpReason { row, message }` and its constructors; `SUBMITTING` |
+| `audit.rs` | the audit log: `append_audit_conn(conn, &AuditEntry)`, `audit_rows_conn -> Vec<AuditRow>`, `bounded_reasons`, `AuditDisposition`; `CREATE_JOB`, `AUDIT_REASONS_MAX` (20), `REASON_MESSAGE_MAX_BYTES` (400) |
+| `create_job.rs` | the `create_job` pipeline: `run_create_job(&CreateJobEnv, CreateJobArgs) -> CreateJobResult`, its halves `decide -> Decision` (`Done`/`Charged`) and `submit_charged`; `audit_args`; the seams `CreateJobEnv { db, smiles, host, step_b, emit }`, `StepB` (→ `StepBOutcome`), `StatusEmit`; the result types `Outcome`, `SetByApp`, `SubmitReport`; the bounds `HEADER_MAX_BYTES`, `SOURCE_MAX_BYTES`, `TARGET_MAX_BYTES`, `GROUP_ID_MAX_BYTES`, `TITLE_MAX_BYTES`, `AUDIT_HEADER_MAX_BYTES`, `STEP_B_MESSAGE_MAX_BYTES` |
+| `create_job_tests.rs`, `step_a_tests.rs`, `create_job_test_support.rs` | the pipeline's tests, step A's and the audit's, and their shared world (a profile with known memory facts, a grant on it, a converged source job, `FakeStepB`, `RecordingEmit`) |
 | `resolve.rs` | `SourceRef::parse`, `resolve_source(&DbState, reference, &dyn SmilesTo3d)`, `resolve_db_conn`, `header_of_input`; the `SmilesTo3d` seam and `SmilesStructure` |
 | `sidecar_smiles.rs` | `SidecarSmiles: SmilesTo3d` (`from_status(&SidecarStatus)`), `check_reply`; `SMILES_CONNECT_TIMEOUT` (5 s), `SMILES_TIMEOUT` (30 s) |
 | `preflight.rs` | `mcp_maxcore -> McpMaxcore { mib, source }`, `memory_verdict_for -> MemoryVerdict`, the pure `verdict_of` |
@@ -66,6 +72,7 @@ PROPOSED (P5). Nothing reaches SUBMITTED by default.
 | `server/service.rs` | `McpService` (the `rmcp` `ServerHandler`: `get_grant`, the permit in `call_tool`, one router of `get_grant` and the read tools), `ConnState { closed, permits }`, `HostPaths { meminfo, data_dir }` (`production(data_dir)`); `bound_errors`/`bounded_error_text`, `ARGUMENT_ERROR_PREFIX`; `RECOVERY_SENTENCE`, `INSTRUCTIONS`, `BUSY` |
 | `server/read_tools.rs` | the ten read tools registered (`#[tool_router(router = read_tools_router)]`): their descriptions, argument structs (`ListJobsArgs`, `JobIdArgs`, `GeometryArgs`, `MeasureArgs`, `ReadOutputArgs`, `SearchManualArgs`, `MemoryEstimateArgs`, `ListGroupsArgs`, `NoArgs`; all `deny_unknown_fields`), `output_request`; the mapping `respond` → `served_text` (the cap at the boundary) / `error_text`; `on_blocking_pool`, `McpService::with_db` |
 | `server/gate.rs` | `AdmissionGate` (`open`, `close`, `spawn`, `task_count`, `wait_all`), `GateClosed` ("MCP is shutting down") |
+| `server/create_job_task.rs` | `create_job_call(&ConnState, &AdmissionGate, Arc<CreateJobEnv>, CreateJobArgs)`: the handler's side — the permit, the gated spawn of the one task, the await. Tests in `server/create_job_task_tests.rs` |
 | `server/lifecycle.rs` | `McpLifecycle` (`tick_step`, `set_enabled`, `status`, `on_exit_requested`, `gate`), the pure `decide` and `pass_through`; `LifecycleEnv` (`production(db, host)`, `production_at(db, paths, host)`; its `host` reaches every connection's service), `Hooks`, `Observed`, `Action`, `Why`, `McpStatus`, `ExitDecision`, `Executor` (`BlockingPool`), `ExitSteps`, `StopHandle`; `with_busy_timeout`, `RECONCILE_BUSY_TIMEOUT` (250 ms) |
 | `server/wiring.rs` | the app's side: `ManagedDb` (the `DbSource` over the managed `DbState`), `wired_lifecycle(db, paths, host)`, `app_lifecycle(app, data_dir)`, `start_ticks`; `exit_requested`, `handle_exit_request`, the pure `prevents_exit`, `guarded_steps`, `backstop`/`run_backstop`/`backstop_steps` → `Backstop` (`Hung`/`Died`/`StillAlive`), `hard_end` (`libc::_exit(1)`), `BackstopTimings`, `EXIT_FLOW_DEADLINE` (60 s), `EXIT_GRACE` (10 s), `BACKSTOP_STEPS_DEADLINE` (20 s); `is_relay_invocation`, `relay_main` |
 | `server/tick.rs` | `run_ticks(lifecycle, interval)`, `Interval`, `Every`, `TICK = 30 s` |
@@ -101,11 +108,11 @@ every matching one is listed; only if none matches are the PROPOSED rows checked
 | R1 | `header.rs` `Violation::OutsideGrammar` → `RefusedReason::OutsideGrammar` | a line that is not `!`, a `%…end` block, a `#` comment or blank; text after a block's `end`; a block that never closes; a `%` block, `!` line or `$` line inside a block; an unterminated quote or brace, a `#` inside one, a control character or non-ASCII whitespace; **any line with two or more `#`**; **any non-ASCII character on a `!` line**. The first line is quoted and the rest counted |
 | R2 | `Violation::Coordinates`, and a `%coords` block anywhere | any `*` line, inside a block or not |
 | R3 | `classify.rs` `header_rows` | a `%pal` or `%maxcore` opener anywhere, or a `!` token matching `^PAL\d*$` in any case |
-| R4 | `source_rows` | unresolved; `terminal_success == Some(false)`; a job-derived source with `terminal_success == None`; `converged == Some(false)`; no atoms; charge/multiplicity unreadable |
+| R4 | `source_rows` | unresolved; `terminal_success == Some(false)`; a job-derived source with `terminal_success == None`; `converged == Some(false)`; no atoms; charge/multiplicity unreadable — that reason is `ChargeMultError::kind_and_line`, a kind and a line, never the source's `* xyz` text (it reaches the model and the audit log) |
 | R5 | `source_rows` | an element unknown after case normalisation; or, with electrons = Σ Z − charge, multiplicity < 1, electrons < 0, odd (electrons + multiplicity − 1), or multiplicity − 1 > electrons. The arithmetic is checked: a charge or multiplicity that overflows the count is R5 (`ChargeMultOutOfRange`), never a wrapped number |
 | R6 | `source_rows` + `allowlist::constraint_entries` | an index token of **any** constraint entry (B/A/D/C) that `parse_index` cannot read as a `u32`, or that lies outside `[0, atom count)`. No index token is ever dropped: `{C 99999999999999999999 C}` is R6 |
 | R7 | `has_scan` | a `%geom Scan` without an `OPT_FAMILY` token |
-| R8 | `classify_mcp_job` | `open_proposals >= 50` |
+| R8 | `classify_mcp_job` | `open_proposals >= 50`; the count is `steps::open_proposals_conn` (`origin = 'mcp'`, `draft`, `grant_id IS NULL`), read inside step A's transaction |
 | R9 | `header_rows` | a `!` token in `NEB_FAMILY` (`NEB`, `NEB-TS`, `NEB-CI`), any case |
 | P1 | `classify_mcp_job` | a `Molecule` or `Smiles` source; the reason carries the charge, the multiplicity and where they came from (a SMILES always gives multiplicity 1) |
 | P2 | `allowlist.rs` | see the allowlist below |
@@ -239,7 +246,8 @@ dropped row, a changed element, a NaN row, an extra column, Bohr-scaled coordina
   `mcp_grants_one_unrevoked ON mcp_grants((revoked_at IS NULL)) WHERE revoked_at IS NULL` keeps at most
   one grant unrevoked.
 - `mcp_audit`: `id`, `at`, `tool`, `args` (≤ 8192 characters, a CHECK), `disposition` (`refused`,
-  `proposed`, `submitted` or NULL), `reasons`, `job_id`, `grant_id`. M3 writes it.
+  `proposed`, `submitted` or NULL), `reasons`, `job_id`, `grant_id`. `audit.rs` writes it (below, "The
+  audit log").
 
 Times are `datetime('now')` text, UTC on the laptop's clock. `expires_at` is compared as text, so every
 writer checks the exact `YYYY-MM-DD HH:MM:SS` form first (`check_utc_text`).
@@ -267,19 +275,35 @@ no MCP tool can create one.
 
 ## Steps A and C (`steps.rs`)
 
-Only `charge_and_insert_conn` and `insert_proposed_conn` write `origin = 'mcp'`. Both insert through
-the app's own `commands::jobs::create_job_conn`, so an MCP job mints its index map like any job, and
-stamp the MCP columns in the same transaction.
+Only `decide_conn`, `charge_and_insert_conn` and `insert_proposed_conn` write `origin = 'mcp'`. Each
+inserts through the app's own `commands::jobs::create_job_conn`, so an MCP job mints its index map
+like any job, and stamps the MCP columns in the same transaction.
 
-- **Step A, `charge_and_insert_conn(conn, McpJobDraft { title, input_content, target, signature })`.**
+- **`create_job`'s step A, `decide_conn(conn, StepAInput)`.** One `BEGIN IMMEDIATE` transaction. After
+  the write lock is granted it reads the time (`datetime('now')`), the grant snapshot with its counters
+  (`grant_snapshot_conn`) and R8's open-proposal count (`open_proposals_conn`), runs the whole
+  classifier (`classify_mcp_job`) on them and on the inputs computed before it (the parsed header, the
+  resolved source, the target, the memory verdict), and folds in the assembly: a classifier REFUSED
+  stands; otherwise an input that failed its post-condition, or was never assembled, is REFUSED
+  internal (decision 4). Then it writes the disposition **and its audit row** in the same transaction:
+  REFUSED → the row only; PROPOSED → an uncharged MCP `draft` with its reasons, and the row; SUBMITTED
+  → a `draft` charged to the grant through `charge_in_tx` (below), and the row with the job and the
+  grant. An unknown `group_id` is an error before any write (an argument error: no row). So two step
+  As are ordered by the write lock in one process and across instances: with `max_in_flight = 1` the
+  second is PROPOSED; at 49 proposals the second PROPOSED call reads 50 and is REFUSED (R8); a revoke
+  that commits first is seen. A step-C refund may take the count above 50; that only makes the next
+  call R8.
+- **M1b's P5-only step A, `charge_and_insert_conn(conn, McpJobDraft { title, input_content, target, signature })`.**
   In one `BEGIN IMMEDIATE` transaction it reads the time (`datetime('now')`, after the write lock is
   granted, never from the caller, so a grant that expired while step A waited on the lock is
   PROPOSED), re-reads the grant snapshot and re-runs the P5 rows
-  (`classify::grant_problems`, the classifier's own code). If the grant still covers the job, the job is
-  inserted as a `draft` with `origin = 'mcp'`, `grant_id` and `mcp_state = 'submitting'`, and
-  `charged_jobs` is incremented (`StepA::Charged`). Otherwise it is inserted as PROPOSED with the
-  reasons and no grant (`StepA::Proposed`). Its post-condition: exactly one grant row was charged and
-  `in_flight` is still within `max_in_flight`; a breach rolls the whole step back.
+  (`classify::grant_problems`, the classifier's own code). If the grant still covers the job, it is
+  charged (`StepA::Charged`); otherwise it is inserted as PROPOSED with the reasons and no grant
+  (`StepA::Proposed`). It writes no audit row; `create_job` uses `decide_conn`.
+- **The charge, `charge_in_tx`**, shared by both step As: the job becomes a `draft` with
+  `origin = 'mcp'`, `grant_id` and `mcp_state = 'submitting'`, and `charged_jobs` is incremented. Its
+  post-condition: exactly one grant row was charged and `in_flight` is still within `max_in_flight`; a
+  breach rolls the whole step back.
 - **`insert_proposed_conn(conn, title, input, reasons)`** inserts a PROPOSED draft. It refuses an empty
   reason list.
 - **Step C, `finish_submit_conn(conn, job_id, grant_id, outcome_message)`.** In one transaction it
@@ -288,14 +312,124 @@ stamp the MCP columns in the same transaction.
   appended (`StepC::Refunded`). Any other row keeps its charge (`StepC::Kept { status }`); a missing row
   is `StepC::Gone`. Step C is idempotent: a refund clears the row's `grant_id`, so a second call on the
   same job finds it no longer charged to the grant and refunds nothing.
+- **`create_job`'s step C, `finish_submit_audited_conn(conn, job_id, grant_id, step_b_message, audit_args)`**,
+  is the same body (`finish_in_tx`) and step C's outcome row (`step_c_audit`) in **one** transaction,
+  so a refund never commits without its row.
 
 ## The reconciliation
 
 `reconcile_submitting_conn(conn)` turns every `draft` with `mcp_state` set into PROPOSED: refunded,
-with the reason `interrupted before submit`. Every other row with the flag only has it cleared. It
-returns the counts (`Reconciled { refunded, cleared }`). Its one caller is the transport's lifecycle
+with the reason `interrupted before submit`. Every other row with the flag only has it cleared. Each
+row it touches gets the outcome row step C would have written, in the same transaction (`args`
+`RECONCILIATION_ARGS`; the encoding below). It returns the counts (`Reconciled { refunded, cleared }`). Its one caller is the transport's lifecycle
 (`server/lifecycle.rs`, injected as `LifecycleEnv::reconcile`): only the instance holding the
 `mcp.lock` `flock` runs it, once per acquisition, before the first bind (below).
+
+## `create_job` (`create_job.rs`, `server/create_job_task.rs`; M3a)
+
+The whole call is **one task** (ADR-027 M0 amendment, item 6; M3 amendment, item 1). Part A builds it
+with every seam injected; Part B registers it in the `rmcp` service.
+
+**The handler** (`create_job_call(conn, gate, env, args)`) does three things and nothing else:
+1. takes one of the connection's request permits (`try_permit`; none free → `BUSY` at once);
+2. spawns the task through the gate (`AdmissionGate::spawn`: the check and the spawn under one mutex;
+   a closed gate → "MCP is shutting down", nothing read or written, the permit back at once);
+3. awaits the task's result.
+
+The task runs the pipeline on Tauri's blocking pool, and the **permit lives inside that blocking
+closure**, so it returns when step C has ended — not when the handler returns. Dropping the handler
+(a service cancel on switch-off or exit) detaches the task, it does not abort it; the pipeline never
+reads `closed`. So a hang-up, a service cancel, a switch-off and exit each leave the task running to
+step C, and switch-off and exit wait for it (the gate's `wait_all`) before the unlink and the lock
+release. A crash between step A's and step C's commits leaves `mcp_state = 'submitting'`; the next lock
+holder's reconciliation finishes it. Part B must keep `call_tool`'s generic permit off `create_job`
+(the handler takes its own, to move it into the task).
+
+**The pipeline** (`run_create_job`, in two halves so the order is visible):
+1. **`decide`**:
+   - the argument bounds (below) — over a bound is a tool error, before anything is read;
+   - the source, through `resolve_source` (the database locked only for a DB-backed reference; a
+     SMILES through `env.smiles`, the `SidecarSmiles` seam, with no lock); a reference that does not
+     resolve goes on as R4;
+   - for a source that resolved with atoms, charge and multiplicity: the app's `%maxcore`
+     (`mcp_maxcore`) and the assembly (`assemble`, with its post-condition);
+   - the **memory verdict** (`memory_verdict_for`) on the assembled input (`Unknown` when nothing was
+     assembled; the classifier refuses that source anyway);
+   - **step A** (`decide_conn`, above) under one `DbState` lock;
+   - the `job:status` emit (`env.emit`) for a job step A created (`draft`).
+2. **`submit_charged`**, for a SUBMITTED job only:
+   - **step B** (`env.step_b.submit(job_id, target)`) with **no lock held**; a panic in it is caught and
+     is a refusal (`"step B panicked"`), so step C always runs;
+   - **step C** (`finish_submit_audited_conn`) under one `DbState` lock;
+   - the `job:status` emit with the status step C read (`draft` after a refund).
+
+Nothing in the pipeline locks `DbState` across a step: `mcp_maxcore` and `memory_verdict_for` lock it
+themselves, and steps A and C each hold it for their one transaction.
+
+**The seams** (`CreateJobEnv`): `db` (`DbSource`), `smiles` (`SmilesTo3d`), `host` (`HostPaths`:
+`/proc/meminfo` and the data dir), `step_b` (`StepB`: submit a charged draft through the app's existing
+path and answer `StepBOutcome::Handed(msg)` or `Refused(msg)`; step C reads the row, not this), and
+`emit` (`StatusEmit`). Part B's real ones: `StepB` over `local_backend::submit` / `submit_to_server`,
+`StatusEmit` over `local_backend::emit_status`, `smiles` over `SidecarSmiles::from_status`.
+
+**The result** (`CreateJobResult`): `disposition` (`refused`, `proposed` or `submitted`: the **final**
+one, so a SUBMITTED call step C refunded is `proposed`), `job_id`, `reasons` (at most 20, each cut to
+400 bytes, a last `"more"` reason counting the rest) and `reasons_count`, `set_by_app` (`maxcore_mib`,
+`maxcore_source`, `charge`, `multiplicity`, `charge_mult_from`, `atom_count`: decision 4's "set by the
+app"; absent on a REFUSED call), and `submit` (`step_b`'s message cut to 600 bytes, `refunded`,
+`job_status`, `step_c_error`). A step C that fails (for example `SQLITE_BUSY` from another instance
+after the 5 s busy timeout) is reported in `step_c_error`, and the job stays `submitting` until the
+next lock holder's reconciliation. The result is bounded by construction and checked against the
+40,000-byte cap as its post-condition; a breach is refused with the disposition and the job id.
+
+**Argument bounds** (M3 amendment, item 1; refused before anything is read or written, with no audit
+row; sizes only, never the text):
+
+| argument | bound |
+|---|---|
+| `header` | 1–20,000 bytes |
+| `source` | 1–1,024 bytes (`smiles:` plus the resolver's 1000-character ASCII SMILES) |
+| `target` | 1–64 bytes (`local` or a profile id; ids are 36-byte UUIDs) |
+| `group_id` | optional, 1–64 bytes; it must exist (checked in step A, an error with no row) |
+| `title` | optional, 1–200 bytes; absent → `Claude: <the source, cut to 100 bytes>` |
+
+A server target that is not a profile is a tool error from the memory preflight ("does not exist"),
+before classification. The proposed draft keeps no target of its own: Anton chooses one at Run, and
+the audit row's `args` records what was asked.
+
+## The audit log (`audit.rs`)
+
+`mcp_audit` records **dispositions, not tool errors** (M3 amendment, item 3):
+- each classifier disposition, a REFUSED internal error included — written **inside step A's
+  transaction**, so a charge without its row cannot commit;
+- step C's outcome — inside step C's transaction;
+- the reconciliation's outcome for each row it touches — inside its transaction.
+
+A call that ends before classification has no row: a busy refusal, "MCP is shutting down", an argument
+error, an unknown group, `SQLITE_BUSY` at step A, a failure of the memory preflight.
+
+Every row has `tool` `create_job`, `args` (the call's argument text: a JSON object of the five
+arguments, each cut to its bound in serialised bytes and the header to 6,000 with `header_bytes` and
+`header_cut`, so it stays below the 8192-character CHECK; a text over the CHECK is cut and marked,
+never refused), `reasons` (a JSON array of `McpReason`, bounded like the result's), `job_id` and
+`grant_id`. **How each row is encoded:**
+
+| row | `disposition` | `reasons` | `job_id` / `grant_id` |
+|---|---|---|---|
+| REFUSED | `refused` | the R rows (`"R1"` … `"R9"`, `"internal"`) | — / — |
+| PROPOSED | `proposed` | the P rows (`"P1"` … `"P5"`) | the draft / — |
+| SUBMITTED | `submitted` | `[]` | the job / the grant |
+| step C refunded | `proposed` | `[{"row":"submit","message":"submit refused: <step B's message>"}]`, the reason appended to the job | the job / the grant |
+| step C kept the charge | NULL | `[{"row":"state","message":"<status>"},{"row":"step_b","message":"<step B's message>"}]` | the job / the grant |
+| step C found the row gone | NULL | `[{"row":"state","message":"gone"},{"row":"step_b",…}]` | the job / the grant |
+| reconciliation refund | `proposed` | `[{"row":"interrupted","message":"interrupted before submit"}]` | the job / the grant |
+| reconciliation clear | NULL | `[{"row":"state","message":"<status>"},{"row":"interrupted","message":"…the charge is kept"}]` | the job / its grant |
+
+`<status>` is `JobStatus::as_str` (`queued`, `running`, …). The finer state of a remote submit — waiting
+for the server's slot ("pending"), "not on the server", `Unknown`, `FailedAfterClaim`, the
+`KillUserProcesses` refusal — is in step B's message, the backend's own outcome text. The
+reconciliation's rows carry `args` `{"outcome_of":"reconciliation"}`. `audit_rows_conn` reads the log
+back (the tests; M4's view).
 
 ## The grant commands (`commands/mcp.rs`)
 
@@ -498,8 +632,9 @@ permit (`ConnState::drain`), and only then returns its slot.
 **The service** (`service.rs`). The `rmcp` `ServerHandler` of one connection.
 - **The request cap.** Every `tools/call` takes one of the connection's `REQUESTS_PER_CONNECTION` (4)
   permits with `try_acquire`. With none free it gets the tool error `BUSY` ("busy, retry: …") at once
-  and never queues. The permit returns when the call's work ends. M3's `create_job` will move its
-  permit into its tracked task.
+  and never queues. The permit returns when the call's work ends. `create_job` takes its own permit
+  in its handler and moves it into its task (above, "`create_job`"); once registered (M3a Part B),
+  `call_tool` must not take a second one for it.
 - **Unknown methods.** `rmcp` answers them itself and keeps the connection: `server/discover` before
   `initialize` without the 2026-07-28 `_meta` gets −32602, with it a `DiscoverResult`; an unknown
   method after `initialize` gets −32601 ("M2a facts" 3).
@@ -523,7 +658,7 @@ refusal is the gate's: one mutex holds `open` across both the check and the trac
 takes the same mutex. Once `close` has returned, `spawn` refuses with `GateClosed` ("MCP is shutting
 down"). Opening after a close starts a fresh tracker generation, and every closed generation is kept
 until its tasks end; `wait_all` waits on all of them. A test hook sits between the check and the
-spawn. No task is spawned through it until M3.
+spawn. Its one spawner is `create_job_call` (M3a; registered as a tool in Part B).
 
 **The lifecycle** (`lifecycle.rs`). One owner, `McpLifecycle`, and **one lifecycle mutex** around
 every transition: a tick step, `set_enabled` (its row write included), and the exit flow's
@@ -576,7 +711,8 @@ thread (through `wiring::exit_requested`), and it takes no mutex:
    `PassThrough`.
 
 The flow, off the caller's thread (`BlockingPool`: Tauri's blocking pool):
-0. run `pause_queue` (the local queue starts nothing from here on);
+0. run `pause_queue`, which sets the local queue's terminal exit flag (`JobRunner::pause_for_exit`):
+   nothing is claimed from here on, and a Resume click cannot clear it;
 1. take the lifecycle mutex, switch off (or adopt a stop that began before exit), release it;
 2. wait for **stop complete** (every generation ended, the unlink done);
 3. run `terminate`, then `sidecar_stop`;
@@ -623,8 +759,12 @@ runs: its stop has nothing to wait for, so the kill, the sidecar stop and `exit`
 **The queue pause** (`JobRunner::pause_for_exit`, decided by Anton) comes first because the job
 `terminate_on_exit` kills frees its slot, and its drive thread's `try_start_next` would otherwise start
 the next queued ORCA job during the kill's 2 s grace; that mpirun would outlive the app, since the
-SIGKILL sweep matches only the old job dir. The claim (`JobRunner::claim_next`) checks the flag under
-the `running` lock. `terminate_on_exit` is safe off the
+SIGKILL sweep matches only the old job dir. It sets a **separate, terminal exit flag**
+(`JobRunner.exiting`, ADR-027 M3 amendment, item 4), not the user's `paused`: the claim
+(`JobRunner::claim_next`) refuses while either is set, under the `running` lock, and Resume
+(`set_paused(false)` → `set_user_paused`) clears only `paused`. So a Resume click during the exit wait
+(the window can stay open up to the backstop's 60 s) starts nothing, and a local step B that runs after
+the exit flow began queues its job but claims no slot. `terminate_on_exit` is safe off the
 main thread: it touches managed state, the `JobRunner`'s `running` mutex, signals, `/proc` and sleeps,
 and no window, GTK or event.
 
@@ -641,8 +781,10 @@ step and ends the process in every case where it is still running:
 
 The end is `hard_end`: one stderr line, then `libc::_exit(1)`, which skips atexit handlers that could
 deadlock against the GTK/WebKit loop. It is injected, so the tests record it instead. A hard end is a
-crash in the reconciliation's terms: a job left in step B is refunded by the next holder's
-`reconcile_submitting_conn`. M3 revisits the 60 s.
+crash in the reconciliation's terms: the next holder's `reconcile_submitting_conn` refunds a job still a
+`draft` at `submitting`, and only clears the flag of one that left `draft`. M3 revisits the 60 s: M3a
+Part A computed a remote step B's worst case against it and brought the fork to Anton (log,
+2026-11-21, M3a Part A); nothing is changed until he decides.
 
 **`orcastudio --mcp`.** `main.rs` asks `is_mcp_relay(args_os().nth(1))` before `run()` — so the relay
 opens no window, initialises no GTK, and prints nothing — and exits with `relay_main()`'s code: the
@@ -974,17 +1116,22 @@ Two choices go beyond the clarifications, and each can only move a job toward An
 
 ## Not yet wired
 
-- **M3 (from the M2b verifier, INFO):** the classifier's source charge reason quotes the source job's
-  `* xyz` line through `ChargeMultError::Display` (`classify.rs`, the R4 source reason). `create_job`
-  returns reasons to the model, so M3 maps it to `ChargeMultError::kind_and_line`, as `get_job` does.
-- **M3:** `create_job` as one tracked task (the preflight, step A, step B, step C around
-  `classify_mcp_job` and `assemble`), `SidecarSmiles` handed to the resolver, the audit log, and R8's
-  live count.
-- **M4:** the Settings → MCP UI over the grant commands, and "Claude is submitting" in place of Run.
+- **M3a Part B:** the real `StepB` over `local_backend::submit` (Local) and `submit_to_server` (a
+  profile, under its in-flight guard); the real `StatusEmit` over `local_backend::emit_status`; the
+  `smiles` seam over `SidecarSmiles::from_status`; the `create_job` tool registered in the `rmcp`
+  service (its description with the recovery sentence, `call_tool` taking no second permit for it); and
+  the live check of the SUBMITTED path with Anton's console grant (ADR-027 M3 amendment, item 2).
+- **The 60 s backstop** against a remote step B: computed in M3a Part A, a fork for Anton (log,
+  2026-11-21); no timing is changed until he decides.
+- **M3b:** `cancel_job`, `create_group`, `wait_for_jobs`, and their audit rows.
+- **M4:** the Settings → MCP UI over the grant commands and the audit log, and "Claude is submitting"
+  in place of Run.
 
 ## Tests
 
-`cargo test -p orcastudio --lib mcp::` runs the module's tests (the transport's are
+`cargo test -p orcastudio --lib mcp::` runs the module's tests (`create_job`'s pipeline
+`mcp::create_job_tests`, its step A, step C and audit `mcp::step_a_tests`, its task
+`mcp::server::create_job_task_tests`; the exit flag's are `local_backend::tests`; the transport's are
 `mcp::server::`, the wiring's `mcp::server::wiring_tests`, the read tools' cores `mcp::tools::` and
 their registration end to end `mcp::server::read_tools_tests`, where `every_tool_answers_through_respond`
 pins that each of the ten tools is served as compact JSON, the shape only `respond` writes), `cargo test -p orcastudio --lib commands::mcp`
@@ -995,5 +1142,6 @@ binary's relay, `npx vitest run src/screens/SettingsScreen.mcp.test.tsx` the swi
 controls are recorded in `log.md`: one per row plus the ADR's M1a list in the M1a entry, and the M1b
 list in the M1b Part A entry, the Part B list in the M1b Part B entry, and the M2a Part A and Part B
 lists in their entries (all 2026-11-19), the M2b Part A list in its entry (2026-11-20), and the M2b
-Part B list and the follow-up's in their entries (2026-11-21). The ASE
+Part B list and the follow-up's in their entries (2026-11-21), and the M3a Part A list in its entry
+(2026-11-21; the script that re-runs it is named there). The ASE
 pin is `pytest sidecar/tests/test_geometry.py` (in the sidecar venv).

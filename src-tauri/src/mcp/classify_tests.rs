@@ -219,6 +219,22 @@ fn r4_the_source_cannot_be_chained_from() {
     }
 }
 
+/// Control (ADR-027 M3 amendment, item 1, M3a; the M2b verifier's F8): an R4 reason quoting the
+/// source's `* xyz` line. A malformed line whose text carries a coordinate row reaches the reason as
+/// a kind and a line only, because `create_job` returns its reasons to the model and writes them to
+/// the audit log. NEGATIVE CONTROL: format the error with its `Display` (which quotes the line) → red.
+#[test]
+fn r4_never_quotes_the_source_charge_line() {
+    let text = "* xyz 0 1 C 0.12345 1.5 -2.25".to_string();
+    let mut s = converged_job();
+    s.charge_mult = Err(ChargeMultError::Malformed { line: 7, text: text.clone() });
+    let reasons = refused(&Case::submitted().source(s).run());
+    let [reason] = reasons.as_slice() else { panic!("{reasons:?}") };
+    let message = reason.message();
+    assert!(!message.contains("0.12345") && !message.contains(&text), "R4-QUOTE: the R4 reason quotes the source line: {message}");
+    assert!(message.contains("line 7"), "the line is named: {message}");
+}
+
 #[test]
 fn r4_does_not_ask_a_molecule_for_a_terminal_state() {
     let d = Case::submitted().source(source_of(SourceKind::Molecule)).run();

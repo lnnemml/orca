@@ -13734,3 +13734,85 @@ A real `claude -p` session listed the 11 tools and received `get_results` inline
   - Inline pointers were added at decision 5, decision 9, Honest limits (R8), M2 item 6 and M0 item 9.
 - **Review history:** DESIGN r1 PASS WITH FINDINGS (6 MED + 6 LOW), r2 PASS WITH FINDINGS (3 MED + 7 LOW). All findings applied.
 - **Next:** M3a Part A (implementer `opus`).
+
+## [2026-11-21] feat | ADR-027 M3a Part A — the create_job cores
+- **What landed** (implementer `opus`; Part A only, nothing registered as a tool, no commit):
+  - **`create_job` as one task.** `mcp/create_job.rs` is the whole call as one blocking pipeline over injected seams (`CreateJobEnv { db, smiles, host, step_b, emit }`; the traits `StepB` and `StatusEmit`). Its order: the argument bounds → the source (`resolve_source`; a SMILES through the `SidecarSmiles` seam with no lock) → the app's `%maxcore` and `assemble` → the memory verdict → **step A** → the `job:status` emit → **step B** with no lock (a panic is caught as a refusal) → **step C** → the outcome row (in step C's transaction) → the `job:status` emit. `mcp/server/create_job_task.rs` is the handler's side: `create_job_call` takes a request permit, spawns the task through the M2a gate, and only awaits it. The permit is held **inside the blocking closure**, so it returns when step C ends. Dropping the handler (a service cancel) detaches the task; nothing in the pipeline reads `closed`.
+  - **Step A classifies inside its `BEGIN IMMEDIATE`.** `steps::decide_conn` reads the time, the grant snapshot with its counters and R8's open-proposal count (`open_proposals_conn`: `origin = 'mcp'`, `draft`, `grant_id IS NULL`) after the write lock, runs `classify_mcp_job`, folds in the assembly (a classifier REFUSED stands, else a failed or missing assembly is REFUSED internal), and writes the disposition **and its audit row** in the same transaction. M1b's `charge_and_insert_conn` (P5 only) and `finish_submit_conn` stay, and share the charge and finish bodies (`charge_in_tx`, `finish_in_tx`) with the new step A and `finish_submit_audited_conn`. M1b's step tests are unchanged and green, the negative control of the extraction.
+  - **The audit log** (`mcp/audit.rs`, v24 columns, no schema change): classifier dispositions in step A's transaction, step C's outcome in step C's, and the reconciliation's outcome for each row it touches in its own. The encoding table is in `modules/mcp-server.md`, "The audit log". A no-refund state is `[{"row":"state","message":"<JobStatus>"},{"row":"step_b","message":"<step B's message>"}]` with `disposition` NULL; a refund is `proposed` with the `submit refused: …` reason. "Pending", "not on the server", `Unknown` and the rest are in step B's message, the backend's own outcome text. `db.rs`'s "one row per MCP tool call" comment is corrected.
+  - **R4** is `ChargeMultError::kind_and_line` (`classify.rs`); the source's `* xyz` text never reaches a reason.
+  - **Argument bounds:** `header` 1–20,000 bytes, `source` 1–1,024, `target` 1–64, `group_id` 1–64 (it must exist), `title` 1–200. Over a bound is a tool error before anything is read, with no row. The result has at most 20 reasons of ≤ 400 bytes and a last `"more"` count, and step B's message is cut to 600; it is checked against 40,000 bytes.
+  - **The terminal exit flag** (`local_backend.rs`): `JobRunner.exiting`, set by `pause_for_exit`. `claim_next` refuses while it or the user's `paused` is set; `set_paused` goes through `set_user_paused`, which touches `paused` only. `wiring.rs` is unchanged.
+  - **The closed flag on two connections:** `server_tests::closed_is_set_on_hang_up_and_on_switch_off` now switches off with two connections, each holding a `get_grant` call in flight (a held `DbSource`). Neither service can end and set `closed` on its own way out before the check, so the flags read are switch-off's own.
+  - **The three LOW doc fixes:** ADR-027 decision 9's pointer, the stranded M3 item-3 list item, and `index.md`'s M2/M3 summary order.
+- **Counts** (`CARGO_TARGET_DIR` in the session scratchpad):
+  - `cargo build`: 0 warnings.
+  - `cargo test -p orcastudio --lib mcp::`, three runs: 338/338 each (8 s, 86 s, 71 s; the laptop was loaded for the last two).
+  - `cargo test -p orcastudio --lib local_backend::`: 37 passed, 1 ignored.
+  - `cargo test --workspace`, to a file: lib 1428 passed, 30 ignored; `mcp_relay_bin` 3; core 24; golden 6; `parity_gate` 0 (1 ignored); `roundtrip` 1; doc-tests 0 and 2; 0 failed.
+  - No TS was touched, so `tsc` and `vitest` were not run.
+- **Controls, 25/25 RED** from their tagged assertions, each with a compiling mutation and the named test run `--exact`; every file was restored by sha256, and `src-tauri/src` was sha-identical at the end. Script: the session scratchpad's `m3a_parta_controls.py`. All bit on the first run; none stayed green.
+  - **Money and order:**
+    - `MONEY-REVOKE` (`a_revoke_committed_before_step_a_wins`): the grant read hoisted above the seam;
+    - `MONEY-INFLIGHT` (`of_two_step_as_at_max_in_flight_one_the_second_is_proposed`): the same hoist;
+    - `MONEY-IMMEDIATE` (`step_a_holds_the_write_lock_from_its_first_read`, two connections on two threads): step A opened DEFERRED;
+    - `MONEY-REFUND` (`a_step_b_refusal_is_refunded`): the refund condition never true;
+    - `MONEY-LEFT-DRAFT` (`step_c_never_refunds_a_job_that_left_draft`): the `draft` check dropped.
+  - **R8:**
+    - `R8-RACE` (`of_two_proposals_at_49_the_second_is_refused`): the count hoisted above the seam;
+    - `R8-CAP` (`the_51st_proposal_is_refused`): the count of `origin = 'user'`;
+    - `R8-SUBMITTED` (`a_submitted_call_does_not_count_toward_r8`): `grant_id IS NULL` dropped.
+  - **Audit:**
+    - `AUDIT-CHARGE` (`a_charge_never_commits_without_its_audit_row`, a trigger fails the insert): the SUBMITTED row removed;
+    - `AUDIT-REFUSED`: the REFUSED row removed;
+    - `AUDIT-REFUND` (`a_refund_leaves_its_outcome_row`): step C's row removed;
+    - `AUDIT-RECONCILE`: the reconciliation's row removed.
+  - **Arguments, the result and R4:**
+    - `ARGS-HEADER`: the header bound removed;
+    - `RESULT-CAP` (`the_largest_result_stays_under_the_cap`): the reasons unbounded;
+    - `R4-QUOTE` (`classify_tests::r4_never_quotes_the_source_charge_line`): the error's `Display` used.
+  - **Exit:**
+    - `EXIT-FLAG-RESUME` (`a_resume_during_exit_starts_no_queued_job`): `pause_for_exit` storing into `paused`;
+    - `EXIT-FLAG-CLAIM` (`no_slot_is_claimed_once_the_exit_flow_has_begun`): the `exiting` check dropped from `claim_next`.
+  - **The closed flag:** `CLOSED-EVERY`: the `closed` store deleted from the listener's `Registry::shut`.
+  - **M0 item 9** (`server::create_job_task_tests`):
+    - `ABANDON-CLOSED`: steps B and C run in the handler after a `closed` check;
+    - `IN-HANDLER` (the gate's test hook sees nothing written): the pipeline run in the handler;
+    - `CANCEL-AFTER-A` (the handler aborted at step A's emit): steps B and C in the handler;
+    - `GATE-CLOSED`, `SWITCH-OFF` (the stop's `before_unlink` hook sees the job's flag) and `EXIT-LOCK` (the exit's kill step sees the task count, the flag and the lock): the task spawned without the gate;
+    - `PERMIT`: the permit dropped as the work starts.
+- **The 60 s backstop against a remote step B. A fork for Anton; nothing changed.**
+  - **The path.** A remote step B is `submit_to_server` (`commands/remote_jobs.rs:145`) → `run_guarded`. Its in-flight guard refuses a busy job; it does not wait (`:93`). Then `submit_remote` (`ssh_backend.rs:388`):
+    1. `persist_submit` (`:417`): DB and local files, no ssh;
+    2. `ready_server` (`:597`): `prepare_call`, and when anything is missing `install_call` and `prepare_call` again, each under `CALL_TIMEOUT` = 60 s (`:94`): ≤ 180 s;
+    3. `upload` (`:663`): rsync under `upload_timeout(bytes)` = 60 s + ⌊bytes / 262,144⌋ s (`:101`, `:105`, `:108`);
+    4. `submit_call` (`:647`): `SUBMIT_TIMEOUT` = 60 s (`:98`);
+    5. `record_attempt` (`:682`): DB.
+
+    Nothing retries (the first failing step ends the attempt, `run_submit_steps` `:626`). Each process overruns its deadline by at most one 20 ms poll and a SIGKILL and reap (`remote/ssh.rs:185`, `:230`).
+  - **Worst case with no queue wait: 300 s + ⌊bytes / 256 KiB⌋ s**, plus DB lock waits (SQLite's 5 s busy timeout).
+  - **But each of the 5 processes first waits for a per-host permit** (`run_gated`, `remote/ssh.rs:134`; 8 per host, `remote/gate.rs:32`), and that wait is **outside** its timeout. A holder can be a poller fetch of up to `FETCH_TIMEOUT` 300 s or `FETCH_GBW_TIMEOUT` 1800 s (`ssh_backend.rs:1159`, `:1164`). So step B's true worst case is not bounded by its own constants.
+  - **The budget.** `EXIT_FLOW_DEADLINE` (`wiring.rs:45`, 60 s) must also hold `terminate_on_exit` (≈ 14 s worst, `tauri-core.md`) and the sidecar stop. That leaves a step B at most ≈ 46 s, less than one ssh call's own bound. A local step B (`local_backend::submit`, `local_backend.rs:450`) is DB work plus a refused claim, well inside.
+  - **A code finding against the M3 amendment's wording.** Item 1 says a forced end mid-step-B refunds a Draft "although its submit may already have reached the server". It cannot: `persist_submit` commits `status = 'queued'` with the coordinates **before any ssh** (`submit_remote`, `ssh_backend.rs:396`). So a forced end during any ssh of step B leaves a `queued` row. The reconciliation then only clears its flag and keeps the charge, and ADR-024's existing recovery takes the job (the poller's label → enqueued, or "not on the server" → Retry), as after a crash during Anton's own Create & Run. A refund can happen only between step A's commit and `persist_submit`'s commit, a window with no ssh, where nothing has reached the server.
+  - **Lean: keep 60 s.**
+    - No constant meets the criterion: the permit wait is unbounded by step B's constants, so even ≥ 314 s is not a bound.
+    - The forced end is the already-recovered crash case, and it never refunds a job that reached the server.
+    - Raising it to 5+ minutes makes a hung close that long, and what the user sees during the wait is unmeasured (M2a).
+    - Bounding step B by the remaining budget needs a cancellable `CommandRunner`, which is a new mechanism, and its outcome equals the forced end's.
+    - If Anton agrees, the amendment's "although its submit may already have reached the server" should be corrected in the ADR. That edit was not made here.
+- **Interpretations** (each can only fail closed, or is stated for the verifier):
+  - **Resolver errors go to the classifier.** A source that does not resolve goes to the classifier as R4 (audited), which is M1b's `ClassifyInput` shape. "A resolver error before classification" is read as a failure around it: the memory preflight, `%maxcore`, the DB lock. Those are tool errors with no row. A server target that is not a profile is such a tool error, not P5.
+  - **The reconciliation writes a row for a clear too.** Besides its refund (the one the amendment names), its clear of a non-`draft` row also gets an outcome row (NULL, state + "interrupted"). So every SUBMITTED row ends in exactly one outcome row. Its `args` are `{"outcome_of":"reconciliation"}`.
+  - **The result's `disposition` is the final one.** A SUBMITTED call that step C refunded returns `proposed`, with `submit.refunded`.
+  - **Step B and step C failures.** A panicking step B is a refusal, so step C runs. A failing step C (for example `SQLITE_BUSY` after 5 s) is not retried: it is reported in `submit.step_c_error`, and the job stays `submitting` for the next reconciliation.
+  - **The handler takes its own permit.** Part B must keep `call_tool`'s generic permit off `create_job`.
+  - **A PROPOSED draft stores no target.** Anton chooses one at Run; the audit `args` record what was asked. The default title is `Claude: <source, ≤ 100 bytes>`.
+  - **The audit row bounds its reasons** like the result: 20 of ≤ 400 bytes plus a `"more"` count. A job's own `mcp_reasons` keep every reason.
+  - **`is_queue_paused` reports the user's pause only**, not the exit flag.
+- **Open for Part B:**
+  - the real `StepB` over `local_backend::submit` and `submit_to_server`;
+  - the real `StatusEmit` over `local_backend::emit_status`;
+  - the `smiles` seam over `SidecarSmiles::from_status`;
+  - the rmcp `create_job` registration, with the recovery sentence and no second permit;
+  - the live check of the SUBMITTED and PROPOSED paths with Anton's console grant (M3 amendment, item 2).
+- **Next:** verifier CODE on Part A, then Anton (the 60 s fork, and the greenlight for Part B).

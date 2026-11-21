@@ -268,17 +268,23 @@ Create and Run is uncovered (named in o26.8).
   server's `tsp` queue, so the `remote_host IS NULL` filter is what keeps the laptop from running it
   (ADR-024 o item 1; a test with the filter removed goes red). Called after enqueue, after each job finishes
   (`drive_job`), and on resume. This survives an app restart for free.
-- `JobRunner` = `data_dir` + `Mutex<Option<RunningJob>>` (the single slot) + an `AtomicBool` pause
-  flag. `RunningJob { job_id, pgid, cancelled }`. Concurrency = 1 (domain rule #4).
+- `JobRunner` = `data_dir` + `Mutex<Option<RunningJob>>` (the single slot) + two `AtomicBool`s: the
+  user's pause flag `paused` and the terminal exit flag `exiting`. `RunningJob { job_id, pgid,
+  cancelled }`. Concurrency = 1 (domain rule #4).
 - **Pause is queue-only.** `pause_queue` stops the *next* job from starting; the running job runs to
   completion. We deliberately do **not** SIGSTOP the running ORCA: it holds all its RAM
   (nprocs × maxcore) frozen, and MPI ranks stopped mid-communication may not resume cleanly.
-- **Exit pauses the queue for good.** The exit flow's first step (ADR-027 M2 amendment item 6;
-  `JobRunner::pause_for_exit`) sets the flag before `terminate_on_exit` runs, so the slot the killed
-  job frees starts nothing: otherwise its drive thread's `try_start_next` could launch the next queued
-  ORCA during the kill's 2 s grace, and that mpirun would outlive the app (the SIGKILL sweep matches
-  only the old job dir). The slot claim is `JobRunner::claim_next`, which checks the flag under the
-  `running` lock.
+- **Exit stops the queue for good.** The exit flow's first step, and the backstop's (ADR-027 M2
+  amendment item 6; `JobRunner::pause_for_exit`), sets the **terminal exit flag** before
+  `terminate_on_exit` runs, so the slot the killed job frees starts nothing: otherwise its drive
+  thread's `try_start_next` could launch the next queued ORCA during the kill's 2 s grace, and that
+  mpirun would outlive the app (the SIGKILL sweep matches only the old job dir). The slot claim is
+  `JobRunner::claim_next`, which refuses while the exit flag **or** the user's pause is set, under the
+  `running` lock. The exit flag is separate from the user's pause (ADR-027 M3 amendment, item 4):
+  `resume_queue` (`set_paused(false)` → `JobRunner::set_user_paused`) clears only the user's flag, so a
+  Resume click during the exit wait — up to the backstop's 60 s, with the window still open — starts no
+  queued job, and a local submit after the exit flow began queues its job but claims no slot. The user's
+  pause and resume are otherwise unchanged; `is_queue_paused` reports the user's flag.
 - **Lock order** is always `running` → `db` (only `claim_next`, called from `try_start_next`, nests them); `cancel` and
   `start_run` take each lock alone. No inversion, no deadlock.
 
@@ -315,8 +321,8 @@ directory. *(Changed in `[2026-07-28] fix: MPI ranks escape process group on can
   ADR-024 o22.14.8).
 - **App exit** (`terminate_on_exit`, a step of the exit flow, off the main thread; ADR-027 M2 amendment
   item 6, `modules/tauri-core.md`) runs the same `terminate_job` and returns only once the tree is dead;
-  `prevent_exit` keeps the process alive meanwhile, and the flow calls `app.exit` after it. The queue is
-  paused before it (see "Sequential queue").
+  `prevent_exit` keeps the process alive meanwhile, and the flow calls `app.exit` after it. The queue's
+  terminal exit flag is set before it (see "Sequential queue").
 - **A job still starting at exit.** Between `claim_next` and the spawn the slot holds the job with
   **pgid 0** (`prepare_job_dir` and the spawn are running). `terminate_on_exit` takes its job through
   `JobRunner::job_to_terminate`, which polls every 20 ms for at most 2 s (`STARTING_JOB_WAIT` /

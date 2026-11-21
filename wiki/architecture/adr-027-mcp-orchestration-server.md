@@ -533,7 +533,8 @@ The repeat is bounded by the cap, and because each call is one client action.
   - the active grant with its usage, plus Revoke and "Cancel Claude's jobs";
   - **the audit log**.
 - **The audit log** is an `mcp_audit` table. It holds every state-changing call, every refusal and
-  every proposal (scope qualified by the M3 amendment, item 3: dispositions only, plus step C's outcome): time, tool, bounded argument text, disposition, reasons, `job_id` and `grant_id`.
+  every proposal (qualified by the M3 amendment, item 3): time, tool, bounded argument text,
+  disposition, reasons, `job_id` and `grant_id`.
   Read calls are counted per connection in memory, and those counts are lost on restart. The log is
   also **the data of the experiment**: how the agent behaves at a given level of autonomy.
 
@@ -1304,12 +1305,12 @@ The decision text above stands, except where an item below says it replaces or q
      - each SUBMITTED, PROPOSED and REFUSED from the classifier;
      - step C's outcome (a refund to PROPOSED with its reason, or no refund with the job's state);
      - the reconciliation's refund after a crash ("interrupted before submit"), as an outcome row;
-     - a REFUSED internal error (decision 4: a failed re-parse post-condition), as REFUSED.
+     - a REFUSED internal error (decision 4: a failed re-parse post-condition), as REFUSED;
+     - the M3b rows of item 1.
 
      Outcome rows use the v24 columns: `disposition` `proposed` for a refund, NULL otherwise, with the
      reason or the job's state in `reasons`. No schema change is implied. `db.rs`'s "one row per MCP
      tool call" comment is updated in M3a.
-     - the M3b rows of item 1.
    - **Where the SUBMITTED row is written.** Inside step A's transaction, so a charge without its
      audit row is impossible.
    - **What is not recorded.** A call that ends before classification is not a disposition and is not

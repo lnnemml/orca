@@ -149,7 +149,11 @@ use crate::error::AppError;
 ///     mcp_grants((revoked_at IS NULL)) WHERE revoked_at IS NULL`. The column form `(revoked_at)`
 ///     would enforce nothing, because NULLs are distinct in a UNIQUE index
 ///     (`tests::the_column_form_index_would_enforce_nothing`);
-///   - `mcp_audit`: one row per MCP tool call (M3 writes it). `args` is bounded by a CHECK
+///   - `mcp_audit`: one row per **disposition or outcome**, not per tool call (ADR-027 M3 amendment,
+///     item 3): each classifier disposition, step C's outcome, and the reconciliation's outcome;
+///     a call that ends before classification has no row. `disposition` is NULL on an outcome
+///     that is not a disposition; `reasons` is a JSON array of `McpReason` (the encoding table is
+///     in `mcp::audit`). `args` is bounded by a CHECK
 ///     ([`MCP_AUDIT_ARGS_MAX_CHARS`]); `job_id` and `grant_id` carry no FK, so the audit outlives
 ///     a deleted job.
 ///
@@ -164,7 +168,7 @@ use crate::error::AppError;
 const SCHEMA_VERSION: i64 = 24;
 
 /// The longest `mcp_audit.args` the database accepts, in characters (the v24 CHECK). The writer
-/// (M3) truncates to this and says so in the row.
+/// (`mcp::audit`) builds a bounded text below it, and cuts and marks anything over it.
 pub(crate) const MCP_AUDIT_ARGS_MAX_CHARS: usize = 8192;
 
 /// Open (creating if needed) `orcastudio.db` under `data_dir` and migrate it to

@@ -23,6 +23,7 @@
 
 use crate::commands::settings::DbState;
 
+pub mod create_job_task;
 pub mod gate;
 pub mod lifecycle;
 pub mod listener;
@@ -35,6 +36,8 @@ pub mod socket;
 pub mod tick;
 pub mod wiring;
 
+#[cfg(test)]
+mod create_job_task_tests;
 #[cfg(test)]
 mod gate_tests;
 #[cfg(test)]

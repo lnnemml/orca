@@ -260,7 +260,43 @@ fn our_own_uid_from_so_peercred_is_served() {
     assert!(c.initialize(1)["serverInfo"].is_object());
 }
 
-/// The `closed` flag (M0 amendment items 6 and 10): set when the transport ends, and on switch-off.
+/// A `DbSource` over the scratch `DbState` that, once armed, holds every database touch made off
+/// the arming thread until released: a tool call then stays in flight on its blocking task.
+struct HeldDb {
+    db: Arc<DbState>,
+    armed_on: std::sync::Mutex<Option<std::thread::ThreadId>>,
+    release: (std::sync::Mutex<bool>, std::sync::Condvar),
+}
+
+impl HeldDb {
+    fn arm(&self) {
+        *self.armed_on.lock().unwrap() = Some(std::thread::current().id());
+    }
+    fn release(&self) {
+        *self.release.0.lock().unwrap() = true;
+        self.release.1.notify_all();
+    }
+}
+
+impl super::DbSource for HeldDb {
+    fn db(&self) -> &DbState {
+        let armed_on = *self.armed_on.lock().unwrap();
+        if armed_on.is_some_and(|t| t != std::thread::current().id()) {
+            let released = self.release.0.lock().unwrap();
+            let _released = self.release.1.wait_while(released, |r| !*r).unwrap();
+        }
+        &self.db
+    }
+}
+
+/// The `closed` flag (M0 amendment items 6 and 10): set when the transport ends, and on switch-off —
+/// on **every** connection (M3 amendment, item 1: the remaining item-9 obligation, "switch-off or exit
+/// not setting every connection's `closed` flag", extended to two connections).
+///
+/// Each of the two connections has a `get_grant` call held in flight (its database touch waits), so
+/// neither service can end, and set `closed` on its own way out, before the check: the flags read at
+/// switch-off's return are switch-off's own. NEGATIVE CONTROL: delete the `closed` store in the
+/// listener's `Registry::shut` → both read open → red.
 #[test]
 fn closed_is_set_on_hang_up_and_on_switch_off() {
     let s = serving("closed-flag");
@@ -271,11 +307,35 @@ fn closed_is_set_on_hang_up_and_on_switch_off() {
     drop(first);
     assert!(eventually(SOON, || conn.is_closed()), "hang-up sets closed");
 
-    let mut second = s.client();
-    second.initialize(1);
-    let conn = s.live_connection();
-    assert!(!conn.closed.load(Ordering::SeqCst));
-    s.lc.set_enabled(false).unwrap();
-    assert!(conn.is_closed(), "switch-off sets closed before it returns");
-    assert!(second.is_closed_by_server(SOON), "switch-off cancels the service");
+    // Switch-off, two connections, each with a call in flight.
+    let scratch = Scratch::new("closed-flag-2");
+    let held = Arc::new(HeldDb {
+        db: scratch.db(),
+        armed_on: std::sync::Mutex::new(None),
+        release: (std::sync::Mutex::new(false), std::sync::Condvar::new()),
+    });
+    let (mut env, _) = super::test_support::counted_env(&scratch.paths(), scratch.db(), Hooks::default());
+    env.db = held.clone();
+    let lc = McpLifecycle::new(env);
+    assert!(lc.set_enabled(true).unwrap().serving);
+    let mut clients: Vec<Client> = (0..2).map(|_| Client::connect(&scratch.paths().socket)).collect();
+    for c in &mut clients {
+        c.initialize(1);
+    }
+    assert!(eventually(SOON, || lc.connections().iter().filter(|c| !c.is_closed()).count() == 2));
+    let conns = lc.connections();
+    held.arm();
+    for c in &mut clients {
+        c.call_get_grant(2);
+    }
+    assert!(eventually(SOON, || conns.iter().all(|c| c.in_flight() == 1)), "each connection has a call in flight");
+
+    lc.set_enabled(false).unwrap();
+    let closed: Vec<bool> = conns.iter().map(|c| c.closed.load(Ordering::SeqCst)).collect();
+    held.release();
+    assert_eq!(closed, vec![true, true], "CLOSED-EVERY: switch-off did not set every connection's `closed` before it returned");
+    for c in &mut clients {
+        let _ = c.response(2); // the released call may still answer during rmcp's drain
+        assert!(c.is_closed_by_server(SOON), "switch-off cancels the service");
+    }
 }

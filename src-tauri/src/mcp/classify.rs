@@ -206,7 +206,12 @@ impl RefusedReason {
                 SourceProblem::TerminalStateUnknown => "the source job's final state is unknown".into(),
                 SourceProblem::NotConverged => "the source optimization did not converge".into(),
                 SourceProblem::NoAtoms => "the source has no atoms".into(),
-                SourceProblem::ChargeMultUnreadable(e) => format!("source charge/multiplicity unreadable: {e}"),
+                // A kind and a line, never the source's `* xyz` text: `ChargeMultError`'s `Display`
+                // quotes the line, and this message reaches the model and the audit log (M3a; the
+                // M2b verifier's F8).
+                SourceProblem::ChargeMultUnreadable(e) => {
+                    format!("source charge/multiplicity unreadable: {}", e.kind_and_line())
+                }
             },
             RefusedReason::UnknownElement { symbol } => format!("unknown element `{symbol}` in the source"),
             RefusedReason::ParityImpossible { electrons, multiplicity } => format!(

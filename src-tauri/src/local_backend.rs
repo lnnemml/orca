@@ -60,8 +60,8 @@ pub(crate) const STARTING_JOB_WAIT: Duration = Duration::from_secs(2);
 pub(crate) const STARTING_JOB_POLL: Duration = Duration::from_millis(20);
 
 /// App-wide LocalBackend state: the job-directory root, the single execution
-/// slot (`Some` while a job is running — concurrency = 1, domain rule #4), and a
-/// pause flag for the queue.
+/// slot (`Some` while a job is running — concurrency = 1, domain rule #4), the
+/// user's pause flag for the queue, and the terminal exit flag.
 ///
 /// The queue itself is NOT held in memory — `queued` jobs live in SQLite and are
 /// picked up by [`try_start_next`]. That survives an app restart and needs no
@@ -69,10 +69,15 @@ pub(crate) const STARTING_JOB_POLL: Duration = Duration::from_millis(20);
 pub struct JobRunner {
     data_dir: PathBuf,
     running: Mutex<Option<RunningJob>>,
-    /// When true, finished jobs don't pull the next `queued` one. The currently
-    /// running job (if any) always runs to completion — pause is queue-only.
-    /// App exit sets it for good, first ([`JobRunner::pause_for_exit`]).
+    /// The user's pause (Pause / Resume, [`set_paused`]): when true, finished jobs don't pull
+    /// the next `queued` one. The currently running job (if any) always runs to completion —
+    /// pause is queue-only. Exit does **not** use it: see `exiting`.
     paused: AtomicBool,
+    /// The terminal exit flag (ADR-027 M3 amendment, item 4): set once by
+    /// [`JobRunner::pause_for_exit`] (the exit flow's first step, and the backstop's), never
+    /// cleared. [`JobRunner::claim_next`] refuses while it is set, and the user's resume
+    /// ([`set_paused`]) cannot clear it, so a Resume click during the exit wait starts nothing.
+    exiting: AtomicBool,
 }
 
 /// The one job currently executing, plus what cancellation needs.
@@ -92,15 +97,17 @@ impl JobRunner {
             data_dir,
             running: Mutex::new(None),
             paused: AtomicBool::new(false),
+            exiting: AtomicBool::new(false),
         }
     }
 
     /// Claim the slot for the oldest local `queued` job, atomically: under the running lock, bail
-    /// if paused or busy, otherwise pick the job and reserve the slot (pgid 0 = still starting).
-    /// Lock order is always running -> db (see cancel/try_start_next). `None` = nothing to start.
+    /// if the app is exiting, the user paused the queue, or the slot is busy; otherwise pick the job
+    /// and reserve the slot (pgid 0 = still starting). Lock order is always running -> db (see
+    /// cancel/try_start_next). `None` = nothing to start.
     pub(crate) fn claim_next(&self, db: &DbState) -> Option<(String, Arc<AtomicBool>)> {
         let mut running = self.running.lock().ok()?;
-        if self.paused.load(Ordering::SeqCst) || running.is_some() {
+        if self.exiting.load(Ordering::SeqCst) || self.paused.load(Ordering::SeqCst) || running.is_some() {
             return None;
         }
         let job_id = {
@@ -139,12 +146,20 @@ impl JobRunner {
         }
     }
 
-    /// Pause the queue for good: the exit flow's first step (ADR-027 M2 amendment item 6, M2a Part B
-    /// fix round). Once `terminate_on_exit` kills the running job, its drive thread frees the slot
-    /// and calls [`try_start_next`]; without the pause that would start the next queued ORCA job
-    /// during the kill's grace, and its ranks would outlive the app.
+    /// Stop the queue for good: the exit flow's first step and the backstop's (ADR-027 M2 amendment
+    /// item 6; M3 amendment item 4). Once `terminate_on_exit` kills the running job, its drive
+    /// thread frees the slot and calls [`try_start_next`]; without this that would start the next
+    /// queued ORCA job during the kill's grace, and its ranks would outlive the app. It sets the
+    /// terminal `exiting` flag, **not** the user's `paused`: a Resume click during the exit wait
+    /// (up to the backstop's 60 s, window still open) clears `paused` only, so it cannot reopen the
+    /// queue. Idempotent.
     pub(crate) fn pause_for_exit(&self) {
-        self.paused.store(true, Ordering::SeqCst);
+        self.exiting.store(true, Ordering::SeqCst);
+    }
+
+    /// The user's pause and resume ([`set_paused`]). Touches `paused` only; the exit flag stays.
+    pub(crate) fn set_user_paused(&self, paused: bool) {
+        self.paused.store(paused, Ordering::SeqCst);
     }
 
     /// The app's data dir: local job dirs live under `<data_dir>/jobs/` (rule #3), for remote
@@ -712,11 +727,12 @@ pub(crate) fn path_is_within(root: &Path, candidate: &Path) -> bool {
     }
 }
 
-/// Set the queue pause flag. Pausing leaves the running job alone; resuming
-/// immediately pulls the next queued job.
+/// Set the user's queue pause flag. Pausing leaves the running job alone; resuming
+/// immediately pulls the next queued job — unless the app is exiting: the exit flag
+/// ([`JobRunner::pause_for_exit`]) is separate, and resuming cannot clear it.
 pub fn set_paused(app: &AppHandle, paused: bool) {
     if let Some(runner) = app.try_state::<JobRunner>() {
-        runner.paused.store(paused, Ordering::SeqCst);
+        runner.set_user_paused(paused);
     }
     if !paused {
         try_start_next(app);
@@ -1321,6 +1337,56 @@ mod tests {
         *runner.running.lock().unwrap() =
             Some(RunningJob { job_id: job.into(), pgid: 0, cancelled: Arc::new(AtomicBool::new(false)) });
         runner
+    }
+
+    /// A scratch database holding one local `queued` job, `next`.
+    fn db_with_a_queued_job(tag: &str) -> (PathBuf, DbState) {
+        let dir = std::env::temp_dir().join(format!("orcastudio-exitflag-{tag}-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        let conn = crate::db::init_db(&dir).unwrap();
+        conn.execute("INSERT INTO jobs (id, title, input_content, status) VALUES ('next', 't', '! SP', 'queued')", [])
+            .unwrap();
+        (dir, DbState(Mutex::new(conn)))
+    }
+
+    /// Control (ADR-027 M3 amendment, item 4): `resume_queue` during the exit wait lets a queued job
+    /// be claimed. The exit flow pauses first; the user then clicks Resume (`set_paused(false)`,
+    /// played through its runner half `set_user_paused`). The exit flag is separate and terminal, so
+    /// nothing is claimed. NEGATIVE CONTROL: `pause_for_exit` storing into the shared `paused` (the
+    /// M2a behaviour) → the resume clears it → the job is claimed → red.
+    #[test]
+    fn a_resume_during_exit_starts_no_queued_job() {
+        let (dir, db) = db_with_a_queued_job("resume");
+        let runner = JobRunner::new(dir.clone());
+        runner.pause_for_exit();
+        runner.set_user_paused(false);
+        assert_eq!(runner.claim_next(&db).map(|(id, _)| id), None, "EXIT-FLAG-RESUME: a resume reopened the queue during exit");
+        runner.set_user_paused(true);
+        runner.set_user_paused(false);
+        assert_eq!(runner.claim_next(&db).map(|(id, _)| id), None, "the exit flag is terminal");
+
+        // The seed is claimable when no exit began, and the user's pause alone still works.
+        let fresh = JobRunner::new(dir.clone());
+        fresh.set_user_paused(true);
+        assert_eq!(fresh.claim_next(&db).map(|(id, _)| id), None, "the user's pause holds the queue");
+        fresh.set_user_paused(false);
+        assert_eq!(fresh.claim_next(&db).map(|(id, _)| id).as_deref(), Some("next"), "the seed must be claimable");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Control (ADR-027 M3 amendment, item 1, M3a exit): a local step B that runs after the exit flow
+    /// has begun starts ORCA, i.e. claims a slot. A local step B is `submit` (`draft` → `queued`) and
+    /// then `try_start_next`, whose one way to the slot is `claim_next`; here the job is already
+    /// queued and nothing else holds the queue. NEGATIVE CONTROL: drop the `exiting` check from
+    /// `claim_next` → the job is claimed → red.
+    #[test]
+    fn no_slot_is_claimed_once_the_exit_flow_has_begun() {
+        let (dir, db) = db_with_a_queued_job("stepb");
+        let runner = JobRunner::new(dir.clone());
+        runner.pause_for_exit();
+        assert_eq!(runner.claim_next(&db).map(|(id, _)| id), None, "EXIT-FLAG-CLAIM: a slot was claimed after exit began");
+        assert!(runner.running.lock().unwrap().is_none(), "the slot stays free");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Control (ADR-027 M2a Part B, second fix round): a job still starting at exit (pgid 0) is not

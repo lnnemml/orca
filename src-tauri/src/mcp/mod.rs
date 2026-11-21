@@ -33,8 +33,11 @@
 
 pub mod allowlist;
 pub mod assemble;
+pub mod audit;
 pub mod charge_mult;
 pub mod classify;
+#[cfg(unix)]
+pub mod create_job;
 pub mod grant;
 pub mod header;
 pub mod preflight;
@@ -55,6 +58,10 @@ mod assemble_tests;
 mod charge_mult_tests;
 #[cfg(test)]
 mod classify_tests;
+#[cfg(all(test, unix))]
+pub(crate) mod create_job_test_support;
+#[cfg(all(test, unix))]
+mod create_job_tests;
 #[cfg(test)]
 mod grant_tests;
 #[cfg(test)]
@@ -67,6 +74,8 @@ mod resolve_tests;
 mod sidecar_smiles_tests;
 #[cfg(test)]
 mod signature_tests;
+#[cfg(test)]
+mod step_a_tests;
 #[cfg(test)]
 mod steps_tests;
 #[cfg(test)]
