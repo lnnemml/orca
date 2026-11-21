@@ -13700,3 +13700,37 @@ A real `claude -p` session listed the 11 tools and received `get_results` inline
 
 **Next:** verifier CODE on this follow-up; then M3 (`create_job`, `cancel_job`, `create_group`,
 `wait_for_jobs`, the audit log, the F8 note on the classifier's R4 source reason).
+
+## [2026-11-21] decision | ADR-027 M3 amendment — the split and the live check, accepted
+- **Why:** M2 is complete. M2a, M2b and their follow-ups are committed, last at `0f3ad38`. M3, the write tools, is the next step. It is the first unit where Claude can spend compute under a grant.
+- **Decided by Anton**, each on the orchestrator's lean:
+  - **M3 splits in two.**
+    - **M3a** is `create_job`:
+      - one tracked task through the M2 gate;
+      - the audit log;
+      - R8 counted in step A's `BEGIN IMMEDIATE`;
+      - `job:status`;
+      - the R4 source reason as kind and line (F8 from M2b);
+      - argument bounds;
+      - the exit flag.
+    - **M3b** is `cancel_job` (mcp jobs only), `create_group`, and `wait_for_jobs` with `timeout_s` ≤ 600. None of them needs a grant.
+  - **The order stays M3 → M4.** The SUBMITTED path is checked live with a narrow grant that Anton creates himself, through the existing M1b command `mcp_create_grant`, in the `tauri dev` devtools console:
+    - Local only, 1–2 jobs, `max_in_flight` 1, within the hour;
+    - he checks the returned `GrantView` against those limits before the check;
+    - he revokes it afterwards.
+
+    This qualifies decision 5 until M4. Four facts are unmeasured and get settled at the check: whether devtools opens, whether the console reaches `invoke`, whether the capability allows the call, and the argument spelling.
+  - **The audit log records dispositions only:**
+    - classifier SUBMITTED, PROPOSED and REFUSED;
+    - step C's outcome;
+    - the reconciliation's refund;
+    - a REFUSED internal error.
+
+    The SUBMITTED row is written inside step A's transaction. Tool errors that happen before classification are not audited. Outcome rows use the v24 columns.
+  - **The exit queue pause becomes a terminal exit flag.** `pause_for_exit`, called from both the flow and the backstop, sets it; `claim_next` checks it; `resume_queue` cannot clear it. This closes the case where a Resume click during an exit wait of up to 60 s would let a queued ORCA job start and outlive the app.
+- **From the DESIGN rounds:**
+  - The 60 s exit backstop against a remote step B is now a **fork**. M3a computes the worst case of a remote step B (its ssh calls × `CALL_TIMEOUT`, plus `SUBMIT_TIMEOUT`, plus the rsync bound) and brings it to Anton with a lean.
+  - M2a's closed-flag control is extended to at least two connections.
+  - Inline pointers were added at decision 5, decision 9, Honest limits (R8), M2 item 6 and M0 item 9.
+- **Review history:** DESIGN r1 PASS WITH FINDINGS (6 MED + 6 LOW), r2 PASS WITH FINDINGS (3 MED + 7 LOW). All findings applied.
+- **Next:** M3a Part A (implementer `opus`).

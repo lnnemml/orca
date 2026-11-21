@@ -1679,8 +1679,9 @@ and OrcaStudio picks the job up, syncs results, and parses them — no terminal,
             `src-tauri/src/mcp/tools/`) + `8683d66` (Part B, the ten tools registered in
             `server/read_tools.rs`, checked end to end over the socket) (2026-11-21); end-to-end check
             passed (11 tools via `orcastudio --mcp` and `claude -p`)
-      - [ ] **M3** write tools — `create_job` with grant charging, `cancel_job` (mcp only),
-            `create_group`, `wait_for_jobs`, audit log
+      - [ ] **M3a** `create_job` — steps A/B/C as one tracked task, grant charging, the audit log,
+            R8, `job:status`; the terminal exit flag (ADR-027 M3 amendment)
+      - [ ] **M3b** `cancel_job` (mcp only), `create_group`, `wait_for_jobs` (≤600 s), their audit rows
       - [ ] **M4** UI — Settings → MCP (grant editor, revoke, audit), Jobs badge + proposal reasons
             (live gate)
       - [ ] **M5** live research gate — a real GOAT → Opt+Freq → SP chain driven from a research folder

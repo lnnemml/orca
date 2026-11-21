@@ -345,7 +345,8 @@ descriptions say so.
 
 ### (5) The grant, and the order in which a SUBMITTED job is charged and submitted
 
-**What a grant is.** A grant is a row Anton creates in Settings → MCP. Its fields are:
+**What a grant is.** A grant is a row Anton creates in Settings → MCP (until M4 builds it, by hand through the same
+Rust command: M3 amendment, item 2). Its fields are:
 - **Targets.**
 - **Levels** — method signatures, decision 6. Anton adds one either with "this job's level" or by
   pasting a `!` line and a solvation block.
@@ -532,7 +533,7 @@ The repeat is bounded by the cap, and because each call is one client action.
   - the active grant with its usage, plus Revoke and "Cancel Claude's jobs";
   - **the audit log**.
 - **The audit log** is an `mcp_audit` table. It holds every state-changing call, every refusal and
-  every proposal: time, tool, bounded argument text, disposition, reasons, `job_id` and `grant_id`.
+  every proposal (scope qualified by the M3 amendment, item 3: dispositions only, plus step C's outcome): time, tool, bounded argument text, disposition, reasons, `job_id` and `grant_id`.
   Read calls are counted per connection in memory, and those counts are lost on restart. The log is
   also **the data of the experiment**: how the agent behaves at a given level of autonomy.
 
@@ -569,7 +570,8 @@ These items are not designed here. Each needs its own ADR, written from Stage-1 
   The deny rule matches names; it is a guardrail, not a boundary.
 - **The client's own permission prompts are a second line, never the first.** The authority boundary
   is the classifier and the grant. Tool annotations are hints (sourced) and are not used.
-- **PROPOSED drafts cost nothing but clutter Jobs.** R8 caps them at 50.
+- **PROPOSED drafts cost nothing but clutter Jobs.** R8 caps them at 50 (a step-C refund may exceed it:
+  M3 amendment, item 1).
 
 ## Consequences
 
@@ -682,7 +684,8 @@ Part B. Every listed control must turn the suite red.
     - `get_geometry` above 600 atoms;
     - `read_output` reading the whole file;
     - the M0-amendment obligations listed in its item 9.
-- **M3 — the write tools.**
+- **M3 — the write tools.** Split into **M3a** (`create_job`) and **M3b** (the other write tools) by
+  the M3 amendment, item 1, which governs where it differs from this bullet.
   - **What it contains:** `create_job` through the step A/B/C order, `cancel_job`, `create_group`,
     `wait_for_jobs`, the audit log, R8, and the `job:status` emit.
   - **Controls:**
@@ -817,7 +820,7 @@ measurement qualifies a decision, the rule below governs.
      - a connection slot freed while a permit is still held;
      - the tool descriptions not stating that a new client session is the recovery after an app
        restart.
-   - **M3:**
+   - **M3:** (split into M3a/M3b by the M3 amendment, item 1)
      - `wait_for_jobs` ignoring `closed`;
      - `create_job` abandoning step B or C when `closed` is set after step A;
      - any step of `create_job` running inside the handler instead of the tracked task;
@@ -1104,7 +1107,8 @@ The decision text above stands, except where an item below says it replaces or q
      - **The backstop (added in M2a Part B, decided by Anton 2026-11-19; the grace and `_exit` in
        its fix round).** A thread starts with the exit flow and ends the process in two cases:
        - the flow has not reached `exit` within **60 s**, or dies first: the backstop runs its own
-         queue pause, kill and sidecar stop (bounded at 20 s), then ends the process;
+         queue pause, kill and sidecar stop (bounded at 20 s), then ends the process (the pause becomes
+         the terminal exit flag: M3 amendment, item 4);
        - the flow reached `exit`, but the process is still alive **10 s** later: it ends the process
          (the flow has already run the kill and the sidecar stop).
 
@@ -1113,9 +1117,10 @@ The decision text above stands, except where an item below says it replaces or q
        later close request, so the app could never close. A forced end counts as a **crash** for the
        reconciliation: a job left in step B stays `submitting`, and the next lock holder's
        reconciliation refunds it (decision 5). M3 revisits the 60 s against the ssh timeouts of a
-       remote step B.
+       remote step B (M3 amendment, item 1: a fork brought to Anton).
      - **The local queue (decided by Anton, M2a Part B fix round).** The flow's first step, before
-       the MCP wait, pauses the local queue for good. Otherwise the job `terminate_on_exit` kills frees
+       the MCP wait, pauses the local queue for good (now the terminal exit flag, which `resume_queue`
+       cannot clear: M3 amendment, item 4). Otherwise the job `terminate_on_exit` kills frees
        its slot, and its drive thread could start the next queued ORCA job during the kill's grace;
        that job's ranks would outlive the app. It holds whether or not MCP was ever switched on.
 
@@ -1172,3 +1177,153 @@ The decision text above stands, except where an item below says it replaces or q
        reachability is not built in Stage 1.
    - **Private helpers.** `list_groups_conn`, `list_server_profiles_conn` and `RunTargetStatus::of`
      become `pub(crate)`. That is visibility only.
+
+## Amendment (2026-11-21) — M3: the split and the live check
+
+**Status:** Accepted by Anton on 2026-11-21.
+- Two forks (items 1 and 2) were decided by Anton on 2026-11-21, each on the orchestrator's lean.
+- DESIGN round 1 was PASS WITH FINDINGS (6 MED + 6 LOW), all applied. It raised two more forks, also
+  decided by Anton on the leans: the audit scope (item 3) and the exit flag (item 4).
+- DESIGN round 2 was PASS WITH FINDINGS (3 MED + 7 LOW), all applied. The 60 s revisit becomes a
+  fork for M3a (MED-3).
+
+The decision text above stands, except where an item below says it replaces or qualifies a sentence.
+
+1. **M3 is two units (decided by Anton).** Each follows the CLAUDE.md loop, and every listed control
+   must turn its unit's suite red.
+   - **M3a — `create_job`** (implementer `opus`: money, concurrency, chemistry consequences).
+     - **What it contains:**
+       - **One tracked task.** `create_job` is one task admitted through the M2 amendment's gate
+         (item 4). It runs the memory verdict, step A, step B and step C around `classify_mcp_job`
+         and `assemble` (decisions 3–5; M0 amendment, item 6).
+       - **`SidecarSmiles`.** It is handed to the resolver and run off the main thread.
+       - **The audit rows of item 3.**
+       - **R8's open-proposal count.**
+         - It is read in the same `BEGIN IMMEDIATE` transaction that inserts the draft, so two
+           concurrent step As in the serving instance cannot both read 49 and insert 50 and 51.
+         - A step-C refund may raise the count above 50: that is allowed and is not an error. It only
+           makes the next `create_job` refused by R8 until proposals are run or deleted.
+       - **The `job:status` emit**, after step A and after step C.
+       - **The R4 source-charge reason.** It is mapped to a kind and a line, and never quotes the
+         source `* xyz` line (verifier finding F8, M2b).
+       - **Bounded arguments.**
+         - The bounds cover the header, the title and every other string argument.
+         - Every result stays under the 40,000-byte cap of the M2 amendment, item 7.
+         - This closes M1a's note that "M3 bounds tool arguments". The implementer fixes the numbers and
+           records them in `wiki/modules/mcp-server.md`; the controls bite on those numbers.
+       - **The 60 s exit backstop** (M2 amendment, item 6), revisited against a remote step B. A remote
+         step B can outlast it: `SUBMIT_TIMEOUT` and `CALL_TIMEOUT` are 60 s each (`ssh_backend.rs`).
+         A forced end mid-step-B counts as a crash: the reconciliation refunds a Draft still at
+         `submitting` to PROPOSED, although its submit may already have reached the server.
+         - **Criterion:** the backstop's flow deadline is at least the worst case of a remote step B,
+           i.e. the sum of its bounded ssh calls (× `CALL_TIMEOUT`), `SUBMIT_TIMEOUT` and the rsync
+           bound, measured from the code.
+         - **This is a fork, not an implementer's change.** The backstop's timings were decided by
+           Anton. M3a computes the worst case, brings the result to Anton with a lean (keep 60 s,
+           raise it, or bound step B by the remaining exit budget), and only then changes anything.
+           A changed value gets a control. The outcome replaces the "M3 revisits the 60 s"
+           sentences in item 6 and in `wiki/modules/mcp-server.md`.
+       - **The exit flag of item 4.**
+     - **Controls:**
+       - **The decomposition's `create_job` controls:**
+         - revoke vs step A;
+         - a step-B refusal not refunded;
+         - two concurrent step As with `max_in_flight = 1`, where the second is not PROPOSED;
+         - step C refunding a job that already left `Draft`;
+         - the 51st proposal accepted;
+         - a grant check outside `BEGIN IMMEDIATE`.
+       - **The M0 amendment's item-9 obligations for `create_job`:**
+         - abandoning step B or C when `closed` is set after step A;
+         - any step running inside the handler instead of the tracked task;
+         - a service cancel right after step A's commit leaving `mcp_state = 'submitting'`;
+         - a task starting after the gate has closed;
+         - switching MCP off between step A and step C leaving `mcp_state = 'submitting'`;
+         - a clean exit releasing the lock while a `create_job` task is still running;
+         - the permit returned when the handler returns instead of when step C ends.
+       - **The remaining item-9 obligation, "switch-off or exit not setting every connection's
+         `closed` flag".** M2a's test covers one connection and has no recorded control on the
+         switch-off arm. M3a extends it to **at least two connections**, and records the control:
+         delete the `closed` store in the listener's `shut`, and the test goes red.
+       - **Audit (item 3):**
+         - a charge committed without its audit row;
+         - a step-C refund leaving the log at SUBMITTED only;
+         - a classifier REFUSED with no audit row.
+       - **R8:** two concurrent PROPOSED calls at 49 open proposals, where both are inserted (a SUBMITTED
+         job does not count toward R8).
+       - **Arguments:** an over-long header accepted; a result over the cap.
+       - **R4:** an R4 reason quoting the source line.
+       - **Exit (item 4):**
+         - `resume_queue` during exit lets a queued job be claimed;
+         - a local step B that runs after the exit flow has begun starts ORCA, i.e. claims a slot.
+   - **M3b — the other write tools** (implementer `opus`).
+     - **What it contains:**
+       - **The tools:** `cancel_job` (only `origin = 'mcp'` jobs), `create_group` and
+         `wait_for_jobs` (decision 8, with `timeout_s` capped at 600).
+       - **Audit rows** for `cancel_job` (a refusal included) and `create_group`. `wait_for_jobs`
+         is a read, counted in memory only (decision 9).
+       - **Bounded arguments:** the group name and the size of `wait_for_jobs`' `known` map.
+       - **No grant needed.** No M3b tool needs an active grant: `create_group` spends nothing
+         (decision 7), and a cancel stops spending (decision 5).
+     - **Controls:**
+       - `cancel_job` on a `user` job accepted;
+       - `wait_for_jobs` ignoring `known`;
+       - `wait_for_jobs` ignoring `closed`;
+       - `timeout_s` above 600 honoured;
+       - a `cancel_job` or `create_group` call with no audit row;
+       - an over-long group name or `known` map accepted.
+2. **The live check of the SUBMITTED path before M4 (decided by Anton).** The order stays M3 → M4.
+   - **What this qualifies.** It qualifies decision 5's "a row Anton creates in Settings → MCP", until
+     M4.
+   - **How the grant is made.** Anton himself creates the grant through the same Rust command,
+     `mcp_create_grant`, the only grant writer. He types it by hand in the `tauri dev` devtools
+     console.
+   - **What else must not create or change a grant.** No agent, test hook, script, environment
+     variable or direct SQL creates or changes a grant in the app's database. No MCP tool can reach the command
+     (decision 7).
+   - **The arguments**, the values Anton types (`commands/mcp.rs`). The core enforces only its own
+     refusals (a bad level, a count below 1, an expiry not after now, an unknown profile); the limits
+     below are Anton's procedure, and he checks the returned `GrantView` against them before the check:
+     - `targets: ["local"]`;
+     - `levels: [<one "!" line>]`;
+     - `max_jobs` 1–2;
+     - `max_in_flight` 1;
+     - `expires_at` as UTC `YYYY-MM-DD HH:MM:SS`, within the hour.
+   - **Revocation.** Anton revokes the grant the same way (`mcp_revoke_grant`) after the check.
+   - **When and from where.** The check runs in M3a Part B, before M3a's commit. The client is a
+     Claude Code session in a research folder with a project `.mcp.json` (M0 amendment, item 8).
+   - **The PROPOSED path** is checked without a grant (P5).
+   - **Unmeasured (rule #10).** These facts are settled at the live check:
+     - that devtools opens in `tauri dev` on WebKitGTK;
+     - that its console can reach the Tauri `invoke` (`withGlobalTauri` is not set);
+     - that the default capability admits the command;
+     - the JavaScript argument spelling `invoke` expects (its default argument-name conversion).
+
+     If any of them fails, stop and bring it to Anton. No other mechanism is added.
+3. **The audit scope (decided by Anton).**
+   - **What it records.** The audit log records **dispositions**, not tool errors:
+     - each SUBMITTED, PROPOSED and REFUSED from the classifier;
+     - step C's outcome (a refund to PROPOSED with its reason, or no refund with the job's state);
+     - the reconciliation's refund after a crash ("interrupted before submit"), as an outcome row;
+     - a REFUSED internal error (decision 4: a failed re-parse post-condition), as REFUSED.
+
+     Outcome rows use the v24 columns: `disposition` `proposed` for a refund, NULL otherwise, with the
+     reason or the job's state in `reasons`. No schema change is implied. `db.rs`'s "one row per MCP
+     tool call" comment is updated in M3a.
+     - the M3b rows of item 1.
+   - **Where the SUBMITTED row is written.** Inside step A's transaction, so a charge without its
+     audit row is impossible.
+   - **What is not recorded.** A call that ends before classification is not a disposition and is not
+     audited: a busy refusal, "MCP is shutting down", an argument error, `SQLITE_BUSY` at step A, or a
+     resolver error before classification. It qualifies decision 9's "every refusal", which means every classifier
+     refusal.
+4. **The exit flag (decided by Anton).**
+   - **The flag.** The exit flow's queue pause (M2 amendment, item 6) becomes a separate, terminal
+     exit flag. `pause_for_exit`, called by both the flow and the backstop, sets the exit flag instead
+     of the shared `paused` flag. `claim_next` checks it, and `resume_queue` cannot clear it.
+   - **Pages M3a updates** (accurate today, stale after the change): `wiki/modules/execution-backends.md`
+     (the exit pause), `wiki/modules/mcp-server.md` (the exit flow's queue pause),
+     `wiki/modules/tauri-core.md` (exit), and the `JobRunner.paused` doc comment in `local_backend.rs`.
+   - **Why.** It closes the case where a Resume click during an exit wait lasting up to 60 s (window
+     still open, `prevent_exit`) clears the shared pause flag. The freed slot would then start the
+     next queued ORCA job, and that job would outlive the app.
+   - **What stays.** The user's pause and resume are unchanged.
