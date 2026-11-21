@@ -10,6 +10,9 @@
 //!   `Transport` wrapper; `rmcp`'s own end comes up to 5 s later, after its response drain), and by
 //!   switch-off. Waiting and reading handlers (M3's `wait_for_jobs`) check it; `rmcp` does not
 //!   cancel a handler when the transport closes (M0 amendment, items 6 and 10).
+//! - **The read count** (M4 amendment, item 2): once a call holds its permit, `call_tool` counts it
+//!   in the connection's [`ConnState::reads`] if [`super::reads::TOOL_KINDS`] classifies it a read
+//!   (lock-free atomics). A busy refusal returns before it; an unknown or write tool is not counted.
 //! - **Unknown methods** such as `server/discover` get a JSON-RPC error and the connection stays
 //!   open: `rmcp` does this itself (re-measured here: `server_tests::an_unknown_method_*`).
 //! - **The recovery sentence** ([`RECOVERY_SENTENCE`]) is in the server's instructions and in every
@@ -35,6 +38,7 @@ use rmcp::{tool, tool_handler, tool_router, ErrorData, RoleServer, ServerHandler
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use super::create_job_task::WriteWiring;
+use super::reads::ReadCounts;
 use super::{DbSource, REQUESTS_PER_CONNECTION};
 use crate::commands::mcp::current_grant_core;
 use crate::mcp::tools::{clip, ECHO_MAX_BYTES, REFUSAL_MAX_BYTES};
@@ -92,11 +96,17 @@ pub struct ConnState {
     /// The transport has ended, or MCP was switched off.
     pub closed: AtomicBool,
     permits: Arc<Semaphore>,
+    /// The read calls this connection admitted (M4 amendment, item 2).
+    pub reads: ReadCounts,
 }
 
 impl ConnState {
     pub fn new() -> Self {
-        ConnState { closed: AtomicBool::new(false), permits: Arc::new(Semaphore::new(REQUESTS_PER_CONNECTION)) }
+        ConnState {
+            closed: AtomicBool::new(false),
+            permits: Arc::new(Semaphore::new(REQUESTS_PER_CONNECTION)),
+            reads: ReadCounts::default(),
+        }
     }
 
     pub fn is_closed(&self) -> bool {
@@ -209,7 +219,8 @@ impl ServerHandler for McpService {
     }
 
     /// Every tool call takes one of the connection's permits first, and holds it until the call's
-    /// work ends. None free: the immediate tool error [`BUSY`], never a queue. A tool in
+    /// work ends. None free: the immediate tool error [`BUSY`], never a queue. An admitted read is
+    /// counted (M4 amendment, item 2). A tool in
     /// [`OWN_PERMIT_TOOLS`] (`create_job`) takes its own in its handler, so none is taken here.
     async fn call_tool(
         &self,
@@ -222,6 +233,8 @@ impl ServerHandler for McpService {
             let Some(permit) = self.conn.try_permit() else {
                 return Ok(CallToolResult::error(vec![ContentBlock::text(BUSY)]).into());
             };
+            // Admitted: a read is counted now, before its arguments are parsed (lock-free).
+            self.conn.reads.count(&request.name);
             Some(permit)
         };
         let call = ToolCallContext::new(self, request, context);

@@ -11,6 +11,12 @@
 //! The switch's two commands (ADR-027 M2a), `mcp_status` and `mcp_set_enabled`, are the exception:
 //! they reach the MCP lifecycle, whose transition can reconcile, bind and `stat`, so they are `async`
 //! with their work in `spawn_blocking`, and the main thread never takes the lifecycle mutex.
+//!
+//! Settings → MCP's other commands (ADR-027 M4 amendment, items 3 and 4; unit M4a):
+//! - `mcp_claude_jobs_summary`, `mcp_list_audit` and `mcp_audit_row` are short reads, synchronous
+//!   like the grant commands (`mcp::claude_jobs`, `mcp::audit_view`);
+//! - `mcp_cancel_claude_jobs` is `async` with its work on the blocking pool: each job goes through
+//!   Anton's per-job Cancel body (`commands::jobs::cancel_one_job`), and a remote one makes ssh calls.
 
 use std::sync::Arc;
 
@@ -18,16 +24,20 @@ use rusqlite::Connection;
 use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
 
-use crate::commands::jobs::get_job_conn;
+use crate::commands::jobs::{cancel_one_job, get_job_conn, CancelResult};
 use crate::commands::settings::DbState;
 use crate::error::AppError;
+use crate::mcp::audit_view::{audit_row_conn, list_audit_conn, AuditPage, AuditRowView};
 use crate::mcp::classify::GrantStatus;
+use crate::mcp::claude_jobs::{cancel_claude_jobs, claude_jobs_summary_conn, ClaudeCancelReport, ClaudeJobsSummary};
 use crate::mcp::grant::{
     create_grant_conn, get_grant_conn, grant_snapshot_conn, in_flight_conn, now_utc_conn, revoke_grant_conn, target_of,
     target_text, Grant, NewGrant,
 };
 use crate::mcp::resolve::header_of_input;
 use crate::mcp::server::lifecycle::{McpLifecycle, McpStatus};
+use crate::mcp::server::wiring::ManagedDb;
+use crate::mcp::server::DbSource;
 use crate::mcp::signature::MethodSignature;
 
 /// The state of a grant as the UI shows it.
@@ -214,6 +224,49 @@ pub(crate) async fn mcp_status_core(lifecycle: Arc<McpLifecycle>) -> Result<McpS
 /// [`mcp_set_enabled`]'s body, off the caller's thread.
 pub(crate) async fn mcp_set_enabled_core(lifecycle: Arc<McpLifecycle>, on: bool) -> Result<McpStatus, AppError> {
     off_the_callers_thread("mcp_set_enabled", move || lifecycle.set_enabled(on)).await
+}
+
+// ----- Settings → MCP: "Cancel Claude's jobs" and the audit view (ADR-027 M4 amendment, items 3, 4) -----
+
+/// The confirm's numbers for "Cancel Claude's jobs": the jobs it would cancel now and the drafts in
+/// step B it would skip. The same statement as the cancel (`mcp::claude_jobs`).
+#[tauri::command]
+pub fn mcp_claude_jobs_summary(db: State<'_, DbState>) -> Result<ClaudeJobsSummary, AppError> {
+    let conn = db.lock()?;
+    claude_jobs_summary_conn(&conn)
+}
+
+/// "Cancel Claude's jobs": every `origin = 'mcp'` job in `queued`, `running` or `cancelling`,
+/// queued first, each through Anton's per-job Cancel body; one result per job, and the count of
+/// skipped drafts in step B. Writes no audit row (Anton's action).
+#[tauri::command]
+pub async fn mcp_cancel_claude_jobs(app: AppHandle) -> Result<ClaudeCancelReport, AppError> {
+    let db: Arc<dyn DbSource> = Arc::new(ManagedDb(app.clone()));
+    cancel_claude_jobs_off_thread(db, move |id| cancel_one_job(&app, id)).await
+}
+
+/// [`mcp_cancel_claude_jobs`]'s body: the selection and every per-job cancel on Tauri's blocking
+/// pool, never on the IPC thread or an async worker.
+pub(crate) async fn cancel_claude_jobs_off_thread(
+    db: Arc<dyn DbSource>,
+    cancel_one: impl FnMut(&str) -> Result<CancelResult, AppError> + Send + 'static,
+) -> Result<ClaudeCancelReport, AppError> {
+    off_the_callers_thread("mcp_cancel_claude_jobs", move || cancel_claude_jobs(db.db(), cancel_one)).await
+}
+
+/// One page of the audit log, newest first: the rows below `before_id` (or the newest), `limit`
+/// of them (default 50, at least 1, at most 200).
+#[tauri::command]
+pub fn mcp_list_audit(db: State<'_, DbState>, before_id: Option<i64>, limit: Option<u32>) -> Result<AuditPage, AppError> {
+    let conn = db.lock()?;
+    list_audit_conn(&conn, before_id, limit)
+}
+
+/// Audit row `id` whole (its `args` uncut); `NotFound` for an unknown id.
+#[tauri::command]
+pub fn mcp_audit_row(db: State<'_, DbState>, id: i64) -> Result<AuditRowView, AppError> {
+    let conn = db.lock()?;
+    audit_row_conn(&conn, id)
 }
 
 /// Run `work` on Tauri's blocking pool and wait for it (as `test_server_profile` does).

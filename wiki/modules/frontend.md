@@ -203,9 +203,20 @@ shows the draft as it was left.
   (advisory; the 30 s tick can change it) is re-read on mount, after every toggle (failed or not) and
   every 5 s (`MCP_STATUS_POLL_MS`) while Settings is open. A failed read shows the error and drops the
   status rather than showing a stale one; a failed toggle shows "The switch failed: …". Local state, as
-  the other Settings cards (no store). The grant, the audit log and Revoke are M4. Test:
-  `src/screens/SettingsScreen.mcp.test.tsx` (the screen whole, `invoke` mocked). The look is Anton's
-  live WebKitGTK gate.
+  the other Settings cards (no store). Test: `src/screens/SettingsScreen.mcp.test.tsx` (the screen
+  whole, `invoke` mocked). The look is Anton's live WebKitGTK gate.
+  - **M4a's pure logic** (ADR-027 M4 amendment items 2–5; no component renders it yet — M4a Part B):
+    `src/mcp/expiry.ts` (the grant's expiry: presets 1 h / 8 h / 24 h / 7 d from an injected "now", a
+    custom local time split by a strict regex and built with `new Date(y, m-1, d, h, min)` — never
+    `new Date(string)` — refused "does not exist — DST" when it does not read back, flagged and shown
+    with its UTC offset in the repeated fall-back hour, sent as UTC `YYYY-MM-DD HH:MM:SS`);
+    `src/mcp/grant.ts` (the card's labels, "in flight (all grants)", and `createGrantFlow`, which decides
+    the replace confirm from a fresh `mcp_get_grant` read at the click); `src/mcp/claudeJobs.ts` ("Cancel
+    Claude's jobs": the confirm with item 3's sentence, "Cancelling N…", the report's summary);
+    `src/mcp/audit.ts` (the audit table's cells and "Load older"); `readsLine` and
+    `connectionReadsText` in `src/mcp/status.ts` (the read count, this instance only, no 0 shown as a
+    fact when it does not serve). Each flow takes its commands as injected deps (the `bulk-delete.ts`
+    pattern). Tests: `src/mcp/*.test.ts`, the time ones under `TZ=Europe/Kyiv` across both DST changes.
 
 ## Editor & templates (`src/editor/`, `src/templates/`)
 

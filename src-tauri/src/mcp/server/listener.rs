@@ -11,6 +11,9 @@
 //! - **The registry** of one start holds its live connections, so switch-off can set every
 //!   `closed` flag. Once shut, it registers nothing, so a connection accepted during switch-off is
 //!   closed rather than missed.
+//! - **The read ledger** (M4 amendment, item 2) is the lifecycle's, shared by every start: a
+//!   connection enters it right after `Registry::register` succeeds and before its service is
+//!   spawned, and is folded after its drain, when no permit can be taken any more.
 
 use std::io;
 use std::pin::Pin;
@@ -25,6 +28,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 
 use super::create_job_task::WriteWiring;
+use super::reads::ReadLedger;
 use super::service::{ConnState, HostPaths, McpService};
 use super::DbSource;
 
@@ -102,6 +106,8 @@ pub struct AcceptContext {
     pub slots: Arc<Semaphore>,
     /// Transports currently open, across starts (the status's `connections`).
     pub connected: Arc<AtomicUsize>,
+    /// The read count since app start, across starts (the status's `reads`).
+    pub reads: Arc<ReadLedger>,
     pub peer_uid: PeerUid,
     pub own_uid: u32,
     pub db: Arc<dyn DbSource>,
@@ -139,8 +145,10 @@ fn admit(stream: UnixStream, ctx: &AcceptContext) {
     let Some(conn) = ctx.registry.register() else {
         return;
     };
+    // Admitted: the connection enters the read ledger before its service can admit a call.
+    let id = ctx.reads.enter(conn.clone());
     let service = McpService::new(conn.clone(), ctx.db.clone(), ctx.host.clone(), ctx.write_wiring.clone());
-    let task = serve_connection(stream, service, conn, slot, ctx.clone());
+    let task = serve_connection(stream, service, conn, id, slot, ctx.clone());
     tauri::async_runtime::spawn(task);
 }
 
@@ -148,6 +156,7 @@ async fn serve_connection(
     stream: UnixStream,
     service: McpService,
     conn: Arc<ConnState>,
+    id: u64,
     slot: OwnedSemaphorePermit,
     ctx: AcceptContext,
 ) {
@@ -161,6 +170,8 @@ async fn serve_connection(
     conn.closed.store(true, Ordering::SeqCst);
     ctx.connected.fetch_sub(1, Ordering::SeqCst);
     conn.drain().await;
+    // Drained: no permit can be taken, so its read counts are final. Folded exactly once.
+    ctx.reads.fold(id);
     ctx.registry.remove(&conn);
     drop(slot);
 }

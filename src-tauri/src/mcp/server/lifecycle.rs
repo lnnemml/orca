@@ -9,7 +9,8 @@
 //!
 //! **Lock order:** lifecycle → gate, lifecycle → `DbState`, lifecycle → the status facts. Nothing
 //! takes the lifecycle mutex while holding `DbState`, the gate or the facts. Handlers never take
-//! it. [`McpLifecycle::status`] does not take it. **The main thread never takes it**: the only
+//! it. [`McpLifecycle::status`] does not take it. The read ledger (`super::reads`) is a leaf held
+//! alone: the accept loop enters a connection, its serve task folds it, the status snapshots it. **The main thread never takes it**: the only
 //! entry the main thread uses is [`McpLifecycle::on_exit_requested`], which is one atomic
 //! `compare_exchange` and a hand-off to the executor.
 //!
@@ -46,6 +47,7 @@ use super::gate::{self, AdmissionGate};
 use super::listener::{accept_loop, kernel_peer_uid, own_uid, AcceptContext, PeerUid, Registry};
 use super::lock::{self, Acquire, McpLock};
 use super::paths::{resolve_for_this_user, McpPaths, PathRefusal};
+use super::reads::{McpReads, ReadLedger};
 use super::service::HostPaths;
 use super::socket::{self, SocketIdentity, Unlinked};
 use super::{DbSource, CONNECTIONS};
@@ -239,6 +241,9 @@ pub struct McpStatus {
     pub socket_path: Option<String>,
     /// Why this instance does not serve.
     pub reason: Option<String>,
+    /// The read count of this instance (M4 amendment, item 2): the total since app start and one
+    /// entry per live or closing connection.
+    pub reads: McpReads,
 }
 
 /// A stop in progress or complete: the wait for every tracked task, then the unlink.
@@ -321,6 +326,8 @@ pub struct McpLifecycle {
     /// The connection slots, shared by every start (a draining connection still holds one).
     slots: Arc<Semaphore>,
     connected: Arc<AtomicUsize>,
+    /// The read count since app start: a leaf mutex, outlives every start (M4 amendment, item 2).
+    reads: Arc<ReadLedger>,
     facts: Mutex<Facts>,
 }
 
@@ -348,6 +355,7 @@ impl McpLifecycle {
             write_wiring,
             slots: Arc::new(Semaphore::new(CONNECTIONS)),
             connected: Arc::new(AtomicUsize::new(0)),
+            reads: Arc::new(ReadLedger::default()),
             facts: Mutex::new(Facts { holds_lock: false, serving: false, reason: Some(NOT_CHECKED.into()), stop: None }),
         })
     }
@@ -489,6 +497,7 @@ impl McpLifecycle {
             registry: registry.clone(),
             slots: self.slots.clone(),
             connected: self.connected.clone(),
+            reads: self.reads.clone(),
             peer_uid: self.env.peer_uid.clone(),
             own_uid: self.env.own_uid,
             db: self.env.db.clone(),
@@ -546,11 +555,14 @@ impl McpLifecycle {
 
     // ----- status -----
 
-    /// The advisory status. It takes the facts' leaf mutex and then `DbState`, never the
-    /// lifecycle mutex.
+    /// The advisory status. It takes the facts' leaf mutex, then `DbState`, then the read ledger's
+    /// leaf mutex, each alone and released before the next; never the lifecycle mutex, and the
+    /// gate's only while a stop runs (when no handler can hold it for long: a closed gate refuses at
+    /// once).
     pub fn status(&self) -> McpStatus {
         let facts = self.facts().clone();
         let enabled = self.read_row().ok();
+        let reads = self.reads.snapshot();
         let stop_running = facts.stop.as_ref().filter(|s| !s.is_complete());
         let last_problem = facts.stop.as_ref().and_then(StopHandle::problem);
         let reason = if self.is_exiting() {
@@ -569,6 +581,7 @@ impl McpLifecycle {
             connections: self.connected.load(Ordering::SeqCst),
             socket_path: self.socket_path().map(|p| p.display().to_string()),
             reason,
+            reads,
         }
     }
 

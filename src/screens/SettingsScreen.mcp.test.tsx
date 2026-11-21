@@ -27,6 +27,7 @@ const OFF: McpStatus = {
   connections: 0,
   socket_path: SOCKET,
   reason: "MCP is off",
+  reads: { total: 0, connections: [] },
 };
 const SERVING: McpStatus = { ...OFF, enabled: true, holds_lock: true, serving: true, reason: null, connections: 2 };
 

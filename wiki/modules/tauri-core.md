@@ -379,8 +379,9 @@ in-flight steps (own process groups) are left to the OS (ADR-024 o18, decided by
   left as-is); `submit_job(app, id, target: Option<String>)` (async; no target → enqueues locally
   and returns `null` at once; a server profile id → the remote submit off the IPC thread, returning
   its `SubmitResponse`; a job Claude is submitting, `mcp_state` set, is refused with `Conflict` on both
-  arms — ADR-027 decision 5, `modules/mcp-server.md` "The `submit_job` guard"); `cancel_job(id) -> CancelResult` (async: `spawn_blocking` + the app's
-  poller → `commands::jobs::cancel_job_core`, which claims the guard itself — a remote live job's
+  arms — ADR-027 decision 5, `modules/mcp-server.md` "The `submit_job` guard"); `cancel_job(id) -> CancelResult` (async: `spawn_blocking` of the per-job
+  body `cancel_one_job` — the app's poller → `commands::jobs::cancel_job_core`, shared with "Cancel
+  Claude's jobs" — which claims the guard itself — a remote live job's
   cancel is recorded and delivered now or left pending, never refused for being busy; a local job is
   dispatched to its backend, `{"result":"dispatched"}`); `undo_cancel(id) -> UndoResult` (sync, no
   guard: one locked write, ADR-024 o22.3 — both in
@@ -475,9 +476,20 @@ in-flight steps (own process groups) are left to the OS (ADR-024 o18, decided by
 - **MCP switch (ADR-027 M2 amendment item 2, `commands/mcp.rs`; `async`, the work in
   `spawn_blocking`):** `mcp_status() -> McpStatus` (advisory: `enabled: Option<bool>`, `holds_lock`,
   `serving`, `stopping_tasks: Option<usize>`, `connections`, `socket_path: Option<String>`,
-  `reason: Option<String>`) and `mcp_set_enabled(on: bool) -> McpStatus` (writes `mcp_enabled`, its
-  only writer, and runs one tick step at once). Off the main thread because a transition can take the
-  lifecycle mutex, reconcile (≤250 ms busy wait), bind and `stat`.
+  `reason: Option<String>`, `reads: McpReads { total, connections: [{ id, state: "open"|"closing",
+  reads, by_tool }] }` — this instance's read calls since app start, ADR-027 M4 amendment item 2) and
+  `mcp_set_enabled(on: bool) -> McpStatus` (writes `mcp_enabled`, its only writer, and runs one tick
+  step at once). Off the main thread because a transition can take the lifecycle mutex, reconcile
+  (≤250 ms busy wait), bind and `stat`. `mcp_status` takes neither the lifecycle mutex nor a
+  connection's permit, and the gate's mutex only while a stop runs.
+- **Settings → MCP (ADR-027 M4 amendment items 3 and 4, `commands/mcp.rs`):** synchronous
+  `mcp_claude_jobs_summary() -> ClaudeJobsSummary { to_cancel, submitting }`,
+  `mcp_list_audit(before_id: Option<i64>, limit: Option<u32>) -> AuditPage { rows, next_before_id }`
+  (newest first, keyset on `id`, limit 50 by default and clamped to 1–200) and
+  `mcp_audit_row(id: i64) -> AuditRowView` (`NotFound` for an unknown id); `async`
+  `mcp_cancel_claude_jobs() -> ClaudeCancelReport { jobs, skipped_submitting }`, whose selection and
+  per-job cancels run on the blocking pool, each through `commands::jobs::cancel_one_job` — the per-job
+  body `cancel_job` runs too. Shapes and rules: `modules/mcp-server.md` "Settings → MCP's commands".
 - **DB helpers** (`pub(crate)`, reused by the backend): `set_job_dir_conn`, `finalize_job_conn`
   (terminal status + `completed_at` + `error_message`), `set_job_results_conn`, `get_job_conn`,
   `update_job_status_conn`, `delete_job_conn` (see below).
@@ -548,9 +560,10 @@ is: a starter command that validates + reserves state + RETURNS immediately, the
   acceptance step is a manual run in the real window; changed in `[2026-07-29] 2.5.5-fix`).
 
 A bounded operation whose result the caller awaits uses the other form: an **`async` command** with its
-work in `tauri::async_runtime::spawn_blocking` — `test_server_profile`, and the MCP switch's
+work in `tauri::async_runtime::spawn_blocking` — `test_server_profile`, the MCP switch's
 `mcp_status`/`mcp_set_enabled` (whose cores are tested from a plain thread for "the work never runs
-on the caller's thread").
+on the caller's thread"), and `mcp_cancel_claude_jobs` (whose core is tested for "every cancel runs on
+the blocking pool").
 
 ## Result extraction & convergence
 

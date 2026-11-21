@@ -902,9 +902,9 @@ pub async fn submit_job(
     }
 }
 
-/// Cancel a job (ADR-024 o22.3, o22.14.7): the thin `AppHandle` shell over [`cancel_job_core`],
-/// run off the IPC thread in `spawn_blocking` with the app's poller (`poller::app::with_poller`) —
-/// a delivery makes ssh calls that can take a minute.
+/// Cancel a job (ADR-024 o22.3, o22.14.7): the thin `AppHandle` shell over [`cancel_one_job`] (the
+/// app's poller and [`cancel_job_core`]), run off the IPC thread in `spawn_blocking` — a delivery
+/// makes ssh calls that can take a minute.
 ///
 /// **Not** `guarded_blocking`: the core claims the job's in-flight guard itself — `try_acquire` on
 /// the remote path (a busy job leaves the cancel pending), `acquire` on the local one (a busy job is
@@ -914,11 +914,17 @@ pub async fn submit_job(
 /// `job:status`).
 #[tauri::command]
 pub async fn cancel_job(app: tauri::AppHandle, id: String) -> Result<CancelResult, AppError> {
-    tauri::async_runtime::spawn_blocking(move || {
-        crate::poller::app::with_poller(&app, |poller| cancel_job_core(poller, &id, |job| dispatch_cancel(&app, job)))
-    })
-    .await
-    .map_err(|e| AppError::Backend(format!("cancel of job: the background task failed: {e}")))?
+    tauri::async_runtime::spawn_blocking(move || cancel_one_job(&app, &id))
+        .await
+        .map_err(|e| AppError::Backend(format!("cancel of job: the background task failed: {e}")))?
+}
+
+/// The per-job body of Anton's Cancel: [`cancel_job_core`] with the app's poller
+/// (`poller::app::with_poller`) and the shared [`dispatch_cancel`]. Blocking (a delivery makes ssh
+/// calls): callers run it on the blocking pool. Shared by [`cancel_job`] and "Cancel Claude's jobs"
+/// (`commands::mcp::mcp_cancel_claude_jobs`, ADR-027 M4 amendment, item 3), so the two cannot drift.
+pub(crate) fn cancel_one_job(app: &tauri::AppHandle, id: &str) -> Result<CancelResult, AppError> {
+    crate::poller::app::with_poller(app, |poller| cancel_job_core(poller, id, |job| dispatch_cancel(app, job)))
 }
 
 /// The guarded path's `dispatch` in the app: the cancel of the backend the job belongs to, keyed on
@@ -2615,33 +2621,36 @@ mod tests {
     }
 
     /// ADR-024 o22.14.7, the shell pinned in the source (no `AppHandle`-free seam exists for it):
-    /// `cancel_job` runs `cancel_job_core` **inside `spawn_blocking`**, through `with_poller`, and
-    /// claims **no guard** itself — no `guarded_blocking`, no `acquire` — since the core claims it
-    /// (`try_acquire` remote, `acquire` local); a pre-claimed guard would turn every remote cancel
-    /// into `Pending` and every local one into a conflict. One awaited call; the backend comes from
-    /// the job the core read; the shell reads nothing itself. `undo_cancel` is a shell over
-    /// `revoke_cancel_core` with no guard. And o21.5's pin, retargeted to the guarded path: in
-    /// `cancel_guarded_or_record` the claim precedes the one read that acts, and the dispatch acts
-    /// on it. (The behaviour is tested on the cores: `poller::cancel::tests`.)
+    /// `cancel_job` runs its per-job body, [`cancel_one_job`], **inside `spawn_blocking`**, and that
+    /// body is `cancel_job_core` through `with_poller` with the shared `dispatch_cancel`; neither
+    /// claims a guard — no `guarded_blocking`, no `acquire` — since the core claims it (`try_acquire`
+    /// remote, `acquire` local); a pre-claimed guard would turn every remote cancel into `Pending`
+    /// and every local one into a conflict. One awaited call; the backend comes from the job the core
+    /// read; neither reads anything itself. `undo_cancel` is a shell over `revoke_cancel_core` with no
+    /// guard. And o21.5's pin, retargeted to the guarded path: in `cancel_guarded_or_record` the
+    /// claim precedes the one read that acts, and the dispatch acts on it. (The behaviour is tested
+    /// on the cores: `poller::cancel::tests`.) The per-job body is extracted for ADR-027 M4's "Cancel
+    /// Claude's jobs", which runs the same one (`commands::mcp`'s pin).
     /// NEGATIVE CONTROLS: a guard claimed in the shell before the task (`.acquire(&id)?`) → red;
-    /// the core called outside `spawn_blocking` → red; the guarded read moved above the `acquire` in
+    /// the body called outside `spawn_blocking` → red; the guarded read moved above the `acquire` in
     /// `cancel_guarded_or_record` → red.
     #[test]
     fn cancel_job_runs_the_core_off_the_ipc_thread_and_claims_no_guard_itself() {
         let src = include_str!("jobs.rs");
         let shell = fn_body(src, concat!("pub async fn ", "cancel_job("));
         let at = |needle: &str| shell.find(needle).unwrap_or_else(|| panic!("cancel_job has `{needle}`"));
-        let (spawn, poller, core) = (
-            at("tauri::async_runtime::spawn_blocking(move ||"),
-            at(concat!("with_", "poller(&app, |poller|")),
-            at(concat!("cancel_job_", "core(poller, &id,")),
-        );
-        assert!(spawn < poller && poller < core, "the core runs inside spawn_blocking, with the app's poller");
+        let (spawn, body) = (at("tauri::async_runtime::spawn_blocking(move ||"), at(concat!("cancel_one_", "job(&app, &id)")));
+        assert!(spawn < body, "the per-job body runs inside spawn_blocking");
+        let one = fn_body(src, concat!("pub(crate) fn ", "cancel_one_job("));
+        let at_one = |needle: &str| one.find(needle).unwrap_or_else(|| panic!("cancel_one_job has `{needle}`"));
+        let (poller, core) = (at_one(concat!("with_", "poller(app, |poller|")), at_one(concat!("cancel_job_", "core(poller, id,")));
+        assert!(poller < core, "the core runs with the app's poller");
         for forbidden in [concat!("guarded_", "blocking"), concat!(".acq", "uire("), concat!("try_", "acquire("), concat!("get_job_", "conn(")] {
             assert!(!shell.contains(forbidden), "cancel_job contains `{forbidden}`");
+            assert!(!one.contains(forbidden), "cancel_one_job contains `{forbidden}`");
         }
         assert_eq!(shell.matches(".await").count(), 1, "one awaited call, the blocking task");
-        assert!(shell.contains("dispatch_cancel(&app, job)"), "the dispatch is the shared one");
+        assert!(one.contains("dispatch_cancel(app, job)"), "the dispatch is the shared one");
         let dispatch = fn_body(src, concat!("pub(crate) fn ", "dispatch_cancel("));
         assert!(dispatch.contains("Backend::for_job(app.clone(), &job)?"), "the backend comes from the job the core read");
 

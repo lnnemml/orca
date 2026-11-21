@@ -32,14 +32,20 @@
 //! - [`cancel`] and [`create_group`] are the M3b write cores (registered by `server::m3b_tools`):
 //!   `cancel_job` (only `origin = 'mcp'`, never a `Draft`; a pre-row, `cancel_job_core`, an
 //!   outcome row) and `create_group` (the insert and its audit row in one transaction).
+//! - [`claude_jobs`] and [`audit_view`] are Settings → MCP's cores (M4a): "Cancel Claude's jobs"
+//!   (one selection, queued first, each job through Anton's per-job cancel body) with its summary,
+//!   and the audit log's pages (keyset on `id`, `args` cut and marked, unreadable `reasons` shown
+//!   raw, never failing the page).
 //!
 //! The module page is `wiki/modules/mcp-server.md`.
 
 pub mod allowlist;
 pub mod assemble;
 pub mod audit;
+pub mod audit_view;
 pub mod cancel;
 pub mod charge_mult;
+pub mod claude_jobs;
 pub mod classify;
 pub mod create_group;
 #[cfg(unix)]
@@ -63,11 +69,15 @@ mod allowlist_tests;
 #[cfg(test)]
 mod assemble_tests;
 #[cfg(test)]
+mod audit_view_tests;
+#[cfg(test)]
 mod cancel_tests;
 #[cfg(test)]
 mod charge_mult_tests;
 #[cfg(test)]
 mod classify_tests;
+#[cfg(test)]
+mod claude_jobs_tests;
 #[cfg(test)]
 mod create_group_tests;
 #[cfg(all(test, unix))]

@@ -763,4 +763,111 @@ export interface McpStatus {
   socket_path: string | null;
   /** Why this instance does not serve. */
   reason: string | null;
+  /** This instance's read count (ADR-027 M4 amendment item 2). */
+  reads: McpReads;
+}
+
+/** Mirrors `mcp::server::reads::ConnectionState`. */
+export type McpConnectionState = "open" | "closing";
+
+/** Mirrors `mcp::server::reads::ConnectionReads` — one live or closing connection's reads. */
+export interface McpConnectionReads {
+  /** The accept ordinal: stable across polls, unique for the app's process. */
+  id: number;
+  /** `closing`: its transport has closed (or MCP was switched off) and it is still draining. */
+  state: McpConnectionState;
+  reads: number;
+  /** The non-zero counts, by tool name. */
+  by_tool: Record<string, number>;
+}
+
+/**
+ * Mirrors `mcp::server::reads::McpReads`. Covers **this instance only**: an instance that does not
+ * serve counts nothing, so its total is not "Claude read nothing" (`readsLine` says so).
+ */
+export interface McpReads {
+  /** Every read call this instance admitted since the app started (lost when the app exits). */
+  total: number;
+  connections: McpConnectionReads[];
+}
+
+// --- Settings → MCP: the grant, the audit log, "Cancel Claude's jobs" (ADR-027 M4a) ------------
+
+/** Mirrors `commands::mcp::GrantState`. */
+export type GrantState = "active" | "expired" | "revoked";
+
+/** Mirrors `commands::mcp::GrantView` — `mcp_create_grant` / `mcp_revoke_grant` / `mcp_get_grant`. */
+export interface GrantView {
+  id: string;
+  state: GrantState;
+  /** UTC on the laptop's clock, `YYYY-MM-DD HH:MM:SS`. */
+  created_at: string;
+  expires_at: string;
+  revoked_at: string | null;
+  /** `"local"` or a server profile id. */
+  targets: string[];
+  /** Each granted level's signature, one line each. */
+  levels: string[];
+  max_jobs: number;
+  max_in_flight: number;
+  /** Stored: step A adds one, only a refund takes one back. */
+  charged_jobs: number;
+  /** Every non-terminal job charged to **any** grant (decision 5). */
+  in_flight: number;
+}
+
+/** Mirrors `mcp::claude_jobs::ClaudeJobsSummary` — `mcp_claude_jobs_summary()`. */
+export interface ClaudeJobsSummary {
+  /** Claude's jobs in queued, running or cancelling: what the cancel would act on now. */
+  to_cancel: number;
+  /** Claude's drafts in step B: skipped. */
+  submitting: number;
+}
+
+/** Mirrors `mcp::claude_jobs::ClaudeJobCancel`: one job's outcome. */
+export type ClaudeJobCancel = { job_id: string; result: CancelResult } | { job_id: string; error: string };
+
+/** Mirrors `mcp::claude_jobs::ClaudeCancelReport` — `mcp_cancel_claude_jobs()`. */
+export interface ClaudeCancelReport {
+  /** One entry per selected job, in the order cancelled (queued first). */
+  jobs: ClaudeJobCancel[];
+  skipped_submitting: number;
+}
+
+/** Mirrors `mcp::steps::McpReason`. */
+export interface McpReason {
+  row: string;
+  message: string;
+}
+
+/** Mirrors `mcp::audit_view::AuditReasons` (serde `tag = "kind"`). */
+export type AuditReasons =
+  | { kind: "read"; list: McpReason[] }
+  /** Not a reasons array: the raw text, cut to 1,024 characters. */
+  | { kind: "unreadable"; raw: string; raw_clipped: boolean };
+
+/** Mirrors `mcp::audit_view::AuditRowView` — one row of `mcp_list_audit`, or `mcp_audit_row(id)`. */
+export interface AuditRowView {
+  id: number;
+  /** UTC on the laptop's clock, `YYYY-MM-DD HH:MM:SS`. */
+  at: string;
+  tool: string;
+  /** Cut to 1,024 characters on a page (`args_clipped`); whole from `mcp_audit_row`. */
+  args: string;
+  args_clipped: boolean;
+  /** The stored args' full length, in characters. */
+  args_chars: number;
+  /** `refused` / `proposed` / `submitted`, or `null` for an outcome that is not a disposition. */
+  disposition: string | null;
+  reasons: AuditReasons;
+  job_id: string | null;
+  grant_id: string | null;
+}
+
+/** Mirrors `mcp::audit_view::AuditPage` — `mcp_list_audit(beforeId, limit)`. */
+export interface AuditPage {
+  /** Newest first. */
+  rows: AuditRowView[];
+  /** The `beforeId` of the next (older) page; `null` when no older row exists. */
+  next_before_id: number | null;
 }

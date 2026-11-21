@@ -18,6 +18,8 @@
 //!   handler's side: the permit, the gate, and the call as one tracked task.
 //! - [`m3b_tools`] registers `cancel_job`, `create_group` and `wait_for_jobs` (M3b) over their cores
 //!   (`crate::mcp::cancel`, `crate::mcp::create_group`, `crate::mcp::tools::wait`).
+//! - [`reads`] is the read count (M4a): the read/write table, each connection's lock-free
+//!   counters, and the lifecycle's ledger of the total since app start.
 //! - [`gate`] is the admission gate over `TaskTracker` generations.
 //! - [`lifecycle`] owns every transition under one mutex, the status, and the exit flow.
 //! - [`tick`] is the 30 s tick driver.
@@ -36,6 +38,7 @@ pub mod lock;
 pub mod m3b_tools;
 pub mod paths;
 pub mod read_tools;
+pub mod reads;
 pub mod relay;
 pub mod service;
 pub mod socket;
@@ -58,6 +61,8 @@ mod m3b_tools_tests;
 mod paths_tests;
 #[cfg(test)]
 mod read_tools_tests;
+#[cfg(test)]
+mod reads_tests;
 #[cfg(test)]
 mod relay_tests;
 #[cfg(test)]

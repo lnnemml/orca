@@ -1,6 +1,6 @@
 # MCP server — the job classifier, input assembly, grant core, transport, read tools and the write tools (`src-tauri/src/mcp/`)
 
-[ADR-027](../architecture/adr-027-mcp-orchestration-server.md), units M1a, M1b, M2a, M2b, M3a and M3b. This module is the
+[ADR-027](../architecture/adr-027-mcp-orchestration-server.md), units M1a, M1b, M2a, M2b, M3a, M3b and M4a. This module is the
 guard that decides whether an AI model may spend compute. A `create_job` call ends in exactly one
 of three dispositions: **REFUSED** (nothing is created), **PROPOSED** (a draft Anton runs by hand)
 or **SUBMITTED** (charged to the active grant). The module also assembles the job's input, so the
@@ -26,9 +26,12 @@ inside its transaction (`steps::decide_conn`), the real step B over the app's ow
 (`step_b.rs`) and the audit log (`audit.rs`); `server/create_job_tool.rs` registers it in the server,
 and `server/wiring.rs` builds its seams over the app. **The M3b tools** are `cancel_job` (`cancel.rs`),
 `create_group` (`create_group.rs`) and `wait_for_jobs` (`tools/wait.rs`), registered by
-`server/m3b_tools.rs`; see "The M3b tools" below. The module stays registered in `lib.rs` under a
-scoped `#[allow(dead_code)]`: a few items still have no non-test caller (the audit log's reader and
-`active_grant_conn`, for M4's panel; `insert_proposed_conn`; test accessors).
+`server/m3b_tools.rs`; see "The M3b tools" below. **Settings → MCP's cores** (M4a) are the read
+count (`server/reads.rs`: every admitted read call counted per connection, and a total since app start
+in `McpStatus.reads`), "Cancel Claude's jobs" (`claude_jobs.rs`) and the audit view (`audit_view.rs`),
+with their commands in `commands/mcp.rs`; see "Settings → MCP's commands" below. The module stays
+registered in `lib.rs` under a scoped `#[allow(dead_code)]`: a few items still have no non-test caller
+(`audit_rows_conn`, test-only by design; `active_grant_conn`; `insert_proposed_conn`; test accessors).
 
 **It fails closed.** A line outside the grammar is REFUSED (R1); a block, key or value outside the
 allowlist is PROPOSED (P2); a source whose terminal state is unknown is REFUSED (R4); a memory
@@ -48,7 +51,9 @@ PROPOSED (P5). Nothing reaches SUBMITTED by default.
 | `assemble.rs` | `assemble(header, maxcore_mib, atoms, charge_mult, source_label) -> Result<Assembled, AssemblyError>`; `comment_safe_label`; `AppSet`; `SERVER_DEFAULT_MAXCORE_MIB = 2000`; `COORD_TOLERANCE_ANG = 1e-6`; `read_coordinate_block`, the strict `* xyz` block reader shared with the resolver |
 | `grant.rs` | `create_grant_conn`, `revoke_grant_conn`, `get_grant_conn`, `active_grant_conn`, `grant_snapshot_conn -> Option<CurrentGrant { id, snapshot }>`, `in_flight_conn`; `Grant` (with `status_at(now)`), `NewGrant`; `target_text`/`target_of` (`"local"` or a profile id); `begin_immediate`, `now_utc_conn`, `check_utc_text` |
 | `steps.rs` | `create_job`'s step A `decide_conn(conn, StepAInput) -> Decided` (`Refused`/`Proposed`/`Charged`), `open_proposals_conn` (R8's count), its step C `finish_submit_audited_conn -> StepC` and `step_c_audit`; M1b's P5-only step A `charge_and_insert_conn -> StepA` (with `charge_and_insert_with`, `McpJobDraft`) and unaudited `finish_submit_conn`, **test-only** (`#[cfg(test)]`: no app code can charge or refund without an audit row), which share the charge and finish bodies (`charge_in_tx`, `finish_in_tx`); `insert_proposed_conn`, `reconcile_submitting_conn -> Reconciled` (with its outcome rows; `RECONCILIATION_ARGS`), `submit_refusal_for_mcp_state`, `refuse_while_mcp_submitting`; `McpReason { row, message }` and its constructors; `SUBMITTING` |
-| `audit.rs` | the audit log: `append_audit_conn(conn, &AuditEntry)`, `audit_rows_conn -> Vec<AuditRow>`, `bounded_reasons`, `AuditDisposition`; `CREATE_JOB`, `AUDIT_REASONS_MAX` (20), `REASON_MESSAGE_MAX_BYTES` (400) |
+| `audit.rs` | the audit log: `append_audit_conn(conn, &AuditEntry)`, `audit_rows_conn -> Vec<AuditRow>` (test-only; a `reasons` that does not parse is its error), `bounded_reasons`, `AuditDisposition`; `CREATE_JOB`, `AUDIT_REASONS_MAX` (20), `REASON_MESSAGE_MAX_BYTES` (400) |
+| `audit_view.rs` | the audit view's reader: `list_audit_conn(conn, before_id, limit) -> AuditPage { rows, next_before_id }`, `audit_row_conn(conn, id) -> AuditRowView` (`NotFound` for an unknown id), `page_limit`, `read_reasons -> AuditReasons` (`Read { list }` / `Unreadable { raw, raw_clipped }`); `AuditRowView { id, at, tool, args, args_clipped, args_chars, disposition, reasons, job_id, grant_id }`; `AUDIT_PAGE_DEFAULT` (50), `AUDIT_PAGE_MAX` (200), `AUDIT_ARGS_PAGE_CHARS` (1,024), `AUDIT_REASONS_RAW_CHARS` (1,024). Tests in `audit_view_tests.rs` |
+| `claude_jobs.rs` | "Cancel Claude's jobs": `select_claude_jobs_conn -> ClaudeJobsSelection { to_cancel, submitting }` over the one statement `CLAUDE_JOBS_SQL`, `claude_jobs_summary_conn -> ClaudeJobsSummary { to_cancel, submitting }`, `cancel_claude_jobs(&DbState, cancel_one) -> ClaudeCancelReport { jobs, skipped_submitting }`; `ClaudeJobCancel { job_id, outcome }`, `ClaudeJobOutcome` (`Result`/`Error`). Tests in `claude_jobs_tests.rs` |
 | `create_job.rs` | the `create_job` pipeline: `run_create_job(&CreateJobEnv, CreateJobArgs) -> CreateJobResult`, its halves `decide -> Decision` (`Done`/`Charged`) and `submit_charged` (over `submit_charged_with`, whose step C transaction and waits are seams); `audit_args`; the seams `CreateJobEnv { db, smiles, host, step_b, emit }`, `StepB` (→ `StepBOutcome`), `StatusEmit`; the result types `Outcome`, `SetByApp`, `SubmitReport`; the bounds `HEADER_MAX_BYTES`, `SOURCE_MAX_BYTES`, `TARGET_MAX_BYTES`, `GROUP_ID_MAX_BYTES`, `TITLE_MAX_BYTES`, `AUDIT_HEADER_MAX_BYTES`, `STEP_B_MESSAGE_MAX_BYTES`; `STEP_C_RETRY_WAITS` (250 ms, 1 s) |
 | `cancel.rs` | `cancel_job`'s core: `run_cancel_job(&Poller, &CancelJobArgs, dispatch) -> CancelJobResult` (`Refused`/`Requested`/`Failed`), `precheck_conn -> Precheck` (`Refused`/`Proceed`), `outcome_row_conn`, `outcome_reasons`, `requested_reason`, `result_tag`, `audit_args`; `CANCEL_JOB`, `JOB_ID_MAX_BYTES` (64), `NOT_CLAUDES`, `DRAFT_REFUSED`, `SUBMITTING_REFUSED`. Tests in `cancel_tests.rs` |
 | `create_group.rs` | `create_group`'s core: `run_create_group(conn, &CreateGroupArgs) -> CreateGroupResult`, `check_args` (→ the trimmed name), `create_group_audited_conn`, `audit_args`; `CREATE_GROUP`, `GROUP_NAME_MAX_CHARS` (200), `PARENT_ID_MAX_BYTES` (64). Tests in `create_group_tests.rs` |
@@ -70,20 +75,21 @@ PROPOSED (P5). Nothing reaches SUBMITTED by default.
 | `tools/wait.rs` | `wait_for_jobs(&WaitArgs, closed, &dyn StatusReader, &dyn WaitClock, tick) -> WaitEnd` (`Answered(WaitResult)`/`ConnectionClosed`), `check_args -> WaitRequest`, the pure `changes`, `read_statuses_conn`; the seams `StatusReader` (the app's `DbStatusReader`) and `WaitClock` (the app's `TokioClock`), `SeamFuture`; `WaitResult`, `StatusChange`; `WAIT_MAX_S` (600), `WAIT_TICK` (2 s), `KNOWN_MAX` (50), `JOB_ID_MAX_BYTES` (64), `GONE`. Tests in `tools/wait_tests.rs` |
 | `tools/*_tests.rs`, `tools/test_support.rs` | one test file per tool file plus `budget_tests.rs`; `test_support` (`pub(crate)`) has the unit-name walk (`unitless_numeric_keys`), `assert_fits`, row builders, and the fixtures that drive each core to its cap (`largest_get_job`, `largest_list_jobs`, `results_json`, `grid_molecule`, `output_job`, `largest_tail_lines`/`largest_search_lines`, `index_manual`/`largest_manual`, `largest_profiles`, `largest_groups`), shared with the end-to-end tests |
 | `*_tests.rs`, `test_db.rs` | one test file per submodule, plus `submit_guard_tests.rs` for the guard's wiring; `test_db.rs` builds a migrated scratch database per test |
-| `../commands/mcp.rs` | the grant commands `mcp_create_grant`, `mcp_revoke_grant`, `mcp_get_grant`, `mcp_level_from_job` and their `*_core`/`*_conn` bodies; `GrantView`, `GrantState`; the switch's `async` commands `mcp_status`, `mcp_set_enabled(on)` over `mcp_status_core`/`mcp_set_enabled_core`. Tests in `commands/mcp_tests.rs` |
+| `../commands/mcp.rs` | the grant commands `mcp_create_grant`, `mcp_revoke_grant`, `mcp_get_grant`, `mcp_level_from_job` and their `*_core`/`*_conn` bodies; `GrantView`, `GrantState`; the switch's `async` commands `mcp_status`, `mcp_set_enabled(on)` over `mcp_status_core`/`mcp_set_enabled_core`; Settings → MCP's `mcp_claude_jobs_summary`, `mcp_cancel_claude_jobs` (over `cancel_claude_jobs_off_thread`), `mcp_list_audit`, `mcp_audit_row`. Tests in `commands/mcp_tests.rs` |
 | `switch.rs` | the switch's row: `MCP_ENABLED_KEY` (`mcp_enabled`), `read_enabled_conn`, `write_enabled_conn`, `is_reserved_setting` |
 | `server/mod.rs` | the transport's submodule list; `CONNECTIONS = 4`, `REQUESTS_PER_CONNECTION = 4`; the `DbSource` seam (`impl DbSource for DbState`) |
 | `server/paths.rs` | `resolve(runtime_dir, app_data_dir) -> Result<McpPaths, PathRefusal>`, `resolve_for_this_user`, `sun_path_max` (107); `McpPaths { dir, lock, socket, base }` |
 | `server/lock.rs` | `try_acquire(path) -> Result<Acquire, LockError>` (`Acquired(McpLock)` / `HeldElsewhere`), `has_cloexec` |
 | `server/socket.rs` | `prepare_dir`, `bind(paths, own_uid, after_bind) -> BoundSocket { listener, identity }`, `check_modes`, `unlink_if_same(identity) -> Unlinked`; `DIR_MODE = 0o700`, `SOCKET_MODE = 0o600` |
-| `server/listener.rs` | `accept_loop`, the peer check (`PeerUid`, `kernel_peer_uid`, `own_uid`, `peer_allowed`), the per-start `Registry`, the `Transport` stream wrapper |
-| `server/service.rs` | `McpService` (the `rmcp` `ServerHandler`: `get_grant`, the permit in `call_tool`, one router of `get_grant`, the read tools, `create_job` and the M3b tools), `ConnState { closed, permits }`, `HostPaths { meminfo, data_dir }` (`production(data_dir)`); `OWN_PERMIT_TOOLS`, `takes_own_permit`; `bound_errors`/`bounded_error_text`, `ARGUMENT_ERROR_PREFIX`; `RECOVERY_SENTENCE`, `INSTRUCTIONS`, `BUSY` |
+| `server/listener.rs` | `accept_loop`, the peer check (`PeerUid`, `kernel_peer_uid`, `own_uid`, `peer_allowed`), the per-start `Registry`, the read ledger's enter (at admission) and fold (after the drain), the `Transport` stream wrapper |
+| `server/reads.rs` | the read count: `TOOL_KINDS` (every tool, `Read`/`Write`), `READ_TOOL_COUNT` (12), `kind_of`; `ReadCounts` (a connection's atomics: `count`, `total`, `by_tool`); `ReadLedger` (`enter`, `fold`, `snapshot`); `McpReads { total, connections }`, `ConnectionReads { id, state, reads, by_tool }`, `ConnectionState` (`Open`/`Closing`). Tests in `server/reads_tests.rs` |
+| `server/service.rs` | `McpService` (the `rmcp` `ServerHandler`: `get_grant`, the permit in `call_tool`, one router of `get_grant`, the read tools, `create_job` and the M3b tools), `ConnState { closed, permits, reads }`, `HostPaths { meminfo, data_dir }` (`production(data_dir)`); `OWN_PERMIT_TOOLS`, `takes_own_permit`; `bound_errors`/`bounded_error_text`, `ARGUMENT_ERROR_PREFIX`; `RECOVERY_SENTENCE`, `INSTRUCTIONS`, `BUSY` |
 | `server/read_tools.rs` | the ten read tools registered (`#[tool_router(router = read_tools_router)]`): their descriptions, argument structs (`ListJobsArgs`, `JobIdArgs`, `GeometryArgs`, `MeasureArgs`, `ReadOutputArgs`, `SearchManualArgs`, `MemoryEstimateArgs`, `ListGroupsArgs`, `NoArgs`; all `deny_unknown_fields`), `output_request`; the mapping `respond` → `served_text` (the cap at the boundary) / `error_text`; `on_blocking_pool`, `McpService::with_db` |
 | `server/gate.rs` | `AdmissionGate` (`open`, `close`, `spawn`, `task_count`, `wait_all`), `GateClosed` ("MCP is shutting down") |
 | `server/create_job_task.rs` | `create_job_call(&ConnState, &AdmissionGate, Arc<CreateJobEnv>, CreateJobArgs)`: the handler's side — the permit, the gated spawn of the one task, the await; `WriteSeams { smiles, step_b, emit, cancel }` (the write tools' seams, what the lifecycle environment carries) and `WriteWiring { gate, env, cancel }` (what each connection's service gets). Tests in `server/create_job_task_tests.rs` |
 | `server/create_job_tool.rs` | `create_job` registered (`#[tool_router(router = create_job_router)]`): `CREATE_JOB_DESCRIPTION`, `CreateJobToolArgs` (`deny_unknown_fields`). Tests in `server/create_job_tool_tests.rs` |
 | `server/m3b_tools.rs` | `cancel_job`, `create_group` and `wait_for_jobs` registered (`#[tool_router(router = m3b_tools_router)]`): `CANCEL_JOB_DESCRIPTION`, `CREATE_GROUP_DESCRIPTION`, `WAIT_FOR_JOBS_DESCRIPTION`, the argument structs (`CancelJobToolArgs`, `CreateGroupToolArgs`, `WaitForJobsToolArgs`; `deny_unknown_fields`); the seam `CancelWorld` (`run(CancelCall)`), `Dispatch`, `cancel_in`, `wait_answer`, `CONNECTION_CLOSED`. Tests in `server/m3b_tools_tests.rs` |
-| `server/lifecycle.rs` | `McpLifecycle` (`tick_step`, `set_enabled`, `status`, `on_exit_requested`, `gate`, `is_exiting`), the pure `decide` and `pass_through`; `LifecycleEnv` (`production(db, host, write_seams)`, `production_at(db, paths, host, write_seams)`; its `host` reaches every connection's service, and with `db` and `write_seams` it makes the one `CreateJobEnv`), `Hooks`, `Observed`, `Action`, `Why`, `McpStatus`, `ExitDecision`, `Executor` (`BlockingPool`), `ExitSteps`, `StopHandle`; `with_busy_timeout`, `RECONCILE_BUSY_TIMEOUT` (250 ms) |
+| `server/lifecycle.rs` | `McpLifecycle` (`tick_step`, `set_enabled`, `status`, `on_exit_requested`, `gate`, `is_exiting`), the pure `decide` and `pass_through`; `LifecycleEnv` (`production(db, host, write_seams)`, `production_at(db, paths, host, write_seams)`; its `host` reaches every connection's service, and with `db` and `write_seams` it makes the one `CreateJobEnv`), `Hooks`, `Observed`, `Action`, `Why`, `McpStatus` (with `reads`), `ExitDecision`, `Executor` (`BlockingPool`), `ExitSteps`, `StopHandle`; `with_busy_timeout`, `RECONCILE_BUSY_TIMEOUT` (250 ms) |
 | `server/wiring.rs` | the app's side: `ManagedDb` (the `DbSource` over the managed `DbState`), `wired_lifecycle(db, paths, host, write_seams)`, `app_lifecycle(app, data_dir)`, `start_ticks`; the write tools' app seams `app_write_seams(app)`: `AppSubmitWorld` (`SubmitWorld`), `AppEmit` (`StatusEmit`), `AppSmiles` (`SmilesTo3d`), `APP_NOT_READY`; `cancel_job`'s world `AppCancelWorld` (`CancelWorld`: `poller_is_managed`, then `with_poller` + `commands::jobs::dispatch_cancel`), `CANCEL_NOT_READY`; `exit_requested`, `handle_exit_request`, the pure `prevents_exit`, `guarded_steps`, `backstop`/`run_backstop`/`backstop_steps` → `Backstop` (`Hung`/`Died`/`StillAlive`), `hard_end` (`libc::_exit(1)`), `BackstopTimings`, `EXIT_FLOW_DEADLINE` (60 s), `EXIT_GRACE` (10 s), `BACKSTOP_STEPS_DEADLINE` (20 s); `is_relay_invocation`, `relay_main` |
 | `server/tick.rs` | `run_ticks(lifecycle, interval)`, `Interval`, `Every`, `TICK = 30 s` |
 | `server/relay.rs` | `relay(stdin, stdout, stderr, socket_path) -> RelayEnd` (`From<RelayEnd> for ExitCode`), `NOT_RUNNING` |
@@ -655,8 +661,8 @@ which `m3b_tools_tests::every_m3b_tools_work_runs_on_the_blocking_pool` checks t
   - **The permit.** `call_tool` holds the call's permit until the handler returns. Once the client
     hangs up, the wait ends at its next tick, the permit returns, and the connection's slot can free.
     The answer (an error naming the closed connection) goes nowhere.
-  - **No read count.** No per-connection count of read calls exists yet (decision 9's in-memory
-    count, built in M4: see "Not yet wired"), so `wait_for_jobs` is not counted.
+  - **The read count.** `wait_for_jobs` is a read: each admitted call counts once in the
+    connection's read count (below, "The read count"), however long it waits.
 
 ## The grant commands (`commands/mcp.rs`)
 
@@ -817,6 +823,51 @@ and `local_fitted_maxcore_with` lock `DbState` themselves.
   warning gives `Warns`; a missing RAM fact, disk fact or estimate gives `Unknown`; only all known and
   quiet gives `Fits`.
 
+## Settings → MCP's commands (`commands/mcp.rs`, M4a)
+
+ADR-027 M4 amendment, items 3 and 4. Anton's actions; no MCP tool calls them.
+
+| command | returns | what it does |
+|---|---|---|
+| `mcp_claude_jobs_summary()` | `ClaudeJobsSummary { to_cancel, submitting }` | synchronous; the confirm's numbers: `claude_jobs_summary_conn`, the cancel's own selection counted |
+| `mcp_cancel_claude_jobs()` | `ClaudeCancelReport { jobs, skipped_submitting }` | `async`; the selection and every per-job cancel on the blocking pool (`cancel_claude_jobs_off_thread`) |
+| `mcp_list_audit(before_id: Option<i64>, limit: Option<u32>)` | `AuditPage { rows, next_before_id }` | synchronous; one page of `mcp_audit`, newest first |
+| `mcp_audit_row(id: i64)` | `AuditRowView` | synchronous; one row whole; `NotFound` for an unknown id |
+
+**"Cancel Claude's jobs"** (`claude_jobs.rs`).
+- **The selection** is one statement (`CLAUDE_JOBS_SQL`), read under one `DbState` lock: every
+  `origin = 'mcp'` job in `queued`, `running` or `cancelling`, plus Claude's drafts in step B
+  (`status = 'draft'` and `mcp_state = 'submitting'`), which are counted and never cancelled. No
+  `user` job, no other draft and no terminal job is selected; a post-condition (rule #9) refuses
+  anything else the statement returns.
+- **The order** is `queued`, then `running`, then `cancelling`: a running job cancelled first would
+  free a local slot, and the queue would start a queued `mcp` job only for the loop to kill it.
+- **The summary is the selection counted**, so the confirm's number and the cancel cannot use
+  different predicates; TypeScript does not re-implement the filter.
+- **Each job** goes through `commands::jobs::cancel_one_job`, the per-job body Anton's `cancel_job`
+  runs (`with_poller` + `cancel_job_core` + `dispatch_cancel`), extracted so the two cannot drift. The
+  lock is released before the first cancel; the core takes it itself.
+- **The report.** One entry per selected job, in order: `{"job_id", "result": <CancelResult>}` or
+  `{"job_id", "error": "<message>"}` (`ClaudeJobOutcome`, not serde's `Ok`/`Err`). A failure does not
+  stop the loop. `skipped_submitting` is the number of step-B drafts skipped.
+- **No audit row**: it is Anton's action; the audit records Claude's dispositions.
+
+**The audit view** (`audit_view.rs`).
+- **Keyset paging on `id`**: `id < before_id` (or the newest), `ORDER BY id DESC`, one row past the
+  limit to know whether an older page exists (`next_before_id` is then the last row's id, else `null`).
+  `mcp_audit.id` is an `INTEGER PRIMARY KEY` and no code deletes an audit row, so ids only grow: no row
+  is skipped or repeated at a boundary, rows appended meanwhile included. (A future purge would need
+  `AUTOINCREMENT`.)
+- **The limit**: `None` → 50; 0 → 1; above 200 → 200 (`page_limit`).
+- **`args`** on a page is cut to 1,024 **characters** and marked: `args_clipped`, with the stored
+  length in `args_chars`. `mcp_audit_row` returns it whole (≤ 8,192 characters, the v24 CHECK).
+- **`reasons`** is `{"kind": "read", "list": [{row, message}]}` (a NULL column is an empty list), or,
+  when it does not parse as a reasons array, `{"kind": "unreadable", "raw", "raw_clipped"}` with the raw
+  text cut to 1,024 characters. An unreadable value **never fails the page**; this deliberately differs
+  from `audit_rows_conn`'s rule-#9 error, which stays test-only.
+- **A page's worst case** is ≈ 3.2 MB of JSON (200 rows × 1,024 characters of args at up to 6 bytes
+  each, plus 20 reasons of ≤ 440 B): accepted for IPC (the M4 amendment, item 4).
+
 ## The transport (`server/`, M2a)
 
 The MCP server (ADR-027 decision 2 and the M2 amendment, items 1–6). The app reaches it through
@@ -850,12 +901,14 @@ an old stop can never remove a newer socket.
    dropped;
 2. **a slot** — one of `CONNECTIONS` (4), held by the lifecycle and shared by every start; a fifth
    connection is closed at once;
-3. **registration** in the start's `Registry`, which switch-off shuts.
+3. **registration** in the start's `Registry`, which switch-off shuts;
+4. **the read ledger**: the connection enters it (`ReadLedger::enter`, which hands out its id, the
+   accept ordinal), before its service is spawned.
 
 Each connection then runs one `McpService` over a `Transport` wrapper of its stream. The wrapper sets
 the connection's `closed` flag at the stream's read EOF: `rmcp`'s own end comes up to 5 s later, after
 its response drain ("M2a facts" 4). When the service ends, the connection waits for its last request
-permit (`ConnState::drain`), and only then returns its slot.
+permit (`ConnState::drain`), is folded into the ledger's total, and only then returns its slot.
 
 **The service** (`service.rs`). The `rmcp` `ServerHandler` of one connection.
 - **The request cap.** Every `tools/call` takes one of the connection's `REQUESTS_PER_CONNECTION` (4)
@@ -864,6 +917,8 @@ permit (`ConnState::drain`), and only then returns its slot.
   (`OWN_PERMIT_TOOLS`, `takes_own_permit`): its handler takes its own permit and moves it into its task
   (above, "`create_job`"), so `call_tool` takes none for it and each call holds exactly one (pinned by
   four concurrent calls on one connection, all reaching step B, with a fifth request refused busy).
+- **The read count.** Once a call holds its permit, `call_tool` counts it in `ConnState.reads` if
+  `reads::TOOL_KINDS` classifies it a read (below, "The read count").
 - **Unknown methods.** `rmcp` answers them itself and keeps the connection: `server/discover` before
   `initialize` without the 2026-07-28 `_meta` gets −32602, with it a `DiscoverResult`; an unknown
   method after `initialize` gets −32601 ("M2a facts" 3).
@@ -929,9 +984,32 @@ switch-off. A transition reads the row, asks the pure `decide`, and acts, all un
   `mcp_enabled`) and runs one step at once. Once exit has begun it writes nothing and the status says
   `exiting`.
 - **`McpStatus`** (`enabled`, `holds_lock`, `serving`, `stopping_tasks`, `connections`,
-  `socket_path`, `reason`) is advisory: `status()` reads a leaf snapshot and the row, never the
-  lifecycle mutex. `enabled` is `None` when the row cannot be read; `stopping_tasks` is `None` when no
-  stop runs.
+  `socket_path`, `reason`, `reads`) is advisory: `status()` takes the facts' leaf mutex (a clone,
+  released at once), then `DbState` for the row, then the read ledger's leaf mutex, each alone; never
+  the lifecycle mutex, and the gate's mutex only while a stop runs (a closed gate refuses at once, so
+  no spawn holds it long). `enabled` is `None` when the row cannot be read; `stopping_tasks` is `None`
+  when no stop runs.
+
+**The read count** (`reads.rs`; ADR-027 M4 amendment, item 2).
+- **What counts.** A call `call_tool` admits — after its permit is taken — to one of the twelve read
+  tools: `get_grant`, the ten read tools and `wait_for_jobs`. A call that then fails argument parsing
+  still counts. A busy refusal, an unknown tool and the three write tools (`create_job`, `cancel_job`,
+  `create_group`; audited instead) do not. One table, `TOOL_KINDS`, classifies every tool; a parity
+  test pins it equal to the service's tool list.
+- **Per connection**, `ReadCounts` in `ConnState`: a total and one counter per read tool, all atomics.
+  Counting takes no lock on the call path.
+- **The ledger** (`ReadLedger`) is the lifecycle's, outside the per-start `Registry`, behind one leaf
+  mutex holding the live connections' handles and the folded total. A connection enters it at
+  admission (right after `Registry::register`, before its service is spawned) and is folded after its
+  `drain()`, when no permit can be taken and its counts are final. The fold (add to the folded total,
+  remove the live entry) and the status snapshot take the same mutex, so each count is seen exactly
+  once. Nothing else is locked while it is held, and no holder awaits.
+- **`McpStatus.reads`** is `{ total, connections }`: the total since app start (folded + live), and one
+  `{ id, state, reads, by_tool }` entry per live or closing connection. `state` is `"closing"` once the
+  transport has closed (or MCP was switched off) while the connection still drains. The total survives
+  a switch-off and switch-on and is lost when the process ends (decision 9).
+- **This instance only.** An instance that does not serve counts nothing; the display (`readsLine`,
+  `src/mcp/status.ts`) then says so and shows no 0 as a fact.
 
 **The exit flow.** `on_exit_requested(executor, steps)` is what `ExitRequested` calls on the main
 thread (through `wiring::exit_requested`), and it takes no mutex:
@@ -1372,11 +1450,12 @@ Two choices go beyond the clarifications, and each can only move a job toward An
 
 ## Not yet wired
 
-- **M4:** the Settings → MCP UI over the grant commands and the audit log, and "Claude is submitting"
-  in place of Run.
-- **M4: decision 9's per-connection in-memory read count**, built in M4 with its display (decided by
-  Anton, 2026-11-21; ADR-027 M3 amendment, item 1). No read tool, `wait_for_jobs` included, is counted
-  today.
+- **M4a Part B:** the Settings → MCP components over the commands and the pure logic above — the
+  grant card and editor (`src/mcp/grant.ts`, `src/mcp/expiry.ts`), Revoke, "Cancel Claude's jobs"
+  (`src/mcp/claudeJobs.ts`), the audit table (`src/mcp/audit.ts`) and the read count's display
+  (`readsLine`, `connectionReadsText` in `src/mcp/status.ts`), with the live WebKitGTK gate.
+- **M4b:** the Jobs screen's Claude badge, a PROPOSED job's reasons, "Claude is submitting" in place
+  of Run, and `groups:changed` from `create_group`.
 
 ## Tests
 
@@ -1389,7 +1468,10 @@ Two choices go beyond the clarifications, and each can only move a job toward An
 `mcp::server::`, the wiring's `mcp::server::wiring_tests`, the read tools' cores `mcp::tools::` and
 their registration end to end `mcp::server::read_tools_tests`, where `every_tool_answers_through_respond`
 pins that each of the ten tools is served as compact JSON, the shape only `respond` writes), `cargo test -p orcastudio --lib commands::mcp`
-the grant and switch commands' tests, `cargo test -p orcastudio --test mcp_relay_bin` the built
+the grant, switch and Settings → MCP commands' tests (the read count's are `mcp::server::reads_tests`,
+"Cancel Claude's jobs"' `mcp::claude_jobs_tests`, the audit view's `mcp::audit_view_tests`),
+`npx vitest run src/mcp` the Settings → MCP pure logic (the expiry under `TZ=Europe/Kyiv`, across both
+DST changes), `cargo test -p orcastudio --test mcp_relay_bin` the built
 binary's relay, `npx vitest run src/screens/SettingsScreen.mcp.test.tsx` the switch row, and
 `npx vitest run src/scene/charge-mult-parity.test.ts` the TS half of the C1 parity. The schema tests are
 `cargo test -p orcastudio --lib db::tests::` (v24 names in `modules/tauri-core.md`). The negative
@@ -1398,5 +1480,6 @@ list in the M1b Part A entry, the Part B list in the M1b Part B entry, and the M
 lists in their entries (all 2026-11-19), the M2b Part A list in its entry (2026-11-20), and the M2b
 Part B list and the follow-up's in their entries (2026-11-21), and the M3a Part A and Part B lists in
 their entries (2026-11-21; the scripts that re-run them are named there), and the M3b Part A and
-Part B lists in their entries (2026-11-21). The ASE
+Part B lists in their entries (2026-11-21), and the M4a Part A list in its entry (2026-11-21; script
+`m4a_parta_controls.py`). The ASE
 pin is `pytest sidecar/tests/test_geometry.py` (in the sidecar venv).

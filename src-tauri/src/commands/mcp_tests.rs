@@ -208,3 +208,78 @@ mod switch {
         ));
     }
 }
+
+// ----- "Cancel Claude's jobs" (ADR-027 M4 amendment, item 3; unit M4a Part A) -----
+
+mod claude_jobs {
+    use std::sync::{Arc, Mutex};
+
+    use super::super::cancel_claude_jobs_off_thread;
+    use crate::commands::jobs::CancelResult;
+    use crate::commands::settings::DbState;
+    use crate::mcp::server::test_support::{where_am_i, Ran};
+    use crate::mcp::server::DbSource;
+    use crate::mcp::test_db::TestDb;
+
+    /// Control OFF-THREAD (item 8: "its cancels running on the IPC thread or the async runtime"): the
+    /// body is driven with `block_on`, as the `async` command's future is; every per-job cancel runs
+    /// on Tauri's blocking pool.
+    #[test]
+    fn every_cancel_runs_on_the_blocking_pool() {
+        let db = TestDb::new("cmd-claude-cancel");
+        for (id, status) in [("q", "queued"), ("r", "running")] {
+            db.conn
+                .execute(
+                    "INSERT INTO jobs (id, title, input_content, status, origin) VALUES (?1, 't', '! SP', ?2, 'mcp')",
+                    rusqlite::params![id, status],
+                )
+                .unwrap();
+        }
+        let state: Arc<dyn DbSource> = Arc::new(DbState(Mutex::new(db.open_another())));
+        let ran = Arc::new(Mutex::new(Vec::new()));
+        let record = ran.clone();
+        let report = tauri::async_runtime::block_on(cancel_claude_jobs_off_thread(state, move |id| {
+            record.lock().unwrap().push((id.to_string(), where_am_i()));
+            Ok(CancelResult::Dispatched)
+        }))
+        .unwrap();
+        assert_eq!(report.jobs.len(), 2);
+        let ran = ran.lock().unwrap();
+        assert_eq!(
+            *ran,
+            [("q".to_string(), Ran::BlockingPool), ("r".to_string(), Ran::BlockingPool)],
+            "OFF-THREAD: a cancel ran off the blocking pool"
+        );
+    }
+
+    /// Control SHARED-BODY (item 8: "not routing through the shared per-job body"), pinned in the
+    /// source (no `AppHandle` harness exists): the command hands each job to
+    /// `commands::jobs::cancel_one_job`, the body Anton's Cancel runs (itself pinned in
+    /// `commands::jobs::tests`), through the off-thread core; it reaches no cancel core of its own.
+    #[test]
+    fn the_command_cancels_each_job_through_antons_per_job_body() {
+        let src = include_str!("mcp.rs");
+        let start = src.find(concat!("pub async fn ", "mcp_cancel_claude_jobs(")).expect("the command");
+        let body = &src[start..start + src[start..].find("\n}\n").unwrap()];
+        assert!(
+            body.contains(concat!("cancel_claude_jobs_off_", "thread(db, move |id| cancel_one_job(&app, id)).await")),
+            "SHARED-BODY: {body}"
+        );
+        for forbidden in [concat!("cancel_job_", "core("), concat!("with_", "poller("), concat!("dispatch_", "cancel(")] {
+            assert!(!body.contains(forbidden), "SHARED-BODY: the command reaches `{forbidden}` itself");
+        }
+        let core = &src[src.find(concat!("pub(crate) async fn ", "cancel_claude_jobs_off_thread(")).unwrap()..];
+        let core = &core[..core.find("\n}\n").unwrap()];
+        assert!(core.contains(concat!("off_the_callers_", "thread(")), "OFF-THREAD: {core}");
+    }
+
+    /// The four M4a commands are registered.
+    #[test]
+    fn the_m4a_commands_are_registered() {
+        let lib = include_str!("../lib.rs");
+        let handlers = &lib[lib.find("generate_handler![").expect("the handler list")..];
+        for cmd in ["mcp_claude_jobs_summary", "mcp_cancel_claude_jobs", "mcp_list_audit", "mcp_audit_row"] {
+            assert!(handlers.contains(&format!("commands::mcp::{cmd},")), "{cmd} is not registered");
+        }
+    }
+}
