@@ -33,7 +33,8 @@
 //! | the reconciliation refunded a `submitting` draft | `proposed` | `[{"row":"interrupted","message":"interrupted before submit"}]` |
 //! | the reconciliation cleared a non-`draft` row's flag | NULL | `[{"row":"state","message":"<job status>"},{"row":"interrupted","message":"…the charge is kept"}]` |
 //! | `cancel_job` refused: the job is not Claude's | `refused` | `[{"row":"origin","message":"not Claude's job (origin = user)"}]` |
-//! | `cancel_job` refused: a `Draft` | `refused` | `[{"row":"draft","message":"a PROPOSED draft cannot be cancelled; Anton deletes it"}]` |
+//! | `cancel_job` refused: a PROPOSED `Draft` | `refused` | `[{"row":"draft","message":"a PROPOSED draft cannot be cancelled; Anton deletes it"}]` |
+//! | `cancel_job` refused: a charged `Draft` in step B (`mcp_state = 'submitting'`) | `refused` | `[{"row":"submitting","message":"being submitted (step B); retry once it is queued"}]` |
 //! | `cancel_job` pre-row (the cancel core runs next) | NULL | `[{"row":"cancel","message":"requested (job was <job status>)"}]` |
 //! | `cancel_job` outcome | NULL | `[{"row":"cancel","message":"<CancelResult tag>"},{"row":"detail","message":"<the CancelResult as compact JSON>"}]` |
 //! | `cancel_job` outcome, the core's error | NULL | `[{"row":"cancel_error","message":"<the error>"}]` |

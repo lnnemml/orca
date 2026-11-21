@@ -335,6 +335,7 @@ impl McpLifecycle {
                 step_b: seams.step_b,
                 emit: seams.emit,
             }),
+            cancel: seams.cancel,
         };
         Arc::new(McpLifecycle {
             env,

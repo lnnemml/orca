@@ -8,6 +8,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -15,10 +16,14 @@ use rusqlite::Connection;
 use serde_json::{json, Value};
 
 use super::create_job_task::CreateJobSeams;
+use super::m3b_tools::{CancelCall, CancelWorld};
+use crate::mcp::cancel::CancelJobResult;
+use crate::mcp::tools::ToolError;
 use super::lifecycle::{Hooks, LifecycleEnv, McpLifecycle};
 use super::listener::{kernel_peer_uid, own_uid};
 use super::paths::{resolve, McpPaths};
 use super::service::HostPaths;
+use super::DbSource;
 use crate::commands::settings::DbState;
 use crate::mcp::classify::Target;
 use crate::mcp::create_job::{StatusEmit, StepB, StepBOutcome};
@@ -141,9 +146,19 @@ impl StatusEmit for NoEmit {
     fn job_status(&self, _: &str, _: JobStatus) {}
 }
 
-/// `create_job`'s seams for a test that does not exercise it: no sidecar, a refusing step B, no emit.
+/// A `cancel_job` world for a test that does not exercise it: every call is refused.
+pub struct NoCancel;
+
+impl CancelWorld for NoCancel {
+    fn run(&self, _: CancelCall<'_>) -> Result<CancelJobResult, ToolError> {
+        Err(ToolError::refused("no cancel_job world in this test"))
+    }
+}
+
+/// The write tools' seams for a test that does not exercise them: no sidecar, a refusing step B, no
+/// emit, no cancel.
 pub fn no_create_job() -> CreateJobSeams {
-    CreateJobSeams { smiles: Arc::new(NoSidecar), step_b: Arc::new(NoStepB), emit: Arc::new(NoEmit) }
+    CreateJobSeams { smiles: Arc::new(NoSidecar), step_b: Arc::new(NoStepB), emit: Arc::new(NoEmit), cancel: Arc::new(NoCancel) }
 }
 
 /// Write the switch row through another connection (another instance, or the test's hand).
@@ -258,4 +273,59 @@ pub fn tool_text(response: &Value) -> (String, bool) {
     let result = &response["result"];
     let text = result["content"][0]["text"].as_str().unwrap_or_default().to_string();
     (text, result["isError"].as_bool().unwrap_or(false))
+}
+
+// ----- the recording database -----
+
+/// Where a database touch (or any other piece of work) ran (shared by the end-to-end tests: the
+/// read tools' and the M3b tools').
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ran {
+    /// An async worker of the runtime: `Handle::block_on` panics there.
+    AsyncWorker,
+    /// Tauri's blocking pool: inside the runtime, where `Handle::block_on` is allowed.
+    BlockingPool,
+    /// Outside the runtime (the test thread, the lifecycle's switch-on).
+    Outside,
+}
+
+pub fn where_am_i() -> Ran {
+    match tokio::runtime::Handle::try_current() {
+        Err(_) => Ran::Outside,
+        Ok(handle) => match catch_unwind(AssertUnwindSafe(|| handle.block_on(async {}))) {
+            Ok(()) => Ran::BlockingPool,
+            Err(_) => Ran::AsyncWorker,
+        },
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Touch {
+    pub ran: Ran,
+    /// `DbState` was locked (by anyone) when the service reached for it.
+    pub lock_held: bool,
+}
+
+/// The service's `DbSource`, recording each touch's thread and whether the lock was held.
+pub struct RecordingDb {
+    pub db: Arc<DbState>,
+    pub touches: Mutex<Vec<Touch>>,
+}
+
+impl DbSource for RecordingDb {
+    fn db(&self) -> &DbState {
+        let lock_held = self.db.0.try_lock().is_err();
+        self.touches.lock().unwrap().push(Touch { ran: where_am_i(), lock_held });
+        &self.db
+    }
+}
+
+impl RecordingDb {
+    pub fn new(db: Arc<DbState>) -> Arc<RecordingDb> {
+        Arc::new(RecordingDb { db, touches: Mutex::new(Vec::new()) })
+    }
+
+    pub fn take(&self) -> Vec<Touch> {
+        std::mem::take(&mut *self.touches.lock().unwrap())
+    }
 }

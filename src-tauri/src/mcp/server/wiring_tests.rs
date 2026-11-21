@@ -484,3 +484,60 @@ fn the_app_seams_of_create_job_are_the_real_ones() {
     let call = smiles.find("SidecarSmiles::from_status(&status).smiles_to_3d(smiles)").expect("the call");
     assert!(status < call, "{smiles}");
 }
+
+/// `cancel_job`'s app world (M3b Part B) needs an `AppHandle`, so its body is pinned in the source:
+/// the app's seams carry it; it checks that the poller's state is managed **before** `with_poller`
+/// (which panics on a missing state), and it cancels through `commands::jobs::dispatch_cancel`, the
+/// dispatch Anton's Cancel uses. The behaviour of the pieces is tested on the cores
+/// (`mcp::cancel_tests`, `poller::cancel::tests`) and over the wire (`m3b_tools_tests`). NEGATIVE
+/// CONTROL: the world dispatching anything but `dispatch_cancel` (`APP-CANCEL`) → red.
+#[test]
+fn the_app_cancel_world_is_the_cancel_commands_own() {
+    let seams = wiring_fn("pub fn app_create_job(", "\n}\n");
+    assert!(seams.contains("cancel: Arc::new(AppCancelWorld(app.clone()))"), "{seams}");
+    let world = wiring_fn("impl CancelWorld for AppCancelWorld", "\n}\n");
+    let managed = world.find("crate::poller::app::poller_is_managed(app)").expect("the readiness check");
+    let poller = world.find("crate::poller::app::with_poller(app, |poller|").expect("the app's poller");
+    assert!(managed < poller, "the readiness check comes first: {world}");
+    assert!(
+        world.contains("call(poller, &|job| crate::commands::jobs::dispatch_cancel(app, job))"),
+        "APP-CANCEL: the app's cancel_job does not dispatch through the cancel command's own dispatch: {world}"
+    );
+}
+
+/// `poller_is_managed` checks every state `with_poller` reads (the verifier's LOW-1, M3b Part B):
+/// `with_poller` panics on a state that is not managed, and `AppCancelWorld` relies on the check to
+/// refuse instead. Each `app.state::<T>()` in `with_poller`'s body has its `app.try_state::<T>()` in
+/// `poller_is_managed`'s (types compared by their last path segment; spacing inside the angle brackets
+/// allowed). Every `state::<` in `with_poller`'s body must be one the parser read, so a form it cannot
+/// parse — a generic type, a UFCS call (`Manager::state::<T>(app)`), a call through another variable —
+/// goes red instead of being skipped (the verifier's LOW-A, fix round 2). NEGATIVE CONTROLS: a state
+/// dropped from `poller_is_managed` (`MANAGED-ALL`), a generic state read (`MANAGED-GENERIC`), a UFCS
+/// read (`MANAGED-UFCS`), a spaced read of an unchecked state (`MANAGED-SPACED`) → red.
+#[test]
+fn poller_is_managed_checks_every_state_with_poller_reads() {
+    const APP: &str = include_str!("../../poller/app.rs");
+    let body = |signature: &str| {
+        let start = APP.find(signature).unwrap_or_else(|| panic!("{signature} exists"));
+        &APP[start..start + APP[start..].find("\n}\n").expect("the fn ends")]
+    };
+    // Every parsed call, in order (a type read twice is listed twice).
+    let types = |text: &str, call: &str| -> Vec<String> {
+        let re = regex::Regex::new(&format!(r"app\.{call}::<\s*([A-Za-z0-9_:]+)\s*>\(\)")).unwrap();
+        re.captures_iter(text).map(|c| c[1].rsplit("::").next().unwrap().to_string()).collect()
+    };
+    let with_poller = body("pub fn with_poller<");
+    let parsed = types(with_poller, "state");
+    let occurrences = with_poller.matches("state::<").count();
+    assert_eq!(
+        occurrences,
+        parsed.len(),
+        "MANAGED-FORMS: with_poller has {occurrences} `state::<` reads but the parser read {parsed:?}: a form it cannot parse"
+    );
+    let read: std::collections::BTreeSet<String> = parsed.into_iter().collect();
+    let checked: std::collections::BTreeSet<String> =
+        types(body("pub fn poller_is_managed("), "try_state").into_iter().collect();
+    assert!(read.len() >= 6, "with_poller's states were found: {read:?}");
+    let missing: Vec<&String> = read.difference(&checked).collect();
+    assert!(missing.is_empty(), "MANAGED-ALL: poller_is_managed does not check {missing:?} (with_poller reads {read:?})");
+}

@@ -1114,7 +1114,8 @@ pub(crate) fn terminate_job(_pgid: i32, _job_dir: &Path) {}
 /// spawn run) is waited out for at most [`STARTING_JOB_WAIT`], then killed like any
 /// other ([`JobRunner::job_to_terminate`]); without that it would start after this
 /// returned and outlive the app. Worst case: 2 s for a starting job + `terminate_job`'s
-/// 10 s drain + 2 s grace ≈ **14 s**, inside the exit backstop's 20 s steps bound and 60 s flow bound.
+/// 10 s drain + 2 s grace + the sweeps ≈ **14.5 s**, inside the exit backstop's 20 s steps bound and
+/// 60 s flow bound.
 pub fn terminate_on_exit(app: &AppHandle) {
     let Some(runner) = app.try_state::<JobRunner>() else {
         return;

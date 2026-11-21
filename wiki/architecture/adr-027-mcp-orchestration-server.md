@@ -536,7 +536,8 @@ The repeat is bounded by the cap, and because each call is one client action.
   - the switch, the socket path, and whether this instance serves;
   - whether a client is connected;
   - the active grant with its usage, plus Revoke and "Cancel Claude's jobs";
-  - **the audit log**.
+  - **the audit log** (qualified by the M3 amendment, item 1: and the per-connection read count, built
+    in M4).
 - **The audit log** is an `mcp_audit` table. It holds every state-changing call, every refusal and
   every proposal (qualified by the M3 amendment, item 3): time, tool, bounded argument text,
   disposition, reasons, `job_id` and `grant_id`.
@@ -708,7 +709,8 @@ Part B. Every listed control must turn the suite red.
 - **M4 — the UI (Part B, live WebKitGTK gate).** The switch, the data line and "this instance serves"
   move to M2a Part B (M2 amendment, item 2).
   - Settings → MCP: the switch with the data line, "this instance serves", the grant editor with
-    "this job's level", Revoke, "Cancel Claude's jobs", and the audit view.
+    "this job's level", Revoke, "Cancel Claude's jobs", and the audit view (qualified by the M3
+    amendment, item 1: also the per-connection read count and its display).
   - In Jobs: the badge, the reasons and "Claude is submitting".
   - Anton adds the `.claude/settings.json` deny rule himself.
 - **M5 — the live research gate (Anton).** A Claude Code session in a separate research folder.
@@ -1294,6 +1296,16 @@ The decision text above stands, except where an item below says it replaces or q
            is stored trimmed. `known` has at most 50 entries, and each job id at most 64 bytes.
          - **`create_group`.** An optional `parent_id` must exist. The insert and its NULL-disposition
            row are one transaction, with no `grant_id`.
+         - **The read count (decided by Anton, 2026-11-21).** Decision 9's per-connection in-memory
+           read count is not built in M2b or M3b. It is built in M4, together with its display. Until
+           then, three sentences describe M4's state, not the code:
+           - decision 9's "Read calls are counted per connection in memory";
+           - decision 2's lifecycle table, "Only the per-connection read counters are lost";
+           - this item's "counted in memory only".
+
+           So the decomposition's M4 item gains the per-connection read count and its display in
+           Settings → MCP, and decision 9's list of what Anton sees in Settings → MCP gains that
+           display. Both carry a pointer here.
      - **Controls:**
        - `cancel_job` on a `user` job accepted;
        - `wait_for_jobs` ignoring `known`;

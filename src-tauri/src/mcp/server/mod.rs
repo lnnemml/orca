@@ -16,6 +16,8 @@
 //!   [`crate::mcp::tools`].
 //! - [`create_job_tool`] registers `create_job` (M3a) in that service; [`create_job_task`] is its
 //!   handler's side: the permit, the gate, and the call as one tracked task.
+//! - [`m3b_tools`] registers `cancel_job`, `create_group` and `wait_for_jobs` (M3b) over their cores
+//!   (`crate::mcp::cancel`, `crate::mcp::create_group`, `crate::mcp::tools::wait`).
 //! - [`gate`] is the admission gate over `TaskTracker` generations.
 //! - [`lifecycle`] owns every transition under one mutex, the status, and the exit flow.
 //! - [`tick`] is the 30 s tick driver.
@@ -31,6 +33,7 @@ pub mod gate;
 pub mod lifecycle;
 pub mod listener;
 pub mod lock;
+pub mod m3b_tools;
 pub mod paths;
 pub mod read_tools;
 pub mod relay;
@@ -49,6 +52,8 @@ mod gate_tests;
 mod lifecycle_tests;
 #[cfg(test)]
 mod lock_tests;
+#[cfg(test)]
+mod m3b_tools_tests;
 #[cfg(test)]
 mod paths_tests;
 #[cfg(test)]

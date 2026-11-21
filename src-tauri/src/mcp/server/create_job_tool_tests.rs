@@ -90,7 +90,7 @@ fn served<S: StepB + 'static>(tag: &str, max_in_flight: u32, step_b: impl FnOnce
         peer_uid: kernel_peer_uid(),
         own_uid: own_uid(),
         hooks: Hooks::default(),
-        create_job: CreateJobSeams { smiles: Arc::new(NoSidecar), step_b, emit: w.emit.clone() },
+        create_job: CreateJobSeams { smiles: Arc::new(NoSidecar), step_b, emit: w.emit.clone(), cancel: Arc::new(super::test_support::NoCancel) },
     };
     let lc = McpLifecycle::new(env);
     assert!(lc.set_enabled(true).unwrap().serving);

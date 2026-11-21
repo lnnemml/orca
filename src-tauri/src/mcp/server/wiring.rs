@@ -7,6 +7,9 @@
 //! `local_backend::emit_status`) and the sidecar's SMILES call ([`AppSmiles`]). Each only looks up
 //! the app's managed state at the moment of the call, with `try_state`: the tick thread may serve
 //! before the rest of setup has run, and a state not managed yet is a refusal, never a panic.
+//! `cancel_job`'s world (M3b Part B, [`AppCancelWorld`]) is built here as well: the app's poller
+//! (`poller::app::with_poller`, after `poller_is_managed`) and `commands::jobs::dispatch_cancel`, the
+//! same pair Anton's Cancel runs.
 //!
 //! Every piece that does not need an `AppHandle` is a plain function over injected parts, so the
 //! tests drive the production environment ([`wired_lifecycle`]), the exit decision
@@ -36,6 +39,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Manager};
 
 use super::create_job_task::CreateJobSeams;
+use super::m3b_tools::{CancelCall, CancelWorld};
 use super::lifecycle::{BlockingPool, ExitDecision, ExitSteps, Executor, LifecycleEnv, McpLifecycle};
 use super::paths::{resolve_for_this_user, McpPaths, PathRefusal};
 use super::relay::{relay, RelayEnd};
@@ -57,15 +61,16 @@ use crate::remote::ssh::SystemRunner;
 use crate::sidecar::SidecarManager;
 
 /// How long the exit flow may take before the backstop ends the process. In M2a the MCP wait is
-/// immediate (no tracked tasks), `terminate_on_exit` takes at most about 14 s (2 s pgid wait, 10 s drain, 2 s
-/// grace) and the sidecar stop about 0.3 s, so a flow that takes longer has hung.
+/// immediate (no tracked tasks), `terminate_on_exit` takes at most about 14.5 s (2 s pgid wait, 10 s
+/// drain, 2 s grace, the sweeps) and the sidecar stop about 0.3 s, so a flow that takes longer has hung.
 pub const EXIT_FLOW_DEADLINE: Duration = Duration::from_secs(60);
 /// How long the process may outlive the flow's `app.exit(0)` before the backstop ends it (decided by
 /// Anton). The event loop normally ends the process at once.
 pub const EXIT_GRACE: Duration = Duration::from_secs(10);
 /// How long the backstop waits for its own queue pause, kill and sidecar stop before it ends the
-/// process anyway. The steps' worst case is about 14.5 s (2 s pgid wait, 10 s drain, 2 s grace, the
-/// sweeps, 0.3 s sidecar stop), so 20 s leaves a margin of about 5 s.
+/// process anyway. The steps' worst case is about 14.8 s (`terminate_on_exit`'s ≈ 14.5 s: 2 s pgid
+/// wait, 10 s drain, 2 s grace, the sweeps; then the 0.3 s sidecar stop), so 20 s leaves a margin of
+/// about 5 s.
 pub const BACKSTOP_STEPS_DEADLINE: Duration = Duration::from_secs(20);
 
 /// The backstop's three bounds; [`BackstopTimings::PRODUCTION`] in the app, short ones in tests.
@@ -133,6 +138,29 @@ pub fn app_create_job(app: &AppHandle) -> CreateJobSeams {
         smiles: Arc::new(AppSmiles(app.clone())),
         step_b: Arc::new(RealStepB(AppSubmitWorld(app.clone()))),
         emit: Arc::new(AppEmit(app.clone())),
+        cancel: Arc::new(AppCancelWorld(app.clone())),
+    }
+}
+
+/// `cancel_job`'s refusal while the poller's state is not managed yet.
+pub const CANCEL_NOT_READY: &str = "the app is still starting; nothing was cancelled";
+
+/// `cancel_job`'s world in the app: the poller `commands::jobs::cancel_job` uses
+/// (`poller::app::with_poller`: the real runner, the app's `AppSink`, `JobRunner`'s data dir) and its
+/// dispatch (`commands::jobs::dispatch_cancel`: `Backend::for_job(..).cancel`). `with_poller` panics
+/// on a missing state, so the call first checks [`poller_is_managed`](crate::poller::app::poller_is_managed):
+/// the MCP tick starts before setup manages the poller's state.
+pub struct AppCancelWorld(pub AppHandle);
+
+impl CancelWorld for AppCancelWorld {
+    fn run(&self, call: CancelCall<'_>) -> Result<crate::mcp::cancel::CancelJobResult, crate::mcp::tools::ToolError> {
+        let app = &self.0;
+        if !crate::poller::app::poller_is_managed(app) {
+            return Err(crate::mcp::tools::ToolError::refused(CANCEL_NOT_READY));
+        }
+        crate::poller::app::with_poller(app, |poller| {
+            call(poller, &|job| crate::commands::jobs::dispatch_cancel(app, job))
+        })
     }
 }
 

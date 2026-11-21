@@ -74,14 +74,15 @@ const DEFAULT_TITLE_SOURCE_BYTES: usize = 100;
 /// Step C's retries (decided by Anton, M3a): after a failed first attempt, one more after each wait
 /// here, so at most three attempts. Each attempt is one `BEGIN IMMEDIATE` transaction under the
 /// connection's busy timeout (`rusqlite`'s 5 s, pinned by a test), so step C's **SQLite** waits total
-/// at most 3 × 5 s + 0.25 s + 1 s = 16.25 s. That bound does **not** include the wait for the
-/// in-process `DbState` mutex before each attempt, which no timeout bounds: it lasts as long as
+/// at least 3 × 5 s + 0.25 s + 1 s = 16.25 s (see the Open line below). That figure does **not**
+/// include the wait for the in-process `DbState` mutex before each attempt, which no timeout bounds: it lasts as long as
 /// another holder in this process keeps it (a UI command, the poller, the reconciliation — each one
 /// transaction or read, normally milliseconds). The exit flow waits for step C (its MCP wait) inside
 /// the backstop's 60 s (`server::wiring::EXIT_FLOW_DEADLINE`), which also holds `terminate_on_exit`
-/// (≈ 14.5 s worst) and the sidecar stop (≈ 0.3 s): 16.25 + 14.5 + 0.3 ≈ 31 s, leaving ≈ 29 s for
+/// (≈ 14.5 s worst) and the sidecar stop (≈ 0.3 s): 16.25 + 14.5 + 0.3 ≈ 31 s, leaving at most ≈ 29 s for
 /// step B and the mutex waits. Every attempt failing is the crash case: `step_c_error` is reported and
 /// the lock holder's reconciliation recovers the job.
+/// Open (rule #10; `wiki/modules/mcp-server.md`, "Step C's retry"): under the rollback journal a COMMIT may wait its own busy timeout, so 16.25 s may be a lower bound (up to ≈ 31.25 s).
 pub const STEP_C_RETRY_WAITS: [Duration; 2] = [Duration::from_millis(250), Duration::from_secs(1)];
 
 /// The tool's arguments (decision 4): no coordinates, charge or multiplicity.

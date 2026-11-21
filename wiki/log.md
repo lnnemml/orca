@@ -13946,3 +13946,92 @@ A real `claude -p` session listed the 11 tools and received `get_results` inline
   - **"between that read and the commit (one database transaction)".** The window is more than one transaction (`step_b.rs`, "The residual window"). On the remote path it is the wait for the `DbState` mutex plus `persist_submit`'s own work: its transaction, the local job dir's file writes and the upload listing. An exit that begins inside it gets its ssh calls started (the job is then `queued` and kept). On the local path it is the lock wait plus the queueing transaction.
 - **Out of scope** (not touched): registering the three tools in the `rmcp` service, their descriptions and argument schemas, the app's `dispatch` (`Backend::for_job(..).cancel`) and the in-memory read counts (all M3b Part B); M4.
 - **Next:** verifier CODE on Part A, then Part B.
+
+## [2026-11-21] feat | ADR-027 M3b Part B — cancel/group/wait wired
+- **What landed** (implementer `opus`; Part B on `5cbd272`, no commit). The three M3b tools are registered in the `rmcp` service (`mcp/server/m3b_tools.rs`, router `m3b_tools_router`), so the server lists 15 tools:
+  - **Arguments.** `CancelJobToolArgs`, `CreateGroupToolArgs` and `WaitForJobsToolArgs`, each `deny_unknown_fields`. The schemas carry the core's bounds: `job_id`/`parent_id` ≤ 64, `name` ≤ 200, `known` 1–50 properties. `timeout_s` has no maximum, because a larger value is capped, not refused.
+  - **Descriptions.** Each carries `RECOVERY_SENTENCE`. `wait_for_jobs`' says three things: a mistyped or unknown id is answered at once as `"gone"`, `timeout_s` is capped at 600, and it re-reads every 2 s.
+  - **Answers.** Every answer goes through `respond`, so the 40,000-byte cap is checked as it leaves. `INSTRUCTIONS` names the new tools.
+- **`cancel_job` goes through the app's own cancel path.**
+  - **One dispatch for both commands.** `commands::jobs::dispatch_cancel(app, job)` (`Backend::for_job(..).cancel`) is extracted from the `cancel_job` command, which now calls it. MCP's world, `wiring::AppCancelWorld`, runs `poller::app::with_poller` with that same function, on the blocking pool (`on_blocking_pool`).
+  - **The readiness check.** `with_poller` panics on a state that is not managed, and the MCP tick starts before setup manages the poller's state (`lib.rs`). So the world first checks the new `poller::app::poller_is_managed` (`try_state` over the six states `with_poller` reads). If one is missing, the call is refused "the app is still starting; nothing was cancelled".
+  - **The seam.** `CancelWorld::run(call)` hands the call a `Poller` and the dispatch. The tool layer is `cancel_in(world, args)` = `run_cancel_job` inside it. The world rides with the write seams (`CreateJobSeams.cancel`, `CreateJobWiring.cancel`; `test_support::NoCancel` where unused).
+  - **The emits are the command's own.** A server job's record write and delivery go through the poller's `AppSink`. A local job goes through `local_backend::cancel`: `emit_status` for a queued job, and `drive_job` when a running one exits.
+- **`create_group`** runs its core under `DbState`, locked once on the blocking pool (`with_db`, now `pub(super)`). The app's `create_group` command emits nothing, so the tool emits nothing either.
+- **`wait_for_jobs`** awaits its core with `&self.conn.closed`, `DbStatusReader(self.db)`, `TokioClock` and `WAIT_TICK`. `call_tool` holds the permit until the handler returns. A hang-up therefore ends the wait at its next tick and returns the permit, and the slot frees. This is now pinned over the socket (`WAIT-CLOSED-PERMIT`). The answer to a closed connection is the error "the connection closed; the wait ended", sent through `respond` to nobody.
+  - **Read counts:** no per-connection in-memory count of read calls exists (decision 9's count was never built), so none was invented and `wait_for_jobs` is not counted.
+- **Fold-ins (Anton's decisions on the Part A verifier findings).**
+  - **LOW-1.** The pre-check reads `mcp_state` in its transaction. A charged draft in step B is refused with its own row kind `submitting`, "being submitted (step B); retry once it is queued" (`SUBMITTING_REFUSED`). A PROPOSED draft keeps `draft`. The `audit.rs` table, the `McpReason.row` doc and the module page are updated. `cancel_tests::a_draft_is_refused_with_a_row_and_never_reaches_the_core` now expects the distinct reason (tag `SUBMITTING`).
+  - **LOW-2.** The module page's lock sentence now reads: an awaited guard does not compile (`COMPILE-GUARD`), and a leaked guard is caught at run time (`LOCK-ACROSS-SLEEP`).
+  - **LOW-3.** `wiki/index.md`'s `mcp-server.md` summary names M3b.
+  - **INFO.** `terminate_on_exit` ≈ 14.5 s everywhere: `EXIT_FLOW_DEADLINE`'s doc (was "about 14 s"), `terminate_on_exit`'s doc (was "≈ 14 s"). `BACKSTOP_STEPS_DEADLINE`'s doc now separates the ≈ 14.5 s from the 0.3 s sidecar stop (≈ 14.8 s); it had counted the sidecar inside its 14.5. Docs only.
+  - **MED-1, reworded (the prober task settles it).** Step C's SQLite waits are **at least 16.25 s**. Under the rollback journal (no `journal_mode` pragma anywhere), each attempt's COMMIT may wait its own busy timeout, up to ≈ 31.25 s. That is **Open** (rule #10) and still under the 60 s backstop. The module page carries this wording, `create_job.rs`'s `STEP_C_RETRY_WAITS` doc has a one-line pointer, and the pinned `16_250` test is unchanged. The ADR states no 16.25 s figure, so it is unchanged. The earlier log entries that say "at most 16.25 s" are superseded by this one: the log is append-only.
+- **Changed assertions in existing tests** (stated for the verifier):
+  - `read_tools_tests::the_ten_read_tools_are_listed_with_the_recovery_sentence` expects the three M3b tools among the listed tools (the tool set changed by design).
+  - `commands::jobs::tests::cancel_job_runs_the_core_off_the_ipc_thread_and_claims_no_guard_itself` pins `dispatch_cancel(&app, job)` in the shell and `Backend::for_job(app.clone(), &job)?` in `dispatch_cancel`. The extraction moved that text, and the pin still guards it.
+  - `cancel_tests`' draft test: see LOW-1.
+  - Mechanical constructor changes: the new `cancel` field in `CreateJobSeams` (`test_support::no_create_job`, `create_job_tool_tests`).
+- **Counts** (`CARGO_TARGET_DIR` in the shared scratchpad):
+  - `mcp::server::m3b_tools_tests`: 7 passed (the hang-up test ≈ 2.5 s);
+  - the touched suites: 62 passed (`m3b_tools_tests`, `cancel_tests`, `wiring_tests`, `read_tools_tests`, `server_tests`, `commands::jobs::tests::cancel_job*`), on the controls script's restored tree;
+  - `cargo test -p orcastudio --lib`, once, at the end: 1482 passed, 0 failed, 30 ignored (M3b Part A: 1474; +8: 7 in `m3b_tools_tests`, 1 in `wiring_tests`), 348.9 s; the filter `mcp::` selects 392 (Part A: 384; +8). Some `commands::export::tests` and one `remote::call_script_tests` test ran over 60 s on the loaded laptop and passed;
+  - `cargo build`: 0 warnings; `cargo clippy` is not installed; no TS was touched, so `tsc`/`vitest` were not run.
+- **Controls, 7/7 RED** from their tagged assertions. Each is a compiling mutation run `--exact` under a 180 s timeout; every file was restored by sha256, `src-tauri/src` was sha-identical at the end, and the touched suites were green again afterwards. Script: `m3b_partb_controls.py` in the session scratchpad.
+  - `RESPOND-M3B` (`m3b_tools_tests::every_m3b_tool_answers_through_respond`): `create_group` replies with pretty JSON instead of `respond`;
+  - `RECOVERY-M3B` (`the_m3b_tools_are_listed_with_their_descriptions_and_schemas`): `wait_for_jobs`' description without the recovery sentence;
+  - `WAIT-CLOSED-PERMIT` (`a_wait_ends_when_its_client_hangs_up_and_its_permit_returns`: four waits fill one connection's permits, the client hangs up, and the permits must return and the slot free while the other three slots are taken): the tool given a fresh `closed` flag instead of the connection's;
+  - `ORIGIN-E2E` (`cancel_job_refuses_antons_job_end_to_end_and_cancels_claudes`): `cancel_in` runs `cancel_job_core` before the pre-check, and Anton's queued job is dispatched over the wire;
+  - `SUBMITTING` (`cancel_tests::a_draft_is_refused_with_a_row_and_never_reaches_the_core`): the step-B branch off, so the reason collapses into the PROPOSED draft's;
+  - `CAP-M3B` (`the_largest_answer_of_each_m3b_tool_fits_as_the_client_receives_it`: 50 ids of 64 control characters, 6 bytes each escaped, all gone): `KNOWN_MAX` 500, so the largest wait no longer fits and is refused `TooLarge`;
+  - `APP-CANCEL` (`wiring_tests::the_app_cancel_world_is_the_cancel_commands_own`, a source pin, since the app's world needs an `AppHandle`): the world dispatching a no-op instead of `dispatch_cancel`.
+- **Out of scope** (not touched): M4 (the Settings → MCP grant editor and audit panel, "Claude is submitting" in place of Run); a per-connection read count; the SQLite COMMIT probe (MED-1's prober task).
+- **Fix round after verifier CODE** (PASS WITH FINDINGS on tree `71dbed48`: 1 MED, 3 LOW, 4 INFO; the 7 controls and 3 of the verifier's own went red). Anton decided to fix everything in one round.
+  - **MED-1: no test guarded "no sync mutex on the async runtime" for the M3b tools.** The verifier's `V-BLOCKING-GAP` (`cancel_in` inline) and `V-WITHDB-GAP` (`create_group` locking inline) stayed green.
+    - `Ran`, `where_am_i`, `Touch` and `RecordingDb` moved from `read_tools_tests` to `server/test_support.rs` (unchanged, made `pub`; `RecordingDb::new`).
+    - `m3b_tools_tests` now serves over a `RecordingDb`, and `ScratchCancel::run` records where it runs. The new `every_m3b_tools_work_runs_on_the_blocking_pool` asserts `BlockingPool` for `cancel_job`'s world, `create_group`'s database work and the wait's reads.
+  - **LOW-1: `poller_is_managed` must cover every state `with_poller` reads** (the verifier dropped `JobRunner` and nothing went red). The new `wiring_tests::poller_is_managed_checks_every_state_with_poller_reads` reads `poller/app.rs` and requires every `app.state::<T>()` in `with_poller` to have its `app.try_state::<T>()` in `poller_is_managed`, compared by last path segment, at least six found.
+  - **LOW-2.** The stale "not yet registered" in `mcp/mod.rs` and `mcp/tools/mod.rs` now reads "registered by `server::m3b_tools`".
+  - **LOW-3 (Anton: defer to M4).** ADR-027, M3 amendment item 1, M3b details: one line saying decision 9's per-connection in-memory read count is not built in M2b/M3b and is built in M4 with its display. Until then three sentences describe M4's state: decision 9's "Read calls are counted per connection in memory", decision 2's lifecycle table "Only the per-connection read counters are lost" (ADR line 217; the brief placed it in the M2 amendment), and this item's "counted in memory only". The module page's "Not yet wired" and the ROADMAP M4 line list the count.
+  - **INFO-1.** `STEP_C_RETRY_WAITS`' doc reads "at least … 16.25 s" (and "leaving at most ≈ 29 s"), consistent with its Open line. The pinned `16_250` test is unchanged.
+  - **INFO-2.** The `known` schema has `propertyNames` 1–64 characters and `additionalProperties` an enum of the nine statuses. The listing test pins it to `JobStatus::ALL`.
+  - **INFO-3.** The cap test's doc describes what it covers: a dispatched cancel of a 64-byte id, not a long core error.
+  - **INFO-4.** New test `the_instructions_name_the_m3b_tools` (the `initialize` result and `INSTRUCTIONS` name all three).
+  - **Runs:** `cargo build` 0 warnings; `cargo test -p orcastudio --lib` once at the end: 1485 passed, 0 failed, 30 ignored (+3: the blocking-pool test, the `poller_is_managed` pin, the instructions test), 283.5 s; the filter `mcp::` selects 395 (+3).
+  - **Controls: 12/12 RED** (the 7 above plus 5 new), the whole script re-run once on the final tree, every file restored by sha256, `src-tauri/src` sha-identical at the end, and the touched suites green afterwards:
+    - `V-BLOCKING`: `cancel_job` calls `cancel_in` inline;
+    - `V-WITHDB`: `create_group` locks `DbState` inline;
+    - `V-WAIT-READ`: `DbStatusReader` reads inline (`future::ready`);
+
+      each of these three goes red in `every_m3b_tools_work_runs_on_the_blocking_pool`;
+    - `MANAGED-ALL`: `JobRunner` dropped from `poller_is_managed`;
+    - `SCHEMA-KNOWN`: `propertyNames` dropped.
+  - **Round 2** (the verifier's delta round on tree `48987046`, PASS WITH FINDINGS, the 12 controls red).
+    - **LOW-A.** The `MANAGED-ALL` source test also counts every `state::<` in `with_poller`'s body and requires the parser to have read each one (`MANAGED-FORMS`). Its regex now allows spacing inside the angle brackets. `SCHEMA-KNOWN` also pins `propertyNames.minLength` 1.
+    - **LOW-B.** The ADR's M4 decomposition item and decision 9's Settings → MCP list each carry a "(qualified by the M3 amendment, item 1 …)" pointer for the read count and its display. The amendment's read-count bullet says so.
+    - **Controls.** The whole script, now 15 controls, re-ran once with 15/15 RED and `src-tauri/src` sha-identical. The three new ones are the verifier's probes: `MANAGED-GENERIC` (`app.state::<std::sync::Mutex<u8>>()`) and `MANAGED-UFCS` (`Manager::state::<XtbRunner>(app)`), both red on `MANAGED-FORMS`, and `MANAGED-SPACED` (`app.state::< XtbRunner >()`), red on `MANAGED-ALL`.
+    - **Runs.** `cargo build` 0 warnings; `cargo test -p orcastudio --lib` once: 1485 passed, 0 failed, 30 ignored (no new tests), 305.1 s.
+- **Next:** M3b is done; see the live check below. Then the `CreateJobSeams`→write-tools rename (separate refactor), the MED-1 SQLite probe (Open), and M4.
+- **Verifier CODE.** Three rounds:
+  - r1 on tree `71dbed48`, PASS WITH FINDINGS;
+  - r2 on tree `48987046`, PASS WITH FINDINGS;
+  - r3 on tree `9a93024f`, PASS, with the 15 controls and the verifier's three probes red;
+  - then a docs-only delta for this paragraph.
+- **The orchestrator's live check (2026-11-21, `tauri dev` on tree `9a93024f`): passed.** The DB was backed up first to `orcastudio.db.bak-2026-11-21-pre-m3b`.
+  - **The tool list.** Raw JSON-RPC over `orcastudio --mcp` listed 15 tools. The three new descriptions and schemas are as built, and `initialize` names the new tools.
+  - **A real client.** A real `claude -p` session (project `--mcp-config`) accepted the schemas (`propertyNames` and the status enum included). It called `wait_for_jobs`, which timed out after 3 s, and `list_groups`.
+  - **`cancel_job`:**
+    - on Anton's job: `refused` (`origin`);
+    - on a PROPOSED draft: `refused` (`draft`);
+    - on an unknown id: an argument error and no audit row;
+    - on a finished Claude job (`parsed`): the pre-row, then the outcome `failed`, the backend's "job is not running or queued (status: parsed)", in a `cancel_error` row;
+    - on a Claude job that Anton ran while the queue was paused (`queued`): `dispatched`. The job became `cancelled`, and **the Jobs view flipped without a reload** (Anton). The audit has the pre-row "requested (job was queued)" and the outcome "dispatched".
+  - **`create_group`:**
+    - `"  MCP live check M3b  "` was stored trimmed, with its audit row (NULL disposition, "created <id>"). Anton saw the group in the sidebar without a reload.
+    - A 201-character name is an argument error.
+  - **`wait_for_jobs`:**
+    - a mistyped id → `gone` at once;
+    - a differing status → answered at once;
+    - an unchanged status with `timeout_s` 4 → `timed_out` after 4 s;
+    - `timeout_s` 5000 → `effective_timeout_s` 600, `timeout_clamped`.
+  - **Hang-up.** With all four connection slots each holding four waits, a fifth client was refused (the relay got a connection reset). Killing one waiting client freed its slot: a new client was initialized at once.
+  - **Not run live:** a remote cancel through `AppSink`, a running local job's cancel, and the startup refusal "the app is still starting". These are covered by the source pins and the existing cancel path's tests.

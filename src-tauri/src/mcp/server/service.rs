@@ -14,8 +14,9 @@
 //!   open: `rmcp` does this itself (re-measured here: `server_tests::an_unknown_method_*`).
 //! - **The recovery sentence** ([`RECOVERY_SENTENCE`]) is in the server's instructions and in every
 //!   tool description, from one constant.
-//! - **The tools** are `get_grant` (here), the ten read tools ([`super::read_tools`]) and
-//!   `create_job` ([`super::create_job_tool`]), one router.
+//! - **The tools** are `get_grant` (here), the ten read tools ([`super::read_tools`]),
+//!   `create_job` ([`super::create_job_tool`]) and `cancel_job`, `create_group` and `wait_for_jobs`
+//!   ([`super::m3b_tools`]), one router.
 //!   A tool error's text is bounded on its way out ([`bound_errors`]): `rmcp`'s own argument error
 //!   quotes the caller's input, so it is cut like an echo.
 
@@ -54,8 +55,9 @@ pub const RECOVERY_SENTENCE: &str = recovery_sentence!();
 
 /// The server's instructions (the `initialize` result).
 pub const INSTRUCTIONS: &str = concat!(
-    "OrcaStudio's MCP server: read access to the app's state, and create_job, which spends compute ",
-    "only under a grant Anton made. Jobs, grants and the audit log live in OrcaStudio's database and ",
+    "OrcaStudio's MCP server: read access to the app's state; create_job, which spends compute only ",
+    "under a grant Anton made; cancel_job for Claude's own jobs, create_group, and wait_for_jobs. ",
+    "Jobs, grants and the audit log live in OrcaStudio's database and ",
     "survive a restart of the app or of this session. ",
     recovery_sentence!()
 );
@@ -162,7 +164,7 @@ pub struct McpService {
 impl McpService {
     pub fn new(conn: Arc<ConnState>, db: Arc<dyn DbSource>, host: Arc<HostPaths>, create_job_wiring: CreateJobWiring) -> Self {
         McpService {
-            tool_router: Self::tool_router() + Self::read_tools_router() + Self::create_job_router(),
+            tool_router: Self::tool_router() + Self::read_tools_router() + Self::create_job_router() + Self::m3b_tools_router(),
             conn,
             db,
             host,
@@ -196,7 +198,7 @@ impl McpService {
     }
 }
 
-// The combined router (`get_grant`, the read tools and `create_job`), not the macro's default
+// The combined router (`get_grant`, the read tools, `create_job` and the M3b tools), not the macro's default
 // `Self::tool_router()`, which lists `get_grant` alone.
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for McpService {

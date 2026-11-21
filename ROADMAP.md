@@ -1684,11 +1684,13 @@ and OrcaStudio picks the job up, syncs results, and parses them — no terminal,
             (Part A, the cores, 25 controls) + `f980804` (Part B: `create_job` registered, the real
             step B, step C retried, 15 controls; the 60 s kept by Anton); live check of the SUBMITTED
             and PROPOSED paths passed 2026-11-21
-      - [~] **M3b** `cancel_job` (mcp only), `create_group`, `wait_for_jobs` (≤600 s), their audit rows
-            — Part A built, pending verification (the three cores in `mcp/cancel.rs`,
-            `mcp/create_group.rs`, `mcp/tools/wait.rs`; Anton's D1–D4; not yet registered)
-      - [ ] **M4** UI — Settings → MCP (grant editor, revoke, audit), Jobs badge + proposal reasons
-            (live gate)
+      - [x] **M3b** `cancel_job` (mcp only), `create_group`, `wait_for_jobs` (≤600 s), their audit rows
+            — committed `5cbd272` (Part A, the three cores; Anton's D1–D4) + Part B (the three tools
+            registered in `server/m3b_tools.rs`, the cancel through the app's own `with_poller` +
+            `dispatch_cancel`, a draft in step B refused with its own reason); live check passed
+      - [ ] **M4** UI — Settings → MCP (grant editor, revoke, audit), Jobs badge + proposal reasons,
+            the per-connection read count with its display (decision 9; moved here by Anton, ADR-027
+            M3 amendment item 1) (live gate)
       - [ ] **M5** live research gate — a real GOAT → Opt+Freq → SP chain driven from a research folder
 - [ ] TS refinement automation: scan maximum → OptTS → Freq → ΔG‡ pipeline
       (if not completed in Phase 4.5)

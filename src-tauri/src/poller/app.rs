@@ -86,6 +86,18 @@ impl PollerSink for AppSink {
     }
 }
 
+/// Whether every state [`with_poller`] reads is managed. `with_poller` uses `app.state()`, which
+/// panics on a missing state; a caller that can run before setup has managed them all (MCP's
+/// `cancel_job`: the MCP tick starts before the poller's state is managed) checks this first.
+pub fn poller_is_managed(app: &AppHandle) -> bool {
+    app.try_state::<DbState>().is_some()
+        && app.try_state::<InFlight>().is_some()
+        && app.try_state::<PollerMemory>().is_some()
+        && app.try_state::<LiveLog>().is_some()
+        && app.try_state::<RemoteStates>().is_some()
+        && app.try_state::<crate::local_backend::JobRunner>().is_some()
+}
+
 /// Run `f` with the app's poller: the real ssh/rsync runner, the shared filter without `.gbw` (no
 /// per-job opt-in exists yet), the app's managed state (the local job dirs' root from `JobRunner`)
 /// and an [`AppSink`].

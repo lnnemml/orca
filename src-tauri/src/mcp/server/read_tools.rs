@@ -331,7 +331,7 @@ fn lock(db: &DbState) -> Result<std::sync::MutexGuard<'_, Connection>, ToolError
 impl McpService {
     /// `read` with `DbState` locked once, on the blocking pool. The guard drops when `read` returns,
     /// inside the blocking task: never held across an `.await`.
-    async fn with_db<T: Send + 'static>(
+    pub(super) async fn with_db<T: Send + 'static>(
         &self,
         read: impl FnOnce(&Connection) -> Result<T, ToolError> + Send + 'static,
     ) -> Result<T, ToolError> {

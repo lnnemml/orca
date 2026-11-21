@@ -4,7 +4,6 @@
 //! fixtures (`tools::test_support`); the service reaches it through a recording `DbSource`.
 
 use std::os::unix::fs::OpenOptionsExt;
-use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -15,8 +14,8 @@ use super::lifecycle::{Hooks, LifecycleEnv, McpLifecycle};
 use super::listener::{kernel_peer_uid, own_uid};
 use super::read_tools::{error_text, output_request, respond, served_text, ReadOutputArgs};
 use super::service::{bounded_error_text, ConnState, HostPaths, ARGUMENT_ERROR_PREFIX, BUSY, RECOVERY_SENTENCE};
-use super::test_support::{eventually, no_create_job, tool_text, Client, Scratch};
-use super::{DbSource, REQUESTS_PER_CONNECTION};
+use super::test_support::{eventually, no_create_job, tool_text, Client, Ran, RecordingDb, Scratch};
+use super::REQUESTS_PER_CONNECTION;
 use crate::commands::settings::DbState;
 use crate::mcp::steps::reconcile_submitting_conn;
 use crate::mcp::test_db::TestDb;
@@ -46,56 +45,6 @@ const READ_TOOLS: [&str; 10] = [
 const MEMINFO: &str = "MemTotal:       15988408 kB\nMemFree:         2683044 kB\nMemAvailable:    9000000 kB\n";
 const WATER_XYZ: &str = "3\nwater\nO 0.0 0.0 0.117790\nH 0.0 0.755453 -0.471161\nH 0.0 -0.755453 -0.471161\n";
 
-// ----- the recording database -----
-
-/// Where a database touch ran.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Ran {
-    /// An async worker of the runtime: `Handle::block_on` panics there.
-    AsyncWorker,
-    /// Tauri's blocking pool: inside the runtime, where `Handle::block_on` is allowed.
-    BlockingPool,
-    /// Outside the runtime (the test thread, the lifecycle's switch-on).
-    Outside,
-}
-
-fn where_am_i() -> Ran {
-    match tokio::runtime::Handle::try_current() {
-        Err(_) => Ran::Outside,
-        Ok(handle) => match catch_unwind(AssertUnwindSafe(|| handle.block_on(async {}))) {
-            Ok(()) => Ran::BlockingPool,
-            Err(_) => Ran::AsyncWorker,
-        },
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-struct Touch {
-    ran: Ran,
-    /// `DbState` was locked (by anyone) when the service reached for it.
-    lock_held: bool,
-}
-
-/// The service's `DbSource`, recording each touch's thread and whether the lock was held.
-struct RecordingDb {
-    db: Arc<DbState>,
-    touches: Mutex<Vec<Touch>>,
-}
-
-impl DbSource for RecordingDb {
-    fn db(&self) -> &DbState {
-        let lock_held = self.db.0.try_lock().is_err();
-        self.touches.lock().unwrap().push(Touch { ran: where_am_i(), lock_held });
-        &self.db
-    }
-}
-
-impl RecordingDb {
-    fn take(&self) -> Vec<Touch> {
-        std::mem::take(&mut *self.touches.lock().unwrap())
-    }
-}
-
 // ----- the served app -----
 
 struct Served {
@@ -114,7 +63,7 @@ fn served(tag: &str, seed: impl FnOnce(&TestDb)) -> Served {
     std::fs::write(db.dir.join("meminfo"), MEMINFO).unwrap();
     seed(&db);
     let state = Arc::new(DbState(Mutex::new(db.open_another())));
-    let recording = Arc::new(RecordingDb { db: state.clone(), touches: Mutex::new(Vec::new()) });
+    let recording = RecordingDb::new(state.clone());
     let scratch = Scratch::new(tag);
     let env = LifecycleEnv {
         paths: Ok(scratch.paths()),
@@ -196,7 +145,8 @@ fn the_ten_read_tools_are_listed_with_the_recovery_sentence() {
     let tools = c.response(2).unwrap()["result"]["tools"].as_array().unwrap().clone();
     let mut names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     names.sort();
-    let mut expected: Vec<&str> = READ_TOOLS.iter().copied().chain(["get_grant", "create_job"]).collect();
+    let mut expected: Vec<&str> =
+        READ_TOOLS.iter().copied().chain(["get_grant", "create_job", "cancel_job", "create_group", "wait_for_jobs"]).collect();
     expected.sort();
     assert_eq!(names, expected, "[ctl:registered]");
 

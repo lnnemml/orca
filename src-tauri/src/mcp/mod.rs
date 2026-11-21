@@ -27,9 +27,9 @@
 //!   the admission gate, the lifecycle and the `orcastudio --mcp` relay.
 //! - [`tools`] holds the read tools' cores (M2b Part A): `list_jobs`, `get_job`, `get_results`,
 //!   `get_geometry`, `measure`, `read_output`, `search_manual`, `list_run_targets`,
-//!   `memory_estimate` and `list_groups`, each with its character cap, and `wait_for_jobs` (M3b
-//!   Part A: the bounded long-poll, not yet registered).
-//! - [`cancel`] and [`create_group`] are the M3b write cores (Part A, not yet registered):
+//!   `memory_estimate` and `list_groups`, each with its character cap, and `wait_for_jobs` (M3b:
+//!   the bounded long-poll, registered by `server::m3b_tools`).
+//! - [`cancel`] and [`create_group`] are the M3b write cores (registered by `server::m3b_tools`):
 //!   `cancel_job` (only `origin = 'mcp'`, never a `Draft`; a pre-row, `cancel_job_core`, an
 //!   outcome row) and `create_group` (the insert and its audit row in one transaction).
 //!

@@ -7,9 +7,11 @@
 //! 2. **The pre-check and its row** ([`precheck_conn`]): **one** `BEGIN IMMEDIATE` transaction reads
 //!    the job's `origin`, `status` and `grant_id` and appends exactly one audit row:
 //!    - `origin != 'mcp'` → a `refused` row, and the call ends (the cancel core is not called);
-//!    - a `Draft` (PROPOSED, or a charged draft in step B with `mcp_state = 'submitting'`) → a
-//!      `refused` row ("Anton deletes it"), and the call ends (`local_backend` refuses a draft
-//!      anyway; decision 5);
+//!    - a `Draft` → a `refused` row, and the call ends (`local_backend` refuses a draft anyway;
+//!      decision 5). A PROPOSED draft's reason is "Anton deletes it" (row `draft`); a charged draft
+//!      still in step B (`mcp_state = 'submitting'`, read in the same transaction) gets its own,
+//!      "being submitted (step B); retry once it is queued" (row `submitting`), since it is about
+//!      to leave `Draft` and become cancellable;
 //!    - otherwise a NULL-disposition **pre-row**, "requested (job was <status>)", and it commits.
 //!
 //!    An unknown job id is an argument error, not a disposition: no row (M3 amendment, item 3).
@@ -36,7 +38,7 @@ use serde::Serialize;
 
 use super::audit::{append_audit_conn, AuditDisposition, AuditEntry, REASON_MESSAGE_MAX_BYTES};
 use super::grant::begin_immediate;
-use super::steps::McpReason;
+use super::steps::{McpReason, SUBMITTING};
 use super::tools::{clip, echo, within_cap, ToolError, RESULT_CAP_BYTES};
 use crate::commands::jobs::{cancel_job_core, CancelResult};
 use crate::error::AppError;
@@ -52,8 +54,10 @@ pub const JOB_ID_MAX_BYTES: usize = 64;
 
 /// The refusal for a job that is not Claude's.
 pub const NOT_CLAUDES: &str = "not Claude's job";
-/// The refusal for a `Draft`.
+/// The refusal for a PROPOSED `Draft`.
 pub const DRAFT_REFUSED: &str = "a PROPOSED draft cannot be cancelled; Anton deletes it";
+/// The refusal for a charged `Draft` still in step B (`mcp_state = 'submitting'`).
+pub const SUBMITTING_REFUSED: &str = "being submitted (step B); retry once it is queued";
 
 /// The tool's arguments.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
@@ -107,12 +111,12 @@ fn check_args(args: &CancelJobArgs) -> Result<(), ToolError> {
 /// An unknown id is [`AppError::NotFound`] and the transaction rolls back: no row.
 pub fn precheck_conn(conn: &Connection, job_id: &str, audit_args: &str) -> Result<Precheck, AppError> {
     let tx = begin_immediate(conn)?;
-    let row: Option<(String, String, Option<String>)> = tx
-        .query_row("SELECT origin, status, grant_id FROM jobs WHERE id = ?1", params![job_id], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+    let row: Option<(String, String, Option<String>, Option<String>)> = tx
+        .query_row("SELECT origin, status, grant_id, mcp_state FROM jobs WHERE id = ?1", params![job_id], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
         })
         .optional()?;
-    let Some((origin, status, grant_id)) = row else {
+    let Some((origin, status, grant_id, mcp_state)) = row else {
         return Err(AppError::NotFound(format!("job {job_id}")));
     };
     // Unknown values are errors (rule #9), never read as "user" or as some status.
@@ -121,6 +125,8 @@ pub fn precheck_conn(conn: &Connection, job_id: &str, audit_args: &str) -> Resul
 
     let refusal = if origin != JobOrigin::Mcp {
         Some(McpReason { row: "origin".into(), message: format!("{NOT_CLAUDES} (origin = {})", origin.as_str()) })
+    } else if status == JobStatus::Draft && mcp_state.as_deref() == Some(SUBMITTING) {
+        Some(McpReason { row: "submitting".into(), message: SUBMITTING_REFUSED.into() })
     } else if status == JobStatus::Draft {
         Some(McpReason { row: "draft".into(), message: DRAFT_REFUSED.into() })
     } else {

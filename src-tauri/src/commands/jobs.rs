@@ -915,12 +915,17 @@ pub async fn submit_job(
 #[tauri::command]
 pub async fn cancel_job(app: tauri::AppHandle, id: String) -> Result<CancelResult, AppError> {
     tauri::async_runtime::spawn_blocking(move || {
-        crate::poller::app::with_poller(&app, |poller| {
-            cancel_job_core(poller, &id, |job| Backend::for_job(app.clone(), &job)?.cancel(&JobHandle(id.clone())))
-        })
+        crate::poller::app::with_poller(&app, |poller| cancel_job_core(poller, &id, |job| dispatch_cancel(&app, job)))
     })
     .await
     .map_err(|e| AppError::Backend(format!("cancel of job: the background task failed: {e}")))?
+}
+
+/// The guarded path's `dispatch` in the app: the cancel of the backend the job belongs to, keyed on
+/// the job the core read (`Backend::for_job`). Shared by [`cancel_job`] and MCP's `cancel_job`
+/// (`mcp::server::wiring::AppCancelWorld`), so both cancel through the same code.
+pub(crate) fn dispatch_cancel(app: &tauri::AppHandle, job: Job) -> Result<(), AppError> {
+    Backend::for_job(app.clone(), &job)?.cancel(&JobHandle(job.id.clone()))
 }
 
 /// Undo a pending remote cancel (ADR-024 o22.3, o22.14.7): [`revoke_cancel_core`] with the app's
@@ -2636,7 +2641,9 @@ mod tests {
             assert!(!shell.contains(forbidden), "cancel_job contains `{forbidden}`");
         }
         assert_eq!(shell.matches(".await").count(), 1, "one awaited call, the blocking task");
-        assert!(shell.contains("Backend::for_job(app.clone(), &job)?"), "the backend comes from the job the core read");
+        assert!(shell.contains("dispatch_cancel(&app, job)"), "the dispatch is the shared one");
+        let dispatch = fn_body(src, concat!("pub(crate) fn ", "dispatch_cancel("));
+        assert!(dispatch.contains("Backend::for_job(app.clone(), &job)?"), "the backend comes from the job the core read");
 
         let undo = fn_body(src, concat!("pub fn ", "undo_cancel("));
         assert!(undo.contains(concat!("revoke_cancel_", "core(poller.db, poller.memory, poller.remote, poller.sink, &id)")), "{undo}");

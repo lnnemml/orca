@@ -138,7 +138,9 @@ fn a_user_job_is_refused_with_a_row_and_never_reaches_the_core() {
 }
 
 /// A `Draft` — PROPOSED, and a charged draft in step B (`mcp_state = 'submitting'`) — is refused in
-/// the pre-check, with its row; the cancel core is not called. Tag `DRAFT`.
+/// the pre-check, with its row; the cancel core is not called. The draft in step B has its own reason
+/// (Anton's LOW-1, M3b Part B): it is about to be queued, and then it can be cancelled. Tags `DRAFT`,
+/// `SUBMITTING`.
 #[test]
 fn a_draft_is_refused_with_a_row_and_never_reaches_the_core() {
     let s = Scene::new("cancel-draft");
@@ -147,7 +149,7 @@ fn a_draft_is_refused_with_a_row_and_never_reaches_the_core() {
     s.claudes("d2", "draft");
     s.db.conn.execute("UPDATE jobs SET mcp_state = 'submitting' WHERE id = 'd2'", []).unwrap();
 
-    for id in ["d1", "d2"] {
+    for (id, expected) in [("d1", ("draft", DRAFT_REFUSED)), ("d2", ("submitting", SUBMITTING_REFUSED))] {
         let dispatched = Cell::new(0);
         let result = run_cancel_job(&s.poller(), &Scene::args(id), |_| {
             dispatched.set(dispatched.get() + 1);
@@ -155,7 +157,11 @@ fn a_draft_is_refused_with_a_row_and_never_reaches_the_core() {
         })
         .unwrap();
         let CancelJobResult::Refused { reasons, .. } = &result else { panic!("DRAFT: {id} not refused: {result:?}") };
-        assert_eq!((reasons[0].row.as_str(), reasons[0].message.as_str()), ("draft", DRAFT_REFUSED));
+        assert_eq!(
+            (reasons[0].row.as_str(), reasons[0].message.as_str()),
+            expected,
+            "SUBMITTING: {id}'s refusal reason (a draft in step B has its own)"
+        );
         assert_eq!(dispatched.get(), 0, "DRAFT: the cancel core was reached for {id}");
         assert_eq!(s.status(id), "draft");
     }
@@ -164,6 +170,7 @@ fn a_draft_is_refused_with_a_row_and_never_reaches_the_core() {
     assert!(rows.iter().all(|r| r.disposition.as_deref() == Some("refused")), "{rows:?}");
     assert_eq!(rows[0].grant_id, None, "a PROPOSED draft has no grant");
     assert_eq!(rows[1].grant_id.as_deref(), Some(s.grant_id.as_str()), "the charged draft's grant, informational");
+    assert_eq!(rows[1].reasons[0].row, "submitting", "SUBMITTING: the audit row keeps the distinct kind");
 }
 
 /// Claude's queued local job: the pre-row is committed **before** the cancel core runs, the core runs
