@@ -57,6 +57,10 @@ pub struct McpReason {
     /// - `"interrupted"`: the reconciliation's refund, or its flag clear;
     /// - `"state"`: a job's status after step C or the reconciliation (audit outcome rows only);
     /// - `"step_b"`: step B's own outcome message (audit outcome rows only);
+    /// - `cancel_job`'s audit rows (`super::cancel`): `"origin"` and `"draft"` (its refusals),
+    ///   `"cancel"` (the pre-row, and the outcome's `CancelResult` tag), `"detail"` (the
+    ///   `CancelResult` as JSON), `"cancel_error"` (the cancel core's error);
+    /// - `"group"`: `create_group`'s audit row (`super::create_group`);
     /// - `"more"`: how many reasons a bounded list left out.
     pub row: String,
     pub message: String,

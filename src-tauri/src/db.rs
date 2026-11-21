@@ -150,8 +150,10 @@ use crate::error::AppError;
 ///     would enforce nothing, because NULLs are distinct in a UNIQUE index
 ///     (`tests::the_column_form_index_would_enforce_nothing`);
 ///   - `mcp_audit`: one row per **disposition or outcome**, not per tool call (ADR-027 M3 amendment,
-///     item 3): each classifier disposition, step C's outcome, and the reconciliation's outcome;
-///     a call that ends before classification has no row. `disposition` is NULL on an outcome
+///     item 3): each classifier disposition, step C's outcome, the reconciliation's outcome, and
+///     the M3b rows of item 1 (`cancel_job`'s refusal or pre-row and its outcome row, `create_group`'s
+///     row); a call that ends before classification (or before the M3b pre-check or insert) has no
+///     row. `disposition` is NULL on an outcome
 ///     that is not a disposition; `reasons` is a JSON array of `McpReason` (the encoding table is
 ///     in `mcp::audit`). `args` is bounded by a CHECK
 ///     ([`MCP_AUDIT_ARGS_MAX_CHARS`]); `job_id` and `grant_id` carry no FK, so the audit outlives

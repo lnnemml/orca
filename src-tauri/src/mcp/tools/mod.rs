@@ -15,6 +15,7 @@
 //! | `list_run_targets` | [`targets::list_run_targets`] | `list_server_profiles_conn`, `RunTargetStatus::of` |
 //! | `memory_estimate` | [`memory::memory_estimate`] | `mcp_maxcore`, `memory_estimate_with` |
 //! | `list_groups` | [`groups::list_groups`] | `list_groups_conn`, paged |
+//! | `wait_for_jobs` | [`wait::wait_for_jobs`] (async; M3b Part A, not yet registered) | a DB re-read per tick ([`wait::read_statuses_conn`]) |
 //!
 //! **Units (rule #11).** Every number a tool returns names its unit in its field name: `_eh`,
 //! `_ang`, `_deg`, `_cm1`, `_km_mol`, `_k`, `_s`, `_mib`, `_kib`, `_bytes`. A count ends in
@@ -50,6 +51,8 @@ pub mod memory;
 pub mod output;
 pub mod results;
 pub mod targets;
+#[cfg(unix)]
+pub mod wait;
 
 #[cfg(test)]
 mod budget_tests;
@@ -71,6 +74,8 @@ mod output_tests;
 mod results_tests;
 #[cfg(test)]
 mod targets_tests;
+#[cfg(all(test, unix))]
+mod wait_tests;
 #[cfg(test)]
 pub(crate) mod test_support;
 

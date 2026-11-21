@@ -1279,6 +1279,21 @@ The decision text above stands, except where an item below says it replaces or q
        - **Bounded arguments:** the group name and the size of `wait_for_jobs`' `known` map.
        - **No grant needed.** No M3b tool needs an active grant: `create_group` spends nothing
          (decision 7), and a cancel stops spending (decision 5).
+       - **The details (decided by Anton, 2026-11-21).**
+         - **`cancel_job` writes two rows.** A pre-check in one `BEGIN IMMEDIATE` transaction reads
+           the job and writes one row: `refused` if `origin` is not `mcp` or the job is a `Draft`
+           (the cancel core is then not called), else a NULL-disposition pre-row. Then
+           `cancel_job_core` runs with no lock held, and a NULL-disposition outcome row follows in
+           its own transaction. A crash between them leaves the pre-row only. An unknown job id is an
+           argument error with no row. The rows carry the job's `grant_id`.
+         - **`wait_for_jobs`.** A named job that no longer exists counts as changed (`"gone"`), and
+           the call returns at once. An empty `known` or an unknown status is an argument error.
+           `timeout_s` is 600 when omitted, clamped to 600 above it (the result says so), and 0 is a
+           one-shot check. It reads any job, not only `mcp` ones.
+         - **Bounds.** A group name is at most 200 characters and not empty after trimming, and it
+           is stored trimmed. `known` has at most 50 entries, and each job id at most 64 bytes.
+         - **`create_group`.** An optional `parent_id` must exist. The insert and its NULL-disposition
+           row are one transaction, with no `grant_id`.
      - **Controls:**
        - `cancel_job` on a `user` job accepted;
        - `wait_for_jobs` ignoring `known`;

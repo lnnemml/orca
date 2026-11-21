@@ -64,7 +64,9 @@ fn get_group_conn(conn: &Connection, id: &str) -> Result<Group, AppError> {
 
 /// Create a group. If `parent_id` is `Some`, the parent must exist (else
 /// [`AppError::NotFound`] — no orphan row is written). `None` = a root-level group.
-fn create_group_conn(
+/// `pub(crate)` for MCP's `create_group` (`mcp::create_group`), which runs it inside the transaction
+/// that also writes its audit row.
+pub(crate) fn create_group_conn(
     conn: &Connection,
     name: &str,
     parent_id: Option<&str>,

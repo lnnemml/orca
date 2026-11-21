@@ -6,13 +6,19 @@
 //!   transaction**, so a charge without its audit row cannot commit ([`super::steps::decide_conn`]);
 //! - step C's outcome, written inside step C's transaction ([`super::steps::finish_submit_audited_conn`]);
 //! - the reconciliation's outcome for each row it touches, in its own transaction
-//!   ([`super::steps::reconcile_submitting_conn`]).
+//!   ([`super::steps::reconcile_submitting_conn`]);
+//! - the M3b rows (M3 amendment, item 1; decided by Anton, 2026-11-21): `cancel_job`'s pre-check row
+//!   — a refusal or the pre-row — in the pre-check's transaction ([`super::cancel::precheck_conn`]),
+//!   and its outcome row in its own transaction after the cancel core
+//!   ([`super::cancel::outcome_row_conn`]); `create_group`'s row in the transaction that inserts the
+//!   group ([`super::create_group::create_group_audited_conn`]). `wait_for_jobs` is a read: no row.
 //!
-//! A call that ends before classification is not a disposition and has no row: a busy refusal,
-//! "MCP is shutting down", an argument error, `SQLITE_BUSY` at step A, or a failure of the memory
+//! A call that ends before classification (for the M3b tools, before the pre-check or the insert) is
+//! not a disposition and has no row: a busy refusal, "MCP is shutting down", an argument error (an
+//! unknown job, group or parent included), `SQLITE_BUSY` at step A, or a failure of the memory
 //! preflight.
 //!
-//! **The columns.** `tool` (`create_job`), `args` (the call's bounded argument text, a JSON object;
+//! **The columns.** `tool` (`create_job`, `cancel_job`, `create_group`), `args` (the call's bounded argument text, a JSON object;
 //! the v24 CHECK caps it at [`MCP_AUDIT_ARGS_MAX_CHARS`] characters), `disposition` (`refused`,
 //! `proposed`, `submitted`, or NULL for an outcome that is not a disposition), `reasons` (a JSON array
 //! of [`McpReason`], at most [`AUDIT_REASONS_MAX`] of them), `job_id`, `grant_id`.
@@ -26,11 +32,18 @@
 //! | step C found the row gone | NULL | `[{"row":"state","message":"gone"},{"row":"step_b","message":"<step B's message>"}]` |
 //! | the reconciliation refunded a `submitting` draft | `proposed` | `[{"row":"interrupted","message":"interrupted before submit"}]` |
 //! | the reconciliation cleared a non-`draft` row's flag | NULL | `[{"row":"state","message":"<job status>"},{"row":"interrupted","message":"…the charge is kept"}]` |
+//! | `cancel_job` refused: the job is not Claude's | `refused` | `[{"row":"origin","message":"not Claude's job (origin = user)"}]` |
+//! | `cancel_job` refused: a `Draft` | `refused` | `[{"row":"draft","message":"a PROPOSED draft cannot be cancelled; Anton deletes it"}]` |
+//! | `cancel_job` pre-row (the cancel core runs next) | NULL | `[{"row":"cancel","message":"requested (job was <job status>)"}]` |
+//! | `cancel_job` outcome | NULL | `[{"row":"cancel","message":"<CancelResult tag>"},{"row":"detail","message":"<the CancelResult as compact JSON>"}]` |
+//! | `cancel_job` outcome, the core's error | NULL | `[{"row":"cancel_error","message":"<the error>"}]` |
+//! | `create_group` | NULL | `[{"row":"group","message":"created <group id>"}]` |
 //!
 //! The job status is `JobStatus::as_str` (`queued`, `running`, `failed`, …). A remote submit's
 //! finer state — waiting for the server's slot ("pending"), "not on the server", `Unknown`,
 //! `FailedAfterClaim`, the `KillUserProcesses` refusal — is in step B's message, which is the backend's
-//! own outcome text.
+//! own outcome text. A `cancel_job` row carries the job's `grant_id` (informational: no M3b tool needs
+//! or spends a grant); a `create_group` row has neither `job_id` nor `grant_id`.
 
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};

@@ -1679,11 +1679,14 @@ and OrcaStudio picks the job up, syncs results, and parses them — no terminal,
             `src-tauri/src/mcp/tools/`) + `8683d66` (Part B, the ten tools registered in
             `server/read_tools.rs`, checked end to end over the socket) (2026-11-21); end-to-end check
             passed (11 tools via `orcastudio --mcp` and `claude -p`)
-      - [~] **M3a** `create_job` — steps A/B/C as one tracked task, grant charging, the audit log,
-            R8, `job:status`; the terminal exit flag (ADR-027 M3 amendment) — Part A committed
-            `03b14fd` (the cores, 25 controls); Part B built, pending verification and the live check
-            (`create_job` registered, the real step B, step C retried, 12 controls; the 60 s kept by Anton)
-      - [ ] **M3b** `cancel_job` (mcp only), `create_group`, `wait_for_jobs` (≤600 s), their audit rows
+      - [x] **M3a** `create_job` — steps A/B/C as one tracked task, grant charging, the audit log,
+            R8, `job:status`; the terminal exit flag (ADR-027 M3 amendment) — committed `03b14fd`
+            (Part A, the cores, 25 controls) + `f980804` (Part B: `create_job` registered, the real
+            step B, step C retried, 15 controls; the 60 s kept by Anton); live check of the SUBMITTED
+            and PROPOSED paths passed 2026-11-21
+      - [~] **M3b** `cancel_job` (mcp only), `create_group`, `wait_for_jobs` (≤600 s), their audit rows
+            — Part A built, pending verification (the three cores in `mcp/cancel.rs`,
+            `mcp/create_group.rs`, `mcp/tools/wait.rs`; Anton's D1–D4; not yet registered)
       - [ ] **M4** UI — Settings → MCP (grant editor, revoke, audit), Jobs badge + proposal reasons
             (live gate)
       - [ ] **M5** live research gate — a real GOAT → Opt+Freq → SP chain driven from a research folder

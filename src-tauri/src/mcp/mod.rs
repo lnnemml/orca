@@ -27,15 +27,21 @@
 //!   the admission gate, the lifecycle and the `orcastudio --mcp` relay.
 //! - [`tools`] holds the read tools' cores (M2b Part A): `list_jobs`, `get_job`, `get_results`,
 //!   `get_geometry`, `measure`, `read_output`, `search_manual`, `list_run_targets`,
-//!   `memory_estimate` and `list_groups`, each with its character cap. Not yet registered.
+//!   `memory_estimate` and `list_groups`, each with its character cap, and `wait_for_jobs` (M3b
+//!   Part A: the bounded long-poll, not yet registered).
+//! - [`cancel`] and [`create_group`] are the M3b write cores (Part A, not yet registered):
+//!   `cancel_job` (only `origin = 'mcp'`, never a `Draft`; a pre-row, `cancel_job_core`, an
+//!   outcome row) and `create_group` (the insert and its audit row in one transaction).
 //!
 //! The module page is `wiki/modules/mcp-server.md`.
 
 pub mod allowlist;
 pub mod assemble;
 pub mod audit;
+pub mod cancel;
 pub mod charge_mult;
 pub mod classify;
+pub mod create_group;
 #[cfg(unix)]
 pub mod create_job;
 pub mod grant;
@@ -57,9 +63,13 @@ mod allowlist_tests;
 #[cfg(test)]
 mod assemble_tests;
 #[cfg(test)]
+mod cancel_tests;
+#[cfg(test)]
 mod charge_mult_tests;
 #[cfg(test)]
 mod classify_tests;
+#[cfg(test)]
+mod create_group_tests;
 #[cfg(all(test, unix))]
 pub(crate) mod create_job_test_support;
 #[cfg(all(test, unix))]
