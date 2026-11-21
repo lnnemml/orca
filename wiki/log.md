@@ -14050,3 +14050,36 @@ Settled the Open item of ADR-027 M3a (rule #10): does a `COMMIT` of a `BEGIN IMM
   - `a_commit_waits_its_own_busy_timeout_under_the_rollback_journal` (300 ms timeout, a reader holding SHARED). Control: the database in WAL → `COMMIT` succeeds → red.
 - **Caveats:** the figure bounds SQLite lock waits, not wall time (fsync on a loaded disk comes on top; a first run at 88 % iowait showed a reader-free `COMMIT` of 14 s). It does not include the in-process `DbState` mutex wait. Whether the transaction stays open on the connection between a failed `COMMIT` and the drop was not isolated; the app relies on the drop-rollback, which was observed.
 - **Next:** verifier CODE, then commit on Anton's OK.
+
+## [2026-11-21] decision | ADR-027 M4 amendment — the split, the read count, the grant editor, accepted
+- **What.** The ADR-027 M4 amendment ("Amendment (2026-11-21) — M4"), accepted by Anton together with
+  the orchestrator's defaults. Before writing it, an explorer pass mapped the M4 anchors at `91daa94`:
+  - no TypeScript caller of any grant command exists;
+  - the TS `Job` type lacks `origin`, `mcp_reasons`, `grant_id` and `mcp_state`;
+  - no audit read command exists (`audit_rows_conn` is unbounded and test-only);
+  - nothing counts reads;
+  - the Jobs screen reloads the groups only on mount, on `job:status` and after Anton's own actions.
+- **Anton's forks:**
+  - M4 is split into M4a (Settings → MCP) and M4b (Jobs);
+  - reads are counted per connection, plus a total since app start;
+  - "Cancel Claude's jobs" is a Rust command;
+  - the grant expiry takes presets (1 h, 8 h default, 24 h, 7 d) or a custom local time.
+- **The orchestrator's defaults, accepted:**
+  - the audit page is 50 rows (capped at 200), with `args` clipped to 1,024 characters in the list;
+  - `max_jobs` / `max_in_flight` default to 5 / 1;
+  - the TS `Job` fields are required;
+  - `groups:changed` is emitted through the emit seam;
+  - the bulk cancel cancels queued jobs before running ones;
+  - this repository's `.claude/settings.json` deny rule is Anton's, before M5 (not the research folder's).
+- **DESIGN reviews:**
+  - **r1** PASS WITH FINDINGS (7 MED, 10 LOW, 3 INFO). The main one: the read-count ledger must live
+    outside the per-start `Registry`, fold a connection after `drain()`, and fold and snapshot under one
+    leaf mutex.
+  - **r2** PASS WITH FINDINGS (1 MED: the deny rule belongs to this repository, not the research
+    folder; 7 LOW).
+  - **r3** delta PASS WITH FINDINGS (1 LOW: the audit page's worst case is ≈ 3.2 MB at the bound, not
+    12 MB). All findings are applied.
+- **M3b log correction.** The live check's "group visible without a reload" has no established cause.
+  The group was created at 12:23 UTC. Later `job:status` events (Anton's Run of `c21c1c0c`, and its
+  cancel at 14:51) or a remount reload the groups. M4b's `groups:changed` gate tests the event itself.
+- **Next.** M4a Part A, with implementer `opus`.

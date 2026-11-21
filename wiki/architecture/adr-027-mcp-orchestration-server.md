@@ -214,7 +214,7 @@ not running, or its MCP server is off") and exits non-zero.
 |---|---|
 | the client session ends | the relay sees stdin EOF and closes the socket. The server sets that connection's `closed` flag. A waiting or reading handler sees the flag on its next tick and ends; handlers are not cancelled (M0 amendment, items 6 and 10) |
 | the app exits, or MCP is turned off | the listener and every connection close: the server sets each connection's `closed` flag and cancels its service (M0 amendment, item 10). Switching off keeps the `flock`. A `create_job` already past its charge step finishes its order of operations (decision 5): its task runs on, the tracker refuses new ones (the gate: M2 amendment, item 4), and a clean exit waits for them before releasing the lock ("Exit" above). The relay sees socket EOF, exits, and the client shows the server as disconnected |
-| the app restarts | the dependable recovery is a new client session (measured, M0 amendment, item 3). Jobs, grants and the audit log live in SQLite and survive. Only the per-connection read counters are lost |
+| the app restarts | the dependable recovery is a new client session (measured, M0 amendment, item 3). Jobs, grants and the audit log live in SQLite and survive. Only the per-connection read counters are lost (and, by the M4 amendment, item 2, the read total since app start) |
 
 ### (3) Three dispositions, chosen by a pure Rust classifier
 
@@ -537,11 +537,12 @@ The repeat is bounded by the cap, and because each call is one client action.
   - whether a client is connected;
   - the active grant with its usage, plus Revoke and "Cancel Claude's jobs";
   - **the audit log** (qualified by the M3 amendment, item 1: and the per-connection read count, built
-    in M4).
+    in M4; carried out with a total since app start by the M4 amendment, item 2).
 - **The audit log** is an `mcp_audit` table. It holds every state-changing call, every refusal and
   every proposal (qualified by the M3 amendment, item 3): time, tool, bounded argument text,
   disposition, reasons, `job_id` and `grant_id`.
-  Read calls are counted per connection in memory, and those counts are lost on restart. The log is
+  Read calls are counted per connection in memory, and those counts are lost on restart (qualified by
+  the M4 amendment, item 2: which calls count, and a total since app start). The log is
   also **the data of the experiment**: how the agent behaves at a given level of autonomy.
 
 **What leaves the machine (accepted by Anton).** T3 sends unpublished research to the model's
@@ -572,7 +573,8 @@ These items are not designed here. Each needs its own ADR, written from Stage-1 
   - the server is off by default;
   - grants are explicit, bounded and expiring;
   - this repository's `.claude/settings.json` gets a `deny` rule on `mcp__orcastudio__*`. Anton adds
-    it himself (unit M4), because agents may not edit that file.
+    it himself (unit M4; moved to before M5 by the M4 amendment, item 1), because agents may not edit
+    that file.
 
   The deny rule matches names; it is a guardrail, not a boundary.
 - **The client's own permission prompts are a second line, never the first.** The authority boundary
@@ -707,12 +709,14 @@ Part B. Every listed control must turn the suite red.
     - a grant check outside `BEGIN IMMEDIATE`;
     - the M0-amendment obligations listed in its item 9.
 - **M4 — the UI (Part B, live WebKitGTK gate).** The switch, the data line and "this instance serves"
-  move to M2a Part B (M2 amendment, item 2).
+  move to M2a Part B (M2 amendment, item 2). Split into M4a/M4b by the M4 amendment, item 1, which
+  governs where it differs from this bullet.
   - Settings → MCP: the switch with the data line, "this instance serves", the grant editor with
     "this job's level", Revoke, "Cancel Claude's jobs", and the audit view (qualified by the M3
     amendment, item 1: also the per-connection read count and its display).
-  - In Jobs: the badge, the reasons and "Claude is submitting".
-  - Anton adds the `.claude/settings.json` deny rule himself.
+  - In Jobs: the badge, the reasons and "Claude is submitting" (and the groups refresh: M4 amendment,
+    item 7).
+  - Anton adds the `.claude/settings.json` deny rule himself (before M5: M4 amendment, item 1).
 - **M5 — the live research gate (Anton).** A Claude Code session in a separate research folder.
   - Anton runs the PROPOSED GOAT from a SMILES.
   - Claude then chains Opt+Freq of the lowest conformers and an SP, Local and uni, under a grant.
@@ -812,7 +816,7 @@ measurement qualifies a decision, the rule below governs.
    - **The rule.** OrcaStudio's server is registered **only in the research folder's project
      `.mcp.json`**, never in user scope. Sessions in this repository then never launch the relay at
      all.
-   - The repository's `deny` rule (M4) stays as the second layer.
+   - The repository's `deny` rule (before M5: M4 amendment, item 1) stays as the second layer.
    - In `auto` mode an MCP call without an allow rule went through (measured on `echo`). That
      confirms the client's gates are not the authority boundary. The auto-mode classifier on a
      spend-type tool stays Open.
@@ -1310,7 +1314,7 @@ The decision text above stands, except where an item below says it replaces or q
 
            So the decomposition's M4 item gains the per-connection read count and its display in
            Settings → MCP, and decision 9's list of what Anton sees in Settings → MCP gains that
-           display. Both carry a pointer here.
+           display. Both carry a pointer here. (Carried out by the M4 amendment, item 2.)
      - **Controls:**
        - `cancel_job` on a `user` job accepted;
        - `wait_for_jobs` ignoring `known`;
@@ -1374,3 +1378,236 @@ The decision text above stands, except where an item below says it replaces or q
      still open, `prevent_exit`) clears the shared pause flag. The freed slot would then start the
      next queued ORCA job, and that job would outlive the app.
    - **What stays.** The user's pause and resume are unchanged.
+
+## Amendment (2026-11-21) — M4: the split, the read count, "Cancel Claude's jobs", the grant editor
+
+**Status:** Accepted by Anton on 2026-11-21, together with the orchestrator's defaults.
+- Anton decided four forks on 2026-11-21, each on the orchestrator's lean: items 1, 2, 3 and 5.
+- The other items are the orchestrator's defaults, put to Anton at acceptance.
+- DESIGN round 1 was PASS WITH FINDINGS (7 MED, 10 LOW, 3 INFO). All findings are applied.
+- DESIGN round 2 was PASS WITH FINDINGS (1 MED, 7 LOW, 3 INFO). All findings are applied, except
+  that `wiki/index.md` is updated at acceptance, with the `decision` log entry.
+- DESIGN round 3 (delta) was PASS WITH FINDINGS (1 LOW: the page bound, corrected; 1 INFO, applied).
+
+The decision text above stands, except where an item below says it replaces or qualifies a sentence.
+The code anchors are at `91daa94`.
+
+1. **M4 is two units (decided by Anton).**
+   - **M4a, Settings → MCP.** The grant editor, Revoke, "Cancel Claude's jobs", the audit view, and
+     the read count with its display.
+   - **M4b, Jobs.** The Claude badge, the proposal reasons, "Claude is submitting" in place of Run,
+     and the groups refresh of item 7.
+   - **The loop.** Each unit follows the CLAUDE.md loop:
+     - **Part A:** the Rust commands and the pure TypeScript logic, with tests. No component.
+     - **STOP.**
+     - **Part B:** the React components and their wiring, with the live WebKitGTK gate.
+   - **Implementers.** M4a Part A runs on `opus`, because it adds a counter on the tool-call path
+     and a bulk cancel through the poller. The other parts run on `sonnet` unless the verifier marks
+     one high-risk.
+   - **Controls.** Every listed control must turn its unit's suite red.
+   - **The deny rule.** Anton adds **this repository's** `.claude/settings.json` deny rule on
+     `mcp__orcastudio__*` himself, before M5 ("Honest limits"; M0 amendment, item 8). It is not part
+     of M4. The research folder is where Claude must be able to use the tools.
+2. **The read count (decided by Anton).** This carries out the M3 amendment's deferral (item 1) and
+   adds a running total.
+   - **What counts.** Every call `call_tool` admits, meaning after its permit is taken, to one of
+     decision 7's twelve `read` tools: the eleven read tools, `get_grant` among them, plus
+     `wait_for_jobs`. A call that then fails argument parsing still counts.
+   - **What does not count.**
+     - A call refused "busy" before admission.
+     - An unknown tool.
+     - A write tool (`create_job`, `cancel_job`, `create_group`). Those are audited instead (M3
+       amendment, item 3).
+   - **The classification table.** One table classifies every tool as read or write. A parity test
+     pins it equal to the service's tool list, so a future tool cannot go uncounted silently.
+   - **Per connection.**
+     - Each live connection carries its count and a per-tool breakdown, in atomics in `ConnState`.
+     - Counting takes no lock on the call path.
+     - Each entry has a stable id, its accept ordinal, so entries map across status polls.
+   - **"Since app start".** This is not a client "session" (decision 7).
+     - **The ledger.** One lifecycle-level ledger lives outside the per-start `Registry`: an `Arc`
+       behind its own leaf mutex. It holds the live connections' counter handles and the folded
+       counts of the ones that ended.
+     - **When a connection enters it.** At admission: right after `Registry::register` succeeds and
+       before its service is spawned.
+     - **When a connection is folded.** After its `drain()`, once no permit can be taken. Adding it to
+       the folded counts and removing its live entry happen under that one leaf mutex, and the status
+       snapshot takes the same mutex. So the snapshot sees every count exactly once.
+     - **The displayed figure.** folded + live.
+     - **Lifetime.** It survives a switch-off and switch-on. It is lost when the process ends
+       (decision 9).
+     - **Scope.** It covers this instance only. When this instance does not serve, the display says
+       so; it does not show 0 as a fact.
+     - **A closing connection.** One whose transport has closed but which is still draining shows as
+       "closing".
+   - **Where it shows.** `mcp_status` gains `reads`: the total since app start, and one entry per
+     live or closing connection (id, state, count, per-tool breakdown).
+   - **The status read.** `mcp_status` never takes the lifecycle transitions mutex (M2 amendment,
+     item 6). For the reads it takes only the ledger's leaf mutex, which no handler holds across an
+     `.await`.
+   - **Lock nesting.** Nothing else is locked while the ledger mutex is held. `status()` takes it
+     alone, after it has released the facts clone, and never together with `DbState`.
+3. **"Cancel Claude's jobs" is a Rust command (decided by Anton).**
+   - **The selection.** `mcp_cancel_claude_jobs()` selects, under one lock, every job with
+     `origin = 'mcp'` whose status is `queued`, `running` or `cancelling` (decision 5). It never
+     selects a draft or a `user` job.
+   - **The order.** It cancels the selected `queued` jobs before the `running` ones. Otherwise a freed
+     local slot would start a queued `mcp` job only to kill it.
+   - **Each job.** Each one goes through the same per-job body as the `cancel_job` command:
+     `with_poller` + `cancel_job_core` + `dispatch_cancel` on the blocking pool. That body is
+     extracted so the two cannot drift.
+   - **What it returns.**
+     - One result per job, as `{job_id, result}` or `{job_id, error}`. The command defines this
+       shape itself; it is not serde's `Ok`/`Err`.
+     - The number of charged drafts in step B it skipped (`mcp_state = 'submitting'`).
+   - **The count for the dialog.** A synchronous read command, `mcp_claude_jobs_summary()`, returns
+     `{to_cancel, submitting}`. It uses the same SQL predicate as the cancel, plus the count of
+     submitting drafts. TypeScript does not re-implement the filter.
+   - **The confirm.** It states the count and says: "jobs Claude is submitting right now, and any it
+     creates later, are not cancelled — revoke the grant to stop new ones".
+   - **During the call.** The button shows "Cancelling N…" until the answer arrives. Remote
+     deliveries make ssh calls, so this can take minutes.
+   - **No audit.** It is Anton's action. The audit records Claude's dispositions (M3 amendment, item
+     3).
+4. **The audit view.**
+   - **The command.** `mcp_list_audit(before_id: Option<i64>, limit: Option<u32>)` is synchronous, like
+     the grant commands.
+     - Newest first, with keyset paging on `id`.
+     - `limit` defaults to 50. Zero is clamped to 1, and anything above 200 to 200.
+   - **Why keyset paging is correct.** `mcp_audit.id` is an `INTEGER PRIMARY KEY` and no code deletes
+     an audit row, so ids are monotonic. A future purge would need `AUTOINCREMENT`.
+   - **Each row.**
+     - `args` is clipped to 1,024 characters and marked when clipped. `mcp_audit_row(id)` returns the
+       full text on demand. That command is synchronous and returns the whole row; its `args` is
+       bounded at 8,192 characters by the v24 CHECK, and an unknown id is `NotFound`.
+     - `reasons` is parsed into `[{row, message}]`.
+   - **Unreadable `reasons`.** It is shown as "reasons unreadable" together with its raw text, cut to
+     1,024 characters, and it never fails the page. This deliberately differs from the rule-#9 error
+     of `audit_rows_conn`, which stays test-only.
+   - **Worst case of a page**, as JSON serialised by serde_json (Tauri's IPC framing is not counted):
+     - with ASCII text, about 200 × (1,024 chars of args + 20 × 400 B of reasons) ≈ 2 MB;
+     - at the bound, ≈ 3.2 MB. Only `args` scales, at up to 6 bytes per character. Each reason's
+       message and row are already clipped to 400 and 40 serialised bytes (`bounded_reasons` →
+       `tools::clip`), so a row is ≈ 16 KB at most.
+
+     This is accepted. The MCP 40,000-byte cap does not apply: this is IPC, not MCP.
+   - **The view.**
+     - A table of time (local, through `formatLaptopUtc`), tool, disposition, job, reasons and args
+       (collapsed).
+     - "Load older" for older rows; "Refresh" reloads the newest page.
+     - No filters in M4.
+5. **The grant editor (the expiry decided by Anton).**
+   - **Targets.** Checkboxes for "local" and for each server profile.
+   - **Levels.** A list. A level is added in one of two ways:
+     - by pasting a `!` line, with an optional solvation block (decision 5);
+     - with "this job's level", a picker of finished jobs that calls `mcp_level_from_job`.
+
+     The core refuses a bad level. The UI shows its error and does not re-implement the grammar.
+   - **`max_jobs` and `max_in_flight`.** Integers ≥ 1, defaulting to 5 and 1.
+   - **The expiry.**
+     - **Presets:** 1 h, 8 h (the default), 24 h and 7 days, computed at Create. The form shows "8 h
+       from Create" and the local time it gives.
+     - **A custom local date and time.** A strict regex splits the input's value into its components,
+       and a pure helper builds the instant from them (`new Date(y, m-1, d, h, min)`); never
+       `new Date(string)`. A WebKitGTK that renders the input as plain text therefore fails safe. The
+       helper then converts the instant to the UTC `YYYY-MM-DD HH:MM:SS` text that `mcp_create_grant`
+       takes.
+     - **The round-trip check (rule #9).** A local time that does not read back the same is refused:
+       "does not exist — DST".
+     - **The fall-back hour.** The resulting time is shown with its UTC offset.
+     - **Unmeasured (rule #10).** How WebKitGTK's `datetime-local` input behaves is settled at the
+       M4a live gate. If the gate shows the input does not work, stop and bring it to Anton. How
+       JavaScriptCore resolves a nonexistent or ambiguous local time needs no measurement: the
+       round-trip refusal holds whatever the engine does, and the shown offset is honest whatever
+       offset it picks. The gate still observes both. vitest runs V8.
+   - **Replacing a grant.** Creating a grant revokes the active one (decision 5). Whether to confirm
+     "this replaces the active grant" is decided from a fresh `mcp_get_grant` read at the click, not
+     from the form's snapshot.
+   - **Revoke.** It also confirms.
+   - **The grant card.**
+     - What it shows: the state, charged out of `max_jobs`, "in flight (all grants)" out of
+       `max_in_flight` (decision 5 counts every grant), the local expiry, the targets and the levels.
+     - It re-reads `mcp_get_grant` on the section's 5 s poll and on `job:status`.
+6. **Jobs (M4b).**
+   - **The TS `Job` type.** It gains these fields, all required, because every `Job` comes from
+     `Job::COLUMNS`:
+     - `origin: "user" | "mcp"`;
+     - `mcp_reasons: string | null`;
+     - `grant_id: string | null`;
+     - `mcp_state: "submitting" | null`.
+   - **The badge.** "Claude" in the status cell, for `origin = 'mcp'` only.
+   - **The reasons of a PROPOSED job.** PROPOSED means `draft` and `origin = 'mcp'` and
+     `grant_id IS NULL` and `mcp_state IS NULL`.
+     - The row shows the first reason; the job detail shows the full list.
+     - A pure helper parses them. Malformed JSON shows as "reasons unreadable" and never throws.
+   - **Submitting.** On a job with `mcp_state = 'submitting'`, Run is replaced by a disabled "Claude
+     is submitting". The `submit_job` refusal stays as the backstop.
+7. **The groups refresh (M4b).**
+   - **The event.** The MCP `create_group` tool emits a payload-free `groups:changed` after its
+     commit, and only after a successful insert.
+     - **The path.** The service has no `AppHandle`, so the event goes through the emit seam it
+       already carries: a `groups_changed()` method beside `AppEmit` (`server/wiring.rs`), with a
+       recording fake for tests. It is emitted after the commit and after `DbState` is released,
+       like the `job:status` emits.
+     - **The listener.** The Jobs screen listens and reloads.
+   - **What stays.** The app's own `create_group` command is unchanged, because its caller already
+     reloads.
+   - **The M3b live check.** It recorded the group appearing "without a reload", but its cause is not
+     established. The Jobs screen reloads on mount, on any `job:status` (the cancel of `c21c1c0c` at
+     14:51 UTC came after the group's creation at 12:23), and after Anton's own cancel, delete or
+     move. The M4b log entry records this.
+8. **Controls.**
+   - **M4a:**
+     - a read call not counted, or a write tool, a busy refusal or an unknown tool counted;
+     - the read/write table diverging from the tool list;
+     - a closed connection's reads lost from the total, or counted twice (live and folded);
+     - `mcp_status` failing to return while another thread holds the lifecycle mutex, the gate's
+       mutex, or every permit of a connection;
+     - "Cancel Claude's jobs" touching a `user` job or a draft, cancelling a `running` job before a
+       `queued` one, not routing through the shared per-job body, or not reporting the skipped
+       `submitting` count;
+     - its cancels running on the IPC thread or the async runtime;
+     - the summary's predicate diverging from the command's;
+     - an audit `limit` of 0 or above 200 honoured;
+     - `args` over 1,024 characters not clipped, or clipped without its mark;
+     - a row skipped or repeated at a page boundary;
+     - unreadable `reasons` failing the page;
+     - the expiry helper wrong under `TZ=Europe/Kyiv`, including across both DST changes;
+     - a nonexistent local time accepted;
+     - a time in the repeated (fall-back) hour shown without its offset;
+     - the grant card not re-reading on the poll or on `job:status`;
+     - Create without the replace confirmation while a fresh read shows an active grant.
+   - **M4b:**
+     - the badge on a `user` job;
+     - Run enabled while `submitting`;
+     - a submitting draft shown as PROPOSED;
+     - malformed reasons throwing;
+     - `create_group` over MCP not emitting `groups:changed`, or emitting it on a refused or failed
+       insert;
+     - the Jobs screen not reloading on it.
+9. **The live gates (Part B, Anton on WebKitGTK).**
+   - **M4a:**
+     - create a grant with "this job's level", then with a custom expiry entered and shown (rule #10
+       of item 5);
+     - without Create, enter a time in the next spring-forward gap (refused) and one in the next
+       fall-back hour (shown with its offset);
+     - replace it, then revoke it;
+     - "Cancel Claude's jobs" on a queued `mcp` job, while a `user` job stays untouched;
+     - page through the audit view;
+     - the read count moves with a `claude -p` session's reads and keeps them in the total after it
+       disconnects.
+   - **M4b:**
+     - the badge;
+     - a PROPOSED job's reasons;
+     - "Claude is submitting" during a remote step B;
+     - a group created over MCP appears while the Jobs screen stays open, with no navigation, no job
+       transition and no click by Anton.
+10. **Pages the units update** (accurate today, stale once the code lands):
+    - `wiki/modules/mcp-server.md`: "The app's `create_group` command emits nothing, so neither does
+      the tool" (M4b), the "No read count" paragraph (M4a), and "Not yet wired" (both);
+    - the `McpStatus` type and its test fixtures (M4a);
+    - `wiki/modules/tauri-core.md`, the MCP command list and the `McpStatus` fields (M4a);
+    - `wiki/modules/groups-ui.md`, where `JobsScreen` owns the groups and loads `list_groups` on
+      mount (M4b: the `groups:changed` listener);
+    - `wiki/modules/frontend.md`, the `JobsScreen` description (M4b: the badge, the reasons and
+      "Claude is submitting").

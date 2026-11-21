@@ -1688,10 +1688,13 @@ and OrcaStudio picks the job up, syncs results, and parses them — no terminal,
             — committed `5cbd272` (Part A, the three cores; Anton's D1–D4) + Part B (the three tools
             registered in `server/m3b_tools.rs`, the cancel through the app's own `with_poller` +
             `dispatch_cancel`, a draft in step B refused with its own reason); live check passed
-      - [ ] **M4** UI — Settings → MCP (grant editor, revoke, audit), Jobs badge + proposal reasons,
-            the per-connection read count with its display (decision 9; moved here by Anton, ADR-027
-            M3 amendment item 1) (live gate)
-      - [ ] **M5** live research gate — a real GOAT → Opt+Freq → SP chain driven from a research folder
+      - [ ] **M4** UI (live gate), split by the ADR-027 M4 amendment:
+        - [ ] **M4a** Settings → MCP — grant editor, revoke, "Cancel Claude's jobs", audit view,
+              the per-connection read count with its display (decision 9; M4 amendment items 2–5)
+        - [ ] **M4b** Jobs — Claude badge, proposal reasons, "Claude is submitting", the
+              `groups:changed` refresh (M4 amendment items 6–7)
+      - [ ] **M5** live research gate (first, Anton adds this repository's `.claude/settings.json`
+            deny rule on `mcp__orcastudio__*`: M4 amendment item 1) — a real GOAT → Opt+Freq → SP chain driven from a research folder
 - [ ] TS refinement automation: scan maximum → OptTS → Freq → ΔG‡ pipeline
       (if not completed in Phase 4.5)
 
