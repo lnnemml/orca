@@ -12,8 +12,8 @@ cores** (M1b) are schema v24, the grant core, steps A and C, the crash reconcili
 `submit_job` guard, the source resolver and the memory preflight; each is a `*_conn` function or
 takes `&DbState`. The **app wiring** (M1b Part B) is the grant's Tauri commands (`commands/mcp.rs`),
 the guard in the two commands that submit a job by hand, and `SidecarSmiles`, the resolver's SMILES
-call over HTTP. The **transport** (M2a, `server/`) is the lock, the socket, the `rmcp` server with one
-tool (`get_grant`), the admission gate, the lifecycle that switches it on and off, and the
+call over HTTP. The **transport** (M2a, `server/`) is the lock, the socket, the `rmcp` server with
+11 tools (`get_grant` and the ten read tools below), the admission gate, the lifecycle that switches it on and off, and the
 `orcastudio --mcp` relay. The **read tools** (M2b) are the ten read tools of decision 7: each core in
 `tools/` is a function over a `&Connection` (or `&DbState`) with its character cap, and
 `server/read_tools.rs` registers it in the server with typed arguments, its lock and the mapping to
@@ -837,6 +837,10 @@ forbidden), and it stays inside the tool's one blocking task.
 reader) also goes through, and reports `file_bytes`, `window_start_byte` and `read_bytes`. The
 rule-#5 gate checks `read_bytes` (what was actually read), not only the reported offset. The search streams the
 file through `output_search::search_output`, which keeps the first 500 matches and counts all.
+A regular expression that does not compile is checked first (`check_regex`) and refused with the
+pattern through `echo` (at most 200 bytes, though the query bound counts 200 *characters*) and the
+`regex` error's kind ("unclosed group"); `search_output`'s own message, which quotes the whole
+pattern, is not passed on.
 
 **`search_manual`** keeps each hit's section id (`section_id`, the `manual_sections` row) and turns
 the index's private-use match marks into `«` `»`. `bm25_score` is dimensionless; lower is better.
@@ -982,7 +986,8 @@ Two choices go beyond the clarifications, and each can only move a job toward An
 
 `cargo test -p orcastudio --lib mcp::` runs the module's tests (the transport's are
 `mcp::server::`, the wiring's `mcp::server::wiring_tests`, the read tools' cores `mcp::tools::` and
-their registration end to end `mcp::server::read_tools_tests`), `cargo test -p orcastudio --lib commands::mcp`
+their registration end to end `mcp::server::read_tools_tests`, where `every_tool_answers_through_respond`
+pins that each of the ten tools is served as compact JSON, the shape only `respond` writes), `cargo test -p orcastudio --lib commands::mcp`
 the grant and switch commands' tests, `cargo test -p orcastudio --test mcp_relay_bin` the built
 binary's relay, `npx vitest run src/screens/SettingsScreen.mcp.test.tsx` the switch row, and
 `npx vitest run src/scene/charge-mult-parity.test.ts` the TS half of the C1 parity. The schema tests are
@@ -990,5 +995,5 @@ binary's relay, `npx vitest run src/screens/SettingsScreen.mcp.test.tsx` the swi
 controls are recorded in `log.md`: one per row plus the ADR's M1a list in the M1a entry, and the M1b
 list in the M1b Part A entry, the Part B list in the M1b Part B entry, and the M2a Part A and Part B
 lists in their entries (all 2026-11-19), the M2b Part A list in its entry (2026-11-20), and the M2b
-Part B list in its entry (2026-11-21). The ASE
+Part B list and the follow-up's in their entries (2026-11-21). The ASE
 pin is `pytest sidecar/tests/test_geometry.py` (in the sidecar venv).

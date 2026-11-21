@@ -471,6 +471,29 @@ fn database_work_runs_on_the_blocking_pool_never_an_async_worker() {
     }
 }
 
+/// Every tool's answer reaches the client as `respond` writes it: compact JSON. A tool that built its
+/// own reply (pretty JSON, no cap re-check) would skip the post-condition the size test relies on.
+/// The observable: the served text is as long as its own compact re-serialisation (`serde_json`
+/// without `preserve_order` sorts keys, which changes the order and not the length; indentation and
+/// newlines change the length). NEGATIVE CONTROL (`ctl:respond`): `list_groups` replies with pretty
+/// JSON instead of `respond` → red.
+#[test]
+fn every_tool_answers_through_respond() {
+    let s = served("rt-respond", small_world);
+    let mut c = s.client();
+    let mut seen: Vec<&str> = Vec::new();
+    for (i, (name, args)) in small_calls().into_iter().enumerate() {
+        let (text, is_error) = c.call_and_wait(10 + i as u64, name, args);
+        assert!(!is_error, "{name}: {text}");
+        let value = json_of(&text);
+        assert!(value.as_object().is_some_and(|o| !o.is_empty()), "{name}: a non-empty object, so indentation would show: {text}");
+        let compact = serde_json::to_string(&value).unwrap();
+        assert_eq!(text.len(), compact.len(), "[ctl:respond] {name} is not served as compact JSON: {}", &text[..text.len().min(120)]);
+        seen.push(name);
+    }
+    assert_eq!(seen, READ_TOOLS, "every read tool was checked");
+}
+
 /// `memory_estimate` runs with no lock taken by the service: its core locks `DbState` itself.
 #[test]
 fn memory_estimate_runs_without_the_lock() {

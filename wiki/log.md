@@ -13646,3 +13646,57 @@ Every result should arrive inline (no "saved to a file" pointer): the largest is
 
 **Next:** verifier CODE; then M3 (`create_job`, `cancel_job`, `create_group`, `wait_for_jobs`, the
 audit log, the F8 note on the classifier's R4 source reason).
+
+## [2026-11-21] fix | ADR-027 M2b follow-up — regex refusal bound, respond coverage, docs
+
+Three LOW findings of the M2b Part B verifier, closed with no change to `output_search.rs` and no
+change to any other caller of it.
+
+**What changed.**
+- **F-A** (`tools/output.rs`): `read_output` on an invalid regular expression quoted the whole pattern.
+  The query bound counts characters (200), not bytes, so 199 × "Ж" + "(" quoted 398 bytes and
+  the same with emoji 797; the module's rule is that no refusal quotes more than 200 bytes of one input.
+  `search` now compiles the regex first (`check_regex`, same case flag as `search_output`) and refuses
+  with the pattern through `echo` (at most 200 bytes) plus the `regex` error's kind (the last line of
+  its message, "unclosed group"). `search_output`'s own message is not passed on for a regex.
+- **F-B** (`server/read_tools_tests.rs`): nothing proved that every tool answers through `respond`; a
+  tool that built its own pretty-JSON reply stayed green. New `every_tool_answers_through_respond`
+  calls each of the ten tools on the small world through the socket and requires the served text to be
+  as long as its own compact re-serialisation. Method chosen: **length** equality, not text equality,
+  because `serde_json` here has no `preserve_order`, so a `Value` round-trip sorts the keys and a text
+  equality would fail on a correct tool; indentation and newlines change the length, key order does
+  not. The cap re-check is already pinned by `the_mapping_refuses_a_result_over_the_cap`.
+- **F-C** (`wiki/modules/mcp-server.md`): the transport sentence said the `rmcp` server has "one tool
+  (`get_grant`)"; it now says 11 tools, `get_grant` and the ten read tools. The `read_output` and Tests
+  sections name the regex check and the new test.
+- `ROADMAP.md`: M2b is `[x]`, commits `16d53fc` + `8683d66`.
+
+**Counts.** `cargo build`: 0 warnings. `cargo test -p orcastudio --lib mcp::`: 303 passed, 3 runs (301
+before: two tests added).
+`cargo test --workspace`: 1391 + 3 + 24 + 6 + 1 + 2 = 1427 passed, 0 failed, 30 ignored (the ignored
+ones read real job directories). New tests: `mcp::tools::output_tests::an_invalid_regex_quotes_at_most_an_echo_of_the_pattern`
+and `mcp::server::read_tools_tests::every_tool_answers_through_respond`.
+
+**Negative controls (4/4 RED, each restored, `src-tauri/src` sha-identical afterwards;
+`m2b_fu_controls.py`).**
+- `regex_old_mapping`: the `check_regex` call removed, so `search_output`'s message passes → RED on
+  `[ctl:regex_quote]`. The first run went RED on the wrong assertion (the error's kind, which the 600-byte
+  cut of the long message pushed out); the quote assertion was moved first so the tag is the intended one.
+- `regex_echo_dropped`: `check_regex` quotes `query` instead of `echo(query)` → RED on `[ctl:regex_quote]`.
+- `respond_list_groups`: `list_groups` answers with pretty JSON → RED on `[ctl:respond] list_groups`.
+- `respond_read_output`: the same for `read_output` → RED on `[ctl:respond] read_output`.
+
+**The orchestrator's live end-to-end result (M2b Part B).** Raw JSON-RPC over `orcastudio --mcp`
+against the live app listed 11 tools; every tool returned inline and within its cap.
+- `get_job` on an OptTS showed a rebuilt header with `nprocs 4`, `%maxcore 2000`, `Calc_Hess true`,
+  16 atoms and no coordinates.
+- A failed job's ORCA error was served, not withheld.
+- `get_results` returned G −234.3634 Eh and one imaginary mode at −458.07 cm⁻¹.
+- `measure` C–C on ibuprofen returned 1.5307 Å, and `[0,0]` was refused.
+- `memory_estimate` returned "Fits", and a header with `%maxcore` was refused.
+- The misspelt `jobid` got "unknown field".
+
+A real `claude -p` session listed the 11 tools and received `get_results` inline.
+
+**Next:** verifier CODE on this follow-up; then M3 (`create_job`, `cancel_job`, `create_group`,
+`wait_for_jobs`, the audit log, the F8 note on the classifier's R4 source reason).

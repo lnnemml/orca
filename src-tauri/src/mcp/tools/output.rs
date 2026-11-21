@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use rusqlite::Connection;
 use serde::Serialize;
 
-use super::{clip, result_text, size_of_text, within_cap, ToolError, RESULT_CAP_BYTES};
+use super::{clip, echo, result_text, size_of_text, within_cap, ToolError, ECHO_MAX_BYTES, RESULT_CAP_BYTES};
 use crate::commands::jobs::get_job_conn;
 use crate::local_backend::read_tail_window;
 use crate::output_search::{search_output, SearchOptions, SearchResult};
@@ -154,6 +154,22 @@ fn tail(job_id: &str, path: &Path, lines: Option<usize>) -> Result<OutputView, T
     within_cap(view, RESULT_CAP_BYTES)
 }
 
+/// A regular expression that does not compile is a refusal that quotes the pattern through [`echo`]
+/// and names the error's kind (the last line of the `regex` crate's message, e.g. "unclosed group").
+/// `search_output`'s own message carries the whole pattern, and the query bound counts characters
+/// (200), not bytes (800 at four bytes each), so it is never passed on.
+fn check_regex(query: &str, case_sensitive: bool) -> Result<(), ToolError> {
+    match regex::RegexBuilder::new(query).case_insensitive(!case_sensitive).build() {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            let message = e.to_string();
+            let kind = message.lines().last().unwrap_or("").trim_start_matches("error:").trim();
+            let kind = clip(kind, ECHO_MAX_BYTES).0;
+            Err(ToolError::refused(format!("invalid regular expression `{}`: {kind}", echo(query))))
+        }
+    }
+}
+
 fn search(job_id: &str, path: &Path, req: &OutputRequest) -> Result<OutputView, ToolError> {
     let OutputRequest::Search { query, regex, case_sensitive, context_lines, offset, limit } = req else {
         return Err(ToolError::refused("not a search"));
@@ -163,6 +179,9 @@ fn search(job_id: &str, path: &Path, req: &OutputRequest) -> Result<OutputView, 
     }
     if query.chars().count() > QUERY_MAX_CHARS {
         return Err(ToolError::refused(format!("the search query is longer than {QUERY_MAX_CHARS} characters")));
+    }
+    if *regex {
+        check_regex(query, *case_sensitive)?;
     }
     let opts = SearchOptions {
         query: query.clone(),

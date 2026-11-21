@@ -7,7 +7,7 @@ use super::output::{
 };
 use super::test_support::{assert_fits, largest_search_lines, largest_tail_lines, output_job, JobRow};
 use crate::local_backend::{read_tail_window, TAIL_LINES_MAX_BYTES};
-use super::ToolError;
+use super::{ToolError, ECHO_MAX_BYTES};
 use crate::mcp::test_db::TestDb;
 
 /// A job `id` whose `output.out` holds `lines`; returns the file's path.
@@ -96,6 +96,26 @@ fn search_pages_with_context_and_counts_every_match() {
     }
     let bad_regex = OutputRequest::Search { query: "(".into(), regex: true, case_sensitive: false, context_lines: None, offset: None, limit: None };
     assert!(matches!(read(&db, "s", &bad_regex), Err(ToolError::Refused(why)) if why.contains("regular expression")));
+}
+
+/// An invalid regular expression of multi-byte characters (the query bound counts characters, 200)
+/// is refused with at most [`ECHO_MAX_BYTES`] of the pattern quoted, and the error's kind. The
+/// old mapping passed `search_output`'s message, which quotes the whole pattern, on. NEGATIVE
+/// CONTROL (`ctl:regex_quote`): that mapping back → red.
+#[test]
+fn an_invalid_regex_quotes_at_most_an_echo_of_the_pattern() {
+    let db = TestDb::new("tools-output-regex-quote");
+    job_with_output(&db, "s", (0..3).map(|i| format!("line {i}")));
+    for glyph in ['Ж', '😀'] {
+        let query = format!("{}(", glyph.to_string().repeat(199));
+        assert_eq!(query.chars().count(), 200, "within the character bound, so it reaches the regex");
+        assert!(query.len() > ECHO_MAX_BYTES, "{} bytes of input", query.len());
+        let req = OutputRequest::Search { query, regex: true, case_sensitive: false, context_lines: None, offset: None, limit: None };
+        let Err(ToolError::Refused(why)) = read(&db, "s", &req) else { panic!("an invalid regex is refused") };
+        let quoted = why.chars().filter(|c| *c == glyph).count() * glyph.len_utf8();
+        assert!(quoted <= ECHO_MAX_BYTES, "[ctl:regex_quote] {quoted} bytes of the pattern quoted for {glyph}");
+        assert!(why.contains("unclosed group"), "the error's kind is named: {why}");
+    }
 }
 
 /// The largest search page fits: 600 matching 1,000-character lines with 3 context lines each,
