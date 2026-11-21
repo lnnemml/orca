@@ -11,7 +11,7 @@
 //!   before the matches pass [`OUTPUT_TEXT_BYTES`]; `next_offset` continues.
 //!
 //! The job's directory is read under the database lock ([`output_path`]); the file is read without
-//! it ([`read_output_at`]), so Part B locks only for the first.
+//! it ([`read_output_at`]), so the registered tool locks only for the first.
 
 use std::path::{Path, PathBuf};
 

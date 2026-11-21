@@ -13494,3 +13494,155 @@ superseded.
 - `tsc` and vitest not run: no TS change.
 
 **Controls: 72/72 RED on the final source tree (71 Rust controls plus the pytest pin), with the 213 files sha-identical afterwards. The two new controls went red on their first run: `bare_star_text` (the bare `*` rule back for text, so the SCF-tail error is withheld) and `opener_text` (the opener rule removed for text, so the echoed `* xyz` leaks in `get_job` and `list_jobs`). `field_not_view` still goes red, now through the row-shaped title; `list_excerpt_guard` goes red through the echo and late-row cases.**
+
+## [2026-11-21] feat | ADR-027 M2b Part B — the MCP read tools registered
+
+The ten read tools of decision 7 are registered in the `rmcp` service and checked end to end over
+the socket, as the client receives them. Implementer `opus`, worktree at `16d53fc` (Part A).
+
+**What landed.**
+- `server/read_tools.rs` (new). The ten tools, each a thin shell over its Part A core:
+  - typed arguments, every struct `deny_unknown_fields` (schema `additionalProperties: false`), with
+    the cores' bounds in the schema (`limit` ranges, `query`/`header`/`source` lengths, 2–4
+    `atom_indices`); `list_run_targets` takes the empty `NoArgs`;
+  - descriptions that carry `RECOVERY_SENTENCE`, name their units, say "0-based" (`get_geometry`,
+    `measure`), "rebuilt from the parsed input … values outside the display allowlist are not shown"
+    (`get_job`) and "bounded tail or search" (`read_output`);
+  - the mapping `respond`: the core's value as compact JSON, every field kept, re-checked against
+    40,000 bytes as it leaves (`served_text`); a `ToolError` becomes a tool error with its own message
+    cut to 600 bytes (`error_text`), never the arguments;
+  - the lock: every core on Tauri's blocking pool (`on_blocking_pool`); `with_db` locks `DbState`
+    once inside that task; `memory_estimate` takes no lock in the service; `read_output` drops the
+    guard after `output_path` and reads the file after.
+- `server/service.rs`: `HostPaths { meminfo, data_dir }` (`production(data_dir)`: the real
+  `/proc/meminfo` and `JobRunner`'s data dir); one router of `get_grant` and the read tools;
+  `#[tool_handler(router = self.tool_router)]`; `bound_errors` in `call_tool` bounds every tool
+  error's text, `rmcp`'s argument error to its prefix plus 200 bytes.
+- Plumbing: `LifecycleEnv.host` → `AcceptContext.host` → `McpService::new(conn, db, host)`;
+  `LifecycleEnv::production(db, host)`, `production_at(db, paths, host)`,
+  `wired_lifecycle(db, paths, host)`, `app_lifecycle(app, &data_dir)` (`lib.rs`).
+- `tools/geometry.rs`: `SOURCE_MAX_BYTES` (200), a source reference longer than that is refused
+  before it is read (finding 2 below).
+- `tools/header_view.rs`: F1, `has_decimal_number` and `hides_bang_token`.
+- `tools/test_support.rs` is `pub(crate)` and holds the Part A fixtures that drive each core to its cap
+  (moved from the Part A test files, whose assertions are unchanged; the moved tests stay green).
+
+**Part A's carried findings, and what was done.**
+- **F1 (Anton decided).** A `!` token holding a decimal number anywhere (`\d*\.\d+`) is hidden:
+  `! SP (0.000000,0.000000,0.117790)` → `! SP [value not shown]`, `! SP x=0.117790 y=0.755453` →
+  `! SP [value not shown] [value not shown]`; `D3`, `def2-SVP`, `6-31G*` stay. Control `f1_decimal`:
+  back to `is_numeric_token` alone → RED on both inputs (the test checks both before asserting; the
+  log shows `left: ["triple", "assigned"]`).
+- **F2 (INFO).** Atomic-number rows (`8 x y z`) are not caught by the detector. Recorded as an Open
+  rule-#10 question on the module page (does ORCA 6.1.1 accept atomic numbers in `* xyz`?). ORCA not
+  run; the detector unchanged.
+- **F3/D1.** The module page's "the backstop covers them" is corrected: in `get_job` a coordinate-like
+  ID field trips the backstop (`jobs::tripwire`), which refuses the whole view; `list_jobs` guards its
+  title and `error_excerpt` and has no backstop, its IDs being app-minted v4 UUIDs (checked:
+  `Uuid::new_v4` in `create_job_conn`, the group and the profile commands). The ADR's `get_job` line
+  says the same.
+- **F4.** The stored error is a line with the exit code plus the stderr tail when stderr is non-empty,
+  else the last 20 lines of `output.out` (`detect_completion`); the module page and the `jobs.rs` doc
+  said "the last 20 lines" only.
+- **F5/D3.** "Every error is a kind and a line" is scoped to the errors the view builds (header,
+  charge/multiplicity, coordinate row); the job's `error` field is ORCA's stored text, guarded by the
+  tripwire. Fixed in the module page, the `jobs.rs` module doc and the ADR's `get_job` line.
+- **D2.** The ADR's `get_job` line points to the module page ("The read tools", `get_job`) for
+  "numeric-looking", "label" and "numbers"; the module page defines all three.
+
+The ADR edit is wording within the item-8 `get_job` line plus two continuation sentences (D1, D2).
+
+**Findings in Part B.**
+1. **`#[tool_handler]` lists `Self::tool_router()` by default**, so with a second router `tools/list`
+   showed `get_grant` alone. M2a's own recovery-sentence test caught it (11 routed tools, 1 listed);
+   fixed by `router = self.tool_router`. Control `listed_router`.
+2. **A source reference was quoted up to the 600-byte cut.** The resolver quotes a `job:`/`molecule:`
+   reference whole in about a dozen messages; Part A bounded those refusals at 600 bytes, which let a
+   100 KB reference come back as 582 bytes of itself. The end-to-end refusal test caught it; a
+   reference over 200 bytes is now refused before it is read. Control `source_bound`.
+3. **`rmcp` quotes the arguments** in its own deserialisation error (`unknown field `<name>``,
+   `invalid type: string "<value>"`), unbounded. `bound_errors` keeps the prefix and 200 bytes.
+   Control `argument_echo`.
+
+**Interpretations.**
+- `get_grant` keeps its M2a body; only the read tools go through the new mapping.
+- `read_output`'s mode is chosen by `query` (absent: the tail); an argument of the other mode is
+  refused, not ignored. `case_sensitive` and `regex` default to false.
+- `memory_estimate`'s `target` is required (no default to `"local"`).
+- The service-side cap check can only be reached by a unit test of the mapping (every core caps
+  itself first); its control is that test.
+- The `withheld_dropped` and `error_quotes_input` controls mutate the `get_job` tool's mapping line
+  (clearing `withheld_fields`; appending the id to the error), the realistic way a mapping regresses.
+- The thread probe: a `DbSource` records, per touch, whether `Handle::block_on` is allowed on that
+  thread (it panics on an async worker, works on the blocking pool) and whether `DbState` is locked.
+- The `read_output` lock test uses a FIFO as `output.out`: the read blocks in `open`, and `DbState`
+  must be free while the call is unanswered.
+- The schema's `source` bound is 200 bytes, the same as `SOURCE_MAX_BYTES`.
+
+**Counts.**
+- 15 new tests: 14 in `mcp::server::read_tools_tests` (end to end over the socket, plus the
+  mapping's unit tests) and the F1 test in `mcp::tools::header_view_tests`.
+- `cargo build`: 0 warnings.
+- `cargo test --workspace`, second run: `orcastudio_lib` **1389** passed (1374 + 15), 30 ignored;
+  `mcp_relay_bin` 3; `orcastudio-core` 24 + 6 + 1 + 2 (1 ignored). The first run had one failure
+  outside this unit: `connection_test::conntest_tests::real_script_bounds_a_hung_df_and_meminfo`
+  took 18.4 s against its 15 s wall-clock bound under the full parallel load; alone it passes in
+  6.2 s, and the second full run passed. A load-sensitive bound, not touched here.
+- `mcp::` **301** (286 + 15), green **3 times**.
+- `tsc` clean; vitest **1381** passed, 2 skipped (no TS change).
+
+**Controls: 14/14 RED** (scratchpad `m2b_partb_controls.py`, not committed; each mutates one source
+file, runs the named test with `--exact`, requires RED carrying the control's tag and no compile
+error, restores sha256-identical; at the end the 215 files of `src-tauri/src` and `sidecar/` are
+sha-identical):
+- `registered`: `list_groups`' `#[tool]` removed → RED, the tool set;
+- `listed_router`: `#[tool_handler]` back to its default router → RED, the tool set;
+- `recovery`: the sentence dropped from `list_groups`' description → RED;
+- `deny_unknown`: `ListJobsArgs` without `deny_unknown_fields` → RED (schema and call);
+- `service_cap`: `served_text`'s cap check removed → RED on a 40,002-byte value;
+- `withheld_dropped`: `get_job`'s mapping clears `withheld_fields` → RED end to end;
+- `error_quotes_input`: `get_job`'s error appends the id → RED (≈550 bytes of input quoted);
+- `source_bound`: the 200-byte reference bound removed → RED (582 bytes quoted);
+- `error_clip`: `error_text` uncut → RED; `argument_echo`: the 200-byte argument echo uncut → RED;
+- `db_on_async`: `with_db` runs its read inline → RED (`Touch { ran: AsyncWorker }`);
+- `lock_across_read`: `read_output` keeps the guard across the file read → RED;
+- `permit_skipped`: `list_groups` takes no permit → RED (its fifth call waits on the database);
+- `f1_decimal`: → RED on both inputs.
+
+One control went green on its first run for a wrong reason: `db_on_async`'s first mutation did not
+compile (a tail-expression temporary), which the script reports as NOT RED; the mutation was
+rewritten (`let inline = …; inline`) and went RED.
+
+**End-to-end check list for the orchestrator** (a live app with MCP switched on; the research
+folder's `.mcp.json`, or `claude -p --strict-mcp-config --mcp-config <file>` with
+`{"mcpServers":{"orcastudio":{"type":"stdio","command":"<path>/orcastudio","args":["--mcp"]}}}`;
+write `--allowedTools=mcp__orcastudio__…` with the `=`, the flag is variadic):
+1. "List your tools from the orcastudio server" → eleven: `get_grant` and the ten read tools.
+2. `list_jobs` with `limit: 5` → `{"jobs":[…5],"total_count":N,"offset":0,"limit":5,"next_offset":5}`;
+   every row has `withheld_fields` (normally `[]`).
+3. `get_job` on a real Opt job → `header` starting `! …`, `atom_count`, `charge_mult` with
+   `source` "the `* xyz` line of job <id>'s input", no coordinate anywhere.
+4. `get_job` on a failed job → `error` is "ORCA did not terminate normally (exit code …)" plus the
+   tail, or `"withheld: coordinate-like content (rule #9)"` with `"error"` in `withheld_fields`.
+5. `get_results` on a parsed Opt+Freq → `final_energy_eh`, `converged`, `frequencies.imaginary_count`,
+   `thermochemistry.free_energy_g_eh`; every number's key ends in a unit.
+6. `get_geometry` `molecule:<id>` or `job:<id>` → `xyz_ang` text and `charge_mult`; a job that failed →
+   a tool error "… ended without success …".
+7. `measure` on that source with `[0, 1]` → `{"kind":"distance","distance_ang":…}`; with `[0, 0]` → a
+   tool error "atom index 0 is given twice …".
+8. `read_output` with `lines: 20` → `mode: "tail"`, 20 `lines`, `read_bytes` ≤ 262,144;
+   with `query: "FINAL SINGLE POINT ENERGY"` → `mode: "search"`, `total_match_count`.
+9. `search_manual` `query: "RIJCOSX"` → hits with `section_id` and `«RIJCOSX»` in the snippet.
+10. `list_run_targets` → `local` first, then each profile with `window_state` and
+    `reachability: "unknown"`.
+11. `memory_estimate` `header: "! r2SCAN-3c Opt\n"`, `target: "local"` → `app_maxcore.mib`,
+    `check`, `verdict`; a header with `%maxcore 3000` → a tool error "the app sets %maxcore …".
+12. `list_groups` → `groups` with `parent_id`, `total_count`.
+13. Any tool with a misspelt argument (`jobid`) → a tool error "failed to deserialize parameters:
+    unknown field `jobid` …".
+14. Five quick parallel calls on one connection are hard to force from `claude -p`; the busy path is
+    covered by `a_fifth_concurrent_call_of_any_tool_is_refused_busy`.
+Every result should arrive inline (no "saved to a file" pointer): the largest is under 40,000 bytes.
+
+**Next:** verifier CODE; then M3 (`create_job`, `cancel_job`, `create_group`, `wait_for_jobs`, the
+audit log, the F8 note on the classifier's R4 source reason).

@@ -12,7 +12,11 @@
 //!   open: `rmcp` does this itself (re-measured here: `server_tests::an_unknown_method_*`).
 //! - **The recovery sentence** ([`RECOVERY_SENTENCE`]) is in the server's instructions and in every
 //!   tool description, from one constant.
+//! - **The tools** are `get_grant` (here) and the ten read tools ([`super::read_tools`]), one router.
+//!   A tool error's text is bounded on its way out ([`bound_errors`]): `rmcp`'s own argument error
+//!   quotes the caller's input, so it is cut like an echo.
 
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -28,6 +32,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use super::{DbSource, REQUESTS_PER_CONNECTION};
 use crate::commands::mcp::current_grant_core;
+use crate::mcp::tools::{clip, ECHO_MAX_BYTES, REFUSAL_MAX_BYTES};
 
 /// The recovery after an app restart (M0 amendment, item 3), measured: the client does not
 /// dependably reconnect on its own. A macro so `concat!` can put the same literal into the
@@ -37,6 +42,8 @@ macro_rules! recovery_sentence {
         "After an app restart, start a new client session."
     };
 }
+
+pub(super) use recovery_sentence;
 
 /// The recovery sentence; every tool description and the server instructions carry it.
 pub const RECOVERY_SENTENCE: &str = recovery_sentence!();
@@ -50,6 +57,11 @@ pub const INSTRUCTIONS: &str = concat!(
 
 /// The tool error for a call over the connection's request cap.
 pub const BUSY: &str = "busy, retry: every request slot of this connection is in use";
+
+/// How `rmcp` begins the tool error for arguments that do not deserialise
+/// (`rmcp::handler::server::tool`, 3.11.0). The rest is `serde_json`'s message, which quotes the
+/// offending input (an unknown field's name, a string given for a number).
+pub const ARGUMENT_ERROR_PREFIX: &str = "failed to deserialize parameters:";
 
 const GET_GRANT_DESCRIPTION: &str = concat!(
     "The current compute grant, as Settings → MCP shows it: its state (active, expired or revoked), ",
@@ -106,18 +118,35 @@ impl Default for ConnState {
     }
 }
 
+/// The host facts `memory_estimate` reads besides the database: `/proc/meminfo` and the app's data
+/// dir (the disk the local job directories live on). Injected, so a test can point them at a
+/// scratch directory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostPaths {
+    pub meminfo: PathBuf,
+    pub data_dir: PathBuf,
+}
+
+impl HostPaths {
+    /// The app's: the real `/proc/meminfo`, and the data dir `JobRunner` is built over.
+    pub fn production(data_dir: &Path) -> HostPaths {
+        HostPaths { meminfo: PathBuf::from(crate::commands::memory::PROC_MEMINFO), data_dir: data_dir.to_path_buf() }
+    }
+}
+
 /// The service one connection runs.
 #[derive(Clone)]
 pub struct McpService {
     tool_router: ToolRouter<Self>,
     conn: Arc<ConnState>,
-    db: Arc<dyn DbSource>,
+    pub(super) db: Arc<dyn DbSource>,
+    pub(super) host: Arc<HostPaths>,
 }
 
 #[tool_router]
 impl McpService {
-    pub fn new(conn: Arc<ConnState>, db: Arc<dyn DbSource>) -> Self {
-        McpService { tool_router: Self::tool_router(), conn, db }
+    pub fn new(conn: Arc<ConnState>, db: Arc<dyn DbSource>, host: Arc<HostPaths>) -> Self {
+        McpService { tool_router: Self::tool_router() + Self::read_tools_router(), conn, db, host }
     }
 
     /// Every tool this server lists, for the description check.
@@ -146,7 +175,9 @@ impl McpService {
     }
 }
 
-#[tool_handler]
+// The combined router (`get_grant` and the read tools), not the macro's default `Self::tool_router()`,
+// which lists `get_grant` alone.
+#[tool_handler(router = self.tool_router)]
 impl ServerHandler for McpService {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
@@ -165,6 +196,30 @@ impl ServerHandler for McpService {
             return Ok(CallToolResult::error(vec![ContentBlock::text(BUSY)]).into());
         };
         let call = ToolCallContext::new(self, request, context);
-        self.tool_router.call(call).await
+        Ok(bound_errors(self.tool_router.call(call).await?))
     }
+}
+
+/// Every tool error's text, bounded: `rmcp`'s argument error keeps its prefix and at most
+/// [`ECHO_MAX_BYTES`] of `serde_json`'s message (which quotes the input), and any error text is cut
+/// to [`REFUSAL_MAX_BYTES`]. A successful result passes unchanged (the read tools cap their own).
+pub fn bound_errors(response: CallToolResponse) -> CallToolResponse {
+    let CallToolResponse::Complete(mut result) = response else { return response };
+    if result.is_error == Some(true) {
+        for block in &mut result.content {
+            if let ContentBlock::Text(t) = block {
+                t.text = bounded_error_text(&t.text);
+            }
+        }
+    }
+    CallToolResponse::Complete(result)
+}
+
+/// See [`bound_errors`].
+pub fn bounded_error_text(text: &str) -> String {
+    let text = match text.strip_prefix(ARGUMENT_ERROR_PREFIX) {
+        Some(rest) => format!("{ARGUMENT_ERROR_PREFIX} {}", clip(rest.trim_start(), ECHO_MAX_BYTES).0),
+        None => text.to_string(),
+    };
+    clip(&text, REFUSAL_MAX_BYTES).0
 }

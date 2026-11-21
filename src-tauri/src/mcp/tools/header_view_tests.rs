@@ -286,6 +286,30 @@ fn numeric_bang_tokens_are_hidden() {
     assert!(get_job(&db.conn, "mass").unwrap().header.is_some_and(|h| h.contains("M = [value not shown]")), "[ctl:bang_numbers]");
 }
 
+/// A `!` token holding a decimal number anywhere is hidden, not only one that starts like a number
+/// (F1 of the Part A verifier, decided by Anton): a parenthesised triple and `x=`/`y=` tokens.
+/// `D3`, `def2-SVP` and `6-31G*` stay. NEGATIVE CONTROL (`ctl:f1_decimal`): back to Part A's
+/// `is_numeric_token` alone → red on both inputs.
+#[test]
+fn bang_tokens_holding_a_decimal_number_are_hidden() {
+    let db = TestDb::new("tools-header-decimal");
+    let triple = format!("! SP D3 def2-SVP 6-31G* (0.000000,0.000000,0.117790)\n{T}");
+    let assigned = format!("! SP x=0.117790 y=0.755453\n{T}");
+    JobRow { input: &triple, ..JobRow::new("triple") }.insert(&db.conn);
+    JobRow { input: &assigned, ..JobRow::new("assigned") }.insert(&db.conn);
+    let expected = [("triple", "! SP D3 def2-SVP 6-31G* [value not shown]"), ("assigned", "! SP [value not shown] [value not shown]")];
+    // Every input is checked before the assertion, so a control shows each one that leaks.
+    let not_hidden: Vec<&str> = expected
+        .iter()
+        .filter(|(id, header)| {
+            let view = get_job(&db.conn, id).unwrap();
+            view.header.as_deref() != Some(*header) || !secrets_in(&result_text(&view).unwrap()).is_empty()
+        })
+        .map(|(id, _)| *id)
+        .collect();
+    assert_eq!(not_hidden, Vec::<&str>::new(), "[ctl:f1_decimal] not hidden");
+}
+
 /// The display-only list (separate from M1a's SUBMITTED allowlist) shows its integer values, and
 /// hides any other value of the same keys. NEGATIVE CONTROLS: a display-list value dropped
 /// (`ctl:display_dropped`), a non-integer value shown (`ctl:display_non_integer`) → red.

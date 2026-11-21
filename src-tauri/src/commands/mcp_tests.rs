@@ -180,7 +180,7 @@ mod switch {
     fn the_switch_commands_do_their_work_off_the_callers_thread() {
         let scratch = Scratch::new("cmd-switch");
         let recording = Arc::new(RecordingDb { db: scratch.db(), threads: Mutex::new(Vec::new()) });
-        let lifecycle = wired_lifecycle(recording.clone(), Ok(scratch.paths()));
+        let lifecycle = wired_lifecycle(recording.clone(), Ok(scratch.paths()), scratch.host());
         let caller = thread::current().id();
 
         let status = tauri::async_runtime::block_on(mcp_status_core(lifecycle.clone())).unwrap();

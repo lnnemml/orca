@@ -4,15 +4,19 @@
 //! its `* xyz` block) and `scene_json`. Neither tool serialises a `Job`: each builds a projection
 //! field by field. `get_job`'s header is **built from M1a's parsed structure, never filtered from raw
 //! text** ([`super::header_view`]; decided by Anton after two verifier FAILs on filtering). The atom
-//! count and the charge and multiplicity come from the strict readers; every error in the view is a
-//! kind and a line, never source text.
+//! count and the charge and multiplicity come from the strict readers; every error the view builds
+//! (the header's, the charge and multiplicity's, a coordinate row's) is a kind and a line, never
+//! source text. The job's `error` field is not built here: it is ORCA's stored text, served under
+//! the tripwire.
 //!
 //! **The rule-#9 tripwire is per field** (Anton, round 4): each text field (the title, the header, the
 //! error, the reasons, the notices, …) is checked whole, before any cut, and replaced by [`WITHHELD`]
 //! when it holds a coordinate-like row; `withheld_fields` names it and the rest is served. A failed
-//! job's error, the last lines of `output.out`, is the common case. `list_jobs` guards its title and
-//! error excerpt the same way. Behind the guards, [`tripwire`] walks the serialised view and refuses it
-//! if a row escaped them.
+//! job's stored error (its stderr tail, or else the last 20 lines of `output.out`:
+//! `local_backend::detect_completion`) is the common case. `list_jobs` guards its title and error
+//! excerpt the same way, and has no backstop (its ids are app-minted v4 UUIDs). Behind `get_job`'s
+//! guards, [`tripwire`] walks the serialised view and refuses the whole view if a row escaped them,
+//! an ID field included.
 //!
 //! **Paging.** `list_jobs` reads one page of [`Job::COLUMNS`] rows, newest first (`created_at DESC,
 //! id DESC`), with an `offset`; `next_offset` is the next page's offset, or `None` on the last page.

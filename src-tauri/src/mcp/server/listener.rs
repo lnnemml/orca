@@ -24,7 +24,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 
-use super::service::{ConnState, McpService};
+use super::service::{ConnState, HostPaths, McpService};
 use super::DbSource;
 
 /// The peer's uid, from `SO_PEERCRED` in production.
@@ -104,6 +104,7 @@ pub struct AcceptContext {
     pub peer_uid: PeerUid,
     pub own_uid: u32,
     pub db: Arc<dyn DbSource>,
+    pub host: Arc<HostPaths>,
 }
 
 /// Accept until `ctx.cancel` fires. The listener (and so the socket's fd) closes when this returns.
@@ -136,7 +137,7 @@ fn admit(stream: UnixStream, ctx: &AcceptContext) {
     let Some(conn) = ctx.registry.register() else {
         return;
     };
-    let service = McpService::new(conn.clone(), ctx.db.clone());
+    let service = McpService::new(conn.clone(), ctx.db.clone(), ctx.host.clone());
     let task = serve_connection(stream, service, conn, slot, ctx.clone());
     tauri::async_runtime::spawn(task);
 }

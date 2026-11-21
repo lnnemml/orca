@@ -1,7 +1,7 @@
 //! Tests for `list_groups` (ADR-027 decision 7; M2 amendment, item 7).
 
 use super::groups::{list_groups, GROUPS_MAX, GROUP_NAME_MAX_BYTES};
-use super::test_support::{assert_fits, id36};
+use super::test_support::{assert_fits, largest_groups};
 use crate::mcp::test_db::TestDb;
 
 #[test]
@@ -28,15 +28,7 @@ fn groups_page_in_creation_order_with_their_parents() {
 #[test]
 fn the_largest_list_groups_page_fits_under_the_cap() {
     let db = TestDb::new("tools-groups-big");
-    let parent = id36("root");
-    // An explicit earlier time: `datetime('now')` has whole seconds, so the root could otherwise sort
-    // after a child created in the same second (`created_at, id`).
-    db.conn.execute("INSERT INTO groups (id, name, created_at) VALUES (?1, 'root', '2000-01-01 00:00:00')", [&parent]).unwrap();
-    for i in 0..300 {
-        db.conn
-            .execute("INSERT INTO groups (id, name, parent_id) VALUES (?1, ?2, ?3)", rusqlite::params![id36(&format!("g{i}")), "N".repeat(5_000), parent])
-            .unwrap();
-    }
+    largest_groups(&db.conn);
     let p = list_groups(&db.conn, None, Some(1_000)).expect("[ctl:groups_cap] the largest page is served");
     assert_fits(&p, "[ctl:groups_cap]");
     assert_eq!((p.groups.len(), p.limit), (GROUPS_MAX, GROUPS_MAX), "[ctl:groups_cap]");

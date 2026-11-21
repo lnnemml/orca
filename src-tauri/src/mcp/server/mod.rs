@@ -11,7 +11,9 @@
 //!   only the inode it bound.
 //! - [`listener`] accepts: the `SO_PEERCRED` check, the 4 connection slots, the per-start registry.
 //! - [`service`] is the `rmcp` service of one connection: the 4-permit request cap, the `closed`
-//!   flag, `get_grant`, and the recovery sentence.
+//!   flag, `get_grant`, the recovery sentence, and the bound on every tool error's text.
+//! - [`read_tools`] registers the ten read tools (M2b) in that service, over the cores in
+//!   [`crate::mcp::tools`].
 //! - [`gate`] is the admission gate over `TaskTracker` generations.
 //! - [`lifecycle`] owns every transition under one mutex, the status, and the exit flow.
 //! - [`tick`] is the 30 s tick driver.
@@ -26,6 +28,7 @@ pub mod lifecycle;
 pub mod listener;
 pub mod lock;
 pub mod paths;
+pub mod read_tools;
 pub mod relay;
 pub mod service;
 pub mod socket;
@@ -40,6 +43,8 @@ mod lifecycle_tests;
 mod lock_tests;
 #[cfg(test)]
 mod paths_tests;
+#[cfg(test)]
+mod read_tools_tests;
 #[cfg(test)]
 mod relay_tests;
 #[cfg(test)]
@@ -56,7 +61,7 @@ pub const CONNECTIONS: usize = 4;
 /// Each connection has at most this many requests in flight (M0 amendment, item 5).
 pub const REQUESTS_PER_CONNECTION: usize = 4;
 
-/// Where the server reaches the database: the app's managed `DbState` in production (Part B), a
+/// Where the server reaches the database: the app's managed `DbState` in production, a
 /// scratch one in tests. Handlers lock it for one query or transaction, off the async workers.
 pub trait DbSource: Send + Sync + 'static {
     fn db(&self) -> &DbState;

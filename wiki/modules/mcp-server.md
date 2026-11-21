@@ -14,9 +14,10 @@ takes `&DbState`. The **app wiring** (M1b Part B) is the grant's Tauri commands 
 the guard in the two commands that submit a job by hand, and `SidecarSmiles`, the resolver's SMILES
 call over HTTP. The **transport** (M2a, `server/`) is the lock, the socket, the `rmcp` server with one
 tool (`get_grant`), the admission gate, the lifecycle that switches it on and off, and the
-`orcastudio --mcp` relay. The **read tools' cores** (M2b Part A, `tools/`) are the ten read tools of
-decision 7, each a function over a `&Connection` (or `&DbState`) with its character cap; they are
-not yet registered in the server. `server/wiring.rs` connects the transport to the app: `lib.rs` setup and
+`orcastudio --mcp` relay. The **read tools** (M2b) are the ten read tools of decision 7: each core in
+`tools/` is a function over a `&Connection` (or `&DbState`) with its character cap, and
+`server/read_tools.rs` registers it in the server with typed arguments, its lock and the mapping to
+what the client receives. `server/wiring.rs` connects the transport to the app: `lib.rs` setup and
 `ExitRequested`, the `main.rs` relay branch, and the switch's commands `mcp_status`/`mcp_set_enabled`,
 which Settings → MCP calls. The module stays registered in `lib.rs` under a scoped
 `#[allow(dead_code)]`, because steps A/C, the resolver and `SidecarSmiles` have no non-test caller
@@ -45,15 +46,15 @@ PROPOSED (P5). Nothing reaches SUBMITTED by default.
 | `preflight.rs` | `mcp_maxcore -> McpMaxcore { mib, source }`, `memory_verdict_for -> MemoryVerdict`, the pure `verdict_of` |
 | `tools/mod.rs` | the read tools' shared core: `ToolError` (`Refused`, `Measure`, `TooLarge`, `App`; `from_app` reads `NotFound` as a refusal), `ToolError::refused` (message ≤ 600 bytes), `echo` (echoed input ≤ 200 bytes), `CLIENT_SPILL_CHARS` (50,000), `RESULT_CAP_BYTES` (40,000), `size_of_text` (UTF-8 bytes), `result_text`, `within_cap` (the size post-condition), `clip` (serialised bytes, escapes counted), `page_limit` |
 | `tools/jobs.rs` | `list_jobs(conn, &JobFilter, offset, limit) -> JobsPage`, `get_job(conn, id) -> JobView`; `JobSummary`, `ChargeMultView`, `ReasonView`; the field-level guard (`WITHHELD`, `withheld_fields`) and `tripwire`, the backstop on the serialised view |
-| `tools/header_view.rs` | `reconstruct(input)`: `get_job`'s header built from `parse_header`, the allowlist and the display-only list, never raw text; `coordinate_row(line, Field)` (the tripwire's detector; `Field::Header`/`Text`); `GEOMETRY_BLOCKS`, `DISPLAY_INTEGER_KEYS`, `is_numeric_token`, `HIDDEN_TOKEN`, `is_identifier` |
+| `tools/header_view.rs` | `reconstruct(input)`: `get_job`'s header built from `parse_header`, the allowlist and the display-only list, never raw text; `coordinate_row(line, Field)` (the tripwire's detector; `Field::Header`/`Text`); `GEOMETRY_BLOCKS`, `DISPLAY_INTEGER_KEYS`, `hides_bang_token` (`is_numeric_token` or `has_decimal_number`), `HIDDEN_TOKEN`, `is_identifier` |
 | `tools/results.rs` | `get_results(conn, id) -> ResultsSummary`; `FrequencySummary`, `ScanSummary`/`ScanPointView`, `NebSummary`/`MepPointView` |
-| `tools/geometry.rs` | `get_geometry(conn, reference) -> GeometryView`, `measure(conn, reference, indices) -> MeasureView`, the pure `measure_atoms -> Result<Measured, MeasureRefusal>`, `ase_dihedral`; `GEOMETRY_MAX_ATOMS` (600), `COINCIDENT_ANG`, `COLLINEAR_SIN` (both 1e-6) |
+| `tools/geometry.rs` | `get_geometry(conn, reference) -> GeometryView`, `measure(conn, reference, indices) -> MeasureView`, the pure `measure_atoms -> Result<Measured, MeasureRefusal>`, `ase_dihedral`; `GEOMETRY_MAX_ATOMS` (600), `COINCIDENT_ANG`, `COLLINEAR_SIN` (both 1e-6), `SOURCE_MAX_BYTES` (200) |
 | `tools/output.rs` | `output_path(conn, id)` (the DB read), `read_output_at(job_id, path, &OutputRequest) -> OutputView` (`Tail`/`Search`/`NoOutput`, no lock) |
 | `tools/manual.rs` | `search_manual(conn, query, limit) -> ManualResults` over `manual::index::search_manual` |
 | `tools/targets.rs` | `list_run_targets(conn)`, `list_run_targets_at(conn, local_time, now_min)`, the pure `window_state(window, now_min) -> WindowState`, `local_now` |
 | `tools/memory.rs` | `memory_estimate(db, meminfo, data_dir, header, target) -> MemoryEstimateView` (takes no lock of its own) |
 | `tools/groups.rs` | `list_groups(conn, offset, limit) -> GroupsPage` over `list_groups_conn` |
-| `tools/*_tests.rs`, `tools/test_support.rs` | one test file per tool file plus `budget_tests.rs`; `test_support` has the unit-name walk (`unitless_numeric_keys`), `assert_fits`, and row builders |
+| `tools/*_tests.rs`, `tools/test_support.rs` | one test file per tool file plus `budget_tests.rs`; `test_support` (`pub(crate)`) has the unit-name walk (`unitless_numeric_keys`), `assert_fits`, row builders, and the fixtures that drive each core to its cap (`largest_get_job`, `largest_list_jobs`, `results_json`, `grid_molecule`, `output_job`, `largest_tail_lines`/`largest_search_lines`, `index_manual`/`largest_manual`, `largest_profiles`, `largest_groups`), shared with the end-to-end tests |
 | `*_tests.rs`, `test_db.rs` | one test file per submodule, plus `submit_guard_tests.rs` for the guard's wiring; `test_db.rs` builds a migrated scratch database per test |
 | `../commands/mcp.rs` | the grant commands `mcp_create_grant`, `mcp_revoke_grant`, `mcp_get_grant`, `mcp_level_from_job` and their `*_core`/`*_conn` bodies; `GrantView`, `GrantState`; the switch's `async` commands `mcp_status`, `mcp_set_enabled(on)` over `mcp_status_core`/`mcp_set_enabled_core`. Tests in `commands/mcp_tests.rs` |
 | `switch.rs` | the switch's row: `MCP_ENABLED_KEY` (`mcp_enabled`), `read_enabled_conn`, `write_enabled_conn`, `is_reserved_setting` |
@@ -62,13 +63,14 @@ PROPOSED (P5). Nothing reaches SUBMITTED by default.
 | `server/lock.rs` | `try_acquire(path) -> Result<Acquire, LockError>` (`Acquired(McpLock)` / `HeldElsewhere`), `has_cloexec` |
 | `server/socket.rs` | `prepare_dir`, `bind(paths, own_uid, after_bind) -> BoundSocket { listener, identity }`, `check_modes`, `unlink_if_same(identity) -> Unlinked`; `DIR_MODE = 0o700`, `SOCKET_MODE = 0o600` |
 | `server/listener.rs` | `accept_loop`, the peer check (`PeerUid`, `kernel_peer_uid`, `own_uid`, `peer_allowed`), the per-start `Registry`, the `Transport` stream wrapper |
-| `server/service.rs` | `McpService` (the `rmcp` `ServerHandler`: `get_grant`, the permit in `call_tool`), `ConnState { closed, permits }`; `RECOVERY_SENTENCE`, `INSTRUCTIONS`, `BUSY` |
+| `server/service.rs` | `McpService` (the `rmcp` `ServerHandler`: `get_grant`, the permit in `call_tool`, one router of `get_grant` and the read tools), `ConnState { closed, permits }`, `HostPaths { meminfo, data_dir }` (`production(data_dir)`); `bound_errors`/`bounded_error_text`, `ARGUMENT_ERROR_PREFIX`; `RECOVERY_SENTENCE`, `INSTRUCTIONS`, `BUSY` |
+| `server/read_tools.rs` | the ten read tools registered (`#[tool_router(router = read_tools_router)]`): their descriptions, argument structs (`ListJobsArgs`, `JobIdArgs`, `GeometryArgs`, `MeasureArgs`, `ReadOutputArgs`, `SearchManualArgs`, `MemoryEstimateArgs`, `ListGroupsArgs`, `NoArgs`; all `deny_unknown_fields`), `output_request`; the mapping `respond` → `served_text` (the cap at the boundary) / `error_text`; `on_blocking_pool`, `McpService::with_db` |
 | `server/gate.rs` | `AdmissionGate` (`open`, `close`, `spawn`, `task_count`, `wait_all`), `GateClosed` ("MCP is shutting down") |
-| `server/lifecycle.rs` | `McpLifecycle` (`tick_step`, `set_enabled`, `status`, `on_exit_requested`, `gate`), the pure `decide` and `pass_through`; `LifecycleEnv` (`production`, `production_at`), `Hooks`, `Observed`, `Action`, `Why`, `McpStatus`, `ExitDecision`, `Executor` (`BlockingPool`), `ExitSteps`, `StopHandle`; `with_busy_timeout`, `RECONCILE_BUSY_TIMEOUT` (250 ms) |
-| `server/wiring.rs` | the app's side: `ManagedDb` (the `DbSource` over the managed `DbState`), `wired_lifecycle`, `app_lifecycle`, `start_ticks`; `exit_requested`, `handle_exit_request`, the pure `prevents_exit`, `guarded_steps`, `backstop`/`run_backstop`/`backstop_steps` → `Backstop` (`Hung`/`Died`/`StillAlive`), `hard_end` (`libc::_exit(1)`), `BackstopTimings`, `EXIT_FLOW_DEADLINE` (60 s), `EXIT_GRACE` (10 s), `BACKSTOP_STEPS_DEADLINE` (20 s); `is_relay_invocation`, `relay_main` |
+| `server/lifecycle.rs` | `McpLifecycle` (`tick_step`, `set_enabled`, `status`, `on_exit_requested`, `gate`), the pure `decide` and `pass_through`; `LifecycleEnv` (`production(db, host)`, `production_at(db, paths, host)`; its `host` reaches every connection's service), `Hooks`, `Observed`, `Action`, `Why`, `McpStatus`, `ExitDecision`, `Executor` (`BlockingPool`), `ExitSteps`, `StopHandle`; `with_busy_timeout`, `RECONCILE_BUSY_TIMEOUT` (250 ms) |
+| `server/wiring.rs` | the app's side: `ManagedDb` (the `DbSource` over the managed `DbState`), `wired_lifecycle(db, paths, host)`, `app_lifecycle(app, data_dir)`, `start_ticks`; `exit_requested`, `handle_exit_request`, the pure `prevents_exit`, `guarded_steps`, `backstop`/`run_backstop`/`backstop_steps` → `Backstop` (`Hung`/`Died`/`StillAlive`), `hard_end` (`libc::_exit(1)`), `BackstopTimings`, `EXIT_FLOW_DEADLINE` (60 s), `EXIT_GRACE` (10 s), `BACKSTOP_STEPS_DEADLINE` (20 s); `is_relay_invocation`, `relay_main` |
 | `server/tick.rs` | `run_ticks(lifecycle, interval)`, `Interval`, `Every`, `TICK = 30 s` |
 | `server/relay.rs` | `relay(stdin, stdout, stderr, socket_path) -> RelayEnd` (`From<RelayEnd> for ExitCode`), `NOT_RUNNING` |
-| `server/*_tests.rs`, `server/test_support.rs` | one test file per submodule plus `server_tests.rs` (the server end to end over a real socket); `test_support` has the scratch dir and DB, a counting environment and a raw NDJSON MCP client |
+| `server/*_tests.rs`, `server/test_support.rs` | one test file per submodule plus `server_tests.rs` (the server end to end over a real socket) and `read_tools_tests.rs` (the read tools end to end, over a recording `DbSource`); `test_support` has the scratch dir and DB, a counting environment and a raw NDJSON MCP client (`call`, `call_and_wait`) |
 | `../../tests/mcp_relay_bin.rs` | the built `orcastudio --mcp` run as a real process (an integration test) |
 
 ## The classifier's input and output
@@ -507,6 +509,14 @@ permit (`ConnState::drain`), and only then returns its slot.
 - **`get_grant`** returns `{"grant": <GrantView or null>}`, read by `commands::mcp::current_grant_core`
   in `spawn_blocking` with `DbState` locked for that one read. A failure is a tool error with its
   message.
+- **The read tools** are registered by `read_tools.rs` (below, "The read tools"). `get_grant`'s router
+  and theirs are one, which `#[tool_handler(router = self.tool_router)]` lists and calls (the macro's
+  default, `Self::tool_router()`, would list `get_grant` alone).
+- **Every tool error's text is bounded** on its way out (`bound_errors`, in `call_tool`): `rmcp`
+  answers arguments that do not deserialise with `failed to deserialize parameters:` and
+  `serde_json`'s message, which quotes the input (an unknown field's name, a string given for a
+  number); that message keeps its prefix and at most 200 bytes after it, and any error text is cut to
+  600 bytes. `BUSY` and a successful result pass unchanged.
 
 **The admission gate** (`gate.rs`). `TaskTracker::close` does not stop spawns ("M2a facts" 7), so the
 refusal is the gate's: one mutex holds `open` across both the check and the tracked spawn, and `close`
@@ -587,9 +597,11 @@ socket → stdout, flushing every chunk, until either side ends: stdin EOF close
 
 ### The wiring (`wiring.rs`)
 
-**Setup** (`lib.rs`, right after `DbState` is managed): `app_lifecycle` builds the one `McpLifecycle`
-over `LifecycleEnv::production` — this user's paths, the real reconciliation, `SO_PEERCRED` — with
-`ManagedDb`, a `DbSource` that reaches the managed `DbState` through the app handle. It is managed as
+**Setup** (`lib.rs`, right after `DbState` is managed): `app_lifecycle(app, &data_dir)` builds the one
+`McpLifecycle` over `LifecycleEnv::production` — this user's paths, the real reconciliation,
+`SO_PEERCRED`, and `HostPaths::production(data_dir)` (the real `/proc/meminfo` and the data dir
+`JobRunner` is built over, for `memory_estimate`) — with `ManagedDb`, a `DbSource` that reaches the
+managed `DbState` through the app handle. It is managed as
 `Arc<McpLifecycle>`, and `start_ticks` starts the `mcp-tick` thread, whose first step runs at once, so
 a switch left on serves from app start. A path refusal (`sun_path`) or no base dir never fails setup:
 it stays in the environment and becomes the status reason once the switch is on.
@@ -643,12 +655,12 @@ line, and the status line from `McpStatus`, re-read on mount, after a toggle and
 
 ## The read tools (`tools/`, M2b)
 
-The ten read tools of decision 7 (M2 amendment, items 1, 7 and 8). Each core is a function over a
-`&Connection`, so Part B locks `DbState` for one call through `spawn_blocking`; `memory_estimate`
-takes `&DbState` because the cores it reuses lock it themselves, and `read_output` splits into a DB
-read (`output_path`) and a file read without the lock (`read_output_at`). A refusal is
-`ToolError::Refused` (or `Measure`) with the reason in words; an unknown id is a refusal, not an app
-error.
+The ten read tools of decision 7 (M2 amendment, items 1, 7 and 8). Each core in `tools/` is a function
+over a `&Connection`; `memory_estimate` takes `&DbState` because the cores it reuses lock it
+themselves, and `read_output` splits into a DB read (`output_path`) and a file read without the lock
+(`read_output_at`). A refusal is `ToolError::Refused` (or `Measure`) with the reason in words; an
+unknown id is a refusal, not an app error. `server/read_tools.rs` registers each core in the server
+(below, "Registration").
 
 **Units (rule #11).** Every number names its unit in its field: `_eh`, `_ang`, `_deg`, `_cm1`,
 `_km_mol`, `_k`, `_s`, `_mib`, `_kib`, `_bytes`; a count ends in `_count` and an index in `_index` or
@@ -668,7 +680,9 @@ characters is cut, not refused. A Cyrillic title therefore keeps about half as m
 ASCII one. **Field budgets stay in UTF-8 bytes** (decided by Anton, 2026-11-20).
 
 **Refusals** quote caller input cut to 200 bytes (`echo`), and every refusal message is cut to 600
-bytes (`ToolError::refused`), including a reused reader's error that quotes the input.
+bytes (`ToolError::refused`), including a reused reader's error that quotes the input. A source
+reference (`get_geometry`, `measure`) longer than 200 bytes is refused before it is read, because the
+resolver's messages quote it whole; so no refusal quotes more than 200 bytes of one input.
 
 | tool | caps (all stated in the result) |
 |---|---|
@@ -698,7 +712,7 @@ so line numbers are the input's), parses it with M1a's `parse_header`, and emits
 
 | construct | shown as |
 |---|---|
-| a `!` line | `! ` and its parsed keyword tokens; each numeric-looking token (a digit, sign or `.` first, then only digits, signs, `.`, `e`/`E`/`d`/`D`, `,`, `;`) becomes `[value not shown]`. Method, basis and job type stay (`D3`, `def2-SVP`, `PAL8` are not numbers) |
+| a `!` line | `! ` and its parsed keyword tokens; each **numeric-looking** token becomes `[value not shown]`: a token that starts with a digit, sign or `.` and holds only digits, signs, `.`, `e`/`E`/`d`/`D`, `,`, `;` (`is_numeric_token`), or a token that holds a decimal number anywhere, `\d*\.\d+` (`has_decimal_number`: `(0.000000,0.000000,0.117790)`, `x=0.117790`). Method, basis and job type stay (`D3`, `def2-SVP`, `6-31G*`, `PAL8` hold no decimal number) |
 | the app's `%maxcore N` | from the strict reader (`memory::read_maxcore`), at its line |
 | an allowlisted key with an admitted value (`allowlist::value_rule`: `%geom Calc_Hess`, `MaxIter`; `%cpcm smd`, `SMDsolvent`) | the key and the value |
 | an allowlisted key with another value | the key, `# value not shown` |
@@ -737,34 +751,42 @@ later `end` becomes a refused-line marker. Safe, but the rest of that `%geom` is
 M1a's grammar is not changed for display.
 
 The main block is never shown: `atom_count` is its rows, and charge and multiplicity come from the
-strict locator with their source ("the `* xyz` line of job <id>'s input"). **Every error in the
-view is a kind and a line, never source text**, fixed at the source: `read_coordinate_block` returns
+strict locator with their source ("the `* xyz` line of job <id>'s input"). **Every error the view
+builds is a kind and a line, never source text** — the header's, the charge and multiplicity's, and
+a coordinate row's — fixed at the source: `read_coordinate_block` returns
 `CoordinateBlockError` (`line N: a coordinate row is not an element and three numbers`, …),
 `header_of_input` returns `HeaderOfInputError`, and `charge_mult.error` is
 `ChargeMultError::kind_and_line` (its `Display` quotes the line and is not used here); each is cut
-to 200 bytes.
+to 200 bytes. The job's `error` field is not built by the view: it is ORCA's stored text, served
+under the tripwire below.
 
 **The rule-#9 tripwire works per field** (Anton, round 4). Every text field (`title`, `header`,
 `header_withheld`, `charge_mult.source`/`error`, `notices`, each MCP reason's `row` and `message`,
 `mcp_reasons_note`, `error`, `remote_host`) is checked whole, before any cut. A field holding a
 coordinate-like row is replaced by `"withheld: coordinate-like content (rule #9)"`, named in
-`withheld_fields`, and the rest of the view is served. A failed job's `error` is ORCA's message plus
-the last 20 lines of `output.out` (`local_backend::detect_completion`). It is served unless it holds a
+`withheld_fields`, and the rest of the view is served. A failed job's stored `error` is a line with
+the exit code plus the tail of its stderr when stderr is non-empty, else the last 20 lines of
+`output.out` (`local_backend::detect_completion`). It is served unless it holds a
 coordinate-like row, for example an echoed `|  4> * xyz 0 1`; ORCA's `***` banners alone do not
 withhold it (Anton, round 5). A **coordinate-like row** (`header_view::coordinate_row`) is either:
 - a geometry line. In text fields (`Field::Text`) this is only a real geometry opener: `* xyz`,
   `* int`, `* gzmt` or `* xyzfile`, in any case and with any spacing (`*xyz`), also after ORCA's
   input-echo prefix (`|  4> * xyz 0 1`). In the built header (`Field::Header`) it is any line
   starting with `*`;
-- or an element-or-label token (a token with a letter that is not a number: `O`, `O(1)`, `H:`, `geometry:`)
-followed by at least three finite numbers **at any position on the line**, a lone `:` token skipped.
+- or an element-or-label token (a **label**: a token with a letter that is not a number: `O`, `O(1)`,
+  `H:`, `geometry:`) followed by at least three finite **numbers** (tokens that parse as finite
+  floats) **at any position on the line**, a lone `:` token skipped.
 ORCA's input echo `|  6> C     4.10220628   -0.56008055    0.58413357` (measured in a real
 `output.out`) matches; SCF iteration rows (numbers only) do not. A line starting with `{` (a
 constraint entry) or holding `=` (a scan or parameter definition) is skipped **in the built header
 only** (`Field::Header`); titles, errors and reasons skip nothing (`Field::Text`). Behind the
 guards, `jobs::tripwire` walks the serialised view with the same detector and refuses it if a row
 escaped every guard. ID fields (`id`, `group_id`, `target_profile_id`, `grant_id`) and timestamps
-are not guarded individually; the backstop covers them.
+are not guarded individually: in `get_job` a coordinate-like ID field trips the backstop, which
+refuses the whole view. `list_jobs` guards each row's `title` and `error_excerpt` and has **no**
+backstop; its ID fields (`id`, `group_id`, `target_profile_id`) are v4 UUIDs the app mints
+(`Uuid::new_v4` in `create_job_conn`, the group and profile commands), and its timestamps are
+SQLite's.
 
 **Notices** are the job's pending states in words: a cancel requested or sent, a submit waiting for
 the server's slot, Claude submitting it.
@@ -804,11 +826,11 @@ panics and never returns a number, for:
 
 A value outside its range after these checks is `OutOfRange`, an internal error, never served.
 
-**Lock span (for Part B).** For a `scan:`, `neb:` or `goat:` source, `resolve_db_conn` reads files in
-the job directory (`read_scan_geometries`, `read_neb_geometries`, `read_ensemble_text`;
-`resolve.rs:249/262/270`) on the caller's connection, so `get_geometry` and `measure` hold `DbState`
-across those bounded, size-capped reads, as the existing commands that read them do. That is allowed
-(only an `.await` under the lock is forbidden), and Part B keeps it inside its one `spawn_blocking`.
+**Lock span.** For a `scan:`, `neb:` or `goat:` source, `resolve_db_conn` reads files in the job
+directory (`read_scan_geometries`, `read_neb_geometries`, `read_ensemble_text`) on the caller's
+connection, so `get_geometry` and `measure` hold `DbState` across those bounded, size-capped reads,
+as the existing commands that read them do. That is allowed (only an `.await` under the lock is
+forbidden), and it stays inside the tool's one blocking task.
 
 **`read_output`** never reads the whole `output.out` (rule #5). The tail reads at most the last
 256 KiB through `local_backend::read_tail_window`, the core `read_tail_lines` (the log console's
@@ -833,6 +855,42 @@ local.
 classifier's verdict (`verdict_of`). A header with its own `%maxcore` is refused: the app sets it.
 
 **`list_groups`** pages `list_groups_conn` (`created_at, id`).
+
+### Registration (`server/read_tools.rs`)
+
+Each tool is a thin shell: typed arguments, the core's call with its lock, and the mapping.
+
+| tool | arguments (schema bounds) |
+|---|---|
+| `list_jobs` | `status`, `origin`, `group_id` (each optional), `offset`, `limit` (1–40) |
+| `get_job`, `get_results` | `job_id` |
+| `get_geometry` | `source` (≤ 200 bytes) |
+| `measure` | `source`, `atom_indices` (2–4, 0-based) |
+| `read_output` | `job_id`; the tail: `lines` (1–400); a search: `query` (1–200), `regex`, `case_sensitive` (both default false), `context_lines` (≤ 3), `offset`, `limit` (1–50) |
+| `search_manual` | `query` (≤ 500), `limit` (1–20) |
+| `list_run_targets` | none |
+| `memory_estimate` | `header` (≤ 20,000), `target` (`"local"` or a profile id) |
+| `list_groups` | `offset`, `limit` (1–100) |
+
+- **Arguments.** Every argument struct has `deny_unknown_fields`, so its schema has
+  `additionalProperties: false` and an unknown argument is a tool error (`unknown field …`), never
+  ignored; `list_run_targets` takes the empty `NoArgs`. The schema's bounds are advice to the
+  client; the cores clamp or refuse on their own. `read_output` without `query` is the tail and
+  refuses a search-only argument; with `query` it is a search and refuses `lines`.
+- **Descriptions.** Each carries `RECOVERY_SENTENCE` (pinned for every listed tool), names the units
+  it returns, and stays under 700 bytes. `get_geometry` and `measure` say indices are 0-based;
+  `get_job` says its header is rebuilt from the parsed input and values outside the display
+  allowlist are not shown; `read_output` says it is a bounded tail or search.
+- **The mapping** (`respond`). A result is the core's value as compact JSON (`result_text`), every
+  field kept, `withheld_fields` and the truncation flags included, and `served_text` checks it
+  against `RESULT_CAP_BYTES` once more as it leaves: over it, a tool error, never served. A
+  `ToolError` is a tool error whose text is the error's own message (an app fault as
+  `<tool> failed: …`), cut to 600 bytes (`error_text`); the mapping never adds the arguments.
+- **Threads and the lock.** Every core runs on Tauri's blocking pool (`on_blocking_pool`), never on an
+  async worker. `with_db` locks `DbState` once for the read, inside that blocking task, so no guard
+  lives across an `.await`. `memory_estimate` takes no lock in the service (its core locks itself).
+  `read_output` locks only for `output_path` and drops the guard before `read_output_at` reads the
+  file. Each call takes one of the connection's 4 permits in `call_tool`, like `get_grant`.
 
 ## Clarifications (orchestrator, within ADR-027)
 
@@ -881,6 +939,9 @@ Two choices go beyond the clarifications, and each can only move a job toward An
 - **Round 5** (2026-11-20): in text fields `*` means only a geometry opener (`* xyz`/`int`/`gzmt`/
   `xyzfile`, also echoed), so a failed job's `***` banners no longer withhold its error.
 - **Field budgets stay in UTF-8 bytes** (2026-11-20).
+- **A `!` token holding a decimal number is hidden** (2026-11-21, the M2b Part A verifier's F1):
+  `\d*\.\d+` anywhere in the token, so `(0.000000,0.000000,0.117790)` and `x=0.117790` are hidden,
+  while `D3`, `def2-SVP` and `6-31G*` stay.
 - **`COINCIDENT_ANG` and `COLLINEAR_SIN` stay at 1e-6** (2026-11-20), knowing `measure.ts` uses 1e-9,
   so in a narrow band the panel shows a number where MCP refuses.
 
@@ -891,6 +952,11 @@ Two choices go beyond the clarifications, and each can only move a job toward An
 - **`Scan` atom indices** are P2 and are **not** range-checked by R6, with the same consequence.
 - **How ORCA 6.1.1 reads a second `#`** on a line is unmeasured (a prober run). Until then, such a
   line is R1.
+
+- **Atomic-number rows** (the M2b Part A verifier's F2, INFO). The tripwire's detector needs a
+  label (a token with a letter), so a row written with an atomic number for the element
+  (`8 0.0 0.0 0.117790`) is not caught in a text field. Whether ORCA 6.1.1 accepts atomic numbers in
+  a `* xyz` block is unmeasured (rule #10: a prober run). The detector is unchanged until then.
 
 - **Source headers with other one-line directives** (`%moinp "x.gbw"`, `%base`) give no
   `opt_signature`, so a Freq from such a job is PROPOSED. Only `%maxcore` is set aside.
@@ -907,10 +973,6 @@ Two choices go beyond the clarifications, and each can only move a job toward An
 - **M3 (from the M2b verifier, INFO):** the classifier's source charge reason quotes the source job's
   `* xyz` line through `ChargeMultError::Display` (`classify.rs`, the R4 source reason). `create_job`
   returns reasons to the model, so M3 maps it to `ChargeMultError::kind_and_line`, as `get_job` does.
-- **M2b Part B:** register the ten read tools in the `rmcp` service (`McpService`), each with its
-  description carrying `RECOVERY_SENTENCE`, its DB work through `spawn_blocking` (one lock per call;
-  `memory_estimate` and `read_output`'s file read outside the lock), `ToolError` mapped to a tool
-  error, and an end-to-end size check per tool over the socket.
 - **M3:** `create_job` as one tracked task (the preflight, step A, step B, step C around
   `classify_mcp_job` and `assemble`), `SidecarSmiles` handed to the resolver, the audit log, and R8's
   live count.
@@ -919,12 +981,14 @@ Two choices go beyond the clarifications, and each can only move a job toward An
 ## Tests
 
 `cargo test -p orcastudio --lib mcp::` runs the module's tests (the transport's are
-`mcp::server::`, the wiring's `mcp::server::wiring_tests`, the read tools' `mcp::tools::`), `cargo test -p orcastudio --lib commands::mcp`
+`mcp::server::`, the wiring's `mcp::server::wiring_tests`, the read tools' cores `mcp::tools::` and
+their registration end to end `mcp::server::read_tools_tests`), `cargo test -p orcastudio --lib commands::mcp`
 the grant and switch commands' tests, `cargo test -p orcastudio --test mcp_relay_bin` the built
 binary's relay, `npx vitest run src/screens/SettingsScreen.mcp.test.tsx` the switch row, and
 `npx vitest run src/scene/charge-mult-parity.test.ts` the TS half of the C1 parity. The schema tests are
 `cargo test -p orcastudio --lib db::tests::` (v24 names in `modules/tauri-core.md`). The negative
 controls are recorded in `log.md`: one per row plus the ADR's M1a list in the M1a entry, and the M1b
 list in the M1b Part A entry, the Part B list in the M1b Part B entry, and the M2a Part A and Part B
-lists in their entries (all 2026-11-19), and the M2b Part A list in its entry (2026-11-20). The ASE
+lists in their entries (all 2026-11-19), the M2b Part A list in its entry (2026-11-20), and the M2b
+Part B list in its entry (2026-11-21). The ASE
 pin is `pytest sidecar/tests/test_geometry.py` (in the sidecar venv).

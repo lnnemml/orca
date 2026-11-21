@@ -26,8 +26,9 @@ never runs a binary). The runtime mechanics of running ORCA live in
   — Tauri command surface (thin wrappers over `*_conn`).
 - `mcp/` — the MCP orchestration server's core (ADR-027): the classifier, input assembly, grant core,
   steps A/C, reconciliation, source resolver, memory preflight and `SidecarSmiles` (the sidecar's
-  SMILES call), and the transport (`mcp/server/`: the lock, the socket, the server, the lifecycle, the
-  relay; `wiring.rs` connects it to setup, `ExitRequested` and `main.rs`). Its commands are the grant
+  SMILES call), the read tools' cores (`mcp/tools/`), and the transport (`mcp/server/`: the lock, the
+  socket, the server with `get_grant` and the ten read tools, the lifecycle, the relay; `wiring.rs`
+  connects it to setup, `ExitRequested` and `main.rs`). Its commands are the grant
   commands and the switch's `mcp_status`/`mcp_set_enabled` in `commands/mcp.rs`. See
   `modules/mcp-server.md`.
 - `main.rs` — `orcastudio --mcp` runs the MCP stdio relay and exits, before `run()` (no window, no
@@ -328,7 +329,8 @@ revisit when the UI needs error codes.
 open + migrate SQLite → `local_backend::reconcile_on_startup(&conn)` (advance any job left
 `running` by a crash — see `execution-backends.md`) → manage `DbState(Mutex<Connection>)` (the
 `Connection` is `Send`, not `Sync`) → the MCP lifecycle (`mcp::server::wiring::app_lifecycle`, over the
-managed `DbState`; managed as `Arc<McpLifecycle>`) and its `mcp-tick` thread, whose first step runs at
+managed `DbState` and the data dir, which `memory_estimate` reads with `/proc/meminfo`; managed as
+`Arc<McpLifecycle>`) and its `mcp-tick` thread, whose first step runs at
 once (a path refusal is a status reason, never a setup error; ADR-027, `modules/mcp-server.md`) →
 `JobRunner` + `InFlight` (the per-job in-flight guard) +
 `LiveLog` + `PollerMemory` + `RemoteStates` (the remote poller's state and the per-job remote records

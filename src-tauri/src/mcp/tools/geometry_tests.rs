@@ -6,7 +6,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use serde_json::json;
 
 use super::geometry::{get_geometry, measure, measure_atoms, MeasureRefusal, Measured, COINCIDENT_ANG, GEOMETRY_MAX_ATOMS};
-use super::test_support::{assert_fits, molecule, store_results, unitless_numeric_keys, JobRow};
+use super::test_support::{assert_fits, grid_molecule, molecule, store_results, unitless_numeric_keys, JobRow};
 use super::ToolError;
 use crate::mcp::classify::SourceAtom;
 use crate::mcp::test_db::TestDb;
@@ -249,23 +249,14 @@ fn get_geometry_gives_xyz_with_charge_and_multiplicity() {
     assert_eq!(lines[2], "C 1.93939185 0.07737406 0.24304182");
 }
 
-/// Molecule `id` with `n` atoms on a wide grid (coordinates up to −999 Å, the widest text).
-fn grid_molecule(db: &TestDb, id: &str, n: usize) {
-    let mut xyz = format!("{n}\ngrid\n");
-    for i in 0..n {
-        let f = -999.0 + i as f64 * 1.000_000_01;
-        xyz.push_str(&format!("C {f:.8} {:.8} {:.8}\n", f + 0.5, f - 0.5));
-    }
-    molecule(&db.conn, id, &xyz, 0, 1);
-}
 
 /// 600 atoms are served and fit under the cap; 601 are refused with a pointer to `measure`.
 /// NEGATIVE CONTROL (`ctl:geometry_600`): accept above 600 → red.
 #[test]
 fn get_geometry_is_refused_above_600_atoms() {
     let db = TestDb::new("tools-geometry-600");
-    grid_molecule(&db, "at", GEOMETRY_MAX_ATOMS);
-    grid_molecule(&db, "over", GEOMETRY_MAX_ATOMS + 1);
+    grid_molecule(&db.conn, "at", GEOMETRY_MAX_ATOMS);
+    grid_molecule(&db.conn, "over", GEOMETRY_MAX_ATOMS + 1);
     let g = get_geometry(&db.conn, "molecule:at").expect("600 atoms are served");
     assert_fits(&g, "[ctl:geometry_600] 600 atoms");
     match get_geometry(&db.conn, "molecule:over") {

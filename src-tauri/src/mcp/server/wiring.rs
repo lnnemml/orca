@@ -20,6 +20,7 @@
 //!   is `libc::_exit(1)` ([`hard_end`]), injected so the tests never call it.
 
 use std::io;
+use std::path::Path;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::Arc;
@@ -31,6 +32,7 @@ use tauri::{AppHandle, Manager};
 use super::lifecycle::{BlockingPool, ExitDecision, ExitSteps, Executor, LifecycleEnv, McpLifecycle};
 use super::paths::{resolve_for_this_user, McpPaths, PathRefusal};
 use super::relay::{relay, RelayEnd};
+use super::service::HostPaths;
 use super::tick::{run_ticks, Every, TICK};
 use super::DbSource;
 use crate::commands::settings::DbState;
@@ -77,17 +79,18 @@ impl DbSource for ManagedDb {
     }
 }
 
-/// The production lifecycle at `paths`: [`LifecycleEnv::production_at`], nothing else. The app
-/// builds it through [`app_lifecycle`]; the wiring tests build it here under a scratch directory.
-pub fn wired_lifecycle(db: Arc<dyn DbSource>, paths: Result<McpPaths, PathRefusal>) -> Arc<McpLifecycle> {
-    McpLifecycle::new(LifecycleEnv::production_at(db, paths))
+/// The production lifecycle at `paths` and `host`: [`LifecycleEnv::production_at`], nothing else.
+/// The app builds it through [`app_lifecycle`]; the wiring tests build it here under a scratch
+/// directory.
+pub fn wired_lifecycle(db: Arc<dyn DbSource>, paths: Result<McpPaths, PathRefusal>, host: HostPaths) -> Arc<McpLifecycle> {
+    McpLifecycle::new(LifecycleEnv::production_at(db, paths, host))
 }
 
-/// The app's lifecycle, over the managed `DbState` and this user's paths. A path refusal or an
-/// unknown base dir does not fail setup: it is kept in the environment and becomes the status reason
-/// once the switch is on.
-pub fn app_lifecycle(app: &AppHandle) -> Arc<McpLifecycle> {
-    wired_lifecycle(Arc::new(ManagedDb(app.clone())), resolve_for_this_user())
+/// The app's lifecycle, over the managed `DbState`, this user's paths, the real `/proc/meminfo` and
+/// `data_dir` (the one `JobRunner` is built over). A path refusal or an unknown base dir does not
+/// fail setup: it is kept in the environment and becomes the status reason once the switch is on.
+pub fn app_lifecycle(app: &AppHandle, data_dir: &Path) -> Arc<McpLifecycle> {
+    wired_lifecycle(Arc::new(ManagedDb(app.clone())), resolve_for_this_user(), HostPaths::production(data_dir))
 }
 
 /// Start the tick thread: one step at once (so a switch left on serves from app start), then one

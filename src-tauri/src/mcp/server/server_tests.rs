@@ -128,7 +128,7 @@ fn every_tool_description_and_the_instructions_carry_the_recovery_sentence() {
         assert!(tool["description"].as_str().unwrap_or_default().contains(RECOVERY_SENTENCE), "{tool}");
     }
 
-    let service = McpService::new(Arc::new(ConnState::new()), s.db.clone());
+    let service = McpService::new(Arc::new(ConnState::new()), s.db.clone(), Arc::new(s.scratch.host()));
     assert_eq!(service.tools().len(), tools.len());
     for tool in service.tools() {
         assert!(tool.description.as_deref().unwrap_or_default().contains(RECOVERY_SENTENCE), "{}", tool.name);
@@ -226,6 +226,7 @@ fn serving_with_peer_uid(tag: &str, peer_uid: PeerUid) -> (Scratch, Arc<McpLifec
     let env = LifecycleEnv {
         paths: Ok(scratch.paths()),
         db: scratch.db(),
+        host: Arc::new(scratch.host()),
         reconcile: Box::new(reconcile_submitting_conn),
         peer_uid,
         own_uid: own_uid(),

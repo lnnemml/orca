@@ -1675,8 +1675,9 @@ and OrcaStudio picks the job up, syncs results, and parses them — no terminal,
             `mcp_status`/`mcp_set_enabled`, the reconcile's 250 ms busy timeout, and the Settings → MCP
             switch row
       - [~] **M2b** the read tools (projections, character caps, `measure` with ASE cross-check,
-            `list_run_targets` window) — Part A built, pending verification (2026-11-20): the ten
-            cores in `src-tauri/src/mcp/tools/`, not yet registered (Part B)
+            `list_run_targets` window) — Part A committed `16d53fc` (2026-11-20): the ten cores in
+            `src-tauri/src/mcp/tools/`; Part B built, pending verification (2026-11-21): the ten
+            tools registered in the server (`server/read_tools.rs`), checked end to end over the socket
       - [ ] **M3** write tools — `create_job` with grant charging, `cancel_job` (mcp only),
             `create_group`, `wait_for_jobs`, audit log
       - [ ] **M4** UI — Settings → MCP (grant editor, revoke, audit), Jobs badge + proposal reasons

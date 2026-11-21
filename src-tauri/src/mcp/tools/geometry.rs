@@ -240,8 +240,16 @@ fn charge_mult_source(src: &ResolvedSource, r: &SourceRef) -> String {
     }
 }
 
+/// A source reference longer than this is refused before it is read: the resolver's messages quote
+/// the reference (or its id) whole, so this bounds every quote of it to an echo's length. A real one
+/// (`job:<uuid>/neb:ts`) is about 50 bytes.
+pub const SOURCE_MAX_BYTES: usize = super::ECHO_MAX_BYTES;
+
 /// A database source with its atoms, or why the read tools cannot read it.
 fn read_source(conn: &Connection, reference: &str) -> Result<(SourceRef, ResolvedSource), ToolError> {
+    if reference.len() > SOURCE_MAX_BYTES {
+        return Err(ToolError::refused(format!("the source reference is longer than {SOURCE_MAX_BYTES} bytes")));
+    }
     let r = SourceRef::parse(reference).map_err(ToolError::refused)?;
     if matches!(r, SourceRef::Smiles { .. }) {
         return Err(ToolError::refused(

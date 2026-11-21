@@ -2,7 +2,7 @@
 //! ADR-024 g, n item 3).
 
 use super::targets::{list_run_targets, list_run_targets_at, local_now, window_state, WindowState, PROFILES_MAX};
-use super::test_support::{assert_fits, id36};
+use super::test_support::{assert_fits, largest_profiles};
 use crate::mcp::test_db::TestDb;
 
 const fn at(h: u32, m: u32) -> u32 {
@@ -75,14 +75,7 @@ fn run_targets_are_this_machine_and_each_profile() {
 #[test]
 fn the_largest_list_run_targets_fits_under_the_cap() {
     let db = TestDb::new("tools-targets-big");
-    for i in 0..150 {
-        db.conn
-            .execute(
-                "INSERT INTO server_profiles (id, name, host, remote_orca_path, remote_scratch_dir, availability_window) VALUES (?1, ?2, ?3, '/opt/orca/orca', '/s', '22:00-08:00')",
-                rusqlite::params![id36(&format!("p{i}")), "N".repeat(5_000), format!("h{i}{}", "h".repeat(200))],
-            )
-            .unwrap();
-    }
+    largest_profiles(&db.conn);
     let t = list_run_targets_at(&db.conn, "2026-11-20 12:00:00".into(), at(12, 0)).expect("[ctl:targets_cap] the largest result is served");
     assert_fits(&t, "[ctl:targets_cap]");
     assert_eq!((t.targets.len(), t.profile_count, t.profiles_truncated), (PROFILES_MAX + 1, 150, true), "[ctl:targets_cap]");

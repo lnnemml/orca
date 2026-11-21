@@ -45,6 +45,7 @@ use super::gate::{self, AdmissionGate};
 use super::listener::{accept_loop, kernel_peer_uid, own_uid, AcceptContext, PeerUid, Registry};
 use super::lock::{self, Acquire, McpLock};
 use super::paths::{resolve_for_this_user, McpPaths, PathRefusal};
+use super::service::HostPaths;
 use super::socket::{self, SocketIdentity, Unlinked};
 use super::{DbSource, CONNECTIONS};
 use crate::error::AppError;
@@ -85,6 +86,8 @@ pub struct Hooks {
 pub struct LifecycleEnv {
     pub paths: Result<McpPaths, PathRefusal>,
     pub db: Arc<dyn DbSource>,
+    /// What `memory_estimate` reads besides the database.
+    pub host: Arc<HostPaths>,
     pub reconcile: Reconcile,
     pub peer_uid: PeerUid,
     pub own_uid: u32,
@@ -92,17 +95,19 @@ pub struct LifecycleEnv {
 }
 
 impl LifecycleEnv {
-    /// The app's environment: this user's paths, the real reconciliation, `SO_PEERCRED`.
-    pub fn production(db: Arc<dyn DbSource>) -> Self {
-        Self::production_at(db, resolve_for_this_user())
+    /// The app's environment: this user's paths, the real reconciliation, `SO_PEERCRED`, the real
+    /// `/proc/meminfo` and the app's data dir.
+    pub fn production(db: Arc<dyn DbSource>, host: HostPaths) -> Self {
+        Self::production_at(db, resolve_for_this_user(), host)
     }
 
-    /// [`LifecycleEnv::production`] at given paths: what the app runs, minus the path resolution, so
-    /// a test can wire the production environment under a scratch directory.
-    pub fn production_at(db: Arc<dyn DbSource>, paths: Result<McpPaths, PathRefusal>) -> Self {
+    /// [`LifecycleEnv::production`] at given paths and host facts: what the app runs, minus the path
+    /// resolution, so a test can wire the production environment under a scratch directory.
+    pub fn production_at(db: Arc<dyn DbSource>, paths: Result<McpPaths, PathRefusal>, host: HostPaths) -> Self {
         LifecycleEnv {
             paths,
             db,
+            host: Arc::new(host),
             reconcile: Box::new(reconcile_submitting_conn),
             peer_uid: kernel_peer_uid(),
             own_uid: own_uid(),
@@ -454,6 +459,7 @@ impl McpLifecycle {
             peer_uid: self.env.peer_uid.clone(),
             own_uid: self.env.own_uid,
             db: self.env.db.clone(),
+            host: self.env.host.clone(),
         };
         let accept = tauri::async_runtime::spawn(accept_loop(listener, ctx));
         t.serving = Some(Serving { socket: identity, cancel, registry, accept });

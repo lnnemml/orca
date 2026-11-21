@@ -6,7 +6,7 @@
 //!
 //! | construct | shown as |
 //! |---|---|
-//! | a `!` line | `! ` and its parsed keyword tokens, each numeric-looking one replaced by [`HIDDEN_TOKEN`] ([`is_numeric_token`]) |
+//! | a `!` line | `! ` and its parsed keyword tokens, each numeric-looking one or one holding a decimal number replaced by [`HIDDEN_TOKEN`] ([`hides_bang_token`]) |
 //! | the app's `%maxcore N` | from the strict reader (`memory::read_maxcore`), at its line |
 //! | an allowlisted key with an admitted value (`allowlist::value_rule`: `%geom Calc_Hess`, `MaxIter`; `%cpcm smd`, `SMDsolvent`) | the key and the value |
 //! | an allowlisted key with any other value | the key, `# value not shown` |
@@ -74,6 +74,19 @@ pub fn is_numeric_token(tok: &str) -> bool {
     cs.next().is_some_and(|c| c.is_ascii_digit() || matches!(c, '+' | '-' | '.'))
         && tok.chars().all(|c| c.is_ascii_digit() || matches!(c, '+' | '-' | '.' | 'e' | 'E' | 'd' | 'D' | ',' | ';'))
         && tok.chars().any(|c| c.is_ascii_digit())
+}
+
+/// True for a `!` token that holds a decimal number (`\d*\.\d+`: a `.` followed by a digit)
+/// anywhere: `(0.000000,0.000000,0.117790)`, `x=0.117790` (decided by Anton, M2b Part B).
+/// `D3`, `def2-SVP` and `6-31G*` hold none and stay.
+pub fn has_decimal_number(tok: &str) -> bool {
+    tok.as_bytes().windows(2).any(|w| w[0] == b'.' && w[1].is_ascii_digit())
+}
+
+/// Whether a `!` token is replaced by [`HIDDEN_TOKEN`]: it looks like a number
+/// ([`is_numeric_token`]), or it holds a decimal number anywhere ([`has_decimal_number`]).
+pub fn hides_bang_token(tok: &str) -> bool {
+    is_numeric_token(tok) || has_decimal_number(tok)
 }
 
 /// The marker a hidden `!` token is replaced by.
@@ -234,7 +247,7 @@ fn reason_kind(why: &str) -> String {
 fn pieces(parsed: &ParsedHeader) -> Vec<(usize, Vec<String>)> {
     let mut out: Vec<(usize, Vec<String>)> = Vec::new();
     for kl in &parsed.keyword_lines {
-        let shown: Vec<&str> = kl.tokens.iter().map(|t| if is_numeric_token(t) { HIDDEN_TOKEN } else { t.as_str() }).collect();
+        let shown: Vec<&str> = kl.tokens.iter().map(|t| if hides_bang_token(t) { HIDDEN_TOKEN } else { t.as_str() }).collect();
         out.push((kl.line, vec![format!("! {}", shown.join(" "))]));
     }
     // A nested opener belongs to the block open at its line: the last block starting at or before it.

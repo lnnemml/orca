@@ -1,19 +1,11 @@
 //! Tests for `list_jobs` and `get_job` (ADR-027 decision 7; M2 amendment, items 7 and 8).
 
-use serde_json::Value;
-
 use super::jobs::{get_job, list_jobs, JobFilter, ERROR_EXCERPT_BYTES, LIST_JOBS_MAX, TITLE_MAX_BYTES};
-use super::test_support::{assert_fits, id36, unitless_numeric_keys, JobRow};
+use super::test_support::{assert_fits, largest_get_job, largest_list_jobs, unitless_numeric_keys, JobRow, WATER_COORDS, WATER_INPUT};
 use super::{result_text, ToolError};
 use crate::mcp::test_db::TestDb;
 use crate::models::job::{JobOrigin, JobStatus};
 
-/// A real input: the app's `%maxcore`, a `%pal` block and an inline `* xyz` block.
-const WATER_INPUT: &str = "! B3LYP def2-SVP Opt\n%maxcore 2000\n%pal nprocs 4 end\n* xyz 0 1\n\
-O 0.000000 0.000000 0.117790\nH 0.000000 0.755453 -0.471161\nH 0.000000 -0.755453 -0.471161\n*\n";
-
-/// Every coordinate value of [`WATER_INPUT`] that a leak would carry.
-const WATER_COORDS: [&str; 3] = ["0.117790", "0.755453", "0.471161"];
 
 fn json_of<T: serde::Serialize>(v: &T) -> String {
     result_text(v).unwrap()
@@ -128,13 +120,7 @@ fn a_line_of_control_characters_is_a_marker() {
 #[test]
 fn the_largest_get_job_fits_under_the_cap() {
     let db = TestDb::new("tools-get-job-big");
-    let keys: String = (0..1_500).map(|i| format!(" Key{i:04} 1\n")).collect();
-    let input = format!("! B3LYP def2-SVP\n%scf\n{keys}end\n{}", &WATER_INPUT[WATER_INPUT.find("* xyz").unwrap()..]);
-    let reasons: Vec<Value> = (0..100).map(|i| serde_json::json!({"row": format!("P{i}"), "message": "r".repeat(5_000)})).collect();
-    JobRow { input: &input, title: &"T".repeat(5_000), error: Some(&"e".repeat(50_000)), ..JobRow::new("big") }.insert(&db.conn);
-    db.conn
-        .execute("UPDATE jobs SET origin = 'mcp', mcp_reasons = ?1 WHERE id = 'big'", [Value::Array(reasons).to_string()])
-        .unwrap();
+    largest_get_job(&db.conn, "big");
     let view = get_job(&db.conn, "big").expect("[ctl:get_job_cap] the largest get_job is served");
     assert_fits(&view, "[ctl:get_job_cap]");
     assert!(view.header_truncated && view.error_truncated && view.title_truncated);
@@ -214,28 +200,7 @@ fn list_jobs_pages_with_offset_and_next_offset() {
 #[test]
 fn the_largest_list_jobs_page_fits_under_the_cap() {
     let db = TestDb::new("tools-list-big");
-    let (group, profile) = (id36("group"), id36("profile"));
-    db.conn.execute("INSERT INTO groups (id, name) VALUES (?1, 'g')", [&group]).unwrap();
-    db.conn
-        .execute(
-            "INSERT INTO server_profiles (id, name, host, remote_orca_path, remote_scratch_dir) VALUES (?1, 'p', 'uni', '/opt/orca/orca', '/s')",
-            [&profile],
-        )
-        .unwrap();
-    let (title, error) = ("T".repeat(5_000), "E".repeat(5_000));
-    for i in 0..80 {
-        let id = id36(&format!("job{i:02}"));
-        JobRow {
-            title: &title,
-            error: Some(&error),
-            status: "cancelled",
-            group_id: Some(&group),
-            backend_id: Some(&profile),
-            energy: Some(-1234.567_890_123_456),
-            ..JobRow::new(&id)
-        }
-        .insert(&db.conn);
-    }
+    largest_list_jobs(&db.conn);
     let page = list_jobs(&db.conn, &JobFilter::default(), None, Some(1000)).expect("[ctl:list_jobs_cap] the largest page is served");
     assert_fits(&page, "[ctl:list_jobs_cap]");
     assert_eq!(page.jobs.len(), LIST_JOBS_MAX as usize);

@@ -1,28 +1,18 @@
 //! Tests for `read_output` (ADR-027 decision 7; M2 amendment, item 7; domain rule #5).
 
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use super::output::{
     output_path, read_output_at, OutputRequest, OutputView, LINE_MAX_BYTES, SEARCH_MAX_MATCHES, TAIL_MAX_LINES, TAIL_WINDOW_BYTES,
 };
-use super::test_support::{assert_fits, JobRow};
+use super::test_support::{assert_fits, largest_search_lines, largest_tail_lines, output_job, JobRow};
 use crate::local_backend::{read_tail_window, TAIL_LINES_MAX_BYTES};
 use super::ToolError;
 use crate::mcp::test_db::TestDb;
 
 /// A job `id` whose `output.out` holds `lines`; returns the file's path.
 fn job_with_output(db: &TestDb, id: &str, lines: impl Iterator<Item = String>) -> PathBuf {
-    let dir = db.dir.join("jobs").join(id);
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("output.out");
-    let mut f = std::io::BufWriter::new(std::fs::File::create(&path).unwrap());
-    for l in lines {
-        writeln!(f, "{l}").unwrap();
-    }
-    f.flush().unwrap();
-    JobRow { job_dir: dir.to_str(), ..JobRow::new(id) }.insert(&db.conn);
-    path
+    output_job(&db.conn, &db.dir, id, lines)
 }
 
 fn read(db: &TestDb, id: &str, req: &OutputRequest) -> Result<OutputView, ToolError> {
@@ -64,7 +54,7 @@ fn the_tail_reads_a_bounded_window_never_the_whole_file() {
 #[test]
 fn the_largest_tail_fits_under_the_cap() {
     let db = TestDb::new("tools-output-tail-big");
-    job_with_output(&db, "wide", (0..2_000).map(|i| format!("{i:04}{}", "w".repeat(996))));
+    job_with_output(&db, "wide", largest_tail_lines());
     let view = read(&db, "wide", &tail(Some(10_000))).expect("[ctl:output_char_cap] the largest tail is served");
     assert_fits(&view, "[ctl:output_char_cap]");
     let OutputView::Tail { requested_line_count, lines, truncated, truncation, cut_line_count, .. } = view else { panic!("a tail") };
@@ -113,7 +103,7 @@ fn search_pages_with_context_and_counts_every_match() {
 #[test]
 fn the_largest_search_page_fits_under_the_cap() {
     let db = TestDb::new("tools-output-search-big");
-    job_with_output(&db, "s", (0..2_400).map(|i| format!("{} {i:04} {}", if i % 4 == 0 { "HIT" } else { "ctx" }, "w".repeat(990))));
+    job_with_output(&db, "s", largest_search_lines());
     let req = search("HIT", 10, None, Some(1_000));
     let view = read(&db, "s", &req).expect("[ctl:search_cap] the largest page is served");
     assert_fits(&view, "[ctl:search_cap]");

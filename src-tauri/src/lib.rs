@@ -72,10 +72,11 @@ pub fn run() {
             local_backend::reconcile_on_startup(&conn);
             app.manage(DbState(Mutex::new(conn)));
 
-            // --- MCP (ADR-027 M2a): the lifecycle over the managed DbState, and its tick thread,
-            // whose first step runs at once (a switch left on serves from app start). A path
-            // refusal never fails setup: it becomes the status reason. ---
-            let mcp_lifecycle = mcp::server::wiring::app_lifecycle(app.handle());
+            // --- MCP (ADR-027 M2a, M2b): the lifecycle over the managed DbState and the data dir
+            // (`memory_estimate`'s disk), and its tick thread, whose first step runs at once (a
+            // switch left on serves from app start). A path refusal never fails setup: it becomes
+            // the status reason. ---
+            let mcp_lifecycle = mcp::server::wiring::app_lifecycle(app.handle(), &data_dir);
             app.manage(mcp_lifecycle.clone());
             mcp::server::wiring::start_ticks(mcp_lifecycle)?;
 

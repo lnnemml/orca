@@ -17,6 +17,7 @@ use serde_json::{json, Value};
 use super::lifecycle::{Hooks, LifecycleEnv, McpLifecycle};
 use super::listener::{kernel_peer_uid, own_uid};
 use super::paths::{resolve, McpPaths};
+use super::service::HostPaths;
 use crate::commands::settings::DbState;
 use crate::mcp::steps::reconcile_submitting_conn;
 
@@ -46,6 +47,12 @@ impl Scratch {
     /// A migrated database in this scratch dir, as the app's `DbState`.
     pub fn db(&self) -> Arc<DbState> {
         Arc::new(DbState(Mutex::new(crate::db::init_db(&self.dir.join("db")).unwrap())))
+    }
+
+    /// The host facts `memory_estimate` reads, under this scratch dir: `meminfo` (absent until a
+    /// test writes it) and the dir itself as the data dir.
+    pub fn host(&self) -> HostPaths {
+        HostPaths { meminfo: self.dir.join("meminfo"), data_dir: self.dir.clone() }
     }
 
     /// Another connection on the same database file (another instance's view).
@@ -100,6 +107,7 @@ pub fn counted_env(paths: &McpPaths, db: Arc<DbState>, hooks: Hooks) -> (Lifecyc
     let env = LifecycleEnv {
         paths: Ok(paths.clone()),
         db,
+        host: Arc::new(HostPaths { meminfo: paths.dir.join("meminfo"), data_dir: paths.dir.clone() }),
         reconcile: Box::new(move |conn| {
             c1.reconciles.fetch_add(1, Ordering::SeqCst);
             reconcile_submitting_conn(conn)
@@ -197,6 +205,17 @@ impl Client {
     /// Send `tools/call get_grant` with this id (no wait).
     pub fn call_get_grant(&mut self, id: u64) {
         self.request(id, "tools/call", json!({ "name": "get_grant", "arguments": {} }));
+    }
+
+    /// Send `tools/call` of `name` with `arguments` (no wait).
+    pub fn call(&mut self, id: u64, name: &str, arguments: Value) {
+        self.request(id, "tools/call", json!({ "name": name, "arguments": arguments }));
+    }
+
+    /// Call `name` and wait for its result: the text and `isError`, as the model would get them.
+    pub fn call_and_wait(&mut self, id: u64, name: &str, arguments: Value) -> (String, bool) {
+        self.call(id, name, arguments);
+        tool_text(&self.response(id).unwrap_or_else(|| panic!("no reply to {name}")))
     }
 
     /// Whether the server has closed this connection: a read returns EOF within `within`.

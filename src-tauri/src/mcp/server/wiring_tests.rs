@@ -56,8 +56,8 @@ fn timings(flow: Duration, grace: Duration, steps: Duration) -> BackstopTimings 
 fn the_wired_lifecycle_keeps_a_non_holder_from_reconciling() {
     let scratch = Scratch::new("wired-nonholder");
     let paths = scratch.paths();
-    let a = wired_lifecycle(scratch.db(), Ok(paths.clone()));
-    let b = wired_lifecycle(scratch.db(), Ok(paths.clone()));
+    let a = wired_lifecycle(scratch.db(), Ok(paths.clone()), scratch.host());
+    let b = wired_lifecycle(scratch.db(), Ok(paths.clone()), scratch.host());
     assert!(a.set_enabled(true).unwrap().serving);
 
     // A's job in step B, as step A leaves it: a charged `submitting` draft.
@@ -87,7 +87,7 @@ fn the_wired_lifecycle_keeps_a_non_holder_from_reconciling() {
 #[test]
 fn a_path_refusal_becomes_the_status_reason() {
     let scratch = Scratch::new("wired-refusal");
-    let lc = wired_lifecycle(scratch.db(), Err(super::paths::PathRefusal::NoBaseDir));
+    let lc = wired_lifecycle(scratch.db(), Err(super::paths::PathRefusal::NoBaseDir), scratch.host());
     set_row(&scratch.another_connection(), true);
     lc.tick_step();
     let status = lc.status();
@@ -114,7 +114,7 @@ fn prevent_exit_exactly_when_the_decision_is_not_pass_through() {
 fn exit_with_mcp_never_enabled_kills_then_stops_the_sidecar_then_exits_promptly() {
     let scratch = Scratch::new("wired-exit-off");
     let paths = scratch.paths();
-    let lc = wired_lifecycle(scratch.db(), Ok(paths.clone()));
+    let lc = wired_lifecycle(scratch.db(), Ok(paths.clone()), scratch.host());
     lc.tick_step(); // the first tick at app start: the row is missing, so "off"
 
     let order = Order::default();
@@ -147,7 +147,7 @@ fn exit_with_mcp_never_enabled_kills_then_stops_the_sidecar_then_exits_promptly(
 #[test]
 fn a_second_request_during_the_flow_is_prevented_and_starts_nothing() {
     let scratch = Scratch::new("wired-exit-twice");
-    let lc = wired_lifecycle(scratch.db(), Ok(scratch.paths()));
+    let lc = wired_lifecycle(scratch.db(), Ok(scratch.paths()), scratch.host());
     let order = Order::default();
     let (release, hold) = mpsc::channel::<()>();
     let o = order.clone();
@@ -172,7 +172,7 @@ fn a_second_request_during_the_flow_is_prevented_and_starts_nothing() {
 #[test]
 fn a_panicking_step_does_not_stop_the_exit() {
     let scratch = Scratch::new("wired-exit-panic");
-    let lc = wired_lifecycle(scratch.db(), Ok(scratch.paths()));
+    let lc = wired_lifecycle(scratch.db(), Ok(scratch.paths()), scratch.host());
     let order = Order::default();
     let (b, c) = (order.clone(), order.clone());
     let (steps, heard) = guarded_steps(
@@ -193,7 +193,7 @@ fn a_panicking_step_does_not_stop_the_exit() {
 #[test]
 fn a_hung_step_is_caught_by_the_backstop() {
     let scratch = Scratch::new("wired-exit-hang");
-    let lc = wired_lifecycle(scratch.db(), Ok(scratch.paths()));
+    let lc = wired_lifecycle(scratch.db(), Ok(scratch.paths()), scratch.host());
     let (release, hold) = mpsc::channel::<()>();
     let (steps, heard) = guarded_steps(
         || {},
@@ -227,7 +227,7 @@ fn a_hung_step_is_caught_by_the_backstop() {
 #[test]
 fn a_process_that_outlives_exit_is_ended_after_the_grace() {
     let scratch = Scratch::new("wired-exit-grace");
-    let lc = wired_lifecycle(scratch.db(), Ok(scratch.paths()));
+    let lc = wired_lifecycle(scratch.db(), Ok(scratch.paths()), scratch.host());
     let order = Order::default();
     let (steps, heard) = recording(&order); // its `exit` only records: the process lives on
     let ended = Arc::new(Mutex::new(None::<(Backstop, Duration)>));
@@ -319,7 +319,7 @@ fn no_queued_job_starts_once_the_exit_flow_has_begun() {
         .unwrap()
         .execute("INSERT INTO jobs (id, title, input_content, status) VALUES ('next', 't', '! SP', 'queued')", [])
         .unwrap();
-    let lc = wired_lifecycle(db.clone(), Ok(scratch.paths()));
+    let lc = wired_lifecycle(db.clone(), Ok(scratch.paths()), scratch.host());
     let runner = Arc::new(JobRunner::new(scratch.dir.clone()));
 
     let claimed = Arc::new(Mutex::new(None));
@@ -422,7 +422,7 @@ fn exit_requested_is_the_hand_off_and_prevent_exit_only() {
 #[test]
 fn setup_wires_the_lifecycle_and_the_tick_and_registers_the_commands() {
     let db = LIB.find("app.manage(DbState(Mutex::new(conn)));").expect("DbState is managed");
-    let build = LIB.find("mcp::server::wiring::app_lifecycle(app.handle())").expect("the lifecycle is built");
+    let build = LIB.find("mcp::server::wiring::app_lifecycle(app.handle(), &data_dir)").expect("the lifecycle is built");
     let manage = LIB.find("app.manage(mcp_lifecycle.clone());").expect("the lifecycle is managed");
     let tick = LIB.find("mcp::server::wiring::start_ticks(mcp_lifecycle)?;").expect("the tick thread starts");
     assert!(db < build && build < manage && manage < tick);

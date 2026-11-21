@@ -1,7 +1,7 @@
-//! The MCP read tools' cores (ADR-027 decision 7; M2 amendment, items 1, 7 and 8; unit M2b Part A).
+//! The MCP read tools' cores (ADR-027 decision 7; M2 amendment, items 1, 7 and 8; unit M2b).
 //! Each core takes a `&Connection` (or `&DbState`, for the memory estimate, which locks itself) or
-//! plain inputs, and returns a serialisable result. None is registered in the `rmcp` service yet:
-//! Part B does that, with the descriptions.
+//! plain inputs, and returns a serialisable result. `server::read_tools` registers each in the
+//! `rmcp` service, with its description, its arguments and its lock.
 //!
 //! | tool | core | reuses |
 //! |---|---|---|
@@ -72,7 +72,7 @@ mod results_tests;
 #[cfg(test)]
 mod targets_tests;
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 
 /// The client writes a result longer than this to a file and hands the model a pointer instead
 /// (M0, measured: 49,000 characters inline, 51,000 spilled; `mcp-transport-probe.md`, item 3).
