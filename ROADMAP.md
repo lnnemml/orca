@@ -1689,10 +1689,10 @@ and OrcaStudio picks the job up, syncs results, and parses them — no terminal,
             registered in `server/m3b_tools.rs`, the cancel through the app's own `with_poller` +
             `dispatch_cancel`, a draft in step B refused with its own reason); live check passed
       - [ ] **M4** UI (live gate), split by the ADR-027 M4 amendment:
-        - [~] **M4a** Settings → MCP — grant editor, revoke, "Cancel Claude's jobs", audit view,
+        - [x] **M4a** Settings → MCP — grant editor, revoke, "Cancel Claude's jobs", audit view,
               the per-connection read count with its display (decision 9; M4 amendment items 2–5)
-              — Part A built (the read count and its ledger, the four commands, the pure TS logic;
-              uncommitted, awaiting the verifier); Part B (the components, the live gate) next
+              — committed `ec85ac0` (Part A) + Part B (components, two-column Settings, the
+              date + hour/minute expiry); live gate passed 2026-11-22
         - [ ] **M4b** Jobs — Claude badge, proposal reasons, "Claude is submitting", the
               `groups:changed` refresh (M4 amendment items 6–7)
       - [ ] **M5** live research gate (first, Anton adds this repository's `.claude/settings.json`

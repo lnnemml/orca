@@ -221,6 +221,10 @@ export function SettingsScreen() {
     <div className="screen">
       <h2 className="section-title">Settings</h2>
 
+      {/* Two independent stacks (app.css `.settings-columns`): everything but MCP on the left, the tall
+          MCP card on the right; one column below 1100 px. The left stack's cards are not re-indented. */}
+      <div className="settings-columns">
+      <div className="settings-col">
       <div className="card">
         <div className="field">
           <label className="label" htmlFor="orca-path">
@@ -502,8 +506,12 @@ export function SettingsScreen() {
       </div>
 
       <ServersSection />
+      </div>
 
-      <McpSection />
+      <div className="settings-col">
+        <McpSection />
+      </div>
+      </div>
 
       {error ? (
         <div className="banner err" style={{ marginTop: 12 }}>

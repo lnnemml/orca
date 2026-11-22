@@ -86,6 +86,32 @@ fn the_selection_is_claudes_live_jobs_queued_first() {
     assert_eq!(s.submitting, 2, "SKIP-COUNT: the drafts in step B");
 }
 
+/// Control POSTCOND-ORIGIN (M4a Part A verifier, LOW-1): the runtime post-condition refuses a row whose
+/// origin is not `mcp`, whatever the statement returned. `m4a_partb_controls.py` also drops
+/// `origin = 'mcp'` from `CLAUDE_JOBS_SQL` and expects the selection itself to fail with this message
+/// (not just the SEL-USER assertions to go red).
+#[test]
+fn the_post_condition_refuses_a_row_that_is_not_claudes() {
+    let row = |id: &str, status: &str, submitting: bool, origin: &str| SelectedRow {
+        id: id.into(),
+        status: status.into(),
+        submitting,
+        origin: origin.into(),
+    };
+    let ok = selection_of_rows(vec![row("a", "queued", false, "mcp"), row("b", "draft", true, "mcp")]).unwrap();
+    assert_eq!((ok.to_cancel.len(), ok.submitting), (1, 1));
+    for (status, submitting) in [("queued", false), ("running", false), ("cancelling", false), ("draft", true)] {
+        let Err(err) = selection_of_rows(vec![row("u", status, submitting, "user")]) else {
+            panic!("POSTCOND-ORIGIN: a {status}/{submitting} row of origin user was accepted");
+        };
+        assert!(err.to_string().contains("selected with origin user"), "POSTCOND-ORIGIN: {status}/{submitting}: {err}");
+    }
+    // The real statement over a table holding both origins returns no `user` row at all.
+    let db = TestDb::new("claude-origin-postcond");
+    every_kind_of_job(&db);
+    assert!(select_claude_jobs_conn(&db.conn).is_ok());
+}
+
 /// Control SUMMARY-PARITY (item 8: "the summary's predicate diverging from the command's"): over every
 /// kind of row, the summary is the selection counted, and the cancel acts on exactly that many.
 #[test]

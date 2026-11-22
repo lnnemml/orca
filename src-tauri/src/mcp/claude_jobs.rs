@@ -30,7 +30,7 @@ use crate::models::job::JobStatus;
 /// Claude's drafts in step B. `submitting` marks a step-B draft, which is counted and never cancelled;
 /// it is `IS`, not `=`, so a NULL `mcp_state` gives 0, never NULL.
 pub const CLAUDE_JOBS_SQL: &str = "SELECT id, status, \
-         (status = 'draft' AND mcp_state IS 'submitting') AS submitting \
+         (status = 'draft' AND mcp_state IS 'submitting') AS submitting, origin \
      FROM jobs \
      WHERE origin = 'mcp' \
        AND (status IN ('queued', 'running', 'cancelling') OR (status = 'draft' AND mcp_state = 'submitting')) \
@@ -56,16 +56,37 @@ pub struct ClaudeJobsSelection {
 pub fn select_claude_jobs_conn(conn: &Connection) -> Result<ClaudeJobsSelection, AppError> {
     let mut stmt = conn.prepare(CLAUDE_JOBS_SQL)?;
     let rows = stmt
-        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, bool>(2)?)))?
+        .query_map([], |r| {
+            Ok(SelectedRow { id: r.get(0)?, status: r.get(1)?, submitting: r.get(2)?, origin: r.get(3)? })
+        })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
+    selection_of_rows(rows)
+}
+
+/// One row of [`CLAUDE_JOBS_SQL`], as read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectedRow {
+    pub id: String,
+    pub status: String,
+    pub submitting: bool,
+    pub origin: String,
+}
+
+/// The post-condition (rule #9) and the split of the statement's rows. It re-checks the statement's
+/// own two predicates in our terms, so a statement edited wrongly cannot cancel what is not Claude's:
+/// every row is `origin = 'mcp'`, and every row that is not a step-B draft is `queued`, `running` or
+/// `cancelling`.
+pub fn selection_of_rows(rows: Vec<SelectedRow>) -> Result<ClaudeJobsSelection, AppError> {
     let mut selection = ClaudeJobsSelection { to_cancel: Vec::new(), submitting: 0 };
-    for (id, status, submitting) in rows {
+    for SelectedRow { id, status, submitting, origin } in rows {
+        if origin != "mcp" {
+            return Err(AppError::Internal(format!("Claude's jobs: job {id} selected with origin {origin}")));
+        }
         if submitting {
             selection.submitting += 1;
             continue;
         }
         let status = JobStatus::from_db(&status)?;
-        // Post-condition (rule #9): the statement selected nothing else.
         if !matches!(status, JobStatus::Queued | JobStatus::Running | JobStatus::Cancelling) {
             return Err(AppError::Internal(format!("Claude's jobs: job {id} selected in status {}", status.as_str())));
         }

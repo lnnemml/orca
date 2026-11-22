@@ -6,9 +6,12 @@
  */
 import type { CancelResult, ClaudeCancelReport, ClaudeJobsSummary } from "../types";
 
-/** Item 3's sentence, verbatim: what the button does not stop. */
+/**
+ * Item 3's sentence: what the button does not stop. "Drafts … (not yet queued)": a job that step C
+ * has already queued is cancelled even while its `mcp_state` still reads `submitting` (M4a Part B).
+ */
 export const NOT_CANCELLED_NOTE =
-  "jobs Claude is submitting right now, and any it creates later, are not cancelled — revoke the grant to stop new ones";
+  "drafts Claude is still submitting (not yet queued), and any it creates later, are not cancelled — revoke the grant to stop new ones";
 
 const plural = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`;
 
@@ -21,7 +24,7 @@ export type ClaudeCancelPlan =
 /** The confirm for the counts Rust returned at the click. */
 export function claudeCancelPlan(s: ClaudeJobsSummary): ClaudeCancelPlan {
   const submitting =
-    s.submitting > 0 ? ` (${plural(s.submitting, "job is", "jobs are")} being submitted by Claude now.)` : "";
+    s.submitting > 0 ? ` (${plural(s.submitting, "draft is", "drafts are")} being submitted by Claude now.)` : "";
   if (s.to_cancel === 0) {
     return { kind: "nothing", text: `Claude has no queued or running job to cancel.${submitting}` };
   }
@@ -77,7 +80,7 @@ export function summarizeClaudeCancel(report: ClaudeCancelReport): ClaudeCancelS
     parts.push(`${failed.length} failed: ${failed.map((f) => `${f.job_id}: ${f.error}`).join("; ")}`);
   }
   if (report.skipped_submitting > 0) {
-    parts.push(`${plural(report.skipped_submitting, "job", "jobs")} being submitted skipped`);
+    parts.push(`${plural(report.skipped_submitting, "draft", "drafts")} being submitted skipped`);
   }
   return { done, failed, skippedSubmitting: report.skipped_submitting, text: `${parts.join("; ")}.` };
 }

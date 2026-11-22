@@ -53,7 +53,7 @@ PROPOSED (P5). Nothing reaches SUBMITTED by default.
 | `steps.rs` | `create_job`'s step A `decide_conn(conn, StepAInput) -> Decided` (`Refused`/`Proposed`/`Charged`), `open_proposals_conn` (R8's count), its step C `finish_submit_audited_conn -> StepC` and `step_c_audit`; M1b's P5-only step A `charge_and_insert_conn -> StepA` (with `charge_and_insert_with`, `McpJobDraft`) and unaudited `finish_submit_conn`, **test-only** (`#[cfg(test)]`: no app code can charge or refund without an audit row), which share the charge and finish bodies (`charge_in_tx`, `finish_in_tx`); `insert_proposed_conn`, `reconcile_submitting_conn -> Reconciled` (with its outcome rows; `RECONCILIATION_ARGS`), `submit_refusal_for_mcp_state`, `refuse_while_mcp_submitting`; `McpReason { row, message }` and its constructors; `SUBMITTING` |
 | `audit.rs` | the audit log: `append_audit_conn(conn, &AuditEntry)`, `audit_rows_conn -> Vec<AuditRow>` (test-only; a `reasons` that does not parse is its error), `bounded_reasons`, `AuditDisposition`; `CREATE_JOB`, `AUDIT_REASONS_MAX` (20), `REASON_MESSAGE_MAX_BYTES` (400) |
 | `audit_view.rs` | the audit view's reader: `list_audit_conn(conn, before_id, limit) -> AuditPage { rows, next_before_id }`, `audit_row_conn(conn, id) -> AuditRowView` (`NotFound` for an unknown id), `page_limit`, `read_reasons -> AuditReasons` (`Read { list }` / `Unreadable { raw, raw_clipped }`); `AuditRowView { id, at, tool, args, args_clipped, args_chars, disposition, reasons, job_id, grant_id }`; `AUDIT_PAGE_DEFAULT` (50), `AUDIT_PAGE_MAX` (200), `AUDIT_ARGS_PAGE_CHARS` (1,024), `AUDIT_REASONS_RAW_CHARS` (1,024). Tests in `audit_view_tests.rs` |
-| `claude_jobs.rs` | "Cancel Claude's jobs": `select_claude_jobs_conn -> ClaudeJobsSelection { to_cancel, submitting }` over the one statement `CLAUDE_JOBS_SQL`, `claude_jobs_summary_conn -> ClaudeJobsSummary { to_cancel, submitting }`, `cancel_claude_jobs(&DbState, cancel_one) -> ClaudeCancelReport { jobs, skipped_submitting }`; `ClaudeJobCancel { job_id, outcome }`, `ClaudeJobOutcome` (`Result`/`Error`). Tests in `claude_jobs_tests.rs` |
+| `claude_jobs.rs` | "Cancel Claude's jobs": `select_claude_jobs_conn -> ClaudeJobsSelection { to_cancel, submitting }` over the one statement `CLAUDE_JOBS_SQL`, `claude_jobs_summary_conn -> ClaudeJobsSummary { to_cancel, submitting }`, `selection_of_rows(Vec<SelectedRow>)` (the rule-#9 post-condition over the statement's rows), `cancel_claude_jobs(&DbState, cancel_one) -> ClaudeCancelReport { jobs, skipped_submitting }`; `ClaudeJobCancel { job_id, outcome }`, `ClaudeJobOutcome` (`Result`/`Error`). Tests in `claude_jobs_tests.rs` |
 | `create_job.rs` | the `create_job` pipeline: `run_create_job(&CreateJobEnv, CreateJobArgs) -> CreateJobResult`, its halves `decide -> Decision` (`Done`/`Charged`) and `submit_charged` (over `submit_charged_with`, whose step C transaction and waits are seams); `audit_args`; the seams `CreateJobEnv { db, smiles, host, step_b, emit }`, `StepB` (→ `StepBOutcome`), `StatusEmit`; the result types `Outcome`, `SetByApp`, `SubmitReport`; the bounds `HEADER_MAX_BYTES`, `SOURCE_MAX_BYTES`, `TARGET_MAX_BYTES`, `GROUP_ID_MAX_BYTES`, `TITLE_MAX_BYTES`, `AUDIT_HEADER_MAX_BYTES`, `STEP_B_MESSAGE_MAX_BYTES`; `STEP_C_RETRY_WAITS` (250 ms, 1 s) |
 | `cancel.rs` | `cancel_job`'s core: `run_cancel_job(&Poller, &CancelJobArgs, dispatch) -> CancelJobResult` (`Refused`/`Requested`/`Failed`), `precheck_conn -> Precheck` (`Refused`/`Proceed`), `outcome_row_conn`, `outcome_reasons`, `requested_reason`, `result_tag`, `audit_args`; `CANCEL_JOB`, `JOB_ID_MAX_BYTES` (64), `NOT_CLAUDES`, `DRAFT_REFUSED`, `SUBMITTING_REFUSED`. Tests in `cancel_tests.rs` |
 | `create_group.rs` | `create_group`'s core: `run_create_group(conn, &CreateGroupArgs) -> CreateGroupResult`, `check_args` (→ the trimmed name), `create_group_audited_conn`, `audit_args`; `CREATE_GROUP`, `GROUP_NAME_MAX_CHARS` (200), `PARENT_ID_MAX_BYTES` (64). Tests in `create_group_tests.rs` |
@@ -838,8 +838,13 @@ ADR-027 M4 amendment, items 3 and 4. Anton's actions; no MCP tool calls them.
 - **The selection** is one statement (`CLAUDE_JOBS_SQL`), read under one `DbState` lock: every
   `origin = 'mcp'` job in `queued`, `running` or `cancelling`, plus Claude's drafts in step B
   (`status = 'draft'` and `mcp_state = 'submitting'`), which are counted and never cancelled. No
-  `user` job, no other draft and no terminal job is selected; a post-condition (rule #9) refuses
-  anything else the statement returns.
+  `user` job, no other draft and no terminal job is selected. The post-condition (rule #9,
+  `selection_of_rows`) re-checks both predicates on the rows the statement returns: any row whose
+  `origin` is not `mcp`, and any non-step-B row not in `queued`/`running`/`cancelling`, is an internal
+  error, so a statement edited wrongly cannot cancel what is not Claude's. A `queued` job whose
+  `mcp_state` still reads `submitting` (inside step C's window) is **not** a skipped draft: it is
+  queued, and it is cancelled. The confirm's sentence says "drafts Claude is still submitting (not yet
+  queued)" for that reason (wording made precise in M4a Part B).
 - **The order** is `queued`, then `running`, then `cancelling`: a running job cancelled first would
   free a local slot, and the queue would start a queued `mcp` job only for the loop to kill it.
 - **The summary is the selection counted**, so the confirm's number and the cancel cannot use
@@ -1104,8 +1109,12 @@ opens no window, initialises no GTK, and prints nothing — and exits with `rela
 with one stderr line (`orcastudio --mcp: <the refusal>`) when the path is refused. The argument is
 compared as an `OsStr`, so a non-UTF-8 argument cannot panic `args()`.
 
-**Settings → MCP** (`src/mcp/McpSection.tsx`, `modules/frontend.md`): the switch, decision 9's data
-line, and the status line from `McpStatus`, re-read on mount, after a toggle and every 5 s.
+**Settings → MCP** (`src/mcp/Mcp*.tsx`, `modules/frontend.md`): the switch, decision 9's data line, the
+status line and the read count from `McpStatus` (re-read on mount, after a toggle and every 5 s), the
+grant card and editor over `mcp_get_grant`/`mcp_create_grant`/`mcp_revoke_grant`/`mcp_level_from_job`,
+"Cancel Claude's jobs" over `mcp_claude_jobs_summary`/`mcp_cancel_claude_jobs`, and the audit table over
+`mcp_list_audit`/`mcp_audit_row`. The card re-reads the grant on the 5 s poll and on `job:status`; Create
+and Revoke read it afresh at the click.
 
 ## The read tools (`tools/`, M2b)
 
@@ -1450,10 +1459,6 @@ Two choices go beyond the clarifications, and each can only move a job toward An
 
 ## Not yet wired
 
-- **M4a Part B:** the Settings → MCP components over the commands and the pure logic above — the
-  grant card and editor (`src/mcp/grant.ts`, `src/mcp/expiry.ts`), Revoke, "Cancel Claude's jobs"
-  (`src/mcp/claudeJobs.ts`), the audit table (`src/mcp/audit.ts`) and the read count's display
-  (`readsLine`, `connectionReadsText` in `src/mcp/status.ts`), with the live WebKitGTK gate.
 - **M4b:** the Jobs screen's Claude badge, a PROPOSED job's reasons, "Claude is submitting" in place
   of Run, and `groups:changed` from `create_group`.
 
@@ -1471,7 +1476,8 @@ pins that each of the ten tools is served as compact JSON, the shape only `respo
 the grant, switch and Settings → MCP commands' tests (the read count's are `mcp::server::reads_tests`,
 "Cancel Claude's jobs"' `mcp::claude_jobs_tests`, the audit view's `mcp::audit_view_tests`),
 `npx vitest run src/mcp` the Settings → MCP pure logic (the expiry under `TZ=Europe/Kyiv`, across both
-DST changes), `cargo test -p orcastudio --test mcp_relay_bin` the built
+DST changes) and its components (`McpSection.panels.test.tsx`: the read count, the grant card and editor,
+Revoke, "Cancel Claude's jobs", the audit table; `invoke`, `listen` and the dialog mocked), `cargo test -p orcastudio --test mcp_relay_bin` the built
 binary's relay, `npx vitest run src/screens/SettingsScreen.mcp.test.tsx` the switch row, and
 `npx vitest run src/scene/charge-mult-parity.test.ts` the TS half of the C1 parity. The schema tests are
 `cargo test -p orcastudio --lib db::tests::` (v24 names in `modules/tauri-core.md`). The negative
@@ -1480,6 +1486,7 @@ list in the M1b Part A entry, the Part B list in the M1b Part B entry, and the M
 lists in their entries (all 2026-11-19), the M2b Part A list in its entry (2026-11-20), and the M2b
 Part B list and the follow-up's in their entries (2026-11-21), and the M3a Part A and Part B lists in
 their entries (2026-11-21; the scripts that re-run them are named there), and the M3b Part A and
-Part B lists in their entries (2026-11-21), and the M4a Part A list in its entry (2026-11-21; script
-`m4a_parta_controls.py`). The ASE
+Part B lists in their entries (2026-11-21), the M4a Part A list in its entry (2026-11-21; script
+`m4a_parta_controls.py`) and the M4a Part B list in its entry (2026-11-21; script
+`m4a_partb_controls.py`). The ASE
 pin is `pytest sidecar/tests/test_geometry.py` (in the sidecar venv).

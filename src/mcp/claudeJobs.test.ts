@@ -15,7 +15,7 @@ import {
 describe("the confirm", () => {
   it("carries item 3's sentence verbatim and the count", () => {
     expect(NOT_CANCELLED_NOTE).toBe(
-      "jobs Claude is submitting right now, and any it creates later, are not cancelled — revoke the grant to stop new ones",
+      "drafts Claude is still submitting (not yet queued), and any it creates later, are not cancelled — revoke the grant to stop new ones",
     );
     const plan = claudeCancelPlan({ to_cancel: 3, submitting: 0 });
     expect(plan.kind).toBe("confirm");
@@ -25,11 +25,13 @@ describe("the confirm", () => {
   });
 
   it("names the drafts being submitted, and says when there is nothing to cancel", () => {
-    expect(claudeCancelPlan({ to_cancel: 2, submitting: 1 }).text).toContain("1 job is being submitted by Claude now");
+    expect(claudeCancelPlan({ to_cancel: 2, submitting: 1 }).text).toContain("1 draft is being submitted by Claude now");
+    expect(claudeCancelPlan({ to_cancel: 2, submitting: 3 }).text).toContain("(3 drafts are being submitted by Claude now.)");
+    expect(claudeCancelPlan({ to_cancel: 2, submitting: 1 }).text).not.toMatch(/\bjobs? (is|are) being submitted/);
     const nothing = claudeCancelPlan({ to_cancel: 0, submitting: 2 });
     expect(nothing).toEqual({
       kind: "nothing",
-      text: "Claude has no queued or running job to cancel. (2 jobs are being submitted by Claude now.)",
+      text: "Claude has no queued or running job to cancel. (2 drafts are being submitted by Claude now.)",
     });
   });
 
@@ -52,7 +54,7 @@ describe("the report", () => {
     const s = summarizeClaudeCancel(REPORT);
     expect(s.done).toBe(2);
     expect(s.failed).toEqual([{ job_id: "r1", error: "conflict: the job is busy" }]);
-    expect(s.text).toBe("2 jobs handled; 1 failed: r1: conflict: the job is busy; 1 job being submitted skipped.");
+    expect(s.text).toBe("2 jobs handled; 1 failed: r1: conflict: the job is busy; 1 draft being submitted skipped.");
     expect(summarizeClaudeCancel({ jobs: [], skipped_submitting: 0 }).text).toBe("0 jobs handled.");
   });
 

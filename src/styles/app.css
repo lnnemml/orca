@@ -1880,6 +1880,42 @@ select:disabled,
   max-width: 560px;
 }
 
+/* --- Settings: two independent vertical stacks ------------------------
+   Left = every section but MCP, right = the MCP card (tall). Two stacks, not a row grid: a row grid
+   would leave an empty cell beside the tall MCP card. Below 1100 px the stacks fall into one column,
+   in the old order (left stack, then MCP). `minmax(0, 1fr)` lets a wide child shrink instead of
+   pushing the column past the window. */
+.settings-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px 20px;
+  align-items: start;
+  max-width: 1600px;
+}
+
+.settings-col {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* A card fills its column (the 560 px cap is for the other screens). */
+.settings-columns .card {
+  max-width: none;
+}
+
+/* The MCP card carries `marginTop: 12` inline; at the top of its own column the grid gap is enough. */
+.settings-col > :first-child {
+  margin-top: 0 !important;
+}
+
+@media (max-width: 1100px) {
+  .settings-columns {
+    grid-template-columns: minmax(0, 1fr);
+    max-width: 560px;
+  }
+}
+
 /* --- Convergence dashboard (Job detail) ------------------------------- */
 
 /* Bound the dashboard so it never crushes the log console below it; scroll

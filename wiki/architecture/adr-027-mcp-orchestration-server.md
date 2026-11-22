@@ -1463,8 +1463,11 @@ The code anchors are at `91daa94`.
    - **The count for the dialog.** A synchronous read command, `mcp_claude_jobs_summary()`, returns
      `{to_cancel, submitting}`. It uses the same SQL predicate as the cancel, plus the count of
      submitting drafts. TypeScript does not re-implement the filter.
-   - **The confirm.** It states the count and says: "jobs Claude is submitting right now, and any it
-     creates later, are not cancelled — revoke the grant to stop new ones".
+   - **The confirm.** It states the count and says: "drafts Claude is still submitting (not yet
+     queued), and any it creates later, are not cancelled — revoke the grant to stop new ones"
+     (wording made precise in M4a Part B: a job already queued by step C is cancelled even while its
+     `mcp_state` still reads `submitting`, so "jobs being submitted right now" overstated what is
+     skipped).
    - **During the call.** The button shows "Cancelling N…" until the answer arrives. Remote
      deliveries make ssh calls, so this can take minutes.
    - **No audit.** It is Anton's action. The audit records Claude's dispositions (M3 amendment, item
@@ -1520,6 +1523,9 @@ The code anchors are at `91daa94`.
        JavaScriptCore resolves a nonexistent or ambiguous local time needs no measurement: the
        round-trip refusal holds whatever the engine does, and the shown offset is honest whatever
        offset it picks. The gate still observes both. vitest runs V8.
+       (Settled at the M4a live gate, 2026-11-22: WebKitGTK's `datetime-local` picker hangs; decided
+       by Anton, the custom time is a text date + hour/minute selects, composed into the same strict
+       helper.)
    - **Replacing a grant.** Creating a grant revokes the active one (decision 5). Whether to confirm
      "this replaces the active grant" is decided from a fresh `mcp_get_grant` read at the click, not
      from the form's snapshot.

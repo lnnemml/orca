@@ -174,6 +174,12 @@ shows the draft as it was left.
   manages library molecules as stored xyz *strings* (the DB format), so it keeps `atomLinesToXyz` +
   `MoleculeViewer xyzData`; migrating it to a Scene would be churn with regression risk and remove no
   duplication.
+- **`SettingsScreen` layout** — two independent vertical stacks (`.settings-columns` in `app.css`, a
+  two-column grid with `align-items: start`, max 1600 px, 12/20 px gaps): the left stack holds every
+  section but MCP in their order (ORCA path, xtb, CPU, API key, Servers), the right stack the tall MCP
+  card. Stacks, not a row grid, so the MCP card does not leave an empty cell beside it. A card fills its
+  column (the global 560 px `.card` cap is lifted inside `.settings-columns`). Below 1100 px of window
+  width it falls into one 560 px column in the same order (left stack, then MCP).
 - **`SettingsScreen`** — the ORCA path editor (`get_settings` / `set_setting`), the CPU-preset
   section, the xtb path field + **Check** button (`xtb_version`, same pattern as ORCA), and the
   **Anthropic API key** card (ADR-015). The key card holds only the input value (a `type=password`
@@ -192,7 +198,7 @@ shows the draft as it was left.
   **immediately** (compared against the live list), not as a surprise on the first Explain. **No price is
   shown** — `/v1/models` doesn't return it and hardcoding one is the recalled-constant anti-pattern
   (ADR-014 (1a)).
-- **Settings → MCP** (`src/mcp/McpSection.tsx`, the last card; ADR-027 M2 amendment item 2) — one row:
+- **Settings → MCP** (`src/mcp/McpSection.tsx`, the last card; ADR-027 M2 amendment item 2) — the switch row first:
   the switch (a checkbox, checked only when `McpStatus.enabled === true`), decision 9's data line beside
   it (`MCP_DATA_LINE`: research data — geometries, input headers, energies, output excerpts — goes to the
   AI model's provider when MCP is on), and a status line from the pure `mcpStatusLine`
@@ -205,7 +211,44 @@ shows the draft as it was left.
   status rather than showing a stale one; a failed toggle shows "The switch failed: …". Local state, as
   the other Settings cards (no store). Test: `src/screens/SettingsScreen.mcp.test.tsx` (the screen
   whole, `invoke` mocked). The look is Anton's live WebKitGTK gate.
-  - **M4a's pure logic** (ADR-027 M4 amendment items 2–5; no component renders it yet — M4a Part B):
+  - **M4a's panels** (ADR-027 M4 amendment items 2–5), under the switch row in the same card, over the
+    pure logic below. Local state, no store; the look is Anton's live WebKitGTK gate.
+    - **The read count** (`McpSection.tsx`): `readsLine(status)`, then one line per live or closing
+      connection (`connectionReadsText`). When this instance does not serve it says so and shows no total
+      as how much Claude read.
+    - **The grant card and editor** (`McpGrantPanel.tsx`, `McpGrantEditor.tsx`). The card shows the state,
+      "N of M jobs charged", "N of M in flight (all grants)", the local expiry, the targets (profile names)
+      and the levels, with "read at HH:MM:SS". It re-reads `mcp_get_grant` on every tick of the section's 5 s
+      poll (`pollTick`) and on `job:status`; a failed read drops the card and shows the error; a read
+      overtaken by a later one is discarded (Revoke's fresh read and the editor's grant count as newer too).
+      **Revoke** reads the grant afresh at the click, confirms with
+      `revokeConfirmText`, and revokes that grant's id. The editor: target checkboxes ("local" plus each
+      `list_server_profiles` entry, none checked at first), a levels list (paste a `!` line and an optional
+      block, or "this job's level" from a select of the newest 30 `completed`/`parsed` jobs through
+      `mcp_level_from_job`, disabled while it answers so a double-click adds one level; a failed `list_jobs` read
+      empties the picker and says "Could not read the jobs, so the picker offers none"; the core's refusal is
+      shown as returned, the grammar is not re-implemented),
+      `max_jobs`/`max_in_flight` (whole numbers ≥ 1, 5 and 1), and the expiry (preset buttons, 8 h pressed;
+      or a custom time: a text date field "date (local)" with the placeholder `YYYY-MM-DD`, an hour select 00-23
+      and a minute select 00-55 in steps of 5, not a `datetime-local` input, whose native picker hangs in
+      WebKitGTK. `composeExpiryChoice` joins them as `YYYY-MM-DD HH:MM` for `customExpiry`, the one strict
+      parser; an empty date is no custom time and the preset rules, any typed date is a custom time that
+      un-presses the presets, and pressing a preset clears the date; all three inputs are the editor's own state, so the poll
+      does not reset them) with its line before Create ("8 h from Create — about … (UTC+02:00)", the
+      DST refusal inline, "this hour occurs twice" in the fall-back hour). Create is disabled for a bad count
+      or an expiry that is refused, and runs `createGrantFlow` (a fresh read, the replace confirm only if that
+      read shows an active grant, then `mcp_create_grant`); a declined replace creates nothing.
+    - **"Cancel Claude's jobs"** (`McpClaudeJobs.tsx`): `cancelClaudeJobsFlow` (the count from
+      `mcp_claude_jobs_summary` at the click, the confirm, then `mcp_cancel_claude_jobs`); the button reads
+      "Cancelling N…" while the call runs; the report lists each job's outcome (a failure with Rust's
+      message) and the skipped drafts. Nothing to cancel: no confirm, no call.
+    - **The audit view** (`McpAudit.tsx`): a table of time (local), tool, disposition, job, reasons and
+      args, newest first, loaded on mount. Args are collapsed; expanding a clipped row (a late answer only fills a row still loading, so a row hidden or dropped by
+      Refresh meanwhile stays closed) fetches the whole
+      text with `mcp_audit_row`, an unclipped row makes no call. Unreadable reasons show as "reasons
+      unreadable: `<raw>`". "Load older" pages with `next_before_id`; "Refresh" reloads the newest page.
+    - Tests: `src/mcp/McpSection.panels.test.tsx` (under `TZ=Europe/Kyiv`).
+  - **M4a's pure logic** (ADR-027 M4 amendment items 2–5):
     `src/mcp/expiry.ts` (the grant's expiry: presets 1 h / 8 h / 24 h / 7 d from an injected "now", a
     custom local time split by a strict regex and built with `new Date(y, m-1, d, h, min)` — never
     `new Date(string)` — refused "does not exist — DST" when it does not read back, flagged and shown
