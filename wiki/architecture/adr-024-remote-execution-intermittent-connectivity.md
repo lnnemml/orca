@@ -1552,7 +1552,8 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
        - **Load race:** a choice the user makes while the load is pending wins over the stored value.
        Submit re-checks the run-target predicate in Rust (n2), so a preselect that went stale between
        load and submit is refused there. Rejected: keying the choice per destination group.
-    2. **A run target is chosen only through Create & Run** (Anton). The Jobs table's Run on a draft
+    2. **A run target is chosen only through Create & Run** (Anton; an MCP draft runs on the target
+       Claude asked for: ADR-027 M4c amendment). The Jobs table's Run on a draft
        and the re-opt fan-out submit locally (`target: null`) and **say so**: the table button reads
        "Run locally", and **every** fan-out that submits without a target (re-opt, 2D surface
        scan, scan profile, NEB band, connectivity — CODE verifier L5, Anton) says its jobs run
@@ -3360,7 +3361,7 @@ findings applied the same day; Anton decided MED-B (a per-child `timeout` plus a
     13. **DESIGN round 2 clarifications** (PASS WITH FINDINGS, 1 HIGH + 3 MED + 9 LOW; the
         orchestrator's, within Anton's decisions). **They win over 26.1–26.12 where they differ.**
         1. **Two targets on the New Job screen** (H-1). "Create Job" makes a draft that can only ever
-           run **locally** (o20.2), while "Create & Run" runs on the selected target. The row therefore
+           run **locally** (o20.2; an MCP draft is the exception: ADR-027 M4c amendment), while "Create & Run" runs on the selected target. The row therefore
            evaluates **Local for Create** and **the selected target for Create & Run**, and shows both
            verdicts when they differ (one line each, each with its own button if it warns). Gate:
            select = a server, a no-`%maxcore` input → the local verdict warns (control: Create

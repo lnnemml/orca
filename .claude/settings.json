@@ -39,7 +39,8 @@
       "Bash(*-l \"yats\"*)",
       "Edit(/.claude/settings.json)",
       "Edit(/.claude/settings.local.json)",
-      "Edit(~/.claude/settings.json)"
+      "Edit(~/.claude/settings.json)",
+      "mcp__orcastudio__*"
     ]
   }
 }

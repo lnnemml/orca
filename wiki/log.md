@@ -14233,3 +14233,28 @@ Settled the Open item of ADR-027 M3a (rule #10): does a `COMMIT` of a `BEGIN IMM
     Both are covered by tests and controls.
   - **Side observation, not this unit.** The server's memory estimate for that 6-atom SP was 56.4 GiB (24 ranks × `%maxcore` 2300). The `%maxcore` proposal for uni may be worth a look.
 - **M4 is complete:** ROADMAP M4b `[x]`, M4 `[x]`. **Next:** M5, the live research gate. First, Anton adds this repository's deny rule.
+
+## [2026-11-23] decision | ADR-027 M4c amendment — a proposal keeps its target, accepted
+- **What.** The ADR-027 M4c amendment ("Amendment (2026-11-23) — M4c: a proposal keeps its target"),
+  accepted by Anton. It answers a defect found at the start of M5: the research session's 9 GOAT
+  jobs for uni came back PROPOSED (P1) with a `%maxcore` fitted for uni (2300 MiB), but the draft did
+  not store its target, so the Jobs row's only Run went local (8–12 ranks × 2300 MiB on a 15 GB laptop).
+- **Anton's forks:**
+  - the target is stored on the draft (schema v25 `jobs.mcp_target`, written by step A);
+  - drafts from before v25 (`origin = 'mcp'`, `mcp_target` NULL) are not runnable: delete and ask
+    Claude again. Anton deleted the 9 GOAT drafts; one older test draft remains.
+- **What it sets.** Run goes only to the stored target ("Run on <name>" / "Run locally"); `submit_job`
+  refuses a mismatched target, a deleted profile and a legacy MCP draft; `requested_target` joins
+  `get_job`/`list_jobs`, and both it and `target_profile_id` are documented in the tool description
+  consts Claude reads. One unit, M4c (Part A `opus` + Part B + live gate).
+- **DESIGN reviews:**
+  - **r1** PASS WITH FINDINGS (6 MED, 8 LOW, 5 INFO): the pointers into ADR-024 o20.2/o26.13.1 and
+    ADR-027 decisions 3/5, the CHECK and the `target >= 25` gate, the backup before Part A.
+  - **r2** PASS WITH FINDINGS (2 MED, 6 LOW, 3 INFO): a raw-text control that could not go red; the
+    `target_profile_id` fix on a doc comment the client never sees.
+  - **r3** (narrow) PASS WITH FINDINGS (1 LOW: the legacy case in `requested_target`'s description).
+  - **r4** PASS.
+- **Also in this commit:** Anton's `.claude/settings.json` deny rule on `mcp__orcastudio__*` (M4
+  amendment item 1), the M5 precondition.
+- **Before Part A:** `tauri dev` stopped and the DB backed up (`orcastudio.db.bak-2026-11-23-pre-m4c`).
+- **Next:** M4c Part A.

@@ -223,7 +223,7 @@ Every `create_job` call ends in exactly one of three outcomes:
 | disposition | what happens | who spends compute |
 |---|---|---|
 | **REFUSED** | nothing is created; the tool returns the reasons | nobody |
-| **PROPOSED** | a `Draft` job with `origin = 'mcp'` and its reasons; Jobs shows it with a "Claude proposes" badge and the reasons | Anton, by pressing Run (the existing draft path) |
+| **PROPOSED** | a `Draft` job with `origin = 'mcp'` and its reasons; Jobs shows it with a "Claude proposes" badge and the reasons | Anton, by pressing Run (the existing draft path; qualified by the M4c amendment: it runs on the target Claude asked for) |
 | **SUBMITTED** | the job is created and submitted to the requested target under the active grant | the grant |
 
 The disposition comes from **`classify_mcp_job`**, a pure function. Its inputs are:
@@ -416,7 +416,7 @@ in the future. The grant create and revoke commands are Rust, owned by M1b.
 first wins: a job charged before the revoke proceeds, and none is charged after it. Revoking does
 not cancel running jobs.
 
-**When Anton runs a PROPOSED job.** It is not charged to any grant, and it keeps `origin = 'mcp'`.
+**When Anton runs a PROPOSED job** (on its stored target: M4c amendment, item 3). It is not charged to any grant, and it keeps `origin = 'mcp'`.
 Claude may cancel it (decided by Anton). The panel's "Cancel Claude's jobs" acts on every
 `origin = 'mcp'` job in `queued`, `running` or `cancelling`, through `cancel_job_core` per job. A
 `Draft` cannot be cancelled (`local_backend.rs:563–566`).
@@ -477,7 +477,7 @@ stands in for it.
 | tool | kind | reuses | notes |
 |---|---|---|---|
 | `list_jobs` | read | `list_jobs_conn` | filters: status, origin, group; paged |
-| `get_job` | read | `get_job_conn` | status, **header and atom count, never the coordinate block**, charge and multiplicity with their source, notices, error, `origin`, reasons, `grant_id`, `mcp_state` |
+| `get_job` | read | `get_job_conn` | status, **header and atom count, never the coordinate block**, charge and multiplicity with their source, notices, error, `origin`, reasons, `grant_id`, `mcp_state` (and `requested_target`: M4c amendment, item 5) |
 | `get_results` | read | `results::read_job_results` | a bounded summary with units in the field names (rule #11): energy (Eh), `converged`, imaginary-mode count and values (cm⁻¹), thermochemistry, scan profile, NEB summary |
 | `get_geometry` | read | the source readers of (4) | xyz with charge and multiplicity and their source. Refused above 600 atoms, with a pointer to `measure` |
 | `measure` | read | `xtb::distance`/`angle`/`dihedral` | distance, angle or dihedral by 0-based indices on a source. A number for the model to **quote**, not compute. Cross-checked against ASE on fixtures |
@@ -601,7 +601,7 @@ These items are not designed here. Each needs its own ADR, written from Stage-1 
 - **A new module page, `wiki/modules/mcp-server.md`**, written in M1a.
 - **[ADR-014](adr-014-ai-integration-boundary.md)** gets the amendment pointer. **`ROADMAP.md`**
   lists units M0–M5.
-- **No change** to ADR-024's state machine, to the backends, or to the UI's own Create/Run paths,
+- **No change** (qualified by the M4c amendment: an MCP draft's Run goes to its stored target) to ADR-024's state machine, to the backends, or to the UI's own Create/Run paths,
   apart from the `mcp_state` display.
 
 ## Open questions
@@ -1548,7 +1548,8 @@ The code anchors are at `91daa94`.
      `grant_id IS NULL` and `mcp_state IS NULL`.
      - The row shows the first reason; the job detail shows the full list.
      - A pure helper parses them. Malformed JSON shows as "reasons unreadable" and never throws.
-   - **Submitting.** On a job with `mcp_state = 'submitting'`, Run is replaced by a disabled "Claude
+   - **Submitting** (an MCP draft's Run otherwise goes to its stored target: M4c amendment, item 3).
+     On a job with `mcp_state = 'submitting'`, Run is replaced by a disabled "Claude
      is submitting". The `submit_job` refusal stays as the backstop.
      (decided by Anton, 2026-11-23) Delete is hidden for a submitting draft, and every job-delete
      command refuses while `mcp_state = 'submitting'`; a job stuck there after a crash becomes
@@ -1647,3 +1648,195 @@ The code anchors are at `91daa94`.
       mount (M4b: the `groups:changed` listener);
     - `wiki/modules/frontend.md`, the `JobsScreen` description (M4b: the badge, the reasons and
       "Claude is submitting").
+
+## Amendment (2026-11-23) — M4c: a proposal keeps its target
+
+**Status:** Accepted (Anton, 2026-11-23).
+- Anton decided two forks on 2026-11-23: the target is stored on the draft (item 2), and drafts from
+  before v25 are not runnable (item 4).
+- DESIGN round 1 was PASS WITH FINDINGS (6 MED, 8 LOW, 5 INFO), all applied.
+- DESIGN round 2 was PASS WITH FINDINGS (2 MED, 6 LOW, 3 INFO), all applied.
+- DESIGN round 3 (narrow) was PASS WITH FINDINGS (1 LOW), applied.
+
+The decision text above stands, except where an item below says it replaces or qualifies a sentence.
+The code anchors are at `7b6c3a5`.
+
+**What this qualifies:**
+- **ADR-024 o20.2** ("a run target is chosen only through Create & Run") and **o26.13.1** ("Create
+  Job makes a draft that can only ever run locally"). An MCP draft is the exception: it runs on the
+  target Claude asked for.
+- **Decision 3's PROPOSED row** ("Anton, by pressing Run (the existing draft path)").
+- **Decision 5's "When Anton runs a PROPOSED job"** and the **Consequences' "No change … to the UI's
+  own Create/Run paths"**.
+- **The M4 amendment, item 6** (Run for a draft).
+- **Decision 7's tool table**, the `get_job` row (its field list gains `requested_target`).
+
+Each of these carries a pointer here.
+
+1. **The defect, found at the start of M5 (2026-11-23).** The research session asked for 9 GOAT
+   jobs with `target` = the uni profile. All 9 came back PROPOSED (P1, a new species).
+   - **The target is not stored.**
+     - `create_job` fits `%maxcore` for the requested target (`mcp/create_job.rs`, `assemble_for` →
+       `preflight::mcp_maxcore`, and `memory_verdict_for`) and writes it into the input.
+     - The draft does not keep that target. Only `stamp_proposed` and `charge_in_tx` write
+       `origin = 'mcp'`, and neither stores it.
+     - The read tools' `target_profile_id` is `jobs.backend_id` (`mcp/tools/jobs.rs`), which only a
+       remote submit writes.
+   - **The Jobs screen cannot run it there.** The row's Run is `onOpenDetail(id, true)` with no target
+     (`JobsScreen.tsx`). `App.openDetail` defaults `runTarget` to null, so the detail's auto-run
+     submits `target: null`, which means local.
+   - **The consequence.** Anton's only click would run a `%maxcore` fitted for uni (2300 MiB, read
+     from the 9 drafts' stored inputs) with the local rank count. That is 8 ranks under the default
+     Interactive preset (`cpu_presets.rs`; `wiki/orca/performance.md`) and 12 under Max throughput.
+     The resulting `%maxcore` budget is about 18 GiB (or 27 GiB) on a 15 GB laptop
+     (`performance.md`). `%maxcore` is a per-rank budget, not a measured footprint.
+   - **The rule this sets.** A proposal must run where Claude assembled it, or not at all.
+   - **What is already correct.** Step B of a SUBMITTED job already passes the same target that
+     `%maxcore` was fitted for (`submit_charged_with`). The defect is in PROPOSED drafts, and in a
+     SUBMITTED job turned PROPOSED by a step-C refund or the reconciliation.
+2. **The target is stored (decided by Anton).**
+   - **The column.** Schema v25 adds
+     `jobs.mcp_target TEXT CHECK (mcp_target IS NULL OR (origin = 'mcp' AND mcp_target <> ''))`.
+     - It follows the v20 form: a guarded ALTER (`column_exists`), and a CHECK that names only its
+       own column and an earlier one (`origin`).
+     - The v25 arm is gated on `target >= 25`, so a v24 fixture can be built with `migrate_to(conn, 24)`.
+     - The column is not NOT NULL for `origin = 'mcp'`, because the existing rows stay NULL (item 4).
+   - **The value.** It is `target_text` of the `Target` that step A classified: `local`, or a
+     profile id the preflight found. An unknown profile is already `NotFound` in the preflight,
+     before step A. (`target_text(&target_of(x)) == x` for every accepted `x`, so the stored text
+     equals Claude's argument byte for byte; what the rule adds is that the profile existed.)
+   - **Who writes it.** Step A writes it, inside the `BEGIN IMMEDIATE` transaction that inserts the
+     job (`decide_with`'s insert, for both PROPOSED and SUBMITTED), from the same `Target` value that
+     `%maxcore` was fitted for.
+     - A REFUSED call inserts no job and writes nothing.
+     - Nothing else writes the column.
+     - A step-C refund and the reconciliation leave it unchanged.
+     - The unused `insert_proposed_conn` is removed, or takes the target. The test fixture
+       `charge_and_insert_with` writes it too.
+   - **No FK.** A deleted profile leaves the value as it is, and the run refuses (item 3). An FK with
+     `ON DELETE CASCADE` on `jobs` would also trip the job-delete pin (M4 amendment, item 6).
+3. **Run goes to the stored target.**
+   - **The row's Run.** For a draft with `origin = 'mcp'` and a non-NULL `mcp_target`, the Run
+     button passes the stored target through `onOpenDetail` to `openDetail(…, runTarget)`. The
+     detail's auto-run submits it. The mapping is `local` → `target: null`, and a profile id is
+     passed as is: `Backend::for_submit(Some("local"))` would look for an ssh profile named "local".
+   - **The label.** The row reads "Run on <the profile's name>", or "Run locally" for `local`. The
+     Jobs screen reads the server profiles in order to name the target.
+   - **No other target is offered.** There are two ways out:
+     - delete the draft and ask Claude again;
+     - use the detail's **New iteration**, which seeds New Job with the input as a **user** job that
+       Anton targets. New Job's `%maxcore` (the seeded value, or the Run-on default if the builder
+       replaces an untouched one) is judged for the chosen target by New Job's memory row. Which of
+       the two it is gets checked at Anton's live gate.
+   - **The order in the row's Run slot:**
+     1. `submitting` (M4 amendment, item 6);
+     2. a legacy draft (item 4) or a deleted profile: a note, and no Run;
+     3. a stored profile that is not a run target (unverified, or its facts cleared by an edit):
+        shown disabled, with the reason, as New Job's select does;
+     4. "Run on <name>".
+   - **The note for a deleted profile:** "its target profile was deleted — delete it and ask Claude
+     again".
+   - **The Rust backstop.** `submit_job` refuses an `origin = 'mcp'` draft whose requested target
+     (`None` = local) differs from its `mcp_target`, with "Claude assembled this job for <target>; run
+     it there, or delete it". It also refuses when the stored profile no longer exists.
+     - The check runs under the same lock as `submittable_job_conn`'s read.
+     - `mcp_target` is written once, in step A, so a check that passes stays true.
+     - `autoRunRefusal` declines the legacy and mismatch cases on the UI side (it gains
+       `runTarget`). A deleted profile is caught by Rust only: the detail does not load profiles.
+   - **Who never reaches the refusal.**
+     - Fan-out child submits (`target: null`: scan, 2D surface, NEB band, connectivity, re-opt) act
+       on fresh **user** jobs, so the refusal never fires for them.
+     - Retry and re-enqueue act on jobs that are no longer drafts.
+   - **Window and reachability.** A stored server target outside its window, or unreachable, behaves
+     like any remote submit today (ADR-024).
+4. **Drafts from before v25 are not runnable (decided by Anton).** An `origin = 'mcp'` draft with
+   `mcp_target` NULL does not record its target on the row. The audit row's `args` does, but there
+   is no backfill.
+   - **The row.** It offers no Run, and shows the note "assembled before targets were stored —
+     delete it and ask Claude again".
+   - **`submit_job`.** It refuses the draft with the same words.
+   - **User drafts.** `origin = 'user'` drafts are unchanged.
+5. **What Claude sees.**
+   - **`requested_target`.** `get_job` and `list_jobs` gain `requested_target`, the stored
+     `mcp_target`.
+   - **Where Claude reads it.** `JobSummary` and `JobView` derive only `Serialize`, so their Rust doc
+     comments never reach the client. What Claude reads is the tool description consts in
+     `mcp/server/read_tools.rs` (`LIST_JOBS`, `GET_JOB`). Both gain the two meanings:
+     - `requested_target`: "where Claude asked it to run: `local` or a profile id; null for a job
+       Claude did not create, or one created before targets were stored (`origin = 'mcp'`; it
+       cannot be run)";
+     - `target_profile_id`: "the server profile it was submitted to; null = not submitted, or ran
+       on this machine (see `remote_host`)".
+
+     Today `LIST_JOBS` says only "target profile" and `GET_JOB` does not mention the target, which
+     leaves an unsubmitted uni draft's `null` ambiguous. The Rust doc comments (`tools/jobs.rs`)
+     are corrected too.
+   - **No new tripwire.** The value is always `local` or an app-minted profile id, so the
+     `list_jobs` rationale that ID fields need no tripwire covers it. The module page names the field
+     there.
+6. **One unit, M4c.**
+   - **Part A** (implementer `opus`: a migration and a compute-shape guard):
+     - the migration;
+     - step A writes the target;
+     - the `submit_job` refusals;
+     - the read-tool field and its docs;
+     - the TS `Job` field;
+     - the pure helpers for the row's Run slot and the submit target.
+   - **Part B:** the row's "Run on <name>", the notes, and the profile read. Anton's live gate follows.
+   - **The real database.** Anton stops `tauri dev` and the database is backed up **before Part A
+     is delegated**. Otherwise a running `tauri dev` would rebuild and migrate it to v25 during the
+     work.
+     - A v24 binary does not panic on a v25 database. It silently ignores `mcp_target` and has no
+       backstop, so no pre-M4c build is run against the migrated database.
+   - **Between Part A and Part B.** The old row's "Run locally" on a uni-targeted MCP draft is
+     refused by `submit_job`. That fails closed.
+7. **Controls.** Each must turn its unit's suite red:
+   - **Writing the target:**
+     - a PROPOSED or SUBMITTED MCP job not storing its target;
+     - the target written outside step A's transaction;
+     - the target written from a constant `Local` instead of the `Target` that `%maxcore` was
+       fitted for;
+     - a stored target that differs from the one `%maxcore` was fitted for: the stored input's
+       `%maxcore` equals `mcp_maxcore(…, stored target)`. The test uses a **server** target whose
+       facts give `mcp_maxcore(server) ≠ mcp_maxcore(local)`, so the equality cannot pass by
+       coincidence;
+     - a step-C refund or the reconciliation clearing it.
+   - **The schema:**
+     - a user row with `mcp_target` accepted;
+     - an MCP row with `mcp_target = ''` accepted;
+     - the migration not idempotent, or not guarded;
+     - a v24 row changed by the v25 arm (a full-row compare).
+   - **Submitting:**
+     - an MCP draft run on a target other than its own accepted;
+     - a legacy MCP draft accepted;
+     - a draft whose profile was deleted accepted;
+     - a user draft refused, or its Run changed.
+   - **The UI:**
+     - the Run click submitting with a target other than `mcp_target`;
+     - the row offering "Run locally" for a uni-targeted MCP draft;
+     - the deleted-profile row offering Run;
+     - a legacy MCP draft's row offering Run;
+     - a non-run-target profile's Run enabled.
+   - **The read tools:**
+     - `requested_target` not exposed;
+     - a test on the `LIST_JOBS` and `GET_JOB` consts: either description saying null means this
+       machine without "not submitted", either saying null means "not Claude's" without the
+       legacy case, or either not naming `requested_target`.
+8. **Pages the unit updates:**
+   - `wiki/modules/mcp-server.md`: step A, the read tools, the sentence "the proposed draft keeps
+     no target of its own: Anton chooses one at Run" (now false), and the list of ID fields in the
+     tripwire paragraph.
+   - `wiki/modules/tauri-core.md`: `submit_job`'s refusals, and the schema version list.
+   - The schema notes in `db.rs`.
+   - `wiki/modules/frontend.md`: the Jobs row ("Run locally for a draft"; "every other draft gets
+     `run_locally`").
+   - `wiki/modules/remote-jobs.md`: "a run target is chosen only through Create & Run".
+   - The code comments `JobsScreen.tsx` (Run → detail) and `remote.ts` (`rowActions`: "a draft runs
+     locally or is deleted").
+   - **At acceptance** (in the commit that accepts this amendment): `ROADMAP.md` gains the M4c line
+     and marks M5's precondition (Anton's `mcp__orcastudio__*` deny rule) done; `wiki/index.md`'s
+     ADR-027 line names the amendment; `wiki/log.md` gains a `decision` entry.
+9. **Accepted limits.**
+   - **The stored target pins a profile id, not the host facts.** Editing the profile, or changing
+     the local CPU preset, leaves the fitted `%maxcore` stale, as it does for any draft today. A
+     remote submit still prints its memory notice.
