@@ -248,6 +248,18 @@ export interface Job {
    *  period and submits it once the slot frees. SQLite `datetime('now')` — **UTC, laptop clock**:
    *  shown through `formatLaptopUtc`, never raw. */
   submit_pending_since: string | null;
+  /** Who created the job (schema v24, ADR-027 decision 5): `"user"` (Anton) or `"mcp"` (Claude,
+   *  through the MCP server). Only `"mcp"` earns the Claude badge — read `isClaudeJob`
+   *  (`src/jobs/claude.ts`), never this field directly. */
+  origin: "user" | "mcp";
+  /** The JSON **text** of `[{row, message}]` — why a PROPOSED draft was not run (ADR-027 decision
+   *  5), or null. Never parse it inline: `parseJobReasons` (`src/jobs/claude.ts`) cannot throw. */
+  mcp_reasons: string | null;
+  /** The MCP grant that paid for this job, or null. A PROPOSED draft has none. */
+  grant_id: string | null;
+  /** `"submitting"` while Claude's `create_job` is between its step A and step C (the charged draft
+   *  is on its way to a backend), else null. The only value Rust writes. */
+  mcp_state: "submitting" | null;
 }
 
 /** Mirrors `src-tauri/src/models/group.rs::Group` (schema v16, Phase 4.7.2, ADR-019).

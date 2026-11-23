@@ -90,7 +90,7 @@ PROPOSED (P5). Nothing reaches SUBMITTED by default.
 | `server/create_job_tool.rs` | `create_job` registered (`#[tool_router(router = create_job_router)]`): `CREATE_JOB_DESCRIPTION`, `CreateJobToolArgs` (`deny_unknown_fields`). Tests in `server/create_job_tool_tests.rs` |
 | `server/m3b_tools.rs` | `cancel_job`, `create_group` and `wait_for_jobs` registered (`#[tool_router(router = m3b_tools_router)]`): `CANCEL_JOB_DESCRIPTION`, `CREATE_GROUP_DESCRIPTION`, `WAIT_FOR_JOBS_DESCRIPTION`, the argument structs (`CancelJobToolArgs`, `CreateGroupToolArgs`, `WaitForJobsToolArgs`; `deny_unknown_fields`); the seam `CancelWorld` (`run(CancelCall)`), `Dispatch`, `cancel_in`, `wait_answer`, `CONNECTION_CLOSED`. Tests in `server/m3b_tools_tests.rs` |
 | `server/lifecycle.rs` | `McpLifecycle` (`tick_step`, `set_enabled`, `status`, `on_exit_requested`, `gate`, `is_exiting`), the pure `decide` and `pass_through`; `LifecycleEnv` (`production(db, host, write_seams)`, `production_at(db, paths, host, write_seams)`; its `host` reaches every connection's service, and with `db` and `write_seams` it makes the one `CreateJobEnv`), `Hooks`, `Observed`, `Action`, `Why`, `McpStatus` (with `reads`), `ExitDecision`, `Executor` (`BlockingPool`), `ExitSteps`, `StopHandle`; `with_busy_timeout`, `RECONCILE_BUSY_TIMEOUT` (250 ms) |
-| `server/wiring.rs` | the app's side: `ManagedDb` (the `DbSource` over the managed `DbState`), `wired_lifecycle(db, paths, host, write_seams)`, `app_lifecycle(app, data_dir)`, `start_ticks`; the write tools' app seams `app_write_seams(app)`: `AppSubmitWorld` (`SubmitWorld`), `AppEmit` (`StatusEmit`), `AppSmiles` (`SmilesTo3d`), `APP_NOT_READY`; `cancel_job`'s world `AppCancelWorld` (`CancelWorld`: `poller_is_managed`, then `with_poller` + `commands::jobs::dispatch_cancel`), `CANCEL_NOT_READY`; `exit_requested`, `handle_exit_request`, the pure `prevents_exit`, `guarded_steps`, `backstop`/`run_backstop`/`backstop_steps` → `Backstop` (`Hung`/`Died`/`StillAlive`), `hard_end` (`libc::_exit(1)`), `BackstopTimings`, `EXIT_FLOW_DEADLINE` (60 s), `EXIT_GRACE` (10 s), `BACKSTOP_STEPS_DEADLINE` (20 s); `is_relay_invocation`, `relay_main` |
+| `server/wiring.rs` | the app's side: `ManagedDb` (the `DbSource` over the managed `DbState`), `wired_lifecycle(db, paths, host, write_seams)`, `app_lifecycle(app, data_dir)`, `start_ticks`; the write tools' app seams `app_write_seams(app)`: `AppSubmitWorld` (`SubmitWorld`), `AppEmit` (`StatusEmit`: `job:status` and `groups:changed`, `GROUPS_CHANGED`), `AppSmiles` (`SmilesTo3d`), `APP_NOT_READY`; `cancel_job`'s world `AppCancelWorld` (`CancelWorld`: `poller_is_managed`, then `with_poller` + `commands::jobs::dispatch_cancel`), `CANCEL_NOT_READY`; `exit_requested`, `handle_exit_request`, the pure `prevents_exit`, `guarded_steps`, `backstop`/`run_backstop`/`backstop_steps` → `Backstop` (`Hung`/`Died`/`StillAlive`), `hard_end` (`libc::_exit(1)`), `BackstopTimings`, `EXIT_FLOW_DEADLINE` (60 s), `EXIT_GRACE` (10 s), `BACKSTOP_STEPS_DEADLINE` (20 s); `is_relay_invocation`, `relay_main` |
 | `server/tick.rs` | `run_ticks(lifecycle, interval)`, `Interval`, `Every`, `TICK = 30 s` |
 | `server/relay.rs` | `relay(stdin, stdout, stderr, socket_path) -> RelayEnd` (`From<RelayEnd> for ExitCode`), `NOT_RUNNING` |
 | `server/*_tests.rs`, `server/test_support.rs` | one test file per submodule plus `server_tests.rs` (the server end to end over a real socket), `read_tools_tests.rs` (the read tools end to end, over a recording `DbSource`) and `create_job_tool_tests.rs` (`create_job` end to end); `test_support` has the scratch dir and DB, a counting environment, `no_write_seams()` (seams for a test that does not exercise a write tool) and a raw NDJSON MCP client (`call`, `call_and_wait`) |
@@ -423,7 +423,7 @@ holder's reconciliation recovers it (a `draft` refunded, any other row only its 
 **The seams** (`CreateJobEnv`): `db` (`DbSource`), `smiles` (`SmilesTo3d`), `host` (`HostPaths`:
 `/proc/meminfo` and the data dir), `step_b` (`StepB`: submit a charged draft through the app's existing
 path and answer `StepBOutcome::Handed(msg)` or `Refused(msg)`; step C reads the row, not this), and
-`emit` (`StatusEmit`). The lifecycle builds the one `CreateJobEnv` from its own `db` and `host` and the
+`emit` (`StatusEmit`: `job_status` for `create_job`, `groups_changed` for `create_group`). The lifecycle builds the one `CreateJobEnv` from its own `db` and `host` and the
 environment's `WriteSeams`, and hands it, with its gate, to every connection's service
 (`WriteWiring`). The app's seams (`wiring::app_write_seams`) are `RealStepB` over `AppSubmitWorld`
 (below, "Step B"), `AppEmit` (`local_backend::emit_status`, the app's one `job:status` emitter) and
@@ -655,7 +655,26 @@ which `m3b_tools_tests::every_m3b_tools_work_runs_on_the_blocking_pool` checks t
     job (the record write, the delivery), and `local_backend::cancel` for a local one (`emit_status`
     for a queued job; `drive_job` when a running one exits).
 - **`create_group`** runs its core under `DbState`, locked once on the blocking pool
-  (`McpService::with_db`). The app's `create_group` command emits nothing, so neither does the tool.
+  (`McpService::with_db`). Once the core has returned `Ok`, so the transaction is committed and the
+  guard is dropped, the tool emits the payload-free **`groups:changed`** so an open Jobs screen reloads
+  its groups (M4 amendment, item 7).
+  - **The path.** The service has no `AppHandle`, so the event goes through the emit seam the
+    environment already carries: `StatusEmit::groups_changed()`, beside `job_status`
+    (`create_job.rs`), read as `self.write_wiring.env.emit`. The app's `AppEmit` sends the event named
+    by `wiring::GROUPS_CHANGED` (`"groups:changed"`) with no payload (`app.emit(GROUPS_CHANGED, ())`,
+    best effort like `emit_status`). The tool's call is `announce_groups_changed`, which runs the emit
+    under `catch_unwind`: the group is already committed, so a panicking emit costs one stderr line,
+    never the answer.
+  - **When.** After `with_db` returns, on the handler's task. Nothing is emitted for a refused name, an
+    unknown parent, or an insert that fails (its transaction rolled back with its audit row).
+  - **What stays.** The app's own `create_group` command is unchanged and emits nothing: its caller
+    already reloads.
+  - **Tests.** `m3b_tools_tests` serves the tool over the socket with a recording emit
+    (`GroupsRecorder`) that observes, from inside the emit, whether `DbState` can be locked and what a
+    second connection sees committed: `create_group_announces_a_created_group_after_the_commit_and_the_lock`,
+    `create_group_announces_nothing_for_a_refused_or_failed_insert` (a blank name, an unknown parent, and
+    an insert a trigger aborts), `a_panicking_groups_emit_is_contained`. The app's emitter, which needs
+    an `AppHandle`, is pinned in `wiring_tests::the_app_emits_groups_changed_with_no_payload`.
 - **`wait_for_jobs`** awaits its core on the handler's task with `&self.conn.closed`, a
   `DbStatusReader` over the service's `DbSource`, a `TokioClock` and `WAIT_TICK`.
   - **The permit.** `call_tool` holds the call's permit until the handler returns. Once the client
@@ -1459,8 +1478,9 @@ Two choices go beyond the clarifications, and each can only move a job toward An
 
 ## Not yet wired
 
-- **M4b:** the Jobs screen's Claude badge, a PROPOSED job's reasons, "Claude is submitting" in place
-  of Run, and `groups:changed` from `create_group`.
+- **M4b Part B:** the Jobs screen's rendering of the Claude badge, a PROPOSED job's reasons and
+  "Claude is submitting" in place of Run, and its `groups:changed` listener. The Rust emit and the
+  pure TypeScript (`src/jobs/claude.ts`, `src/jobs/groups-changed.ts`) are in place (M4b Part A).
 
 ## Tests
 
@@ -1488,5 +1508,5 @@ Part B list and the follow-up's in their entries (2026-11-21), and the M3a Part 
 their entries (2026-11-21; the scripts that re-run them are named there), and the M3b Part A and
 Part B lists in their entries (2026-11-21), the M4a Part A list in its entry (2026-11-21; script
 `m4a_parta_controls.py`) and the M4a Part B list in its entry (2026-11-21; script
-`m4a_partb_controls.py`). The ASE
-pin is `pytest sidecar/tests/test_geometry.py` (in the sidecar venv).
+`m4a_partb_controls.py`) and the M4b Part A list in its entry (2026-11-22; script
+`m4b_parta_controls.py`). The ASE pin is `pytest sidecar/tests/test_geometry.py` (in the sidecar venv).

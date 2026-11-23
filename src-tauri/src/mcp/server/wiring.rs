@@ -36,7 +36,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use super::create_job_task::WriteSeams;
 use super::m3b_tools::{CancelCall, CancelWorld};
@@ -178,12 +178,22 @@ impl SmilesTo3d for AppSmiles {
     }
 }
 
-/// `job:status`, through the app's one emitter (`local_backend::emit_status`).
+/// The write tools' events over the app: `job:status`, through the app's one emitter
+/// (`local_backend::emit_status`), and the payload-free `groups:changed` ([`GROUPS_CHANGED`]).
 pub struct AppEmit(pub AppHandle);
+
+/// The event `create_group` emits once its group is committed. It carries no payload: the Jobs screen
+/// reloads `list_groups`, the same read it runs on mount.
+pub const GROUPS_CHANGED: &str = "groups:changed";
 
 impl StatusEmit for AppEmit {
     fn job_status(&self, job_id: &str, status: JobStatus) {
         local_backend::emit_status(&self.0, job_id, status);
+    }
+
+    fn groups_changed(&self) {
+        // Best effort, like `emit_status`: a window that is gone is not an error of the tool.
+        let _ = self.0.emit(GROUPS_CHANGED, ());
     }
 }
 

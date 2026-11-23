@@ -6,8 +6,9 @@
  *   moment of Create.
  * - **A custom value** is split by a strict regex into its components and built with
  *   `new Date(y, m - 1, d, h, min)`; **never `new Date(string)`**, whose parse of a local form is
- *   engine-defined. So a WebKitGTK that renders `datetime-local` as plain text fails safe: anything
- *   but the strict form is refused.
+ *   engine-defined. The value comes from `composeExpiryChoice` (`McpGrantEditor.tsx`: the date field plus the hour
+ *   and minute selects), but the strict form is enforced here, so a malformed text fails safe:
+ *   anything but the strict form is refused.
  * - **The round-trip check (rule #9).** The built instant must read back as the same local
  *   components. A time skipped by a spring-forward change does not, whatever the engine resolved it
  *   to, and is refused: "does not exist — DST".
@@ -106,7 +107,7 @@ export function presetExpiry(preset: ExpiryPreset, now: Date): ResolvedExpiry {
   return resolved(new Date(now.getTime() + span.ms));
 }
 
-/** `YYYY-MM-DDTHH:MM` (the `datetime-local` value; a space for the `T` is accepted), optionally `:00`. */
+/** `YYYY-MM-DD HH:MM` (what `composeExpiryChoice` builds from the date field and the hour and minute selects; a `T` for the space is accepted), optionally `:00`. */
 const LOCAL_DATETIME = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(00))?$/;
 
 /** A custom local date and time, strictly parsed, built from components, and round-trip checked. */

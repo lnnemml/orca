@@ -1525,7 +1525,9 @@ The code anchors are at `91daa94`.
        offset it picks. The gate still observes both. vitest runs V8.
        (Settled at the M4a live gate, 2026-11-22: WebKitGTK's `datetime-local` picker hangs; decided
        by Anton, the custom time is a text date + hour/minute selects, composed into the same strict
-       helper.)
+       helper. JavaScriptCore's choice of offset in the repeated hour was not recorded; by design none
+       is needed: the shown offset is honest whatever offset the engine picks
+       (`log.md`, 2026-11-22, the M4a Part B entry).)
    - **Replacing a grant.** Creating a grant revokes the active one (decision 5). Whether to confirm
      "this replaces the active grant" is decided from a fresh `mcp_get_grant` read at the click, not
      from the form's snapshot.

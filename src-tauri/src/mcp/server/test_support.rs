@@ -144,6 +144,8 @@ pub struct NoEmit;
 
 impl StatusEmit for NoEmit {
     fn job_status(&self, _: &str, _: JobStatus) {}
+
+    fn groups_changed(&self) {}
 }
 
 /// A `cancel_job` world for a test that does not exercise it: every call is refused.

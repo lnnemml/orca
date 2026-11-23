@@ -37,6 +37,10 @@ function waitingJob(over: Partial<Job> = {}): Job {
     cancel_requested_at: null,
     cancel_sent_at: null,
     submit_pending_since: "2026-10-19 08:30:00",
+    origin: "user",
+    mcp_reasons: null,
+    grant_id: null,
+    mcp_state: null,
     ...over,
   };
 }

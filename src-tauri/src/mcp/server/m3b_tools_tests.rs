@@ -10,14 +10,18 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use rusqlite::Connection;
+
 use serde_json::{json, Value};
 
 use super::create_job_task::WriteSeams;
 use super::lifecycle::{Hooks, LifecycleEnv, McpLifecycle};
 use super::listener::{kernel_peer_uid, own_uid};
-use super::m3b_tools::{CancelCall, CancelWorld, CANCEL_JOB_DESCRIPTION, CREATE_GROUP_DESCRIPTION, WAIT_FOR_JOBS_DESCRIPTION};
+use super::m3b_tools::{
+    announce_groups_changed, CancelCall, CancelWorld, CANCEL_JOB_DESCRIPTION, CREATE_GROUP_DESCRIPTION, WAIT_FOR_JOBS_DESCRIPTION,
+};
 use super::service::{ConnState, HostPaths, INSTRUCTIONS, RECOVERY_SENTENCE};
-use super::test_support::{eventually, where_am_i, Client, NoEmit, NoStepB, Ran, RecordingDb, Scratch};
+use super::test_support::{eventually, where_am_i, Client, NoStepB, Ran, RecordingDb, Scratch};
 use super::CONNECTIONS;
 use crate::commands::settings::DbState;
 use crate::error::AppError;
@@ -25,6 +29,7 @@ use crate::execution_backend::FetchPolicy;
 use crate::in_flight::InFlight;
 use crate::mcp::audit::audit_rows_conn;
 use crate::mcp::cancel::{CancelJobResult, SUBMITTING_REFUSED};
+use crate::mcp::create_job::StatusEmit;
 use crate::mcp::create_job_test_support::NoSidecar;
 use crate::mcp::steps::reconcile_submitting_conn;
 use crate::mcp::test_db::{grant, TestDb};
@@ -91,8 +96,56 @@ impl CancelWorld for ScratchCancel {
     }
 }
 
+/// What the database looked like at the moment of one `groups:changed` emit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GroupsSeen {
+    /// `DbState` could be locked from inside the emit: the tool had released it.
+    lock_free: bool,
+    /// `groups` rows another connection sees: committed ones only (-1: the read failed).
+    groups_committed: i64,
+    /// `mcp_audit` rows of `create_group` another connection sees.
+    audit_committed: i64,
+}
+
+/// The emit seam of the served app: records every `groups:changed` with [`GroupsSeen`], taken inside
+/// the call. The observer is its own connection, so an uncommitted insert is invisible to it.
+struct GroupsRecorder {
+    state: Arc<DbState>,
+    observer: Mutex<Connection>,
+    seen: Mutex<Vec<GroupsSeen>>,
+    job_status: Mutex<Vec<String>>,
+}
+
+impl GroupsRecorder {
+    fn new(state: Arc<DbState>, observer: Connection) -> Self {
+        Self { state, observer: Mutex::new(observer), seen: Mutex::new(Vec::new()), job_status: Mutex::new(Vec::new()) }
+    }
+
+    fn seen(&self) -> Vec<GroupsSeen> {
+        self.seen.lock().unwrap().clone()
+    }
+}
+
+impl StatusEmit for GroupsRecorder {
+    fn job_status(&self, job_id: &str, _: JobStatus) {
+        self.job_status.lock().unwrap().push(job_id.to_string());
+    }
+
+    fn groups_changed(&self) {
+        let lock_free = self.state.0.try_lock().is_ok();
+        let observer = self.observer.lock().unwrap();
+        let count = |sql: &str| observer.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap_or(-1);
+        self.seen.lock().unwrap().push(GroupsSeen {
+            lock_free,
+            groups_committed: count("SELECT COUNT(*) FROM groups"),
+            audit_committed: count("SELECT COUNT(*) FROM mcp_audit WHERE tool = 'create_group'"),
+        });
+    }
+}
+
 struct Served {
     db: TestDb,
+    groups: Arc<GroupsRecorder>,
     cancel: Arc<ScratchCancel>,
     /// The service's `DbSource`, recording where each touch ran.
     recording: Arc<RecordingDb>,
@@ -123,6 +176,7 @@ fn served(tag: &str, seed: impl FnOnce(&TestDb)) -> Served {
         dispatched: Mutex::new(Vec::new()),
         ran: Mutex::new(Vec::new()),
     });
+    let groups = Arc::new(GroupsRecorder::new(state.clone(), db.open_another()));
     let scratch = Scratch::new(tag);
     let env = LifecycleEnv {
         paths: Ok(scratch.paths()),
@@ -135,7 +189,7 @@ fn served(tag: &str, seed: impl FnOnce(&TestDb)) -> Served {
         write_seams: WriteSeams {
             smiles: Arc::new(NoSidecar),
             step_b: Arc::new(NoStepB),
-            emit: Arc::new(NoEmit),
+            emit: groups.clone(),
             cancel: cancel.clone(),
         },
     };
@@ -148,7 +202,7 @@ fn served(tag: &str, seed: impl FnOnce(&TestDb)) -> Served {
     db.conn.execute("UPDATE jobs SET mcp_state = 'submitting' WHERE id = 'd2'", []).unwrap();
     db.conn.execute("UPDATE mcp_grants SET charged_jobs = 1 WHERE id = ?1", [&g]).unwrap();
     recording.take();
-    Served { db, cancel, recording, scratch, lc }
+    Served { db, groups, cancel, recording, scratch, lc }
 }
 
 impl Served {
@@ -318,6 +372,74 @@ fn create_group_creates_a_group_with_its_row() {
     assert!(is_error && text.contains("empty"), "{text}");
     let rows = audit_rows_conn(&s.db.conn).unwrap();
     assert_eq!(rows.iter().map(|r| r.tool.as_str()).collect::<Vec<_>>(), ["create_group", "create_group"]);
+}
+
+/// `groups:changed` (M4 amendment, item 7): a created group is announced once, after its transaction
+/// committed and with `DbState` released (the recorder reads both from inside the emit, through a
+/// second connection). Tags `GROUPS-EMIT` (the tool not emitting), `GROUPS-AFTER-COMMIT` (the emit
+/// before the call), `GROUPS-LOCK-FREE` (the emit while `DbState` is held).
+#[test]
+fn create_group_announces_a_created_group_after_the_commit_and_the_lock() {
+    let s = served("m3b-groups-emit", |_| {});
+    let mut c = s.client();
+    assert_eq!(s.groups.seen(), vec![], "nothing is emitted before a group exists");
+    let (text, is_error) = c.call_and_wait(10, "create_group", json!({ "name": "SN2 study" }));
+    assert!(!is_error, "{text}");
+    let seen = s.groups.seen();
+    assert_eq!(seen.len(), 1, "GROUPS-EMIT: a created group emits groups:changed once: {seen:?}");
+    assert!(seen[0].lock_free, "GROUPS-LOCK-FREE: DbState was held during the emit: {seen:?}");
+    assert_eq!(
+        (seen[0].groups_committed, seen[0].audit_committed),
+        (1, 1),
+        "GROUPS-AFTER-COMMIT: the group and its audit row were not committed when the event fired: {seen:?}"
+    );
+    let (_, is_error) = c.call_and_wait(11, "create_group", json!({ "name": "child", "parent_id": json_of(&text)["group_id"] }));
+    assert!(!is_error);
+    assert_eq!(s.groups.seen().len(), 2, "each created group emits once");
+    assert_eq!(s.groups.job_status.lock().unwrap().len(), 0, "create_group emits no job:status");
+}
+
+/// Nothing is announced for a group that was not created: a blank name and an unknown parent are
+/// refused before or inside the transaction, and an insert that fails inside it (a trigger aborts it
+/// here) rolls back with its audit row. Once the trigger is gone the same call is announced, so the
+/// silence above is the refusal's and not the fixture's. Tag `GROUPS-NO-EMIT-ON-FAILURE`.
+#[test]
+fn create_group_announces_nothing_for_a_refused_or_failed_insert() {
+    let s = served("m3b-groups-refused", |_| {});
+    let mut c = s.client();
+
+    let (text, is_error) = c.call_and_wait(10, "create_group", json!({ "name": "   " }));
+    assert!(is_error && text.contains("empty"), "{text}");
+    let (text, is_error) = c.call_and_wait(11, "create_group", json!({ "name": "x", "parent_id": "no-such" }));
+    assert!(is_error && text.contains("does not exist"), "{text}");
+    s.db.conn
+        .execute_batch("CREATE TRIGGER no_groups BEFORE INSERT ON groups BEGIN SELECT RAISE(ABORT, 'insert refused by the test'); END;")
+        .unwrap();
+    let (text, is_error) = c.call_and_wait(12, "create_group", json!({ "name": "doomed" }));
+    assert!(is_error, "the insert failed: {text}");
+    assert_eq!(s.groups.seen(), vec![], "GROUPS-NO-EMIT-ON-FAILURE: a refused or failed insert emitted groups:changed");
+    let groups: i64 = s.db.conn.query_row("SELECT COUNT(*) FROM groups", [], |r| r.get(0)).unwrap();
+    assert_eq!(groups, 0, "the failed insert left nothing behind");
+
+    s.db.conn.execute_batch("DROP TRIGGER no_groups").unwrap();
+    let (text, is_error) = c.call_and_wait(13, "create_group", json!({ "name": "fine" }));
+    assert!(!is_error, "{text}");
+    assert_eq!(s.groups.seen().len(), 1, "the same call, with the trigger gone, is announced");
+}
+
+/// The emit is isolated from a panic (the group is committed; the answer still goes out). Tag
+/// `GROUPS-EMIT-PANIC`.
+#[test]
+fn a_panicking_groups_emit_is_contained() {
+    struct PanicEmit;
+    impl StatusEmit for PanicEmit {
+        fn job_status(&self, _: &str, _: JobStatus) {}
+        fn groups_changed(&self) {
+            panic!("the groups:changed emit panics");
+        }
+    }
+    let r = std::panic::catch_unwind(|| announce_groups_changed(&PanicEmit));
+    assert!(r.is_ok(), "GROUPS-EMIT-PANIC: a panic in the emit escaped the tool");
 }
 
 // ----- wait_for_jobs -----

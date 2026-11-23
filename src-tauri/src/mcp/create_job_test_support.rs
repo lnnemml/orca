@@ -52,6 +52,10 @@ impl StatusEmit for RecordingEmit {
             f();
         }
     }
+
+    fn groups_changed(&self) {
+        panic!("create_job never emits groups:changed");
+    }
 }
 
 impl RecordingEmit {

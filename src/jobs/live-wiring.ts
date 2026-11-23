@@ -64,7 +64,7 @@ export interface ListenerScope {
   dispose(): void;
 }
 
-export function createListenerScope(bridge: Bridge): ListenerScope {
+export function createListenerScope(bridge: Pick<Bridge, "listen">): ListenerScope {
   let disposed = false;
   const attached: UnlistenFn[] = [];
   return {

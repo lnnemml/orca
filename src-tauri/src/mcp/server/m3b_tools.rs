@@ -11,8 +11,11 @@
 //!   by the same code (the poller's `AppSink` for a server job; `local_backend::cancel` for a local
 //!   one).
 //! - **`create_group`** runs its core under `DbState`, locked once on the blocking pool
-//!   (`McpService::with_db`). The app's own `create_group` command emits nothing, so neither does
-//!   this.
+//!   (`McpService::with_db`). Once the core has returned `Ok`, so the transaction is committed and the
+//!   guard dropped, it emits the payload-free `groups:changed` ([`announce_groups_changed`], through
+//!   the service's emit seam, `StatusEmit::groups_changed`) so an open Jobs screen reloads its groups
+//!   (M4 amendment, item 7). A refused or failed insert emits nothing. The app's own `create_group`
+//!   command is unchanged: its caller already reloads.
 //! - **`wait_for_jobs`** awaits its core on the handler's task with the connection's `closed` flag,
 //!   the app's reader ([`DbStatusReader`]: one query per tick on the blocking pool) and clock. The
 //!   call holds one of the connection's permits (`call_tool`) until the handler returns, so a wait
@@ -21,6 +24,7 @@
 //!   still sent through [`respond`], as an error.
 
 use std::collections::BTreeMap;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
@@ -33,6 +37,7 @@ use super::service::{recovery_sentence, McpService};
 use crate::error::AppError;
 use crate::mcp::cancel::{run_cancel_job, CancelJobArgs, CancelJobResult};
 use crate::mcp::create_group::{run_create_group, CreateGroupArgs};
+use crate::mcp::create_job::StatusEmit;
 use crate::mcp::tools::wait::{wait_for_jobs, DbStatusReader, TokioClock, WaitArgs, WaitEnd, WaitResult, WAIT_TICK};
 use crate::mcp::tools::ToolError;
 use crate::models::job::Job;
@@ -133,6 +138,14 @@ pub fn cancel_in(world: &dyn CancelWorld, args: &CancelJobArgs) -> Result<Cancel
     world.run(&mut |poller, dispatch| run_cancel_job(poller, args, dispatch))
 }
 
+/// `groups:changed`, isolated from a panic: the group is already committed, so a failing emit costs
+/// one stderr line and never the tool's answer.
+pub fn announce_groups_changed(emit: &dyn StatusEmit) {
+    if catch_unwind(AssertUnwindSafe(|| emit.groups_changed())).is_err() {
+        eprintln!("[OrcaStudio] mcp: the groups:changed emit panicked; create_group answers anyway");
+    }
+}
+
 /// A wait's end as the tool's answer: the result, or the (unread) closed error.
 pub fn wait_answer(end: Result<WaitEnd, ToolError>) -> Result<WaitResult, ToolError> {
     match end? {
@@ -155,7 +168,14 @@ impl McpService {
     #[tool(description = CREATE_GROUP_DESCRIPTION)]
     async fn create_group(&self, Parameters(a): Parameters<CreateGroupToolArgs>) -> Result<CallToolResult, ErrorData> {
         let args = CreateGroupArgs { name: a.name, parent_id: a.parent_id };
-        Ok(respond("create_group", self.with_db(move |c| run_create_group(c, &args)).await))
+        let emit = self.write_wiring.env.emit.clone();
+        let created = self.with_db(move |c| run_create_group(c, &args)).await;
+        // `with_db` has returned: the transaction is committed and `DbState` released. Only a created
+        // group is announced.
+        if created.is_ok() {
+            announce_groups_changed(&*emit);
+        }
+        Ok(respond("create_group", created))
     }
 
     #[tool(description = WAIT_FOR_JOBS_DESCRIPTION)]

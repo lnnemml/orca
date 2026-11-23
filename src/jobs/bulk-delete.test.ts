@@ -46,6 +46,10 @@ function job(over: Partial<Job> = {}): Job {
     cancel_requested_at: null,
     cancel_sent_at: null,
     submit_pending_since: null,
+    origin: "user",
+    mcp_reasons: null,
+    grant_id: null,
+    mcp_state: null,
     ...over,
   };
 }

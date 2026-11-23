@@ -485,6 +485,18 @@ fn the_app_seams_of_create_job_are_the_real_ones() {
     assert!(status < call, "{smiles}");
 }
 
+/// The app's `groups:changed` (M4b Part A) needs an `AppHandle`, so — like the other seams — it is
+/// pinned in the source: the event is named `groups:changed` (the string the Jobs screen listens for,
+/// `src/jobs/groups-changed.ts`), it carries no payload, and the app's emitter sends it. NEGATIVE
+/// CONTROL: the event renamed, or sent with a payload (`APP-GROUPS-EVENT`) → red.
+#[test]
+fn the_app_emits_groups_changed_with_no_payload() {
+    assert_eq!(GROUPS_CHANGED, "groups:changed", "APP-GROUPS-EVENT: the name the Jobs screen listens for");
+    let emitter = wiring_fn("impl StatusEmit for AppEmit", "\n}\n");
+    let body = &emitter[emitter.find("fn groups_changed").expect("the method")..];
+    assert!(body.contains("self.0.emit(GROUPS_CHANGED, ())"), "APP-GROUPS-EVENT: {body}");
+}
+
 /// `cancel_job`'s app world (M3b Part B) needs an `AppHandle`, so its body is pinned in the source:
 /// the app's seams carry it; it checks that the poller's state is managed **before** `with_poller`
 /// (which panics on a missing state), and it cancels through `commands::jobs::dispatch_cancel`, the

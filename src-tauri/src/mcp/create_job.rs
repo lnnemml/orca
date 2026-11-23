@@ -128,10 +128,17 @@ pub trait StepB: Send + Sync {
     fn submit(&self, job_id: &str, target: &Target) -> StepBOutcome;
 }
 
-/// The `job:status` emit (decision 9: step A emits, so Jobs refreshes). Part B implements it over
-/// `local_backend::emit_status`.
+/// The write tools' emit seam: the service has no `AppHandle`, so every event a tool owes the UI goes
+/// through this trait. [`job_status`](StatusEmit::job_status) is `create_job`'s (decision 9: step A
+/// emits, so Jobs refreshes); [`groups_changed`](StatusEmit::groups_changed) is `create_group`'s (M4
+/// amendment, item 7). The app implements both in `server::wiring::AppEmit`.
 pub trait StatusEmit: Send + Sync {
     fn job_status(&self, job_id: &str, status: JobStatus);
+
+    /// `groups:changed`, payload-free: a group was created behind the UI's back, so the Jobs screen
+    /// reloads its groups. The `create_group` tool calls it only after its transaction committed and
+    /// `DbState` was released, and never for a refused or failed insert.
+    fn groups_changed(&self);
 }
 
 /// Everything `create_job` reaches outside its arguments.

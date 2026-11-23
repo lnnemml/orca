@@ -1093,7 +1093,9 @@ for a draft, not for a remote live job — `cancelling` included, whose log the 
 (o16.7, o22.14.8). The remote IPC shapes (`Outcome`, `Label`, `RemoteState` with its `CheckError {
 text, answered }` and its `pending_submit`, `SubmitResponse` with the typed `Refusal`, `StatusStep`
 with `submit_rechecked`, `CancelResult`, `UndoResult`, …) live in `types.ts`; `Job` carries
-`cancel_requested_at` / `cancel_sent_at` (o22.14.5) and `submit_pending_since` (o23.5);
+`cancel_requested_at` / `cancel_sent_at` (o22.14.5), `submit_pending_since` (o23.5) and the four MCP
+fields `origin` (`"user" | "mcp"`), `mcp_reasons` (the JSON **text** of `[{row, message}]`), `grant_id`
+and `mcp_state` (`"submitting" | null`), all required (every `Job` comes from `Job::COLUMNS`);
 `deliveredNotice` maps `submit_rechecked` and the 5.4b steps `lost_swept`, `re_enqueued`,
 `re_enqueue_waiting`, `re_enqueue_refused` (never a delivery's) to no notice — case by case, no
 default. `JobStatus` includes `cancelling` (a remote job whose cancel reached the server while
@@ -1149,6 +1151,37 @@ literal and for any call with `"undo_cancel"` as its first argument (an aliased 
 checks that each screen's `clickCancelFamily` call has exactly the keys `id` and
 `sending`; and that the detail screen imports no `confirm` at all (the Jobs screen's is the delete's). `src/jobs/CancelButtons.tsx` draws the family (used by the Jobs
 row, the panel, and the header of a local job).
+
+### Claude's jobs (`src/jobs/claude.ts`, `src/jobs/groups-changed.ts`) — ADR-027 M4 amendment, items 6–7
+
+The pure logic behind the Jobs screen's Claude badge, a PROPOSED job's reasons, "Claude is submitting"
+in place of Run, and the groups refresh. No React, no Tauri; the screens render what these decide and
+none reads `origin`, `mcp_state` or `mcp_reasons` itself. Every predicate is exact (rule #9): a job the
+payload does not positively name as Claude's is not Claude's, and a missing field never matches.
+
+- `isClaudeJob(job)`: `origin === "mcp"`. The badge (`CLAUDE_BADGE`, "Claude") is for these only.
+- `isProposed(job)`: `status = 'draft'` ∧ `origin = 'mcp'` ∧ `grant_id === null` ∧ `mcp_state === null`.
+  A charged draft in step B is also a `draft` with `origin = 'mcp'` but is *submitting*, not PROPOSED;
+  a draft whose step B was refused is refunded (Rust clears `grant_id` and `mcp_state`, writes
+  `mcp_reasons`) and so becomes PROPOSED.
+- `isSubmitting(job)`: `mcp_state === 'submitting'`.
+- `parseJobReasons(job)` → `{kind: "none"} | {kind: "read", list} | {kind: "unreadable", raw, raw_clipped}`,
+  the audit view's `AuditReasons` plus `none`, so `firstReasonText` / `reasonsText` (`src/mcp/audit.ts`)
+  are reused. It never throws: anything but a JSON array of `{row: string, message: string}` is
+  `unreadable`, with the raw text cut to 1,024 characters. `firstReason(job)` (the row's one line) and
+  `reasonsList(job)` (the detail's lines) answer only for a PROPOSED job with reasons, else `null`.
+- `runAction(job)` → `{kind: "run"}` (the screen's own Run), `{kind: "submitting", label: "Claude is
+  submitting", disabled: true}` (a draft with `mcp_state = 'submitting'`), or `{kind: "none"}` (not a
+  draft). The `submit_job` refusal in Rust stays as the backstop.
+- `subscribeGroupsChanged(bridge, onChanged)` (`groups-changed.ts`) listens for the payload-free
+  `groups:changed` that Claude's `create_group` tool emits (`GROUPS_CHANGED_EVENT`, pinned against Rust's
+  constant) through `createListenerScope`, so a registration that resolves after `dispose()` is dropped
+  at once. It returns `{ready, dispose}`; `ready` resolves once the listener is attached, for a view
+  that reads its groups after it ("listen first, then ask", o16.7).
+
+The Jobs screen does not render these yet: the badge, the reasons, the disabled label and the listener
+are M4b Part B. The vitest config excludes `.claude/**`, so a plain `npm test` in the main checkout no
+longer collects the tests of every agent worktree under `.claude/worktrees/*/src/`.
 
 ### Bulk delete (`src/jobs/bulk-delete.ts`)
 

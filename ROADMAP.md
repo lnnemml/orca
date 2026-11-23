@@ -1693,8 +1693,9 @@ and OrcaStudio picks the job up, syncs results, and parses them — no terminal,
               the per-connection read count with its display (decision 9; M4 amendment items 2–5)
               — committed `ec85ac0` (Part A) + Part B (components, two-column Settings, the
               date + hour/minute expiry); live gate passed 2026-11-22
-        - [ ] **M4b** Jobs — Claude badge, proposal reasons, "Claude is submitting", the
-              `groups:changed` refresh (M4 amendment items 6–7)
+        - [~] **M4b** Jobs — Claude badge, proposal reasons, "Claude is submitting", the
+              `groups:changed` refresh (M4 amendment items 6–7) — Part A (the Rust emit, the pure
+              TS helpers) built; Part B (the Jobs screen) pending
       - [ ] **M5** live research gate (first, Anton adds this repository's `.claude/settings.json`
             deny rule on `mcp__orcastudio__*`: M4 amendment item 1) — a real GOAT → Opt+Freq → SP chain driven from a research folder
 - [ ] TS refinement automation: scan maximum → OptTS → Freq → ΔG‡ pipeline

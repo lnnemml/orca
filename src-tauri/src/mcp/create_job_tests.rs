@@ -342,6 +342,8 @@ impl StatusEmit for PanicFirstEmit {
         }
         self.after.lock().unwrap().push(status);
     }
+
+    fn groups_changed(&self) {}
 }
 
 /// The world's environment with another emit.
@@ -375,6 +377,8 @@ impl StatusEmit for AlwaysPanicEmit {
     fn job_status(&self, _: &str, _: JobStatus) {
         panic!("every job:status emit panics");
     }
+
+    fn groups_changed(&self) {}
 }
 
 /// Panic isolation end to end: with every emit panicking (step A's, and step C's after its commit),
