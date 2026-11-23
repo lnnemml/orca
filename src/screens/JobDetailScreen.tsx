@@ -22,6 +22,8 @@ import { GroupSelect } from "../groups/GroupSelect";
 import { useGroupPicker } from "../groups/useGroupPicker";
 import { InlineRename } from "../jobs/InlineRename";
 import { CancelButtons } from "../jobs/CancelButtons";
+import { autoRunRefusal } from "../jobs/claude";
+import { ClaudeBadge, DetailReasons } from "../jobs/ClaudeMarks";
 import { clickCancelFamily, openJobView, tauriBridge, trackRemoteStates, type RemoteStateTracker } from "../jobs/live-wiring";
 import {
   isLiveStatus,
@@ -425,10 +427,17 @@ export function JobDetailScreen({
   // lost. The close drops every listener, a late-resolving one included, and closes the watch
   // only if this view opened it.
   useEffect(() => {
-    const submit = async () => {
+    const submit = async (current: Job | null) => {
       // The ref guards against React StrictMode's double-mount.
       if (!autoRun || didSubmit.current) return;
       didSubmit.current = true;
+      // A draft Claude is still submitting is not submitted from here (ADR-027 M4 amendment, item 8);
+      // Rust's `submit_job` refusal is the backstop for what this read cannot see.
+      const refused = autoRunRefusal(current);
+      if (refused !== null) {
+        setNotice({ text: refused, tone: "warn" });
+        return;
+      }
       try {
         const response = await invoke<SubmitResponse | null>("submit_job", {
           id: jobId,
@@ -694,7 +703,12 @@ export function JobDetailScreen({
           ) : null}
           <CancelButtons actions={toolbarOffers} busy={cancelBusy} onAction={cancelFamily} />
         </div>
-        {job ? <span className={`badge ${job.status}`}>{job.status}</span> : null}
+        {job ? (
+          <span className="row" style={{ gap: 6 }}>
+            <ClaudeBadge job={job} />
+            <span className={`badge ${job.status}`}>{job.status}</span>
+          </span>
+        ) : null}
       </div>
 
       {job ? (
@@ -724,6 +738,9 @@ export function JobDetailScreen({
           ) : null}
         </div>
       ) : null}
+
+      {/* A PROPOSED draft's reasons: the whole list, or the raw text when unreadable (ADR-027 M4, item 6). */}
+      {job ? <DetailReasons job={job} /> : null}
 
       {error ? (
         <div className="banner err" style={{ marginBottom: 10 }}>

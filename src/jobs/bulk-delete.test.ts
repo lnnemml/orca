@@ -231,6 +231,48 @@ describe("planBulkDelete: the three kinds of skipped row (F3, L1)", () => {
   });
 });
 
+describe("planBulkDelete: a job Claude holds (ADR-027 M4, item 6)", () => {
+  const SUBMITTING = { origin: "mcp", grant_id: "g1", mcp_state: "submitting" } as const;
+
+  // CONTROL: make rowActions offer Delete for a submitting draft → it is deletable, and this goes red.
+  it("skips it in its own bucket, not as live or as cancel-less", () => {
+    const sub = job({ id: "sub", status: "draft", ...SUBMITTING });
+    const plain = job({ id: "plain", status: "draft" });
+    const p = plan([sub, plain]);
+    expect(ids(p.deletable)).toEqual(["plain"]);
+    expect(ids(p.skipped)).toEqual(["sub"]);
+    expect(ids(p.skippedSubmitting)).toEqual(["sub"]);
+    expect(p.skippedNoCancel).toEqual([]);
+    expect(p.skippedCancelUnderway).toEqual([]);
+  });
+
+  // A terminal row a crash left flagged: `rowActions` answers delete_held, the plan skips it the same way.
+  // CONTROL: let `offersSubmitting` ignore `delete_held` -> it lands in the no-cancel bucket -> red.
+  it("skips a terminal job that still carries mcp_state in the same bucket", () => {
+    const stuck = job({ id: "stuck", status: "completed", origin: "mcp", grant_id: "g1", mcp_state: "submitting" });
+    const p = plan([stuck, job({ id: "plain" })]);
+    expect(ids(p.deletable)).toEqual(["plain"]);
+    expect(ids(p.skippedSubmitting)).toEqual(["stuck"]);
+    expect(p.skippedNoCancel).toEqual([]);
+  });
+
+  it("words it as Claude's, never as 'cancel them first'", () => {
+    const sub = [job({ id: "sub", status: "draft", ...SUBMITTING })];
+    const t = bulkDeleteNothingText(mkPlan({ skipped: sub, skippedSubmitting: sub }));
+    expect(t.split("\n")).toEqual([
+      "None of the selected jobs can be deleted.",
+      "1 job held by Claude will be skipped — it can be deleted once Claude's create_job ends or MCP reconciles it.",
+    ]);
+    const summary = bulkDeleteSummary(mkPlan({ deletable: [], skipped: sub, skippedSubmitting: sub }), { deleted: [], failed: [] });
+    expect(summary).toBe("Deleted 0; skipped 1 (held by Claude)");
+    // The same words for a flagged terminal row (DeleteHeldNote, Rust's refusal), and the plural.
+    const two = [job({ id: "a", status: "completed", mcp_state: "submitting" }), job({ id: "b", status: "draft", mcp_state: "submitting" })];
+    expect(bulkDeleteNothingText(mkPlan({ skipped: two, skippedSubmitting: two })).split("\n")[1]).toBe(
+      "2 jobs held by Claude will be skipped — they can be deleted once Claude's create_job ends or MCP reconciles them.",
+    );
+  });
+});
+
 describe("planBulkDelete: hidden and missing", () => {
   it("counts the deletable jobs the filter hides, not the skipped or visible ones", () => {
     const js = [job({ id: "a" }), job({ id: "b" }), job({ id: "c", status: "running" }), job({ id: "d" })];
@@ -248,7 +290,7 @@ describe("planBulkDelete: hidden and missing", () => {
 
   it("plans nothing for an empty selection", () => {
     const p = planBulkDelete(new Set(), [job()], new Set(), noRecord);
-    expect(p).toEqual({ deletable: [], skipped: [], skippedNoCancel: [], skippedCancelUnderway: [], missing: [], hiddenDeletable: 0 });
+    expect(p).toEqual({ deletable: [], skipped: [], skippedNoCancel: [], skippedCancelUnderway: [], skippedSubmitting: [], missing: [], hiddenDeletable: 0 });
   });
 });
 
@@ -314,7 +356,7 @@ describe("runBulkDelete", () => {
   });
 });
 
-const mkPlan = (over: Partial<BulkDeletePlan> = {}): BulkDeletePlan => ({ deletable: [], skipped: [], skippedNoCancel: [], skippedCancelUnderway: [], missing: [], hiddenDeletable: 0, ...over });
+const mkPlan = (over: Partial<BulkDeletePlan> = {}): BulkDeletePlan => ({ deletable: [], skipped: [], skippedNoCancel: [], skippedCancelUnderway: [], skippedSubmitting: [], missing: [], hiddenDeletable: 0, ...over });
 const some = (n: number, prefix: string, over: Partial<Job> = {}) => Array.from({ length: n }, (_, i) => job({ id: `${prefix}${i}`, ...over }));
 const live = (n: number) => some(n, "live", { status: "running" });
 const underway = (n: number) => some(n, "underway", { status: "cancelling", ...COORDS });

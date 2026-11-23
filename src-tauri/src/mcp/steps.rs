@@ -600,6 +600,25 @@ pub fn submit_refusal_for_mcp_state(job: &Job) -> Option<AppError> {
     })
 }
 
+/// The job-delete commands' guard (ADR-027 M4 amendment, item 6; decided by Anton, 2026-11-23): a
+/// job between step A and step C is not deleted. Same predicate as [`submit_refusal_for_mcp_state`]
+/// (`mcp_state` set; fail closed on any value), so the two cannot disagree on what "submitting" is;
+/// the words say "deleted", not "run". Without it a delete in the window removed the row and step C
+/// then recorded `gone` while the grant's charge stayed spent.
+///
+/// A job that a crash left in `submitting` stays undeletable until the reconciliation
+/// ([`reconcile_submitting_conn`]) clears it, which happens on the next acquisition of the MCP lock
+/// (so only once MCP is on); the message says both ways out. The Jobs screen withholds Delete on the
+/// same predicate (`rowActions`), so this refusal is the backstop and rarely the first thing seen.
+pub fn delete_refusal_for_mcp_state(job: &Job) -> Option<AppError> {
+    submit_refusal_for_mcp_state(job).map(|_| {
+        AppError::Conflict(format!(
+            "Claude is submitting job {}; it can be deleted once Claude's create_job ends, or once MCP is on and reconciles it",
+            job.id
+        ))
+    })
+}
+
 /// [`submit_refusal_for_mcp_state`] as a `Result`, for the commands that submit a job by hand:
 /// `submit_job` (through `commands::jobs::submittable_job_conn`, both arms) and
 /// `retry_remote_submit`.
@@ -610,4 +629,17 @@ pub fn submit_refusal_for_mcp_state(job: &Job) -> Option<AppError> {
 /// command.
 pub fn refuse_while_mcp_submitting(job: &Job) -> Result<(), AppError> {
     submit_refusal_for_mcp_state(job).map_or(Ok(()), Err)
+}
+
+/// [`delete_refusal_for_mcp_state`] as a `Result`, for `delete_job_conn` — the one place a `jobs`
+/// row is deleted (the bulk delete is the screen's loop of `delete_job`; a group, molecule or
+/// profile delete never deletes a job).
+///
+/// **The check and the delete share one lock.** Every caller of `delete_job_conn` holds the
+/// `DbState` mutex across the read this takes and the delete that follows, and every MCP step
+/// takes the same mutex, so a job read with `mcp_state` NULL cannot become `submitting` before the
+/// delete lands (step A sets it only in the insert's own transaction) and one read as `submitting`
+/// is refused whether or not step C clears it a moment later.
+pub fn refuse_delete_while_mcp_submitting(job: &Job) -> Result<(), AppError> {
+    delete_refusal_for_mcp_state(job).map_or(Ok(()), Err)
 }

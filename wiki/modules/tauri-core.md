@@ -522,10 +522,54 @@ guarded, its isolated `job_dir`. The contract, with the two ratified decisions:
 - **Jobs-survive both ways** — like `delete_reaction` (v13) and `remove_reference_job` (v14):
   deleting a job never deletes another job (the re-opt child is nulled, not cascaded) and never
   deletes a reaction (its reference row is dropped, the reaction stays).
+- **Refused while Claude is submitting (ADR-027 M4 amendment, item 6; decided by Anton,
+  2026-11-23).** A job with `mcp_state = 'submitting'` (between step A and step C of
+  `create_job`) is refused with `AppError::Conflict("Claude is submitting job … ; it can be deleted
+  once Claude's create_job ends, or once MCP is on and reconciles it")` —
+  `mcp::steps::refuse_delete_while_mcp_submitting`, built on the predicate of
+  `submit_refusal_for_mcp_state` so "submitting" has one definition. It is the **first** check in
+  `delete_job_conn`, before the remote and local-live checks and before anything is touched. Without
+  it a delete in the window removed the row and step C recorded `gone`, keeping the grant's charge.
+  **There is one job-delete path:** `delete_job_conn` is the only place `DELETE FROM jobs` runs
+  (production code), reached only through `delete_job_guarded`, the body of the `delete_job` command;
+  the bulk delete is the Jobs screen's loop of `delete_job` (one refusal per row, reported in its
+  summary); a group's delete re-parents its jobs, a server profile's delete nulls their `backend_id`,
+  and neither deletes a job. **Check and delete are one critical section:** `delete_job_guarded` holds
+  the `DbState` lock across the read and the delete, and every MCP step takes the same lock, so a job
+  read with `mcp_state` NULL cannot become `submitting` before the delete lands (only step A sets it,
+  in the insert's own transaction). A job a crash left in `submitting` stays undeletable until the
+  reconciliation (`reconcile_submitting_conn`) clears it, which runs on the MCP lock's next
+  acquisition, so only once MCP is on (the message names both ways out). The Jobs screen withholds
+  Delete on the same predicate for **any** job with `mcp_state` set (a submitting draft, or a terminal
+  job a crash left flagged: `rowActions`), so this refusal is the backstop, rarely the first thing
+  seen. **A source pin keeps the path single:** `job_delete_pin_tests` scans the non-test sources
+  under `src-tauri/src` and fails on a second `DELETE FROM jobs`, on `REPLACE INTO jobs` /
+  `UPDATE OR REPLACE jobs` (they delete the row they replace), on a `jobs` column or table definition
+  with `ON DELETE CASCADE` (a parent's delete would delete jobs; the rule reads `jobs` itself only,
+  at a word boundary, so `jobs_archive` is another table, and a child such as `results` cascading
+  from `jobs` is the reverse and allowed), or on the one delete moving out of `delete_job_conn`.
+  The matcher reads string literals, joins a `concat!`, reads the file a production `include_str!` /
+  `include_bytes!` / `include!` names (binary files lossily; a computed path fails the pin on
+  purpose), and folds case, quotes (`"` `` ` `` `'` `[` `]`), schema qualifiers (`main.jobs`, also
+  `main . jobs`), `/* */` and `--` comments and the whitespace escapes
+  (`\n \t \r \x20 \u{20}`) before matching; a doc comment that names the statement
+  is no hit. Test code is told apart by the `#[cfg(test)] mod name;` declarations (also
+  `cfg(all(test, …))` and `#[path]`), the `#[cfg(test)] mod tests` tail, and a check of that tail
+  that walks its items by character, so code after a module's closing `}` on the same line is
+  refused. **Not covered (it is lexical):** SQL assembled at run time or by another macro
+  (`format!`, `stringify!`, a `+` join, a file read at run time), a char literal inside
+  `concat!`, a letter written as a non-whitespace escape (`\x6a`, `\u{6a}`), a comment marker
+  (`--`, `/*`) inside an SQL string value (it can hide a later delete in the same literal), a
+  cascade on a table other than `jobs`, a delete from outside `src-tauri/src`, a migration that
+  deletes jobs by other means. **False positive:** the dot folding joins any `word . word`, so a
+  prose string like "…delete from Settings. Jobs…" fails the pin (fail-safe); reword it.
 
 Cargo controls (`commands::jobs`): `delete_job_removes_it_and_cascades_results`,
 `delete_job_nulls_reopt_children`, `delete_job_drops_reference_rows`, `delete_job_returns_its_job_dir`,
-`delete_job_absent_is_not_found`, `delete_job_refuses_running`/`_refuses_queued`, and the bite-verified
+`delete_job_absent_is_not_found`, `delete_job_refuses_running`/`_refuses_queued`,
+`delete_job_conn_refuses_a_job_claude_is_submitting` and
+`delete_job_guarded_refuses_a_job_claude_is_submitting_and_keeps_its_state` (the backstop),
+`job_delete_pin_tests::a_job_row_is_deleted_in_exactly_one_place_and_never_replaced` (the pin), and the bite-verified
 negative control above; plus `path_is_within_*` (descendant/root/sibling/parent/nonexistent/symlink)
 in `local_backend`.
 

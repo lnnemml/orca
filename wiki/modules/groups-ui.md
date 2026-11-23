@@ -100,9 +100,12 @@ so the filter never points at a non-existent group.
 
 `groups:changed` (ADR-027 M4 amendment, item 7): Claude's `create_group` tool creates a group while the
 screen is open, and Rust emits the payload-free `groups:changed` once it is committed. The subscription
-is `subscribeGroupsChanged` (`src/jobs/groups-changed.ts`; see `modules/frontend.md` §Claude's jobs);
-the screen's wiring (reload `list_groups` and the jobs on it) is M4b Part B. The app's own
-`create_group` command emits nothing: its caller already reloads.
+is `subscribeGroupsChanged` (`src/jobs/groups-changed.ts`), used through `subscribeJobsReload`
+(`src/jobs/jobs-reload.ts`; see `modules/frontend.md` §Claude's jobs): the screen reloads its `load()`
+(`list_jobs` and `list_groups`) on `groups:changed` and on `job:status`, reads its list once both
+listeners are attached, and disposes them on unmount; a failed registration is shown in the error
+banner, never an unhandled rejection. The app's own `create_group` command emits nothing: its caller
+already reloads.
 
 ## Search / status filter, composed on the group filter (`search.ts`, Phase 4.7.4)
 

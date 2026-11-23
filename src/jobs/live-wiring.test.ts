@@ -209,7 +209,7 @@ function handlers() {
 const LOG_EVENTS = ["job:log", "job:convergence", "job:log-reset", "job:status"];
 
 /** Open the view; `get_job` answers `row` whenever it is asked. Listeners are pending in order. */
-async function opened(row: Job, afterOpen: (() => Promise<void>) | null = null) {
+async function opened(row: Job, afterOpen: ((current: Job | null) => Promise<void>) | null = null) {
   const fake = fakeBridge({ get_job: row });
   const { on, seen } = handlers();
   const close = openJobView(fake.bridge, "j1", on, afterOpen);
@@ -355,6 +355,19 @@ describe("openJobView (o16.7)", () => {
     await settle();
     expect(fake.log.indexOf("invoke:get_job")).toBeGreaterThan(fake.log.indexOf("listen:job:status"));
     expect(seen[0]).toBe("job");
+  });
+
+  // CONTROL: call `afterOpen()` without the row → the auto-run guard in the detail screen sees null → red.
+  it("hands the row it read to the submit, so the submit can decline a job it must not submit", async () => {
+    let seenRow: Job | null | undefined;
+    const row = job({ status: "draft", mcp_state: "submitting" });
+    const { fake } = await opened(row, async (current) => {
+      seenRow = current;
+    });
+    await attachAll(fake);
+    fake.pendingInvoke("watch_job_log")?.resolve(undefined);
+    await settle();
+    expect(seenRow).toEqual(row);
   });
 
   it("drops the held log on job:log-reset, ignores other jobs' events, then runs the submit", async () => {

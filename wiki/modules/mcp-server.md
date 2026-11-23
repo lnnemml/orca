@@ -749,6 +749,16 @@ guard in `submit_job` and `retry_remote_submit`, pinned in the source (these com
 tests (`a_submit_with_no_target_never_reaches_the_ssh_path` and the remote-command pins in
 `commands::remote_jobs`) are unchanged.
 
+**The delete guard (M4b).** `delete_refusal_for_mcp_state(&Job)` / `refuse_delete_while_mcp_submitting`
+(`steps.rs`) are the same predicate with delete's words ("Claude is submitting job …; it can be deleted
+once Claude's create_job ends, or once MCP is on and reconciles it"); `delete_job_conn` calls the second
+first thing, under the caller's `DbState` lock (`modules/tauri-core.md`, "Deleting a job"). It is the only
+function that deletes a `jobs` row, so it is the one place to guard, and `job_delete_pin_tests` fails on a
+second delete or a `REPLACE INTO jobs`. A job stuck in `submitting` by a crash is deletable once the
+reconciliation clears it (next MCP lock acquisition, so only with MCP on); the Jobs screen holds Delete
+back for it meanwhile. Tests in `commands::jobs::tests` (`delete_job_conn_refuses_a_job_claude_is_submitting`,
+`delete_job_guarded_refuses_a_job_claude_is_submitting_and_keeps_its_state`) and the pin.
+
 ## The source resolver (`resolve.rs`)
 
 `resolve_source(db, reference, sidecar)` parses the reference (`SourceRef::parse`) and resolves it. It
@@ -1478,9 +1488,9 @@ Two choices go beyond the clarifications, and each can only move a job toward An
 
 ## Not yet wired
 
-- **M4b Part B:** the Jobs screen's rendering of the Claude badge, a PROPOSED job's reasons and
-  "Claude is submitting" in place of Run, and its `groups:changed` listener. The Rust emit and the
-  pure TypeScript (`src/jobs/claude.ts`, `src/jobs/groups-changed.ts`) are in place (M4b Part A).
+Nothing in M4: the code of M4a and M4b is complete, pending M4b's live gate (the Jobs screen's
+badge, a PROPOSED job's reasons, "Claude is submitting" with no Delete, and the `groups:changed`
+refresh).
 
 ## Tests
 

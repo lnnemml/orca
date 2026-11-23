@@ -22,6 +22,7 @@
  * - `resolveRunTarget`: the remembered "Run on" choice, checked against those choices (o20.1).
  */
 import { formatLaptopUtc } from "../format";
+import { isHeldByClaude, runAction } from "./claude";
 import type {
   CancelResult,
   CheckError,
@@ -414,8 +415,15 @@ function waitNotice(waiting: boolean, record: RemoteState | null | undefined): W
 export type RowAction =
   | { action: "cancel" | "retry_cancel" | "undo_cancel"; confirm: boolean }
   | { action: "run_locally" }
+  /** A draft Claude is still submitting: Run is replaced by a disabled `SUBMITTING_LABEL`, and no Delete. */
+  | { action: "submitting" }
   | { action: "open" }
-  | { action: "delete" };
+  | { action: "delete" }
+  /**
+   * Delete is held back because `mcp_state` is set (Rust's `delete_refusal_for_mcp_state`): it takes
+   * the place of `delete` on a terminal row a crash left flagged. The row shows a muted note, no button.
+   */
+  | { action: "delete_held" };
 
 /** The cancel-family actions that send `cancel_job`: a first Cancel and Retry cancel. */
 export type CancelSend = { action: "cancel" | "retry_cancel"; confirm: boolean };
@@ -425,10 +433,25 @@ export type CancelSend = { action: "cancel" | "retry_cancel"; confirm: boolean }
  * `queued`/`running`, remote `queued`/`running`/`cancelling` — offers only its cancel family, never
  * Delete (Rust refuses it; a `cancelling` job offers Retry cancel); a remote live job's cancel
  * family is exactly `remoteView`'s. A live job with corrupt coordinates offers nothing (o19.8).
- * Every other (terminal) row opens or is deleted.
+ * Every other (terminal) row opens or is deleted. A draft Claude is **submitting** (`mcp_state`,
+ * ADR-027 M4 amendment items 6 and 8, decided by Anton 2026-11-23) offers neither: `claude.ts`'s
+ * `runAction` decides Run's slot and this is the one place it is composed with Delete, so the row,
+ * the bulk delete and the detail all read the same answer (Rust refuses both while it lasts).
+ *
+ * **Delete is held back for any job whose `mcp_state` is set** (`isHeldByClaude`, the predicate of
+ * Rust's `delete_refusal_for_mcp_state`), not only a draft: a terminal row left flagged by a crash
+ * before step C offers `open` and `delete_held` instead of `delete`. A live row never offered Delete.
  */
 export function rowActions(job: Job, record: RemoteState | null | undefined): RowAction[] {
-  if (job.status === "draft") return [{ action: "run_locally" }, { action: "delete" }];
+  const actions = baseRowActions(job, record);
+  if (!isHeldByClaude(job)) return actions;
+  return actions.map((a): RowAction => (a.action === "delete" ? { action: "delete_held" } : a));
+}
+
+function baseRowActions(job: Job, record: RemoteState | null | undefined): RowAction[] {
+  if (job.status === "draft") {
+    return runAction(job).kind === "submitting" ? [{ action: "submitting" }] : [{ action: "run_locally" }, { action: "delete" }];
+  }
   const coords = coordinateState(job);
   if (coords === "local") {
     if (job.status === "queued" || job.status === "running") return [{ action: "cancel", confirm: false }];

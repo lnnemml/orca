@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { Job } from "../types";
 import {
+  autoRunRefusal,
   CLAUDE_BADGE,
   firstReason,
   isClaudeJob,
+  isHeldByClaude,
   isProposed,
   isSubmitting,
   parseJobReasons,
@@ -222,5 +224,31 @@ describe("the Run slot", () => {
     for (const status of ALL_BUT_DRAFT) expect(runAction(job({ status })).kind).toBe("none");
     // Step C has queued the job but its flag still reads submitting: Cancel shows, never Run.
     expect(runAction(job({ status: "queued", mcp_state: "submitting" })).kind).toBe("none");
+  });
+});
+
+describe("held by Claude (what holds Delete back)", () => {
+  // CONTROL: `isHeldByClaude` true only for `submitting`, or never -> red on the odd value / the status line.
+  it("is any set mcp_state, the predicate of Rust's delete refusal", () => {
+    expect(isHeldByClaude(job(SUBMITTING))).toBe(true);
+    expect(isHeldByClaude(job({ status: "completed", mcp_state: "submitting" }))).toBe(true);
+    expect(isHeldByClaude(job({ mcp_state: null }))).toBe(false);
+    // An odd value (Rust fails closed on any non-NULL) and a payload that lacks the field.
+    expect(isHeldByClaude(job({ mcp_state: "busy" as unknown as "submitting" }))).toBe(true);
+    expect(isHeldByClaude({} as Job)).toBe(false);
+  });
+});
+
+describe("the auto-run submit", () => {
+  // CONTROL: return null always -> the submitting draft is auto-submitted from the UI -> red.
+  it("is refused for a draft Claude is still submitting, in the same words as the Run slot", () => {
+    expect(autoRunRefusal(job(SUBMITTING))).toContain(SUBMITTING_LABEL);
+  });
+
+  it("goes ahead for every other draft, for a job that is not a draft, and for an unread row", () => {
+    expect(autoRunRefusal(job({ status: "draft" }))).toBeNull();
+    expect(autoRunRefusal(job(PROPOSED))).toBeNull();
+    expect(autoRunRefusal(job({ status: "queued", mcp_state: "submitting" }))).toBeNull();
+    expect(autoRunRefusal(null)).toBeNull();
   });
 });

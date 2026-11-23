@@ -538,6 +538,33 @@ describe("rowActions (o22.14.8)", () => {
     expect(kinds(job({ status: "running", remote_socket: null }))).toEqual([]);
   });
 
+  // The Run slot and Delete, composed (ADR-027 M4 amendment items 6 and 8; Anton, 2026-11-23).
+  // CONTROL: return the plain draft's actions for a submitting draft → Run is offered and Delete too → red.
+  it("offers a draft Claude is submitting neither Run nor Delete, only the disabled 'submitting'", () => {
+    const sub = job({ status: "draft", ...LOCAL, origin: "mcp", grant_id: "g1", mcp_state: "submitting" });
+    expect(rowActions(sub, null)).toEqual([{ action: "submitting" }]);
+    expect(kinds(job({ status: "draft", ...LOCAL, origin: "mcp", grant_id: null, mcp_state: null }))).toEqual(["run_locally", "delete"]);
+  });
+
+  // Delete is held back for ANY job whose mcp_state is set (Anton chose (b), 2026-11-23): a terminal row
+  // a crash left flagged shows no Delete. CONTROL: let a terminal row's `delete` through -> red.
+  it("holds Delete back on a terminal job that still carries mcp_state, and keeps Open", () => {
+    for (const status of ["completed", "parsed", "failed", "cancelled", "lost"] as const) {
+      expect(kinds(job({ status, ...LOCAL, origin: "mcp", grant_id: "g1", mcp_state: "submitting" }))).toEqual(["open", "delete_held"]);
+    }
+    expect(kinds(job({ status: "completed", ...LOCAL, mcp_state: null }))).toEqual(["open", "delete"]);
+  });
+
+  it("leaves a live flagged row's cancel family alone: it never offered Delete", () => {
+    expect(rowActions(job({ status: "running", ...LOCAL, mcp_state: "submitting", grant_id: "g1", origin: "mcp" }), null)).toEqual([
+      { action: "cancel", confirm: false },
+    ]);
+  });
+
+  it("offers a PROPOSED draft (no grant, no state) Run and Delete as any draft", () => {
+    expect(kinds(job({ status: "draft", ...LOCAL, origin: "mcp", grant_id: null, mcp_state: null, mcp_reasons: "[]" }))).toEqual(["run_locally", "delete"]);
+  });
+
   it("names the action a Cancel button sends", () => {
     expect(cancelSendOf(rowActions(job({ status: "cancelling" }), record()))).toEqual({ action: "retry_cancel", confirm: false });
     expect(cancelSendOf([{ action: "undo_cancel", confirm: false }])).toBeNull();

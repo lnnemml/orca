@@ -14,7 +14,7 @@
 use std::path::{Path, PathBuf};
 
 /// The string literals of Rust source `src`, comments skipped.
-fn string_literals(src: &str) -> Vec<String> {
+pub(crate) fn string_literals(src: &str) -> Vec<String> {
     let chars: Vec<char> = src.chars().collect();
     let mut out = Vec::new();
     let mut i = 0;
@@ -85,7 +85,7 @@ fn string_literals(src: &str) -> Vec<String> {
 }
 
 /// At `chars[i]` = `r` or `br`: the raw string's `#` count and where its body starts, if it is one.
-fn raw_start(chars: &[char], i: usize) -> Option<(usize, usize)> {
+pub(crate) fn raw_start(chars: &[char], i: usize) -> Option<(usize, usize)> {
     let mut j = if chars[i] == 'b' { i + 2 } else { i + 1 };
     let mut hashes = 0;
     while chars.get(j) == Some(&'#') {
@@ -129,7 +129,7 @@ fn rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 /// The file's production part: everything before its `#[cfg(test)] mod tests`.
-fn production(src: &str) -> &str {
+pub(crate) fn production(src: &str) -> &str {
     ["#[cfg(test)]\nmod tests", "#[cfg(test)]\npub(crate) mod tests", "#[cfg(test)]\npub(super) mod tests"]
         .iter()
         .filter_map(|marker| src.find(marker))

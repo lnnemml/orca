@@ -46,6 +46,8 @@ mod secrets;
 mod sidecar;
 mod ssh_backend;
 #[cfg(test)]
+mod job_delete_pin_tests;
+#[cfg(test)]
 mod text_guard_tests;
 mod timing;
 mod xtb;

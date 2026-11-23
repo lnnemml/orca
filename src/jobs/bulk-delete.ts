@@ -28,6 +28,13 @@ export interface BulkDeletePlan {
    * wrong advice too. The rest of `skipped` (it offers `cancel`) can be cancelled.
    */
   skippedCancelUnderway: Job[];
+  /**
+   * The part of `skipped` that Claude holds (`rowActions` answers `submitting` for a draft, or
+   * `delete_held` for a terminal row a crash left flagged): "cancel them first" is wrong advice for
+   * these — they can be deleted once Claude's `create_job` ends or MCP reconciles them. Rust refuses
+   * them as well.
+   */
+  skippedSubmitting: Job[];
   /** Selected ids no longer among the jobs (deleted elsewhere): nothing to do, dropped from the selection. */
   missing: string[];
   /** How many of `deletable` the current search/status/group filter hides. */
@@ -42,6 +49,10 @@ export interface BulkDeleteResult {
 
 /** Whether a row's actions offer Delete — the single authority on "deletable" (asked of `rowActions`). */
 const offersDelete = (actions: readonly RowAction[]): boolean => actions.some((a) => a.action === "delete");
+
+/** Whether Delete is held back for the row because Claude holds it (a submitting draft, or a flagged terminal row; `rowActions`). */
+const offersSubmitting = (actions: readonly RowAction[]): boolean =>
+  actions.some((a) => a.action === "submitting" || a.action === "delete_held");
 
 /** Whether a row's actions offer a first Cancel. */
 const offersFirstCancel = (actions: readonly RowAction[]): boolean => actions.some((a) => a.action === "cancel");
@@ -64,6 +75,7 @@ export function planBulkDelete(
   const skipped: Job[] = [];
   const skippedNoCancel: Job[] = [];
   const skippedCancelUnderway: Job[] = [];
+  const skippedSubmitting: Job[] = [];
   const known = new Set<string>();
   for (const job of jobs) {
     known.add(job.id);
@@ -74,12 +86,16 @@ export function planBulkDelete(
       continue;
     }
     skipped.push(job);
+    if (offersSubmitting(actions)) {
+      skippedSubmitting.push(job);
+      continue;
+    }
     if (offersFirstCancel(actions)) continue;
     (offersCancelFollowUp(actions) ? skippedCancelUnderway : skippedNoCancel).push(job);
   }
   const missing = [...selected].filter((id) => !known.has(id));
   const hiddenDeletable = deletable.filter((j) => !visibleIds.has(j.id)).length;
-  return { deletable, skipped, skippedNoCancel, skippedCancelUnderway, missing, hiddenDeletable };
+  return { deletable, skipped, skippedNoCancel, skippedCancelUnderway, skippedSubmitting, missing, hiddenDeletable };
 }
 
 /**
@@ -103,15 +119,16 @@ export async function runBulkDelete(jobs: readonly Job[], del: (id: string) => P
 const jobs = (n: number) => `${n} job${n === 1 ? "" : "s"}`;
 
 /** Skipped jobs by what the user can do: cancel them first, wait for a cancel under way, or look. */
-function skipCounts(plan: BulkDeletePlan): { cancellable: number; underway: number; noCancel: number } {
+function skipCounts(plan: BulkDeletePlan): { cancellable: number; underway: number; noCancel: number; submitting: number } {
   const noCancel = plan.skippedNoCancel.length;
   const underway = plan.skippedCancelUnderway.length;
-  return { cancellable: plan.skipped.length - noCancel - underway, underway, noCancel };
+  const submitting = plan.skippedSubmitting.length;
+  return { cancellable: plan.skipped.length - noCancel - underway - submitting, underway, noCancel, submitting };
 }
 
 /** The confirm lines about skipped jobs; a zero count adds nothing. */
 function skipLines(plan: BulkDeletePlan): string[] {
-  const { cancellable, underway, noCancel } = skipCounts(plan);
+  const { cancellable, underway, noCancel, submitting } = skipCounts(plan);
   const lines: string[] = [];
   const verb = (n: number, one: string, many: string) => (n === 1 ? one : many);
   if (cancellable > 0) {
@@ -122,6 +139,9 @@ function skipLines(plan: BulkDeletePlan): string[] {
   }
   if (noCancel > 0) {
     lines.push(`${jobs(noCancel)} ${verb(noCancel, "is", "are")} live with no cancel available and will be skipped — see the ${verb(noCancel, "job", "jobs")}.`);
+  }
+  if (submitting > 0) {
+    lines.push(`${jobs(submitting)} held by Claude will be skipped — ${verb(submitting, "it", "they")} can be deleted once Claude's create_job ends or MCP reconciles ${verb(submitting, "it", "them")}.`);
   }
   return lines;
 }
@@ -150,15 +170,16 @@ export function bulkDeleteNothingText(plan: BulkDeletePlan): string {
 /**
  * The one summary after the run: "Deleted N; skipped M (still live — cancel them first); skipped U
  * (cancel already under way — wait for it to finish); skipped K (live, no cancel available — see the
- * job); failed F", then each failure on its own line with its
+ * job); skipped S (held by Claude); failed F", then each failure on its own line with its
  * title and error. A zero clause is left out ("already gone" is for `missing`).
  */
 export function bulkDeleteSummary(plan: BulkDeletePlan, result: BulkDeleteResult): string {
-  const { cancellable, underway, noCancel } = skipCounts(plan);
+  const { cancellable, underway, noCancel, submitting } = skipCounts(plan);
   const parts = [`Deleted ${result.deleted.length}`];
   if (cancellable > 0) parts.push(`skipped ${cancellable} (still live — cancel them first)`);
   if (underway > 0) parts.push(`skipped ${underway} (cancel already under way — wait for it to finish)`);
   if (noCancel > 0) parts.push(`skipped ${noCancel} (live, no cancel available — see the job)`);
+  if (submitting > 0) parts.push(`skipped ${submitting} (held by Claude)`);
   if (result.failed.length > 0) parts.push(`failed ${result.failed.length}`);
   if (plan.missing.length > 0) parts.push(`${plan.missing.length} already gone`);
   const lines = [parts.join("; ")];

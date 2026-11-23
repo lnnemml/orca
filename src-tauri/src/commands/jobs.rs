@@ -465,6 +465,12 @@ fn rename_job_conn(conn: &Connection, id: &str, title: &str) -> Result<Job, AppE
 /// Delete a job from the database and return its isolated `job_dir` (or `None`)
 /// for the caller to remove **after** the transaction commits (Phase 4.7.1).
 ///
+/// Refuses a job Claude is submitting (`mcp_state = 'submitting'`, between step A and step C of
+/// `create_job`): "Claude is submitting" ([`crate::mcp::steps::refuse_delete_while_mcp_submitting`]),
+/// under the caller's `DbState` lock, so the check and the delete are one critical section. A job
+/// a crash left in `submitting` stays undeletable until the MCP reconciliation clears it, on the
+/// next acquisition of the MCP lock. This is the only function that deletes a `jobs` row.
+///
 /// Terminal-states-only: refuses a `Running`/`Queued` job ("cancel it first").
 /// Terminating a live run is [`crate::local_backend::cancel`]'s job, never
 /// delete's — there is no killpg in this path.
@@ -489,6 +495,11 @@ pub(crate) fn delete_job_conn(conn: &Connection, id: &str) -> Result<Option<Stri
     // Not-found first: nothing is touched if the id is absent (mirrors
     // delete_reaction_conn).
     let job = get_job_conn(conn, id)?;
+
+    // Claude is between step A and step C for this job (ADR-027 M4): the row is the MCP server's
+    // until step C records the outcome. Refused under the caller's lock — the check and the delete
+    // are one critical section — and before anything is touched.
+    crate::mcp::steps::refuse_delete_while_mcp_submitting(&job)?;
 
     // A remote job that is not terminal lives on its server: refused with the remote reason
     // (ADR-024 o item 2), before the local "cancel it first" below, which it cannot follow yet.
@@ -2395,6 +2406,76 @@ mod tests {
         update_job_status_conn(&conn, &job.id, "failed").unwrap();
         delete_job_conn(&conn, &job.id).unwrap();
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- the delete backstop (ADR-027 M4 amendment, item 6; decided by Anton, 2026-11-23) ---------
+
+    /// A charged MCP draft in step B (`mcp_state = 'submitting'`) on a fresh migrated database,
+    /// with a reaction reference row on it (so a refusal that touched anything before refusing
+    /// would show). Returns the database, the job id and its grant id.
+    fn submitting_job(tag: &str) -> (crate::mcp::test_db::TestDb, String, String) {
+        let db = crate::mcp::test_db::TestDb::new(tag);
+        let g = crate::mcp::test_db::grant(&db.conn, 3, 2);
+        db.job("sub", "draft", Some(&g.id));
+        db.conn.execute("UPDATE jobs SET mcp_state = 'submitting' WHERE id = 'sub'", []).unwrap();
+        insert_reaction(&db.conn, "r1", "rxn");
+        db.conn
+            .execute("INSERT INTO reaction_reference_jobs (reaction_id, job_id) VALUES ('r1', 'sub')", [])
+            .unwrap();
+        (db, "sub".into(), g.id)
+    }
+
+    fn is_claude_submitting(err: &AppError) -> bool {
+        matches!(err, AppError::Conflict(m) if m.contains("Claude is submitting job")
+            && m.contains("it can be deleted once Claude's create_job ends, or once MCP is on and reconciles it"))
+    }
+
+    /// The one job-delete body (`delete_job_conn`) refuses a job Claude is submitting, touching
+    /// nothing, and deletes it once step C has cleared the flag. NEGATIVE CONTROL: drop the
+    /// `refuse_delete_while_mcp_submitting` call from `delete_job_conn` → the first assert is red.
+    #[test]
+    fn delete_job_conn_refuses_a_job_claude_is_submitting() {
+        let (db, id, gid) = submitting_job("del-conn");
+        let err = delete_job_conn(&db.conn, &id).unwrap_err();
+        assert!(is_claude_submitting(&err), "{err:?}");
+        assert!(get_job_conn(&db.conn, &id).is_ok(), "the row survives");
+        let refs: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM reaction_reference_jobs WHERE job_id = ?1", params![id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(refs, 1, "nothing was touched before the refusal");
+        assert_eq!(db.charged(&gid), 0, "the counter is not the delete's business");
+
+        // Step C cleared the flag (here: the refusal arm's refund), and the job is deletable again.
+        db.conn.execute("UPDATE jobs SET mcp_state = NULL, grant_id = NULL WHERE id = ?1", params![id]).unwrap();
+        delete_job_conn(&db.conn, &id).unwrap();
+        assert!(matches!(get_job_conn(&db.conn, &id), Err(AppError::NotFound(_))));
+    }
+
+    /// The `delete_job` command's body — the single delete and each step of the screen's bulk loop —
+    /// refuses a submitting job, keeps its poller state, and releases the in-flight guard it
+    /// claimed. NEGATIVE CONTROL: the same one as above (the command reaches the row through
+    /// `delete_job_conn`) → red.
+    #[test]
+    fn delete_job_guarded_refuses_a_job_claude_is_submitting_and_keeps_its_state() {
+        use crate::poller::live_log::LiveLog;
+        use crate::poller::plan::PollerMemory;
+        let (db, id, _) = submitting_job("del-guarded");
+        let state = DbState(std::sync::Mutex::new(db.open_another()));
+        let (in_flight, live, memory) = (InFlight::default(), LiveLog::new(), PollerMemory::new());
+        memory.set_fetching(&id);
+
+        let refused = delete_job_guarded(&in_flight, &state, &live, &memory, &id);
+        assert!(matches!(&refused, Err(e) if is_claude_submitting(e)), "{refused:?}");
+        assert!(get_job_conn(&state.lock().unwrap(), &id).is_ok(), "the row survives");
+        assert!(memory.get(&id).fetching, "a refused delete does not drop the poller's memory of the job");
+        assert!(!in_flight.is_busy(&id), "the guard is released");
+
+        // The bulk loop is `delete_job` once per id: a submitting row among others fails alone.
+        db.job("plain", "failed", None);
+        assert!(delete_job_guarded(&in_flight, &state, &live, &memory, &id).is_err());
+        delete_job_guarded(&in_flight, &state, &live, &memory, "plain").unwrap();
+        assert!(get_job_conn(&state.lock().unwrap(), &id).is_ok());
     }
 
     /// NEGATIVE CONTROL — proves FK enforcement is ON and the A1 cleanup is

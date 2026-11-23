@@ -36,6 +36,16 @@ export function isSubmitting(job: Pick<Job, "mcp_state">): boolean {
   return job.mcp_state === "submitting";
 }
 
+/**
+ * `mcp_state` is set to anything: the job's row is the MCP server's until step C (or the
+ * reconciliation) clears it, and no job-delete command takes it (Rust's `delete_refusal_for_mcp_state`
+ * refuses on any non-NULL value, failing closed). Wider than {@link isSubmitting} on purpose: this is
+ * what holds Delete back, that is what words Run's slot.
+ */
+export function isHeldByClaude(job: Pick<Job, "mcp_state">): boolean {
+  return job.mcp_state != null;
+}
+
 // --- Reasons ------------------------------------------------------------------------------------
 
 /** What `jobs.mcp_reasons` holds: nothing, a readable list, or text that is not one. */
@@ -121,4 +131,16 @@ export function runAction(job: Pick<Job, "status" | "mcp_state">): RunAction {
   if (job.status !== "draft") return { kind: "none" };
   if (isSubmitting(job)) return { kind: "submitting", label: SUBMITTING_LABEL, disabled: true };
   return { kind: "run" };
+}
+
+/**
+ * The text that stops an auto-run submit (a row's Run, New Job's Create & Run) on a job Claude is
+ * still submitting; null when the submit may go ahead. The same `runAction` answer as the row's, so
+ * the screens cannot disagree. A row that could not be read (`null`) is let through, and Rust's
+ * `submit_job` refusal is the defence in depth behind this check: this one only spares the user a
+ * call that would be refused (a job can only leave `submitting`, never enter it after its insert).
+ */
+export function autoRunRefusal(job: Pick<Job, "status" | "mcp_state"> | null): string | null {
+  if (job === null) return null;
+  return runAction(job).kind === "submitting" ? `${SUBMITTING_LABEL}: this job can be run once that ends.` : null;
 }

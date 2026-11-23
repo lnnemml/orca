@@ -174,7 +174,8 @@ export interface JobViewHandlers {
  * Open the job view: attach `job:log`, `job:convergence`, `job:log-reset` and `job:status`, and
  * only then open the live log (`watch_job_log`, so the poller's offset-0 chunk finds the
  * listeners) and read the row (so no status change is lost between the read and the listener),
- * backfill if `backfillsLog` admits the row, and finally run `afterOpen` (the auto-run submit).
+ * backfill if `backfillsLog` admits the row, and finally run `afterOpen` (the auto-run submit) with
+ * the row it read (null when the read failed), so the submit can decline a job it must not submit.
  * Returns the close: it drops every listener and closes the watch **only if this view's open was
  * sent** (a close without an open would decrement another view's count).
  */
@@ -182,7 +183,7 @@ export function openJobView(
   bridge: Bridge,
   jobId: string,
   on: JobViewHandlers,
-  afterOpen: (() => Promise<void>) | null,
+  afterOpen: ((current: Job | null) => Promise<void>) | null,
 ): () => void {
   const scope = createListenerScope(bridge);
   let watchOpened = false;
@@ -233,7 +234,7 @@ export function openJobView(
       if (!scope.disposed) on.backfill(lines, events);
     }
 
-    if (afterOpen && !scope.disposed) await afterOpen();
+    if (afterOpen && !scope.disposed) await afterOpen(current);
   })();
 
   return () => {

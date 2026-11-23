@@ -67,7 +67,10 @@ shows the draft as it was left.
   The **memory and disk warning row** sits under the create bar (see "Memory and disk preflight"
   below); it never disables Create or Create & Run (`createAllowed` lists the reply and never reads
   it).
-- **`JobsScreen`** — `list_jobs` on mount into a `.jobs-table`: Title / Status badge / Energy (Eh) /
+- **`JobsScreen`** — reads `list_jobs` (and `list_groups`) **after its `job:status` and `groups:changed`
+  listeners are attached** (`subscribeJobsReload`), and again on every such event, into a
+  `.jobs-table`: Title / Status badge (plus the **Claude** badge for `origin = 'mcp'` and, for a
+  PROPOSED draft, its first reason as a muted line under the status; §Claude's jobs) / Energy (Eh) /
   Time / Created (in the laptop's time, `formatLaptopUtc`), a Refresh button, empty + loading states.
   Rows are clickable (→ detail); the
   actions column renders `rowActions(job, record)` (`src/jobs/remote.ts`, ADR-024 o22.14.8): a live
@@ -76,8 +79,12 @@ shows the draft as it was left.
   `cancelling` row, or a pending one whose re-sends stopped) and **Undo cancel** (a pending cancel
   whose send is not marked — including a pending, unsent, not-stopped row, which therefore always has
   a working button), each labelled by its own offer; every other row the
-  primary action (**Run locally** for draft, **Open** otherwise) **plus a `Delete`** button
-  (`.btn-danger`), matching the backend's terminal-states-only refusal ("cancel it first"). A click
+  primary action (**Run locally** for a draft, **Open** otherwise) **plus a `Delete`** button
+  (`.btn-danger`), matching the backend's terminal-states-only refusal ("cancel it first"), **except
+  a job Claude holds** (`mcp_state` set, ADR-027 M4 item 6): a submitting draft gets a disabled
+  **Claude is submitting** in Run's place and no Delete, and a terminal job a crash left flagged keeps
+  **Open** and gets a muted "held by Claude" note where Delete would be (`rowActions` answers
+  `submitting` / `delete_held`; §Claude's jobs). A click
   goes through `clickCancelFamily` (below, "The wiring") with the job id and the in-flight callback
   only, and the screen shows the returned notice in a dismissible `.banner.warn` above the table, then
   reloads the list. The banner is dismissed by hand (✕) and **replaced by the next answer**
@@ -129,8 +136,9 @@ shows the draft as it was left.
   closed meanwhile), then reads the row (`get_job` — after `job:status` is attached, so no status
   change falls between the read and the listener), then backfills `read_job_output` / `read_job_convergence` when `backfillsLog(job)` admits it —
   never for a remote `queued`/`running` job, whose whole log the poller re-streams from offset 0 —
-  and only then (if `autoRun`) calls `submit_job({ id, target: runTarget })`, so no early lines are
-  missed (a `didSubmit` ref neutralises React StrictMode's dev double-submit; the backend slot mutex
+  and only then (if `autoRun`, and unless `autoRunRefusal(row)` says Claude is still submitting the
+  draft: then it shows that notice and calls nothing) calls `submit_job({ id, target: runTarget })`,
+  so no early lines are missed (a `didSubmit` ref neutralises React StrictMode's dev double-submit; the backend slot mutex
   is the real guard). Unmount drops every listener, including one whose `listen` resolves after it,
   and closes the watch only if this view opened it. `job:log` appends (capped 5000 lines,
   auto-scroll); `job:log-reset` drops the held lines and convergence points; `job:status` updates the
@@ -1152,11 +1160,12 @@ checks that each screen's `clickCancelFamily` call has exactly the keys `id` and
 `sending`; and that the detail screen imports no `confirm` at all (the Jobs screen's is the delete's). `src/jobs/CancelButtons.tsx` draws the family (used by the Jobs
 row, the panel, and the header of a local job).
 
-### Claude's jobs (`src/jobs/claude.ts`, `src/jobs/groups-changed.ts`) — ADR-027 M4 amendment, items 6–7
+### Claude's jobs (`src/jobs/claude.ts`, `ClaudeMarks.tsx`, `groups-changed.ts`, `jobs-reload.ts`) — ADR-027 M4 amendment, items 6–8
 
 The pure logic behind the Jobs screen's Claude badge, a PROPOSED job's reasons, "Claude is submitting"
-in place of Run, and the groups refresh. No React, no Tauri; the screens render what these decide and
-none reads `origin`, `mcp_state` or `mcp_reasons` itself. Every predicate is exact (rule #9): a job the
+in place of Run, and the reloads, plus the small components that draw it. `claude.ts` has no React and
+no Tauri; the screens render what it decides and none reads `origin`, `mcp_state` or `mcp_reasons`
+itself. Every predicate is exact (rule #9): a job the
 payload does not positively name as Claude's is not Claude's, and a missing field never matches.
 
 - `isClaudeJob(job)`: `origin === "mcp"`. The badge (`CLAUDE_BADGE`, "Claude") is for these only.
@@ -1172,15 +1181,42 @@ payload does not positively name as Claude's is not Claude's, and a missing fiel
   `reasonsList(job)` (the detail's lines) answer only for a PROPOSED job with reasons, else `null`.
 - `runAction(job)` → `{kind: "run"}` (the screen's own Run), `{kind: "submitting", label: "Claude is
   submitting", disabled: true}` (a draft with `mcp_state = 'submitting'`), or `{kind: "none"}` (not a
-  draft). The `submit_job` refusal in Rust stays as the backstop.
+  draft). The `submit_job` refusal in Rust stays as the backstop. `autoRunRefusal(job)` is the same
+  answer for an auto-run submit: the text that stops it, or `null`.
+- `isHeldByClaude(job)`: `mcp_state != null` — **any** set value, the predicate of Rust's
+  `delete_refusal_for_mcp_state` (which fails closed on any non-NULL). Wider than `isSubmitting` on
+  purpose: that words Run's slot, this holds Delete back.
+- **Run and Delete are composed in `rowActions`** (`remote.ts`), the one place both are decided
+  (Anton, 2026-11-23): a draft whose `runAction` is `submitting` gets `[{action: "submitting"}]` — no
+  `run_locally`, no `delete`; every other draft gets `run_locally` and `delete` as before. Then, for
+  **any** job with `isHeldByClaude`, a `delete` in the answer becomes `{action: "delete_held"}`: a
+  terminal row a crash left flagged (MCP off, before step C) offers `open` and `delete_held`, and the
+  Jobs row draws a muted "held by Claude" note (`DeleteHeldNote`; its title says it can be deleted once
+  Claude's `create_job` ends or once MCP is on and reconciles it). A live row never offered Delete. The
+  Jobs row, `planBulkDelete` and the detail's toolbar all read that one answer; Rust refuses the delete
+  as well (`modules/tauri-core.md`).
 - `subscribeGroupsChanged(bridge, onChanged)` (`groups-changed.ts`) listens for the payload-free
   `groups:changed` that Claude's `create_group` tool emits (`GROUPS_CHANGED_EVENT`, pinned against Rust's
   constant) through `createListenerScope`, so a registration that resolves after `dispose()` is dropped
   at once. It returns `{ready, dispose}`; `ready` resolves once the listener is attached, for a view
   that reads its groups after it ("listen first, then ask", o16.7).
+- `subscribeJobsReload(bridge, reload, onError)` (`jobs-reload.ts`) is what the Jobs screen subscribes
+  with: `reload` on every `job:status` and every `groups:changed` (through `subscribeGroupsChanged`),
+  until `dispose()`. `job:status` carries no `mcp_state`, so "Claude is submitting" clears only because
+  the row is read again. `ready` settles once both registrations are done and **never rejects**: a
+  failed registration goes to `onError` (the screen's error banner). The screen reads its list after
+  `ready` ("listen first, then ask") and disposes on unmount.
+- **Components** (`ClaudeMarks.tsx`): `ClaudeBadge` ("Claude", `badge tone-info`, `origin = 'mcp'`
+  only), `RowReason` (a PROPOSED draft's `firstReason` under its status), `DetailReasons` (a banner on
+  the job detail: one `<li>` per reason, or "reasons unreadable: …" with the raw text; nothing for a
+  job that is not PROPOSED), `DeleteHeldNote` (the muted "held by Claude" where Delete would be on a flagged terminal row),
+  `SubmittingButton` (the disabled "Claude is submitting" in Run's place;
+  the Jobs row draws it where `rowActions` answers `submitting`).
+- **The detail's auto-run.** `openJobView` hands the row it read to the `afterOpen` submit; the detail's
+  submit asks `autoRunRefusal` and, for a submitting draft, shows the notice instead of calling
+  `submit_job`.
 
-The Jobs screen does not render these yet: the badge, the reasons, the disabled label and the listener
-are M4b Part B. The vitest config excludes `.claude/**`, so a plain `npm test` in the main checkout no
+The vitest config excludes `.claude/**`, so a plain `npm test` in the main checkout no
 longer collects the tests of every agent worktree under `.claude/worktrees/*/src/`.
 
 ### Bulk delete (`src/jobs/bulk-delete.ts`)
@@ -1188,7 +1224,7 @@ longer collects the tests of every agent worktree under `.claude/worktrees/*/src
 The pure logic behind **Delete selected (N)…** on the Jobs screen; a wrapper over the existing
 `delete_job`, no new command and no new semantics (so no ADR).
 - `planBulkDelete(selected, jobs, visibleIds, recordOf)` → `{ deletable, skipped, skippedNoCancel,
-  skippedCancelUnderway, missing, hiddenDeletable }`, in `jobs` order. It calls `rowActions(job, record)` once per selected
+  skippedCancelUnderway, skippedSubmitting, missing, hiddenDeletable }`, in `jobs` order. It calls `rowActions(job, record)` once per selected
   job; a job is **deletable iff those actions offer `delete`** — the predicate that draws the row's
   Delete button, reused rather than a second status list (a spy test pins the call and that its
   answer is obeyed): drafts and terminal rows (completed/parsed/failed/cancelled/lost, also with
@@ -1200,7 +1236,10 @@ The pure logic behind **Delete selected (N)…** on the Jobs screen; a wrapper o
   (`skippedCancelUnderway`: `cancelling`, or a pending cancel) — a cancel is already under way, so
   "wait for it to finish"; it offers **nothing** (`skippedNoCancel`: corrupt coordinates, or a sent
   cancel whose re-sends run) — "see the job". "Cancel them first" is wrong advice for the last two,
-  so each is worded apart. `missing` = selected ids no longer among the jobs; `hiddenDeletable` = deletable jobs
+  so each is worded apart; a fourth kind, a job Claude holds (`rowActions` answers `submitting` for a
+  draft, `delete_held` for a flagged terminal row), is `skippedSubmitting`: "N jobs held by Claude will be skipped — they can be deleted once
+  Claude's create_job ends or MCP reconciles them" (the summary says "skipped N (held by Claude)";
+  Rust refuses them too). `missing` = selected ids no longer among the jobs; `hiddenDeletable` = deletable jobs
   outside `visibleIds`.
 - `runBulkDelete(jobs, del)` awaits `del(id)` **one job at a time**, catches per job
   (`String(e)`) and goes on; it never throws and never stops early. A job that turned live between

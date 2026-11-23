@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { confirm, message } from "@tauri-apps/plugin-dialog";
 
 import type { Group, Job, JobStatus } from "../types";
@@ -11,6 +10,8 @@ import { filterJobsBySearch } from "../groups/search";
 import { ROOT_OPTION } from "../groups/GroupSelect";
 import { InlineRename } from "../jobs/InlineRename";
 import { CancelButtons } from "../jobs/CancelButtons";
+import { ClaudeBadge, DeleteHeldNote, RowReason, SubmittingButton } from "../jobs/ClaudeMarks";
+import { subscribeJobsReload } from "../jobs/jobs-reload";
 import { clickCancelFamily, tauriBridge, trackRemoteStates, type RemoteStateTracker } from "../jobs/live-wiring";
 import { bulkDeleteFlow, planBulkDelete } from "../jobs/bulk-delete";
 import { bannerAfterClick, remoteView, rowActions, type CancelBusy, type CancelFamilyAction, type HeldRemoteState } from "../jobs/remote";
@@ -186,12 +187,19 @@ export function JobsScreen({
     [load],
   );
 
+  // The list is read after the listeners are attached ("listen first, then ask", o16.7) and again on
+  // every `job:status` (the queue advances jobs; the event carries no `mcp_state`, so "Claude is
+  // submitting" clears only through this reload) and every `groups:changed` (Claude made a group,
+  // ADR-027 M4). A registration that fails is shown, not thrown; unmount detaches both.
   useEffect(() => {
-    load();
-    // Statuses change as the queue advances jobs — refresh on every transition.
-    const unlisten = listen("job:status", () => load());
+    let disposed = false;
+    const sub = subscribeJobsReload(tauriBridge, () => void load(), setError);
+    void sub.ready.then(() => {
+      if (!disposed) void load();
+    });
     return () => {
-      unlisten.then((fn) => fn());
+      disposed = true;
+      sub.dispose();
     };
   }, [load]);
 
@@ -452,6 +460,8 @@ export function JobsScreen({
                         <span className={`badge ${job.status}`}>{job.status}</span>
                       )}
                       <RemoteJobBadges job={job} record={remoteHeld.get(job.id)?.state} />
+                      <ClaudeBadge job={job} />
+                      <RowReason job={job} />
                     </td>
                     <td className="mono" style={{ textAlign: "right" }}>
                       {formatEnergy(job.energy)}
@@ -471,6 +481,11 @@ export function JobsScreen({
                           // each labelled by its offer; a terminal row opens or is deleted.
                           const actions = rowActions(job, remoteHeld.get(job.id)?.state);
                           const terminal = actions.some((a) => a.action === "delete");
+                          // A draft Claude is still submitting: a disabled "Claude is submitting" in
+                          // Run's place and no Delete (ADR-027 M4 item 6); `rowActions` decides.
+                          const claudeSubmitting = actions.some((a) => a.action === "submitting");
+                          // A terminal row a crash left flagged: Open stays, Delete is a muted note.
+                          const deleteHeld = actions.some((a) => a.action === "delete_held");
                           return (
                             <>
                               <CancelButtons
@@ -479,8 +494,8 @@ export function JobsScreen({
                                 onAction={(action) => cancelFamily(job, action)}
                                 stopPropagation
                               />
-                              {terminal ? (
-                                // Terminal states: the primary action + Delete.
+                              {terminal || deleteHeld ? (
+                                // Terminal states: the primary action + Delete (or its held-back note).
                                 <>
                                   <button
                                     className={
@@ -497,16 +512,25 @@ export function JobsScreen({
                                         chosen only through New Job's Create & Run (ADR-024 o20.2). */}
                                     {job.status === "draft" ? "Run locally" : "Open"}
                                   </button>
-                                  <button
-                                    className="btn btn-sm btn-danger"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      remove(job);
-                                    }}
-                                  >
-                                    Delete
-                                  </button>
+                                  {terminal ? (
+                                    <button
+                                      className="btn btn-sm btn-danger"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        remove(job);
+                                      }}
+                                    >
+                                      Delete
+                                    </button>
+                                  ) : (
+                                    <DeleteHeldNote />
+                                  )}
                                 </>
+                              ) : null}
+                              {claudeSubmitting ? (
+                                <span onClick={(e) => e.stopPropagation()}>
+                                  <SubmittingButton />
+                                </span>
                               ) : null}
                             </>
                           );

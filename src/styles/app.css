@@ -3167,3 +3167,14 @@ button.ir-imaginary-mode.selected {
 .memory-preflight .memory-apply {
   margin-left: 8px;
 }
+
+/* Claude's jobs on the Jobs screen (ADR-027 M4): a PROPOSED draft's first reason under its status. */
+.claude-reason {
+  margin-top: 2px;
+  max-width: 340px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.claude-badge {
+  margin-left: 6px;
+}

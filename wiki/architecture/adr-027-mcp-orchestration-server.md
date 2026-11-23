@@ -1527,7 +1527,7 @@ The code anchors are at `91daa94`.
        by Anton, the custom time is a text date + hour/minute selects, composed into the same strict
        helper. JavaScriptCore's choice of offset in the repeated hour was not recorded; by design none
        is needed: the shown offset is honest whatever offset the engine picks
-       (`log.md`, 2026-11-22, the M4a Part B entry).)
+       (`log.md`, the `[2026-11-21] feat | ADR-027 M4a Part B` entry, its 2026-11-22 live-gate bullet).)
    - **Replacing a grant.** Creating a grant revokes the active one (decision 5). Whether to confirm
      "this replaces the active grant" is decided from a fresh `mcp_get_grant` read at the click, not
      from the form's snapshot.
@@ -1550,6 +1550,28 @@ The code anchors are at `91daa94`.
      - A pure helper parses them. Malformed JSON shows as "reasons unreadable" and never throws.
    - **Submitting.** On a job with `mcp_state = 'submitting'`, Run is replaced by a disabled "Claude
      is submitting". The `submit_job` refusal stays as the backstop.
+     (decided by Anton, 2026-11-23) Delete is hidden for a submitting draft, and every job-delete
+     command refuses while `mcp_state = 'submitting'`; a job stuck there after a crash becomes
+     deletable once the reconciliation clears it.
+     (decided by Anton, 2026-11-23, after the verifier) Delete is withheld for **any** job whose
+     `mcp_state` is set, on the same predicate as the Rust refusal, so a terminal job a crash left
+     flagged shows a muted note instead of a Delete that would fail. The refusal's message names both
+     ways out ("…once Claude's create_job ends, or once MCP is on and reconciles it"). A Rust source
+     pin (`job_delete_pin_tests`) keeps `delete_job_conn` the one place to guard: in the non-test
+     sources it fails on a second `DELETE FROM jobs`, on `REPLACE INTO jobs` or `UPDATE OR REPLACE
+     jobs`, and on a definition of `jobs` itself (`ALTER TABLE jobs`, `CREATE TABLE jobs`, at a word
+     boundary: `jobs_archive` is another table) that carries `ON DELETE CASCADE`. It is lexical: it
+     reads string literals (joining a `concat!`, and reading the file a production `include_str!` /
+     `include_bytes!` names, binary ones lossily), after folding case, quotes and brackets, schema
+     qualifiers (with or without whitespace around the dot), SQL comments and the whitespace
+     escapes. **Not covered:** SQL assembled at run time or by another macro (`format!`,
+     `stringify!`, a `+` join, a file read at run time); a char literal inside `concat!`; a letter
+     written as a non-whitespace escape (`\x6a`, `\u{6a}`); a comment marker (`--`, `/*`) inside an
+     SQL string value, which can hide a later delete in the same literal; a computed include path
+     (refused on purpose: the pin fails rather than guess); a cascade defined on a table other than
+     `jobs`; a delete from outside `src-tauri/src`; a migration that deletes jobs by other means (a
+     migration is reviewed as one). **False positive:** the dot folding joins any `word . word`, so
+     a prose string like "…delete from Settings. Jobs…" fails the pin (fail-safe); reword it.
 7. **The groups refresh (M4b).**
    - **The event.** The MCP `create_group` tool emits a payload-free `groups:changed` after its
      commit, and only after a successful insert.
@@ -1588,6 +1610,11 @@ The code anchors are at `91daa94`.
    - **M4b:**
      - the badge on a `user` job;
      - Run enabled while `submitting`;
+     - Delete offered for a submitting draft or for a terminal job that still carries `mcp_state`,
+       or a job-delete command accepting one;
+     - a second `DELETE FROM jobs`, a `REPLACE INTO jobs` or `UPDATE OR REPLACE jobs`, or a `jobs`
+       definition with `ON DELETE CASCADE`, written in any of the forms the source pin folds (the
+       limits are in item 6);
      - a submitting draft shown as PROPOSED;
      - malformed reasons throwing;
      - `create_group` over MCP not emitting `groups:changed`, or emitting it on a refused or failed
@@ -1607,7 +1634,8 @@ The code anchors are at `91daa94`.
    - **M4b:**
      - the badge;
      - a PROPOSED job's reasons;
-     - "Claude is submitting" during a remote step B;
+     - "Claude is submitting" during a remote step B, with no Delete on that row (or on a terminal
+       job that still carries `mcp_state`: a muted note instead), and "Delete selected" skipping it;
      - a group created over MCP appears while the Jobs screen stays open, with no navigation, no job
        transition and no click by Anton.
 10. **Pages the units update** (accurate today, stale once the code lands):
