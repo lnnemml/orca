@@ -5,6 +5,7 @@
  * itself, and none can throw on malformed reasons (`parseJobReasons` never does).
  */
 import type { Job } from "../types";
+import type { RunSlot } from "./remote";
 import { CLAUDE_BADGE, firstReason, isClaudeJob, reasonsList, SUBMITTING_LABEL } from "./claude";
 
 /** "Claude" for a job Claude created (`origin = 'mcp'`); nothing for any other job. */
@@ -73,4 +74,54 @@ export function SubmittingButton() {
       {SUBMITTING_LABEL}
     </button>
   );
+}
+
+/**
+ * A draft's Run on the Jobs row, as `runSlot` decided it (ADR-027 M4c amendment, item 3): a Run
+ * button (`run`), a disabled Run that carries Rust's reason (`disabled`), or a muted note and no Run
+ * (`note`: a Claude draft that cannot be run). `submitting` and `none` draw nothing here: the row
+ * draws "Claude is submitting" through `rowActions` and a non-draft has no Run. Clicking Run hands
+ * the slot's own target on, never a value of its own.
+ */
+export function DraftRunSlot({ slot, onRun }: { slot: RunSlot; onRun: (target: string | null) => void }) {
+  switch (slot.kind) {
+    case "run":
+      return (
+        <button
+          className="btn btn-primary btn-sm"
+          data-testid="draft-run"
+          onClick={(e) => {
+            e.stopPropagation();
+            onRun(slot.target);
+          }}
+        >
+          {slot.label}
+        </button>
+      );
+    case "disabled":
+      return (
+        // A click on the disabled button or its reason does not open the row (as `SubmittingButton`'s).
+        <span className="row" style={{ gap: 8 }} onClick={(e) => e.stopPropagation()}>
+          <button className="btn btn-primary btn-sm" disabled title={slot.reason} data-testid="draft-run-disabled">
+            {slot.label}
+          </button>
+          <span className="muted" data-testid="draft-run-reason">
+            {slot.reason}
+          </span>
+        </span>
+      );
+    case "note":
+      return (
+        <span className="muted" title="Claude's draft cannot be run" data-testid="draft-run-note">
+          {slot.text}
+        </span>
+      );
+    case "submitting":
+    case "none":
+      return null;
+    default: {
+      const unhandled: never = slot;
+      return unhandled;
+    }
+  }
 }

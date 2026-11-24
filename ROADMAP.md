@@ -1697,14 +1697,14 @@ and OrcaStudio picks the job up, syncs results, and parses them — no terminal,
               `groups:changed` refresh (M4 amendment items 6–7) — committed `1c15ca2` (Part A) +
               Part B (the Jobs screen, the job-delete backstop and its source pin); live gate
               passed 2026-11-23
-      - [ ] **M4c** a proposal keeps its target (ADR-027 M4c amendment, accepted 2026-11-23): schema
+      - [x] **M4c** a proposal keeps its target (ADR-027 M4c amendment, accepted 2026-11-23): schema
             v25 `jobs.mcp_target` written by step A; the row's Run goes to the stored target ("Run on
             <name>"), `submit_job` refuses any other and pre-v25 MCP drafts; `requested_target` in the
             read tools. Part A (migration, step A, refusals, read tools, pure helpers) + Part B (the row,
-            notes, profile read) + live gate
+            notes, profile read) + live gate — committed `7e07871` (Part A) + Part B; live gate passed
+            2026-11-24
       - [ ] **M5** live research gate (precondition done 2026-11-23: Anton added this repository's
-            `.claude/settings.json` deny rule on `mcp__orcastudio__*`, M4 amendment item 1; blocked on
-            M4c) — a real GOAT → Opt+Freq → SP chain driven from a research folder
+            `.claude/settings.json` deny rule on `mcp__orcastudio__*`, M4 amendment item 1; M4c done) — a real GOAT → Opt+Freq → SP chain driven from a research folder
 - [ ] TS refinement automation: scan maximum → OptTS → Freq → ΔG‡ pipeline
       (if not completed in Phase 4.5)
 

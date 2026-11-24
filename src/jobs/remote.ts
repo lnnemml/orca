@@ -28,6 +28,7 @@ import {
   LOCAL_MCP_TARGET,
   SUBMITTING_LABEL,
   isHeldByClaude,
+  submitTargetOf,
   runAction,
 } from "./claude";
 import type {
@@ -421,7 +422,12 @@ function waitNotice(waiting: boolean, record: RemoteState | null | undefined): W
 /** A Jobs-table row action: one of the cancel family (with its confirm), or the terminal row's. */
 export type RowAction =
   | { action: "cancel" | "retry_cancel" | "undo_cancel"; confirm: boolean }
-  | { action: "run_locally" }
+  /**
+   * A draft's Run slot is present. Where it runs and what it says is `runSlot`'s (ADR-027 M4c: a
+   * user draft runs here, a Claude draft on its stored target or not at all); this only says the
+   * slot exists, so the row composes it with Delete in one place.
+   */
+  | { action: "run" }
   /** A draft Claude is still submitting: Run is replaced by a disabled `SUBMITTING_LABEL`, and no Delete. */
   | { action: "submitting" }
   | { action: "open" }
@@ -436,7 +442,9 @@ export type RowAction =
 export type CancelSend = { action: "cancel" | "retry_cancel"; confirm: boolean };
 
 /**
- * A Jobs-table row's actions. A draft runs locally or is deleted; a **live** job — local
+ * A Jobs-table row's actions. A draft has a Run slot (`runSlot` words it and names its target: a
+ * user draft runs on this machine, a Claude draft on the target it was assembled for, or it offers
+ * no Run) and Delete; a **live** job — local
  * `queued`/`running`, remote `queued`/`running`/`cancelling` — offers only its cancel family, never
  * Delete (Rust refuses it; a `cancelling` job offers Retry cancel); a remote live job's cancel
  * family is exactly `remoteView`'s. A live job with corrupt coordinates offers nothing (o19.8).
@@ -457,7 +465,7 @@ export function rowActions(job: Job, record: RemoteState | null | undefined): Ro
 
 function baseRowActions(job: Job, record: RemoteState | null | undefined): RowAction[] {
   if (job.status === "draft") {
-    return runAction(job).kind === "submitting" ? [{ action: "submitting" }] : [{ action: "run_locally" }, { action: "delete" }];
+    return runAction(job).kind === "submitting" ? [{ action: "submitting" }] : [{ action: "run" }, { action: "delete" }];
   }
   const coords = coordinateState(job);
   if (coords === "local") {
@@ -732,13 +740,13 @@ export function runSlot(
   if (job.origin !== "mcp") return { kind: "run", label: "Run locally", target: null };
   const stored = job.mcp_target;
   if (stored == null) return { kind: "note", text: LEGACY_DRAFT_NOTE };
-  if (stored === LOCAL_MCP_TARGET) return { kind: "run", label: "Run locally", target: null };
+  if (stored === LOCAL_MCP_TARGET) return { kind: "run", label: "Run locally", target: submitTargetOf(stored) };
   if (profiles === null) return { kind: "disabled", label: "Run", reason: PROFILES_UNREAD_REASON };
   const option = runTargetOptions([...profiles]).find((o) => o.target === stored);
   if (option === undefined) return { kind: "note", text: DELETED_PROFILE_NOTE };
   const label = `Run on ${option.label}`;
   if (!option.enabled) return { kind: "disabled", label, reason: option.reason ?? "no reason reported" };
-  return { kind: "run", label, target: stored };
+  return { kind: "run", label, target: submitTargetOf(stored) };
 }
 
 /** The app setting holding the target of the last Create & Run (o20.1): a profile id, `""` for

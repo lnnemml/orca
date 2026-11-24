@@ -67,7 +67,9 @@ shows the draft as it was left.
   The **memory and disk warning row** sits under the create bar (see "Memory and disk preflight"
   below); it never disables Create or Create & Run (`createAllowed` lists the reply and never reads
   it).
-- **`JobsScreen`** — reads `list_jobs` (and `list_groups`) **after its `job:status` and `groups:changed`
+- **`JobsScreen`** — reads `list_jobs`, `list_groups` and `list_server_profiles` (the profiles name a
+  Claude draft's target; a failed or non-list read is `null` = unread, and never fails the list)
+  **after its `job:status` and `groups:changed`
   listeners are attached** (`subscribeJobsReload`), and again on every such event, into a
   `.jobs-table`: Title / Status badge (plus the **Claude** badge for `origin = 'mcp'` and, for a
   PROPOSED draft, its first reason as a muted line under the status; §Claude's jobs) / Energy (Eh) /
@@ -79,7 +81,8 @@ shows the draft as it was left.
   `cancelling` row, or a pending one whose re-sends stopped) and **Undo cancel** (a pending cancel
   whose send is not marked — including a pending, unsent, not-stopped row, which therefore always has
   a working button), each labelled by its own offer; every other row the
-  primary action (**Run locally** for a draft, **Open** otherwise) **plus a `Delete`** button
+  primary action (a draft's **Run slot**, `runSlot`, below: "Run locally" for a user draft, "Run on
+  <name>" / "Run locally" / a note / a disabled Run for a Claude draft; **Open** otherwise) **plus a `Delete`** button
   (`.btn-danger`), matching the backend's terminal-states-only refusal ("cancel it first"), **except
   a job Claude holds** (`mcp_state` set, ADR-027 M4 item 6): a submitting draft gets a disabled
   **Claude is submitting** in Run's place and no Delete, and a terminal job a crash left flagged keeps
@@ -1200,16 +1203,24 @@ payload does not positively name as Claude's is not Claude's, and a missing fiel
   locally"; the profiles not read (`null`) → `disabled` "Run" (`PROFILES_UNREAD_REASON`, never the
   deleted note); its profile gone → `note` (`DELETED_PROFILE_NOTE`); not a run target → `disabled`
   "Run on <name>" with Rust's reason, from New Job's own `runTargetOptions`; else `run` "Run on
-  <name>" with the profile id as `target`. No other target is ever offered. `runSlot` is pure and
-  tested; the Jobs row does not read it yet (the row still offers "Run locally" for every draft not
-  being submitted, and `submit_job` refuses a Claude draft run off its target — closed until the row
-  is wired).
+  <name>" with the profile id as `target`; both `run` targets come from `submitTargetOf`. No other
+  target is ever offered. `runSlot` is pure and tested.
+- **The Jobs row draws that slot** (`DraftRunSlot`, `ClaudeMarks.tsx`) wherever `rowActions` offers a
+  draft its `run` action: a `run` slot is a Run button labelled by the slot whose click calls
+  `onOpenDetail(job.id, true, slot.target)` (App's `openDetail(jobId, autoRun, runTarget)`, so the
+  detail's auto-run submits `target: slot.target` — `null` for this machine, else the profile id; the
+  row has no target of its own); a `disabled` slot is a disabled Run with the reason beside it (a click
+  there does not open the row); a `note` slot is the muted note and **no Run**, Delete stays. The
+  profiles are re-read with every reload of the list (`job:status`, `groups:changed`) and on each
+  mount, so a profile edited in Settings changes the row the next time it is drawn. A user draft is
+  `run` "Run locally" with `target: null`, whether or not the profiles were read.
 - `isHeldByClaude(job)`: `mcp_state != null` — **any** set value, the predicate of Rust's
   `delete_refusal_for_mcp_state` (which fails closed on any non-NULL). Wider than `isSubmitting` on
   purpose: that words Run's slot, this holds Delete back.
 - **Run and Delete are composed in `rowActions`** (`remote.ts`), the one place both are decided
   (Anton, 2026-11-23): a draft whose `runAction` is `submitting` gets `[{action: "submitting"}]` — no
-  `run_locally`, no `delete`; every other draft gets `run_locally` and `delete` as before. Then, for
+  `run`, no `delete`; every other draft gets `run` (its slot exists; `runSlot` words it and names its
+  target) and `delete`. Then, for
   **any** job with `isHeldByClaude`, a `delete` in the answer becomes `{action: "delete_held"}`: a
   terminal row a crash left flagged (MCP off, before step C) offers `open` and `delete_held`, and the
   Jobs row draws a muted "held by Claude" note (`DeleteHeldNote`; its title says it can be deleted once
@@ -1232,7 +1243,8 @@ payload does not positively name as Claude's is not Claude's, and a missing fiel
   the job detail: one `<li>` per reason, or "reasons unreadable: …" with the raw text; nothing for a
   job that is not PROPOSED), `DeleteHeldNote` (the muted "held by Claude" where Delete would be on a flagged terminal row),
   `SubmittingButton` (the disabled "Claude is submitting" in Run's place;
-  the Jobs row draws it where `rowActions` answers `submitting`).
+  the Jobs row draws it where `rowActions` answers `submitting`), `DraftRunSlot` (a draft's Run slot
+  as `runSlot` decided it; draws nothing for `submitting` / `none`).
 - **The detail's auto-run.** `openJobView` hands the row it read to the `afterOpen` submit; the detail's
   submit asks `autoRunRefusal(row, runTarget)` and, for a submitting draft or a Claude draft off its
   stored target, shows the notice instead of calling `submit_job`.

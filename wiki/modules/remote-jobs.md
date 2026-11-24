@@ -1184,9 +1184,10 @@ Recorded in [remote-live-run-b4.md](../architecture/remote-live-run-b4.md):
   refuses it on any other target, when the target was never stored (a draft from before v25), and
   when its profile was deleted (`modules/mcp-server.md`, "The `submit_job` guard"). The UI side is
   `remote.ts`'s `runSlot` ("Run on <name>", "Run locally", a note, or a disabled Run with Rust's
-  reason) and `claude.ts`'s `submitTargetOf` and `autoRunRefusal` (`modules/frontend.md`); the Jobs
-  row does not read `runSlot` yet, so its "Run locally" on a server-targeted Claude draft is refused
-  until it does.
+  reason) and `claude.ts`'s `submitTargetOf` and `autoRunRefusal` (`modules/frontend.md`). The Jobs
+  row draws `runSlot` for a draft: a Claude draft's Run opens the detail with its stored target
+  (`openDetail(id, true, target)`, `null` for `local`), and a legacy draft or one whose profile was
+  deleted shows its note and no Run.
 - **Known limitation — `started_at` of a remote job** is stamped with the time of the status check
   that first sees the classifier's `Running` (`queued` → `running`, `crate::poller`), not the time the
   job started on the server. It can be late by up to a status period (15 s), or by hours when the

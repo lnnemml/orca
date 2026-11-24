@@ -81,12 +81,12 @@ pub(super) const LIST_JOBS: &str = concat!(
 );
 
 pub(super) const GET_JOB: &str = concat!(
-    "One job: status, origin, times (UTC), energy (Eh), wall time (s), input header, atom count, ",
+    "One job: status, origin, times (UTC), energy (Eh), wall time (s), header, atom count, ",
     "charge, multiplicity, notices, error, MCP reasons. ",
     requested_target_meaning!(),
     target_profile_id_meaning!("remote_host"),
-    "The header is rebuilt from the parsed input: values outside the display allowlist are not shown, ",
-    "geometry only as markers. Coordinate-like text is withheld (withheld_fields). ",
+    "Header rebuilt from the parsed input: values outside the display allowlist are not shown, ",
+    "geometry only as markers, never the coordinate block. Coordinate-like text is withheld (withheld_fields). ",
     recovery_sentence!()
 );
 

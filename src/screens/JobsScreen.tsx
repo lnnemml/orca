@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { confirm, message } from "@tauri-apps/plugin-dialog";
 
-import type { Group, Job, JobStatus } from "../types";
+import type { Group, Job, JobStatus, ServerProfile } from "../types";
 import { formatEnergy, formatLaptopUtc, formatWallTime } from "../format";
 import { GroupSidebar } from "../groups/GroupSidebar";
 import { filterJobsByGroup, type GroupSelection } from "../groups/tree";
@@ -10,17 +10,19 @@ import { filterJobsBySearch } from "../groups/search";
 import { ROOT_OPTION } from "../groups/GroupSelect";
 import { InlineRename } from "../jobs/InlineRename";
 import { CancelButtons } from "../jobs/CancelButtons";
-import { ClaudeBadge, DeleteHeldNote, RowReason, SubmittingButton } from "../jobs/ClaudeMarks";
+import { ClaudeBadge, DeleteHeldNote, DraftRunSlot, RowReason, SubmittingButton } from "../jobs/ClaudeMarks";
 import { subscribeJobsReload } from "../jobs/jobs-reload";
 import { clickCancelFamily, tauriBridge, trackRemoteStates, type RemoteStateTracker } from "../jobs/live-wiring";
 import { bulkDeleteFlow, planBulkDelete } from "../jobs/bulk-delete";
-import { bannerAfterClick, remoteView, rowActions, type CancelBusy, type CancelFamilyAction, type HeldRemoteState } from "../jobs/remote";
+import { bannerAfterClick, remoteView, rowActions, runSlot, type CancelBusy, type CancelFamilyAction, type HeldRemoteState } from "../jobs/remote";
 import { RemoteJobBadges } from "../jobs/RemotePanel";
 import { STATUS_CHIPS } from "../jobs/status";
 import { exportSelection, type CopyMode } from "../export/save";
 
 interface JobsScreenProps {
-  onOpenDetail: (jobId: string, autoRun: boolean) => void;
+  /** `runTarget` is where an `autoRun` submits: null = this machine, else a server profile id
+   *  (`submit_job`'s `target`). A Claude draft's Run passes its stored target (ADR-027 M4c). */
+  onOpenDetail: (jobId: string, autoRun: boolean, runTarget?: string | null) => void;
   /** Whether the queue is paused — surfaced on `queued` badges so a job that
    *  isn't starting shows why. */
   queuePaused: boolean;
@@ -104,14 +106,23 @@ export function JobsScreen({
     };
   }, []);
 
+  // The server profiles, read with every reload of the list: a Claude draft's Run names its stored
+  // target's profile and judges whether it is a run target (`runSlot`, ADR-027 M4c item 3). `null`
+  // = not read (loading, the read failed, or an answer that is not a list): such a draft then shows
+  // a disabled Run, never Run and never a claim that its profile is gone. The read has its own
+  // catch, so a profile failure never fails the job list.
+  const [profiles, setProfiles] = useState<readonly ServerProfile[] | null>(null);
+
   const load = useCallback(async () => {
     try {
-      const [jobList, groupList] = await Promise.all([
+      const [jobList, groupList, profileList] = await Promise.all([
         invoke<Job[]>("list_jobs"),
         invoke<Group[]>("list_groups"),
+        invoke<ServerProfile[]>("list_server_profiles").catch(() => null),
       ]);
       setJobs(jobList);
       setGroups(groupList);
+      setProfiles(Array.isArray(profileList) ? profileList : null);
       const liveRemote = jobList.filter((j) => remoteView(j, null).kind === "live").map((j) => j.id);
       void remoteTracker.current?.read(liveRemote);
     } catch (e) {
@@ -484,6 +495,11 @@ export function JobsScreen({
                           // A draft Claude is still submitting: a disabled "Claude is submitting" in
                           // Run's place and no Delete (ADR-027 M4 item 6); `rowActions` decides.
                           const claudeSubmitting = actions.some((a) => a.action === "submitting");
+                          // A draft's Run slot (`runSlot`): a user draft runs here; a Claude draft
+                          // runs only on the target it was assembled for, or offers a note / a
+                          // disabled Run (ADR-027 M4c item 3). Drawn only where `rowActions` offers
+                          // a Run, so "submitting" has one decider.
+                          const slot = actions.some((a) => a.action === "run") ? runSlot(job, profiles) : null;
                           // A terminal row a crash left flagged: Open stays, Delete is a muted note.
                           const deleteHeld = actions.some((a) => a.action === "delete_held");
                           return (
@@ -497,21 +513,22 @@ export function JobsScreen({
                               {terminal || deleteHeld ? (
                                 // Terminal states: the primary action + Delete (or its held-back note).
                                 <>
-                                  <button
-                                    className={
-                                      job.status === "draft"
-                                        ? "btn btn-primary btn-sm"
-                                        : "btn btn-sm"
-                                    }
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      onOpenDetail(job.id, job.status === "draft");
-                                    }}
-                                  >
-                                    {/* A draft runs on this machine from here: the run target is
-                                        chosen only through New Job's Create & Run (ADR-024 o20.2). */}
-                                    {job.status === "draft" ? "Run locally" : "Open"}
-                                  </button>
+                                  {slot !== null ? (
+                                    <DraftRunSlot
+                                      slot={slot}
+                                      onRun={(target) => onOpenDetail(job.id, true, target)}
+                                    />
+                                  ) : (
+                                    <button
+                                      className="btn btn-sm"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        onOpenDetail(job.id, false);
+                                      }}
+                                    >
+                                      Open
+                                    </button>
+                                  )}
                                   {terminal ? (
                                     <button
                                       className="btn btn-sm btn-danger"

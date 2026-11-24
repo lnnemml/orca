@@ -1428,8 +1428,9 @@ Each tool is a thin shell: typed arguments, the core's call with its lock, and t
   refuses a search-only argument; with `query` it is a search and refuses `lines`.
 - **Descriptions.** Each carries `RECOVERY_SENTENCE` (pinned for every listed tool), names the units
   it returns, and stays under 700 bytes. `get_geometry` and `measure` say indices are 0-based;
-  `get_job` says its header is rebuilt from the parsed input and values outside the display
-  allowlist are not shown; `read_output` says it is a bounded tail or search.
+  `get_job` says its header is rebuilt from the parsed input, values outside the display
+  allowlist are not shown, and geometry appears only as markers, "never the coordinate block"
+  (pinned by `the_job_descriptions_say_what_each_null_target_means`); `read_output` says it is a bounded tail or search.
 - **The mapping** (`respond`). A result is the core's value as compact JSON (`result_text`), every
   field kept, `withheld_fields` and the truncation flags included, and `served_text` checks it
   against `RESULT_CAP_BYTES` once more as it leaves: over it, a tool error, never served. A

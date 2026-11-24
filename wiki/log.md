@@ -14319,3 +14319,75 @@ Settled the Open item of ADR-027 M3a (rule #10): does a `COMMIT` of a `BEGIN IMM
   helpers), `remote-jobs.md` (o20.2's exception).
 - **Next:** verifier CODE on Part A; then Part B (the row's "Run on <name>", the notes, the profile
   read, the `JobsScreen.tsx` and `rowActions` comments) and Anton's live gate.
+
+## [2026-11-24] feat | ADR-027 M4c Part B — the row's Run on the stored target
+- **What.** Part B of the M4c amendment: the Jobs row's Run for a Claude draft goes to its stored
+  target (`job.mcp_target`), or is not offered. Uncommitted in its worktree; no real database was
+  opened and `tauri dev` was not run.
+- **The row** (`JobsScreen.tsx`, `ClaudeMarks.tsx`). Wherever `rowActions` offers a draft its `run`
+  action, the row draws `runSlot(job, profiles)` through the new `DraftRunSlot`: a Run button
+  ("Run on <name>" / "Run locally") whose click is `onOpenDetail(job.id, true, slot.target)`, so
+  App's `openDetail(jobId, autoRun, runTarget)` and the detail's auto-run submit exactly that target
+  (`null` for `local`, the profile id otherwise; both come from `submitTargetOf`, now used by
+  `runSlot` for both branches); a disabled Run with Rust's reason beside it; or the legacy /
+  deleted-profile note and no Run (Delete stays). `onOpenDetail` gains an optional `runTarget`.
+  "Claude is submitting" still has one decider (`rowActions`). A user draft is unchanged: "Run
+  locally", `target: null`, whether or not the profiles were read.
+- **The profile read.** `JobsScreen.load` reads `list_server_profiles` with the jobs and groups (its
+  own catch; a non-list answer is `null` = unread, so a server-targeted draft shows a disabled Run
+  with `PROFILES_UNREAD_REASON`, never the deleted note). It re-reads on every reload and mount. No
+  new Rust command, no profile-change event exists.
+- **Rename.** `RowAction`'s `run_locally` is now `run` (the slot exists; `runSlot` says what and
+  where). The three `remote.test.ts` expectations changed in name only.
+- **Stale text** (INFO-2): the `rowActions` comment, the Run-to-detail comment (gone with the old
+  button), `frontend.md`'s Jobs row, `rowActions` and `runSlot` paragraphs, `remote-jobs.md`'s
+  "not wired yet" sentence.
+- **GET_JOB** (Part A LOW). The description lost "never the coordinate block" when compressed; it is
+  back ("geometry only as markers, never the coordinate block"), 694 bytes (cap 700; `input header`
+  is now `header`, the field's own name), pinned in
+  `the_job_descriptions_say_what_each_null_target_means`. `mcp-server.md` names it.
+- **Existing test changed.** `JobsScreen.claude.test.tsx` "offers a PROPOSED draft Run and Delete"
+  had a Claude draft with no stored target; by the amendment that is a legacy draft with no Run, so
+  the fixture now stores `mcp_target: "local"`. Nothing else existing was changed.
+- **Counts.** `cargo test -p orcastudio --lib` 1534 passed / 31 ignored (unchanged: the new Rust
+  assertion is inside an existing test); `cargo build` 0 warnings; `npx tsc --noEmit` clean;
+  `npx vitest run src/` 1543 passed / 2 skipped, 107 files (was 1531: +12 row tests).
+- **Controls** (`m4c_partb_controls.py`, backed up to `~/orcastudio-worktree-backups-2026-11-21/`):
+  each a mutation, the narrowest test, RED required on the tagged assertion, the file restored and
+  checked by sha256. **All 9 RED on tag, all restores OK:** `ui_row_target` (click hands null on),
+  `ui_row_local_null` (`local` passed through), `ui_row_uni_local` ("Run locally" for a uni draft),
+  `ui_row_deleted`, `ui_row_legacy` (Run offered), `ui_row_not_run_target` (Run enabled),
+  `ui_row_unread` (enabled while unread), `ui_row_user` (a user draft's target changed),
+  `desc_no_coordinates` (GET_JOB loses the phrase).
+- **Live gate for Anton** (render and flow are not unit-testable; the first Run of a Claude draft on
+  uni):
+  1. an MCP draft targeted at uni shows "Run on <uni's name>", and clicking it opens the detail and
+     runs on uni (check the job's `backend_id`/host, and its `%maxcore` is the uni value);
+  2. a `local` one says "Run locally" and runs here;
+  3. the legacy test draft `cd752a6a` shows the note and no Run, Delete still works;
+  4. if reachable: a profile that is not a run target (unverified, or edited so its facts are
+     cleared) shows a disabled "Run on <name>" with the reason; and stopping the profile read is
+     not reachable by hand (unit-tested);
+  5. **New iteration** on a Claude draft: which `%maxcore` New Job ends up with (the seeded value
+     or the Run-on default; amendment item 3, LOW-4), and that New Job's memory row judges it for
+     the chosen target;
+  6. user drafts: "Run locally" unchanged.
+- **Verifier CODE r1** (tree `202ee84e`): PASS WITH FINDINGS (0 HIGH/MED, 2 LOW, 4 INFO).
+  - Counts matched: 1534 / 31 ignored, 1543 / 2 skipped, 0 warnings, tsc clean.
+  - The 9 implementer controls went RED. Of the verifier's 11 own mutations, 7 went RED, 2 stayed GREEN as expected (the 697-byte GET_JOB, the equivalent `v_slot_ungated`) and 2 stayed GREEN as gaps (the two LOWs below).
+  - **LOW-1, accepted as a test gap.** No test covers a profile read that succeeds and then fails. The code sets `null` (fail closed), and Rust refuses a deleted or not-run-target profile anyway.
+  - **LOW-2, accepted as a test gap.** No test pins `App.openDetail` passing `runTarget` on. Dropping it fails closed (the detail's refusal), and live-gate item 1 exercised the path end to end.
+- **The orchestrator's live gate passed** (2026-11-24, Anton on WebKitGTK; `tauri dev` on tree `202ee84e`; real DB at v25, backup `orcastudio.db.bak-2026-11-23-pre-m4c`).
+  - Two PROPOSED drafts were made over MCP by Anton's own terminal (P1 + P5, ethylene HF/def2-SVP). This repository's deny rule keeps the orchestrator off MCP.
+    - `0438f501` "M4c gate: uni draft": `mcp_target` = the uni profile, `%maxcore` 2300 (`server_proposal`).
+    - `0000de14` "M4c gate: local draft": `mcp_target` = `local`, `%maxcore` 1600 (`local_fitted`).
+  - **The rows.**
+    - The uni draft showed "Run on university cluster". Anton clicked it, and the job ran on uni: `backend_id` = the uni profile, `remote_host` `uni`, `parsed`, −77.977605 Eh.
+    - The local draft showed "Run locally" and ran here: `backend_id` NULL, `parsed`, −77.977605 Eh.
+    - The legacy draft `cd752a6a` showed "assembled before targets were stored — delete it and ask Claude again", with no Run and Delete kept.
+    - User jobs were unchanged.
+  - **Layout.** "Run on university cluster" wraps to two lines and the legacy note to three. This is readable, and Anton raised no objection.
+  - **New iteration** on the uni draft (amendment item 3, LOW-4, settled). New Job kept the seeded `%maxcore 2300`; an untouched seeded value is not replaced by the Run-on default. Its memory row judged it for Local: "this machine ≈18.9 GiB > 13.7 GiB".
+  - **Not exercised live:** a not-run-target profile, a deleted profile, and the unread state. These are covered by unit tests and controls.
+- **M4c is complete:** ROADMAP M4c `[x]`.
+- **Next:** M5, the live research gate. The research session recreates its GOAT drafts, which now keep their target.

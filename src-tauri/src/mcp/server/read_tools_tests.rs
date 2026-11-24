@@ -199,6 +199,9 @@ fn the_job_descriptions_say_what_each_null_target_means() {
         assert!(description.contains(RECOVERY_SENTENCE) && description.len() < 700, "{name}: {} bytes", description.len());
     }
     assert!(GET_JOB.contains("rebuilt from the parsed input") && GET_JOB.contains("values outside the display allowlist are not shown"));
+    // The coordinate block is never returned: Claude reads this sentence, not the code (ADR-027 decision
+    // 7's table makes it bold). `ctl:desc_no_coordinates` — drop "never the coordinate block" → red.
+    assert!(GET_JOB.contains("never the coordinate block"), "[ctl:desc_no_coordinates] {GET_JOB}");
 }
 
 /// Every read tool's input schema refuses unknown properties, and an unknown argument is a tool

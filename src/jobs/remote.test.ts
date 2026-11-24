@@ -537,7 +537,7 @@ describe("rowActions (o22.14.8)", () => {
     expect(kinds(job({ status: "running", cancel_requested_at: "2026-10-18 06:18:01", cancel_sent_at: "2026-10-18 06:18:05" }), record())).toEqual([]);
     expect(kinds(job({ status: "completed" }))).toEqual(["open", "delete"]);
     expect(kinds(job({ status: "failed", ...LOCAL }))).toEqual(["open", "delete"]);
-    expect(kinds(job({ status: "draft", ...LOCAL }))).toEqual(["run_locally", "delete"]);
+    expect(kinds(job({ status: "draft", ...LOCAL }))).toEqual(["run", "delete"]);
     // Corrupt coordinates: shown, never acted on (o19.8).
     expect(kinds(job({ status: "running", remote_socket: null }))).toEqual([]);
   });
@@ -547,7 +547,7 @@ describe("rowActions (o22.14.8)", () => {
   it("offers a draft Claude is submitting neither Run nor Delete, only the disabled 'submitting'", () => {
     const sub = job({ status: "draft", ...LOCAL, origin: "mcp", grant_id: "g1", mcp_state: "submitting" });
     expect(rowActions(sub, null)).toEqual([{ action: "submitting" }]);
-    expect(kinds(job({ status: "draft", ...LOCAL, origin: "mcp", grant_id: null, mcp_state: null }))).toEqual(["run_locally", "delete"]);
+    expect(kinds(job({ status: "draft", ...LOCAL, origin: "mcp", grant_id: null, mcp_state: null }))).toEqual(["run", "delete"]);
   });
 
   // Delete is held back for ANY job whose mcp_state is set (Anton chose (b), 2026-11-23): a terminal row
@@ -566,7 +566,7 @@ describe("rowActions (o22.14.8)", () => {
   });
 
   it("offers a PROPOSED draft (no grant, no state) Run and Delete as any draft", () => {
-    expect(kinds(job({ status: "draft", ...LOCAL, origin: "mcp", grant_id: null, mcp_state: null, mcp_reasons: "[]" }))).toEqual(["run_locally", "delete"]);
+    expect(kinds(job({ status: "draft", ...LOCAL, origin: "mcp", grant_id: null, mcp_state: null, mcp_reasons: "[]" }))).toEqual(["run", "delete"]);
   });
 
   it("names the action a Cancel button sends", () => {
