@@ -260,6 +260,12 @@ export interface Job {
   /** `"submitting"` while Claude's `create_job` is between its step A and step C (the charged draft
    *  is on its way to a backend), else null. The only value Rust writes. */
   mcp_state: "submitting" | null;
+  /** Where Claude assembled an MCP job to run (schema v25, ADR-027 M4c amendment): `"local"` or a
+   *  server profile id — the target its `%maxcore` was fitted for. Null for a user job, and for an
+   *  MCP job created before targets were stored (such a draft is not runnable). Never map it to
+   *  `submit_job`'s `target` inline: `submitTargetOf` (`src/jobs/claude.ts`) turns `"local"` into
+   *  null. */
+  mcp_target: string | null;
 }
 
 /** Mirrors `src-tauri/src/models/group.rs::Group` (schema v16, Phase 4.7.2, ADR-019).

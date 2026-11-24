@@ -14,7 +14,8 @@
 //! when it holds a coordinate-like row; `withheld_fields` names it and the rest is served. A failed
 //! job's stored error (its stderr tail, or else the last 20 lines of `output.out`:
 //! `local_backend::detect_completion`) is the common case. `list_jobs` guards its title and error
-//! excerpt the same way, and has no backstop (its ids are app-minted v4 UUIDs). Behind `get_job`'s
+//! excerpt the same way, and has no backstop (its ids are app-minted v4 UUIDs, and `requested_target`
+//! is `local` or an app-minted profile id, so neither needs a guard). Behind `get_job`'s
 //! guards, [`tripwire`] walks the serialised view and refuses the whole view if a row escaped them,
 //! an ID field included.
 //!
@@ -71,8 +72,13 @@ pub struct JobSummary {
     pub status: JobStatus,
     pub origin: JobOrigin,
     pub group_id: Option<String>,
-    /// The server profile the job runs on; `None` is this machine.
+    /// The server profile the job was submitted to (`jobs.backend_id`, written by a remote submit);
+    /// `None` = not submitted, or ran on this machine (`get_job`'s `remote_host` tells them apart).
     pub target_profile_id: Option<String>,
+    /// Where Claude asked an MCP job to run (`jobs.mcp_target`, schema v25): `local` or a server
+    /// profile id. `None` for a job Claude did not create, or one created before targets were stored
+    /// (`origin = 'mcp'`; such a draft cannot be run).
+    pub requested_target: Option<String>,
     pub created_at_utc: String,
     pub started_at_utc: Option<String>,
     pub completed_at_utc: Option<String>,
@@ -129,6 +135,7 @@ fn summary_of(job: Job) -> JobSummary {
         origin: job.origin,
         group_id: job.group_id,
         target_profile_id: job.backend_id,
+        requested_target: job.mcp_target,
         created_at_utc: job.created_at,
         started_at_utc: job.started_at,
         completed_at_utc: job.completed_at,
@@ -217,8 +224,10 @@ pub struct JobView {
     pub status: JobStatus,
     pub origin: JobOrigin,
     pub group_id: Option<String>,
-    /// The server profile the job runs on; `None` is this machine.
+    /// See [`JobSummary::target_profile_id`].
     pub target_profile_id: Option<String>,
+    /// See [`JobSummary::requested_target`].
+    pub requested_target: Option<String>,
     /// The server host alias of a remote job (its stored coordinates, ADR-024); `None` for a local one.
     pub remote_host: Option<String>,
     pub created_at_utc: String,
@@ -384,6 +393,7 @@ pub fn get_job(conn: &Connection, id: &str) -> Result<JobView, ToolError> {
         origin: job.origin,
         group_id: job.group_id,
         target_profile_id: job.backend_id,
+        requested_target: job.mcp_target,
         remote_host,
         created_at_utc: job.created_at,
         started_at_utc: job.started_at,

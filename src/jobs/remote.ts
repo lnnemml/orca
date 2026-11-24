@@ -22,7 +22,14 @@
  * - `resolveRunTarget`: the remembered "Run on" choice, checked against those choices (o20.1).
  */
 import { formatLaptopUtc } from "../format";
-import { isHeldByClaude, runAction } from "./claude";
+import {
+  DELETED_PROFILE_NOTE,
+  LEGACY_DRAFT_NOTE,
+  LOCAL_MCP_TARGET,
+  SUBMITTING_LABEL,
+  isHeldByClaude,
+  runAction,
+} from "./claude";
 import type {
   CancelResult,
   CheckError,
@@ -680,6 +687,58 @@ export function runTargetOptions(profiles: ServerProfile[]): RunTargetOption[] {
       reason: p.run_target.is_run_target ? null : (p.run_target.reason ?? "no reason reported"),
     })),
   ];
+}
+
+/**
+ * What a Jobs row's Run slot shows (ADR-027 M4c amendment, item 3). `run`: a Run button labelled
+ * `label` that opens the detail with `target` as `submit_job`'s target. `submitting`: Run is replaced
+ * by the disabled "Claude is submitting". `note`: no Run, only the note (a Claude draft that cannot be
+ * run). `disabled`: a disabled Run with Rust's reason, as New Job's select shows a profile that is not
+ * a run target. `none`: not a draft, so no Run at all.
+ */
+export type RunSlot =
+  | { kind: "none" }
+  | { kind: "submitting"; label: typeof SUBMITTING_LABEL; disabled: true }
+  | { kind: "note"; text: string }
+  | { kind: "disabled"; label: string; reason: string }
+  | { kind: "run"; label: string; target: string | null };
+
+/** The disabled slot's reason while the server profiles are not (yet) read: the row cannot name the
+ *  target or know whether it is a run target, so it offers no Run (failing closed). */
+export const PROFILES_UNREAD_REASON = "the server profiles are not loaded";
+
+/**
+ * A draft's Run slot on the Jobs row (ADR-027 M4c amendment, item 3): a Claude draft runs where Claude
+ * assembled it — on the target its `%maxcore` was fitted for — or not at all. In order:
+ * 1. not a draft → `none`; Claude still submitting it → `submitting` (M4 amendment, item 6);
+ * 2. a user draft → "Run locally" on this machine, unchanged;
+ * 3. a Claude draft with no stored target (from before v25, or a payload without the field) → the
+ *    legacy note; stored `local` → "Run locally";
+ * 4. its stored profile is gone → the deleted-profile note; not a run target (unverified, or its
+ *    facts cleared by an edit) → disabled, with Rust's reason, through New Job's own
+ *    `runTargetOptions`; otherwise "Run on <name>", targeting that profile id.
+ *
+ * `profiles` null means the profiles are not read (still loading, or the read failed): a
+ * server-targeted Claude draft then shows a disabled Run with {@link PROFILES_UNREAD_REASON} — never
+ * the deleted note (a claim the row cannot make) and never Run. No other target is ever offered.
+ */
+export function runSlot(
+  job: Pick<Job, "status" | "origin" | "mcp_state" | "mcp_target">,
+  profiles: readonly ServerProfile[] | null,
+): RunSlot {
+  const action = runAction(job);
+  if (action.kind === "none") return { kind: "none" };
+  if (action.kind === "submitting") return action;
+  if (job.origin !== "mcp") return { kind: "run", label: "Run locally", target: null };
+  const stored = job.mcp_target;
+  if (stored == null) return { kind: "note", text: LEGACY_DRAFT_NOTE };
+  if (stored === LOCAL_MCP_TARGET) return { kind: "run", label: "Run locally", target: null };
+  if (profiles === null) return { kind: "disabled", label: "Run", reason: PROFILES_UNREAD_REASON };
+  const option = runTargetOptions([...profiles]).find((o) => o.target === stored);
+  if (option === undefined) return { kind: "note", text: DELETED_PROFILE_NOTE };
+  const label = `Run on ${option.label}`;
+  if (!option.enabled) return { kind: "disabled", label, reason: option.reason ?? "no reason reported" };
+  return { kind: "run", label, target: stored };
 }
 
 /** The app setting holding the target of the last Create & Run (o20.1): a profile id, `""` for

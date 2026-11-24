@@ -166,12 +166,16 @@ pub fn largest_get_job(conn: &Connection, id: &str) {
     let input = format!("! B3LYP def2-SVP\n%scf\n{keys}end\n{}", &WATER_INPUT[WATER_INPUT.find("* xyz").unwrap()..]);
     let reasons: Vec<Value> = (0..100).map(|i| json!({"row": format!("P{i}"), "message": "r".repeat(5_000)})).collect();
     JobRow { input: &input, title: &"T".repeat(5_000), error: Some(&"e".repeat(50_000)), ..JobRow::new(id) }.insert(conn);
-    conn.execute("UPDATE jobs SET origin = 'mcp', mcp_reasons = ?1 WHERE id = ?2", params![Value::Array(reasons).to_string(), id])
-        .unwrap();
+    // `requested_target` at its largest: a 36-character profile id (schema v25).
+    conn.execute(
+        "UPDATE jobs SET origin = 'mcp', mcp_reasons = ?1, mcp_target = ?2 WHERE id = ?3",
+        params![Value::Array(reasons).to_string(), id36("profile"), id],
+    )
+    .unwrap();
 }
 
-/// The largest `list_jobs` page (`jobs_tests`): 80 jobs with 36-character ids, group and profile
-/// ids, 5,000-character titles and errors.
+/// The largest `list_jobs` page (`jobs_tests`): 80 MCP jobs with 36-character ids, group and profile
+/// ids (`target_profile_id` and `requested_target` both set), 5,000-character titles and errors.
 pub fn largest_list_jobs(conn: &Connection) {
     let (group, profile) = (id36("group"), id36("profile"));
     conn.execute("INSERT INTO groups (id, name) VALUES (?1, 'g')", [&group]).unwrap();
@@ -195,6 +199,7 @@ pub fn largest_list_jobs(conn: &Connection) {
         }
         .insert(&conn);
     }
+    conn.execute("UPDATE jobs SET origin = 'mcp', mcp_target = ?1", [&profile]).unwrap();
 }
 
 /// A results row in the shape `parse_and_store` writes (canonical units), with frequencies (two

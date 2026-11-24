@@ -23,7 +23,7 @@ mod manual;
 // Part B wires the transport (`mcp::server::wiring`: setup, the tick, `ExitRequested`, the relay) and
 // `mcp_status`/`mcp_set_enabled`; M3a wires `create_job` (steps A/B/C, the resolver, `SidecarSmiles`).
 // The scoped allow stays while a few items still have no non-test caller (the audit log's reader and
-// `active_grant_conn` for M4's panel, `insert_proposed_conn`, test accessors), so the build stays
+// `active_grant_conn` for M4's panel, test accessors), so the build stays
 // warning-clean without a faked caller.
 #[allow(dead_code)]
 mod mcp;

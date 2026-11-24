@@ -18,8 +18,11 @@ import {
   undoNotice,
   resolveRunTarget,
   LAST_RUN_TARGET_SETTING,
+  PROFILES_UNREAD_REASON,
+  runSlot,
   runTargetOptions,
 } from "./remote";
+import { DELETED_PROFILE_NOTE, LEGACY_DRAFT_NOTE } from "./claude";
 
 const COORDS = { remote_host: "uni", remote_job_dir: "/home/anton/.orcastudio/jobs/j1", remote_socket: "/tmp/ts-slot-0" };
 
@@ -49,6 +52,7 @@ function job(over: Partial<Job> = {}): Job {
     mcp_reasons: null,
     grant_id: null,
     mcp_state: null,
+    mcp_target: null,
     ...over,
   };
 }
@@ -774,5 +778,57 @@ describe("resolveRunTarget (o20.1)", () => {
     expect(resolveRunTarget(options, stored(""))).toBeNull();
     expect(resolveRunTarget(options, { viewer_theme: "dark" })).toBeNull();
     expect(resolveRunTarget(options, null)).toBeNull();
+  });
+});
+
+describe("runSlot: a Claude draft runs where Claude assembled it (ADR-027 M4c amendment, item 3)", () => {
+  const PROFILES = [
+    makeProfile({ id: "p-uni", name: "uni", run_target: { is_run_target: true, reason: null } }),
+    makeProfile({ id: "p-lab", name: "lab", run_target: { is_run_target: false, reason: "the profile has no core mask" } }),
+  ];
+  const CLAUDE = { status: "draft", origin: "mcp", grant_id: null, mcp_state: null } as const;
+
+  // CONTROL (ctl:ui_slot_target): give a profile-targeted slot `target: null` (or label it "Run
+  // locally") -> the uni draft runs on this machine -> red.
+  it("offers Run on the stored profile, with that profile's id as the submit target", () => {
+    expect(runSlot(job({ ...CLAUDE, mcp_target: "p-uni" }), PROFILES), "[ctl:ui_slot_target]").toEqual({ kind: "run", label: "Run on uni", target: "p-uni" });
+    expect(runSlot(job({ ...CLAUDE, mcp_target: "local" }), PROFILES)).toEqual({ kind: "run", label: "Run locally", target: null });
+  });
+
+  // CONTROL (ctl:ui_slot_legacy): let a null mcp_target fall through to Run -> red.
+  it("offers no Run on a legacy Claude draft, only the note", () => {
+    expect(runSlot(job({ ...CLAUDE, mcp_target: null }), PROFILES), "[ctl:ui_slot_legacy]").toEqual({ kind: "note", text: LEGACY_DRAFT_NOTE });
+    const old = job(CLAUDE) as Partial<Job>;
+    delete old.mcp_target;
+    expect(runSlot(old as Job, PROFILES)).toEqual({ kind: "note", text: LEGACY_DRAFT_NOTE });
+  });
+
+  // CONTROL (ctl:ui_slot_deleted): offer "Run locally" when the profile is not found -> red.
+  it("offers no Run when the stored profile is gone, only the note", () => {
+    expect(runSlot(job({ ...CLAUDE, mcp_target: "p-gone" }), PROFILES), "[ctl:ui_slot_deleted]").toEqual({ kind: "note", text: DELETED_PROFILE_NOTE });
+    expect(DELETED_PROFILE_NOTE).toBe("its target profile was deleted — delete it and ask Claude again");
+  });
+
+  // CONTROL (ctl:ui_slot_not_run_target): ignore `enabled` -> the unverified profile's Run is enabled -> red.
+  it("shows a stored profile that is not a run target disabled, with Rust's reason", () => {
+    expect(runSlot(job({ ...CLAUDE, mcp_target: "p-lab" }), PROFILES), "[ctl:ui_slot_not_run_target]").toEqual({
+      kind: "disabled",
+      label: "Run on lab",
+      reason: "the profile has no core mask",
+    });
+  });
+
+  it("offers no Run while the profiles are not read, and never calls the profile deleted", () => {
+    expect(runSlot(job({ ...CLAUDE, mcp_target: "p-uni" }), null)).toEqual({ kind: "disabled", label: "Run", reason: PROFILES_UNREAD_REASON });
+    // A local target needs no profile.
+    expect(runSlot(job({ ...CLAUDE, mcp_target: "local" }), null)).toEqual({ kind: "run", label: "Run locally", target: null });
+  });
+
+  it("keeps 'Claude is submitting' first, no Run off a draft, and a user draft's Run locally", () => {
+    const submitting = runSlot(job({ ...CLAUDE, grant_id: "g1", mcp_state: "submitting", mcp_target: null }), PROFILES);
+    expect(submitting).toEqual({ kind: "submitting", label: "Claude is submitting", disabled: true });
+    expect(runSlot(job({ ...CLAUDE, status: "queued", mcp_target: "p-uni" }), PROFILES)).toEqual({ kind: "none" });
+    expect(runSlot(job({ status: "draft" }), PROFILES)).toEqual({ kind: "run", label: "Run locally", target: null });
+    expect(runSlot(job({ status: "draft" }), null)).toEqual({ kind: "run", label: "Run locally", target: null });
   });
 });

@@ -31,7 +31,7 @@ count (`server/reads.rs`: every admitted read call counted per connection, and a
 in `McpStatus.reads`), "Cancel Claude's jobs" (`claude_jobs.rs`) and the audit view (`audit_view.rs`),
 with their commands in `commands/mcp.rs`; see "Settings → MCP's commands" below. The module stays
 registered in `lib.rs` under a scoped `#[allow(dead_code)]`: a few items still have no non-test caller
-(`audit_rows_conn`, test-only by design; `active_grant_conn`; `insert_proposed_conn`; test accessors).
+(`audit_rows_conn`, test-only by design; `active_grant_conn`; test accessors).
 
 **It fails closed.** A line outside the grammar is REFUSED (R1); a block, key or value outside the
 allowlist is PROPOSED (P2); a source whose terminal state is unknown is REFUSED (R4); a memory
@@ -50,7 +50,7 @@ PROPOSED (P5). Nothing reaches SUBMITTED by default.
 | `classify.rs` | `classify_mcp_job(&ClassifyInput) -> Disposition`; the input types and the typed reasons (below); `MAX_OPEN_PROPOSALS = 50`, `OPT_FAMILY`, `FREQ_TYPE`, `NEB_FAMILY` |
 | `assemble.rs` | `assemble(header, maxcore_mib, atoms, charge_mult, source_label) -> Result<Assembled, AssemblyError>`; `comment_safe_label`; `AppSet`; `SERVER_DEFAULT_MAXCORE_MIB = 2000`; `COORD_TOLERANCE_ANG = 1e-6`; `read_coordinate_block`, the strict `* xyz` block reader shared with the resolver |
 | `grant.rs` | `create_grant_conn`, `revoke_grant_conn`, `get_grant_conn`, `active_grant_conn`, `grant_snapshot_conn -> Option<CurrentGrant { id, snapshot }>`, `in_flight_conn`; `Grant` (with `status_at(now)`), `NewGrant`; `target_text`/`target_of` (`"local"` or a profile id); `begin_immediate`, `now_utc_conn`, `check_utc_text` |
-| `steps.rs` | `create_job`'s step A `decide_conn(conn, StepAInput) -> Decided` (`Refused`/`Proposed`/`Charged`), `open_proposals_conn` (R8's count), its step C `finish_submit_audited_conn -> StepC` and `step_c_audit`; M1b's P5-only step A `charge_and_insert_conn -> StepA` (with `charge_and_insert_with`, `McpJobDraft`) and unaudited `finish_submit_conn`, **test-only** (`#[cfg(test)]`: no app code can charge or refund without an audit row), which share the charge and finish bodies (`charge_in_tx`, `finish_in_tx`); `insert_proposed_conn`, `reconcile_submitting_conn -> Reconciled` (with its outcome rows; `RECONCILIATION_ARGS`), `submit_refusal_for_mcp_state`, `refuse_while_mcp_submitting`; `McpReason { row, message }` and its constructors; `SUBMITTING` |
+| `steps.rs` | `create_job`'s step A `decide_conn(conn, StepAInput) -> Decided` (`Refused`/`Proposed`/`Charged`), `open_proposals_conn` (R8's count), its step C `finish_submit_audited_conn -> StepC` and `step_c_audit`; M1b's P5-only step A `charge_and_insert_conn -> StepA` (with `charge_and_insert_with`, `McpJobDraft`) and unaudited `finish_submit_conn`, **test-only** (`#[cfg(test)]`: no app code can charge or refund without an audit row), which share the charge and finish bodies (`charge_in_tx`, `finish_in_tx`) and the stored target's write (`stamp_mcp_target`); `reconcile_submitting_conn -> Reconciled` (with its outcome rows; `RECONCILIATION_ARGS`), `submit_refusal_for_mcp_state`, `refuse_while_mcp_submitting`, `submit_job`'s target guard `refuse_off_target_conn(conn, &Job, requested)` with `LEGACY_DRAFT_NOTE` and `DELETED_PROFILE_NOTE`; `McpReason { row, message }` and its constructors; `SUBMITTING` |
 | `audit.rs` | the audit log: `append_audit_conn(conn, &AuditEntry)`, `audit_rows_conn -> Vec<AuditRow>` (test-only; a `reasons` that does not parse is its error), `bounded_reasons`, `AuditDisposition`; `CREATE_JOB`, `AUDIT_REASONS_MAX` (20), `REASON_MESSAGE_MAX_BYTES` (400) |
 | `audit_view.rs` | the audit view's reader: `list_audit_conn(conn, before_id, limit) -> AuditPage { rows, next_before_id }`, `audit_row_conn(conn, id) -> AuditRowView` (`NotFound` for an unknown id), `page_limit`, `read_reasons -> AuditReasons` (`Read { list }` / `Unreadable { raw, raw_clipped }`); `AuditRowView { id, at, tool, args, args_clipped, args_chars, disposition, reasons, job_id, grant_id }`; `AUDIT_PAGE_DEFAULT` (50), `AUDIT_PAGE_MAX` (200), `AUDIT_ARGS_PAGE_CHARS` (1,024), `AUDIT_REASONS_RAW_CHARS` (1,024). Tests in `audit_view_tests.rs` |
 | `claude_jobs.rs` | "Cancel Claude's jobs": `select_claude_jobs_conn -> ClaudeJobsSelection { to_cancel, submitting }` over the one statement `CLAUDE_JOBS_SQL`, `claude_jobs_summary_conn -> ClaudeJobsSummary { to_cancel, submitting }`, `selection_of_rows(Vec<SelectedRow>)` (the rule-#9 post-condition over the statement's rows), `cancel_claude_jobs(&DbState, cancel_one) -> ClaudeCancelReport { jobs, skipped_submitting }`; `ClaudeJobCancel { job_id, outcome }`, `ClaudeJobOutcome` (`Result`/`Error`). Tests in `claude_jobs_tests.rs` |
@@ -291,9 +291,23 @@ no MCP tool can create one.
 
 ## Steps A and C (`steps.rs`)
 
-Only `decide_conn`, `charge_and_insert_conn` and `insert_proposed_conn` write `origin = 'mcp'`. Each
-inserts through the app's own `commands::jobs::create_job_conn`, so an MCP job mints its index map
-like any job, and stamps the MCP columns in the same transaction.
+Only `decide_conn` and the test-only `charge_and_insert_conn` write `origin = 'mcp'`. Each inserts
+through the app's own `commands::jobs::create_job_conn`, so an MCP job mints its index map like any
+job, and stamps the MCP columns in the same transaction.
+
+**The stored target** (schema v25; ADR-027 M4c amendment, item 2). A Claude job keeps the target it
+was assembled for in `jobs.mcp_target`: `local` or a server profile id, the `target_text` of the
+`Target` that `create_job` handed to `assemble_for` (`%maxcore`) and `memory_verdict_for`, and that
+the classifier judged. The same two writers store it, and nothing else does: `stamp_mcp_target`
+writes `origin = 'mcp'` and `mcp_target` in one statement (the v25 CHECK admits a target only on an
+MCP row), right after the insert, inside step A's `BEGIN IMMEDIATE` — so before the audit row, and
+for a PROPOSED and a SUBMITTED job alike. A REFUSED call inserts no job and stores nothing. Step C's
+refund and keep and the reconciliation never touch the column, so a refunded draft still runs where
+Claude assembled it. An MCP draft from before v25 has it NULL (no backfill) and is not runnable. The
+rule this serves: a proposal runs where Claude assembled it, or not at all — `%maxcore` is a per-rank
+budget fitted for that target's rank count and memory, so a uni-fitted 2300 MiB on the laptop's 8–12
+ranks would ask for 18–27 GiB of a 15 GB machine. `submit_job` enforces it (`refuse_off_target_conn`,
+"The `submit_job` guard" below).
 
 - **`create_job`'s step A, `decide_conn(conn, StepAInput)`.** One `BEGIN IMMEDIATE` transaction. After
   the write lock is granted it reads the time (`datetime('now')`), the grant snapshot with its counters
@@ -320,8 +334,6 @@ like any job, and stamps the MCP columns in the same transaction.
   `origin = 'mcp'`, `grant_id` and `mcp_state = 'submitting'`, and `charged_jobs` is incremented. Its
   post-condition: exactly one grant row was charged and `in_flight` is still within `max_in_flight`; a
   breach rolls the whole step back.
-- **`insert_proposed_conn(conn, title, input, reasons)`** inserts a PROPOSED draft. It refuses an empty
-  reason list.
 - **Step C, `finish_submit_conn(conn, job_id, grant_id, outcome_message)`.** In one transaction it
   re-reads the row and always clears `mcp_state`. A row still in `draft` and charged to `grant_id` is
   refunded: `grant_id` set to NULL, `charged_jobs` decremented, and the reason `submit refused: …`
@@ -498,8 +510,9 @@ row; sizes only, never the text):
 | `title` | optional, 1–200 bytes; absent → `Claude: <the source, cut to 100 bytes>` |
 
 A server target that is not a profile is a tool error from the memory preflight ("does not exist"),
-before classification. The proposed draft keeps no target of its own: Anton chooses one at Run, and
-the audit row's `args` records what was asked.
+before classification. Step A stores the target on the job (`jobs.mcp_target`, "The stored target"
+above), PROPOSED or SUBMITTED: a proposed draft runs on that target or not at all, and the audit row's
+`args` records what was asked as well.
 
 ## The audit log (`audit.rs`)
 
@@ -742,12 +755,39 @@ transaction that inserts the row, and only ever cleared after that. A job read w
 never become `submitting` later, so the check stays true for the rest of the command. The remote arm's
 row is read again under the in-flight guard by `submit_to_server`, unchanged.
 
+**The target guard** (ADR-027 M4c amendment, items 3 and 4). Under the same lock as its guarded read,
+`submit_job` calls `steps::refuse_off_target_conn(&conn, &job, target)`. A user job, and any job that
+is not a draft, passes. An `origin = 'mcp'` draft is refused (`AppError::Conflict`), in this order:
+1. `mcp_target` NULL (a draft from before v25): "Claude's draft <id>: assembled before targets were
+   stored — delete it and ask Claude again" (`LEGACY_DRAFT_NOTE`);
+2. its stored profile no longer exists: "Claude's draft <id>: its target profile was deleted — delete
+   it and ask Claude again" (`DELETED_PROFILE_NOTE`). This is checked before the match, because "run it
+   there" is false advice for a target that is gone;
+3. the requested target differs from the stored one: "Claude assembled this job for <this machine |
+   the server profile "<name>">; run it there, or delete it".
+
+The request is read as `Backend::for_submit` reads it: `None` is this machine, `Some(x)` is the
+profile `x`, so `Some("local")` never matches a stored `local` (it would look for a profile named
+"local"). `mcp_target` is written once, in step A's insert, so a check that passes stays true; a
+profile deleted after it is the remote submit's own `NotFound`. Only `submit_job` carries this
+guard: fan-out child submits act on fresh **user** jobs, and Retry and the re-enqueue act on jobs
+that are no longer drafts. The Jobs screen's pure helpers mirror it on the UI side (`frontend.md`):
+`autoRunRefusal` declines the legacy and mismatch cases; a deleted profile is caught by Rust only on
+that path (the detail loads no profiles).
+
 Tests (`mcp/submit_guard_tests.rs`): the guarded read refuses a `submitting` job and passes a user
 draft; the job submits by hand once step C has cleared the flag; the retry's guard; the place of each
 guard in `submit_job` and `retry_remote_submit`, pinned in the source (these commands need an
-`AppHandle`, as `cancel_job`'s test does); and `the_backends_carry_no_mcp_guard`. The existing submit
-tests (`a_submit_with_no_target_never_reaches_the_ssh_path` and the remote-command pins in
-`commands::remote_jobs`) are unchanged.
+`AppHandle`, as `cancel_job`'s test does); and `the_backends_carry_no_mcp_guard`. The target guard:
+`an_mcp_draft_is_refused_on_any_target_but_its_own`, `a_legacy_draft_and_a_deleted_profiles_draft_are_refused`,
+`a_user_draft_submits_on_any_target_as_before`, and the pin
+`submit_job_checks_the_target_under_the_reads_lock_before_either_arm`. Step A's write is tested in
+`step_a_tests.rs` (`step_a_stores_the_target_inside_its_transaction_before_the_audit_row`, a trigger
+refusing an audit row whose job has no target yet), `create_job_tests.rs`
+(`the_stored_target_is_the_one_maxcore_was_fitted_for`, on a fixture where uni's fitted `%maxcore`
+differs from local's) and `steps_tests.rs` (`refunds_and_the_reconciliation_keep_the_stored_target`).
+The existing submit tests (`a_submit_with_no_target_never_reaches_the_ssh_path` and the remote-command
+pins in `commands::remote_jobs`) are unchanged.
 
 **The delete guard (M4b).** `delete_refusal_for_mcp_state(&Job)` / `refuse_delete_while_mcp_submitting`
 (`steps.rs`) are the same predicate with delete's words ("Claude is submitting job …; it can be deleted
@@ -1196,6 +1236,18 @@ row, and a deleted one can skip one. `energy_eh` is `jobs.energy` (Eh: the parse
 `error_excerpt` pass the field-level tripwire below, checked on the whole text before the excerpt is
 cut, and `withheld_fields` names any replaced.
 
+**The two target fields** (both job tools; ADR-027 M4c amendment, item 5). `requested_target` is the
+stored `jobs.mcp_target`: where Claude asked the job to run, `local` or a profile id; null for a job
+Claude did not create, or an MCP job created before targets were stored (which cannot be run).
+`target_profile_id` is `jobs.backend_id`, which only a remote submit writes: the profile the job was
+submitted to; null means not submitted, or ran on this machine (`get_job`'s `remote_host` tells them
+apart). So an unsubmitted uni draft reads `requested_target = "uni-id"`, `target_profile_id = null`.
+`JobSummary` and `JobView` derive only `Serialize`, so their Rust doc comments never reach the client:
+both meanings are written into the tool descriptions `LIST_JOBS` and `GET_JOB`
+(`server/read_tools.rs`, from the shared `requested_target_meaning!` and `target_profile_id_meaning!`
+macros), under the 700-byte description cap; `the_job_descriptions_say_what_each_null_target_means`
+pins both meanings in both. `list_jobs` has no `remote_host`, so its description points at `get_job`'s.
+
 **`get_job`** builds its projection field by field; no field carries `input_content` or the scene
 (ADR-014 invariant 1). **Its header is built, never filtered** (decided by Anton after two verifier
 FAILs on filtering raw text, M2b; ADR-027's M2 amendment, item 8). `header_view::reconstruct` takes
@@ -1273,12 +1325,12 @@ ORCA's input echo `|  6> C     4.10220628   -0.56008055    0.58413357` (measured
 constraint entry) or holding `=` (a scan or parameter definition) is skipped **in the built header
 only** (`Field::Header`); titles, errors and reasons skip nothing (`Field::Text`). Behind the
 guards, `jobs::tripwire` walks the serialised view with the same detector and refuses it if a row
-escaped every guard. ID fields (`id`, `group_id`, `target_profile_id`, `grant_id`) and timestamps
-are not guarded individually: in `get_job` a coordinate-like ID field trips the backstop, which
-refuses the whole view. `list_jobs` guards each row's `title` and `error_excerpt` and has **no**
-backstop; its ID fields (`id`, `group_id`, `target_profile_id`) are v4 UUIDs the app mints
-(`Uuid::new_v4` in `create_job_conn`, the group and profile commands), and its timestamps are
-SQLite's.
+escaped every guard. ID fields (`id`, `group_id`, `target_profile_id`, `requested_target`,
+`grant_id`) and timestamps are not guarded individually: in `get_job` a coordinate-like ID field
+trips the backstop, which refuses the whole view. `list_jobs` guards each row's `title` and
+`error_excerpt` and has **no** backstop; its ID fields (`id`, `group_id`, `target_profile_id`,
+`requested_target`) are v4 UUIDs the app mints (`Uuid::new_v4` in `create_job_conn`, the group and
+profile commands) or the literal `local`, and its timestamps are SQLite's.
 
 **Notices** are the job's pending states in words: a cancel requested or sent, a submit waiting for
 the server's slot, Claude submitting it.

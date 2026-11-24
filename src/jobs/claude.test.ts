@@ -8,10 +8,13 @@ import {
   isHeldByClaude,
   isProposed,
   isSubmitting,
+  LEGACY_DRAFT_NOTE,
+  LOCAL_MCP_TARGET,
   parseJobReasons,
   RAW_REASONS_SHOWN,
   reasonsList,
   runAction,
+  submitTargetOf,
   SUBMITTING_LABEL,
 } from "./claude";
 
@@ -43,6 +46,7 @@ function job(over: Partial<Job> = {}): Job {
     mcp_reasons: null,
     grant_id: null,
     mcp_state: null,
+    mcp_target: null,
     ...over,
   };
 }
@@ -242,13 +246,59 @@ describe("held by Claude (what holds Delete back)", () => {
 describe("the auto-run submit", () => {
   // CONTROL: return null always -> the submitting draft is auto-submitted from the UI -> red.
   it("is refused for a draft Claude is still submitting, in the same words as the Run slot", () => {
-    expect(autoRunRefusal(job(SUBMITTING))).toContain(SUBMITTING_LABEL);
+    expect(autoRunRefusal(job(SUBMITTING), null)).toContain(SUBMITTING_LABEL);
   });
 
   it("goes ahead for every other draft, for a job that is not a draft, and for an unread row", () => {
-    expect(autoRunRefusal(job({ status: "draft" }))).toBeNull();
-    expect(autoRunRefusal(job(PROPOSED))).toBeNull();
-    expect(autoRunRefusal(job({ status: "queued", mcp_state: "submitting" }))).toBeNull();
-    expect(autoRunRefusal(null)).toBeNull();
+    expect(autoRunRefusal(job({ status: "draft" }), null)).toBeNull();
+    // A Claude draft on its own stored target (M4c): `local` runs on this machine.
+    expect(autoRunRefusal(job({ ...PROPOSED, mcp_target: "local" }), null)).toBeNull();
+    expect(autoRunRefusal(job({ status: "queued", mcp_state: "submitting" }), null)).toBeNull();
+    expect(autoRunRefusal(null, null)).toBeNull();
+  });
+});
+
+// --- The stored target (ADR-027 M4c amendment) ---------------------------------------------------
+
+describe("the submit target of a stored mcp_target", () => {
+  // CONTROL (ctl:ui_local_null): return `mcpTarget` as is -> `local` reaches `submit_job` as a profile
+  // named "local" -> red.
+  it("maps local to null (this machine) and a profile id to itself", () => {
+    expect(submitTargetOf("local"), "[ctl:ui_local_null]").toBeNull();
+    expect(LOCAL_MCP_TARGET).toBe("local");
+    expect(submitTargetOf("p-uni")).toBe("p-uni");
+  });
+});
+
+describe("the auto-run submit of a Claude draft (M4c)", () => {
+  const UNI = { ...PROPOSED, mcp_target: "p-uni" } as const;
+
+  // CONTROL (ctl:ui_autorun_mismatch): drop the target comparison -> the uni draft auto-runs locally -> red.
+  it("declines a target other than the stored one, and goes ahead on the stored one", () => {
+    expect(autoRunRefusal(job(UNI), null), "[ctl:ui_autorun_mismatch]").toBe(
+      "Not run: Claude assembled this job for the server profile p-uni; run it there, or delete it.",
+    );
+    expect(autoRunRefusal(job(UNI), "p-dark")).toContain("for the server profile p-uni");
+    expect(autoRunRefusal(job(UNI), "p-uni")).toBeNull();
+    expect(autoRunRefusal(job({ ...PROPOSED, mcp_target: "local" }), "p-uni")).toBe(
+      "Not run: Claude assembled this job for this machine; run it there, or delete it.",
+    );
+    // `Backend::for_submit(Some("local"))` is a profile named "local", not this machine.
+    expect(autoRunRefusal(job({ ...PROPOSED, mcp_target: "local" }), "local")).not.toBeNull();
+  });
+
+  // CONTROL (ctl:ui_autorun_legacy): let a null mcp_target through -> the legacy draft auto-runs -> red.
+  it("declines a legacy Claude draft on every target, failing closed on a payload without the field", () => {
+    for (const target of [null, "p-uni", "local"]) {
+      expect(autoRunRefusal(job(PROPOSED), target), "[ctl:ui_autorun_legacy]").toBe(`Not run: ${LEGACY_DRAFT_NOTE}.`);
+    }
+    const old = job(PROPOSED) as Partial<Job>;
+    delete old.mcp_target;
+    expect(autoRunRefusal(old as Job, null)).toBe(`Not run: ${LEGACY_DRAFT_NOTE}.`);
+    expect(LEGACY_DRAFT_NOTE).toBe("assembled before targets were stored — delete it and ask Claude again");
+  });
+
+  it("leaves a user draft as it was, on any target", () => {
+    for (const target of [null, "p-uni"]) expect(autoRunRefusal(job({ status: "draft" }), target)).toBeNull();
   });
 });

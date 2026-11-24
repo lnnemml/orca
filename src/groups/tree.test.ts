@@ -41,6 +41,7 @@ function j(id: string, group_id: string | null): Job {
     mcp_reasons: null,
     grant_id: null,
     mcp_state: null,
+    mcp_target: null,
   };
 }
 

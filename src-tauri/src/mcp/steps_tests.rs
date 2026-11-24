@@ -5,10 +5,10 @@ use std::cell::RefCell;
 use std::sync::{Arc, Barrier};
 
 use super::classify::{GrantProblem, ProposedReason, Target};
-use super::grant::{create_grant_conn, grant_snapshot_conn, in_flight_conn, now_utc_conn, revoke_grant_conn};
+use super::grant::{create_grant_conn, grant_snapshot_conn, in_flight_conn, now_utc_conn, revoke_grant_conn, NewGrant};
 use super::signature::MethodSignature;
 use super::steps::{
-    charge_and_insert_conn, charge_and_insert_with, finish_submit_conn, insert_proposed_conn, reconcile_submitting_conn,
+    charge_and_insert_conn, charge_and_insert_with, finish_submit_conn, reconcile_submitting_conn,
     submit_refusal_for_mcp_state, McpJobDraft, McpReason, Reconciled, StepA, StepC, SUBMITTING,
 };
 use super::test_db::{grant, new_grant, TestDb, EXPIRES, LEVEL, NOW};
@@ -206,16 +206,6 @@ fn a_grant_that_expires_during_the_lock_wait_is_not_charged() {
     assert_eq!(db.charged(&g.id), 0);
 }
 
-#[test]
-fn insert_proposed_writes_an_uncharged_mcp_draft_with_its_reasons() {
-    let db = TestDb::new("proposed");
-    let reasons = vec![ProposedReason::FreqWithoutConvergedOpt];
-    let job = insert_proposed_conn(&db.conn, "t", INPUT, &reasons).unwrap();
-    assert_eq!((job.status, job.origin, job.grant_id, job.mcp_state), (JobStatus::Draft, JobOrigin::Mcp, None, None));
-    assert_eq!(reasons_of(&db, &job.id), vec![McpReason::proposed(&reasons[0])]);
-    assert!(insert_proposed_conn(&db.conn, "t", INPUT, &[]).is_err(), "a proposal without a reason");
-}
-
 /// Step C on a row step B never handed over: refund. NEGATIVE CONTROL: make step C never refund →
 /// red.
 #[test]
@@ -230,6 +220,44 @@ fn step_c_refunds_a_job_still_in_draft() {
     assert_eq!(reasons_of(&db, &id), vec![McpReason::submit_refused("slot check failed")]);
     assert_eq!(db.charged(&g.id), 0);
     assert_eq!(in_flight_conn(&db.conn).unwrap(), 0);
+}
+
+/// The stored target survives everything after step A (ADR-027 M4c amendment, item 2): step C's
+/// refund, step C's keep, the reconciliation's refund and its flag clear all leave `mcp_target` as step
+/// A wrote it — a refunded draft must still run where Claude assembled it. Built with a **server**
+/// target, so a writer that reset it to `local` is seen too. NEGATIVE CONTROL (`ctl:target_refund`):
+/// add `mcp_target = NULL` to `refund`'s UPDATE → red; (`ctl:target_reconcile`): add it to the
+/// reconciliation's flag clear → red.
+#[test]
+fn refunds_and_the_reconciliation_keep_the_stored_target() {
+    let db = TestDb::new("target-kept");
+    db.conn
+        .execute(
+            "INSERT INTO server_profiles (id, name, host, remote_orca_path, remote_scratch_dir) VALUES ('p-uni', 'uni', 'uni', '/o', '/s')",
+            [],
+        )
+        .unwrap();
+    create_grant_conn(&db.conn, &NewGrant { targets: vec![Target::Server { profile_id: "p-uni".into() }], ..new_grant(5, 5) }, NOW)
+        .unwrap();
+    let uni = Target::Server { profile_id: "p-uni".into() };
+    let s = sig();
+    let one = || charged(step_a_draft(&db.conn, McpJobDraft { title: "t", input_content: INPUT, target: &uni, signature: &s }).unwrap());
+    let (refunded, gid) = one();
+    let (kept, _) = one();
+    let (reconciled, _) = one();
+    let (cleared, _) = one();
+    let target = |id: &str| get_job_conn(&db.conn, id).unwrap().mcp_target;
+    for id in [&refunded, &kept, &reconciled, &cleared] {
+        assert_eq!(target(id).as_deref(), Some("p-uni"), "step A stored the server target");
+    }
+    assert_eq!(finish_submit_conn(&db.conn, &refunded, &gid, "slot busy").unwrap(), StepC::Refunded);
+    db.conn.execute("UPDATE jobs SET status = 'queued' WHERE id = ?1", [&kept]).unwrap();
+    assert!(matches!(finish_submit_conn(&db.conn, &kept, &gid, "queued").unwrap(), StepC::Kept { .. }));
+    db.conn.execute("UPDATE jobs SET status = 'queued' WHERE id = ?1", [&cleared]).unwrap();
+    assert_eq!(reconcile_submitting_conn(&db.conn).unwrap(), Reconciled { refunded: 1, cleared: 1 });
+    for (id, ctl) in [(&refunded, "ctl:target_refund"), (&kept, "step C keep"), (&reconciled, "ctl:target_reconcile"), (&cleared, "ctl:target_reconcile")] {
+        assert_eq!(target(id).as_deref(), Some("p-uni"), "[{ctl}] {id} lost its target");
+    }
 }
 
 /// Step C on a row that left `draft`: the charge stays, the flag goes. NEGATIVE CONTROL: drop the

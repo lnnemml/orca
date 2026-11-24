@@ -222,3 +222,35 @@ fn job_tool_numbers_carry_their_units() {
     let page = serde_json::to_value(list_jobs(&db.conn, &JobFilter::default(), None, None).unwrap()).unwrap();
     assert_eq!(unitless_numeric_keys(&page, &allow), Vec::<String>::new());
 }
+
+/// ADR-027 M4c amendment, item 5: both job tools serve `requested_target`, the stored `mcp_target`,
+/// beside `target_profile_id` (the submit's profile): an unsubmitted uni draft reads
+/// `requested_target = "uni"` and `target_profile_id = null`; a local one reads `"local"`; a user job
+/// and an MCP job from before v25 read null. NEGATIVE CONTROL (`ctl:requested_target`): serve
+/// `requested_target: None` (or drop the field) in either projection → red.
+#[test]
+fn both_job_tools_serve_the_requested_target() {
+    let db = TestDb::new("tools-requested-target");
+    JobRow { status: "draft", origin: "mcp", ..JobRow::new("uni-draft") }.insert(&db.conn);
+    JobRow { status: "draft", origin: "mcp", ..JobRow::new("local-draft") }.insert(&db.conn);
+    JobRow { status: "draft", origin: "mcp", ..JobRow::new("legacy") }.insert(&db.conn);
+    JobRow { status: "draft", ..JobRow::new("user") }.insert(&db.conn);
+    db.conn.execute("UPDATE jobs SET mcp_target = 'uni' WHERE id = 'uni-draft'", []).unwrap();
+    db.conn.execute("UPDATE jobs SET mcp_target = 'local' WHERE id = 'local-draft'", []).unwrap();
+
+    let want = [("uni-draft", Some("uni")), ("local-draft", Some("local")), ("legacy", None), ("user", None)];
+    for (id, target) in want {
+        let view = get_job(&db.conn, id).unwrap();
+        assert_eq!(view.requested_target.as_deref(), target, "[ctl:requested_target] get_job {id}");
+        assert_eq!(view.target_profile_id, None, "{id} was never submitted");
+        let json = serde_json::to_value(&view).unwrap();
+        assert!(json.as_object().unwrap().contains_key("requested_target"), "[ctl:requested_target] get_job serves the key");
+    }
+    let page = list_jobs(&db.conn, &JobFilter::default(), None, None).unwrap();
+    for (id, target) in want {
+        let row = page.jobs.iter().find(|j| j.id == id).unwrap();
+        assert_eq!(row.requested_target.as_deref(), target, "[ctl:requested_target] list_jobs {id}");
+    }
+    let json = serde_json::to_value(&page).unwrap();
+    assert!(json["jobs"][0].as_object().unwrap().contains_key("requested_target"), "[ctl:requested_target] list_jobs serves the key");
+}

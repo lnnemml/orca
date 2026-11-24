@@ -14258,3 +14258,64 @@ Settled the Open item of ADR-027 M3a (rule #10): does a `COMMIT` of a `BEGIN IMM
   amendment item 1), the M5 precondition.
 - **Before Part A:** `tauri dev` stopped and the DB backed up (`orcastudio.db.bak-2026-11-23-pre-m4c`).
 - **Next:** M4c Part A.
+
+## [2026-11-23] feat | ADR-027 M4c Part A — the stored target, the submit refusals, requested_target
+- **What.** Part A of the M4c amendment ("a proposal keeps its target"): a Claude draft runs where
+  Claude assembled it — on the target its `%maxcore` was fitted for — or not at all. Implementer
+  `opus` (a migration and a compute-shape guard), uncommitted in its worktree; no real database was
+  opened, every test uses a temp or in-memory one.
+- **Schema v25** (`db.rs`): `jobs.mcp_target TEXT CHECK (mcp_target IS NULL OR (origin = 'mcp' AND
+  mcp_target <> ''))`, a guarded ALTER (on `origin` and on the column), gated on `target >= 25` so
+  `migrate_to(conn, 24)` still builds a v24 fixture. No FK, no backfill. `Job.mcp_target` after
+  `mcp_state`; the schema notes on `SCHEMA_VERSION` gain the v25 entry.
+- **Step A writes it** (`mcp/steps.rs`, `stamp_mcp_target`): `origin = 'mcp'` and
+  `mcp_target = target_text(input.target)` in one statement, in `decide_with`'s insert, inside the
+  `BEGIN IMMEDIATE`, for PROPOSED and SUBMITTED; the same `Target` that `create_job` handed to
+  `assemble_for` and `memory_verdict_for`. The test-only `charge_and_insert_with` writes it too. A
+  REFUSED call writes nothing; step C's refund and keep and the reconciliation leave it.
+  `insert_proposed_conn` (unused) is removed, with its test.
+- **`submit_job` refusals** (`steps::refuse_off_target_conn`, called under the lock of
+  `submittable_job_conn`'s read): for an `origin = 'mcp'` draft — `mcp_target` NULL ("assembled before
+  targets were stored — delete it and ask Claude again"), then a deleted stored profile ("its target
+  profile was deleted — delete it and ask Claude again"), then a requested target (`None` = local,
+  `Some(x)` = profile `x`, as `Backend::for_submit` reads it) other than the stored one ("Claude
+  assembled this job for <this machine | the server profile "<name>">; run it there, or delete it").
+  User drafts unchanged.
+- **Read tools.** `get_job` and `list_jobs` serve `requested_target`; the `LIST_JOBS` and `GET_JOB`
+  descriptions carry both meanings in the amendment's words (shared `requested_target_meaning!` /
+  `target_profile_id_meaning!` macros), under the 700-byte description cap; the Rust doc comments on
+  `target_profile_id` are corrected. The largest-result fixtures carry a 36-byte `mcp_target`.
+- **TS.** `Job.mcp_target: string | null` (required) in `types.ts` and the 12 fixture builders.
+  `claude.ts`: `LOCAL_MCP_TARGET`, `submitTargetOf` (`local` → `null`), `LEGACY_DRAFT_NOTE`,
+  `DELETED_PROFILE_NOTE`, and `autoRunRefusal(job, runTarget)` (declines submitting, legacy and
+  mismatch); its one caller, the detail's auto-run, passes its `runTarget`. `remote.ts`:
+  `runSlot(job, profiles)` (the row's slot in the amendment's order, through `runTargetOptions`;
+  `profiles` null → a disabled Run, `PROFILES_UNREAD_REASON`). The Jobs row does not read `runSlot`
+  yet: that is Part B.
+- **Counts.** `cargo test -p orcastudio --lib` 1534 passed / 31 ignored (was 1519 / 30: +16 new, −1
+  `insert_proposed`; +1 ignored real-copy test `real_v24_db_copy_migrates_to_v25_without_touching_any_row`);
+  `cargo build` 0 warnings; `npx tsc --noEmit` clean; `npx vitest run src/` 1531 passed / 2 skipped,
+  106 files (was 1520).
+- **Controls** (`m4c_parta_controls.py`, backed up to `~/orcastudio-worktree-backups-2026-11-21/`):
+  each a mutation, the narrowest test, RED required on the tagged assertion, the file restored and
+  checked by sha256. **All 29 RED on tag, all restores OK.**
+  - writing the target: `target_stored` (no write in the insert), `target_in_tx` (written after the
+    commit — a trigger refuses an audit row whose job has no target), `target_constant_local`
+    (`&Target::Local`, tested with uni, whose fitted `%maxcore` differs from local's),
+    `target_fitted_for` (`%maxcore` fitted for local while uni is stored), `target_refund`,
+    `target_reconcile`, `from_row_target`;
+  - schema: `v25_check_user`, `v25_check_empty`, `v25_guard` (unguarded ALTER re-run),
+    `v25_full_row` (a write of `mcp_reasons` in the v25 arm, seen by the full-row compare of every
+    table of a `migrate_to(24)` fixture);
+  - submitting: `submit_mismatch`, `submit_legacy`, `submit_deleted`, `submit_user`, `submit_pin`
+    (the check under the read's lock, before either arm);
+  - read tools: `requested_target_get_job`, `requested_target_list_jobs`, `desc_not_submitted`,
+    `desc_legacy`, `desc_names`;
+  - pure helpers: `ui_local_null`, `ui_autorun_mismatch`, `ui_autorun_legacy`, `ui_slot_target`,
+    `ui_slot_legacy`, `ui_slot_deleted`, `ui_slot_not_run_target`, `ui_detail_target`.
+- **Wiki.** `mcp-server.md` (the stored target, the target guard and its tests, the two target
+  fields, `requested_target` among the ID fields, the false "keeps no target of its own" sentence
+  replaced), `tauri-core.md` (`submit_job`'s refusals; v25; v1–v25), `frontend.md` (the rule and the
+  helpers), `remote-jobs.md` (o20.2's exception).
+- **Next:** verifier CODE on Part A; then Part B (the row's "Run on <name>", the notes, the profile
+  read, the `JobsScreen.tsx` and `rowActions` comments) and Anton's live gate.

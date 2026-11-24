@@ -47,20 +47,46 @@ use crate::mcp::tools::{clip, result_text, size_of_text, ToolError, REFUSAL_MAX_
 
 // ----- descriptions -----
 
-const LIST_JOBS: &str = concat!(
-    "OrcaStudio's jobs, newest first, one page at a time: id, title, status, origin (user or mcp), ",
-    "group, target profile, times (UTC), final energy (Eh) and an error excerpt. Filter by status, ",
-    "origin or group_id; page with offset and limit (default 20, at most 40); next_offset is the next ",
-    "page's offset. A field holding coordinate-like text is withheld and named in withheld_fields. ",
+/// What `requested_target` means, word for word in both job tools (ADR-027 M4c amendment, item 5).
+/// The descriptions are what the client reads; the Rust doc comments on `JobSummary` and `JobView`
+/// never reach it.
+macro_rules! requested_target_meaning {
+    () => {
+        "requested_target: where Claude asked it to run: `local` or a profile id; null for a job Claude \
+         did not create, or one created before targets were stored (origin = 'mcp'; it cannot be run). "
+    };
+}
+
+/// What `target_profile_id` means (ADR-027 M4c amendment, item 5); `get_job` serves the
+/// `remote_host` it points to, `list_jobs` does not.
+macro_rules! target_profile_id_meaning {
+    ($remote_host:literal) => {
+        concat!(
+            "target_profile_id: the server profile it was submitted to; null = not submitted, or ran on ",
+            "this machine (see ",
+            $remote_host,
+            "). "
+        )
+    };
+}
+
+pub(super) const LIST_JOBS: &str = concat!(
+    "OrcaStudio's jobs, newest first: id, title, status, origin (user or mcp), group, times (UTC), ",
+    "energy (Eh), error excerpt, and ",
+    requested_target_meaning!(),
+    target_profile_id_meaning!("get_job's remote_host"),
+    "Filter by status, origin or group_id; page with offset and limit (default 20, at most 40) and ",
+    "next_offset. Coordinate-like text is withheld, named in withheld_fields. ",
     recovery_sentence!()
 );
 
-const GET_JOB: &str = concat!(
-    "One job: status, origin, times (UTC), energy (Eh), wall time (s), its input header, atom count, ",
-    "charge and multiplicity with their source, notices, error, MCP reasons, grant_id and mcp_state. ",
-    "The header is rebuilt from the parsed input, never copied from it: values outside the display ",
-    "allowlist are not shown, geometry appears only as markers, and the coordinate block is never ",
-    "returned. A field holding coordinate-like text is withheld and named in withheld_fields. ",
+pub(super) const GET_JOB: &str = concat!(
+    "One job: status, origin, times (UTC), energy (Eh), wall time (s), input header, atom count, ",
+    "charge, multiplicity, notices, error, MCP reasons. ",
+    requested_target_meaning!(),
+    target_profile_id_meaning!("remote_host"),
+    "The header is rebuilt from the parsed input: values outside the display allowlist are not shown, ",
+    "geometry only as markers. Coordinate-like text is withheld (withheld_fields). ",
     recovery_sentence!()
 );
 

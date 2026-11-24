@@ -162,12 +162,23 @@ use crate::error::AppError;
 ///   Guarded ALTERs (column_exists) and `IF NOT EXISTS`. Each CHECK names only its own column and
 ///   earlier new ones (the v20 form). Existing rows: `origin = 'user'`, the rest NULL.
 ///
+/// - v25: the target an MCP job was assembled for (ADR-027 M4c amendment, item 2). One `jobs` column,
+///   `mcp_target TEXT CHECK (mcp_target IS NULL OR (origin = 'mcp' AND mcp_target <> ''))`: `local`
+///   or a server profile id, the `target_text` of the `Target` whose `%maxcore` step A wrote into the
+///   input. Written **only** by step A (`mcp::steps::decide_with`'s insert), in its `BEGIN IMMEDIATE`
+///   transaction, for a PROPOSED and a SUBMITTED job; never rewritten (a step-C refund and the
+///   reconciliation leave it). `submit_job` refuses an MCP draft on any other target, a draft whose
+///   value is NULL, and one whose profile is gone (`mcp::steps::refuse_off_target_conn`). Nullable,
+///   because every existing MCP row stays NULL (no backfill: such a draft is not runnable). No FK: a
+///   deleted profile leaves the value, and the run refuses. Guarded ALTER (column_exists, on `origin`,
+///   which the CHECK names). Existing rows: NULL.
+///
 /// Unit 5.4b takes **no** schema version (ADR-024 o25.3): the re-enqueue counter is the server's
 /// `.reenqueue-1` claim, and the terminal `lost` status needs no CHECK (the status column has none)
 /// — `finalize_job_conn` writes it and NULLs the pending columns as for any terminal state.
 ///
 /// [`Job::is_remote`]: crate::models::job::Job::is_remote
-const SCHEMA_VERSION: i64 = 24;
+const SCHEMA_VERSION: i64 = 25;
 
 /// The longest `mcp_audit.args` the database accepts, in characters (the v24 CHECK). The writer
 /// (`mcp::audit`) builds a bounded text below it, and cuts and marks anything over it.
@@ -192,10 +203,11 @@ fn migrate(conn: &Connection) -> Result<(), AppError> {
 }
 
 /// [`migrate`] stopping at `target`, which must lie in `23..=SCHEMA_VERSION`: every arm up to v23
-/// runs, and the v24 arm only when `target >= 24`. The app always migrates to [`SCHEMA_VERSION`];
-/// a lower target exists so a test can build a real v23 database that the v24 arm has **never**
-/// touched — a fixture built by migrating to the current version and then dropping the v24 objects
-/// would already carry any damage the v24 arm did to existing rows (the M1b verifier's MED-1).
+/// runs, the v24 arm only when `target >= 24`, and the v25 arm only when `target >= 25`. The app
+/// always migrates to [`SCHEMA_VERSION`]; a lower target exists so a test can build a real v23 (or
+/// v24) database that the later arms have **never** touched — a fixture built by migrating to the
+/// current version and then dropping the later objects would already carry any damage those arms
+/// did to existing rows (the M1b verifier's MED-1).
 fn migrate_to(conn: &Connection, target: i64) -> Result<(), AppError> {
     if !(23..=SCHEMA_VERSION).contains(&target) {
         return Err(AppError::Internal(format!("migrate_to({target}): only 23..={SCHEMA_VERSION}")));
@@ -662,6 +674,21 @@ fn migrate_to(conn: &Connection, target: i64) -> Result<(), AppError> {
             }
         }
         version = 24;
+    }
+
+    // --- v24 -> v25: the target an MCP job was assembled for (ADR-027 M4c amendment, item 2). One
+    // nullable column; its CHECK names only itself and the earlier `origin` (the v20 form), so SQLite
+    // tests it against every existing row, which has it NULL. Guarded on `origin` (the CHECK names it:
+    // a stub `jobs (id)` gains it in the v24 arm) and on the column itself, so a re-run is a no-op. No
+    // FK: a deleted profile leaves the value, and `submit_job` refuses the run. ---
+    if version < 25 && target >= 25 {
+        if column_exists(conn, "jobs", "origin")? && !column_exists(conn, "jobs", "mcp_target")? {
+            conn.execute_batch(
+                "ALTER TABLE jobs ADD COLUMN mcp_target TEXT \
+                     CHECK (mcp_target IS NULL OR (origin = 'mcp' AND mcp_target <> ''));",
+            )?;
+        }
+        version = 25;
     }
 
     // Persist the resulting version so subsequent runs skip completed steps.
@@ -2071,12 +2098,17 @@ mod tests {
 
     /// Every user table except the v24 ones, with its v23 columns and every row's values.
     fn snapshot_v23_tables(conn: &Connection) -> Vec<(String, Vec<String>, Vec<Vec<rusqlite::types::Value>>)> {
+        snapshot_tables(conn, "AND name NOT LIKE 'mcp_%'")
+    }
+
+    /// Every user table (`extra` narrows the set), with its current columns and every row's values.
+    fn snapshot_tables(conn: &Connection, extra: &str) -> Vec<(String, Vec<String>, Vec<Vec<rusqlite::types::Value>>)> {
         let tables: Vec<String> = {
             let mut stmt = conn
-                .prepare(
+                .prepare(&format!(
                     "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' \
-                     AND name NOT LIKE 'manual_fts%' AND name NOT LIKE 'mcp_%' ORDER BY name",
-                )
+                     AND name NOT LIKE 'manual_fts%' {extra} ORDER BY name"
+                ))
                 .unwrap();
             stmt.query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect()
         };
@@ -2231,8 +2263,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("orcastudio-v24-fresh-{}", std::process::id()));
         std::fs::remove_dir_all(&dir).ok();
         let conn = init_db(&dir).unwrap();
-        assert_eq!(SCHEMA_VERSION, 24);
-        assert_eq!(current_version(&conn).unwrap(), 24);
+        assert!(SCHEMA_VERSION >= 24);
+        assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
         for col in ["origin", "mcp_reasons", "grant_id", "mcp_state"] {
             assert!(column_exists(&conn, "jobs", col).unwrap(), "jobs.{col}");
         }
@@ -2387,6 +2419,150 @@ mod tests {
              INSERT INTO g (id) VALUES ('b');",
         )
         .expect("the column form admits a second NULL");
+    }
+
+    // --- v25: `jobs.mcp_target` (ADR-027 M4c amendment, item 2) ------------------------------------
+
+    /// A real v24 database the v25 arm has **never** run on (MED-1, as for v24): [`v23_db_with_jobs`]
+    /// migrated by `migrate_to(.., 24)`, then a grant `g1`, the fully seeded job `full` made an MCP job
+    /// with every v24 column set (so every column of that row is non-NULL), a PROPOSED and a queued MCP
+    /// job, and an audit row.
+    fn v24_db_with_mcp_jobs() -> Connection {
+        let conn = v23_db_with_jobs();
+        migrate_to(&conn, 24).unwrap();
+        assert_eq!(current_version(&conn).unwrap(), 24);
+        assert!(!column_exists(&conn, "jobs", "mcp_target").unwrap(), "the v25 arm never ran");
+        conn.execute_batch(
+            "INSERT INTO mcp_grants (id, expires_at, targets, levels, max_jobs, max_in_flight, charged_jobs) \
+                 VALUES ('g1', '2099-01-01 00:00:00', '[\"p-uni\"]', '[]', 5, 2, 2);
+             UPDATE jobs SET origin = 'mcp', mcp_reasons = '[{\"row\":\"submit\",\"message\":\"m\"}]', grant_id = 'g1', \
+                 mcp_state = 'submitting' WHERE id = 'full';
+             INSERT INTO jobs (id, title, input_content, status, origin, mcp_reasons) \
+                 VALUES ('m-proposed', 't', '! SP', 'draft', 'mcp', '[{\"row\":\"P1\",\"message\":\"new species\"}]');
+             INSERT INTO jobs (id, title, input_content, status, origin, grant_id) \
+                 VALUES ('m-queued', 't', '! SP', 'queued', 'mcp', 'g1');
+             INSERT INTO mcp_audit (tool, args, disposition, reasons, job_id, grant_id) \
+                 VALUES ('create_job', '{}', 'proposed', '[]', 'm-proposed', NULL);",
+        )
+        .unwrap();
+        let nulls: i64 = conn
+            .query_row(
+                &format!(
+                    "SELECT {} FROM jobs WHERE id = 'full'",
+                    column_names(&conn, "jobs").iter().map(|c| format!("({c} IS NULL)")).collect::<Vec<_>>().join(" + ")
+                ),
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(nulls, 0, "every v24 column of `full` is set");
+        conn
+    }
+
+    /// v25 on a fresh database: `jobs.mcp_target` exists, and a new row has it NULL.
+    #[test]
+    fn fresh_db_migrates_to_v25_with_mcp_target() {
+        let dir = std::env::temp_dir().join(format!("orcastudio-v25-fresh-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        let conn = init_db(&dir).unwrap();
+        assert_eq!(SCHEMA_VERSION, 25);
+        assert_eq!(current_version(&conn).unwrap(), 25);
+        assert!(column_exists(&conn, "jobs", "mcp_target").unwrap());
+        conn.execute("INSERT INTO jobs (id, title, input_content) VALUES ('n', 't', '! SP')", []).unwrap();
+        let t: Option<String> = conn.query_row("SELECT mcp_target FROM jobs WHERE id = 'n'", [], |r| r.get(0)).unwrap();
+        assert_eq!(t, None);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Rule #9 on the v25 migration: every table of a real v24 database (the MCP tables included)
+    /// keeps every row and every value, column for column — the fully seeded `full` among them — and
+    /// every job reads `mcp_target` NULL. NEGATIVE CONTROL (`ctl:v25_full_row`): an
+    /// `UPDATE jobs SET mcp_reasons = NULL` (or any write of an existing column) in the v25 arm → red.
+    #[test]
+    fn migrate_v24_to_v25_keeps_every_row_and_leaves_mcp_target_null() {
+        let conn = v24_db_with_mcp_jobs();
+        let before = snapshot_tables(&conn, "");
+        assert!(before.iter().any(|(t, _, rows)| t == "jobs" && rows.len() == 14), "the fixture has its 14 jobs");
+        assert!(before.iter().any(|(t, _, rows)| t == "mcp_grants" && rows.len() == 1));
+        migrate(&conn).expect("v24 -> v25");
+        assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
+        for (table, cols, rows) in &before {
+            assert_eq!(&full_rows(&conn, table, cols), rows, "[ctl:v25_full_row] {table}: no row changed");
+        }
+        let set: i64 = conn.query_row("SELECT COUNT(*) FROM jobs WHERE mcp_target IS NOT NULL", [], |r| r.get(0)).unwrap();
+        assert_eq!(set, 0, "no backfill: every existing job's mcp_target is NULL");
+        migrate(&conn).expect("v25 -> v25 no-op");
+    }
+
+    /// NEGATIVE CONTROL for the guarded ALTER (`ctl:v25_guard`): re-running the v25 arm over a database
+    /// that already has the column (the version set back to 24, nothing dropped) is a no-op, not a
+    /// "duplicate column" error, and keeps a stored value. Make the ALTER unguarded and this is red.
+    #[test]
+    fn the_v25_arm_reruns_over_its_own_column() {
+        let conn = v24_db_with_mcp_jobs();
+        migrate(&conn).expect("v24 -> v25");
+        conn.execute("UPDATE jobs SET mcp_target = 'local' WHERE id = 'm-proposed'", []).unwrap();
+        conn.execute("UPDATE settings SET value = '24' WHERE key = 'schema_version'", []).unwrap();
+        let rerun = migrate(&conn);
+        assert!(rerun.is_ok(), "[ctl:v25_guard] the v25 arm again, over its own column: {rerun:?}");
+        assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
+        let t: Option<String> = conn.query_row("SELECT mcp_target FROM jobs WHERE id = 'm-proposed'", [], |r| r.get(0)).unwrap();
+        assert_eq!(t.as_deref(), Some("local"), "the re-run keeps a stored target");
+    }
+
+    /// The v25 CHECK (`ctl:v25_check_user`, `ctl:v25_check_empty`): `mcp_target` only on an MCP row,
+    /// never `''`; NULL anywhere; `local` and a profile id on an MCP row. A row holding a target
+    /// cannot be turned into a user row. No FK: deleting the profile leaves the value. NEGATIVE
+    /// CONTROLS: drop `origin = 'mcp'` from the CHECK → the user row is accepted → red; drop
+    /// `mcp_target <> ''` → `''` is accepted → red.
+    #[test]
+    fn the_v25_check_rejects_a_user_row_and_an_empty_target() {
+        let conn = v24_db_with_mcp_jobs();
+        migrate(&conn).unwrap();
+        let set = |id: &str, sql: &str| conn.execute(&format!("UPDATE jobs SET {sql} WHERE id = ?1"), [id]);
+        assert!(set("l-draft", "mcp_target = 'local'").is_err(), "[ctl:v25_check_user] a user row with mcp_target");
+        assert!(set("m-proposed", "mcp_target = ''").is_err(), "[ctl:v25_check_empty] an MCP row with ''");
+        set("m-proposed", "mcp_target = 'local'").expect("local on an MCP row");
+        set("m-queued", "mcp_target = 'p-uni'").expect("a profile id on an MCP row");
+        assert!(set("m-proposed", "origin = 'user'").is_err(), "a row with a target stays Claude's");
+        set("l-draft", "mcp_target = NULL").expect("NULL on a user row");
+        let fks: Vec<String> = {
+            let mut stmt = conn.prepare("SELECT \"from\" FROM pragma_foreign_key_list('jobs')").unwrap();
+            stmt.query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect()
+        };
+        assert!(!fks.iter().any(|c| c == "mcp_target"), "no FK on mcp_target: {fks:?}");
+        conn.execute("UPDATE jobs SET backend_id = NULL WHERE backend_id = 'p-uni'", []).unwrap();
+        conn.execute("DELETE FROM server_profiles WHERE id = 'p-uni'", []).unwrap();
+        let t: Option<String> = conn.query_row("SELECT mcp_target FROM jobs WHERE id = 'm-queued'", [], |r| r.get(0)).unwrap();
+        assert_eq!(t.as_deref(), Some("p-uni"), "a deleted profile leaves the value");
+    }
+
+    /// The v25 migration on a copy of a real v24 database (rule #9). Every table keeps every row and
+    /// every value, column for column; no job gains a target; the integrity and FK checks pass. Run by
+    /// hand on a scratch copy — this test migrates the file it is given:
+    /// `ORCASTUDIO_V24_DB_COPY=/scratch/orcastudio.db cargo test real_v24_db_copy -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "needs ORCASTUDIO_V24_DB_COPY = a scratch copy of a real v24 orcastudio.db"]
+    fn real_v24_db_copy_migrates_to_v25_without_touching_any_row() {
+        let Ok(path) = std::env::var("ORCASTUDIO_V24_DB_COPY") else {
+            panic!("set ORCASTUDIO_V24_DB_COPY to a scratch copy of a v24 database");
+        };
+        let conn = Connection::open(&path).unwrap();
+        assert_eq!(current_version(&conn).unwrap(), 24, "the copy must be a v24 database");
+        let before = snapshot_tables(&conn, "");
+        migrate(&conn).expect("v24 -> v25 on the real copy");
+        assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
+        for (table, cols, rows) in &before {
+            assert_eq!(&full_rows(&conn, table, cols), rows, "{table}: no row changed");
+            eprintln!("{table}: {} rows, {} columns unchanged", rows.len(), cols.len());
+        }
+        let set: i64 = conn.query_row("SELECT COUNT(*) FROM jobs WHERE mcp_target IS NOT NULL", [], |r| r.get(0)).unwrap();
+        assert_eq!(set, 0, "no backfill");
+        let integrity: String = conn.query_row("PRAGMA integrity_check", [], |r| r.get(0)).unwrap();
+        assert_eq!(integrity, "ok");
+        let fk_violations: i64 = conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| r.get(0)).unwrap();
+        assert_eq!(fk_violations, 0);
+        eprintln!("v24 -> v25: {} tables unchanged; integrity {integrity}; 0 FK violations", before.len());
     }
 
     /// The v24 migration on a copy of a real v23 database (rule #9 on the one place a migration can

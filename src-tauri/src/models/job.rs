@@ -211,8 +211,8 @@ pub struct Job {
     /// job (the v22 CHECK); every write of it emits `job:status`.
     pub submit_pending_since: Option<String>,
     /// Who created the job (schema v24, ADR-027). Every job before v24 is the user's. Only
-    /// `mcp::steps::decide_conn` (`create_job`'s step A), `insert_proposed_conn` and the test-only
-    /// `charge_and_insert_conn` write `mcp`.
+    /// `mcp::steps::decide_conn` (`create_job`'s step A) and the test-only `charge_and_insert_conn`
+    /// write `mcp`.
     pub origin: JobOrigin,
     /// An MCP job's reasons, a JSON array of `mcp::steps::McpReason` (`{row, message}`): why it was
     /// proposed, or why its charge was refunded. `None` for a user job and a charged one.
@@ -225,6 +225,12 @@ pub struct Job {
     /// command refuses the job (`mcp::steps::submit_refusal_for_mcp_state`). The v24 CHECK admits
     /// nothing else, and only on a charged job.
     pub mcp_state: Option<String>,
+    /// Where Claude assembled an MCP job to run (schema v25, ADR-027 M4c amendment): `"local"` or a
+    /// server profile id, the target its `%maxcore` was fitted for. Written only by `create_job`'s
+    /// step A (`mcp::steps::decide_with`), never rewritten. `None` for a user job, and for an MCP job
+    /// created before v25 (such a draft is not runnable). `submit_job` refuses an MCP draft on any
+    /// other target (`mcp::steps::refuse_off_target_conn`).
+    pub mcp_target: Option<String>,
 }
 
 impl Job {
@@ -234,7 +240,7 @@ impl Job {
          energy, wall_time, error_message, created_at, started_at, completed_at, \
          scene_json, scene_log_json, pathway_id, group_id, backend_id, \
          remote_host, remote_job_dir, remote_socket, cancel_requested_at, cancel_sent_at, \
-         submit_pending_since, origin, mcp_reasons, grant_id, mcp_state";
+         submit_pending_since, origin, mcp_reasons, grant_id, mcp_state, mcp_target";
 
     /// Whether this job runs on a server. **A job is remote iff its coordinates are non-NULL**
     /// (ADR-024 o item 1) — never decided by `backend_id`, which only names the profile and is
@@ -293,6 +299,7 @@ impl Job {
             mcp_reasons: row.get(23)?,
             grant_id: row.get(24)?,
             mcp_state: row.get(25)?,
+            mcp_target: row.get(26)?,
         })
     }
 }
@@ -317,7 +324,8 @@ mod tests {
                 pathway_id TEXT, group_id TEXT, backend_id TEXT,
                 remote_host TEXT, remote_job_dir TEXT, remote_socket TEXT,
                 cancel_requested_at TEXT, cancel_sent_at TEXT, submit_pending_since TEXT,
-                origin TEXT NOT NULL DEFAULT 'user', mcp_reasons TEXT, grant_id TEXT, mcp_state TEXT
+                origin TEXT NOT NULL DEFAULT 'user', mcp_reasons TEXT, grant_id TEXT, mcp_state TEXT,
+                mcp_target TEXT
             );",
         )
         .unwrap();
@@ -479,6 +487,29 @@ mod tests {
         assert_eq!(serde_json::to_value(&mcp).unwrap()["origin"], serde_json::json!("mcp"), "the wire spelling");
         let sql = format!("SELECT {} FROM jobs WHERE id = 'odd'", Job::COLUMNS);
         assert!(conn.query_row(&sql, [], Job::from_row).is_err(), "an unknown origin is refused, never defaulted");
+    }
+
+    /// Schema v25: `mcp_target` reaches `Job` in its own field, after `mcp_state` (two distinct
+    /// values, so a shifted index cannot pass), and is serialised under its column's name for the TS
+    /// `Job`. NEGATIVE CONTROL: read `mcp_target` at `row.get(25)` → red.
+    #[test]
+    fn from_row_reads_mcp_target_after_mcp_state() {
+        let conn = Connection::open_in_memory().unwrap();
+        setup(&conn);
+        conn.execute_batch(
+            "INSERT INTO jobs (id, title, input_content, status, origin, grant_id, mcp_state, mcp_target) \
+                VALUES ('mcp', 't', '! SP', 'draft', 'mcp', 'g1', 'submitting', 'p-uni');
+             INSERT INTO jobs (id, title, input_content, status) VALUES ('user', 't', '! SP', 'draft');",
+        )
+        .unwrap();
+        let mcp = get(&conn, "mcp");
+        assert_eq!(
+            (mcp.mcp_state.as_deref(), mcp.mcp_target.as_deref()),
+            (Some("submitting"), Some("p-uni")),
+            "[ctl:from_row_target]"
+        );
+        assert_eq!(get(&conn, "user").mcp_target, None);
+        assert_eq!(serde_json::to_value(&mcp).unwrap()["mcp_target"], serde_json::json!("p-uni"), "the wire name");
     }
 
     /// The terminal set is exactly completed, parsed, failed, cancelled and lost; the success subset

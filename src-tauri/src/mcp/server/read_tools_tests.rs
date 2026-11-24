@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 
 use super::lifecycle::{Hooks, LifecycleEnv, McpLifecycle};
 use super::listener::{kernel_peer_uid, own_uid};
-use super::read_tools::{error_text, output_request, respond, served_text, ReadOutputArgs};
+use super::read_tools::{error_text, output_request, respond, served_text, ReadOutputArgs, GET_JOB, LIST_JOBS};
 use super::service::{bounded_error_text, ConnState, HostPaths, ARGUMENT_ERROR_PREFIX, BUSY, RECOVERY_SENTENCE};
 use super::test_support::{eventually, no_write_seams, tool_text, Client, Ran, RecordingDb, Scratch};
 use super::REQUESTS_PER_CONNECTION;
@@ -164,6 +164,41 @@ fn the_ten_read_tools_are_listed_with_the_recovery_sentence() {
     assert!(get_job.contains("rebuilt from the parsed input") && get_job.contains("values outside the display allowlist are not shown"));
     assert!(description("read_output").contains("bounded tail or search"));
     assert!(description("measure").contains("(Å)") && description("get_results").contains("(Eh)"));
+}
+
+/// The sentence of `description` that defines `field` (from `field:` to the first `). ` after it).
+fn meaning<'a>(description: &'a str, field: &str) -> &'a str {
+    let label = format!("{field}:");
+    let Some(start) = description.find(&label) else { return "" };
+    let rest = &description[start..];
+    &rest[..rest.find("). ").map_or(rest.len(), |i| i + 1)]
+}
+
+/// ADR-027 M4c amendment, item 5: what the client reads is the tool descriptions, so both job tools'
+/// descriptions name `requested_target` and give both null meanings: `target_profile_id` null is
+/// "not submitted" as well as "this machine", and `requested_target` null is a job Claude did not
+/// create **or** one created before targets were stored (which cannot be run). Both stay under the
+/// per-tool description cap. NEGATIVE CONTROLS: `ctl:desc_names` — drop `requested_target_meaning!()`
+/// from either description; `ctl:desc_not_submitted` — drop "not submitted, or " from
+/// `target_profile_id_meaning!`; `ctl:desc_legacy` — drop the "or one created before targets were
+/// stored" clause from `requested_target_meaning!` → red.
+#[test]
+fn the_job_descriptions_say_what_each_null_target_means() {
+    for (name, description) in [("list_jobs", LIST_JOBS), ("get_job", GET_JOB)] {
+        assert!(description.contains("requested_target:"), "[ctl:desc_names] {name} names requested_target: {description}");
+        let profile = meaning(description, "target_profile_id");
+        assert!(profile.contains("this machine"), "{name}: {profile}");
+        assert!(profile.contains("not submitted"), "[ctl:desc_not_submitted] {name}: {profile}");
+        let requested = meaning(description, "requested_target");
+        assert!(requested.contains("`local` or a profile id"), "{name}: {requested}");
+        assert!(requested.contains("did not create"), "{name}: {requested}");
+        assert!(
+            requested.contains("created before targets were stored") && requested.contains("cannot be run"),
+            "[ctl:desc_legacy] {name}: {requested}"
+        );
+        assert!(description.contains(RECOVERY_SENTENCE) && description.len() < 700, "{name}: {} bytes", description.len());
+    }
+    assert!(GET_JOB.contains("rebuilt from the parsed input") && GET_JOB.contains("values outside the display allowlist are not shown"));
 }
 
 /// Every read tool's input schema refuses unknown properties, and an unknown argument is a tool

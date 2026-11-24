@@ -136,8 +136,9 @@ shows the draft as it was left.
   closed meanwhile), then reads the row (`get_job` — after `job:status` is attached, so no status
   change falls between the read and the listener), then backfills `read_job_output` / `read_job_convergence` when `backfillsLog(job)` admits it —
   never for a remote `queued`/`running` job, whose whole log the poller re-streams from offset 0 —
-  and only then (if `autoRun`, and unless `autoRunRefusal(row)` says Claude is still submitting the
-  draft: then it shows that notice and calls nothing) calls `submit_job({ id, target: runTarget })`,
+  and only then (if `autoRun`, and unless `autoRunRefusal(row, runTarget)` declines — Claude is still
+  submitting the draft, or a Claude draft is not on its stored target: then it shows that notice and
+  calls nothing) calls `submit_job({ id, target: runTarget })`,
   so no early lines are missed (a `didSubmit` ref neutralises React StrictMode's dev double-submit; the backend slot mutex
   is the real guard). Unmount drops every listener, including one whose `listen` resolves after it,
   and closes the watch only if this view opened it. `job:log` appends (capped 5000 lines,
@@ -1181,8 +1182,28 @@ payload does not positively name as Claude's is not Claude's, and a missing fiel
   `reasonsList(job)` (the detail's lines) answer only for a PROPOSED job with reasons, else `null`.
 - `runAction(job)` → `{kind: "run"}` (the screen's own Run), `{kind: "submitting", label: "Claude is
   submitting", disabled: true}` (a draft with `mcp_state = 'submitting'`), or `{kind: "none"}` (not a
-  draft). The `submit_job` refusal in Rust stays as the backstop. `autoRunRefusal(job)` is the same
-  answer for an auto-run submit: the text that stops it, or `null`.
+  draft). The `submit_job` refusal in Rust stays as the backstop.
+- **A Claude draft runs where Claude assembled it, or not at all** (ADR-027 M4c amendment; the rule
+  is Rust's `submit_job` target guard, `modules/mcp-server.md`). The `Job` carries `mcp_target`
+  (`"local"`, a profile id, or null: a user job, or a Claude draft from before targets were stored).
+  `claude.ts` holds the pieces: `LOCAL_MCP_TARGET`; `submitTargetOf(mcpTarget)` — `submit_job`'s
+  `target`, `"local"` → `null` (this machine), a profile id → itself (never `"local"`:
+  `Backend::for_submit` would read it as a profile name); `LEGACY_DRAFT_NOTE` and
+  `DELETED_PROFILE_NOTE`, the same words as Rust's refusals; and `autoRunRefusal(job, runTarget)`,
+  the text that stops an auto-run submit, or `null`: Claude still submitting it; a Claude draft with
+  no stored target (a payload without the field reads as one, failing closed); a Claude draft whose
+  `submitTargetOf(mcp_target)` is not `runTarget`. A user draft is unchanged. A deleted profile is
+  caught by Rust only on that path (the detail loads no profiles).
+- **The row's Run slot** is `runSlot(job, profiles)` (`remote.ts`), in this order: not a draft →
+  `none`; Claude submitting → `submitting`; a user draft → `run` "Run locally" (`target: null`); a
+  Claude draft with no stored target → `note` (`LEGACY_DRAFT_NOTE`); stored `local` → `run` "Run
+  locally"; the profiles not read (`null`) → `disabled` "Run" (`PROFILES_UNREAD_REASON`, never the
+  deleted note); its profile gone → `note` (`DELETED_PROFILE_NOTE`); not a run target → `disabled`
+  "Run on <name>" with Rust's reason, from New Job's own `runTargetOptions`; else `run` "Run on
+  <name>" with the profile id as `target`. No other target is ever offered. `runSlot` is pure and
+  tested; the Jobs row does not read it yet (the row still offers "Run locally" for every draft not
+  being submitted, and `submit_job` refuses a Claude draft run off its target — closed until the row
+  is wired).
 - `isHeldByClaude(job)`: `mcp_state != null` — **any** set value, the predicate of Rust's
   `delete_refusal_for_mcp_state` (which fails closed on any non-NULL). Wider than `isSubmitting` on
   purpose: that words Run's slot, this holds Delete back.
@@ -1213,8 +1234,8 @@ payload does not positively name as Claude's is not Claude's, and a missing fiel
   `SubmittingButton` (the disabled "Claude is submitting" in Run's place;
   the Jobs row draws it where `rowActions` answers `submitting`).
 - **The detail's auto-run.** `openJobView` hands the row it read to the `afterOpen` submit; the detail's
-  submit asks `autoRunRefusal` and, for a submitting draft, shows the notice instead of calling
-  `submit_job`.
+  submit asks `autoRunRefusal(row, runTarget)` and, for a submitting draft or a Claude draft off its
+  stored target, shows the notice instead of calling `submit_job`.
 
 The vitest config excludes `.claude/**`, so a plain `npm test` in the main checkout no
 longer collects the tests of every agent worktree under `.claude/worktrees/*/src/`.

@@ -9,7 +9,10 @@ use std::time::Duration;
 
 use super::audit::{bounded_reasons, AUDIT_REASONS_MAX};
 use super::create_job::*;
-use super::create_job_test_support::{source_job, FakeStepB, Hand, World, HEADER};
+use super::classify::Target;
+use super::create_job_test_support::{source_job, FakeStepB, Hand, World, HEADER, PROFILE};
+use super::grant::target_of;
+use super::preflight::mcp_maxcore;
 use super::steps::{finish_submit_audited_conn, reconcile_submitting_conn, McpReason, StepC};
 use super::tools::{result_text, size_of_text, ToolError, RESULT_CAP_BYTES};
 use crate::error::AppError;
@@ -51,6 +54,55 @@ fn a_submitted_call_runs_a_then_b_then_c() {
     // The stored input is the app's: the header, `%maxcore` and the source's block.
     let input: String = w.db.conn.query_row("SELECT input_content FROM jobs WHERE id = ?1", [&job_id], |r| r.get(0)).unwrap();
     assert!(input.starts_with("! wB97X-3c CPCM(DMF) Opt\n%maxcore ") && input.contains("* xyz 0 1"), "{input}");
+}
+
+/// The `%maxcore` in a stored input, MiB.
+fn stored_maxcore(w: &World, job_id: &str) -> (Option<String>, u64) {
+    let (input, target): (String, Option<String>) = w
+        .db
+        .conn
+        .query_row("SELECT input_content, mcp_target FROM jobs WHERE id = ?1", [job_id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap();
+    let line = input.lines().find_map(|l| l.strip_prefix("%maxcore ")).unwrap_or_else(|| panic!("no %maxcore: {input}"));
+    (target, line.trim().parse().unwrap())
+}
+
+/// `mcp_maxcore` for `target` on the world's database and host files: the value `create_job` fits.
+fn fitted(w: &World, target: &Target) -> u64 {
+    mcp_maxcore(&w.state, &w.db.dir.join("meminfo"), &w.db.dir, HEADER, target).unwrap().mib
+}
+
+/// The stored target is the one `%maxcore` was fitted for (ADR-027 M4c amendment, items 2 and 7),
+/// through the whole pipeline: a SUBMITTED uni job, a uni job refunded by step C, a PROPOSED local job
+/// and a PROPOSED `dark` job each store `target_text` of Claude's `target`, and the stored input's
+/// `%maxcore` equals `mcp_maxcore(…, target_of(stored))`. The fixture is chosen so that
+/// `mcp_maxcore(uni) ≠ mcp_maxcore(local)` (asserted first), so the equality cannot pass by
+/// coincidence. NEGATIVE CONTROLS: `ctl:target_constant_local` — `stamp_mcp_target` given
+/// `&Target::Local` in `decide_with` → red; `ctl:target_fitted_for` — `create_job` fits `%maxcore` for
+/// `&Target::Local` while step A stores Claude's target → red.
+#[test]
+fn the_stored_target_is_the_one_maxcore_was_fitted_for() {
+    let w = World::new("cj-target", 3);
+    let uni = target_of(PROFILE.to_string());
+    assert_ne!(fitted(&w, &uni), fitted(&w, &Target::Local), "the fixture must tell uni from local");
+
+    let over = Arc::new(FakeStepB::new(w.state.clone(), Hand::Over));
+    let refuse = Arc::new(FakeStepB::new(w.state.clone(), Hand::Refuse));
+    let submitted = run(&w, &over, w.args()).unwrap();
+    assert_eq!(submitted.disposition, Outcome::Submitted);
+    let refunded = run(&w, &refuse, w.args()).unwrap();
+    assert!(refunded.submit.as_ref().unwrap().refunded);
+    let local = run(&w, &over, CreateJobArgs { target: "local".into(), ..w.args() }).unwrap();
+    let dark = run(&w, &over, CreateJobArgs { target: "dark".into(), ..w.args() }).unwrap();
+    assert_eq!((local.disposition, dark.disposition), (Outcome::Proposed, Outcome::Proposed));
+
+    for (r, want) in [(&submitted, PROFILE), (&refunded, PROFILE), (&local, "local"), (&dark, "dark")] {
+        let job_id = r.job_id.clone().unwrap();
+        let (stored, maxcore) = stored_maxcore(&w, &job_id);
+        assert_eq!(stored.as_deref(), Some(want), "[ctl:target_constant_local] {job_id}");
+        let stored = target_of(stored.unwrap());
+        assert_eq!(maxcore, fitted(&w, &stored), "[ctl:target_fitted_for] {want}: the input's %maxcore is not the stored target's");
+    }
 }
 
 /// Control (M3 amendment, item 1, M3a): a step-B refusal not refunded. Step B refused before it took

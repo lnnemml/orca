@@ -61,10 +61,15 @@ impl Case {
     }
 
     fn input(&self) -> StepAInput<'_> {
+        self.input_for(&Target::Local)
+    }
+
+    /// The same call for `target`.
+    fn input_for<'a>(&'a self, target: &'a Target) -> StepAInput<'a> {
         StepAInput {
             header: &self.header,
             source: &self.source,
-            target: &Target::Local,
+            target,
             memory: self.memory,
             assembled: Some(&self.assembled),
             title: "t",
@@ -130,6 +135,67 @@ fn a_charge_never_commits_without_its_audit_row() {
         "AUDIT-CHARGE: a charge committed without its audit row: {outcome:?}, {jobs} jobs, {} charged",
         db.charged(&g.id)
     );
+}
+
+/// The stored target (ADR-027 M4c amendment, items 2 and 7): step A stores `target_text` of the call's
+/// target on a SUBMITTED and on a PROPOSED job. NEGATIVE CONTROL (`ctl:target_stored`): drop the
+/// `stamp_mcp_target` call from `decide_with`'s insert → red.
+#[test]
+fn step_a_stores_the_target_of_a_submitted_and_a_proposed_job() {
+    let db = TestDb::new("decide-target");
+    grant(&db.conn, 5, 2);
+    assert!(matches!(decide(&db.conn, &Case::submitted()).unwrap(), Decided::Charged { .. }));
+    let uni = Target::Server { profile_id: "p-uni".into() };
+    let case = Case::proposed();
+    assert!(matches!(decide_with(&db.conn, case.input_for(&uni), || Ok(()), fixed_clock).unwrap(), Decided::Proposed { .. }));
+    let stored: Vec<(String, Option<String>)> = {
+        let mut stmt = db.conn.prepare("SELECT origin, mcp_target FROM jobs ORDER BY rowid").unwrap();
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().map(Result::unwrap).collect()
+    };
+    assert_eq!(
+        stored,
+        vec![("mcp".into(), Some("local".into())), ("mcp".into(), Some("p-uni".into()))],
+        "[ctl:target_stored] SUBMITTED local, PROPOSED p-uni"
+    );
+}
+
+/// The target is written **inside step A's transaction, before its audit row** (ADR-027 M4c
+/// amendment, item 2): a trigger refuses any audit row whose job has no target yet, so a target
+/// written after the audit row, after the commit, or in a transaction of its own fails the call; and
+/// the job step A returns — read inside its transaction — already carries it. NEGATIVE CONTROL
+/// (`ctl:target_in_tx`): store the target after `tx.commit()` instead of in the insert → red.
+#[test]
+fn step_a_stores_the_target_inside_its_transaction_before_the_audit_row() {
+    let db = TestDb::new("decide-target-tx");
+    grant(&db.conn, 5, 2);
+    db.conn
+        .execute_batch(
+            "CREATE TEMP TRIGGER audit_after_target BEFORE INSERT ON mcp_audit \
+                 WHEN NEW.job_id IS NOT NULL AND (SELECT mcp_target FROM main.jobs WHERE id = NEW.job_id) IS NULL \
+             BEGIN SELECT RAISE(ABORT, 'an audit row before its job has a target'); END;",
+        )
+        .unwrap();
+    let decided = decide(&db.conn, &Case::submitted());
+    let Ok(Decided::Charged { job, .. }) = decided else { panic!("[ctl:target_in_tx] the SUBMITTED call: {decided:?}") };
+    assert_eq!(job.mcp_target.as_deref(), Some("local"), "[ctl:target_in_tx] SUBMITTED, read inside step A");
+
+    let uni = Target::Server { profile_id: "p-uni".into() };
+    let case = Case::proposed();
+    let decided = decide_with(&db.conn, case.input_for(&uni), || Ok(()), fixed_clock);
+    let Ok(Decided::Proposed { job, .. }) = decided else { panic!("[ctl:target_in_tx] the PROPOSED call: {decided:?}") };
+    assert_eq!(job.mcp_target.as_deref(), Some("p-uni"), "[ctl:target_in_tx] PROPOSED, read inside step A");
+}
+
+/// A REFUSED call inserts no job, so it stores no target anywhere (ADR-027 M4c amendment, item 2).
+#[test]
+fn a_refused_call_stores_no_target() {
+    let db = TestDb::new("decide-refused-target");
+    grant(&db.conn, 5, 2);
+    let mut case = Case::submitted();
+    case.header = parse_header(&format!("{HEADER}* xyz 0 1\n"));
+    assert!(matches!(decide(&db.conn, &case).unwrap(), Decided::Refused { .. }));
+    let targets: i64 = db.conn.query_row("SELECT COUNT(*) FROM jobs WHERE mcp_target IS NOT NULL", [], |r| r.get(0)).unwrap();
+    assert_eq!(targets, 0);
 }
 
 /// Control (M3 amendment, item 3): a classifier REFUSED with no audit row. NEGATIVE CONTROL: skip the

@@ -186,6 +186,7 @@ function job(over: Partial<Job> = {}): Job {
     mcp_reasons: null,
     grant_id: null,
     mcp_state: null,
+    mcp_target: null,
     ...over,
   };
 }

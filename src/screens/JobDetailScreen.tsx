@@ -431,9 +431,10 @@ export function JobDetailScreen({
       // The ref guards against React StrictMode's double-mount.
       if (!autoRun || didSubmit.current) return;
       didSubmit.current = true;
-      // A draft Claude is still submitting is not submitted from here (ADR-027 M4 amendment, item 8);
-      // Rust's `submit_job` refusal is the backstop for what this read cannot see.
-      const refused = autoRunRefusal(current);
+      // A draft Claude is still submitting is not submitted from here (ADR-027 M4 amendment, item 8),
+      // nor is a Claude draft on any target but its stored one (M4c amendment, item 3); Rust's
+      // `submit_job` refusals are the backstop for what this read cannot see.
+      const refused = autoRunRefusal(current, runTarget);
       if (refused !== null) {
         setNotice({ text: refused, tone: "warn" });
         return;

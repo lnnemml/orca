@@ -1,7 +1,9 @@
 /**
  * Claude's jobs on the Jobs screen (ADR-027 M4 amendment, items 6 and 8): the badge, a PROPOSED job's
- * reasons, and "Claude is submitting" in place of Run. Pure: no React, no Tauri. The screens render
- * what this decides; none of them reads `origin`, `mcp_state` or `mcp_reasons` itself.
+ * reasons, and "Claude is submitting" in place of Run; and the stored target (M4c amendment): a
+ * Claude draft runs where Claude assembled it, or not at all (`submitTargetOf`, `autoRunRefusal`;
+ * the row's slot is `remote.ts`'s `runSlot`). Pure: no React, no Tauri. The screens render what this
+ * decides; none of them reads `origin`, `mcp_state`, `mcp_reasons` or `mcp_target` itself.
  *
  * Every predicate here is **exact** (rule #9): a job the payload does not positively name as Claude's
  * is not Claude's. A field that is missing or odd (an older payload, a fixture) never counts as a
@@ -133,14 +135,58 @@ export function runAction(job: Pick<Job, "status" | "mcp_state">): RunAction {
   return { kind: "run" };
 }
 
+// --- The stored target (ADR-027 M4c amendment) ---------------------------------------------------
+
+/** The `mcp_target` text for this machine (Rust's `mcp::grant::LOCAL_TARGET`); any other value is a
+ *  server profile id. */
+export const LOCAL_MCP_TARGET = "local";
+
+/** Why a Claude draft from before v25 offers no Run (item 4). Rust's `submit_job` refuses it with the
+ *  same words (`mcp::steps::LEGACY_DRAFT_NOTE`). */
+export const LEGACY_DRAFT_NOTE = "assembled before targets were stored — delete it and ask Claude again";
+
+/** Why a Claude draft whose stored profile is gone offers no Run (item 3); Rust's
+ *  `mcp::steps::DELETED_PROFILE_NOTE`. */
+export const DELETED_PROFILE_NOTE = "its target profile was deleted — delete it and ask Claude again";
+
 /**
- * The text that stops an auto-run submit (a row's Run, New Job's Create & Run) on a job Claude is
- * still submitting; null when the submit may go ahead. The same `runAction` answer as the row's, so
- * the screens cannot disagree. A row that could not be read (`null`) is let through, and Rust's
- * `submit_job` refusal is the defence in depth behind this check: this one only spares the user a
- * call that would be refused (a job can only leave `submitting`, never enter it after its insert).
+ * `submit_job`'s `target` for a stored `mcp_target` (item 3): `local` → null (this machine); a
+ * profile id → itself. Never pass `"local"` through: `Backend::for_submit(Some("local"))` would look
+ * for an ssh profile named "local", and Rust's target guard refuses it.
  */
-export function autoRunRefusal(job: Pick<Job, "status" | "mcp_state"> | null): string | null {
+export function submitTargetOf(mcpTarget: string): string | null {
+  return mcpTarget === LOCAL_MCP_TARGET ? null : mcpTarget;
+}
+
+/** How a refusal names a stored target where no profile names are loaded (the job detail). */
+function storedTargetWords(mcpTarget: string): string {
+  return mcpTarget === LOCAL_MCP_TARGET ? "this machine" : `the server profile ${mcpTarget}`;
+}
+
+/**
+ * The text that stops an auto-run submit (a row's Run, opened as the detail with `runTarget`) on
+ * `runTarget`; null when the submit may go ahead. It declines:
+ * - a job Claude is still submitting (the same `runAction` answer as the row's, so the screens cannot
+ *   disagree);
+ * - a Claude draft with no stored target (item 4: from before v25, or a payload without the field —
+ *   failing closed), with {@link LEGACY_DRAFT_NOTE};
+ * - a Claude draft asked to run anywhere but its stored target (`submitTargetOf(mcp_target) !==
+ *   runTarget`, item 3): `%maxcore` was fitted for that target.
+ *
+ * A user draft is unchanged. A row that could not be read (`null`) is let through: Rust's `submit_job`
+ * refusals are the defence in depth behind this check, and the only check of a deleted profile (the
+ * detail loads no profiles). This one spares the user a call that would be refused.
+ */
+export function autoRunRefusal(
+  job: Pick<Job, "status" | "origin" | "mcp_state" | "mcp_target"> | null,
+  runTarget: string | null,
+): string | null {
   if (job === null) return null;
-  return runAction(job).kind === "submitting" ? `${SUBMITTING_LABEL}: this job can be run once that ends.` : null;
+  if (runAction(job).kind === "submitting") return `${SUBMITTING_LABEL}: this job can be run once that ends.`;
+  if (job.status !== "draft" || job.origin !== "mcp") return null;
+  if (job.mcp_target == null) return `Not run: ${LEGACY_DRAFT_NOTE}.`;
+  if (submitTargetOf(job.mcp_target) !== runTarget) {
+    return `Not run: Claude assembled this job for ${storedTargetWords(job.mcp_target)}; run it there, or delete it.`;
+  }
+  return null;
 }

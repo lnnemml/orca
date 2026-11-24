@@ -12,9 +12,16 @@
 //! app code can charge or refund a job without its audit row.
 //!
 //! **Who writes `origin = 'mcp'`.** Only [`decide_conn`] (`create_job`'s step A: a PROPOSED or a
-//! charged job), [`insert_proposed_conn`], and the test-only `charge_and_insert_conn`. Each inserts
-//! through the app's own `create_job_conn`, so an MCP job mints its index map like any job, then
-//! stamps the MCP columns in the same transaction.
+//! charged job) and the test-only `charge_and_insert_conn`. Each inserts through the app's own
+//! `create_job_conn`, so an MCP job mints its index map like any job, then stamps the MCP columns in
+//! the same transaction.
+//!
+//! **The stored target** (schema v25; ADR-027 M4c amendment, item 2). The same two writers, and
+//! nothing else, store `jobs.mcp_target` ([`stamp_mcp_target`]): the `target_text` of the very
+//! [`Target`] value the caller fitted `%maxcore` for, in the statement that makes the row Claude's,
+//! inside step A's `BEGIN IMMEDIATE`. A REFUSED call inserts no job and stores nothing; step C's
+//! refund and the reconciliation never touch the column. [`refuse_off_target_conn`] is
+//! `submit_job`'s guard on it: an MCP draft runs where Claude assembled it, or not at all.
 //!
 //! **The step-B window.** From step A's commit to step C's, the row holds `mcp_state =
 //! 'submitting'` and a `grant_id`; [`refuse_while_mcp_submitting`] is the guard of every command
@@ -36,7 +43,9 @@ use super::classify::{
     classify_mcp_job, ClassifyInput, Disposition, GrantSnapshot, MemoryVerdict, ProposedReason, RefusedReason,
     ResolvedSource, Target,
 };
-use super::grant::{begin_immediate, check_utc_text, grant_snapshot_conn, in_flight_conn, now_utc_conn, CurrentGrant};
+use super::grant::{
+    begin_immediate, check_utc_text, grant_snapshot_conn, in_flight_conn, now_utc_conn, target_of, target_text, CurrentGrant,
+};
 use super::header::ParsedHeader;
 #[cfg(test)]
 use super::signature::MethodSignature;
@@ -184,6 +193,7 @@ pub(crate) fn charge_and_insert_with(
     let current = grant_snapshot_conn(&tx, &now)?;
     let problems = grant_problems(current.as_ref().map(|c| &c.snapshot), draft.target, draft.signature);
     let job = create_job_conn(&tx, draft.title, draft.input_content, None, None)?;
+    stamp_mcp_target(&tx, &job.id, draft.target)?;
 
     let outcome = match (problems.is_empty(), current) {
         (true, Some(CurrentGrant { id: grant_id, snapshot })) => {
@@ -202,6 +212,23 @@ pub(crate) fn charge_and_insert_with(
     };
     tx.commit()?;
     Ok(outcome)
+}
+
+/// Make the just-inserted job `job_id` Claude's and store the target it was assembled for (schema
+/// v25; ADR-027 M4c amendment, item 2): `origin = 'mcp'` and `mcp_target = target_text(target)` in
+/// one statement (the v25 CHECK admits a target only on an MCP row), inside the caller's step-A
+/// transaction. `target` must be the very value `%maxcore` was fitted for: the callers pass the
+/// [`StepAInput::target`] (or the test-only draft's) that `create_job` also handed to
+/// `assemble_for` and `memory_verdict_for`. The write is asserted to touch exactly one row.
+fn stamp_mcp_target(tx: &Connection, job_id: &str, target: &Target) -> Result<(), AppError> {
+    let n = tx.execute(
+        "UPDATE jobs SET origin = ?1, mcp_target = ?2 WHERE id = ?3",
+        params![JobOrigin::Mcp.as_str(), target_text(target), job_id],
+    )?;
+    if n != 1 {
+        return Err(AppError::Internal(format!("step A: the target of job {job_id} was stored on {n} rows")));
+    }
+    Ok(())
 }
 
 fn stamp_proposed(conn: &Connection, job_id: &str, reasons: &[McpReason]) -> Result<(), AppError> {
@@ -351,8 +378,12 @@ pub(crate) fn decide_with(
             &AuditEntry { tool: CREATE_JOB, args: input.audit_args, disposition: Some(disposition), reasons, job_id, grant_id },
         )
     };
+    // The insert of a PROPOSED or a SUBMITTED job. It stores the target here, in step A's
+    // transaction, from `input.target`: the value `create_job` fitted `%maxcore` for and the
+    // classifier just judged (ADR-027 M4c amendment, item 2).
     let insert = |assembled: &Assembled| -> Result<Job, AppError> {
         let job = create_job_conn(&tx, input.title, &assembled.input, None, None)?;
+        stamp_mcp_target(&tx, &job.id, input.target)?;
         if let Some(group) = input.group_id {
             tx.execute("UPDATE jobs SET group_id = ?1 WHERE id = ?2", params![group, job.id])?;
         }
@@ -387,26 +418,6 @@ pub(crate) fn decide_with(
     };
     tx.commit()?;
     Ok(decided)
-}
-
-/// Insert a PROPOSED MCP job: a `draft` with `origin = 'mcp'` and its reasons, uncharged. A
-/// PROPOSED job without a reason is refused (honest-or-absent).
-pub fn insert_proposed_conn(
-    conn: &Connection,
-    title: &str,
-    input_content: &str,
-    reasons: &[ProposedReason],
-) -> Result<Job, AppError> {
-    if reasons.is_empty() {
-        return Err(AppError::Internal("a proposed MCP job needs at least one reason".into()));
-    }
-    let tx = begin_immediate(conn)?;
-    let job = create_job_conn(&tx, title, input_content, None, None)?;
-    let reasons: Vec<McpReason> = reasons.iter().map(McpReason::proposed).collect();
-    stamp_proposed(&tx, &job.id, &reasons)?;
-    let job = get_job_conn(&tx, &job.id)?;
-    tx.commit()?;
-    Ok(job)
 }
 
 /// What step C did.
@@ -629,6 +640,65 @@ pub fn delete_refusal_for_mcp_state(job: &Job) -> Option<AppError> {
 /// command.
 pub fn refuse_while_mcp_submitting(job: &Job) -> Result<(), AppError> {
     submit_refusal_for_mcp_state(job).map_or(Ok(()), Err)
+}
+
+/// The words of a legacy MCP draft's refusal and note (ADR-027 M4c amendment, item 4): it was created
+/// before v25, so its row does not record its target. The Jobs screen's note says the same
+/// (`src/jobs/claude.ts`, `LEGACY_DRAFT_NOTE`).
+pub const LEGACY_DRAFT_NOTE: &str = "assembled before targets were stored — delete it and ask Claude again";
+
+/// The words of the refusal and note for an MCP draft whose stored profile no longer exists (ADR-027
+/// M4c amendment, item 3; `src/jobs/claude.ts`, `DELETED_PROFILE_NOTE`).
+pub const DELETED_PROFILE_NOTE: &str = "its target profile was deleted — delete it and ask Claude again";
+
+/// `submit_job`'s target guard (ADR-027 M4c amendment, items 3 and 4): an MCP draft runs where Claude
+/// assembled it — on the target its `%maxcore` was fitted for — or not at all. A user job, and any
+/// job that is not a draft (the backends refuse those on their own), passes unchanged. An
+/// `origin = 'mcp'` draft is refused, in this order:
+/// 1. `mcp_target` NULL: a draft from before v25 ([`LEGACY_DRAFT_NOTE`]);
+/// 2. its stored server profile no longer exists ([`DELETED_PROFILE_NOTE`]) — checked before the
+///    match, because "run it there" would be false advice for a target that is gone;
+/// 3. the requested target is not the stored one: "Claude assembled this job for <target>; run it
+///    there, or delete it".
+///
+/// `requested` is `submit_job`'s own argument, read as [`Backend::for_submit`] reads it: `None` is
+/// this machine and `Some(x)` is the profile `x` — so `Some("local")` is a profile named "local", not
+/// this machine, and never matches a stored `local`.
+///
+/// **One lock.** `submit_job` calls this with the connection of its guarded read
+/// (`submittable_job_conn`), under the same `DbState` lock. `mcp_target` is written once, in step A's
+/// insert, and never rewritten, so a check that passes stays true; a profile deleted after the check
+/// is the remote submit's own `NotFound`.
+///
+/// [`Backend::for_submit`]: crate::execution_backend::Backend::for_submit
+pub fn refuse_off_target_conn(conn: &Connection, job: &Job, requested: Option<&str>) -> Result<(), AppError> {
+    if job.origin != JobOrigin::Mcp || job.status != JobStatus::Draft {
+        return Ok(());
+    }
+    let Some(stored) = job.mcp_target.as_deref() else {
+        return Err(AppError::Conflict(format!("Claude's draft {}: {LEGACY_DRAFT_NOTE}", job.id)));
+    };
+    let stored = target_of(stored.to_string());
+    let where_stored = match &stored {
+        Target::Local => "this machine".to_string(),
+        Target::Server { profile_id } => match crate::commands::server_profiles::get_profile_conn(conn, profile_id) {
+            Ok(profile) => format!("the server profile \"{}\"", profile.name),
+            Err(AppError::NotFound(_)) => {
+                return Err(AppError::Conflict(format!("Claude's draft {}: {DELETED_PROFILE_NOTE}", job.id)));
+            }
+            Err(e) => return Err(e),
+        },
+    };
+    let requested = match requested {
+        None => Target::Local,
+        Some(id) => Target::Server { profile_id: id.to_string() },
+    };
+    if requested != stored {
+        return Err(AppError::Conflict(format!(
+            "Claude assembled this job for {where_stored}; run it there, or delete it"
+        )));
+    }
+    Ok(())
 }
 
 /// [`delete_refusal_for_mcp_state`] as a `Result`, for `delete_job_conn` — the one place a `jobs`

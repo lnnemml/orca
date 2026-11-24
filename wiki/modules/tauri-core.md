@@ -16,7 +16,7 @@ never runs a binary). The runtime mechanics of running ORCA live in
 ## Files
 
 - `lib.rs` — Tauri builder, setup hook, exit handling, invoke-handler registration.
-- `db.rs` — SQLite open + versioned migrations (v1–v24).
+- `db.rs` — SQLite open + versioned migrations (v1–v25).
 - `results.rs` — store/read parsed results (all four artifact readers) into the `results` table
   (ADR-012); the completion hook lives in `local_backend`. See `modules/artifact-readers.md`.
 - `orca_json.rs` — spawn `orca_2json` (ADR-009), lazy-cached gbw→JSON in the job dir (unit 3.7).
@@ -257,6 +257,20 @@ survives a restart.
   `the_expression_index_refuses_a_second_unrevoked_grant`, and the ignored real-copy test
   `real_v23_db_copy_migrates_to_v24_without_touching_any_row` (`ORCASTUDIO_V23_DB_COPY`). The
   grant, step and reconciliation cores over these tables live in `mcp/`.
+- **v25** — **the target an MCP job was assembled for** (ADR-027 M4c amendment, item 2). One column,
+  `jobs.mcp_target TEXT CHECK (mcp_target IS NULL OR (origin = 'mcp' AND mcp_target <> ''))`: `local`
+  or a server profile id, written only by `create_job`'s step A inside its transaction and never
+  rewritten; `submit_job` refuses a Claude draft on any other target. Nullable (every existing row,
+  MCP drafts included, stays NULL: no backfill, such a draft is not runnable); no FK (a deleted profile
+  leaves the value and the run refuses; an `ON DELETE CASCADE` would also trip the job-delete pin).
+  Guarded ALTER on `origin` and on the column; the arm is gated on `target >= 25`, so
+  `migrate_to(conn, 24)` still builds a v24 fixture. `Job` carries it as `mcp_target`, after
+  `mcp_state`. Tests: `fresh_db_migrates_to_v25_with_mcp_target`,
+  `migrate_v24_to_v25_keeps_every_row_and_leaves_mcp_target_null` (every table, the MCP tables
+  included, compared value by value, with the job `full` holding every v24 column non-NULL; the fixture
+  is built by `migrate_to(conn, 24)`), `the_v25_arm_reruns_over_its_own_column`,
+  `the_v25_check_rejects_a_user_row_and_an_empty_target`, and the ignored real-copy test
+  `real_v24_db_copy_migrates_to_v25_without_touching_any_row` (`ORCASTUDIO_V24_DB_COPY`).
 - The queue statuses (`queued`, `cancelled`) and `parsed` needed **no migration** — `status` is TEXT.
 - Migration tests assert preservation across each step (…`migrate_v6_to_v7_adds_homo_lumo_gap`,
   `migrate_v7_to_v8_backfills_energy_from_results`, `migrate_v8_to_v9_adds_manual_tables_and_preserves_data`,
@@ -379,7 +393,13 @@ in-flight steps (own process groups) are left to the OS (ADR-024 o18, decided by
   left as-is); `submit_job(app, id, target: Option<String>)` (async; no target → enqueues locally
   and returns `null` at once; a server profile id → the remote submit off the IPC thread, returning
   its `SubmitResponse`; a job Claude is submitting, `mcp_state` set, is refused with `Conflict` on both
-  arms — ADR-027 decision 5, `modules/mcp-server.md` "The `submit_job` guard"); `cancel_job(id) -> CancelResult` (async: `spawn_blocking` of the per-job
+  arms — ADR-027 decision 5; and, under the same lock as that read, a Claude draft (`origin = 'mcp'`)
+  is refused with `Conflict` when its stored `mcp_target` is NULL ("assembled before targets were
+  stored — delete it and ask Claude again"), when its stored profile no longer exists ("its target
+  profile was deleted — delete it and ask Claude again"), or when `target` (`None` = this machine) is
+  not its stored target ("Claude assembled this job for <target>; run it there, or delete it") —
+  ADR-027 M4c amendment, `mcp::steps::refuse_off_target_conn`; a user draft is unchanged; see
+  `modules/mcp-server.md` "The `submit_job` guard"); `cancel_job(id) -> CancelResult` (async: `spawn_blocking` of the per-job
   body `cancel_one_job` — the app's poller → `commands::jobs::cancel_job_core`, shared with "Cancel
   Claude's jobs" — which claims the guard itself — a remote live job's
   cancel is recorded and delivered now or left pending, never refused for being busy; a local job is

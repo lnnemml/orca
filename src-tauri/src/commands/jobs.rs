@@ -890,9 +890,14 @@ pub fn read_neb_geometries(
 ///   (outcome, `%pal` alignment and its notice).
 ///
 /// Before either arm, the job is read through [`submittable_job_conn`]: a job Claude is submitting
-/// (ADR-027 decision 5, `mcp_state` set) is refused on both arms.
+/// (ADR-027 decision 5, `mcp_state` set) is refused on both arms. Under the same lock, an MCP draft
+/// is refused on any target but the one Claude assembled it for, when it predates stored targets,
+/// and when its stored profile is gone ([`refuse_off_target_conn`], ADR-027 M4c amendment, item 3);
+/// a user draft passes as before.
 ///
 /// Async so the remote arm can await its blocking task; the local arm awaits nothing.
+///
+/// [`refuse_off_target_conn`]: crate::mcp::steps::refuse_off_target_conn
 #[tauri::command]
 pub async fn submit_job(
     app: tauri::AppHandle,
@@ -902,7 +907,9 @@ pub async fn submit_job(
     let job = {
         let db = app.state::<DbState>();
         let conn = db.lock()?;
-        submittable_job_conn(&conn, &id)?
+        let job = submittable_job_conn(&conn, &id)?;
+        crate::mcp::steps::refuse_off_target_conn(&conn, &job, target.as_deref())?;
+        job
     };
     match Backend::for_submit(app.clone(), target) {
         Backend::Local(local) => {

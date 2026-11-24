@@ -51,6 +51,7 @@ function job(over: Partial<Job> = {}): Job {
     mcp_reasons: null,
     grant_id: null,
     mcp_state: null,
+    mcp_target: null,
     ...over,
   };
 }
@@ -171,8 +172,38 @@ describe("JobDetailScreen: the auto-run submit and a submitting draft (ADR-027 M
     await waitFor(() => expect(submitCalls()).toHaveLength(1));
     first.unmount();
     invokeMock.mockClear();
-    answer(job({ ...PROPOSED, mcp_reasons: REASONS }));
+    // A PROPOSED draft Claude assembled for this machine (M4c: its stored target is `local`).
+    answer(job({ ...PROPOSED, mcp_target: "local", mcp_reasons: REASONS }));
     render(screenFor(true));
     await waitFor(() => expect(submitCalls()).toHaveLength(1));
+  });
+});
+
+describe("JobDetailScreen: the auto-run submit of a Claude draft keeps its target (ADR-027 M4c, item 3)", () => {
+  const forTarget = (runTarget: string | null) => (
+    <JobDetailScreen
+      jobId="j1"
+      autoRun
+      runTarget={runTarget}
+      onBack={() => {}}
+      onIterate={() => {}}
+      onUseConformer={() => {}}
+      onOpenJob={() => {}}
+    />
+  );
+
+  // CONTROL: call `autoRunRefusal` without the screen's `runTarget` (null) -> the uni draft opened
+  // for uni is declined -> red; with it but the comparison dropped -> the local open submits -> red.
+  it("declines a uni draft opened to run locally, and submits it on uni", async () => {
+    answer(job({ ...PROPOSED, mcp_target: "p-uni" }));
+    const local = render(forTarget(null));
+    await waitFor(() => expect(screen.getByText(/Claude assembled this job for the server profile p-uni/)).toBeTruthy());
+    expect(submitCalls()).toEqual([]);
+    local.unmount();
+    invokeMock.mockClear();
+    answer(job({ ...PROPOSED, mcp_target: "p-uni" }));
+    render(forTarget("p-uni"));
+    await waitFor(() => expect(submitCalls(), "[ctl:ui_detail_target]").toHaveLength(1));
+    expect(submitCalls()[0][1]).toEqual({ id: "j1", target: "p-uni" });
   });
 });

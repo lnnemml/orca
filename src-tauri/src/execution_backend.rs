@@ -496,7 +496,7 @@ mod tests {
                  scene_json TEXT, scene_log_json TEXT, pathway_id TEXT, group_id TEXT, backend_id TEXT,
                  remote_host TEXT, remote_job_dir TEXT, remote_socket TEXT, cancel_requested_at TEXT, cancel_sent_at TEXT,
                  submit_pending_since TEXT, origin TEXT NOT NULL DEFAULT 'user', mcp_reasons TEXT, grant_id TEXT,
-                 mcp_state TEXT);",
+                 mcp_state TEXT, mcp_target TEXT);",
         )
         .unwrap();
         let (h, d, s) = coords.map_or((None, None, None), |(h, d, s)| (Some(h), Some(d), Some(s)));

@@ -1174,11 +1174,19 @@ Recorded in [remote-live-run-b4.md](../architecture/remote-live-run-b4.md):
 - **Not measured:** that the keepalive ends a call on a dead link in ~2 min is inferred from the
   options (M2 waived, o24.9). G1b (the overnight suspend) is still open.
 
-- **A run target is chosen only through Create & Run** (ADR-024 o20.2): a draft made with "Create
-  Job" and later run from the Jobs table's "Run locally" button runs locally, and every fan-out
-  submits locally (`target: null`) and says so — the DFT re-opt, the OptTS refines of the 1D scan,
-  the 2D surface and the NEB band, and the connectivity check. Choosing a target there is not built
-  in 5.3.
+- **A run target is chosen only through Create & Run** (ADR-024 o20.2) — **except for a Claude
+  draft**, which runs on the target Claude assembled it for, or not at all (ADR-027 M4c amendment):
+  its `%maxcore` was fitted for that target. A user draft made with "Create Job" and later run from
+  the Jobs table's "Run locally" button runs locally, and every fan-out submits locally
+  (`target: null`) and says so — the DFT re-opt, the OptTS refines of the 1D scan, the 2D surface and
+  the NEB band, and the connectivity check (each acts on a fresh **user** job). Choosing a target there
+  is not built in 5.3. A Claude draft stores its target in `jobs.mcp_target` (schema v25); `submit_job`
+  refuses it on any other target, when the target was never stored (a draft from before v25), and
+  when its profile was deleted (`modules/mcp-server.md`, "The `submit_job` guard"). The UI side is
+  `remote.ts`'s `runSlot` ("Run on <name>", "Run locally", a note, or a disabled Run with Rust's
+  reason) and `claude.ts`'s `submitTargetOf` and `autoRunRefusal` (`modules/frontend.md`); the Jobs
+  row does not read `runSlot` yet, so its "Run locally" on a server-targeted Claude draft is refused
+  until it does.
 - **Known limitation — `started_at` of a remote job** is stamped with the time of the status check
   that first sees the classifier's `Running` (`queued` → `running`, `crate::poller`), not the time the
   job started on the server. It can be late by up to a status period (15 s), or by hours when the
